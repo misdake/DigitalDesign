@@ -1,26 +1,30 @@
-# Texture sampling oracle and counted model
+# Texture sampling models
 
 ## Current boundary
 
-This component implements **oracle and counted** (steps 0 and 1).
+This component implements oracle, counted and a bounded timed baseline.
 `texture::ports` owns slot, quad, Group4 and precision configuration records;
 `texture::sim::oracle` owns preparation, filtering, a functional cache and an
 independent continuous reference. `texture::sim::counted` implements the frozen
-UNORM9 datapath with independently replayable numerical ledgers. Timed, cycle
-emulation, RTL, GPU dispatch integration and physical performance results remain
-future work.
+UNORM9 datapath with independently replayable numerical ledgers.
+`texture::sim::timed` combines conservative static preparation reservations with
+cycle execution of the bounded cache/color controller. An optimized II=2
+preparation calendar, independent emulation, RTL, GPU dispatch integration and
+fitted physical performance remain future work.
 
 Refills reuse the existing GPU-owned `frontend::ports::MemoryPort` facade,
 re-exported by texture. The existing generic test adapter connects it to the
 vendor SDRAM `Service` from base commit
 `fb472c98c5b4e9f32faac26929cea16534a21b74`, through a dev dependency only.
 Each tile requests 128 aligned bytes and consumes sixteen actual little-endian
-64-bit beats. The vendor service owns latency/load behavior; sampling introduces
-no second memory interface or texture-specific latency fixture.
+64-bit beats. Timed uses the GPU-owned `RefillPort` cycle projection of that
+same service's submit/step/events. The composition adapter forwards directly;
+the vendor service owns all latency/load behavior. There is no texture-specific
+memory timing model or production vendor dependency.
 
 `Config::default()` preserves the historical precision-study candidate.
 `Config::counted()` selects the frozen step-1 contract below. Ongoing timed
-choices remain in the local GPU v2 texture specification and development process.
+targets remain in the local GPU v2 texture specification and development process.
 
 ## Frozen counted contract
 
@@ -116,7 +120,8 @@ Equality tests expand into audited comparisons/adds, and nonoverlapping packet
 packing/bank concatenation currently uses counted add operations. Physical
 logic/wiring certificates must handle those graphs before sizing ALUs; primitive
 operation counts must not be interpreted as dedicated physical adder counts.
-There is no schedule, throughput claim, FPGA synthesis or PnR result here.
+This numerical work ledger does not establish a schedule or FPGA resource result.
+The separately checked timed baseline is described below.
 
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label texture-counted -CargoArgs @('-p','gpu-v2','--lib','--test','texture_counted','--test','texture','--test','texture_sdram')
@@ -127,6 +132,161 @@ Omit the second probe path for six synthetic profiles without downloaded assets.
 It exports `summary.csv`, `operations.csv` and first-case stage goldens. Relevant
 tests and strict component clippy pass; only the pre-existing Windows linker
 stdout diagnostic remains. No whole-repository checks were run for this step.
+
+## Timed execution and reservations
+
+`Program::compile` captures counted preparation and assigns its primitive graph
+to fixed sites using two bounded scheduler candidates. Dependencies, port/lane
+budgets, multiplier latencies, ordered packet writes and width-weighted retained
+value occupancy are checked independently. Programs are immutable and tied to
+their slot bindings; admission rejects stale bindings or incompatible hardware.
+`Machine::step` executes the cache/color state, advancing the existing SDRAM
+Service by one cycle. A report contains bounded offers, control, responses,
+events, snapshots and ordered committed pixels.
+
+There are two explicit input profiles:
+
+- `Reserved` (default): one quad's complete counted primitive reservation at a
+  time. Group4 packets release at their actual scheduled writes. A full FIFO
+  freezes this preparation's local calendar; cache/refill/color keep advancing.
+  These are numerical payloads evaluated by counted plus verified reservations,
+  rather than an independent cycle executor of every preparation primitive.
+- `PreparedGroups`: externally prepared, counted-verified packets are offered
+  at up to one per enabled cycle. This measures cache/color capacity only. It
+  does not charge the preparation graph to throughput or establish whole-sampler
+  II=2. Immutable program/golden/trace arrays are harness data, not extra queues.
+
+| Site / storage | Default timed declaration |
+| --- | --- |
+| Group4 FIFO | 32x72; 16 entries available for comparison; one write/read per enabled edge |
+| Quad ingress | Four waiting descriptors, one active preparation; 16 live quad IDs |
+| Hint FIFO | Eight keys; last three pending keys deduplicated; optional hints can drop |
+| Miss directory | Four descriptors including active; one active 128-byte refill |
+| Cache | 16 sets x four ways; coherent demand/prefetch tag views; one allocation/edge |
+| Data banks | Four 1024x16 banks; one registered read and one refill write each |
+| Result credits | 16, covering in-flight last groups and queued results; configurable 1..16 |
+| Preparation arithmetic | Three 9x8 lanes; fixed one-cycle logic sites per operation/width; eight helper register reads; one ROM read/site |
+| Preparation value budget | 16384 conservative bits; constants/wiring also counted; observed occupancy is reported by the probe |
+| Color arithmetic | Twelve 9x8 lanes, II=1, latency 3; nine tree adders; three one-cycle feedback adders; per-channel carry/increment normalization |
+| Run bounds | <=256 quads, <=2 million wall cycles, <=12000 preparation events/quad |
+
+DSP packing is checked as one four-lane preparation macro (one lane spare) and
+three four-lane color macros, within two DSP tiles. This is a placement
+certificate for Multiply9, not a synthesis/frequency result. Color expansion is
+bit replication. The color pipeline is statically read(1), multiply(3),
+tree(2), feedback(1), normalize(2): nine enabled cycles from bank issue to result,
+and a further handshake edge to commit. Continuous one-group samples therefore
+need ten credits; four credits alone impose output stalls even with warm cache.
+The declared logic stages still require implementation/timing validation in RTL.
+
+```mermaid
+flowchart LR
+  Q[Bounded quad ingress] --> P[Static preparation reservation]
+  P --> G[32 x 72 Group4 FIFO]
+  P --> H[8 optional hints]
+  G --> T[Demand tag view]
+  H --> U[Prefetch tag view]
+  T --> D[Single directory commit]
+  U --> D
+  D --> M[4 miss descriptors / 1 active refill]
+  M --> S[Existing SDRAM Service]
+  S --> B[4 data banks / refill writes]
+  T --> B
+  B --> C[Fixed color pipeline]
+  C --> O[Reserved result credits / ordered commit]
+```
+
+Demand rechecks the logical key when consuming a group. READY ways cannot be
+evicted until their short read reservation reaches word capture. Afterwards,
+tokens carry the captured words; no way is retained across a whole sample/quad.
+FILLING keys merge, demand promotes a pending descriptor, and active bursts
+never preempt. A demand miss wins the single allocation; the prefetch view sees
+the committed/forwarded allocation. Prefetch replacement protects the waiting
+demand head, even under result backpressure. Fill, prefetch and demand touches
+apply in that order to the shared PLRU state. A last-beat write cannot be read
+from that same line on the same edge; other READY lines continue to serve hits.
+
+Consumer CE gates admission, preparation, tag requests, color and output
+commit. The non-backpressurable refill sink and already committed miss work
+continue under CE=0, including READY publication and starting pending bursts.
+This is an explicit interface boundary, not a freeze of the memory controller.
+Last groups reserve output capacity at read issue. On `last`, normalization
+uses that token's **post-add** accumulator. A quad ID cannot be reused until
+preparation ends and every covered result commits. Slot rebind requires drain.
+The FIFO and tokens transfer verbatim 72-bit counted packets; closed color
+kernels slice weights and `first` from those packets. Host decoding is used for
+controller keys/identity and independent inspection, never to rebuild arithmetic
+operands between numerical stages.
+
+Malformed IDs/beat order/last flags, incomplete completion, memory errors and
+watchdog expiration cause a terminal sampler fault. FILLING is not published as
+READY. An accepted Service transaction remains owned by the Service: drain it
+externally before recreating the sampler; a sampler fault never cancels a burst.
+
+### Timed evidence and remaining bottleneck
+
+The independent audit replays controller decisions and also reconstructs
+row-major tiles, PLRU victim order, reservations, word coverage, group/sample
+ordering, RAW565 expansion, partial sums, feedback and exact /511 output. It
+checks queue capacities and the static color/DSP issue calendar. Tampered
+payloads, CE, totals, reservation calendars and value budgets are rejected.
+Tests compare committed values with the independently implemented oracle,
+rather than treating successful replay as a numerical golden.
+
+Nine integration tests and one cache-control test cover sizes 0/1/3/5/9/10,
+full/missing mips, filters/masks and quad-ID reuse; calibrated-average and both
+chained/unchained services under solo/display/CPU/combined load; FIFO saturation,
+hint drops, descriptor saturation, same-set pollution/refetch, pending-demand
+promotion, non-preemption, short reservations, output backpressure, CE,
+malformed beats, binding changes, configurable latencies/capacities and bounded
+permanent stalls. The dedicated
+prefetch test requires READY reads on the **same edges as actual refill beats**.
+The bilinear probe additionally records 119 such simultaneous edges.
+
+The bounded probe uses 64 quads/256 pixels per profile, starts cold and includes
+pipeline fill/drain. These rows use the calibrated-average Service, prepared
+Group4 input and 16 result credits; numbers are cycles per pixel:
+
+| Profile | 16 entries, no hints | 16 + prefetch | 32 entries, no hints | 32 + prefetch |
+| --- | ---: | ---: | ---: | ---: |
+| Bilinear | 2.234375 | 1.710938 | 2.234375 | 1.488281 |
+| Fractional trilinear | 3.640625 | 3.082031 | 3.640625 | 2.710938 |
+| Sequential cold tiles | 7.046875 | 5.816406 | 7.046875 | 5.816406 |
+| Two-mip repeat seams | 8.796875 | 8.742188 | 8.796875 | 8.742188 |
+
+For 32 + prefetch, bilinear issues 320 groups/381 cycles (83.99% group-site
+utilization) with ten refills; fractional issues 608/694 (87.61%) with thirteen.
+Four result credits worsen bilinear to 2.625000 cycles/pixel, with 316 credit
+stall cycles. Under the configured display+CPU unchained Service the four
+prepared-input profiles take 3.851562, 5.062500, 8.515625 and 11.105469
+cycles/pixel respectively. Queue depth cannot create refill bandwidth or reduce
+the seam's eight groups/pixel. Optional existing Peppers/Mandrill/Sailboat/Airplane
+assets each produce 256 committed pixels bit-identical to the oracle.
+
+The default **Reserved end-to-end baseline** takes 76.285156, 128.539062,
+76.253906 and 147.546875 cycles/pixel for those same profiles. Preparation
+coefficient-lane utilization is only 0.87..1.56%; observed retained values peak
+at 1977..2798 conservative bits. Serial quad preparation and literal primitive
+graphs dominate, including equality expansion and field/address concatenation.
+The ready/write calendar is input-path-specific and not a universal issue ROM.
+No optimized II=2 preparation, small-logic lowering, cross-quad preparation
+pipeline or complete-system throughput has been established. The next
+optimization must certify legal comparison/wiring lowering and context lifetime
+before replacing this conservative baseline; its cycle counts cannot be hidden
+by presenting the prepared-input results as end-to-end sampler performance.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label texture-timed-control -CargoArgs @('-p','gpu-v2','--lib','texture::sim::timed::tests')
+& scripts/run-cargo.ps1 -Subcommand test -Label texture-timed -CargoArgs @('-p','gpu-v2','--test','texture_timed','--test','texture_counted','--test','texture','--test','texture_sdram')
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-timed-probe -CargoArgs @('-p','gpu-v2','--example','texture_timed_probe','--','target/gpu-v2-texture-timed','target/gpu-v2-texture-photos/assets')
+```
+
+Omit the final path to run without existing photos. `summary.csv` records
+profile, memory mode, preparation mode, capacities, workload, occupancy,
+utilization and distinct stall counters; `overlap.csv` records simultaneous beat
+and read edges. These counters can overlap and must not be summed as disjoint
+causes. Validation remains confined to texture and the related SDRAM/modeling
+paths; no whole-repository audit or board/RTL/PnR result is claimed.
 Work stops here for discussion. Timed must execute the 32-entry queue, optional
 prefetch, FILLING merge, demand recheck/reservation, READY hits during refill,
 CE/backpressure and fault/drain behavior before concurrency can be claimed.

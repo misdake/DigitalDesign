@@ -28,6 +28,12 @@ pub struct Preparation {
     /// Verbatim finished stage payloads; host decoding never feeds arithmetic.
     payloads: Vec<i128>,
 }
+impl Preparation {
+    /// Transfer only the verbatim finished packet into the next closed stage.
+    pub(crate) fn payload(&self, index: usize) -> i128 {
+        self.payloads[index]
+    }
+}
 pub struct Pixel {
     pub lane: u8,
     pub rgb: [u8; 3],

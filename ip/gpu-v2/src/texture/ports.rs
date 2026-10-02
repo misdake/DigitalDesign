@@ -2,6 +2,29 @@
 // remain at the test/composition boundary, never in this IP library.
 pub use crate::frontend::ports::MemoryPort;
 
+/// Cycle projection of the existing SDRAM Service facade. Composition adapters
+/// forward submit/step directly; this interface supplies no latency model.
+pub trait RefillPort {
+    fn submit_read(&mut self, address: u64, bytes: usize) -> Result<u64, String>;
+    /// The committed return channel cannot be backpressured by the sampler.
+    fn step(&mut self) -> Result<Vec<RefillEvent>, String>;
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RefillEvent {
+    Started {
+        id: u64,
+    },
+    Beat {
+        id: u64,
+        index: usize,
+        data: u64,
+        last: bool,
+    },
+    Complete {
+        id: u64,
+    },
+}
+
 pub const TILE_BYTES: usize = 128;
 pub const MAX_SIZE_LOG2: u8 = 10;
 

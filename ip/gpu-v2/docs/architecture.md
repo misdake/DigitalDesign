@@ -15,7 +15,7 @@ ip/gpu-v2/
     vertex/                    v6 decode, matrix transforms and seven-row output
     frontend/                  bounded command/DMA/vertex composition
     triangle/                  owned transformed inputs and setup oracle only
-    texture/                   precision oracle, closed counted sampler and functional cache
+    texture/                   oracle, closed counted sampler, timed cache/color and preparation reservations
     lighting/
       ports.rs                 component input/output and context contracts
       sim/
@@ -59,6 +59,13 @@ Rust services return real data. The existing timed frontend still uses its expli
 latency fixture; it has not become a numerical cycle executor for this combination.
 Emulation and RTL remain independent verification paths.
 Tests use stage goldens rather than treating audit success as an accuracy oracle.
+
+Texture advances the existing SDRAM Service directly through a thin GPU-owned
+RefillPort projection in test composition. Its bounded cache/color machine
+executes real refill beats, bank captures, closed color kernels and ordered
+results; conservative counted preparation is separately assigned static
+reservations. A prepared-Group4 profile isolates cache/color capacity. It does
+not establish optimized preparation throughput or a complete GPU runtime.
 
 Lighting starts at a single pixel and returns two scalar intensities, g and h.
 Quad allocation, coverage, four-pixel grouping and branch joins belong to the
