@@ -1,5 +1,5 @@
-//! Retired GPU integration point. The GPU v2 implementation is developed in
-//! the standalone cmodel in this directory's `sim/` crate.
+//! Retired GPU integration point. New reusable components are developed in
+//! `ip/gpu-v2`; this directory's `sim/` crate is a historical cmodel harness.
 //!
 //! This leaf preserves the system wiring while explicitly rejecting the old
 //! command ABI. It does not execute commands or issue memory requests.
@@ -105,6 +105,19 @@ impl Module for CpuV3Gpu {
 
     fn verilog_source() -> Option<String> {
         Some(include_str!("gpu.v").to_owned())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("gpu_tb.v").to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "explicit retired GPU status and inactive-memory-port RTL validation"]
+    fn retired_gpu_rejects_legacy_commands_in_verilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<super::CpuV3Gpu>().unwrap();
     }
 }
 

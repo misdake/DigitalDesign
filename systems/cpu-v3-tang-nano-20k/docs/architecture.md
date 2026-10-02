@@ -3,7 +3,11 @@
 This document records the last fitted Stage 12 system before the GPU v2 reset. GPU resource,
 timing, raster, and framebuffer results below are historical, not measurements of the current
 GPU integration leaf. Device 4 now rejects legacy submissions and issues no memory requests;
-the standalone v2 cmodel is at `src/hardware/gpu/sim/`.
+new components live in `ip/gpu-v2`, while `src/hardware/gpu/sim/` is a historical harness.
+Host and RTL Flash boot tests verify that the historical S2 application halts on
+its first rejected submit without changing either framebuffer or requesting a swap.
+The retired leaf's bounded RTL test checks every device/channel/read/write/reset
+combination and inactive memory ports; this does not qualify a production GPU.
 
 It is the companion to the
 concise [`cpu-v3-optimization.md`](cpu-v3-optimization.md) index; long-form historical evidence lives

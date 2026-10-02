@@ -17,7 +17,7 @@ use digital_design_hardware_gowin::{
 use std::cell::Cell;
 
 thread_local! {
-    static S2_RASTER_ONLY: Cell<bool> = const { Cell::new(false) };
+    static S2_REJECTION_ONLY: Cell<bool> = const { Cell::new(false) };
 }
 
 fn main() -> Result<(), GowinCliError> {
@@ -192,8 +192,8 @@ impl Module for CpuV3System {
             .replace("__S2_IMAGE_WORDS__", &(S2_IMAGE.len() / 2).to_string())
             .replace("__S1_IMAGE_INIT__", &image_init("expected_s1", S1_IMAGE))
             .replace("__S2_IMAGE_INIT__", &image_init("expected_s2", S2_IMAGE));
-        Some(if S2_RASTER_ONLY.with(Cell::get) {
-            format!("`define CPU_V3_S2_RASTER_ONLY\n{testbench}")
+        Some(if S2_REJECTION_ONLY.with(Cell::get) {
+            format!("`define CPU_V3_S2_REJECTION_ONLY\n{testbench}")
         } else {
             testbench
         })
@@ -350,10 +350,10 @@ mod tests {
 
     #[test]
     #[ignore = "explicit external simulator validation"]
-    fn flash_boot_renders_s2_triangle_in_verilog() {
-        S2_RASTER_ONLY.with(|flag| flag.set(true));
+    fn flash_boot_rejects_retired_s2_gpu_in_verilog() {
+        S2_REJECTION_ONLY.with(|flag| flag.set(true));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
-        S2_RASTER_ONLY.with(|flag| flag.set(false));
+        S2_REJECTION_ONLY.with(|flag| flag.set(false));
         result.unwrap();
     }
 }

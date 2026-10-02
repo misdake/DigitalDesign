@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 // Signature testbench for the single-stage flash boot. Phase 1 preloads the
 // Flash model with the packed boot package and verifies the default S2
-// application followed by the button-01 S1 application. Later phases
+// application's rejected legacy GPU submit, followed by the button-01 S1 application. Later phases
 // corrupt the descriptor and manifest metadata and check the boot stage's
 // failure reports.
 module tb;
@@ -164,25 +164,7 @@ reg [1:0] corrupt_metadata = 0;
 integer flash_init_index;
 integer image_word;
 
-function [15:0] triangle_only_pixel;
-    input integer x;
-    input integer y;
-    integer px, py, e0, e1, e2;
-    begin
-        px = 2*x + 1;
-        py = 2*y + 1;
-        e0 = 240*(py - 96) - 16*(px - 160);
-        e1 = -120*(py - 128) - 144*(px - 640);
-        e2 = -120*(py - 416) + 160*(px - 400);
-        if (e0 > 0 && e1 > 0 && e2 >= 0)
-            triangle_only_pixel = (((x >> 3) & 31) << 11) |
-                (((y >> 2) & 63) << 5) | ((x >> 4) & 31);
-        else triangle_only_pixel = 0;
-    end
-endfunction
-
-integer image_x, image_y, image_address;
-reg [15:0] expected_pixel;
+integer framebuffer_word;
 
 initial begin
     for (flash_init_index = 0; flash_init_index < FLASH_PACKAGE_SIZE; flash_init_index = flash_init_index + 1)
@@ -240,42 +222,11 @@ reg boot_phase_seen = 0;
 reg dma_phase_seen = 0;
 reg application_phase_seen = 0;
 integer pre_submit_stall_cycles = 0;
-reg gpu_command_error_seen = 0;
 reg [31:0] pre_submit_last_retired = 0;
-wire [63:0] gpu_debug_payload0 = dut.u_gpu.exec_payload0;
-wire [63:0] gpu_debug_payload1 = dut.u_gpu.exec_payload1;
-wire [63:0] gpu_debug_line0 = dut.u_gpu.ro_buffer[0];
-wire [7:0] gpu_debug_valid = {
-    dut.u_gpu.cache_valid[7], dut.u_gpu.cache_valid[6],
-    dut.u_gpu.cache_valid[5], dut.u_gpu.cache_valid[4],
-    dut.u_gpu.cache_valid[3], dut.u_gpu.cache_valid[2],
-    dut.u_gpu.cache_valid[1], dut.u_gpu.cache_valid[0]
-};
-
 always @(posedge clk) begin
-    if (!gpu_command_error_seen && dut.code_segment == 16'd7 && dut.u_gpu.phase == 5'd16) begin
-        $display("FAIL: S2 GPU entered PH_ERROR (qword=%0d tile_pos=%0d list_index=%0d chunk=%0d ro_error=%0d fb_r_error=%0d fb_w_error=%0d memory_error=%0d port_state=%0d)",
-            dut.u_gpu.qword_index, dut.u_gpu.draw_tile_pos,
-            dut.u_gpu.list_index, dut.u_gpu.list_chunk_start,
-            dut.gpu_ro_memory_error, dut.gpu_fb_r_memory_error,
-            dut.gpu_fb_w_memory_error, dut.memory_error,
-            dut.u_shared_sdram_port.state);
-    end
-    if (!gpu_command_error_seen && dut.code_segment == 16'd7 && dut.u_gpu.command_error) begin
-        gpu_command_error_seen <= 1'b1;
-        $display("FAIL: S2 GPU command error (phase=%0d active=0x%06x/%0d line=0x%04x data0=0x%016x opcode=0x%02x count=%0d arg0=0x%08x payload0=0x%016x payload1=0x%016x qword=%0d target_set=%0d target=0x%06x valid=0x%02x tile_pos=%0d list_index=%0d chunk=%0d list=%016x/%016x/%016x/%016x)",
-            dut.u_gpu.phase, dut.u_gpu.active_base, dut.u_gpu.active_words,
-            dut.u_gpu.line_qword_base, gpu_debug_line0,
-            dut.u_gpu.pending_opcode, dut.u_gpu.pending_count,
-            dut.u_gpu.pending_arg0, gpu_debug_payload0,
-            gpu_debug_payload1, dut.u_gpu.qword_index,
-            dut.u_gpu.target_set, dut.u_gpu.target_base, gpu_debug_valid,
-            dut.u_gpu.draw_tile_pos, dut.u_gpu.list_index,
-            dut.u_gpu.list_chunk_start, dut.u_gpu.ro_buffer[4],
-            dut.u_gpu.ro_buffer[5], dut.u_gpu.ro_buffer[6],
-            dut.u_gpu.ro_buffer[7]);
-        $finish(1);
-    end
+    if ({dut.gpu_ro_memory_request_valid, dut.gpu_fb_r_memory_request_valid,
+         dut.gpu_fb_w_memory_request_valid} !== 3'b000)
+        $fatal(1,"retired GPU issued a memory request");
 
     case (dut.boot_phase)
         1: wait_sdram_phase_seen <= 1;
@@ -290,7 +241,7 @@ end
 // Catch a cache/CPU deadlock substantially earlier than the global scenario
 // timeout while leaving the later GPU and vblank waits unconstrained here.
 always @(posedge clk) begin
-    if (dut.code_segment != 16'd7 || dut.u_gpu.received_count != 0 ||
+    if (dut.code_segment != 16'd7 || dut.halted ||
         dut.retired_words != pre_submit_last_retired) begin
         pre_submit_last_retired <= dut.retired_words;
         pre_submit_stall_cycles <= 0;
@@ -416,9 +367,14 @@ __S2_IMAGE_INIT__
 
     // Phase 1: the intact package boots the default S2 display application
     // (no button held). The display application never writes the LEDs, so the
-    // boot monitor keeps ownership and shows the application phase.
+    // boot monitor keeps ownership and shows the application phase. Its first
+    // legacy GPU submit must halt with 0x0b01 and have no rendering effects.
     wait (dut.code_segment == 16'd7);
-    wait (display_frame_seen);
+    wait (dut.halted);
+    if (dut.halt_signal !== 16'h0b01 || dut.faulted)
+        $fatal(1,"retired S2 GPU must halt on submit rejection: signal=%h fault=%b",dut.halt_signal,dut.faulted);
+    if (display_frame_seen || dut.u_display.next_pending)
+        $fatal(1,"rejected S2 draw reported success or requested a swap");
     repeat (4) @(posedge clk);
     if (dut.data_segment !== 16'h0000 && dut.data_segment !== 16'h0020 &&
         dut.data_segment !== 16'h0021)
@@ -446,27 +402,15 @@ __S2_IMAGE_INIT__
     if (dut.diagnostic_active !== 1 || leds !== 6'b100000)
         $fatal(1, "display application must leave diagnostic ownership at phase 5: active=%0d leds=%b",
             dut.diagnostic_active, leds);
-    // Pixel (200,100) lies strictly inside the viewport triangle. Both
-    // framebuffer slots were initialized before the first DDHT display frame.
-    if (memory[22'h20a248] !== 16'hcb2c || memory[22'h222248] !== 16'hcb2c)
-        $fatal(1, "S2 triangle missing: A=%04x B=%04x",
-            memory[22'h20a248], memory[22'h222248]);
-    // Check the full triangle-only image against independent integer edges,
-    // including every black background pixel in both framebuffer slots.
-    for (image_y = 0; image_y < 240; image_y = image_y + 1)
-        for (image_x = 0; image_x < 400; image_x = image_x + 1) begin
-            image_address = ((image_y >> 4)*25 + (image_x >> 4))*256 +
-                (image_y & 15)*16 + (image_x & 15);
-            expected_pixel = triangle_only_pixel(image_x, image_y);
-            if (memory[22'h200000 + image_address] !== expected_pixel ||
-                memory[22'h218000 + image_address] !== expected_pixel)
-                $fatal(1, "triangle-only pixel (%0d,%0d): expected=%04x A=%04x B=%04x",
-                    image_x, image_y, expected_pixel,
-                    memory[22'h200000 + image_address], memory[22'h218000 + image_address]);
-        end
+    // Every seeded framebuffer word and guard must survive the rejected
+    // submission. Boot DMA and CPU command-buffer stores use other regions.
+    for (framebuffer_word=0; framebuffer_word<96000; framebuffer_word=framebuffer_word+1)
+        if (memory[22'h200000+framebuffer_word] !== 16'h5a5a ||
+            memory[22'h218000+framebuffer_word] !== 16'h5a5a)
+            $fatal(1,"rejected GPU modified framebuffer offset=%0d",framebuffer_word);
     if (memory[22'h217700] !== 16'hbeef || memory[22'h22f700] !== 16'hbeef)
-        $fatal(1, "triangle-only draw changed framebuffer guards");
-`ifdef CPU_V3_S2_RASTER_ONLY
+        $fatal(1, "rejected GPU draw changed framebuffer guards");
+`ifdef CPU_V3_S2_REJECTION_ONLY
     $display("DIGITAL_DESIGN_PASS");
     $finish;
 `endif
@@ -521,12 +465,9 @@ end
 
 initial begin
     repeat (8000000) @(posedge clk);
-    $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d gpu_phase=%0d recv=%0d exec=%0d fifo=%0d draw=%0d/%0d transfer=%0d/%0d/%0d cmd_error=%0d display_seen=%0d)",
+    $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d halted=%0d halt_signal=%h display_seen=%0d)",
         dut.code_segment, dut.data_segment, dut.pc, leds, dut.retired_words,
-        dut.u_gpu.phase, dut.u_gpu.received_count, dut.u_gpu.executed_count,
-        dut.u_gpu.fifo_count, dut.u_gpu.draw_tile_pos, dut.u_gpu.draw_tile_count,
-        dut.u_gpu.transfer_entry, dut.u_gpu.transfer_line, dut.u_gpu.transfer_beat,
-        dut.u_gpu.command_error, display_frame_seen);
+        dut.halted, dut.halt_signal, display_frame_seen);
     $finish(1);
 end
 endmodule
