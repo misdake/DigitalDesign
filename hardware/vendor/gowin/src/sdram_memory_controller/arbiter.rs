@@ -957,7 +957,13 @@ mod tests {
                 memory_request_ready: true,
                 ..idle()
             },
-            z(),
+            // After acceptance the active owner's payload stays connected.
+            // Scalar data is consumed only at the request edge, so no second
+            // request or write-data handshake accompanies this held value.
+            CpuV3MemoryArbiterOutputValue {
+                memory_write_data: 0xdddd,
+                ..z()
+            },
         ));
         steps.push(step(
             CpuV3MemoryArbiterInputValue {
