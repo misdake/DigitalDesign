@@ -15,6 +15,7 @@ ip/gpu-v2/
     vertex/                    v6 decode, matrix transforms and seven-row output
     frontend/                  bounded command/DMA/vertex composition
     triangle/                  owned transformed inputs and setup oracle only
+    texture/                   sampling ports, precision oracle and functional cache
     lighting/
       ports.rs                 component input/output and context contracts
       sim/
@@ -69,8 +70,11 @@ and presentation only; it must not reproduce the arithmetic in JavaScript. The
 runtime-format audited lane and the WASM interface have not been implemented.
 Implemented behavior and validation are in [lighting](lighting.md) and
 [frontend](frontend.md). The frontend does not consume triangle records or define
-an encoded GPU command ABI; framebuffer/cache, sampling and final system
+an encoded GPU command ABI; framebuffer/cache and final system
 integration remain separate work.
 The [triangle oracle](triangle.md) consumes the vertex component's owned output
 records directly. It provides self-contained source fields and coverage fans;
 it does not read live/released vertex slots or instantiate a timed triangle queue.
+The [texture oracle](texture.md) implements independent sampling and a functional
+cache through the existing MemoryPort. Queue/tag/refill concurrency and physical
+sampling throughput remain separate future work.
