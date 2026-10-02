@@ -77,8 +77,9 @@ and returns stable average offsets. Functional data goldens remain independent.
 
 The unchanged frontend DMA cover adapter still issues one cover at a time.
 Group execution inside the memory service does not make the whole GPU frontend
-a cycle-accurate implementation. Production system activation and physical-board
-qualification remain separate; the group mode defaults off.
+a cycle-accurate implementation. Production system activation remains separate;
+the group mode defaults off. Physical SRAM/Flash-reload group measurements are
+recorded in the [board study](../../../hardware/vendor/gowin/doc/sdram-traffic-probe.md#group-board-results-2026-10-02).
 
 ## Shared baseline for module worktrees
 
@@ -134,4 +135,9 @@ Icarus edge/pin tests, independent cycle/oracle data comparison, reset, refresh,
 row conflicts, held final responses, source underrun and illegal admissions.
 The additional bounded active-display test and its narrow startup margin are
 documented only in the [probe study](../../../hardware/vendor/gowin/doc/sdram-traffic-probe.md#bounded-active-demand-cycle-check).
-New-image cold-start UART and physical early/group utilization remain unverified.
+The additional [production-display component check](../../../hardware/vendor/gowin/doc/sdram-traffic-probe.md#bounded-production-display-and-cdc-check)
+executes the real four-row buffer, publication/release CDC and RGB consumer with
+the connected vendor RTL and pin model. Its finite active-region pass is separate
+from complete system qualification. The group image passes repeated physical
+SRAM and verified Flash software-reload measurement; early-only board measurement
+and full power-off cold-start UART remain open.

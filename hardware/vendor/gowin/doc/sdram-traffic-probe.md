@@ -13,8 +13,11 @@ input/output constraints. The production system configuration is unchanged.
 The independent cycle combination and connected pin fixture pass. Nine shortened
 workload windows pass pin-model data/guard checks, real UART bit decoding and CRC32.
 The full board image passes Gowin 1.9.8.11 Education PnR and setup/hold audit for
-GW2AR-LV18QN88C8/I7. Physical qualification on 2026-10-02 passes the nine workloads
-below using the same fitted image.
+GW2AR-LV18QN88C8/I7. The original serial image passes the physical workloads below.
+The current four-sector group image also passes repeated SRAM and verified Flash
+software-reload measurements; see [group board results](#group-board-results-2026-10-02).
+The bounded production-display component check below also passes. Physical cold
+power-on and complete production system integration remain open.
 
 | Measurement | Result | Scope |
 | --- | --- | --- |
@@ -354,16 +357,77 @@ worst-case bounds. Queue-to-grant includes the host backlog of a common release.
 | Early + group | 6796 | 3454 | 3470 | 0 |
 
 All 12 combinations passed their assumed deadlines. The group's initial fill
-leaves only 53 clocks against the assumed 6849-clock budget. The real startup
-deadline, tiled scanout addresses, release/publication CDC, consumer stalls and
-buffer underflow are not represented. Neither this test nor the 7500-clock pin
-probe qualifies production scanout. Next qualification must replay the actual
-display producer and four-row buffer, including startup and adverse refresh/
-arrival phases, with completion-to-publication delay inside the deadline.
+leaves only 53 clocks against the assumed 6849-clock budget. This is an assumed
+Service workload deadline, not the production startup contract: the actual
+display waits for publication and a frame boundary before starting. This earlier
+test does not execute tiled addressing, publication/release CDC or scanout.
+The connected production-display check below covers those components within a
+bounded scope; neither check is a complete production-system qualification.
 
 Reproduce only this additional check with `cargo test --release -p gpu-v2
 --test sdram_display_load -- --nocapture`; detailed output is in the corresponding
 `target/cargo-summaries/mc-active-display-bounded-release.log`.
+
+### Bounded production display and CDC check
+
+`ip/gpu-v2/tests/sdram_display_rtl.rs` directly composes the unchanged production
+`display_hdmi.v`, `display_line_buffer.v` and `display_pair_fifo.v` with the
+vendor's generated arbiter, adapter, gearbox, native controller and SDRAM pin
+model. Production 2x timing, framebuffer dimensions and sRGB table are read from
+the authoritative system sources; no replacement display/CDC model or system
+crate dependency is added to GPU v2. The pin-safe related clocks retain the exact
+nominal 54 MHz / 33.3 MHz logic/pixel ratio; physical PLL/TMDS behavior is outside
+this simulation.
+
+```mermaid
+flowchart LR
+    D[Production display fill] --> M[Arbiter / adapter / gearbox / MC]
+    B[CPU and framebuffer traffic] --> M
+    M <--> P[SDRAM pin model]
+    M -->|Display beats| R[Two dual-clock line-buffer banks]
+    R --> C[Production pair FIFO / RGB consumer]
+    D -. Publish toggle and CDC .-> C
+    C -. Release toggle and CDC .-> D
+```
+
+Six normal cases compare serial/early/group with independent video-lock delays
+of 0/73 logic clocks and a fractional pixel-edge shift. CPU arrival periods stay
+1728/288 clocks, every third D-cache request writes, and framebuffer read/write
+are saturated in disjoint scratch regions. Initialization uses the production
+21600 controller clocks. The real producer fills the initial 100 segments, waits
+for actual consumer releases and publishes only complete two-row groups. Each
+case checks 48 active output rows / 38400 pixels against independent coordinate
+goldens and an output-row counter, including tiled request order, row width,
+slot reuse, native refresh and protocol errors. No startup deadline is invented.
+
+Observed timing below is in logic clocks across these finite samples. Fill starts
+at the first accepted segment; release-to-publication includes return CDC and
+arbitration. Readiness lead is publication visible in the pixel domain to the
+actual first-row readiness sample, excluding the initial prefetched groups.
+
+| Config | Accepted-first-segment to publication max | Release to publication max | Minimum visible-publication lead |
+| --- | ---: | ---: | ---: |
+| Serial | 558 | 581 | 6331 |
+| Early only | 1657 | 1667 | 5246 |
+| Early + group | 3421 | 3470 | 3442 |
+
+All six cases pass without underflow or wrong/missing/duplicate pixel rows;
+230400 pixels are checked. Last accepted beat to observed publication is one
+logic edge, and to observed pixel-domain publication is at most four logic
+clocks. A seventh starvation control stops new display grants after six groups:
+the unpublished row remains black, then the real consumer reports underflow
+after 25 completed output rows. This verifies that the test actually observes
+the production failure path rather than relying only on service averages.
+
+Every case has a 1150000-logic-clock and 180-second process bound. Source hashes,
+per-case timing and exported RTL are under
+`target/gpu-v2-sdram/display-integration/summary.json`; the final test log is
+`target/cargo-summaries/mc-display-integration-final-release.log`. Reproduce with
+`cargo test --release -p gpu-v2 --test sdram_display_rtl -- --ignored --nocapture --test-threads=1`.
+This covers a bounded active region, two lock/arrival phases and functional
+synchronizers, not full-frame wrap/swap, all phase combinations, metastability,
+the physical PLL or complete system integration. Production remains serial;
+enabling groups still needs full-system co-simulation/PnR and cold-start evidence.
 
 ### Matched current-source artifacts
 
@@ -372,8 +436,9 @@ group probe. Their source fingerprints are `8c1622c9b8c0da7b` in
 `target/sdram_serial_compare_probe_gowin` and `e3b23eb00d60c787` in
 `target/sdram_early_compare_probe_gowin`. Each contains its audited
 `gowin-build.manifest` and `measurement-manifest.json`; the group identity is
-recorded above. No new physical measurements exist for these three snapshots.
-The original serial board results remain historical evidence for their own image.
+recorded above. Physical group measurements are recorded below; the matched
+current serial/early snapshots have not been measured on the board. The original
+serial board results remain historical evidence for their own image.
 
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand run -Label sdram-group-build -CargoArgs @('-p','digital-design-hardware-gowin','--example','sdram_chained_group_probe','--','target/sdram_chained_group_probe_gowin','--build')
@@ -381,17 +446,41 @@ The original serial board results remain historical evidence for their own image
 python hardware/vendor/gowin/examples/sdram_traffic_probe/resources.py target/sdram_chained_group_probe_gowin
 ```
 
-The image is
-`target/sdram_chained_group_probe_gowin/impl/pnr/sdram_chained_group_probe.fs`.
-After the user's new board confirmation, SRAM programming and `choose uart`
-succeeded but bounded group and unchanged-health captures again returned zero
-bytes. The user then authorized persistent probes. The generated `.bin` was
-programmed at Flash offset zero with successful verification, followed by FPGA
-reload; another bounded capture still returned zero bytes. Binary SHA256 is
-`bf9ca98060e8dba9ed4e658c3445c82086c379a0c0915be65aa4afc699fc579b`.
-The user confirmed USB/power disconnect and reconnect; COM4 remained enumerated
-but Windows denied opening it. A read-only handle scan found no visible serial
-owner (some system processes are inaccessible), and a bounded FTDI USB cycle did
-not recover access. Flash cold-start UART confirmation is still pending; no new
-candidate bandwidth or latency is physically qualified. Evidence is under
-`target/gpu-v2-sdram/group-board-2026-10-02/`.
+### Group board results, 2026-10-02
+
+After the user's fresh board authorization, USB Debugger A at location 6977 and
+COM4 were usable. The initial Flash/reload captures were empty; their cause is
+unresolved. An unchanged health probe then produced 18 valid DDHT success frames.
+With `choose uart` kept open, the audited group SRAM image produced 327 CRC-valid
+version-2 records. The same generated binary was written to Flash offset zero,
+Program/Verify succeeded, and FPGA Reprogram succeeded. A separate capture started
+after that reload produced another 362 valid records, independently of pre-write
+traffic. Each mode has 36--41 records per capture. All 689 records pass CRC,
+pattern/protocol/watchdog flags, drained client counts, useful-byte totals and
+512 B group accounting, covering 4,779,236,256 useful bytes.
+
+Source is `358a4e9`, with the group fingerprint and FS hash listed above. Binary
+SHA256 is `bf9ca98060e8dba9ed4e658c3445c82086c379a0c0915be65aa4afc699fc579b`.
+Aggregates below weight bandwidth by elapsed clocks and group means by completions;
+maxima are observed values, not worst-case or PVT guarantees. Mode identities are
+the same as the historical serial table and simulated comparison above.
+
+| Mode | Effective MB/s | Useful bus % | 512 B group mean / observed max, 54 MHz clocks |
+| --- | ---: | ---: | ---: |
+| 0 | 373.29 | 86.41 | 73.07 / 87 |
+| 1 | 374.30 | 86.64 | 72.87 / 86 |
+| 2 | 372.24 | 86.17 | 73.27 / 89 |
+| 3 | 367.01 | 84.96 | 74.33 / 89 |
+| 4 | 361.01 | 83.57 | 78.11 / 100 |
+| 5 | 360.29 | 83.40 | 80.37 / 141 |
+| 6 | 345.83 | 80.05 | 87.11 / 155 |
+| 7 | 345.85 | 80.06 | 87.11 / 196 |
+| 8 | 314.73 | 72.85 | 117.12 / 155 |
+
+Display completion mean/max is 48.93/106 clocks in mode 6 and 1565.70/3195 clocks
+from common batch release in mode 7. Modes 0--7 report zero missed configured load
+deadlines; intentional overload mode 8 reports 3,124,755 per window. The batch
+probe still uses the 7500-clock average interval, not the real active scanout/CDC
+path. Software Flash reload is verified; full power-off cold boot remains pending.
+Production defaults stay serial. Raw captures, decoded per-client records and
+`recovered-summary.json` are under `target/gpu-v2-sdram/group-board-2026-10-02/`.
