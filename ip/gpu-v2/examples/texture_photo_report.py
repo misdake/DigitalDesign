@@ -5,6 +5,7 @@ Requires Pillow and NumPy; takes the texture_photo_probe output directory.
 import csv
 import json
 import math
+import os
 from pathlib import Path
 import sys
 
@@ -105,7 +106,9 @@ def check(root, worst):
 
 
 def label(draw, x, y, text, size=20, color='#182332'):
-    draw.text((x, y), text, fill=color, font=ImageFont.truetype('C:/Windows/Fonts/segoeui.ttf', size))
+    font_path = (Path(os.environ['WINDIR']) / 'Fonts' / 'segoeui.ttf'
+                 if 'WINDIR' in os.environ else 'DejaVuSans.ttf')
+    draw.text((x, y), text, fill=color, font=ImageFont.truetype(str(font_path), size))
 
 
 def figures(root, worst):
