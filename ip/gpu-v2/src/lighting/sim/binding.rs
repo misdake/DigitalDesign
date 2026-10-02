@@ -311,7 +311,7 @@ fn contract_logic(
     kinds: &mut [Option<LaneKind>],
     groups: &[FusedGroup],
 ) -> Result<Vec<audited::physical::LogicCone>, String> {
-    if h.cone_depth > 4
+    if h.cone_depth > 8
         || h.cone_latency == 0
         || h.cone_latency > 4
         || h.cone_lanes_per_shape == 0
@@ -519,6 +519,18 @@ mod tests {
                 assert!(depth(&frame, cone.result_event, &members, &primitive.kinds) <= 4);
             }
             bound.audit_logic_depth(&frame, hardware).unwrap();
+            let coarse_hardware = Hardware {
+                cone_depth: 8,
+                ..hardware
+            };
+            let coarse = BoundDag::new(&frame, coarse_hardware).unwrap();
+            for cone in &coarse.cones {
+                let members = std::iter::once(cone.result_event)
+                    .chain(cone.absorbed_events.iter().copied())
+                    .collect();
+                assert!(depth(&frame, cone.result_event, &members, &primitive.kinds) <= 8);
+            }
+            coarse.audit_logic_depth(&frame, coarse_hardware).unwrap();
             let root = frame.values[frame.outputs[0].value].producer;
             let operands = all_logic
                 .iter()
