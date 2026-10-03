@@ -24,6 +24,10 @@ The [framebuffer model](docs/framebuffer.md) provides a materialized depth/blend
 oracle and bounded serial/overlapped control through the common burst port.
 Its arithmetic latency is a fixture assumption; counted arithmetic and RTL
 remain future work.
+The [controlled pixel composition](docs/pixel-system.md) connects global16
+basic/light/sample stores, ordered join and exact final to the existing double
+output/ROP and actual serial cycle MC. Its branch results are external reference
+stimulus; actual streaming branch execution remains future work.
 The [SDRAM memory controller combination](docs/sdram-memory-controller.md) is
 provided by the Gowin vendor crate through a dev dependency. Its Rust oracle
 supports real data, calibrated average service and configured CPU/display loads.

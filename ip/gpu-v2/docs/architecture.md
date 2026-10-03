@@ -9,7 +9,7 @@ ip/gpu-v2/
   Cargo.toml                   gpu-v2 library
   src/
     lib.rs
-    system/                    future whole-GPU composition through component ports
+    system/                    controlled pixel result-store/join/final/ROP composition
     command_processor/         typed command guards and fixed event identities
     scratchpad/                four banks, DMA/core ports and region leases
     vertex/                    v6 decode, matrix transforms and seven-row output
@@ -69,8 +69,8 @@ Emulation and RTL remain independent verification paths.
 Tests use stage goldens rather than treating audit success as an accuracy oracle.
 The separate GPU-owned `memory::ports` burst transport provides explicit write
 completion through a bounded direct-combination test adapter. The standalone
-framebuffer maintenance model consumes that port; frontend and production GPU
-composition remain future work.
+framebuffer maintenance model and controlled J1 pixel composition consume that
+port. Actual streaming branches and production GPU composition remain future work.
 
 Texture advances the vendor cycle MC through a thin GPU-owned RefillPort in
 test composition. Its bounded cache/color machine executes actual refill beats,
@@ -82,9 +82,10 @@ declared storage map still needs compaction and fitted timing/area validation;
 the controller's arithmetic goldens are not independent numerical emulation.
 
 Lighting starts at a single pixel and returns two scalar intensities, g and h.
-Quad allocation, coverage, four-pixel grouping and branch joins belong to the
-future composition. Final color, texture sampling and framebuffer are separate
-components. Component calculations can be tested without a GPU system.
+Quad allocation and branch joins are implemented in the bounded
+[controlled pixel composition](pixel-system.md), with externally generated
+branch results. Coverage and actual streaming branch execution remain future
+composition work. Component calculations can be tested without a GPU system.
 
 Web code calls the same Rust oracle through bare WASM exports. It owns controls
 and presentation only; it does not reproduce the arithmetic in JavaScript. The
