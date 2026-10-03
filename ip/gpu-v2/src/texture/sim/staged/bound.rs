@@ -12,6 +12,7 @@ use resource_scheduler::{
 use std::{collections::BTreeMap, sync::Arc};
 pub mod control;
 pub mod inventory;
+pub mod session;
 pub mod storage;
 pub mod system;
 

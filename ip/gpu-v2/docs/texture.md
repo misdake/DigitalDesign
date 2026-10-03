@@ -11,7 +11,9 @@ UNORM9 datapath with independently replayable numerical ledgers.
 the historical static preparation baseline and checked input from
 `staged::bound`: universal periodic stage calendars with finite credits,
 registered boundaries and optional early shared-context release. Independent
-arithmetic emulation, RTL, GPU dispatch and fitted performance remain future work.
+preparation arithmetic emulation, RTL, GPU dispatch and fitted performance remain
+future work. `texture::emu::color` independently executes the captured-texel color
+pipeline; its standalone/replay boundary is described below.
 An optional concrete periodic FF-slice layout checks bit ownership at every
 actual read edge; the dedicated allocation remains the default reference.
 
@@ -1060,6 +1062,91 @@ replacement is required to merge this unit.
 The output directory contains actual packet/cache/commit edges, hot blockers,
 native/pool allocation rows and the selector declaration. Miss absorption, more
 storage conversion and arithmetic cones are subsequent independent work.
+
+### Persistent sampling connection
+
+`sim::staged::bound::session::Session` owns the existing preparation, packet
+pool and cache machines plus the independent ColorEmu across consecutive
+`step` calls. Its constructor accepts a finite controlled input sequence;
+it is not a live CP/quad-dispatch port. Actual acceptance advances that input
+sequence. Preparation still replays closed-frame audited arithmetic; it is not
+an independent numerical preparation emulator. The cache program checks
+packet provenance only; actual captured texels and decoded packet bits drive
+ColorEmu. The closed cache/color commits remain an explicit diagnostic/control
+shadow, not public results or permission to reuse a public quad ID.
+
+The unit fixes P16/G32, the existing 64-row 1W/1R packet pool and two total
+head/pending positions. Cache read latency is fixed at one enabled edge. The
+existing CE-gated cache return stage retains its own reservation; this unit
+does not claim a new wall-clock BSRAM-return implementation. One captured input
+register (packet72 + texels64 + valid1 = 137 bits) holds until a real ColorEmu
+acceptance. If occupied, it gates preparation/cache advancement while the single
+RefillPort owner continues draining accepted MC/refill traffic on wall edges.
+There is no added packet/texel FIFO and no queue-depth search.
+
+Actual public result consumption clears one bit in a 16x4 lane-ownership mask
+(64 bits); neither closed-color shadow commits nor preparation completion free
+these identities. Result credit stays with ColorEmu's existing Result16 until
+actual consumption. Added link state is 137 + 64 + terminal-fault1 = 202 logical
+bits, excluding diagnostics and finite input/program fixtures. Existing models
+and ColorEmu retain their own declared state; these are Rust bounds, not fitted
+FPGA resource results. Session errors are terminal and require recreation.
+
+`tests/texture_sampling_step.rs` covers cold misses, nearest/bilinear/mip/seam,
+CE, prolonged result backpressure with refill drain, stable held results,
+full ColorEmu credit, and reuse with different RGB data only after actual
+consumption. `examples/texture_sampling_step.rs` writes bounded workload/trace
+evidence with an explicit warm measurement window, separating packet, pixel
+and quad intervals. Texture and framebuffer still require one shared MC owner
+before system integration; their standalone adapters cannot advance a common
+controller independently. No preparation RTL, full sampler RTL or board proof
+is implied.
+
+### Independent captured-texel color cycle emulator
+
+`texture::emu::color::ColorEmu` takes an already captured `Input` containing the
+actual 72-bit packet and four RGB565 texels in tap order. `tick(Tick)` decodes
+UNORM9 weights/first/last/key and calculates runtime values; it never evaluates
+Program/FrameReport results or calls counted, oracle or `Model::numerical`.
+The existing bound/timed preparation, packet, cache and color path is unchanged.
+
+| Enabled edges after input acceptance | Actual arithmetic/state |
+| --- | --- |
+| 0 | Decode weights/key/flags and expand the captured RGB565 words |
+| 1..3 | Twelve 9x8 products, three registered product stages |
+| 4 / 5 | Pair sums / complete RGB partial, each 17 bits |
+| 6 | Single accumulator/owner feedback; only last proceeds to normalization |
+| 7 / 8 | Exact /511 carry fields / RGB24 queued with key6 |
+| 9 or later | Pre-edge visible output consumed when CE and output_ready hold |
+
+The pipe has eight finite positions, can accept one group per enabled edge,
+and freezes completely under CE=0. One input-stream owner checks contiguous
+first/last groups; one accumulator holds feedback, including across input gaps.
+Sixteen result credits include last-group pipe reservations and queued results.
+Only actual output consumption returns credit; a full-credit last group cannot
+borrow the same edge's return. A caller holds its offer while input_ready is low.
+Malformed owner/width/domain input or watchdog exhaustion is terminal: recreate
+the local emulator before reuse; this is not an in-place MC recovery mechanism.
+
+`ALLOCATION` declares the existing twelve Multiply9 lanes in three macros (six
+DSP18 equivalents), 612 hard product bits, 496 other datapath bits and 499 result/
+control FF bits; it adds no BSRAM. These finite field/role declarations exclude
+host traces/watchdog counters and are not fitted Logic. Selection, CE, validation
+and fault logic require later lowering. The baseline inventory is unchanged.
+
+Tests independently sum expanded texels and divide by 511, exhaust all 130306
+legal normalization values, check stage timing, mixed multi-group owners, full
+credits, CE stalls, invalid requests and bounded recovery. A directed regression
+fills all 16 result credits with distinct RGB values across two keys, pauses CE
+with queued and in-flight results, then blocks the seventeenth last packet until
+an old credit is available. After the pipeline drains into the fully occupied
+queue, it verifies ordered consumption and reuses both keys with different
+multi-group colors on the same drained instance. The complete outputs match
+independent integer goldens. Actual serial MC
+Captured events, including coarse mip/seams/masks/ID reuse, are replayed into this
+block and compared to sampler oracle RGB. This replay does not connect the live
+cache reservation/backpressure boundary or public sample-result store. Those
+adapters need actual return-edge/DSP timing verification; no RTL/PnR is claimed.
 
 ### Bilinear restart bubble: bounded negative experiment
 

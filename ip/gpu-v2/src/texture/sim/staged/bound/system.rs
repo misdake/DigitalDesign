@@ -98,7 +98,7 @@ impl Report {
         Ok(())
     }
 }
-fn packet_issues(
+pub(super) fn packet_issues(
     step: &Step,
     programs: &[Arc<Program>],
     pooled: bool,
