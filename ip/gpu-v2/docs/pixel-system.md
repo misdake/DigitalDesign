@@ -1,10 +1,48 @@
 # Controlled pixel composition (J1)
 
 `system::pixel` connects bounded result storage and exact final color to the
-existing framebuffer model. Branch results are external test stimulus: lighting
-uses its baseline counted model checked against the independent oracle, and
-sampling uses its UNORM9 oracle. This composition does not instantiate either
-branch's cycle executor. It has no command, geometry, rasterizer, RTL or board path.
+existing framebuffer model. `Model` (J1) still takes externally controlled branch
+results; sampling uses its UNORM9 oracle. The `live` submodule replaces only the
+lighting result producer with the real `LightingEmu`; it does not instantiate
+sampling, and has no command, geometry, rasterizer, RTL or board path.
+
+## Lighting-live connection
+
+`LightingLive::new(pixel, lighting_context, max_cycles)` owns one `Model` and one
+`LightingEmu` (default `Fast` profile) and steps both once per wall edge.
+`LiveTick` carries the J1 controls plus a `LiveQuad` (J1 attributes and four
+per-lane `PixelInput`s) and the unchanged controlled `SampleWrite`. After a quad
+is admitted, only covered, non-default lanes issue `LightingRequest`s; default
+light never reads or writes the light store. A returned `LightingResult` is
+checked against the context epoch and stored through J1's one light write port on
+the same edge it is popped, so a cycle shows issue before the matching
+`LightDone`.
+
+The caller holds an offered quad until actual `quad_accepted`; the wrapper does
+not copy an unaccepted input, including during CE=0. One admitted input snapshot
+retains only four lighting pixels until the last covered lane issues. Its bill
+is 4x84 pixel bits (normal48 + NDC36), mask4, cursor3, quad4 and valid1: 348
+logical bits. Context-load control adds one bit. There is no second copy of the
+quad's basic/header payload and no new result FIFO. The fixed context is a
+controlled uniform source for the existing emulator context register.
+`ticket_for_quad[16]` and serials are host ownership witnesses, excluded from
+this logical bill; no wide hardware tag or fitted resource claim follows.
+
+`LiveTick::light_ready` independently backpressures the real light-store write.
+LightingEmu is stallable: its existing output and numerical pipeline hold until
+that write succeeds, independently of final readiness. This is distinct from
+a non-stoppable BSRAM return. Abort resets local lighting work on the next edge,
+including CE=0, while the existing framebuffer transport drains. `drained()`
+requires both the faulted J1 path and empty local lighting; it is not successful
+rendering. An execution error latches abort; a watchdog still requires external
+transport drain after its bound.
+`tests/pixel_lighting_live.rs` compares the complete image and guards against the
+independent integer golden, requires the executor output to equal the oracle and
+the counted architecture config, and covers coverage/default combinations,
+consecutive quads, slot reuse, CE pauses, final/result-port backpressure, input
+ownership and abort. All six lighting contexts cross all three final contexts;
+the tests do not silently truncate these combinations with a zip. The oracle only
+supplies post-hoc goldens; it never drives or releases the device.
 
 ## Interfaces and ownership
 
@@ -107,6 +145,18 @@ out-of-order branch writes, same-address order, duplicate/stale/default rejectio
 real slot reuse, synchronous return reservation, CE/backpressure, cold/dirty
 maintenance, fault drain and a permanent-result-stall watchdog. Reversing the
 same-address stimulus changes the independent golden, proving order matters.
+Two directed cases sharpen the J1 boundary: a wrap-16 slot is first filled with
+real non-default payloads and then reused for light-only, sample-only and
+both-default bypass, with exact per-store read/write addresses proving the stale
+bank cell is never touched and the full byte/guard image matching independent
+arithmetic; and finish asserted while an allocated result is late and the
+downstream MC is stalled shows no premature complete, that already allocated
+results still land, that no work is admitted after finish, that a CE pause
+preserves state, and that Complete follows dirty writeback ACK. This fixture
+case identifies accepted read/write transactions separately, checks all sixteen
+write beats, observes the delayed interval after the last beat without Complete,
+and compares the complete color/depth/guard image with an independent golden;
+refill completion alone is not counted as a flush ACK.
 
 `tests/pixel_sdram.rs` uses the existing direct `Combination` burst adapter with
 the actual serial arbiter/gearbox/controller cycle emulator and pin memory model.
@@ -122,5 +172,5 @@ The next integration requires persistent sampling step/result-ready control and
 a single shared MC dispatcher for texture and framebuffer clients. Existing
 standalone adapters each own their MC advance and cannot be stepped independently
 against one shared controller. J1 needs no new vendor/audited/ROP public API.
-Actual branch execution, certified final/ROP arithmetic and render/display
+Actual sampling execution in J1, certified final/ROP arithmetic and render/display
 ownership remain separate work. No emu-vs-RTL, PnR or board result is claimed here.

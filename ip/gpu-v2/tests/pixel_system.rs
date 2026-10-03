@@ -3,6 +3,7 @@ use gpu_v2::{
     lighting::ports::LightingOutput,
     system::pixel::*,
 };
+use std::collections::VecDeque;
 #[path = "support/pixel.rs"]
 mod support;
 
@@ -557,4 +558,556 @@ fn same_address_depth_and_alpha_require_submission_order_and_preserve_guards() {
     let proof = support::replay(&mut model, &mut memory, &inputs, true, 100_000);
     assert!(proof.out_of_order && proof.retired.len() == 48 && memory.idle());
     assert_eq!(memory.bytes, expected); // Includes every untouched word and guard.
+}
+
+fn write_addresses(cycles: &[Cycle], store: Store) -> Vec<u8> {
+    let mut addresses: Vec<u8> = cycles
+        .iter()
+        .flat_map(|c| &c.accesses)
+        .filter(|a| a.store == store && a.write)
+        .map(|a| a.address)
+        .collect();
+    addresses.sort_unstable();
+    addresses
+}
+
+/// Admit one stimulus, offer exactly its non-default branch payloads, and step
+/// until the quad retires. Bounded; only the directed boundary tests use it.
+fn drain_quad(
+    model: &mut Model,
+    memory: &mut Fixture,
+    s: &support::Stimulus,
+    max_steps: u64,
+) -> (Ticket, Vec<Cycle>) {
+    let mut cycles = Vec::new();
+    let first = model
+        .step(
+            Tick {
+                quad: Some(s.quad),
+                ..Default::default()
+            },
+            memory,
+        )
+        .unwrap();
+    assert!(first.quad_accepted, "direct stimulus was not admitted");
+    let ticket = first.ticket.expect("admitted stimulus has a ticket");
+    cycles.push(first);
+    let mut light = VecDeque::new();
+    let mut sample = VecDeque::new();
+    for lane in (0..4u8).rev() {
+        if s.quad.header.mask >> lane & 1 == 0 {
+            continue;
+        }
+        if !s.quad.default_light {
+            light.push_front(LightWrite {
+                key: PixelKey { ticket, lane },
+                value: s.light[usize::from(lane)],
+            });
+        }
+        if !s.quad.default_sample {
+            sample.push_front(SampleWrite {
+                key: PixelKey { ticket, lane },
+                rgb: s.sample[usize::from(lane)],
+            });
+        }
+    }
+    let mut retired = false;
+    for _ in 0..max_steps {
+        let t = model
+            .step(
+                Tick {
+                    light: light.front().copied(),
+                    sample: sample.front().copied(),
+                    ..Default::default()
+                },
+                memory,
+            )
+            .unwrap();
+        assert!(
+            !t.events.iter().any(|e| matches!(e, Event::Rejected(_))),
+            "direct replay rejected: {:?}",
+            t.events
+        );
+        if t.light_accepted {
+            light.pop_front();
+        }
+        if t.sample_accepted {
+            sample.pop_front();
+        }
+        let now_retired = t.events.iter().any(|e| matches!(e, Event::Retired(_)));
+        cycles.push(t);
+        if now_retired {
+            retired = true;
+            break;
+        }
+    }
+    assert!(
+        retired,
+        "direct stimulus did not retire within {max_steps} edges"
+    );
+    assert!(
+        light.is_empty() && sample.is_empty(),
+        "branch writes left queued"
+    );
+    (ticket, cycles)
+}
+
+/// Request finish and step until the single flush/ACK completes. Bounded.
+fn complete_render(model: &mut Model, memory: &mut Fixture, max_steps: u64) -> Vec<Cycle> {
+    let mut cycles = Vec::new();
+    for _ in 0..max_steps {
+        let t = model
+            .step(
+                Tick {
+                    finish: true,
+                    ..Default::default()
+                },
+                memory,
+            )
+            .unwrap();
+        let complete = t.events.iter().any(|e| matches!(e, Event::Complete));
+        cycles.push(t);
+        if complete {
+            return cycles;
+        }
+    }
+    panic!("pixel render did not complete within {max_steps} edges");
+}
+
+#[test]
+fn reused_global_slot_after_real_payloads_alternates_bypass_without_stale_reads() {
+    let context = support::context();
+    let mut initial = support::image();
+    let depth_start = context.surface.depth_base_bytes as usize;
+    let plane = usize::from(context.surface.width) * usize::from(context.surface.height) * 2;
+    // Force every depth test to pass so each addressed pixel commits, including
+    // the deliberately reused addresses 0 and 1.
+    initial[depth_start..depth_start + plane].fill(0xff);
+    let base = support::synthetic(24);
+    let inputs: Vec<support::Stimulus> = base
+        .iter()
+        .take(22)
+        .enumerate()
+        .map(|(i, b)| {
+            let mut s = b.clone();
+            s.quad.header = fb::Header {
+                x: ((i % 10) * 16) as u16,
+                y: ((i / 10) % 2 * 16) as u8,
+                mask: 15,
+            };
+            let tint = s.quad.basic;
+            s.quad.basic = std::array::from_fn(|lane| Basic {
+                tint: tint[lane].tint,
+                depth: (60_000 - i * 100 - lane * 7) as u16,
+            });
+            let (default_light, default_sample) = match i {
+                0..=15 => (false, false),
+                _ => match (i - 16) % 3 {
+                    0 => (false, true),
+                    1 => (true, false),
+                    _ => (true, true),
+                },
+            };
+            s.quad.default_light = default_light;
+            s.quad.default_sample = default_sample;
+            s
+        })
+        .collect();
+    let expected = support::golden(initial.clone(), &inputs, context);
+    let mut memory = Fixture::new(initial);
+    memory.request_period = 3;
+    memory.ack_delay = 5;
+    let mut model = Model::new(context, 200_000).unwrap();
+    let mut tickets: Vec<Ticket> = Vec::new();
+    let mut all_cycles: Vec<Vec<Cycle>> = Vec::new();
+    let mut totals = [0u64; 4]; // light reads/writes, sample reads/writes.
+    for (i, s) in inputs.iter().enumerate() {
+        let (ticket, cycles) = drain_quad(&mut model, &mut memory, s, 4000);
+        assert_eq!(
+            ticket.serial, i as u64,
+            "serial must follow admission order"
+        );
+        assert_eq!(
+            ticket.quad,
+            (i as u8) & 15,
+            "slot index must follow wrap order"
+        );
+        let covered = u64::from(s.quad.header.mask.count_ones());
+        let light_w = cycles
+            .iter()
+            .flat_map(|c| &c.events)
+            .filter(|e| matches!(e, Event::LightDone(_)))
+            .count() as u64;
+        let sample_w = cycles
+            .iter()
+            .flat_map(|c| &c.events)
+            .filter(|e| matches!(e, Event::SampleDone(_)))
+            .count() as u64;
+        let light_r = cycles
+            .iter()
+            .flat_map(|c| &c.accesses)
+            .filter(|a| a.store == Store::Light && !a.write)
+            .count() as u64;
+        let sample_r = cycles
+            .iter()
+            .flat_map(|c| &c.accesses)
+            .filter(|a| a.store == Store::Sample && !a.write)
+            .count() as u64;
+        if s.quad.default_light {
+            assert_eq!(light_w + light_r, 0, "default light touched its stale bank");
+        } else {
+            assert_eq!((light_r, light_w), (covered, covered));
+        }
+        if s.quad.default_sample {
+            assert_eq!(
+                sample_w + sample_r,
+                0,
+                "default sample touched its stale bank"
+            );
+        } else {
+            assert_eq!((sample_r, sample_w), (covered, covered));
+        }
+        for (store, bypass) in [
+            (Store::Light, s.quad.default_light),
+            (Store::Sample, s.quad.default_sample),
+        ] {
+            let expected_addresses: Vec<u8> = if bypass {
+                vec![]
+            } else {
+                (0..4).map(|lane| ticket.quad * 4 + lane).collect()
+            };
+            let mut reads: Vec<_> = cycles
+                .iter()
+                .flat_map(|c| &c.accesses)
+                .filter(|a| a.store == store && !a.write)
+                .map(|a| a.address)
+                .collect();
+            reads.sort_unstable();
+            assert_eq!(reads, expected_addresses, "wrong result read cell");
+            assert_eq!(
+                write_addresses(&cycles, store),
+                expected_addresses,
+                "wrong result write cell"
+            );
+        }
+        totals[0] += light_r;
+        totals[1] += light_w;
+        totals[2] += sample_r;
+        totals[3] += sample_w;
+        if i >= 16 {
+            // The wrap-16 slot is the same header allocation as slot zero.
+            assert_eq!(ticket.quad, tickets[i - 16].quad, "global slot not reused");
+            assert_ne!(ticket.serial, tickets[i - 16].serial);
+            if !s.quad.default_light {
+                assert_eq!(
+                    write_addresses(&cycles, Store::Light),
+                    write_addresses(&all_cycles[i - 16], Store::Light),
+                    "reused light bank cell not identical"
+                );
+            }
+            if !s.quad.default_sample {
+                assert_eq!(
+                    write_addresses(&cycles, Store::Sample),
+                    write_addresses(&all_cycles[i - 16], Store::Sample),
+                    "reused sample bank cell not identical"
+                );
+            }
+        }
+        tickets.push(ticket);
+        all_cycles.push(cycles);
+    }
+    assert_eq!(
+        [
+            model.stats.light_reads,
+            model.stats.light_writes,
+            model.stats.sample_reads,
+            model.stats.sample_writes,
+        ],
+        totals
+    );
+    let finish = complete_render(&mut model, &mut memory, 200_000);
+    assert!(finish
+        .iter()
+        .any(|c| c.events.iter().any(|e| matches!(e, Event::FlushRequested))));
+    assert!(model.complete() && memory.idle());
+    assert_eq!(memory.bytes, expected);
+}
+
+#[test]
+fn finish_holds_closing_for_late_result_during_mc_stall_and_completes_after_ack() {
+    let context = support::context();
+    let mut initial = support::image();
+    let depth = context.surface.depth_base_bytes as usize;
+    let plane = usize::from(context.surface.width) * usize::from(context.surface.height) * 2;
+    initial[depth..depth + plane].fill(255); // Both quads must dirty depth.
+    let mut memory = Fixture::new(initial.clone());
+    // No request is accepted at this period, so the downstream MC stays stalled.
+    memory.request_period = u64::MAX / 2;
+    memory.ack_delay = 12;
+    let mut model = Model::new(context, 200_000).unwrap();
+    // Quad A is fully bypassed; it retires while leaving a cold refill pending.
+    let mut a = support::synthetic(2).pop().unwrap();
+    a.quad.header = fb::Header {
+        x: 0,
+        y: 0,
+        mask: 15,
+    };
+    let tint = a.quad.basic;
+    a.quad.basic = std::array::from_fn(|lane| Basic {
+        tint: tint[lane].tint,
+        depth: 1000 + lane as u16,
+    });
+    a.quad.default_light = true;
+    a.quad.default_sample = true;
+    drain_quad(&mut model, &mut memory, &a, 4000);
+    let mut presented = false;
+    for _ in 0..16 {
+        let t = model.step(Tick::default(), &mut memory).unwrap();
+        presented |= t.framebuffer.request.is_some() && !t.framebuffer.response.accepted;
+    }
+    assert!(presented, "cold refill was not presented to the stalled MC");
+    assert_eq!(memory.requests, 0, "stalled MC accepted a request");
+    assert_eq!(model.snapshot().phase, Phase::Running);
+    assert!(!model.complete());
+
+    // Quad B needs real branch results that are deliberately withheld.
+    let mut b = support::synthetic(3)[1].clone();
+    b.quad.header = fb::Header {
+        x: 32,
+        y: 0,
+        mask: 15,
+    };
+    let tint = b.quad.basic;
+    b.quad.basic = std::array::from_fn(|lane| Basic {
+        tint: tint[lane].tint,
+        depth: 2000 + lane as u16,
+    });
+    b.quad.default_light = false;
+    b.quad.default_sample = false;
+    let expected = support::golden(initial.clone(), &[a.clone(), b.clone()], context);
+    let color = context.surface.color_base_bytes as usize;
+    assert_ne!(
+        expected[color..color + plane],
+        initial[color..color + plane]
+    );
+    assert_ne!(
+        expected[depth..depth + plane],
+        initial[depth..depth + plane]
+    );
+    let first = model
+        .step(
+            Tick {
+                quad: Some(b.quad),
+                ..Default::default()
+            },
+            &mut memory,
+        )
+        .unwrap();
+    assert!(first.quad_accepted);
+    let ticket = first.ticket.unwrap();
+    let mut drained = false;
+    for _ in 0..64 {
+        let t = model.step(Tick::default(), &mut memory).unwrap();
+        assert!(!t
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Complete | Event::FlushRequested)));
+        if !t.snapshot.ingress {
+            drained = true;
+            break;
+        }
+    }
+    assert!(drained, "basic ingress did not drain");
+    assert_eq!(model.snapshot().live, 1);
+
+    // finish arrives while allocated work still waits for its branch result.
+    let c = model
+        .step(
+            Tick {
+                finish: true,
+                quad: Some(b.quad),
+                ..Default::default()
+            },
+            &mut memory,
+        )
+        .unwrap();
+    assert!(!c.quad_accepted, "new work admitted after finish");
+    assert_eq!(model.stats.admitted, 2);
+    assert_eq!(c.snapshot.phase, Phase::Closing);
+    assert!(!c
+        .events
+        .iter()
+        .any(|e| matches!(e, Event::FlushRequested | Event::Complete)));
+
+    // A CE pause preserves the closing state and accepts nothing.
+    let before = model.snapshot();
+    let paused = model
+        .step(
+            Tick {
+                ce: false,
+                finish: true,
+                quad: Some(b.quad),
+                light: Some(LightWrite {
+                    key: PixelKey { ticket, lane: 0 },
+                    value: b.light[0],
+                }),
+                ..Default::default()
+            },
+            &mut memory,
+        )
+        .unwrap();
+    assert_eq!(paused.snapshot, before);
+    assert!(!paused.quad_accepted && !paused.light_accepted && !paused.sample_accepted);
+    assert!(paused.accesses.is_empty());
+    assert!(!model.complete());
+
+    // Already allocated results can still arrive while closing.
+    for lane in 0..4u8 {
+        if b.quad.header.mask >> lane & 1 == 0 {
+            continue;
+        }
+        let t = model
+            .step(
+                Tick {
+                    light: Some(LightWrite {
+                        key: PixelKey { ticket, lane },
+                        value: b.light[usize::from(lane)],
+                    }),
+                    ..Default::default()
+                },
+                &mut memory,
+            )
+            .unwrap();
+        assert!(t.light_accepted && t.snapshot.phase == Phase::Closing);
+    }
+    for lane in 0..4u8 {
+        if b.quad.header.mask >> lane & 1 == 0 {
+            continue;
+        }
+        let t = model
+            .step(
+                Tick {
+                    sample: Some(SampleWrite {
+                        key: PixelKey { ticket, lane },
+                        rgb: b.sample[usize::from(lane)],
+                    }),
+                    ..Default::default()
+                },
+                &mut memory,
+            )
+            .unwrap();
+        assert!(t.sample_accepted && t.snapshot.phase == Phase::Closing);
+    }
+
+    // Retire and request the real flush, still under the stalled MC.
+    let mut retired = false;
+    let mut flush = false;
+    for _ in 0..20_000 {
+        let t = model.step(Tick::default(), &mut memory).unwrap();
+        assert!(
+            !t.events.iter().any(|e| matches!(e, Event::Complete)),
+            "complete before flush ACK"
+        );
+        retired |= t.events.iter().any(|e| matches!(e, Event::Retired(_)));
+        flush |= t.events.iter().any(|e| matches!(e, Event::FlushRequested));
+        if flush {
+            break;
+        }
+    }
+    assert!(retired && flush, "retire/flush did not happen");
+    assert_eq!(model.snapshot().phase, Phase::Flushing);
+    assert!(!model.complete());
+
+    // No completion and no new admission while the downstream MC stays stalled.
+    for _ in 0..1000 {
+        let t = model
+            .step(
+                Tick {
+                    quad: Some(b.quad),
+                    ..Default::default()
+                },
+                &mut memory,
+            )
+            .unwrap();
+        assert!(!t.quad_accepted, "new work admitted after finish");
+        assert!(
+            !t.events.iter().any(|e| matches!(e, Event::Complete)),
+            "premature complete during MC stall"
+        );
+    }
+    assert_eq!(memory.requests, 0, "stalled MC accepted a request");
+    assert!(!model.complete());
+
+    // Release the MC and distinguish refill completion from flush writeback
+    // ACK. No dirty eviction can occur with these two tiles in the eight lines.
+    memory.request_period = 1;
+    let mut complete = false;
+    let mut active_write = None;
+    let mut write_beats = 0;
+    let mut last_write_beat = None;
+    let mut last_write_ack = None;
+    let mut read_acks = 0;
+    let mut write_acks = 0;
+    let mut delayed_write_edges = 0;
+    for _ in 0..20_000 {
+        let t = model
+            .step(
+                Tick {
+                    finish: true,
+                    quad: Some(b.quad),
+                    ..Default::default()
+                },
+                &mut memory,
+            )
+            .unwrap();
+        assert!(!t.quad_accepted, "new work admitted after finish");
+        let response = t.framebuffer.response;
+        if response.accepted {
+            assert!(active_write.is_none());
+            let request = t.framebuffer.request.unwrap();
+            active_write = Some(request.write);
+            write_beats = 0;
+            last_write_beat = None;
+            if request.write {
+                assert_eq!(
+                    t.snapshot.phase,
+                    Phase::Flushing,
+                    "write is not flush maintenance"
+                );
+            }
+        }
+        if response.write_accepted {
+            assert_eq!(active_write, Some(true));
+            write_beats += 1;
+            if write_beats == 16 {
+                last_write_beat = Some(t.wall);
+                assert!(!model.complete(), "last beat is not ACK");
+            }
+        }
+        if let Some(success) = response.complete {
+            assert!(success);
+            if active_write.take().expect("terminal without transaction") {
+                assert_eq!(write_beats, 16);
+                assert!(t.wall - last_write_beat.unwrap() >= memory.ack_delay);
+                write_acks += 1;
+                last_write_ack = Some(t.wall);
+            } else {
+                read_acks += 1;
+            }
+        } else if active_write == Some(true) && last_write_beat.is_some() {
+            delayed_write_edges += 1;
+            assert!(!model.complete(), "render completed before writeback ACK");
+        }
+        if t.events.iter().any(|e| matches!(e, Event::Complete)) {
+            assert!(last_write_ack.is_some_and(|ack| ack <= t.wall));
+            assert!(active_write.is_none());
+            complete = true;
+            break;
+        }
+    }
+    assert!(complete, "render did not complete after ACK");
+    assert!(model.complete() && memory.idle());
+    assert!(memory.requests > 0, "completion without a real MC request");
+    assert!(read_acks > 0 && write_acks > 0 && delayed_write_edges > 0);
+    assert_eq!(memory.bytes, expected); // Both planes and all guards.
 }

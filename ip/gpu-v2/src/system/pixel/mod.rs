@@ -1,11 +1,14 @@
 //! J1: controlled branch-result writes, owned stores, ordered final and existing ROP.
-//! No lighting/sampling cycle executor or geometry is instantiated here.
+//! `Model` still takes controlled branch results. `live` connects the real
+//! LightingEmu to that light store; sampling remains controlled stimulus.
 
 mod color;
+mod live;
 mod model;
 
 use crate::{framebuffer::ports::*, lighting::ports::LightingOutput};
 pub use color::final_rgb;
+pub use live::{LightingLive, LiveCycle, LiveQuad, LiveTick};
 pub use model::{Access, Cycle, Event, Model, Phase, Snapshot, Stats, Store};
 
 /// Host witness of one allocation. The serial detects stale injection at wrap;
