@@ -1114,12 +1114,13 @@ context/result release and color-input acceptance. No complete-quad FIFO or
 constructor input sequence is added. The finite `Session` API stays compatible.
 
 Actual `CoefficientEmu` consumes captured scalar coordinates and weights;
-its local numeric clock can hold while downstream preparation drains. Work uses
+its local numeric clock can hold while actual membership and packet pipelines
+drain on base CE. Work uses
 mutable 94-bit SSRAM rows and one 92-bit return/head bank with separate R/C/
 consume/ACK edges, detailed below. Packet W and public color consumption remain
 later, separate transfers.
 
-The other five arithmetic stages remain counted. Eligible ingress compiles
+Derivative, LOD and coordinate arithmetic remain counted. Eligible ingress compiles
 against one shared Binding and immutable slot context. Upstream programs expire
 at final coordinate capture in early-release mode, or final packet W in late
 mode. Original packet totals and cache provenance remain counted premises;
@@ -1165,6 +1166,41 @@ reserved-work control remain charged to their owners. Default Packed declares
 ColorEmu and Runtime link state. These are model allocations, not fitted cells;
 other configurations have their own receipt. Legacy Session inventory and
 global replay audit remain unchanged and do not certify this locally held path.
+
+### Runtime membership and packet arithmetic
+
+Private Runtime pipelines execute membership and packet operations from captured
+scalar operands. They neither fetch completed stage values nor call counted or
+oracle helpers while stepping. Membership E0 captures weights, coordinates and
+metadata; E1 slices tile/local coordinates and tests nonzero weights, E2 compares
+tiles, E3 retains pair equivalences, and E4 selects the first nonzero representative
+of each tile. E5/E6 align the result; old E6 writes Work on E7. Original corner
+weights retain their positions rather than merging duplicate-tile coefficients.
+
+Packet E0 validates and captures the old Work head and sparse tap before cursor
+advance or ACK. The emit0 bit ends at that predicate, leaving 93 captured bits.
+E1 selects tile/header, corner masks and first/last markers; E2 gates four 9-bit
+weights and concatenates disjoint fields into packet72. E3..E8 are real alignment
+registers; old E8 writes the reserved Pool64 destination on E9. Both pipelines
+have standalone II1, old-state transfers and CE-frozen registers, including
+alignment stages. Existing Work/head and packet-credit limits still govern
+whole-path throughput; this change preserves the event calendar.
+
+The actual membership data banks total 648 bits with valid7/fault1; packet banks
+total 673 bits with valid9/fault1. Runtime retains the existing conservative data
+ceilings and generic control. Packed replaces the old two phase allowances with
+these 18 control bits plus separately retained allowances of 7 and 6 bits, so its
+declared total above is unchanged. Dedicated adds 18 control bits to its previous
+configuration receipt. No RAM, queue, multiplier or port is added; removed replay
+selector metrics are not a claim about synthesized logic. Legacy Session and the
+private coefficient hybrid below retain their original numerical boundaries.
+
+Private numerical tests independently assemble tuple-based membership and packet
+goldens, exercise every registered cut, sparse taps, bubbles and terminal faults,
+and inspect actual banks and Pool writes under CE/input/result stalls. A test-only
+guard rejects dynamic counted helper calls, and poisoning completed legacy stage
+values cannot affect Runtime results. Configuration receipts are allocation
+checks; only the explicitly exercised configurations have cycle evidence.
 
 Private library qualification tests under
 `texture::sim::staged::bound::runtime::qualification` and

@@ -1,8 +1,8 @@
-//! Private live coefficient/Work executor. Upstream and downstream arithmetic
-//! remain closed counted bodies; their host previews are not RAM payloads.
+//! Private live coefficient/membership/Work/packet executor. D/LOD/coordinate
+//! remain counted; downstream arithmetic advances actual scalar registers.
 use super::{
     control::{Event, Hardware, Stats, Step},
-    transport::{Member, Work},
+    transport::Work,
     *,
 };
 use crate::texture::emu::coefficient::{self, CoefficientEmu};
@@ -16,16 +16,6 @@ struct Context {
 }
 struct Coordinate {
     input: coefficient::Input,
-    issue: u64,
-}
-// Counted stage result preview; paid numerical stage banks/calendar retain the
-// operands/result. No extra Work or full coefficient FIFO is allocated here.
-struct Membership {
-    member: Member,
-    issue: u64,
-}
-struct Packet {
-    payload: i128,
     issue: u64,
 }
 struct Completion {
@@ -42,6 +32,9 @@ pub(super) struct Trace {
     pub offer_cost: usize,
     pub plane: Option<(coefficient::Output, usize)>,
     pub packet: Option<i128>,
+    pub member_input: Option<runtime_membership::Input>,
+    pub member_banks: [Option<u128>; 7],
+    pub packet_banks: [Option<u128>; 9],
 }
 pub(super) struct Machine {
     pub binding: Arc<Binding>,
@@ -55,9 +48,9 @@ pub(super) struct Machine {
     ready: VecDeque<coefficient::Input>,
     coefficient: CoefficientEmu,
     ready_plane: usize,
-    members: VecDeque<Membership>,
+    members: runtime_membership::Pipeline,
     work: Work,
-    packets: VecDeque<Packet>,
+    packets: runtime_packet::Pipeline,
     coordinate_count: usize,
     work_count: usize,
     #[cfg(test)]
@@ -68,6 +61,14 @@ pub(super) struct Machine {
     pub packet_ready: bool,
 }
 impl Machine {
+    #[cfg(test)]
+    pub(super) fn numerical_banks(&self) -> ([Option<u128>; 7], [Option<u128>; 9]) {
+        (self.members.banks(), self.packets.banks())
+    }
+    #[cfg(test)]
+    pub(super) fn corrupt_head_tap(&mut self) -> bool {
+        self.work.corrupt_head_tap()
+    }
     #[cfg(test)]
     pub(super) fn corrupt_next_work_read(&mut self) -> bool {
         self.work.corrupt_next_read()
@@ -82,7 +83,11 @@ impl Machine {
     }
     #[cfg(test)]
     pub(super) fn counts(&self) -> (usize, usize, usize) {
-        (self.work_count, self.coordinate_count, self.members.len())
+        (
+            self.work_count,
+            self.coordinate_count,
+            self.members.inflight(),
+        )
     }
     pub(super) fn new(binding: Arc<Binding>, hardware: Hardware) -> Result<Self, String> {
         hardware.validate()?;
@@ -99,9 +104,9 @@ impl Machine {
             coefficient: CoefficientEmu::new(hardware.max_cycles)
                 .map_err(|e| format!("coefficient: {e:?}"))?,
             ready_plane: 0,
-            members: VecDeque::new(),
+            members: runtime_membership::Pipeline::default(),
             work: Work::new(hardware.work_credits)?,
-            packets: VecDeque::new(),
+            packets: runtime_packet::Pipeline::default(),
             coordinate_count: 0,
             work_count: 0,
             #[cfg(test)]
@@ -122,7 +127,7 @@ impl Machine {
         self.live == 0
             && self.coordinate_count == 0
             && self.work_count == 0
-            && self.packets.is_empty()
+            && self.packets.inflight() == 0
             && self.coefficient.idle()
     }
     fn shared_release(&mut self, slot: usize, events: &mut Vec<Event>) -> Result<(), String> {
@@ -179,6 +184,8 @@ impl Machine {
         packet_issue_ready: bool,
         masks: &[u8; 16],
     ) -> Result<Step, String> {
+        #[cfg(test)]
+        let _counted_exclusion = counted_call_guard::Scope::enter();
         if self.stats.cycles >= self.hardware.max_cycles {
             return Err("bound watchdog".into());
         }
@@ -188,29 +195,24 @@ impl Machine {
         let offered = offer.as_ref().map(|(id, _)| *id);
         let pre_work = self.work_count;
         let pre_coordinates = self.coordinate_count;
-        let pre_packets = self.packets.len();
+        let pre_packets = self.packets.inflight();
         let old_input = self.ready.front().copied();
         let old_output = self.coefficient.output();
         let mut events = vec![];
         let mut accepted = false;
         let t = self.stats.enabled;
         self.stats.cycles += 1;
-        let mut write = None;
-        let mut capture = false;
+        let mut member_input = None;
+        let mut packet_input = None;
         let mut plane_capture = None;
-        #[cfg(test)]
-        let mut packet_word = None;
         if ce {
             self.stats.enabled += 1;
-            // Own result until its registered holding cut and external P W.
-            if ready
-                && self
-                    .packets
-                    .front()
-                    .is_some_and(|p| t - p.issue > self.binding.packet.span() + 1)
-            {
-                let packet = self.packets.pop_front().unwrap();
-                let quad = ((packet.payload >> 66) & 15) as u8;
+            // A Pool64 old reservation guarantees W, independent of G32.
+            if let Some(payload) = self.packets.output() {
+                if !ready {
+                    return Err("Runtime reserved packet destination not ready".into());
+                }
+                let quad = ((payload >> 66) & 15) as u8;
                 let completion = self.completion[usize::from(quad)]
                     .as_mut()
                     .ok_or("Runtime packet completion owner")?;
@@ -221,7 +223,7 @@ impl Machine {
                 self.stats.packets += 1;
                 events.push(Event::Packet {
                     program: usize::from(quad),
-                    payload: packet.payload,
+                    payload,
                 });
                 if completion.left == 0 {
                     self.release(quad, &mut events)?;
@@ -232,37 +234,19 @@ impl Machine {
             let consumer_ready = consumer_ready && self.packet_ready;
             if consumer_ready {
                 if let Some((member, tap)) = self.work.front() {
-                    // Complete Member92+tap2 capture precedes the RAM ACK. The
-                    // counted body/result owns all future reads, never Work.
-                    let stage = packet_values(|name| member.raw(name), usize::from(tap))
-                        .map_err(|e| format!("live packet: {e:?}"))?;
-                    self.binding.packet.audit(&stage.frame)?;
-                    let payload = stage.raw("packet");
+                    packet_input = Some(runtime_packet::Input { member, tap });
                     Self::issue(
                         &mut events,
                         "packet",
                         member.key(),
                         masks[usize::from(member.key() / 4)],
                         usize::from(member.raw("fine") == 0),
-                        // Preserve the public event's packet ordinal; the
-                        // actual sparse tap2 remains the numerical operand.
+                        // Numerical tap and emitted ordinal remain distinct.
                         (member.emit() & ((1 << tap) - 1)).count_ones() as usize,
                     )?;
-                    self.packets.push_back(Packet { payload, issue: t });
-                    capture = true;
-                    #[cfg(test)]
-                    {
-                        packet_word = Some(payload);
-                    }
                 }
             }
-            if let Some(member) = self
-                .members
-                .pop_front_if(|p| t - p.issue > self.binding.plane.span())
-            {
-                write = Some(member.member);
-            }
-            let member_ready = self.members.len() < (self.binding.plane.span() + 2) as usize;
+            let member_ready = self.members.inflight() < (self.binding.plane.span() + 2) as usize;
             #[cfg(test)]
             let member_ready = member_ready && self.membership_ready;
             if member_ready {
@@ -275,25 +259,14 @@ impl Machine {
                     if output.weights[which][0] == 0 {
                         return Err("Runtime inactive ready plane".into());
                     }
-                    let stage = membership_values(
-                        output.weights[which].map(i128::from),
-                        output.metadata.coordinates[which].map(i128::from),
-                        [
-                            i128::from(output.metadata.slot),
-                            i128::from(output.metadata.levels[which]),
-                            i128::from(output.metadata.key / 4),
-                        ],
-                        i128::from(output.metadata.key % 4),
-                        [
-                            i128::from(which == 0),
-                            i128::from(output.metadata.last_fine),
-                        ],
-                    )
-                    .map_err(|e| format!("live membership: {e:?}"))?;
-                    self.binding.plane.audit(&stage.frame)?;
-                    self.members.push_back(Membership {
-                        member: Member::capture(&stage)?,
-                        issue: t,
+                    member_input = Some(runtime_membership::Input {
+                        weights: output.weights[which],
+                        coordinates: output.metadata.coordinates[which],
+                        slot: output.metadata.slot,
+                        level: output.metadata.levels[which],
+                        key: output.metadata.key,
+                        fine: which == 0,
+                        last_fine: output.metadata.last_fine,
                     });
                     Self::issue(
                         &mut events,
@@ -307,6 +280,12 @@ impl Machine {
                 }
             }
         }
+        // Operand capture succeeds before any source cursor/ACK can change.
+        let _packet = self.packets.tick(ce, packet_input)?;
+        #[cfg(test)]
+        let packet_word = _packet;
+        let write = self.members.tick(ce, member_input)?;
+        let capture = packet_input.is_some();
         let work_edge = self.work.tick(ce, write, capture)?;
         if work_edge.ack {
             self.work_count = self.work_count.checked_sub(1).ok_or("Runtime Work ACK")?;
@@ -484,9 +463,9 @@ impl Machine {
         if self.coordinate_count > self.hardware.coordinate_credits
             || self.coordinate_count != self.coordinates.len() + self.ready.len()
             || self.work_count > self.hardware.work_credits
-            || materialized + self.members.len() > self.work_count
-            || self.packets.len() > self.hardware.packet_credits
-            || self.members.len() > (self.binding.plane.span() + 2) as usize
+            || materialized + self.members.inflight() > self.work_count
+            || self.packets.inflight() > self.hardware.packet_credits
+            || self.members.inflight() > (self.binding.plane.span() + 2) as usize
         {
             return Err("Runtime preparation ownership bound".into());
         }
@@ -497,8 +476,8 @@ impl Machine {
         self.stats.peak_live = self.stats.peak_live.max(self.live.count_ones() as usize);
         self.stats.peak_coordinates = self.stats.peak_coordinates.max(self.coordinate_count);
         self.stats.peak_work = self.stats.peak_work.max(self.work_count);
-        self.stats.peak_packet = self.stats.peak_packet.max(self.packets.len());
-        self.stats.blocked += u64::from(ce && !ready && !self.packets.is_empty());
+        self.stats.peak_packet = self.stats.peak_packet.max(self.packets.inflight());
+        self.stats.blocked += u64::from(ce && !ready && self.packets.inflight() != 0);
         #[cfg(test)]
         {
             self.trace = Trace {
@@ -508,6 +487,9 @@ impl Machine {
                 offer_cost: old_input.map_or(0, |i| i.parents.iter().filter(|&&p| p != 0).count()),
                 plane: plane_capture,
                 packet: packet_word,
+                member_input,
+                member_banks: self.members.banks(),
+                packet_banks: self.packets.banks(),
             };
         }
         Ok(Step {

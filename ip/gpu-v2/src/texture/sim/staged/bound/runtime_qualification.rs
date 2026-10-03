@@ -7,7 +7,7 @@ use crate::texture::{
 };
 use std::io::Write;
 #[path = "runtime_physical.rs"]
-mod physical;
+pub(super) mod physical;
 const BOUND: u64 = 20_000;
 
 #[test]
@@ -63,7 +63,7 @@ const BASE: u32 = 4096;
 fn pattern(n: u8, x: usize, y: usize) -> u16 {
     [0xf800, 0x07e0, 0x001f, 0xffff, 0xffe0, 0xf81f, 0x07ff, 0][(x / 4 + y + usize::from(n)) % 8]
 }
-fn fixture() -> (Vec<Slot>, Vec<u8>) {
+pub(super) fn fixture() -> (Vec<Slot>, Vec<u8>) {
     let mut bytes = vec![];
     for n in 0..=5 {
         let logical = 1_usize << n;
@@ -91,7 +91,7 @@ fn fixture() -> (Vec<Slot>, Vec<u8>) {
         bytes,
     )
 }
-fn input(id: u8, mask: u8, uv: [f64; 2], filter: Filter) -> QuadInput {
+pub(super) fn input(id: u8, mask: u8, uv: [f64; 2], filter: Filter) -> QuadInput {
     let mut q = QuadInput {
         quad_id: id,
         mask,
@@ -117,7 +117,7 @@ fn expand(word: u16) -> [u32; 3] {
 }
 /// Independent scalar integer reference on this dyadic/rho1 fixture. No sampler,
 /// counted Frame, packet/color helper or cache provenance is read here.
-fn golden(q: &QuadInput) -> Vec<color::Output> {
+pub(super) fn golden(q: &QuadInput) -> Vec<color::Output> {
     let mut out = vec![];
     for lane in 0..4 {
         if q.mask >> lane & 1 == 0 {
@@ -239,6 +239,11 @@ fn receipt(r: &Runtime, p: control::Hardware, name: &str) {
         actual.ff_bits as i64,
         (baseline.ff_bits + color_bits + LINK_STATE_BITS as u64 + 108 + 2 * a + q) as i64
             + correction
+            + if p.storage == control::Storage::Dedicated {
+                18
+            } else {
+                0
+            }
     );
     assert_eq!(actual.sdp4_cells, baseline.sdp4_cells);
     assert_eq!(actual.ram16x1_cells, baseline.ram16x1_cells);
@@ -276,7 +281,7 @@ fn receipt(r: &Runtime, p: control::Hardware, name: &str) {
         writeln!(file, "]}}").unwrap();
     }
 }
-fn runtime(slots: &[Slot], p: control::Hardware) -> Runtime {
+pub(super) fn runtime(slots: &[Slot], p: control::Hardware) -> Runtime {
     let mut r = Runtime::new(
         slots,
         p,

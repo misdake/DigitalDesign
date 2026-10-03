@@ -1,7 +1,6 @@
 //! Mutable Work94 SSRAM with one paid92-bit registered return/head bank.
 //! Native SSRAM fanout is sampled at R; a later C publishes valid, and only
 //! an old valid head can be consumed. No hard BSRAM output register is assumed.
-use super::Stage;
 
 const FIELDS: [(&str, u8); 22] = [
     ("w0", 9),
@@ -29,24 +28,67 @@ const FIELDS: [(&str, u8); 22] = [
 ];
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Member(u128);
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MemberFields {
+    pub weights: [u16; 4],
+    pub emit: [bool; 4],
+    pub tiles: [u8; 4],
+    pub local: [u8; 2],
+    pub same: [bool; 2],
+    pub slot: u8,
+    pub level: u8,
+    pub key: u8,
+    pub fine: bool,
+    pub final_plane: bool,
+}
 impl Member {
-    pub(super) fn capture(stage: &Stage) -> Result<Self, String> {
+    /// Owned scalar capture, independent of any Stage or numerical frame.
+    pub(super) fn from_fields(v: MemberFields) -> Result<Self, String> {
+        let values = [
+            v.weights[0].into(),
+            v.weights[1].into(),
+            v.weights[2].into(),
+            v.weights[3].into(),
+            v.emit[0].into(),
+            v.emit[1].into(),
+            v.emit[2].into(),
+            v.emit[3].into(),
+            v.tiles[0].into(),
+            v.tiles[1].into(),
+            v.tiles[2].into(),
+            v.tiles[3].into(),
+            v.local[0].into(),
+            v.local[1].into(),
+            v.same[0].into(),
+            v.same[1].into(),
+            v.slot.into(),
+            v.level.into(),
+            (v.key / 4).into(),
+            (v.key % 4).into(),
+            v.fine.into(),
+            v.final_plane.into(),
+        ];
+        if v.key > 63 {
+            return Err("Work member key width".into());
+        }
         let mut word = 0;
         let mut low = 0;
-        for (name, bits) in FIELDS {
-            let value = stage.raw(name);
-            if !(0..1_i128 << bits).contains(&value) {
+        for ((name, bits), value) in FIELDS.into_iter().zip(values) {
+            let value: u128 = value;
+            if value >= 1_u128 << bits {
                 return Err(format!("Work member field {name}"));
             }
-            word |= (value as u128) << low;
+            word |= value << low;
             low += bits;
         }
-        debug_assert_eq!(low, 92);
         let result = Self(word);
         if result.emit() == 0 {
             return Err("Work active plane has no group".into());
         }
         Ok(result)
+    }
+    pub(super) fn bits(self) -> u128 {
+        self.0
     }
     pub(super) fn raw(self, name: &str) -> i128 {
         let mut low = 0;
@@ -102,6 +144,14 @@ pub(super) struct Work {
 #[path = "transport_tests.rs"]
 mod tests;
 impl Work {
+    #[cfg(test)]
+    pub(super) fn corrupt_head_tap(&mut self) -> bool {
+        if !self.valid {
+            return false;
+        }
+        self.cursor = 4;
+        true
+    }
     #[cfg(test)]
     pub(super) fn corrupt_next_read(&mut self) -> bool {
         if self.materialized == 0 || self.valid || self.pending {

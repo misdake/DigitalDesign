@@ -18,11 +18,49 @@ pub mod control;
 pub mod inventory;
 pub mod runtime;
 mod runtime_inventory;
+mod runtime_membership;
+#[cfg(test)]
+mod runtime_numerical_tests;
+mod runtime_packet;
 mod runtime_preparation;
 pub mod session;
 pub mod storage;
 pub mod system;
 mod transport;
+
+// Test-only exclusion of fresh counted evaluation on the live numerical path.
+// Legacy Program construction occurs outside this scope and remains supported.
+#[cfg(test)]
+mod counted_call_guard {
+    use std::cell::Cell;
+    thread_local! {
+        static LIVE: Cell<bool> = const { Cell::new(false) };
+        static CALLS: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
+    }
+    pub(super) struct Scope;
+    impl Scope {
+        pub(super) fn enter() -> Self {
+            LIVE.with(|v| assert!(!v.replace(true), "nested live numerical scope"));
+            Self
+        }
+    }
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            LIVE.with(|v| v.set(false));
+        }
+    }
+    pub(super) fn call(which: usize) {
+        CALLS.with(|v| {
+            let mut calls = v.get();
+            calls[which] += 1;
+            v.set(calls);
+        });
+        LIVE.with(|v| assert!(!v.get(), "counted arithmetic on live Runtime path"));
+    }
+    pub(super) fn calls() -> [u64; 2] {
+        CALLS.with(Cell::get)
+    }
+}
 
 pub struct Lane {
     pub lane: u8,
@@ -143,6 +181,8 @@ fn membership_values(
     lane: i128,
     flags: [i128; 2],
 ) -> Result<Stage, Fault> {
+    #[cfg(test)]
+    counted_call_guard::call(0);
     let mut m = Model::numerical();
     let weights: CoefficientStore = m.input("weights", &weights)?;
     let coords: TexelCoordinateStore = m.input("coords", &coords)?;
@@ -205,6 +245,8 @@ fn packet(p: &Stage, tap: usize) -> Result<Stage, Fault> {
 }
 // Complete92-bit membership plus2-bit tap input capture, same counted body.
 fn packet_values(p: impl Fn(&str) -> i128, tap: usize) -> Result<Stage, Fault> {
+    #[cfg(test)]
+    counted_call_guard::call(1);
     let mut m = Model::numerical();
     let weights: CoefficientStore = m.input(
         "weights",

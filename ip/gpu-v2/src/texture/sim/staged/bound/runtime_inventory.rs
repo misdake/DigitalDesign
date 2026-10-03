@@ -48,6 +48,50 @@ pub(super) fn describe(
         19,
         "qualified local phase8/valid11; downstream base CE independent",
     ));
+    // These fixed local register maps replace only this Runtime's two counted
+    // stage owners. Retain their conservative data ceilings and generic control.
+    for (name, used) in [
+        ("membership FF", super::runtime_membership::DATA_BITS as u64),
+        ("packet FF", super::runtime_packet::DATA_BITS as u64),
+    ] {
+        let row = r
+            .rows
+            .iter_mut()
+            .find(|row| row.name == name)
+            .ok_or("Runtime numerical allocation")?;
+        if row.ff_bits < used {
+            return Err("Runtime numerical field map exceeds data ceiling".into());
+        }
+        row.ports = "actual fixed scalar registers; conservative data ceiling retained; no replay certificate";
+    }
+    if p.storage == control::Storage::Packed {
+        let phases = r
+            .rows
+            .iter_mut()
+            .find(|row| row.name == "periodic storage phase/valid")
+            .ok_or("Runtime numerical phase allocation")?;
+        phases.ff_bits -= b.plane.packed.control_ff_bits + b.packet.packed.control_ff_bits;
+        r.rows.push(ff(
+            "actual membership retained control allowance",
+            7,
+            "paid separately from valid7/fault1",
+        ));
+        r.rows.push(ff(
+            "actual packet retained control allowance",
+            6,
+            "paid separately from valid9/fault1",
+        ));
+    }
+    r.rows.push(ff(
+        "actual membership valid/fault",
+        super::runtime_membership::CONTROL_BITS as u64,
+        "valid7 + separately owned terminal fault1; base CE",
+    ));
+    r.rows.push(ff(
+        "actual packet valid/fault",
+        super::runtime_packet::CONTROL_BITS as u64,
+        "valid9 + separately owned terminal fault1; base CE",
+    ));
     r.rows.push(ff(
         "actual coefficient queue control",
         13,
@@ -104,6 +148,11 @@ pub(super) fn describe(
         r.rotating_read_mux_bits -= b.coefficient.packed.read_selector_tree_bits;
         r.rotating_write_mux_bits -= b.coefficient.packed.write_selector_tree_bits;
         r.storage_control_boolean_gates -= b.coefficient.packed.control_boolean_gates;
+        for stage in [&b.plane, &b.packet] {
+            r.rotating_read_mux_bits -= stage.packed.read_selector_tree_bits;
+            r.rotating_write_mux_bits -= stage.packed.write_selector_tree_bits;
+            r.storage_control_boolean_gates -= stage.packed.control_boolean_gates;
+        }
     } else {
         r.rotating_read_mux_bits -= b
             .coefficient
@@ -111,6 +160,13 @@ pub(super) fn describe(
             .iter()
             .map(|bank| u64::from(bank.width) * bank.slots.saturating_sub(1))
             .sum::<u64>();
+        for stage in [&b.plane, &b.packet] {
+            r.rotating_read_mux_bits -= stage
+                .ff_banks
+                .iter()
+                .map(|bank| u64::from(bank.width) * bank.slots.saturating_sub(1))
+                .sum::<u64>();
+        }
     }
     r.operand_mux_tree_bits -= b.coefficient.operand_mux_tree_bits;
     Ok(r)

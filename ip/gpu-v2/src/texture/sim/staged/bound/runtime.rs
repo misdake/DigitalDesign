@@ -225,10 +225,10 @@ impl Runtime {
                         }
                         for member in &mut lane.memberships {
                             for output in &mut member.frame.outputs {
-                                if output.name.starts_with('w') {
-                                    output.raw ^= 511;
-                                    self.poison_hits += 1;
-                                }
+                                // All closed Member fields are poisoned, not
+                                // merely weights; live pipeline uses none.
+                                output.raw ^= 1;
+                                self.poison_hits += 1;
                             }
                         }
                         for plane in &mut lane.packets {
@@ -401,6 +401,9 @@ impl Runtime {
     }
 }
 
+#[cfg(test)]
+#[path = "runtime_numerical_qualification.rs"]
+mod numerical_qualification;
 #[cfg(test)]
 #[path = "runtime_qualification.rs"]
 mod qualification;
