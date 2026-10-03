@@ -387,6 +387,11 @@ pub struct Machine {
     admitted_slot: [u8; 16],
 }
 impl Machine {
+    /// Borrow the single immutable texture context for runtime host compilation.
+    /// This adds no descriptor copy or mutable context-switch interface.
+    pub(crate) fn external_context(&self) -> (&[Slot], &Hardware) {
+        (&self.slots, &self.hardware)
+    }
     pub fn new(slots: Vec<Slot>, hardware: Hardware) -> Result<Self, Error> {
         hardware.validate()?;
         if slots.is_empty() || slots.len() > 16 {

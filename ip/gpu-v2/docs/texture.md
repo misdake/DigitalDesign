@@ -1102,6 +1102,47 @@ before system integration; their standalone adapters cannot advance a common
 controller independently. No preparation RTL, full sampler RTL or board proof
 is implied.
 
+### Runtime quad ingress
+
+`sim::staged::bound::runtime::Runtime` adds caller-owned live input to the
+existing bounded path. `step(memory, Option<&QuadInput>, Control)` reports
+pre-edge `input_ready` for that ID and actual `accepted`; acceptance requires
+valid, ready and CE. Rejected input is neither compiled nor retained, so the
+caller may replace it before acceptance. Ready conservatively excludes same-edge
+context/result release and color-input acceptance. No complete-quad FIFO or
+constructor input sequence is added. The finite `Session` API stays compatible.
+
+Preparation remains counted closed-frame arithmetic replay. Host compilation
+runs only at eligible ingress, using one shared Binding and the cache's canonical
+immutable slot context. The existing controller owns at most 16 distinct live
+preparation programs across eight contexts and its bounded tokens; all Arc
+references expire after the final preparation packet (also for mask0). The cache
+retains at most 16 provenance programs until that same completion. Program frames,
+host floats, compiler calendars and watchdog/statistics are diagnostic/model
+objects, not free hardware storage or independent arithmetic emulation. Per-edge
+DSP diagnostic records are cleared, and snapshots/events are returned to callers;
+Runtime retains no stream history. Serial four-lane UV ingress is still deferred.
+
+Accepted coverage mapping adds 16x4 = 64 logical bits, cleared at preparation
+release; public lane ownership separately lasts until actual ColorEmu consumption.
+`LINK_STATE_BITS` is 266: capture137 + public lanes64 + coverage64 + fault1. The
+existing preparation/cache/color stores and P16/G32, Pool64 1W/1R, two total
+head/pending positions, read1 and Result16 remain owned by their existing models.
+No precision, arithmetic operation count, physical DSP allocation or cache
+capacity changes. The sole RefillPort step drains accepted beats even when CE or
+the color link stalls. Errors are terminal; accepted MC work requires separate
+external drain before reuse/recreation. These are Rust bounds, not fitted area.
+
+One immutable texture context lasts for the instance; drain and recreate before
+changing slots. All four helper UV lanes affect derivatives even for partial
+coverage; only covered lanes yield key6/RGB24 results. Mask0 drains without
+results/refills. Default-sample remains upstream constant bypass (`None` offers
+no sampler work), with no sampler completion invented for that branch.
+`tests/texture_runtime.rs` checks live replacement, same-instance different-RGB
+reuse, partial/helper/default/mask0, actual P16/G32/Result16/16-ID limits, CE and
+committed refill drain under sustained backpressure. `texture_runtime_probe`
+writes drained warm-window wall/enabled calendars and actual event traces.
+
 ### Independent captured-texel color cycle emulator
 
 `texture::emu::color::ColorEmu` takes an already captured `Input` containing the

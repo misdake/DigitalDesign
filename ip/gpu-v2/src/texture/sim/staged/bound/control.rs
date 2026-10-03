@@ -136,6 +136,13 @@ pub struct Machine {
     pub dsp_issues: Vec<physical::DspIssue>,
 }
 impl Machine {
+    /// Pre-edge ingress credit; no predicted same-edge context release.
+    pub(crate) fn input_ready(&self, quad: u8) -> bool {
+        quad < 16 && self.live >> quad & 1 == 0 && self.slots.iter().any(Option::is_none)
+    }
+    pub(crate) fn live_mask(&self) -> u16 {
+        self.live
+    }
     pub(crate) fn pending_packets(&self) -> usize {
         self.packet_count
     }
