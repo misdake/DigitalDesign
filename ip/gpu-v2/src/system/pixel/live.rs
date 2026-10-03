@@ -115,6 +115,14 @@ impl LightingLive {
     pub fn snapshot(&self) -> Snapshot {
         self.model.snapshot()
     }
+    /// Reuse the existing allocation witness for the sibling sampling adapter.
+    /// This does not add another owner/tag table or change the six-bit key.
+    pub(super) fn allocated_ticket(&self, quad: u8) -> Option<Ticket> {
+        self.ticket_for_quad
+            .get(usize::from(quad))
+            .copied()
+            .flatten()
+    }
     pub fn complete(&self) -> bool {
         self.model.complete()
     }

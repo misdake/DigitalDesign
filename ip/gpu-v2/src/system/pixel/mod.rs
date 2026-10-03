@@ -1,12 +1,15 @@
 //! J1: controlled branch-result writes, owned stores, ordered final and existing ROP.
 //! `Model` still takes controlled branch results. `live` connects the real
-//! LightingEmu to that light store; sampling remains controlled stimulus.
+//! LightingEmu to that light store; `branches` adds actual baseline Sampling
+//! Runtime/cache/ColorEmu results using distinct controlled memory ports.
 
+mod branches;
 mod color;
 mod live;
 mod model;
 
 use crate::{framebuffer::ports::*, lighting::ports::LightingOutput};
+pub use branches::{BranchCycle, BranchQuad, BranchTick, PixelBranches, SAMPLING_OFFER_BITS};
 pub use color::final_rgb;
 pub use live::{LightingLive, LiveCycle, LiveQuad, LiveTick};
 pub use model::{Access, Cycle, Event, Model, Phase, Snapshot, Stats, Store};

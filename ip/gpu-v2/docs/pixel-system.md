@@ -2,9 +2,10 @@
 
 `system::pixel` connects bounded result storage and exact final color to the
 existing framebuffer model. `Model` (J1) still takes externally controlled branch
-results; sampling uses its UNORM9 oracle. The `live` submodule replaces only the
-lighting result producer with the real `LightingEmu`; it does not instantiate
-sampling, and has no command, geometry, rasterizer, RTL or board path.
+results. The `live` submodule connects `LightingEmu`; `PixelBranches` connects
+that path alongside actual persistent Sampling Runtime/cache/ColorEmu results. These bounded
+composers use controlled quad inputs, without command, geometry, rasterizer,
+RTL or board integration.
 
 ## Lighting-live connection
 
@@ -43,6 +44,146 @@ consecutive quads, slot reuse, CE pauses, final/result-port backpressure, input
 ownership and abort. All six lighting contexts cross all three final contexts;
 the tests do not silently truncate these combinations with a zip. The oracle only
 supplies post-hoc goldens; it never drives or releases the device.
+
+## Both real branch executors
+
+`PixelBranches::new(pixel, lighting, texture_slots, max_cycles)` owns one
+`LightingLive` and one persistent bound `Runtime`. Runtime uses its unchanged
+preparation/cache/ColorEmu capacities and a frozen context with 1 through 16 valid
+texture slots. It is not recreated for a quad or an idle gap. `BranchTick`
+provides controlled attributes, all four helper UV lanes, independent branch
+store readiness, Sampling offer readiness, CE, final readiness and finish.
+The caller retains an unallocated offer until `live.model.quad_accepted`.
+
+Only actual J1 allocation supplies quad4. A single captured Sampling offer then
+bridges that allocation to Runtime's separate real acceptance, reported as
+`sample_admitted`. No future ID, release or downstream credit is predicted.
+Eligibility for a new sampled allocation uses pre-edge offer emptiness: accepting
+an old offer cannot fund a new allocation on that edge. Likewise a new allocation
+cannot issue its Sampling offer on its own edge. A busy offer holds later sampled
+input outside the wrapper; default-sample and zero-coverage inputs require no
+Sampling offer. Zero coverage allocates neither branch.
+
+`sample_issue_ready=false` withholds only the offer. It never freezes older
+accepted work. CE freezes compute/admission/result transfers, while the Runtime
+still steps its distinct texture transport on every non-faulted wall edge,
+including idle gaps and result stalls. Already accepted sampled IDs overlap in
+the existing contexts and credits. `sample_ready` gates actual ColorEmu output
+consumption independently of final readiness. Only this **actual public result**
+supplies `SampleWrite`; the closed-cache cross-check never writes J1 or releases
+its ownership. On that same enabled edge J1 writes its single sample port, then
+emits `SampleDone`; the wrapper asserts a corresponding successful store write.
+
+The sibling adapter reads LightingLive's existing allocation witness through a
+private accessor. It adds no second owner table or wide hardware tag. J1/store
+witnesses remain until final consumption and global retirement. Runtime's own
+six-bit result ownership and pre-edge ID readiness prevent same-key reuse while
+old public lanes or preparation/cache references remain live.
+
+```mermaid
+flowchart LR
+    Q[Controlled quad and four helper UV lanes] --> A[J1 actual allocation]
+    A --> L[Fast LightingEmu]
+    A --> O[One captured Sampling offer]
+    O -->|actual accepted edge| S[Persistent Runtime and retained cache]
+    S --> C[Real captured texels and ColorEmu]
+    L --> LW[Light store write then LightDone]
+    C --> SW[Sample store write then SampleDone]
+    LW --> J[Ordered join and final]
+    SW --> J
+    J --> R[Existing output, ROP, flush and ACK]
+```
+
+The offer has the following logical bill, all retained from actual allocation
+until Sampling acceptance (or discarded on terminal abort):
+
+| Field | Bits | Capture |
+| --- | ---: | --- |
+| Four helper U/V pairs | 320 | Eight signed 40-bit Q18 codes, RNE and checked magnitude <=2^20 |
+| LOD bias | 16 | Signed Q8 code, RNE after +/-32 clamp |
+| Texture slot / material size | 4 / 4 | Checked slot0..15 / size0..10 |
+| Filter / mask / allocated quad | 2 / 4 / 4 | Exact checked metadata and actual quad4 |
+| Offer valid | 1 | Set by allocation, cleared only on acceptance/abort |
+| Total offer | **355** | One entry, not a FIFO |
+
+Terminal fault adds one persistent bit: wrapper total **356 logical bits**,
+versus seven wrapper bits at the archived singleton checkpoint. This is a
+349-bit declaration increase, not fitted Logic or physical FF measurement.
+The checked integer containers are host representations. RNE capture exactly
+matches the frozen texture format; decoding gives exact binary rationals, so
+Runtime's subsequent counted capture is idempotent. Tests cover even/odd UV and
+bias ties, bias clamping and held-offer sender changes. This host boundary does
+not implement a serial eight-edge UV ingress or certify capture hardware cost.
+
+No return register, full-result FIFO, extra context, or duplicate basic/light
+quad payload is added. Runtime's declared link state (266 bits), existing input
+capture, P16/Group32, result16 and all cache/preparation/ColorEmu storage remain
+its owner's bill; LightingLive's input register is accounted above. Compilation
+occurs only at an eligible Runtime ingress edge, with no preloaded quad list or
+unbounded history. Preparation and closed-cache arithmetic are still counted
+replay, not an independent numerical emulator or RTL. No area, clock or II claim
+follows from the Rust containers or these logical declarations.
+
+`step(texture, framebuffer)` exposes two independently owned client ports.
+J1's issued store returns and framebuffer maintenance advance on wall edges.
+The original branch tests use distinct controlled fixtures. The shared native
+fixture below routes both views through one clock owner; independently advancing
+adapters must never target the same `Combination`.
+
+Finish stops new J1 allocation but retains and offers an already allocated
+Sampling request, even if Runtime had not accepted it. Success requires actual
+branch stores, final/ROP, dirty writeback ACKs, an empty offer and Runtime idle.
+Sampling or J1/ROP failure latches terminal fault and cannot report success.
+Runtime has no abort/drain API: preserve it for diagnosis, stop ticking it, and
+have the caller separately drain accepted texture transport. Wrapper fault
+steps drain only the distinct framebuffer port. `framebuffer_drained()` is not
+a whole-render drain. Recreate after both transports drain; watchdog exhaustion
+also requires external transport drain. Partial external writes are not rolled
+back or relabelled as successful completion.
+
+`tests/pixel_branches.rs` compares every actual branch result with independent
+component goldens and the entire framebuffer/depth/guard image with independent
+integer final/address/depth/blend arithmetic. It retains forty-quad defaults,
+partial/zero coverage, true wrap reuse, independent stalls, CE, finish and both
+transport fault boundaries. Persistent-specific cases prove varying RGB across
+warm idle gaps and wrap, overlapping actual Sampling IDs, blocked output stability,
+full real result16/global16/P16/Group32 limits and recovery, capture ties, and
+immutable allocated offers whose acceptance cannot fund same-edge allocation.
+All loops and instance lifetimes are bounded.
+
+Matched S1/S2 execution uses the archived singleton source, identical controlled
+fixtures/stimuli and component/full-frame goldens. Exact sources, wall/CE timing,
+acceptances, first/last results, cold/warm windows and refill counts are in the
+workspace `target/gpu-pixel-branches/persistent/` evidence. Sampler step/enabled
+counts include idle housekeeping in persistent S2 but only singleton lifetimes
+in S1; they are not arithmetic utilization. Per-quad intervals in an overlapping
+stream include queueing, and refill deltas in those intervals may include other
+IDs. Warm serial windows isolate those effects. A finite frame mean is not a
+steady-state II or whole-GPU performance certificate.
+
+## Shared native memory fixture
+
+`tests/pixel_shared_sdram.rs` connects the persistent branches through the
+test-only `support/sdram/shared_pixel.rs` adapter to one actual serial
+arbiter/gearbox/controller `Combination` and one external image. The FB view
+owns each physical tick; the passive Sampling view delivers one bounded RO
+edge record on the following edge. This additional return edge is explicit.
+Native initialization is accounted separately, and accepted MC returns continue
+during compute CE pauses and closed Sampling result admission.
+
+Each enabled background client has one reserved sink: Display, Instruction
+and Data issue 32-byte reads periodically. Sampling retains its native 128-byte
+refill; FB reads/writes retain their sixteen-beat transactions and final ACK.
+Texture and background regions are disjoint from color/depth and remain guarded.
+Independent branch goldens and the entire image check cold/warm cache reuse,
+normal completion, paused returns, and external RO discard plus FB fault drain.
+The fixture serializes quad admission; it does not prove shared-MC saturation.
+
+Read-only preflight errors occur before Hub mutation. An error after that
+boundary, including write-source underrun or native tick failure, poisons the
+adapter: retry and idle/drained claims are rejected. Driver RO-poll failure
+before the clock owner is a separately tested drainable case. General native
+error-response recovery, context rebinding, RTL and board behavior remain open.
 
 ## Interfaces and ownership
 
@@ -168,9 +309,11 @@ and nearest/bilinear/trilinear sampling with four helper UVs. Branch reference
 generation uses external texture fixture memory; only framebuffer traffic uses
 the cycle MC in J1.
 
-The next integration requires persistent sampling step/result-ready control and
-a single shared MC dispatcher for texture and framebuffer clients. Existing
-standalone adapters each own their MC advance and cannot be stepped independently
-against one shared controller. J1 needs no new vendor/audited/ROP public API.
-Actual sampling execution in J1, certified final/ROP arithmetic and render/display
+The next integration requires serial helper-UV ingress, independent preparation
+arithmetic and live geometry inputs. The shared native dispatcher above is a
+test-only composition; production transport and context ownership still need
+their own integration contract. Existing standalone adapters each own their
+MC advance and cannot be stepped independently against one shared controller.
+J1 needs no new vendor/audited/ROP public API.
+Certified final/ROP arithmetic, live command/raster inputs and render/display
 ownership remain separate work. No emu-vs-RTL, PnR or board result is claimed here.
