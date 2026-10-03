@@ -10,12 +10,19 @@ use resource_scheduler::{
     Graph, ModuloGraph, ModuloSchedule, Node, Resource as Site, SearchConfig,
 };
 use std::{collections::BTreeMap, sync::Arc};
+#[expect(
+    dead_code,
+    reason = "Legacy private ingress/live ports are retained; Runtime uses its live executor"
+)]
 pub mod control;
 pub mod inventory;
 pub mod runtime;
+mod runtime_inventory;
+mod runtime_preparation;
 pub mod session;
 pub mod storage;
 pub mod system;
+mod transport;
 
 pub struct Lane {
     pub lane: u8,
@@ -120,25 +127,28 @@ pub fn prepare(q: &QuadInput, slots: &[Slot]) -> Result<Preparation, counted::Er
     })
 }
 fn membership(c: &Stage, q: &Stage, w: &Stage, lane: usize, which: usize) -> Result<Stage, Fault> {
+    membership_values(
+        std::array::from_fn(|t| w.raw(&format!("w{which}.{t}"))),
+        std::array::from_fn(|i| q.raw(&format!("t{which}.{}.{}", i / 2, i % 2))),
+        [c.raw("slot"), c.raw(&format!("n{which}")), c.raw("quad")],
+        lane as i128,
+        [i128::from(which == 0), c.raw("last_fine")],
+    )
+}
+// One counted body for legacy prepare and captured actual coefficient operands.
+fn membership_values(
+    weights: [i128; 4],
+    coords: [i128; 4],
+    identity: [i128; 3],
+    lane: i128,
+    flags: [i128; 2],
+) -> Result<Stage, Fault> {
     let mut m = Model::numerical();
-    let weights: CoefficientStore = m.input(
-        "weights",
-        &(0..4)
-            .map(|t| w.raw(&format!("w{which}.{t}")))
-            .collect::<Vec<_>>(),
-    )?;
-    let coords: TexelCoordinateStore = m.input(
-        "coords",
-        &(0..4)
-            .map(|i| q.raw(&format!("t{which}.{}.{}", i / 2, i % 2)))
-            .collect::<Vec<_>>(),
-    )?;
-    let identity = m.input::<4, 0, false>(
-        "identity",
-        &[c.raw("slot"), c.raw(&format!("n{which}")), c.raw("quad")],
-    )?;
-    let lane_id = m.input::<2, 0, false>("lane", &[lane as i128])?;
-    let flags = m.input::<1, 0, false>("flags", &[i128::from(which == 0), c.raw("last_fine")])?;
+    let weights: CoefficientStore = m.input("weights", &weights)?;
+    let coords: TexelCoordinateStore = m.input("coords", &coords)?;
+    let identity = m.input::<4, 0, false>("identity", &identity)?;
+    let lane_id = m.input::<2, 0, false>("lane", &[lane])?;
+    let flags = m.input::<1, 0, false>("flags", &flags)?;
     let f = m.compute("texture_membership", 256)?;
     let a = f.read(coords.at::<0>())?;
     let b = f.read(coords.at::<1>())?;
@@ -191,32 +201,24 @@ fn membership(c: &Stage, q: &Stage, w: &Stage, lane: usize, which: usize) -> Res
     Stage::finish(f)
 }
 fn packet(p: &Stage, tap: usize) -> Result<Stage, Fault> {
+    packet_values(|name| p.raw(name), tap)
+}
+// Complete92-bit membership plus2-bit tap input capture, same counted body.
+fn packet_values(p: impl Fn(&str) -> i128, tap: usize) -> Result<Stage, Fault> {
     let mut m = Model::numerical();
     let weights: CoefficientStore = m.input(
         "weights",
-        &(0..4).map(|i| p.raw(&format!("w{i}"))).collect::<Vec<_>>(),
+        &(0..4).map(|i| p(&format!("w{i}"))).collect::<Vec<_>>(),
     )?;
-    let tiles = m.input::<7, 0, false>(
-        "tiles",
-        &[p.raw("tx0"), p.raw("tx1"), p.raw("ty0"), p.raw("ty1")],
-    )?;
-    let local = m.input::<3, 0, false>("local", &[p.raw("lx"), p.raw("ly")])?;
-    let meta = m.input::<4, 0, false>("meta", &[p.raw("slot"), p.raw("n"), p.raw("quad")])?;
-    let lane = m.input::<2, 0, false>("lane", &[p.raw("lane"), tap as i128])?;
-    let flags = m.input::<1, 0, false>(
-        "flags",
-        &[
-            p.raw("same_x"),
-            p.raw("same_y"),
-            p.raw("fine"),
-            p.raw("final"),
-        ],
-    )?;
+    let tiles = m.input::<7, 0, false>("tiles", &[p("tx0"), p("tx1"), p("ty0"), p("ty1")])?;
+    let local = m.input::<3, 0, false>("local", &[p("lx"), p("ly")])?;
+    let meta = m.input::<4, 0, false>("meta", &[p("slot"), p("n"), p("quad")])?;
+    let lane = m.input::<2, 0, false>("lane", &[p("lane"), tap as i128])?;
+    let flags =
+        m.input::<1, 0, false>("flags", &[p("same_x"), p("same_y"), p("fine"), p("final")])?;
     let emit = m.input::<1, 0, false>(
         "emit",
-        &(0..4)
-            .map(|i| p.raw(&format!("emit{i}")))
-            .collect::<Vec<_>>(),
+        &(0..4).map(|i| p(&format!("emit{i}"))).collect::<Vec<_>>(),
     )?;
     let f = m.compute("texture_packet", 384)?;
     let tap = f.read(lane.at::<1>())?;

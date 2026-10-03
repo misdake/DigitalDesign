@@ -1,14 +1,13 @@
 //! Live quad ingress over the existing bounded preparation/cache/color path.
 //!
-//! Preparation arithmetic is counted closed-frame replay, compiled only at an
-//! eligible ingress edge. It is not an independent numerical emulator. No input
+//! Coefficients and Work RAM execute actual bounded scalar handshakes. Other
+//! preparation arithmetic is counted replay at eligible ingress. No input
 //! list or program history is retained. Real cache captures drive ColorEmu;
 //! only actual public result consumption returns public lane ownership.
 use super::control::{
-    Event as PreparationEvent, Hardware as PreparationHardware, Machine as Preparation,
-    Step as PreparationStep,
+    Event as PreparationEvent, Hardware as PreparationHardware, Step as PreparationStep,
 };
-use super::{session, Program};
+use super::{runtime_preparation::Machine as Preparation, session, Program};
 use crate::texture::emu::color::{
     ColorEmu, Event as ColorEvent, Input as ColorInput, Output as ColorOutput, Step as ColorStep,
     Tick as ColorTick,
@@ -75,6 +74,10 @@ pub struct Runtime {
     max_wall: u64,
     faulted: bool,
     pub stats: Stats,
+    #[cfg(test)]
+    poison: bool,
+    #[cfg(test)]
+    poison_hits: usize,
 }
 
 impl Runtime {
@@ -100,6 +103,8 @@ impl Runtime {
             return Err("sampling runtime fixes no hints/P16/G32/read1/result16".into());
         }
         let binding = super::Binding::build()?;
+        // Separate allocation receipt; legacy Session inventory/audit stays intact.
+        super::runtime_inventory::describe(&binding, preparation_hardware, &cache_hardware)?;
         Ok(Self {
             preparation: Preparation::new(binding, preparation_hardware)?,
             cache: timed::Machine::new(slots.to_vec(), cache_hardware)
@@ -112,6 +117,10 @@ impl Runtime {
             max_wall,
             faulted: false,
             stats: Stats::default(),
+            #[cfg(test)]
+            poison: false,
+            #[cfg(test)]
+            poison_hits: 0,
         })
     }
 
@@ -203,6 +212,37 @@ impl Runtime {
             let q = offered.unwrap();
             let (slots, hardware) = self.cache.external_context();
             let preparation = Program::compile(q, slots, self.preparation.binding.clone())?;
+            #[cfg(test)]
+            let preparation = {
+                let mut preparation = preparation;
+                if self.poison {
+                    let p = std::sync::Arc::get_mut(&mut preparation)
+                        .expect("unique just-compiled source");
+                    for lane in &mut p.preparation.lanes {
+                        for output in &mut lane.coefficient.frame.outputs {
+                            output.raw ^= 511;
+                            self.poison_hits += 1;
+                        }
+                        for member in &mut lane.memberships {
+                            for output in &mut member.frame.outputs {
+                                if output.name.starts_with('w') {
+                                    output.raw ^= 511;
+                                    self.poison_hits += 1;
+                                }
+                            }
+                        }
+                        for plane in &mut lane.packets {
+                            for packet in plane {
+                                for output in &mut packet.frame.outputs {
+                                    output.raw ^= 1 << 28;
+                                    self.poison_hits += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                preparation
+            };
             let cache = timed::Program::compile(q, slots, hardware)
                 .map_err(|e| format!("cache provenance: {e:?}"))?;
             self.stats.compilations += 1;
@@ -248,10 +288,8 @@ impl Runtime {
             effective_ce,
             self.cache.packet_ready(),
             self.cache.packet_issue_ready(),
+            &self.masks,
         )?;
-        // Per-edge audit records are host diagnostics, not an unbounded runtime
-        // history. Existing finite Session audit behavior is unchanged.
-        self.preparation.dsp_issues.clear();
         if preparation.accepted != compiled.is_some() {
             return Err("sampling runtime pre-edge ingress divergence".into());
         }
@@ -362,3 +400,7 @@ impl Runtime {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_qualification.rs"]
+mod qualification;

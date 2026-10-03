@@ -1113,36 +1113,70 @@ caller may replace it before acceptance. Ready conservatively excludes same-edge
 context/result release and color-input acceptance. No complete-quad FIFO or
 constructor input sequence is added. The finite `Session` API stays compatible.
 
-Preparation remains counted closed-frame arithmetic replay. Host compilation
-runs only at eligible ingress, using one shared Binding and the cache's canonical
-immutable slot context. The existing controller owns at most 16 distinct live
-preparation programs across eight contexts and its bounded tokens; all Arc
-references expire after the final preparation packet (also for mask0). The cache
-retains at most 16 provenance programs until that same completion. Program frames,
-host floats, compiler calendars and watchdog/statistics are diagnostic/model
-objects, not free hardware storage or independent arithmetic emulation. Per-edge
-DSP diagnostic records are cleared, and snapshots/events are returned to callers;
-Runtime retains no stream history. Serial four-lane UV ingress is still deferred.
+Actual `CoefficientEmu` consumes captured scalar coordinates and weights;
+its local numeric clock can hold while downstream preparation drains. Work uses
+mutable 94-bit SSRAM rows and one 92-bit return/head bank with separate R/C/
+consume/ACK edges, detailed below. Packet W and public color consumption remain
+later, separate transfers.
+
+The other five arithmetic stages remain counted. Eligible ingress compiles
+against one shared Binding and immutable slot context. Upstream programs expire
+at final coordinate capture in early-release mode, or final packet W in late
+mode. Original packet totals and cache provenance remain counted premises;
+frames, floats and calendars are model objects, not free hardware storage.
+Runtime retains no history; serial four-lane UV ingress remains deferred.
 
 Accepted coverage mapping adds 16x4 = 64 logical bits, cleared at preparation
 release; public lane ownership separately lasts until actual ColorEmu consumption.
 `LINK_STATE_BITS` is 266: capture137 + public lanes64 + coverage64 + fault1. The
 existing preparation/cache/color stores and P16/G32, Pool64 1W/1R, two total
 head/pending positions, read1 and Result16 remain owned by their existing models.
-No precision, arithmetic operation count, physical DSP allocation or cache
-capacity changes. The sole RefillPort step drains accepted beats even when CE or
-the color link stalls. Errors are terminal; accepted MC work requires separate
-external drain before reuse/recreation. These are Rust bounds, not fitted area.
+Texture precision and cache capacities are unchanged. RefillPort drains accepted
+beats even when CE or the color link stalls. Errors are terminal; accepted MC
+work needs external drain before recreation. These are Rust bounds, not fitted area.
 
 One immutable texture context lasts for the instance; drain and recreate before
-changing slots. All four helper UV lanes affect derivatives even for partial
-coverage; only covered lanes yield key6/RGB24 results. Mask0 drains without
-results/refills. Default-sample remains upstream constant bypass (`None` offers
-no sampler work), with no sampler completion invented for that branch.
+changing slots. All four helper UV lanes affect derivatives for partial coverage;
+only covered lanes yield key6/RGB24. Mask0 drains without results/refills.
+Default-sample is upstream constant bypass (`None` offers no sampler work).
 `tests/texture_runtime.rs` checks live replacement, same-instance different-RGB
 reuse, partial/helper/default/mask0, actual P16/G32/Result16/16-ID limits, CE and
 committed refill drain under sustained backpressure. `texture_runtime_probe`
 writes drained warm-window wall/enabled calendars and actual event traces.
+
+### Runtime Work transport and allocation qualification
+
+Logical Work capacity W remains 2..32, with physical depth
+`max(16, next_power_of_two(W))` and modulo-W pointers. One R and one W can target
+different rows; same-row R/W, W-to-R, C-to-consume, ACK-to-next-R and same-edge
+returned-credit admission are forbidden. The source row stays reserved through
+pending/valid head expansion. Coefficient admission reserves one or two Work
+destinations from old free capacity. Its existing two ready rows are consumed
+one active plane per base edge, releasing the whole row after its last plane.
+
+A private configuration-matched allocation receipt retains generic control and
+the cache's closed-color shadow. Actual coefficient numeric315 replaces the
+legacy coefficient allocation; phase19 replaces its Packed phase suballocation
+or is explicitly added for Dedicated. Queue13, fault1, plane cursor1, head92,
+pending1, pointers2A and materialized countQ add `108 + 2A + Q` bits, where
+`A=ceil(log2(W))` and `Q=ceil(log2(W+1))`. Existing head cursor2/valid1 and central
+reserved-work control remain charged to their owners. Default Packed declares
+16,939 soft bits, 56 SDP4, 6 BSRAM and 1,377 hard product bits, including actual
+ColorEmu and Runtime link state. These are model allocations, not fitted cells;
+other configurations have their own receipt. Legacy Session inventory and
+global replay audit remain unchanged and do not certify this locally held path.
+
+Private library qualification tests under
+`texture::sim::staged::bound::runtime::qualification` and
+`texture::sim::staged::bound::transport::tests` cover W2/3/16/17/32, logical wraps,
+early/late release, Dedicated/Packed, sparse tap versus public packet ordinal,
+R/C/ACK pauses, partial-state terminal failure, literal packet/RGB goldens and
+poisoned legacy numerical outputs. Actual 128B MC returns drain during caller
+CE0; a local full coefficient queue holds its numerical state while older work
+progresses. Run these library tests and `texture_runtime`, `texture_sampling_step`
+and downstream pixel/shared-MC regressions in both profiles. One-head bubbles
+remain: unstalled one-group planes start every three enabled edges, four-group
+planes every six. This is not complete preparation emulation, RTL or GPU fitting.
 
 ### Independent coefficient cycle emulator and private composition
 
