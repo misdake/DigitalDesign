@@ -52,8 +52,8 @@ Three completion boundaries have different meanings:
 | `SnapshotLastUseAck` | All announced fans have been completely written and published, or the source legally produced zero fans. Upstream may consume its snapshot. Published records remain owned. |
 | `RecordReleased` | The final attribute return has transferred to its consumer and the caller supplied `last_quad_ack`. Only this successful event returns the record slot. |
 
-`SnapshotLastUseAck` is intended to adapt to source capture's consumed-ticket
-input. The adapter and live snapshot connection are not implemented here. Source
+`SnapshotLastUseAck` adapts to source capture's consumed-ticket input through
+the normal-path `source_record_link::Connection` described above. Source
 snapshots, raw scratchpad storage, and triangle records have separate lifetimes.
 
 ## Enabled-edge behavior
@@ -147,5 +147,36 @@ with actual source-slot reuse, a blocked third fan, live records after snapshot
 consumption, CE across admission/feedback, non-default context, zero fans and
 observable negative ACK/cancellation cases. Every driver has a cycle bound.
 
-Integration still needs the numerical row encoder,
+Production integration still needs the numerical row encoder,
 coverage/attribute consumers, and complete cancellation/fence ownership.
+
+## Test-only numerical connection
+
+`tests/record_raster_pixel.rs` connects this controller to persistent
+`PixelBranches` and the actual shared SDRAM cycle fixture. Its private 51-row,
+36-bit format owns coverage edges, nine attribute fields, determinant, local
+scale and original constant-channel attributes for a restricted 32x32 profile.
+It is a test format, not a production triangle ABI or a storage budget.
+
+The bounded consumer loads only `ConsumerCaptured` words, then advances a
+tile/quad/lane cursor and holds one complete quad until actual admission.
+All four helper UVs are captured; only covered lanes supply basic and lighting
+attributes. After exhaustion and the final accepted quad, a later marked
+attribute reread confirms the record before a later release ACK. Empty fans
+also exhaust their consumer references before this confirmation.
+
+Original snapped vertices and a separate per-sample solve supply the checker,
+not consumer inputs. Tests compare final attribute codes and the complete
+color/depth/texture/guard memory image. They cover real two-slot backpressure,
+slot reuse, paused returns/helpers/final offers, finish, and cancellation.
+Accepted framebuffer writes finish with genuine MC terminals during abort;
+a poisoned memory owner cannot become successful global drain or render finish.
+
+Setup encoding and attribute reconstruction remain atomic host oracle work.
+Only transport, consumer control, downstream handshakes and the shared MC
+execute cycle transitions. This fixture is not arithmetic emulation, a
+counted/timed rasterizer, DRAW, RTL, fitted resources or board evidence.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label record-raster-pixel -CargoArgs @('-p','gpu-v2','--test','record_raster_pixel','--','--skip','shared::tests','--test-threads=1')
+```
