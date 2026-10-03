@@ -1,7 +1,7 @@
 use super::{Decoded, MAX_COVERAGE, MAX_RECORDS, MAX_SOURCES, MAX_WALL, WORDS};
 use gpu_v2::{
     framebuffer::ports::Header,
-    geometry::record_transport as record,
+    geometry::{record_transport as record, source_record_link as link},
     lighting::ports::PixelInput,
     system::pixel::{Basic, BranchQuad, LiveQuad, QuadInput},
     texture::ports::{Filter, QuadInput as TextureQuad},
@@ -359,10 +359,31 @@ impl Reader {
     pub fn step(
         &mut self,
         ce: bool,
-        mut input: record::Input,
+        input: record::Input,
         ready: bool,
         accepted: bool,
     ) -> Result<Vec<record::Event>, String> {
+        self.step_with_clock(ce, input, ready, accepted, |controller, action| {
+            Ok(link::Out {
+                source: Vec::new(),
+                transport: controller
+                    .step(action)
+                    .map_err(|e| format!("record step {e:?}"))?,
+            })
+        })
+        .map(|out| out.transport)
+    }
+    /// Test-only composition seam. The callback owns exactly one record edge;
+    /// action preparation and captured-word observation stay Reader-owned.
+    /// A source connection must supply its real events, never a second step.
+    pub fn step_with_clock(
+        &mut self,
+        ce: bool,
+        mut input: record::Input,
+        ready: bool,
+        accepted: bool,
+        clock: impl FnOnce(&mut record::Controller, record::Input) -> Result<link::Out, String>,
+    ) -> Result<link::Out, String> {
         if input.read.is_some()
             || input.last_quad_ack.is_some()
             || input.abort_ack.is_some()
@@ -405,11 +426,9 @@ impl Reader {
         if self.stats.wall > MAX_WALL {
             return Err("reader wall watchdog".into());
         }
-        let events = self
-            .controller
-            .step(input)
-            .map_err(|e| format!("record step {e:?}"))?;
-        for e in &events {
+        let out = clock(&mut self.controller, input)?;
+        let events = &out.transport;
+        for e in events {
             if self.trace.len() >= (8 * MAX_WALL) as usize {
                 return Err("record trace watchdog".into());
             }
@@ -471,7 +490,7 @@ impl Reader {
                 mut issued,
                 mut captured,
             } => {
-                for event in &events {
+                for event in events {
                     match event {
                         record::Event::ReadIssued { key: k, row } => {
                             if *k != key || *row != issued {
@@ -531,7 +550,7 @@ impl Reader {
                 mut issued,
             } => {
                 let mut consumed = false;
-                for event in &events {
+                for event in events {
                     match event {
                         record::Event::ReadIssued { key: k, row } => {
                             if *k != key || *row != 50 || issued {
@@ -590,7 +609,7 @@ impl Reader {
                 captured: 0,
             };
         }
-        Ok(events)
+        Ok(out)
     }
     pub fn save(&self, dir: &Path, name: &str) {
         std::fs::create_dir_all(dir).unwrap();

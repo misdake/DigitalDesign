@@ -177,6 +177,22 @@ Only transport, consumer control, downstream handshakes and the shared MC
 execute cycle transitions. This fixture is not arithmetic emulation, a
 counted/timed rasterizer, DRAW, RTL, fitted resources or board evidence.
 
+`tests/source_record_raster_pixel.rs` extends this fixture to actual source
+captures through `source_record_link::Connection`. The encoder decodes only the
+owned snapshot, preflights every fan, and retains one stable 36-bit write offer
+plus identity/cursor metadata. Oracle reports and encoded arrays are call-local;
+they are not queued future records. Two source slots, four pending tasks plus the
+existing active/ready position, and two record slots retain their original limits.
+Source-slot reuse with different data cannot alter an owned snapshot's records.
+
+Reader's one-shot clock callback replaces its direct transport step, preserving
+one source/record edge and the existing shared-MC clock owner. Normal and paused
+runs compare the complete image against an independent checker. Source-linked
+cancellation is terminal and unsupported: separate downstream abort tests drain
+accepted memory traffic without manufacturing record release or render success.
+Vertex publication is still an atomic fixture; this is not live CP/DMA/vertex
+execution or a completed DRAW-to-framebuffer implementation.
+
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label record-raster-pixel -CargoArgs @('-p','gpu-v2','--test','record_raster_pixel','--','--skip','shared::tests','--test-threads=1')
 ```
