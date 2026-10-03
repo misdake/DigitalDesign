@@ -1,0 +1,113 @@
+# Bounded triangle-record transport
+
+`src/geometry/record_transport.rs` is an independent Rust control model for opaque
+triangle-record rows. It executes ownership, storage admission, publication, the
+shared read return, and release. It does not execute setup, coverage, attribute
+arithmetic, or define a numerical record layout. Its integration test includes the
+file by path; no public crate or system entry point registers this module yet.
+
+## Storage and ownership
+
+The model has exactly two record slots, each admitting 1 through 64 sequential
+36-bit rows. Payload uses fixed arrays; allocation and release change metadata,
+without clearing the payload. There is one writer and one shared reader for
+coverage and attribute consumers. A write to a Writing slot and a read of a
+different Published slot may happen on the same enabled edge. There is no fan
+FIFO or additional record queue.
+
+Every slot key binds slot index, monotonically increasing generation, source
+ticket, context, and fan index. The context is frozen at construction. One active
+upstream snapshot lease admits up to six consecutive fans. A third fan stalls
+while both slots are occupied; its rows remain the upstream producer's duty.
+`SourceEnd` announces the total fan count, including fans still awaiting credit.
+
+Three completion boundaries have different meanings:
+
+| Boundary | Meaning |
+| --- | --- |
+| Input `source_captured` | Upstream already owns a complete snapshot; transport accepts its ticket/context. This model does not read or release transformed source storage. |
+| `SnapshotLastUseAck` | All announced fans have been completely written and published, or the source legally produced zero fans. Upstream may consume its snapshot. Published records remain owned. |
+| `RecordReleased` | The final attribute return has transferred to its consumer and the caller supplied `last_quad_ack`. Only this successful event returns the record slot. |
+
+`SnapshotLastUseAck` is intended to adapt to source capture's consumed-ticket
+input. The adapter and live snapshot connection are not implemented here. Source
+snapshots, raw scratchpad storage, and triangle records have separate lifetimes.
+
+## Enabled-edge behavior
+
+Eligibility is determined from pre-edge state. A final row write does not publish
+on its own edge; publication occurs on the next enabled edge. A newly published
+record cannot be read on that publication edge. Slot release cannot fund a
+same-edge allocation. Callers advance or withdraw requests only after the
+corresponding acceptance event.
+
+The shared reader has one logical return credit spanning Pending and Captured
+phases. It reserves ownership on issue, captures one enabled edge later, and
+transfers no earlier than the following enabled edge. While the captured head is
+blocked, further reads stall. A head transfer can accept a new read on the same
+edge; a pending return cannot do so.
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant T as Transport
+    participant C as Consumer
+    P->>T: E0 final row write
+    T->>C: E1 Published
+    C->>T: E2 read issue, reserve return credit
+    T->>T: E3 ReturnCaptured
+    T->>C: E4 ConsumerCaptured when ready
+    C->>T: E4 or later last_quad_ack
+    T->>T: RecordReleased
+    P->>T: Next enabled edge may reserve freed slot
+```
+
+`last_attribute_capture` is an authoritative marker supplied by the external
+attribute adapter, not a determination of actual quad exhaustion by this model.
+Issuing that marked read seals further reads to the record. Its captured return
+must transfer before release is legal. A final transfer and its ACK may coincide.
+The future adapter must prove that every other consumer reference is finished
+before supplying this marker; this fixture model cannot prove that property.
+
+CE freezes admission, writes, publication, returns, transfers, ACKs, and cancel
+drain. The finite wall-edge watchdog still counts disabled edges and rejected
+actions. Source and reservation budgets are also explicit and positive. Normal
+invalid actions are validated before state mutation, apart from this watchdog.
+Bad context, stale owner/generation, malformed row, premature ACK, and illegal
+state transitions return faults.
+
+## Cancellation
+
+`cancel()` latches stop intent. On enabled drain edges, an unpublished writer is
+discarded, even if its final row was already written. The active snapshot emits
+`SnapshotAborted`, without a successful last-use ACK. A pending read still
+captures before being discarded on a later enabled edge. Captured heads are
+discarded without successful consumer transfer.
+
+A published record requires a separate fault-only `abort_ack` confirming that
+consumers have cancelled every reference. This ACK can latch while its return is
+pending, but the slot is freed only after that return is drained. Published
+records are never silently freed by upstream cancellation. Abort events are
+distinct from successful release events. `drained()` covers only this transport,
+not DMA, source capture, renderer completion, or a draw fence.
+
+## Verification and limits
+
+The bounded regression uses independently generated nonzero fixture words and
+checks every returned row and owner. It covers two occupied slots and third-fan
+backpressure, all 64 rows, six fans and zero-output sources, CE holds, concurrent
+read/write, shared-return turnover, stale keys, bad context and rows, early ACKs,
+and cancellation in Writing, fully written but unpublished, Pending, Captured,
+and Published states. Each controller has finite wall/source/record limits.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label geometry-record-transport -LogDirectory target/gpu-v2-record-transport/logs -CargoArgs @('-p','gpu-v2','--test','geometry_record_transport','--offline','--','--nocapture')
+& scripts/run-cargo.ps1 -Subcommand clippy -Label geometry-record-transport-clippy -LogDirectory target/gpu-v2-record-transport/logs -CargoArgs @('-p','gpu-v2','--test','geometry_record_transport','--offline','--','-D','warnings')
+```
+
+The implementation is an executable Rust storage/control boundary, not RTL or a
+native BSRAM binding. Its response latency is explicit model behavior. Fixture
+fan rows are supplied externally and do not count as a free hardware queue.
+There are no fitted resource, frequency, or real geometry throughput results.
+Integration still needs the source-capture adapter, numerical row encoder,
+coverage/attribute consumers, and complete cancellation/fence ownership.

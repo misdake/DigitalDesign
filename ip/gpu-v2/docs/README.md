@@ -3,6 +3,7 @@
 | Document | Scope |
 | --- | --- |
 | [Architecture](architecture.md) | Crate boundary, component ports and model ownership |
+| [Triangle-record transport](geometry-record-transport.md) | Independent bounded Rust two-slot publication, shared read-return credit and consumer release model |
 | [Lighting](lighting.md) | Oracle/counting/timing, cycle emu/RTL, resource/system alternatives, fitted area and numerical tradeoffs |
 | [Lighting WASM review](../web/README.md) | Real Rust browser comparison, deterministic scene controls, build and verification |
 | [Frontend](frontend.md) | Command processor, scratchpad, vertex transform and bounded Rust composition |
