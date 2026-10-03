@@ -5,6 +5,7 @@
 pub mod command_processor;
 pub mod framebuffer;
 pub mod frontend;
+pub mod geometry;
 pub mod lighting;
 pub mod memory;
 pub mod scratchpad;

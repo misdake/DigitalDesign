@@ -14,6 +14,7 @@ ip/gpu-v2/
     scratchpad/                four banks, DMA/core ports and region leases
     vertex/                    v6 decode, matrix transforms and seven-row output
     frontend/                  bounded command/DMA/vertex and separate source-capture control
+    geometry/                  opaque record transport and normal-path source lease connection
     memory/                    GPU-owned burst transport; vendor adapters stay outside production IP
     framebuffer/               materialized ROP oracle and bounded bank/maintenance control
     triangle/                  owned transformed inputs and setup oracle only

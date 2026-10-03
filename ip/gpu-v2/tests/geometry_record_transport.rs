@@ -1,6 +1,5 @@
-// Deliberately no public module registration until the integration owner selects it.
-#[path = "../src/geometry/record_transport.rs"]
-mod transport;
+use gpu_v2::geometry::record_transport as transport;
+use std::collections::VecDeque;
 use transport::*;
 
 fn controller() -> Controller {
@@ -1052,4 +1051,438 @@ fn cycle_source_record_budgets_include_ce_stalls() {
         }),
         Err(Fault::Bound)
     );
+}
+
+// Test-side ownership/data scoreboard. It mirrors only the facts a consumer can
+// observe: which key owns each physical slot, the publication order, accepted read
+// words, normal release after final capture, and abort of a live record without
+// requiring a final capture. It is
+// deliberately not a copy of the controller's writing/publishing state machine.
+struct Scoreboard {
+    slot_key: [Option<Key>; SLOTS],
+    slot_seen: [bool; SLOTS],
+    slot_generation: [u64; SLOTS],
+    published_generation: u64,
+    allocations: usize,
+    reuses: usize,
+    normal_releases: usize,
+    aborts: usize,
+    coverage_reads: usize,
+    attribute_reads: usize,
+    read_count: usize,
+    final_captured: Vec<Key>,
+    ce_pauses: usize,
+}
+
+impl Scoreboard {
+    fn new() -> Self {
+        Self {
+            slot_key: [None; SLOTS],
+            slot_seen: [false; SLOTS],
+            slot_generation: [0; SLOTS],
+            published_generation: 0,
+            allocations: 0,
+            reuses: 0,
+            normal_releases: 0,
+            aborts: 0,
+            coverage_reads: 0,
+            attribute_reads: 0,
+            read_count: 0,
+            final_captured: Vec::new(),
+            ce_pauses: 0,
+        }
+    }
+    fn on_reserved(&mut self, key: Key) {
+        assert!(key.slot < SLOTS);
+        assert!(key.generation > 0);
+        assert!(
+            self.slot_key[key.slot].is_none(),
+            "slot {} still owned by a live record",
+            key.slot
+        );
+        if self.slot_seen[key.slot] {
+            self.reuses += 1;
+        }
+        self.slot_seen[key.slot] = true;
+        assert!(
+            key.generation > self.slot_generation[key.slot],
+            "generation must advance when a slot is reused"
+        );
+        self.slot_generation[key.slot] = key.generation;
+        self.slot_key[key.slot] = Some(key);
+        self.allocations += 1;
+    }
+    fn on_published(&mut self, key: Key) {
+        assert_eq!(
+            self.slot_key[key.slot],
+            Some(key),
+            "publish requires a live reservation"
+        );
+        assert!(
+            key.generation > self.published_generation,
+            "publication order must follow reservation order"
+        );
+        self.published_generation = key.generation;
+    }
+    fn on_response(&mut self, response: Response, expected_last: bool) {
+        let key = response.key;
+        assert_eq!(
+            self.slot_key[key.slot],
+            Some(key),
+            "read of a record that is not live"
+        );
+        assert_eq!(response.last_attribute_capture, expected_last);
+        assert_eq!(
+            response.word,
+            word(key.source, key.fan, response.row),
+            "accepted read value differs from the independent fixture"
+        );
+        match response.consumer {
+            Consumer::Coverage => self.coverage_reads += 1,
+            Consumer::Attribute => self.attribute_reads += 1,
+        }
+        self.read_count += 1;
+    }
+    fn on_final_captured(&mut self, key: Key) {
+        self.final_captured.push(key);
+    }
+    fn on_normal_release(&mut self, key: Key) {
+        assert_eq!(
+            self.slot_key[key.slot],
+            Some(key),
+            "release of a record that is not live"
+        );
+        assert!(
+            self.final_captured.contains(&key),
+            "release before the final capture"
+        );
+        self.slot_key[key.slot] = None;
+        self.normal_releases += 1;
+    }
+    fn on_abort(&mut self, key: Key) {
+        assert_eq!(
+            self.slot_key[key.slot],
+            Some(key),
+            "abort of a record that is not live"
+        );
+        self.slot_key[key.slot] = None;
+        self.aborts += 1;
+    }
+    fn live_count(&self) -> usize {
+        self.slot_key.iter().filter(|key| key.is_some()).count()
+    }
+}
+
+struct LiveRecord {
+    key: Key,
+    rows: usize,
+}
+
+// Fixed-seed generator so the sequence is reproducible without new dependencies.
+fn rand_below(state: &mut u64, range: u64) -> u64 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    (*state >> 33) % range
+}
+
+fn scored_read(
+    c: &mut Controller,
+    sb: &mut Scoreboard,
+    key: Key,
+    rows: usize,
+    row: usize,
+) -> Response {
+    let last = row + 1 == rows;
+    // The sealed final row must be an attribute capture; the other rows alternate
+    // between the coverage and attribute consumers on the single shared return.
+    let consumer = if last {
+        Consumer::Attribute
+    } else if sb.read_count.is_multiple_of(2) {
+        Consumer::Coverage
+    } else {
+        Consumer::Attribute
+    };
+    let read = Read {
+        key,
+        row,
+        consumer,
+        last_attribute_capture: last,
+    };
+    assert_eq!(
+        edge(
+            c,
+            Input {
+                read: Some(read),
+                ..enabled()
+            }
+        ),
+        vec![Event::ReadIssued { key, row }]
+    );
+    assert!(c.response().is_none());
+    // Disabled edge while the shared return is Pending: no capture, no progress.
+    assert!(edge(
+        c,
+        Input {
+            ce: false,
+            ..Input::default()
+        }
+    )
+    .is_empty());
+    assert!(c.response().is_none());
+    sb.ce_pauses += 1;
+    let expected = Response {
+        key,
+        row,
+        word: word(key.source, key.fan, row),
+        consumer,
+        last_attribute_capture: last,
+    };
+    let captures = edge(
+        c,
+        Input {
+            return_ready: true,
+            ..enabled()
+        },
+    );
+    let [Event::ReturnCaptured(actual)] = captures.as_slice() else {
+        panic!("expected one actual capture, got {captures:?}");
+    };
+    assert_eq!(*actual, expected);
+    assert_eq!(c.response(), Some(*actual));
+    let consumed = edge(
+        c,
+        Input {
+            return_ready: true,
+            ..enabled()
+        },
+    );
+    let [Event::ConsumerCaptured(response)] = consumed.as_slice() else {
+        panic!("expected one actual transfer, got {consumed:?}");
+    };
+    assert_eq!(*response, *actual);
+    assert!(c.response().is_none());
+    sb.on_response(*response, last);
+    if response.last_attribute_capture {
+        sb.on_final_captured(response.key);
+    }
+    *response
+}
+
+fn scored_write(c: &mut Controller, sb: &mut Scoreboard, key: Key, rows: usize, rng: &mut u64) {
+    for row in 0..rows {
+        if rand_below(rng, 4) == 0 {
+            assert!(edge(
+                c,
+                Input {
+                    ce: false,
+                    ..Input::default()
+                }
+            )
+            .is_empty());
+            sb.ce_pauses += 1;
+        }
+        assert_eq!(
+            edge(
+                c,
+                Input {
+                    write: Some(Write {
+                        key,
+                        row,
+                        word: word(key.source, key.fan, row),
+                    }),
+                    ..enabled()
+                }
+            ),
+            vec![Event::RowWritten { key, row }]
+        );
+    }
+    let published = edge(c, enabled());
+    assert!(published.contains(&Event::Published(key)));
+    sb.on_published(key);
+}
+
+fn scored_read_record(c: &mut Controller, sb: &mut Scoreboard, key: Key, rows: usize) {
+    for row in 0..rows {
+        scored_read(c, sb, key, rows, row);
+    }
+}
+
+fn scored_release(c: &mut Controller, sb: &mut Scoreboard, key: Key) {
+    assert_eq!(
+        edge(
+            c,
+            Input {
+                last_quad_ack: Some(key),
+                ..enabled()
+            }
+        ),
+        vec![Event::RecordReleased(key)]
+    );
+    sb.on_normal_release(key);
+}
+
+fn scored_reserve(c: &mut Controller, source: SourceOwner, fan: u8, rows: usize) -> Key {
+    let events = edge(
+        c,
+        Input {
+            reserve: Some(Reserve { source, fan, rows }),
+            ..enabled()
+        },
+    );
+    match events.as_slice() {
+        [Event::Reserved(key)] => {
+            assert_eq!(key.source, source, "reservation changed the source");
+            assert_eq!(key.fan, fan, "reservation changed the fan");
+            *key
+        }
+        other => panic!("expected exactly one reservation, got {other:?}"),
+    }
+}
+
+#[test]
+fn scoreboarded_multi_source_reuse_shared_return_and_legal_cancel() {
+    let mut c = controller();
+    let mut sb = Scoreboard::new();
+    let mut rng = 0x5eed_1234_abcd_ef01_u64;
+    let mut live: VecDeque<LiveRecord> = VecDeque::new();
+
+    // Several overlapping source/fan/record lifetimes. Each new record reuses the
+    // physical slot of a fully released predecessor, and a new source may be
+    // accepted while older published records are still live.
+    for stream in 0..6_u64 {
+        let source = SourceOwner {
+            ticket: 200 + stream,
+            context: 7,
+        };
+        assert_eq!(
+            edge(
+                &mut c,
+                Input {
+                    source_captured: Some(source),
+                    ..enabled()
+                }
+            ),
+            vec![Event::SnapshotAccepted(source)]
+        );
+        let fans = 2 + rand_below(&mut rng, 4) as u8; // 2..=5
+        assert!(edge(
+            &mut c,
+            Input {
+                source_end: Some(SourceEnd { source, fans }),
+                ..enabled()
+            }
+        )
+        .is_empty());
+        for fan in 0..fans {
+            let rows = 2 + rand_below(&mut rng, 3) as usize; // 2..=4
+                                                             // At most both old records can require a drain. A broken free-slot
+                                                             // report fails after two bounded attempts rather than driving a wait.
+            for _ in 0..SLOTS {
+                if c.free_slots() > 0 {
+                    break;
+                }
+                let old = live
+                    .pop_front()
+                    .expect("both slots full must imply two live records");
+                scored_read_record(&mut c, &mut sb, old.key, old.rows);
+                scored_release(&mut c, &mut sb, old.key);
+            }
+            assert!(
+                c.free_slots() > 0,
+                "slot credit not returned after bounded drain"
+            );
+            assert_eq!(sb.live_count(), live.len());
+            let key = scored_reserve(&mut c, source, fan, rows);
+            sb.on_reserved(key);
+            scored_write(&mut c, &mut sb, key, rows, &mut rng);
+            live.push_back(LiveRecord { key, rows });
+        }
+    }
+
+    // Keep exactly two published records live so the cancellation exercises a
+    // multi-record abort drain rather than a single empty slot.
+    if live.len() < SLOTS {
+        let source = SourceOwner {
+            ticket: 900,
+            context: 7,
+        };
+        assert_eq!(
+            edge(
+                &mut c,
+                Input {
+                    source_captured: Some(source),
+                    ..enabled()
+                }
+            ),
+            vec![Event::SnapshotAccepted(source)]
+        );
+        let need = (SLOTS - live.len()) as u8;
+        assert!(edge(
+            &mut c,
+            Input {
+                source_end: Some(SourceEnd { source, fans: need }),
+                ..enabled()
+            }
+        )
+        .is_empty());
+        for fan in 0..need {
+            let rows = 2 + usize::from(fan);
+            let key = scored_reserve(&mut c, source, fan, rows);
+            sb.on_reserved(key);
+            scored_write(&mut c, &mut sb, key, rows, &mut rng);
+            live.push_back(LiveRecord { key, rows });
+        }
+    }
+    assert_eq!(live.len(), SLOTS);
+    assert_eq!(sb.live_count(), SLOTS);
+    assert!(
+        live.iter().all(|r| !sb.final_captured.contains(&r.key)),
+        "cancel must exercise unconsumed records"
+    );
+
+    // Legal cancellation: no source, writer, or pending return is in flight, so
+    // the first enabled edge only latches CancelStarted. Each published record is
+    // then drained by its own consumer cancellation ACK.
+    c.cancel();
+    assert_eq!(edge(&mut c, enabled()), vec![Event::CancelStarted]);
+    for _ in 0..SLOTS {
+        let Some(record) = live.pop_front() else {
+            break;
+        };
+        assert_eq!(
+            edge(
+                &mut c,
+                Input {
+                    abort_ack: Some(record.key),
+                    ..enabled()
+                }
+            ),
+            vec![
+                Event::AbortAccepted(record.key),
+                Event::RecordAborted(record.key)
+            ]
+        );
+        sb.on_abort(record.key);
+    }
+    assert!(live.is_empty(), "abort drain exceeded fixed slot bound");
+    assert!(c.drained());
+    assert_eq!(sb.live_count(), 0);
+
+    // Nonvacuous coverage of the intended sequence.
+    assert!(sb.allocations >= 8, "allocations {}", sb.allocations);
+    assert!(sb.reuses >= 3, "slot reuses {}", sb.reuses);
+    assert!(
+        sb.normal_releases >= 4,
+        "normal releases {}",
+        sb.normal_releases
+    );
+    assert!(sb.aborts >= 2, "aborted records {}", sb.aborts);
+    assert!(
+        sb.coverage_reads >= 2 && sb.attribute_reads >= 2,
+        "coverage {} attribute {}",
+        sb.coverage_reads,
+        sb.attribute_reads
+    );
+    assert!(sb.ce_pauses >= 2, "ce pauses {}", sb.ce_pauses);
 }

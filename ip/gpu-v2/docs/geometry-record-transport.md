@@ -3,8 +3,31 @@
 `src/geometry/record_transport.rs` is an independent Rust control model for opaque
 triangle-record rows. It executes ownership, storage admission, publication, the
 shared read return, and release. It does not execute setup, coverage, attribute
-arithmetic, or define a numerical record layout. Its integration test includes the
-file by path; no public crate or system entry point registers this module yet.
+arithmetic, or define a numerical record layout. The crate exports it through
+`geometry::record_transport`; tests use that same implementation.
+
+## Source connection
+
+`geometry::source_record_link::Connection` supplies the normal-path lease
+control between `frontend::source_capture` and the record controller. One
+`pump` advances each controller once. The caller retains the producer, fan-row
+encoder and consumer ports; the connection alone drives source admission and
+the consumed-ticket feedback. It obtains context from the actual source
+snapshot, with no test constant or payload copy.
+
+The connection retains one offered ticket/context until actual
+`SnapshotAccepted`. Actual `SnapshotLastUseAck` latches one feedback ticket,
+consumed only on a later enabled edge. It does not merge physical source-slot
+release, source-snapshot consumption, and final record release. The added state
+is offer129 + feedback65 + unsupported-cancel1 = 195 host-witness bits; u64
+ticket/context widths are diagnostic contracts, not fitted hardware tags.
+Four counters and returned event vectors are host diagnostics. There is no fan
+FIFO, second snapshot, capacity increase or additional RAM port.
+
+Cancellation is rejected explicitly and latches a recreation requirement;
+callers must drain the controllers externally. It cannot become a successful
+consumed-ticket event. Complete cancellation and render-fence composition,
+setup arithmetic and a numerical record encoder remain separate work.
 
 ## Storage and ownership
 
@@ -100,6 +123,16 @@ read/write, shared-return turnover, stale keys, bad context and rows, early ACKs
 and cancellation in Writing, fully written but unpublished, Pending, Captured,
 and Published states. Each controller has finite wall/source/record limits.
 
+A fixed-seed scoreboard regression runs several overlapping sources and fans
+through both physical slots, alternates the coverage and attribute consumers on
+the single shared return, pauses on disabled edges, and ends with a legal
+cancellation that aborts two still-published records. An independent test-side
+scoreboard checks every accepted read word against the fixture function, the
+publication order by record generation, and normal release only after a live
+record's final capture was consumed. Cancellation instead requires each live
+record's abort ACK; the two records in this sequence have not been final-captured.
+Slot-credit and cancellation drains have explicit two-slot iteration bounds.
+
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label geometry-record-transport -LogDirectory target/gpu-v2-record-transport/logs -CargoArgs @('-p','gpu-v2','--test','geometry_record_transport','--offline','--','--nocapture')
 & scripts/run-cargo.ps1 -Subcommand clippy -Label geometry-record-transport-clippy -LogDirectory target/gpu-v2-record-transport/logs -CargoArgs @('-p','gpu-v2','--test','geometry_record_transport','--offline','--','-D','warnings')
@@ -109,5 +142,10 @@ The implementation is an executable Rust storage/control boundary, not RTL or a
 native BSRAM binding. Its response latency is explicit model behavior. Fixture
 fan rows are supplied externally and do not count as a free hardware queue.
 There are no fitted resource, frequency, or real geometry throughput results.
-Integration still needs the source-capture adapter, numerical row encoder,
+`tests/source_record_transport.rs` additionally checks the production connection
+with actual source-slot reuse, a blocked third fan, live records after snapshot
+consumption, CE across admission/feedback, non-default context, zero fans and
+observable negative ACK/cancellation cases. Every driver has a cycle bound.
+
+Integration still needs the numerical row encoder,
 coverage/attribute consumers, and complete cancellation/fence ownership.
