@@ -10,9 +10,10 @@ UNORM9 datapath with independently replayable numerical ledgers.
 `texture::sim::timed` executes the bounded cache/color controller. It supports
 the historical static preparation baseline and checked input from
 `staged::bound`: universal periodic stage calendars with finite credits,
-registered boundaries and optional early shared-context release. Independent
-preparation arithmetic emulation, RTL, GPU dispatch and fitted performance remain
-future work. `texture::emu::color` independently executes the captured-texel color
+registered boundaries and optional early shared-context release. Most independent
+preparation arithmetic, RTL, GPU dispatch and fitted performance remain future
+work. The independent coefficient cycle block and its private composition test
+are described below. `texture::emu::color` executes the captured-texel color
 pipeline; its standalone/replay boundary is described below.
 An optional concrete periodic FF-slice layout checks bit ownership at every
 actual read edge; the dedicated allocation remains the default reference.
@@ -1142,6 +1143,44 @@ no sampler work), with no sampler completion invented for that branch.
 reuse, partial/helper/default/mask0, actual P16/G32/Result16/16-ID limits, CE and
 committed refill drain under sustained backpressure. `texture_runtime_probe`
 writes drained warm-window wall/enabled calendars and actual event traces.
+
+### Independent coefficient cycle emulator and private composition
+
+`texture::emu::coefficient::CoefficientEmu` accepts scalar parent weights,
+fractions and owned metadata. It executes real fixed-width operations through
+three registered multiply sites, with three-cycle products, initiation interval
+two and eleven enabled edges to publish a result. Six cohorts and two ready
+rows are bounded; an old full ready queue holds the local numeric clock while
+the consumer can transfer the existing head. `output()` reads that head without
+adding retained state. Admission reserves one downstream work credit per
+nonzero parent from the pre-edge available count; consuming a coefficient row
+does not return those credits.
+
+The private `cfg(test)` coefficient hybrid uses actual output weights and
+metadata to compile membership and one packet at a time into the existing
+pooled cache and `ColorEmu`. It reserves Work16 before coefficient admission,
+returns each plane credit at final packet operand capture, and retains public
+lane ownership until actual color consumption. A fine/coarse cursor consumes
+the existing ready row without a second payload queue. Its coefficient clock
+can hold while older membership, packet and cache work drains on base CE;
+actual MC returns continue on wall edges during caller CE holds.
+
+This composition is a default-only private experiment, not a replacement for
+public `Runtime`. Derivative, LOD, coordinate, membership and packet arithmetic
+and their calendars remain counted replay; original completion totals and
+independent cache provenance remain explicit dependencies. Its FF-backed Work
+and additional control/fault/cursor state are conservatively charged, not fitted
+area or a hardware lowering certificate. Formal Runtime configurations and
+capacities remain unchanged.
+
+`texture_coefficient` checks exhaustive splits, joint fraction boundaries,
+physical register ownership, pauses and terminal faults. The private library
+qualification adds hand packet/RGB literals, poisoned legacy preparation
+results, full ready/work pressure, pre-edge credit checks, CE-held MC returns
+and same-ID reuse with different colors. Run the focused integration test and
+library tests matching `texture::emu::coefficient` in both profiles. These prove
+the coefficient arithmetic frontier and bounded composition, not complete
+preparation arithmetic, RTL, PnR or whole-GPU performance.
 
 ### Independent captured-texel color cycle emulator
 
