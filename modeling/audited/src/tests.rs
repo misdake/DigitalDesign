@@ -17,6 +17,41 @@ fn ports() -> PortShape {
 }
 
 #[test]
+fn source_names_do_not_emit_events_or_change_counts() {
+    let run = |name: bool| {
+        let mut m = Model::numerical();
+        let input = m.input::<9, 0, false>("normal.x", &[7]).unwrap();
+        let f = m.compute("name metadata", 32).unwrap();
+        let x = f.read(input.at::<0>()).unwrap();
+        let squared: Fixed<18, 0, false> = f.product(x, x).unwrap();
+        if name {
+            f.name_value("normal.x_squared", squared).unwrap();
+            f.name_value("unused_zero", Fixed::<9, 0, false>::constant::<0>())
+                .unwrap();
+        }
+        f.publish("square", squared).unwrap();
+        f.finish()
+    };
+    let plain = run(false);
+    let named = run(true);
+    named.audit().unwrap();
+    assert_eq!(plain.events.len(), named.events.len());
+    assert_eq!(plain.counts, named.counts);
+    assert_eq!(plain.cycles, named.cycles);
+    assert_eq!(plain.outputs[0].raw, named.outputs[0].raw);
+    for (a, b) in plain.values.iter().zip(&named.values) {
+        assert_eq!(
+            (a.format, a.raw, a.ready_cycle, a.producer),
+            (b.format, b.raw, b.ready_cycle, b.producer)
+        );
+    }
+    assert!(named
+        .values
+        .iter()
+        .any(|v| v.name.as_deref() == Some("normal.x_squared")));
+}
+
+#[test]
 fn triangle_and_non_power_of_two_rcp_have_independent_host_goldens() {
     for route in [ProductRoute::Native18Pair, ProductRoute::Wide36] {
         let report = triangle::run(route).unwrap();
@@ -1047,4 +1082,27 @@ fn numerical_event_limits_and_branch_failures_still_invalidate_the_computation()
         Err(Fault::Range)
     ));
     assert!(!frame.finish().valid);
+}
+
+#[test]
+fn event_source_tracks_the_kernel_call_through_arithmetic_helpers() {
+    let mut model = Model::numerical();
+    let frame = model.compute("source", 64).unwrap();
+    let call_line = line!() + 2;
+    frame
+        .add_same(
+            Fixed::<18, 0, true>::constant::<1>(),
+            Fixed::<18, 0, true>::constant::<2>(),
+        )
+        .unwrap();
+    let report = frame.finish();
+    let add = report
+        .events
+        .iter()
+        .find(|e| e.operation == Operation::Add)
+        .unwrap();
+    assert_eq!(add.source.file(), file!());
+    assert_eq!(add.source.line(), call_line);
+    assert!(report.valid);
+    report.audit().unwrap();
 }

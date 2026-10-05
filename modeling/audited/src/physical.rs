@@ -108,6 +108,9 @@ impl FusedGroup {
 pub struct LogicCone {
     pub result_event: usize,
     pub absorbed_events: Vec<usize>,
+    /// Explicit additional result events produced at the same ready edge.
+    /// Undeclared intermediates still cannot escape the physical boundary.
+    pub exported_events: Vec<usize>,
     /// Sorted unique external value IDs, including constants.
     pub operands: Vec<usize>,
     pub max_width: u32,
@@ -131,6 +134,7 @@ impl LogicCone {
         let proof = Self {
             result_event,
             absorbed_events: Vec::new(),
+            exported_events: Vec::new(),
             operands: operands.into_iter().collect(),
             max_width: e
                 .inputs
@@ -162,6 +166,12 @@ impl LogicCone {
             .collect();
         if members.len() != self.absorbed_events.len() + 1 {
             return Err(bad("logic cone duplicate member"));
+        }
+        let exports: BTreeSet<_> = self.exported_events.iter().copied().collect();
+        if exports.len() != self.exported_events.len()
+            || exports.iter().any(|id| !self.absorbed_events.contains(id))
+        {
+            return Err(bad("logic cone exported result certificate"));
         }
         let mut external = BTreeSet::new();
         for &id in &members {
@@ -205,6 +215,7 @@ impl LogicCone {
                 return Err(bad("logic cone internal control"));
             }
             if id != self.result_event
+                && !exports.contains(&id)
                 && (frame.outputs.iter().any(|o| o.value == output)
                     || frame.events.iter().any(|other| {
                         !members.contains(&other.id)
@@ -218,7 +229,9 @@ impl LogicCone {
             return Err(bad("logic cone operand certificate"));
         }
         let mut reachable = BTreeSet::new();
-        let mut pending = vec![self.result_event];
+        let mut pending: Vec<_> = std::iter::once(self.result_event)
+            .chain(exports.iter().copied())
+            .collect();
         while let Some(id) = pending.pop() {
             if reachable.insert(id) {
                 pending.extend(

@@ -25,6 +25,12 @@ DSP18 operation; explicit target packing is checked separately. Rounding include
 guard and increment adder. Variable right shifts truncate; RNE must be explicit.
 `resize_exact` checks a contract and never implements saturation.
 
+`floor_to` explicitly records static arithmetic rescaling and checked narrowing;
+negative values round toward minus infinity. `half_up_to` records the same floor,
+a static guard-bit slice and a narrow add; ties go toward positive infinity.
+Neither substitutes for `round_to` (nearest-even). `Operand::format()` exposes
+type metadata only, never runtime data or provenance.
+
 ## Source ownership
 
 | File | Responsibility |
@@ -62,14 +68,17 @@ accumulator/result. Absorbed intermediates may not escape. Bound dependencies
 preserve external operands and every control gate; a certificate with different
 operands, overlapping groups or an internal escape is rejected.
 
-`physical::LogicCone` certifies a connected pure-logic subgraph with one result,
-at most 64 absorbed events, an explicit width cap and a positive result latency.
+`physical::LogicCone` certifies a pure-logic subgraph reachable from its declared results,
+at most 64 total member events, an explicit width cap and a positive result latency.
 Its sorted external operands and every control gate are preserved. Multipliers,
 memory, publication and control effects cannot be absorbed; internal values must
-not escape. Absorbed events become zero-time aliases at the result-ready edge.
+not escape unless their event IDs are explicitly listed in `exported_events`.
+Exports must be unique absorbed events; the root cannot be listed again. All
+results share one ready edge, and disconnected unexported work is rejected.
+Absorbed events become zero-time aliases at the result-ready edge.
 `composed_dependencies`, the composed memory audits and
 `lifecycle::analyze_composed_policy` combine these cones with DSP fusion, reject
-overlap and account for the cone result's retained storage. Every original
+overlap and account for each exported result's retained storage. Every original
 numerical operation remains in the independently replayed ledger. This is a
 declared circuit boundary; its width and latency do not prove a clock frequency
 or its physical adder count. An IP must declare cone lanes and validate timing

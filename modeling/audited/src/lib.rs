@@ -214,6 +214,12 @@ pub struct Operand {
     format: Format,
     origin: Origin,
 }
+impl Operand {
+    /// Type metadata only: does not expose the runtime value or provenance.
+    pub const fn format(self) -> Format {
+        self.format
+    }
+}
 mod sealed {
     pub trait Sealed {
         fn operand(&self) -> super::Operand;
