@@ -5,6 +5,12 @@ The independent numerical cycle emulator and synthesizable RTL implement the
 single-pixel component. Quad allocation, GPU command ABI, final color and the
 web adapter remain outside this component.
 
+`sim::workbench` exposes the existing Fast/Compact full/diffuse bound DAG and
+calendar to the [interactive scheduling workbench](../web/README.md#lighting-scheduling-workbench).
+It independently validates manual issue/lane/II/capacity edits, preserving atomic
+DSP/logic fusion and recomputing zero-latency wiring. Exported schedules are host
+planning artifacts; they do not replace the emulator/RTL program automatically.
+
 ## Cycle pipeline contract
 
 `LightingProfile::Fast` implements full/specular II2 and diffuse II1;
@@ -85,6 +91,295 @@ behavioral backend uses matching latencies. Normalization tables are packed
 SQ256 plus RSQRT128 into one512x36 ROM per read lane; power uses two ROMs.
 Synthesis can additionally map long retained-value chains into BSRAM/SSRAM;
 counted ROM budgets therefore do not describe the total fitted memory usage.
+
+## Compact normal transport
+
+The new functional chain selects **S12F10** (12 total signed bits, ten fractional
+bits, also called S2.10) for both transformed-normal output and interpolated
+pixel-normal storage. The original v6 mesh input stays S8F7. Light direction,
+projection, normalized N/V/H, reciprocal and dot/power working formats stay at
+their existing precision. In particular, normalized N is still Q14; narrowing
+transport does not imply a narrower reciprocal or DSP result.
+
+`spec/lighting-formats.csv::NormalInput` is the twelve-bit arithmetic type.
+`CompactPixelInput` validates codes [-2048,2047], does not normalize them, and
+defines this local layout:
+
+| Row | Bits | Meaning |
+| --- | --- | --- |
+| 0 | [11:0], [23:12], [35:24] | Normal XYZ, three S12F10 codes |
+| 1 | [17:0], [35:18] | NDC XY, two S18F16 codes |
+
+Thus the payload is72 bits and exactly two36-bit rows, versus84 meaningful bits
+in three36-bit rows on the original port. Normal alone falls48->36 bits. A
+four-pixel normal+NDC snapshot falls336->288 payload bits; a sixteen-pixel store
+falls1344->1152 payload bits, excluding headers. These are bit counts, **not**
+fitted FF/BSRAM savings or changes to the existing pixel-system live stores.
+
+The producer performs RNE directly at F10 (negative ties included). Converting
+existing Q14 codes uses right-RNE4 with positive +2 saturation to2047; expanding
+the twelve-bit code into the working Q14 value sign-extends and appends four
+zero bits. Expansion is wiring. Direct f64 producers quantize once at F10,
+avoiding an unintended double-round through Q14. `rows` / `from_rows` reject
+noncanonical upper bits. CPU-facing producers may retain aligned signed16 Q14
+words and explicitly use `from_q14`; tight internal storage still uses S12F10.
+There is no separate sign-magnitude storage ABI or negative-zero encoding.
+
+`counted::evaluate_compact` actually reads `pixel.compact-rows` with two declared
+rows and twelve-bit slices, then uses the original square/rsqrt/power arithmetic.
+Full mode reads the normal row and NDC row; diffuse reads only the normal row.
+The compact kernel extracts each sign as wiring, computes magnitude with a
+signed13 negator (including -2048), then compares unsigned12 magnitudes. Only
+the selected maximum enters Q14 max/prescale arithmetic; signed components
+expand independently as wiring for the existing signed DSP arithmetic. Zero
+detection is `max_code < 1`, exactly equivalent to the Q14 threshold4. Expanded
+values have four zero low bits and common downscale is at most two bits, so the
+32767/RNE-overflow prescale guard is unnecessary. SQ, RSQRT and normalized N
+remain unchanged. This local sign/magnitude view does not persist duplicate
+components or change negative rounding to magnitude truncation.
+
+`timed::plan_compact` reserves this graph with72 payload bits/pixel and two input
+rows. It requires already quantized codes; `plan` with the compact flag rejects
+Q14 inputs having nonzero low four bits. Row calendars explicitly gate
+`pixel.compact-rows` on their physical read-ready times and audit two-row
+coverage. This first row calendar prefetches both rows even in diffuse mode;
+the counted diffuse kernel itself consumes only the normal row. Architecture
+profiles with prelatched power fields still require
+register inputs; the separate row experiment uses the non-prelatched optimized
+kernel and performs its context-ROM work in the counted graph. The four uniform
+rows remain aligned Q14. This is offline counted/timed support, not a compact
+cycle port or fitted mux/BSRAM implementation.
+
+### Exact narrow prescale and storage-aware candidate
+
+`counted::Config::compact()` selects architecture arithmetic with compact
+transport and `compact_prescale`. Both flags are explicit; the previous compact
+graph remains selectable with `compact_prescale=false`. For a nonzero U12 maximum
+code `m`, let `z=leading_zeros_12(m)`. The Q14 common shift is `z-2`, so
+`(code<<4) << (z-2)` equals `(code << z) << 2`. The dynamic operation is therefore
+a **signed13 left shift**, followed by two zero bits of wiring. Its magnitude is
+at most4095; no normal-prescale RNE or signed right shift remains. Zero codes use
+the original0.5 fallback, with the same final zero gate. Published SQ, reciprocal,
+normalized N and all later stages match the original quantized-input contract.
+This option works with the existing scalar/block alternatives; it changes only N
+prescale, not their separately declared H/dot semantics.
+
+`Storage::DemandRows` is an additional offline compact-input calendar. It reads
+the rows actually consumed by the current uniform mode: none for unlit/ambient,
+normal only for diffuse, normal plus NDC for full. `ReadOrder::PixelMajor` and
+`NormalFirst` compare per-pixel and normal-row-first ordering on the same ports.
+The original `Storage::Rows` remains the conservative prefetch baseline. Both
+use the same72-bit transport and four aligned uniform rows, and retain the
+architecture/register-input restriction. Demand reads reduce bandwidth; they do
+not by themselves change the upstream allocated payload or context preparation.
+
+`PeriodicSchedule::compact_storage_bounded` compares whole and partial ALAP
+placements with width-weighted, repeated value lifetimes. It tries at most256
+candidates, preserves lane/phase, input capture ages, II and commit age, and accepts
+only independently audited placements whose peak live bits do not increase.
+Blind ALAP can increase this cost, particularly when an input row or reciprocal
+has several consumers. ROM/DSP physical calendars are checked separately by
+`audit_physical`. Live-bit cost excludes primitive-internal registers, control,
+IDs/FIFOs and routing; it is not total FF count or a synthesis result.
+
+The browser uses this same numerical contract through `oracle::evaluate_output`
+after transport expansion; it does not run the audited evaluator per pixel.
+Existing `PixelInput` / `PixelRows` and cycle emu/RTL continue to define the
+original wide transport. The cycle-program constructor rejects the compact
+flag rather than incorrectly treating it as the old three-row input. Migrating
+that external port/calendar is a separate hardware task; no new II, latency or
+PnR result is claimed by this functional precision change.
+
+S12F10 fits the binary upstream pipeline better than strict SNORM12. SNORM12's
+producer encoding uses2047 instead of1024 and clips at±1; when consumed only by
+normalization, its integer codes can be expanded by appending three zeros,
+letting normalization remove the common scale. The browser retains SNORM12 as
+an explicit comparison. S12F10 preserves more headroom for unnormalized normals
+and avoids the2047 scaling at the producer. Normal-matrix and mesh preflight
+remain necessary; near-cancelling or tiny normals can still have larger errors.
+
+Light retains the aligned Q14 boundary in this unit. A separately quantized
+S12F10 light is a possible future contract, with a matching unit-length error
+tolerance; reusing the normal's arbitrary common-scale shortcut would change
+both dot products and L+V because light is not normalized inside lighting. Its
+48-bit uniform cost is paid once per context, unlike per-pixel normal storage. Uniform
+rows, the180-bit retained context and ROM precision remain unchanged in this
+unit. Power context43->30 and literal power28->27 repacking remain candidates;
+they are not silently counted as implemented. Keeping the existing ROMs avoids
+changing the numerical approximation while isolating normal transport errors.
+
+Verification covers all4096 codes, all65536 Q14 conversions,17 exponent codes
+against the counted output, numerical frame comparison, and functional FIFO
+capacity changes. In one deliberately bright200x120 grazing scene (yaw85,
+s=4, Cs255), changing only pixel-normal Q14->S12F10 gave max |delta g|=1 and
+|delta h|=1 Q8 code, with identical D16. This is a finite example, not a global
+bound. Larger full-pipeline differences include compact fetch, geometry coverage,
+RGB565 tint and earlier normal quantization, so they cannot be attributed only
+to the lighting input width.
+
+## Implemented Fast path walkthrough
+
+The current `system::pixel::LightingLive` constructor explicitly selects
+`LightingEmu::with_profile(Fast)`. It does not select Resource, System or Factor.
+This section describes that original architecture and its matching RTL export.
+Compact changes its calendar and capacities; the alternatives below change more
+than scheduling and must be selected explicitly. Ages below are relative to an
+accepted pixel at age0 and count advancing edges, not stalled wall clocks.
+The result becomes valid at age97; its first transfer is on the following edge.
+
+### Input and immutable context
+
+| Boundary | Useful payload | Actual interface / retained owner |
+| --- | --- | --- |
+| Pixel normal | Three signed16 Q14 components, 48 bits; not normalized upstream | PixelRows row0 holds X/Y; row1 holds Z |
+| Pixel center | Two signed18 Q16 NDC components, 36 bits; each in [-1,1] | Row1 bits16..33 hold X; row2 bits0..17 hold Y |
+| Pixel capture | 84 useful bits plus external ID32 | Three simultaneous36-bit RTL inputs, not three serial RAM reads |
+| Uniform fields | Light48 + projection48 + Ia/Id18 + mode2 + shininess5 = 121 bits | Latched once per drained context update; no per-pixel uniform delay copies |
+| Complete retained context | Uniform121 + epoch16 + prepared power43 = 180 bits | Immutable registers; specular RGB is represented here only by the prepared mode |
+| Ordered result | g9 + h9 + ID32 + epoch16 = 66 bits | Held pipeline output; no additional local result FIFO |
+
+The 43-bit power context contains boundary15, coarse shift4, fine shift4 and two
+address bases of10 bits each. A 32x43 context ROM has17 useful entries. Context
+load selects and latches one entry. The four36-bit `UniformRows` are a candidate
+packing helper, not the physical RTL's uniform RAM or a serial loading protocol.
+
+### Numerical paths and exact published ages
+
+Normal and view/half computations overlap. The following rows are numerical
+boundaries, not mutually exclusive whole-clock stages: different pixels use
+different physical lanes in the same edge.
+
+| Work | Full path age | Diffuse age | Data / operation |
+| --- | --- | --- | --- |
+| Read normal rows | 2 | 2 | Extract three signed16 Q14 values |
+| Common normal scale | 13 | 13 | Widen magnitude to17 bits, max of three, threshold4, leading zeros and shared shift; shifted components stay16 Q14 |
+| Normal squared length | 20 | 20 | Three signed-SQ chords and their sum, unsigned30 Q28 |
+| Normal reciprocal length | 29 | 29 | RSQRT interpolation and exponent restoration, unsigned17 Q15 |
+| Unit normal | X/Z37, Y38 | X/Y/Z37 | Three signed16 x unsigned17 products, signed33 Q29; RNE/clamp to signed16 Q14 |
+| Normal-light dot | 46 | 44 | One standalone third product plus one paired MAC for the other two and sum; signed34 Q28 |
+| Diffuse coefficient d | 50 | 48 | Clamp NL to [0,1], RNE to unsigned9 Q8 |
+| Diffuse g | 58 | 55 | Id9 x d9 -> unsigned18 Q16, RNE; add Ia in10 Q8 and saturate to511 |
+| View ray | X/Y8, Z3 | Not used | NDC18 x projection16 -> signed34 Q30, RNE to signed16 Q14; Z is uniform k |
+| View squared length / reciprocal | 13 / 22 | Not used | Same SQ/RSQRT method; validated k>=8192 permits no magnitude prescale or zero branch |
+| Unit view vector | 29 | Not used | Three signed16 Q14 components |
+| Half-vector common scale | 38 | Not used | RNE((L+V)/2), magnitude threshold64, common scale |
+| Half squared length / reciprocal | 45 / 55 | Not used | unsigned30 Q28 / unsigned17 Q15 |
+| Unit half vector | X/Y64, Z63 | Not used | Three signed16 Q14 components, with degenerate H forced to zero |
+| Normal-half dot | 71 | Not used | Paired MAC plus third product; signed34 Q28 |
+| Power coordinate x | 75 | Not used | Clamp NH to [0,1], RNE to unsigned16 Q15, including32768 endpoint |
+| Shininess power | 89 | Not used | Prepared-context segment selection, one power read and delta-times-tail interpolation |
+| Masked p9 | 91 | Not used | RNE power to unsigned9 Q8; force zero when NL<=0 |
+| Specular h | 96 | Constant zero | Id9 x p9 -> unsigned18 Q16, RNE to9 Q8 |
+| Ordered result valid | 97 | 56 | g/h and complete ID aligned; acceptance requires CE and output ready |
+
+For SQ, a signed scaled component is decomposed as x=128a+b, b in0..127.
+The 256-entry signed table supplies a*a; a9-bit slope (2a+1) multiplies the tail
+using DSP9. The Q28 chord is `(a*a<<14) + ((2a+1)*b<<7)`. This removes a second
+absolute-value step; the maximum-magnitude prescale still computes magnitudes.
+Very small N/H use a safe internal vector before lookup and mask the normalized
+output to zero afterwards, so a zero input cannot create an invalid RSQRT address.
+
+RSQRT uses two64-segment pages selected by exponent parity. Each24-bit entry
+contains base16 and delta8; an8-bit fraction drives a DSP9 correction, RNE and
+exponent restoration. It computes inverse square root, not general reciprocal.
+The latter's LUT/Newton path is not needed by this lighting component.
+
+Power clamps its lookup input to32767 and separately selects the exact32768
+endpoint. The prepared context selects coarse/fine segments; the28-bit entry
+contains left16 and delta12. Delta12 times tail12 gives24 bits in DSP18. Only
+this nonnegative interpolation correction uses floor; normalization and output
+quantization retain RNE. Full-mode pixels with NL<=0 still traverse the specular
+calendar and are masked near the end. They do not dynamically become diffuse jobs.
+
+### DSP issue and memory ports
+
+| Owner | Physical capacity | Per-pixel full / diffuse work | Ports and timing |
+| --- | --- | --- | --- |
+| Small multipliers | 7 MULT9X9 | 14 / 5 issues | One operand pair per lane per edge, three advancing-edge latency |
+| Large multipliers | 7 MULT18X18 | 14 / 4 issues | One operand pair per lane per edge, three advancing-edge latency |
+| Paired dot MAC | 1 MULTADDALU18X18 | 2 / 1 issues | Two products plus aligned C, four advancing-edge latency; no running accumulation |
+| Normalization tables | Six replicas, each512x36 | 12 / 4 reads | One synchronous read per replica per edge, one advancing-edge latency, no runtime writes |
+| Power table | 1024x28 logical, split16+12 | 1 / 0 reads | Both slices read the same10-bit address; one logical read, one-edge return |
+| Material context table | 32x43 logical | No per-pixel read | Select once at drained context update and latch43 bits |
+
+Each normalization replica packs signed SQ256 and RSQRT128; remaining words are
+unused. Different replicas supply independent simultaneous addresses. Physical
+power allocation uses the existing two BSRAM slices, not two independent pixel
+requests. The 886 useful power entries fit the padded1024-word address domain.
+
+Full N SQ reads issue15/return16, RSQRT23/24; V SQ reads issue3 and8, RSQRT16/17;
+H SQ reads40/41, RSQRT49/50. All are scheduled in the shared six-port calendar.
+The paired MAC handles NL at42/46 and NH at67/71, occupying opposite II2 phases.
+The third products issue38/ready41 and64/67 respectively. Power reads83/84,
+its interpolation product84/87, and final h multiplication91/94 before RNE.
+These times are from the implemented calendar, not an ASAP dependency sketch.
+
+Full work is14 DSP9 products,14 standalone DSP18 products and four products in
+two paired-MAC issues. The seven small and seven large lanes are physical sites,
+not multipliers allocated separately to every pixel. The DSP coexistence checker
+packs them into seven macros/four tiles. No full/diffuse runtime resource arbiter
+exists: both mode graphs use the same sites and switch only after complete drain.
+
+### Retention, identity and backpressure
+
+The default export retains6201 logical bits in per-value delay chains,504 bits
+in the two modes' input-row delays,180 context bits and98 valid ages. Examples
+below state extra retained taps beyond the producing lane's current output.
+
+| Value | Width | Ready / last consumer | Retained words / payload bits |
+| --- | ---: | --- | ---: |
+| Full N.x | 16 | 37 / 67 | 15 / 240 |
+| Full N.y | 16 | 38 / 67 | 15 / 240 |
+| Full N.z | 16 | 37 / 64 | 14 / 224 |
+| Full NL | 34 | 46 / 89 | 22 / 748 |
+| Full g | 9 | 58 / 97 | 20 / 180 |
+| Full H.x/H.y | 16 each | 64 / 67 | 2 / 32 each |
+| Full H.z | 16 | 63 / 64 | 1 / 16 |
+| Full h | 9 | 96 / 97 | 1 / 9 |
+| Diffuse N.x/N.y | 16 each | 37 / 40 | 3 / 48 each |
+| Diffuse g | 9 | 55 / 56 | 1 / 9 |
+
+For distance D and initiation interval II, extra retained words are ceil(D/II).
+Consumers select compile-time taps, with no indexed scratchpad or dynamic free
+list. At each value's scheduled phase, old taps shift to the next tap. Multiple
+wire consumers can read taps simultaneously. This is not automatically equivalent
+to a single1R1W addressable RAM; replacing it requires a separate port/age mapping.
+The default leaves FF/shift-memory inference to synthesis. The explicit Compact
+RAM rings described in Resource profiles belong to that separate option.
+
+The default preserves two independent external-ID chains: full50x32=1600 bits
+and diffuse57x32=1824 bits. It does not use the newer shared-ID FIFO. The selected
+mode shifts its chain at its II phase and reads a fixed output tap. ID32 is kept
+even though the current pixel adapter uses only quad4+lane2. Context epoch16 does
+not need a per-token chain because context cannot change until complete drain.
+Phase2, one-hot calendar5 and configured1 provide8 control bits. Generated
+register-declaration metrics also include physical lane/cut storage; they are
+not fitted FF counts. Fitted BSRAM totals, including inferred retention, remain
+in the isolated validation record below rather than in this logical payload bill.
+
+An enabled edge advances only when context is configured and the old output is
+not held by backpressure. Input acceptance additionally requires phase0 and no
+context request. CE0 or a blocked valid output freezes every phase, valid age,
+DSP stage, ROM return and retained tap. Reset clears ownership even at CE0;
+stale payload bits need no clearing. Unlit/ambient select constants at the
+diffuse output age; they are not early-return component paths.
+
+The live adapter separately owns one348-bit input snapshot: four84-bit pixels,
+mask4, cursor3, quad4 and valid1. It only issues covered, non-default lanes after
+actual quad admission; it has no pre-admission quad copy or added result FIFO.
+The existing J1 light store is64x18 logical payload, one result write port and
+one final-stage read port. A result is popped only when that write succeeds;
+LightDone follows all required writes. Default-light slots use constants without
+reading or writing this store. J1's synchronous return and global retirement
+remain separate from LightingEmu's numerical completion and identity ownership.
+The complete-image pixel composition is Rust validation; it is not integrated
+GPU RTL or whole-GPU fitted memory/port proof.
+
+Reproduce the operation and retention tables with the existing
+`lighting_rtl_export` example (`gowin fast`, no alternative argument):
+`operations.csv`, `storage.csv`, `lanes.csv` and the generated RTL describe the
+same selected body. `LightingVerilog::stages` supplies published names, widths
+and ages. This documentation does not require a new fit or new arithmetic tests.
 
 ## Isolated implementation validation
 
@@ -988,7 +1283,151 @@ preparation ROM still costs **86 RAM16 cells**, although it disappears from the
 pixel frame's ROM access report; two immutable context copies also retain their
 43-bit prepared fields. Resource counts describe static models, not PnR results.
 
+## Reusable measured Rust pipeline blocks
+
+`sim::pipeline` factors numerical tails and coordinate frontends into typed functions:
+
+| Block | Inputs | Result | Opt-in latency |
+| --- | --- | --- | ---: |
+| `normalized_output` | S33F29 product, optional zero bit | RNE S18F14, clamp to +/-1, S16F14 direction | 1 cycle |
+| `reciprocal_tail` | U16F15 base, U16F23 correction | RNE correction, U16F15 subtraction | 1 cycle |
+| `diffuse_finish` | U18F16 product, U9F8 ambient | RNE U9F8, U10F8 sum, saturated U9F8 intensity | 1 cycle |
+| `square_sum` | Three U30F28 squared components | Two additions, public U30F28 q | 1 cycle |
+| `inverse_head` | Bounded U30F28 q | Address U7, fraction U8F8, restore U1 | 1 cycle |
+| `inverse_tail` | Base U16F15, correction U16F23, bounded restore | RNE, subtract and restored U17F15 reciprocal | 1 cycle |
+| `power_head` | Safe U16F15 coordinate, latched U43 context | Address U10, tail U12, negative shift S18 | 1 cycle |
+
+Oracle remains the independent numerical reference. Counted calls these functions
+and retains every arithmetic event and existing stage golden. Timed's optional
+`Hardware::lighting_measured_ii2()` contracts only exact typed DAG patterns; the
+opcode/format/literal/alias signature is pinned independently of runtime samples.
+Undeclared escaped intermediates prevent contraction. `LogicCone::exported_events`
+allows explicitly declared side results on the same ready edge; all original
+arithmetic remains in counted and independently replayed. `inverse_head` assumes
+`2^26 <= q <= 3*2^28`; its normal producer establishes that bound, including the
+zero-normal bypass. The inverse-tail restoration is zero or one. `power_head`
+receives the separately clamped endpoint, and keeps floor interpolation unchanged.
+DSP products, ROM reads and branch effects remain outside the pure-logic blocks.
+The historical profiles keep their previous binding unless explicitly selected.
+
+`Hardware::lighting_functions_ii2()` selects measured functions plus conservative
+two-edge generic cones for compact-normal counted/timed planning. Cycle emu/RTL
+select `LightingRetiming`, independently executing numerical operations on the
+same checked calendar. The resource candidate is available through
+`LightingEmu::retimed_resource_profile(profile, max_wall_ticks)` and
+`LightingRtlOptions::retimed_resource_profile(profile)`. It retains the existing
+resource-profile numerical kernel and rates; it is not the default architecture
+or a migration of the closed three-row cycle input to S2.10 transport.
+
+Two bounded local lifetime passes preserve resource lane, modulo phase, II and
+completion. Only independently checked moves that reduce width-weighted boundary
+payload are accepted. The emitter storage table and fitted result remain the final
+storage evidence; the cost proxy does not include every mux/control register.
+Fast adds no multiplier/read capacity. Compact fills two unused DSP9 slots in its
+existing kind-separated macro; extra-ROM/DSP variants remain opt-in experiments.
+
+The matched baselines, three optimization rounds, selected configurations and
+full-module two-placement evidence are in the generated
+[retiming review](../../../target/lighting-retime-20261005/review.md).
+The [resource sweep](../../../target/lighting-retime-20261005/final-resource/summary.csv)
+and [architecture sweep](../../../target/lighting-retime-20261005/final-architecture/summary.csv)
+report declared register bits separately from fitted FF. Zero-delay retained rows
+include diagnostic taps and are not a count of distinct physical buses.
+
+### Compensated-floor numerical configuration
+
+`counted::Config::compensated_resource_profile(profile)` constructs the explicit
+Fast/Compact numerical alternative. Use `oracle::Config::from_counted(kernel)`
+for its independent scalar reference, `LightingEmu::compensated_resource_profile`
+for cycle execution and `LightingRtlOptions::compensated_resource_profile` for
+RTL. Existing constructors retain their original nearest-even behavior.
+
+The local arithmetic adapter chooses the policy before constructing the DAG:
+intermediate conversions floor, the diffuse Q28-to-Q8 factor uses one guard-bit
+increment, and final U18F16-to-U9F8 g/h conversions retain nearest-even. Floor is
+static arithmetic wiring, not a runtime replacement of a RoundIncrement event.
+The counted ledger, timed binding, numerical VM and RTL consume these same events.
+Only the closed resource kernels are accepted; cached/prepared/compact-normal
+transport and system scalar-N alternatives require separate validation.
+
+The alternate `POWER_MIDPOINT_Q15` table has the same rows, deltas and widths as
+POWER, with 64 added to each Q15 base. Its diagnostic publication is explicitly
+`power.midpoint_q15`, an encoded value for floor conversion to Q8, not ordinary
+x^s. The x==1 branch retains the exact 32768 endpoint. Zero still becomes Q8 zero.
+Only the selected table is physically instantiated; generating both host arrays
+does not duplicate the hardware ROM. Compact keeps its existing max=32767 normal
+prescale bin even though floor no longer causes the RNE overflow there.
+
+Reproduce the bounded frozen dataset with `lighting_compensation_dataset`, export
+the actual rebuilt DAG/HDL with `lighting_compensation_probe`, then run the ignored
+`compensated_frozen_dataset_replays_actual_dag` test with the absolute dataset path
+in `LIGHTING_COMPENSATION_DATASET`. The bounded `lighting_cycles` RTL test selects
+this configuration with `LIGHTING_COMPENSATED_FLOOR=1`, resource/retimed profile,
+extra-large=1 and local steering. Ordinary g/h differences are tiny, but the
+existing half-vector degeneracy threshold can change classification; no global
+one-code error bound is claimed. Independent reference and stage checks cover it.
+The final formal-DAG area, two placements, memory calendars and co-simulation
+identity are in the [formal configuration review](../../../target/lighting-compensation-formal-20261005/review.md).
+These are isolated Lighting results, not whole-GPU fit or board evidence.
+
+### DSP input topology alternatives (nearest-even baseline)
+
+`LightingRtlOptions::steered_resource_profile(profile)` selects a later matched
+connection-cost alternative; `LightingEmu::steered_resource_profile(profile,
+max_wall_ticks)` supplies its numerical cycle program. It preserves the resource
+kernel, rates, stage values and issue/ready edges, fills one existing MULT18 slot,
+and selects `DspSteering::Local`. Historical constructors remain unchanged.
+
+The RTL lowering interns symbolic operand sources, independent of runtime sample
+values, and includes format/sign extension and retained-token distance in a
+bit-source diversity proxy. Two deterministic local passes, each at most 256
+trials, commute certified scalar multiplication operands and exchange same-phase,
+same-kind lanes within one mode. Pair-MAC inputs are not commuted. Every operand
+multiset, issue/ready edge and physical phase exclusion is independently checked
+afterward. `dsp_input_csv` records the actual emitted operand alternatives. This
+proxy guides experiments; it is not a LUT or routing estimate.
+
+DSP idle fallback is emitted structurally exactly once under `free_slots`; it is
+not reapplied by searching the generated HDL. The experimental `one_hot_dsp`
+masked-input and `DspSteering::Joint` searches remain explicit alternatives, not
+selected defaults. A lower structural score need not improve fitted Logic or
+timing. Joint exchanges, sparse DSP9 use and additional DSP18 use were measured
+against the same kernel before selection. Full per-round conclusions, rejected
+candidate history, source identities, two placements and behavioral/vendor
+co-simulation evidence are in the generated
+[steering review](../../../target/lighting-steering-20261005/review.md).
+
+This is isolated Lighting-module evidence. Counted arithmetic remains unchanged;
+physical input topology is an RTL lowering decision. It does not prove whole-GPU
+fit, board timing or S2.10 cycle-input transport migration.
+
+The isolated two-placement probes used a 72 MHz margin target for the 54 MHz
+clock. `BlockKind::evidence()` identifies the local experiment groups
+`lighting-fabric-fusion-20261005` and `lighting-memory-fusion-20261005`.
+Memory edge semantics follow the
+[Gowin BSRAM contract](../../../hardware/vendor/gowin/doc/gowin-bsram-timing.md).
+The reciprocal-tail block is the interpolation subset of its probe; the
+inverse-tail block also includes bounded restoration. The global-CE ROM probe
+uses production SQ/RSQRT pages and real SDPX9B. Its post-read long-logic candidate
+fails the margin target and is excluded. Power frontend probes sweep every
+coordinate for representative codes and all-code boundaries. These probes justify candidate
+boundaries, not a whole-Lighting frequency or area claim. Input muxes, CE/hold
+timing, pipeline-internal registers and actual routing still require integration.
+Adder inventory includes embedded ordinary sums and RNE increments; contracting
+their scheduling boundaries does not remove their hardware cost.
+
+`lighting_pipeline_probe` compares primitive, existing two-cycle depth cones and
+the typed candidate with the same DSP/ROM capacities, at ROM latencies one/two
+and II one/two/three. It audits physical calendars and performs bounded storage
+compaction; reports also distinguish provisioned from occupied block/adder copies.
+Full shape and register details remain in each run directory. Reproduce with:
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-pipeline -CargoArgs @('-p','gpu-v2','--example','lighting_pipeline_probe','--','target/lighting-pipeline-blocks')
+```
+
 ## Numerical contract
+
 
 The raster input carries an unnormalized signed 16-bit Q14 normal and two
 signed 18-bit Q16 NDC coordinates in [-1,1]. Lighting normalizes the normal and
@@ -1308,7 +1747,8 @@ CE/context execution; these are provided by the independent pipeline above.
 
 ## Avoiding repeated abs and choosing where to truncate
 
-The current external normal is S(16,14), not Q16.16. A sign-magnitude format
+The legacy cycle-port normal is S(16,14), not Q16.16; the compact counted/timed
+boundary above is S12F10. A sign-magnitude format
 with the same total 16 bits has one sign and 15 magnitude bits, symmetric
 extrema +/-32767 raw and two zero encodings. It does not gain precision over
 the current two's-complement format, and loses the -32768 endpoint. Keeping
@@ -1341,8 +1781,11 @@ The complete 32,768-input domain is exhaustively compared with the original
 magnitude chord, and representative counted stage outputs agree bit for bit.
 
 This avoids nine secondary abs operations per full pixel, including their
-negation, comparison and selection. Nine initial abs operations for the N/V/H
-maximum and degeneracy checks remain. The SQ payload grows from 128x14=1,792
+negation, comparison and selection. The basic path retains nine initial abs
+operations for N/V/H. The architecture path uses validated V bounds to skip
+V's three initial abs/max/prescale operations, leaving six for N/H; the compact
+N view narrows its three magnitude negators and two max comparisons. The SQ
+payload grows from 128x14=1,792
 bits to 256x15=3,840 bits per table copy; it still makes nine SQ reads per pixel.
 The concrete layout below allocates the ROM copies; no fitted logic/BRAM tradeoff
 is claimed.

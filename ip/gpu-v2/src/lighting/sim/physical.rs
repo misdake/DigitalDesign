@@ -14,6 +14,91 @@ pub struct PhysicalReport {
     pub accesses: Vec<MemoryAccess>,
 }
 impl PeriodicSchedule {
+    /// Compare actual repeated value lifetimes before accepting ALAP phase
+    /// compaction. A narrower local operator alone does not guarantee less
+    /// retained storage. This excludes primitive-internal/control registers.
+    pub fn compact_storage(self, plan: &Plan) -> Result<Self, String> {
+        self.compact_storage_bounded(plan, 1)
+    }
+
+    /// At most 256 measured candidates: whole ALAP, then partial moves in reverse
+    /// dependency order. Preserve lane/phase, input capture ages and commit;
+    /// accept only independently checked, nonincreasing peak live-bit costs.
+    pub fn compact_storage_bounded(mut self, plan: &Plan, attempts: usize) -> Result<Self, String> {
+        if !(1..=256).contains(&attempts) {
+            return Err("storage search budget must be 1..256".into());
+        }
+        let before = self.retained_values(plan)?;
+        let order = dependency_order(plan)?;
+        let mut candidate = self.clone().compact_lifetimes(plan)?;
+        candidate.retime_wires(plan, &order, &self);
+        let mut cost = before.peak_bits;
+        if let Ok(after) = candidate.retained_values(plan) {
+            if candidate.latency <= self.latency && after.peak_bits <= cost {
+                cost = after.peak_bits;
+                self = candidate.clone();
+            }
+        }
+        let mut tried = 1;
+        for &id in order.iter().rev() {
+            if tried == attempts {
+                break;
+            }
+            if self.slots[id].kind.is_none() || candidate.slots[id].issue <= self.slots[id].issue {
+                continue;
+            }
+            tried += 1;
+            let mut partial = self.clone();
+            partial.slots[id] = candidate.slots[id].clone();
+            // Absorbed members depend on their certified root. Recompute every
+            // other wire from checked dependencies, while retaining capture ages
+            // for precaptured pixel/context rows (no hidden input-buffer saving).
+            partial.retime_wires(plan, &order, &self);
+            // Some partial moves cross a still-early consumer; rejection is
+            // expected. The validator checks all atomic cones and repeated lanes.
+            if let Ok(live) = partial.retained_values(plan) {
+                if live.peak_bits <= cost {
+                    cost = live.peak_bits;
+                    self = partial;
+                }
+            }
+        }
+        self.audit(plan)?;
+        Ok(self)
+    }
+
+    fn retime_wires(&mut self, plan: &Plan, order: &[usize], captured: &Self) {
+        for &wire in order {
+            if self.slots[wire].kind.is_some() {
+                continue;
+            }
+            let ready = if matches!(plan.template.events[wire].operation, Operation::Read { .. }) {
+                captured.slots[wire].issue
+            } else {
+                plan.binding.dependencies[wire]
+                    .iter()
+                    .map(|&d| self.slots[d].ready)
+                    .max()
+                    .unwrap_or(0)
+            };
+            self.slots[wire].issue = ready;
+            self.slots[wire].ready = ready;
+        }
+    }
+
+    pub fn retained_values(&self, plan: &Plan) -> Result<LiveReport, String> {
+        self.audit(plan)?;
+        let times: Vec<_> = self
+            .slots
+            .iter()
+            .map(|r| Timing {
+                issue: r.issue,
+                ready: r.ready,
+            })
+            .collect();
+        retained_values(plan, &times, self.write_issue, self.initiation_interval)
+    }
+
     /// Check declared target placement, ports, and retained values for one body.
     /// Uniform inputs are already latched; this does not execute arithmetic/RTL.
     pub fn audit_physical(
@@ -131,7 +216,7 @@ impl PeriodicSchedule {
                         }],
                     })
                     .collect(),
-                "POWER" => {
+                "POWER" | "POWER_MIDPOINT_Q15" => {
                     let mut slices = Vec::new();
                     for (part, (low, width)) in [(0, 16), (16, 12)].into_iter().enumerate() {
                         let bank = layout.banks.len();
@@ -239,26 +324,7 @@ impl PeriodicSchedule {
         let memory_cells = layout
             .audit_gowin_budget(frame, memory_budget)
             .map_err(|e| format!("memory budget: {e:?}"))?;
-        let retained = lifecycle::analyze_composed_policy(
-            frame,
-            &times,
-            &plan.binding.groups,
-            &plan.binding.cones,
-            &lifecycle::LifetimePolicy {
-                commit_cycle: self.write_issue,
-                period: Some(self.initiation_interval),
-                max_cycle: h.max_cycles,
-                invariant_inputs: frame
-                    .memories
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, m)| m.kind == MemoryKind::Input && m.name.starts_with("context."))
-                    .map(|(id, _)| id)
-                    .collect(),
-                retained_outputs: Some(vec!["g".into(), "h".into()]),
-            },
-        )
-        .map_err(|e| format!("lifetime: {e:?}"))?;
+        let retained = retained_values(plan, &times, self.write_issue, self.initiation_interval)?;
         retained
             .audit_budget(registers)
             .map_err(|e| format!("register budget: {e:?}"))?;
@@ -271,4 +337,59 @@ impl PeriodicSchedule {
             accesses,
         })
     }
+}
+
+fn dependency_order(plan: &Plan) -> Result<Vec<usize>, String> {
+    let n = plan.template.events.len();
+    let mut pending: Vec<_> = plan.binding.dependencies.iter().map(Vec::len).collect();
+    let mut users = vec![Vec::new(); n];
+    for (id, deps) in plan.binding.dependencies.iter().enumerate() {
+        for &dep in deps {
+            users[dep].push(id);
+        }
+    }
+    let mut queue: std::collections::VecDeque<_> = (0..n).filter(|&id| pending[id] == 0).collect();
+    let mut order = Vec::with_capacity(n);
+    while let Some(id) = queue.pop_front() {
+        order.push(id);
+        for &user in &users[id] {
+            pending[user] -= 1;
+            if pending[user] == 0 {
+                queue.push_back(user);
+            }
+        }
+    }
+    if order.len() != n {
+        return Err("storage search dependency cycle".into());
+    }
+    Ok(order)
+}
+
+fn retained_values(
+    plan: &Plan,
+    times: &[Timing],
+    commit: u64,
+    ii: u64,
+) -> Result<LiveReport, String> {
+    let frame = &plan.template;
+    lifecycle::analyze_composed_policy(
+        frame,
+        times,
+        &plan.binding.groups,
+        &plan.binding.cones,
+        &lifecycle::LifetimePolicy {
+            commit_cycle: commit,
+            period: Some(ii),
+            max_cycle: plan.hardware.max_cycles,
+            invariant_inputs: frame
+                .memories
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.kind == MemoryKind::Input && m.name.starts_with("context."))
+                .map(|(id, _)| id)
+                .collect(),
+            retained_outputs: Some(vec!["g".into(), "h".into()]),
+        },
+    )
+    .map_err(|e| format!("lifetime: {e:?}"))
 }

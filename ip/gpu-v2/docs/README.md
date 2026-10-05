@@ -4,7 +4,7 @@
 | --- | --- |
 | [Architecture](architecture.md) | Crate boundary, component ports and model ownership |
 | [Triangle-record transport](geometry-record-transport.md) | Bounded Rust two-slot publication, shared read-return credit, consumer release and normal-path source lease connection |
-| [Lighting](lighting.md) | Oracle/counting/timing, cycle emu/RTL, resource/system alternatives, fitted area and numerical tradeoffs |
+| [Lighting](lighting.md) | Compact normal, measured functions, DSP steering and explicit compensated-floor oracle/count/timed/emu/RTL contracts |
 | [Lighting WASM review](../web/README.md) | Real Rust browser comparison, deterministic scene controls, build and verification |
 | [Frontend](frontend.md) | Command processor, scratchpad, vertex transform and bounded Rust composition |
 | [Triangle](triangle.md) | Oracle-only clipping, coverage, perspective fields, precision study and workload analysis |

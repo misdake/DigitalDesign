@@ -149,3 +149,20 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod compensation_tests {
+    #[test]
+    fn midpoint_rom_keeps_delta_capacity_and_endpoint_encoding() {
+        use super::*;
+        assert_eq!(POWER_RAW.len(), POWER_MIDPOINT_RAW.len());
+        for (&raw, &biased) in POWER_RAW.iter().zip(POWER_MIDPOINT_RAW.iter()) {
+            assert_eq!(raw >> 16, biased >> 16);
+            assert_eq!((raw & 65535) + 64, biased & 65535);
+            assert!(biased < 1 << 28);
+        }
+        for p in 0_i128..=32768 {
+            assert_eq!((p + 64) / 128, p / 128 + i128::from(p % 128 >= 64));
+        }
+    }
+}

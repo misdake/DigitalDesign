@@ -7,6 +7,47 @@ pub mod ports;
 pub mod rtl;
 pub mod sim;
 
+/// Explicit numerical contract, independent of resource count and scheduling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LightingQuantization {
+    #[default]
+    NearestEven,
+    /// Floor intermediates, midpoint Q8 factors, and final nearest-even outputs.
+    CompensatedFloor,
+}
+
+/// Explicit bounded scheduling experiment; numerical kernel and public ports
+/// are selected separately. Default preserves the existing hardware program.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LightingRetiming {
+    pub measured_functions: bool,
+    pub extra_large_multiply: usize,
+    pub extra_small_multiply: usize,
+    pub extra_normalize_reads: usize,
+    pub compact_lifetimes: bool,
+}
+
+impl LightingRetiming {
+    /// Same existing resource-profile kernel and rates; fill spare Compact DSP9
+    /// slots within the already allocated macro, rather than add a DSP tile.
+    pub fn resource_candidate(profile: LightingProfile) -> Self {
+        Self {
+            measured_functions: true,
+            compact_lifetimes: true,
+            extra_small_multiply: usize::from(profile == LightingProfile::Compact) * 2,
+            ..Self::default()
+        }
+    }
+    /// Matched connection-cost alternative: one more MULT18 slot in an already
+    /// allocated macro. Physical lane steering is applied by the RTL lowering.
+    pub fn steered_resource_candidate(profile: LightingProfile) -> Self {
+        Self {
+            extra_large_multiply: 1,
+            ..Self::resource_candidate(profile)
+        }
+    }
+}
+
 /// Two complete hardware alternatives with shared full/diffuse arithmetic lanes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LightingProfile {

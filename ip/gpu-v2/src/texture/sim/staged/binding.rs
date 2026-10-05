@@ -175,6 +175,7 @@ pub fn lod_shared_h_cone(frame: &FrameReport) -> Result<LogicCone, Fault> {
         return Ok(LogicCone {
             result_event: root.id,
             absorbed_events: vec![h.id],
+            exported_events: Vec::new(),
             operands: operands.into_iter().collect(),
             max_width,
             latency: 1,

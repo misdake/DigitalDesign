@@ -15,6 +15,32 @@ fn idle() -> LightingTick {
         output_ready: true,
     }
 }
+fn retiming(profile: LightingProfile) -> gpu_v2::lighting::LightingRetiming {
+    let delta = |name| {
+        std::env::var(name)
+            .ok()
+            .map(|v| v.parse().unwrap())
+            .unwrap_or(0)
+    };
+    if std::env::var_os("LIGHTING_RETIMED_RESOURCE").is_some() {
+        let mut r = gpu_v2::lighting::LightingRetiming::resource_candidate(profile);
+        r.extra_large_multiply += delta("LIGHTING_EXTRA_LARGE");
+        r.extra_small_multiply += delta("LIGHTING_EXTRA_SMALL");
+        if profile == LightingProfile::Compact
+            && std::env::var_os("LIGHTING_REMOVE_SPARE_SMALL9").is_some()
+        {
+            r.extra_small_multiply = 0;
+        }
+        return r;
+    }
+    gpu_v2::lighting::LightingRetiming {
+        measured_functions: std::env::var_os("LIGHTING_MEASURED_FUNCTIONS").is_some(),
+        extra_large_multiply: delta("LIGHTING_EXTRA_LARGE"),
+        extra_small_multiply: delta("LIGHTING_EXTRA_SMALL"),
+        extra_normalize_reads: delta("LIGHTING_EXTRA_READS"),
+        compact_lifetimes: std::env::var_os("LIGHTING_COMPACT_LIFETIMES").is_some(),
+    }
+}
 fn context(m: Material, l: Light, pr: Projection) -> LightingContext {
     LightingContext {
         material: m,
@@ -260,7 +286,9 @@ fn exercise(
         LightingProfile::SystemFast | LightingProfile::SystemCompact
     );
     let factor = std::env::var_os("LIGHTING_FACTOR_KERNEL").is_some();
-    let kernel = if system || factor {
+    let kernel = if std::env::var_os("LIGHTING_COMPENSATED_FLOOR").is_some() {
+        counted::Config::compensated_resource_profile(profile)
+    } else if system || factor {
         counted::Config {
             exact_normal_gate: std::env::var_os("LIGHTING_SCALED_GATE").is_none(),
             ..counted::Config::system_profile()
@@ -275,13 +303,21 @@ fn exercise(
             ..counted::Config::architecture()
         }
     };
-    let scalar = kernel.scalar_norm;
-    let direct = kernel.direct_square;
     let depth = std::env::var("LIGHTING_LOGIC_DEPTH")
         .ok()
         .map(|v| v.parse().unwrap())
         .unwrap_or(0);
-    let mut emu = if depth != 0 {
+    let mut emu = if retiming(profile) != Default::default() {
+        LightingEmu::with_retiming(
+            profile,
+            kernel,
+            roles || system || resource || factor,
+            depth,
+            retiming(profile),
+            dedicated,
+            40_000,
+        )
+    } else if depth != 0 {
         LightingEmu::with_kernel_depth(
             profile,
             dedicated,
@@ -432,19 +468,7 @@ fn exercise(
                     m,
                     light,
                     ctx.projection,
-                    oracle::Config {
-                        scalar_norm: scalar,
-                        scalar_normal: kernel.scalar_normal,
-                        exact_normal_gate: kernel.exact_normal_gate,
-                        direct_square: direct,
-                        direct_all_squares: kernel.direct_all_squares,
-                        square9: kernel.square9,
-                        rounding: oracle::RoundingPolicy {
-                            power: oracle::Rounding::Floor,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
+                    oracle::Config::from_counted(kernel),
                 )
                 .unwrap();
                 expected.push_back(LightingResult {
@@ -657,8 +681,39 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
         if std::env::var_os("LIGHTING_SCALED_GATE").is_some() {
             options.exact_normal_gate = false;
         }
+        options.quantization = if std::env::var_os("LIGHTING_COMPENSATED_FLOOR").is_some() {
+            gpu_v2::lighting::LightingQuantization::CompensatedFloor
+        } else {
+            Default::default()
+        };
+        options.retiming = retiming(profile);
+        options.dsp_steering = match std::env::var("LIGHTING_DSP_STEERING").as_deref() {
+            Ok("joint") => gpu_v2::lighting::rtl::DspSteering::Joint,
+            Ok("local") => gpu_v2::lighting::rtl::DspSteering::Local,
+            Ok("orient") => gpu_v2::lighting::rtl::DspSteering::Orient,
+            _ => gpu_v2::lighting::rtl::DspSteering::None,
+        };
+        options.one_hot_dsp = std::env::var_os("LIGHTING_ONEHOT_DSP").is_some();
         let rtl = gpu_v2::lighting::rtl::generate_with_options(profile, options).unwrap();
-        let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/gpu-v2-lighting/rtl-cosim-{profile:?}-resource-{resource}-dedicated-{dedicated}-scalar-{scalar}-block-{block}-roles-{roles}-direct-{direct}-depth-{}-stationary-{}-cut-{}-window-{}-normalff-{}",options.logic_depth,options.stationary_logic,options.cost_cut,options.q_windows,options.shallow_normal_ff));
+        let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/gpu-v2-lighting/rtl-cosim-f{}-l{}-s{}-r{}-c{}-{profile:?}-resource-{resource}-dedicated-{dedicated}-scalar-{scalar}-block-{block}-roles-{roles}-direct-{direct}-depth-{}-stationary-{}-cut-{}-window-{}-normalff-{}",u8::from(options.retiming.measured_functions),options.retiming.extra_large_multiply,options.retiming.extra_small_multiply,options.retiming.extra_normalize_reads,u8::from(options.retiming.compact_lifetimes),options.logic_depth,options.stationary_logic,options.cost_cut,options.q_windows,options.shallow_normal_ff));
+        let dir =
+            if options.quantization == gpu_v2::lighting::LightingQuantization::CompensatedFloor {
+                dir.join("compensated-floor")
+            } else {
+                dir
+            };
+        let dir = if options.dsp_steering != gpu_v2::lighting::rtl::DspSteering::None
+            || options.one_hot_dsp
+        {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+                "../../target/gpu-v2-lighting/steering-{profile:?}-{:?}-onehot{}-resource{resource}-f{}-l{}-s{}-c{}",
+                options.dsp_steering, options.one_hot_dsp,
+                options.retiming.measured_functions, options.retiming.extra_large_multiply,
+                options.retiming.extra_small_multiply, options.retiming.compact_lifetimes
+            ))
+        } else {
+            dir
+        };
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("lighting.v"), &rtl.source).unwrap();
         let mut tb = String::from(

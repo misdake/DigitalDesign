@@ -9,6 +9,7 @@ pub enum Rounding {
     Floor,
     /// Equivalent to flooring unsigned magnitude and then restoring its sign.
     TowardZero,
+    HalfUp,
 }
 
 /// Stage-isolated precision experiments. Generated ROM endpoints stay RNE.
@@ -38,6 +39,8 @@ impl RoundingPolicy {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
+    pub quantization: super::super::LightingQuantization,
+    pub block_prescale: bool,
     pub direction_fraction: u32,
     pub reciprocal_fraction: u32,
     /// Extra interpolation/product fractional bits; ROM endpoints retain their format.
@@ -66,6 +69,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            quantization: Default::default(),
+            block_prescale: false,
             direction_fraction: format::Direction::FORMAT.fraction,
             reciprocal_fraction: format::Reciprocal::FORMAT.fraction,
             reciprocal_work_extra: 0,
@@ -88,8 +93,44 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Independent numerical golden for the exact selected counted contract.
+    pub fn from_counted(kernel: super::counted::Config) -> Self {
+        let compensated =
+            kernel.quantization == super::super::LightingQuantization::CompensatedFloor;
+        Self {
+            quantization: kernel.quantization,
+            block_prescale: kernel.block_prescale,
+            scalar_norm: kernel.scalar_norm,
+            scalar_normal: kernel.scalar_normal,
+            exact_normal_gate: kernel.exact_normal_gate,
+            direct_square: kernel.direct_square,
+            direct_all_squares: kernel.direct_all_squares,
+            square9: kernel.square9,
+            rounding: if compensated {
+                RoundingPolicy {
+                    dot: Rounding::HalfUp,
+                    output: Rounding::NearestEven,
+                    ..RoundingPolicy::floor_all()
+                }
+            } else {
+                RoundingPolicy {
+                    power: if kernel.power_floor {
+                        Rounding::Floor
+                    } else {
+                        Rounding::NearestEven
+                    },
+                    ..Default::default()
+                }
+            },
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Golden {
+    trace: bool,
     pub stages: Vec<(String, i128)>,
     pub g: i128,
     pub h: i128,
@@ -97,7 +138,9 @@ pub struct Golden {
 }
 impl Golden {
     fn stage(&mut self, name: impl Into<String>, value: i128) -> i128 {
-        self.stages.push((name.into(), value));
+        if self.trace {
+            self.stages.push((name.into(), value));
+        }
         value
     }
     pub fn intensities(&self) -> [f64; 2] {
@@ -121,6 +164,13 @@ fn rounded(n: i128, shift: u32, rounding: Rounding) -> i128 {
         Rounding::NearestEven => rne(n, shift),
         Rounding::Floor => n >> shift,
         Rounding::TowardZero => n / (1_i128 << shift),
+        Rounding::HalfUp => {
+            if shift == 0 {
+                n
+            } else {
+                (n >> shift) + ((n >> (shift - 1)) & 1)
+            }
+        }
     }
 }
 fn quantize(v: f64, f: u32) -> i128 {
@@ -152,6 +202,11 @@ fn normalize(
     let m = raw.iter().map(|v| v.abs()).max().unwrap();
     let highest = 127 - m.leading_zeros() as i32;
     let mut shift = if bounded { 0 } else { f as i32 - 1 - highest };
+    // Compact keeps its exact, pre-existing prescale boundary at max=32767.
+    // Floor removes RNE overflow, but the selected circuit still uses this bin.
+    if c.block_prescale && prefix == "n" && !bounded && m == 32767 {
+        shift = -2;
+    }
     if !bounded
         && shift < 0
         && raw
@@ -160,7 +215,9 @@ fn normalize(
     {
         shift -= 1;
     }
-    g.stage(format!("{prefix}.shift"), i128::from(shift));
+    if g.trace {
+        g.stage(format!("{prefix}.shift"), i128::from(shift));
+    }
     let v = raw.map(|a| {
         if shift >= 0 {
             a << shift
@@ -188,7 +245,9 @@ fn normalize(
             }
         })
         .sum::<i128>();
-    g.stage(format!("{prefix}.q"), q);
+    if g.trace {
+        g.stage(format!("{prefix}.q"), q);
+    }
     let highest = 127 - q.leading_zeros() as i32;
     let exponent = highest - 2 * f as i32;
     let r = if c.approximate_rsqrt {
@@ -224,7 +283,9 @@ fn normalize(
             c.reciprocal_fraction + c.reciprocal_work_extra,
         )
     };
-    g.stage(format!("{prefix}.r"), r);
+    if g.trace {
+        g.stage(format!("{prefix}.r"), r);
+    }
     if c.scalar_norm && (prefix == "h" || c.scalar_normal && prefix == "n") {
         return v;
     }
@@ -242,7 +303,9 @@ fn normalize(
         }
     });
     for (i, value) in unit.iter().enumerate() {
-        g.stage(format!("{prefix}.{i}"), *value);
+        if g.trace {
+            g.stage(format!("{prefix}.{i}"), *value);
+        }
     }
     unit
 }
@@ -280,7 +343,65 @@ pub fn evaluate(
     projection: Projection,
     c: Config,
 ) -> Result<Golden, InputError> {
+    evaluate_inner(pixel, material, light, projection, c, true)
+}
+
+/// Fast functional output using the very same oracle arithmetic. The original
+/// kernel requires no stage records; scalar review variants retain their trace
+/// because it is currently part of reciprocal recovery, rather than duplicating
+/// the numerical expression in a browser shader.
+pub fn evaluate_output(
+    pixel: PixelInput,
+    material: Material,
+    light: Light,
+    projection: Projection,
+    c: Config,
+) -> Result<LightingOutput, InputError> {
+    let g = evaluate_inner(pixel, material, light, projection, c, c.scalar_norm)?;
+    if g.intensity_fraction != 8 {
+        return Err(InputError::Configuration);
+    }
+    Ok(LightingOutput {
+        g: g.g as u16,
+        h: g.h as u16,
+    })
+}
+
+fn evaluate_inner(
+    pixel: PixelInput,
+    material: Material,
+    light: Light,
+    projection: Projection,
+    c: Config,
+    trace: bool,
+) -> Result<Golden, InputError> {
     validate(pixel, material, light, projection)?;
+    if c.quantization == super::super::LightingQuantization::CompensatedFloor
+        && (c.direction_fraction != 14
+            || c.reciprocal_fraction != 15
+            || c.dot_fraction != 15
+            || c.power_fraction != 15
+            || c.intensity_fraction != 8
+            || c.reciprocal_work_extra != 0
+            || !c.approximate_square
+            || !c.approximate_rsqrt
+            || !c.approximate_power
+            || !c.scalar_norm
+            || c.scalar_normal
+            || c.direct_square
+            || c.direct_all_squares
+            || c.square9
+            || c.half_ndc_override.is_some()
+            || c.normal_override.is_some()
+            || c.rounding
+                != (RoundingPolicy {
+                    dot: Rounding::HalfUp,
+                    output: Rounding::NearestEven,
+                    ..RoundingPolicy::floor_all()
+                }))
+    {
+        return Err(InputError::Configuration);
+    }
     if !(10..=20).contains(&c.direction_fraction)
         || !(10..=24).contains(&c.reciprocal_fraction)
         || c.reciprocal_work_extra > 8
@@ -299,11 +420,13 @@ pub fn evaluate(
         && (c.direction_fraction != 14
             || c.reciprocal_fraction != 15
             || c.reciprocal_work_extra != 0
-            || c.rounding.normalization != Rounding::NearestEven)
+            || (c.rounding.normalization != Rounding::NearestEven
+                && c.quantization != super::super::LightingQuantization::CompensatedFloor))
     {
         return Err(InputError::Configuration);
     }
     let mut g = Golden {
+        trace,
         stages: Vec::new(),
         g: 0,
         h: 0,
@@ -386,7 +509,9 @@ pub fn evaluate(
                 rescale(i128::from(projection.k), 14, f),
             ];
             for (i, value) in vraw.iter().enumerate() {
-                g.stage(format!("ray.{i}"), *value);
+                if g.trace {
+                    g.stage(format!("ray.{i}"), *value);
+                }
             }
             let v = normalize(vraw, rescale(4, 14, f).max(1), true, c, "v", &mut g);
             let hraw = std::array::from_fn(|i| rounded(l[i] + v[i], 1, c.rounding.half));
@@ -402,14 +527,14 @@ pub fn evaluate(
                         rne(rne(nh_raw, 13) * rn, 14)
                     }
                 } else {
-                    rne(nh_raw, 12)
+                    rounded(nh_raw, 12, c.rounding.normalization)
                 };
                 if nraw.iter().map(|x| x.abs()).max().unwrap() < 4
                     || hraw.iter().map(|x| x.abs()).max().unwrap() < 64
                 {
                     0
                 } else {
-                    rne(first * rh, 16) << 13
+                    rounded(first * rh, 16, c.rounding.normalization) << 13
                 }
             } else {
                 nh_raw
@@ -422,7 +547,7 @@ pub fn evaluate(
             );
             g.stage("nh", nh);
             g.stage("x", x);
-            let p = if c.approximate_power {
+            let mut p = if c.approximate_power {
                 rescale(
                     i128::from(power_table_with(
                         rescale(x, c.dot_fraction, 15) as u32,
@@ -439,9 +564,32 @@ pub fn evaluate(
                     c.power_fraction,
                 )
             };
-            g.stage("power", p);
+            let compensated =
+                c.quantization == super::super::LightingQuantization::CompensatedFloor;
+            if compensated && x != 32768 {
+                // Independently account for the ROM encoding; do not consume
+                // POWER_MIDPOINT_RAW as a golden for the counted implementation.
+                p += 64;
+            }
+            g.stage(
+                if compensated {
+                    "power.midpoint_q15"
+                } else {
+                    "power"
+                },
+                p,
+            );
             let p = if positive_nl {
-                rescale_with(p, c.power_fraction, fi, c.rounding.output)
+                rescale_with(
+                    p,
+                    c.power_fraction,
+                    fi,
+                    if compensated {
+                        Rounding::Floor
+                    } else {
+                        c.rounding.output
+                    },
+                )
             } else {
                 0
             };

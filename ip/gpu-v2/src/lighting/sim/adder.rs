@@ -21,6 +21,7 @@ impl PeriodicSchedule {
             &plan.template,
             Hardware {
                 cone_depth: 0,
+                measured_blocks: false,
                 ..plan.hardware
             },
         )?;

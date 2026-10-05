@@ -196,6 +196,7 @@ mod tests {
                     inputs: inputs[id].clone(),
                     control: None,
                     output: Some(id),
+                    source: std::panic::Location::caller(),
                 })
                 .collect(),
             memories: vec![],

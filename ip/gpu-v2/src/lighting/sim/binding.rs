@@ -165,11 +165,33 @@ impl BoundDag {
     /// Rebuild primitive physical kinds and independently check every supplied
     /// cone certificate; scheduling audit does not trust the member search.
     pub(crate) fn audit_logic_depth(&self, f: &FrameReport, h: Hardware) -> Result<(), String> {
+        if h.measured_blocks || h.measured_functions {
+            let expected = Self::new(f, h)?;
+            if self.cones != expected.cones
+                || self.kinds != expected.kinds
+                || self.dependencies != expected.dependencies
+            {
+                return Err("measured block certificate".into());
+            }
+        }
         if self.cones.is_empty() {
             return Ok(());
         }
-        let primitive = Self::new(f, Hardware { cone_depth: 0, ..h })?;
+        let primitive = Self::new(
+            f,
+            Hardware {
+                cone_depth: 0,
+                measured_blocks: false,
+                measured_functions: false,
+                ..h
+            },
+        )?;
         for cone in &self.cones {
+            if self.kinds[cone.result_event].as_ref().is_some_and(
+                |k| matches!(k,LaneKind::LogicCone{shape,..} if shape.starts_with("measured:")),
+            ) {
+                continue;
+            }
             cone.audit(f)
                 .map_err(|e| format!("logic certificate: {e:?}"))?;
             let members = std::iter::once(cone.result_event)
@@ -248,7 +270,52 @@ impl BoundDag {
                 }
             }
         }
-        let cones = if h.cone_depth > 0 {
+        let cones = if h.measured_blocks || h.measured_functions {
+            if (h.measured_functions && !h.kernel.dataflow)
+                || (!h.measured_functions && h.cone_depth != 0)
+                || (!h.measured_functions && h.cone_latency != 1)
+                || !(1..=16).contains(&h.cone_lanes_per_shape)
+                || h.binding != Binding::LightingDsp
+            {
+                return Err("measured block profile bounds".into());
+            }
+            let blocks = super::pipeline::bind(f, h.measured_functions)?;
+            let mut cones = Vec::new();
+            let dsp_members: BTreeSet<_> = groups
+                .iter()
+                .flat_map(|g| {
+                    std::iter::once(g.result_event).chain(g.absorbed_events.iter().copied())
+                })
+                .collect();
+            for (kind, cone) in blocks {
+                if std::iter::once(cone.result_event)
+                    .chain(cone.absorbed_events.iter().copied())
+                    .any(|id| dsp_members.contains(&id))
+                {
+                    return Err("measured block overlaps DSP".into());
+                }
+                for &id in &cone.absorbed_events {
+                    kinds[id] = None;
+                }
+                kinds[cone.result_event] = Some(LaneKind::LogicCone {
+                    shape: format!("measured:{}", kind.label()),
+                    width: cone.max_width,
+                });
+                cones.push(cone);
+            }
+            if h.measured_functions && h.cone_depth > 0 {
+                let reserved: BTreeSet<_> = cones
+                    .iter()
+                    .flat_map(|c| {
+                        std::iter::once(c.result_event).chain(c.absorbed_events.iter().copied())
+                    })
+                    .collect();
+                cones.extend(contract_logic_excluding(
+                    f, h, &mut kinds, &groups, &reserved,
+                )?);
+            }
+            cones
+        } else if h.cone_depth > 0 {
             contract_logic(f, h, &mut kinds, &groups)?
         } else {
             Vec::new()
@@ -311,6 +378,15 @@ fn contract_logic(
     kinds: &mut [Option<LaneKind>],
     groups: &[FusedGroup],
 ) -> Result<Vec<audited::physical::LogicCone>, String> {
+    contract_logic_excluding(f, h, kinds, groups, &BTreeSet::new())
+}
+fn contract_logic_excluding(
+    f: &FrameReport,
+    h: Hardware,
+    kinds: &mut [Option<LaneKind>],
+    groups: &[FusedGroup],
+    reserved: &BTreeSet<usize>,
+) -> Result<Vec<audited::physical::LogicCone>, String> {
     if h.cone_depth > 8
         || h.cone_latency == 0
         || h.cone_latency > 4
@@ -320,7 +396,7 @@ fn contract_logic(
         return Err("logic cone profile bounds".into());
     }
     let primitive_kinds = kinds.to_vec();
-    let mut used = BTreeSet::new();
+    let mut used = reserved.clone();
     for g in groups {
         used.insert(g.result_event);
         used.extend(g.absorbed_events.iter().copied());
@@ -431,6 +507,7 @@ fn contract_logic(
         let cone = audited::physical::LogicCone {
             result_event: root,
             absorbed_events: members.iter().copied().filter(|&id| id != root).collect(),
+            exported_events: Vec::new(),
             operands: operands.into_iter().collect(),
             max_width,
             latency: h.cone_latency,
@@ -540,6 +617,7 @@ mod tests {
                 .into_iter()
                 .collect();
             let too_deep = audited::physical::LogicCone {
+                exported_events: Vec::new(),
                 result_event: root,
                 absorbed_events: all_logic.iter().copied().filter(|&id| id != root).collect(),
                 operands,

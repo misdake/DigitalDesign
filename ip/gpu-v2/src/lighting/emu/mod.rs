@@ -113,13 +113,48 @@ impl LightingEmu {
         logic_depth: usize,
         max_wall_ticks: u64,
     ) -> Result<Self, String> {
+        Self::with_retiming(
+            profile,
+            kernel,
+            roles,
+            logic_depth,
+            Default::default(),
+            dedicated,
+            max_wall_ticks,
+        )
+    }
+    pub fn with_retiming(
+        profile: LightingProfile,
+        kernel: super::sim::counted::Config,
+        roles: bool,
+        logic_depth: usize,
+        retiming: super::LightingRetiming,
+        dedicated: bool,
+        max_wall_ticks: u64,
+    ) -> Result<Self, String> {
         if max_wall_ticks == 0 {
             return Err("zero clock budget".into());
         }
         Ok(Self {
             programs: [
-                Program::with_kernel_depth(profile, true, dedicated, kernel, roles, logic_depth)?,
-                Program::with_kernel_depth(profile, false, dedicated, kernel, roles, logic_depth)?,
+                Program::with_retiming(
+                    profile,
+                    true,
+                    dedicated,
+                    kernel,
+                    roles,
+                    logic_depth,
+                    retiming,
+                )?,
+                Program::with_retiming(
+                    profile,
+                    false,
+                    dedicated,
+                    kernel,
+                    roles,
+                    logic_depth,
+                    retiming,
+                )?,
             ],
             context: None,
             tokens: VecDeque::new(),
@@ -127,6 +162,50 @@ impl LightingEmu {
             wall_ticks: 0,
             max_wall_ticks,
         })
+    }
+    /// Numerical execution of the selected measured resource-profile calendar.
+    pub fn retimed_resource_profile(
+        profile: LightingProfile,
+        max_wall_ticks: u64,
+    ) -> Result<Self, String> {
+        Self::with_retiming(
+            profile,
+            super::sim::counted::Config::resource_profile(profile),
+            true,
+            0,
+            super::LightingRetiming::resource_candidate(profile),
+            false,
+            max_wall_ticks,
+        )
+    }
+    /// Matching numeric cycle program for the explicitly steered RTL profile.
+    pub fn steered_resource_profile(
+        profile: LightingProfile,
+        max_wall_ticks: u64,
+    ) -> Result<Self, String> {
+        Self::with_retiming(
+            profile,
+            super::sim::counted::Config::resource_profile(profile),
+            true,
+            0,
+            super::LightingRetiming::steered_resource_candidate(profile),
+            false,
+            max_wall_ticks,
+        )
+    }
+    pub fn compensated_resource_profile(
+        profile: LightingProfile,
+        max_wall_ticks: u64,
+    ) -> Result<Self, String> {
+        Self::with_retiming(
+            profile,
+            super::sim::counted::Config::compensated_resource_profile(profile),
+            true,
+            0,
+            super::LightingRetiming::steered_resource_candidate(profile),
+            false,
+            max_wall_ticks,
+        )
     }
     /// Accept-to-valid latency in advancing CE edges, excluding stalls.
     pub fn latency(&self) -> usize {
@@ -213,7 +292,7 @@ impl LightingEmu {
                 let ready = program
                     .instructions
                     .iter()
-                    .find(|i| i.root == producer)
+                    .find(|i| i.members.contains(&producer))
                     .unwrap()
                     .ready;
                 if token.age == ready {

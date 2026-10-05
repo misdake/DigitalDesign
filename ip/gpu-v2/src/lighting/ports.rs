@@ -7,6 +7,68 @@ pub struct PixelInput {
     pub ndc: [i32; 2],
 }
 
+/// Compact transport: three S12F10 components and two S18F16 coordinates.
+/// The normal is NOT normalized. Conversion to the Q14 working kernel is wiring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompactPixelInput {
+    pub normal: [i16; 3],
+    pub ndc: [i32; 2],
+}
+impl CompactPixelInput {
+    pub fn validate(self) -> Result<Self, InputError> {
+        if self.normal.iter().any(|&v| !(-2048..=2047).contains(&v)) {
+            return Err(InputError::Configuration);
+        }
+        if self.ndc.iter().any(|&v| !(-65536..=65536).contains(&v)) {
+            return Err(InputError::ViewRay);
+        }
+        Ok(self)
+    }
+    /// RNE at the producer boundary. Positive +2 overflow is saturated to 2047.
+    pub fn from_q14(pixel: PixelInput) -> Result<Self, InputError> {
+        let normal = pixel.normal.map(|v| {
+            let q = i32::from(v).div_euclid(16);
+            let r = i32::from(v).rem_euclid(16);
+            (q + i32::from(r > 8 || r == 8 && q & 1 != 0)).clamp(-2048, 2047) as i16
+        });
+        Self {
+            normal,
+            ndc: pixel.ndc,
+        }
+        .validate()
+    }
+    pub fn expanded(self) -> Result<PixelInput, InputError> {
+        self.validate()?;
+        Ok(PixelInput {
+            normal: self.normal.map(|v| v << 4),
+            ndc: self.ndc,
+        })
+    }
+    /// Two logical 36-bit rows: XYZ normal, then NDC XY; no cycle port claim.
+    pub fn rows(self) -> Result<[u64; 2], InputError> {
+        self.validate()?;
+        Ok([
+            (self.normal[0] as u64 & 4095)
+                | ((self.normal[1] as u64 & 4095) << 12)
+                | ((self.normal[2] as u64 & 4095) << 24),
+            (self.ndc[0] as u64 & 0x3ffff) | ((self.ndc[1] as u64 & 0x3ffff) << 18),
+        ])
+    }
+    pub fn from_rows(rows: [u64; 2]) -> Result<Self, InputError> {
+        if rows.iter().any(|v| v >> 36 != 0) {
+            return Err(InputError::Configuration);
+        }
+        Self {
+            normal: std::array::from_fn(|i| (((rows[0] >> (12 * i)) as i16) << 4) >> 4),
+            ndc: [
+                ((rows[1] as i32) << 14) >> 14,
+                (((rows[1] >> 18) as i32) << 14) >> 14,
+            ],
+        }
+        .validate()
+    }
+}
+
 /// Candidate local buffer layout, independent of external GPU memory/command ABI.
 /// Row 0: normal X/Y; row 1: normal Z and NDC X; row 2: NDC Y.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

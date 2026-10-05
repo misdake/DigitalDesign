@@ -25,6 +25,11 @@ pub use stream::{stream, StreamContext, StreamResult, StreamRun};
 #[derive(Clone, Copy, Debug)]
 pub struct Hardware {
     pub dsp_tiles: usize,
+    /// Opt-in typed, structurally matched blocks with isolated 72 MHz evidence.
+    /// Separate from arbitrary logic-depth cones; does not shorten memory/DSP.
+    pub measured_blocks: bool,
+    /// Function-sized, multi-output certificates, independently characterized.
+    pub measured_functions: bool,
     /// Maximum serial nonwiring logic levels per explicitly certified cone; zero disables.
     pub cone_depth: usize,
     pub cone_latency: u64,
@@ -54,6 +59,8 @@ impl Default for Hardware {
     fn default() -> Self {
         Self {
             dsp_tiles: 12,
+            measured_blocks: false,
+            measured_functions: false,
             cone_depth: 0,
             cone_latency: 1,
             cone_lanes_per_shape: 3,
@@ -89,8 +96,23 @@ pub enum Binding {
 pub enum Storage {
     /// Precaptured registers. Reports payload sizes but imposes no input bus.
     Registers,
-    /// Candidate 36-bit rows: normal XY; normal Z + NDC X; NDC Y.
+    /// Candidate 36-bit rows. Compact: XYZ normal, NDC XY (two rows).
+    /// Aligned Q14: normal XY, normal Z + NDC X, NDC Y (three rows).
     Rows { read_lanes: usize, latency: u64 },
+    /// Compact candidate: fetch only pixel rows actually consumed by this mode.
+    /// Uniform preparation restrictions are identical to Rows. This changes
+    /// bandwidth/order, not the two-row payload contract or a cycle interface.
+    DemandRows {
+        read_lanes: usize,
+        latency: u64,
+        order: ReadOrder,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadOrder {
+    PixelMajor,
+    /// Fetch every normal row before NDC rows to release the N dependency chain.
+    NormalFirst,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strategy {
@@ -187,7 +209,7 @@ pub(super) fn kind(report: &FrameReport, event: usize) -> Result<Option<LaneKind
             } else {
                 Some(match report.memories[m].name.as_str() {
                     "SQ" | "RSQRT" => LaneKind::NormalizeRead,
-                    "POWER" => LaneKind::PowerRead,
+                    "POWER" | "POWER_MIDPOINT_Q15" => LaneKind::PowerRead,
                     "POWER_CONTEXT" => LaneKind::ContextRead,
                     _ => return Err("unknown lighting store".into()),
                 })
@@ -301,9 +323,36 @@ impl Hardware {
             ..Self::lighting_architecture_ii2()
         }
     }
+    /// Candidate using only the reusable measured fabric blocks. Compact normal
+    /// transport stays explicit; no automatic change to cycle emulation or RTL.
+    pub fn lighting_measured_ii2() -> Self {
+        Self {
+            measured_blocks: true,
+            kernel: counted::Config::compact(),
+            cone_depth: 0,
+            cone_latency: 1,
+            ..Self::lighting_architecture_ii2()
+        }
+    }
+    /// Measured multi-output functions with conservative two-edge generic cones.
+    /// Finite/periodic counted planning keeps compact input transport explicit.
+    pub fn lighting_functions_ii2() -> Self {
+        Self {
+            measured_functions: true,
+            kernel: counted::Config::compact(),
+            ..Self::lighting_architecture_ii2()
+        }
+    }
     pub(crate) fn unit(self, k: &LaneKind) -> (usize, u64) {
         match k {
-            LaneKind::LogicCone { .. } => (self.cone_lanes_per_shape, self.cone_latency),
+            LaneKind::LogicCone { shape, .. } => (
+                self.cone_lanes_per_shape,
+                if shape.starts_with("measured:") {
+                    1
+                } else {
+                    self.cone_latency
+                },
+            ),
             LaneKind::SmallMultiply => (self.small_multiply, self.multiply_latency),
             LaneKind::LargeMultiply => (self.large_multiply, self.multiply_latency),
             LaneKind::PairMultiplyAdd => (self.paired_macros, self.paired_latency),
@@ -336,6 +385,49 @@ pub(super) fn dependencies(template: &FrameReport, event: usize) -> Vec<usize> {
     deps
 }
 
+fn consumed_pixel_rows(template: &FrameReport) -> std::collections::BTreeSet<usize> {
+    template
+        .events
+        .iter()
+        .filter_map(|e| {
+            if let Operation::Read { memory, row } = e.operation {
+                if matches!(
+                    template.memories[memory].name.as_str(),
+                    "pixel.rows" | "pixel.compact-rows"
+                ) {
+                    return Some(row);
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Bounded compact batch. Producer quantization is explicit at the call site;
+/// CPU-facing Q14 words may use CompactPixelInput::from_q14 before this boundary.
+/// Row input retains the existing restriction on prelatched architecture state.
+pub fn plan_compact(
+    pixels: &[CompactPixelInput],
+    material: Material,
+    light: Light,
+    projection: Projection,
+    mut hardware: Hardware,
+    storage: Storage,
+    strategy: Strategy,
+) -> Result<Plan, String> {
+    if pixels.is_empty() || pixels.len() > 64 {
+        return Err("batch must contain 1..64 pixels".into());
+    }
+    let expanded = pixels
+        .iter()
+        .map(|p| p.expanded().map_err(|e| format!("pixel: {e:?}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    hardware.kernel.compact_normal = true;
+    plan(
+        &expanded, material, light, projection, hardware, storage, strategy,
+    )
+}
+
 pub fn plan(
     pixels: &[PixelInput],
     material: Material,
@@ -347,6 +439,9 @@ pub fn plan(
 ) -> Result<Plan, String> {
     if pixels.is_empty() || pixels.len() > 64 {
         return Err("batch must contain 1..64 pixels".into());
+    }
+    if matches!(storage, Storage::DemandRows { .. }) && !hardware.kernel.compact_normal {
+        return Err("demand rows require compact normal transport".into());
     }
     if (hardware.kernel.shared_half || hardware.kernel.dataflow || hardware.kernel.flat_normal)
         && !matches!(storage, Storage::Registers)
@@ -432,6 +527,11 @@ pub fn plan(
         Storage::Rows {
             read_lanes,
             latency,
+        }
+        | Storage::DemandRows {
+            read_lanes,
+            latency,
+            ..
         } => {
             if read_lanes == 0 || read_lanes > 64 || latency == 0 || latency > hardware.max_cycles {
                 return Err("invalid read interface".into());
@@ -457,9 +557,31 @@ pub fn plan(
                 issue + latency
             };
             let uniform = (0..4).map(|row| read(0, None, row)).max().unwrap();
-            let pixel = (0..n)
-                .map(|pixel| std::array::from_fn(|row| read(uniform, Some(pixel), row)))
-                .collect();
+            let pixel_rows = if hardware.kernel.compact_normal { 2 } else { 3 };
+            let consumed = match storage {
+                Storage::DemandRows { .. } => consumed_pixel_rows(&template),
+                _ => (0..pixel_rows).collect(),
+            };
+            let mut pixel = vec![[0; 3]; n];
+            if matches!(
+                storage,
+                Storage::DemandRows {
+                    order: ReadOrder::NormalFirst,
+                    ..
+                }
+            ) {
+                for &row in &consumed {
+                    for (id, ready) in pixel.iter_mut().enumerate() {
+                        ready[row] = read(uniform, Some(id), row);
+                    }
+                }
+            } else {
+                for (id, ready) in pixel.iter_mut().enumerate() {
+                    for &row in &consumed {
+                        ready[row] = read(uniform, Some(id), row);
+                    }
+                }
+            }
             (uniform, pixel)
         }
     };
@@ -475,7 +597,7 @@ pub fn plan(
             if let Operation::Read { memory, row } = template.events[event].operation {
                 if template.memories[memory].kind == MemoryKind::Input {
                     gates[id] = gates[id].max(match template.memories[memory].name.as_str() {
-                        "pixel.rows" => pixel_ready[pixel][row],
+                        "pixel.rows" | "pixel.compact-rows" => pixel_ready[pixel][row],
                         _ => uniform_ready,
                     });
                 }
@@ -574,6 +696,8 @@ pub fn plan(
         reads,
         pixel_payload_bits: (if hardware.kernel.shared_half || hardware.kernel.prepared_ray {
             96
+        } else if hardware.kernel.compact_normal {
+            72
         } else {
             84
         }) * n,
@@ -730,12 +854,27 @@ impl Plan {
             Storage::Rows {
                 read_lanes,
                 latency,
+            }
+            | Storage::DemandRows {
+                read_lanes,
+                latency,
+                ..
             } => {
+                let pixel_rows = if self.kernel.compact_normal { 2 } else { 3 };
+                let consumed = match self.storage {
+                    Storage::DemandRows { .. } => {
+                        if !self.kernel.compact_normal {
+                            return Err("demand rows require compact normal transport".into());
+                        }
+                        consumed_pixel_rows(&self.template)
+                    }
+                    _ => (0..pixel_rows).collect(),
+                };
                 if read_lanes == 0
                     || read_lanes > 64
                     || latency == 0
                     || latency > self.hardware.max_cycles
-                    || self.reads.len() != 4 + 3 * self.outputs.len()
+                    || self.reads.len() != 4 + consumed.len() * self.outputs.len()
                 {
                     return Err("input row coverage".into());
                 }
@@ -745,7 +884,7 @@ impl Plan {
                     if r.lane >= read_lanes
                         || r.issue.checked_add(latency) != Some(r.ready)
                         || r.ready > self.hardware.max_cycles
-                        || r.row >= if r.pixel.is_some() { 3 } else { 4 }
+                        || r.row >= if r.pixel.is_some() { pixel_rows } else { 4 }
                         || r.pixel.is_some_and(|p| p >= self.outputs.len())
                         || !seen.insert((r.pixel, r.row))
                     {
@@ -758,6 +897,16 @@ impl Plan {
                     if times.windows(2).any(|v| v[1] <= v[0]) {
                         return Err("input port collision".into());
                     }
+                }
+                let expected: std::collections::BTreeSet<_> = (0..4)
+                    .map(|row| (None, row))
+                    .chain(
+                        (0..self.outputs.len())
+                            .flat_map(|pixel| consumed.iter().map(move |&row| (Some(pixel), row))),
+                    )
+                    .collect();
+                if seen != expected {
+                    return Err("input row coverage".into());
                 }
                 let uniform_ready = self
                     .reads
@@ -777,11 +926,14 @@ impl Plan {
                     if let Operation::Read { memory, row } = self.template.events[r.event].operation
                     {
                         if self.template.memories[memory].kind == MemoryKind::Input {
-                            let ready = if self.template.memories[memory].name == "pixel.rows" {
+                            let ready = if matches!(
+                                self.template.memories[memory].name.as_str(),
+                                "pixel.rows" | "pixel.compact-rows"
+                            ) {
                                 self.reads
                                     .iter()
                                     .find(|s| s.pixel == Some(r.pixel) && s.row == row)
-                                    .unwrap()
+                                    .ok_or("input row coverage")?
                                     .ready
                             } else {
                                 uniform_ready
@@ -896,17 +1048,7 @@ impl Plan {
                 material,
                 light,
                 projection,
-                oracle::Config {
-                    rounding: oracle::RoundingPolicy {
-                        power: if self.kernel.power_floor {
-                            oracle::Rounding::Floor
-                        } else {
-                            oracle::Rounding::NearestEven
-                        },
-                        ..oracle::RoundingPolicy::default()
-                    },
-                    ..oracle::Config::default()
-                },
+                oracle::Config::from_counted(self.kernel),
             )
             .map_err(|e| format!("{e:?}"))?;
             if i128::from(output.g) != golden.g || i128::from(output.h) != golden.h {

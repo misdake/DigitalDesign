@@ -4,6 +4,27 @@ use audited::{lifecycle, physical::*, Fixed, FrameReport, Model, Operation};
 const MAX_EVENTS: usize = 64;
 const MAX_CYCLE: u64 = 32;
 
+#[test]
+fn explicit_side_results_share_the_ready_edge_and_unlisted_values_stay_closed() {
+    let (frame, mut cone) = clamp(5, true);
+    assert!(cone.audit(&frame).is_err());
+    let sum = frame
+        .events
+        .iter()
+        .find(|e| matches!(e.operation, Operation::Add))
+        .unwrap()
+        .id;
+    cone.exported_events.push(sum);
+    cone.audit(&frame).unwrap();
+    audit_logic_dependencies(&frame, &times(&frame, &cone), &[cone.clone()], MAX_CYCLE).unwrap();
+    let mut invalid = cone.clone();
+    invalid.exported_events.push(sum);
+    assert!(invalid.audit(&frame).is_err());
+    let mut invalid = cone;
+    invalid.exported_events = vec![invalid.result_event];
+    assert!(invalid.audit(&frame).is_err());
+}
+
 fn clamp(a: i128, escape: bool) -> (FrameReport, LogicCone) {
     let mut m = Model::numerical();
     let input = m.input::<8, 0, true>("input", &[a, 3]).unwrap();
@@ -50,6 +71,7 @@ fn clamp(a: i128, escape: bool) -> (FrameReport, LogicCone) {
         LogicCone {
             result_event: root,
             absorbed_events: absorbed,
+            exported_events: Vec::new(),
             operands,
             max_width: 9,
             latency: 2,
@@ -167,6 +189,7 @@ fn cone_rejects_disconnected_pure_work_and_multiplication() {
     let mut cone = LogicCone {
         result_event: adds[2],
         absorbed_events: vec![adds[0], adds[1]],
+        exported_events: Vec::new(),
         operands: vec![operand],
         max_width: 8,
         latency: 1,
@@ -217,6 +240,7 @@ fn cone_preserves_external_control_and_its_retained_predicate() {
     let cone = LogicCone {
         result_event: root,
         absorbed_events: members,
+        exported_events: Vec::new(),
         operands: vec![frame.events[0].output.unwrap()],
         max_width: 8,
         latency: 2,

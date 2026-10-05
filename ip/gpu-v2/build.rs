@@ -177,6 +177,17 @@ fn main() {
     )
     .unwrap();
     emit_table(&mut out, "POWER", "PowerEntry", &power);
+    // Alternate internal encoding: half a Q8 unit is 64 Q15 codes. Bias the
+    // base only; deltas and the physical row width/count stay unchanged.
+    let midpoint: Vec<_> = power
+        .iter()
+        .map(|&entry| {
+            let base = (entry & 65535) + 64;
+            assert!(base <= 65535);
+            (entry & !65535) | base
+        })
+        .collect();
+    emit_table(&mut out, "POWER_MIDPOINT", "PowerEntry", &midpoint);
     emit_table(&mut out, "CONTEXT", "PowerContext", &contexts);
     fs::write(
         PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("lighting.rs"),

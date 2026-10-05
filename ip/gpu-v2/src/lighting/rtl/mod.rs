@@ -14,7 +14,9 @@ use std::{
 };
 mod cuts;
 mod ranges;
+mod steering;
 use ranges::{infer_ranges, RawRange};
+pub use steering::DspSteering;
 
 fn token_read_offset(depth: usize, read_edge_captures: bool) -> usize {
     debug_assert!(depth >= 4);
@@ -23,6 +25,12 @@ fn token_read_offset(depth: usize, read_edge_captures: bool) -> usize {
 
 #[derive(Clone, Copy, Debug)]
 pub struct LightingRtlOptions {
+    pub quantization: super::LightingQuantization,
+    /// Physical input topology only; issue/ready edges and arithmetic stay fixed.
+    pub dsp_steering: DspSteering,
+    /// Exploit the independently checked exclusive calendar at DSP input muxes.
+    pub one_hot_dsp: bool,
+    pub retiming: super::LightingRetiming,
     pub hierarchy: bool,
     /// Experimental pure-logic boundary, zero retains the established depth.
     pub logic_depth: usize,
@@ -56,6 +64,10 @@ pub struct LightingRtlOptions {
 impl Default for LightingRtlOptions {
     fn default() -> Self {
         Self {
+            quantization: Default::default(),
+            dsp_steering: DspSteering::None,
+            one_hot_dsp: false,
+            retiming: Default::default(),
             hierarchy: false,
             logic_depth: 0,
             stationary_logic: false,
@@ -85,6 +97,7 @@ impl Default for LightingRtlOptions {
 impl LightingRtlOptions {
     fn kernel(self) -> super::sim::counted::Config {
         super::sim::counted::Config {
+            quantization: self.quantization,
             scalar_norm: self.scalar_norm,
             scalar_normal: self.scalar_normal,
             exact_normal_gate: self.exact_normal_gate,
@@ -107,6 +120,29 @@ impl LightingRtlOptions {
             shared_ids: true,
             ram_retained: profile == LightingProfile::Compact,
             ..Self::default()
+        }
+    }
+    /// Reviewed measured-function retiming, preserving resource-profile numbers.
+    /// Explicit opt-in: the existing default and numerical alternatives stay distinct.
+    pub fn retimed_resource_profile(profile: LightingProfile) -> Self {
+        Self {
+            retiming: super::LightingRetiming::resource_candidate(profile),
+            ..Self::resource_profile(profile)
+        }
+    }
+    /// Reviewed input-topology candidate, explicitly separate from defaults.
+    pub fn steered_resource_profile(profile: LightingProfile) -> Self {
+        Self {
+            dsp_steering: DspSteering::Local,
+            retiming: super::LightingRetiming::steered_resource_candidate(profile),
+            ..Self::resource_profile(profile)
+        }
+    }
+    /// Same closed port contract, with compensated floor recorded in the DAG.
+    pub fn compensated_resource_profile(profile: LightingProfile) -> Self {
+        Self {
+            quantization: super::LightingQuantization::CompensatedFloor,
+            ..Self::steered_resource_profile(profile)
         }
     }
     /// Factor kernel with larger pure-logic boundaries and the chosen profile's IIs.
@@ -143,6 +179,8 @@ pub struct LaneReport {
     pub diffuse_operations: usize,
 }
 pub struct LightingVerilog {
+    /// Actual emitted DSP input alternatives; structural evidence, not LUT cost.
+    pub dsp_input_csv: String,
     pub lanes: Vec<LaneReport>,
     pub source: String,
     pub latency: usize,
@@ -228,13 +266,14 @@ impl LoweredProgram {
         };
         for (mode, full) in [true, false].into_iter().enumerate() {
             let kernel = options.kernel();
-            let p = Program::with_kernel_depth(
+            let p = Program::with_retiming(
                 profile,
                 full,
                 options.dedicated_dsp,
                 kernel,
                 options.role_schedule,
                 options.logic_depth,
+                options.retiming,
             )?;
             let event_base = s.frame.events.len();
             let value_base = s.frame.values.len();
@@ -298,6 +337,7 @@ impl LoweredProgram {
         if options.stationary_logic {
             s.stationary_logic()?;
         }
+        steering::arrange(&mut s, options.dsp_steering)?;
         Ok(s)
     }
     fn stationary_logic(&mut self) -> Result<(), String> {
@@ -406,6 +446,8 @@ fn scalar_shareable(frame: &LoweredFrame, instructions: &[Instruction]) -> bool 
 }
 
 struct Emitter {
+    one_hot_dsp: bool,
+    dsp_input_csv: String,
     program: LoweredProgram,
     body: String,
     sequential: String,
@@ -551,6 +593,22 @@ fn diffuse_raw_normals(program: &LoweredProgram) -> Result<BTreeSet<usize>, Stri
     Ok(fields.into_values().collect())
 }
 impl Emitter {
+    fn instruction_outputs(&self, ins: &Instruction) -> Vec<usize> {
+        let f = &self.program.frame;
+        let mut outputs = vec![f.events[ins.root].output.unwrap()];
+        for &id in &ins.members {
+            let value = f.events[id].output.unwrap();
+            if id != ins.root
+                && (f.outputs.iter().any(|o| o.value == value)
+                    || self.program.instructions.iter().any(|consumer| {
+                        consumer.root != ins.root && consumer.inputs.contains(&value)
+                    }))
+            {
+                outputs.push(value);
+            }
+        }
+        outputs
+    }
     fn interface_format(&self, value: usize) -> Format {
         if self.q_amounts.contains(&value) {
             Format {
@@ -569,7 +627,7 @@ impl Emitter {
                 .program
                 .instructions
                 .iter()
-                .find(|i| i.root == root)
+                .find(|i| i.members.contains(&root))
                 .unwrap()
                 .ready;
             let depth = self.retained[&value].div_ceil(self.program.ii[root]);
@@ -725,7 +783,7 @@ impl Emitter {
             .program
             .instructions
             .iter()
-            .find(|ins| ins.root == v.producer)
+            .find(|ins| ins.members.contains(&v.producer))
             .ok_or("escaping contracted value")?;
         let delay = age
             .checked_sub(ins.ready)
@@ -1244,9 +1302,10 @@ assign unit{lane}_result=unit{lane}_tail;
             _ => instructions
                 .iter()
                 .map(|i| {
-                    self.program.frame.values[self.program.frame.events[i.root].output.unwrap()]
-                        .format
-                        .bits
+                    self.instruction_outputs(i)
+                        .iter()
+                        .map(|&v| self.interface_format(v).bits)
+                        .sum()
                 })
                 .max()
                 .unwrap(),
@@ -1281,29 +1340,74 @@ assign unit{lane}_result=unit{lane}_tail;
                 let w = if a == 4 { 54 } else { operand_width };
                 writeln!(self.body, "reg signed [{}:0] unit{lane}_a{a};", w - 1).unwrap();
             }
-            writeln!(self.body, "always @* begin").unwrap();
-            for a in 0..operand_count {
-                writeln!(self.body, "unit{lane}_a{a}=0;").unwrap();
-            }
+            let mut alternatives = vec![Vec::<String>::new(); operand_count];
+            let mut occupied = BTreeSet::new();
             for ins in &instructions {
-                writeln!(
-                    self.body,
-                    "if {} begin",
-                    self.program.phase(ins.root, ins.issue)
-                )
-                .unwrap();
+                if !occupied.insert((
+                    self.program.full[ins.root],
+                    ins.issue % self.program.ii[ins.root],
+                )) {
+                    return Err("DSP input calendar is not exclusive".into());
+                }
+            }
+            if !self.one_hot_dsp {
+                writeln!(self.body, "always @* begin").unwrap();
+            }
+            for a in 0..operand_count {
+                if !self.one_hot_dsp {
+                    writeln!(self.body, "unit{lane}_a{a}=0;").unwrap();
+                }
+            }
+            for (ordinal, ins) in instructions.iter().enumerate() {
+                if !self.one_hot_dsp {
+                    // Select the idle default exactly once, structurally. Do not
+                    // search emitted HDL and accidentally promote another branch.
+                    let phase = if self.free_slots && ordinal == 0 {
+                        "(1'b1)".into()
+                    } else {
+                        self.program.phase(ins.root, ins.issue)
+                    };
+                    writeln!(self.body, "if {} begin", phase).unwrap();
+                }
                 for (a, &v) in ins.inputs.iter().enumerate() {
                     let n = self.value(v, ins.issue)?;
+                    let f = self.program.frame.values[v].format;
+                    let expression = numeric(&n, f);
                     writeln!(
-                        self.body,
-                        "unit{lane}_a{a} = {};",
-                        numeric(&n, self.program.frame.values[v].format)
+                        self.dsp_input_csv,
+                        "{lane},{kind:?},{},{},{a},{},{},\"{}\"",
+                        self.program.full[ins.root],
+                        ins.issue % self.program.ii[ins.root],
+                        f.bits,
+                        f.signed,
+                        expression.replace('"', "\"\"")
                     )
                     .unwrap();
+                    if self.one_hot_dsp {
+                        let w = if a == 4 { 54 } else { operand_width };
+                        // Explicit sizing preserves two's-complement sign extension.
+                        // Full/diffuse mode changes drain first; calendar is one-hot.
+                        alternatives[a].push(format!(
+                            "({{{w}{{{}}}}} & {w}'({expression}))",
+                            self.program.phase(ins.root, ins.issue)
+                        ));
+                    } else {
+                        writeln!(self.body, "unit{lane}_a{a} = {};", expression).unwrap();
+                    }
+                }
+                if !self.one_hot_dsp {
+                    writeln!(self.body, "end").unwrap();
+                }
+            }
+            if self.one_hot_dsp {
+                writeln!(self.body, "// Exclusive registered calendar: parallel masked DSP inputs.\nalways @* begin").unwrap();
+                for (a, terms) in alternatives.iter().enumerate() {
+                    writeln!(self.body, "unit{lane}_a{a} = {};", terms.join(" | ")).unwrap();
                 }
                 writeln!(self.body, "end").unwrap();
+            } else {
+                writeln!(self.body, "end").unwrap();
             }
-            writeln!(self.body, "end").unwrap();
             if operand_count == 5 {
                 writeln!(self.body,"wire signed [53:0] {name} = unit{lane}_a0 * unit{lane}_a1 + unit{lane}_a2 * unit{lane}_a3 + unit{lane}_a4;").unwrap();
             } else {
@@ -1360,8 +1464,19 @@ assign unit{lane}_result=unit{lane}_tail;
                 )
                 .unwrap();
             } else {
-                self.rom("power_lo", 16, &POWER_RAW.map(|v| v & 65535), 1024);
-                self.rom("power_hi", 12, &POWER_RAW.map(|v| v >> 16), 1024);
+                let power = if self
+                    .program
+                    .frame
+                    .memories
+                    .iter()
+                    .any(|m| m.name == "POWER_MIDPOINT_Q15")
+                {
+                    &POWER_MIDPOINT_RAW
+                } else {
+                    &POWER_RAW
+                };
+                self.rom("power_lo", 16, &power.map(|v| v & 65535), 1024);
+                self.rom("power_hi", 12, &power.map(|v| v >> 16), 1024);
                 writeln!(
                     self.body,
                     "wire [27:0] {name} = {{power_hi[unit{lane}_addr],power_lo[unit{lane}_addr]}};"
@@ -1370,7 +1485,19 @@ assign unit{lane}_result=unit{lane}_tail;
             }
         } else if matches!(kind, LaneKind::LogicCone { .. }) {
             let function = format!("cone{lane}");
-            self.function(&function, &instructions[0])?;
+            let outputs = self.instruction_outputs(&instructions[0]);
+            self.function_outputs(&function, &instructions[0], &outputs)?;
+            for ins in &instructions {
+                let shape: Vec<_> = self
+                    .instruction_outputs(ins)
+                    .iter()
+                    .map(|&v| self.interface_format(v))
+                    .collect();
+                let reference: Vec<_> = outputs.iter().map(|&v| self.interface_format(v)).collect();
+                if shape != reference {
+                    return Err("multi-output cone lane shape".into());
+                }
+            }
             for (index, &v) in instructions[0].inputs.iter().enumerate() {
                 writeln!(
                     self.body,
@@ -1503,7 +1630,7 @@ assign unit{lane}_result=unit{lane}_tail;
         if dsp {
             writeln!(self.body, "`endif").unwrap();
         }
-        if self.free_slots {
+        if self.free_slots && !dsp {
             // Only occupied phases have consumers. The first mux choice is a
             // harmless default on otherwise unused slots; no zero mask needed.
             if let Some(offset) = self.body[body_start..].find("if (calendar[") {
@@ -1559,13 +1686,19 @@ assign unit{lane}_result=unit{lane}_tail;
             writeln!(self.body, ");").unwrap();
         }
         for ins in &instructions {
-            let v = self.program.frame.events[ins.root].output.unwrap();
-            writeln!(
-                self.body,
-                "wire {} v{v}_d0 = unit{lane}_result;",
-                decl(self.program.frame.values[v].format)
-            )
-            .unwrap();
+            let outputs = self.instruction_outputs(ins);
+            let mut offset: u32 = outputs.iter().map(|&v| self.interface_format(v).bits).sum();
+            for v in outputs {
+                let format = self.interface_format(v);
+                offset -= format.bits;
+                writeln!(
+                    self.body,
+                    "wire {} v{v}_d0 = unit{lane}_result[{offset}+:{}];",
+                    decl(format),
+                    format.bits
+                )
+                .unwrap();
+            }
         }
         Ok(())
     }
@@ -1619,7 +1752,7 @@ pub fn generate_with_options(
             let ins = program
                 .instructions
                 .iter()
-                .find(|i| i.root == v.producer)
+                .find(|i| i.members.contains(&v.producer))
                 .unwrap();
             StageProbe {
                 full: program.full[ins.root],
@@ -1644,6 +1777,8 @@ pub fn generate_with_options(
         BTreeSet::new()
     };
     let mut e = Emitter {
+        one_hot_dsp: options.one_hot_dsp,
+        dsp_input_csv: String::from("lane,kind,full,phase,port,bits,signed,source\n"),
         program,
         body: String::new(),
         sequential: String::new(),
@@ -1738,7 +1873,7 @@ pub fn generate_with_options(
             .program
             .instructions
             .iter()
-            .find(|i| i.root == root)
+            .find(|i| i.members.contains(&root))
             .unwrap()
             .ready;
         writeln!(
@@ -1897,7 +2032,7 @@ end
             .program
             .instructions
             .iter()
-            .find(|i| i.root == v.producer)
+            .find(|i| i.members.contains(&v.producer))
             .unwrap();
         let ii = e.program.ii[ins.root];
         let words = distance.div_ceil(ii);
@@ -2093,6 +2228,7 @@ endmodule
         diff_last_phase = diffuse_ii - 1
     );
     Ok(LightingVerilog {
+        dsp_input_csv: e.dsp_input_csv,
         source: format!("{source}\n{}", e.modules),
         lanes: e.lanes,
         latency,
@@ -2284,7 +2420,7 @@ pub fn calendar_study_with_options(
             let ins = p
                 .instructions
                 .iter()
-                .find(|i| i.root == p.frame.values[value].producer)
+                .find(|i| i.members.contains(&p.frame.values[value].producer))
                 .ok_or("escaping study value")?;
             let start = s.nodes[ins.root].issue * group + (ins.ready - ins.issue) as u64;
             if end < start {
