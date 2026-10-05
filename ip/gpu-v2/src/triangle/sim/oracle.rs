@@ -105,6 +105,10 @@ pub struct FieldCache {
 }
 #[derive(Clone, Debug)]
 pub struct SourceFields {
+    /// Raw homogeneous source units and binary scale. Integer inputs use Q16;
+    /// the continuous frontend adapter uses Q28, without changing raster math.
+    pub raw_clip: [[i64; 4]; 3],
+    pub raw_scale: f64,
     pub positions: [IntegerField; 3],
     /// Viewport constants are factored OUT before cross products, keeping these
     /// inputs at most 33 bits (34 after source differences), rather than 41.
@@ -304,14 +308,17 @@ fn source(
     input: &Input,
     c: &Config,
     triangles: &[CoverageTriangle],
+    raw_clip: [[i64; 4]; 3],
+    raw_scale: f64,
+    attributes_override: Option<[[f64; 8]; 3]>,
 ) -> Result<SourceFields, String> {
     // P_i = 2*rawW_i*(screenX_i,screenY_i,1). This needs no division by original
     // W, so vertices behind or exactly on the eye plane are valid source inputs.
     let cofactor_positions = std::array::from_fn(|i| {
-        let v = &input.vertices[i];
-        let x = i128::from(v.clip[0]);
-        let y = i128::from(v.clip[1]);
-        let w = i128::from(v.clip[3]);
+        let v = raw_clip[i];
+        let x = i128::from(v[0]);
+        let y = i128::from(v[1]);
+        let w = i128::from(v[3]);
         [x + w, w - y, 2 * w]
     });
     let delta1 = std::array::from_fn(|i| cofactor_positions[1][i] - cofactor_positions[0][i]);
@@ -329,19 +336,21 @@ fn source(
     if determinant == 0 {
         return Err("homogeneous source is singular but snapped coverage survives".into());
     }
-    let attributes = std::array::from_fn(|i| {
-        let v = &input.vertices[i];
-        let rgb = v.rgb565;
-        [
-            f64::from(v.uv[0]) / 4095.0,
-            f64::from(v.uv[1]) / 4095.0,
-            f64::from(rgb >> 11) / 31.0,
-            f64::from((rgb >> 5) & 63) / 63.0,
-            f64::from(rgb & 31) / 31.0,
-            f64::from(v.normal[0]) / 16384.0,
-            f64::from(v.normal[1]) / 16384.0,
-            f64::from(v.normal[2]) / 16384.0,
-        ]
+    let attributes = attributes_override.unwrap_or_else(|| {
+        std::array::from_fn(|i| {
+            let v = &input.vertices[i];
+            let rgb = v.rgb565;
+            [
+                f64::from(v.uv[0]) / 4095.0,
+                f64::from(v.uv[1]) / 4095.0,
+                f64::from(rgb >> 11) / 31.0,
+                f64::from((rgb >> 5) & 63) / 63.0,
+                f64::from(rgb & 31) / 31.0,
+                f64::from(v.normal[0]) / 16384.0,
+                f64::from(v.normal[1]) / 16384.0,
+                f64::from(v.normal[2]) / 16384.0,
+            ]
+        })
     });
     let (anchor2, radius) = if c.field_origin == FieldOrigin::Local {
         let minx = triangles.iter().map(|t| t.bbox[0]).min().unwrap();
@@ -408,6 +417,8 @@ fn source(
             .then_some(attributes[0][k])
     });
     Ok(SourceFields {
+        raw_clip,
+        raw_scale,
         positions,
         cofactor_positions,
         cofactor_fields,
@@ -424,6 +435,60 @@ fn source(
     })
 }
 pub fn run(input: &Input, config: Config) -> Result<Report, String> {
+    run_inner(
+        input,
+        config,
+        input.vertices.clone().map(|v| v.clip.map(i64::from)),
+        65536.0,
+        None,
+    )
+}
+
+/// Continuous frontend boundary. Geometry is quantized once to Q28 by this
+/// backend, then uses exactly the same clipping, coverage and field machinery.
+/// Attributes remain f64. The bounded clip range keeps integer cofactors in i128.
+pub fn run_continuous(
+    id: u32,
+    clip: [[f64; 4]; 3],
+    attributes: [[f64; 8]; 3],
+    config: Config,
+) -> Result<Report, String> {
+    if clip
+        .iter()
+        .flatten()
+        .any(|x| !x.is_finite() || x.abs() > 32.0)
+        || attributes
+            .iter()
+            .flatten()
+            .any(|x| !x.is_finite() || x.abs() > 4096.0)
+    {
+        return Err("continuous source finite/range bounds".into());
+    }
+    let input = Input {
+        id,
+        vertices: std::array::from_fn(|i| crate::vertex::ports::Transformed {
+            clip: clip[i].map(|v| (v * 65536.0).round_ties_even() as i32),
+            normal: [0; 3],
+            uv: [0; 2],
+            rgb565: 0,
+        }),
+    };
+    run_inner(
+        &input,
+        config,
+        clip.map(|v| v.map(|x| (x * 268435456.0).round_ties_even() as i64)),
+        268435456.0,
+        Some(attributes),
+    )
+}
+
+fn run_inner(
+    input: &Input,
+    config: Config,
+    raw_clip: [[i64; 4]; 3],
+    raw_scale: f64,
+    attributes: Option<[[f64; 8]; 3]>,
+) -> Result<Report, String> {
     config.validate()?;
     if input
         .vertices
@@ -432,14 +497,13 @@ pub fn run(input: &Input, config: Config) -> Result<Report, String> {
     {
         return Err("triangle UNORM12 input width".into());
     }
-    let mut polygon: Vec<_> = input
-        .vertices
+    let mut polygon: Vec<_> = raw_clip
         .iter()
         .map(|v| {
             [
-                f64::from(v.clip[0]),
-                f64::from(v.clip[1]),
-                f64::from(v.clip[3]),
+                v[0] as f64 * 65536.0 / raw_scale,
+                v[1] as f64 * 65536.0 / raw_scale,
+                v[3] as f64 * 65536.0 / raw_scale,
             ]
         })
         .collect();
@@ -599,7 +663,9 @@ pub fn run(input: &Input, config: Config) -> Result<Report, String> {
         None
     } else {
         work.source_packages = 1;
-        Some(source(input, &config, &triangles)?)
+        Some(source(
+            input, &config, &triangles, raw_clip, raw_scale, attributes,
+        )?)
     };
     Ok(Report {
         input: input.clone(),
@@ -724,7 +790,7 @@ impl Report {
             position,
             beta,
             attrs,
-            s.determinant as f64 * inv / 65536.0,
+            s.determinant as f64 * inv / s.raw_scale,
             &self.config,
         )
     }
@@ -738,7 +804,7 @@ impl Report {
             .map(|n| n / s.determinant as f64)
             .iter()
             .enumerate()
-            .map(|(i, &t)| t * f64::from(self.input.vertices[i].clip[3]) * 2.0)
+            .map(|(i, &t)| t * s.raw_clip[i][3] as f64 * 2.0)
             .collect::<Vec<_>>()
             .try_into()
             .unwrap())
@@ -750,10 +816,11 @@ impl Report {
             return Err("reference position bound".into());
         }
         let mut m = [[0.0; 4]; 3];
-        for (i, v) in self.input.vertices.iter().enumerate() {
-            let x = f64::from(v.clip[0]);
-            let y = f64::from(v.clip[1]);
-            let w = f64::from(v.clip[3]);
+        let s = self.source.as_ref().ok_or("missing source")?;
+        for (i, v) in s.raw_clip.iter().enumerate() {
+            let x = v[0] as f64;
+            let y = v[1] as f64;
+            let w = v[3] as f64;
             m[0][i] = f64::from(self.config.width) * (x + w);
             m[1][i] = f64::from(self.config.height) * (w - y);
             m[2][i] = 2.0 * w;
@@ -790,23 +857,22 @@ impl Report {
             (0..3)
                 .map(|i| {
                     let weight = if self.config.rgb_affine && (2..5).contains(&channel) {
-                        t[i] * f64::from(self.input.vertices[i].clip[3])
+                        t[i] * s.raw_clip[i][3] as f64
                     } else {
                         beta[i]
                     };
-                    let v = &self.input.vertices[i];
-                    let attribute = match channel {
-                        0 | 1 => f64::from(v.uv[channel]) / 4095.0,
-                        2 => f64::from(v.rgb565 >> 11) / 31.0,
-                        3 => f64::from((v.rgb565 >> 5) & 63) / 63.0,
-                        4 => f64::from(v.rgb565 & 31) / 31.0,
-                        _ => f64::from(v.normal[channel - 5]) / 16384.0,
-                    };
+                    let attribute = s.attributes[i][channel];
                     weight * attribute
                 })
                 .sum()
         });
-        finish(position, beta, attrs, 1.0 / (sum * 65536.0), &self.config)
+        finish(
+            position,
+            beta,
+            attrs,
+            1.0 / (sum * s.raw_scale),
+            &self.config,
+        )
     }
     /// Bounded scanline reference, with exact coverage increments. Querying each
     /// sample with independent contains()/orient tests can validate this path.

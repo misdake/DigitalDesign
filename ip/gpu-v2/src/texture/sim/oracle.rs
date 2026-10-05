@@ -564,14 +564,50 @@ pub fn sample<M: MemoryPort>(
     config: Config,
 ) -> Result<Output, String> {
     let prepared = prepare(input, cache.slots(), config)?;
+    let (captured, cache_events) = capture(&prepared, cache, memory)?;
+    resolve(prepared, captured, cache_events)
+}
+pub(crate) type CapturedTexels = Vec<Vec<[u16; 4]>>;
+
+pub(crate) fn capture<M: MemoryPort>(
+    prepared: &PreparedQuad,
+    cache: &mut Cache,
+    memory: &mut M,
+) -> Result<(CapturedTexels, Vec<CacheEvent>), String> {
+    let mut events = Vec::new();
+    let captured = prepared
+        .pixels
+        .iter()
+        .map(|pixel| {
+            pixel
+                .groups
+                .iter()
+                .map(|g| cache.read_group(g, memory, &mut events))
+                .collect()
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((captured, events))
+}
+pub(crate) fn resolve(
+    prepared: PreparedQuad,
+    captured: Vec<Vec<[u16; 4]>>,
+    cache_events: Vec<CacheEvent>,
+) -> Result<Output, String> {
+    if captured.len() != prepared.pixels.len()
+        || captured
+            .iter()
+            .zip(&prepared.pixels)
+            .any(|(a, p)| a.len() != p.groups.len())
+    {
+        return Err("texture capture shape".into());
+    }
     let mut pixels = Vec::new();
-    let mut cache_events = Vec::new();
-    let scale = u64::from(config.coefficient_scale());
-    for pixel in &prepared.pixels {
+    let scale = u64::from(prepared.config.coefficient_scale());
+    for (index, pixel) in prepared.pixels.iter().enumerate() {
         let mut accumulator = [0_u64; 3];
         let mut groups = Vec::new();
-        for group in &pixel.groups {
-            let texels = cache.read_group(group, memory, &mut cache_events)?;
+        for (g, group) in pixel.groups.iter().enumerate() {
+            let texels = captured[index][g];
             let expanded = texels.map(expand565);
             let partial = std::array::from_fn(|channel| {
                 (0..4)

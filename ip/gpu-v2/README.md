@@ -13,8 +13,15 @@ Lighting provides explicit Fast/Compact resource profiles with scalar H
 normalization, fixed DSP roles and checked synchronous retained storage.
 Additional system candidates compare scalar N/H, direct squares and a complete
 ID FIFO at II2/II4; their area and numerical limitations are recorded together.
-The [interactive WASM review](web/README.md) compares the real Rust kernels with
-shared scene inputs and optional error maps.
+The [interactive Rust review](web/README.md) compares the real Rust kernels with
+shared scene inputs and optional error maps through a local WebSocket server.
+The [functional oracle chain](docs/oracle-chain.md) renders actual meshes through
+fetch, vertex, setup/coverage, lighting/sampling, final, ROP and atomic caches.
+Its two configurable native Rust pipelines compare frontend precision and normal
+transport without executing counted/timed code or a JavaScript shader.
+Optional Rayon acceleration preserves the same ordered numerical results. A
+[lighting workbench](web/README.md#lighting-scheduling-workbench) displays and
+edits the real bound DAG's repeated calendar, with independent resource checks.
 The [triangle setup oracle](docs/triangle.md) is complete only through its first
 Rust step; counted/timed and hardware directions remain future work.
 The [texture models](docs/texture.md) implement oracle/counting and universal
