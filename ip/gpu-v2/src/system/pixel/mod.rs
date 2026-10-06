@@ -5,6 +5,7 @@
 
 mod branches;
 mod color;
+pub mod final_stage;
 mod live;
 mod model;
 
