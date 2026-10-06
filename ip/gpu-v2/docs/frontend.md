@@ -2,11 +2,13 @@
 
 The reusable components own `ports` and `sim/{oracle,counted,timed}` under
 `src/command_processor`, `src/scratchpad`, `src/vertex` and `src/frontend`.
-Frontend composition consumes finished numerical reports at narrow typed
-boundaries. Its arithmetic milestone stops at transformed vertices. A separate
-bounded source-capture controller prepares the existing triangle oracle's input;
-it is not wired into that sequencer. The frontend implements no
-triangle generation, framebuffer cache, emulator, RTL or command-machine ABI.
+Frontend arithmetic consumes counted vertex plans at narrow typed boundaries.
+`frontend::sim::runtime::Sequencer` persistently advances CP, synthetic DMA and
+one current vertex plan. It writes the canonical transformed store through a
+borrowed producer port. The legacy driver owns standalone slots; the connected
+test composition writes SourceCapture's slots and continues through the existing
+record/raster/pixel backend. Neither frontend composition is an independent vertex
+arithmetic emulator, RTL implementation or encoded command-machine ABI.
 
 The oracle can also consume a GPU-owned MemoryPort through `run_with_memory`.
 The [SDRAM combination adapter](sdram-memory-controller.md) uses the vendor service
@@ -27,8 +29,10 @@ flowchart LR
   L --> V[V6 decode and static vertex issue ROM]
   CP --> U[Separate MVP / normal SSRAM banks]
   U --> V
-  V --> O[Two seven-row transformed slots]
-  O --> R[Explicit consumer release]
+  V --> O[Borrowed transformed producer port]
+  O --> R[Legacy slots and explicit release]
+  O --> S[Canonical SourceCapture slots]
+  S --> B[Existing snapshot / record / pixel backend]
 ```
 
 ## Contracts
@@ -85,18 +89,96 @@ seven rows: four raw clip fields; XYZ normal in row4 (three S(12,10) fields),
 UNORM12 U/V in row5 and RGB565 in row6. Upper unused bits are
 zero. All seven registered writes must complete before the next publication
 edge sets ready. Publication retains the slot; explicit consumer release is
-required before allocation increments its epoch and clears ready bits. There
+required in LegacyStandalone before allocation increments its epoch and clears ready bits. There
 is a separate producer-active bit: even a matching consumer release cannot
 recycle a slot while the remaining vertex writes are still in flight. There
-are no triangle references in this milestone. Slot starvation and producerless
+are no triangle references in LegacyStandalone. ConnectedTriangles delegates
+release to SourceCapture's producer/seal/reference rule. Slot starvation and producerless
 WAIT are bounded timeouts, not success.
+
+## Persistent frontend and checked producer boundary
+
+`runtime::Profile::LegacyStandalone` preserves `timed::run`'s command semantics,
+including final Publish+DrawDone on one edge and explicit RELEASE. `run` is now
+a driver/observer; its history vectors do not feed execution. Four frozen pre-change
+cases compare cycles, actions, events, outputs, slot/scratchpad data and transfers.
+The existing independent Report audit remains in place.
+
+`ConnectedTriangles` accepts at most six DRAWs, exactly three vertices each,
+rejects RELEASE, and is bounded at120000 wall edges. Finish/DrawDone occurs on
+an enabled edge after the last publication. CP/DMA retain sticky completion tokens,
+same-edge DMA-complete WAIT behavior, independent wall-clock DMA progress and
+two scratchpad regions. A completed sequencer can continue idle stepping while
+downstream rendering drains. Frontend FENCE remains separate from render completion.
+Unexpected producer errors poison the sequencer and require recreation; connected
+cancellation/fault drain composition is not implemented.
+
+The engine owns two source-word latches, one registered return, one draw context,
+and at most one counted vertex Plan. It constructs that Plan only after the
+current vertex's actual scratchpad reads return, emits its seven scheduled row
+writes, then drops the Plan on publication. It holds no transformed Slot array,
+future vertex plans, output meshes or history vectors. Legacy observer copies of
+accepted certificates and the current Plan's counted answers are explicitly host
+model state; they are not independently executed vertex arithmetic or FPGA storage.
+
+SourceCapture exposes a non-cloneable `prepare_producer_edge(ce)` permit and a
+borrowed `bind_producer_edge(permit)` port. Prepare precedes the sole source clock;
+bind requires exactly one matching source step, CE and private controller issuer.
+Duplicate, stale, foreign and missing-clock permits fail. An edge accepts at most
+one allocate/write/publish/finish effect and one task attempt. CE0 rejects mutation.
+Allocation uses old free-slot metadata: a current-edge release cannot fund reuse.
+
+One sequential producer tracks slot/full epoch, expected/next vertex, seven-bit
+write mask and last accepted write/publication edge. Rows may arrive in any order;
+duplicate, wrong owner/vertex/row and noncanonical words are rejected before mutation.
+Rows0..3 are32-bit, row4 is36-bit, row5 is24-bit and row6 is16-bit within the
+36-bit store. Publication decodes and validates the same S12F10/UNORM12 contract
+as atomic inputs. It needs all seven rows and a later edge; finish needs every expected publication and a later
+edge. Checked slots reject atomic fixture publication, direct finish/seal/submit;
+atomic fixtures cannot allocate a second writer while a checked producer is live.
+Fixture APIs remain available to the earlier standalone source tests.
+
+Only published vertices can be captured; only the current unpublished vertex can
+be written. Thus legal read/write activity uses different addresses, without a new
+read port or forwarding. Task admission checks old epoch, ready/sealed state and
+pending credit. Successful actual admission increments its reference before
+`seal_after_admission`; new publications and queue pops cannot supply same-edge
+credit. Source release and snapshot last-use timing remain source-owned.
+
+The test-only topology adapter retains one Task descriptor (147 payload bits plus
+valid), one bounded DRAW ordinal and immutable context. It creates `[0,1,2]` only
+from an actual DrawDone receipt, retries the unchanged descriptor, and masks the
+next DRAW until admission. DMA/WAIT/FENCE continue. Source, record and frontend
+advance exactly once per wall edge; the existing backend retains one physical MC
+clock. Backend pixels use actual captured rows, with no preloaded frontend Report.
+Clip/setup and raster helpers retain the existing bounded atomic numerical
+test adapters; the legacy PixelBranches backend uses the current Runtime's six
+registered preparation kernels while retaining its structural counted Program dependency.
+
+Clean tests cover two-slot pressure and epoch reuse while the older snapshot is
+still encoding. A completed first snapshot releases its slot early, so saturation
+appears on a later DRAW rather than requiring the third DRAW to stall. Two slots
+and one task per sealed DRAW cannot naturally fill four pending plus one active
+task positions. A separately labeled atomic-fixture control test seeds five
+references and checks stable retry of the sixth task produced by the real frontend.
+It is not clean-DRAW throughput evidence.
+
+Complete-image tests decode original packed bytes through an independent vertex
+oracle, then independent triangle coverage/attribute, lighting, texture and final
+pixel goldens. Normal and CE-paused runs compare the entire135168-byte image,
+including guards, and check each actual seven-row publication,21 source reads and
+returns, source/snapshot/record identities, record words, ordered results and drain.
+The tested corpus includes clipped three-fan, tiny, overlapping and zero-fan draws.
+This is Rust integration proof with synthetic frontend DMA and counted vertex
+arithmetic; native shared128B MC is exercised only by the existing downstream
+backend. Native frontend MC, indexed topology, RTL/PnR and board work remain open.
 
 ## Bounded triangle source capture
 
 `frontend::source_capture::Controller` owns the two existing transformed slots,
 four pending triangle descriptors and one active capture/snapshot position.
-These four descriptors represent the planned geometry task credits; a future
-CP adapter must reuse them rather than add another four-entry FIFO behind them.
+These four descriptors are the geometry task credits; the connected test adapter
+reuses them and retains at most one retry descriptor.
 A task names three published vertex indices, slot, full u32 epoch, triangle ID
 and one immutable draw-context token. A monotonically bounded ticket distinguishes
 consumer acknowledgments, even when triangle IDs repeat. Queue-full admission

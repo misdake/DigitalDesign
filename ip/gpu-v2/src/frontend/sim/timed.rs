@@ -4,7 +4,7 @@ use crate::{
     command_processor::{
         ports::*,
         sim::{
-            counted as command_counted, oracle as command_oracle,
+            counted as command_counted,
             timed::{self as event_audit, EventTick},
         },
     },
@@ -18,7 +18,7 @@ use crate::{
     },
     vertex::{ports::*, sim::timed as vertex_timed},
 };
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     pub hardware: vertex_timed::Hardware,
@@ -125,33 +125,6 @@ pub struct Report {
     pub fault: Option<String>,
     pub fence: bool,
 }
-struct Dma {
-    descriptor: DmaDescriptor,
-    lease: Lease,
-    beat: usize,
-    next: u64,
-    last_write: Option<u64>,
-    failed: bool,
-}
-struct Execution {
-    plan: usize,
-    body_start: u64,
-}
-struct Draw {
-    lease: Lease,
-    slot: usize,
-    epoch: u32,
-    region: usize,
-    offset: usize,
-    count: usize,
-    context: Context,
-    vertex: usize,
-    cached: Vec<(usize, u64)>,
-    pending: Option<(usize, u64, u64)>,
-    execution: Option<Execution>,
-    result: Vec<Transformed>,
-    loaded: bool,
-}
 type ReplayedDraw = (
     Lease,
     usize,
@@ -162,377 +135,94 @@ type ReplayedDraw = (
     usize,
     Vec<Transformed>,
 );
+/// Legacy driver and observer. Histories never feed the persistent engine.
 pub fn run(input: &Input, config: Config, core_stalls: &[u64]) -> Result<Report, String> {
-    command_oracle::validate(&input.commands, 64)?;
-    let commands = command_counted::run(&input.commands, 64)?;
-    if config.max_cycles == 0
-        || config.max_cycles > 1_000_000
-        || config.dma_first_latency == 0
-        || config.dma_first_latency > 1000
-        || config.dma_gap == 0
-        || config.dma_gap > 1000
-        || input.memory.len() > 1_048_576
-        || core_stalls.len() > 100000
+    use super::runtime::{LegacySlots, Profile, Sequencer};
+    if core_stalls.len() > 100000
         || core_stalls.iter().any(|&c| c >= config.max_cycles)
         || core_stalls.iter().copied().collect::<BTreeSet<_>>().len() != core_stalls.len()
     {
         return Err("frontend cycle/memory/service bounds".into());
     }
-    let mut sp = Scratchpad::default();
-    let mut leases = [None; 2];
-    let mut tokens = [false; 4];
-    let mut reserved = [false; 4];
+    let commands = command_counted::run(&input.commands, 64)?;
+    let mut engine = Sequencer::new(input, config, Profile::LegacyStandalone)?;
+    let mut slots = LegacySlots::default();
     let stall_set = core_stalls.iter().copied().collect::<BTreeSet<_>>();
-    let mut slots: [Slot; 2] = std::array::from_fn(|_| Slot::default());
-    let mut queue = VecDeque::new();
-    let mut active: Option<Dma> = None;
-    let mut draw: Option<Draw> = None;
-    let mut events = EventState::default();
-    let mut event_rows = Vec::new();
     let mut records = Vec::new();
-    let mut plans: Vec<vertex_timed::Plan> = Vec::new();
+    let mut events = Vec::new();
+    let mut plans = Vec::new();
     let mut outputs = Vec::new();
+    let mut output: Option<DrawOutput> = None;
     let mut transactions = Vec::new();
     let mut transfers = Vec::new();
-    let mut pc = 0;
-    let mut core_cycle = 0;
-    let mut fault = None;
-    let mut fence = false;
-    for cycle in 0..config.max_cycles {
-        let ce = !stall_set.contains(&cycle);
-        let mut set = 0_u8;
-        let mut ack = 0_u8;
-        let mut emit = |action| {
-            records.push(Record {
-                cycle,
-                core_cycle,
-                action,
-            })
-        };
-        if active.is_none() {
-            if let Some((descriptor, lease)) = queue.pop_front() {
-                active = Some(Dma {
-                    descriptor,
-                    lease,
-                    beat: 0,
-                    next: cycle + config.dma_first_latency,
-                    last_write: None,
-                    failed: false,
-                });
-            }
+    for _ in 0..config.max_cycles {
+        let out = engine.step(!stall_set.contains(&engine.wall()), true, &mut slots)?;
+        if out.plan_created {
+            let p = engine
+                .current_plan()
+                .ok_or("observer missing current plan")?;
+            // Copy the accepted current certificate only, never future plans.
+            plans.push(vertex_timed::Plan {
+                counted: crate::vertex::sim::counted::BatchReport {
+                    outputs: p.counted.outputs.clone(),
+                    frame: p.counted.frame.clone(),
+                },
+                graph: p.graph.clone(),
+                schedule: p.schedule.clone(),
+                rom: p.rom.clone(),
+                layout: p.layout.clone(),
+                accesses: p.accesses.clone(),
+                dsp: p.dsp.clone(),
+                retained: p.retained.clone(),
+                publication: p.publication.clone(),
+                hardware: p.hardware,
+                setup_cycles: p.setup_cycles,
+            });
         }
-        if let Some(dma) = active.as_mut() {
-            if dma.beat == dma.descriptor.byte_count / 8 {
-                if dma.last_write.is_some_and(|c| cycle > c) {
-                    if !dma.failed {
-                        sp.complete(dma.lease)?;
-                        tokens[usize::from(dma.descriptor.completion_token)] = true;
-                        set |= 1 << dma.descriptor.completion_token;
-                        emit(Action::DmaComplete {
-                            lease: dma.lease,
-                            token: dma.descriptor.completion_token,
-                        });
-                    } else {
-                        emit(Action::DmaFaultComplete { lease: dma.lease });
-                    }
-                    active = None;
+        for r in &out.records {
+            let tx = match r.action {
+                Action::DmaWrite { address, data, .. } => {
+                    Some(Transaction::DmaWrite { address, data })
                 }
-            } else if cycle >= dma.next {
-                if !dma.failed {
-                    match input.read_beat(dma.descriptor.physical_addr + dma.beat as u64 * 8) {
-                        Ok(data) => {
-                            let address = sp.dma_beat(dma.lease, data)?;
-                            emit(Action::DmaWrite {
-                                lease: dma.lease,
-                                address,
-                                data,
-                            });
-                            let transaction = transactions.len();
-                            transactions.push(Transaction::DmaWrite { address, data });
-                            transfers.push(Transfer {
-                                transaction,
-                                issue: cycle,
-                                ready: cycle + 1,
-                            });
-                        }
-                        Err(error) => {
-                            sp.fault(dma.lease)?;
-                            dma.failed = true;
-                            fault = Some(error.clone());
-                            emit(Action::DmaFault { lease: dma.lease });
-                            emit(Action::Fault(error));
-                        }
-                    }
-                } else {
-                    emit(Action::DmaDrain {
-                        lease: dma.lease,
-                        beat: dma.beat,
+                Action::CoreRead { address, .. } => Some(Transaction::CoreRead { address }),
+                _ => None,
+            };
+            if let Some(tx) = tx {
+                transfers.push(Transfer {
+                    transaction: transactions.len(),
+                    issue: r.cycle,
+                    ready: r.cycle + 1,
+                });
+                transactions.push(tx);
+            }
+            match r.action {
+                Action::DrawStart { slot, epoch, .. } => {
+                    output = Some(DrawOutput {
+                        slot,
+                        epoch,
+                        vertices: Vec::new(),
                     });
                 }
-                dma.beat += 1;
-                dma.next = cycle + config.dma_gap;
-                dma.last_write = Some(cycle);
+                Action::Publish { slot, vertex, .. } => {
+                    let row = vertex * 7;
+                    let value = Transformed::from_rows(
+                        slots.0[slot].rows[row..row + 7].try_into().unwrap(),
+                    )?;
+                    output
+                        .as_mut()
+                        .ok_or("observer publication without draw")?
+                        .vertices
+                        .push(value);
+                }
+                Action::DrawDone { .. } => {
+                    outputs.push(output.take().ok_or("observer finish without draw")?)
+                }
+                _ => {}
             }
         }
-        if pc < input.commands.len() && fault.is_none() {
-            set |= 1 << 4;
-        }
-        if fault.is_some() {
-            set |= 1 << 7;
-        }
-        let boundary = ce && draw.is_none();
-        events.update(set, 0);
-        let handler = events.take(boundary);
-        if let Some(id) = handler {
-            if id < 4 {
-                ack |= 1 << id;
-            } else if id == 4 && pc >= input.commands.len() {
-                ack |= 1 << 4;
-            }
-        }
-        if ce && fault.is_none() {
-            if let Some(d) = draw.as_mut() {
-                if let Some((address, data, ready)) = d.pending {
-                    if cycle >= ready {
-                        if d.cached.len() == 2 {
-                            d.cached.remove(0);
-                        }
-                        d.cached.push((address, data));
-                        d.pending = None;
-                    }
-                }
-                if let Some(execution) = &d.execution {
-                    let plan = &plans[execution.plan];
-                    if core_cycle >= execution.body_start {
-                        let relative = core_cycle - execution.body_start + plan.setup_cycles;
-                        for e in &plan.counted.frame.events {
-                            if let audited::Operation::Write { memory, row } = e.operation {
-                                if plan.counted.frame.memories[memory].name == "TRANSFORMED"
-                                    && plan.schedule.nodes[e.id].issue == relative
-                                {
-                                    let data = plan.counted.outputs[0].rows()[row];
-                                    let destination = d.vertex * 7 + row;
-                                    slots[d.slot].rows[destination] = data;
-                                    emit(Action::VertexWrite {
-                                        slot: d.slot,
-                                        epoch: d.epoch,
-                                        row: destination,
-                                        data,
-                                    });
-                                }
-                            }
-                        }
-                        if relative == plan.publication[0] {
-                            slots[d.slot].ready[d.vertex] = true;
-                            d.result.push(plan.counted.outputs[0].clone());
-                            emit(Action::Publish {
-                                slot: d.slot,
-                                epoch: d.epoch,
-                                vertex: d.vertex,
-                            });
-                            d.vertex += 1;
-                            d.execution = None;
-                            if d.vertex == d.count {
-                                slots[d.slot].finish_production(d.epoch)?;
-                                sp.release(d.lease)?;
-                                emit(Action::DrawDone {
-                                    lease: d.lease,
-                                    slot: d.slot,
-                                });
-                                outputs.push(DrawOutput {
-                                    slot: d.slot,
-                                    epoch: d.epoch,
-                                    vertices: d.result.clone(),
-                                });
-                                draw = None;
-                            }
-                        }
-                    }
-                } else if d.pending.is_none() {
-                    let start = d.region * REGION_BYTES + d.offset + d.vertex * 12;
-                    let addresses = [start & !7, (start + 8) & !7];
-                    if let Some(&address) = addresses
-                        .iter()
-                        .find(|a| !d.cached.iter().any(|(known, _)| known == *a))
-                    {
-                        match sp.read64(d.lease, address) {
-                            Ok(data) => {
-                                d.pending = Some((address, data, cycle + 1));
-                                emit(Action::CoreRead {
-                                    lease: d.lease,
-                                    address,
-                                    data,
-                                });
-                                let transaction = transactions.len();
-                                transactions.push(Transaction::CoreRead { address });
-                                transfers.push(Transfer {
-                                    transaction,
-                                    issue: cycle,
-                                    ready: cycle + 1,
-                                });
-                            }
-                            Err(error) => {
-                                fault = Some(error.clone());
-                                emit(Action::Fault(error));
-                            }
-                        }
-                    } else {
-                        let packed = PackedVertex(std::array::from_fn(|k| {
-                            let addr = start + k * 4;
-                            let data = d
-                                .cached
-                                .iter()
-                                .find(|(a, _)| *a == addr & !7)
-                                .expect("two-word vertex latch")
-                                .1;
-                            (data >> ((addr & 7) * 8)) as u32
-                        }));
-                        match vertex_timed::run(&d.context, &[packed], config.hardware) {
-                            Ok(plan) => {
-                                let index = plans.len();
-                                let setup = !d.loaded;
-                                let body_start =
-                                    core_cycle + if setup { plan.setup_cycles } else { 0 };
-                                emit(Action::Compute {
-                                    slot: d.slot,
-                                    vertex: d.vertex,
-                                    plan: index,
-                                    body_start,
-                                    setup,
-                                });
-                                d.loaded = true;
-                                plans.push(plan);
-                                d.execution = Some(Execution {
-                                    plan: index,
-                                    body_start,
-                                });
-                            }
-                            Err(error) => {
-                                fault = Some(error.clone());
-                                emit(Action::Fault(error));
-                            }
-                        }
-                    }
-                }
-            } else if pc < input.commands.len()
-                && (handler == Some(4)
-                    || matches!(input.commands[pc], Command::Wait(_) | Command::Fence))
-            {
-                let mut accepted = false;
-                match &input.commands[pc] {
-                    Command::Dma(descriptor) => {
-                        let token = usize::from(descriptor.completion_token);
-                        if reserved[token] {
-                            fault = Some("DMA token still reserved/unacknowledged".into());
-                        } else if queue.len() < 4 {
-                            match sp.reserve(*descriptor) {
-                                Ok(lease) => {
-                                    leases[lease.region] = Some(lease);
-                                    reserved[token] = true;
-                                    queue.push_back((*descriptor, lease));
-                                    emit(Action::Submit {
-                                        descriptor: *descriptor,
-                                        lease,
-                                    });
-                                    accepted = true;
-                                }
-                                Err(error) => fault = Some(error),
-                            }
-                        }
-                    }
-                    Command::Wait(token) => {
-                        if tokens[usize::from(*token)] {
-                            tokens[usize::from(*token)] = false;
-                            reserved[usize::from(*token)] = false;
-                            ack |= 1 << token;
-                            emit(Action::WaitAck(*token));
-                            accepted = true;
-                        }
-                    }
-                    Command::Draw {
-                        region,
-                        byte_offset,
-                        vertices,
-                        context,
-                    } => {
-                        if let Some(lease) = leases[*region] {
-                            if sp.regions[*region].owner == Owner::Ready {
-                                if let Some(slot) = slots.iter().position(|s| !s.held) {
-                                    let epoch = slots[slot].allocate()?;
-                                    sp.acquire(lease)?;
-                                    emit(Action::DrawStart { lease, slot, epoch });
-                                    draw = Some(Draw {
-                                        lease,
-                                        slot,
-                                        epoch,
-                                        region: *region,
-                                        offset: *byte_offset,
-                                        count: *vertices,
-                                        context: context.clone(),
-                                        vertex: 0,
-                                        cached: Vec::new(),
-                                        pending: None,
-                                        execution: None,
-                                        result: Vec::new(),
-                                        loaded: false,
-                                    });
-                                    accepted = true;
-                                }
-                            } else if matches!(
-                                sp.regions[*region].owner,
-                                Owner::Free | Owner::Faulted
-                            ) {
-                                fault = Some("DRAW region not READY or FILLING".into());
-                            }
-                        } else {
-                            fault = Some("DRAW region has no producer".into());
-                        }
-                    }
-                    Command::Release { slot, epoch } => match slots[*slot].release(*epoch) {
-                        Ok(()) => {
-                            emit(Action::Release {
-                                slot: *slot,
-                                epoch: *epoch,
-                            });
-                            accepted = true;
-                        }
-                        Err(error) => fault = Some(error),
-                    },
-                    Command::Fence => {
-                        if active.is_none() && queue.is_empty() {
-                            fence = true;
-                            emit(Action::Fence);
-                            accepted = true;
-                        }
-                    }
-                    Command::Unsupported(_) => fault = Some("unsupported command".into()),
-                }
-                if accepted {
-                    pc += 1;
-                    ack |= 1 << 4;
-                }
-                if let Some(error) = &fault {
-                    emit(Action::Fault(error.clone()));
-                }
-            }
-        }
-        // Set wins for same-edge handler acknowledgment and new event.
-        events.update(set, ack);
-        event_rows.push(EventTick {
-            cycle,
-            set,
-            ack,
-            boundary,
-            handler,
-            pending: events.pending,
-        });
-        if ce {
-            core_cycle += 1;
-        }
-        if (pc == input.commands.len() && draw.is_none() || fault.is_some())
-            && active.is_none()
-            && queue.is_empty()
-        {
+        records.extend(out.records);
+        events.push(out.event);
+        if engine.done() {
             let scratchpad_counted = if transactions.is_empty() {
                 None
             } else {
@@ -545,19 +235,19 @@ pub fn run(input: &Input, config: Config, core_stalls: &[u64]) -> Result<Report,
                 input: input.clone(),
                 config,
                 core_stalls: core_stalls.to_vec(),
-                cycles: cycle + 1,
-                core_cycles: core_cycle,
-                outputs,
-                slots,
-                scratchpad: sp,
+                cycles: engine.wall(),
+                core_cycles: engine.core_cycles(),
+                fault: engine.fault().map(str::to_owned),
+                fence: engine.fence(),
+                scratchpad: engine.into_scratchpad(),
+                slots: slots.0,
                 records,
-                events: event_rows,
+                events,
                 plans,
+                outputs,
                 commands,
                 scratchpad_counted,
                 transfers,
-                fault,
-                fence,
             };
             report.audit()?;
             return Ok(report);

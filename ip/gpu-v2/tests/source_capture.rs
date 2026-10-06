@@ -1,3 +1,4 @@
+use gpu_v2::frontend::{sim::runtime::ProducerPort, source_capture::SourceProducerEdge};
 use gpu_v2::{
     frontend::{
         ports::Slot,
@@ -5,6 +6,207 @@ use gpu_v2::{
     },
     vertex::ports::Transformed,
 };
+
+fn checked<T>(c: &mut Controller, ce: bool, f: impl FnOnce(&mut SourceProducerEdge<'_>) -> T) -> T {
+    let permit = c.prepare_producer_edge(ce);
+    c.step(ce, None).unwrap();
+    f(&mut c.bind_producer_edge(permit).unwrap())
+}
+fn empty_checked() -> Controller {
+    Controller::new(std::array::from_fn(|_| Slot::default()), 7, 1000, 10).unwrap()
+}
+
+#[test]
+fn checked_producer_clock_and_issuer_permits_are_single_use() {
+    let mut a = empty_checked();
+    let permit = a.prepare_producer_edge(true);
+    assert!(
+        a.bind_producer_edge(permit).is_err(),
+        "missing source clock"
+    );
+    let stale = a.prepare_producer_edge(true);
+    a.step(true, None).unwrap();
+    a.step(true, None).unwrap();
+    assert!(a.bind_producer_edge(stale).is_err());
+    let mut b = empty_checked();
+    let foreign = a.prepare_producer_edge(true);
+    b.step(true, None).unwrap();
+    assert!(b.bind_producer_edge(foreign).is_err());
+    let one = a.prepare_producer_edge(true);
+    let duplicate = a.prepare_producer_edge(true);
+    a.step(true, None).unwrap();
+    assert!(a.bind_producer_edge(one).is_ok());
+    assert!(a.bind_producer_edge(duplicate).is_err());
+    let wrong_ce = a.prepare_producer_edge(true);
+    a.step(false, None).unwrap();
+    assert!(a.bind_producer_edge(wrong_ce).is_err());
+    checked(&mut a, false, |p| {
+        assert!(p.free_slot().is_none());
+        assert!(p.allocate(0, 3).is_err());
+    });
+}
+
+#[test]
+fn checked_rows_reject_before_mutation_and_publish_on_later_edge() {
+    let mut c = empty_checked();
+    let epoch = checked(&mut c, true, |p| p.allocate(0, 1).unwrap());
+    let before = c.slots().clone();
+    assert!(c
+        .publish_completed_vertex(0, epoch, 0, &vertices()[0])
+        .is_err());
+    assert!(c.finish_production(0, epoch).is_err());
+    assert!(
+        c.allocate(1).is_err(),
+        "no concurrent atomic fixture writer"
+    );
+    assert!(c.abort_production(0, epoch).is_err());
+    assert!(c.submit(task(epoch)).is_err());
+    assert!(c.seal(0, epoch).is_err());
+    checked(&mut c, true, |p| {
+        assert!(p.allocate(1, 1).is_err(), "one active writer");
+        assert!(p.write_row(0, epoch + 1, 0, 0, 0).is_err());
+        assert!(p.write_row(0, epoch, 1, 0, 0).is_err());
+        assert!(p.write_row(0, epoch, 0, 7, 0).is_err());
+        assert!(p.write_row(0, epoch, 0, 0, 1 << 32).is_err());
+        for (row, width) in [32, 32, 32, 32, 36, 24, 16].into_iter().enumerate() {
+            assert!(p.write_row(0, epoch, 0, row, 1 << width).is_err());
+        }
+        assert!(p.publish(0, epoch, 0).is_err());
+        assert!(p.finish(0, epoch).is_err());
+        assert!(p.release(0, epoch).is_err());
+    });
+    assert_eq!(c.slots(), &before);
+    let rows = vertices()[0].rows();
+    for row in [6, 2, 4, 0, 5, 1, 3] {
+        checked(&mut c, true, |p| {
+            p.write_row(0, epoch, 0, row, rows[row]).unwrap();
+            assert!(p.write_row(0, epoch, 0, row, rows[row]).is_err());
+            assert!(p.publish(0, epoch, 0).is_err());
+        });
+        checked(&mut c, true, |p| {
+            assert!(p.write_row(0, epoch, 0, row, 0).is_err())
+        });
+    }
+    checked(&mut c, true, |p| {
+        p.publish(0, epoch, 0).unwrap();
+        assert!(p.finish(0, epoch).is_err());
+        assert!(
+            p.submit_task(Task {
+                vertices: [0; 3],
+                ..task(epoch)
+            })
+            .is_err(),
+            "new publication not old-ready"
+        );
+    });
+    checked(&mut c, false, |p| assert!(p.finish(0, epoch).is_err()));
+    checked(&mut c, true, |p| p.finish(0, epoch).unwrap());
+    assert!(c.slots()[0].held && !c.slots()[0].producing);
+    checked(&mut c, true, |p| {
+        assert!(p.seal_after_admission(0, epoch, 0).is_err());
+        let ticket = p
+            .submit_task(Task {
+                vertices: [0; 3],
+                ..task(epoch)
+            })
+            .unwrap()
+            .unwrap();
+        assert!(p.seal_after_admission(0, epoch, ticket + 1).is_err());
+        p.seal_after_admission(0, epoch, ticket).unwrap();
+        assert!(p
+            .submit_task(Task {
+                vertices: [0; 3],
+                ..task(epoch)
+            })
+            .is_err());
+    });
+    for _ in 0..24 {
+        c.step(true, None).unwrap();
+    }
+    assert!(!c.slots()[0].held);
+    assert!(c.snapshot().is_some(), "release does not ACK snapshot");
+    let newer = checked(&mut c, true, |p| p.allocate(0, 1).unwrap());
+    assert_eq!(newer, epoch + 1);
+    checked(&mut c, true, |p| {
+        assert!(p.write_row(0, epoch, 0, 0, 0).is_err())
+    });
+}
+
+#[test]
+fn checked_old_credit_and_release_cannot_be_borrowed_same_edge() {
+    let (mut c, epoch) = producer();
+    for _ in 0..4 {
+        c.submit(task(epoch)).unwrap().unwrap();
+    }
+    let permit = c.prepare_producer_edge(true);
+    c.step(true, None).unwrap();
+    assert_eq!(c.queued(), 3);
+    assert_eq!(
+        c.bind_producer_edge(permit)
+            .unwrap()
+            .submit_task(task(epoch))
+            .unwrap(),
+        None
+    );
+    let mut c = empty_checked();
+    let epoch = c.allocate(0).unwrap();
+    c.publish_completed_vertex(0, epoch, 0, &vertices()[0])
+        .unwrap();
+    c.finish_production(0, epoch).unwrap();
+    c.seal(0, epoch).unwrap();
+    let permit = c.prepare_producer_edge(true);
+    assert!(c
+        .step(true, None)
+        .unwrap()
+        .contains(&Event::SourceReleased { slot: 0, epoch }));
+    let mut edge = c.bind_producer_edge(permit).unwrap();
+    assert_eq!(edge.free_slot(), Some(1));
+    assert!(edge.allocate(0, 1).is_err());
+    assert_eq!(
+        checked(&mut c, true, |p| p.allocate(0, 1).unwrap()),
+        epoch + 1
+    );
+}
+
+#[test]
+fn checked_capture_reads_published_rows_while_next_vertex_writes() {
+    let mut c = empty_checked();
+    let epoch = checked(&mut c, true, |p| p.allocate(0, 2).unwrap());
+    for (row, data) in vertices()[0].rows().into_iter().enumerate() {
+        checked(&mut c, true, |p| {
+            p.write_row(0, epoch, 0, row, data).unwrap()
+        });
+    }
+    checked(&mut c, true, |p| p.publish(0, epoch, 0).unwrap());
+    checked(&mut c, true, |p| {
+        p.submit_task(Task {
+            vertices: [0; 3],
+            ..task(epoch)
+        })
+        .unwrap()
+        .unwrap()
+    });
+    let mut concurrent = 0;
+    for (row, data) in vertices()[1].rows().into_iter().enumerate() {
+        let permit = c.prepare_producer_edge(true);
+        let events = c.step(true, None).unwrap();
+        let mut p = c.bind_producer_edge(permit).unwrap();
+        assert!(
+            p.write_row(0, epoch, 0, row, 0).is_err(),
+            "published addresses cannot be overwritten"
+        );
+        p.write_row(0, epoch, 1, row, data).unwrap();
+        for event in events {
+            if let Event::ReadIssue { row: read, .. } = event {
+                assert!(read < 7 && read != 7 + row);
+                concurrent += 1;
+            }
+        }
+    }
+    assert_eq!(concurrent, 7);
+    checked(&mut c, true, |p| p.publish(0, epoch, 1).unwrap());
+    checked(&mut c, true, |p| p.finish(0, epoch).unwrap());
+}
 
 fn vertices() -> [Transformed; 3] {
     std::array::from_fn(|i| Transformed {
