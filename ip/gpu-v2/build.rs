@@ -142,6 +142,41 @@ fn main() {
         }
     }
     emit_table(&mut out, "RSQRT", "ReciprocalEntry", &rsqrt);
+    // Q13 endpoints, grouped slope residuals. The decode restores Q15 exactly;
+    // storage rounding is the only numerical change from the legacy Q15 ROM.
+    let mut endpoints = Vec::new();
+    for parity in 0..2 {
+        for segment in 0..64 {
+            let endpoint = |i: u32| {
+                (8192.0 / ((1.0 + f64::from(i) / 64.0) * f64::from(1_u32 << parity)).sqrt())
+                    .round_ties_even() as u64
+            };
+            let base = endpoint(segment);
+            endpoints.push((base, base - endpoint(segment + 1)));
+        }
+    }
+    let biases: Vec<_> = endpoints
+        .chunks(8)
+        .map(|group| group.iter().map(|&(_, delta)| delta).min().unwrap())
+        .collect();
+    let compressed: Vec<_> = endpoints
+        .iter()
+        .enumerate()
+        .map(|(i, &(base, delta))| {
+            let residual = delta - biases[i / 8];
+            assert!(base < 16384 && residual < 16 && delta < 64);
+            base | (residual << 14)
+        })
+        .collect();
+    writeln!(out, "pub const RSQRT_Q13_BIASES: [u64; 16] = {biases:?};").unwrap();
+    emit_table(&mut out, "RSQRT_Q13_BIAS", "ReciprocalBias", &biases);
+    emit_table(
+        &mut out,
+        "RSQRT_Q13_LIMIT",
+        "ReciprocalGroupLimit",
+        &(1..16).collect::<Vec<_>>(),
+    );
+    emit_table(&mut out, "RSQRT_Q13", "ReciprocalStoredEntry", &compressed);
     // Experimental direct length table; parity pages share the RSQRT address.
     let mut sqrt = Vec::new();
     for parity in 0..2 {

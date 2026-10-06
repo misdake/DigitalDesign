@@ -8,7 +8,7 @@ use resource_scheduler::{
     check_modulo, modulo_schedule_bounded, Graph, Limits, ModuloGraph, ModuloSchedule,
     ModuloViolation, SearchConfig,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_ISSUE: u64 = 1024;
 pub const MAX_II: u64 = 32;
@@ -33,6 +33,8 @@ pub struct NodeInfo {
     pub physical_kind: String,
     /// Logical table identity, independent of its replicated physical ports.
     pub read_memory: Option<String>,
+    /// Total physical word width at this read port, before any Q13 decode.
+    pub read_word_bits: Option<u32>,
     /// Audited operand and product widths, including multiplications inside MACs.
     pub multipliers: Vec<[u32; 3]>,
     pub bits: u32,
@@ -70,6 +72,33 @@ pub struct Slot {
     pub issue: u64,
     pub lane: usize,
 }
+/// Explicit offline calendar input. It is never loaded by production defaults.
+#[derive(Clone, Debug)]
+pub struct SchedulePlan {
+    pub ii: u64,
+    pub capacities: Vec<usize>,
+    pub slots: Vec<Slot>,
+    /// Mode enables are supplied at the input boundary, outside the arithmetic.
+    pub preconnected_modes: bool,
+}
+impl SchedulePlan {
+    pub(crate) fn agrees(&self, other: &Self) -> bool {
+        self.ii == other.ii
+            && self.capacities == other.capacities
+            && self.preconnected_modes == other.preconnected_modes
+            && self.slots.len() == other.slots.len()
+            && self
+                .slots
+                .iter()
+                .map(|s| (s.id, (s.issue, s.lane)))
+                .collect::<BTreeMap<_, _>>()
+                == other
+                    .slots
+                    .iter()
+                    .map(|s| (s.id, (s.issue, s.lane)))
+                    .collect::<BTreeMap<_, _>>()
+    }
+}
 /// Dependency-only earliest starts for one pixel, without resource sharing.
 /// Issues include hidden zero-latency wiring; no physical lanes are allocated.
 pub struct SinglePixel {
@@ -104,6 +133,44 @@ pub struct Workbench {
     order: Vec<usize>,
 }
 impl Workbench {
+    /// Project mode decodes to external input wires; numeric comparisons remain.
+    /// Existing arithmetic issue ages are retained until a caller edits/searches.
+    pub fn preconnected_modes(mut self) -> Self {
+        let mode_nodes: BTreeSet<_> = self
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.steps == ["compare"] && n.outputs.iter().any(|p| p.label.starts_with("mode."))
+            })
+            .map(|n| n.id)
+            .collect();
+        for &id in &mode_nodes {
+            self.graph.nodes[id].resource = None;
+            self.baseline.nodes[id].lane = None;
+        }
+        self.nodes.retain(|n| !mode_nodes.contains(&n.id));
+        let mut ancestors = vec![BTreeSet::new(); self.graph.nodes.len()];
+        for &id in &self.order {
+            for &parent in &self.graph.nodes[id].predecessors {
+                if self.graph.nodes[parent].resource.is_some() {
+                    ancestors[id].insert(parent);
+                } else {
+                    let inherited = ancestors[parent].clone();
+                    ancestors[id].extend(inherited);
+                }
+            }
+        }
+        for n in &mut self.nodes {
+            n.parents = ancestors[n.id].iter().copied().collect();
+            for port in &mut n.inputs {
+                port.sources.retain(|id| !mode_nodes.contains(id));
+            }
+        }
+        let mut baseline = self.baseline.clone();
+        self.normalize(&self.graph, &mut baseline);
+        self.baseline = baseline;
+        self
+    }
     pub fn new(profile: LightingProfile, full: bool) -> Result<Self, String> {
         Self::with_quantization(profile, full, LightingQuantization::CompensatedFloor)
     }
@@ -126,6 +193,37 @@ impl Workbench {
             options.retiming,
         )?;
         let physical = crate::lighting::rtl::physical_calendar_with_options(profile, options)?;
+        Self::from_program(p, physical, full, quantization)
+    }
+    /// The selected calendar and storage encoding, also used by emu and RTL.
+    pub fn with_calendar(
+        calendar: crate::lighting::calendars::UnifiedCalendar,
+        quantization: LightingQuantization,
+    ) -> Result<Self, String> {
+        let profile = LightingProfile::Fast;
+        let options = calendar.options(quantization);
+        let plans = calendar.plans(quantization)?;
+        let mut p = Program::with_retiming(
+            profile,
+            true,
+            options.dedicated_dsp,
+            options.kernel(),
+            options.role_schedule,
+            options.logic_depth,
+            options.retiming,
+        )?;
+        p.apply_plan(&plans[0])?;
+        let physical =
+            crate::lighting::rtl::physical_calendar_with_schedule_plans(profile, options, &plans)?;
+        Self::from_program(p, physical, true, quantization)
+    }
+    fn from_program(
+        p: Program,
+        physical: Vec<crate::lighting::rtl::CalendarInstruction>,
+        full: bool,
+        quantization: LightingQuantization,
+    ) -> Result<Self, String> {
+        let q13 = p.frame.memories.iter().any(|m| m.name == "RSQRT_Q13");
         let physical: std::collections::BTreeMap<_, _> = physical
             .into_iter()
             .filter(|i| i.full == full)
@@ -315,6 +413,24 @@ impl Workbench {
                     read_memory: p.frame.events.get(id).and_then(|e| match e.operation {
                         audited::Operation::Read { memory, .. } => {
                             Some(p.frame.memories[memory].name.clone())
+                        }
+                        _ => None,
+                    }),
+                    read_word_bits: p.frame.events.get(id).and_then(|e| match e.operation {
+                        audited::Operation::Read { memory, .. }
+                            if p.frame.memories[memory].kind != audited::MemoryKind::Input =>
+                        {
+                            Some(match p.frame.memories[memory].name.as_str() {
+                                "SQ" | "RSQRT" | "RSQRT_Q13" | "SQRT" => {
+                                    if q13 {
+                                        18
+                                    } else {
+                                        36
+                                    }
+                                }
+                                "POWER" | "POWER_MIDPOINT_Q15" => 28,
+                                _ => p.frame.memories[memory].format.bits,
+                            })
                         }
                         _ => None,
                     }),

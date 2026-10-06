@@ -5,7 +5,7 @@
 | [Architecture](architecture.md) | Crate boundary, component ports and model ownership |
 | [Functional oracle chain](oracle-chain.md) | Shared Rust mesh-to-framebuffer composition, configurable frontend precision, bounded FIFOs and A/B WebSocket review |
 | [Triangle-record transport](geometry-record-transport.md) | Bounded Rust two-slot publication, shared read-return credit, consumer release and normal-path source lease connection |
-| [Lighting](lighting.md) | Fast architecture, S2.10 normal, measured functions, DSP steering and explicit compensated-floor oracle/count/timed/emu/RTL contracts |
+| [Lighting](lighting.md) | Fast architecture, S2.10 normal, Q13 RSQRT TDP storage, unified II2 calendars and standalone board qualification |
 | [Rust browser review](../web/README.md) | Native Rayon/WebSocket A/B review, interactive lighting schedule workbench, optional historical WASM diagnostic, build and verification |
 | [Frontend](frontend.md) | Command processor, scratchpad, vertex transform and bounded Rust composition |
 | [Triangle](triangle.md) | Oracle-only clipping, coverage, perspective fields, precision study and workload analysis |

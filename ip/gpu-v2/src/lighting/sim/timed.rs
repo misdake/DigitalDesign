@@ -212,7 +212,7 @@ pub(super) fn kind(report: &FrameReport, event: usize) -> Result<Option<LaneKind
                 None
             } else {
                 Some(match report.memories[m].name.as_str() {
-                    "SQ" | "RSQRT" | "SQRT" => LaneKind::NormalizeRead,
+                    "SQ" | "RSQRT" | "RSQRT_Q13" | "SQRT" => LaneKind::NormalizeRead,
                     "POWER" | "POWER_MIDPOINT_Q15" => LaneKind::PowerRead,
                     "POWER_CONTEXT" => LaneKind::ContextRead,
                     _ => return Err("unknown lighting store".into()),

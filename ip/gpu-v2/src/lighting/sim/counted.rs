@@ -60,6 +60,9 @@ pub struct Report {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
+    /// Q13 endpoints encoded as U14 base + U4 grouped slope residual.
+    /// Decode is a checked combinational part of the normalization ROM boundary.
+    pub rsqrt_q13: bool,
     /// Queue contract: unlit is handled by the quad owner, never this kernel.
     pub lit_queue: bool,
     pub quantization: LightingQuantization,
@@ -201,12 +204,69 @@ enum SquareTable {
 struct Tables {
     direct_square: bool,
     square: SquareTable,
-    rsqrt: Memory<24, 0, false>,
+    rsqrt: RsqrtTable,
     sqrt: Option<Memory<25, 0, false>>,
     power: Memory<28, 0, false>,
     context: Memory<43, 0, false>,
     context_is_latched: bool,
     static_power: bool,
+}
+
+#[derive(Clone, Copy)]
+enum RsqrtTable {
+    Legacy(Memory<24, 0, false>),
+    Q13(Memory<18, 0, false>),
+}
+impl RsqrtTable {
+    fn new(model: &mut Model, compressed: bool) -> Result<Self, Fault> {
+        if compressed {
+            Ok(Self::Q13(model.table("RSQRT_Q13", &RSQRT_Q13)?))
+        } else {
+            Ok(Self::Legacy(model.table("RSQRT", &RSQRT)?))
+        }
+    }
+}
+
+fn rsqrt_entry(
+    f: &Arithmetic<'_, '_>,
+    table: RsqrtTable,
+    address: Fixed<7, 0, false>,
+    stage: &str,
+) -> Result<ReciprocalEntry, Fault> {
+    match table {
+        RsqrtTable::Legacy(table) => f.read(table.indexed(address)),
+        RsqrtTable::Q13(table) => {
+            let stored = named(
+                f,
+                &format!("{stage}.rsqrt.stored"),
+                f.read(table.indexed(address))?,
+            )?;
+            decode_rsqrt(f, stored, address, stage)
+        }
+    }
+}
+
+pub(super) fn decode_rsqrt(
+    f: &Arithmetic<'_, '_>,
+    stored: ReciprocalStoredEntry,
+    address: Fixed<7, 0, false>,
+    stage: &str,
+) -> Result<ReciprocalEntry, Fault> {
+    let group = f.slice::<4, 0, false, 3>(address)?;
+    let mut bias = RSQRT_Q13_BIAS[15];
+    for i in (0..15).rev() {
+        bias = f.select(f.less(group, RSQRT_Q13_LIMIT[i])?, RSQRT_Q13_BIAS[i], bias)?;
+    }
+    let base = f.resize_exact::<24, 0, false>(f.slice::<14, 0, false, 0>(stored)?)?;
+    let residual = f.resize_exact::<6, 0, false>(f.slice::<4, 0, false, 14>(stored)?)?;
+    let delta = f.resize_exact::<24, 0, false>(f.add_same(residual, bias)?)?;
+    let base = f.shift_left_const::<2, 24, 0, false>(base)?;
+    let delta = f.shift_left_const::<18, 24, 0, false>(delta)?;
+    named(
+        f,
+        &format!("{stage}.rsqrt.decoded"),
+        f.add_same(base, delta)?,
+    )
 }
 
 // Source-level DAG names are metadata: no new operations, reads or publications.
@@ -662,8 +722,10 @@ fn prepare_normalization(
             amount,
         });
     }
-    let entry = f.read(t.rsqrt.indexed(address))?;
-    f.name_value(&format!("{stage}.rsqrt_entry"), entry)?;
+    let entry = rsqrt_entry(f, t.rsqrt, address, stage)?;
+    if matches!(t.rsqrt, RsqrtTable::Legacy(_)) {
+        f.name_value(&format!("{stage}.rsqrt_entry"), entry)?;
+    }
     let base = f.slice::<16, 15, false, 0>(entry)?;
     let delta = f.slice::<8, 15, false, 16>(entry)?;
     let correction: Fixed<16, 23, false> = f.product(delta, fraction)?;
@@ -1376,10 +1438,16 @@ fn evaluate_with_preparation(
 ) -> Result<Report, Error> {
     validate(pixel, material, light, projection)?;
     let numerical_config = Config {
+        rsqrt_q13: false,
         lit_queue: false,
         weighted_view: false,
         ..config
     };
+    if config.rsqrt_q13
+        && (config.quantization != LightingQuantization::CompensatedFloor || config.weighted_view)
+    {
+        return Err(InputError::Configuration.into());
+    }
     if config.quantization == LightingQuantization::CompensatedFloor
         && numerical_config
             != Config::compensated_resource_profile(super::super::LightingProfile::Fast)
@@ -1556,7 +1624,7 @@ fn evaluate_with_preparation(
         } else {
             SquareTable::Magnitude(model.table("SQ", &SQUARE)?)
         },
-        rsqrt: model.table("RSQRT", &RSQRT)?,
+        rsqrt: RsqrtTable::new(&mut model, config.rsqrt_q13)?,
         sqrt: if config.weighted_view {
             Some(model.table("SQRT", &SQRT)?)
         } else {
@@ -1694,7 +1762,7 @@ pub fn prepare_half(
         } else {
             SquareTable::Magnitude(m.table("SQ", &SQUARE)?)
         },
-        rsqrt: m.table("RSQRT", &RSQRT)?,
+        rsqrt: RsqrtTable::new(&mut m, config.rsqrt_q13)?,
         sqrt: None,
         power: m.table("POWER", &POWER)?,
         context: m.table("POWER_CONTEXT", &CONTEXT)?,
@@ -1824,7 +1892,7 @@ pub fn prepare_flat(
         } else {
             SquareTable::Magnitude(m.table("SQ", &SQUARE)?)
         },
-        rsqrt: m.table("RSQRT", &RSQRT)?,
+        rsqrt: RsqrtTable::new(&mut m, config.rsqrt_q13)?,
         sqrt: None,
         power: m.table("POWER", &POWER)?,
         context: m.table("POWER_CONTEXT", &CONTEXT)?,
@@ -1918,7 +1986,7 @@ mod compact_tests {
                 static_power: false,
                 context_is_latched: false,
                 square: SquareTable::Signed(model.table("SQ", &SQUARE_SIGNED).unwrap()),
-                rsqrt: model.table("RSQRT", &RSQRT).unwrap(),
+                rsqrt: RsqrtTable::new(&mut model, false).unwrap(),
                 sqrt: None,
                 power: model.table("POWER", &POWER).unwrap(),
                 context: model.table("POWER_CONTEXT", &CONTEXT).unwrap(),

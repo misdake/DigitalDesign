@@ -23,7 +23,7 @@ fn scalar(kind: &Option<LaneKind>) -> bool {
 
 // Intern semantic expressions; runtime template sample values are never keys.
 // This estimates opportunities for shared sources, not fitted LUTs or routing.
-fn sources(p: &LoweredProgram) -> Vec<usize> {
+pub(super) fn sources(p: &LoweredProgram) -> Vec<usize> {
     fn visit(
         p: &LoweredProgram,
         v: usize,

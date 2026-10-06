@@ -15,6 +15,9 @@ HalfSum,17,14,true
 SquareEntry,14,0,false
 SquareSignedEntry,15,0,false
 ReciprocalEntry,24,0,false
+ReciprocalStoredEntry,18,0,false
+ReciprocalBias,6,0,false
+ReciprocalGroupLimit,4,0,false
 PowerEntry,28,0,false
 PowerContext,43,0,false
 ViewLengthEntry,25,0,false

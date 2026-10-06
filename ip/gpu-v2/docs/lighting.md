@@ -11,12 +11,136 @@ It independently validates manual issue/lane/II/capacity edits, preserving atomi
 DSP/logic fusion and recomputing zero-latency wiring. Exported schedules are host
 planning artifacts; they do not replace the emulator/RTL program automatically.
 
+## Unified lit calendar selected for the workbench
+
+`calendars::UnifiedCalendar::selected(quantization)` selects the reviewed
+free per-edge calendar for CompensatedFloor and the two-edge group calendar for
+NearestEven. The workbench loads this choice by default and keeps both optimized
+alternatives available for comparison. Two-edge grouping limits a DSP site to
+at most two neighboring groups; both alternatives accept one pixel every two
+advancing edges. It does not describe an II1 versus II2 comparison.
+
+Diffuse's separate arithmetic/calendar is removed in these configurations.
+All lit modes run the complete mathematical program at the same latency and II;
+retirement returns `(g,0)` for diffuse and `(ambient,0)` for ambient mode. Unlit
+still bypasses the lighting queue. Normal S(12,10) transport and working rounding
+boundaries remain fixed. The selected Floor/free configuration now uses the Q13
+RSQRT endpoint storage described below; its small numerical change is explicit.
+Context changes continue to drain.
+
+Generated fixtures per numerical policy, calendar and endpoint encoding live in
+`spec/lighting-calendars/`. `UnifiedCalendar::plans` and `options` feed the same
+explicit checked `LightingEmu::with_schedule_plans`, RTL generator and physical
+calendar export; the web server consumes these fixtures directly. The old
+constructors below remain separately qualified, and GPU backends do not silently
+migrate to a different admission contract.
+
+The [unified-calendar review](../../../target/lighting-unified-20261006/review.md)
+is the single evidence home for matched fits, all optimization rounds, DSP packing,
+selection rationale, exact HDL identities, behavioral/vendor operation traces and
+web checks. Floor now chooses the lower latency, free calendar; the grouped
+alternative retains its Logic, FF and DSP-input benefits at three extra edges
+and one extra BSRAM. The NearestEven group choice
+improves Logic, DSP count and latency at a FF cost.
+These are isolated Lighting-module results, not whole-GPU or board results.
+
+Storage is organized by numerical value, rather than one record containing an
+entire pixel's intermediate state. Each retained value has a format-specific
+delay chain sized by the producer-ready to last-use distance and II. The chain
+advances only on its scheduled enabled phase; CE and output stalls freeze it.
+Gowin can map those chains to FF, SSRAM or BSRAM without changing their logical
+order. The [memory attribution](../../../target/lighting-unified-20261006/review.md#storage-layout-and-attribution)
+records fitted counts and controlled synthesis checks of these categories.
+
+The selected free calendar carries IDs in a 20-word, 32-bit shift FIFO. The
+grouped comparison instead uses a 32-word, 32-bit addressed ring with read/write
+pointers and a registered output. Neither stores normal/color/UV payloads.
+`valid_pipe` is a per-age bit vector; one context remains latched until every
+in-flight pixel drains. The context contains epoch, mode, shininess code,
+light/projection vectors, intensities and the prepared power descriptor.
+
+The selected Floor/free normalization uses three identical 1024x18 true-dual-port
+DPX9B images, providing six independent synchronous read channels. SQ occupies
+0..255 (15 effective bits) and compressed RSQRT occupies 256..383 (18 bits);
+remaining addresses read zero. Full lighting performs nine SQ and three RSQRT
+reads per pixel at II2. Both ports share the datapath CE, use the primitive output
+bypass, and disable writes, primitive reset and the extra output register.
+Legacy and NearestEven configurations retain replicated 512x36 single-read
+images with base16/delta8 RSQRT and the optional SQRT extension at 384..511.
+The 886-entry power table declares 1024x16 base and 1024x12 delta arrays. The
+32x43 shininess context table packs boundary15, wide/fine shift4 each and two
+10-bit modular bases; only codes 0..16 are valid. Its current implementation
+uses logic rather than an additional fitted RAM block.
+
+### Q13 RSQRT storage contract
+
+Each of 128 entries stores an unsigned Q13 base in 14 bits and a four-bit delta
+residual. Consecutive groups of eight segments share a six-bit bias, generated
+as the smallest Q13 endpoint delta in that group. The address's parity bit and
+top three segment bits select one of sixteen fixed biases. Decode restores
+`base_q15 = base_q13 << 2` and
+`delta_q15 = (residual + bias[address >> 3]) << 2`.
+Endpoint generation uses nearest-even rounding; the selected Floor interpolation
+and all subsequent working formats remain unchanged. No negative zero is added.
+
+Counted records the raw 18-bit read and every decode operation. A checked,
+closed decoder topology places that combinational logic at the synchronous
+read's output age, without a separate arithmetic pipeline site. The four-bit
+group selector follows the same CE/stall schedule as the ROM data. Both encoded
+storage ports and decoder latency are covered by emu/behavioral/vendor checks.
+`options_legacy` / `plans_legacy` retain the previous exact Q15 endpoint baseline.
+
+The exhaustive 32,768-point lookup comparison changes the old Q15 result by at
+most two codes. Sampled general inputs change g by at most one Q8 code and h by
+two; the high-shininess/nearly antiparallel diagnostic frames reach three h codes
+and two display-channel codes. These downstream maxima are measurements, not
+all-input mathematical bounds. The simpler Q12 compression and the exact SSRAM
+replication trial are rejected: Q12 amplifies a near-zero half-vector case, while
+SSRAM spends substantially more logic and distributed memory for the same BSRAM
+saving. Detailed intermediate experiments remain local.
+
+Selected core qualification (serial harness, GW2AR-18C, Gowin 1.9.8.11 Education,
+66 MHz constraint; isolated Lighting, not whole GPU or physical-board proof):
+
+| Core | Logic | FF | BSRAM | RAM16 | Fmax MHz | Latency / II |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Q13 Floor/free | 2142 | 1953 | 7 | 27 | 76.452 | 38 / 2 |
+
+DSP stays eight MULT9X9, ten MULT18X18 and two paired MACs (nine macros).
+Both setup and hold have zero violations. The seven BSRAM are three normalization
+TDP banks, two POWER banks, one ID FIFO and one intermediate retention bank.
+The standalone 60 MHz board fixture adds nine answer/input ROMs; its offline
+qualification is separate from this core fit. Exact source/report receipts:
+`target/lighting-rsqrt-production-20261007/review.json`.
+
+Reproduce the stored-domain, counted-stage, mixed-pixel and physical-bank tests:
+
+```powershell
+cargo test --release -p gpu-v2 --test lighting_rsqrt
+cargo test --release -p gpu-v2 --lib q13_native_tdp -- --ignored --nocapture
+$env:LIGHTING_SELECTED_CALENDAR = "1"
+cargo test --release -p gpu-v2 --test lighting_cycles verilog_matches_cycle_payloads_and_all_published_stages -- --ignored --nocapture --test-threads=1
+Remove-Item Env:LIGHTING_SELECTED_CALENDAR
+```
+
+The last command checks CE, backpressure, context drain, reset, arbitrary IDs,
+output masks and every published stage against the independently validated
+executor, in behavioral HDL and actual Gowin primitives. For a matched exact
+endpoint export, also set `LIGHTING_LEGACY_RSQRT=1` on the probe below; this uses
+the separate legacy options/fixtures rather than modifying generated HDL.
+
+Reproduce the fixture exports and independent numerical traces with
+`lighting_two_cycle_probe <directory> rtl` and
+`LIGHTING_REVIEWED_CALENDAR=free|two-edge|selected`. Its generated testbench checks
+CE stalls, output backpressure, context drains, arbitrary 32-bit IDs, operation
+main results and published intermediate stages in both HDL implementations.
+
 The selected NDC input is S(16,14), generated directly from pixel centers with
 one RNE. View-ray products are S(32,28), converted to the Q14 working ray
 using the selected intermediate rounding policy.
 Normal working precision and Q14 light/projection uniforms remain unchanged.
 
-## Qualified 60 MHz lit-queue selection
+## Existing qualified lit-queue constructor
 
 `LightingRtlOptions::lit_queue_resource_profile` selects the same configuration
 used by `LightingEmu::lit_queue_resource_profile` and `sim::workbench`.
@@ -26,7 +150,7 @@ existing oracle/counting arithmetic, formats and output bits.
 
 | Profile / policy | Full latency | Diffuse latency | Full / diffuse II | Logic | FF | BSRAM | Fmax MHz |
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
-| Fast / CompensatedFloor | 38 | 19 | 2 / 1 | 2721 | 2279 | 9 | 69.637 |
+| Fast / CompensatedFloor | 38 | 19 | 2 / 1 | 2721 | 2279 | 10 | 69.637 |
 | Fast / NearestEven | 39 | 21 | 2 / 1 | 3849 | 2253 | 9 | 69.629 |
 
 Latencies count advancing edges; CE and output stalls extend wall-clock time.
@@ -36,7 +160,7 @@ Both have zero setup/hold violations at the qualification constraint.
 Source/report identities and the rejected/intermediate tradeoffs are retained
 in `target/multiplier-retiming/selected60` and neighboring experiment directories.
 
-The selected boundaries are:
+The qualified arithmetic boundaries are:
 
 - Ordinary MULT9X9/MULT18X18: operand/sign and PIPE registers bypassed, OUT enabled,
   one advancing edge. Explicit two/three-edge alternatives remain available.
@@ -463,7 +587,8 @@ there is no repeated squaring, runtime floating power or integer divider in coun
 
 * Normalization needs `1/sqrt(q)`, not the general reciprocal `1/q`.
   Write `q=2^e*t`, `1<=t<2`. Exponent parity selects two pages of 64 segments.
-  Each 24-bit entry packs Q15 base in 16 bits and Q15 delta in 8 bits.
+Legacy 24-bit entries pack Q15 base in 16 bits and Q15 delta in 8 bits;
+  the selected Q13 encoding above restores the same working fields.
   Eight segment-fraction bits drive `r0=base-RNE(delta*f/256)`; the exponent
   restores `r=r0*2^(-floor(e/2))`. Component products retain full precision
   before RNE to Q14. General RCP uses LUT+Newton elsewhere in the GPU;
@@ -483,6 +608,59 @@ Numerical interpolation policies are explicit and independently validated.
 
 ## Verification and reproduction
 
+### Standalone Tang Nano 20K qualification
+
+`examples/lighting_board/` exports the selected free per-edge CompensatedFloor
+calendar directly, with no CPU, SDRAM, geometry or whole-GPU integration.
+Lighting runs at 60 MHz from the onboard 27 MHz clock; the shared diagnostic
+reporter runs at 27 MHz. A bounded scoreboard compares actual DUT g/h, 32-bit
+pixel IDs and context epochs against generated independent integer-oracle ROMs.
+It traverses 22 contexts and 32 pixels twice: ambient, diffuse, all 17 shininess
+codes, signed S(12,10) boundaries, changing uniforms, CE stalls and backpressure.
+The second pass uses new epochs. User button S1 resets and restarts the test.
+
+Behavioral and Gowin-DSP simulations exercise independent 60/27 MHz clocks,
+mid-stream reset, forced numeric/identity/timeout failures, and decoded UART
+success/failure frames. Their PLL is bypassed; physical PLL frequency and timing
+are checked separately by the board fit. Offline evidence and the audited image
+identity live in `target/lighting_board_gowin/preparation.json`.
+
+```powershell
+cargo run --release -p gpu-v2 --example lighting_board -- --build
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 -Profile lighting-floor -Mode Audit
+# After power-on and a passing board-health gate; substitute the actual VCP.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 -Profile lighting-floor -Mode Full -Port COM8
+```
+
+Programming uses volatile SRAM. DDHT test ID `0x0c` reports status 0 after all
+1,408 comparisons pass; 1 means g/h mismatch, 2 identity/epoch mismatch,
+3 watchdog expiry, 4 unexpected output. Repeated status frames report a latched
+verdict rather than newly completed traversals. LEDs 1..6 show heartbeat, done,
+success, report toggle, UART busy and PLL lock. Require a passing `board-health`
+capture first with the same physical setup. Offline preparation does not prove
+physical-board operation.
+
+The explicit offline two-edge experiment uses `SchedulePlan`,
+`LightingEmu::with_schedule_plans` and `rtl::generate_with_schedule_plans`.
+These validate every dependency and recurring resource collision before lowering;
+ordinary constructors retain their qualified calendars. Mode-only comparisons
+may be declared preconnected input controls; numerical comparisons remain.
+`shared_prefix` requires explicit II2 plans for both modes and shares only complete,
+identically scheduled, mode-independent recipes. DSP sites in that earlier trial
+span at most two neighboring two-edge groups. Diffuse accepts one pixel every
+two edges and follows the full path's common prefix; its reduced rate and increased
+latency are explicit costs. No production configuration is changed automatically.
+
+Reproduce with the `lighting_two_cycle_probe` CSV export, the bounded
+`examples/lighting_two_cycle_schedule.py` search and its `--align-prefix` step,
+then the probe's `rtl` action with `LIGHTING_SHARED_PREFIX=1`.
+The [two-edge review](../../../target/lighting-two-cycle-20261006/review.md)
+contains the matching baseline/candidate fits, source and HDL identities, and
+independent numerical plus behavioral/vendor checks of each physical operation's
+main result and the published stages.
+This is a lighting-module experiment; full-system fitting and board validation
+remain outside its evidence.
+
 - Oracle is an independent integer reference plus an ideal floating comparison.
   Counted emits every numerical/read operation through audited Frame.
 - Timed binds the same graph, audits atomic DSP/logic fusion and checks recurring
@@ -494,7 +672,7 @@ Numerical interpolation policies are explicit and independently validated.
   whole-GPU/system integration and physical-board proof.
 
 Export the selected Fast probe with the `lighting_rtl_export` example, profile
-`fast`, options `steered-resource`, and `LIGHTING_LIT_QUEUE=1`. Select compensated
+`fast`, options `resource`, and `LIGHTING_LIT_QUEUE=1`. Select compensated
 floor with `LIGHTING_COMPENSATED_FLOOR=1`; otherwise nearest-even is retained.
 The qualified retiming is chosen by the common lit-queue constructor. The
 `lighting_cycles` ignored differential test uses `LIGHTING_CANONICAL_LIT_QUEUE=1`

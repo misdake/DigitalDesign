@@ -1,9 +1,11 @@
 //! Pixel lighting ports, three numerical models, cycle emulator and static RTL.
 
+pub mod calendars;
 mod datapath;
 pub mod emu;
 mod format;
 pub mod ports;
+pub mod rsqrt;
 pub mod rtl;
 pub mod sim;
 

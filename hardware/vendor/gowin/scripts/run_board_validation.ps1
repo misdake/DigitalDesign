@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("board-health", "cpu-v3-system")]
+    [ValidateSet("board-health", "cpu-v3-system", "lighting-floor")]
     [string]$Profile,
 
     [ValidateSet("Audit", "Observe", "Program", "Full")]
@@ -36,6 +36,14 @@ function Get-ProfileConfiguration {
                 Example = "board_health"
                 Output = "target/board_health_gowin"
                 TestIds = "0x0a"
+            }
+        }
+        "lighting-floor" {
+            return @{
+                Package = "gpu-v2"
+                Example = "lighting_board"
+                Output = "target/lighting_board_gowin"
+                TestIds = "0x0c"
             }
         }
         "cpu-v3-system" {

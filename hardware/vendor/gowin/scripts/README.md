@@ -29,7 +29,8 @@ read-only artifact checks, observation, and hardware mutation:
 | `Program` | Audit, optionally write either the boot package or a complete power-on Flash image, then program the audited SRAM bitstream exactly once. |
 | `Full` | Perform `Program`, then bounded VCP wait, capture, and protocol validation. |
 
-Supported profiles are the FPGA-alive `board-health` probe and the full CPU V3
+Supported profiles include the standalone GPU v2 `lighting-floor` qualification,
+the FPGA-alive `board-health` probe and the full CPU V3
 `cpu-v3-system` system (single-stage flash boot plus the SDRAM and HDMI datapaths).
 The board's selection latch powers up in the S2 slot, so `cpu-v3-system` boots the
 display application by default. That display application reports its own DDHT status
@@ -132,6 +133,7 @@ Assigned test IDs:
 | `0x07` | CPU V3 full system single-stage flash boot, S1 slider diagnostic (application reached) |
 | `0x0a` | Tang Nano 20K board clock/button/UART transport health probe |
 | `0x0b` | CPU V3 S2 display application per-frame status |
+| `0x0c` | GPU v2 selected Floor free per-edge Lighting, independent-oracle g/h and identity scoreboard |
 
 The former CPU V3 CPU-execution (`0x04`), SDRAM (`0x05`), boot-DMA (`0x06`),
 system-control-UART (`0x08`), device-path (`0x09`), and the read-only/diagnostic
@@ -168,6 +170,15 @@ boot results unless this probe first passes with the same physical setup.
 
 The `sdram_word_port` example predates this protocol and still sends a
 private `SDWP` frame; it is not validated by `check_uart_status.ps1`.
+
+The `lighting-floor` profile uses the module-owned `gpu-v2` example
+`lighting_board`. Lighting runs at 60 MHz and UART at 27 MHz (divider 234).
+It tests 1,408 outputs, including ambient/diffuse/full contexts, stalls and all
+shininess codes. It programs SRAM only and reports a sticky DDHT verdict every
+100 ms after completion. Its test ROMs belong to the board harness and are
+included in the whole-image fit. See `ip/gpu-v2/docs/lighting.md` for coverage,
+error codes and reproduction. Run `board-health` first, then `lighting-floor`
+with `-Mode Full` and the actual VCP; offline `-Mode Audit` needs no board.
 
 ## HDMI physical-link bring-up
 

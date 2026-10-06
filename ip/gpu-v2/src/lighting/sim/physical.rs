@@ -173,22 +173,30 @@ impl PeriodicSchedule {
         let mut layout = MemoryLayout::default();
         let sq = frame.memories.iter().position(|m| m.name == "SQ");
         let rsqrt = frame.memories.iter().position(|m| m.name == "RSQRT");
+        let q13 = frame.memories.iter().any(|m| m.name == "RSQRT_Q13");
         let mut normalization_banks = Vec::new();
-        if sq.is_some() || rsqrt.is_some() {
-            for lane in 0..h.normalize_reads {
+        if sq.is_some() || rsqrt.is_some() || q13 {
+            for lane in 0..if q13 {
+                h.normalize_reads.div_ceil(2)
+            } else {
+                h.normalize_reads
+            } {
                 normalization_banks.push(layout.banks.len());
                 layout.banks.push(MemoryBank {
                     name: format!("normalize.{lane}"),
                     kind: RamKind::Bsram,
-                    width: 36,
-                    depth: 512,
-                    ports: vec![MemoryPort {
-                        read: true,
-                        write: false,
-                        read_latency: h.rom_latency,
-                        write_latency: 1,
-                        initiation_interval: 1,
-                    }],
+                    width: if q13 { 18 } else { 36 },
+                    depth: if q13 { 1024 } else { 512 },
+                    ports: vec![
+                        MemoryPort {
+                            read: true,
+                            write: false,
+                            read_latency: h.rom_latency,
+                            write_latency: 1,
+                            initiation_interval: 1,
+                        };
+                        if q13 { 2 } else { 1 }
+                    ],
                     collision: ReadDuringWrite::Forbidden,
                 });
             }
@@ -200,14 +208,14 @@ impl PeriodicSchedule {
             .filter(|(_, m)| m.kind != MemoryKind::Input)
         {
             let copies = match m.name.as_str() {
-                "SQ" | "RSQRT" | "SQRT" => normalization_banks
+                "SQ" | "RSQRT" | "RSQRT_Q13" | "SQRT" => normalization_banks
                     .iter()
                     .map(|&bank| MemoryCopy {
                         slices: vec![MemorySlice {
                             bank,
                             base_row: if m.name == "SQRT" {
                                 384
-                            } else if m.name == "RSQRT" {
+                            } else if m.name == "RSQRT" || m.name == "RSQRT_Q13" {
                                 sq.map_or(0, |id| frame.memories[id].rows)
                             } else {
                                 0
@@ -289,9 +297,15 @@ impl PeriodicSchedule {
                     .ok_or("store not placed")?;
                 let copy = if frame.memories[memory].name == "SQ"
                     || frame.memories[memory].name == "RSQRT"
+                    || frame.memories[memory].name == "RSQRT_Q13"
                     || frame.memories[memory].name == "SQRT"
                 {
-                    r.lane.ok_or("ROM lane missing")?
+                    let lane = r.lane.ok_or("ROM lane missing")?;
+                    if q13 {
+                        lane / 2
+                    } else {
+                        lane
+                    }
                 } else {
                     0
                 };
@@ -299,7 +313,11 @@ impl PeriodicSchedule {
                     event: r.event,
                     copy,
                     ports: vec![
-                        0;
+                        if q13 && r.kind == Some(LaneKind::NormalizeRead) {
+                            r.lane.unwrap() % 2
+                        } else {
+                            0
+                        };
                         placement
                             .copies
                             .get(copy)

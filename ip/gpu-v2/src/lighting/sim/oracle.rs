@@ -39,6 +39,7 @@ impl RoundingPolicy {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
+    pub rsqrt_q13: bool,
     pub quantization: super::super::LightingQuantization,
     pub block_prescale: bool,
     pub direction_fraction: u32,
@@ -70,6 +71,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            rsqrt_q13: false,
             quantization: Default::default(),
             block_prescale: false,
             direction_fraction: format::Direction::FORMAT.fraction,
@@ -101,6 +103,7 @@ impl Config {
         let compensated =
             kernel.quantization == super::super::LightingQuantization::CompensatedFloor;
         Self {
+            rsqrt_q13: kernel.rsqrt_q13,
             quantization: kernel.quantization,
             block_prescale: kernel.block_prescale,
             scalar_norm: kernel.scalar_norm,
@@ -288,10 +291,15 @@ fn normalize(
         let fraction = tail % 256;
         let parity = exponent.rem_euclid(2);
         let endpoint = |i: i128| {
+            let stored_fraction = if c.rsqrt_q13 {
+                13
+            } else {
+                c.reciprocal_fraction
+            };
             quantize(
                 1.0 / ((1.0 + i as f64 / 64.0) * 2_f64.powi(parity)).sqrt(),
-                c.reciprocal_fraction,
-            )
+                stored_fraction,
+            ) << (c.reciprocal_fraction - stored_fraction)
         };
         let base = endpoint(segment);
         let delta = base - endpoint(segment + 1);
@@ -402,6 +410,14 @@ fn evaluate_inner(
     trace: bool,
 ) -> Result<Golden, InputError> {
     validate(pixel, material, light, projection)?;
+    if c.rsqrt_q13
+        && (c.reciprocal_fraction != 15
+            || c.reciprocal_work_extra != 0
+            || !c.approximate_rsqrt
+            || c.weighted_view)
+    {
+        return Err(InputError::Configuration);
+    }
     if c.quantization == super::super::LightingQuantization::CompensatedFloor
         && (c.direction_fraction != 14
             || c.reciprocal_fraction != 15

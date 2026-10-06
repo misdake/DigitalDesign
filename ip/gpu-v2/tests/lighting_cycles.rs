@@ -285,6 +285,7 @@ fn exercise(
     mut record: impl FnMut(LightingTick, LightingSignals, Vec<(u32, bool, String, i128)>),
 ) {
     let scalar = std::env::var_os("LIGHTING_SCALAR_NORM").is_some();
+    let selected = std::env::var_os("LIGHTING_SELECTED_CALENDAR").is_some();
     let block = std::env::var_os("LIGHTING_BLOCK_PRESCALE").is_some();
     let roles = std::env::var_os("LIGHTING_ROLE_SCHEDULE").is_some();
     let direct = std::env::var_os("LIGHTING_DIRECT_SQUARE").is_some();
@@ -313,11 +314,29 @@ fn exercise(
         kernel = counted::Config::lit_queue_resource_profile(profile, kernel.quantization);
     }
     kernel.weighted_view = std::env::var_os("LIGHTING_WEIGHTED_VIEW").is_some();
+    if selected {
+        kernel = counted::Config {
+            rsqrt_q13: true,
+            ..counted::Config::lit_queue_resource_profile(
+                LightingProfile::Fast,
+                gpu_v2::lighting::LightingQuantization::CompensatedFloor,
+            )
+        };
+    }
     let depth = std::env::var("LIGHTING_LOGIC_DEPTH")
         .ok()
         .map(|v| v.parse().unwrap())
         .unwrap_or(0);
-    let mut emu = if std::env::var_os("LIGHTING_CANONICAL_LIT_QUEUE").is_some() {
+    let mut emu = if selected {
+        let q = gpu_v2::lighting::LightingQuantization::CompensatedFloor;
+        let calendar = gpu_v2::lighting::calendars::UnifiedCalendar::selected(q);
+        LightingEmu::with_schedule_plans(
+            profile,
+            calendar.options(q),
+            &calendar.plans(q).unwrap(),
+            40000,
+        )
+    } else if std::env::var_os("LIGHTING_CANONICAL_LIT_QUEUE").is_some() {
         let options = gpu_v2::lighting::rtl::LightingRtlOptions::lit_queue_resource_profile(
             profile,
             kernel.quantization,
@@ -733,7 +752,20 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
             );
         }
         options.weighted_view = std::env::var_os("LIGHTING_WEIGHTED_VIEW").is_some();
-        let rtl = gpu_v2::lighting::rtl::generate_with_options(profile, options).unwrap();
+        let selected = std::env::var_os("LIGHTING_SELECTED_CALENDAR").is_some();
+        let rtl = if selected {
+            let q = gpu_v2::lighting::LightingQuantization::CompensatedFloor;
+            let calendar = gpu_v2::lighting::calendars::UnifiedCalendar::selected(q);
+            options = calendar.options(q);
+            gpu_v2::lighting::rtl::generate_with_schedule_plans(
+                profile,
+                options,
+                &calendar.plans(q).unwrap(),
+            )
+            .unwrap()
+        } else {
+            gpu_v2::lighting::rtl::generate_with_options(profile, options).unwrap()
+        };
         let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/gpu-v2-lighting/rtl-cosim-f{}-l{}-s{}-r{}-c{}-{profile:?}-resource-{resource}-dedicated-{dedicated}-scalar-{scalar}-block-{block}-roles-{roles}-direct-{direct}-depth-{}-stationary-{}-cut-{}-window-{}-normalff-{}",u8::from(options.retiming.measured_functions),options.retiming.extra_large_multiply,options.retiming.extra_small_multiply,options.retiming.extra_normalize_reads,u8::from(options.retiming.compact_lifetimes),options.logic_depth,options.stationary_logic,options.cost_cut,options.q_windows,options.shallow_normal_ff));
         let dir =
             if options.quantization == gpu_v2::lighting::LightingQuantization::CompensatedFloor {
@@ -760,6 +792,12 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
                 "../../target/lighting-lit-queue-20261006/rtl-{profile:?}-{:?}",
                 options.quantization
             ))
+        } else {
+            dir
+        };
+        let dir = if selected {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/lighting-rsqrt-production-20261007/selected-cosim")
         } else {
             dir
         };

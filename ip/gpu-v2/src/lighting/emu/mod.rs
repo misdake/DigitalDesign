@@ -20,6 +20,46 @@ pub struct LightingEmu {
     max_wall_ticks: u64,
 }
 impl LightingEmu {
+    /// Explicit offline experiment, with the same audited arithmetic as options.
+    pub fn with_schedule_plans(
+        profile: LightingProfile,
+        options: super::rtl::LightingRtlOptions,
+        plans: &[super::sim::workbench::SchedulePlan; 2],
+        max_wall_ticks: u64,
+    ) -> Result<Self, String> {
+        if options.unified_lit
+            && (profile != LightingProfile::Fast
+                || !options.lit_queue
+                || options.shared_prefix
+                || !plans[0].agrees(&plans[1]))
+        {
+            return Err("unified lit modes require one identical Fast lit-queue calendar".into());
+        }
+        let mut emu = Self::with_retiming(
+            profile,
+            options.kernel(),
+            options.role_schedule,
+            options.logic_depth,
+            options.retiming,
+            options.dedicated_dsp,
+            max_wall_ticks,
+        )?;
+        if options.unified_lit {
+            emu.programs[1] = Program::with_retiming(
+                profile,
+                true,
+                options.dedicated_dsp,
+                options.kernel(),
+                options.role_schedule,
+                options.logic_depth,
+                options.retiming,
+            )?;
+        }
+        for (program, plan) in emu.programs.iter_mut().zip(plans) {
+            program.apply_plan(plan)?;
+        }
+        Ok(emu)
+    }
     pub fn new(max_wall_ticks: u64) -> Result<Self, String> {
         Self::with_profile(LightingProfile::Fast, max_wall_ticks)
     }
@@ -325,6 +365,25 @@ impl LightingEmu {
             }
         }
         stages
+    }
+    /// Every physical result boundary, for offline calendar differential checks.
+    pub fn boundary_values(&self) -> Vec<(u32, bool, String, i128)> {
+        let mut values = Vec::new();
+        for token in &self.tokens {
+            let p = &self.programs[Self::program_index(token.context)];
+            for ins in &p.instructions {
+                if p.binding.kinds[ins.root].is_some() && token.age == ins.ready {
+                    let value = p.frame.events[ins.root].output.unwrap();
+                    values.push((
+                        token.request.id,
+                        p.full,
+                        format!("event:{}", ins.root),
+                        token.values[value].unwrap(),
+                    ));
+                }
+            }
+        }
+        values
     }
     fn execute_age(program: &Program, t: &mut Token) -> Result<(), String> {
         let mut keep = Vec::new();

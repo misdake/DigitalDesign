@@ -211,6 +211,10 @@ impl BoundDag {
             .map(|e| timed::dependencies(f, e))
             .collect::<Vec<_>>();
         let mut groups = Vec::new();
+        let decoded = super::rsqrt::members(f)?;
+        for &id in &decoded {
+            kinds[id] = None;
+        }
         if h.binding == Binding::LightingDsp {
             for e in &f.events {
                 if wiring_add(f, e.id) {
@@ -304,25 +308,60 @@ impl BoundDag {
                 cones.push(cone);
             }
             if h.measured_functions && h.cone_depth > 0 {
-                let reserved: BTreeSet<_> = cones
+                let mut reserved: BTreeSet<_> = cones
                     .iter()
                     .flat_map(|c| {
                         std::iter::once(c.result_event).chain(c.absorbed_events.iter().copied())
                     })
                     .collect();
+                reserved.extend(&decoded);
                 cones.extend(contract_logic_excluding(
                     f, h, &mut kinds, &groups, &reserved,
                 )?);
             }
             cones
         } else if h.cone_depth > 0 {
-            contract_logic(f, h, &mut kinds, &groups)?
+            contract_logic_excluding(f, h, &mut kinds, &groups, &decoded)?
         } else {
             Vec::new()
         };
         if !cones.is_empty() {
             dependencies = audited::physical::composed_dependencies(f, &groups, &cones)
                 .map_err(|e| format!("logic dependencies: {e:?}"))?;
+        }
+        // Decode the bias after the synchronous read, retaining its four-bit
+        // group selector rather than a six-bit predecoded coefficient.
+        for &id in &decoded {
+            if matches!(f.events[id].operation, Operation::Less | Operation::Select) {
+                let mut pending = f.events[id].inputs.clone();
+                let mut visited = BTreeSet::new();
+                while let Some(v) = pending.pop() {
+                    let e = &f.events[f.values[v].producer];
+                    if !visited.insert(e.id) {
+                        continue;
+                    }
+                    if matches!(e.operation, Operation::Read {memory,..} if f.memories[memory].name=="RSQRT_Q13")
+                    {
+                        dependencies[id].push(e.id);
+                    } else {
+                        pending.extend(&e.inputs);
+                    }
+                }
+                // Bias predicates use only the group address. Locate the read
+                // whose address feeds this decoder when it is not an ancestor.
+                for read in &f.events {
+                    if matches!(read.operation, Operation::Read {memory,..} if f.memories[memory].name=="RSQRT_Q13")
+                        && read
+                            .inputs
+                            .iter()
+                            .any(|&v| visited.contains(&f.values[v].producer))
+                    {
+                        dependencies[id].push(read.id);
+                    }
+                }
+                dependencies[id].sort_unstable();
+                dependencies[id].dedup();
+            }
         }
         Ok(Self {
             cones,
@@ -371,14 +410,6 @@ fn longest_logic_path(
         depths.insert(id, input_depth + usize::from(primitive_kinds[id].is_some()));
     }
     Ok(depths.values().copied().max().unwrap_or(0))
-}
-fn contract_logic(
-    f: &FrameReport,
-    h: Hardware,
-    kinds: &mut [Option<LaneKind>],
-    groups: &[FusedGroup],
-) -> Result<Vec<audited::physical::LogicCone>, String> {
-    contract_logic_excluding(f, h, kinds, groups, &BTreeSet::new())
 }
 fn contract_logic_excluding(
     f: &FrameReport,
