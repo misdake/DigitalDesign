@@ -286,7 +286,7 @@ fn exercise(
         LightingProfile::SystemFast | LightingProfile::SystemCompact
     );
     let factor = std::env::var_os("LIGHTING_FACTOR_KERNEL").is_some();
-    let kernel = if std::env::var_os("LIGHTING_COMPENSATED_FLOOR").is_some() {
+    let mut kernel = if std::env::var_os("LIGHTING_COMPENSATED_FLOOR").is_some() {
         counted::Config::compensated_resource_profile(profile)
     } else if system || factor {
         counted::Config {
@@ -303,6 +303,7 @@ fn exercise(
             ..counted::Config::architecture()
         }
     };
+    kernel.lit_queue = std::env::var_os("LIGHTING_LIT_QUEUE").is_some();
     let depth = std::env::var("LIGHTING_LOGIC_DEPTH")
         .ok()
         .map(|v| v.parse().unwrap())
@@ -329,7 +330,10 @@ fn exercise(
     } else if system {
         LightingEmu::with_kernel(profile, dedicated, kernel, true, 40_000)
     } else if resource {
-        LightingEmu::with_resource_profile(profile, 40_000)
+        // Preserve the selected quantization and lit-queue switches on both
+        // sides of the differential comparison; the convenience constructor
+        // would silently restore the default resource kernel.
+        LightingEmu::with_kernel(profile, dedicated, kernel, true, 40_000)
     } else {
         LightingEmu::with_kernel(profile, dedicated, kernel, roles, 40_000)
     }
@@ -351,6 +355,10 @@ fn exercise(
     let mut random = support::Random(0x37ba829183);
     let mut serial = 0_u32;
     for batch in 0..27 {
+        // Unlit is a quad-owner bypass, not a request in the queue contract.
+        if kernel.lit_queue && batch == 17 {
+            continue;
+        }
         let m = Material {
             shininess_code: (batch % 17) as u8,
             unlit: batch == 17,
@@ -422,11 +430,11 @@ fn exercise(
                 _ => std::array::from_fn(|_| random.next() as i16),
             };
             let ndc = match i {
-                0 => [-65536; 2],
-                1 => [65536; 2],
+                0 => [-16384; 2],
+                1 => [16384; 2],
                 2 | 5 | 6 => [0; 2],
                 8..=28 if batch == 20 => [500 + (i - 8), 0],
-                _ => std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536),
+                _ => std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384),
             };
             pixels.push(PixelInput { normal, ndc });
         }
@@ -620,7 +628,7 @@ fn clock_budget_and_accepted_input_validation_are_explicit() {
             input: Some(LightingRequest {
                 pixel: PixelInput {
                     normal: [0; 3],
-                    ndc: [65537, 0]
+                    ndc: [16385, 0]
                 },
                 id: 0
             }),
@@ -669,6 +677,12 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
                 ..Default::default()
             }
         };
+        options.lit_queue = std::env::var_os("LIGHTING_LIT_QUEUE").is_some();
+        // Explicit experiments must also override the resource constructor.
+        // Otherwise LIGHTING_SPLIT_CONES=0 silently tests the default backend.
+        if std::env::var_os("LIGHTING_SPLIT_CONES").is_some() {
+            options.split_cones = split;
+        }
         options.q_windows = std::env::var_os("LIGHTING_Q_WINDOWS").is_some();
         options.shallow_normal_ff = profile == LightingProfile::Fast
             && std::env::var_os("LIGHTING_SHALLOW_NORMAL_FF").is_some();
@@ -711,6 +725,21 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
                 options.retiming.measured_functions, options.retiming.extra_large_multiply,
                 options.retiming.extra_small_multiply, options.retiming.compact_lifetimes
             ))
+        } else {
+            dir
+        };
+        // Keep queue variants and both numerical policies in disjoint evidence
+        // directories; DSP steering must not overwrite the quantization suffix.
+        let dir = if options.lit_queue {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+                "../../target/lighting-lit-queue-20261006/rtl-{profile:?}-{:?}",
+                options.quantization
+            ))
+        } else {
+            dir
+        };
+        let dir = if !options.split_cones {
+            dir.join("unsplit-cones")
         } else {
             dir
         };

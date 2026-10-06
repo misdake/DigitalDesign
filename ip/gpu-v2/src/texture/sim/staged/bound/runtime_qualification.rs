@@ -93,6 +93,7 @@ pub(super) fn fixture() -> (Vec<Slot>, Vec<u8>) {
 }
 pub(super) fn input(id: u8, mask: u8, uv: [f64; 2], filter: Filter) -> QuadInput {
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: id,
         mask,
         uv: [uv; 4],
@@ -142,8 +143,8 @@ pub(super) fn golden(q: &QuadInput) -> Vec<color::Output> {
             let nearest = q.filter == Filter::Nearest;
             let mut axes = [(0_i32, 0_u32); 2];
             for (a, axis) in axes.iter_mut().enumerate() {
-                let uv = ((q.uv[lane][a] * 262144.0).round_ties_even() as i64).rem_euclid(262144);
-                let coord = (uv * (1 << n) * 256 / 262144) as i32 - if nearest { 0 } else { 128 };
+                let uv = ((q.uv[lane][a] * 65536.0).round_ties_even() as i64).rem_euclid(65536);
+                let coord = (uv * (1 << n) * 256 / 65536) as i32 - if nearest { 0 } else { 128 };
                 *axis = (
                     coord.div_euclid(256),
                     if nearest {
@@ -235,10 +236,16 @@ fn receipt(r: &Runtime, p: control::Hardware, name: &str) {
     } else {
         0
     };
+    // The accepted actual coordinate owner retains nearest through coefficient
+    // admission. The legacy 37-bit inventory omits this one bit per live slot.
+    let coordinate_owner_bits = (r.preparation.binding.coordinate.span() + 1)
+        .div_ceil(r.preparation.binding.coordinate.ii())
+        .min(p.coordinate_credits as u64);
     assert_eq!(
         actual.ff_bits as i64,
         (baseline.ff_bits + color_bits + LINK_STATE_BITS as u64 + 108 + 2 * a + q) as i64
             + correction
+            + coordinate_owner_bits as i64
             + if p.storage == control::Storage::Dedicated {
                 18
             } else {
@@ -260,7 +267,7 @@ fn receipt(r: &Runtime, p: control::Hardware, name: &str) {
                 actual.ram16x1_cells,
                 actual.hard_pipeline_bits
             ),
-            (16939, 56, 211, 1377)
+            (16453, 56, 211, 1377)
         );
     }
     println!(

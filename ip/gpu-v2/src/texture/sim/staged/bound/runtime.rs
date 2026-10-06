@@ -218,7 +218,17 @@ impl Runtime {
                 if self.poison {
                     let p = std::sync::Arc::get_mut(&mut preparation)
                         .expect("unique just-compiled source");
+                    for stage in [&mut p.preparation.derivative, &mut p.preparation.lod] {
+                        for output in &mut stage.frame.outputs {
+                            output.raw ^= 511;
+                            self.poison_hits += 1;
+                        }
+                    }
                     for lane in &mut p.preparation.lanes {
+                        for output in &mut lane.coordinate.frame.outputs {
+                            output.raw ^= 1023;
+                            self.poison_hits += 1;
+                        }
                         for output in &mut lane.coefficient.frame.outputs {
                             output.raw ^= 511;
                             self.poison_hits += 1;
@@ -289,6 +299,7 @@ impl Runtime {
             self.cache.packet_ready(),
             self.cache.packet_issue_ready(),
             &self.masks,
+            self.cache.external_context().0,
         )?;
         if preparation.accepted != compiled.is_some() {
             return Err("sampling runtime pre-edge ingress divergence".into());

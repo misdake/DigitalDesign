@@ -128,7 +128,7 @@ fn closed_stage_payloads_match_counted_and_oracle() {
                     }
                     if case % 3 == 0 {
                         q.uv = [[0.0; 2]; 4];
-                        q.uv[3][0] = 1.0 / 262144.0;
+                        q.uv[3][0] = 1.0 / 65536.0;
                     }
                     q.lod_bias = [-32.0, -2.0, 0.0, 0.5, 1.75, 8.5, 9.5, 32.0][case as usize % 8];
                     compare(&q, slot(n, mip));
@@ -138,10 +138,10 @@ fn closed_stage_payloads_match_counted_and_oracle() {
     }
     for uv in [
         0.0,
-        -1.0 / 262144.0,
-        1.0 - 1.0 / 262144.0,
-        1048576.0,
-        -1048576.0,
+        -1.0 / 65536.0,
+        1.0 - 1.0 / 65536.0,
+        1.9999847412109375,
+        -1.9999847412109375,
     ] {
         compare(&input(10, Filter::Bilinear, [uv; 2]), slot(10, true));
     }
@@ -152,10 +152,9 @@ fn single_boundary_wrap_matches_general_modulo_at_texture_edges() {
         for mip in [false, true] {
             for filter in [Filter::Nearest, Filter::Bilinear, Filter::Trilinear] {
                 for raw in [
-                    -262145, -262144, -1, 0, 1, 127, 128, 129, 262015, 262016, 262017, 262143,
-                    262144,
+                    -65537, -65536, -1, 0, 1, 127, 128, 129, 65407, 65408, 65409, 65535, 65536,
                 ] {
-                    let mut q = input(n, filter, [f64::from(raw) / 262144.0; 2]);
+                    let mut q = input(n, filter, [f64::from(raw) / 65536.0; 2]);
                     q.mask = 1;
                     q.lod_bias = 0.5;
                     compare(&q, slot(n, mip));
@@ -166,11 +165,12 @@ fn single_boundary_wrap_matches_general_modulo_at_texture_edges() {
 }
 #[test]
 fn short_normalization_is_exact_at_lod_grid_and_halfway_boundaries() {
-    for h in 0..=19 {
+    for h in 0..=17 {
         for k in 0..=64 {
-            for delta in [-1.0 / 262144.0, 0.0, 1.0 / 262144.0] {
+            for delta in [-1.0 / 65536.0, 0.0, 1.0 / 65536.0] {
                 let mut q = input(9, Filter::Trilinear, [0.13, 0.31]);
-                let rho = 2_f64.powi(h - 18) * (1.0 + f64::from(k) / 64.0 + 1.0 / 128.0);
+                let rho = 2_f64.powi(h - 16) * (1.0 + f64::from(k) / 64.0 + 1.0 / 128.0);
+                q.mask = 1;
                 q.uv[1][0] += rho + delta;
                 q.lod_bias = -2.5;
                 compare(&q, slot(9, true));
@@ -191,7 +191,7 @@ fn fixed_phase_control_preserves_contexts_and_packets_under_backpressure() {
         );
         q.quad_id = (i % 16) as u8;
         q.mask = [15, 9, 6, 1, 0][i % 5];
-        q.uv[3][0] = 1.0 / 262144.0;
+        q.uv[3][0] = 1.0 / 65536.0;
         q.lod_bias = [0.0, 9.5][i % 2];
         inputs.push(q);
     }

@@ -36,7 +36,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ];
                             let p = PixelInput {
                                 normal,
-                                ndc: [center + i32::from(dx) * step / 2, i32::from(dy) * step / 2],
+                                ndc: [
+                                    (center + i32::from(dx) * step / 2) / 4,
+                                    (i32::from(dy) * step / 2) / 4,
+                                ],
                             };
                             let m = Material {
                                 shininess_code: code,

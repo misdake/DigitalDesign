@@ -54,6 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             let mask = [15, 15, 15, 5, 3, 1][case % 6];
             let q = QuadInput {
+                force_coarsest: false,
                 quad_id: 0,
                 mask,
                 uv,

@@ -4,7 +4,7 @@ fn pixels(n: usize) -> Vec<PixelInput> {
     (0..n)
         .map(|i| PixelInput {
             normal: [7123, -519, 13567],
-            ndc: [i as i32 * 7919 % 131073 - 65536, 12345],
+            ndc: [(i as i32 * 7919 % 131073 - 65536) / 4, 3086],
         })
         .collect()
 }
@@ -68,7 +68,7 @@ fn physical_rows_and_restricted_hardware_are_checked() {
             },
         );
         assert_eq!(r.source_reads, 28);
-        assert_eq!(r.pixel_payload_bits, 672);
+        assert_eq!(r.pixel_payload_bits, 8 * 80);
         println!("restricted lanes={lanes} cycles={}", r.cycles);
     }
 }
@@ -175,7 +175,7 @@ fn modes_and_limits_have_explicit_boundaries() {
 }
 #[test]
 fn pixel_rows_roundtrip_boundaries_and_reject_unused_bits() {
-    for ndc in [-65536, -1, 0, 1, 65536] {
+    for ndc in [-16384, -1, 0, 1, 16384] {
         let p = PixelInput {
             normal: [i16::MIN, i16::MAX, -1],
             ndc: [ndc, -ndc],
@@ -254,11 +254,11 @@ fn fused_profiles_match_goldens_for_boundaries_codes_and_modes() {
         },
         PixelInput {
             normal: [i16::MIN, 0, 0],
-            ndc: [-65536, 65536],
+            ndc: [-16384, 16384],
         },
         PixelInput {
             normal: [32767; 3],
-            ndc: [65536, -65536],
+            ndc: [16384, -16384],
         },
         PixelInput {
             normal: [0, 0, 4],
@@ -266,7 +266,7 @@ fn fused_profiles_match_goldens_for_boundaries_codes_and_modes() {
         },
         PixelInput {
             normal: [63, -64, 65],
-            ndc: [12345, -54321],
+            ndc: [3086, -13580],
         },
     ];
     for code in 0..17 {
@@ -428,11 +428,11 @@ fn periodic_boundary_codes_and_short_modes_match_oracle_at_fixed_ii() {
         },
         PixelInput {
             normal: [32767; 3],
-            ndc: [65536, -65536],
+            ndc: [16384, -16384],
         },
         PixelInput {
             normal: [i16::MIN, 0, 0],
-            ndc: [-65536, 65536],
+            ndc: [-16384, 16384],
         },
         PixelInput {
             normal: [0, 0, 4],

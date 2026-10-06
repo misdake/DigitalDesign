@@ -22,7 +22,7 @@ fn main() {
             0,
             PixelInput {
                 normal,
-                ndc: std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536),
+                ndc: std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384),
             },
             Material {
                 shininess_code: (random.next() % 17) as u8,

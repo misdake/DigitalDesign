@@ -117,6 +117,7 @@ fn main() {
                 uv[3][0] = 1.0 / 262144.0;
             }
             let q = QuadInput {
+                force_coarsest: false,
                 quad_id: (case % 16) as u8,
                 mask: if profile == "perspective" {
                     (case % 15 + 1) as u8

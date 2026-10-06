@@ -46,7 +46,7 @@ fn main() {
                     let input = (sent < count).then(|| LightingRequest {
                         pixel: PixelInput {
                             normal: [8192, 4096, 12288],
-                            ndc: [sent * 17, 0],
+                            ndc: [(sent * 17) / 4, 0],
                         },
                         id: (sent as u32).wrapping_mul(0x9e3779b9) ^ 0x80004001,
                     });

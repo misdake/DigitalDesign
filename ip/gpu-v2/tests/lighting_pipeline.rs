@@ -98,7 +98,7 @@ fn pixels(n: usize) -> Vec<CompactPixelInput> {
                 [0; 3],
                 [1024, 0, 0],
             ][i % 5],
-            ndc: [(i as i32 * 7919 % 131073) - 65536, 31457],
+            ndc: [((i as i32 * 7919 % 131073) - 65536) / 4, 7864],
         })
         .collect()
 }

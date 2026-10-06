@@ -157,8 +157,8 @@ fn queue_pressure_prefetch_overlap_and_same_set_replacement() {
     let bytes = asset(slot, pattern);
     // Repeating boundary quads: 32 real groups, eight keys, shared sets across mips.
     let mut seam = input(9, Filter::Trilinear, [0.0; 2]);
-    seam.uv[3][0] = 1.0 / 262144.0;
-    seam.lod_bias = 9.5;
+    seam.uv[3][0] = 1.0 / 65536.0;
+    seam.lod_bias = 7.5;
     let inputs: Vec<_> = (0..24)
         .map(|i| {
             let mut q = seam.clone();

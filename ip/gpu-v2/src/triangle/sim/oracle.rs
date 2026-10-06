@@ -346,9 +346,9 @@ fn source(
                 f64::from(rgb >> 11) / 31.0,
                 f64::from((rgb >> 5) & 63) / 63.0,
                 f64::from(rgb & 31) / 31.0,
-                f64::from(v.normal[0]) / 16384.0,
-                f64::from(v.normal[1]) / 16384.0,
-                f64::from(v.normal[2]) / 16384.0,
+                f64::from(v.normal[0]) / 1024.0,
+                f64::from(v.normal[1]) / 1024.0,
+                f64::from(v.normal[2]) / 1024.0,
             ]
         })
     });
@@ -435,6 +435,9 @@ fn source(
     })
 }
 pub fn run(input: &Input, config: Config) -> Result<Report, String> {
+    for vertex in &input.vertices {
+        vertex.validate()?;
+    }
     run_inner(
         input,
         config,
@@ -693,7 +696,7 @@ fn finish(
     let uv = std::array::from_fn(|i| a[i]);
     let rgb = [a[2], a[3], a[4]];
     let normal = [a[5], a[6], a[7]];
-    let normal_raw = normal.map(|v| (v * 16384.0).round_ties_even());
+    let normal_raw = normal.map(|v| (v * 1024.0).round_ties_even());
     if normal_raw
         .iter()
         .any(|&v| v < f64::from(i32::MIN) || v > f64::from(i32::MAX))

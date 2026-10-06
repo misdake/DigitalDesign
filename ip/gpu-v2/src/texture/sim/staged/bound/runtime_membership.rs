@@ -65,6 +65,7 @@ struct Pairs {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Pipeline {
+    short_alignment: bool,
     input: Option<Input>,
     slice: Option<Slice>,
     equal: Option<Equal>,
@@ -75,6 +76,12 @@ pub(super) struct Pipeline {
     fault: bool,
 }
 impl Pipeline {
+    pub(super) fn with_short_alignment(short_alignment: bool) -> Self {
+        Self {
+            short_alignment,
+            ..Self::default()
+        }
+    }
     pub(super) fn inflight(&self) -> usize {
         [
             self.input.is_some(),
@@ -112,7 +119,11 @@ impl Pipeline {
     }
     fn advance(&mut self, input: Option<Input>) -> Result<Option<Member>, String> {
         let input = input.map(Input::validate).transpose()?;
-        let old_output = self.output;
+        let old_output = if self.short_alignment {
+            self.emit
+        } else {
+            self.output
+        };
         // All right-hand sides read old registers; commits are simultaneous.
         let emit = self
             .pairs
@@ -166,8 +177,16 @@ impl Pipeline {
             },
             nonzero: v.weights.map(|w| w != 0),
         });
-        self.output = self.align;
-        self.align = self.emit;
+        self.output = if self.short_alignment {
+            None
+        } else {
+            self.align
+        };
+        self.align = if self.short_alignment {
+            None
+        } else {
+            self.emit
+        };
         self.emit = emit;
         self.pairs = pairs;
         self.equal = equal;

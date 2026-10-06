@@ -18,7 +18,7 @@ pub fn vertex(screen: [f64; 2], w: f64, index: usize, c: Config) -> Transformed 
             (index as i32 + 1) * 12345,
             (w * 65536.0).round_ties_even() as i32,
         ],
-        normal: [[16384, 0, 16384], [-8192, 12288, 4096], [0, -16384, 8192]][index % 3],
+        normal: [[1024, 0, 1024], [-512, 768, 256], [0, -1024, 512]][index % 3],
         uv: [[0, 0], [4095, 0], [0, 4095]][index % 3],
         rgb565: [0xf800, 0x07e0, 0x001f][index % 3],
     }

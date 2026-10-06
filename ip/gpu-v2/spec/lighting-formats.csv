@@ -1,7 +1,7 @@
 # name,bits,fraction,signed
 Direction,16,14,true
 NormalInput,12,10,true
-Ndc,18,16,true
+Ndc,16,14,true
 PixelWord,36,0,false
 Magnitude,17,14,false
 NormalizedWork,32,28,true

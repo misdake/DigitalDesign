@@ -35,7 +35,7 @@ each A/B render gets independent FIFO, texture-cache and framebuffer state.
 | --- | --- | --- |
 | Mesh -> fetch | `MeshVertex`: position3, normal3, UV2, tint3; f64 | Ideal input or canonical96-bit `PackedVertex` v6; actual meshlet base/grid, S8F7 normals, UNORM12 UV and RGB565 tint |
 | Fetch -> vertex | `FetchedTriangle`: ID and three decoded vertices | Same logical interface for both fetch modes; no ideal color quantization at fetch |
-| Vertex -> setup | `TransformedTriangle`: ID, clip3x4, attributes3x8 | Continuous matrix oracle or existing integer S16F16 position/MVP + Q14 normal-matrix oracle. Selected normal output is Q14, S12F10 or SNORM12 |
+| Vertex -> setup | `TransformedTriangle`: ID, clip3x4, attributes3x8 | Continuous matrix oracle or integer S16F16 position/MVP + Q14 normal-matrix oracle with S12F10 output. Normal-format comparison switches remain Q14, S12F10 or SNORM12 |
 | Setup -> raster | Existing triangle `Report` | One backend. `run_continuous` retains clip as Q28 integer cofactors, f64 attributes; it shares all clipping, projection snapping, source preparation and coverage code with Q16 input `run` |
 | Raster -> shader | `RasterQuad`: triangle ID, aligned XY, coverage mask, four `Sample`s, invalid-helper mask | All valid helpers interpolate from the same original perspective fields, including uncovered lanes; no zero-filled derivative inputs |
 | Shader -> final | `ShadedQuad`: XY/mask, D16x4, tint8x12, texture8x12, g/hx4 | One original lighting arithmetic policy, floor only in power interpolation; texture uses the existing UNORM9 numerical contract and real functional cache |
@@ -110,9 +110,11 @@ whose extrapolated homogeneous denominator crosses the projective pole.
 Covered lanes must retain positive finite W; any failure stops the frame. Only
 the specific invalid-W helper condition is marked; unrelated errors propagate.
 The invalid helper temporarily carries a covered sample, **and a separate marker
-forces the coarsest mip** for that textured quad. It is never treated as a genuine
-zero derivative. `helper_fallbacks` records these quads. This initial functional
-composition policy is explicit, not a frozen hardware helper contract.
+forces the coarsest mip** for that textured quad. The selected S(18,16) boundary
+also marks uncovered UV codes outside [-2,2). Placeholder derivative work may
+execute, but the flag overrides LOD independently of bias or its value.
+Covered invalid UV still fails. `helper_fallbacks` records these quads. This
+policy is shared with the finite queue, counted, register emulators and RTL.
 
 Texture uses the existing16-set/4-way cache and actual RAW565 mip payloads through
 the GPU `MemoryPort`. The initial framebuffer oracle cache has eight direct-mapped

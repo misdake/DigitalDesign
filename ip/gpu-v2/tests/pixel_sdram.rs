@@ -84,8 +84,8 @@ fn reference_lighting_and_sampling_results_reach_final_color_and_depth() {
             let pixel = light::PixelInput {
                 normal: normals[(i + lane) % normals.len()],
                 ndc: [
-                    ((i + lane) as i32 % 3 - 1) * 65536,
-                    ((i + lane * 2) as i32 % 3 - 1) * 65536,
+                    ((i + lane) as i32 % 3 - 1) * 16384,
+                    ((i + lane * 2) as i32 % 3 - 1) * 16384,
                 ],
             };
             // Freeze the baseline Config::default on both paths; no mixing
@@ -112,9 +112,12 @@ fn reference_lighting_and_sampling_results_reach_final_color_and_depth() {
             );
             s.light[lane] = report.output;
         }
-        let u = i as f64 * 0.137 - 2.0;
-        let v = i as f64 * -0.093 + 1.0;
+        // Repeated seams and negative helpers remain inside the selected
+        // unwrapped S(18,16) domain; out-of-domain rejection is tested separately.
+        let u = (i % 17) as f64 * 0.137 - 1.0;
+        let v = (i % 17) as f64 * -0.093 + 1.0;
         let q = tex::QuadInput {
+            force_coarsest: false,
             quad_id: (i & 15) as u8,
             mask: s.quad.header.mask,
             uv: [[u, v], [u + 0.04, v], [u, v + 0.04], [u + 0.04, v + 0.04]],

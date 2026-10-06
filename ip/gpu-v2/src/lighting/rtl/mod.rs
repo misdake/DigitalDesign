@@ -25,6 +25,8 @@ fn token_read_offset(depth: usize, read_edge_captures: bool) -> usize {
 
 #[derive(Clone, Copy, Debug)]
 pub struct LightingRtlOptions {
+    /// Mode zero is an upstream quad bypass, excluded from this datapath.
+    pub lit_queue: bool,
     pub quantization: super::LightingQuantization,
     /// Physical input topology only; issue/ready edges and arithmetic stay fixed.
     pub dsp_steering: DspSteering,
@@ -64,6 +66,7 @@ pub struct LightingRtlOptions {
 impl Default for LightingRtlOptions {
     fn default() -> Self {
         Self {
+            lit_queue: false,
             quantization: Default::default(),
             dsp_steering: DspSteering::None,
             one_hot_dsp: false,
@@ -95,8 +98,9 @@ impl Default for LightingRtlOptions {
     }
 }
 impl LightingRtlOptions {
-    fn kernel(self) -> super::sim::counted::Config {
+    pub(crate) fn kernel(self) -> super::sim::counted::Config {
         super::sim::counted::Config {
+            lit_queue: self.lit_queue,
             quantization: self.quantization,
             scalar_norm: self.scalar_norm,
             scalar_normal: self.scalar_normal,
@@ -110,6 +114,16 @@ impl LightingRtlOptions {
         }
     }
     /// Complete checked resource alternative with the original stream ports.
+    pub fn lit_queue_resource_profile(
+        profile: LightingProfile,
+        quantization: super::LightingQuantization,
+    ) -> Self {
+        Self {
+            lit_queue: true,
+            quantization,
+            ..Self::steered_resource_profile(profile)
+        }
+    }
     pub fn resource_profile(profile: LightingProfile) -> Self {
         let k = super::sim::counted::Config::resource_profile(profile);
         Self {
@@ -2171,7 +2185,7 @@ assign out_epoch = ctx_epoch;
 always @* begin
  out_g={g}; out_h={h};
  case(ctx_mode)
-  0: begin out_g=9'd256; out_h=0; end
+  {unlit_output}
   1: begin out_g=ctx_i0; out_h=0; end
   2: begin out_g={dg};out_h=0;end
  endcase
@@ -2205,6 +2219,11 @@ end
 endmodule
 "#,
         body = body,
+        unlit_output = if options.lit_queue {
+            ""
+        } else {
+            "0: begin out_g=9'd256; out_h=0; end"
+        },
         sequential = sequential,
         full_calendar_next = if system_calendar && specular_ii == 4 {
             "{4'b0000,calendar[2:0],calendar[3]}"
@@ -2275,6 +2294,55 @@ fn hoist(input: &str) -> (String, String) {
 
 /// Actual per-pixel issue/ready calendar, including physical lane relocation.
 /// The block study below describes alternatives rather than this implemented body.
+pub(crate) struct CalendarInstruction {
+    pub full: bool,
+    pub event: usize,
+    pub lane: Option<usize>,
+    pub kind: String,
+    pub issue: usize,
+    pub ready: usize,
+}
+/// Read-only typed view of the exact post-steering RTL lowering. Event IDs are
+/// local to each mode, unlike the combined full/diffuse CSV export below.
+pub(crate) fn physical_calendar_with_options(
+    profile: LightingProfile,
+    options: LightingRtlOptions,
+) -> Result<Vec<CalendarInstruction>, String> {
+    let p = LoweredProgram::new(profile, options)?;
+    let keys: BTreeSet<_> = p
+        .instructions
+        .iter()
+        .filter_map(|i| {
+            p.binding.kinds[i.root]
+                .clone()
+                .map(|kind| (kind, p.schedule.nodes[i.root].lane.unwrap()))
+        })
+        .collect();
+    let lanes: BTreeMap<_, _> = keys
+        .into_iter()
+        .enumerate()
+        .map(|(id, k)| (k, id))
+        .collect();
+    let diffuse_base = p
+        .full
+        .iter()
+        .position(|full| !*full)
+        .ok_or("missing diffuse calendar")?;
+    Ok(p.instructions
+        .iter()
+        .map(|i| {
+            let kind = p.binding.kinds[i.root].as_ref();
+            CalendarInstruction {
+                full: p.full[i.root],
+                event: i.root - if p.full[i.root] { 0 } else { diffuse_base },
+                lane: kind.map(|k| lanes[&(k.clone(), p.schedule.nodes[i.root].lane.unwrap())]),
+                kind: kind.map_or_else(|| "wiring/input".into(), |k| format!("{k:?}")),
+                issue: i.issue,
+                ready: i.ready,
+            }
+        })
+        .collect())
+}
 pub fn operation_calendar_with_options(
     profile: LightingProfile,
     options: LightingRtlOptions,

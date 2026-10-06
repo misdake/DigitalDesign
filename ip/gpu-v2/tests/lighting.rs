@@ -119,7 +119,7 @@ fn reciprocal_work_precision_experiment_preserves_external_formats() {
     // Reproduced input where retaining an interpolation bit reaches the output.
     let pixel = PixelInput {
         normal: [31689, 5502, -5932],
-        ndc: [-56255, -29532],
+        ndc: [-14064, -7383],
     };
     let material = Material {
         shininess_code: 3,
@@ -170,7 +170,7 @@ fn seeded_sphere_and_shininess_sweep_match_and_measure_ideal_error() {
     for index in 0..1024 {
         let pixel = PixelInput {
             normal: random.direction(),
-            ndc: std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536),
+            ndc: std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384),
         };
         let light = Light {
             direction: random.direction(),
@@ -232,7 +232,7 @@ fn full_backlight_and_degenerate_half_keep_full_arithmetic() {
 fn oracle_precision_and_approximation_controls_are_effective() {
     let p = PixelInput {
         normal: [7123, -519, 13567],
-        ndc: [18319, -34891],
+        ndc: [4580, -8723],
     };
     let evaluate = |c| {
         oracle::evaluate(
@@ -325,7 +325,7 @@ fn invalid_inputs_and_event_limits_are_failures() {
     .is_err());
     assert!(counted::evaluate(
         PixelInput {
-            ndc: [65537, 0],
+            ndc: [16385, 0],
             ..p
         },
         m,

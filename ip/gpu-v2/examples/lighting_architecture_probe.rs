@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let pixel = PixelInput {
         normal: [7123, -519, 13567],
-        ndc: [21234, 12345],
+        ndc: [5308, 3086],
     };
     let mut out=String::from("profile,II,latency,half_slots,macros,bsram_pixel,ssram_pixel,retained_bits,normal_add18,normal_add36,increment18,logic_cones\n");
     for (name, hardware, material, ii) in [

@@ -7,6 +7,155 @@ that path alongside actual persistent Sampling Runtime/cache/ColorEmu results. T
 composers use controlled quad inputs, without command, geometry, rasterizer,
 RTL or board integration.
 
+## Explicit quad dispatcher and common contexts
+
+The selected dispatcher ingress carries S(12,10) normal, S(16,14) pixel-center
+NDC and unwrapped S(18,16) helper UV. Each compact lighting pixel contains68
+meaningful bits in two36-bit rows. Sampling carries eight18-bit UV components
+and one `force_coarsest` flag. Width accounting follows these effective fields;
+it does not imply a narrower fitted RAM geometry. Unlit/untextured still bypass
+their branch queues and never require unused input data to be valid.
+
+`dispatch::Dispatcher` is a separate bounded controller; the older J1 composers
+below retain their original contracts. `engines::BranchEngines` connects the
+dispatcher to the current Fast CompensatedFloor lit-only LightingEmu and the
+persistent Sampling Runtime. `composition::FinalBranches` adds the actual
+registered FinalEmu with an explicit external row-stream port. `backend::Backend`
+connects that port to the actual registered ROP/framebuffer cache emulator.
+Sampling's numerical/control qualification
+boundaries remain those in [texture.md](texture.md).
+
+The raster/attribute producer holds an `Input` until accepted into a configurable
+quad ingress FIFO. Each input carries an aligned 2x2 XY/mask, common-context ID,
+four RGB8/D16 basic values, four S12F10 normals plus S(16,14) NDC centers, and all
+four S(18,16) helper UV pairs and the coarsest-mip flag. Dispatch reserves a free one of 16 status slots, one
+basic-store writer and credit in each required branch queue, using pre-edge
+capacity. A blocked branch cannot cause partial dispatch. Moving attributes to
+the branch queues removes them from ingress; status retains no normal or UV.
+
+`CommonContext` owns lighting material/light/projection, optional texture
+slot/size/filter/bias, final alpha and ROP state. The configurable table has four
+entries by default, at most 16. It is currently a stable register-table model
+with mux read views, not an unlimited-port BRAM abstraction. A reference covers
+ingress and status through output publication. Context replacement is rejected
+while referenced. Lighting uniform changes wait for its real kernel to drain.
+Host generation/serial witnesses detect stale access and are not proposed wide
+hardware tags.
+
+Unlit never enters the lighting queue: its status starts with light-done coverage
+and final supplies g=256/h=0 without accessing light RAM. Untextured similarly
+bypasses the Sampling queue and sample RAM with RGB255. This allocation-marker
+representation avoids reading or writing stale payload rows. Other done bits
+are set only after actual single-port result writes; unsolicited, duplicate,
+uncovered and stale results latch terminal fault. Zero coverage allocates nothing.
+
+The basic writer uses one 32-bit write per enabled edge, alternating RGB24 and
+D16 rows for each covered lane. Final probes only the oldest status. It reserves
+one of two output slots before reading basic RGB, light and sample on their
+separate read ports; basic depth uses the next read. Returns capture on wall
+time even when CE is low. One held keyed final job receives the immutable
+specular color from common context. Final response writes RGBA32 then D16 in
+two separate edges. Uncovered output lanes contain zeros and remain masked.
+
+Row7 publication releases status and its context reference. Output independently
+holds XY/mask and the detached ROP-state snapshot, so no subsequent context
+lookup can change its meaning. ROP reads one output row through a reserved
+synchronous return and held skid; eight accepted rows release that output slot.
+No same-edge returned credit funds another admission. This conservative first
+controller uses one final arithmetic job at a time; its throughput is not the
+previous Lighting or framebuffer hot-path II. It is not dispatcher RTL evidence.
+
+`Dispatcher::inventory()` is the payload/array organization source of truth.
+Additional costs include the basic writer, final working state, context registers,
+FIFO metadata, output descriptors and two independently reserved return paths.
+The four payload stores have one read and one write per edge; no spare capacity
+is counted as an extra port. Physical primitive allocation and fitted mux/Logic
+are not inferred from logical widths.
+
+`pixel_dispatch_overnight` checks 72 controlled quads, all bypass combinations,
+partial masks, context pins, slot reuse, ordered output, CE/backpressure, single
+read/write ports and watchdogs. `pixel_engines_overnight` runs 36 quads through
+actual Lighting, Sampling and the nine-stage FinalEmu. It compares returned
+operands and every output color/depth row to independent goldens; memory is a
+stalled byte fixture. Neither
+test claims shared-MC performance, full final/ROP RTL or board validation.
+
+`FinalBranches` reserves one keyed final operation, advances the independent
+leaf once per wall edge, and returns only an actually consumed result to the
+dispatcher. Depth remains in the dispatcher. The leaf's fixed-stage arithmetic
+and its four result credits have separate timing certificates; the present
+single-job composition does not claim the arithmetic-only II=1 lower bound.
+`pixel_final_stage` exhaustively checks the division/rounding identities;
+`pixel_final_stage_rtl` compares a bounded registered RTL stream with the emu.
+The composition itself remains a Rust controller rather than integrated RTL.
+
+`BranchEngines::step_with_rop` polls Sampling's read view first, then invokes a
+single external framebuffer/physical-clock owner with the pre-edge held row.
+That owner must run once on every wall edge, including CE=0 and an empty row
+offer, and returns actual row acceptance. A branch fault switches the external
+owner to an explicit accepted-memory drain; retrying a partially advanced edge
+is not supported. `pixel_dispatch_shared_clock` checks this order with the real
+arbiter/gearbox/Combination, concurrent display/CPU reads, partial coverage and
+CE pauses, including unchanged memory guards. It uses actual FinalEmu; ROP row
+consumption is controlled there, with no framebuffer writes in that fixture.
+
+`raster_input::convert` consumes existing triangle-oracle `RasterQuad` attributes
+into this compact ingress contract. Covered RGB becomes UNORM8, depth retains
+D16, pixel centers produce S(16,14) NDC, and lit normals become S2.10 with an
+explicit clipping counter. All four UV helper lanes retain unwrapped S(18,16) codes;
+unlit/untextured attributes need no conversion. Textured nonprojectable helpers
+set the conservative coarsest-LOD flag; out-of-domain uncovered helpers do the
+same. Covered invalid UV still errors. Runtime and register-only Sampler share
+the flag semantics. `pixel_raster_ingress` checks actual triangle
+coverage/interpolation and independent branch offers, not live rasterizer RTL.
+
+## Actual backend and shared memory owner
+
+`backend::Backend` composes the independent branches, actual FinalEmu and
+`framebuffer::emu::FramebufferEmu`. Sampling's read view is polled before the
+cache invokes its `MemoryPort` exactly once per wall edge, including CE=0 and
+an empty output offer. Production GPU code depends only on GPU-owned ports;
+the real vendor arbiter/gearbox/controller is supplied by the test adapter.
+
+Each detached ROP row carries the immutable context snapshot. A differing ROP
+context waits for the old cache work to retire before row0 admission; the next
+seven rows must keep ticket/header/context and sequence. Same-context quads may
+use both cache output slots. Context switching retains resident tiles and dirty
+data. This conservative barrier avoids reading a newer material for old work;
+it is a baseline for later overlap optimization, not a new context RAM port.
+
+Closing waits for branches/Final and all eight output-row transfers, requests
+flush once, and reports completion only after actual framebuffer terminal ACKs.
+A failed edge is terminal: external transport cancels unpresented Sampling and
+drains accepted requests; already advanced edges must not be retried.
+
+`pixel_backend_shared_mc` checks thirty-six inputs across twenty tiles, all four
+lit/textured combinations, partial/empty masks, context changes, status reuse,
+CE and downstream backpressure. Real128B Sampling refills and framebuffer
+reads/writes share one `Combination` with CPU/display background reads. Every
+color/depth/guard/texture byte matches the independent full-image golden;
+accepted burst beat/terminal counts are checked. This closes the Rust backend
+numerical/transport path, not live DRAW ingress, integrated GPU RTL or board proof.
+
+`registered::RegisteredBranches` and `registered_backend::Backend` provide the
+new register-only Sampling alternative. They keep the same Dispatcher/Final/ROP
+ownership contracts but replace Runtime admission with direct S(18,16) helper UVs
+to `SamplerEmu`; no counted Program or preparation oracle executes on this live
+path. Lighting remains the independent lit-only Fast CompensatedFloor kernel.
+Sampling's held RGB96 quad-result bank feeds the existing single result-write
+port using one two-bit covered-lane cursor, without a second color buffer. The
+last covered-lane write transfers that held result; all other lanes wait in its
+bank under CE/backpressure. Status still retains neither normal nor UV.
+
+`pixel_registered_backend` repeats the independent full-image/guard proof with
+the actual register-only sampler, both serial optimizations enabled and one
+physical Combination shared with framebuffer and CPU/display traffic. A second
+case starts from actual triangle-oracle RasterQuads. The raw register sampler,
+Lighting and ROP/cache can still be instantiated independently. This is a Rust
+composition proof: Dispatcher, common-context management and the complete GPU
+connection are not yet RTL; triangle/raster inputs are numerical oracle output,
+not live DRAW/vertex/rasterizer hardware.
+
 ## Lighting-live connection
 
 `LightingLive::new(pixel, lighting_context, max_cycles)` owns one `Model` and one

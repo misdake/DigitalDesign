@@ -23,19 +23,26 @@ struct Selected {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Pipeline {
+    short_alignment: bool,
     input: Option<u128>,        //93, never a retained Member92+tap2
     selected: Option<Selected>, //76
     words: [Option<u128>; 7],   //E2..E8
     fault: bool,
 }
 impl Pipeline {
+    pub(super) fn with_short_alignment(short_alignment: bool) -> Self {
+        Self {
+            short_alignment,
+            ..Self::default()
+        }
+    }
     pub(super) fn inflight(&self) -> usize {
         usize::from(self.input.is_some())
             + usize::from(self.selected.is_some())
             + self.words.iter().filter(|v| v.is_some()).count()
     }
     pub(super) fn output(&self) -> Option<i128> {
-        self.words[6].map(|v| v as i128)
+        self.words[if self.short_alignment { 0 } else { 6 }].map(|v| v as i128)
     }
     pub(super) fn tick(&mut self, ce: bool, input: Option<Input>) -> Result<Option<i128>, String> {
         if self.fault {
@@ -103,7 +110,11 @@ impl Pipeline {
                 | u128::from(s.key % 4) << 70
         });
         for i in (1..7).rev() {
-            self.words[i] = self.words[i - 1];
+            self.words[i] = if self.short_alignment {
+                None
+            } else {
+                self.words[i - 1]
+            };
         }
         self.words[0] = packed;
         self.selected = selected;
