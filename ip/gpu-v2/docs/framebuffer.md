@@ -16,6 +16,55 @@ arithmetic emulator, or RTL. The oracle call's result availability is an explici
 schedule assumption; there is no certified multiplier, rounding, or packing
 latency. This component is not connected to the production GPU/system.
 
+## Actual registered ROP and cache emulator
+
+`arithmetic` adds one closed audited ROP graph and its matching typed-register
+`Pipeline`, plus the synthesizable eight-stage `rtl/rop_leaf.v`. Runtime operands
+cross input capture, depth comparison/RGB565 expansion, six 8x8 blend products,
+weighted sum with127, bounded division255, channel quantization products,
+quantization division and packing. The result is transferred eight enabled
+edges after acceptance; arithmetic II is1. CE freezes all stages and the two-bit
+lane key. These are generic arithmetic declarations, not fitted DSP/Logic data.
+
+`emu::FramebufferEmu` owns the existing four-bank/two-output-slot storage and
+advances that actual leaf exactly once per wall edge. It reads the eight source
+rows synchronously, issues four lane operations and reserves four result slots;
+color/depth writes occur separately after every result returns. It never runs
+the oracle or queues a precomputed pixel answer. ROP is deliberately serial;
+the earlier thirteen-edge fixture intervals below belong to `sim::bounded`.
+The new physical leaf and its issue/return masks are additional state, so the
+older logical-state total below is not an inventory of the new emulator.
+
+`emu::TOTAL_LOGICAL_BITS` declares 67767 logical bits: cache65536, output512,
+tags152, maintenance96, ROP working state525, output control52, configuration88,
+other control9 and the actual leaf797. ROP includes source-depth64 and both
+four-bit issue/return masks; phase reaches16 and needs five bits. Host statistics
+and watchdogs are excluded. This Rust state bill is separate from the RTL's
+implementation calendar and is not a fitted FF/BSRAM/Logic result.
+
+Maintenance remains independent of compute CE: first write data is prefetched
+before request presentation, consumed beats capture the next bank read into
+the sole skid, and held data/request never change under backpressure. Terminal
+ACK, including ACK on the final beat, governs dirty clear and tag publication.
+Fault discards compute work but drains presented/accepted transport; a watchdog
+or partially advanced adapter error requires external drain, never edge retry.
+Context replacement requires an idle cache; resident tiles survive replacement.
+
+`framebuffer_cache_emu` checks whole-byte guards against a separately addressed
+real-number golden, sixty quads across twenty tiles, both blends/all depth modes,
+zero-alpha depth write, CE/backpressure, continuous write supply and fault drain.
+`framebuffer_leaf_actual{,_rtl}` compares actual registered arithmetic with
+independent division goldens and bounded Icarus streams. `rtl::source()` now
+includes the actual synchronous-bank `rtl/framebuffer_cache.v` and ROP leaf.
+`framebuffer_cache_actual_rtl` checks complete color/depth/guard images, both
+blends, all depth functions, zero-alpha depth writes, cache eviction, CE and
+request/write stalls. It also checks continuous write supply, same-edge read
+acceptance/first beat, delayed and final-beat ACK, transport failure and compute
+fault drain. RTL and the independently authored cache emulator implement
+conservative calendars and are compared by externally committed images and
+transport invariants, not claimed identical per-edge cache schedules. No fitted
+BSRAM/Logic, fmax, integrated GPU RTL or board result is established here.
+
 ## Data and maintenance contracts
 
 Four true dual-port 1024x16 banks hold eight 16x16 tiles, with color in each bank's
@@ -153,12 +202,12 @@ Register lifetime reuse replaces duplicated contexts:
 | Two arithmetic token registers | Each result34, lane2, descriptor1, valid1 = 38 bits; explicit return owner assertions |
 
 Together with phase3, the pipeline state is 60+37+76+32+128+136+3 = **572 logical
-bits**, replacing the serial ROP's 552 plus active-valid bit: a **19-bit increase**
+bits**, replacing the serial ROP's 452 plus active-valid bit: a **119-bit increase**
 in retained logical state. The model modes are alternative implementations; they
 do not instantiate both working sets in hardware. The common state below is
 unchanged, giving 67016 logical modeled bits for this variant. Arithmetic internal
-registers, tag/RAW comparators, muxes and control cones remain unmeasured, so 19
-bits is not a fitted FF/Logic delta. No second 552-bit working set is allocated.
+registers, tag/RAW comparators, muxes and control cones remain unmeasured, so 119
+bits is not a fitted FF/Logic delta. No second 452-bit working set is allocated.
 
 A new header overlapping any uncommitted descriptor cannot issue cache reads.
 The next fixed admission opportunity after commit is offset 16, so repeated
@@ -284,12 +333,12 @@ values include a valid bit. Physical arithmetic pipeline registers remain unmeas
 | Two 8x32 output payloads | 512 | One final W plus one synchronous ROP R; physical candidate one 512x36 BSRAM |
 | Eight tags + valid + two dirty bits | 152 | Single control owner; no parallel replacement while pinned |
 | Maintenance: line3, target16+valid, write1, plane1, sector2, accepted1, presented1, beat5, skid64+valid | 96 | One active transaction; one-beat capture credit |
-| ROP: line3, phase4, header21, row-return32, source RGBA128, old color/depth128, result color/depth128+write flags8 | 552 | One active context; four retained lanes |
+| ROP: line3, phase4, header21, row-return32, source RGBA128, old color/depth128, result color/depth128+write flags8 | 452 | One active context; four retained lanes |
 | Output headers42 + present2 + ready2 + head1 + tail1 + fill-row4 | 52 | Two total slots, including partial producer slot |
 | Surface: two bases64, width10, height9 | 83 | Immutable configuration |
 | Context: depth-func3 + depth-write1 + blend1 | 5 | Immutable configuration |
 | Victim3, flush1, flush-complete1, fault1, miss-wait1, active-ROP1, active-maintenance1 | 9 | Control owner |
-| **Total logical modeled state** | **66997** | Excludes trace/statistics and external fixture memory |
+| **Total logical modeled state** | **66897** | Excludes trace/statistics and external fixture memory |
 
 The four cache BSRAMs reserve four physical blocks; unused parity is not free RAM.
 The output block reserves one further whole BSRAM (18432 physical bits) despite
