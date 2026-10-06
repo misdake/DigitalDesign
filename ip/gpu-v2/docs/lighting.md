@@ -1342,6 +1342,43 @@ for its independent scalar reference, `LightingEmu::compensated_resource_profile
 for cycle execution and `LightingRtlOptions::compensated_resource_profile` for
 RTL. Existing constructors retain their original nearest-even behavior.
 
+The lit-queue entry uses matching `Config::lit_queue_resource_profile(profile,
+quantization)`, `LightingEmu::lit_queue_resource_profile(profile, quantization,
+max_wall_ticks)` and `LightingRtlOptions::lit_queue_resource_profile(profile,
+quantization)` constructors. It excludes the outer unlit compare/branch and
+RTL output-mode selector. Mode0 is owned by the quad default-light bypass;
+counted/emu reject it, and RTL requires the caller to supply modes1/2/3.
+Ambient and diffuse control remain. The scheduling page selects this entry.
+Legacy standalone constructors and functional oracle retain unlit compatibility.
+Current cycle, numerical and two-backend stage evidence has one home in the
+[lit-queue review](../../../target/lighting-lit-queue-20261006/review.json);
+the earlier fitted area/frequency numbers do not describe this changed calendar.
+
+Fusion coverage depends on the numerical operation signature. The current Fast
+full floor calendar binds square-sum x3, inverse-head x3, diffuse-finish and
+power-head as measured one-cycle blocks. Its floor inverse-tail and normalized
+outputs do not match the RNE certificates and retain generic binding. The RNE
+calendar additionally binds inverse-tail x3 and normalized-output x6. Exact
+inventory is in [fusion inventory](../../../target/lighting-lit-queue-20261006/fusion-inventory.json).
+The workbench now exposes complete physical-block recipes and the final select
+predicate/alternatives, including whether the predicate belongs to another
+block. Many compare/select pairs are already within generic two-edge cones;
+their final `Select` label did not imply a separate physical mux stage. Escaping
+predicates and diagnostic values remain explicit boundaries. Measured one-edge
+certificates still require exact opcode/format/literal matches; presentation
+changes do not contract an unmatched cone.
+All current units have initiation interval1, including DSP/MAC, ROM and multi-edge
+logic. The RTL advances separate stage registers under the common datapath CE;
+there is no iterative, exclusively occupied unit in these configurations.
+The optional unsplit-cone backend retains the same issue/ready ages using
+output delay registers; numerical co-simulation alone does not certify its
+combinational timing. Select descriptions, constant classification and unit
+stripe verification are recorded in
+[block-detail review](../../../target/schedule-block-details-20261006/review.json).
+Normal abs/max/prescale and read-adjacent combinations remain separate unless
+their complete bound operation has a matching certificate; isolated probes do
+not silently reduce a cycle in the full implementation.
+
 The local arithmetic adapter chooses the policy before constructing the DAG:
 intermediate conversions floor, the diffuse Q28-to-Q8 factor uses one guard-bit
 increment, and final U18F16-to-U9F8 g/h conversions retain nearest-even. Floor is

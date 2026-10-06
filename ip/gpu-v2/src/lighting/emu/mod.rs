@@ -11,6 +11,7 @@ struct Token {
 }
 
 pub struct LightingEmu {
+    lit_queue: bool,
     programs: [Program; 2],
     context: Option<LightingContext>,
     tokens: VecDeque<Token>,
@@ -136,6 +137,7 @@ impl LightingEmu {
             return Err("zero clock budget".into());
         }
         Ok(Self {
+            lit_queue: kernel.lit_queue,
             programs: [
                 Program::with_retiming(
                     profile,
@@ -164,6 +166,21 @@ impl LightingEmu {
         })
     }
     /// Numerical execution of the selected measured resource-profile calendar.
+    pub fn lit_queue_resource_profile(
+        profile: LightingProfile,
+        quantization: super::LightingQuantization,
+        max_wall_ticks: u64,
+    ) -> Result<Self, String> {
+        Self::with_retiming(
+            profile,
+            super::sim::counted::Config::lit_queue_resource_profile(profile, quantization),
+            true,
+            0,
+            super::LightingRetiming::steered_resource_candidate(profile),
+            false,
+            max_wall_ticks,
+        )
+    }
     pub fn retimed_resource_profile(
         profile: LightingProfile,
         max_wall_ticks: u64,
@@ -354,6 +371,9 @@ impl LightingEmu {
         }
         if let Some(context) = tick.context.filter(|_| signals.context_ready) {
             context.validate().map_err(|e| format!("context: {e:?}"))?;
+            if self.lit_queue && context.mode() == 0 {
+                return Err("unlit context must bypass the lighting queue".into());
+            }
             self.context = Some(context);
             self.phase = 0;
             return Ok(signals);

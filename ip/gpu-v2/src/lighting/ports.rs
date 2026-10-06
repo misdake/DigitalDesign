@@ -266,6 +266,7 @@ pub struct LightingSignals {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputError {
+    UnlitQueue,
     Shininess,
     LightIntensity,
     LightDirection,

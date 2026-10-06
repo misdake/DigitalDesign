@@ -60,6 +60,8 @@ pub struct Report {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
+    /// Queue contract: unlit is handled by the quad owner, never this kernel.
+    pub lit_queue: bool,
     pub quantization: LightingQuantization,
     /// Explicit compact two-row S12F10 transport; Q14 working values are wiring.
     /// This format is currently a counted/oracle boundary, not a cycle profile.
@@ -97,6 +99,16 @@ pub struct Config {
     pub dedicated_dots: bool,
 }
 impl Config {
+    pub fn lit_queue_resource_profile(
+        profile: super::super::LightingProfile,
+        quantization: LightingQuantization,
+    ) -> Self {
+        Self {
+            lit_queue: true,
+            quantization,
+            ..Self::resource_profile(profile)
+        }
+    }
     /// Closed resource-profile contract with ROM midpoint and narrow final RNE.
     pub fn compensated_resource_profile(profile: super::super::LightingProfile) -> Self {
         Self {
@@ -867,6 +879,9 @@ fn outputs(f: &Arithmetic<'_, '_>, g: Intensity, h: Intensity) -> Result<(), Fau
 }
 fn kernel(f: &Arithmetic<'_, '_>, input: &Inputs, t: &Tables, config: Config) -> Result<(), Fault> {
     let mode = f.read(input.mode.at::<0>())?;
+    if config.lit_queue {
+        return lit_kernel(f, input, t, config, mode);
+    }
     f.branch(
         named(
             f,
@@ -874,265 +889,268 @@ fn kernel(f: &Arithmetic<'_, '_>, input: &Inputs, t: &Tables, config: Config) ->
             f.less(mode, Fixed::<2, 0, false>::constant::<1>())?,
         )?,
         |f| outputs(f, Intensity::constant::<256>(), Intensity::constant::<0>()),
+        |f| lit_kernel(f, input, t, config, mode),
+    )
+}
+// Lit queue excludes mode zero; no unlit comparator or control dependency.
+fn lit_kernel(
+    f: &Arithmetic<'_, '_>,
+    input: &Inputs,
+    t: &Tables,
+    config: Config,
+    mode: Fixed<2, 0, false>,
+) -> Result<(), Fault> {
+    let ia = f.read(input.intensities.at::<0>())?;
+    f.branch(
+        named(
+            f,
+            "mode.ambient_only",
+            f.less(mode, Fixed::<2, 0, false>::constant::<2>())?,
+        )?,
+        |f| outputs(f, ia, Intensity::constant::<0>()),
         |f| {
-            let ia = f.read(input.intensities.at::<0>())?;
+            let id = f.read(input.intensities.at::<1>())?;
+            let row0 = if input.flat.is_none() {
+                Some(f.read(input.pixel.at::<0>())?)
+            } else {
+                None
+            };
+            let row1 = if config.compact_normal {
+                None
+            } else {
+                Some(f.read(input.pixel.at::<1>())?)
+            };
+            let mut normal_factors = None;
+            let mut normal_gate = None;
+            let (n, nl, g, l) = if let Some(flat) = &input.flat {
+                let n = read3(f, flat.normal)?;
+                for (i, value) in n.iter().enumerate() {
+                    f.publish(&format!("n.{i}"), *value)?;
+                }
+                let nl = f.read(flat.nl.at::<0>())?;
+                f.publish("nl", nl)?;
+                f.publish("d", f.read(flat.d.at::<0>())?)?;
+                (n, nl, f.read(flat.g.at::<0>())?, read3(f, input.light)?)
+            } else {
+                let (normal, compact) = if config.compact_normal {
+                    let (normal, compact) = compact_normal(f, row0.unwrap())?;
+                    (normal, Some(compact))
+                } else {
+                    (
+                        [
+                            f.slice::<16, 14, true, 0>(row0.unwrap())?,
+                            f.slice::<16, 14, true, 16>(row0.unwrap())?,
+                            f.slice::<16, 14, true, 0>(row1.unwrap())?,
+                        ],
+                        None,
+                    )
+                };
+                name_vector(f, "normal.input", normal)?;
+                let policy = NormalizationPolicy {
+                    fast: config.dataflow,
+                    block: config.block_prescale,
+                    compact,
+                    compact_prescale: config.compact_prescale,
+                };
+                let n = if config.scalar_normal {
+                    let factors = prepare_normalization(
+                        f,
+                        normal,
+                        Magnitude::constant::<4>(),
+                        false,
+                        t,
+                        "n",
+                        policy,
+                    )?;
+                    normal_factors = Some(factors);
+                    factors.scaled
+                } else {
+                    normalize(f, normal, Magnitude::constant::<4>(), false, t, "n", policy)?
+                };
+                let l = read3(f, input.light)?;
+                let raw = dot(f, n, l, "normal_dot_light")?;
+                let nl = if let Some(factors) = normal_factors {
+                    f.publish("nl.raw", raw)?;
+                    let gate = f.select(
+                        factors.zero,
+                        Fixed::<1, 0, false>::constant::<0>(),
+                        f.less(Dot::constant::<0>(), raw)?,
+                    )?;
+                    let gate = if config.exact_normal_gate {
+                        exact_normal_gate(
+                            f,
+                            f.read(input.normal_lsb.unwrap().at::<0>())?,
+                            l,
+                            factors,
+                            raw,
+                        )?
+                    } else {
+                        gate
+                    };
+                    f.publish("nl.gate", gate)?;
+                    normal_gate = Some(gate);
+                    let narrow =
+                        f.round_to::<18, 16, true>(f.resize_exact::<30, 28, true>(raw)?)?;
+                    let product: Fixed<35, 31, true> = f.product(narrow, factors.reciprocal)?;
+                    let rounded =
+                        f.round_to::<18, 15, true>(f.resize_exact::<34, 31, true>(product)?)?;
+                    let rounded = f.select(
+                        factors.zero,
+                        Fixed::<18, 15, true>::constant::<0>(),
+                        rounded,
+                    )?;
+                    f.binary_scale(
+                        f.shift_left_const::<13, 34, 15, true>(f.resize_exact(rounded)?)?,
+                    )?
+                } else {
+                    raw
+                };
+                f.publish("nl", nl)?;
+                let d = clamp(f, nl, Dot::constant::<0>(), Dot::constant::<268435456>())?;
+                let d: Intensity = f.round_to(d)?;
+                f.publish("d", d)?;
+                let product: Fixed<18, 16, false> =
+                    named(f, "diffuse.light_product", f.product(id, d)?)?;
+                let (g, diffuse, sum) = super::pipeline::diffuse_finish(f, product, ia)?;
+                f.name_value("diffuse.intensity", diffuse)?;
+                f.name_value("diffuse.ambient_sum", sum)?;
+                (n, nl, g, l)
+            };
             f.branch(
                 named(
                     f,
-                    "mode.ambient_only",
-                    f.less(mode, Fixed::<2, 0, false>::constant::<2>())?,
+                    "mode.diffuse_only",
+                    f.less(mode, Fixed::<2, 0, false>::constant::<3>())?,
                 )?,
-                |f| outputs(f, ia, Intensity::constant::<0>()),
+                |f| outputs(f, g, Intensity::constant::<0>()),
                 |f| {
-                    let id = f.read(input.intensities.at::<1>())?;
-                    let row0 = if input.flat.is_none() {
-                        Some(f.read(input.pixel.at::<0>())?)
-                    } else {
-                        None
-                    };
-                    let row1 = if config.compact_normal {
-                        None
-                    } else {
-                        Some(f.read(input.pixel.at::<1>())?)
-                    };
-                    let mut normal_factors = None;
-                    let mut normal_gate = None;
-                    let (n, nl, g, l) = if let Some(flat) = &input.flat {
-                        let n = read3(f, flat.normal)?;
-                        for (i, value) in n.iter().enumerate() {
-                            f.publish(&format!("n.{i}"), *value)?;
+                    let mut half_factors = None;
+                    let h = if let Some(half) = input.half {
+                        let h = read3(f, half)?;
+                        for (i, value) in h.iter().enumerate() {
+                            f.publish(&format!("h.{i}"), *value)?;
                         }
-                        let nl = f.read(flat.nl.at::<0>())?;
-                        f.publish("nl", nl)?;
-                        f.publish("d", f.read(flat.d.at::<0>())?)?;
-                        (n, nl, f.read(flat.g.at::<0>())?, read3(f, input.light)?)
+                        h
                     } else {
-                        let (normal, compact) = if config.compact_normal {
-                            let (normal, compact) = compact_normal(f, row0.unwrap())?;
-                            (normal, Some(compact))
+                        let ray = if config.prepared_ray {
+                            let row2 = f.read(input.pixel.at::<2>())?;
+                            [
+                                f.slice::<16, 14, true, 16>(row1.unwrap())?,
+                                f.slice::<16, 14, true, 0>(row2)?,
+                                f.slice::<16, 14, true, 16>(row2)?,
+                            ]
                         } else {
-                            (
-                                [
-                                    f.slice::<16, 14, true, 0>(row0.unwrap())?,
-                                    f.slice::<16, 14, true, 16>(row0.unwrap())?,
-                                    f.slice::<16, 14, true, 0>(row1.unwrap())?,
-                                ],
-                                None,
-                            )
+                            let (x, y): (Ndc, Ndc) = if config.compact_normal {
+                                let row = f.read(input.pixel.at::<1>())?;
+                                (
+                                    f.slice::<18, 16, true, 0>(row)?,
+                                    f.slice::<18, 16, true, 18>(row)?,
+                                )
+                            } else {
+                                (
+                                    f.slice::<18, 16, true, 16>(row1.unwrap())?,
+                                    f.slice::<18, 16, true, 0>(f.read(input.pixel.at::<2>())?)?,
+                                )
+                            };
+                            f.name_value("screen.ndc_x", x)?;
+                            f.name_value("screen.ndc_y", y)?;
+                            let px: Fixed<34, 30, true> =
+                                f.product(x, f.read(input.projection.at::<0>())?)?;
+                            let py: Fixed<34, 30, true> =
+                                f.product(y, f.read(input.projection.at::<1>())?)?;
+                            f.name_value("view_ray.x_product", px)?;
+                            f.name_value("view_ray.y_product", py)?;
+                            [
+                                f.round_to(px)?,
+                                f.round_to(py)?,
+                                f.read(input.projection.at::<2>())?,
+                            ]
                         };
-                        name_vector(f, "normal.input", normal)?;
-                        let policy = NormalizationPolicy {
-                            fast: config.dataflow,
-                            block: config.block_prescale,
-                            compact,
-                            compact_prescale: config.compact_prescale,
-                        };
-                        let n = if config.scalar_normal {
+                        for (i, value) in ray.iter().enumerate() {
+                            f.publish(&format!("ray.{i}"), *value)?;
+                        }
+                        let v = normalize(
+                            f,
+                            ray,
+                            Magnitude::constant::<4>(),
+                            true,
+                            t,
+                            "v",
+                            (config.dataflow, config.block_prescale).into(),
+                        )?;
+                        let mut half = [Direction::constant::<0>(); 3];
+                        for i in 0..3 {
+                            let sum: HalfSum = f.add(l[i], v[i])?;
+                            let sum = f.binary_scale::<17, 15, true>(sum)?;
+                            half[i] = f.round_to(sum)?;
+                        }
+                        name_vector(f, "halfway.input", half)?;
+                        if config.scalar_norm {
                             let factors = prepare_normalization(
                                 f,
-                                normal,
-                                Magnitude::constant::<4>(),
+                                half,
+                                Magnitude::constant::<64>(),
                                 false,
                                 t,
-                                "n",
-                                policy,
+                                "h",
+                                (true, config.block_prescale).into(),
                             )?;
-                            normal_factors = Some(factors);
+                            half_factors = Some(factors);
                             factors.scaled
                         } else {
-                            normalize(f, normal, Magnitude::constant::<4>(), false, t, "n", policy)?
-                        };
-                        let l = read3(f, input.light)?;
-                        let raw = dot(f, n, l, "normal_dot_light")?;
-                        let nl = if let Some(factors) = normal_factors {
-                            f.publish("nl.raw", raw)?;
-                            let gate = f.select(
-                                factors.zero,
-                                Fixed::<1, 0, false>::constant::<0>(),
-                                f.less(Dot::constant::<0>(), raw)?,
-                            )?;
-                            let gate = if config.exact_normal_gate {
-                                exact_normal_gate(
-                                    f,
-                                    f.read(input.normal_lsb.unwrap().at::<0>())?,
-                                    l,
-                                    factors,
-                                    raw,
-                                )?
-                            } else {
-                                gate
-                            };
-                            f.publish("nl.gate", gate)?;
-                            normal_gate = Some(gate);
-                            let narrow =
-                                f.round_to::<18, 16, true>(f.resize_exact::<30, 28, true>(raw)?)?;
-                            let product: Fixed<35, 31, true> =
-                                f.product(narrow, factors.reciprocal)?;
-                            let rounded = f.round_to::<18, 15, true>(
-                                f.resize_exact::<34, 31, true>(product)?,
-                            )?;
-                            let rounded = f.select(
-                                factors.zero,
-                                Fixed::<18, 15, true>::constant::<0>(),
-                                rounded,
-                            )?;
-                            f.binary_scale(
-                                f.shift_left_const::<13, 34, 15, true>(f.resize_exact(rounded)?)?,
+                            normalize(
+                                f,
+                                half,
+                                Magnitude::constant::<64>(),
+                                false,
+                                t,
+                                "h",
+                                (config.dataflow, config.block_prescale).into(),
                             )?
-                        } else {
-                            raw
-                        };
-                        f.publish("nl", nl)?;
-                        let d = clamp(f, nl, Dot::constant::<0>(), Dot::constant::<268435456>())?;
-                        let d: Intensity = f.round_to(d)?;
-                        f.publish("d", d)?;
-                        let product: Fixed<18, 16, false> =
-                            named(f, "diffuse.light_product", f.product(id, d)?)?;
-                        let (g, diffuse, sum) = super::pipeline::diffuse_finish(f, product, ia)?;
-                        f.name_value("diffuse.intensity", diffuse)?;
-                        f.name_value("diffuse.ambient_sum", sum)?;
-                        (n, nl, g, l)
+                        }
                     };
-                    f.branch(
-                        named(
+                    let x: Specular = if let Some(hf) = half_factors {
+                        let nh = scalar_half_dot(f, n, hf, normal_factors)?;
+                        let published: Dot = f.binary_scale(
+                            f.shift_left_const::<13, 34, 15, true>(f.resize_exact(nh)?)?,
+                        )?;
+                        f.publish("nh", published)?;
+                        f.resize_exact(clamp(
                             f,
-                            "mode.diffuse_only",
-                            f.less(mode, Fixed::<2, 0, false>::constant::<3>())?,
-                        )?,
-                        |f| outputs(f, g, Intensity::constant::<0>()),
-                        |f| {
-                            let mut half_factors = None;
-                            let h = if let Some(half) = input.half {
-                                let h = read3(f, half)?;
-                                for (i, value) in h.iter().enumerate() {
-                                    f.publish(&format!("h.{i}"), *value)?;
-                                }
-                                h
-                            } else {
-                                let ray = if config.prepared_ray {
-                                    let row2 = f.read(input.pixel.at::<2>())?;
-                                    [
-                                        f.slice::<16, 14, true, 16>(row1.unwrap())?,
-                                        f.slice::<16, 14, true, 0>(row2)?,
-                                        f.slice::<16, 14, true, 16>(row2)?,
-                                    ]
-                                } else {
-                                    let (x, y): (Ndc, Ndc) = if config.compact_normal {
-                                        let row = f.read(input.pixel.at::<1>())?;
-                                        (
-                                            f.slice::<18, 16, true, 0>(row)?,
-                                            f.slice::<18, 16, true, 18>(row)?,
-                                        )
-                                    } else {
-                                        (
-                                            f.slice::<18, 16, true, 16>(row1.unwrap())?,
-                                            f.slice::<18, 16, true, 0>(
-                                                f.read(input.pixel.at::<2>())?,
-                                            )?,
-                                        )
-                                    };
-                                    f.name_value("screen.ndc_x", x)?;
-                                    f.name_value("screen.ndc_y", y)?;
-                                    let px: Fixed<34, 30, true> =
-                                        f.product(x, f.read(input.projection.at::<0>())?)?;
-                                    let py: Fixed<34, 30, true> =
-                                        f.product(y, f.read(input.projection.at::<1>())?)?;
-                                    f.name_value("view_ray.x_product", px)?;
-                                    f.name_value("view_ray.y_product", py)?;
-                                    [
-                                        f.round_to(px)?,
-                                        f.round_to(py)?,
-                                        f.read(input.projection.at::<2>())?,
-                                    ]
-                                };
-                                for (i, value) in ray.iter().enumerate() {
-                                    f.publish(&format!("ray.{i}"), *value)?;
-                                }
-                                let v = normalize(
-                                    f,
-                                    ray,
-                                    Magnitude::constant::<4>(),
-                                    true,
-                                    t,
-                                    "v",
-                                    (config.dataflow, config.block_prescale).into(),
-                                )?;
-                                let mut half = [Direction::constant::<0>(); 3];
-                                for i in 0..3 {
-                                    let sum: HalfSum = f.add(l[i], v[i])?;
-                                    let sum = f.binary_scale::<17, 15, true>(sum)?;
-                                    half[i] = f.round_to(sum)?;
-                                }
-                                name_vector(f, "halfway.input", half)?;
-                                if config.scalar_norm {
-                                    let factors = prepare_normalization(
-                                        f,
-                                        half,
-                                        Magnitude::constant::<64>(),
-                                        false,
-                                        t,
-                                        "h",
-                                        (true, config.block_prescale).into(),
-                                    )?;
-                                    half_factors = Some(factors);
-                                    factors.scaled
-                                } else {
-                                    normalize(
-                                        f,
-                                        half,
-                                        Magnitude::constant::<64>(),
-                                        false,
-                                        t,
-                                        "h",
-                                        (config.dataflow, config.block_prescale).into(),
-                                    )?
-                                }
-                            };
-                            let x: Specular = if let Some(hf) = half_factors {
-                                let nh = scalar_half_dot(f, n, hf, normal_factors)?;
-                                let published: Dot = f.binary_scale(
-                                    f.shift_left_const::<13, 34, 15, true>(f.resize_exact(nh)?)?,
-                                )?;
-                                f.publish("nh", published)?;
-                                f.resize_exact(clamp(
-                                    f,
-                                    nh,
-                                    Fixed::<18, 15, true>::constant::<0>(),
-                                    Fixed::<18, 15, true>::constant::<32768>(),
-                                )?)?
-                            } else {
-                                let nh = dot(f, n, h, "normal_dot_halfway")?;
-                                f.publish("nh", nh)?;
-                                f.round_to(clamp(
-                                    f,
-                                    nh,
-                                    Dot::constant::<0>(),
-                                    Dot::constant::<268435456>(),
-                                )?)?
-                            };
-                            f.publish("x", x)?;
-                            let p =
-                                power(f, x, f.read(input.code.at::<0>())?, t, config.power_floor)?;
-                            f.publish(
-                                if config.quantization == LightingQuantization::CompensatedFloor {
-                                    "power.midpoint_q15"
-                                } else {
-                                    "power"
-                                },
-                                p,
-                            )?;
-                            let p9: Intensity = f.round_to(p)?;
-                            let positive = match normal_gate {
-                                Some(gate) => gate,
-                                None => f.less(Dot::constant::<0>(), nl)?,
-                            };
-                            let p9 = f.select(positive, p9, Intensity::constant::<0>())?;
-                            f.publish("p9", p9)?;
-                            let product: Fixed<18, 16, false> =
-                                named(f, "specular.light_product", f.product(id, p9)?)?;
-                            outputs(f, g, f.round_to(product)?)
+                            nh,
+                            Fixed::<18, 15, true>::constant::<0>(),
+                            Fixed::<18, 15, true>::constant::<32768>(),
+                        )?)?
+                    } else {
+                        let nh = dot(f, n, h, "normal_dot_halfway")?;
+                        f.publish("nh", nh)?;
+                        f.round_to(clamp(
+                            f,
+                            nh,
+                            Dot::constant::<0>(),
+                            Dot::constant::<268435456>(),
+                        )?)?
+                    };
+                    f.publish("x", x)?;
+                    let p = power(f, x, f.read(input.code.at::<0>())?, t, config.power_floor)?;
+                    f.publish(
+                        if config.quantization == LightingQuantization::CompensatedFloor {
+                            "power.midpoint_q15"
+                        } else {
+                            "power"
                         },
-                    )
+                        p,
+                    )?;
+                    let p9: Intensity = f.round_to(p)?;
+                    let positive = match normal_gate {
+                        Some(gate) => gate,
+                        None => f.less(Dot::constant::<0>(), nl)?,
+                    };
+                    let p9 = f.select(positive, p9, Intensity::constant::<0>())?;
+                    f.publish("p9", p9)?;
+                    let product: Fixed<18, 16, false> =
+                        named(f, "specular.light_product", f.product(id, p9)?)?;
+                    outputs(f, g, f.round_to(product)?)
                 },
             )
         },
@@ -1259,9 +1277,15 @@ fn evaluate_with_preparation(
     ),
 ) -> Result<Report, Error> {
     validate(pixel, material, light, projection)?;
+    let numerical_config = Config {
+        lit_queue: false,
+        ..config
+    };
     if config.quantization == LightingQuantization::CompensatedFloor
-        && config != Config::compensated_resource_profile(super::super::LightingProfile::Fast)
-        && config != Config::compensated_resource_profile(super::super::LightingProfile::Compact)
+        && numerical_config
+            != Config::compensated_resource_profile(super::super::LightingProfile::Fast)
+        && numerical_config
+            != Config::compensated_resource_profile(super::super::LightingProfile::Compact)
     {
         return Err(InputError::Configuration.into());
     }
@@ -1293,6 +1317,9 @@ fn evaluate_with_preparation(
     } else {
         3
     };
+    if config.lit_queue && mode == 0 {
+        return Err(InputError::UnlitQueue.into());
+    }
     let flat_preparation = if config.flat_normal && mode >= 2 {
         Some(if let Some(cached) = cached_flat {
             cached.clone()

@@ -1,7 +1,8 @@
 //! Host scheduling editor over the same bound DAG as LightingEmu. Edits are
 //! planning artifacts: they do not silently replace the emulator's program.
-use super::counted;
-use crate::lighting::{datapath::Program, LightingProfile};
+use crate::lighting::{
+    datapath::Program, rtl::LightingRtlOptions, LightingProfile, LightingQuantization,
+};
 use audited::physical::{DspInventory, DspMode, DspUsage};
 use resource_scheduler::{
     check_modulo, modulo_schedule_bounded, Graph, Limits, ModuloGraph, ModuloSchedule,
@@ -19,12 +20,21 @@ pub struct PortInfo {
     pub description: String,
     /// Visible producers, after following hidden zero-latency wiring.
     pub sources: Vec<usize>,
+    /// Literal or format-only wiring of a literal, never a fixture's sampled value.
+    pub constant: bool,
 }
 #[derive(Clone, Debug)]
 pub struct NodeInfo {
     pub id: usize,
     pub label: String,
     pub resource: usize,
+    /// Exact post-steering RTL lane; commit is a cycle-program boundary.
+    pub physical_lane: Option<usize>,
+    pub physical_kind: String,
+    /// Logical table identity, independent of its replicated physical ports.
+    pub read_memory: Option<String>,
+    /// Audited operand and product widths, including multiplications inside MACs.
+    pub multipliers: Vec<[u32; 3]>,
     pub bits: u32,
     pub stable: bool,
     pub parents: Vec<usize>,
@@ -33,6 +43,13 @@ pub struct NodeInfo {
     pub outputs: Vec<PortInfo>,
     pub program_lines: Vec<usize>,
     pub explanation: String,
+    /// Complete lowered recipe owned by this physical instruction, in DAG order.
+    pub recipe: Vec<String>,
+    /// Arithmetic stages, including comparisons hidden behind a final select.
+    pub steps: Vec<String>,
+    /// Final select's predicate and alternatives; predicate may come from a
+    /// separate block, explicitly marked rather than silently claiming fusion.
+    pub choice: Option<[String; 4]>,
 }
 /// A readable expansion of the actual audited kernel, with an exact operator
 /// range and the originating Rust call site. Fusion may own several lines.
@@ -58,6 +75,7 @@ pub struct Slot {
 pub struct SinglePixel {
     pub issues: Vec<u64>,
     pub span: u64,
+    pub bypassed: Vec<usize>,
 }
 #[derive(Clone, Debug)]
 pub struct Conflict {
@@ -76,6 +94,9 @@ pub struct Inspection {
     pub dsp: DspUsage,
 }
 pub struct Workbench {
+    pub quantization: LightingQuantization,
+    /// Accept-to-valid latency of the reviewed cycle program, in advancing edges.
+    pub latency: usize,
     pub graph: Graph,
     pub nodes: Vec<NodeInfo>,
     pub baseline: ModuloSchedule,
@@ -84,17 +105,40 @@ pub struct Workbench {
 }
 impl Workbench {
     pub fn new(profile: LightingProfile, full: bool) -> Result<Self, String> {
+        Self::with_quantization(profile, full, LightingQuantization::CompensatedFloor)
+    }
+    pub fn with_quantization(
+        profile: LightingProfile,
+        full: bool,
+        quantization: LightingQuantization,
+    ) -> Result<Self, String> {
         if !matches!(profile, LightingProfile::Fast | LightingProfile::Compact) {
             return Err("workbench v1 supports Fast and Compact".into());
         }
-        let p = Program::with_kernel_depth(
+        let options = LightingRtlOptions::lit_queue_resource_profile(profile, quantization);
+        let p = Program::with_retiming(
             profile,
             full,
-            false,
-            counted::Config::architecture(),
-            false,
-            0,
+            options.dedicated_dsp,
+            options.kernel(),
+            options.role_schedule,
+            options.logic_depth,
+            options.retiming,
         )?;
+        let physical = crate::lighting::rtl::physical_calendar_with_options(profile, options)?;
+        let physical: std::collections::BTreeMap<_, _> = physical
+            .into_iter()
+            .filter(|i| i.full == full)
+            .map(|i| (i.event, i))
+            .collect();
+        for i in &p.instructions {
+            let rtl = physical
+                .get(&i.root)
+                .ok_or("missing physical instruction")?;
+            if (i.issue, i.ready) != (rtl.issue, rtl.ready) {
+                return Err("RTL and cycle-program operation ages disagree".into());
+            }
+        }
         let mut order = Vec::new();
         let mut visited = vec![false; p.graph.nodes.len()];
         while order.len() < p.graph.nodes.len() {
@@ -197,8 +241,18 @@ impl Workbench {
         // also have a branch gate in the scheduler; that gate must not become
         // a fictitious producer of every variable in the branch.
         let mut data_sources = vec![BTreeSet::new(); p.frame.values.len()];
+        let mut constants = vec![false; p.frame.values.len()];
         for e in &p.frame.events {
             let Some(v) = e.output else { continue };
+            constants[v] = e.operation == audited::Operation::Literal
+                || matches!(
+                    e.operation,
+                    audited::Operation::Resize
+                        | audited::Operation::BinaryScale
+                        | audited::Operation::Slice(_)
+                        | audited::Operation::ShiftLeft(_)
+                        | audited::Operation::RescaleFloor(_)
+                ) && e.inputs.iter().all(|&input| constants[input]);
             let root = p
                 .instructions
                 .iter()
@@ -225,6 +279,7 @@ impl Workbench {
                     operation(producer)
                 ),
                 sources: data_sources[v].iter().copied().collect(),
+                constant: constants[v],
             }
         };
         let nodes = p
@@ -253,6 +308,33 @@ impl Workbench {
                     id,
                     label: labels.join(" · "),
                     resource,
+                    physical_lane: physical.get(&id).and_then(|i| i.lane),
+                    physical_kind: physical
+                        .get(&id)
+                        .map_or_else(|| "commit".into(), |i| i.kind.clone()),
+                    read_memory: p.frame.events.get(id).and_then(|e| match e.operation {
+                        audited::Operation::Read { memory, .. } => {
+                            Some(p.frame.memories[memory].name.clone())
+                        }
+                        _ => None,
+                    }),
+                    multipliers: p
+                        .instructions
+                        .iter()
+                        .find(|i| i.root == id)
+                        .into_iter()
+                        .flat_map(|i| &i.members)
+                        .filter_map(|&m| {
+                            let e = &p.frame.events[m];
+                            (e.operation == audited::Operation::Multiply).then(|| {
+                                [
+                                    p.frame.values[e.inputs[0]].format.bits,
+                                    p.frame.values[e.inputs[1]].format.bits,
+                                    p.frame.values[e.output.unwrap()].format.bits,
+                                ]
+                            })
+                        })
+                        .collect(),
                     bits,
                     stable,
                     parents: ancestors[id].iter().copied().collect(),
@@ -280,10 +362,76 @@ impl Workbench {
                         || "Publish diffuse and specular factors".into(),
                         |v| semantic[v].clone(),
                     ),
+                    recipe: program
+                        .iter()
+                        .filter(|line| {
+                            p.instructions
+                                .iter()
+                                .find(|i| i.root == id)
+                                .is_some_and(|i| i.members.contains(&line.event))
+                                || id == line.event && id >= p.frame.events.len()
+                        })
+                        .map(|line| format!("{}{}{}", line.before, line.operator, line.after))
+                        .collect(),
+                    steps: p
+                        .instructions
+                        .iter()
+                        .find(|i| i.root == id)
+                        .into_iter()
+                        .flat_map(|i| &i.members)
+                        .filter_map(|&m| {
+                            use audited::Operation as O;
+                            Some(
+                                match p.frame.events[m].operation {
+                                    O::Add => "add",
+                                    O::Sub => "subtract",
+                                    O::Multiply => "multiply",
+                                    O::Less => "compare",
+                                    O::Select => "select",
+                                    O::Shift => "shift",
+                                    O::LeadingZeros => "leading zeros",
+                                    O::RoundIncrement(_) => "round control",
+                                    O::Read { .. } => "read",
+                                    _ => return None,
+                                }
+                                .to_string(),
+                            )
+                        })
+                        .collect(),
+                    choice: p.instructions.iter().find(|i| i.root == id).and_then(|i| {
+                        let e = i
+                            .members
+                            .iter()
+                            .rev()
+                            .map(|&m| &p.frame.events[m])
+                            .find(|e| e.operation == audited::Operation::Select)?;
+                        let test = &p.frame.events[p.frame.values[e.inputs[0]].producer];
+                        let condition = if test.operation == audited::Operation::Less {
+                            format!(
+                                "{} < {}",
+                                value_names[test.inputs[0]], value_names[test.inputs[1]]
+                            )
+                        } else {
+                            value_names[e.inputs[0]].clone()
+                        };
+                        Some([
+                            condition,
+                            value_names[e.inputs[1]].clone(),
+                            value_names[e.inputs[2]].clone(),
+                            if i.members.contains(&test.id) {
+                                "internal"
+                            } else {
+                                "external"
+                            }
+                            .into(),
+                        ])
+                    }),
                 })
             })
             .collect();
         Ok(Self {
+            quantization,
+            latency: p.latency,
             graph: p.graph,
             nodes,
             baseline: p.schedule,
@@ -292,6 +440,30 @@ impl Workbench {
         })
     }
     pub fn single_pixel(&self) -> SinglePixel {
+        self.single_pixel_with_boundary(false)
+    }
+    /// Planning projection at the lit-queue entrance. Quad ownership supplies
+    /// g=1/h=0 for unlit without issuing a lighting request. The standalone
+    /// emulator/RTL compatibility program remains unchanged.
+    pub fn lit_queue_single_pixel(&self) -> SinglePixel {
+        self.single_pixel_with_boundary(true)
+    }
+    fn single_pixel_with_boundary(&self, lit_queue: bool) -> SinglePixel {
+        let bypassed: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|n| lit_queue && n.outputs.iter().any(|p| p.label == "mode.unlit"))
+            .map(|n| n.id)
+            .collect();
+        let latency = |id: usize| {
+            if bypassed.contains(&id) {
+                0
+            } else {
+                self.graph.nodes[id]
+                    .resource
+                    .map_or(0, |r| self.graph.resources[r].latency)
+            }
+        };
         let mut issues = vec![0; self.graph.nodes.len()];
         let mut span = 0;
         for &id in &self.order {
@@ -299,18 +471,54 @@ impl Workbench {
             issues[id] = n
                 .predecessors
                 .iter()
-                .map(|&p| {
-                    issues[p]
-                        + self.graph.nodes[p]
-                            .resource
-                            .map_or(0, |r| self.graph.resources[r].latency)
-                })
+                .map(|&p| issues[p] + latency(p))
                 .max()
                 .unwrap_or(0)
                 .max(n.earliest);
-            span = span.max(issues[id] + n.resource.map_or(0, |r| self.graph.resources[r].latency));
+            span = span.max(issues[id] + latency(id));
         }
-        SinglePixel { issues, span }
+        if lit_queue {
+            // Use only slack before the first visible consumer. Stagger table
+            // reads when possible, without extending the dependency bound or
+            // pretending this implies fewer ports in a periodic pipeline.
+            let mut reads: Vec<_> = self
+                .nodes
+                .iter()
+                .filter(|n| n.read_memory.is_some())
+                .collect();
+            reads.sort_by_key(|n| (issues[n.id], n.id));
+            let mut occupied = std::collections::BTreeMap::<&str, BTreeSet<u64>>::new();
+            for n in reads {
+                let deadline = self
+                    .nodes
+                    .iter()
+                    .filter(|m| m.parents.contains(&n.id))
+                    .map(|m| issues[m.id])
+                    .min()
+                    .unwrap_or(span)
+                    .saturating_sub(latency(n.id));
+                let used = occupied
+                    .entry(n.read_memory.as_deref().unwrap())
+                    .or_default();
+                if let Some(issue) = (issues[n.id]..=deadline).find(|t| !used.contains(t)) {
+                    issues[n.id] = issue;
+                }
+                used.insert(issues[n.id]);
+            }
+            // Hidden format wires follow the moved read. The deadline above
+            // ensures that every visible arithmetic consumer retains its age.
+            for &id in &self.order {
+                for &p in &self.graph.nodes[id].predecessors {
+                    issues[id] = issues[id].max(issues[p] + latency(p));
+                }
+                debug_assert!(issues[id] + latency(id) <= span);
+            }
+        }
+        SinglePixel {
+            issues,
+            span,
+            bypassed,
+        }
     }
     pub fn slots(&self, schedule: &ModuloSchedule) -> Vec<Slot> {
         self.nodes
@@ -386,7 +594,17 @@ impl Workbench {
             schedule.nodes[s.id].issue = s.issue;
             schedule.nodes[s.id].lane = Some(s.lane);
         }
-        self.normalize(&graph, &mut schedule);
+        // A read-only load must preserve the reviewed calendar, including its
+        // deliberately delayed wiring. Recompute wiring only for actual edits.
+        if schedule != self.baseline
+            || graph
+                .resources
+                .iter()
+                .zip(&self.graph.resources)
+                .any(|(a, b)| a.lanes != b.lanes)
+        {
+            self.normalize(&graph, &mut schedule);
+        }
         let mg = ModuloGraph::from_graph(&graph).map_err(|e| e.to_string())?;
         let checked = check_modulo(&mg, &schedule);
         let conflicts: Vec<_> = checked
@@ -820,16 +1038,80 @@ fn periodic_live(start: u64, end: u64, phase: u64, ii: u64) -> u64 {
 mod tests {
     use super::*;
     #[test]
+    fn reviewed_workbench_matches_cycle_rtl_and_has_explicit_quantization() {
+        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+            for quantization in [
+                LightingQuantization::CompensatedFloor,
+                LightingQuantization::NearestEven,
+            ] {
+                let options = LightingRtlOptions::lit_queue_resource_profile(profile, quantization);
+                let rtl = crate::lighting::rtl::generate_with_options(profile, options).unwrap();
+                for full in [false, true] {
+                    let w = Workbench::with_quantization(profile, full, quantization).unwrap();
+                    assert_eq!(
+                        w.latency,
+                        if full {
+                            rtl.latency
+                        } else {
+                            rtl.diffuse_latency
+                        }
+                    );
+                    assert_eq!(
+                        w.baseline.initiation_interval as usize,
+                        if full {
+                            rtl.specular_ii
+                        } else {
+                            rtl.diffuse_ii
+                        }
+                    );
+                    let p = Program::with_retiming(
+                        profile,
+                        full,
+                        options.dedicated_dsp,
+                        options.kernel(),
+                        options.role_schedule,
+                        options.logic_depth,
+                        options.retiming,
+                    )
+                    .unwrap();
+                    assert_eq!(w.baseline, p.schedule);
+                    for n in &w.nodes {
+                        assert_eq!(
+                            w.baseline.nodes[n.id].issue as usize,
+                            p.instructions
+                                .iter()
+                                .find(|i| i.root == n.id)
+                                .map_or(p.latency - 1, |i| i.issue)
+                        );
+                    }
+                    let biased = w
+                        .nodes
+                        .iter()
+                        .any(|n| n.label.contains("POWER_MIDPOINT_Q15"));
+                    assert_eq!(
+                        biased,
+                        full && quantization == LightingQuantization::CompensatedFloor
+                    );
+                }
+            }
+        }
+    }
+    #[test]
     fn ports_use_physical_fusion_operands_and_real_output_values() {
         for full in [false, true] {
             let w = Workbench::new(LightingProfile::Fast, full).unwrap();
-            let p = Program::with_kernel_depth(
+            let options = LightingRtlOptions::lit_queue_resource_profile(
+                LightingProfile::Fast,
+                LightingQuantization::CompensatedFloor,
+            );
+            let p = Program::with_retiming(
                 LightingProfile::Fast,
                 full,
-                false,
-                counted::Config::architecture(),
-                false,
-                0,
+                options.dedicated_dsp,
+                options.kernel(),
+                options.role_schedule,
+                options.logic_depth,
+                options.retiming,
             )
             .unwrap();
             let mut fused = 0;
@@ -868,16 +1150,73 @@ mod tests {
         }
     }
     #[test]
+    fn block_details_preserve_constants_fusion_and_pipeline_contract() {
+        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+            for full in [false, true] {
+                for quantization in [
+                    LightingQuantization::CompensatedFloor,
+                    LightingQuantization::NearestEven,
+                ] {
+                    let w = Workbench::with_quantization(profile, full, quantization).unwrap();
+                    assert!(w.graph.resources.iter().all(|r| r.initiation_interval == 1));
+                    let abs = w
+                        .nodes
+                        .iter()
+                        .find(|n| n.explanation == "normal.abs.x")
+                        .unwrap();
+                    assert_eq!(abs.steps, ["subtract", "compare", "select"]);
+                    assert_eq!(abs.inputs.iter().filter(|p| !p.constant).count(), 1);
+                    assert_eq!(abs.inputs.iter().filter(|p| p.constant).count(), 2);
+                    assert!(abs.recipe.iter().any(|line| line.contains(" < ")));
+                    assert!(abs.recipe.iter().any(|line| line.contains("select(")));
+                    assert_eq!(abs.choice.as_ref().unwrap()[3], "internal");
+                    let safe = w
+                        .nodes
+                        .iter()
+                        .find(|n| n.explanation == "normal.safe_magnitude")
+                        .unwrap();
+                    assert_eq!(safe.choice.as_ref().unwrap()[3], "external");
+                    for n in &w.nodes {
+                        assert_eq!(n.choice.is_some(), n.steps.iter().any(|s| s == "select"));
+                        assert_eq!(
+                            n.recipe,
+                            n.program_lines
+                                .iter()
+                                .map(|&line| {
+                                    let p = &w.program[line - 1];
+                                    format!("{}{}{}", p.before, p.operator, p.after)
+                                })
+                                .collect::<Vec<_>>()
+                        );
+                        for p in n.inputs.iter().filter(|p| p.constant) {
+                            assert!(p.sources.is_empty(), "a constant must have no runtime wire");
+                        }
+                        // Context/ROM outputs remain runtime operands even when
+                        // the template used identical fixture values.
+                        if n.read_memory.is_some() {
+                            assert!(n.outputs.iter().all(|p| !p.constant));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn readable_program_preserves_fusion_members_and_kernel_locations() {
         for full in [false, true] {
             let w = Workbench::new(LightingProfile::Fast, full).unwrap();
-            let p = Program::with_kernel_depth(
+            let options = LightingRtlOptions::lit_queue_resource_profile(
+                LightingProfile::Fast,
+                LightingQuantization::CompensatedFloor,
+            );
+            let p = Program::with_retiming(
                 LightingProfile::Fast,
                 full,
-                false,
-                counted::Config::architecture(),
-                false,
-                0,
+                options.dedicated_dsp,
+                options.kernel(),
+                options.role_schedule,
+                options.logic_depth,
+                options.retiming,
             )
             .unwrap();
             for n in &w.nodes {
@@ -891,6 +1230,8 @@ mod tests {
                             include_str!("counted.rs")
                         } else if info.source_file.ends_with("lighting/sim/pipeline.rs") {
                             include_str!("pipeline.rs")
+                        } else if info.source_file.ends_with("lighting/sim/quantization.rs") {
+                            include_str!("quantization.rs")
                         } else {
                             panic!("unexpected kernel location: {}", info.source_file);
                         };
@@ -921,6 +1262,57 @@ mod tests {
                         let latency =
                             w.graph.resources[w.graph.nodes[parent].resource.unwrap()].latency;
                         assert!(single.issues[n.id] >= single.issues[parent] + latency);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn lit_queue_projection_bypasses_unlit_and_spreads_reads_only_in_slack() {
+        for quantization in [
+            LightingQuantization::CompensatedFloor,
+            LightingQuantization::NearestEven,
+        ] {
+            for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+                for full in [false, true] {
+                    let w = Workbench::with_quantization(profile, full, quantization).unwrap();
+                    let old = w.single_pixel();
+                    let single = w.lit_queue_single_pixel();
+                    assert!(single.bypassed.is_empty());
+                    let mut specialized = w.graph.clone();
+                    for &id in &single.bypassed {
+                        specialized.nodes[id].resource = None;
+                    }
+                    assert_eq!(
+                        single.span,
+                        ModuloGraph::from_graph(&specialized)
+                            .unwrap()
+                            .critical_path()
+                    );
+                    assert_eq!(single.span, old.span);
+                    for (id, n) in specialized.nodes.iter().enumerate() {
+                        for &parent in &n.predecessors {
+                            let latency = specialized.nodes[parent]
+                                .resource
+                                .map_or(0, |r| specialized.resources[r].latency);
+                            assert!(single.issues[id] >= single.issues[parent] + latency);
+                        }
+                        let latency = n.resource.map_or(0, |r| specialized.resources[r].latency);
+                        assert!(single.issues[id] + latency <= single.span);
+                    }
+                    if profile == LightingProfile::Fast && !full {
+                        let square: Vec<_> = w
+                            .nodes
+                            .iter()
+                            .filter(|n| n.read_memory.as_deref() == Some("SQ"))
+                            .map(|n| single.issues[n.id])
+                            .collect();
+                        let first = if quantization == LightingQuantization::CompensatedFloor {
+                            12
+                        } else {
+                            14
+                        };
+                        assert_eq!(square, [first, first + 1, first + 2]);
                     }
                 }
             }

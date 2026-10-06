@@ -1,10 +1,121 @@
 mod support;
 use audited::{Fixed, Model, Operation};
 use gpu_v2::lighting::{
+    emu::LightingEmu,
     ports::*,
     sim::{counted, oracle},
-    LightingProfile,
+    LightingProfile, LightingQuantization,
 };
+
+#[test]
+fn lit_queue_omits_unlit_gate_and_matches_independent_numeric_goldens() {
+    for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        for quantization in [
+            LightingQuantization::NearestEven,
+            LightingQuantization::CompensatedFloor,
+        ] {
+            let kernel = counted::Config::lit_queue_resource_profile(profile, quantization);
+            let options = gpu_v2::lighting::rtl::LightingRtlOptions::lit_queue_resource_profile(
+                profile,
+                quantization,
+            );
+            let rtl = gpu_v2::lighting::rtl::generate_with_options(profile, options).unwrap();
+            assert!(!rtl.source.contains("0: begin out_g=9'd256"));
+            println!(
+                "lit queue {profile:?}/{quantization:?}: full={} diffuse={} II={}/{}",
+                rtl.latency, rtl.diffuse_latency, rtl.specular_ii, rtl.diffuse_ii
+            );
+            let mut emu =
+                LightingEmu::lit_queue_resource_profile(profile, quantization, 100_000).unwrap();
+            for (serial, (pixel, material, light, projection)) in
+                support::representative().into_iter().enumerate()
+            {
+                let context = LightingContext {
+                    material,
+                    light,
+                    projection,
+                    epoch: serial as u16,
+                };
+                let tick = LightingTick {
+                    reset: false,
+                    ce: true,
+                    context: Some(context),
+                    input: None,
+                    output_ready: true,
+                };
+                if material.unlit {
+                    assert!(matches!(
+                        counted::evaluate_with_config(
+                            pixel,
+                            material,
+                            light,
+                            projection,
+                            support::MAX_EVENTS,
+                            kernel
+                        ),
+                        Err(counted::Error::Input(InputError::UnlitQueue))
+                    ));
+                    assert!(emu.tick(tick).unwrap_err().contains("bypass"));
+                    continue;
+                }
+                let counted = counted::evaluate_with_config(
+                    pixel,
+                    material,
+                    light,
+                    projection,
+                    support::MAX_EVENTS,
+                    kernel,
+                )
+                .unwrap();
+                counted.frame.audit().unwrap();
+                assert!(!counted
+                    .frame
+                    .values
+                    .iter()
+                    .any(|v| v.name.as_deref() == Some("mode.unlit")));
+                let golden = oracle::evaluate(
+                    pixel,
+                    material,
+                    light,
+                    projection,
+                    oracle::Config::from_counted(kernel),
+                )
+                .unwrap();
+                assert_eq!(
+                    [i128::from(counted.output.g), i128::from(counted.output.h)],
+                    [golden.g, golden.h]
+                );
+                assert!(emu.tick(tick).unwrap().context_ready);
+                let mut request = Some(LightingRequest {
+                    id: serial as u32,
+                    pixel,
+                });
+                let mut returned = false;
+                for cycle in 0..1000 {
+                    let signals = emu
+                        .tick(LightingTick {
+                            ce: cycle % 7 != 3,
+                            context: None,
+                            input: request,
+                            ..tick
+                        })
+                        .unwrap();
+                    if signals.input_ready {
+                        request = None;
+                    }
+                    if let Some(result) = signals.output {
+                        assert_eq!(result.output, counted.output);
+                        assert_eq!(result.id, serial as u32);
+                        assert_eq!(result.epoch, serial as u16);
+                        returned = true;
+                        break;
+                    }
+                }
+                assert!(returned, "bounded queue result");
+            }
+        }
+    }
+}
 
 #[test]
 fn explicit_floor_and_guard_rounding_have_real_ledger_semantics() {
