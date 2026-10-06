@@ -3,11 +3,18 @@
 //! LightingEmu to that light store; `branches` adds actual baseline Sampling
 //! Runtime/cache/ColorEmu results using distinct controlled memory ports.
 
+pub mod backend;
 mod branches;
 mod color;
+pub mod composition;
+pub mod dispatch;
+pub mod engines;
 pub mod final_stage;
 mod live;
 mod model;
+pub mod raster_input;
+pub mod registered;
+pub mod registered_backend;
 
 use crate::{framebuffer::ports::*, lighting::ports::LightingOutput};
 pub use branches::{BranchCycle, BranchQuad, BranchTick, PixelBranches, SAMPLING_OFFER_BITS};
