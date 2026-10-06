@@ -326,7 +326,7 @@ mod tests {
     fn project_contains_full_system_memory_flash_and_display() {
         let verilog = VerilogProject::generate::<CpuV3System>().unwrap();
         assert!(!verilog.resource_claims.is_empty());
-        // The GPU command processor, tile cache and rasterizer are fitted.
+        // The top-level GPU source is present in the generated project.
         assert!(verilog
             .files
             .keys()
@@ -336,10 +336,9 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
-        // Boot BSRAM + two data banks and one tag bank per CPU cache + the FPU register
-        // RAM (two blocks) + the two display line-buffer banks + the eight-bank GPU
-        // framebuffer tile cache + one raster output FIFO.
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 20);
+        // Current board claims: boot ROM (1), FPU registers (2),
+        // I/D cache data and tags (6), and display line buffers (2).
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 11);
     }
 
     #[test]

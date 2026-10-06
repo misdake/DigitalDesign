@@ -14,6 +14,8 @@ module CpuV3System (
     input wire sdram_read_valid,
     input wire sdram_init_done,
     input wire sdram_request_ready,
+    input wire sdram_stream_active,
+    input wire sdram_clock_ready,
     input wire sdram_done,
     input wire sdram_write_data_ready,
     input wire pixel_clock,
@@ -25,6 +27,8 @@ module CpuV3System (
     output wire flash_cs_n,
     output wire flash_mosi,
     output wire sdram_request_valid,
+    output wire sdram_next_valid,
+    output wire [20:0] sdram_next_address,
     output wire sdram_write,
     output wire [20:0] sdram_address,
     output wire [3:0] sdram_write_mask,
@@ -43,7 +47,7 @@ wire external_reset_seen;
 __RESET_CONTROLLER__ u_reset(
     .clk(clk),
     .external_reset(|buttons),
-    .clock_ready(1'b1),
+    .clock_ready(sdram_clock_ready),
     .reset(reset),
     .clock_ready_synchronized(clock_ready_synchronized),
     .external_reset_seen(external_reset_seen)
@@ -642,8 +646,10 @@ __GPU__ u_gpu (
     .gpu_fb_r_write_data(gpu_fb_r_memory_write_data)
 );
 
+wire sdram_lookahead_window;
+
 __ARBITER__ u_memory_arbiter (
-    .lookahead_enable(1'b0),
+    .lookahead_enable(sdram_lookahead_window),
     .clk(clk),
     .reset(reset),
     .instruction_request_valid(icache_memory_request_valid),
@@ -729,7 +735,7 @@ __ARBITER__ u_memory_arbiter (
     .memory_response_ready(memory_response_ready)
 );
 
-__SHARED_SDRAM_PORT__ u_shared_sdram_port (
+__SHARED_SDRAM_PORT__ #(.EARLY_GRANT(1)) u_shared_sdram_port (
     .clk(clk),
     .reset(reset),
     .cpu_request_valid(memory_request_valid),
@@ -743,16 +749,19 @@ __SHARED_SDRAM_PORT__ u_shared_sdram_port (
     .controller_read_valid(sdram_read_valid),
     .controller_init_done(sdram_init_done),
     .controller_request_ready(sdram_request_ready),
-    .controller_stream_active(1'b0),
+    .controller_stream_active(sdram_stream_active),
     .controller_done(sdram_done),
     .controller_write_data_ready(sdram_write_data_ready),
     .cpu_request_ready(memory_request_ready),
+    .cpu_lookahead_window(sdram_lookahead_window),
     .cpu_write_data_ready(memory_write_data_ready),
     .cpu_response_valid(memory_response_valid),
     .cpu_read_data(memory_read_data),
     .cpu_response_last(memory_response_last),
     .cpu_error(memory_error),
     .controller_request_valid(sdram_request_valid),
+    .controller_next_valid(sdram_next_valid),
+    .controller_next_address(sdram_next_address),
     .controller_write(sdram_write),
     .controller_address(sdram_address),
     .controller_write_mask(sdram_write_mask),

@@ -129,8 +129,14 @@ samples its high half. A write begins on the CPU falling edge; the following ris
 consumes the old high half and may accept the next pair. Reads group two native return words into
 one ordered 64-bit response. Transaction completion and reset clear the bridge's ownership token.
 Command and tile-list fetches remain one line, while framebuffer cache refill and clean use four
-line transactions. The arbiter has one outstanding request, so the controller's optional
-next-descriptor chaining is not enabled in this system.
+line transactions. Near the end of an active line transfer, the arbiter may grant one successor
+before the current response completes. That grant fixes the next owner and descriptor; the current
+owner retains its write payload and all responses until its accepted final response. Display has
+priority while the successor slot is open, but cannot displace an already granted request. The
+adapter forwards the reserved address to the bridge, which may prepare a different bank while
+the current stream runs. The next request can enter the bridge when the current final response is
+accepted; ordinary requests do not claim gap-free physical DQ chaining. The optional indivisible
+four-sector group is a separate protocol and remains disabled in the CPU V3 system.
 
 ## Clock domains
 

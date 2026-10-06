@@ -211,6 +211,8 @@ pub struct TangNano20KBootHdmiWideInputs {
     pub sdram_read_valid: digital_design_circuit::Wire,
     pub sdram_init_done: digital_design_circuit::Wire,
     pub sdram_request_ready: digital_design_circuit::Wire,
+    pub sdram_stream_active: digital_design_circuit::Wire,
+    pub sdram_clock_ready: digital_design_circuit::Wire,
     pub sdram_done: digital_design_circuit::Wire,
     pub sdram_write_data_ready: digital_design_circuit::Wire,
     pub pixel_clock: digital_design_circuit::Wire,
@@ -227,6 +229,8 @@ pub struct TangNano20KBootHdmiWideOutputs {
     pub flash_cs_n: digital_design_circuit::Wire,
     pub flash_mosi: digital_design_circuit::Wire,
     pub sdram_request_valid: digital_design_circuit::Wire,
+    pub sdram_next_valid: digital_design_circuit::Wire,
+    pub sdram_next_address: Wires<21>,
     pub sdram_write: digital_design_circuit::Wire,
     pub sdram_address: Wires<21>,
     pub sdram_write_mask: Wires<4>,
@@ -791,6 +795,34 @@ impl TangNano20K {
                         "src/generated/target/tang_nano_20k/sdram/sdrc_hs_name.v".into(),
                     ],
                 );
+        }
+
+        if video && wide_2x {
+            extension = extension
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_stream_active",
+                    GowinPortDirection::Input,
+                    1,
+                    "sdram_stream_active",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_next_valid",
+                    GowinPortDirection::Output,
+                    1,
+                    "sdram_next_valid",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_next_address",
+                    GowinPortDirection::Output,
+                    21,
+                    "sdram_next_address",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_clock_ready",
+                    GowinPortDirection::Input,
+                    1,
+                    "sdram_pll_locked",
+                ));
         }
 
         if video {

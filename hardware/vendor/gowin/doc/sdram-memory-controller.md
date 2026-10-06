@@ -167,10 +167,13 @@ they are estimates, not physical bandwidth evidence.
 ## Optional early admission
 
 `Combination::with_early_grant`, `combination::rtl_sources_with_early_grant` and
-`emu::service::Config::early_grant` enable the same one-slot protocol. The default
-remains serial. `SharedSdramPort` defaults `EARLY_GRANT=0`; the CPU system ties
-`lookahead_enable` and `controller_stream_active` low. Production activation and
-whole-system resource/timing qualification are separate from the standalone probe.
+`emu::service::Config::early_grant` enable the same one-slot protocol. The
+reusable combination remains serial by default. The CPU V3 full-system board
+build enables `EARLY_GRANT=1` on `SharedSdramPort` and `PREPARE_NEXT=1`
+on the 54/108 MHz bridge, connecting the adapter's lookahead and reserved
+address to the seven-owner arbiter and native controller. The board PLL lock
+also conditions the system reset. This is one reserved successor per active
+request; it does not turn four 128 B sectors into an indivisible transaction.
 
 The adapter opens its successor slot in the last four logic beats of an active
 line while the native stream is active. The arbiter records a reserved owner and
