@@ -58,6 +58,7 @@ pub struct Config {
     pub normal_override: Option<[i16; 3]>,
     /// Independent scalar-dot normalization experiment (fixed Q14/Q15 ports).
     pub scalar_norm: bool,
+    pub weighted_view: bool,
     /// System candidate: scalar N normalization and raw-dot sign gate.
     pub scalar_normal: bool,
     pub exact_normal_gate: bool,
@@ -84,6 +85,7 @@ impl Default for Config {
             half_ndc_override: None,
             normal_override: None,
             scalar_norm: false,
+            weighted_view: false,
             scalar_normal: false,
             exact_normal_gate: false,
             direct_square: false,
@@ -102,6 +104,7 @@ impl Config {
             quantization: kernel.quantization,
             block_prescale: kernel.block_prescale,
             scalar_norm: kernel.scalar_norm,
+            weighted_view: kernel.weighted_view,
             scalar_normal: kernel.scalar_normal,
             exact_normal_gate: kernel.exact_normal_gate,
             direct_square: kernel.direct_square,
@@ -194,15 +197,16 @@ fn normalize(
     c: Config,
     prefix: &str,
     g: &mut Golden,
+    threshold_length: Option<i128>,
 ) -> [i128; 3] {
     let f = c.direction_fraction;
     let m = raw.iter().map(|v| v.abs()).max().unwrap();
-    let zero = m < threshold;
+    let zero = threshold_length.map_or(m < threshold, |length| m * 512 < length);
     let raw = if zero { [1 << (f - 1), 0, 0] } else { raw };
     let m = raw.iter().map(|v| v.abs()).max().unwrap();
     let highest = 127 - m.leading_zeros() as i32;
     let mut shift = if bounded { 0 } else { f as i32 - 1 - highest };
-    // Compact keeps its exact, pre-existing prescale boundary at max=32767.
+    // Block prescaling keeps its explicit boundary at max=32767.
     // Floor removes RNE overflow, but the selected circuit still uses this bin.
     if c.block_prescale && prefix == "n" && !bounded && m == 32767 {
         shift = -2;
@@ -250,6 +254,28 @@ fn normalize(
     }
     let highest = 127 - q.leading_zeros() as i32;
     let exponent = highest - 2 * f as i32;
+    if c.weighted_view && prefix == "v" {
+        let mantissa = q >> (highest - 14);
+        let segment = (mantissa - 16384) / 256;
+        let fraction = mantissa % 256;
+        let parity = exponent.rem_euclid(2);
+        let endpoint =
+            |i: i128| quantize(((1.0 + i as f64 / 64.0) * 2_f64.powi(parity)).sqrt(), 15);
+        let base = endpoint(segment);
+        let root = base
+            + rounded(
+                (endpoint(segment + 1) - base) * fraction,
+                8,
+                c.rounding.rsqrt,
+            );
+        let length = if exponent < 0 {
+            rounded(root, 1, c.rounding.normalization)
+        } else {
+            root
+        };
+        g.stage("v.length", length);
+        return v;
+    }
     let r = if c.approximate_rsqrt {
         // Extract 6-bit segment plus 8-bit fraction from the normalized q.
         let mantissa = if highest >= 14 {
@@ -413,6 +439,21 @@ fn evaluate_inner(
     {
         return Err(InputError::Configuration);
     }
+    if c.weighted_view
+        && (!c.scalar_norm
+            || c.scalar_normal
+            || c.block_prescale
+            || c.direct_square
+            || c.direct_all_squares
+            || c.square9
+            || c.direction_fraction != 14
+            || c.reciprocal_fraction != 15
+            || c.reciprocal_work_extra != 0
+            || !c.approximate_square
+            || !c.approximate_rsqrt)
+    {
+        return Err(InputError::Configuration);
+    }
     if c.scalar_normal && !c.scalar_norm {
         return Err(InputError::Configuration);
     }
@@ -445,7 +486,7 @@ fn evaluate_inner(
             .normal_override
             .unwrap_or(pixel.normal)
             .map(|v| rescale(i128::from(v), 14, f));
-        let n = normalize(nraw, rescale(4, 14, f).max(1), false, c, "n", &mut g);
+        let n = normalize(nraw, rescale(4, 14, f).max(1), false, c, "n", &mut g, None);
         let l = light.direction.map(|v| rescale(i128::from(v), 14, f));
         let nl_raw = n.iter().zip(l).map(|(a, b)| a * b).sum::<i128>();
         let normal_zero = nraw.iter().map(|x| x.abs()).max().unwrap() < 4;
@@ -513,9 +554,35 @@ fn evaluate_inner(
                     g.stage(format!("ray.{i}"), *value);
                 }
             }
-            let v = normalize(vraw, rescale(4, 14, f).max(1), true, c, "v", &mut g);
-            let hraw = std::array::from_fn(|i| rounded(l[i] + v[i], 1, c.rounding.half));
-            let h = normalize(hraw, rescale(64, 14, f), false, c, "h", &mut g);
+            let v = normalize(vraw, rescale(4, 14, f).max(1), true, c, "v", &mut g, None);
+            let length = if c.weighted_view {
+                Some(
+                    g.stages
+                        .iter()
+                        .find(|(name, _)| name == "v.length")
+                        .unwrap()
+                        .1,
+                )
+            } else {
+                None
+            };
+            let hraw = std::array::from_fn(|i| {
+                if let Some(length) = length {
+                    let product = l[i] * length;
+                    g.stage(
+                        format!("weighted.light.{i}"),
+                        if c.quantization == super::super::LightingQuantization::CompensatedFloor {
+                            product >> 15
+                        } else {
+                            product
+                        },
+                    );
+                    rounded((v[i] << 15) + product, 16, c.rounding.half)
+                } else {
+                    rounded(l[i] + v[i], 1, c.rounding.half)
+                }
+            });
+            let h = normalize(hraw, rescale(64, 14, f), false, c, "h", &mut g, length);
             let nh_raw = n.iter().zip(h).map(|(a, b)| a * b).sum::<i128>();
             let nh = if c.scalar_norm {
                 g.stage("nh.raw", nh_raw);
@@ -530,7 +597,10 @@ fn evaluate_inner(
                     rounded(nh_raw, 12, c.rounding.normalization)
                 };
                 if nraw.iter().map(|x| x.abs()).max().unwrap() < 4
-                    || hraw.iter().map(|x| x.abs()).max().unwrap() < 64
+                    || length.map_or_else(
+                        || hraw.iter().map(|x| x.abs()).max().unwrap() < 64,
+                        |length| hraw.iter().map(|x| x.abs()).max().unwrap() * 512 < length,
+                    )
                 {
                     0
                 } else {

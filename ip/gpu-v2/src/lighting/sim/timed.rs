@@ -30,6 +30,7 @@ pub struct Hardware {
     pub measured_blocks: bool,
     /// Function-sized, multi-output certificates, independently characterized.
     pub measured_functions: bool,
+    pub combine_sum_address: bool,
     /// Maximum serial nonwiring logic levels per explicitly certified cone; zero disables.
     pub cone_depth: usize,
     pub cone_latency: u64,
@@ -61,6 +62,7 @@ impl Default for Hardware {
             dsp_tiles: 12,
             measured_blocks: false,
             measured_functions: false,
+            combine_sum_address: false,
             cone_depth: 0,
             cone_latency: 1,
             cone_lanes_per_shape: 3,
@@ -80,7 +82,9 @@ impl Default for Hardware {
             rounders_per_width: 2,
             leading_zeros_per_width: 1,
             normalize_reads: 6,
-            multiply_latency: 3,
+            // Matched OUT-only MULT9X9/MULT18X18; input mux and dynamic signs
+            // are included in the qualified lit-queue module's timing paths.
+            multiply_latency: 1,
             logic_latency: 1,
             rom_latency: 1,
             max_cycles: 20000,
@@ -208,7 +212,7 @@ pub(super) fn kind(report: &FrameReport, event: usize) -> Result<Option<LaneKind
                 None
             } else {
                 Some(match report.memories[m].name.as_str() {
-                    "SQ" | "RSQRT" => LaneKind::NormalizeRead,
+                    "SQ" | "RSQRT" | "SQRT" => LaneKind::NormalizeRead,
                     "POWER" | "POWER_MIDPOINT_Q15" => LaneKind::PowerRead,
                     "POWER_CONTEXT" => LaneKind::ContextRead,
                     _ => return Err("unknown lighting store".into()),

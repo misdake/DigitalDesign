@@ -51,6 +51,8 @@ pub struct LightingRtlOptions {
     pub share_scalars: bool,
     pub range_shifts: bool,
     pub scalar_norm: bool,
+    /// Explicit length-weighted view candidate, never the default kernel.
+    pub weighted_view: bool,
     pub scalar_normal: bool,
     pub exact_normal_gate: bool,
     pub shared_ids: bool,
@@ -83,6 +85,7 @@ impl Default for LightingRtlOptions {
             share_scalars: true,
             range_shifts: true,
             scalar_norm: false,
+            weighted_view: false,
             scalar_normal: false,
             exact_normal_gate: false,
             shared_ids: false,
@@ -103,6 +106,7 @@ impl LightingRtlOptions {
             lit_queue: self.lit_queue,
             quantization: self.quantization,
             scalar_norm: self.scalar_norm,
+            weighted_view: self.weighted_view,
             scalar_normal: self.scalar_normal,
             exact_normal_gate: self.exact_normal_gate,
             block_prescale: self.block_prescale,
@@ -118,9 +122,12 @@ impl LightingRtlOptions {
         profile: LightingProfile,
         quantization: super::LightingQuantization,
     ) -> Self {
+        let (logic_depth, retiming) = super::LightingRetiming::lit_queue_60mhz(profile);
         Self {
             lit_queue: true,
             quantization,
+            logic_depth,
+            retiming,
             ..Self::steered_resource_profile(profile)
         }
     }
@@ -132,7 +139,7 @@ impl LightingRtlOptions {
             dedicated_dots: k.dedicated_dots,
             role_schedule: true,
             shared_ids: true,
-            ram_retained: profile == LightingProfile::Compact,
+            ram_retained: false,
             ..Self::default()
         }
     }
@@ -1128,29 +1135,49 @@ impl Emitter {
         }
     }
 
-    fn dsp(&mut self, lane: usize, kind: &LaneKind) {
+    fn dsp(&mut self, lane: usize, kind: &LaneKind, latency: usize) {
         writeln!(self.body, "`ifdef GPU_V2_GOWIN_DSP").unwrap();
         if matches!(kind, LaneKind::PairMultiplyAdd) {
-            // Two product PIPE registers are parallel, not serial. C must be
-            // delayed one extra edge before CREG to match the product stage.
+            assert!(matches!(latency, 1 | 4));
+            let registered = u8::from(latency == 4);
+            let c = if latency == 4 {
+                format!("unit{lane}_c_delay")
+            } else {
+                format!("unit{lane}_a4")
+            };
+            // The four-edge version's product PIPE registers are parallel;
+            // delay C before CREG to align it. The one-edge version bypasses
+            // every internal register and captures the complete MAC in tail.
             writeln!(
                 self.body,
-                "reg [53:0] unit{lane}_c_delay,unit{lane}_tail;\nwire [53:0] unit{lane}_dsp_out;"
+                "reg [53:0] unit{lane}_tail;\nwire [53:0] unit{lane}_dsp_out;"
             )
             .unwrap();
-            writeln!(self.sequential,"`ifdef GPU_V2_GOWIN_DSP\nunit{lane}_c_delay<=unit{lane}_a4;\nunit{lane}_tail<=unit{lane}_dsp_out;\n`endif").unwrap();
+            writeln!(
+                self.sequential,
+                "`ifdef GPU_V2_GOWIN_DSP\nunit{lane}_tail<=unit{lane}_dsp_out;\n`endif"
+            )
+            .unwrap();
+            if latency == 4 {
+                writeln!(self.body, "reg [53:0] unit{lane}_c_delay;").unwrap();
+                writeln!(
+                    self.sequential,
+                    "`ifdef GPU_V2_GOWIN_DSP\nunit{lane}_c_delay<=unit{lane}_a4;\n`endif"
+                )
+                .unwrap();
+            }
             writeln!(
                 self.body,
                 r#"MULTADDALU18X18 #(
- .A0REG(1'b1),.B0REG(1'b1),.A1REG(1'b1),.B1REG(1'b1),.CREG(1'b1),
- .PIPE0_REG(1'b1),.PIPE1_REG(1'b1),.OUT_REG(1'b1),
- .ASIGN0_REG(1'b1),.ASIGN1_REG(1'b1),.BSIGN0_REG(1'b1),.BSIGN1_REG(1'b1),
+ .A0REG(1'b{registered}),.B0REG(1'b{registered}),.A1REG(1'b{registered}),.B1REG(1'b{registered}),.CREG(1'b{registered}),
+ .PIPE0_REG(1'b{registered}),.PIPE1_REG(1'b{registered}),.OUT_REG(1'b{registered}),
+ .ASIGN0_REG(1'b{registered}),.ASIGN1_REG(1'b{registered}),.BSIGN0_REG(1'b{registered}),.BSIGN1_REG(1'b{registered}),
  .ACCLOAD_REG0(1'b0),.ACCLOAD_REG1(1'b0),.SOA_REG(1'b0),
  .B_ADD_SUB(1'b0),.C_ADD_SUB(1'b0),.MULTADDALU18X18_MODE(0),.MULT_RESET_MODE("SYNC")
 ) dsp{lane}(
  .DOUT(unit{lane}_dsp_out),.CASO(),.SOA(),.SOB(),
  .A0(unit{lane}_a0[17:0]),.B0(unit{lane}_a1[17:0]),
- .A1(unit{lane}_a2[17:0]),.B1(unit{lane}_a3[17:0]),.C(unit{lane}_c_delay),
+ .A1(unit{lane}_a2[17:0]),.B1(unit{lane}_a3[17:0]),.C({c}),
  .ASIGN({{unit{lane}_a2[18],unit{lane}_a0[18]}}),
  .BSIGN({{unit{lane}_a3[18],unit{lane}_a1[18]}}),
  .SIA(18'd0),.SIB(18'd0),.CASI(55'd0),.ACCLOAD(1'b0),.ASEL(2'b00),.BSEL(2'b00),
@@ -1167,11 +1194,17 @@ assign unit{lane}_result=unit{lane}_tail;
                 18
             };
             let top = bits - 1;
+            // OUT captures the current combinational operands/signs at latency 1.
+            // Latency 2 adds matched operand/sign registers; latency 3 also PIPE.
+            // CE freezes every enabled stage together, including dynamic signs.
+            assert!((1..=3).contains(&latency));
+            let input_reg = u8::from(latency >= 2);
+            let pipe_reg = u8::from(latency == 3);
             writeln!(
                 self.body,
                 r#"MULT{bits}X{bits} #(
- .AREG(1'b1),.BREG(1'b1),.PIPE_REG(1'b1),.OUT_REG(1'b1),
- .ASIGN_REG(1'b1),.BSIGN_REG(1'b1),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")
+ .AREG(1'b{input_reg}),.BREG(1'b{input_reg}),.PIPE_REG(1'b{pipe_reg}),.OUT_REG(1'b1),
+ .ASIGN_REG(1'b{input_reg}),.BSIGN_REG(1'b{input_reg}),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")
 ) dsp{lane}(
  .DOUT(unit{lane}_result),.SOA(),.SOB(),
  .A(unit{lane}_a0[{top}:0]),.B(unit{lane}_a1[{top}:0]),
@@ -1455,7 +1488,9 @@ assign unit{lane}_result=unit{lane}_tail;
                 } else {
                     self.value(ins.inputs[0], ins.issue)?
                 };
-                let address = if memory_name == "RSQRT" {
+                let address = if memory_name == "SQRT" {
+                    format!("9'd384 + {a}")
+                } else if memory_name == "RSQRT" {
                     format!("9'd256 + {a}")
                 } else {
                     a
@@ -1471,6 +1506,9 @@ assign unit{lane}_result=unit{lane}_tail;
             if matches!(kind, LaneKind::NormalizeRead) {
                 let mut entries = SQUARE_SIGNED_RAW.to_vec();
                 entries.extend(RSQRT_RAW);
+                if self.program.frame.memories.iter().any(|m| m.name == "SQRT") {
+                    entries.extend(SQRT_RAW);
+                }
                 self.rom(&format!("norm{lane}"), 36, &entries, 512);
                 writeln!(
                     self.body,
@@ -1633,7 +1671,7 @@ assign unit{lane}_result=unit{lane}_tail;
         }
         writeln!(self.body, "wire [{}:0] unit{lane}_result;", width - 1).unwrap();
         if dsp {
-            self.dsp(lane, kind);
+            self.dsp(lane, kind, latency);
         }
         writeln!(
             self.body,
@@ -2614,7 +2652,8 @@ mod q_window_tests {
 
     #[test]
     fn shared_windows_reject_a_wider_range_or_observed_amount() {
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             let mut p = LoweredProgram::new(profile, LightingRtlOptions::factor_profile()).unwrap();
             let mut ranges = infer_ranges(&p.frame);
             let eligible = q_window_amounts(&p, &ranges);
@@ -2634,7 +2673,8 @@ mod q_window_tests {
 
     #[test]
     fn shared_windows_reject_extra_amount_consumers_and_wider_slices() {
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             let mut p = LoweredProgram::new(profile, LightingRtlOptions::factor_profile()).unwrap();
             let mut ranges = infer_ranges(&p.frame);
             let eligible = q_window_amounts(&p, &ranges);

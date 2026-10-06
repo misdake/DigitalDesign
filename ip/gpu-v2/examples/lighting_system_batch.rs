@@ -7,7 +7,8 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "target/gpu-v2-lighting/system-study".into());
     let mut csv=String::from("profile,mode,pixels,II,first_valid_edges,first_transfer_edges,context_to_drain_edges,context_to_next_context_edges,peak_tokens,id_slots\n");
-    for profile in [LightingProfile::SystemFast, LightingProfile::SystemCompact] {
+    {
+        let profile = LightingProfile::SystemFast;
         for full in [true, false] {
             for count in [16, 64, 256] {
                 let mut emu = LightingEmu::with_system_profile(profile, 10000).unwrap();

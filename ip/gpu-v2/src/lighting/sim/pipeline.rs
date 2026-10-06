@@ -15,6 +15,7 @@ pub enum BlockKind {
     InverseTail,
     SquareSum,
     PowerHead,
+    SquareSumHead,
 }
 impl BlockKind {
     fn topology_signature(self) -> u64 {
@@ -27,6 +28,7 @@ impl BlockKind {
             Self::InverseTail => 0x20062abd6a6b9db3,
             Self::SquareSum => 0xd04217cca9e24ce5,
             Self::PowerHead => 0x59683cd2ebb7e36f,
+            Self::SquareSumHead => 0xab7ffb5a088facbe,
         }
     }
     pub fn label(self) -> &'static str {
@@ -39,6 +41,7 @@ impl BlockKind {
             Self::InverseTail => "inverse-tail",
             Self::SquareSum => "square-sum",
             Self::PowerHead => "power-head",
+            Self::SquareSumHead => "square-sum-head",
         }
     }
     /// Reference isolated probe; not a fitted whole-component frequency claim.
@@ -51,6 +54,7 @@ impl BlockKind {
             Self::InverseTail => "lighting-function-fusion-20261005/inverse_tail_bounded; lighting-oc-fusion-20261005/shared-mux",
             Self::SquareSum => "lighting-function-fusion-20261005/inverse_sum_address_bounded",
             Self::PowerHead => "lighting-retime-20261005/power-control/power_frontend_whole (endpoint clamp excluded)",
+            Self::SquareSumHead => "multiplier-retiming/sum-address60 (whole Lighting candidate)",
         }
     }
 }
@@ -73,6 +77,15 @@ pub struct InverseHead {
     pub address: Fixed<7, 0, false>,
     pub restore: Fixed<1, 0, false>,
     pub zeros: Fixed<18, 0, true>,
+}
+/// One multi-output boundary: square sums, bounded LZD and mantissa alignment.
+/// Export the sum with address/fraction/restore, preserving visible stage data.
+pub fn square_sum_head(
+    f: &Frame<'_>,
+    values: [Fixed<30, 28, false>; 3],
+) -> Result<(Fixed<30, 28, false>, InverseHead), Fault> {
+    let q = square_sum(f, values)?.0;
+    Ok((q, inverse_head(f, q)?))
 }
 /// One measured fabric boundary: q -> address, fraction and restore.
 /// Domain 2^26 <= q <= 3*2^28 is established by the normalization producer.
@@ -294,6 +307,7 @@ fn patterns() -> &'static [Pattern] {
     static PATTERNS: OnceLock<Vec<Pattern>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         [
+            BlockKind::SquareSumHead,
             BlockKind::NormalizedOutput { zero_gate: false },
             BlockKind::NormalizedOutput { zero_gate: true },
             BlockKind::ReciprocalTail,
@@ -318,6 +332,16 @@ fn patterns() -> &'static [Pattern] {
             let sx = m.input::<16,15,false>("specular", &[0]).unwrap();
             let f = m.compute("typed pipeline pattern", 128).unwrap();
             match kind {
+                BlockKind::SquareSumHead => {
+                    let a = f.read(q.at::<0>()).unwrap();
+                    let b = f.read(q.at::<0>()).unwrap();
+                    let c = f.read(q.at::<0>()).unwrap();
+                    let (sum, h) = square_sum_head(&f, [a,b,c]).unwrap();
+                    f.publish("result", h.address).unwrap();
+                    f.publish("fraction", h.fraction).unwrap();
+                    f.publish("restore", h.restore).unwrap();
+                    f.publish("q", sum).unwrap();
+                }
                 BlockKind::NormalizedOutput { zero_gate } => {
                     let p = f.read(product.at::<0>()).unwrap();
                     let z = if zero_gate {
@@ -421,6 +445,7 @@ fn match_value(
 pub(crate) fn bind(
     frame: &FrameReport,
     functions: bool,
+    sum_address: bool,
 ) -> Result<Vec<(BlockKind, audited::physical::LogicCone)>, String> {
     let mut result = Vec::new();
     let mut used = BTreeSet::new();
@@ -439,6 +464,9 @@ pub(crate) fn bind(
             continue;
         }
         for p in patterns() {
+            if p.kind == BlockKind::SquareSumHead && (!functions || !sum_address) {
+                continue;
+            }
             if !functions
                 && matches!(
                     p.kind,
@@ -550,22 +578,63 @@ mod tests {
     fn block_matching_checks_constants_and_does_not_hide_escaped_intermediates() {
         let original = frame(false);
         original.audit().unwrap();
-        assert_eq!(bind(&original, false).unwrap().len(), 1);
+        assert_eq!(bind(&original, false, false).unwrap().len(), 1);
         let escaped = frame(true);
         escaped.audit().unwrap();
-        assert!(bind(&escaped, false).unwrap().is_empty());
+        assert!(bind(&escaped, false, false).unwrap().is_empty());
         let mut altered = frame(false);
         // For a zero product changing the lower clamp bound leaves every sampled
         // numerical result valid. It must still invalidate the typed pattern.
         let bound = altered.values.iter_mut().find(|v| v.raw == -16384).unwrap();
         bound.raw = -16383;
         altered.audit().unwrap();
-        assert!(bind(&altered, false).unwrap().is_empty());
+        assert!(bind(&altered, false, false).unwrap().is_empty());
     }
     #[test]
     fn measured_pattern_signatures() {
         for p in patterns() {
             assert_eq!(fingerprint(&p.frame, p.result), p.kind.topology_signature());
+        }
+    }
+    #[test]
+    fn sum_address_exports_q_and_rejects_an_unexported_partial_sum() {
+        for escape_xy in [false, true] {
+            let mut m = Model::numerical();
+            let input = m
+                .input::<30, 28, false>("squares", &[1 << 26, 1 << 26, 0])
+                .unwrap();
+            let f = m.compute("sum address exports", 128).unwrap();
+            let squares = [
+                f.read(input.at::<0>()).unwrap(),
+                f.read(input.at::<1>()).unwrap(),
+                f.read(input.at::<2>()).unwrap(),
+            ];
+            let (q, xy) = square_sum(&f, squares).unwrap();
+            let h = inverse_head(&f, q).unwrap();
+            f.publish("address", h.address).unwrap();
+            f.publish("fraction", h.fraction).unwrap();
+            f.publish("restore", h.restore).unwrap();
+            f.publish("q", q).unwrap();
+            if escape_xy {
+                f.publish("partial sum", xy).unwrap();
+            }
+            let frame = f.finish();
+            frame.audit().unwrap();
+            let blocks = bind(&frame, true, true).unwrap();
+            assert_eq!(
+                blocks.iter().any(|(k, _)| *k == BlockKind::SquareSumHead),
+                !escape_xy
+            );
+            if !escape_xy {
+                let cone = &blocks
+                    .iter()
+                    .find(|(k, _)| *k == BlockKind::SquareSumHead)
+                    .unwrap()
+                    .1;
+                assert!(cone
+                    .exported_events
+                    .contains(&frame.values[frame.outputs[3].value].producer));
+            }
         }
     }
 }

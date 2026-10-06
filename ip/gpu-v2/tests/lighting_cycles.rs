@@ -24,16 +24,31 @@ fn retiming(profile: LightingProfile) -> gpu_v2::lighting::LightingRetiming {
     };
     if std::env::var_os("LIGHTING_RETIMED_RESOURCE").is_some() {
         let mut r = gpu_v2::lighting::LightingRetiming::resource_candidate(profile);
+        r.sum_address = std::env::var_os("LIGHTING_SUM_ADDRESS").is_some();
+        r.paired_latency = std::env::var("LIGHTING_PAIRED_LATENCY")
+            .ok()
+            .map(|v| v.parse().unwrap());
+        r.cone_latency = std::env::var("LIGHTING_CONE_LATENCY")
+            .ok()
+            .map(|v| v.parse().unwrap());
+        r.multiply_latency = std::env::var("LIGHTING_MULTIPLY_LATENCY")
+            .ok()
+            .map(|v| v.parse().unwrap());
         r.extra_large_multiply += delta("LIGHTING_EXTRA_LARGE");
         r.extra_small_multiply += delta("LIGHTING_EXTRA_SMALL");
-        if profile == LightingProfile::Compact
-            && std::env::var_os("LIGHTING_REMOVE_SPARE_SMALL9").is_some()
-        {
-            r.extra_small_multiply = 0;
-        }
         return r;
     }
     gpu_v2::lighting::LightingRetiming {
+        sum_address: std::env::var_os("LIGHTING_SUM_ADDRESS").is_some(),
+        paired_latency: std::env::var("LIGHTING_PAIRED_LATENCY")
+            .ok()
+            .map(|v| v.parse().unwrap()),
+        cone_latency: std::env::var("LIGHTING_CONE_LATENCY")
+            .ok()
+            .map(|v| v.parse().unwrap()),
+        multiply_latency: std::env::var("LIGHTING_MULTIPLY_LATENCY")
+            .ok()
+            .map(|v| v.parse().unwrap()),
         measured_functions: std::env::var_os("LIGHTING_MEASURED_FUNCTIONS").is_some(),
         extra_large_multiply: delta("LIGHTING_EXTRA_LARGE"),
         extra_small_multiply: delta("LIGHTING_EXTRA_SMALL"),
@@ -52,16 +67,8 @@ fn context(m: Material, l: Light, pr: Projection) -> LightingContext {
 
 #[test]
 fn numerical_executor_matches_every_stage_without_rebuilding_the_graph() {
-    for profile in [
-        LightingProfile::Fast,
-        LightingProfile::Compact,
-        LightingProfile::SystemFast,
-        LightingProfile::SystemCompact,
-    ] {
-        let system = matches!(
-            profile,
-            LightingProfile::SystemFast | LightingProfile::SystemCompact
-        );
+    for profile in [LightingProfile::Fast, LightingProfile::SystemFast] {
+        let system = matches!(profile, LightingProfile::SystemFast);
         for &resource in if system {
             &[true][..]
         } else {
@@ -176,7 +183,8 @@ fn numerical_executor_matches_every_stage_without_rebuilding_the_graph() {
 
 #[test]
 fn factor_profile_retains_public_rates_and_matches_independent_goldens() {
-    for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+    {
+        let profile = LightingProfile::Fast;
         let rtl = gpu_v2::lighting::rtl::generate_with_options(
             profile,
             gpu_v2::lighting::rtl::LightingRtlOptions::factor_profile(),
@@ -281,10 +289,7 @@ fn exercise(
     let roles = std::env::var_os("LIGHTING_ROLE_SCHEDULE").is_some();
     let direct = std::env::var_os("LIGHTING_DIRECT_SQUARE").is_some();
     let resource = std::env::var_os("LIGHTING_RESOURCE_PROFILE").is_some();
-    let system = matches!(
-        profile,
-        LightingProfile::SystemFast | LightingProfile::SystemCompact
-    );
+    let system = matches!(profile, LightingProfile::SystemFast);
     let factor = std::env::var_os("LIGHTING_FACTOR_KERNEL").is_some();
     let mut kernel = if std::env::var_os("LIGHTING_COMPENSATED_FLOOR").is_some() {
         counted::Config::compensated_resource_profile(profile)
@@ -304,11 +309,29 @@ fn exercise(
         }
     };
     kernel.lit_queue = std::env::var_os("LIGHTING_LIT_QUEUE").is_some();
+    if std::env::var_os("LIGHTING_CANONICAL_LIT_QUEUE").is_some() {
+        kernel = counted::Config::lit_queue_resource_profile(profile, kernel.quantization);
+    }
+    kernel.weighted_view = std::env::var_os("LIGHTING_WEIGHTED_VIEW").is_some();
     let depth = std::env::var("LIGHTING_LOGIC_DEPTH")
         .ok()
         .map(|v| v.parse().unwrap())
         .unwrap_or(0);
-    let mut emu = if retiming(profile) != Default::default() {
+    let mut emu = if std::env::var_os("LIGHTING_CANONICAL_LIT_QUEUE").is_some() {
+        let options = gpu_v2::lighting::rtl::LightingRtlOptions::lit_queue_resource_profile(
+            profile,
+            kernel.quantization,
+        );
+        LightingEmu::with_retiming(
+            profile,
+            kernel,
+            options.role_schedule,
+            options.logic_depth,
+            options.retiming,
+            options.dedicated_dsp,
+            40_000,
+        )
+    } else if retiming(profile) != Default::default() {
         LightingEmu::with_retiming(
             profile,
             kernel,
@@ -584,13 +607,8 @@ fn exercise(
 }
 
 #[test]
-fn stream_has_real_payloads_both_profiles_stalls_drain_context_and_reset() {
-    for profile in [
-        LightingProfile::Fast,
-        LightingProfile::Compact,
-        LightingProfile::SystemFast,
-        LightingProfile::SystemCompact,
-    ] {
+fn fast_stream_has_real_payloads_stalls_drain_context_and_reset() {
+    for profile in [LightingProfile::Fast, LightingProfile::SystemFast] {
         exercise(profile, false, |_, _, _| {});
     }
 }
@@ -654,9 +672,9 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
     );
     let system = std::env::var_os("LIGHTING_SYSTEM_PROFILE").is_some();
     let profiles = if system {
-        [LightingProfile::SystemFast, LightingProfile::SystemCompact]
+        [LightingProfile::SystemFast]
     } else {
-        [LightingProfile::Fast, LightingProfile::Compact]
+        [LightingProfile::Fast]
     };
     for profile in profiles {
         let resource = std::env::var_os("LIGHTING_RESOURCE_PROFILE").is_some();
@@ -708,6 +726,13 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
             _ => gpu_v2::lighting::rtl::DspSteering::None,
         };
         options.one_hot_dsp = std::env::var_os("LIGHTING_ONEHOT_DSP").is_some();
+        if std::env::var_os("LIGHTING_CANONICAL_LIT_QUEUE").is_some() {
+            options = gpu_v2::lighting::rtl::LightingRtlOptions::lit_queue_resource_profile(
+                profile,
+                options.quantization,
+            );
+        }
+        options.weighted_view = std::env::var_os("LIGHTING_WEIGHTED_VIEW").is_some();
         let rtl = gpu_v2::lighting::rtl::generate_with_options(profile, options).unwrap();
         let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/gpu-v2-lighting/rtl-cosim-f{}-l{}-s{}-r{}-c{}-{profile:?}-resource-{resource}-dedicated-{dedicated}-scalar-{scalar}-block-{block}-roles-{roles}-direct-{direct}-depth-{}-stationary-{}-cut-{}-window-{}-normalff-{}",u8::from(options.retiming.measured_functions),options.retiming.extra_large_multiply,options.retiming.extra_small_multiply,options.retiming.extra_normalize_reads,u8::from(options.retiming.compact_lifetimes),options.logic_depth,options.stationary_logic,options.cost_cut,options.q_windows,options.shallow_normal_ff));
         let dir =
@@ -740,6 +765,25 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
         };
         let dir = if !options.split_cones {
             dir.join("unsplit-cones")
+        } else {
+            dir
+        };
+        let dir = dir.join(format!(
+            "mul-latency-{}",
+            options
+                .retiming
+                .multiply_latency
+                .unwrap_or(gpu_v2::lighting::sim::timed::Hardware::default().multiply_latency)
+        ));
+        let dir = dir.join(format!(
+            "cone-{:?}-pair-{:?}-depth{}-sum{}",
+            options.retiming.cone_latency,
+            options.retiming.paired_latency,
+            options.logic_depth,
+            options.retiming.sum_address
+        ));
+        let dir = if options.weighted_view {
+            dir.join("weighted-view")
         } else {
             dir
         };

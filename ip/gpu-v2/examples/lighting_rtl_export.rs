@@ -4,13 +4,11 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "target/gpu-v2-lighting/rtl".into());
     let profile = match std::env::args().nth(3).as_deref() {
-        Some("compact") => LightingProfile::Compact,
         Some("system-fast") => LightingProfile::SystemFast,
-        Some("system-compact") => LightingProfile::SystemCompact,
         None | Some("fast") => LightingProfile::Fast,
         Some(s) => panic!("unknown profile {s}"),
     };
-    let options = match std::env::args().nth(4).as_deref() {
+    let mut options = match std::env::args().nth(4).as_deref() {
         None => rtl::LightingRtlOptions::default(),
         Some("factor-window-ff") => rtl::LightingRtlOptions {
             shallow_normal_ff: true,
@@ -139,6 +137,31 @@ fn main() {
         },
         Some(s) => panic!("unknown lowering {s}"),
     };
+    if std::env::var_os("LIGHTING_LIT_QUEUE").is_some() {
+        options = rtl::LightingRtlOptions::lit_queue_resource_profile(profile, Default::default());
+    }
+    options.weighted_view = std::env::var_os("LIGHTING_WEIGHTED_VIEW").is_some();
+    if std::env::var_os("LIGHTING_COMPENSATED_FLOOR").is_some() {
+        options.quantization = gpu_v2::lighting::LightingQuantization::CompensatedFloor;
+    }
+    if let Ok(v) = std::env::var("LIGHTING_MULTIPLY_LATENCY") {
+        options.retiming.multiply_latency =
+            Some(v.parse().expect("LIGHTING_MULTIPLY_LATENCY must be 1..=3"));
+    }
+    if let Ok(v) = std::env::var("LIGHTING_CONE_LATENCY") {
+        options.retiming.cone_latency =
+            Some(v.parse().expect("LIGHTING_CONE_LATENCY must be 1..=2"));
+    }
+    if let Ok(v) = std::env::var("LIGHTING_PAIRED_LATENCY") {
+        options.retiming.paired_latency =
+            Some(v.parse().expect("LIGHTING_PAIRED_LATENCY must be 1 or 4"));
+    }
+    if let Ok(v) = std::env::var("LIGHTING_SUM_ADDRESS") {
+        options.retiming.sum_address = v != "0";
+    }
+    if let Ok(depth) = std::env::var("LIGHTING_LOGIC_DEPTH") {
+        options.logic_depth = depth.parse().expect("LIGHTING_LOGIC_DEPTH must be 1..=8");
+    }
     let result = rtl::generate_with_options(profile, options).unwrap();
     for full in [true, false]
         .into_iter()
@@ -257,7 +280,12 @@ fn main() {
         .unwrap();
         std::fs::write(
             format!("{directory}/lighting.sdc"),
-            "create_clock -name clk -period 18.518 [get_ports {clk}]\n",
+            if options.lit_queue {
+                // Qualify a 60 MHz datapath with ten percent clock margin.
+                "create_clock -name clk -period 15.151515 [get_ports {clk}]\n"
+            } else {
+                "create_clock -name clk -period 18.518 [get_ports {clk}]\n"
+            },
         )
         .unwrap();
     }

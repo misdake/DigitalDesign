@@ -51,8 +51,8 @@ The periodic variant uses the generic resource scheduler and checks repeating
 arithmetic calendars. Physical certificates additionally check DSP placement,
 concrete ROM banks/replicas/ports and retained-value capacity. Lighting's
 independent emu/RTL implement numerical streaming, CE and backpressure for a
-single drained context. Fast and Compact select full/diffuse II2/II1 and II3/II2
-respectively. Resource/system alternatives remain explicitly selected candidates;
+single drained context. Fast is the sole resource architecture, with full/diffuse
+II2/II1. Resource/system alternatives remain explicitly selected candidates;
 the original numerical profile stays the default. The isolated probes have
 fitted evidence; whole-GPU/system composition remains future work.
 The earlier mixed-mode reservation stream uses the framework's context/FIFO/

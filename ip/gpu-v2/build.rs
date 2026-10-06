@@ -47,6 +47,7 @@ fn emit_table(out: &mut String, name: &str, ty: &str, values: &[u64]) {
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
     let mut texture = String::new();
     for row in rows("spec/texture-formats.csv") {
         assert_eq!(row.len(), 6);
@@ -141,6 +142,21 @@ fn main() {
         }
     }
     emit_table(&mut out, "RSQRT", "ReciprocalEntry", &rsqrt);
+    // Experimental direct length table; parity pages share the RSQRT address.
+    let mut sqrt = Vec::new();
+    for parity in 0..2 {
+        for segment in 0..64 {
+            let endpoint = |i: u32| {
+                (32768.0 * ((1.0 + f64::from(i) / 64.0) * f64::from(1_u32 << parity)).sqrt())
+                    .round_ties_even() as u64
+            };
+            let base = endpoint(segment);
+            let delta = endpoint(segment + 1) - base;
+            assert!(base < 65536 && delta < 512);
+            sqrt.push(base | (delta << 16));
+        }
+    }
+    emit_table(&mut out, "SQRT", "ViewLengthEntry", &sqrt);
     let mut power = Vec::new();
     let mut contexts = Vec::new();
     let mut params = Vec::new();

@@ -12,7 +12,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     fs::create_dir_all(&root)?;
     let mut csv=String::from("profile,round,full_ii,diffuse_ii,full_latency,diffuse_latency,register_bits,mul9,mul18,mac,normal_roms,dsp_macros,dsp_tiles_used,retained_delay_bits,zero_delay_retained_rows\n");
-    for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+    {
+        let profile = LightingProfile::Fast;
         for (round, functions, large, small, reads, compact) in [
             ("baseline", false, 0, 0, 0, false),
             ("functions", true, 0, 0, 0, false),
@@ -30,6 +31,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let options = LightingRtlOptions {
                 retiming: LightingRetiming {
+                    multiply_latency: None,
+                    cone_latency: None,
+                    paired_latency: None,
+                    sum_address: false,
                     measured_functions: functions,
                     extra_large_multiply: large,
                     extra_small_multiply: small,

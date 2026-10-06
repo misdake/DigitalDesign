@@ -279,7 +279,7 @@ impl BoundDag {
             {
                 return Err("measured block profile bounds".into());
             }
-            let blocks = super::pipeline::bind(f, h.measured_functions)?;
+            let blocks = super::pipeline::bind(f, h.measured_functions, h.combine_sum_address)?;
             let mut cones = Vec::new();
             let dsp_members: BTreeSet<_> = groups
                 .iter()

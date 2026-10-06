@@ -241,7 +241,8 @@ mod tests {
     #[test]
     fn steering_is_checked_nonincreasing_and_preserves_every_temporal_edge() {
         let mut changed = false;
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             let options = LightingRtlOptions::retimed_resource_profile(profile);
             let mut p = LoweredProgram::new(profile, options).unwrap();
             let keys = sources(&p);

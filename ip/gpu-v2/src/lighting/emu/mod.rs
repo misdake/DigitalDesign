@@ -39,7 +39,7 @@ impl LightingEmu {
             max_wall_ticks,
         )
     }
-    /// Explicit factor candidate with Fast II2/II1 or Compact II3/II2.
+    /// Explicit factor candidate with Fast II2/II1.
     /// The scaled NL gate follows the existing area candidate, not baseline bits.
     pub fn with_factor_profile(
         profile: LightingProfile,
@@ -59,7 +59,7 @@ impl LightingEmu {
         max_wall_ticks: u64,
     ) -> Result<Self, String> {
         if !profile.system() {
-            return Err("system profile requires SystemFast/SystemCompact".into());
+            return Err("system profile requires SystemFast".into());
         }
         Self::with_kernel(
             profile,
@@ -171,12 +171,14 @@ impl LightingEmu {
         quantization: super::LightingQuantization,
         max_wall_ticks: u64,
     ) -> Result<Self, String> {
+        let options =
+            super::rtl::LightingRtlOptions::lit_queue_resource_profile(profile, quantization);
         Self::with_retiming(
             profile,
-            super::sim::counted::Config::lit_queue_resource_profile(profile, quantization),
-            true,
-            0,
-            super::LightingRetiming::steered_resource_candidate(profile),
+            options.kernel(),
+            options.role_schedule,
+            options.logic_depth,
+            options.retiming,
             false,
             max_wall_ticks,
         )

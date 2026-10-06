@@ -23,7 +23,8 @@ mod compensation_review {
         let path = std::env::var_os("LIGHTING_COMPENSATION_DATASET").expect("dataset path");
         let data = std::fs::read_to_string(path).unwrap();
         assert_eq!(data.lines().count(), 32975);
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             let kernel = counted::Config::compensated_resource_profile(profile);
             let program = Program::with_retiming(
                 profile,
@@ -177,8 +178,17 @@ impl Program {
         {
             return Err("retiming resource delta outside bounded experiment".into());
         }
+        if retiming
+            .multiply_latency
+            .is_some_and(|n| !(1..=3).contains(&n))
+        {
+            return Err("ordinary DSP latency must be 1..=3 advancing edges".into());
+        }
         if logic_depth != 0 && !(2..=8).contains(&logic_depth) {
             return Err("logic boundary depth must be 2..=8".into());
+        }
+        if retiming.sum_address && !retiming.measured_functions {
+            return Err("sum-address contraction requires typed function bindings".into());
         }
         if config.compact_normal
             || !config.dataflow
@@ -230,7 +240,17 @@ impl Program {
                     .frame;
                 let b = BoundDag::new(&f, hardware)?;
                 let ray = ancestors(&f, &["ray.0", "ray.1"]);
-                let view = ancestors(&f, &["v.0", "v.1", "v.2"]);
+                let view = ancestors(
+                    &f,
+                    &[
+                        "v.0",
+                        "v.1",
+                        "v.2",
+                        "weighted.light.0",
+                        "weighted.light.1",
+                        "weighted.light.2",
+                    ],
+                );
                 let mut large = [0_usize; 3];
                 let mut small = 0_usize;
                 let mut reads = 0_usize;
@@ -269,14 +289,6 @@ impl Program {
                         .or_insert(effective_work);
                 }
             }
-            // Complete the existing Compact MULT18 macro instead of leaving
-            // its eighth slot idle. This adds no macro or tile allocation.
-            if profile == LightingProfile::Compact
-                && logic_depth == 8
-                && role_capacity.iter().sum::<usize>() % 2 == 1
-            {
-                role_capacity[2] += 1;
-            }
             hardware.large_multiply = role_capacity.iter().sum();
             hardware.small_multiply = small_capacity;
             hardware.normalize_reads = read_capacity;
@@ -288,7 +300,17 @@ impl Program {
                 .frame;
             let full_binding = BoundDag::new(&full_frame, hardware)?;
             let rays = ancestors(&full_frame, &["ray.0", "ray.1"]);
-            let views = ancestors(&full_frame, &["v.0", "v.1", "v.2"]);
+            let views = ancestors(
+                &full_frame,
+                &[
+                    "v.0",
+                    "v.1",
+                    "v.2",
+                    "weighted.light.0",
+                    "weighted.light.1",
+                    "weighted.light.2",
+                ],
+            );
             let mut large = [0_usize; 3];
             let mut small = 0_usize;
             let mut reads = 0_usize;
@@ -336,6 +358,22 @@ impl Program {
             hardware.large_multiply = 32;
         }
         hardware.measured_functions = retiming.measured_functions;
+        hardware.combine_sum_address = retiming.sum_address;
+        if let Some(latency) = retiming.paired_latency {
+            if !matches!(latency, 1 | 4) {
+                return Err("paired DSP latency must be one or four edges".into());
+            }
+            hardware.paired_latency = latency;
+        }
+        if let Some(latency) = retiming.cone_latency {
+            if !(1..=2).contains(&latency) {
+                return Err("generic cone latency must be one or two edges".into());
+            }
+            hardware.cone_latency = latency;
+        }
+        if let Some(latency) = retiming.multiply_latency {
+            hardware.multiply_latency = latency;
+        }
         hardware.large_multiply += retiming.extra_large_multiply;
         hardware.small_multiply += retiming.extra_small_multiply;
         hardware.normalize_reads += retiming.extra_normalize_reads;
@@ -373,7 +411,17 @@ impl Program {
             return Err("role schedule requires shared scalar architecture".into());
         }
         let ray = ancestors(&frame, &["ray.0", "ray.1"]);
-        let view = ancestors(&frame, &["v.0", "v.1", "v.2"]);
+        let view = ancestors(
+            &frame,
+            &[
+                "v.0",
+                "v.1",
+                "v.2",
+                "weighted.light.0",
+                "weighted.light.1",
+                "weighted.light.2",
+            ],
+        );
         let mut resources = BTreeMap::new();
         let mut physical_resources = Vec::new();
         for (id, kind) in binding.kinds.iter().enumerate() {
@@ -774,6 +822,7 @@ impl Program {
                 .map(i128::from),
             "SQ" => SQUARE_SIGNED_RAW.get(row).copied().map(i128::from),
             "RSQRT" => RSQRT_RAW.get(row).copied().map(i128::from),
+            "SQRT" => SQRT_RAW.get(row).copied().map(i128::from),
             "POWER" => POWER_RAW.get(row).copied().map(i128::from),
             "POWER_MIDPOINT_Q15" => POWER_MIDPOINT_RAW.get(row).copied().map(i128::from),
             _ => None,

@@ -200,12 +200,14 @@ impl PeriodicSchedule {
             .filter(|(_, m)| m.kind != MemoryKind::Input)
         {
             let copies = match m.name.as_str() {
-                "SQ" | "RSQRT" => normalization_banks
+                "SQ" | "RSQRT" | "SQRT" => normalization_banks
                     .iter()
                     .map(|&bank| MemoryCopy {
                         slices: vec![MemorySlice {
                             bank,
-                            base_row: if m.name == "RSQRT" {
+                            base_row: if m.name == "SQRT" {
+                                384
+                            } else if m.name == "RSQRT" {
                                 sq.map_or(0, |id| frame.memories[id].rows)
                             } else {
                                 0
@@ -287,6 +289,7 @@ impl PeriodicSchedule {
                     .ok_or("store not placed")?;
                 let copy = if frame.memories[memory].name == "SQ"
                     || frame.memories[memory].name == "RSQRT"
+                    || frame.memories[memory].name == "SQRT"
                 {
                     r.lane.ok_or("ROM lane missing")?
                 } else {

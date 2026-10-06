@@ -17,9 +17,20 @@ pub enum LightingQuantization {
 }
 
 /// Explicit bounded scheduling experiment; numerical kernel and public ports
-/// are selected separately. Default preserves the existing hardware program.
+/// are selected separately. Default uses the Hardware latency declarations.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LightingRetiming {
+    /// Ordinary MULT9X9/MULT18X18 advancing-edge latency; None uses Hardware.
+    /// Matched primitive configurations support one, two or three stages.
+    pub multiply_latency: Option<u64>,
+    /// Generic fabric-cone latency; measured typed functions stay one edge.
+    /// One-edge candidates require a matched whole-module timing qualification.
+    pub cone_latency: Option<u64>,
+    /// Dual-product MAC: one combinational macro plus a fabric output register,
+    /// or the established four-edge registered implementation.
+    pub paired_latency: Option<u64>,
+    /// Candidate multi-output square-sum plus reciprocal-address boundary.
+    pub sum_address: bool,
     pub measured_functions: bool,
     pub extra_large_multiply: usize,
     pub extra_small_multiply: usize,
@@ -28,13 +39,28 @@ pub struct LightingRetiming {
 }
 
 impl LightingRetiming {
-    /// Same existing resource-profile kernel and rates; fill spare Compact DSP9
-    /// slots within the already allocated macro, rather than add a DSP tile.
-    pub fn resource_candidate(profile: LightingProfile) -> Self {
+    /// Qualified 60 MHz Fast lit-queue fabric/DSP boundaries.
+    pub fn lit_queue_60mhz(profile: LightingProfile) -> (usize, Self) {
+        if profile != LightingProfile::Fast {
+            // System candidates keep their independently selected boundaries.
+            return (0, Self::steered_resource_candidate(profile));
+        }
+        (
+            6,
+            Self {
+                multiply_latency: Some(1),
+                cone_latency: Some(1),
+                paired_latency: Some(1),
+                sum_address: true,
+                ..Self::steered_resource_candidate(profile)
+            },
+        )
+    }
+    /// Preserve the Fast resource kernel and rates with measured function binding.
+    pub fn resource_candidate(_profile: LightingProfile) -> Self {
         Self {
             measured_functions: true,
             compact_lifetimes: true,
-            extra_small_multiply: usize::from(profile == LightingProfile::Compact) * 2,
             ..Self::default()
         }
     }
@@ -48,26 +74,20 @@ impl LightingRetiming {
     }
 }
 
-/// Two complete hardware alternatives with shared full/diffuse arithmetic lanes.
+/// Fast hardware with shared full/diffuse lanes and a legacy system candidate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LightingProfile {
     #[default]
     Fast,
-    Compact,
     /// Integration candidate with full/diffuse II2; numerical kernel is explicit.
     SystemFast,
-    /// Integration candidate with full/diffuse II4; numerical kernel is explicit.
-    SystemCompact,
 }
 impl LightingProfile {
     pub(crate) fn ii(self, full: bool) -> usize {
         match (self, full) {
             (Self::Fast, true) => 2,
             (Self::Fast, false) => 1,
-            (Self::Compact, true) => 3,
-            (Self::Compact, false) => 2,
             (Self::SystemFast, _) => 2,
-            (Self::SystemCompact, _) => 4,
         }
     }
     pub(crate) fn hardware(self) -> sim::timed::Hardware {
@@ -78,16 +98,9 @@ impl LightingProfile {
                 large_multiply: 7,
                 ..h
             },
-            Self::Compact | Self::SystemCompact => sim::timed::Hardware {
-                small_multiply: 5,
-                large_multiply: 5,
-                normalize_reads: 4,
-                dsp_tiles: 3,
-                ..h
-            },
         }
     }
     pub(crate) fn system(self) -> bool {
-        matches!(self, Self::SystemFast | Self::SystemCompact)
+        matches!(self, Self::SystemFast)
     }
 }
