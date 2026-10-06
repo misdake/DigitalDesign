@@ -124,6 +124,7 @@ fn connected_case(raster_scene: bool) {
     let ids = std::array::from_fn::<_, 4, _>(|i| backend.set_context(i as u8, context(i)).unwrap());
     let mut inputs: Vec<_> = (0..36)
         .map(|i| Input {
+            force_coarsest: false,
             context: ids[i % 4],
             header: Header {
                 x: (i % 10 * 16 + (i / 20 % 2) * 2) as u16,
@@ -136,12 +137,12 @@ fn connected_case(raster_scene: bool) {
             }),
             light: std::array::from_fn(|lane| CompactPixelInput {
                 normal: [[0, 0, 1024], [256, 384, 921], [0, 0, 0], [-1024, 0, 0]][lane],
-                ndc: [i as i32 * 1024 - 16384, lane as i32 * 8192],
+                ndc: [(i as i32 * 1024 - 16384) / 4, (lane as i32 * 8192) / 4],
             }),
-            uv_q18: std::array::from_fn(|lane| {
+            uv_q16: std::array::from_fn(|lane| {
                 [
-                    i as i64 * 4096 - 131072 + (lane as i64 & 1) * 8191,
-                    i as i64 * 2027 + (lane as i64 >> 1) * 4096,
+                    (i as i64 * 4096 - 131072 + (lane as i64 & 1) * 8191) / 4,
+                    (i as i64 * 2027 + (lane as i64 >> 1) * 4096) / 4,
                 ]
             }),
         })
@@ -173,9 +174,10 @@ fn connected_case(raster_scene: bool) {
         let mut colors = [[255; 3]; 4];
         if let Some(s) = c.sample.filter(|_| q.header.mask != 0) {
             let quad = tex::QuadInput {
+                force_coarsest: false,
                 quad_id: 0,
                 mask: q.header.mask,
-                uv: q.uv_q18.map(|v| v.map(|x| x as f64 / 262144.0)),
+                uv: q.uv_q16.map(|v| v.map(|x| x as f64 / 65536.0)),
                 slot: s.slot,
                 material_size_log2: s.size_log2,
                 filter: s.filter,

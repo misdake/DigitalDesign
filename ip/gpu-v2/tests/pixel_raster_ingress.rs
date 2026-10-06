@@ -105,16 +105,16 @@ fn real_triangle_attributes_enter_independent_compact_queues() {
     for lane in 0..4 {
         let s = &quad.samples[lane];
         assert_eq!(
-            input.uv_q18[lane],
-            s.uv.map(|v| (v * 262144.0).round_ties_even() as i64)
+            input.uv_q16[lane],
+            s.uv.map(|v| (v * 65536.0).round_ties_even() as i64)
         );
         if quad.mask & (1 << lane) != 0 {
             assert_eq!(input.light[lane].normal, [1, 205, 1024]);
             assert_eq!(
                 input.light[lane].ndc,
                 [
-                    ((s.position[0] / 8.0 - 1.0) * 65536.0).round_ties_even() as i32,
-                    ((1.0 - s.position[1] / 8.0) * 65536.0).round_ties_even() as i32
+                    ((s.position[0] / 8.0 - 1.0) * 16384.0).round_ties_even() as i32,
+                    ((1.0 - s.position[1] / 8.0) * 16384.0).round_ties_even() as i32
                 ]
             );
         }
@@ -136,7 +136,7 @@ fn real_triangle_attributes_enter_independent_compact_queues() {
         })
         .unwrap();
     let offers = dispatcher.signals();
-    assert_eq!(offers.sampling.unwrap().uv_q18, input.uv_q18);
+    assert_eq!(offers.sampling.unwrap().uv_q16, input.uv_q16);
     assert_eq!(offers.lighting.unwrap().pixels, input.light);
 }
 
@@ -147,11 +147,8 @@ fn invalid_projective_helpers_are_explicit_and_bypass_ignores_unused_fields() {
     let mut quad = raster().into_iter().find(|q| q.mask != 15).unwrap();
     let helper = (0..4).find(|lane| quad.mask & (1 << lane) == 0).unwrap();
     quad.invalid_helpers = 1 << helper;
-    assert!(
-        raster_input::convert(&dispatcher, context, quad.clone(), [16, 16])
-            .unwrap_err()
-            .contains("coarsest-LOD")
-    );
+    let (forced, _) = raster_input::convert(&dispatcher, context, quad.clone(), [16, 16]).unwrap();
+    assert!(forced.force_coarsest);
     let mut bypass = material();
     bypass.lighting.material.unlit = true;
     bypass.sample = None;

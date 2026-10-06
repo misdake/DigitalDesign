@@ -8,9 +8,9 @@ use audited::{
 
 pub mod rtl;
 
-pub const NUMERIC_BITS: usize = 1336;
-pub const CONTROL_BITS: usize = 49;
-pub const SPAN: u8 = 16;
+pub const NUMERIC_BITS: usize = 858;
+pub const CONTROL_BITS: usize = 50;
+pub const SPAN: u8 = 17;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
@@ -25,6 +25,7 @@ pub struct Header {
 pub struct Input {
     pub uv: [i64; 8],
     pub bias: i16,
+    pub force_coarsest: bool,
     pub header: Header,
 }
 impl Input {
@@ -45,17 +46,8 @@ impl Input {
         {
             return Err("D input metadata range".into());
         }
-        let mut uv = [0; 8];
-        for (i, v) in q.uv.iter().flatten().enumerate() {
-            if v.abs() > 1_048_576.0 {
-                return Err("D external UV bound".into());
-            }
-            let raw = (v * 262144.0).round_ties_even();
-            if !raw.is_finite() || !(-(1_i64 << 39) as f64..(1_i64 << 39) as f64).contains(&raw) {
-                return Err("D signed UV40 range".into());
-            }
-            uv[i] = raw as i64;
-        }
+        let (codes, force_coarsest) = crate::texture::ports::capture_uv(q)?;
+        let uv = std::array::from_fn(|i| codes[i / 2][i % 2]);
         // The real admission crosses the same generated protected memory type
         // as the legacy input. No frame/body is executed or retained here.
         let mut boundary = audited::Model::numerical();
@@ -92,6 +84,7 @@ impl Input {
         Ok(Self {
             uv,
             bias,
+            force_coarsest,
             header: Header {
                 quad: q.quad_id,
                 mask: q.mask,
@@ -110,6 +103,7 @@ impl Input {
             .map(|(i, v)| ("helper_uv", i, i128::from(v)))
             .collect();
         rows.push(("bias", 0, i128::from(self.bias)));
+        rows.push(("force_coarsest", 0, i128::from(self.force_coarsest)));
         for (i, v) in [
             self.header.quad,
             self.header.mask,

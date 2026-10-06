@@ -216,7 +216,7 @@ pub(super) fn describe(
         }
         // Dedicated retains conservative FF ceilings, but actual D/LOD use
         // the certified Packed physical slices. Bill their real steering:
-        // read +489, write +1189, Boolean +7407 versus the old Dedicated bill.
+        // read/write/Boolean steering re-derived for the current widths versus the old Dedicated bill.
         // These are topology demands, not fitted Logic or PnR measurements.
         for stage in [&b.derivative, &b.lod] {
             r.rotating_read_mux_bits -= stage

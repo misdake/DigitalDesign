@@ -159,6 +159,7 @@ impl Controller {
         if self.stopped || !s.producing || vertex >= 64 || s.ready[vertex] {
             return Err("source vertex publication state".into());
         }
+        value.validate()?;
         let rows = value.rows();
         Transformed::from_rows(rows)?;
         self.slots[slot].rows[vertex * 7..vertex * 7 + 7].copy_from_slice(&rows);

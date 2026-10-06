@@ -44,7 +44,7 @@ pub struct Step {
 /// Additional state beyond the six arithmetic leaves. The declarations count
 /// conservative separate banks, including fields inactive in some phases;
 /// Rust enum/Option layout and host watchdog counters are not a hardware bill.
-pub const CONTROLLER_DATA_BITS: usize = 144 + 76 + 83 + 171 + 92 + 72;
+pub const CONTROLLER_DATA_BITS: usize = 128 + 54 + 83 + 171 + 92 + 72;
 pub const CONTROLLER_CONTROL_BITS: usize = 4 + 2 + 1 + 2 + 1 + 1;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -166,7 +166,7 @@ impl PreparationEmu {
                 || i.header.slot >= 16
                 || i.uv
                     .iter()
-                    .any(|v| !(-(1_i64 << 39)..(1_i64 << 39)).contains(v))
+                    .any(|v| !(-(1_i64 << 17)..(1_i64 << 17)).contains(v))
             {
                 return Err("serial preparation input width".into());
             }

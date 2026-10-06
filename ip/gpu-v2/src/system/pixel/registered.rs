@@ -262,7 +262,8 @@ impl<M: MemoryPort> RegisteredBranches<M> {
                     .get(c.slot as usize)
                     .ok_or("registered sample slot")?;
                 Ok::<_, String>(derivative::Input {
-                    uv: std::array::from_fn(|i| j.uv_q18[i / 2][i % 2]),
+                    force_coarsest: j.force_coarsest,
+                    uv: std::array::from_fn(|i| j.uv_q16[i / 2][i % 2]),
                     bias: c.bias_q8,
                     header: derivative::Header {
                         quad: j.ticket.quad,

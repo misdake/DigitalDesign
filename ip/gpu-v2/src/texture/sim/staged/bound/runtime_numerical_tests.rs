@@ -358,6 +358,7 @@ fn actual_scalar_terminal_fault_width_empty_and_invalid_tap() {
 #[test]
 fn dynamic_counted_guard_rejects_both_helpers_and_restores_compile_scope() {
     let q = crate::texture::ports::QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask: 1,
         uv: [[0.0, 0.0]; 4],

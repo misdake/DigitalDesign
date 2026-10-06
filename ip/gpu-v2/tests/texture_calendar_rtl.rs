@@ -106,6 +106,7 @@ fn calendar(
 
 fn canonical() -> bound::Preparation {
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask: 1,
         uv: [[0.003, 0.003]; 4],
@@ -195,8 +196,8 @@ fn d_golden(i: derivative::Input) -> derivative::Output {
         .max()
         .unwrap();
     derivative::Output {
-        uv: i.uv.map(|v| v.rem_euclid(1 << 18) as u32),
-        slope,
+        uv: i.uv.map(|v| v.rem_euclid(1 << 16) as u32),
+        slope: if i.force_coarsest { 131073 } else { slope },
         bias: i.bias,
         header: i.header,
     }
@@ -210,7 +211,7 @@ fn l_golden(i: lod::Input) -> lod::Output {
     };
     let l = if i.slope == 0 {
         0
-    } else if i.slope > 524288 {
+    } else if i.slope > 131072 {
         maximum
     } else {
         let h = 63 - i.slope.leading_zeros();
@@ -220,7 +221,7 @@ fn l_golden(i: lod::Input) -> lod::Output {
         let remainder = tail % 8192;
         let k = quotient
             + u64::from(remainder > 4096 || remainder == 4096 && !quotient.is_multiple_of(2));
-        let exponent = i32::from(i.header.max_n) + h as i32 - 18 + i32::from(k == 64);
+        let exponent = i32::from(i.header.max_n) + h as i32 - 16 + i32::from(k == 64);
         let log = ((1.0 + (k % 64) as f64 / 64.0).log2() * 256.0).round_ties_even() as i32;
         (256 * exponent + log + i32::from(i.bias)).clamp(0, maximum)
     };
@@ -234,7 +235,7 @@ fn l_golden(i: lod::Input) -> lod::Output {
     };
     lod::Output {
         context: lod::CoordinateContext {
-            shift: i32::from(fine.max(1)) - 10,
+            shift: i32::from(fine.max(1)) - 8,
             nearest: i.header.filter == 0,
             halve: fine > 1,
             side: levels.map(|n| 1_i16 << n.max(1)),
@@ -287,6 +288,7 @@ fn d_stimulus(slope: u64, id: usize) -> (QuadInput, Slot) {
         valid: true,
     };
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: (id % 16) as u8,
         mask: 1,
         uv: [[-0.75, 0.125]; 4],
@@ -295,11 +297,7 @@ fn d_stimulus(slope: u64, id: usize) -> (QuadInput, Slot) {
         filter: [Filter::Nearest, Filter::Bilinear, Filter::Trilinear][id % 3],
         lod_bias: [-32.0, -0.5, 0.0, 0.5, 32.0][id % 5],
     };
-    q.uv[1][0] += slope as f64 / 262144.0;
-    if slope > (1 << 38) {
-        q.uv[0][0] = -(1_i64 << 38) as f64 / 262144.0;
-        q.uv[1][0] = (slope - (1 << 38)) as f64 / 262144.0;
-    }
+    q.uv[1][0] += slope as f64 / 65536.0;
     (q, slot)
 }
 
@@ -319,7 +317,7 @@ fn derivative_inputs() -> Vec<derivative::Input> {
         524289,
         1 << 39,
     ];
-    slopes.extend((0..64).map(|k| 262144 + k * 4096 + 2048));
+    slopes.extend((0..64).map(|k| 65536 + k * 1024 + 512));
     // Requested increments that land the actual LOD `RoundIncrement(13)` exactly
     // below, on and above the half. An actual slope of 2^18+t normalizes to a
     // 19-bit tail of 2t, so t selects the remainder/quotient pair; both retained
@@ -339,7 +337,7 @@ fn derivative_inputs() -> Vec<derivative::Input> {
 fn coordinate_inputs() -> Vec<CoordInput> {
     let mut v = vec![];
     for physical in 1..=10 {
-        let shift = physical - 10;
+        let shift = physical - 8;
         let side = 1i16 << physical;
         for nearest in [false, true] {
             let halve = physical > 1;
@@ -351,14 +349,14 @@ fn coordinate_inputs() -> Vec<CoordInput> {
                 side: [side, (side / 2).max(2)],
             });
             v.push(CoordInput {
-                uv: [(1u32 << 18) - 1, 256u32.wrapping_sub(1)],
+                uv: [(1u32 << 16) - 1, 256u32.wrapping_sub(1)],
                 shift,
                 nearest,
                 halve,
                 side: [side, (side / 2).max(2)],
             });
             v.push(CoordInput {
-                uv: [128, (1u32 << 18) - 128],
+                uv: [128, (1u32 << 16) - 128],
                 shift,
                 nearest,
                 halve,
@@ -367,8 +365,8 @@ fn coordinate_inputs() -> Vec<CoordInput> {
         }
     }
     v.push(CoordInput {
-        uv: [1 << 17, (1 << 18) - 1],
-        shift: -9,
+        uv: [1 << 15, (1 << 16) - 1],
+        shift: -7,
         nearest: false,
         halve: false,
         side: [2, 2],
@@ -385,6 +383,7 @@ fn d_rows(i: &derivative::Input) -> Vec<(&'static str, usize, i128)> {
             .map(|(k, v)| ("helper_uv", k, i128::from(*v)))
             .collect();
     r.push(("bias", 0, i128::from(i.bias)));
+    r.push(("force_coarsest", 0, i128::from(i.force_coarsest)));
     r.push(("meta", 0, i128::from(i.header.quad)));
     r.push(("meta", 1, i128::from(i.header.mask)));
     r.push(("meta", 2, i128::from(i.header.slot)));
@@ -962,14 +961,14 @@ fn rne_below_tie_above_and_signed_negatives() {
     };
     // (actual slope, expected RoundIncrement bit, label)
     let cases: [(u64, i128, &str); 8] = [
-        (262144, 0, "tail zero"),
-        (263144, 0, "below half"),
-        (264192, 0, "tie, even quotient"),
-        (268288, 1, "tie, odd quotient"),
-        (265144, 1, "above half"),
-        (266239, 1, "just below the next multiple"),
-        (266240, 0, "exact multiple"),
-        (272384, 0, "tie, even quotient q2"),
+        (65536, 0, "tail zero"),
+        (65786, 0, "below half"),
+        (66048, 0, "tie, even quotient"),
+        (67072, 1, "tie, odd quotient"),
+        (66286, 1, "above half"),
+        (66559, 1, "just below the next multiple"),
+        (66560, 0, "exact multiple"),
+        (68096, 0, "tie, even quotient q2"),
     ];
     let inputs: Vec<lod::Input> = cases
         .iter()
@@ -997,6 +996,7 @@ fn rne_below_tie_above_and_signed_negatives() {
     }
     // Signed-negative helper UV is retained; only its magnitude feeds slope.
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask: 1,
         uv: [[0.0, 0.0]; 4],
@@ -1005,7 +1005,7 @@ fn rne_below_tie_above_and_signed_negatives() {
         filter: Filter::Trilinear,
         lod_bias: 0.0,
     };
-    q.uv[1][0] = -(2048.0 / 262144.0);
+    q.uv[1][0] = -(2048.0 / 65536.0);
     let d = derivative::Input::capture(
         &q,
         Slot {

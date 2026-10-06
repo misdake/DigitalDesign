@@ -63,8 +63,8 @@ fn rne(n: i64, d: i64) -> i64 {
 }
 pub fn ndc(x: u16, y: u16) -> [i32; 2] {
     [
-        rne((2 * i64::from(x) + 1 - 32) * 65536, 32) as i32,
-        rne((32 - 2 * i64::from(y) - 1) * 65536, 32) as i32,
+        rne((2 * i64::from(x) + 1 - 32) * 16384, 32) as i32,
+        rne((32 - 2 * i64::from(y) - 1) * 16384, 32) as i32,
     ]
 }
 #[derive(Debug)]
@@ -126,6 +126,7 @@ impl Cursor {
                 }; 4],
             },
             sample: Some(TextureQuad {
+                force_coarsest: false,
                 quad_id: 0,
                 mask: 0,
                 uv: [[0.0; 2]; 4],
@@ -207,10 +208,26 @@ impl Cursor {
             QuadPhase::Capture(lane) => {
                 let x = self.xy[0] + (lane % 2) as u16;
                 let y = self.xy[1] + (lane / 2) as u16;
-                let v = self.data.evaluate(f64::from(x) + 0.5, f64::from(y) + 0.5)?;
-                self.quad.sample.as_mut().unwrap().uv[lane] = v.uv()?;
+                let covered = self.quad.live.quad.header.mask >> lane & 1 != 0;
+                let value = match self.data.evaluate(f64::from(x) + 0.5, f64::from(y) + 0.5) {
+                    Ok(v) => Some(v),
+                    Err(e) if !covered && e == "invalid helper W/attributes" => {
+                        self.quad.sample.as_mut().unwrap().force_coarsest = true;
+                        None
+                    }
+                    Err(e) => return Err(e),
+                };
+                if let Some(v) = &value {
+                    let sample = self.quad.sample.as_mut().unwrap();
+                    match v.uv() {
+                        Ok(uv) => sample.uv[lane] = uv,
+                        Err(_) if !covered => sample.force_coarsest = true,
+                        Err(e) => return Err(e),
+                    }
+                }
                 stats.helpers += 1;
-                if self.quad.live.quad.header.mask >> lane & 1 != 0 {
+                if covered {
+                    let v = value.as_ref().ok_or("covered record sample missing")?;
                     self.quad.live.quad.basic[lane] = Basic {
                         tint: v.tint(),
                         depth: v.depth(self.attributes.near, self.attributes.far)?,
@@ -635,7 +652,7 @@ mod tests {
             [rne(3, 2), rne(5, 2), rne(-3, 2), rne(-5, 2)],
             [2, 2, -2, -2]
         );
-        assert_eq!(super::ndc(0, 0), [-63488, 63488]);
-        assert_eq!(super::ndc(31, 31), [63488, -63488]);
+        assert_eq!(super::ndc(0, 0), [-15872, 15872]);
+        assert_eq!(super::ndc(31, 31), [15872, -15872]);
     }
 }

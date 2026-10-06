@@ -49,7 +49,7 @@ pub struct Preparation {
     pub groups: Vec<Group4>,
     pub payloads: Vec<i128>,
 }
-fn uv_address(s: UvStore, i: usize) -> audited::Address<40, 18, true> {
+fn uv_address(s: UvStore, i: usize) -> audited::Address<18, 16, true> {
     match i {
         0 => s.at::<0>(),
         1 => s.at::<1>(),
@@ -75,13 +75,11 @@ fn pair_address<const B: u32, const F: u32, const S: bool>(
 fn derivatives(q: &QuadInput, slot: Slot) -> Result<Stage, counted::Error> {
     #[cfg(test)]
     bound::counted_call_guard::call(2);
-    let uv: Vec<_> =
-        q.uv.iter()
-            .flatten()
-            .map(|v| (v * 262144.0).round_ties_even() as i128)
-            .collect();
+    let (captured, force_coarsest) = capture_uv(q)?;
+    let uv: Vec<_> = captured.into_iter().flatten().map(i128::from).collect();
     let mut m = Model::numerical();
     let store: UvStore = m.input("helper_uv", &uv)?;
+    let force = m.input::<1, 0, false>("force_coarsest", &[i128::from(force_coarsest)])?;
     let bias: BiasStore = m.input(
         "bias",
         &[(q.lod_bias.clamp(-32.0, 32.0) * 256.0).round_ties_even() as i128],
@@ -109,7 +107,7 @@ fn derivatives(q: &QuadInput, slot: Slot) -> Result<Stage, counted::Error> {
     let mut uvs = [UvRaw::constant::<0>(); 8];
     for (i, v) in uvs.iter_mut().enumerate() {
         *v = f.binary_scale(f.read(uv_address(store, i))?)?;
-        f.publish(&format!("uv{i}"), f.slice::<18, 0, false, 0>(*v)?)?;
+        f.publish(&format!("uv{i}"), f.slice::<16, 0, false, 0>(*v)?)?;
     }
     let mut mags = [Magnitude::constant::<0>(); 8];
     for (edge, (a, b)) in [(0, 1), (2, 3), (0, 2), (1, 3)].into_iter().enumerate() {
@@ -133,7 +131,14 @@ fn derivatives(q: &QuadInput, slot: Slot) -> Result<Stage, counted::Error> {
             )?;
         }
     }
-    f.publish("slope", mags[0])?;
+    f.publish(
+        "slope",
+        f.select(
+            f.read(force.at::<0>())?,
+            Magnitude::constant::<131073>(),
+            mags[0],
+        )?,
+    )?;
     f.publish("bias", f.read(bias.at::<0>())?)?;
     f.publish("quad", f.read(meta.at::<0>())?)?;
     f.publish("mask", f.read(meta.at::<1>())?)?;
@@ -169,7 +174,7 @@ fn lod(d: &Stage) -> Result<Stage, Fault> {
         max_n,
         Size::constant::<0>(),
     )?)?)?;
-    let overflow = f.less(Magnitude::constant::<524288>(), s)?;
+    let overflow = f.less(Magnitude::constant::<131072>(), s)?;
     let zero = counted::eq(&f, s, Magnitude::constant::<0>())?;
     // Substitute one before narrowing so zero/overflow paths never construct an
     // invalid shift or overflowing 20-bit slope. Final guards retain semantics.
@@ -188,7 +193,7 @@ fn lod(d: &Stage) -> Result<Stage, Fault> {
     let carry = counted::eq(&f, k, TableIndex::constant::<64>())?;
     let fraction = f.read(log.indexed(f.slice::<6, 0, false, 0>(k)?))?;
     let exponent = f.add_same(
-        f.sub_same(h, Shift::constant::<18>())?,
+        f.sub_same(h, Shift::constant::<16>())?,
         f.resize_exact(max_n)?,
     )?;
     let integer =
@@ -243,7 +248,7 @@ fn lod(d: &Stage) -> Result<Stage, Fault> {
         )?;
         f.publish(
             &format!("shift{which}"),
-            f.sub::<18, 0, true>(physical, Size::constant::<10>())?,
+            f.sub::<18, 0, true>(physical, Size::constant::<8>())?,
         )?;
         f.publish(
             &format!("prefix{which}"),
@@ -295,7 +300,7 @@ pub(super) fn coordinate_values(
     #[cfg(test)]
     bound::counted_call_guard::call(4);
     let mut m = Model::numerical();
-    let uv = m.input::<18, 0, false>("wrapped_uv", &[i128::from(uv[0]), i128::from(uv[1])])?;
+    let uv = m.input::<16, 0, false>("wrapped_uv", &[i128::from(uv[0]), i128::from(uv[1])])?;
     let shift = m.input::<18, 0, true>("coordinate_shift", &[i128::from(shift)])?;
     let flags = m.input::<1, 0, false>("flags", &[i128::from(nearest), i128::from(halve)])?;
     let side: IntegerCoordinateStore =

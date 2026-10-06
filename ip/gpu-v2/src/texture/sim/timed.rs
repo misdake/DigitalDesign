@@ -1239,6 +1239,7 @@ mod tests {
             ..Default::default()
         };
         let q = QuadInput {
+            force_coarsest: false,
             quad_id: 0,
             mask: 1,
             uv: [[0.13, 0.07]; 4],
@@ -1305,6 +1306,7 @@ mod tests {
             next: 3,
         });
         let q = QuadInput {
+            force_coarsest: false,
             quad_id: 0,
             slot: 0,
             material_size_log2: 5,

@@ -81,7 +81,8 @@ drain continue on wall-clock edges. FENCE covers accepted frontend DMA and
 vertex publication only; it is not the eventual render fence.
 
 Each output slot is one 512x36 BSRAM. A meshlet has at most 64 vertices, each
-seven rows: four raw clip fields; nx/ny; nz/u; v/RGB565. Upper unused bits are
+seven rows: four raw clip fields; XYZ normal in row4 (three S(12,10) fields),
+UNORM12 U/V in row5 and RGB565 in row6. Upper unused bits are
 zero. All seven registered writes must complete before the next publication
 edge sets ready. Publication retains the slot; explicit consumer release is
 required before allocation increments its epoch and clears ready bits. There
@@ -179,6 +180,11 @@ ties to even; output overflow faults rather than wrapping or saturating. The
 remaining decode, addressing, packing and context-copy work is retained in the
 ledger. Signed66 Q32 and signed34 Q28 sums are conservative full-precision
 formats; future narrowing needs a domain proof, not successful sample values.
+The selected vertex output is S(12,10), after one RNE from each full Q28 sum.
+`Normal` remains the S(16,14) multiply operand; `NormalOutput` owns the narrowed
+producer boundary. `Transformed::validate` rejects normal or UV width violations
+before source publication and triangle admission. The seven-row physical output
+allocation and read/write counts remain unchanged by this repacking.
 
 The driver preflight checks the actual Q14 normal matrix's Gram matrix against
 identity with maximum raw error 32768. Identity, signed rotations and quantized

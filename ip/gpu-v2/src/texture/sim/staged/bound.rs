@@ -835,6 +835,7 @@ impl Program {
 impl Binding {
     pub fn build() -> Result<Arc<Self>, String> {
         let mut q = QuadInput {
+            force_coarsest: false,
             quad_id: 0,
             mask: 1,
             uv: [[0.003, 0.003]; 4],

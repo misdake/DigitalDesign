@@ -14,7 +14,7 @@ fn vertices() -> [Transformed; 3] {
             -16384,
             65536,
         ],
-        normal: [i16::MIN, i as i16 * 8192, i16::MAX],
+        normal: [-2048, i as i16 * 512, 2047],
         uv: [i as u16 * 2000, 4095 - i as u16 * 1000],
         rgb565: 0x1234 ^ (i as u16 * 0x1001),
     })
@@ -231,7 +231,7 @@ fn cancellation_drains_registered_read_without_success_publication() {
 fn malformed_rows_context_and_unpublished_sources_are_rejected() {
     for row in 0..7 {
         let mut rows = vertices()[0].rows();
-        rows[row] |= 1 << 35;
+        rows[row] |= 1 << [32, 32, 32, 32, 36, 24, 16][row];
         assert!(Transformed::from_rows(rows).is_err());
     }
     assert_eq!(

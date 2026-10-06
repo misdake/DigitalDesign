@@ -9,7 +9,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             clip_fraction: 16,
-            normal_fraction: 14,
+            normal_fraction: 10,
         }
     }
 }
@@ -34,7 +34,7 @@ pub fn rne(x: i128, shift: u32) -> i128 {
 }
 pub fn run(context: &Context, vertex: PackedVertex, config: &Config) -> Result<Report, String> {
     context.validate()?;
-    if config.clip_fraction > 16 || config.normal_fraction > 14 {
+    if config.clip_fraction > 16 || config.normal_fraction > 10 {
         return Err("oracle precision bounds".into());
     }
     let (position, normal, uv, rgb565) = unpack(context, vertex)?;
@@ -76,7 +76,7 @@ pub fn transform_quantized(
     config: &Config,
 ) -> Result<Report, String> {
     context.validate()?;
-    if config.clip_fraction > 16 || config.normal_fraction > 14 || uv.iter().any(|&v| v > 4095) {
+    if config.clip_fraction > 16 || config.normal_fraction > 10 || uv.iter().any(|&v| v > 4095) {
         return Err("vertex precision/UV bounds".into());
     }
     let clip_sum = std::array::from_fn(|row| {
@@ -100,9 +100,12 @@ pub fn transform_quantized(
     }
     for i in 0..3 {
         out_normal[i] = i16::try_from(
-            rne(normal_sum[i], 28 - config.normal_fraction) << (14 - config.normal_fraction),
+            rne(normal_sum[i], 28 - config.normal_fraction) << (10 - config.normal_fraction),
         )
         .map_err(|_| "normal overflow")?;
+        if !(-2048..=2047).contains(&out_normal[i]) {
+            return Err("S(12,10) normal overflow".into());
+        }
     }
     Ok(Report {
         position,

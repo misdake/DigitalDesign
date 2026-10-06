@@ -110,7 +110,7 @@ fn transform_vertex(
         let report = vo::transform_quantized(c, raw, nr, [0; 2], 0, &vo::Config::default())?;
         (
             report.output.clip.map(|x| x as f64 / 65536.0),
-            report.output.normal.map(|x| x as f64 / 16384.0),
+            report.output.normal.map(|x| x as f64 / 1024.0),
         )
     };
     let clipped = usize::from(config.vertex_normal.clipped(normal));
@@ -320,7 +320,7 @@ fn light_quad(
     config: Config,
     stats: &mut Stats,
 ) -> Result<ShadedQuad, String> {
-    stats.helper_fallbacks += usize::from(q.invalid_helpers != 0);
+    stats.helper_fallbacks += usize::from(scene.textured && tex::capture_uv(&texture_input(q))?.1);
     let mut out = ShadedQuad {
         header: fb::Header {
             x: q.xy[0],
@@ -339,10 +339,13 @@ fn light_quad(
         stats.fragments += 1;
         stats.normal_clips += usize::from(config.pixel_normal.clipped(s.normal));
         let normal = config.pixel_normal.quantize(s.normal)?;
-        let ndc = [
-            ((s.position[0] * 2.0 / scene.width as f64 - 1.0) * 65536.0).round_ties_even() as i32,
-            ((1.0 - s.position[1] * 2.0 / scene.height as f64) * 65536.0).round_ties_even() as i32,
-        ];
+        let ndc = lp::pixel_center_ndc(
+            q.xy[0] + (lane % 2) as u16,
+            q.xy[1] + (lane / 2) as u16,
+            scene.width,
+            scene.height,
+        )
+        .map_err(|e| format!("pixel center: {e:?}"))?;
         let pixel = match config.pixel_normal {
             NormalFormat::S12F10 => lp::CompactPixelInput {
                 normal: normal.map(|v| (v * 1024.0).round_ties_even() as i16),
@@ -378,13 +381,14 @@ fn light_quad(
 }
 fn texture_input(q: &RasterQuad) -> tex::QuadInput {
     tex::QuadInput {
+        force_coarsest: q.invalid_helpers != 0,
         quad_id: 0,
         mask: q.mask,
         uv: q.samples.clone().map(|s| s.uv),
         slot: 0,
         material_size_log2: 5,
         filter: tex::Filter::Trilinear,
-        lod_bias: if q.invalid_helpers != 0 { 5.0 } else { 0.0 },
+        lod_bias: 0.0,
     }
 }
 fn shade(

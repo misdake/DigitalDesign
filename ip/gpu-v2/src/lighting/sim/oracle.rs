@@ -406,7 +406,7 @@ fn evaluate_inner(
         || !(10..=24).contains(&c.reciprocal_fraction)
         || c.reciprocal_work_extra > 8
         || c.half_ndc_override
-            .is_some_and(|p| p.iter().any(|&x| !(-65536..=65536).contains(&x)))
+            .is_some_and(|p| p.iter().any(|&x| !(-16384..=16384).contains(&x)))
         || !(8..=24).contains(&c.dot_fraction)
         || !(8..=24).contains(&c.power_fraction)
         || !(4..=16).contains(&c.intensity_fraction)
@@ -495,14 +495,14 @@ fn evaluate_inner(
                 rescale_with(
                     i128::from(c.half_ndc_override.unwrap_or(pixel.ndc)[0])
                         * i128::from(projection.ray_scale[0]),
-                    30,
+                    28,
                     f,
                     c.rounding.projection,
                 ),
                 rescale_with(
                     i128::from(c.half_ndc_override.unwrap_or(pixel.ndc)[1])
                         * i128::from(projection.ray_scale[1]),
-                    30,
+                    28,
                     f,
                     c.rounding.projection,
                 ),
@@ -634,8 +634,8 @@ pub fn ideal(
     }
     let v = unit(
         [
-            f64::from(pixel.ndc[0]) / 65536.0 * f64::from(projection.ray_scale[0]) / 16384.0,
-            f64::from(pixel.ndc[1]) / 65536.0 * f64::from(projection.ray_scale[1]) / 16384.0,
+            f64::from(pixel.ndc[0]) / 16384.0 * f64::from(projection.ray_scale[0]) / 16384.0,
+            f64::from(pixel.ndc[1]) / 16384.0 * f64::from(projection.ray_scale[1]) / 16384.0,
             f64::from(projection.k) / 16384.0,
         ],
         4.0 / 16384.0,

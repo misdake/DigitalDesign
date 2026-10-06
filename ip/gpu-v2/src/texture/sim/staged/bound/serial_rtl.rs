@@ -25,9 +25,9 @@
 //! Declared state inventory is the additive controller bank only (the six
 //! kernels carry their own separately audited arithmetic state):
 //!
-//! * data 144 (D UV8x18) + 76 (pending LOD input 75 + valid) + 83 (LOD
+//! * data 128 (D wrapped UV8x16) + 54 (pending LOD input 53 + valid) + 83 (LOD
 //!   context/id) + 171 (coefficient operand/result row) + 92 (held Member) +
-//!   72 (packet head) = 638 bits;
+//!   72 (packet head) = 600 bits;
 //! * control 4 (state) + 2 (lane) + 1 (plane) + 2 (tap) + 1 (head valid) +
 //!   1 (terminal fault) = 11 bits.
 //!
@@ -48,7 +48,7 @@ use crate::texture::rtl::coefficient;
 /// Top-level module instantiated by the qualification testbench.
 pub const TOP: &str = "gpu_v2_texture_serial_preparation";
 /// Additive controller data-bank baseline (see module docs).
-pub const CONTROLLER_DATA_BITS: usize = 144 + 76 + 83 + 171 + 92 + 72;
+pub const CONTROLLER_DATA_BITS: usize = 128 + 54 + 83 + 171 + 92 + 72;
 /// Additive controller control-bank baseline.
 pub const CONTROLLER_CONTROL_BITS: usize = 4 + 2 + 1 + 2 + 1 + 1;
 
@@ -184,6 +184,7 @@ fn d_input(io: &Io) -> Result<String, String> {
         ("meta", 3) => Ok("in_max_n".into()),
         ("has_mip", 0) => Ok("in_has_mip".into()),
         ("filter", 0) => Ok("in_filter".into()),
+        ("force_coarsest", 0) => Ok("in_force_coarsest".into()),
         _ => Err(format!("unmapped D input {} row {}", io.key, io.row)),
     }
 }
@@ -266,9 +267,9 @@ pub fn build_with_config(config: serial::Config) -> Result<Plan, String> {
 
     // Independent verification of the frozen kernel calendars.
     for (name, inv, numeric, span, period, ii) in [
-        ("D", &d.inventory, 1336usize, 16u8, 32u32, 8u32),
-        ("LOD", &lod.inventory, 277, 27, 32, 8),
-        ("COORD", &coord.inventory, 718, 9, 8, 2),
+        ("D", &d.inventory, 858usize, 17u8, 32u32, 8u32),
+        ("LOD", &lod.inventory, 264, 28, 32, 8),
+        ("COORD", &coord.inventory, 716, 9, 8, 2),
     ] {
         if inv.numeric_bits != numeric || inv.span != span || inv.period != period || inv.ii != ii {
             return Err(format!(
@@ -564,14 +565,14 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   input         reset,
   input         ce,
   input         in_valid,
-  input  signed [39:0] in_uv_0,
-  input  signed [39:0] in_uv_1,
-  input  signed [39:0] in_uv_2,
-  input  signed [39:0] in_uv_3,
-  input  signed [39:0] in_uv_4,
-  input  signed [39:0] in_uv_5,
-  input  signed [39:0] in_uv_6,
-  input  signed [39:0] in_uv_7,
+  input  signed [17:0] in_uv_0,
+  input  signed [17:0] in_uv_1,
+  input  signed [17:0] in_uv_2,
+  input  signed [17:0] in_uv_3,
+  input  signed [17:0] in_uv_4,
+  input  signed [17:0] in_uv_5,
+  input  signed [17:0] in_uv_6,
+  input  signed [17:0] in_uv_7,
   input  signed [15:0] in_bias,
   input  [3:0]  in_quad,
   input  [3:0]  in_mask,
@@ -579,6 +580,7 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   input  [3:0]  in_max_n,
   input         in_has_mip,
   input  [1:0]  in_filter,
+  input  in_force_coarsest,
   output        in_ready,
   output        in_accept,
   input         out_ready,
@@ -606,13 +608,13 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   // writes the [511,0,0,0] fine / zero coarse row and skips the coefficient.
   localparam NEAREST_BYPASS = 1'b0;
 
-  // Controller state banks (the additive 638 data + 11 control baseline).
+  // Controller state banks (the additive 600 data + 11 control baseline).
   reg [3:0]  state;
   reg [1:0]  rlane, rtap;
   reg        rplane;
   reg        rhead_valid, fault_reg;
-  reg [17:0] ruv0, ruv1, ruv2, ruv3, ruv4, ruv5, ruv6, ruv7;
-  reg [39:0] rslope;
+  reg [15:0] ruv0, ruv1, ruv2, ruv3, ruv4, ruv5, ruv6, ruv7;
+  reg [17:0] rslope;
   reg [15:0] rbias;
   reg [3:0]  rquad, rmask, rslot, rmax_n;
   reg        rhas_mip;
@@ -632,8 +634,8 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
 
   // Submodule outputs.
   wire d_in_ready, d_fault, d_out_valid;
-  wire [17:0] d_uv0, d_uv1, d_uv2, d_uv3, d_uv4, d_uv5, d_uv6, d_uv7;
-  wire [39:0] d_slope;
+  wire [15:0] d_uv0, d_uv1, d_uv2, d_uv3, d_uv4, d_uv5, d_uv6, d_uv7;
+  wire [17:0] d_slope;
   wire signed [15:0] d_bias;
   wire [3:0] d_quad, d_mask, d_slot, d_max_n;
   wire d_has_mip;
@@ -662,7 +664,7 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   wire gce = ce & ~fault_reg;
 
   // A zero-width or out-of-range header is the only expressible admission
-  // violation at this boundary (UV is already a signed-40 external code).
+  // violation at this boundary (UV is already a signed-18 external code).
   wire bad_input = (in_max_n > 4'd10) | (in_filter > 2'd2)
                  | (in_bias < -16'sd8192) | (in_bias > 16'sd8192);
 
@@ -680,9 +682,9 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   wire l_in_valid = (state == S_LOD_ISSUE) & l_in_ready & rpend_valid & ~fault_reg;
 
   // Coordinate operand selection: lane*2 / lane*2+1 of the captured UV.
-  wire [17:0] c_in_uv0 = (rlane == 2'd0) ? ruv0 : (rlane == 2'd1) ? ruv2
+  wire [15:0] c_in_uv0 = (rlane == 2'd0) ? ruv0 : (rlane == 2'd1) ? ruv2
                        : (rlane == 2'd2) ? ruv4 : ruv6;
-  wire [17:0] c_in_uv1 = (rlane == 2'd0) ? ruv1 : (rlane == 2'd1) ? ruv3
+  wire [15:0] c_in_uv1 = (rlane == 2'd0) ? ruv1 : (rlane == 2'd1) ? ruv3
                        : (rlane == 2'd2) ? ruv5 : ruv7;
   wire c_in_valid = (state == S_COORD_ISSUE) & c_in_ready & ~fault_reg;
 
@@ -763,9 +765,9 @@ const FSM: &str = r###"  always @(posedge clk) begin
       rplane <= 1'b0;
       rhead_valid <= 1'b0;
       fault_reg <= 1'b0;
-      ruv0 <= 18'd0; ruv1 <= 18'd0; ruv2 <= 18'd0; ruv3 <= 18'd0;
-      ruv4 <= 18'd0; ruv5 <= 18'd0; ruv6 <= 18'd0; ruv7 <= 18'd0;
-      rslope <= 40'd0; rbias <= 16'd0;
+      ruv0 <= 16'd0; ruv1 <= 16'd0; ruv2 <= 16'd0; ruv3 <= 16'd0;
+      ruv4 <= 16'd0; ruv5 <= 16'd0; ruv6 <= 16'd0; ruv7 <= 16'd0;
+      rslope <= 18'd0; rbias <= 16'd0;
       rquad <= 4'd0; rmask <= 4'd0; rslot <= 4'd0; rmax_n <= 4'd0;
       rhas_mip <= 1'b0; rfilter <= 2'd0; rpend_valid <= 1'b0;
       lc_shift <= 18'sd0; lc_nearest <= 1'b0; lc_halve <= 1'b0;

@@ -159,8 +159,8 @@ fn compensated_counted_matches_independent_oracle_and_published_stages() {
             PixelInput {
                 normal,
                 ndc: [
-                    ((random.next() % 131073) as i32) - 65536,
-                    ((random.next() % 131073) as i32) - 65536,
+                    ((random.next() % 32769) as i32) - 16384,
+                    ((random.next() % 32769) as i32) - 16384,
                 ],
             },
             Material {
@@ -224,7 +224,7 @@ fn compensated_timed_plan_and_configuration_guards() {
     let pixels = [
         PixelInput {
             normal: [9459; 3],
-            ndc: [12345, -54321],
+            ndc: [3086, -13580],
         },
         PixelInput {
             normal: [0, 0, 16384],

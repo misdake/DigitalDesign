@@ -8,11 +8,11 @@ fn compact_row_calendar_and_narrow_magnitude_match_aligned_working_values() {
     let compact = [
         CompactPixelInput {
             normal: [-2048, 1, 2047],
-            ndc: [-65536, 65536],
+            ndc: [-16384, 16384],
         },
         CompactPixelInput {
             normal: [377, -286, 939],
-            ndc: [12345, -31457],
+            ndc: [3086, -7864],
         },
         CompactPixelInput {
             normal: [0; 3],
@@ -20,7 +20,7 @@ fn compact_row_calendar_and_narrow_magnitude_match_aligned_working_values() {
         },
         CompactPixelInput {
             normal: [1, -1, 0],
-            ndc: [65536, -65536],
+            ndc: [16384, -16384],
         },
     ];
     let wide: Vec<_> = compact.iter().map(|p| p.expanded().unwrap()).collect();
@@ -65,8 +65,8 @@ fn compact_row_calendar_and_narrow_magnitude_match_aligned_working_values() {
                 .compare_oracle(&wide, material, Light::default(), Projection::default())
                 .unwrap();
             assert_eq!(candidate.outputs, aligned.outputs);
-            assert_eq!(aligned.pixel_payload_bits, 4 * 84);
-            assert_eq!(candidate.pixel_payload_bits, 4 * 72);
+            assert_eq!(aligned.pixel_payload_bits, 4 * 80);
+            assert_eq!(candidate.pixel_payload_bits, 4 * 68);
             if matches!(storage, Storage::Rows { .. }) {
                 assert_eq!(aligned.source_reads, 4 + 3 * 4);
                 assert_eq!(candidate.source_reads, 4 + 2 * 4);
@@ -101,7 +101,7 @@ fn compact_block_prescale_preserves_stage_values_without_extreme_guard() {
     for normal in [[-2048, 2047, 0], [2047, -1024, 1], [1, 0, -1], [0; 3]] {
         let pixel = CompactPixelInput {
             normal,
-            ndc: [-17329, 31457],
+            ndc: [-4332, 7864],
         }
         .expanded()
         .unwrap();
@@ -196,5 +196,5 @@ fn compact_plans_reject_implicit_quantization_and_preserve_context_restriction()
         Strategy::Interleaved,
     )
     .unwrap();
-    assert_eq!(candidate.pixel_payload_bits, 72);
+    assert_eq!(candidate.pixel_payload_bits, 68);
 }

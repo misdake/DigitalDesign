@@ -9,6 +9,13 @@ RTL or board integration.
 
 ## Explicit quad dispatcher and common contexts
 
+The selected dispatcher ingress carries S(12,10) normal, S(16,14) pixel-center
+NDC and unwrapped S(18,16) helper UV. Each compact lighting pixel contains68
+meaningful bits in two36-bit rows. Sampling carries eight18-bit UV components
+and one `force_coarsest` flag. Width accounting follows these effective fields;
+it does not imply a narrower fitted RAM geometry. Unlit/untextured still bypass
+their branch queues and never require unused input data to be valid.
+
 `dispatch::Dispatcher` is a separate bounded controller; the older J1 composers
 below retain their original contracts. `engines::BranchEngines` connects the
 dispatcher to the current Fast CompensatedFloor lit-only LightingEmu and the
@@ -20,8 +27,8 @@ boundaries remain those in [texture.md](texture.md).
 
 The raster/attribute producer holds an `Input` until accepted into a configurable
 quad ingress FIFO. Each input carries an aligned 2x2 XY/mask, common-context ID,
-four RGB8/D16 basic values, four S12F10 normals plus S18F16 NDC centers, and all
-four S40F18 helper UVs. Dispatch reserves a free one of 16 status slots, one
+four RGB8/D16 basic values, four S12F10 normals plus S(16,14) NDC centers, and all
+four S(18,16) helper UV pairs and the coarsest-mip flag. Dispatch reserves a free one of 16 status slots, one
 basic-store writer and credit in each required branch queue, using pre-edge
 capacity. A blocked branch cannot cause partial dispatch. Moving attributes to
 the branch queues removes them from ingress; status retains no normal or UV.
@@ -94,11 +101,12 @@ consumption is controlled there, with no framebuffer writes in that fixture.
 
 `raster_input::convert` consumes existing triangle-oracle `RasterQuad` attributes
 into this compact ingress contract. Covered RGB becomes UNORM8, depth retains
-D16, pixel centers produce S18F16 NDC, and lit normals become S2.10 with an
-explicit clipping counter. All four UV helper lanes retain unwrapped Q18 codes;
+D16, pixel centers produce S(16,14) NDC, and lit normals become S2.10 with an
+explicit clipping counter. All four UV helper lanes retain unwrapped S(18,16) codes;
 unlit/untextured attributes need no conversion. Textured nonprojectable helpers
-currently return an explicit error: the conservative coarsest-LOD override is
-not yet in the Runtime ingress ABI. `pixel_raster_ingress` checks actual triangle
+set the conservative coarsest-LOD flag; out-of-domain uncovered helpers do the
+same. Covered invalid UV still errors. Runtime and register-only Sampler share
+the flag semantics. `pixel_raster_ingress` checks actual triangle
 coverage/interpolation and independent branch offers, not live rasterizer RTL.
 
 ## Actual backend and shared memory owner
@@ -131,7 +139,7 @@ numerical/transport path, not live DRAW ingress, integrated GPU RTL or board pro
 
 `registered::RegisteredBranches` and `registered_backend::Backend` provide the
 new register-only Sampling alternative. They keep the same Dispatcher/Final/ROP
-ownership contracts but replace Runtime admission with direct S40F18 helper UVs
+ownership contracts but replace Runtime admission with direct S(18,16) helper UVs
 to `SamplerEmu`; no counted Program or preparation oracle executes on this live
 path. Lighting remains the independent lit-only Fast CompensatedFloor kernel.
 Sampling's held RGB96 quad-result bank feeds the existing single result-write

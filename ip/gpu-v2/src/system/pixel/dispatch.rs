@@ -43,8 +43,9 @@ pub struct Input {
     pub header: Header,
     pub basic: [Basic; 4],
     pub light: [CompactPixelInput; 4],
-    /// Four helper lanes, S40F18, including uncovered lanes.
-    pub uv_q18: [[i64; 2]; 4],
+    /// Four helper lanes, S(18,16), including uncovered lanes.
+    pub uv_q16: [[i64; 2]; 4],
+    pub force_coarsest: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -60,7 +61,8 @@ pub struct SampleJob {
     pub ticket: Ticket,
     pub context: ContextId,
     pub mask: u8,
-    pub uv_q18: [[i64; 2]; 4],
+    pub uv_q16: [[i64; 2]; 4],
+    pub force_coarsest: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,9 +392,10 @@ impl Dispatcher {
     /// this is neither fitted Logic nor a BSRAM/SSRAM allocation certificate.
     pub fn inventory(&self) -> Inventory {
         Inventory {
-            ingress_payload_bits: self.config.ingress * (9 + 8 + 4 + 4 + 4 * 40 + 4 * 72 + 8 * 40),
-            lighting_queue_payload_bits: self.config.lighting * (4 + 4 + 4 + 4 * 72),
-            sampling_queue_payload_bits: self.config.sampling * (4 + 4 + 4 + 8 * 40),
+            ingress_payload_bits: self.config.ingress
+                * (9 + 8 + 4 + 4 + 4 * 40 + 4 * 68 + 8 * 18 + 1),
+            lighting_queue_payload_bits: self.config.lighting * (4 + 4 + 4 + 4 * 68),
+            sampling_queue_payload_bits: self.config.sampling * (4 + 4 + 4 + 8 * 18 + 1),
             // XY/mask21, context4, bypass2, done masks12, issued2, valid1.
             status_bits: SLOTS * (21 + 4 + 2 + 12 + 2 + 1),
             basic_rows: (128, 32),
@@ -498,12 +501,12 @@ impl Dispatcher {
                         }
                     }
                     if ctx.sample.is_some()
-                        && q.uv_q18
-                            .iter()
-                            .flatten()
-                            .any(|&v| !(-(1_i64 << 38)..=(1_i64 << 38)).contains(&v))
+                        && q.uv_q16.iter().flatten().any(|&v| {
+                            !(crate::texture::ports::UV_MIN..=crate::texture::ports::UV_MAX)
+                                .contains(&v)
+                        })
                     {
-                        return Err("sampling S40F18 input".into());
+                        return Err("sampling S(18,16) input".into());
                     }
                 }
             }
@@ -766,7 +769,8 @@ impl Dispatcher {
                     ticket,
                     context: q.context,
                     mask: q.header.mask,
-                    uv_q18: q.uv_q18,
+                    uv_q16: q.uv_q16,
+                    force_coarsest: q.force_coarsest,
                 });
             }
             self.tail += 1;

@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pixels: Vec<_> = (0..32)
         .map(|i| PixelInput {
             normal: [7123, -519, 13567],
-            ndc: [i * 7919 % 131073 - 65536, 12345],
+            ndc: [(i * 7919 % 131073 - 65536) / 4, 3086],
         })
         .collect();
     let mut summary=String::from("binding,batch,multiplier_half_slots,multiplier_macros,narrow_adders,wide_adders,first_result,cycles,cycles_per_pixel,best\n");

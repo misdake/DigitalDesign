@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 100 + i,
                 PixelInput {
                     normal: [7123, -519, 13567],
-                    ndc: [(i as i32 * 3000) % 131073 - 65536, 0],
+                    ndc: [((i as i32 * 3000) % 131073 - 65536) / 4, 0],
                 },
                 if !(8..56).contains(&i) { 0 } else { 1 },
             )

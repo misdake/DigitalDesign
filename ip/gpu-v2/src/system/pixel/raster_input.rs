@@ -16,9 +16,8 @@ pub struct Quantization {
 }
 
 /// Consumes the raster attributes, retaining only queue-owned compact inputs.
-/// UV helper lanes remain unwrapped S40F18; they are never coverage-zero-filled.
-/// A nonprojectable helper currently fails explicitly for textured work. Its
-/// conservative coarsest-LOD override is not yet in the Runtime ingress ABI.
+/// Helpers retain unwrapped S(18,16). Nonprojectable/out-of-range uncovered
+/// helpers explicitly force coarsest LOD before a benign replacement is stored.
 pub fn convert(
     dispatcher: &Dispatcher,
     context: ContextId,
@@ -39,9 +38,6 @@ pub fn convert(
         return Err("raster adapter coverage/header".into());
     }
     let material = dispatcher.context(context)?;
-    if quad.mask != 0 && material.sample.is_some() && quad.invalid_helpers != 0 {
-        return Err("textured invalid helper requires explicit coarsest-LOD contract".into());
-    }
     let mut input = Input {
         context,
         header: Header {
@@ -54,8 +50,24 @@ pub fn convert(
             normal: [0; 3],
             ndc: [0; 2],
         }; 4],
-        uv_q18: [[0; 2]; 4],
+        uv_q16: [[0; 2]; 4],
+        force_coarsest: false,
     };
+    if quad.mask != 0 {
+        if let Some(sample) = material.sample {
+            let source = crate::texture::ports::QuadInput {
+                quad_id: 0,
+                mask: quad.mask,
+                uv: quad.samples.clone().map(|s| s.uv),
+                slot: sample.slot,
+                material_size_log2: sample.size_log2,
+                filter: sample.filter,
+                lod_bias: f64::from(sample.bias_q8) / 256.0,
+                force_coarsest: quad.invalid_helpers != 0,
+            };
+            (input.uv_q16, input.force_coarsest) = crate::texture::ports::capture_uv(&source)?;
+        }
+    }
     let mut quantization = Quantization::default();
     for (lane, sample) in quad.samples.into_iter().enumerate() {
         if quad.mask & (1 << lane) != 0 {
@@ -72,32 +84,20 @@ pub fn convert(
                 quantization.normal_clips +=
                     usize::from(NormalFormat::S12F10.clipped(sample.normal));
                 let normal = NormalFormat::S12F10.quantize(sample.normal)?;
-                let ndc = [
-                    sample.position[0] * 2.0 / f64::from(width) - 1.0,
-                    1.0 - sample.position[1] * 2.0 / f64::from(height),
-                ];
-                if ndc
-                    .iter()
-                    .any(|v| !v.is_finite() || !(-2.0..2.0).contains(v))
-                {
-                    return Err("raster adapter NDC S2.16 range".into());
-                }
+                let ndc = crate::lighting::ports::pixel_center_ndc(
+                    quad.xy[0] + (lane % 2) as u16,
+                    quad.xy[1] + (lane / 2) as u16,
+                    width,
+                    height,
+                )
+                .map_err(|e| format!("raster adapter pixel center: {e:?}"))?;
                 input.light[lane] = CompactPixelInput {
                     normal: normal.map(|v| (v * 1024.0).round_ties_even() as i16),
-                    ndc: ndc.map(|v| (v * 65536.0).round_ties_even() as i32),
+                    ndc,
                 };
                 input.light[lane]
                     .validate()
                     .map_err(|e| format!("raster adapter normal/NDC: {e:?}"))?;
-            }
-        }
-        if quad.mask != 0 && material.sample.is_some() {
-            for axis in 0..2 {
-                let raw = (sample.uv[axis] * 262144.0).round_ties_even();
-                if !raw.is_finite() || raw.abs() > (1_u64 << 38) as f64 {
-                    return Err("raster adapter helper UV range".into());
-                }
-                input.uv_q18[lane][axis] = raw as i64;
             }
         }
     }

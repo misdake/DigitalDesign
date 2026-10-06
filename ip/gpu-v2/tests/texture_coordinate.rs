@@ -31,6 +31,7 @@ const OUT: &[&str] = coordinate::OUTPUTS;
 
 fn build_calendar(poison: bool) -> Calendar {
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask: 1,
         uv: [[0.003, 0.003]; 4],
@@ -142,7 +143,7 @@ fn golden(inp: CoordInput) -> CoordOutput {
 fn vectors() -> Vec<CoordInput> {
     let mut v = vec![];
     for physical in 1..=10 {
-        let shift = physical - 10;
+        let shift = physical - 8;
         let side = 1i16 << physical;
         for nearest in [false, true] {
             let halve = physical > 1;
@@ -157,7 +158,7 @@ fn vectors() -> Vec<CoordInput> {
                     },
                     CoordInput {
                         // last wrapped index and the centering boundary
-                        uv: [(1u32 << 18) - 1, 256u32.wrapping_sub(1)],
+                        uv: [(1u32 << 16) - 1, 256u32.wrapping_sub(1)],
                         shift,
                         nearest,
                         halve,
@@ -165,7 +166,7 @@ fn vectors() -> Vec<CoordInput> {
                     },
                     CoordInput {
                         // negative-going boundary: fine-128 crosses zero
-                        uv: [128, (1u32 << 18) - 128],
+                        uv: [128, (1u32 << 16) - 128],
                         shift,
                         nearest,
                         halve,
@@ -176,10 +177,10 @@ fn vectors() -> Vec<CoordInput> {
             }
         }
     }
-    // extreme unwrapped helper UV across the full Q18 range
+    // extreme unwrapped helper UV across the full Q16 range
     v.push(CoordInput {
-        uv: [1 << 17, (1 << 18) - 1],
-        shift: -9,
+        uv: [1 << 15, (1 << 16) - 1],
+        shift: -7,
         nearest: false,
         halve: false,
         side: [2, 2],
@@ -219,15 +220,15 @@ fn actual_coordinate_registers_match_independent_semantic_goldens() {
 fn coordinate_admission_requires_a_real_physical_mip_shape() {
     let calendar = build_calendar(false);
     let valid = CoordInput {
-        uv: [0, (1 << 18) - 1],
-        shift: -5,
+        uv: [0, (1 << 16) - 1],
+        shift: -3,
         nearest: false,
         halve: true,
         side: [32, 16],
     };
     let invalid = [
         CoordInput {
-            uv: [1 << 18, 0],
+            uv: [1 << 16, 0],
             ..valid
         },
         CoordInput {
@@ -246,7 +247,7 @@ fn coordinate_admission_requires_a_real_physical_mip_shape() {
             side: [2048, 1024],
             ..valid
         },
-        CoordInput { shift: -4, ..valid },
+        CoordInput { shift: -2, ..valid },
         CoordInput {
             shift: i32::MIN,
             ..valid

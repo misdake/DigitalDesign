@@ -105,7 +105,13 @@ pub fn prepare(input: &QuadInput, slots: &[Slot], config: Config) -> Result<Prep
     } else {
         0
     };
-    let uv = input.uv.map(|p| {
+    let (bounded_uv, force_coarsest) = if config.uv_fraction == Some(16) {
+        let (raw, force) = capture_uv(input)?;
+        (raw.map(|p| p.map(|v| v as f64 / UV_SCALE)), force)
+    } else {
+        (input.uv, input.force_coarsest)
+    };
+    let uv = bounded_uv.map(|p| {
         p.map(|v| match config.uv_fraction {
             Some(f) => {
                 (v * 2.0_f64.powi(i32::from(f))).round_ties_even() / 2.0_f64.powi(i32::from(f))
@@ -116,7 +122,7 @@ pub fn prepare(input: &QuadInput, slots: &[Slot], config: Config) -> Result<Prep
     let d = derivatives(uv);
     let slope = max_derivative(d);
     let rho = slope * f64::from(1_u16 << slot.max_size_log2);
-    let overflow = slope > config.derivative_limit;
+    let overflow = force_coarsest || slope > config.derivative_limit;
     // Compare against continuous input UV, not an exact-log oracle of already
     // quantized derivatives. UV precision and overflow policy must show up here.
     let input_rho = max_derivative(derivatives(input.uv)) * f64::from(1_u16 << slot.max_size_log2);

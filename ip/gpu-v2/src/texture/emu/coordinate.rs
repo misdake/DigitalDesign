@@ -6,7 +6,7 @@
 //! counted answer dependency.
 use super::derivative::{scalar, Calendar, Edge, Registers};
 
-pub const NUMERIC_BITS: usize = 718;
+pub const NUMERIC_BITS: usize = 716;
 pub const CONTROL_BITS: usize = 18;
 pub const SPAN: u8 = 9;
 pub const II: u32 = 2;
@@ -20,12 +20,12 @@ pub const OUTPUTS: &[&str] = &[
 ];
 
 /// Scalar operands captured at admission. UV is already the derivative stage's
-/// wrapped Q18 output; the LOD context supplies the shift/nearest/halve flags
+/// wrapped Q16 output; the LOD context supplies the shift/nearest/halve flags
 /// and the per-plane physical side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Input {
     pub uv: [u32; 2],
-    /// Exactly log2(side[0])-10; physical mip sides are powers of two, 2..1024.
+    /// Exactly log2(side[0])-8; physical mip sides are powers of two, 2..1024.
     pub shift: i32,
     pub nearest: bool,
     pub halve: bool,
@@ -89,10 +89,10 @@ impl CoordinateEmu {
     pub fn tick(&mut self, ce: bool, input: Option<Input>) -> Result<Edge, String> {
         if let Some(i) = input.filter(|_| ce) {
             let side = i.side[0];
-            if i.uv.iter().any(|v| *v >= 1 << 18)
+            if i.uv.iter().any(|v| *v >= 1 << 16)
                 || !(2..=1024).contains(&side)
                 || !(side as u16).is_power_of_two()
-                || i.shift != (side as u16).ilog2() as i32 - 10
+                || i.shift != (side as u16).ilog2() as i32 - 8
                 || i.halve != (side > 2)
                 || i.side[1] != (side / 2).max(2)
             {

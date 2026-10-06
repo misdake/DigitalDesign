@@ -59,8 +59,8 @@ pub struct LiveCycle {
 }
 
 /// One input snapshot, with no pre-admission quad copy or added result FIFO.
-/// `pending` holds four 84-bit pixels (normal48 + NDC36), mask4, cursor3,
-/// quad4 and valid1: 348 logical bits until the last covered lane issues.
+/// `pending` holds four 80-bit pixels (normal48 + NDC32), mask4, cursor3,
+/// quad4 and valid1: 332 logical bits until the last covered lane issues.
 /// Serial64 and `ticket_for_quad[16]` are host ownership witnesses, excluded
 /// from that logical bill. An upstream source holds its offered quad until
 /// `model.quad_accepted`, including through CE and admission backpressure.

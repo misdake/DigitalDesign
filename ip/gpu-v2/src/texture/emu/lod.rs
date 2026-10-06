@@ -1,8 +1,8 @@
 //! LOD arithmetic and single-port registered ROM returns on the frozen calendar.
 use super::derivative::{self, scalar, Calendar, Edge, Header, Registers};
-pub const NUMERIC_BITS: usize = 277;
-pub const CONTROL_BITS: usize = 60;
-pub const SPAN: u8 = 27;
+pub const NUMERIC_BITS: usize = 264;
+pub const CONTROL_BITS: usize = 61;
+pub const SPAN: u8 = 28;
 /// The exact71-bit downstream context. Diagnostic prefix/LOD/lambda values are
 /// traced where produced; they are not a second persistent output row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +86,7 @@ impl LodEmu {
     }
     pub fn tick(&mut self, ce: bool, input: Option<Input>) -> Result<Edge, String> {
         if let Some(i) = input.filter(|_| ce) {
-            if i.slope >= 1_u64 << 40
+            if i.slope >= 1_u64 << 18
                 || !(-8192..=8192).contains(&i.bias)
                 || i.header.max_n > 10
                 || i.header.quad >= 16

@@ -59,13 +59,14 @@ pub struct BranchCycle {
     pub input_held: bool,
 }
 
-/// One offer: helper UV8x40, bias16, slot4, size4, filter2, mask4, quad4,
-/// valid1 = 355 logical bits. Terminal fault adds one bit. Integer containers
+/// One offer: helper UV8x18, bias16, slot4, size4, filter2, mask4, quad4,
+/// force-coarsest1 and valid1 = 180 logical bits. Terminal fault adds one bit. Integer containers
 /// are host representations of these checked codes, not fitted storage.
-pub const SAMPLING_OFFER_BITS: usize = 8 * 40 + 16 + 4 + 4 + 2 + 4 + 4 + 1;
+pub const SAMPLING_OFFER_BITS: usize = 8 * 18 + 16 + 4 + 4 + 2 + 4 + 4 + 1 + 1;
 #[derive(Clone, Copy)]
 struct Offer {
     uv: [[i64; 2]; 4],
+    force_coarsest: bool,
     bias: i16,
     slot: u8,
     size: u8,
@@ -74,7 +75,7 @@ struct Offer {
     quad: u8,
 }
 impl Offer {
-    /// Same external RNE Q18/Q8 capture as the frozen counted format. Decode
+    /// Same external RNE Q16/Q8 capture as the frozen counted format. Decode
     /// produces exact binary rationals, so Runtime's capture is idempotent.
     /// This is host ingress capture, not independent preparation arithmetic.
     fn capture(input: &TextureQuad, quad: u8) -> Result<Self, String> {
@@ -90,12 +91,10 @@ impl Offer {
         {
             return Err("sampling offer capture bounds".into());
         }
+        let (uv, force_coarsest) = crate::texture::ports::capture_uv(input)?;
         Ok(Self {
-            uv: std::array::from_fn(|lane| {
-                std::array::from_fn(|axis| {
-                    (input.uv[lane][axis] * 262144.0).round_ties_even() as i64
-                })
-            }),
+            uv,
+            force_coarsest,
             bias: (input.lod_bias.clamp(-32.0, 32.0) * 256.0).round_ties_even() as i16,
             slot: input.slot,
             size: input.material_size_log2,
@@ -106,10 +105,11 @@ impl Offer {
     }
     fn input(self) -> TextureQuad {
         TextureQuad {
+            force_coarsest: self.force_coarsest,
             quad_id: self.quad,
             mask: self.mask,
             uv: std::array::from_fn(|lane| {
-                std::array::from_fn(|axis| self.uv[lane][axis] as f64 / 262144.0)
+                std::array::from_fn(|axis| self.uv[lane][axis] as f64 / 65536.0)
             }),
             slot: self.slot,
             material_size_log2: self.size,

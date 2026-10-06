@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pixels: Vec<_> = (0..64)
         .map(|i| PixelInput {
             normal: [7123, -519, 13567],
-            ndc: [i * 7919 % 131073 - 65536, 12345],
+            ndc: [(i * 7919 % 131073 - 65536) / 4, 3086],
         })
         .collect();
     let reference = plan(

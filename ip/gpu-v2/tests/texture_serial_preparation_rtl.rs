@@ -86,7 +86,7 @@ fn cases() -> Vec<(derivative::Input, Vec<i128>)> {
         (4, 3, Filter::Trilinear),
         (8, 10, Filter::Nearest),
     ] {
-        let mut q = support::input(n, filter, [2.5, -1.25]);
+        let mut q = support::input(n, filter, [-1.5, -1.25]);
         q.mask = mask;
         q.quad_id = 1;
         q.lod_bias = 1.75;
@@ -94,8 +94,8 @@ fn cases() -> Vec<(derivative::Input, Vec<i128>)> {
     }
     // Negative and repeated UV corners.
     {
-        let mut q = support::input(6, Filter::Bilinear, [-3.75, -2.5]);
-        q.uv = [[-3.75, -2.5]; 4];
+        let mut q = support::input(6, Filter::Bilinear, [-1.75, -1.5]);
+        q.uv = [[-1.75, -1.5]; 4];
         q.quad_id = 3;
         q.lod_bias = -3.5;
         push(q, support::slot(6, true));
@@ -110,13 +110,13 @@ fn cases() -> Vec<(derivative::Input, Vec<i128>)> {
             [0.5, 0.5],
         ];
         q.quad_id = 3;
-        q.mask = 15;
+        q.mask = 12;
         q.lod_bias = 0.25;
         push(q, support::slot(10, true));
     }
     // Missing mip chain with a sparse mask.
     {
-        let mut q = support::input(6, Filter::Trilinear, [4.25, 5.75]);
+        let mut q = support::input(6, Filter::Trilinear, [0.25, 0.75]);
         q.quad_id = 1;
         q.mask = 5;
         q.lod_bias = 2.0;
@@ -240,21 +240,21 @@ fn serial_rtl_inventory_and_widths_are_verified() {
     assert_eq!(
         plan.widths,
         serial_rtl::Widths {
-            uv: 144,
-            pending_lod: 76,
+            uv: 128,
+            pending_lod: 54,
             lod_context: 83,
             coefficient: 171,
             member: 92,
             head: 72,
         }
     );
-    assert_eq!(plan.widths.data(), 638);
-    assert_eq!(serial_rtl::CONTROLLER_DATA_BITS, 638);
+    assert_eq!(plan.widths.data(), 600);
+    assert_eq!(serial_rtl::CONTROLLER_DATA_BITS, 600);
     assert_eq!(serial_rtl::CONTROLLER_CONTROL_BITS, 11);
     // The three kernel calendars are re-derived, not copied from the baseline.
-    assert_eq!(plan.d.inventory.numeric_bits, 1336);
-    assert_eq!(plan.lod.inventory.numeric_bits, 277);
-    assert_eq!(plan.coord.inventory.numeric_bits, 718);
+    assert_eq!(plan.d.inventory.numeric_bits, 858);
+    assert_eq!(plan.lod.inventory.numeric_bits, 264);
+    assert_eq!(plan.coord.inventory.numeric_bits, 716);
     assert_eq!(plan.d.inventory.ii, 8);
     assert_eq!(plan.lod.inventory.ii, 8);
     assert_eq!(plan.coord.inventory.ii, 2);
@@ -326,7 +326,7 @@ fn serial_rtl_config_inventories_and_anchors_are_verified() {
             "{label} config roundtrip"
         );
         // The additive controller bank is unchanged by either option.
-        assert_eq!(plan.widths.data(), 638, "{label} controller data");
+        assert_eq!(plan.widths.data(), 600, "{label} controller data");
         assert_eq!(plan.widths.head, 72, "{label} controller head");
         if config.short_alignment {
             assert_eq!(plan.membership.data_bits, 464, "{label} membership data");
@@ -360,7 +360,7 @@ fn serial_rtl_config_inventories_and_anchors_are_verified() {
             .contains("module gpu_v2_texture_serial_preparation ("));
         assert!(plan.source.contains("localparam NEAREST_BYPASS"));
         println!(
-            "{label} controller=638 membership={}/{} packet={}/{} banks={}",
+            "{label} controller=600 membership={}/{} packet={}/{} banks={}",
             plan.membership.data_bits,
             plan.membership.control_bits,
             plan.packet.data_bits,
@@ -429,8 +429,8 @@ fn nearest_bypass_fixture_matches_edge_counts_and_packets() {
     assert_eq!(bypass.received, expected, "nearest bypass packets");
     let base_ce = baseline.edges.iter().filter(|e| e.ce).count();
     let bypass_ce = bypass.edges.iter().filter(|e| e.ce).count();
-    assert_eq!(base_ce, 220, "baseline enabled edges");
-    assert_eq!(bypass_ce, 171, "nearest bypass enabled edges");
+    assert_eq!(base_ce, 222, "baseline enabled edges");
+    assert_eq!(bypass_ce, 173, "nearest bypass enabled edges");
     println!(
         "nearest fixture baseline_ce={base_ce} bypass_ce={bypass_ce} packets={}",
         expected.len()
@@ -441,11 +441,11 @@ fn nearest_bypass_fixture_matches_edge_counts_and_packets() {
 // Bounded Icarus co-simulation of the generated controller.
 // ---------------------------------------------------------------------------
 
-fn v40(value: i64) -> String {
+fn v18(value: i64) -> String {
     if value < 0 {
-        format!("-40'sd{}", -(value as i128))
+        format!("-18'sd{}", -(value as i128))
     } else {
-        format!("40'sd{value}")
+        format!("18'sd{value}")
     }
 }
 
@@ -461,11 +461,11 @@ fn serial_tb(edges: &[Edge], name: &str) -> String {
     let mut s = String::new();
     s.push_str("module tb;\n");
     s.push_str("reg clk=0, reset=1, ce=0, in_valid=0, out_ready=0;\n");
-    s.push_str("reg signed [39:0] in_uv_0=0,in_uv_1=0,in_uv_2=0,in_uv_3=0;\n");
-    s.push_str("reg signed [39:0] in_uv_4=0,in_uv_5=0,in_uv_6=0,in_uv_7=0;\n");
+    s.push_str("reg signed [17:0] in_uv_0=0,in_uv_1=0,in_uv_2=0,in_uv_3=0;\n");
+    s.push_str("reg signed [17:0] in_uv_4=0,in_uv_5=0,in_uv_6=0,in_uv_7=0;\n");
     s.push_str("reg signed [15:0] in_bias=0;\n");
     s.push_str("reg [3:0] in_quad=0,in_mask=0,in_slot=0,in_max_n=0;\n");
-    s.push_str("reg in_has_mip=0;\nreg [1:0] in_filter=0;\n");
+    s.push_str("reg in_force_coarsest=0;reg in_has_mip=0;\nreg [1:0] in_filter=0;\n");
     s.push_str("wire in_ready,in_accept,out_valid,fault;\n");
     s.push_str("wire [71:0] out_packet;\nwire [3:0] out_state;\n");
     s.push_str(&format!(
@@ -473,7 +473,7 @@ fn serial_tb(edges: &[Edge], name: &str) -> String {
          .in_uv_0(in_uv_0),.in_uv_1(in_uv_1),.in_uv_2(in_uv_2),.in_uv_3(in_uv_3),\
          .in_uv_4(in_uv_4),.in_uv_5(in_uv_5),.in_uv_6(in_uv_6),.in_uv_7(in_uv_7),\
          .in_bias(in_bias),.in_quad(in_quad),.in_mask(in_mask),.in_slot(in_slot),\
-         .in_max_n(in_max_n),.in_has_mip(in_has_mip),.in_filter(in_filter),\
+         .in_max_n(in_max_n),.in_has_mip(in_has_mip),.in_filter(in_filter),.in_force_coarsest(in_force_coarsest),\
          .in_ready(in_ready),.in_accept(in_accept),.out_ready(out_ready),\
          .out_valid(out_valid),.out_packet(out_packet),.out_state(out_state),.fault(fault));\n",
         serial_rtl::TOP
@@ -484,6 +484,10 @@ fn serial_tb(edges: &[Edge], name: &str) -> String {
     );
     for (index, edge) in edges.iter().enumerate() {
         let input = edge.offer;
+        s.push_str(&format!(
+            "in_force_coarsest={};\n",
+            u8::from(input.is_some_and(|v| v.force_coarsest))
+        ));
         let uv = |i: usize| input.map_or(0i64, |v| v.uv[i]);
         s.push_str(&format!(
             "ce={};in_valid={};out_ready={};in_quad=4'd{};in_mask=4'd{};in_slot=4'd{};\
@@ -499,14 +503,14 @@ fn serial_tb(edges: &[Edge], name: &str) -> String {
             input.map_or(0, |v| v.header.max_n),
             u8::from(input.is_some_and(|v| v.header.has_mip)),
             input.map_or(0, |v| v.header.filter),
-            v40(uv(0)),
-            v40(uv(1)),
-            v40(uv(2)),
-            v40(uv(3)),
-            v40(uv(4)),
-            v40(uv(5)),
-            v40(uv(6)),
-            v40(uv(7)),
+            v18(uv(0)),
+            v18(uv(1)),
+            v18(uv(2)),
+            v18(uv(3)),
+            v18(uv(4)),
+            v18(uv(5)),
+            v18(uv(6)),
+            v18(uv(7)),
             v16(input.map_or(0, |v| i64::from(v.bias))),
         ));
         s.push_str("#1;\n");
@@ -704,11 +708,11 @@ fn fault_tb() -> String {
     let mut s = String::new();
     s.push_str("module tb;\n");
     s.push_str("reg clk=0, reset=0, ce=0, in_valid=0, out_ready=0;\n");
-    s.push_str("reg signed [39:0] in_uv_0=0,in_uv_1=0,in_uv_2=0,in_uv_3=0;\n");
-    s.push_str("reg signed [39:0] in_uv_4=0,in_uv_5=0,in_uv_6=0,in_uv_7=0;\n");
+    s.push_str("reg signed [17:0] in_uv_0=0,in_uv_1=0,in_uv_2=0,in_uv_3=0;\n");
+    s.push_str("reg signed [17:0] in_uv_4=0,in_uv_5=0,in_uv_6=0,in_uv_7=0;\n");
     s.push_str("reg signed [15:0] in_bias=0;\n");
     s.push_str("reg [3:0] in_quad=0,in_mask=0,in_slot=0,in_max_n=0;\n");
-    s.push_str("reg in_has_mip=0;\nreg [1:0] in_filter=0;\n");
+    s.push_str("reg in_force_coarsest=0;reg in_has_mip=0;\nreg [1:0] in_filter=0;\n");
     s.push_str("wire in_ready,in_accept,out_valid,fault;\n");
     s.push_str("wire [71:0] out_packet;\nwire [3:0] out_state;\n");
     s.push_str(&format!(
@@ -716,7 +720,7 @@ fn fault_tb() -> String {
          .in_uv_0(in_uv_0),.in_uv_1(in_uv_1),.in_uv_2(in_uv_2),.in_uv_3(in_uv_3),\
          .in_uv_4(in_uv_4),.in_uv_5(in_uv_5),.in_uv_6(in_uv_6),.in_uv_7(in_uv_7),\
          .in_bias(in_bias),.in_quad(in_quad),.in_mask(in_mask),.in_slot(in_slot),\
-         .in_max_n(in_max_n),.in_has_mip(in_has_mip),.in_filter(in_filter),\
+         .in_max_n(in_max_n),.in_has_mip(in_has_mip),.in_filter(in_filter),.in_force_coarsest(in_force_coarsest),\
          .in_ready(in_ready),.in_accept(in_accept),.out_ready(out_ready),\
          .out_valid(out_valid),.out_packet(out_packet),.out_state(out_state),.fault(fault));\n",
         serial_rtl::TOP

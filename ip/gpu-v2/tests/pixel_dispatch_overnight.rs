@@ -45,6 +45,7 @@ fn context(unlit: bool, untextured: bool) -> CommonContext {
 
 fn input(id: ContextId, index: usize, mask: u8) -> Input {
     Input {
+        force_coarsest: false,
         context: id,
         header: Header {
             x: ((index % 16) * 2) as u16,
@@ -59,7 +60,7 @@ fn input(id: ContextId, index: usize, mask: u8) -> Input {
             normal: [0, 0, 1024],
             ndc: [0; 2],
         }; 4],
-        uv_q18: [[-17, 229]; 4],
+        uv_q16: [[-17, 229]; 4],
     }
 }
 
@@ -156,7 +157,7 @@ fn all_bypasses_order_ports_context_and_bounded_backpressure() {
             if tick.sampling_ready {
                 if let Some(job) = s.sampling {
                     assert!(d.context(job.context).unwrap().sample.is_some());
-                    assert_eq!(job.uv_q18, [[-17, 229]; 4]);
+                    assert_eq!(job.uv_q16, [[-17, 229]; 4]);
                     for lane in 0..4 {
                         if job.mask & (1 << lane) != 0 {
                             sample.push_back((

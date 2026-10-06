@@ -1,5 +1,31 @@
 # Texture sampling models
 
+## Selected render precision
+
+The physical oracle/count/timed/emu/RTL preparation boundary uses unwrapped
+S(18,16) UV (eight components per quad), with one RNE at raster/admission.
+`capture_uv` preserves UV=1 as raw65536 until derivative calculation; only
+afterwards does repeat wrap keep the low16 bits. Exact signed differences are
+nineteen-bit integer codes at the same F16 scale, with eighteen-bit magnitudes.
+The coordinate shift is `physical_size_log2 - 8`, preserving Q8 texel coordinates
+and the existing UNORM9/511 filtering coefficients.
+
+`force_coarsest` is captured per quad and survives the dispatcher, held offers
+and actual serial RTL input. An uncovered helper outside the representable
+domain uses a benign placeholder and forces the coarsest available mip, even
+with negative bias or zero ordinary derivative. The D-to-LOD seam encodes that
+flag as slope131073, strictly above the raw131072 derivative-limit threshold.
+This is an explicit fallback, not a clamped or wrapped normal derivative.
+Covered out-of-range UV is rejected. With no mip chain, the only available base
+layer remains selected. Ideal and legacy oracle precision configurations remain
+available; `Config::counted()` selects this physical contract.
+
+The packed register calendar is regenerated for the new formats. D/LOD/coordinate
+numeric banks are858/264/716 bits, spans17/28/9, and II8/8/2 respectively.
+The serial controller data bank is600 bits. These are checked allocation counts,
+not fitted Logic, FF or BSRAM results. Historical timing/PnR evidence below
+predates this migration and does not validate the current RTL's frequency.
+
 ## Current boundary
 
 This component implements oracle, counted and a bounded timed baseline.
@@ -40,7 +66,7 @@ targets remain in the local GPU v2 texture specification and development process
 
 ## Independent register-only sampler
 
-`sim::staged::bound::serial::PreparationEmu` accepts raw S40F18 helper UVs,
+`sim::staged::bound::serial::PreparationEmu` accepts raw S(18,16) helper UVs,
 Q8 bias and a bounded header. Its stepping path runs actual derivative, LOD,
 coordinate, coefficient, membership and packet register kernels. It does not
 admit a counted `Program`, execute an oracle, retain a numerical template or
@@ -49,8 +75,8 @@ test references. One quad is serialized deliberately; leaf II is not quad II.
 
 | Step | Actual computation and retained boundary | Timing boundary |
 | --- | --- | --- |
-| Derivative | Eight signed edge differences; magnitudes/maximum, overflow guard and header | 16 enabled edges, kernel II8 |
-| LOD | Guarded CLZ/normalization, Table64 lookup/RNE, bias/clamp, fine/coarse level and parent weights | 27-edge calendar |
+| Derivative | Eight signed edge differences; magnitudes/maximum, overflow guard and header | 17 enabled edges, kernel II8 |
+| LOD | Guarded CLZ/normalization, Table64 lookup/RNE, bias/clamp, fine/coarse level and parent weights | 28-edge calendar |
 | Coordinate | Per covered lane, signed floor/wrap Q8 coordinates and coarse half transform | 9 enabled edges, kernel II2 |
 | Coefficient | Exact UNORM9 row/column weights; up to two retained 171-bit rows | 12 enabled edges, kernel II2 |
 | Membership | Local 2x2 tap grouping at repeat/tile seams; first/last group identity | 7-edge default, 5-edge short configuration |
@@ -166,14 +192,14 @@ The single signal-format source is [`texture-formats.csv`](../spec/texture-forma
 It contains width, binary point, rounding/range and arithmetic route. The build
 script generates typed values, typed stores and ROM literals; no runtime `Fixed`
 constructor or division is used. `format.rs` includes that generated source.
-UV is captured as signed Q18 with magnitude <=2^20. After the capture, most
+UV is captured as unwrapped S(18,16), with explicit helper fallback. After the capture, most
 signals carry integer codes (CSV fraction zero): coordinates are Q8 codes,
 LOD/bias are Q8 codes and coefficients/colors are separately interpreted UNORM
 codes. Explicit slicing and scaling preserve those units.
 
 | Boundary | Frozen behavior |
 | --- | --- |
-| Helper UV | RNE Q18; all four unwrapped edges and both components |
+| Helper UV | RNE S(18,16); all four unwrapped edges and both components |
 | LOD | 64x8 ROM; `k=RNE(64*(mantissa-1))`; k=64 carries into exponent |
 | LOD bias | RNE Q8 at capture; clamp to +/-32 before capture is output-equivalent for this UV/size contract |
 | LOD guards | slope >2 forces coarsest available mip; zero slope selects zero; bias then clamp otherwise |
@@ -1296,8 +1322,8 @@ global replay audit remain unchanged and do not certify this locally held path.
 
 ### Runtime derivative and LOD arithmetic
 
-`emu::derivative::DerivativeEmu` executes the eight signed41 differences before
-wrapping, their absolute magnitudes and the balanced40-bit maximum tree once per
+`emu::derivative::DerivativeEmu` executes the eight signed19 differences before
+wrapping, their absolute magnitudes and the balanced18-bit maximum tree once per
 quad. `emu::lod::LodEmu` executes the guarded20-bit leading-zero/normalization,
 RNE mantissa index and64 carry, registered log ROM return, bias/clamp, mip levels,
 parents and registered prefix ROM returns. Zero and overflow keep their existing
@@ -1305,12 +1331,12 @@ priority over bias; filter, single-mip and coefficient precision are unchanged.
 
 | Actual stage | II | Primitive ready age | Numeric FF | Phase/valid FF |
 |---|---:|---:|---:|---:|
-| Derivative | 8 | 16 | 1,336 | 32 + 17 |
-| LOD | 8 | 27 | 277 | 32 + 28 |
-| Coordinate | 2 | 9 | 718 | 8 + 10 |
+| Derivative | 8 | 17 | 858 | 32 + 18 |
+| LOD | 8 | 28 | 264 | 32 + 29 |
+| Coordinate | 2 | 9 | 716 | 8 + 10 |
 
 `emu::coordinate::CoordinateEmu` executes the same frozen coordinate body on its
-own old-state registers. It captures the wrapped Q18 helper UV pair, the signed
+own old-state registers. It captures the wrapped Q16 helper UV pair, the signed
 LOD shift and the nearest/halve/side context and emits the fine/coarse Q8
 fractions and the eight wrapped taps. Its Q8 floor, centered `-128`, signed
 `(fine-128)>>1` halving, nearest/bilinear/trilinear flag use and single-boundary
@@ -1371,7 +1397,7 @@ constructor answers and checks full physical width and rejected-input storage.
 Connected qualification poisons old D/LOD/coordinate outputs, traps live legacy
 helper calls, checks actual cuts and CE freezes, and preserves the accepted
 128B refill, Work/head and full-image evidence. `tests/texture_coordinate.rs`
-drives the coordinate bank with extreme Q18 UV, every physical mip size1..10,
+drives the coordinate bank with extreme Q16 UV, every physical mip size1..10,
 nearest/halve combinations and both wrap boundaries, comparing every published
 fraction/tap against an independent integer golden, under CE freeze and from a
 poisoned structural calendar. A connected test checks every live coordinate cut

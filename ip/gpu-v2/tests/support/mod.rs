@@ -20,10 +20,10 @@ pub fn representative() -> Vec<(PixelInput, Material, Light, Projection)> {
     ];
     let positions = [
         [0, 0],
-        [-65536, -65536],
-        [65536, 65536],
-        [-32768, 16384],
-        [12345, -54321],
+        [-16384, -16384],
+        [16384, 16384],
+        [-8192, 4096],
+        [3086, -13580],
     ];
     let directions = [
         [0, 0, 16384],

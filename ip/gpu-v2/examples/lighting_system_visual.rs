@@ -68,7 +68,10 @@ fn main() {
                     let sy = 1.0 - (y as f64 + 0.5) / HEIGHT as f64 * 2.0;
                     let mut pixel = PixelInput {
                         normal: [8192, 0, 0],
-                        ndc: [(sx * 65536.0).round() as i32, (sy * 65536.0).round() as i32],
+                        ndc: [
+                            ((sx * 65536.0).round() as i32) / 4,
+                            ((sy * 65536.0).round() as i32) / 4,
+                        ],
                     };
                     let mut light = Light {
                         direction: unit([0.35 + 0.25 * (time - 0.5), -0.25, 0.9]),

@@ -201,6 +201,7 @@ fn build_case(
 ) -> (derivative::Input, [[u8; 3]; 4]) {
     let slot_value = slots[usize::from(slot)];
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: id,
         mask,
         uv: [uv; 4],
@@ -235,7 +236,7 @@ fn cases(slots: &[Slot]) -> Vec<(derivative::Input, [[u8; 3]; 4])> {
     let uvs = [
         [-0.012, 0.995],
         [0.4375, 0.1875],
-        [2.03125, -3.0625],
+        [1.03125, -1.0625],
         [0.25, 0.25],
         [0.999, 0.001],
         [-1.5, 0.75],
@@ -438,6 +439,7 @@ fn zero_mask_completes_without_any_memory_or_color_work() {
         filter: 0,
     };
     let input = derivative::Input {
+        force_coarsest: false,
         uv: [0; 8],
         bias: 0,
         header,
@@ -483,6 +485,7 @@ fn missing_mip_slot_uses_level_zero_and_reuses_tiles() {
     let memory = Refill::new(image);
     let mut dut = SamplerEmu::new(vec![slot], memory, 20_000).unwrap();
     let q = QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask: 15,
         uv: [[0.25, 0.25]; 4],
@@ -526,6 +529,7 @@ fn memory_error_faults_and_drains_bounded() {
     memory.fail = true;
     let mut dut = SamplerEmu::new(slots.to_vec(), memory, 8192).unwrap();
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: 3,
         mask: 15,
         uv: [[0.25, 0.25]; 4],
@@ -591,7 +595,8 @@ fn input_literal(input: &derivative::Input) -> String {
     }
     tb.push_str(&format!("in_bias=16'sh{:04x};", input.bias as u16));
     tb.push_str(&format!(
-        "in_quad=4'd{};in_mask=4'd{};in_slot=4'd{};in_max_n=4'd{};in_has_mip={};in_filter=2'd{};",
+        "in_force_coarsest={};in_quad=4'd{};in_mask=4'd{};in_slot=4'd{};in_max_n=4'd{};in_has_mip={};in_filter=2'd{};",
+        input.force_coarsest as u8,
         input.header.quad,
         input.header.mask,
         input.header.slot,
@@ -606,9 +611,9 @@ fn testbench(edges: &[Edge]) -> String {
     let mut tb = String::new();
     tb.push_str("module tb;\n");
     tb.push_str("reg clk=0,reset=0,ce=0,in_valid=0,out_ready=0;\n");
-    tb.push_str("reg signed [39:0] in_uv_0=0,in_uv_1=0,in_uv_2=0,in_uv_3=0,in_uv_4=0,in_uv_5=0,in_uv_6=0,in_uv_7=0;\n");
+    tb.push_str("reg signed [17:0] in_uv_0=0,in_uv_1=0,in_uv_2=0,in_uv_3=0,in_uv_4=0,in_uv_5=0,in_uv_6=0,in_uv_7=0;\n");
     tb.push_str("reg signed [15:0] in_bias=0;\n");
-    tb.push_str("reg [3:0] in_quad=0,in_mask=0,in_slot=0,in_max_n=0;reg in_has_mip=0;reg [1:0] in_filter=0;\n");
+    tb.push_str("reg [3:0] in_quad=0,in_mask=0,in_slot=0,in_max_n=0;reg in_force_coarsest=0;reg in_has_mip=0;reg [1:0] in_filter=0;\n");
     tb.push_str("reg mem_req_ready=0,mem_resp_valid=0,mem_resp_complete=0,mem_resp_ok=0;\n");
     tb.push_str("reg [3:0] mem_resp_index=0;reg [63:0] mem_resp_data=0;\n");
     tb.push_str(
@@ -621,7 +626,7 @@ fn testbench(edges: &[Edge]) -> String {
     tb.push_str(".in_uv_4(in_uv_4),.in_uv_5(in_uv_5),.in_uv_6(in_uv_6),.in_uv_7(in_uv_7),");
     tb.push_str(".in_bias(in_bias),.in_quad(in_quad),.in_mask(in_mask),.in_slot(in_slot),.in_max_n(in_max_n),");
     tb.push_str(
-        ".in_has_mip(in_has_mip),.in_filter(in_filter),.in_ready(in_ready),.in_accept(in_accept),",
+        ".in_has_mip(in_has_mip),.in_filter(in_filter),.in_force_coarsest(in_force_coarsest),.in_ready(in_ready),.in_accept(in_accept),",
     );
     tb.push_str(".out_ready(out_ready),.out_valid(out_valid),.out_quad(out_quad),.out_mask(out_mask),.out_rgb(out_rgb),");
     tb.push_str(".out_transfer(out_transfer),.cache_accept(cache_accept),.color_accept(color_accept),.fault(fault),");
@@ -926,6 +931,7 @@ fn eviction_cases(slots: &[Slot], count: u32) -> Vec<(derivative::Input, [[u8; 3
             (((j * 71) % 200) as f64) / 200.0 - 0.5,
         ];
         let mut q = QuadInput {
+            force_coarsest: false,
             quad_id: (j % 16) as u8,
             mask: 15,
             uv: [uv; 4],
@@ -969,9 +975,9 @@ fn input_width_fault_blocks_and_reset_recovers_in_rtl() {
     let mut tb = String::new();
     tb.push_str("module tb;\n");
     tb.push_str("reg clk=0,reset=0,ce=0,in_valid=0,out_ready=0;\n");
-    tb.push_str("reg signed [39:0] in_uv_0=0,in_uv_1=0,in_uv_2=0,in_uv_3=0,in_uv_4=0,in_uv_5=0,in_uv_6=0,in_uv_7=0;\n");
+    tb.push_str("reg signed [17:0] in_uv_0=0,in_uv_1=0,in_uv_2=0,in_uv_3=0,in_uv_4=0,in_uv_5=0,in_uv_6=0,in_uv_7=0;\n");
     tb.push_str("reg signed [15:0] in_bias=0;\n");
-    tb.push_str("reg [3:0] in_quad=0,in_mask=0,in_slot=0,in_max_n=0;reg in_has_mip=0;reg [1:0] in_filter=0;\n");
+    tb.push_str("reg [3:0] in_quad=0,in_mask=0,in_slot=0,in_max_n=0;reg in_force_coarsest=0;reg in_has_mip=0;reg [1:0] in_filter=0;\n");
     tb.push_str("reg mem_req_ready=0,mem_resp_valid=0,mem_resp_complete=0,mem_resp_ok=0;\n");
     tb.push_str("reg [3:0] mem_resp_index=0;reg [63:0] mem_resp_data=0;\n");
     tb.push_str(
@@ -984,7 +990,7 @@ fn input_width_fault_blocks_and_reset_recovers_in_rtl() {
     tb.push_str(".in_uv_4(in_uv_4),.in_uv_5(in_uv_5),.in_uv_6(in_uv_6),.in_uv_7(in_uv_7),");
     tb.push_str(".in_bias(in_bias),.in_quad(in_quad),.in_mask(in_mask),.in_slot(in_slot),.in_max_n(in_max_n),");
     tb.push_str(
-        ".in_has_mip(in_has_mip),.in_filter(in_filter),.in_ready(in_ready),.in_accept(in_accept),",
+        ".in_has_mip(in_has_mip),.in_filter(in_filter),.in_force_coarsest(in_force_coarsest),.in_ready(in_ready),.in_accept(in_accept),",
     );
     tb.push_str(".out_ready(out_ready),.out_valid(out_valid),.out_quad(out_quad),.out_mask(out_mask),.out_rgb(out_rgb),");
     tb.push_str(".out_transfer(out_transfer),.cache_accept(cache_accept),.color_accept(color_accept),.fault(fault),");

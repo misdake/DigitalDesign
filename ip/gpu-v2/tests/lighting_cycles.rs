@@ -330,7 +330,10 @@ fn exercise(
     } else if system {
         LightingEmu::with_kernel(profile, dedicated, kernel, true, 40_000)
     } else if resource {
-        LightingEmu::with_resource_profile(profile, 40_000)
+        // Preserve the selected quantization and lit-queue switches on both
+        // sides of the differential comparison; the convenience constructor
+        // would silently restore the default resource kernel.
+        LightingEmu::with_kernel(profile, dedicated, kernel, true, 40_000)
     } else {
         LightingEmu::with_kernel(profile, dedicated, kernel, roles, 40_000)
     }
@@ -427,11 +430,11 @@ fn exercise(
                 _ => std::array::from_fn(|_| random.next() as i16),
             };
             let ndc = match i {
-                0 => [-65536; 2],
-                1 => [65536; 2],
+                0 => [-16384; 2],
+                1 => [16384; 2],
                 2 | 5 | 6 => [0; 2],
                 8..=28 if batch == 20 => [500 + (i - 8), 0],
-                _ => std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536),
+                _ => std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384),
             };
             pixels.push(PixelInput { normal, ndc });
         }
@@ -625,7 +628,7 @@ fn clock_budget_and_accepted_input_validation_are_explicit() {
             input: Some(LightingRequest {
                 pixel: PixelInput {
                     normal: [0; 3],
-                    ndc: [65537, 0]
+                    ndc: [16385, 0]
                 },
                 id: 0
             }),

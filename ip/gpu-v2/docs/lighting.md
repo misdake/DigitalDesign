@@ -11,6 +11,12 @@ It independently validates manual issue/lane/II/capacity edits, preserving atomi
 DSP/logic fusion and recomputing zero-latency wiring. Exported schedules are host
 planning artifacts; they do not replace the emulator/RTL program automatically.
 
+The selected NDC input is S(16,14), generated directly from pixel centers with
+one RNE. View-ray products are S(32,28), then RNE to the Q14 working ray.
+Normal working precision and Q14 light/projection uniforms remain unchanged.
+Existing fitted tables below predate this input-width migration; allocation
+changes do not constitute new PnR or board evidence.
+
 ## Cycle pipeline contract
 
 `LightingProfile::Fast` implements full/specular II2 and diffuse II1;
@@ -108,12 +114,12 @@ defines this local layout:
 | Row | Bits | Meaning |
 | --- | --- | --- |
 | 0 | [11:0], [23:12], [35:24] | Normal XYZ, three S12F10 codes |
-| 1 | [17:0], [35:18] | NDC XY, two S18F16 codes |
+| 1 | [15:0], [31:16] | NDC XY, two S16F14 codes; four spare bits |
 
-Thus the payload is72 bits and exactly two36-bit rows, versus84 meaningful bits
+Thus the payload is68 bits and exactly two36-bit rows, versus80 meaningful bits
 in three36-bit rows on the original port. Normal alone falls48->36 bits. A
-four-pixel normal+NDC snapshot falls336->288 payload bits; a sixteen-pixel store
-falls1344->1152 payload bits, excluding headers. These are bit counts, **not**
+four-pixel normal+NDC snapshot falls320->272 payload bits; a sixteen-pixel store
+falls1280->1088 payload bits, excluding headers. These are bit counts, **not**
 fitted FF/BSRAM savings or changes to the existing pixel-system live stores.
 
 The producer performs RNE directly at F10 (negative ties included). Converting
@@ -138,7 +144,7 @@ values have four zero low bits and common downscale is at most two bits, so the
 remain unchanged. This local sign/magnitude view does not persist duplicate
 components or change negative rounding to magnitude truncation.
 
-`timed::plan_compact` reserves this graph with72 payload bits/pixel and two input
+`timed::plan_compact` reserves this graph with68 payload bits/pixel and two input
 rows. It requires already quantized codes; `plan` with the compact flag rejects
 Q14 inputs having nonzero low four bits. Row calendars explicitly gate
 `pixel.compact-rows` on their physical read-ready times and audit two-row
@@ -169,7 +175,7 @@ the rows actually consumed by the current uniform mode: none for unlit/ambient,
 normal only for diffuse, normal plus NDC for full. `ReadOrder::PixelMajor` and
 `NormalFirst` compare per-pixel and normal-row-first ordering on the same ports.
 The original `Storage::Rows` remains the conservative prefetch baseline. Both
-use the same72-bit transport and four aligned uniform rows, and retain the
+use the same68-bit transport and four aligned uniform rows, and retain the
 architecture/register-input restriction. Demand reads reduce bandwidth; they do
 not by themselves change the upstream allocated payload or context preparation.
 
@@ -232,8 +238,8 @@ The result becomes valid at age97; its first transfer is on the following edge.
 | Boundary | Useful payload | Actual interface / retained owner |
 | --- | --- | --- |
 | Pixel normal | Three signed16 Q14 components, 48 bits; not normalized upstream | PixelRows row0 holds X/Y; row1 holds Z |
-| Pixel center | Two signed18 Q16 NDC components, 36 bits; each in [-1,1] | Row1 bits16..33 hold X; row2 bits0..17 hold Y |
-| Pixel capture | 84 useful bits plus external ID32 | Three simultaneous36-bit RTL inputs, not three serial RAM reads |
+| Pixel center | Two signed16 Q14 NDC components, 32 bits; each in [-1,1] | Row1 bits16..31 hold X; row2 bits0..15 hold Y |
+| Pixel capture | 80 useful bits plus external ID32 | Three simultaneous36-bit RTL inputs, not three serial RAM reads |
 | Uniform fields | Light48 + projection48 + Ia/Id18 + mode2 + shininess5 = 121 bits | Latched once per drained context update; no per-pixel uniform delay copies |
 | Complete retained context | Uniform121 + epoch16 + prepared power43 = 180 bits | Immutable registers; specular RGB is represented here only by the prepared mode |
 | Ordered result | g9 + h9 + ID32 + epoch16 = 66 bits | Held pipeline output; no additional local result FIFO |
@@ -259,7 +265,7 @@ different physical lanes in the same edge.
 | Normal-light dot | 46 | 44 | One standalone third product plus one paired MAC for the other two and sum; signed34 Q28 |
 | Diffuse coefficient d | 50 | 48 | Clamp NL to [0,1], RNE to unsigned9 Q8 |
 | Diffuse g | 58 | 55 | Id9 x d9 -> unsigned18 Q16, RNE; add Ia in10 Q8 and saturate to511 |
-| View ray | X/Y8, Z3 | Not used | NDC18 x projection16 -> signed34 Q30, RNE to signed16 Q14; Z is uniform k |
+| View ray | X/Y8, Z3 | Not used | NDC16 x projection16 -> signed32 Q28, RNE to signed16 Q14; Z is uniform k |
 | View squared length / reciprocal | 13 / 22 | Not used | Same SQ/RSQRT method; validated k>=8192 permits no magnitude prescale or zero branch |
 | Unit view vector | 29 | Not used | Three signed16 Q14 components |
 | Half-vector common scale | 38 | Not used | RNE((L+V)/2), magnitude threshold64, common scale |
@@ -364,7 +370,7 @@ DSP stage, ROM return and retained tap. Reset clears ownership even at CE0;
 stale payload bits need no clearing. Unlit/ambient select constants at the
 diffuse output age; they are not early-return component paths.
 
-The live adapter separately owns one348-bit input snapshot: four84-bit pixels,
+The live adapter separately owns one332-bit input snapshot: four80-bit pixels,
 mask4, cursor3, quad4 and valid1. It only issues covered, non-default lanes after
 actual quad admission; it has no pre-admission quad copy or added result FIFO.
 The existing J1 light store is64x18 logical payload, one result write port and
@@ -1996,7 +2002,7 @@ This layout is internal to this experiment and does not freeze a GPU ABI.
 | 1 | normal Z at bit 0, NDC X at bit 16 |
 | 2 | NDC Y at bit 0 |
 
-Each pixel has 84 payload bits in 108 physical bits. `PixelRows` checks unused
+Each pixel now has 80 payload bits in 108 physical bits. `PixelRows` checks unused
 bits and NDC range. Four uniform rows contain light XY; light Z/Ia/Id;
 projection XY; projection k/mode/shininess, totaling 121 payload bits in 144
 physical bits. `UniformRows` serializes these rows. Uniform rows are loaded once
@@ -2105,12 +2111,12 @@ The one-cycle improvement alone does not select an extra BSRAM.
 
 `prepare_ray` is a separate closed model costing two 18x18 products and two
 RNE operations. `Config::prepared()` consumes Q14 rays in three 36-bit rows:
-normal XY; normal Z/ray X; ray Y/Z. Payload grows from 84 to 96 bits. This gives
+normal XY; normal Z/ray X; ray Y/Z. Payload grows from 80 to 96 bits. This gives
 108 cycles with individual logic delays, or70 with exploratory one-cycle cones;
 these are lighting-entry latencies, not end-to-end claims after moving work.
 `scanline_rays` provides an exact upstream alternative for up to 64 uniformly
 stepped quantized NDC X positions. Three one-time products seed X/Y and X-step;
-Q30 accumulation adds one 34-bit value per subsequent pixel. Y RNE is shared,
+Q28 accumulation adds one 32-bit value per subsequent pixel. Y RNE is shared,
 X RNE stays per pixel. This retains more guard bits than the proposed Q22 seed
 and avoids drift from repeatedly adding Q14 results. Arbitrary raster positions
 must restart from an appropriate seed or use separately prepared coordinates.

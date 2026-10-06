@@ -1,13 +1,31 @@
 //! Quantized component ports. These are pixel ports, with no quad ownership.
 
-/// Unnormalized S(16,14) normal and S(18,16) NDC pixel center from raster.
+/// Unnormalized S(16,14) normal and S(16,14) NDC pixel center from raster.
 #[derive(Clone, Copy, Debug)]
 pub struct PixelInput {
     pub normal: [i16; 3],
     pub ndc: [i32; 2],
 }
 
-/// Compact transport: three S12F10 components and two S18F16 coordinates.
+/// Raster producer boundary: exact integer pixel center, one RNE to F14.
+/// This host oracle conversion is not a free counted raster arithmetic claim.
+pub fn pixel_center_ndc(x: u16, y: u16, width: u16, height: u16) -> Result<[i32; 2], InputError> {
+    if width == 0 || height == 0 || x >= width || y >= height {
+        return Err(InputError::ViewRay);
+    }
+    let round = |numerator: i64, denominator: u16| {
+        let d = i64::from(denominator);
+        let q = numerator.div_euclid(d);
+        let r = numerator.rem_euclid(d);
+        (q + i64::from(2 * r > d || (2 * r == d && q & 1 != 0))) as i32
+    };
+    Ok([
+        round((2 * i64::from(x) + 1 - i64::from(width)) * 16384, width),
+        round((i64::from(height) - 2 * i64::from(y) - 1) * 16384, height),
+    ])
+}
+
+/// Compact transport: three S12F10 components and two S16F14 coordinates.
 /// The normal is NOT normalized. Conversion to the Q14 working kernel is wiring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompactPixelInput {
@@ -19,7 +37,7 @@ impl CompactPixelInput {
         if self.normal.iter().any(|&v| !(-2048..=2047).contains(&v)) {
             return Err(InputError::Configuration);
         }
-        if self.ndc.iter().any(|&v| !(-65536..=65536).contains(&v)) {
+        if self.ndc.iter().any(|&v| !(-16384..=16384).contains(&v)) {
             return Err(InputError::ViewRay);
         }
         Ok(self)
@@ -51,18 +69,18 @@ impl CompactPixelInput {
             (self.normal[0] as u64 & 4095)
                 | ((self.normal[1] as u64 & 4095) << 12)
                 | ((self.normal[2] as u64 & 4095) << 24),
-            (self.ndc[0] as u64 & 0x3ffff) | ((self.ndc[1] as u64 & 0x3ffff) << 18),
+            (self.ndc[0] as u64 & 0xffff) | ((self.ndc[1] as u64 & 0xffff) << 16),
         ])
     }
     pub fn from_rows(rows: [u64; 2]) -> Result<Self, InputError> {
-        if rows.iter().any(|v| v >> 36 != 0) {
+        if rows[0] >> 36 != 0 || rows[1] >> 32 != 0 {
             return Err(InputError::Configuration);
         }
         Self {
             normal: std::array::from_fn(|i| (((rows[0] >> (12 * i)) as i16) << 4) >> 4),
             ndc: [
-                ((rows[1] as i32) << 14) >> 14,
-                (((rows[1] >> 18) as i32) << 14) >> 14,
+                rows[1] as u16 as i16 as i32,
+                (rows[1] >> 16) as u16 as i16 as i32,
             ],
         }
         .validate()
@@ -75,23 +93,23 @@ impl CompactPixelInput {
 pub struct PixelRows(pub [u64; 3]);
 impl PixelRows {
     pub fn encode(pixel: PixelInput) -> Result<Self, InputError> {
-        if pixel.ndc.iter().any(|&v| !(-65536..=65536).contains(&v)) {
+        if pixel.ndc.iter().any(|&v| !(-16384..=16384).contains(&v)) {
             return Err(InputError::ViewRay);
         }
         Ok(Self([
             u64::from(pixel.normal[0] as u16) | (u64::from(pixel.normal[1] as u16) << 16),
-            u64::from(pixel.normal[2] as u16) | (((pixel.ndc[0] as u64) & 0x3ffff) << 16),
-            (pixel.ndc[1] as u64) & 0x3ffff,
+            u64::from(pixel.normal[2] as u16) | (((pixel.ndc[0] as u64) & 0xffff) << 16),
+            (pixel.ndc[1] as u64) & 0xffff,
         ]))
     }
     pub fn decode(self) -> Result<PixelInput, InputError> {
-        if self.0[0] >> 32 != 0 || self.0[1] >> 34 != 0 || self.0[2] >> 18 != 0 {
+        if self.0[0] >> 32 != 0 || self.0[1] >> 32 != 0 || self.0[2] >> 16 != 0 {
             return Err(InputError::ViewRay);
         }
-        let sign18 = |v: u64| ((v as i32) << 14) >> 14;
+        let sign16 = |v: u64| v as u16 as i16 as i32;
         let pixel = PixelInput {
             normal: [self.0[0] as i16, (self.0[0] >> 16) as i16, self.0[1] as i16],
-            ndc: [sign18(self.0[1] >> 16), sign18(self.0[2])],
+            ndc: [sign16(self.0[1] >> 16), sign16(self.0[2])],
         };
         Self::encode(pixel)?;
         Ok(pixel)
@@ -296,7 +314,7 @@ pub fn validate(
             .ray_scale
             .iter()
             .any(|&v| i32::from(v).abs() > 12288)
-        || pixel.ndc.iter().any(|&v| !(-65536..=65536).contains(&v))
+        || pixel.ndc.iter().any(|&v| !(-16384..=16384).contains(&v))
     {
         return Err(InputError::ViewRay);
     }

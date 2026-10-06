@@ -1043,20 +1043,20 @@ fn lit_kernel(
                             let (x, y): (Ndc, Ndc) = if config.compact_normal {
                                 let row = f.read(input.pixel.at::<1>())?;
                                 (
-                                    f.slice::<18, 16, true, 0>(row)?,
-                                    f.slice::<18, 16, true, 18>(row)?,
+                                    f.slice::<16, 14, true, 0>(row)?,
+                                    f.slice::<16, 14, true, 16>(row)?,
                                 )
                             } else {
                                 (
-                                    f.slice::<18, 16, true, 16>(row1.unwrap())?,
-                                    f.slice::<18, 16, true, 0>(f.read(input.pixel.at::<2>())?)?,
+                                    f.slice::<16, 14, true, 16>(row1.unwrap())?,
+                                    f.slice::<16, 14, true, 0>(f.read(input.pixel.at::<2>())?)?,
                                 )
                             };
                             f.name_value("screen.ndc_x", x)?;
                             f.name_value("screen.ndc_y", y)?;
-                            let px: Fixed<34, 30, true> =
+                            let px: Fixed<32, 28, true> =
                                 f.product(x, f.read(input.projection.at::<0>())?)?;
-                            let py: Fixed<34, 30, true> =
+                            let py: Fixed<32, 28, true> =
                                 f.product(y, f.read(input.projection.at::<1>())?)?;
                             f.name_value("view_ray.x_product", px)?;
                             f.name_value("view_ray.y_product", py)?;
@@ -1509,7 +1509,7 @@ pub fn prepare_ray(
     projection: Projection,
     max_events: usize,
 ) -> Result<([i16; 3], FrameReport), Error> {
-    if pixel.ndc.iter().any(|&x| !(-65536..=65536).contains(&x)) {
+    if pixel.ndc.iter().any(|&x| !(-16384..=16384).contains(&x)) {
         return Err(InputError::ViewRay.into());
     }
     if !(8192..=12288).contains(&projection.k)
@@ -1521,13 +1521,13 @@ pub fn prepare_ray(
         return Err(InputError::ViewRay.into());
     }
     let mut m = Model::numerical();
-    let ndc = m.input::<18, 16, true>("raster.ndc", &pixel.ndc.map(i128::from))?;
+    let ndc = m.input::<16, 14, true>("raster.ndc", &pixel.ndc.map(i128::from))?;
     let scale =
         m.input::<16, 14, true>("context.ray-scale", &projection.ray_scale.map(i128::from))?;
     let k = m.input::<16, 14, true>("context.k", &[i128::from(projection.k)])?;
     let f = m.compute("upstream ray preparation", max_events)?;
-    let x: Fixed<34, 30, true> = f.product(f.read(ndc.at::<0>())?, f.read(scale.at::<0>())?)?;
-    let y: Fixed<34, 30, true> = f.product(f.read(ndc.at::<1>())?, f.read(scale.at::<1>())?)?;
+    let x: Fixed<32, 28, true> = f.product(f.read(ndc.at::<0>())?, f.read(scale.at::<0>())?)?;
+    let y: Fixed<32, 28, true> = f.product(f.read(ndc.at::<1>())?, f.read(scale.at::<1>())?)?;
     f.publish("ray.0", f.round_to::<16, 14, true>(x)?)?;
     f.publish("ray.1", f.round_to::<16, 14, true>(y)?)?;
     f.publish("ray.2", f.read(k.at::<0>())?)?;
@@ -1639,23 +1639,23 @@ pub fn scanline_rays(
     projection: Projection,
     max_events: usize,
 ) -> Result<(Vec<[i16; 3]>, FrameReport), Error> {
-    if count == 0 || count > 64 || !(-65536..=65536).contains(&ndc_step) {
+    if count == 0 || count > 64 || !(-16384..=16384).contains(&ndc_step) {
         return Err(InputError::Configuration.into());
     }
     let last = i64::from(seed.ndc[0]) + i64::from(ndc_step) * (count as i64 - 1);
-    if !(-65536..=65536).contains(&last) {
+    if !(-16384..=16384).contains(&last) {
         return Err(InputError::ViewRay.into());
     }
     validate(seed, Material::default(), Light::default(), projection)?;
     let mut m = Model::numerical();
-    let xy = m.input::<18, 16, true>("raster.seed", &seed.ndc.map(i128::from))?;
-    let step = m.input::<18, 16, true>("raster.step", &[i128::from(ndc_step)])?;
+    let xy = m.input::<16, 14, true>("raster.seed", &seed.ndc.map(i128::from))?;
+    let step = m.input::<16, 14, true>("raster.step", &[i128::from(ndc_step)])?;
     let scale = m.input::<16, 14, true>("context.scale", &projection.ray_scale.map(i128::from))?;
     let k = m.input::<16, 14, true>("context.k", &[i128::from(projection.k)])?;
-    let f = m.compute("exact Q30 scan rays", max_events)?;
-    let mut x: Fixed<34, 30, true> = f.product(f.read(xy.at::<0>())?, f.read(scale.at::<0>())?)?;
-    let y: Fixed<34, 30, true> = f.product(f.read(xy.at::<1>())?, f.read(scale.at::<1>())?)?;
-    let delta: Fixed<34, 30, true> =
+    let f = m.compute("exact Q28 scan rays", max_events)?;
+    let mut x: Fixed<32, 28, true> = f.product(f.read(xy.at::<0>())?, f.read(scale.at::<0>())?)?;
+    let y: Fixed<32, 28, true> = f.product(f.read(xy.at::<1>())?, f.read(scale.at::<1>())?)?;
+    let delta: Fixed<32, 28, true> =
         f.product(f.read(step.at::<0>())?, f.read(scale.at::<0>())?)?;
     let y: Direction = f.round_to(y)?;
     let z = f.read(k.at::<0>())?;

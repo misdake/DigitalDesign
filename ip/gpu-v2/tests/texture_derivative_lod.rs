@@ -90,6 +90,7 @@ fn calendar(
 }
 fn canonical() -> bound::Preparation {
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask: 1,
         uv: [[0.003, 0.003]; 4],
@@ -119,8 +120,8 @@ fn d_golden(i: derivative::Input) -> derivative::Output {
         .max()
         .unwrap();
     derivative::Output {
-        uv: i.uv.map(|v| v.rem_euclid(1 << 18) as u32),
-        slope,
+        uv: i.uv.map(|v| v.rem_euclid(1 << 16) as u32),
+        slope: if i.force_coarsest { 131073 } else { slope },
         bias: i.bias,
         header: i.header,
     }
@@ -133,7 +134,7 @@ fn l_golden(i: lod::Input) -> lod::Output {
     };
     let l = if i.slope == 0 {
         0
-    } else if i.slope > 524288 {
+    } else if i.slope > 131072 {
         maximum
     } else {
         let h = 63 - i.slope.leading_zeros();
@@ -143,7 +144,7 @@ fn l_golden(i: lod::Input) -> lod::Output {
         let remainder = tail % 8192;
         let k = quotient
             + u64::from(remainder > 4096 || remainder == 4096 && !quotient.is_multiple_of(2));
-        let exponent = i32::from(i.header.max_n) + h as i32 - 18 + i32::from(k == 64);
+        let exponent = i32::from(i.header.max_n) + h as i32 - 16 + i32::from(k == 64);
         let log = ((1.0 + (k % 64) as f64 / 64.0).log2() * 256.0).round_ties_even() as i32;
         (256 * exponent + log + i32::from(i.bias)).clamp(0, maximum)
     };
@@ -157,7 +158,7 @@ fn l_golden(i: lod::Input) -> lod::Output {
     };
     lod::Output {
         context: lod::CoordinateContext {
-            shift: i32::from(fine.max(1)) - 10,
+            shift: i32::from(fine.max(1)) - 8,
             nearest: i.header.filter == 0,
             halve: fine > 1,
             side: levels.map(|n| 1_i16 << n.max(1)),
@@ -178,6 +179,7 @@ fn stimulus(slope: u64, id: usize) -> (QuadInput, Slot) {
         valid: true,
     };
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: (id % 16) as u8,
         mask: 1,
         uv: [[-0.75, 0.125]; 4],
@@ -186,11 +188,7 @@ fn stimulus(slope: u64, id: usize) -> (QuadInput, Slot) {
         filter: [Filter::Nearest, Filter::Bilinear, Filter::Trilinear][id % 3],
         lod_bias: [-32.0, -0.5, 0.0, 0.5, 32.0][id % 5],
     };
-    q.uv[1][0] += slope as f64 / 262144.0;
-    if slope > (1 << 38) {
-        q.uv[0][0] = -(1_i64 << 38) as f64 / 262144.0;
-        q.uv[1][0] = (slope - (1 << 38)) as f64 / 262144.0;
-    }
+    q.uv[1][0] += slope as f64 / 65536.0;
     (q, slot)
 }
 #[test]
@@ -213,12 +211,12 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
         256,
         257,
         65536,
-        262144,
-        524288,
+        65536,
+        131072,
         524289,
-        1 << 39,
+        1 << 17,
     ];
-    slopes.extend((0..64).map(|k| 262144 + k * 4096 + 2048));
+    slopes.extend((0..64).map(|k| 65536 + k * 1024 + 512));
     // Every exact RNE tie, including odd63->64 carry, crossed with all filters,
     // mip availability and boundary biases; negative helper UV is retained.
     let samples: Vec<_> = (0..6)
@@ -260,11 +258,14 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
             if let Some(o) = old_d.2 {
                 assert_eq!(
                     o,
-                    d_golden(inputs[owners[((enabled + 32 - 16) % 32) / 8].unwrap()])
+                    d_golden(
+                        inputs[owners[((enabled + 32 - usize::from(derivative::SPAN)) % 32) / 8]
+                            .unwrap()]
+                    )
                 );
             }
             if let Some(o) = old_l.2 {
-                let id = owners[((enabled + 32 - 27) % 32) / 8].unwrap();
+                let id = owners[((enabled + 32 - usize::from(lod::SPAN)) % 32) / 8].unwrap();
                 assert_eq!(o, l_golden(d_golden(inputs[id]).into()));
                 completed += 1;
             }
@@ -305,7 +306,7 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
                 if let Some((port, index)) = calc.rom {
                     match port {
                         0 => {
-                            assert_eq!(calc.age, 10);
+                            assert_eq!(calc.age, 9);
                             assert_eq!(
                                 calc.raw,
                                 ((1.0 + index as f64 / 64.0).log2() * 256.0).round_ties_even()
@@ -314,12 +315,12 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
                             roms[0] += 1;
                         }
                         1 => {
-                            assert!([21, 24].contains(&calc.age));
+                            assert!([22, 25].contains(&calc.age));
                             let prefix: i128 = (0..index)
                                 .map(|n| 1_i128 << (2 * n.saturating_sub(3)))
                                 .sum();
                             assert_eq!(calc.raw, prefix);
-                            roms[if calc.age == 21 { 1 } else { 2 }] += 1;
+                            roms[if calc.age == 22 { 1 } else { 2 }] += 1;
                         }
                         _ => panic!("unknown ROM"),
                     }
@@ -372,6 +373,7 @@ fn each_actual_cut_matches_partial_helper_sample() {
         valid: true,
     };
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: 3,
         mask: 1,
         uv: [[0.13, 0.07]; 4],
@@ -391,7 +393,7 @@ fn each_actual_cut_matches_partial_helper_sample() {
     .unwrap();
     let input = derivative::Input::capture(&q, slot).unwrap();
     let mut output = None;
-    for age in 0..=16 {
+    for age in 0..=derivative::SPAN {
         if let Some(o) = d.output().unwrap() {
             output = Some(o);
         }
@@ -419,7 +421,7 @@ fn each_actual_cut_matches_partial_helper_sample() {
     }
     assert_eq!(output.header.quad, 3);
     let mut l = LodEmu::new(calendar(&b.lod, &c.lod.frame, L_OUTPUTS, true)).unwrap();
-    for age in 0..=27 {
+    for age in 0..=lod::SPAN {
         if let Some(o) = l.output().unwrap() {
             for (name, raw) in [
                 ("shift0", i128::from(o.context.shift)),
@@ -499,7 +501,8 @@ fn full_physical_width_and_rejected_inputs_never_add_or_mutate_storage() {
     .unwrap();
     let mut l = LodEmu::new(calendar(&b.lod, &c.lod.frame, L_OUTPUTS, false)).unwrap();
     let good = derivative::Input {
-        uv: [-(1 << 39), 0, (1 << 39) - 1, 0, 0, 0, 0, 0],
+        force_coarsest: false,
+        uv: [-(1 << 17), 0, (1 << 17) - 1, 0, 0, 0, 0, 0],
         bias: 8192,
         header: derivative::Header {
             quad: 15,
@@ -511,16 +514,16 @@ fn full_physical_width_and_rejected_inputs_never_add_or_mutate_storage() {
         },
     };
     let mut bad = good;
-    bad.uv[0] = 1 << 39;
+    bad.uv[0] = 1 << 17;
     let old = (d.bank().to_vec(), d.phase());
     assert!(d.tick(true, Some(bad)).is_err());
     assert_eq!((d.bank().to_vec(), d.phase()), old);
     assert!(!d.tick(false, Some(bad)).unwrap().accepted);
     assert_eq!((d.bank().to_vec(), d.phase()), old);
-    for age in 0..=16 {
+    for age in 0..=derivative::SPAN {
         if let Some(o) = d.output().unwrap() {
             assert_eq!(o, d_golden(good));
-            assert_eq!(o.slope, (1 << 40) - 1);
+            assert_eq!(o.slope, (1 << 18) - 1);
         }
         d.tick(true, (age == 0).then_some(good)).unwrap();
     }
@@ -528,11 +531,11 @@ fn full_physical_width_and_rejected_inputs_never_add_or_mutate_storage() {
     assert_eq!(d.bank().len(), derivative::NUMERIC_BITS.div_ceil(64));
     let i = lod::Input::from(d_golden(good));
     let mut bad = i;
-    bad.slope = 1 << 40;
+    bad.slope = 1 << 18;
     let old = (l.bank().to_vec(), l.phase());
     assert!(l.tick(true, Some(bad)).is_err());
     assert_eq!((l.bank().to_vec(), l.phase()), old);
-    for age in 0..=27 {
+    for age in 0..=lod::SPAN {
         if let Some(o) = l.output().unwrap() {
             assert_eq!(o, l_golden(i));
             assert_eq!(o.context.levels, [0, 0]);
@@ -550,6 +553,7 @@ fn full_physical_width_and_rejected_inputs_never_add_or_mutate_storage() {
 fn derivative_lod_binding_intake() {
     let binding = bound::Binding::build().unwrap();
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask: 1,
         uv: [[0.003, 0.003]; 4],
@@ -617,7 +621,7 @@ fn derivative_lod_binding_intake() {
             binding.derivative.span(),
             binding.derivative.packed.ff_bits
         ),
-        (8, 16, 1336)
+        (8, 17, 858)
     );
     assert_eq!(
         (
@@ -626,6 +630,6 @@ fn derivative_lod_binding_intake() {
             binding.lod.packed.ff_bits,
             binding.lod.rom_ram16_cells
         ),
-        (8, 27, 277, 45)
+        (8, 28, 264, 45)
     );
 }

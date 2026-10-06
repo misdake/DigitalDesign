@@ -62,7 +62,7 @@ fn whole_sampler_filter_lod_wrap_masks_ce_credit_and_cache_reuse() {
         let mut q = support::input(
             6,
             [Filter::Nearest, Filter::Bilinear, Filter::Trilinear][i % 3],
-            [[-0.012, 0.995], [0.4375, 0.1875], [2.03125, -3.0625]][i % 3],
+            [[-0.012, 0.995], [0.4375, 0.1875], [1.03125, -1.0625]][i % 3],
         );
         q.quad_id = (i % 16) as u8;
         q.mask = [15, 5, 10, 1, 0][i % 5];

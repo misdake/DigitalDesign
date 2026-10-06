@@ -74,6 +74,7 @@ pub(super) fn calendars(
     // Constructor-only structural extraction; no sampled nonliteral raw answer
     // survives Calendar::from_structure. This is outside the live-call guard.
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask: 1,
         uv: [[0.003, 0.003]; 4],
@@ -554,7 +555,7 @@ impl Machine {
                         .ok_or("Runtime actual covered lane")?;
                     let v = lod.context;
                     let quad = lod.quad;
-                    // Actual wrapped Q18 operands and captured LOD context feed
+                    // Actual wrapped Q16 operands and captured LOD context feed
                     // the coordinate register calendar; no counted body runs.
                     coordinate_input = Some(coordinate::Input {
                         uv: [uv[usize::from(lane) * 2], uv[usize::from(lane) * 2 + 1]],

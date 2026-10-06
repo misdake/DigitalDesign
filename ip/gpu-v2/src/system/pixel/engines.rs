@@ -220,9 +220,10 @@ impl BranchEngines {
                     .sample
                     .ok_or("untextured entered sample queue")?;
                 Ok::<_, String>(QuadInput {
+                    force_coarsest: job.force_coarsest,
                     quad_id: job.ticket.quad,
                     mask: job.mask,
-                    uv: job.uv_q18.map(|v| v.map(|x| x as f64 / 262144.0)),
+                    uv: job.uv_q16.map(|v| v.map(|x| x as f64 / 65536.0)),
                     slot: context.slot,
                     material_size_log2: context.size_log2,
                     filter: context.filter,

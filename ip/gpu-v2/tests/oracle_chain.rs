@@ -16,7 +16,7 @@ fn compact_transport_all_codes_roundtrip_and_counted_golden() {
     for code in -2048..=2047 {
         let p = CompactPixelInput {
             normal: [code, -1, 2047],
-            ndc: [-65536, 65536],
+            ndc: [-16384, 16384],
         };
         assert_eq!(CompactPixelInput::from_rows(p.rows().unwrap()).unwrap(), p);
     }
@@ -43,7 +43,7 @@ fn compact_transport_all_codes_roundtrip_and_counted_golden() {
         for normal in [[-2048, 1, 2047], [377, -286, 939], [0, 0, 0], [1, -1, 0]] {
             let p = CompactPixelInput {
                 normal,
-                ndc: [31457, -17329],
+                ndc: [7864, -4332],
             };
             let material = Material {
                 shininess_code: code,

@@ -14,21 +14,21 @@ fn dedicated_actual_d_lod_selector_bill_matches_static_certificate_and_old_basis
             b.derivative.packed.read_selector_tree_bits,
             b.lod.packed.read_selector_tree_bits
         ),
-        (1191, 248)
+        (1140, 229)
     );
     assert_eq!(
         (
             b.derivative.packed.write_selector_tree_bits,
             b.lod.packed.write_selector_tree_bits
         ),
-        (833, 356)
+        (469, 316)
     );
     assert_eq!(
         (
             b.derivative.packed.control_boolean_gates,
             b.lod.packed.control_boolean_gates
         ),
-        (5444, 1963)
+        (2574, 1792)
     );
     for storage in [control::Storage::Dedicated, control::Storage::Packed] {
         let p = control::Hardware {
@@ -59,17 +59,17 @@ fn dedicated_actual_d_lod_selector_bill_matches_static_certificate_and_old_basis
             .sum();
         let old_runtime_read = old.rotating_read_mux_bits - removed_read;
         if storage == control::Storage::Dedicated {
-            assert_eq!(actual.rotating_read_mux_bits, old_runtime_read + 489);
+            assert_eq!(actual.rotating_read_mux_bits, old_runtime_read + 769);
             assert_eq!(
                 actual.rotating_write_mux_bits,
-                old.rotating_write_mux_bits + 1189
+                old.rotating_write_mux_bits + 785
             );
             assert_eq!(
                 actual.storage_control_boolean_gates,
-                old.storage_control_boolean_gates + 7407
+                old.storage_control_boolean_gates + 4366
             );
-            let ceilings = [2440, 793];
-            let actual_used = [1385, 337];
+            let ceilings = [1251, 727];
+            let actual_used = [908, 325];
             for ((name, ceiling), used) in ["derivative FF", "LOD FF"]
                 .into_iter()
                 .zip(ceilings)

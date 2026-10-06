@@ -84,6 +84,7 @@ fn shared_clock_follows_sampling_poll_on_every_wall_edge() {
         )
         .unwrap();
     let input = Input {
+        force_coarsest: false,
         context,
         header: Header {
             x: 0,
@@ -98,11 +99,11 @@ fn shared_clock_follows_sampling_poll_on_every_wall_edge() {
             normal: [0, 0, 1024],
             ndc: [0; 2],
         }; 4],
-        uv_q18: [
-            [131000, 65500],
-            [139200, 65500],
-            [131000, 73700],
-            [139200, 73700],
+        uv_q16: [
+            [32750, 16375],
+            [34800, 16375],
+            [32750, 18425],
+            [34800, 18425],
         ],
     };
     let mut reference = texture::Image {
@@ -112,9 +113,10 @@ fn shared_clock_follows_sampling_poll_on_every_wall_edge() {
     let mut cache = oracle::Cache::new(vec![slot]).unwrap();
     let golden = oracle::sample(
         &gpu_v2::texture::ports::QuadInput {
+            force_coarsest: false,
             quad_id: 0,
             mask: 5,
-            uv: input.uv_q18.map(|v| v.map(|x| x as f64 / 262144.0)),
+            uv: input.uv_q16.map(|v| v.map(|x| x as f64 / 65536.0)),
             slot: 0,
             material_size_log2: 5,
             filter: Filter::Trilinear,

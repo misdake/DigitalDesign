@@ -8,7 +8,7 @@ fn inputs(n: usize) -> Vec<CompactPixelInput> {
     (0..n)
         .map(|i| CompactPixelInput {
             normal: [[-2048, 2047, 1], [377, -286, 939], [1, 0, -1], [0; 3]][i % 4],
-            ndc: [(i as i32 * 7919 % 131073) - 65536, 31457],
+            ndc: [((i as i32 * 7919 % 131073) - 65536) / 4, 7864],
         })
         .collect()
 }
@@ -53,7 +53,7 @@ fn exact_narrow_prescale_preserves_all_stages_and_removes_normal_rounding() {
     for normal in vectors {
         let p = CompactPixelInput {
             normal,
-            ndc: [-17329, 65536],
+            ndc: [-4332, 16384],
         }
         .expanded()
         .unwrap();

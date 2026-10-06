@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 [0; 3],
                 [1024, 0, 0],
             ][i % 5],
-            ndc: [(i as i32 * 7919 % 131073) - 65536, 31457],
+            ndc: [((i as i32 * 7919 % 131073) - 65536) / 4, 7864],
         })
         .collect();
     let mut csv=String::from("mode,profile,rom_latency,ii,latency,peak_bits,storage_compacted_bits,cones,blocks_by_shape,normal_alu_sites,increment_or_negate_sites,bsram_blocks,ssram_cells,dsp_tiles_used,capacity_half_slots,finite_cycles,finite_first_result,cone_provisioned,cone_occupied,normal_provisioned,normal_occupied,increment_or_negate_provisioned,increment_or_negate_occupied\n");

@@ -697,9 +697,9 @@ pub fn plan(
         pixel_payload_bits: (if hardware.kernel.shared_half || hardware.kernel.prepared_ray {
             96
         } else if hardware.kernel.compact_normal {
-            72
+            68
         } else {
-            84
+            80
         }) * n,
         uniform_payload_bits: 121
             + if hardware.kernel.dataflow { 43 } else { 0 }
