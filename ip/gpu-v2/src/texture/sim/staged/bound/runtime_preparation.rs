@@ -1,22 +1,172 @@
-//! Private live coefficient/membership/Work/packet executor. D/LOD/coordinate
-//! remain counted; downstream arithmetic advances actual scalar registers.
+//! Private live D/LOD/coefficient/membership/Work/packet executor. Coordinate
+//! consumes captured scalar inputs through an actual packed register calendar.
 use super::{
     control::{Event, Hardware, Stats, Step},
     transport::Work,
     *,
 };
 use crate::texture::emu::coefficient::{self, CoefficientEmu};
+use crate::texture::emu::{
+    coordinate::{self, CoordinateEmu},
+    derivative::{self, DerivativeEmu},
+    lod::{self, LodEmu},
+};
 use std::collections::VecDeque;
 
+fn calendar(
+    plan: &StagePlan,
+    frame: &FrameReport,
+    outputs: &[&str],
+) -> Result<derivative::Calendar, String> {
+    let fields = plan
+        .packed_fields
+        .iter()
+        .map(|f| {
+            let iterations = plan.packed.period / plan.ii();
+            let mut lows = Vec::with_capacity(iterations as usize);
+            for iteration in 0..iterations {
+                lows.push(
+                    plan.packed
+                        .placements
+                        .iter()
+                        .find(|p| {
+                            p.value == f.value
+                                && p.source_low == f.source_low
+                                && p.iteration == iteration
+                        })
+                        .ok_or("Runtime D/LOD missing placement")?
+                        .low,
+                );
+            }
+            Ok(derivative::Field {
+                value: f.value,
+                source_low: f.source_low,
+                width: f.width,
+                birth: u8::try_from(f.birth).map_err(|_| "Runtime D/LOD field birth")?,
+                last_read: u8::try_from(f.last_read).map_err(|_| "Runtime D/LOD field last")?,
+                lows,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    derivative::Calendar::from_structure(
+        frame,
+        &plan.times,
+        &plan.cones,
+        &plan.lowering.wiring_adds,
+        fields,
+        plan.packed.ff_bits,
+        u8::try_from(plan.span()).map_err(|_| "Runtime D/LOD span")?,
+        u32::try_from(plan.packed.period).map_err(|_| "Runtime D/LOD period")?,
+        u32::try_from(plan.ii()).map_err(|_| "Runtime D/LOD ii")?,
+        outputs,
+    )
+}
+pub(super) fn calendars(
+    b: &Binding,
+) -> Result<
+    (
+        derivative::Calendar,
+        derivative::Calendar,
+        derivative::Calendar,
+    ),
+    String,
+> {
+    // Constructor-only structural extraction; no sampled nonliteral raw answer
+    // survives Calendar::from_structure. This is outside the live-call guard.
+    let mut q = QuadInput {
+        quad_id: 0,
+        mask: 1,
+        uv: [[0.003, 0.003]; 4],
+        slot: 0,
+        material_size_log2: 9,
+        filter: Filter::Trilinear,
+        lod_bias: 0.5,
+    };
+    q.uv[1][0] += 1.0 / 512.0;
+    let p = prepare(
+        &q,
+        &[Slot {
+            base_address: 4096,
+            max_size_log2: 9,
+            has_full_mip: true,
+            valid: true,
+        }],
+    )
+    .map_err(|e| format!("Runtime D/LOD structural source {e:?}"))?;
+    Ok((
+        calendar(
+            &b.derivative,
+            &p.derivative.frame,
+            &[
+                "uv0", "uv1", "uv2", "uv3", "uv4", "uv5", "uv6", "uv7", "slope", "bias", "quad",
+                "mask", "slot", "max_n", "has_mip", "filter",
+            ],
+        )?,
+        calendar(
+            &b.lod,
+            &p.lod.frame,
+            &[
+                "shift0",
+                "nearest",
+                "halve",
+                "side0",
+                "side1",
+                "parent0",
+                "parent1",
+                "n0",
+                "n1",
+                "last_fine",
+                "quad",
+                "mask",
+                "slot",
+            ],
+        )?,
+        calendar(
+            &b.coordinate,
+            &p.lanes[0].coordinate.frame,
+            coordinate::OUTPUTS,
+        )?,
+    ))
+}
+
+enum Payload {
+    Raw(derivative::Input),
+    Derived(derivative::Output),
+    Ready { uv: [u32; 8], lod: lod::Output },
+}
 struct Context {
     source: Arc<Program>,
     next: usize,
     d: Option<u64>,
     lod: Option<u64>,
+    payload: Payload,
 }
-struct Coordinate {
-    input: coefficient::Input,
-    issue: u64,
+/// Metadata captured when a lane enters the actual coordinate pipeline. The
+/// wrapped taps and Q8 fractions are produced later by `CoordinateEmu`'s old
+/// scalar registers; only these lod/identity values are retained alongside.
+struct PendingCoordinate {
+    parents: [u16; 2],
+    nearest: bool,
+    levels: [u8; 2],
+    slot: u8,
+    key: u8,
+    last_fine: bool,
+}
+impl PendingCoordinate {
+    fn finish(self, out: coordinate::Output) -> coefficient::Input {
+        coefficient::Input {
+            parents: self.parents,
+            fractions: out.fractions,
+            nearest: self.nearest,
+            metadata: coefficient::Metadata {
+                coordinates: out.coordinates,
+                levels: self.levels,
+                slot: self.slot,
+                key: self.key,
+                last_fine: self.last_fine,
+            },
+        }
+    }
 }
 struct Completion {
     slot: usize,
@@ -26,6 +176,15 @@ struct Completion {
 #[cfg(test)]
 #[derive(Default)]
 pub(super) struct Trace {
+    pub d_capture: Option<derivative::Output>,
+    pub l_capture: Option<lod::Output>,
+    pub d_edge: Option<derivative::Edge>,
+    pub l_edge: Option<derivative::Edge>,
+    pub c_edge: Option<derivative::Edge>,
+    pub d_input: Option<derivative::Input>,
+    pub l_input: Option<lod::Input>,
+    pub c_owner: Option<(u8, usize)>,
+    pub coordinate: Option<coefficient::Input>,
     pub work: transport::Edge,
     pub coefficient: Option<coefficient::Step>,
     pub pre_work: usize,
@@ -44,8 +203,11 @@ pub(super) struct Machine {
     order: VecDeque<usize>,
     live: u16,
     completion: [Option<Completion>; 16],
-    coordinates: VecDeque<Coordinate>,
+    coordinate_pending: VecDeque<PendingCoordinate>,
     ready: VecDeque<coefficient::Input>,
+    derivative: DerivativeEmu,
+    lod: LodEmu,
+    coordinate: CoordinateEmu,
     coefficient: CoefficientEmu,
     ready_plane: usize,
     members: runtime_membership::Pipeline,
@@ -64,6 +226,19 @@ impl Machine {
     #[cfg(test)]
     pub(super) fn numerical_banks(&self) -> ([Option<u128>; 7], [Option<u128>; 9]) {
         (self.members.banks(), self.packets.banks())
+    }
+    #[cfg(test)]
+    pub(super) fn d_lod_state(&self) -> (Vec<u64>, Vec<u64>, u8, u8) {
+        (
+            self.derivative.bank().to_vec(),
+            self.lod.bank().to_vec(),
+            self.derivative.phase(),
+            self.lod.phase(),
+        )
+    }
+    #[cfg(test)]
+    pub(super) fn coordinate_state(&self) -> (Vec<u64>, u8) {
+        (self.coordinate.bank().to_vec(), self.coordinate.phase())
     }
     #[cfg(test)]
     pub(super) fn corrupt_head_tap(&mut self) -> bool {
@@ -91,6 +266,7 @@ impl Machine {
     }
     pub(super) fn new(binding: Arc<Binding>, hardware: Hardware) -> Result<Self, String> {
         hardware.validate()?;
+        let (d, l, c) = calendars(&binding)?;
         Ok(Self {
             binding,
             hardware,
@@ -99,8 +275,11 @@ impl Machine {
             order: VecDeque::new(),
             live: 0,
             completion: std::array::from_fn(|_| None),
-            coordinates: VecDeque::new(),
+            coordinate_pending: VecDeque::new(),
             ready: VecDeque::new(),
+            derivative: DerivativeEmu::new(d)?,
+            lod: LodEmu::new(l)?,
+            coordinate: CoordinateEmu::new(c)?,
             coefficient: CoefficientEmu::new(hardware.max_cycles)
                 .map_err(|e| format!("coefficient: {e:?}"))?,
             ready_plane: 0,
@@ -129,6 +308,11 @@ impl Machine {
             && self.work_count == 0
             && self.packets.inflight() == 0
             && self.coefficient.idle()
+            && self.derivative.idle()
+            && self.lod.idle()
+            && self.coordinate.idle()
+            && self.coordinate_pending.is_empty()
+            && self.ready.is_empty()
     }
     fn shared_release(&mut self, slot: usize, events: &mut Vec<Event>) -> Result<(), String> {
         let c = self.slots[slot]
@@ -183,6 +367,7 @@ impl Machine {
         ready: bool,
         packet_issue_ready: bool,
         masks: &[u8; 16],
+        slots: &[Slot],
     ) -> Result<Step, String> {
         #[cfg(test)]
         let _counted_exclusion = counted_call_guard::Scope::enter();
@@ -198,6 +383,9 @@ impl Machine {
         let pre_packets = self.packets.inflight();
         let old_input = self.ready.front().copied();
         let old_output = self.coefficient.output();
+        let old_derivative = self.derivative.output()?;
+        let old_lod = self.lod.output()?;
+        let old_coordinate = self.coordinate.output()?;
         let mut events = vec![];
         let mut accepted = false;
         let t = self.stats.enabled;
@@ -205,8 +393,29 @@ impl Machine {
         let mut member_input = None;
         let mut packet_input = None;
         let mut plane_capture = None;
+        let mut derivative_input = None;
+        let mut lod_input = None;
+        let mut coordinate_input = None;
+        #[cfg(test)]
+        let mut coordinate_capture = None;
+        #[cfg(test)]
+        let mut coordinate_owner = None;
         if ce {
             self.stats.enabled += 1;
+            // The actual coordinate bank publishes at age SPAN. The captured
+            // taps/weights enter the ready queue for the next coefficient edge.
+            if let Some(out) = old_coordinate {
+                let pending = self
+                    .coordinate_pending
+                    .pop_front()
+                    .ok_or("Runtime coordinate result owner")?;
+                let input = pending.finish(out);
+                #[cfg(test)]
+                {
+                    coordinate_capture = Some(input);
+                }
+                self.ready.push_back(input);
+            }
             // A Pool64 old reservation guarantees W, independent of G32.
             if let Some(payload) = self.packets.output() {
                 if !ready {
@@ -324,49 +533,50 @@ impl Machine {
             return Err("Runtime coefficient row handshake".into());
         }
         if ce {
-            // Consumers only saw the old coordinate ready; no registered-cut bypass.
-            if let Some(coordinate) = self
-                .coordinates
-                .pop_front_if(|c| t - c.issue > self.binding.coordinate.span())
-            {
-                self.ready.push_back(coordinate.input);
-            }
             if t.is_multiple_of(self.binding.coordinate.ii())
                 && pre_coordinates < self.hardware.coordinate_credits
             {
                 let slot = self.order.iter().copied().find(|&s| {
                     let c = self.slots[s].as_ref().unwrap();
                     c.lod.is_some_and(|u| t - u > self.binding.lod.span() + 1)
+                        && matches!(c.payload, Payload::Ready { .. })
                         && c.next < c.source.preparation.lanes.len()
                 });
                 if let Some(slot) = slot {
                     let c = self.slots[slot].as_mut().unwrap();
                     let ordinal = c.next;
-                    let lane = &c.source.preparation.lanes[ordinal];
-                    let lod = &c.source.preparation.lod;
-                    let coord = &lane.coordinate;
-                    let quad = c.source.input.quad_id;
-                    let input = coefficient::Input {
-                        parents: std::array::from_fn(|w| lod.raw(&format!("parent{w}")) as u16),
-                        fractions: std::array::from_fn(|w| {
-                            std::array::from_fn(|a| coord.raw(&format!("f{w}.{a}")) as u8)
-                        }),
-                        nearest: lod.raw("nearest") != 0,
-                        metadata: coefficient::Metadata {
-                            coordinates: std::array::from_fn(|w| {
-                                std::array::from_fn(|i| {
-                                    coord.raw(&format!("t{w}.{}.{}", i / 2, i % 2)) as u16
-                                })
-                            }),
-                            levels: std::array::from_fn(|w| lod.raw(&format!("n{w}")) as u8),
-                            slot: lod.raw("slot") as u8,
-                            key: quad * 4 + lane.lane,
-                            last_fine: lod.raw("last_fine") != 0,
-                        },
+                    let Payload::Ready { uv, lod } = c.payload else {
+                        return Err("Runtime actual LOD context not captured".into());
                     };
+                    let lane = (0..4_u8)
+                        .filter(|l| lod.mask >> l & 1 != 0)
+                        .nth(ordinal)
+                        .ok_or("Runtime actual covered lane")?;
+                    let v = lod.context;
+                    let quad = lod.quad;
+                    // Actual wrapped Q18 operands and captured LOD context feed
+                    // the coordinate register calendar; no counted body runs.
+                    coordinate_input = Some(coordinate::Input {
+                        uv: [uv[usize::from(lane) * 2], uv[usize::from(lane) * 2 + 1]],
+                        shift: v.shift,
+                        nearest: v.nearest,
+                        halve: v.halve,
+                        side: v.side,
+                    });
+                    self.coordinate_pending.push_back(PendingCoordinate {
+                        parents: v.parents,
+                        nearest: v.nearest,
+                        levels: v.levels,
+                        slot: lod.slot,
+                        key: quad * 4 + lane,
+                        last_fine: v.last_fine,
+                    });
+                    #[cfg(test)]
+                    {
+                        coordinate_owner = Some((quad, ordinal));
+                    }
                     c.next += 1;
                     let last = c.next == c.source.preparation.lanes.len();
-                    self.coordinates.push_back(Coordinate { input, issue: t });
                     self.coordinate_count += 1;
                     events.push(Event::Issue {
                         stage: "coordinate",
@@ -407,6 +617,7 @@ impl Machine {
                         if stage == "lod" {
                             c.lod.is_none()
                                 && c.d.is_some_and(|u| t - u > self.binding.derivative.span())
+                                && matches!(c.payload, Payload::Derived(_))
                         } else {
                             c.d.is_none()
                         }
@@ -414,8 +625,16 @@ impl Machine {
                     if let Some(slot) = slot {
                         let c = self.slots[slot].as_mut().unwrap();
                         if stage == "lod" {
+                            let Payload::Derived(d) = c.payload else {
+                                return Err("Runtime actual D context".into());
+                            };
+                            lod_input = Some(lod::Input::from(d));
                             c.lod = Some(t);
                         } else {
+                            let Payload::Raw(d) = c.payload else {
+                                return Err("Runtime actual D admission context".into());
+                            };
+                            derivative_input = Some(d);
                             c.d = Some(t);
                         }
                         events.push(Event::Issue {
@@ -428,12 +647,57 @@ impl Machine {
                     }
                 }
             }
+            // Capture after all old-state issue/consumer decisions. Shared387
+            // rows replace their variant, rather than retain another payload.
+            if let Some(d) = old_derivative {
+                let slot = self
+                    .order
+                    .iter()
+                    .copied()
+                    .find(|s| {
+                        self.slots[*s]
+                            .as_ref()
+                            .is_some_and(|c| c.source.input.quad_id == d.header.quad)
+                    })
+                    .ok_or("Runtime D return owner")?;
+                let c = self.slots[slot].as_mut().unwrap();
+                if !matches!(c.payload, Payload::Raw(_))
+                    || c.d != Some(t - u64::from(derivative::SPAN))
+                {
+                    return Err("Runtime D return cut".into());
+                }
+                c.payload = Payload::Derived(d);
+            }
+            if let Some(l) = old_lod {
+                let slot = self
+                    .order
+                    .iter()
+                    .copied()
+                    .find(|s| {
+                        self.slots[*s]
+                            .as_ref()
+                            .is_some_and(|c| c.source.input.quad_id == l.quad)
+                    })
+                    .ok_or("Runtime LOD return owner")?;
+                let c = self.slots[slot].as_mut().unwrap();
+                let Payload::Derived(d) = c.payload else {
+                    return Err("Runtime LOD return context".into());
+                };
+                if c.lod != Some(t - u64::from(lod::SPAN)) {
+                    return Err("Runtime LOD return cut".into());
+                }
+                c.payload = Payload::Ready { uv: d.uv, lod: l };
+            }
             if ingress_ready {
                 let (_, source) = offer.ok_or("Runtime ingress offer")?;
                 if !Arc::ptr_eq(&source.binding, &self.binding) {
                     return Err("binding source identity".into());
                 }
                 let quad = source.input.quad_id;
+                let input_slot = *slots
+                    .get(usize::from(source.input.slot))
+                    .ok_or("Runtime D slot")?;
+                let captured = derivative::Input::capture(&source.input, input_slot)?;
                 let slot = self
                     .slots
                     .iter()
@@ -449,6 +713,7 @@ impl Machine {
                     next: 0,
                     d: None,
                     lod: None,
+                    payload: Payload::Raw(captured),
                 });
                 self.order.push_back(slot);
                 self.stats.accepted += 1;
@@ -459,9 +724,12 @@ impl Machine {
                 });
             }
         }
+        let _d_edge = self.derivative.tick(ce, derivative_input)?;
+        let _l_edge = self.lod.tick(ce, lod_input)?;
+        let _c_edge = self.coordinate.tick(ce, coordinate_input)?;
         let materialized = self.work.snapshot().materialized;
         if self.coordinate_count > self.hardware.coordinate_credits
-            || self.coordinate_count != self.coordinates.len() + self.ready.len()
+            || self.coordinate_count != self.coordinate_pending.len() + self.ready.len()
             || self.work_count > self.hardware.work_credits
             || materialized + self.members.inflight() > self.work_count
             || self.packets.inflight() > self.hardware.packet_credits
@@ -481,6 +749,15 @@ impl Machine {
         #[cfg(test)]
         {
             self.trace = Trace {
+                d_capture: old_derivative.filter(|_| ce),
+                l_capture: old_lod.filter(|_| ce),
+                d_edge: Some(_d_edge),
+                l_edge: Some(_l_edge),
+                c_edge: Some(_c_edge),
+                d_input: derivative_input,
+                l_input: lod_input,
+                c_owner: coordinate_owner,
+                coordinate: coordinate_capture,
                 work: work_edge,
                 coefficient: Some(coefficient),
                 pre_work,

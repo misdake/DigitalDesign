@@ -11,10 +11,13 @@ UNORM9 datapath with independently replayable numerical ledgers.
 the historical static preparation baseline and checked input from
 `staged::bound`: universal periodic stage calendars with finite credits,
 registered boundaries and optional early shared-context release. Most independent
-preparation arithmetic, RTL, GPU dispatch and fitted performance remain future
-work. The independent coefficient cycle block and its private composition test
-are described below. `texture::emu::color` executes the captured-texel color
-pipeline; its standalone/replay boundary is described below.
+preparation has now also been implemented as independent registered kernels.
+The conservative `PreparationEmu`/`SamplerEmu` path below complements the richer
+Runtime; it does not replace its earlier performance evidence. Actual leaf RTL
+and the composed preparation/cache/color whole-sampler RTL are qualified with
+bounded differential tests. Fitted performance and live DRAW/board integration
+remain open.
+`texture::emu::color` executes the captured-texel color pipeline.
 An optional concrete periodic FF-slice layout checks bit ownership at every
 actual read edge; the dedicated allocation remains the default reference.
 
@@ -34,6 +37,128 @@ at source `358a4e9` (local dependency cherry-pick `f6b61ec`). Early grant and
 `Config::default()` preserves the historical precision-study candidate.
 `Config::counted()` selects the frozen step-1 contract below. Ongoing timed
 targets remain in the local GPU v2 texture specification and development process.
+
+## Independent register-only sampler
+
+`sim::staged::bound::serial::PreparationEmu` accepts raw S40F18 helper UVs,
+Q8 bias and a bounded header. Its stepping path runs actual derivative, LOD,
+coordinate, coefficient, membership and packet register kernels. It does not
+admit a counted `Program`, execute an oracle, retain a numerical template or
+schedule already computed answers. Closed counted goldens remain independent
+test references. One quad is serialized deliberately; leaf II is not quad II.
+
+| Step | Actual computation and retained boundary | Timing boundary |
+| --- | --- | --- |
+| Derivative | Eight signed edge differences; magnitudes/maximum, overflow guard and header | 16 enabled edges, kernel II8 |
+| LOD | Guarded CLZ/normalization, Table64 lookup/RNE, bias/clamp, fine/coarse level and parent weights | 27-edge calendar |
+| Coordinate | Per covered lane, signed floor/wrap Q8 coordinates and coarse half transform | 9 enabled edges, kernel II2 |
+| Coefficient | Exact UNORM9 row/column weights; up to two retained 171-bit rows | 12 enabled edges, kernel II2 |
+| Membership | Local 2x2 tap grouping at repeat/tile seams; first/last group identity | 7-edge default, 5-edge short configuration |
+| Packet | Canonical key/local/weights/first/last/quad/lane into one held 72-bit word | 9-edge default, 3-edge short configuration |
+| Demand cache | Literal slot/level address, tag/PLRU lookup, address/config FF stage, synchronous four-bank tap capture | Hit read captures on the enabled edge after address issue; miss waits for actual beats and terminal ACK |
+| Color | RAW565 expansion, twelve 9x8 products in three registered ages, pair/partial/feedback sums, exact nearest /511 | Eight enabled edges from group acceptance; only last group emits a pixel |
+
+The serial controller adds 638 data and 11 control bits, including a 171-bit
+operand/result overlay. `SamplerEmu` connects the held packet to
+`emu::cache::CacheEmu` and then `ColorEmu`, using pre-edge ready/valid throughout.
+It retains one quad result bank: RGB96, quad4, mask4, done4 and two control bits.
+One completed quad holds under CE/backpressure; its transfer does not fund
+same-edge admission. Zero coverage runs no numerical/cache work.
+
+The demand cache has 64 lines in 16 four-way sets, 3-bit tree-PLRU per set,
+four synchronous 1024x16 banks, one 72-bit demand head, one captured result,
+one read-address/config stage and one miss descriptor. No prefetch or hints are
+implemented in this independent baseline. `cache::Allocation` is its exact
+logical inventory; slot validity is a billed ROM bit, and read ownership pins
+the line. A hit is visible only from old READY tags. ACK cannot fund same-edge
+read issue; read capture cannot fund same-edge address issue. An old output
+transfer can free the later result capture slot.
+
+Each miss presents one aligned 128B request and consumes sixteen indexed 64-bit
+beats plus an independent terminal ACK. Same-edge accept/first beat and
+last-beat/ACK are supported. Delayed ACK without a beat is supported; last beat
+alone never publishes. Memory maintenance runs on wall time under CE0 and
+fault. Fault invalidates compute and FILLING publication, retains an already
+presented request and drains to terminal. A malformed beat sharing a terminal
+still consumes that terminal. Recovery requires recreation, not edge replay.
+
+`emu::refill_bridge::RefillBridge` adapts the existing single-parent `RefillPort`
+to this cache. Facade credit reservation is acceptance at this boundary;
+physical Started/beat/terminal events remain distinct. It polls without clocking
+the physical MC. The framebuffer owner advances the shared Combination once
+after Sampling has polled. See [pixel-system.md](pixel-system.md).
+
+`serial::Config` keeps both optimizations off by default. `nearest_bypass` skips
+coefficient execution only for effective nearest filtering and supplies exact
+511/zero parent rows through the same 171-bit boundary. `short_alignment` removes
+unused Membership/Packet alignment tails without merging arithmetic stages.
+It saves 616 data plus eight valid bits. On the checked four-covered-pixel
+fixture, preparation drains at 220/171/188/139 enabled edges for baseline,
+nearest-only, short-only and both respectively; trilinear short alignment changes
+299 to 235. These are fixture preparation spans, not memory-inclusive latency,
+sustained throughput or FPGA area. No multiplier/resource instance is removed
+by the runtime nearest bypass.
+
+The independent `texture_sampler_emu` optimization matrix also measures the
+whole registered composition. Twenty repeated full-mask quads include negative/
+repeat seams, a nonzero derivative, and (for trilinear) a half-level bias. The
+fixture accepts one request/beat per wall edge, delays ACK by three, and uses
+CE/output-ready continuously. All four configurations return identical oracle
+pixels and leave asset/guards unchanged. The final hot window is actually steady:
+
+| Filter | Default hot edges/quad | Nearest bypass | Short tails | Both |
+| --- | ---: | ---: | ---: | ---: |
+| Nearest | 240 | 184 | 208 | 152 |
+| Bilinear | 296 | 296 | 232 | 232 |
+| Trilinear | 504 | 504 | 336 | 336 |
+
+These are one-quad serial-controller fixture intervals, not the periodic Runtime
+or a shared-MC bandwidth result. Reproduce with `texture_sampler_emu`; exact
+cold-return edges, requests and group counts are generated in
+`target/gpu-overnight-20261006/sampler-optimization-matrix.csv` at repository root.
+Removing unused alignment ages helps every seam group; skipping coefficients
+helps only effective nearest. Neither optimization widens a shared input mux or
+changes arithmetic rounding. The next throughput frontier is overlapping real
+quad/lane ownership across the existing kernels; arithmetic latency and scalar
+controller waits must be separated before choosing more DSPs. The richer
+periodic Runtime remains the comparison point rather than being deleted.
+
+`rtl::sampler::{build_with_config,verilog_with_config}` composes the same
+preparation, cache and Color leaves without duplicating numerical code. The
+default factory remains configuration-identical. Its result bank is108 data
+plus two control bits. Raw header slot/max_n/has_mip must correspond to the
+immutable slot table: use `derivative::Input::capture` or the checked common
+context adapter. The wrapper does not add another slot ROM or a second raw-header
+lookup port. Every whole-RTL configuration is checked edge by edge against
+`SamplerEmu`, including actual refill bytes, branch accepts and held outputs.
+
+`texture_sampler_emu` checks 48 sequential quads across all filters, masks,
+negative UV/repeat/mips, CE and request/result backpressure against independent
+counted-contract oracle pixels. `texture_cache_actual{,_rtl}` checks separate
+and same-edge ACKs, seams/PLRU/levels, port stalls, abort and numbered beats;
+Icarus compares actual RTL and registers on every edge. Actual numerical leaf
+RTL is separately covered by `texture_{calendar,coefficient,color,
+serial_preparation}_rtl` integration tests and the private `runtime_rtl::tests`
+Membership/Packet co-simulations. Arithmetic RTL currently lowers explicit
+expressions/registers; no shared-DSP mux binding, Gowin fit, fmax or board proof
+is inferred from these declarations. Earlier Runtime experiments below retain
+their original, narrower qualification boundaries.
+`texture_sampler_rtl` also exercises all filters/material levels0/1/3/6/10,
+missing mips, masks, negative UV, CE/result/request stalls, both ACK seam timings,
+more than64 cache lines and identity reuse. The whole wrapper has no external
+abort port yet; cache fault/drain is independently qualified and Rust composition
+exposes explicit abort/drain. Do not treat wrapper fault wiring as a tested
+external cancellation command.
+
+The Sampling schedule page `/web/sampling-schedule.html` reads the IP's certified
+leaf calendars through `/schedule-ws` (`profile: "sampling"`). It also runs the
+project's actual preparation emulator to export all four optimization state
+traces, plus a two-quad cache/refill/color composition trace from `SamplerEmu`.
+Its memory fixture is explicitly identified; it is not an averaged MC model.
+State traces disable periodic-repeat display: their measured quad span does not
+certify a universal initiation interval. Browser code contains no copied model
+arithmetic; leaf packing inventories and actual implementation declarations are
+identified separately.
 
 ## Frozen counted contract
 
@@ -1120,8 +1245,10 @@ mutable 94-bit SSRAM rows and one 92-bit return/head bank with separate R/C/
 consume/ACK edges, detailed below. Packet W and public color consumption remain
 later, separate transfers.
 
-Derivative, LOD and coordinate arithmetic remain counted. Eligible ingress compiles
-against one shared Binding and immutable slot context. Upstream programs expire
+Derivative, LOD and coordinate now advance actual scalar registers on the shared
+Binding; the coordinate bank consumes the captured UV/LOD scalars and publishes
+its own taps/weights. Eligible ingress still compiles independent provenance
+against immutable slots. Programs expire
 at final coordinate capture in early-release mode, or final packet W in late
 mode. Original packet totals and cache provenance remain counted premises;
 frames, floats and calendars are model objects, not free hardware storage.
@@ -1166,6 +1293,91 @@ reserved-work control remain charged to their owners. Default Packed declares
 ColorEmu and Runtime link state. These are model allocations, not fitted cells;
 other configurations have their own receipt. Legacy Session inventory and
 global replay audit remain unchanged and do not certify this locally held path.
+
+### Runtime derivative and LOD arithmetic
+
+`emu::derivative::DerivativeEmu` executes the eight signed41 differences before
+wrapping, their absolute magnitudes and the balanced40-bit maximum tree once per
+quad. `emu::lod::LodEmu` executes the guarded20-bit leading-zero/normalization,
+RNE mantissa index and64 carry, registered log ROM return, bias/clamp, mip levels,
+parents and registered prefix ROM returns. Zero and overflow keep their existing
+priority over bias; filter, single-mip and coefficient precision are unchanged.
+
+| Actual stage | II | Primitive ready age | Numeric FF | Phase/valid FF |
+|---|---:|---:|---:|---:|
+| Derivative | 8 | 16 | 1,336 | 32 + 17 |
+| LOD | 8 | 27 | 277 | 32 + 28 |
+| Coordinate | 2 | 9 | 718 | 8 + 10 |
+
+`emu::coordinate::CoordinateEmu` executes the same frozen coordinate body on its
+own old-state registers. It captures the wrapped Q18 helper UV pair, the signed
+LOD shift and the nearest/halve/side context and emits the fine/coarse Q8
+fractions and the eight wrapped taps. Its Q8 floor, centered `-128`, signed
+`(fine-128)>>1` halving, nearest/bilinear/trilinear flag use and single-boundary
+repeat wrap (including negatives and `1024` endpoints) are unchanged. The bank is
+the certified Packed layout for the II2 kernel: four rotating destinations in an
+8-edge periodic bank, no DSP, ROM or BSRAM. Base CE freezes the bank, phase
+and valid; the result publishes at age9 into the existing coefficient-ready
+queue. The live step path reads actual old scalar operands, never the counted
+`coordinate_values` body or a finished coordinate frame.
+
+Each bank uses the existing certified Packed physical slices. Instructions read
+old bits at their issue age and register results for the next ready age; all
+reuse reads precede writes. Input-only birth0/last0 slices are acceptance wires,
+not another retained input copy. Log reads occur at age10 and prefix reads at
+ages21/24, with returns at11/22/25. The existing64x8 and11x13 single-port ROMs
+remain45 RAM16x1 /12 SDP4. Arithmetic, ROM captures and phase/valid freeze together
+under base CE. There is no additional output queue, cohort tag or memory port.
+
+Only operation/format descriptors, literal constants and immutable wiring/cut
+maps survive constructor template extraction; sampled arithmetic answers do not.
+UV and bias quantization occur on real admission through the generated protected
+input types. Registered execution uses actual old scalar operands, never a finished
+Frame or a newly evaluated D/LOD body. Diagnostics such as differences, LOD/lambda
+and prefixes are observable at their production cuts without a second output bank.
+
+The existing387-bit shared context row replaces its payload: Raw355, Derived219,
+or wrapped UV144 + header12 + coordinate-context71 =227, with its two-bit variant
+tag inside the same ceiling. Base addresses remain in the immutable slot table.
+D captures at age16 into that row; LOD issue needs old captured data and age>16.
+LOD captures at27, retains the existing holding cut28, and coordinate issue
+requires old validity at age>28. The actual coordinate pipeline retains only the
+captured scalar operands; the lane's parents/levels/slot/key/final metadata is
+held as structure until its result returns. The actual pending owner is38 bits,
+including nearest for the later coefficient input; Runtime explicitly adds one
+bit per live coordinate to the old37-bit allowance. Coordinate admission requires
+wrapped UV18, power-of-two fine side2..1024, shift=log2(side)-10,
+coarse side=max(2,fine/2), and halve iff fine side>2. Phase wraps at its certified
+period8, so the eighteen declared control bits are8 phase plus10 valid bits.
+The counted `coordinate_values` body
+is now reached only by legacy `prepare`/`Program::compile`, which is trapped by
+the live counted-call guard. Original lane/completion/packet totals and the
+independent cache checker remain counted.
+
+Packed phase/valid is already paid. Dedicated uses the same actual Packed bank:
+D data/control1,385 fits its retained2,440 ceiling, and LOD337 fits793. The pending
+nearest bits above are the only added FF allowance; no RAM, DSP or primitive/ROM
+port is added. Dedicated steering is explicitly rebilled:
+read-tree demand rises489 bits, write-tree demand1,189 bits and storage-control
+Boolean demand7,407 gates; Packed already includes these declarations. They are
+topology demands, not fitted Logic, timing or a PnR result. Legacy Session/Binding
+and downstream contracts are unchanged.
+
+`tests/texture_derivative_lod.rs` compares462 overlapping samples with independent
+integer goldens,43,428 arithmetic cuts,56,826 physical writes and three sets of462
+ROM returns, including every mantissa RNE tie/carry, zero/overflow, negative UV,
+all filters, mip/no-mip and bias boundaries. It also poisons all nonliteral
+constructor answers and checks full physical width and rejected-input storage.
+Connected qualification poisons old D/LOD/coordinate outputs, traps live legacy
+helper calls, checks actual cuts and CE freezes, and preserves the accepted
+128B refill, Work/head and full-image evidence. `tests/texture_coordinate.rs`
+drives the coordinate bank with extreme Q18 UV, every physical mip size1..10,
+nearest/halve combinations and both wrap boundaries, comparing every published
+fraction/tap against an independent integer golden, under CE freeze and from a
+poisoned structural calendar. A connected test checks every live coordinate cut
+against its owning frame and confirms CE freeze. This closes D/LOD and
+coordinate arithmetic; counted completion/provenance and packet totals remain
+explicit limits.
 
 ### Runtime membership and packet arithmetic
 

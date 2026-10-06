@@ -73,6 +73,8 @@ fn pair_address<const B: u32, const F: u32, const S: bool>(
     }
 }
 fn derivatives(q: &QuadInput, slot: Slot) -> Result<Stage, counted::Error> {
+    #[cfg(test)]
+    bound::counted_call_guard::call(2);
     let uv: Vec<_> =
         q.uv.iter()
             .flatten()
@@ -143,6 +145,8 @@ fn derivatives(q: &QuadInput, slot: Slot) -> Result<Stage, counted::Error> {
     Stage::finish(f).map_err(counted::Error::from)
 }
 fn lod(d: &Stage) -> Result<Stage, Fault> {
+    #[cfg(test)]
+    bound::counted_call_guard::call(3);
     let mut m = Model::numerical();
     let slope: MagnitudeStore = m.input("slope", &[d.raw("slope")])?;
     let bias: BiasStore = m.input("bias", &[d.raw("bias")])?;
@@ -262,17 +266,40 @@ fn lod(d: &Stage) -> Result<Stage, Fault> {
     Stage::finish(f)
 }
 fn coordinates(d: &Stage, c: &Stage, lane: usize) -> Result<Stage, Fault> {
-    let mut m = Model::numerical();
-    let uv = m.input::<18, 0, false>(
-        "wrapped_uv",
-        &[
-            d.raw(&format!("uv{}", lane * 2)),
-            d.raw(&format!("uv{}", lane * 2 + 1)),
+    let flag = |name| match c.raw(name) {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(Fault::Range),
+    };
+    coordinate_values(
+        [
+            u32::try_from(d.raw(&format!("uv{}", lane * 2))).map_err(|_| Fault::Range)?,
+            u32::try_from(d.raw(&format!("uv{}", lane * 2 + 1))).map_err(|_| Fault::Range)?,
         ],
-    )?;
-    let shift = m.input::<18, 0, true>("coordinate_shift", &[c.raw("shift0")])?;
-    let flags = m.input::<1, 0, false>("flags", &[c.raw("nearest"), c.raw("halve")])?;
-    let side: IntegerCoordinateStore = m.input("side", &[c.raw("side0"), c.raw("side1")])?;
+        i32::try_from(c.raw("shift0")).map_err(|_| Fault::Range)?,
+        flag("nearest")?,
+        flag("halve")?,
+        [
+            i16::try_from(c.raw("side0")).map_err(|_| Fault::Range)?,
+            i16::try_from(c.raw("side1")).map_err(|_| Fault::Range)?,
+        ],
+    )
+}
+pub(super) fn coordinate_values(
+    uv: [u32; 2],
+    shift: i32,
+    nearest: bool,
+    halve: bool,
+    side: [i16; 2],
+) -> Result<Stage, Fault> {
+    #[cfg(test)]
+    bound::counted_call_guard::call(4);
+    let mut m = Model::numerical();
+    let uv = m.input::<18, 0, false>("wrapped_uv", &[i128::from(uv[0]), i128::from(uv[1])])?;
+    let shift = m.input::<18, 0, true>("coordinate_shift", &[i128::from(shift)])?;
+    let flags = m.input::<1, 0, false>("flags", &[i128::from(nearest), i128::from(halve)])?;
+    let side: IntegerCoordinateStore =
+        m.input("side", &[i128::from(side[0]), i128::from(side[1])])?;
     let f = m.compute("texture_coordinates", 512)?;
     let nearest = f.read(flags.at::<0>())?;
     let halve = f.read(flags.at::<1>())?;
