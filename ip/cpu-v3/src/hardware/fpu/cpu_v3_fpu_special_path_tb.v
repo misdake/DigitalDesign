@@ -242,7 +242,7 @@ initial begin
 end
 
 // Shared-pipe stub: the real CpuV3FpuMulPipe lives in the unit top; this
-// TB-local copy reproduces its exact signed-36 3-stage tag-carrying behavior
+// TB-local copy reproduces its exact signed-36 2-stage tag-carrying behavior
 // so the leaf test needs no resource-claiming sibling modules (same pattern as
 // the multiply-path TB).
 wire sf_mul_in_valid;
@@ -260,15 +260,10 @@ reg [8:0] mul_s1_tag = 0;
 reg mul_s2_valid = 0;
 reg signed [71:0] mul_s2_prod = 0;
 reg [8:0] mul_s2_tag = 0;
-reg mul_s3_valid = 0;
-reg signed [71:0] mul_s3_prod = 0;
-reg [8:0] mul_s3_tag = 0;
 always @(posedge clk) begin
     if (abort) begin
-        mul_s1_valid <= 0; mul_s2_valid <= 0; mul_s3_valid <= 0;
+        mul_s1_valid <= 0; mul_s2_valid <= 0;
     end else begin
-        mul_s3_valid <= mul_s2_valid;
-        if (mul_s2_valid) begin mul_s3_prod <= mul_s2_prod; mul_s3_tag <= mul_s2_tag; end
         mul_s2_valid <= mul_s1_valid;
         if (mul_s1_valid) begin mul_s2_prod <= mul_s1_a * mul_s1_b; mul_s2_tag <= mul_s1_tag; end
         mul_s1_valid <= sf_mul_in_valid;
@@ -278,9 +273,9 @@ always @(posedge clk) begin
         end
     end
 end
-assign mul_out_valid = mul_s3_valid && !abort;
-assign mul_out_product = mul_s3_prod[63:0];
-assign mul_out_tag = mul_s3_tag;
+assign mul_out_valid = mul_s2_valid && !abort;
+assign mul_out_product = mul_s2_prod[63:0];
+assign mul_out_tag = mul_s2_tag;
 
 CpuV3FpuSpecialPath special_path (
     .clk(clk),

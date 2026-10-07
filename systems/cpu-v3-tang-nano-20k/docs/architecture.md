@@ -299,6 +299,35 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
+The 2026-10-07 FPU multiplier change is measured on development base `e583cfa`,
+with the inactive GPU shell swept from both builds. It removes the shared
+multiplier's third stage and retains SINCOS timing with an 18-bit phase register.
+The runtime clocks remain 54/108 MHz; fitted Fmax is timing margin, not a clock
+change. The matching before/after fits use Gowin 1.9.8.11 Education on GW2AR-18C.
+
+| Development fit | Before: three stages | After: two stages |
+| --- | ---: | ---: |
+| Logic / LUT / ALU | 8,556 / 7,255 / 1,109 | 8,605 / 7,304 / 1,109 |
+| RAM16 / Logic FF / CLS | 32 / 3,401 / 5,650 | 32 / 3,359 / 5,718 |
+| BSRAM: SDPB / DPB / pROM | 4 / 6 / 1 | 4 / 6 / 1 |
+| DSP: MULT18X18 / MULT36X36 / MULTADDALU18X18 | 2 / 1 / 1 | 2 / 1 / 1 |
+| CPU fitted Fmax / CPU worst setup slack | 54.861 MHz / 0.291 ns | 58.897 MHz / 1.540 ns |
+| Controller fitted Fmax | 122.876 MHz | 116.251 MHz |
+| Pixel fitted Fmax | 83.294 MHz | 87.911 MHz |
+| Overall worst setup slack | 0.291 ns | 0.657 ns |
+| Setup / hold violated endpoints | 0 / 0 | 0 / 0 |
+
+After the change, the tightest overall setup path is inside the SDRAM
+controller; the tightest CPU path runs from the PC register to an I-cache data
+bank address. The before CPU path runs from system-control cache-clean state
+to core state. Neither CPU critical path is the multiplier, so the changed
+whole-system placement does not establish a multiplier critical-path repair.
+Offline verification and the unchanged-workload benchmark comparison are in
+the [multiplier record](cpu-v3-optimization-record.md#2026-10-07--two-stage-fpu-multiplier).
+These fits include no complete GPU v2 and have no new physical-board evidence.
+
+## Historical production fits before the GPU v2 reset
+
 The default 2x four-line display/sRGB system retains the eight-DPB framebuffer and
 quad owner. The CPU/cache architecture consolidation fit is the baseline for the
 native SDRAM integration below.

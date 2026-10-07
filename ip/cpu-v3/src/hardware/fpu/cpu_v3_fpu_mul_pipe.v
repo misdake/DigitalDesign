@@ -13,11 +13,10 @@
 // positive 36-bit hardware constant 36'h0_A2F9836E (bit 31 of K is set, so a
 // signed 32-bit bus would have mis-sign-extended it).
 //
-// Timing (II = 1, latency 3):
+// Timing (II = 1, latency 2):
 //   T0   : in_valid with operands + tag on the input ports.
 //   T0+1 : stage 1 registers captured the operands.
-//   T0+2 : stage 2 holds the product.
-//   T0+3 : stage 3 presents out_valid with the full-width product and tag.
+//   T0+2 : stage 2 holds the product; its ports present it combinationally.
 // abort voids every in-flight entry combinationally and clears the valids.
 module CpuV3FpuMulPipe (
     input wire clk,
@@ -41,15 +40,12 @@ reg signed [35:0] s1_a_r = 36'sd0;
 reg signed [35:0] s1_b_r = 36'sd0;
 reg [8:0] s1_tag_r = 9'd0;
 
-// Stage 2: first product register.
+// Stage 2: the product register; the ports present it combinationally. This is
+// the last stage, so the returned product is available one beat after the
+// operands are captured rather than two.
 reg s2_valid_r = 1'b0;
 reg signed [71:0] s2_prod_r = 72'sd0;
 reg [8:0] s2_tag_r = 9'd0;
-
-// Stage 3: second product register; the ports present it combinationally.
-reg s3_valid_r = 1'b0;
-reg signed [71:0] s3_prod_r = 72'sd0;
-reg [8:0] s3_tag_r = 9'd0;
 
 // Inferred 36x36 -> 72-bit signed multiplier: the stage-1 registers feed this
 // combinational product and stage 2 registers it (repository mul_s18 style).
@@ -59,13 +55,7 @@ always @(posedge clk) begin
     if (abort) begin
         s1_valid_r <= 1'b0;
         s2_valid_r <= 1'b0;
-        s3_valid_r <= 1'b0;
     end else begin
-        s3_valid_r <= s2_valid_r;
-        if (s2_valid_r) begin
-            s3_prod_r <= s2_prod_r;
-            s3_tag_r <= s2_tag_r;
-        end
         s2_valid_r <= s1_valid_r;
         if (s1_valid_r) begin
             s2_prod_r <= product_next;
@@ -80,8 +70,8 @@ always @(posedge clk) begin
     end
 end
 
-assign out_valid = s3_valid_r && !abort;
-assign out_product = s3_prod_r[63:0];
-assign out_tag = s3_tag_r;
+assign out_valid = s2_valid_r && !abort;
+assign out_product = s2_prod_r[63:0];
+assign out_tag = s2_tag_r;
 
 endmodule

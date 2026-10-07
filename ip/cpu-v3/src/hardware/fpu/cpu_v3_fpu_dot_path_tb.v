@@ -90,7 +90,7 @@ initial begin
 end
 
 // Shared-pipe stub: the real CpuV3FpuMulPipe lives in the unit top; this
-// TB-local copy reproduces its exact 3-stage tag-carrying behavior so the
+// TB-local copy reproduces its exact 2-stage tag-carrying behavior so the
 // leaf test needs no resource-claiming sibling modules (same pattern as the
 // scalar-path and multiply-path TBs).
 wire mul_in_valid;
@@ -108,15 +108,10 @@ reg [8:0] mul_s1_tag = 0;
 reg mul_s2_valid = 0;
 reg signed [71:0] mul_s2_prod = 0;
 reg [8:0] mul_s2_tag = 0;
-reg mul_s3_valid = 0;
-reg signed [71:0] mul_s3_prod = 0;
-reg [8:0] mul_s3_tag = 0;
 always @(posedge clk) begin
     if (abort) begin
-        mul_s1_valid <= 0; mul_s2_valid <= 0; mul_s3_valid <= 0;
+        mul_s1_valid <= 0; mul_s2_valid <= 0;
     end else begin
-        mul_s3_valid <= mul_s2_valid;
-        if (mul_s2_valid) begin mul_s3_prod <= mul_s2_prod; mul_s3_tag <= mul_s2_tag; end
         mul_s2_valid <= mul_s1_valid;
         if (mul_s1_valid) begin mul_s2_prod <= mul_s1_a * mul_s1_b; mul_s2_tag <= mul_s1_tag; end
         mul_s1_valid <= mul_in_valid;
@@ -126,9 +121,9 @@ always @(posedge clk) begin
         end
     end
 end
-assign mul_out_valid = mul_s3_valid && !abort;
-assign mul_out_product = mul_s3_prod[63:0];
-assign mul_out_tag = mul_s3_tag;
+assign mul_out_valid = mul_s2_valid && !abort;
+assign mul_out_product = mul_s2_prod[63:0];
+assign mul_out_tag = mul_s2_tag;
 
 CpuV3FpuDotPath dot_path (
     .clk(clk),
@@ -292,7 +287,7 @@ endtask
 // Issues one dot-family instruction (DOT, DOTADD or DOTSTORE) and checks the
 // whole pipeline: the T0 lane-0 addresses, the per-cycle A/B read addresses
 // with the mode stride, the per-cycle ACC against the running partial sum, the
-// register write port (a single DOTSTORE write on T(last_lane + 5)), the busy
+// register write port (a single DOTSTORE write on T(last_lane + 4)), the busy
 // window and the final ACC. DOTSTORE computes a fresh dot product of its own,
 // so the written word is `q16(sum)` and the final ACC is zero; DOT leaves
 // `ACC = sum` and DOTADD leaves `ACC = ref_acc + sum`.
@@ -368,7 +363,7 @@ task run_dot;
         instr_complete = 1'b0;
         #1; // let the deasserted instr_complete settle before sampling T1
 
-        // T1 .. T(last_lane + 4): reads, then the three-stage product drain and
+        // T1 .. T(last_lane + 3): reads, then the two-stage product drain and
         // the accumulation. DOTSTORE adds one more beat for its register write.
         t = 1;
         while (busy) begin
@@ -386,8 +381,8 @@ task run_dot;
                     "dot read B idle");
             end
 
-            // DOTSTORE writes its captured sum on T(last_lane + 5).
-            if (is_store && (t == last_lane + 5)) begin
+            // DOTSTORE writes its captured sum on T(last_lane + 4).
+            if (is_store && (t == last_lane + 4)) begin
                 check_value({31'b0, dp_write_enable}, 32'h1,
                     "store write enable");
                 check_value({23'b0, dp_write_address}, fd,
@@ -398,7 +393,7 @@ task run_dot;
             end
 
             // ACC visible during cycle T(t): lanes whose product is already
-            // latched at the end of T(k+4), i.e. k + 5 <= t. DOT and DOTSTORE
+            // latched at the end of T(k+3), i.e. k + 4 <= t. DOT and DOTSTORE
             // start from zero; DOTADD from ref_acc. DOTSTORE holds the completed
             // sum on its writeback beat and clears ACC on the following beat,
             // which the post-loop check covers.
@@ -407,7 +402,7 @@ task run_dot;
             else
                 exp_acc = 64'sd0;
             for (k = 0; k < nlanes; k = k + 1)
-                if ((k + 5) <= t)
+                if ((k + 4) <= t)
                     exp_acc = exp_acc + exp_prod[k];
             check_value64(acc_out, exp_acc, "dot acc t");
 
@@ -415,12 +410,12 @@ task run_dot;
             t = t + 1;
             @(negedge clk);
         end
-        // The window must be exactly last_lane + 5 beats for DOT / DOTADD and
-        // last_lane + 6 for DOTSTORE, and the port idle.
+        // The window must be exactly last_lane + 4 beats for DOT / DOTADD and
+        // last_lane + 5 for DOTSTORE, and the port idle.
         if (is_store)
-            check_value(busy_count, last_lane + 6, "store busy window");
+            check_value(busy_count, last_lane + 5, "store busy window");
         else
-            check_value(busy_count, last_lane + 5, "dot busy window");
+            check_value(busy_count, last_lane + 4, "dot busy window");
         check_value({31'b0, busy}, 32'h0, "dot busy clear");
         check_value({31'b0, dp_write_enable}, 32'h0, "dot write clear");
 
@@ -518,7 +513,7 @@ task run_dot_abort_mid;
         else
             partial = 64'sd0;
         for (k = 0; k < nlanes; k = k + 1)
-            if ((k + 5) <= t)
+            if ((k + 4) <= t)
                 partial = partial + exp_prod[k];
         check_value64(acc_out, partial, "abort pre acc");
 

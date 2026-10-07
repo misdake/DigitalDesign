@@ -74,9 +74,9 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
 | FPR file | Two mirrored 512 x 32 SDPB BSRAMs giving 2R1W; architectural `F0..F63` are addresses `0..63`, the hidden LUT region is `64..511` (mirror A: RCP and SINCOS; mirror B: RSQRT even/odd) | Two registered-address synchronous reads and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
 | FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), one scalar/vector lane controller, and one shared result/address commit register | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
-| FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), three stages, II = 1, with a 9-bit destination tag | The multiply, dot and SINCOS range-reduction owners time-share it; the core serializes FPU instructions |
+| FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit destination tag | The multiply, dot and SINCOS range-reduction owners time-share it; the core serializes FPU instructions |
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
-| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables, one local inferred 18 x 18 interpolation lane, and the shared pipe for SINCOS range reduction | RCP/RSQRT `T0..T3`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
+| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables, one local inferred 18 x 18 interpolation lane, one product re-alignment register, and the shared pipe for SINCOS range reduction | RCP/RSQRT `T0..T3`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
 
 Integer unsigned comparison uses the shared subtractor's carry; signed comparison
 first checks differing operand signs, then uses the difference sign for equal-sign
@@ -196,8 +196,10 @@ the pair retires as two words.
   Vector operations and `MOV` retain one lane per cycle, with the read window
   `T0..T(last_lane)` and writes trailing by two beats. Destination aliasing and
   abort cancellation retain the same read-first register-file schedule.
-- The shared 36 x 36 pipe has latency 3 and II = 1, so `VMUL`/`VMULS`/scalar
-  `MUL` write back three beats after the lane's operands are captured. Its
+- The shared 36 x 36 pipe has two registered stages and II = 1. For
+  `VMUL`/`VMULS`/scalar `MUL`, lane k's RF address is presented at `T(k)`,
+  its operands issue at `T(k+1)`, and its product writes back during `T(k+3)`.
+  This removes one beat from the previous three-stage pipe. Its
   return-valid signal is not path ownership: the multiply and dot sequencers
   retain ownership through their own outstanding counters until every issued
   product has returned, which keeps the shared operand mux on the issuer.
@@ -207,7 +209,8 @@ the pair retires as two words.
 - RCP/RSQRT are blocking `T0..T3`; SINCOS is `T0..T7` for the dual
   `sin`/`cos` output and `T0..T6` for a single output. The special path
   monopolizes both RF read ports while active and reuses the shared pipe for
-  its one SINCOS range-reduction product.
+  its one SINCOS range-reduction product; it registers that product once so its
+  own schedule is unaffected by the pipe's shortened latency.
 - `FLD`/`FST` and their vector forms reuse the core data port with its existing
   variable-latency handshake; loads stay blocking until the destination
   registers are written, while stores drain through the core's early-release

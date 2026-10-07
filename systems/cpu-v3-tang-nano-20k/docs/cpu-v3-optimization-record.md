@@ -1435,3 +1435,86 @@ full-system fit uses 12,304 Logic, 50 RAM16 and 20 BSRAM; the 54-MHz CPU and
 108-MHz controller clocks close at fitted limits of 55.547 and 136.790 MHz,
 respectively, with no setup or hold violations. Board UART validation of this
 integrated image remains pending.
+
+## 2026-10-07 — Two-stage FPU multiplier
+
+On base `e583cfa`, removing the last product/tag/valid register from the shared
+36x36 pipe advances MUL, VMUL, VMULS, DOT, DOTADD and DOTSTORE by one beat,
+with II=1 and the same signed Q16.16/64-bit wrapping arithmetic. Outstanding
+counts still retain ownership through the final return. The special path
+registers only `product[49:32]`, the low 18 bits of the shifted SINCOS phase,
+so dual/single SINCOS, RCP and RSQRT retain their existing schedules.
+The integer multiplier is unchanged.
+
+The leaf tests check exact return/write/ACC timing, randomized products,
+in-place A/B destinations, VMULS scalar aliasing, and partial-write abort.
+The pipe test checks the positive signed-36 SINCOS constant and abort with
+both stages occupied, including the first edge after abort is released.
+Removing either combinational abort gating or pending-valid clearing makes
+the strengthened pipe test fail. This closes the old test's gap: its extra
+wait before abort allowed the shortened pipe to drain before cancellation.
+
+The frozen 22-program set and CSV schema are unchanged. Program sizes,
+retired instructions and retired words match in every row. The measured
+metric is emulator execution cycles at the unchanged clock configuration,
+including the suite's existing initialization and service-model behavior.
+Geometric mean of per-program after/before ratios: **0.991765** across all
+22 programs (0.823% fewer cycles), and **0.981973** across the nine `fpu-*`
+programs plus `frame-particles` (1.803% fewer cycles). No program regresses.
+
+| Program | Before cycles | After cycles | Delta |
+| --- | ---: | ---: | ---: |
+| fpu-medium-bezier | 18,568 | 17,672 | -896 |
+| fpu-medium-mandelbrot | 1,039,837 | 999,971 | -39,866 |
+| fpu-medium-normalize-batch | 55,701 | 55,189 | -512 |
+| fpu-medium-transform4x4 | 39,833 | 39,321 | -512 |
+| fpu-short-horner | 1,030 | 1,003 | -27 |
+| fpu-short-sincos | 1,238 | 1,238 | 0 |
+| fpu-short-splat | 1,591 | 1,575 | -16 |
+| fpu-stress-interleave | 3,433 | 3,369 | -64 |
+| fpu-stress-spill | 1,203 | 1,191 | -12 |
+| frame-particles | 452,286 | 449,727 | -2,559 |
+| frame-sprite-batch | 757,185 | 757,185 | 0 |
+| frame-tile-world | 640,076 | 640,076 | 0 |
+| long-quicksort | 1,385,097 | 1,385,097 | 0 |
+| long-streaming-mix | 484,592 | 484,592 | 0 |
+| medium-binary-search | 192,687 | 192,687 | 0 |
+| medium-dijkstra | 206,442 | 206,442 | 0 |
+| medium-matrix-multiply | 139,213 | 139,213 | 0 |
+| medium-sieve | 64,213 | 64,213 | 0 |
+| short-fizzbuzz | 2,808 | 2,808 | 0 |
+| short-sort-insertion | 4,201 | 4,201 | 0 |
+| short-substring-match | 3,956 | 3,956 | 0 |
+| short-vec-heap | 53,474 | 53,474 | 0 |
+
+The fitted resource/timing values live only in the
+[development-fit table](architecture.md#current-fitted-result-and-validation-boundary).
+The two baseline fits and two candidate fits agree within each variant.
+The narrower phase register produces the same fit as the earlier wider
+register: synthesis already removed its unused bits. CPU Fmax improvement
+is a routed whole-system result; the runtime clock is unchanged and the
+SDRAM controller's fitted limit decreases while still meeting its constraint.
+
+Independent review passes 1,345 workspace tests, strict workspace Clippy,
+31 CPU RTL/co-simulation tests, two system co-simulations, all six Icarus
+validation groups, generated boot-image repacking, whole-system PnR and the
+generated-source/bitstream audit. A fresh 22-program candidate run matches
+the original candidate in every exported metric. The direct pipe test passes
+1,492 checks and rejects both abort mutants. Rust formatting, diff, layering,
+source hygiene and the four changed Markdown files pass their checks.
+An isolated Git archive of exact base `e583cfa` independently reproduces the
+baseline fit and all 22 baseline CSV rows across every exported metric.
+Candidate and baseline SDC/CST hashes match. The archived before/after fits
+are therefore corroborated by fresh runs with recorded source identity.
+The full documentation checker still reports the same 18 missing GPU-artifact
+links as unmodified HEAD; consequently the combined `-Mode all` command
+stops at that existing issue, and its remaining stages were run separately.
+
+Raw before/candidate reports remain in the task worktree under
+`target/mulpipe-pnr/{before,before-r2,after,after-narrow}/`; benchmark CSVs
+are `target/mulpipe-baseline.csv` and `target/mulpipe-final.csv`.
+Both CSVs record base HEAD `e583cfa` with configuration `current`; that
+metadata alone does not identify the uncommitted source variant.
+Independent review receipts and the final source identity belong under
+`target/mulpipe-review/`. These are pre-commit experiments, not new committed
+ledger rows. No new board result is claimed.

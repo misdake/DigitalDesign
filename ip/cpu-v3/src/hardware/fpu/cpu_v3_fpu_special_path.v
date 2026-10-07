@@ -46,12 +46,13 @@
 //
 // SINCOS (design section 9.4) is a shorter fixed microsequence on the same
 // blocking path. It writes two registers (Fd = sin, Fd+1 = cos) on consecutive
-// beats. The range product is issued into the shared pipe at T0 and returns at
-// T3 with a fixed 3-cycle latency:
+// beats. The range product is issued into the shared pipe at T0; the pipe
+// returns it at T2 and the re-alignment register presents it at T3,
+// keeping this schedule unchanged:
 //   T0         : capture the instruction controls and issue the range product
 //                (signed Fa, K) into the shared pipe.
 //   T1, T2     : the shared pipe advances; the local 18x18 multiplier is idle.
-//   T3         : the product returns; register q = phase[17:16],
+//   T3         : the product is presented; register q = phase[17:16],
 //                f = phase[15:0] from (product >>> 32).
 //   T4         : drive the first LUT address (sine, or cosine for mode 10)
 //                from the registered q/f.
@@ -201,6 +202,19 @@ reg [1:0] sc_q = 2'd0;
 reg [15:0] sc_f = 16'd0;
 reg signed [17:0] sc_result_reg = 18'sd0;
 
+// The shared pipe presents its product one beat earlier than the SINCOS
+// microsequence below consumes it (the range-reduction product is needed at
+// T3). One register here re-aligns the pipe output with the existing T3
+// capture, so the SINCOS schedule and its numerical contract are unchanged by
+// the pipe's shortened latency. Only phase[17:0] is ever consumed, so the
+// register keeps those 18 bits directly and no separate shifter is needed.
+reg [17:0] sc_phase_reg = 18'd0;
+
+always @(posedge clk) begin
+    if (mul_out_valid)
+        sc_phase_reg <= mul_out_product[49:32];
+end
+
 // Reduced-argument reflection. sin uses (q, f) and cos uses (q+1, f); the
 // quarter-wave symmetries give sin's reflection from q[0] and cos's from
 // !q[0]. `u == 0x10000` (bit 16) selects the exact quarter endpoint.
@@ -236,8 +250,8 @@ assign mul_in_a = {{4{x0[31]}}, x0};
 assign mul_in_b = SINCOS_K;
 assign mul_in_tag = 9'd0;
 
-wire signed [63:0] sc_phase_shifted = mul_out_product >>> 32;
-wire [17:0] sc_phase18 = sc_phase_shifted[17:0];
+// The low 18 bits of (product >>> 32) are product[49:32].
+wire [17:0] sc_phase18 = sc_phase_reg;
 
 // ---------------------------------------------------------------------------
 // Shared 18x18 multiplier. RCP/RSQRT feed `interp_delta * interp_residue` and
