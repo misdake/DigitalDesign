@@ -13,6 +13,7 @@ use std::{
     fmt::Write,
 };
 mod cuts;
+mod power_masks;
 mod prefix;
 mod ranges;
 mod steering;
@@ -26,6 +27,8 @@ fn token_read_offset(depth: usize, read_edge_captures: bool) -> usize {
 
 #[derive(Clone, Copy, Debug)]
 pub struct LightingRtlOptions {
+    /// Exact power-tail masks captured with the batch-uniform context.
+    pub power_context_masks: bool,
     /// Three paired TDP normalization banks with Q13 grouped RSQRT endpoints.
     pub rsqrt_q13: bool,
     /// All lit modes traverse the complete calendar; only output masking differs.
@@ -75,6 +78,7 @@ pub struct LightingRtlOptions {
 impl Default for LightingRtlOptions {
     fn default() -> Self {
         Self {
+            power_context_masks: false,
             rsqrt_q13: false,
             unified_lit: false,
             shared_prefix: false,
@@ -524,6 +528,7 @@ fn scalar_shareable(frame: &LoweredFrame, instructions: &[Instruction]) -> bool 
 }
 
 struct Emitter {
+    power_mask: Option<power_masks::Rewrite>,
     rsqrt_q13: bool,
     one_hot_dsp: bool,
     dsp_input_csv: String,
@@ -689,7 +694,16 @@ impl Emitter {
         outputs
     }
     fn interface_format(&self, value: usize) -> Format {
-        if self.q_amounts.contains(&value) {
+        if self
+            .power_mask
+            .is_some_and(|rewrite| rewrite.descriptor == value)
+        {
+            Format {
+                bits: 75,
+                fraction: 0,
+                signed: false,
+            }
+        } else if self.q_amounts.contains(&value) {
             Format {
                 bits: 2,
                 fraction: 0,
@@ -954,6 +968,17 @@ impl Emitter {
                 }
             };
             let num = |i: usize| numeric(&get(i), frame.values[e.inputs[i]].format);
+            if let Some(rewrite) = self.power_mask.filter(|rewrite| rewrite.event == id) {
+                let descriptor = ins
+                    .inputs
+                    .iter()
+                    .position(|&value| value == rewrite.descriptor)
+                    .ok_or("certified power descriptor is not a function input")?;
+                writeln!(self.body,
+                    "if (t{}) t{v} = t{} & a{descriptor}[58:43]; else t{v} = t{} & a{descriptor}[74:59];",
+                    rewrite.region, rewrite.raw, rewrite.raw).unwrap();
+                continue;
+            }
             let expr = match e.operation {
                 Operation::Literal => literal(frame.values[v].raw, out.bits),
                 Operation::Add => format!("{} + {}", num(0), num(1)),
@@ -1138,7 +1163,7 @@ impl Emitter {
     fn input_read(&mut self, ins: &Instruction, memory: usize, row: usize) -> Result<(), String> {
         let frame = &self.program.frame;
         let value = frame.events[ins.root].output.unwrap();
-        let f = frame.values[value].format;
+        let f = self.interface_format(value);
         let source = match frame.memories[memory].name.as_str() {
             "pixel.normal-lsb" => {
                 let mode = usize::from(!self.program.full[ins.root]);
@@ -1364,7 +1389,7 @@ assign unit{lane}_result=unit{lane}_tail;
         self.register_bits += (bits + width) as usize;
         Ok(true)
     }
-    fn rom(&mut self, name: &str, width: usize, values: &[u64], depth: usize) {
+    fn rom<T: Copy + Into<u128>>(&mut self, name: &str, width: usize, values: &[T], depth: usize) {
         writeln!(
             self.body,
             "reg [{}:0] {name} [0:{}];\ninitial begin",
@@ -1376,7 +1401,7 @@ assign unit{lane}_result=unit{lane}_tail;
             writeln!(
                 self.body,
                 "{name}[{i}] = {width}'h{:x};",
-                values.get(i).copied().unwrap_or(0)
+                values.get(i).copied().map(Into::into).unwrap_or(0)
             )
             .unwrap();
         }
@@ -1623,7 +1648,16 @@ assign unit{lane}_result=unit{lane}_tail;
                 writeln!(
                     self.body,
                     "reg {} unit{lane}_a{index};",
-                    decl(self.program.frame.values[v].format)
+                    decl(
+                        if self
+                            .power_mask
+                            .is_some_and(|rewrite| rewrite.descriptor == v)
+                        {
+                            self.interface_format(v)
+                        } else {
+                            self.program.frame.values[v].format
+                        }
+                    )
                 )
                 .unwrap();
             }
@@ -1884,6 +1918,22 @@ fn generate_with_optional_plans(
         );
     }
     let program = LoweredProgram::with_plans(profile, options, plans)?;
+    let power_mask = if options.power_context_masks {
+        if !options.unified_lit || !options.rsqrt_q13 {
+            return Err("prepared power masks require the selected unified Q13 core".into());
+        }
+        Some(power_masks::certify(&program)?)
+    } else {
+        None
+    };
+    // Added physical context bits are not part of the audited numerical value.
+    let numeric_signal = |value| {
+        if power_mask.is_some_and(|rewrite| rewrite.descriptor == value) {
+            format!("v{value}_d0[42:0]")
+        } else {
+            format!("v{value}_d0")
+        }
+    };
     let normal_ff = if options.shallow_normal_ff {
         if profile != LightingProfile::Fast {
             return Err("shallow normal FF experiment is limited to Fast".into());
@@ -1922,7 +1972,7 @@ fn generate_with_optional_plans(
                             diffuse_base
                         }
                 ),
-                signal: format!("v{value}_d0"),
+                signal: numeric_signal(value),
                 age: i.ready,
                 bits: program.frame.values[value].format.bits,
             }
@@ -1948,7 +1998,7 @@ fn generate_with_optional_plans(
                 ) {
                     literal(v.raw, v.format.bits)
                 } else {
-                    format!("v{}_d0", o.value)
+                    numeric_signal(o.value)
                 },
                 age: ins.ready,
                 bits: v.format.bits,
@@ -1962,6 +2012,7 @@ fn generate_with_optional_plans(
         BTreeSet::new()
     };
     let mut e = Emitter {
+        power_mask,
         rsqrt_q13: options.rsqrt_q13,
         one_hot_dsp: options.one_hot_dsp,
         dsp_input_csv: String::from("lane,kind,full,phase,port,bits,signed,source\n"),
@@ -2140,7 +2191,17 @@ fn generate_with_optional_plans(
             }
         }
     }
-    e.rom("context_rom", 43, &CONTEXT_RAW, 32);
+    let context_width = if options.power_context_masks { 75 } else { 43 };
+    if options.power_context_masks {
+        let descriptors: Vec<_> = CONTEXT_RAW
+            .iter()
+            .copied()
+            .map(power_masks::encode_descriptor)
+            .collect();
+        e.rom("context_rom", context_width, &descriptors, 32);
+    } else {
+        e.rom("context_rom", context_width, &CONTEXT_RAW, 32);
+    }
     for mode in 0..if options.unified_lit { 1 } else { 2 } {
         if let Some(last) = e.input_lsb_delays[mode] {
             let ii = if mode == 0 { specular_ii } else { diffuse_ii };
@@ -2183,6 +2244,7 @@ fn generate_with_optional_plans(
         (full_id_depth + diff_id_depth + 2) * 32
     };
     e.register_bits += latency + 1 + 16 + 3 * 16 + 3 * 16 + 2 * 9 + 2 + 5 + 43 + 2;
+    e.register_bits += context_width - 43;
     // Declare all module nets before use. In particular, declaration-assignment
     // syntax otherwise creates implicit nets before later retained registers.
     let (declarations, body) = hoist(&e.body);
@@ -2401,7 +2463,7 @@ module gpu_v2_lighting(
 reg configured;reg [1:0] phase;reg [{calendar_top}:0] calendar;
 reg [1:0] ctx_mode; reg [4:0] ctx_code; reg [15:0] ctx_epoch;
 reg signed [15:0] ctx_l0,ctx_l1,ctx_l2,ctx_p0,ctx_p1,ctx_p2;
-reg [8:0] ctx_i0,ctx_i1; reg [42:0] ctx_power;
+reg [8:0] ctx_i0,ctx_i1; reg [{context_top}:0] ctx_power;
 reg [{latency}:0] valid_pipe;
 {id_declarations}
 wire full_mode;
@@ -2453,6 +2515,7 @@ end
 endmodule
 "#,
         body = body,
+        context_top = context_width - 1,
         mode_select = if options.unified_lit {
             "1'b1"
         } else {

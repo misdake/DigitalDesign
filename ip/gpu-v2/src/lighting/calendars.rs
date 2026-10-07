@@ -25,6 +25,8 @@ impl UnifiedCalendar {
 
     pub fn options(self, quantization: LightingQuantization) -> LightingRtlOptions {
         LightingRtlOptions {
+            power_context_masks: self == Self::Free
+                && quantization == LightingQuantization::CompensatedFloor,
             rsqrt_q13: self == Self::Free && quantization == LightingQuantization::CompensatedFloor,
             ..self.options_legacy(quantization)
         }

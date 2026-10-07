@@ -797,7 +797,7 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
         };
         let dir = if selected {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/lighting-rsqrt-production-20261007/selected-cosim")
+                .join("../../target/lighting-context-masks-production-20261007/selected-cosim")
         } else {
             dir
         };

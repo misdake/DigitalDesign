@@ -11,6 +11,24 @@ It independently validates manual issue/lane/II/capacity edits, preserving atomi
 DSP/logic fusion and recomputing zero-latency wiring. Exported schedules are host
 planning artifacts; they do not replace the emulator/RTL program automatically.
 
+## Frozen primary core
+
+As of 2026-10-07, the primary Lighting core is frozen after adopting exact
+context-prepared power masks: Fast, CompensatedFloor, the free per-edge unified lit calendar,
+II2 / 38 advancing edges, S(12,10) normal transport, Q13 RSQRT endpoint storage,
+and the nine-macro DSP binding described below. Preserve the numerical recipe,
+rounding boundaries, issue/ready ages, DSP/ROM topology and retained-value order.
+Further core optimization or adoption of experimental expression rewrites needs
+an explicit decision to reopen this design.
+
+Small peripheral changes may adapt interfaces, context/token transport, queue
+integration, diagnostics or presentation while preserving this core contract.
+CE/backpressure, arbitrary IDs, epoch ownership and context drain must remain
+correct. Such integration still requires its own verification; the existing
+standalone proof does not qualify a changed wrapper or a complete GPU.
+The legacy constructors and explicit comparison configurations keep their
+existing behavior; freezing this core does not migrate GPU backend defaults.
+
 ## Unified lit calendar selected for the workbench
 
 `calendars::UnifiedCalendar::selected(quantization)` selects the reviewed
@@ -68,9 +86,19 @@ bypass, and disable writes, primitive reset and the extra output register.
 Legacy and NearestEven configurations retain replicated 512x36 single-read
 images with base16/delta8 RSQRT and the optional SQRT extension at 384..511.
 The 886-entry power table declares 1024x16 base and 1024x12 delta arrays. The
-32x43 shininess context table packs boundary15, wide/fine shift4 each and two
-10-bit modular bases; only codes 0..16 are valid. Its current implementation
+32-entry shininess context table packs boundary15, wide/fine shift4 each and two
+10-bit modular bases; only codes 0..16 are valid. Counted and emu retain this
+43-bit numerical descriptor. The selected RTL appends two 16-bit low-bit masks,
+making a 75-bit physical descriptor captured only on a context handshake. Each
+mask is `(1 << shift) - 1`; unused descriptor codes still read zero. This table
 uses logic rather than an additional fitted RAM block.
+
+The generator certifies the closed typed power-tail topology, descriptor owner,
+slice positions, shift sign, widths and same-cone operands before replacing
+`x - ((x >> shift) << shift)` with the selected prepared mask AND. The numerical
+DAG, all observable operation values and issue/ready edges remain unchanged.
+Extra physical descriptor bits are excluded from numerical stage probes.
+Legacy constructors and the other explicit calendars do not enable this rewrite.
 
 ### Q13 RSQRT storage contract
 
@@ -104,14 +132,20 @@ Selected core qualification (serial harness, GW2AR-18C, Gowin 1.9.8.11 Education
 
 | Core | Logic | FF | BSRAM | RAM16 | Fmax MHz | Latency / II |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Q13 Floor/free | 2142 | 1953 | 7 | 27 | 76.452 | 38 / 2 |
+| Q13 Floor/free, prepared masks | 2113 | 1957 | 7 | 27 | 72.270 | 38 / 2 |
 
 DSP stays eight MULT9X9, ten MULT18X18 and two paired MACs (nine macros).
 Both setup and hold have zero violations. The seven BSRAM are three normalization
 TDP banks, two POWER banks, one ID FIFO and one intermediate retention bank.
 The standalone 60 MHz board fixture adds nine answer/input ROMs; its offline
-qualification is separate from this core fit. Exact source/report receipts:
-`target/lighting-rsqrt-production-20261007/review.json`.
+and physical qualifications are separate from this core fit. Exact source/report
+receipts:
+`target/lighting-context-masks-production-20261007/review.json`.
+The earlier Q13 core qualification remains historical in
+`target/lighting-rsqrt-production-20261007/review.json`. Prepared masks preserve
+its exact output bits; all 32 descriptor codes and every 16-bit input coordinate
+are exhaustively checked. The new source is separately fitted and replayed in
+behavioral/vendor RTL. It has not received a new physical-board test.
 
 Reproduce the stored-domain, counted-stage, mixed-pixel and physical-bank tests:
 
@@ -639,6 +673,18 @@ verdict rather than newly completed traversals. LEDs 1..6 show heartbeat, done,
 success, report toggle, UART busy and PLL lock. Require a passing `board-health`
 capture first with the same physical setup. Offline preparation does not prove
 physical-board operation.
+
+On 2026-10-07, the audited `4f52bb6` image passed that health gate and was loaded
+into volatile SRAM on the Tang Nano 20K. Live UART reported success after the
+1,408-output scoreboard completed, with no failure, wrong-test or checksum-error
+frames in the successful capture. Repeated frames carry the same latched verdict.
+The bitstream identity matches the preparation receipt; the configured Lighting
+clock is 60 MHz, without an independent frequency measurement. Flash was not
+programmed. This proves standalone Lighting operation, without CPU/whole-GPU
+integration or a Flash cold boot. The physical evidence and image identity are
+recorded in `target/lighting_board_gowin/live-test-20261007.json`.
+That receipt covers the core before context-prepared masks were adopted; it is
+retained as historical physical evidence, not proof of the revised image.
 
 The explicit offline two-edge experiment uses `SchedulePlan`,
 `LightingEmu::with_schedule_plans` and `rtl::generate_with_schedule_plans`.
