@@ -285,10 +285,11 @@ fn live_independent_queues_join_real_results_through_ce_and_wrap() {
             .count() as u64
     );
     assert_eq!(
-        backend.branches().sampling().stats.compilations,
+        backend.branches().sampling().stats.admissions,
         inputs
             .iter()
             .filter(|q| q.header.mask != 0 && q.context.slot & 2 == 0)
             .count() as u64
     );
+    assert_eq!(backend.branches().sampling().stats.compilations, 0);
 }

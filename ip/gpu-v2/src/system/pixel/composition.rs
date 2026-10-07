@@ -105,6 +105,7 @@ impl FinalBranches {
             specular: j.specular,
         });
         let final_stage = self.final_stage.tick(final_stage::Tick {
+            reset: false,
             ce: tick.ce,
             input,
             output_ready: before.final_output_ready && tick.final_result_ready,

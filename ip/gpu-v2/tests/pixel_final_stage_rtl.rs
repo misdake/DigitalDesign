@@ -17,6 +17,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 struct Stim {
+    reset: bool,
     ce: bool,
     ready: bool,
     input: Option<Input>,
@@ -66,12 +67,17 @@ fn stimulus(max_edges: usize) -> Vec<Stim> {
     let mut ptr = 0;
     let mut edges = Vec::new();
     for wall in 0..max_edges {
+        let reset = wall == 35;
+        if reset {
+            assert!(!emu.idle(), "reset stimulus must have live work");
+        }
         // Bursts of full throughput, then a CE pause, then output backpressure.
         let ce = !(wall % 17 == 13 || wall % 17 == 14);
         let ready = wall % 11 != 5 && !(wall % 29 >= 22 && wall % 29 <= 25);
         let input = pixels.get(ptr).copied();
         let step = emu
             .tick(Tick {
+                reset,
                 ce,
                 input,
                 output_ready: ready,
@@ -81,6 +87,7 @@ fn stimulus(max_edges: usize) -> Vec<Stim> {
             ptr += 1;
         }
         edges.push(Stim {
+            reset,
             ce,
             ready,
             input,
@@ -109,7 +116,8 @@ fn testbench(edges: &[Stim]) -> String {
     tb.push_str("clk=0;reset=1;ce=0;in_valid=0;out_ready=0;#1;clk=1;#1;clk=0;#1;reset=0;\n");
     for (edge, stim) in edges.iter().enumerate() {
         tb.push_str(&format!(
-            "ce={};out_ready={};in_valid={};\n",
+            "reset={};ce={};out_ready={};in_valid={};\n",
+            bit(stim.reset),
             bit(stim.ce),
             bit(stim.ready),
             bit(stim.input.is_some())
@@ -182,9 +190,9 @@ fn rtl_declares_the_emulated_pipeline() {
             "missing fixed-calendar RTL: {pattern}"
         );
     }
-    // Four credits, pre-edge readiness and the finite HDL watchdog stay in place.
-    assert!(source.contains("assign in_ready  = ce && (credits < 3'd4);"));
-    assert!(source.contains("assign out_valid = (f_count != 3'd0);"));
+    // Eight credits, pre-edge readiness and the finite HDL watchdog stay in place.
+    assert!(source.contains("assign in_ready  = !reset && ce && (credits < 4'd8);"));
+    assert!(source.contains("assign out_valid = !reset && (f_count != 4'd0);"));
 }
 
 /// Run `command` with a wall-clock watchdog. Output goes to `{name}.out` and

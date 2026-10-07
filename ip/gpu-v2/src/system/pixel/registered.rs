@@ -124,6 +124,7 @@ impl<M: MemoryPort> RegisteredBranches<M> {
         let before = self.dispatch.signals();
         let final_job = before.final_input.filter(|_| t.final_issue_ready);
         let final_stage = self.final_stage.tick(final_stage::Tick {
+            reset: false,
             ce: t.ce,
             input: final_job.map(|j| final_stage::Input {
                 key: j.key.ticket.quad * 4 + j.key.lane,

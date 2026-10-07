@@ -36,7 +36,7 @@ fn connected_runtime_partial_return_fault_is_terminal() {
     assert!(injected);
     let before = r.preparation.work_state();
     let mc_wall = mc.cycles;
-    assert!(!before.pending && !before.valid && before.materialized > 0);
+    assert!(before.materialized > before.loaded && before.loaded < super::super::transport::HEADS);
     let error = r
         .step(&mut mc, None, timed::Control::default())
         .unwrap_err();
@@ -44,9 +44,9 @@ fn connected_runtime_partial_return_fault_is_terminal() {
     assert!(r.faulted());
     assert!(!r.input_ready(1));
     let after = r.preparation.work_state();
-    assert!(
-        after.pending,
-        "R reservation occurred before the protocol error"
+    assert_eq!(
+        after.loaded, before.loaded,
+        "malformed row was not published"
     );
     assert_eq!(
         mc.cycles, mc_wall,
@@ -243,7 +243,7 @@ fn receipt(r: &Runtime, p: control::Hardware, name: &str) {
         .min(p.coordinate_credits as u64);
     assert_eq!(
         actual.ff_bits as i64,
-        (baseline.ff_bits + color_bits + LINK_STATE_BITS as u64 + 108 + 2 * a + q) as i64
+        (baseline.ff_bits + color_bits + LINK_STATE_BITS as u64 + 206 + 3 * a + q) as i64
             + correction
             + coordinate_owner_bits as i64
             + if p.storage == control::Storage::Dedicated {
@@ -267,7 +267,7 @@ fn receipt(r: &Runtime, p: control::Hardware, name: &str) {
                 actual.ram16x1_cells,
                 actual.hard_pipeline_bits
             ),
-            (16453, 56, 211, 1377)
+            (16555, 56, 211, 1377)
         );
     }
     println!(
@@ -289,7 +289,7 @@ fn receipt(r: &Runtime, p: control::Hardware, name: &str) {
     }
 }
 pub(super) fn runtime(slots: &[Slot], p: control::Hardware) -> Runtime {
-    let mut r = Runtime::new(
+    Runtime::new(
         slots,
         p,
         timed::Hardware {
@@ -300,9 +300,7 @@ pub(super) fn runtime(slots: &[Slot], p: control::Hardware) -> Runtime {
         },
         BOUND,
     )
-    .unwrap();
-    r.poison = true;
-    r
+    .unwrap()
 }
 fn observe(r: &Runtime, step: &Step, totals: &mut Counts) {
     let trace = &r.preparation.trace;
@@ -361,9 +359,31 @@ fn finish(r: &Runtime, mc: &physical::Physical, c: &Counts, name: &str) {
             && r.stats.link.captures > 0
             && r.stats.link.results > 0
     );
-    assert!(r.poison_hits > 0);
+    assert_eq!(r.stats.compilations, 0);
+    assert_eq!(r.stats.peak_preparation_programs, 0);
     assert_eq!(mc.cycles, r.stats.link.wall, "one MC wall owner");
-    println!("RUNTIME {name}: wall={} base={} coefficient={} quads={} products={} returns={} planes={} WorkW={} R={} C={} ACK={} packet_capture={} packetW={} beats={} READY={} Color_capture={} public={} wrap_visits={} poison={}",r.wall,r.stats.link.enabled,r.preparation.coefficient_snapshot().enabled,r.stats.link.accepted,c.products,c.returns,c.planes,c.w,c.r,c.c,c.ack,c.captures,c.packets,r.cache_stats().beats,r.cache_stats().refills,r.stats.link.captures,r.stats.link.results,c.wraps,r.poison_hits);
+    println!(
+        "RUNTIME {name}: wall={} base={} coefficient={} quads={} products={} returns={} planes={} WorkW={} R={} C={} ACK={} packet_capture={} packetW={} beats={} READY={} Color_capture={} public={} wrap_visits={} compilations={}",
+        r.wall,
+        r.stats.link.enabled,
+        r.preparation.coefficient_snapshot().enabled,
+        r.stats.link.accepted,
+        c.products,
+        c.returns,
+        c.planes,
+        c.w,
+        c.r,
+        c.c,
+        c.ack,
+        c.captures,
+        c.packets,
+        r.cache_stats().beats,
+        r.cache_stats().refills,
+        r.stats.link.captures,
+        r.stats.link.results,
+        c.wraps,
+        r.stats.compilations
+    );
 }
 fn calendar(name: &str) -> Option<std::fs::File> {
     evidence_dir().map(|dir| {let mut file=std::fs::File::create(dir.join(format!("calendar-{name}.csv"))).unwrap();
@@ -545,15 +565,11 @@ fn connected_runtime_literal_and_supported_configurations() {
                 assert!(step.results.is_empty());
                 pause -= 1;
             } else if paused_states.contains(&0) {
-                let state = if edge.read.is_some() {
-                    Some(0)
-                } else if edge.returned {
-                    Some(1)
-                } else if edge.ack {
-                    Some(2)
-                } else {
-                    None
-                };
+                let state = [edge.read.is_some(), edge.returned, edge.ack]
+                    .into_iter()
+                    .enumerate()
+                    .find(|(i, active)| *active && paused_states[*i] == 0)
+                    .map(|(i, _)| i);
                 if let Some(state) = state {
                     if paused_states[state] == 0 {
                         paused_states[state] += 1;
@@ -791,6 +807,72 @@ fn connected_runtime_full_work_local_hold_and_mc_ce0() {
             assert_eq!(result_peak, 16);
         }
         finish(&r, &mc, &totals, name);
-        println!("PRESSURE {name}: held={held} drained={drained} transfers={transferred} full={full} onefree={one} blocked_ACK={old_ack} CE0_beats={off_beats} READY={off_ready} result_peak={result_peak}");
+        println!(
+            "PRESSURE {name}: held={held} drained={drained} transfers={transferred} full={full} onefree={one} blocked_ACK={old_ack} CE0_beats={off_beats} READY={off_ready} result_peak={result_peak}"
+        );
+    }
+}
+
+#[test]
+fn connected_runtime_work_prefetch_has_two_edge_hot_pixels() {
+    let (slots, bytes) = fixture();
+    for filter in [Filter::Nearest, Filter::Bilinear] {
+        let p = control::Hardware {
+            storage: control::Storage::Packed,
+            max_cycles: BOUND,
+            ..Default::default()
+        };
+        let mut r = runtime(&slots, p);
+        let mut mc = physical::Physical::new(u64::from(BASE), bytes.clone(), true, false);
+        let qs: Vec<_> = (0..48)
+            .map(|i| input(i % 16, 15, [0.125, 0.125], filter))
+            .collect();
+        assert!(
+            r.step(&mut mc, Some(&qs[0]), timed::Control::default())
+                .unwrap()
+                .accepted
+        );
+        for _ in 0..BOUND {
+            r.step(&mut mc, None, timed::Control::default()).unwrap();
+            if r.idle() {
+                break;
+            }
+        }
+        assert!(r.idle(), "cache warm-up watchdog");
+        let mut accepted = 0;
+        let mut result_edges = vec![];
+        let mut got = vec![];
+        let mut warm_refills = None;
+        for _ in 0..BOUND {
+            let step = r
+                .step(&mut mc, qs.get(accepted), timed::Control::default())
+                .unwrap();
+            accepted += usize::from(step.accepted);
+            for result in step.results {
+                result_edges.push(step.cycle);
+                got.push(result);
+                if got.len() == 64 {
+                    warm_refills = Some(r.cache_stats().refills);
+                }
+                if got.len() == 128 {
+                    assert_eq!(warm_refills, Some(r.cache_stats().refills));
+                }
+            }
+            if accepted == qs.len() && r.idle() {
+                break;
+            }
+        }
+        assert!(r.idle());
+        assert_eq!(got, qs.iter().flat_map(golden).collect::<Vec<_>>());
+        assert_eq!(result_edges.len(), 192);
+        assert!(
+            result_edges[63..128].windows(2).all(|w| w[1] - w[0] == 2),
+            "{filter:?} actual hot return spacing: {:?}",
+            result_edges[63..128]
+                .windows(2)
+                .map(|w| w[1] - w[0])
+                .collect::<Vec<_>>()
+        );
+        println!("WORK HOT {filter:?}: 64 actual intervals of 2 edges, zero window refills");
     }
 }

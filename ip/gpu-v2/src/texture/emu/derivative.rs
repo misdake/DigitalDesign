@@ -34,6 +34,13 @@ impl Input {
         q: &crate::texture::ports::QuadInput,
         slot: crate::texture::ports::Slot,
     ) -> Result<Self, String> {
+        Self::from_raw(&crate::texture::ports::RawQuadInput::capture(q)?, slot)
+    }
+    /// Integer-only input from the published Sampling queue and draw context.
+    pub fn from_raw(
+        q: &crate::texture::ports::RawQuadInput,
+        slot: crate::texture::ports::Slot,
+    ) -> Result<Self, String> {
         use crate::texture::ports::Filter;
         slot.validate()?;
         if q.quad_id >= 16
@@ -41,13 +48,15 @@ impl Input {
             || q.slot >= 16
             || slot.max_size_log2 > 10
             || !slot.valid
-            || !q.lod_bias.is_finite()
             || q.material_size_log2 != slot.max_size_log2
+            || q.uv_q16.iter().flatten().any(|v| {
+                !(crate::texture::ports::UV_MIN..=crate::texture::ports::UV_MAX).contains(v)
+            })
         {
             return Err("D input metadata range".into());
         }
-        let (codes, force_coarsest) = crate::texture::ports::capture_uv(q)?;
-        let uv = std::array::from_fn(|i| codes[i / 2][i % 2]);
+        let force_coarsest = q.force_coarsest;
+        let uv = std::array::from_fn(|i| q.uv_q16[i / 2][i % 2]);
         // The real admission crosses the same generated protected memory type
         // as the legacy input. No frame/body is executed or retained here.
         let mut boundary = audited::Model::numerical();
@@ -55,7 +64,10 @@ impl Input {
         let _: crate::texture::format::UvStore = boundary
             .input("accepted_uv", &codes)
             .map_err(|e| format!("D UV boundary {e:?}"))?;
-        let bias = (q.lod_bias.clamp(-32.0, 32.0) * 256.0).round_ties_even() as i16;
+        // The stable draw field is signed16 Q8. Beyond +/-32 levels the
+        // clamped LOD is unchanged; retain the same protected boundary as the
+        // legacy quantizer without converting through floating point.
+        let bias = q.bias_q8.clamp(-8192, 8192);
         let filter = match q.filter {
             Filter::Nearest => 0,
             Filter::Bilinear => 1,

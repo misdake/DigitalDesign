@@ -15,9 +15,9 @@
 //!
 //! - All registers, both FIFO pointers and the credit counter advance on an
 //!   enabled edge (`ce=1`); `ce=0` freezes every one of them.
-//! - Pre-edge combinational handshake: `in_ready = ce && credits < CAPACITY`
+//! - Pre-edge combinational handshake: `in_ready = !reset && ce && credits < CAPACITY`
 //!   and a pixel is accepted iff `in_ready && in_valid`. `out_valid` is the
-//!   non-empty FIFO. A result transfers iff `ce && out_ready && out_valid`.
+//!   non-empty FIFO gated by `!reset`. A result transfers iff `ce && out_ready && out_valid`.
 //! - Acceptance and publication are computed from the old state, so a credit
 //!   returned by a transfer on an edge can never fund an acceptance on that
 //!   same edge; it funds the next edge.
@@ -26,7 +26,7 @@
 //!   first result transfers on the tenth enabled edge after acceptance.
 //!
 //! `out_ready=0` (backpressure) holds the head result stable; acceptance then
-//! stalls once all four credits are reserved. `initiation_interval` here is the
+//! stalls once all eight credits are reserved. `initiation_interval` here is the
 //! arithmetic lane capacity (one pixel can be accepted per enabled edge); the
 //! finite credit-aware completion is `sim::credit::CreditCalendar`, not this
 //! number. No counted or oracle call occurs on `tick`.
@@ -241,6 +241,21 @@ impl FinalEmu {
         }
     }
     pub fn tick(&mut self, tick: Tick) -> Result<Step, String> {
+        if tick.reset && self.wall < self.max_wall {
+            self.wall += 1;
+            self.enabled = 0;
+            self.stages = [None; PIPELINE_STAGES];
+            self.fifo.clear();
+            self.credits = 0;
+            self.faulted = false;
+            return Ok(Step {
+                input_ready: false,
+                accepted: false,
+                consumed: false,
+                output: None,
+                snapshot: self.snapshot(),
+            });
+        }
         if self.faulted {
             return Err("final terminal fault; recreate before reuse".into());
         }
@@ -390,6 +405,7 @@ mod tests {
         let pixel = pixel(7);
         let step = emu
             .tick(Tick {
+                reset: false,
                 ce: true,
                 input: Some(pixel),
                 output_ready: true,
@@ -399,6 +415,7 @@ mod tests {
         let mut cycles = 0;
         while emu.queued() == 0 {
             emu.tick(Tick {
+                reset: false,
                 ce: true,
                 input: None,
                 output_ready: false,
@@ -410,6 +427,7 @@ mod tests {
         assert_eq!(cycles, PIPELINE_LATENCY);
         let step = emu
             .tick(Tick {
+                reset: false,
                 ce: true,
                 input: None,
                 output_ready: true,

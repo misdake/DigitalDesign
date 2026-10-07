@@ -1257,28 +1257,52 @@ is implied.
 ### Runtime quad ingress
 
 `sim::staged::bound::runtime::Runtime` adds caller-owned live input to the
-existing bounded path. `step(memory, Option<&QuadInput>, Control)` reports
-pre-edge `input_ready` for that ID and actual `accepted`; acceptance requires
-valid, ready and CE. Rejected input is neither compiled nor retained, so the
-caller may replace it before acceptance. Ready conservatively excludes same-edge
+existing bounded path. `step_raw(memory, Option<&RawQuadInput>, Control)`
+accepts signed18 Q16 helper UVs, coverage and result ID plus stable draw fields
+(slot, material size, filter, signed16 Q8 bias and force-coarsest). Raw bias is
+saturated in integer arithmetic at +/-8192, matching the legacy boundary.
+`step(QuadInput)` remains a quantization-only adapter. Both report pre-edge
+`input_ready` for that ID and actual `accepted`; acceptance requires valid,
+ready and CE. Rejected input is not captured or validated beyond identity, so
+the caller may replace it before acceptance. Ready conservatively excludes same-edge
 context/result release and color-input acceptance. No complete-quad FIFO or
 constructor input sequence is added. The finite `Session` API stays compatible.
 
 Actual `CoefficientEmu` consumes captured scalar coordinates and weights;
 its local numeric clock can hold while actual membership and packet pipelines
 drain on base CE. Work uses
-mutable 94-bit SSRAM rows and one 92-bit return/head bank with separate R/C/
-consume/ACK edges, detailed below. Packet W and public color consumption remain
+mutable 94-bit SSRAM rows and two 92-bit registered heads. Asynchronous RAM
+data and head-valid capture together on R; consumption is on a later edge,
+as detailed below. Packet W and public color consumption remain
 later, separate transfers.
 
 Derivative, LOD and coordinate now advance actual scalar registers on the shared
 Binding; the coordinate bank consumes the captured UV/LOD scalars and publishes
-its own taps/weights. Eligible ingress still compiles independent provenance
-against immutable slots. Programs expire
-at final coordinate capture in early-release mode, or final packet W in late
-mode. Original packet totals and cache provenance remain counted premises;
-frames, floats and calendars are model objects, not free hardware storage.
-Runtime retains no history; serial four-lane UV ingress remains deferred.
+its own taps/weights. Live admission captures boundary fields only: it neither
+compiles a Program nor computes future lane values, packets or packet totals.
+Constructors extract input-independent structural calendars once. Legacy
+Session/Program studies retain their independent provenance; Runtime never
+constructs or retains those per-quad objects. `Stats.admissions` counts actual
+acceptance; compatibility `compilations` and `peak_preparation_programs` stay
+zero, and `peak_live_quads` reports bounded preparation IDs.
+
+Coordinate issue visits accepted covered lanes in order. Actual LOD/coefficients
+choose active planes; membership derives the emitted tile mask from registered
+weights and coordinates. Packet E1 derives first from the fine plane/tap and
+last from the final-plane flag and absence of a higher emitted tap. Only the
+actual packet W with last clears that lane in preparation's remaining mask.
+All bits clear releases preparation; mask0 releases after its real D/LOD path.
+The cache independently checks admitted slot/lane, lowest remaining covered
+lane, first/open continuity, last closure and an old producer reservation.
+Premature/duplicate completion faults; no expected packet count is consulted.
+Public result ownership still lasts until actual ColorEmu output consumption.
+
+The retained preparation packets-left6/ID ceiling now holds remaining-mask4.
+The cache's old validation-cursor6/ID allocation is replaced by remaining4,
+open1 and live1; the Rust legacy fields are unused on this path. This alternative
+allocation fits the existing receipt without extra FF/RAM/DSP claims. It is
+not evidence of fitted hardware. Runtime adds no serial raster ingress or
+complete-quad FIFO; the upstream foundation owns that transport.
 
 Accepted coverage mapping adds 16x4 = 64 logical bits, cleared at preparation
 release; public lane ownership separately lasts until actual ColorEmu consumption.
@@ -1297,28 +1321,76 @@ Default-sample is upstream constant bypass (`None` offers no sampler work).
 reuse, partial/helper/default/mask0, actual P16/G32/Result16/16-ID limits, CE and
 committed refill drain under sustained backpressure. `texture_runtime_probe`
 writes drained warm-window wall/enabled calendars and actual event traces.
+Its raw-port run preserves all sixteen first-stage event/edge traces byte for
+byte across eight hot/paused cases, with zero live compilations. Additional
+raw-input tests generate 64 quads after successive acceptances, overlap two
+stable slots, exercise every coverage mask and extreme UV/bias/force fields,
+then invoke the unchanged numerical oracle after drain. Direct cache tests
+reject early/duplicate completion, wrong or uncovered lanes/slots, missing or
+repeated first, repeated last, and duplicate admission using only live ownership.
 
 ### Runtime Work transport and allocation qualification
 
 Logical Work capacity W remains 2..32, with physical depth
 `max(16, next_power_of_two(W))` and modulo-W pointers. One R and one W can target
-different rows; same-row R/W, W-to-R, C-to-consume, ACK-to-next-R and same-edge
-returned-credit admission are forbidden. The source row stays reserved through
-pending/valid head expansion. Coefficient admission reserves one or two Work
+different rows. The producer fills the complete row before publishing it;
+neither that write nor a same-edge ACK supplies new read/row credit. The two
+heads form a fixed SPSC ring, not an allocator. R samples asynchronous SSRAM
+into an old empty head and publishes its valid bit at that edge. Only an old
+valid head may be consumed; there is no R-to-consume bypass or extra C edge.
+Another published row may be prefetched while the current head expands.
+The source row stays reserved through its last packet capture/ACK.
+Coefficient admission reserves one or two Work
 destinations from old free capacity. Its existing two ready rows are consumed
 one active plane per base edge, releasing the whole row after its last plane.
 
 A private configuration-matched allocation receipt retains generic control and
 the cache's closed-color shadow. Actual coefficient numeric315 replaces the
 legacy coefficient allocation; phase19 replaces its Packed phase suballocation
-or is explicitly added for Dedicated. Queue13, fault1, plane cursor1, head92,
-pending1, pointers2A and materialized countQ add `108 + 2A + Q` bits, where
-`A=ceil(log2(W))` and `Q=ceil(log2(W+1))`. Existing head cursor2/valid1 and central
-reserved-work control remain charged to their owners. Default Packed declares
-16,939 soft bits, 56 SDP4, 6 BSRAM and 1,377 hard product bits, including actual
-ColorEmu and Runtime link state. These are model allocations, not fitted cells;
-other configurations have their own receipt. Legacy Session inventory and
+or is explicitly added for Dedicated. Work declares payload184, head control10
+(two cursor2/valid1, two head pointers1, occupancy2), three modulo-W row pointers
+and materialized countQ: `194 + 3A + Q` bits, where `A=ceil(log2(W))` and
+`Q=ceil(log2(W+1))`. It replaces the old single-head inventory, adding `98+A`
+bits (102 at W16) and a 94-bit two-way head payload/cursor selector. Queue13,
+fault1, plane cursor1 and central in-flight work accounting remain separate.
+The default Packed receipt declares 16,555 soft bits and 1,377 hard product
+bits; RAM, BSRAM and DSP declarations are unchanged. The legacy SDP4/RAM16x1
+counters are accounting bases, not interchangeable physical RAM16 primitive
+counts. These are model allocations, not fitted cells; other configurations
+have their own receipt. Legacy Session inventory and
 global replay audit remain unchanged and do not certify this locally held path.
+
+`rtl::work` is an independent asynchronous-RAM/two-head RTL leaf, checked against
+Work on every edge at logical depths 2/3/16/17/32. Random CE/consumer stalls,
+logical/physical wrap, all fifteen nonempty emit masks, distinct
+payloads, simultaneous read/write/consume and a separate FIFO semantic golden
+are covered. Reset suppresses all transfers, clears ownership and pointers,
+and preserves payload RAM; occupied reset followed by different replacement
+rows is checked. The isolated saturated single-group test sustains one row per
+enabled edge. This leaf is not yet a complete overlapped sampler RTL top, and
+no Gowin fit or frequency result is claimed.
+
+The unchanged `texture_runtime_probe` supplies the same 48 full-mask quads
+after a same-instance cache warm-up. In the middle window (result indices
+63 through 127), the old/new actual return intervals are:
+
+| Case | Old result gaps | Two-head result gaps | New window edges/pixel |
+| --- | --- | --- | ---: |
+| Nearest | 64 x 3 | 64 x 2 | 2.000 |
+| Bilinear | 64 x 3 | 64 x 2 | 2.000 |
+| Mip | 64 x 6 | 56 x 2, 8 x 10 | 3.000 |
+| Seam | 64 x 6 | 63 x 4, 1 x 108 | 5.625 |
+
+All windows have zero new refills and preserve independently calculated pixels.
+Nearest/bilinear shared-context lifetimes for accepted quads 16..31 fall from
+95 to 63 edges with the same eight contexts. Mip/seam still have long gaps;
+neither their window average nor the filled/drained batch mean is a steady II.
+In particular the old seam packet stream already had mixed 1/3-edge gaps.
+Do not diagnose every seam packet as three edges or solve an unmeasured
+bottleneck by adding contexts. Raw before/after calendars and lifecycle data
+are frozen under `target/sampling-foundation-20261007`, including the source
+snapshot used for that first stage. The subsequent raw-ingress change and its
+separate receipts are under `target/sampling-live-20261007`.
 
 ### Runtime derivative and LOD arithmetic
 
@@ -1377,8 +1449,8 @@ coarse side=max(2,fine/2), and halve iff fine side>2. Phase wraps at its certifi
 period8, so the eighteen declared control bits are8 phase plus10 valid bits.
 The counted `coordinate_values` body
 is now reached only by legacy `prepare`/`Program::compile`, which is trapped by
-the live counted-call guard. Original lane/completion/packet totals and the
-independent cache checker remain counted.
+the live counted-call guard. Completion uses actual last packets and accepted
+lane masks as described under Runtime quad ingress.
 
 Packed phase/valid is already paid. Dedicated uses the same actual Packed bank:
 D data/control1,385 fits its retained2,440 ceiling, and LOD337 fits793. The pending
@@ -1394,16 +1466,15 @@ integer goldens,43,428 arithmetic cuts,56,826 physical writes and three sets of4
 ROM returns, including every mantissa RNE tie/carry, zero/overflow, negative UV,
 all filters, mip/no-mip and bias boundaries. It also poisons all nonliteral
 constructor answers and checks full physical width and rejected-input storage.
-Connected qualification poisons old D/LOD/coordinate outputs, traps live legacy
-helper calls, checks actual cuts and CE freezes, and preserves the accepted
+Connected qualification traps legacy helper and Program calls on every live
+edge (including accepted ingress), checks actual cuts and CE freezes, and preserves the accepted
 128B refill, Work/head and full-image evidence. `tests/texture_coordinate.rs`
 drives the coordinate bank with extreme Q16 UV, every physical mip size1..10,
 nearest/halve combinations and both wrap boundaries, comparing every published
 fraction/tap against an independent integer golden, under CE freeze and from a
 poisoned structural calendar. A connected test checks every live coordinate cut
-against its owning frame and confirms CE freeze. This closes D/LOD and
-coordinate arithmetic; counted completion/provenance and packet totals remain
-explicit limits.
+against its independent checker frame and confirms CE freeze. The checker
+never supplies values, completion or packet counts to Runtime.
 
 ### Runtime membership and packet arithmetic
 
@@ -1436,8 +1507,9 @@ private coefficient hybrid below retain their original numerical boundaries.
 Private numerical tests independently assemble tuple-based membership and packet
 goldens, exercise every registered cut, sparse taps, bubbles and terminal faults,
 and inspect actual banks and Pool writes under CE/input/result stalls. A test-only
-guard rejects dynamic counted helper calls, and poisoning completed legacy stage
-values cannot affect Runtime results. Configuration receipts are allocation
+guard rejects dynamic counted helper/Program calls across the complete live
+step. Constructor-poison tests remain on the independent arithmetic leaves;
+there are no per-input legacy stage values to poison in Runtime. Configuration receipts are allocation
 checks; only the explicitly exercised configurations have cycle evidence.
 
 Private library qualification tests under
@@ -1445,12 +1517,12 @@ Private library qualification tests under
 `texture::sim::staged::bound::transport::tests` cover W2/3/16/17/32, logical wraps,
 early/late release, Dedicated/Packed, sparse tap versus public packet ordinal,
 R/C/ACK pauses, partial-state terminal failure, literal packet/RGB goldens and
-poisoned legacy numerical outputs. Actual 128B MC returns drain during caller
+absence of live counted calls. Actual 128B MC returns drain during caller
 CE0; a local full coefficient queue holds its numerical state while older work
 progresses. Run these library tests and `texture_runtime`, `texture_sampling_step`
-and downstream pixel/shared-MC regressions in both profiles. One-head bubbles
-remain: unstalled one-group planes start every three enabled edges, four-group
-planes every six. This is not complete preparation emulation, RTL or GPU fitting.
+and downstream pixel/shared-MC regressions in both profiles. Two-head Work
+transport and its measured intervals are documented above. This is not a full
+overlapping sampler RTL top or GPU fitting result.
 
 ### Independent coefficient cycle emulator and private composition
 

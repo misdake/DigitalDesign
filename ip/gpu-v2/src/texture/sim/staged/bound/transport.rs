@@ -1,6 +1,13 @@
-//! Mutable Work94 SSRAM with one paid92-bit registered return/head bank.
-//! Native SSRAM fanout is sampled at R; a later C publishes valid, and only
-//! an old valid head can be consumed. No hard BSRAM output register is assumed.
+//! SPSC Work94 SSRAM with two fixed, ordered 92-bit registered heads.
+//! SSRAM has asynchronous read: R captures data and valid together; only an
+//! old valid head can be consumed. There is no extra return/publication edge.
+//! A full row is written before publication; neither a same-edge write nor
+//! release funds R. Source rows remain owned until their last packet capture.
+
+pub(super) const HEADS: usize = 2;
+pub(super) const HEAD_DATA_BITS: u64 = HEADS as u64 * 92;
+// Two cursor2/valid1, read/fill head1 and occupancy2.
+pub(super) const HEAD_CONTROL_BITS: u64 = 2 * 3 + 2 + 2;
 
 const FIELDS: [(&str, u8); 22] = [
     ("w0", 9),
@@ -112,18 +119,25 @@ impl Member {
 pub(super) struct Snapshot {
     pub read: usize,
     pub write: usize,
-    /// Includes source rows whose pending/valid head is still expanding.
+    /// Includes source rows whose prefetched/active head is still expanding.
     pub materialized: usize,
     pub valid: bool,
-    pub pending: bool,
     pub cursor: u8,
     pub payload: Member,
+    pub fetch: usize,
+    pub loaded: usize,
+    pub heads: [Member; HEADS],
+    pub cursors: [u8; HEADS],
+    pub head_valid: u8,
+    pub consume_head: usize,
+    pub fill_head: usize,
 }
 /// Per-edge diagnostic wires, never an additional retained payload/owner bank.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Edge {
     pub read: Option<usize>,
     pub write: Option<usize>,
+    /// Asynchronous SSRAM capture/publication on R, not an extra return age.
     pub returned: bool,
     pub capture: Option<(Member, u8)>,
     pub ack: bool,
@@ -134,30 +148,50 @@ pub(super) struct Work {
     read: usize,
     write: usize,
     materialized: usize,
-    head: Member,
-    cursor: u8,
-    valid: bool,
-    pending: bool,
+    fetch: usize,
+    loaded: usize,
+    heads: [Member; HEADS],
+    cursors: [u8; HEADS],
+    head_valid: u8,
+    consume_head: usize,
+    fill_head: usize,
 }
 
+#[cfg(test)]
+#[path = "transport_rtl_tests.rs"]
+mod rtl_tests;
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
 impl Work {
+    /// Transport-only reset. The surrounding sampler must drain external work
+    /// before recreation; this local queue owns no memory-controller request.
+    /// Payload rows/heads are deliberately not cleared.
+    #[cfg(test)]
+    fn reset(&mut self) {
+        self.read = 0;
+        self.write = 0;
+        self.fetch = 0;
+        self.materialized = 0;
+        self.loaded = 0;
+        self.head_valid = 0;
+        self.consume_head = 0;
+        self.fill_head = 0;
+    }
     #[cfg(test)]
     pub(super) fn corrupt_head_tap(&mut self) -> bool {
-        if !self.valid {
+        if self.front().is_none() {
             return false;
         }
-        self.cursor = 4;
+        self.cursors[self.consume_head] = 4;
         true
     }
     #[cfg(test)]
     pub(super) fn corrupt_next_read(&mut self) -> bool {
-        if self.materialized == 0 || self.valid || self.pending {
+        if self.materialized <= self.loaded || self.loaded == HEADS {
             return false;
         }
-        self.rows[self.read] |= 1 << 92;
+        self.rows[self.fetch] |= 1 << 92;
         true
     }
     pub(super) fn new(capacity: usize) -> Result<Self, String> {
@@ -170,10 +204,13 @@ impl Work {
             read: 0,
             write: 0,
             materialized: 0,
-            head: Member::default(),
-            cursor: 0,
-            valid: false,
-            pending: false,
+            fetch: 0,
+            loaded: 0,
+            heads: [Member::default(); HEADS],
+            cursors: [0; HEADS],
+            head_valid: 0,
+            consume_head: 0,
+            fill_head: 0,
         })
     }
     pub(super) fn snapshot(&self) -> Snapshot {
@@ -181,14 +218,23 @@ impl Work {
             read: self.read,
             write: self.write,
             materialized: self.materialized,
-            valid: self.valid,
-            pending: self.pending,
-            cursor: self.cursor,
-            payload: self.head,
+            valid: self.head_valid >> self.consume_head & 1 != 0,
+            cursor: self.cursors[self.consume_head],
+            payload: self.heads[self.consume_head],
+            fetch: self.fetch,
+            loaded: self.loaded,
+            heads: self.heads,
+            cursors: self.cursors,
+            head_valid: self.head_valid,
+            consume_head: self.consume_head,
+            fill_head: self.fill_head,
         }
     }
     pub(super) fn front(&self) -> Option<(Member, u8)> {
-        self.valid.then_some((self.head, self.cursor))
+        (self.head_valid >> self.consume_head & 1 != 0).then_some((
+            self.heads[self.consume_head],
+            self.cursors[self.consume_head],
+        ))
     }
     pub(super) fn tick(
         &mut self,
@@ -207,28 +253,33 @@ impl Work {
         if write.is_some() && old.materialized == self.capacity {
             return Err("Work write lacks old row credit".into());
         }
-        let read = !old.valid && !old.pending && old.materialized != 0;
-        if read && write.is_some() && self.read == self.write {
+        let read = old.loaded < HEADS && old.materialized > old.loaded;
+        if read && write.is_some() && old.fetch == old.write {
             return Err("Work same-row R/W".into());
         }
-        if old.pending {
-            self.pending = false;
-            self.valid = true;
-            edge.returned = true;
-        }
         if read {
-            // One physical R; reserve the only return/head location first.
-            self.pending = true;
-            let row = self.rows[self.read];
+            // Reserve an OLD empty destination. Neither a consumption nor a
+            // producer publication on this edge can fund this read.
+            if old.head_valid >> old.fill_head & 1 != 0 {
+                return Err("Work prefetch overwrote an owned head".into());
+            }
+            let row = self.rows[old.fetch];
             if row >> 92 != 0 {
                 return Err("Work immutable initial cursor".into());
             }
-            self.head = Member(row);
-            self.cursor = self.head.emit().trailing_zeros() as u8;
-            if self.cursor >= 4 {
+            let member = Member(row);
+            let cursor = member.emit().trailing_zeros() as u8;
+            if cursor >= 4 {
                 return Err("Work empty RAM group".into());
             }
-            edge.read = Some(self.read);
+            self.heads[old.fill_head] = member;
+            self.cursors[old.fill_head] = cursor;
+            self.head_valid |= 1 << old.fill_head;
+            self.fill_head = (old.fill_head + 1) % HEADS;
+            self.fetch = (old.fetch + 1) % self.capacity;
+            self.loaded += 1;
+            edge.read = Some(old.fetch);
+            edge.returned = true;
         }
         if consume {
             if old.payload.emit() >> old.cursor & 1 == 0 {
@@ -238,11 +289,13 @@ impl Work {
             edge.capture = Some((old.payload, old.cursor));
             if let Some(next) = (old.cursor + 1..4).find(|&tap| old.payload.emit() >> tap & 1 != 0)
             {
-                self.cursor = next;
+                self.cursors[old.consume_head] = next;
             } else {
-                self.valid = false;
+                self.head_valid &= !(1 << old.consume_head);
+                self.consume_head = (old.consume_head + 1) % HEADS;
                 self.read = (self.read + 1) % self.capacity;
                 self.materialized -= 1;
+                self.loaded -= 1;
                 edge.ack = true;
             }
         }
@@ -255,7 +308,11 @@ impl Work {
             self.write = (self.write + 1) % self.capacity;
             self.materialized += 1;
         }
-        if self.materialized > self.capacity || self.valid && self.pending {
+        if self.materialized > self.capacity
+            || self.loaded > HEADS
+            || self.loaded > self.materialized
+            || self.loaded != self.head_valid.count_ones() as usize
+        {
             return Err("Work ownership bound".into());
         }
         Ok(edge)

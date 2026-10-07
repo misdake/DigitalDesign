@@ -1,4 +1,4 @@
-//! Bounded cache/color cycle execution with offline preparation reservations.
+//! Bounded cache/color execution with legacy replay or live packet admission.
 //! The preparation calendar is a conservative primitive baseline, not II=2 RTL.
 use super::super::ports::*;
 use super::{counted, oracle::State};
@@ -6,6 +6,8 @@ use audited::physical::{DspInventory, DspMode};
 use std::{collections::VecDeque, sync::Arc};
 mod audit;
 mod filter;
+#[cfg(test)]
+mod live_tests;
 pub mod packet;
 mod schedule;
 pub use schedule::ArithmeticPlan;
@@ -160,6 +162,8 @@ impl Program {
         slots: &[Slot],
         hardware: &Hardware,
     ) -> Result<Arc<Self>, Error> {
+        #[cfg(test)]
+        super::staged::bound::counted_call_guard::assert_not_live();
         hardware.validate()?;
         let preparation = counted::prepare(input, slots)?;
         let arithmetic = schedule::plan(&preparation, hardware)?;
@@ -322,6 +326,14 @@ struct External {
     packet: Option<i128>,
     prepared: Vec<u8>,
     issues: Vec<packet::Owner>,
+    live: Option<LiveAdmission>,
+}
+/// Actual accepted metadata for the register Runtime. No frame or packet list.
+#[derive(Clone, Copy)]
+pub(crate) struct LiveAdmission {
+    pub quad: u8,
+    pub mask: u8,
+    pub slot: u8,
 }
 #[derive(Clone, Copy)]
 struct Line {
@@ -385,9 +397,12 @@ pub struct Machine {
     external_programs: Vec<Option<Arc<Program>>>,
     external_cursor: [usize; 16],
     admitted_slot: [u8; 16],
+    external_live: u16,
+    external_remaining: [u8; 16],
+    external_open: u16,
 }
 impl Machine {
-    /// Borrow the single immutable texture context for runtime host compilation.
+    /// Borrow the single immutable texture context for admission validation.
     /// This adds no descriptor copy or mutable context-switch interface.
     pub(crate) fn external_context(&self) -> (&[Slot], &Hardware) {
         (&self.slots, &self.hardware)
@@ -432,6 +447,9 @@ impl Machine {
             external_programs: (0..16).map(|_| None).collect(),
             external_cursor: [0; 16],
             admitted_slot: [0; 16],
+            external_live: 0,
+            external_remaining: [0; 16],
+            external_open: 0,
         })
     }
     pub fn idle(&self) -> bool {
@@ -888,6 +906,7 @@ impl Machine {
             packet: external_packet,
             prepared,
             issues: packet_issues,
+            live: live_admission,
         } = external;
         if packet_issues.len() > 1 {
             return Err("packet pool has one producer issue per edge".into());
@@ -902,7 +921,10 @@ impl Machine {
         let responses = memory.step()?;
         let written = self.responses(&responses, &mut events)?;
         let mut accepted = false;
-        let offer_index = offered.as_ref().map(|(i, _)| *i);
+        let offer_index = offered
+            .as_ref()
+            .map(|(i, _)| *i)
+            .or(live_admission.map(|a| usize::from(a.quad)));
         if control.ce {
             let t = self.stats.enabled_cycles;
             let previous_groups = self.group_occupancy();
@@ -952,6 +974,34 @@ impl Machine {
                     self.stats.input_stalls += 1;
                 }
             }
+            if let Some(a) = live_admission {
+                if a.quad >= 16
+                    || a.mask >= 16
+                    || self.hardware.preparation != PreparationMode::BoundStages
+                {
+                    return Err("live sampler admission width/mode".into());
+                }
+                self.slots
+                    .get(usize::from(a.slot))
+                    .ok_or("live sampler slot")?
+                    .validate()?;
+                let id = usize::from(a.quad);
+                if accepted || self.live >> id & 1 != 0 || self.external_live >> id & 1 != 0 {
+                    return Err("live sampler duplicate admission".into());
+                }
+                self.live |= 1 << id;
+                self.external_live |= 1 << id;
+                self.external_remaining[id] = a.mask;
+                self.external_open &= !(1 << id);
+                self.remaining[id] = a.mask;
+                self.admitted_slot[id] = a.slot;
+                self.produced[id] = false;
+                events.push(Event::Accepted {
+                    quad: a.quad,
+                    mask: a.mask,
+                });
+                accepted = true;
+            }
             if self.hardware.preparation == PreparationMode::BoundStages {
                 if let Some(pool) = self.packet_pool.as_mut() {
                     for &owner in &packet_issues {
@@ -969,19 +1019,35 @@ impl Machine {
                         return Err("external packet port overflow".into());
                     }
                     let id = ((payload >> 66) & 15) as usize;
-                    let program = self.external_programs[id]
-                        .as_ref()
-                        .ok_or("external packet without admission")?;
-                    let cursor = self.external_cursor[id];
-                    if cursor >= program.preparation.groups.len()
-                        || payload != program.preparation.payload(cursor)
-                    {
-                        return Err("external packet golden/order".into());
-                    }
-                    // Golden only checks numerical/order provenance. Runtime
-                    // key, coordinates, coefficients and flags come from bits.
                     let group = self.decode_packet(payload)?.group;
-                    self.external_cursor[id] += 1;
+                    if self.external_live >> id & 1 != 0 {
+                        let open = self.external_open >> id & 1 != 0;
+                        let mask = self.external_remaining[id];
+                        if mask == 0
+                            || group.lane != mask.trailing_zeros() as u8
+                            || group.first == open
+                        {
+                            return Err("live packet first/last/lane order".into());
+                        }
+                        if group.last {
+                            self.external_remaining[id] &= !(1 << group.lane);
+                            self.external_open &= !(1 << id);
+                        } else {
+                            self.external_open |= 1 << id;
+                        }
+                    } else {
+                        // Legacy Session study retains its independent provenance.
+                        let program = self.external_programs[id]
+                            .as_ref()
+                            .ok_or("external packet without admission")?;
+                        let cursor = self.external_cursor[id];
+                        if cursor >= program.preparation.groups.len()
+                            || payload != program.preparation.payload(cursor)
+                        {
+                            return Err("external packet golden/order".into());
+                        }
+                        self.external_cursor[id] += 1;
+                    }
                     if let Some(pool) = self.packet_pool.as_mut() {
                         pool_write = Some(pool.write(t, payload, &mut packet_events)?);
                     } else {
@@ -1000,11 +1066,18 @@ impl Machine {
                     if i >= 16 {
                         return Err("external completion ID".into());
                     }
-                    let p = self.external_programs[i]
-                        .as_ref()
-                        .ok_or("external completion without admission")?;
-                    if self.external_cursor[i] != p.preparation.groups.len() {
-                        return Err("incomplete external preparation".into());
+                    if self.external_live >> i & 1 != 0 {
+                        if self.external_remaining[i] != 0 || self.external_open >> i & 1 != 0 {
+                            return Err("live completion precedes actual last packets".into());
+                        }
+                        self.external_live &= !(1 << i);
+                    } else {
+                        let p = self.external_programs[i]
+                            .as_ref()
+                            .ok_or("external completion without admission")?;
+                        if self.external_cursor[i] != p.preparation.groups.len() {
+                            return Err("incomplete external preparation".into());
+                        }
                     }
                     self.external_programs[i] = None;
                     self.produced[i] = true;
@@ -1013,7 +1086,11 @@ impl Machine {
             } else if external_packet.is_some() || !prepared.is_empty() {
                 return Err("unexpected external preparation port".into());
             }
-        } else if external_packet.is_some() || !prepared.is_empty() || !packet_issues.is_empty() {
+        } else if external_packet.is_some()
+            || !prepared.is_empty()
+            || !packet_issues.is_empty()
+            || live_admission.is_some()
+        {
             return Err("external preparation advanced under CE=0".into());
         }
         // Accepted response beats and directory commits continue under consumer CE=0.
@@ -1102,6 +1179,7 @@ impl Machine {
                 packet,
                 prepared,
                 issues: vec![],
+                live: None,
             },
         );
         if result.is_err() {
@@ -1129,6 +1207,40 @@ impl Machine {
                 packet,
                 prepared,
                 issues,
+                live: None,
+            },
+        );
+        if result.is_err() {
+            self.faulted = true;
+        }
+        result
+    }
+    /// Register Runtime ingress and actual packet completion. Legacy replay
+    /// programs are absent; first/last and accepted coverage own the lifecycle.
+    pub(crate) fn step_live<M: RefillPort + ?Sized>(
+        &mut self,
+        memory: &mut M,
+        offered: Option<LiveAdmission>,
+        control: Control,
+        packet: Option<i128>,
+        prepared: Vec<u8>,
+        issues: Vec<packet::Owner>,
+    ) -> Result<Step, Error> {
+        if self.faulted
+            || self.packet_pool.is_none()
+            || self.hardware.preparation != PreparationMode::BoundStages
+        {
+            return Err("live sampler mode/fault".into());
+        }
+        let result = self.step_inner(
+            memory,
+            None,
+            control,
+            External {
+                packet,
+                prepared,
+                issues,
+                live: offered,
             },
         );
         if result.is_err() {

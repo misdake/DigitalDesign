@@ -1,4 +1,4 @@
-# Controlled pixel composition (J1)
+# Pixel composition and published quad foundation
 
 `system::pixel` connects bounded result storage and exact final color to the
 existing framebuffer model. `Model` (J1) still takes externally controlled branch
@@ -6,6 +6,188 @@ results. The `live` submodule connects `LightingEmu`; `PixelBranches` connects
 that path alongside actual persistent Sampling Runtime/cache/ColorEmu results. These bounded
 composers use controlled quad inputs, without command, geometry, rasterizer,
 RTL or board integration.
+
+## Published row foundation
+
+`foundation::Pipeline` is a separate replacement controller; `foundation_live::Live`
+attaches the frozen Fast/free/Floor Q13 Lighting core and actual persistent Sampling
+Runtime, and `foundation_backend::Backend` attaches the existing serial
+FramebufferEmu/cache. The older dispatcher below remains available as a baseline.
+The new controller is Rust edge-level integration, with independently checked
+SPSC and Final RTL leaves. It is not full-controller RTL, fitted storage, integrated
+system PnR, a rasterizer, or physical-board evidence.
+
+The source supplies eight held attribute beats per quad. Each beat writes one
+basic RGB24/D16 row and, when lit, one Lighting36 row; odd beats also write one
+Sampling UV36 row. Only the first beat carries XY/mask, draw-bank selection and
+`force_coarsest`. A private producer holds metadata for the incomplete tail, never
+a duplicate complete quad. The final beat publishes all required input queues
+and advances the global published insert pointer. Occupancy includes the private
+tail, so it cannot borrow credit released on the same edge. Mask-zero quads
+allocate no status or payload; their draw boundary still survives.
+
+The 32 global slots hold compact origin/mask and ownership, not normal or UV.
+Lighting has two quad input entries, with two36-bit rows per pixel; Sampling has
+eight entries, with one36-bit UV row per lane. Independent consumers assemble
+only the necessary head: one held normal row for Lighting, three UV rows plus
+the fourth queue head for Sampling. Each queue frees its entry on its own last
+row acceptance. Results remain in separate single-writer arrays.
+
+Each branch writes its own whole-quad done RAM once, with the last covered
+result. The allocator has a separate one-bit expected epoch for each branch and
+slot, toggling only when that branch actually runs. Bypass neither toggles the
+expectation nor accesses stale result/done data. A single global lap epoch is
+insufficient: active-to-bypass-to-active could match a stale done value. Each
+branch initializes its32 done cells through its own writer before admissions.
+Join suppresses a done read when the same slot completes on that edge, and
+observes the new value on the next edge. Diagnostic serials, generations and
+per-lane sent/seen masks detect invalid ownership in Rust; they are not proposed
+wide tags or hardware per-lane readiness storage. Branch results must stay ordered
+within each quad; the two branches may complete independently.
+
+Join captures color operands on C and depth on D, admitting multiple keyed jobs
+to the actual nine-stage Final leaf at two edges per covered pixel. Eight total
+result credits cover the real acceptance-to-consumption lifetime. A bounded
+eight-entry key/depth owner FIFO follows actual Final acceptance. Output writes
+RGBA32 then D16, one row per edge, with zeros for uncovered lanes. Row7 publishes
+the output entry; actual ROP row7 acceptance releases its global slot and draw
+reference. No scalar wait-for-Final-response loop remains on this path.
+
+Lighting's existing32-bit ID carries global slot5/lane2. Sampling retains its
+16 public quad IDs and key6: the fixed ID is `global_slot & 15`. An adapter owns
+16 entries of high destination bit, valid and remaining coverage mask. It assigns
+only on actual Runtime admission and clears only after the last actual result
+write. An old mapping blocks an aliased new offer using pre-edge state, even
+when that edge returns its last result. Bypass occupies no mapping. Final also
+keeps its existing key6; the strictly ordered owner FIFO retains full global
+slot5/lane2 and depth. Return compares the queue head's low6 key, with no random
+lookup by the truncated key. Aliased slots are at least16 nonempty quads apart,
+while at most8 Final tasks are live. Host full-ticket witnesses remain separate.
+
+Two immutable draw banks publish atomically; a third draw waits for a free bank.
+The boundary queue retains empty and bypass draws and releases a bank after its
+last queued reader. A reused Lighting bank forces a context reload. Lighting
+uniform changes still drain that frozen leaf locally; core-internal overlapping
+contexts are not claimed. The framebuffer adapter snapshots ROP state for its
+current quad and waits for that existing leaf to idle before changing context.
+Draw retirement does not imply MC completion. `Backend::request_finish()`
+explicitly ends the frame; only then, after the pixel path drains, does the
+adapter request cache flush and wait for real write ACKs. Temporary idleness or
+an empty draw never implicitly ends the frame.
+
+The banked mutable fields are lighting/material/projection, Sampling
+slot/filter/bias/material size, alpha and ROP modes. `Live::new` still fixes the
+texture slot address/size/mip table, and `Backend::new` fixes the render surface.
+Two material draws therefore qualify only those banked changes. Rebinding the
+same texture slot or changing render target while old work is in flight requires
+an explicit drain/fence and a new attachment; neither is qualified as an
+overlapped change. No cache version/tag scheme is introduced here.
+
+### Memory organization and read positions
+
+These are logical fields and implemented edge-model organizations, not fitted
+device counts. Basic and result arrays currently have asynchronous reads into
+explicit capture positions; replacing them with synchronous BSRAM requires a
+corresponding calendar change. One source/destination read/write is available
+per payload array per edge, with same-address collisions excluded by ownership.
+
+| Store | Useful bits | Model rows | Read/write ownership and physical boundary |
+| --- | --- | --- | --- |
+| Basic | 32x4x(RGB24+D16)=5120 | 256x32 | Producer writes; join reads C/D. Asynchronous storage candidate, not an implemented synchronous SDP36. |
+| Lighting input | 2x4x68=544 | 16x36 | Source writes; Lighting head reads. Selected asynchronous SSRAM organization; behavioral distributed-RAM RTL checked, without fit. |
+| Sampling input | 8x4x36=1152 | 32x36 | Source writes; Sampling head reads. One explicit SDPX9B36 primitive with hard synchronous DO; vendor-primitive edge simulation checked, without fit. |
+| Lighting result | 32x4x18=2304 | 128x32 | Lighting writes; join reads. Effective g9/h9, upper model bits unused. Mapping remains to be fitted. |
+| Sampling result | 32x4x24=3072 | 128x32 | Sampling writes; join reads. Effective RGB24; physical mapping remains to be fitted. |
+| Output | 32x4x(RGBA32+D16)=6144 | 256x32 | Final writer and ROP head reader. Current capture/distributed organization; conservative32-quad depth follows global slot lifetime through ROP row7. |
+| Done | 2x32x1=64 | Two32x1 arrays | One branch writer and one join probe per array; no allocator clear or read. Expected epochs add64 allocator FF bits. |
+
+Payload is not the complete resource cost. Two completed queue heads are paid
+per queue: Lighting and Sampling each retain2x36 data bits, Output2x32, plus row
+tags, validity and pointers. Sampling additionally owns the primitive's hard DO
+return and its pending row/valid tag; this DO is not a separate soft36-bit FF
+array. Lighting holds one36-bit normal; Sampling holds3x36 assembled UV bits.
+Join retains96 bits of Final operands/key and the owner FIFO retains8x(7+16)
+effective bits, plus phase/pointers and the output depth hold. Final's arithmetic
+pipeline and8x30-bit result FIFO are additional leaf state.
+The Sampling destination adapter adds a conservative16x(high1+valid1+mask4)=96
+logical FF bits; public key6 and its internal8-context configuration do not grow.
+
+Status has32x23 effective bits (aligned origin15, mask4, bank1, two bypass
+flags and `force_coarsest`), plus the separately owned expected epochs. Context
+banks carry Lighting160, optional Sampling26, alpha8 and ROP5 effective bits
+each, with valid/closed/reference and boundary state. Current Rust status/context
+lookup views serve allocator, both branch descriptors, join and ROP; these are
+register-table/mux views, not an arbitrary-port SSRAM claim. Descriptor queues
+and their bounded slot/bank ownership also cost storage; their packed physical
+implementation is still open. Host witness integers do not establish RAM or FF
+allocation. A smaller output queue could reduce storage but would change
+backpressure/lifetime; no reduction is inferred from useful bits alone.
+Each enlarged payload still fits the capacity of one future SDP36 block, but
+its asynchronous read/capture implementation has not been retimed or fitted to
+that primitive. Capacity arithmetic is not a synchronous-storage qualification.
+
+### Qualification
+
+`pixel_foundation` independently checks96 full quads: every publication gap is8,
+every actual Final acceptance gap2, and all768 actual ROP-input row transfers
+have gap1 at a controlled one-row-per-edge sink. This is a sustained finite
+stream interval, not a fill/drain average. Faster externally released quads
+exercise backlog/backpressure rather than pretending the eight-row source bus
+accepts a quad in four edges. Sparse masks, CE pauses, independent branch stalls,
+all bypass combinations, repeated slot reuse, unpublished tails, empty draws,
+terminal faults and wall watchdogs have separate bounded checks.
+Active/bypass epoch patterns use32-quad blocks and six complete slot laps, so
+the same slot actually encounters active-to-bypass-to-active reuse.
+
+`pixel_foundation_live` checks the actual selected Lighting and Sampling engines
+for nearest, bilinear and trilinear, changing draw contexts, tile/mip crossings,
+misses, CE and result stalls. Its measured gap distributions retain branch/cache
+and context-drain bubbles; the controlled-branch II2 result is not transferred
+to arbitrary live workloads. A separate actual FramebufferEmu test uses one
+shared arbiter/gearbox/Combination clock owner, competing background requests,
+real row/context backpressure and flush ACKs. The full color/depth image and
+untouched guards match an independent golden. ROP remains the existing serial
+implementation; the older bounded II8 control calendar is not its measured rate.
+
+The original16-slot controller's fixed-footprint Nearest trace revealed160-edge
+steady source-to-ROP lifetime against a128-edge budget. Its exact life/stall
+timeline and failing whole-warm-interval II2 counterexample are retained in the
+worktree receipt. At least20 slots are required for that measured lifetime;
+32 is the tested power-of-two candidate, not a proven minimum. Releasing at
+last join D alone would still leave141 edges and cannot justify global16.
+
+The normal `actual_one_group_warm_nearest_bilinear_stream_has_ii2_to_rop` test
+checks actual branch calculations and all512 rows per filter. With full coverage,
+one group per pixel, one initial tile refill, eight-edge quad releases and a
+one-row-per-edge ROP input sink, **every** Final gap across quads16..63 is2 and
+every ROP row gap is1. The192 Final transfers and384 row transfers include all
+intervals in this declared window. Public-ID alias waits and32-slot wrapping
+are exercised; no interval is silently dropped or averaged into an II.
+
+The original complex Bilinear footprint remains a separate normal numerical
+test: its upper taps cross an8x8 tile boundary, creating six groups per quad
+(384 packets/256 pixels). Its warm interval retains ten-edge inter-quad gaps
+in this implementation. An explicitly ignored strict counterexample preserves
+the failed universal II2 assertion. The fractional two-plane Trilinear case
+also retains its measured distribution. These traces check all512 rows per
+case and report every quads16..63 interval; neither is relabeled as a one-group
+case or an immutable algorithmic throughput bound. Their source, admission,
+shared-context release, last result, join, output and occupancy events are kept.
+
+The foundation adapter supplies `RawQuadInput` to `Runtime::step_raw` directly:
+UV Q16 and draw bias Q8 do not make a fixed-to-float-to-fixed round trip. Live
+admissions count actual accepted quads, while per-input Program compilation
+remains zero. The compatibility float entry of older composers is capture-only;
+Sampling's internal qualification remains specified in [texture.md](texture.md).
+
+`pixel_spsc` checks bounded semantic streams against independent whole-entry
+publication goldens, wrap, poisoned stale payload, incomplete tails, reset,
+CE, stalls and full one-row-per-edge runs. Ignored Icarus cases compare every
+edge for capture, registered and explicit Sampling SDPX9B36 configurations.
+`pixel_final_stage` checks finite credits,512 paced pixels at II2 and reset with
+live old results; `pixel_final_stage_rtl` includes a nonempty reset edge. Reset
+gates ready/valid, invalidates ownership and never clears payload RAM. No
+on-reset transfer or same-edge returned credit is counted.
 
 ## Explicit quad dispatcher and common contexts
 
@@ -83,7 +265,7 @@ test claims shared-MC performance, full final/ROP RTL or board validation.
 `FinalBranches` reserves one keyed final operation, advances the independent
 leaf once per wall edge, and returns only an actually consumed result to the
 dispatcher. Depth remains in the dispatcher. The leaf's fixed-stage arithmetic
-and its four result credits have separate timing certificates; the present
+and its eight result credits have separate timing certificates; the present
 single-job composition does not claim the arithmetic-only II=1 lower bound.
 `pixel_final_stage` exhaustively checks the division/rounding identities;
 `pixel_final_stage_rtl` compares a bounded registered RTL stream with the emu.

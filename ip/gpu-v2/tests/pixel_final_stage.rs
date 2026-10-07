@@ -191,7 +191,7 @@ fn timed_plan_binds_the_fixed_stage_calendar_and_credit_completion() {
     let n = inputs.len() as u64;
     assert_eq!(
         plan.completion.enabled_edges,
-        11 * n.div_ceil(4) + (n - 1) % 4
+        11 * n.div_ceil(RESULT_CAPACITY as u64) + (n - 1) % RESULT_CAPACITY as u64
     );
     assert!(plan.completion.enabled_edges > plan.arithmetic_lower_bound);
     // Literal additions and the +1 step are classified apart from full adds.
@@ -249,6 +249,7 @@ fn credit_calendar_matches_the_emulator_over_a_long_continuous_stream() {
         let offer = offered < n;
         let step = emu
             .tick(Tick {
+                reset: false,
                 ce: true,
                 input: offer.then_some(pixel),
                 output_ready: true,
@@ -276,13 +277,134 @@ fn credit_calendar_matches_the_emulator_over_a_long_continuous_stream() {
     assert_eq!(retired, n);
     // Observed finite completion matches the credit-aware closed form.
     let n = n as u64;
-    assert_eq!(enabled, 11 * n.div_ceil(4) + (n - 1) % 4);
+    assert_eq!(
+        enabled,
+        11 * n.div_ceil(RESULT_CAPACITY as u64) + (n - 1) % RESULT_CAPACITY as u64
+    );
     // Observed steady throughput is capacity-bound, never one per clock.
     assert!(retired < enabled as usize);
-    assert!(enabled * 4 >= n * 11, "below the 4/11 capacity band");
+    assert!(
+        enabled * RESULT_CAPACITY as u64 >= n * 11,
+        "below the 8/11 capacity band"
+    );
     let done = cal.completion(n as usize, 100_000).unwrap();
     assert_eq!(done.enabled_edges, enabled);
     assert_eq!(done.max_in_flight, RESULT_CAPACITY);
+}
+
+#[test]
+fn final_maintains_two_edge_pixel_calendar() {
+    let mut emu = FinalEmu::new(4096).unwrap();
+    let mut expected = std::collections::VecDeque::new();
+    let mut transferred = Vec::new();
+    let mut sent = 0;
+    for edge in 0..4096 {
+        let input = (edge % 2 == 0 && sent < 512).then_some(Input {
+            key: (sent & 63) as u8,
+            tint: [sent as u8, 200, 0],
+            texture: [255, 127, 255],
+            g: 256,
+            h: 0,
+            specular: [0; 3],
+        });
+        let step = emu
+            .tick(Tick {
+                reset: false,
+                ce: true,
+                input,
+                output_ready: true,
+            })
+            .unwrap();
+        if let Some(input) = input {
+            assert!(step.accepted, "II2 credit gap at edge {edge}");
+            // Independent /255 nearest integer for the deliberately exact g=1.
+            let value = 200u32 * 127;
+            let rounded = value / 255 + u32::from(2 * (value % 255) > 255);
+            expected.push_back(Output {
+                key: input.key,
+                rgb: [sent as u8, rounded as u8, 0],
+            });
+            sent += 1;
+        }
+        if step.consumed {
+            assert_eq!(step.output, expected.pop_front());
+            transferred.push(edge);
+        }
+        if sent == 512 && emu.idle() {
+            break;
+        }
+    }
+    assert_eq!(transferred.len(), 512);
+    for pair in transferred.windows(2) {
+        assert_eq!(pair[1] - pair[0], 2);
+    }
+}
+
+#[test]
+fn reset_invalidates_nonempty_results_and_accepts_fresh_reused_keys() {
+    let mut emu = FinalEmu::new(256).unwrap();
+    let old = Input {
+        key: 5,
+        tint: [23; 3],
+        texture: [255; 3],
+        g: 256,
+        ..Default::default()
+    };
+    for _ in 0..8 {
+        assert!(
+            emu.tick(Tick {
+                input: Some(old),
+                output_ready: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .accepted
+        );
+    }
+    for _ in 0..12 {
+        emu.tick(Tick {
+            output_ready: false,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    assert_eq!(emu.queued(), 8);
+    let reset = emu
+        .tick(Tick {
+            reset: true,
+            input: Some(old),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(!reset.input_ready && !reset.accepted && !reset.consumed && reset.output.is_none());
+    assert!(emu.idle());
+    let fresh = Input {
+        tint: [199; 3],
+        ..old
+    };
+    assert!(
+        emu.tick(Tick {
+            input: Some(fresh),
+            ..Default::default()
+        })
+        .unwrap()
+        .accepted
+    );
+    let mut results = Vec::new();
+    for _ in 0..32 {
+        let step = emu.tick(Tick::default()).unwrap();
+        if step.consumed {
+            results.push(step.output.unwrap());
+        }
+    }
+    assert_eq!(
+        results,
+        vec![Output {
+            key: 5,
+            rgb: [199; 3]
+        }]
+    );
+    assert!(emu.idle());
 }
 
 #[test]
@@ -316,6 +438,7 @@ fn emu_streams_with_ce_pauses_backpressure_and_reused_keys() {
         let before_snapshot = emu.snapshot();
         let step = emu
             .tick(Tick {
+                reset: false,
                 ce,
                 input,
                 output_ready: ready,
@@ -372,10 +495,11 @@ fn credit_return_never_funds_a_same_edge_acceptance() {
         h: 50,
         specular: [70, 80, 90],
     };
-    // Fill the four result credits while withholding output transfers.
+    // Fill the eight result credits while withholding output transfers.
     for i in 0..RESULT_CAPACITY {
         let step = emu
             .tick(Tick {
+                reset: false,
                 ce: true,
                 input: Some(pixel),
                 output_ready: false,
@@ -384,9 +508,10 @@ fn credit_return_never_funds_a_same_edge_acceptance() {
         assert!(step.accepted, "accept {i}");
     }
     assert_eq!(emu.credits(), RESULT_CAPACITY);
-    // Drain four results so the FIFO holds all four credits.
+    // Drain eight results so the FIFO holds all eight credits.
     for _ in 0..30 {
         emu.tick(Tick {
+            reset: false,
             ce: true,
             input: None,
             output_ready: false,
@@ -397,6 +522,7 @@ fn credit_return_never_funds_a_same_edge_acceptance() {
     // The edge that transfers one result must not also accept a new pixel.
     let blocked = emu
         .tick(Tick {
+            reset: false,
             ce: true,
             input: Some(pixel),
             output_ready: true,
@@ -407,6 +533,7 @@ fn credit_return_never_funds_a_same_edge_acceptance() {
     // The freed credit funds acceptance only on the following edge.
     let next = emu
         .tick(Tick {
+            reset: false,
             ce: true,
             input: Some(pixel),
             output_ready: false,
@@ -442,6 +569,7 @@ fn illegal_inputs_are_rejected_only_when_offered() {
     // Parked while `ce=0`: not accepted, not validated.
     let step = emu
         .tick(Tick {
+            reset: false,
             ce: false,
             input: Some(illegal),
             output_ready: true,
@@ -452,6 +580,7 @@ fn illegal_inputs_are_rejected_only_when_offered() {
     // Offered on an enabled edge: rejected as a terminal fault.
     assert!(emu
         .tick(Tick {
+            reset: false,
             ce: true,
             input: Some(illegal),
             output_ready: true,
@@ -473,5 +602,5 @@ fn rtl_declaration_matches_the_emulated_pipeline() {
     assert!(allocation.portless_storage_bits() < allocation.total_state_bits());
     let source = rtl::source();
     assert!(source.contains("module gpu_v2_final_stage"));
-    assert!(source.contains("assign in_ready  = ce && (credits < 3'd4);"));
+    assert!(source.contains("assign in_ready  = !reset && ce && (credits < 4'd8);"));
 }
