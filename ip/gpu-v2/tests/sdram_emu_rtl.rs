@@ -1347,6 +1347,10 @@ fn early_facade_promotes_four_sectors_only_on_completion() {
             }
         }
     }
+    println!(
+        "SDRAM_512B_READ_CYCLES serial={} early={}",
+        lengths[0], lengths[1]
+    );
     assert!(lengths[1] < lengths[0], "serial/early lengths {lengths:?}");
 }
 

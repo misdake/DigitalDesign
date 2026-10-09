@@ -6,3 +6,4 @@ pub mod cache;
 pub mod coefficient;
 pub mod color;
 pub mod sampler;
+pub mod work;

@@ -9,10 +9,10 @@ See [architecture](docs/architecture.md) for component ownership and the model
 directions, [lighting](docs/lighting.md) for the numerical models, independent
 cycle emulator, synthesizable RTL and matched isolated PnR evidence, and
 [frontend](docs/frontend.md) for the bounded Rust frontend models.
-Lighting provides explicit Fast/Compact resource profiles with scalar H
+Lighting provides the Fast resource profile with scalar H
 normalization, fixed DSP roles and checked synchronous retained storage.
-Additional system candidates compare scalar N/H, direct squares and a complete
-ID FIFO at II2/II4; their area and numerical limitations are recorded together.
+The explicit SystemFast comparison uses scalar N/H, direct squares and a complete
+ID FIFO at II2; it remains separate from the selected lit-queue configuration.
 The [interactive Rust review](web/README.md) compares the real Rust kernels with
 shared scene inputs and optional error maps through a local WebSocket server.
 The [functional oracle chain](docs/oracle-chain.md) renders actual meshes through

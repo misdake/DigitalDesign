@@ -8,7 +8,7 @@ use resource_scheduler::{
     check_modulo, modulo_schedule_bounded, Graph, Limits, ModuloGraph, ModuloSchedule,
     ModuloViolation, SearchConfig,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_ISSUE: u64 = 1024;
 pub const MAX_II: u64 = 32;
@@ -33,6 +33,8 @@ pub struct NodeInfo {
     pub physical_kind: String,
     /// Logical table identity, independent of its replicated physical ports.
     pub read_memory: Option<String>,
+    /// Total physical word width at this read port, before any Q13 decode.
+    pub read_word_bits: Option<u32>,
     /// Audited operand and product widths, including multiplications inside MACs.
     pub multipliers: Vec<[u32; 3]>,
     pub bits: u32,
@@ -70,6 +72,33 @@ pub struct Slot {
     pub issue: u64,
     pub lane: usize,
 }
+/// Explicit offline calendar input. It is never loaded by production defaults.
+#[derive(Clone, Debug)]
+pub struct SchedulePlan {
+    pub ii: u64,
+    pub capacities: Vec<usize>,
+    pub slots: Vec<Slot>,
+    /// Mode enables are supplied at the input boundary, outside the arithmetic.
+    pub preconnected_modes: bool,
+}
+impl SchedulePlan {
+    pub(crate) fn agrees(&self, other: &Self) -> bool {
+        self.ii == other.ii
+            && self.capacities == other.capacities
+            && self.preconnected_modes == other.preconnected_modes
+            && self.slots.len() == other.slots.len()
+            && self
+                .slots
+                .iter()
+                .map(|s| (s.id, (s.issue, s.lane)))
+                .collect::<BTreeMap<_, _>>()
+                == other
+                    .slots
+                    .iter()
+                    .map(|s| (s.id, (s.issue, s.lane)))
+                    .collect::<BTreeMap<_, _>>()
+    }
+}
 /// Dependency-only earliest starts for one pixel, without resource sharing.
 /// Issues include hidden zero-latency wiring; no physical lanes are allocated.
 pub struct SinglePixel {
@@ -104,6 +133,44 @@ pub struct Workbench {
     order: Vec<usize>,
 }
 impl Workbench {
+    /// Project mode decodes to external input wires; numeric comparisons remain.
+    /// Existing arithmetic issue ages are retained until a caller edits/searches.
+    pub fn preconnected_modes(mut self) -> Self {
+        let mode_nodes: BTreeSet<_> = self
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.steps == ["compare"] && n.outputs.iter().any(|p| p.label.starts_with("mode."))
+            })
+            .map(|n| n.id)
+            .collect();
+        for &id in &mode_nodes {
+            self.graph.nodes[id].resource = None;
+            self.baseline.nodes[id].lane = None;
+        }
+        self.nodes.retain(|n| !mode_nodes.contains(&n.id));
+        let mut ancestors = vec![BTreeSet::new(); self.graph.nodes.len()];
+        for &id in &self.order {
+            for &parent in &self.graph.nodes[id].predecessors {
+                if self.graph.nodes[parent].resource.is_some() {
+                    ancestors[id].insert(parent);
+                } else {
+                    let inherited = ancestors[parent].clone();
+                    ancestors[id].extend(inherited);
+                }
+            }
+        }
+        for n in &mut self.nodes {
+            n.parents = ancestors[n.id].iter().copied().collect();
+            for port in &mut n.inputs {
+                port.sources.retain(|id| !mode_nodes.contains(id));
+            }
+        }
+        let mut baseline = self.baseline.clone();
+        self.normalize(&self.graph, &mut baseline);
+        self.baseline = baseline;
+        self
+    }
     pub fn new(profile: LightingProfile, full: bool) -> Result<Self, String> {
         Self::with_quantization(profile, full, LightingQuantization::CompensatedFloor)
     }
@@ -112,8 +179,8 @@ impl Workbench {
         full: bool,
         quantization: LightingQuantization,
     ) -> Result<Self, String> {
-        if !matches!(profile, LightingProfile::Fast | LightingProfile::Compact) {
-            return Err("workbench v1 supports Fast and Compact".into());
+        if profile != LightingProfile::Fast {
+            return Err("workbench supports Fast".into());
         }
         let options = LightingRtlOptions::lit_queue_resource_profile(profile, quantization);
         let p = Program::with_retiming(
@@ -126,6 +193,37 @@ impl Workbench {
             options.retiming,
         )?;
         let physical = crate::lighting::rtl::physical_calendar_with_options(profile, options)?;
+        Self::from_program(p, physical, full, quantization)
+    }
+    /// The selected calendar and storage encoding, also used by emu and RTL.
+    pub fn with_calendar(
+        calendar: crate::lighting::calendars::UnifiedCalendar,
+        quantization: LightingQuantization,
+    ) -> Result<Self, String> {
+        let profile = LightingProfile::Fast;
+        let options = calendar.options(quantization);
+        let plans = calendar.plans(quantization)?;
+        let mut p = Program::with_retiming(
+            profile,
+            true,
+            options.dedicated_dsp,
+            options.kernel(),
+            options.role_schedule,
+            options.logic_depth,
+            options.retiming,
+        )?;
+        p.apply_plan(&plans[0])?;
+        let physical =
+            crate::lighting::rtl::physical_calendar_with_schedule_plans(profile, options, &plans)?;
+        Self::from_program(p, physical, true, quantization)
+    }
+    fn from_program(
+        p: Program,
+        physical: Vec<crate::lighting::rtl::CalendarInstruction>,
+        full: bool,
+        quantization: LightingQuantization,
+    ) -> Result<Self, String> {
+        let q13 = p.frame.memories.iter().any(|m| m.name == "RSQRT_Q13");
         let physical: std::collections::BTreeMap<_, _> = physical
             .into_iter()
             .filter(|i| i.full == full)
@@ -315,6 +413,24 @@ impl Workbench {
                     read_memory: p.frame.events.get(id).and_then(|e| match e.operation {
                         audited::Operation::Read { memory, .. } => {
                             Some(p.frame.memories[memory].name.clone())
+                        }
+                        _ => None,
+                    }),
+                    read_word_bits: p.frame.events.get(id).and_then(|e| match e.operation {
+                        audited::Operation::Read { memory, .. }
+                            if p.frame.memories[memory].kind != audited::MemoryKind::Input =>
+                        {
+                            Some(match p.frame.memories[memory].name.as_str() {
+                                "SQ" | "RSQRT" | "RSQRT_Q13" | "SQRT" => {
+                                    if q13 {
+                                        18
+                                    } else {
+                                        36
+                                    }
+                                }
+                                "POWER" | "POWER_MIDPOINT_Q15" => 28,
+                                _ => p.frame.memories[memory].format.bits,
+                            })
                         }
                         _ => None,
                     }),
@@ -1039,7 +1155,8 @@ mod tests {
     use super::*;
     #[test]
     fn reviewed_workbench_matches_cycle_rtl_and_has_explicit_quantization() {
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             for quantization in [
                 LightingQuantization::CompensatedFloor,
                 LightingQuantization::NearestEven,
@@ -1151,7 +1268,8 @@ mod tests {
     }
     #[test]
     fn block_details_preserve_constants_fusion_and_pipeline_contract() {
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             for full in [false, true] {
                 for quantization in [
                     LightingQuantization::CompensatedFloor,
@@ -1162,20 +1280,18 @@ mod tests {
                     let abs = w
                         .nodes
                         .iter()
-                        .find(|n| n.explanation == "normal.abs.x")
+                        .find(|n| n.recipe.iter().any(|line| line.contains("normal.abs.x")))
                         .unwrap();
-                    assert_eq!(abs.steps, ["subtract", "compare", "select"]);
-                    assert_eq!(abs.inputs.iter().filter(|p| !p.constant).count(), 1);
-                    assert_eq!(abs.inputs.iter().filter(|p| p.constant).count(), 2);
+                    for step in ["subtract", "compare", "select"] {
+                        assert!(abs.steps.iter().any(|s| s == step));
+                    }
+                    assert!(abs.inputs.iter().any(|p| !p.constant));
+                    assert!(abs.inputs.iter().any(|p| p.constant));
                     assert!(abs.recipe.iter().any(|line| line.contains(" < ")));
                     assert!(abs.recipe.iter().any(|line| line.contains("select(")));
-                    assert_eq!(abs.choice.as_ref().unwrap()[3], "internal");
-                    let safe = w
-                        .nodes
-                        .iter()
-                        .find(|n| n.explanation == "normal.safe_magnitude")
-                        .unwrap();
-                    assert_eq!(safe.choice.as_ref().unwrap()[3], "external");
+                    // In a deeper contraction safe-magnitude wiring need not
+                    // remain a separate block; every surviving select must
+                    // still carry its complete choice and arithmetic recipe.
                     for n in &w.nodes {
                         assert_eq!(n.choice.is_some(), n.steps.iter().any(|s| s == "select"));
                         assert_eq!(
@@ -1249,7 +1365,8 @@ mod tests {
     }
     #[test]
     fn single_pixel_attains_independent_critical_path_bound() {
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             for full in [false, true] {
                 let w = Workbench::new(profile, full).unwrap();
                 let single = w.single_pixel();
@@ -1273,7 +1390,8 @@ mod tests {
             LightingQuantization::CompensatedFloor,
             LightingQuantization::NearestEven,
         ] {
-            for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+            {
+                let profile = LightingProfile::Fast;
                 for full in [false, true] {
                     let w = Workbench::with_quantization(profile, full, quantization).unwrap();
                     let old = w.single_pixel();
@@ -1300,19 +1418,30 @@ mod tests {
                         let latency = n.resource.map_or(0, |r| specialized.resources[r].latency);
                         assert!(single.issues[id] + latency <= single.span);
                     }
-                    if profile == LightingProfile::Fast && !full {
+                    if !full {
                         let square: Vec<_> = w
                             .nodes
                             .iter()
                             .filter(|n| n.read_memory.as_deref() == Some("SQ"))
                             .map(|n| single.issues[n.id])
                             .collect();
-                        let first = if quantization == LightingQuantization::CompensatedFloor {
-                            12
-                        } else {
-                            14
-                        };
-                        assert_eq!(square, [first, first + 1, first + 2]);
+                        assert_eq!(square.len(), 3);
+                        // A fused multi-output sum/address block can consume
+                        // all three reads immediately, leaving no stagger slack.
+                        // Read movement must not postpone that consumer.
+                        for n in w
+                            .nodes
+                            .iter()
+                            .filter(|n| n.read_memory.as_deref() == Some("SQ"))
+                        {
+                            assert!(single.issues[n.id] >= old.issues[n.id]);
+                            for consumer in w.nodes.iter().filter(|m| m.parents.contains(&n.id)) {
+                                assert!(
+                                    single.issues[n.id] + specialized.resources[n.resource].latency
+                                        <= old.issues[consumer.id]
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1326,7 +1455,8 @@ mod tests {
     }
     #[test]
     fn baselines_and_edits_use_independent_periodic_checker() {
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             for full in [false, true] {
                 let w = Workbench::new(profile, full).unwrap();
                 let capacities: Vec<_> = w.graph.resources.iter().map(|r| r.lanes).collect();

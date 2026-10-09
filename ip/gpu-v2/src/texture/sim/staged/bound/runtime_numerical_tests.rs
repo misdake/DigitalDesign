@@ -356,7 +356,7 @@ fn actual_scalar_terminal_fault_width_empty_and_invalid_tap() {
     }
 }
 #[test]
-fn dynamic_counted_guard_rejects_both_helpers_and_restores_compile_scope() {
+fn dynamic_counted_guard_rejects_helpers_and_programs_and_restores_compile_scope() {
     let q = crate::texture::ports::QuadInput {
         force_coarsest: false,
         quad_id: 0,
@@ -374,7 +374,8 @@ fn dynamic_counted_guard_rejects_both_helpers_and_restores_compile_scope() {
         valid: true,
     };
     let d = super::super::derivatives(&q, slot).unwrap();
-    for which in 0..4 {
+    let binding = super::Binding::build().unwrap();
+    for which in 0..7 {
         assert!(std::panic::catch_unwind(|| {
             let _scope = super::counted_call_guard::Scope::enter();
             if which == 0 {
@@ -383,8 +384,15 @@ fn dynamic_counted_guard_rejects_both_helpers_and_restores_compile_scope() {
                 let _ = super::packet_values(|_| 0, 0);
             } else if which == 2 {
                 let _ = super::super::derivatives(&q, slot);
-            } else {
+            } else if which == 3 {
                 let _ = super::super::lod(&d);
+            } else if which == 4 {
+                let _ = super::Program::compile(&q, &[slot], binding.clone());
+            } else if which == 5 {
+                let _ =
+                    crate::texture::sim::timed::Program::compile(&q, &[slot], &Default::default());
+            } else {
+                let _ = crate::texture::sim::counted::prepare(&q, &[slot]);
             }
         })
         .is_err());

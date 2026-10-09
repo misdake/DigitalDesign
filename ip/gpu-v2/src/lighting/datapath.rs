@@ -23,7 +23,8 @@ mod compensation_review {
         let path = std::env::var_os("LIGHTING_COMPENSATION_DATASET").expect("dataset path");
         let data = std::fs::read_to_string(path).unwrap();
         assert_eq!(data.lines().count(), 32975);
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             let kernel = counted::Config::compensated_resource_profile(profile);
             let program = Program::with_retiming(
                 profile,
@@ -143,7 +144,286 @@ pub(crate) struct Program {
     pub ii: usize,
     pub full: bool,
 }
+
+#[cfg(test)]
+mod rsqrt_calendar_tests {
+    use super::*;
+    #[test]
+    fn q13_calendar_preserves_every_registered_operation() {
+        use crate::lighting::{
+            calendars::UnifiedCalendar, sim::workbench::Slot, LightingQuantization,
+        };
+        let calendar = UnifiedCalendar::Free;
+        let q = LightingQuantization::CompensatedFloor;
+        let options = calendar.options_legacy(q);
+        let make = |compressed| {
+            Program::with_retiming(
+                LightingProfile::Fast,
+                true,
+                options.dedicated_dsp,
+                counted::Config {
+                    rsqrt_q13: compressed,
+                    ..options.kernel()
+                },
+                options.role_schedule,
+                options.logic_depth,
+                options.retiming,
+            )
+            .unwrap()
+        };
+        let mut old = make(false);
+        let plans = calendar.plans_legacy(q).unwrap();
+        old.apply_plan(&plans[0]).unwrap();
+        let mut new = make(true);
+        let old_nodes: Vec<_> = old
+            .graph
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.resource.is_some())
+            .collect();
+        let new_nodes: Vec<_> = new
+            .graph
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(id, n)| {
+                n.resource.is_some()
+                    && !new.frame.events.get(*id).is_some_and(|e| {
+                        e.operation == Operation::Less
+                            && e.output.is_some_and(|v| {
+                                new.frame.values[v]
+                                    .name
+                                    .as_deref()
+                                    .is_some_and(|n| n.starts_with("mode."))
+                            })
+                    })
+            })
+            .collect();
+        assert_eq!(old_nodes.len(), new_nodes.len());
+        let mut slots = Vec::new();
+        for ((before, a), (after, b)) in old_nodes.into_iter().zip(new_nodes) {
+            assert_eq!(
+                old.graph.resources[a.resource.unwrap()].name,
+                new.graph.resources[b.resource.unwrap()].name,
+                "{before}->{after}"
+            );
+            if let (Some(x), Some(y)) = (old.frame.events.get(before), new.frame.events.get(after))
+            {
+                // The sole changed registered output is the physical ROM word.
+                assert_eq!(
+                    std::mem::discriminant(&x.operation),
+                    std::mem::discriminant(&y.operation),
+                    "{before}->{after}"
+                );
+                if !matches!(x.operation, Operation::Read { .. }) {
+                    assert_eq!(
+                        old.frame.values[x.output.unwrap()].format,
+                        new.frame.values[y.output.unwrap()].format
+                    );
+                    let members = |p: &Program, id| {
+                        p.instructions
+                            .iter()
+                            .find(|i| i.root == id)
+                            .unwrap()
+                            .members
+                            .iter()
+                            .map(|&m| format!("{:?}", p.frame.events[m].operation))
+                            .collect::<Vec<_>>()
+                    };
+                    assert_eq!(
+                        members(&old, before),
+                        members(&new, after),
+                        "{before}->{after}"
+                    );
+                }
+            }
+            slots.push(Slot {
+                id: after,
+                issue: old.schedule.nodes[before].issue,
+                lane: old.schedule.nodes[before].lane.unwrap(),
+            });
+        }
+        let plan = super::super::sim::workbench::SchedulePlan {
+            slots,
+            ..plans[0].clone()
+        };
+        new.apply_plan(&plan).unwrap();
+        assert_eq!((new.latency, new.ii), (38, 2));
+        let mut text = format!(
+            "{}\n{}\nid,issue,lane\n",
+            plan.ii,
+            plan.capacities
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        for slot in &plan.slots {
+            use std::fmt::Write;
+            writeln!(text, "{},{},{}", slot.id, slot.issue, slot.lane).unwrap();
+        }
+        if std::env::var_os("LIGHTING_REGENERATE_Q13_PLAN").is_some() {
+            std::fs::write(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/spec/lighting-calendars/free-floor-q13.plan"
+                ),
+                &text,
+            )
+            .unwrap();
+        } else {
+            assert_eq!(
+                text,
+                include_str!("../../spec/lighting-calendars/free-floor-q13.plan")
+            );
+        }
+    }
+}
 impl Program {
+    /// Apply a separately requested, independently checked offline calendar.
+    /// The numerical operations and all atomic fusion recipes stay unchanged.
+    pub(crate) fn apply_plan(
+        &mut self,
+        plan: &super::sim::workbench::SchedulePlan,
+    ) -> Result<(), String> {
+        if plan.ii != 2
+            || plan.capacities.len() != self.graph.resources.len()
+            || plan.capacities.iter().any(|n| !(1..=64).contains(n))
+        {
+            return Err("offline plan requires II2 and bounded resource capacities".into());
+        }
+        if plan.preconnected_modes {
+            for e in &self.frame.events {
+                if e.operation == Operation::Less
+                    && e.output.is_some_and(|v| {
+                        self.frame.values[v]
+                            .name
+                            .as_deref()
+                            .is_some_and(|name| name.starts_with("mode."))
+                    })
+                {
+                    if self
+                        .binding
+                        .groups
+                        .iter()
+                        .any(|g| g.absorbed_events.contains(&e.id))
+                        || self
+                            .binding
+                            .cones
+                            .iter()
+                            .any(|g| g.absorbed_events.contains(&e.id))
+                    {
+                        return Err("mode decode unexpectedly absorbed in an atomic recipe".into());
+                    }
+                    self.graph.nodes[e.id].resource = None;
+                    self.binding.kinds[e.id] = None;
+                }
+            }
+        }
+        for (resource, &capacity) in self.graph.resources.iter_mut().zip(&plan.capacities) {
+            resource.lanes = capacity;
+        }
+        let expected = self
+            .graph
+            .nodes
+            .iter()
+            .filter(|n| n.resource.is_some())
+            .count();
+        if expected != plan.slots.len() {
+            return Err("offline assignment count".into());
+        }
+        let mut schedule = self.schedule.clone();
+        schedule.initiation_interval = plan.ii;
+        let mut seen = BTreeSet::new();
+        for slot in &plan.slots {
+            if slot.id >= self.graph.nodes.len()
+                || self.graph.nodes[slot.id].resource.is_none()
+                || slot.issue > 1024
+                || !seen.insert(slot.id)
+            {
+                return Err(
+                    "duplicate, unknown, wiring or out-of-bounds offline assignment".into(),
+                );
+            }
+            schedule.nodes[slot.id].issue = slot.issue;
+            schedule.nodes[slot.id].lane = Some(slot.lane);
+        }
+        let mut settled = vec![false; self.graph.nodes.len()];
+        for _ in 0..self.graph.nodes.len() {
+            let mut changed = false;
+            for (id, node) in self.graph.nodes.iter().enumerate() {
+                if settled[id] || !node.predecessors.iter().all(|&p| settled[p]) {
+                    continue;
+                }
+                if node.resource.is_none() {
+                    schedule.nodes[id].lane = None;
+                    schedule.nodes[id].issue = node
+                        .predecessors
+                        .iter()
+                        .map(|&p| {
+                            schedule.nodes[p].issue
+                                + self.graph.nodes[p]
+                                    .resource
+                                    .map_or(0, |r| self.graph.resources[r].latency)
+                        })
+                        .max()
+                        .unwrap_or(0)
+                        .max(node.earliest);
+                }
+                settled[id] = true;
+                changed = true;
+            }
+            if settled.iter().all(|s| *s) {
+                break;
+            }
+            if !changed {
+                return Err("offline graph cycle".into());
+            }
+        }
+        schedule.span = self
+            .graph
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(id, n)| {
+                schedule.nodes[id].issue + n.resource.map_or(0, |r| self.graph.resources[r].latency)
+            })
+            .max()
+            .unwrap_or(0);
+        let checked = resource_scheduler::check_modulo(
+            &ModuloGraph::from_graph(&self.graph).map_err(|e| e.to_string())?,
+            &schedule,
+        );
+        if !checked.is_ok() {
+            return Err(format!("offline calendar: {checked:?}"));
+        }
+        self.ii = plan.ii as usize;
+        self.latency = schedule.nodes.last().unwrap().issue as usize + 1;
+        for ins in &mut self.instructions {
+            ins.issue = schedule.nodes[ins.root].issue as usize;
+            ins.ready = ins.issue
+                + self.graph.nodes[ins.root]
+                    .resource
+                    .map_or(0, |r| self.graph.resources[r].latency as usize);
+        }
+        for &id in &self.order {
+            let ins = &self.instructions[id];
+            if self.binding.kinds[ins.root].is_none()
+                && !matches!(
+                    self.frame.events[ins.root].operation,
+                    Operation::Read { .. }
+                )
+                && ins.inputs.iter().all(|&v| self.stable[v])
+            {
+                if let Some(v) = self.frame.events[ins.root].output {
+                    self.stable[v] = true;
+                }
+            }
+        }
+        self.schedule = schedule;
+        Ok(())
+    }
     pub fn with_kernel_depth(
         profile: LightingProfile,
         full: bool,
@@ -177,8 +457,17 @@ impl Program {
         {
             return Err("retiming resource delta outside bounded experiment".into());
         }
+        if retiming
+            .multiply_latency
+            .is_some_and(|n| !(1..=3).contains(&n))
+        {
+            return Err("ordinary DSP latency must be 1..=3 advancing edges".into());
+        }
         if logic_depth != 0 && !(2..=8).contains(&logic_depth) {
             return Err("logic boundary depth must be 2..=8".into());
+        }
+        if retiming.sum_address && !retiming.measured_functions {
+            return Err("sum-address contraction requires typed function bindings".into());
         }
         if config.compact_normal
             || !config.dataflow
@@ -230,7 +519,17 @@ impl Program {
                     .frame;
                 let b = BoundDag::new(&f, hardware)?;
                 let ray = ancestors(&f, &["ray.0", "ray.1"]);
-                let view = ancestors(&f, &["v.0", "v.1", "v.2"]);
+                let view = ancestors(
+                    &f,
+                    &[
+                        "v.0",
+                        "v.1",
+                        "v.2",
+                        "weighted.light.0",
+                        "weighted.light.1",
+                        "weighted.light.2",
+                    ],
+                );
                 let mut large = [0_usize; 3];
                 let mut small = 0_usize;
                 let mut reads = 0_usize;
@@ -269,14 +568,6 @@ impl Program {
                         .or_insert(effective_work);
                 }
             }
-            // Complete the existing Compact MULT18 macro instead of leaving
-            // its eighth slot idle. This adds no macro or tile allocation.
-            if profile == LightingProfile::Compact
-                && logic_depth == 8
-                && role_capacity.iter().sum::<usize>() % 2 == 1
-            {
-                role_capacity[2] += 1;
-            }
             hardware.large_multiply = role_capacity.iter().sum();
             hardware.small_multiply = small_capacity;
             hardware.normalize_reads = read_capacity;
@@ -288,7 +579,17 @@ impl Program {
                 .frame;
             let full_binding = BoundDag::new(&full_frame, hardware)?;
             let rays = ancestors(&full_frame, &["ray.0", "ray.1"]);
-            let views = ancestors(&full_frame, &["v.0", "v.1", "v.2"]);
+            let views = ancestors(
+                &full_frame,
+                &[
+                    "v.0",
+                    "v.1",
+                    "v.2",
+                    "weighted.light.0",
+                    "weighted.light.1",
+                    "weighted.light.2",
+                ],
+            );
             let mut large = [0_usize; 3];
             let mut small = 0_usize;
             let mut reads = 0_usize;
@@ -336,6 +637,22 @@ impl Program {
             hardware.large_multiply = 32;
         }
         hardware.measured_functions = retiming.measured_functions;
+        hardware.combine_sum_address = retiming.sum_address;
+        if let Some(latency) = retiming.paired_latency {
+            if !matches!(latency, 1 | 4) {
+                return Err("paired DSP latency must be one or four edges".into());
+            }
+            hardware.paired_latency = latency;
+        }
+        if let Some(latency) = retiming.cone_latency {
+            if !(1..=2).contains(&latency) {
+                return Err("generic cone latency must be one or two edges".into());
+            }
+            hardware.cone_latency = latency;
+        }
+        if let Some(latency) = retiming.multiply_latency {
+            hardware.multiply_latency = latency;
+        }
         hardware.large_multiply += retiming.extra_large_multiply;
         hardware.small_multiply += retiming.extra_small_multiply;
         hardware.normalize_reads += retiming.extra_normalize_reads;
@@ -373,7 +690,17 @@ impl Program {
             return Err("role schedule requires shared scalar architecture".into());
         }
         let ray = ancestors(&frame, &["ray.0", "ray.1"]);
-        let view = ancestors(&frame, &["v.0", "v.1", "v.2"]);
+        let view = ancestors(
+            &frame,
+            &[
+                "v.0",
+                "v.1",
+                "v.2",
+                "weighted.light.0",
+                "weighted.light.1",
+                "weighted.light.2",
+            ],
+        );
         let mut resources = BTreeMap::new();
         let mut physical_resources = Vec::new();
         for (id, kind) in binding.kinds.iter().enumerate() {
@@ -774,6 +1101,8 @@ impl Program {
                 .map(i128::from),
             "SQ" => SQUARE_SIGNED_RAW.get(row).copied().map(i128::from),
             "RSQRT" => RSQRT_RAW.get(row).copied().map(i128::from),
+            "RSQRT_Q13" => RSQRT_Q13_RAW.get(row).copied().map(i128::from),
+            "SQRT" => SQRT_RAW.get(row).copied().map(i128::from),
             "POWER" => POWER_RAW.get(row).copied().map(i128::from),
             "POWER_MIDPOINT_Q15" => POWER_MIDPOINT_RAW.get(row).copied().map(i128::from),
             _ => None,

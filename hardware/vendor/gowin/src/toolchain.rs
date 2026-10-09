@@ -688,6 +688,7 @@ pub struct GowinProject<T: GowinTarget> {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum GowinDspMode {
     Padd18,
+    Mult9x9,
     Mult18x18,
     MultAddAlu18x18,
     Alu54d,
@@ -697,6 +698,7 @@ impl GowinDspMode {
     const fn report_name(self) -> &'static str {
         match self {
             Self::Padd18 => "PADD18",
+            Self::Mult9x9 => "MULT9X9",
             Self::Mult18x18 => "MULT18X18",
             Self::MultAddAlu18x18 => "MULTADDALU18X18",
             Self::Alu54d => "ALU54D",
@@ -2222,12 +2224,14 @@ fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
     }) {
         return Some(0);
     }
+    let small = resource_mode_usage(report, "DSP", "MULT9X9")?;
     let plain = resource_mode_usage(report, "DSP", "MULT18X18")?;
     let wide = resource_mode_usage(report, "DSP", "MULT36X36")?;
     let multiply_add = resource_mode_usage(report, "DSP", "MULTADDALU18X18")?;
     let pre_add = resource_mode_usage(report, "DSP", "PADD18")?;
     let alu = resource_mode_usage(report, "DSP", "ALU54D")?;
-    let known_primitives = plain
+    let known_primitives = small
+        .checked_add(plain)?
         .checked_add(wide)?
         .checked_add(multiply_add)?
         .checked_add(pre_add)?
@@ -2236,8 +2240,10 @@ fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
     if all_primitives != known_primitives {
         return None;
     }
+    // Two MULT9X9 fit one 18x18 lane; round partial occupancy up.
     // A MULT36X36 occupies four 18x18 multiplier lanes.
     plain
+        .checked_add(small.checked_add(1)? / 2)?
         .checked_add(multiply_add.checked_mul(2)?)?
         .checked_add(wide.checked_mul(4)?)
 }
@@ -2860,6 +2866,24 @@ mod tests {
   rPLL | 1/2 | 50%\n";
         assert_eq!(resource_usage_fraction(sdram_only, "rPLL"), Some(1));
         assert_eq!(dsp_multiplier_lane_usage(sdram_only), Some(0));
+    }
+
+    #[test]
+    fn physical_resource_parser_counts_mixed_small_multipliers() {
+        let report =
+            "DSP | 38%\n --MULT9X9 | 12\n --MULT18X18 | 8\n --MULTADDALU18X18 | 2\n PLL | 1/2\n";
+        assert_eq!(dsp_multiplier_lane_usage(report), Some(18));
+        assert_eq!(
+            dsp_multiplier_lane_usage(&report.replace("| 12", "| 11")),
+            Some(18)
+        );
+        assert_eq!(
+            dsp_multiplier_lane_usage(&report.replace("MULT9X9", "UNKNOWN_DSP")),
+            None
+        );
+        let memories =
+            "BSRAM | 44%\n --SP | 2\n --SDPB | 1\n --pROM | 8\n --pROMX9 | 9\n DSP | 38%\n";
+        assert_eq!(resource_mode_total(memories, "BSRAM"), Some(20));
     }
 
     #[test]

@@ -60,6 +60,9 @@ pub struct Report {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
+    /// Q13 endpoints encoded as U14 base + U4 grouped slope residual.
+    /// Decode is a checked combinational part of the normalization ROM boundary.
+    pub rsqrt_q13: bool,
     /// Queue contract: unlit is handled by the quad owner, never this kernel.
     pub lit_queue: bool,
     pub quantization: LightingQuantization,
@@ -83,6 +86,8 @@ pub struct Config {
     pub flat_normal: bool,
     /// Normalize NH with one scalar H reciprocal instead of three H components.
     pub scalar_norm: bool,
+    /// Opt-in Fast experiment: H = normalize((R + length(R) L)/2).
+    pub weighted_view: bool,
     /// Explicit system candidate: apply N reciprocal to scalar dots, gate before RNE.
     pub scalar_normal: bool,
     /// Recover the exact input NL sign from three low bits per component.
@@ -99,6 +104,12 @@ pub struct Config {
     pub dedicated_dots: bool,
 }
 impl Config {
+    fn without_queue(self) -> Self {
+        Self {
+            lit_queue: false,
+            ..self
+        }
+    }
     pub fn lit_queue_resource_profile(
         profile: super::super::LightingProfile,
         quantization: LightingQuantization,
@@ -171,7 +182,7 @@ impl Config {
     pub fn resource_profile(profile: super::super::LightingProfile) -> Self {
         Self {
             scalar_norm: true,
-            block_prescale: profile == super::super::LightingProfile::Compact,
+            block_prescale: false,
             dedicated_dots: profile == super::super::LightingProfile::Fast,
             ..Self::architecture()
         }
@@ -193,11 +204,69 @@ enum SquareTable {
 struct Tables {
     direct_square: bool,
     square: SquareTable,
-    rsqrt: Memory<24, 0, false>,
+    rsqrt: RsqrtTable,
+    sqrt: Option<Memory<25, 0, false>>,
     power: Memory<28, 0, false>,
     context: Memory<43, 0, false>,
     context_is_latched: bool,
     static_power: bool,
+}
+
+#[derive(Clone, Copy)]
+enum RsqrtTable {
+    Legacy(Memory<24, 0, false>),
+    Q13(Memory<18, 0, false>),
+}
+impl RsqrtTable {
+    fn new(model: &mut Model, compressed: bool) -> Result<Self, Fault> {
+        if compressed {
+            Ok(Self::Q13(model.table("RSQRT_Q13", &RSQRT_Q13)?))
+        } else {
+            Ok(Self::Legacy(model.table("RSQRT", &RSQRT)?))
+        }
+    }
+}
+
+fn rsqrt_entry(
+    f: &Arithmetic<'_, '_>,
+    table: RsqrtTable,
+    address: Fixed<7, 0, false>,
+    stage: &str,
+) -> Result<ReciprocalEntry, Fault> {
+    match table {
+        RsqrtTable::Legacy(table) => f.read(table.indexed(address)),
+        RsqrtTable::Q13(table) => {
+            let stored = named(
+                f,
+                &format!("{stage}.rsqrt.stored"),
+                f.read(table.indexed(address))?,
+            )?;
+            decode_rsqrt(f, stored, address, stage)
+        }
+    }
+}
+
+pub(super) fn decode_rsqrt(
+    f: &Arithmetic<'_, '_>,
+    stored: ReciprocalStoredEntry,
+    address: Fixed<7, 0, false>,
+    stage: &str,
+) -> Result<ReciprocalEntry, Fault> {
+    let group = f.slice::<4, 0, false, 3>(address)?;
+    let mut bias = RSQRT_Q13_BIAS[15];
+    for i in (0..15).rev() {
+        bias = f.select(f.less(group, RSQRT_Q13_LIMIT[i])?, RSQRT_Q13_BIAS[i], bias)?;
+    }
+    let base = f.resize_exact::<24, 0, false>(f.slice::<14, 0, false, 0>(stored)?)?;
+    let residual = f.resize_exact::<6, 0, false>(f.slice::<4, 0, false, 14>(stored)?)?;
+    let delta = f.resize_exact::<24, 0, false>(f.add_same(residual, bias)?)?;
+    let base = f.shift_left_const::<2, 24, 0, false>(base)?;
+    let delta = f.shift_left_const::<18, 24, 0, false>(delta)?;
+    named(
+        f,
+        &format!("{stage}.rsqrt.decoded"),
+        f.add_same(base, delta)?,
+    )
 }
 
 // Source-level DAG names are metadata: no new operations, reads or publications.
@@ -268,7 +337,7 @@ fn block_shifted(
 #[derive(Clone, Copy)]
 struct Normalization {
     scaled: [Direction; 3],
-    reciprocal: Reciprocal,
+    factor: Reciprocal,
     zero: Fixed<1, 0, false>,
     amount: Fixed<18, 0, true>,
 }
@@ -336,6 +405,8 @@ struct NormalizationPolicy {
     block: bool,
     compact: Option<CompactMagnitude>,
     compact_prescale: bool,
+    view_length: bool,
+    threshold_length: Option<Fixed<17, 15, false>>,
 }
 impl From<(bool, bool)> for NormalizationPolicy {
     fn from((fast, block): (bool, bool)) -> Self {
@@ -344,6 +415,8 @@ impl From<(bool, bool)> for NormalizationPolicy {
             block,
             compact: None,
             compact_prescale: false,
+            view_length: false,
+            threshold_length: None,
         }
     }
 }
@@ -362,6 +435,8 @@ fn prepare_normalization(
         block,
         compact,
         compact_prescale,
+        view_length,
+        threshold_length,
     } = policy;
     let stage = match prefix {
         "n" => "normal",
@@ -432,6 +507,25 @@ fn prepare_normalization(
         f.name_value(&format!("{stage}.max_magnitude"), m)?;
         let zero = if let Some(compact) = compact {
             compact.zero
+        } else if let Some(length) = threshold_length {
+            // Original max(abs((unit(R)+L)/2)) < 64/16384.
+            // Weighted Q14 half is length(R) times the original: m*512 < s_Q15.
+            if f.floor_intermediates() {
+                // m*512 < s is exactly m < ceil(s/512). The floor calendar
+                // benefits from narrowing; the RNE graph gains two cycles and
+                // another retained BSRAM with this form, so keeps direct compare.
+                let biased: Fixed<18, 15, false> =
+                    f.add(length, Fixed::<17, 15, false>::constant::<511>())?;
+                let threshold = f.slice::<9, 14, false, 9>(biased)?;
+                f.less(m, threshold)?
+            } else {
+                let code = f.binary_scale::<17, 0, false>(m)?;
+                let scaled = f.shift_left_const::<9, 26, 0, false>(f.resize_exact(code)?)?;
+                f.less(
+                    scaled,
+                    f.resize_exact::<26, 0, false>(f.binary_scale::<17, 0, false>(length)?)?,
+                )?
+            }
         } else {
             f.less(m, threshold)?
         };
@@ -607,8 +701,31 @@ fn prepare_normalization(
     f.name_value(&format!("{stage}.length_exponent"), exponent)?;
     f.name_value(&format!("{stage}.mantissa_shift"), align)?;
     f.name_value(&format!("{stage}.rsqrt_address"), address)?;
-    let entry = f.read(t.rsqrt.indexed(address))?;
-    f.name_value(&format!("{stage}.rsqrt_entry"), entry)?;
+    if view_length {
+        // Bounded ray exponent is -2..0: sqrt restores by /2 or identity.
+        let entry = f.read(t.sqrt.ok_or(Fault::Format)?.indexed(address))?;
+        f.name_value("view.sqrt_entry", entry)?;
+        let base = f.slice::<16, 15, false, 0>(entry)?;
+        let delta = f.slice::<9, 15, false, 16>(entry)?;
+        let correction: Fixed<17, 23, false> = f.product(delta, fraction)?;
+        let correction: Fixed<17, 15, false> = f.round_to(correction)?;
+        let interpolated = f.add_same(f.resize_exact(base)?, correction)?;
+        let half = f.round_to::<17, 15, false>(f.binary_scale::<17, 16, false>(interpolated)?)?;
+        let restore = f.slice::<1, 0, false, 0>(fast_restore.ok_or(Fault::Format)?)?;
+        let length = f.select(restore, half, interpolated)?;
+        f.name_value("view.length", length)?;
+        f.publish("v.length", length)?;
+        return Ok(Normalization {
+            scaled: v,
+            factor: length,
+            zero,
+            amount,
+        });
+    }
+    let entry = rsqrt_entry(f, t.rsqrt, address, stage)?;
+    if matches!(t.rsqrt, RsqrtTable::Legacy(_)) {
+        f.name_value(&format!("{stage}.rsqrt_entry"), entry)?;
+    }
     let base = f.slice::<16, 15, false, 0>(entry)?;
     let delta = f.slice::<8, 15, false, 16>(entry)?;
     let correction: Fixed<16, 23, false> = f.product(delta, fraction)?;
@@ -634,7 +751,7 @@ fn prepare_normalization(
     f.publish(&format!("{prefix}.r"), r)?;
     Ok(Normalization {
         scaled: v,
-        reciprocal: r,
+        factor: r,
         zero,
         amount,
     })
@@ -659,7 +776,7 @@ fn normalize(
     let factors = prepare_normalization(f, raw, threshold, bounded, t, prefix, policy)?;
     let Normalization {
         scaled: mut v,
-        reciprocal: r,
+        factor: r,
         zero,
         ..
     } = factors;
@@ -715,13 +832,13 @@ fn scalar_half_dot(
         // Two scaled vectors can have a raw dot up to three. Keep Q15 before
         // the N reciprocal; the resulting dot with unit N then fits Q16.
         let operand = f.round_to::<18, 15, true>(f.resize_exact::<31, 28, true>(raw)?)?;
-        let product: Fixed<35, 30, true> = f.product(operand, n.reciprocal)?;
+        let product: Fixed<35, 30, true> = f.product(operand, n.factor)?;
         let unit_n = f.round_to::<18, 16, true>(f.resize_exact::<32, 30, true>(product)?)?;
         f.select(n.zero, Fixed::<18, 16, true>::constant::<0>(), unit_n)?
     } else {
         f.round_to::<18, 16, true>(f.resize_exact::<30, 28, true>(raw)?)?
     };
-    let product: Fixed<35, 31, true> = f.product(narrow, half.reciprocal)?;
+    let product: Fixed<35, 31, true> = f.product(narrow, half.factor)?;
     let value = f.round_to::<18, 15, true>(f.resize_exact::<34, 31, true>(product)?)?;
     f.select(half.zero, Fixed::<18, 15, true>::constant::<0>(), value)
 }
@@ -951,6 +1068,8 @@ fn lit_kernel(
                     block: config.block_prescale,
                     compact,
                     compact_prescale: config.compact_prescale,
+                    view_length: false,
+                    threshold_length: None,
                 };
                 let n = if config.scalar_normal {
                     let factors = prepare_normalization(
@@ -991,7 +1110,7 @@ fn lit_kernel(
                     normal_gate = Some(gate);
                     let narrow =
                         f.round_to::<18, 16, true>(f.resize_exact::<30, 28, true>(raw)?)?;
-                    let product: Fixed<35, 31, true> = f.product(narrow, factors.reciprocal)?;
+                    let product: Fixed<35, 31, true> = f.product(narrow, factors.factor)?;
                     let rounded =
                         f.round_to::<18, 15, true>(f.resize_exact::<34, 31, true>(product)?)?;
                     let rounded = f.select(
@@ -1069,20 +1188,58 @@ fn lit_kernel(
                         for (i, value) in ray.iter().enumerate() {
                             f.publish(&format!("ray.{i}"), *value)?;
                         }
-                        let v = normalize(
-                            f,
-                            ray,
-                            Magnitude::constant::<4>(),
-                            true,
-                            t,
-                            "v",
-                            (config.dataflow, config.block_prescale).into(),
-                        )?;
+                        let mut length = None;
                         let mut half = [Direction::constant::<0>(); 3];
-                        for i in 0..3 {
-                            let sum: HalfSum = f.add(l[i], v[i])?;
-                            let sum = f.binary_scale::<17, 15, true>(sum)?;
-                            half[i] = f.round_to(sum)?;
+                        if config.weighted_view {
+                            let factors = prepare_normalization(
+                                f,
+                                ray,
+                                Magnitude::constant::<4>(),
+                                true,
+                                t,
+                                "v",
+                                NormalizationPolicy {
+                                    view_length: true,
+                                    ..(true, false).into()
+                                },
+                            )?;
+                            length = Some(factors.factor);
+                            for i in 0..3 {
+                                let product: Fixed<33, 29, true> =
+                                    f.product(l[i], factors.factor)?;
+                                if f.floor_intermediates() {
+                                    // floor((R + P)/2) = floor((R + floor(P))/2)
+                                    // for integer Q14 R. Narrow before the fabric add;
+                                    // the validated length bounds abs(P) below 1.300.
+                                    let product: Direction = f.floor_to(product)?;
+                                    f.publish(&format!("weighted.light.{i}"), product)?;
+                                    let sum: HalfSum = f.add(ray[i], product)?;
+                                    half[i] = f.round_to(f.binary_scale::<17, 15, true>(sum)?)?;
+                                } else {
+                                    f.publish(&format!("weighted.light.{i}"), product)?;
+                                    let ray = f.resize_exact::<33, 14, true>(ray[i])?;
+                                    let ray = f.binary_scale::<33, 29, true>(
+                                        f.shift_left_const::<15, 33, 14, true>(ray)?,
+                                    )?;
+                                    let sum: Fixed<34, 29, true> = f.add(ray, product)?;
+                                    half[i] = f.round_to(f.binary_scale::<34, 30, true>(sum)?)?;
+                                }
+                            }
+                        } else {
+                            let v = normalize(
+                                f,
+                                ray,
+                                Magnitude::constant::<4>(),
+                                true,
+                                t,
+                                "v",
+                                (config.dataflow, config.block_prescale).into(),
+                            )?;
+                            for i in 0..3 {
+                                let sum: HalfSum = f.add(l[i], v[i])?;
+                                let sum = f.binary_scale::<17, 15, true>(sum)?;
+                                half[i] = f.round_to(sum)?;
+                            }
                         }
                         name_vector(f, "halfway.input", half)?;
                         if config.scalar_norm {
@@ -1093,7 +1250,10 @@ fn lit_kernel(
                                 false,
                                 t,
                                 "h",
-                                (true, config.block_prescale).into(),
+                                NormalizationPolicy {
+                                    threshold_length: length,
+                                    ..(true, config.block_prescale).into()
+                                },
                             )?;
                             half_factors = Some(factors);
                             factors.scaled
@@ -1278,14 +1438,29 @@ fn evaluate_with_preparation(
 ) -> Result<Report, Error> {
     validate(pixel, material, light, projection)?;
     let numerical_config = Config {
+        rsqrt_q13: false,
         lit_queue: false,
+        weighted_view: false,
         ..config
     };
+    if config.rsqrt_q13
+        && (config.quantization != LightingQuantization::CompensatedFloor || config.weighted_view)
+    {
+        return Err(InputError::Configuration.into());
+    }
     if config.quantization == LightingQuantization::CompensatedFloor
         && numerical_config
             != Config::compensated_resource_profile(super::super::LightingProfile::Fast)
+    {
+        return Err(InputError::Configuration.into());
+    }
+    if config.weighted_view
         && numerical_config
-            != Config::compensated_resource_profile(super::super::LightingProfile::Compact)
+            != Config::lit_queue_resource_profile(
+                super::super::LightingProfile::Fast,
+                config.quantization,
+            )
+            .without_queue()
     {
         return Err(InputError::Configuration.into());
     }
@@ -1449,7 +1624,12 @@ fn evaluate_with_preparation(
         } else {
             SquareTable::Magnitude(model.table("SQ", &SQUARE)?)
         },
-        rsqrt: model.table("RSQRT", &RSQRT)?,
+        rsqrt: RsqrtTable::new(&mut model, config.rsqrt_q13)?,
+        sqrt: if config.weighted_view {
+            Some(model.table("SQRT", &SQRT)?)
+        } else {
+            None
+        },
         power: if config.quantization == LightingQuantization::CompensatedFloor {
             model.table("POWER_MIDPOINT_Q15", &POWER_MIDPOINT)?
         } else {
@@ -1582,7 +1762,8 @@ pub fn prepare_half(
         } else {
             SquareTable::Magnitude(m.table("SQ", &SQUARE)?)
         },
-        rsqrt: m.table("RSQRT", &RSQRT)?,
+        rsqrt: RsqrtTable::new(&mut m, config.rsqrt_q13)?,
+        sqrt: None,
         power: m.table("POWER", &POWER)?,
         context: m.table("POWER_CONTEXT", &CONTEXT)?,
         context_is_latched: false,
@@ -1711,7 +1892,8 @@ pub fn prepare_flat(
         } else {
             SquareTable::Magnitude(m.table("SQ", &SQUARE)?)
         },
-        rsqrt: m.table("RSQRT", &RSQRT)?,
+        rsqrt: RsqrtTable::new(&mut m, config.rsqrt_q13)?,
+        sqrt: None,
         power: m.table("POWER", &POWER)?,
         context: m.table("POWER_CONTEXT", &CONTEXT)?,
         context_is_latched: false,
@@ -1804,7 +1986,8 @@ mod compact_tests {
                 static_power: false,
                 context_is_latched: false,
                 square: SquareTable::Signed(model.table("SQ", &SQUARE_SIGNED).unwrap()),
-                rsqrt: model.table("RSQRT", &RSQRT).unwrap(),
+                rsqrt: RsqrtTable::new(&mut model, false).unwrap(),
+                sqrt: None,
                 power: model.table("POWER", &POWER).unwrap(),
                 context: model.table("POWER_CONTEXT", &CONTEXT).unwrap(),
             };
@@ -1832,6 +2015,8 @@ mod compact_tests {
                     block: false,
                     compact: Some(compact),
                     compact_prescale: true,
+                    view_length: false,
+                    threshold_length: None,
                 },
             )
             .unwrap();

@@ -7,6 +7,31 @@ mod tests {
     use super::{CONTEXT_RAW, POWER_PARAMS, POWER_RAW, RSQRT_RAW, SQUARE_SIGNED_RAW};
 
     #[test]
+    fn weighted_view_sqrt_table_fits_unused_normalization_rows() {
+        assert_eq!(super::SQRT_RAW.len(), 128);
+        for parity in 0..2 {
+            for segment in 0..64 {
+                let entry = super::SQRT_RAW[parity * 64 + segment];
+                let endpoint = |i: usize| {
+                    (32768.0 * ((1.0 + i as f64 / 64.0) * (1 << parity) as f64).sqrt())
+                        .round_ties_even() as u64
+                };
+                assert_eq!(entry & 65535, endpoint(segment));
+                assert_eq!(entry >> 16, endpoint(segment + 1) - endpoint(segment));
+                assert!(entry < 1 << 25);
+                for fraction in 0..256 {
+                    let numerator = (entry >> 16) * fraction;
+                    let floor = numerator >> 8;
+                    let remainder = numerator & 255;
+                    let increment =
+                        u64::from(remainder > 128 || remainder == 128 && floor & 1 != 0);
+                    assert!((entry & 65535) + floor + increment <= 65536);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn normalized_square_sum_has_only_four_leading_zero_counts() {
         // Independent integer RNE, including negative half ties.
         let scaled = |x: i64, shift: i32| {

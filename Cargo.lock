@@ -393,6 +393,7 @@ name = "gpu-v2"
 version = "0.1.0"
 dependencies = [
  "audited",
+ "digital-design-circuit",
  "digital-design-hardware-gowin",
  "rayon",
  "resource-scheduler",

@@ -357,6 +357,8 @@ fn layer(
 }
 
 pub fn prepare(input: &QuadInput, slots: &[Slot]) -> Result<Preparation, Error> {
+    #[cfg(test)]
+    super::staged::bound::counted_call_guard::assert_not_live();
     let slot = oracle::check_input(input, slots)?;
     let (captured, force_coarsest) = capture_uv(input)?;
     let uv: Vec<i128> = captured.into_iter().flatten().map(i128::from).collect();

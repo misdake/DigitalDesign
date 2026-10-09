@@ -63,6 +63,7 @@ generated outside this document.
 
 - 2026-09-28 — Unified FPU lanes, common integer operands/results, synchronous D-cache metadata, ordered fetch cursors and six-client round robin reduce Logic while retaining two-way caches, dense clean throughput and frozen-suite execution cycles; full offline validation passed.
 - 2026-09-28 — The native SDRAM controller and two-pair 54/108-MHz bridge integrate bank-striped, naturally aligned line bursts with scalar masking; full-system simulation and routed timing pass.
+- 2026-10-07 — The shared FPU multiplier uses two registered stages, shortening MUL/VMUL/VMULS and the dot family by one beat while retaining SINCOS timing with an 18-bit phase register; the [record](cpu-v3-optimization-record.md#2026-10-07--two-stage-fpu-multiplier) preserves the frozen-suite comparison and offline validation boundary.
 
 ## Next work
 

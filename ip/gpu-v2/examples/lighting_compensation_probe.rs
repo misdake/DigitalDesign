@@ -12,7 +12,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     fs::create_dir_all(&root)?;
     let mut summary = String::from("profile,full_latency,diffuse_latency,full_ii,diffuse_ii,register_bits,dsp9,dsp18,pairs,normalize_roms\n");
-    for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+    {
+        let profile = LightingProfile::Fast;
         let options = LightingRtlOptions::compensated_resource_profile(profile);
         let r = rtl::generate_with_options(profile, options)?;
         let dir = root.join(format!("{profile:?}"));

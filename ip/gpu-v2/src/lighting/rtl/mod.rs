@@ -13,6 +13,8 @@ use std::{
     fmt::Write,
 };
 mod cuts;
+mod power_masks;
+mod prefix;
 mod ranges;
 mod steering;
 use ranges::{infer_ranges, RawRange};
@@ -25,6 +27,14 @@ fn token_read_offset(depth: usize, read_edge_captures: bool) -> usize {
 
 #[derive(Clone, Copy, Debug)]
 pub struct LightingRtlOptions {
+    /// Exact power-tail masks captured with the batch-uniform context.
+    pub power_context_masks: bool,
+    /// Three paired TDP normalization banks with Q13 grouped RSQRT endpoints.
+    pub rsqrt_q13: bool,
+    /// All lit modes traverse the complete calendar; only output masking differs.
+    pub unified_lit: bool,
+    /// Explicit II=2 experiment: share an identically scheduled mode-independent prefix.
+    pub shared_prefix: bool,
     /// Mode zero is an upstream quad bypass, excluded from this datapath.
     pub lit_queue: bool,
     pub quantization: super::LightingQuantization,
@@ -51,6 +61,8 @@ pub struct LightingRtlOptions {
     pub share_scalars: bool,
     pub range_shifts: bool,
     pub scalar_norm: bool,
+    /// Explicit length-weighted view candidate, never the default kernel.
+    pub weighted_view: bool,
     pub scalar_normal: bool,
     pub exact_normal_gate: bool,
     pub shared_ids: bool,
@@ -66,6 +78,10 @@ pub struct LightingRtlOptions {
 impl Default for LightingRtlOptions {
     fn default() -> Self {
         Self {
+            power_context_masks: false,
+            rsqrt_q13: false,
+            unified_lit: false,
+            shared_prefix: false,
             lit_queue: false,
             quantization: Default::default(),
             dsp_steering: DspSteering::None,
@@ -83,6 +99,7 @@ impl Default for LightingRtlOptions {
             share_scalars: true,
             range_shifts: true,
             scalar_norm: false,
+            weighted_view: false,
             scalar_normal: false,
             exact_normal_gate: false,
             shared_ids: false,
@@ -100,9 +117,11 @@ impl Default for LightingRtlOptions {
 impl LightingRtlOptions {
     pub(crate) fn kernel(self) -> super::sim::counted::Config {
         super::sim::counted::Config {
+            rsqrt_q13: self.rsqrt_q13,
             lit_queue: self.lit_queue,
             quantization: self.quantization,
             scalar_norm: self.scalar_norm,
+            weighted_view: self.weighted_view,
             scalar_normal: self.scalar_normal,
             exact_normal_gate: self.exact_normal_gate,
             block_prescale: self.block_prescale,
@@ -118,9 +137,12 @@ impl LightingRtlOptions {
         profile: LightingProfile,
         quantization: super::LightingQuantization,
     ) -> Self {
+        let (logic_depth, retiming) = super::LightingRetiming::lit_queue_60mhz(profile);
         Self {
             lit_queue: true,
             quantization,
+            logic_depth,
+            retiming,
             ..Self::steered_resource_profile(profile)
         }
     }
@@ -132,7 +154,7 @@ impl LightingRtlOptions {
             dedicated_dots: k.dedicated_dots,
             role_schedule: true,
             shared_ids: true,
-            ram_retained: profile == LightingProfile::Compact,
+            ram_retained: false,
             ..Self::default()
         }
     }
@@ -193,6 +215,8 @@ pub struct LaneReport {
     pub diffuse_operations: usize,
 }
 pub struct LightingVerilog {
+    /// Main result of every physical operation, without exposing cone internals.
+    pub boundaries: Vec<StageProbe>,
     /// Actual emitted DSP input alternatives; structural evidence, not LUT cost.
     pub dsp_input_csv: String,
     pub lanes: Vec<LaneReport>,
@@ -248,6 +272,9 @@ struct LoweredSchedule {
     nodes: Vec<resource_scheduler::ModuloNode>,
 }
 struct LoweredProgram {
+    aliases: BTreeMap<usize, usize>,
+    duplicate_roots: BTreeSet<usize>,
+    shared_events: BTreeSet<usize>,
     diffuse_calendar_offset: usize,
     frame: LoweredFrame,
     binding: LoweredBinding,
@@ -261,7 +288,27 @@ struct LoweredProgram {
 }
 impl LoweredProgram {
     fn new(profile: LightingProfile, options: LightingRtlOptions) -> Result<Self, String> {
+        Self::with_plans(profile, options, None)
+    }
+    fn with_plans(
+        profile: LightingProfile,
+        options: LightingRtlOptions,
+        plans: Option<&[super::sim::workbench::SchedulePlan; 2]>,
+    ) -> Result<Self, String> {
+        if options.unified_lit
+            && (!options.lit_queue || profile != LightingProfile::Fast || options.shared_prefix)
+        {
+            return Err(
+                "unified lit calendar requires Fast lit queue without prefix aliases".into(),
+            );
+        }
+        if options.unified_lit && plans.is_some_and(|plans| !plans[0].agrees(&plans[1])) {
+            return Err("unified modes must use one identical calendar".into());
+        }
         let mut s = Self {
+            aliases: BTreeMap::new(),
+            duplicate_roots: BTreeSet::new(),
+            shared_events: BTreeSet::new(),
             diffuse_calendar_offset: if profile.system() { 4 } else { 3 },
             frame: LoweredFrame {
                 values: Vec::new(),
@@ -279,8 +326,13 @@ impl LoweredProgram {
             output_values: [[0; 2]; 2],
         };
         for (mode, full) in [true, false].into_iter().enumerate() {
+            if options.unified_lit && !full {
+                s.latencies[1] = s.latencies[0];
+                s.output_values[1] = s.output_values[0];
+                break;
+            }
             let kernel = options.kernel();
-            let p = Program::with_retiming(
+            let mut p = Program::with_retiming(
                 profile,
                 full,
                 options.dedicated_dsp,
@@ -289,6 +341,9 @@ impl LoweredProgram {
                 options.logic_depth,
                 options.retiming,
             )?;
+            if let Some(plans) = plans {
+                p.apply_plan(&plans[mode])?;
+            }
             let event_base = s.frame.events.len();
             let value_base = s.frame.values.len();
             let memory_base = s.frame.memories.len();
@@ -352,6 +407,12 @@ impl LoweredProgram {
             s.stationary_logic()?;
         }
         steering::arrange(&mut s, options.dsp_steering)?;
+        if options.shared_prefix {
+            if plans.is_none() || s.ii.iter().any(|&ii| ii != 2) {
+                return Err("shared prefix requires explicit II=2 plans for both modes".into());
+            }
+            prefix::share(&mut s)?;
+        }
         Ok(s)
     }
     fn stationary_logic(&mut self) -> Result<(), String> {
@@ -400,6 +461,13 @@ impl LoweredProgram {
         self.frame.memories[id].kind == MemoryKind::Input
     }
     fn phase(&self, root: usize, age: usize) -> String {
+        if self.shared_events.contains(&root) {
+            let slot = (age + 1) % self.ii[root];
+            return format!(
+                "(calendar[{slot}] || calendar[{}])",
+                slot + self.diffuse_calendar_offset
+            );
+        }
         let slot = (age + 1) % self.ii[root]
             + if self.full[root] {
                 0
@@ -460,6 +528,8 @@ fn scalar_shareable(frame: &LoweredFrame, instructions: &[Instruction]) -> bool 
 }
 
 struct Emitter {
+    power_mask: Option<power_masks::Rewrite>,
+    rsqrt_q13: bool,
     one_hot_dsp: bool,
     dsp_input_csv: String,
     program: LoweredProgram,
@@ -624,7 +694,16 @@ impl Emitter {
         outputs
     }
     fn interface_format(&self, value: usize) -> Format {
-        if self.q_amounts.contains(&value) {
+        if self
+            .power_mask
+            .is_some_and(|rewrite| rewrite.descriptor == value)
+        {
+            Format {
+                bits: 75,
+                fraction: 0,
+                signed: false,
+            }
+        } else if self.q_amounts.contains(&value) {
             Format {
                 bits: 2,
                 fraction: 0,
@@ -783,6 +862,7 @@ impl Emitter {
         }
     }
     fn value(&mut self, value: usize, age: usize) -> Result<String, String> {
+        let value = self.program.aliases.get(&value).copied().unwrap_or(value);
         let v = &self.program.frame.values[value];
         if matches!(
             self.program.frame.events[v.producer].operation,
@@ -888,6 +968,17 @@ impl Emitter {
                 }
             };
             let num = |i: usize| numeric(&get(i), frame.values[e.inputs[i]].format);
+            if let Some(rewrite) = self.power_mask.filter(|rewrite| rewrite.event == id) {
+                let descriptor = ins
+                    .inputs
+                    .iter()
+                    .position(|&value| value == rewrite.descriptor)
+                    .ok_or("certified power descriptor is not a function input")?;
+                writeln!(self.body,
+                    "if (t{}) t{v} = t{} & a{descriptor}[58:43]; else t{v} = t{} & a{descriptor}[74:59];",
+                    rewrite.region, rewrite.raw, rewrite.raw).unwrap();
+                continue;
+            }
             let expr = match e.operation {
                 Operation::Literal => literal(frame.values[v].raw, out.bits),
                 Operation::Add => format!("{} + {}", num(0), num(1)),
@@ -1072,7 +1163,7 @@ impl Emitter {
     fn input_read(&mut self, ins: &Instruction, memory: usize, row: usize) -> Result<(), String> {
         let frame = &self.program.frame;
         let value = frame.events[ins.root].output.unwrap();
-        let f = frame.values[value].format;
+        let f = self.interface_format(value);
         let source = match frame.memories[memory].name.as_str() {
             "pixel.normal-lsb" => {
                 let mode = usize::from(!self.program.full[ins.root]);
@@ -1128,29 +1219,49 @@ impl Emitter {
         }
     }
 
-    fn dsp(&mut self, lane: usize, kind: &LaneKind) {
+    fn dsp(&mut self, lane: usize, kind: &LaneKind, latency: usize) {
         writeln!(self.body, "`ifdef GPU_V2_GOWIN_DSP").unwrap();
         if matches!(kind, LaneKind::PairMultiplyAdd) {
-            // Two product PIPE registers are parallel, not serial. C must be
-            // delayed one extra edge before CREG to match the product stage.
+            assert!(matches!(latency, 1 | 4));
+            let registered = u8::from(latency == 4);
+            let c = if latency == 4 {
+                format!("unit{lane}_c_delay")
+            } else {
+                format!("unit{lane}_a4")
+            };
+            // The four-edge version's product PIPE registers are parallel;
+            // delay C before CREG to align it. The one-edge version bypasses
+            // every internal register and captures the complete MAC in tail.
             writeln!(
                 self.body,
-                "reg [53:0] unit{lane}_c_delay,unit{lane}_tail;\nwire [53:0] unit{lane}_dsp_out;"
+                "reg [53:0] unit{lane}_tail;\nwire [53:0] unit{lane}_dsp_out;"
             )
             .unwrap();
-            writeln!(self.sequential,"`ifdef GPU_V2_GOWIN_DSP\nunit{lane}_c_delay<=unit{lane}_a4;\nunit{lane}_tail<=unit{lane}_dsp_out;\n`endif").unwrap();
+            writeln!(
+                self.sequential,
+                "`ifdef GPU_V2_GOWIN_DSP\nunit{lane}_tail<=unit{lane}_dsp_out;\n`endif"
+            )
+            .unwrap();
+            if latency == 4 {
+                writeln!(self.body, "reg [53:0] unit{lane}_c_delay;").unwrap();
+                writeln!(
+                    self.sequential,
+                    "`ifdef GPU_V2_GOWIN_DSP\nunit{lane}_c_delay<=unit{lane}_a4;\n`endif"
+                )
+                .unwrap();
+            }
             writeln!(
                 self.body,
                 r#"MULTADDALU18X18 #(
- .A0REG(1'b1),.B0REG(1'b1),.A1REG(1'b1),.B1REG(1'b1),.CREG(1'b1),
- .PIPE0_REG(1'b1),.PIPE1_REG(1'b1),.OUT_REG(1'b1),
- .ASIGN0_REG(1'b1),.ASIGN1_REG(1'b1),.BSIGN0_REG(1'b1),.BSIGN1_REG(1'b1),
+ .A0REG(1'b{registered}),.B0REG(1'b{registered}),.A1REG(1'b{registered}),.B1REG(1'b{registered}),.CREG(1'b{registered}),
+ .PIPE0_REG(1'b{registered}),.PIPE1_REG(1'b{registered}),.OUT_REG(1'b{registered}),
+ .ASIGN0_REG(1'b{registered}),.ASIGN1_REG(1'b{registered}),.BSIGN0_REG(1'b{registered}),.BSIGN1_REG(1'b{registered}),
  .ACCLOAD_REG0(1'b0),.ACCLOAD_REG1(1'b0),.SOA_REG(1'b0),
  .B_ADD_SUB(1'b0),.C_ADD_SUB(1'b0),.MULTADDALU18X18_MODE(0),.MULT_RESET_MODE("SYNC")
 ) dsp{lane}(
  .DOUT(unit{lane}_dsp_out),.CASO(),.SOA(),.SOB(),
  .A0(unit{lane}_a0[17:0]),.B0(unit{lane}_a1[17:0]),
- .A1(unit{lane}_a2[17:0]),.B1(unit{lane}_a3[17:0]),.C(unit{lane}_c_delay),
+ .A1(unit{lane}_a2[17:0]),.B1(unit{lane}_a3[17:0]),.C({c}),
  .ASIGN({{unit{lane}_a2[18],unit{lane}_a0[18]}}),
  .BSIGN({{unit{lane}_a3[18],unit{lane}_a1[18]}}),
  .SIA(18'd0),.SIB(18'd0),.CASI(55'd0),.ACCLOAD(1'b0),.ASEL(2'b00),.BSEL(2'b00),
@@ -1167,11 +1278,17 @@ assign unit{lane}_result=unit{lane}_tail;
                 18
             };
             let top = bits - 1;
+            // OUT captures the current combinational operands/signs at latency 1.
+            // Latency 2 adds matched operand/sign registers; latency 3 also PIPE.
+            // CE freezes every enabled stage together, including dynamic signs.
+            assert!((1..=3).contains(&latency));
+            let input_reg = u8::from(latency >= 2);
+            let pipe_reg = u8::from(latency == 3);
             writeln!(
                 self.body,
                 r#"MULT{bits}X{bits} #(
- .AREG(1'b1),.BREG(1'b1),.PIPE_REG(1'b1),.OUT_REG(1'b1),
- .ASIGN_REG(1'b1),.BSIGN_REG(1'b1),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")
+ .AREG(1'b{input_reg}),.BREG(1'b{input_reg}),.PIPE_REG(1'b{pipe_reg}),.OUT_REG(1'b1),
+ .ASIGN_REG(1'b{input_reg}),.BSIGN_REG(1'b{input_reg}),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")
 ) dsp{lane}(
  .DOUT(unit{lane}_result),.SOA(),.SOB(),
  .A(unit{lane}_a0[{top}:0]),.B(unit{lane}_a1[{top}:0]),
@@ -1272,7 +1389,7 @@ assign unit{lane}_result=unit{lane}_tail;
         self.register_bits += (bits + width) as usize;
         Ok(true)
     }
-    fn rom(&mut self, name: &str, width: usize, values: &[u64], depth: usize) {
+    fn rom<T: Copy + Into<u128>>(&mut self, name: &str, width: usize, values: &[T], depth: usize) {
         writeln!(
             self.body,
             "reg [{}:0] {name} [0:{}];\ninitial begin",
@@ -1284,7 +1401,7 @@ assign unit{lane}_result=unit{lane}_tail;
             writeln!(
                 self.body,
                 "{name}[{i}] = {width}'h{:x};",
-                values.get(i).copied().unwrap_or(0)
+                values.get(i).copied().map(Into::into).unwrap_or(0)
             )
             .unwrap();
         }
@@ -1311,7 +1428,13 @@ assign unit{lane}_result=unit{lane}_tail;
             LaneKind::SmallMultiply => 18,
             LaneKind::LargeMultiply => 36,
             LaneKind::PairMultiplyAdd => 54,
-            LaneKind::NormalizeRead => 36,
+            LaneKind::NormalizeRead => {
+                if self.rsqrt_q13 {
+                    18
+                } else {
+                    36
+                }
+            }
             LaneKind::PowerRead => 28,
             _ => instructions
                 .iter()
@@ -1455,7 +1578,9 @@ assign unit{lane}_result=unit{lane}_tail;
                 } else {
                     self.value(ins.inputs[0], ins.issue)?
                 };
-                let address = if memory_name == "RSQRT" {
+                let address = if memory_name == "SQRT" {
+                    format!("9'd384 + {a}")
+                } else if memory_name == "RSQRT" || memory_name == "RSQRT_Q13" {
                     format!("9'd256 + {a}")
                 } else {
                     a
@@ -1469,14 +1594,21 @@ assign unit{lane}_result=unit{lane}_tail;
             }
             writeln!(self.body, "end").unwrap();
             if matches!(kind, LaneKind::NormalizeRead) {
-                let mut entries = SQUARE_SIGNED_RAW.to_vec();
-                entries.extend(RSQRT_RAW);
-                self.rom(&format!("norm{lane}"), 36, &entries, 512);
-                writeln!(
-                    self.body,
-                    "wire [35:0] {name} = norm{lane}[unit{lane}_addr];"
-                )
-                .unwrap();
+                if self.rsqrt_q13 {
+                    writeln!(self.body, "wire [17:0] {name} = unit{lane}_p0;").unwrap();
+                } else {
+                    let mut entries = SQUARE_SIGNED_RAW.to_vec();
+                    entries.extend(RSQRT_RAW);
+                    if self.program.frame.memories.iter().any(|m| m.name == "SQRT") {
+                        entries.extend(SQRT_RAW);
+                    }
+                    self.rom(&format!("norm{lane}"), 36, &entries, 512);
+                    writeln!(
+                        self.body,
+                        "wire [35:0] {name} = norm{lane}[unit{lane}_addr];"
+                    )
+                    .unwrap();
+                }
             } else {
                 let power = if self
                     .program
@@ -1516,7 +1648,16 @@ assign unit{lane}_result=unit{lane}_tail;
                 writeln!(
                     self.body,
                     "reg {} unit{lane}_a{index};",
-                    decl(self.program.frame.values[v].format)
+                    decl(
+                        if self
+                            .power_mask
+                            .is_some_and(|rewrite| rewrite.descriptor == v)
+                        {
+                            self.interface_format(v)
+                        } else {
+                            self.program.frame.values[v].format
+                        }
+                    )
                 )
                 .unwrap();
             }
@@ -1628,12 +1769,18 @@ assign unit{lane}_result=unit{lane}_tail;
             && matches!(kind, LaneKind::LogicCone { .. })
             && latency == 2
             && self.split_cone(lane, &instructions[0], width)?;
-        if !split {
+        if !split && !(self.rsqrt_q13 && matches!(kind, LaneKind::NormalizeRead)) {
             self.pipeline(lane, width, latency, &name, dsp);
+        }
+        if self.rsqrt_q13 && matches!(kind, LaneKind::NormalizeRead) {
+            if latency != 1 {
+                return Err("Q13 TDP requires one-edge reads".into());
+            }
+            writeln!(self.body, "wire [17:0] unit{lane}_p0;").unwrap();
         }
         writeln!(self.body, "wire [{}:0] unit{lane}_result;", width - 1).unwrap();
         if dsp {
-            self.dsp(lane, kind);
+            self.dsp(lane, kind, latency);
         }
         writeln!(
             self.body,
@@ -1744,7 +1891,49 @@ pub fn generate_with_options(
     profile: LightingProfile,
     options: LightingRtlOptions,
 ) -> Result<LightingVerilog, String> {
-    let program = LoweredProgram::new(profile, options)?;
+    generate_with_optional_plans(profile, options, None)
+}
+/// Explicit offline candidate; defaults never consume these edited calendars.
+pub fn generate_with_schedule_plans(
+    profile: LightingProfile,
+    options: LightingRtlOptions,
+    plans: &[super::sim::workbench::SchedulePlan; 2],
+) -> Result<LightingVerilog, String> {
+    generate_with_optional_plans(profile, options, Some(plans))
+}
+fn generate_with_optional_plans(
+    profile: LightingProfile,
+    options: LightingRtlOptions,
+    plans: Option<&[super::sim::workbench::SchedulePlan; 2]>,
+) -> Result<LightingVerilog, String> {
+    if options.rsqrt_q13
+        && (profile != LightingProfile::Fast
+            || !options.unified_lit
+            || options.weighted_view
+            || options.hierarchy
+            || plans.is_none())
+    {
+        return Err(
+            "Q13 TDP requires an explicit unified Fast calendar without SQRT or hierarchy".into(),
+        );
+    }
+    let program = LoweredProgram::with_plans(profile, options, plans)?;
+    let power_mask = if options.power_context_masks {
+        if !options.unified_lit || !options.rsqrt_q13 {
+            return Err("prepared power masks require the selected unified Q13 core".into());
+        }
+        Some(power_masks::certify(&program)?)
+    } else {
+        None
+    };
+    // Added physical context bits are not part of the audited numerical value.
+    let numeric_signal = |value| {
+        if power_mask.is_some_and(|rewrite| rewrite.descriptor == value) {
+            format!("v{value}_d0[42:0]")
+        } else {
+            format!("v{value}_d0")
+        }
+    };
     let normal_ff = if options.shallow_normal_ff {
         if profile != LightingProfile::Fast {
             return Err("shallow normal FF experiment is limited to Fast".into());
@@ -1755,8 +1944,40 @@ pub fn generate_with_options(
     };
     let latency = program.latencies[0];
     let diffuse_latency = program.latencies[1];
-    let specular_ii = profile.ii(true);
-    let diffuse_ii = profile.ii(false);
+    let specular_ii = program.ii[0];
+    let diffuse_base = program
+        .full
+        .iter()
+        .position(|full| !full)
+        .unwrap_or(program.full.len());
+    let diffuse_ii = if options.unified_lit {
+        specular_ii
+    } else {
+        program.ii[diffuse_base]
+    };
+    let boundaries = program
+        .instructions
+        .iter()
+        .filter(|i| program.binding.kinds[i.root].is_some())
+        .map(|i| {
+            let value = program.frame.events[i.root].output.unwrap();
+            StageProbe {
+                full: program.full[i.root],
+                name: format!(
+                    "event:{}",
+                    i.root
+                        - if program.full[i.root] {
+                            0
+                        } else {
+                            diffuse_base
+                        }
+                ),
+                signal: numeric_signal(value),
+                age: i.ready,
+                bits: program.frame.values[value].format.bits,
+            }
+        })
+        .collect();
     let stages = program
         .frame
         .outputs
@@ -1777,7 +1998,7 @@ pub fn generate_with_options(
                 ) {
                     literal(v.raw, v.format.bits)
                 } else {
-                    format!("v{}_d0", o.value)
+                    numeric_signal(o.value)
                 },
                 age: ins.ready,
                 bits: v.format.bits,
@@ -1791,6 +2012,8 @@ pub fn generate_with_options(
         BTreeSet::new()
     };
     let mut e = Emitter {
+        power_mask,
+        rsqrt_q13: options.rsqrt_q13,
         one_hot_dsp: options.one_hot_dsp,
         dsp_input_csv: String::from("lane,kind,full,phase,port,bits,signed,source\n"),
         program,
@@ -1817,6 +2040,9 @@ pub fn generate_with_options(
     };
     let mut lanes = BTreeMap::<(LaneKind, usize), Vec<usize>>::new();
     for (id, ins) in e.program.instructions.iter().enumerate() {
+        if e.program.duplicate_roots.contains(&ins.root) {
+            continue;
+        }
         if let Some(kind) = e.program.binding.kinds[ins.root].clone() {
             lanes
                 .entry((kind, e.program.schedule.nodes[ins.root].lane.unwrap()))
@@ -1838,11 +2064,32 @@ pub fn generate_with_options(
         }
         e.lane(lane, kind, ids)?;
     }
+    if options.rsqrt_q13 {
+        let ports: Vec<_> = lanes
+            .keys()
+            .enumerate()
+            .filter_map(|(id, (kind, _))| (*kind == LaneKind::NormalizeRead).then_some(id))
+            .collect();
+        if ports.len() != 6 {
+            return Err("Q13 normalization requires six paired read channels".into());
+        }
+        for (bank, pair) in ports.chunks(2).enumerate() {
+            let [a, b] = pair else {
+                return Err("unpaired normalization channel".into());
+            };
+            writeln!(e.body, "lighting_norm_q13 bank{bank}(.clk(clk),.ce(datapath_ce),.a({{1'b0,unit{a}_addr}}),.b({{1'b0,unit{b}_addr}}),.qa(unit{a}_p0),.qb(unit{b}_p0));").unwrap();
+        }
+        e.modules.push_str(&normalization_tdp_q13());
+        roms = ports.len() / 2;
+    }
     let unbound: Vec<_> = e
         .program
         .instructions
         .iter()
-        .filter(|ins| e.program.binding.kinds[ins.root].is_none())
+        .filter(|ins| {
+            e.program.binding.kinds[ins.root].is_none()
+                && !e.program.duplicate_roots.contains(&ins.root)
+        })
         .map(|i| Instruction {
             root: i.root,
             members: i.members.clone(),
@@ -1877,6 +2124,27 @@ pub fn generate_with_options(
             .unwrap();
         }
     }
+    // Only existing instruction ports get aliases; cone internals stay private.
+    for ins in e
+        .program
+        .instructions
+        .iter()
+        .filter(|i| e.program.duplicate_roots.contains(&i.root))
+    {
+        for value in e.instruction_outputs(ins) {
+            let canonical = e.program.aliases[&value];
+            if e.program.frame.events[e.program.frame.values[value].producer].operation
+                != Operation::Literal
+            {
+                writeln!(
+                    e.body,
+                    "wire {} v{value}_d0 = v{canonical}_d0;",
+                    decl(e.program.frame.values[value].format)
+                )
+                .unwrap();
+            }
+        }
+    }
     let g = e.value(e.program.output_values[0][0], latency)?;
     let h = e.value(e.program.output_values[0][1], latency)?;
     let dg = e.value(e.program.output_values[1][0], diffuse_latency)?;
@@ -1898,8 +2166,8 @@ pub fn generate_with_options(
         .unwrap();
     }
     e.retained_storage(options.ram_retained)?;
-    for mode in 0..2 {
-        let ii = profile.ii(mode == 0);
+    for mode in 0..if options.unified_lit { 1 } else { 2 } {
+        let ii = if mode == 0 { specular_ii } else { diffuse_ii };
         for row in 0..3 {
             for d in 0..=e.input_delays[mode][row].div_ceil(ii) {
                 writeln!(e.body, "reg [35:0] pixel{mode}_{row}_d{d};").unwrap();
@@ -1923,10 +2191,20 @@ pub fn generate_with_options(
             }
         }
     }
-    e.rom("context_rom", 43, &CONTEXT_RAW, 32);
-    for mode in 0..2 {
+    let context_width = if options.power_context_masks { 75 } else { 43 };
+    if options.power_context_masks {
+        let descriptors: Vec<_> = CONTEXT_RAW
+            .iter()
+            .copied()
+            .map(power_masks::encode_descriptor)
+            .collect();
+        e.rom("context_rom", context_width, &descriptors, 32);
+    } else {
+        e.rom("context_rom", context_width, &CONTEXT_RAW, 32);
+    }
+    for mode in 0..if options.unified_lit { 1 } else { 2 } {
         if let Some(last) = e.input_lsb_delays[mode] {
-            let ii = profile.ii(mode == 0);
+            let ii = if mode == 0 { specular_ii } else { diffuse_ii };
             for d in 0..=last.div_ceil(ii) {
                 writeln!(e.body, "reg [8:0] normal_lsb{mode}_d{d};").unwrap();
                 if d == 0 {
@@ -1942,7 +2220,13 @@ pub fn generate_with_options(
             }
         }
     }
-    e.register_bits += if profile.system() { 9 } else { 5 };
+    e.register_bits += if options.unified_lit {
+        2
+    } else if profile.system() {
+        9
+    } else {
+        5
+    };
     let full_id_depth = latency.div_ceil(specular_ii);
     let diff_id_depth = diffuse_latency.div_ceil(diffuse_ii);
     let shared_id_depth = full_id_depth.max(diff_id_depth);
@@ -1960,6 +2244,7 @@ pub fn generate_with_options(
         (full_id_depth + diff_id_depth + 2) * 32
     };
     e.register_bits += latency + 1 + 16 + 3 * 16 + 3 * 16 + 2 * 9 + 2 + 5 + 43 + 2;
+    e.register_bits += context_width - 43;
     // Declare all module nets before use. In particular, declaration-assignment
     // syntax otherwise creates implicit nets before later retained registers.
     let (declarations, body) = hoist(&e.body);
@@ -2028,13 +2313,23 @@ end
         String::new()
     };
     let system_calendar = profile.system();
-    let calendar_top = if system_calendar { 7 } else { 4 };
-    let full_initial = if system_calendar {
+    let calendar_top = if options.unified_lit {
+        1
+    } else if system_calendar {
+        7
+    } else {
+        4
+    };
+    let full_initial = if options.unified_lit {
+        "2'b01"
+    } else if system_calendar {
         "8'b00000001"
     } else {
         "5'b00001"
     };
-    let diff_initial = if system_calendar {
+    let diff_initial = if options.unified_lit {
+        "2'b01"
+    } else if system_calendar {
         "8'b00010000"
     } else {
         "5'b01000"
@@ -2060,9 +2355,9 @@ end
         )
         .unwrap();
     }
-    for mode in 0..2 {
+    for mode in 0..if options.unified_lit { 1 } else { 2 } {
         for row in 0..3 {
-            let ii = profile.ii(mode == 0);
+            let ii = if mode == 0 { specular_ii } else { diffuse_ii };
             let last = e.input_delays[mode][row];
             let words = last.div_ceil(ii) + 1;
             writeln!(
@@ -2073,9 +2368,9 @@ end
             .unwrap();
         }
     }
-    for mode in 0..2 {
+    for mode in 0..if options.unified_lit { 1 } else { 2 } {
         if let Some(last) = e.input_lsb_delays[mode] {
-            let ii = profile.ii(mode == 0);
+            let ii = if mode == 0 { specular_ii } else { diffuse_ii };
             let words = last.div_ceil(ii) + 1;
             writeln!(
                 storage_csv,
@@ -2127,9 +2422,10 @@ end
     .unwrap();
     writeln!(
         storage_csv,
-        "ROM,normalization_declared,36,0,0,1,{},{}",
-        roms * 512,
-        roms * 512 * 36
+        "ROM,normalization_declared,{},0,0,1,{},{}",
+        if options.rsqrt_q13 { 18 } else { 36 },
+        roms * if options.rsqrt_q13 { 1024 } else { 512 },
+        roms * 18432
     )
     .unwrap();
     writeln!(storage_csv, "ROM,power_declared,28,0,0,1,1024,28672").unwrap();
@@ -2167,13 +2463,13 @@ module gpu_v2_lighting(
 reg configured;reg [1:0] phase;reg [{calendar_top}:0] calendar;
 reg [1:0] ctx_mode; reg [4:0] ctx_code; reg [15:0] ctx_epoch;
 reg signed [15:0] ctx_l0,ctx_l1,ctx_l2,ctx_p0,ctx_p1,ctx_p2;
-reg [8:0] ctx_i0,ctx_i1; reg [42:0] ctx_power;
+reg [8:0] ctx_i0,ctx_i1; reg [{context_top}:0] ctx_power;
 reg [{latency}:0] valid_pipe;
 {id_declarations}
 wire full_mode;
 {id_retime}
 {declarations}
-assign full_mode = ctx_mode==3;
+assign full_mode = {mode_select};
 wire [1:0] last_phase = full_mode ? 2'd{full_last_phase} : 2'd{diff_last_phase};
 wire advance = ce && configured && !(out_valid && !out_ready);
 wire datapath_ce = advance && !reset && !(context_valid && context_ready);
@@ -2219,13 +2515,21 @@ end
 endmodule
 "#,
         body = body,
+        context_top = context_width - 1,
+        mode_select = if options.unified_lit {
+            "1'b1"
+        } else {
+            "ctx_mode==3"
+        },
         unlit_output = if options.lit_queue {
             ""
         } else {
             "0: begin out_g=9'd256; out_h=0; end"
         },
         sequential = sequential,
-        full_calendar_next = if system_calendar && specular_ii == 4 {
+        full_calendar_next = if options.unified_lit {
+            "{calendar[0],calendar[1]}"
+        } else if system_calendar && specular_ii == 4 {
             "{4'b0000,calendar[2:0],calendar[3]}"
         } else if system_calendar {
             "{6'b000000,calendar[0],calendar[1]}"
@@ -2234,7 +2538,9 @@ endmodule
         } else {
             "{2'b00,calendar[1:0],calendar[2]}"
         },
-        diff_calendar_next = if system_calendar && diffuse_ii == 4 {
+        diff_calendar_next = if options.unified_lit {
+            "{calendar[0],calendar[1]}"
+        } else if system_calendar && diffuse_ii == 4 {
             "{calendar[6:4],calendar[7],4'b0000}"
         } else if system_calendar {
             "{2'b00,calendar[4],calendar[5],4'b0000}"
@@ -2247,6 +2553,7 @@ endmodule
         diff_last_phase = diffuse_ii - 1
     );
     Ok(LightingVerilog {
+        boundaries,
         dsp_input_csv: e.dsp_input_csv,
         source: format!("{source}\n{}", e.modules),
         lanes: e.lanes,
@@ -2292,9 +2599,108 @@ fn hoist(input: &str) -> (String, String) {
     (declarations, body)
 }
 
+/// The output bypass is synchronous; CE freezes both address/data capture.
+/// No write, output register or primitive reset is enabled on either port.
+fn normalization_tdp_q13() -> String {
+    let mut values = SQUARE_SIGNED_RAW.to_vec();
+    values.extend(RSQRT_Q13_RAW);
+    values.resize(1024, 0);
+    let mut s = String::from("module lighting_norm_q13(input clk,ce,input [9:0] a,b,output [17:0] qa,qb);\n`ifdef GPU_V2_GOWIN_DSP\nDPX9B #(.BIT_WIDTH_0(18),.BIT_WIDTH_1(18),.READ_MODE0(0),.READ_MODE1(0)");
+    for (i, words) in values.chunks(16).enumerate() {
+        // 16 words x 18 bits = 288; emit one nibble at a time, avoiding a host
+        // integer wider than u128 and preserving the primitive's parity bits.
+        let hex: String = (0..72)
+            .rev()
+            .map(|n| {
+                let bit = n * 4;
+                let nibble = (0..4).fold(0_u32, |value, j| {
+                    value | ((((words[(bit + j) / 18] >> ((bit + j) % 18)) & 1) as u32) << j)
+                });
+                char::from_digit(nibble, 16).unwrap()
+            })
+            .collect();
+        write!(s, ",\n.INIT_RAM_{i:02X}(288'h{hex})").unwrap();
+    }
+    s.push_str(") ram(.DOA(qa),.DOB(qb),.DIA(18'd0),.DIB(18'd0),.ADA({a,4'b0000}),.ADB({b,4'b0000}),.WREA(1'b0),.WREB(1'b0),.CLKA(clk),.CLKB(clk),.CEA(ce),.CEB(ce),.OCEA(1'b0),.OCEB(1'b0),.RESETA(1'b0),.RESETB(1'b0),.BLKSELA(3'd0),.BLKSELB(3'd0));\n`else\nreg [17:0] mem[0:1023];reg [17:0] out_a,out_b;assign qa=out_a;assign qb=out_b;initial begin\n");
+    for (i, value) in values.iter().enumerate() {
+        writeln!(s, "mem[{i}]=18'h{value:x};").unwrap();
+    }
+    s.push_str("end\nalways @(posedge clk) if(ce) begin out_a<=mem[a];out_b<=mem[b];end\n`endif\nendmodule\n");
+    s
+}
+
+#[cfg(test)]
+mod q13_rom_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires Icarus and GOWIN_HOME"]
+    fn q13_native_tdp_reads_both_ports_and_freezes_on_ce() {
+        use std::process::Command;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/lighting-rsqrt-production-20261007/primitive-audit");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rom.v"), normalization_tdp_q13()).unwrap();
+        let mut tb=String::from("module tb;reg clk=0,ce=1;reg [9:0] a=0,b=0;wire [17:0] qa,qb;lighting_norm_q13 dut(.*);\n`ifdef GPU_V2_GOWIN_DSP\nGSR GSR(.GSRI(1'b1));\n`endif\nreg [17:0] expected[0:1023];integer i;reg [17:0] held_a,held_b;initial begin\n");
+        for i in 0..1024 {
+            let value = if i < 256 {
+                let a = if i >= 128 { i as i64 - 256 } else { i as i64 };
+                (a * a) as u64
+            } else if i < 384 {
+                let index = i - 256;
+                let parity = index / 64;
+                let segment = index % 64;
+                let endpoint = |s: usize| {
+                    (8192.0 / ((1.0 + s as f64 / 64.0) * (1_u32 << parity) as f64).sqrt())
+                        .round_ties_even() as u64
+                };
+                let bias = (segment / 8 * 8..segment / 8 * 8 + 8)
+                    .map(|s| endpoint(s) - endpoint(s + 1))
+                    .min()
+                    .unwrap();
+                endpoint(segment) | ((endpoint(segment) - endpoint(segment + 1) - bias) << 14)
+            } else {
+                0
+            };
+            writeln!(tb, "expected[{i}]=18'h{value:x};").unwrap();
+        }
+        tb.push_str("for(i=0;i<1024;i=i+1) begin a=i;b=1023-i;ce=1;#2;clk=1;#2;clk=0;#2;if(qa!==expected[i]||qb!==expected[1023-i]) $fatal(1,\"TDP row %0d\",i);held_a=qa;held_b=qb;ce=0;a=~a;b=~b;#2;clk=1;#2;clk=0;#2;if(qa!==held_a||qb!==held_b) $fatal(1,\"CE hold\");end $display(\"PASS both ports 1024 rows CE freeze\");$finish;end initial begin #20000;$fatal(1,\"bounded timeout\");end endmodule\n");
+        std::fs::write(dir.join("tb.v"), tb).unwrap();
+        for vendor in [false, true] {
+            let mut command =
+                Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()));
+            command
+                .current_dir(&dir)
+                .args(["-g2012", "-s", "tb", "-o", "test.vvp"]);
+            if vendor {
+                command.arg("-DGPU_V2_GOWIN_DSP").arg(
+                    std::path::Path::new(&std::env::var_os("GOWIN_HOME").unwrap())
+                        .join("IDE/simlib/gw2a/prim_sim.v"),
+                );
+            }
+            let compiled = command.args(["rom.v", "tb.v"]).output().unwrap();
+            assert!(
+                compiled.status.success(),
+                "{}",
+                String::from_utf8_lossy(&compiled.stderr)
+            );
+            let result = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+                .current_dir(&dir)
+                .arg("test.vvp")
+                .output()
+                .unwrap();
+            let out = String::from_utf8_lossy(&result.stdout);
+            assert!(
+                result.status.success() && out.contains("PASS"),
+                "vendor={vendor} {out}"
+            );
+            println!("vendor={vendor} {out}");
+        }
+    }
+}
+
 /// Actual per-pixel issue/ready calendar, including physical lane relocation.
 /// The block study below describes alternatives rather than this implemented body.
-pub(crate) struct CalendarInstruction {
+pub struct CalendarInstruction {
     pub full: bool,
     pub event: usize,
     pub lane: Option<usize>,
@@ -2309,9 +2715,21 @@ pub(crate) fn physical_calendar_with_options(
     options: LightingRtlOptions,
 ) -> Result<Vec<CalendarInstruction>, String> {
     let p = LoweredProgram::new(profile, options)?;
+    physical_calendar(p)
+}
+/// Physical instance names for an explicit, checked offline calendar.
+pub fn physical_calendar_with_schedule_plans(
+    profile: LightingProfile,
+    options: LightingRtlOptions,
+    plans: &[super::sim::workbench::SchedulePlan; 2],
+) -> Result<Vec<CalendarInstruction>, String> {
+    physical_calendar(LoweredProgram::with_plans(profile, options, Some(plans))?)
+}
+fn physical_calendar(p: LoweredProgram) -> Result<Vec<CalendarInstruction>, String> {
     let keys: BTreeSet<_> = p
         .instructions
         .iter()
+        .filter(|i| !p.duplicate_roots.contains(&i.root))
         .filter_map(|i| {
             p.binding.kinds[i.root]
                 .clone()
@@ -2327,7 +2745,7 @@ pub(crate) fn physical_calendar_with_options(
         .full
         .iter()
         .position(|full| !*full)
-        .ok_or("missing diffuse calendar")?;
+        .unwrap_or(p.full.len());
     Ok(p.instructions
         .iter()
         .map(|i| {
@@ -2614,7 +3032,8 @@ mod q_window_tests {
 
     #[test]
     fn shared_windows_reject_a_wider_range_or_observed_amount() {
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             let mut p = LoweredProgram::new(profile, LightingRtlOptions::factor_profile()).unwrap();
             let mut ranges = infer_ranges(&p.frame);
             let eligible = q_window_amounts(&p, &ranges);
@@ -2634,7 +3053,8 @@ mod q_window_tests {
 
     #[test]
     fn shared_windows_reject_extra_amount_consumers_and_wider_slices() {
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             let mut p = LoweredProgram::new(profile, LightingRtlOptions::factor_profile()).unwrap();
             let mut ranges = infer_ranges(&p.frame);
             let eligible = q_window_amounts(&p, &ranges);

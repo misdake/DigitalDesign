@@ -156,7 +156,7 @@ fn accepted_q16_ties_at_1024_repeat_edge_survive_caller_mutation_and_ce_stalls()
         ]
     );
     assert!(ce_off > 0 && beats == 32);
-    assert_eq!(r.stats.compilations, 1);
+    assert_eq!(r.stats.admissions, 1);
     assert_eq!(r.stats.link.captures, 2);
     println!("Q16 capture: packets=2 beats={beats} CE-off={ce_off}, RGB={pixels:?}");
 }

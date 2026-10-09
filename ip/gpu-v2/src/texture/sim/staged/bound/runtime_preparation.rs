@@ -136,11 +136,26 @@ enum Payload {
     Ready { uv: [u32; 8], lod: lod::Output },
 }
 struct Context {
-    source: Arc<Program>,
     next: usize,
     d: Option<u64>,
     lod: Option<u64>,
     payload: Payload,
+}
+impl Context {
+    fn quad(&self) -> u8 {
+        match &self.payload {
+            Payload::Raw(v) => v.header.quad,
+            Payload::Derived(v) => v.header.quad,
+            Payload::Ready { lod, .. } => lod.quad,
+        }
+    }
+    fn mask(&self) -> u8 {
+        match &self.payload {
+            Payload::Raw(v) => v.header.mask,
+            Payload::Derived(v) => v.header.mask,
+            Payload::Ready { lod, .. } => lod.mask,
+        }
+    }
 }
 /// Metadata captured when a lane enters the actual coordinate pipeline. The
 /// wrapped taps and Q8 fractions are produced later by `CoordinateEmu`'s old
@@ -171,7 +186,7 @@ impl PendingCoordinate {
 }
 struct Completion {
     slot: usize,
-    left: usize,
+    remaining: u8,
 }
 
 #[cfg(test)]
@@ -321,7 +336,7 @@ impl Machine {
             .ok_or("Runtime context release owner")?;
         self.order.retain(|&s| s != slot);
         events.push(Event::SharedRelease {
-            program: usize::from(c.source.input.quad_id),
+            program: usize::from(c.quad()),
             slot,
         });
         Ok(())
@@ -330,6 +345,9 @@ impl Machine {
         let completion = self.completion[usize::from(quad)]
             .take()
             .ok_or("Runtime completion release owner")?;
+        if completion.remaining != 0 {
+            return Err("Runtime release precedes actual last lane packets".into());
+        }
         self.live &= !(1 << quad);
         if !self.hardware.release_after_capture {
             self.shared_release(completion.slot, events)?;
@@ -363,22 +381,19 @@ impl Machine {
     }
     pub(super) fn step_packet_port(
         &mut self,
-        offer: Option<(usize, Arc<Program>)>,
+        offer: Option<derivative::Input>,
         ce: bool,
         ready: bool,
         packet_issue_ready: bool,
         masks: &[u8; 16],
-        slots: &[Slot],
     ) -> Result<Step, String> {
-        #[cfg(test)]
-        let _counted_exclusion = counted_call_guard::Scope::enter();
         if self.stats.cycles >= self.hardware.max_cycles {
             return Err("bound watchdog".into());
         }
-        let ingress_ready = offer.as_ref().is_some_and(|(id, p)| {
-            *id == usize::from(p.input.quad_id) && self.input_ready(p.input.quad_id)
-        });
-        let offered = offer.as_ref().map(|(id, _)| *id);
+        let ingress_ready = offer
+            .as_ref()
+            .is_some_and(|p| self.input_ready(p.header.quad));
+        let offered = offer.as_ref().map(|p| usize::from(p.header.quad));
         let pre_work = self.work_count;
         let pre_coordinates = self.coordinate_count;
         let pre_packets = self.packets.inflight();
@@ -426,16 +441,20 @@ impl Machine {
                 let completion = self.completion[usize::from(quad)]
                     .as_mut()
                     .ok_or("Runtime packet completion owner")?;
-                completion.left = completion
-                    .left
-                    .checked_sub(1)
-                    .ok_or("Runtime completion underflow")?;
+                let lane = ((payload >> 70) & 3) as u8;
+                let bit = 1 << lane;
+                if completion.remaining & bit == 0 {
+                    return Err("Runtime packet for completed/uncovered lane".into());
+                }
+                if payload >> 65 & 1 != 0 {
+                    completion.remaining &= !bit;
+                }
                 self.stats.packets += 1;
                 events.push(Event::Packet {
                     program: usize::from(quad),
                     payload,
                 });
-                if completion.left == 0 {
+                if completion.remaining == 0 {
                     self.release(quad, &mut events)?;
                 }
             }
@@ -541,7 +560,7 @@ impl Machine {
                     let c = self.slots[s].as_ref().unwrap();
                     c.lod.is_some_and(|u| t - u > self.binding.lod.span() + 1)
                         && matches!(c.payload, Payload::Ready { .. })
-                        && c.next < c.source.preparation.lanes.len()
+                        && c.next < c.mask().count_ones() as usize
                 });
                 if let Some(slot) = slot {
                     let c = self.slots[slot].as_mut().unwrap();
@@ -577,7 +596,7 @@ impl Machine {
                         coordinate_owner = Some((quad, ordinal));
                     }
                     c.next += 1;
-                    let last = c.next == c.source.preparation.lanes.len();
+                    let last = c.next == c.mask().count_ones() as usize;
                     self.coordinate_count += 1;
                     events.push(Event::Issue {
                         stage: "coordinate",
@@ -597,12 +616,11 @@ impl Machine {
                 .copied()
                 .filter(|&s| {
                     let c = self.slots[s].as_ref().unwrap();
-                    c.source.preparation.lanes.is_empty()
-                        && c.lod.is_some_and(|u| t - u > self.binding.lod.span() + 1)
+                    c.mask() == 0 && c.lod.is_some_and(|u| t - u > self.binding.lod.span() + 1)
                 })
                 .collect();
             for slot in empty {
-                let quad = self.slots[slot].as_ref().unwrap().source.input.quad_id;
+                let quad = self.slots[slot].as_ref().unwrap().quad();
                 if self.hardware.release_after_capture {
                     self.shared_release(slot, &mut events)?;
                 }
@@ -640,7 +658,7 @@ impl Machine {
                         }
                         events.push(Event::Issue {
                             stage,
-                            program: usize::from(c.source.input.quad_id),
+                            program: usize::from(c.quad()),
                             lane: 0,
                             plane: 0,
                             packet: 0,
@@ -658,7 +676,7 @@ impl Machine {
                     .find(|s| {
                         self.slots[*s]
                             .as_ref()
-                            .is_some_and(|c| c.source.input.quad_id == d.header.quad)
+                            .is_some_and(|c| c.quad() == d.header.quad)
                     })
                     .ok_or("Runtime D return owner")?;
                 let c = self.slots[slot].as_mut().unwrap();
@@ -674,11 +692,7 @@ impl Machine {
                     .order
                     .iter()
                     .copied()
-                    .find(|s| {
-                        self.slots[*s]
-                            .as_ref()
-                            .is_some_and(|c| c.source.input.quad_id == l.quad)
-                    })
+                    .find(|s| self.slots[*s].as_ref().is_some_and(|c| c.quad() == l.quad))
                     .ok_or("Runtime LOD return owner")?;
                 let c = self.slots[slot].as_mut().unwrap();
                 let Payload::Derived(d) = c.payload else {
@@ -690,15 +704,8 @@ impl Machine {
                 c.payload = Payload::Ready { uv: d.uv, lod: l };
             }
             if ingress_ready {
-                let (_, source) = offer.ok_or("Runtime ingress offer")?;
-                if !Arc::ptr_eq(&source.binding, &self.binding) {
-                    return Err("binding source identity".into());
-                }
-                let quad = source.input.quad_id;
-                let input_slot = *slots
-                    .get(usize::from(source.input.slot))
-                    .ok_or("Runtime D slot")?;
-                let captured = derivative::Input::capture(&source.input, input_slot)?;
+                let captured = offer.ok_or("Runtime ingress offer")?;
+                let quad = captured.header.quad;
                 let slot = self
                     .slots
                     .iter()
@@ -706,11 +713,10 @@ impl Machine {
                     .ok_or("Runtime context credit")?;
                 self.completion[usize::from(quad)] = Some(Completion {
                     slot,
-                    left: source.preparation.payloads.len(),
+                    remaining: captured.header.mask,
                 });
                 self.live |= 1 << quad;
                 self.slots[slot] = Some(Context {
-                    source,
                     next: 0,
                     d: None,
                     lod: None,

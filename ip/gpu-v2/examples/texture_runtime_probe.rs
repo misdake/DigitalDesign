@@ -1,5 +1,5 @@
 //! Bounded live quad stimulus, real MC and actual ColorEmu results.
-//! Host compilation is counted preparation replay, not cycle arithmetic emu.
+//! Upstream quantization feeds the raw port; oracle runs only after drain.
 #[path = "../tests/support/sdram/physical_texture.rs"]
 #[allow(dead_code)]
 mod physical;
@@ -46,7 +46,7 @@ fn main() {
     );
     fs::create_dir_all(root).unwrap();
     let mut summary = fs::File::create(root.join("runtime_calendar.csv")).unwrap();
-    writeln!(summary, "case,mode,warm_wall,warm_refills,quads,pixels,packets,wall,caller_enabled,cache_enabled,refills,compiled_quads,rejected,P_peak,G_peak,context_peak,source_peak,color_credit_peak,gated,wall_per_pixel,enabled_per_pixel").unwrap();
+    writeln!(summary, "case,mode,warm_wall,warm_refills,quads,pixels,packets,wall,caller_enabled,cache_enabled,refills,admitted_quads,live_compilations,rejected,P_peak,G_peak,context_peak,live_peak,color_credit_peak,gated,wall_per_pixel,enabled_per_pixel").unwrap();
     for case in ["nearest", "bilinear", "mip", "seam"] {
         for paused in [false, true] {
             let slot = support::slot(5, true);
@@ -68,14 +68,14 @@ fn main() {
             )
             .unwrap();
             // Warm the actual same-instance cache, then start a drained window.
-            let warm = quad(case, 0);
+            let warm = RawQuadInput::capture(&quad(case, 0)).unwrap();
             assert!(
-                r.step(&mut memory, Some(&warm), timed::Control::default())
+                r.step_raw(&mut memory, Some(&warm), timed::Control::default())
                     .unwrap()
                     .accepted
             );
             for _ in 0..10_000 {
-                r.step(&mut memory, None, timed::Control::default())
+                r.step_raw(&mut memory, None, timed::Control::default())
                     .unwrap();
                 if r.idle() {
                     break;
@@ -96,6 +96,7 @@ fn main() {
             )
             .unwrap();
             let mut offered = quad(case, 0);
+            let mut raw_offered = RawQuadInput::capture(&offered).unwrap();
             let mut accepted = vec![];
             let mut got = vec![];
             let mut caller_enabled = 0;
@@ -103,9 +104,9 @@ fn main() {
             let mut peak_g = 0;
             for t in 1..=80_000 {
                 let st = r
-                    .step(
+                    .step_raw(
                         &mut memory,
-                        (accepted.len() < 48).then_some(&offered),
+                        (accepted.len() < 48).then_some(&raw_offered),
                         timed::Control {
                             ce: !paused || t % 17 > 3,
                             result_ready: !paused || (t > 1_200 && t % 29 > 5),
@@ -173,6 +174,7 @@ fn main() {
                 if st.accepted {
                     accepted.push(offered);
                     offered = quad(case, accepted.len());
+                    raw_offered = RawQuadInput::capture(&offered).unwrap();
                 }
                 if accepted.len() == 48 && r.idle() {
                     break;
@@ -199,6 +201,10 @@ fn main() {
                 })
                 .collect();
             assert_eq!(got, want);
+            assert_eq!(
+                (r.stats.compilations, r.stats.peak_preparation_programs),
+                (0, 0)
+            );
             let wall = r.stats.link.wall - warm_wall;
             let enabled = r.stats.link.enabled - before.link.enabled;
             let packets = r.stats.link.packets - before.link.packets;
@@ -206,9 +212,9 @@ fn main() {
             assert_eq!(refills, 0, "measurement window must actually be warm");
             let interval_wall = wall as f64 / got.len() as f64;
             let interval_enabled = enabled as f64 / got.len() as f64;
-            writeln!(summary, "{case},{mode},{warm_wall},{warm_refills},48,{},{packets},{wall},{caller_enabled},{enabled},{refills},{},{},{peak_p},{peak_g},{},{},{},{},{interval_wall},{interval_enabled}",
-                got.len(), r.stats.compilations - before.compilations, r.stats.rejected - before.rejected,
-                r.preparation_stats().peak_contexts, r.stats.peak_preparation_programs,
+            writeln!(summary, "{case},{mode},{warm_wall},{warm_refills},48,{},{packets},{wall},{caller_enabled},{enabled},{refills},{},{},{},{peak_p},{peak_g},{},{},{},{},{interval_wall},{interval_enabled}",
+                got.len(), r.stats.admissions - before.admissions, r.stats.compilations - before.compilations, r.stats.rejected - before.rejected,
+                r.preparation_stats().peak_contexts, r.stats.peak_live_quads,
                 r.stats.link.peak_color_credits, r.stats.link.color_gated_edges - before.link.color_gated_edges).unwrap();
             println!("{case}/{mode}: {} pixels, {packets} packets, {wall} wall/{enabled} enabled, {interval_wall:.3} wall per pixel, warm refills={refills}", got.len());
         }

@@ -34,7 +34,7 @@ mod transport;
 // Test-only exclusion of fresh counted evaluation on the live numerical path.
 // Legacy Program construction occurs outside this scope and remains supported.
 #[cfg(test)]
-pub(super) mod counted_call_guard {
+pub(in crate::texture::sim) mod counted_call_guard {
     use std::cell::Cell;
     thread_local! {
         static LIVE: Cell<bool> = const { Cell::new(false) };
@@ -58,6 +58,9 @@ pub(super) mod counted_call_guard {
             calls[which] += 1;
             v.set(calls);
         });
+        assert_not_live();
+    }
+    pub(in crate::texture::sim) fn assert_not_live() {
         LIVE.with(|v| assert!(!v.get(), "counted arithmetic on live Runtime path"));
     }
     pub(super) fn calls() -> [u64; 5] {
@@ -817,6 +820,8 @@ impl Program {
         slots: &[Slot],
         binding: Arc<Binding>,
     ) -> Result<Arc<Self>, String> {
+        #[cfg(test)]
+        counted_call_guard::assert_not_live();
         let preparation = prepare(q, slots).map_err(|e| format!("bound preparation: {e:?}"))?;
         binding.audit(&preparation)?;
         Ok(Arc::new(Self {

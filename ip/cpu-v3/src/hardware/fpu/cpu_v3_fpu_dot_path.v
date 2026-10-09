@@ -25,7 +25,7 @@
 // The multiplier is the shared CpuV3FpuMulPipe instance in the unit top (the
 // core serializes instructions, so this path, the multiply path and SINCOS
 // never multiply at once). This controller sequences lanes and hands each to the
-// pipe with its destination tag; products return three cycles later and are
+// pipe with its destination tag; products return two cycles later and are
 // accumulated (or, for DOTSTORE's final lane, captured for the writeback).
 //
 // gowinsynthesis note: the 64-bit accumulate fuses with the multiplier into a

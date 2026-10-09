@@ -1,9 +1,9 @@
 //! Bounded old-state credit/FIFO calendar for the final-color leaf.
 //!
 //! Finiteness is real: the leaf has [`super::super::PIPELINE_LATENCY`] (= 9)
-//! one-operation stages and only [`super::super::RESULT_CAPACITY`] (= 4)
+//! one-operation stages and only [`super::super::RESULT_CAPACITY`] (= 8)
 //! outstanding result credits. The arithmetic span (`latency + n - 1`) is only
-//! a pipelining lower bound. The engine also stalls whenever all four credits
+//! a pipelining lower bound. The engine also stalls whenever all eight credits
 //! are reserved, so the enabled-edge count until the last result is retired is
 //! strictly larger than that bound.
 //!
@@ -55,8 +55,8 @@ pub struct CreditCompletion {
     pub max_in_flight: usize,
     pub max_queued: usize,
     /// Enabled edges after the first retirement that transferred no result.
-    /// It is non-zero here because four credits cannot keep a nine-stage
-    /// pipeline full: the engine accepts a burst of four, then stalls until a
+    /// It is non-zero here because eight credits cannot keep a nine-stage
+    /// pipeline full: the engine accepts a burst of eight, then stalls until a
     /// credit returns. This is the finite-capacity bubble, not a bug.
     pub steady_bubbles: u64,
 }
@@ -87,7 +87,7 @@ impl CreditCalendar {
             enabled: 0,
         })
     }
-    /// Calendar bound to this leaf's fixed nine-stage, four-credit engine.
+    /// Calendar bound to this leaf's fixed nine-stage, eight-credit engine.
     pub fn leaf() -> Self {
         Self::new(PIPELINE_LATENCY, RESULT_CAPACITY).expect("fixed final-stage geometry")
     }
@@ -148,10 +148,10 @@ impl CreditCalendar {
     /// every enabled edge until all are accepted, and the consumer never
     /// backpressures. Bounded by `max_edges`; no arithmetic is evaluated.
     ///
-    /// With the leaf's `latency = 9`, `capacity = 4` the accepted burst is four
+    /// With the leaf's `latency = 9`, `capacity = 8` the accepted burst is eight
     /// pixels and the period is `latency + 2 = 11` enabled edges (a credit
     /// returned at the end of an edge funds the next edge only), so the steady
-    /// rate is `4/11`, not one per clock.
+    /// rate is `8/11`, not one per clock.
     pub fn completion(&self, n: usize, max_edges: u64) -> Result<CreditCompletion, String> {
         if n == 0 {
             return Err("final credit completion requires a pixel".into());
@@ -195,13 +195,13 @@ mod tests {
     #[test]
     fn credit_return_never_funds_the_transfer_edge() {
         let mut cal = CreditCalendar::leaf();
-        // Fill all four credits: accepted edges 1..=4.
-        for edge in 1..=4 {
+        // Fill all eight credits: accepted edges 1..=8.
+        for edge in 1..=RESULT_CAPACITY {
             let step = cal.step(true, false);
             assert!(step.accepted, "edge {edge}");
         }
         assert_eq!(cal.credits(), RESULT_CAPACITY);
-        // Freeze the input; the four results publish at edges 10..=13.
+        // Freeze the input; the eight results publish at edges 10..=17.
         for _ in 0..9 {
             cal.step(false, false);
         }
@@ -219,9 +219,10 @@ mod tests {
 
     #[test]
     fn completion_is_credit_aware_and_steady_below_one_per_clock() {
-        // Closed form for this fixed geometry (latency 9, capacity 4): a burst
-        // of four accepts every eleven enabled edges.
-        let expected = |n: u64| 11 * n.div_ceil(4) + (n - 1) % 4;
+        // Closed form for this fixed geometry (latency 9, capacity 8): a burst
+        // of eight accepts every eleven enabled edges.
+        let expected =
+            |n: u64| 11 * n.div_ceil(RESULT_CAPACITY as u64) + (n - 1) % RESULT_CAPACITY as u64;
         let cal = CreditCalendar::leaf();
         for n in 1..=500u64 {
             let done = cal.completion(n as usize, 100_000).unwrap();
@@ -231,11 +232,11 @@ mod tests {
             assert!(done.max_in_flight <= RESULT_CAPACITY);
             assert!(done.max_queued <= RESULT_CAPACITY);
         }
-        // Long continuous requests: observed rate is the capacity-bound 4/11,
+        // Long continuous requests: observed rate is the capacity-bound 8/11,
         // strictly below one pixel per enabled edge.
         let long = cal.completion(10_000, 4_000_000).unwrap();
         assert!(long.steady_bubbles > 0);
-        assert_eq!(long.enabled_edges, 27_503);
+        assert_eq!(long.enabled_edges, 13_757);
         assert!(long.enabled_edges > (PIPELINE_LATENCY + 10_000 - 1) as u64);
     }
 

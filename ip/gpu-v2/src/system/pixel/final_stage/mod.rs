@@ -27,8 +27,10 @@ pub mod sim;
 /// Key width in bits. The key travels unchanged with its pixel.
 pub const KEY_BITS: u32 = 6;
 pub const KEY_MASK: u8 = (1 << KEY_BITS) - 1;
-/// Result credits reserved at acceptance; also the output FIFO depth.
-pub const RESULT_CAPACITY: usize = 4;
+/// Result credits reserved at acceptance; also the output FIFO depth. Six are
+/// needed across the ten-edge acceptance-to-consumption lifetime at II2; eight
+/// is the finite power-of-two implementation, with no same-edge credit reuse.
+pub const RESULT_CAPACITY: usize = 8;
 /// One arithmetic operation per enabled edge; the FIFO tail is LATENCY stages
 /// after acceptance.
 pub const PIPELINE_STAGES: usize = 9;
@@ -36,6 +38,7 @@ pub const PIPELINE_LATENCY: usize = PIPELINE_STAGES;
 /// `CE` gates every numerical stage and both FIFO transfers.
 #[derive(Clone, Copy, Debug)]
 pub struct Tick {
+    pub reset: bool,
     pub ce: bool,
     pub input: Option<Input>,
     pub output_ready: bool,
@@ -43,6 +46,7 @@ pub struct Tick {
 impl Default for Tick {
     fn default() -> Self {
         Self {
+            reset: false,
             ce: true,
             input: None,
             output_ready: true,

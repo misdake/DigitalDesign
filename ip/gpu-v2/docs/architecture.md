@@ -51,8 +51,8 @@ The periodic variant uses the generic resource scheduler and checks repeating
 arithmetic calendars. Physical certificates additionally check DSP placement,
 concrete ROM banks/replicas/ports and retained-value capacity. Lighting's
 independent emu/RTL implement numerical streaming, CE and backpressure for a
-single drained context. Fast and Compact select full/diffuse II2/II1 and II3/II2
-respectively. Resource/system alternatives remain explicitly selected candidates;
+single drained context. Fast is the sole resource architecture, with full/diffuse
+II2/II1. Resource/system alternatives remain explicitly selected candidates;
 the original numerical profile stays the default. The isolated probes have
 fitted evidence; whole-GPU/system composition remains future work.
 The earlier mixed-mode reservation stream uses the framework's context/FIFO/
@@ -71,7 +71,10 @@ Tests use stage goldens rather than treating audit success as an accuracy oracle
 The separate GPU-owned `memory::ports` burst transport provides explicit write
 completion through a bounded direct-combination test adapter. The standalone
 framebuffer maintenance model and controlled J1 pixel composition consume that
-port. Actual streaming branches and production GPU composition remain future work.
+port. Bounded pixel composers also connect actual LightingEmu and Sampling
+Runtime branch executors. Production command/geometry/raster integration and
+complete GPU RTL remain open; see the version boundaries in
+[pixel-system.md](pixel-system.md#source-and-qualification-boundaries).
 
 Texture advances the vendor cycle MC through a thin GPU-owned RefillPort in
 test composition. Its bounded cache/color machine executes actual refill beats,
@@ -85,8 +88,9 @@ the controller's arithmetic goldens are not independent numerical emulation.
 Lighting starts at a single pixel and returns two scalar intensities, g and h.
 Quad allocation and branch joins are implemented in the bounded
 [controlled pixel composition](pixel-system.md), with externally generated
-branch results. Coverage and actual streaming branch execution remain future
-composition work. Component calculations can be tested without a GPU system.
+branch results in J1; later live composers use actual branch executors.
+Production raster integration, complete controller RTL and whole-GPU fit remain
+open. Component calculations can be tested without a GPU system.
 
 Web code calls the same Rust oracle through a standalone native WebSocket server.
 It owns controls and presentation only; it does not reproduce arithmetic in

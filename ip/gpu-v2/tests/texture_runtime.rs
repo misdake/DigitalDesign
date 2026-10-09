@@ -82,6 +82,129 @@ fn check_bounds(s: &bound::runtime::Step) {
     }
 }
 
+fn raw_offer(i: usize, slots: &[Slot]) -> RawQuadInput {
+    let slot = i % 2;
+    let base = [UV_MIN, UV_MAX, -65537, -1, 0, 32767, 65535, 65536][i % 8];
+    RawQuadInput {
+        quad_id: (i % 16) as u8,
+        mask: ((i * 7) % 16) as u8,
+        uv_q16: std::array::from_fn(|lane| {
+            [
+                (base + (lane & 1) as i64 * 2048).min(UV_MAX),
+                (base + (lane >> 1) as i64 * 2048).min(UV_MAX),
+            ]
+        }),
+        slot: slot as u8,
+        material_size_log2: slots[slot].max_size_log2,
+        filter: [Filter::Nearest, Filter::Bilinear, Filter::Trilinear][i % 3],
+        bias_q8: [0, 128, -8192, 8192, i16::MIN, i16::MAX, -1][i % 7],
+        force_coarsest: i % 11 == 7,
+    }
+}
+
+#[test]
+fn raw_raster_packets_overlap_stable_draws_without_runtime_programs() {
+    let (slots, bytes) = fixture();
+    let mut r = runtime(&slots, 40_000);
+    let mut memory = physical::Physical::new(u64::from(support::BASE), bytes.clone(), true, true);
+    let mut offered = raw_offer(0, &slots);
+    let mut accepted = vec![];
+    let mut got = vec![];
+    let mut overlap = false;
+    for t in 0..40_000 {
+        let s = r
+            .step_raw(
+                &mut memory,
+                (accepted.len() < 64).then_some(&offered),
+                timed::Control {
+                    ce: t % 13 > 2,
+                    result_ready: t > 700 && t % 19 > 3,
+                },
+            )
+            .unwrap();
+        check_bounds(&s);
+        assert!(s.results.len() <= 1);
+        overlap |= s.snapshot.preparation_live.count_ones() > 1;
+        got.extend(s.results);
+        if s.accepted {
+            accepted.push(offered);
+            // No list is supplied to Runtime, nor can it inspect the checker.
+            offered = raw_offer(accepted.len(), &slots);
+        }
+        if accepted.len() == 64 && r.idle() {
+            break;
+        }
+    }
+    assert!(r.idle() && overlap);
+    assert_eq!(accepted.len(), 64);
+    assert_eq!(r.stats.admissions, 64);
+    assert_eq!(
+        (r.stats.compilations, r.stats.peak_preparation_programs),
+        (0, 0)
+    );
+    assert_eq!(memory.cycles, r.stats.link.wall);
+    // The oracle is evaluated after the actual stream has drained. Exact dyadic
+    // conversion belongs only to this independent numerical checker.
+    let inputs: Vec<_> = accepted
+        .iter()
+        .map(|q| QuadInput {
+            quad_id: q.quad_id,
+            mask: q.mask,
+            uv: q.uv_q16.map(|uv| uv.map(|v| v as f64 / 65536.0)),
+            slot: q.slot,
+            material_size_log2: q.material_size_log2,
+            filter: q.filter,
+            lod_bias: f64::from(q.bias_q8) / 256.0,
+            force_coarsest: q.force_coarsest,
+        })
+        .collect();
+    assert_eq!(got, expected(&inputs, &slots, &bytes));
+}
+
+#[test]
+fn raw_capture_ignores_unaccepted_payload_and_rejects_malformed_accepted_fields() {
+    let (slots, bytes) = fixture();
+    for case in 0..5 {
+        let mut r = runtime(&slots, 2_000);
+        let mut memory =
+            physical::Physical::new(u64::from(support::BASE), bytes.clone(), false, false);
+        let mut bad = raw_offer(1, &slots);
+        match case {
+            0 => bad.uv_q16[0][0] = UV_MIN - 1,
+            1 => {
+                bad.mask = 1;
+                bad.uv_q16[3][1] = UV_MAX + 1;
+                bad.force_coarsest = true;
+            }
+            2 => bad.mask = 16,
+            3 => bad.slot = 16,
+            _ => bad.material_size_log2 = 11,
+        }
+        let s = r
+            .step_raw(
+                &mut memory,
+                Some(&bad),
+                timed::Control {
+                    ce: false,
+                    result_ready: false,
+                },
+            )
+            .unwrap();
+        assert!(s.input_ready && !s.accepted);
+        assert_eq!(r.stats.admissions, 0);
+        assert!(r
+            .step_raw(&mut memory, Some(&bad), timed::Control::default())
+            .is_err());
+        assert!(r.faulted() && !r.input_ready(bad.quad_id));
+        assert_eq!(r.stats.admissions, 0);
+        let clocks = memory.cycles;
+        assert!(r
+            .step_raw(&mut memory, None, timed::Control::default())
+            .is_err());
+        assert_eq!(memory.cycles, clocks);
+    }
+}
+
 #[test]
 fn runtime_streams_different_content_and_masks_without_a_precompiled_input_list() {
     let (slots, bytes) = fixture();
@@ -134,9 +257,11 @@ fn runtime_streams_different_content_and_masks_without_a_precompiled_input_list(
     }
     assert!(r.idle(), "runtime stream failed to drain");
     assert_eq!(accepted.len(), 48);
-    assert_eq!(r.stats.compilations, 48);
+    assert_eq!(r.stats.admissions, 48);
+    assert_eq!(r.stats.compilations, 0);
+    assert_eq!(r.stats.peak_preparation_programs, 0);
     assert!(ce_rejected > 0 && busy_rejected > 0);
-    assert!(r.stats.peak_preparation_programs <= 16);
+    assert!(r.stats.peak_live_quads <= 16);
     assert!(r.preparation_stats().peak_contexts <= 8);
     assert_eq!(got, expected(&accepted, &slots, &bytes));
     assert_eq!(
@@ -168,7 +293,7 @@ fn rejected_payload_can_be_replaced_and_same_key_reuse_waits_for_actual_consumpt
         )
         .unwrap();
     assert!(st.input_ready && !st.accepted);
-    assert_eq!(r.stats.compilations, 0);
+    assert_eq!(r.stats.admissions, 0);
     assert!(
         r.step(&mut memory, Some(&a), timed::Control::default())
             .unwrap()
@@ -196,10 +321,7 @@ fn rejected_payload_can_be_replaced_and_same_key_reuse_waits_for_actual_consumpt
         shadow && queued,
         "shadow retirement and actual held result exercised"
     );
-    assert_eq!(
-        r.stats.compilations, 1,
-        "rejected data must not be compiled"
-    );
+    assert_eq!(r.stats.admissions, 1, "rejected data must not be captured");
     assert_eq!(r.snapshot().result_lanes[3], 1);
     assert_eq!(r.snapshot().preparation_live, 0);
     assert_eq!(r.snapshot().preparation_masks, [0; 16]);
@@ -230,7 +352,7 @@ fn rejected_payload_can_be_replaced_and_same_key_reuse_waits_for_actual_consumpt
     }
     assert!(r.idle());
     assert!(replacement_accepted.unwrap() > first_consumed.unwrap());
-    assert_eq!(r.stats.compilations, 2);
+    assert_eq!(r.stats.admissions, 2);
     let want = expected(&[a, replacement], &slots, &bytes);
     assert_eq!(want[0].key, want[1].key);
     assert_ne!(want[0].rgb, want[1].rgb);
@@ -335,7 +457,7 @@ fn partial_helper_derivatives_empty_mask_default_omission_and_warm_reuse() {
             .unwrap();
         assert!(st.results.is_empty() && !st.accepted && r.idle());
     }
-    assert_eq!(r.stats.compilations, 0);
+    assert_eq!(r.stats.admissions, 0);
     assert_eq!(memory.requests, 0);
     let mut fine = support::input(5, Filter::Bilinear, [0.13, 0.07]);
     fine.mask = 1;

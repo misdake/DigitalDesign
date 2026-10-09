@@ -5,7 +5,7 @@
 //! `specular*h`, stage 2 `+128`, stage 3 `+(t >> 8)`, stage 4 `base*g`,
 //! stage 5 `sum`, stage 6 `+127`, stage 7 `+bit`, stage 8 the compare, stage 9
 //! the saturating select. Nine one-operation stages advance on `ce`, the ninth
-//! pushes a `{key,rgb}` word into a four-deep FIFO, and `in_ready`/`out_valid`
+//! pushes a `{key,rgb}` word into an eight-deep FIFO, and `in_ready`/`out_valid`
 //! are the pre-edge handshake. Result credits are reserved at acceptance from
 //! the old state (no same-edge reuse). The ignored Icarus test drives this
 //! module every edge and compares it with `emu::FinalEmu`; no expected RTL
@@ -58,8 +58,8 @@ impl Default for Allocation {
             + 9 * 6                                  // key pipe
             + 9; // valid pipe
         let fifo_payload_bits = RESULT_CAPACITY * (6 + 24);
-        let credit_bits = 3;
-        let control_bits = 2 + 2 + 3; // head, tail, count
+        let credit_bits = 4;
+        let control_bits = 3 + 3 + 4; // head, tail, count
         Self {
             mul18_lanes: 9,
             add16_lanes: 6,
@@ -84,7 +84,7 @@ pub fn initiation_interval() -> usize {
 
 /// The complete synthesizable module. Fixed widths; no parameters.
 pub fn source() -> &'static str {
-    r#"// gpu_v2_final_stage: one-op-per-stage final color, nine stages, four credits.
+    r#"// gpu_v2_final_stage: one-op-per-stage final color, nine stages, eight credits.
 // This file is emitted from the leaf's rtl module; edits belong there.
 module gpu_v2_final_stage(
   input  wire        clk,
@@ -111,7 +111,7 @@ module gpu_v2_final_stage(
   output wire [7:0]  out_g,
   output wire [7:0]  out_b
 );
-  reg [2:0] credits;
+  reg [3:0] credits;
   reg [8:0] vpipe;
   reg [5:0] kpipe [0:8];
 
@@ -135,11 +135,11 @@ module gpu_v2_final_stage(
   reg        s8_ov [0:2];
   reg [7:0]  s9_col[0:2];
 
-  reg [5:0]  f_key [0:3];
-  reg [7:0]  f_col [0:3][0:2];
-  reg [1:0]  f_head;
-  reg [1:0]  f_tail;
-  reg [2:0]  f_count;
+  reg [5:0]  f_key [0:7];
+  reg [7:0]  f_col [0:7][0:2];
+  reg [2:0]  f_head;
+  reg [2:0]  f_tail;
+  reg [3:0]  f_count;
 
   wire [7:0] tin [0:2];
   wire [7:0] tex [0:2];
@@ -173,8 +173,8 @@ module gpu_v2_final_stage(
     end
   endgenerate
 
-  assign in_ready  = ce && (credits < 3'd4);
-  assign out_valid = (f_count != 3'd0);
+  assign in_ready  = !reset && ce && (credits < 4'd8);
+  assign out_valid = !reset && (f_count != 4'd0);
   assign out_key   = f_key[f_head];
   assign out_r     = f_col[f_head][0];
   assign out_g     = f_col[f_head][1];
@@ -184,25 +184,25 @@ module gpu_v2_final_stage(
   always @(posedge clk) begin
     if (reset) begin
       vpipe   <= 9'd0;
-      credits <= 3'd0;
-      f_head  <= 2'd0;
-      f_tail  <= 2'd0;
-      f_count <= 3'd0;
+      credits <= 4'd0;
+      f_head  <= 3'd0;
+      f_tail  <= 3'd0;
+      f_count <= 4'd0;
     end else if (ce) begin
-      if (out_ready && f_count != 3'd0) f_head <= f_head + 2'd1;
+      if (out_ready && f_count != 4'd0) f_head <= f_head + 3'd1;
       if (vpipe[8]) begin
         f_key[f_tail]     <= kpipe[8];
         f_col[f_tail][0]  <= s9_col[0];
         f_col[f_tail][1]  <= s9_col[1];
         f_col[f_tail][2]  <= s9_col[2];
-        f_tail            <= f_tail + 2'd1;
+        f_tail            <= f_tail + 3'd1;
       end
       f_count <= f_count
-                 + (vpipe[8] ? 3'd1 : 3'd0)
-                 - ((out_ready && f_count != 3'd0) ? 3'd1 : 3'd0);
+                 + (vpipe[8] ? 4'd1 : 4'd0)
+                 - ((out_ready && f_count != 4'd0) ? 4'd1 : 4'd0);
       credits <= credits
-                 + ((in_valid && in_ready) ? 3'd1 : 3'd0)
-                 - ((out_ready && f_count != 3'd0) ? 3'd1 : 3'd0);
+                 + ((in_valid && in_ready) ? 4'd1 : 4'd0)
+                 - ((out_ready && f_count != 4'd0) ? 4'd1 : 4'd0);
       for (i=0;i<3;i=i+1) begin
         s9_col[i] <= n_col[i];
         s8_rd[i]  <= n_rd[i];

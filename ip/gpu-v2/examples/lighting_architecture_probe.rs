@@ -95,50 +95,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             1,
         ),
         (
-            "compact-II3-diffuse",
-            Hardware {
-                small_multiply: 5,
-                large_multiply: 5,
-                normalize_reads: 4,
-                ..Hardware::lighting_architecture_ii2()
-            },
-            diffuse,
-            1,
-        ),
-        (
-            "compact-II4-diffuse",
-            Hardware {
-                small_multiply: 4,
-                large_multiply: 4,
-                normalize_reads: 3,
-                ..Hardware::lighting_architecture_ii2()
-            },
-            diffuse,
-            2,
-        ),
-        (
-            "compact-II3",
-            Hardware {
-                small_multiply: 5,
-                large_multiply: 5,
-                normalize_reads: 4,
-                ..Hardware::lighting_architecture_ii2()
-            },
-            Material::default(),
-            3,
-        ),
-        (
-            "compact-II4",
-            Hardware {
-                small_multiply: 4,
-                large_multiply: 4,
-                normalize_reads: 3,
-                ..Hardware::lighting_architecture_ii2()
-            },
-            Material::default(),
-            4,
-        ),
-        (
             "cones2",
             Hardware {
                 cone_depth: 2,

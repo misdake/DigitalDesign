@@ -23,7 +23,7 @@ fn scalar(kind: &Option<LaneKind>) -> bool {
 
 // Intern semantic expressions; runtime template sample values are never keys.
 // This estimates opportunities for shared sources, not fitted LUTs or routing.
-fn sources(p: &LoweredProgram) -> Vec<usize> {
+pub(super) fn sources(p: &LoweredProgram) -> Vec<usize> {
     fn visit(
         p: &LoweredProgram,
         v: usize,
@@ -241,7 +241,8 @@ mod tests {
     #[test]
     fn steering_is_checked_nonincreasing_and_preserves_every_temporal_edge() {
         let mut changed = false;
-        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        {
+            let profile = LightingProfile::Fast;
             let options = LightingRtlOptions::retimed_resource_profile(profile);
             let mut p = LoweredProgram::new(profile, options).unwrap();
             let keys = sources(&p);

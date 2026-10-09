@@ -1,18 +1,18 @@
 //! Live quad ingress over the existing bounded preparation/cache/color path.
 //!
-//! Coefficients and Work RAM execute actual bounded scalar handshakes. Other
-//! preparation arithmetic is counted replay at eligible ingress. No input
-//! list or program history is retained. Real cache captures drive ColorEmu;
+//! Raw input drives bounded scalar preparation, Work and packet pipelines.
+//! No input-dependent Program is constructed or retained. Real cache captures drive ColorEmu;
 //! only actual public result consumption returns public lane ownership.
 use super::control::{
     Event as PreparationEvent, Hardware as PreparationHardware, Step as PreparationStep,
 };
-use super::{runtime_preparation::Machine as Preparation, session, Program};
+use super::{runtime_preparation::Machine as Preparation, session};
 use crate::texture::emu::color::{
     ColorEmu, Event as ColorEvent, Input as ColorInput, Output as ColorOutput, Step as ColorStep,
     Tick as ColorTick,
 };
-use crate::texture::ports::{QuadInput, RefillPort, Slot};
+use crate::texture::emu::derivative;
+use crate::texture::ports::{QuadInput, RawQuadInput, RefillPort, Slot};
 use crate::texture::sim::timed;
 
 const FAULT: &str = "sampling runtime terminal fault; recreate before reuse";
@@ -25,11 +25,14 @@ pub struct Stats {
     pub link: session::Stats,
     pub offers: u64,
     pub rejected: u64,
-    /// Successful quad compilations (one preparation/provenance pair), not
-    /// hardware operations or pipeline latency.
+    /// Accepted live inputs; independent of covered-lane or packet counts.
+    pub admissions: u64,
+    /// Compatibility diagnostic: always zero on this live path.
     pub compilations: u64,
-    /// Distinct live preparation sources, bounded by the existing 16 IDs.
+    /// Compatibility diagnostic: no live preparation Programs are retained.
     pub peak_preparation_programs: usize,
+    /// Distinct live preparation IDs, bounded by the existing 16 IDs.
+    pub peak_live_quads: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,10 +77,26 @@ pub struct Runtime {
     max_wall: u64,
     faulted: bool,
     pub stats: Stats,
-    #[cfg(test)]
-    poison: bool,
-    #[cfg(test)]
-    poison_hits: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Offer<'a> {
+    Quantized(&'a RawQuadInput),
+    Legacy(&'a QuadInput),
+}
+impl Offer<'_> {
+    fn quad(self) -> u8 {
+        match self {
+            Self::Quantized(q) => q.quad_id,
+            Self::Legacy(q) => q.quad_id,
+        }
+    }
+    fn capture(self) -> Result<RawQuadInput, String> {
+        match self {
+            Self::Quantized(q) => Ok(*q),
+            Self::Legacy(q) => RawQuadInput::capture(q),
+        }
+    }
 }
 
 impl Runtime {
@@ -117,10 +136,6 @@ impl Runtime {
             max_wall,
             faulted: false,
             stats: Stats::default(),
-            #[cfg(test)]
-            poison: false,
-            #[cfg(test)]
-            poison_hits: 0,
         })
     }
 
@@ -182,6 +197,26 @@ impl Runtime {
         offered: Option<&QuadInput>,
         control: timed::Control,
     ) -> Result<Step, String> {
+        self.advance(memory, offered.map(Offer::Legacy), control)
+    }
+
+    /// Integer rasterizer input and stable draw metadata. Captures only on an
+    /// eligible CE edge; helper UVs and bias never make a floating-point round trip.
+    pub fn step_raw<M: RefillPort + ?Sized>(
+        &mut self,
+        memory: &mut M,
+        offered: Option<&RawQuadInput>,
+        control: timed::Control,
+    ) -> Result<Step, String> {
+        self.advance(memory, offered.map(Offer::Quantized), control)
+    }
+
+    fn advance<M: RefillPort + ?Sized>(
+        &mut self,
+        memory: &mut M,
+        offered: Option<Offer<'_>>,
+        control: timed::Control,
+    ) -> Result<Step, String> {
         if self.faulted {
             return Err(FAULT.into());
         }
@@ -189,6 +224,8 @@ impl Runtime {
             self.faulted = true;
             return Err("sampling runtime wall watchdog".into());
         }
+        #[cfg(test)]
+        let _live = super::counted_call_guard::Scope::enter();
         let result = self.step_inner(memory, offered, control);
         if result.is_err() {
             self.faulted = true;
@@ -199,64 +236,22 @@ impl Runtime {
     fn step_inner<M: RefillPort + ?Sized>(
         &mut self,
         memory: &mut M,
-        offered: Option<&QuadInput>,
+        offered: Option<Offer<'_>>,
         control: timed::Control,
     ) -> Result<Step, String> {
-        if control.ce && offered.is_some_and(|q| q.quad_id >= 16) {
+        if control.ce && offered.is_some_and(|q| q.quad() >= 16) {
             return Err("sampling runtime quad ID exceeds key6".into());
         }
-        let input_ready = offered.is_some_and(|q| self.input_ready(q.quad_id));
-        // Host arithmetic replay is prepared only for a real eligible edge.
-        // No compile/clone/retention occurs for a CE pause or rejected offer.
-        let compiled = if input_ready && control.ce {
-            let q = offered.unwrap();
-            let (slots, hardware) = self.cache.external_context();
-            let preparation = Program::compile(q, slots, self.preparation.binding.clone())?;
-            #[cfg(test)]
-            let preparation = {
-                let mut preparation = preparation;
-                if self.poison {
-                    let p = std::sync::Arc::get_mut(&mut preparation)
-                        .expect("unique just-compiled source");
-                    for stage in [&mut p.preparation.derivative, &mut p.preparation.lod] {
-                        for output in &mut stage.frame.outputs {
-                            output.raw ^= 511;
-                            self.poison_hits += 1;
-                        }
-                    }
-                    for lane in &mut p.preparation.lanes {
-                        for output in &mut lane.coordinate.frame.outputs {
-                            output.raw ^= 1023;
-                            self.poison_hits += 1;
-                        }
-                        for output in &mut lane.coefficient.frame.outputs {
-                            output.raw ^= 511;
-                            self.poison_hits += 1;
-                        }
-                        for member in &mut lane.memberships {
-                            for output in &mut member.frame.outputs {
-                                // All closed Member fields are poisoned, not
-                                // merely weights; live pipeline uses none.
-                                output.raw ^= 1;
-                                self.poison_hits += 1;
-                            }
-                        }
-                        for plane in &mut lane.packets {
-                            for packet in plane {
-                                for output in &mut packet.frame.outputs {
-                                    output.raw ^= 1 << 28;
-                                    self.poison_hits += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-                preparation
-            };
-            let cache = timed::Program::compile(q, slots, hardware)
-                .map_err(|e| format!("cache provenance: {e:?}"))?;
-            self.stats.compilations += 1;
-            Some((q, preparation, cache))
+        let input_ready = offered.is_some_and(|q| self.input_ready(q.quad()));
+        // Capture only boundary fields, never input-dependent arithmetic or
+        // expected packet/result counts. Each stage computes from old registers.
+        let captured = if input_ready && control.ce {
+            let q = offered.unwrap().capture()?;
+            let slots = self.cache.external_context().0;
+            let slot = *slots
+                .get(usize::from(q.slot))
+                .ok_or("sampling runtime slot")?;
+            Some(derivative::Input::from_raw(&q, slot)?)
         } else {
             None
         };
@@ -292,22 +287,20 @@ impl Runtime {
             self.stats.link.color_gated_edges += 1;
         }
         let preparation = self.preparation.step_packet_port(
-            compiled
-                .as_ref()
-                .map(|(q, p, _)| (usize::from(q.quad_id), p.clone())),
+            captured,
             effective_ce,
             self.cache.packet_ready(),
             self.cache.packet_issue_ready(),
             &self.masks,
-            self.cache.external_context().0,
         )?;
-        if preparation.accepted != compiled.is_some() {
+        if preparation.accepted != captured.is_some() {
             return Err("sampling runtime pre-edge ingress divergence".into());
         }
-        if let Some((q, _, _)) = &compiled {
-            self.masks[usize::from(q.quad_id)] = q.mask;
-            self.remaining[usize::from(q.quad_id)] = q.mask;
+        if let Some(q) = captured {
+            self.masks[usize::from(q.header.quad)] = q.header.mask;
+            self.remaining[usize::from(q.header.quad)] = q.header.mask;
             self.stats.link.accepted += 1;
+            self.stats.admissions += 1;
         }
         let mut packet = None;
         let mut done = vec![];
@@ -335,13 +328,17 @@ impl Runtime {
                 _ => {}
             }
         }
-        // Cache remains the single MC owner; step_pooled drains memory on every
+        // Cache remains the single MC owner; step_live drains memory on every
         // successful wall edge even when the caller or color link freezes CE.
         let cache = self
             .cache
-            .step_pooled(
+            .step_live(
                 memory,
-                compiled.map(|(q, _, p)| (usize::from(q.quad_id), p)),
+                captured.map(|q| timed::LiveAdmission {
+                    quad: q.header.quad,
+                    mask: q.header.mask,
+                    slot: q.header.slot,
+                }),
                 timed::Control {
                     ce: effective_ce,
                     result_ready: true,
@@ -391,15 +388,15 @@ impl Runtime {
             .link
             .peak_captured_input
             .max(usize::from(self.color_input.is_some()));
-        self.stats.peak_preparation_programs = self
+        self.stats.peak_live_quads = self
             .stats
-            .peak_preparation_programs
+            .peak_live_quads
             .max(self.preparation.live_mask().count_ones() as usize);
         Ok(Step {
             cycle: self.wall,
             control,
             effective_ce,
-            offered: offered.map(|q| q.quad_id),
+            offered: offered.map(Offer::quad),
             input_ready,
             accepted: preparation.accepted,
             results,

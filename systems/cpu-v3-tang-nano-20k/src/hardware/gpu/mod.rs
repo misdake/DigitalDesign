@@ -112,15 +112,6 @@ impl Module for CpuV3Gpu {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    #[ignore = "explicit retired GPU status and inactive-memory-port RTL validation"]
-    fn retired_gpu_rejects_legacy_commands_in_verilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<super::CpuV3Gpu>().unwrap();
-    }
-}
-
 fn sample_wires<const W: usize>(wires: &Wires<W>, circuit: &CircuitWires) -> u64 {
     wires
         .wires
@@ -129,4 +120,13 @@ fn sample_wires<const W: usize>(wires: &Wires<W>, circuit: &CircuitWires) -> u64
         .fold(0, |bits, (index, wire)| {
             bits | (u64::from(wire.get(circuit) & 1) << index)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "explicit retired GPU status and inactive-memory-port RTL validation"]
+    fn retired_gpu_rejects_legacy_commands_in_verilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<super::CpuV3Gpu>().unwrap();
+    }
 }

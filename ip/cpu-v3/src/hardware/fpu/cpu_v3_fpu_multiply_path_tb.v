@@ -78,7 +78,7 @@ initial begin
 end
 
 // Shared-pipe stub: the real CpuV3FpuMulPipe lives in the unit top; this
-// TB-local copy reproduces its exact 3-stage tag-carrying behavior so the
+// TB-local copy reproduces its exact 2-stage tag-carrying behavior so the
 // leaf test needs no resource-claiming sibling modules (see the scalar-path
 // TB for the same pattern).
 wire mul_in_valid;
@@ -96,15 +96,10 @@ reg [8:0] mul_s1_tag = 0;
 reg mul_s2_valid = 0;
 reg signed [71:0] mul_s2_prod = 0;
 reg [8:0] mul_s2_tag = 0;
-reg mul_s3_valid = 0;
-reg signed [71:0] mul_s3_prod = 0;
-reg [8:0] mul_s3_tag = 0;
 always @(posedge clk) begin
     if (abort) begin
-        mul_s1_valid <= 0; mul_s2_valid <= 0; mul_s3_valid <= 0;
+        mul_s1_valid <= 0; mul_s2_valid <= 0;
     end else begin
-        mul_s3_valid <= mul_s2_valid;
-        if (mul_s2_valid) begin mul_s3_prod <= mul_s2_prod; mul_s3_tag <= mul_s2_tag; end
         mul_s2_valid <= mul_s1_valid;
         if (mul_s1_valid) begin mul_s2_prod <= mul_s1_a * mul_s1_b; mul_s2_tag <= mul_s1_tag; end
         mul_s1_valid <= mul_in_valid;
@@ -114,9 +109,9 @@ always @(posedge clk) begin
         end
     end
 end
-assign mul_out_valid = mul_s3_valid && !abort;
-assign mul_out_product = mul_s3_prod[63:0];
-assign mul_out_tag = mul_s3_tag;
+assign mul_out_valid = mul_s2_valid && !abort;
+assign mul_out_product = mul_s2_prod[63:0];
+assign mul_out_tag = mul_s2_tag;
 
 CpuV3FpuMultiplyPath multiply_path (
     .clk(clk),
@@ -247,7 +242,7 @@ task read_reg;
 endtask
 
 // Issues one scalar MUL (opcode 0xD, subop 0x02) and checks the whole pipeline:
-// the read window, the single writeback four beats later and the readback.
+// the read window, the single writeback three beats later and the readback.
 task run_scalar_mul;
     input [5:0] fa;
     input [5:0] fb;
@@ -277,7 +272,7 @@ task run_scalar_mul;
         while (busy) begin
             check_value({31'b0, mp_read_a_address}, 32'h0, "mul read A idle");
             check_value({31'b0, mp_read_b_address}, 32'h0, "mul read B idle");
-            if (t == 4) begin
+            if (t == 3) begin
                 check_value({31'b0, mp_write_enable}, 32'h1, "mul write en");
                 check_value({23'b0, mp_write_address}, fd, "mul write addr");
                 check_value(mp_write_data, exp_lane[0], "mul write data");
@@ -288,8 +283,8 @@ task run_scalar_mul;
             t = t + 1;
             @(negedge clk);
         end
-        check_value(busy_count, 5, "mul busy window");
-        check_value(t, 5, "mul cycle count");
+        check_value(busy_count, 4, "mul busy window");
+        check_value(t, 4, "mul cycle count");
         check_value({31'b0, busy}, 32'h0, "mul busy clear");
         check_value({31'b0, mp_write_enable}, 32'h0, "mul write clear");
 
@@ -354,7 +349,7 @@ task run_vector_mul;
         instr_complete = 1'b0;
         #1; // let the deasserted instr_complete settle before sampling T1
 
-        // T1 .. T(last_lane + 4): reads, then the three-stage product drain.
+        // T1 .. T(last_lane + 3): reads, then the two-stage product drain.
         t = 1;
         while (busy) begin
             if (t <= last_lane) begin
@@ -366,11 +361,11 @@ task run_vector_mul;
                 check_value({31'b0, mp_read_a_address}, 32'h0, "read A idle");
                 check_value({31'b0, mp_read_b_address}, 32'h0, "read B idle");
             end
-            if ((t >= 4) && (t <= (last_lane + 4))) begin
-                addr_d = fd + (t - 4);
+            if ((t >= 3) && (t <= (last_lane + 3))) begin
+                addr_d = fd + (t - 3);
                 check_value({31'b0, mp_write_enable}, 32'h1, "write enable t");
                 check_value({23'b0, mp_write_address}, addr_d, "write address t");
-                check_value(mp_write_data, exp_lane[t-4], "write data t");
+                check_value(mp_write_data, exp_lane[t-3], "write data t");
             end else begin
                 check_value({31'b0, mp_write_enable}, 32'h0, "write idle t");
             end
@@ -378,9 +373,9 @@ task run_vector_mul;
             t = t + 1;
             @(negedge clk);
         end
-        // The window must be exactly last_lane + 5 beats and the port idle.
-        check_value(busy_count, last_lane + 5, "busy window beats");
-        check_value(t, last_lane + 5, "cycle count");
+        // The window must be exactly last_lane + 4 beats and the port idle.
+        check_value(busy_count, last_lane + 4, "busy window beats");
+        check_value(t, last_lane + 4, "cycle count");
         check_value({31'b0, busy}, 32'h0, "busy clear");
         check_value({31'b0, mp_write_enable}, 32'h0, "write enable clear");
 
@@ -404,8 +399,8 @@ task run_vector_mul;
     end
 endtask
 
-// Issues a vec4 VMUL and aborts during T5, after lane 0 has committed at the
-// end of T4 and while lane 1 is in the write stage. Semantics under test: an
+// Issues a vec4 VMUL and aborts during T4, after lane 0 has committed at the
+// end of T3 and while lane 1 is in the write stage. Semantics under test: an
 // abort keeps every lane already written and leaves every not-yet-written lane
 // at its old value -- it never rolls back and never completes the rest.
 task run_mul_abort_mid;
@@ -438,12 +433,11 @@ task run_mul_abort_mid;
         @(negedge clk);
         instr_complete = 1'b0;
         @(negedge clk); // T2
-        @(negedge clk); // T3
-        @(negedge clk); // T4: lane 0 commits at the end of this cycle
-        @(negedge clk); // T5: lane 1 is the pending write
+        @(negedge clk); // T3: lane 0 commits at the end of this cycle
+        @(negedge clk); // T4: lane 1 is the pending write
         #1;
-        check_value({31'b0, busy}, 32'h1, "abort T5 busy before");
-        check_value({31'b0, mp_write_enable}, 32'h1, "abort T5 write pending");
+        check_value({31'b0, busy}, 32'h1, "abort T4 busy before");
+        check_value({31'b0, mp_write_enable}, 32'h1, "abort T4 write pending");
         abort = 1'b1;
         #1;
         check_value({31'b0, busy}, 32'h0, "abort clears busy");
@@ -504,9 +498,11 @@ initial begin
     run_vector_mul(6'd12, 6'd16, 6'd40, 2'b10, 1'b0); // VMUL.4
     run_vector_mul(6'd12, 6'd16, 6'd40, 2'b01, 1'b1); // VMULS.3
 
-    // Allowed in-place destination (dst_base == srcA_base): every read happens
-    // before any write, so each lane reads its own old value.
+    // Allowed in-place destinations: every lane's read precedes its write.
+    // VMULS must also retain the old broadcast scalar when dst_base == srcB_base.
     run_vector_mul(6'd20, 6'd24, 6'd20, 2'b10, 1'b0); // VMUL.4 F20, F20, F24
+    run_vector_mul(6'd20, 6'd24, 6'd24, 2'b10, 1'b0); // VMUL.4 F24, F20, F24
+    run_vector_mul(6'd20, 6'd24, 6'd24, 2'b10, 1'b1); // VMULS.4 F24, F20, F24
 
     // abort in the middle of a vec4 VMUL.
     run_mul_abort_mid(6'd12, 6'd20, 6'd40);

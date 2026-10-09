@@ -1,5 +1,5 @@
 // Testbench for CpuV3FpuMulPipe: directed corners plus randomized streams
-// against a 64-bit reference with a fixed three-cycle latency.
+// against a 64-bit reference with a fixed two-cycle latency.
 module tb;
 reg clk = 0;
 always #5 clk = ~clk;
@@ -7,7 +7,7 @@ always #5 clk = ~clk;
 reg abort = 0;
 reg in_valid = 0;
 // The pipe's operand buses are signed 36 bits; the TB drives the same
-// sign-extended values the ordinary MUL/DOT owners present.
+// sign-extended values the MUL/DOT owners present and SINCOS's positive K.
 reg [35:0] in_a = 0;
 reg [35:0] in_b = 0;
 reg [8:0] in_tag = 0;
@@ -35,30 +35,27 @@ integer check_count = 0;
 integer i;
 integer seed = 32'h5EED1234;
 
-// Reference model: a three-entry delay line of (a*b, tag), one entry per
-// cycle, wrap-free in 64 bits. out_valid must be high exactly when the third
-// stage holds a live entry.
-reg signed [63:0] ref_a [0:2];
-reg signed [63:0] ref_b [0:2];
-reg [8:0] ref_tag [0:2];
-reg ref_valid [0:2];
+// After the second capture edge, the output must equal the previous push.
+// Keep that transaction independently of the DUT's internal pipeline stages.
+reg signed [63:0] ref_a = 0;
+reg signed [63:0] ref_b = 0;
+reg [8:0] ref_tag = 0;
+reg ref_valid = 0;
 reg signed [63:0] ref_product;
-integer s;
 
-// The check runs one beat after the push's capture edge, so the output ports
-// show the entry driven two pushes ago: ref index 1.
+// Check after the current capture edge, before advancing the reference.
 task check_output;
     begin
-        if (out_valid !== ref_valid[1]) begin
-            $display("DIGITAL_DESIGN_FAIL: out_valid=%b want %b", out_valid, ref_valid[1]);
+        if (out_valid !== ref_valid) begin
+            $display("DIGITAL_DESIGN_FAIL: out_valid=%b want %b", out_valid, ref_valid);
             $finish;
         end
         if (out_valid) begin
             check_count = check_count + 1;
-            ref_product = ref_a[1] * ref_b[1];
-            if (out_product !== ref_product || out_tag !== ref_tag[1]) begin
+            ref_product = ref_a * ref_b;
+            if (out_product !== ref_product || out_tag !== ref_tag) begin
                 $display("DIGITAL_DESIGN_FAIL: got product=%h tag=%0d want %h %0d",
-                    out_product, out_tag, ref_product, ref_tag[1]);
+                    out_product, out_tag, ref_product, ref_tag);
                 $finish;
             end
         end
@@ -66,63 +63,76 @@ task check_output;
 endtask
 
 // Advance the reference delay line after the DUT's edge semantics.
+task push_wide;
+    input v;
+    input [35:0] a;
+    input [35:0] b;
+    input [8:0] tg;
+    begin
+        @(negedge clk);
+        in_valid = v;
+        in_a = a;
+        in_b = b;
+        in_tag = tg;
+        @(posedge clk); #1;
+        check_output;
+        ref_valid = v;
+        if (v) begin
+            ref_a = {{28{a[35]}}, a};
+            ref_b = {{28{b[35]}}, b};
+            ref_tag = tg;
+        end
+    end
+endtask
+
 task push;
     input v;
     input [31:0] a;
     input [31:0] b;
     input [8:0] tg;
     begin
-        @(negedge clk);
-        in_valid = v;
-        in_a = {{4{a[31]}}, a};
-        in_b = {{4{b[31]}}, b};
-        in_tag = tg;
-        @(posedge clk); #1;
-        check_output;
-        ref_valid[2] = ref_valid[1]; ref_valid[1] = ref_valid[0]; ref_valid[0] = v;
-        ref_a[2] = ref_a[1]; ref_a[1] = ref_a[0];
-        ref_b[2] = ref_b[1]; ref_b[1] = ref_b[0];
-        ref_tag[2] = ref_tag[1]; ref_tag[1] = ref_tag[0];
-        if (v) begin
-            ref_a[0] = {{32{a[31]}}, a};
-            ref_b[0] = {{32{b[31]}}, b};
-            ref_tag[0] = tg;
-        end
+        push_wide(v, {{4{a[31]}}, a}, {{4{b[31]}}, b}, tg);
     end
 endtask
 
 initial begin
-    ref_valid[0] = 0; ref_valid[1] = 0; ref_valid[2] = 0;
-    ref_a[0] = 0; ref_a[1] = 0; ref_a[2] = 0;
-    ref_b[0] = 0; ref_b[1] = 0; ref_b[2] = 0;
-    ref_tag[0] = 0; ref_tag[1] = 0; ref_tag[2] = 0;
-
     // Directed corners: 1.0*1.0, signs, fraction, wrap at both extremes.
     push(1, 32'h00010000, 32'h00010000, 9'd5);   // 1.0 * 1.0
     push(1, 32'hffff0000, 32'h00020000, 9'd6);   // -1.0 * 2.0
     push(1, 32'h00008000, 32'h00004000, 9'd7);   // 0.5 * 0.25
     push(1, 32'h80000000, 32'h80000000, 9'd8);   // min * min (wrap)
     push(1, 32'h7fffffff, 32'h7fffffff, 9'd9);   // max * max
+    // SINCOS K has bit 31 set but is positive on its signed-36 bus.
+    push_wide(1, 36'h0_7fffffff, 36'h0_a2f9836e, 9'd20);
+    push_wide(1, 36'hf_80000000, 36'h0_a2f9836e, 9'd21);
+    push_wide(1, 36'hf_ffffffff, 36'h0_a2f9836e, 9'd22);
     push(0, 0, 0, 0);
     push(0, 0, 0, 0);
     push(0, 0, 0, 0);
     push(0, 0, 0, 0);
 
-    // abort mid-stream: the two in-flight entries are voided; afterwards the
-    // pipe must stay empty for the whole drain window.
+    // Abort with both stages occupied: cancel the visible return immediately
+    // and discard the pending transaction at the next edge.
     push(1, 32'h00030000, 32'h00040000, 9'd10);
     push(1, 32'h00050000, 32'h00060000, 9'd11);
-    @(negedge clk); in_valid = 0;   // stop driving before the abort
-    @(negedge clk); abort = 1;
-    @(posedge clk);            // abort kills both in-flight entries here
+    @(negedge clk); in_valid = 0; abort = 1;
+    #1;
+    if (out_valid !== 1'b0) begin
+        $display("DIGITAL_DESIGN_FAIL: abort did not gate the visible return");
+        $finish;
+    end
+    check_count = check_count + 1;
+    @(posedge clk); #1;
+    if (out_valid !== 1'b0) begin
+        $display("DIGITAL_DESIGN_FAIL: abort did not clear the pipeline");
+        $finish;
+    end
+    check_count = check_count + 1;
     @(negedge clk); abort = 0;
-    ref_valid[0] = 0; ref_valid[1] = 0; ref_valid[2] = 0;
-    ref_a[0] = 0; ref_a[1] = 0; ref_a[2] = 0;
-    ref_b[0] = 0; ref_b[1] = 0; ref_b[2] = 0;
-    // The abort posedge killed both entries; the next five beats must show no
+    ref_valid = 0;
+    // The abort edge killed both entries; the next four beats must show no
     // output at all (checked by hand, not via the delay line).
-    @(negedge clk); in_valid = 0;
-    for (i = 0; i < 5; i = i + 1) begin
+    for (i = 0; i < 4; i = i + 1) begin
         @(posedge clk); #1;
         check_count = check_count + 1;
         if (out_valid !== 1'b0) begin

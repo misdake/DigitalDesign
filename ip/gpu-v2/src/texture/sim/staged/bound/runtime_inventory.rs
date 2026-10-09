@@ -27,6 +27,20 @@ pub(super) fn describe(
     c: &timed::Hardware,
 ) -> Result<Inventory, String> {
     let mut r = inventory::describe(b, p, c)?;
+    // These are alternative Runtime allocations, not storage added alongside
+    // a Session replay cursor. Runtime never uses that legacy cursor/table.
+    let completion = r
+        .rows
+        .iter_mut()
+        .find(|row| row.name == "prep completion/live")
+        .ok_or("Runtime completion allocation")?;
+    completion.ports = "actual remaining mask4 replaces packets-left6/ID within retained ceiling; original context3/valid1 and live16";
+    let cache_control = r
+        .rows
+        .iter_mut()
+        .find(|row| row.name == "cache queue/quad control")
+        .ok_or("Runtime live packet validation allocation")?;
+    cache_control.ports = "remaining4/produced1; old cursor6 replaced by packet remaining4/open1/live1 per ID; cache live16 and queue/control64 retained";
     let a = (usize::BITS - (p.work_credits - 1).leading_zeros()) as u64;
     let q = (usize::BITS - p.work_credits.leading_zeros()) as u64;
     // Nearest outlives its scalar flag's last arithmetic read and must reach
@@ -156,18 +170,20 @@ pub(super) fn describe(
     ));
     r.rows.push(ff(
         "Work return/head payload",
-        92,
-        "sole bank sampled at R and held through last packet capture",
+        super::transport::HEAD_DATA_BITS,
+        "two fixed ordered banks: asynchronous SSRAM R captures data/valid, next edge consumes",
     ));
+    // Replace the legacy single cursor2/valid1 with the complete prefetch ring.
+    r.rows.retain(|row| row.name != "plane head cursor");
     r.rows.push(ff(
-        "Work pending return",
-        1,
-        "reserve at R, publish existing valid on later C",
+        "Work prefetch control",
+        super::transport::HEAD_CONTROL_BITS,
+        "two cursor2/valid1; head read/fill pointers1; occupancy2; no extra return age",
     ));
     r.rows.push(ff(
         "Work read/write row pointers",
-        2 * a,
-        "modulo logical W, source read pointer held until ACK",
+        3 * a,
+        "modulo logical W: write, prefetch, and source-release held until ACK",
     ));
     r.rows.push(ff(
         "Work materialized count",
@@ -187,6 +203,9 @@ pub(super) fn describe(
         "capture137, public lanes64, accepted masks64, Runtime terminal fault1",
     ));
     r.ff_bits = r.rows.iter().map(|r| r.ff_bits).sum();
+    // Two-way old head payload/cursor selection: one mux node per bit.
+    // Target enable/decode is declared control above, not fitted Logic.
+    r.rotating_read_mux_bits += 94;
     r.hard_pipeline_bits = r.rows.iter().map(|r| r.hard_pipeline_bits).sum();
     r.dsp18 += color::ALLOCATION.dsp18_equivalents;
     // Old coefficient rotating selector metrics are not a certificate for the

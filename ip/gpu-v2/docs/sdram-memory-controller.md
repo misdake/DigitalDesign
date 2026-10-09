@@ -115,13 +115,14 @@ boundary; see the [vendor group contract](../../../hardware/vendor/gowin/doc/sdr
 `average::Profile::gpu_chained_groups(load)` calibrates that exact cycle path once
 and returns stable average offsets. Functional data goldens remain independent.
 
-The unchanged frontend DMA cover adapter still issues one cover at a time.
-Group execution inside the memory service does not make the whole GPU frontend
-a cycle-accurate implementation. Production system activation remains separate;
-the group mode defaults off. Physical SRAM/Flash-reload group measurements are
-recorded in the [board study](../../../hardware/vendor/gowin/doc/sdram-traffic-probe.md#group-board-results-2026-10-02).
+The frontend DMA cover adapter still issues one cover at a time. Group
+execution inside the memory service does not make the whole GPU frontend a
+cycle-accurate implementation. The CPU V3 board enables one-slot early
+admission and keeps the indivisible group mode off. Physical SRAM/Flash-reload
+group measurements are recorded in the
+[board study](../../../hardware/vendor/gowin/doc/sdram-traffic-probe.md#group-board-results-2026-10-02).
 
-## Shared baseline for module worktrees
+## Cycle service contract
 
 Consumers use `ports::Service` (`submit`, `step`, `cycle`, `idle`) and byte-addressed
 32/64/128/512 B requests. Host acceptance is a queue entry, not the arbiter grant;
@@ -141,43 +142,36 @@ they must not claim the framebuffer's four-sector chaining bandwidth benefit.
 Do not replace the sampling numerical golden or confuse its functional cache
 with a cycle-executed cache controller.
 
-## Offline MC source integration
+## Integration configuration
 
-The host `ports::Service` contract and external data boundary remain compatible
-with `fb472c9`: byte addresses, 64-bit beats, bounded queue acceptance and
-Started/ReadBeat/Complete events. The independent cycle/RTL implementation first
-appears in `3b69ba5`; `d11abf2` records its historical serial board results.
-A worktree based only on `fb472c9` must first take those two commits before the
-commit containing the optional early/group changes in this section. The audited
-logic certificate commits are separate dependencies. Do not copy individual RTL
-files or substitute the mean-latency oracle for this cycle implementation.
+The host `ports::Service` accepts byte-addressed 32/64/128/512 B jobs and
+reports Started/ReadBeat/Complete events. Its queue acceptance is distinct
+from a hardware arbiter grant. `emu::service::Memory` runs the cycle-executed
+arbiter, adapter, bridge and pin model. `Combination::new` and
+`combination::rtl_sources` retain the serial standalone default; the
+`with_options` variants select early admission and indivisible groups
+explicitly. Keep emu and RTL options identical.
 
-Use `emu::service::Memory::new(image, service::Config { ..Default::default() })`
-for the serial cycle baseline. `Combination::new(image, init_cycles)` and
-`combination::rtl_sources(init_cycles)` select the same serial protocol. The
-explicit `with_options` / `rtl_sources_with_options` arguments are
-`(image, init_cycles, early_grant, chained_groups)` and
-`(init_cycles, early_grant, chained_groups)`, respectively. Sample with identical
-options in emu and RTL; the board PLL/pads are outside the standalone source bundle.
-
-| Low-level addition | Serial binding | Experimental binding |
+| Signal or option | Standalone serial default | CPU V3 board |
 | --- | --- | --- |
-| Arbiter `lookahead_enable` | Tie low | Adapter `cpu_lookahead_window` |
-| Adapter `controller_stream_active` | Tie low | Gearbox `stream_active` |
-| Adapter `controller_next_valid/address` | Unused | Gearbox `next_valid/address` |
-| Adapter `EARLY_GRANT`, `CHAIN_GROUP_FOUR` | Both zero | Match service options |
-| Gearbox `PREPARE_NEXT`, `CHAIN_GROUP_FOUR` | Both zero | Match service options |
+| Arbiter `lookahead_enable` | Low | Adapter `cpu_lookahead_window` |
+| Adapter `controller_stream_active` | Low | Bridge `stream_active` |
+| Reserved address | Unused | Adapter to bridge `next_valid/address` |
+| `EARLY_GRANT` / `PREPARE_NEXT` | 0 / 0 | 1 / 1 |
+| `CHAIN_GROUP_FOUR` | 0 | 0 |
 
-The production CPU wrapper retains the serial ties/defaults. Its dependency
-compiles, but this offline delivery is not a new whole-system co-simulation,
-PnR, CDC or board qualification. Existing GPU evidence covers six explicit
-Icarus edge/pin tests, independent cycle/oracle data comparison, reset, refresh,
-row conflicts, held final responses, source underrun and illegal admissions.
-The additional bounded active-display test and its narrow startup margin are
-documented only in the [probe study](../../../hardware/vendor/gowin/doc/sdram-traffic-probe.md#bounded-active-demand-cycle-check).
-The additional [production-display component check](../../../hardware/vendor/gowin/doc/sdram-traffic-probe.md#bounded-production-display-and-cdc-check)
-executes the real four-row buffer, publication/release CDC and RGB consumer with
-the connected vendor RTL and pin model. Its finite active-region pass is separate
-from complete system qualification. The group image passes repeated physical
-SRAM and verified Flash software-reload measurement; early-only board measurement
-and full power-off cold-start UART remain open.
+The CPU V3 board grants at most one next descriptor while the active line
+stream continues. Its physical controller may prepare another bank, and the
+next request can enter the bridge on accepted final-response retirement.
+The current write payload and response owner do not change on early grant.
+The reserved request is irrevocable; Display priority applies before its
+grant. See the
+[vendor contract](../../../hardware/vendor/gowin/doc/sdram-memory-controller.md#optional-early-admission)
+for alignment, backpressure and timing constraints.
+
+Cycle/pin RTL comparison covers read/write data and guards, reset, refresh,
+row conflicts, held final responses and illegal descriptors. The CPU V3
+production project also passes 54/108 MHz PnR and full-system Icarus boot
+simulation. The standalone board-probe results in the
+[traffic study](../../../hardware/vendor/gowin/doc/sdram-traffic-probe.md)
+do not qualify this CPU V3 bitstream on physical hardware.

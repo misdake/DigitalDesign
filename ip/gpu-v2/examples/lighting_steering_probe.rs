@@ -12,28 +12,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     fs::create_dir_all(&root)?;
     let mut csv = String::from("profile,candidate,full_latency,diffuse_latency,full_ii,diffuse_ii,register_bits,mul9,mul18,mac,rom\n");
-    for profile in [LightingProfile::Fast, LightingProfile::Compact] {
-        for (name, steering, one_hot, extra_large, extra_small) in [
-            ("baseline", DspSteering::None, false, 0, 0),
-            ("onehot", DspSteering::None, true, 0, 0),
-            ("orient", DspSteering::Orient, false, 0, 0),
-            ("local", DspSteering::Local, false, 0, 0),
-            ("local-onehot", DspSteering::Local, true, 0, 0),
-            ("local-large1", DspSteering::Local, false, 1, 0),
-            ("local-sparse9", DspSteering::Local, false, 0, -2),
-            ("joint", DspSteering::Joint, false, 0, 0),
-            ("joint-large1", DspSteering::Joint, false, 1, 0),
+    {
+        let profile = LightingProfile::Fast;
+        for (name, steering, one_hot, extra_large) in [
+            ("baseline", DspSteering::None, false, 0),
+            ("onehot", DspSteering::None, true, 0),
+            ("orient", DspSteering::Orient, false, 0),
+            ("local", DspSteering::Local, false, 0),
+            ("local-onehot", DspSteering::Local, true, 0),
+            ("local-large1", DspSteering::Local, false, 1),
+            ("joint", DspSteering::Joint, false, 0),
+            ("joint-large1", DspSteering::Joint, false, 1),
         ] {
-            if profile == LightingProfile::Fast && extra_small < 0 {
-                continue;
-            }
             let mut options = LightingRtlOptions::retimed_resource_profile(profile);
             options.dsp_steering = steering;
             options.one_hot_dsp = one_hot;
             options.retiming.extra_large_multiply += extra_large;
-            if extra_small < 0 {
-                options.retiming.extra_small_multiply -= (-extra_small) as usize;
-            }
             let rtl = rtl::generate_with_options(profile, options)?;
             if name == "local-large1" {
                 assert_eq!(

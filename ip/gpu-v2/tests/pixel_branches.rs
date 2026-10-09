@@ -873,7 +873,8 @@ fn persistent_cache_survives_idle_gaps_and_global_wrap_with_different_rgb() {
             .sum()
     );
     assert_eq!(framebuffer.bytes, expected);
-    assert_eq!(dut.sampling_stats().compilations, 20);
+    assert_eq!(dut.sampling_stats().admissions, 20);
+    assert_eq!(dut.sampling_stats().compilations, 0);
     println!("WARM_PROOF windows={completed_windows} gap_edges={gap_edges} requests={} first={first} cold_interval={} warm_intervals={:?} final={}",texture.requests,latencies[0],&latencies[1..],framebuffer.cycle);
 }
 
@@ -981,7 +982,8 @@ fn persistent_real_capacity_stall_retains_allocated_offer_and_recovers() {
     assert!(public_ids > 1 && producer <= 16 && groups <= 32);
     assert!(stable > 0 && held_offer > 0 && paused_beats > 0 && closed_beats > 0);
     assert!(dut.sampling_stats().link.color_gated_edges > 0);
-    assert_eq!(dut.sampling_stats().compilations, 24);
+    assert_eq!(dut.sampling_stats().admissions, 24);
+    assert_eq!(dut.sampling_stats().compilations, 0);
     println!("CAPACITY_PROOF ids={public_ids} global={global} credits={credits} producer={producer} groups={groups} stable={stable} held_offer={held_offer} paused_beats={paused_beats} closed_beats={closed_beats}");
 }
 
@@ -1113,7 +1115,8 @@ fn allocated_offer_survives_sender_change_and_cannot_fund_same_edge_allocation()
             );
         }
         if wall == 699 {
-            assert_eq!(dut.sampling_stats().compilations, 1);
+            assert_eq!(dut.sampling_stats().admissions, 1);
+            assert_eq!(dut.sampling_stats().compilations, 0);
             assert_eq!(
                 results.len(),
                 4,

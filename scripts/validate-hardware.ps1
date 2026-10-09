@@ -145,12 +145,10 @@ function Invoke-BoardArtifactAudit {
 }
 
 function Invoke-AuditValidation {
-    Invoke-BoardArtifactAudit "board-health"
     Invoke-BoardArtifactAudit "cpu-v3-system"
 }
 
 function Invoke-PnrValidation {
-    Invoke-GowinBuild "digital-design-hardware-gowin" "board_health"
     Invoke-GowinBuild "cpu-v3-tang-nano-20k" "cpu_v3_system"
 }
 

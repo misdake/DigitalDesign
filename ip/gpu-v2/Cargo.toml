@@ -12,4 +12,5 @@ resource-scheduler = { path = "../../modeling/scheduler" }
 rayon = { version = "1.12", optional = true }
 
 [dev-dependencies]
+digital-design-circuit = { path = "../../circuit" }
 digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }

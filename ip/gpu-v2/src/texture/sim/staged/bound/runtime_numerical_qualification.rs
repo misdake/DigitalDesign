@@ -59,7 +59,8 @@ fn dedicated_actual_d_lod_selector_bill_matches_static_certificate_and_old_basis
             .sum();
         let old_runtime_read = old.rotating_read_mux_bits - removed_read;
         if storage == control::Storage::Dedicated {
-            assert_eq!(actual.rotating_read_mux_bits, old_runtime_read + 769);
+            // The Work two-head selector adds payload92 + cursor2 mux nodes.
+            assert_eq!(actual.rotating_read_mux_bits, old_runtime_read + 769 + 94);
             assert_eq!(
                 actual.rotating_write_mux_bits,
                 old.rotating_write_mux_bits + 785
@@ -82,7 +83,7 @@ fn dedicated_actual_d_lod_selector_bill_matches_static_certificate_and_old_basis
                 assert!(used <= ceiling);
             }
         } else {
-            assert_eq!(actual.rotating_read_mux_bits, old_runtime_read);
+            assert_eq!(actual.rotating_read_mux_bits, old_runtime_read + 94);
             assert_eq!(
                 actual.rotating_write_mux_bits,
                 old.rotating_write_mux_bits
@@ -295,10 +296,15 @@ fn connected_actual_numerical_banks_pool_writes_and_ce_cuts() {
         // Pause every phase of each data path, and block only new captures.
         r.preparation.membership_ready = wall % 19 != 7;
         r.preparation.packet_ready = wall % 17 != 3;
+        let raw_input = qs
+            .get(accepted)
+            .map(RawQuadInput::capture)
+            .transpose()
+            .unwrap();
         let step = r
-            .step(
+            .step_raw(
                 &mut mc,
-                qs.get(accepted),
+                raw_input.as_ref(),
                 timed::Control {
                     ce: wall % 7 != 2,
                     result_ready: wall > 1000,
@@ -309,15 +315,8 @@ fn connected_actual_numerical_banks_pool_writes_and_ce_cuts() {
             accepted += 1;
         }
         let trace = &r.preparation.trace;
-        if !step.accepted {
-            assert_eq!(super::super::counted_call_guard::calls(), calls);
-        } else {
-            // Only eligible upstream compile/provenance may use counted helpers.
-            // Slot 4 is the counted coordinate body, which compile still calls;
-            // the live step path must never reach it.
-            let after = super::super::counted_call_guard::calls();
-            assert!((0..5).all(|i| after[i] > calls[i]));
-        }
+        // Admission is raw boundary capture, including on accepted edges.
+        assert_eq!(super::super::counted_call_guard::calls(), calls);
         if !step.effective_ce {
             assert_eq!(r.preparation.numerical_banks(), before);
             assert_eq!(r.preparation.d_lod_state(), before_d_lod);
@@ -441,7 +440,7 @@ fn connected_actual_numerical_banks_pool_writes_and_ce_cuts() {
     assert!(frozen > 0 && written > 0 && refused > 0 && partial > 0);
     assert_eq!((d_captures, l_captures), (qs.len(), qs.len()));
     assert!(d_calcs > 0 && l_calcs > 0);
-    println!("NUMERICAL actual Runtime: Dcalcs={d_calcs} LODcalcs={l_calcs} captures={d_captures}/{l_captures} member_cuts={hits_m:?} packet_cuts={hits_p:?} frozen={frozen} PW={written} refused={refused} partial={partial} poison={}",r.poison_hits);
+    println!("NUMERICAL actual Runtime: Dcalcs={d_calcs} LODcalcs={l_calcs} captures={d_captures}/{l_captures} member_cuts={hits_m:?} packet_cuts={hits_p:?} frozen={frozen} PW={written} refused={refused} partial={partial} compilations={}",r.stats.compilations);
 }
 #[test]
 fn connected_actual_coordinate_cuts_match_live_frames_and_freeze_under_ce() {

@@ -171,6 +171,43 @@ pub struct QuadInput {
     pub force_coarsest: bool,
 }
 
+/// Captured raster attributes and immutable draw Sampling fields. This is a
+/// wire packet, not a precomputed schedule or an additional ingress FIFO.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawQuadInput {
+    /// Caller-owned result ID, 0..15. Reuse waits for public consumption.
+    pub quad_id: u8,
+    /// Low four coverage bits; uncovered helpers still participate in D.
+    pub mask: u8,
+    /// Signed18 Q16 codes in [-131072, 131071], including helper lanes.
+    pub uv_q16: [[i64; 2]; 4],
+    pub slot: u8,
+    pub material_size_log2: u8,
+    pub filter: Filter,
+    /// Signed Q8 draw field; integer saturation at +/-8192 matches capture.
+    pub bias_q8: i16,
+    pub force_coarsest: bool,
+}
+impl RawQuadInput {
+    /// Compatibility capture only: no preparation arithmetic or oracle call.
+    pub fn capture(input: &QuadInput) -> Result<Self, String> {
+        if !input.lod_bias.is_finite() {
+            return Err("Sampling nonfinite bias".into());
+        }
+        let (uv_q16, force_coarsest) = capture_uv(input)?;
+        Ok(Self {
+            quad_id: input.quad_id,
+            mask: input.mask,
+            uv_q16,
+            slot: input.slot,
+            material_size_log2: input.material_size_log2,
+            filter: input.filter,
+            bias_q8: (input.lod_bias.clamp(-32.0, 32.0) * 256.0).round_ties_even() as i16,
+            force_coarsest,
+        })
+    }
+}
+
 /// Oracle experiment controls, not frozen counted/RTL formats.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {

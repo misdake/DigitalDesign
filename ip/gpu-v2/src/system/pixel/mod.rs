@@ -10,11 +10,15 @@ pub mod composition;
 pub mod dispatch;
 pub mod engines;
 pub mod final_stage;
+pub mod foundation;
+pub mod foundation_live;
+pub mod foundation_backend;
 mod live;
 mod model;
 pub mod raster_input;
 pub mod registered;
 pub mod registered_backend;
+pub mod spsc;
 
 use crate::{framebuffer::ports::*, lighting::ports::LightingOutput};
 pub use branches::{BranchCycle, BranchQuad, BranchTick, PixelBranches, SAMPLING_OFFER_BITS};
