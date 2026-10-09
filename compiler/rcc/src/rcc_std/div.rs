@@ -24,8 +24,8 @@ static DIVMOD_REM: u16 = 0;
 /// shift-subtract divide: `a / b` and `a % b` into the two static cells
 fn divmod_core(a: u16, b: u16) {
     if b == 0 {
-        addr_of(&DIVMOD_QUO).write(0, 0);
-        addr_of(&DIVMOD_REM).write(0, a);
+        unsafe { addr_of(&DIVMOD_QUO).write(0, 0) };
+        unsafe { addr_of(&DIVMOD_REM).write(0, a) };
         return;
     }
     let mut x = a;
@@ -42,8 +42,8 @@ fn divmod_core(a: u16, b: u16) {
         }
         i += 1;
     }
-    addr_of(&DIVMOD_QUO).write(0, quo);
-    addr_of(&DIVMOD_REM).write(0, rem);
+    unsafe { addr_of(&DIVMOD_QUO).write(0, quo) };
+    unsafe { addr_of(&DIVMOD_REM).write(0, rem) };
 }
 
 /// |x| as a u16 (so the core can work on magnitudes)

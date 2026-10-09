@@ -697,6 +697,9 @@ fn ty_to_json(ty: &str) -> String {
 fn fault_kind_name(fault: &Fault) -> String {
     match fault.kind {
         FaultKind::InvalidInstruction => "invalid instruction".to_string(),
+        FaultKind::UnalignedAddress { address } => {
+            format!("unaligned physical word address 0x{:08x}", address.get())
+        }
         FaultKind::PhysicalAddressOutOfRange { address } => {
             format!("physical address out of range {address:?}")
         }

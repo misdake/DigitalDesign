@@ -74,23 +74,23 @@ fn test_ptr_array() {
 fn main() {
     let mut sum: u16 = 0;
     for i in 0..8u16 {
-        Ptr::from_addr(i).write(0, 11);
+        unsafe { Ptr::from_addr(i).write(0, 11) };
     }
     let array1 = Ptr::from_addr(8);
     let array2 = Ptr::from_addr(9);
     let mut j = 0;
     while j < 4 {
-        array1.add((j << 1) as i16).write(0, 4);
-        array2.add((j << 1) as i16).write(0, 7);
+        unsafe { array1.add((j << 1) as i16).write(0, 4) };
+        unsafe { array2.add((j << 1) as i16).write(0, 7) };
         j += 1;
     }
     for i in 0..8u16 {
-        sum += Ptr::from_addr(i).read(0);
+        sum += unsafe { Ptr::from_addr(i).read(0) };
     }
     let mut j = 0;
     while j < 4 {
-        sum += array1.add((j << 1) as i16).read(0);
-        sum += array2.add((j << 1) as i16).read(0);
+        sum += unsafe { array1.add((j << 1) as i16).read(0) };
+        sum += unsafe { array2.add((j << 1) as i16).read(0) };
         j += 1;
     }
     halt(sum);
@@ -107,9 +107,9 @@ fn test_struct() {
 fn main() {
     let base = Ptr::from_addr(555);
     let vec2 = base.add(2);
-    vec2.write(0, 123); // .x
-    vec2.write(1, 456); // .y
-    halt(vec2.read(0));
+    unsafe { vec2.write(0, 123) }; // .x
+    unsafe { vec2.write(1, 456) }; // .y
+    halt(unsafe { vec2.read(0) });
 }
 "#;
     let (state, signal) = compile_and_run(src, "main", 1000);

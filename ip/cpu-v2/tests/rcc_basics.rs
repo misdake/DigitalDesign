@@ -345,7 +345,7 @@ fn test_procedure_implicit_ret() {
 fn fill(p: Ptr, n: u16, v: u16) {
     let mut i: u16 = 0;
     while i < n {
-        p.write(i as i16, v + i);
+        unsafe { p.write(i as i16, v + i) };
         i += 1;
     }
 }

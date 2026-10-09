@@ -1,0 +1,11 @@
+[package]
+name = "gpu-v2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+audited = { path = "../../modeling/audited" }
+resource-scheduler = { path = "../../modeling/scheduler" }
+
+[dev-dependencies]
+digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }

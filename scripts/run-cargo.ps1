@@ -6,11 +6,20 @@ param(
 
     [string]$LogDirectory = "",
 
-    [string[]]$CargoArgs = @()
+    [string[]]$CargoArgs = @(),
+
+    # Release is the default. Use debug for assertions, overflow checks, or
+    # profile-dependent failures.
+    [switch]$DebugProfile
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+$profileName = if ($DebugProfile) { "debug" } else { "release" }
+if (-not $DebugProfile) {
+    $CargoArgs = @("--release") + $CargoArgs
+}
 
 if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
     $LogDirectory = Join-Path $repoRoot "target/cargo-summaries"
@@ -20,6 +29,10 @@ New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 $displayName = if ([string]::IsNullOrWhiteSpace($Label)) { $Subcommand } else { $Label }
 $safeName = (($displayName -replace '[^A-Za-z0-9_-]+', '-').Trim('-')).ToLowerInvariant()
 if ([string]::IsNullOrWhiteSpace($safeName)) { $safeName = $Subcommand }
+# The profile is part of the artifact name: a release run and a debug run of the
+# same label must not overwrite each other's log, and the summary says which
+# profile produced the numbers.
+if (-not $DebugProfile) { $safeName = "$safeName-release" }
 $logPath = Join-Path $LogDirectory "$safeName.log"
 $summaryPath = Join-Path $LogDirectory "$safeName.json"
 $relativeLogPath = $logPath.Substring($repoRoot.Length + 1).Replace('\', '/')
@@ -48,6 +61,7 @@ $summary = [ordered]@{
     schema = 1
     subcommand = $Subcommand
     label = $displayName
+    profile = $profileName
     exit_code = $exitCode
     ok = ($exitCode -eq 0)
     log_path = $relativeLogPath
@@ -57,6 +71,7 @@ $summary = [ordered]@{
 
 Write-Output ""
 Write-Output "== cargo $Subcommand $($CargoArgs -join ' ') =="
+Write-Output "profile: $profileName"
 Write-Output "log:    $relativeLogPath"
 Write-Output "result: $(if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' })  exit=$exitCode"
 Write-Output "warnings: $warningCount  errors: $errorCount"

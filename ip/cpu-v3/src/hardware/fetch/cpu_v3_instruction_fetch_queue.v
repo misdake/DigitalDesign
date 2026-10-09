@@ -27,10 +27,14 @@ reg stream_valid = 0;
 reg [31:0] expected_core_address = 0;
 reg [31:0] next_memory_address = 0;
 
-// These small FIFOs and the BTC intentionally use FFs, not scarce RAM16 cells.
+// Full stream ownership is checked against expected_core_address. Redirects
+// invalidate old request slots before responses can enter the new stream.
+// BTC tags remain full physical addresses because entries survive redirects.
 (* syn_ramstyle = "registers" *) reg [15:0] queue_data [0:3];
 (* syn_ramstyle = "registers" *) reg queue_error [0:3];
-(* syn_ramstyle = "registers" *) reg [31:0] queue_address [0:3];
+// Current requests and responses are ordered, so one stream cursor identifies
+// the next downstream word. Old-path requests are drained using current bits.
+reg [15:0] downstream_head_offset = 0;
 reg [1:0] queue_head = 0;
 reg [1:0] queue_tail = 0;
 reg [2:0] queue_count = 0;
@@ -38,7 +42,7 @@ reg [2:0] queue_count = 0;
 // Clear live ownership on every restart. Unlike a toggled epoch, these bits
 // cannot alias an old request after a sequence of fast BTC redirects.
 reg [3:0] metadata_current = 0;
-(* syn_ramstyle = "registers" *) reg [31:0] metadata_address [0:3];
+
 reg [1:0] metadata_head = 0;
 reg [1:0] metadata_tail = 0;
 reg [2:0] metadata_count = 0;
@@ -61,7 +65,7 @@ function [31:0] next_word;
 endfunction
 
 wire core_address_matches = stream_valid && core_address == expected_core_address;
-wire queue_head_matches = queue_count != 0 && queue_address[queue_head] == core_address;
+wire queue_head_matches = queue_count != 0 && downstream_head_offset == core_address[15:0];
 wire restart = core_request_valid && (!core_address_matches ||
                (replay_remaining == 0 && queue_count != 0 && !queue_head_matches));
 reg btc_hit;
@@ -97,7 +101,7 @@ wire btc_response = !reset && !flush && core_request_valid &&
 wire response_is_current = metadata_count != 0 && metadata_current[metadata_head];
 wire response_bypass = !reset && !flush && !restart && !btc_response &&
     core_request_valid && core_address_matches && queue_count == 0 &&
-    memory_response_valid && response_is_current && metadata_address[metadata_head] == core_address;
+    memory_response_valid && response_is_current && downstream_head_offset == core_address[15:0];
 assign core_response_valid = !reset && !flush && core_request_valid &&
     (btc_response || (!restart && core_address_matches && (queue_head_matches || response_bypass)));
 wire core_pop = core_response_valid && core_response_ready;
@@ -134,6 +138,7 @@ always @(posedge clk) begin
         stream_valid <= 0;
         expected_core_address <= 0;
         next_memory_address <= 0;
+        downstream_head_offset <= 0;
         queue_head <= 0;
         queue_tail <= 0;
         queue_count <= 0;
@@ -189,6 +194,8 @@ always @(posedge clk) begin
             queue_tail <= 0;
             queue_count <= 0;
             stream_valid <= core_request_valid;
+            if (core_request_valid)
+                downstream_head_offset <= flush ? core_address[15:0] : memory_address[15:0];
             if (core_request_valid) begin
                 expected_core_address <= next_word(core_address, core_pop ? 2'd1 : 2'd0);
                 if (flush) next_memory_address <= core_address;
@@ -196,11 +203,11 @@ always @(posedge clk) begin
             end
         end else begin
             if (core_pop) expected_core_address <= next_word(expected_core_address, 2'd1);
+            if (queue_pop || bypass_pop) downstream_head_offset <= downstream_head_offset + 1'b1;
             if (queue_pop) queue_head <= queue_head + 1'b1;
             if (enqueue_response) begin
                 queue_data[queue_tail] <= memory_read_data;
                 queue_error[queue_tail] <= memory_error;
-                queue_address[queue_tail] <= metadata_address[metadata_head];
                 queue_tail <= queue_tail + 1'b1;
             end
             case ({enqueue_response, queue_pop})
@@ -216,7 +223,6 @@ always @(posedge clk) begin
         end
         if (memory_request_fire) begin
             metadata_current[metadata_tail] <= 1;
-            metadata_address[metadata_tail] <= memory_address;
             metadata_tail <= metadata_tail + 1'b1;
         end
         case ({memory_request_fire, memory_response_fire})

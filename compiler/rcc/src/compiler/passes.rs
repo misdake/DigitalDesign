@@ -727,6 +727,9 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::DevSend { .. }
                         | Instr::DevRecv { .. }
                         | Instr::DcacheInvalidateAll
+                        | Instr::DcacheLineCopy { .. }
+                        | Instr::DcacheCleanLine { .. }
+                        | Instr::DcacheWait
                         | Instr::MtsrDseg { .. }
                         | Instr::Jseg { .. }
                         | Instr::Signal { .. }

@@ -1,4 +1,4 @@
-//! Encoding helpers for CpuV3 revision 0.8.
+//! Encoding helpers for CpuV3 revision 0.9.
 
 pub type Word = u16;
 pub type Register = u8;
@@ -6,7 +6,7 @@ pub type Register = u8;
 pub const LINK_REGISTER: Register = 14;
 pub const STACK_REGISTER: Register = 13;
 pub const DEFAULT_DATA_BASE: Word = 0x4000;
-/// A zero stack pointer denotes the exclusive top of the 16-bit stack segment.
+/// A zero stack pointer denotes the exclusive top of the 16-bit address space.
 pub const DEFAULT_STACK_TOP: Word = 0;
 
 /// Three-register integer ALU operations. The discriminant is the major
@@ -96,8 +96,16 @@ pub enum TestCondition {
 #[repr(u16)]
 pub enum SpecialRegister {
     CodeSegment = 0,
+    /// Contiguous 128-KiB data base. Writing it expands to four page entries.
     DataSegment = 1,
+    DataSegment0 = 2,
+    DataSegment1 = 3,
+    DataSegment2 = 4,
+    DataSegment3 = 5,
 }
+
+pub const DATA_CACHE_CLEAN_LINE_SELECTOR: u8 = 6;
+pub const DATA_CACHE_WAIT_SELECTOR: u8 = 8;
 
 /// FPU v2 major opcode, word0 bits [15:12] (design `fpu-design-v2` section 5).
 /// Every FPU v2 instruction is 32 bits wide, fetched as two 16-bit words, and
@@ -817,6 +825,13 @@ pub fn set_equal(dst: Register, src: Register) -> Word {
     extended(6, dst, src)
 }
 
+/// Starts an asynchronous 32-byte cache-line copy. The source is
+/// the mapped page containing `r[offset]`; the destination keeps the same
+/// in-page offset and takes its eight-bit physical page from `r[destination_page]`.
+pub fn line_copy(offset: Register, destination_page: Register) -> Word {
+    extended(7, offset, destination_page)
+}
+
 /// Replaces `dst` with the signed comparison `dst < src` as 0 or 1.
 pub fn set_less_than_signed(dst: Register, src: Register) -> Word {
     extended(8, dst, src)
@@ -860,8 +875,24 @@ pub fn read_special(dst: Register, special: SpecialRegister) -> Word {
 ///
 /// CSEG deliberately cannot be written this way: changing the fetch segment
 /// and the program counter must be one architectural operation.
+pub fn write_data_segment_page(index: u8, src: Register) -> Word {
+    assert!(index < 4, "CpuV3 data-segment page index exceeds three");
+    extended(0xe, index + 2, src)
+}
+
+/// Sets a contiguous 128-KiB data mapping (`DSEGn = rs * 4 + n`).
 pub fn write_data_segment(src: Register) -> Word {
     extended(0xe, SpecialRegister::DataSegment as Register, src)
+}
+
+/// Starts an asynchronous clean of the line containing `r[address]`.
+pub fn clean_data_line(address: Register) -> Word {
+    extended(0xe, DATA_CACHE_CLEAN_LINE_SELECTOR, address)
+}
+
+/// Waits for all accepted asynchronous D-cache commands.
+pub const fn wait_data_cache() -> Word {
+    0x6e80
 }
 
 /// Atomically selects the code segment and the offset of the next instruction.
@@ -973,6 +1004,10 @@ mod tests {
         assert_eq!(nop(), 0x6000);
         assert_eq!(read_special(3, SpecialRegister::CodeSegment), 0x6d30);
         assert_eq!(write_data_segment(4), 0x6e14);
+        assert_eq!(write_data_segment_page(0, 4), 0x6e24);
+        assert_eq!(write_data_segment_page(3, 4), 0x6e54);
+        assert_eq!(clean_data_line(4), 0x6e64);
+        assert_eq!(wait_data_cache(), 0x6e80);
         assert_eq!(jump_segment(3, 4), 0x6f34);
         assert_eq!(device_receive(3, 2, 1), 0x7213);
         assert_eq!(device_send(3, 2, 1), 0x7a13);

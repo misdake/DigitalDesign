@@ -90,7 +90,18 @@ function Get-RelativeAgentPath([string]$Path) {
     return $Path.Substring($agentRoot.Length).TrimStart('\', '/') -replace '\\', '/'
 }
 
+function Test-IsArchivedBuildArtifact([string]$RelativePath) {
+    # Worktree target/ snapshots retain their original generated reports and
+    # SHA256 manifest. They are evidence artifacts, not authored local specs.
+    # Keep checks enabled for the surrounding records and for unmanifested trees.
+    $archive = [regex]::Match($RelativePath, '^(projects/[^/]+/records/worktrees/[^/]+)/target/')
+    return $archive.Success -and (Test-Path -LiteralPath (Join-Path $agentRoot ($archive.Groups[1].Value + '/manifest.json')) -PathType Leaf)
+}
+
 function Test-IsLocalDocument([string]$RelativePath) {
+    # Installed third-party dependencies are not authored project documents.
+    if ($RelativePath -match '(^|/)(node_modules|vendor)/') { return $false }
+    if (Test-IsArchivedBuildArtifact $RelativePath) { return $false }
     $name = Split-Path -Leaf $RelativePath
     if ($name -eq "README.md" -or $name -eq "todo.md") { return $false }
     # OpenCode prompts are per-run execution artifacts paired with JSONL/stderr,
@@ -183,6 +194,7 @@ if (Test-Path -LiteralPath $agentRoot -PathType Container) {
 
     foreach ($file in (Get-ChildItem $agentRoot -Recurse -File -Filter "*.md")) {
         $relative = Get-RelativeAgentPath $file.FullName
+        if (Test-IsArchivedBuildArtifact $relative) { continue }
         foreach ($line in (Get-DocumentLines $file.FullName)) {
             foreach ($match in [regex]::Matches($line, '\]\(([^)]+)\)')) {
                 $target = $match.Groups[1].Value.Trim()

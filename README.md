@@ -25,7 +25,7 @@ benchmark evidence live at the same commit.
   - **CPU V1**: pilot processor with assembler, core, reference model, and an
     abstract device bus; runs Sokoban in `cpu-v1-sim`.
   - **CPU V2**: 16-bit Harvard CPU, ISA 2.6, cycle model, and rcc backend.
-  - **CPU V3**: current ISA (revision 0.8) plus the two-word FPU v2
+  - **CPU V3**: current ISA (revision 0.9) plus the two-word FPU v2
     (`F0..F63` signed Q16.16, `vec2/3/4` as consecutive ranges, opcodes
     `0xC/0xD/0xE`), Stage 12 microarchitecture with overlapped integer
     execution, fetch queue, two-way I-cache, write-back D-cache with
@@ -49,6 +49,9 @@ benchmark evidence live at the same commit.
 
 ```
 circuit/                         gate graph, simulation, Verilog rendering
+modeling/
+  audited/                       independent fixed-point modeling and work audit
+  scheduler/                     bounded resource-constrained DAG scheduling
 hardware/
   core/                          hardware description and project/resource APIs
   macros/                        hardware derive macros
@@ -59,6 +62,7 @@ ip/
   cpu-v1/                        reusable CPU V1 processor IP
   cpu-v2/                        CPU V2 ISA, model, and rcc backend
   cpu-v3/                        CPU V3 ISA, model, Gowin-bound cache/RTL, and rcc backend
+  gpu-v2/                        reusable GPU components and staged numerical models
 compiler/
   rcc/                           frontend, target-independent IR and passes
   isa-macros/                    ISA definition macros
@@ -71,7 +75,8 @@ systems/
 
 Dependencies point upward through the layers: `circuit -> hardware ->
 ip/compiler -> systems`. A later layer may use an earlier layer, never the
-reverse. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the detailed ownership
+reverse. The independent `modeling/audited` tool is another foundational input
+to IP models. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the detailed ownership
 rules and the memory/device model.
 
 ## Prerequisites
@@ -104,7 +109,9 @@ powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode qui
 
 `validate-hardware.ps1` accepts `quick | iverilog | audit | pnr | all`. Run
 cargo through `scripts/run-cargo.ps1` when raw output would be large — it tees
-the full log and prints a compact summary.
+the full log and prints a compact summary. It uses the release profile by
+default; pass `-DebugProfile` when investigating debug assertions, overflow
+checks, or profile-dependent failures. Logs and summaries record the profile.
 
 `check-docs.ps1` keeps the documentation rules machine-checked: a current-state
 section stays within its line budget, a fitted number lives in one current-state
@@ -158,6 +165,9 @@ the next browser `requestAnimationFrame`, without starting an unbounded CPU run.
 - rcc language: `compiler/rcc/src/frontend/spec.md`.
 - Hardware framework: `hardware/core/README.md` and
   `hardware/vendor/gowin/scripts/README.md`.
+- Gowin device references: [`hardware/vendor/gowin/doc/`](hardware/vendor/gowin/doc/README.md).
+- Audited modeling: [`modeling/audited/README.md`](modeling/audited/README.md).
+- GPU v2 IP: [`ip/gpu-v2/README.md`](ip/gpu-v2/README.md).
 
 ## License
 

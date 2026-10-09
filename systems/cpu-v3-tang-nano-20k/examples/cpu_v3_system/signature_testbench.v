@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 // Signature testbench for the single-stage flash boot. Phase 1 preloads the
 // Flash model with the packed boot package and verifies the default S2
-// application followed by the button-01 S1 application. Later phases
+// application's rejected legacy GPU submit, followed by the button-01 S1 application. Later phases
 // corrupt the descriptor and manifest metadata and check the boot stage's
 // failure reports.
 module tb;
@@ -11,21 +11,21 @@ reg flash_miso = 1;
 reg [63:0] sdram_read_data = 0;
 reg sdram_read_valid = 0;
 reg sdram_init_done = 0;
-reg sdram_command_ack = 0;
-reg sdram_write_data_ready = 1;
+wire sdram_request_ready;
+reg sdram_done = 0;
+reg sdram_write_data_ready = 0;
 wire [5:0] leds;
 wire uart_tx;
 wire flash_clk;
 wire flash_cs_n;
 wire flash_mosi;
-wire sdram_command_valid;
-wire [2:0] sdram_command;
-wire sdram_precharge;
+wire sdram_request_valid;
+wire sdram_write;
 wire [20:0] sdram_address;
+wire [5:0] sdram_words;
 wire [3:0] sdram_write_mask;
 wire [63:0] sdram_write_data;
 wire sdram_write_data_valid;
-wire [7:0] sdram_burst_length;
 reg pixel_clock = 0;
 reg serial_clock = 0;
 reg video_locked = 1;
@@ -39,112 +39,106 @@ always #5 clk = ~clk;
 always #2 pixel_clock = ~pixel_clock;
 always #1 serial_clock = ~serial_clock;
 
-// SDRAM model: 16-bit words, two words per 32-bit controller word. The boot
-// sections stay below physical word 0x80000, so 19 index bits suffice.
-//
-// The SharedSdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
-// (four 64-bit beats), and it streams line-write beats through
-// sdram_write_data_valid BEFORE the ACTIVE/WRITE command pair. The model
-// therefore buffers the four 64-bit beats and commits them to memory when the
-// WRITE command acknowledges a burst of seven, and it returns line reads as
-// four ordered 64-bit beats. A 32-bit word W occupies memory[2*W] (low half)
-// and memory[2*W+1] (high half), matching the port's packing.
-reg [15:0] memory [0:524287];
+// Abstract native 32-bit controller port. Address is a 32-bit word address.
+// The board bridge groups two native words into each 64-bit system beat.
+reg [15:0] memory [0:4194303];
+reg write_pending = 0;
+reg [20:0] transfer_address = 0;
+reg [5:0] transfer_words = 0;
+reg [3:0] transfer_mask = 0;
+integer transfer_pairs = 0;
+integer transfer_pair = 0;
 integer read_delay = 0;
-integer read_beats = 0;
-reg [20:0] pending_read_address = 0;
-reg read_is_line = 0;
-reg [2:0] read_beat = 0;
+integer read_pairs = 0;
 reg word_read_seen = 0;
 reg line_burst_seen = 0;
-integer write_beats = 0;
-reg [20:0] pending_write_address = 0;
-reg [7:0] pending_write_length = 0;
-reg [63:0] write_capture [0:3];
-reg [2:0] write_capture_beat = 0;
-reg [17:0] idx;
-reg [17:0] idx2;
+reg [20:0] idx;
+reg [20:0] idx2;
 integer cycle;
 
+assign sdram_request_ready = !(|buttons) && !write_pending &&
+    read_delay == 0 && read_pairs == 0;
+always @(*) sdram_write_data_ready = !(|buttons) && write_pending;
+
 always @(posedge clk) begin
-    sdram_command_ack <= 0;
+    sdram_done <= 0;
     sdram_read_valid <= 0;
-
-    // The word port streams the four line-write beats while it is in its
-    // ST_WRITE_STAGE, which runs before ACTIVE/WRITE. Capture each beat here.
-    if (sdram_write_data_valid) begin
-        write_capture[write_capture_beat] <= sdram_write_data;
-        write_capture_beat <= write_capture_beat + 1'b1;
-    end
-
-    // The word port interleaves a refresh command every 600 clocks.
-    if (sdram_command_valid && (sdram_command == 3'b001 || sdram_command == 3'b011))
-        sdram_command_ack <= 1;
-
-    if (sdram_command_valid && sdram_command == 3'b100) begin
-        sdram_command_ack <= 1;
-        write_capture_beat <= 0;
-        pending_write_address <= sdram_address;
-        pending_write_length <= sdram_burst_length;
-        if (sdram_burst_length != 0 && sdram_burst_length != 7)
-            $fatal(1, "unexpected write burst length %0d", sdram_burst_length);
-        if (sdram_burst_length == 7) begin
-            // Commit a cache line: beat j carries 32-bit words (base+2*j) and
-            // (base+2*j+1) in sdram_write_data[31:0] and [63:32].
-            begin : line_write_commit
-                integer j;
-                for (j = 0; j < 4; j = j + 1) begin
-                    idx = sdram_address[17:0] + 2*j;
-                    memory[{idx, 1'b0}] <= write_capture[j][15:0];
-                    memory[{idx, 1'b1}] <= write_capture[j][31:16];
-                    idx = idx + 1;
-                    memory[{idx, 1'b0}] <= write_capture[j][47:32];
-                    memory[{idx, 1'b1}] <= write_capture[j][63:48];
-                end
-            end
+    if (|buttons) begin
+        write_pending <= 0;
+        read_delay <= 0;
+        read_pairs <= 0;
+        transfer_pair <= 0;
+    end else begin
+    if (sdram_request_valid && sdram_request_ready) begin
+        if (sdram_words != 1 && sdram_words != 8 &&
+            sdram_words != 16 && sdram_words != 32)
+            $fatal(1, "illegal native descriptor length %0d", sdram_words);
+        if (write_pending || read_delay != 0 || read_pairs != 0)
+            $fatal(1, "overlapping native descriptors write=%0d delay=%0d pairs=%0d new_write=%0d new_words=%0d new_addr=%h old_words=%0d old_addr=%h port_state=%0d",
+                write_pending, read_delay, read_pairs, sdram_write,
+                sdram_words, sdram_address, transfer_words,
+                transfer_address, dut.u_shared_sdram_port.state);
+        transfer_address <= sdram_address;
+        transfer_words <= sdram_words;
+        transfer_mask <= sdram_write_mask;
+        transfer_pair <= 0;
+        transfer_pairs <= sdram_words == 1 ? 1 : sdram_words / 2;
+        if (sdram_write) begin
+            write_pending <= 1;
         end else begin
-            if (!sdram_write_mask[0]) memory[{sdram_address[17:0], 1'b0}][7:0] <= sdram_write_data[7:0];
-            if (!sdram_write_mask[1]) memory[{sdram_address[17:0], 1'b0}][15:8] <= sdram_write_data[15:8];
-            if (!sdram_write_mask[2]) memory[{sdram_address[17:0], 1'b1}][7:0] <= sdram_write_data[23:16];
-            if (!sdram_write_mask[3]) memory[{sdram_address[17:0], 1'b1}][15:8] <= sdram_write_data[31:24];
+            read_delay <= 2;
+            read_pairs <= sdram_words == 1 ? 1 : sdram_words / 2;
+            if (sdram_write_mask != 0) $fatal(1, "read DQM mask not zero");
+            if (sdram_words == 1) word_read_seen <= 1;
+            else line_burst_seen <= 1;
         end
     end
 
-    // One READ command returns burst_length+1 ordered 64-bit beats for a line
-    // (four beats) or one 32-bit word for a burst of zero.
-    if (sdram_command_valid && sdram_command == 3'b101) begin
-        if (sdram_burst_length == 0) word_read_seen <= 1;
-        else if (sdram_burst_length == 7) line_burst_seen <= 1;
-        else $fatal(1, "unexpected burst length %0d", sdram_burst_length);
-        pending_read_address <= sdram_address;
-        read_is_line <= sdram_burst_length == 7;
-        read_delay <= 2;
-        read_beat <= 0;
-        read_beats <= sdram_burst_length == 7 ? 4 : 1;
-        sdram_command_ack <= 1;
-    end else if (read_delay != 0) begin
-        read_delay <= read_delay - 1;
-    end else if (read_beats != 0) begin
-        sdram_read_valid <= 1;
-        if (read_is_line) begin
-            idx = pending_read_address[17:0] + 2*read_beat;
+    if (write_pending && sdram_write_data_valid && sdram_write_data_ready) begin
+        idx = transfer_address + 2*transfer_pair;
+        if (transfer_words == 1) begin
+            if (!transfer_mask[0]) memory[{idx,1'b0}] <= sdram_write_data[15:0];
+            if (!transfer_mask[2]) memory[{idx,1'b1}] <= sdram_write_data[31:16];
+        end else begin
             idx2 = idx + 1;
-            sdram_read_data <= {
-                memory[{idx2, 1'b1}],
-                memory[{idx2, 1'b0}],
-                memory[{idx, 1'b1}],
-                memory[{idx, 1'b0}]
-            };
-        end else begin
-            idx = pending_read_address[17:0];
-            sdram_read_data <= {
-                32'b0,
-                memory[{idx, 1'b1}],
-                memory[{idx, 1'b0}]
-            };
+            memory[{idx,1'b0}] <= sdram_write_data[15:0];
+            memory[{idx,1'b1}] <= sdram_write_data[31:16];
+            memory[{idx2,1'b0}] <= sdram_write_data[47:32];
+            memory[{idx2,1'b1}] <= sdram_write_data[63:48];
         end
-        read_beat <= read_beat + 1'b1;
-        read_beats <= read_beats - 1;
+        transfer_pair <= transfer_pair + 1;
+        if (transfer_pair == transfer_pairs - 1) begin
+            write_pending <= 0;
+            sdram_done <= 1;
+        end
+    end
+
+    if (read_delay != 0) read_delay <= read_delay - 1;
+    else if (read_pairs != 0) begin
+        idx = transfer_address + 2*transfer_pair;
+        idx2 = idx + 1;
+        sdram_read_data <= transfer_words == 1 ?
+            {32'b0, memory[{idx,1'b1}], memory[{idx,1'b0}]} :
+            {memory[{idx2,1'b1}], memory[{idx2,1'b0}],
+             memory[{idx,1'b1}], memory[{idx,1'b0}]};
+        sdram_read_valid <= 1;
+        transfer_pair <= transfer_pair + 1;
+        read_pairs <= read_pairs - 1;
+        if (read_pairs == 1) sdram_done <= 1;
+    end
+    end
+end
+
+always @(posedge clk) begin
+    if (dut.code_segment == 16'd7 && dut.memory_response_valid && dut.memory_error)
+        $fatal(1, "SDRAM native adapter error: state=%0d fed=%0d/%0d words=%0d address=%h",
+            dut.u_shared_sdram_port.state, dut.u_shared_sdram_port.line_fed,
+            dut.u_shared_sdram_port.line_total, transfer_words, transfer_address);
+    if (dut.icache_memory_request_ready &&
+        (!dut.memory_request_valid || dut.memory_write || !dut.memory_line ||
+         dut.memory_address != dut.icache_memory_address)) begin
+        $display("FAIL: instruction acceptance routed mismatched request");
+        $finish(1);
     end
 end
 
@@ -153,8 +147,14 @@ end
 // (placed at Flash byte 0x100000) read as erased Flash.
 localparam integer FLASH_BASE = 32'h00100000;
 localparam integer FLASH_PACKAGE_SIZE = __FLASH_PACKAGE_SIZE__;
+localparam integer S1_BASE = __S1_BASE__;
+localparam integer S2_BASE = __S2_BASE__;
+localparam integer S1_IMAGE_WORDS = __S1_IMAGE_WORDS__;
+localparam integer S2_IMAGE_WORDS = __S2_IMAGE_WORDS__;
 
 reg [7:0] flash_image [0:FLASH_PACKAGE_SIZE-1];
+reg [15:0] expected_s1 [0:S1_IMAGE_WORDS-1];
+reg [15:0] expected_s2 [0:S2_IMAGE_WORDS-1];
 reg [31:0] flash_command = 0;
 integer flash_command_bits = 0;
 reg [23:0] flash_byte_address = 0;
@@ -162,6 +162,9 @@ integer flash_data_bit = 0;
 reg [7:0] flash_current_byte = 0;
 reg [1:0] corrupt_metadata = 0;
 integer flash_init_index;
+integer image_word;
+
+integer framebuffer_word;
 
 initial begin
     for (flash_init_index = 0; flash_init_index < FLASH_PACKAGE_SIZE; flash_init_index = flash_init_index + 1)
@@ -218,8 +221,13 @@ reg wait_sdram_phase_seen = 0;
 reg boot_phase_seen = 0;
 reg dma_phase_seen = 0;
 reg application_phase_seen = 0;
-
+integer pre_submit_stall_cycles = 0;
+reg [31:0] pre_submit_last_retired = 0;
 always @(posedge clk) begin
+    if ({dut.gpu_ro_memory_request_valid, dut.gpu_fb_r_memory_request_valid,
+         dut.gpu_fb_w_memory_request_valid} !== 3'b000)
+        $fatal(1,"retired GPU issued a memory request");
+
     case (dut.boot_phase)
         1: wait_sdram_phase_seen <= 1;
         2: boot_phase_seen <= 1;
@@ -227,6 +235,40 @@ always @(posedge clk) begin
         5: application_phase_seen <= 1;
         default: begin end
     endcase
+end
+
+// Before the first GPU submission there is no intentional long CPU sleep.
+// Catch a cache/CPU deadlock substantially earlier than the global scenario
+// timeout while leaving the later GPU and vblank waits unconstrained here.
+always @(posedge clk) begin
+    if (dut.code_segment != 16'd7 || dut.halted ||
+        dut.retired_words != pre_submit_last_retired) begin
+        pre_submit_last_retired <= dut.retired_words;
+        pre_submit_stall_cycles <= 0;
+    end else begin
+        pre_submit_stall_cycles <= pre_submit_stall_cycles + 1;
+        if (pre_submit_stall_cycles == 1000000) begin
+            $display("FAIL: pre-submit CPU stall (pc=0x%04x retired=%0d core_state=%0d halted=%0d fault=%0d fault_code=0x%02x hold=%0d if_req=%0d if_ready=%0d icache_state=%0d refill_beat=%0d pending_addr=0x%08x ic_mem_req=%0d ic_mem_ready=%0d ic_mem_resp=%0d mem_resp=%0d/%0d port_state=%0d port_pending=%0d/%0d/0x%06x beats=%0d/%0d sdram_cmd=%0d/%0d sdram_read=%0d clean_valid=%0d clean_addr=0x%06x line_ready=%0d dcache_state=%0d maint_busy=%0d maint_done=%0d)",
+                dut.pc, dut.retired_words, dut.u_core.state, dut.halted,
+                dut.faulted, dut.fault_code, dut.sysctl_cpu_hold,
+                dut.core_instruction_request_valid, dut.core_instruction_request_ready,
+                dut.u_instruction_cache.u_cache.state,
+                dut.u_instruction_cache.u_cache.refill_beat,
+                dut.u_instruction_cache.u_cache.pending_address,
+                dut.icache_memory_request_valid, dut.icache_memory_request_ready,
+                dut.icache_memory_response_valid, dut.memory_response_valid,
+                dut.memory_response_last, dut.u_shared_sdram_port.state,
+                dut.u_shared_sdram_port.pending_write,
+                dut.u_shared_sdram_port.pending_line,
+                dut.memory_address,
+                dut.u_shared_sdram_port.read_beats, dut.u_shared_sdram_port.line_total,
+                dut.sdram_request_valid, dut.sdram_done, dut.sdram_read_valid,
+                dut.core_data_line_clean_valid, dut.core_data_line_clean_address,
+                dut.dcache_line_copy_ready, dut.u_data_cache.state,
+                dut.dcache_maintenance_busy, dut.dcache_maintenance_done);
+            $finish(1);
+        end
+    end
 end
 
 always @(posedge clk) begin
@@ -306,27 +348,45 @@ end
 initial begin
     for (cycle = 0; cycle < 524288; cycle = cycle + 1)
         memory[cycle] = 0;
-    // Sentinels prove that the boot stage loads only the selected application
-    // slot.
-    memory[20'h30200] = 16'hdead;
-    memory[20'h70200] = 16'hdead;
+    for (cycle = 0; cycle < 96000; cycle = cycle + 1) begin
+        memory[22'h200000 + cycle] = 16'h5a5a;
+        memory[22'h218000 + cycle] = 16'h5a5a;
+    end
+    memory[22'h217700] = 16'hbeef;
+    memory[22'h22f700] = 16'hbeef;
+    // Seed each application slot with the complement of its generated image.
+    // The comparisons below follow image length and contents automatically.
+__S1_IMAGE_INIT__
+__S2_IMAGE_INIT__
+    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
+        memory[S1_BASE + image_word] = ~expected_s1[image_word];
+    for (image_word = 0; image_word < S2_IMAGE_WORDS; image_word = image_word + 1)
+        memory[S2_BASE + image_word] = ~expected_s2[image_word];
     repeat (16) @(posedge clk);
     sdram_init_done = 1;
 
     // Phase 1: the intact package boots the default S2 display application
     // (no button held). The display application never writes the LEDs, so the
-    // boot monitor keeps ownership and shows the application phase.
+    // boot monitor keeps ownership and shows the application phase. Its first
+    // legacy GPU submit must halt with 0x0b01 and have no rendering effects.
     wait (dut.code_segment == 16'd7);
-    wait (display_frame_seen);
+    wait (dut.halted);
+    if (dut.halt_signal !== 16'h0b01 || dut.faulted)
+        $fatal(1,"retired S2 GPU must halt on submit rejection: signal=%h fault=%b",dut.halt_signal,dut.faulted);
+    if (display_frame_seen || dut.u_display.next_pending)
+        $fatal(1,"rejected S2 draw reported success or requested a swap");
     repeat (4) @(posedge clk);
     if (dut.data_segment !== 16'h0000 && dut.data_segment !== 16'h0020 &&
         dut.data_segment !== 16'h0021)
         $fatal(1, "S2 display application data segment is not a framebuffer store: dseg=0x%04x",
             dut.data_segment);
-    if (memory[20'h70200] === 16'hdead)
-        $fatal(1, "selected S2 application was not loaded");
-    if (memory[20'h30200] !== 16'hdead)
-        $fatal(1, "unselected S1 application was loaded");
+    for (image_word = 0; image_word < S2_IMAGE_WORDS; image_word = image_word + 1)
+        if (memory[S2_BASE + image_word] !== expected_s2[image_word])
+            $fatal(1, "selected S2 application word %0d: expected=%04x actual=%04x",
+                image_word, expected_s2[image_word], memory[S2_BASE + image_word]);
+    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
+        if (memory[S1_BASE + image_word] !== ~expected_s1[image_word])
+            $fatal(1, "unselected S1 application word %0d changed", image_word);
     if (word_read_seen)
         $fatal(1, "a word read reached the SDRAM adapter; line refills must burst");
     if (!line_burst_seen)
@@ -342,6 +402,18 @@ initial begin
     if (dut.diagnostic_active !== 1 || leds !== 6'b100000)
         $fatal(1, "display application must leave diagnostic ownership at phase 5: active=%0d leds=%b",
             dut.diagnostic_active, leds);
+    // Every seeded framebuffer word and guard must survive the rejected
+    // submission. Boot DMA and CPU command-buffer stores use other regions.
+    for (framebuffer_word=0; framebuffer_word<96000; framebuffer_word=framebuffer_word+1)
+        if (memory[22'h200000+framebuffer_word] !== 16'h5a5a ||
+            memory[22'h218000+framebuffer_word] !== 16'h5a5a)
+            $fatal(1,"rejected GPU modified framebuffer offset=%0d",framebuffer_word);
+    if (memory[22'h217700] !== 16'hbeef || memory[22'h22f700] !== 16'hbeef)
+        $fatal(1, "rejected GPU draw changed framebuffer guards");
+`ifdef CPU_V3_S2_REJECTION_ONLY
+    $display("DIGITAL_DESIGN_PASS");
+    $finish;
+`endif
 
     // Phase 2: holding the S1 button (01) resets the CPU and latches the
     // slider boot. The live pins are 00 after release, so reaching CSEG 3 /
@@ -355,8 +427,10 @@ initial begin
     if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
         $fatal(1, "S1 slider application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
-    if (memory[20'h30200] === 16'hdead)
-        $fatal(1, "selected S1 application was not loaded");
+    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
+        if (memory[S1_BASE + image_word] !== expected_s1[image_word])
+            $fatal(1, "selected S1 application word %0d: expected=%04x actual=%04x",
+                image_word, expected_s1[image_word], memory[S1_BASE + image_word]);
     if (leds !== 6'b000001)
         $fatal(1, "slider application must light logical LED 000001, got %b", leds);
 
@@ -391,8 +465,9 @@ end
 
 initial begin
     repeat (8000000) @(posedge clk);
-    $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d)",
-        dut.code_segment, dut.data_segment, dut.pc, leds, dut.retired_words);
+    $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d halted=%0d halt_signal=%h display_seen=%0d)",
+        dut.code_segment, dut.data_segment, dut.pc, leds, dut.retired_words,
+        dut.halted, dut.halt_signal, display_frame_seen);
     $finish(1);
 end
 endmodule

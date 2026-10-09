@@ -189,7 +189,7 @@ fn auto_init(out: &mut [IrFunc], opts: &impl RccConfig) -> Result<(), syn::Error
         }
     }
     let heap_used = reachable.contains("malloc") || reachable.contains("free");
-    let vec_used = reachable.contains("vec_new") || reachable.contains("init_vec");
+    let vec_used = reachable.iter().any(|name| name.starts_with("vec_"));
     if !heap_used && !vec_used {
         return Ok(());
     }
@@ -2136,6 +2136,10 @@ struct FnLower<'a> {
     sret_dst: Option<VarId>,
     /// true once the current block has ended (return/halt)
     dead: bool,
+    /// Nesting depth of the narrow rcc `unsafe { ... }` boundary. Only raw Ptr
+    /// dereference/conversion operations consume this permission.
+    unsafe_depth: usize,
+    unsafe_ops: usize,
     /// In no-opt builds, scalar locals use stable frame slots so the debugger
     /// can read them throughout their lexical lifetime.
     materialize_debug_locals: bool,
@@ -2336,6 +2340,7 @@ fn scan_expr(
             scan_residents(&x.body, consts, structs, out)
         }
         Expr::Block(x) => scan_residents(&x.block, consts, structs, out),
+        Expr::Unsafe(x) => scan_residents(&x.block, consts, structs, out),
         Expr::Return(x) => {
             if let Some(e) = &x.expr {
                 scan_expr(e, consts, structs, out)?;
@@ -2392,6 +2397,8 @@ fn lower_fn(
         ret_ty: sig.ret.clone(),
         sret_dst,
         dead: false,
+        unsafe_depth: 0,
+        unsafe_ops: 0,
         materialize_debug_locals,
     };
     // with sret the hidden destination occupies parameter slot 0
@@ -3498,6 +3505,46 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
 // expressions
 // ---------------------------------------------------------------------------
 
+fn unsafe_block_value(l: &mut FnLower, u: &syn::ExprUnsafe) -> Result<Val, syn::Error> {
+    if l.unsafe_depth != 0 {
+        return Err(err(u, "nested unsafe blocks are not supported"));
+    }
+    let used_before = l.unsafe_ops;
+    l.unsafe_depth += 1;
+    l.scopes.push(HashMap::new());
+    l.scope_ends.push(end_line_of(&u.block));
+
+    let result = (|| {
+        let stmts = &u.block.stmts;
+        let (head, tail) = match stmts.split_last() {
+            Some((Stmt::Expr(t), head)) => (head, Some(t)),
+            _ => (&stmts[..], None),
+        };
+        for statement in head {
+            if l.dead {
+                return Err(err(statement, "unreachable code (after return/halt)"));
+            }
+            stmt(l, statement)?;
+        }
+        match tail {
+            Some(value) => expr(l, value),
+            None => Ok(Val::Unit),
+        }
+    })();
+
+    l.scope_ends.pop();
+    l.scopes.pop();
+    l.unsafe_depth -= 1;
+    let value = result?;
+    if l.unsafe_ops == used_before {
+        return Err(err(
+            u,
+            "unsafe block contains no raw Ptr operation or cache-line command",
+        ));
+    }
+    Ok(value)
+}
+
 fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
     match e {
         Expr::Paren(p) => expr(l, &p.expr),
@@ -3916,6 +3963,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             // if used as a value: `let x = if c { a } else { b };`
             control_flow_value(l, e)
         }
+        Expr::Unsafe(u) => unsafe_block_value(l, u),
         Expr::Block(b) => Err(err(&b, "blocks as expressions are not supported")),
         Expr::Tuple(_) => Err(err(
             e,
@@ -4598,6 +4646,13 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     }
     let name = &segs[0];
 
+    if matches!(name.as_str(), "dcache_line_copy" | "dcache_clean_line") {
+        if l.unsafe_depth == 0 {
+            return Err(err(call, format!("{name} requires an unsafe block")));
+        }
+        l.unsafe_ops += 1;
+    }
+
     // intrinsics with non-value arguments must be handled before generic arg
     // evaluation (assert takes a condition, addr_of takes a reference)
     match name.as_str() {
@@ -4614,19 +4669,31 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             let (base, offset, _, _) = place_addr_of(l, &r.expr)?;
             return Ok(Val::V(place_addr(l, base, offset), Ty::Ptr));
         }
-        // the address of one value as a typed view: `view_of(&p)` for a struct or
+        // the address of one value as a typed view: `view_of(&mut p)` for a struct or
         // scalar place (a Buf uses `.as_array()`)
         "view_of" => {
             if call.args.len() != 1 {
-                return Err(err(call, "view_of(&x) takes 1 argument"));
+                return Err(err(call, "view_of(&mut x) takes 1 argument"));
             }
             let Expr::Reference(r) = &call.args[0] else {
                 return Err(err(
                     &call.args[0],
-                    "view_of expects a reference: view_of(&x)",
+                    "view_of expects a mutable reference: view_of(&mut x)",
                 ));
             };
-            let (base, offset, ty, _) = place_addr_of(l, &r.expr)?;
+            if r.mutability.is_none() {
+                return Err(err(
+                    &call.args[0],
+                    "view_of expects a mutable reference: view_of(&mut x)",
+                ));
+            }
+            let (base, offset, ty, mutable) = place_addr_of(l, &r.expr)?;
+            if !mutable {
+                return Err(err(
+                    &r.expr,
+                    "view_of needs a mutable place (declare it with `let mut`)",
+                ));
+            }
             match ty {
                 Ty::Array(..) => {
                     return Err(err(
@@ -4726,6 +4793,36 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         let zero = l.b.load_imm(0);
         l.b.dev_send(0, 4, zero);
         return Ok(Val::V(l.b.dev_recv(0, 5), Ty::U16));
+    }
+    if name.as_str() == "dcache_line_copy" {
+        if args.len() != 2 {
+            return Err(err(
+                call,
+                "dcache_line_copy(source, destination_page) takes 2 arguments",
+            ));
+        }
+        let (source, from) = &args[0];
+        let (source, _) = coerce(l, *source, from, &Ty::Ptr, &call.args[0])?;
+        let (destination_page, from) = &args[1];
+        let (destination_page, _) = coerce(l, *destination_page, from, &Ty::U16, &call.args[1])?;
+        l.b.dcache_line_copy(source, destination_page);
+        return Ok(Val::Unit);
+    }
+    if name.as_str() == "dcache_clean_line" {
+        if args.len() != 1 {
+            return Err(err(call, "dcache_clean_line(address) takes 1 argument"));
+        }
+        let (address, from) = &args[0];
+        let (address, _) = coerce(l, *address, from, &Ty::Ptr, &call.args[0])?;
+        l.b.dcache_clean_line(address);
+        return Ok(Val::Unit);
+    }
+    if name.as_str() == "dcache_wait" {
+        if !args.is_empty() {
+            return Err(err(call, "dcache_wait() takes no arguments"));
+        }
+        l.b.dcache_wait();
+        return Ok(Val::Unit);
     }
     if name.as_str() == "icache_invalidate_delayed_and_jump" {
         if args.len() != 2 {
@@ -5388,6 +5485,18 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
                 base_ty.display()
             ),
         ));
+    }
+    if matches!(
+        method.as_str(),
+        "read" | "write" | "as_u16_array" | "as_i16_array"
+    ) {
+        if l.unsafe_depth == 0 {
+            return Err(err(
+                &m.method,
+                format!("Ptr::{method} requires an unsafe block"),
+            ));
+        }
+        l.unsafe_ops += 1;
     }
     match method.as_str() {
         "addr" => {
@@ -6056,5 +6165,90 @@ mod tests {
             let error = parse_source_with(source, 0).err().unwrap().to_string();
             assert!(error.contains("255-word local frame limit"), "{error}");
         }
+    }
+
+    #[test]
+    fn view_of_requires_an_explicit_mutable_place() {
+        let prefix = "struct P { x: u16 } ";
+        let shared = parse_source_with(
+            &format!("{prefix} fn main() {{ let p: P = P {{ x: 1 }}; let v = view_of(&p); halt(v[0u16].x); }}"),
+            0,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            shared.contains("view_of expects a mutable reference"),
+            "{shared}"
+        );
+
+        let immutable = parse_source_with(
+            &format!("{prefix} fn main() {{ let p: P = P {{ x: 1 }}; let v = view_of(&mut p); halt(v[0u16].x); }}"),
+            0,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            immutable.contains("view_of needs a mutable place"),
+            "{immutable}"
+        );
+
+        assert!(parse_source_with(
+            &format!("{prefix} fn main() {{ let mut p: P = P {{ x: 1 }}; let v = view_of(&mut p); halt(v[0u16].x); }}"),
+            0,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn raw_pointer_access_requires_a_narrow_unsafe_block() {
+        let outside = parse_source_with(
+            "fn main() { let p = Ptr::from_addr(0x100); halt(p.read(0)); }",
+            0,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            outside.contains("Ptr::read requires an unsafe block"),
+            "{outside}"
+        );
+
+        assert!(parse_source_with(
+            "fn main() { let p = Ptr::from_addr(0x100); unsafe { p.write(0, 7) }; halt(unsafe { p.read(0) }); }",
+            0,
+        )
+        .is_ok());
+
+        let unused = parse_source_with(
+            "fn main() { let p = Ptr::from_addr(0x100); let q = unsafe { p.add(1) }; halt(q.addr()); }",
+            0,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            unused.contains("unsafe block contains no raw Ptr"),
+            "{unused}"
+        );
+
+        let cache_outside = parse_source_with(
+            "fn main() { let p = Ptr::from_addr(0x100); dcache_clean_line(p); halt(0); }",
+            0,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            cache_outside.contains("dcache_clean_line requires an unsafe block"),
+            "{cache_outside}"
+        );
+
+        assert!(parse_source_with(
+            "fn main() { let p = Ptr::from_addr(0x100); unsafe { dcache_line_copy(p, 8); dcache_clean_line(p); }; dcache_wait(); halt(0); }",
+            0,
+        )
+        .is_ok());
     }
 }

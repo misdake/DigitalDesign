@@ -50,7 +50,7 @@ reg response_error = 0;
 reg response_valid = 0;
 reg refill_discard = 0;
 // Valid and victim bits live in a RAM16 leaf (asynchronous read, synchronous
-// write, one set per access), like the tag arrays. invalidate_all cannot
+// write, one set per access). invalidate_all cannot
 // clear RAM in one cycle: it starts a 64-set sweep that clears both ways in
 // parallel. New lookups are blocked through cpu_request_ready while the sweep
 // (or the invalidate pulse) is active, which preserves the all-invalid
@@ -68,6 +68,7 @@ wire [11:0] pending_tag = pending_address[21:10];
 wire [3:0] pending_word = pending_address[3:0];
 wire [11:0] way_0_tag_read_data;
 wire [11:0] way_1_tag_read_data;
+wire [5:0] cache_lookup_set;
 wire invalidating = invalidate_all || sweep_active;
 // The sweep blocks new requests through cpu_request_ready, so hit
 // qualification does not need its own `!invalidating` term. Keeping the gate
@@ -114,7 +115,7 @@ __CACHE_TAGS__ u_tags (
     .clk(clk),
     .write_enable(tag_write_enable),
     .write_way(pending_way),
-    .address(pending_set),
+    .address(cache_lookup_set),
     .write_data(pending_tag),
     .way_0_read_data(way_0_tag_read_data),
     .way_1_read_data(way_1_tag_read_data)
@@ -135,7 +136,7 @@ assign cpu_request_ready = !invalidate_all && !sweep_active &&
 wire accept_cpu_request = cpu_request_valid && cpu_request_ready;
 wire [31:0] cache_lookup_address = accept_cpu_request ? cpu_address :
                                    pending_address;
-wire [5:0] cache_lookup_set = cache_lookup_address[9:4];
+assign cache_lookup_set = cache_lookup_address[9:4];
 wire [3:0] cache_lookup_word = cache_lookup_address[3:0];
 wire [9:0] lookup_way_0_address = {1'b0, cache_lookup_set, cache_lookup_word[3:1]};
 wire [9:0] lookup_way_1_address = {1'b1, cache_lookup_set, cache_lookup_word[3:1]};

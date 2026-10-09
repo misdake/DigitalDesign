@@ -1,5 +1,5 @@
 // bench-max-cycles: 100000
-// bench-expected-halt: 32788
+// bench-expected-halt: 1
 // bench-tier: short
 use crate::dsl_rt::*;
 use crate::rcc_std::*;
@@ -19,12 +19,12 @@ fn main() {
         let block = malloc(8);
         let mut j: u16 = 0;
         while j < 8 {
-            block.write(j, vec_get(v, j) ^ 0x11);
+            unsafe { block.write(j, vec_get(v, j) ^ 0x11) };
             j = j + 1;
         }
         j = 0;
         while j < 8 {
-            total = total ^ block.read(j);
+            total = total ^ unsafe { block.read(j) };
             j = j + 1;
         }
         free(block);
@@ -34,5 +34,8 @@ fn main() {
         vec_free(v);
         round = round + 1;
     }
-    halt(total);
+    if total != 0 {
+        halt(0xff);
+    }
+    halt(1);
 }

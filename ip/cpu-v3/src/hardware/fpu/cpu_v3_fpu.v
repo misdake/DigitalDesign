@@ -96,9 +96,9 @@ end
 // the head of each mux. The execution paths are never busy at once (the core
 // serializes instructions), and the multiply mux arm simply takes precedence so
 // the select stays defined.
-wire vp_busy;
-wire [8:0] vp_read_a_address;
-wire [8:0] vp_read_b_address;
+wire alu_vector_busy;
+wire [8:0] alu_read_a_address;
+wire [8:0] alu_read_b_address;
 wire mp_busy;
 wire [8:0] mp_read_a_address;
 wire [8:0] mp_read_b_address;
@@ -112,24 +112,19 @@ wire [8:0] rf_read_a_address =
     sf_busy ? sf_read_a_address :
     dp_busy ? dp_read_a_address :
     mp_busy ? mp_read_a_address :
-    vp_busy ? vp_read_a_address : held_read_a_address;
+    alu_vector_busy ? alu_read_a_address : held_read_a_address;
 wire [8:0] rf_read_b_address =
     sf_busy ? sf_read_b_address :
     dp_busy ? dp_read_b_address :
     mp_busy ? mp_read_b_address :
-    vp_busy ? vp_read_b_address :
+    alu_vector_busy ? alu_read_b_address :
     ext_access ? ext_read_address : held_read_b_address;
 
-// Scalar path write port. While ext_access is high the external channel owns
-// the RF write port and the scalar write port is masked.
-wire sp_write_enable;
-wire [8:0] sp_write_address;
-wire [31:0] sp_write_data;
-wire sp_busy;
-
-wire vp_write_enable;
-wire [8:0] vp_write_address;
-wire [31:0] vp_write_data;
+// The shared ALU lane engine owns one result/address commit register.
+wire ap_write_enable;
+wire [8:0] ap_write_address;
+wire [31:0] ap_write_data;
+wire ap_busy;
 wire mp_write_enable;
 wire [8:0] mp_write_address;
 wire [31:0] mp_write_data;
@@ -140,20 +135,17 @@ wire sf_write_enable;
 wire [8:0] sf_write_address;
 wire [31:0] sf_write_data;
 wire rf_write_enable = ext_access ? ext_write_enable :
-                       vp_write_enable | mp_write_enable | dp_write_enable |
-                       sp_write_enable | sf_write_enable;
+                       ap_write_enable | mp_write_enable | dp_write_enable | sf_write_enable;
 wire [8:0] rf_write_address =
     ext_access ? ext_write_address :
-    vp_write_enable ? vp_write_address :
     mp_write_enable ? mp_write_address :
     dp_write_enable ? dp_write_address :
-    sf_write_enable ? sf_write_address : sp_write_address;
+    sf_write_enable ? sf_write_address : ap_write_address;
 wire [31:0] rf_write_data =
     ext_access ? ext_write_data :
-    vp_write_enable ? vp_write_data :
     mp_write_enable ? mp_write_data :
     dp_write_enable ? dp_write_data :
-    sf_write_enable ? sf_write_data : sp_write_data;
+    sf_write_enable ? sf_write_data : ap_write_data;
 
 wire [31:0] rf_read_a_data;
 wire [31:0] rf_read_b_data;
@@ -171,41 +163,34 @@ CpuV3FpuRegisterRam rf (
 
 // Scalar execution path. It consumes the front-end pair and the RF operand
 // data; abort reaches both the front-end and the path.
-CpuV3FpuScalarPath scalar_path (
-    .clk(clk),
-    .abort(abort),
-    .instr_complete(fe_instr_complete),
-    .instr_opcode(instr_opcode),
-    .word1_raw(word1_raw),
-    .rf_read_a_data(rf_read_a_data),
-    .rf_read_b_data(rf_read_b_data),
-    .rf_write_enable(sp_write_enable),
-    .rf_write_address(sp_write_address),
-    .rf_write_data(sp_write_data),
-    .flag_lt(flag_lt),
-    .flag_eq(flag_eq),
-    .flag_gt(flag_gt),
-    .busy(sp_busy)
+// One physical ALU and lane engine serve scalar and vector instructions.
+// Scalar operands are already ready at T0; vector reads retain their lane pipeline.
+wire [3:0] alu_request_op;
+wire [31:0] shared_alu_result;
+wire shared_alu_lt;
+wire shared_alu_eq;
+wire shared_alu_gt;
+CpuV3FpuScalarAlu shared_alu (
+    .a(rf_read_a_data),
+    .b(rf_read_b_data),
+    .op(alu_request_op),
+    .result(shared_alu_result),
+    .flag_lt(shared_alu_lt),
+    .flag_eq(shared_alu_eq),
+    .flag_gt(shared_alu_gt)
 );
 
-// Vector execution path (opcode 0xC). It consumes the same front-end pair;
-// the bases come from the front-end's latched word0.
-CpuV3FpuVectorPath vector_path (
-    .clk(clk),
-    .abort(abort),
-    .instr_complete(fe_instr_complete),
-    .instr_opcode(instr_opcode),
-    .word1_raw(word1_raw),
-    .base_a(word0_raw[11:6]),
-    .base_b(word0_raw[5:0]),
-    .rf_read_a_data(rf_read_a_data),
-    .rf_read_b_data(rf_read_b_data),
-    .rf_read_a_address(vp_read_a_address),
-    .rf_read_b_address(vp_read_b_address),
-    .rf_write_enable(vp_write_enable),
-    .rf_write_address(vp_write_address),
-    .rf_write_data(vp_write_data),
-    .busy(vp_busy)
+CpuV3FpuAluPath alu_path (
+    .clk(clk), .abort(abort), .instr_complete(fe_instr_complete),
+    .instr_opcode(instr_opcode), .word1_raw(word1_raw),
+    .base_a(word0_raw[11:6]), .base_b(word0_raw[5:0]),
+    .alu_result(shared_alu_result), .alu_request_op(alu_request_op),
+    .alu_lt(shared_alu_lt), .alu_eq(shared_alu_eq), .alu_gt(shared_alu_gt),
+    .rf_read_a_address(alu_read_a_address), .rf_read_b_address(alu_read_b_address),
+    .rf_write_enable(ap_write_enable), .rf_write_address(ap_write_address),
+    .rf_write_data(ap_write_data),
+    .flag_lt(flag_lt), .flag_eq(flag_eq), .flag_gt(flag_gt),
+    .vector_busy(alu_vector_busy), .busy(ap_busy)
 );
 
 // Shared 36x36 multiply pipe. The core serializes instructions, so the
@@ -339,7 +324,7 @@ CpuV3FpuDotPath dot_path (
     .acc_out(dp_acc)
 );
 
-assign busy = sp_busy | vp_busy | mp_busy | dp_busy | sf_busy;
+assign busy = ap_busy | mp_busy | dp_busy | sf_busy;
 assign instr_complete = fe_instr_complete;
 assign ext_read_data = rf_read_b_data;
 

@@ -22,11 +22,11 @@ fn main() {
 
     // take the address of a local (sp + slot at run time)
     let total: u16 = 0;
-    let mut total_view = addr_of(&total).as_u16_array();
+    let mut total_view = unsafe { addr_of(&total).as_u16_array() };
     total_view[0u16] = grid_view[16u16];
 
     // take the address of a global (compile-time constant)
-    let mut score = addr_of(&SCORE).as_u16_array();
+    let mut score = unsafe { addr_of(&SCORE).as_u16_array() };
     score[0u16] = total;
     halt(SCORE);
 }

@@ -38,6 +38,11 @@
 // write enable is suppressed (both on the capture edge and, combinationally,
 // on the writeback edge), busy drops and all three countdowns are cleared.
 module CpuV3FpuScalarPath (
+    input wire [31:0] alu_result,
+    output wire [3:0] alu_request_op,
+    input wire alu_lt,
+    input wire alu_eq,
+    input wire alu_gt,
     input wire clk,
     input wire abort,
     input wire instr_complete,
@@ -74,20 +79,8 @@ wire subop_owned_elsewhere = (subop == 6'h02) || (subop == 6'h0C) ||
 // cancelled. It is the only beat that starts work.
 wire load_now = instr_complete && is_scalar && !subop_owned_elsewhere && !abort;
 
-// Combinational scalar ALU leaf; it owns no register of its own.
-wire [31:0] alu_result;
-wire alu_lt;
-wire alu_eq;
-wire alu_gt;
-CpuV3FpuScalarAlu scalar_alu (
-    .a(rf_read_a_data),
-    .b(rf_read_b_data),
-    .op(subop[3:0]),
-    .result(alu_result),
-    .flag_lt(alu_lt),
-    .flag_eq(alu_eq),
-    .flag_gt(alu_gt)
-);
+// Request the unit-wide combinational ALU; capture its result at the same edge.
+assign alu_request_op = subop[3:0];
 
 // Captured writeback payload and the comparison flag registers.
 reg write_enable_r = 1'b0;

@@ -662,6 +662,17 @@ fn lower_instruction(
             CACHE_MAINTENANCE_DEVICE,
             D_INVALIDATE_ALL,
         )),
+        Instr::DcacheLineCopy {
+            source,
+            destination_page,
+        } => lines.word(cpu_v3::line_copy(
+            register(*source),
+            register(*destination_page),
+        )),
+        Instr::DcacheCleanLine { address } => {
+            lines.word(cpu_v3::clean_data_line(register(*address)))
+        }
+        Instr::DcacheWait => lines.word(cpu_v3::wait_data_cache()),
         Instr::MtsrDseg { src } => lines.word(cpu_v3::write_data_segment(register(*src))),
         Instr::Jseg { cseg, target } => {
             lines.word(cpu_v3::jump_segment(register(*cseg), register(*target)))
@@ -1705,20 +1716,24 @@ fn link(
         "CpuV3 program at code_base {:#06x} exceeds the 64K code-segment window",
         options.code_base
     );
-    assert!(
-        cursor <= usize::from(options.data_base),
-        "CpuV3 unified-memory image uses {cursor} code words and crosses data_base {:#06x}",
-        options.data_base
-    );
+    if !options.separate_code_data_segments {
+        assert!(
+            cursor <= usize::from(options.data_base),
+            "CpuV3 unified-memory image uses {cursor} code words and crosses data_base {:#06x}",
+            options.data_base
+        );
+    }
     let stack_limit = if options.stack_init == 0 {
         1 << 16
     } else {
         usize::from(options.stack_init)
     };
-    assert!(
-        cursor <= stack_limit,
-        "CpuV3 unified-memory image uses {cursor} code words and crosses stack top {stack_limit:#07x}"
-    );
+    if !options.separate_code_data_segments {
+        assert!(
+            cursor <= stack_limit,
+            "CpuV3 unified-memory image uses {cursor} code words and crosses stack top {stack_limit:#07x}"
+        );
+    }
     let heap_end = options
         .heap_begin
         .checked_add(options.heap_size)
@@ -1733,14 +1748,16 @@ fn link(
         .iter()
         .flat_map(|function| function.static_addresses.iter().copied())
         .collect::<Vec<_>>();
-    if let Some(address) = static_addresses
-        .iter()
-        .copied()
-        .find(|address| usize::from(*address) < cursor)
-    {
-        panic!(
-            "CpuV3 unified-memory image uses {cursor} code words but static data starts at {address:#06x}; select a non-overlapping data_base"
-        );
+    if !options.separate_code_data_segments {
+        if let Some(address) = static_addresses
+            .iter()
+            .copied()
+            .find(|address| usize::from(*address) < cursor)
+        {
+            panic!(
+                "CpuV3 unified-memory image uses {cursor} code words but static data starts at {address:#06x}; select a non-overlapping data_base"
+            );
+        }
     }
     if let Some(address) = static_addresses
         .iter()
@@ -2870,11 +2887,11 @@ mod tests {
                 bump(view, 5u16);
                 let total = sum_x(view, 3u16);
                 let mut single: Point = Point { x: 7, y: 0 };
-                bump(view_of(&single), 100u16);
+                bump(view_of(&mut single), 100u16);
                 halt(total + single.x);
             }
         "#;
-        // bump(view) makes x = 15, so sum_x = 65; bump(view_of(&single)) makes 107
+        // bump(view) makes x = 15, so sum_x = 65; bump(view_of(&mut single)) makes 107
         assert_eq!(run_with_std_capped(source, 40_000), 172);
     }
 
@@ -2951,8 +2968,8 @@ mod tests {
             }
 
             fn main() {
-                let p: Point = make(3u16, 4u16);
-                let q: Point = pass_through(view_of(&p));
+                let mut p: Point = make(3u16, 4u16);
+                let q: Point = pass_through(view_of(&mut p));
                 let mut r: Point = q;
                 r = make(10u16, 20u16);
                 halt(p.x + p.y + q.x + q.y + r.x + r.y);
@@ -3153,7 +3170,7 @@ mod tests {
             r#"
             static COUNT: u16 = 0;
             fn side(value: bool) -> bool {
-                addr_of(&COUNT).write(0, COUNT + 1u16);
+                unsafe { addr_of(&COUNT).write(0, COUNT + 1u16) };
                 value
             }
             fn choose(value: bool) -> bool { value || side(true) }
@@ -3178,12 +3195,12 @@ mod tests {
             struct P { x: u16, y: u16 }
             static INDEX: u16 = 0;
             fn swap(p: Array<P>) -> P { P { x: p[0u16].y, y: p[0u16].x } }
-            fn make() -> P { addr_of(&INDEX).write(0, 1); P { x: 7, y: 8 } }
+            fn make() -> P { unsafe { addr_of(&INDEX).write(0, 1) }; P { x: 7, y: 8 } }
             fn main() {
                 let mut p: P = P { x: 1, y: 2 };
                 p = P { x: p.y, y: p.x };
                 if p.x != 2u16 || p.y != 1u16 { halt(10); }
-                p = swap(view_of(&p));
+                p = swap(view_of(&mut p));
                 if p.x != 1u16 || p.y != 2u16 { halt(11); }
                 let mut t: (u16, u16) = (3, 4);
                 t = (t.1, t.0);
@@ -3335,7 +3352,7 @@ mod tests {
         assert_source_in_both_modes(
             r#"
             static CALLS: u16 = 0;
-            fn observe(x: u16) -> u16 { addr_of(&CALLS).write(0, CALLS + 1u16); x }
+            fn observe(x: u16) -> u16 { unsafe { addr_of(&CALLS).write(0, CALLS + 1u16) }; x }
             fn classify(x: i16) -> u16 {
                 let mut result: u16 = 0;
                 match x {
@@ -3414,12 +3431,16 @@ mod tests {
     /// the library modules themselves need this entry point.
     fn compile_with_std(source: &str) -> CpuV3Program {
         let options = CompilerOptions::default();
+        compile_with_std_options(source, &options)
+    }
+
+    fn compile_with_std_options(source: &str, options: &CompilerOptions) -> CpuV3Program {
         let program =
-            rcc::frontend::compile_program_named("<test>", source, &options, &mut |name| {
+            rcc::frontend::compile_program_named("<test>", source, options, &mut |name| {
                 Err(format!("unknown module `{name}`"))
             })
             .unwrap();
-        super::compile(program, &options, "main")
+        super::compile(program, options, "main")
     }
 
     fn execute(program: CpuV3Program) -> (u16, cpu_v3::CpuV3Sim) {
@@ -3466,6 +3487,196 @@ mod tests {
     /// like `run_with_std`, for a program that needs more than the default cap
     fn run_with_std_capped(source: &str, max_cycles: usize) -> u16 {
         execute_capped(compile_with_std(source), max_cycles).0
+    }
+
+    fn run_with_std_options(
+        source: &str,
+        options: CompilerOptions,
+        max_cycles: usize,
+    ) -> (u16, cpu_v3::CpuV3Sim) {
+        execute_capped(compile_with_std_options(source, &options), max_cycles)
+    }
+
+    #[test]
+    fn heap_realloc_grows_in_place_and_preserves_words() {
+        let source = r#"
+            fn main() {
+                let p = malloc(4);
+                unsafe {
+                    p.write(0, 11);
+                    p.write(1, 22);
+                    p.write(2, 33);
+                    p.write(3, 44);
+                };
+                let q = heap_realloc(p, 8);
+                if q.addr() != p.addr() { halt(10); }
+                if unsafe { q.read(0) } != 11 || unsafe { q.read(3) } != 44 { halt(11); }
+                let r = heap_realloc(q, 2);
+                if r.addr() != p.addr() || unsafe { r.read(1) } != 22 { halt(12); }
+                free(r);
+                halt(1);
+            }
+        "#;
+        let options = CompilerOptions {
+            heap_size: 24,
+            ..CompilerOptions::default()
+        };
+        assert_eq!(run_with_std_options(source, options, 100_000).0, 1);
+    }
+
+    #[test]
+    fn heap_realloc_falls_back_and_best_fit_prefers_the_smaller_hole() {
+        let source = r#"
+            fn main() {
+                let a = malloc(4);
+                let b = malloc(10);
+                let guard1 = malloc(4);
+                let small = malloc(6);
+                let guard2 = malloc(4);
+                unsafe { a.write(0, 77) };
+                let moved = heap_realloc(a, 8);
+                if moved.addr() == a.addr() || unsafe { moved.read(0) } != 77 { halt(11); }
+                free(b);
+                free(small);
+                let fit = malloc(5);
+                if fit.addr() != small.addr() { halt(10); }
+                free(fit);
+                free(moved);
+                free(guard1);
+                free(guard2);
+                halt(1);
+            }
+        "#;
+        let options = CompilerOptions {
+            heap_size: 64,
+            ..CompilerOptions::default()
+        };
+        assert_eq!(run_with_std_options(source, options, 100_000).0, 1);
+    }
+
+    #[test]
+    fn vec_grows_with_the_default_heap_and_supports_reserve_and_shrink() {
+        let source = r#"
+            fn main() {
+                let v = vec_new();
+                let mut i: u16 = 0;
+                while i < 8 {
+                    vec_push(v, i + 10);
+                    i += 1;
+                }
+                if vec_len(v) != 8 || vec_cap(v) < 8 { halt(10); }
+                if vec_get(v, 0) != 10 || vec_get(v, 7) != 17 { halt(11); }
+                while vec_len(v) > 3 { vec_pop(v); }
+                vec_shrink_to_fit(v);
+                if vec_cap(v) != 3 || vec_get(v, 2) != 12 { halt(12); }
+                vec_clear(v);
+                if !vec_is_empty(v) { halt(13); }
+                vec_reserve(v, 4);
+                if vec_cap(v) < 4 { halt(14); }
+                vec_free(v);
+                halt(1);
+            }
+        "#;
+        assert_eq!(run_with_std_capped(source, 100_000), 1);
+    }
+
+    #[test]
+    fn zero_capacity_vec_can_grow_and_checked_pop_rejects_empty() {
+        let grow = r#"
+            fn main() {
+                let v = vec_new();
+                vec_push(v, 7);
+                vec_push(v, 8);
+                vec_push(v, 9);
+                vec_push(v, 10);
+                halt(vec_cap(v) * 100 + vec_get(v, 3));
+            }
+        "#;
+        let options = CompilerOptions {
+            heap_size: 20,
+            vec_init_cap: 0,
+            ..CompilerOptions::default()
+        };
+        assert_eq!(run_with_std_options(grow, options, 100_000).0, 410);
+
+        let empty_pop = "fn main() { let v = vec_new(); vec_pop(v); halt(1); }";
+        assert_eq!(run_with_std(empty_pop), 0xffe3);
+    }
+
+    #[test]
+    fn heap_coalesces_both_sides_and_rejects_double_free() {
+        let coalesce = r#"
+            fn main() {
+                let a = malloc(4);
+                let b = malloc(4);
+                let c = malloc(4);
+                free(a);
+                free(c);
+                free(b);
+                let whole = malloc(18);
+                if whole.addr() != a.addr() { halt(10); }
+                free(whole);
+                halt(1);
+            }
+        "#;
+        let options = CompilerOptions {
+            heap_size: 24,
+            ..CompilerOptions::default()
+        };
+        assert_eq!(run_with_std_options(coalesce, options, 100_000).0, 1);
+
+        let double_free = "fn main() { let p = malloc(1); free(p); free(p); halt(1); }";
+        assert_eq!(run_with_std(double_free), 0xffe2);
+    }
+
+    #[test]
+    fn heap_at_zero_supports_exact_fit_and_reports_oom() {
+        let source = r#"
+            fn main() {
+                let p = malloc(6);
+                if p.addr() != 1 { halt(10); }
+                unsafe { p.write(5, 77) };
+                if unsafe { p.read(5) } != 77 { halt(11); }
+                free(p);
+                malloc(7);
+                halt(1);
+            }
+        "#;
+        let options = CompilerOptions {
+            code_base: 0x100,
+            heap_begin: 0,
+            heap_size: 8,
+            ..CompilerOptions::default()
+        };
+        assert_eq!(run_with_std_options(source, options, 100_000).0, 0xffe1);
+
+        let maximum = r#"
+            fn main() {
+                let p = malloc(0x7ffd);
+                if p.addr() != 1 { halt(10); }
+                unsafe { p.write(32764i16, 77) };
+                if unsafe { p.read(32764i16) } != 77 { halt(11); }
+                halt(1);
+            }
+        "#;
+        let maximum_options = CompilerOptions {
+            code_base: 0x8000,
+            data_base: 0x9000,
+            heap_begin: 0,
+            heap_size: 0x7fff,
+            ..CompilerOptions::default()
+        };
+        assert_eq!(run_with_std_options(maximum, maximum_options, 100_000).0, 1);
+    }
+
+    #[test]
+    fn vec_checked_access_and_capacity_failures_are_stable() {
+        let out_of_bounds =
+            "fn main() { let v = vec_new(); vec_push(v, 7); vec_get(v, 1); halt(1); }";
+        assert_eq!(run_with_std(out_of_bounds), 0xffe3);
+
+        let overflow = "fn main() { let v = vec_new(); vec_reserve(v, 0xffff); halt(1); }";
+        assert_eq!(run_with_std(overflow), 0xffe4);
     }
 
     fn disasm(program: &CpuV3Program) -> Vec<cpu_v3::DisasmLine> {
@@ -3595,7 +3806,7 @@ mod tests {
         let source = r#"
             fn main() {
                 mtsr_dseg(1);
-                let mut a = Ptr::from_addr(0x0010).as_u16_array();
+                let mut a = unsafe { Ptr::from_addr(0x0010).as_u16_array() };
                 a[0u16] = 0x1234;
                 jseg(2, 0x0020);
             }
@@ -3642,11 +3853,50 @@ mod tests {
     }
 
     #[test]
+    fn cache_line_intrinsics_lower_to_revision_0_9_commands() {
+        let source = r#"
+            fn main() {
+                let line = Ptr::from_addr(0x0100);
+                unsafe {
+                    dcache_line_copy(line, 1);
+                    dcache_clean_line(line);
+                };
+                dcache_wait();
+                halt(0);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(program.words.iter().any(|word| word & 0xff00 == 0x6700));
+        assert!(program.words.iter().any(|word| word & 0xfff0 == 0x6e60));
+        assert!(program.words.contains(&cpu_v3::wait_data_cache()));
+
+        let mut machine = cpu_v3::CpuV3Sim::default();
+        machine
+            .load_program(program.code_base, &program.words)
+            .unwrap();
+        let line: [u16; 16] = std::array::from_fn(|i| 0x1000 + i as u16);
+        machine.load_program(0x0100, &line).unwrap();
+        let outcome = machine.run(10_000);
+        assert!(
+            matches!(outcome, Ok(cpu_v3::RunOutcome::Halted { signal: 0, .. })),
+            "{outcome:?}"
+        );
+        for (index, expected) in line.into_iter().enumerate() {
+            assert_eq!(
+                machine.physical_memory(cpu_v3::PhysicalWordAddress::new(
+                    (1 << 14) | 0x0100 | index as u32
+                )),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn segment_switch_mirror_loop_copies_across_data_segments() {
         let source = r#"
             fn main() {
-                let desc = Ptr::from_addr(0x1000).as_u16_array();
-                let mut handoff = Ptr::from_addr(0x0100).as_u16_array();
+                let desc = unsafe { Ptr::from_addr(0x1000).as_u16_array() };
+                let mut handoff = unsafe { Ptr::from_addr(0x0100).as_u16_array() };
                 let hseg: u16 = 2;
                 let mut i: u16 = 0;
                 while i < 32 {
@@ -3707,6 +3957,62 @@ mod tests {
             .or_else(|| error.downcast_ref::<&str>().copied())
             .unwrap_or("");
         assert!(message.contains("CpuV3 unified-memory image"), "{message}");
+    }
+
+    #[test]
+    fn separate_segments_allow_code_and_static_data_to_use_the_same_offsets() {
+        let source = "static VALUE: u16 = 7; fn main() { halt(VALUE); }";
+        let options = CompilerOptions::for_separate_code_and_data_segments(0);
+        assert_eq!(options.data_base, 0);
+        assert_eq!(options.heap_begin, 0x2000);
+        assert_eq!(options.heap_size, 0x7fff);
+        assert_eq!(options.stack_init, 0xc000);
+        assert!(options.separate_code_data_segments);
+
+        let program = compile(source, options);
+        assert_eq!(program.code_base, 0);
+        assert!(!program.words.is_empty());
+    }
+
+    #[test]
+    fn segmented_application_uses_the_full_data_window_layout() {
+        let source = r#"
+            static MARK: u16 = 7;
+            fn main() {
+                let local: Buf<u16, 2> = Buf::new([3, 4]);
+                let v = vec_new();
+                vec_push(v, 11);
+                vec_push(v, 22);
+                if MARK != 7 || local[0u16] + local[1u16] != 7 { halt(10); }
+                if vec_get(v, 0) != 11 || vec_get(v, 1) != 22 { halt(11); }
+                vec_free(v);
+                halt(1);
+            }
+        "#;
+        let options = CompilerOptions::for_separate_code_and_data_segments(0);
+        let program = compile_with_std_options(source, &options);
+
+        let mut boot = Vec::new();
+        boot.extend(cpu_v3::load_immediate16(1, 4));
+        boot.extend(cpu_v3::load_immediate16(2, 3));
+        boot.extend(cpu_v3::load_immediate16(3, 0));
+        boot.extend(cpu_v3::load_immediate16(13, 0));
+        boot.extend([cpu_v3::write_data_segment(1), cpu_v3::jump_segment(2, 3)]);
+
+        let mut machine = cpu_v3::CpuV3Sim::default();
+        machine.load_program(0, &boot).unwrap();
+        machine.load_segment(3, 0, &program.words).unwrap();
+        assert!(matches!(
+            machine.run(100_000),
+            Ok(cpu_v3::RunOutcome::Halted { signal: 1, .. })
+        ));
+        assert_eq!(machine.code_segment(), 3);
+        assert_eq!(machine.data_segment(), 4);
+        assert!((0xbf00..=0xbfff).contains(&machine.register(13).unwrap()));
+        assert_eq!(
+            machine.physical_memory(cpu_v3::PhysicalWordAddress::new(0x0004_2000)),
+            0xffff
+        );
     }
 
     #[test]

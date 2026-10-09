@@ -13,6 +13,26 @@ benchmarks/run-suite.ps1 -Stage <N>   # frozen suite, CSV to target/stage<N>-res
 historical experiments). The harness itself is
 `tests/bench_emu.rs::benchmark_suite::run_benchmark_directory` (ignored, release mode).
 
+For a paired CPU-only SDRAM service comparison, run the same suite twice with the same source and
+compiler. `legacy` is the original abstract service model. `native128` uses CPU-port cycle counts
+calibrated against the native controller, 2:1 clock bridge, adapter, and SDRAM pin model with
+`BANK_BIT=5` (128-byte bank interleave). Pin-level calibration runs at the model's supported
+99/49.5 MHz clock pair; the production clock pair is 108/54 MHz:
+
+```powershell
+$env:CPU_V3_BENCH_SDRAM_PROFILE = 'legacy'
+benchmarks/run-suite.ps1 -Stage <old-label> -OutputFile target/legacy.csv
+$env:CPU_V3_BENCH_SDRAM_PROFILE = 'native128'
+benchmarks/run-suite.ps1 -Stage <new-label> -OutputFile target/native128.csv
+Remove-Item Env:CPU_V3_BENCH_SDRAM_PROFILE
+```
+
+The profile changes only benchmark memory-service timing, not production RTL. The frozen CPU suite
+issues 32-byte cache-line requests, so this comparison measures the effect of the 128-byte bank
+mapping on those requests; it does not measure continuous 128-byte GPU or DMA traffic. Both profiles
+use the same abstract refresh cadence to isolate request service. Report the result as an emulator
+estimate, not a board throughput measurement.
+
 ## Program contract
 
 - Metadata header (parsed by the harness):

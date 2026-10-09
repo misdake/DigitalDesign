@@ -1,0 +1,9 @@
+[package]
+name = "gpu-v2-cmodel"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone cmodel under the system GPU source tree while the v2 contract settles.
+[workspace]
+
+[dependencies]

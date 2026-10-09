@@ -278,6 +278,18 @@ pub enum Instr {
     /// CpuV3-only: blocking clean-plus-invalidate of the complete write-back
     /// data cache. This is a compiler memory and control barrier.
     DcacheInvalidateAll,
+    /// CpuV3-only asynchronous copy of one aligned D-cache line to a physical
+    /// destination page. This is an observable memory operation.
+    DcacheLineCopy {
+        source: VReg,
+        destination_page: VReg,
+    },
+    /// CpuV3-only asynchronous clean of one resident D-cache line.
+    DcacheCleanLine {
+        address: VReg,
+    },
+    /// CpuV3-only completion/error boundary for asynchronous D-cache commands.
+    DcacheWait,
     /// CpuV3-only: write the DSEG special register (MTSR DSEG)
     MtsrDseg {
         src: VReg,
@@ -487,6 +499,14 @@ impl Instr {
                 f(*addr);
                 args.iter().copied().for_each(f);
             }
+            Instr::DcacheLineCopy {
+                source,
+                destination_page,
+            } => {
+                f(*source);
+                f(*destination_page);
+            }
+            Instr::DcacheCleanLine { address } => f(*address),
             Instr::DevSend { src, .. }
             | Instr::MtsrDseg { src }
             | Instr::StoreSp { src, .. }
@@ -542,6 +562,7 @@ impl Instr {
             | Instr::StoreStatic { .. }
             | Instr::DevRecv { .. }
             | Instr::DcacheInvalidateAll
+            | Instr::DcacheWait
             | Instr::LoadSp { .. }
             | Instr::LoadLocal { .. }
             | Instr::AddrOfLocal { .. }
@@ -583,6 +604,14 @@ impl Instr {
                 f(addr);
                 args.iter_mut().for_each(f);
             }
+            Instr::DcacheLineCopy {
+                source,
+                destination_page,
+            } => {
+                f(source);
+                f(destination_page);
+            }
+            Instr::DcacheCleanLine { address } => f(address),
             Instr::DevSend { src, .. }
             | Instr::MtsrDseg { src }
             | Instr::StoreSp { src, .. }
@@ -638,6 +667,7 @@ impl Instr {
             | Instr::StoreStatic { .. }
             | Instr::DevRecv { .. }
             | Instr::DcacheInvalidateAll
+            | Instr::DcacheWait
             | Instr::LoadSp { .. }
             | Instr::LoadLocal { .. }
             | Instr::AddrOfLocal { .. }
@@ -985,6 +1015,12 @@ impl fmt::Display for Instr {
                 src,
             } => write!(f, "dev_send {device}, {channel}, v{src}"),
             Instr::DcacheInvalidateAll => write!(f, "dcache_invalidate_all"),
+            Instr::DcacheLineCopy {
+                source,
+                destination_page,
+            } => write!(f, "dcache_line_copy v{source}, v{destination_page}"),
+            Instr::DcacheCleanLine { address } => write!(f, "dcache_clean_line v{address}"),
+            Instr::DcacheWait => write!(f, "dcache_wait"),
             Instr::MtsrDseg { src } => write!(f, "mtsr_dseg v{src}"),
             Instr::Jseg { cseg, target } => write!(f, "jseg v{cseg}, v{target}"),
             Instr::LoadSp { dst, slot } => write!(f, "v{dst} = load_sp #{slot}"),

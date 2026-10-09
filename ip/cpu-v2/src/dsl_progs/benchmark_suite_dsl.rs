@@ -56,7 +56,7 @@ fn benchmark_basics() -> u16 {
     data[0u16] = acc;
 
     let result = data[0u16] ^ (signed as u16) ^ ones ^ highest;
-    addr_of(&BASIC_RESULT).write(0, result);
+    unsafe { addr_of(&BASIC_RESULT).write(0, result) };
     BASIC_RESULT
 }
 

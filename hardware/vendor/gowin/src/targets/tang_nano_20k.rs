@@ -167,8 +167,7 @@ pub struct TangNano20KBootOutputs {
     pub sdram_burst_length: Wires<8>,
 }
 
-/// Board inputs for the full CPU V3 system that owns both fitted memories
-/// and the onboard HDMI port concurrently.
+/// Board inputs for the single-clock Controller HS boot and HDMI service.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KBootHdmiInputs {
     pub buttons: Wires<2>,
@@ -182,7 +181,7 @@ pub struct TangNano20KBootHdmiInputs {
     pub video_locked: digital_design_circuit::Wire,
 }
 
-/// Raw Flash-read, Controller HS, and HDMI ports for the full CPU V3 system.
+/// Raw Flash-read, Controller HS, and HDMI ports for the single-clock service.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KBootHdmiOutputs {
     pub leds: Wires<6>,
@@ -203,7 +202,7 @@ pub struct TangNano20KBootHdmiOutputs {
     pub tmds_data_n: Wires<3>,
 }
 
-/// CPU V3 full-system board inputs after the fixed 32-to-64-bit SDRAM gearbox.
+/// CPU V3 full-system inputs from the native SDRAM bridge.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KBootHdmiWideInputs {
     pub buttons: Wires<2>,
@@ -211,14 +210,15 @@ pub struct TangNano20KBootHdmiWideInputs {
     pub sdram_read_data: Wires<64>,
     pub sdram_read_valid: digital_design_circuit::Wire,
     pub sdram_init_done: digital_design_circuit::Wire,
-    pub sdram_command_ack: digital_design_circuit::Wire,
+    pub sdram_request_ready: digital_design_circuit::Wire,
+    pub sdram_done: digital_design_circuit::Wire,
     pub sdram_write_data_ready: digital_design_circuit::Wire,
     pub pixel_clock: digital_design_circuit::Wire,
     pub serial_clock: digital_design_circuit::Wire,
     pub video_locked: digital_design_circuit::Wire,
 }
 
-/// CPU V3 full-system outputs driving the fixed 64-to-32-bit SDRAM gearbox.
+/// CPU V3 full-system outputs driving the native SDRAM bridge.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KBootHdmiWideOutputs {
     pub leds: Wires<6>,
@@ -226,18 +226,44 @@ pub struct TangNano20KBootHdmiWideOutputs {
     pub flash_clk: digital_design_circuit::Wire,
     pub flash_cs_n: digital_design_circuit::Wire,
     pub flash_mosi: digital_design_circuit::Wire,
-    pub sdram_command_valid: digital_design_circuit::Wire,
-    pub sdram_command: Wires<3>,
-    pub sdram_precharge: digital_design_circuit::Wire,
+    pub sdram_request_valid: digital_design_circuit::Wire,
+    pub sdram_write: digital_design_circuit::Wire,
     pub sdram_address: Wires<21>,
     pub sdram_write_mask: Wires<4>,
     pub sdram_write_data: Wires<64>,
     pub sdram_write_data_valid: digital_design_circuit::Wire,
-    pub sdram_burst_length: Wires<8>,
+    pub sdram_words: Wires<6>,
     pub tmds_clk_p: digital_design_circuit::Wire,
     pub tmds_clk_n: digital_design_circuit::Wire,
     pub tmds_data_p: Wires<3>,
     pub tmds_data_n: Wires<3>,
+}
+
+/// Native 54/108 MHz SDRAM service without Flash or video circuitry.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KSdramWideInputs {
+    pub buttons: Wires<2>,
+    pub sdram_read_data: Wires<64>,
+    pub sdram_read_valid: digital_design_circuit::Wire,
+    pub sdram_init_done: digital_design_circuit::Wire,
+    pub sdram_request_ready: digital_design_circuit::Wire,
+    pub sdram_stream_active: digital_design_circuit::Wire,
+    pub sdram_done: digital_design_circuit::Wire,
+    pub sdram_write_data_ready: digital_design_circuit::Wire,
+}
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KSdramWideOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_circuit::Wire,
+    pub sdram_next_valid: digital_design_circuit::Wire,
+    pub sdram_next_address: Wires<21>,
+    pub sdram_request_valid: digital_design_circuit::Wire,
+    pub sdram_write: digital_design_circuit::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<64>,
+    pub sdram_write_data_valid: digital_design_circuit::Wire,
+    pub sdram_words: Wires<6>,
 }
 
 /// Fitted onboard HDMI video modes. The board wrapper selects the video PLL
@@ -526,23 +552,35 @@ impl TangNano20K {
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 
-    /// Create a single-clock 54 MHz project with the fitted 64-Mibit SDRAM.
-    ///
-    /// The board wrapper owns the PLL and Gowin Controller HS instance. User
-    /// logic, command scheduling, caches, and the controller use the same
-    /// 54 MHz clock. Only the SDRAM physical clock uses the PLL's 180-degree
-    /// output.
+    /// Bind either the native 108/54 MHz full-system service or the fitted
+    /// 54 MHz Controller HS debug service to the 64-Mibit board SDRAM.
     fn sdram_debug_uart_binding_with_video(
         video: bool,
         wide_2x: bool,
         video_mode: TangNano20KVideoMode,
     ) -> GowinBoardBinding<Self> {
-        let wrapper = if wide_2x {
+        Self::sdram_debug_uart_binding_with_options(video, wide_2x, video_mode, false)
+    }
+    fn sdram_debug_uart_binding_with_options(
+        video: bool,
+        wide_2x: bool,
+        video_mode: TangNano20KVideoMode,
+        chained_groups: bool,
+    ) -> GowinBoardBinding<Self> {
+        assert!(!chained_groups || (wide_2x && !video));
+        let wrapper = if wide_2x && !video {
+            include_str!("tang_nano_20k/sdram/service_108m_54m.v")
+        } else if wide_2x {
             include_str!("tang_nano_20k/sdram/service_108m_54m_hdmi.v")
         } else if video {
             include_str!("tang_nano_20k/sdram/service_54m_hdmi.v")
         } else {
             include_str!("tang_nano_20k/sdram/service_54m.v")
+        };
+        let wrapper = if chained_groups {
+            wrapper.replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .CHAIN_GROUP_FOUR(1)")
+        } else {
+            wrapper.to_string()
         };
         let mut extension = GowinBoardExtension::new(wrapper)
             .with_logic_clock("logic_clk")
@@ -615,30 +653,6 @@ impl TangNano20K {
                 "sdram_init_done",
             ))
             .connect_logic(GowinLogicConnection::new(
-                "sdram_command_ack",
-                GowinPortDirection::Input,
-                1,
-                "sdram_command_ack",
-            ))
-            .connect_logic(GowinLogicConnection::new(
-                "sdram_command_valid",
-                GowinPortDirection::Output,
-                1,
-                "sdram_command_valid",
-            ))
-            .connect_logic(GowinLogicConnection::new(
-                "sdram_command",
-                GowinPortDirection::Output,
-                3,
-                "sdram_command",
-            ))
-            .connect_logic(GowinLogicConnection::new(
-                "sdram_precharge",
-                GowinPortDirection::Output,
-                1,
-                "sdram_precharge",
-            ))
-            .connect_logic(GowinLogicConnection::new(
                 "sdram_address",
                 GowinPortDirection::Output,
                 21,
@@ -655,39 +669,25 @@ impl TangNano20K {
                 GowinPortDirection::Output,
                 if wide_2x { 64 } else { 32 },
                 "sdram_write_data",
-            ))
-            .connect_logic(GowinLogicConnection::new(
-                "sdram_burst_length",
-                GowinPortDirection::Output,
-                8,
-                "sdram_burst_length",
-            ))
-            .add_source_file(
-                "src/generated/target/tang_nano_20k/sdram/controller_qn88.v",
-                include_str!("tang_nano_20k/sdram/controller_qn88.v"),
-            )
-            .add_source_file(
-                "src/generated/target/tang_nano_20k/sdram/sdrc_hs_defines.v",
-                include_str!("tang_nano_20k/sdram/sdrc_hs_defines.v"),
-            )
-            .add_source_file(
-                "src/generated/target/tang_nano_20k/sdram/sdrc_hs_name.v",
-                include_str!("tang_nano_20k/sdram/sdrc_hs_name.v"),
-            )
-            .add_source_file(
-                "src/generated/target/tang_nano_20k/sdram/pll_54m.v",
-                include_str!("tang_nano_20k/sdram/pll_54m.v"),
-            )
-            .require_installed_ide_file(
-                "ipcore/SDRC_HS/data/sdrc_hs_top.vp",
-                [
-                    "src/generated/target/tang_nano_20k/sdram/sdrc_hs_defines.v".into(),
-                    "src/generated/target/tang_nano_20k/sdram/sdrc_hs_name.v".into(),
-                ],
-            );
+            ));
 
         if wide_2x {
             extension = extension
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_request_ready", GowinPortDirection::Input, 1, "sdram_request_ready",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_done", GowinPortDirection::Input, 1, "sdram_done",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_request_valid", GowinPortDirection::Output, 1, "sdram_request_valid",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_write", GowinPortDirection::Output, 1, "sdram_write",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_words", GowinPortDirection::Output, 6, "sdram_words",
+                ))
                 .connect_logic(GowinLogicConnection::new(
                     "sdram_write_data_ready",
                     GowinPortDirection::Input,
@@ -701,6 +701,14 @@ impl TangNano20K {
                     "sdram_write_data_valid",
                 ))
                 .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/sdram_controller.v",
+                    crate::sdram_memory_controller::RtlSources::CONTROLLER,
+                )
+                .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/native_bridge_108m_54m.v",
+                    crate::sdram_memory_controller::RtlSources::GEARBOX,
+                )
+                .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/pll_108m_54m.v",
                     include_str!("tang_nano_20k/sdram/pll_108m_54m.v"),
                 )
@@ -709,6 +717,79 @@ impl TangNano20K {
                 )
                 .add_sdc_constraint(
                     "create_generated_clock -name cpu_clk -source [get_pins {u_sdram_pll/rpll_inst/CLKOUT}] -divide_by 2 [get_pins {u_sdram_pll/rpll_inst/CLKOUTD}]",
+                )
+                .add_sdc_constraint(
+                    "set_input_delay -clock [get_clocks {sdram_clk}] -max 6.0 [get_ports {IO_sdram_dq*}]",
+                )
+                .add_sdc_constraint(
+                    "set_input_delay -clock [get_clocks {sdram_clk}] -min 2 [get_ports {IO_sdram_dq*}]",
+                )
+                .add_sdc_constraint(
+                    "set_output_delay -clock [get_clocks {sdram_clk}] -max 1.5 [get_ports {O_sdram_cke O_sdram_cs_n O_sdram_cas_n O_sdram_ras_n O_sdram_wen_n O_sdram_dqm* O_sdram_addr* O_sdram_ba* IO_sdram_dq*}]",
+                )
+                .add_sdc_constraint(
+                    "set_output_delay -clock [get_clocks {sdram_clk}] -min -1 [get_ports {O_sdram_cke O_sdram_cs_n O_sdram_cas_n O_sdram_ras_n O_sdram_wen_n O_sdram_dqm* O_sdram_addr* O_sdram_ba* IO_sdram_dq*}]",
+                )
+                .add_sdc_constraint(
+                    "set_multicycle_path -setup 2 -from [get_ports {IO_sdram_dq*}] -to [get_clocks {controller_clk}]",
+                )
+                .add_sdc_constraint(
+                    "set_multicycle_path -hold 0 -from [get_ports {IO_sdram_dq*}] -to [get_clocks {controller_clk}]",
+                );
+        } else {
+            extension = extension
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_command_ack",
+                    GowinPortDirection::Input,
+                    1,
+                    "sdram_command_ack",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_command_valid",
+                    GowinPortDirection::Output,
+                    1,
+                    "sdram_command_valid",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_command",
+                    GowinPortDirection::Output,
+                    3,
+                    "sdram_command",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_precharge",
+                    GowinPortDirection::Output,
+                    1,
+                    "sdram_precharge",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_burst_length",
+                    GowinPortDirection::Output,
+                    8,
+                    "sdram_burst_length",
+                ))
+                .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/controller_qn88.v",
+                    include_str!("tang_nano_20k/sdram/controller_qn88.v"),
+                )
+                .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/sdrc_hs_defines.v",
+                    include_str!("tang_nano_20k/sdram/sdrc_hs_defines.v"),
+                )
+                .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/sdrc_hs_name.v",
+                    include_str!("tang_nano_20k/sdram/sdrc_hs_name.v"),
+                )
+                .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/pll_54m.v",
+                    include_str!("tang_nano_20k/sdram/pll_54m.v"),
+                )
+                .require_installed_ide_file(
+                    "ipcore/SDRC_HS/data/sdrc_hs_top.vp",
+                    [
+                        "src/generated/target/tang_nano_20k/sdram/sdrc_hs_defines.v".into(),
+                        "src/generated/target/tang_nano_20k/sdram/sdrc_hs_name.v".into(),
+                    ],
                 );
         }
 
@@ -757,7 +838,7 @@ impl TangNano20K {
                 // as synchronous paths. The PLL-derived 54 MHz clock gets an
                 // explicit generated-clock name so the group can reference it.
                 .add_sdc_constraint(if wide_2x {
-                    "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
+                    "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 -phase 292.5 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
                 } else {
                     "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 2 [get_pins {u_sdram_pll/rpll_inst/CLKOUT}]"
                 })
@@ -770,6 +851,30 @@ impl TangNano20K {
                 );
         }
 
+        if wide_2x && !video {
+            extension = extension
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_stream_active",
+                    GowinPortDirection::Input,
+                    1,
+                    "sdram_stream_active",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_next_valid",
+                    GowinPortDirection::Output,
+                    1,
+                    "sdram_next_valid",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_next_address",
+                    GowinPortDirection::Output,
+                    21,
+                    "sdram_next_address",
+                ));
+            extension = extension.add_sdc_constraint(
+                "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 -phase 292.5 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
+            );
+        }
         let mut binding = Self::user_io_binding()
             .require(DebugUartTx)
             .require(Pll)
@@ -824,6 +929,34 @@ impl TangNano20K {
     {
         GowinModuleProject::new(
             GowinProject::new(project_name).with_board_binding(Self::sdram_debug_uart_binding()),
+        )
+    }
+
+    pub fn sdram_wide_debug_uart_project<M>(
+        project_name: impl Into<String>,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KSdramWideInputs, Output = TangNano20KSdramWideOutputs>,
+    {
+        Self::sdram_wide_debug_uart_project_with_chained_groups(project_name, false)
+    }
+    pub fn sdram_wide_debug_uart_project_with_chained_groups<M>(
+        project_name: impl Into<String>,
+        chained_groups: bool,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KSdramWideInputs, Output = TangNano20KSdramWideOutputs>,
+    {
+        GowinModuleProject::new(
+            GowinProject::new(project_name).with_board_binding(
+                Self::sdram_debug_uart_binding_with_options(
+                    false,
+                    true,
+                    TangNano20KVideoMode::Hdmi720p60,
+                    chained_groups,
+                )
+                .with_process_option("-ioreg_in_iob", "1"),
+            ),
         )
     }
 
@@ -886,7 +1019,7 @@ impl TangNano20K {
     /// Flash, the 64-Mibit SDRAM, and the onboard HDMI port.
     ///
     /// This is the full CPU V3 system surface: the board wrapper owns the SDRAM
-    /// PLL/Controller HS and the video PLL for the selected
+    /// PLL/native SDRAM controller and the video PLL for the selected
     /// [`TangNano20KVideoMode`], while the Flash reader leaf owns the SPI Flash
     /// device. Higher-level logic claims none of these devices.
     pub fn boot_hdmi_memory_project<M>(
@@ -921,7 +1054,8 @@ impl TangNano20K {
                 "flash_miso",
                 [Self::SPI_FLASH_MISO],
             )
-            .with_process_option("-use_mspi_as_gpio", "1");
+            .with_process_option("-use_mspi_as_gpio", "1")
+            .with_process_option("-ioreg_in_iob", "1");
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 

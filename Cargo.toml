@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "modeling/audited",
+    "modeling/scheduler",
     "circuit",
     "hardware/core",
     "hardware/common",
@@ -10,6 +12,7 @@ members = [
     "systems/cpu-v1-sim",
     "ip/cpu-v2",
     "ip/cpu-v3",
+    "ip/gpu-v2",
     "systems/cpu-v3-tang-nano-20k",
     "systems/cpu-v2-sim",
     "compiler/isa-macros",

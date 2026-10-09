@@ -90,7 +90,7 @@
     <span class="badge">16-bit word offsets</span>
     <span class="badge">Segmented physical word addresses</span>
     <span class="badge">Transient pending test, no persistent flags</span>
-    <span class="badge">Revision 0.8</span>
+    <span class="badge">Revision 0.9</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
@@ -107,7 +107,7 @@
 <h2 id="overview">1. Architectural overview</h2>
 <div class="cards">
   <div class="card"><b>16</b><span>general-purpose, writable 16-bit registers</span></div>
-  <div class="card"><b>65,536</b><span>word offsets in each boot-selected segment</span></div>
+  <div class="card"><b>4 × 16K</b><span>logical data quarters, each independently mapped to a physical page</span></div>
   <div class="card"><b>1 or 2</b><span>physical words per retired operation; two when PFX12 is consumed</span></div>
   <div class="card"><b>CMP → B</b><span>a transient pending test result links a compare to its consuming branch; there are no persistent flags</span></div>
 </div>
@@ -117,8 +117,8 @@
     <ul>
       <li>All arithmetic wraps modulo 2<sup>16</sup>.</li>
       <li>Memory is word-addressed; one address selects one 16-bit word.</li>
-      <li>A physical address directly concatenates a 16-bit segment and a 16-bit offset.</li>
-      <li>Reset starts with CSEG = DSEG = PC = 0; applications normally keep their boot-selected segments fixed.</li>
+      <li>Instruction fetch concatenates CSEG and PC. Data uses <code>{DSEG[offset[15:14]], offset[13:0]}</code>.</li>
+      <li>Reset starts with CSEG = PC = 0 and DSEG0..3 = 0..3. A legacy DSEG write maps four consecutive pages atomically.</li>
       <li>The PC normally advances before instruction semantics, so relative control flow is based on the following word.</li>
       <li>All registers are architecturally writable. ABI reservations are compiler conventions, not hardwired registers.</li>
       <li>CMP-class instructions leave a transient pending test result (Less/Equal/Greater). Only a conditional branch or conditional move consumes it; any other retired non-prefix instruction expires it, and <code>PFX12</code> is transparent to it. Reset leaves no pending result.</li>
@@ -166,7 +166,7 @@
   <tr><th class="center">n3</th><th>Family</th><th>Form</th><th>Summary</th></tr>
   <tr><td class="center op mono">0/1/3/4/5</td><td class="op">Register ALU</td><td class="mono">op rd ra rb</td><td>Add, subtract, and three-operand logic.</td></tr>
   <tr><td class="center op mono">2</td><td class="op">Shift / multiply</td><td class="mono">2 fn rd operand</td><td>Destructive shifts and unsigned multiplies.</td></tr>
-  <tr><td class="center extended mono">6</td><td class="extended">Extended / system</td><td class="mono">6 fn a b</td><td>Move, unary, bit queries, comparisons, SIGNAL, special registers, JSEG.</td></tr>
+  <tr><td class="center extended mono">6</td><td class="extended">Extended / system</td><td class="mono">6 fn a b</td><td>Move, unary, bit queries, comparisons, asynchronous line copy, SIGNAL, special registers, JSEG.</td></tr>
   <tr><td class="center control mono">7</td><td class="control">Device</td><td class="mono">7 dir/dev ch reg</td><td>Single-cycle device channel receive/send.</td></tr>
   <tr><td class="center memory mono">8</td><td class="memory">LOAD</td><td class="mono">8 rd base imm4</td><td>Read one 16-bit word.</td></tr>
   <tr><td class="center memory mono">9</td><td class="memory">STORE</td><td class="mono">9 rs base imm4</td><td>Write one 16-bit word.</td></tr>
@@ -219,17 +219,25 @@
   <tr><td class="mono">4</td><td class="mn">CLZ rd, rs</td><td class="mono">6 4 rd rs</td><td class="sem">rd = count_leading_zeros(rs)</td></tr>
   <tr><td class="mono">5</td><td class="mn">POPCNT rd, rs</td><td class="mono">6 5 rd rs</td><td class="sem">rd = population_count(rs)</td></tr>
   <tr><td class="mono">6</td><td class="mn">SEQ rd, rs</td><td class="mono">6 6 rd rs</td><td class="sem">rd = (rd == rs) ? 1 : 0</td></tr>
-  <tr><td class="mono reserved">7</td><td class="reserved">reserved</td><td class="mono">6 7 .. ..</td><td>Invalid instruction</td></tr>
+  <tr><td class="mono">7</td><td class="mn">LCOPY roffset, rpage</td><td class="mono">6 7 roffset rpage</td><td class="sem">Asynchronously copy the aligned 16-word source line to physical page r[page] at the same low 14-bit offset. A resident destination alias is discarded before the complete-line overwrite.</td></tr>
   <tr><td class="mono">8</td><td class="mn">SLT rd, rs</td><td class="mono">6 8 rd rs</td><td class="sem">rd = signed(rd) &lt; signed(rs) as 0/1</td></tr>
   <tr><td class="mono">9</td><td class="mn">SLTU rd, rs</td><td class="mono">6 9 rd rs</td><td class="sem">rd = unsigned(rd) &lt; unsigned(rs) as 0/1</td></tr>
   <tr><td class="mono">A</td><td class="mn">CMPS ra, rb</td><td class="mono">6 A ra rb</td><td class="sem">pending = signed ordering of ra vs rb; writes no register</td></tr>
   <tr><td class="mono">B</td><td class="mn">CMPU ra, rb</td><td class="mono">6 B ra rb</td><td class="sem">pending = unsigned ordering of ra vs rb; writes no register</td></tr>
   <tr><td class="mono">C</td><td class="mn">SIGNAL rs, type4</td><td class="mono">6 C rs type</td><td class="sem">type 0 halts and latches rs at the retirement edge; types 1..15 are simulator-side events that retire as a NOP in hardware</td></tr>
-  <tr><td class="mono">D</td><td class="mn">MFSR rd, sr</td><td class="mono">6 D rd sr</td><td class="sem">Read CSEG (sr=0) or DSEG (sr=1); other selectors are invalid.</td></tr>
-  <tr><td class="mono">E</td><td class="mn">MTSR DSEG, rs</td><td class="mono">6 E 1 rs</td><td class="sem">Set the boot-time data segment. Other special-register selectors are invalid.</td></tr>
+  <tr><td class="mono">D</td><td class="mn">MFSR rd, sr</td><td class="mono">6 D rd sr</td><td class="sem">Read CSEG (sr=0), legacy DSEG (sr=1), or DSEG0..3 (sr=2..5).</td></tr>
+  <tr><td class="mono">E</td><td class="mn">MTSR / D-cache control</td><td class="mono">6 E selector rs</td><td class="sem">Selectors 1..5 write bulk/individual data mappings; 6 and 8 issue clean-line and wait; 7 is reserved.</td></tr>
   <tr><td class="mono">F</td><td class="mn">JSEG seg, target</td><td class="mono">6 F seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
 </table>
-<p class="caption">No instruction in this family consumes a <code>PFX12</code> prefix. <code>S*</code> names write a Boolean register result; <code>CMP*</code> names write the transient pending test.</p>
+<p class="caption">No instruction in this family consumes a <code>PFX12</code> prefix. <code>LCOPY</code> requires a 16-word-aligned offset and fitted source/destination segments. <code>S*</code> names write a Boolean register result; <code>CMP*</code> names write the transient pending test.</p>
+<table>
+  <tr><th>Function-E selector</th><th>Operation</th><th>Semantics</th></tr>
+  <tr><td class="mono">1</td><td class="mn">MTSR DSEG, rs</td><td>Set DSEG0..3 to <code>r[rs]*4 + {0,1,2,3}</code>; r[rs] must be below 64.</td></tr>
+  <tr><td class="mono">2..5</td><td class="mn">MTSR DSEG0..3, rs</td><td>Replace one 8-bit physical page mapping.</td></tr>
+  <tr><td class="mono">6</td><td class="mn">DCLEANL raddr</td><td>Asynchronously write back one dirty hit; miss and clean hit are no-ops.</td></tr>
+  <tr><td class="mono">7</td><td class="mn">Reserved</td><td>Invalid instruction.</td></tr>
+  <tr><td class="mono">8</td><td class="mn">DWAIT</td><td>Wait for command idle and fault if the sticky command result is an error; canonical low nibble is zero.</td></tr>
+</table>
 
 <h3>4.4 Device access — opcode 7</h3>
 <table>
@@ -342,30 +350,48 @@ approximation make the ordinary-distance boundary approximate.</p>
 <div class="notice"><b>Precise prefix rule:</b> a non-consumer expires the pending prefix and retires it separately. A second prefix also retires and replaces the first. If a prefixed consumer faults, the reported address is the prefix address and neither word retires.</div>
 
 <h2 id="memory">6. Segmented addressing and ABI memory map</h2>
-<div class="notice"><b>Physical address rule:</b> <code>physical_word = {segment[15:0], offset[15:0]}</code>. There is no segment addition and a wrapping offset never carries into the segment. A fitted target may implement a smaller physical range and must report an error rather than truncate or alias an unsupported address.</div>
+<div class="notice"><b>Two translations:</b> instruction fetch uses <code>{CSEG, PC}</code>. A 16-bit data offset uses its high two bits to select <code>DSEG0..DSEG3</code>, then forms <code>{DSEGn[7:0], offset[13:0]}</code>. All addresses shown here are word addresses.</div>
 <div class="grid">
   <div class="panel">
-    <svg viewBox="0 0 580 460" role="img" aria-label="CPU V3 unified address-space map">
-      <rect class="box-blue" x="115" y="35" width="280" height="95" rx="8"/><text class="svg-title" x="255" y="66" text-anchor="middle">0x0000 — linked code</text><text class="svg-text" x="255" y="91" text-anchor="middle">grows upward</text><text class="svg-mono" x="255" y="113" text-anchor="middle">instruction and literal words</text>
-      <rect class="box-green" x="115" y="130" width="280" height="85" rx="8"/><text class="svg-title" x="255" y="163" text-anchor="middle">0x4000 — static data</text><text class="svg-text" x="255" y="189" text-anchor="middle">compiler default data base</text>
-      <rect class="box-amber" x="115" y="215" width="280" height="90" rx="8"/><text class="svg-title" x="255" y="250" text-anchor="middle">0x8000 — heap baseline</text><text class="svg-text" x="255" y="276" text-anchor="middle">rcc_std allocator region</text>
-      <rect class="box" x="115" y="305" width="280" height="140" rx="8"/><text class="svg-title" x="255" y="350" text-anchor="middle">stack / ordinary memory</text><text class="svg-text" x="255" y="378" text-anchor="middle">SP = 0 denotes 0x10000</text><text class="svg-text" x="255" y="406" text-anchor="middle">grows downward through 0xffff</text>
-      <text class="svg-mono" x="70" y="48">0000</text><text class="svg-mono" x="70" y="143">4000</text><text class="svg-mono" x="70" y="228">8000</text><text class="svg-mono" x="70" y="447">ffff</text>
-      <path class="arrow" d="M430 80 L430 185"/><text class="svg-text" x="445" y="137">up</text>
-      <path class="arrow" d="M430 372 L430 320"/><text class="svg-text" x="445" y="350">down</text>
+    <svg viewBox="0 0 580 460" role="img" aria-label="Four logical data quarters independently mapped through DSEG0 to DSEG3">
+      <text class="svg-title" x="120" y="25" text-anchor="middle">16-bit logical data offset</text>
+      <text class="svg-title" x="460" y="25" text-anchor="middle">physical 32-KiB pages</text>
+      <rect class="box-blue" x="25" y="45" width="190" height="82" rx="8"/><text class="svg-title" x="120" y="76" text-anchor="middle">quarter 0</text><text class="svg-mono" x="120" y="101" text-anchor="middle">0000..3fff</text>
+      <rect class="box-green" x="25" y="139" width="190" height="82" rx="8"/><text class="svg-title" x="120" y="170" text-anchor="middle">quarter 1</text><text class="svg-mono" x="120" y="195" text-anchor="middle">4000..7fff</text>
+      <rect class="box-amber" x="25" y="233" width="190" height="82" rx="8"/><text class="svg-title" x="120" y="264" text-anchor="middle">quarter 2</text><text class="svg-mono" x="120" y="289" text-anchor="middle">8000..bfff</text>
+      <rect class="box" x="25" y="327" width="190" height="82" rx="8"/><text class="svg-title" x="120" y="358" text-anchor="middle">quarter 3</text><text class="svg-mono" x="120" y="383" text-anchor="middle">c000..ffff</text>
+      <rect class="box-blue" x="365" y="45" width="190" height="82" rx="8"/><text class="svg-title" x="460" y="76" text-anchor="middle">page DSEG0</text><text class="svg-text" x="460" y="101" text-anchor="middle">16 Kwords</text>
+      <rect class="box-green" x="365" y="139" width="190" height="82" rx="8"/><text class="svg-title" x="460" y="170" text-anchor="middle">page DSEG1</text><text class="svg-text" x="460" y="195" text-anchor="middle">independent</text>
+      <rect class="box-amber" x="365" y="233" width="190" height="82" rx="8"/><text class="svg-title" x="460" y="264" text-anchor="middle">page DSEG2</text><text class="svg-text" x="460" y="289" text-anchor="middle">independent</text>
+      <rect class="box" x="365" y="327" width="190" height="82" rx="8"/><text class="svg-title" x="460" y="358" text-anchor="middle">page DSEG3</text><text class="svg-text" x="460" y="383" text-anchor="middle">independent</text>
+      <path class="arrow" d="M215 86 L365 86"/><text class="svg-mono" x="290" y="77" text-anchor="middle">DSEG0</text>
+      <path class="arrow" d="M215 180 L365 180"/><text class="svg-mono" x="290" y="171" text-anchor="middle">DSEG1</text>
+      <path class="arrow" d="M215 274 L365 274"/><text class="svg-mono" x="290" y="265" text-anchor="middle">DSEG2</text>
+      <path class="arrow" d="M215 368 L365 368"/><text class="svg-mono" x="290" y="359" text-anchor="middle">DSEG3</text>
+      <text class="svg-text" x="290" y="439" text-anchor="middle">Pages may be non-adjacent, reordered, or aliased.</text>
     </svg>
   </div>
   <div class="panel">
-    <h3>Address-space contract</h3>
+    <h3>Translation contract</h3>
     <ul>
-      <li>Ordinary CPU pointers cover one 65,536-word = 128-KiB segment.</li>
-      <li>Instruction fetch uses <code>{CSEG, PC}</code>; ordinary data and stack accesses use <code>{DSEG, offset}</code>.</li>
-      <li>All offsets, including <code>0xff00..0xffff</code>, select ordinary memory in <code>DSEG</code>. Devices 0..7 are accessible only through the dedicated device instructions.</li>
-      <li><code>CompilerOptions::default()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, and stack top <code>0x10000</code>, encoded as SP = 0. CPU V3 has no v2.6 function table.</li>
-      <li>The CPU V3 compiler's optional <code>code_base</code> relocates all linked code offsets and function pointers without padding the emitted section bytes.</li>
+      <li><code>PC</code> and ordinary data pointers remain 16-bit. One CSEG exposes 64 Kwords (128 KiB) of code; each DSEG entry exposes 16 Kwords (32 KiB) of data.</li>
+      <li>Offset arithmetic wraps at 16 bits before data translation. A fitted target faults on an unsupported physical address instead of truncating high bits.</li>
+      <li>The four DSEG entries are independent. Hardware permits duplicate mappings and performs no alias check.</li>
+      <li>Reading legacy <code>DSEG</code> returns <code>DSEG0 &gt;&gt; 2</code>. Writing <code>s &lt; 64</code> atomically sets <code>DSEG0..3 = s*4 + {0,1,2,3}</code>.</li>
+      <li>Writing an individual DSEG entry accepts an 8-bit physical page number. Afterward, legacy readback is only a compatibility view of the base page.</li>
     </ul>
   </div>
 </div>
+<h3>Fitted Tang Nano 20K ABI layout</h3>
+<table>
+  <tr><th>Logical word range</th><th>Initial use</th><th>Page mapping</th></tr>
+  <tr><td class="mono">0000..1fff</td><td>Static data, growing upward; 16-KiB reservation.</td><td>First half of DSEG0.</td></tr>
+  <tr><td class="mono">2000..9ffe</td><td>Heap; <code>0x7fff</code> words under the current boundary-tag limit.</td><td>Remainder of DSEG0, all of DSEG1, and part of DSEG2.</td></tr>
+  <tr><td class="mono">9fff..bfff</td><td>Stack capacity, growing downward from exclusive top <code>c000</code>.</td><td>Remainder of DSEG2.</td></tr>
+  <tr><td class="mono">c000..ffff</td><td>Dynamically remappable library/device window.</td><td>All of DSEG3.</td></tr>
+</table>
+<p>Boot first uses the legacy DSEG write to establish four consecutive physical pages. DSEG0..2 then provide the ordinary 96-KiB application arena; libraries may remap DSEG3 as one scoped 32-KiB window. The ISA neither protects the heap/stack boundary nor assigns ownership to that window.</p>
+<p><code>CompilerOptions::for_separate_code_and_data_segments()</code> selects data base <code>0x0000</code>, heap base <code>0x2000</code>, and stack top <code>0xc000</code>. Linked code starts at offset <code>0x0000</code> of its separate CSEG. <code>CompilerOptions::default()</code> retains a conservative unified-memory layout for standalone images and simulators that do not establish distinct mappings.</p>
 
 <h2 id="abi">7. Compiler ABI</h2>
 <table>
@@ -374,7 +400,7 @@ approximation make the ordinary-distance boundary approximate.</p>
   <tr><td class="mono">r2..r7</td><td>arguments 0 through 5</td><td>caller-saved</td><td>Also general allocation after ABI shims.</td></tr>
   <tr><td class="mono">r8..r11</td><td>long-lived values</td><td>callee-saved</td><td>Saved only when actually allocated by the function.</td></tr>
   <tr><td class="mono">r12</td><td>compiler scratch / indirect-call target</td><td>reserved, caller-clobbered</td><td>Not allocatable; used for wide lowering and function pointers.</td></tr>
-  <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; reset value 0 denotes the exclusive <code>0x10000</code> segment top.</td></tr>
+  <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; the fitted application layout starts at exclusive top <code>0xc000</code>.</td></tr>
   <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here; the architecture fixes the link register to r14 (<code>JALREL</code> has no link field, <code>JALR</code> requires link = 14).</td></tr>
   <tr><td class="mono">r15</td><td>general allocation</td><td>caller-saved</td><td>Ordinary allocatable register since v0.5; device instructions replaced the former reserved device-base convention.</td></tr>
   <tr><td class="mono">F0..F3</td><td>FPU return values</td><td>caller-saved</td><td rowspan="4">FPU v2 ABI over the flat <code>F0..F63</code> Q16.16 file; a vector occupies a consecutive range. All F registers are caller-saved and ACC is caller-clobbered. FPU lowering is not implemented yet (C0).</td></tr>
@@ -418,6 +444,7 @@ approximation make the ordinary-distance boundary approximate.</p>
   <tr><td>Reserved or malformed encoding (reserved FPU subop/length/mode, non-canonical fields, a truncated FPU pair)</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
   <tr><td>Conditional branch (B functions 0..5) or conditional move (B functions 8..D) with no pending test result</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address when prefixed</td><td>faulting operation does not retire</td></tr>
   <tr><td>Fetch or data address outside fitted physical memory (including FLD/FST/FLDV/FSTV)</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
+  <tr><td>Unaligned <code>LCOPY</code> source</td><td>data-memory fault</td><td>faulting instruction offset</td><td>does not retire</td></tr>
   <tr><td>Valid prefixed consumer</td><td>executes one wide operation</td><td>—</td><td>retires two words together</td></tr>
   <tr><td>Pending prefix followed by non-consumer</td><td>prefix expires; next instruction executes normally</td><td>—</td><td>prefix and instruction retire separately</td></tr>
   <tr><td>SIGNAL type 0 after already halted</td><td>returns the latched halt signal</td><td>—</td><td>no additional execution</td></tr>
@@ -428,7 +455,8 @@ approximation make the ordinary-distance boundary approximate.</p>
 <h2 id="revision">9. Revision history</h2>
 <table>
   <tr><th>Revision</th><th>Change</th></tr>
-  <tr><td class="mono">0.8</td><td><b>Current.</b> Breaking integer rearrangement with no binary compatibility. Majors 0/1/3/4/5 keep <code>ADD</code>/<code>SUB</code>/<code>AND</code>/<code>OR</code>/<code>XOR</code>; the old three-register <code>MUL</code> (major 2) and register-count <code>SHL</code>/<code>ASR</code> (majors 6/7) move into the destructive shift/multiply family at major 2, joined by <code>SHR</code>, the immediate shifts <code>SHLI</code>/<code>SHRI</code>/<code>ASRI</code> and <code>MULI</code> (both moved from major A), and the unsigned product windows <code>MUL8</code>/<code>MUL16</code>. Major 6 becomes the extended/system family (unary, bit queries, <code>SEQ</code>, destructive <code>SLT</code>/<code>SLTU</code>, pending-test <code>CMPS</code>/<code>CMPU</code>, <code>SIGNAL</code>, special registers, <code>JSEG</code>); <code>NOP</code> is now <code>6000</code>. <code>SIGNAL rs, type4</code> replaces <code>HALT</code> (<code>SIGNAL r0, 0</code> = <code>6C00</code>). Device access moves from major C to major 7 with an unchanged field layout. Major A keeps arithmetic/logic, constant construction at functions 2/3, and comparisons, with <code>CMPEQI</code> renamed <code>SEQI</code>; functions 7/B are <code>LDC</code>/<code>ADDC</code>, indexing a shared symmetric 16-entry constant table (<code>MAG = [8, 16, 24, 32, 64, 128, 256, 512]</code>; indices 0..7 hold <code>MAG[k]</code>, indices 8..15 hold <code>-MAG[k - 8]</code>) that starts just past the <code>0..=15</code> range <code>ADDI</code>/<code>LDI</code>/<code>LDUI</code> already cover, and they never consume <code>PFX12</code>. Amendment (still revision 0.8): <code>ADDI</code>/<code>SUBI</code> read the unprefixed immediate as an unsigned u4 (<code>0..=15</code>) instead of a signed i4 — negative adjustments are <code>SUBI</code>'s job, so the signed range wasted half the encodings; the <code>PFX12</code>-widened forms still add/subtract the full 16-bit immediate pattern. Major B becomes the symmetric control family: six conditional branches (0..5), <code>JREL</code> (6), <code>JALREL</code> (7), six conditional moves (8..D), <code>JREG</code> (<code>B E 0 target</code>), and <code>JALR</code> (<code>B F E target</code>), with <code>JALREL</code>/<code>JALR</code> linking to the fixed <code>r14</code>. <code>IMMHI12</code> is renamed <code>PFX12</code> and carries a neutral 12-bit payload with the closed consumer set above. The FPU was subsequently replaced wholesale by the two-word Q16.16 FPU v2: majors C/D/E now start a 32-bit pair and the old single-word Q8.8 <code>Dxxx</code> encoding is invalid.</td></tr>
+  <tr><td class="mono">0.9</td><td><b>Current.</b> Adds asynchronous 32-byte <code>LCOPY</code>, four independently mapped 32-KiB data pages with legacy bulk DSEG setup, and <code>DCLEANL</code>/<code>DWAIT</code>; function-E selector 7 remains reserved.</td></tr>
+  <tr><td class="mono">0.8</td><td>Breaking integer rearrangement with no binary compatibility. Majors 0/1/3/4/5 keep <code>ADD</code>/<code>SUB</code>/<code>AND</code>/<code>OR</code>/<code>XOR</code>; the old three-register <code>MUL</code> (major 2) and register-count <code>SHL</code>/<code>ASR</code> (majors 6/7) move into the destructive shift/multiply family at major 2, joined by <code>SHR</code>, the immediate shifts <code>SHLI</code>/<code>SHRI</code>/<code>ASRI</code> and <code>MULI</code> (both moved from major A), and the unsigned product windows <code>MUL8</code>/<code>MUL16</code>. Major 6 becomes the extended/system family (unary, bit queries, <code>SEQ</code>, destructive <code>SLT</code>/<code>SLTU</code>, pending-test <code>CMPS</code>/<code>CMPU</code>, <code>SIGNAL</code>, special registers, <code>JSEG</code>); <code>NOP</code> is now <code>6000</code>. <code>SIGNAL rs, type4</code> replaces <code>HALT</code> (<code>SIGNAL r0, 0</code> = <code>6C00</code>). Device access moves from major C to major 7 with an unchanged field layout. Major A keeps arithmetic/logic, constant construction at functions 2/3, and comparisons, with <code>CMPEQI</code> renamed <code>SEQI</code>; functions 7/B are <code>LDC</code>/<code>ADDC</code>, indexing a shared symmetric 16-entry constant table (<code>MAG = [8, 16, 24, 32, 64, 128, 256, 512]</code>; indices 0..7 hold <code>MAG[k]</code>, indices 8..15 hold <code>-MAG[k - 8]</code>) that starts just past the <code>0..=15</code> range <code>ADDI</code>/<code>LDI</code>/<code>LDUI</code> already cover, and they never consume <code>PFX12</code>. Amendment (still revision 0.8): <code>ADDI</code>/<code>SUBI</code> read the unprefixed immediate as an unsigned u4 (<code>0..=15</code>) instead of a signed i4 — negative adjustments are <code>SUBI</code>'s job, so the signed range wasted half the encodings; the <code>PFX12</code>-widened forms still add/subtract the full 16-bit immediate pattern. Major B becomes the symmetric control family: six conditional branches (0..5), <code>JREL</code> (6), <code>JALREL</code> (7), six conditional moves (8..D), <code>JREG</code> (<code>B E 0 target</code>), and <code>JALR</code> (<code>B F E target</code>), with <code>JALREL</code>/<code>JALR</code> linking to the fixed <code>r14</code>. <code>IMMHI12</code> is renamed <code>PFX12</code> and carries a neutral 12-bit payload with the closed consumer set above. The FPU was subsequently replaced wholesale by the two-word Q16.16 FPU v2: majors C/D/E now start a 32-bit pair and the old single-word Q8.8 <code>Dxxx</code> encoding is invalid.</td></tr>
   <tr><td class="mono">0.7</td><td>Historical: introduced the blocking fix16 FPU in the <code>D fn a b</code> family; retired and replaced by the two-word Q16.16 FPU v2.</td></tr>
   <tr><td class="mono">0.6</td><td>Removes address-mapped device access; <code>LOAD</code>/<code>STORE</code> always reach memory.</td></tr>
   <tr><td class="mono">0.5</td><td>Replaces test-register branches with a transient pending test result, moves relative jumps into the B family, turns opcode C into device instructions, and frees <code>r15</code> for general allocation.</td></tr>

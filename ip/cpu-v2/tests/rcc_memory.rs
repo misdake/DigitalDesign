@@ -26,7 +26,7 @@ fn main() {
     assert(DOUBLE == 16, 2);
     // writing through the address of a global
     let s = addr_of(&SCORE);
-    s.write(0, TILE.read(1));
+    unsafe { s.write(0, TILE.read(1)) };
     halt(SCORE);
 }
 "#;
@@ -41,8 +41,8 @@ fn main() {
 fn test_addr_of_local() {
     let src = r#"
 fn bump(p: Ptr) {
-    let v = p.read(0);
-    p.write(0, v + 1);
+    let v = unsafe { p.read(0) };
+    unsafe { p.write(0, v + 1) };
 }
 fn main() {
     let mut x: u16 = 41;
@@ -60,7 +60,7 @@ fn test_local_array_as_param() {
 fn fill(buf: Ptr, n: u16, v: u16) {
     let mut i: u16 = 0;
     while i < n {
-        buf.add(i as i16).write(0, v);
+        unsafe { buf.add(i as i16).write(0, v) };
         i += 1;
     }
 }
@@ -68,7 +68,7 @@ fn sum(buf: Ptr, n: u16) -> u16 {
     let mut s: u16 = 0;
     let mut i: u16 = 0;
     while i < n {
-        s += buf.add(i as i16).read(0);
+        s += unsafe { buf.add(i as i16).read(0) };
         i += 1;
     }
     s
@@ -101,7 +101,7 @@ fn main() {
 
     let global = WORDS.as_array();
     let raw = data.as_ptr();
-    halt(raw.read(0) + data[1u16] + global[2u16] + (signed_view[1i16] as u16));
+    halt(unsafe { raw.read(0) } + data[1u16] + global[2u16] + (signed_view[1i16] as u16));
 }
 "#;
     assert_eq!(run(src), Some(38));
@@ -112,9 +112,9 @@ fn test_ptr_to_typed_array_views() {
     let src = r#"
 fn main() {
     let p = Ptr::from_addr(0x0200);
-    let mut words = p.as_u16_array();
+    let mut words = unsafe { p.as_u16_array() };
     words[0u16] = 10;
-    let mut signed = p.as_i16_array();
+    let mut signed = unsafe { p.as_i16_array() };
     signed[1i16] = -3i16;
     words[2u16] = words[0u16] + (signed[1i16] as u16);
     halt(words[2u16]);
@@ -133,7 +133,7 @@ fn touch(mut words: Array<u16>, mut signed: Array<i16>) -> u16 {
 }
 fn main() {
     let p = Ptr::from_addr(0x0200);
-    halt(touch(p.as_u16_array(), p.add(8).as_i16_array()));
+    halt(touch(unsafe { p.as_u16_array() }, unsafe { p.add(8).as_i16_array() }));
 }
 "#;
     let program = cpu_v2::frontend::parse_source(src).expect("parse failed");
@@ -228,7 +228,7 @@ fn test_array_element_whitelists_agree() {
 fn test_addr_of_param() {
     let src = r#"
 fn set1(p: Ptr) {
-    p.write(0, 1);
+    unsafe { p.write(0, 1) };
 }
 fn choose(x: u16, y: u16) -> u16 {
     let mut z: u16 = x;
@@ -252,19 +252,19 @@ fn test_ptr_ops_full() {
 fn main() {
     // a scratch area high enough to clear the data section (no statics here)
     let base = Ptr::from_addr(0x100);
-    base.write(0, 11);
-    base.write(1, 22);
-    base.write(2, 33);
+    unsafe { base.write(0, 11) };
+    unsafe { base.write(1, 22) };
+    unsafe { base.write(2, 33) };
     // addr() feeds back into from_addr
     let end = Ptr::from_addr(base.addr() + 2);
-    let a = end.read(0); // base[2]
+    let a = unsafe { end.read(0) }; // base[2]
     // add() with a literal and with a (negative) i16 variable
-    let b = base.add(1).read(0);
+    let b = unsafe { base.add(1).read(0) };
     let back: i16 = -1;
-    let c = end.add(back).read(0); // base[1]
+    let c = unsafe { end.add(back).read(0) }; // base[1]
     // write through an offset pointer
-    end.write(0, a + b);
-    halt(end.read(0) + c);
+    unsafe { end.write(0, a + b) };
+    halt(unsafe { end.read(0) } + c);
 }
 "#;
     // host-side simulation of the same word accesses
@@ -289,7 +289,7 @@ fn main() {
     let q = Ptr::from_addr(p.addr());
     // from_addr on a computed address lands on element 2
     let r = Ptr::from_addr(G.as_ptr().addr() + 2);
-    halt(q.read(0) + q.read(1) + r.read(0));
+    halt(unsafe { q.read(0) } + unsafe { q.read(1) } + unsafe { r.read(0) });
 }
 "#;
     let g = [111u16, 222, 333];
@@ -331,8 +331,8 @@ fn main() {
     let mut a: Buf<u16, 4> = Buf::new([1, 2, 3, 4]);
     let p = a.as_ptr();
     // raw pointer writes land in the array's frame slots
-    p.write(0, p.read(3) + 10);
-    p.add(1).write(1, p.read(0)); // a[2] = a[0]
+    unsafe { p.write(0, p.read(3) + 10) };
+    unsafe { p.add(1).write(1, p.read(0)) }; // a[2] = a[0]
     halt(a.read(0) + a.read(1) + a.read(2) + a.read(3));
 }
 "#;
@@ -368,7 +368,7 @@ static B: Buf<u16, 4> = Buf::new([10, 0, 30, 40]); // addr 1..=4 (B[1] is zero: 
 static C: i16 = -2;                   // addr 5 (raw sign bits)
 static D: Buf<u16, 3> = Buf::new([0; 3]);          // addr 6..=8 (all zero: nothing stored)
 fn main() {
-    addr_of(&A).write(0, A + 1);
+    unsafe { addr_of(&A).write(0, A + 1) };
     halt(0);
 }
 "#;
@@ -416,9 +416,9 @@ static SCORE: u16 = 100;
 static TICK: i16 = -7;
 fn main() {
     // reading a static loads the word; writing goes through its address
-    addr_of(&SCORE).write(0, SCORE + 23);
+    unsafe { addr_of(&SCORE).write(0, SCORE + 23) };
     let t: i16 = TICK + 3;
-    addr_of(&TICK).write(0, t as u16);
+    unsafe { addr_of(&TICK).write(0, t as u16) };
     assert(TICK == -4, 1);
     halt(SCORE);
 }
@@ -460,9 +460,9 @@ fn main() {
 fn test_addr_of_local_swap() {
     let src = r#"
 fn swap(a: Ptr, b: Ptr) {
-    let t = a.read(0);
-    a.write(0, b.read(0));
-    b.write(0, t);
+    let t = unsafe { a.read(0) };
+    unsafe { a.write(0, b.read(0)) };
+    unsafe { b.write(0, t) };
 }
 fn main() {
     let mut x: u16 = 3;
@@ -483,8 +483,8 @@ fn test_addr_of_param_copy() {
 fn bump_twice(v: u16) -> u16 {
     // an address-taken param is copied into the callee's frame at entry
     let p = addr_of(&v);
-    p.write(0, p.read(0) + 1);
-    p.write(0, p.read(0) + 1);
+    unsafe { p.write(0, p.read(0) + 1) };
+    unsafe { p.write(0, p.read(0) + 1) };
     v
 }
 fn main() {
@@ -506,7 +506,7 @@ fn sum_at(p: Ptr, n: u16) -> u16 {
     let mut s: u16 = 0;
     let mut i: u16 = 0;
     while i < n {
-        s += p.add(i as i16).read(0);
+        s += unsafe { p.add(i as i16).read(0) };
         i += 1;
     }
     s
@@ -573,10 +573,10 @@ fn sort(p: Ptr, n: u16) {
         while j + 1 < n - i {
             let a = p.add(j as i16);
             let b = a.add(1);
-            if a.read(0) > b.read(0) {
-                let t = a.read(0);
-                a.write(0, b.read(0));
-                b.write(0, t);
+            if unsafe { a.read(0) } > unsafe { b.read(0) } {
+                let t = unsafe { a.read(0) };
+                unsafe { a.write(0, b.read(0)) };
+                unsafe { b.write(0, t) };
             }
             j += 1;
         }

@@ -75,7 +75,6 @@ try {
                 "-p", "cpu-v3-tang-nano-20k",
                 "--test", "bench_emu",
                 "tests::benchmark_suite::run_benchmark_directory",
-                "--release",
                 "--", "--ignored", "--exact", "--nocapture"
             )
         if ($LASTEXITCODE -ne 0) {

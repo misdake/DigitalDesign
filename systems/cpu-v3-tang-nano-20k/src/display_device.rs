@@ -17,6 +17,11 @@ pub const DISPLAY_FRAMEBUFFER_HIGH: u8 = 2;
 /// Read: status bits described by the constants below. Write: a display
 /// command such as [`DISPLAY_NEXT_SWAP`].
 pub const DISPLAY_CONTROL: u8 = 3;
+/// Read active format; write staged format. Bit 0 selects linear RGB565.
+/// NEXT_SWAP snapshots this bit together with the framebuffer address.
+pub const DISPLAY_COLOR_FORMAT: u8 = 4;
+pub const DISPLAY_RGB565: u16 = 0;
+pub const DISPLAY_LINEAR_RGB565: u16 = 1;
 
 /// Atomically publish the staged framebuffer address for the next vblank.
 pub const DISPLAY_NEXT_SWAP: u16 = 1;
@@ -35,6 +40,9 @@ pub struct DisplayDevice {
     active_base: Cell<u32>,
     shadow_base: Cell<u32>,
     pending_base: Cell<u32>,
+    active_linear: Cell<bool>,
+    shadow_linear: Cell<bool>,
+    pending_linear: Cell<bool>,
     low_written: Cell<bool>,
     high_written: Cell<bool>,
     pending: Cell<bool>,
@@ -51,6 +59,9 @@ impl Default for DisplayDevice {
             active_base: Cell::new(FRAMEBUFFER_A_BASE_WORD),
             shadow_base: Cell::new(FRAMEBUFFER_A_BASE_WORD),
             pending_base: Cell::new(FRAMEBUFFER_A_BASE_WORD),
+            active_linear: Cell::new(false),
+            shadow_linear: Cell::new(false),
+            pending_linear: Cell::new(false),
             low_written: Cell::new(false),
             high_written: Cell::new(false),
             pending: Cell::new(false),
@@ -82,6 +93,10 @@ impl DisplayDevice {
         self.pending.get()
     }
 
+    pub fn linear_rgb565(&self) -> bool {
+        self.active_linear.get()
+    }
+
     pub fn waiting_for_vblank(&self) -> bool {
         self.waiting_for_vblank.get()
     }
@@ -94,6 +109,7 @@ impl DisplayDevice {
         let swap_applied = self.pending.replace(false);
         if swap_applied {
             self.active_base.set(self.pending_base.get());
+            self.active_linear.set(self.pending_linear.get());
         }
         swap_applied
     }
@@ -107,6 +123,7 @@ impl DisplayDevice {
         self.high_written.set(false);
         if base & 0xf == 0 && base <= MAX_FRAMEBUFFER_BASE {
             self.pending_base.set(base);
+            self.pending_linear.set(self.shadow_linear.get());
             self.pending.set(true);
         } else {
             self.invalid_address.set(true);
@@ -143,6 +160,7 @@ impl Device for DisplayDevice {
             DISPLAY_FRAMEBUFFER_LOW => self.active_base.get() as u16,
             DISPLAY_FRAMEBUFFER_HIGH => (self.active_base.get() >> 16) as u16,
             DISPLAY_CONTROL => self.status(),
+            DISPLAY_COLOR_FORMAT => u16::from(self.active_linear.get()),
             _ => 0,
         }
     }
@@ -162,6 +180,7 @@ impl Device for DisplayDevice {
                 self.invalid_address.set(false);
             }
             DISPLAY_CONTROL if value == DISPLAY_NEXT_SWAP => self.submit_swap(),
+            DISPLAY_COLOR_FORMAT => self.shadow_linear.set(value & 1 != 0),
             _ => (),
         }
     }
@@ -177,6 +196,24 @@ mod tests {
 
     fn write(device: &mut DisplayDevice, channel: u8, value: u16) {
         device.write(&mut [], channel, value);
+    }
+
+    #[test]
+    fn color_format_is_snapshotted_and_applied_with_the_base() {
+        let mut device = DisplayDevice::default();
+        write(&mut device, DISPLAY_COLOR_FORMAT, DISPLAY_LINEAR_RGB565);
+        write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x8000);
+        write(&mut device, DISPLAY_FRAMEBUFFER_HIGH, 0x0021);
+        write(&mut device, DISPLAY_CONTROL, DISPLAY_NEXT_SWAP);
+        write(&mut device, DISPLAY_COLOR_FORMAT, DISPLAY_RGB565);
+        assert!(!device.linear_rgb565());
+        device.advance_frame();
+        assert!(device.linear_rgb565());
+        assert_eq!(device.active_base(), 0x0021_8000);
+        assert_eq!(
+            device.read(&mut [], DISPLAY_COLOR_FORMAT),
+            DISPLAY_LINEAR_RGB565
+        );
     }
 
     #[test]
