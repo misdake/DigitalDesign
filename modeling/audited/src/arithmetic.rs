@@ -5,6 +5,7 @@ use super::*;
 
 impl Frame<'_> {
     /// Same-format helpers infer the result format without adding an event layer.
+    #[track_caller]
     pub fn add_same<const B: u32, const F: u32, const S: bool>(
         &self,
         a: Fixed<B, F, S>,
@@ -12,6 +13,7 @@ impl Frame<'_> {
     ) -> Result<Fixed<B, F, S>, Fault> {
         self.add(a, b)
     }
+    #[track_caller]
     pub fn sub_same<const B: u32, const F: u32, const S: bool>(
         &self,
         a: Fixed<B, F, S>,
@@ -19,6 +21,7 @@ impl Frame<'_> {
     ) -> Result<Fixed<B, F, S>, Fault> {
         self.sub(a, b)
     }
+    #[track_caller]
     fn typed<const B: u32, const F: u32, const S: bool>(
         &self,
         v: Operand,
@@ -31,6 +34,7 @@ impl Frame<'_> {
             origin: v.origin,
         })
     }
+    #[track_caller]
     fn binary(
         &self,
         a: Operand,
@@ -63,6 +67,7 @@ impl Frame<'_> {
             raw,
         )
     }
+    #[track_caller]
     pub fn add<const B: u32, const F: u32, const S: bool>(
         &self,
         a: impl FixedValue,
@@ -70,6 +75,7 @@ impl Frame<'_> {
     ) -> Result<Fixed<B, F, S>, Fault> {
         self.typed(self.binary(a.operand(), b.operand(), Fixed::<B, F, S>::FORMAT, false)?)
     }
+    #[track_caller]
     pub fn sub<const B: u32, const F: u32, const S: bool>(
         &self,
         a: impl FixedValue,
@@ -77,6 +83,7 @@ impl Frame<'_> {
     ) -> Result<Fixed<B, F, S>, Fault> {
         self.typed(self.binary(a.operand(), b.operand(), Fixed::<B, F, S>::FORMAT, true)?)
     }
+    #[track_caller]
     fn resize(&self, a: Operand, format: Format) -> Result<Operand, Fault> {
         if a.format.fraction != format.fraction {
             return self.fail(Fault::Format);
@@ -85,6 +92,7 @@ impl Frame<'_> {
         // Legal values use wiring. A failed check invalidates the entire frame.
         self.dynamic(Operation::Resize, None, &[a], format, a.bits)
     }
+    #[track_caller]
     pub fn resize_exact<const B: u32, const F: u32, const S: bool>(
         &self,
         a: impl FixedValue,
@@ -92,6 +100,7 @@ impl Frame<'_> {
         self.typed(self.resize(a.operand(), Fixed::<B, F, S>::FORMAT)?)
     }
     /// A statically chosen power-of-two scale, represented by the binary point.
+    #[track_caller]
     pub fn binary_scale<const B: u32, const F: u32, const S: bool>(
         &self,
         a: impl FixedValue,
@@ -103,12 +112,14 @@ impl Frame<'_> {
         }
         self.typed(self.dynamic(Operation::BinaryScale, None, &[a], out, a.bits)?)
     }
+    #[track_caller]
     pub fn shift_left_const<const SHIFT: u32, const B: u32, const F: u32, const S: bool>(
         &self,
         a: Fixed<B, F, S>,
     ) -> Result<Fixed<B, F, S>, Fault> {
         self.typed(self.left_shift(a.operand(), SHIFT)?)
     }
+    #[track_caller]
     fn left_shift(&self, a: Operand, shift: u32) -> Result<Operand, Fault> {
         if shift >= 127 {
             return self.fail(Fault::Format);
@@ -120,6 +131,7 @@ impl Frame<'_> {
     }
     /// Positive amount shifts left; negative shifts right (arithmetic for signed data).
     /// This is a clocked variable shifter, never classified as static wiring.
+    #[track_caller]
     pub fn shift<const B: u32, const F: u32, const S: bool>(
         &self,
         a: Fixed<B, F, S>,
@@ -146,6 +158,7 @@ impl Frame<'_> {
         )?)
     }
     /// Unsigned leading-zero detector. Zero has B leading zeros; a caller may guard it.
+    #[track_caller]
     pub fn leading_zeros<const B: u32, const F: u32>(
         &self,
         a: Fixed<B, F, false>,
@@ -166,6 +179,7 @@ impl Frame<'_> {
     /// Normalize positive U18 data to a Q16 mantissa and a signed binary exponent.
     /// The top-bit case discards one low bit; all other cases are exact wiring shifts.
     /// Every check, leading-zero count, exponent add/sub and dynamic shift is audited.
+    #[track_caller]
     pub fn normalize_positive<const F: u32>(
         &self,
         a: Fixed<18, F, false>,
@@ -177,12 +191,14 @@ impl Frame<'_> {
         let exponent = self.sub_same(Fixed::<18, F, false>::MSB_EXPONENT, zeros)?;
         Ok((mantissa, exponent))
     }
+    #[track_caller]
     pub fn slice<const B: u32, const F: u32, const S: bool, const LOW: u32>(
         &self,
         a: impl FixedValue,
     ) -> Result<Fixed<B, F, S>, Fault> {
         self.typed(self.slice_value(a.operand(), Fixed::<B, F, S>::FORMAT, LOW)?)
     }
+    #[track_caller]
     fn slice_value(&self, a: Operand, out: Format, low: u32) -> Result<Operand, Fault> {
         if !out.valid() || low + out.bits > a.format.bits {
             return self.fail(Fault::Format);
@@ -195,6 +211,7 @@ impl Frame<'_> {
         };
         self.dynamic(Operation::Slice(low), None, &[a], out, raw)
     }
+    #[track_caller]
     fn physical_product(
         &self,
         a: Operand,
@@ -221,6 +238,7 @@ impl Frame<'_> {
     }
     /// A logical product always records its actual DSP lowering.
     /// Native18Pair includes two DSP returns, shift wiring and a counted wide add.
+    #[track_caller]
     pub fn mul<const B: u32, const F: u32, const S: bool>(
         &self,
         a: impl FixedValue,
@@ -313,6 +331,7 @@ impl Frame<'_> {
     /// Infer output type from a typed destination; choose a fully counted lowering.
     /// Narrow x narrow uses one DSP18, wide x narrow uses two DSP18 returns,
     /// and wide x wide uses one DSP36. Explicit `mul` still overrides the route.
+    #[track_caller]
     pub fn product<const B: u32, const F: u32, const S: bool>(
         &self,
         a: impl FixedValue,
@@ -332,6 +351,7 @@ impl Frame<'_> {
         };
         self.mul(a, b, route)
     }
+    #[track_caller]
     pub fn less(
         &self,
         a: impl FixedValue,
@@ -351,6 +371,7 @@ impl Frame<'_> {
             i128::from(a.bits < b.bits),
         )?)
     }
+    #[track_caller]
     pub fn select<const B: u32, const F: u32, const S: bool>(
         &self,
         p: Fixed<1, 0, false>,
@@ -369,6 +390,7 @@ impl Frame<'_> {
     /// Fixed-format ties-even rounding: explicit bit wiring and round control,
     /// followed by a counted adder (including +0) and checked final narrowing.
     /// A guard bit is retained whenever the source domain can cross an output edge.
+    #[track_caller]
     pub fn round_to<const B: u32, const F: u32, const S: bool>(
         &self,
         a: impl FixedValue,
@@ -417,5 +439,78 @@ impl Frame<'_> {
         )?;
         let rounded = self.binary(floor, increment, intermediate, false)?;
         self.typed(self.resize(rounded, out)?)
+    }
+
+    /// Arithmetic floor to a binary point, with checked narrowing. Static
+    /// rescaling is wiring; signed negative values round toward minus infinity.
+    #[track_caller]
+    pub fn floor_to<const B: u32, const F: u32, const S: bool>(
+        &self,
+        a: impl FixedValue,
+    ) -> Result<Fixed<B, F, S>, Fault> {
+        let a = a.operand();
+        if a.format.fraction < F {
+            return self.fail(Fault::Format);
+        }
+        let shift = a.format.fraction - F;
+        if shift == 0 {
+            return self.resize_exact(a);
+        }
+        if shift >= 127 {
+            return self.fail(Fault::Format);
+        }
+        self.typed(self.dynamic(
+            Operation::RescaleFloor(shift),
+            None,
+            &[a],
+            Fixed::<B, F, S>::FORMAT,
+            a.bits >> shift,
+        )?)
+    }
+
+    /// Nearest rounding with ties toward positive infinity. A static guard-bit
+    /// slice and a counted narrow increment implement it; no sticky detector.
+    #[track_caller]
+    pub fn half_up_to<const B: u32, const F: u32, const S: bool>(
+        &self,
+        a: impl FixedValue,
+    ) -> Result<Fixed<B, F, S>, Fault> {
+        let a = a.operand();
+        if a.format.fraction < F {
+            return self.fail(Fault::Format);
+        }
+        let shift = a.format.fraction - F;
+        if shift == 0 {
+            return self.resize_exact(a);
+        }
+        if shift >= 127 {
+            return self.fail(Fault::Format);
+        }
+        let signed = a.format.signed || S;
+        let needed =
+            a.format.bits.saturating_sub(shift).max(1) + u32::from(!a.format.signed && signed);
+        let intermediate = Format {
+            bits: B + u32::from(needed > B),
+            fraction: F,
+            signed,
+        };
+        let floor = self.dynamic(
+            Operation::RescaleFloor(shift),
+            None,
+            &[a],
+            intermediate,
+            a.bits >> shift,
+        )?;
+        let guard = self.slice_value(
+            a,
+            Format {
+                bits: 1,
+                fraction: F,
+                signed: false,
+            },
+            shift - 1,
+        )?;
+        let rounded = self.binary(floor, guard, intermediate, false)?;
+        self.typed(self.resize(rounded, Fixed::<B, F, S>::FORMAT)?)
     }
 }

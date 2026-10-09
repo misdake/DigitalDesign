@@ -357,13 +357,34 @@ fn actual_scalar_terminal_fault_width_empty_and_invalid_tap() {
 }
 #[test]
 fn dynamic_counted_guard_rejects_both_helpers_and_restores_compile_scope() {
-    for which in 0..2 {
+    let q = crate::texture::ports::QuadInput {
+        force_coarsest: false,
+        quad_id: 0,
+        mask: 1,
+        uv: [[0.0, 0.0]; 4],
+        slot: 0,
+        material_size_log2: 1,
+        filter: crate::texture::ports::Filter::Nearest,
+        lod_bias: 0.0,
+    };
+    let slot = crate::texture::ports::Slot {
+        base_address: 4096,
+        max_size_log2: 1,
+        has_full_mip: false,
+        valid: true,
+    };
+    let d = super::super::derivatives(&q, slot).unwrap();
+    for which in 0..4 {
         assert!(std::panic::catch_unwind(|| {
             let _scope = super::counted_call_guard::Scope::enter();
             if which == 0 {
                 let _ = super::membership_values([1, 0, 0, 0], [0; 4], [0; 3], 0, [1, 1]);
-            } else {
+            } else if which == 1 {
                 let _ = super::packet_values(|_| 0, 0);
+            } else if which == 2 {
+                let _ = super::super::derivatives(&q, slot);
+            } else {
+                let _ = super::super::lod(&d);
             }
         })
         .is_err());

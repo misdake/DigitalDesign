@@ -80,6 +80,8 @@ pub struct Event {
     /// The preceding branch/guard event, independent of optional cycle timing.
     pub control: Option<usize>,
     pub output: Option<ValueId>,
+    /// The kernel call site, independent of numerical and scheduling semantics.
+    pub source: &'static std::panic::Location<'static>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValueRecord {
@@ -87,6 +89,8 @@ pub struct ValueRecord {
     pub raw: i128,
     pub ready_cycle: u64,
     pub producer: usize,
+    /// Optional source-level name; presentation metadata, never a new event.
+    pub name: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct Observation {
@@ -899,10 +903,12 @@ pub struct Frame<'a> {
     state: RefCell<State>,
 }
 impl Frame<'_> {
+    #[track_caller]
     pub(super) fn fail<T>(&self, fault: Fault) -> Result<T, Fault> {
         self.state.borrow_mut().faults.push(fault.clone());
         Err(fault)
     }
+    #[track_caller]
     pub(super) fn resolve(&self, v: impl FixedValue) -> Result<(ValueId, Operand), Fault> {
         let v = v.operand();
         match v.origin {
@@ -941,6 +947,7 @@ impl Frame<'_> {
             }
         }
     }
+    #[track_caller]
     pub(super) fn emit(
         &self,
         op: Operation,
@@ -972,6 +979,7 @@ impl Frame<'_> {
                 raw,
                 ready_cycle: ready,
                 producer: id,
+                name: None,
             });
             value
         });
@@ -985,6 +993,7 @@ impl Frame<'_> {
             inputs: inputs.to_vec(),
             control: state.control,
             output: value,
+            source: std::panic::Location::caller(),
         };
         let stores = self.model.stores.borrow();
         count_event(&mut state.counts, &event, |memory| {
@@ -993,6 +1002,7 @@ impl Frame<'_> {
         state.events.push(event);
         Ok(value)
     }
+    #[track_caller]
     pub(super) fn value<const B: u32, const F: u32, const S: bool>(
         &self,
         op: Operation,
@@ -1014,6 +1024,7 @@ impl Frame<'_> {
             },
         })
     }
+    #[track_caller]
     pub(super) fn dynamic(
         &self,
         op: Operation,
@@ -1038,6 +1049,7 @@ impl Frame<'_> {
             },
         })
     }
+    #[track_caller]
     fn check_memory<const B: u32, const F: u32, const S: bool>(
         &self,
         m: &Memory<B, F, S>,
@@ -1051,6 +1063,7 @@ impl Frame<'_> {
         }
         Ok(())
     }
+    #[track_caller]
     fn resolve_address<const B: u32, const F: u32, const S: bool>(
         &self,
         address: Address<B, F, S>,
@@ -1071,6 +1084,7 @@ impl Frame<'_> {
         }
     }
     /// Data format, storage and address dependencies come from the typed location.
+    #[track_caller]
     pub fn read<const B: u32, const F: u32, const S: bool>(
         &self,
         address: Address<B, F, S>,
@@ -1078,6 +1092,7 @@ impl Frame<'_> {
         let (m, row, inputs) = self.resolve_address(address)?;
         self.read_row(&m, row, &inputs)
     }
+    #[track_caller]
     fn read_row<const B: u32, const F: u32, const S: bool>(
         &self,
         m: &Memory<B, F, S>,
@@ -1113,6 +1128,7 @@ impl Frame<'_> {
             .or_insert(ready);
         Ok(value)
     }
+    #[track_caller]
     pub fn write<const B: u32, const F: u32, const S: bool>(
         &self,
         address: Address<B, F, S>,
@@ -1148,12 +1164,24 @@ impl Frame<'_> {
         self.model.stores.borrow_mut()[m.id].cells[row] = Some(v.bits);
         Ok(())
     }
+    /// Attach a source variable name without emitting work or materializing literals.
+    #[track_caller]
+    pub fn name_value(&self, name: &str, value: impl FixedValue) -> Result<(), Fault> {
+        if matches!(value.operand().origin, Origin::Constant) {
+            return Ok(());
+        }
+        let (id, _) = self.resolve(value)?;
+        self.state.borrow_mut().values[id].name = Some(name.into());
+        Ok(())
+    }
+    #[track_caller]
     pub fn publish(&self, name: &str, value: impl FixedValue) -> Result<(), Fault> {
         let (id, _) = self.resolve(value)?;
         self.emit(Operation::Publish(name.into()), None, &[id], None, 0)?;
         self.state.borrow_mut().outputs.push((name.into(), id));
         Ok(())
     }
+    #[track_caller]
     pub fn require<const EXPECTED: bool>(&self, p: Fixed<1, 0, false>) -> Result<(), Fault> {
         let (id, value) = self.resolve(p)?;
         if (value.bits != 0) != EXPECTED {
@@ -1165,6 +1193,7 @@ impl Frame<'_> {
         state.control = Some(state.events.last().unwrap().id);
         Ok(())
     }
+    #[track_caller]
     fn branch_decision(&self, p: Fixed<1, 0, false>) -> Result<bool, Fault> {
         let (id, value) = self.resolve(p)?;
         let taken = value.bits != 0;
@@ -1176,6 +1205,7 @@ impl Frame<'_> {
     }
     /// Execute and count only the selected path; false is a normal algorithm result.
     /// No host predicate or raw data escapes the computation boundary.
+    #[track_caller]
     pub fn branch(
         &self,
         p: Fixed<1, 0, false>,
@@ -1192,6 +1222,7 @@ impl Frame<'_> {
             Err(fault) => self.fail(fault),
         }
     }
+    #[track_caller]
     pub fn branch_value<const B: u32, const F: u32, const S: bool>(
         &self,
         p: Fixed<1, 0, false>,
@@ -1211,6 +1242,7 @@ impl Frame<'_> {
         self.resize_exact(value)
     }
     /// Consume the computation boundary before exposing host integers.
+    #[track_caller]
     pub fn finish(self) -> FrameReport {
         let state = self.state.into_inner();
         let memories = self

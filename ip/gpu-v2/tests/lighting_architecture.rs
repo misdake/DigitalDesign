@@ -39,7 +39,7 @@ fn exact_dataflow_and_prepared_ray_preserve_every_stage() {
 fn diffuse_is_a_genuinely_smaller_one_pixel_per_cycle_calendar() {
     let p = PixelInput {
         normal: [32767, -32768, 17],
-        ndc: [65536, -65536],
+        ndc: [16384, -16384],
     };
     let h = Hardware {
         kernel: counted::Config::architecture(),
@@ -103,8 +103,8 @@ fn diffuse_is_a_genuinely_smaller_one_pixel_per_cycle_calendar() {
 }
 #[test]
 fn prepared_ray_golden_matches_independent_ndc_equations_at_boundaries() {
-    for x in [-65536, -65535, -1, 0, 1, 65535, 65536] {
-        for y in [-65536, 0, 65536] {
+    for x in [-16384, -16383, -1, 0, 1, 16383, 16384] {
+        for y in [-16384, 0, 16384] {
             let p = PixelInput {
                 normal: [0, 0, 16384],
                 ndc: [x, y],
@@ -137,7 +137,7 @@ fn prepared_ray_golden_matches_independent_ndc_equations_at_boundaries() {
 fn exact_shared_half_has_checked_key_and_variable_normals() {
     let pixel = PixelInput {
         normal: [0, 0, 16384],
-        ndc: [12345, -45678],
+        ndc: [3086, -11420],
     };
     let c = counted::Config::architecture();
     let half =
@@ -185,7 +185,7 @@ fn exact_shared_half_has_checked_key_and_variable_normals() {
     }
     assert!(counted::evaluate_reusing_half(
         PixelInput {
-            ndc: [12346, -45678],
+            ndc: [3087, -11420],
             ..pixel
         },
         Material::default(),
@@ -237,7 +237,7 @@ fn bounded_stream_preserves_ids_contexts_ce_and_outputs_across_modes() {
                 100 + i,
                 PixelInput {
                     normal: [7123, -519, 13567],
-                    ndc: [(i as i32 * 3000) % 131073 - 65536, 0],
+                    ndc: [((i as i32 * 3000) % 131073 - 65536) / 4, 0],
                 },
                 if !(8..56).contains(&i) { 0 } else { 1 },
             )
@@ -334,7 +334,7 @@ fn seeded_dataflow_vectors_and_cone_certificates_are_independent() {
     for _ in 0..128 {
         let p = PixelInput {
             normal: std::array::from_fn(|_| random.next() as i16),
-            ndc: std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536),
+            ndc: std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384),
         };
         let l = Light {
             direction: random.direction(),
@@ -362,7 +362,7 @@ fn seeded_dataflow_vectors_and_cone_certificates_are_independent() {
     }
     let p = PixelInput {
         normal: [7123, -519, 13567],
-        ndc: [23156, 12567],
+        ndc: [5789, 3142],
     };
     let h = Hardware::lighting_architecture_ii2();
     let plan = plan(
@@ -411,11 +411,11 @@ fn seeded_dataflow_vectors_and_cone_certificates_are_independent() {
 }
 
 #[test]
-fn q30_scan_accumulator_replaces_per_pixel_multiply_without_drift() {
-    for step in [-2048, 0, 2048] {
+fn q28_scan_accumulator_replaces_per_pixel_multiply_without_drift() {
+    for step in [-512, 0, 512] {
         let seed = PixelInput {
             normal: [0; 3],
-            ndc: [if step < 0 { 65536 } else { -65536 }, 12345],
+            ndc: [(if step < 0 { 65536 } else { -65536 }) / 4, 3086],
         };
         let (rays, report) =
             counted::scanline_rays(seed, step, 64, Projection::default(), 2048).unwrap();
@@ -435,7 +435,7 @@ fn q30_scan_accumulator_replaces_per_pixel_multiply_without_drift() {
     }
     let seed = PixelInput {
         normal: [0; 3],
-        ndc: [65536, 0],
+        ndc: [16384, 0],
     };
     assert!(counted::scanline_rays(seed, 1, 2, Projection::default(), 128).is_err());
 }
@@ -451,7 +451,7 @@ fn flat_triangle_shares_n_nl_d_and_g_with_a_checked_owner() {
         let c = counted::Config::architecture();
         let flat = counted::prepare_flat(normal, Light::default(), 2048, c).unwrap();
         flat.frame().audit().unwrap();
-        for ndc in [[0, 0], [-65536, 65536], [12345, -45678]] {
+        for ndc in [[0, 0], [-16384, 16384], [3086, -11420]] {
             let p = PixelInput { normal, ndc };
             let full = counted::evaluate_with_config(
                 p,

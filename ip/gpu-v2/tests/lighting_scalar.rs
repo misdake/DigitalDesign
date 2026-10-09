@@ -12,7 +12,7 @@ fn bounded_block_prescale_preserves_all_published_stage_values() {
         cases.push((
             PixelInput {
                 normal: std::array::from_fn(|_| random.next() as i16),
-                ndc: std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536),
+                ndc: std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384),
             },
             Material {
                 shininess_code: (i % 17) as u8,
@@ -84,7 +84,7 @@ fn scalar_expression_matches_independent_oracle_and_measures_output_error() {
         };
         let pixel = PixelInput {
             normal: std::array::from_fn(|_| random.next() as i16),
-            ndc: std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536),
+            ndc: std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384),
         };
         let material = Material {
             shininess_code: (i % 17) as u8,
@@ -112,7 +112,7 @@ fn scalar_expression_matches_independent_oracle_and_measures_output_error() {
                 cases.push((
                     PixelInput {
                         normal: [-magnitude, 1, -1],
-                        ndc: [coordinate * 32, 0],
+                        ndc: [(coordinate * 32) / 4, 0],
                     },
                     Material {
                         shininess_code: code,

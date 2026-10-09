@@ -196,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut highlight = Vec::new();
     for index in 0..32768 {
         let normal = std::array::from_fn(|_| random.next() as i16);
-        let ndc = std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536);
+        let ndc = std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384);
         let light = Light {
             direction: random.unit(),
             ambient: 32,

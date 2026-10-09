@@ -11,6 +11,7 @@ pub fn slot(n: u8, mip: bool) -> Slot {
 }
 pub fn input(n: u8, filter: Filter, uv: [f64; 2]) -> QuadInput {
     QuadInput {
+        force_coarsest: false,
         quad_id: 3,
         mask: 15,
         uv: [uv; 4],

@@ -36,6 +36,7 @@ fn fixture() -> (Vec<Slot>, Vec<u8>) {
 }
 fn input(id: u8, mask: u8, uv: [f64; 2], filter: Filter) -> QuadInput {
     let mut q = QuadInput {
+        force_coarsest: false,
         quad_id: id,
         mask,
         uv: [uv; 4],
@@ -85,8 +86,8 @@ fn golden(q: &QuadInput) -> Vec<color::Output> {
             let nearest = q.filter == Filter::Nearest;
             let mut axes = [(0_i32, 0_u32); 2];
             for (a, axis) in axes.iter_mut().enumerate() {
-                let uv = ((q.uv[lane][a] * 262144.0).round_ties_even() as i64).rem_euclid(262144);
-                let coord = (uv * (1 << n) * 256 / 262144) as i32 - if nearest { 0 } else { 128 };
+                let uv = ((q.uv[lane][a] * 65536.0).round_ties_even() as i64).rem_euclid(65536);
+                let coord = (uv * (1 << n) * 256 / 65536) as i32 - if nearest { 0 } else { 128 };
                 *axis = (
                     coord.div_euclid(256),
                     if nearest {

@@ -20,7 +20,7 @@ fn system_expressions_match_independent_stages_and_report_error_classes() {
         };
         let mut pixel = PixelInput {
             normal: std::array::from_fn(|_| random.next() as i16),
-            ndc: std::array::from_fn(|_| (random.next() % 131073) as i32 - 65536),
+            ndc: std::array::from_fn(|_| (random.next() % 32769) as i32 - 16384),
         };
         let material = Material {
             shininess_code: (i % 17) as u8,
@@ -80,7 +80,7 @@ fn system_expressions_match_independent_stages_and_report_error_classes() {
                 (
                     PixelInput {
                         normal: [16384, 0, 0],
-                        ndc: [x * 32, 0],
+                        ndc: [(x * 32) / 4, 0],
                     },
                     Material {
                         shininess_code: code,

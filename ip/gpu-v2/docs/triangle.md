@@ -15,6 +15,14 @@ per-sample linear solve. Clip/interpolation arithmetic uses CPU `f64`; coverage,
 source cofactors and pixel field goldens use `i128`. This is a precision study,
 not a frozen fixed-point or physical performance contract.
 
+The selected source normal is S(12,10). Its host `i16` container does not permit
+sixteen-bit normal codes. Default interpolation UV diagnostics use F16; source
+UNORM12 UV continues to divide by4095. Other `attribute_fraction` configurations
+remain explicit reference experiments. Normal diagnostics expose F10 codes in
+`i32`, including helper extrapolation; the real pixel ingress RNE/saturates to
+S(12,10). UV ingress rejects out-of-range covered lanes and explicitly forces
+coarsest LOD for abnormal uncovered helpers; see [texture](texture.md).
+
 ```mermaid
 flowchart LR
     A[Owned transformed vertices] --> B[Clip XYW geometry]
@@ -30,7 +38,7 @@ flowchart LR
 
 ## Geometry and coverage
 
-- Inputs: clip XYZW signed Q16, normal signed Q14, UV **UNORM12 /4095**, RGB565.
+- Inputs: clip XYZW signed Q16, normal signed S(12,10), UV **UNORM12 /4095**, RGB565.
   Geometry uses **XYW**. Z is deliberately ignored: depth is uniform W, not clip Z.
 - Clip order: W >= near, +X, -X, +Y, -Y, with guard `abs(X/Y) <= 2^g*W`.
   Defaults are near `8199/65536`, far 200, g=3, viewport 400x240, Q4 snap.
@@ -120,11 +128,12 @@ it is not the eventual fixed-point accumulator contract.
 
 ## Samples, knobs and independent checks
 
-UV remains unwrapped and signed at the oracle output; default quantization is
-Q17. RGB clamps at RGB565 conversion. Normal remains unnormalized signed Q14 in
-an **i32** diagnostic result: extrapolated normals are not silently narrowed to
-lighting's i16 input. A future bridge must prove a range or uniformly rescale
-the direction before narrowing. Depth is
+UV remains unwrapped and signed at the oracle output; default diagnostic
+quantization is F16. RGB clamps at RGB565 conversion. Normal remains
+unnormalized F10 in an **i32** diagnostic result: extrapolated helpers are not
+silently narrowed to twelve bits. The actual covered, lit ingress quantizes
+to S(12,10) and counts explicit saturation. A future N/w shortcut must uniformly
+rescale before narrowing. Depth is
 `RNE(clamp((w-near)/(far-near),0,1)*65535)`.
 
 Knobs include viewport, near/far, power-of-two guard, subpixel precision,
@@ -233,11 +242,14 @@ This is a future interface alternative, not an implemented lighting connection.
 
 Constant channels can remove products and stored coefficients, and exact flat
 normal/material/light work can be prepared once as demonstrated by lighting.
-Source base/delta attributes can remain in code units: normal150 + UV76 + RGB54
-= **280 bits**, instead of raising all 24 values to one broad format. Constant
-code conversion is still work. Inclusive Q17 UV=1 has raw131072; its positive
-delta does **not** fit signed18. Signed beta also needs an explicit extrapolation
-range; a storage type that covers [0,1] does not cover every snapped sample.
+The historical Q14-normal/Q17 study retained source base/delta attributes in
+code units: normal150 + UV76 + RGB54 = **280 bits**, instead of raising all 24
+values to one broad format. This was a proposed source-record layout, not the
+current vertex store. Constant code conversion is still work. Its inclusive
+Q17 UV=1 raw131072 did not fit signed18. The selected F16 boundary now represents
+UV=1 as65536 in signed18. Signed beta still needs an explicit extrapolation
+range; the selected helper flag handles abnormal UV, rather than assuming a
+storage type covering [0,1] covers every snapped sample.
 
 The largest remaining concern is preparation width and conditioning. The oracle
 keeps exact raw cofactors/determinants; coefficient quantization happens after

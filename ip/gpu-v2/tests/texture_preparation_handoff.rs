@@ -49,7 +49,7 @@ fn field(word: i128, shift: u32, bits: u32) -> u32 {
 }
 
 #[test]
-fn accepted_q18_ties_at_1024_repeat_edge_survive_caller_mutation_and_ce_stalls() {
+fn accepted_q16_ties_at_1024_repeat_edge_survive_caller_mutation_and_ce_stalls() {
     let slot = support::slot(10, true);
     let bytes = support::asset(slot, stimulus);
     let mut memory = physical::Physical::new(u64::from(support::BASE), bytes, true, false);
@@ -59,12 +59,12 @@ fn accepted_q18_ties_at_1024_repeat_edge_survive_caller_mutation_and_ce_stalls()
     q.mask = 9;
     // RNE capture: -0.5 -> 0, +0.5 -> 0; -1.5 -> -2, 255.5 -> 256.
     // Differences give rho=1 and LOD=0. With n=10, Q8 coordinates are the
-    // wrapped Q18 codes themselves, so required texels are (0,0),(1023,1).
+    // wrapped Q16 codes shifted by two, so required texels are (0,0),(1023,1).
     q.uv = [
-        [-0.5 / 262144.0, 0.5 / 262144.0],
-        [-1.5 / 262144.0, 255.5 / 262144.0],
-        [-0.5 / 262144.0, 0.5 / 262144.0],
-        [-1.5 / 262144.0, 255.5 / 262144.0],
+        [-0.5 / 65536.0, 0.5 / 65536.0],
+        [-1.5 / 65536.0, 63.5 / 65536.0],
+        [-0.5 / 65536.0, 0.5 / 65536.0],
+        [-1.5 / 65536.0, 63.5 / 65536.0],
     ];
     assert!(
         r.step(&mut memory, Some(&q), timed::Control::default())
@@ -158,7 +158,7 @@ fn accepted_q18_ties_at_1024_repeat_edge_survive_caller_mutation_and_ce_stalls()
     assert!(ce_off > 0 && beats == 32);
     assert_eq!(r.stats.compilations, 1);
     assert_eq!(r.stats.link.captures, 2);
-    println!("Q18 capture: packets=2 beats={beats} CE-off={ce_off}, RGB={pixels:?}");
+    println!("Q16 capture: packets=2 beats={beats} CE-off={ce_off}, RGB={pixels:?}");
 }
 
 #[test]
@@ -170,10 +170,10 @@ fn helper_only_midpoint_lod_emits_eight_hand_derived_unorm9_seam_packets() {
     let mut q = support::input(5, Filter::Trilinear, [0.0; 2]);
     q.quad_id = 2;
     q.mask = 1;
-    // Only uncovered lane3 has a nonzero helper derivative: rho=2^-13.
-    // bias=13.5 gives LOD=0.5. RNE(511*128/256)=256, parents=[255,256].
-    q.uv[3][0] = 1.0 / 262144.0;
-    q.lod_bias = 13.5;
+    // Only uncovered lane3 has a nonzero helper derivative: rho=2^-11.
+    // bias=11.5 gives LOD=0.5. RNE(511*128/256)=256, parents=[255,256].
+    q.uv[3][0] = 1.0 / 65536.0;
+    q.lod_bias = 11.5;
     assert!(
         r.step(&mut memory, Some(&q), timed::Control::default())
             .unwrap()

@@ -138,7 +138,7 @@ fn execute(context: &Context, vertices: &[PackedVertex]) -> Result<FrameReport, 
             *destination = f.round_to(sum)?;
             f.publish(&format!("{prefix}.clip.{row}"), *destination)?;
         }
-        let mut normal = [Normal::constant::<0>(); 3];
+        let mut normal = [NormalOutput::constant::<0>(); 3];
         for (row, destination) in normal.iter_mut().enumerate() {
             let mut products = [NormalProduct::constant::<0>(); 3];
             for k in 0..3 {
@@ -165,18 +165,18 @@ fn execute(context: &Context, vertices: &[PackedVertex]) -> Result<FrameReport, 
         for k in 0..4 {
             rows[k] = f.resize_exact(f.slice::<32, 0, false, 0>(clip[k])?)?;
         }
-        let nx: Fixed<36, 0, false> = f.resize_exact(f.slice::<16, 0, false, 0>(normal[0])?)?;
-        let ny: Fixed<36, 0, false> = f.resize_exact(f.slice::<16, 0, false, 0>(normal[1])?)?;
-        rows[4] = f.add_same(nx, f.shift_left_const::<16, 36, 0, false>(ny)?)?;
-        let nz: Fixed<36, 0, false> = f.resize_exact(f.slice::<16, 0, false, 0>(normal[2])?)?;
+        let nx: Fixed<36, 0, false> = f.resize_exact(f.slice::<12, 0, false, 0>(normal[0])?)?;
+        let ny: Fixed<36, 0, false> = f.resize_exact(f.slice::<12, 0, false, 0>(normal[1])?)?;
+        let nz: Fixed<36, 0, false> = f.resize_exact(f.slice::<12, 0, false, 0>(normal[2])?)?;
+        rows[4] = f.add_same(
+            f.add_same(nx, f.shift_left_const::<12, 36, 0, false>(ny)?)?,
+            f.shift_left_const::<24, 36, 0, false>(nz)?,
+        )?;
         rows[5] = f.add_same(
-            nz,
-            f.shift_left_const::<16, 36, 0, false>(f.resize_exact(uv[0])?)?,
+            f.resize_exact(uv[0])?,
+            f.shift_left_const::<12, 36, 0, false>(f.resize_exact(uv[1])?)?,
         )?;
-        rows[6] = f.add_same(
-            f.resize_exact(uv[1])?,
-            f.shift_left_const::<12, 36, 0, false>(f.resize_exact(rgb)?)?,
-        )?;
+        rows[6] = f.resize_exact(rgb)?;
         for (k, row) in rows.iter().enumerate() {
             f.write(output.indexed(output_addr), *row)?;
             f.publish(&format!("{prefix}.row.{k}"), *row)?;

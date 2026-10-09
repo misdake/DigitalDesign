@@ -1,12 +1,13 @@
 //! Private configuration-matched allocation, not the legacy Session replay
-//! certificate. Numeric coefficient315 is actual in both storage policies.
+//! certificate. D/LOD use actual packed registers in both storage policies;
+//! Dedicated phase/valid fits within its retained conservative data ceiling.
 use super::{
     control,
     inventory::{self, Inventory, Row},
     Binding,
 };
 use crate::texture::{
-    emu::{coefficient, color},
+    emu::{coefficient, color, coordinate, derivative, lod},
     sim::timed,
 };
 fn ff(name: &'static str, bits: u64, ports: &'static str) -> Row {
@@ -28,6 +29,52 @@ pub(super) fn describe(
     let mut r = inventory::describe(b, p, c)?;
     let a = (usize::BITS - (p.work_credits - 1).leading_zeros()) as u64;
     let q = (usize::BITS - p.work_credits.leading_zeros()) as u64;
+    // Nearest outlives its scalar flag's last arithmetic read and must reach
+    // the coefficient input. The old37-bit pass-through omitted that bit.
+    let coord_live = (b.coordinate.span() + 1)
+        .div_ceil(b.coordinate.ii())
+        .min(p.coordinate_credits as u64);
+    let coordinate_owner = r
+        .rows
+        .iter_mut()
+        .find(|row| row.name == "coordinate pass-through")
+        .ok_or("Runtime coordinate pending owner allocation")?;
+    coordinate_owner.ff_bits += coord_live;
+    coordinate_owner.ports =
+        "actual38: parents18 + levels8 + slot4/key6 + nearest1/final1; fixed ordered owner ring";
+    for (name, data, control) in [
+        (
+            "derivative FF",
+            derivative::NUMERIC_BITS,
+            derivative::CONTROL_BITS,
+        ),
+        ("LOD FF", lod::NUMERIC_BITS, lod::CONTROL_BITS),
+        (
+            "coordinate FF",
+            coordinate::NUMERIC_BITS,
+            coordinate::CONTROL_BITS,
+        ),
+    ] {
+        let row = r
+            .rows
+            .iter_mut()
+            .find(|row| row.name == name)
+            .ok_or("Runtime D/LOD allocation")?;
+        let required = data
+            + if p.storage == control::Storage::Dedicated {
+                control
+            } else {
+                0
+            };
+        if row.ff_bits < required as u64 {
+            return Err("Runtime D/LOD register map exceeds retained ceiling".into());
+        }
+        row.ports = if p.storage == control::Storage::Dedicated {
+            "actual certified packed scalar bank and phase/valid suballocated within Dedicated ceiling; no extra FF"
+        } else {
+            "actual certified packed scalar bank; phase/valid in existing periodic row"
+        };
+    }
     let coefficient_row = r
         .rows
         .iter_mut()
@@ -166,6 +213,20 @@ pub(super) fn describe(
                 .iter()
                 .map(|bank| u64::from(bank.width) * bank.slots.saturating_sub(1))
                 .sum::<u64>();
+        }
+        // Dedicated retains conservative FF ceilings, but actual D/LOD use
+        // the certified Packed physical slices. Bill their real steering:
+        // read/write/Boolean steering re-derived for the current widths versus the old Dedicated bill.
+        // These are topology demands, not fitted Logic or PnR measurements.
+        for stage in [&b.derivative, &b.lod] {
+            r.rotating_read_mux_bits -= stage
+                .ff_banks
+                .iter()
+                .map(|bank| u64::from(bank.width) * bank.slots.saturating_sub(1))
+                .sum::<u64>();
+            r.rotating_read_mux_bits += stage.packed.read_selector_tree_bits;
+            r.rotating_write_mux_bits += stage.packed.write_selector_tree_bits;
+            r.storage_control_boolean_gates += stage.packed.control_boolean_gates;
         }
     }
     r.operand_mux_tree_bits -= b.coefficient.operand_mux_tree_bits;

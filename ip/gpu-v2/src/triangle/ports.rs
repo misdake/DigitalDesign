@@ -58,7 +58,7 @@ impl Default for Config {
             field_bits: None,
             field_origin: FieldOrigin::Local,
             interpolation: Interpolation::Basis,
-            attribute_fraction: 17,
+            attribute_fraction: 16,
             rgb_affine: false,
             max_samples: 96000,
         }
@@ -91,7 +91,7 @@ impl Config {
 pub struct QuantizedSample {
     /// Unwrapped, signed UV. Extrapolation from coverage snap is retained.
     pub uv: [i64; 2],
-    /// Signed Q14; deliberately not normalized or silently clipped to i16.
+    /// Diagnostic F10 codes before ingress saturation; deliberately unnormalized.
     pub normal: [i32; 3],
     pub rgb565: u16,
     pub depth: u16,

@@ -23,6 +23,9 @@ mod runtime_membership;
 mod runtime_numerical_tests;
 mod runtime_packet;
 mod runtime_preparation;
+pub mod runtime_rtl;
+pub mod serial;
+pub mod serial_rtl;
 pub mod session;
 pub mod storage;
 pub mod system;
@@ -31,11 +34,11 @@ mod transport;
 // Test-only exclusion of fresh counted evaluation on the live numerical path.
 // Legacy Program construction occurs outside this scope and remains supported.
 #[cfg(test)]
-mod counted_call_guard {
+pub(super) mod counted_call_guard {
     use std::cell::Cell;
     thread_local! {
         static LIVE: Cell<bool> = const { Cell::new(false) };
-        static CALLS: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
+        static CALLS: Cell<[u64; 5]> = const { Cell::new([0; 5]) };
     }
     pub(super) struct Scope;
     impl Scope {
@@ -49,7 +52,7 @@ mod counted_call_guard {
             LIVE.with(|v| v.set(false));
         }
     }
-    pub(super) fn call(which: usize) {
+    pub(in crate::texture::sim::staged) fn call(which: usize) {
         CALLS.with(|v| {
             let mut calls = v.get();
             calls[which] += 1;
@@ -57,7 +60,7 @@ mod counted_call_guard {
         });
         LIVE.with(|v| assert!(!v.get(), "counted arithmetic on live Runtime path"));
     }
-    pub(super) fn calls() -> [u64; 2] {
+    pub(super) fn calls() -> [u64; 5] {
         CALLS.with(Cell::get)
     }
 }
@@ -832,6 +835,7 @@ impl Program {
 impl Binding {
     pub fn build() -> Result<Arc<Self>, String> {
         let mut q = QuadInput {
+            force_coarsest: false,
             quad_id: 0,
             mask: 1,
             uv: [[0.003, 0.003]; 4],

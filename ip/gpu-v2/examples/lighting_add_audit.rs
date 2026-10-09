@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plan = timed::plan(
         &[PixelInput {
             normal: [7123, -519, 13567],
-            ndc: [-65536, 12345],
+            ndc: [-16384, 3086],
         }],
         Material::default(),
         Light::default(),

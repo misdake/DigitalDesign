@@ -276,6 +276,7 @@ impl Equality {
         LogicCone {
             result_event: self.result_event,
             absorbed_events: self.absorbed_events.to_vec(),
+            exported_events: Vec::new(),
             operands: operands.into_iter().collect(),
             max_width: members
                 .iter()

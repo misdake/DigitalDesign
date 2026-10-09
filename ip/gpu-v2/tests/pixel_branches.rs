@@ -172,7 +172,10 @@ fn quads(count: usize) -> Vec<BranchQuad> {
                             [-730, 2119, -7133],
                             [32767, -32768, 16384],
                         ][(i + lane) % 4],
-                        ndc: [((i % 3) as i32 - 1) * 32768, (lane as i32 - 2) * 16384],
+                        ndc: [
+                            (((i % 3) as i32 - 1) * 32768) / 4,
+                            ((lane as i32 - 2) * 16384) / 4,
+                        ],
                     }),
                 },
                 sample: Some(q),
@@ -761,7 +764,7 @@ fn framebuffer_failure_after_real_branch_results_never_completes_successfully() 
 
 #[test]
 fn persistent_cache_survives_idle_gaps_and_global_wrap_with_different_rgb() {
-    assert_eq!(SAMPLING_OFFER_BITS, 355);
+    assert_eq!(SAMPLING_OFFER_BITS, 180);
     let mut qs = quads(20);
     for (i, q) in qs.iter_mut().enumerate() {
         q.live.quad.header.mask = if i % 3 == 2 { 5 } else { 15 };
@@ -993,8 +996,8 @@ fn captured_offer_rne_ties_and_bias_clamp_preserve_reference_rgb() {
         let base = 32768.0 + (i % 2) as f64;
         sample.uv = std::array::from_fn(|lane| {
             [
-                (base + 0.5 + lane as f64 / 2.0) / 262144.0,
-                (16384.5 - lane as f64 / 2.0) / 262144.0,
+                (base + 0.5 + lane as f64 / 2.0) / 65536.0,
+                (16384.5 - lane as f64 / 2.0) / 65536.0,
             ]
         });
     }

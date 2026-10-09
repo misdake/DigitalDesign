@@ -385,14 +385,14 @@ fn thin_triangles_culling_unorm_and_unwrapped_lod_contracts() {
     let flat = input([[0.0, 0.0], [64.0, 0.0], [0.0, 40.0]], [1.0; 3], c);
     let mut flat = flat;
     for v in &mut flat.vertices {
-        v.normal = [-16384, 8192, 0];
+        v.normal = [-1024, 512, 0];
         v.uv = [4095, 4095];
         v.rgb565 = 0xffff;
     }
     let r = run(&flat, c).unwrap();
     let s = r.evaluate([12.5, 12.5]).unwrap();
-    assert_eq!(s.quantized.uv, [1 << 17; 2]);
-    assert_eq!(s.quantized.normal, [-16384, 8192, 0]);
+    assert_eq!(s.quantized.uv, [1 << 16; 2]);
+    assert_eq!(s.quantized.normal, [-1024, 512, 0]);
     assert_eq!(s.quantized.rgb565, 0xffff);
     assert_eq!(r.quad_lod(12, 12, 1024).unwrap(), 0.0);
     assert!(r.quad_lod(12, 12, 1023).is_err());
@@ -501,7 +501,7 @@ fn varied_sources_check_three_fields_without_reusing_cofactors() {
             c,
         );
         for v in &mut input.vertices {
-            v.normal = std::array::from_fn(|_| random() as i16);
+            v.normal = std::array::from_fn(|_| (random() as i16) >> 4);
             v.uv = std::array::from_fn(|_| (random() % 4096) as u16);
             v.rgb565 = random() as u16;
         }
@@ -562,18 +562,18 @@ fn constant_channels_survive_independent_plane_quantization() {
     let mut input = pressure()[2].1.clone();
     for v in &mut input.vertices {
         v.uv = [3011, 3001];
-        v.normal = [-13111, 12345, 777];
+        v.normal = [-819, 772, 49];
         v.rgb565 = 0x1249;
     }
     let r = run(&input, c).unwrap();
     for (_, _, s) in r.rasterize().unwrap() {
-        assert_eq!(s.quantized.normal, [-13111, 12345, 777]);
+        assert_eq!(s.quantized.normal, [-819, 772, 49]);
         assert_eq!(s.quantized.rgb565, 0x1249);
         assert_eq!(
             s.quantized.uv,
             [
-                (3011.0 / 4095.0 * 131072.0_f64).round_ties_even() as i64,
-                (3001.0 / 4095.0 * 131072.0_f64).round_ties_even() as i64
+                (3011.0 / 4095.0 * 65536.0_f64).round_ties_even() as i64,
+                (3001.0 / 4095.0 * 65536.0_f64).round_ties_even() as i64
             ]
         );
     }
@@ -606,5 +606,5 @@ fn exact_projection_ties_and_vertex_stage_bridge() {
     let r = run(&input, c).unwrap();
     assert!(!r.rasterize().unwrap().is_empty());
     let s = r.evaluate([33.5, 18.5]).unwrap();
-    assert_eq!(s.quantized.normal, [16256, 0, 16256]);
+    assert_eq!(s.quantized.normal, [1016, 0, 1016]);
 }

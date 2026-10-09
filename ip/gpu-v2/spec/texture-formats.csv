@@ -1,8 +1,8 @@
 # name,bits,fraction,signed,rounding_or_range,route
-Uv,40,18,true,RNE Q18 external capture,input
-UvRaw,40,0,true,exact checked range,ALU or wiring
-Difference,41,0,true,exact checked range,ALU or wiring
-Magnitude,40,0,false,exact checked range,ALU or wiring
+Uv,18,16,true,RNE F16 raster/admission capture,input
+UvRaw,18,0,true,exact checked range,ALU or wiring
+Difference,19,0,true,exact checked range,ALU or wiring
+Magnitude,18,0,false,exact checked range,ALU or wiring
 Slope,20,0,false,exact checked range,ALU or wiring
 Normalized,40,0,false,exact checked range,ALU or wiring
 MantissaTail,38,32,false,exact normalized tail F32,slice wiring

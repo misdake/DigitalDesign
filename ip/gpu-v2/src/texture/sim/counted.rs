@@ -202,7 +202,7 @@ fn layer_context(
         IntegerCoordinate::constant::<1>(),
         f.resize_exact(physical_n)?,
     )?;
-    let coordinate_shift = f.sub::<18, 0, true>(physical_n, Size::constant::<10>())?;
+    let coordinate_shift = f.sub::<18, 0, true>(physical_n, Size::constant::<8>())?;
     let tile_shift = f.sub::<18, 0, true>(n, Size::constant::<3>())?;
     let tile_shift = f.select(
         f.less(tile_shift, Shift::constant::<0>())?,
@@ -358,16 +358,13 @@ fn layer(
 
 pub fn prepare(input: &QuadInput, slots: &[Slot]) -> Result<Preparation, Error> {
     let slot = oracle::check_input(input, slots)?;
-    let uv: Vec<i128> = input
-        .uv
-        .iter()
-        .flatten()
-        .map(|v| (v * 262144.0).round_ties_even() as i128)
-        .collect();
+    let (captured, force_coarsest) = capture_uv(input)?;
+    let uv: Vec<i128> = captured.into_iter().flatten().map(i128::from).collect();
     // External capture: biases outside +/-32 cannot change a clamped LOD.
     let bias = (input.lod_bias.clamp(-32.0, 32.0) * 256.0).round_ties_even() as i128;
     let mut model = Model::numerical();
     let uv_store: UvStore = model.input("helper_uv", &uv)?;
+    let force = model.input::<1, 0, false>("force_coarsest", &[i128::from(force_coarsest)])?;
     let bias_store: BiasStore = model.input("lod_bias_q8", &[bias])?;
     let metadata = model.input::<4, 0, false>(
         "quad_context",
@@ -434,7 +431,11 @@ pub fn prepare(input: &QuadInput, slots: &[Slot]) -> Result<Preparation, Error> 
             slope = f.select(f.less(slope, mag)?, mag, slope)?;
         }
     }
-    let overflow = f.less(Magnitude::constant::<524288>(), slope)?;
+    let overflow = f.select(
+        f.read(force.at::<0>())?,
+        Fixed::<1, 0, false>::constant::<1>(),
+        f.less(Magnitude::constant::<131072>(), slope)?,
+    )?;
     f.publish("overflow", overflow)?;
     let lod: Lod = f.branch_value(
         overflow,
@@ -455,7 +456,7 @@ pub fn prepare(input: &QuadInput, slots: &[Slot]) -> Result<Preparation, Error> 
                     let address = f.slice::<6, 0, false, 0>(k)?;
                     let fraction = f.read(log.indexed(address))?;
                     let exponent = f.add_same(
-                        f.sub_same(h, Shift::constant::<18>())?,
+                        f.sub_same(h, Shift::constant::<16>())?,
                         f.resize_exact(max_n)?,
                     )?;
                     let exponent = f.add_same(exponent, f.resize_exact(carry)?)?;
@@ -527,7 +528,7 @@ pub fn prepare(input: &QuadInput, slots: &[Slot]) -> Result<Preparation, Error> 
                 let mut q = [Coordinate::constant::<0>(); 2];
                 let shift = c.layers[0].coordinate_shift;
                 for axis in 0..2 {
-                    let wrapped = f.slice::<18, 0, false, 0>(uv[axis])?;
+                    let wrapped = f.slice::<16, 0, false, 0>(uv[axis])?;
                     let scaled = f.shift(f.resize_exact::<20, 0, true>(wrapped)?, shift)?;
                     q[axis] = f.sub_same(scaled, center)?;
                 }

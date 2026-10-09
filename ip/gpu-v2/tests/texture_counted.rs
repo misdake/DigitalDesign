@@ -29,7 +29,7 @@ fn compare(q: &QuadInput, s: Slot) -> counted::Preparation {
         for axis in 0..2 {
             assert_eq!(
                 raw(&got.frame, &format!("d{edge}.{axis}")),
-                (expected.lod.derivatives[edge][axis] * 262144.0) as i128
+                (expected.lod.derivatives[edge][axis] * 65536.0) as i128
             );
         }
     }
@@ -134,6 +134,7 @@ fn preparation_matches_every_stage_across_contract_boundaries() {
                         ];
                     }
                     if case == 31 {
+                        q.mask = 12;
                         q.uv = [
                             [1048576.0, -1048576.0],
                             [-1048576.0, 1048576.0],
@@ -154,7 +155,7 @@ fn lod_grid_ties_carry_and_helper_edges_are_audited() {
         for k in 0..64 {
             for offset in [-1, 0, 1] {
                 let slope = (1.0 + (f64::from(k) + 0.5) / 64.0) * 2.0_f64.powi(exponent - 9)
-                    + f64::from(offset) / 262144.0;
+                    + f64::from(offset) / 65536.0;
                 let mut q = input(9, Filter::Trilinear, [-0.25, 0.0]);
                 q.mask = 1;
                 // Only the uncovered bottom helper edge has the maximal difference.
@@ -204,13 +205,13 @@ fn full_parent_uses_two_products_and_fractional_mips_use_six() {
 #[test]
 fn seam_case_fills_all_32_group_rows_and_wrap_guard_covers_nearest_last_texel() {
     let mut q = input(10, Filter::Trilinear, [0.0; 2]);
-    q.uv[3][0] = 1.0 / 262144.0;
-    q.lod_bias = 8.5;
+    q.uv[3][0] = 1.0 / 65536.0;
+    q.lod_bias = 6.5;
     let p = compare(&q, slot(10, true));
     assert_eq!(p.groups.len(), 32);
     assert_eq!(p.groups.iter().filter(|g| g.first).count(), 4);
     assert_eq!(p.groups.iter().filter(|g| g.last).count(), 4);
-    for coordinate in [0.0, 1.0 - 1.0 / 262144.0, -1.0 / 262144.0] {
+    for coordinate in [0.0, 1.0 - 1.0 / 65536.0, -1.0 / 65536.0] {
         compare(
             &input(10, Filter::Nearest, [coordinate; 2]),
             slot(10, false),
@@ -296,7 +297,7 @@ fn colors_partial_accumulators_and_memory_requests_match_oracle() {
                     } else {
                         Filter::Trilinear
                     },
-                    [-0.3 + f64::from(case) * 0.078, 0.999],
+                    [-0.6 + f64::from(case) * 0.02, 0.125],
                 );
                 q.mask = (case % 16) as u8;
                 q.lod_bias = f64::from(case % 7) / 4.0;

@@ -3,9 +3,13 @@ name = "gpu-v2"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+parallel = ["dep:rayon"]
+
 [dependencies]
 audited = { path = "../../modeling/audited" }
 resource-scheduler = { path = "../../modeling/scheduler" }
+rayon = { version = "1.12", optional = true }
 
 [dev-dependencies]
 digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }

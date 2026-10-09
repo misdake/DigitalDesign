@@ -346,7 +346,7 @@ fn partial_helper_derivatives_empty_mask_default_omission_and_warm_reuse() {
     let qs = [partial.clone(), zero, partial.clone(), fine];
     let mut got = vec![];
     let mut request_counts = vec![];
-    for q in &qs {
+    for (ordinal, q) in qs.iter().enumerate() {
         assert!(r.input_ready(q.quad_id));
         assert!(
             r.step(&mut memory, Some(q), timed::Control::default())
@@ -356,7 +356,7 @@ fn partial_helper_derivatives_empty_mask_default_omission_and_warm_reuse() {
         for _ in 0..5_000 {
             let st = r
                 .step(&mut memory, None, timed::Control::default())
-                .unwrap();
+                .unwrap_or_else(|e| panic!("reuse sample{ordinal} {e}"));
             check_bounds(&st);
             got.extend(st.results);
             if r.idle() {

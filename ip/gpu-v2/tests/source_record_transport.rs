@@ -42,7 +42,7 @@ fn original_vertices() -> [Transformed; 3] {
             -16384,
             65536,
         ],
-        normal: [i16::MIN, i as i16 * 8192, i16::MAX],
+        normal: [-2048, i as i16 * 512, 2047],
         uv: [i as u16 * 2000, 4095 - i as u16 * 1000],
         rgb565: 0x1234 ^ (i as u16 * 0x1001),
     })

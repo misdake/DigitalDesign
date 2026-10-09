@@ -107,6 +107,7 @@ struct Variant {
 
 fn input(uv: [f64; 2], dx: [f64; 2], dy: [f64; 2], mask: u8) -> QuadInput {
     QuadInput {
+        force_coarsest: false,
         quad_id: 0,
         mask,
         uv: [

@@ -27,6 +27,32 @@ pub enum RefillEvent {
 
 pub const TILE_BYTES: usize = 128;
 pub const MAX_SIZE_LOG2: u8 = 10;
+pub const UV_FRACTION: u32 = 16;
+pub const UV_SCALE: f64 = 65536.0;
+pub const UV_MIN: i64 = -(1 << 17);
+pub const UV_MAX: i64 = (1 << 17) - 1;
+
+/// One raster/admission RNE boundary. Abnormal uncovered helpers use a benign
+/// code only after explicitly requesting the coarsest mip. They never generate
+/// a normal derivative from a wrapped or clamped out-of-range value.
+pub fn capture_uv(input: &QuadInput) -> Result<([[i64; 2]; 4], bool), String> {
+    let mut force = input.force_coarsest;
+    let mut raw = [[0; 2]; 4];
+    for (lane, uv) in input.uv.iter().enumerate() {
+        for (axis, value) in uv.iter().enumerate() {
+            let code = (value * UV_SCALE).round_ties_even();
+            if !code.is_finite() || code < UV_MIN as f64 || code > UV_MAX as f64 {
+                if input.mask & (1 << lane) != 0 {
+                    return Err("covered UV outside S(18,16)".into());
+                }
+                force = true;
+            } else {
+                raw[lane][axis] = code as i64;
+            }
+        }
+    }
+    Ok((raw, force))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Slot {
@@ -140,6 +166,9 @@ pub struct QuadInput {
     pub filter: Filter,
     /// In mip levels, applied before clamping.
     pub lod_bias: f64,
+    /// Nonprojectable or out-of-range helper: choose the coarsest available mip
+    /// independent of bias, including a zero derivative.
+    pub force_coarsest: bool,
 }
 
 /// Oracle experiment controls, not frozen counted/RTL formats.
@@ -175,7 +204,7 @@ impl Config {
     /// Frozen step-1 contract; historical default remains an oracle experiment.
     pub fn counted() -> Self {
         Self {
-            uv_fraction: Some(18),
+            uv_fraction: Some(16),
             coefficient_fraction: 9,
             coefficient_encoding: CoefficientEncoding::Unorm,
             lod_method: LodMethod::Table64Nearest,

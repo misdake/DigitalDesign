@@ -35,7 +35,7 @@ ip/gpu-v2/
       rtl/                     synthesizable shared lanes, retiming and Gowin probe
   tests/support/               deterministic stimuli and comparison helpers
   examples/                    bounded component probes and report export
-  web/                         standalone Rust WASM lighting review and controls
+  web/                         standalone Rust WebSocket review; optional WASM diagnostic
   docs/                        implemented contracts and validation boundaries
 ```
 
@@ -88,11 +88,19 @@ Quad allocation and branch joins are implemented in the bounded
 branch results. Coverage and actual streaming branch execution remain future
 composition work. Component calculations can be tested without a GPU system.
 
-Web code calls the same Rust oracle through bare WASM exports. It owns controls
-and presentation only; it does not reproduce the arithmetic in JavaScript. The
-[lighting review](../web/README.md) keeps scene/algorithm/ideal calculations in
-Rust and has a native/WASM bit comparison. The planned runtime-format audited
-lane and a complete GPU browser adapter have not been implemented.
+Web code calls the same Rust oracle through a standalone native WebSocket server.
+It owns controls and presentation only; it does not reproduce arithmetic in
+JavaScript. Networking dependencies stay in the host adapter. The optional
+[historical lighting review](../web/README.md) retains native/WASM comparisons.
+The [functional chain](oracle-chain.md)
+now provides mesh-to-materialized-framebuffer A/B comparison with configurable
+frontend precision and bounded queues. It does not execute counted/timed paths;
+its optional native Rayon adapter parallelizes pure per-vertex/triangle/quad work
+while committing cache/ROP in order. The separate lighting scheduling workbench
+inspects the actual bound DAG and validates edited periodic calendars; see the
+[browser instructions](../web/README.md#lighting-scheduling-workbench). It does
+not install edited schedules into emu/RTL. The planned runtime-format audited lane and command-to-hardware integration
+remain separate work.
 Implemented behavior and validation are in [lighting](lighting.md) and
 [frontend](frontend.md). Its separate source-capture control prepares self-contained
 inputs for the triangle oracle and decouples source release from final fan use.

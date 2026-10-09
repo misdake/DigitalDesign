@@ -12,6 +12,93 @@ use resource_scheduler::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+mod compensation_review {
+    use super::*;
+    use crate::lighting::{sim::oracle, LightingRetiming};
+
+    #[test]
+    #[ignore = "requires the frozen numerical experiment dataset"]
+    fn compensated_frozen_dataset_replays_actual_dag() {
+        let path = std::env::var_os("LIGHTING_COMPENSATION_DATASET").expect("dataset path");
+        let data = std::fs::read_to_string(path).unwrap();
+        assert_eq!(data.lines().count(), 32975);
+        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+            let kernel = counted::Config::compensated_resource_profile(profile);
+            let program = Program::with_retiming(
+                profile,
+                true,
+                false,
+                kernel,
+                true,
+                0,
+                LightingRetiming::steered_resource_candidate(profile),
+            )
+            .unwrap();
+            let mut stats = [[0_i128; 8]; 5];
+            for line in data.lines() {
+                let v: Vec<_> = line.split(',').collect();
+                let i = |n: usize| v[n].parse::<i32>().unwrap();
+                let pixel = PixelInput {
+                    normal: [i(1) as i16, i(2) as i16, i(3) as i16],
+                    ndc: [i(4), i(5)],
+                };
+                let material = Material {
+                    shininess_code: i(11) as u8,
+                    unlit: i(12) != 0,
+                    specular_color: if i(13) == 0 { [0; 3] } else { [255; 3] },
+                };
+                let light = Light {
+                    direction: [i(6) as i16, i(7) as i16, i(8) as i16],
+                    ambient: i(9) as u16,
+                    directional: i(10) as u16,
+                };
+                let projection = Projection {
+                    k: i(14) as i16,
+                    ray_scale: [i(15) as i16, i(16) as i16],
+                };
+                let ctx = LightingContext {
+                    material,
+                    light,
+                    projection,
+                    epoch: 0,
+                };
+                let mut values = vec![None; program.frame.values.len()];
+                for &j in &program.order {
+                    for (value, raw) in program
+                        .execute(&program.instructions[j], &values, pixel, ctx)
+                        .unwrap()
+                    {
+                        values[value] = Some(raw);
+                    }
+                }
+                let actual = program.output_values.map(|v| values[v].unwrap());
+                let golden = oracle::evaluate(
+                    pixel,
+                    material,
+                    light,
+                    projection,
+                    oracle::Config::from_counted(kernel),
+                )
+                .unwrap();
+                assert_eq!(actual, [golden.g, golden.h], "{profile:?}: {line}");
+                let s = &mut stats[i(0) as usize];
+                s[0] += 1;
+                s[1] += i128::from(actual != [i(17) as i128, i(18) as i128]);
+                for k in 0..2 {
+                    let e = actual[k] - i(17 + k) as i128;
+                    s[2 + k] += e;
+                    s[4 + k] += e.abs();
+                    s[6 + k] = s[6 + k].max(e.abs());
+                }
+            }
+            for (group, s) in stats.into_iter().enumerate() {
+                println!("NUMERIC {profile:?} group={group} n={} changed={} signed={}/{} abs={}/{} max={}/{}",s[0],s[1],s[2],s[3],s[4],s[5],s[6],s[7]);
+            }
+        }
+    }
+}
+
 fn ancestors(frame: &FrameReport, names: &[&str]) -> Vec<bool> {
     let mut result = vec![false; frame.events.len()];
     let mut pending: Vec<_> = frame
@@ -65,10 +152,36 @@ impl Program {
         roles: bool,
         logic_depth: usize,
     ) -> Result<Self, String> {
+        Self::with_retiming(
+            profile,
+            full,
+            dedicated,
+            config,
+            roles,
+            logic_depth,
+            Default::default(),
+        )
+    }
+    pub fn with_retiming(
+        profile: LightingProfile,
+        full: bool,
+        dedicated: bool,
+        config: counted::Config,
+        roles: bool,
+        logic_depth: usize,
+        retiming: super::LightingRetiming,
+    ) -> Result<Self, String> {
+        if retiming.extra_large_multiply > 3
+            || retiming.extra_small_multiply > 4
+            || retiming.extra_normalize_reads > 2
+        {
+            return Err("retiming resource delta outside bounded experiment".into());
+        }
         if logic_depth != 0 && !(2..=8).contains(&logic_depth) {
             return Err("logic boundary depth must be 2..=8".into());
         }
-        if !config.dataflow
+        if config.compact_normal
+            || !config.dataflow
             || !config.signed_square
             || !config.power_floor
             || config.prepared_ray
@@ -221,6 +334,19 @@ impl Program {
         if dedicated {
             hardware.small_multiply = 32;
             hardware.large_multiply = 32;
+        }
+        hardware.measured_functions = retiming.measured_functions;
+        hardware.large_multiply += retiming.extra_large_multiply;
+        hardware.small_multiply += retiming.extra_small_multiply;
+        hardware.normalize_reads += retiming.extra_normalize_reads;
+        role_capacity[2] += retiming.extra_large_multiply;
+        // A real kind-separated Gowin placement, not fractional multiplier sums.
+        if !dedicated {
+            let macros = hardware.small_multiply.div_ceil(4)
+                + hardware.large_multiply.div_ceil(2)
+                + hardware.paired_macros;
+            hardware.dsp_tiles = hardware.dsp_tiles.max(macros.div_ceil(2));
+            hardware.dsp_inventory()?;
         }
         let ii = profile.ii(full);
         let binding = BoundDag::new(&frame, hardware)?;
@@ -495,6 +621,103 @@ impl Program {
             };
             stable[e.output.unwrap()] = invariant;
         }
+        if retiming.compact_lifetimes {
+            let modulo =
+                ModuloGraph::from_graph(&graph).map_err(|e| format!("compact graph: {e:?}"))?;
+            let target = resource_scheduler::compact_modulo(&modulo, &schedule)
+                .map_err(|e| format!("compact calendar: {e:?}"))?;
+            let node_latency = |id: usize| {
+                graph.nodes[id]
+                    .resource
+                    .map_or(0, |r| graph.resources[r].latency)
+            };
+            let mut owner: Vec<_> = (0..frame.events.len()).collect();
+            for ins in &instructions {
+                for &id in &ins.members {
+                    owner[id] = ins.root;
+                }
+            }
+            // Score only real instruction boundaries, never internal cone values.
+            // This is a payload proxy; the emitter's storage CSV remains authoritative.
+            let cost = |candidate: &ModuloSchedule| {
+                let mut last = BTreeMap::<usize, u64>::new();
+                for ins in &instructions {
+                    for &v in &ins.inputs {
+                        if !stable[v] {
+                            let age = candidate.nodes[ins.root].issue;
+                            last.entry(v)
+                                .and_modify(|t| *t = (*t).max(age))
+                                .or_insert(age);
+                        }
+                    }
+                }
+                for &v in &output_values {
+                    last.insert(v, candidate.span);
+                }
+                last.into_iter()
+                    .map(|(v, end)| {
+                        let root = owner[frame.values[v].producer];
+                        let ready = candidate.nodes[root].issue + node_latency(root);
+                        end.saturating_sub(ready).div_ceil(ii as u64)
+                            * u64::from(frame.values[v].format.bits)
+                    })
+                    .sum::<u64>()
+            };
+            if cost(&target) < cost(&schedule) {
+                schedule = target.clone();
+            }
+            let mut topo = Vec::new();
+            let mut seen = BTreeSet::new();
+            while topo.len() < graph.nodes.len() {
+                let before = topo.len();
+                for (id, node) in graph.nodes.iter().enumerate() {
+                    if !seen.contains(&id) && node.predecessors.iter().all(|p| seen.contains(p)) {
+                        seen.insert(id);
+                        topo.push(id);
+                    }
+                }
+                if topo.len() == before {
+                    return Err("compact dependency cycle".into());
+                }
+            }
+            // Two bounded local passes preserve every physical lane and modulo phase.
+            // A checked move can delay an early branch without delaying all its inputs.
+            for _ in 0..2 {
+                let mut tried = 0;
+                for &id in topo.iter().rev() {
+                    if schedule.nodes[id].lane.is_none()
+                        || target.nodes[id].issue <= schedule.nodes[id].issue
+                    {
+                        continue;
+                    }
+                    if tried == 64 {
+                        break;
+                    }
+                    tried += 1;
+                    let mut trial = schedule.clone();
+                    trial.nodes[id].issue = target.nodes[id].issue;
+                    for &wire in &topo {
+                        if graph.nodes[wire].resource.is_none() {
+                            trial.nodes[wire].issue = graph.nodes[wire]
+                                .predecessors
+                                .iter()
+                                .map(|&d| trial.nodes[d].issue + node_latency(d))
+                                .max()
+                                .unwrap_or(0);
+                        }
+                    }
+                    if resource_scheduler::check_modulo(&modulo, &trial).is_ok()
+                        && cost(&trial) < cost(&schedule)
+                    {
+                        schedule = trial;
+                    }
+                }
+            }
+            for ins in &mut instructions {
+                ins.issue = schedule.nodes[ins.root].issue as usize;
+                ins.ready = ins.issue + node_latency(ins.root) as usize;
+            }
+        }
         Ok(Self {
             frame,
             graph,
@@ -552,6 +775,7 @@ impl Program {
             "SQ" => SQUARE_SIGNED_RAW.get(row).copied().map(i128::from),
             "RSQRT" => RSQRT_RAW.get(row).copied().map(i128::from),
             "POWER" => POWER_RAW.get(row).copied().map(i128::from),
+            "POWER_MIDPOINT_Q15" => POWER_MIDPOINT_RAW.get(row).copied().map(i128::from),
             _ => None,
         };
         value.ok_or_else(|| format!("source {}[{row}]", m.name))

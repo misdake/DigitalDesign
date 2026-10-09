@@ -122,7 +122,7 @@ fn inputs(count: usize, bypass: bool) -> Inputs {
                             [-8192, 4096, 16384],
                             [0, 0, 0],
                         ][lane],
-                        ndc: [((i % 3) as i32 - 1) * 32768, (lane as i32 - 2) * 16384],
+                        ndc: [((i % 3) as i32 - 1) * 8192, (lane as i32 - 2) * 4096],
                     }),
                 },
                 sample: Some(sample),

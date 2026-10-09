@@ -49,7 +49,7 @@ fn input(id: u32, points: [[f64; 2]; 3], color: [u16; 3], normal: [i16; 3]) -> t
                 0,
                 65536,
             ],
-            normal,
+            normal: normal.map(|v| (f64::from(v) / 16.0).round_ties_even() as i16),
             uv: [[64, 96], [4095, 96], [64, 4095]][i],
             rgb565: color[i],
         }),
@@ -206,6 +206,7 @@ fn reference_quad(r: &oracle::Report, fan: usize, x: u16, y: u16) -> Option<Bran
             }; 4],
         },
         sample: Some(tex::QuadInput {
+            force_coarsest: false,
             quad_id: 0,
             mask,
             uv: [[0.; 2]; 4],
@@ -216,7 +217,7 @@ fn reference_quad(r: &oracle::Report, fan: usize, x: u16, y: u16) -> Option<Bran
         }),
     };
     for (lane, s) in samples.iter().enumerate() {
-        q.sample.as_mut().unwrap().uv[lane] = s.quantized.uv.map(|v| v as f64 / 262144.);
+        q.sample.as_mut().unwrap().uv[lane] = s.quantized.uv.map(|v| v as f64 / 65536.);
         if mask >> lane & 1 != 0 {
             q.live.quad.basic[lane] = Basic {
                 tint: s
@@ -227,8 +228,8 @@ fn reference_quad(r: &oracle::Report, fan: usize, x: u16, y: u16) -> Option<Bran
             let px = i32::from(x) + (lane % 2) as i32;
             let py = i32::from(y) + (lane / 2) as i32;
             q.live.light[lane] = light::PixelInput {
-                normal: s.quantized.normal.map(|v| i16::try_from(v).unwrap()),
-                ndc: [px * 4096 + 2048 - 65536, 65536 - py * 4096 - 2048],
+                normal: s.quantized.normal.map(|v| i16::try_from(v * 16).unwrap()),
+                ndc: [px * 1024 + 512 - 16384, 16384 - py * 1024 - 512],
             };
         }
     }

@@ -11,7 +11,7 @@ pub fn profile() -> Config {
         height: 32,
         field_bits: Some(36),
         interpolation: Interpolation::Planes,
-        attribute_fraction: 18,
+        attribute_fraction: 16,
         max_samples: 4096,
         ..Default::default()
     }
@@ -50,7 +50,7 @@ impl Encoded {
             || c.field_bits != Some(36)
             || c.field_origin != FieldOrigin::Local
             || c.interpolation != Interpolation::Planes
-            || c.attribute_fraction != 18
+            || c.attribute_fraction != 16
             || c.subpixel_bits != 4
             || c.rgb_affine
         {
@@ -203,9 +203,9 @@ impl Decoded {
                 f64::from(rgb >> 11) / 31.0,
                 f64::from((rgb >> 5) & 63) / 63.0,
                 f64::from(rgb & 31) / 31.0,
-                f64::from(p as u16 as i16) / 16384.0,
-                f64::from((p >> 16) as u16 as i16) / 16384.0,
-                f64::from((p >> 32) as u16 as i16) / 16384.0,
+                f64::from(p as u16 as i16) / 1024.0,
+                f64::from((p >> 16) as u16 as i16) / 1024.0,
+                f64::from((p >> 32) as u16 as i16) / 1024.0,
             ]
         });
         Ok(Self {
@@ -259,22 +259,21 @@ impl Values {
     pub fn uv(&self) -> Result<[f64; 2], String> {
         let mut result = [0.0; 2];
         for (i, value) in result.iter_mut().enumerate() {
-            let raw = (self.a[i] * 262144.0).round_ties_even();
+            let raw = (self.a[i] * 65536.0).round_ties_even();
             if !raw.is_finite()
-                || raw.abs() > (1_u64 << 38) as f64
-                || raw < -(1_i64 << 39) as f64
-                || raw >= (1_i64 << 39) as f64
+                || raw < gpu_v2::texture::ports::UV_MIN as f64
+                || raw > gpu_v2::texture::ports::UV_MAX as f64
             {
                 return Err("helper UV ingress overflow".into());
             }
-            *value = raw / 262144.0;
+            *value = raw / 65536.0;
         }
         Ok(result)
     }
     pub fn normal(&self) -> Result<[i16; 3], String> {
         let mut result = [0_i16; 3];
         for (i, value) in result.iter_mut().enumerate() {
-            let raw = (self.a[i + 5] * 16384.0).round_ties_even();
+            let raw = (self.a[i + 5] * 1024.0).round_ties_even() * 16.0;
             if !raw.is_finite() || raw < f64::from(i32::MIN) || raw > f64::from(i32::MAX) {
                 return Err("normal i32 overflow".into());
             }
