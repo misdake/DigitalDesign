@@ -1535,3 +1535,123 @@ two full-system co-simulations. Runtime CPU/FPU source matches `6849df7`; the
 new changes strengthen test coverage and clarify the existing timing contract.
 Resource and performance evidence remains attached to the original committed
 implementation and its ledger rows above.
+
+## 2026-10-09 — Shared integer shifter and scalar memory storage
+
+The original independent cloud experiment starts at published `code-v0.3-dev` commit
+`8717eb71c564821c4a0ebd91899a8d30e43a87fd`; no GPU source, ISA, clock,
+cache policy, arbitration order or SDRAM pin/refresh policy changes. The matched
+local integrated resource and timing measurements have one current home in
+[architecture](architecture.md#current-fitted-result-and-validation-boundary).
+
+### Contracts and implementation
+
+The in-order integer core consumes one shift result per Execute cycle. Six
+separate register/immediate and left/logical-right/arithmetic-right expressions
+are therefore unnecessary. A count mux and reversible 16-bit wiring share one
+17-bit signed right-shift barrel. The extra bit controls sign versus zero fill;
+the `>>>` assignment is independently signed, preserving the Verilog signedness
+rule. The instruction decoder still rejects the same reserved forms. No register,
+state, handshake or execution cycle is added.
+
+A native scalar read returns one 32-bit word, of which the adapter exposes only
+one selected 16-bit halfword. Previously the adapter held that word in a second
+payload register before copying the halfword to its response register. It now
+captures the selected halfword directly in the response register and waits for
+both read-data and native completion before asserting valid. Either event may
+arrive first or both may arrive together. A backpressured response still holds
+until acceptance. Scalar writes now hold their single halfword unshifted, with
+lane placement performed from the saved address bit. Line streams, source-held
+write beats, early grants and the opt-in grouped mode retain their schedules.
+The Rust adapter oracle reflects the earlier unqualified payload update; this
+has no successful-response or producer/consumer semantic change.
+
+The actual fitted system enables `EARLY_GRANT=1` and `PREPARE_NEXT=1`, despite
+older prose describing serial production. These settings are retained. The
+arbiter's irrevocable reserved owner is necessary for that existing successor
+slot. The bridge's two write pairs absorb the related-clock transport phase and
+supply continuous 32-bit SDRAM words without retaining a whole line. Removing
+these mechanisms was not justified by the real contracts and was not attempted.
+
+### Verification
+
+- Exhaustive baseline-versus-candidate combinational RTL comparison: all
+  16,777,216 combinations of 16-bit operand, sixteen decoder values and sixteen
+  count pairs agree, including all reserved forms and deliberately different
+  register/immediate count sources.
+- The core RTL testbench adds 768 actual instruction cases: all six forms,
+  all sixteen counts and eight sign/boundary/alternating operands; the following
+  MOV/HALT checks forwarding and seven-word retirement.
+- All 31 CPU V3 explicit RTL/co-simulation tests pass, and both system
+  co-simulation tests pass after the final adapter change.
+- The adapter test adds both scalar-read lanes, completion before/with/after
+  data, and held-response checks. These tests pass on the original adapter and
+  the candidate, including an early-grant-enabled candidate instance. Native
+  bridge bank-striping, masking, reset and SDRAM pin-model simulation pass.
+- All 52 regular Gowin vendor unit tests pass (six optional tests ignored).
+- All 22 frozen release-mode emulator benchmark records are identical across
+  baseline and candidate, including cycles, retirement, latency, traffic and
+  refresh fields. This is emulator evidence; it is not a board benchmark or
+  an RTL run of all 22 workloads.
+- The complete release workspace regression passes: 1,372 tests pass, zero
+  fail and 101 intentionally optional tests are ignored; required focused
+  CPU/system/vendor RTL tests listed above are run explicitly. Strict workspace
+  Clippy/all targets and the affected-crate check pass.
+  The changed Rust file passes rustfmt. Workspace rustfmt retains an unrelated
+  GPU module-order diff. Portable equivalents of layering/source-hygiene pass;
+  documentation checks retain the same eighteen missing GPU/web/artifact links
+  as the clean baseline. No new constraint-check failure is introduced.
+
+### Original cloud fitting evidence
+
+The original matched Gowin 1.9.11.03 Education fits are retained as a tool-specific
+comparison; the local integration uses the fit in architecture above.
+
+| Cloud fit | Baseline | Shared shifter only | Shared shifter and scalar storage |
+| --- | ---: | ---: | ---: |
+| Logic | 8,668 | 8,423 | 8,385 |
+| Total registers / Logic FF | 3,450 / 3,366 | 3,450 / 3,366 | 3,401 / 3,316 |
+| CPU fitted Fmax | 57.336 MHz | 55.715 MHz | 57.975 MHz |
+| Controller fitted Fmax | 117.426 MHz | 127.190 MHz | 127.656 MHz |
+| Worst setup slack / setup / hold endpoints | -2.495 ns / 53 / 0 | -2.511 ns / 53 / 0 | -2.483 ns / 53 / 0 |
+
+Three whole-system fits compare baseline, shared shifter alone, and both changes
+under Gowin 1.9.11.03 Education with identical target/constraints/options. All
+successful internal-clock paths meet the unchanged runtime clock constraints,
+while the same inherited SDRAM output setup failure family remains. Placement
+changes internal Fmax even in untouched blocks; the measured margins are not
+proof of a local critical-path fix.
+
+The direct Linux `gw_sh` flow produced bitstreams without the repository
+build-manifest writer. Its independent evidence file records SHA-256 hashes of
+generated inputs and bitstreams; the integration below supplies the normal
+repository build and artifact audit. The cloud experiment is offline evidence.
+
+SDRAM output timing under the newer Linux release remains a separate tool and
+CL2-interface investigation. Further area rounds should use a matched baseline
+and preserve the actual simultaneous ownership and producer/sink contracts.
+
+### Local integration verification
+
+The archive patch applies directly to clean `8717eb7`; all 60 packaged evidence
+files match their size/SHA-256 manifest. The production patch is retained, with
+the current resource section updated to the local tool measurements.
+
+Local release-mode verification passes: 288 CPU/vendor unit tests, all 31 CPU
+RTL/co-simulation tests, both full-system co-simulations, adapter and native-bridge
+RTL, and an explicit early-grant adapter instance. Regenerating the exhaustive
+shifter harness from the actual baseline and patched core passes all 16,777,216
+combinations. The core's 768 real-instruction cases remain in its RTL testbench.
+Affected-crate/all-target strict Clippy, changed-file rustfmt, layering, source
+hygiene, documentation and whitespace checks pass on Windows.
+
+The local before/after project generation compares all 41 generated files; only
+the core and scalar adapter change. CST, SDC, build options, boot assets, arbiter,
+bridge, controller and GPU shell are byte-identical. Both fits use Gowin
+1.9.8.11 Education with the same device, constraints and placement/routing options,
+and pass setup/hold analysis and repository `--check-existing` auditing. The
+different area savings in the cloud and local flows are recorded separately.
+
+After committing, the standard resource and frozen-suite scripts regenerate
+the committed system and record the exact source identity in the project's
+resources.csv and performance.csv, retaining their selected raw evidence.

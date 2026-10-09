@@ -45,8 +45,7 @@ module SharedSdramPort #(parameter EARLY_GRANT = 0, parameter CHAIN_GROUP_FOUR =
     reg [6:0] line_total = 0;
     reg [6:0] line_fed = 0;
     reg [6:0] read_beats = 0;
-    reg [63:0] scalar_write_data = 0;
-    reg [31:0] scalar_read_data = 0;
+    reg [15:0] scalar_write_data = 0;
     reg scalar_read_seen = 0;
     reg done_seen = 0;
     reg [19:0] timeout_count = 0;
@@ -108,7 +107,11 @@ module SharedSdramPort #(parameter EARLY_GRANT = 0, parameter CHAIN_GROUP_FOUR =
         launch_count == 2'b01 ? 6'd16 : launch_group ? 6'd0 : 6'd32;
     assign controller_write_mask = launch_write && !launch_line ?
         (launch_address[0] ? 4'b0011 : 4'b1100) : 4'b0000;
-    assign controller_write_data = pending_line ? cpu_write_data : scalar_write_data;
+    // A scalar request owns only one halfword. Hold that halfword once and
+    // place it on the selected native lane; the upper pair word is unused.
+    wire [31:0] scalar_write_word = pending_lane ?
+        {scalar_write_data, 16'b0} : {16'b0, scalar_write_data};
+    assign controller_write_data = pending_line ? cpu_write_data : {32'b0, scalar_write_word};
     assign controller_write_data_valid = active_write && !terminal_write_hold;
     assign cpu_write_data_ready = active_write && !terminal_write_hold &&
         pending_line && controller_write_data_ready;
@@ -158,9 +161,7 @@ module SharedSdramPort #(parameter EARLY_GRANT = 0, parameter CHAIN_GROUP_FOUR =
                         cpu_response_last <= 1;
                         state <= ST_RESPONSE;
                     end else begin
-                        scalar_write_data <= launch_address[0] ?
-                            {32'b0, launch_scalar_data[15:0], 16'b0} :
-                            {48'b0, launch_scalar_data[15:0]};
+                        scalar_write_data <= launch_scalar_data[15:0];
                         state <= ST_BUSY;
                     end
                 end
@@ -180,7 +181,11 @@ module SharedSdramPort #(parameter EARLY_GRANT = 0, parameter CHAIN_GROUP_FOUR =
                             if (read_beats == line_total - 1'b1)
                                 state <= ST_READ_LAST;
                         end else begin
-                            scalar_read_data <= controller_read_data[31:0];
+                            // The response register itself holds the selected halfword
+                            // while native completion arrives. Valid remains low;
+                            // there is no second scalar-read payload snapshot.
+                            cpu_read_data <= {48'b0, pending_lane ?
+                                controller_read_data[31:16] : controller_read_data[15:0]};
                             scalar_read_seen <= 1;
                         end
                     end else if (pending_line && !pending_write) begin
@@ -193,9 +198,6 @@ module SharedSdramPort #(parameter EARLY_GRANT = 0, parameter CHAIN_GROUP_FOUR =
                         state <= ST_RESPONSE;
                     end else if (!pending_write && !pending_line && (done_seen || controller_done) &&
                                  (scalar_read_seen || controller_read_valid)) begin
-                        cpu_read_data <= {48'b0, pending_lane ?
-                            (controller_read_valid ? controller_read_data[31:16] : scalar_read_data[31:16]) :
-                            (controller_read_valid ? controller_read_data[15:0] : scalar_read_data[15:0])};
                         cpu_response_valid <= 1;
                         cpu_response_last <= 1;
                         state <= ST_RESPONSE;
@@ -260,9 +262,7 @@ module SharedSdramPort #(parameter EARLY_GRANT = 0, parameter CHAIN_GROUP_FOUR =
                     cpu_response_last <= 1;
                     state <= ST_RESPONSE;
                 end else begin
-                    scalar_write_data <= launch_address[0] ?
-                        {32'b0, launch_scalar_data[15:0], 16'b0} :
-                        {48'b0, launch_scalar_data[15:0]};
+                    scalar_write_data <= launch_scalar_data[15:0];
                     state <= ST_BUSY;
                 end
             end

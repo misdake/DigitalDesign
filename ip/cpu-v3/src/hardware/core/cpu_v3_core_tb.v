@@ -52,6 +52,9 @@ integer errors = 0;
 integer scenario = 0;
 integer last_run_cycles = 0;
 integer cond;
+integer shift_value_index, shift_amount, shift_form;
+reg [15:0] shift_value, expected_shift;
+reg [3:0] shift_fn;
 reg check_high_data_address = 0;
 integer data_beat = 0;
 integer fail_data_beat = -1;
@@ -496,6 +499,47 @@ initial begin
         errors = errors + 1;
     end
 
+    // Shared integer shifter: every count, all six instruction forms, and
+    // sign/boundary/alternating operands. The unused count source is deliberately
+    // different, and register counts have nonzero upper bits. MOV and HALT
+    // immediately consume the shifted GPR through the normal forwarding path.
+    for (shift_value_index = 0; shift_value_index < 8; shift_value_index = shift_value_index + 1) begin
+        case (shift_value_index)
+            0: shift_value = 16'h0000;
+            1: shift_value = 16'h0001;
+            2: shift_value = 16'h7fff;
+            3: shift_value = 16'h8000;
+            4: shift_value = 16'h8001;
+            5: shift_value = 16'hffff;
+            6: shift_value = 16'ha55a;
+            7: shift_value = 16'h5aa5;
+        endcase
+        for (shift_amount = 0; shift_amount < 16; shift_amount = shift_amount + 1) begin
+            for (shift_form = 0; shift_form < 6; shift_form = shift_form + 1) begin
+                shift_fn = shift_form < 3 ? shift_form : shift_form + 1;
+                case (shift_form % 3)
+                    0: expected_shift = shift_value << shift_amount;
+                    1: expected_shift = shift_value >> shift_amount;
+                    2: expected_shift = $signed(shift_value) >>> shift_amount;
+                endcase
+                clear_memory;
+                memory[0] = 16'hf000 | (shift_value >> 4);
+                memory[1] = 16'ha310 | (shift_value & 16'h000f);
+                memory[2] = 16'hffff;
+                memory[3] = 16'ha320 | (shift_form < 3 ? shift_amount : 15 - shift_amount);
+                memory[4] = 16'h2010 | (shift_fn << 8) | (shift_form < 3 ? 2 : shift_amount);
+                memory[5] = 16'h6001; // MOV r0, r1
+                memory[6] = 16'h6c00; // HALT
+                scenario = 100 + shift_value_index*96 + shift_amount*6 + shift_form;
+                expect_halt(expected_shift, 60);
+                if (retired_words !== 7) begin
+                    $display("FAIL: shift scenario %0d retired %0d words, expected 7", scenario, retired_words);
+                    errors = errors + 1;
+                end
+            end
+        end
+    end
+
     if (errors != 0) begin
         $display("FAIL: %0d error(s)", errors);
         $finish(1);
@@ -505,7 +549,7 @@ initial begin
 end
 
 initial begin
-    #500000;
+    #1000000;
     $display("FAIL: global timeout");
     $finish(1);
 end

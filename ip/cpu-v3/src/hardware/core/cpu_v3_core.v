@@ -315,19 +315,36 @@ function [15:0] population_count;
     end
 endfunction
 
-// Destructive shifts compute the result in a statement-based case so the
-// arithmetic `>>>` is never inside a conditional expression. In Verilog a `?:`
-// is unsigned if any branch is unsigned, which silently turns `>>>` into a
-// logical shift.
+// The core issues one destructive shift at a time. Register and immediate
+// forms share the count input, and bit reversal lets left shifts use the same
+// right-shift barrel. The extra sign bit selects zero or arithmetic fill.
+// Keep >>> in its own signed assignment: a surrounding unsigned ?: would
+// silently change arithmetic-right-shift semantics in Verilog.
+wire [3:0] shift_count = field_d[2] ? instruction[3:0] : gpr_read_b_data[3:0];
+wire shift_left = field_d[1:0] == 2'b00;
+wire shift_arithmetic = field_d[1:0] == 2'b10;
+wire [15:0] shift_ordered_input;
+genvar shift_bit;
+generate
+    for (shift_bit = 0; shift_bit < 16; shift_bit = shift_bit + 1) begin : shift_order
+        assign shift_ordered_input[shift_bit] = shift_left ?
+            gpr_read_a_data[15-shift_bit] : gpr_read_a_data[shift_bit];
+    end
+endgenerate
+wire signed [16:0] shift_operand =
+    {shift_arithmetic && gpr_read_a_data[15], shift_ordered_input};
+wire signed [16:0] shift_right_result = shift_operand >>> shift_count;
+wire [15:0] shift_ordered_result;
+generate
+    for (shift_bit = 0; shift_bit < 16; shift_bit = shift_bit + 1) begin : shift_restore
+        assign shift_ordered_result[shift_bit] = shift_left ?
+            shift_right_result[15-shift_bit] : shift_right_result[shift_bit];
+    end
+endgenerate
 reg [15:0] shift_result;
 always @* begin
     case (field_d)
-        4'h0: shift_result = gpr_read_a_data << gpr_read_b_data[3:0];
-        4'h1: shift_result = gpr_read_a_data >> gpr_read_b_data[3:0];
-        4'h2: shift_result = $signed(gpr_read_a_data) >>> gpr_read_b_data[3:0];
-        4'h4: shift_result = gpr_read_a_data << instruction[3:0];
-        4'h5: shift_result = gpr_read_a_data >> instruction[3:0];
-        4'h6: shift_result = $signed(gpr_read_a_data) >>> instruction[3:0];
+        4'h0, 4'h1, 4'h2, 4'h4, 4'h5, 4'h6: shift_result = shift_ordered_result;
         default: shift_result = 16'd0;
     endcase
 end

@@ -11,7 +11,6 @@ pub struct State {
     fed: u8,
     beats: u8,
     scalar_write: u64,
-    scalar_read: u32,
     read_seen: bool,
     done_seen: bool,
     timeout: u32,
@@ -162,7 +161,7 @@ impl State {
                             self.state = 2;
                         }
                     } else {
-                        self.scalar_read = i.controller_read_data as u32;
+                        self.data = (i.controller_read_data >> if o.lane { 16 } else { 0 }) & 65535;
                         self.read_seen = true;
                     }
                 } else if o.line && !o.writing {
@@ -178,12 +177,6 @@ impl State {
                     && (o.done_seen || i.controller_done)
                     && (o.read_seen || i.controller_read_valid)
                 {
-                    let d = if i.controller_read_valid {
-                        i.controller_read_data as u32
-                    } else {
-                        o.scalar_read
-                    };
-                    self.data = u64::from(d >> if o.lane { 16 } else { 0 } & 65535);
                     self.valid = true;
                     self.last = true;
                     self.state = 4;

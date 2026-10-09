@@ -78,13 +78,20 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
 | Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables, one local inferred 18 x 18 interpolation lane, one product re-alignment register, and the shared pipe for SINCOS range reduction | RCP/RSQRT `T0..T3`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
 
+All six integer shift forms share one 17-bit signed right-shift barrel.
+Register/immediate decode selects the four-bit count before the barrel. Left shift
+reverses the 16-bit operand and result using wiring and muxes; logical right shift
+uses zero fill, and arithmetic right shift replicates the original sign. The
+signed shift is computed in its own assignment before result selection. This
+changes neither the single-cycle Execute schedule nor forwarding/retirement.
+
 Integer unsigned comparison uses the shared subtractor's carry; signed comparison
 first checks differing operand signs, then uses the difference sign for equal-sign
 operands. Negation selects zero as the left operand. Prefix and immediate signedness
 are selected before execution, preserving the defined wrapping 16-bit results.
 
 The integer `ASR`/`ASRI` instructions shift `signed(rd)` arithmetically. The RTL computes the
-shift result in a statement-based `case` and the FSM selects it; it never places `>>>` inside a
+signed barrel result separately, then a statement-based `case` validates the form; it never places `>>>` inside a
 conditional expression, because Verilog makes `?:` unsigned when any branch is unsigned and would
 silently turn the arithmetic shift into a logical one. `FTOI16` and every other signed FPU result
 depend on the same rule for any arithmetic shift in their datapath.
