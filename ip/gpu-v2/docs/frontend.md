@@ -3,7 +3,9 @@
 The reusable components own `ports` and `sim/{oracle,counted,timed}` under
 `src/command_processor`, `src/scratchpad`, `src/vertex` and `src/frontend`.
 Frontend composition consumes finished numerical reports at narrow typed
-boundaries. This milestone stops at transformed vertices. It implements no
+boundaries. Its arithmetic milestone stops at transformed vertices. A separate
+bounded source-capture controller prepares the existing triangle oracle's input;
+it is not wired into that sequencer. The frontend implements no
 triangle generation, framebuffer cache, emulator, RTL or command-machine ABI.
 
 The oracle can also consume a GPU-owned MemoryPort through `run_with_memory`.
@@ -87,6 +89,77 @@ is a separate producer-active bit: even a matching consumer release cannot
 recycle a slot while the remaining vertex writes are still in flight. There
 are no triangle references in this milestone. Slot starvation and producerless
 WAIT are bounded timeouts, not success.
+
+## Bounded triangle source capture
+
+`frontend::source_capture::Controller` owns the two existing transformed slots,
+four pending triangle descriptors and one active capture/snapshot position.
+These four descriptors represent the planned geometry task credits; a future
+CP adapter must reuse them rather than add another four-entry FIFO behind them.
+A task names three published vertex indices, slot, full u32 epoch, triangle ID
+and one immutable draw-context token. A monotonically bounded ticket distinguishes
+consumer acknowledgments, even when triangle IDs repeat. Queue-full admission
+returns no credit; stale epochs, unpublished vertices, context mismatch and
+submission after stream sealing are rejected. This is a Rust control/transport
+model, not an audited triangle arithmetic executor or CP command encoding.
+
+Capture reads three sets of seven rows sequentially, one row per enabled edge.
+It deliberately rereads a repeated vertex index. The baseline chooses the
+512x36 SDP bypass read stage: request at E0, downstream capture at E1, matching
+the [Gowin timing contract](../../../hardware/vendor/gowin/doc/gowin-bsram-timing.md).
+One return credit is reserved before each issue; both return and issue freeze
+with core CE. Twenty-one issues, the last return and a separate publication
+edge take **23 enabled edges**, excluding consumer work and queue waiting.
+The model emits issue/return events with concrete addresses/data. It does not
+provide free parallel reads, an extra port or a second queued snapshot.
+
+The snapshot decodes the current seven-row layout with canonical spare-bit
+checks into an owned `triangle::ports::Input`. It holds the full source through
+the consumer's final clipping/fan use. `source_captured` is independent of
+`triangle_consumed`: the source slot may be recycled once its producer has
+finished, its triangle stream is sealed and every accepted reference is captured.
+Snapshot data remains valid after source reuse. Ready snapshot backpressure
+prevents the next task's capture, preserving the single geometry position.
+
+Successful producer completion and stream sealing are independent controls.
+Cancellation stops new tasks/publication, drains a pending source read on an
+enabled edge, discards queued/captured geometry and emits no successful capture.
+It still requires producer completion/drain acknowledgment and stream sealing
+before slot release. Fault-only `abort_production` covers a producer that failed
+before publishing any vertex. This controller does not drain DMA, accepted
+external memory, raster records or pixels. `drained()` describes only capture
+and snapshot work; it cannot authorize a full render fence or context change.
+The existing frontend FENCE and RELEASE semantics are unchanged.
+
+`publish_completed_vertex` is an explicit producer fixture boundary after all
+seven writes and publication, not a zero-cost production write schedule. The
+integration regression instead imports actual timed-frontend slots and checks
+their input against the existing triangle oracle. The shared arithmetic calendar,
+two triangle record slots and a live CP/vertex/capture pipeline remain separate
+integration work. Precision candidates must update both packing and decoder after
+review; the current baseline has no hidden truncation of clip, normal or UV.
+
+| Retained object | Declared logical capacity |
+| --- | --- |
+| Existing source slots | 2 x 512 x 36 bits; no new source replica |
+| Snapshot rows | One 21 x 36-bit store; 648 useful bits, 108 spare bits |
+| Registered return | One 36-bit payload plus row tag/valid |
+| Pending descriptors | Four, each 32-bit triangle ID + 1-bit slot + 32-bit epoch + 18-bit indices + 64-bit context + 64-bit ticket = 211 payload bits |
+| Active/snapshot metadata | One additional descriptor/ticket; capture cursors, per-slot reference counts, sealing and valid state are separate control |
+
+The active and ready Rust states are mutually exclusive and transfer ownership
+of one logical snapshot. This is a capacity declaration, not an RTL RAM binding,
+FF/Logic measurement or proof that every control register can be minimized.
+No context narrowing, refcount CAM or per-vertex recycling is assumed.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label gpu-source-capture -CargoArgs @('-p','gpu-v2','--test','source_capture')
+```
+
+The bounded regressions cover concrete frontend/triangle input, exact read
+count, reordered/repeated source indices, CE stalls, queue credit, source reuse
+while the snapshot remains live, separate producer/seal completion, cancellation,
+bad row drain, stale tickets/context/epochs and cycle/task watchdogs.
 
 ## Numerical stages
 

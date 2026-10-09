@@ -38,6 +38,21 @@ impl LightingEmu {
             max_wall_ticks,
         )
     }
+    /// Explicit factor candidate with Fast II2/II1 or Compact II3/II2.
+    /// The scaled NL gate follows the existing area candidate, not baseline bits.
+    pub fn with_factor_profile(
+        profile: LightingProfile,
+        max_wall_ticks: u64,
+    ) -> Result<Self, String> {
+        Self::with_kernel_depth(
+            profile,
+            false,
+            super::sim::counted::Config::system_candidate(true),
+            true,
+            8,
+            max_wall_ticks,
+        )
+    }
     pub fn with_system_profile(
         profile: LightingProfile,
         max_wall_ticks: u64,
@@ -87,13 +102,24 @@ impl LightingEmu {
         roles: bool,
         max_wall_ticks: u64,
     ) -> Result<Self, String> {
+        Self::with_kernel_depth(profile, dedicated, kernel, roles, 0, max_wall_ticks)
+    }
+    /// Explicit stage-boundary experiment, with independent numerical execution.
+    pub fn with_kernel_depth(
+        profile: LightingProfile,
+        dedicated: bool,
+        kernel: super::sim::counted::Config,
+        roles: bool,
+        logic_depth: usize,
+        max_wall_ticks: u64,
+    ) -> Result<Self, String> {
         if max_wall_ticks == 0 {
             return Err("zero clock budget".into());
         }
         Ok(Self {
             programs: [
-                Program::with_kernel(profile, true, dedicated, kernel, roles)?,
-                Program::with_kernel(profile, false, dedicated, kernel, roles)?,
+                Program::with_kernel_depth(profile, true, dedicated, kernel, roles, logic_depth)?,
+                Program::with_kernel_depth(profile, false, dedicated, kernel, roles, logic_depth)?,
             ],
             context: None,
             tokens: VecDeque::new(),

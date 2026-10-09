@@ -10,9 +10,57 @@ use resource_scheduler::{
     Graph, ModuloGraph, ModuloSchedule, Node, Resource as Site, SearchConfig,
 };
 use std::{collections::BTreeMap, sync::Arc};
+#[expect(
+    dead_code,
+    reason = "Legacy private ingress/live ports are retained; Runtime uses its live executor"
+)]
 pub mod control;
 pub mod inventory;
+pub mod runtime;
+mod runtime_inventory;
+mod runtime_membership;
+#[cfg(test)]
+mod runtime_numerical_tests;
+mod runtime_packet;
+mod runtime_preparation;
+pub mod session;
+pub mod storage;
 pub mod system;
+mod transport;
+
+// Test-only exclusion of fresh counted evaluation on the live numerical path.
+// Legacy Program construction occurs outside this scope and remains supported.
+#[cfg(test)]
+mod counted_call_guard {
+    use std::cell::Cell;
+    thread_local! {
+        static LIVE: Cell<bool> = const { Cell::new(false) };
+        static CALLS: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
+    }
+    pub(super) struct Scope;
+    impl Scope {
+        pub(super) fn enter() -> Self {
+            LIVE.with(|v| assert!(!v.replace(true), "nested live numerical scope"));
+            Self
+        }
+    }
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            LIVE.with(|v| v.set(false));
+        }
+    }
+    pub(super) fn call(which: usize) {
+        CALLS.with(|v| {
+            let mut calls = v.get();
+            calls[which] += 1;
+            v.set(calls);
+        });
+        LIVE.with(|v| assert!(!v.get(), "counted arithmetic on live Runtime path"));
+    }
+    pub(super) fn calls() -> [u64; 2] {
+        CALLS.with(Cell::get)
+    }
+}
 
 pub struct Lane {
     pub lane: u8,
@@ -117,25 +165,30 @@ pub fn prepare(q: &QuadInput, slots: &[Slot]) -> Result<Preparation, counted::Er
     })
 }
 fn membership(c: &Stage, q: &Stage, w: &Stage, lane: usize, which: usize) -> Result<Stage, Fault> {
+    membership_values(
+        std::array::from_fn(|t| w.raw(&format!("w{which}.{t}"))),
+        std::array::from_fn(|i| q.raw(&format!("t{which}.{}.{}", i / 2, i % 2))),
+        [c.raw("slot"), c.raw(&format!("n{which}")), c.raw("quad")],
+        lane as i128,
+        [i128::from(which == 0), c.raw("last_fine")],
+    )
+}
+// One counted body for legacy prepare and captured actual coefficient operands.
+fn membership_values(
+    weights: [i128; 4],
+    coords: [i128; 4],
+    identity: [i128; 3],
+    lane: i128,
+    flags: [i128; 2],
+) -> Result<Stage, Fault> {
+    #[cfg(test)]
+    counted_call_guard::call(0);
     let mut m = Model::numerical();
-    let weights: CoefficientStore = m.input(
-        "weights",
-        &(0..4)
-            .map(|t| w.raw(&format!("w{which}.{t}")))
-            .collect::<Vec<_>>(),
-    )?;
-    let coords: TexelCoordinateStore = m.input(
-        "coords",
-        &(0..4)
-            .map(|i| q.raw(&format!("t{which}.{}.{}", i / 2, i % 2)))
-            .collect::<Vec<_>>(),
-    )?;
-    let identity = m.input::<4, 0, false>(
-        "identity",
-        &[c.raw("slot"), c.raw(&format!("n{which}")), c.raw("quad")],
-    )?;
-    let lane_id = m.input::<2, 0, false>("lane", &[lane as i128])?;
-    let flags = m.input::<1, 0, false>("flags", &[i128::from(which == 0), c.raw("last_fine")])?;
+    let weights: CoefficientStore = m.input("weights", &weights)?;
+    let coords: TexelCoordinateStore = m.input("coords", &coords)?;
+    let identity = m.input::<4, 0, false>("identity", &identity)?;
+    let lane_id = m.input::<2, 0, false>("lane", &[lane])?;
+    let flags = m.input::<1, 0, false>("flags", &flags)?;
     let f = m.compute("texture_membership", 256)?;
     let a = f.read(coords.at::<0>())?;
     let b = f.read(coords.at::<1>())?;
@@ -188,32 +241,26 @@ fn membership(c: &Stage, q: &Stage, w: &Stage, lane: usize, which: usize) -> Res
     Stage::finish(f)
 }
 fn packet(p: &Stage, tap: usize) -> Result<Stage, Fault> {
+    packet_values(|name| p.raw(name), tap)
+}
+// Complete92-bit membership plus2-bit tap input capture, same counted body.
+fn packet_values(p: impl Fn(&str) -> i128, tap: usize) -> Result<Stage, Fault> {
+    #[cfg(test)]
+    counted_call_guard::call(1);
     let mut m = Model::numerical();
     let weights: CoefficientStore = m.input(
         "weights",
-        &(0..4).map(|i| p.raw(&format!("w{i}"))).collect::<Vec<_>>(),
+        &(0..4).map(|i| p(&format!("w{i}"))).collect::<Vec<_>>(),
     )?;
-    let tiles = m.input::<7, 0, false>(
-        "tiles",
-        &[p.raw("tx0"), p.raw("tx1"), p.raw("ty0"), p.raw("ty1")],
-    )?;
-    let local = m.input::<3, 0, false>("local", &[p.raw("lx"), p.raw("ly")])?;
-    let meta = m.input::<4, 0, false>("meta", &[p.raw("slot"), p.raw("n"), p.raw("quad")])?;
-    let lane = m.input::<2, 0, false>("lane", &[p.raw("lane"), tap as i128])?;
-    let flags = m.input::<1, 0, false>(
-        "flags",
-        &[
-            p.raw("same_x"),
-            p.raw("same_y"),
-            p.raw("fine"),
-            p.raw("final"),
-        ],
-    )?;
+    let tiles = m.input::<7, 0, false>("tiles", &[p("tx0"), p("tx1"), p("ty0"), p("ty1")])?;
+    let local = m.input::<3, 0, false>("local", &[p("lx"), p("ly")])?;
+    let meta = m.input::<4, 0, false>("meta", &[p("slot"), p("n"), p("quad")])?;
+    let lane = m.input::<2, 0, false>("lane", &[p("lane"), tap as i128])?;
+    let flags =
+        m.input::<1, 0, false>("flags", &[p("same_x"), p("same_y"), p("fine"), p("final")])?;
     let emit = m.input::<1, 0, false>(
         "emit",
-        &(0..4)
-            .map(|i| p.raw(&format!("emit{i}")))
-            .collect::<Vec<_>>(),
+        &(0..4).map(|i| p(&format!("emit{i}"))).collect::<Vec<_>>(),
     )?;
     let f = m.compute("texture_packet", 384)?;
     let tap = f.read(lane.at::<1>())?;
@@ -345,14 +392,31 @@ pub struct StagePlan {
     retained: Vec<String>,
     certified_sites: Vec<(Resource, usize)>,
     pub ff_banks: Vec<FfBank>,
+    pub packed: storage::Layout,
+    pub packed_fields: Vec<FfBank>,
+}
+fn storage_ports(f: &FrameReport, ports: &[String]) -> Vec<String> {
+    ports
+        .iter()
+        .filter(|name| {
+            !(matches!(
+                f.name.as_str(),
+                "texture_derivatives" | "texture_lod_context"
+            ) && *name == "base")
+                && !(f.name == "texture_lod_context" && *name == "shift1")
+        })
+        .cloned()
+        .collect()
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FfBank {
     pub value: usize,
+    pub source_low: u32,
     pub width: u32,
     pub slots: u64,
     pub birth: u64,
     pub last_read: u64,
+    pub read_times: Vec<u64>,
 }
 fn operand_mux_bits(
     f: &FrameReport,
@@ -456,10 +520,12 @@ fn storage_banks(
                 i.value,
                 FfBank {
                     value: i.value,
+                    source_low: 0,
                     width: i.bits,
                     slots: 0,
                     birth: i.start,
                     last_read: i.end - 1,
+                    read_times: vec![],
                 },
             )
         })
@@ -605,7 +671,19 @@ impl StagePlan {
             .filter(|(r, _)| *r == Resource::Dsp18)
             .map(|(_, n)| *n as u64 * 17 * 3)
             .sum();
+        let packed_retained = storage_ports(f, &retained);
+        let packed_fields = storage::fields(
+            f,
+            &graph,
+            &times,
+            &cones,
+            &lowering,
+            &packed_retained,
+            calendar.span,
+        )?;
         let result = Self {
+            packed: storage::Layout::build(&packed_fields, ii)?,
+            packed_fields,
             operand_mux_tree_bits: operand_mux_bits(f, &graph, &calendar, &cones),
             certified_sites: sites.clone(),
             ff_banks,
@@ -664,6 +742,20 @@ impl StagePlan {
         let life = lifecycle::analyze_composed_policy(f, &self.times, &[], &self.cones, &policy)
             .map_err(|e| format!("lifecycle reuse: {e:?}"))?;
         let banks = storage_banks(f, &life, &self.lowering, self.ii())?;
+        let packed_retained = storage_ports(f, &self.retained);
+        let packed_fields = storage::fields(
+            f,
+            &self.graph,
+            &self.times,
+            &self.cones,
+            &self.lowering,
+            &packed_retained,
+            self.span(),
+        )?;
+        self.packed.audit(&packed_fields, self.ii())?;
+        if self.packed_fields != packed_fields {
+            return Err("packed field liveness mutation".into());
+        }
         let ff: u64 = banks.iter().map(|b| u64::from(b.width) * b.slots).sum();
         if life != self.life || ff != self.fixed_ff_bits {
             return Err("bound retained storage mutation".into());

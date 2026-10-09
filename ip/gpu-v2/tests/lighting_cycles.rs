@@ -41,91 +41,206 @@ fn numerical_executor_matches_every_stage_without_rebuilding_the_graph() {
         } else {
             &[false, true][..]
         } {
-            let mut emu = if system {
-                LightingEmu::with_system_profile(profile, 300_000)
-            } else if resource {
-                LightingEmu::with_resource_profile(profile, 300_000)
-            } else {
-                LightingEmu::with_profile(profile, 300_000)
-            }
-            .unwrap();
-            for (id, (p, m, l, pr)) in support::representative().into_iter().enumerate() {
-                let ctx = context(m, l, pr);
-                assert!(
-                    emu.tick(LightingTick {
-                        context: Some(ctx),
-                        ..idle()
-                    })
-                    .unwrap()
-                    .context_ready
-                );
-                let req = LightingRequest {
-                    pixel: p,
-                    id: id as u32,
+            for depth in [0, 8] {
+                let kernel = if system {
+                    counted::Config::system_profile()
+                } else if resource {
+                    counted::Config::resource_profile(profile)
+                } else {
+                    counted::Config::architecture()
                 };
-                assert!(
-                    emu.tick(LightingTick {
-                        input: Some(req),
-                        ..idle()
-                    })
-                    .unwrap()
-                    .input_ready
-                );
-                for _ in 0..emu.latency() {
-                    emu.tick(idle()).unwrap();
+                let mut emu = if depth != 0 {
+                    LightingEmu::with_kernel_depth(
+                        profile,
+                        false,
+                        kernel,
+                        system || resource,
+                        depth,
+                        300_000,
+                    )
+                } else if system {
+                    LightingEmu::with_system_profile(profile, 300_000)
+                } else if resource {
+                    LightingEmu::with_resource_profile(profile, 300_000)
+                } else {
+                    LightingEmu::with_profile(profile, 300_000)
                 }
-                let result = emu.signals(idle()).output.unwrap();
-                let expected = counted::evaluate_with_config(
-                    p,
-                    m,
-                    l,
-                    pr,
-                    support::MAX_EVENTS,
-                    if system {
-                        counted::Config::system_profile()
-                    } else if resource {
-                        counted::Config::resource_profile(profile)
-                    } else {
-                        counted::Config::architecture()
-                    },
-                )
                 .unwrap();
-                assert_eq!(result.output, expected.output, "{p:?} {m:?} {l:?}");
-                let stages = emu.output_stages().unwrap();
-                for o in expected.frame.outputs {
-                    assert_eq!(
-                        stages.iter().find(|(n, _)| *n == o.name).unwrap().1,
-                        o.raw,
-                        "stage {} {p:?}",
-                        o.name
+                for (id, (p, m, l, pr)) in support::representative().into_iter().enumerate() {
+                    let ctx = context(m, l, pr);
+                    assert!(
+                        emu.tick(LightingTick {
+                            context: Some(ctx),
+                            ..idle()
+                        })
+                        .unwrap()
+                        .context_ready
                     );
-                }
-                let golden = oracle::evaluate(
-                    p,
-                    m,
-                    l,
-                    pr,
-                    oracle::Config {
-                        scalar_norm: resource,
-                        scalar_normal: system,
-                        exact_normal_gate: system,
-                        direct_all_squares: system,
-                        rounding: oracle::RoundingPolicy {
-                            power: oracle::Rounding::Floor,
+                    let req = LightingRequest {
+                        pixel: p,
+                        id: id as u32,
+                    };
+                    assert!(
+                        emu.tick(LightingTick {
+                            input: Some(req),
+                            ..idle()
+                        })
+                        .unwrap()
+                        .input_ready
+                    );
+                    for _ in 0..emu.latency() {
+                        emu.tick(idle()).unwrap();
+                    }
+                    let result = emu.signals(idle()).output.unwrap();
+                    let expected = counted::evaluate_with_config(
+                        p,
+                        m,
+                        l,
+                        pr,
+                        support::MAX_EVENTS,
+                        if system {
+                            counted::Config::system_profile()
+                        } else if resource {
+                            counted::Config::resource_profile(profile)
+                        } else {
+                            counted::Config::architecture()
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(result.output, expected.output, "{p:?} {m:?} {l:?}");
+                    let stages = emu.output_stages().unwrap();
+                    for o in expected.frame.outputs {
+                        assert_eq!(
+                            stages.iter().find(|(n, _)| *n == o.name).unwrap().1,
+                            o.raw,
+                            "stage {} {p:?}",
+                            o.name
+                        );
+                    }
+                    let golden = oracle::evaluate(
+                        p,
+                        m,
+                        l,
+                        pr,
+                        oracle::Config {
+                            scalar_norm: resource,
+                            scalar_normal: system,
+                            exact_normal_gate: system,
+                            direct_all_squares: system,
+                            rounding: oracle::RoundingPolicy {
+                                power: oracle::Rounding::Floor,
+                                ..Default::default()
+                            },
                             ..Default::default()
                         },
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-                assert_eq!(
-                    (i128::from(result.output.g), i128::from(result.output.h)),
-                    (golden.g, golden.h)
-                );
-                assert_eq!(result.id, id as u32);
-                assert_eq!(result.epoch, 17);
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        (i128::from(result.output.g), i128::from(result.output.h)),
+                        (golden.g, golden.h)
+                    );
+                    assert_eq!(result.id, id as u32);
+                    assert_eq!(result.epoch, 17);
+                    emu.tick(idle()).unwrap();
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn factor_profile_retains_public_rates_and_matches_independent_goldens() {
+    for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+        let rtl = gpu_v2::lighting::rtl::generate_with_options(
+            profile,
+            gpu_v2::lighting::rtl::LightingRtlOptions::factor_profile(),
+        )
+        .unwrap();
+        let mut emu = LightingEmu::with_factor_profile(profile, 80_000).unwrap();
+        assert_eq!(
+            (rtl.specular_ii, rtl.diffuse_ii),
+            if profile == LightingProfile::Fast {
+                (2, 1)
+            } else {
+                (3, 2)
+            }
+        );
+        for (id, (pixel, material, light, projection)) in
+            support::representative().into_iter().step_by(7).enumerate()
+        {
+            let ctx = context(material, light, projection);
+            assert!(
+                emu.tick(LightingTick {
+                    context: Some(ctx),
+                    ..idle()
+                })
+                .unwrap()
+                .context_ready
+            );
+            assert_eq!(
+                emu.latency(),
+                if ctx.mode() == 3 {
+                    rtl.latency
+                } else {
+                    rtl.diffuse_latency
+                }
+            );
+            assert_eq!(
+                emu.initiation_interval(),
+                if ctx.mode() == 3 {
+                    rtl.specular_ii
+                } else {
+                    rtl.diffuse_ii
+                }
+            );
+            assert!(
+                emu.tick(LightingTick {
+                    input: Some(LightingRequest {
+                        pixel,
+                        id: id as u32
+                    }),
+                    ..idle()
+                })
+                .unwrap()
+                .input_ready
+            );
+            for _ in 0..emu.latency() {
                 emu.tick(idle()).unwrap();
             }
+            let result = emu.signals(idle()).output.unwrap();
+            let counted = counted::evaluate_with_config(
+                pixel,
+                material,
+                light,
+                projection,
+                support::MAX_EVENTS,
+                counted::Config::system_candidate(true),
+            )
+            .unwrap();
+            assert_eq!(result.output, counted.output);
+            let golden = oracle::evaluate(
+                pixel,
+                material,
+                light,
+                projection,
+                oracle::Config {
+                    scalar_norm: true,
+                    scalar_normal: true,
+                    direct_all_squares: true,
+                    rounding: oracle::RoundingPolicy {
+                        power: oracle::Rounding::Floor,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                (i128::from(result.output.g), i128::from(result.output.h)),
+                (golden.g, golden.h)
+            );
+            assert_eq!((result.id, result.epoch), (id as u32, 17));
+            emu.tick(idle()).unwrap();
         }
     }
 }
@@ -144,8 +259,12 @@ fn exercise(
         profile,
         LightingProfile::SystemFast | LightingProfile::SystemCompact
     );
-    let kernel = if system {
-        counted::Config::system_profile()
+    let factor = std::env::var_os("LIGHTING_FACTOR_KERNEL").is_some();
+    let kernel = if system || factor {
+        counted::Config {
+            exact_normal_gate: std::env::var_os("LIGHTING_SCALED_GATE").is_none(),
+            ..counted::Config::system_profile()
+        }
     } else if resource {
         counted::Config::resource_profile(profile)
     } else {
@@ -158,8 +277,21 @@ fn exercise(
     };
     let scalar = kernel.scalar_norm;
     let direct = kernel.direct_square;
-    let mut emu = if system {
-        LightingEmu::with_system_profile(profile, 40_000)
+    let depth = std::env::var("LIGHTING_LOGIC_DEPTH")
+        .ok()
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(0);
+    let mut emu = if depth != 0 {
+        LightingEmu::with_kernel_depth(
+            profile,
+            dedicated,
+            kernel,
+            roles || system || resource || factor,
+            depth,
+            40_000,
+        )
+    } else if system {
+        LightingEmu::with_kernel(profile, dedicated, kernel, true, 40_000)
     } else if resource {
         LightingEmu::with_resource_profile(profile, 40_000)
     } else {
@@ -496,7 +628,7 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
     };
     for profile in profiles {
         let resource = std::env::var_os("LIGHTING_RESOURCE_PROFILE").is_some();
-        let options = if system {
+        let mut options = if system || std::env::var_os("LIGHTING_FACTOR_KERNEL").is_some() {
             gpu_v2::lighting::rtl::LightingRtlOptions::system_profile()
         } else if resource {
             gpu_v2::lighting::rtl::LightingRtlOptions::resource_profile(profile)
@@ -513,8 +645,20 @@ fn verilog_matches_cycle_payloads_and_all_published_stages() {
                 ..Default::default()
             }
         };
+        options.q_windows = std::env::var_os("LIGHTING_Q_WINDOWS").is_some();
+        options.shallow_normal_ff = profile == LightingProfile::Fast
+            && std::env::var_os("LIGHTING_SHALLOW_NORMAL_FF").is_some();
+        options.cost_cut = std::env::var_os("LIGHTING_COST_CUT").is_some();
+        options.stationary_logic = std::env::var_os("LIGHTING_STATIONARY_LOGIC").is_some();
+        options.logic_depth = std::env::var("LIGHTING_LOGIC_DEPTH")
+            .ok()
+            .map(|v| v.parse().unwrap())
+            .unwrap_or(0);
+        if std::env::var_os("LIGHTING_SCALED_GATE").is_some() {
+            options.exact_normal_gate = false;
+        }
         let rtl = gpu_v2::lighting::rtl::generate_with_options(profile, options).unwrap();
-        let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/gpu-v2-lighting/rtl-cosim-{profile:?}-resource-{resource}-dedicated-{dedicated}-scalar-{scalar}-block-{block}-roles-{roles}-direct-{direct}"));
+        let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/gpu-v2-lighting/rtl-cosim-{profile:?}-resource-{resource}-dedicated-{dedicated}-scalar-{scalar}-block-{block}-roles-{roles}-direct-{direct}-depth-{}-stationary-{}-cut-{}-window-{}-normalff-{}",options.logic_depth,options.stationary_logic,options.cost_cut,options.q_windows,options.shallow_normal_ff));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("lighting.v"), &rtl.source).unwrap();
         let mut tb = String::from(

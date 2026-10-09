@@ -12,8 +12,40 @@ fn main() {
     };
     let options = match std::env::args().nth(4).as_deref() {
         None => rtl::LightingRtlOptions::default(),
+        Some("factor-window-ff") => rtl::LightingRtlOptions {
+            shallow_normal_ff: true,
+            q_windows: true,
+            ..rtl::LightingRtlOptions::factor_profile()
+        },
+        Some("factor-window") => rtl::LightingRtlOptions {
+            q_windows: true,
+            ..rtl::LightingRtlOptions::factor_profile()
+        },
+        Some("factor-cut") => rtl::LightingRtlOptions {
+            cost_cut: true,
+            ..rtl::LightingRtlOptions::factor_profile()
+        },
+        Some("factor-coarse") => rtl::LightingRtlOptions::factor_profile(),
+        Some("factor-hierarchy") => rtl::LightingRtlOptions {
+            hierarchy: true,
+            ..rtl::LightingRtlOptions::factor_profile()
+        },
+        Some("resource-coarse") => rtl::LightingRtlOptions {
+            logic_depth: 8,
+            ..rtl::LightingRtlOptions::resource_profile(profile)
+        },
         Some("resource") => rtl::LightingRtlOptions::resource_profile(profile),
         Some("system") => rtl::LightingRtlOptions::system_profile(),
+        Some("stationary") => rtl::LightingRtlOptions {
+            stationary_logic: true,
+            exact_normal_gate: false,
+            ..rtl::LightingRtlOptions::system_profile()
+        },
+        Some("coarse") => rtl::LightingRtlOptions {
+            logic_depth: 8,
+            exact_normal_gate: false,
+            ..rtl::LightingRtlOptions::system_profile()
+        },
         Some("system-scaled-gate") | Some("system-square18") => rtl::LightingRtlOptions {
             exact_normal_gate: false,
             ..rtl::LightingRtlOptions::system_profile()
@@ -108,7 +140,10 @@ fn main() {
         Some(s) => panic!("unknown lowering {s}"),
     };
     let result = rtl::generate_with_options(profile, options).unwrap();
-    for full in [true, false] {
+    for full in [true, false]
+        .into_iter()
+        .filter(|_| !options.stationary_logic)
+    {
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             format!(
@@ -120,6 +155,12 @@ fn main() {
         .unwrap();
     }
 
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        format!("{directory}/operations.csv"),
+        rtl::operation_calendar_with_options(profile, options).unwrap(),
+    )
+    .unwrap();
     let mut lanes = String::from("lane,kind,width,latency,full_operations,diffuse_operations\n");
     for l in &result.lanes {
         use std::fmt::Write;
@@ -196,6 +237,7 @@ fn main() {
     std::fs::write(format!("{directory}/dsp-packing.txt"),format!("certified_macros={},certified_tiles={},DSP9_half_slots={},whole_macro_DSP18_charge={},whole_tile_DSP18_charge={}\n",usage.macros,usage.tiles,usage.multiplier_half_slots,2*usage.macros,4*usage.tiles)).unwrap();
     std::fs::write(format!("{directory}/lanes.csv"), lanes).unwrap();
     std::fs::write(format!("{directory}/storage.csv"), &result.storage_csv).unwrap();
+    std::fs::write(format!("{directory}/cuts.csv"), &result.cuts_csv).unwrap();
     let source = if gowin {
         format!("`define GPU_V2_GOWIN_DSP\n{}", result.source)
     } else {

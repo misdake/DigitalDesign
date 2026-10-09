@@ -57,13 +57,17 @@ pub(crate) struct Program {
     pub full: bool,
 }
 impl Program {
-    pub fn with_kernel(
+    pub fn with_kernel_depth(
         profile: LightingProfile,
         full: bool,
         dedicated: bool,
         config: counted::Config,
         roles: bool,
+        logic_depth: usize,
     ) -> Result<Self, String> {
+        if logic_depth != 0 && !(2..=8).contains(&logic_depth) {
+            return Err("logic boundary depth must be 2..=8".into());
+        }
         if !config.dataflow
             || !config.signed_square
             || !config.power_floor
@@ -89,6 +93,9 @@ impl Program {
             .map_err(|e| format!("template audit: {e:?}"))?;
         let mut hardware = profile.hardware();
         hardware.kernel = config;
+        if logic_depth != 0 {
+            hardware.cone_depth = logic_depth;
+        }
         let full_ii = profile.ii(true);
         let scalar_squares: usize = if config.direct_square { 3 } else { 0 };
         let large_work: usize = if scalar { 12 + scalar_squares } else { 14 };
@@ -97,8 +104,70 @@ impl Program {
             3_usize.div_ceil(full_ii),
             (large_work - 5).div_ceil(full_ii),
         ];
-        let mut system_cone_work = BTreeMap::new();
-        if profile.system() {
+        let mut system_cone_work = BTreeMap::<super::sim::timed::LaneKind, usize>::new();
+        if !profile.system() && config.scalar_normal {
+            // The factor kernel must budget the actual full AND diffuse rates.
+            // In particular Fast diffuse II1 cannot borrow an II2 full budget.
+            let mut small_capacity = 0;
+            let mut read_capacity = 0;
+            role_capacity = [0; 3];
+            for mode in [true, false] {
+                let f = counted::hardware_template_with_config(mode, config)
+                    .map_err(|e| format!("factor workload: {e:?}"))?
+                    .frame;
+                let b = BoundDag::new(&f, hardware)?;
+                let ray = ancestors(&f, &["ray.0", "ray.1"]);
+                let view = ancestors(&f, &["v.0", "v.1", "v.2"]);
+                let mut large = [0_usize; 3];
+                let mut small = 0_usize;
+                let mut reads = 0_usize;
+                let mut cones = BTreeMap::new();
+                for (id, kind) in b.kinds.iter().enumerate() {
+                    match kind {
+                        Some(k @ super::sim::timed::LaneKind::LogicCone { .. }) => {
+                            *cones.entry(k.clone()).or_insert(0_usize) += 1
+                        }
+                        Some(super::sim::timed::LaneKind::LargeMultiply) => {
+                            large[if ray[id] {
+                                0
+                            } else if view[id] {
+                                1
+                            } else {
+                                2
+                            }] += 1
+                        }
+                        Some(super::sim::timed::LaneKind::SmallMultiply) => small += 1,
+                        Some(super::sim::timed::LaneKind::NormalizeRead) => reads += 1,
+                        _ => (),
+                    }
+                }
+                let ii = profile.ii(mode);
+                for (capacity, work) in role_capacity.iter_mut().zip(large) {
+                    *capacity = (*capacity).max(work.div_ceil(ii));
+                }
+                small_capacity = small_capacity.max(small.div_ceil(ii));
+                read_capacity = read_capacity.max(reads.div_ceil(ii));
+                for (k, work) in cones {
+                    // Existing graph builder stores effective work in full-II units.
+                    let effective_work = work.div_ceil(ii) * full_ii;
+                    system_cone_work
+                        .entry(k)
+                        .and_modify(|n| *n = (*n).max(effective_work))
+                        .or_insert(effective_work);
+                }
+            }
+            // Complete the existing Compact MULT18 macro instead of leaving
+            // its eighth slot idle. This adds no macro or tile allocation.
+            if profile == LightingProfile::Compact
+                && logic_depth == 8
+                && role_capacity.iter().sum::<usize>() % 2 == 1
+            {
+                role_capacity[2] += 1;
+            }
+            hardware.large_multiply = role_capacity.iter().sum();
+            hardware.small_multiply = small_capacity;
+            hardware.normalize_reads = read_capacity;
+        } else if profile.system() {
             // Budget both modes from the complete full body, not one sample
             // path or the smaller diffuse body. The binding stays audited.
             let full_frame = counted::hardware_template_with_config(true, config)

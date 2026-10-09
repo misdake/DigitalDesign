@@ -1,3 +1,3 @@
-//! Future composition of GPU components through their owned ports.
-//!
-//! No command ABI, memory map, quad lifecycle or board policy is defined yet.
+//! Bounded component composition experiments, separate from board/command policy.
+
+pub mod pixel;

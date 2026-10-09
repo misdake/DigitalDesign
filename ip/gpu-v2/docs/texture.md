@@ -10,8 +10,13 @@ UNORM9 datapath with independently replayable numerical ledgers.
 `texture::sim::timed` executes the bounded cache/color controller. It supports
 the historical static preparation baseline and checked input from
 `staged::bound`: universal periodic stage calendars with finite credits,
-registered boundaries and optional early shared-context release. Independent
-arithmetic emulation, RTL, GPU dispatch and fitted performance remain future work.
+registered boundaries and optional early shared-context release. Most independent
+preparation arithmetic, RTL, GPU dispatch and fitted performance remain future
+work. The independent coefficient cycle block and its private composition test
+are described below. `texture::emu::color` executes the captured-texel color
+pipeline; its standalone/replay boundary is described below.
+An optional concrete periodic FF-slice layout checks bit ownership at every
+actual read edge; the dedicated allocation remains the default reference.
 
 Refills reuse the existing GPU-owned `frontend::ports::MemoryPort` facade,
 re-exported by texture. The existing generic test adapter connects it to the
@@ -354,7 +359,7 @@ the hot window. This is bounded synthetic traffic; it does not establish a
 production display/CDC margin or board behavior. Optional 512-byte groups are
 not enabled or used to infer a gain for isolated 128-byte refills.
 
-`inventory` bills dedicated allocations, not the prior boundary-data peak:
+The original dedicated `inventory` bills allocations, not boundary-data peaks:
 all kernel FF banks, contexts, pass-through/ready records, completion, phase/
 queue control, slot/tag/PLRU/line state, miss directory, Group/result FIFOs and
 color tokens/tree/feedback. The conservative mapping needs **16469 FF bits for
@@ -382,6 +387,132 @@ beats during CE=0 and rejection of timing/storage/site/provenance mutations.
 The probe exports `performance.csv`, `stages.csv` and `storage.csv` under the
 chosen output directory; no full-repository or board validation is part of this
 unit.
+
+### Concrete periodic FF reuse
+
+The optional `control::Storage::Packed` policy reuses bit-addressed FF slices
+inside the six preparation kernels. It changes no arithmetic format, stage
+II, context release, FIFO credit, cache port or MC behavior. Other allocations
+retain the dedicated conservative bill. This bounded comparison uses exactly
+two layouts; it does not search for a global minimum or select a fitted winner.
+
+Structural wiring views resolve slices, signed extension, floor shifts, static
+input aliases and certified disjoint field concatenation to their original
+source bits. Product low bytes and sliced-away UV high bits stop occupying
+storage after their last actual read. Constants remain literal wiring at each
+consumer, independent of their sampled value. The unused D/LOD base publication
+and LOD shift1 diagnostic publication are omitted from physical retention;
+cache addresses still read the separately billed, drain-protected slot table.
+
+Each field lists its producer edge and **every read offset**. A deterministic
+first-fit allocation assigns contiguous physical FF ranges and a finite periodic
+phase bitmap. Overlapping live masks, duplicate births, missing fields, forged
+bit origins/read offsets, out-of-range addresses and altered bills are rejected.
+Lifetimes include the final read edge: a new producer cannot overwrite an old
+value on that edge. Every physical bit has at most one write per enabled edge;
+reads use continuous FF fanout and explicitly billed phase-specific selectors.
+No RAM port or cache maintenance port is borrowed.
+
+| Kernel | Dedicated data FF | Packed data FF | Periodic live peak | Phase/valid FF | Read mux bit nodes | Write mux bit nodes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| D | 2440 | 1336 | 1159 | 49 | 1191 | 833 |
+| LOD | 793 | 277 | 277 | 60 | 248 | 356 |
+| coordinate | 890 | 718 | 691 | 18 | 806 | 211 |
+| coefficient | 419 | 315 | 315 | 19 | 489 | 200 |
+| membership | 691 | 722 | 649 | 15 | 1258 | 142 |
+| packet | 674 | 673 | 673 | 16 | 1154 | 579 |
+
+Data FF falls from 5907 to 4041, with **177 additional control FF** for six
+CE-gated one-hot phase rings and fixed-delay issue-valid pipelines. Allocation
+fragmentation makes membership larger despite its smaller live peak; the bill
+uses actual allocated ranges rather than ideal simultaneous-live bits. The
+new storage topology costs **5146 read and 2321 write 2:1 bit-mux nodes**, plus
+**10871 conservative Boolean gates** for phase/valid enables and per-bit enable
+OR trees. Shared enable factoring is not credited. Existing arithmetic operand
+selection remains 4526 bit nodes. These are topology demands, not Logic/LUT counts;
+arithmetic and non-stage queue/controller logic still require RTL synthesis.
+
+The whole conservative storage bill is **14780 FF with five contexts, 16001
+with eight**, versus the dedicated totals above. RAM stays 92 RAM16SDP4 cells
+(355 separately reported framework 16x1 cells), four cache-data BSRAMs and eight
+DSP18 slots with 765 hard pipeline bits. Macro register compatibility and the
+declared soft captures remain unverified by RTL. Large retained allocations
+include shared contexts, coordinate/coefficient boundary copies, packet holds
+and whole color tokens. They are paid even when a hypothetical borrowed view or
+field ring might remove a copy. Five contexts cost measured bilinear hot II
+3.3125 instead of eight-context II2; their fractional hot II is 3.109375 instead
+of 2.703125. Neither total establishes the 1500-Logic target or spare capacity
+for the rest of the GPU. Eight contexts still exceed the device's entire FF count.
+
+Actual issue traces replay every packed bit write/read with producer value ID,
+source bit, unique issue clock, expiry and numerical value. CE freezes both
+phase and valid calendars. Owner comparisons catch stale data even when colors
+match. This checks storage transport from immutable closed-frame goldens;
+the goldens are not an independent cycle arithmetic emulator.
+Placement tables must remain in the canonical order used by binary search.
+Replay visits every enabled edge from zero, including idle bubbles, and rejects
+duplicate/skipped edges or issue clocks different from the current edge. Its
+clock checker is host diagnostic state, not another datapath register bill.
+
+The probe compares both layouts on the same 30 actual serial-MC cases. All
+cycles, packets, refills, queue peaks and pixels match between layouts, including
+one-quad/four-quad batches, warm steady windows, sparse masks, seams, cold scans,
+loaded traffic and initialization inside the batch. The additional mixed-mode
+test exercises ID/context reuse, long result backpressure and MC beats during
+CE=0; certificate/address/lifetime/cost mutation tests fail as intended.
+The scoped seven-suite regression passes 50 tests, including the integration
+review's lookup-order and idle-edge negative cases; component clippy and fmt
+checks pass. Observed stage live peaks reach every periodic peak in the table.
+`layout.csv` exports concrete addresses/lifetimes, `storage_traffic.csv` records
+observed per-stage live peaks and read/write bit traffic, and the three original
+CSV files retain the full costs and performance comparison. Reproduce with the
+existing `texture_bound_probe` command and an output directory such as
+`target/gpu-v2-texture-packed`.
+
+The native input remains a complete quad. The shared interconnect proposal's
+four sequential U/V40 lane transfers therefore need a separately verified
+reservation/assembly adapter. A simple standalone candidate needs 320 UV FF,
+6 key FF and 16 assembly-control FF (342 total), before immutable draw/header
+metadata, and accepts one lane every two clocks: at least eight clocks/quad
+before the existing native admission and D phase alignment. Alternatively,
+reservation could assemble directly in the already billed raw context region;
+this needs a receiver reservation API and cannot be claimed as free today.
+Likewise the proposed 64x24 public sample-result BSRAM and delayed done-after-store
+adapter are not this native result FIFO. The public store is an additional
+BSRAM outside the four sampler data banks; one pending key/valid needs seven FF.
+Global quad ownership must continue through final output publication.
+
+Further input borrowing needs an explicit parent-region reference, protected
+last-read/release acknowledgement and a finite read-port certificate. For example,
+a blocked lane record cannot read an early-released context after that context
+is reused. Marking such input as a globally invariant constant would hide the
+hazard. This unit keeps those copies, does not modify the public audited API,
+and stops before arithmetic emulation, RTL or PnR.
+
+Remaining storage decisions use the existing eight-context allocation and trace
+credits. Occupied records are not field liveness: the current performance CSV
+does not split ready occupancy from in-flight credits or export color/result
+field lifetimes. Those missing measurements must not be replaced with ideal
+live-bit estimates. No additional layout is implemented in this unit.
+
+| Allocation | Paid FF | Existing trace evidence | Required ports and next decision |
+| --- | ---: | --- | --- |
+| shared contexts | 3096 | Peak 8 occupied slots; raw/D/LOD fields have distinct lifetimes | Admission, D capture and LOD capture can write different contexts in one edge; D, LOD and lane consumers can coincide. A single 1R1W bank is insufficient without field banks/prefetch/capture scheduling; keep short borrowed fields protected through last read. |
+| ready and pass-through | 2021 | Coordinate aggregate credit peaks at 6; 185/594 pass bits cover fixed-latency overlap, 900/342 ready bits cover backpressure | Each ready FIFO has 1W+1R; synchronous RAM needs a reserved return/skid. Separate rounded 150/171-bit RAM16 rows cost 38/43 SDP4 cells at depth16 before control. Pass-through is fixed-delay data, better handled by field lifetimes or explicit taps than an unpriced multiport RF. |
+| packet holding | 1152 | Packet credit peak 16 includes pipeline and stable output; it is not 16 occupied output rows | Output storage can use 1W+1R, 18 SDP4 cells for 16x72. Reserve the synchronous return and a stable 72-bit skid; retain output validity during stalls. Stage registers and packet-credit counting still remain. |
+| color tokens | 2268 | Nine-token fixed pipeline capacity; per-field occupied peak not exported | Capture/partial/accumulate/normalize act on different ages in the same edge. One whole-token 1R1W RAM is insufficient. Reclaim fields at their actual consumers and keep feedback/markers in FF or separately ported banks; macro-product registers must remain counted. |
+| slot table | 1024 | These 30 cases bind one slot; interface capacity remains 16 | 26 reserved ABI bits/entry can be constant wiring. Actual fields total 38 bits/entry. Admission validation and head/miss lookup must be separated or given two read views; a miss-only synchronous lookup is a candidate, not a proved hot-path replacement. Drain-protected writes must remain. |
+| result FIFO | 480 | Capacity 16; occupied/field peak not exported here | Native FIFO is 1W+1R and could use eight SDP4 cells plus registered return/hold. The public 64x24 result BSRAM is an alternative protocol adapter, not a free replacement; done and global retirement must follow actual store/output publication. |
+
+Two subsequent structural routes remain for budget discussion: (1) reserve and
+bank contexts, borrow protected inputs, and put the independently stalled ready/
+packet queues in 1R1W RAM with explicit return credits; or (2) first split color
+tokens/pass-through by consumer lifetime and adopt the public result-store
+adapter. Route 1 must resolve simultaneous context reads/writes and RAM-return
+stalls; route 2 must resolve concurrent color ages, feedback, done timing and
+global ID reuse. Both retain eight contexts, current precision and stage II.
+The five-context comparison measures the throughput penalty only; it is not
+an area-closure solution. Whole-GPU RAM/Logic budgeting precedes either route.
 
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label texture-bound -CargoArgs @('-p','gpu-v2','--test','texture_bound')
@@ -760,7 +891,453 @@ strength reductions independently. Texture/SDRAM regression remains unchanged.
 & scripts/run-cargo.ps1 -Subcommand run -Label texture-work -CargoArgs @('-p','gpu-v2','--example','texture_work_probe','--','target/gpu-v2-texture-work')
 ```
 
-Validation on this branch: GPU v2 release regression, texture debug tests,
+### Bounded storage transport probe
+
+`texture_storage_probe` is an independent study. It leaves the native bound
+controller, numerical contract and previously recorded MC performance unchanged.
+It exports real native field lifetimes and post-edge occupancy separately from
+inclusive last-read occupancy, then checks three bounded transport components:
+
+- Raw/wrapped input has one arithmetic UV window, a rescheduled derivative
+  calendar, physical periodic FF owner/value replay and separately owned
+  metadata/LOD ports. Its downstream lane-credit returns are a fixed-latency
+  fixture, so its input interval is not a composed GPU throughput measurement.
+- A 64-row packet pool uses one producer write and one synchronous head read,
+  preserves the 16/32 logical credits, and counts pending/head within Group
+  occupancy. Tests include row wrap, CE, long consumer stalls, terminal fault
+  concurrent with capture and a partial actual serial-MC burst drained under
+  fault. The single head deliberately has no return-to-consumer bypass.
+- Color uses finite field registers and independent integer arithmetic checked
+  against native partial/accumulator/RGB goldens. Its public result write precedes
+  done, and global slot reuse waits for final's synchronous capture. A dense
+  consumer-stall stimulus reaches all 16 global slots.
+
+`allocation.csv` is one provisional replacement ledger, not a fitted resource
+result: planned lane/plane/slot adapters are marked explicitly. RAM16SDP4,
+FF, hard DSP registers and the separately budgeted public result BSRAM are
+distinct. The raw and packet calendars expose throughput obstructions; their
+individual successful replays do not establish a composed II or area closure.
+No full staged arithmetic emulator, replacement cache implementation or RTL is
+added.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-storage -CargoArgs @('-p','gpu-v2','--example','texture_storage_probe','--','target/gpu-v2-texture-storage')
+```
+
+### Per-lane storage reservation increment
+
+`texture_storage_increment` first replaces the raw probe's four-ticket cohort
+fixture with a finite 16-row lane controller. Each actual wrapped R reserves one
+row and its return destination. Only the last required lane capture releases its
+raw context; an unissued lane can pause while older stages and acknowledgements
+continue. Coordinate/coefficient credits stay six, coefficient-ready credit two,
+work credit sixteen and raw contexts eight.
+
+Relative to coordinate capture C, geometry/operand W is C+10, coefficient R is
+C+11 and its capture C+12. Weights W is C+23; member R is C+24 and full 171-bit
+head capture C+25 returns the row. Coefficient R uses odd phases and member R
+even phases of the same operand port. Head consumption starts C+26, with the
+second plane on C+27. Source reservation uses accepted events, never predicted
+future releases. CE freezes all local pending returns and fixed calendars.
+
+Bilinear sustains quad II8 in this isolated fixture. Two-plane sampling reaches
+work credit sixteen: edge85 cannot reserve two more work tokens, and the current
+cohort pauses its next wrapped R until two actual acknowledgements arrive.
+Arithmetic is still closed-frame golden data. Work acknowledgement is a bounded
+external endpoint, not the native plane/packet/cache composition. Sparse/zero
+coverage, signed UV, CE, ring reuse and equal-value stale-owner rejection are
+checked. `lane_cost.csv` retains the previous control allowance and charges
+additional references. Work admission reads sixteen paid per-row flags captured
+from the actual LOD last-fine bit, rather than looking ahead at golden plane
+counts or borrowing the geometry bank's member read port. Head consumption uses
+its captured last-fine bit to end the lane. `lane_selectors.csv` separately
+charges port and flag selection.
+`lane_controls.csv` records finite counter/compare transitions awaiting lowering;
+these declarations are not fitted Logic or an area closure result.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-storage-increment -CargoArgs @('-p','gpu-v2','--example','texture_storage_increment','--','target/gpu-v2-texture-storage-increment')
+```
+
+### Two-head packet storage increment
+
+The same increment example separately checks two owned 72-bit head locations.
+The original probe retains its single-head baseline. Payload banks still have
+one R and one W; producer credit stays sixteen and Group credit thirty-two,
+including queued indices, pending returns and captured heads. A read reserves
+an empty target, full synchronous capture returns its row once, and actual
+consumer issue returns Group credit. The consumer sees only a previous edge's
+valid head. Full-Group producer readiness uses pre-edge occupancy.
+
+The hot trace consumes packets on edges 12/13/14, sustaining one per enabled
+clock. Edge 12 consumes head0, captures head1 and reserves the next head0 read.
+All 1024 seam packets match their source goldens through sixteen ring wraps.
+CE, long miss-style stalls and a sudden stop preserve both owned locations;
+normal stalled cases reach P16/G32 and forty-six live rows. No third head, extra
+credit, extra bank port or return-to-consumer bypass is used.
+
+Fault at edge 12 suppresses consumption but still captures the reserved return;
+reset waits through the last local W at edge 19. A separate accepted serial-MC
+burst faults after beat 3 with both heads occupied, then drains all remaining
+twelve beats, including beats under CE=0, before reset. Six injected violations
+must fail at their intended checks: early index publication, early row release,
+stale equal-value reply, pending reset, occupied-head reservation and return-edge
+consumption. These tests retain the terminal drain/recreate boundary.
+
+`packet_two_head_cost.csv` pays the extra payload, valid, target and pointers,
+as well as payload/valid selection; `packet_two_head_controls.csv` lists capture
+enable decode and finite credit logic. The former bank output reservation is
+retained, without a third soft payload buffer. Mux nodes are not fitted LUTs.
+`packet_two_head_summary.csv` distinguishes enabled clocks from wall clocks;
+its sampled interval spans consumption indices 32 through 96 and can include a
+stall. Ready is explicit stimulus here, so this is not a native cache/MC CPP
+measurement. Native storage replacement and full GPU integration remain separate.
+
+The two increments add 178 declared FF bits and 169 bit-mux nodes. Their combined
+provisional inventory is 6873 FF bits, 156 RAM16 cells and eight sampling BSRAMs;
+it still includes planned adapters and is not a fitted resource result. Lane and
+packet throughput are measured independently and do not establish sampler II2.
+Increment validation is limited to GPU v2 regressions, the finite probes, strict
+clippy and formatting; no new CPU/system co-simulation, RTL or PnR run is claimed.
+The lane stale-owner injection must execute and hit its designated owner check.
+
+### Connected packet pool, cache and color
+
+`bound::system::run_pooled` connects the existing bound preparation to a 64-row
+72-bit pool and two synchronous heads, then to the actual cache/tag/data and
+color pipeline. `run` retains the native storage path for comparison. Producer
+credit sixteen includes all packet calculations and written rows waiting for
+index transfer; the preparation controller cannot allocate a second credit
+domain. Group credit thirty-two includes indices, pending returns and heads.
+Pool rows are reserved on actual packet issue, written from its finished output,
+released on full synchronous capture, and Group credit is released by cache Read.
+There is one payload W and one R, with no return-edge consumer bypass.
+
+Runtime key, coordinates, UNORM9 weights, first/last and quad/lane are decoded
+from the captured payload. An admitted quad's four-bit slot survives preparation
+release until cache/color retirement, and the live lane/immutable slot bindings
+validate consumption. Golden Programs check payload/order but supply no Group
+semantic fields to the external consumer. A test corrupts their semantic Group
+fields while retaining the payload and proves the actual decode still governs.
+
+The connected probe uses actual serial refills to warm lines. Its middle window
+commits 64 pixels, has no refill submissions in the three hot cases, and reports
+packet service separately from pixel/quad throughput:
+
+| Hot profile | Native clocks/pixel | Pool clocks/pixel | Pool clocks/quad | Pool clocks/packet in window |
+| --- | ---: | ---: | ---: | ---: |
+| Bilinear | 2.125 | 2.25 | 9 | 2.0870 |
+| Two-plane | 2.65625 | 2.65625 | 10.625 | 1.3934 |
+| Seam expansion | 8 | 8 | 32 | 1 |
+
+In the pool's bilinear/two-plane windows, respectively 75/48 clocks have no old
+head to offer; none has a ready head waiting for cache, and producer credit is
+never full. The existing preparation/input and transport availability therefore
+limit those measured windows. Seam expansion sustains all 512 Reads in its
+512-clock window. Bilinear's added handoff/rephasing cost remains visible;
+this correct connection does not claim an unconditional quad II8.
+
+A recovery profile holds result readiness low, freezes consumer CE periodically,
+then changes to a previously cold tile. It stalls safely, accepts refill beats
+under CE=0 and eventually commits every result. All eight native/pool runs match
+independent oracle RGB. Additional tests cover slot changes, masks/zero coverage,
+quad reuse, corrupt return ownership/data and forbidden capture-edge consumption.
+The slot regression alternates distinct texture assets when reusing the same quad
+ID and checks Reads after preparation release. Return negatives inject a wrong
+pending owner and altered backing-row data at capture; a separate trace mutation
+checks replay rejection.
+
+The actual inventory removes `packet holding records` and `Group4 FIFO` in pool
+mode. It retains all other bound preparation/cache/color storage, adds the two
+payload BSRAMs, and conservatively pays short descriptors in FF, heads, pending,
+pointers and slot lifetime state. Index FF selectors and head selection are
+listed separately in `packet_selectors.csv`; write enables/compare/decode still
+need lowering. These rows describe this connection, not the earlier complete
+storage replacement plan or fitted Logic. No queue-depth scan or broader storage
+replacement is required to merge this unit.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-packet-connected -CargoArgs @('-p','gpu-v2','--example','texture_packet_connected','--','target/gpu-v2-texture-connected')
+```
+
+The output directory contains actual packet/cache/commit edges, hot blockers,
+native/pool allocation rows and the selector declaration. Miss absorption, more
+storage conversion and arithmetic cones are subsequent independent work.
+
+### Persistent sampling connection
+
+`sim::staged::bound::session::Session` owns the existing preparation, packet
+pool and cache machines plus the independent ColorEmu across consecutive
+`step` calls. Its constructor accepts a finite controlled input sequence;
+it is not a live CP/quad-dispatch port. Actual acceptance advances that input
+sequence. Preparation still replays closed-frame audited arithmetic; it is not
+an independent numerical preparation emulator. The cache program checks
+packet provenance only; actual captured texels and decoded packet bits drive
+ColorEmu. The closed cache/color commits remain an explicit diagnostic/control
+shadow, not public results or permission to reuse a public quad ID.
+
+The unit fixes P16/G32, the existing 64-row 1W/1R packet pool and two total
+head/pending positions. Cache read latency is fixed at one enabled edge. The
+existing CE-gated cache return stage retains its own reservation; this unit
+does not claim a new wall-clock BSRAM-return implementation. One captured input
+register (packet72 + texels64 + valid1 = 137 bits) holds until a real ColorEmu
+acceptance. If occupied, it gates preparation/cache advancement while the single
+RefillPort owner continues draining accepted MC/refill traffic on wall edges.
+There is no added packet/texel FIFO and no queue-depth search.
+
+Actual public result consumption clears one bit in a 16x4 lane-ownership mask
+(64 bits); neither closed-color shadow commits nor preparation completion free
+these identities. Result credit stays with ColorEmu's existing Result16 until
+actual consumption. Added link state is 137 + 64 + terminal-fault1 = 202 logical
+bits, excluding diagnostics and finite input/program fixtures. Existing models
+and ColorEmu retain their own declared state; these are Rust bounds, not fitted
+FPGA resource results. Session errors are terminal and require recreation.
+
+`tests/texture_sampling_step.rs` covers cold misses, nearest/bilinear/mip/seam,
+CE, prolonged result backpressure with refill drain, stable held results,
+full ColorEmu credit, and reuse with different RGB data only after actual
+consumption. `examples/texture_sampling_step.rs` writes bounded workload/trace
+evidence with an explicit warm measurement window, separating packet, pixel
+and quad intervals. Texture and framebuffer still require one shared MC owner
+before system integration; their standalone adapters cannot advance a common
+controller independently. No preparation RTL, full sampler RTL or board proof
+is implied.
+
+### Runtime quad ingress
+
+`sim::staged::bound::runtime::Runtime` adds caller-owned live input to the
+existing bounded path. `step(memory, Option<&QuadInput>, Control)` reports
+pre-edge `input_ready` for that ID and actual `accepted`; acceptance requires
+valid, ready and CE. Rejected input is neither compiled nor retained, so the
+caller may replace it before acceptance. Ready conservatively excludes same-edge
+context/result release and color-input acceptance. No complete-quad FIFO or
+constructor input sequence is added. The finite `Session` API stays compatible.
+
+Actual `CoefficientEmu` consumes captured scalar coordinates and weights;
+its local numeric clock can hold while actual membership and packet pipelines
+drain on base CE. Work uses
+mutable 94-bit SSRAM rows and one 92-bit return/head bank with separate R/C/
+consume/ACK edges, detailed below. Packet W and public color consumption remain
+later, separate transfers.
+
+Derivative, LOD and coordinate arithmetic remain counted. Eligible ingress compiles
+against one shared Binding and immutable slot context. Upstream programs expire
+at final coordinate capture in early-release mode, or final packet W in late
+mode. Original packet totals and cache provenance remain counted premises;
+frames, floats and calendars are model objects, not free hardware storage.
+Runtime retains no history; serial four-lane UV ingress remains deferred.
+
+Accepted coverage mapping adds 16x4 = 64 logical bits, cleared at preparation
+release; public lane ownership separately lasts until actual ColorEmu consumption.
+`LINK_STATE_BITS` is 266: capture137 + public lanes64 + coverage64 + fault1. The
+existing preparation/cache/color stores and P16/G32, Pool64 1W/1R, two total
+head/pending positions, read1 and Result16 remain owned by their existing models.
+Texture precision and cache capacities are unchanged. RefillPort drains accepted
+beats even when CE or the color link stalls. Errors are terminal; accepted MC
+work needs external drain before recreation. These are Rust bounds, not fitted area.
+
+One immutable texture context lasts for the instance; drain and recreate before
+changing slots. All four helper UV lanes affect derivatives for partial coverage;
+only covered lanes yield key6/RGB24. Mask0 drains without results/refills.
+Default-sample is upstream constant bypass (`None` offers no sampler work).
+`tests/texture_runtime.rs` checks live replacement, same-instance different-RGB
+reuse, partial/helper/default/mask0, actual P16/G32/Result16/16-ID limits, CE and
+committed refill drain under sustained backpressure. `texture_runtime_probe`
+writes drained warm-window wall/enabled calendars and actual event traces.
+
+### Runtime Work transport and allocation qualification
+
+Logical Work capacity W remains 2..32, with physical depth
+`max(16, next_power_of_two(W))` and modulo-W pointers. One R and one W can target
+different rows; same-row R/W, W-to-R, C-to-consume, ACK-to-next-R and same-edge
+returned-credit admission are forbidden. The source row stays reserved through
+pending/valid head expansion. Coefficient admission reserves one or two Work
+destinations from old free capacity. Its existing two ready rows are consumed
+one active plane per base edge, releasing the whole row after its last plane.
+
+A private configuration-matched allocation receipt retains generic control and
+the cache's closed-color shadow. Actual coefficient numeric315 replaces the
+legacy coefficient allocation; phase19 replaces its Packed phase suballocation
+or is explicitly added for Dedicated. Queue13, fault1, plane cursor1, head92,
+pending1, pointers2A and materialized countQ add `108 + 2A + Q` bits, where
+`A=ceil(log2(W))` and `Q=ceil(log2(W+1))`. Existing head cursor2/valid1 and central
+reserved-work control remain charged to their owners. Default Packed declares
+16,939 soft bits, 56 SDP4, 6 BSRAM and 1,377 hard product bits, including actual
+ColorEmu and Runtime link state. These are model allocations, not fitted cells;
+other configurations have their own receipt. Legacy Session inventory and
+global replay audit remain unchanged and do not certify this locally held path.
+
+### Runtime membership and packet arithmetic
+
+Private Runtime pipelines execute membership and packet operations from captured
+scalar operands. They neither fetch completed stage values nor call counted or
+oracle helpers while stepping. Membership E0 captures weights, coordinates and
+metadata; E1 slices tile/local coordinates and tests nonzero weights, E2 compares
+tiles, E3 retains pair equivalences, and E4 selects the first nonzero representative
+of each tile. E5/E6 align the result; old E6 writes Work on E7. Original corner
+weights retain their positions rather than merging duplicate-tile coefficients.
+
+Packet E0 validates and captures the old Work head and sparse tap before cursor
+advance or ACK. The emit0 bit ends at that predicate, leaving 93 captured bits.
+E1 selects tile/header, corner masks and first/last markers; E2 gates four 9-bit
+weights and concatenates disjoint fields into packet72. E3..E8 are real alignment
+registers; old E8 writes the reserved Pool64 destination on E9. Both pipelines
+have standalone II1, old-state transfers and CE-frozen registers, including
+alignment stages. Existing Work/head and packet-credit limits still govern
+whole-path throughput; this change preserves the event calendar.
+
+The actual membership data banks total 648 bits with valid7/fault1; packet banks
+total 673 bits with valid9/fault1. Runtime retains the existing conservative data
+ceilings and generic control. Packed replaces the old two phase allowances with
+these 18 control bits plus separately retained allowances of 7 and 6 bits, so its
+declared total above is unchanged. Dedicated adds 18 control bits to its previous
+configuration receipt. No RAM, queue, multiplier or port is added; removed replay
+selector metrics are not a claim about synthesized logic. Legacy Session and the
+private coefficient hybrid below retain their original numerical boundaries.
+
+Private numerical tests independently assemble tuple-based membership and packet
+goldens, exercise every registered cut, sparse taps, bubbles and terminal faults,
+and inspect actual banks and Pool writes under CE/input/result stalls. A test-only
+guard rejects dynamic counted helper calls, and poisoning completed legacy stage
+values cannot affect Runtime results. Configuration receipts are allocation
+checks; only the explicitly exercised configurations have cycle evidence.
+
+Private library qualification tests under
+`texture::sim::staged::bound::runtime::qualification` and
+`texture::sim::staged::bound::transport::tests` cover W2/3/16/17/32, logical wraps,
+early/late release, Dedicated/Packed, sparse tap versus public packet ordinal,
+R/C/ACK pauses, partial-state terminal failure, literal packet/RGB goldens and
+poisoned legacy numerical outputs. Actual 128B MC returns drain during caller
+CE0; a local full coefficient queue holds its numerical state while older work
+progresses. Run these library tests and `texture_runtime`, `texture_sampling_step`
+and downstream pixel/shared-MC regressions in both profiles. One-head bubbles
+remain: unstalled one-group planes start every three enabled edges, four-group
+planes every six. This is not complete preparation emulation, RTL or GPU fitting.
+
+### Independent coefficient cycle emulator and private composition
+
+`texture::emu::coefficient::CoefficientEmu` accepts scalar parent weights,
+fractions and owned metadata. It executes real fixed-width operations through
+three registered multiply sites, with three-cycle products, initiation interval
+two and eleven enabled edges to publish a result. Six cohorts and two ready
+rows are bounded; an old full ready queue holds the local numeric clock while
+the consumer can transfer the existing head. `output()` reads that head without
+adding retained state. Admission reserves one downstream work credit per
+nonzero parent from the pre-edge available count; consuming a coefficient row
+does not return those credits.
+
+The private `cfg(test)` coefficient hybrid uses actual output weights and
+metadata to compile membership and one packet at a time into the existing
+pooled cache and `ColorEmu`. It reserves Work16 before coefficient admission,
+returns each plane credit at final packet operand capture, and retains public
+lane ownership until actual color consumption. A fine/coarse cursor consumes
+the existing ready row without a second payload queue. Its coefficient clock
+can hold while older membership, packet and cache work drains on base CE;
+actual MC returns continue on wall edges during caller CE holds.
+
+This composition is a default-only private experiment, not a replacement for
+public `Runtime`. Derivative, LOD, coordinate, membership and packet arithmetic
+and their calendars remain counted replay; original completion totals and
+independent cache provenance remain explicit dependencies. Its FF-backed Work
+and additional control/fault/cursor state are conservatively charged, not fitted
+area or a hardware lowering certificate. Formal Runtime configurations and
+capacities remain unchanged.
+
+`texture_coefficient` checks exhaustive splits, joint fraction boundaries,
+physical register ownership, pauses and terminal faults. The private library
+qualification adds hand packet/RGB literals, poisoned legacy preparation
+results, full ready/work pressure, pre-edge credit checks, CE-held MC returns
+and same-ID reuse with different colors. Run the focused integration test and
+library tests matching `texture::emu::coefficient` in both profiles. These prove
+the coefficient arithmetic frontier and bounded composition, not complete
+preparation arithmetic, RTL, PnR or whole-GPU performance.
+
+### Independent captured-texel color cycle emulator
+
+`texture::emu::color::ColorEmu` takes an already captured `Input` containing the
+actual 72-bit packet and four RGB565 texels in tap order. `tick(Tick)` decodes
+UNORM9 weights/first/last/key and calculates runtime values; it never evaluates
+Program/FrameReport results or calls counted, oracle or `Model::numerical`.
+The existing bound/timed preparation, packet, cache and color path is unchanged.
+
+| Enabled edges after input acceptance | Actual arithmetic/state |
+| --- | --- |
+| 0 | Decode weights/key/flags and expand the captured RGB565 words |
+| 1..3 | Twelve 9x8 products, three registered product stages |
+| 4 / 5 | Pair sums / complete RGB partial, each 17 bits |
+| 6 | Single accumulator/owner feedback; only last proceeds to normalization |
+| 7 / 8 | Exact /511 carry fields / RGB24 queued with key6 |
+| 9 or later | Pre-edge visible output consumed when CE and output_ready hold |
+
+The pipe has eight finite positions, can accept one group per enabled edge,
+and freezes completely under CE=0. One input-stream owner checks contiguous
+first/last groups; one accumulator holds feedback, including across input gaps.
+Sixteen result credits include last-group pipe reservations and queued results.
+Only actual output consumption returns credit; a full-credit last group cannot
+borrow the same edge's return. A caller holds its offer while input_ready is low.
+Malformed owner/width/domain input or watchdog exhaustion is terminal: recreate
+the local emulator before reuse; this is not an in-place MC recovery mechanism.
+
+`ALLOCATION` declares the existing twelve Multiply9 lanes in three macros (six
+DSP18 equivalents), 612 hard product bits, 496 other datapath bits and 499 result/
+control FF bits; it adds no BSRAM. These finite field/role declarations exclude
+host traces/watchdog counters and are not fitted Logic. Selection, CE, validation
+and fault logic require later lowering. The baseline inventory is unchanged.
+
+Tests independently sum expanded texels and divide by 511, exhaust all 130306
+legal normalization values, check stage timing, mixed multi-group owners, full
+credits, CE stalls, invalid requests and bounded recovery. A directed regression
+fills all 16 result credits with distinct RGB values across two keys, pauses CE
+with queued and in-flight results, then blocks the seventeenth last packet until
+an old credit is available. After the pipeline drains into the fully occupied
+queue, it verifies ordered consumption and reuses both keys with different
+multi-group colors on the same drained instance. The complete outputs match
+independent integer goldens. Actual serial MC
+Captured events, including coarse mip/seams/masks/ID reuse, are replayed into this
+block and compared to sampler oracle RGB. This replay does not connect the live
+cache reservation/backpressure boundary or public sample-result store. Those
+adapters need actual return-edge/DSP timing verification; no RTL/PnR is claimed.
+
+### Bilinear restart bubble: bounded negative experiment
+
+After the connected baseline and review `82fbc3d`, one candidate forwarded an
+old published producer descriptor into R on an empty Group index transfer edge.
+Only `Pool::advance`'s transfer-time `written = Some(t)` overwrite was removed;
+W remained older than R, capture returned the row, and only a later cache Read
+returned Group credit. Pre-edge G32 and P16/64 rows/two heads/one W/R were kept.
+It was rejected for unchanged hot throughput; production retains the baseline.
+
+The same normally warmed bilinear input and commit indices 63..127 show:
+
+| Event, wall clock | Native | Connected baseline | Forwarding candidate |
+| --- | ---: | ---: | ---: |
+| Reused quad 0 / program 16 admitted | 143 | 146 | 145 |
+| Derivative / LOD issue | 145 / 169 | 153 / 177 | 153 / 177 |
+| First packet issue / W | 231 / 240 | 239 / 248 | 239 / 248 |
+| Index transfer / R / capture | n/a | 249 / 250 / 251 | 249 / 249 / 250 |
+| First cache Read / pixel commit | 241 / 251 | 252 / 262 | 251 / 261 |
+| Hot window start / end | 241 / 377 | 244 / 388 | 243 / 387 |
+| Hot clocks / Reads / pixels | 136 / 68 / 64 | 144 / 69 / 64 | 144 / 69 / 64 |
+| Clocks per Read / pixel / quad | 2 / 2.125 / 8.5 | 2.0870 / 2.25 / 9 | 2.0870 / 2.25 / 9 |
+
+Admission follows stage issue on an edge. Even admission at 145 misses that
+derivative phase; both pool paths wait for 153. Continuous bilinear Reads stay
+two clocks apart. Advancing transport one clock advances both measured endpoints
+one clock, leaving the extra eight clocks from preparation rephasing unchanged.
+Two-plane/seam hot CPP remain 2.65625/8; all hot windows have zero new refills.
+Recovery CPP changes 2.46875 to 2.453125, a separate miss/CE/backpressure window.
+
+Candidate storage delta is zero FF/RAM/BSRAM/DSP. Its complete added source
+selection is a six-bit 2:1 R-address mux plus `empty && transfer` and source-valid
+OR; existing credit, head, R/W guard, ring updates and enables remain shared.
+These are structural nodes, not fitted Logic. The rejected change is not shipped.
+Actual MC/oracle runs cover all eight native/pool curves and safe CE/result/miss
+recovery. `texture_packet_connected` now exports both paths' preparation and
+cache edges, CSV-escaped stage names, and explicit hot endpoints. Reproduce with
+the command above; repeat after the single experimental removal described here.
+
+Historical native validation on this branch, predating these increments: GPU v2
+release regression, texture debug tests,
 strict workspace clippy, layering/source hygiene and required CPU/core/system
 co-simulations passed. Full workspace testing stops at the unchanged legacy
 GPU-display boot test, which expects an accepted command from the retired GPU.

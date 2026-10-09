@@ -9,11 +9,14 @@ ip/gpu-v2/
   Cargo.toml                   gpu-v2 library
   src/
     lib.rs
-    system/                    future whole-GPU composition through component ports
+    system/                    controlled pixel result-store/join/final/ROP composition
     command_processor/         typed command guards and fixed event identities
     scratchpad/                four banks, DMA/core ports and region leases
     vertex/                    v6 decode, matrix transforms and seven-row output
-    frontend/                  bounded command/DMA/vertex composition
+    frontend/                  bounded command/DMA/vertex and separate source-capture control
+    geometry/                  opaque record transport and normal-path source lease connection
+    memory/                    GPU-owned burst transport; vendor adapters stay outside production IP
+    framebuffer/               materialized ROP oracle and bounded bank/maintenance control
     triangle/                  owned transformed inputs and setup oracle only
     texture/                   oracle/count, universal periodic preparation and bounded cycle-MC cache/color composition
     lighting/
@@ -65,6 +68,10 @@ Rust services return real data. The existing timed frontend still uses its expli
 latency fixture; it has not become a numerical cycle executor for this combination.
 Emulation and RTL remain independent verification paths.
 Tests use stage goldens rather than treating audit success as an accuracy oracle.
+The separate GPU-owned `memory::ports` burst transport provides explicit write
+completion through a bounded direct-combination test adapter. The standalone
+framebuffer maintenance model and controlled J1 pixel composition consume that
+port. Actual streaming branches and production GPU composition remain future work.
 
 Texture advances the vendor cycle MC through a thin GPU-owned RefillPort in
 test composition. Its bounded cache/color machine executes actual refill beats,
@@ -76,9 +83,10 @@ declared storage map still needs compaction and fitted timing/area validation;
 the controller's arithmetic goldens are not independent numerical emulation.
 
 Lighting starts at a single pixel and returns two scalar intensities, g and h.
-Quad allocation, coverage, four-pixel grouping and branch joins belong to the
-future composition. Final color, texture sampling and framebuffer are separate
-components. Component calculations can be tested without a GPU system.
+Quad allocation and branch joins are implemented in the bounded
+[controlled pixel composition](pixel-system.md), with externally generated
+branch results. Coverage and actual streaming branch execution remain future
+composition work. Component calculations can be tested without a GPU system.
 
 Web code calls the same Rust oracle through bare WASM exports. It owns controls
 and presentation only; it does not reproduce the arithmetic in JavaScript. The
@@ -86,7 +94,10 @@ and presentation only; it does not reproduce the arithmetic in JavaScript. The
 Rust and has a native/WASM bit comparison. The planned runtime-format audited
 lane and a complete GPU browser adapter have not been implemented.
 Implemented behavior and validation are in [lighting](lighting.md) and
-[frontend](frontend.md). The frontend does not consume triangle records or define
+[frontend](frontend.md). Its separate source-capture control prepares self-contained
+inputs for the triangle oracle and decouples source release from final fan use.
+It does not schedule triangle arithmetic or connect the command sequencer to setup.
+The frontend does not consume triangle records or define
 an encoded GPU command ABI; framebuffer/cache and final system
 integration remain separate work.
 The [triangle oracle](triangle.md) consumes the vertex component's owned output
@@ -97,3 +108,11 @@ closed counted datapath, a functional cache through MemoryPort, and bounded
 timed cache/refill/color execution through the existing SDRAM Service. A staged
 companion verifies numerical boundaries and context/credit control proposals;
 independent cycle arithmetic and physical sampling throughput remain unverified.
+
+The [framebuffer model](framebuffer.md) implements materialized depth/blend,
+four-bank tile addressing, demand refill, dirty writeback and flush. Serial and
+overlapped ROP control calendars share the same capacities; the latter assumes
+two-cycle oracle arithmetic returns rather than certified arithmetic. Tests
+compare complete byte images and guards through fixtures and the actual serial
+MC adapter. This is not counted ROP arithmetic, RTL or complete render/display
+ownership, and maintenance currently excludes simultaneous hit execution.

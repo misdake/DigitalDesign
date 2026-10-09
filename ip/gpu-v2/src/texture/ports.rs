@@ -216,6 +216,29 @@ pub struct Group4 {
     pub lane: u8,
 }
 impl Group4 {
+    /// Runtime decode of the UNORM9 packet consumed by cache and color.
+    pub fn unpack72(payload: i128) -> Result<Self, String> {
+        if !(0..1_i128 << 72).contains(&payload) {
+            return Err("Group4 payload width".into());
+        }
+        let w = payload as u128;
+        let g = Self {
+            key: TileKey {
+                slot: (w & 15) as u8,
+                n: ((w >> 4) & 15) as u8,
+                x: ((w >> 8) & 127) as u8,
+                y: ((w >> 15) & 127) as u8,
+            },
+            top_left_local: [((w >> 22) & 7) as u8, ((w >> 25) & 7) as u8],
+            coefficients: std::array::from_fn(|j| ((w >> (28 + 9 * j)) & 511) as u32),
+            first: w >> 64 & 1 != 0,
+            last: w >> 65 & 1 != 0,
+            quad_id: ((w >> 66) & 15) as u8,
+            lane: (w >> 70) as u8,
+        };
+        g.pack72()?;
+        Ok(g)
+    }
     /// Canonical bit order for inspection only. ABI bit positions are not frozen.
     pub fn pack72(&self) -> Result<u128, String> {
         if self.key.slot > 15

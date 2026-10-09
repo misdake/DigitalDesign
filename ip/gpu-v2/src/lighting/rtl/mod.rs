@@ -12,6 +12,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
 };
+mod cuts;
 mod ranges;
 use ranges::{infer_ranges, RawRange};
 
@@ -23,6 +24,16 @@ fn token_read_offset(depth: usize, read_edge_captures: bool) -> usize {
 #[derive(Clone, Copy, Debug)]
 pub struct LightingRtlOptions {
     pub hierarchy: bool,
+    /// Experimental pure-logic boundary, zero retains the established depth.
+    pub logic_depth: usize,
+    /// Keep inexpensive logic at fixed pipeline sites; DSP/ROM/shift/LZD share.
+    pub stationary_logic: bool,
+    /// Bounded internal cut search; external issue/ready timing is unchanged.
+    pub cost_cut: bool,
+    /// Exact four-way q alignment; only its two-bit code crosses the cut.
+    pub q_windows: bool,
+    /// Fast experiment: native FFs for only the three diffuse raw-normal chains.
+    pub shallow_normal_ff: bool,
     /// Free calendar slots may compute irrelevant values instead of forcing zero.
     pub free_slots: bool,
     pub split_cones: bool,
@@ -46,6 +57,11 @@ impl Default for LightingRtlOptions {
     fn default() -> Self {
         Self {
             hierarchy: false,
+            logic_depth: 0,
+            stationary_logic: false,
+            cost_cut: false,
+            q_windows: false,
+            shallow_normal_ff: false,
             free_slots: true,
             split_cones: true,
             dedicated_dsp: false,
@@ -93,6 +109,15 @@ impl LightingRtlOptions {
             ..Self::default()
         }
     }
+    /// Factor kernel with larger pure-logic boundaries and the chosen profile's IIs.
+    /// Uses the previously reviewed scaled NL gate; half-vector limits remain.
+    pub fn factor_profile() -> Self {
+        Self {
+            logic_depth: 8,
+            exact_normal_gate: false,
+            ..Self::system_profile()
+        }
+    }
     /// Integration candidate. Select explicitly pending numerical/visual review.
     pub fn system_profile() -> Self {
         Self {
@@ -135,6 +160,7 @@ pub struct LightingVerilog {
     pub id_slots: usize,
     /// Retained/input lifetimes and complete control/ROM boundary inventory.
     pub storage_csv: String,
+    pub cuts_csv: String,
     /// HDL signal/age for observing the same numerical stage boundaries.
     pub stages: Vec<StageProbe>,
 }
@@ -202,12 +228,13 @@ impl LoweredProgram {
         };
         for (mode, full) in [true, false].into_iter().enumerate() {
             let kernel = options.kernel();
-            let p = Program::with_kernel(
+            let p = Program::with_kernel_depth(
                 profile,
                 full,
                 options.dedicated_dsp,
                 kernel,
                 options.role_schedule,
+                options.logic_depth,
             )?;
             let event_base = s.frame.events.len();
             let value_base = s.frame.values.len();
@@ -268,7 +295,52 @@ impl LoweredProgram {
                 s.instructions.push(i);
             }
         }
+        if options.stationary_logic {
+            s.stationary_logic()?;
+        }
         Ok(s)
+    }
+    fn stationary_logic(&mut self) -> Result<(), String> {
+        let mut ordinals = BTreeMap::new();
+        let mut occupied = BTreeSet::new();
+        for i in &self.instructions {
+            let Some(kind) = &self.binding.kinds[i.root] else {
+                continue;
+            };
+            let expensive = matches!(
+                kind,
+                LaneKind::SmallMultiply
+                    | LaneKind::LargeMultiply
+                    | LaneKind::PairMultiplyAdd
+                    | LaneKind::NormalizeRead
+                    | LaneKind::PowerRead
+                    | LaneKind::Shift(_)
+                    | LaneKind::LeadingZeros(_)
+            ) || i.members.iter().any(|&id| {
+                matches!(
+                    self.frame.events[id].operation,
+                    Operation::Shift | Operation::LeadingZeros
+                )
+            });
+            if !expensive {
+                let ordinal = ordinals
+                    .entry((self.full[i.root], kind.clone()))
+                    .or_insert(0);
+                self.schedule.nodes[i.root].lane = Some(*ordinal);
+                *ordinal += 1;
+            }
+            // Independent physical issue audit for both drained, exclusive modes.
+            let key = (
+                self.full[i.root],
+                kind.clone(),
+                self.schedule.nodes[i.root].lane.unwrap(),
+                i.issue % self.ii[i.root],
+            );
+            if !occupied.insert(key) {
+                return Err("stationary lane phase collision".into());
+            }
+        }
+        Ok(())
     }
     fn input_memory(&self, id: usize) -> bool {
         self.frame.memories[id].kind == MemoryKind::Input
@@ -347,13 +419,150 @@ struct Emitter {
     split_cones: bool,
     share_scalars: bool,
     range_shifts: bool,
+    cost_cut: bool,
+    cuts_csv: String,
+    q_amounts: BTreeSet<usize>,
+    normal_ff: BTreeSet<usize>,
     ranges: Vec<RawRange>,
     active_ranges: BTreeMap<usize, RawRange>,
     modules: String,
     lanes: Vec<LaneReport>,
 }
+// A representation change is allowed only when all consumers are the proved
+// unsigned q shift, and that result is used exclusively by the 14-bit slices.
+fn q_window_amounts(program: &LoweredProgram, ranges: &[RawRange]) -> BTreeSet<usize> {
+    let f = &program.frame;
+    let mut amounts = BTreeSet::new();
+    for e in &f.events {
+        if e.operation != Operation::Shift {
+            continue;
+        }
+        let q = f.values[e.inputs[0]].format;
+        let amount = e.inputs[1];
+        let r = ranges[amount];
+        let v = e.output.unwrap();
+        if q.bits != 30
+            || q.signed
+            || r.lo != -15
+            || r.hi != -12
+            || f.values[v].format != q
+            || f.outputs.iter().any(|o| o.value == v || o.value == amount)
+        {
+            continue;
+        }
+        let consumers: Vec<_> = f.events.iter().filter(|c| c.inputs.contains(&v)).collect();
+        if consumers.is_empty()
+            || consumers.iter().any(|c| {
+                !matches!(c.operation,Operation::Slice(n)
+            if n + f.values[c.output.unwrap()].format.bits <= 14)
+            })
+        {
+            continue;
+        }
+        if f.events
+            .iter()
+            .filter(|c| c.inputs.contains(&amount))
+            .any(|c| c.id != e.id)
+        {
+            continue;
+        }
+        amounts.insert(amount);
+    }
+    // An operand position has one representation in a shared physical lane.
+    // Decline the rewrite if any corresponding full/diffuse use is ineligible.
+    let mut lanes = BTreeMap::<_, Vec<&Instruction>>::new();
+    for ins in &program.instructions {
+        let Some(kind) = program.binding.kinds[ins.root].as_ref() else {
+            continue;
+        };
+        if !matches!(kind, LaneKind::LogicCone { .. }) {
+            continue;
+        }
+        lanes
+            .entry((kind, program.schedule.nodes[ins.root].lane.unwrap()))
+            .or_default()
+            .push(ins);
+    }
+    loop {
+        let previous = amounts.len();
+        for uses in lanes.values() {
+            let values = |ins: &Instruction| {
+                ins.inputs
+                    .iter()
+                    .copied()
+                    .chain(ins.members.iter().map(|&id| f.events[id].output.unwrap()))
+                    .collect::<Vec<_>>()
+            };
+            let positions: Vec<_> = uses.iter().map(|ins| values(ins)).collect();
+            if positions.iter().any(|v| v.len() != positions[0].len()) {
+                for v in positions.iter().flatten() {
+                    amounts.remove(v);
+                }
+                continue;
+            }
+            for pos in 0..positions[0].len() {
+                if positions.iter().any(|v| !amounts.contains(&v[pos])) {
+                    for v in &positions {
+                        amounts.remove(&v[pos]);
+                    }
+                }
+            }
+        }
+        if previous == amounts.len() {
+            break;
+        }
+    }
+    amounts
+}
+const Q_WINDOWS: [(usize, usize); 4] = [(0, 12), (1, 15), (2, 14), (3, 13)];
+
+// Select by the numerical input contract, never by relocated value numbers.
+fn diffuse_raw_normals(program: &LoweredProgram) -> Result<BTreeSet<usize>, String> {
+    let frame = &program.frame;
+    let mut fields = BTreeMap::new();
+    for e in &frame.events {
+        let Operation::Slice(offset) = e.operation else {
+            continue;
+        };
+        let v = e.output.unwrap();
+        if program.full[e.id]
+            || frame.values[v].format
+                != (Format {
+                    bits: 16,
+                    fraction: 14,
+                    signed: true,
+                })
+        {
+            continue;
+        }
+        let source = &frame.events[frame.values[e.inputs[0]].producer];
+        if let Operation::Read { memory, row } = source.operation {
+            if frame.memories[memory].name == "pixel.rows"
+                && [(0, 0), (0, 16), (1, 0)].contains(&(row, offset))
+                && fields.insert((row, offset), v).is_some()
+            {
+                return Err("duplicate diffuse raw-normal field".into());
+            }
+        }
+    }
+    if fields.len() != 3 {
+        return Err("diffuse raw-normal FF experiment requires exactly three input fields".into());
+    }
+    Ok(fields.into_values().collect())
+}
 impl Emitter {
-    fn retained_storage(&mut self, ram: bool) {
+    fn interface_format(&self, value: usize) -> Format {
+        if self.q_amounts.contains(&value) {
+            Format {
+                bits: 2,
+                fraction: 0,
+                signed: false,
+            }
+        } else {
+            self.program.frame.values[value].format
+        }
+    }
+    fn retained_storage(&mut self, ram: bool) -> Result<(), String> {
         let info = |value: usize| {
             let root = self.program.frame.values[value].producer;
             let ready = self
@@ -366,6 +575,17 @@ impl Emitter {
             let depth = self.retained[&value].div_ceil(self.program.ii[root]);
             (root, ready, depth)
         };
+        for &v in &self.normal_ff {
+            if !self.retained.contains_key(&v) {
+                return Err("missing diffuse normal retention".into());
+            }
+            let (root, ready, depth) = info(v);
+            if self.program.full[root] || self.program.ii[root] != 1 || ready != 2 || depth != 5 {
+                return Err(
+                    "diffuse normal FF experiment requires the existing age2-to7 chain".into(),
+                );
+            }
+        }
         let mut ram_candidates = Vec::new();
         if ram {
             for &value in self.retained.keys() {
@@ -391,7 +611,23 @@ impl Emitter {
             }
             let f = self.program.frame.values[value].format;
             let (root, ready, depth) = info(value);
-            if ram_values.contains(&value) {
+            if self.normal_ff.contains(&value) {
+                writeln!(self.body,"// Explicit raw-normal FF chain v{value}: {depth}x{}; all original taps retained.", f.bits).unwrap();
+                for d in 1..=depth {
+                    // The declaration hoister is intentionally unchanged. Use
+                    // distinct model state, so conditional wire/reg declarations
+                    // cannot lose their preprocessor guards during hoisting.
+                    writeln!(self.body,"wire {} v{value}_d{d};\nreg {} raw_normal_model_{value}_{d};\n`ifdef GPU_V2_GOWIN_DSP\nfor(genvar bit_{value}_{d}=0;bit_{value}_{d}<{};bit_{value}_{d}=bit_{value}_{d}+1) begin : raw_normal_{value}_{d}\n DFFE ff(.Q(v{value}_d{d}[bit_{value}_{d}]),.D(v{value}_d{}[bit_{value}_{d}]),.CLK(clk),.CE(diffuse_normal_ff_ce));\nend\n`else\nassign v{value}_d{d} = raw_normal_model_{value}_{d};\n`endif",decl(f),decl(f),f.bits,d-1).unwrap();
+                    writeln!(
+                        self.sequential,
+                        "`ifndef GPU_V2_GOWIN_DSP\nif {} raw_normal_model_{value}_{d} <= v{value}_d{};\n`endif",
+                        self.program.phase(root, ready),
+                        d - 1
+                    )
+                    .unwrap();
+                    self.register_bits += f.bits as usize;
+                }
+            } else if ram_values.contains(&value) {
                 let ii = self.program.ii[root];
                 let uses = &self.retained_uses[&value];
                 let long = uses
@@ -452,6 +688,7 @@ impl Emitter {
                 }
             }
         }
+        Ok(())
     }
     fn union_lane_ranges(&mut self, instructions: &[Instruction]) {
         self.active_ranges.clear();
@@ -518,10 +755,10 @@ impl Emitter {
     ) -> Result<(), String> {
         let frame = &self.program.frame;
         let output_format = if outputs.len() == 1 {
-            frame.values[outputs[0]].format
+            self.interface_format(outputs[0])
         } else {
             Format {
-                bits: outputs.iter().map(|&v| frame.values[v].format.bits).sum(),
+                bits: outputs.iter().map(|&v| self.interface_format(v).bits).sum(),
                 fraction: 0,
                 signed: false,
             }
@@ -531,14 +768,17 @@ impl Emitter {
             writeln!(
                 self.body,
                 "input {} a{index};",
-                decl(frame.values[v].format)
+                decl(self.interface_format(v))
             )
             .unwrap();
         }
         for &id in &ins.members {
             let v = frame.events[id].output.unwrap();
             writeln!(self.body, "reg {} t{v};", decl(frame.values[v].format)).unwrap();
-            if self.range_shifts && matches!(frame.events[id].operation, Operation::Shift) {
+            if self.range_shifts
+                && matches!(frame.events[id].operation, Operation::Shift)
+                && !self.q_amounts.contains(&frame.events[id].inputs[1])
+            {
                 let amount = frame.events[id].inputs[1];
                 let range = self
                     .active_ranges
@@ -584,6 +824,18 @@ impl Emitter {
                 Operation::Resize | Operation::BinaryScale => num(0),
                 Operation::ShiftLeft(n) => format!("{} <<< {n}", num(0)),
                 Operation::Shift => {
+                    if self.q_amounts.contains(&e.inputs[1]) {
+                        // For [-15,-12], low two amount bits encode all four
+                        // shifts bijectively. The full q result is exact; only
+                        // its low14 bits have consumers. No RNE is moved.
+                        writeln!(self.body,"// Exact q windows; code0/1/2/3 => right12/15/14/13.\ncase ({} & 2'b11)",get(1)).unwrap();
+                        for (code, shift) in Q_WINDOWS {
+                            writeln!(self.body, "2'd{code}: t{v} = {} >> {shift};", get(0))
+                                .unwrap();
+                        }
+                        writeln!(self.body, "endcase").unwrap();
+                        continue;
+                    }
                     if self.range_shifts {
                         let amount = e.inputs[1];
                         let range = self
@@ -720,7 +972,8 @@ impl Emitter {
         let names = outputs
             .iter()
             .map(|v| {
-                if ins
+                let encoded = self.q_amounts.contains(v);
+                let part = if ins
                     .members
                     .iter()
                     .any(|&id| frame.events[id].output == Some(*v))
@@ -728,6 +981,11 @@ impl Emitter {
                     format!("t{v}")
                 } else {
                     format!("a{}", ins.inputs.iter().position(|i| i == v).unwrap())
+                };
+                if encoded {
+                    format!("{part}[1:0]")
+                } else {
+                    part
                 }
             })
             .collect::<Vec<_>>();
@@ -858,57 +1116,47 @@ assign unit{lane}_result=unit{lane}_tail;
 
     fn split_cone(&mut self, lane: usize, ins: &Instruction, width: u32) -> Result<bool, String> {
         let frame = &self.program.frame;
-        let members: BTreeSet<_> = ins.members.iter().copied().collect();
-        let mut depths = BTreeMap::<usize, usize>::new();
-        for &id in &ins.members {
-            let e = &frame.events[id];
-            let depth = e
-                .inputs
-                .iter()
-                .filter_map(|&v| depths.get(&frame.values[v].producer))
-                .copied()
-                .max()
-                .unwrap_or(0);
-            let logic = !matches!(
-                e.operation,
-                Operation::Literal
-                    | Operation::Resize
-                    | Operation::BinaryScale
-                    | Operation::Slice(_)
-                    | Operation::ShiftLeft(_)
-            );
-            depths.insert(id, depth + usize::from(logic));
-        }
-        let maximum = depths[&ins.root];
-        if maximum < 2 {
+        let mut alternatives = cuts::candidates(frame, ins, &self.ranges, &self.active_ranges);
+        if alternatives.is_empty() {
             return Ok(false);
         }
-        let cut = maximum.div_ceil(2);
-        let early: Vec<_> = ins
-            .members
-            .iter()
-            .copied()
-            .filter(|i| depths[i] <= cut)
-            .collect();
-        let late: Vec<_> = ins
-            .members
-            .iter()
-            .copied()
-            .filter(|i| depths[i] > cut)
-            .collect();
-        let mut crossing = BTreeSet::new();
-        for &id in &late {
-            for &v in &frame.events[id].inputs {
-                let producer = frame.values[v].producer;
-                if !matches!(frame.events[producer].operation, Operation::Literal)
-                    && (!members.contains(&producer) || depths[&producer] <= cut)
-                {
-                    crossing.insert(v);
-                }
-            }
-        }
-        let crossing: Vec<_> = crossing.into_iter().collect();
-        let formats: Vec<_> = crossing.iter().map(|&v| frame.values[v].format).collect();
+        let maximum = alternatives.last().unwrap().at + 1;
+        let baseline = maximum.div_ceil(2);
+        let selected = if self.cost_cut {
+            cuts::choose(&alternatives, baseline)
+        } else {
+            baseline
+        };
+        let old = alternatives.iter().find(|c| c.at == baseline).unwrap();
+        let chosen = alternatives.iter().find(|c| c.at == selected).unwrap();
+        writeln!(
+            self.cuts_csv,
+            "{lane},{maximum},{baseline},{selected},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            old.bits,
+            chosen.bits,
+            old.effective_bits,
+            chosen.effective_bits,
+            old.align_bits,
+            chosen.align_bits,
+            old.delay[0],
+            old.delay[1],
+            chosen.delay[0],
+            chosen.delay[1],
+            chosen.levels[0],
+            chosen.levels[1],
+            chosen
+                .crossing
+                .iter()
+                .map(|&v| self.interface_format(v).bits as usize)
+                .sum::<usize>()
+        )
+        .unwrap();
+        let chosen =
+            alternatives.swap_remove(alternatives.iter().position(|c| c.at == selected).unwrap());
+        let early = chosen.early;
+        let late = chosen.late;
+        let crossing = chosen.crossing;
+        let formats: Vec<_> = crossing.iter().map(|&v| self.interface_format(v)).collect();
         let bits: u32 = formats.iter().map(|f| f.bits).sum();
         let first = Instruction {
             root: ins.root,
@@ -1350,6 +1598,14 @@ pub fn generate_with_options(
     options: LightingRtlOptions,
 ) -> Result<LightingVerilog, String> {
     let program = LoweredProgram::new(profile, options)?;
+    let normal_ff = if options.shallow_normal_ff {
+        if profile != LightingProfile::Fast {
+            return Err("shallow normal FF experiment is limited to Fast".into());
+        }
+        diffuse_raw_normals(&program)?
+    } else {
+        BTreeSet::new()
+    };
     let latency = program.latencies[0];
     let diffuse_latency = program.latencies[1];
     let specular_ii = profile.ii(true);
@@ -1382,6 +1638,11 @@ pub fn generate_with_options(
         })
         .collect();
     let ranges = infer_ranges(&program.frame);
+    let q_amounts = if options.q_windows {
+        q_window_amounts(&program, &ranges)
+    } else {
+        BTreeSet::new()
+    };
     let mut e = Emitter {
         program,
         body: String::new(),
@@ -1396,6 +1657,10 @@ pub fn generate_with_options(
         split_cones: options.split_cones,
         share_scalars: options.share_scalars,
         range_shifts: options.range_shifts,
+        cost_cut: options.cost_cut,
+        q_amounts,
+        normal_ff,
+        cuts_csv: String::from("lane,max_levels,baseline_cut,cut,old_bits,bits,old_effective_bits,effective_bits,old_align_bits,align_bits,old_delay0,old_delay1,delay0,delay1,levels0,levels1,packed_bits\n"),
         ranges,
         active_ranges: BTreeMap::new(),
         modules: String::new(),
@@ -1466,7 +1731,24 @@ pub fn generate_with_options(
     let g = e.value(e.program.output_values[0][0], latency)?;
     let h = e.value(e.program.output_values[0][1], latency)?;
     let dg = e.value(e.program.output_values[1][0], diffuse_latency)?;
-    e.retained_storage(options.ram_retained);
+    if !e.normal_ff.is_empty() {
+        let v = *e.normal_ff.first().unwrap();
+        let root = e.program.frame.values[v].producer;
+        let ready = e
+            .program
+            .instructions
+            .iter()
+            .find(|i| i.root == root)
+            .unwrap()
+            .ready;
+        writeln!(
+            e.body,
+            "wire diffuse_normal_ff_ce = datapath_ce && {};",
+            e.program.phase(root, ready)
+        )
+        .unwrap();
+    }
+    e.retained_storage(options.ram_retained)?;
     for mode in 0..2 {
         let ii = profile.ii(mode == 0);
         for row in 0..3 {
@@ -1824,6 +2106,7 @@ endmodule
         normalization_roms: roms,
         id_slots,
         storage_csv,
+        cuts_csv: e.cuts_csv,
         stages,
     })
 }
@@ -1854,6 +2137,52 @@ fn hoist(input: &str) -> (String, String) {
     (declarations, body)
 }
 
+/// Actual per-pixel issue/ready calendar, including physical lane relocation.
+/// The block study below describes alternatives rather than this implemented body.
+pub fn operation_calendar_with_options(
+    profile: LightingProfile,
+    options: LightingRtlOptions,
+) -> Result<String, String> {
+    let p = LoweredProgram::new(profile, options)?;
+    let mut keys = BTreeSet::new();
+    for i in &p.instructions {
+        if let Some(k) = &p.binding.kinds[i.root] {
+            keys.insert((k.clone(), p.schedule.nodes[i.root].lane.unwrap()));
+        }
+    }
+    let lanes: BTreeMap<_, _> = keys
+        .into_iter()
+        .enumerate()
+        .map(|(id, k)| (k, id))
+        .collect();
+    let mut csv = String::from("full,event,physical_lane,kind,issue,ready,phase,inputs,members\n");
+    for i in &p.instructions {
+        let (lane, kind) = if let Some(k) = &p.binding.kinds[i.root] {
+            (
+                lanes[&(k.clone(), p.schedule.nodes[i.root].lane.unwrap())].to_string(),
+                format!("{k:?}").replace('"', "\"\""),
+            )
+        } else {
+            (String::new(), "wiring/input".into())
+        };
+        writeln!(
+            csv,
+            "{},{},{},\"{}\",{},{},{},{},{}",
+            p.full[i.root],
+            i.root,
+            lane,
+            kind,
+            i.issue,
+            i.ready,
+            i.issue % p.ii[i.root],
+            i.inputs.len(),
+            i.members.len()
+        )
+        .unwrap();
+    }
+    Ok(csv)
+}
+
 /// Bounded block-calendar experiment: B consecutive pixels followed by bubbles.
 /// This is independently checked scheduling evidence, not an implemented burst interface.
 pub fn calendar_study(profile: LightingProfile, full: bool) -> Result<String, String> {
@@ -1866,15 +2195,19 @@ pub fn calendar_study_with_options(
     full: bool,
     options: LightingRtlOptions,
 ) -> Result<String, String> {
+    if options.stationary_logic {
+        return Err("block study does not relocate stationary logic sites".into());
+    }
     use resource_scheduler::{
         Graph, Limits, ModuloGraph, ModuloNode, ModuloSchedule, SearchConfig,
     };
-    let p = Program::with_kernel(
+    let p = Program::with_kernel_depth(
         profile,
         full,
         options.dedicated_dsp,
         options.kernel(),
         options.role_schedule,
+        options.logic_depth,
     )?;
     let mut csv =
         String::from("group,period,average_ii,latency,operand_choices,retained_value_peak_bits\n");
@@ -2051,6 +2384,117 @@ mod token_ram_tests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod q_window_tests {
+    use super::*;
+
+    #[test]
+    fn encoded_windows_preserve_all_unsigned_q_bits() {
+        // Single-bit basis covers every input bit of these linear bit windows;
+        // extremes and mixed patterns also exercise the signed amount encoding.
+        let words = (0..30)
+            .map(|n| 1_u32 << n)
+            .chain([0, (1 << 30) - 1, 0x15555555, 0x2aaaaaaa]);
+        for q in words {
+            for amount in -15_i32..=-12 {
+                let code = (amount & 3) as usize;
+                let shift = Q_WINDOWS.iter().find(|x| x.0 == code).unwrap().1;
+                assert_eq!(q >> shift, q >> amount.unsigned_abs());
+            }
+        }
+    }
+
+    #[test]
+    fn shared_windows_reject_a_wider_range_or_observed_amount() {
+        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+            let mut p = LoweredProgram::new(profile, LightingRtlOptions::factor_profile()).unwrap();
+            let mut ranges = infer_ranges(&p.frame);
+            let eligible = q_window_amounts(&p, &ranges);
+            assert!(!eligible.is_empty(), "test must reach the actual q rewrite");
+            let amount = *eligible.first().unwrap();
+            ranges[amount].lo = -16;
+            let rejected = q_window_amounts(&p, &ranges);
+            assert!(!rejected.contains(&amount));
+            assert!(rejected.len() < eligible.len());
+            ranges[amount].lo = -15;
+            let mut observation = p.frame.outputs[0].clone();
+            observation.value = amount;
+            p.frame.outputs.push(observation);
+            assert!(!q_window_amounts(&p, &ranges).contains(&amount));
+        }
+    }
+
+    #[test]
+    fn shared_windows_reject_extra_amount_consumers_and_wider_slices() {
+        for profile in [LightingProfile::Fast, LightingProfile::Compact] {
+            let mut p = LoweredProgram::new(profile, LightingRtlOptions::factor_profile()).unwrap();
+            let mut ranges = infer_ranges(&p.frame);
+            let eligible = q_window_amounts(&p, &ranges);
+            assert!(!eligible.is_empty(), "test must reach the actual q rewrite");
+            let amount = *eligible.first().unwrap();
+            let shifted = p
+                .frame
+                .events
+                .iter()
+                .find(|e| e.operation == Operation::Shift && e.inputs[1] == amount)
+                .unwrap()
+                .output
+                .unwrap();
+            let consumer = p
+                .frame
+                .events
+                .iter()
+                .position(|e| {
+                    e.inputs.contains(&shifted) && matches!(e.operation, Operation::Slice(_))
+                })
+                .unwrap();
+
+            // A second use needs the signed amount, not its two-bit encoding.
+            let mut extra = p.frame.events[consumer].clone();
+            extra.id = p.frame.events.len();
+            extra.inputs = vec![amount];
+            extra.operation = Operation::Slice(0);
+            extra.output = Some(p.frame.values.len());
+            let format = p.frame.values[p.frame.events[consumer].output.unwrap()].format;
+            p.frame.values.push(LoweredValue {
+                format,
+                raw: p.frame.values[amount].raw & ((1_i128 << format.bits) - 1),
+                producer: extra.id,
+            });
+            ranges.push(RawRange::format(format));
+            p.frame.events.push(extra);
+            assert_eq!(
+                p.frame
+                    .events
+                    .iter()
+                    .filter(|e| e.inputs.contains(&amount))
+                    .count(),
+                2
+            );
+            assert!(!q_window_amounts(&p, &ranges).contains(&amount));
+            p.frame.events.pop();
+            p.frame.values.pop();
+            ranges.pop();
+            assert!(q_window_amounts(&p, &ranges).contains(&amount));
+
+            // The rewrite's consumer contract permits only the low 14 bits.
+            let original_slice = p.frame.events[consumer].operation.clone();
+            let width = p.frame.values[p.frame.events[consumer].output.unwrap()]
+                .format
+                .bits;
+            p.frame.events[consumer].operation = Operation::Slice(15 - width);
+            assert!(!q_window_amounts(&p, &ranges).contains(&amount));
+            p.frame.events[consumer].operation = original_slice;
+            assert!(q_window_amounts(&p, &ranges).contains(&amount));
+
+            let mut observation = p.frame.outputs[0].clone();
+            observation.value = shifted;
+            p.frame.outputs.push(observation);
+            assert!(!q_window_amounts(&p, &ranges).contains(&amount));
         }
     }
 }

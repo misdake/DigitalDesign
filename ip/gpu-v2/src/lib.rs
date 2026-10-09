@@ -3,8 +3,11 @@
 #![forbid(unsafe_code)]
 
 pub mod command_processor;
+pub mod framebuffer;
 pub mod frontend;
+pub mod geometry;
 pub mod lighting;
+pub mod memory;
 pub mod scratchpad;
 pub mod system;
 pub mod texture;

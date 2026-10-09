@@ -570,6 +570,290 @@ Remove-Item Env:LIGHTING_SYSTEM_PROFILE
 # Run gw_sh build.tcl in the exported directory for a complete isolated fit.
 ```
 
+## Factor pipeline and operation boundaries
+
+`LightingRtlOptions::factor_profile()` and `LightingEmu::with_factor_profile`
+explicitly select the new candidate. Fast retains specular II2 / diffuse II1;
+Compact retains II3 / II2. The original default, resource alternatives and System
+candidates remain separate. The numerical kernel is the existing
+`counted::Config::system_candidate(true)`: scalar N/H factors, DSP18 squares,
+block prescale and the previously reviewed scaled NL gate. This scheduling change
+adds no new arithmetic approximation relative to that System area kernel. It
+inherits its known half-vector limitations and differs from original g/h bits.
+
+The useful boundary is a complete pure-logic expression between DSP/ROM issues,
+not every small select, clamp or round. The explicit experiment permits up to
+8 serial nonwiring operations per cone, with two real registered segments.
+The independent longest-path audit includes reconvergent paths; wiring counts
+zero. Multiply, memory access and published stage boundaries remain outside
+contraction. This is still a bounded static graph, not a hand-written universal
+ALU, runtime instruction dispatcher or globally optimal scheduler.
+
+```mermaid
+flowchart LR
+    N[Raw N] --> NF[Scale and length factor]
+    NF --> NL[Scaled NL dot]
+    NL --> G[N factor and complete clamp/RNE expression]
+    G --> O[g/h and complete external ID]
+    R[Pixel ray] --> V[Explicit unit V]
+    V --> HF[Raw H and length factor]
+    NF --> NH[Scaled NH dot]
+    HF --> NH
+    NH --> P[N/H scalar factors and power]
+    P --> O
+```
+
+Pure-logic contraction reduces escaping values, retention and operand boundaries.
+DSPs keep fixed ray / V / remaining-arithmetic responsibilities. Inventories are
+budgeted from **both** complete mode graphs at their respective IIs; Fast diffuse
+II1 cannot borrow a full II2 budget. Each role uses the maximum of the two
+ceil(work/II) requirements. The graph and physical pool pass separate modulo
+checks. Full and diffuse remain mutually exclusive and switch only after drain.
+CE/output backpressure freezes all state; reset drops ownership without clearing
+RAM. The complete32-bit ID FIFO remains inside the measured lighting boundary.
+
+Compact's arithmetic pool initially used7 native multipliers. Completing the
+already allocated macro's unused native slot simplifies its calendar, without
+adding a macro or tile. This is a measured allocation choice, not an assumption
+that DSP18 and DSP9 can mix in one macro.
+
+### Factor fitted comparison
+
+Complete flat PnR uses the same serial probe,309 harness FFs, device/tool and
+54.002MHz constraint as the earlier comparisons. Logic=LUT+ALU+6*RAM16.
+Final exported RTL is byte-identical to its fitted source. These are isolated
+component results; whole-GPU fit and board operation remain unverified.
+
+| Quantity | Factor Fast | Factor Compact |
+| --- | ---: | ---: |
+| Full/specular II / latency | 2 / 81 | 3 / 85 |
+| Diffuse II / latency | 1 / 36 | 2 / 36 |
+| PnR Logic | **2983** | **3021** |
+| LUT / ALU / RAM16 | 2259 / 448 / 46 | 2554 / 317 / 25 |
+| Fitted FF, including harness | 3269 | 3152 |
+| BSRAM total; pROM / SDPB / SPX9 | **8; 4 / 2 / 2** | 6; 3 / 3 / 0 |
+| MULT9 / MULT18 / paired macro | 3 / 10 / 1 | 2 / 8 / 1 |
+| Certified whole macros / tiles | 7 / 4 | 6 / 3 |
+| Conservative macro DSP18 charge / tile charge | 14 / 16 | 12 / 12 |
+| Fmax MHz | 78.573 | 95.200 |
+| Setup / hold violated endpoints | 0 / 0 | 0 / 0 |
+
+Compared with the original Fast/Compact implementations, Logic falls28.89%/
+20.87%; against the H-only resource alternatives it falls20.20%/16.11%. Those
+comparisons include a numerical-kernel change. The same-kernel System II2/II2
+comparison below isolates the boundary benefit; do not attribute all savings to
+rescheduling alone. Fast exceeds the6-block lighting memory allocation; Compact
+fits it. The previous Fast total omitted two SPX9 instances and is withdrawn.
+The source-identical baseline refresh reproduces all resource and timing numbers,
+including the SPX9 instances; this is an accounting correction, not a new mapping.
+No sampling block or spare whole-GPU block is borrowed. Neither
+achieves the2200-Logic aspiration. Fast also exceeds a12-DSP18 budget when macros
+are charged conservatively; nominal primitive percentages do not fix that gap.
+
+### Bounded experiments and attribution
+
+| Experiment | Full / diffuse II | PnR Logic | Decision |
+| --- | ---: | ---: | --- |
+| System area kernel, coarse boundaries, Fast | 2 / 2 | 2954 | 15.65% below same-kernel System Fast; same DSP/BSRAM |
+| System area kernel, coarse boundaries, Compact | 4 / 4 | 2797 | Only1.58% below same-kernel System Compact |
+| Stationary cheap logic, System Fast | 2 / 2 | 3497 | Only5 Logic saved; reject as primary method |
+| Stationary cheap logic, System Compact | 4 / 4 | 3061 | More Logic; reject |
+| H-only resource kernel, coarse Fast | 2 / 1 | 3791 | More Logic than its resource baseline; reject |
+| H-only resource kernel, coarse Compact | 3 / 2 | 3784 | More Logic; reject |
+| Factor Compact with unfilled native slot | 3 / 2 | 3174 | Superseded by final Compact; same macro/tile allocation |
+
+Larger boundaries are useful here in combination with the factor expression;
+they are not a universal area rule. Stationary cheap logic removes some sharing
+but adds arithmetic copies. Merely grouping pixels was already rejected above.
+
+Diagnostic hierarchy synthesis uses exclusive local LUT+ALU+6*RAM16 counts.
+It is a separate retained-hierarchy build, not a cell-by-cell attribution of flat
+PnR. Both local totals are2987; grouping priorities assign any shift-containing
+cone to scaling, then LZD, DSP/ROM, comparison/select and remaining rounding.
+Thus mixed comparison/select cones can also contain rounding and sums.
+
+| Local category, including its own mux/segment registers | Fast | Final Compact |
+| --- | ---: | ---: |
+| Variable scaling | 1038 (34.75%) | 918 (30.73%) |
+| Comparison/select mixed expressions | 599 (20.05%) | 596 (19.95%) |
+| Context, retained storage and control in parent | 505 (16.91%) | 362 (12.12%) |
+| DSP input selection and external tail | 359 (12.02%) | 556 (18.61%) |
+| Remaining rounding | 161 | 143 |
+| Remaining sums | 125 | 245 |
+| LZD | 135 | 110 |
+| ROM interface / harness | 2 / 63 | 3 / 54 |
+
+Compact saves ALU/storage but still spends more on DSP operand selection. Filling
+its native slot reduced Logic by153 and improved Fmax from72.500MHz. It avoids
+an extra macro while bringing total area close to Fast. Scaling and numerical
+selection remain larger costs than the phase controller.
+
+### Factor verification and reproduction
+
+Independent oracle/count/emu final checks and published stages pass. The original
+six kernel/profile combinations also pass with both default and8-level boundaries.
+Each final factor profile retires3025 tokens across27 contexts, all17 exponent
+codes, normal scaling boundaries, negative extremes, degenerate cases, random
+projections, CE pauses, held outputs, drained context updates and reset/restart.
+Behavioral Icarus and actual Gowin DSP simulation both match the independent emu
+for every handshake, observed output and published stage. Both mandatory CPU
+core/system co-simulations pass; those are regression checks rather than GPU
+integration. GPU clippy, touched-file formatting and layering pass. Full source
+hygiene is blocked by pre-existing unignored geometry-study build artifacts;
+document checks remain blocked by the two shared-index Gowin files absent from
+this checkout. No unrelated geometry or system source was changed.
+
+```powershell
+# Complete numerical/regression tests:
+& scripts/run-cargo.ps1 -Subcommand test -Label lighting-factor -CargoArgs @('-p','gpu-v2')
+# Both cycle implementations, with vendor and behavioral DSPs:
+$env:LIGHTING_FACTOR_KERNEL='1'
+$env:LIGHTING_SCALED_GATE='1'
+$env:LIGHTING_LOGIC_DEPTH='8'
+& scripts/run-cargo.ps1 -Subcommand test -Label lighting-factor-rtl -CargoArgs @('-p','gpu-v2','--test','lighting_cycles','verilog_matches','--','--ignored','--nocapture','--test-threads=1')
+# Fresh exports, followed by gw_sh build.tcl inside each directory:
+& scripts/run-cargo.ps1 -Subcommand run -Label factor-fast -CargoArgs @('-p','gpu-v2','--example','lighting_rtl_export','--','target/gpu-v2-lighting/stage-study/final-fast','gowin','fast','factor-coarse')
+& scripts/run-cargo.ps1 -Subcommand run -Label factor-compact -CargoArgs @('-p','gpu-v2','--example','lighting_rtl_export','--','target/gpu-v2-lighting/stage-study/final-compact','gowin','compact','factor-coarse')
+```
+
+`operations.csv` is the implemented issue/ready/physical-lane calendar, including
+full/diffuse phase and contraction membership. `calendar-*.csv` is the separate
+alternative block study. `storage.csv` and `dsp-packing.csv` keep the complete
+retention and macro accounting. Selected flat reports, diagnostic attribution
+and source identity are preserved under local `gpu-v2-lighting-fit-evidence` in
+`factor-fast/compact`; raw builds remain in `target/gpu-v2-lighting/stage-study`.
+
+### Bounded internal-cut and q-window experiments
+
+This follow-up keeps the Factor numerical kernel, every rounding point, published
+stage observation,32-bit external identity, external issue/ready calendar and
+two registered logic segments. Only two implementation candidates were fitted.
+Both options default to false; neither replaces the default implementation.
+
+Candidate A enumerates existing legal two-stage cuts. It minimizes structurally
+proved effective crossing bits plus external-input alignment cost, subject to
+at most four logic levels per segment and a weighted-delay bound relative to
+the old cut. Shared full/diffuse instances use range unions. Shift, carry,
+comparison and rounding weights are heuristics; PnR decides actual timing.
+Eight lanes change cut. Declared crossing bits fall891→824, but total fitted
+Logic falls by only8: LUTs fall43 while ALUs rise35. Fewer declared registers
+alone do not predict area or timing.
+
+Candidate B uses the unsigned30-bit q path whose shift amount is proved to be
+[-15,-12] and whose result is consumed only by14-bit mantissa slices. The low
+two bits encode these four amounts bijectively; code0/1/2/3 selects right shifts
+12/15/14/13. This removes the signed amount negation and variable-shift expression
+and carries a2-bit code across the segment boundary instead of18 bits, saving
+32 declared bits across two lanes. The full shifted q value remains exact;
+rounding and guard/sticky decisions are unchanged. All corresponding uses in
+each shared lane must satisfy the same representation contract. An observed
+amount, additional consumer or wider amount range prevents the rewrite.
+
+Complete flat PnR uses the same probe/device/tool/54.002MHz constraint. The
+refreshed baseline RTL is byte-identical to the earlier Factor Fast fit and
+reproduces its complete resource and timing result. Every row retains8 BSRAM:
+4 pROM +2 SDPB +2 SPX9. These exceed the6-block allocation; the earlier reported
+Fast6-block total was a missed SPX9 row. No memory is moved outside the boundary.
+
+| Quantity | Refreshed Factor Fast | A: internal cut | B: q window |
+| --- | ---: | ---: | ---: |
+| Logic | 2983 | 2975 | **2864** |
+| LUT / ALU / RAM16 | 2259 / 448 / 46 | 2216 / 483 / 46 | 2140 / 448 / 46 |
+| FF including harness | 3269 | 3221 | 3195 |
+| BSRAM | 8 | 8 | 8 |
+| MULT9 / MULT18 / pair | 3 / 10 / 1 | 3 / 10 / 1 | 3 / 10 / 1 |
+| Certified macros / tiles | 7 / 4 | 7 / 4 | 7 / 4 |
+| Full II / latency; diffuse II / latency | 2 / 81; 1 / 36 | 2 / 81; 1 / 36 | 2 / 81; 1 / 36 |
+| Fmax MHz | 78.573 | 71.623 | 76.673 |
+| Setup / hold violated endpoints | 0 / 0 | 0 / 0 | 0 / 0 |
+
+A saves0.27% Logic with worse timing and is rejected as the preferred method.
+B saves3.99% Logic and74 FF at unchanged DSP/memory cost; its narrower internal
+representation is useful, but it remains an explicit experimental option because
+the memory budget is unmet. Compact PnR was not expanded after the Fast budget
+failure. Both candidates still pass Fast and Compact behavioral/vendor DSP
+cycle co-simulation, including every published stage, CE and backpressure.
+Independent bit-basis checks cover the complete unsigned q window transform;
+guard regressions reject broader ranges, extra amount consumers, wider slices,
+and observed amount or shifted values. CPU core
+and system co-simulations pass again for this round. The Gowin synthesized
+netlist is encrypted, so exact per-register cell attribution is not claimed.
+
+Exports use `lighting_rtl_export ... gowin fast factor-cut` or `factor-window`;
+tests select `LIGHTING_COST_CUT=1` or `LIGHTING_Q_WINDOWS=1` in addition to the
+Factor environment above. Raw fitted builds and final source comparisons are in
+`target/gpu-v2-lighting/boundary-study`. The existing fit-evidence record preserves
+the three flat reports, identities, cuts, storage and physical DSP certificates.
+`cuts.csv` separates audited-format widths from actual `packed_bits`, so the
+q representation reduction is visible without changing the numerical audit.
+Both original default-profile exports remain byte-identical to their prior fits.
+The fixed-cost lesson is to carry the smallest proved representation across
+boundaries; a globally balanced expression tree does not guarantee low Logic.
+
+### Fast shallow-normal storage boundary
+
+One subsequent storage candidate starts from B (`factor-window`). Only the three
+diffuse raw S(16,14) normal chains, age2→7 at II1, use explicit native DFFE:
+3 components ×5 taps ×16 bits =240 FF bits. Selection follows the pixel-row
+field contract rather than relocated value numbers; unexpected retention or
+profile is rejected. Full-mode raw normals, long scaled-N retention, all ROMs,
+the complete32-bit ID ring and other storage retain their original lowering.
+`shallow_normal_ff` defaults to false. Export selects `factor-window-ff` for Fast;
+the numerical emu remains the same Factor profile.
+
+Existing B timing paths identify two single-clock writable RAM sites rooted at
+`v581_d1`, with DI paths from diffuse raw N.x/N.y/N.z. The primitive inventory
+identifies these as SPX9. Complete merged-bank port ownership remains unavailable
+in the encrypted flat netlist, so the experiment is restricted to the240-bit
+source chains. One complete matched PnR tests the actual result; no global RAM
+ban, ID narrowing, K² movement, ROM rearrangement or second storage candidate
+is included.
+
+| Quantity | B q-window Fast | Explicit shallow FF Fast |
+| --- | ---: | ---: |
+| Logic | 2864 | **2913** |
+| LUT / ALU / RAM16 | 2140 / 448 / 46 | 2159 / 448 / 51 |
+| FF including309 harness FFs | 3195 | 3437 |
+| CLS | 2843 | 3012 |
+| BSRAM; SPX9 / SDPB / pROM | 8; 2 / 2 / 4 | **6; 0 / 2 / 4** |
+| MULT9 / MULT18 / pair | 3 / 10 / 1 | 3 / 10 / 1 |
+| Certified macros / tiles | 7 / 4 | 7 / 4 |
+| Full II / latency; diffuse II / latency | 2 / 81; 1 / 36 | 2 / 81; 1 / 36 |
+| Fmax MHz | 76.673 | **88.282** |
+| Setup / hold violated endpoints | 0 / 0 | 0 / 0 |
+
+The six-block lighting target is met in this isolated fit: both SPX9 disappear,
+and the complete BSRAM-kind sum agrees with recursive synthesis XML. Relative
+to B, the trade is+49 Logic,+242 fitted FF,+5 RAM16 and+169 CLS. The240-bit bound
+describes the changed source chains; automatic remapping elsewhere means the
+whole fitted FF delta need not equal240. The additional RAM16 cells are charged,
+without assigning encrypted-netlist cells to guessed source fields. Remaining
+timing paths still identify the ID ring and scaled N.y delay as BSRAM users.
+
+This is the preferred explicit Fast storage candidate. Together with the
+unchanged Factor Compact above, both II2/II1 and II3/II2 candidates fit6 blocks.
+Fast still exceeds the conservative12-DSP18 macro budget and both exceed the
+2200-Logic aspiration. The clock constraint remains54.002MHz; Fmax is a routed
+component result, not a frequency change or whole-GPU/board validation.
+
+Behavioral FFs and actual Gowin DFFE/DSP primitives independently match every
+handshake, output and published numerical stage: Fast14536 wall cycles and
+155982 stage observations, including CE pauses, output backpressure, sparse
+tokens, drained context changes and reset/drop/restart. Compact remains the
+unchanged regression profile. All132 ordinary GPU tests and both mandatory
+CPU core/system co-simulations pass; strict clippy, scoped hygiene, formatting
+and layering pass. Main integration also passes the lighting regressions and full
+repository hygiene/docs/layering checks after the shared vendor documentation move.
+The DFFE model is simulated rather than stubbed; payload FFs do not reset when
+runtime reset drops valid ownership. Vendor CE equals the original advancing
+edge and diffuse phase; the behavioral model uses the same edge semantics.
+
+Reproduce with `lighting_rtl_export ... gowin fast factor-window-ff` and
+`LIGHTING_SHALLOW_NORMAL_FF=1` added to the Factor/q-window RTL test environment.
+Raw source, scope manifest, full PnR and BSRAM cross-check are under
+`target/gpu-v2-lighting/shallow-ff-study`; selected evidence is linked by the
+existing local fit record. Original B/default exports remain byte-identical.
+
 ## Area audit and scheduling experiments
 
 A diagnostic hierarchy emits one child per physical arithmetic/ROM lane while

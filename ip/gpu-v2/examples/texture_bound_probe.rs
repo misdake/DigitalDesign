@@ -1,16 +1,29 @@
 //! Universal periodic preparation + bounded cache/color + actual cycle MC.
 //! Default MC remains serial; no prefetch or average timing substitution.
 #[path = "../tests/support/sdram/physical_texture.rs"]
-mod physical;
+pub(crate) mod physical;
 #[path = "../tests/support/texture.rs"]
 #[allow(dead_code)]
-mod support;
+pub(crate) mod support;
 use gpu_v2::texture::{
     ports::*,
     sim::{oracle, staged::bound, timed},
 };
 use std::{fs, io::Write, path::Path};
-fn inputs(profile: &str, mask: u8, count: usize) -> Vec<QuadInput> {
+fn configurations() -> Vec<(bound::control::Storage, usize, bool)> {
+    [
+        bound::control::Storage::Dedicated,
+        bound::control::Storage::Packed,
+    ]
+    .into_iter()
+    .flat_map(|storage| {
+        [(5, true), (8, false), (8, true)]
+            .into_iter()
+            .map(move |(contexts, early)| (storage, contexts, early))
+    })
+    .collect()
+}
+pub(crate) fn inputs(profile: &str, mask: u8, count: usize) -> Vec<QuadInput> {
     (0..count)
         .map(|i| {
             let i0 = i % 64;
@@ -58,10 +71,16 @@ fn main() {
     );
     fs::create_dir_all(root).unwrap();
     let b = bound::Binding::build().unwrap();
+    let mut layout = fs::File::create(root.join("layout.csv")).unwrap();
+    writeln!(
+        layout,
+        "stage,period,value,source_low,width,iteration,physical_low,live_phase_mask,read_offsets"
+    )
+    .unwrap();
     let mut stages = fs::File::create(root.join("stages.csv")).unwrap();
     writeln!(
         stages,
-        "stage,II,primitive_span,registered_transfer,FF_bits,DSP_pipeline_bits,RAM16x1_cells,operand_mux_tree_bits,sites"
+        "stage,II,primitive_span,registered_transfer,FF_bits,packed_FF_bits,packed_peak_bits,packed_control_FF,packed_write_mux_bits,packed_read_mux_bits,packed_control_gates,DSP_pipeline_bits,RAM16x1_cells,operand_mux_tree_bits,sites"
     )
     .unwrap();
     for (name, p) in [
@@ -74,27 +93,62 @@ fn main() {
     ] {
         writeln!(
             stages,
-            "{name},{},{},1,{},{},{},{},\"{:?}\"",
+            "{name},{},{},1,{},{},{},{},{},{},{},{},{},{},\"{:?}\"",
             p.ii(),
             p.span(),
             p.fixed_ff_bits,
+            p.packed.ff_bits,
+            p.packed.peak_live_bits,
+            p.packed.control_ff_bits,
+            p.packed.write_selector_tree_bits,
+            p.packed.read_selector_tree_bits,
+            p.packed.control_boolean_gates,
             p.dsp_pipeline_bits,
             p.rom_ram16_cells,
             p.operand_mux_tree_bits,
             p.sites
         )
         .unwrap();
+        println!(
+            "{name} dedicated={} packed={} periodicPeak={} writeMux={} readMux={}",
+            p.fixed_ff_bits,
+            p.packed.ff_bits,
+            p.packed.peak_live_bits,
+            p.packed.write_selector_tree_bits,
+            p.packed.read_selector_tree_bits
+        );
+        for allocation in &p.packed.placements {
+            let field = p
+                .packed_fields
+                .iter()
+                .find(|f| f.value == allocation.value && f.source_low == allocation.source_low)
+                .unwrap();
+            writeln!(
+                layout,
+                "{name},{},{},{},{},{},{},{:016x},\"{:?}\"",
+                p.packed.period,
+                allocation.value,
+                allocation.source_low,
+                allocation.width,
+                allocation.iteration,
+                allocation.low,
+                allocation.live_phases,
+                field.read_times
+            )
+            .unwrap();
+        }
     }
     let mut storage = fs::File::create(root.join("storage.csv")).unwrap();
-    writeln!(storage, "contexts,early_release,allocation,FF_bits,RAM16SDP4_cells,framework_RAM16x1_cells,BSRAM,hard_pipeline_bits,ports").unwrap();
+    writeln!(storage, "layout,contexts,early_release,allocation,FF_bits,RAM16SDP4_cells,framework_RAM16x1_cells,BSRAM,hard_pipeline_bits,ports").unwrap();
     let cache = timed::Hardware {
         preparation: timed::PreparationMode::BoundStages,
         prefetch: false,
         ..Default::default()
     };
-    for (contexts, early) in [(5, true), (8, false), (8, true)] {
+    for (mode, contexts, early) in configurations() {
         let prep = bound::control::Hardware {
             contexts,
+            storage: mode,
             release_after_capture: early,
             ..Default::default()
         };
@@ -102,7 +156,7 @@ fn main() {
         for row in &bill.rows {
             writeln!(
                 storage,
-                "{contexts},{early},{},{},{},{},{},{},\"{}\"",
+                "{mode:?},{contexts},{early},{},{},{},{},{},{},\"{}\"",
                 row.name,
                 row.ff_bits,
                 row.sdp4_cells,
@@ -113,14 +167,16 @@ fn main() {
             )
             .unwrap();
         }
-        println!("storage contexts={contexts} early={early}: FF={} SDP4={} conservativeRAM16x1={} BSRAM={} DSP18={} one_read_mux_tree_bits={} operand_mux_tree_bits={}",
-            bill.ff_bits, bill.sdp4_cells, bill.ram16x1_cells, bill.bsram, bill.dsp18, bill.rotating_read_mux_bits, bill.operand_mux_tree_bits);
+        println!("storage layout={mode:?} contexts={contexts} early={early}: FF={} SDP4={} conservativeRAM16x1={} BSRAM={} DSP18={} read_mux_tree_bits={} write_mux_tree_bits={} storage_control_gates={} operand_mux_tree_bits={}",
+            bill.ff_bits, bill.sdp4_cells, bill.ram16x1_cells, bill.bsram, bill.dsp18, bill.rotating_read_mux_bits, bill.rotating_write_mux_bits, bill.storage_control_boolean_gates, bill.operand_mux_tree_bits);
     }
     if args.get(1).is_some_and(|a| a == "--storage-only") {
         return;
     }
     let mut csv = fs::File::create(root.join("performance.csv")).unwrap();
-    writeln!(csv, "profile,mask,quads,contexts,early_release,loaded,MC_init_inside_batch,init_cycles_excluded,pixels,groups,batch_cycles,batch_cycles_per_pixel,steady_pixels,steady_cycles,steady_cycles_per_pixel,steady_GPU_submissions,refills,demand_wait,group_highwater,contexts_highwater,coordinate_highwater,work_highwater,packet_highwater,live_highwater,coefficient_products").unwrap();
+    let mut traffic = fs::File::create(root.join("storage_traffic.csv")).unwrap();
+    writeln!(traffic, "profile,mask,quads,contexts,early_release,loaded,MC_init_inside_batch,stage,observed_peak_live_bits,bit_writes,bit_reads").unwrap();
+    writeln!(csv, "layout,profile,mask,quads,contexts,early_release,loaded,MC_init_inside_batch,init_cycles_excluded,pixels,groups,batch_cycles,batch_cycles_per_pixel,steady_pixels,steady_cycles,steady_cycles_per_pixel,steady_GPU_submissions,refills,demand_wait,group_highwater,contexts_highwater,coordinate_highwater,work_highwater,packet_highwater,live_highwater,coefficient_products").unwrap();
     let slot = support::slot(9, true);
     let bytes = support::asset(slot, support::pattern);
     for (profile, mask, count, loaded, cold_init) in [
@@ -155,9 +211,10 @@ fn main() {
                     })
             })
             .collect();
-        for (contexts, early) in [(5, true), (8, false), (8, true)] {
+        for (mode, contexts, early) in configurations() {
             let prep = bound::control::Hardware {
                 contexts,
+                storage: mode,
                 release_after_capture: early,
                 ..Default::default()
             };
@@ -172,6 +229,15 @@ fn main() {
             })
             .unwrap();
             assert_eq!(r.cache.pixels, expected);
+            if mode == bound::control::Storage::Packed {
+                for (name, t) in ["D", "LOD", "coord", "coeff", "membership", "packet"]
+                    .into_iter()
+                    .zip(bound::storage::audit_trace(&r).unwrap())
+                {
+                    writeln!(traffic, "{profile},{mask},{count},{contexts},{early},{loaded},{cold_init},{name},{},{},{}",
+                        t.peak_live_bits, t.bit_writes, t.bit_reads).unwrap();
+                }
+            }
             let commits: Vec<_> = r
                 .cache
                 .steps
@@ -221,10 +287,10 @@ fn main() {
                         .count()
                 })
                 .sum();
-            writeln!(csv, "{profile},{mask},{count},{contexts},{early},{loaded},{cold_init},{},{},{},{},{cpp:.6},{steady_pixels},{steady_cycles},{steady:.6},{submissions},{},{},{},{},{},{},{},{},{products}",
+            writeln!(csv, "{mode:?},{profile},{mask},{count},{contexts},{early},{loaded},{cold_init},{},{},{},{},{cpp:.6},{steady_pixels},{steady_cycles},{steady:.6},{submissions},{},{},{},{},{},{},{},{},{products}",
                 memory.init_cycles, expected.len(), s.reads, s.wall_cycles, s.refills, s.demand_wait_cycles,
                 s.peak_groups, p.peak_contexts, p.peak_coordinates, p.peak_work, p.peak_packet, p.peak_live).unwrap();
-            println!("{profile} mask={mask} n={count} context={contexts}/{early} loaded={loaded} coldInit={cold_init}: batch={cpp:.4} steady={steady:.4} hotSubmits={submissions} refills={}", s.refills);
+            println!("{mode:?} {profile} mask={mask} n={count} context={contexts}/{early} loaded={loaded} coldInit={cold_init}: batch={cpp:.4} steady={steady:.4} hotSubmits={submissions} refills={}", s.refills);
         }
     }
 }

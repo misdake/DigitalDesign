@@ -65,6 +65,88 @@ function Get-ReportField([string]$text, [string]$pattern, [string]$name) {
     return $match.Groups[1].Value
 }
 
+# Count physical blocks, not ROM/retention roles. A primitive's name does not
+# identify its purpose. Percentage-only PnR headers have no numeric total;
+# optional Gowin synthesis XML supplies an independent cross-check in that case.
+function Get-GowinBsramUsage([string]$text, [string]$SynthesisReportPath = "") {
+    $kinds = [ordered]@{ SP = 0; SPX9 = 0; SDPB = 0; SDPX9B = 0;
+        DPB = 0; DPX9B = 0; pROM = 0; pROMX9 = 0 }
+    $lines = $text -split '\r?\n'
+    $headers = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*BSRAM\s*\|\s*(.*?)\s*$') {
+            $headers += [pscustomobject]@{ Index = $i; Usage = $Matches[1] }
+        }
+    }
+    if ($headers.Count -ne 1) { throw "Expected one PnR BSRAM section; found $($headers.Count)." }
+    $header = $headers[0]
+    $pnrTotal = $null
+    $percentage = $null
+    if ($header.Usage -match '^(\d+)(?:/\d+)?(?:\s+(?:<\s*)?\d+%)?$') {
+        $pnrTotal = [int]$Matches[1]
+    } elseif ($header.Usage -match '^(<\s*)?(\d+)%$') {
+        $percentage = [int]$Matches[2]
+        if ($percentage -gt 100) { throw "Invalid PnR BSRAM percentage: $($header.Usage)." }
+        if (-not $Matches[1] -and $percentage -eq 0) { $pnrTotal = 0 }
+    } else { throw "Unrecognized PnR BSRAM usage: $($header.Usage)." }
+
+    $seen = @{}
+    for ($i = $header.Index + 1; $i -lt $lines.Count; $i++) {
+        if ([string]::IsNullOrWhiteSpace($lines[$i])) { continue }
+        if ($lines[$i] -notmatch '^\s*--([^|]+)\|\s*(.*?)\s*$') {
+            if ($lines[$i] -match '^\s*--') { throw "Malformed BSRAM primitive row: $($lines[$i])." }
+            break
+        }
+        $kind = $Matches[1].Trim()
+        $usage = $Matches[2]
+        if (-not $kinds.Contains($kind)) { throw "Unknown BSRAM primitive kind: $kind." }
+        if ($seen.ContainsKey($kind)) { throw "Duplicate BSRAM primitive kind: $kind." }
+        if ($usage -notmatch '^(\d+)(?:/\d+)?(?:\s+(?:<\s*)?\d+%)?$') {
+            throw "Invalid BSRAM primitive count for ${kind}: $usage."
+        }
+        $kinds[$kind] = [int]$Matches[1]
+        $seen[$kind] = $true
+    }
+    $total = [int](($kinds.Values | Measure-Object -Sum).Sum)
+    if ($seen.Count -eq 0 -and $pnrTotal -ne 0) {
+        throw "PnR BSRAM section has no primitive counts."
+    }
+    if ($null -ne $pnrTotal -and $total -ne $pnrTotal) {
+        throw "PnR BSRAM total mismatch: header=$pnrTotal, primitive sum=$total."
+    }
+    if ($null -ne $percentage -and $percentage -gt 0 -and $total -eq 0) {
+        throw "Nonzero PnR BSRAM percentage has zero primitive sum."
+    }
+
+    $synthesisTotal = $null
+    if ($SynthesisReportPath) {
+        if (-not (Test-Path -LiteralPath $SynthesisReportPath)) {
+            throw "Synthesis BSRAM report not found: $SynthesisReportPath."
+        }
+        $document = New-Object System.Xml.XmlDocument
+        $document.Load($SynthesisReportPath)
+        if ($document.DocumentElement.get_LocalName() -ne "Module") {
+            throw "Unknown Gowin synthesis hierarchy schema: $SynthesisReportPath."
+        }
+        # Gowin Module/SubModule attributes are OWN counts, not inclusive
+        # subtree totals (the component Logic parser uses the same convention).
+        # Visit each node exactly once; do not sum a separately computed subtree
+        # total again at its parent. Inclusive/other XML must fail the PnR check.
+        $synthesisTotal = 0
+        foreach ($node in $document.SelectNodes("/Module | /Module//SubModule")) {
+            $value = $node.GetAttribute("Bsram")
+            if ($value -eq "") { continue }
+            if ($value -notmatch '^\d+$') { throw "Invalid synthesis Bsram count: $value." }
+            $synthesisTotal += [int]$value
+        }
+        if ($synthesisTotal -ne $total) {
+            throw "BSRAM synthesis/PnR mismatch: synthesis=$synthesisTotal, PnR primitive sum=$total."
+        }
+    }
+    return [pscustomobject]@{ Total = $total; ByKind = $kinds;
+        PnrUsage = $header.Usage; PnrTotal = $pnrTotal; SynthesisTotal = $synthesisTotal }
+}
+
 # The synthesis hierarchy report lists every module with its *own* numbers, so a component is
 # the sum over its whole subtree (accumulating recovers the totals resource-analysis.md quotes:
 # 3,902 registers, 7,593 LUT). Modules that are not under a named root are board glue. A
@@ -204,11 +286,7 @@ try {
     $text = Get-Content -Path $pnr -Raw
     $lutAlu = [regex]::Match($text, '--LUT,ALU,ROM16\s*\|\s*\d+\((\d+) LUT,\s*(\d+) ALU')
     if (-not $lutAlu.Success) { throw "PnR report has no LUT/ALU line." }
-    $bsram = 0
-    foreach ($label in @("--SDPB", "--DPB", "--pROM")) {
-        $m = [regex]::Match($text, [regex]::Escape($label) + '\s*\|\s*(\d+)')
-        if ($m.Success) { $bsram += [int]$m.Groups[1].Value }
-    }
+    $bsramUsage = Get-GowinBsramUsage $text $synRsc
     $slack = ""
     $lines = Get-Content -Path $paths
     for ($i = 0; $i -lt $lines.Count - 1; $i++) {
@@ -237,7 +315,7 @@ try {
         ssram             = Get-ReportField $text 'SSRAM\(RAM16\)\s*\|\s*(\d+)' "SSRAM"
         ff                = Get-ReportField $text 'Logic Register as FF\s*\|\s*(\d+)/' "logic flip-flops"
         cls               = Get-ReportField $text 'CLS\s*\|\s*(\d+)/' "CLS"
-        bsram             = $bsram
+        bsram             = $bsramUsage.Total
         dsp               = Get-ReportField $text '--MULT18X18\s*\|\s*(\d+)' "DSP"
         fmax_mhz          = Get-ReportField (Get-Content -Path $tr -Raw) 'cpu_clk\s+\S+\(MHz\)\s+([\d.]+)\(MHz\)' "cpu_clk fmax"
         slack_ns          = $slack
@@ -252,6 +330,7 @@ try {
         Write-Host "(-DryRun, nothing written) $csv"
         Write-Host "  archive: $archiveDir"
         Write-Host $line
+        Write-Host ("BSRAM physical blocks by kind: " + ($bsramUsage.ByKind | ConvertTo-Json -Compress))
         Write-Host ""
         Write-Host "component Logic (synthesis split; sums to $((($componentLogic.Values | Measure-Object -Sum).Sum))):"
         foreach ($key in $componentLogic.Keys) { Write-Host ("  {0,-12} {1}" -f $key, $componentLogic[$key]) }
@@ -261,6 +340,10 @@ try {
     foreach ($entry in $archiveFiles) {
         Copy-Item -LiteralPath $entry.Source -Destination (Join-Path $archiveDir $entry.Name) -Force
     }
+    # Preserve the complete kind breakdown without changing the historical CSV
+    # schema. This is accounting evidence, not a semantic ROM/retention split.
+    [System.IO.File]::WriteAllText((Join-Path $archiveDir "bsram-usage.json"),
+        ($bsramUsage | ConvertTo-Json -Depth 4) + "`n", (New-Object System.Text.UTF8Encoding($false)))
     [System.IO.File]::AppendAllText($csv, $line + "`n", (New-Object System.Text.UTF8Encoding($false)))
     Write-Host ""
     Write-Host "Archived $archiveDir"
