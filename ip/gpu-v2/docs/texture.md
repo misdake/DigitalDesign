@@ -1,5 +1,27 @@
 # Texture sampling models
 
+## Source and qualification boundaries
+
+The long-calendar preparation contracts below describe the `e583cfa` source
+baseline. The later published-quad foundation is committed on the development
+line at `a0fe042`. Sampling optimization checkpoints through `dad5328` are on
+`dev/gpu-soft-ff-20261008`; they have not been integrated into this
+development checkout. File presence does not establish integration.
+
+The selected `dad5328` RTL uses a three-edge shared-axis D, four-edge grouped
+LOD, two-edge legal-domain Coordinate, explicit two-row coefficient weight FFs,
+borrowed Member/Packet outputs and fused Color tap sums. Its independent generic
+emulators remain numerical references where the physical architecture differs.
+The qualified configuration has16 material slots. Source hashes, complete serial
+sampler resource/timing reports and committed identity are recorded in that
+worktree's `target/sampling-list-20261009/{review,commit}.json`.
+
+That fitted serial composition includes texture cache/refill and Color; it
+excludes outer Quad and the complete overlapping Runtime controller. The
+non-seam warm two-mip II2 receipt belongs to Runtime emulation, not the serial
+controller or whole-GPU fit. Complete Runtime hardware, shared-MC performance,
+integrated GPU area/timing and board operation still require their own proof.
+
 ## Selected render precision
 
 The physical oracle/count/timed/emu/RTL preparation boundary uses unwrapped
@@ -84,7 +106,7 @@ test references. One quad is serialized deliberately; leaf II is not quad II.
 | Demand cache | Literal slot/level address, tag/PLRU lookup, address/config FF stage, synchronous four-bank tap capture | Hit read captures on the enabled edge after address issue; miss waits for actual beats and terminal ACK |
 | Color | RAW565 expansion, twelve 9x8 products in three registered ages, pair/partial/feedback sums, exact nearest /511 | Eight enabled edges from group acceptance; only last group emits a pixel |
 
-The serial controller adds 638 data and 11 control bits, including a 171-bit
+The serial controller adds 600 data and 11 control bits, including a 171-bit
 operand/result overlay. `SamplerEmu` connects the held packet to
 `emu::cache::CacheEmu` and then `ColorEmu`, using pre-edge ready/valid throughout.
 It retains one quad result bank: RGB96, quad4, mask4, done4 and two control bits.
@@ -1328,6 +1350,32 @@ stable slots, exercise every coverage mask and extreme UV/bias/force fields,
 then invoke the unchanged numerical oracle after drain. Direct cache tests
 reject early/duplicate completion, wrong or uncovered lanes/slots, missing or
 repeated first, repeated last, and duplicate admission using only live ownership.
+
+**Historical warm-cache measurements.** The pre-fusion probe warms and
+drains the same instance, then measures48 quads/192 covered pixels with no
+refills. Runtime figures below are total measurement-window wall clocks divided
+by pixels, including fill/drain. Serial figures are its separate default hot-quad
+interval divided by four covered lanes. They are different controllers and
+fixtures; neither column is a whole-GPU fitted throughput result.
+
+| Filter | Runtime window wall edges/pixel | Serial default hot edges/pixel |
+| --- | ---: | ---: |
+| Nearest | 3.594 | 60.00 |
+| Bilinear | 3.594 | 74.00 |
+| Trilinear | 6.573 | 126.00 |
+
+The original receipts remain at `target/sampler-hot-runtime` and
+`target/cargo-summaries/runtime-hot-probe-release.log`. Do not label these
+averages as steady-state II. Paused Runtime wall figures from that receipt
+are9.896/13.484; they are not serial measurements.
+
+The historical seam trace has768 packets for192 pixels. Its packet-issue
+intervals are576 one-edge gaps and191 three-edge gaps, rather than a uniform
+three-edge cadence. Derivative/LOD and lane issue gaps also include startup
+values. Counts and window means alone do not prove that context capacity is
+the limiting cause. The former context-expansion recommendation is superseded
+by measured lifetime/credit work; keep Work16/context8 and use matched traces
+to distinguish arithmetic, seam service, cache stalls and actual ownership.
 
 ### Runtime Work transport and allocation qualification
 

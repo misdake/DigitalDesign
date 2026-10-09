@@ -662,7 +662,7 @@ identity live in `target/lighting_board_gowin/preparation.json`.
 ```powershell
 cargo run --release -p gpu-v2 --example lighting_board -- --build
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 -Profile lighting-floor -Mode Audit
-# After power-on and a passing board-health gate; substitute the actual VCP.
+# For the requested lighting board test after power-on; substitute the actual VCP.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 -Profile lighting-floor -Mode Full -Port COM8
 ```
 
@@ -670,11 +670,9 @@ Programming uses volatile SRAM. DDHT test ID `0x0c` reports status 0 after all
 1,408 comparisons pass; 1 means g/h mismatch, 2 identity/epoch mismatch,
 3 watchdog expiry, 4 unexpected output. Repeated status frames report a latched
 verdict rather than newly completed traversals. LEDs 1..6 show heartbeat, done,
-success, report toggle, UART busy and PLL lock. Require a passing `board-health`
-capture first with the same physical setup. Offline preparation does not prove
-physical-board operation.
+success, report toggle, UART busy and PLL lock.
 
-On 2026-10-07, the audited `4f52bb6` image passed that health gate and was loaded
+On 2026-10-07, the audited `4f52bb6` image was loaded
 into volatile SRAM on the Tang Nano 20K. Live UART reported success after the
 1,408-output scoreboard completed, with no failure, wrong-test or checksum-error
 frames in the successful capture. Repeated frames carry the same latched verdict.

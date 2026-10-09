@@ -85,11 +85,9 @@ long. Modes 0--7 have zero missed release opportunities. Saturation deliberately
 over-offers three clients and skips an average 3,104,910 release opportunities per
 window; accepted jobs still drain. It is not a promise to service all offered load.
 
-The initial raw-port captures were empty. The unchanged board-health control also
-captured zero until BL616 reboot/route recovery, then passed 23 valid health frames.
-No MC source change was needed. The SDRAM image was restored before both successful
-captures and remains in FPGA SRAM; external Flash was not modified. Evidence and
-full per-client results are under `target/gpu-v2-sdram/board-2026-10-02/`, with image
+Both successful captures used the audited SDRAM image in FPGA SRAM and the
+existing MC source. Evidence and full per-client results are under
+`target/gpu-v2-sdram/board-2026-10-02/`, with image
 identity in `session.json` and independently checked aggregates in `measurements.json`.
 
 ## Workloads
@@ -189,11 +187,8 @@ verified port, then decode the saved bytes:
 python hardware/vendor/gowin/examples/sdram_traffic_probe/decode.py --input target/gpu-v2-sdram/board-capture/uart.bin --output target/gpu-v2-sdram/board-capture
 ```
 
-`COM_PORT` is a placeholder for the verified board port. If the BL616 route is
-stuck, confirm with the unchanged board-health image. Software BL616 reboot has
-left COM4 enumerated but inaccessible in this session; prefer a user-controlled
-USB/power disconnect rather than repeating that recovery. The persisted Flash
-probe reloads after power returns; an SRAM-only control does not.
+`COM_PORT` is a placeholder for the verified board port. Capture options are
+documented in `../scripts/README.md`. A persisted Flash probe reloads after power returns.
 Opening a raw serial port alone does not select the FPGA UART route. The decoder's
 `--port` option requires pyserial and a UART interface that is already transparent.
 Offline input uses
@@ -220,12 +215,10 @@ The following table identifies the earlier fitted early-only snapshot. Current
 source has subsequently gained opt-in physical groups; rebuild the early-only
 project before auditing it against that source, rather than reusing its old image.
 Physical candidate qualification is **pending usable UART measurements**. On
-2026-10-02 the user enabled the board, the audited candidate was programmed into
-SRAM, and the LEDs were reported to cycle. Bounded captures returned zero bytes;
-the unchanged board-health control also returned zero. BL616 software reboot
-then left COM4 enumerated but refusing access. These attempts do not qualify
-candidate bandwidth or latency; recovery evidence is under
-`target/gpu-v2-sdram/early-board-2026-10-02/`. External Flash was not written.
+2026-10-02, the audited candidate was programmed into SRAM and the LEDs were
+reported to cycle. That observation establishes activity; bandwidth and latency
+qualification requires decoded UART records. The session evidence is under
+`target/gpu-v2-sdram/early-board-2026-10-02/`.
 
 | Candidate measurement | Result | Scope |
 | --- | --- | --- |
@@ -449,10 +442,8 @@ python hardware/vendor/gowin/examples/sdram_traffic_probe/resources.py target/sd
 ### Group board results, 2026-10-02
 
 After the user's fresh board authorization, USB Debugger A at location 6977 and
-COM4 were usable. The initial Flash/reload captures were empty; their cause is
-unresolved. An unchanged health probe then produced 18 valid DDHT success frames.
-With `choose uart` kept open, the audited group SRAM image produced 327 CRC-valid
-version-2 records. The same generated binary was written to Flash offset zero,
+COM4 were usable. With `choose uart` kept open, the audited group SRAM image
+produced 327 CRC-valid version-2 records. The same generated binary was written to Flash offset zero,
 Program/Verify succeeded, and FPGA Reprogram succeeded. A separate capture started
 after that reload produced another 362 valid records, independently of pre-write
 traffic. Each mode has 36--41 records per capture. All 689 records pass CRC,

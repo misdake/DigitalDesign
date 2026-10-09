@@ -106,8 +106,3 @@ provides only `report_enable` and an atomically sampled status byte. This keeps 
 out of CPU, SDRAM, BSRAM, DMA, and future GPU/audio self-tests. A protocol transmitter remains
 inside a harness when its bytes are themselves the behavior under test, such as the system-control
 UART and the SDRAM word-port `SDWP` signature.
-
-The vendor-level `board_health` probe is the first hardware gate. It deliberately avoids CPU,
-memory, PLL, Flash, and system-control dependencies. Higher-level hardware evidence is meaningful
-only after the exact built artifact passes manifest validation and this transport probe produces a
-valid frame.

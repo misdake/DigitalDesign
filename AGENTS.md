@@ -45,6 +45,11 @@ unclear, ask instead of deciding silently.
 
 ## Tool environment
 
+### Tang Nano 20K board access
+
+Use the requested target's audited artifact and record its image identity and
+physical results. Board procedures are in `hardware/vendor/gowin/scripts/README.md`.
+
 Icarus Verilog: `IVERILOG_EXE`, `VVP_EXE` (the ignored co-sim tests and
 `scripts/validate-hardware.ps1 -Mode iverilog|all` read them). Gowin: `GOWIN_HOME` or `--gowin-home`.
 

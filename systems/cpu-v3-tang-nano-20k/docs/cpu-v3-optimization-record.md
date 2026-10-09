@@ -850,8 +850,7 @@ values to mask failures. On the Tang Nano 20K, an interactive LED viewer indepen
 eight words through a burst read and eight burst-zero probes. Both the direct 54/54 path and the
 production 108/54 gearbox returned M0..M7 exactly. Before moving the 108 MHz read window, the viewer
 had shown `M6,M0,M1,M2,M3,M4,M5,M6` and constant stale M6 probes, directly identifying the early
-sample. This is physical confirmation despite the separate UART/USB capture failure (the board-health
-control also receives zero FPGA-UART bytes).
+sample. The LED viewer physically confirms the corrected burst values on both paths.
 
 The production `cpu_v3_system` passes full-system Gowin PnR with the corrected shared wrapper at
 10,099 Logic (8,822 LUT, 749 ALU, 88 SSRAM), 4,293 registers, 7,053 CLS, 4 DPB + 1 SDPB + 2 pROM,

@@ -7,6 +7,23 @@ that path alongside actual persistent Sampling Runtime/cache/ColorEmu results. T
 composers use controlled quad inputs, without command, geometry, rasterizer,
 RTL or board integration.
 
+## Source and qualification boundaries
+
+This checkout includes the J1/dispatcher baseline and the published
+`foundation::Pipeline` with global32 from `a0fe042`. Synchronous row-store/SPSC
+refinements at `0b1fa4b` and the subsequent `dad5328` optimization baseline
+remain on their worktree branches, pending integration into this checkout.
+The16-slot dispatcher below remains a separate baseline. Current f207 work
+starts from `dad5328` on a dedicated branch.
+
+Those later row banks and queue leaves have scoped native replay and matched local
+fits. They do not establish a complete pixel-controller RTL or whole-GPU fit.
+Producer current/next state is implemented in the published foundation;
+consumer uniform handoffs and Lighting context changes without draining remain
+open. The older sealed f207 WIP is superseded and must not overwrite the
+accepted synchronous implementation. Current source/qualification pointers are
+maintained by the local `gpu-v2-module-status` entry.
+
 ## Published row foundation
 
 `foundation::Pipeline` is a separate replacement controller; `foundation_live::Live`

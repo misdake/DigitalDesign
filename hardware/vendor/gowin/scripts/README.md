@@ -14,9 +14,9 @@ powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode aud
 powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode pnr
 ```
 
-`audit` checks those four existing artifacts against current sources without rebuilding. `pnr`
-builds and audits the board-health, CPU, CPU/SDRAM, complete boot, and Flash-readback artifacts. Neither mode
-programs a device. Each successful mode writes a small evidence record below
+`audit` checks the existing CPU V3 system artifact against current sources. `pnr`
+builds and audits that artifact. Both modes run offline. Each successful mode
+writes a small evidence record below
 `target/hardware-validation` containing the commit, dirty-worktree flag, and completed steps.
 
 Board interaction uses `run_board_validation.ps1`, which deliberately separates
@@ -29,8 +29,8 @@ read-only artifact checks, observation, and hardware mutation:
 | `Program` | Audit, optionally write either the boot package or a complete power-on Flash image, then program the audited SRAM bitstream exactly once. |
 | `Full` | Perform `Program`, then bounded VCP wait, capture, and protocol validation. |
 
-Supported profiles include the standalone GPU v2 `lighting-floor` qualification,
-the FPGA-alive `board-health` probe and the full CPU V3
+Supported profiles are the standalone GPU v2 `lighting-floor` qualification and
+the full CPU V3
 `cpu-v3-system` system (single-stage flash boot plus the SDRAM and HDMI datapaths).
 The board's selection latch powers up in the S2 slot, so `cpu-v3-system` boots the
 display application by default. That display application reports its own DDHT status
@@ -49,7 +49,7 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board
 
 # Observe an image that is already running, without touching FPGA or Flash.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
-    -Profile board-health -Mode Observe -Port COM8
+    -Profile cpu-v3-system -Mode Observe -Port COM8
 
 # Explicit complete boot run. Flash and SRAM are each programmed at most once.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
@@ -67,27 +67,19 @@ is not equivalent on every BL616 firmware revision. At the end it returns to
 the quiet BL616 console before closing the handle; it never resets or
 re-enumerates USB.
 
-### UART capture recovery
+### UART capture options
 
-If a capture is interrupted, or the console is left mid-route, the BL616 can stay
-in a state where the host captures zero bytes even though the DUT is
-transmitting. Cross-check with a plain `board-health` run first: it transmits
-continuously, so it also captures zero bytes while the route is stuck, which
-means an empty `cpu-v3-system` capture is not by itself a DUT failure.
-
-The BL616 console shell provides `reboot`, which restarts the bridge MCU
-internally; its USB VCP drops and re-enumerates, clearing the stuck route while
-leaving the FPGA and its configuration untouched. Pass `-ResetBl616` to reboot
-the bridge before capturing:
+Use the verified VCP and keep the selected FPGA UART route open for the capture.
+When explicitly requested, `-ResetBl616` restarts the bridge MCU before capture;
+its USB VCP re-enumerates while the FPGA keeps its configuration:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
     -Profile cpu-v3-system -Mode Observe -Port COM8 -ResetBl616
 ```
 
-`capture_bl616_uart.ps1 -ResetBl616` performs the same reboot for a direct
-capture. This is usually more reliable than unplugging and replugging USB,
-because it resets only the bridge MCU. A run that passes `-ResetBl616` records
+`capture_bl616_uart.ps1 -ResetBl616` performs the same bridge reboot for a direct
+capture. A run that passes `-ResetBl616` records
 `reset_bl616: true` in `evidence.json`.
 
 All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
@@ -131,7 +123,6 @@ Assigned test IDs:
 | `0x01` | Tang Nano 20K BSRAM shapes self-test |
 | `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
 | `0x07` | CPU V3 full system single-stage flash boot, S1 slider diagnostic (application reached) |
-| `0x0a` | Tang Nano 20K board clock/button/UART transport health probe |
 | `0x0b` | CPU V3 S2 display application per-frame status |
 | `0x0c` | GPU v2 selected Floor free per-edge Lighting, independent-oracle g/h and identity scoreboard |
 
@@ -146,13 +137,10 @@ Build once, then use the runner above or these lower-level commands to program
 the audited image without rerunning synthesis or place-and-route:
 
 ```powershell
-cargo run -p digital-design-hardware-gowin --example board_health -- --build
-cargo run -p digital-design-hardware-gowin --example board_health -- --check-existing
-cargo run -p digital-design-hardware-gowin --example board_health -- --program-existing
-powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_bl616_uart.ps1 `
-    -Port COM8 -Out target/board_health_gowin/capture.bin
-powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uart_status.ps1 `
-    -Path target/board_health_gowin/capture.bin -TestId 0x0a -MinimumSuccessFrames 2
+cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_system -- --build
+cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_system -- --check-existing
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-system -Mode Full -Port COM8
 ```
 
 `--build` writes `gowin-build.manifest` beside the generated project. The
@@ -160,13 +148,6 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uar
 device, bitstream length, or bitstream fingerprint, then reruns timing and
 physical-resource audits before invoking Programmer. This keeps a USB retry
 from silently changing the FPGA implementation under test.
-
-The board-health probe is the required first gate for higher-level hardware
-tests. Its LEDs are: LED1 heartbeat, LED2/LED3 synchronized button levels,
-LED4 completed-frame toggle, LED5 UART busy, and LED6 fabric-alive. A high
-button is also returned as the DDHT status byte, so reset inputs remain
-observable instead of silencing the probe. Do not interpret CPU, memory, or
-boot results unless this probe first passes with the same physical setup.
 
 The `sdram_word_port` example predates this protocol and still sends a
 private `SDWP` frame; it is not validated by `check_uart_status.ps1`.
@@ -177,8 +158,8 @@ It tests 1,408 outputs, including ambient/diffuse/full contexts, stalls and all
 shininess codes. It programs SRAM only and reports a sticky DDHT verdict every
 100 ms after completion. Its test ROMs belong to the board harness and are
 included in the whole-image fit. See `ip/gpu-v2/docs/lighting.md` for coverage,
-error codes and reproduction. Run `board-health` first, then `lighting-floor`
-with `-Mode Full` and the actual VCP; offline `-Mode Audit` needs no board.
+error codes and reproduction. Run `lighting-floor` with `-Mode Full` and the
+actual VCP when that board test is requested; offline `-Mode Audit` needs no board.
 
 ## HDMI physical-link bring-up
 
