@@ -2,7 +2,7 @@
 
 Status: append-only detail record; normally read only when investigating an old decision
 Repository: `../../../`
-Updated: 2026-09-28
+Updated: 2026-10-09
 
 The concise milestone index lives in [`cpu-v3-optimization.md`](cpu-v3-optimization.md). This file
 preserves the former long-form roadmap, measurements, rejected alternatives, and validation notes.
@@ -1516,5 +1516,23 @@ are `target/mulpipe-baseline.csv` and `target/mulpipe-final.csv`.
 Both CSVs record base HEAD `e583cfa` with configuration `current`; that
 metadata alone does not identify the uncommitted source variant.
 Independent review receipts and the final source identity belong under
-`target/mulpipe-review/`. These are pre-commit experiments, not new committed
-ledger rows. No new board result is claimed.
+`target/mulpipe-review/`. These raw files are pre-commit experiments. The finalized
+implementation is committed as `6849df7`; its post-commit full-system fit and
+22-program run are recorded in the project's local `resources.csv` and
+`performance.csv`. The performance row references
+`records/performance/2026-10-07-6849df7-stage907.csv`.
+
+### Functional review, 2026-10-09
+
+The development checkout at `a0fe042` contains the committed two-stage multiplier
+and the SINCOS phase register. Bounded Rust checks pin the shared return to `T2`,
+single write to `T6`, dual writes to `T6/T7`, and the corresponding 7/8 busy beats.
+Cancellation is checked from issue through the first write, followed immediately
+by a new instruction with a different operand and destination. The numerical
+reference is the independent `lut::sincos_q16` oracle.
+
+The review passes 236 CPU functional tests, 31 CPU RTL/co-simulation tests and
+two full-system co-simulations. Runtime CPU/FPU source matches `6849df7`; the
+new changes strengthen test coverage and clarify the existing timing contract.
+Resource and performance evidence remains attached to the original committed
+implementation and its ledger rows above.

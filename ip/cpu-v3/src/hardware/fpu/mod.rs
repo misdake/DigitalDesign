@@ -2436,8 +2436,9 @@ mod tests {
 
     /// Drives the private special-path cycle model through one SINCOS the same
     /// way the parent does (operand on the pre-T0 RF read, packed interval on
-    /// the one-cycle RF read) with a local copy of the shared pipe feeding the
-    /// T3 range product, and checks both writes against the frozen
+    /// the one-cycle RF read) with the shared pipe returning at T2 and the
+    /// special path capturing its registered phase at T3. Check writes against
+    /// the fixed T6/T7 schedule and the frozen
     /// `lut::sincos_q16` reference (itself the two-term C0/C1 reducer). This is
     /// the leaf-level model/RTL agreement guard: the Verilog leaf testbench
     /// checks the RTL against an independent reference, and this test pins the
@@ -2455,9 +2456,14 @@ mod tests {
             let mut pipe = PipeStub::default();
             let mut read_a = a as u32;
             let mut writes: Vec<(u16, u32)> = Vec::new();
+            let mut write_cycles = Vec::new();
+            let mut product_cycles = Vec::new();
             let mut busy_count = 0u32;
-            for cycle in 0..cycles {
+            for cycle in 0..cycles + 2 {
                 let (pipe_valid, pipe_product, pipe_tag) = pipe.out();
+                if pipe_valid {
+                    product_cycles.push(cycle);
+                }
                 let input = CpuV3FpuSpecialPathInputValue {
                     abort: false,
                     instr_complete: cycle == 0,
@@ -2475,6 +2481,7 @@ mod tests {
                 }
                 if out.rf_write_enable {
                     writes.push((out.rf_write_address as u16, out.rf_write_data as u32));
+                    write_cycles.push(cycle);
                 }
                 pipe.step(
                     false,
@@ -2506,6 +2513,13 @@ mod tests {
                 busy_count, cycles,
                 "sincos busy length mismatch at a={a}, mode={mode}"
             );
+            assert_eq!(product_cycles, vec![2], "shared pipe must return at T2");
+            let expected_write_cycles = if matches!(mode, 1 | 2) {
+                vec![6]
+            } else {
+                vec![6, 7]
+            };
+            assert_eq!(write_cycles, expected_write_cycles, "SINCOS write schedule");
             checked += 1;
         };
 
@@ -2540,100 +2554,105 @@ mod tests {
         assert!(checked > 1000, "expected a dense sweep, checked={checked}");
     }
 
-    /// Abort asserted on the T3 range-product beat must clear busy
-    /// combinationally, gate both writes and void the shared-pipe product; a
-    /// following SINCOS then computes normally from the clean context.
+    /// Abort from issue through the first write must gate the cancelled
+    /// writes. An immediate restart with a different operand must use its own
+    /// phase, including abort on the T2 return or T3 phase-capture beat.
     #[test]
     fn sincos_cycle_model_abort_cancels_without_writes() {
         let packed = lut::packed_sincos_lut();
         let fd = 8u16;
         let a = 0x0001_0000i32;
         let word1 = (fd << 10) | (u16::from(encoding::SINCOS) << 4);
-        let mut state = CpuV3FpuSpecialPathState::default();
-        let mut pipe = PipeStub::default();
-        let mut read_a = a as u32;
+        for abort_cycle in 0..=6 {
+            let mut state = CpuV3FpuSpecialPathState::default();
+            let mut pipe = PipeStub::default();
+            let mut read_a = a as u32;
 
-        for cycle in 0..6 {
-            let abort = cycle == 3;
-            let (pipe_valid, pipe_product, pipe_tag) = pipe.out();
-            let input = CpuV3FpuSpecialPathInputValue {
-                abort,
-                instr_complete: cycle == 0,
-                instr_opcode: u64::from(encoding::OPCODE_SCALAR),
-                word1_raw: u64::from(word1),
-                rf_read_a_data: u64::from(read_a),
-                rf_read_b_data: 0,
-                mul_out_valid: pipe_valid,
-                mul_out_product: pipe_product,
-                mul_out_tag: pipe_tag,
-            };
-            let out = state.comb(&input);
-            if cycle < 3 {
-                assert!(out.busy, "SINCOS must be busy before abort");
-            } else {
-                assert!(!out.busy, "abort must clear busy at cycle {cycle}");
+            for cycle in 0..=abort_cycle {
+                let abort = cycle == abort_cycle;
+                let (pipe_valid, pipe_product, pipe_tag) = pipe.out();
+                let input = CpuV3FpuSpecialPathInputValue {
+                    abort,
+                    instr_complete: cycle == 0,
+                    instr_opcode: u64::from(encoding::OPCODE_SCALAR),
+                    word1_raw: u64::from(word1),
+                    rf_read_a_data: u64::from(read_a),
+                    rf_read_b_data: 0,
+                    mul_out_valid: pipe_valid,
+                    mul_out_product: pipe_product,
+                    mul_out_tag: pipe_tag,
+                };
+                let out = state.comb(&input);
+                if cycle < abort_cycle {
+                    assert!(out.busy, "SINCOS must be busy before abort");
+                } else {
+                    assert!(!out.busy, "abort must clear busy at cycle {cycle}");
+                }
+                assert!(
+                    !out.rf_write_enable,
+                    "abort must not present a write at cycle {cycle}"
+                );
+                pipe.step(
+                    abort,
+                    out.mul_in_valid,
+                    out.mul_in_a as i64,
+                    out.mul_in_b as i64,
+                    out.mul_in_tag as u16,
+                );
+                state.tick(&input);
+                let address = out.rf_read_a_address as usize;
+                read_a = if (256..512).contains(&address) {
+                    packed[address - 256]
+                } else {
+                    0
+                };
             }
-            assert!(
-                !out.rf_write_enable,
-                "abort must not present a write at cycle {cycle}"
-            );
-            pipe.step(
-                abort,
-                out.mul_in_valid,
-                out.mul_in_a as i64,
-                out.mul_in_b as i64,
-                out.mul_in_tag as u16,
-            );
-            state.tick(&input);
-            let address = out.rf_read_a_address as usize;
-            read_a = if (256..512).contains(&address) {
-                packed[address - 256]
-            } else {
-                0
-            };
-        }
 
-        // The next SINCOS must compute normally from a clean context.
-        let (sin, cos) = lut::sincos_q16(a);
-        let mut read_a = a as u32;
-        let mut got: Vec<(u16, u32)> = Vec::new();
-        for cycle in 0..8 {
-            let (pipe_valid, pipe_product, pipe_tag) = pipe.out();
-            let input = CpuV3FpuSpecialPathInputValue {
-                abort: false,
-                instr_complete: cycle == 0,
-                instr_opcode: u64::from(encoding::OPCODE_SCALAR),
-                word1_raw: u64::from(word1),
-                rf_read_a_data: u64::from(read_a),
-                rf_read_b_data: 0,
-                mul_out_valid: pipe_valid,
-                mul_out_product: pipe_product,
-                mul_out_tag: pipe_tag,
-            };
-            let out = state.comb(&input);
-            if out.rf_write_enable {
-                got.push((out.rf_write_address as u16, out.rf_write_data as u32));
+            // Restart on the next edge with a distinct phase and destination.
+            let next_a = -0x0002_0000i32 + abort_cycle;
+            let next_fd = fd + 2;
+            let word1 = (next_fd << 10) | (u16::from(encoding::SINCOS) << 4);
+            let (sin, cos) = lut::sincos_q16(next_a);
+            let mut read_a = next_a as u32;
+            let mut got: Vec<(u16, u32)> = Vec::new();
+            for cycle in 0..10 {
+                let (pipe_valid, pipe_product, pipe_tag) = pipe.out();
+                let input = CpuV3FpuSpecialPathInputValue {
+                    abort: false,
+                    instr_complete: cycle == 0,
+                    instr_opcode: u64::from(encoding::OPCODE_SCALAR),
+                    word1_raw: u64::from(word1),
+                    rf_read_a_data: u64::from(read_a),
+                    rf_read_b_data: 0,
+                    mul_out_valid: pipe_valid,
+                    mul_out_product: pipe_product,
+                    mul_out_tag: pipe_tag,
+                };
+                let out = state.comb(&input);
+                if out.rf_write_enable {
+                    got.push((out.rf_write_address as u16, out.rf_write_data as u32));
+                }
+                pipe.step(
+                    false,
+                    out.mul_in_valid,
+                    out.mul_in_a as i64,
+                    out.mul_in_b as i64,
+                    out.mul_in_tag as u16,
+                );
+                state.tick(&input);
+                let address = out.rf_read_a_address as usize;
+                read_a = if (256..512).contains(&address) {
+                    packed[address - 256]
+                } else {
+                    0
+                };
             }
-            pipe.step(
-                false,
-                out.mul_in_valid,
-                out.mul_in_a as i64,
-                out.mul_in_b as i64,
-                out.mul_in_tag as u16,
+            assert_eq!(
+                got,
+                vec![(next_fd, sin as u32), (next_fd + 1, cos as u32)],
+                "post-abort SINCOS must be clean at abort cycle {abort_cycle}"
             );
-            state.tick(&input);
-            let address = out.rf_read_a_address as usize;
-            read_a = if (256..512).contains(&address) {
-                packed[address - 256]
-            } else {
-                0
-            };
         }
-        assert_eq!(
-            got,
-            vec![(fd, sin as u32), (fd + 1, cos as u32)],
-            "post-abort SINCOS must be clean"
-        );
     }
 
     /// Algebraic proof of the single-constant reducer: `C0*2^16 + C1 == K`, so

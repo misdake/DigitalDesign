@@ -209,8 +209,11 @@ the pair retires as two words.
 - RCP/RSQRT are blocking `T0..T3`; SINCOS is `T0..T7` for the dual
   `sin`/`cos` output and `T0..T6` for a single output. The special path
   monopolizes both RF read ports while active and reuses the shared pipe for
-  its one SINCOS range-reduction product; it registers that product once so its
-  own schedule is unaffected by the pipe's shortened latency.
+  its one SINCOS range-reduction product. The shared pipe returns at `T2`;
+  the local 18-bit phase register supplies the `T3` capture. A single output
+  writes at `T6`, and dual output writes at `T6` and `T7`. Abort gates writes
+  on the abort edge; a new instruction may start on the following edge with
+  its own operand and destination.
 - `FLD`/`FST` and their vector forms reuse the core data port with its existing
   variable-latency handshake; loads stay blocking until the destination
   registers are written, while stores drain through the core's early-release
