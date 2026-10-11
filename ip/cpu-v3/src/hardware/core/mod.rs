@@ -3,7 +3,6 @@ use digital_design_hardware::{
     resources::components::SsramBits, HardwareIdentity, Module, ModuleIo, TargetResourceRequest,
     VerilogDependency, VerilogIdentity,
 };
-use digital_design_hardware_gowin::DspMulS18;
 use std::cmp::Ordering;
 
 use crate::SignalEvent;
@@ -460,6 +459,15 @@ impl CpuV3CoreState {
             ext_write_address: u64::from(self.fpu2_fd) + (u64::from(self.fpu2_beat) >> 1),
             ext_write_data: u64::from(ext_write_data),
             ext_read_address,
+            integer_in_valid: self.phase == Phase::Execute
+                && self.instruction >> 12 == 2
+                && matches!(field(self.instruction, 8), 8..=10 | 12),
+            integer_in_a: u64::from(self.registers[usize::from(field(self.instruction, 4))]),
+            integer_in_b: u64::from(if field(self.instruction, 8) == 12 {
+                immediate4(self.instruction, self.prefix, false)
+            } else {
+                self.registers[usize::from(field(self.instruction, 0))]
+            }),
         }
     }
 
@@ -1410,7 +1418,7 @@ impl Module for CpuV3Core {
             Phase::MultiplyCommit => {
                 state.write_gpr(
                     state.multiply_destination,
-                    (state.multiply_product >> state.multiply_shift) as u16,
+                    (fpu_out.integer_out_product >> state.multiply_shift) as u16,
                 );
                 state.retire(state.multiply_retire_words);
             }
@@ -1450,22 +1458,14 @@ impl Module for CpuV3Core {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(
-            include_str!("cpu_v3_core.v")
-                .replace(
-                    "__DSP_MULTIPLIER__",
-                    &DspMulS18::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__GPR_RAM__",
-                    &CpuV3GprRam::verilog_identity().module_name(),
-                ),
-        )
+        Some(include_str!("cpu_v3_core.v").replace(
+            "__GPR_RAM__",
+            &CpuV3GprRam::verilog_identity().module_name(),
+        ))
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<DspMulS18>("u_multiplier"),
             VerilogDependency::new::<CpuV3GprRam>("u_gpr_ram"),
             VerilogDependency::new::<CpuV3Fpu>("u_fpu"),
         ]

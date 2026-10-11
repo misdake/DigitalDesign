@@ -52,7 +52,13 @@ module CpuV3Fpu (
     input wire [8:0] ext_write_address,
     input wire [31:0] ext_write_data,
     input wire [8:0] ext_read_address,
-    output wire [31:0] ext_read_data
+    output wire [31:0] ext_read_data,
+    // CPU integer owner: unsigned 16-bit operands; reserved tag bit 8.
+    input wire integer_in_valid,
+    input wire [15:0] integer_in_a,
+    input wire [15:0] integer_in_b,
+    output wire integer_out_valid,
+    output wire [31:0] integer_out_product
 );
 
 // Front-end leaf: two-word pair decode and operand-address generation.
@@ -198,16 +204,25 @@ wire sf_mul_in_valid;
 wire signed [35:0] sf_mul_in_a;
 wire signed [35:0] sf_mul_in_b;
 wire [8:0] sf_mul_in_tag;
-wire mul_in_valid = sf_mul_in_valid || product_mul_in_valid;
-wire signed [35:0] mul_in_a = sf_mul_in_valid ? sf_mul_in_a :
+wire mul_in_valid = integer_in_valid || sf_mul_in_valid || product_mul_in_valid;
+wire signed [35:0] mul_in_a = integer_in_valid ? $signed({20'b0, integer_in_a}) :
+    sf_mul_in_valid ? sf_mul_in_a :
     product_mul_in_a;
-wire signed [35:0] mul_in_b = sf_mul_in_valid ? sf_mul_in_b :
+wire signed [35:0] mul_in_b = integer_in_valid ? $signed({20'b0, integer_in_b}) :
+    sf_mul_in_valid ? sf_mul_in_b :
     product_mul_in_b;
-wire [8:0] mul_in_tag = sf_mul_in_valid ? sf_mul_in_tag :
+wire [8:0] mul_in_tag = integer_in_valid ? 9'h100 :
+    sf_mul_in_valid ? sf_mul_in_tag :
     product_mul_in_tag;
-wire mul_out_valid;
+wire pipe_out_valid;
 wire signed [63:0] mul_out_product;
 wire [8:0] mul_out_tag;
+wire mul_out_valid = pipe_out_valid && !mul_out_tag[8];
+assign integer_out_valid = pipe_out_valid && mul_out_tag[8];
+// The last product/tag registers retain this result during core hold; no
+// new instruction can acquire the pipe until integer commit has retired.
+assign integer_out_product = mul_out_product[31:0];
+
 
 CpuV3FpuMulPipe mul_pipe (
     .clk(clk),
@@ -216,7 +231,7 @@ CpuV3FpuMulPipe mul_pipe (
     .in_a(mul_in_a),
     .in_b(mul_in_b),
     .in_tag(mul_in_tag),
-    .out_valid(mul_out_valid),
+    .out_valid(pipe_out_valid),
     .out_product(mul_out_product),
     .out_tag(mul_out_tag)
 );

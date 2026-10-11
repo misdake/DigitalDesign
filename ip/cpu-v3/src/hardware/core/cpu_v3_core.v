@@ -122,7 +122,9 @@ reg [1:0] multiply_retire_words = 0;
 reg [4:0] multiply_shift = 0;
 wire signed [17:0] multiplier_left;
 wire signed [17:0] multiplier_right;
-wire signed [35:0] multiplier_product;
+wire [31:0] multiplier_product;
+wire integer_mul_out_valid;
+wire integer_mul_issue;
 
 // Reset walks the scalar register file back to zero one word per cycle
 // through its synchronous write port.
@@ -132,6 +134,10 @@ wire [3:0] opcode = instruction[15:12];
 wire [3:0] field_d = instruction[11:8];
 wire [3:0] field_a = instruction[7:4];
 wire [3:0] field_b = instruction[3:0];
+// Only the integer Execute owner may acquire the shared pipe.
+assign integer_mul_issue = !reset && !hold && state == ST_EXECUTE
+    && opcode == 4'h2 && (field_d == 4'h8 || field_d == 4'h9
+        || field_d == 4'ha || field_d == 4'hc);
 // Word0 latch (AUX fields X = [11:8], Fa = [7:2], kind = [1:0]) and the
 // word1 fields captured at the word1 response beat.
 reg [15:0] fpu2_word0 = 0;
@@ -394,8 +400,8 @@ wire [15:0] integer_and = integer_left & integer_right;
 wire [15:0] integer_or = integer_left | integer_right;
 wire [15:0] integer_xor = integer_left ^ integer_right;
 
-// Integer multiply: both DSP inputs are zero-extended, so the 36-bit signed
-// product carries the full unsigned 32-bit product in its low bits. MULI
+// Integer multiply uses the shared signed-36 pipe with unsigned-16 operands.
+// Its retained low 32 bits hold the exact product through core hold. MULI
 // (major 2, fn C) sources the unsigned immediate bit pattern.
 wire immediate_multiply = opcode == 4'h2 && field_d == 4'hc;
 wire [15:0] multiply_left_word = gpr_read_a_data;
@@ -403,6 +409,7 @@ wire [15:0] multiply_right_word =
     immediate_multiply ? immediate_unsigned(instruction) : gpr_read_b_data;
 assign multiplier_left = {2'b0, multiply_left_word};
 assign multiplier_right = {2'b0, multiply_right_word};
+// Integer issue is confined to the blocking Execute owner;
 
 __GPR_RAM__ u_gpr_ram (
     .clk(clk),
@@ -415,12 +422,6 @@ __GPR_RAM__ u_gpr_ram (
     .read_b_data(gpr_read_b_ram_data)
 );
 
-__DSP_MULTIPLIER__ u_multiplier (
-    .clk(clk),
-    .a(multiplier_left),
-    .b(multiplier_right),
-    .product(multiplier_product)
-);
 
 // FPU v2 unit (fpu-design-v2 section 26). The core streams both instruction
 // words in, and implements FLD/FST itself through the ext_* channel while
@@ -478,6 +479,11 @@ wire [8:0] fpu2_ext_read_address =
 
 CpuV3Fpu u_fpu (
     .clk(clk),
+    .integer_in_valid(integer_mul_issue),
+    .integer_in_a(multiply_left_word),
+    .integer_in_b(multiply_right_word),
+    .integer_out_valid(integer_mul_out_valid),
+    .integer_out_product(multiplier_product),
     .abort(fpu2_abort),
     .word_valid(fpu2_word_valid),
     .word(fpu2_word),
@@ -709,7 +715,7 @@ always @(posedge clk) begin
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 // MUL0/MUL8/MUL16 and MULI share the single
-                                // integer DSP and the two-state wait/commit.
+                                // shared wide pipe and the unchanged wait/commit window.
                                 4'h8, 4'h9, 4'ha, 4'hc: begin
                                     multiply_destination <= field_a;
                                     multiply_shift <= field_d == 4'h9 ? 5'd8 :

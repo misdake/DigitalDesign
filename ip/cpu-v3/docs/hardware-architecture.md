@@ -70,14 +70,14 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One registered write per cycle; a forwarding mux exposes the pending write to a matching next instruction |
 | Control state | 16-bit PC, CSEG, four 8-bit DSEG page mappings, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | One common operand pair for register/immediate add/sub/logic/compare; the add/subtract lane also forms effective addresses and relative targets; separate shift, CLZ and popcount paths | One non-multiply integer result; sequential PC increment remains independent for overlapped instruction acceptance |
-| Integer multiplier | One registered signed 18 x 18 `MULT18X18` lane | Accepts an input each cycle, but the blocking core uses one operation at a time |
+| Integer multiplier | Unsigned 16-bit operands zero-extended into the shared signed 36 x 36 CPU/FPU pipe, with integer-owner tag `0x100` | The blocking core retains `Execute -> MultiplyWait -> MultiplyCommit`; the returned low 32 bits supply the selected 16-bit product window |
 | FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
 | FPR file | Two mirrored 512 x 32 SDPB BSRAMs giving 2R1W; architectural `F0..F63` are addresses `0..63`, the hidden LUT region is `64..511` (mirror A: RCP and SINCOS; mirror B: RSQRT even/odd) | Two registered-address synchronous reads and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
 | FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), one scalar/vector lane controller, and one shared result/address commit register | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
-| FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit destination tag | The multiply, dot and SINCOS range-reduction owners time-share it; the core serializes FPU instructions |
+| CPU/FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit owner/destination tag | Integer multiply, FPU multiply/dot, SINCOS range reduction and all LUT interpolation products time-share it; the core serializes owners |
 | Product issuer | One `ProductPath` owner for scalar `MUL`, `VMUL`, `VMULS`, `DOT`, `DOTADD` and `DOTSTORE`, with two six-bit read-address cursors and one outstanding-return count | One synchronous RF operand pair and one product issue per enabled beat; existing return tags and write timing are retained |
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
-| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables, one local inferred 18 x 18 interpolation lane, one product re-alignment register, and the shared pipe for SINCOS range reduction | RCP/RSQRT `T0..T3`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
+| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables; range reduction and delta/residue interpolation use the shared CPU/FPU pipe, with two LUT-base metadata stages and direct result writeback | RCP/RSQRT `T0..T4`; SINCOS `T0..T8` dual, `T0..T7` single; owns both RF read ports while active |
 
 All six integer shift forms share one 17-bit signed right-shift barrel.
 Register/immediate decode selects the four-bit count before the barrel. Left shift
@@ -228,14 +228,28 @@ the pair retires as two words.
   narrows once into its final 32-bit slot and writes/clears ACC on the next
   enabled beat. Abort gates writes and clears pending ownership, while already
   written MUL lanes and the accumulated ACC prefix survive.
-- RCP/RSQRT are blocking `T0..T3`; SINCOS is `T0..T7` for the dual
-  `sin`/`cos` output and `T0..T6` for a single output. The special path
-  monopolizes both RF read ports while active and reuses the shared pipe for
-  its one SINCOS range-reduction product. The shared pipe returns at `T2`;
-  the local 18-bit phase register supplies the `T3` capture. A single output
-  writes at `T6`, and dual output writes at `T6` and `T7`. Abort gates writes
-  on the abort edge; a new instruction may start on the following edge with
-  its own operand and destination.
+- RCP/RSQRT are blocking `T0..T4`; SINCOS is `T0..T8` for the dual
+  `sin`/`cos` output and `T0..T7` for a single output. The special path
+  monopolizes both RF read ports and uses the shared CPU/FPU pipe for both
+  range reduction and delta/residue interpolation. RCP/RSQRT read the packed
+  LUT at `T1`, issue signed delta times unsigned residue at `T2`, and write
+  at `T4`. SINCOS range reduction returns at `T2`; the retained 18-bit phase
+  supplies the `T3` capture. Its interpolation requests issue at `T5` and
+  `T6`; a single output writes at `T7`, and dual outputs at `T7` and `T8`.
+  Two 17-bit base metadata stages accompany tagged products; the returned
+  product feeds the existing correction, scaling and sign logic directly
+  into the synchronous RF write. Arithmetic shifts, endpoint handling,
+  normalization, saturation and architectural widths retain their numerical
+  contract. Abort gates writes on the abort edge; a new instruction may
+  start on the following edge with its own operand and destination.
+- Integer requests use tag bit 8; interpolation uses bit 7, with bit 6
+  selecting SINCOS and bits 1/0 carrying endpoint/sign. The input mux gives
+  integer, special and ordinary product requests priority in that order;
+  there is no concurrent-client retry queue. Core instruction serialization
+  excludes overlapping owners. Integer returns are suppressed from FPU
+  execution paths, and the product/tag registers retain the last integer
+  result across a core hold until `MultiplyCommit`. Reset suppresses new
+  integer issue, and the existing FPU abort clears pending shared returns.
 - `FLD`/`FST` and their vector forms reuse the core data port with its existing
   variable-latency handshake; loads stay blocking until the destination
   registers are written, while stores drain through the core's early-release

@@ -1694,3 +1694,35 @@ were rejected after matched whole-system fits increased Logic without reducing
 the mapped ALU count. The independent direct SDRAM event-capture candidate was
 also rejected: removing payload staging increased Logic and introduced related
 falling-controller-to-CPU setup failures. Neither experiment is in this change.
+
+## 2026-10-11: Shared CPU wide multiplier
+
+The existing two-stage signed-36 pipe now accepts CPU unsigned-16 integer
+products and special-function LUT delta/residue products as well as ordinary
+FPU products and SINCOS range reduction. The in-order core serializes these
+owners; a fixed-priority input mux and reserved return-tag bits replace the two
+independent narrow multipliers without a concurrent-client queue. The last
+integer product remains available across held wait/commit states. Special LUT
+bases travel beside the shared product, which feeds the original correction,
+scale and sign logic directly into RF writeback.
+
+Integer Execute-to-Commit, scalar/vector MUL and DOT schedules remain unchanged.
+RCP/RSQRT write at T4; single SIN/COS at T7; dual SINCOS at T7/T8. Each special
+instruction adds one enabled beat. Endpoint substitution, signed shifts,
+normalization, saturation, fixed-point widths and architectural results retain
+their original contract. Abort suppresses writes and clears pending product and
+metadata ownership; an already committed first dual output is not rolled back.
+
+The sealed implementation passes CPU unit tests, mandatory core/leaf and system
+co-simulations, bounded mixed-owner/tag-product replay, integer wait/commit hold
+and extended-age special abort/restart checks. Actual main raw sources match
+that implementation and its freshly generated full-system export matches the
+qualified executable bodies. The documentation successor changes no arithmetic.
+Scoped formatting, layering, hygiene and documentation checks pass.
+
+The matched pre-commit CPU/system candidate fits pass internal CPU timing in two
+54-MHz placements; existing external SDRAM setup violations remain outside this
+claim. No new board, generic performance or connected GPU result is implied.
+The user explicitly waived post-commit resource and benchmark recording for this
+batch. Earlier measured tables remain historical checkpoints; no new ledger
+numbers are manufactured from the reused candidate evidence.

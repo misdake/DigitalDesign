@@ -549,8 +549,8 @@ task run_special;
         word1_raw = {fd, subop, 4'h0};
         #1;
         check_value({31'b0, busy}, 32'h1, "T0 busy");
-        check_value({31'b0, sf_w_wait}, 32'h4, "T0 w_wait");
-        check_value({31'b0, sf_x_wait}, 32'h4, "T0 x_wait");
+        check_value({31'b0, sf_w_wait}, 32'h5, "T0 w_wait");
+        check_value({31'b0, sf_x_wait}, 32'h5, "T0 x_wait");
         check_value({31'b0, sf_r_wait}, 32'h0, "T0 r_wait");
         check_value({31'b0, sf_write_enable}, 32'h0, "T0 write idle");
 
@@ -560,7 +560,7 @@ task run_special;
         #1;
         t = 1;
         while (busy) begin
-            if (t == 3) begin
+            if (t == 4) begin
                 check_value({31'b0, sf_write_enable}, 32'h1, "T3 write enable");
                 check_value({23'b0, sf_write_address}, fd, "T3 write address");
                 check_value(sf_write_data, expected, label);
@@ -572,7 +572,7 @@ task run_special;
             @(negedge clk);
             #1;
         end
-        check_value(busy_count, 4, "busy window length");
+        check_value(busy_count, 5, "busy window length");
         check_value({31'b0, busy}, 32'h0, "busy clear");
         check_value({31'b0, sf_write_enable}, 32'h0, "write clear");
         @(negedge clk);
@@ -618,7 +618,7 @@ task run_sincos_mode;
         instr_complete = 1'b1;
         instr_opcode = 4'hD;
         word1_raw = {fd, SINCOS_SUBOP, 2'b00, mode};
-        expected_cycles = ((mode == 2'b01) || (mode == 2'b10)) ? 7 : 8;
+        expected_cycles = ((mode == 2'b01) || (mode == 2'b10)) ? 8 : 9;
         #1;
         check_value({31'b0, busy}, 32'h1, "sincos T0 busy");
         check_value({31'b0, sf_w_wait}, expected_cycles, "sincos T0 w_wait");
@@ -691,6 +691,7 @@ endtask
 task run_sincos_abort;
     input [5:0] fd;
     input [31:0] a;
+    input integer abort_age;
     begin
         set_operand(a);
         parked_a = 9'd0;
@@ -701,14 +702,14 @@ task run_sincos_abort;
         word1_raw = {fd, SINCOS_SUBOP, 4'h0};
         #1;
         check_value({31'b0, busy}, 32'h1, "abort T0 busy");
-        @(negedge clk);
-        instr_complete = 1'b0;
-        #1;
-        @(negedge clk);
-        #1;
-        @(negedge clk);
-        #1;
+        if (abort_age > 0) begin
+            @(negedge clk);
+            instr_complete = 1'b0;
+            #1;
+            repeat (abort_age-1) @(negedge clk);
+        end
         abort = 1'b1;
+        instr_complete = 1'b0;
         #1;
         check_value({31'b0, busy}, 32'h0, "abort clears busy");
         check_value({31'b0, sf_write_enable}, 32'h0, "abort gates write");
@@ -797,8 +798,10 @@ initial begin
     run_sincos_mode(6'd45, 32'h0006487F, 2'b10);
 
     // Abort cancels the context with no write, and the next SINCOS is clean.
-    run_sincos_abort(6'd40, 32'h00010000);
-    run_sincos_abort(6'd42, 32'hFFF9B781);
+    for (i=0;i<=8;i=i+1) begin
+        run_sincos_abort(6'd40, 32'h00010000, i);
+        run_sincos_abort(6'd42, 32'hFFF9B781, i);
+    end
 
     // Fine sweep around each quadrant boundary, where sin/cos cross zero and
     // the interpolation kink meets the range-reduction error.

@@ -299,6 +299,24 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
+The selected CPU now time-shares its existing two-stage signed-36 multiplier
+between integer multiply, ordinary FPU products, range reduction and LUT
+interpolation. The integer and interpolation narrow multipliers are removed.
+Integer MUL/MULI and FPU MUL/VMUL/DOT timings are unchanged; RCP, RSQRT and
+SIN/COS/SINCOS add one special-function beat with unchanged numeric results.
+The owner tags, abort behavior and exact schedules are specified in
+[hardware-architecture.md](../../../ip/cpu-v3/docs/hardware-architecture.md).
+
+The table below preserves the preceding storage/execution checkpoint, before
+this additional multiplier sharing. Qualified shared-wide source and the actual
+main export match; core and system co-simulation, bounded mixed-owner/hold/abort
+replay and documentation checks qualify the change. No new post-commit resource
+or benchmark record is generated for this adoption, as requested. The
+[optimization record](cpu-v3-optimization-record.md#2026-10-11-shared-cpu-wide-multiplier)
+describes the source and validation boundary.
+
+## Earlier storage and product-issuer checkpoint
+
 The 2026-10-11 CPU storage/execution review uses exact development base `9ae1f27`
 and matched Gowin 1.9.11.03 Education builds. The D-cache reuses its final CPU
 response register during refill; response publication still waits for a complete

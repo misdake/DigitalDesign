@@ -31,7 +31,9 @@ wire flag_gt;
 wire instr_complete;
 wire [31:0] ext_read_data;
 
-CpuV3Fpu dut (.*);
+CpuV3Fpu dut (
+    .integer_in_valid(1'b0), .integer_in_a(16'd0), .integer_in_b(16'd0),
+    .integer_out_valid(), .integer_out_product(), .*);
 
 always #5 clk = ~clk;
 

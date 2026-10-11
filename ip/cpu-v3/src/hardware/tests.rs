@@ -829,6 +829,9 @@ fn run_core_rtl_trace(tb: &str) -> Vec<CoreCosimOut> {
         String::from_utf8_lossy(&simulation.stderr)
     );
     let stdout = String::from_utf8_lossy(&simulation.stdout);
+    if let Some(path) = std::env::var_os("SHARED_WIDE_TRACE_FILE") {
+        std::fs::write(path, simulation.stdout.as_slice()).unwrap();
+    }
     let mut trace = Vec::new();
     for line in stdout.lines() {
         let line = line.trim();
@@ -1447,3 +1450,6 @@ fn verify_fpu_dot_path_with_iverilog() {
 fn verify_fpu_mul_pipe_with_iverilog() {
     digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuMulPipe>().unwrap();
 }
+
+#[path = "shared_wide_study.rs"]
+mod shared_wide_study;

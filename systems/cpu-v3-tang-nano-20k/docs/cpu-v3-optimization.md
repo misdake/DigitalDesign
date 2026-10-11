@@ -12,6 +12,8 @@ generated outside this document.
 
 ## Completed milestones
 
+- 2026-10-11 — Integer multiply and FPU LUT interpolation share the existing CPU wide multiplier, preserving integer/MUL/DOT timing and numeric results while adding one special-function beat; see the [record](cpu-v3-optimization-record.md#2026-10-11-shared-cpu-wide-multiplier).
+
 - 2026-08-29 — Stage 0 removed per-line coherence machinery and froze global cache-maintenance and boot-handoff semantics.
 - 2026-08-29 — Stage 1 added private 256-bit cache refill buffers with complete-line commit.
 - 2026-08-29 — Stage 2 replaced serialized SDRAM reads with one real eight-word burst.

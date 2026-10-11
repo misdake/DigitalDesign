@@ -701,10 +701,7 @@ pub struct CpuV3FpuSpecialPathOutput {
     pub mul_in_tag: Wires<9>,
 }
 
-/// FPU v2 special-function execution-path controller (opcode 0xD subops 0x0C
-/// RCP, 0x0D RSQRT and 0x0E SINCOS). Blocking: while active it owns both
-/// register-file read ports. Emu lives in the unit top; the leaf is verified
-/// through its Verilog testbench and the system co-simulation.
+/// Shared-wide special-function path: one added beat; direct tagged return writes.
 pub struct CpuV3FpuSpecialPath;
 
 impl HardwareIdentity for CpuV3FpuSpecialPath {
@@ -715,8 +712,6 @@ impl HardwareIdentity for CpuV3FpuSpecialPath {
     }
 }
 
-/// Pipeline registers of the blocking special path. Instruction context is
-/// written once and remains stable while only the valid token/data advance.
 #[derive(Default, Clone)]
 pub struct CpuV3FpuSpecialPathState {
     p0_valid: bool,
@@ -729,34 +724,21 @@ pub struct CpuV3FpuSpecialPathState {
     s1_shift: u8,
     s1_left: bool,
     s1_zero: bool,
-    s2_valid: bool,
-    s2_interpolated: u32,
-    // SINCOS context (Stage 7c): the range product comes from the shared
-    // 36x36 pipe; this context only registers the returned quadrant/fraction,
-    // the mode controls and the interpolation result.
+    interp_wait: bool,
+    meta_s1_valid: bool,
+    meta_s1_base: u32,
+    meta_s2_base: u32,
     sc_valid: bool,
     sc_stage: u8,
     sc_fd: u8,
     sc_mode: u8,
     sc_q: u8,
     sc_f: u16,
-    sc_result: u32,
-    /// Re-alignment register for the shared pipe's return. The pipe presents
-    /// its product one beat earlier than the SINCOS microsequence consumes it
-    /// (the range product is needed at T3), so the special path delays it by
-    /// one cycle and its schedule stays exactly as it was. Only phase[17:0] is
-    /// consumed, so the register holds `product[49:32]`.
     sc_phase_reg: u32,
 }
 
-/// The positive SINCOS range-reduction constant `round((2/pi) * 2^32)`.
-/// `C0*2^16 + C1 == K`, so `(a * K) >>> 32` is the same integer as the frozen
-/// two-term reducer `h0 + ((((p0 + h1) << 16) + p1) >> 32)` for every i32 `a`.
 const SINCOS_K: i64 = 2_734_261_102;
 
-/// All combinational results of one cycle, sampled from the pre-edge state.
-/// `comb` turns the output subset into wires; `tick` uses the capture subset to
-/// update the pipeline registers. Both must see the same pre-edge snapshot.
 struct CpuV3FpuSpecialPathComputed {
     load_now: bool,
     is_rcp: bool,
@@ -780,17 +762,15 @@ struct CpuV3FpuSpecialPathComputed {
     s1_shift: u8,
     s1_left: bool,
     s1_zero: bool,
-    capture_interpolated: u32,
+    interp_issue: bool,
+    capture_base: u32,
     fd: u8,
     sc_mode: u8,
     sc_q_next: u8,
     sc_f_next: u16,
-    sc_result_next: u32,
 }
 
 impl CpuV3FpuSpecialPathState {
-    /// Mirrors every combinational assignment of CpuV3FpuSpecialPath from the
-    /// pre-edge state and the live inputs.
     fn compute(&self, input: &CpuV3FpuSpecialPathInputValue) -> CpuV3FpuSpecialPathComputed {
         let instr_opcode = input.instr_opcode as u8;
         let word1 = input.word1_raw as u16;
@@ -803,23 +783,19 @@ impl CpuV3FpuSpecialPathState {
         let is_sincos = is_scalar && subop == encoding::SINCOS;
         let load_now = input.instr_complete && (is_rcp || is_rsqrt || is_sincos) && !input.abort;
 
-        // T0 operand capture; normalization runs from the registered operand.
         let x0 = input.rf_read_a_data as u32;
         let x0_negative = x0 & 0x8000_0000 != 0;
         let x0_magnitude = if x0_negative { x0.wrapping_neg() } else { x0 };
         let p0_zero = self.p0_magnitude == 0;
         let clz = self.p0_magnitude.leading_zeros();
 
-        // Shared normalized index/residue for both tables.
         let normalized = self.p0_magnitude.wrapping_shl(clz);
         let norm_index = ((normalized >> 24) & 0x7F) as u8;
         let norm_residue = ((normalized >> 15) & 0x1FF) as u16;
 
-        // RCP scale: 2^(clz-15).
         let rcp_shift = clz.abs_diff(15) as u8;
         let rcp_left = clz >= 15;
 
-        // RSQRT parity is parity(31-clz). Its scale is floor((15-clz)/2).
         let rsqrt_odd = clz & 1 == 0;
         let rsqrt_left = clz > 15;
         let rsqrt_distance = clz.abs_diff(15);
@@ -829,15 +805,12 @@ impl CpuV3FpuSpecialPathState {
             rsqrt_distance / 2
         };
 
-        // Aligned bases make the address a concatenation, not an addition.
         let table_address = if self.p0_rcp || !rsqrt_odd {
             128u16 | u16::from(norm_index)
         } else {
             256u16 | u16::from(norm_index)
         };
 
-        // SINCOS reduced-argument reflection uses the registered quadrant and
-        // fraction the shared multiply pipe returned.
         let sc_u_sin = if self.sc_q & 1 == 1 {
             0x1_0000 - i64::from(self.sc_f)
         } else {
@@ -854,8 +827,6 @@ impl CpuV3FpuSpecialPathState {
         let sc_interp_u = if sc_interp_is_cos { sc_u_cos } else { sc_u_sin };
         let sc_residue = sc_interp_u & 0xFF;
 
-        // One packed read supplies both the 17-bit current and signed 10-bit
-        // delta. The product fits signed 19 bits, but i32 keeps the emu clear.
         let packed_interval = if self.p0_rcp {
             input.rf_read_a_data as u32
         } else {
@@ -865,8 +836,6 @@ impl CpuV3FpuSpecialPathState {
         let delta_bits = ((packed_interval >> 17) & 0x03FF) as i32;
         let interval_delta = (delta_bits << 22) >> 22;
 
-        // SINCOS packed interval (always mirror A). The local 18x18 multiplier
-        // only interpolates now; the range product comes from the shared pipe.
         let sc_delta_bits = ((input.rf_read_a_data as u32 >> 17) & 0x03FF) as i32;
         let sc_delta = ((sc_delta_bits << 22) >> 22) as i64;
         let mul_x = if self.sc_valid {
@@ -879,27 +848,36 @@ impl CpuV3FpuSpecialPathState {
         } else {
             i64::from(self.s1_residue)
         };
-        let mul_product = mul_x.wrapping_mul(mul_y);
-        let interpolated = (interval_current as i32 + (mul_product >> 9) as i32) as u32;
+        let mul_product = input.mul_out_product as i64;
+        let interpolated = (self.meta_s2_base as i32 + (mul_product >> 9) as i32) as u32;
 
-        // SINCOS range product: issued at T0 and presented by the re-alignment
-        // register at T3. phase = (signed(Fa) * K) >>> 32; only phase[17:0] is
-        // consumed, and the register holds exactly those bits, so no shift is
-        // needed here.
         let sc_phase18 = u64::from(self.sc_phase_reg);
         let sc_q_comb = ((sc_phase18 >> 16) & 0x3) as u8;
         let sc_f_comb = (sc_phase18 & 0xFFFF) as u16;
 
-        // Shared-pipe drive: one signed-Fa-by-K product at T0. The signed-32
-        // operand sign-extends to the pipe's 36-bit bus; K is the positive
-        // constant (the pipe's i64 model is exact).
-        let mul_in_valid = load_now && is_sincos;
-        let mul_in_a = i64::from(x0 as i32);
-        let mul_in_b = SINCOS_K;
-        let mul_in_tag = 0u16;
+        let interp_issue = self.s1_valid
+            || (self.sc_valid && (self.sc_stage == 5 || (!sc_single && self.sc_stage == 6)));
+        let range_issue = load_now && is_sincos;
+        let issue_sign = if sc_interp_is_cos {
+            ((self.sc_q >> 1) & 1) ^ (self.sc_q & 1)
+        } else {
+            (self.sc_q >> 1) & 1
+        };
+        let mul_in_valid = (range_issue || interp_issue) && !input.abort;
+        let mul_in_a = if range_issue {
+            i64::from(x0 as i32)
+        } else {
+            mul_x
+        };
+        let mul_in_b = if range_issue { SINCOS_K } else { mul_y };
+        let mul_in_tag = if range_issue {
+            0
+        } else if self.sc_valid {
+            0xc0 | (((sc_interp_u >> 15) as u16) & 2) | u16::from(issue_sign)
+        } else {
+            0x80
+        };
 
-        // T4 drives the selected first address; dual-output mode drives the
-        // cosine address at T5 while interpolating sine.
         let sc_addr_u = if self.sc_stage == 5 || sc_first_is_cos {
             sc_u_cos
         } else {
@@ -920,36 +898,30 @@ impl CpuV3FpuSpecialPathState {
             0
         };
 
-        // SINCOS interpolation (T5 first result, T6 second) and result sign.
         let sc_current = (input.rf_read_a_data as u32) & 0x1_FFFF;
-        let sc_interp_sum = i64::from(sc_current) + (mul_product >> 8);
-        let sc_interp_mag = if sc_interp_u & 0x1_0000 != 0 {
+        let sc_interp_sum = i64::from(self.meta_s2_base) + (mul_product >> 8);
+        let sc_interp_mag = if input.mul_out_tag & 2 != 0 {
             0x1_0000
         } else {
             (sc_interp_sum & 0x1_FFFF) as u32
         };
-        let sc_result_sign = if sc_interp_is_cos {
-            ((self.sc_q >> 1) & 1) ^ (self.sc_q & 1)
-        } else {
-            (self.sc_q >> 1) & 1
-        };
+        let sc_result_sign = input.mul_out_tag as u8 & 1;
         let sc_result: u32 = if sc_result_sign == 1 {
             (-(sc_interp_mag as i32)) as u32
         } else {
             sc_interp_mag
         };
 
-        // T3 scaling and sign. Only RCP's left path can overflow signed 32;
-        // RSQRT's maximum left shift is eight.
+        let returned_interpolated = interpolated & 0x1_ffff;
         let scaled = if self.s1_left {
-            let wide = u64::from(self.s2_interpolated) << self.s1_shift;
+            let wide = u64::from(returned_interpolated) << self.s1_shift;
             if self.p0_rcp && wide > 0x7FFF_FFFF {
                 0x7FFF_FFFF
             } else {
                 wide as u32
             }
         } else {
-            self.s2_interpolated >> self.s1_shift
+            returned_interpolated >> self.s1_shift
         };
         let rcp_value = if self.p0_negative {
             scaled.wrapping_neg()
@@ -968,22 +940,19 @@ impl CpuV3FpuSpecialPathState {
         let out_rsqrt = if self.s1_zero { 0 } else { scaled };
         let rcp_result = if self.p0_rcp { out_rcp } else { out_rsqrt };
 
-        // The interpolation is registered before the RF port: T6 writes the
-        // first result and T7 writes the second. The 6-bit index wraps like the
-        // RTL concatenation.
         let sc_write = self.sc_valid
-            && (self.sc_stage == 6 || (!sc_single && self.sc_stage == 7))
+            && input.mul_out_valid
+            && input.mul_out_tag & 0xc0 == 0xc0
             && !input.abort;
-        let write_enable = (self.s2_valid || sc_write) && !input.abort;
+        let rcp_return = input.mul_out_valid && input.mul_out_tag == 0x80;
+        let write_enable = (rcp_return || sc_write) && !input.abort;
         let write_address = if sc_write {
-            u16::from(self.sc_fd.wrapping_add(u8::from(self.sc_stage == 7)) & 0x3F)
+            u16::from(self.sc_fd.wrapping_add(u8::from(self.sc_stage == 8)) & 0x3F)
         } else {
             u16::from(self.p0_fd)
         };
-        let write_data = if sc_write { self.sc_result } else { rcp_result };
+        let write_data = if sc_write { sc_result } else { rcp_result };
 
-        // SINCOS capture values. q/f come from the pipe product returned at
-        // T3; the interpolation result registers at T5/T6.
         let sc_q_next = if self.sc_stage == 3 {
             sc_q_comb
         } else {
@@ -1006,18 +975,18 @@ impl CpuV3FpuSpecialPathState {
             write_enable,
             write_address,
             write_data,
-            busy: (load_now || self.p0_valid || self.s1_valid || self.s2_valid || self.sc_valid)
+            busy: (load_now || self.p0_valid || self.s1_valid || self.interp_wait || self.sc_valid)
                 && !input.abort,
             r_wait: 0,
             w_wait: if load_now {
                 if is_sincos {
                     if matches!(mode, 1 | 2) {
-                        7
-                    } else {
                         8
+                    } else {
+                        9
                     }
                 } else {
-                    4
+                    5
                 }
             } else {
                 0
@@ -1025,12 +994,12 @@ impl CpuV3FpuSpecialPathState {
             x_wait: if load_now {
                 if is_sincos {
                     if matches!(mode, 1 | 2) {
-                        7
-                    } else {
                         8
+                    } else {
+                        9
                     }
                 } else {
-                    4
+                    5
                 }
             } else {
                 0
@@ -1051,12 +1020,16 @@ impl CpuV3FpuSpecialPathState {
             } else {
                 self.p0_negative || p0_zero
             },
-            capture_interpolated: interpolated,
+            interp_issue,
+            capture_base: if self.sc_valid {
+                sc_current
+            } else {
+                interval_current
+            },
             fd,
             sc_mode: mode,
             sc_q_next,
             sc_f_next,
-            sc_result_next: sc_result,
         }
     }
 
@@ -1079,20 +1052,24 @@ impl CpuV3FpuSpecialPathState {
         }
     }
 
-    /// Mirrors the single always block of CpuV3FpuSpecialPath. Reads only the
-    /// pre-edge snapshot in `c` plus the pre-edge register fields it mutates.
     fn tick(&mut self, input: &CpuV3FpuSpecialPathInputValue) {
         let c = self.compute(input);
-        // Re-align the shared pipe's return with the T3 capture the SINCOS
-        // schedule expects, keeping only the phase bits the lookup consumes
-        // (this mirrors the RTL's sc_phase_reg).
-        if input.mul_out_valid {
+        let old_meta_valid = self.meta_s1_valid;
+        let old_meta_base = self.meta_s1_base;
+        self.meta_s1_valid = c.interp_issue && !input.abort;
+        if c.interp_issue {
+            self.meta_s1_base = c.capture_base;
+        }
+        if old_meta_valid {
+            self.meta_s2_base = old_meta_base;
+        }
+        if input.mul_out_valid && input.mul_out_tag == 0 {
             self.sc_phase_reg = ((input.mul_out_product as i64) >> 32) as u32 & 0x3_FFFF;
         }
         if input.abort {
             self.p0_valid = false;
             self.s1_valid = false;
-            self.s2_valid = false;
+            self.interp_wait = false;
             self.sc_valid = false;
             self.sc_stage = 0;
         } else if c.load_now {
@@ -1103,7 +1080,7 @@ impl CpuV3FpuSpecialPathState {
                 self.sc_mode = c.sc_mode;
                 self.p0_valid = false;
                 self.s1_valid = false;
-                self.s2_valid = false;
+                self.interp_wait = false;
             } else {
                 self.sc_valid = false;
                 self.p0_valid = true;
@@ -1112,12 +1089,9 @@ impl CpuV3FpuSpecialPathState {
                 self.p0_magnitude = c.p0_magnitude;
                 self.p0_fd = c.fd;
                 self.s1_valid = false;
-                self.s2_valid = false;
+                self.interp_wait = false;
             }
         } else if self.sc_valid {
-            // Keep the pre-edge stage explicit: the RTL nonblocking assignments
-            // below this case all test the old value, even when the case clears
-            // sc_stage on the same edge.
             let sc_stage = self.sc_stage;
             let sc_single = matches!(self.sc_mode, 1 | 2);
             match sc_stage {
@@ -1125,22 +1099,17 @@ impl CpuV3FpuSpecialPathState {
                     self.sc_q = c.sc_q_next;
                     self.sc_f = c.sc_f_next;
                 }
-                5 => self.sc_result = c.sc_result_next,
-                6 => {
-                    if sc_single {
-                        self.sc_valid = false;
-                        self.sc_stage = 0;
-                    } else {
-                        self.sc_result = c.sc_result_next;
-                    }
+                7 if sc_single => {
+                    self.sc_valid = false;
+                    self.sc_stage = 0;
                 }
-                7 => {
+                8 => {
                     self.sc_valid = false;
                     self.sc_stage = 0;
                 }
                 _ => {}
             }
-            if sc_stage != 7 && !(sc_stage == 6 && sc_single) {
+            if sc_stage != 8 && !(sc_stage == 7 && sc_single) {
                 self.sc_stage = sc_stage + 1;
             }
         } else if self.p0_valid {
@@ -1150,13 +1119,12 @@ impl CpuV3FpuSpecialPathState {
             self.s1_shift = c.s1_shift;
             self.s1_left = c.s1_left;
             self.s1_zero = c.s1_zero;
-            self.s2_valid = false;
+            self.interp_wait = false;
         } else if self.s1_valid {
-            self.s2_valid = true;
-            self.s2_interpolated = c.capture_interpolated;
+            self.interp_wait = true;
             self.s1_valid = false;
-        } else {
-            self.s2_valid = false;
+        } else if input.mul_out_valid && input.mul_out_tag == 0x80 {
+            self.interp_wait = false;
         }
     }
 }
@@ -1197,19 +1165,13 @@ impl Module for CpuV3FpuSpecialPath {
     }
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        // The one inferred 18x18 signed multiplier is time-shared by the
-        // RCP/RSQRT/SINCOS interpolation products. SINCOS range reduction now
-        // reuses the shared 36x36 pipe, so no further lane is claimed here.
-        vec![TargetResourceRequest::new(
-            digital_design_hardware::resources::components::DspMultipliers::new(1),
-        )]
+        Vec::new()
     }
 
     fn verilog_testbench() -> Option<String> {
         Some(include_str!("cpu_v3_fpu_special_path_tb.v").to_string())
     }
 }
-
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuVectorPathInput {
     pub alu_result: Wires<32>,
@@ -1569,6 +1531,9 @@ pub struct CpuV3FpuInput {
     pub ext_write_address: Wires<9>,
     pub ext_write_data: Wires<32>,
     pub ext_read_address: Wires<9>,
+    pub integer_in_valid: Wire,
+    pub integer_in_a: Wires<16>,
+    pub integer_in_b: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
@@ -1579,6 +1544,8 @@ pub struct CpuV3FpuOutput {
     pub flag_gt: Wire,
     pub instr_complete: Wire,
     pub ext_read_data: Wires<32>,
+    pub integer_out_valid: Wire,
+    pub integer_out_product: Wires<32>,
 }
 
 /// FPU v2 unit top level: two-word front-end + mirrored-BSRAM register
@@ -1759,7 +1726,7 @@ impl CpuV3FpuState {
         let sf_busy = (sf_load_now
             || self.special_path.p0_valid
             || self.special_path.s1_valid
-            || self.special_path.s2_valid
+            || self.special_path.interp_wait
             || self.special_path.sc_valid)
             && !input.abort;
         CpuV3FpuOutputValue {
@@ -1769,6 +1736,8 @@ impl CpuV3FpuState {
             flag_gt: self.scalar_path.flag_gt,
             instr_complete: self.frontend.instr_complete,
             ext_read_data: u64::from(self.rf.read_b_data),
+            integer_out_valid: self.pipe_s2_valid && self.pipe_s2_tag & 0x100 != 0 && !input.abort,
+            integer_out_product: self.pipe_s2_prod as u64 & 0xffff_ffff,
         }
     }
 }
@@ -1850,7 +1819,7 @@ impl CpuV3FpuState {
             rf_read_b_data: u64::from(state.rf.read_b_data),
             // The shared pipe returns the range product at T2; the special
             // path registers its phase bits for T3. Abort voids the return.
-            mul_out_valid: state.pipe_s2_valid && !input.abort,
+            mul_out_valid: state.pipe_s2_valid && state.pipe_s2_tag & 0x100 == 0 && !input.abort,
             mul_out_product: state.pipe_s2_prod as u64,
             mul_out_tag: u64::from(state.pipe_s2_tag),
         };
@@ -2016,7 +1985,7 @@ impl CpuV3FpuState {
             product_data_valid: state.product_run
                 && state.product_lane >= 1
                 && state.product_lane - 1 <= state.product_last_lane,
-            pipe_out_valid: state.pipe_s2_valid && !input.abort,
+            pipe_out_valid: state.pipe_s2_valid && state.pipe_s2_tag & 0x100 == 0 && !input.abort,
             pipe_out_product: state.pipe_s2_prod,
             pipe_out_tag: state.pipe_s2_tag,
             product_outstanding_prev: state.product_outstanding,
@@ -2030,6 +1999,9 @@ impl CpuV3FpuState {
             rf_read_a: state.rf.read_a_data,
             rf_read_b: state.rf.read_b_data,
             // Special-path shared-pipe drive (SINCOS range product at its T0).
+            integer_in_valid: input.integer_in_valid,
+            integer_in_a: input.integer_in_a as i64,
+            integer_in_b: input.integer_in_b as i64,
             sf_mul_in_valid: sp_comb.mul_in_valid,
             sf_mul_in_a: sp_comb.mul_in_a as i64,
             sf_mul_in_b: sp_comb.mul_in_b as i64,
@@ -2121,6 +2093,9 @@ struct TickContext {
     rf_read_b: u32,
     // Special-path shared-pipe drive (SINCOS range product): sf wins the input
     // multiplexer because the core never overlaps the owners.
+    integer_in_valid: bool,
+    integer_in_a: i64,
+    integer_in_b: i64,
     sf_mul_in_valid: bool,
     sf_mul_in_a: i64,
     sf_mul_in_b: i64,
@@ -2276,9 +2251,14 @@ impl CpuV3FpuState {
                 self.pipe_s2_prod = pipe_s1a * pipe_s1b;
                 self.pipe_s2_tag = pipe_s1tag;
             }
-            self.pipe_s1_valid = ctx.sf_mul_in_valid || ctx.product_data_valid;
+            self.pipe_s1_valid =
+                ctx.integer_in_valid || ctx.sf_mul_in_valid || ctx.product_data_valid;
             if self.pipe_s1_valid {
-                if ctx.sf_mul_in_valid {
+                if ctx.integer_in_valid {
+                    self.pipe_s1_a = ctx.integer_in_a;
+                    self.pipe_s1_b = ctx.integer_in_b;
+                    self.pipe_s1_tag = 0x100;
+                } else if ctx.sf_mul_in_valid {
                     self.pipe_s1_a = ctx.sf_mul_in_a;
                     self.pipe_s1_b = ctx.sf_mul_in_b;
                     self.pipe_s1_tag = ctx.sf_mul_in_tag;
@@ -2317,6 +2297,9 @@ mod tests {
                 ext_write_address: 0,
                 ext_write_data: 0,
                 ext_read_address: 0,
+                integer_in_valid: false,
+                integer_in_a: 0,
+                integer_in_b: 0,
             }
         }
         fn record(
@@ -2597,7 +2580,6 @@ mod tests {
         fn step(&mut self, abort: bool, in_valid: bool, in_a: i64, in_b: i64, in_tag: u16) {
             if abort {
                 self.s1_valid = false;
-                self.s2_valid = false;
                 return;
             }
             self.s2_valid = self.s1_valid;
@@ -2635,7 +2617,7 @@ mod tests {
 
         let mut check = |a: i32, mode: u16| {
             let word1 = (fd << 10) | (u16::from(encoding::SINCOS) << 4) | mode;
-            let cycles = if matches!(mode, 1 | 2) { 7 } else { 8 };
+            let cycles = if matches!(mode, 1 | 2) { 8 } else { 9 };
             let mut state = CpuV3FpuSpecialPathState::default();
             let mut pipe = PipeStub::default();
             let mut read_a = a as u32;
@@ -2697,11 +2679,19 @@ mod tests {
                 busy_count, cycles,
                 "sincos busy length mismatch at a={a}, mode={mode}"
             );
-            assert_eq!(product_cycles, vec![2], "shared pipe must return at T2");
+            assert_eq!(
+                product_cycles,
+                if matches!(mode, 1 | 2) {
+                    vec![2, 7]
+                } else {
+                    vec![2, 7, 8]
+                },
+                "range/interpolation shared returns"
+            );
             let expected_write_cycles = if matches!(mode, 1 | 2) {
-                vec![6]
+                vec![7]
             } else {
-                vec![6, 7]
+                vec![7, 8]
             };
             assert_eq!(write_cycles, expected_write_cycles, "SINCOS write schedule");
             checked += 1;
@@ -2747,7 +2737,7 @@ mod tests {
         let fd = 8u16;
         let a = 0x0001_0000i32;
         let word1 = (fd << 10) | (u16::from(encoding::SINCOS) << 4);
-        for abort_cycle in 0..=6 {
+        for abort_cycle in 0..=7 {
             let mut state = CpuV3FpuSpecialPathState::default();
             let mut pipe = PipeStub::default();
             let mut read_a = a as u32;
