@@ -240,21 +240,38 @@ fn serial_rtl_inventory_and_widths_are_verified() {
     assert_eq!(
         plan.widths,
         serial_rtl::Widths {
-            uv: 128,
+            uv: 0,
             pending_lod: 54,
-            lod_context: 83,
-            coefficient: 171,
-            member: 92,
-            head: 72,
+            lod_context: 26,
+            coefficient: 124,
+            member: 0,
+            head: 0,
         }
     );
-    assert_eq!(plan.widths.data(), 600);
-    assert_eq!(serial_rtl::CONTROLLER_DATA_BITS, 600);
+    assert_eq!(plan.widths.data(), 204);
+    assert_eq!(serial_rtl::CONTROLLER_DATA_BITS, 204);
+    assert_eq!(plan.borrowed_uv_bits, 128);
+    assert_eq!(
+        plan.d
+            .outputs
+            .iter()
+            .filter(|io| io.key.starts_with("uv"))
+            .count(),
+        8
+    );
+    assert!(!plan.source.contains("ruv0"));
     assert_eq!(serial_rtl::CONTROLLER_CONTROL_BITS, 11);
     // The three kernel calendars are re-derived, not copied from the baseline.
-    assert_eq!(plan.d.inventory.numeric_bits, 858);
-    assert_eq!(plan.lod.inventory.numeric_bits, 264);
-    assert_eq!(plan.coord.inventory.numeric_bits, 716);
+    assert_eq!(plan.d.inventory.numeric_bits, 219);
+    assert_eq!(plan.d.inventory.span, 3);
+    assert_eq!(plan.lod.inventory.numeric_bits, 83);
+    assert_eq!(plan.lod_data_bits, 80);
+    assert_eq!(plan.lod_control_bits, 7);
+    assert_eq!(plan.coord.inventory.numeric_bits, 188);
+    assert_eq!(plan.coordinate_data_bits, 68);
+    assert!(plan.source.contains("reg [35:0] result_bank;"));
+    assert!(plan.source.contains("reg [15:0] v_input;"));
+    assert!(!plan.source.contains("reg [55:0] u_result;"));
     assert_eq!(plan.d.inventory.ii, 8);
     assert_eq!(plan.lod.inventory.ii, 8);
     assert_eq!(plan.coord.inventory.ii, 2);
@@ -326,32 +343,32 @@ fn serial_rtl_config_inventories_and_anchors_are_verified() {
             "{label} config roundtrip"
         );
         // The additive controller bank is unchanged by either option.
-        assert_eq!(plan.widths.data(), 600, "{label} controller data");
-        assert_eq!(plan.widths.head, 72, "{label} controller head");
+        assert_eq!(plan.widths.data(), 204, "{label} controller data");
+        assert_eq!(plan.widths.head, 0, "{label} controller head");
         if config.short_alignment {
-            assert_eq!(plan.membership.data_bits, 464, "{label} membership data");
+            assert_eq!(plan.membership.data_bits, 148, "{label} membership data");
             assert_eq!(
-                plan.membership.control_bits, 6,
+                plan.membership.control_bits, 3,
                 "{label} membership control"
             );
-            assert_eq!(plan.membership.latency, 5, "{label} membership latency");
-            assert_eq!(plan.packet.data_bits, 241, "{label} packet data");
-            assert_eq!(plan.packet.control_bits, 4, "{label} packet control");
-            assert_eq!(plan.packet.latency, 3, "{label} packet latency");
+            assert_eq!(plan.membership.latency, 2, "{label} membership latency");
+            assert_eq!(plan.packet.data_bits, 149, "{label} packet data");
+            assert_eq!(plan.packet.control_bits, 3, "{label} packet control");
+            assert_eq!(plan.packet.latency, 2, "{label} packet latency");
         } else {
-            assert_eq!(plan.membership.data_bits, 648, "{label} membership data");
+            assert_eq!(plan.membership.data_bits, 528, "{label} membership data");
             assert_eq!(
                 plan.membership.control_bits, 8,
                 "{label} membership control"
             );
             assert_eq!(plan.membership.latency, 7, "{label} membership latency");
-            assert_eq!(plan.packet.data_bits, 673, "{label} packet data");
+            assert_eq!(plan.packet.data_bits, 653, "{label} packet data");
             assert_eq!(plan.packet.control_bits, 10, "{label} packet control");
             assert_eq!(plan.packet.latency, 9, "{label} packet latency");
         }
         assert_eq!(
             u32::from(plan.membership.alignment_banks) + u32::from(plan.packet.alignment_banks),
-            if config.short_alignment { 0 } else { 8 },
+            if config.short_alignment { 0 } else { 12 },
             "{label} retained alignment banks"
         );
         // Constructor-only source: structural RTL, never a sampled answer.
@@ -360,7 +377,7 @@ fn serial_rtl_config_inventories_and_anchors_are_verified() {
             .contains("module gpu_v2_texture_serial_preparation ("));
         assert!(plan.source.contains("localparam NEAREST_BYPASS"));
         println!(
-            "{label} controller=600 membership={}/{} packet={}/{} banks={}",
+            "{label} controller=204 membership={}/{} packet={}/{} banks={}",
             plan.membership.data_bits,
             plan.membership.control_bits,
             plan.packet.data_bits,
@@ -429,8 +446,8 @@ fn nearest_bypass_fixture_matches_edge_counts_and_packets() {
     assert_eq!(bypass.received, expected, "nearest bypass packets");
     let base_ce = baseline.edges.iter().filter(|e| e.ce).count();
     let bypass_ce = bypass.edges.iter().filter(|e| e.ce).count();
-    assert_eq!(base_ce, 222, "baseline enabled edges");
-    assert_eq!(bypass_ce, 173, "nearest bypass enabled edges");
+    assert_eq!(base_ce, 134, "baseline enabled edges");
+    assert_eq!(bypass_ce, 102, "nearest bypass enabled edges");
     println!(
         "nearest fixture baseline_ce={base_ce} bypass_ce={bypass_ce} packets={}",
         expected.len()
@@ -586,7 +603,7 @@ fn run_iverilog(subdir: &str, tb: &str, top: &str) -> String {
 
 fn run_iverilog_config(subdir: &str, tb: &str, top: &str, config: Config) -> String {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/opencode/serial-opt-rtl-20261006")
+        .join("../../target/sampling-serial-uv-production-20261009/preparation-rtl")
         .join(subdir);
     std::fs::create_dir_all(&dir).unwrap();
     let rtl = serial_rtl::source_with_config(config).expect("serial preparation RTL");

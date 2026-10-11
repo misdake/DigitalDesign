@@ -2,10 +2,13 @@
 //! leaf advances actual registers. No Program, sampled frame, delayed answer,
 //! or cache timing template is retained. The packet head is one paid 72-bit FF.
 //! This baseline deliberately serializes lanes, planes and emitted groups.
-use super::{runtime_membership as member, runtime_packet as packet, transport::Member, Binding};
+use super::{
+    compact_membership as member, compact_packet as packet, compact_transport::Member, Binding,
+};
 use crate::texture::emu::{
-    coefficient::{self, CoefficientEmu},
-    coordinate::{self, CoordinateEmu},
+    coefficient::{self, compact_stage::SerialCoefficientEmu},
+    context_store::ReadyDecision,
+    coordinate::{self, compact_axis::CompactCoordinateEmu},
     derivative::{self, DerivativeEmu},
     lod::{self, LodEmu},
 };
@@ -44,7 +47,7 @@ pub struct Step {
 /// Additional state beyond the six arithmetic leaves. The declarations count
 /// conservative separate banks, including fields inactive in some phases;
 /// Rust enum/Option layout and host watchdog counters are not a hardware bill.
-pub const CONTROLLER_DATA_BITS: usize = 128 + 54 + 83 + 171 + 92 + 72;
+pub const CONTROLLER_DATA_BITS: usize = 54 + 26 + 124;
 pub const CONTROLLER_CONTROL_BITS: usize = 4 + 2 + 1 + 2 + 1 + 1;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -52,9 +55,7 @@ pub struct Config {
     /// Nearest's exact coefficient row is [511,0,0,0], with no coarse plane.
     /// Reuse the existing result bank; no extra payload buffer is allocated.
     pub nearest_bypass: bool,
-    /// Remove only transport alignment registers: Membership7->5, Packet9->3.
-    /// All arithmetic edges stay registered; the old overlapped Runtime retains
-    /// its default alignment and inventory. The serial controller needs none.
+    /// Select the compact two-edge Membership and Packet pipelines.
     pub short_alignment: bool,
 }
 
@@ -76,15 +77,14 @@ pub struct PreparationEmu {
     config: Config,
     d: DerivativeEmu,
     l: LodEmu,
-    c: CoordinateEmu,
-    k: CoefficientEmu,
+    c: CompactCoordinateEmu,
+    k: SerialCoefficientEmu,
     m: member::Pipeline,
     p: packet::Pipeline,
     phase: Phase,
-    uv: [u32; 8],
     pending_lod: Option<lod::Input>,
-    lod: Option<lod::Output>,
-    coefficients: Option<coefficient::Output>,
+    lod: Option<ReadyDecision>,
+    coefficients: Option<CompactRow>,
     member: Option<Member>,
     head: Option<i128>,
     lane: u8,
@@ -93,6 +93,12 @@ pub struct PreparationEmu {
     wall: u64,
     max_wall: u64,
     fault: bool,
+}
+#[derive(Clone, Copy)]
+struct CompactRow {
+    weights: [[u16; 4]; 2],
+    fractions: [u8; 2],
+    metadata: crate::texture::emu::compact::Metadata,
 }
 impl PreparationEmu {
     pub fn new(max_wall: u64) -> Result<Self, String> {
@@ -107,12 +113,11 @@ impl PreparationEmu {
             config,
             d: DerivativeEmu::new(d)?,
             l: LodEmu::new(l)?,
-            c: CoordinateEmu::new(c)?,
-            k: CoefficientEmu::new(max_wall).map_err(|e| format!("coefficient {e:?}"))?,
+            c: CompactCoordinateEmu::new(c)?,
+            k: SerialCoefficientEmu::new(max_wall).map_err(|e| format!("coefficient {e:?}"))?,
             m: member::Pipeline::with_short_alignment(config.short_alignment),
             p: packet::Pipeline::with_short_alignment(config.short_alignment),
             phase: Phase::Idle,
-            uv: [0; 8],
             pending_lod: None,
             lod: None,
             coefficients: None,
@@ -178,12 +183,13 @@ impl PreparationEmu {
             .then_some(self.pending_lod)
             .flatten();
         let c_in = if ce && old == Phase::CoordinateIssue && self.c.phase().is_multiple_of(2) {
-            let v = self.lod.ok_or("serial coordinate context")?.context;
+            let v = self
+                .lod
+                .ok_or("serial coordinate context")?
+                .expand()
+                .context;
             Some(coordinate::Input {
-                uv: [
-                    self.uv[self.lane as usize * 2],
-                    self.uv[self.lane as usize * 2 + 1],
-                ],
+                uv: self.d.serial_uv(self.lane)?,
                 shift: v.shift,
                 nearest: v.nearest,
                 halve: v.halve,
@@ -193,25 +199,36 @@ impl PreparationEmu {
             None
         };
         let k_in = if ce && old == Phase::CoefficientIssue {
-            self.coefficients.map(|v| coefficient::Input {
-                parents: self.lod.unwrap().context.parents,
-                fractions: v.weights.map(|w| [w[0] as u8, w[1] as u8]),
-                nearest: self.lod.unwrap().context.nearest,
-                metadata: v.metadata,
+            self.coefficients.map(|v| {
+                let n = v.metadata.n();
+                let base = v.metadata.base(0);
+                let raw = u64::from(v.fractions[0])
+                    | u64::from(v.fractions[1]) << 8
+                    | u64::from(base[0]) << 16
+                    | u64::from(base[1]) << 26;
+                coefficient::Input {
+                    parents: self.lod.unwrap().expand().context.parents,
+                    fractions: crate::texture::emu::compact::expand_result(raw, n).fractions,
+                    nearest: self.lod.unwrap().expand().context.nearest,
+                    metadata: v
+                        .metadata
+                        .expand(self.lod.unwrap().expand().context.last_fine),
+                }
             })
         } else {
             None
         };
         let m_in = if ce && old == Phase::MemberIssue {
             let v = self.coefficients.ok_or("serial coefficient row")?;
-            Some(member::Input {
+            let metadata = v.metadata.expand(v.weights[1] == [0; 4]);
+            Some(super::runtime_membership::Input {
                 weights: v.weights[self.plane],
-                coordinates: v.metadata.coordinates[self.plane],
-                slot: v.metadata.slot,
-                level: v.metadata.levels[self.plane],
-                key: v.metadata.key,
+                coordinates: metadata.coordinates[self.plane],
+                slot: metadata.slot,
+                level: metadata.levels[self.plane],
+                key: metadata.key,
                 fine: self.plane == 0,
-                last_fine: v.metadata.last_fine,
+                last_fine: metadata.last_fine,
             })
         } else {
             None
@@ -246,7 +263,6 @@ impl PreparationEmu {
                 }
                 Phase::Derivative if d_out.is_some() => {
                     let v = d_out.unwrap();
-                    self.uv = v.uv;
                     self.pending_lod = Some(v.into());
                     self.phase = Phase::LodIssue;
                 }
@@ -255,18 +271,19 @@ impl PreparationEmu {
                     self.phase = Phase::Lod;
                 }
                 Phase::Lod if l_out.is_some() => {
-                    self.lod = l_out;
+                    self.lod = Some(ReadyDecision::capture(l_out.unwrap())?);
                     self.lane = l_out.unwrap().mask.trailing_zeros() as u8;
                     self.phase = Phase::CoordinateIssue;
                 }
                 Phase::CoordinateIssue if c_edge.accepted => self.phase = Phase::Coordinate,
                 Phase::Coordinate if c_out.is_some() => {
                     let o = c_out.unwrap();
-                    let l = self.lod.unwrap();
-                    // A 171-bit phase-overlay operand row: the first four weight
-                    // slices temporarily hold Q8 coordinate fractions.
-                    self.coefficients = Some(coefficient::Output {
-                        weights: o.fractions.map(|f| [f[0] as u16, f[1] as u16, 0, 0]),
+                    let l = self.lod.unwrap().expand();
+                    // One compact row retains fine fractions16, weights72 and metadata36.
+                    let input = coefficient::Input {
+                        parents: l.context.parents,
+                        fractions: o.fractions,
+                        nearest: l.context.nearest,
                         metadata: coefficient::Metadata {
                             coordinates: o.coordinates,
                             levels: l.context.levels,
@@ -274,6 +291,12 @@ impl PreparationEmu {
                             key: l.quad * 4 + self.lane,
                             last_fine: l.context.last_fine,
                         },
+                    };
+                    self.coefficients = Some(CompactRow {
+                        weights: [[0; 4]; 2],
+                        fractions: o.fractions[0],
+                        metadata: crate::texture::emu::compact::Metadata::capture(input)
+                            .map_err(|e| format!("serial compact {e:?}"))?,
                     });
                     if self.config.nearest_bypass && l.context.nearest {
                         let row = self.coefficients.as_mut().unwrap();
@@ -285,13 +308,15 @@ impl PreparationEmu {
                     }
                 }
                 Phase::CoefficientIssue if k_edge.accepted => {
-                    self.coefficients = None;
                     self.phase = Phase::Coefficient;
                 }
                 Phase::Coefficient if k_edge.output.is_some() => {
                     let v = k_edge.output.unwrap();
                     self.plane = usize::from(v.weights[0] == [0; 4]);
-                    self.coefficients = Some(v);
+                    self.coefficients
+                        .as_mut()
+                        .ok_or("serial compact owner")?
+                        .weights = v.weights;
                     self.phase = Phase::MemberIssue;
                 }
                 Phase::MemberIssue => self.phase = Phase::Member,
@@ -320,7 +345,7 @@ impl PreparationEmu {
                     } else {
                         self.member = None;
                         self.coefficients = None;
-                        let higher = self.lod.unwrap().mask & (15_u8 << (self.lane + 1));
+                        let higher = self.lod.unwrap().expand().mask & (15_u8 << (self.lane + 1));
                         if higher != 0 {
                             self.lane = higher.trailing_zeros() as u8;
                             self.phase = Phase::CoordinateIssue;

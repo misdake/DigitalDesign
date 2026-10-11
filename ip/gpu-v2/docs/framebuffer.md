@@ -413,3 +413,18 @@ and last-beat/ACK checks run alongside the framebuffer suite:
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label framebuffer-memory -CargoArgs @('-p','gpu-v2','--test','framebuffer','--test','memory_burst')
 ```
+
+## Actual post-quad composition
+
+`system::pixel::postquad::verilog_selected` connects the registered ROP and
+framebuffer cache to actual Quad/Lighting/Sampling/Final producers and shared
+128-byte transport. Its closed aligned-quad bank geometry and paired source
+reads preserve the independent arithmetic and all-results-before-write fence.
+The selected sink overlaps preparation of the second existing immutable output
+slot with the current quad tail for distinct aligned quads in the same resident
+tile. Same-pixel and cross-tile dependencies preserve ordered fallback; prior
+returns and bank writes precede owner handover. It adds no second result owner.
+The generic standalone cache/ROP emitters remain available unchanged. Complete
+memory-image qualification and matched whole-chain resources are recorded in
+the [post-quad report](postquad-performance.md); physical SDRAM integration is
+outside that report's boundary.

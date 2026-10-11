@@ -48,13 +48,7 @@ fn calendar(
     poison: bool,
 ) -> Calendar {
     let evidence = gpu_v2::texture::sim::staged::binding::Evidence::build(frame).unwrap();
-    let mut cones = evidence.lowering.logic_cones(frame, 1).unwrap();
-    if frame.name == "texture_lod_context" {
-        let shared = gpu_v2::texture::sim::staged::binding::lod_shared_h_cone(frame).unwrap();
-        for id in [shared.absorbed_events[0], shared.result_event] {
-            cones.push(audited::physical::LogicCone::singleton(frame, id, 1).unwrap());
-        }
-    }
+    let cones = plan.logic_cones();
     let fields = plan
         .packed_fields
         .iter()
@@ -92,7 +86,7 @@ fn calendar(
     Calendar::from_structure(
         &frame,
         &plan.times,
-        &cones,
+        cones,
         &evidence.lowering.wiring_adds,
         fields,
         plan.packed.ff_bits,
@@ -134,7 +128,7 @@ fn coordinate_calendar(poison: bool) -> Calendar {
     let mut frame = p.lanes[0].coordinate.frame.clone();
     let plan = &b.coordinate;
     let evidence = gpu_v2::texture::sim::staged::binding::Evidence::build(&frame).unwrap();
-    let cones = evidence.lowering.logic_cones(&frame, 1).unwrap();
+    let cones = plan.logic_cones();
     if poison {
         for value in &mut frame.values {
             if frame.events[value.producer].operation != audited::Operation::Literal {
@@ -173,7 +167,7 @@ fn coordinate_calendar(poison: bool) -> Calendar {
     Calendar::from_structure(
         &frame,
         &plan.times,
-        &cones,
+        cones,
         &evidence.lowering.wiring_adds,
         fields,
         plan.packed.ff_bits,
@@ -328,10 +322,37 @@ fn derivative_inputs() -> Vec<derivative::Input> {
         .enumerate()
         .map(|(id, s)| d_stimulus(s, id))
         .collect();
-    samples
+    let mut inputs: Vec<_> = samples
         .iter()
         .map(|(q, s)| derivative::Input::capture(q, *s).unwrap())
-        .collect()
+        .collect();
+    // Exercise both diagonals independently. The semantic golden continues
+    // to evaluate the original four square edges, not the extrema identity.
+    let corner_codes = [-131072, -1, 0, 1, 131071];
+    for code in 0..625usize {
+        let mut input = inputs[0];
+        let mut digits = code;
+        for corner in 0..4 {
+            input.uv[2 * corner] = corner_codes[digits % 5];
+            input.uv[2 * corner + 1] = corner_codes[4 - digits % 5];
+            digits /= 5;
+        }
+        input.force_coarsest = false;
+        inputs.push(input);
+    }
+    let mut rng = 0xd2026108u32;
+    for sample in 0..1024 {
+        let mut input = inputs[0];
+        for uv in &mut input.uv {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            *uv = i64::from(rng & 262143) - 131072;
+        }
+        input.force_coarsest = sample % 11 == 0;
+        inputs.push(input);
+    }
+    inputs
 }
 
 fn coordinate_inputs() -> Vec<CoordInput> {
@@ -553,7 +574,12 @@ fn output_values(des: &rtl::Descriptor, named: &[(String, i128)]) -> Vec<(String
 }
 
 fn artifact_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/opencode/calendar-rtl-round2/rtl")
+    // Independent validation processes must not rewrite a running simulator's
+    // source, vectors or executable (e.g. workspace and hardware checks).
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../target/opencode/calendar-rtl-round2/rtl/run-{}",
+        std::process::id()
+    ))
 }
 
 fn range(width: u32, signed: bool) -> String {
@@ -796,9 +822,18 @@ fn run_derivative() -> (rtl::Descriptor, String, Vec<Row>) {
 }
 
 fn run_lod_inputs(module: &str, inputs: Vec<lod::Input>) -> (rtl::Descriptor, String, Vec<Row>) {
+    run_lod_inputs_offset(module, inputs, 0)
+}
+fn run_lod_inputs_offset(
+    module: &str,
+    inputs: Vec<lod::Input>,
+    offset: u32,
+) -> (rtl::Descriptor, String, Vec<Row>) {
     let b = bound::Binding::build().unwrap();
     let c = canonical();
-    let cal = calendar(&b.lod, &c.lod.frame, L_OUTPUTS, false);
+    let cal = calendar(&b.lod, &c.lod.frame, L_OUTPUTS, false)
+        .with_issue_offset(offset)
+        .unwrap();
     let des = rtl::describe_debug(&cal, module);
     let source = rtl::emit_debug(&cal, module);
     let mut emu = LodEmu::new(cal.clone()).unwrap();
@@ -819,7 +854,7 @@ fn run_lod_inputs(module: &str, inputs: Vec<lod::Input>) -> (rtl::Descriptor, St
                 assert_eq!(o, &want, "LOD emu/golden enabled {enabled}");
             }
         }
-        let offer = if ce && enabled.is_multiple_of(u64::from(ii)) {
+        let offer = if ce && enabled % u64::from(ii) == u64::from(offset) {
             pending.pop_front()
         } else {
             None
@@ -832,7 +867,9 @@ fn run_lod_inputs(module: &str, inputs: Vec<lod::Input>) -> (rtl::Descriptor, St
         }
         let named = out.as_ref().map(l_named).unwrap_or_default();
         let bank = bank_hex(emu.bank(), cal.numeric_bits());
-        let (phase, valid_state) = phase_valid(enabled, cal.period(), cal.span(), &accepts);
+        let (_, valid_state) = phase_valid(enabled, cal.period(), cal.span(), &accepts);
+        let phase = 1_u128
+            << ((enabled + u64::from(cal.period()) - u64::from(offset)) % u64::from(cal.period()));
         rows.push(Row {
             ce,
             in_valid: offer.is_some(),
@@ -987,7 +1024,9 @@ fn rne_below_tie_above_and_signed_negatives() {
             }
             let edge = emu.tick(true, (age == 0).then_some(*input)).unwrap();
             for calc in &edge.calculations {
-                if calc.event == 31 {
+                if c.lod.frame.events[calc.event].operation
+                    == audited::Operation::RoundIncrement(13)
+                {
                     round = Some(calc.raw);
                 }
             }
@@ -1089,4 +1128,15 @@ fn off_phase_valid_is_refused_with_fault() {
     let mut run = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()));
     run.current_dir(&root).arg("test.vvp");
     bounded(run, &root, "run");
+}
+
+#[test]
+fn fixed_lod_issue_offset_matches_rtl_across_ce_pauses() {
+    let inputs = derivative_inputs()
+        .into_iter()
+        .take(32)
+        .map(|d| lod::Input::from(d_golden(d)))
+        .collect();
+    let (des, source, rows) = run_lod_inputs_offset("texture_lod_phase3", inputs, 3);
+    simulate(&des, &source, &rows);
 }

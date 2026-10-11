@@ -85,16 +85,16 @@ fn operands(v: Input, site: Site, age: u8) -> [u16; 2] {
     let pair = match (site, age) {
         (Site::Multiply(0), 1) => (FineParent, FineV),
         (Site::Multiply(0), 2) => (CoarseParent, CoarseV),
-        (Site::Multiply(1), 4) => (FineBottom, FineU),
-        (Site::Multiply(1), 5) => (FineTop, FineU),
-        (Site::Multiply(2), 5) => (CoarseBottom, CoarseU),
-        (Site::Multiply(2), 6) => (CoarseTop, CoarseU),
-        (Site::Subtract(0), 4) => (FineParent, FineBottom),
-        (Site::Subtract(0), 5) => (CoarseParent, CoarseBottom),
-        (Site::Subtract(1), 7) => (FineBottom, FineBottomRight),
-        (Site::Subtract(1), 8) => (FineTop, FineTopRight),
-        (Site::Subtract(2), 8) => (CoarseBottom, CoarseBottomRight),
-        (Site::Subtract(2), 9) => (CoarseTop, CoarseTopRight),
+        (Site::Multiply(1), 2) => (FineBottom, FineU),
+        (Site::Multiply(1), 3) => (CoarseBottom, CoarseU),
+        (Site::Multiply(2), 2) => (FineTop, FineU),
+        (Site::Multiply(2), 3) => (CoarseTop, CoarseU),
+        (Site::Subtract(0), 2) => (FineParent, FineBottom),
+        (Site::Subtract(0), 3) => (CoarseParent, CoarseBottom),
+        (Site::Subtract(1), 3) => (FineBottom, FineBottomRight),
+        (Site::Subtract(1), 4) => (CoarseBottom, CoarseBottomRight),
+        (Site::Subtract(2), 3) => (FineTop, FineTopRight),
+        (Site::Subtract(2), 4) => (CoarseTop, CoarseTopRight),
         (Site::Select(0), 0) => (Nearest, FineURaw),
         (Site::Select(1), 0) => (Nearest, FineVRaw),
         (Site::Select(0), 1) => (Nearest, CoarseURaw),
@@ -232,9 +232,9 @@ impl Certificate {
                     let (latency, value) = match site {
                         Site::Multiply(_) => {
                             self.products += 1;
-                            (3, u32::from(actual[0]) * u32::from(actual[1]))
+                            (1, u32::from(actual[0]) * u32::from(actual[1]))
                         }
-                        Site::Subtract(_) => (1, u32::from(actual[0]) - u32::from(actual[1])),
+                        Site::Subtract(_) => (0, u32::from(actual[0]) - u32::from(actual[1])),
                         Site::Select(_) => (
                             1,
                             if actual[0] != 0 {
@@ -335,10 +335,10 @@ impl Certificate {
                     }
                 }
                 Event::OutputRegister { key } => {
-                    self.flight(now, key, 10);
+                    self.flight(now, key, CAPTURE_AGE - 1);
                 }
                 Event::Captured(out) => {
-                    let f = self.flight(now, out.metadata.key, 11);
+                    let f = self.flight(now, out.metadata.key, CAPTURE_AGE);
                     assert_eq!(out, golden(f.input));
                     assert_eq!(out.weights[0].iter().sum::<u16>(), f.input.parents[0]);
                     assert_eq!(out.weights[1].iter().sum::<u16>(), f.input.parents[1]);
@@ -375,8 +375,11 @@ impl Certificate {
         }
         assert_eq!(self.flights.len(), usize::from(step.snapshot.cohorts));
         assert_eq!(self.ready.len(), usize::from(step.snapshot.queued));
-        assert!(self.flights.len() <= 6 && self.ready.len() <= 2);
-        assert_eq!(step.snapshot.numeric_words[4] >> 59, 0);
+        assert!(self.flights.len() <= COHORT_CAPACITY && self.ready.len() <= 2);
+        assert_eq!(
+            step.snapshot.numeric_words[NUMERIC_BITS / 64] >> (NUMERIC_BITS % 64),
+            0
+        );
         self.peak_cohorts = self.peak_cohorts.max(step.snapshot.cohorts);
         self.peak_ready = self.peak_ready.max(step.snapshot.queued);
     }
@@ -428,7 +431,7 @@ fn exhaustive_splits_execute_real_pipeline_and_certify_every_register_owner() {
     }
     assert!(r.idle());
     assert_eq!(sent, 512 * 256);
-    assert_eq!(c.peak_cohorts, 6);
+    assert_eq!(c.peak_cohorts, COHORT_CAPACITY as u8);
     c.drained();
     println!(
         "exhaustive vectors={sent} products={} returns={} physical field writes={} enabled={}",
@@ -522,8 +525,8 @@ fn hand_vectors_and_nearest_ignore_fraction_values_on_fixed_six_product_calendar
             break;
         }
     }
-    assert_eq!(first_capture, Some(11));
-    assert_eq!(first_consume, Some(12));
+    assert_eq!(first_capture, Some(u64::from(CAPTURE_AGE)));
+    assert_eq!(first_consume, Some(u64::from(CONSUMER_AGE)));
     assert!(r.idle());
     assert_eq!(sent, cases.len());
     c.drained();
@@ -539,7 +542,7 @@ fn work16_ready_full_ce_and_reused_metadata_drain_with_actual_acknowledgements()
     // explicit later last-use acknowledgement. At most16 work entries exist.
     let mut waiting: VecDeque<(Metadata, u8)> = VecDeque::new();
     let mut acknowledgements: VecDeque<(usize, u8)> = VecDeque::new();
-    let mut pause_ages = [false; 12];
+    let mut pause_ages = [false; CONSUMER_AGE as usize];
     // Age0 is an external offer before its accepted edge, unlike later live
     // pipeline ages; force its first three attempted captures to CE=0.
     pause_ages[0] = true;
@@ -558,7 +561,7 @@ fn work16_ready_full_ce_and_reused_metadata_drain_with_actual_acknowledgements()
         // is fixture state, never a scheduling/operand source for the emulator.
         let pre = r.snapshot();
         if pause_remaining == 0 {
-            if let Some(age) = (0..12).find(|&a| {
+            if let Some(age) = (0..CONSUMER_AGE as usize).find(|&a| {
                 !pause_ages[a]
                     && c.flights
                         .iter()
@@ -667,7 +670,7 @@ fn work16_ready_full_ce_and_reused_metadata_drain_with_actual_acknowledgements()
     // Mixtures must actually reach the one-free/two-required boundary.
     assert!(saw_one_not_two);
     assert!(offer_changes > 100 && c.frozen_consumes > 0);
-    assert_eq!((c.peak_cohorts, c.peak_ready), (6, 2));
+    assert_eq!((c.peak_cohorts, c.peak_ready), (COHORT_CAPACITY as u8, 2));
     c.drained();
     println!("pressure vectors={sent}, wall={}, enabled={}, blocked offer changes={offer_changes}, frozen consumes={}", r.snapshot().wall, r.snapshot().enabled, c.frozen_consumes);
 }

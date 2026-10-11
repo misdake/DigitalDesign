@@ -1,27 +1,5 @@
 # Texture sampling models
 
-## Source and qualification boundaries
-
-The long-calendar preparation contracts below describe the `e583cfa` source
-baseline. The later published-quad foundation is committed on the development
-line at `a0fe042`. Sampling optimization checkpoints through `dad5328` are on
-`dev/gpu-soft-ff-20261008`; they have not been integrated into this
-development checkout. File presence does not establish integration.
-
-The selected `dad5328` RTL uses a three-edge shared-axis D, four-edge grouped
-LOD, two-edge legal-domain Coordinate, explicit two-row coefficient weight FFs,
-borrowed Member/Packet outputs and fused Color tap sums. Its independent generic
-emulators remain numerical references where the physical architecture differs.
-The qualified configuration has16 material slots. Source hashes, complete serial
-sampler resource/timing reports and committed identity are recorded in that
-worktree's `target/sampling-list-20261009/{review,commit}.json`.
-
-That fitted serial composition includes texture cache/refill and Color; it
-excludes outer Quad and the complete overlapping Runtime controller. The
-non-seam warm two-mip II2 receipt belongs to Runtime emulation, not the serial
-controller or whole-GPU fit. Complete Runtime hardware, shared-MC performance,
-integrated GPU area/timing and board operation still require their own proof.
-
 ## Selected render precision
 
 The physical oracle/count/timed/emu/RTL preparation boundary uses unwrapped
@@ -42,15 +20,21 @@ Covered out-of-range UV is rejected. With no mip chain, the only available base
 layer remains selected. Ideal and legacy oracle precision configurations remain
 available; `Config::counted()` selects this physical contract.
 
-The packed register calendar is regenerated for the new formats. D/LOD/coordinate
-numeric banks are858/264/716 bits, spans17/28/9, and II8/8/2 respectively.
-The serial controller data bank is600 bits. These are checked allocation counts,
-not fitted Logic, FF or BSRAM results. Historical timing/PnR evidence below
-predates this migration and does not validate the current RTL's frequency.
+The live kernels now use the short register boundaries documented under
+[Runtime derivative and LOD arithmetic](#runtime-derivative-and-lod-arithmetic).
+The selected serial RTL and live emulator controller data bank is332 bits,
+including a26-bit LOD decision and compact coordinate metadata.
+Register declarations, isolated-leaf PnR, whole-GPU timing and board validation
+are separate evidence levels;
+historical tables below do not establish the current implementation's timing.
 
 ## Current boundary
 
-This component implements oracle, counted and a bounded timed baseline.
+This component keeps three distinct execution paths: the functional oracle and
+counted numerical ledger; the legacy timed/Session/Program replay controller;
+and live register execution in `Runtime`, `PreparationEmu` and `SamplerEmu`.
+The live path computes from accepted scalar inputs. It does not use the legacy
+calendar's completion ages or its retained numerical answers as hardware state.
 `texture::ports` owns slot, quad, Group4 and precision configuration records;
 `texture::sim::oracle` owns preparation, filtering, a functional cache and an
 independent continuous reference. `texture::sim::counted` implements the frozen
@@ -58,13 +42,12 @@ UNORM9 datapath with independently replayable numerical ledgers.
 `texture::sim::timed` executes the bounded cache/color controller. It supports
 the historical static preparation baseline and checked input from
 `staged::bound`: universal periodic stage calendars with finite credits,
-registered boundaries and optional early shared-context release. Most independent
-preparation has now also been implemented as independent registered kernels.
-The conservative `PreparationEmu`/`SamplerEmu` path below complements the richer
-Runtime; it does not replace its earlier performance evidence. Actual leaf RTL
+registered boundaries and optional early shared-context release.
+`PreparationEmu`/`SamplerEmu` complement Runtime; the historical performance
+receipts below retain their original provenance. Actual leaf RTL
 and the composed preparation/cache/color whole-sampler RTL are qualified with
-bounded differential tests. Fitted performance and live DRAW/board integration
-remain open.
+bounded differential tests. Complete serial-sampler fitting is documented below;
+complete overlapping Runtime RTL and live DRAW/board integration remain open.
 `texture::emu::color` executes the captured-texel color pipeline.
 An optional concrete periodic FF-slice layout checks bit ownership at every
 actual read edge; the dedicated allocation remains the default reference.
@@ -86,7 +69,65 @@ at source `358a4e9` (local dependency cherry-pick `f6b61ec`). Early grant and
 `Config::counted()` selects the frozen step-1 contract below. Ongoing timed
 targets remain in the local GPU v2 texture specification and development process.
 
-## Independent register-only sampler
+## Row Runtime transport
+
+The published pixel Live adapter selects `Runtime::new_rows`/`step_row`; its
+four actual36-bit UV beats use the sole UV tail for reservation. Canonical Raw
+writes on row0 and all existing admission owners publish on row3. The caller
+holds its descriptor and immutable draw configuration throughout those rows.
+Atomic `Runtime::new`/`step_raw` remains a separate compatibility/reference
+transport selected at construction, rather than an additional hardware path.
+`row_accepted` reports each row transfer; `accepted` reports fourth-row
+publication. Coefficient/cache/Color still execute in the same register Runtime.
+`rtl::runtime_rows` closes actual Context8, UV, Raw/Ready, D/LOD and compact C6.
+Its default statically selects fixed EARLY ordered retirement and the canonical
+C owner; generic construction profiles remain references. EARLY C consumption
+releases its Context in order, so no additional reclaim pointer or reclaimable
+array is stored. C6 retains owner24 plus result36: parent1[9], nearest[1],
+level0[4], slot[4], key[6]. Consumption restores parent0=511-parent1,
+level1=saturating(level0-1) and last_fine=(parent1==0). The actual LOD domain
+qualifies those identities; checked standalone construction rejects malformed
+owners. The trusted closed producer keeps the unchanged wide output interface.
+The selected Runtime emulator uses the same physical codec and exposes actual
+24-bit owner writes/consumes; generic wide references remain unchanged.
+
+The output of `runtime_rows` alone is an external Coefficient boundary.
+`rtl::runtime_backend` closes selected Coefficient ready2, short Member,
+Work16, short Packet and the ordered Pool through Group72. Its old proposal
+readiness does not depend on joined commit. Promised writes reserve Work credit
+at Coefficient admission; actual Work acknowledgement releases it. Independent
+proposals qualify a common commit with the frontend, without another C-head
+payload bank. The composition export is `pixel_preparation_ingress`; cache/Color
+and actual pixel-result completion remain external. These actual RTL scopes
+are qualified separately from complete overlapping Runtime RTL. Current
+source identities, bounded tests and matched fitting scopes are recorded at
+`D:/github/DigitalDesign-code/target/pixel-composition-backend-20261010/review.json`.
+
+`pixel_sampling_ingress` extends the actual row Runtime through native texture
+cache and result16 Color/public RGB completion. The cache borrows the stable
+Pool head instead of retaining another demand payload; one Group72 register is
+shared by its paid data read and captured Color row. Refill and paid return
+maintenance continue during CE0. Public16 retains valid1 plus last-covered
+lane2 per ID; actual last-lane RGB consumption releases the ID. The independent
+diagnostic model retains wider coverage tracking as a reference. Color uses
+twelve separate MULT9X9 primitives and fabric addition, while D remains fabric.
+The selected closed top relies on actual Pool stability and the single UV-tail
+row0 reservation to omit repeated address/publication checks. Row-specific
+proposals avoid propagating row0 public credit into row3 admission checks. Generic checked
+factories remain available; this does not relax arbitrary transport validation.
+In this closed top, Work16 reads immutable payload72 directly at reclaim_ptr
+from one distributed-RAM read port. A separate control bank feeds emit4 to the
+two logical heads, which retain cursor2 and the original fetch/ACK calendar.
+Packet E0 captures the same old member; no wide head payload register or selector
+is required. Old occupancy still prevents full-queue ACK from financing a put
+on the same edge. Generic and compact Work references remain unchanged.
+Independent Group/RGB joint qualification, full-scope resource reports and
+current timing status are recorded at
+`D:/github/DigitalDesign-code/target/pixel-composition-work-20261010/review.json`.
+Result/done banks, ordered join/Final/ROP and live Draw/memory ownership remain
+parent integration work; these results do not establish whole-GPU timing.
+
+## Independent serial sampler
 
 `sim::staged::bound::serial::PreparationEmu` accepts raw S(18,16) helper UVs,
 Q8 bias and a bounded header. Its stepping path runs actual derivative, LOD,
@@ -97,17 +138,26 @@ test references. One quad is serialized deliberately; leaf II is not quad II.
 
 | Step | Actual computation and retained boundary | Timing boundary |
 | --- | --- | --- |
-| Derivative | Eight signed edge differences; magnitudes/maximum, overflow guard and header | 17 enabled edges, kernel II8 |
-| LOD | Guarded CLZ/normalization, Table64 lookup/RNE, bias/clamp, fine/coarse level and parent weights | 28-edge calendar |
-| Coordinate | Per covered lane, signed floor/wrap Q8 coordinates and coarse half transform | 9 enabled edges, kernel II2 |
-| Coefficient | Exact UNORM9 row/column weights; up to two retained 171-bit rows | 12 enabled edges, kernel II2 |
-| Membership | Local 2x2 tap grouping at repeat/tile seams; first/last group identity | 7-edge default, 5-edge short configuration |
-| Packet | Canonical key/local/weights/first/last/quad/lane into one held 72-bit word | 9-edge default, 3-edge short configuration |
+| Derivative | Shared axis extrema/differences, then exact max/force and header | 3 enabled edges, kernel II8 |
+| LOD | Pre-lookup CLZ/normalization/RNE, registered LOG ROM, guarded tail, then levels/parents | 4 enabled edges, kernel II8 |
+| Coordinate | Fine/coarse signed coordinates, then fractions and wrapped taps | 2 enabled edges, kernel II2 |
+| Coefficient | Three shared one-edge products and exact complement subtracts; Serial has one72-bit ready row and one owner, Runtime retains ready2; single-copy metadata in BSRAM | Capture age5, old-state consumption age6; Runtime kernel II2 |
+| Membership | Local 2x2 tap grouping at repeat/tile seams; first/last group identity | 7-edge default, 2-edge short configuration |
+| Packet | Canonical key/local/weights/first/last/quad/lane into one held 72-bit word | 9-edge default, 2-edge short configuration |
 | Demand cache | Literal slot/level address, tag/PLRU lookup, address/config FF stage, synchronous four-bank tap capture | Hit read captures on the enabled edge after address issue; miss waits for actual beats and terminal ACK |
-| Color | RAW565 expansion, twelve 9x8 products in three registered ages, pair/partial/feedback sums, exact nearest /511 | Eight enabled edges from group acceptance; only last group emits a pixel |
+| Color | RAW565 expansion, independent 9x9 products and registered fabric four-tap sums (independent emulator retains products), then feedback and exact nearest /511 | Queue age2, kernel II1; only last group emits a pixel |
 
-The serial controller adds 600 data and 11 control bits, including a 171-bit
-operand/result overlay. `SamplerEmu` connects the held packet to
+The live serial emulator and selected RTL use332 data and11 control bits:
+UV128, pending header54, LOD decision26, fractions16, weights72 and owned
+metadata36. Metadata is captured once from
+Coordinate and held through the last group, rather than echoed through
+Coefficient. Its metadata BSRAM is removable in the serial composition; the
+overlapping Runtime and standalone compact coefficient retain it. Member76
+and Packet72 are borrowed directly from their existing leaf
+output registers. The controller does not issue another job to either leaf
+before its last read, and output stalls retain the current packet ownership.
+Payload reset is unnecessary once control validity is cleared. `SamplerEmu`
+connects the held packet to
 `emu::cache::CacheEmu` and then `ColorEmu`, using pre-edge ready/valid throughout.
 It retains one quad result bank: RGB96, quad4, mask4, done4 and two control bits.
 One completed quad holds under CE/backpressure; its transfer does not fund
@@ -116,8 +166,9 @@ same-edge admission. Zero coverage runs no numerical/cache work.
 The demand cache has 64 lines in 16 four-way sets, 3-bit tree-PLRU per set,
 four synchronous 1024x16 banks, one 72-bit demand head, one captured result,
 one read-address/config stage and one miss descriptor. No prefetch or hints are
-implemented in this independent baseline. `cache::Allocation` is its exact
-logical inventory; slot validity is a billed ROM bit, and read ownership pins
+implemented in this independent baseline. `cache::Allocation` is the independent
+emulator's logical inventory, rather than the RTL's fitted FF count; slot
+validity is a billed ROM bit, and read ownership pins
 the line. A hit is visible only from old READY tags. ACK cannot fund same-edge
 read issue; read capture cannot fund same-edge address issue. An old output
 transfer can free the later result capture slot.
@@ -138,16 +189,15 @@ after Sampling has polled. See [pixel-system.md](pixel-system.md).
 
 `serial::Config` keeps both optimizations off by default. `nearest_bypass` skips
 coefficient execution only for effective nearest filtering and supplies exact
-511/zero parent rows through the same 171-bit boundary. `short_alignment` removes
-unused Membership/Packet alignment tails without merging arithmetic stages.
-It saves 616 data plus eight valid bits. On the checked four-covered-pixel
-fixture, preparation drains at 220/171/188/139 enabled edges for baseline,
-nearest-only, short-only and both respectively; trilinear short alignment changes
-299 to 235. These are fixture preparation spans, not memory-inclusive latency,
-sustained throughput or FPGA area. No multiplier/resource instance is removed
-by the runtime nearest bypass.
+511/zero parent rows through the same 171-bit boundary. `short_alignment` selects
+the compact two-edge Membership/Packet paths, removing intermediate payload
+copies and alignment tails. Their actual declarations are documented under
+Runtime membership and packet arithmetic below. The bounded serial tests compare all four configurations against the same
+packet goldens and RTL under CE and output stalls. Their fixture spans are not
+memory-inclusive latency, sustained throughput or FPGA area. No multiplier
+instance is removed by the runtime nearest bypass.
 
-The independent `texture_sampler_emu` optimization matrix also measures the
+The historical pre-short-pipeline `texture_sampler_emu` matrix measured the
 whole registered composition. Twenty repeated full-mask quads include negative/
 repeat seams, a nonzero derivative, and (for trilinear) a half-level bias. The
 fixture accepts one request/beat per wall edge, delays ACK by three, and uses
@@ -160,7 +210,8 @@ pixels and leave asset/guards unchanged. The final hot window is actually steady
 | Bilinear | 296 | 296 | 232 | 232 |
 | Trilinear | 504 | 504 | 336 | 336 |
 
-These are one-quad serial-controller fixture intervals, not the periodic Runtime
+These archived values predate the current short arithmetic pipeline. They are
+one-quad serial-controller fixture intervals, not the periodic Runtime
 or a shared-MC bandwidth result. Reproduce with `texture_sampler_emu`; exact
 cold-return edges, requests and group counts are generated in
 `target/gpu-overnight-20261006/sampler-optimization-matrix.csv` at repository root.
@@ -187,9 +238,9 @@ and same-edge ACKs, seams/PLRU/levels, port stalls, abort and numbered beats;
 Icarus compares actual RTL and registers on every edge. Actual numerical leaf
 RTL is separately covered by `texture_{calendar,coefficient,color,
 serial_preparation}_rtl` integration tests and the private `runtime_rtl::tests`
-Membership/Packet co-simulations. Arithmetic RTL currently lowers explicit
-expressions/registers; no shared-DSP mux binding, Gowin fit, fmax or board proof
-is inferred from these declarations. Earlier Runtime experiments below retain
+Membership/Packet co-simulations. Arithmetic RTL lowers explicit expressions/registers; the coefficient leaf
+now has actual shared multiplier input muxes. Register declarations alone do
+not establish Gowin mapping, fmax, integrated GPU timing or board behavior. Earlier Runtime experiments below retain
 their original, narrower qualification boundaries.
 `texture_sampler_rtl` also exercises all filters/material levels0/1/3/6/10,
 missing mips, masks, negative UV, CE/result/request stalls, both ACK seam timings,
@@ -418,8 +469,9 @@ existing counted/oracle packets. UNORM9 precision and rounding are unchanged.
 `staged::binding` uses the public structural WiringAdd/Equality proofs without
 changing the numerical ledger. It checks resource counts and dependency timing;
 unlimited primitive lanes are a diagnostic assumption, not a physical schedule.
-Its actual LOD counterexample shows why a single-output cone cannot absorb the
-shared `h=19-clz(slope)` used by both normalization and exponent calculation.
+The historical LOD counterexample rejected a single-output cone that hid a
+shared normalization/exponent intermediate. Current multi-output certificates
+make escaping results and their retained alias sources explicit.
 
 `staged::stream` executes bounded contexts, coordinate credits, coefficient
 reservations and ordered plane/packet control. Fixed three-lane coefficient
@@ -448,6 +500,9 @@ Context release, slot reuse, captured operands, ordering and tampered snapshots
 are audited; independent oracle/count comparisons include LOD ties and UV seams.
 
 ### Universal preparation binding and cycle-MC composition
+
+This section records the historical primitive-calendar experiment. Its tables
+and throughput receipts are not the current live Runtime register contract.
 
 `staged::bound` replaces the proposed latencies with one calendar per kernel.
 Memory shapes, literals, operands, control dependencies and value formats must
@@ -562,6 +617,9 @@ chosen output directory; no full-repository or board validation is part of this
 unit.
 
 ### Concrete periodic FF reuse
+
+The following allocation table records the earlier calendar; current live
+allocations are documented in the Runtime arithmetic sections below.
 
 The optional `control::Storage::Packed` policy reuses bit-addressed FF slices
 inside the six preparation kernels. It changes no arithmetic format, stage
@@ -1278,6 +1336,14 @@ is implied.
 
 ### Runtime quad ingress
 
+The separate `system::pixel::quad_sampling_ingress` connects the actual Sample8
+queue directly to `uv_rows`, preserving unwrapped helpers without an outer
+three-row assembly. Its Context allocation and canonical Raw-bank endpoint are
+parent-owned. The atomic Runtime model below is still a separate interface;
+the row composition does not yet qualify a complete overlapping Runtime top.
+The ingress and shared Lighting composition boundaries are documented in
+[Pixel composition](pixel-system.md#composition-ingress-units).
+
 `sim::staged::bound::runtime::Runtime` adds caller-owned live input to the
 existing bounded path. `step_raw(memory, Option<&RawQuadInput>, Control)`
 accepts signed18 Q16 helper UVs, coverage and result ID plus stable draw fields
@@ -1286,11 +1352,14 @@ saturated in integer arithmetic at +/-8192, matching the legacy boundary.
 `step(QuadInput)` remains a quantization-only adapter. Both report pre-edge
 `input_ready` for that ID and actual `accepted`; acceptance requires valid,
 ready and CE. Rejected input is not captured or validated beyond identity, so
-the caller may replace it before acceptance. Ready conservatively excludes same-edge
-context/result release and color-input acceptance. No complete-quad FIFO or
+the caller may replace it before acceptance. Ready excludes same-edge context/result credit release. A held color input
+may coexist with raw admission when `ColorEmu::input_ready(last)` proves that
+it can be consumed using old result credits on this edge; an empty link slot
+is no longer required. The admission predicate and Color execution share this
+check, so admission cannot promise an edge on which the link forces a hold. No complete-quad FIFO or
 constructor input sequence is added. The finite `Session` API stays compatible.
 
-Actual `CoefficientEmu` consumes captured scalar coordinates and weights;
+Actual `FixedCoefficientEmu` consumes captured scalar coordinates and weights;
 its local numeric clock can hold while actual membership and packet pipelines
 drain on base CE. Work uses
 mutable 94-bit SSRAM rows and two 92-bit registered heads. Asynchronous RAM
@@ -1319,6 +1388,30 @@ lane, first/open continuity, last closure and an old producer reservation.
 Premature/duplicate completion faults; no expected packet count is consulted.
 Public result ownership still lasts until actual ColorEmu output consumption.
 
+Color's feedback is unsigned17 and its four-product partial is unsigned19;
+their20-bit sum cannot overflow. The sum-domain fault check therefore covers
+every partial-domain failure at the same edge, allowing RTL to omit the
+duplicate three-channel partial comparison. The emulator retains its precise
+diagnostic message; terminal fault, atomic port suppression and all numerical
+results are unchanged. Native fault/semantic replay and matched leaf fits are
+recorded in `target/sampling-arithmetic-logic-20261008/review.json`.
+
+Runtime selects the cache's capture-only pipeline: one pending packet72/line6
+with valid1 survives from read issue to the next enabled capture. The four bank
+words then enter the existing one-slot Color input register; the line pin is
+released at capture. CE or a blocked Color input holds that pending read and
+pin while accepted refill responses continue to drain. One capture and the next
+read may share an edge, retaining a one-packet-per-edge handoff.
+
+Only the separate timed/Session reference allocates numerical color tokens,
+partial/sum values, feedback accumulator, result FIFO and result credits.
+Those owners do not exist in the Runtime cache variant, and it emits no
+Partial/Accumulate/Result/Commit events. Actual Color consumption explicitly
+clears the cache's remaining lane bit; its quad releases after both preparation
+completion and actual last-result consumption. No shadow age or delayed commit
+queue substitutes for that event. Runtime's Step no longer exposes cache_commits;
+the independent Session reference retains that diagnostic.
+
 The retained preparation packets-left6/ID ceiling now holds remaining-mask4.
 The cache's old validation-cursor6/ID allocation is replaced by remaining4,
 open1 and live1; the Rust legacy fields are unused on this path. This alternative
@@ -1326,14 +1419,135 @@ allocation fits the existing receipt without extra FF/RAM/DSP claims. It is
 not evidence of fitted hardware. Runtime adds no serial raster ingress or
 complete-quad FIFO; the upstream foundation owns that transport.
 
-Accepted coverage mapping adds 16x4 = 64 logical bits, cleared at preparation
-release; public lane ownership separately lasts until actual ColorEmu consumption.
-`LINK_STATE_BITS` is 266: capture137 + public lanes64 + coverage64 + fault1. The
+The cache owns the sole public-result remaining mask, cleared only by actual
+ColorEmu consumption; Runtime reads that mask for its diagnostic snapshot.
+`Runtime::Step::result_quad_last` exports the transition to an empty mask on
+that actual consumption edge. Pixel composition uses this sole completion
+event to release the public-ID destination mapping after the result write;
+preparation release and Context reclamation do not release that mapping.
+Readiness is sampled before Color advances, so a last result cannot fund
+same-edge ID reuse. Packet E0 exposes its actual operand key6 directly to the
+reservation adapter. It does not reconstruct a physical lane from a diagnostic
+covered-lane ordinal, and no accepted-coverage copy is retained in Runtime.
+Runtime issue diagnostics use `KeyIssue` with that physical key; the independent
+legacy `Issue` keeps its covered-lane ordinal. Canonical key is `quad*4+lane`;
+Packet72's quad bits66..69 and lane bits70..71 must be decoded separately.
+The existing preparation completion mask guards host issue invariants; this
+does not claim a free multi-read hardware table or a fitted Logic reduction.
+`LINK_STATE_BITS` is 138: capture137 + fault1. The
 existing preparation/cache/color stores and P16/G32, Pool64 1W/1R, two total
 head/pending positions, read1 and Result16 remain owned by their existing models.
 Texture precision and cache capacities are unchanged. RefillPort drains accepted
 beats even when CE or the color link stalls. Errors are terminal; accepted MC
 work needs external drain before recreation. These are Rust bounds, not fitted area.
+
+Runtime preparation now advances an explicit ordered Context queue controller
+(`emu::runtime_frontend`), with live UV, D/LOD phase and Ready-metadata ports.
+Allocate/reclaim and D/LOD/C heads/counts, held D/LOD owners and one 2-bit active
+C-head covered-lane ordinal belong to this controller. Done or empty input clears
+that ordinal; no per-context cursor array or diagnostic shadow survives. Payload and public IDs remain in their
+existing owners. Admission uses old credits; same-edge reclaim cannot fund
+reuse, and CE0 freezes control while a native UV return can arrive externally.
+Its hand-written queue RTL is qualified against actual Runtime ports and the
+frozen pre-change executor, projecting only expired/non-C-head ordinal diagnostics.
+All functional ports, payloads and other owners remain exact. This is the queue subunit, with no complete closed
+frontend or overlapping Runtime top yet. The RTL classifies each owned row once
+as Raw, Derived or Ready; each legality port selects that one bit, preserving
+all fault predicates and the same register state. Qualification and isolated probe have
+one report home:
+`D:/github/DigitalDesign-code/target/sampling-runtime-rounds-20261010/select-review.json`.
+
+The fixed Runtime cache uses one demand descriptor. Only its strict global
+Packet head can allocate, and that head remains Filling until physical terminal
+completion; there are no prefetch hints. Thus pending plus presented/active
+ownership cannot exceed one. The descriptor keeps its line/key/address through
+presentation, Started, sixteen ordered beats and Complete, including consumer
+CE0 and a delayed terminal event. The selected path has no descriptor queue or
+promotion selector. Generic timed and Session keep their prefetch-capable queued
+reference. This changes neither cache read scheduling nor the warm II2 path.
+Runtime allocation counts one descriptor and transport state as a model ceiling;
+the generic queued reference retains its separate four-descriptor allocation.
+Actual Runtime/physical-MC per-edge comparisons, independent pixel goldens,
+source proof and fault/drain boundaries are recorded in
+`E:/worktrees/f207/DigitalDesign-code/target/sampling-runtime-demand-owner-20261010/review.json`; they do not establish
+a fitted cache-controller saving or complete Runtime/GPU hardware qualification.
+
+`new_runtime_capture` selects the trusted ordered PacketPool backend
+(`emu::packet_store_ordered` and its independent RTL), with unchanged Producer16,
+Group32,64 physical payload rows and two total owned head/pending positions.
+Reservation is the actual Work-to-Packet E0 capture. Every reserved producer
+advances on the same effective CE and writes exactly at E2, in capture order,
+without holes, cancellation or overtaking. This permits ordered cursors and an
+unwritten count to replace the expected-owner RAM and publication bitmap.
+The two native512x36 payload banks, their hard72-bit DO and two72-bit soft heads
+remain. CE0 holds the paid DO and its reservation; reset invalidates ownership
+and macro output without clearing backing payload RAM.
+
+W cannot fund same-edge Transfer, Transfer cannot fund same-edge payload R,
+and full Producer/Group credits cannot borrow a simultaneous release. Old head
+consumption may reserve a future read but cannot bypass a newly issued read.
+The reachable invariant is `rows = Producer + Group - valid_heads`, with
+`Producer <= 16`, `Group <= 32`, and at most two head/pending positions. Thus
+Producer readiness implies row capacity. Consume uses an old valid head; an
+unreserved write is rejected before shared advancement. The real
+`rtl::runtime_packet_backend` combines compact Work16, short Packet and Pool64
+on this shared edge, masks accepted malformed entries and parent abort, and
+retains terminal state until local reset. Short Packet ready is `ce && !fault`,
+so a healthy actual shared-edge issue always has Packet readiness. Reset of
+this local backend does not cancel any external MC work.
+
+Generic `emu::packet_store`/RTL retain the expected-owner memory and original
+owner/key diagnostics. Generic timed Pool and Session retain arbitrary producer
+timing and their tamper checks. They do not select this trusted producer profile.
+The selected profile does not promise arbitrary internal control/RAM bit-flip
+detection. Event serials and pending-row diagnostics are host witnesses, not
+additional payload copies or readiness inputs.
+
+Current compact Runtime preparation, cache, packet, Color and public events
+match the retained generic Pool and independent integer pixels on84 calendars.
+The selected Pool's portable/native RTL and the original Work/short Packet/Pool
+backend replay those calendars; the generic-owner backend uses the identical
+backend calendars. The final Work mapping is checked by generic/compact Work
+tests, one actual default backend calendar in portable/native RTL, and bounded
+source-versus-placed-netlist replay. Directed tests check full credits, wrap, CE0 paid DO, live-state reset,
+entry-fault and parent-abort atomicity, then new payloads against an independent
+Packet golden. Reproduce the relevant leaf tests with
+`cargo test -p gpu-v2 --lib ordered_pool_directed_portable_native -- --ignored`.
+Actual backend scripts and receipts are under
+`target/sampling-runtime-pool-integration-20261009/`.
+The actual-key/sole-mask composition is recorded in
+`target/sampling-runtime-lean2-key-integration-20261009/`. The final Work mapping
+uses asynchronous distributed rows and two explicit payload registers.
+Source-matched native fits and placed-netlist payload replay are recorded in
+`target/sampling-work-async-mapping-20261009/` and
+`target/sampling-work-explicit-heads-20261010/`. These qualify the
+Work/Packet/Pool backend; the complete overlapping Runtime controller remains
+outside that fitted and mapped unit.
+
+A Runtime terminal error stops compute, not the independent transport owner.
+That owner retains a presented request's descriptor until physical acceptance,
+then keeps the accepted burst through all16 beats and terminal completion.
+It may discard old returns only while draining the old owner; it must not route
+them into a recreated Runtime. The bounded parent test faults both before RO
+acceptance behind Display traffic and after a partial accepted128B burst,
+externally drains to physical idle without resetting transport or reloading the
+image, and only then reconstructs Runtime and checks new pixels. Reproduce with
+`cargo test -p gpu-v2 --lib terminal_parent_fault_drains_presented`.
+
+Matched native backend fits use the same observable wrapper,54MHz and placement
+zero. Both generic-owner and selected ordered variants preserve asynchronous
+Work rows. Their resource/timing report is
+`target/sampling-work-async-mapping-20261009/matched-fit-receipts.json`; the
+explicit-head candidate and its source-matched baseline are in
+`target/sampling-work-explicit-heads-20261010/matched-fit-receipts.json`.
+The final placed-netlist replay covers477 wall edges including first write/fetch,
+concurrent transfers, CE0 paid returns, two heads, stalls, wrap and complete
+drain. It compares actual owned Member/Packet/Pool data and control using vendor
+primitives and GSR; its receipt is in that task's
+`actual-calendars/postmapped-selected-native-p0-diagnostic/receipt.json`.
+Complete overlapping Runtime control RTL, whole Runtime/Serial/Quad/GPU
+resources, miss/seam throughput and board proof remain separate; backend
+differences are not added to Serial totals.
 
 One immutable texture context lasts for the instance; drain and recreate before
 changing slots. All four helper UV lanes affect derivatives for partial coverage;
@@ -1351,32 +1565,6 @@ then invoke the unchanged numerical oracle after drain. Direct cache tests
 reject early/duplicate completion, wrong or uncovered lanes/slots, missing or
 repeated first, repeated last, and duplicate admission using only live ownership.
 
-**Historical warm-cache measurements.** The pre-fusion probe warms and
-drains the same instance, then measures48 quads/192 covered pixels with no
-refills. Runtime figures below are total measurement-window wall clocks divided
-by pixels, including fill/drain. Serial figures are its separate default hot-quad
-interval divided by four covered lanes. They are different controllers and
-fixtures; neither column is a whole-GPU fitted throughput result.
-
-| Filter | Runtime window wall edges/pixel | Serial default hot edges/pixel |
-| --- | ---: | ---: |
-| Nearest | 3.594 | 60.00 |
-| Bilinear | 3.594 | 74.00 |
-| Trilinear | 6.573 | 126.00 |
-
-The original receipts remain at `target/sampler-hot-runtime` and
-`target/cargo-summaries/runtime-hot-probe-release.log`. Do not label these
-averages as steady-state II. Paused Runtime wall figures from that receipt
-are9.896/13.484; they are not serial measurements.
-
-The historical seam trace has768 packets for192 pixels. Its packet-issue
-intervals are576 one-edge gaps and191 three-edge gaps, rather than a uniform
-three-edge cadence. Derivative/LOD and lane issue gaps also include startup
-values. Counts and window means alone do not prove that context capacity is
-the limiting cause. The former context-expansion recommendation is superseded
-by measured lifetime/credit work; keep Work16/context8 and use matched traces
-to distinguish arithmetic, seam service, cache stalls and actual ownership.
-
 ### Runtime Work transport and allocation qualification
 
 Logical Work capacity W remains 2..32, with physical depth
@@ -1388,25 +1576,28 @@ into an old empty head and publishes its valid bit at that edge. Only an old
 valid head may be consumed; there is no R-to-consume bypass or extra C edge.
 Another published row may be prefetched while the current head expands.
 The source row stays reserved through its last packet capture/ACK.
+The RTL explicitly selects distributed RAM for the rows so Gowin preserves
+the asynchronous read. Inferring synchronous BSRAM changes the first fetch
+edge and violates this transport contract.
+The two payload heads are explicit registers with one fixed output mux and
+separate writes selected by the existing fill-head bit.
 Coefficient admission reserves one or two Work
 destinations from old free capacity. Its existing two ready rows are consumed
 one active plane per base edge, releasing the whole row after its last plane.
 
-A private configuration-matched allocation receipt retains generic control and
-the cache's closed-color shadow. Actual coefficient numeric315 replaces the
-legacy coefficient allocation; phase19 replaces its Packed phase suballocation
-or is explicitly added for Dedicated. Work declares payload184, head control10
-(two cursor2/valid1, two head pointers1, occupancy2), three modulo-W row pointers
-and materialized countQ: `194 + 3A + Q` bits, where `A=ceil(log2(W))` and
-`Q=ceil(log2(W+1))`. It replaces the old single-head inventory, adding `98+A`
-bits (102 at W16) and a 94-bit two-way head payload/cursor selector. Queue13,
-fault1, plane cursor1 and central in-flight work accounting remain separate.
-The default Packed receipt declares 16,555 soft bits and 1,377 hard product
-bits; RAM, BSRAM and DSP declarations are unchanged. The legacy SDP4/RAM16x1
-counters are accounting bases, not interchangeable physical RAM16 primitive
-counts. These are model allocations, not fitted cells; other configurations
-have their own receipt. Legacy Session inventory and
-global replay audit remain unchanged and do not certify this locally held path.
+The configuration-matched Runtime receipt replaces replay arithmetic banks
+with the actual live owners, for either storage policy. Coefficient state uses
+its `ALLOCATION` declaration; Membership/Packet use the short leaves below.
+Work declares184 payload bits and10 head-control bits, plus three modulo-W row
+pointers and materialized countQ: `194 + 3A + Q`, where `A=ceil(log2(W))` and
+`Q=ceil(log2(W+1))`. The two-head selector covers94 payload/cursor bits.
+Generic preparation/cache control remains conservative. The current Runtime
+receipt replaces the old color tokens/tree/result/DSP rows with the one-slot
+79-bit pending read; actual ColorEmu is the sole numerical/result owner.
+This removes logical model allocations, not measured physical cells. The
+event/port receipts are under `target/sampling-sequential-storage-20261008`;
+the totals are not a fitted whole-sampler bill.
+Legacy Session inventory and replay timing do not certify the locally held path.
 
 `rtl::work` is an independent asynchronous-RAM/two-head RTL leaf, checked against
 Work on every edge at logical depths 2/3/16/17/32. Random CE/consumer stalls,
@@ -1418,7 +1609,7 @@ rows is checked. The isolated saturated single-group test sustains one row per
 enabled edge. This leaf is not yet a complete overlapped sampler RTL top, and
 no Gowin fit or frequency result is claimed.
 
-The unchanged `texture_runtime_probe` supplies the same 48 full-mask quads
+The archived two-head transport experiment supplied the same48 full-mask quads
 after a same-instance cache warm-up. In the middle window (result indices
 63 through 127), the old/new actual return intervals are:
 
@@ -1431,7 +1622,7 @@ after a same-instance cache warm-up. In the middle window (result indices
 
 All windows have zero new refills and preserve independently calculated pixels.
 Nearest/bilinear shared-context lifetimes for accepted quads 16..31 fall from
-95 to 63 edges with the same eight contexts. Mip/seam still have long gaps;
+95 to 63 edges with the same eight contexts. At that earlier checkpoint mip/seam still had long gaps;
 neither their window average nor the filled/drained batch mean is a steady II.
 In particular the old seam packet stream already had mixed 1/3-edge gaps.
 Do not diagnose every seam packet as three edges or solve an unmeasured
@@ -1440,149 +1631,378 @@ are frozen under `target/sampling-foundation-20261007`, including the source
 snapshot used for that first stage. The subsequent raw-ingress change and its
 separate receipts are under `target/sampling-live-20261007`.
 
+The current short-pipeline/ingress experiment supersedes those earlier hot-flow
+intervals. For warm, non-seam, true two-mip traffic, its four-nonzero-tap packets
+sustain one packet per enabled edge; all 511 gaps between the 512 pixel results
+are two enabled edges in each measured W configuration, with eight contexts
+and the existing32-group capacity. The final trace, Work lifetimes and separate
+queued versus earliest-return latencies are in
+`target/sampling-fusion-integration-20261007/hot-flow-fixed/`; this event evidence
+is separate from isolated-leaf PnR and whole-GPU acceptance.
+
 ### Runtime derivative and LOD arithmetic
 
-`emu::derivative::DerivativeEmu` executes the eight signed19 differences before
-wrapping, their absolute magnitudes and the balanced18-bit maximum tree once per
-quad. `emu::lod::LodEmu` executes the guarded20-bit leading-zero/normalization,
-RNE mantissa index and64 carry, registered log ROM return, bias/clamp, mip levels,
-parents and registered prefix ROM returns. Zero and overflow keep their existing
-priority over bias; filter, single-mip and coefficient precision are unchanged.
+`DerivativeEmu` uses the square-edge partition `{0,3}` versus `{1,2}`. Per axis,
+`max(max(A)-min(B), max(B)-min(A))` is exactly the largest absolute difference
+on the four square edges. One shared axis datapath computes diagonal min/max,
+two signed19 cross differences and their maximum on age0 for U and age1 for V.
+Age2 selects their exact nonnegative18-bit maximum and force-coarsest guard.
+The emitter checks both cuts' operations, formats, constants and bit connections
+before sharing them on disjoint one-hot phases. The independent integer emulator
+still executes the certified cuts and retains their separately allocated results.
+A global UV range would also include
+diagonals and is not equivalent. `LodEmu` has four boundaries: guarded CLZ/normalization/RNE
+lookup preparation, registered LOG return, bias/clamp/guards, then levels/parents.
+Normalization uses CLZ directly instead of two cancelling subtractions.
+Zero/overflow priority, mip/filter selection and UNORM9 rounding are unchanged.
+The shared-axis rewrite and matched complete serial sampler fits are recorded
+in `target/sampling-d-shared-20261009/review.json`; declaration
+budgets remain distinct from fitted registers and complete sampler resources.
 
-| Actual stage | II | Primitive ready age | Numeric FF | Phase/valid FF |
-|---|---:|---:|---:|---:|
-| Derivative | 8 | 17 | 858 | 32 + 18 |
-| LOD | 8 | 28 | 264 | 32 + 29 |
-| Coordinate | 2 | 9 | 716 | 8 + 10 |
+| Actual kernel | II | Ready age | Numeric FF | Phase/valid FF |
+| --- | ---: | ---: | ---: | ---: |
+| Derivative | 8 | 3 | 219 | 8 + 4 |
+| LOD | 8 | 4 | 83 | 8 + 5 |
+| Coordinate | 2 | 2 | 188 | 2 + 3 |
 
-`emu::coordinate::CoordinateEmu` executes the same frozen coordinate body on its
-own old-state registers. It captures the wrapped Q16 helper UV pair, the signed
-LOD shift and the nearest/halve/side context and emits the fine/coarse Q8
-fractions and the eight wrapped taps. Its Q8 floor, centered `-128`, signed
-`(fine-128)>>1` halving, nearest/bilinear/trilinear flag use and single-boundary
-repeat wrap (including negatives and `1024` endpoints) are unchanged. The bank is
-the certified Packed layout for the II2 kernel: four rotating destinations in an
-8-edge periodic bank, no DSP, ROM or BSRAM. Base CE freezes the bank, phase
-and valid; the result publishes at age9 into the existing coefficient-ready
-queue. The live step path reads actual old scalar operands, never the counted
-`coordinate_values` body or a finished coordinate frame.
+These are the independent generic calendar declarations. The selected serial
+`rtl::lod` replaces CLZ followed by a variable shifter with grouped16/8/4/2/1
+zero tests and fixed shifts. It produces the same RNE six-bit ROM index and
+exponent carry, reads the maintained `format::LOG_RAW` table once, then applies
+signed bias/guards/clamp and derives levels/parents. Its declared numeric bank
+is80 bits, with a three-bit phase and four validity bits. Checked admission
+limits size to0..10 and bias to[-8192,8192]. Size cancels between the raw LOD
+and the final fine-level subtraction: the selected path computes the signed
+Q8 offset `(h-16+carry)*256+log+bias` directly. Its five-bit exponent ranges
+from-16 to1; retained bias and offset use fifteen bits. A negative offset
+derives the fine level and fraction directly; size only supplies the clamp
+bound. At the lower boundary, distance equal to size retains a nonzero
+fraction, while distance greater than size clamps to size and fraction zero.
+This preserves precision and overflow/zero guards. Four advancing edges
+including capture and II8 are unchanged; CE holds both payload and validity,
+and reset drops ownership without resetting payload. The generic `LodEmu`
+remains the reference. An independent integer/analytic golden checks every
+18-bit slope code, power boundaries, all supported size/filter/mip combinations
+and bias extremes, with input poisoning, output CE pauses and occupied reset.
+The matched16-slot report is `target/sampling-list-20261009/review.json`.
 
-Each bank uses the existing certified Packed physical slices. Instructions read
-old bits at their issue age and register results for the next ready age; all
-reuse reads precede writes. Input-only birth0/last0 slices are acceptance wires,
-not another retained input copy. Log reads occur at age10 and prefix reads at
-ages21/24, with returns at11/22/25. The existing64x8 and11x13 single-port ROMs
-remain45 RAM16x1 /12 SDP4. Arithmetic, ROM captures and phase/valid freeze together
-under base CE. There is no additional output queue, cohort tag or memory port.
+`CoordinateEmu` first computes signed fine/coarse Q8 coordinates, then fractions
+and wrapped taps. Its input is wrapped16-bit Q16 UV, side2..1024, signed
+`shift=log2(side)-8`, coarse side=max(2,fine/2), and halve iff fine side>2.
+The signed floor, centered `-128`, negative repeat wrap and1024 endpoint rules
+are unchanged. The generic diagnostic RTL scale uses a five-bit barrel distance with the complete
+signed18 amount guard: large positive shifts return zero, and large negative
+shifts sign-fill. Thus all amount codes retain their previous arithmetic
+behavior, including the most-negative code; legal shifts remain -7..2. Its
+calendar, allocation and independent integer emulator are unchanged. It uses
+no multiplier, ROM or BSRAM. The full18-bit control replay and matched complete
+leaf area/timing comparison are in the same arithmetic report.
 
-Only operation/format descriptors, literal constants and immutable wiring/cut
-maps survive constructor template extraction; sampled arithmetic answers do not.
-UV and bias quantization occur on real admission through the generated protected
-input types. Registered execution uses actual old scalar operands, never a finished
-Frame or a newly evaluated D/LOD body. Diagnostics such as differences, LOD/lambda
-and prefixes are observable at their production cuts without a second output bank.
+The serial composition selects `rtl::coordinate` for this checked physical-mip
+domain. Since legal shifts are-7..2, scaling is `(uv<<2)>>(2-shift)`, with one
+shared unsigned18-bit right shifter and a four-bit distance0..9. Repeat uses
+`floor(q/256) & (side-1)` and `(floor(q/256)+1) & (side-1)`; it preserves negative
+centering and the side1024 endpoint without signed boundary comparisons.
+Fine coordinates are computed once per axis and coarse coordinates derive
+from their centered half. Admission computes U and writes its final56-bit
+result slices; only V input16/configuration16 survive to the second edge,
+when the same kernel writes V's final56 bits and publishes the joint result.
+The selected `SharedCoordinateEmu` and RTL own144 numeric bits plus the
+unchanged phase2/valid3; no temporary U result or precomputed V is retained.
+The generic188-bit calendar/`CoordinateEmu` remains an independent reference.
+II2, two advancing edges,
+phase refusal and CE/reset validity are unchanged. Off-valid numeric output
+bits are unspecified. Production LOD/Ready decoding establishes the legal
+relationships; the generic full-domain lowering is still available for
+diagnostics. The exhaustive RTL test visits all65536 UV codes on both axes for
+all ten physical sizes and both nearest policies against integer multiply,
+floor and modulo goldens, including pauses and reset with different operands.
+The test poisons all external operands after U capture; both the Rust and RTL
+executors must compute V from their owned registers. Shared-axis resource and
+two-placement54MHz receipts are in `target/sampling-axis-share-20261009/review.json`.
 
-The existing387-bit shared context row replaces its payload: Raw355, Derived219,
-or wrapped UV144 + header12 + coordinate-context71 =227, with its two-bit variant
-tag inside the same ceiling. Base addresses remain in the immutable slot table.
-D captures at age16 into that row; LOD issue needs old captured data and age>16.
-LOD captures at27, retains the existing holding cut28, and coordinate issue
-requires old validity at age>28. The actual coordinate pipeline retains only the
-captured scalar operands; the lane's parents/levels/slot/key/final metadata is
-held as structure until its result returns. The actual pending owner is38 bits,
-including nearest for the later coefficient input; Runtime explicitly adds one
-bit per live coordinate to the old37-bit allowance. Coordinate admission requires
-wrapped UV18, power-of-two fine side2..1024, shift=log2(side)-10,
-coarse side=max(2,fine/2), and halve iff fine side>2. Phase wraps at its certified
-period8, so the eighteen declared control bits are8 phase plus10 valid bits.
-The counted `coordinate_values` body
-is now reached only by legacy `prepare`/`Program::compile`, which is trapped by
-the live counted-call guard. Completion uses actual last packets and accepted
-lane masks as described under Runtime quad ingress.
+LogicCone certificates retain every pure arithmetic event and explicitly export
+escaping intermediate results. Exported aliases retain their producer bits;
+undeclared escapes, missing operands, overlap and corrupted timing are rejected.
+The executor reads external operands from old registers, evaluates internal wires
+combinationally, then commits the single boundary write. Literal/format/wiring
+metadata survives construction; sampled nonliteral values and FrameReports do
+not. Poisoned-constructor and independent arithmetic tests enforce that boundary.
 
-Packed phase/valid is already paid. Dedicated uses the same actual Packed bank:
-D data/control1,385 fits its retained2,440 ceiling, and LOD337 fits793. The pending
-nearest bits above are the only added FF allowance; no RAM, DSP or primitive/ROM
-port is added. Dedicated steering is explicitly rebilled:
-read-tree demand rises489 bits, write-tree demand1,189 bits and storage-control
-Boolean demand7,407 gates; Packed already includes these declarations. They are
-topology demands, not fitted Logic, timing or a PnR result. Legacy Session/Binding
-and downstream contracts are unchanged.
+LOG reads issue at age1 and return at age2. The64x8 registered table is declared
+as32 RAM16x1 /8 SDP4 accounting units. Runtime never consumes `prefix0/1`, so
+prefix lookup is separated from the live LOD stage; it remains in the complete
+counted model and cache address path. Diagnostic differences, LOD/lambda and
+coordinate values remain audited without forcing additional registered stages.
+Every numerical bank, phase and valid register holds under base CE0.
 
-`tests/texture_derivative_lod.rs` compares462 overlapping samples with independent
-integer goldens,43,428 arithmetic cuts,56,826 physical writes and three sets of462
-ROM returns, including every mantissa RNE tie/carry, zero/overflow, negative UV,
-all filters, mip/no-mip and bias boundaries. It also poisons all nonliteral
-constructor answers and checks full physical width and rejected-input storage.
-Connected qualification traps legacy helper and Program calls on every live
-edge (including accepted ingress), checks actual cuts and CE freezes, and preserves the accepted
-128B refill, Work/head and full-image evidence. `tests/texture_coordinate.rs`
-drives the coordinate bank with extreme Q16 UV, every physical mip size1..10,
-nearest/halve combinations and both wrap boundaries, comparing every published
-fraction/tap against an independent integer golden, under CE freeze and from a
-poisoned structural calendar. A connected test checks every live coordinate cut
-against its independent checker frame and confirms CE freeze. The checker
-never supplies values, completion or packet counts to Runtime.
+Fixed reset phases align consumers with captured old state: D phase0, LOD phase4
+(eligible at global enabled phase4), and Coordinate phase0. D capture at age3
+allows LOD issue on the next edge. After LOD capture at age4, the UV RAM request
+uses the next odd enabled phase and Coordinate consumes its return on the next
+even phase. There is no live rephasing. The directed paused test records
+D/LOD/Coordinate issue at enabled8/12/18. The extra D edge consumes the previous
+UV parity wait, so first Coordinate issue stays at enabled18. Context count8 and
+steady quad II8/pixel II2 are unchanged. This Runtime evidence remains distinct
+from the serial RTL fit; complete overlapping Runtime RTL is still absent.
+
+Runtime now uses one bounded context ring. Admission/reclaim and the D/LOD/
+Coordinate heads are modulo-capacity cursors; counts describe disjoint intervals
+of the same eight slots, not three eight-entry queues. D and LOD each retain one
+inflight slot owner and publish from the actual numerical valid return. No quad
+search, free-slot search or absolute issue timestamp controls readiness.
+
+Long-lived UV now occupies one native SDP36 block: four36-bit rows/context,
+32 useful rows for eight contexts, with the full512x36 macro charged. Formal
+admission captures one144-bit raw head. That same head supplies D and writes
+one36-bit UV pair on each of four enabled edges, beginning with admission; it
+is released only after both the final write and actual D capture. Input ready
+uses the old empty head, so an unaccepted offer is never sampled and a same-edge
+head release cannot fund admission. D reads the accepted head, never a second
+per-context FF copy. Its wrapped output is exactly each raw operand's low16
+bits; there is no D-return RAM write. Coordinate requests one covered-lane row
+on an odd enabled phase and reads those low16 slices from the synchronous DO.
+The reserved return is captured on the following wall edge including CE0.
+It can directly supply the even-phase Coordinate issue; otherwise a32-bit
+return head holds it until actual consumption. The owner remains reserved
+through both RAM flight and that hold, preventing overwrite.
+
+Runtime context metadata uses only Raw36 and canonical Ready26 fixed
+asynchronous-read SRAM banks, each with16 physical rows for logical capacities
+1..8. The selected `context_store::runtime::Store` and `runtime_source` RTL
+retain9+7 RAM16SDP4 cells. Derived53 is a wire from D's actual terminal bank;
+its former padded56-bit RAM is absent. Generic `Store`/`source` keep arbitrary
+Ready83 and9+14+21 cells; `new_lod_ready`/`source_with_lod_ready` keep the
+independent canonical three-bank reference. No generic caller changes format.
+
+Ready26 retains fine level4, nearest1, coarse parent9 and quad/mask/slot12.
+The coarse level is `max(fine-1,0)`, each physical side is
+`1 << max(level,1)`, shift is `max(fine,1)-8`, the fine parent is
+`511-coarse_parent`, halve is `fine>1`, and last-fine is `coarse_parent==0`.
+Capture checks every expanded operand and rejects noncanonical or out-of-range
+returns before any mutation. General callers are never silently truncated.
+The logical83-bit edge/diagnostic interface remains unchanged; expanded fields
+are combinational wires at use, without an additional payload head or pipeline
+edge. Serial PreparationEmu/RTL retain this same26-bit decision instead of83
+held bits. Capacity, old-state credit, issue/return phases and CE behavior are
+unchanged. This removes redundant storage, rather than lowering precision.
+Raw shares its read port between D issue at global phase0 and D return
+identity at phase3. D returns publish one ordered Derived lease; LOD accepts it
+at phase4, and reads its quad identity again at the following phase0. All reads
+use old D bank bits before either leaf ticks, including simultaneous LOD return
+and next D acceptance. Shared CE freezes both numerical phases and the lease.
+D II8/span3 has one terminal bank and no arithmetic write after phase2, so
+`derived_count<=1`; the owner is the old ordered `d_head` predecessor. No
+Derived payload or owner shadow is added. Ready has one Coordinate read and
+one LOD-return write; old Context/public-ID/UV credits and reclaim stay intact.
+Diagnostic snapshots and `SharedRelease.program` use explicit non-hardware
+peeks; these reads never drive readiness, identity checks or arithmetic.
+Context storage/type/address/identity/control faults are preflighted before
+preparation mutation, and bank writes commit only after a successful step.
+This guarantee does not cover arbitrary errors elsewhere in Runtime.
+
+Early release
+retires after the final Coordinate consumption of the reserved UV row; late
+release marks packet completion and reclaims only the ordered ring head.
+Base addresses remain in the slot table. The new UV owner is176 soft payload
+bits plus16 explicit control bits and one hard36-bit DO; the eight144-bit FF
+UV rows are absent. The older387-bit context allowance and227-bit split-bank
+checkpoint remain historical accounting, not measured hardware savings.
+
+The independent three-bank reference qualification compares76 Runtime calendars with the committed
+union-payload baseline on every wall edge, including admission, all preparation
+events and exact public results. It retains warm pixel II2 and old-state credits.
+Independent wire goldens and portable/native/newly-lowered-union RTL replay cover
+capacities1..8, signed boundaries, padding, simultaneous bank writes, CE stalls,
+fault suppression and same-instance contaminated-RAM reset/drain/reuse.
+The matched60MHz placements0/1 fit the complete bank port controller with the
+same observable wrapper. Retained ordered Runtime controls are external in both
+variants; the union reference is newly lowered from the old Rust model, not
+existing complete Runtime RTL. Physical numbers have one generated report home:
+`target/sampling-context-metadata-storage-20261008/implementation/fit-summary.json`.
+These generic-clock probes do not establish complete Runtime/system fit or board
+results. Reproduce replay with `cargo test -p gpu-v2 --lib context_storage -- --ignored`.
+
+Runtime Derived-loan qualification compares12 actual Runtime profiles to
+frozen `538cbb9` execution on every wall edge, including zero/sparse masks,
+CE0, C6/Context8 saturation, early/late release, miss and delayed terminal
+completion. Live D/LOD RTL with portable and vendor RAM models checks both
+LOD reads after D validity expires. The matched observable D/LOD/metadata leaf
+fit is a limited subcomponent probe; its report is
+`D:/github/DigitalDesign-code/target/sampling-runtime-rounds-20261010/derived-review.json`. It excludes
+the Runtime frontend, UV, Coordinate, cache, Color, full Runtime and GPU.
+
+Canonical Ready qualification exhausts levels/parents and identity combinations,
+checks all seven independently inconsistent derived operands before commit, and
+replays Raw→Derived→Ready reuse on the same instance at capacities1..8 through
+portable, native and union-reference RTL. Independent three-bank76 Runtime port calendars and
+serial/whole-sampler differential tests cover the integrated consumers. Receipts
+for this newer format have a separate home:
+`target/sampling-ready-decision-20261009/review.json`. Earlier context fits above
+retain their original83-bit format and do not measure this decision26 lowering.
+Reproduce with `cargo test -p gpu-v2 --lib canonical_ready_ -- --include-ignored`
+and `cargo test -p gpu-v2 --lib context_storage_runtime_native_replay -- --ignored`.
+
+The earlier compact Coordinate implementation stores each reservation in two
+asynchronous-read SRAM banks: owner38
+(two9-bit parents, levels, slot/key, nearest and final) is written at issue;
+fine fractions16/base coordinates20 are written at return. Native16x40 and16x36 banks use10+9
+RAM16SDP4 cells, including two padded owner bits; total Coordinate credit stays6.
+Coefficient reads the old completed row directly, with no full-row FF head or
+shadow. Both bank writes and an older-row consume may share an edge. Neither a
+return nor a consume grants same-edge ready/free credit. Three modulo-capacity
+pointers and occupied/completed counts replace duplicate inflight counters and
+per-row flags (15 control bits at capacity6); CE0 holds both banks and controls.
+Reset invalidates ownership without clearing SRAM. The selected Runtime now
+uses the canonical owner codec described under [Row Runtime transport](#row-runtime-transport);
+the wide bank remains a generic reference. Historical Runtime calendars,
+independent semantic goldens, native/FF replays and same-wrapper A/B storage fits
+are in `target/sampling-coordinate-storage-20261008/review.md`. This unit adds no
+pipeline edge; the512-pixel warm two-mip flow retains all511 two-edge intervals.
+UV actual-port calendars, all admission phases, CE-off returns, independent
+goldens and behavioral/native controller replays are recorded in
+`target/sampling-ram-lowering-20261008`. RAM peaks are one read and one write per
+wall edge. Its matching storage-controller fit uses the same emitted native RTL
+and a registered characterization wrapper; wrapper resources are reported
+separately. That fit does not cover metadata/control outside the UV unit or the
+whole sampler. The remaining generic preparation-control ceiling is unchanged.
+Completion remains based on actual final packets and accepted masks. Both
+Dedicated and Packed Runtime modes use these same actual packed scalar banks.
+Input-write selectors and CE decode remain charged even with one cohort.
+
+`texture_derivative_lod` checks462 overlapping inputs against independent integer
+goldens, including mantissa ties/carry, signed extremes, force, missing mips,
+filters and bias limits. `texture_calendar_rtl` covers full-leaf Icarus,
+constructor poisoning, off-phase refusal and the actual LOD reset phase under CE
+pauses. Multi-output tests independently check an exported truncated sum, a
+same-edge doubled result and a later sum with an old external operand; malformed
+certificates and missing alias-source storage must fail. Connected qualification
+checks every live cut, packet/Pool writes and the dynamic no-counted-call guard.
+
+The matched old/new complete-leaf fit uses identical registered wrappers and
+hashes in `target/sampling-fusion-integration-20261007/leaf-fit/`. Its coordinator
+review includes both placements at66MHz and the actual LOD phase5 source.
+This isolated leaf result is separate from whole-GPU timing or board proof.
 
 ### Runtime membership and packet arithmetic
 
-Private Runtime pipelines execute membership and packet operations from captured
-scalar operands. They neither fetch completed stage values nor call counted or
-oracle helpers while stepping. Membership E0 captures weights, coordinates and
-metadata; E1 slices tile/local coordinates and tests nonzero weights, E2 compares
-tiles, E3 retains pair equivalences, and E4 selects the first nonzero representative
-of each tile. E5/E6 align the result; old E6 writes Work on E7. Original corner
-weights retain their positions rather than merging duplicate-tile coefficients.
+Runtime selects the adjacent-tap compact leaves. Membership E0 captures Common72: weights,
+base tile/local coordinates and identity. Coordinate slicing is wiring at admission;
+E1 tests nonzero weights, compares tiles and selects each tile's first nonzero
+representative together, producing Member76. Old E1 writes Work on E2. Corner
+weights retain their original positions rather than combining duplicate-tile
+coefficients; intermediate Slice/Equal/Pairs payload copies are absent.
 
-Packet E0 validates and captures the old Work head and sparse tap before cursor
-advance or ACK. The emit0 bit ends at that predicate, leaving 93 captured bits.
-E1 selects tile/header, corner masks and first/last markers; E2 gates four 9-bit
-weights and concatenates disjoint fields into packet72. E3..E8 are real alignment
-registers; old E8 writes the reserved Pool64 destination on E9. Both pipelines
-have standalone II1, old-state transfers and CE-frozen registers, including
-alignment stages. Existing Work/head and packet-credit limits still govern
-whole-path throughput; this change preserves the event calendar.
+Packet E0 validates/captures the old Work head and sparse tap before cursor
+advance or ACK; emit0 ends at that predicate, leaving77 retained bits. E1 selects
+tile/header, corner masks and first/last, gates weights and concatenates Packet72
+together. Old E0 valid requests synchronous owner R on E1; its hard DO is checked
+when old E1 writes the reserved Pool64 row on E2. Membership/Packet keep II1,
+old-state transfer and whole-pipeline CE hold. Work and packet-credit limits are
+unchanged. The short emulator leaves never populate the removed alignment banks;
+the RTL elaboration constant disables their writes and removes their observability.
 
-The actual membership data banks total 648 bits with valid7/fault1; packet banks
-total 673 bits with valid9/fault1. Runtime retains the existing conservative data
-ceilings and generic control. Packed replaces the old two phase allowances with
-these 18 control bits plus separately retained allowances of 7 and 6 bits, so its
-declared total above is unchanged. Dedicated adds 18 control bits to its previous
-configuration receipt. No RAM, queue, multiplier or port is added; removed replay
-selector metrics are not a claim about synthesized logic. Legacy Session and the
-private coefficient hybrid below retain their original numerical boundaries.
+Membership retains148 data bits and valid2/fault1; Packet retains149 data bits
+and valid2/fault1. Runtime charges these actual owners and removes the obsolete
+alignment/control allowances. The serial controller still supports the old7/9
+edge leaves for comparison; its `short_alignment` flag selects2/2. Neither form
+is a new RAM, FIFO or memory port.
 
-Private numerical tests independently assemble tuple-based membership and packet
-goldens, exercise every registered cut, sparse taps, bubbles and terminal faults,
-and inspect actual banks and Pool writes under CE/input/result stalls. A test-only
-guard rejects dynamic counted helper/Program calls across the complete live
-step. Constructor-poison tests remain on the independent arithmetic leaves;
-there are no per-input legacy stage values to poison in Runtime. Configuration receipts are allocation
-checks; only the explicitly exercised configurations have cycle evidence.
+Independent tuple goldens cover every cut, sparse taps, bubbles, input errors,
+CE/result stalls, physical Pool writes and two-head Work R/C/ACK ownership.
+All15,872 legal W/context/coordinate/storage/release allocation combinations
+check the short owners; only executed configurations have cycle evidence.
+`texture_serial_preparation_rtl` compares both leaf forms within complete serial
+RTL under CE/backpressure. This does not establish an overlapping sampler RTL
+top or fitted whole-GPU area.
 
-Private library qualification tests under
-`texture::sim::staged::bound::runtime::qualification` and
-`texture::sim::staged::bound::transport::tests` cover W2/3/16/17/32, logical wraps,
-early/late release, Dedicated/Packed, sparse tap versus public packet ordinal,
-R/C/ACK pauses, partial-state terminal failure, literal packet/RGB goldens and
-absence of live counted calls. Actual 128B MC returns drain during caller
-CE0; a local full coefficient queue holds its numerical state while older work
-progresses. Run these library tests and `texture_runtime`, `texture_sampling_step`
-and downstream pixel/shared-MC regressions in both profiles. Two-head Work
-transport and its measured intervals are documented above. This is not a full
-overlapping sampler RTL top or GPU fitting result.
+Matched full-observability leaf fits, independent mathematical goldens, source
+identities and validation receipts are indexed by
+`target/sampling-structural-dataflow-20261008/review.json`. Leaf fitting establishes
+only the measured Membership/Packet deltas, not a whole Runtime fitted total.
 
 ### Independent coefficient cycle emulator and private composition
 
 `texture::emu::coefficient::CoefficientEmu` accepts scalar parent weights,
 fractions and owned metadata. It executes real fixed-width operations through
-three registered multiply sites, with three-cycle products, initiation interval
-two and eleven enabled edges to publish a result. Six cohorts and two ready
-rows are bounded; an old full ready queue holds the local numeric clock while
+three actually shared9x8 multiply sites, each with one registered product edge.
+Fine/coarse input muxes alternate vertical split, bottom horizontal and top
+horizontal work; complement subtraction has no extra register. II remains2,
+result capture is age5 and old-state consumption begins at age6. Three cohorts
+and two ready rows are bounded; an old full ready queue holds the local numeric clock while
 the consumer can transfer the existing head. `output()` reads that head without
 adding retained state. Admission reserves one downstream work credit per
 nonzero parent from the pre-edge available count; consuming a coefficient row
-does not return those credits.
+does not return those credits. The ready bank holds only72-bit weights in
+two explicit FF rows, with no RAM16 cells. Age4 writes weights and age5 publishes
+ownership. The99-bit metadata is written once at admission into three native
+512x36 BSRAMs, using16 physical rows and at most five live owners. It remains
+there until public consumption. A synchronous read on publication returns the
+first head; consumption reads the following address. Both complete on the
+existing edges, so age6 consumption and the II2 contract are preserved. There
+is no metadata copy in ready storage and no soft FF payload head. Old-full
+still freezes arithmetic on a consuming edge. CE0 holds both the unpublished
+weight row and the hard metadata return; reset invalidates ownership and clears
+the return without clearing backing RAM. Invalid admissions suppress both ports.
+`ALLOCATION` declares122 numerical bits,8 phase/valid bits,14 queue-control
+bits and one fault bit, plus144 ready-weight bits:289 soft bits plus51 hard
+product bits and108 hard metadata return bits. Metadata BSRAM is charged separately.
+These are declarations, not fitted cells. Portable RTL implements the same
+weight asynchronous read and metadata synchronous read ports.
+Both portable and native RTL select these same FF rows. The former SRAM/FF
+characterization switch is removed: two separate registers prevent Gowin from
+inferring a RAM16 array, and the complete16-slot serial fit favors Logic over
+FF savings. The earlier SRAM/single-copy-metadata results remain historical in
+`target/sampling-coefficient-metadata-storage-20261008/review.json`. Current
+source identity, independent lifetime and native Runtime replay, complete16-slot
+two-placement fits and rejected candidates are recorded in
+`target/sampling-list-20261009/review.json`.
+
+The former packed-bank RTL's operand-selection fits and rejected candidates
+remain historical in `target/sampling-coefficient-select-20261009/review.json`.
+The selected production `coefficient::compact_stage::CompactCoefficientEmu` and
+`rtl::compact_coefficient` execute input37, horizontal-delay17, row-total18 and
+fine-corner36 stages. Input37 holds parents18, fine fractions16, fine-base parity2
+and arithmetic-halve1. On E2, the old input row reconstructs coarse V and captures
+coarse U into the existing horizontal delay; E3 reads that delay. Nearest gates
+the arithmetic fractions, while metadata captures borrow from the original raw
+fractions. Metadata36 retains fine bases20, borrow2, level4, slot4 and public key6
+in one synchronous BSRAM. Last-fine is reconstructed from the entire coarse
+weight row being zero; no single corner can stand in for that predicate.
+Coordinate retains a fine-only36 result alongside its V/config32 bank. Expanded
+tap/fraction views are combinational wiring, with no second retained112-bit row.
+Work stores Member76/cursor2 and two ordered76-bit heads; Packet captures77 bits
+before emitting the unchanged canonical72-bit public packet. The selected domain
+requires adjacent taps and the corresponding next mip/fractions; checked Rust
+constructors reject non-adjacent inputs. Internal compact RTL trusts its closed
+production producer. Generic Coordinate/Coefficient and Membership/Packet
+references retain their arbitrary legal input semantics and original calendars.
+Runtime and Serial use the compact executors. Runtime keeps Work16, Context8,
+Group32 and ready2; Serial selects a single ready row and one outstanding
+coefficient owner. Public IDs and every enabled stage age remain unchanged. Local parity, valid,
+stages and DSPs freeze together on CE0 or old-full, including a full consuming
+edge. Age4 write/age5 publication/age6 consumption and II2 are unchanged.
+Closed Serial also borrows the eight wrapped16-bit UV outputs directly from
+D's input bank. Those physical slices are written only on D acceptance and
+remain unchanged through every covered lane's Coordinate acceptance. The next
+nonempty quad can enter D only after the previous quad's final packet transfer.
+This removes the Serial128-bit UV copy and its capture enable; the original
+lane mux now reads the retained D outputs. CE0, fault and reset still gate
+ownership, and no derivative arithmetic or stage age changes. PreparationEmu
+reads the same physical bank through an audited output-field getter, without
+a host UV shadow or oracle recomputation. Serial's controller data declaration
+is204 bits; the D bank and its output widths are unchanged. This borrowing
+contract applies to closed Serial; overlapping Runtime retains its own UV
+lifetimes. Actual production source matching and the two qualified54MHz
+layouts are recorded in
+`D:/github/DigitalDesign-code/target/sampling-serial-uv-production-20261009/review.json`.
+The complete compact source, matched 16-slot Serial fits, actual Runtime native
+port replays and independent generic/tuple goldens have one evidence home:
+`target/sampling-compact-coordinate-20261009/review.json`. These Serial fits and
+Runtime declarations do not qualify a full Runtime RTL top, whole GPU or board.
+Matched complete16-slot fits, frozen source identity, independent execution,
+both RTL backends and Runtime ready/metadata lifetime receipts are recorded in
+`target/sampling-coefficient-stages-20261009/review.json`.
 
 The private `cfg(test)` coefficient hybrid uses actual output weights and
 metadata to compile membership and one packet at a time into the existing
@@ -1621,26 +2041,157 @@ The existing bound/timed preparation, packet, cache and color path is unchanged.
 | Enabled edges after input acceptance | Actual arithmetic/state |
 | --- | --- |
 | 0 | Decode weights/key/flags and expand the captured RGB565 words |
-| 1..3 | Twelve 9x8 products, three registered product stages |
-| 4 / 5 | Pair sums / complete RGB partial, each 17 bits |
-| 6 | Single accumulator/owner feedback; only last proceeds to normalization |
-| 7 / 8 | Exact /511 carry fields / RGB24 queued with key6 |
-| 9 or later | Pre-edge visible output consumed when CE and output_ready hold |
+| 1 | Twelve registered9x8 products |
+| 2 | Balanced four-tap sums, old accumulator feedback, exact /511 and last-result queue write |
+| 3 or later | Asynchronous SRAM head is visible; consumed when CE and output_ready hold |
 
-The pipe has eight finite positions, can accept one group per enabled edge,
+The pipe has two finite positions, can accept one group per enabled edge,
 and freezes completely under CE=0. One input-stream owner checks contiguous
 first/last groups; one accumulator holds feedback, including across input gaps.
 Sixteen result credits include last-group pipe reservations and queued results.
 Only actual output consumption returns credit; a full-credit last group cannot
 borrow the same edge's return. A caller holds its offer while input_ready is low.
-Malformed owner/width/domain input or watchdog exhaustion is terminal: recreate
-the local emulator before reuse; this is not an in-place MC recovery mechanism.
+Malformed owner/width/domain input or watchdog exhaustion is terminal until
+`ColorEmu::reset()`. Reset clears control and pipeline ownership, retains result
+RAM contents, and supports reuse of the same instance. This local
+leaf reset is not an in-place MC recovery mechanism.
 
-`ALLOCATION` declares the existing twelve Multiply9 lanes in three macros (six
-DSP18 equivalents), 612 hard product bits, 496 other datapath bits and 499 result/
-control FF bits; it adds no BSRAM. These finite field/role declarations exclude
-host traces/watchdog counters and are not fitted Logic. Selection, CE, validation
-and fault logic require later lowering. The baseline inventory is unchanged.
+The independent product-based emulator's `ALLOCATION` declares twelve Multiply9 lanes in three macros (six
+DSP18 equivalents),204 hard product bits,215 other datapath bits and19 result/
+control bits:234 soft bits plus eight RAM16SDP4 (32 RAM16x1), with no head register
+or BSRAM. This reference inventory totals438 bits including product registers,
+excluding RAM cells; it is not the selected RTL's physical register inventory.
+These field/role declarations
+exclude host traces/watchdogs and do not substitute for fitted Logic or timing.
+
+The selected `texture::rtl::color` retains the public two-edge calendar and
+captures the complete four-tap sum at age1. Each RGB channel uses four unsigned
+`MULT9X9` cells with bypassed product output registers. Two18-bit fabric pair
+sums feed one19-bit fabric full sum, captured in a CE-gated soft register.
+Twelve small multipliers can pack into three DSP macros; no fused multiply-add
+or separate ALU54D is used. The portable implementation uses ordinary integer
+products with the same balanced tree, and the original product-based emulator
+remains an independent cycle and numerical reference. The selected binding
+trades fabric addition for lower DSP demand without changing public latency
+or packet II1.
+
+The selected declaration inventory is twelve logical multiplier lanes, no
+fused macros, three19-bit registered partials (57 meaningful soft output bits),
+six pair adders, three full-sum adders, three feedback adders and291 total
+meaningful soft state bits. There are no individual registered
+products. The full19-bit partial supports four unconserved raw511 weights:
+`4*511*255=521220`; its20-bit addition with old17-bit feedback preserves the
+original age2 range-fault check. Fault, CE, reset, old-credit and result-SRAM
+edges are unchanged. Tests explicitly reject that maximum raw partial on the
+original age2 edge in both portable and native primitive simulation.
+
+The selected16-slot complete sampler's Color source, hierarchy, both
+54MHz placements, DSP kinds and commit mapping have one evidence home:
+`D:/github/DigitalDesign-code/target/sampling-structural-rounds-20261010/review.json`.
+The preceding soft-partial binding remains in
+`D:/github/DigitalDesign-code/target/sampling-color-fabric-sum-20261010/review.json`.
+The earlier fused comparison remains in `target/sampling-color-mac-20261009/review.json`.
+Its serial area excludes the
+outer Quad queues and complete overlapping Runtime controller; emulator
+product-role accounting is not a substitute for this physical fit.
+
+Result16 uses eight native `RAM16SDP4` with one shared write address/enable and
+one asynchronous read address: key6 and RGB24 occupy bits29:0; writes zero
+bits31:30. The SRAM output directly supplies the head, with no soft payload copy
+or extra queue capacity. Queue pointers/count, credits and fault remain soft.
+An old-count1 pop+push exposes the replacement at the next pre-edge, without an
+additional refill edge. Continuous last groups sustain every-edge admission and
+output. CE=0 holds pointers and suppresses writes; the old head remains visible.
+Reset or a detected fault suppresses writes and ownership transfers, including
+an older age2 result that otherwise writes that edge. The asynchronous read has
+no enable or reset; stale bits are harmless while output validity is false.
+An empty-row write may share the unowned read address; an owned valid head never
+aliases a write. Full16 old credits leave no result in flight to overwrite it.
+
+The composed Serial wrapper always consumes Color outputs. It selects
+the private `ColorEmu::new_serial_trusted` and `rtl::color::verilog_serial_trusted`:
+one registered32-bit result word replaces Result16, with no RAM read/write pointers.
+The old result is read before a same-edge replacement is written. One validity
+bit and two credit bits cover the result and two arithmetic stages; at most
+three result credits are live. CE0 freezes all owners and the row, reset drops
+validity, and fault gating cancels writes on the detecting edge. Queue age2
+and next-edge visibility remain unchanged. This profile requires an always-ready
+sink on enabled edges; standalone and Runtime Color keep Result16 and its
+backpressure contract. Continuous-last-group and mixed-group portable/native
+replay compare the single row with the independent standalone emulator and
+integer RGB oracle. Complete Serial qualification is recorded in
+`D:/github/DigitalDesign-code/target/sampling-color-closed-20261009/review.json`;
+its fit includes the cache, while overlapping Runtime and whole-GPU fits remain
+separate work.
+
+The private Serial numeric profile retains17-bit channel partials and sums.
+Coefficient conserves a total weight of511, Membership/Packet emit each
+nonzero tap exactly once. The private cache inverse-permutes the coefficients
+to follow physical-bank texels, preserving every weighted contribution. Every
+group and prefix is nonnegative and bounded by511, so a channel sum is at most
+`255*511`, below17-bit capacity. This removes the redundant range comparison
+without changing rounding, owner/credit checks, malformed-header detection or
+refill fault handling. Public checked Color, including the single-result-row
+profile, and Runtime retain the19-bit partial,20-bit sum and range detector.
+Qualification checks actual emitted groups, integer RGB goldens, seams,
+first/last boundaries, CE freezes and reset/fault drain. The subsequent actual
+16-slot Serial combination with LOD cancellation and shared cache decoding is
+recorded in `D:/github/DigitalDesign-code/target/sampling-serial-budget-20261009/review.json`.
+
+The private native Serial binding captures the four weights at E0 in the
+existing twelve MULT9X9 A input registers. RGB retains its soft decode bank;
+B remains bypassed. E1 captures each17-bit product in the existing MULT9X9
+output registers; the balanced fabric four-tap sum feeds E2 feedback and
+normalization directly, removing the three17-bit soft partial registers.
+Feedback and result publication remain at E2.
+The same `ce && !fault` advances all DSP state. A detecting fault can advance
+unowned DSP data, but the existing validity and write gates suppress its use;
+reset discards ownership before another group is admitted. Portable RTL and the
+independent product emulator retain their original arithmetic-stage reference;
+portable RTL uses soft weight capture and the registered E1 full sum.
+Allocation's logical pipeline totals describe that reference; the native binding
+removes the shared36-bit soft weight bank and51-bit soft partial bank, using108
+live hard input bits and204 live hard output bits across the three channels,
+with no additional macro. Generic and overlapping Runtime
+bindings retain their existing input registers and checked numeric profile.
+Actual16-slot complete Serial qualification and physical resource comparisons
+are recorded in
+`D:/github/DigitalDesign-code/target/sampling-structural-rounds-20261010/review.json`.
+The earlier fused weight-input qualification remains in
+`D:/github/DigitalDesign-code/target/sampling-color-weight-input-production-20261009/review.json`.
+
+Color ownership compares old credits with `count+push+decoded_last` modulo32,
+canceling incoming/pop arithmetic from the comparison. It separately rejects
+`count_next+decoded_last+incoming_last>=32`, preserving the original six-bit
+total's wrap behavior even in corrupt states. No extra register or pipeline
+edge is introduced; the independent emulator retains its post-edge accounting.
+Portable/native RTL compare all16384 five-bit count/credit/control combinations
+with the original expression, in addition to lifecycle/fault-edge tests.
+
+Matched complete-Color fits use the same33-output observable wrapper at60MHz,
+placements0/1. Physical costs, hierarchy attribution and timing have one report
+home: `target/sampling-color-result-storage-20261008/fit-summary.json` (baseline and alternatives)
+and `target/sampling-color-result-storage-20261008/ssram-production/fit-summary.json` (production SRAM).
+The original queue already infers its key array into SRAM, so logical payload
+bits cannot be reported as fitted FF savings. Production SRAM preserves age3
+first output and singleton replacement without a bubble, and avoids an additional
+BSRAM. The verified BSRAM alternative saves Logic and leaf SRAM but introduces
+synchronous first-fill/refill waits. The old SRAM characterization lacks atomic
+fault gating and is not the delivered implementation. These are isolated Color
+probes with a generic-clock placement warning, not composed sampler/system or
+board proof. The default Runtime declaration is generated by
+`runtime_inventory::describe` for the selected configuration. It is a model bill;
+native binding overrides and physical fits are recorded separately.
+
+The Color storage qualification independently computes integer RGB goldens,
+tracks actual row ownership and read/write addresses, and replays directed and
+live Runtime calendars through portable and native RTL. It covers128 consecutive
+results at II1, full16 old credits, simultaneous pop/write, singleton replacement,
+CE=0 head visibility, contaminated-RAM reset/reuse on the same instance, and
+fault-edge suppression of an otherwise simultaneous pop/write. The live paused
+Runtime calendar reaches16 stored results; ordinary and paused calendars also
+check public pixels against the sampler oracle. Reproduce the dedicated replay
+with `cargo test -p gpu-v2 --lib color_storage_portable_native_replay -- --ignored`.
 
 Tests independently sum expanded texels and divide by 511, exhaust all 130306
 legal normalization values, check stage timing, mixed multi-group owners, full
@@ -1653,8 +2204,74 @@ multi-group colors on the same drained instance. The complete outputs match
 independent integer goldens. Actual serial MC
 Captured events, including coarse mip/seams/masks/ID reuse, are replayed into this
 block and compared to sampler oracle RGB. This replay does not connect the live
-cache reservation/backpressure boundary or public sample-result store. Those
-adapters need actual return-edge/DSP timing verification; no RTL/PnR is claimed.
+cache reservation/backpressure boundary or public sample-result store. Its
+original emulator evidence is separate from the Color result-RAM RTL replay and
+isolated PnR above; neither proves the complete sampler's physical implementation.
+
+### Complete serial-sampler fit checkpoints
+
+`texture_sampler_export` exports the actual serial preparation/cache/refill/Color
+composition with its native Gowin backend, a fixed slot fixture and all public
+ports. For example, run `cargo run -p gpu-v2 --example texture_sampler_export --
+target/texture-sampler-fit16 16`; slot counts1 and16 are supported. The selected
+fixture uses short alignment and keeps nearest bypass disabled. Matched baseline
+and decision26 candidates use identical slots, fully observable registered input
+and output boundaries, clock constraints and placements0/1. Wrapper resources
+are reported separately from the sampler synthesis hierarchy; PnR totals include
+the wrapper. DSP counts name the reported primitive type, not an assumed tile
+packing. Complete fit/source hashes, resource deltas, timing failures and the
+resulting optimization priority live only in
+`target/sampling-ready-decision-20261009/review.json` for the decision26 checkpoint.
+The subsequent Logic-budget cache reconstruction, rejected alternatives and
+matched complete native fits are recorded in
+`target/sampling-budget-20261009/review.json`.
+The checked-domain Coordinate/Color-credit checkpoint, exhaustive code-domain
+qualification, rejected register-overlay candidate and matched complete fits
+are recorded in `target/sampling-first-principles-20261009/review.json`.
+
+This top serializes one quad. It is distinct from the overlapped Runtime with
+Work16/context8 and its separately declared allocation. A complete serial fit
+neither proves complete Runtime fit nor whole-GPU/system/board acceptance.
+Future optimization checkpoints must refit this complete native composition;
+leaf savings alone cannot establish the resource or timing outcome. The baseline
+cache hierarchy motivated the following production reconstruction:
+
+- A tag omits the four set-address bits and retains18 bits. Two36-bit native
+  `SDPX9B` banks read all four ways at admission. Allocation writes only the
+  selected18-bit half through two9-bit write masks; that edge inhibits reads.
+  The held head refreshes its tag row before a later terminal can publish READY.
+- Each set owns an8-bit state row and a3-bit PLRU row in distributed SRAM.
+  Separate per-set reset masks hide stale contents. The held miss head and
+  its unique descriptor always address the same set. Terminal publication and
+  READY-hit issue are mutually exclusive, so each row needs one write port.
+  Four fixed two-bit assignments select the updated way, replacing a variable
+  part-select write. The input tile-domain check ORs the x/y bits and tests
+  their shared power-of-two bound once; malformed levels still fault before
+  allocation. Exhaustive checks cover every state byte/write-way combination
+  and all raw level/x/y fields, including malformed levels.
+- Refill beat bits select the bank-local address directly; bit1 swaps the
+  low/high word pairs. A closed inverse bank map issues the four tap reads.
+  The public cache uses two conditional swaps to derive canonical tap order
+  from the held result payload and preserves Group4 unchanged. The private
+  Serial composition keeps physical-bank texel order and inverse-permutes the
+  four9-bit weights instead. This replaces64-bit texel selection with36-bit
+  weight selection, preserving header, key, local coordinates and the exact
+  weighted sum. Generic cache and overlapping Runtime retain the public order.
+  No per-tap destination write decoder is retained.
+- Valid tile x/y fields form a concatenated tile index. The mip prefix is added
+  at bounded width before the final base-address addition. With no descriptor,
+  a full set contains only READY lines and at most one pinned line, so the PLRU
+  first choice or its sibling is sufficient; invalid-first ordering is preserved.
+
+These changes preserve every public enabled-edge handshake and numerical result.
+`texture_cache_actual_rtl` qualifies portable/native backends over all sets,
+replacement, seams, levels, pauses, backpressure and actual numbered refill beats.
+It asserts tag read/write exclusion, descriptor/set identity and sole PLRU writer.
+`texture_cache_fault_rtl` verifies malformed traffic, fault drain and same-instance
+reset with retained RAM contents and different refill data. Whole-sampler RTL
+replays preserve all preparation configurations. The emulator remains an
+independent logical reference; its tag/read/descriptor capacity must not be
+subtracted from an FF model and presented as measured whole-GPU savings.
 
 ### Bilinear restart bubble: bounded negative experiment
 
@@ -1703,3 +2320,77 @@ The two Gowin reference documents missing from the initial worktree have been
 restored from the main checkout and indexed in the vendor document README.
 Subsequent validation is limited to the requested component and changed files;
 the earlier quick validation aggregate cannot be reported as passing.
+
+## Explicit continuous preparation and integer filter candidate
+
+The continuous Context8 constructor shares one prepare head and one four-state
+owner across UV input, D and LOD. D accepts at phase0 and returns at phase3; LOD
+accepts at phase4 and returns at the next phase0. A simultaneous LOD return and
+new D accept preserves old-state credit. The real D terminal bank remains leased
+through its late phase0 identity read; CE or a denied global edge freezes the
+lease and owner. Raw/Ready counts and Coordinate ownership remain separate.
+The original controller stays an independent reference; continuous preparation
+is an explicit construction choice rather than a replacement for all profiles.
+
+The closed integer filter candidate conserves the existing total weight511 and
+retains RAW565 cache payloads and the twelve9x9 product sites. Each RGB8 tap is
+`(weight*channel+256)>>9`, with independent positive rounding before summing.
+For channel<=255 each term is at most floor(weight/2), so every valid partitioned
+prefix is at most255. Accumulator and feedback become eight bits; the previous
+Q8.1 ties-to-even logic and final /511 projection are absent in this explicit
+profile. Group/tile splitting, public latency, CE and FIFO ownership do not
+change. Generic Color and the original cadence profile retain their contracts.
+
+Pure floor rounding was rejected because its scalar picture study is consistently
+darker. Half-up8 is the composed candidate. Its scalar RGB565 image comparison
+and actual whole-chain numeric/transport qualification have separate evidence
+in [the combined report](../../../target/postquad-combined-20261011/report.md).
+These studies do not establish a full RTL scene render or physical image quality.
+
+## Unique weights and compact Group candidate
+
+The explicit complete-chain `combined-unique-group34` factory retains the
+physical bank-order Color path. Four unmasked nine-bit weights are written
+once to a128x36 native bank under Public16 ownership. Group34 carries the
+original header without its four-bit texture slot plus two chosen-axis bits.
+Tap membership is reconstructed from level, local texel coordinates and those
+two bits; immutable draw configuration supplies the texture slot. Pool64 fits
+one36-bit native column, with no separate stored mask column. The freed Pool
+bank becomes the weight bank rather than reducing total BSRAM count.
+
+A weight read is coissued with the real texel read. The paid synchronous return
+remains owned through CE0 and backpressure, and a separate captured weight word
+permits the next read while an earlier result is occupied. Public publication
+and final-result release remain the existing authority; Work frees on final
+PacketE0 acknowledgement. No refcount, queue capacity or cache data format is
+added. Generic Group72 modules and the previous complete factory remain
+independent reference choices.
+
+The opt-in `texture::emu::unique_weights::Store` models physical weight RAM,
+Public leases, paid DO and captured results; it is not a replacement full
+Runtime emulator. Actual native/portable chain comparisons, independent Store
+traces, real Packet RTL geometry checks, two-draw slot rebind and whole-chain
+fit identities have one home in
+`D:/github/DigitalDesign-code/target/gpu-structure-implementation-20261011/report.md`.
+The immutable texture slot contract lasts until `pipeline_idle`; changing it
+while an old queued Group remains live is outside this specialized profile.
+
+
+## Balanced Group48 complete-chain profile
+
+The explicit `combined-group48-pool64` postquad factory raises the ordered
+Group credit from32 to48 within the existing ring64. Producer16, row/counter
+widths, two captured heads, one paid read and the single native36-bit Pool
+column remain unchanged. The private guard rejects `rows>=63`; actual fixed-E2
+producer/head reachability keeps the maximum at62. No same-edge freed credit
+funds admission. The generic/default Group32 stores and complete factory remain
+independent references. `packet_store_ordered::Store::group48`, the explicit
+`Pool64Group48` timed profile and `Runtime::new_group48` select the matching
+register model without changing default constructors.
+
+Actual RTL full48, multi-wrap, CE0 and fault checks, independent whole-chain
+numeric/DRAM comparisons, cold buffering, steady II2, and same-source complete
+PnR evidence have one home in
+`D:/github/DigitalDesign-code/target/gpu-bsram-capacity-20261011/report.md`.
+This is a balanced worktree successor; it does not imply a larger Public/Context
+window, new memory-controller bandwidth or a whole-GPU/board qualification.

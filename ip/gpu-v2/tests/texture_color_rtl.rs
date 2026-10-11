@@ -23,7 +23,7 @@ use std::fs::File;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-const OUT_DIR: &str = "../../target/opencode/color-rtl-20261006";
+const OUT_DIR: &str = "../../target/sampling-color-weight-input-production-20261009/color-leaf";
 
 struct Stim {
     ce: bool,
@@ -107,6 +107,150 @@ fn golden(input: &[Input]) -> Vec<Output> {
     out
 }
 
+/// Fill both arithmetic stages and replace the sole owned result on consecutive
+/// edges. Pauses freeze the old row and both stages together; the independent
+/// standalone emulator and integer division oracle supply the expected values.
+fn closed_stimulus() -> Vec<Stim> {
+    let mut input: Vec<_> = (0..96)
+        .map(|i| {
+            group(
+                (i % 64) as u8,
+                true,
+                true,
+                [511, 0, 0, 0],
+                [i * 613, 1, 2, 3],
+                10,
+            )
+        })
+        .collect();
+    input.extend(pixels());
+    let mut reference = ColorEmu::new(10_000).unwrap();
+    let mut selected = ColorEmu::new_serial_closed(10_000).unwrap();
+    let mut edges = Vec::new();
+    let mut at = 0;
+    let mut committed = Vec::new();
+    let mut replacements = 0;
+    let mut credit_peak = 0;
+    for clock in 0..2000 {
+        let tick = Tick {
+            ce: clock % 7 != 3,
+            input: input.get(at).copied(),
+            output_ready: true,
+        };
+        let old = reference.tick(tick).unwrap();
+        let step = selected.tick(tick).unwrap();
+        assert_eq!(step.input_ready, old.input_ready);
+        assert_eq!(step.output, old.output);
+        assert_eq!(step.events, old.events);
+        assert!(step.snapshot.queued <= 1);
+        assert_eq!(step.snapshot.result_pointers, [0, 0]);
+        credit_peak = credit_peak.max(step.snapshot.result_credits);
+        replacements += usize::from(
+            tick.ce && step.result_access.read.is_some() && step.result_access.write.is_some(),
+        );
+        if step.accepted {
+            at += 1;
+        }
+        if tick.ce {
+            if let Some(value) = step.output {
+                committed.push(value);
+            }
+        }
+        edges.push(Stim {
+            ce: tick.ce,
+            ready: true,
+            input: tick.input,
+            input_ready: old.input_ready,
+            output: old.output,
+        });
+        if at == input.len() && selected.idle() {
+            break;
+        }
+    }
+    assert!(selected.idle());
+    assert_eq!(committed, golden(&input));
+    assert!(replacements > 80);
+    assert_eq!(credit_peak, 3);
+    selected.reset();
+    assert!(selected.idle());
+    assert!(selected
+        .tick(Tick {
+            ce: true,
+            input: None,
+            output_ready: false
+        })
+        .is_err());
+    edges
+}
+
+#[test]
+fn closed_result_row_matches_the_standalone_reference() {
+    closed_stimulus();
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn closed_result_row_matches_both_backends() {
+    let edges = closed_stimulus();
+    let dir = out_dir().join("closed-serial");
+    std::fs::create_dir_all(&dir).unwrap();
+    for native in [false, true] {
+        let source = color::verilog_serial_closed();
+        let module = if native {
+            format!("`define GPU_V2_GOWIN_DSP\n{source}")
+        } else {
+            source
+        };
+        compile_and_run(
+            &dir,
+            if native { "native" } else { "portable" },
+            &module,
+            &testbench(&edges),
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn trusted_serial_numeric_profile_matches_both_backends() {
+    let edges = closed_stimulus();
+    let dir = out_dir().join("trusted-serial");
+    std::fs::create_dir_all(&dir).unwrap();
+    let slot = gpu_v2::texture::ports::Slot {
+        base_address: 0,
+        has_full_mip: true,
+        max_size_log2: 10,
+        valid: true,
+    };
+    let plan = gpu_v2::texture::rtl::sampler::build(&[slot]).unwrap();
+    let start = plan.source.find("module gpu_v2_texture_color(").unwrap();
+    let end = plan.source.find("module gpu_v2_texture_sampler (").unwrap();
+    let color_source = &plan.source[start..end];
+    assert!(color_source.contains("wire [16:0] sumv [0:2];"));
+    assert!(color::verilog().contains("wire [19:0] sumv [0:2];"));
+    assert_eq!(color::DECODE_WEIGHT_BITS, 36);
+    assert_eq!(color::SERIAL_NATIVE_SOFT_WEIGHT_BITS, 0);
+    assert_eq!(color::SERIAL_NATIVE_HARD_WEIGHT_BITS, 108);
+    assert_eq!(color::SERIAL_NATIVE_HARD_PRODUCT_BITS, 204);
+    assert_eq!(color::SERIAL_NATIVE_SOFT_PARTIAL_BITS, 0);
+    assert_eq!(color::Allocation::serial_trusted().pipeline_bits, 266);
+    assert!(color_source.contains(".AREG(1'b1),.BREG(1'b0),.PIPE_REG(1'b0),.OUT_REG(1'b1)"));
+    assert!(color::verilog().contains(".AREG(1'b0),.BREG(1'b0),.PIPE_REG(1'b0),.OUT_REG(1'b0)"));
+    for native in [false, true] {
+        let module = if native {
+            format!("`define GPU_V2_GOWIN_DSP\n{color_source}")
+        } else {
+            color_source.to_owned()
+        };
+        compile_and_run(
+            &dir,
+            if native { "native" } else { "portable" },
+            &module,
+            &testbench(&edges),
+        );
+    }
+}
+
 /// Deterministic stream: sample sizes one to eight, repeated keys, zero-weight
 /// interior groups, fine/coarse mip levels and distinct tap colors and weights.
 fn pixels() -> Vec<Input> {
@@ -188,28 +332,18 @@ fn rtl_declares_the_emulated_pipeline() {
     let source = color::verilog();
     assert!(source.contains("module gpu_v2_texture_color("));
     assert_eq!(color::latency(), color::LATENCY);
-    assert_eq!(LATENCY, 8);
-    assert_eq!(color::latency(), 8);
+    assert_eq!(LATENCY, 2);
+    assert_eq!(color::latency(), 2);
     assert_eq!(color::initiation_interval(), 1);
-    // Decode, three product ages, tree, feedback and exact nearest /511 stay in
-    // the emitted calendar; the readiness and credit checks are fixed logic.
-    for pattern in [
-        "assign prod[t][c] = d_w[t] * d_col[t][c];",
-        "assign pair[i][c] = {1'b0, p2_val[2*i][c]} + {1'b0, p2_val[2*i+1][c]};",
-        "assign part[c] = {1'b0, q_val[0][c]} + {1'b0, q_val[1][c]};",
-        "assign sumv[c] = {1'b0, r_val[c]} + {2'b0, prev[c]};",
-        "wire [8:0] hlow = {1'b0, s_val[c][17:9]} + {1'b0, s_val[c][7:0]};",
-        "assign ninc[c] = s_val[c][8] | hlow[8];",
-    ] {
-        assert!(
-            source.contains(pattern),
-            "missing fixed-calendar RTL: {pattern}"
-        );
-    }
-    // The leaf declares generic registered products, not a Gowin macro claim.
+    // Check the independent multiplier binding and two-edge contract.
+    assert!(source.contains("gpu_v2_texture_color_sum4 m"));
+    assert!(source.contains("MULT9X9 #("));
     let a = color::Allocation::default();
     assert_eq!(a.multiplier_lanes, 12);
-    assert_eq!(a.registered_product_bits, 3 * 12 * 17);
+    assert_eq!(a.registered_product_bits, 0);
+    assert_eq!(a.registered_partial_bits, 3 * 19);
+    assert_eq!(a.fused_macros, 0);
+    assert_eq!(a.adder_lanes, 12);
 }
 
 #[test]
@@ -491,6 +625,12 @@ fn out_dir() -> std::path::PathBuf {
 
 fn compile_and_run(dir: &std::path::Path, stem: &str, module: &str, bench: &str) {
     std::fs::write(dir.join(format!("{stem}.v")), module).unwrap();
+    let gowin = module.starts_with("`define GPU_V2_GOWIN_DSP");
+    let bench = if gowin {
+        bench.replace("module tb;", "module tb; GSR GSR(.GSRI(1'b1));")
+    } else {
+        bench.to_string()
+    };
     std::fs::write(dir.join(format!("{stem}_tb.v")), bench).unwrap();
     let compiler = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
     let runtime = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
@@ -504,6 +644,11 @@ fn compile_and_run(dir: &std::path::Path, stem: &str, module: &str, bench: &str)
         &format!("{stem}.v"),
         &format!("{stem}_tb.v"),
     ]);
+    if gowin {
+        let home = std::env::var_os("GOWIN_HOME")
+            .expect("GOWIN_HOME is required for vendor primitive replay");
+        compile.arg(std::path::PathBuf::from(home).join("IDE/simlib/gw2a/prim_sim.v"));
+    }
     bounded(
         compile,
         dir,
@@ -600,7 +745,27 @@ fn raw_testbench(edges: &[RawStim], fault_from: usize) -> String {
 #[test]
 #[ignore = "requires Icarus (IVERILOG_EXE/VVP_EXE)"]
 fn iverilog_latches_owner_and_sum_faults() {
-    let dir = out_dir();
+    check_owner_and_sum_faults(false);
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn gowin_iverilog_latches_owner_and_sum_faults() {
+    check_owner_and_sum_faults(true);
+}
+
+fn check_owner_and_sum_faults(native: bool) {
+    let dir = out_dir().join(if native {
+        "native-faults"
+    } else {
+        "portable-faults"
+    });
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = if native {
+        format!("`define GPU_V2_GOWIN_DSP\n{}", color::verilog())
+    } else {
+        color::verilog().to_string()
+    };
     // Group4's four-bit mip field has only eleven canonical values.
     let mut invalid = group(0, true, true, [511, 0, 0, 0], [0; 4], 5);
     invalid.payload = (invalid.payload & !(15 << 4)) | (15 << 4);
@@ -615,7 +780,7 @@ fn iverilog_latches_owner_and_sum_faults() {
     compile_and_run(
         &dir,
         "texture_color_rtl_mip_fault",
-        color::verilog(),
+        &source,
         &raw_testbench(
             &[RawStim {
                 ce: true,
@@ -641,11 +806,11 @@ fn iverilog_latches_owner_and_sum_faults() {
     compile_and_run(
         &dir,
         "texture_color_rtl_owner_fault",
-        color::verilog(),
+        &source,
         &raw_testbench(&owner, 2),
     );
 
-    // Sum domain: the four-tap partial 130560 exceeds 255*511 at age five.
+    // Sum domain: four-tap partial 130560 exceeds 255*511 on the age2 edge.
     let mut sum = vec![RawStim {
         ce: true,
         ready: false,
@@ -661,7 +826,104 @@ fn iverilog_latches_owner_and_sum_faults() {
     compile_and_run(
         &dir,
         "texture_color_rtl_sum_fault",
-        color::verilog(),
-        &raw_testbench(&sum, 6),
+        &source,
+        &raw_testbench(&sum, 3),
     );
+    // All four unconserved raw weights require bit18 of the full tap sum.
+    // Truncating it to the legal 17-bit accumulator would silently accept it.
+    sum[0].input = Some(group(0, true, true, [511; 4], [0xffff; 4], 5));
+    assert_eq!(contribution(sum[0].input.unwrap()), [521220; 3]);
+    compile_and_run(
+        &dir,
+        "texture_color_rtl_full_width_sum_fault",
+        &source,
+        &raw_testbench(&sum, 3),
+    );
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn gowin_iverilog_matches_emu_every_edge() {
+    let edges = stimulus();
+    assert!(edges.len() > 64);
+    let dir = out_dir();
+    compile_and_run(
+        &dir,
+        "color_gowin",
+        &format!("`define GPU_V2_GOWIN_DSP\n{}", color::verilog()),
+        &testbench(&edges),
+    );
+}
+
+/// Probe the actual emitted ownership network over every five-bit state,
+/// including unreachable corruption and subtraction/addition wrap. The golden
+/// remains the original post-edge accounting, independent of the cancellation.
+fn check_credit_all_codes(native: bool) {
+    let dir = out_dir().join(if native {
+        "native-credit-all-codes"
+    } else {
+        "portable-credit-all-codes"
+    });
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = if native {
+        format!("`define GPU_V2_GOWIN_DSP\n{}", color::verilog())
+    } else {
+        color::verilog().to_string()
+    };
+    let tb = r#"
+module tb;
+  reg [4:0] count_code,credit_code;
+  reg push_code,pop_code,decoded_code,incoming_code;
+  integer count,credit,flags,checks;
+  integer golden_count,golden_credits,golden_total;
+  reg golden_bad;
+  gpu_v2_texture_color dut(.clk(1'b0),.reset(1'b1),.ce(1'b0),
+    .in_valid(1'b0),.in_payload(72'd0),.in_tex0(16'd0),.in_tex1(16'd0),
+    .in_tex2(16'd0),.in_tex3(16'd0),.out_ready(1'b0));
+  initial begin
+    force dut.f_count=count_code;
+    force dut.credits=credit_code;
+    force dut.p_valid=push_code;
+    force dut.p_last=1'b1;
+    force dut.do_pop=pop_code;
+    force dut.d_valid=decoded_code;
+    force dut.d_last=1'b1;
+    force dut.accepted=incoming_code;
+    force dut.last_in=1'b1;
+    checks=0;
+    for(count=0;count<32;count=count+1)
+      for(credit=0;credit<32;credit=credit+1)
+        for(flags=0;flags<16;flags=flags+1) begin
+          count_code=count; credit_code=credit;
+          push_code=flags[0]; pop_code=flags[1];
+          decoded_code=flags[2]; incoming_code=flags[3];
+          golden_count=(count+push_code-pop_code)&31;
+          golden_credits=(credit+incoming_code-pop_code)&31;
+          golden_total=golden_count+decoded_code+incoming_code;
+          golden_bad=(golden_credits!=golden_total);
+          #1;
+          if(dut.credit_bad !== golden_bad)
+            $fatal(1,"credit count=%0d credit=%0d flags=%0d got=%b want=%b",
+              count,credit,flags,dut.credit_bad,golden_bad);
+          checks=checks+1;
+        end
+    if(checks!=16384) $fatal(1,"credit coverage");
+    $display("PASS edges=%0d credit all-codes comparisons=%0d",checks,checks); $finish;
+  end
+  initial begin #2000000; $fatal(1,"credit watchdog"); end
+endmodule
+"#;
+    compile_and_run(&dir, "credit_all_codes", &source, tb);
+}
+
+#[test]
+#[ignore = "requires Icarus Verilog"]
+fn iverilog_credit_matches_original_accounting_all_codes() {
+    check_credit_all_codes(false);
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn gowin_iverilog_credit_matches_original_accounting_all_codes() {
+    check_credit_all_codes(true);
 }

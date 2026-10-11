@@ -240,18 +240,33 @@ fn actual_selected_branches_to_rop_input_all_filters_and_two_draws() {
             let mut source = 0;
             let mut row = 0;
             let mut closed = [false; 2];
-            let mut owners = BTreeMap::new();
+            let mut owners = BTreeMap::<u64, usize>::new();
             let mut received = Vec::new();
             let mut context_waits = 0;
             let mut final_edges = Vec::new();
             let mut output_edges = Vec::new();
             let mut events = Vec::new();
+            let mut sample_rows = BTreeMap::<u64, usize>::new();
             for wall in 0..LIMIT as usize {
                 let offer = (source < 64 && wall >= 16 + source * 8).then(|| beats[source][row]);
                 let t = tick(wall, offer, stall);
                 let step = live.step(&mut memory, t).unwrap_or_else(|e| {
                     panic!("filter {filter:?} wall {wall} source {source}: {e}")
                 });
+                assert!(step.pixels.signals.sampling.is_none());
+                if step.pixels.sampling_row_accepted {
+                    let beat = step.pixels.signals.sampling_row.unwrap();
+                    let index = owners[&beat.ticket.serial];
+                    let next = sample_rows.entry(beat.ticket.serial).or_default();
+                    assert_eq!(usize::from(beat.row), *next);
+                    assert_eq!(beat.uv_q16, inputs[index].uv_q16[*next]);
+                    assert_eq!(beat.mask, inputs[index].header.mask);
+                    assert_eq!(beat.context, inputs[index].context);
+                    assert_eq!(step.pixels.sampling_accepted, beat.row == 3);
+                    *next += 1;
+                } else {
+                    assert!(!step.pixels.sampling_accepted);
+                }
                 if let Some(ticket) = step.pixels.published {
                     owners.insert(ticket.serial, source);
                 }
@@ -271,7 +286,7 @@ fn actual_selected_branches_to_rop_input_all_filters_and_two_draws() {
                     .filter(|_| t.ce && t.lighting_result_ready)
                 {
                     let ticket = live.pipeline().ticket((o.id / 4) as u8).unwrap();
-                    let index = owners[&ticket.serial];
+                    let index: usize = owners[&ticket.serial];
                     assert_eq!(o.output, golden_light(contexts[usize::from(index >= 32)]));
                 }
                 if step.pixels.final_stage.accepted {
@@ -340,6 +355,15 @@ fn actual_selected_branches_to_rop_input_all_filters_and_two_draws() {
                 .flat_map(|(i, _)| (0..8u8).map(move |r| (i, r)))
                 .collect();
             assert_eq!(received, expected);
+            let sampled = inputs
+                .iter()
+                .enumerate()
+                .filter(|(i, q)| {
+                    q.header.mask != 0 && contexts[usize::from(*i >= 32)].sample.is_some()
+                })
+                .count();
+            assert_eq!(sample_rows.len(), sampled);
+            assert!(sample_rows.values().all(|&rows| rows == 4));
             assert_eq!(
                 live.sampling().stats.admissions,
                 inputs
@@ -519,13 +543,16 @@ fn reused_lighting_bank_reloads_context_and_empty_draw_does_not_finish_frame() {
     };
     let mut live = Live::new(&[slot], LIMIT).unwrap();
     let mut wall = 0;
-    // Same bank repeatedly changes its lighting/alpha. No sampled operand is
+    // Ordered commands alternate banks; each reused bank changes lighting and
+    // alpha after two draws. No sampled operand is
     // involved, so every actual output independently identifies the new draw.
     for draw in 0..6 {
-        let mut c = context(Filter::Nearest, draw & 1 != 0, false);
+        let mut c = context(Filter::Nearest, (draw / 2) & 1 != 0, false);
+        c.alpha = 31 + draw as u8;
+        c.lighting.epoch = 17 + draw as u16;
         c.sample = None;
         let id = live.open_draw(c).unwrap().unwrap();
-        assert_eq!(id.slot, 0);
+        assert_eq!(id.slot, (draw & 1) as u8);
         let q = inputs([id; 2], 2, false)[0];
         let beats = foundation::source_beats(q).unwrap();
         let mut source_row = 0;
@@ -616,8 +643,115 @@ fn actual_fixed_footprint_single_draw_checks_all_pixels_and_reports_live_gaps() 
 }
 
 #[test]
-fn actual_one_group_warm_nearest_bilinear_stream_has_ii2_to_rop() {
+fn actual_one_group_per_mip_warm_all_filters_has_ii2_to_rop() {
     fixed_footprint_stream(true, true);
+}
+
+#[test]
+fn actual_public_id_alias_waits_for_old_destination_result() {
+    let slot = texture::slot(6, true);
+    let asset = texture::asset(slot, texture::pattern);
+    let mut memory = Memory {
+        bytes: asset.clone(),
+        pending: VecDeque::new(),
+        active: None,
+        next: 0,
+        wall: 0,
+    };
+    let mut live = Live::new(&[slot], LIMIT).unwrap();
+    let c = context(Filter::Nearest, false, false);
+    let id = live.open_draw(c).unwrap().unwrap();
+    let mut inputs = inputs([id; 2], 17, false);
+    for q in &mut inputs {
+        // One live lane lets all sixteen public destinations be occupied
+        // without first exhausting the four-lane Work/result capacity.
+        q.header.mask = 1;
+        q.force_coarsest = false;
+        q.uv_q16 = [[4096, 4096]; 4];
+    }
+    let samples = goldens(&inputs, [c; 2], asset, slot);
+    let beats: Vec<_> = inputs
+        .iter()
+        .map(|&q| foundation::source_beats(q).unwrap())
+        .collect();
+    let mut source = 0;
+    let mut row = 0;
+    let mut owners = BTreeMap::new();
+    let mut received = 0;
+    let mut alias_waits = 0;
+    let mut release_collision = false;
+    let mut alias_admitted = false;
+    for wall in 0..LIMIT as usize {
+        let mut t = tick(
+            wall,
+            (source < inputs.len()).then(|| beats[source][row]),
+            false,
+        );
+        // Release only after the actual aliased head is blocked, independent
+        // of pipeline depth. The release edge must still reject that head.
+        t.sampling_result_ready = alias_waits != 0;
+        let step = live.step(&mut memory, t).unwrap();
+        if let Some(ticket) = step.pixels.published {
+            owners.insert(ticket.serial, source);
+        }
+        if step.pixels.input_accepted {
+            row += 1;
+            if row == 8 {
+                row = 0;
+                source += 1;
+                if source == inputs.len() {
+                    live.close_draw(id).unwrap();
+                }
+            }
+        }
+        if step.sampling_alias_wait {
+            alias_waits += 1;
+            assert!(
+                !step.pixels.sampling_accepted,
+                "admission borrowed aliased release"
+            );
+            if let Some(write) = step.sample_written {
+                release_collision |= owners[&write.key.ticket.serial] == 0;
+            }
+        }
+        if step.pixels.sampling_accepted {
+            let ticket = step.pixels.signals.sampling_row.unwrap().ticket;
+            if owners[&ticket.serial] == 16 {
+                assert!(
+                    release_collision,
+                    "aliased ID admitted before old result release"
+                );
+                alias_admitted = true;
+            }
+        }
+        if let Some(r) = step.pixels.signals.rop {
+            let index = owners[&r.ticket.serial];
+            assert_eq!((index, usize::from(r.row)), (received / 8, received % 8));
+            let q = inputs[index];
+            let expected = match r.row {
+                0 => {
+                    let rgb =
+                        pixel::rgb(q.basic[0].tint, samples[index][0], golden_light(c), [0; 3]);
+                    u32::from_le_bytes([rgb[0], rgb[1], rgb[2], c.alpha])
+                }
+                1 => u32::from(q.basic[0].depth),
+                _ => 0,
+            };
+            assert_eq!(r.data, expected, "alias quad {index} row {}", r.row);
+            received += 1;
+        }
+        if source == inputs.len() && live.idle() {
+            break;
+        }
+    }
+    assert!(live.idle());
+    assert_eq!(received, inputs.len() * 8);
+    assert!(
+        alias_waits > 0,
+        "public ID alias backpressure was not exercised"
+    );
+    assert!(release_collision && alias_admitted);
+    assert_eq!(live.sampling().stats.admissions, 17);
 }
 
 #[test]
@@ -627,11 +761,7 @@ fn actual_original_cross_tile_bilinear_ii2_counterexample() {
 }
 
 fn fixed_footprint_stream(require_ii2: bool, one_group: bool) {
-    let filters: &[Filter] = if one_group {
-        &[Filter::Nearest, Filter::Bilinear]
-    } else {
-        &[Filter::Nearest, Filter::Bilinear, Filter::Trilinear]
-    };
+    let filters = &[Filter::Nearest, Filter::Bilinear, Filter::Trilinear];
     for &filter in filters {
         let slot = texture::slot(6, true);
         let asset = texture::asset(slot, texture::pattern);
@@ -657,8 +787,18 @@ fn fixed_footprint_stream(require_ii2: bool, one_group: bool) {
             };
             q.uv_q16 = std::array::from_fn(|lane| {
                 [
-                    4096 + (lane % 2) as i64 * delta,
-                    (if one_group { 4096 } else { 8192 }) + (lane / 2) as i64 * delta,
+                    (if one_group && filter == Filter::Trilinear {
+                        4259
+                    } else {
+                        4096
+                    }) + (lane % 2) as i64 * delta,
+                    (if one_group && filter == Filter::Trilinear {
+                        4387
+                    } else if one_group {
+                        4096
+                    } else {
+                        8192
+                    }) + (lane / 2) as i64 * delta,
                 ]
             });
         }
@@ -677,6 +817,7 @@ fn fixed_footprint_stream(require_ii2: bool, one_group: bool) {
         let mut trace = String::from("event,wall,quad,lane_or_row,refills\n");
         let mut lifecycle = String::from("event,wall,quad,lane_or_row\n");
         let mut capacity = String::from("wall,source_quad,source_row,offered,accepted,input_ready,global_before,global_after,light_input,sample_input,global_full,light_full,sample_full\n");
+        let mut bank_replay = pixel_bank_replay::Recorder::new();
         for wall in 0..LIMIT as usize {
             let t = tick(
                 wall,
@@ -687,6 +828,61 @@ fn fixed_footprint_stream(require_ii2: bool, one_group: bool) {
             let source_index = source;
             let source_row = row;
             let step = live.step(&mut memory, t).unwrap();
+            let light_write = step
+                .lighting
+                .output
+                .filter(|_| t.ce && t.lighting_result_ready)
+                .map(|o| gpu_v2::system::pixel::LightWrite {
+                    key: gpu_v2::system::pixel::PixelKey {
+                        ticket: live.pipeline().ticket((o.id / 4) as u8).unwrap(),
+                        lane: (o.id % 4) as u8,
+                    },
+                    value: o.output,
+                });
+            let output_data = step
+                .pixels
+                .accesses
+                .iter()
+                .find(|a| a.store == foundation::Store::Output && a.write)
+                .map(|a| {
+                    let ticket = live.pipeline().ticket((a.address / 8) as u8).unwrap();
+                    let index: usize = owners[&ticket.serial];
+                    let lane = a.address % 8 / 2;
+                    let q = inputs[index];
+                    if a.address & 1 != 0 {
+                        u32::from(q.basic[lane].depth)
+                    } else {
+                        let rgb = pixel::rgb(
+                            q.basic[lane].tint,
+                            samples[index][lane],
+                            golden_light(c),
+                            c.lighting.material.specular_color,
+                        );
+                        u32::from_le_bytes([rgb[0], rgb[1], rgb[2], c.alpha])
+                    }
+                });
+            bank_replay.edge(
+                &step.pixels,
+                t.input,
+                light_write,
+                step.sample_written,
+                pixel_bank_replay::OutputEdge {
+                    ce: t.ce,
+                    ready: t.rop_ready,
+                    data: output_data,
+                    expected: step.pixels.signals.rop.map(|r| (r.data, r.row)),
+                },
+            );
+            if one_group && filter == Filter::Trilinear {
+                for event in &step.sampling.cache.events {
+                    if let gpu_v2::texture::sim::timed::Event::Captured { group, .. } = event {
+                        assert!(
+                            group.coefficients.iter().all(|&weight| weight != 0),
+                            "two mip planes must each retain four effective taps"
+                        );
+                    }
+                }
+            }
             alias_waits += usize::from(step.sampling_alias_wait);
             capacity.push_str(&format!(
                 "{wall},{source_index},{source_row},{},{},{},{},{},{},{},{},{},{}\n",
@@ -731,7 +927,7 @@ fn fixed_footprint_stream(require_ii2: bool, one_group: bool) {
                     !step.sampling_alias_wait,
                     "admission borrowed aliased release"
                 );
-                let ticket = step.pixels.signals.sampling.unwrap().ticket;
+                let ticket = step.pixels.signals.sampling_row.unwrap().ticket;
                 record("sampling_admit", owners[&ticket.serial], 0);
             }
             if let Some(o) = step.lighting.output {
@@ -837,26 +1033,30 @@ fn fixed_footprint_stream(require_ii2: bool, one_group: bool) {
         } else {
             format!("warm-{filter:?}")
         };
+        bank_replay.finish(&name);
         std::fs::write(dir.join(format!("{name}.csv")), trace).unwrap();
         std::fs::write(dir.join(format!("{name}-lifecycle.csv")), lifecycle).unwrap();
         std::fs::write(dir.join(format!("{name}-capacity.csv")), capacity).unwrap();
         assert_eq!(live.sampling().stats.admissions, 64);
         assert_eq!(live.sampling().stats.compilations, 0);
-        assert!(
-            alias_waits > 0,
-            "public ID alias backpressure was not exercised"
-        );
+        // Public-ID collision coverage uses the directed single-lane test;
+        // this full-mask throughput stream records whichever stalls occur.
         if one_group {
+            let packets = if filter == Filter::Trilinear {
+                512
+            } else {
+                256
+            };
             assert_eq!(
                 live.sampling().stats.link.packets,
-                256,
-                "one packet group per pixel"
+                packets,
+                "one packet group per mip plane"
             );
-            assert_eq!(live.sampling().stats.link.captures, 256);
+            assert_eq!(live.sampling().stats.link.captures, packets);
             assert_eq!(
                 live.sampling().cache_stats().refills,
-                1,
-                "only initial cold tile refill"
+                if filter == Filter::Trilinear { 2 } else { 1 },
+                "only initial cold tile refill per mip plane"
             );
         }
         // A fixed warm footprint is not sufficient to declare end-to-end II2:
@@ -875,7 +1075,7 @@ fn fixed_footprint_stream(require_ii2: bool, one_group: bool) {
         std::fs::write(dir.join(format!("{name}.txt")), format!(
             "Predeclared quads16..63, one draw, full mask, fixed footprint. Every pixel/row checked independently. one_group={one_group}; Trilinear uses fractional two-plane LOD.\nFinal acceptance gaps={final_gaps:?}\nROP-input row gaps={rop_gaps:?}\nSampling alias wait edges={alias_waits}\nSampling stats={:?}\n", live.sampling().stats
         )).unwrap();
-        if require_ii2 && filter != Filter::Trilinear {
+        if require_ii2 && (one_group || filter != Filter::Trilinear) {
             for w in warm_final.windows(2) {
                 assert_eq!(w[1] - w[0], 2, "whole warm {filter:?} Final gap");
             }
@@ -883,5 +1083,16 @@ fn fixed_footprint_stream(require_ii2: bool, one_group: bool) {
                 assert_eq!(w[1] - w[0], 1, "whole warm {filter:?} ROP row gap");
             }
         }
+    }
+}
+#[path = "support/pixel_bank_replay.rs"]
+mod pixel_bank_replay;
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME for actual warm native-bank replay"]
+fn actual_warm_all_filters_native_bank_returns_match() {
+    fixed_footprint_stream(true, true);
+    for filter in [Filter::Nearest, Filter::Bilinear, Filter::Trilinear] {
+        pixel_bank_replay::replay(&format!("warm-one-group-{filter:?}"));
     }
 }

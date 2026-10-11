@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 mod support;
 
 const LIMIT: u64 = 600_000;
-const OUT_DIR: &str = "../../target/opencode/whole-sampler-rtl-20261006";
+const OUT_DIR: &str = "../../target/sampling-color-weight-input-production-20261009/whole-sampler";
 
 // ---------------------------------------------------------------------------
 // Recorded demand memory: the same deterministic refill protocol as the
@@ -160,7 +160,7 @@ impl MemoryPort for Refill {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-mip fixture: five full-mip slots at contiguous bases covering
+// Multi-mip fixture: sixteen full-mip slots aliasing five contiguous assets covering
 // `max_size_log2` 0/1/3/6/10.
 // ---------------------------------------------------------------------------
 
@@ -180,6 +180,10 @@ fn table() -> (Vec<Slot>, Vec<u8>) {
         offset += asset.len() as u32;
         bytes.extend_from_slice(&asset);
         slots.push(slot);
+    }
+    let unique = slots.clone();
+    while slots.len() < 16 {
+        slots.push(unique[slots.len() % unique.len()]);
     }
     (slots, bytes)
 }
@@ -388,6 +392,23 @@ fn rtl_composes_the_accepted_leaves_and_declares_the_wrapper_bank() {
     assert!(source.contains("module gpu_v2_texture_color("));
     assert_eq!(sampler::WRAPPER_DATA_BITS, 108);
     assert_eq!(sampler::WRAPPER_CONTROL_BITS, 2);
+    for (nearest_bypass, short_alignment) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let config = serial::Config {
+            nearest_bypass,
+            short_alignment,
+        };
+        sampler::audit_with_config(config).expect("configured whole sampler audit");
+        let source = sampler::verilog_with_config(&slots, config).unwrap();
+        assert_eq!(source.matches("endmodule").count(), 13);
+        for module in [
+            "gpu_v2_texture_coefficient_mul9",
+            "gpu_v2_texture_color_sum4",
+        ] {
+            assert_eq!(source.matches(&format!("module {module}(")).count(), 1);
+        }
+    }
     // The composed wrapper must not retain a sampled answer or oracle entry.
     let wrapper = sampler::wrapper_source();
     for forbidden in ["oracle", "counted", "Program", "FrameReport", "average"] {
@@ -760,6 +781,12 @@ fn out_dir() -> std::path::PathBuf {
 
 fn compile_and_run(dir: &std::path::Path, stem: &str, module: &str, bench: &str) {
     std::fs::write(dir.join(format!("{stem}.v")), module).unwrap();
+    let gowin = module.starts_with("`define GPU_V2_GOWIN_DSP");
+    let bench = if gowin {
+        bench.replace("module tb;", "module tb; GSR GSR(.GSRI(1'b1));")
+    } else {
+        bench.to_string()
+    };
     std::fs::write(dir.join(format!("{stem}_tb.v")), bench).unwrap();
     let compiler = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
     let runtime = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
@@ -773,6 +800,11 @@ fn compile_and_run(dir: &std::path::Path, stem: &str, module: &str, bench: &str)
         &format!("{stem}.v"),
         &format!("{stem}_tb.v"),
     ]);
+    if gowin {
+        let home = std::env::var_os("GOWIN_HOME")
+            .expect("GOWIN_HOME is required for vendor primitive replay");
+        compile.arg(std::path::PathBuf::from(home).join("IDE/simlib/gw2a/prim_sim.v"));
+    }
     bounded(
         compile,
         dir,
@@ -829,6 +861,16 @@ fn iverilog_matches_whole_sampler_every_edge() {
 #[test]
 #[ignore = "requires Icarus (IVERILOG_EXE/VVP_EXE)"]
 fn iverilog_whole_sampler_all_preparation_configurations() {
+    replay_all_preparation_configurations(false);
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn gowin_iverilog_whole_sampler_all_preparation_configurations() {
+    replay_all_preparation_configurations(true);
+}
+
+fn replay_all_preparation_configurations(gowin: bool) {
     let (slots, bytes) = table();
     let cases = cases(&slots);
     assert_eq!(
@@ -854,10 +896,16 @@ fn iverilog_whole_sampler_all_preparation_configurations() {
         assert_eq!(committed.len(), cases.len());
         assert!(edges.iter().any(|e| e.resp_complete && e.resp_valid));
         assert!(edges.iter().any(|e| e.request_ready && e.resp_valid));
-        let module = sampler::verilog_with_config(&slots, config).unwrap();
+        let mut module = sampler::verilog_with_config(&slots, config).unwrap();
+        if gowin {
+            module = format!("`define GPU_V2_GOWIN_DSP\n{module}");
+        }
         compile_and_run(
             &out_dir(),
-            &format!("whole_config_{index}"),
+            &format!(
+                "whole_config_{}_{index}",
+                if gowin { "gowin" } else { "generic" }
+            ),
             &module,
             &testbench(&edges),
         );
@@ -1020,4 +1068,116 @@ fn input_width_fault_blocks_and_reset_recovers_in_rtl() {
     tb.push_str("if (out_valid !== 1'b0) $fatal(1,\"out_valid after reset\");\n");
     tb.push_str("$display(\"PASS edges=fault-reset\");$finish;end endmodule\n");
     compile_and_run(&dir, "texture_sampler_rtl_fault", &module, &tb);
+}
+
+#[test]
+#[ignore = "requires Icarus and Gowin primitive library"]
+fn selected_sixteen_slot_sampler_matches_both_backends() {
+    let (slots, bytes) = table();
+    assert_eq!(slots.len(), 16);
+    let cases = cases(&slots);
+    let config = serial::Config {
+        nearest_bypass: false,
+        short_alignment: true,
+    };
+    let mut memory = Refill::new(padded(&bytes));
+    memory.request_period = 3;
+    memory.beat_period = 2;
+    memory.ack_delay = 4;
+    memory.first_beat_same_edge = true;
+    memory.simultaneous = true;
+    let (edges, committed) = run_emu_with_config(&slots, &cases, memory, config);
+    assert_eq!(committed.len(), cases.len());
+    assert!(edges.iter().any(|e| e.resp_complete && e.resp_valid));
+    assert!(edges.iter().any(|e| e.request_ready && e.resp_valid));
+    for native in [false, true] {
+        let source = sampler::verilog_with_config(&slots, config).unwrap();
+        let module = if native {
+            format!("`define GPU_V2_GOWIN_DSP\n{source}")
+        } else {
+            source
+        };
+        compile_and_run(
+            &out_dir(),
+            if native {
+                "selected16_native"
+            } else {
+                "selected16_portable"
+            },
+            &module,
+            &testbench(&edges),
+        );
+    }
+}
+
+/// Independently use the cache emulator's coordinate-to-bank map to check
+/// every local origin, including repeat seams. Input/output traffic timing is
+/// covered separately by the complete selected sampler replay above.
+#[test]
+#[ignore = "requires Icarus"]
+fn serial_bank_order_preserves_weighted_tap_association() {
+    use std::fmt::Write;
+    let (slots, _) = table();
+    let source = sampler::verilog(&slots).unwrap();
+    let begin = source.find("module gpu_v2_texture_cache(").unwrap();
+    let end = begin + source[begin..].find("endmodule").unwrap() + "endmodule".len();
+    let module = source[begin..end].to_owned();
+    let texels = [0xf801_u16, 0x07e2, 0x003f, 0x9abc];
+    let mut tb = String::from(
+        "module tb;wire[71:0] p;wire[15:0] t0,t1,t2,t3;\n\
+         gpu_v2_texture_cache dut(.clk(1'b0),.reset(1'b0),.ce(1'b0),.abort(1'b0),\n\
+         .in_valid(1'b0),.in_payload(72'd0),.out_ready(1'b0),\n\
+         .mem_req_ready(1'b0),.mem_resp_valid(1'b0),.mem_resp_index(4'd0),\n\
+         .mem_resp_data(64'd0),.mem_resp_complete(1'b0),.mem_resp_ok(1'b0),\n\
+         .out_payload(p),.out_tex0(t0),.out_tex1(t1),.out_tex2(t2),.out_tex3(t3));\n\
+         initial begin #100000;$fatal(1,\"bank-map watchdog\");end\ninitial begin\n",
+    );
+    for (bank, texel) in texels.iter().enumerate() {
+        writeln!(tb, "dut.res_tex[{bank}]=16'h{texel:04x};").unwrap();
+    }
+    let mut cases = 0;
+    for y in 0..8_u8 {
+        for x in 0..8_u8 {
+            let (bank_of_tap, _) = gpu_v2::texture::emu::cache::tap_map([x, y]);
+            for profile in 0..9_usize {
+                let weights = if profile < 4 {
+                    let mut weights = [0_u16; 4];
+                    weights[profile] = 511;
+                    weights
+                } else {
+                    let a = (profile * 29) as u16;
+                    [a, 127, 97, 511 - a - 127 - 97]
+                };
+                let low = (0x00_35_a7_u128 & ((1 << 22) - 1))
+                    | (u128::from(x) << 22)
+                    | (u128::from(y) << 25);
+                let high = 0xd3_u128 << 64;
+                let payload = weights
+                    .iter()
+                    .enumerate()
+                    .fold(high | low, |word, (tap, weight)| {
+                        word | (u128::from(*weight) << (28 + 9 * tap))
+                    });
+                writeln!(tb, "dut.res_payload=72'h{payload:018x};#1;").unwrap();
+                writeln!(tb, "if(p[71:64]!==8'hd3||p[27:0]!==28'h{low:07x})$fatal(1,\"header case{cases}\");").unwrap();
+                for (tap, bank) in bank_of_tap.iter().enumerate() {
+                    writeln!(
+                        tb,
+                        "if(p[{}+:9]!==9'd{})$fatal(1,\"weight case{cases} tap{tap}\");",
+                        28 + 9 * usize::from(*bank),
+                        weights[tap]
+                    )
+                    .unwrap();
+                }
+                writeln!(tb, "if({{t3,t2,t1,t0}}!==64'h{:04x}{:04x}{:04x}{:04x})$fatal(1,\"texel case{cases}\");",texels[3],texels[2],texels[1],texels[0]).unwrap();
+                cases += 1;
+            }
+        }
+    }
+    writeln!(
+        tb,
+        "$display(\"PASS edges={cases} bank-associations\");$finish;end endmodule"
+    )
+    .unwrap();
+    compile_and_run(&out_dir(), "selected_bank_association", &module, &tb);
 }

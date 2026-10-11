@@ -7,8 +7,8 @@
 //! * [`crate::texture::sim::staged::bound::serial_rtl::source`] (the one-quad
 //!   serial preparation controller and its D/LOD/coordinate/coefficient/
 //!   membership/packet leaves);
-//! * [`crate::texture::rtl::cache::verilog`] (the slot-specialized demand cache);
-//! * [`crate::texture::rtl::color::verilog`] (the eight-edge color leaf);
+//! * the private bank-ordered demand cache (weights follow physical texels);
+//! * the private conserved-weight Serial Color profile (two enabled edges);
 //! * the hand-written `gpu_v2_texture_sampler` wrapper below.
 //!
 //! ## Wrapper contract (mirrors `SamplerEmu`)
@@ -16,7 +16,7 @@
 //! * One active quad at a time. A new raw quad is admitted only when no active
 //!   quad is held, and only from the pre-edge state, so a same-edge result
 //!   transfer can never fund a same-edge admission.
-//! * The raw fields are the preparation fields: eight signed-40 helper UV, a
+//! * The raw fields are the preparation fields: eight signed-18 helper UV, a
 //!   signed-16 bias, `quad4`/`mask4`/`slot4`/`max_n4`, `has_mip` and `filter2`.
 //! * Preparation head transfers exactly when the cache accepts; the cache
 //!   transfers exactly when the color leaf accepts. Every branch ready/valid is
@@ -71,15 +71,15 @@ pub fn build_with_config(slots: &[Slot], config: serial::Config) -> Result<Plan,
         slot.validate()?;
     }
     let preparation = serial_rtl::source_with_config(config)?;
-    let cache_source = cache::verilog(slots);
-    let color_source = color::verilog();
+    let cache_source = cache::verilog_serial_bank_ordered(slots);
+    let color_source = color::verilog_serial_trusted();
     let wrapper = wrapper_source();
     let mut source = String::new();
     source.push_str(&preparation);
     source.push('\n');
     source.push_str(&cache_source);
     source.push('\n');
-    source.push_str(color_source);
+    source.push_str(&color_source);
     source.push('\n');
     source.push_str(&wrapper);
     Ok(Plan { source, wrapper })
@@ -261,13 +261,19 @@ endmodule
 
 /// Audit the composed module against the expected anchors and inventory.
 pub fn audit() -> Result<(), String> {
+    audit_with_config(serial::Config::default())
+}
+
+/// Audit the complete leaf composition for one preparation configuration.
+pub fn audit_with_config(config: serial::Config) -> Result<(), String> {
+    serial_rtl::audit_with_config(config)?;
     let slots = vec![Slot {
         base_address: 0,
         has_full_mip: false,
         max_size_log2: 0,
         valid: true,
     }];
-    let plan = build(&slots)?;
+    let plan = build_with_config(&slots, config)?;
     for anchor in [
         format!("module {MODULE} ("),
         format!("module {} (", serial_rtl::TOP),
@@ -290,13 +296,88 @@ pub fn audit() -> Result<(), String> {
             return Err(format!("whole sampler wrapper missing anchor: {anchor}"));
         }
     }
+    for anchor in [
+        "wire [16:0] part [0:2];",
+        "wire [16:0] sumv [0:2];",
+        "wire sum_bad = 1'b0;",
+    ] {
+        if !plan.source.contains(anchor) {
+            return Err(format!("Serial trusted Color missing anchor: {anchor}"));
+        }
+    }
     if WRAPPER_DATA_BITS != 108 || WRAPPER_CONTROL_BITS != 2 {
         return Err("whole sampler wrapper inventory".into());
     }
-    // Seven preparation modules (D/LOD/coordinate/coefficient/membership/
-    // packet/controller), the cache, the color leaf and this wrapper.
-    if plan.source.matches("endmodule").count() != 10 {
-        return Err("whole sampler unexpected module count".into());
+    audit_module_definitions(&plan.source)?;
+    Ok(())
+}
+
+/// Exact definitions include the distinct physical multiply wrappers. A total
+/// count alone cannot detect a duplicated leaf replacing a required module.
+fn audit_module_definitions(source: &str) -> Result<(), String> {
+    let mut expected = [
+        "gpu_v2_texture_serial_d",
+        "gpu_v2_texture_serial_lod",
+        "gpu_v2_texture_serial_coord",
+        "gpu_v2_texture_coefficient",
+        "gpu_v2_texture_coefficient_mul9",
+        "membership_leaf",
+        "packet_leaf",
+        serial_rtl::TOP,
+        cache::MODULE,
+        color::MODULE,
+        "gpu_v2_texture_color_sum4",
+        "gpu_v2_texture_color_mul9",
+        MODULE,
+    ];
+    let mut actual: Vec<_> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("module "))
+        .map(|line| line.split(['(', ' ', '\t', '#']).next().unwrap_or_default())
+        .collect();
+    expected.sort_unstable();
+    actual.sort_unstable();
+    if actual != expected
+        || source
+            .lines()
+            .filter(|line| line.trim() == "endmodule")
+            .count()
+            != expected.len()
+    {
+        return Err(format!(
+            "whole sampler module definitions: expected {expected:?}, got {actual:?}"
+        ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inventory_rejects_missing_duplicate_and_extra_modules() {
+        let slot = Slot {
+            base_address: 0,
+            has_full_mip: false,
+            max_size_log2: 0,
+            valid: true,
+        };
+        let source = verilog(&[slot]).unwrap();
+        audit_module_definitions(&source).unwrap();
+        // Both renames preserve the total of thirteen definitions. Exact
+        // identity must still reject the missing multiply wrapper.
+        for replacement in [
+            "module unexpected_mul9(",
+            "module gpu_v2_texture_color_sum4(",
+        ] {
+            let mutated =
+                source.replacen("module gpu_v2_texture_coefficient_mul9(", replacement, 1);
+            assert_ne!(mutated, source);
+            assert!(audit_module_definitions(&mutated).is_err());
+        }
+        assert!(
+            audit_module_definitions(&format!("{source}\nmodule extra();\nendmodule\n")).is_err()
+        );
+    }
 }

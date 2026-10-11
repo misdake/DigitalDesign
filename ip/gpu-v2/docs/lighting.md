@@ -6,14 +6,15 @@ single-pixel component. Quad allocation, GPU command ABI, final color and the
 web adapter remain outside this component.
 
 `sim::workbench` exposes the existing Fast full/diffuse bound DAG and
-calendar to the [interactive scheduling workbench](../web/README.md#lighting-scheduling-workbench).
+calendar to scheduling adapters. Historical browser assets and instructions are
+not included in this checkout.
 It independently validates manual issue/lane/II/capacity edits, preserving atomic
 DSP/logic fusion and recomputing zero-latency wiring. Exported schedules are host
 planning artifacts; they do not replace the emulator/RTL program automatically.
 
-## Frozen primary core
+## Frozen 38-edge comparison core
 
-As of 2026-10-07, the primary Lighting core is frozen after adopting exact
+The 2026-10-07 primary core remains an independent frozen reference after adopting exact
 context-prepared power masks: Fast, CompensatedFloor, the free per-edge unified lit calendar,
 II2 / 38 advancing edges, S(12,10) normal transport, Q13 RSQRT endpoint storage,
 and the nine-macro DSP binding described below. Preserve the numerical recipe,
@@ -27,7 +28,8 @@ CE/backpressure, arbitrary IDs, epoch ownership and context drain must remain
 correct. Such integration still requires its own verification; the existing
 standalone proof does not qualify a changed wrapper or a complete GPU.
 The legacy constructors and explicit comparison configurations keep their
-existing behavior; freezing this core does not migrate GPU backend defaults.
+existing behavior. The accepted SmoothH9 production calendar is described below;
+this historical freeze does not select its algorithm for the legacy workbench.
 
 ## Unified lit calendar selected for the workbench
 
@@ -53,8 +55,13 @@ calendar export; the web server consumes these fixtures directly. The old
 constructors below remain separately qualified, and GPU backends do not silently
 migrate to a different admission contract.
 
-The [unified-calendar review](../../../target/lighting-unified-20261006/review.md)
-is the single evidence home for matched fits, all optimization rounds, DSP packing,
+Historical generated report paths below identify the original local evidence;
+those ignored artifacts are not shipped with the source and are not live links.
+Reproduce evidence through the named probes and co-simulation tests rather than
+assuming a report exists in a fresh checkout.
+
+The unified-calendar review (`target/lighting-unified-20261006/review.md`)
+recorded matched fits, all optimization rounds, DSP packing,
 selection rationale, exact HDL identities, behavioral/vendor operation traces and
 web checks. Floor now chooses the lower latency, free calendar; the grouped
 alternative retains its Logic, FF and DSP-input benefits at three extra edges
@@ -67,8 +74,8 @@ entire pixel's intermediate state. Each retained value has a format-specific
 delay chain sized by the producer-ready to last-use distance and II. The chain
 advances only on its scheduled enabled phase; CE and output stalls freeze it.
 Gowin can map those chains to FF, SSRAM or BSRAM without changing their logical
-order. The [memory attribution](../../../target/lighting-unified-20261006/review.md#storage-layout-and-attribution)
-records fitted counts and controlled synthesis checks of these categories.
+order. The historical review's storage-layout-and-attribution section recorded
+fitted counts and controlled synthesis checks of these categories.
 
 The selected free calendar carries IDs in a 20-word, 32-bit shift FIFO. The
 grouped comparison instead uses a 32-word, 32-bit addressed ring with read/write
@@ -480,11 +487,11 @@ storage evidence; the cost proxy does not include every mux/control register.
 Extra-ROM/DSP variants remain opt-in experiments and require matched validation.
 
 The matched baselines, three optimization rounds, selected configurations and
-full-module two-placement evidence are in the generated
-[retiming review](../../../target/lighting-retime-20261005/review.md).
-The [resource sweep](../../../target/lighting-retime-20261005/final-resource/summary.csv)
-and [architecture sweep](../../../target/lighting-retime-20261005/final-architecture/summary.csv)
-report declared register bits separately from fitted FF. Zero-delay retained rows
+full-module two-placement evidence were recorded in the generated
+retiming review (`target/lighting-retime-20261005/review.md`).
+Its resource and architecture sweeps (`final-resource/summary.csv` and
+`final-architecture/summary.csv`) reported declared register bits separately from
+fitted FF. Zero-delay retained rows
 include diagnostic taps and are not a count of distinct physical buses.
 
 ### Compensated-floor numerical configuration
@@ -503,8 +510,8 @@ RTL output-mode selector. Mode0 is owned by the quad default-light bypass;
 counted/emu reject it, and RTL requires the caller to supply modes1/2/3.
 Ambient and diffuse control remain. The scheduling page selects this entry.
 Legacy standalone constructors and functional oracle retain unlit compatibility.
-Current cycle, numerical and two-backend stage evidence has one home in the
-[lit-queue review](../../../target/lighting-lit-queue-20261006/review.json);
+Cycle, numerical and two-backend stage evidence was recorded in the
+lit-queue review (`target/lighting-lit-queue-20261006/review.json`);
 the earlier fitted area/frequency numbers do not describe this changed calendar.
 
 Fusion coverage depends on the numerical operation signature. The current Fast
@@ -512,7 +519,7 @@ full floor calendar combines square-sum and inverse-head into three multi-output
 one-cycle blocks, and binds diffuse-finish and power-head. Its floor inverse-tail and normalized
 outputs do not match the RNE certificates and retain generic binding. The RNE
 calendar additionally binds inverse-tail x3 and normalized-output x6. Exact
-inventory is in [fusion inventory](../../../target/lighting-fast-only-20261006/fusion-inventory.json).
+inventory was recorded in `target/lighting-fast-only-20261006/fusion-inventory.json`.
 The workbench now exposes complete physical-block recipes and the final select
 predicate/alternatives, including whether the predicate belongs to another
 block. Many compare/select pairs are already within generic one-edge cones;
@@ -527,7 +534,7 @@ The optional unsplit-cone backend retains the same issue/ready ages using
 output delay registers; numerical co-simulation alone does not certify its
 combinational timing. Select descriptions, constant classification and unit
 stripe verification are recorded in
-[block-detail review](../../../target/schedule-block-details-20261006/review.json).
+the historical block-detail review (`target/schedule-block-details-20261006/review.json`).
 Normal abs/max/prescale and read-adjacent combinations remain separate unless
 their complete bound operation has a matching certificate; isolated probes do
 not silently reduce a cycle in the full implementation.
@@ -556,7 +563,8 @@ extra-large=1 and local steering. Ordinary g/h differences are tiny, but the
 existing half-vector degeneracy threshold can change classification; no global
 one-code error bound is claimed. Independent reference and stage checks cover it.
 The final formal-DAG area, two placements, memory calendars and co-simulation
-identity are in the [formal configuration review](../../../target/lighting-compensation-formal-20261005/review.md).
+identity were recorded in the formal configuration review
+(`target/lighting-compensation-formal-20261005/review.md`).
 These are isolated Lighting results, not whole-GPU fit or board evidence.
 
 ### Explicit view-length experiment
@@ -662,7 +670,7 @@ identity live in `target/lighting_board_gowin/preparation.json`.
 ```powershell
 cargo run --release -p gpu-v2 --example lighting_board -- --build
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 -Profile lighting-floor -Mode Audit
-# For the requested lighting board test after power-on; substitute the actual VCP.
+# After power-on and a passing board-health gate; substitute the actual VCP.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 -Profile lighting-floor -Mode Full -Port COM8
 ```
 
@@ -670,9 +678,11 @@ Programming uses volatile SRAM. DDHT test ID `0x0c` reports status 0 after all
 1,408 comparisons pass; 1 means g/h mismatch, 2 identity/epoch mismatch,
 3 watchdog expiry, 4 unexpected output. Repeated status frames report a latched
 verdict rather than newly completed traversals. LEDs 1..6 show heartbeat, done,
-success, report toggle, UART busy and PLL lock.
+success, report toggle, UART busy and PLL lock. Require a passing `board-health`
+capture first with the same physical setup. Offline preparation does not prove
+physical-board operation.
 
-On 2026-10-07, the audited `4f52bb6` image was loaded
+On 2026-10-07, the audited `4f52bb6` image passed that health gate and was loaded
 into volatile SRAM on the Tang Nano 20K. Live UART reported success after the
 1,408-output scoreboard completed, with no failure, wrong-test or checksum-error
 frames in the successful capture. Repeated frames carry the same latched verdict.
@@ -698,8 +708,8 @@ latency are explicit costs. No production configuration is changed automatically
 Reproduce with the `lighting_two_cycle_probe` CSV export, the bounded
 `examples/lighting_two_cycle_schedule.py` search and its `--align-prefix` step,
 then the probe's `rtl` action with `LIGHTING_SHARED_PREFIX=1`.
-The [two-edge review](../../../target/lighting-two-cycle-20261006/review.md)
-contains the matching baseline/candidate fits, source and HDL identities, and
+The two-edge review (`target/lighting-two-cycle-20261006/review.md`)
+recorded the matching baseline/candidate fits, source and HDL identities, and
 independent numerical plus behavioral/vendor checks of each physical operation's
 main result and the published stages.
 This is a lighting-module experiment; full-system fitting and board validation
@@ -727,3 +737,43 @@ Current source/report identity and exact verification receipts are kept in
 retiming review is distinct from the newer Fast-only code cleanup receipt in
 `target/lighting-fast-only-20261006`. Raw exploratory reports remain local;
 they are not additional supported architectures or current resource budgets.
+
+## Direct h9 closed-draw calendar
+
+`UnifiedCalendar::SmoothH9` is the accepted counted/Program/emu/RTL calendar
+for the complete Group48/Pool64 production composition. It keeps a separate pixel half vector and the original
+intensity product. The power stage directly produces h9 instead of retaining a
+wide intermediate power value. One generated table owns all seventeen shininess
+codes (4,5,6,7,8,10,12,14,16,20,24,28,32,40,48,56,64). Its544 used16-bit entries
+contain a9-bit base and7-bit delta; the allocated ROM is1024 entries.
+
+A context-prepared three-bit shift selects the cosine-distance grid. A six-bit
+fraction interpolates `base - ((delta*fraction+32)>>6)` using an explicit9x9
+multiplier with one enabled-edge latency. Nonpositive N.L and the far tail return
+zero; cosine1 returns256. The Lighting calendar is34 enabled edges with II2.
+Reset, CE, backpressure, identity and pixel-specific H are retained. These are
+closed-draw arithmetic/ownership contracts, not whole-GPU or board qualification.
+
+The accepted DSP binding is Lighting B: seven ordinary18 lanes in one global
+pool, nine small9 lanes including the dedicated H9 tail, and one fused paired
+MAC. NL and NH keep their original opposite-parity issues and separate retained
+histories. View-Y/normal-X and the third NL/NH products share physical lanes.
+`spec/lighting-calendars/shared-global7-h9.plan` freezes the audited post-steering
+calendar; `DspSteering::Orient` preserves its explicit assignments. Program,
+Emu, RTL and the explicit SmoothH9 consumer all load that same fixture.
+`UnifiedCalendar::SmoothH9Reference` retains the original 34-edge nine18/two-MAC
+calendar. The legacy `selected(quantization)`, Free/TwoEdge workbench and generic
+consumer constructors retain their previous algorithms. Experiment constructors
+always start from SmoothH9Reference, so adopting B cannot silently redefine them.
+
+Matched complete-chain fit numbers and the small9 tradeoff have one home:
+`D:/github/DigitalDesign-code/target/dsp-reuse-tradeoffs-20261011/report.md`.
+Actual production export identity, default-factory/core checks, hot/cold and
+CE0/paid-fault replay, and preserved WIP are recorded in
+`E:/worktrees/60c7/DigitalDesign-code/target/lighting-b-adoption-20261011/report.md`.
+Only Lighting changes in the qualified complete-chain source; the evidence
+excludes whole-GPU integration and physical-board qualification.
+
+The actual complete-chain timing repair and its later composition are described
+in [post-quad performance](postquad-performance.md#combined-h9-and-storage-candidate).
+The Fast/default core and old explicit calendars remain independent references.

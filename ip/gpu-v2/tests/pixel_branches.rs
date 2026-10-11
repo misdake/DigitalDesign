@@ -313,14 +313,20 @@ fn both_real_branches_full_frame_guard_wrap_defaults_and_stalls() {
         let mut first_admit = None;
         let mut first_sample = None;
         let mut peak_sample_ids = 0;
+        let mut pause_allocated_offer = false;
+        let mut paused_allocated_offer = false;
         for wall in 0..MAX {
+            // Pause the edge after a real allocation while exposing its held
+            // sampling offer. Periodic windows can miss this in a short pipe.
+            let offer_pause = pause_allocated_offer;
+            pause_allocated_offer = false;
             let t = dut
                 .step(
                     BranchTick {
-                        ce: wall % 17 > 3,
+                        ce: !offer_pause && wall % 17 > 3,
                         final_ready: wall > 100 && wall % 43 > 16,
                         light_ready: wall % 23 > 7,
-                        sample_issue_ready: wall % 37 > 12,
+                        sample_issue_ready: offer_pause || wall % 37 > 12,
                         sample_ready: wall % 29 > 10,
                         quad: qs.get(next).cloned(),
                         finish: next == qs.len(),
@@ -330,6 +336,11 @@ fn both_real_branches_full_frame_guard_wrap_defaults_and_stalls() {
                 )
                 .unwrap();
             let c = &t.live.model;
+            if offer_pause {
+                let s = t.sampling.as_ref().unwrap();
+                assert!(s.offered.is_some() && !s.accepted && !s.control.ce);
+                paused_allocated_offer = true;
+            }
             ce_edges += u64::from(c.ce);
             assert!(!c.events.iter().any(|e| matches!(e, Event::Rejected(_))));
             if c.quad_accepted {
@@ -342,6 +353,9 @@ fn both_real_branches_full_frame_guard_wrap_defaults_and_stalls() {
                     allocations[usize::from(ticket.quad)] = Some(ticket.serial);
                     owners.insert(ticket.serial, next);
                     let q = &qs[next].live.quad;
+                    if !paused_allocated_offer && !q.default_sample && q.header.mask != 0 {
+                        pause_allocated_offer = true;
+                    }
                     ready.insert(
                         ticket.serial,
                         (
@@ -518,6 +532,8 @@ fn both_real_branches_full_frame_guard_wrap_defaults_and_stalls() {
         assert_eq!(texture.beats, texture.requests * 16);
         assert_eq!(texture.completions, texture.requests);
         assert!(samples.len() > 12 && lightvalues.len() > 2);
+        assert!(paused_allocated_offer);
+        println!("STALL_COVERAGE shininess={shininess} held_result={held_result} output_stall={output_stall} admission_wait={admission_wait} ce_returns={ce_returns}");
         assert!(held_result && output_stall && admission_wait && ce_returns);
         let wanted_sample: usize = qs
             .iter()
@@ -913,6 +929,7 @@ fn persistent_real_capacity_stall_retains_allocated_offer_and_recovers() {
     let mut held_offer = 0;
     let mut accepted = BTreeSet::new();
     let mut returned = BTreeSet::new();
+    let mut release_capacity_offer = false;
     for wall in 0..MAX {
         let t = dut
             .step(
@@ -920,6 +937,10 @@ fn persistent_real_capacity_stall_retains_allocated_offer_and_recovers() {
                     quad: qs.get(next).cloned(),
                     finish: next == qs.len(),
                     ce: wall % 23 > 7,
+                    // Reserve the sixteenth global allocation, then expose
+                    // its offer only after the old Color credit blocks work.
+                    // Earlier accepted work keeps running during this hold.
+                    sample_issue_ready: accepted.len() < 15 || release_capacity_offer,
                     sample_ready: wall >= 7000,
                     ..Default::default()
                 },
@@ -945,6 +966,8 @@ fn persistent_real_capacity_stall_retains_allocated_offer_and_recovers() {
         public_ids = public_ids.max(s.snapshot.result_lanes.iter().filter(|m| **m != 0).count());
         global = global.max(t.live.model.snapshot.live);
         credits = credits.max(s.snapshot.color.result_credits);
+        release_capacity_offer |= s.snapshot.color.result_credits == 16
+            && dut.sampling_stats().link.color_gated_edges > 0;
         let pool = s.snapshot.cache.packet_pool.as_ref().unwrap();
         groups = groups.max(pool.groups);
         producer = producer.max(pool.producer);
@@ -979,7 +1002,9 @@ fn persistent_real_capacity_stall_retains_allocated_offer_and_recovers() {
     assert_eq!(returned.len(), 24 * 4);
     assert_eq!(credits, 16);
     assert_eq!(global, 16);
+    assert!(release_capacity_offer);
     assert!(public_ids > 1 && producer <= 16 && groups <= 32);
+    println!("STALL_CAPACITY stable={stable} held_offer={held_offer} paused_beats={paused_beats} closed_beats={closed_beats}");
     assert!(stable > 0 && held_offer > 0 && paused_beats > 0 && closed_beats > 0);
     assert!(dut.sampling_stats().link.color_gated_edges > 0);
     assert_eq!(dut.sampling_stats().admissions, 24);

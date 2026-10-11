@@ -68,7 +68,7 @@ fn golden(input: &[Input]) -> Vec<Output> {
     out
 }
 #[test]
-fn one_packet_has_real_stages_and_eight_enabled_edge_latency() {
+fn one_packet_has_real_products_and_fused_tree_feedback() {
     let p = request(37, true, true, [0, 511, 0, 0], [0, 0x08a3, 0, 0]);
     let mut m = ColorEmu::new(64).unwrap();
     let mut times = [None; 5];
@@ -101,7 +101,7 @@ fn one_packet_has_real_stages_and_eight_enabled_edge_latency() {
             }
         }
     }
-    assert_eq!(times, [Some(0), Some(3), Some(5), Some(6), Some(LATENCY)]);
+    assert_eq!(times, [Some(0), Some(1), Some(2), Some(2), Some(LATENCY)]);
     assert_eq!(output, golden(&[p]));
     assert!(m.idle());
 }
@@ -205,7 +205,7 @@ fn full_credit_does_not_use_same_edge_output_return() {
     );
 }
 #[test]
-fn wrong_owner_is_terminal_but_new_instance_can_run_a_legal_stream() {
+fn wrong_owner_is_terminal_until_same_instance_reset() {
     let mut m = ColorEmu::new(64).unwrap();
     m.tick(Tick {
         ce: true,
@@ -229,13 +229,37 @@ fn wrong_owner_is_terminal_but_new_instance_can_run_a_legal_stream() {
             output_ready: true
         })
         .unwrap_err(),
-        "color terminal fault; recreate before reuse"
+        "color terminal fault; reset before reuse"
     );
     let legal = [
         request(2, true, false, [255, 0, 0, 0], [0xffff; 4]),
         request(2, false, true, [256, 0, 0, 0], [0xffff; 4]),
     ];
-    assert_eq!(replay(&legal, 0).0, golden(&legal));
+    m.reset();
+    let mut accepted = 0;
+    let mut results = vec![];
+    for _ in 0..32 {
+        let s = m
+            .tick(Tick {
+                ce: true,
+                input: legal.get(accepted).copied(),
+                output_ready: true,
+            })
+            .unwrap();
+        accepted += usize::from(s.accepted);
+        results.extend(s.events.into_iter().filter_map(|e| {
+            if let Event::Commit(o) = e {
+                Some(o)
+            } else {
+                None
+            }
+        }));
+        if accepted == legal.len() && m.idle() {
+            break;
+        }
+    }
+    assert!(m.idle() && accepted == legal.len());
+    assert_eq!(results, golden(&legal));
 }
 #[test]
 fn backpressure_holds_full_queue_then_drains_and_reuses_owner_and_key() {

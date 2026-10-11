@@ -2,10 +2,12 @@
 //!
 //! The emitted Verilog is a fixed-width, slot-specialized mirror of
 //! [`crate::texture::emu::cache::CacheEmu`]. It is produced from the immutable
-//! [`Slot`] table so the address base/level ROM is literal wiring, and it
-//! instantiates four inferred synchronous bank RAMs. No PnR, BSRAM-fit or
-//! timing result is claimed here; the ignored Icarus test drives this module
-//! edge for edge against the live emulator through a small behavioral memory.
+//! [`Slot`] table so the address base/level ROM is literal wiring. The Gowin
+//! backend uses two masked-write tag BSRAMs, three set-state/PLRU SRAM cells
+//! and four synchronous data BSRAMs. Admission reads all four tags before the
+//! first lookup. Reset masks hide stale state; allocation writes the key and
+//! the terminal publishes READY. The ignored Icarus tests qualify both physical
+//! and portable backends edge for edge against the independent emulator.
 //!
 //! The refill transport handles the request acceptance, the numbered beats and
 //! the terminal acknowledgement as three independent events. A terminal may
@@ -17,13 +19,15 @@
 //! invalidates a `Filling` publication, but a presented request is held until
 //! acceptance and drains to its terminal event.
 
-use crate::texture::emu::cache::{Allocation, BANKS, BANK_DEPTH, LINES, REFILL_BEATS, SETS, WAYS};
+use crate::texture::emu::cache::{Allocation, BANKS, BANK_DEPTH, REFILL_BEATS, SETS, WAYS};
 use crate::texture::ports::{layer_offset, Slot};
 
 /// Verilog module name emitted by [`verilog`].
 pub const MODULE: &str = "gpu_v2_texture_cache";
 
-/// Exact declared capacity of the emitted leaf (shared with the emu).
+/// Logical reference capacity shared with the emu, not the RTL's fitted FF count.
+/// The physical backend compresses tag keys, moves set rows into SRAM and
+/// derives tap permutation from the held payload instead of retaining it.
 pub fn allocation() -> Allocation {
     Allocation::default()
 }
@@ -35,7 +39,73 @@ fn slot_base_literal(slot: Option<&Slot>) -> String {
     )
 }
 
-fn mut_verilog(slots: &[Slot]) -> String {
+fn mut_verilog(slots: &[Slot], strategy: HitDecode, bank_ordered: bool) -> String {
+    let output_map = if bank_ordered {
+        r#"  // Private Serial cache/Color boundary: weights follow physical banks.
+  // Inverse-permute36 weight bits instead of permuting64 texel bits.
+  wire a=res_payload[22];
+  wire y0=res_payload[25]^res_payload[23],y1=y0^a;
+  wire [8:0] w0=res_payload[36:28],w1=res_payload[45:37];
+  wire [8:0] w2=res_payload[54:46],w3=res_payload[63:55];
+  wire [8:0] z0=y0?w2:w0,z2=y0?w0:w2;
+  wire [8:0] z1=y1?w3:w1,z3=y1?w1:w3;
+  wire [8:0] b0=a?z1:z0,b1=a?z0:z1;
+  wire [8:0] b2=a?z3:z2,b3=a?z2:z3;
+  assign out_payload={res_payload[71:64],b3,b2,b1,b0,res_payload[27:0]};
+  assign out_tex0=res_tex[0];assign out_tex1=res_tex[1];
+  assign out_tex2=res_tex[2];assign out_tex3=res_tex[3];
+"#
+    } else {
+        r#"  assign out_payload = res_payload;
+  // Two conditional swaps implement the bank bijection; no dynamic write
+  // decoder or four independent destination selectors are needed.
+  wire [15:0] x0=res_payload[22]?res_tex[1]:res_tex[0];
+  wire [15:0] x1=res_payload[22]?res_tex[0]:res_tex[1];
+  wire [15:0] x2=res_payload[22]?res_tex[3]:res_tex[2];
+  wire [15:0] x3=res_payload[22]?res_tex[2]:res_tex[3];
+  wire y0=res_payload[25]^res_payload[23];
+  wire y1=y0^res_payload[22];
+  assign out_tex0=y0?x2:x0;
+  assign out_tex1=y1?x3:x1;
+  assign out_tex2=y0?x0:x2;
+  assign out_tex3=y1?x1:x3;
+"#
+    };
+    let hit_decode = match strategy {
+        HitDecode::Fixed => {
+            r#"  wire [3:0] ready_hits;
+  wire [3:0] filling_hits;
+  genvar hw;
+  generate for (hw=0;hw<4;hw=hw+1) begin: fixed_hit_decode
+    assign ready_hits[hw] = head_state[hw*2+:2] == 2'd2 && tag_q[hw] == head_tag;
+    assign filling_hits[hw] = head_state[hw*2+:2] != 2'd0 && head_state[hw*2+:2] != 2'd2 && tag_q[hw] == head_tag;
+  end endgenerate
+  always @(*) begin
+    hit_ready = |ready_hits;
+    look_filling = |filling_hits;
+    // Preserve the original highest-way priority with two fixed Boolean decodes.
+    hit_line = {head_set, ready_hits[3] | ready_hits[2], ready_hits[3] | (ready_hits[1] & ~ready_hits[2])};
+  end
+"#
+        }
+        HitDecode::SerialPriority => {
+            r#"  always @(*) begin
+    hit_ready = 1'b0; hit_line = 6'd0;
+    look_filling = 1'b0;
+    for (wl = 0; wl < 4; wl = wl + 1) begin
+      if ((head_state[wl*2+:2] != 2'd0) &&
+          (tag_q[wl] == head_tag)) begin
+        if (head_state[wl*2+:2] == 2'd2) begin
+          hit_ready = 1'b1; hit_line = head_set*4+wl;
+        end else begin
+          look_filling = 1'b1;
+        end
+      end
+    end
+  end
+"#
+        }
+    };
     let base_arms: String = (0..16)
         .map(|s| {
             format!(
@@ -136,10 +206,13 @@ module {MODULE}(
     endcase
   endfunction
 
-  // Tags: 2-bit state (0 invalid, 1 filling, 2 ready) and 22-bit key.
-  reg [1:0]  tstate [0:{last_line}];
-  reg [21:0] tkey   [0:{last_line}];
-  reg [2:0]  plru   [0:{last_set}];
+  // Reset masks hide stale SRAM rows without clearing RAM contents.
+  (* syn_ramstyle="distributed_ram" *) reg[7:0] state_rows[0:{last_set}];
+  (* syn_ramstyle="distributed_ram" *) reg[2:0] plru_rows[0:{last_set}];
+  reg [15:0] state_initialized;
+  // Four set bits are carried by the address; each retained tag needs 18 bits.
+  wire[17:0] tag_q[0:3];
+  reg [15:0] plru_initialized;
 
   // Four explicit synchronous banks. Their contents are only read once a line
   // is READY, which requires a complete sixteen-beat refill of all 64 words.
@@ -158,13 +231,12 @@ module {MODULE}(
   reg [71:0] rd_payload;
   reg [5:0]  rd_line;
   reg [3:0]  rd_local [0:3];
-  reg [1:0]  rd_tap   [0:3];
+  // Tap permutation is derived from the held result coordinates.
   reg        pin_valid;
   reg [5:0]  pin_line;
 
   // One demand descriptor, presented until the memory accepts it.
   reg        desc_valid;
-  reg [21:0] desc_key;
   reg [5:0]  desc_line;
   reg [31:0] desc_addr;
   reg        desc_started;
@@ -182,18 +254,26 @@ module {MODULE}(
   wire [6:0]  hk_x    = head_key[14:8];
   wire [6:0]  hk_y    = head_key[21:15];
   wire [31:0] hk_lay  = slot_full_f(hk_slot) ? layer_off_f(hk_n) : 32'd0;
-  wire [31:0] hk_row = (hk_n < 4'd3) ? {{25'd0,hk_y}} : ({{25'd0,hk_y}} << (hk_n - 4'd3));
-  wire [31:0] hk_addr = slot_base_f(hk_slot) + ((hk_lay + hk_row + hk_x) << 7);
+  // Valid x occupies the bits below y; concatenate the tile index.
+  wire [13:0] hk_row = {{7'd0,hk_y}} << ((hk_n < 4'd3)?4'd0:(hk_n-4'd3));
+  wire [13:0] hk_tile = hk_row | {{7'd0,hk_x}};
+  wire [14:0] hk_offset = {{1'b0,hk_tile}}+{{1'b0,hk_lay[13:0]}};
+  wire [31:0] hk_addr = slot_base_f(hk_slot)+{{10'd0,hk_offset,7'd0}};
 
   // Raw port inputs must satisfy the same immutable slot/level/tile contract
   // as TileKey::address. No malformed input can allocate or publish a line.
   wire [3:0] ik_slot = in_payload[3:0];
   wire [3:0] ik_n = in_payload[7:4];
-  wire [7:0] ik_side = (ik_n < 4'd3) ? 8'd1 : (8'd1 << (ik_n - 4'd3));
+  // Both axes use the same power-of-two bound. Share the high-bit check.
+  wire [6:0] ik_xy = in_payload[14:8] | in_payload[21:15];
+  wire ik_coord_bad = (ik_xy[0] && ik_n < 4'd4) ||
+      (ik_xy[1] && ik_n < 4'd5) || (ik_xy[2] && ik_n < 4'd6) ||
+      (ik_xy[3] && ik_n < 4'd7) || (ik_xy[4] && ik_n < 4'd8) ||
+      (ik_xy[5] && ik_n < 4'd9) || (ik_xy[6] && ik_n < 4'd10);
   wire input_bad = ce && in_valid && !head_valid && !fault && !abort &&
       (!slot_valid_f(ik_slot) || ik_n > 4'd10 || ik_n > slot_max_f(ik_slot) ||
        (!slot_full_f(ik_slot) && ik_n != slot_max_f(ik_slot)) ||
-       {{1'b0,in_payload[14:8]}} >= ik_side || {{1'b0,in_payload[21:15]}} >= ik_side);
+       ik_coord_bad);
 
   // Transport event separation. A request is offered while unstarted; a
   // presented request stays offered across fault/abort. Acceptance, beats and
@@ -215,11 +295,7 @@ module {MODULE}(
 
   assign in_ready = ce && !head_valid && !fault_eff;
   assign out_valid = res_valid && !fault_eff;
-  assign out_payload = res_payload;
-  assign out_tex0 = res_tex[0];
-  assign out_tex1 = res_tex[1];
-  assign out_tex2 = res_tex[2];
-  assign out_tex3 = res_tex[3];
+{output_map}
 
   assign mem_req_valid = req_present && (!fault_latched || desc_presented);
   assign mem_req_addr  = desc_addr;
@@ -232,80 +308,105 @@ module {MODULE}(
   // Victim: an Invalid way first, otherwise the tree-PLRU Ready way.
   reg        vic_valid;
   reg [5:0]  vic_line;
-  integer    wl, wv, wr;
-  reg [1:0]  o0, o1, o2, o3;
-  always @(*) begin
-    hit_ready = 1'b0; hit_line = 6'd0;
-    look_filling = 1'b0;
-    for (wl = 0; wl < {ways}; wl = wl + 1) begin
-      if ((tstate[head_set*{ways}+wl] != 2'd0) &&
-          (tkey[head_set*{ways}+wl] == head_key)) begin
-        if (tstate[head_set*{ways}+wl] == 2'd2) begin
-          hit_ready = 1'b1; hit_line = head_set*{ways}+wl;
-        end else begin
-          look_filling = 1'b1;
-        end
-      end
-    end
+  integer    wl, wv;
+  reg [1:0]  o0, o1;
+
+  wire[17:0] head_tag={{head_key[21:17],head_key[14:10],head_key[7:0]}};
+  wire tag_write=!reset && ce && !fault_eff && !desc_valid && head_valid &&
+      !hit_ready && !look_filling && vic_valid;
+  wire tag_read=!reset && !fault_eff && !tag_write && (head_valid || (in_valid && in_ready));
+  wire[3:0] tag_set=head_valid?head_set:{{in_payload[16:15],in_payload[9:8]}};
+  // A cache head remains unchanged from allocation until its terminal/read.
+  // Admission prefetch supplies the first lookup without another enabled edge.
+  // Allocation gates all tag reads; the held head refreshes on following clocks.
+`ifdef GPU_V2_GOWIN_DSP
+  genvar tg;
+  generate for(tg=0;tg<2;tg=tg+1)begin:tag_pair
+    wire[35:0] pair_q;
+    wire[3:0] byte_mask=vic_line[0]?4'b1100:4'b0011;
+    SDPX9B #(.READ_MODE(1'b0),.BIT_WIDTH_0(36),.BIT_WIDTH_1(36)) bank(
+      .DO(pair_q),.DI({{head_tag,head_tag}}),
+      .BLKSELA(3'b000),.BLKSELB(3'b000),
+      .ADA({{5'd0,vic_line[5:2],1'b0,byte_mask}}),
+      .ADB({{5'd0,tag_set,5'd0}}),.CLKA(clk),.CLKB(clk),
+      .CEA(tag_write && vic_line[1]==tg),.CEB(tag_read),
+      .OCE(1'b1),.RESETA(1'b0),.RESETB(1'b0));
+    assign tag_q[tg*2]=pair_q[17:0];assign tag_q[tg*2+1]=pair_q[35:18];
+  end endgenerate
+`else
+  reg[17:0] tag_ram[0:63];reg[17:0] tag_read_q[0:3];integer tr;
+  always @(posedge clk)begin
+    if(tag_write)tag_ram[vic_line]<=head_tag;
+    if(tag_read)for(tr=0;tr<4;tr=tr+1)tag_read_q[tr]<=tag_ram[{{tag_set,2'b00}}+tr];
   end
-  always @(*) begin
-    vic_valid = 1'b0; vic_line = 6'd0;
-    for (wv = 0; wv < {ways}; wv = wv + 1) begin
-      if (!vic_valid && (tstate[head_set*{ways}+wv] == 2'd0) &&
-          !(pin_valid && (pin_line == head_set*{ways}+wv))) begin
-        vic_valid = 1'b1; vic_line = head_set*{ways}+wv;
-      end
-    end
-    if (!vic_valid) begin
-      case (plru[head_set])
-        3'd0: begin o0=2'd0; o1=2'd1; o2=2'd2; o3=2'd3; end
-        3'd1: begin o0=2'd2; o1=2'd3; o2=2'd0; o3=2'd1; end
-        3'd2: begin o0=2'd1; o1=2'd0; o2=2'd2; o3=2'd3; end
-        3'd3: begin o0=2'd2; o1=2'd3; o2=2'd1; o3=2'd0; end
-        3'd4: begin o0=2'd0; o1=2'd1; o2=2'd3; o3=2'd2; end
-        3'd5: begin o0=2'd3; o1=2'd2; o2=2'd0; o3=2'd1; end
-        3'd6: begin o0=2'd1; o1=2'd0; o2=2'd3; o3=2'd2; end
-        default: begin o0=2'd3; o1=2'd2; o2=2'd1; o3=2'd0; end
-      endcase
-      if (tstate[head_set*{ways}+o0] == 2'd2 &&
-          !(pin_valid && (pin_line == head_set*{ways}+o0))) begin
-        vic_valid = 1'b1; vic_line = head_set*{ways}+o0;
-      end else if (tstate[head_set*{ways}+o1] == 2'd2 &&
-          !(pin_valid && (pin_line == head_set*{ways}+o1))) begin
-        vic_valid = 1'b1; vic_line = head_set*{ways}+o1;
-      end else if (tstate[head_set*{ways}+o2] == 2'd2 &&
-          !(pin_valid && (pin_line == head_set*{ways}+o2))) begin
-        vic_valid = 1'b1; vic_line = head_set*{ways}+o2;
-      end else if (tstate[head_set*{ways}+o3] == 2'd2 &&
-          !(pin_valid && (pin_line == head_set*{ways}+o3))) begin
-        vic_valid = 1'b1; vic_line = head_set*{ways}+o3;
-      end
+  genvar tp;generate for(tp=0;tp<4;tp=tp+1)begin:tag_port
+    assign tag_q[tp]=tag_read_q[tp];
+  end endgenerate
+`endif
+  wire[7:0] head_state=state_initialized[head_set]?state_rows[head_set]:8'd0;
+  wire[2:0] head_plru=plru_initialized[head_set]?plru_rows[head_set]:3'd0;
+  wire read_issue=ce && !fault_eff && !rd_valid && (!res_valid || out_ready) && head_valid && hit_ready;
+  wire publish=terminal && !fault_eff && term_ok;
+  wire state_write=tag_write || (desc_valid && (terminal || fault_eff || (beat_present && !beat_ok)));
+  wire[1:0] state_way=tag_write?vic_line[1:0]:desc_line[1:0];
+  wire[1:0] state_value=tag_write?2'd1:(publish?2'd2:2'd0);
+  wire[7:0] state_next;
+  genvar sw;
+  generate for(sw=0;sw<4;sw=sw+1)begin:state_update
+    assign state_next[sw*2+:2]=(state_way==sw)?state_value:head_state[sw*2+:2];
+  end endgenerate
+  wire plru_write=publish || read_issue;
+  wire[1:0] used_way=publish?desc_line[1:0]:hit_line[1:0];
+  wire[2:0] plru_next=used_way[1]?{{(used_way[0]^1'b1),head_plru[1],1'b0}}:
+      {{head_plru[2],(used_way[0]^1'b1),1'b1}};
+  // Both descriptor and hit keep the same head set until read issue. One port
+  // suffices: refill publication and a READY head issue are mutually exclusive.
+  always @(posedge clk)begin
+    if(!reset && state_write)state_rows[head_set]<=state_next;
+    if(!reset && plru_write)plru_rows[head_set]<=plru_next;
+  end
+  always @(posedge clk)begin
+    if(reset)begin state_initialized<=0;plru_initialized<=0;end
+    else begin
+      if(state_write)state_initialized[head_set]<=1;
+      if(plru_write)plru_initialized[head_set]<=1;
     end
   end
 
-  // Tap routing for the head's 2x2 local footprint (wrapped 7->0).
-  integer t;
-  reg [3:0] tx, ty;
-  reg [1:0] tbank;
-  reg [3:0] tlocal;
-  reg [3:0] cnt;   // beat loop
-  reg [2:0] bx;
-  reg [2:0] by;
-  reg [1:0] bsel;
-  reg [3:0] blocal;
-  reg [3:0] tset;
+{hit_decode}  always @(*) begin
+    vic_valid = 1'b0; vic_line = 6'd0;
+    for (wv = 0; wv < {ways}; wv = wv + 1) begin
+      if (!vic_valid && (head_state[wv*2+:2] == 2'd0) &&
+          !(pin_valid && (pin_line == head_set*4+wv))) begin
+        vic_valid = 1'b1; vic_line = head_set*4+wv;
+      end
+    end
+    if (!vic_valid) begin
+      // No descriptor means every non-invalid line is READY. Only one
+      // line may be pinned, so the PLRU first choice or its sibling suffices.
+      o0={{head_plru[0],(head_plru[0]?head_plru[2]:head_plru[1])}};
+      o1=o0^2'd1;
+      vic_valid=1'b1;
+      if(pin_valid && pin_line=={{head_set,o0}})vic_line={{head_set,o1}};
+      else vic_line={{head_set,o0}};
+    end
+  end
+
+  // Inverse tap map for each fixed bank, including7->0 repeat wrap.
+  wire[1:0] bank_tap0={{(1'b0 ^ head_tly[0] ^ head_tlx[1] ^ (head_tlx[0] & (1'b0 ^ head_tlx[0]))),(1'b0 ^ head_tlx[0])}};
+  wire[2:0] bank_x0=head_tlx+bank_tap0[0],bank_y0=head_tly+bank_tap0[1];
+  wire[1:0] bank_tap1={{(1'b0 ^ head_tly[0] ^ head_tlx[1] ^ (head_tlx[0] & (1'b1 ^ head_tlx[0]))),(1'b1 ^ head_tlx[0])}};
+  wire[2:0] bank_x1=head_tlx+bank_tap1[0],bank_y1=head_tly+bank_tap1[1];
+  wire[1:0] bank_tap2={{(1'b1 ^ head_tly[0] ^ head_tlx[1] ^ (head_tlx[0] & (1'b0 ^ head_tlx[0]))),(1'b0 ^ head_tlx[0])}};
+  wire[2:0] bank_x2=head_tlx+bank_tap2[0],bank_y2=head_tly+bank_tap2[1];
+  wire[1:0] bank_tap3={{(1'b1 ^ head_tly[0] ^ head_tlx[1] ^ (head_tlx[0] & (1'b1 ^ head_tlx[0]))),(1'b1 ^ head_tlx[0])}};
+  wire[2:0] bank_x3=head_tlx+bank_tap3[0],bank_y3=head_tly+bank_tap3[1];
 
   always @(posedge clk) begin
     if (reset) begin
       head_valid <= 1'b0; res_valid <= 1'b0; rd_valid <= 1'b0;
       pin_valid <= 1'b0; desc_valid <= 1'b0; desc_started <= 1'b0;
       desc_presented <= 1'b0; desc_next <= 5'd0; fault <= 1'b0;
-      for (wr = 0; wr < {lines}; wr = wr + 1) begin
-        tstate[wr] <= 2'd0;
-      end
-      for (wr = 0; wr < {sets}; wr = wr + 1) begin
-        plru[wr] <= 3'd0;
-      end
     end else begin
       if (fault_eff) fault <= 1'b1;
 
@@ -326,42 +427,30 @@ module {MODULE}(
             desc_next <= eff_next;
           end
         end else if (beat_ok) begin
-          for (cnt = 0; cnt < 4; cnt = cnt + 1) begin
-            bx = (mem_resp_index * 4 + cnt) % 8;
-            by = (mem_resp_index * 4 + cnt) / 8;
-            bsel = {{by[0] ^ bx[1], bx[0]}};
-            blocal = {{by[2:0], bx[2]}};
-            case (bsel)
-              2'd0: bank0[desc_line*16+blocal] <= mem_resp_data[cnt*16 +: 16];
-              2'd1: bank1[desc_line*16+blocal] <= mem_resp_data[cnt*16 +: 16];
-              2'd2: bank2[desc_line*16+blocal] <= mem_resp_data[cnt*16 +: 16];
-              default: bank3[desc_line*16+blocal] <= mem_resp_data[cnt*16 +: 16];
-            endcase
-          end
+          // Four words share one bank-local address; index bit1 swaps word pairs.
+          bank0[{{desc_line,mem_resp_index[3:1],mem_resp_index[0]}}] <= mem_resp_index[1] ? mem_resp_data[32+:16] : mem_resp_data[0+:16];
+          bank1[{{desc_line,mem_resp_index[3:1],mem_resp_index[0]}}] <= mem_resp_index[1] ? mem_resp_data[48+:16] : mem_resp_data[16+:16];
+          bank2[{{desc_line,mem_resp_index[3:1],mem_resp_index[0]}}] <= mem_resp_index[1] ? mem_resp_data[0+:16] : mem_resp_data[32+:16];
+          bank3[{{desc_line,mem_resp_index[3:1],mem_resp_index[0]}}] <= mem_resp_index[1] ? mem_resp_data[16+:16] : mem_resp_data[48+:16];
           desc_next <= eff_next;
         end else begin
           fault <= 1'b1;
-          if (desc_valid) tstate[desc_line] <= 2'd0;
+          // State row port invalidates the demand way.
         end
       end
 
       if (terminal) begin
         if (fault_eff) begin
           // A faulted/aborted terminal ends the transport; never publish.
-          if (desc_valid) tstate[desc_line] <= 2'd0;
+          // State row port invalidates the demand way.
           desc_valid <= 1'b0;
         end else if (term_ok) begin
-          tstate[desc_line] <= 2'd2;
-          tkey[desc_line] <= desc_key;
-          tset = desc_line[5:2];
-          if (desc_line[1] == 1'b0)
-            plru[tset] <= {{plru[tset][2], (desc_line[0] ^ 1'b1), 1'b1}};
-          else
-            plru[tset] <= {{(desc_line[0] ^ 1'b1), plru[tset][1], 1'b0}};
+
+          // Key was written at allocation; ACK publishes state only.
           desc_valid <= 1'b0;
         end else begin
           fault <= 1'b1;
-          if (desc_valid) tstate[desc_line] <= 2'd0;
+          // State row port invalidates the demand way.
           desc_valid <= 1'b0;
         end
       end
@@ -371,7 +460,7 @@ module {MODULE}(
         head_valid <= 1'b0; res_valid <= 1'b0; rd_valid <= 1'b0;
         pin_valid <= 1'b0;
         if (desc_valid) begin
-          tstate[desc_line] <= 2'd0;
+
           if (!desc_presented && !mem_req_valid) desc_valid <= 1'b0;
         end
       end
@@ -386,10 +475,10 @@ module {MODULE}(
         // 2. Capture the pending synchronous RAM read if the result slot was
         //    free before this edge.
         if (rd_valid && !res_valid) begin
-          res_tex[rd_tap[0]] <= bank0[rd_line*16+rd_local[0]];
-          res_tex[rd_tap[1]] <= bank1[rd_line*16+rd_local[1]];
-          res_tex[rd_tap[2]] <= bank2[rd_line*16+rd_local[2]];
-          res_tex[rd_tap[3]] <= bank3[rd_line*16+rd_local[3]];
+          res_tex[0] <= bank0[rd_line*16+rd_local[0]];
+          res_tex[1] <= bank1[rd_line*16+rd_local[1]];
+          res_tex[2] <= bank2[rd_line*16+rd_local[2]];
+          res_tex[3] <= bank3[rd_line*16+rd_local[3]];
           res_payload <= rd_payload;
           res_valid <= 1'b1;
           rd_valid <= 1'b0;
@@ -399,32 +488,23 @@ module {MODULE}(
         // 3. Issue a synchronous read for a READY-hit head. The result is free
         //    for a next-edge capture when it is empty or leaving this edge.
         if (!rd_valid && (!res_valid || out_ready) && head_valid && hit_ready) begin
-          for (t = 0; t < 4; t = t + 1) begin
-            tx = (head_tlx + t[0]) & 4'h7;
-            ty = (head_tly + t[1]) & 4'h7;
-            tbank = {{ty[0] ^ tx[1], tx[0]}};
-            tlocal = {{ty[2:0], tx[2]}};
-            rd_local[tbank] <= tlocal;
-            rd_tap[tbank] <= t[1:0];
-          end
+          rd_local[0] <= {{bank_y0,bank_x0[2]}};
+          rd_local[1] <= {{bank_y1,bank_x1[2]}};
+          rd_local[2] <= {{bank_y2,bank_x2[2]}};
+          rd_local[3] <= {{bank_y3,bank_x3[2]}};
           rd_payload <= head_payload;
           rd_line <= hit_line;
           rd_valid <= 1'b1;
           pin_valid <= 1'b1;
           pin_line <= hit_line;
           head_valid <= 1'b0;
-          tset = hit_line[5:2];
-          if (hit_line[1] == 1'b0)
-            plru[tset] <= {{plru[tset][2], (hit_line[0] ^ 1'b1), 1'b1}};
-          else
-            plru[tset] <= {{(hit_line[0] ^ 1'b1), plru[tset][1], 1'b0}};
+
         end
 
         // 4. Allocate the single demand descriptor on a genuine miss.
         if (!desc_valid && head_valid && !hit_ready && !look_filling && vic_valid) begin
-          tstate[vic_line] <= 2'd1;
-          tkey[vic_line] <= head_key;
-          desc_key <= head_key;
+
+          // Single tag write is performed by the fixed bank port below.
           desc_line <= vic_line;
           desc_addr <= hk_addr;
           desc_started <= 1'b0;
@@ -443,18 +523,15 @@ module {MODULE}(
   end
 endmodule
 "#,
-        last_line = LINES - 1,
         last_set = SETS - 1,
         last_word = BANK_DEPTH - 1,
         ways = WAYS,
-        lines = LINES,
-        sets = SETS,
     )
 }
 
 /// Emit the complete synthesizable module for the given immutable slot table.
 pub fn verilog(slots: &[Slot]) -> String {
-    mut_verilog(slots)
+    verilog_with_hit_decode(slots, HitDecode::Fixed)
 }
 
 /// Alias matching the `source()` convention of the other hand-written leaves.
@@ -477,6 +554,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fixed_hit_decode_preserves_highest_ready_way_and_filling() {
+        assert_eq!(WAYS, 4);
+        let source = verilog(&[]);
+        assert!(source.contains("ready_hits[3] | (ready_hits[1] & ~ready_hits[2])"));
+        assert!(source.contains("assign filling_hits[hw] = head_state[hw*2+:2] != 2'd0"));
+        for set in 0_u8..16 {
+            for states in 0_u16..256 {
+                for matching in 0_u8..16 {
+                    let mut expected = None;
+                    let mut filling = false;
+                    let mut ready = 0u8;
+                    for way in 0..4 {
+                        let state = (states >> (2 * way)) & 3;
+                        if matching >> way & 1 != 0 && state != 0 {
+                            if state == 2 {
+                                expected = Some(set * 4 + way);
+                                ready |= 1 << way;
+                            } else {
+                                filling = true;
+                            }
+                        }
+                    }
+                    let encoded = (set << 2)
+                        | (((ready >> 3 | ready >> 2) & 1) << 1)
+                        | ((ready >> 3 | (ready >> 1 & !(ready >> 2))) & 1);
+                    assert_eq!(ready != 0, expected.is_some());
+                    if let Some(line) = expected {
+                        assert_eq!(encoded, line);
+                    }
+                    let actual_filling = (0..4).any(|way| {
+                        matching >> way & 1 != 0 && !matches!((states >> (2 * way)) & 3, 0 | 2)
+                    });
+                    assert_eq!(filling, actual_filling);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn module_declares_ports_and_is_slot_specialized() {
         let slots = vec![Slot {
             base_address: 0x1000,
@@ -496,4 +612,22 @@ mod tests {
         assert_eq!(allocation().read_bits, 103);
         assert_eq!(allocation().descriptor_bits, 68);
     }
+}
+
+/// Explicit emitter strategy; both preserve the highest matching READY way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HitDecode {
+    Fixed,
+    SerialPriority,
+}
+pub fn verilog_with_hit_decode(slots: &[Slot], strategy: HitDecode) -> String {
+    mut_verilog(slots, strategy, false)
+}
+
+/// Private Serial composition only. Output texels stay in physical bank order
+/// and the four payload weights are inverse-permuted to match. Key, local
+/// coordinates and first/last remain unchanged. The public cache API retains
+/// canonical tap order and an unchanged Group4 payload.
+pub(crate) fn verilog_serial_bank_ordered(slots: &[Slot]) -> String {
+    mut_verilog(slots, HitDecode::SerialPriority, true)
 }

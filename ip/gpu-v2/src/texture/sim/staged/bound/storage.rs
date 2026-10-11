@@ -25,6 +25,10 @@ pub fn fields(
         .flat_map(|p| &p.absorbed_events)
         .copied()
         .collect();
+    let exported: BTreeSet<_> = cones
+        .iter()
+        .flat_map(|c| c.exported_events.iter().copied())
+        .collect();
     let wiring: BTreeMap<_, _> = lowering
         .wiring_adds
         .iter()
@@ -36,7 +40,9 @@ pub fn fields(
     for e in &f.events {
         let Some(v) = e.output else { continue };
         let width = f.values[v].format.bits;
-        if absorbed.contains(&e.id) || e.operation == Operation::Literal {
+        if absorbed.contains(&e.id) && !exported.contains(&e.id)
+            || e.operation == Operation::Literal
+        {
             views[v] = vec![None; width as usize];
             continue;
         }

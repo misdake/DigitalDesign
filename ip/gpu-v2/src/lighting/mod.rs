@@ -2,8 +2,10 @@
 
 pub mod calendars;
 mod datapath;
+pub mod dsp_sharing;
 pub mod emu;
 mod format;
+pub(crate) mod h9;
 pub mod ports;
 pub mod rsqrt;
 pub mod rtl;

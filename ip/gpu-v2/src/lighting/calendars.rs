@@ -9,6 +9,10 @@ use super::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnifiedCalendar {
+    /// Selected smooth H9 calendar: global seven-lane pool and one fused MAC.
+    SmoothH9,
+    /// Frozen 34-edge H9 reference with the original nine lanes and two MACs.
+    SmoothH9Reference,
     /// Original per-edge schedule with optimized DSP input connections.
     Free,
     /// DSP ownership restricted to at most two neighboring two-edge groups.
@@ -25,9 +29,17 @@ impl UnifiedCalendar {
 
     pub fn options(self, quantization: LightingQuantization) -> LightingRtlOptions {
         LightingRtlOptions {
+            smooth_h9: matches!(self, Self::SmoothH9 | Self::SmoothH9Reference),
+            h9_tail_dsp: matches!(self, Self::SmoothH9 | Self::SmoothH9Reference),
+            dsp_steering: if self == Self::SmoothH9 {
+                DspSteering::Orient
+            } else {
+                self.options_legacy(quantization).dsp_steering
+            },
             power_context_masks: self == Self::Free
                 && quantization == LightingQuantization::CompensatedFloor,
-            rsqrt_q13: self == Self::Free && quantization == LightingQuantization::CompensatedFloor,
+            rsqrt_q13: self != Self::TwoEdge
+                && quantization == LightingQuantization::CompensatedFloor,
             ..self.options_legacy(quantization)
         }
     }
@@ -35,7 +47,7 @@ impl UnifiedCalendar {
     pub fn options_legacy(self, quantization: LightingQuantization) -> LightingRtlOptions {
         LightingRtlOptions {
             unified_lit: true,
-            dsp_steering: if self == Self::Free {
+            dsp_steering: if self != Self::TwoEdge {
                 DspSteering::Local
             } else {
                 DspSteering::Orient
@@ -47,7 +59,16 @@ impl UnifiedCalendar {
     }
 
     pub fn plans(self, quantization: LightingQuantization) -> Result<[SchedulePlan; 2], String> {
-        let text = if self.options(quantization).rsqrt_q13 {
+        if matches!(self, Self::SmoothH9 | Self::SmoothH9Reference)
+            && quantization != LightingQuantization::CompensatedFloor
+        {
+            return Err("smooth h9 requires the reviewed compensated-floor geometry".into());
+        }
+        let text = if self == Self::SmoothH9 {
+            include_str!("../../spec/lighting-calendars/shared-global7-h9.plan")
+        } else if self == Self::SmoothH9Reference {
+            include_str!("../../spec/lighting-calendars/free-h9.plan")
+        } else if self.options(quantization).rsqrt_q13 {
             include_str!("../../spec/lighting-calendars/free-floor-q13.plan")
         } else {
             self.plan_text(quantization)
@@ -58,10 +79,17 @@ impl UnifiedCalendar {
         self,
         quantization: LightingQuantization,
     ) -> Result<[SchedulePlan; 2], String> {
-        Self::parse_plan(self.plan_text(quantization))
+        Self::parse_plan(
+            if matches!(self, Self::SmoothH9 | Self::SmoothH9Reference) {
+                Self::Free.plan_text(quantization)
+            } else {
+                self.plan_text(quantization)
+            },
+        )
     }
     fn plan_text(self, quantization: LightingQuantization) -> &'static str {
         match (self, quantization) {
+            (Self::SmoothH9 | Self::SmoothH9Reference, _) => Self::Free.plan_text(quantization),
             (Self::Free, LightingQuantization::CompensatedFloor) => {
                 include_str!("../../spec/lighting-calendars/free-floor.plan")
             }

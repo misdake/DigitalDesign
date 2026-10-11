@@ -60,6 +60,10 @@ pub struct Report {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
+    /// Explicit smooth output-domain h9 kernel; geometric precision is unchanged.
+    pub smooth_h9: bool,
+    /// Physical H9-tail composite consumes one 9x9 DSP and one final edge.
+    pub h9_tail_dsp: bool,
     /// Q13 endpoints encoded as U14 base + U4 grouped slope residual.
     /// Decode is a checked combinational part of the normalization ROM boundary.
     pub rsqrt_q13: bool,
@@ -202,6 +206,8 @@ enum SquareTable {
     Signed(Memory<15, 0, false>),
 }
 struct Tables {
+    h9: Option<Memory<16, 0, false>>,
+    h9_step: Option<Memory<3, 0, false>>,
     direct_square: bool,
     square: SquareTable,
     rsqrt: RsqrtTable,
@@ -1135,6 +1141,9 @@ fn lit_kernel(
                 f.name_value("diffuse.ambient_sum", sum)?;
                 (n, nl, g, l)
             };
+            if config.smooth_h9 && normal_gate.is_none() {
+                normal_gate = Some(f.less(Dot::constant::<0>(), nl)?);
+            }
             f.branch(
                 named(
                     f,
@@ -1292,21 +1301,33 @@ fn lit_kernel(
                         )?)?
                     };
                     f.publish("x", x)?;
-                    let p = power(f, x, f.read(input.code.at::<0>())?, t, config.power_floor)?;
-                    f.publish(
-                        if config.quantization == LightingQuantization::CompensatedFloor {
-                            "power.midpoint_q15"
-                        } else {
-                            "power"
-                        },
-                        p,
-                    )?;
-                    let p9: Intensity = f.round_to(p)?;
-                    let positive = match normal_gate {
-                        Some(gate) => gate,
-                        None => f.less(Dot::constant::<0>(), nl)?,
+                    let p9 = if config.smooth_h9 {
+                        let positive = normal_gate.expect("h9 early complete-dot predicate");
+                        let head = super::pipeline::h9_head(
+                            f,
+                            x,
+                            f.read(input.code.at::<0>())?,
+                            f.read(t.h9_step.unwrap().at::<0>())?,
+                        )?;
+                        let entry = f.read(t.h9.unwrap().indexed(head.address))?;
+                        super::pipeline::h9_tail(f, entry, head.fraction, head.far, positive)?
+                    } else {
+                        let p = power(f, x, f.read(input.code.at::<0>())?, t, config.power_floor)?;
+                        f.publish(
+                            if config.quantization == LightingQuantization::CompensatedFloor {
+                                "power.midpoint_q15"
+                            } else {
+                                "power"
+                            },
+                            p,
+                        )?;
+                        let p9: Intensity = f.round_to(p)?;
+                        let positive = match normal_gate {
+                            Some(gate) => gate,
+                            None => f.less(Dot::constant::<0>(), nl)?,
+                        };
+                        f.select(positive, p9, Intensity::constant::<0>())?
                     };
-                    let p9 = f.select(positive, p9, Intensity::constant::<0>())?;
                     f.publish("p9", p9)?;
                     let product: Fixed<18, 16, false> =
                         named(f, "specular.light_product", f.product(id, p9)?)?;
@@ -1438,11 +1459,23 @@ fn evaluate_with_preparation(
 ) -> Result<Report, Error> {
     validate(pixel, material, light, projection)?;
     let numerical_config = Config {
+        smooth_h9: false,
+        h9_tail_dsp: false,
         rsqrt_q13: false,
         lit_queue: false,
         weighted_view: false,
         ..config
     };
+    if config.h9_tail_dsp && !config.smooth_h9 {
+        return Err(InputError::Configuration.into());
+    }
+    if config.smooth_h9
+        && (!config.lit_queue
+            || !config.rsqrt_q13
+            || config.quantization != LightingQuantization::CompensatedFloor)
+    {
+        return Err(InputError::Configuration.into());
+    }
     if config.rsqrt_q13
         && (config.quantization != LightingQuantization::CompensatedFloor || config.weighted_view)
     {
@@ -1606,7 +1639,7 @@ fn evaluate_with_preparation(
         mode: model.input("context.mode", &[mode])?,
         code: model.input("context.shininess", &[i128::from(material.shininess_code)])?,
     };
-    let context_preparation = if config.dataflow && mode == 3 {
+    let context_preparation = if config.dataflow && mode == 3 && !config.smooth_h9 {
         Some(prepare_context(material.shininess_code, max_events)?)
     } else {
         None
@@ -1614,6 +1647,19 @@ fn evaluate_with_preparation(
     let t = Tables {
         direct_square: config.direct_square,
         static_power,
+        h9: if config.smooth_h9 {
+            Some(model.table("POWER_H9", &super::super::h9::H9)?)
+        } else {
+            None
+        },
+        h9_step: if config.smooth_h9 {
+            Some(model.input(
+                "context.h9-step",
+                &[super::super::h9::grid_shift(material.shininess_code)],
+            )?)
+        } else {
+            None
+        },
         context_is_latched: config.dataflow,
         square: if config.square9 {
             SquareTable::Magnitude9
@@ -1753,6 +1799,8 @@ pub fn prepare_half(
     let t = Tables {
         direct_square: config.direct_square,
         static_power: false,
+        h9: None,
+        h9_step: None,
         square: if config.square9 {
             SquareTable::Magnitude9
         } else if config.direct_all_squares {
@@ -1883,6 +1931,8 @@ pub fn prepare_flat(
     let t = Tables {
         direct_square: config.direct_square,
         static_power: false,
+        h9: None,
+        h9_step: None,
         square: if config.square9 {
             SquareTable::Magnitude9
         } else if config.direct_all_squares {
@@ -1984,6 +2034,8 @@ mod compact_tests {
             let tables = Tables {
                 direct_square: false,
                 static_power: false,
+                h9: None,
+                h9_step: None,
                 context_is_latched: false,
                 square: SquareTable::Signed(model.table("SQ", &SQUARE_SIGNED).unwrap()),
                 rsqrt: RsqrtTable::new(&mut model, false).unwrap(),

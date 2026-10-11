@@ -33,13 +33,7 @@ fn calendar(
     poison: bool,
 ) -> Calendar {
     let evidence = gpu_v2::texture::sim::staged::binding::Evidence::build(frame).unwrap();
-    let mut cones = evidence.lowering.logic_cones(frame, 1).unwrap();
-    if frame.name == "texture_lod_context" {
-        let shared = gpu_v2::texture::sim::staged::binding::lod_shared_h_cone(frame).unwrap();
-        for id in [shared.absorbed_events[0], shared.result_event] {
-            cones.push(audited::physical::LogicCone::singleton(frame, id, 1).unwrap());
-        }
-    }
+    let cones = plan.logic_cones();
     let fields = plan
         .packed_fields
         .iter()
@@ -77,7 +71,7 @@ fn calendar(
     Calendar::from_structure(
         &frame,
         &plan.times,
-        &cones,
+        cones,
         &evidence.lowering.wiring_adds,
         fields,
         plan.packed.ff_bits,
@@ -232,12 +226,11 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
         .iter()
         .map(|(q, s)| bound::prepare(q, &[*s]).unwrap())
         .collect();
-    let mut owners = [None; 4];
     let mut accepted = 0;
     let mut completed = 0;
     let mut enabled = 0;
     let mut per_cut = 0;
-    let mut roms = [0; 3];
+    let mut roms = [0; 1];
     let mut writes = 0;
     let mut frozen = 0;
     let mut csv = std::env::var_os("GPU_DERIVATIVE_LOD_OUTPUT").map(|p| {
@@ -258,20 +251,16 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
             if let Some(o) = old_d.2 {
                 assert_eq!(
                     o,
-                    d_golden(
-                        inputs[owners[((enabled + 32 - usize::from(derivative::SPAN)) % 32) / 8]
-                            .unwrap()]
-                    )
+                    d_golden(inputs[(enabled - usize::from(derivative::SPAN)) / 8])
                 );
             }
             if let Some(o) = old_l.2 {
-                let id = owners[((enabled + 32 - usize::from(lod::SPAN)) % 32) / 8].unwrap();
+                let id = (enabled - usize::from(lod::SPAN)) / 8;
                 assert_eq!(o, l_golden(d_golden(inputs[id]).into()));
                 completed += 1;
             }
         }
         let offer = if ce && enabled % 8 == 0 && accepted < inputs.len() {
-            owners[(enabled % 32) / 8] = Some(accepted);
             let i = inputs[accepted];
             accepted += 1;
             Some(i)
@@ -291,7 +280,7 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
         }
         for (name, edge, fields) in [("D", de, &df), ("LOD", le, &lf)] {
             for calc in &edge.calculations {
-                let id = owners[calc.iteration].unwrap();
+                let id = (enabled - usize::from(calc.age)) / 8;
                 let frame = if name == "D" {
                     &drefs[id].derivative.frame
                 } else {
@@ -306,21 +295,13 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
                 if let Some((port, index)) = calc.rom {
                     match port {
                         0 => {
-                            assert_eq!(calc.age, 9);
+                            assert_eq!(calc.age, 1);
                             assert_eq!(
                                 calc.raw,
                                 ((1.0 + index as f64 / 64.0).log2() * 256.0).round_ties_even()
                                     as i128
                             );
                             roms[0] += 1;
-                        }
-                        1 => {
-                            assert!([22, 25].contains(&calc.age));
-                            let prefix: i128 = (0..index)
-                                .map(|n| 1_i128 << (2 * n.saturating_sub(3)))
-                                .sum();
-                            assert_eq!(calc.raw, prefix);
-                            roms[if calc.age == 22 { 1 } else { 2 }] += 1;
                         }
                         _ => panic!("unknown ROM"),
                     }
@@ -358,8 +339,8 @@ fn overlapping_registered_cuts_integer_goldens_rom_calendar_and_ce() {
         }
     }
     assert_eq!(completed, inputs.len());
-    assert_eq!(roms, [inputs.len(); 3]);
-    assert!(frozen > 100 && per_cut > 10_000 && writes > 10_000);
+    assert_eq!(roms, [inputs.len(); 1]);
+    assert!(frozen > 100 && per_cut > 10_000 && writes > inputs.len());
     println!("DLOD samples={} cuts={per_cut} writes={writes} ROM={roms:?} frozen={frozen} enabled={enabled}",inputs.len());
 }
 #[test]
@@ -621,7 +602,7 @@ fn derivative_lod_binding_intake() {
             binding.derivative.span(),
             binding.derivative.packed.ff_bits
         ),
-        (8, 17, 858)
+        (8, 3, 219)
     );
     assert_eq!(
         (
@@ -630,6 +611,6 @@ fn derivative_lod_binding_intake() {
             binding.lod.packed.ff_bits,
             binding.lod.rom_ram16_cells
         ),
-        (8, 28, 264, 45)
+        (8, 4, 83, 32)
     );
 }

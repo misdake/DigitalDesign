@@ -27,6 +27,10 @@ fn token_read_offset(depth: usize, read_edge_captures: bool) -> usize {
 
 #[derive(Clone, Copy, Debug)]
 pub struct LightingRtlOptions {
+    /// Explicit output-domain power algorithm paired with its own calendar.
+    pub smooth_h9: bool,
+    /// H9 mixed DSP/fabric tail: combinational 7x6 product and one finish edge.
+    pub h9_tail_dsp: bool,
     /// Exact power-tail masks captured with the batch-uniform context.
     pub power_context_masks: bool,
     /// Three paired TDP normalization banks with Q13 grouped RSQRT endpoints.
@@ -78,6 +82,8 @@ pub struct LightingRtlOptions {
 impl Default for LightingRtlOptions {
     fn default() -> Self {
         Self {
+            smooth_h9: false,
+            h9_tail_dsp: false,
             power_context_masks: false,
             rsqrt_q13: false,
             unified_lit: false,
@@ -117,6 +123,8 @@ impl Default for LightingRtlOptions {
 impl LightingRtlOptions {
     pub(crate) fn kernel(self) -> super::sim::counted::Config {
         super::sim::counted::Config {
+            smooth_h9: self.smooth_h9,
+            h9_tail_dsp: self.h9_tail_dsp,
             rsqrt_q13: self.rsqrt_q13,
             lit_queue: self.lit_queue,
             quantization: self.quantization,
@@ -1193,7 +1201,7 @@ impl Emitter {
                 }
             }
             "context.shininess" => "ctx_code".into(),
-            "context.power" => "ctx_power".into(),
+            "context.power" | "context.h9-step" => "ctx_power".into(),
             _ => return Err("unknown RTL input source".into()),
         };
         writeln!(self.body, "wire {} v{value}_d0 = {source};", decl(f)).unwrap();
@@ -1435,7 +1443,19 @@ assign unit{lane}_result=unit{lane}_tail;
                     36
                 }
             }
-            LaneKind::PowerRead => 28,
+            LaneKind::PowerRead => {
+                if self
+                    .program
+                    .frame
+                    .memories
+                    .iter()
+                    .any(|m| m.name == "POWER_H9")
+                {
+                    16
+                } else {
+                    28
+                }
+            }
             _ => instructions
                 .iter()
                 .map(|i| {
@@ -1610,26 +1630,37 @@ assign unit{lane}_result=unit{lane}_tail;
                     .unwrap();
                 }
             } else {
-                let power = if self
+                if self
                     .program
                     .frame
                     .memories
                     .iter()
-                    .any(|m| m.name == "POWER_MIDPOINT_Q15")
+                    .any(|m| m.name == "POWER_H9")
                 {
-                    &POWER_MIDPOINT_RAW
+                    self.rom("power_h9", 16, &super::h9::H9_RAW, 1024);
+                    writeln!(self.body, "wire [15:0] {name} = power_h9[unit{lane}_addr];").unwrap();
                 } else {
-                    &POWER_RAW
-                };
-                self.rom("power_lo", 16, &power.map(|v| v & 65535), 1024);
-                self.rom("power_hi", 12, &power.map(|v| v >> 16), 1024);
-                writeln!(
+                    let power = if self
+                        .program
+                        .frame
+                        .memories
+                        .iter()
+                        .any(|m| m.name == "POWER_MIDPOINT_Q15")
+                    {
+                        &POWER_MIDPOINT_RAW
+                    } else {
+                        &POWER_RAW
+                    };
+                    self.rom("power_lo", 16, &power.map(|v| v & 65535), 1024);
+                    self.rom("power_hi", 12, &power.map(|v| v >> 16), 1024);
+                    writeln!(
                     self.body,
                     "wire [27:0] {name} = {{power_hi[unit{lane}_addr],power_lo[unit{lane}_addr]}};"
                 )
-                .unwrap();
+                    .unwrap();
+                }
             }
-        } else if matches!(kind, LaneKind::LogicCone { .. }) {
+        } else if matches!(kind, LaneKind::LogicCone { .. } | LaneKind::H9Tail) {
             let function = format!("cone{lane}");
             let outputs = self.instruction_outputs(&instructions[0]);
             self.function_outputs(&function, &instructions[0], &outputs)?;
@@ -1686,12 +1717,55 @@ assign unit{lane}_result=unit{lane}_tail;
                 .map(|a| format!("unit{lane}_a{a}"))
                 .collect::<Vec<_>>()
                 .join(",");
-            writeln!(
-                self.body,
-                "wire [{}:0] {name} = {function}({args});",
-                width - 1
-            )
-            .unwrap();
+            if *kind == LaneKind::H9Tail {
+                for ins in &instructions {
+                    super::sim::pipeline::audit_h9_tail_roles(
+                        &self.program.frame.events,
+                        ins.root,
+                        &ins.inputs,
+                        |v| self.program.frame.values[v].format,
+                        |v| self.program.frame.values[v].producer,
+                    )?;
+                }
+                if latency != 1 || width != 9 || instructions[0].inputs.len() != 13 {
+                    return Err(format!("H9 mixed lane shape/latency certificate latency{latency} width{width} inputs{:?}",instructions[0].inputs.iter().map(|v|self.program.frame.values[*v].format).collect::<Vec<_>>()));
+                }
+                for ins in &instructions {
+                    for (port, bits, source) in [
+                        (0, 7, format!("unit{lane}_a3[15:9]")),
+                        (1, 6, format!("unit{lane}_a2")),
+                    ] {
+                        writeln!(
+                            self.dsp_input_csv,
+                            "{lane},H9Tail,{},{},{port},{bits},false,\"{source}\"",
+                            self.program.full[ins.root],
+                            ins.issue % self.program.ii[ins.root]
+                        )
+                        .unwrap();
+                    }
+                }
+                writeln!(self.body,r#"wire [8:0] {name};
+wire [17:0] unit{lane}_h9_product;
+wire [12:0] unit{lane}_h9_rounded;
+wire [8:0] unit{lane}_h9_value;
+`ifdef GPU_V2_GOWIN_DSP
+MULT9X9 #(.AREG(1'b0),.BREG(1'b0),.PIPE_REG(1'b0),.OUT_REG(1'b0),.ASIGN_REG(1'b0),.BSIGN_REG(1'b0),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")) h9_dsp{lane}(
+.DOUT(unit{lane}_h9_product),.SOA(),.SOB(),.A({{2'b00,unit{lane}_a3[15:9]}}),.B({{3'b000,unit{lane}_a2}}),.ASIGN(1'b0),.BSIGN(1'b0),.SIA(9'd0),.SIB(9'd0),.ASEL(1'b0),.BSEL(1'b0),.CLK(clk),.CE(datapath_ce),.RESET(1'b0));
+assign unit{lane}_h9_rounded=unit{lane}_h9_product[12:0]+13'd32;
+assign unit{lane}_h9_value=unit{lane}_a3[8:0]-{{2'd0,unit{lane}_h9_rounded[12:6]}};
+assign {name}=(unit{lane}_a0 && !unit{lane}_a1) ? unit{lane}_h9_value : 9'd0;
+`else
+assign {name}={function}({args});
+`endif
+"#).unwrap();
+            } else {
+                writeln!(
+                    self.body,
+                    "wire [{}:0] {name} = {function}({args});",
+                    width - 1
+                )
+                .unwrap();
+            }
         } else if self.share_scalars && scalar_shareable(&self.program.frame, &instructions) {
             let function = format!("scalar_shared{lane}");
             self.union_lane_ranges(&instructions);
@@ -2056,7 +2130,7 @@ fn generate_with_optional_plans(
     let mut roms = 0;
     for (lane, ((kind, _), ids)) in lanes.iter().enumerate() {
         match kind {
-            LaneKind::SmallMultiply => small += 1,
+            LaneKind::SmallMultiply | LaneKind::H9Tail => small += 1,
             LaneKind::LargeMultiply => large += 1,
             LaneKind::PairMultiplyAdd => pair += 1,
             LaneKind::NormalizeRead => roms += 1,
@@ -2191,8 +2265,16 @@ fn generate_with_optional_plans(
             }
         }
     }
-    let context_width = if options.power_context_masks { 75 } else { 43 };
-    if options.power_context_masks {
+    let context_width = if options.smooth_h9 {
+        4
+    } else if options.power_context_masks {
+        75
+    } else {
+        43
+    };
+    if options.smooth_h9 {
+        e.rom("context_rom", context_width, &super::h9::H9_SHIFTS_RAW, 32);
+    } else if options.power_context_masks {
         let descriptors: Vec<_> = CONTEXT_RAW
             .iter()
             .copied()
@@ -2243,8 +2325,7 @@ fn generate_with_optional_plans(
     } else {
         (full_id_depth + diff_id_depth + 2) * 32
     };
-    e.register_bits += latency + 1 + 16 + 3 * 16 + 3 * 16 + 2 * 9 + 2 + 5 + 43 + 2;
-    e.register_bits += context_width - 43;
+    e.register_bits += latency + 1 + 16 + 3 * 16 + 3 * 16 + 2 * 9 + 2 + 5 + context_width + 2;
     // Declare all module nets before use. In particular, declaration-assignment
     // syntax otherwise creates implicit nets before later retained registers.
     let (declarations, body) = hoist(&e.body);
@@ -2717,6 +2798,28 @@ pub(crate) fn physical_calendar_with_options(
     let p = LoweredProgram::new(profile, options)?;
     physical_calendar(p)
 }
+/// Freeze the audited post-steering lane assignments into an explicit temporal plan.
+/// This makes subsequent cross-role sharing a graph-capacity change rather than
+/// an emitted-Verilog edit. The original commit slot is retained unchanged.
+pub fn canonical_schedule_plan(
+    profile: LightingProfile,
+    options: LightingRtlOptions,
+    plans: &[super::sim::workbench::SchedulePlan; 2],
+) -> Result<[super::sim::workbench::SchedulePlan; 2], String> {
+    if !options.unified_lit {
+        return Err("canonical experiment requires unified lit modes".into());
+    }
+    let p = LoweredProgram::with_plans(profile, options, Some(plans))?;
+    let mut plan = plans[0].clone();
+    for slot in &mut plan.slots {
+        if let Some(node) = p.schedule.nodes.get(slot.id) {
+            slot.lane = node.lane.ok_or("missing canonical resource lane")?;
+            slot.issue = node.issue;
+        }
+    }
+    Ok([plan.clone(), plan])
+}
+
 /// Physical instance names for an explicit, checked offline calendar.
 pub fn physical_calendar_with_schedule_plans(
     profile: LightingProfile,

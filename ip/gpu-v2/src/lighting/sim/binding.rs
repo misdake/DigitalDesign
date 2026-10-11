@@ -187,9 +187,10 @@ impl BoundDag {
             },
         )?;
         for cone in &self.cones {
-            if self.kinds[cone.result_event].as_ref().is_some_and(
-                |k| matches!(k,LaneKind::LogicCone{shape,..} if shape.starts_with("measured:")),
-            ) {
+            if self.kinds[cone.result_event].as_ref().is_some_and(|k| {
+                *k == LaneKind::H9Tail
+                    || matches!(k,LaneKind::LogicCone{shape,..} if shape.starts_with("measured:"))
+            }) {
                 continue;
             }
             cone.audit(f)
@@ -301,10 +302,19 @@ impl BoundDag {
                 for &id in &cone.absorbed_events {
                     kinds[id] = None;
                 }
-                kinds[cone.result_event] = Some(LaneKind::LogicCone {
-                    shape: format!("measured:{}", kind.label()),
-                    width: cone.max_width,
-                });
+                if kind == super::pipeline::BlockKind::H9Tail && h.kernel.h9_tail_dsp {
+                    super::pipeline::audit_h9_tail_interface(f, cone.result_event, &cone.operands)?;
+                }
+                kinds[cone.result_event] = Some(
+                    if kind == super::pipeline::BlockKind::H9Tail && h.kernel.h9_tail_dsp {
+                        LaneKind::H9Tail
+                    } else {
+                        LaneKind::LogicCone {
+                            shape: format!("measured:{}", kind.label()),
+                            width: cone.max_width,
+                        }
+                    },
+                );
                 cones.push(cone);
             }
             if h.measured_functions && h.cone_depth > 0 {

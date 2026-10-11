@@ -222,8 +222,9 @@ fn inventory(h: &Hybrid) {
         color::ALLOCATION.datapath_ff_bits + color::ALLOCATION.result_and_control_ff_bits;
     report.push_str(&format!("],\"base_cache_preparation_FF\":{},\"unchanged_color_emu_FF\":{},\"unchanged_link_FF\":266,\"work_transport_added_FF\":1504,\"work_removed_sdp4\":{},\"work_removed_ram16x1\":{},\"queue_control_increment\":13,\"independent_fault_increment\":1,\"ready_plane_increment\":1,\"candidate_composition_FF\":{},\"candidate_sdp4\":{},\"candidate_ram16x1\":{},\"BSRAM\":{},\"hard_pipeline_bits\":{},\"fitted\":false}}",
         base.ff_bits,color_bits,work.sdp4_cells,work.ram16x1_cells,base.ff_bits+color_bits as u64+266+1519,
-        base.sdp4_cells-work.sdp4_cells,base.ram16x1_cells-work.ram16x1_cells,base.bsram,
-        base.hard_pipeline_bits+color::ALLOCATION.hard_product_bits as u64));
+        base.sdp4_cells-work.sdp4_cells+color::ALLOCATION.sdp4_cells as u64,
+        base.ram16x1_cells-work.ram16x1_cells+4*color::ALLOCATION.sdp4_cells as u64,base.bsram+color::ALLOCATION.bsram,
+        base.hard_pipeline_bits+(color::ALLOCATION.hard_product_bits+color::ALLOCATION.result_output_hard_bits) as u64));
     // Optional export never affects execution or readiness. All evidence stays target.
     if let Ok(path) = std::env::var("GPU_COEFFICIENT_HYBRID_OUTPUT") {
         std::fs::write(std::path::Path::new(&path).join("inventory.json"), report).unwrap();

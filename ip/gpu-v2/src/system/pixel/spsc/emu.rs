@@ -11,8 +11,10 @@ pub struct Queue {
     issue: usize,
     write_row: usize,
     issue_row: usize,
-    pending: Option<Word>,
-    heads: VecDeque<Word>,
+    // Every return is ordered; row/last belong to the consumer, not a payload.
+    consume_row: usize,
+    pending: Option<u64>,
+    heads: VecDeque<u64>,
     wall: u64,
 }
 
@@ -30,6 +32,7 @@ impl Queue {
             issue: 0,
             write_row: 0,
             issue_row: 0,
+            consume_row: 0,
             pending: None,
             heads: VecDeque::with_capacity(2),
             wall: 0,
@@ -60,7 +63,18 @@ impl Queue {
             input_ready: ce
                 && (self.write_row != 0
                     || self.distance(self.insert, self.consume) < self.config.entries),
-            output: self.heads.front().copied(),
+            // The previous read edge already filled the synchronous RAM DO.
+            // With no queued head, consume that reserved return directly.
+            output: self
+                .heads
+                .front()
+                .copied()
+                .or(self.pending)
+                .map(|data| Word {
+                    data,
+                    row: self.consume_row,
+                    last: self.consume_row + 1 == self.config.rows,
+                }),
         }
     }
 
@@ -83,8 +97,12 @@ impl Queue {
         }
         let consumed = tick.ce && tick.output_ready && signals.output.is_some();
         let published = accepted && self.write_row + 1 == self.config.rows;
-        let pending_return =
-            !tick.reset && tick.ce && self.heads.len() < 2 && self.pending.is_some();
+        let consume_pending = consumed && self.heads.is_empty();
+        let pending_return = !tick.reset
+            && tick.ce
+            && self.heads.len() < 2
+            && self.pending.is_some()
+            && !consume_pending;
         // No use of a head position released by this edge's consume.
         let read_address = (!tick.reset
             && tick.ce
@@ -95,6 +113,7 @@ impl Queue {
         let write_address = accepted
             .then_some((self.insert % self.config.entries) * self.config.rows + self.write_row);
         let returned = pending_return
+            || consume_pending
             || (self.config.read_timing == ReadTiming::Capture && read_address.is_some());
         if tick.reset {
             self.insert = 0;
@@ -102,17 +121,20 @@ impl Queue {
             self.issue = 0;
             self.write_row = 0;
             self.issue_row = 0;
+            self.consume_row = 0;
             self.pending = None;
             self.heads.clear();
         } else if tick.ce {
-            let next_pending = read_address.map(|address| Word {
-                data: self.ram[address],
-                row: self.issue_row,
-                last: self.issue_row + 1 == self.config.rows,
-            });
+            let next_pending = read_address.map(|address| self.ram[address]);
             if consumed {
-                let word = self.heads.pop_front().unwrap();
-                if word.last {
+                if consume_pending {
+                    self.pending.take().unwrap()
+                } else {
+                    self.heads.pop_front().unwrap()
+                };
+                self.consume_row += 1;
+                if self.consume_row == self.config.rows {
+                    self.consume_row = 0;
                     self.consume = self.advance(self.consume);
                 }
             }

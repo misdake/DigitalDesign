@@ -13,24 +13,24 @@ Lighting provides the Fast resource profile with scalar H
 normalization, fixed DSP roles and checked synchronous retained storage.
 The explicit SystemFast comparison uses scalar N/H, direct squares and a complete
 ID FIFO at II2; it remains separate from the selected lit-queue configuration.
-The [interactive Rust review](web/README.md) compares the real Rust kernels with
-shared scene inputs and optional error maps through a local WebSocket server.
 The [functional oracle chain](docs/oracle-chain.md) renders actual meshes through
 fetch, vertex, setup/coverage, lighting/sampling, final, ROP and atomic caches.
 Its two configurable native Rust pipelines compare frontend precision and normal
 transport without executing counted/timed code or a JavaScript shader.
-Optional Rayon acceleration preserves the same ordered numerical results. A
-[lighting workbench](web/README.md#lighting-scheduling-workbench) displays and
-edits the real bound DAG's repeated calendar, with independent resource checks.
+Optional Rayon acceleration preserves the same ordered numerical results. The
+[lighting workbench model](docs/lighting.md) exposes the real bound DAG's repeated
+calendar, with independent resource checks. Historical browser assets and their
+build instructions are not included in this checkout.
 The [triangle setup oracle](docs/triangle.md) is complete only through its first
 Rust step; counted/timed and hardware directions remain future work.
 The [texture models](docs/texture.md) implement oracle/counting and universal
 periodic preparation connected to bounded cache/color and cycle-MC execution.
-An independent register-only sampler now executes the complete numerical,
+An independent serial sampler now executes the complete numerical,
 demand-cache/refill and Color path, with bounded whole-sampler RTL differential
 tests and two lossless preparation optimizations. Its conservative serial
-calendar complements the periodic Runtime; fitted area remains open. The
-[Sampling viewer](web/sampling-schedule.html) shows certified leaf calendars
+calendar complements the periodic Runtime. Native complete serial fit checkpoints
+are documented separately from the still-open complete Runtime/GPU fit. The
+[texture documentation](docs/texture.md) describes certified leaf calendars
 and actual preparation/cache/controller traces from the project models.
 The [framebuffer model](docs/framebuffer.md) provides a materialized depth/blend
 oracle and bounded serial/overlapped control through the common burst port.
@@ -45,6 +45,13 @@ Lighting/Sampling, registered Final/ROP/cache and a single shared MC clock owner
 with CPU/display traffic and whole-image guards. Unlit/untextured bypass their
 branch queues. The integrated dispatcher/geometry path is still Rust-only;
 isolated component RTL is not an integrated GPU RTL or board result.
+The [selected post-quad RTL](docs/postquad-performance.md) closes Quad,
+Lighting, overlapping Runtime Sampling, texture cache, Final, ROP and framebuffer
+cache through one shared burst port. Export `combined-group48-pool64` for the
+qualified successor; the historical `selected` export remains a reference.
+Its bounded two-backend tests and source-matched fits exclude geometry and the
+physical memory controller. Device 4 and the board system are not connected to
+this standalone composition yet.
 The [SDRAM memory controller combination](docs/sdram-memory-controller.md) is
 provided by the Gowin vendor crate through a dev dependency. Its Rust oracle
 supports real data, calibrated average service and configured CPU/display loads.

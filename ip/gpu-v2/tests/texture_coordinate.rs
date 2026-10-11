@@ -15,7 +15,10 @@ mod support;
 use gpu_v2::texture::{
     emu::{
         color::Output,
-        coordinate::{self, CoordinateEmu, Input as CoordInput, Output as CoordOutput, SPAN},
+        coordinate::{
+            self, CoordinateEmu, Input as CoordInput, Output as CoordOutput, SharedCoordinateEmu,
+            SPAN,
+        },
         derivative::{Calendar, Field},
     },
     ports::*,
@@ -55,7 +58,7 @@ fn build_calendar(poison: bool) -> Calendar {
     let mut frame = p.lanes[0].coordinate.frame.clone();
     let plan = &b.coordinate;
     let evidence = binding::Evidence::build(&frame).unwrap();
-    let cones = evidence.lowering.logic_cones(&frame, 1).unwrap();
+    let cones = plan.logic_cones();
     if poison {
         for value in &mut frame.values {
             if frame.events[value.producer].operation != audited::Operation::Literal {
@@ -94,7 +97,7 @@ fn build_calendar(poison: bool) -> Calendar {
     Calendar::from_structure(
         &frame,
         &plan.times,
-        &cones,
+        cones,
         &evidence.lowering.wiring_adds,
         fields,
         plan.packed.ff_bits,
@@ -138,6 +141,126 @@ fn golden(inp: CoordInput) -> CoordOutput {
         fractions,
         coordinates,
     }
+}
+
+#[test]
+fn shared_axis_all_codes_preserve_joint_publication_and_captured_v() {
+    assert_eq!(
+        coordinate::SHARED_NUMERIC_BITS,
+        gpu_v2::texture::rtl::coordinate::NUMERIC_BITS
+    );
+    assert_eq!(
+        coordinate::CONTROL_BITS,
+        gpu_v2::texture::rtl::coordinate::CONTROL_BITS
+    );
+    let mut shared = SharedCoordinateEmu::new(build_calendar(true)).unwrap();
+    let mut checks = 0;
+    for n in 1..=10 {
+        let side = 1_i16 << n;
+        for nearest in [false, true] {
+            for uv in 0..65536 {
+                let input = CoordInput {
+                    uv: [uv, 65535 - uv],
+                    shift: n - 8,
+                    nearest,
+                    halve: n > 1,
+                    side: [side, (side / 2).max(2)],
+                };
+                let u = shared.tick(true, Some(input)).unwrap();
+                assert_eq!(u.axis.unwrap().0, 0);
+                assert!(u.accepted && shared.output().unwrap().is_none());
+                if uv % 8192 == 0 {
+                    let before = (shared.bank(), shared.phase(), shared.output().unwrap());
+                    // Poison all input fields while CE is low. The second axis
+                    // must later use the captured V/configuration, not these.
+                    let poison = CoordInput {
+                        uv: [u32::MAX; 2],
+                        shift: i32::MIN,
+                        side: [-1; 2],
+                        nearest: !nearest,
+                        halve: n == 1,
+                    };
+                    assert!(!shared.tick(false, Some(poison)).unwrap().accepted);
+                    assert_eq!(
+                        (shared.bank(), shared.phase(), shared.output().unwrap()),
+                        before
+                    );
+                }
+                let v = shared.tick(true, None).unwrap();
+                assert_eq!(v.axis.unwrap().0, 1);
+                assert!(!v.accepted);
+                assert_eq!(shared.output().unwrap(), Some(golden(input)));
+                checks += 1;
+            }
+        }
+    }
+    assert_eq!(checks, 1_310_720);
+}
+
+#[test]
+fn shared_axis_stream_matches_generic_calendar_and_rejects_atomically() {
+    let calendar = build_calendar(false);
+    let mut reference = CoordinateEmu::new(calendar.clone()).unwrap();
+    let mut shared = SharedCoordinateEmu::new(build_calendar(true)).unwrap();
+    let inputs = vectors();
+    let mut accepted = 0;
+    let mut retired = 0;
+    let mut pauses = [0; 3];
+    let mut pending_resets = 0;
+    for wall in 0..2000 {
+        assert_eq!(shared.phase(), reference.phase());
+        assert_eq!(shared.idle(), reference.idle());
+        assert_eq!(shared.output().unwrap(), reference.output().unwrap());
+        // Five advancing edges per block alternate the paused phase.
+        let ce = wall != 0 && wall % 6 != 2;
+        if ce && shared.output().unwrap().is_some() {
+            retired += 1;
+        }
+        if !ce {
+            pauses[if shared.output().unwrap().is_some() {
+                2
+            } else {
+                shared.phase() as usize
+            }] += 1;
+        }
+        let input = (shared.phase() == 0)
+            .then(|| inputs.get(accepted).copied())
+            .flatten();
+        let a = shared.tick(ce, input).unwrap();
+        let b = reference.tick(ce, input).unwrap();
+        assert_eq!(a.accepted, b.accepted);
+        if a.accepted {
+            accepted += 1;
+            let snapshot = (shared.bank(), shared.phase(), shared.output().unwrap());
+            assert!(shared.tick(true, input).is_err());
+            assert_eq!(
+                (shared.bank(), shared.phase(), shared.output().unwrap()),
+                snapshot
+            );
+            if pending_resets == 0 {
+                shared.reset();
+                reference = CoordinateEmu::new(calendar.clone()).unwrap();
+                pending_resets += 1;
+            }
+        }
+        if accepted == inputs.len() && shared.idle() {
+            break;
+        }
+    }
+    assert!(shared.idle() && accepted == inputs.len());
+    assert_eq!(retired, inputs.len() - 1);
+    assert!(pauses.iter().all(|v| *v > 0), "pause coverage={pauses:?}");
+    assert_eq!(pending_resets, 1);
+    let snapshot = (shared.bank(), shared.phase(), shared.output().unwrap());
+    let bad = CoordInput {
+        uv: [65536, 0],
+        ..inputs[0]
+    };
+    assert!(shared.tick(true, Some(bad)).is_err());
+    assert_eq!(
+        (shared.bank(), shared.phase(), shared.output().unwrap()),
+        snapshot
+    );
 }
 
 fn vectors() -> Vec<CoordInput> {
@@ -274,9 +397,10 @@ fn coordinate_admission_requires_a_real_physical_mip_shape() {
         assert!(emu.idle());
         assert!(emu.tick(true, Some(valid)).unwrap().accepted);
     }
+    let period = calendar.period() as usize;
     let mut emu = CoordinateEmu::new(calendar).unwrap();
     for enabled in 0..64 {
-        assert_eq!(usize::from(emu.phase()), enabled % 8);
+        assert_eq!(usize::from(emu.phase()), enabled % period);
         emu.tick(true, None).unwrap();
     }
 }
@@ -372,15 +496,28 @@ fn runtime_overlapping_contexts_and_repeated_quad_ids_match_oracle() {
         q
     };
     let qs = [mk(0, 0.13), mk(1, 0.41), mk(2, 0.67), mk(3, 0.91)];
-    // Accept all four overlapping contexts before draining any.
-    for q in &qs {
-        assert!(r.input_ready(q.quad_id));
-        assert!(
-            r.step(&mut memory, Some(q), timed::Control::default())
-                .unwrap()
-                .accepted
-        );
+    // The single raw/D head serializes admission. Keep all four public owners
+    // live before draining results; acceptance must obey its actual old ready.
+    let mut admitted = 0;
+    for _ in 0..1000 {
+        let step = r
+            .step(
+                &mut memory,
+                qs.get(admitted),
+                timed::Control {
+                    ce: true,
+                    result_ready: false,
+                },
+            )
+            .unwrap();
+        assert!(step.results.is_empty());
+        admitted += usize::from(step.accepted);
+        if admitted == qs.len() {
+            break;
+        }
     }
+    assert_eq!(admitted, qs.len());
+    assert!(r.stats.peak_live_quads >= 4);
     let mut got = vec![];
     for _ in 0..40_000 {
         let st = r

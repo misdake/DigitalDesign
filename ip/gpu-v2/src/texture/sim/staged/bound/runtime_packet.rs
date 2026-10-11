@@ -1,8 +1,11 @@
 //! Actual packet arithmetic. Complete94-bit external capture uses emit0 only
-//! at E0; surviving E0 state93 + E1 state76 + seven72-bit banks =673 bits.
+//! at E0. The reference retains93 +76 +seven72-bit banks =673 data bits;
+//! Runtime's compact E0 Capture93 / E1 Packet72 retain165 data bits.
 use super::transport::Member;
 
+#[cfg(test)]
 pub(super) const DATA_BITS: usize = 93 + 76 + 7 * 72;
+#[cfg(test)]
 pub(super) const CONTROL_BITS: usize = 9 + 1;
 #[cfg(test)]
 pub(super) const BANK_BITS: [usize; 9] = [93, 76, 72, 72, 72, 72, 72, 72, 72];
@@ -43,6 +46,11 @@ impl Pipeline {
     }
     pub(super) fn output(&self) -> Option<i128> {
         self.words[if self.short_alignment { 0 } else { 6 }].map(|v| v as i128)
+    }
+    pub(super) fn owner_read(&self) -> bool {
+        // Compact E0 requests the reserved owner at E1. Native DO is then
+        // held for the E2 packet write; no same-address write/read bypass.
+        self.short_alignment && self.input.is_some()
     }
     pub(super) fn tick(&mut self, ce: bool, input: Option<Input>) -> Result<Option<i128>, String> {
         if self.fault {
@@ -99,7 +107,12 @@ impl Pipeline {
                 last: field(word, 90, 1) != 0 && !higher,
             }
         });
-        let packed = self.selected.map(|s| {
+        let packed = (if self.short_alignment {
+            selected
+        } else {
+            self.selected
+        })
+        .map(|s| {
             let mut word = u128::from(s.header);
             for (i, (weight, mask)) in s.weights.into_iter().zip(s.masks).enumerate() {
                 word |= u128::from(if mask { weight } else { 0 }) << (28 + 9 * i);
@@ -117,7 +130,7 @@ impl Pipeline {
             };
         }
         self.words[0] = packed;
-        self.selected = selected;
+        self.selected = if self.short_alignment { None } else { selected };
         self.input = input;
         Ok(old_output)
     }

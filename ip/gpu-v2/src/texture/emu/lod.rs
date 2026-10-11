@@ -1,8 +1,8 @@
 //! LOD arithmetic and single-port registered ROM returns on the frozen calendar.
 use super::derivative::{self, scalar, Calendar, Edge, Header, Registers};
-pub const NUMERIC_BITS: usize = 264;
-pub const CONTROL_BITS: usize = 61;
-pub const SPAN: u8 = 28;
+pub const NUMERIC_BITS: usize = 83;
+pub const CONTROL_BITS: usize = 13;
+pub const SPAN: u8 = 4;
 /// The exact71-bit downstream context. Diagnostic prefix/LOD/lambda values are
 /// traced where produced; they are not a second persistent output row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -71,10 +71,7 @@ Tests use stage goldens rather than treating audit success as an accuracy oracle
 The separate GPU-owned `memory::ports` burst transport provides explicit write
 completion through a bounded direct-combination test adapter. The standalone
 framebuffer maintenance model and controlled J1 pixel composition consume that
-port. Bounded pixel composers also connect actual LightingEmu and Sampling
-Runtime branch executors. Production command/geometry/raster integration and
-complete GPU RTL remain open; see the version boundaries in
-[pixel-system.md](pixel-system.md#source-and-qualification-boundaries).
+port. Actual streaming branches and production GPU composition remain future work.
 
 Texture advances the vendor cycle MC through a thin GPU-owned RefillPort in
 test composition. Its bounded cache/color machine executes actual refill beats,
@@ -88,21 +85,19 @@ the controller's arithmetic goldens are not independent numerical emulation.
 Lighting starts at a single pixel and returns two scalar intensities, g and h.
 Quad allocation and branch joins are implemented in the bounded
 [controlled pixel composition](pixel-system.md), with externally generated
-branch results in J1; later live composers use actual branch executors.
-Production raster integration, complete controller RTL and whole-GPU fit remain
-open. Component calculations can be tested without a GPU system.
+branch results. Coverage and actual streaming branch execution remain future
+composition work. Component calculations can be tested without a GPU system.
 
-Web code calls the same Rust oracle through a standalone native WebSocket server.
-It owns controls and presentation only; it does not reproduce arithmetic in
-JavaScript. Networking dependencies stay in the host adapter. The optional
-[historical lighting review](../web/README.md) retains native/WASM comparisons.
+Historical browser adapters called the same Rust oracle through a standalone
+native WebSocket server. Their assets and build instructions are not included
+in this checkout; they are not a current verification entry point.
 The [functional chain](oracle-chain.md)
 now provides mesh-to-materialized-framebuffer A/B comparison with configurable
 frontend precision and bounded queues. It does not execute counted/timed paths;
 its optional native Rayon adapter parallelizes pure per-vertex/triangle/quad work
 while committing cache/ROP in order. The separate lighting scheduling workbench
-inspects the actual bound DAG and validates edited periodic calendars; see the
-[browser instructions](../web/README.md#lighting-scheduling-workbench). It does
+model inspects the actual bound DAG and validates edited periodic calendars;
+see [lighting](lighting.md). It does
 not install edited schedules into emu/RTL. The planned runtime-format audited lane and command-to-hardware integration
 remain separate work.
 Implemented behavior and validation are in [lighting](lighting.md) and
@@ -119,12 +114,18 @@ The [texture models](texture.md) implement independent reference sampling, a
 closed counted datapath, a functional cache through MemoryPort, and bounded
 timed cache/refill/color execution through the existing SDRAM Service. A staged
 companion verifies numerical boundaries and context/credit control proposals;
-independent cycle arithmetic and physical sampling throughput remain unverified.
+selected cycle arithmetic and independent RTL qualification are described in
+[texture](texture.md). The actual overlapping Runtime path is also connected
+inside the bounded [post-quad composition](postquad-performance.md).
 
 The [framebuffer model](framebuffer.md) implements materialized depth/blend,
 four-bank tile addressing, demand refill, dirty writeback and flush. Serial and
 overlapped ROP control calendars share the same capacities; the latter assumes
 two-cycle oracle arithmetic returns rather than certified arithmetic. Tests
 compare complete byte images and guards through fixtures and the actual serial
-MC adapter. This is not counted ROP arithmetic, RTL or complete render/display
-ownership, and maintenance currently excludes simultaneous hit execution.
+MC adapter. That oracle-return calendar is separate from the actual registered
+ROP RTL and framebuffer cache connected in the newer post-quad composition.
+Its finite ROM qualification, complete-chain fits and upstream draft are linked
+from [post-quad performance](postquad-performance.md). Physical SDRAM and
+render/display ownership still require integration; maintenance is serialized
+with ROP bank access in this bounded composition.

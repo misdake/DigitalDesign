@@ -6,7 +6,7 @@
 use super::{
     dispatch::{CommonContext, ContextId, RopRow},
     foundation::{self, Beat, Pipeline},
-    LightWrite, PixelKey, SampleWrite,
+    sample_owner, LightWrite, PixelKey, SampleWrite,
 };
 use crate::{
     lighting::{
@@ -14,9 +14,13 @@ use crate::{
         LightingQuantization,
     },
     texture::{
-        ports::{RawQuadInput, RefillPort, Slot},
+        emu::{context_store::Raw, derivative::Header},
+        ports::{RefillPort, Slot},
         sim::{
-            staged::bound::{control, runtime::Runtime},
+            staged::bound::{
+                control,
+                runtime::{RowInput, Runtime},
+            },
             timed,
         },
     },
@@ -44,20 +48,14 @@ pub struct Step {
     pub sample_written: Option<SampleWrite>,
 }
 
-#[derive(Clone, Copy)]
-struct SampleDestination {
-    // Serial/full ticket are host witnesses. Hardware keeps only destination
-    // high1, valid1 and remaining-mask4 for each fixed low-four-bit public ID.
-    ticket: super::Ticket,
-    remaining: u8,
-}
-
 pub struct Live {
     pipeline: Pipeline,
     lighting: LightingEmu,
     sampling: Runtime,
     loaded_light: Option<ContextId>,
-    sample_destinations: [Option<SampleDestination>; 16],
+    // Full tickets are host witnesses. Actual ownership is the separate 32-bit adapter.
+    sample_destinations: [Option<super::Ticket>; 16],
+    sample_owner: sample_owner::Owner,
     slot_sizes: [Option<u8>; 16],
     faulted: bool,
 }
@@ -67,14 +65,14 @@ impl Live {
         let quantization = LightingQuantization::CompensatedFloor;
         let calendar = UnifiedCalendar::selected(quantization);
         Ok(Self {
-            pipeline: Pipeline::new(max_wall)?,
+            pipeline: Pipeline::new_rows(max_wall)?,
             lighting: LightingEmu::with_schedule_plans(
                 LightingProfile::Fast,
                 calendar.options(quantization),
                 &calendar.plans(quantization)?,
                 max_wall,
             )?,
-            sampling: Runtime::new(
+            sampling: Runtime::new_rows(
                 slots,
                 control::Hardware {
                     storage: control::Storage::Packed,
@@ -90,6 +88,7 @@ impl Live {
             )?,
             loaded_light: None,
             sample_destinations: [None; 16],
+            sample_owner: sample_owner::Owner::default(),
             slot_sizes: std::array::from_fn(|i| {
                 slots.get(i).filter(|s| s.valid).map(|s| s.max_size_log2)
             }),
@@ -109,7 +108,6 @@ impl Live {
             .get(usize::from(public_quad))
             .copied()
             .flatten()
-            .map(|d| d.ticket)
     }
     pub fn idle(&self) -> bool {
         !self.faulted
@@ -117,6 +115,7 @@ impl Live {
             && self.lighting.in_flight() == 0
             && self.sampling.idle()
             && self.sample_destinations.iter().all(Option::is_none)
+            && self.sample_owner.idle()
     }
     pub fn faulted(&self) -> bool {
         self.faulted || self.pipeline.faulted() || self.sampling.faulted()
@@ -221,10 +220,10 @@ impl Live {
         // last actual result write. Eligibility observes pre-edge state, so
         // this edge's result release never funds an aliased new admission.
         let sampling_alias_wait = before
-            .sampling
-            .is_some_and(|j| self.sample_destinations[usize::from(j.ticket.quad & 15)].is_some());
+            .sampling_row
+            .is_some_and(|j| j.row == 0 && !self.sample_owner.input_ready(j.ticket.quad));
         let sample_job = before
-            .sampling
+            .sampling_row
             .filter(|_| t.sampling_issue_ready && !sampling_alias_wait);
         let offered = sample_job
             .map(|j| {
@@ -233,19 +232,29 @@ impl Live {
                     .context(j.context)?
                     .sample
                     .ok_or("bypass entered Sampling")?;
-                Ok::<_, String>(RawQuadInput {
-                    quad_id: j.ticket.quad & 15,
-                    mask: j.mask,
+                let slot = self
+                    .sampling
+                    .texture_slot(c.slot)
+                    .filter(|s| s.valid)
+                    .ok_or("Sampling lost immutable texture slot")?;
+                Ok::<_, String>(RowInput {
                     uv_q16: j.uv_q16,
-                    slot: c.slot,
-                    material_size_log2: c.size_log2,
-                    filter: c.filter,
-                    bias_q8: c.bias_q8,
-                    force_coarsest: j.force_coarsest,
+                    raw: Raw {
+                        bias: c.bias_q8,
+                        force_coarsest: j.force_coarsest,
+                        header: Header {
+                            quad: j.ticket.quad & 15,
+                            mask: j.mask,
+                            slot: c.slot,
+                            max_n: c.size_log2.min(slot.max_size_log2),
+                            has_mip: slot.has_full_mip,
+                            filter: c.filter as u8,
+                        },
+                    },
                 })
             })
             .transpose()?;
-        let sampling = self.sampling.step_raw(
+        let sampling = self.sampling.step_row(
             memory,
             offered.as_ref(),
             timed::Control {
@@ -266,12 +275,12 @@ impl Live {
                     .copied()
                     .flatten()
                     .ok_or("Sampling result without public destination")?;
-                if destination.remaining & (1 << (o.key % 4)) == 0 {
-                    return Err("Sampling public destination duplicate/uncovered lane".into());
+                if self.sample_owner.destination(o.key) != Some(destination.quad * 4 + o.key % 4) {
+                    return Err("Sampling public destination mismatch".into());
                 }
                 Ok::<_, String>(SampleWrite {
                     key: PixelKey {
-                        ticket: destination.ticket,
+                        ticket: destination,
                         lane: o.key % 4,
                     },
                     rgb: o.rgb,
@@ -283,7 +292,7 @@ impl Live {
             ce: t.ce,
             input: t.input,
             lighting_ready: t.lighting_issue_ready && lighting.input_ready && !switching,
-            sampling_ready: sampling.accepted,
+            sampling_ready: sampling.row_accepted,
             light,
             sample,
             final_issue_ready: t.final_issue_ready,
@@ -292,18 +301,31 @@ impl Live {
         })?;
         if pixels.lighting_accepted != (t.ce && lighting.input_ready && light_tick.input.is_some())
             || pixels.sampling_accepted != sampling.accepted
+            || pixels.sampling_row_accepted != sampling.row_accepted
         {
             return Err("actual branch/store handshake disagreement".into());
         }
-        if let Some(result) = sampling.results.first() {
+        let owner = self.sample_owner.tick(sample_owner::Tick {
+            ce: t.ce,
+            admission: sampling.accepted.then(|| sample_job.unwrap().ticket.quad),
+            result: sampling.results.first().map(|r| sample_owner::ResultBeat {
+                key: r.key,
+                quad_last: sampling.result_quad_last,
+            }),
+            ..Default::default()
+        });
+        if owner.fault || owner.accepted != sampling.accepted {
+            return Err("Sampling public owner handshake disagreement".into());
+        }
+        if let Some(result) = sampling
+            .results
+            .first()
+            .filter(|_| sampling.result_quad_last)
+        {
             let slot = usize::from(result.key / 4);
-            let owner = self.sample_destinations[slot]
-                .as_mut()
+            self.sample_destinations[slot]
+                .take()
                 .ok_or("Sampling result destination disappeared")?;
-            owner.remaining &= !(1 << (result.key % 4));
-            if owner.remaining == 0 {
-                self.sample_destinations[slot] = None;
-            }
         }
         if sampling.accepted {
             let job = sample_job.ok_or("Sampling admitted absent raw input")?;
@@ -311,10 +333,7 @@ impl Live {
             if self.sample_destinations[slot].is_some() || job.mask == 0 {
                 return Err("Sampling public destination reassigned while live".into());
             }
-            self.sample_destinations[slot] = Some(SampleDestination {
-                ticket: job.ticket,
-                remaining: job.mask,
-            });
+            self.sample_destinations[slot] = Some(job.ticket);
         }
         // Bank1 + loaded-valid suffice in hardware: invalidate when that draw
         // retires so reusing the same bank still reloads its new context.

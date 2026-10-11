@@ -5,12 +5,17 @@
 //! leaf modules; it does not model arithmetic, embed test vectors or retain a
 //! sampled answer:
 //!
-//! * `D`, `LOD` and coordinate kernels come from
+//! * `D` comes from
 //!   [`crate::texture::emu::derivative::rtl::emit`] over the immutable
 //!   [`super::serial::structural_calendars`] calendars (II8/II8/II2).
+//! * LOD uses the grouped checked-domain kernel in [`crate::texture::rtl::lod`],
+//!   with the generic calendar and emulator retained independently;
+//! * coordinate uses the checked physical-mip kernel in
+//!   [`crate::texture::rtl::compact_coordinate`]; the generic calendar and independent
+//!   emulator remain its numerical/phase reference;
 //! * the coefficient leaf is the hand-written accepted RTL
-//!   [`crate::texture::rtl::coefficient`];
-//! * membership and packet are the accepted [`super::runtime_rtl`] leaves.
+//!   [`crate::texture::rtl::compact_coefficient`];
+//! * membership and packet use [`crate::texture::rtl::compact_leaves`].
 //!
 //! The controller reproduces the exact old-edge CE/state semantics of
 //! [`super::serial::PreparationEmu`]: one lane, one plane and one emitted tap at
@@ -25,15 +30,15 @@
 //! Declared state inventory is the additive controller bank only (the six
 //! kernels carry their own separately audited arithmetic state):
 //!
-//! * data 128 (D wrapped UV8x16) + 54 (pending LOD input 53 + valid) + 83 (LOD
-//!   context/id) + 171 (coefficient operand/result row) + 92 (held Member) +
-//!   72 (packet head) = 600 bits;
+//! * data54 (pending LOD input53 + valid) +26 (LOD decision/id) +124
+//!   (fine fraction16 + weights72 + metadata36) =204 bits. Coordinate borrows
+//!   D's held UV8x16; Member and Packet borrow stable leaf result banks.
 //! * control 4 (state) + 2 (lane) + 1 (plane) + 2 (tap) + 1 (head valid) +
 //!   1 (terminal fault) = 11 bits.
 //!
 //! These widths are *independently verified* by [`audit`] against the emitted
 //! kernel descriptors rather than copied from the root baseline. The coefficient
-//! leaf uses a binary phase-3 counter instead of the Rust one-hot phase-8; the
+//! leaf uses local parity plus five valid bits; the
 //! controller drives it through its published `in_ready`/`in_accept` handshake
 //! and never assumes the Rust phase encoding.
 //!
@@ -43,29 +48,32 @@
 use super::runtime_rtl;
 use super::serial;
 use crate::texture::emu::derivative::rtl::{self, Descriptor, Io};
-use crate::texture::rtl::coefficient;
+use crate::texture::rtl::{
+    compact_coefficient as coefficient, compact_coordinate as coordinate, compact_leaves,
+    lod as lod_rtl,
+};
 
 /// Top-level module instantiated by the qualification testbench.
 pub const TOP: &str = "gpu_v2_texture_serial_preparation";
 /// Additive controller data-bank baseline (see module docs).
-pub const CONTROLLER_DATA_BITS: usize = 128 + 54 + 83 + 171 + 92 + 72;
+pub const CONTROLLER_DATA_BITS: usize = 54 + 26 + 124;
 /// Additive controller control-bank baseline.
 pub const CONTROLLER_CONTROL_BITS: usize = 4 + 2 + 1 + 2 + 1 + 1;
 
-/// Active data bits of the short-alignment membership leaf (E0..E4).
-pub const MEMBERSHIP_SHORT_DATA_BITS: u32 = 92 + 90 + 92 + 98 + 92;
-/// Active control bits of the short-alignment membership leaf (5 valid + fault).
-pub const MEMBERSHIP_SHORT_CONTROL_BITS: u32 = 5 + 1;
-/// Active data bits of the default membership leaf (adds E5/E6, two 92-bit banks).
-pub const MEMBERSHIP_LONG_DATA_BITS: u32 = MEMBERSHIP_SHORT_DATA_BITS + 2 * 92;
+/// Active data bits of the compact membership leaf: Common72 + Member76.
+pub const MEMBERSHIP_SHORT_DATA_BITS: u32 = 72 + 76;
+/// Two valid bits and one terminal fault bit.
+pub const MEMBERSHIP_SHORT_CONTROL_BITS: u32 = 2 + 1;
+/// Frozen default membership calendar, independent of the compact lowering.
+pub const MEMBERSHIP_LONG_DATA_BITS: u32 = 72 + 6 * 76;
 /// Active control bits of the default membership leaf (7 valid + fault).
 pub const MEMBERSHIP_LONG_CONTROL_BITS: u32 = 7 + 1;
-/// Active data bits of the short-alignment packet leaf (E0..E2).
-pub const PACKET_SHORT_DATA_BITS: u32 = 93 + 76 + 72;
-/// Active control bits of the short-alignment packet leaf (3 valid + fault).
-pub const PACKET_SHORT_CONTROL_BITS: u32 = 3 + 1;
-/// Active data bits of the default packet leaf (adds six 72-bit banks).
-pub const PACKET_LONG_DATA_BITS: u32 = PACKET_SHORT_DATA_BITS + 6 * 72;
+/// Compact packet capture77 and packed72; selection is combinational at E1.
+pub const PACKET_SHORT_DATA_BITS: u32 = 77 + 72;
+/// Two valid bits and one fault bit.
+pub const PACKET_SHORT_CONTROL_BITS: u32 = 2 + 1;
+/// Frozen default packet calendar, independent of the compact lowering.
+pub const PACKET_LONG_DATA_BITS: u32 = 77 + 8 * 72;
 /// Active control bits of the default packet leaf (9 valid + fault).
 pub const PACKET_LONG_CONTROL_BITS: u32 = 9 + 1;
 
@@ -89,7 +97,7 @@ impl LeafInventory {
             Self {
                 data_bits: MEMBERSHIP_SHORT_DATA_BITS,
                 control_bits: MEMBERSHIP_SHORT_CONTROL_BITS,
-                latency: 5,
+                latency: 2,
                 alignment_banks: 0,
             }
         } else {
@@ -97,7 +105,7 @@ impl LeafInventory {
                 data_bits: MEMBERSHIP_LONG_DATA_BITS,
                 control_bits: MEMBERSHIP_LONG_CONTROL_BITS,
                 latency: 7,
-                alignment_banks: 2,
+                alignment_banks: 5,
             }
         }
     }
@@ -107,7 +115,7 @@ impl LeafInventory {
             Self {
                 data_bits: PACKET_SHORT_DATA_BITS,
                 control_bits: PACKET_SHORT_CONTROL_BITS,
-                latency: 3,
+                latency: 2,
                 alignment_banks: 0,
             }
         } else {
@@ -115,7 +123,7 @@ impl LeafInventory {
                 data_bits: PACKET_LONG_DATA_BITS,
                 control_bits: PACKET_LONG_CONTROL_BITS,
                 latency: 9,
-                alignment_banks: 6,
+                alignment_banks: 7,
             }
         }
     }
@@ -142,8 +150,17 @@ impl Widths {
 pub struct Plan {
     pub source: String,
     pub d: Descriptor,
+    /// Generic independent numerical/calendar reference.
     pub lod: Descriptor,
+    pub lod_data_bits: usize,
+    pub lod_control_bits: usize,
+    /// Generic numerical reference descriptor; selected physical storage is
+    /// reported separately, not substituted into the reference calendar.
     pub coord: Descriptor,
+    /// Actual selected coordinate declarations (V/config32 + fine result36).
+    pub coordinate_data_bits: usize,
+    /// Interface bits read from D's paid bank; not controller UV storage.
+    pub borrowed_uv_bits: u32,
     pub widths: Widths,
     pub config: serial::Config,
     pub membership: LeafInventory,
@@ -267,9 +284,9 @@ pub fn build_with_config(config: serial::Config) -> Result<Plan, String> {
 
     // Independent verification of the frozen kernel calendars.
     for (name, inv, numeric, span, period, ii) in [
-        ("D", &d.inventory, 858usize, 17u8, 32u32, 8u32),
-        ("LOD", &lod.inventory, 264, 28, 32, 8),
-        ("COORD", &coord.inventory, 716, 9, 8, 2),
+        ("D", &d.inventory, 219usize, 3u8, 8u32, 8u32),
+        ("LOD", &lod.inventory, 83, 4, 8, 8),
+        ("COORD", &coord.inventory, 188, 2, 2, 2),
     ] {
         if inv.numeric_bits != numeric || inv.span != span || inv.period != period || inv.ii != ii {
             return Err(format!(
@@ -279,19 +296,24 @@ pub fn build_with_config(config: serial::Config) -> Result<Plan, String> {
         }
     }
 
-    let widths = Widths {
-        uv: d
+    let borrowed_uv_bits = (0..8).try_fold(0, |bits, i| {
+        let io = d
             .outputs
             .iter()
-            .find(|io| io.key == "uv0")
-            .map(|io| io.width)
-            .ok_or("D uv0 missing")?
-            * 8,
+            .find(|io| io.key == format!("uv{i}"))
+            .ok_or("D borrowed UV output missing")?;
+        if io.width != 16 {
+            return Err("D borrowed UV output width");
+        }
+        Ok(bits + io.width)
+    })?;
+    let widths = Widths {
+        uv: 0,
         pending_lod: sum_widths(&lod.inputs) + 1,
-        lod_context: sum_widths(&lod.outputs),
-        coefficient: coefficient::OUT_PAYLOAD_BITS as u32,
-        member: 92,
-        head: 72,
+        lod_context: 26,
+        coefficient: (coefficient::OUT_PAYLOAD_BITS + 16) as u32,
+        member: 0,
+        head: 0,
     };
     if widths.data() != CONTROLLER_DATA_BITS as u32 {
         return Err(format!(
@@ -306,9 +328,9 @@ pub fn build_with_config(config: serial::Config) -> Result<Plan, String> {
     let membership = LeafInventory::membership(config.short_alignment);
     let packet = LeafInventory::packet(config.short_alignment);
     if !config.short_alignment
-        && (membership.data_bits != runtime_rtl::MEMBERSHIP_DATA_BITS
+        && (membership.data_bits != MEMBERSHIP_LONG_DATA_BITS
             || membership.control_bits != runtime_rtl::MEMBERSHIP_CONTROL_BITS
-            || packet.data_bits != runtime_rtl::PACKET_DATA_BITS
+            || packet.data_bits != PACKET_LONG_DATA_BITS
             || packet.control_bits != runtime_rtl::PACKET_CONTROL_BITS)
     {
         return Err("default leaf inventory drift".into());
@@ -363,15 +385,18 @@ pub fn build_with_config(config: serial::Config) -> Result<Plan, String> {
     let mut source = String::new();
     source.push_str(&rtl::emit(&d_cal, &d.module));
     source.push('\n');
-    source.push_str(&rtl::emit(&l_cal, &lod.module));
+    source.push_str(&lod_rtl::verilog());
     source.push('\n');
-    source.push_str(&rtl::emit(&c_cal, &coord.module));
+    if coord.module != coordinate::MODULE {
+        return Err("selected coordinate module identity".into());
+    }
+    source.push_str(coordinate::verilog());
     source.push('\n');
-    source.push_str(coefficient::verilog());
+    source.push_str(&coefficient::serial_verilog());
     source.push('\n');
-    source.push_str(runtime_rtl::MEMBERSHIP_RTL);
+    source.push_str(compact_leaves::membership());
     source.push('\n');
-    source.push_str(runtime_rtl::PACKET_RTL);
+    source.push_str(compact_leaves::packet());
     source.push('\n');
     source.push_str(&controller_head(config));
     source.push_str(&d_inst);
@@ -385,7 +410,11 @@ pub fn build_with_config(config: serial::Config) -> Result<Plan, String> {
         source,
         d,
         lod,
+        lod_data_bits: lod_rtl::NUMERIC_BITS,
+        lod_control_bits: lod_rtl::CONTROL_BITS,
         coord,
+        coordinate_data_bits: coordinate::NUMERIC_BITS,
+        borrowed_uv_bits,
         widths,
         config,
         membership,
@@ -418,41 +447,52 @@ pub fn audit_with_config(config: serial::Config) -> Result<(), String> {
         "module gpu_v2_texture_serial_lod (",
         "module gpu_v2_texture_serial_coord (",
         "module gpu_v2_texture_coefficient(",
-        "module membership_leaf (",
-        "module packet_leaf (",
+        "reg [71:0] ready_ff0;",
+        "assign ready_value=ready_ff0;",
+        "cohorts<1 && queued==0",
+        "module membership_leaf #(",
+        "module packet_leaf #(",
         "endmodule",
     ] {
         if !src.contains(anchor) {
             return Err(format!("serial preparation RTL missing anchor: {anchor}"));
         }
     }
+    if src.contains("ready_ff1") {
+        return Err("closed Serial coefficient has a second ready row".into());
+    }
     if plan.widths.data() != CONTROLLER_DATA_BITS as u32
+        || plan.widths.uv != 0
+        || plan.borrowed_uv_bits != 128
         || plan.widths.pending_lod == 0
         || plan.widths.lod_context == 0
-        || plan.widths.head != 72
+        || plan.widths.head != 0
     {
         return Err("serial preparation width invariant".into());
+    }
+    if src.contains("ruv0") || !src.contains("wire [15:0] c_in_uv0 = (rlane == 2'd0) ? d_uv0") {
+        return Err("Serial Coordinate must borrow D UV directly".into());
     }
     if config.short_alignment {
         let short_membership = LeafInventory {
             data_bits: MEMBERSHIP_SHORT_DATA_BITS,
             control_bits: MEMBERSHIP_SHORT_CONTROL_BITS,
-            latency: 5,
+            latency: 2,
             alignment_banks: 0,
         };
         let short_packet = LeafInventory {
             data_bits: PACKET_SHORT_DATA_BITS,
             control_bits: PACKET_SHORT_CONTROL_BITS,
-            latency: 3,
+            latency: 2,
             alignment_banks: 0,
         };
         if plan.membership != short_membership || plan.packet != short_packet {
             return Err("short leaf inventory mismatch".into());
         }
-    } else if plan.membership.data_bits != runtime_rtl::MEMBERSHIP_DATA_BITS
+    } else if plan.membership.data_bits != MEMBERSHIP_LONG_DATA_BITS
         || plan.membership.control_bits != runtime_rtl::MEMBERSHIP_CONTROL_BITS
         || plan.membership.latency != runtime_rtl::MEMBERSHIP_LATENCY
-        || plan.packet.data_bits != runtime_rtl::PACKET_DATA_BITS
+        || plan.packet.data_bits != PACKET_LONG_DATA_BITS
         || plan.packet.control_bits != runtime_rtl::PACKET_CONTROL_BITS
         || plan.packet.latency != runtime_rtl::PACKET_LATENCY
     {
@@ -481,13 +521,17 @@ pub fn audit_with_config(config: serial::Config) -> Result<(), String> {
 
 /// Controller head with the nearest-bypass elaboration constant selected.
 fn controller_head(config: serial::Config) -> String {
+    let head = CONTROLLER_HEAD.replace(
+        "// READY_DECODE",
+        &crate::texture::rtl::context_store::ready_decode("lc", "lc_decision"),
+    );
     if config.nearest_bypass {
-        CONTROLLER_HEAD.replace(
+        head.replace(
             "localparam NEAREST_BYPASS = 1'b0;",
             "localparam NEAREST_BYPASS = 1'b1;",
         )
     } else {
-        CONTROLLER_HEAD.to_string()
+        head
     }
 }
 
@@ -608,29 +652,27 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   // writes the [511,0,0,0] fine / zero coarse row and skips the coefficient.
   localparam NEAREST_BYPASS = 1'b0;
 
-  // Controller state banks (the additive 600 data + 11 control baseline).
+  // Controller state banks (204 data +11 control; borrowed leaf results).
   reg [3:0]  state;
   reg [1:0]  rlane, rtap;
   reg        rplane;
   reg        rhead_valid, fault_reg;
-  reg [15:0] ruv0, ruv1, ruv2, ruv3, ruv4, ruv5, ruv6, ruv7;
+  // Closed Serial borrows D UV until the last Coordinate acceptance.
   reg [17:0] rslope;
   reg [15:0] rbias;
   reg [3:0]  rquad, rmask, rslot, rmax_n;
   reg        rhas_mip;
   reg [1:0]  rfilter;
   reg        rpend_valid;
-  reg signed [17:0] lc_shift;
-  reg        lc_nearest, lc_halve;
-  reg signed [11:0] lc_side0, lc_side1;
-  reg [8:0]  lc_parent0, lc_parent1;
-  reg [3:0]  lc_n0, lc_n1;
-  reg        lc_last_fine;
-  reg [3:0]  lc_quad, lc_mask, lc_slot;
+  reg [25:0] lc_decision;
+  // READY_DECODE
+  wire lc_nearest=lc_decision[4],lc_halve=(lc_n0>1),lc_last_fine=(lc_parent1==0);
+  wire[3:0] lc_quad=lc_decision[17:14],lc_mask=lc_decision[21:18],lc_slot=lc_decision[25:22];
+  reg [15:0] rfrac;
   reg [71:0] rcoef_w;
-  reg [98:0] rcoef_m;
-  reg [91:0] rmember;
-  reg [71:0] rhead;
+  reg [35:0] rcoef_m;
+  wire [75:0] rmember;
+  wire [71:0] rhead;
 
   // Submodule outputs.
   wire d_in_ready, d_fault, d_out_valid;
@@ -654,11 +696,13 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   wire [9:0] c_t1_0_0, c_t1_0_1, c_t1_1_0, c_t1_1_1;
   wire k_in_ready, k_in_accept, k_out_valid, k_fault;
   wire [71:0] k_weights;
-  wire [98:0] k_meta;
+  wire [35:0] k_meta;
   wire m_in_ready, m_out_valid, m_fault;
-  wire [91:0] m_member;
+  wire [75:0] m_member;
   wire p_in_ready, p_out_valid, p_fault;
   wire [71:0] p_packet;
+  assign rmember=m_member;
+  assign rhead=p_packet;
 
   // Enabled local clock: kernels freeze while a terminal fault is latched.
   wire gce = ce & ~fault_reg;
@@ -682,16 +726,16 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   wire l_in_valid = (state == S_LOD_ISSUE) & l_in_ready & rpend_valid & ~fault_reg;
 
   // Coordinate operand selection: lane*2 / lane*2+1 of the captured UV.
-  wire [15:0] c_in_uv0 = (rlane == 2'd0) ? ruv0 : (rlane == 2'd1) ? ruv2
-                       : (rlane == 2'd2) ? ruv4 : ruv6;
-  wire [15:0] c_in_uv1 = (rlane == 2'd0) ? ruv1 : (rlane == 2'd1) ? ruv3
-                       : (rlane == 2'd2) ? ruv5 : ruv7;
+  wire [15:0] c_in_uv0 = (rlane == 2'd0) ? d_uv0 : (rlane == 2'd1) ? d_uv2
+                       : (rlane == 2'd2) ? d_uv4 : d_uv6;
+  wire [15:0] c_in_uv1 = (rlane == 2'd0) ? d_uv1 : (rlane == 2'd1) ? d_uv3
+                       : (rlane == 2'd2) ? d_uv5 : d_uv7;
   wire c_in_valid = (state == S_COORD_ISSUE) & c_in_ready & ~fault_reg;
 
-  // Coefficient operand row (phase overlay):
-  //   at Coordinate the low 72 bits carry the Q8 fractions as weights and the
-  //   99-bit metadata carries coordinates/levels/slot/key/last_fine;
-  //   at Coefficient the same 171-bit row becomes the actual coefficient result.
+  // Fractions have their own 32-bit bank, avoiding operand/result overlay.
+  // Metadata stays with this lane until its last group; coefficient echoes
+  // cannot change it. Member and Packet result banks remain stable until the
+  // controller explicitly issues their next job, so no payload copy is needed.
   wire [161:0] k_in_payload;
   wire [7:0]   k_work = 8'd16;
   wire k_in_valid = (state == S_COEF_ISSUE) & ~fault_reg;
@@ -699,43 +743,39 @@ const CONTROLLER_HEAD: &str = r###"module gpu_v2_texture_serial_preparation (
   assign k_in_payload[0]       = lc_nearest;
   assign k_in_payload[10:1]    = { 1'b0, lc_parent0 };
   assign k_in_payload[20:11]   = { 1'b0, lc_parent1 };
-  assign k_in_payload[28:21]   = rcoef_w[7:0];
-  assign k_in_payload[36:29]   = rcoef_w[16:9];
-  assign k_in_payload[44:37]   = rcoef_w[43:36];
-  assign k_in_payload[52:45]   = rcoef_w[52:45];
-  assign k_in_payload[63:53]   = { 1'b0, rcoef_m[9:0] };
-  assign k_in_payload[74:64]   = { 1'b0, rcoef_m[19:10] };
-  assign k_in_payload[85:75]   = { 1'b0, rcoef_m[29:20] };
-  assign k_in_payload[96:86]   = { 1'b0, rcoef_m[39:30] };
-  assign k_in_payload[107:97]  = { 1'b0, rcoef_m[49:40] };
-  assign k_in_payload[118:108] = { 1'b0, rcoef_m[59:50] };
-  assign k_in_payload[129:119] = { 1'b0, rcoef_m[69:60] };
-  assign k_in_payload[140:130] = { 1'b0, rcoef_m[79:70] };
-  assign k_in_payload[144:141] = rcoef_m[83:80];
-  assign k_in_payload[148:145] = rcoef_m[87:84];
-  assign k_in_payload[153:149] = { 1'b0, rcoef_m[91:88] };
-  assign k_in_payload[160:154] = { 1'b0, rcoef_m[97:92] };
-  assign k_in_payload[161]     = rcoef_m[98];
-
-  // Membership operand selection of the active plane.
-  wire m_in_valid = (state == S_MEM_ISSUE) & ~fault_reg;
+  assign k_in_payload[28:21]   = rfrac[7:0];
+  assign k_in_payload[36:29]   = rfrac[15:8];
+  assign k_in_payload[44:37]   = 8'd0;
+  assign k_in_payload[52:45]   = 8'd0;
+  assign k_in_payload[63:53]={1'b0,rcoef_m[9:0]};
+  assign k_in_payload[74:64]=11'd0;
+  assign k_in_payload[85:75]={1'b0,rcoef_m[19:10]};
+  assign k_in_payload[140:86]=55'd0;
+  assign k_in_payload[144:141]=rcoef_m[25:22];
+  assign k_in_payload[148:145]=lc_n1;
+  assign k_in_payload[153:149]={1'b0,rcoef_m[29:26]};
+  assign k_in_payload[160:154]={1'b0,rcoef_m[35:30]};
+  assign k_in_payload[161]=lc_last_fine;
+  wire [8:0] cx=(rcoef_m[9:1]-{8'd0,rcoef_m[20]});
+  wire [8:0] cy=(rcoef_m[19:11]-{8'd0,rcoef_m[21]});
+  wire [9:0] cmask=10'd1023>>(4'd11-rcoef_m[25:22]);
+  wire [9:0] coarse_x=(rcoef_m[25:22]<=1)?rcoef_m[9:0]:({1'b0,cx}&cmask);
+  wire [9:0] coarse_y=(rcoef_m[25:22]<=1)?rcoef_m[19:10]:({1'b0,cy}&cmask);
   wire [8:0] m_in_w0 = rplane ? rcoef_w[44:36] : rcoef_w[8:0];
   wire [8:0] m_in_w1 = rplane ? rcoef_w[53:45] : rcoef_w[17:9];
   wire [8:0] m_in_w2 = rplane ? rcoef_w[62:54] : rcoef_w[26:18];
   wire [8:0] m_in_w3 = rplane ? rcoef_w[71:63] : rcoef_w[35:27];
-  wire [9:0] m_in_c0 = rplane ? rcoef_m[49:40] : rcoef_m[9:0];
-  wire [9:0] m_in_c1 = rplane ? rcoef_m[59:50] : rcoef_m[19:10];
-  wire [9:0] m_in_c2 = rplane ? rcoef_m[69:60] : rcoef_m[29:20];
-  wire [9:0] m_in_c3 = rplane ? rcoef_m[79:70] : rcoef_m[39:30];
-  wire [3:0] m_in_slot = rcoef_m[91:88];
-  wire [3:0] m_in_level = rplane ? rcoef_m[87:84] : rcoef_m[83:80];
-  wire [5:0] m_in_key = rcoef_m[97:92];
-  wire m_in_fine = ~rplane;
-  wire m_in_last_fine = rcoef_m[98];
-
-  // Packet admission of one held Member and one emitted tap.
-  wire p_in_valid = (state == S_PKT_ISSUE) & ~fault_reg;
-  wire [91:0] p_in_member = rmember;
+  wire [9:0] m_in_c0=rplane?coarse_x:rcoef_m[9:0];
+  wire [9:0] m_in_c2=rplane?coarse_y:rcoef_m[19:10];
+  wire [9:0] m_in_c1=0,m_in_c3=0; // Selected leaf consumes base only.
+  wire [3:0] m_in_slot=rcoef_m[29:26];
+  wire [3:0] m_in_level=rplane?lc_n1:rcoef_m[25:22];
+  wire [5:0] m_in_key=rcoef_m[35:30];
+  wire m_in_fine=~rplane;
+  wire m_in_last_fine=!(|rcoef_w[71:36]);
+  wire m_in_valid=(state==S_MEM_ISSUE)&~fault_reg;
+  wire p_in_valid=(state==S_PKT_ISSUE)&~fault_reg;
+  wire [75:0] p_in_member = rmember;
   wire [1:0] p_in_tap = rtap;
 
   // Cursor advance predicates (evaluated on the pre-edge head consumption).
@@ -765,18 +805,7 @@ const FSM: &str = r###"  always @(posedge clk) begin
       rplane <= 1'b0;
       rhead_valid <= 1'b0;
       fault_reg <= 1'b0;
-      ruv0 <= 16'd0; ruv1 <= 16'd0; ruv2 <= 16'd0; ruv3 <= 16'd0;
-      ruv4 <= 16'd0; ruv5 <= 16'd0; ruv6 <= 16'd0; ruv7 <= 16'd0;
-      rslope <= 18'd0; rbias <= 16'd0;
-      rquad <= 4'd0; rmask <= 4'd0; rslot <= 4'd0; rmax_n <= 4'd0;
-      rhas_mip <= 1'b0; rfilter <= 2'd0; rpend_valid <= 1'b0;
-      lc_shift <= 18'sd0; lc_nearest <= 1'b0; lc_halve <= 1'b0;
-      lc_side0 <= 12'sd0; lc_side1 <= 12'sd0;
-      lc_parent0 <= 9'd0; lc_parent1 <= 9'd0;
-      lc_n0 <= 4'd0; lc_n1 <= 4'd0; lc_last_fine <= 1'b0;
-      lc_quad <= 4'd0; lc_mask <= 4'd0; lc_slot <= 4'd0;
-      rcoef_w <= 72'd0; rcoef_m <= 99'd0;
-      rmember <= 92'd0; rhead <= 72'd0;
+      rpend_valid <= 1'b0;
     end else if (ce) begin
       if (fault_reg) begin
         // Terminal: all handshakes and kernels stay blocked.
@@ -788,8 +817,6 @@ const FSM: &str = r###"  always @(posedge clk) begin
             state <= S_DERIV;
           end
           S_DERIV: if (d_out_valid) begin
-            ruv0 <= d_uv0; ruv1 <= d_uv1; ruv2 <= d_uv2; ruv3 <= d_uv3;
-            ruv4 <= d_uv4; ruv5 <= d_uv5; ruv6 <= d_uv6; ruv7 <= d_uv7;
             rslope <= d_slope; rbias <= d_bias;
             rquad <= d_quad; rmask <= d_mask; rslot <= d_slot; rmax_n <= d_max_n;
             rhas_mip <= d_has_mip; rfilter <= d_filter; rpend_valid <= 1'b1;
@@ -800,51 +827,39 @@ const FSM: &str = r###"  always @(posedge clk) begin
             state <= S_LOD;
           end
           S_LOD: if (l_out_valid) begin
-            lc_shift <= l_shift0; lc_nearest <= l_nearest; lc_halve <= l_halve;
-            lc_side0 <= l_side0; lc_side1 <= l_side1;
-            lc_parent0 <= l_parent0; lc_parent1 <= l_parent1;
-            lc_n0 <= l_n0; lc_n1 <= l_n1; lc_last_fine <= l_last_fine;
-            lc_quad <= l_quad; lc_mask <= l_mask; lc_slot <= l_slot;
+            lc_decision <= {l_slot,l_mask,l_quad,l_parent1,l_nearest,l_n0};
             rlane <= lowbit4(l_mask);
             state <= S_COORD_ISSUE;
           end
           S_COORD_ISSUE: if (c_in_valid) state <= S_COORD;
           S_COORD: if (c_out_valid) begin
-            rcoef_m[9:0]   <= c_t0_0_0; rcoef_m[19:10] <= c_t0_0_1;
-            rcoef_m[29:20] <= c_t0_1_0; rcoef_m[39:30] <= c_t0_1_1;
-            rcoef_m[49:40] <= c_t1_0_0; rcoef_m[59:50] <= c_t1_0_1;
-            rcoef_m[69:60] <= c_t1_1_0; rcoef_m[79:70] <= c_t1_1_1;
-            rcoef_m[83:80] <= lc_n0; rcoef_m[87:84] <= lc_n1;
-            rcoef_m[91:88] <= lc_slot; rcoef_m[97:92] <= { lc_quad, rlane };
-            rcoef_m[98] <= lc_last_fine;
-            // Nearest bypass: exact [511,0,0,0] fine / zero coarse row into the
-            // existing result bank, plane 0, straight to membership.
+            rcoef_m<={{lc_quad,rlane},lc_slot,lc_n0,
+              (!c_t0_1_0[0]&&!c_f0_1[7]),(!c_t0_0_0[0]&&!c_f0_0[7]),c_t0_1_0,c_t0_0_0};
             if (NEAREST_BYPASS & lc_nearest) begin
               rcoef_w <= 72'd511;
               rplane  <= 1'b0;
               state   <= S_MEM_ISSUE;
             end else begin
-              rcoef_w <= { 9'd0, 9'd0, { 1'b0, c_f1_1 }, { 1'b0, c_f1_0 },
-                           9'd0, 9'd0, { 1'b0, c_f0_1 }, { 1'b0, c_f0_0 } };
+              rfrac <= {c_f0_1,c_f0_0};
               state   <= S_COEF_ISSUE;
             end
           end
           S_COEF_ISSUE: if (k_in_accept) state <= S_COEF;
           S_COEF: if (k_out_valid) begin
             rcoef_w <= k_weights;
-            rcoef_m <= k_meta;
+            // Keep the current lane metadata; no redundant coefficient echo.
             rplane <= (k_weights[35:0] == 36'd0) ? 1'b1 : 1'b0;
             state <= S_MEM_ISSUE;
           end
           S_MEM_ISSUE: state <= S_MEM;
           S_MEM: if (m_out_valid) begin
-            rmember <= m_member;
+            // Borrow the membership result until the next plane is issued.
             rtap <= lowbit4(m_member[39:36]);
             state <= S_PKT_ISSUE;
           end
           S_PKT_ISSUE: state <= S_PKT;
           S_PKT: if (p_out_valid) begin
-            rhead <= p_packet;
+            // Packet result remains stable throughout the held-head state.
             rhead_valid <= 1'b1;
             state <= S_HEAD;
           end

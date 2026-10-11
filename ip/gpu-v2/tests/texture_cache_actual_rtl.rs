@@ -526,18 +526,42 @@ fn bounded(mut command: std::process::Command, dir: &std::path::Path, name: &str
     }
 }
 
-fn run_icarus(scenario: &Scenario, edges: &[Edge], counter: usize) {
+fn run_icarus(scenario: &Scenario, edges: &[Edge], counter: usize, gowin: bool) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/opencode/texture-cache-round2")
-        .join(scenario.name);
+        .join(scenario.name)
+        .join(if gowin { "gowin" } else { "portable" });
     std::fs::create_dir_all(&dir).unwrap();
     let bytes = support::asset(scenario.slot, support::pattern);
     std::fs::write(
         dir.join("gpu_v2_texture_cache.v"),
-        rtl::verilog(&[scenario.slot]),
+        format!(
+            "{}{}",
+            if gowin {
+                "`define GPU_V2_GOWIN_DSP\n"
+            } else {
+                ""
+            },
+            rtl::verilog(&[scenario.slot])
+        ),
     )
     .unwrap();
     let mut tb = testbench(edges, counter);
+    tb = tb.replace(
+        "module tb;",
+        if gowin {
+            "module tb; GSR GSR(.GSRI(1'b1));"
+        } else {
+            "module tb;"
+        },
+    );
+    // These ownership facts make the physical single-write state/tag ports safe.
+    tb.push_str("\nmodule cache_port_invariants(input clk,reset,desc_valid,tag_write,tag_read,publish,read_issue,input[3:0]desc_set,head_set);always @(posedge clk)if(!reset)begin if(desc_valid && desc_set!==head_set)$fatal(1,\"descriptor changed head set\");if(tag_write && tag_read)$fatal(1,\"tag read/write collision\");if(publish && read_issue)$fatal(1,\"two PLRU writers\");end endmodule\n");
+    tb = tb.replacen(
+        "gpu_v2_texture_cache dut(",
+        "cache_port_invariants invariants(.clk(clk),.reset(reset),.desc_valid(dut.desc_valid),.tag_write(dut.tag_write),.tag_read(dut.tag_read),.publish(dut.publish),.read_issue(dut.read_issue),.desc_set(dut.desc_line[5:2]),.head_set(dut.head_set));\ngpu_v2_texture_cache dut(",
+        1,
+    );
     tb.push_str(&memory_module(
         bytes.len(),
         scenario.ack_delay,
@@ -563,6 +587,11 @@ fn run_icarus(scenario: &Scenario, edges: &[Edge], counter: usize) {
         "gpu_v2_texture_cache.v",
         "tb.v",
     ]);
+    if gowin {
+        let home = std::env::var_os("GOWIN_HOME")
+            .expect("GOWIN_HOME is required for native tag RAM replay");
+        compile.arg(std::path::PathBuf::from(home).join("IDE/simlib/gw2a/prim_sim.v"));
+    }
     bounded(compile, &dir, "compile", Duration::from_secs(120));
     let mut run = std::process::Command::new(&runtime);
     run.current_dir(&dir).arg("test.vvp");
@@ -836,7 +865,7 @@ fn iverilog_matches_emu_every_edge_and_every_memory_beat() {
         let (edges, count) = record(&scenario);
         assert!(count > 0, "{}: empty stimulus", scenario.name);
         total += count;
-        run_icarus(&scenario, &edges, count);
+        run_icarus(&scenario, &edges, count, false);
     }
     assert!(
         total > 194,
@@ -848,6 +877,10 @@ fn iverilog_matches_emu_every_edge_and_every_memory_beat() {
 #[test]
 #[ignore = "requires Icarus (IVERILOG_EXE/VVP_EXE)"]
 fn iverilog_abort_drains_accepted_burst() {
+    replay_abort(false);
+}
+
+fn replay_abort(gowin: bool) {
     let scenario = Scenario {
         name: "abort_mid_burst",
         slot: support::slot(5, true),
@@ -882,5 +915,20 @@ fn iverilog_abort_drains_accepted_burst() {
             .all(|e| !e.out_valid),
         "no output may appear after abort"
     );
-    run_icarus(&scenario, &edges, count);
+    run_icarus(&scenario, &edges, count, gowin);
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn gowin_tag_banks_match_emu_every_edge_and_every_memory_beat() {
+    let mut total = 0;
+    for scenario in scenarios() {
+        let (edges, count) = record(&scenario);
+        assert!(count > 0, "{}: empty stimulus", scenario.name);
+        total += count;
+        run_icarus(&scenario, &edges, count, true);
+    }
+    assert!(total > 194);
+    replay_abort(true);
+    println!("total native co-simulated edges: {total}");
 }

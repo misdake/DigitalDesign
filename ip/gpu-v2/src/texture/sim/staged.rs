@@ -109,34 +109,35 @@ fn derivatives(q: &QuadInput, slot: Slot) -> Result<Stage, counted::Error> {
         *v = f.binary_scale(f.read(uv_address(store, i))?)?;
         f.publish(&format!("uv{i}"), f.slice::<16, 0, false, 0>(*v)?)?;
     }
-    let mut mags = [Magnitude::constant::<0>(); 8];
-    for (edge, (a, b)) in [(0, 1), (2, 3), (0, 2), (1, 3)].into_iter().enumerate() {
-        for axis in 0..2 {
-            let d: Difference = f.sub(uvs[b * 2 + axis], uvs[a * 2 + axis])?;
-            f.publish(&format!("d{edge}.{axis}"), d)?;
-            mags[edge * 2 + axis] = f.resize_exact(f.select(
-                f.less(d, Difference::constant::<0>())?,
-                f.sub_same(Difference::constant::<0>(), d)?,
-                d,
-            )?)?;
-        }
+    // The four square edges form K2,2 between diagonals {0,3} and {1,2}.
+    // The largest absolute edge difference is therefore the larger of the
+    // two cross-extrema differences. A global range would include diagonals
+    // and is not equivalent. Signed18 inputs require signed19 differences.
+    let mut axes = [Difference::constant::<0>(); 2];
+    for axis in 0..2 {
+        let a = [uvs[axis], uvs[6 + axis]];
+        let b = [uvs[2 + axis], uvs[4 + axis]];
+        let aless = f.less(a[0], a[1])?;
+        let bless = f.less(b[0], b[1])?;
+        let amin = f.select(aless, a[0], a[1])?;
+        let amax = f.select(aless, a[1], a[0])?;
+        let bmin = f.select(bless, b[0], b[1])?;
+        let bmax = f.select(bless, b[1], b[0])?;
+        let forward: Difference = f.sub(amax, bmin)?;
+        let backward: Difference = f.sub(bmax, amin)?;
+        axes[axis] = f.select(f.less(forward, backward)?, backward, forward)?;
+        f.publish(&format!("axis{axis}"), axes[axis])?;
     }
-    // Balanced three-level max tree; no running-maximum feedback across edges.
-    for span in [4, 2, 1] {
-        for i in 0..span {
-            mags[i] = f.select(
-                f.less(mags[i * 2], mags[i * 2 + 1])?,
-                mags[i * 2 + 1],
-                mags[i * 2],
-            )?;
-        }
-    }
+    // At least one cross-extrema difference per axis is nonnegative. The
+    // selected maximum is exactly the original unsigned18 edge magnitude.
+    let largest = f.select(f.less(axes[0], axes[1])?, axes[1], axes[0])?;
+    let magnitude: Magnitude = f.resize_exact(largest)?;
     f.publish(
         "slope",
         f.select(
             f.read(force.at::<0>())?,
             Magnitude::constant::<131073>(),
-            mags[0],
+            magnitude,
         )?,
     )?;
     f.publish("bias", f.read(bias.at::<0>())?)?;
@@ -163,7 +164,6 @@ fn lod(d: &Stage) -> Result<Stage, Fault> {
     let filter: FilterCodeStore = m.input("filter", &[d.raw("filter")])?;
     let base: ByteAddressStore = m.input("base", &[d.raw("base")])?;
     let log: LogEntryStore = m.table("log2_64", &LOG)?;
-    let prefixes: PrefixStore = m.table("mip_prefix", &PREFIX)?;
     let f = m.compute("texture_lod_context", 512)?;
     let s = f.read(slope.at::<0>())?;
     let max_n = f.read(meta.at::<0>())?;
@@ -183,11 +183,12 @@ fn lod(d: &Stage) -> Result<Stage, Fault> {
         Magnitude::constant::<1>(),
         f.select(zero, Magnitude::constant::<1>(), s)?,
     )?)?;
-    let h: Shift = f.sub_same(Shift::constant::<19>(), f.leading_zeros(safe)?)?;
-    let norm: NormalizedShort = f.shift(
-        f.resize_exact(safe)?,
-        f.sub_same(Shift::constant::<19>(), h)?,
-    )?;
+    let leading = f.leading_zeros(safe)?;
+    let h: Shift = f.sub_same(Shift::constant::<19>(), leading)?;
+    // The normalization shift is exactly CLZ, not 19 - (19 - CLZ).
+    // Keep h only for the exponent consumer; do not serialize the barrel
+    // shifter behind two cancelling registered subtractions.
+    let norm: NormalizedShort = f.shift(f.resize_exact(safe)?, leading)?;
     let tail: MantissaShort = f.slice::<19, 13, false, 0>(norm)?;
     let k: TableIndex = f.round_to(tail)?;
     let carry = counted::eq(&f, k, TableIndex::constant::<64>())?;
@@ -250,10 +251,9 @@ fn lod(d: &Stage) -> Result<Stage, Fault> {
             &format!("shift{which}"),
             f.sub::<18, 0, true>(physical, Size::constant::<8>())?,
         )?;
-        f.publish(
-            &format!("prefix{which}"),
-            f.select(has, f.read(prefixes.indexed(n))?, Prefix::constant::<0>())?,
-        )?;
+        // Prefix offsets belong to cache address translation (and the full
+        // counted oracle). Sampling publishes mip levels, never these offsets;
+        // diagnostic prefix reads must not delay its live LOD context.
     }
     f.publish(
         "parent0",

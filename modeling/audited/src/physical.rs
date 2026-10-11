@@ -155,6 +155,26 @@ impl LogicCone {
         if !frame.valid {
             return Err(bad("logic cone requires a valid numerical frame"));
         }
+        self.audit_structure(frame)
+    }
+
+    /// Validate the wiring certificate without consulting sampled arithmetic
+    /// results. Executable calendar constructors use this after numerical
+    /// planning; poisoning nonliteral samples must not change emitted hardware.
+    pub fn audit_structure(&self, frame: &FrameReport) -> Result<(), Fault> {
+        if frame.events.iter().enumerate().any(|(id, e)| {
+            e.id != id
+                || e.inputs.iter().any(|&v| v >= frame.values.len())
+                || e.output.is_some_and(|v| v >= frame.values.len())
+                || e.control.is_some_and(|c| c >= frame.events.len())
+        }) || frame.values.iter().enumerate().any(|(v, value)| {
+            frame
+                .events
+                .get(value.producer)
+                .is_none_or(|e| e.output != Some(v))
+        }) {
+            return Err(bad("logic cone structural provenance"));
+        }
         if self.absorbed_events.len() > 64
             || !(1..=126).contains(&self.max_width)
             || self.latency == 0
@@ -172,6 +192,27 @@ impl LogicCone {
             || exports.iter().any(|id| !self.absorbed_events.contains(id))
         {
             return Err(bad("logic cone exported result certificate"));
+        }
+        for &id in &exports {
+            let e = frame
+                .events
+                .get(id)
+                .ok_or_else(|| bad("logic cone export index"))?;
+            if e.inputs.len() == 1
+                && matches!(
+                    e.operation,
+                    Operation::Resize
+                        | Operation::BinaryScale
+                        | Operation::Slice(_)
+                        | Operation::ShiftLeft(_)
+                        | Operation::RescaleFloor(_)
+                )
+            {
+                let source = frame.values[e.inputs[0]].producer;
+                if self.absorbed_events.contains(&source) && !exports.contains(&source) {
+                    return Err(bad("logic cone exported alias hides storage source"));
+                }
+            }
         }
         let mut external = BTreeSet::new();
         for &id in &members {

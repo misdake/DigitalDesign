@@ -37,20 +37,39 @@ fn run(mut command: Command, dir: &std::path::Path, name: &str) {
 #[test]
 #[ignore = "requires Icarus"]
 fn malformed_ports_and_terminal_drain_are_real_rtl_checks() {
+    replay_faults(false);
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn gowin_fault_drain_and_reset_masks_hide_stale_tag_and_state_ram() {
+    replay_faults(true);
+}
+
+fn replay_faults(gowin: bool) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/gpu-overnight-20261006/cache-fault-rtl");
+        .join("../../target/gpu-overnight-20261006/cache-fault-rtl")
+        .join(if gowin { "gowin" } else { "portable" });
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("dut.v"),
-        cache::verilog(&[Slot {
-            base_address: 4096,
-            has_full_mip: false,
-            max_size_log2: 6,
-            valid: true,
-        }]),
+        format!(
+            "{}{}",
+            if gowin {
+                "`define GPU_V2_GOWIN_DSP\n"
+            } else {
+                ""
+            },
+            cache::verilog(&[Slot {
+                base_address: 4096,
+                has_full_mip: false,
+                max_size_log2: 6,
+                valid: true,
+            }])
+        ),
     )
     .unwrap();
-    fs::write(dir.join("tb.v"),r#"
+    let bench = r#"
 module tb;
  reg clk=0; always #5 clk=~clk;
  reg reset=1,ce=1,abort=0,iv=0,orr=1,mready=0,rv=0,ack=0,ok=1;
@@ -101,16 +120,36 @@ module tb;
    rv=0;ack=0;b=0;while(!ov && b<20)begin step_edge;b=b+1;end
    if(!ov || fault || !drained || {t0,t1,t2,t3}!=64'h07e007e007e007e0)
      $fatal(1,"legal read/output did not work after reset");
+   // Preserve initialized physical RAM, reset only architectural ownership,
+   // then reuse the same key with different actual memory data.
+   request;
+   data=64'hf800f800f800f800;
+   for(i=1;i<16;i=i+1)begin rv=1;ri=i;ack=(i==15);step_edge;end
+   rv=0;ack=0;b=0;while(!ov && b<20)begin step_edge;b=b+1;end
+   // Beat0 used the old data intentionally: local(0,0) spans beats0 and2.
+   if(!ov || fault || !drained || {t0,t1,t2,t3}!=64'h07e007e0f800f800)
+     $fatal(1,"stale RAM escaped reset masks or refill did not replace data");
    $display("PASS raw port/terminal/CE0 faults and real legal output");$finish;
  end
  initial begin #20000;$fatal(1,"HDL watchdog");end
 endmodule
-"#).unwrap();
+"#;
+    let bench = if gowin {
+        bench.replace("module tb;", "module tb; GSR GSR(.GSRI(1'b1));")
+    } else {
+        bench.to_string()
+    };
+    fs::write(dir.join("tb.v"), bench).unwrap();
     let mut compile =
         Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()));
     compile
         .current_dir(&dir)
         .args(["-g2012", "-s", "tb", "-o", "sim.vvp", "dut.v", "tb.v"]);
+    if gowin {
+        let home = std::env::var_os("GOWIN_HOME")
+            .expect("GOWIN_HOME is required for native cache RAM replay");
+        compile.arg(std::path::PathBuf::from(home).join("IDE/simlib/gw2a/prim_sim.v"));
+    }
     run(compile, &dir, "compile");
     let mut simulate = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()));
     simulate.current_dir(&dir).arg("sim.vvp");

@@ -124,23 +124,23 @@ Its replacement policy is a functional implementation choice; it does not claim
 the bounded hardware-control model's timing or physical storage. Cache activity
 does not replace numerical calculation with an average delay or a saved image.
 
-## Browser and verification
+## Historical browser adapter and verification
 
-[Browser instructions](../web/README.md#full-chain-comparison) describe the A/B
-controls and build. Initial scenes are a smooth triangulated sphere, coarse
+The historical browser adapter and its build instructions are not included in
+this checkout. Its A/B controls used a smooth triangulated sphere, coarse
 interpolation, a tilted mipmapped checker plane and near-plane clipping. Light
 yaw uses sin/cos over ±180 degrees, including ±90, avoiding a tan singularity.
 Material Ia/Id, actual exponent code and independent Cs are visible controls.
 Displayed RGB is expanded materialized RGB565 followed by a Rust sRGB lookup.
 Diff compares the actual A/B display bytes; g/h and D16 remain separately available.
 
-The default web entry runs native Rust through a local WebSocket server, with
+The historical web entry ran native Rust through a local WebSocket server, with
 whole-frame binary responses, latest-request coalescing and reconnect recovery.
 It needs no WASM build. Networking, request serialization and server state remain
 in the standalone host adapter. Rayon is an optional native IP dependency. A/B
 arithmetic and comparison remain in the IP; the historical WASM adapter uses the
-sequential entry. Full transport and build contracts live in the browser
-instructions linked above.
+sequential entry. Earlier transport and build instructions were stored with the
+omitted browser adapter.
 
 Native regressions cover all4096 compact normal codes, all65536 Q14 producer
 codes, all17 exponents against the audited compact arithmetic, independent

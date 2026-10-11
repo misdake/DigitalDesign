@@ -24,6 +24,7 @@ fn fields(values: &[(u128, usize)]) -> u128 {
     }
     result
 }
+#[allow(dead_code)]
 pub(super) fn golden_member_banks(v: member::Input) -> [u128; 7] {
     let mut capture: Vec<_> = v.weights.into_iter().map(|w| (w.into(), 9)).collect();
     capture.extend(v.coordinates.map(|c| (c.into(), 10)));
@@ -68,6 +69,7 @@ pub(super) fn golden_member_banks(v: member::Input) -> [u128; 7] {
         member,
     ]
 }
+#[allow(dead_code)]
 pub(super) fn golden_packet_banks(v: member::Input, tap: usize) -> [u128; 9] {
     let word = golden_member(v);
     // Independent bit-vector deletion, rather than the DUT compression formula.
@@ -401,4 +403,39 @@ fn dynamic_counted_guard_rejects_helpers_and_programs_and_restores_compile_scope
     super::membership_values([1, 0, 0, 0], [0; 4], [0; 3], 0, [1, 1]).unwrap();
     let after = super::counted_call_guard::calls();
     assert_eq!(after[0], before[0] + 1);
+}
+
+// Selected profile goldens derive fields from the independent coordinate tuples.
+pub(super) fn compact_common(v: member::Input) -> u128 {
+    let mut vs: Vec<_> = v.weights.into_iter().map(|w| (w.into(), 9)).collect();
+    vs.extend([
+        (u128::from(v.coordinates[0] / 8), 7),
+        (u128::from(v.coordinates[2] / 8), 7),
+        (u128::from(v.coordinates[0] % 8), 3),
+        (u128::from(v.coordinates[2] % 8), 3),
+        (v.slot.into(), 4),
+        (v.level.into(), 4),
+        ((v.key / 4).into(), 4),
+        ((v.key % 4).into(), 2),
+        (v.fine.into(), 1),
+        ((!v.fine || v.last_fine).into(), 1),
+    ]);
+    fields(&vs)
+}
+pub(super) fn compact_member(v: member::Input) -> u128 {
+    let c = compact_common(v);
+    let mask = groups(v).into_iter().fold(0u128, |m, i| m | (1 << i));
+    (c & ((1 << 36) - 1)) | (mask << 36) | ((c >> 36) << 40)
+}
+pub(super) fn compact_packet_capture(v: member::Input, tap: usize) -> u128 {
+    let m = compact_member(v);
+    let mut c = 0;
+    let mut next = 0;
+    for b in 0..76 {
+        if b != 36 {
+            c |= ((m >> b) & 1) << next;
+            next += 1;
+        }
+    }
+    c | ((tap as u128) << next)
 }

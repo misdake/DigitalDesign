@@ -11,14 +11,18 @@ use crate::texture::emu::color::{
     ColorEmu, Event as ColorEvent, Input as ColorInput, Output as ColorOutput, Step as ColorStep,
     Tick as ColorTick,
 };
+use crate::texture::emu::context_store::Raw;
 use crate::texture::emu::derivative;
 use crate::texture::ports::{QuadInput, RawQuadInput, RefillPort, Slot};
 use crate::texture::sim::timed;
 
 const FAULT: &str = "sampling runtime terminal fault; recreate before reuse";
-/// Capture137 + public lanes64 + accepted coverage64 + terminal fault1.
+#[cfg(test)]
+#[path = "runtime_demand_qualification.rs"]
+mod demand_qualification;
+/// Capture137 + terminal fault1; cache owns public lanes and preparation owns lane validity.
 /// Existing preparation/cache/ColorEmu storage is charged by its owner.
-pub const LINK_STATE_BITS: usize = 137 + 64 + 64 + 1;
+pub const LINK_STATE_BITS: usize = 137 + 1;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -41,7 +45,6 @@ pub struct Snapshot {
     pub color_input: bool,
     pub result_lanes: [u8; 16],
     pub preparation_live: u16,
-    pub preparation_masks: [u8; 16],
     pub color: crate::texture::emu::color::Snapshot,
     pub cache: timed::Snapshot,
 }
@@ -55,9 +58,12 @@ pub struct Step {
     /// Pre-edge ready for the offered ID; CE is a separate acceptance condition.
     pub input_ready: bool,
     pub accepted: bool,
+    /// An actual UV row handshake; accepted remains the fourth-row publication.
+    pub row_accepted: bool,
     pub results: Vec<ColorOutput>,
-    /// Closed-color lifecycle shadow, never public result ownership.
-    pub cache_commits: Vec<timed::PixelResult>,
+    /// Combinational event from the sole public lane owner on actual consumption.
+    /// No second coverage mask is retained by the composition adapter.
+    pub result_quad_last: bool,
     pub color: ColorStep,
     pub cache: timed::Step,
     pub preparation: PreparationStep,
@@ -69,44 +75,114 @@ pub struct Runtime {
     cache: timed::Machine,
     color: ColorEmu,
     color_input: Option<ColorInput>,
-    remaining: [u8; 16],
-    /// Actual accepted coverage for mapping covered-lane ordinals to key6.
-    /// Not a golden program table; expires after the last preparation packet.
-    masks: [u8; 16],
     wall: u64,
     max_wall: u64,
     faulted: bool,
     pub stats: Stats,
 }
 
+/// Caller-owned Sample queue descriptor and immutable draw configuration stay
+/// stable through all four accepted rows. Only row0 stores Raw; every helper's
+/// S18F16 UV pair writes directly into the canonical UV/D transport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowInput {
+    pub raw: Raw,
+    pub uv_q16: [i64; 2],
+}
+
 #[derive(Clone, Copy)]
 enum Offer<'a> {
     Quantized(&'a RawQuadInput),
     Legacy(&'a QuadInput),
+    Row(&'a RowInput),
 }
 impl Offer<'_> {
     fn quad(self) -> u8 {
         match self {
             Self::Quantized(q) => q.quad_id,
             Self::Legacy(q) => q.quad_id,
+            Self::Row(q) => q.raw.header.quad,
         }
     }
     fn capture(self) -> Result<RawQuadInput, String> {
         match self {
             Self::Quantized(q) => Ok(*q),
             Self::Legacy(q) => RawQuadInput::capture(q),
+            Self::Row(_) => Err("Runtime row cannot recapture a full Quad".into()),
         }
     }
 }
 
 impl Runtime {
+    /// Static P16/G48/ring64 profile; default Public16 and cache ownership stay.
+    pub fn new_group48(
+        slots: &[Slot],
+        preparation_hardware: PreparationHardware,
+        cache_hardware: timed::Hardware,
+        max_wall: u64,
+    ) -> Result<Self, String> {
+        let mut r = Self::new(slots, preparation_hardware, cache_hardware, max_wall)?;
+        r.cache.select_group48();
+        Ok(r)
+    }
+
     /// One immutable texture context. To change slots, drain then recreate.
     /// max_wall bounds the lifetime of this instance, not a preloaded workload.
     pub fn new(
         slots: &[Slot],
         preparation_hardware: PreparationHardware,
+        cache_hardware: timed::Hardware,
+        max_wall: u64,
+    ) -> Result<Self, String> {
+        Self::with_transport(
+            slots,
+            preparation_hardware,
+            cache_hardware,
+            max_wall,
+            false,
+            false,
+        )
+    }
+    /// Production row transport, sharing the same arithmetic/cache execution.
+    pub fn new_rows(
+        slots: &[Slot],
+        preparation_hardware: PreparationHardware,
+        cache_hardware: timed::Hardware,
+        max_wall: u64,
+    ) -> Result<Self, String> {
+        Self::with_transport(
+            slots,
+            preparation_hardware,
+            cache_hardware,
+            max_wall,
+            true,
+            false,
+        )
+    }
+    /// Explicit continuous Context8 preparation; existing constructors retain the reference allocation.
+    pub fn new_rows_profile(
+        slots: &[Slot],
+        preparation_hardware: PreparationHardware,
+        cache_hardware: timed::Hardware,
+        max_wall: u64,
+        continuous_prepare: bool,
+    ) -> Result<Self, String> {
+        Self::with_transport(
+            slots,
+            preparation_hardware,
+            cache_hardware,
+            max_wall,
+            true,
+            continuous_prepare,
+        )
+    }
+    fn with_transport(
+        slots: &[Slot],
+        preparation_hardware: PreparationHardware,
         mut cache_hardware: timed::Hardware,
         max_wall: u64,
+        rows: bool,
+        continuous_prepare: bool,
     ) -> Result<Self, String> {
         if max_wall == 0 || max_wall > 2_000_000 {
             return Err("sampling runtime wall bound".into());
@@ -125,13 +201,17 @@ impl Runtime {
         // Separate allocation receipt; legacy Session inventory/audit stays intact.
         super::runtime_inventory::describe(&binding, preparation_hardware, &cache_hardware)?;
         Ok(Self {
-            preparation: Preparation::new(binding, preparation_hardware)?,
-            cache: timed::Machine::new(slots.to_vec(), cache_hardware)
+            preparation: if rows && continuous_prepare {
+                Preparation::new_rows_profile(binding, preparation_hardware, true)?
+            } else if rows {
+                Preparation::new_rows(binding, preparation_hardware)?
+            } else {
+                Preparation::new(binding, preparation_hardware)?
+            },
+            cache: timed::Machine::new_runtime_capture(slots.to_vec(), cache_hardware)
                 .map_err(|e| format!("cache machine: {e:?}"))?,
             color: ColorEmu::new(max_wall)?,
             color_input: None,
-            remaining: [0; 16],
-            masks: [0; 16],
             wall: 0,
             max_wall,
             faulted: false,
@@ -144,16 +224,27 @@ impl Runtime {
     }
 
     /// Combinational ready for a caller-owned ID, independent of caller CE.
-    /// Conservative pre-edge credit: no same-edge release or color acceptance
-    /// is predicted. A downstream credit shortage eventually gates this port.
+    /// Existing Color data may leave on this edge when its old-state credit
+    /// allows it. No same-edge result release is borrowed for that decision.
     pub fn input_ready(&self, quad: u8) -> bool {
         !self.faulted
             && self.wall < self.max_wall
             && quad < 16
-            && self.color_input.is_none()
-            && self.remaining[usize::from(quad)] == 0
+            && self
+                .color_input
+                .is_none_or(|input| self.color.input_ready(input.payload >> 65 & 1 != 0))
             && self.preparation.input_ready(quad)
             && self.cache.external_ready(quad)
+    }
+    /// Row0 checks all old owners; continuation uses the already reserved tail.
+    pub fn row_ready(&self, quad: u8) -> bool {
+        !self.faulted
+            && self.wall < self.max_wall
+            && self.preparation.row_ready(quad)
+            && (self.preparation.row_index() != 0 || self.input_ready(quad))
+    }
+    pub fn input_row(&self) -> usize {
+        self.preparation.row_index()
     }
 
     /// No end-of-stream marker is needed: caller owns future offers.
@@ -163,11 +254,19 @@ impl Runtime {
             && self.cache.idle()
             && self.color_input.is_none()
             && self.color.idle()
-            && self.remaining == [0; 16]
     }
 
     pub fn cache_stats(&self) -> &timed::Stats {
         &self.cache.stats
+    }
+    /// Immutable constructor-owned texture configuration; callers do not own a
+    /// second mutable slot table merely to present a Sample row's Raw wires.
+    pub fn texture_slot(&self, slot: u8) -> Option<Slot> {
+        self.cache
+            .external_context()
+            .0
+            .get(usize::from(slot))
+            .copied()
     }
 
     pub fn preparation_stats(&self) -> &super::control::Stats {
@@ -178,9 +277,8 @@ impl Runtime {
         Snapshot {
             wall: self.wall,
             color_input: self.color_input.is_some(),
-            result_lanes: self.remaining,
+            result_lanes: self.cache.remaining_lanes(),
             preparation_live: self.preparation.live_mask(),
-            preparation_masks: self.masks,
             color: self.color.snapshot(),
             cache: self.cache.snapshot(),
         }
@@ -197,6 +295,9 @@ impl Runtime {
         offered: Option<&QuadInput>,
         control: timed::Control,
     ) -> Result<Step, String> {
+        if self.preparation.is_rows() && offered.is_some() {
+            return Err("Runtime atomic offer on row transport".into());
+        }
         self.advance(memory, offered.map(Offer::Legacy), control)
     }
 
@@ -208,7 +309,23 @@ impl Runtime {
         offered: Option<&RawQuadInput>,
         control: timed::Control,
     ) -> Result<Step, String> {
+        if self.preparation.is_rows() && offered.is_some() {
+            return Err("Runtime atomic offer on row transport".into());
+        }
         self.advance(memory, offered.map(Offer::Quantized), control)
+    }
+    /// The caller removes each source row on row_accepted, and its source entry
+    /// only on accepted. No full-quad assembly is captured on this path.
+    pub fn step_row<M: RefillPort + ?Sized>(
+        &mut self,
+        memory: &mut M,
+        offered: Option<&RowInput>,
+        control: timed::Control,
+    ) -> Result<Step, String> {
+        if !self.preparation.is_rows() {
+            return Err("Runtime row call on atomic transport".into());
+        }
+        self.advance(memory, offered.map(Offer::Row), control)
     }
 
     fn advance<M: RefillPort + ?Sized>(
@@ -242,16 +359,44 @@ impl Runtime {
         if control.ce && offered.is_some_and(|q| q.quad() >= 16) {
             return Err("sampling runtime quad ID exceeds key6".into());
         }
-        let input_ready = offered.is_some_and(|q| self.input_ready(q.quad()));
+        let input_ready = offered.is_some_and(|q| match q {
+            Offer::Row(r) => self.row_ready(r.raw.header.quad),
+            _ => self.input_ready(q.quad()),
+        });
         // Capture only boundary fields, never input-dependent arithmetic or
         // expected packet/result counts. Each stage computes from old registers.
-        let captured = if input_ready && control.ce {
+        let captured = if input_ready && control.ce && !matches!(offered, Some(Offer::Row(_))) {
             let q = offered.unwrap().capture()?;
             let slots = self.cache.external_context().0;
             let slot = *slots
                 .get(usize::from(q.slot))
                 .ok_or("sampling runtime slot")?;
             Some(derivative::Input::from_raw(&q, slot)?)
+        } else {
+            None
+        };
+        let captured_row = if input_ready && control.ce {
+            match offered {
+                Some(Offer::Row(r)) => {
+                    if self.preparation.row_index() == 0 {
+                        r.raw.pack()?;
+                        let slot = self
+                            .cache
+                            .external_context()
+                            .0
+                            .get(usize::from(r.raw.header.slot))
+                            .ok_or("Runtime row texture slot")?;
+                        if !slot.valid
+                            || slot.max_size_log2 != r.raw.header.max_n
+                            || slot.has_full_mip != r.raw.header.has_mip
+                        {
+                            return Err("Runtime row immutable texture configuration".into());
+                        }
+                    }
+                    Some(*r)
+                }
+                _ => None,
+            }
         } else {
             None
         };
@@ -262,15 +407,14 @@ impl Runtime {
             output_ready: control.result_ready,
         })?;
         let mut results = vec![];
+        let mut result_quad_last = false;
         for e in &color.events {
             match e {
                 ColorEvent::Commit(o) => {
-                    let mask = &mut self.remaining[usize::from(o.key / 4)];
-                    let bit = 1 << (o.key % 4);
-                    if *mask & bit == 0 {
-                        return Err("sampling runtime result for unowned lane".into());
-                    }
-                    *mask &= !bit;
+                    result_quad_last = self
+                        .cache
+                        .complete_live(o.key)
+                        .map_err(|e| format!("cache completion: {e:?}"))?;
                     results.push(*o);
                 }
                 ColorEvent::Accepted { .. } => self.stats.link.color_groups += 1,
@@ -286,45 +430,50 @@ impl Runtime {
         if control.ce && !effective_ce {
             self.stats.link.color_gated_edges += 1;
         }
-        let preparation = self.preparation.step_packet_port(
-            captured,
-            effective_ce,
-            self.cache.packet_ready(),
-            self.cache.packet_issue_ready(),
-            &self.masks,
-        )?;
-        if preparation.accepted != captured.is_some() {
+        let owner_read = self.preparation.packet_owner_read();
+        let port = if self.preparation.is_rows() {
+            self.preparation.step_row_packet_port(
+                captured_row,
+                effective_ce,
+                self.cache.packet_ready(),
+                self.cache.packet_issue_ready(),
+            )?
+        } else {
+            self.preparation.step_packet_port(
+                captured,
+                effective_ce,
+                self.cache.packet_ready(),
+                self.cache.packet_issue_ready(),
+            )?
+        };
+        let row_accepted = port.row_accepted;
+        let preparation = port.preparation;
+        if !self.preparation.is_rows() && preparation.accepted != captured.is_some()
+            || self.preparation.is_rows()
+                && row_accepted != (captured_row.is_some() && effective_ce)
+        {
             return Err("sampling runtime pre-edge ingress divergence".into());
         }
-        if let Some(q) = captured {
-            self.masks[usize::from(q.header.quad)] = q.header.mask;
-            self.remaining[usize::from(q.header.quad)] = q.header.mask;
+        if preparation.accepted {
             self.stats.link.accepted += 1;
             self.stats.admissions += 1;
         }
         let mut packet = None;
         let mut done = vec![];
-        let mut issues = vec![];
+        // This key is from the actual old Work operand captured by compact Packet E0.
+        // It is independent of diagnostic events and of packet writeback payload.
+        let issues = port
+            .packet_key
+            .into_iter()
+            .map(|key| timed::packet::Owner {
+                quad: key / 4,
+                lane: key % 4,
+            })
+            .collect();
         for e in &preparation.events {
             match e {
                 PreparationEvent::Packet { payload, .. } => packet = Some(*payload),
                 PreparationEvent::Release { program } => done.push(*program as u8),
-                PreparationEvent::Issue {
-                    stage: "packet",
-                    program,
-                    lane,
-                    ..
-                } => {
-                    let mask = self.masks[*program];
-                    let physical_lane = (0..4_u8)
-                        .filter(|i| mask >> i & 1 != 0)
-                        .nth(*lane)
-                        .ok_or("sampling runtime packet covered lane")?;
-                    issues.push(timed::packet::Owner {
-                        quad: *program as u8,
-                        lane: physical_lane,
-                    });
-                }
                 _ => {}
             }
         }
@@ -332,29 +481,35 @@ impl Runtime {
         // successful wall edge even when the caller or color link freezes CE.
         let cache = self
             .cache
-            .step_live(
+            .step_runtime(
                 memory,
-                captured.map(|q| timed::LiveAdmission {
-                    quad: q.header.quad,
-                    mask: q.header.mask,
-                    slot: q.header.slot,
-                }),
+                captured
+                    .map(|q| Raw {
+                        bias: q.bias,
+                        force_coarsest: q.force_coarsest,
+                        header: q.header,
+                    })
+                    .or(captured_row.filter(|_| preparation.accepted).map(|q| q.raw))
+                    .map(|q| timed::LiveAdmission {
+                        quad: q.header.quad,
+                        mask: q.header.mask,
+                        slot: q.header.slot,
+                    }),
                 timed::Control {
                     ce: effective_ce,
                     result_ready: true,
                 },
                 packet,
-                done.clone(),
-                issues,
+                done,
+                timed::packet::Issues {
+                    owners: issues,
+                    owner_read,
+                },
             )
             .map_err(|e| format!("cache step: {e:?}"))?;
         if preparation.accepted != cache.accepted {
             return Err("sampling runtime cache ingress divergence".into());
         }
-        for q in done {
-            self.masks[usize::from(q)] = 0;
-        }
-        let mut cache_commits = vec![];
         for e in &cache.events {
             match e {
                 timed::Event::Captured { group, words, .. } => {
@@ -368,12 +523,12 @@ impl Runtime {
                     self.stats.link.captures += 1;
                 }
                 timed::Event::Produced { .. } => self.stats.link.packets += 1,
-                timed::Event::Commit { pixel } => cache_commits.push(pixel.clone()),
                 _ => {}
             }
         }
         self.stats.offers += u64::from(offered.is_some());
-        self.stats.rejected += u64::from(offered.is_some() && !preparation.accepted);
+        self.stats.rejected +=
+            u64::from(offered.is_some() && !preparation.accepted && !row_accepted);
         self.stats.link.results += results.len() as u64;
         self.stats.link.enabled += u64::from(effective_ce);
         self.stats.link.wall = self.wall;
@@ -399,8 +554,9 @@ impl Runtime {
             offered: offered.map(Offer::quad),
             input_ready,
             accepted: preparation.accepted,
+            row_accepted,
             results,
-            cache_commits,
+            result_quad_last,
             color,
             cache,
             preparation,
@@ -410,8 +566,56 @@ impl Runtime {
 }
 
 #[cfg(test)]
+#[path = "runtime_coefficient_ready_qualification.rs"]
+mod coefficient_ready_qualification;
+#[cfg(test)]
+#[path = "runtime_color_storage_qualification.rs"]
+mod color_storage_qualification;
+#[cfg(test)]
+#[path = "runtime_context_storage_qualification.rs"]
+mod context_storage_qualification;
+#[cfg(test)]
+#[path = "runtime_coordinate_storage_qualification.rs"]
+mod coordinate_storage_qualification;
+#[cfg(test)]
 #[path = "runtime_numerical_qualification.rs"]
 mod numerical_qualification;
 #[cfg(test)]
+#[path = "runtime_ordered_qualification.rs"]
+mod ordered_qualification;
+#[cfg(test)]
+#[path = "runtime_packet_storage_qualification.rs"]
+mod packet_storage_qualification;
+
+#[cfg(test)]
+#[path = "runtime_backend_qualification.rs"]
+mod backend_qualification;
+
+#[cfg(test)]
+#[path = "runtime_fault_qualification.rs"]
+mod fault_qualification;
+#[cfg(test)]
 #[path = "runtime_qualification.rs"]
 mod qualification;
+#[cfg(test)]
+#[path = "runtime_uv_qualification.rs"]
+mod uv_qualification;
+
+#[cfg(test)]
+#[path = "runtime_frontend_qualification.rs"]
+mod frontend_qualification;
+
+#[cfg(test)]
+#[path = "runtime_derived_qualification.rs"]
+mod derived_qualification;
+#[cfg(test)]
+#[path = "runtime_row_qualification.rs"]
+mod row_qualification;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "runtime_row_reference.rs"]
+mod row_reference;
+
+#[cfg(test)]
+#[path = "runtime_group48_qualification.rs"]
+mod group48_qualification;

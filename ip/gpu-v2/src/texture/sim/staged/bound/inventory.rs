@@ -106,12 +106,6 @@ pub fn describe(
         64,
         "one indexed read/8 enabled clocks; registered output",
     ));
-    rows.push(ram(
-        "mip prefix ROM",
-        13,
-        11,
-        "one indexed read/8 enabled clocks; registered output",
-    ));
     if rows.iter().map(|r| r.ram16x1_cells).sum::<u64>() != b.lod.rom_ram16_cells as u64 {
         return Err("ROM accounting disagrees with binding".into());
     }

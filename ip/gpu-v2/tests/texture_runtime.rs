@@ -1,3 +1,5 @@
+#[path = "support/texture_capture.rs"]
+mod capture;
 #[path = "support/sdram/physical_texture.rs"]
 #[allow(dead_code)]
 mod physical;
@@ -65,6 +67,19 @@ fn expected(inputs: &[QuadInput], slots: &[Slot], bytes: &[u8]) -> Vec<Output> {
 }
 
 fn check_bounds(s: &bound::runtime::Step) {
+    assert!(!s.cache.snapshot.reference_color);
+    assert!(s.cache.snapshot.pipeline <= 1);
+    assert_eq!(
+        (s.cache.snapshot.results, s.cache.snapshot.result_credits),
+        (0, 0)
+    );
+    assert!(!s.cache.events.iter().any(|e| matches!(
+        e,
+        timed::Event::Partial { .. }
+            | timed::Event::Accumulate { .. }
+            | timed::Event::Result { .. }
+            | timed::Event::Commit { .. }
+    )));
     assert_eq!(
         s.accepted,
         s.offered.is_some() && s.input_ready && s.control.ce
@@ -104,6 +119,7 @@ fn raw_offer(i: usize, slots: &[Slot]) -> RawQuadInput {
 
 #[test]
 fn raw_raster_packets_overlap_stable_draws_without_runtime_programs() {
+    let mut audit = capture::CaptureAudit::default();
     let (slots, bytes) = fixture();
     let mut r = runtime(&slots, 40_000);
     let mut memory = physical::Physical::new(u64::from(support::BASE), bytes.clone(), true, true);
@@ -123,6 +139,7 @@ fn raw_raster_packets_overlap_stable_draws_without_runtime_programs() {
             )
             .unwrap();
         check_bounds(&s);
+        audit.observe(&s);
         assert!(s.results.len() <= 1);
         overlap |= s.snapshot.preparation_live.count_ones() > 1;
         got.extend(s.results);
@@ -136,6 +153,7 @@ fn raw_raster_packets_overlap_stable_draws_without_runtime_programs() {
         }
     }
     assert!(r.idle() && overlap);
+    audit.finish("raw-miss-wrap");
     assert_eq!(accepted.len(), 64);
     assert_eq!(r.stats.admissions, 64);
     assert_eq!(
@@ -207,6 +225,7 @@ fn raw_capture_ignores_unaccepted_payload_and_rejects_malformed_accepted_fields(
 
 #[test]
 fn runtime_streams_different_content_and_masks_without_a_precompiled_input_list() {
+    let mut audit = capture::CaptureAudit::default();
     let (slots, bytes) = fixture();
     let mut r = runtime(&slots, 40_000);
     let mut memory = physical::Physical::new(u64::from(support::BASE), bytes.clone(), true, true);
@@ -227,6 +246,7 @@ fn runtime_streams_different_content_and_masks_without_a_precompiled_input_list(
             )
             .unwrap();
         check_bounds(&st);
+        audit.observe(&st);
         ce_rejected += usize::from(st.offered.is_some() && !st.control.ce);
         busy_rejected += usize::from(st.offered.is_some() && st.control.ce && !st.accepted);
         got.extend(st.results);
@@ -256,6 +276,7 @@ fn runtime_streams_different_content_and_masks_without_a_precompiled_input_list(
         }
     }
     assert!(r.idle(), "runtime stream failed to drain");
+    audit.finish("mixed-seam-miss");
     assert_eq!(accepted.len(), 48);
     assert_eq!(r.stats.admissions, 48);
     assert_eq!(r.stats.compilations, 0);
@@ -299,7 +320,6 @@ fn rejected_payload_can_be_replaced_and_same_key_reuse_waits_for_actual_consumpt
             .unwrap()
             .accepted
     );
-    let mut shadow = false;
     let mut queued = false;
     for _ in 0..1_500 {
         let st = r
@@ -314,17 +334,21 @@ fn rejected_payload_can_be_replaced_and_same_key_reuse_waits_for_actual_consumpt
             .unwrap();
         check_bounds(&st);
         assert!(!st.accepted && !st.input_ready && st.results.is_empty());
-        shadow |= !st.cache_commits.is_empty();
+        assert!(!st.cache.snapshot.reference_color);
+        assert_eq!(
+            (st.cache.snapshot.results, st.cache.snapshot.result_credits),
+            (0, 0)
+        );
+        assert_ne!(st.cache.snapshot.live_quads & (1 << 3), 0);
         queued |= st.color.output.is_some();
     }
     assert!(
-        shadow && queued,
-        "shadow retirement and actual held result exercised"
+        queued,
+        "actual result held while cache/public ownership remains live"
     );
     assert_eq!(r.stats.admissions, 1, "rejected data must not be captured");
     assert_eq!(r.snapshot().result_lanes[3], 1);
     assert_eq!(r.snapshot().preparation_live, 0);
-    assert_eq!(r.snapshot().preparation_masks, [0; 16]);
     let mut replacement = a.clone();
     replacement.uv = [[0.71, 0.63]; 4];
     let mut replacement_accepted = None;
@@ -486,7 +510,7 @@ fn partial_helper_derivatives_empty_mask_default_omission_and_warm_reuse() {
             }
         }
         assert!(r.idle());
-        assert_eq!(r.snapshot().preparation_masks, [0; 16]);
+        assert_eq!(r.snapshot().preparation_live, 0);
         request_counts.push(memory.requests);
     }
     assert_eq!(
@@ -581,5 +605,5 @@ fn runtime_wall_watchdog_is_terminal_even_when_no_input_is_offered() {
         .unwrap_err()
         .contains("watchdog"));
     assert!(r.faulted() && !r.idle());
-    assert_eq!(bound::runtime::LINK_STATE_BITS, 266);
+    assert_eq!(bound::runtime::LINK_STATE_BITS, 138);
 }

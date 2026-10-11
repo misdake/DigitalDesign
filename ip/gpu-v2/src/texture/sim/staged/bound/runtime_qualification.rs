@@ -227,49 +227,80 @@ fn receipt(r: &Runtime, p: control::Hardware, name: &str) {
     let c = r.cache.external_context().1;
     let actual = runtime_inventory::describe(&r.preparation.binding, p, c).unwrap();
     let baseline = super::super::inventory::describe(&r.preparation.binding, p, c).unwrap();
-    let color_bits =
-        (color::ALLOCATION.datapath_ff_bits + color::ALLOCATION.result_and_control_ff_bits) as u64;
-    let a = u64::from(usize::BITS - (p.work_credits - 1).leading_zeros());
-    let q = u64::from(usize::BITS - p.work_credits.leading_zeros());
-    let correction = if p.storage == control::Storage::Dedicated {
-        19_i64 - 104
-    } else {
-        0
-    };
-    // The accepted actual coordinate owner retains nearest through coefficient
-    // admission. The legacy 37-bit inventory omits this one bit per live slot.
-    let coordinate_owner_bits = (r.preparation.binding.coordinate.span() + 1)
-        .div_ceil(r.preparation.binding.coordinate.ii())
-        .min(p.coordinate_credits as u64);
-    assert_eq!(
-        actual.ff_bits as i64,
-        (baseline.ff_bits + color_bits + LINK_STATE_BITS as u64 + 206 + 3 * a + q) as i64
-            + correction
-            + coordinate_owner_bits as i64
-            + if p.storage == control::Storage::Dedicated {
-                18
-            } else {
-                0
-            }
-    );
-    assert_eq!(actual.sdp4_cells, baseline.sdp4_cells);
-    assert_eq!(actual.ram16x1_cells, baseline.ram16x1_cells);
-    assert_eq!(actual.bsram, 6);
-    if p.work_credits == 16
-        && p.coordinate_credits == 6
-        && p.contexts == 8
-        && p.storage == control::Storage::Packed
-    {
+    // Check the actual typed owners independently of the obsolete replay
+    // allocation's fixed deltas. These widths are explicit interface contracts.
+    for (name, bits) in [
+        ("derivative FF", 219),
+        ("LOD FF", 83),
+        ("coordinate FF", 68),
+        ("coefficient FF", 108),
+        ("coefficient pass-through", 0),
+        ("coefficient ready records", 144),
+        ("membership FF", 148),
+        ("packet FF", 149),
+        ("actual derivative phase/valid", 12),
+        ("actual LOD phase/valid", 13),
+        ("actual coordinate phase/valid", 5),
+        ("actual coefficient phase/valid", 6),
+        ("actual membership valid/fault", 3),
+        ("actual packet valid/fault", 3),
+        ("cache pending read", 79),
+    ] {
         assert_eq!(
-            (
-                actual.ff_bits,
-                actual.sdp4_cells,
-                actual.ram16x1_cells,
-                actual.hard_pipeline_bits
-            ),
-            (16555, 56, 211, 1377)
+            actual.rows.iter().find(|r| r.name == name).unwrap().ff_bits,
+            bits,
+            "{name}"
         );
     }
+    assert_eq!(
+        actual.sdp4_cells,
+        baseline.sdp4_cells + 19 + 8 + 16 - 4 * (p.work_credits as u64).div_ceil(16)
+    );
+    assert_eq!(
+        actual.ram16x1_cells,
+        baseline.ram16x1_cells + 76 + 32 + 64 - 16 * (p.work_credits as u64).div_ceil(16)
+    );
+    let ready = actual
+        .rows
+        .iter()
+        .find(|r| r.name == "coefficient ready records")
+        .unwrap();
+    assert_eq!(
+        (ready.sdp4_cells, ready.ram16x1_cells, ready.bsram),
+        (0, 0, 0)
+    );
+    assert_eq!(actual.bsram, 8);
+    assert!(!actual
+        .rows
+        .iter()
+        .any(|row| row.name == "packet owner BSRAM"));
+    assert_eq!(
+        actual
+            .rows
+            .iter()
+            .find(|row| row.name == "packet ordered control")
+            .unwrap()
+            .ff_bits,
+        65
+    );
+    for removed in [
+        "color tokens",
+        "color tree/feedback/normalize",
+        "result FIFO",
+        "color DSP pipeline",
+    ] {
+        assert!(!actual.rows.iter().any(|r| r.name == removed));
+    }
+    assert_eq!(actual.dsp18, 8);
+    assert_eq!(
+        actual
+            .rows
+            .iter()
+            .find(|r| r.name == "coefficient FF")
+            .unwrap()
+            .hard_pipeline_bits,
+        51
+    );
     println!(
         "ALLOCATION {name}: FF={} SDP4={} RAM16x1={} BSRAM={} hard={} DSP18eq={} fitted=false",
         actual.ff_bits,
@@ -532,6 +563,7 @@ fn connected_runtime_literal_and_supported_configurations() {
         let mut shared_release = 0;
         let mut prep_release = 0;
         let mut actual_masks = [0_u8; 16];
+        let mut completed = [false; 16];
         let mut coordinate_issues = [0_usize; 16];
         let mut next_packet_ordinal = 0;
         let mut sparse_tap = 0;
@@ -553,6 +585,7 @@ fn connected_runtime_literal_and_supported_configurations() {
             if step.accepted {
                 let q = &qs[accepted];
                 actual_masks[usize::from(q.quad_id)] = q.mask;
+                completed[usize::from(q.quad_id)] = false;
                 coordinate_issues[usize::from(q.quad_id)] = 0;
                 accepted += 1;
             }
@@ -585,11 +618,15 @@ fn connected_runtime_literal_and_supported_configurations() {
                     PreparationEvent::Packet { payload, .. } => {
                         assert_eq!(Some(*payload), pending_packets.pop_front())
                     }
-                    PreparationEvent::Issue {
+                    PreparationEvent::KeyIssue {
                         stage: "packet",
+                        key,
                         packet,
                         ..
                     } => {
+                        let (member, _) = edge.capture.expect("actual Packet E0 capture");
+                        assert_eq!(*key, member.key());
+                        assert_ne!(actual_masks[usize::from(*key / 4)] >> (*key % 4) & 1, 0);
                         assert_eq!(*packet, next_packet_ordinal);
                         next_packet_ordinal = if edge.ack { 0 } else { next_packet_ordinal + 1 };
                     }
@@ -614,11 +651,16 @@ fn connected_runtime_literal_and_supported_configurations() {
                             assert!(step.preparation.events.iter().any(|e|matches!(e,
                                 PreparationEvent::Issue {stage:"coordinate",program:p,..} if p==program)));
                         } else {
-                            assert!(step.preparation.events.iter().any(|e| matches!(e,
-                                PreparationEvent::Release {program:p} if p==program)));
+                            assert!(
+                                completed[*program]
+                                    || step.preparation.events.iter().any(|e| matches!(e,
+                                PreparationEvent::Release {program:p} if p==program)),
+                                "ordered reclaim precedes completion"
+                            );
                         }
                     }
                     PreparationEvent::Release { program } => {
+                        completed[*program] = true;
                         prep_release += 1;
                         if actual_masks[*program] != 0 {
                             assert!(step.preparation.events.iter().any(|e|matches!(e,
@@ -875,4 +917,69 @@ fn connected_runtime_work_prefetch_has_two_edge_hot_pixels() {
         );
         println!("WORK HOT {filter:?}: 64 actual intervals of 2 edges, zero window refills");
     }
+}
+
+#[test]
+fn connected_short_pipeline_issues_on_next_available_capture_edge() {
+    let (slots, bytes) = fixture();
+    let p = control::Hardware {
+        storage: control::Storage::Packed,
+        max_cycles: BOUND,
+        ..Default::default()
+    };
+    assert_eq!(p.contexts, 8);
+    let mut r = runtime(&slots, p);
+    let mut mc = physical::Physical::new(u64::from(BASE), bytes, true, false);
+    let q = input(0, 15, [0.25, 0.25], Filter::Trilinear);
+    let mut accepted = false;
+    let mut issues = std::collections::BTreeMap::new();
+    let mut result = Vec::new();
+    for wall in 0..BOUND {
+        let enabled = r.stats.link.enabled;
+        let ce = wall % 11 < 8;
+        let old = r.preparation.d_lod_state();
+        let step = r
+            .step(
+                &mut mc,
+                (!accepted).then_some(&q),
+                timed::Control {
+                    ce,
+                    result_ready: true,
+                },
+            )
+            .unwrap();
+        accepted |= step.accepted;
+        if !ce {
+            assert_eq!(r.preparation.d_lod_state(), old);
+        }
+        for event in &step.preparation.events {
+            match event {
+                PreparationEvent::Issue { stage, lane: 0, .. }
+                | PreparationEvent::KeyIssue { stage, key: 0, .. } => {
+                    issues.entry(*stage).or_insert(enabled);
+                }
+                _ => {}
+            }
+        }
+        let (membership, packet) = r.preparation.numerical_banks();
+        assert!(membership[5..].iter().all(Option::is_none));
+        assert!(packet[3..].iter().all(Option::is_none));
+        result.extend(step.results);
+        if accepted && r.idle() {
+            break;
+        }
+    }
+    assert!(r.idle());
+    assert_eq!(result, golden(&q));
+    // Independent selected boundary contract: shared D3 plus old-state capture1;
+    // registered head/ROM/tail/levels4 plus old-state capture1, then one
+    // odd RAM request/following even consumption edge. The old D2 path had
+    // another parity wait, so the first Coordinate still issues at enabled18.
+    assert_eq!(issues["lod"] - issues["derivative"], 4);
+    assert_eq!(issues["coordinate"] - issues["lod"], 6);
+    assert_eq!(
+        (issues["derivative"], issues["lod"], issues["coordinate"]),
+        (8, 12, 18)
+    );
+    println!("SHORT_ISSUES {issues:?}");
 }

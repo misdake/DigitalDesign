@@ -205,11 +205,12 @@ fn long_result_backpressure_bounds_skid_gates_cache_and_recovers_in_order() {
     let mut qs = quads();
     qs.truncate(16);
     let want = expected(&qs, &slots, &bytes);
-    // Consume a few early results, then hold the result store closed for a long
-    // window so both the ColorEmu credits and the local link actually fill.
+    // Close the result store from cold start so accepted refill beats necessarily
+    // overlap backpressure, independent of the arithmetic pipeline latency.
+    // Keep it closed long enough to fill both ColorEmu credits and the local link.
     let (got, _, stats, summary) = run(&qs, &slots, bytes, true, 30_000, |t| timed::Control {
         ce: true,
-        result_ready: !(120..=1_600).contains(&t),
+        result_ready: t > 1_600,
     });
     assert_eq!(
         got, want,

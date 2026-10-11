@@ -8,6 +8,7 @@ fn capacity(h: Hardware, k: &LaneKind) -> usize {
         LaneKind::SmallMultiply => h.small_multiply,
         LaneKind::LargeMultiply => h.large_multiply,
         LaneKind::PairMultiplyAdd => h.paired_macros,
+        LaneKind::H9Tail => 1,
         LaneKind::Negate(_) => h.negators_per_width,
         LaneKind::Increment(_) => h.incrementers_per_width,
         LaneKind::Add(18) => h.narrow_adders,

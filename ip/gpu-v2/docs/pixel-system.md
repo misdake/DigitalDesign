@@ -7,32 +7,113 @@ that path alongside actual persistent Sampling Runtime/cache/ColorEmu results. T
 composers use controlled quad inputs, without command, geometry, rasterizer,
 RTL or board integration.
 
-## Source and qualification boundaries
-
-This checkout includes the J1/dispatcher baseline and the published
-`foundation::Pipeline` with global32 from `a0fe042`. Synchronous row-store/SPSC
-refinements at `0b1fa4b` and the subsequent `dad5328` optimization baseline
-remain on their worktree branches, pending integration into this checkout.
-The16-slot dispatcher below remains a separate baseline. Current f207 work
-starts from `dad5328` on a dedicated branch.
-
-Those later row banks and queue leaves have scoped native replay and matched local
-fits. They do not establish a complete pixel-controller RTL or whole-GPU fit.
-Producer current/next state is implemented in the published foundation;
-consumer uniform handoffs and Lighting context changes without draining remain
-open. The older sealed f207 WIP is superseded and must not overwrite the
-accepted synchronous implementation. Current source/qualification pointers are
-maintained by the local `gpu-v2-module-status` entry.
-
 ## Published row foundation
+
+### Composition ingress units
+
+The composition branch adds real ingress units alongside the published
+foundation reference. `quad_ingress` reserves global32 and the required Light2
+and Sample8 entries on row0, publishes only on row7, and emits the packed
+status/origin publication to the parent. Its branch descriptors have single
+consumer ports; it keeps no second random-access global status table. The Basic
+SDP36 bank has a separate synchronous read port. Actual ROP row7 acceptance
+remains the sole global retirement event.
+
+`texture::{emu,rtl}::uv_rows` consumes four actual UV36 rows. Row0 writes Raw36
+metadata directly into the parent's canonical bank; each row writes the UV RAM
+and its corresponding slice of the sole144-bit derivative operand bank. Row3
+commits the Context. The parent reserves a Context before row0, preserves its
+ownership until all later coordinate reads finish, and supplies stable selected
+draw metadata. D consumption frees the operand head, not that Context or UV RAM
+slot. Incomplete Contexts cannot serve D/C reads. Command acceptance observes
+old credit; already reserved synchronous returns survive CE0.
+
+`lighting_consumer` retains only the preceding normal36 row and loaded-bank
+valid/selection. Covered odd rows issue directly into the frozen selected core;
+uncovered rows are skipped. PixelRows are wire expansion of the compact source,
+with no intermediate PixelRows array. The opaque core ID carries global key7
+and the last-covered flag. Context changes drain Lighting locally, while its
+old outputs continue to leave. The parent owns the immutable draw banks and
+invalidates a loaded bank on actual draw retirement.
+
+These units have bounded model and actual portable/native RTL qualification.
+`quad_sampling_ingress` connects the actual Sample8 head directly to the new
+UV unit; `quad_lighting_ingress` connects the actual Light2 head to the frozen
+core. `pixel_ingress` shares one Quad ingress between both consumers. These
+wrappers add no payload shadow. The parent still supplies Context allocation,
+the canonical Raw bank endpoint and the selected immutable draw fields.
+`foundation::Pipeline::new` retains atomic UV assembly as a separate reference.
+`foundation_live::Live` selects `Pipeline::new_rows` and `Runtime::new_rows`:
+each actual Sample queue beat transfers directly, using the queue's existing
+row cursor. No three-row assembly bank is instantiated on this path. The
+parent holds the descriptor and immutable draw fields through all four rows.
+The matched Quad/UV row-versus-atomic native
+fit has identical external ports and real memories; its wrapper-inclusive
+resources, source hashes and hierarchy are recorded at
+`D:/github/DigitalDesign-code/target/pixel-composition-start-20261010/review.json`.
+This ingress comparison is separate from full Sampling/Runtime or GPU area.
+`pixel_runtime_ingress` replaces the external Context/Raw endpoints with the
+actual Context8, canonical Raw/Ready banks, fabric D, LOD terminal-bank loan,
+compact Coordinate and C6 owner/result store. One real Quad source feeds this
+frontend and the selected Lighting core. Independent proposals qualify a common
+commit; a denied commit or CE0 still preserves already-paid native RAM returns.
+The selected fixed EARLY controller retires Contexts in C order; its reclaim
+pointer and per-Context reclaimable bits are derived rather than retained.
+C6 stores a canonical24-bit owner and36-bit result, restoring the unchanged
+wide numerical interface at consumption. Generic controller and wide owner
+implementations remain independent references. The matched frontend comparisons,
+two-layout resource/timing reports and selected source identities are recorded at
+`D:/github/DigitalDesign-code/target/pixel-composition-backend-20261010/review.json`.
+
+`pixel_preparation_ingress` extends that actual top through Coefficient ready2,
+short Member, Work16, short Packet and the ordered P16/G32/64-row Pool. C6
+holds its owner/result until the actual Coefficient acceptance. Backend proposal
+readiness is independent of joined commit; the same preflight qualifies every
+participant. A5-bit reservation count covers promised Work writes as well as
+stored Members; actual Work acknowledgement returns credit. The backend retains
+only that count, one plane cursor and one terminal stop bit beyond the leaves.
+The bounded portable/native joint replay compares each Group72 with independent
+counted goldens and covers Work16 saturation, output stalls and CE0 returns.
+Its resource and qualification scope is recorded in the same report.
+Cache/Color, immutable draw configuration and public-ID credit remain external
+boundaries. The qualification parent completes a sample after its last Group;
+that is not a Color-result completion certificate. Result/done banks, join/Final
+and ROP control are still required for the full composition top.
+
+`pixel_sampling_ingress` adds the actual borrowed-head Runtime cache, checked
+result16 Color and public completion. The ordered Pool keeps Group72 stable
+until an actual READY read; one Group register serves both that paid read and
+the captured Color input. Native tags use two SDPX9B banks and texels use four
+SDPB16 banks. Refill acceptance, numbered beats and terminal completion advance
+on wall clocks, including CE0. A public ID stores only valid1 and last-covered
+lane2; consuming that lane's actual RGB frees the ID. The ordered producers and
+FIFO prove earlier groups and lanes have already passed. Context retirement
+and global ROP retirement remain separate events.
+
+The selected closed construction omits the repeated borrowed-address check and
+the row3 publication preflight already guaranteed by the unique row0 UV-tail
+reservation. Raw and admit proposals are factored by their actual row; a Raw
+proposal already contains reserve_ready, so no second reservation check is
+needed. Work16 keeps payload72 in a single-read distributed RAM at reclaim_ptr;
+its two logical heads retain only emit4 and cursor2. Packet E0 reads the immutable
+published row directly, removing the wide two-head payload selector. Final ACK
+releases the row; full-queue ACK does not finance a put on the same edge. Checked
+generic factories remain independent references. Joint
+portable/native replay uses independent Group/RGB goldens, actual cache misses,
+sixteen live public IDs, delayed refill completion and output stalls. Complete
+scope totals, matched experiment decisions and timing status are recorded at
+`D:/github/DigitalDesign-code/target/pixel-composition-work-20261010/review.json`.
+The parent still owns immutable Draw fields, memory transport, result/done
+storage, join/Final and ROP; this is not a complete GPU fit or board result.
 
 `foundation::Pipeline` is a separate replacement controller; `foundation_live::Live`
 attaches the frozen Fast/free/Floor Q13 Lighting core and actual persistent Sampling
 Runtime, and `foundation_backend::Backend` attaches the existing serial
 FramebufferEmu/cache. The older dispatcher below remains available as a baseline.
 The new controller is Rust edge-level integration, with independently checked
-SPSC and Final RTL leaves. It is not full-controller RTL, fitted storage, integrated
-system PnR, a rasterizer, or physical-board evidence.
+SPSC, synchronous row-bank and Final RTL leaves. The actual Basic/result bank
+group and Output queue now have matched native-storage PnR. Full-controller RTL,
+integrated system PnR, rasterizer and physical-board evidence remain separate.
 
 The source supplies eight held attribute beats per quad. Each beat writes one
 basic RGB24/D16 row and, when lit, one Lighting36 row; odd beats also write one
@@ -45,10 +126,13 @@ allocate no status or payload; their draw boundary still survives.
 
 The 32 global slots hold compact origin/mask and ownership, not normal or UV.
 Lighting has two quad input entries, with two36-bit rows per pixel; Sampling has
-eight entries, with one36-bit UV row per lane. Independent consumers assemble
-only the necessary head: one held normal row for Lighting, three UV rows plus
-the fourth queue head for Sampling. Each queue frees its entry on its own last
-row acceptance. Results remain in separate single-writer arrays.
+eight entries, with one36-bit UV row per lane. Lighting holds one normal row;
+the selected Live Sampling path transfers each UV row directly to Runtime.
+The atomic reference alone assembles three UV rows plus the fourth queue head.
+Each queue frees its entry on its own last
+row acceptance. All three queues use registered reads. A previously returned
+RAM word supplies the output directly when the head ring is empty; it does not
+wait for another head-capture edge. Results use separate single-writer banks.
 
 Each branch writes its own whole-quad done RAM once, with the last covered
 result. The allocator has a separate one-bit expected epoch for each branch and
@@ -62,28 +146,38 @@ per-lane sent/seen masks detect invalid ownership in Rust; they are not proposed
 wide tags or hardware per-lane readiness storage. Branch results must stay ordered
 within each quad; the two branches may complete independently.
 
-Join captures color operands on C and depth on D, admitting multiple keyed jobs
+Join issues color reads on C and depth on D. The following wall edge captures
+each reserved return even under CE=0. Two pixel heads retain returned fields;
+Final accepts only a head whose depth has also returned, without a direct Basic
+read at acceptance. Join admits multiple keyed jobs
 to the actual nine-stage Final leaf at two edges per covered pixel. Eight total
 result credits cover the real acceptance-to-consumption lifetime. A bounded
-eight-entry key/depth owner FIFO follows actual Final acceptance. Output writes
+eight-entry depth-only owner FIFO follows actual Final acceptance. Output writes
 RGBA32 then D16, one row per edge, with zeros for uncovered lanes. Row7 publishes
 the output entry; actual ROP row7 acceptance releases its global slot and draw
 reference. No scalar wait-for-Final-response loop remains on this path.
 
 Lighting's existing32-bit ID carries global slot5/lane2. Sampling retains its
 16 public quad IDs and key6: the fixed ID is `global_slot & 15`. An adapter owns
-16 entries of high destination bit, valid and remaining coverage mask. It assigns
+16 entries of high destination bit and valid. Sampling's existing public lane
+owner supplies `Runtime::Step::result_quad_last` on actual Color consumption;
+the adapter retains no second remaining-coverage mask. It assigns
 only on actual Runtime admission and clears only after the last actual result
 write. An old mapping blocks an aliased new offer using pre-edge state, even
 when that edge returns its last result. Bypass occupies no mapping. Final also
-keeps its existing key6; the strictly ordered owner FIFO retains full global
-slot5/lane2 and depth. Return compares the queue head's low6 key, with no random
+keeps its existing key6; the output quad/lane cursor supplies the full ordered
+destination, so the depth owner FIFO does not duplicate a destination tag.
+Return compares that cursor's low6 key, with no random
 lookup by the truncated key. Aliased slots are at least16 nonempty quads apart,
 while at most8 Final tasks are live. Host full-ticket witnesses remain separate.
 
-Two immutable draw banks publish atomically; a third draw waits for a free bank.
+Two immutable draw banks publish atomically in alternating command order.
+The producer has one current draw and at most one waiting next draw; next cannot
+supply attributes or close before current closes. A third draw waits for the
+next bank in sequence to be free. Arbitrary A/B/A draw references are rejected.
 The boundary queue retains empty and bypass draws and releases a bank after its
-last queued reader. A reused Lighting bank forces a context reload. Lighting
+last queued reader. A reused Lighting bank forces a context reload. This producer
+current/next rule does not implement per-consumer uniform switching. Lighting
 uniform changes still drain that frozen leaf locally; core-internal overlapping
 contexts are not claimed. The framebuffer adapter snapshots ROP state for its
 current quad and waits for that existing leaf to idle before changing context.
@@ -102,35 +196,50 @@ overlapped change. No cache version/tag scheme is introduced here.
 
 ### Memory organization and read positions
 
-These are logical fields and implemented edge-model organizations, not fitted
-device counts. Basic and result arrays currently have asynchronous reads into
-explicit capture positions; replacing them with synchronous BSRAM requires a
-corresponding calendar change. One source/destination read/write is available
+These are logical fields and implemented edge-model organizations. Basic and
+result banks have one-wall-edge synchronous returns;
+Output uses the registered SPSC. Explicit read, write and return records check
+the calendar. `row_store::FOUNDATION_SHAPES` supplies the model and native bank
+generator from the same global-slot count. One read/write is available
 per payload array per edge, with same-address collisions excluded by ownership.
 
 | Store | Useful bits | Model rows | Read/write ownership and physical boundary |
 | --- | --- | --- | --- |
-| Basic | 32x4x(RGB24+D16)=5120 | 256x32 | Producer writes; join reads C/D. Asynchronous storage candidate, not an implemented synchronous SDP36. |
-| Lighting input | 2x4x68=544 | 16x36 | Source writes; Lighting head reads. Selected asynchronous SSRAM organization; behavioral distributed-RAM RTL checked, without fit. |
+| Origin | 32x15=480 | 32x15 | Accepted source row0 writes aligned x/2 and y/2; the Output row0 read prefetches one synchronous origin. One native SDP36, current-hold register and hard next DO; actual-controller replay and local two-placement fit checked. |
+| Basic | 32x4x(RGB24+D16)=5120 | 256x24 | Producer writes; join reads C/D. One native SDP36 with hard synchronous DO; narrower D16 rows share the RGB24 width. Actual controller access replay and bank-group fit checked. |
+| Lighting input | 2x4x68=544 | 16x36 | Source writes; Lighting head reads. Registered SPSC with direct old-return output; behavioral RTL checked, without fit. |
 | Sampling input | 8x4x36=1152 | 32x36 | Source writes; Sampling head reads. One explicit SDPX9B36 primitive with hard synchronous DO; vendor-primitive edge simulation checked, without fit. |
-| Lighting result | 32x4x18=2304 | 128x32 | Lighting writes; join reads. Effective g9/h9, upper model bits unused. Mapping remains to be fitted. |
-| Sampling result | 32x4x24=3072 | 128x32 | Sampling writes; join reads. Effective RGB24; physical mapping remains to be fitted. |
-| Output | 32x4x(RGBA32+D16)=6144 | 256x32 | Final writer and ROP head reader. Current capture/distributed organization; conservative32-quad depth follows global slot lifetime through ROP row7. |
+| Lighting result | 32x4x18=2304 | 128x18 | Lighting writes; join reads. One native SDP36 with hard synchronous DO; actual controller access replay and bank-group fit checked. |
+| Sampling result | 32x4x24=3072 | 128x24 | Sampling writes; join reads. One native SDP36 with hard synchronous DO; actual controller access replay and bank-group fit checked. |
+| Output | 32x4x(RGBA32+D16)=6144 | 256x32 | Final writer and registered ROP head reader; one native SDP36 with hard synchronous DO, actual access replay and queue fit checked. Conservative32-quad depth follows global slot lifetime through ROP row7. |
 | Done | 2x32x1=64 | Two32x1 arrays | One branch writer and one join probe per array; no allocator clear or read. Expected epochs add64 allocator FF bits. |
 
 Payload is not the complete resource cost. Two completed queue heads are paid
 per queue: Lighting and Sampling each retain2x36 data bits, Output2x32, plus row
 tags, validity and pointers. Sampling additionally owns the primitive's hard DO
 return and its pending row/valid tag; this DO is not a separate soft36-bit FF
-array. Lighting holds one36-bit normal; Sampling holds3x36 assembled UV bits.
-Join retains96 bits of Final operands/key and the owner FIFO retains8x(7+16)
-effective bits, plus phase/pointers and the output depth hold. Final's arithmetic
+array. Output likewise uses the low32 bits of native hard DO, with three-bit
+internal row cursors for its eight-row entries. Lighting holds one36-bit normal;
+The atomic reference holds3x36 assembled UV bits; selected Live has no assembly
+bank or additional Sampling row cursor.
+Join retains two bounded pixel heads containing Final operands/key and depth,
+plus the read-flight tag. The owner FIFO retains8x16 effective depth bits,
+plus phase/pointers and the output depth hold. Final's arithmetic
 pipeline and8x30-bit result FIFO are additional leaf state.
-The Sampling destination adapter adds a conservative16x(high1+valid1+mask4)=96
-logical FF bits; public key6 and its internal8-context configuration do not grow.
+The Sampling destination adapter declares16x(high1+valid1)=32 payload/control
+bits, plus one terminal-fault bit in its standalone RTL. This replaces the
+previous96-bit declaration; it is not a fitted64-FF or Logic saving. Public key6
+and its internal8-context configuration do not grow.
 
-Status has32x23 effective bits (aligned origin15, mask4, bank1, two bypass
-flags and `force_coarsest`), plus the separately owned expected epochs. Context
+Status retains32x8 effective bits (mask4, bank1, two bypass flags and
+`force_coarsest`), plus the separately owned expected epochs. Its aligned15-bit
+origin is held in the separate single-read bank. Current coordinates survive
+ROP stalls through accepted row7; that acceptance retires the origin reservation.
+The native next value stays in hard DO, with old pending validity controlling
+read credit. CE-off preserves both reservations; reset invalidates them without
+clearing RAM. The local matched origin fit, source identity and controller
+replays are in `target/quad-sequential-20261009/origin/review.json`; this does not
+establish a full Status/Quad resource delta or480 saved FF. Context
 banks carry Lighting160, optional Sampling26, alpha8 and ROP5 effective bits
 each, with valid/closed/reference and boundary state. Current Rust status/context
 lookup views serve allocator, both branch descriptors, join and ROP; these are
@@ -139,9 +248,17 @@ and their bounded slot/bank ownership also cost storage; their packed physical
 implementation is still open. Host witness integers do not establish RAM or FF
 allocation. A smaller output queue could reduce storage but would change
 backpressure/lifetime; no reduction is inferred from useful bits alone.
-Each enlarged payload still fits the capacity of one future SDP36 block, but
-its asynchronous read/capture implementation has not been retimed or fitted to
-that primitive. Capacity arithmetic is not a synchronous-storage qualification.
+`foundation::storage_verilog` emits the three native banks, Output queue and
+native origin bank with its current/next controller.
+Six actual access streams cover paced input, CE/output stalls, sparse masks,
+bypass and live warm Nearest/Bilinear/Trilinear. Independent RAM goldens use
+accepted writes; native Output writes use independently calculated final words.
+The streams check native read data before each next edge, including reserved
+returns during compute CE-off. Resource and two-placement timing reports live
+only in `target/quad-ram-lowering-20261008/review.json`; registered source and
+observation harness costs are separated there. This qualifies storage and its
+queue controller, not RTL for the Rust foundation controller, descriptor/status
+mapping or complete GPU fit.
 
 ### Qualification
 
@@ -173,13 +290,20 @@ worktree receipt. At least20 slots are required for that measured lifetime;
 32 is the tested power-of-two candidate, not a proven minimum. Releasing at
 last join D alone would still leave141 edges and cannot justify global16.
 
-The normal `actual_one_group_warm_nearest_bilinear_stream_has_ii2_to_rop` test
+The normal `actual_one_group_per_mip_warm_all_filters_has_ii2_to_rop` test
 checks actual branch calculations and all512 rows per filter. With full coverage,
-one group per pixel, one initial tile refill, eight-edge quad releases and a
+one group per mip plane, one initial tile refill per plane, eight-edge quad releases and a
 one-row-per-edge ROP input sink, **every** Final gap across quads16..63 is2 and
 every ROP row gap is1. The192 Final transfers and384 row transfers include all
 intervals in this declared window. Public-ID alias waits and32-slot wrapping
-are exercised; no interval is silently dropped or averaged into an II.
+are recorded; no interval is silently dropped or averaged into an II. The
+Trilinear footprint has two mip planes and all eight effective tap weights
+nonzero; its512 groups produce256 pixels through actual Sampling and Final.
+The row-bank tests additionally compare three shapes over1024 pre-edge RTL
+observations against an independent old-state memory golden. Published SPSC
+tests include registered Light2/Output32 and the Sampling SDPX9B primitive,
+CE, backpressure, wrap and reset. A returned Basic/branch read is checked against
+the preceding wall-edge request, including capture while compute CE is low.
 
 The original complex Bilinear footprint remains a separate normal numerical
 test: its upper taps cross an8x8 tile boundary, creating six groups per quad
@@ -191,8 +315,13 @@ case and report every quads16..63 interval; neither is relabeled as a one-group
 case or an immutable algorithmic throughput bound. Their source, admission,
 shared-context release, last result, join, output and occupancy events are kept.
 
-The foundation adapter supplies `RawQuadInput` to `Runtime::step_raw` directly:
-UV Q16 and draw bias Q8 do not make a fixed-to-float-to-fixed round trip. Live
+The selected foundation adapter supplies `RowInput` to `Runtime::step_row`:
+UV Q16 and draw bias Q8 do not make a fixed-to-float-to-fixed round trip.
+Row0 checks old Context/public/preparation/cache credit and writes canonical
+Raw once. The sole UV tail reserves the unpublished Context; row3 publishes
+Context and existing owners together. Continuations use the parent-held Raw
+header, with no metadata shadow or extra Raw read port. `row_accepted` reports
+each transfer; `accepted` reports only that fourth-row publication. Live
 admissions count actual accepted quads, while per-input Program compilation
 remains zero. The compatibility float entry of older composers is capture-only;
 Sampling's internal qualification remains specified in [texture.md](texture.md).
@@ -464,7 +593,7 @@ bias ties, bias clamping and held-offer sender changes. This host boundary does
 not implement a serial eight-edge UV ingress or certify capture hardware cost.
 
 No return register, full-result FIFO, extra context, or duplicate basic/light
-quad payload is added. Runtime's declared link state (266 bits), existing input
+quad payload is added. Runtime's declared link state (138 bits), existing input
 capture, P16/Group32, result16 and all cache/preparation/ColorEmu storage remain
 its owner's bill; LightingLive's input register is accounted above. Compilation
 occurs only at an eligible Runtime ingress edge, with no preloaded quad list or
@@ -664,4 +793,21 @@ their own integration contract. Existing standalone adapters each own their
 MC advance and cannot be stepped independently against one shared controller.
 J1 needs no new vendor/audited/ROP public API.
 Certified final/ROP arithmetic, live command/raster inputs and render/display
-ownership remain separate work. No emu-vs-RTL, PnR or board result is claimed here.
+ownership remain separate work. Those J1 tests do not establish a fitted GPU.
+
+## Complete post-quad RTL qualification
+
+The newer `postquad::verilog_selected` factory connects actual Quad ingress,
+Lighting, overlapping Sampling/cache/Color, result banks, ordered Final,
+ROP/framebuffer cache and one shared request owner. It is independently checked
+with finite ROM draws and final memory byte goldens, and has matched full-chain
+fits. The [post-quad report](postquad-performance.md) owns the resource and
+cold/hot performance results. This path has one immutable draw bank; the older
+two-bank foundation and J1 model contracts above remain separate evidence.
+The selected cache overlaps pending reads/captured results and pays next-head
+tag reads using the existing ordered Pool. Join launches on actual Basic DO and
+releases Final RGB on color-row ACK while retaining the paired depth witness.
+ROP borrows the existing second immutable output slot; ownership still retires
+only on row7. Exact calendars and qualified source identity live in the report.
+The [quad output draft](quad-output-protocol-draft.md) defines its upstream row
+format. Raster/interpolator and physical SDRAM/display integration remain open.

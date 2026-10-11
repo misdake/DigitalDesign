@@ -10,25 +10,37 @@ use resource_scheduler::{
     Graph, ModuloGraph, ModuloSchedule, Node, Resource as Site, SearchConfig,
 };
 use std::{collections::BTreeMap, sync::Arc};
+mod compact_membership;
+#[cfg(test)]
+mod compact_numerical_tests;
+mod compact_packet;
+mod compact_transport;
 #[expect(
     dead_code,
     reason = "Legacy private ingress/live ports are retained; Runtime uses its live executor"
 )]
 pub mod control;
+mod fusion;
 pub mod inventory;
 pub mod runtime;
 mod runtime_inventory;
+#[allow(dead_code)] // Independent generic comparison profile retained.
 mod runtime_membership;
 #[cfg(test)]
 mod runtime_numerical_tests;
+#[cfg(test)]
+#[allow(dead_code)] // Independent generic comparison profile retained.
 mod runtime_packet;
 mod runtime_preparation;
 pub mod runtime_rtl;
 pub mod serial;
 pub mod serial_rtl;
+#[cfg(test)]
+mod serial_weight_qualification;
 pub mod session;
 pub mod storage;
 pub mod system;
+#[allow(dead_code)] // Independent generic comparison profile retained.
 mod transport;
 
 // Test-only exclusion of fresh counted evaluation on the live numerical path.
@@ -554,6 +566,11 @@ fn storage_banks(
     Ok(banks.into_values().collect())
 }
 impl StagePlan {
+    /// Certified combinational boundaries used by both the real register
+    /// executor and RTL lowering. Consumers must not recreate primitive cuts.
+    pub fn logic_cones(&self) -> &[LogicCone] {
+        &self.cones
+    }
     pub fn span(&self) -> u64 {
         self.calendar.span
     }
@@ -566,14 +583,8 @@ impl StagePlan {
         let mut cones = lowering
             .logic_cones(f, 1)
             .map_err(|e| format!("cones: {e:?}"))?;
-        // Explicit charged singleton splits keep shared h/shift legal and billed.
-        if f.name == "texture_lod_context" {
-            let shared =
-                super::binding::lod_shared_h_cone(f).map_err(|e| format!("shared h: {e:?}"))?;
-            for id in [shared.absorbed_events[0], shared.result_event] {
-                cones.push(LogicCone::singleton(f, id, 1).map_err(|e| format!("split: {e:?}"))?);
-            }
-        }
+        let primitive_cones = cones.clone();
+        fusion::extend(f, &mut cones)?;
         let mut rs = lowering
             .resources(f)
             .map_err(|e| format!("resources: {e:?}"))?;
@@ -590,6 +601,16 @@ impl StagePlan {
             }
         }
         let mut counts = BTreeMap::<Resource, usize>::new();
+        let mut fused = BTreeMap::<String, Vec<usize>>::new();
+        for c in cones.iter().filter(|c| !primitive_cones.contains(c)) {
+            for &id in c.absorbed_events.iter().chain([&c.result_event]) {
+                rs[id] = None;
+            }
+            fused
+                .entry(fusion::shape(f, c))
+                .or_default()
+                .push(c.result_event);
+        }
         for r in rs.iter().flatten() {
             *counts.entry(*r).or_default() += 1;
         }
@@ -627,6 +648,26 @@ impl StagePlan {
         }
         let deps =
             physical::logic_dependencies(f, &cones).map_err(|e| format!("dependencies: {e:?}"))?;
+        let mut fused_sites = BTreeMap::new();
+        for (shape, roots) in fused {
+            let site = graph.resources.len();
+            // D's identical axis cuts share an actual RTL datapath. All other
+            // fabric cuts retain the independent physical sites they lower to.
+            let lanes = if f.name == "texture_derivatives" {
+                1
+            } else {
+                roots.len()
+            };
+            graph.resources.push(Site {
+                name: format!("FabricCone:{shape}"),
+                lanes,
+                latency: 1,
+                initiation_interval: 1,
+            });
+            for root in roots {
+                fused_sites.insert(root, site);
+            }
+        }
         graph.nodes = f
             .events
             .iter()
@@ -636,7 +677,10 @@ impl StagePlan {
                 name: format!("{:?}", e.operation),
                 predecessors,
                 earliest: 0,
-                resource: r.map(|r| map[&r]),
+                resource: fused_sites
+                    .get(&e.id)
+                    .copied()
+                    .or_else(|| r.map(|r| map[&r])),
             })
             .collect();
         let modulo = ModuloGraph::from_graph(&graph).map_err(|e| format!("modulo graph: {e:?}"))?;
@@ -656,9 +700,16 @@ impl StagePlan {
             .collect();
         physical::audit_logic_dependencies(f, &times, &cones, 100000)
             .map_err(|e| format!("gates: {e:?}"))?;
-        lowering
-            .audit_timing(f, &times, 1, 100000)
-            .map_err(|e| format!("wiring gates: {e:?}"))?;
+        // The composed audit above includes original equality recipes and all
+        // fabric cuts. Auditing primitive cuts alone would invent registers
+        // inside the fused region. Wiring adds must still remain zero-latency.
+        if lowering
+            .wiring_adds
+            .iter()
+            .any(|w| times[w.result_event].issue != times[w.result_event].ready)
+        {
+            return Err("wiring add acquired a register".into());
+        }
         let policy = LifetimePolicy {
             commit_cycle: calendar.span,
             period: Some(ii),
@@ -911,3 +962,23 @@ impl Binding {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "bound/frontend_reference_preparation.rs"]
+mod frontend_reference_preparation;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "bound/frontend_reference_runtime.rs"]
+mod frontend_reference_runtime;
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod derived_reference_preparation;
+#[cfg(test)]
+#[allow(dead_code)]
+mod derived_reference_runtime;
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod derived_reference_frontend;

@@ -224,7 +224,8 @@ fn nearest_literal_bypass_preserves_packets_and_removes_real_coefficient_edges()
         assert_eq!(a.0, b.0);
         assert_eq!(a.0, bound::prepare(&q, &[slot]).unwrap().payloads);
         if filter == Filter::Nearest {
-            assert!(a.1 >= b.1 + 48);
+            // Four lanes bypass the new six-edge coefficient consumer contract.
+            assert!(a.1 >= b.1 + 24);
             println!(
                 "nearest4 baseline={} bypass={} saved={}",
                 a.1,

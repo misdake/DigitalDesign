@@ -37,8 +37,8 @@ module packet_leaf (
 
     // Elaboration-time constant (named override at instantiation): 0 keeps the
     // accepted E0..E8 alignment and 9-edge latency bit-for-bit; 1 publishes the
-    // E2 pack register at 3 enabled edges and lets synthesis prune the six
-    // unused 72-bit banks.
+    // compact E1 select/pack register at 2 enabled edges and lets synthesis prune
+    // the unused Selected76 and alignment banks.
     parameter SHORT_ALIGNMENT = 0;
 
     // Emitted predicate: the tap must select a set Member emit bit.
@@ -105,12 +105,14 @@ module packet_leaf (
     reg        v1;
 
     // E2 pack from the registered E1 selection.
-    wire [8:0] p_w0 = sel_e1[36:28];
-    wire [8:0] p_w1 = sel_e1[45:37];
-    wire [8:0] p_w2 = sel_e1[54:46];
-    wire [8:0] p_w3 = sel_e1[63:55];
-    wire [5:0] p_key = sel_e1[69:64];
-    wire [3:0] p_masks = sel_e1[73:70];
+    // Compact form selects and masks directly from registered E0.
+    wire [75:0] pack_source = SHORT_ALIGNMENT ? sel_next : sel_e1;
+    wire [8:0] p_w0 = pack_source[36:28];
+    wire [8:0] p_w1 = pack_source[45:37];
+    wire [8:0] p_w2 = pack_source[54:46];
+    wire [8:0] p_w3 = pack_source[63:55];
+    wire [5:0] p_key = pack_source[69:64];
+    wire [3:0] p_masks = pack_source[73:70];
     wire [8:0] mw0 = p_masks[0] ? p_w0 : 9'd0;
     wire [8:0] mw1 = p_masks[1] ? p_w1 : 9'd0;
     wire [8:0] mw2 = p_masks[2] ? p_w2 : 9'd0;
@@ -118,10 +120,10 @@ module packet_leaf (
     wire [71:0] pack_next = {
         p_key[1:0],      // 71:70 lane
         p_key[5:2],      // 69:66 quad
-        sel_e1[75],      // 65    last
-        sel_e1[74],      // 64    first
+        pack_source[75],      // 65    last
+        pack_source[74],      // 64    first
         mw3, mw2, mw1, mw0,
-        sel_e1[27:0]     // header
+        pack_source[27:0]     // header
     };
 
     // E2..E7 align banks; E8 is the published output bank.
@@ -129,8 +131,8 @@ module packet_leaf (
     reg        v2, v3, v4, v5, v6, v7, v8;
 
     assign in_ready  = ce & ~fault;
-    // Short alignment publishes the E2 pack register; the default keeps old E8.
-    assign out_valid = SHORT_ALIGNMENT ? (v2 & ~fault) : (v8 & ~fault);
+    // Compact form publishes E1; the frozen default keeps old E8.
+    assign out_valid = SHORT_ALIGNMENT ? (v1 & ~fault) : (v8 & ~fault);
 
     always @(posedge clk) begin
         if (reset) begin
@@ -156,7 +158,7 @@ module packet_leaf (
                 sel_e1  <= sel_next;
                 v2      <= v1;
                 if (SHORT_ALIGNMENT) begin
-                    // Publish the E2 pack word; the constant removes the tail.
+                    // Select and pack E0 directly into E1; no retained Selected76.
                     out_packet <= pack_next;
                 end else begin
                     w0      <= pack_next;

@@ -15,6 +15,8 @@
 //! are no memory ports, no context state and no dispatcher/ROP logic here.
 
 use super::{PIPELINE_LATENCY, RESULT_CAPACITY};
+pub mod ordered_compact;
+pub mod ordered_shared;
 
 pub const MODULE: &str = "gpu_v2_final_stage";
 

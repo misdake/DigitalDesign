@@ -52,8 +52,8 @@ module membership_leaf (
 
     // Elaboration-time constant (named override at instantiation): 0 keeps the
     // accepted E0..E6 alignment and 7-edge latency bit-for-bit; 1 publishes the
-    // E4 arithmetic register at 5 enabled edges and lets synthesis prune the two
-    // unused 92-bit banks.
+    // compact Common86/Member92 path at 2 enabled edges and lets synthesis prune
+    // the unused reference intermediate and alignment banks.
     parameter SHORT_ALIGNMENT = 0;
 
     // Inactive plane is the only unrepresentable input an exact-width lane can
@@ -114,9 +114,31 @@ module membership_leaf (
     // ---- E6: published output ----
     reg        v6;
 
+    // Compact E0 capture uses the original Common86 layout.
+    wire [85:0] common_cap = {
+        (~in_fine | in_last_fine), in_fine, in_key, in_level, in_slot,
+        in_c2[2:0], in_c0[2:0], in_c3[9:3], in_c2[9:3], in_c1[9:3], in_c0[9:3],
+        in_w3, in_w2, in_w1, in_w0
+    };
+    reg [85:0] compact0;
+    wire compact_sx = compact0[42:36] == compact0[49:43];
+    wire compact_sy = compact0[56:50] == compact0[63:57];
+    wire compact_n0 = |compact0[8:0];
+    wire compact_n1 = |compact0[17:9];
+    wire compact_n2 = |compact0[26:18];
+    wire compact_n3 = |compact0[35:27];
+    wire compact_e0 = compact_n0;
+    wire compact_e1 = compact_n1 & ~(compact_n0 & compact_sx);
+    wire compact_e2 = compact_n2 & ~((compact_n0 & compact_sy) | (compact_n1 & compact_sx & compact_sy));
+    wire compact_e3 = compact_n3 & ~((compact_n0 & compact_sx & compact_sy) | (compact_n1 & compact_sy) | (compact_n2 & compact_sx));
+    wire [91:0] compact_member = {
+        compact0[85:84], compact0[79:78], compact0[83:80], compact0[77:70], compact_sy, compact_sx,
+        compact0[69:36], compact_e3, compact_e2, compact_e1, compact_e0, compact0[35:0]
+    };
+
     assign in_ready  = ce & ~fault;
-    // Short alignment publishes the E4 register; the default keeps the old E6.
-    assign out_valid = SHORT_ALIGNMENT ? (v4 & ~fault) : (v6 & ~fault);
+    // Compact form publishes E1; the frozen default keeps the old E6.
+    assign out_valid = SHORT_ALIGNMENT ? (v1 & ~fault) : (v6 & ~fault);
 
     // Representative selection: the first nonzero weight of each tile is kept,
     // duplicate-tile coefficients below it are suppressed (never merged).
@@ -161,6 +183,7 @@ module membership_leaf (
             end
             if (advance) begin
                 // E0
+                compact0 <= common_cap;
                 v0     <= in_valid;
                 w0_0   <= in_w0;
                 w1_0   <= in_w1;
@@ -250,12 +273,12 @@ module membership_leaf (
                 p5_3    <= same_x2;
                 // E4
                 v4      <= v3;
-                member4 <= member_next;
-                // E5/E6 default-only alignment tail; the short constant publishes
-                // the E4 arithmetic word directly, aligned with v4, so synthesis
-                // removes the tail without a skew between valid and data.
+                if (!SHORT_ALIGNMENT) member4 <= member_next;
+                // E5/E6 default-only alignment tail. The short constant instead
+                // publishes compact E1 with v1, removing intermediate payload
+                // copies without a skew between valid and data.
                 if (SHORT_ALIGNMENT) begin
-                    out_member <= member_next;
+                    out_member <= compact_member;
                 end else begin
                     // E5
                     v5      <= v4;

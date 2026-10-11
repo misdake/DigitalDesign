@@ -115,6 +115,10 @@ pub fn analyze_composed_policy(
         .flat_map(|g| g.absorbed_events.iter().copied())
         .chain(cones.iter().flat_map(|c| c.absorbed_events.iter().copied()))
         .collect();
+    let exported: std::collections::BTreeSet<_> = cones
+        .iter()
+        .flat_map(|c| c.exported_events.iter().copied())
+        .collect();
     let bad = || Fault::Audit("lifetime bounds or arithmetic".into());
     if period == Some(0) || commit_cycle > max_cycle {
         return Err(bad());
@@ -145,7 +149,7 @@ pub fn analyze_composed_policy(
         return Err(bad());
     }
     for e in &frame.events {
-        if absorbed.contains(&e.id)
+        if absorbed.contains(&e.id) && !exported.contains(&e.id)
             || matches!(e.operation, Operation::ProductMapping { .. })
             || matches!(&e.operation,Operation::Publish(name) if policy.retained_outputs.as_ref().is_some_and(|names|!names.contains(name)))
         {
@@ -196,6 +200,12 @@ pub fn analyze_composed_policy(
                     },
                 );
             }
+        }
+        // An exported internal result owns storage at the fused ready edge.
+        // Its operands are read once at the cone root's issue boundary, not
+        // again as a fictitious registered operation at publication.
+        if exported.contains(&e.id) {
+            continue;
         }
         let inputs = roots.get(&e.id).map_or(&e.inputs, |inputs| *inputs);
         let mut controls: Vec<_> = e

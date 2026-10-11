@@ -9,6 +9,8 @@ mod filter;
 #[cfg(test)]
 mod live_tests;
 pub mod packet;
+mod pipeline;
+mod refill;
 mod schedule;
 pub use schedule::ArithmeticPlan;
 
@@ -86,6 +88,7 @@ pub enum PacketStorage {
     #[default]
     Native,
     Pool64,
+    Pool64Group48,
 }
 impl Hardware {
     pub fn validate(&self) -> Result<(), Error> {
@@ -96,7 +99,15 @@ impl Hardware {
         {
             return Err("packet pool requires bound stages/P16/G32/no hints".into());
         }
-        if ![16, 32].contains(&self.group_capacity)
+        if self.packet_storage == PacketStorage::Pool64Group48
+            && (self.preparation != PreparationMode::BoundStages
+                || self.group_capacity != 48
+                || self.prefetch)
+        {
+            return Err("Group48 requires bound/P16/G48/no hints".into());
+        }
+        if !([16, 32].contains(&self.group_capacity)
+            || (self.packet_storage == PacketStorage::Pool64Group48 && self.group_capacity == 48))
             || !(1..=8).contains(&self.quad_capacity)
             || !(1..=16).contains(&self.hint_capacity)
             || !(1..=4).contains(&self.descriptor_capacity)
@@ -299,6 +310,8 @@ pub struct Snapshot {
     pub hints: usize,
     pub descriptors: usize,
     pub quads: usize,
+    /// False means the live cache owns only one pending synchronous read.
+    pub reference_color: bool,
     pub pipeline: usize,
     pub results: usize,
     pub result_credits: usize,
@@ -327,6 +340,7 @@ struct External {
     prepared: Vec<u8>,
     issues: Vec<packet::Owner>,
     live: Option<LiveAdmission>,
+    owner_read: bool,
 }
 /// Actual accepted metadata for the register Runtime. No frame or packet list.
 #[derive(Clone, Copy)]
@@ -357,15 +371,6 @@ struct Producer {
     clock: u64,
     next: usize,
 }
-struct Token {
-    group: Group4,
-    payload: i128,
-    line: usize,
-    age: u64,
-    words: Option<[u16; 4]>,
-    partial: Option<[u32; 3]>,
-    sum: Option<[u32; 3]>,
-}
 struct Packet {
     group: Group4,
     payload: i128,
@@ -382,16 +387,12 @@ pub struct Machine {
     groups: VecDeque<Packet>,
     packet_pool: Option<packet::Pool>,
     hints: VecDeque<TileKey>,
-    pending: VecDeque<Descriptor>,
-    active: Option<Active>,
-    tokens: VecDeque<Token>,
-    results: VecDeque<PixelResult>,
-    credits: usize,
+    refills: refill::Owner,
+    pipeline: pipeline::Pipeline,
     reservations: u64,
     live: u16,
     remaining: [u8; 16],
     produced: [bool; 16],
-    accumulator: Option<((u8, u8), [u32; 3])>,
     faulted: bool,
     pub stats: Stats,
     external_programs: Vec<Option<Arc<Program>>>,
@@ -402,12 +403,81 @@ pub struct Machine {
     external_open: u16,
 }
 impl Machine {
+    pub(crate) fn select_group48(&mut self) {
+        assert!(self.idle());
+        self.hardware.packet_storage = PacketStorage::Pool64Group48;
+        self.hardware.group_capacity = 48;
+        self.hardware.validate().expect("Group48 configuration");
+        self.packet_pool = Some(packet::Pool::ordered48());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn demand_owner_probe(&self) -> (usize, usize, bool, usize) {
+        self.refills.probe()
+    }
+    #[cfg(test)]
+    pub(crate) fn demand_queued_reference(&mut self) {
+        assert!(self.idle());
+        self.refills = refill::Owner::generic();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn packet_legacy_reference(&mut self) {
+        assert!(self.idle());
+        self.packet_pool = Some(packet::Pool::default());
+    }
+    #[cfg(test)]
+    pub(crate) fn packet_storage_trace(
+        &self,
+    ) -> Option<(
+        crate::texture::emu::packet_store_ordered::Tick,
+        crate::texture::emu::packet_store_ordered::Edge,
+    )> {
+        self.packet_pool
+            .as_ref()
+            .and_then(packet::Pool::storage_trace)
+    }
+    #[cfg(test)]
+    pub(crate) fn packet_storage_state(
+        &self,
+    ) -> Option<(
+        crate::texture::emu::packet_store_ordered::Control,
+        Option<u128>,
+        bool,
+        u128,
+    )> {
+        self.packet_pool
+            .as_ref()
+            .and_then(packet::Pool::storage_state)
+    }
     /// Borrow the single immutable texture context for admission validation.
     /// This adds no descriptor copy or mutable context-switch interface.
     pub(crate) fn external_context(&self) -> (&[Slot], &Hardware) {
         (&self.slots, &self.hardware)
     }
     pub fn new(slots: Vec<Slot>, hardware: Hardware) -> Result<Self, Error> {
+        Self::with_pipeline(
+            slots,
+            hardware,
+            pipeline::Pipeline::Reference(Box::default()),
+        )
+    }
+    /// Live cache reads return at one enabled edge; selected ordered PacketPool.
+    /// Only Runtime supplies the actual fixed two-edge, shared-CE Packet producer.
+    pub(crate) fn new_runtime_capture(slots: Vec<Slot>, hardware: Hardware) -> Result<Self, Error> {
+        if hardware.read_latency != 1
+            || hardware.prefetch
+            || hardware.preparation != PreparationMode::BoundStages
+        {
+            return Err("live cache requires read1/bound/no prefetch".into());
+        }
+        Self::with_pipeline(slots, hardware, pipeline::Pipeline::Capture(None))
+    }
+    fn with_pipeline(
+        slots: Vec<Slot>,
+        hardware: Hardware,
+        pipeline: pipeline::Pipeline,
+    ) -> Result<Self, Error> {
         hardware.validate()?;
         if slots.is_empty() || slots.len() > 16 {
             return Err("slot count".into());
@@ -417,7 +487,11 @@ impl Machine {
                 s.validate()?;
             }
         }
-        let pooled = hardware.packet_storage == PacketStorage::Pool64;
+        let group48 = hardware.packet_storage == PacketStorage::Pool64Group48;
+        let pooled = matches!(
+            hardware.packet_storage,
+            PacketStorage::Pool64 | PacketStorage::Pool64Group48
+        );
         Ok(Self {
             slots,
             hardware,
@@ -430,18 +504,28 @@ impl Machine {
             quads: VecDeque::new(),
             producer: None,
             groups: VecDeque::new(),
-            packet_pool: pooled.then(packet::Pool::default),
+            packet_pool: pooled.then(|| {
+                if pipeline.is_reference() {
+                    packet::Pool::default()
+                } else {
+                    if group48 {
+                        packet::Pool::ordered48()
+                    } else {
+                        packet::Pool::ordered()
+                    }
+                }
+            }),
             hints: VecDeque::new(),
-            pending: VecDeque::new(),
-            active: None,
-            tokens: VecDeque::new(),
-            results: VecDeque::new(),
-            credits: 0,
+            refills: if pipeline.is_reference() {
+                refill::Owner::generic()
+            } else {
+                refill::Owner::demand()
+            },
+            pipeline,
             reservations: 0,
             live: 0,
             remaining: [0; 16],
             produced: [false; 16],
-            accumulator: None,
             faulted: false,
             stats: Stats::default(),
             external_programs: (0..16).map(|_| None).collect(),
@@ -458,11 +542,13 @@ impl Machine {
             && self.groups.is_empty()
             && self.packet_pool.as_ref().is_none_or(packet::Pool::idle)
             && self.hints.is_empty()
-            && self.pending.is_empty()
-            && self.active.is_none()
-            && self.tokens.is_empty()
-            && self.results.is_empty()
+            && self.refills.count() == 0
+            && self.pipeline.idle()
             && self.live == 0
+    }
+    /// Diagnostic view of the sole public-result lane owner; no extra storage.
+    pub(crate) fn remaining_lanes(&self) -> [u8; 16] {
+        self.remaining
     }
     pub fn faulted(&self) -> bool {
         self.faulted
@@ -522,7 +608,7 @@ impl Machine {
         .map(|w| set * 4 + w)
     }
     fn descriptors(&self) -> usize {
-        self.pending.len() + usize::from(self.active.is_some())
+        self.refills.count()
     }
     fn allocate(
         &mut self,
@@ -531,7 +617,7 @@ impl Machine {
         protected: Option<TileKey>,
         events: &mut Vec<Event>,
     ) -> Result<bool, Error> {
-        if self.descriptors() >= self.hardware.descriptor_capacity {
+        if !self.refills.available(self.hardware.descriptor_capacity) {
             return Ok(false);
         }
         let Some(line) = self.victim(key, protected) else {
@@ -542,7 +628,7 @@ impl Machine {
             state: State::Filling,
             key: Some(key),
         };
-        self.pending.push_back(Descriptor { key, line, address });
+        self.refills.push(Descriptor { key, line, address })?;
         self.stats.allocations += 1;
         events.push(Event::Allocate {
             key,
@@ -551,6 +637,22 @@ impl Machine {
             prefetch,
         });
         Ok(true)
+    }
+    /// Called only after the actual public Color result is consumed. This is
+    /// independent of cache/preparation CE and does not invent a color age.
+    pub(crate) fn complete_live(&mut self, key: u8) -> Result<bool, Error> {
+        if self.faulted || self.pipeline.is_reference() || key >= 64 {
+            return Err("live completion mode/key/fault".into());
+        }
+        let id = usize::from(key / 4);
+        let bit = 1 << (key % 4);
+        if self.remaining[id] & bit == 0 {
+            return Err("duplicate/unowned live result".into());
+        }
+        self.remaining[id] &= !bit;
+        self.release_quad(key / 4);
+        self.stats.committed += 1;
+        Ok(self.remaining[id] == 0)
     }
     fn release_quad(&mut self, id: u8) {
         let i = usize::from(id);
@@ -565,30 +667,9 @@ impl Machine {
     ) -> Result<Option<usize>, Error> {
         let mut written = None;
         for response in responses {
-            let active = self.active.as_mut().ok_or("unsolicited refill event")?;
-            match *response {
-                RefillEvent::Started { id } => {
-                    if id != active.id || active.started {
-                        return Err("refill start identity/order".into());
-                    }
-                    active.started = true;
-                }
-                RefillEvent::Beat {
-                    id,
-                    index,
-                    data,
-                    last,
-                } => {
-                    if id != active.id
-                        || !active.started
-                        || index != active.next
-                        || index >= 16
-                        || last != (index == 15)
-                        || written.is_some()
-                    {
-                        return Err("refill beat identity/order/port budget".into());
-                    }
-                    let line = active.descriptor.line;
+            match self.refills.response(response.clone(), written.is_some())? {
+                refill::Action::Started => {}
+                refill::Action::Beat { line, index, data } => {
                     for j in 0..4 {
                         let linear = index * 4 + j;
                         let x = linear % 8;
@@ -597,18 +678,12 @@ impl Machine {
                         let local = (y & 7) * 2 + ((x >> 2) & 1);
                         self.banks[bank][line * 16 + local] = (data >> (j * 16)) as u16;
                     }
-                    active.next += 1;
                     self.stats.beats += 1;
                     written = Some(line);
                     events.push(Event::Beat { line, index, data });
                 }
-                RefillEvent::Complete { id } => {
-                    if id != active.id || !active.started || active.next != 16 {
-                        return Err("refill completion without sixteen beats".into());
-                    }
-                    let descriptor = active.descriptor.clone();
+                refill::Action::Ready(descriptor) => {
                     self.lines[descriptor.line].state = State::Ready;
-                    self.active = None;
                     self.touch(descriptor.line);
                     self.stats.refills += 1;
                     events.push(Event::Ready {
@@ -619,91 +694,6 @@ impl Machine {
             }
         }
         Ok(written)
-    }
-    fn pipeline(&mut self, events: &mut Vec<Event>) -> Result<(), Error> {
-        let mut next = VecDeque::new();
-        while let Some(mut token) = self.tokens.pop_front() {
-            token.age += 1;
-            if token.age == self.hardware.read_latency {
-                if self.lines[token.line].state != State::Ready
-                    || self.lines[token.line].key != Some(token.group.key)
-                {
-                    return Err("reserved read replaced before capture".into());
-                }
-                let words = std::array::from_fn(|t| {
-                    let x = usize::from(token.group.top_left_local[0]) + (t & 1);
-                    let y = usize::from(token.group.top_left_local[1]) + (t >> 1);
-                    let bank = ((y & 1) ^ ((x >> 1) & 1)) * 2 + (x & 1);
-                    let local = (y & 7) * 2 + ((x >> 2) & 1);
-                    self.banks[bank][token.line * 16 + local]
-                });
-                token.words = Some(words);
-                self.reservations &= !(1 << token.line);
-                events.push(Event::Captured {
-                    group: token.group.clone(),
-                    line: token.line,
-                    words,
-                });
-            }
-            if token.age == self.hardware.partial_at() {
-                let value =
-                    filter::partial(token.payload, token.words.ok_or("missing bank data")?)?;
-                token.partial = Some(value);
-                events.push(Event::Partial {
-                    group: token.group.clone(),
-                    value,
-                });
-            }
-            if token.age == self.hardware.accumulator_at() {
-                let identity = (token.group.quad_id, token.group.lane);
-                let previous = if token.group.first {
-                    if self.accumulator.is_some() {
-                        return Err("first interrupted prior sample".into());
-                    }
-                    [0; 3]
-                } else {
-                    let (owner, value) = self.accumulator.ok_or("non-first without accumulator")?;
-                    if owner != identity {
-                        return Err("sample group ordering".into());
-                    }
-                    value
-                };
-                let value = filter::accumulate(
-                    previous,
-                    token.partial.ok_or("missing partial")?,
-                    token.payload,
-                )?;
-                token.sum = Some(value);
-                events.push(Event::Accumulate {
-                    group: token.group.clone(),
-                    value,
-                });
-                self.accumulator = if token.group.last {
-                    None
-                } else {
-                    Some((identity, value))
-                };
-                if !token.group.last {
-                    continue;
-                }
-            }
-            if token.age == self.hardware.color_latency() {
-                let pixel = PixelResult {
-                    quad_id: token.group.quad_id,
-                    lane: token.group.lane,
-                    rgb: filter::normalize(token.sum.ok_or("missing final sum")?)?,
-                };
-                if self.results.len() >= self.hardware.result_capacity {
-                    return Err("reserved output capacity violated".into());
-                }
-                self.results.push_back(pixel.clone());
-                events.push(Event::Result { pixel });
-            } else {
-                next.push_back(token);
-            }
-        }
-        self.tokens = next;
-        Ok(())
     }
     fn produce(&mut self, events: &mut Vec<Event>) -> Result<(), Error> {
         if self.hardware.preparation == PreparationMode::BoundStages {
@@ -789,13 +779,9 @@ impl Machine {
                 }
                 Some((_, State::Filling)) => {
                     self.stats.demand_wait_cycles += 1;
-                    if let Some(i) = self.pending.iter().position(|d| d.key == g.key) {
-                        if i != 0 {
-                            let d = self.pending.remove(i).unwrap();
-                            self.pending.push_front(d);
-                            self.stats.promotions += 1;
-                            events.push(Event::Promote { key: g.key });
-                        }
+                    if self.refills.promote(g.key) {
+                        self.stats.promotions += 1;
+                        events.push(Event::Promote { key: g.key });
                     }
                 }
                 _ => {}
@@ -829,7 +815,7 @@ impl Machine {
                     self.stats.demand_wait_cycles += 1;
                     return Ok(());
                 }
-                if g.last && self.credits == self.hardware.result_capacity {
+                if g.last && self.pipeline.credits() == self.hardware.result_capacity {
                     self.stats.result_credit_stalls += 1;
                     return Ok(());
                 }
@@ -850,23 +836,12 @@ impl Machine {
                     self.groups.pop_front().unwrap()
                 };
                 self.reservations |= 1 << line;
-                if g.last {
-                    self.credits += 1;
-                }
                 self.touch(line);
                 self.stats.reads += 1;
                 if refill_overlap {
                     self.stats.hits_during_refill += 1;
                 }
-                self.tokens.push_back(Token {
-                    group: g.clone(),
-                    payload: packet.payload,
-                    line,
-                    age: 0,
-                    words: None,
-                    partial: None,
-                    sum: None,
-                });
+                self.pipeline.issue(g.clone(), packet.payload, line)?;
                 events.push(Event::Read {
                     group: g,
                     payload: packet.payload,
@@ -907,6 +882,7 @@ impl Machine {
             prepared,
             issues: packet_issues,
             live: live_admission,
+            owner_read,
         } = external;
         if packet_issues.len() > 1 {
             return Err("packet pool has one producer issue per edge".into());
@@ -917,7 +893,7 @@ impl Machine {
         self.stats.wall_cycles += 1;
         let mut events = Vec::new();
         let mut packet_events = Vec::new();
-        let overlap = self.active.is_some();
+        let overlap = self.refills.active();
         let responses = memory.step()?;
         let written = self.responses(&responses, &mut events)?;
         let mut accepted = false;
@@ -930,8 +906,7 @@ impl Machine {
             let previous_groups = self.group_occupancy();
             self.stats.enabled_cycles += 1;
             if control.result_ready {
-                if let Some(pixel) = self.results.pop_front() {
-                    self.credits -= 1;
+                if let Some(pixel) = self.pipeline.commit() {
                     let id = usize::from(pixel.quad_id);
                     let bit = 1 << pixel.lane;
                     if self.remaining[id] & bit == 0 {
@@ -943,7 +918,13 @@ impl Machine {
                     events.push(Event::Commit { pixel });
                 }
             }
-            self.pipeline(&mut events)?;
+            self.pipeline.advance(
+                &self.hardware,
+                &self.lines,
+                &self.banks,
+                &mut self.reservations,
+                &mut events,
+            )?;
             self.tags(
                 written,
                 overlap || written.is_some(),
@@ -1059,7 +1040,13 @@ impl Machine {
                     events.push(Event::Produced { group, payload });
                 }
                 if let Some(pool) = self.packet_pool.as_mut() {
-                    pool.advance(t, previous_groups, pool_write, &mut packet_events)?;
+                    pool.advance(
+                        t,
+                        previous_groups,
+                        pool_write,
+                        owner_read,
+                        &mut packet_events,
+                    )?;
                 }
                 for &id in &prepared {
                     let i = usize::from(id);
@@ -1094,22 +1081,13 @@ impl Machine {
             return Err("external preparation advanced under CE=0".into());
         }
         // Accepted response beats and directory commits continue under consumer CE=0.
-        if self.active.is_none() {
-            if let Some(descriptor) = self.pending.pop_front() {
-                let id = memory.submit_read(descriptor.address, 128)?;
-                events.push(Event::Submitted {
-                    id,
-                    key: descriptor.key,
-                    line: descriptor.line,
-                    address: descriptor.address,
-                });
-                self.active = Some(Active {
-                    descriptor,
-                    id,
-                    started: false,
-                    next: 0,
-                });
-            }
+        if let Some((id, descriptor)) = self.refills.submit(memory)? {
+            events.push(Event::Submitted {
+                id,
+                key: descriptor.key,
+                line: descriptor.line,
+                address: descriptor.address,
+            });
         }
         let snapshot = self.snapshot();
         self.stats.peak_groups = self.stats.peak_groups.max(snapshot.groups);
@@ -1180,6 +1158,7 @@ impl Machine {
                 prepared,
                 issues: vec![],
                 live: None,
+                owner_read: false,
             },
         );
         if result.is_err() {
@@ -1208,6 +1187,7 @@ impl Machine {
                 prepared,
                 issues,
                 live: None,
+                owner_read: false,
             },
         );
         if result.is_err() {
@@ -1217,7 +1197,8 @@ impl Machine {
     }
     /// Register Runtime ingress and actual packet completion. Legacy replay
     /// programs are absent; first/last and accepted coverage own the lifecycle.
-    pub(crate) fn step_live<M: RefillPort + ?Sized>(
+    #[cfg(test)]
+    fn step_live<M: RefillPort + ?Sized>(
         &mut self,
         memory: &mut M,
         offered: Option<LiveAdmission>,
@@ -1225,6 +1206,27 @@ impl Machine {
         packet: Option<i128>,
         prepared: Vec<u8>,
         issues: Vec<packet::Owner>,
+    ) -> Result<Step, Error> {
+        self.step_runtime(
+            memory,
+            offered,
+            control,
+            packet,
+            prepared,
+            packet::Issues {
+                owners: issues,
+                owner_read: false,
+            },
+        )
+    }
+    pub(crate) fn step_runtime<M: RefillPort + ?Sized>(
+        &mut self,
+        memory: &mut M,
+        offered: Option<LiveAdmission>,
+        control: Control,
+        packet: Option<i128>,
+        prepared: Vec<u8>,
+        issues: packet::Issues,
     ) -> Result<Step, Error> {
         if self.faulted
             || self.packet_pool.is_none()
@@ -1239,8 +1241,9 @@ impl Machine {
             External {
                 packet,
                 prepared,
-                issues,
+                issues: issues.owners,
                 live: offered,
+                owner_read: issues.owner_read,
             },
         );
         if result.is_err() {
@@ -1254,9 +1257,10 @@ impl Machine {
             hints: self.hints.len(),
             descriptors: self.descriptors(),
             quads: self.quads.len(),
-            pipeline: self.tokens.len(),
-            results: self.results.len(),
-            result_credits: self.credits,
+            reference_color: self.pipeline.is_reference(),
+            pipeline: self.pipeline.pending(),
+            results: self.pipeline.results(),
+            result_credits: self.pipeline.credits(),
             reservations: self.reservations,
             live_quads: self.live,
             producer_clock: self.producer.as_ref().map(|p| p.clock),
@@ -1411,8 +1415,9 @@ mod tests {
         for &key in &keys {
             assert!(machine.allocate(key, true, None, &mut events).unwrap());
         }
-        machine.active = Some(Active {
-            descriptor: machine.pending.pop_front().unwrap(),
+        let generic = machine.refills.generic_mut();
+        generic.active = Some(Active {
+            descriptor: generic.pending.pop_front().unwrap(),
             id: 91,
             started: true,
             next: 3,
@@ -1439,11 +1444,14 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, Event::Promote { key } if *key == keys[2])));
-        assert_eq!(machine.pending.front().unwrap().key, keys[2]);
+        assert_eq!(
+            machine.refills.generic_mut().pending.front().unwrap().key,
+            keys[2]
+        );
         assert_eq!(
             (
-                machine.active.as_ref().unwrap().id,
-                machine.active.as_ref().unwrap().next
+                machine.refills.generic_mut().active.as_ref().unwrap().id,
+                machine.refills.generic_mut().active.as_ref().unwrap().next
             ),
             (91, 3)
         );

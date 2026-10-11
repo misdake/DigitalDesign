@@ -11,13 +11,29 @@ pub mod dispatch;
 pub mod engines;
 pub mod final_stage;
 pub mod foundation;
-pub mod foundation_live;
 pub mod foundation_backend;
+pub mod foundation_live;
+pub mod framebuffer_native;
+pub mod framebuffer_quantization;
+pub mod framebuffer_sink;
+pub mod lighting_consumer;
 mod live;
 mod model;
+pub mod origin;
+pub mod pixel_ingress;
+pub mod pixel_preparation_ingress;
+pub mod pixel_runtime_ingress;
+pub mod pixel_sampling_ingress;
+pub mod postquad;
+pub mod postquad_descriptor;
+pub mod quad_ingress;
+pub mod quad_lighting_ingress;
+pub mod quad_sampling_ingress;
 pub mod raster_input;
 pub mod registered;
 pub mod registered_backend;
+pub mod row_store;
+pub mod sample_owner;
 pub mod spsc;
 
 use crate::{framebuffer::ports::*, lighting::ports::LightingOutput};
@@ -91,3 +107,5 @@ impl Default for Tick {
         }
     }
 }
+
+pub mod quad_authority_model;

@@ -71,6 +71,13 @@ pub enum Event {
         plane: usize,
         packet: usize,
     },
+    /// Actual Runtime operand key; legacy Issue retains covered-lane ordinals.
+    KeyIssue {
+        stage: &'static str,
+        key: u8,
+        plane: usize,
+        packet: usize,
+    },
     SharedRelease {
         program: usize,
         slot: usize,
