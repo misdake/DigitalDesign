@@ -8,7 +8,9 @@ Nano system as a historical development harness; new components belong here.
 See [architecture](docs/architecture.md) for component ownership and the model
 directions, [lighting](docs/lighting.md) for the numerical models, independent
 cycle emulator, synthesizable RTL and matched isolated PnR evidence, and
-[frontend](docs/frontend.md) for the bounded Rust frontend models.
+[frontend](docs/frontend.md) for the bounded Rust frontend models and independent
+command/vertex kernels. Those kernels remain separate from the connected Rust
+frontend and from the post-quad RTL.
 Lighting provides the Fast resource profile with scalar H
 normalization, fixed DSP roles and checked synchronous retained storage.
 The explicit SystemFast comparison uses scalar N/H, direct squares and a complete

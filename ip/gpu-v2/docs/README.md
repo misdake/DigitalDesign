@@ -6,7 +6,7 @@
 | [Functional oracle chain](oracle-chain.md) | Shared Rust mesh-to-framebuffer composition, configurable frontend precision, bounded FIFOs and A/B WebSocket review |
 | [Triangle-record transport](geometry-record-transport.md) | Bounded Rust two-slot publication, shared read-return credit, consumer release and normal-path source lease connection |
 | [Lighting](lighting.md) | Reference cores and selected direct H9/shared B calendar, per-pixel V/H and bounded component qualification |
-| [Frontend](frontend.md) | Command processor, scratchpad, vertex transform and bounded Rust composition |
+| [Frontend](frontend.md) | Bounded Rust frontend models and independent Command/Vertex kernels, including the 102-edge DO-loan leaf |
 | [Triangle](triangle.md) | Oracle-only clipping, coverage, perspective fields, precision study and workload analysis |
 | [Texture](texture.md) | UNORM9 oracle/counted; universal periodic preparation, bounded cache/color and cycle-MC timed composition |
 | [Framebuffer](framebuffer.md) | Materialized ROP oracle, actual registered ROP/cache and bounded MC qualification |

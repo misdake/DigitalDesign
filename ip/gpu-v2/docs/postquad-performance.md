@@ -401,8 +401,9 @@ reconstructed DRAM and ordered commits. Raw faults, CE0, reset, abort and paid
 memory draining are qualified. Both matched native placements pass54 MHz. The
 same complete-chain steady hot window remains8 edges/quad; cold service retains
 its actual memory stalls. Resource totals, source identities, original receipts,
-rejected alternatives and pictures have one home in
-[the follow-up report](../../../target/postquad-followup-20261010/report.md).
+rejected alternatives and pictures have one home in the source-owned follow-up
+report at
+`E:/worktrees/60c7/DigitalDesign-code/target/postquad-followup-20261010/report.md`.
 The default `selected` and explicit `sh9` factories remain independent reference
 exports. This qualification covers the post-quad chain, not the whole GPU or a
 physical board image.

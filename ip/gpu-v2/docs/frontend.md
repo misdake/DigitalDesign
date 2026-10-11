@@ -1,4 +1,4 @@
-# Command, scratchpad and vertex Rust models
+# Command, scratchpad and vertex models and independent kernels
 
 The reusable components own `ports` and `sim/{oracle,counted,timed}` under
 `src/command_processor`, `src/scratchpad`, `src/vertex` and `src/frontend`.
@@ -9,6 +9,63 @@ borrowed producer port. The legacy driver owns standalone slots; the connected
 test composition writes SourceCapture's slots and continues through the existing
 record/raster/pixel backend. Neither frontend composition is an independent vertex
 arithmetic emulator, RTL implementation or encoded command-machine ABI.
+
+## Independent component kernels
+
+`command_processor::{control,emu,rtl}` and `vertex::{emu,rtl}` are separate
+opt-in components. They are not instantiated by the existing frontend
+composition or connected to one another. The oracle/count/timed models below
+retain their existing ownership and evidence boundaries.
+
+The command kernel executes one semantic command at a time with explicit
+event acknowledgement, sticky DMA tokens and a separately registered DRAW
+completion. `control::CommandPort` retains a driver-validated typed payload
+until the matching action accepts; control capture alone does not transfer
+that payload. Actual DMA execution and payload storage remain external.
+Completion/event capture uses wall-clock edges even during CE0; command action
+acceptance uses enabled edges. `fence_ready` describes an external frontend
+drain condition. It does not by itself establish rendering completion or an
+encoded command ABI.
+
+`vertex::emu::VertexEmu` executes its own operands, accumulator and rounding
+registers; it does not replay a counted Plan's answers. The matching native
+and portable RTL consumes a checked base/grid header, 25 sequential matrix
+words and one v6 vertex owner. Native coefficient storage uses one BSRAM;
+source storage and the private result store belong to the caller. Driver
+normal-matrix preflight is required before coefficient transport. Seven
+canonical row transfers precede a later publication handshake. A partial
+result on fault/reset is abandoned and cannot be published.
+
+Vertex transfer means `ce && !reset && old_valid && old_ready`; raw offers can
+persist during CE0. The exact position implementation rejects a high unsigned
+delta before a low32 shift and checked33-bit base addition. Clip/normal
+rounding and public formats are unchanged. The native wide multiplier returns
+uniform results in two enabled edges; the narrow multiplier returns in one.
+
+The preferred further isolated vertex candidate is
+`vertex::do_loan::VertexEmu` with `vertex::rtl::do_loan_native()` /
+`do_loan_portable()`. It issues directly from the registered coefficient RAM
+output and retains that output until the current product is consumed. No new
+coefficient read occurs during this loan. Its dense internal state encoding
+changes neither the numerical formats nor public handshakes. The original
+position32 emulator and factories remain available as exact references.
+
+The DO-loan kernel takes 102 productive enabled edges per valid vertex,
+excluding the unchanged 26-edge context load and input/output stalls; the
+reference takes 123. It still writes seven private rows before publication.
+Its independent bounded test is `tests/vertex_wide_do_loan_qualification.rs`;
+`VERTEX_QUAL_DIR` writes the live calendar for both RTL backends. Actual source,
+qualification, same-boundary fitted resources and production identity are
+recorded in `target/gpu-quality-window-20261011/report.md` in the main workspace.
+This independent leaf is not a connected frontend or whole-system proof.
+
+Bounded independent qualification is in `tests/command_control_cosim.rs` and
+`tests/vertex_leaf_qualification.rs`. The live command test requires actual
+Icarus and an explicit `GPU_COMMAND_QUAL_DIR` with exported sources. The vertex
+test can write a replay calendar with `VERTEX_QUAL_DIR`; both RTL backends must
+be checked against that calendar. Isolated leaf fitting excludes external
+payload/source/result banks and provides no assembled frontend or whole-GPU
+resource, throughput or board claim.
 
 The oracle can also consume a GPU-owned MemoryPort through `run_with_memory`.
 The [SDRAM combination adapter](sdram-memory-controller.md) uses the vendor service
