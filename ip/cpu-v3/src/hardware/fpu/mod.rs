@@ -1525,6 +1525,40 @@ impl Module for CpuV3FpuDotPath {
     }
 }
 
+/// One physical product issuer, shared by ordinary multiply and dot modes.
+/// Its actual register execution model lives in CpuV3FpuState.
+pub struct CpuV3FpuProductPath;
+impl HardwareIdentity for CpuV3FpuProductPath {
+    const TARGET_RESOURCE_LEAF: bool = true;
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuProductPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+impl Module for CpuV3FpuProductPath {
+    type Input = CpuV3FpuDotPathInput;
+    type Output = CpuV3FpuDotPathOutput;
+    type EmuState = ();
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        Vec::new()
+    }
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_product_path.v").to_string())
+    }
+    fn verilog_testbench() -> Option<String> {
+        Some(
+            [
+                include_str!("cpu_v3_fpu_product_path_tb.v"),
+                include_str!("cpu_v3_fpu_multiply_path.v"),
+                include_str!("cpu_v3_fpu_dot_path.v"),
+                include_str!("cpu_v3_fpu_mul_pipe.v"),
+            ]
+            .join("\n"),
+        )
+    }
+}
+
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuInput {
     pub abort: Wire,
@@ -1580,27 +1614,20 @@ pub struct CpuV3FpuState {
     vp_wr_enable: bool,
     vp_wr_address: u16,
     vp_wr_data: u32,
-    mp_run: bool,
-    mp_lane: u8,
-    mp_last_lane: u8,
-    mp_base_a: u8,
-    mp_base_b: u8,
-    mp_is_vmuls: bool,
-    mp_waddr: u16,
-    mp_outstanding: u8,
-    dp_run: bool,
-    dp_lane: u8,
-    dp_last_lane: u8,
-    dp_base_a: u8,
-    dp_base_b: u8,
-    dp_stride: u8,
-    dp_store_mode: bool,
-    dp_acc_lane: u8,
-    dp_store: bool,
-    dp_store_addr: u16,
-    dp_store_data: u32,
-    dp_outstanding: u8,
-    dp_acc: i64,
+    product_run: bool,
+    product_lane: u8,
+    product_last_lane: u8,
+    product_base_a: u8,
+    product_base_b: u8,
+    product_stride: u8,
+    product_dot: bool,
+    product_store_mode: bool,
+    product_waddr: u16,
+    product_outstanding: u8,
+    product_acc_lane: u8,
+    product_store: bool,
+    product_store_data: u32,
+    product_acc: i64,
     // Shared multiply pipe (CpuV3FpuMulPipe): the only multiplier in the
     // unit. The tag carries the multiply path's write address; the dot path
     // tags lanes for observability.
@@ -1634,27 +1661,20 @@ impl Default for CpuV3FpuState {
             vp_wr_enable: false,
             vp_wr_address: 0,
             vp_wr_data: 0,
-            mp_run: false,
-            mp_lane: 0,
-            mp_last_lane: 0,
-            mp_base_a: 0,
-            mp_base_b: 0,
-            mp_is_vmuls: false,
-            mp_waddr: 0,
-            mp_outstanding: 0,
-            dp_run: false,
-            dp_lane: 0,
-            dp_last_lane: 0,
-            dp_base_a: 0,
-            dp_base_b: 0,
-            dp_stride: 1,
-            dp_store_mode: false,
-            dp_acc_lane: 0,
-            dp_store: false,
-            dp_store_addr: 0,
-            dp_store_data: 0,
-            dp_outstanding: 0,
-            dp_acc: 0,
+            product_run: false,
+            product_lane: 0,
+            product_last_lane: 0,
+            product_base_a: 0,
+            product_base_b: 0,
+            product_stride: 1,
+            product_dot: false,
+            product_store_mode: false,
+            product_waddr: 0,
+            product_outstanding: 0,
+            product_acc_lane: 0,
+            product_store: false,
+            product_store_data: 0,
+            product_acc: 0,
             pipe_s1_valid: false,
             pipe_s1_a: 0,
             pipe_s1_b: 0,
@@ -1676,7 +1696,7 @@ impl CpuV3FpuState {
 
     /// The shared 64-bit dot accumulator.
     pub fn accumulator(&self) -> i64 {
-        self.dp_acc
+        self.product_acc
     }
 
     /// Combinational outputs of the unit top (registered leaf outputs and the
@@ -1714,11 +1734,6 @@ impl CpuV3FpuState {
                 ))
                 || (self.frontend.instr_opcode == encoding::OPCODE_SCALAR
                     && encoding::scalar_subop(self.frontend.word1_raw) == encoding::MUL));
-        // `busy` is path ownership, not "the shared pipe returned": the RTL
-        // unit top selects the multiply/dot operand mux on `mp_busy`, and the
-        // shared `pipe_s2_valid` must not leak into it. `*_outstanding` already
-        // covers every return beat.
-        let mp_busy = (mp_load_now || self.mp_run || self.mp_outstanding != 0) && !input.abort;
         let dp_load_now = self.frontend.instr_complete
             && !input.abort
             && self.frontend.instr_opcode == encoding::OPCODE_VECTOR
@@ -1726,7 +1741,11 @@ impl CpuV3FpuState {
                 encoding::vector_subop(self.frontend.word1_raw),
                 encoding::DOT | encoding::DOTADD | encoding::DOTSTORE
             );
-        let dp_busy = (dp_load_now || self.dp_run || self.dp_outstanding != 0 || self.dp_store)
+        let product_busy = (mp_load_now
+            || dp_load_now
+            || self.product_run
+            || self.product_outstanding != 0
+            || self.product_store)
             && !input.abort;
         // Special path (RCP/RSQRT/SINCOS): blocking, so its busy window is
         // exactly the T0..T3 or T0..T7 pipeline its own state tracks.
@@ -1744,7 +1763,7 @@ impl CpuV3FpuState {
             || self.special_path.sc_valid)
             && !input.abort;
         CpuV3FpuOutputValue {
-            busy: sp_w_wait != 0 || vp_busy || mp_busy || dp_busy || sf_busy,
+            busy: sp_w_wait != 0 || vp_busy || product_busy || sf_busy,
             flag_lt: self.scalar_path.flag_lt,
             flag_eq: self.scalar_path.flag_eq,
             flag_gt: self.scalar_path.flag_gt,
@@ -1796,8 +1815,7 @@ impl Module for CpuV3Fpu {
             VerilogDependency::new::<CpuV3FpuScalarAlu>("shared_alu"),
             VerilogDependency::new::<CpuV3FpuAluPath>("alu_path"),
             VerilogDependency::new::<CpuV3FpuSpecialPath>("special_path"),
-            VerilogDependency::new::<CpuV3FpuMultiplyPath>("multiply_path"),
-            VerilogDependency::new::<CpuV3FpuDotPath>("dot_path"),
+            VerilogDependency::new::<CpuV3FpuProductPath>("product_path"),
             VerilogDependency::new::<CpuV3FpuMulPipe>("mul_pipe"),
         ]
     }
@@ -1924,7 +1942,6 @@ impl CpuV3FpuState {
                 encoding::vector_subop(word1_fields),
                 encoding::DOT | encoding::DOTADD | encoding::DOTSTORE
             );
-        let dp_active = dp_load_now || state.dp_run;
         let mp_load_now = instr_complete_prev
             && ((state.frontend.instr_opcode == encoding::OPCODE_VECTOR
                 && matches!(
@@ -1933,21 +1950,22 @@ impl CpuV3FpuState {
                 ))
                 || (state.frontend.instr_opcode == encoding::OPCODE_SCALAR
                     && encoding::scalar_subop(word1_fields) == encoding::MUL));
-        let mp_active = mp_load_now || state.mp_run;
+        let product_load_now = mp_load_now || dp_load_now;
+        let product_active = product_load_now
+            || state.product_run
+            || state.product_outstanding != 0
+            || state.product_store;
         let vp_active = vp_load_now || state.vp_run;
         let read_a_address = if sp_comb.busy {
             sp_comb.rf_read_a_address as usize
-        } else if dp_load_now {
+        } else if product_load_now {
             usize::from(encoding::word0_fa(state.frontend.word0_raw))
-        } else if dp_active && state.dp_lane <= state.dp_last_lane {
-            usize::from(state.dp_base_a) + usize::from(state.dp_lane)
-        } else if dp_active {
-            0
-        } else if mp_load_now {
-            usize::from(encoding::word0_fa(state.frontend.word0_raw))
-        } else if mp_active && state.mp_lane <= state.mp_last_lane {
-            usize::from(state.mp_base_a) + usize::from(state.mp_lane)
-        } else if mp_active {
+        } else if product_active
+            && state.product_run
+            && state.product_lane <= state.product_last_lane
+        {
+            usize::from(state.product_base_a)
+        } else if product_active {
             0
         } else if vp_load_now {
             usize::from(encoding::word0_fa(state.frontend.word0_raw))
@@ -1960,22 +1978,14 @@ impl CpuV3FpuState {
         };
         let read_b_address = if sp_comb.busy {
             sp_comb.rf_read_b_address as usize
-        } else if dp_load_now {
+        } else if product_load_now {
             usize::from(encoding::word0_fb(state.frontend.word0_raw))
-        } else if dp_active && state.dp_lane <= state.dp_last_lane {
-            usize::from(state.dp_base_b) + usize::from(state.dp_lane) * usize::from(state.dp_stride)
-        } else if dp_active {
-            0
-        } else if mp_load_now {
-            usize::from(encoding::word0_fb(state.frontend.word0_raw))
-        } else if mp_active && state.mp_lane <= state.mp_last_lane {
-            usize::from(state.mp_base_b)
-                + if state.mp_is_vmuls {
-                    0
-                } else {
-                    usize::from(state.mp_lane)
-                }
-        } else if mp_active {
+        } else if product_active
+            && state.product_run
+            && state.product_lane <= state.product_last_lane
+        {
+            usize::from(state.product_base_b)
+        } else if product_active {
             0
         } else if vp_load_now {
             usize::from(encoding::word0_fb(state.frontend.word0_raw))
@@ -2001,28 +2011,22 @@ impl CpuV3FpuState {
             len_field: encoding::word1_len(word1_fields),
             vector_subop: encoding::vector_subop(word1_fields),
             vp_load_now,
-            mp_load_now,
-            dp_load_now,
-            mp_data_valid: state.mp_run
-                && state.mp_lane >= 1
-                && (state.mp_lane - 1) <= state.mp_last_lane,
-            dp_data_valid: state.dp_run
-                && state.dp_lane >= 1
-                && (state.dp_lane - 1) <= state.dp_last_lane,
+            product_load_now,
+            product_dot_load: dp_load_now,
+            product_data_valid: state.product_run
+                && state.product_lane >= 1
+                && state.product_lane - 1 <= state.product_last_lane,
             pipe_out_valid: state.pipe_s2_valid && !input.abort,
             pipe_out_product: state.pipe_s2_prod,
             pipe_out_tag: state.pipe_s2_tag,
-            // Pre-edge counts: the RTL guards the accumulate and the RF write
-            // with the count from before this edge's return is removed, so a
-            // returning final entry still counts as owned by the path.
-            mp_outstanding_prev: state.mp_outstanding,
-            dp_outstanding_prev: state.dp_outstanding,
-            // Pre-edge lane bookkeeping for the pipe tags: the RTL presents
-            // waddr_r / lane_r combinationally and only increments them at the
-            // edge, so the tag must be sampled before the updates below.
-            mp_waddr_prev: state.mp_waddr,
-            dp_lane_prev: state.dp_lane,
-            dp_store_prev: state.dp_store,
+            product_outstanding_prev: state.product_outstanding,
+            product_dot_prev: state.product_dot,
+            product_tag_prev: if state.product_dot {
+                u16::from(state.product_lane.wrapping_sub(1)) & 7
+            } else {
+                state.product_waddr
+            },
+            product_store_prev: state.product_store,
             rf_read_a: state.rf.read_a_data,
             rf_read_b: state.rf.read_b_data,
             // Special-path shared-pipe drive (SINCOS range product at its T0).
@@ -2035,16 +2039,8 @@ impl CpuV3FpuState {
         // Vector path register updates (mirrors CpuV3FpuVectorPath).
         state.tick_vector_path(&ctx);
 
-        // Multiply path register updates (mirrors CpuV3FpuMultiplyPath):
-        // the lane sequencer hands operand pairs to the shared pipe with the
-        // destination tag; the pipe returns them three cycles later.
-        state.tick_multiply_path(&ctx);
-
-        // Dot path register updates (mirrors CpuV3FpuDotPath). ACC
-        // accumulates the pipe product returning this cycle (pre-edge stage
-        // three); the DOTSTORE final-lane capture and the writeback clear
-        // read the pre-edge store flag.
-        state.tick_dot_path(&ctx);
+        // One physical issuer/return owner, matching ProductPath RTL.
+        state.tick_product_path(&ctx);
 
         // Shared multiply pipe transfer (mirrors CpuV3FpuMulPipe): reverse
         // order so every stage reads its predecessor's pre-edge value.
@@ -2067,14 +2063,18 @@ impl CpuV3FpuState {
             )
         } else if state.vp_wr_enable && !input.abort {
             (true, state.vp_wr_address as usize, state.vp_wr_data)
-        } else if ctx.pipe_out_valid && ctx.mp_outstanding_prev != 0 && !input.abort {
+        } else if ctx.pipe_out_valid
+            && ctx.product_outstanding_prev != 0
+            && !ctx.product_dot_prev
+            && !input.abort
+        {
             (
                 true,
                 ctx.pipe_out_tag as usize,
                 ((ctx.pipe_out_product >> 16) & 0xFFFF_FFFF) as u32,
             )
-        } else if ctx.dp_store_prev && !input.abort {
-            (true, state.dp_store_addr as usize, state.dp_store_data)
+        } else if ctx.product_store_prev && !input.abort {
+            (true, state.product_waddr as usize, state.product_store_data)
         } else if sp_comb.rf_write_enable {
             (
                 true,
@@ -2107,18 +2107,16 @@ struct TickContext {
     len_field: u8,
     vector_subop: u8,
     vp_load_now: bool,
-    mp_load_now: bool,
-    dp_load_now: bool,
-    mp_data_valid: bool,
-    dp_data_valid: bool,
+    product_load_now: bool,
+    product_dot_load: bool,
+    product_data_valid: bool,
     pipe_out_valid: bool,
     pipe_out_product: i64,
     pipe_out_tag: u16,
-    mp_outstanding_prev: u8,
-    dp_outstanding_prev: u8,
-    mp_waddr_prev: u16,
-    dp_lane_prev: u8,
-    dp_store_prev: bool,
+    product_outstanding_prev: u8,
+    product_dot_prev: bool,
+    product_tag_prev: u16,
+    product_store_prev: bool,
     rf_read_a: u32,
     rf_read_b: u32,
     // Special-path shared-pipe drive (SINCOS range product): sf wins the input
@@ -2177,102 +2175,84 @@ impl CpuV3FpuState {
         }
     }
 
-    /// Multiply-path register updates: one RTL always block of
-    /// CpuV3FpuMultiplyPath. The lane sequencer hands operand pairs to the
-    /// shared pipe with the destination tag; the pipe returns them three
-    /// cycles later. Reads only the pre-edge operands in `ctx`.
-    fn tick_multiply_path(&mut self, ctx: &TickContext) {
+    /// One actual ProductPath state block; all returns use pre-edge ownership.
+    fn tick_product_path(&mut self, ctx: &TickContext) {
         if ctx.abort {
-            self.mp_run = false;
-            self.mp_outstanding = 0;
-        } else if ctx.mp_load_now {
-            self.mp_run = true;
-            self.mp_lane = 1;
-            self.mp_last_lane = if ctx.instr_opcode == encoding::OPCODE_SCALAR {
+            self.product_run = false;
+            self.product_outstanding = 0;
+            self.product_store_mode = false;
+            self.product_store = false;
+        } else if ctx.product_load_now {
+            self.product_run = true;
+            self.product_lane = 1;
+            self.product_last_lane = if ctx.instr_opcode == encoding::OPCODE_SCALAR {
                 0
             } else {
                 encoding::decoded_last_lane(ctx.len_field)
             };
-            self.mp_base_a = encoding::word0_fa(ctx.word0_raw);
-            self.mp_base_b = encoding::word0_fb(ctx.word0_raw);
-            self.mp_is_vmuls =
-                ctx.instr_opcode == encoding::OPCODE_VECTOR && ctx.vector_subop == encoding::VMULS;
-            self.mp_waddr = u16::from(encoding::word1_fd(ctx.word1_fields));
-            self.mp_outstanding = 0;
-        } else {
-            if self.mp_run {
-                if self.mp_lane > self.mp_last_lane + 1 {
-                    self.mp_run = false;
-                } else {
-                    self.mp_lane += 1;
+            self.product_stride = if ctx.product_dot_load {
+                match encoding::word1_mode(ctx.word1_fields) & 3 {
+                    1 => 3,
+                    2 => 4,
+                    _ => 1,
                 }
-                self.mp_waddr = self.mp_waddr.wrapping_add(1);
-            }
-            // Only this path's own returns decrement (the pipe is shared).
-            self.mp_outstanding = self
-                .mp_outstanding
-                .wrapping_add(u8::from(ctx.mp_data_valid))
-                .wrapping_sub(u8::from(ctx.pipe_out_valid && self.mp_outstanding != 0));
-        }
-    }
-
-    /// Dot-path register updates: one RTL always block of CpuV3FpuDotPath.
-    /// ACC accumulates the pipe product returning this cycle (pre-edge stage
-    /// three); the DOTSTORE final-lane capture and the writeback clear read the
-    /// pre-edge store flag. Reads only the pre-edge operands in `ctx`.
-    fn tick_dot_path(&mut self, ctx: &TickContext) {
-        if ctx.abort {
-            self.dp_run = false;
-            self.dp_outstanding = 0;
-            self.dp_store_mode = false;
-            self.dp_store = false;
-        } else if ctx.dp_load_now {
-            self.dp_run = true;
-            self.dp_lane = 1;
-            self.dp_last_lane = encoding::decoded_last_lane(ctx.len_field);
-            self.dp_base_a = encoding::word0_fa(ctx.word0_raw);
-            self.dp_base_b = encoding::word0_fb(ctx.word0_raw);
-            self.dp_stride = match encoding::word1_mode(ctx.word1_fields) & 0x3 {
-                1 => 3,
-                2 => 4,
-                _ => 1,
+            } else if ctx.instr_opcode == encoding::OPCODE_VECTOR
+                && ctx.vector_subop == encoding::VMULS
+            {
+                0
+            } else {
+                1
             };
-            self.dp_store_mode = ctx.vector_subop == encoding::DOTSTORE;
-            self.dp_acc_lane = 0;
-            self.dp_store = false;
-            self.dp_store_addr = u16::from(encoding::word1_fd(ctx.word1_fields));
-            self.dp_outstanding = 0;
-            // DOT and DOTSTORE start a fresh sum; DOTADD continues the ACC.
-            if matches!(ctx.vector_subop, encoding::DOT | encoding::DOTSTORE) {
-                self.dp_acc = 0;
+            // T0 reads the live bases, so stored cursors start at lane one.
+            self.product_base_a = encoding::word0_fa(ctx.word0_raw).wrapping_add(1) & 63;
+            self.product_base_b =
+                encoding::word0_fb(ctx.word0_raw).wrapping_add(self.product_stride) & 63;
+            self.product_dot = ctx.product_dot_load;
+            self.product_store_mode =
+                ctx.product_dot_load && ctx.vector_subop == encoding::DOTSTORE;
+            self.product_waddr = u16::from(encoding::word1_fd(ctx.word1_fields));
+            self.product_outstanding = 0;
+            self.product_acc_lane = 0;
+            self.product_store = false;
+            if ctx.product_dot_load && ctx.vector_subop != encoding::DOTADD {
+                self.product_acc = 0;
             }
         } else {
-            if self.dp_run {
-                if self.dp_lane > self.dp_last_lane + 1 {
-                    self.dp_run = false;
+            if self.product_run {
+                if self.product_lane <= self.product_last_lane {
+                    self.product_base_a = self.product_base_a.wrapping_add(1) & 63;
+                    self.product_base_b =
+                        self.product_base_b.wrapping_add(self.product_stride) & 63;
+                }
+                if self.product_lane > self.product_last_lane + 1 {
+                    self.product_run = false;
                 } else {
-                    self.dp_lane += 1;
+                    self.product_lane += 1;
+                }
+                if !self.product_dot {
+                    self.product_waddr = self.product_waddr.wrapping_add(1) & 511;
                 }
             }
-            self.dp_outstanding = self
-                .dp_outstanding
-                .wrapping_add(u8::from(ctx.dp_data_valid))
-                .wrapping_sub(u8::from(ctx.pipe_out_valid && self.dp_outstanding != 0));
-            // Accumulate the returning product. Only entries this instruction
-            // issued count (the pipe is shared with the multiply path).
-            if ctx.pipe_out_valid && ctx.dp_outstanding_prev != 0 {
-                let sum = self.dp_acc.wrapping_add(ctx.pipe_out_product);
-                self.dp_acc = sum;
-                if self.dp_store_mode && self.dp_acc_lane == self.dp_last_lane {
-                    self.dp_store_data = ((sum >> 16) & 0xFFFF_FFFF) as u32;
-                    self.dp_store = true;
-                    self.dp_store_mode = false;
+            self.product_outstanding = self
+                .product_outstanding
+                .wrapping_add(u8::from(ctx.product_data_valid))
+                .wrapping_sub(u8::from(
+                    ctx.pipe_out_valid && ctx.product_outstanding_prev != 0,
+                ))
+                & 15;
+            if ctx.pipe_out_valid && ctx.product_outstanding_prev != 0 && self.product_dot {
+                let sum = self.product_acc.wrapping_add(ctx.pipe_out_product);
+                self.product_acc = sum;
+                if self.product_store_mode && self.product_acc_lane == self.product_last_lane {
+                    self.product_store_data = (sum >> 16) as u32;
+                    self.product_store = true;
+                    self.product_store_mode = false;
                 }
-                self.dp_acc_lane += 1;
+                self.product_acc_lane = self.product_acc_lane.wrapping_add(1) & 7;
             }
-            if ctx.dp_store_prev {
-                self.dp_store = false;
-                self.dp_acc = 0;
+            if ctx.product_store_prev {
+                self.product_store = false;
+                self.product_acc = 0;
             }
         }
     }
@@ -2296,29 +2276,16 @@ impl CpuV3FpuState {
                 self.pipe_s2_prod = pipe_s1a * pipe_s1b;
                 self.pipe_s2_tag = pipe_s1tag;
             }
-            // The operand mux: the special path's SINCOS issue wins the tie,
-            // then multiply, then dot (never more than one active).
-            let in_valid = if ctx.sf_mul_in_valid {
-                true
-            } else if self.mp_run || ctx.mp_load_now {
-                ctx.mp_data_valid
-            } else {
-                ctx.dp_data_valid
-            };
-            self.pipe_s1_valid = in_valid;
-            if in_valid {
+            self.pipe_s1_valid = ctx.sf_mul_in_valid || ctx.product_data_valid;
+            if self.pipe_s1_valid {
                 if ctx.sf_mul_in_valid {
                     self.pipe_s1_a = ctx.sf_mul_in_a;
                     self.pipe_s1_b = ctx.sf_mul_in_b;
                     self.pipe_s1_tag = ctx.sf_mul_in_tag;
-                } else if self.mp_run || ctx.mp_load_now {
-                    self.pipe_s1_a = ctx.rf_read_a as i32 as i64;
-                    self.pipe_s1_b = ctx.rf_read_b as i32 as i64;
-                    self.pipe_s1_tag = ctx.mp_waddr_prev;
                 } else {
                     self.pipe_s1_a = ctx.rf_read_a as i32 as i64;
                     self.pipe_s1_b = ctx.rf_read_b as i32 as i64;
-                    self.pipe_s1_tag = ctx.dp_lane_prev as u16 - 1;
+                    self.pipe_s1_tag = ctx.product_tag_prev;
                 }
             }
         }
@@ -2335,6 +2302,223 @@ impl CpuV3FpuState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "actual unified ProductPath emulation replay with aliasing, CE and each abort age"]
+    fn verify_product_unit_emu_matches_rtl() {
+        use std::fmt::Write;
+        fn idle() -> CpuV3FpuInputValue {
+            CpuV3FpuInputValue {
+                abort: false,
+                word_valid: false,
+                word: 0,
+                ext_access: false,
+                ext_write_enable: false,
+                ext_write_address: 0,
+                ext_write_data: 0,
+                ext_read_address: 0,
+            }
+        }
+        fn record(
+            state: &mut CpuV3FpuState,
+            tb: &mut String,
+            count: &mut usize,
+            input: CpuV3FpuInputValue,
+            enabled: bool,
+        ) {
+            assert!(*count < 20000, "product emu replay cycle limit");
+            for value in CpuV3FpuInput::verilog_values(&input) {
+                writeln!(tb, "{}={}'h{:x};", value.name, value.width, value.value).unwrap();
+            }
+            tb.push_str("#1;\n");
+            for value in CpuV3FpuOutput::verilog_values(&state.comb(&input)) {
+                if value.name != "ext_read_data" || input.ext_access {
+                    writeln!(
+                        tb,
+                        "if({} !== {}'h{:x}) $fatal(1,\"emu output {} cycle={}\");",
+                        value.name, value.width, value.value, value.name, *count
+                    )
+                    .unwrap();
+                }
+            }
+            if enabled {
+                tb.push_str("#3;clk=1;#1;\n");
+                state.tick(&input);
+            } else {
+                tb.push_str("#4;\n");
+            }
+            writeln!(
+                tb,
+                "if(dut.dp_acc !== 64'h{:x}) $fatal(1,\"emu ACC cycle={}\");",
+                state.accumulator() as u64,
+                *count
+            )
+            .unwrap();
+            for index in 0..68 {
+                writeln!(tb,"if(dut.rf.mirror_0[{index}] !== 32'h{:x}) $fatal(1,\"emu RF{index} cycle={}\");",
+                    state.rf.mirror_a[index],*count).unwrap();
+            }
+            tb.push_str("#4;clk=0;\n");
+            *count += 1;
+        }
+        let mut state = CpuV3FpuState::default();
+        let mut tb = String::from("module tb;reg clk=0;\n");
+        for value in CpuV3FpuInput::verilog_values(&idle()) {
+            writeln!(tb, "reg [{}:0] {}=0;", value.width - 1, value.name).unwrap();
+        }
+        for value in CpuV3FpuOutput::verilog_values(&state.comb(&idle())) {
+            writeln!(tb, "wire [{}:0] {};", value.width - 1, value.name).unwrap();
+        }
+        tb.push_str("CpuV3Fpu dut(.*);initial begin\n");
+        let mut count = 0;
+        for index in 0..68 {
+            let mut value = idle();
+            value.ext_access = true;
+            value.ext_write_enable = true;
+            value.ext_write_address = index;
+            value.ext_write_data = match index % 4 {
+                0 => 0x80000000,
+                1 => 0x7fffffff,
+                2 => 0xffff8000,
+                _ => 0x13579bdf ^ (index * 0x271311),
+            };
+            record(&mut state, &mut tb, &mut count, value, true);
+        }
+        for mode in 0..6 {
+            for abort_age in -1..10 {
+                let subop = match mode {
+                    0 | 5 => 2,
+                    1 => 3,
+                    2 => 13,
+                    3 => 14,
+                    _ => 15,
+                };
+                let opcode = if mode == 5 { 0xd } else { 0xc };
+                let len = (abort_age + 1) % 4;
+                let word1 = if mode == 5 {
+                    61 << 10 | 2 << 4
+                } else {
+                    61 << 10 | len << 8 | subop << 3 | len
+                };
+                let mut input = idle();
+                input.word_valid = true;
+                input.word = opcode << 12 | 62 << 6 | 63;
+                record(&mut state, &mut tb, &mut count, input, true);
+                let mut input = idle();
+                input.word_valid = true;
+                input.word = word1 as u64;
+                record(&mut state, &mut tb, &mut count, input, true);
+                for age in 0..13 {
+                    let mut input = idle();
+                    input.abort = age == abort_age;
+                    if age % 3 == 1 {
+                        record(&mut state, &mut tb, &mut count, input.clone(), false);
+                    }
+                    record(&mut state, &mut tb, &mut count, input, true);
+                }
+                assert!(!state.comb(&idle()).busy);
+            }
+        }
+        writeln!(tb,"$display(\"DIGITAL_DESIGN_PASS actual ProductPath emu cycles={count}\");$finish;end initial begin #{};$fatal(1,\"emu replay timeout\");end endmodule",count*10+100).unwrap();
+        let project = digital_design_hardware::VerilogProject::generate::<CpuV3Fpu>().unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("cpu-product-emu-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("modules.v"),
+            project.files.into_values().collect::<Vec<_>>().join("\n"),
+        )
+        .unwrap();
+        std::fs::write(directory.join("tb.v"), tb).unwrap();
+        let result = std::process::Command::new(
+            std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()),
+        )
+        .current_dir(&directory)
+        .args([
+            "-g2012",
+            "-D__ICARUS__",
+            "-s",
+            "tb",
+            "-o",
+            "sim.vvp",
+            "modules.v",
+            "tb.v",
+        ])
+        .output()
+        .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let result =
+            std::process::Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+                .current_dir(&directory)
+                .arg("sim.vvp")
+                .output()
+                .unwrap();
+        assert!(
+            result.status.success()
+                && String::from_utf8_lossy(&result.stdout).contains("DIGITAL_DESIGN_PASS"),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&result.stdout));
+    }
+
+    #[test]
+    #[ignore = "bounded old/new physical ProductPath calendars, aliasing, abort and CE"]
+    fn verify_product_path_matches_separate_issuers() {
+        let project = digital_design_hardware::VerilogProject::generate::<CpuV3Fpu>().unwrap();
+        let mut sources: Vec<_> = project.files.into_values().collect();
+        sources.push(CpuV3FpuMultiplyPath::verilog_source().unwrap());
+        sources.push(CpuV3FpuDotPath::verilog_source().unwrap());
+        let directory =
+            std::env::temp_dir().join(format!("cpu-productpath-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("modules.v"), sources.join("\n")).unwrap();
+        std::fs::write(
+            directory.join("tb.v"),
+            include_str!("cpu_v3_fpu_product_path_tb.v"),
+        )
+        .unwrap();
+        let result = std::process::Command::new(
+            std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()),
+        )
+        .current_dir(&directory)
+        .args([
+            "-g2012",
+            "-D__ICARUS__",
+            "-s",
+            "tb",
+            "-o",
+            "sim.vvp",
+            "modules.v",
+            "tb.v",
+        ])
+        .output()
+        .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let result =
+            std::process::Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+                .current_dir(&directory)
+                .arg("sim.vvp")
+                .output()
+                .unwrap();
+        assert!(
+            result.status.success()
+                && String::from_utf8_lossy(&result.stdout).contains("DIGITAL_DESIGN_PASS"),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&result.stdout));
+    }
 
     #[test]
     #[ignore = "explicit external simulation of the unified FPU ALU lane/commit engine"]

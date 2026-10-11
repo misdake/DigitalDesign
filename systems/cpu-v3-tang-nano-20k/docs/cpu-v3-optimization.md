@@ -2,7 +2,7 @@
 
 Status: concise milestone index
 Repository: `../../../`
-Updated: 2026-10-09
+Updated: 2026-10-11
 
 Add exactly one short sentence here for each completed optimization; append implementation detail,
 measurements, rejected alternatives, and validation evidence to
@@ -66,6 +66,10 @@ generated outside this document.
 - 2026-10-07 — The shared FPU multiplier uses two registered stages, shortening MUL/VMUL/VMULS and the dot family by one beat while retaining SINCOS timing with an 18-bit phase register; the [record](cpu-v3-optimization-record.md#2026-10-07--two-stage-fpu-multiplier) preserves the frozen-suite comparison and offline validation boundary.
 
 - 2026-10-09 — One shared integer shift barrel and direct scalar-response storage reduce whole-system Logic with unchanged instruction/transaction schedules; local audited fitting, functional regressions and the original cloud comparison are in the [record](cpu-v3-optimization-record.md#2026-10-09--shared-integer-shifter-and-scalar-memory-storage).
+
+- 2026-10-11 — D-cache refill captures the requested halfword in its final CPU response slot, preserving complete-line publication, fault clearing and LCOPY ownership; the [record](cpu-v3-optimization-record.md#2026-10-11-d-cache-final-response-slot) links the matched qualification boundary.
+
+- 2026-10-11 — One ProductPath issuer and existing-register address cursors replace separate MUL/DOT controllers and repeated lane-stride address generation, retaining ACC64, aliasing and abort calendars; the [record](cpu-v3-optimization-record.md#2026-10-11-unified-fpu-product-issuer-and-address-cursors) defines the qualified scope.
 
 ## Next work
 

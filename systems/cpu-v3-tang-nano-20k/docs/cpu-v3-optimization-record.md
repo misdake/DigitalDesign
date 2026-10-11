@@ -1655,3 +1655,42 @@ different area savings in the cloud and local flows are recorded separately.
 After committing, the standard resource and frozen-suite scripts regenerate
 the committed system and record the exact source identity in the project's
 resources.csv and performance.csv, retaining their selected raw evidence.
+
+
+## 2026-10-11: D-cache final response slot
+
+The requested refill halfword now writes the final CPU response register directly.
+The separate refill-response payload is removed; response validity still waits for
+the complete error-free line. A late error clears the captured value, write-allocate
+stores publish zero, LCOPY publishes no CPU response, and a held response remains
+stable until consumed. Emulator and RTL retain the original enabled-edge calendar.
+The bounded response-slot test covers every requested halfword, dirty eviction,
+refill faults, held responses and LCOPY. Actual-main CPU and system co-simulation
+qualify the integrated change. Current matched fit and timing boundaries live in
+[architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
+
+
+## 2026-10-11: Unified FPU product issuer and address cursors
+
+One ProductPath now owns MUL, VMUL, VMULS, DOT, DOTADD and DOTSTORE issue/return
+control. Existing six-bit base fields advance as RF address cursors only on an
+enabled reading edge; this removes lane-times-stride address computation without
+adding a cursor bank. T0 reads live bases, VMULS holds B, and six-bit wrap and
+read-first alias behavior are unchanged. The shared arithmetic pipe, 64-bit DOT
+accumulator and final 32-bit DOTSTORE slot retain their original precision and
+calendar. Abort preserves completed MUL writes and the accumulated DOT prefix.
+Independent old/new issuer replay and full FPU replay cover CE, aliasing, strides,
+wrap and abort ages; actual-main CPU and system co-simulation qualify integration.
+The original standalone issuers remain reference tests outside the selected
+hardware graph. Resource metadata was calibrated to the fitted ProductPath, which
+uses no DSP; arithmetic DSPs remain elsewhere. The removed MULTADD primitive is a
+netlist fact; identifying its old lane-times-stride purpose is source-backed
+inference. Current fit and evidence boundaries are linked
+from [architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
+
+
+The shared scalar-ALU alternatives, including the single packed-add encoding,
+were rejected after matched whole-system fits increased Logic without reducing
+the mapped ALU count. The independent direct SDRAM event-capture candidate was
+also rejected: removing payload staging increased Logic and introduced related
+falling-controller-to-CPU setup failures. Neither experiment is in this change.

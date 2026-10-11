@@ -99,24 +99,19 @@ end
 wire alu_vector_busy;
 wire [8:0] alu_read_a_address;
 wire [8:0] alu_read_b_address;
-wire mp_busy;
-wire [8:0] mp_read_a_address;
-wire [8:0] mp_read_b_address;
-wire dp_busy;
-wire [8:0] dp_read_a_address;
-wire [8:0] dp_read_b_address;
+wire product_busy;
+wire [8:0] product_read_a_address;
+wire [8:0] product_read_b_address;
 wire sf_busy;
 wire [8:0] sf_read_a_address;
 wire [8:0] sf_read_b_address;
 wire [8:0] rf_read_a_address =
     sf_busy ? sf_read_a_address :
-    dp_busy ? dp_read_a_address :
-    mp_busy ? mp_read_a_address :
+    product_busy ? product_read_a_address :
     alu_vector_busy ? alu_read_a_address : held_read_a_address;
 wire [8:0] rf_read_b_address =
     sf_busy ? sf_read_b_address :
-    dp_busy ? dp_read_b_address :
-    mp_busy ? mp_read_b_address :
+    product_busy ? product_read_b_address :
     alu_vector_busy ? alu_read_b_address :
     ext_access ? ext_read_address : held_read_b_address;
 
@@ -125,26 +120,21 @@ wire ap_write_enable;
 wire [8:0] ap_write_address;
 wire [31:0] ap_write_data;
 wire ap_busy;
-wire mp_write_enable;
-wire [8:0] mp_write_address;
-wire [31:0] mp_write_data;
-wire dp_write_enable;
-wire [8:0] dp_write_address;
-wire [31:0] dp_write_data;
+wire product_write_enable;
+wire [8:0] product_write_address;
+wire [31:0] product_write_data;
 wire sf_write_enable;
 wire [8:0] sf_write_address;
 wire [31:0] sf_write_data;
 wire rf_write_enable = ext_access ? ext_write_enable :
-                       ap_write_enable | mp_write_enable | dp_write_enable | sf_write_enable;
+                       ap_write_enable | product_write_enable | sf_write_enable;
 wire [8:0] rf_write_address =
     ext_access ? ext_write_address :
-    mp_write_enable ? mp_write_address :
-    dp_write_enable ? dp_write_address :
+    product_write_enable ? product_write_address :
     sf_write_enable ? sf_write_address : ap_write_address;
 wire [31:0] rf_write_data =
     ext_access ? ext_write_data :
-    mp_write_enable ? mp_write_data :
-    dp_write_enable ? dp_write_data :
+    product_write_enable ? product_write_data :
     sf_write_enable ? sf_write_data : ap_write_data;
 
 wire [31:0] rf_read_a_data;
@@ -198,28 +188,23 @@ CpuV3FpuAluPath alu_path (
 // The operand buses are signed 36 bits; the ordinary multiply/dot paths
 // sign-extend their architectural signed-32 operands, and SINCOS drives the
 // positive 36-bit K constant. The special path's in-valid is the highest
-// priority arm (its one range product is issued at its T0), then multiply, then
-// dot, so the select is always defined.
-wire mp_mul_in_valid;
-wire signed [35:0] mp_mul_in_a;
-wire signed [35:0] mp_mul_in_b;
-wire [8:0] mp_mul_in_tag;
-wire dp_mul_in_valid;
-wire signed [35:0] dp_mul_in_a;
-wire signed [35:0] dp_mul_in_b;
-wire [8:0] dp_mul_in_tag;
+// priority arm (its one range product is issued at its T0), followed by the
+// unified multiply/dot product owner, so the select is always defined.
+wire product_mul_in_valid;
+wire signed [35:0] product_mul_in_a;
+wire signed [35:0] product_mul_in_b;
+wire [8:0] product_mul_in_tag;
 wire sf_mul_in_valid;
 wire signed [35:0] sf_mul_in_a;
 wire signed [35:0] sf_mul_in_b;
 wire [8:0] sf_mul_in_tag;
-wire mul_in_valid = sf_mul_in_valid ||
-    (mp_busy ? mp_mul_in_valid : dp_mul_in_valid);
+wire mul_in_valid = sf_mul_in_valid || product_mul_in_valid;
 wire signed [35:0] mul_in_a = sf_mul_in_valid ? sf_mul_in_a :
-    (mp_busy ? mp_mul_in_a : dp_mul_in_a);
+    product_mul_in_a;
 wire signed [35:0] mul_in_b = sf_mul_in_valid ? sf_mul_in_b :
-    (mp_busy ? mp_mul_in_b : dp_mul_in_b);
+    product_mul_in_b;
 wire [8:0] mul_in_tag = sf_mul_in_valid ? sf_mul_in_tag :
-    (mp_busy ? mp_mul_in_tag : dp_mul_in_tag);
+    product_mul_in_tag;
 wire mul_out_valid;
 wire signed [63:0] mul_out_product;
 wire [8:0] mul_out_tag;
@@ -268,63 +253,23 @@ CpuV3FpuSpecialPath special_path (
     .mul_out_tag(mul_out_tag)
 );
 
-// Multiply execution path (VMUL/VMULS/scalar MUL). Same front-end pair
-// contract as the vector path.
-CpuV3FpuMultiplyPath multiply_path (
-    .clk(clk),
-    .abort(abort),
-    .instr_complete(fe_instr_complete),
-    .instr_opcode(instr_opcode),
-    .word1_raw(word1_raw),
-    .base_a(word0_raw[11:6]),
-    .base_b(word0_raw[5:0]),
-    .rf_read_a_data(rf_read_a_data),
-    .rf_read_b_data(rf_read_b_data),
-    .rf_read_a_address(mp_read_a_address),
-    .rf_read_b_address(mp_read_b_address),
-    .mul_in_valid(mp_mul_in_valid),
-    .mul_in_a(mp_mul_in_a),
-    .mul_in_b(mp_mul_in_b),
-    .mul_in_tag(mp_mul_in_tag),
-    .mul_out_valid(mul_out_valid),
-    .mul_out_product(mul_out_product),
-    .mul_out_tag(mul_out_tag),
-    .rf_write_enable(mp_write_enable),
-    .rf_write_address(mp_write_address),
-    .rf_write_data(mp_write_data),
-    .busy(mp_busy)
-);
-
-// Dot-product path (DOT/DOTADD/DOTSTORE, opcode 0xC subops 0x0D..0x0F).
-// Same front-end pair contract as the vector path.
+// One actual product issuer owns both ordinary multiply and dot families.
 wire [63:0] dp_acc;
-CpuV3FpuDotPath dot_path (
-    .clk(clk),
-    .abort(abort),
-    .instr_complete(fe_instr_complete),
-    .instr_opcode(instr_opcode),
-    .word1_raw(word1_raw),
-    .base_a(word0_raw[11:6]),
-    .base_b(word0_raw[5:0]),
-    .rf_read_a_data(rf_read_a_data),
-    .rf_read_b_data(rf_read_b_data),
-    .rf_read_a_address(dp_read_a_address),
-    .rf_read_b_address(dp_read_b_address),
-    .mul_in_valid(dp_mul_in_valid),
-    .mul_in_a(dp_mul_in_a),
-    .mul_in_b(dp_mul_in_b),
-    .mul_in_tag(dp_mul_in_tag),
-    .mul_out_valid(mul_out_valid),
-    .mul_out_product(mul_out_product),
-    .mul_out_tag(mul_out_tag),
-    .rf_write_enable(dp_write_enable),
-    .rf_write_address(dp_write_address),
-    .rf_write_data(dp_write_data),
-    .busy(dp_busy),
-    .acc_out(dp_acc)
+CpuV3FpuProductPath product_path (
+    .clk(clk), .abort(abort), .instr_complete(fe_instr_complete),
+    .instr_opcode(instr_opcode), .word1_raw(word1_raw),
+    .base_a(word0_raw[11:6]), .base_b(word0_raw[5:0]),
+    .rf_read_a_data(rf_read_a_data), .rf_read_b_data(rf_read_b_data),
+    .rf_read_a_address(product_read_a_address), .rf_read_b_address(product_read_b_address),
+    .mul_in_valid(product_mul_in_valid), .mul_in_a(product_mul_in_a),
+    .mul_in_b(product_mul_in_b), .mul_in_tag(product_mul_in_tag),
+    .mul_out_valid(mul_out_valid), .mul_out_product(mul_out_product),
+    .mul_out_tag(mul_out_tag), .rf_write_enable(product_write_enable),
+    .rf_write_address(product_write_address), .rf_write_data(product_write_data),
+    .busy(product_busy), .acc_out(dp_acc)
 );
 
-assign busy = ap_busy | mp_busy | dp_busy | sf_busy;
+assign busy = ap_busy | product_busy | sf_busy;
 assign instr_complete = fe_instr_complete;
 assign ext_read_data = rf_read_b_data;
 

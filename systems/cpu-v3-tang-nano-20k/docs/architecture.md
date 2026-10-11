@@ -299,6 +299,42 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
+The 2026-10-11 CPU storage/execution review uses exact development base `9ae1f27`
+and matched Gowin 1.9.11.03 Education builds. The D-cache reuses its final CPU
+response register during refill; response publication still waits for a complete
+error-free line. The CPU-side memory port remains 16-bit. ProductPath unifies MUL/DOT lane
+issuance and replaces lane-times-stride address generation with existing-register
+cursors. ACC64, operand precision, aliasing, abort and enabled-edge schedules remain.
+The inferred DSP instance removed by the cursor change is identified under
+ProductPath; the shared arithmetic multiplier and special-function lane remain.
+
+| Matched complete CPU-system fit | Base `9ae1f27` | D-cache final response slot | + ProductPath cursors |
+| --- | ---: | ---: | ---: |
+| Logic / LUT / ALU | 8,385 / 7,102 / 1,091 | 8,301 / 7,017 / 1,092 | 8,296 / 7,036 / 1,068 |
+| RAM16 / total Register / Logic FF / CLS | 32 / 3,401 / 3,316 / 5,522 | 32 / 3,386 / 3,301 / 5,500 | 32 / 3,363 / 3,279 / 5,499 |
+| BSRAM: SDPB / DPB / pROM | 4 / 6 / 1 | 4 / 6 / 1 | 4 / 6 / 1 |
+| Physical DSP blocks / 18x18 planning lanes | 4 / 8 | 4 / 8 | 3 / 6 |
+| DSP: MULT18X18 / MULT36X36 / MULTADDALU18X18 | 2 / 1 / 1 | 2 / 1 / 1 | 2 / 1 / 0 |
+| CPU / controller / pixel fitted Fmax | 57.975 / 127.656 / 84.723 MHz | 55.858 / 133.371 / 97.249 MHz | 57.511 / 116.945 / 87.791 MHz |
+| Overall setup / hold violated endpoints | 53 / 0 | 53 / 0 | 53 / 0 |
+
+The builds use identical generated CST/SDC and placement/routing options on
+GW2AR-LV18QN88C8/I7 version C; runtime clocks remain 54/108 MHz. CPU and controller
+same-clock setup/hold checks pass. The overall report retains the baseline's
+external SDRAM-output setup violations, so global timing is not declared clean.
+These results cover CPU, caches, boot, display/HDMI, control and the inactive GPU
+shell; they do not include the current GPU post-quad chain. They are a current-tool
+comparison, not a numerical delta against the older-tool table below.
+
+Bounded independent emu/RTL comparisons preserve response holds, refill errors,
+LCOPY ownership, ISA results and enabled-edge schedules. CPU and system co-simulation
+qualify the implementation; there is no new board or frozen-suite performance claim.
+The exact matched source and reports are captured under
+`target/structure-rounds-cpu-20261011` in f207 and
+`target/structural-implementation-20261011` in the main repository.
+
+## Earlier shared-shift and scalar-storage fit
+
 The 2026-10-09 integration starts from development base `8717eb7`. It shares the
 core's six shift forms through one signed right-shift barrel with reversible bit
 order, and captures scalar SDRAM reads directly in the final response register.

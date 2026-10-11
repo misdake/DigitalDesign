@@ -75,6 +75,7 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | FPR file | Two mirrored 512 x 32 SDPB BSRAMs giving 2R1W; architectural `F0..F63` are addresses `0..63`, the hidden LUT region is `64..511` (mirror A: RCP and SINCOS; mirror B: RSQRT even/odd) | Two registered-address synchronous reads and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
 | FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), one scalar/vector lane controller, and one shared result/address commit register | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
 | FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit destination tag | The multiply, dot and SINCOS range-reduction owners time-share it; the core serializes FPU instructions |
+| Product issuer | One `ProductPath` owner for scalar `MUL`, `VMUL`, `VMULS`, `DOT`, `DOTADD` and `DOTSTORE`, with two six-bit read-address cursors and one outstanding-return count | One synchronous RF operand pair and one product issue per enabled beat; existing return tags and write timing are retained |
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
 | Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables, one local inferred 18 x 18 interpolation lane, one product re-alignment register, and the shared pipe for SINCOS range reduction | RCP/RSQRT `T0..T3`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
 
@@ -130,7 +131,13 @@ cycle, and the system holds the CPU for the D-cache sweep.
 A read or write-allocate miss issues one aligned line request; the system arbiter
 streams four ordered 64-bit beats at 54 MHz. Each beat writes four words directly
 through the four BSRAM ports, and tag/valid state commits only on the fourth
-error-free beat. The victim is invalid throughout refill, so an error or invalidate
+error-free beat. A CPU load miss captures its requested halfword directly into
+its final response register when that beat arrives, without another refill-only
+16-bit payload slot. Response-valid remains low until the complete error-free
+line is committed. A later refill error clears this payload and publishes an
+error; write-allocate stores still complete with zero response data, and LCOPY
+never publishes a CPU data response. Once valid, the response remains held until
+consumed. The victim is invalid throughout refill, so an error or invalidate
 cannot expose a partial line. Dirty eviction primes the synchronous DPB outputs,
 then streams four ordered 64-bit beats without a private line buffer. The board
 gearbox pairs/splits those logical beats against the 32-bit SDRAM controller at
@@ -207,12 +214,20 @@ the pair retires as two words.
   `VMUL`/`VMULS`/scalar `MUL`, lane k's RF address is presented at `T(k)`,
   its operands issue at `T(k+1)`, and its product writes back during `T(k+3)`.
   This removes one beat from the previous three-stage pipe. Its
-  return-valid signal is not path ownership: the multiply and dot sequencers
-  retain ownership through their own outstanding counters until every issued
-  product has returned, which keeps the shared operand mux on the issuer.
+  return-valid signal is not path ownership: one ProductPath issuer retains
+  the shared operand mux through its common outstanding-return count until
+  every issued product has returned. The former separate multiply and dot
+  controllers remain standalone test references, outside the selected unit.
+  At T0 the RF reads the live bases; those existing six-bit fields then hold
+  lane-one cursors. A advances by one, while B advances by zero for VMULS or
+  by the existing one/three/four DOT stride. Only enabled reading edges advance
+  them, preserving six-bit wrap and read-first alias behavior without a
+  lane-times-stride address multiplier.
 - `DOT`/`DOTADD`/`DOTSTORE` accumulate the complete signed product of every
   lane into the 64-bit Q32.32 ACC with no per-lane narrowing; `DOTSTORE`
-  narrows once and clears ACC.
+  narrows once into its final 32-bit slot and writes/clears ACC on the next
+  enabled beat. Abort gates writes and clears pending ownership, while already
+  written MUL lanes and the accumulated ACC prefix survive.
 - RCP/RSQRT are blocking `T0..T3`; SINCOS is `T0..T7` for the dual
   `sin`/`cos` output and `T0..T6` for a single output. The special path
   monopolizes both RF read ports while active and reuses the shared pipe for
@@ -240,10 +255,11 @@ caches, 54/108-MHz SDRAM gearbox, and display path. The fitted numbers live in
 which owns them and is where they are updated; they are deliberately not repeated
 here.
 
-What that fit says about the CPU itself: after registering the AUX/FLD/FST GPR
-address selection, the former state-to-GPR-write critical cone is absent from
-the top 25. The tightest CPU-clock path now runs from the instruction fetch
-queue head into core state; the hidden special-function lookup is not critical.
+The CPU and controller same-clock setup/hold checks pass at their configured
+clocks in the matched current-tool fit. The complete timing report retains the
+baseline's external SDRAM-output setup violations; this is not a claim that all
+board timing constraints pass. The system document separates these checks from
+physical-board validation and from the independently fitted GPU post-quad chain.
 
 The following timing sections are retained as implementation history for the FPU
 lane pipeline. They are not the current full-system Stage 12 result.

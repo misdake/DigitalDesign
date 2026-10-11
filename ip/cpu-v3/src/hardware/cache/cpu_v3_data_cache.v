@@ -67,7 +67,6 @@ reg response_valid = 0;
 reg sweep_active = 0;
 reg [5:0] sweep_set = 0;
 reg sweep_finishes_maintenance = 0;
-reg [15:0] refill_response_data = 0;
 // A line copy is a normal source lookup/refill followed by the existing
 // write-back path with only the physical segment redirected. The destination
 // is not allocated on a cold destination. A resident destination is directly
@@ -582,12 +581,16 @@ always @(posedge clk) begin
                     end
                     state <= ST_IDLE;
                 end else begin
-                    if (refill_beat == pending_word[3:2])
+                    // No older response can coexist with this miss. Capture
+                    // into its final held slot, but publish valid only after
+                    // all four beats succeed (a later error still clears it).
+                    if (!pending_write && !line_copy_active &&
+                        refill_beat == pending_word[3:2])
                         case (pending_word[1:0])
-                            0: refill_response_data <= memory_read_data[15:0];
-                            1: refill_response_data <= memory_read_data[31:16];
-                            2: refill_response_data <= memory_read_data[47:32];
-                            default: refill_response_data <= memory_read_data[63:48];
+                            0: response_data <= memory_read_data[15:0];
+                            1: response_data <= memory_read_data[31:16];
+                            2: response_data <= memory_read_data[47:32];
+                            default: response_data <= memory_read_data[63:48];
                         endcase
                     if (refill_beat == 3) begin
                         if (line_copy_active) begin
@@ -597,12 +600,8 @@ always @(posedge clk) begin
                             wb_beat <= 0;
                             state <= ST_WB_PRIME;
                         end else begin
-                            response_data <= pending_write ? 16'b0 :
-                                (pending_word[3:2] == 3 ?
-                                    (pending_word[1:0] == 0 ? memory_read_data[15:0] :
-                                     pending_word[1:0] == 1 ? memory_read_data[31:16] :
-                                     pending_word[1:0] == 2 ? memory_read_data[47:32] : memory_read_data[63:48]) :
-                                    refill_response_data);
+                            if (pending_write)
+                                response_data <= 16'b0;
                             response_error <= 0;
                             response_valid <= 1;
                             state <= ST_IDLE;

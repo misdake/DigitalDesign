@@ -406,3 +406,109 @@ fn verify_data_cache_lifecycle_goldens() {
         }
     }
 }
+
+#[test]
+#[ignore = "final-slot early capture and late-error hold under portable and official DPB models"]
+fn verify_data_cache_response_slot_goldens() {
+    let (mut circuit, (input, output)) = build_circuit(|| {
+        let input = CpuV3DataCacheInput::allocate();
+        let output = CpuV3DataCache::emu(&input);
+        (input, output)
+    });
+    let mut trace = Vec::new();
+    let mut step = |value: CpuV3DataCacheInputValue| {
+        assert!(trace.len() < 30000, "response-slot model cycle limit");
+        input.drive(&mut circuit, &value);
+        circuit.execute_gates();
+        let out = output.sample(&circuit);
+        trace.push((value, out.clone()));
+        circuit.clock_tick();
+        out
+    };
+    let mut reset = idle();
+    reset.reset = true;
+    step(reset);
+    let mut scenario = 0;
+    for failed_beat in [None, Some(0), Some(1), Some(2), Some(3)] {
+        for requested_word in 0..16 {
+            let mut ready = false;
+            for _ in 0..100 {
+                if step(idle()).cpu_request_ready {
+                    ready = true;
+                    break;
+                }
+            }
+            assert!(ready, "response-slot scrub timeout");
+            scenario += 1;
+            let line_address = 0x1000 + scenario * 16;
+            let address = line_address + requested_word;
+            let pattern = |word: u64| (0x5371 ^ word ^ ((word & 127) << 9)) as u16;
+            let expected = pattern(address);
+            let mut request = idle();
+            request.cpu_request_valid = true;
+            request.cpu_address = address;
+            request.cpu_response_ready = false;
+            assert!(step(request).cpu_request_ready);
+            let mut request_seen = false;
+            for _ in 0..20 {
+                let mut wait = idle();
+                wait.cpu_response_ready = false;
+                let out = step(wait);
+                if out.memory_request_valid {
+                    assert!(!out.memory_write);
+                    assert_eq!(out.memory_address, line_address);
+                    request_seen = true;
+                    break;
+                }
+            }
+            assert!(request_seen, "response-slot memory request timeout");
+            let mut captured = false;
+            for beat in 0..4 {
+                for _ in 0..beat + 1 {
+                    let mut gap = idle();
+                    gap.cpu_response_ready = false;
+                    let out = step(gap);
+                    assert!(!out.cpu_response_valid);
+                    if captured {
+                        assert_eq!(out.cpu_read_data, u64::from(expected));
+                    }
+                }
+                let mut receive = idle();
+                receive.cpu_response_ready = false;
+                receive.memory_response_valid = true;
+                receive.memory_error = failed_beat == Some(beat);
+                receive.memory_read_data = (0..4)
+                    .map(|lane| u64::from(pattern(line_address + beat * 4 + lane)) << (16 * lane))
+                    .fold(0, |a, b| a | b);
+                assert!(step(receive).memory_response_ready);
+                captured |= requested_word / 4 == beat;
+                if failed_beat == Some(beat) {
+                    break;
+                }
+            }
+            for _ in 0..6 {
+                let mut hold = idle();
+                hold.cpu_response_ready = false;
+                hold.cpu_request_valid = true;
+                hold.cpu_address = address + 16;
+                let out = step(hold);
+                assert!(out.cpu_response_valid && !out.cpu_request_ready);
+                assert_eq!(out.cpu_error, failed_beat.is_some());
+                assert_eq!(
+                    out.cpu_read_data,
+                    if failed_beat.is_some() {
+                        0
+                    } else {
+                        u64::from(expected)
+                    }
+                );
+            }
+            step(idle());
+        }
+    }
+    let replay = trace_tb(&trace);
+    for vendor in [false, true] {
+        run_rtl_golden(&replay, vendor);
+        run_rtl_golden(include_str!("cpu_v3_data_cache_response_slot_tb.v"), vendor);
+    }
+}

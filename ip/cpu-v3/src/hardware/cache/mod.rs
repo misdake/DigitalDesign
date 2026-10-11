@@ -1109,6 +1109,9 @@ enum DataMemoryPhase {
 pub struct CpuV3DataCacheState {
     cache: crate::DataCache,
     pending_cpu_request: Option<crate::CpuMemoryRequest>,
+    // Mirrors the RTL pending_word for an active CPU read. The functional
+    // cache independently checks the final data when the line completes.
+    pending_read_word: Option<usize>,
     request: Option<crate::MainMemoryRequest>,
     phase: DataMemoryPhase,
     words: [u16; CPU_V3_CACHE_LINE_WORDS],
@@ -1152,6 +1155,7 @@ impl Default for CpuV3DataCacheState {
         Self {
             cache: crate::DataCache::default(),
             pending_cpu_request: None,
+            pending_read_word: None,
             request: None,
             phase: DataMemoryPhase::Idle,
             words: [0; CPU_V3_CACHE_LINE_WORDS],
@@ -1210,9 +1214,16 @@ impl CpuV3DataCacheState {
                     return;
                 }
                 self.response_data = match response {
+                    crate::CpuMemoryResponse::Read { value }
+                        if self.phase == DataMemoryPhase::ReadReceive =>
+                    {
+                        assert_eq!(self.response_data, value, "refill final-slot capture");
+                        self.response_data
+                    }
                     crate::CpuMemoryResponse::Read { value } => value,
                     crate::CpuMemoryResponse::WriteComplete => 0,
                 };
+                self.pending_read_word = None;
                 self.response_error = false;
                 self.response_valid = true;
                 self.request = None;
@@ -1333,6 +1344,7 @@ impl CpuV3DataCacheState {
         // RTL scrubs its metadata records, which blocks new requests.
         self.cache = crate::DataCache::default();
         self.pending_cpu_request = None;
+        self.pending_read_word = None;
         self.request = None;
         self.phase = DataMemoryPhase::Idle;
         self.full_maintenance = false;
@@ -1586,6 +1598,7 @@ impl Module for CpuV3DataCache {
                 state.may_have_dirty = true;
             }
             let address = crate::PhysicalWordAddress::new(input.cpu_address as u32);
+            state.pending_read_word = (!input.cpu_write).then_some((address.get() & 15) as usize);
             state.pending_cpu_request = Some(if input.cpu_write {
                 crate::CpuMemoryRequest::Write {
                     address,
@@ -1605,6 +1618,7 @@ impl Module for CpuV3DataCache {
                     | crate::CpuMemoryRequest::Write { address, .. } => address,
                 };
                 if address.get() >> 22 != 0 {
+                    state.pending_read_word = None;
                     state.response_error = true;
                     state.response_data = 0;
                     state.response_valid = true;
@@ -1723,6 +1737,12 @@ impl Module for CpuV3DataCache {
                     state.fail_transaction();
                 } else {
                     let word = 4 * state.beat;
+                    if let Some(requested_word) = state.pending_read_word {
+                        if (word..word + 4).contains(&requested_word) {
+                            state.response_data =
+                                (input.memory_read_data >> (16 * (requested_word - word))) as u16;
+                        }
+                    }
                     state.words[word] = input.memory_read_data as u16;
                     state.words[word + 1] = (input.memory_read_data >> 16) as u16;
                     state.words[word + 2] = (input.memory_read_data >> 32) as u16;
