@@ -2144,17 +2144,19 @@ fn generate_with_optional_plans(
             .enumerate()
             .filter_map(|(id, (kind, _))| (*kind == LaneKind::NormalizeRead).then_some(id))
             .collect();
-        if ports.len() != 6 {
-            return Err("Q13 normalization requires six paired read channels".into());
+        if ports.is_empty() || ports.len() > 6 {
+            return Err("Q13 normalization requires one to six scheduled read channels".into());
         }
         for (bank, pair) in ports.chunks(2).enumerate() {
-            let [a, b] = pair else {
-                return Err("unpaired normalization channel".into());
-            };
-            writeln!(e.body, "lighting_norm_q13 bank{bank}(.clk(clk),.ce(datapath_ce),.a({{1'b0,unit{a}_addr}}),.b({{1'b0,unit{b}_addr}}),.qa(unit{a}_p0),.qb(unit{b}_p0));").unwrap();
+            let a = pair[0];
+            if let Some(&b) = pair.get(1) {
+                writeln!(e.body, "lighting_norm_q13 bank{bank}(.clk(clk),.ce(datapath_ce),.a({{1'b0,unit{a}_addr}}),.b({{1'b0,unit{b}_addr}}),.qa(unit{a}_p0),.qb(unit{b}_p0));").unwrap();
+            } else {
+                writeln!(e.body, "lighting_norm_q13 bank{bank}(.clk(clk),.ce(datapath_ce),.a({{1'b0,unit{a}_addr}}),.b(10'b0),.qa(unit{a}_p0),.qb());").unwrap();
+            }
         }
         e.modules.push_str(&normalization_tdp_q13());
-        roms = ports.len() / 2;
+        roms = ports.len().div_ceil(2);
     }
     let unbound: Vec<_> = e
         .program
@@ -2395,20 +2397,24 @@ end
     };
     let system_calendar = profile.system();
     let calendar_top = if options.unified_lit {
-        1
+        specular_ii - 1
     } else if system_calendar {
         7
     } else {
         4
     };
-    let full_initial = if options.unified_lit {
+    let full_initial = if options.unified_lit && specular_ii == 4 {
+        "4'b0001"
+    } else if options.unified_lit {
         "2'b01"
     } else if system_calendar {
         "8'b00000001"
     } else {
         "5'b00001"
     };
-    let diff_initial = if options.unified_lit {
+    let diff_initial = if options.unified_lit && specular_ii == 4 {
+        "4'b0001"
+    } else if options.unified_lit {
         "2'b01"
     } else if system_calendar {
         "8'b00010000"
@@ -2608,7 +2614,9 @@ endmodule
             "0: begin out_g=9'd256; out_h=0; end"
         },
         sequential = sequential,
-        full_calendar_next = if options.unified_lit {
+        full_calendar_next = if options.unified_lit && specular_ii == 4 {
+            "{calendar[2:0],calendar[3]}"
+        } else if options.unified_lit {
             "{calendar[0],calendar[1]}"
         } else if system_calendar && specular_ii == 4 {
             "{4'b0000,calendar[2:0],calendar[3]}"
@@ -2619,7 +2627,9 @@ endmodule
         } else {
             "{2'b00,calendar[1:0],calendar[2]}"
         },
-        diff_calendar_next = if options.unified_lit {
+        diff_calendar_next = if options.unified_lit && specular_ii == 4 {
+            "{calendar[2:0],calendar[3]}"
+        } else if options.unified_lit {
             "{calendar[0],calendar[1]}"
         } else if system_calendar && diffuse_ii == 4 {
             "{calendar[6:4],calendar[7],4'b0000}"

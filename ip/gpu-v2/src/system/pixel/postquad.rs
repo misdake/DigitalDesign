@@ -140,13 +140,13 @@ impl CompositionProfile {
         }
     }
 }
-/// Emit the selected complete chain; source ROM and memory transport are external.
+/// Emit the selected II4 complete chain; interpolator and memory are external.
 pub fn verilog_selected(
     slots: &[Slot],
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    verilog_profile(slots, surface, backend, CompositionProfile::selected())
+    super::postquad_ii4::verilog(slots, surface, backend, 9)
 }
 pub fn verilog(
     slots: &[Slot],
@@ -920,7 +920,7 @@ pub fn verilog_combined_candidate(
     let source = verilog_cadence_h9_profile(slots, surface, backend, preparation)?;
     let source = quad_authority::lower(source, quad_authority::Authority::Ingress)?;
     let source = h9_control::lower_local_fault(source)?;
-    Ok(filter_precision::lower(source, true))
+    Ok(filter_precision::lower(source))
 }
 
 /// Prepare a borrowed head address from the old-state paid retirement offer.

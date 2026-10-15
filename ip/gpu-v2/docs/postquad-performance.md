@@ -9,7 +9,52 @@ The upstream contract is the [quad output protocol draft](quad-output-protocol-d
 The [editable theory and performance diagram](https://www.tldraw.com/f/ApLq8dDsVItIaoqoFm1ro)
 shows the component graph and the distinction between arithmetic and whole-chain calendars.
 
-## Selected post-quad successor
+## Selected four-cycle post-interpolator chain
+
+`postquad::verilog_selected` and exporter modes `selected` and `ii4` emit
+`postquad_ii4`: Lighting, preparation, texture cache, Color, ordered Final, ROP,
+framebuffer cache and the internal memory arbiter. The interpolator is external.
+The eight-row quad protocol and immutable-draw drain boundary remain unchanged.
+II4 describes admission and steady hot commits, not pixel latency. Cache misses,
+same-pixel dependencies and external pauses are paid separately.
+
+Lighting retains its numerical operations and 34 enabled-edge latency, with a
+four-phase calendar, nine ordinary 18-bit multipliers and one shared dot MAC.
+Normalization reads share four scheduled channels over two true-dual-port ROM
+banks. The shared MAC uses its existing hard output register instead of a fabric
+tail register. The closed Lighting core advances on private compute CE;
+its actual parent guarantees output readiness on that CE. Public context/pixel
+acknowledgments and result writes still require the common commit CE, and the
+generic core retains its independent output-backpressure guard.
+Color uses six small multipliers for two RGB taps per edge and a
+guarded packed DSP accumulator; exact four-tap groups and trilinear results keep
+their existing rounding. Final/ROP retain the shared two-phase product bank.
+
+There are sixteen global quad owners. This capacity reduction from the Group48
+reference is explicit; the public sixteen-slot owner space, Group48/Pool64 and
+their old-state credits remain unchanged. Exact coefficients are written once
+to the existing authoritative Color weight bank. Private coefficient/member
+transport carries nonzero masks, not another full weight payload. Its complete
+private composition is required; generic coefficient exports still carry full
+weights. Current ordered preparation and Context checks are retained.
+
+For a non-power-of-two surface stride, the tile number is computed by shifts and
+adds and captured on exactly the canonical header's two load paths. Cache
+lookup borrows that held tile number. This avoids an inferred address DSP and
+keeps stride arithmetic out of the cache-readiness/global-enable return path.
+It adds no issue edge and changes no enabled RAM operation. The cadence lowering
+also accepts the configured surface height rather than matching a literal 256.
+The II4/selected exporter defaults to the current 400x240 contract;
+`surface512` explicitly reproduces the historical 512x256 benchmark boundary.
+
+Source identities, archive review, bank/primitive counts, matched wrapper fits,
+bounded replays and rejected variants have one home in
+[the source-matched II4 acceptance report](postquad-ii4-qualification.txt).
+Whole-GPU/CPU placement and board validation remain separate. Explicit Group48,
+older factories and the legacy `CompositionProfile::selected()` template remain
+available for comparisons; they do not select the new complete factory.
+
+## Previous Group48 post-quad successor
 
 The explicit `postquad::verilog_combined_group48_pool64_candidate` factory,
 exported as `combined-group48-pool64`, builds on the retained
@@ -56,25 +101,25 @@ complete exports are byte-identical to the qualified B sources; only Lighting's
 module body differs from the frozen reference. The binding and reference
 constructors are specified in [Lighting](lighting.md#direct-h9-closed-draw-calendar).
 Matched fit numbers remain solely in
-`D:/github/DigitalDesign-code/target/dsp-reuse-tradeoffs-20261011/report.md`;
+[historical exp-010](experiment-review.md#reproduction-and-historical-boundaries);
 actual adoption identity and bounded production replay are in
-`E:/worktrees/60c7/DigitalDesign-code/target/lighting-b-adoption-20261011/report.md`.
+[historical exp-140](experiment-review.md#reproduction-and-historical-boundaries).
 
 The Group48 capacity qualification, balanced-capacity comparison, matching
 complete-chain fits and working-tree promotion are recorded in
-`D:/github/DigitalDesign-code/target/gpu-bsram-capacity-20261011/report.md`.
+[historical exp-022](experiment-review.md#reproduction-and-historical-boundaries).
 Only Group credit32->48 and the row safety guard48->63 change in the actual
 Pool leaf; Producer16, ring64, two owned heads, FF/BSRAM/DSP formats and physical
 read/write ports remain. Cold waiting can accept more Packets; tested final
 drain times remain unchanged. The capacity experiment does not claim a higher
 steady pixel rate. Prior source identity, exact-error qualification, steady II2
 pixel throughput, matched complete-chain fits and worktree promotion are recorded in
-`D:/github/DigitalDesign-code/target/gpu-timing-private-pipeline-20261011/report.md`
+[historical exp-045](experiment-review.md#reproduction-and-historical-boundaries)
 and its source freeze, matched fit receipts and `promotion.json`. The preceding
 stream/parallel-hit evidence remains in
-`D:/github/DigitalDesign-code/target/gpu-stream-context-20261011/report.md`. The preceding
+[historical exp-042](experiment-review.md#reproduction-and-historical-boundaries). The preceding
 Group34 weight-storage evidence remains in
-`D:/github/DigitalDesign-code/target/gpu-structure-implementation-20261011/report.md`. The upstream geometry and physical
+[historical exp-044](experiment-review.md#reproduction-and-historical-boundaries). The upstream geometry and physical
 memory controller remain outside that fit. This successor is working-tree
 source integrated into `code-v0.3-dev`, not a complete fitted GPU. The historical
 CLI `selected` profile remains a reference; use `combined-group48-pool64` for
@@ -403,7 +448,7 @@ same complete-chain steady hot window remains8 edges/quad; cold service retains
 its actual memory stalls. Resource totals, source identities, original receipts,
 rejected alternatives and pictures have one home in the source-owned follow-up
 report at
-`E:/worktrees/60c7/DigitalDesign-code/target/postquad-followup-20261010/report.md`.
+[historical exp-190](experiment-review.md#reproduction-and-historical-boundaries).
 The default `selected` and explicit `sh9` factories remain independent reference
 exports. This qualification covers the post-quad chain, not the whole GPU or a
 physical board image.
@@ -438,6 +483,6 @@ cold/stalled and sparse/stalled scenarios independently check Color, Final,
 window remains8 enabled/wall edges per quad, or2 per pixel; miss/paused windows
 retain their measured stalls. Actual numbers, source identities, rejected
 individual alternatives, exact read-address proof and visual studies have one
-home in [the combined report](../../../target/postquad-combined-20261011/report.md).
+home in [the combined report](../../../.agent/projects/cpu-v3-tang-nano-20k/records/experiment-consolidation-20261015/catalog.md#exp-055).
 This is complete post-quad evidence including texture/framebuffer caches and
 shared memory ownership, excluding the GPU front half and physical board.

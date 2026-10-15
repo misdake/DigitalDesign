@@ -133,14 +133,13 @@ pub struct ColorEmu {
     max_wall: u64,
     faulted: bool,
     trusted_weights: bool,
-    integer_filter: Option<bool>,
+    integer_filter: bool,
 }
 impl ColorEmu {
-    /// Independent two-edge integer filter experiment. Input comes from the
-    /// conserved weight511 producer; true uses half-up taps, false floors.
-    pub fn new_integer_filter(max_wall: u64, half_up: bool) -> Result<Self, String> {
+    /// Two-edge half-up integer filter for the conserved weight511 producer.
+    pub fn new_integer_filter(max_wall: u64) -> Result<Self, String> {
         let mut value = Self::new(max_wall)?;
-        value.integer_filter = Some(half_up);
+        value.integer_filter = true;
         Ok(value)
     }
     pub fn allocation(&self) -> Allocation {
@@ -180,7 +179,7 @@ impl ColorEmu {
             max_wall,
             faulted: false,
             trusted_weights: false,
-            integer_filter: None,
+            integer_filter: false,
         })
     }
     /// Reset control in this same instance. Payload RAM is deliberately retained.
@@ -280,11 +279,8 @@ impl ColorEmu {
         if tick.ce {
             if let Some(p) = self.products {
                 let mut partial = std::array::from_fn(|c| {
-                    if let Some(half_up) = self.integer_filter {
-                        p.values
-                            .iter()
-                            .map(|tap| (tap[c] + if half_up { 256 } else { 0 }) >> 9)
-                            .sum()
+                    if self.integer_filter {
+                        p.values.iter().map(|tap| (tap[c] + 256) >> 9).sum()
                     } else {
                         (p.values[0][c] + p.values[1][c]) + (p.values[2][c] + p.values[3][c])
                     }
@@ -311,7 +307,7 @@ impl ColorEmu {
                     a.value
                 };
                 let mut value = std::array::from_fn(|c| previous[c] + partial[c]);
-                if self.integer_filter.is_some() && value.iter().any(|&v| v > 255) {
+                if self.integer_filter && value.iter().any(|&v| v > 255) {
                     return Err("integer filter requires a conserved weight511 prefix".into());
                 }
                 if !self.trusted_weights && value.iter().any(|&v| v > MAX_SUM) {
@@ -328,7 +324,7 @@ impl ColorEmu {
                 if p.meta.last {
                     let mut rgb = [0; 3];
                     for (out, value) in rgb.iter_mut().zip(sum.value) {
-                        if self.integer_filter.is_some() {
+                        if self.integer_filter {
                             *out = value as u8;
                             continue;
                         }

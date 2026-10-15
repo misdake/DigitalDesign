@@ -26,6 +26,7 @@ pub mod pixel_runtime_ingress;
 pub mod pixel_sampling_ingress;
 pub mod postquad;
 pub mod postquad_descriptor;
+pub mod postquad_ii4;
 pub mod quad_ingress;
 pub mod quad_lighting_ingress;
 pub mod quad_sampling_ingress;

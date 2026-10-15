@@ -69,13 +69,11 @@ const COMMON: &[(&str, &str)] = &[
 "###,
     ),
     (
-        r###" parameter [8:0] HEIGHT=9'd256
-)(
+        r###")(
  input wire clk,reset,ce,commit_allow,
  output wire preflight_bad,
 "###,
-        r###" parameter [8:0] HEIGHT=9'd256
-)(
+        r###")(
  input wire shade_phase,
  input wire [53:0] shared_rop_product, output wire shared_rop_offer,shared_rop_ce, output wire [26:0] shared_rop_a, output wire [7:0] shared_rop_b,
  input wire clk,reset,ce,commit_allow,

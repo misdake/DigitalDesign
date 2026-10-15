@@ -41,6 +41,99 @@ pub fn shared_dots() -> Result<(LightingRtlOptions, [SchedulePlan; 2]), String> 
     Ok((options, plans))
 }
 
+/// Four-edge admission with one shared dot MAC and an explicit wide-multiply pool.
+/// Issue dates, numerical operations and the 34-edge latency stay unchanged.
+pub fn four_cycle(wide_pool: usize) -> Result<(LightingRtlOptions, [SchedulePlan; 2]), String> {
+    if !(7..=11).contains(&wide_pool) {
+        return Err("II4 wide pool must contain seven to eleven multipliers".into());
+    }
+    let (mut options, mut plans) = shared_scalar_pairs(false, false)?;
+    options.id_ring = false;
+    options.free_slots = true;
+    for plan in &mut plans {
+        let mut program = Program::with_retiming(
+            LightingProfile::Fast,
+            true,
+            options.dedicated_dsp,
+            options.kernel(),
+            options.role_schedule,
+            options.logic_depth,
+            options.retiming,
+        )?;
+        program.apply_plan(plan)?;
+        plan.ii = 4;
+        for _ in 7..wide_pool {
+            let mut groups = std::collections::BTreeMap::<(usize, usize), Vec<usize>>::new();
+            for slot in &plan.slots {
+                if program.binding.kinds.get(slot.id) == Some(&Some(LaneKind::LargeMultiply)) {
+                    groups
+                        .entry((program.graph.nodes[slot.id].resource.unwrap(), slot.lane))
+                        .or_default()
+                        .push(slot.id);
+                }
+            }
+            let ((resource, _), ids) = groups
+                .into_iter()
+                .filter(|(_, ids)| ids.len() > 1)
+                .max_by_key(|(_, ids)| {
+                    let different = program.frame.events[ids[0]]
+                        .inputs
+                        .iter()
+                        .zip(&program.frame.events[*ids.last().unwrap()].inputs)
+                        .filter(|(a, b)| a != b)
+                        .count();
+                    (different, ids.len(), ids[0])
+                })
+                .ok_or("II4 pool has no remaining shared wide lane")?;
+            let moved = *ids.last().unwrap();
+            let lane = plan.capacities[resource];
+            plan.capacities[resource] += 1;
+            plan.slots.iter_mut().find(|s| s.id == moved).unwrap().lane = lane;
+        }
+        program.apply_plan(plan)?;
+        if program.ii != 4 || program.latency != 34 {
+            return Err("II4 schedule changed its checked temporal contract".into());
+        }
+    }
+    Ok((options, plans))
+}
+
+/// Share normalization read ports across modulo-four phases without retiming.
+pub fn four_cycle_shared_roms(
+    wide_pool: usize,
+) -> Result<(LightingRtlOptions, [SchedulePlan; 2]), String> {
+    let (options, mut plans) = four_cycle(wide_pool)?;
+    for plan in &mut plans {
+        let mut program = Program::with_retiming(
+            LightingProfile::Fast,
+            true,
+            options.dedicated_dsp,
+            options.kernel(),
+            options.role_schedule,
+            options.logic_depth,
+            options.retiming,
+        )?;
+        program.apply_plan(plan)?;
+        let mut counts = vec![[0usize; 4]; program.graph.resources.len()];
+        for slot in &mut plan.slots {
+            if program.binding.kinds.get(slot.id) == Some(&Some(LaneKind::NormalizeRead)) {
+                let resource = program.graph.nodes[slot.id].resource.unwrap();
+                let phase = (slot.issue % 4) as usize;
+                slot.lane = counts[resource][phase];
+                counts[resource][phase] += 1;
+            }
+        }
+        for (resource, phases) in counts.iter().enumerate() {
+            let ports = *phases.iter().max().unwrap();
+            if ports != 0 {
+                plan.capacities[resource] = ports;
+            }
+        }
+        program.apply_plan(plan)?;
+    }
+    Ok((options, plans))
+}
+
 /// Checked opposite-parity pairs with a global physical pool, preserving SQ,
 /// RSQRT, per-pixel H/V and the special combinational H9 tail.
 pub fn shared_scalar_pairs(

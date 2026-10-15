@@ -401,7 +401,7 @@ checks every write ACK follows the final data beat, and confirms serial operatio
 with zero read/write chains. The bounded run completes in **10254 wall cycles**,
 with 80 covered pixels, 24 misses, 24576 bytes read, 24576 bytes written, and 192
 write ACKs. The per-transaction trace and counters are regenerated under
-`target/framebuffer-real-mc/`. These are this independent MC model's finite
+[historical exp-089](experiment-review.md#reproduction-and-historical-boundaries). These are this independent MC model's finite
 results, not a loaded complete-system or physical-board measurement.
 
 Additional protocol tests terminate a read after three beats with `complete(false)`

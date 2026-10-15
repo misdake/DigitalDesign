@@ -49,7 +49,7 @@ pub fn verilog_profile(native: bool, profile: Profile) -> Result<String, String>
     source.push_str(compact_coordinate::verilog());
     source.push_str(&uv_rows::source(native));
     let frontend = if profile.continuous_prepare {
-        include_str!("runtime_frontend_prepare.v").to_owned()
+        include_str!("runtime_frontend_ordered.v").to_owned()
     } else if profile.early_ordered {
         runtime_frontend_early::verilog_shared().to_owned()
     } else {

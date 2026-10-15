@@ -238,7 +238,7 @@ ROP stalls through accepted row7; that acceptance retires the origin reservation
 The native next value stays in hard DO, with old pending validity controlling
 read credit. CE-off preserves both reservations; reset invalidates them without
 clearing RAM. The local matched origin fit, source identity and controller
-replays are in `target/quad-sequential-20261009/origin/review.json`; this does not
+replays are in [historical exp-336](experiment-review.md#reproduction-and-historical-boundaries); this does not
 establish a full Status/Quad resource delta or480 saved FF. Context
 banks carry Lighting160, optional Sampling26, alpha8 and ROP5 effective bits
 each, with valid/closed/reference and boundary state. Current Rust status/context
@@ -255,7 +255,7 @@ bypass and live warm Nearest/Bilinear/Trilinear. Independent RAM goldens use
 accepted writes; native Output writes use independently calculated final words.
 The streams check native read data before each next edge, including reserved
 returns during compute CE-off. Resource and two-placement timing reports live
-only in `target/quad-ram-lowering-20261008/review.json`; registered source and
+only in [historical exp-202](experiment-review.md#reproduction-and-historical-boundaries); registered source and
 observation harness costs are separated there. This qualifies storage and its
 queue controller, not RTL for the Rust foundation controller, descriptor/status
 mapping or complete GPU fit.
@@ -631,7 +631,7 @@ All loops and instance lifetimes are bounded.
 Matched S1/S2 execution uses the archived singleton source, identical controlled
 fixtures/stimuli and component/full-frame goldens. Exact sources, wall/CE timing,
 acceptances, first/last results, cold/warm windows and refill counts are in the
-workspace `target/gpu-pixel-branches/persistent/` evidence. Sampler step/enabled
+workspace [historical exp-118](experiment-review.md#reproduction-and-historical-boundaries) evidence. Sampler step/enabled
 counts include idle housekeeping in persistent S2 but only singleton lifetimes
 in S1; they are not arithmetic utilization. Per-quad intervals in an overlapping
 stream include queueing, and refill deltas in those intervals may include other

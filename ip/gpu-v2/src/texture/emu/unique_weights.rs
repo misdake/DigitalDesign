@@ -155,6 +155,8 @@ impl Store {
                 || self
                     .result
                     .is_some_and(|(g, _)| group_address(g) / 8 == usize::from(q))
+                || e.read
+                    .is_some_and(|g| group_address(g) / 8 == usize::from(q))
             {
                 return Err("public release before cache weight consumption".into());
             }

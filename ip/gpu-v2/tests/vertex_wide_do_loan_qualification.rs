@@ -160,8 +160,7 @@ fn register_bits(r: &Registers) -> String {
         (r.normal_row as u128, 2),
         (r.col as u128, 2),
         (r.coefficient_q as u32 as u128, 32),
-        (r.wide_stage0 as u64 as u128, 64),
-        (r.wide_product as u64 as u128, 64),
+        (r.wide_product as u128, 72),
         (r.narrow_product as u32 as u128, 32),
         (r.accumulator as u128, 66),
         (r.normal_pack as u128, 36),
@@ -176,8 +175,8 @@ struct Driver {
     emu: VertexEmu,
     file: Option<BufWriter<fs::File>>,
     cycles: usize,
-    states: [usize; 13],
-    pauses: [usize; 13],
+    states: [usize; 12],
+    pauses: [usize; 12],
     writes: usize,
     publications: usize,
     row_holds: [usize; 7],
@@ -194,8 +193,8 @@ impl Driver {
             emu: VertexEmu::default(),
             file,
             cycles: 0,
-            states: [0; 13],
-            pauses: [0; 13],
+            states: [0; 12],
+            pauses: [0; 12],
             writes: 0,
             publications: 0,
             row_holds: [0; 7],
@@ -217,12 +216,7 @@ impl Driver {
             self.publication_holds += 1;
             assert_eq!(self.emu.regs, before, "held publication and identity");
         }
-        if !input.reset
-            && matches!(
-                before.state,
-                State::TermReturn | State::WideWait | State::Accumulate
-            )
-        {
+        if !input.reset && matches!(before.state, State::TermReturn | State::Accumulate) {
             assert_eq!(
                 self.emu.regs.coefficient_q, before.coefficient_q,
                 "actual RAM DO lease cannot be replaced before product consumption"
@@ -391,10 +385,7 @@ impl Driver {
             if before.state != State::Fault {
                 assert_eq!(out.ticket, ticket);
             }
-            if matches!(
-                before.state,
-                State::TermReturn | State::WideWait | State::Accumulate
-            ) {
+            if matches!(before.state, State::TermReturn | State::Accumulate) {
                 let col = before.col as usize;
                 let coefficient = if before.row < 4 {
                     context.mvp[before.row as usize][col]
@@ -408,13 +399,9 @@ impl Driver {
                 if ce && before.state == State::TermReturn {
                     if before.row < 4 {
                         assert_eq!(
-                            self.emu.regs.wide_stage0,
-                            i64::from(coefficient) * g.position[col],
-                            "first native wide edge uses registered DO"
-                        );
-                        assert_eq!(
-                            self.emu.regs.wide_product, before.wide_stage0,
-                            "wide output consumes old stage0"
+                            self.emu.regs.wide_product,
+                            i128::from(coefficient) * i128::from(g.position[col]),
+                            "single native edge registers full signed72 product from RAM DO"
                         );
                     } else {
                         assert_eq!(
@@ -424,16 +411,6 @@ impl Driver {
                         );
                     }
                 }
-                if ce && before.state == State::WideWait {
-                    assert_eq!(
-                        self.emu.regs.wide_product, before.wide_stage0,
-                        "second uniform native wide edge"
-                    );
-                    assert_eq!(
-                        self.emu.regs.wide_stage0, before.wide_stage0,
-                        "same DO/position through second wide edge"
-                    );
-                }
             }
             if ce && before.state == State::Accumulate {
                 let c = usize::from(before.col);
@@ -441,7 +418,7 @@ impl Driver {
                     let row = usize::from(before.row);
                     assert_eq!(
                         before.wide_product,
-                        i64::from(context.mvp[row][c]) * g.position[c],
+                        i128::from(context.mvp[row][c]) * i128::from(g.position[c]),
                         "actual wide operand/product"
                     );
                     i128::from(context.mvp[row][3]) * 65536
@@ -522,7 +499,7 @@ fn bounded_wide_do_loan_numeric_ownership_calendar() {
     let baseline = d.vertex(&Context::default(), v, case, false);
     case += 1;
     assert_eq!(
-        baseline, 102,
+        baseline, 90,
         "sequential baseline accept through publication"
     );
     // Same loaded Context, changed vertex and destination: no hidden precomputed frame.
@@ -787,7 +764,6 @@ fn bounded_wide_do_loan_numeric_ownership_calendar() {
         State::InitReturn,
         State::TermRead,
         State::TermReturn,
-        State::WideWait,
         State::Accumulate,
         State::Round,
         State::Write,
@@ -884,7 +860,7 @@ fn bounded_wide_do_loan_numeric_ownership_calendar() {
             vertex_edges += d.vertex(&Context::default(), v, case, false);
             case += 1;
         }
-        assert_eq!(vertex_edges, n * 102);
+        assert_eq!(vertex_edges, n * 90);
         costs.push(format!("{{\"vertices\":{n},\"load_edges\":26,\"vertex_edges\":{vertex_edges},\"total_enabled_edges\":{},\"old_position32_total_enabled_edges\":{},\"amortized_enabled_edges_per_vertex\":{}}}",26+vertex_edges,26+n*123,(26+vertex_edges)as f64/n as f64));
     }
     assert!(d.row_holds.iter().all(|&n| n > 0));
@@ -892,10 +868,10 @@ fn bounded_wide_do_loan_numeric_ownership_calendar() {
     if let Some(path) = std::env::var_os("VERTEX_QUAL_DIR") {
         let p = PathBuf::from(path);
         fs::write(p.join("draw-cost.json"), format!("[{}]\n", costs.join(","))).unwrap();
-        fs::write(p.join("lease-offer-coverage.json"),format!("{{\"dense_states\":13,\"row_holds\":{:?},\"publication_holds\":{},\"ram_do_checked_at_return_wait_and_consumption\":true,\"wide_calendar\":\"TERM_RETURN stage0, WIDE_WAIT stage1, ACCUMULATE old-product consume\",\"narrow_calendar\":\"TERM_RETURN output, ACCUMULATE old-product consume\"}}\n",d.row_holds,d.publication_holds)).unwrap();
+        fs::write(p.join("lease-offer-coverage.json"),format!("{{\"dense_states\":12,\"row_holds\":{:?},\"publication_holds\":{},\"ram_do_checked_at_issue_and_consumption\":true,\"wide_calendar\":\"TERM_RETURN full signed72 product, ACCUMULATE old-product consume\",\"narrow_calendar\":\"TERM_RETURN output, ACCUMULATE old-product consume\"}}\n",d.row_holds,d.publication_holds)).unwrap();
     }
     // Arithmetic/read/return/write/publication CE0 was exercised.
-    for state in 0..=12 {
+    for state in 0..=11 {
         assert!(d.pauses[state] > 0, "pause coverage state {state}");
     }
     if let Some(mut file) = d.file {

@@ -333,5 +333,6 @@ impl Controller {
 #[path = "runtime_frontend/shared_qualification.rs"]
 mod shared_qualification;
 
+pub mod ordered;
 mod prepare;
 pub(crate) use prepare::PhysicalController;

@@ -31,6 +31,13 @@ fn main() {
         | "combined"
         | "forwarded"
         | "selected"
+        | "ii4"
+        | "ii4-roms"
+        | "ii4-pool7"
+        | "ii4-pool8"
+        | "ii4-pool9"
+        | "ii4-pool10"
+        | "ii4-pool11"
         | "cache-pipeline"
         | "sh9"
         | "cadence"
@@ -113,11 +120,17 @@ fn main() {
     profile.framebuffer_write_address |= args.iter().any(|x| x == "framebuffer-write-address");
     profile.framebuffer_write_data |= args.iter().any(|x| x == "framebuffer-write-data");
     profile.framebuffer_held_draw |= args.iter().any(|x| x == "framebuffer-held-draw");
+    let ii4_mode = args[2] == "selected" || args[2].starts_with("ii4");
+    assert!(
+        !(args.iter().any(|arg| arg == "surface400") && args.iter().any(|arg| arg == "surface512"))
+    );
+    let surface400 = !args.iter().any(|arg| arg == "surface512")
+        && (ii4_mode || args.iter().any(|arg| arg == "surface400"));
     let surface = MaterializedSurface {
         color_base_bytes: 0x100000,
         depth_base_bytes: 0x140000,
-        width: 512,
-        height: 256,
+        width: if surface400 { 400 } else { 512 },
+        height: if surface400 { 240 } else { 256 },
     };
     let slots = [Slot {
         base_address: 0x1000,
@@ -131,7 +144,24 @@ fn main() {
     } else {
         quad_ingress::rtl::Backend::Portable
     };
-    let rtl = if args[2] == "combined-group48-pool64" {
+    let rtl = if args[2] == "ii4" || args[2] == "ii4-roms" || args[2].starts_with("ii4-pool") {
+        assert!(args
+            .iter()
+            .skip(3)
+            .all(|arg| arg == "portable" || arg == "surface400" || arg == "surface512"));
+        let wide_pool = args[2]
+            .strip_prefix("ii4-pool")
+            .map(|n| n.parse::<usize>().expect("II4 wide pool"))
+            .unwrap_or(9);
+        gpu_v2::system::pixel::postquad_ii4::verilog(&slots, surface, backend, wide_pool)
+            .expect("II4 complete postquad")
+    } else if args[2] == "selected" {
+        assert!(args
+            .iter()
+            .skip(3)
+            .all(|arg| arg == "portable" || arg == "surface400" || arg == "surface512"));
+        postquad::verilog_selected(&slots, surface, backend).expect("selected II4 postquad")
+    } else if args[2] == "combined-group48-pool64" {
         postquad::verilog_combined_group48_pool64_candidate(&slots, surface, backend)
             .expect("Group48")
     } else if args[2] == "combined-closed-basic-carry" {
@@ -207,7 +237,18 @@ fn main() {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(path, source).unwrap();
-    if args[2] == "cadence"
+    if args[2] == "selected"
+        || args[2] == "ii4"
+        || args[2] == "ii4-roms"
+        || args[2].starts_with("ii4-pool")
+    {
+        println!(
+            "Exported {} complete postquad ({}) to {}",
+            args[2],
+            if native { "native" } else { "portable" },
+            path.display()
+        );
+    } else if args[2] == "cadence"
         || (args[2] == "cadence-h9"
             || (args[2] == "cadence-h9-control" || args[2] == "cadence-h9-local-fault"))
     {
@@ -216,6 +257,6 @@ fn main() {
             path.display()
         );
     } else {
-        println!("Exported {:?} to {}", profile, path.display());
+        println!("Exported factory={} backend={} surface={}x{} to {} (generic profile arguments apply only to generic factories)", args[2], if native { "native" } else { "portable" }, surface.width, surface.height, path.display());
     }
 }

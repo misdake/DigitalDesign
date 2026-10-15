@@ -1,0 +1,23 @@
+{
+  "cases.json": "a7a626202b79a82a3a7922c94f93e3a1eef17c5c6d1a52ac61124b867e6568f0",
+  "interpolator_ii4.v": "0e8a3358870a8560aa20b89874c4099c92fd4be7e29ad1cb5eae5ee171de3438",
+  "setup_addressmin.v": "3333bb85acfdddced499c9b6a6e3be334ed4fff261e179d7e172fe95542846ec",
+  "cases/interpolator-n9t3-s200-c0-p0-cache/gold.hex": "9a2ba8f0027fe5b857d1d4837de882c38dd079574de2b3021811805d07bcee76",
+  "cases/interpolator-n9t3-s200-c0-p0-cache/matrix.hex": "b39508ba7ba033fa8938166458c24027c4c37d55a2dbf2888957573cd2aae2ac",
+  "cases/interpolator-n9t3-s200-c0-p0-cache/refs.hex": "a4ed8595e047162a8d978906b2c74b1b27b2dcf075ccd77c3833ab4b5c21ca91",
+  "cases/interpolator-n9t3-s200-c0-p0-cache/tb.v": "a7e79501efab14ddedb189d479bbe9a7e14c05666a8dcc2849878d5779a756e3",
+  "cases/interpolator-n9t3-s200-c0-p0-cache/vertex-gold.hex": "eecb6af8369825a59bd66855fbfe72872e27dc0b9a56fa03b100a2f944a45f8b",
+  "cases/interpolator-n9t3-s200-c0-p0-cache/vertex-input.hex": "b598d065033d2e0262e7c6c8b97a867462743f4ea0c2b57adfd5e52f51220267",
+  "cases/interpolator-n9t3-s201-c0-p1-cache/gold.hex": "0dba14cb6ee2f60ac3b51c6f2b52a5322216bbceb1c2ec40a6c43e2b8f97f606",
+  "cases/interpolator-n9t3-s201-c0-p1-cache/matrix.hex": "112a80969610af43356b249b55598af513f1e819033ef830c6e8962aa4a48be6",
+  "cases/interpolator-n9t3-s201-c0-p1-cache/refs.hex": "1ed8cc5f4e78baa024aede4a017aef8c352425505116b5746865da642daf5054",
+  "cases/interpolator-n9t3-s201-c0-p1-cache/tb.v": "eb22185a3239d20229603fda791d7f3698133fa03ef0e14cfb60c55052357b07",
+  "cases/interpolator-n9t3-s201-c0-p1-cache/vertex-gold.hex": "630ee0efb59b142d6e871177c3a5aa46a37d8695b5d08e969e7276e976b3f87f",
+  "cases/interpolator-n9t3-s201-c0-p1-cache/vertex-input.hex": "750646f19b2b54853fed934407427037e711dc6eb523afe3f9a97a98ea19e68a",
+  "cases/setup-tight-invalid/tb.v": "34810f7d7c29e149bf096309ebc9b4f73ec0afb11d73d5ef10a4fd4a2e7693ac",
+  "cases/setup-tight-invalid/vectors.txt": "de871ca2f49c1717de2c3b3d99245473877ca6dd9add07ee6cf32efa620bd5fb",
+  "cases/setup-tight-small-stalls/tb.v": "b7b4186ec7f9b0d1b520da9e3fc5157f08de4a3e2cf79a33c52230b39b01564e",
+  "cases/setup-tight-small-stalls/vectors.txt": "113b40bcc308c5591d51ed93f7b0fa22a8aa6ff47dd4b88eb06f22051e0396c5",
+  "cases/setup-tight-translation/tb.v": "e252bb8161998afc16b5619fcd3ad02e3e9768937496d70a2a7ae5d8b66d750d",
+  "cases/setup-tight-translation/vectors.txt": "040ddb3ab015e5106e7a44563c7c90a77298be0985b67504f27f7c129b4d63c4"
+}

@@ -2,10 +2,11 @@
 
 ## Current boundary
 
-This component implements **oracle only** (step 0 of oracle/counted/timed).
+Geometry Setup implements **oracle only** (step 0 of oracle/counted/timed).
 It consumes three owned `vertex::ports::Transformed` records. It does not fetch
 triangle records, schedule DSPs, allocate RAM, define an encoded GPU ABI or
-implement emulation/RTL. The command/scratchpad/vertex implementation is described
+implement geometry emulation/RTL. The explicit attribute recovery leaf described
+below has its own independent emu/RTL boundary. The command/scratchpad/vertex implementation is described
 in [frontend](frontend.md); pixel lighting is in [lighting](lighting.md).
 
 The oracle provides bounded geometry clipping, projection, exact integer
@@ -22,6 +23,61 @@ remain explicit reference experiments. Normal diagnostics expose F10 codes in
 `i32`, including helper extrapolation; the real pixel ingress RNE/saturates to
 S(12,10). UV ingress rejects out-of-range covered lanes and explicitly forces
 coarsest LOD for abnormal uncovered helpers; see [texture](texture.md).
+
+## Explicit attribute studies
+
+The explicit `triangle::basecolor_threefield` experiment prepares D/N1/N2
+from the original unsnapped XYW and shares one source across clipped fans.
+It consumes numerical RGB888-or-UV24 albedo plus S12F10 normals, retains only the chosen
+albedo attributes and recovers `a0 + delta1*beta1 + delta2*beta2`; constants bypass
+products. The original oracle, coverage and default precision remain unchanged.
+Weight9 and Delta9 separate magnitude, sign, scale and Q9 endpoint metadata.
+Legal negative/extrapolated helpers are preserved. Integer F16 attribute
+assembly is implemented numerically; field/reciprocal precision and a clocked
+Setup kernel are separate work.
+
+The bounded source-mode tests and `gpu-v2-basecolor-diff` compare beta-only,
+delta-only and combined narrowing across seven 48-frame scenes. LOD uses all
+four actual Q16 helper UV values. The local diagnostic page retains per-pixel
+V/H and identifies its continuous Lighting display separately from native RTL.
+The UV nine-bit weight profile was rejected during moving-image LOD review.
+The separate `triangle::basecolor_uv12` research module compares UV Q10/Q11/Q12
+while preserving independent Q9 Color/normal rounding. Q12 is rounded once,
+then split into unsigned high9 products and explicit low3 shift/add correction.
+Both exact and narrowed attribute deltas are priced; sign, endpoints and legal
+helper extrapolation remain explicit. Nine 48-frame scenes include high-frequency
+texture motion and LOD transition motion. The default oracle is unchanged;
+UV Q12 is a visual candidate, not a selected hardware precision.
+
+## Registered recovery component
+
+`triangle::recovery` is a separate explicit registered attribute-code leaf.
+One descriptor binds six fixed lanes: normal XYZ, then RGB or UV, with the last
+albedo lane unused for Texture. It issues delta1 and delta2 on consecutive
+enabled edges through unsigned `MULT9X9` with one-edge registered outputs.
+Each lane shares one phase-selected add/sub carry chain. The qualified default
+uses exact UV deltas, independently rounded Q9 Color/normal and split Q12 UV
+weights, signed30/F12 raw outputs and a seven-bit token. Restoring four zero
+bits is exactly equal to its independent F16 arithmetic reference.
+
+The actual emu and native/portable RTL preserve one output owner's payload
+under backpressure, freeze paid arithmetic through CE0 and allow configuration
+only after drain. The bounded qualification checks every owned register,
+endpoint/sign cases and continuous input/result acceptance at two edges per
+pixel. Signed/extrapolated weights beyond the supported exponent3 domain return
+an ordered fallback marker and zero placeholder data. The caller must retain
+original source and execute a wider path before treating that pixel as complete;
+the marker is not a recovered value or permission to discard a valid helper.
+
+This leaf excludes field generation, reciprocal, depth, UV `/4095` transport,
+normal ingress rounding/saturation, RGB clamp, raster/record ports and wider
+fallback execution. Its qualified exact-UV default is an opt-in research
+component, not a selected whole-GPU precision. The old geometry oracle and
+production factories retain their interfaces. Other parameter combinations
+have numerical proofs only, not default RTL qualification.
+
+These studies are available for visual review. Source identity and root qualification are recorded in
+[historical exp-021](experiment-review.md#reproduction-and-historical-boundaries).
 
 ```mermaid
 flowchart LR
@@ -188,6 +244,31 @@ produces >0.5 channel error in the grazing fixture and is not selected as the
 default. Both are executable rejection examples, not format recommendations.
 
 ## First-principles workload
+
+### Mixed-width recovery component
+
+`triangle::recovery_mixed` keeps the shared-add leaf's original Delta9 normal
+math, exact UV deltas, independent Q9 normal/color and Q12 UV weights,
+signed30/F12 raw output, fallback markers and II2 calendar. Normal deltas
+are decoded once at descriptor binding, adding six active descriptor bits.
+Three normal and two UV lanes use single-edge MULT18X18 products; three RGB
+lanes use single-edge MULT9X9. Fixed wide products remove the UV low-three-bit
+fabric correction and per-delta normal shift from the pixel path.
+
+`tests/threefield_recovery_mixed.rs` compares every exposed pre/post-edge port
+to the unchanged small-DSP implementation and checks all new actual owned
+registers in native and portable RTL. A separate finite configuration replay
+enumerates all 4096 normal magnitude/scale encodings. This is the preferred
+measured Logic/DSP trade for the prospective frontend; `recovery` remains the
+explicit small-DSP reference. Neither is instantiated by production geometry.
+Source-matched resource/timing evidence is in
+[historical exp-033](experiment-review.md#reproduction-and-historical-boundaries).
+
+The leaf still excludes field walking, inverse/depth, final UV conversion,
+normal/color output conversion and actual wider-helper execution. Its
+fallback marker requires a real ordered wider path before composition.
+
+### Logical operation counts
 
 These are **logical scalar products**, not DSP18 issues, latency, fabric area
 or a counted ledger. Constant viewport networks, conversions, normalization,

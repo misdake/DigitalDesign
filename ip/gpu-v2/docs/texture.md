@@ -214,7 +214,7 @@ These archived values predate the current short arithmetic pipeline. They are
 one-quad serial-controller fixture intervals, not the periodic Runtime
 or a shared-MC bandwidth result. Reproduce with `texture_sampler_emu`; exact
 cold-return edges, requests and group counts are generated in
-`target/gpu-overnight-20261006/sampler-optimization-matrix.csv` at repository root.
+[historical exp-117](experiment-review.md#reproduction-and-historical-boundaries) at repository root.
 Removing unused alignment ages helps every seam group; skipping coefficients
 helps only effective nearest. Neither optimization widens a shared input mux or
 changes arithmetic rounding. The next throughput frontier is overlapping real
@@ -1394,7 +1394,7 @@ every partial-domain failure at the same edge, allowing RTL to omit the
 duplicate three-channel partial comparison. The emulator retains its precise
 diagnostic message; terminal fault, atomic port suppression and all numerical
 results are unchanged. Native fault/semantic replay and matched leaf fits are
-recorded in `target/sampling-arithmetic-logic-20261008/review.json`.
+recorded in [historical exp-216](experiment-review.md#reproduction-and-historical-boundaries).
 
 Runtime selects the cache's capture-only pipeline: one pending packet72/line6
 with valid1 survives from read issue to the next enabled capture. The four bank
@@ -1469,7 +1469,7 @@ Runtime allocation counts one descriptor and transport state as a model ceiling;
 the generic queued reference retains its separate four-descriptor allocation.
 Actual Runtime/physical-MC per-edge comparisons, independent pixel goldens,
 source proof and fault/drain boundaries are recorded in
-`E:/worktrees/f207/DigitalDesign-code/target/sampling-runtime-demand-owner-20261010/review.json`; they do not establish
+[historical exp-350](experiment-review.md#reproduction-and-historical-boundaries); they do not establish
 a fitted cache-controller saving or complete Runtime/GPU hardware qualification.
 
 `new_runtime_capture` selects the trusted ordered PacketPool backend
@@ -1514,13 +1514,13 @@ entry-fault and parent-abort atomicity, then new payloads against an independent
 Packet golden. Reproduce the relevant leaf tests with
 `cargo test -p gpu-v2 --lib ordered_pool_directed_portable_native -- --ignored`.
 Actual backend scripts and receipts are under
-`target/sampling-runtime-pool-integration-20261009/`.
+[historical exp-353](experiment-review.md#reproduction-and-historical-boundaries).
 The actual-key/sole-mask composition is recorded in
-`target/sampling-runtime-lean2-key-integration-20261009/`. The final Work mapping
+[historical exp-352](experiment-review.md#reproduction-and-historical-boundaries). The final Work mapping
 uses asynchronous distributed rows and two explicit payload registers.
 Source-matched native fits and placed-netlist payload replay are recorded in
-`target/sampling-work-async-mapping-20261009/` and
-`target/sampling-work-explicit-heads-20261010/`. These qualify the
+[historical exp-260](experiment-review.md#reproduction-and-historical-boundaries) and
+[historical exp-262](experiment-review.md#reproduction-and-historical-boundaries). These qualify the
 Work/Packet/Pool backend; the complete overlapping Runtime controller remains
 outside that fitted and mapped unit.
 
@@ -1537,9 +1537,9 @@ image, and only then reconstructs Runtime and checks new pixels. Reproduce with
 Matched native backend fits use the same observable wrapper,54MHz and placement
 zero. Both generic-owner and selected ordered variants preserve asynchronous
 Work rows. Their resource/timing report is
-`target/sampling-work-async-mapping-20261009/matched-fit-receipts.json`; the
+[historical exp-260](experiment-review.md#reproduction-and-historical-boundaries); the
 explicit-head candidate and its source-matched baseline are in
-`target/sampling-work-explicit-heads-20261010/matched-fit-receipts.json`.
+[historical exp-262](experiment-review.md#reproduction-and-historical-boundaries).
 The final placed-netlist replay covers477 wall edges including first write/fetch,
 concurrent transfers, CE0 paid returns, two heads, stalls, wrap and complete
 drain. It compares actual owned Member/Packet/Pool data and control using vendor
@@ -1595,7 +1595,7 @@ Generic preparation/cache control remains conservative. The current Runtime
 receipt replaces the old color tokens/tree/result/DSP rows with the one-slot
 79-bit pending read; actual ColorEmu is the sole numerical/result owner.
 This removes logical model allocations, not measured physical cells. The
-event/port receipts are under `target/sampling-sequential-storage-20261008`;
+event/port receipts are under [historical exp-252](experiment-review.md#reproduction-and-historical-boundaries);
 the totals are not a fitted whole-sampler bill.
 Legacy Session inventory and replay timing do not certify the locally held path.
 
@@ -1627,9 +1627,9 @@ neither their window average nor the filled/drained batch mean is a steady II.
 In particular the old seam packet stream already had mixed 1/3-edge gaps.
 Do not diagnose every seam packet as three edges or solve an unmeasured
 bottleneck by adding contexts. Raw before/after calendars and lifecycle data
-are frozen under `target/sampling-foundation-20261007`, including the source
+are frozen under [historical exp-236](experiment-review.md#reproduction-and-historical-boundaries), including the source
 snapshot used for that first stage. The subsequent raw-ingress change and its
-separate receipts are under `target/sampling-live-20261007`.
+separate receipts are under [historical exp-240](experiment-review.md#reproduction-and-historical-boundaries).
 
 The current short-pipeline/ingress experiment supersedes those earlier hot-flow
 intervals. For warm, non-seam, true two-mip traffic, its four-nonzero-tap packets
@@ -1637,7 +1637,7 @@ sustain one packet per enabled edge; all 511 gaps between the 512 pixel results
 are two enabled edges in each measured W configuration, with eight contexts
 and the existing32-group capacity. The final trace, Work lifetimes and separate
 queued versus earliest-return latencies are in
-`target/sampling-fusion-integration-20261007/hot-flow-fixed/`; this event evidence
+[historical exp-237](experiment-review.md#reproduction-and-historical-boundaries); this event evidence
 is separate from isolated-leaf PnR and whole-GPU acceptance.
 
 ### Runtime derivative and LOD arithmetic
@@ -1656,7 +1656,7 @@ lookup preparation, registered LOG return, bias/clamp/guards, then levels/parent
 Normalization uses CLZ directly instead of two cancelling subtractions.
 Zero/overflow priority, mip/filter selection and UNORM9 rounding are unchanged.
 The shared-axis rewrite and matched complete serial sampler fits are recorded
-in `target/sampling-d-shared-20261009/review.json`; declaration
+in [historical exp-065](experiment-review.md#reproduction-and-historical-boundaries); declaration
 budgets remain distinct from fitted registers and complete sampler resources.
 
 | Actual kernel | II | Ready age | Numeric FF | Phase/valid FF |
@@ -1684,7 +1684,7 @@ and reset drops ownership without resetting payload. The generic `LodEmu`
 remains the reference. An independent integer/analytic golden checks every
 18-bit slope code, power boundaries, all supported size/filter/mip combinations
 and bias extremes, with input poisoning, output CE pauses and occupied reset.
-The matched16-slot report is `target/sampling-list-20261009/review.json`.
+The matched16-slot report is [historical exp-239](experiment-review.md#reproduction-and-historical-boundaries).
 
 `CoordinateEmu` first computes signed fine/coarse Q8 coordinates, then fractions
 and wrapped taps. Its input is wrapped16-bit Q16 UV, side2..1024, signed
@@ -1719,7 +1719,7 @@ all ten physical sizes and both nearest policies against integer multiply,
 floor and modulo goldens, including pauses and reset with different operands.
 The test poisons all external operands after U capture; both the Rust and RTL
 executors must compute V from their owned registers. Shared-axis resource and
-two-placement54MHz receipts are in `target/sampling-axis-share-20261009/review.json`.
+two-placement54MHz receipts are in [historical exp-217](experiment-review.md#reproduction-and-historical-boundaries).
 
 LogicCone certificates retain every pure arithmetic event and explicitly export
 escaping intermediate results. Exported aliases retain their producer bits;
@@ -1819,7 +1819,7 @@ The matched60MHz placements0/1 fit the complete bank port controller with the
 same observable wrapper. Retained ordered Runtime controls are external in both
 variants; the union reference is newly lowered from the old Rust model, not
 existing complete Runtime RTL. Physical numbers have one generated report home:
-`target/sampling-context-metadata-storage-20261008/implementation/fit-summary.json`.
+[historical exp-231](experiment-review.md#reproduction-and-historical-boundaries).
 These generic-clock probes do not establish complete Runtime/system fit or board
 results. Reproduce replay with `cargo test -p gpu-v2 --lib context_storage -- --ignored`.
 
@@ -1838,7 +1838,7 @@ replays Raw→Derived→Ready reuse on the same instance at capacities1..8 throu
 portable, native and union-reference RTL. Independent three-bank76 Runtime port calendars and
 serial/whole-sampler differential tests cover the integrated consumers. Receipts
 for this newer format have a separate home:
-`target/sampling-ready-decision-20261009/review.json`. Earlier context fits above
+[historical exp-245](experiment-review.md#reproduction-and-historical-boundaries). Earlier context fits above
 retain their original83-bit format and do not measure this decision26 lowering.
 Reproduce with `cargo test -p gpu-v2 --lib canonical_ready_ -- --include-ignored`
 and `cargo test -p gpu-v2 --lib context_storage_runtime_native_replay -- --ignored`.
@@ -1857,11 +1857,11 @@ Reset invalidates ownership without clearing SRAM. The selected Runtime now
 uses the canonical owner codec described under [Row Runtime transport](#row-runtime-transport);
 the wide bank remains a generic reference. Historical Runtime calendars,
 independent semantic goldens, native/FF replays and same-wrapper A/B storage fits
-are in `target/sampling-coordinate-storage-20261008/review.md`. This unit adds no
+are in [historical exp-064](experiment-review.md#reproduction-and-historical-boundaries). This unit adds no
 pipeline edge; the512-pixel warm two-mip flow retains all511 two-edge intervals.
 UV actual-port calendars, all admission phases, CE-off returns, independent
 goldens and behavioral/native controller replays are recorded in
-`target/sampling-ram-lowering-20261008`. RAM peaks are one read and one write per
+[historical exp-067](experiment-review.md#reproduction-and-historical-boundaries). RAM peaks are one read and one write per
 wall edge. Its matching storage-controller fit uses the same emitted native RTL
 and a registered characterization wrapper; wrapper resources are reported
 separately. That fit does not cover metadata/control outside the UV unit or the
@@ -1880,7 +1880,7 @@ certificates and missing alias-source storage must fail. Connected qualification
 checks every live cut, packet/Pool writes and the dynamic no-counted-call guard.
 
 The matched old/new complete-leaf fit uses identical registered wrappers and
-hashes in `target/sampling-fusion-integration-20261007/leaf-fit/`. Its coordinator
+hashes in [historical exp-237](experiment-review.md#reproduction-and-historical-boundaries). Its coordinator
 review includes both placements at66MHz and the actual LOD phase5 source.
 This isolated leaf result is separate from whole-GPU timing or board proof.
 
@@ -1918,7 +1918,7 @@ top or fitted whole-GPU area.
 
 Matched full-observability leaf fits, independent mathematical goldens, source
 identities and validation receipts are indexed by
-`target/sampling-structural-dataflow-20261008/review.json`. Leaf fitting establishes
+[historical exp-259](experiment-review.md#reproduction-and-historical-boundaries). Leaf fitting establishes
 only the measured Membership/Packet deltas, not a whole Runtime fitted total.
 
 ### Independent coefficient cycle emulator and private composition
@@ -1953,13 +1953,13 @@ Both portable and native RTL select these same FF rows. The former SRAM/FF
 characterization switch is removed: two separate registers prevent Gowin from
 inferring a RAM16 array, and the complete16-slot serial fit favors Logic over
 FF savings. The earlier SRAM/single-copy-metadata results remain historical in
-`target/sampling-coefficient-metadata-storage-20261008/review.json`. Current
+[historical exp-219](experiment-review.md#reproduction-and-historical-boundaries). Current
 source identity, independent lifetime and native Runtime replay, complete16-slot
 two-placement fits and rejected candidates are recorded in
-`target/sampling-list-20261009/review.json`.
+[historical exp-239](experiment-review.md#reproduction-and-historical-boundaries).
 
 The former packed-bank RTL's operand-selection fits and rejected candidates
-remain historical in `target/sampling-coefficient-select-20261009/review.json`.
+remain historical in [historical exp-221](experiment-review.md#reproduction-and-historical-boundaries).
 The selected production `coefficient::compact_stage::CompactCoefficientEmu` and
 `rtl::compact_coefficient` execute input37, horizontal-delay17, row-total18 and
 fine-corner36 stages. Input37 holds parents18, fine fractions16, fine-base parity2
@@ -1995,14 +1995,14 @@ is204 bits; the D bank and its output widths are unchanged. This borrowing
 contract applies to closed Serial; overlapping Runtime retains its own UV
 lifetimes. Actual production source matching and the two qualified54MHz
 layouts are recorded in
-`D:/github/DigitalDesign-code/target/sampling-serial-uv-production-20261009/review.json`.
+[historical exp-256](experiment-review.md#reproduction-and-historical-boundaries).
 The complete compact source, matched 16-slot Serial fits, actual Runtime native
 port replays and independent generic/tuple goldens have one evidence home:
-`target/sampling-compact-coordinate-20261009/review.json`. These Serial fits and
+[historical exp-063](experiment-review.md#reproduction-and-historical-boundaries). These Serial fits and
 Runtime declarations do not qualify a full Runtime RTL top, whole GPU or board.
 Matched complete16-slot fits, frozen source identity, independent execution,
 both RTL backends and Runtime ready/metadata lifetime receipts are recorded in
-`target/sampling-coefficient-stages-20261009/review.json`.
+[historical exp-222](experiment-review.md#reproduction-and-historical-boundaries).
 
 The private `cfg(test)` coefficient hybrid uses actual output weights and
 metadata to compile membership and one packet at a time into the existing
@@ -2090,7 +2090,7 @@ The selected16-slot complete sampler's Color source, hierarchy, both
 `D:/github/DigitalDesign-code/target/sampling-structural-rounds-20261010/review.json`.
 The preceding soft-partial binding remains in
 `D:/github/DigitalDesign-code/target/sampling-color-fabric-sum-20261010/review.json`.
-The earlier fused comparison remains in `target/sampling-color-mac-20261009/review.json`.
+The earlier fused comparison remains in [historical exp-224](experiment-review.md#reproduction-and-historical-boundaries).
 Its serial area excludes the
 outer Quad queues and complete overlapping Runtime controller; emulator
 product-role accounting is not a substitute for this physical fit.
@@ -2158,7 +2158,7 @@ Actual16-slot complete Serial qualification and physical resource comparisons
 are recorded in
 `D:/github/DigitalDesign-code/target/sampling-structural-rounds-20261010/review.json`.
 The earlier fused weight-input qualification remains in
-`D:/github/DigitalDesign-code/target/sampling-color-weight-input-production-20261009/review.json`.
+[historical exp-229](experiment-review.md#reproduction-and-historical-boundaries).
 
 Color ownership compares old credits with `count+push+decoded_last` modulo32,
 canceling incoming/pop arithmetic from the comparison. It separately rejects
@@ -2170,8 +2170,8 @@ with the original expression, in addition to lifecycle/fault-edge tests.
 
 Matched complete-Color fits use the same33-output observable wrapper at60MHz,
 placements0/1. Physical costs, hierarchy attribution and timing have one report
-home: `target/sampling-color-result-storage-20261008/fit-summary.json` (baseline and alternatives)
-and `target/sampling-color-result-storage-20261008/ssram-production/fit-summary.json` (production SRAM).
+home: [historical exp-062](experiment-review.md#reproduction-and-historical-boundaries) (baseline and alternatives)
+and [historical exp-062](experiment-review.md#reproduction-and-historical-boundaries) (production SRAM).
 The original queue already infers its key array into SRAM, so logical payload
 bits cannot be reported as fitted FF savings. Production SRAM preserves age3
 first output and singleton replacement without a bubble, and avoids an additional
@@ -2221,13 +2221,13 @@ are reported separately from the sampler synthesis hierarchy; PnR totals include
 the wrapper. DSP counts name the reported primitive type, not an assumed tile
 packing. Complete fit/source hashes, resource deltas, timing failures and the
 resulting optimization priority live only in
-`target/sampling-ready-decision-20261009/review.json` for the decision26 checkpoint.
+[historical exp-245](experiment-review.md#reproduction-and-historical-boundaries) for the decision26 checkpoint.
 The subsequent Logic-budget cache reconstruction, rejected alternatives and
 matched complete native fits are recorded in
-`target/sampling-budget-20261009/review.json`.
+[historical exp-218](experiment-review.md#reproduction-and-historical-boundaries).
 The checked-domain Coordinate/Color-credit checkpoint, exhaustive code-domain
 qualification, rejected register-overlay candidate and matched complete fits
-are recorded in `target/sampling-first-principles-20261009/review.json`.
+are recorded in [historical exp-235](experiment-review.md#reproduction-and-historical-boundaries).
 
 This top serializes one quad. It is distinct from the overlapped Runtime with
 Work16/context8 and its separately declared allocation. A complete serial fit
@@ -2332,6 +2332,19 @@ lease and owner. Raw/Ready counts and Coordinate ownership remain separate.
 The original controller stays an independent reference; continuous preparation
 is an explicit construction choice rather than a replacement for all profiles.
 
+The continuous constructor now selects the ordered-frontier physical controller
+in both emulation and RTL. Occupied regions are determined by the prepare and C
+heads, counts and one four-state prepare owner; per-slot validity and stage
+registers are absent. Diagnostic classes are reconstructed from those regions.
+Parallel covered-lane rank decode replaces the procedural priority chain.
+Context8 capacity, old-state admission, denied-edge holds and immediate fault
+fencing remain unchanged. The generic Controller is the independent reference;
+arbitrary corruption of removed class registers is outside the physical state.
+The Group48 exporter is byte-identical to the qualified successor in both
+backends. Source binding and bounded default-constructor verification are in
+[historical exp-024](experiment-review.md#reproduction-and-historical-boundaries) in the main workspace; matched
+complete-postquad placement results remain in the linked retry report there.
+
 The closed integer filter candidate conserves the existing total weight511 and
 retains RAW565 cache payloads and the twelve9x9 product sites. Each RGB8 tap is
 `(weight*channel+256)>>9`, with independent positive rounding before summing.
@@ -2344,7 +2357,7 @@ change. Generic Color and the original cadence profile retain their contracts.
 Pure floor rounding was rejected because its scalar picture study is consistently
 darker. Half-up8 is the composed candidate. Its scalar RGB565 image comparison
 and actual whole-chain numeric/transport qualification have separate evidence
-in [the combined report](../../../target/postquad-combined-20261011/report.md).
+in [the combined report](../../../.agent/projects/cpu-v3-tang-nano-20k/records/experiment-consolidation-20261015/catalog.md#exp-055).
 These studies do not establish a full RTL scene render or physical image quality.
 
 ## Unique weights and compact Group candidate
@@ -2371,7 +2384,7 @@ Public leases, paid DO and captured results; it is not a replacement full
 Runtime emulator. Actual native/portable chain comparisons, independent Store
 traces, real Packet RTL geometry checks, two-draw slot rebind and whole-chain
 fit identities have one home in
-`D:/github/DigitalDesign-code/target/gpu-structure-implementation-20261011/report.md`.
+[historical exp-044](experiment-review.md#reproduction-and-historical-boundaries).
 The immutable texture slot contract lasts until `pipeline_idle`; changing it
 while an old queued Group remains live is outside this specialized profile.
 
@@ -2391,6 +2404,6 @@ register model without changing default constructors.
 Actual RTL full48, multi-wrap, CE0 and fault checks, independent whole-chain
 numeric/DRAM comparisons, cold buffering, steady II2, and same-source complete
 PnR evidence have one home in
-`D:/github/DigitalDesign-code/target/gpu-bsram-capacity-20261011/report.md`.
+[historical exp-022](experiment-review.md#reproduction-and-historical-boundaries).
 This is a balanced worktree successor; it does not imply a larger Public/Context
 window, new memory-controller bandwidth or a whole-GPU/board qualification.

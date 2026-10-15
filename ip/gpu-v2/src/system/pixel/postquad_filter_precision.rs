@@ -2,7 +2,7 @@
 //! Each positive tap rounds to at most floor(weight/2), because RGB<=255.
 //! Thus every partitioned prefix is <=floor(511/2)=255, independent of
 //! group/tile splitting. Zero taps stay zero; CE, latency and owners unchanged.
-pub fn lower(mut source: String, half_up: bool) -> String {
+pub fn lower(mut source: String) -> String {
     let mut one = |old: &str, new: &str| {
         assert_eq!(source.matches(old).count(), 1, "Filter8 anchor {old}");
         source = source.replace(old, new);
@@ -19,13 +19,9 @@ pub fn lower(mut source: String, half_up: bool) -> String {
         let a = pair * 2;
         let b = a + 1;
         let old = format!(" wire [1:0] bump{pair}={{1'b0,(p{a}[7]&&((|p{a}[6:0])||p{a}[8]))}}+{{1'b0,(p{b}[7]&&((|p{b}[6:0])||p{b}[8]))}};\n wire [9:0] pair{pair}={{1'b0,p{a}[16:8]}}+{{1'b0,p{b}[16:8]}}+{{8'b0,bump{pair}}};");
-        let new = if half_up {
-            format!(
-                " wire [7:0] pair{pair}=p{a}[16:9]+p{b}[16:9]+{{7'b0,p{a}[8]}}+{{7'b0,p{b}[8]}};"
-            )
-        } else {
-            format!(" wire [7:0] pair{pair}=p{a}[16:9]+p{b}[16:9];")
-        };
+        let new = format!(
+            " wire [7:0] pair{pair}=p{a}[16:9]+p{b}[16:9]+{{7'b0,p{a}[8]}}+{{7'b0,p{b}[8]}};"
+        );
         one(&old, &new);
     }
     one(

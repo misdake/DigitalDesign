@@ -12,6 +12,17 @@ fn main() {
         gpu_v2::vertex::rtl::do_loan_native(),
     )
     .unwrap();
+
+    fs::write(
+        out.join("reference-do-loan-portable.v"),
+        gpu_v2::vertex::rtl::reference_do_loan_portable(),
+    )
+    .unwrap();
+    fs::write(
+        out.join("reference-do-loan-native.v"),
+        gpu_v2::vertex::rtl::reference_do_loan_native(),
+    )
+    .unwrap();
     fs::write(
         out.join("old-position32-portable.v"),
         gpu_v2::vertex::rtl::portable(),

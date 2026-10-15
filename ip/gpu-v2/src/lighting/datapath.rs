@@ -288,11 +288,11 @@ impl Program {
         &mut self,
         plan: &super::sim::workbench::SchedulePlan,
     ) -> Result<(), String> {
-        if plan.ii != 2
+        if !matches!(plan.ii, 2 | 4)
             || plan.capacities.len() != self.graph.resources.len()
             || plan.capacities.iter().any(|n| !(1..=64).contains(n))
         {
-            return Err("offline plan requires II2 and bounded resource capacities".into());
+            return Err("offline plan requires II2/II4 and bounded resource capacities".into());
         }
         if plan.preconnected_modes {
             for e in &self.frame.events {

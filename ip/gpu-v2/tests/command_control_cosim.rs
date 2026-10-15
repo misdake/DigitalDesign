@@ -108,32 +108,28 @@ impl Live {
             "actual exported source drift"
         );
         fs::write(out.join("tb.v"), TB).unwrap();
-        let compile = Process::new(
-            std::env::var("IVERILOG_EXE")
-                .unwrap_or_else(|_| "C:/Develop/iverilog/bin/iverilog.exe".into()),
-        )
-        .args(["-g2012", "-s", "tb", "-o", "sim.vvp"])
-        .arg(&source)
-        .arg("tb.v")
-        .current_dir(&out)
-        .output()
-        .unwrap();
+        let compile =
+            Process::new(std::env::var("IVERILOG_EXE").unwrap_or_else(|_| "iverilog".into()))
+                .args(["-g2012", "-s", "tb", "-o", "sim.vvp"])
+                .arg(&source)
+                .arg("tb.v")
+                .current_dir(&out)
+                .output()
+                .unwrap();
         fs::write(out.join("compile.err"), &compile.stderr).unwrap();
         assert!(
             compile.status.success(),
             "{}",
             String::from_utf8_lossy(&compile.stderr)
         );
-        let mut child = Process::new(
-            std::env::var("VVP_EXE").unwrap_or_else(|_| "C:/Develop/iverilog/bin/vvp.exe".into()),
-        )
-        .arg("sim.vvp")
-        .current_dir(&out)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        let mut child = Process::new(std::env::var("VVP_EXE").unwrap_or_else(|_| "vvp".into()))
+            .arg("sim.vvp")
+            .current_dir(&out)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         let (tx, rows) = mpsc::channel();

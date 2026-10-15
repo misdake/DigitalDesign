@@ -1,14 +1,6 @@
-//! Physical Context8 preparation owner shared by D and LOD.
+//! Physical Context8 preparation uses ordered frontiers, without slot classes.
 //! The generic Controller remains an independent qualification reference.
 use super::*;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase {
-    Idle,
-    Derivative,
-    Derived,
-    Lod,
-}
 
 #[cfg(test)]
 mod qualification {
@@ -22,7 +14,7 @@ mod qualification {
         ));
         assert!(matches!(
             PhysicalController::new(8, true, true).unwrap(),
-            PhysicalController::Continuous(_)
+            PhysicalController::Ordered(_)
         ));
         assert!(PhysicalController::new(3, true, true).is_err());
         assert!(PhysicalController::new(8, false, true).is_err());
@@ -90,24 +82,10 @@ mod qualification {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Registers {
-    slots: Vec<Option<Context>>,
-    allocate: usize,
-    occupied: usize,
-    raw_count: usize,
-    prepare_head: usize,
-    phase: Phase,
-    c_head: usize,
-    ordinal: usize,
-    lod_count: usize,
-}
-
-#[derive(Clone, Debug)]
 pub(crate) enum PhysicalController {
     Reference(Controller),
-    Continuous(Registers),
+    Ordered(super::ordered::Frontiers),
 }
-
 impl PhysicalController {
     pub fn new(capacity: usize, early: bool, continuous: bool) -> Result<Self, String> {
         if !continuous {
@@ -116,47 +94,18 @@ impl PhysicalController {
         if capacity != 8 || !early {
             return Err("Continuous preparation requires ordered Context8".into());
         }
-        Ok(Self::Continuous(Registers {
-            slots: vec![None; 8],
-            allocate: 0,
-            occupied: 0,
-            raw_count: 0,
-            prepare_head: 0,
-            phase: Phase::Idle,
-            c_head: 0,
-            ordinal: 0,
-            lod_count: 0,
-        }))
+        Ok(Self::Ordered(super::ordered::Frontiers::new()))
     }
-
-    /// Temporary diagnostic view; none of these reconstructed heads, owners,
-    /// derived count or reclaim flags is a retained physical register.
+    /// Reconstruct the diagnostic history; no per-slot classes are retained.
     pub fn view(&self) -> Controller {
         match self {
             Self::Reference(c) => c.clone(),
-            Self::Continuous(r) => Controller {
-                slots: r.slots.clone(),
-                reclaimable: vec![false; 8],
-                allocate: r.allocate,
-                reclaim: r.c_head,
-                occupied: r.occupied,
-                d_head: (r.prepare_head + usize::from(r.phase != Phase::Idle)) & 7,
-                raw_count: r.raw_count,
-                d_owner: (r.phase == Phase::Derivative).then_some(r.prepare_head),
-                l_head: (r.prepare_head + usize::from(r.phase == Phase::Lod)) & 7,
-                derived_count: usize::from(r.phase == Phase::Derived),
-                l_owner: (r.phase == Phase::Lod).then_some(r.prepare_head),
-                c_head: r.c_head,
-                ordinal: r.ordinal,
-                lod_count: r.lod_count,
-                early: true,
-            },
+            Self::Ordered(r) => r.view(),
         }
     }
-
     #[cfg(test)]
     pub fn reference_fault_state(&mut self) -> &mut Controller {
-        if matches!(self, Self::Continuous(_)) {
+        if matches!(self, Self::Ordered(_)) {
             *self = Self::Reference(self.view());
         }
         let Self::Reference(c) = self else {
@@ -164,90 +113,36 @@ impl PhysicalController {
         };
         c
     }
-
     pub fn reads(&self, ce: bool, dz: bool, lz: bool, uv: Option<usize>) -> Reads {
-        self.view().reads(ce, dz, lz, uv)
+        match self {
+            Self::Reference(c) => c.reads(ce, dz, lz, uv),
+            Self::Ordered(r) => r.reads(ce, dz, lz, uv),
+        }
     }
-
     pub fn lane(&self, mask: u8) -> Result<Option<Lane>, String> {
-        self.view().lane(mask)
+        match self {
+            Self::Reference(c) => c.lane(mask),
+            Self::Ordered(r) => r.lane(mask),
+        }
     }
-
     pub fn preflight(&self, p: Ports, reserve: bool) -> Result<Tick, String> {
-        let t = self.view().preflight(p, reserve)?;
-        self.prepare_shared(t, false)?;
-        Ok(t)
+        match self {
+            Self::Reference(c) => c.preflight(p, reserve),
+            Self::Ordered(r) => r.preflight(p, reserve),
+        }
     }
-
     pub fn prepare_shared(
         &self,
         t: Tick,
         allow: bool,
     ) -> Result<(Self, Option<(usize, Metadata)>), String> {
         match self {
-            Self::Reference(c) => {
-                let (next, released) = c.prepare_shared(t, allow)?;
-                Ok((Self::Reference(next), released))
-            }
-            Self::Continuous(r) => {
-                // Check the same old-state port contract, then independently
-                // update only the physical shared-owner register allocation.
-                self.view().prepare(t)?;
-                if !t.ce {
-                    return Ok((self.clone(), None));
-                }
-                if t.retire != 0
-                    || t.d_issue && !(r.phase == Phase::Idle || r.phase == Phase::Lod && t.l_return)
-                    || t.d_return && r.phase != Phase::Derivative
-                    || t.l_issue && r.phase != Phase::Derived
-                    || t.l_return && r.phase != Phase::Lod
-                {
-                    return Err("continuous preparation owner/calendar".into());
-                }
-                let done = t.c_empty || t.c_take && r.ordinal + 1 == t.c_mask.count_ones() as usize;
-                let mut n = r.clone();
-                let released = done.then(|| {
-                    let metadata = r.slots[r.c_head].unwrap().metadata;
-                    n.slots[r.c_head] = None;
-                    n.c_head = (r.c_head + 1) & 7;
-                    n.ordinal = 0;
-                    n.occupied -= 1;
-                    n.lod_count -= 1;
-                    (r.c_head, metadata)
-                });
-                if t.c_take && !done {
-                    n.ordinal += 1;
-                }
-                if t.l_return {
-                    n.slots[r.prepare_head].as_mut().unwrap().metadata = Metadata::Ready;
-                    n.prepare_head = (r.prepare_head + 1) & 7;
-                    n.phase = Phase::Idle;
-                    n.lod_count += 1;
-                }
-                if t.d_issue {
-                    n.phase = Phase::Derivative;
-                    n.raw_count -= 1;
-                }
-                if t.d_return {
-                    n.slots[r.prepare_head].as_mut().unwrap().metadata = Metadata::Derived;
-                    n.phase = Phase::Derived;
-                }
-                if t.l_issue {
-                    n.phase = Phase::Lod;
-                }
-                if t.admit {
-                    n.slots[r.allocate] = Some(Context {
-                        metadata: Metadata::Raw,
-                    });
-                    n.allocate = (r.allocate + 1) & 7;
-                    n.occupied += 1;
-                    n.raw_count += 1;
-                }
-                if !allow {
-                    return Ok((self.clone(), None));
-                }
-                Ok((Self::Continuous(n), released))
-            }
+            Self::Reference(c) => c
+                .prepare_shared(t, allow)
+                .map(|(n, release)| (Self::Reference(n), release)),
+            Self::Ordered(r) => r
+                .prepare(t, allow)
+                .map(|(n, release)| (Self::Ordered(n), release)),
         }
     }
 }

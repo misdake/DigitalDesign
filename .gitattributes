@@ -1,1 +1,12 @@
 * text=auto eol=lf
+
+# Source-hashed immutable qualification fixtures retain their historical bytes,
+# including original whitespace; their manifests check the complete contents.
+# The frozen Color template also has two space-only lines; retain its qualified
+# export identity while still checking EOF blanks and spaces before tabs.
+ip/gpu-v2/src/system/pixel/postquad_ii4_color.v -text whitespace=-blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+ip/gpu-v2/examples/postquad_ii4/fixtures/** -text -whitespace
+ip/gpu-v2/examples/geometry_reference/interpolator_ii4.v -text -whitespace
+ip/gpu-v2/examples/geometry_reference/setup_addressmin.v -text -whitespace
+ip/gpu-v2/examples/geometry_reference/cases.json -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+ip/gpu-v2/examples/geometry_reference/cases/** -text -whitespace

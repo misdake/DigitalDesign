@@ -2,3 +2,4 @@
 pub mod ports;
 pub mod sim;
 pub mod source_capture;
+pub mod source_record;

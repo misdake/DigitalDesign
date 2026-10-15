@@ -767,10 +767,10 @@ consumer constructors retain their previous algorithms. Experiment constructors
 always start from SmoothH9Reference, so adopting B cannot silently redefine them.
 
 Matched complete-chain fit numbers and the small9 tradeoff have one home:
-`D:/github/DigitalDesign-code/target/dsp-reuse-tradeoffs-20261011/report.md`.
+[historical exp-010](experiment-review.md#reproduction-and-historical-boundaries).
 Actual production export identity, default-factory/core checks, hot/cold and
 CE0/paid-fault replay, and preserved WIP are recorded in
-`E:/worktrees/60c7/DigitalDesign-code/target/lighting-b-adoption-20261011/report.md`.
+[historical exp-140](experiment-review.md#reproduction-and-historical-boundaries).
 Only Lighting changes in the qualified complete-chain source; the evidence
 excludes whole-GPU integration and physical-board qualification.
 

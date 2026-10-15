@@ -12,7 +12,7 @@ arithmetic emulator, RTL implementation or encoded command-machine ABI.
 
 ## Independent component kernels
 
-`command_processor::{control,emu,rtl}` and `vertex::{emu,rtl}` are separate
+`command_processor::{control,emu,payload,rtl}` and `vertex::{emu,rtl}` are separate
 opt-in components. They are not instantiated by the existing frontend
 composition or connected to one another. The oracle/count/timed models below
 retain their existing ownership and evidence boundaries.
@@ -21,11 +21,35 @@ The command kernel executes one semantic command at a time with explicit
 event acknowledgement, sticky DMA tokens and a separately registered DRAW
 completion. `control::CommandPort` retains a driver-validated typed payload
 until the matching action accepts; control capture alone does not transfer
-that payload. Actual DMA execution and payload storage remain external.
+that payload. Actual DMA execution and checked Context transport remain external.
 Completion/event capture uses wall-clock edges even during CE0; command action
 acceptance uses enabled edges. `fence_ready` describes an external frontend
 drain condition. It does not by itself establish rendering completion or an
 encoded command ABI.
+
+The default independent command component is `CommandProcessorEmu` and
+`rtl::{verilog,native,portable}` / `rtl::MODULE` (`gpu_v2_command_processor`).
+It contains the unchanged 25-bit control state, 90 physical scalar payload
+bits and one ownership bit. Capture acquires the old offered payload;
+`command_done` releases ownership. CE0 leaves payload and ownership unchanged;
+fault retains them until reset. Downstream action acceptance observes the old
+captured payload even when the current input bus changes.
+
+`payload::RetainedPayload::from_prepared` preserves full 64-bit DMA addresses,
+13-bit scratchpad addresses and 13-bit byte counts; DRAW retains region,
+12-bit byte offset and 7-bit count, and RELEASE retains slot and 32-bit epoch.
+WAIT/FENCE have zero scalar payload, with token retained by the control state.
+The 96-bit transport has six canonical zero padding bits. This is an internal
+semantic bus, not an encoded command ABI; the existing checked preflight still
+owns validity. Matrices are not copied into this component.
+
+RTL uses a parallel cyclic grant over the existing pending/current-set event
+bits. IDs 5/6 remain masked. COMMAND capture consumes grant[4] directly and the
+cursor consumes a grant encoder, removing the rotated serial scan and the
+handler-id decode from capture. The original serial control RTL is retained
+as `rtl::reference_control_verilog`; `emu::CommandEmu` remains its independently
+executed control reference. Native and portable command exports use identical
+primitive-free logic, with no separate arithmetic binding.
 
 `vertex::emu::VertexEmu` executes its own operands, accumulator and rounding
 registers; it does not replay a counted Plan's answers. The matching native
@@ -42,29 +66,79 @@ delta before a low32 shift and checked33-bit base addition. Clip/normal
 rounding and public formats are unchanged. The native wide multiplier returns
 uniform results in two enabled edges; the narrow multiplier returns in one.
 
-The preferred further isolated vertex candidate is
-`vertex::do_loan::VertexEmu` with `vertex::rtl::do_loan_native()` /
-`do_loan_portable()`. It issues directly from the registered coefficient RAM
-output and retains that output until the current product is consumed. No new
-coefficient read occurs during this loan. Its dense internal state encoding
-changes neither the numerical formats nor public handshakes. The original
-position32 emulator and factories remain available as exact references.
+The selected independent vertex is `vertex::do_loan::VertexEmu` (also
+`vertex::VertexEmu`) with `vertex::rtl::do_loan_native()` /
+`do_loan_portable()`. It retains the existing module name and ports, one
+36x36 multiplier, one 18x18 multiplier and one coefficient BSRAM. The wide
+product is captured in one enabled edge (PIPE0/OUT0_REG1) and consumed by the
+accumulator on the following enabled edge. Its actual registered RAM DO
+remains the coefficient authority through consumption; no duplicate matrix
+or coefficient row is added.
 
-The DO-loan kernel takes 102 productive enabled edges per valid vertex,
-excluding the unchanged 26-edge context load and input/output stalls; the
-reference takes 123. It still writes seven private rows before publication.
-Its independent bounded test is `tests/vertex_wide_do_loan_qualification.rs`;
-`VERTEX_QUAL_DIR` writes the live calendar for both RTL backends. Actual source,
-qualification, same-boundary fitted resources and production identity are
-recorded in `target/gpu-quality-window-20261011/report.md` in the main workspace.
-This independent leaf is not a connected frontend or whole-system proof.
+The selected engine takes 90 productive enabled edges per valid vertex,
+excluding the unchanged 26-edge context load and input/output stalls. Seven
+private rows precede publication. Precision, error behavior, CE0 and ownership
+are unchanged. `vertex::do_loan_reference::VertexEmu` and
+`rtl::reference_do_loan_{native,portable}` retain the original 102-edge engine;
+the older position32 model/factories remain explicit references as well.
 
-Bounded independent qualification is in `tests/command_control_cosim.rs` and
-`tests/vertex_leaf_qualification.rs`. The live command test requires actual
+`tests/vertex_wide_do_loan_qualification.rs` binds the existing bounded
+single-edge qualification to the selected default model. The old 102-edge
+test is retained as `vertex_wide_do_loan_reference_qualification.rs`.
+`gpu-v2-vertex-do-loan-export` emits selected and reference RTL separately.
+The prior numerical/native/portable and isolated vendor-model timing evidence
+is source-matched to the selected implementation; it is not board or assembled
+frontend proof.
+
+The Vertex80 transport, XYW decoders, parallel23 executor and its stored
+source/result chain have been retired from the active crate at the user's
+request. Their source, exporters and qualification tests were captured before
+removal in [historical exp-011](experiment-review.md#reproduction-and-historical-boundaries) in the main
+workspace. Historical fitting reports remain historical evidence.
+
+`material_color::{ColorSource, Albedo}` now owns the two numerical enums used by
+the independent material and triangle studies. They have no vertex-format,
+executor or RAM-layout dependency. The selected Vertex90 and explicit
+Vertex102 reference, Command components and opaque source-record leaf remain.
+
+### Ordered source-record component
+
+`frontend::source_record::{RecordEmu, native_rtl, portable_rtl}` is an explicit
+independent component with one 512x36 RAM, partitioned into sixteen fixed
+32-word records. Words are opaque; the field, polygon and depth layout remains
+a separate interface decision. One producer writes consecutive rows and
+publishes on the acknowledged final row. The consumer reads and releases only
+the oldest published record. The producer may also read its already-written
+unpublished prefix through that same paid read port.
+
+The actual RAM DO holds the returned word through backpressure, CE0 and fault;
+there is no duplicate payload register or per-word source ID. A pending read
+of the oldest record prevents its release until a later edge. Full-buffer
+release cannot finance a write on the same edge. Reset discards control
+ownership without clearing RAM words. Abort stops new operations immediately
+and preserves a paid return until reset. The caller still owns arbitration
+between producer preparation and raster reads, and must release a record only
+after every fan/helper use has completed.
+
+`tests/source_record_qualification.rs` checks finite emulator/native/portable
+replays against an independently assembled FIFO of source words, including
+prefix reads, pointer wrap, old-state credit, held returns, abort and reset.
+Source-matched isolated resource/timing evidence is in
+[historical exp-033](experiment-review.md#reproduction-and-historical-boundaries). The component is not yet
+connected to the existing SourceCapture or assembled geometry pipeline.
+
+Bounded independent qualification is in `tests/command_control_cosim.rs`,
+`tests/command_payload_binding.rs`, `tests/command_payload_cosim.rs` and
+`tests/vertex_leaf_qualification.rs`. The live payload test executes the default
+physical owner, observes all 90 payload bits before and after each edge and
+compares the unchanged control state/actions to `CommandEmu`. The checked typed
+codec test is separate from opaque canonical bus stress. The live command tests require actual
 Icarus and an explicit `GPU_COMMAND_QUAL_DIR` with exported sources. The vertex
 test can write a replay calendar with `VERTEX_QUAL_DIR`; both RTL backends must
 be checked against that calendar. Isolated leaf fitting excludes external
-payload/source/result banks and provides no assembled frontend or whole-GPU
+source/result banks and checked Context transport. The default CP fit includes
+its physical scalar payload owner; the explicit control-only probe excludes it.
+Neither provides an assembled frontend or whole-GPU
 resource, throughput or board claim.
 
 The oracle can also consume a GPU-owned MemoryPort through `run_with_memory`.
