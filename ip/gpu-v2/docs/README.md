@@ -14,6 +14,7 @@
 | [Post-quad performance](postquad-performance.md) | Selected II4 post-interpolator RTL, retained Group48 references, independent cache scenarios and matched fit evidence |
 | [最终LOD直接接入](direct-lod.md) | 前半最终U5F3 LOD、无helper准备链、物理纹理边界和阶段验证入口 |
 | [VLIW前后半合体](vliw-integration.md) | 当前几何与插值、唯一结果池、静态读写、发布／退休与验证边界 |
+| [VLIW主仓内存接入](vliw-memory.md) | 静态meshlet装填、固定页目的地址、三类主仓内存端口和阶段3关键证据 |
 | [Experiment consolidation](experiment-review.md) | Retained implementations and replay tools, rejected alternatives and retired evidence boundaries |
 | [II4 qualification receipt](postquad-ii4-qualification.txt) | Current source identities, complete-chain resource/timing counts and bounded verification scope |
 | [Quad output protocol draft](quad-output-protocol-draft.md) | Proposed eight-row rasterizer/interpolator output and immutable draw/transport lifetime |

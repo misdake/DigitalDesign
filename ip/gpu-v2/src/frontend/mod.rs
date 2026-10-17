@@ -4,3 +4,4 @@ pub mod sim;
 pub mod source_capture;
 pub mod source_record;
 pub mod vliw;
+pub mod vliw_dma;

@@ -8,7 +8,7 @@ use gpu_v2::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() < 3 {
-        return Err("OUTPUT direct-lod|backend|full|frontend [portable]".into());
+        return Err("OUTPUT direct-lod|backend|full|sdram|frontend [portable]".into());
     }
     let portable = args.iter().skip(3).any(|s| s == "portable");
     let backend = if portable {
@@ -34,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             gpu_v2::system::pixel::vliw_backend::verilog_selected(&slots, surface, backend)?
         }
         "full" => gpu_v2::system::vliw::verilog(&slots, surface, backend)?,
+        "sdram" => gpu_v2::system::vliw_sdram::verilog(&slots, surface, backend)?,
         "frontend" => gpu_v2::frontend::vliw::verilog(portable),
         _ => return Err("unknown VLIW profile".into()),
     };
