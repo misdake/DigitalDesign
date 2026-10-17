@@ -12,6 +12,7 @@
 | [Framebuffer](framebuffer.md) | Materialized ROP oracle, actual registered ROP/cache and bounded MC qualification |
 | [Pixel composition](pixel-system.md) | Published row/SPSC foundation, two draw banks, pipelined Final, actual Lighting/Sampling and serial ROP/shared-MC qualification |
 | [Post-quad performance](postquad-performance.md) | Selected II4 post-interpolator RTL, retained Group48 references, independent cache scenarios and matched fit evidence |
+| [最终LOD直接接入](direct-lod.md) | 前半最终U5F3 LOD、无helper准备链、物理纹理边界和阶段验证入口 |
 | [Experiment consolidation](experiment-review.md) | Retained implementations and replay tools, rejected alternatives and retired evidence boundaries |
 | [II4 qualification receipt](postquad-ii4-qualification.txt) | Current source identities, complete-chain resource/timing counts and bounded verification scope |
 | [Quad output protocol draft](quad-output-protocol-draft.md) | Proposed eight-row rasterizer/interpolator output and immutable draw/transport lifetime |

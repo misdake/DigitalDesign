@@ -1,0 +1,111 @@
+{
+  "status": "pass",
+  "stage": 1,
+  "source": {
+    "ip/gpu-v2/src/texture/direct_lod.rs": "427dea39a98df8e1744914aae001d470d83c6de16caf9b169f0ef15aaa672398",
+    "ip/gpu-v2/src/texture/rtl/direct_lod.rs": "1294463d3765616da2c80b9dfbf239a3fcacd2fcf450d13139a9492ca2bd2025",
+    "ip/gpu-v2/src/texture/rtl/direct_lod.v": "8f4929267e1a10fa6f897131a9d8636023220ec80be020cff0fa2fe19990fdcd",
+    "ip/gpu-v2/src/system/pixel/direct_lod.rs": "2ef916fcb8fe3f707201b44b82e0e47728c3bf402b1a8eb73813f9c1715e507c",
+    "ip/gpu-v2/src/system/pixel/direct_lod_rows.v": "43a80712cf42295dd94d1711f60084b54be2bcb07264408e89819922e5e5b51d",
+    "ip/gpu-v2/src/texture/mod.rs": "1a808f634f6a0a36b33665b5eb6eb04f506953c09ca330200222f6d7f7a2d679",
+    "ip/gpu-v2/src/texture/rtl/mod.rs": "a13b1b940d1c7c3cec8a40a0deff448b5bf3d2f27ed8411a37c0e7045a4f2125",
+    "ip/gpu-v2/src/system/pixel/mod.rs": "867f6cd4ddd796c0a81e1754d33ef425e628516e3196773160844c9e4202fdf9",
+    "ip/gpu-v2/tests/direct_lod.rs": "00f6b81a76b06902bd822cc0ba84c8fc03340837b06bfe6162bc094f5fd9f1a0",
+    "ip/gpu-v2/tests/direct_lod_stage1.py": "be4678aaf9245903d72451606169e644428e5777f20beec94cee2d18ddb16cfc",
+    "ip/gpu-v2/tests/direct_lod_complete.py": "3e15e0673d75db4415fe8045f33561dd9014832f3532355ae7742d5027473693"
+  },
+  "comparison_fixture": {
+    "texture_base": 4096,
+    "max_n": 6,
+    "full_mip": true,
+    "width": 400,
+    "height": 240,
+    "color_base": 1048576,
+    "depth_base": 1310720
+  },
+  "native_export_sha256": "ab83dafba80e22e25d3cb49ac911cc80b3de90f87e076cd9a671b1e39785a736",
+  "matched_baseline": {
+    "logic": 6496,
+    "logic_ff": 3690,
+    "io_ff": 7,
+    "ssram": 108,
+    "bsram": 22,
+    "fmax_p0": 54.176,
+    "fmax_p1": 54.085
+  },
+  "fits": [
+    {
+      "placement": 0,
+      "logic": 5679,
+      "register": 3233,
+      "logic_ff": 3226.0,
+      "ssram": 95,
+      "bsram": 21.0,
+      "primitives": {
+        "MULT9X9": 24,
+        "MULT18X18": 9,
+        "MULTADDALU18X18": 1,
+        "ALU54D": 1
+      },
+      "fmax": 54.046,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "original_source_sha256": "036dc25a6c32807527458e2b50ef8174185d96d7f6d6af1d8a9c62e4a516baad",
+      "source_sha256": "8123af825caca4fdfe9422ce8b790c882dd9c7451095c974442cd227040fa063",
+      "wrapper_sha256": "73f4490043205474fc4dd83fd762dca0a7ae096faf81c6f2991ff59e0a16737d",
+      "report_sha256": "b56656be0e7ee247ae6aaab02f301121a4afba0af1994fc81cd3994f3c08ce2e",
+      "timing_sha256": "0e97575387b759cc465f0ae15a2b835eae1d4421460663d0a9645c558f017379",
+      "wrapper_generator_sha256": "4509c8d6f671745fc59d7e2fedde9083d12665c54eff23846033729da6ba4456"
+    },
+    {
+      "placement": 1,
+      "logic": 5679,
+      "register": 3233,
+      "logic_ff": 3226.0,
+      "ssram": 95,
+      "bsram": 21.0,
+      "primitives": {
+        "MULT9X9": 24,
+        "MULT18X18": 9,
+        "MULTADDALU18X18": 1,
+        "ALU54D": 1
+      },
+      "fmax": 54.013,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "original_source_sha256": "036dc25a6c32807527458e2b50ef8174185d96d7f6d6af1d8a9c62e4a516baad",
+      "source_sha256": "8123af825caca4fdfe9422ce8b790c882dd9c7451095c974442cd227040fa063",
+      "wrapper_sha256": "73f4490043205474fc4dd83fd762dca0a7ae096faf81c6f2991ff59e0a16737d",
+      "report_sha256": "870adfb07f61dfc912a55d4c6d282512d3ff6ccea87c6980df85a01fd03a01c1",
+      "timing_sha256": "ca13a94cb083de8bfb01011fcc15dabfd57bc7b9735254943eeb16a93d55dc50",
+      "wrapper_generator_sha256": "4509c8d6f671745fc59d7e2fedde9083d12665c54eff23846033729da6ba4456"
+    }
+  ],
+  "qualified_tests": {
+    "coordinate_vectors": 1502,
+    "complete_quads": 9,
+    "complete_pixels": 21,
+    "complete_wall_cycles": 1453,
+    "steady_quads": 96,
+    "steady_last_intervals": 31,
+    "steady_input_ce": 496,
+    "steady_c_issue_ce": 496,
+    "steady_commit_ce": 496,
+    "steady_lag_start_end_ce": [
+      83,
+      83
+    ]
+  },
+  "receipts": {
+    "coordinate-receipt.json": "318a448be3b36f4b3c8fb232e85139ab687066ae73942e86c165d231bd252775",
+    "complete-tile-final-v1-receipt.json": "578a5470c765c966b7682b3bbcf13f7b6a997cecc050dd9a27808d16c98c0d8a",
+    "complete-steady-single-paced96-v1-receipt.json": "70b7a9e84cbf9103f1d8928e33f4fad5bdd7ef004428b469afe56bc083cd8ee8",
+    "complete-steady-actual-v2-receipt.json": "547b763da7b760fdaf6562f1d294e5e313d5eab40d52a6c7e93f1889c7e1432c"
+  },
+  "notes": [
+    "统计包含注册探针。两组布局无setup/hold违例；CPU/显示/板测排除。",
+    "完整金值回放使用n5纹理；面积比较严格使用原n6配置；不把两个配置的结果混算。",
+    "实际UV跨纹理tile时Color可达约56CE/quad；16CE为单纹理tile稳定用况。",
+    "旧匹配版本53.367MHz失败；生产端预存tile列后才通过，不按布局挑选。"
+  ]
+}

@@ -26,3 +26,5 @@ pub mod work;
 
 pub mod runtime_frontend;
 pub mod runtime_frontend_early;
+
+pub mod direct_lod;
