@@ -77,9 +77,9 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | Integer multiplier | Unsigned 16-bit operands zero-extended into the shared signed 36 x 36 CPU/FPU pipe, with integer-owner tag `0x100` | The blocking core retains `Execute -> MultiplyWait -> MultiplyCommit`; the returned low 32 bits supply the selected 16-bit product window |
 | FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
 | FPR file | Two mirrored 512 x 32 SDPB BSRAMs giving 2R1W; architectural `F0..F63` are addresses `0..63`, the hidden LUT region is `64..511` (mirror A: RCP and SINCOS; mirror B: RSQRT even/odd) | Two registered-address synchronous reads and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
-| FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), one scalar/vector lane controller, and one shared result/address commit register | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
+| FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), using the common FPU lane issuer and commit slot | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
 | CPU/FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit owner/destination tag | Integer multiply, FPU multiply/dot, SINCOS range reduction and all LUT interpolation products time-share it; the core serializes owners |
-| Product issuer | One `ProductPath` owner for scalar `MUL`, `VMUL`, `VMULS`, `DOT`, `DOTADD` and `DOTSTORE`, with two six-bit read-address cursors and one outstanding-return count | One synchronous RF operand pair and one product issue per enabled beat; existing return tags and write timing are retained |
+| FPU operand-port issuer and commit | ALU and product instructions share one lane calendar, two six-bit read cursors and destination context. One next-edge result/address slot serves ALU and final `DOTSTORE`; the product outstanding count retains direct multiplier returns | One synchronous RF operand pair per enabled beat; ALU and product vector II = 1, direct MUL/special returns and all existing write beats are retained |
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
 | Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables; range reduction and delta/residue interpolation use the shared CPU/FPU pipe, with two LUT-base metadata stages and direct result writeback | RCP/RSQRT `T0..T4`; SINCOS `T0..T8` dual, `T0..T7` single; owns both RF read ports while active |
 
@@ -88,6 +88,20 @@ Within the FPU ALU, ADD/SUB, MIN/MAX, CMP and NEG/ABS share one wrapping
 before using the subtraction sign. CEIL, half-up ROUND and TRUNC only need the
 integer half, so they share one 16-bit increment followed by sixteen zero bits.
 No execution or vector-lane stage is added, and the defined wrap boundaries remain.
+
+The accepted `word0` already retains the parked architectural RF addresses. The
+common port issuer advances its cursors only for the scheduled vector/product
+reads; special-function LUT accesses and idle external accesses select those same
+physical ports. A single destination context serves ordinary and special work;
+the special leaf receives operation fields and returns only a relative destination.
+ALU results and final DOTSTORE values share their mutually exclusive next-edge
+commit storage. Ordinary products and special-function results still write the RF
+directly on their original return beat. Write events form one mutually exclusive
+final bus, with no new queue or arbitration state. Standalone ALU/ProductPath
+leaves remain test references and are absent from the production dependency graph.
+The independent value model commits the old scalar/vector write registers after
+sampling RF reads; new results become eligible on the following edge. Its strict
+mixed-owner replay checks RF/ACC after each enabled edge and during clock holds.
 
 All six integer shift forms share one 17-bit signed right-shift barrel.
 Register/immediate decode selects the four-bit count before the barrel. Left shift

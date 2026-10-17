@@ -1782,3 +1782,34 @@ acceptance scope and the exact evidence entry are in
 [architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
 The matched comparison is pre-commit evidence; committed builds and workload runs
 are recorded separately by the project commit workflow. No new board result is claimed.
+
+## 2026-10-17: Shared FPU port calendar and commit
+
+The producer descriptor, synchronous RF address launch, ALU/product lane issue,
+destination lifetime and final RF consumer are replaced together. The accepted
+word0 retains parked Fa/Fb addresses; one pair of cursors and one lane calendar
+advance vector ALU and ordinary product reads. One destination context also serves
+special functions, whose local destination fields are constant in the production
+instance. Their relative second-result offset preserves dual SINCOS write order.
+
+ALU results and the final DOTSTORE value share one next-edge commit slot. Ordinary
+MUL and special-function returns keep their direct RF writes. One mutually
+exclusive write-event bus replaces the nested final source selection; the existing
+scalar/vector and product issuer leaves leave the production dependency graph.
+ACC64, two-stage multiplication, aliasing, abort, scalar T0/T1, vector II=1 and
+all special-function schedules are preserved. Existing standalone leaves remain
+independent reference tests rather than parallel production implementations.
+
+An expanded value-model replay exposed scalar/vector RF commits using newly
+updated registers instead of pre-edge registers. The same failure is reproduced
+against frozen baseline RTL before correcting the model's sampling/commit edge;
+the arithmetic oracle and hardware execution calendar are unchanged. The replay
+checks all ordinary/special operation families, RF/ACC contents, clock holds and
+each abort age. A separate frozen-RTL differential checks public pins, read
+addresses, multiplier issues and actual writes over mixed instruction streams.
+
+The matched full-system fit and frozen-suite comparison, source identities and
+qualification boundary are linked from the current
+[architecture section](architecture.md#current-fitted-result-and-validation-boundary).
+The matched comparison is pre-commit evidence; committed builds and workload runs
+are recorded separately by the project commit workflow. No new board result is claimed.

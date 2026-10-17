@@ -1782,9 +1782,7 @@ impl Module for CpuV3Fpu {
             VerilogDependency::new::<CpuV3FpuFrontend>("frontend"),
             VerilogDependency::new::<CpuV3FpuRegisterRam>("rf"),
             VerilogDependency::new::<CpuV3FpuScalarAlu>("shared_alu"),
-            VerilogDependency::new::<CpuV3FpuAluPath>("alu_path"),
             VerilogDependency::new::<CpuV3FpuSpecialPath>("special_path"),
-            VerilogDependency::new::<CpuV3FpuProductPath>("product_path"),
             VerilogDependency::new::<CpuV3FpuMulPipe>("mul_pipe"),
         ]
     }
@@ -1805,6 +1803,19 @@ impl CpuV3FpuState {
         // the front-end register update is about to write (nonblocking
         // semantics; the leaf-level Verilog testbenches cannot catch this).
         let instr_complete_prev = state.frontend.instr_complete;
+        let word0_prev = state.frontend.word0_raw;
+        let word1_prev = state.frontend.word1_raw;
+        let opcode_prev = state.frontend.instr_opcode;
+        let held_a_prev = state.held_read_a_address;
+        let held_b_prev = state.held_read_b_address;
+        // RF writes consume the old commit registers. The path updates below
+        // produce next-edge values, just like RTL nonblocking assignments.
+        let scalar_write_prev = (
+            state.scalar_path.write_enable,
+            state.scalar_path.write_address,
+            state.scalar_path.write_data,
+        );
+        let vector_write_prev = (state.vp_wr_enable, state.vp_wr_address, state.vp_wr_data);
 
         // Pre-edge special-path snapshot. The leaf's combinational logic and
         // its always block both read these values, exactly as the RTL reads its
@@ -1857,14 +1868,14 @@ impl CpuV3FpuState {
             sp.w_count = 0;
             sp.x_count = 0;
         } else {
-            let word1 = state.frontend.word1_raw;
+            let word1 = word1_prev;
             let subop = encoding::scalar_subop(word1);
             let fd = encoding::word1_fd(word1);
             let is_cmp = subop == encoding::CMP;
             // MUL is owned by the multiply path; RCP/RSQRT/SINCOS by the
             // special path.
             let load_now = instr_complete_prev
-                && state.frontend.instr_opcode == encoding::OPCODE_SCALAR
+                && opcode_prev == encoding::OPCODE_SCALAR
                 && !matches!(
                     subop,
                     encoding::MUL | encoding::RCP | encoding::RSQRT | encoding::SINCOS
@@ -1892,9 +1903,9 @@ impl CpuV3FpuState {
         // Read addresses for this cycle's RF read: computed from pre-edge
         // vector state (RTL nonblocking semantics), so they are resolved
         // before the vector register updates below.
-        let word1_fields = state.frontend.word1_raw;
+        let word1_fields = word1_prev;
         let vp_load_now = instr_complete_prev
-            && state.frontend.instr_opcode == encoding::OPCODE_VECTOR
+            && opcode_prev == encoding::OPCODE_VECTOR
             && matches!(
                 encoding::vector_subop(word1_fields),
                 encoding::VADD
@@ -1906,18 +1917,18 @@ impl CpuV3FpuState {
                     | encoding::VMOV
             );
         let dp_load_now = instr_complete_prev
-            && state.frontend.instr_opcode == encoding::OPCODE_VECTOR
+            && opcode_prev == encoding::OPCODE_VECTOR
             && matches!(
                 encoding::vector_subop(word1_fields),
                 encoding::DOT | encoding::DOTADD | encoding::DOTSTORE
             );
         let mp_load_now = instr_complete_prev
-            && ((state.frontend.instr_opcode == encoding::OPCODE_VECTOR
+            && ((opcode_prev == encoding::OPCODE_VECTOR
                 && matches!(
                     encoding::vector_subop(word1_fields),
                     encoding::VMUL | encoding::VMULS
                 ))
-                || (state.frontend.instr_opcode == encoding::OPCODE_SCALAR
+                || (opcode_prev == encoding::OPCODE_SCALAR
                     && encoding::scalar_subop(word1_fields) == encoding::MUL));
         let product_load_now = mp_load_now || dp_load_now;
         let product_active = product_load_now
@@ -1928,7 +1939,7 @@ impl CpuV3FpuState {
         let read_a_address = if sp_comb.busy {
             sp_comb.rf_read_a_address as usize
         } else if product_load_now {
-            usize::from(encoding::word0_fa(state.frontend.word0_raw))
+            usize::from(encoding::word0_fa(word0_prev))
         } else if product_active
             && state.product_run
             && state.product_lane <= state.product_last_lane
@@ -1937,18 +1948,18 @@ impl CpuV3FpuState {
         } else if product_active {
             0
         } else if vp_load_now {
-            usize::from(encoding::word0_fa(state.frontend.word0_raw))
+            usize::from(encoding::word0_fa(word0_prev))
         } else if vp_active && state.vp_lane <= state.vp_last_lane {
             usize::from(state.vp_base_a) + usize::from(state.vp_lane)
         } else if vp_active {
             0
         } else {
-            state.held_read_a_address as usize
+            held_a_prev as usize
         };
         let read_b_address = if sp_comb.busy {
             sp_comb.rf_read_b_address as usize
         } else if product_load_now {
-            usize::from(encoding::word0_fb(state.frontend.word0_raw))
+            usize::from(encoding::word0_fb(word0_prev))
         } else if product_active
             && state.product_run
             && state.product_lane <= state.product_last_lane
@@ -1957,7 +1968,7 @@ impl CpuV3FpuState {
         } else if product_active {
             0
         } else if vp_load_now {
-            usize::from(encoding::word0_fb(state.frontend.word0_raw))
+            usize::from(encoding::word0_fb(word0_prev))
         } else if vp_active && state.vp_lane <= state.vp_last_lane {
             usize::from(state.vp_base_b) + usize::from(state.vp_lane)
         } else if vp_active {
@@ -1965,7 +1976,7 @@ impl CpuV3FpuState {
         } else if input.ext_access {
             input.ext_read_address as usize
         } else {
-            state.held_read_b_address as usize
+            held_b_prev as usize
         };
 
         // Shared pre-edge snapshots for the four per-path tick helpers. Every
@@ -1974,8 +1985,8 @@ impl CpuV3FpuState {
         // re-sample state they mutate.
         let ctx = TickContext {
             abort: input.abort,
-            instr_opcode: state.frontend.instr_opcode,
-            word0_raw: state.frontend.word0_raw,
+            instr_opcode: opcode_prev,
+            word0_raw: word0_prev,
             word1_fields,
             len_field: encoding::word1_len(word1_fields),
             vector_subop: encoding::vector_subop(word1_fields),
@@ -2026,15 +2037,16 @@ impl CpuV3FpuState {
         let rf = &mut state.rf;
         rf.read_a_data = rf.mirror_a[read_a_address];
         rf.read_b_data = rf.mirror_b[read_b_address];
-        let sp = &state.scalar_path;
+        let (scalar_we, scalar_wa, scalar_wd) = scalar_write_prev;
+        let (vector_we, vector_wa, vector_wd) = vector_write_prev;
         let (we, wa, wd) = if input.ext_access {
             (
                 input.ext_write_enable,
                 input.ext_write_address as usize,
                 input.ext_write_data as u32,
             )
-        } else if state.vp_wr_enable && !input.abort {
-            (true, state.vp_wr_address as usize, state.vp_wr_data)
+        } else if vector_we && !input.abort {
+            (true, vector_wa as usize, vector_wd)
         } else if ctx.pipe_out_valid
             && ctx.product_outstanding_prev != 0
             && !ctx.product_dot_prev
@@ -2054,11 +2066,7 @@ impl CpuV3FpuState {
                 sp_comb.rf_write_data as u32,
             )
         } else {
-            (
-                sp.write_enable && !input.abort,
-                sp.write_address as usize,
-                sp.write_data,
-            )
+            (scalar_we && !input.abort, scalar_wa as usize, scalar_wd)
         };
         if we {
             rf.mirror_a[wa] = wd;
@@ -2284,8 +2292,8 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "actual unified ProductPath emulation replay with aliasing, CE and each abort age"]
-    fn verify_product_unit_emu_matches_rtl() {
+    #[ignore = "shared FPU port/writeback replay with aliasing, CE and each abort age"]
+    fn verify_port_owner_emu_matches_rtl() {
         use std::fmt::Write;
         fn idle() -> CpuV3FpuInputValue {
             CpuV3FpuInputValue {
@@ -2332,7 +2340,7 @@ mod tests {
             }
             writeln!(
                 tb,
-                "if(dut.dp_acc !== 64'h{:x}) $fatal(1,\"emu ACC cycle={}\");",
+                "if(dut.acc_r !== 64'h{:x}) $fatal(1,\"emu ACC cycle={}\");",
                 state.accumulator() as u64,
                 *count
             )
@@ -2367,31 +2375,55 @@ mod tests {
             };
             record(&mut state, &mut tb, &mut count, value, true);
         }
-        for mode in 0..6 {
-            for abort_age in -1..10 {
-                let subop = match mode {
-                    0 | 5 => 2,
-                    1 => 3,
-                    2 => 13,
-                    3 => 14,
-                    _ => 15,
-                };
-                let opcode = if mode == 5 { 0xd } else { 0xc };
-                let len = (abort_age + 1) % 4;
-                let word1 = if mode == 5 {
-                    61 << 10 | 2 << 4
+        for mode in 0..30 {
+            for abort_age in -1..12 {
+                let len = ((abort_age + 1) % 4) as u16;
+                let (opcode, fa, fb, word1) = if mode < 6 {
+                    let subop = match mode {
+                        0 | 5 => 2,
+                        1 => 3,
+                        2 => 13,
+                        3 => 14,
+                        _ => 15,
+                    };
+                    let word1 = if mode == 5 {
+                        61 << 10 | 2 << 4
+                    } else {
+                        61 << 10 | len << 8 | subop << 3 | len
+                    };
+                    (if mode == 5 { 0xd } else { 0xc }, 62, 63, word1)
+                } else if mode < 18 {
+                    let subop = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15][mode - 6];
+                    (0xd, 62, 63, 61 << 10 | subop << 4)
+                } else if mode < 25 {
+                    let subop = [0, 1, 4, 5, 6, 7, 12][mode - 18];
+                    (0xc, 59, 60, 60 << 10 | (len % 3) << 8 | subop << 3)
                 } else {
-                    61 << 10 | len << 8 | subop << 3 | len
+                    let (subop, special_mode) = match mode {
+                        25 => (12, 0),
+                        26 => (13, 0),
+                        _ => (14, (mode - 27) as u16),
+                    };
+                    (0xd, 62, 63, 61 << 10 | subop << 4 | special_mode)
                 };
+                // Exercise normalization, zero, signed endpoints and fractional
+                // inputs while retaining the independent cycle/numeric model.
+                let values = [0, 1, 0xffff, 0x10000, 0x7fffffff, 0x80000000, 0xffff8000];
+                let mut seed = idle();
+                seed.ext_access = true;
+                seed.ext_write_enable = true;
+                seed.ext_write_address = 62;
+                seed.ext_write_data = values[(mode + (abort_age + 1) as usize) % values.len()];
+                record(&mut state, &mut tb, &mut count, seed, true);
                 let mut input = idle();
                 input.word_valid = true;
-                input.word = opcode << 12 | 62 << 6 | 63;
+                input.word = opcode << 12 | fa << 6 | fb;
                 record(&mut state, &mut tb, &mut count, input, true);
                 let mut input = idle();
                 input.word_valid = true;
                 input.word = word1 as u64;
                 record(&mut state, &mut tb, &mut count, input, true);
-                for age in 0..13 {
+                for age in 0..15 {
                     let mut input = idle();
                     input.abort = age == abort_age;
                     if age % 3 == 1 {
@@ -2402,7 +2434,7 @@ mod tests {
                 assert!(!state.comb(&idle()).busy);
             }
         }
-        writeln!(tb,"$display(\"DIGITAL_DESIGN_PASS actual ProductPath emu cycles={count}\");$finish;end initial begin #{};$fatal(1,\"emu replay timeout\");end endmodule",count*10+100).unwrap();
+        writeln!(tb,"$display(\"DIGITAL_DESIGN_PASS shared FPU ports emu cycles={count}\");$finish;end initial begin #{};$fatal(1,\"emu replay timeout\");end endmodule",count*10+100).unwrap();
         let project = digital_design_hardware::VerilogProject::generate::<CpuV3Fpu>().unwrap();
         let directory =
             std::env::temp_dir().join(format!("cpu-product-emu-{}", std::process::id()));
@@ -2455,6 +2487,7 @@ mod tests {
     fn verify_product_path_matches_separate_issuers() {
         let project = digital_design_hardware::VerilogProject::generate::<CpuV3Fpu>().unwrap();
         let mut sources: Vec<_> = project.files.into_values().collect();
+        sources.push(CpuV3FpuProductPath::verilog_source().unwrap());
         sources.push(CpuV3FpuMultiplyPath::verilog_source().unwrap());
         sources.push(CpuV3FpuDotPath::verilog_source().unwrap());
         let directory =

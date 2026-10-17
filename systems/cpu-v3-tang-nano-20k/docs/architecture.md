@@ -300,18 +300,18 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-10-17 CPU/cache batch starts at `03cd09e10ede4f905a1e0dd03cfd0814e4f5e558`.
-I-cache metadata moves into its existing tag DPB,
-refill reuses the final response slot, fetch cursors share successor computation,
-and the FPU ALU shares arithmetic and integer-half rounding. Cache capacity,
-associativity, CPU-side width, precision and enabled-edge schedules are retained.
+The 2026-10-17 FPU port/commit batch starts at `1a5e0a7872126001eaa8909901ec3b96111fd2bc`.
+ALU and product instructions share the physical RF read calendar and destination
+context; ALU and DOTSTORE share one commit slot, while product and special returns
+remain direct. The preceding I-cache/fetch/ALU savings are part of this baseline.
+Cache geometry, precision, retirement and enabled-edge schedules are retained.
 
-| Matched pre-commit CPU-system fit | Base `03cd09e` | Selected batch |
+| Matched pre-commit CPU-system fit | Base `1a5e0a7` | Selected batch |
 | --- | ---: | ---: |
-| Logic | 8,308 | 8,161 |
-| RAM16 / Logic FF / CLS | 32 / 3,277 / 5,475 | 20 / 3,279 / 5,418 |
+| Logic | 8,161 | 8,077 |
+| RAM16 / Logic FF / CLS | 20 / 3,279 / 5,418 | 20 / 3,207 / 5,358 |
 | BSRAM / MULT36X36 | 11 / 1 | 11 / 1 |
-| CPU fitted Fmax | 55.685 MHz | 56.120 MHz |
+| CPU fitted Fmax | 56.120 MHz | 57.841 MHz |
 
 Both use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C, identical
 CST/SDC and placement/routing options. CPU same-clock setup/hold has no violated
@@ -320,10 +320,10 @@ at the user's direction; the unchanged strict audit still reports it in the raw
 logs. No constraints or SDRAM implementation were changed to suppress it.
 These fits cover the CPU system and inactive GPU shell, not complete GPU v2.
 The source-bound reports, rejected candidates and validation are in
-[`target/cpu-cache-area-20261017/report.md`](../../../target/cpu-cache-area-20261017/report.md).
+[`target/fpu-port-writeback-20261017/report.md`](../../../target/fpu-port-writeback-20261017/report.md).
 This table records the source-bound pre-commit comparison; subsequent committed
 builds and workload runs have separate project ledger evidence. The
-[record](cpu-v3-optimization-record.md#2026-10-17-cpu-and-cache-area-reduction)
+[record](cpu-v3-optimization-record.md#2026-10-17-shared-fpu-port-calendar-and-commit)
 describes the retained structure and verification boundary. No new board result is claimed.
 
 ## Earlier storage and product-issuer checkpoint
