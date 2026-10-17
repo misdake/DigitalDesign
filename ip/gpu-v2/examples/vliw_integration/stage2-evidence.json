@@ -1,0 +1,324 @@
+{
+  "status": "pass",
+  "stage": 2,
+  "scope": "当前V/T/R/I、唯一结果池和完整后半；独立GPU IP，未接CPU占位模块、显示或物理板。",
+  "origin_commit": "72488fde0f6e529b65a69c45868b2804462e9b25",
+  "source_hash_format": "SHA256 with CRLF normalized to LF; arithmetic tokens are unchanged by Git text normalization",
+  "selected_source": {
+    "ip/gpu-v2/src/frontend/vliw/compute.v": "4466f3c704d8f8de893bd424d5256ceaa056e2b39461d49c2c134780e3103a00",
+    "ip/gpu-v2/src/frontend/vliw/frontend.v": "4c05858db1579f7d1b6b2fb16798d81a4e17e99be0a4860c5142063084e9d9c7",
+    "ip/gpu-v2/src/frontend/vliw/input_storage.v": "8340b2212e21a8fde90af48f9eea9134829693d874704d7173a9364e22f4e5f2",
+    "ip/gpu-v2/src/frontend/vliw/input_t_work.v": "fd5cddc482649bd2ea6779f6d6628c6d9e6daac057a7b885eafcf3deb673840c",
+    "ip/gpu-v2/src/frontend/vliw/interpolator_stream.v": "607101d702e19222adcff70662057e863dab4b594bae12f3ac37298abd6b1fad",
+    "ip/gpu-v2/src/frontend/vliw/lod.v": "1aef91629b01c6e39113ca251fef18fa527ae9c3361af2b234dc660283ea20e7",
+    "ip/gpu-v2/src/frontend/vliw/meshlet.v": "41d5ffe299071f9f852be85821e5a636d8c61c8d018195ad8fc49ca1ef7133a6",
+    "ip/gpu-v2/src/frontend/vliw/pipeline_stream.v": "6f14db1132d25f8c27e00b04b0bf66b491b638aad077a7215b5ed8aa3c207603",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "7ac5d61cc06a3e13b33a0cff75e818b4c093586a1c4c1c37b4c0f7f707184c8a",
+    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "6a0bd978eb38478bc8996fdac8ba26e177c64587a24c3a028f580fba08bdeab4",
+    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "9df699eaf2e7f60f23a1e976cb436d09877d99a2fdd6c7357a348d43c6f162bd",
+    "ip/gpu-v2/src/frontend/vliw/primitives/dsp.v": "322fe8718aff4f3323c9d8764b713c91e4b7f33b1769d797660bf39dc4770970",
+    "ip/gpu-v2/src/frontend/vliw/primitives/ram.v": "c7e04efedccc44833b927ed9858131b0949683660a0e8ced0b3b94137e8237eb",
+    "ip/gpu-v2/src/frontend/vliw/primitives/window.v": "a9e7de48c1ea6599f71dfcad1a4c03b1021116e9fcf55031d931231953a1c873",
+    "ip/gpu-v2/src/frontend/vliw/raster.v": "1c0eb58a23e8981f4a9b683803dbd7583edeadb48fd041c2027aaf12a61985ad",
+    "ip/gpu-v2/src/frontend/vliw/raster_program.v": "02139d03b924e12baaacfa5ca102458f5505b46aff4a39ce8782416c7204ea52",
+    "ip/gpu-v2/src/frontend/vliw/raster_storage.v": "428ef1e71bc04b2d89317294af3aaa90295513f54c073fd2534a1ee754bd1bc1",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_fields.vh": "c31ba52dfb929d373650a24e8b062e939a85a6bb1cb77e9f4f8fd9428bb79432",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_rom.v": "9b1813f10d181477756aa0b851a3671860221b4c36f7173f8b1ccfc06055cc43",
+    "ip/gpu-v2/src/frontend/vliw/vertex/mac.v": "4fb22768c24f05996d006f4145964afe901cc47cc23c03ae38e2b4105b9b8753",
+    "ip/gpu-v2/src/frontend/vliw/vertex/rf.v": "e8b038cba9dc2c1319535bd6d759eac81793e44305e65f7c33cbc410a39e154a",
+    "ip/gpu-v2/src/frontend/vliw/vertex/storage.v": "a078892f2a6f9f6abfd7fb0a97ccdc8f4d8456889cf8ca0e6cc64441bd82d36d",
+    "ip/gpu-v2/src/frontend/vliw.rs": "c2f560c6a6e3bd236588fd64aa765fbef914321bfbeca96f38250bdf2c2e4c86",
+    "ip/gpu-v2/src/system/pixel/vliw_backend.rs": "6adbdb7dabb57c7825a82b4925c89d0646977b527392ddc8a6c7d6ccfa0ab7d8",
+    "ip/gpu-v2/src/system/pixel/vliw_backend.v": "8fb3689cd8cb9c49d3aee1ab0b680c1f44070a9969cea55e9620aa7f9e121865",
+    "ip/gpu-v2/src/system/pixel/vliw_backend_final.v": "4de1cb72adb1cea467768296dbc60752eb3ea3a04c9e0c86bf6bc278125b6a88",
+    "ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs": "e486a8073e25130218bc3fa4c34e508fe88efc918def4835d690d146ec0cbfbc",
+    "ip/gpu-v2/src/system/pixel/vliw_quad_pool.v": "7bcf220f1462e2ab5fc7bcbffec62a008da0e2f56fd93f08702c814381204f87",
+    "ip/gpu-v2/src/system/vliw.rs": "ceedd79d6abe3e07a164bbc17824b3a09d6bcf6ed496770fea351ca6890de8e8",
+    "ip/gpu-v2/src/system/vliw.v": "4ec70449d1fff17d84d9d2c4c5809265d16759a8d4642df4a95b57e74ecbe1c4"
+  },
+  "native_export_canonical_lf_sha256": "6bd175ac492b3bff0749fea47f35f69868385cd6cae1bdb07dfb3f9f4f7c5ef6",
+  "comparison_fixture": {
+    "texture_base": 4096,
+    "max_n": 6,
+    "full_mip": true,
+    "width": 400,
+    "height": 240,
+    "color_base": 1048576,
+    "depth_base": 1310720
+  },
+  "fits": [
+    {
+      "placement": 0,
+      "logic": 11752,
+      "logic_ff": 5055.0,
+      "register": 5062,
+      "ssram": 217,
+      "bsram": 33.0,
+      "dsp": 18.0,
+      "primitives": {
+        "MULT9X9": 24,
+        "MULT18X18": 10,
+        "MULTALU36X18": 3,
+        "MULTADDALU18X18": 3,
+        "ALU54D": 1
+      },
+      "fmax": 54.564,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "report_sha256": "a4924360ed54a6ec37010e4aa6477c278173044283c33fcb0d73fff8d0551b1e",
+      "timing_sha256": "d6e8837635ea25c47cfe274bdee06c8ba5f22e1c108e63bbf14d5f13466ae5b5",
+      "export_sha256": "9fb656d2f1dad5ca9d43bdb79b150b45280329ed22f347d04f2eea8cdb62d9ca",
+      "wrapper_sha256": "7451aa5e8d2a7c651d3060de8168ef1bf6fd210ae1500f5467b8794e0bdb4c52",
+      "receipt": "target/gpu-vliw-integration-20261018/stage2/full-fit-final2q-v1-p0/receipt.json",
+      "receipt_sha256": "046b7dc5fe1cb7f062d7bceaba7138010612c4f1d3e3aec1c0d390bba0a75b5b"
+    },
+    {
+      "placement": 1,
+      "logic": 11752,
+      "logic_ff": 5055.0,
+      "register": 5062,
+      "ssram": 217,
+      "bsram": 33.0,
+      "dsp": 18.0,
+      "primitives": {
+        "MULT9X9": 24,
+        "MULT18X18": 10,
+        "MULTALU36X18": 3,
+        "MULTADDALU18X18": 3,
+        "ALU54D": 1
+      },
+      "fmax": 54.542,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "report_sha256": "8043c64cf80df6f51cbc83b894a9cedd486733f50295644407dea60f7c29bcae",
+      "timing_sha256": "9d40fd29866d3f2bcea509efbf1f374ab9735e79551b504a4400dd1d51a54ffa",
+      "export_sha256": "9fb656d2f1dad5ca9d43bdb79b150b45280329ed22f347d04f2eea8cdb62d9ca",
+      "wrapper_sha256": "7451aa5e8d2a7c651d3060de8168ef1bf6fd210ae1500f5467b8794e0bdb4c52",
+      "receipt": "target/gpu-vliw-integration-20261018/stage2/full-fit-final2q-v1-p1/receipt.json",
+      "receipt_sha256": "e4c5b485a4c59cfd7fef9c6f55ec5c0c4cdbfd43d45bd4463a6c16bafdc9b229"
+    }
+  ],
+  "probe": {
+    "dynamic_input_bits": 453,
+    "output_bits": 214,
+    "registers": 459,
+    "counts_include_probe": true
+  },
+  "runs": [
+    {
+      "tag": "final2q-rabbit-v1",
+      "mode": "portable",
+      "counts": {
+        "V_T_checked": true,
+        "attributes": 5016,
+        "depth_events": 1672,
+        "lod": 418,
+        "empty": 108,
+        "quads": 418,
+        "packets": 60,
+        "geometry_quads": 310,
+        "live_quads": 310,
+        "live_pixels": 704,
+        "ROP_pass": 352,
+        "ROP_depth_reject": 352,
+        "light": 704,
+        "sample": 352,
+        "final": 704,
+        "memory_bytes": 400384,
+        "lod_values": [
+          0,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          15,
+          18,
+          31
+        ]
+      },
+      "wall_metrics": {
+        "cycles": 45746,
+        "CE": 42885,
+        "Q": 418,
+        "published": 418,
+        "empty": 108,
+        "peak": 17,
+        "fullCE": 0,
+        "headersPending": 54,
+        "startsPending": 1,
+        "light": 704,
+        "sample": 352,
+        "final": 704,
+        "commits": 310,
+        "requests": 246,
+        "CE0returns": 179,
+        "CE0checks": 2859
+      },
+      "dut_sha256": "a860b13906aa483d77b740b0c8b8a02ffbd35a9317e56bc2f04b7c0da5d29bf4",
+      "receipt_sha256": "467103889f024f9cdd6f1a5485171ec9df753f0bb12659454181a33da310a4d9"
+    },
+    {
+      "tag": "final2q-rabbit-v1",
+      "mode": "native",
+      "counts": {
+        "V_T_checked": true,
+        "attributes": 5016,
+        "depth_events": 1672,
+        "lod": 418,
+        "empty": 108,
+        "quads": 418,
+        "packets": 60,
+        "geometry_quads": 310,
+        "live_quads": 310,
+        "live_pixels": 704,
+        "ROP_pass": 352,
+        "ROP_depth_reject": 352,
+        "light": 704,
+        "sample": 352,
+        "final": 704,
+        "memory_bytes": 400384,
+        "lod_values": [
+          0,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          15,
+          18,
+          31
+        ]
+      },
+      "wall_metrics": {
+        "cycles": 45746,
+        "CE": 42885,
+        "Q": 418,
+        "published": 418,
+        "empty": 108,
+        "peak": 17,
+        "fullCE": 0,
+        "headersPending": 54,
+        "startsPending": 1,
+        "light": 704,
+        "sample": 352,
+        "final": 704,
+        "commits": 310,
+        "requests": 246,
+        "CE0returns": 179,
+        "CE0checks": 2859
+      },
+      "dut_sha256": "9fb656d2f1dad5ca9d43bdb79b150b45280329ed22f347d04f2eea8cdb62d9ca",
+      "receipt_sha256": "bf0172d1db55840c09506bd446a8ec3de4a4c441a0c6144d4e5bd1e73f1773ad"
+    },
+    {
+      "tag": "final2q-box-v1",
+      "mode": "portable",
+      "counts": {
+        "V_T_checked": true,
+        "attributes": 75504,
+        "depth_events": 25168,
+        "lod": 6292,
+        "empty": 1,
+        "quads": 6292,
+        "packets": 8,
+        "geometry_quads": 6291,
+        "live_quads": 6291,
+        "live_pixels": 24400,
+        "ROP_pass": 24400,
+        "ROP_depth_reject": 0,
+        "light": 24400,
+        "sample": 24400,
+        "final": 24400,
+        "memory_bytes": 400384,
+        "lod_values": [
+          0
+        ]
+      },
+      "wall_metrics": {
+        "cycles": 142909,
+        "CE": 142907,
+        "Q": 6292,
+        "published": 6292,
+        "empty": 1,
+        "peak": 24,
+        "fullCE": 31300,
+        "headersPending": 4,
+        "startsPending": 0,
+        "light": 24400,
+        "sample": 24400,
+        "final": 24400,
+        "commits": 6291,
+        "requests": 2327,
+        "CE0returns": 0,
+        "CE0checks": 0
+      },
+      "dut_sha256": "a860b13906aa483d77b740b0c8b8a02ffbd35a9317e56bc2f04b7c0da5d29bf4",
+      "receipt_sha256": "fcd0a97c310afd95e1d8d340b2997a20e6ec0c54fc1b36bec2ddc552faa1e9b6"
+    }
+  ],
+  "proofs": {
+    "author_receipt": {
+      "path": "target\\gpu-vliw-integration-20261018\\stage2\\backend-final2q-v1.json",
+      "sha256": "a5a49297bdd7b5ca5588a5d3e949fac3c88fbb0d8430f7e964dc6a6b481a8c00"
+    },
+    "independent_audit": {
+      "path": "target\\gpu-vliw-integration-20261018\\stage2\\independent-review-final2q\\audit.json",
+      "sha256": "fa7ecb4531a10d2097972a8a355de8117faef6e9e47cbc52c482ac2f27a92f3d"
+    },
+    "independent_second_placement": {
+      "path": "target\\gpu-vliw-integration-20261018\\stage2\\independent-review-final2q-p1\\audit.json",
+      "sha256": "a7a8685b89d99a66884ab4cf10dae78d5bff8ee7b025d07aece1f98d1a2ad968"
+    },
+    "staged_checkout": {
+      "tree": "4bf472373c71c031f11a1fe018746b4efdfca39e",
+      "fresh_cargo_build": true,
+      "full_export_tokens_match_qualified_export": true,
+      "boundary": "仅阶段2暂存树可独立构建；阶段3文件不在此树"
+    }
+  },
+  "sustained": {
+    "quads": 96,
+    "period_effective_ce": 16,
+    "tail_intervals": 31,
+    "input_span_ce": 496,
+    "commit_span_ce": 496,
+    "lag_start_end": [
+      167,
+      167
+    ],
+    "global_used_start_end": [
+      10,
+      10
+    ],
+    "scope": "有限同屏quad、同纹理tile热负载；不是任意纹理或整帧吞吐"
+  },
+  "selected_changes": [
+    "I自然返回直接写Normal/UV/Basic银行；删除13字导出和后半八行再收集",
+    "T算术排空与旧quad退休分离；固定head/next读取，元数据随同步payload读提前捕获",
+    "全局flush完整排空；计算叶本地检查加注册跨模块fail-stop",
+    "Final两项旧态容量，BASE空队列直通，保留II2追赶能力"
+  ],
+  "rejected": {
+    "single_final_slot": "虽然过54MHz，box总拍增加16.64%、实际MC增加14.70%，未采用；失败源只在target。"
+  },
+  "qualification": {
+    "vertex_bytes_unchanged": true,
+    "precision_unchanged": true,
+    "whole_CPU_GPU_fit": false,
+    "board": false
+  },
+  "nonsemantic_adoption": {
+    "ip/gpu-v2/src/system/pixel/vliw_backend_final.v": {
+      "frozen_raw_sha256": "71e1acfb5bf73be04a3acc5b05a9cf62816ecfc32833035a22d7e1f27137e554",
+      "adopted_canonical_lf_sha256": "4de1cb72adb1cea467768296dbc60752eb3ea3a04c9e0c86bf6bc278125b6a88",
+      "change": "仅清除三条空行上的尾随空格；所有非空白token逐字节相同，原始试验和拟合收据不改写。"
+    }
+  }
+}

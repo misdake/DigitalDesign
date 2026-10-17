@@ -126,7 +126,7 @@ def main():
             whitespace_only.append(dict(path=rel,upstream_sha256=h,adopted_sha256=adopted[rel]))
     for rel in ['scene/oracle.py','reference.py','math/model.py']:
         text=(reference/rel).read_text()
-        assert 'E:/worktrees' not in text and 'E:\\worktrees' not in text
+        assert not re.search(r'(?i)\b[A-Z]:[/\\]', text), 'external absolute path dependency'
     result=dict(status='pass',auditor_sha256=SHA(__file__),source_final_sha256=SHA(OUT/'source-final.json'),
         frozen_files=frozen['files'],full_integer_replay=full_replay,
         fixed_16CE=dict(quads=96,mode='portable',window_intervals=31,window_CE=496,interval_range=intervals,

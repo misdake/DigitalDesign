@@ -22,7 +22,15 @@ def main():
     assert top, 'Export the composition top first'
     normalized = output.with_name(output.name + '-input.v')
     assert not normalized.exists()
-    normalized.write_text(text[:top.start(1)] + 'gpu_v2_postquad' + text[top.end(1):])
+    normalized_text = text[:top.start(1)] + 'gpu_v2_postquad' + text[top.end(1):]
+    # The retained probe parser expects whitespace after input/output. Without
+    # this lexical normalization it silently omits compact vector declarations.
+    normalized_text = re.sub(r'\b(input|output)(?=\[)', r'\1 ', normalized_text)
+    normalized.write_text(normalized_text)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'postquad_ii4'))
+    from wrapper import wrapper
+    _, boundary = wrapper(normalized_text)
+    assert boundary['input_bits'] > 300 and boundary['output_bits'] > 100, 'Incomplete physical boundary'
     fit = Path(__file__).resolve().parents[1] / 'postquad_ii4/fit.py'
     with output.with_name(output.name + '.log').open('w') as log:
         result = subprocess.run([sys.executable, str(fit), str(normalized), str(output), str(args.placement)],

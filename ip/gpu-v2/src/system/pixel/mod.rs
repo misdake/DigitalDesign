@@ -112,3 +112,6 @@ impl Default for Tick {
 pub mod quad_authority_model;
 
 pub mod direct_lod;
+
+pub mod vliw_backend;
+pub mod vliw_quad_pool;

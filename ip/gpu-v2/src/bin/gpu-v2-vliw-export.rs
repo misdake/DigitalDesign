@@ -8,7 +8,7 @@ use gpu_v2::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() < 3 {
-        return Err("OUTPUT direct-lod [portable]".into());
+        return Err("OUTPUT direct-lod|backend|full|frontend [portable]".into());
     }
     let portable = args.iter().skip(3).any(|s| s == "portable");
     let backend = if portable {
@@ -30,6 +30,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let source = match args[2].as_str() {
         "direct-lod" => direct_lod::verilog_selected(&slots, surface, backend)?,
+        "backend" => {
+            gpu_v2::system::pixel::vliw_backend::verilog_selected(&slots, surface, backend)?
+        }
+        "full" => gpu_v2::system::vliw::verilog(&slots, surface, backend)?,
+        "frontend" => gpu_v2::frontend::vliw::verilog(portable),
         _ => return Err("unknown VLIW profile".into()),
     };
     let path = std::path::Path::new(&args[1]);

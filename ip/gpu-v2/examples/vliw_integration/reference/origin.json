@@ -46,10 +46,10 @@
     "near_crossing_triangles"
   ],
   "adopted_source_sha256": {
-    "reference.py": "3af9a31fff2e78a55786385cd0ef3598913b23c8720aad25683fb0eb3ba2db8a",
-    "uv-inputs.json": "f85650fc680cda5077f2bb4a48d0b8f7988182bf04e2f3c54fe4ca791952b8b8",
-    "math/model.py": "b772c954e761bf67cc974d7724641dcd94f846b4d4e2798972cccaccceb094a0",
-    "scene/oracle.py": "c88ea6b278b9a67fabd4224a022bc3b06a0e858770ee0b5e747dd847b6a0e147"
+    "reference.py": "b4a4f3d3b01ce4092fff5c8565100cc91d43a392c013f66ad9a53bda7c8aff09",
+    "uv-inputs.json": "dc7c08caa32a3b6c1bf59bef8d6ced1d7b367fea049f3a1f326c892ecd792f5b",
+    "math/model.py": "d75d8da82520e88c0c11a2ee6c764e9d2f36d7011a4ed247802a2b82fa35d980",
+    "scene/oracle.py": "77b35ad87252a0c26e2ff5e6fdc869788c15116408b730bd7c9ec2c8bc9cad2d"
   },
-  "adoption_note": "reference.py only trims extra EOF whitespace; source_sha256 retains original upstream bytes; adopted_source_sha256 binds repository bytes"
+  "adoption_note": "Reference text uses repository LF newlines; reference.py also trims extra EOF whitespace. source_sha256 retains original upstream bytes; adopted_source_sha256 binds repository bytes."
 }

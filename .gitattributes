@@ -10,3 +10,6 @@ ip/gpu-v2/examples/geometry_reference/interpolator_ii4.v -text -whitespace
 ip/gpu-v2/examples/geometry_reference/setup_addressmin.v -text -whitespace
 ip/gpu-v2/examples/geometry_reference/cases.json -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
 ip/gpu-v2/examples/geometry_reference/cases/** -text -whitespace
+
+# VLIW source identities are checked as raw bytes against the adoption manifests.
+ip/gpu-v2/src/frontend/vliw/** -text -whitespace
