@@ -132,6 +132,11 @@ wire install = !reset && !flush && !restart && core_pop && !core_error && fill_p
     core_address == next_word({10'b0, fill_tag}, 2'd1);
 wire touch = !reset && !flush && core_pop && btc_response && first_btc_word;
 wire [BTC_INDEX_BITS-1:0] touch_entry = install ? victim_entry : response_entry;
+// Every ordinary core pop has matched both stream ownership and the
+// downstream head. One successor therefore advances both cursors; restart
+// uses that same increment only when it actually consumes the first word.
+wire [31:0] core_successor = next_word(core_address, 2'd1);
+wire [31:0] memory_successor = next_word(memory_address, 2'd1);
 integer update_index;
 always @(posedge clk) begin
     if (reset) begin
@@ -197,13 +202,13 @@ always @(posedge clk) begin
             if (core_request_valid)
                 downstream_head_offset <= flush ? core_address[15:0] : memory_address[15:0];
             if (core_request_valid) begin
-                expected_core_address <= next_word(core_address, core_pop ? 2'd1 : 2'd0);
+                expected_core_address <= core_pop ? core_successor : core_address;
                 if (flush) next_memory_address <= core_address;
-                else next_memory_address <= next_word(memory_address, memory_request_fire ? 2'd1 : 2'd0);
+                else next_memory_address <= memory_request_fire ? memory_successor : memory_address;
             end
         end else begin
-            if (core_pop) expected_core_address <= next_word(expected_core_address, 2'd1);
-            if (queue_pop || bypass_pop) downstream_head_offset <= downstream_head_offset + 1'b1;
+            if (core_pop) expected_core_address <= core_successor;
+            if (queue_pop || bypass_pop) downstream_head_offset <= core_successor[15:0];
             if (queue_pop) queue_head <= queue_head + 1'b1;
             if (enqueue_response) begin
                 queue_data[queue_tail] <= memory_read_data;
@@ -215,7 +220,7 @@ always @(posedge clk) begin
                 2'b01: queue_count <= queue_count - 1'b1;
                 default: queue_count <= queue_count;
             endcase
-            if (memory_request_fire) next_memory_address <= next_word(memory_address, 2'd1);
+            if (memory_request_fire) next_memory_address <= memory_successor;
         end
         if (memory_response_fire) begin
             metadata_current[metadata_head] <= 0;

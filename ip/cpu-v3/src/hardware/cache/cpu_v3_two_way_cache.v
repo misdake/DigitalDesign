@@ -44,30 +44,32 @@ reg [31:0] pending_address = 0;
 reg [15:0] pending_write_data = 0;
 reg [2:0] refill_beat = 0;
 reg pending_way = 0;
-reg [15:0] refill_response_data = 0;
+// A miss owns the already-free final response slot. Capture the requested
+// word there as its beat arrives, but publish valid only after all four
+// error-free beats. A later error replaces the speculative payload with zero.
 reg [15:0] response_data = 0;
 reg response_error = 0;
 reg response_valid = 0;
 reg refill_discard = 0;
-// Valid and victim bits live in a RAM16 leaf (asynchronous read, synchronous
-// write, one set per access). invalidate_all cannot
-// clear RAM in one cycle: it starts a 64-set sweep that clears both ways in
-// parallel. New lookups are blocked through cpu_request_ready while the sweep
-// (or the invalidate pulse) is active, which preserves the all-invalid
-// semantics of the old flip-flop clear.
+// Tags, validity and the way-zero victim bit share one synchronous metadata
+// DPB. Its two ports read the two ways alongside the data lookup. Sweep
+// writes hold both old Q values; one pending-lookup bit records whether its
+// set has since been cleared, preserving lookup behavior under backpressure.
 reg sweep_active = 0;
 reg [5:0] sweep_set = 0;
-wire way_0_valid_read;
-wire way_1_valid_read;
-wire victim_read;
+reg lookup_invalidated = 0;
+wire [15:0] meta0, meta1;
+wire way_0_valid_read = meta0[12] && !lookup_invalidated;
+wire way_1_valid_read = meta1[12] && !lookup_invalidated;
+wire victim_read = meta0[14];
 
 wire pending_address_valid = pending_address[31:22] == 0;
 
 wire [5:0] pending_set = pending_address[9:4];
 wire [11:0] pending_tag = pending_address[21:10];
 wire [3:0] pending_word = pending_address[3:0];
-wire [11:0] way_0_tag_read_data;
-wire [11:0] way_1_tag_read_data;
+wire [11:0] way_0_tag_read_data = meta0[11:0];
+wire [11:0] way_1_tag_read_data = meta1[11:0];
 wire [5:0] cache_lookup_set;
 wire invalidating = invalidate_all || sweep_active;
 // The sweep blocks new requests through cpu_request_ready, so hit
@@ -83,42 +85,20 @@ wire selected_victim = !way_0_valid_read ? 1'b0 :
 wire refill_commit = state == ST_LINE_RECEIVE && memory_response_valid &&
                         !memory_error && refill_beat == 3 &&
                         !refill_discard && !invalidating;
-wire tag_write_enable = refill_commit;
-// Single valid-array write port: the sweep has priority; otherwise the
-// line-request state clears the victim way and a refill commit installs it.
-// The victim is invalid from the first request cycle, which still precedes the
-// first refill data beat, so the clear does not need the request handshake.
-// Gating the clear on `memory_request_ready` measured as 128 flip-flops plus
-// 419 LUT for the valid arrays instead of twelve RAM16 cells: both caches
-// instantiate this same leaf, and only the instance whose write enable stays
-// off that shared input keeps RAM16 inference.
-wire valid_write_enable = !sweep_active &&
-    (refill_commit || state == ST_LINE_REQUEST);
-
-__CACHE_VALID__ u_valid (
-    .clk(clk),
-    .clear_enable(sweep_active),
-    .clear_set(sweep_set),
-    .write_enable(valid_write_enable),
-    .write_way(pending_way),
-    .write_set(pending_set),
-    .write_value(refill_commit),
-    .victim_write_enable(refill_commit),
-    .victim_write_value(!pending_way),
-    .read_set(pending_set),
-    .way_0_valid(way_0_valid_read),
-    .way_1_valid(way_1_valid_read),
-    .victim(victim_read)
-);
-
-__CACHE_TAGS__ u_tags (
-    .clk(clk),
-    .write_enable(tag_write_enable),
-    .write_way(pending_way),
-    .address(cache_lookup_set),
-    .write_data(pending_tag),
-    .way_0_read_data(way_0_tag_read_data),
-    .way_1_read_data(way_1_tag_read_data)
+wire invalidate_victim = state == ST_LINE_REQUEST;
+wire meta_write0 = sweep_active || refill_commit || (invalidate_victim && !pending_way);
+wire meta_write1 = sweep_active || (pending_way && (refill_commit || invalidate_victim));
+wire [5:0] meta_write_set = sweep_active ? sweep_set : pending_set;
+wire [15:0] install_word = {1'b0,!pending_way,1'b0,1'b1,pending_tag};
+wire [15:0] meta_word0 = sweep_active ? 16'b0 : refill_commit ?
+    (pending_way ? (meta0 & 16'hbfff) : install_word) : (meta0 & 16'hefff);
+wire [15:0] meta_word1 = sweep_active ? 16'b0 : refill_commit ?
+    install_word : (meta1 & 16'hefff);
+__CACHE_METADATA__ u_metadata (
+    .clk(clk), .read_set(cache_lookup_set),
+    .write_0(meta_write0), .write_set_0(meta_write_set), .write_data_0(meta_word0),
+    .write_1(meta_write1), .write_set_1(meta_write_set), .write_data_1(meta_word1),
+    .q0(meta0), .q1(meta1)
 );
 
 wire response_space = !response_valid || cpu_response_ready;
@@ -193,6 +173,7 @@ always @(posedge clk) begin
         refill_discard <= 0;
         sweep_active <= 0;
         sweep_set <= 0;
+        lookup_invalidated <= 0;
     end else begin
         if (response_valid && cpu_response_ready)
             response_valid <= 0;
@@ -204,6 +185,8 @@ always @(posedge clk) begin
             if (sweep_set == 63)
                 sweep_active <= 0;
         end
+        if (sweep_active && sweep_set == pending_set)
+            lookup_invalidated <= 1;
         case (state)
             ST_IDLE: begin
                 if (lookup_valid && response_space) begin
@@ -259,17 +242,12 @@ always @(posedge clk) begin
                 end else begin
                     if (refill_beat == pending_word[3:2])
                         case (pending_word[1:0])
-                            0: refill_response_data <= memory_read_data[15:0];
-                            1: refill_response_data <= memory_read_data[31:16];
-                            2: refill_response_data <= memory_read_data[47:32];
-                            default: refill_response_data <= memory_read_data[63:48];
+                            0: response_data <= memory_read_data[15:0];
+                            1: response_data <= memory_read_data[31:16];
+                            2: response_data <= memory_read_data[47:32];
+                            default: response_data <= memory_read_data[63:48];
                         endcase
                     if (refill_beat == 3) begin
-                    response_data <= pending_word[3:2] == 3 ?
-                        (pending_word[1:0] == 0 ? memory_read_data[15:0] :
-                         pending_word[1:0] == 1 ? memory_read_data[31:16] :
-                         pending_word[1:0] == 2 ? memory_read_data[47:32] : memory_read_data[63:48]) :
-                        refill_response_data;
                     response_error <= 0;
                     response_valid <= 1;
                     state <= ST_IDLE;
@@ -281,6 +259,7 @@ always @(posedge clk) begin
         endcase
 
         if (accept_cpu_request) begin
+            lookup_invalidated <= 0;
             pending_write <= cpu_write;
             pending_address <= cpu_address;
             pending_write_data <= cpu_write_data;

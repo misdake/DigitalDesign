@@ -70,16 +70,17 @@ software-controlled invalidation preserve precise handoff semantics.
 The I-cache and D-cache are independently instantiated 4-KiB, two-way caches with 64 sets and 16
 16-bit words per line. Each cache uses two 1024x16 true-dual-port data BSRAMs split strictly by word
 parity. Way zero and way one occupy the lower and upper halves of both parity banks. Each cache
-also uses one 1024x16 DPB for its two 64x12 tag arrays; D-cache valid, dirty and victim
-metadata occupy spare bits in that same DPB. Both tag reads launch alongside the data
+also uses one 1024x16 DPB for its two 64x12 tag arrays; both caches' valid and victim
+metadata, plus D-cache dirty, occupy spare bits in that same DPB. Both metadata reads launch alongside the data
 reads in the existing lookup stage. Normal-mode metadata writes hold the selected port's output.
 D-cache write-back assembles its address in the existing capture stage after the tag read.
 The I-cache accepts one resident read per cycle without backpressure. The D-cache serializes
 request acceptance, lookup and response consumption, accepting a resident request every three
-cycles with a continuously ready sink. The I-cache stores valid and victim bits in twelve
-explicit `RAM16SDP1` cells with asynchronous reads. The D-cache synchronously reads and
-updates complete metadata words through its two DPB ports, with the victim bit stored in
-way zero. The registered pending way is invalidated when its line request starts.
+cycles with a continuously ready sink. Both caches synchronously read and update
+complete metadata words through their two DPB ports, with the victim bit in way
+zero. I-cache sweep writes hold old Q; one pending-lookup bit records that its set
+has been cleared, preserving invalidation under response backpressure. The
+registered pending way is invalidated when its line request starts.
 Because the metadata RAM cannot clear in one cycle, a global invalidate or reset clears one set of both ways
 per cycle and blocks lookups for the 64-set sweep. The D-cache additionally drives a hold so the core
 does not issue requests while its reset or error-scrub sweep runs.
@@ -299,21 +300,31 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The selected CPU now time-shares its existing two-stage signed-36 multiplier
-between integer multiply, ordinary FPU products, range reduction and LUT
-interpolation. The integer and interpolation narrow multipliers are removed.
-Integer MUL/MULI and FPU MUL/VMUL/DOT timings are unchanged; RCP, RSQRT and
-SIN/COS/SINCOS add one special-function beat with unchanged numeric results.
-The owner tags, abort behavior and exact schedules are specified in
-[hardware-architecture.md](../../../ip/cpu-v3/docs/hardware-architecture.md).
+The 2026-10-17 CPU/cache batch starts at `03cd09e10ede4f905a1e0dd03cfd0814e4f5e558`.
+I-cache metadata moves into its existing tag DPB,
+refill reuses the final response slot, fetch cursors share successor computation,
+and the FPU ALU shares arithmetic and integer-half rounding. Cache capacity,
+associativity, CPU-side width, precision and enabled-edge schedules are retained.
 
-The table below preserves the preceding storage/execution checkpoint, before
-this additional multiplier sharing. Qualified shared-wide source and the actual
-main export match; core and system co-simulation, bounded mixed-owner/hold/abort
-replay and documentation checks qualify the change. No new post-commit resource
-or benchmark record is generated for this adoption, as requested. The
-[optimization record](cpu-v3-optimization-record.md#2026-10-11-shared-cpu-wide-multiplier)
-describes the source and validation boundary.
+| Matched pre-commit CPU-system fit | Base `03cd09e` | Selected batch |
+| --- | ---: | ---: |
+| Logic | 8,308 | 8,161 |
+| RAM16 / Logic FF / CLS | 32 / 3,277 / 5,475 | 20 / 3,279 / 5,418 |
+| BSRAM / MULT36X36 | 11 / 1 | 11 / 1 |
+| CPU fitted Fmax | 55.685 MHz | 56.120 MHz |
+
+Both use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C, identical
+CST/SDC and placement/routing options. CPU same-clock setup/hold has no violated
+endpoints. External SDRAM-output timing is excluded from this batch's acceptance
+at the user's direction; the unchanged strict audit still reports it in the raw
+logs. No constraints or SDRAM implementation were changed to suppress it.
+These fits cover the CPU system and inactive GPU shell, not complete GPU v2.
+The source-bound reports, rejected candidates and validation are in
+[`target/cpu-cache-area-20261017/report.md`](../../../target/cpu-cache-area-20261017/report.md).
+This table records the source-bound pre-commit comparison; subsequent committed
+builds and workload runs have separate project ledger evidence. The
+[record](cpu-v3-optimization-record.md#2026-10-17-cpu-and-cache-area-reduction)
+describes the retained structure and verification boundary. No new board result is claimed.
 
 ## Earlier storage and product-issuer checkpoint
 

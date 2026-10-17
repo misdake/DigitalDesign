@@ -298,41 +298,6 @@ impl Module for CpuV3CacheTagRam {
     }
 }
 
-/// Synchronous two-way tag lookup sharing one true-dual-port BSRAM.
-struct CpuV3CacheTagBsram;
-
-impl HardwareIdentity for CpuV3CacheTagBsram {
-    const TARGET_RESOURCE_LEAF: bool = true;
-    fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3CacheTagBsram").namespace(["components", "cpu", "cpu_v3"])
-    }
-}
-
-impl Module for CpuV3CacheTagBsram {
-    type Input = CpuV3CacheTagRamInput;
-    type Output = CpuV3CacheTagRamOutput;
-    type EmuState = ();
-    const USES_MAIN_CLOCK: bool = true;
-    const EMU_AVAILABLE: bool = false;
-    fn target_resources() -> Vec<TargetResourceRequest> {
-        vec![TargetResourceRequest::new(BsramBlocks::new(1))]
-    }
-    fn execute_emu(
-        _state: &mut Self::EmuState,
-        _circuit: &mut CircuitWires,
-        _input: &Self::Input,
-        _output: &Self::Output,
-    ) {
-        panic!("synchronous tag BSRAM is verified through the cache cycle model")
-    }
-    fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_cache_tag_bsram.v").to_string())
-    }
-    fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_cache_tag_bsram_tb.v").to_string())
-    }
-}
-
 /// RAM16 valid (2 x 64) and victim (64) arrays with asynchronous read, a
 /// synchronous single-way write port, and a sweep clear that takes priority
 /// and clears both ways of one set per cycle. Way zero initializes from the
@@ -640,7 +605,6 @@ pub struct CpuV3TwoWayCacheState {
     lookup_valid: bool,
     pending: Pending,
     refill_beat: u8,
-    refill_response_data: u16,
     response_data: u16,
     response_error: bool,
     response_valid: bool,
@@ -665,7 +629,6 @@ impl Default for CpuV3TwoWayCacheState {
             lookup_valid: false,
             pending: Pending::default(),
             refill_beat: 0,
-            refill_response_data: 0,
             response_data: 0,
             response_error: false,
             response_valid: false,
@@ -798,12 +761,16 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
         // following edge clears both ways of one set. The RAM write port
         // gives the sweep priority over any line-request/commit write, which
         // is therefore dropped while a sweep runs.
+        // The RAM clear enable sees the old sweep_active even when a new
+        // invalidate restarts the cursor on this edge.
+        if state.sweep_active {
+            next.valid[0][state.sweep_set as usize] = false;
+            next.valid[1][state.sweep_set as usize] = false;
+        }
         if input.invalidate_all {
             next.sweep_active = true;
             next.sweep_set = 0;
         } else if state.sweep_active {
-            next.valid[0][state.sweep_set as usize] = false;
-            next.valid[1][state.sweep_set as usize] = false;
             next.sweep_set = state.sweep_set + 1;
             if state.sweep_set == 63 {
                 next.sweep_active = false;
@@ -877,7 +844,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                             }
                         }
                         if first_word <= word && word < first_word + 4 {
-                            next.refill_response_data =
+                            next.response_data =
                                 (input.memory_read_data >> (16 * (word - first_word))) as u16;
                         }
                         if state.refill_beat as usize + 1 == CPU_V3_CACHE_MEMORY_BEATS {
@@ -890,11 +857,6 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                                 next.tags[state.pending_way][set] = tag;
                                 next.victim[set] = 1 - state.pending_way;
                             }
-                            next.response_data = if first_word <= word && word < first_word + 4 {
-                                (input.memory_read_data >> (16 * (word - first_word))) as u16
-                            } else {
-                                state.refill_response_data
-                            };
                             next.response_error = false;
                             next.response_valid = true;
                             next.state = State::Idle;
@@ -947,12 +909,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                     &CpuV3DualPortCacheData::<I>::verilog_identity().module_name(),
                 )
                 .replace(
-                    "__CACHE_TAGS__",
-                    &CpuV3CacheTagBsram::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__CACHE_VALID__",
-                    &CpuV3CacheValidRamWithImage::<I>::verilog_identity().module_name(),
+                    "__CACHE_METADATA__",
+                    &CpuV3CacheMetadataWithImage::<I>::verilog_identity().module_name(),
                 ),
         )
     }
@@ -960,8 +918,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<CpuV3DualPortCacheData<I>>("u_data_banks"),
-            VerilogDependency::new::<CpuV3CacheTagBsram>("u_tags"),
-            VerilogDependency::new::<CpuV3CacheValidRamWithImage<I>>("u_valid"),
+            VerilogDependency::new::<CpuV3CacheMetadataWithImage<I>>("u_metadata"),
         ]
     }
 
@@ -1035,17 +992,27 @@ struct CpuV3DataCacheMetadataOutput {
 }
 
 /// One synchronous record per way/set: tag, valid, dirty and the way-zero victim bit.
-struct CpuV3DataCacheMetadata;
+struct CpuV3CacheMetadataWithImage<I>(PhantomData<I>);
+type CpuV3DataCacheMetadata = CpuV3CacheMetadataWithImage<ZeroBsramImage>;
 
-impl HardwareIdentity for CpuV3DataCacheMetadata {
+impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3CacheMetadataWithImage<I> {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3DataCacheMetadata").namespace(["components", "cpu", "cpu_v3"])
+        let identity = VerilogIdentity::new("CpuV3DataCacheMetadata").namespace([
+            "components",
+            "cpu",
+            "cpu_v3",
+        ]);
+        if I::INITIAL_VALID == 0 {
+            identity
+        } else {
+            identity.symbol("IMAGE", format!("v{:016x}", I::INITIAL_VALID))
+        }
     }
 }
 
-impl Module for CpuV3DataCacheMetadata {
+impl<I: CpuV3CacheImage> Module for CpuV3CacheMetadataWithImage<I> {
     type Input = CpuV3DataCacheMetadataInput;
     type Output = CpuV3DataCacheMetadataOutput;
     type EmuState = ();
@@ -1067,11 +1034,52 @@ impl Module for CpuV3DataCacheMetadata {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_data_cache_metadata.v").to_string())
+        // A 16-bit DPB word is addressed by ADA[13:4]; the low four pins
+        // select write lanes rather than adding word-address bits. Way zero
+        // occupies words 0..63 and holds image validity in bit 12.
+        let mut initial_params = String::new();
+        for chunk in 0..4 {
+            let mut words = [0u16; 16];
+            for (lane, word) in words.iter_mut().enumerate() {
+                if I::INITIAL_VALID & (1u64 << (chunk * 16 + lane)) != 0 {
+                    *word = 0x1000;
+                }
+            }
+            if words.iter().any(|&word| word != 0) {
+                let hex: String = words
+                    .iter()
+                    .rev()
+                    .map(|word| format!("{word:04x}"))
+                    .collect();
+                write!(initial_params, ",.INIT_RAM_{chunk:02X}(256'h{hex})").unwrap();
+            }
+        }
+        Some(
+            include_str!("cpu_v3_data_cache_metadata.v")
+                .replace(
+                    "CpuV3DataCacheMetadata",
+                    &Self::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__INITIAL_VALID__",
+                    &format!("64'h{:016x}", I::INITIAL_VALID),
+                )
+                .replace("__INITIAL_PARAMS__", &initial_params),
+        )
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_data_cache_metadata_tb.v").to_string())
+        Some(
+            include_str!("cpu_v3_data_cache_metadata_tb.v")
+                .replace(
+                    "CpuV3DataCacheMetadata",
+                    &Self::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__INITIAL_VALID__",
+                    &format!("64'h{:016x}", I::INITIAL_VALID),
+                ),
+        )
     }
 }
 
@@ -2116,7 +2124,7 @@ mod tests {
     }
 
     #[test]
-    fn export_claims_two_data_bsram_one_tag_bsram_and_valid_ssram() {
+    fn export_claims_two_data_bsrams_and_one_packed_metadata_bsram() {
         let project = VerilogProject::generate::<CpuV3TwoWayCache>().unwrap();
         let resources: Vec<_> = project
             .resource_claims
@@ -2137,7 +2145,7 @@ mod tests {
             .filter(|resource| resource.kind == ResourceKind::SsramBit)
             .map(|resource| resource.amount)
             .sum();
-        assert_eq!(ssram, CPU_V3_CACHE_VALID_PHYSICAL_BITS as u64);
+        assert_eq!(ssram, 0);
     }
 
     #[test]
@@ -2186,17 +2194,42 @@ mod tests {
     #[test]
     #[ignore = "official Gowin DPB model for synchronous D-cache metadata"]
     fn verify_data_cache_metadata_with_vendor_dpb() {
-        let directory =
-            std::env::temp_dir().join(format!("cache-metadata-vendor-{}", std::process::id()));
+        verify_metadata_with_vendor::<ZeroBsramImage>();
+    }
+
+    struct SparseMetadataImage;
+    impl BsramImage<16> for SparseMetadataImage {
+        const WORDS: [u64; 1024] = [0; 1024];
+    }
+    impl CpuV3CacheImage for SparseMetadataImage {
+        const INITIAL_VALID: u64 = 0x915a_c342_f0e1_268d;
+    }
+
+    #[test]
+    #[ignore = "sparse metadata initialization in portable and official DPB models"]
+    fn verify_preloaded_metadata_with_vendor_dpb() {
+        digital_design_hardware::verify_verilog_with_iverilog::<
+            CpuV3CacheMetadataWithImage<SparseMetadataImage>,
+        >()
+        .unwrap();
+        verify_metadata_with_vendor::<SparseMetadataImage>();
+    }
+
+    fn verify_metadata_with_vendor<I: CpuV3CacheImage>() {
+        let directory = std::env::temp_dir().join(format!(
+            "cache-metadata-vendor-{}-{:016x}",
+            std::process::id(),
+            I::INITIAL_VALID
+        ));
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             directory.join("metadata.v"),
-            CpuV3DataCacheMetadata::verilog_source().unwrap(),
+            CpuV3CacheMetadataWithImage::<I>::verilog_source().unwrap(),
         )
         .unwrap();
         std::fs::write(
             directory.join("tb.v"),
-            CpuV3DataCacheMetadata::verilog_testbench().unwrap(),
+            CpuV3CacheMetadataWithImage::<I>::verilog_testbench().unwrap(),
         )
         .unwrap();
         let prim = std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").unwrap())
@@ -2283,6 +2316,7 @@ mod tests {
         invalidate_all: bool,
         trace: &mut Vec<(CycleIn, CycleOut)>,
     ) -> CycleOut {
+        assert!(trace.len() < 20_000, "cache co-simulation cycle limit");
         let memory_response = memory.beats.pop_front();
         let (cpu_write, cpu_address, cpu_write_data) = cpu_request.unwrap_or((false, 0, 0));
         input.drive(
@@ -2674,16 +2708,18 @@ mod tests {
         let mut s = String::new();
         s.push_str(&CpuV3DualPortCacheData::<ZeroBsramImage>::verilog_source().unwrap());
         s.push('\n');
-        s.push_str(&CpuV3CacheTagBsram::verilog_source().unwrap());
-        s.push('\n');
-        s.push_str(&CpuV3CacheValidRam::verilog_source().unwrap());
+        s.push_str(&CpuV3DataCacheMetadata::verilog_source().unwrap());
         s.push('\n');
         s.push_str(&CpuV3TwoWayCache::verilog_source().unwrap());
         s
     }
 
     fn run_iverilog_cosim(sources: &str, tb: &str) -> Vec<CycleOut> {
-        let directory = std::env::temp_dir().join(format!("cache-cosim-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!(
+            "cache-cosim-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("modules.v"), sources).unwrap();
         std::fs::write(directory.join("tb.v"), tb).unwrap();
@@ -2748,6 +2784,98 @@ mod tests {
         assert_eq!(rtl.len(), trace.len(), "cycle count mismatch");
         for (i, ((_, expected), actual)) in trace.iter().zip(&rtl).enumerate() {
             assert_eq!(*actual, *expected, "emu/RTL output mismatch at cycle {i}");
+        }
+    }
+
+    #[test]
+    #[ignore = "held lookups across metadata sweep writes and completion"]
+    fn held_lookup_matches_rtl_across_invalidate_sweep() {
+        for (hold, restart_at) in [
+            (0, None),
+            (1, None),
+            (17, None),
+            (18, None),
+            (19, None),
+            (63, None),
+            (64, None),
+            (66, None),
+            (80, None),
+            (20, Some(18)),
+            (66, Some(63)),
+            (80, Some(0)),
+        ] {
+            let (mut circuit, input, output) = fixture();
+            let mut memory = MemoryModel::new();
+            let mut trace = Vec::new();
+            cosim_read(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                0x123,
+                &mut trace,
+            );
+            // One completed response holds the slot while a second hit's
+            // lookup remains outstanding. Sweep set 18 across that lookup.
+            for address in [0x123, 0x124] {
+                let out = cosim_step(
+                    &mut circuit,
+                    &input,
+                    &output,
+                    &mut memory,
+                    Some((false, address, 0)),
+                    false,
+                    false,
+                    &mut trace,
+                );
+                assert!(out.cpu_request_ready);
+            }
+            cosim_step(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                None,
+                false,
+                true,
+                &mut trace,
+            );
+            for cycle in 0..hold {
+                cosim_step(
+                    &mut circuit,
+                    &input,
+                    &output,
+                    &mut memory,
+                    None,
+                    false,
+                    restart_at == Some(cycle),
+                    &mut trace,
+                );
+            }
+            let mut responses = 0;
+            for _ in 0..256 {
+                let out = cosim_step(
+                    &mut circuit,
+                    &input,
+                    &output,
+                    &mut memory,
+                    None,
+                    true,
+                    false,
+                    &mut trace,
+                );
+                responses += usize::from(out.cpu_response_valid);
+                if responses == 2 {
+                    break;
+                }
+            }
+            assert_eq!(responses, 2, "bounded completion hold={hold}");
+            let tb = generate_cosim_tb(&trace, &CpuV3TwoWayCache::verilog_identity().module_name());
+            let rtl = run_iverilog_cosim(&cache_cosim_sources(), &tb);
+            assert_eq!(rtl.len(), trace.len());
+            for (cycle, ((_, expected), actual)) in trace.iter().zip(&rtl).enumerate() {
+                assert_eq!(actual, expected, "hold={hold} cycle={cycle}");
+            }
         }
     }
 }

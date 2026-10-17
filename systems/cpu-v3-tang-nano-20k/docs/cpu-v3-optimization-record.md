@@ -1726,3 +1726,59 @@ claim. No new board, generic performance or connected GPU result is implied.
 The user explicitly waived post-commit resource and benchmark recording for this
 batch. Earlier measured tables remain historical checkpoints; no new ledger
 numbers are manufactured from the reused candidate evidence.
+
+## 2026-10-17: CPU and cache area reduction
+
+The I-cache producer, metadata layout, lookup consumer, invalidation sweep and
+refill publication path are changed together. Its existing tag DPB now owns tag,
+valid and replacement state; the separate selected RAM16 valid/victim owner and
+private tag-only leaf are removed. Both ways still read alongside data in the
+existing lookup stage. Normal-mode sweep writes hold old Q, so one local bit
+records when the pending lookup's set was actually cleared, including restarted
+sweeps and long response backpressure. Sparse preloaded validity is encoded into
+the physical DPB words and verified before writes against the official vendor model.
+
+The requested refill halfword now lands directly in the final I-cache response
+slot. Publication still waits for the complete error-free line; a later fault
+replaces any captured word with zero. All sixteen words, every error prefix,
+refill gaps and held responses are checked through the public read-only boundary.
+
+The fetch producer/consumer cursors share successors using accepted-address
+equivalence; BTC replay remains separate from ordinary queue consumption. The
+FPU scalar/vector lane selects arithmetic operands before one common wrapping
+add/subtract path and shares integer-half rounding. These changes retain the
+original independent cursor and numeric models, cache geometry, 16-bit CPU port,
+retirement behavior and scalar/vector ALU execution calendar.
+
+Matched complete-wrapper measurements select the combination. A 32-bit FST
+capture-RAM candidate changes capture storage and the complete halfword drain,
+but its lower FF count increases whole-system Logic; it is not adopted. That
+result applies to that 32-bit organization. Two further complete candidates
+change the synchronous FPR read/capture calendar, native RAM width and consumer
+address order together: capture `2*len` halfwords into four RAM16 cells, then
+drain in that same order. One selects the current FPR while held; the other
+captures the high half of old Q alongside the low-half write, holding that high
+half across a paused consumer. Both remove the four wide FF registers and the
+centralized register/half selection network. Complete capture precedes retirement,
+so later FPR overwrites and memory backpressure cannot alter the payload. Each
+adds one FST capture edge per source register.
+
+The initially smaller halfword fit omitted its hold cost and is explicitly
+unqualified. Both complete pause-correct wrappers were compared against the
+selected non-FST combination: neither reduces its whole-system Logic. Favorable
+FF/CLS or clock results remain separate tradeoffs and do not override this
+batch's Logic objective. Neither remains in active source. The appended-bit
+carry spelling is also absent because it does not reduce the mapped ALU count.
+
+The retained calendar-preserving batch passes isolated CPU/system co-simulation
+and matches every exported per-program metric in the archived 22-program base.
+FST candidates have separate bounded qualification, including holds on every
+capture half and a blocked drain while all source FPRs are overwritten. Their
+frozen-suite results and capture-cycle cost remain in the source-bound report;
+they are not attributed to the selected implementation. Full workspace tests and
+affected-crate strict lint pass. Whole-workspace strict lint still reports
+pre-existing issues in untouched GPU tests. Current fitted values, external SDRAM
+acceptance scope and the exact evidence entry are in
+[architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
+The matched comparison is pre-commit evidence; committed builds and workload runs
+are recorded separately by the project commit workflow. No new board result is claimed.

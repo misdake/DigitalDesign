@@ -31,18 +31,23 @@ wire signed [31:0] b_signed;
 assign a_signed = a;
 assign b_signed = b;
 
-// Arithmetic primitives. Verilog keeps these at 32 bits, so the results wrap.
-wire [31:0] sum = a + b;
-wire [31:0] diff = a - b;
-wire [31:0] neg_a = 32'h00000000 - a;
+// Only one ALU result is consumed per lane. ADD, SUB, MIN/MAX, CMP and
+// NEG/ABS share one wrapping adder; comparison uses the difference sign only
+// when operand signs agree, so signed overflow cannot corrupt ordering.
+wire negate = op == 4'h5 || op == 4'h6;
+wire subtract = op != 4'h0;
+wire [31:0] arithmetic_left = negate ? 32'b0 : a;
+wire [31:0] arithmetic_right = negate ? a : b;
+wire [31:0] arithmetic_rhs = arithmetic_right ^ {32{subtract}};
+wire [31:0] arithmetic_result = arithmetic_left + arithmetic_rhs + subtract;
 
 // |a|: negation also wraps, so for 0x80000000 (the most negative value) the
 // absolute value is itself, exactly as specified.
-wire [31:0] abs_a = a_signed[31] ? neg_a : a;
+wire [31:0] abs_a = a_signed[31] ? arithmetic_result : a;
 
-wire signed_lt = (a_signed < b_signed);
+wire signed_lt = a[31] != b[31] ? a[31] : arithmetic_result[31];
 wire signed_eq = (a_signed == b_signed);
-wire signed_gt = (a_signed > b_signed);
+wire signed_gt = !signed_lt && !signed_eq;
 wire [31:0] min_ab = signed_lt ? a : b;
 wire [31:0] max_ab = signed_gt ? a : b;
 
@@ -52,19 +57,13 @@ wire frac_nonzero = |a[15:0];
 // positive and negative two's-complement values alike.
 wire [31:0] floor_a = {a[31:16], 16'h0000};
 
-// CEIL: the floor, plus one unit in the last place when a fractional part
-// remains. An exact integer input (fraction zero) is returned unchanged.
-wire [31:0] ceil_a =
-    floor_a + (frac_nonzero ? 32'h00010000 : 32'h00000000);
-
-// ROUND: round-half-up, frozen rule. Adding 0x00008000 (one half unit) and then
-// flooring makes an exact half always round upward.
-wire [31:0] round_shifted = a + 32'h00008000;
-wire [31:0] round_a = {round_shifted[31:16], 16'h0000};
-
-// TRUNC: toward zero. Non-negative inputs use the floor; negative inputs use
-// the ceil, which equals the floor for exact integers and floor + 1 otherwise.
-wire [31:0] trunc_a = a_signed[31] ? ceil_a : floor_a;
+// These consumers discard the fractional half. A single 16-bit increment
+// produces CEIL, half-up ROUND and toward-zero TRUNC directly, including wrap
+// at the signed integer boundary; no full-width rounded temporary is needed.
+wire integer_increment = op == 4'h9 ? a[15] :
+    (frac_nonzero && (op == 4'h8 || a[31]));
+wire [15:0] rounded_integer = a[31:16] + integer_increment;
+wire [31:0] rounded_a = {rounded_integer, 16'h0000};
 
 assign flag_lt = signed_lt;
 assign flag_eq = signed_eq;
@@ -74,16 +73,16 @@ assign flag_gt = signed_gt;
 // unknown op can never propagate X into result.
 always @(*) begin
     case (op)
-        4'h0: result = sum;
-        4'h1: result = diff;
+        4'h0: result = arithmetic_result;
+        4'h1: result = arithmetic_result;
         4'h3: result = min_ab;
         4'h4: result = max_ab;
         4'h5: result = abs_a;
-        4'h6: result = neg_a;
+        4'h6: result = arithmetic_result;
         4'h7: result = floor_a;
-        4'h8: result = ceil_a;
-        4'h9: result = round_a;
-        4'hA: result = trunc_a;
+        4'h8: result = rounded_a;
+        4'h9: result = rounded_a;
+        4'hA: result = rounded_a;
         4'hB: result = 32'h00000000;
         4'hF: result = a;
         default: result = 32'h00000000;

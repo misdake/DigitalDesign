@@ -35,6 +35,10 @@ consumes an ordinary queued or bypassed word. Restart initializes it to the targ
 detection. Every restart clears queue occupancy and marks old requests stale
 before a late response can enter the new stream. BTC replay does not advance the
 downstream head; BTC tags retain full physical targets across ordinary redirects.
+An accepted ordinary response proves that the core address equals the downstream
+head. That address's successor therefore advances both the expected-core cursor
+and downstream head; restart and downstream request bookkeeping reuse explicit
+successor values without changing the acceptance calendar.
 
 The queue also contains a fully associative resolved-target BTC, defaulting to
 four entries of two 16-bit instruction words (not necessarily two instructions).
@@ -79,6 +83,12 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
 | Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables; range reduction and delta/residue interpolation use the shared CPU/FPU pipe, with two LUT-base metadata stages and direct result writeback | RCP/RSQRT `T0..T4`; SINCOS `T0..T8` dual, `T0..T7` single; owns both RF read ports while active |
 
+Within the FPU ALU, ADD/SUB, MIN/MAX, CMP and NEG/ABS share one wrapping
+32-bit add/subtract path. Signed comparison checks differing operand signs
+before using the subtraction sign. CEIL, half-up ROUND and TRUNC only need the
+integer half, so they share one 16-bit increment followed by sixteen zero bits.
+No execution or vector-lane stage is added, and the defined wrap boundaries remain.
+
 All six integer shift forms share one 17-bit signed right-shift barrel.
 Register/immediate decode selects the four-bit count before the barrel. Left shift
 reverses the 16-bit operand and result using wiring and muxes; logical right shift
@@ -121,17 +131,20 @@ The read-only I-cache can start its next lookup while a resident read resolves,
 allowing one ordered hit per cycle without backpressure. The write-back D-cache
 serializes acceptance, lookup and response consumption. Stores allocate on a
 miss; replacing a dirty victim first writes its complete line.
-Each cache uses a third DPB for tags. The I-cache keeps valid/victim bits in twelve
-RAM16 cells. The D-cache packs tag, valid and dirty into each way's 16-bit metadata
-word, with the set's victim bit in way zero. Lookup reads both metadata words
-synchronously alongside data; stores, refill and maintenance share their update
-ports. There is no D-cache dirty bitmap or separate valid/victim RAM.
+Each cache uses a third DPB for complete metadata. Both pack tag and valid into
+each way's 16-bit word, with the set's victim bit in way zero; D-cache also stores
+dirty in that word. Lookup reads both metadata words synchronously alongside
+data; stores, refill and maintenance share their update ports. Neither selected
+cache has a separate valid/victim RAM or dirty bitmap. During an I-cache sweep,
+normal-mode writes hold the pending lookup's old metadata Q. One bit records
+when that lookup's set has been cleared, so a backpressured lookup cannot reuse
+the old validity after the sweep, including when another invalidate restarts it.
 A global invalidate, reset, or memory-error scrub clears one set of both ways per
 cycle, and the system holds the CPU for the D-cache sweep.
 A read or write-allocate miss issues one aligned line request; the system arbiter
 streams four ordered 64-bit beats at 54 MHz. Each beat writes four words directly
 through the four BSRAM ports, and tag/valid state commits only on the fourth
-error-free beat. A CPU load miss captures its requested halfword directly into
+error-free beat. Both caches capture a read miss's requested halfword directly into
 its final response register when that beat arrives, without another refill-only
 16-bit payload slot. Response-valid remains low until the complete error-free
 line is committed. A later refill error clears this payload and publishes an

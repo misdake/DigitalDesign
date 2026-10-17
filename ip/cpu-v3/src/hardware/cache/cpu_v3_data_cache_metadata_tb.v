@@ -5,6 +5,7 @@ reg write_0=0,write_1=0;
 reg [15:0] write_data_0=0,write_data_1=0;
 wire [15:0] q0,q1;
 CpuV3DataCacheMetadata dut(.*);
+localparam [63:0] EXPECTED_INITIAL_VALID = __INITIAL_VALID__;
 always #5 clk=~clk;
 reg [15:0] golden0[0:63],golden1[0:63];
 reg [15:0] expected0=0,expected1=0;
@@ -23,7 +24,11 @@ task edge_and_check;begin
    cycles,read_set,q0,q1,expected0,expected1);
 end endtask
 initial begin
- for(i=0;i<64;i=i+1)begin golden0[i]=0;golden1[i]=0;end
+ for(i=0;i<64;i=i+1)begin golden0[i]={3'b0,EXPECTED_INITIAL_VALID[i],12'b0};golden1[i]=0;end
+ // Read before writing to check physical INIT placement in the vendor model.
+ for(i=0;i<64;i=i+1)begin
+  @(negedge clk);read_set=i;edge_and_check();
+ end
  // Every set/bit, independent port read/write addresses, and simultaneous
  // way-one install plus way-zero victim RMW are covered by distinct words.
  for(i=0;i<2048;i=i+1)begin
