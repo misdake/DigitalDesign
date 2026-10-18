@@ -300,18 +300,18 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-10-17 FPU port/commit batch starts at `1a5e0a7872126001eaa8909901ec3b96111fd2bc`.
-ALU and product instructions share the physical RF read calendar and destination
-context; ALU and DOTSTORE share one commit slot, while product and special returns
-remain direct. The preceding I-cache/fetch/ALU savings are part of this baseline.
-Cache geometry, precision, retirement and enabled-edge schedules are retained.
+The 2026-10-18 BTC payload batch starts at `e5f769069b68670549663f74220e6c14529269c5`.
+The two fill acceptances write an unreferenced spare pair in 16-bit distributed
+RAM. Complete installation exchanges the spare/victim pointers atomically;
+replay reads the final pair/halfword. Exact LRU uses relative-order bits.
+Capacity, full physical tags, stale-response handling and fetch schedules are retained.
 
-| Matched pre-commit CPU-system fit | Base `1a5e0a7` | Selected batch |
+| Matched pre-commit CPU-system fit | Base `e5f7690` | Selected batch |
 | --- | ---: | ---: |
-| Logic | 8,161 | 8,077 |
-| RAM16 / Logic FF / CLS | 20 / 3,279 / 5,418 | 20 / 3,207 / 5,358 |
+| Logic | 8,077 | 8,058 |
+| RAM16 / Logic FF / CLS | 20 / 3,207 / 5,358 | 24 / 3,076 / 5,259 |
 | BSRAM / MULT36X36 | 11 / 1 | 11 / 1 |
-| CPU fitted Fmax | 56.120 MHz | 57.841 MHz |
+| CPU fitted Fmax | 57.841 MHz | 57.609 MHz |
 
 Both use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C, identical
 CST/SDC and placement/routing options. CPU same-clock setup/hold has no violated
@@ -320,11 +320,13 @@ at the user's direction; the unchanged strict audit still reports it in the raw
 logs. No constraints or SDRAM implementation were changed to suppress it.
 These fits cover the CPU system and inactive GPU shell, not complete GPU v2.
 The source-bound reports, rejected candidates and validation are in
-[`target/fpu-port-writeback-20261017/report.md`](../../../target/fpu-port-writeback-20261017/report.md).
+[`target/cpu-btc-payload-20261018/report.md`](../../../target/cpu-btc-payload-20261018/report.md).
 This table records the source-bound pre-commit comparison; subsequent committed
 builds and workload runs have separate project ledger evidence. The
-[record](cpu-v3-optimization-record.md#2026-10-17-shared-fpu-port-calendar-and-commit)
-describes the retained structure and verification boundary. No new board result is claimed.
+[record](cpu-v3-optimization-record.md#2026-10-18-btc-spare-pair-payload-storage)
+describes the retained structure and verification boundary. Earlier FPU port/commit
+evidence remains in [its report](../../../target/fpu-port-writeback-20261017/report.md).
+No new board result is claimed.
 
 ## Earlier storage and product-issuer checkpoint
 

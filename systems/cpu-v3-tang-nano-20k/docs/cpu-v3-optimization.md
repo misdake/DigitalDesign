@@ -12,6 +12,8 @@ generated outside this document.
 
 ## Completed milestones
 
+- 2026-10-18 — BTC payload fills write a spare RAM pair directly and install it by atomic pointer exchange; replay reads the final halfword and exact LRU uses relative-order bits. Capacity and the fetch calendar are unchanged. See the [record](cpu-v3-optimization-record.md#2026-10-18-btc-spare-pair-payload-storage).
+
 - 2026-10-17 — FPU ALU/product read scheduling, destination context and ALU/DOTSTORE commit storage are unified without changing write beats; the strict mixed-owner replay also corrects old-state RF commit timing in the value model. See the [record](cpu-v3-optimization-record.md#2026-10-17-shared-fpu-port-calendar-and-commit).
 
 - 2026-10-17 — I-cache metadata/response ownership and shared fetch/FPU arithmetic reduce CPU-system Logic without changing the execution calendar; complete FST alternatives are separately priced and retained as experiments. See the [record](cpu-v3-optimization-record.md#2026-10-17-cpu-and-cache-area-reduction).

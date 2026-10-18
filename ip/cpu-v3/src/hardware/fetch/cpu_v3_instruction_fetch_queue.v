@@ -22,6 +22,8 @@ localparam [2:0] QUEUE_DEPTH = 4;
 localparam integer BTC_ENTRIES = __BTC_ENTRIES__;
 localparam integer BTC_STORAGE = BTC_ENTRIES == 0 ? 1 : BTC_ENTRIES;
 localparam integer BTC_INDEX_BITS = BTC_ENTRIES == 8 ? 3 : 2;
+localparam integer PAIR_BITS = BTC_ENTRIES == 8 ? 4 : 3;
+localparam integer PAYLOAD_WORDS = BTC_ENTRIES == 8 ? 32 : 16;
 
 reg stream_valid = 0;
 reg [31:0] expected_core_address = 0;
@@ -49,14 +51,39 @@ reg [2:0] metadata_count = 0;
 
 reg [BTC_STORAGE-1:0] btc_valid = 0;
 (* syn_ramstyle = "registers" *) reg [21:0] btc_tag [0:BTC_STORAGE-1];
-(* syn_ramstyle = "registers" *) reg [15:0] btc_word0 [0:BTC_STORAGE-1];
-(* syn_ramstyle = "registers" *) reg [15:0] btc_word1 [0:BTC_STORAGE-1];
-(* syn_ramstyle = "registers" *) reg [BTC_INDEX_BITS-1:0] btc_rank [0:BTC_STORAGE-1];
+// One spare pair is not referenced by any complete BTC entry. First/second
+// words write its two addresses separately, and installation swaps ownership
+// only after the error-free second word. Partial fills cannot damage old pairs.
+(* syn_ramstyle = "distributed_ram" *) reg [15:0] btc_payload [0:PAYLOAD_WORDS-1];
+(* syn_ramstyle = "registers" *) reg [PAIR_BITS-1:0] entry_pair [0:BTC_STORAGE-1];
+reg [PAIR_BITS-1:0] spare_pair = BTC_ENTRIES;
+// Exact LRU stores one relative-order bit for each unordered entry pair.
+// Touching an entry updates only its incident bits; no rank mux/add/saturation.
+localparam integer AGE_BITS = BTC_ENTRIES > 1 ? BTC_ENTRIES*(BTC_ENTRIES-1)/2 : 1;
+reg [AGE_BITS-1:0] btc_newer = 0;
+wire [BTC_STORAGE-1:0] btc_oldest;
+function integer relation_index;
+    input integer left_entry, right_entry;
+    begin
+        relation_index = left_entry*(2*BTC_ENTRIES-left_entry-1)/2 + right_entry-left_entry-1;
+    end
+endfunction
+genvar age_row, age_column;
+generate for (age_row=0;age_row<BTC_STORAGE;age_row=age_row+1) begin: age_rows
+    wire [BTC_STORAGE-1:0] others_newer;
+    for (age_column=0;age_column<BTC_STORAGE;age_column=age_column+1) begin: age_columns
+        if (age_row==age_column) assign others_newer[age_column]=1'b1;
+        else if (age_row<age_column)
+            assign others_newer[age_column]=!btc_newer[relation_index(age_row,age_column)];
+        else assign others_newer[age_column]=btc_newer[relation_index(age_column,age_row)];
+    end
+    assign btc_oldest[age_row]=&others_newer;
+end endgenerate
 reg [BTC_INDEX_BITS-1:0] replay_entry = 0;
 reg [1:0] replay_remaining = 0;
 reg [1:0] fill_phase = 0;
 reg [21:0] fill_tag = 0;
-reg [15:0] fill_word = 0;
+
 
 function [31:0] next_word;
     input [31:0] address;
@@ -84,7 +111,7 @@ always @* begin
             btc_hit = 1;
             hit_entry = lookup_index[BTC_INDEX_BITS-1:0];
         end
-        if (btc_rank[lookup_index] == BTC_ENTRIES - 1)
+        if (btc_oldest[lookup_index])
             victim_entry = lookup_index[BTC_INDEX_BITS-1:0];
     end
     // Lowest-numbered invalid slot first; do not evict on a partial fill.
@@ -109,9 +136,10 @@ wire queue_pop = core_pop && !btc_response && !response_bypass;
 wire bypass_pop = core_pop && response_bypass;
 wire [BTC_INDEX_BITS-1:0] response_entry = btc_hit ? hit_entry : replay_entry;
 wire first_btc_word = btc_hit || replay_remaining == 2;
+wire [PAIR_BITS:0] payload_read_address = {entry_pair[response_entry], !first_btc_word};
 assign core_request_ready = core_pop;
 assign core_read_data = btc_response ?
-    (first_btc_word ? btc_word0[response_entry] : btc_word1[response_entry]) :
+    btc_payload[payload_read_address] :
     (response_bypass ? memory_read_data : queue_data[queue_head]);
 assign core_error = btc_response ? 1'b0 :
     (response_bypass ? memory_error : queue_error[queue_head]);
@@ -130,6 +158,15 @@ wire enqueue_response = memory_response_fire && response_is_current && !flush &&
 
 wire install = !reset && !flush && !restart && core_pop && !core_error && fill_phase == 2 &&
     core_address == next_word({10'b0, fill_tag}, 2'd1);
+// Read and write use separate physical ports. The write address always names
+// the spare pair, so no visible entry can collide with an in-progress fill.
+wire payload_first_write = !reset && !flush && !restart && core_pop && !core_error &&
+    fill_phase == 1 && core_address == {10'b0, fill_tag};
+wire [PAIR_BITS:0] payload_write_address = {spare_pair, install};
+always @(posedge clk) begin
+    if (payload_first_write || install)
+        btc_payload[payload_write_address] <= core_read_data;
+end
 wire touch = !reset && !flush && core_pop && btc_response && first_btc_word;
 wire [BTC_INDEX_BITS-1:0] touch_entry = install ? victim_entry : response_entry;
 // Every ordinary core pop has matched both stream ownership and the
@@ -138,6 +175,8 @@ wire [BTC_INDEX_BITS-1:0] touch_entry = install ? victim_entry : response_entry;
 wire [31:0] core_successor = next_word(core_address, 2'd1);
 wire [31:0] memory_successor = next_word(memory_address, 2'd1);
 integer update_index;
+integer newer_index;
+integer reset_pair;
 always @(posedge clk) begin
     if (reset) begin
         stream_valid <= 0;
@@ -156,7 +195,9 @@ always @(posedge clk) begin
         replay_remaining <= 0;
         fill_phase <= 0;
         fill_tag <= 0;
-        fill_word <= 0;
+        spare_pair <= BTC_ENTRIES;
+        for (reset_pair = 0; reset_pair < BTC_STORAGE; reset_pair = reset_pair + 1)
+            entry_pair[reset_pair] <= reset_pair;
     end else begin
         if (flush) begin
             btc_valid <= 0;
@@ -172,22 +213,22 @@ always @(posedge clk) begin
                 if (btc_response) replay_remaining <= replay_remaining - 1'b1;
                 if (fill_phase != 0 && core_error) fill_phase <= 0;
                 else if (fill_phase == 1 && core_address == {10'b0, fill_tag}) begin
-                    fill_word <= core_read_data;
                     fill_phase <= 2;
                 end else if (install) fill_phase <= 0;
             end
             if (install) begin
                 btc_valid[victim_entry] <= 1;
                 btc_tag[victim_entry] <= fill_tag;
-                btc_word0[victim_entry] <= fill_word;
-                btc_word1[victim_entry] <= core_read_data;
+                entry_pair[victim_entry] <= spare_pair;
+                spare_pair <= entry_pair[victim_entry];
             end
             if (install || touch) begin
                 for (update_index = 0; update_index < BTC_ENTRIES; update_index = update_index + 1) begin
-                    if (update_index == touch_entry) btc_rank[update_index] <= 0;
-                    else if (btc_valid[update_index] && (install || btc_rank[update_index] < btc_rank[touch_entry])) begin
-                        if (btc_rank[update_index] != BTC_ENTRIES - 1)
-                            btc_rank[update_index] <= btc_rank[update_index] + 1'b1;
+                    for (newer_index=update_index+1;newer_index<BTC_ENTRIES;newer_index=newer_index+1) begin
+                        if (update_index==touch_entry)
+                            btc_newer[relation_index(update_index,newer_index)]<=1'b1;
+                        else if (newer_index==touch_entry)
+                            btc_newer[relation_index(update_index,newer_index)]<=1'b0;
                     end
                 end
             end

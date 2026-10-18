@@ -60,6 +60,18 @@ BTC and replay/fill state. Ordinary redirects retain complete entries. The BTC
 neither predicts a target nor adds memory traffic to complete a partial entry;
 software-controlled instruction coherency applies exactly as to the I-cache.
 
+The payload is one asynchronous-read, synchronous-write 16-bit distributed RAM.
+Each tag owns a physical pair through a small pointer; one additional pair is
+reserved for incomplete fills. The two successful words write that spare pair
+directly on their acceptance edges. Installing the second word swaps the spare
+and victim pointers atomically, so a partial fill never overwrites a visible
+entry. Replay selects the owned pair and halfword directly, without a first-word
+staging register or a separate two-word output mux. Reset clears validity and
+restores unique pair ownership; flush retains the pointer permutation while
+clearing validity. Exact LRU uses one relative-order bit per unordered entry
+pair, updated on the same install/first-word acceptance events as before. The
+independent cycle model retains its rank-based reference representation.
+
 `CPU_V3_BTC_ENTRIES=0|4|8` is a build-time environment setting, default 4.
 The CPU crate build script generates one constant used by both the Rust model
 and generated Verilog. Zero disables BTC storage/lookup for comparison while

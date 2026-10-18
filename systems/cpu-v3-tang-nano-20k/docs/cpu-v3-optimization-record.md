@@ -1813,3 +1813,31 @@ qualification boundary are linked from the current
 [architecture section](architecture.md#current-fitted-result-and-validation-boundary).
 The matched comparison is pre-commit evidence; committed builds and workload runs
 are recorded separately by the project commit workflow. No new board result is claimed.
+
+## 2026-10-18: BTC spare-pair payload storage
+
+The BTC fill producer, physical payload layout, installation ownership, replay
+addressing and replacement-state representation are changed together. A pending
+pair writes its two accepted words directly into an unreferenced spare pair in
+16-bit distributed RAM. The error-free second acceptance atomically exchanges
+the victim's pair pointer with the spare. Complete entries survive cancellation,
+errors and redirects during partial fills. Flush clears validity without breaking
+the ownership permutation; reset restores unique initial ownership.
+
+Replay addresses the selected pair/halfword directly. The former first-word
+staging register, payload FF banks and two-word final selector are removed.
+Exact LRU uses pairwise relative-order bits instead of arithmetic ranks, with
+the same invalid-first priority, installation and first-replay-word touch events.
+The existing rank-based cycle model remains an independent reference. BTC
+capacity, full physical tags, ordinary queue reservations, stale-response drain,
+PC wrap, warm replay/continuation timing and all external ports are unchanged.
+
+A complete packed-32-bit RAM candidate reduces FF but grows total Logic. A
+later direct ordinary-producer candidate reduces local logic but also grows
+the full-system footprint; neither is retained. The selected complete spare-pair
+chain is judged by the whole CPU-system fit, not the FF reduction or subtree
+LUT count. Its matched results and source identity are linked from the current
+[architecture section](architecture.md#current-fitted-result-and-validation-boundary).
+Expanded protocol replay checks repeated slot replacement, distinct halfwords,
+both replay holds, PC wrap and cancelled first-word fills against the independent
+model and frozen original RTL. No runtime clock increase or board result is claimed.

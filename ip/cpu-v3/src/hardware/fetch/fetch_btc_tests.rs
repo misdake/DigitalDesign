@@ -357,6 +357,56 @@ fn scenarios() -> Rig {
             address = next_word(address, 1);
         }
     }
+    if CPU_V3_BTC_ENTRIES != 0 {
+        // Every slot is replaced repeatedly with distinct low/high words.
+        // A first-word-only fill must leave all complete pairs untouched;
+        // hold both replay words while continuation requests/responses stall.
+        for round in 0..24_u32 {
+            r.invalidate();
+            r.version = (round as u16).wrapping_mul(0x1357);
+            let targets: Vec<u32> = (0..CPU_V3_BTC_ENTRIES)
+                .map(|i| {
+                    if i + 1 == CPU_V3_BTC_ENTRIES && round & 1 != 0 {
+                        0x3fffff
+                    } else {
+                        0x20000 + round * 0x800 + i as u32 * 16
+                    }
+                })
+                .collect();
+            for &target in &targets {
+                r.pair(target);
+            }
+            for &target in &targets {
+                for half in 0..2 {
+                    let address = next_word(target, half);
+                    for stall in 0..3 {
+                        let out = r.tick(Some(address), false, stall & 1 != 0, stall == 2, false);
+                        assert!(
+                            out.core_response_valid,
+                            "complete pair must replay during stalls"
+                        );
+                    }
+                    assert_eq!(r.fetch(address), 0);
+                }
+            }
+            let incomplete = 0x90000 + round * 16;
+            let installs = r.state.btc_statistics().installed;
+            r.fetch(incomplete);
+            assert_eq!(
+                r.fetch(targets[0]),
+                0,
+                "partial fill damaged the old victim"
+            );
+            r.fetch(next_word(targets[0], 1));
+            assert_eq!(r.state.btc_statistics().installed, installs);
+            r.pair(incomplete);
+            assert_eq!(
+                r.fetch(targets[0]),
+                0,
+                "atomic install evicted the wrong pair"
+            );
+        }
+    }
     r
 }
 
@@ -392,6 +442,13 @@ fn btc_protocol_matches_iverilog() {
     )
     .unwrap();
     std::fs::write(directory.join("tb.v"), tb).unwrap();
+    if let Ok(root) = std::env::var("CPU_V3_BTC_EVIDENCE") {
+        let evidence = std::path::Path::new(&root).join(format!("entries-{CPU_V3_BTC_ENTRIES}"));
+        std::fs::create_dir_all(&evidence).unwrap();
+        std::fs::copy(directory.join("dut.v"), evidence.join("dut.v")).unwrap();
+        std::fs::copy(directory.join("tb.v"), evidence.join("tb.v")).unwrap();
+        std::fs::write(evidence.join("cycles.txt"), rig.trace.len().to_string()).unwrap();
+    }
     let compile = std::process::Command::new(
         std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()),
     )
