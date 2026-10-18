@@ -17,8 +17,10 @@ reg pr=0;wire pub;wire[4:0]ps;wire[22:0]pb;reg[4:0]di=0;wire[22:0]dis,dhs,dns;wi
 reg br=0;reg[7:0]ba;wire bv,bcol;wire[23:0]bd;
 reg lr=0,sr=0;wire lvalid,llast,svalid,slast;wire[35:0]ldata,sdata;wire[2:0]lrow;wire[1:0]srow;wire[9:0]ldesc;wire[18:0]sdesc;
 reg retire=0,skip=0;reg[4:0]rid;wire empty,skipready;wire[4:0]rs;wire[5:0]used,prod,lp,sp;wire busy,fault;
+wire hint_valid;wire[8:0]hint_tile;
 gpu_v2_vliw_quad_pool dut(.clk(clk),.reset(reset),.front_ce(fc),.backend_ce(bc),.phase(phase),.draw_bank(bank),.draw_unlit(unlit),
  .quad_valid(qv),.quad_ready(qr),.quad_id(qid),.quad_x(qx),.quad_y(qy),.quad_rgb(rgb),.quad_end_valid(ev),.quad_end_id(eid),.quad_end_mask(emask),
+ .prefetch_valid(hint_valid),.prefetch_tile(hint_tile),
  .result_we(rw),.result_wa(ra),.result_wd(rd),.depth_event_valid(dv),.depth_event_pid(dpid),.depth_event_z16(dz),.depth_event_pass(dpass),
  .lod_valid(lv),.lod_id(lid),.lod_value(lod),.publish_ready(pr),.published(pub),.published_slot(ps),.published_begin(pb),
  .descriptor_issue_slot(di),.descriptor_issue(dis),.descriptor_head(dhs),.descriptor_head_tile(tile),.descriptor_next(dns),.descriptor_next_tile(nexttile),
@@ -60,7 +62,7 @@ begin
  ev=0;rw=0;dv=0;lv=0;
  for(j=0;j<sent;j=j+1)begin
   delta=ft-starts[j];
-  if(delta==14)begin ev=1;eid=j%8;emask=geom(j);end
+  if(delta==14)begin ev=1;eid=j%8;emask=geom(j);qx=x(j);qy=y(j);end
   if(delta==(RGB?15:50))begin lv=1;lid=j%8;lod=RGB?8'd0:level(j);end
   for(ln=0;ln<4;ln=ln+1)begin
    if(delta==13+4*ln)begin dv=1;dpid=((j%8)*4+ln);dz=zval(j,ln);dpass=pass(j,ln);end
@@ -87,6 +89,8 @@ begin
  end
 end endtask
 always @(posedge clk)if(!reset)begin
+ if(hint_valid!==(fc&&ev&&(|emask)))$fatal(1,"geometry hint validity");
+ if(hint_valid&&hint_tile!==((qy/8)*32+qx/8))$fatal(1,"geometry hint raw tile");
  if(fault||bcol)$fatal(1,"pool fault");
  if(lhold&&(!lvalid||{ldesc,lrow,llast,ldata}!==lh))$fatal(1,"Light hold changed");
  if(shold&&(!svalid||{sdesc,srow,slast,sdata}!==sh))$fatal(1,"Sample hold changed");
@@ -97,10 +101,10 @@ always @(posedge clk)if(!reset)begin
  b_pending=bc&&br;if(b_pending)begin b_expected=basic(retired,brow);brow=brow+1;end
  if(published>retired)begin
   if(dhs!==header(retired))$fatal(1,"head descriptor %0d %h %h",retired,dhs,header(retired));
-  if(tile!==((y(retired)/8)*25+x(retired)/8))$fatal(1,"head tile %0d",retired);
+  if(tile!==((y(retired)/8)*32+x(retired)/8))$fatal(1,"head raw tile %0d",retired);
   if(published>retired+1)begin
    if(dns!==header(retired+1))$fatal(1,"next descriptor %0d",retired+1);
-   if(nexttile!==((y(retired+1)/8)*25+x(retired+1)/8))$fatal(1,"next tile %0d",retired+1);
+   if(nexttile!==((y(retired+1)/8)*32+x(retired+1)/8))$fatal(1,"next raw tile %0d",retired+1);
   end
   addrq=retired+((di-retired%32+32)%32);if(dis!==header(addrq))$fatal(1,"issue descriptor");
  end

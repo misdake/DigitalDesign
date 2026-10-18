@@ -1,6 +1,6 @@
 # VLIW GPU 合体资格与资源判断
 
-当前实现是 `system::vliw_sdram::verilog` 导出的独立 GPU IP。四阶段关键证据分别保存在 `examples/vliw_integration/stage1-evidence.json` 至 [stage4-evidence.json](../examples/vliw_integration/stage4-evidence.json)；最后一份是当前采用点，前面的文件是对应阶段的冻结基线。完整生成物及失败实验留在忽略的任务目录，没有作为第二套实现入库。
+The selected independent GPU IP is exported by `system::vliw_sdram::verilog`; its current qualification is the [TDP framebuffer receipt](../examples/vliw_integration/framebuffer-tdp-evidence.json) and [implementation contract](framebuffer-tdp.md). `stage1-evidence.json` through [stage4-evidence.json](../examples/vliw_integration/stage4-evidence.json) retain their historical identities. The stage-4 breakdown and small scenes below are historical baselines, not measurements of the TDP implementation. Generated outputs and rejected experiments remain outside Git.
 
 ## 采用的结构
 
@@ -12,7 +12,7 @@ Final 用两项旧态容量切断输出 ACK 到输入信用的组合反馈，空
 
 生产者模式在全部旧返回完成后才可能随下一 T 的配置改变。CE 暂停冻结整套日历；24个活动槽、8个未发布槽和消费者退休规则不变。旧 G/N/W/L、标签、模式及完整发布条件留作非综合断言，逐物理沿核对。此池只服务闭合的固定顺序生产者，不再承诺任意缺失、乱序返回或提前换模式的运行时硬件诊断。没有改变 Vertex 或精度，也没有把必要工作转移到 T 或下游。
 
-## 最终拟合
+## Historical stage-4 fit
 
 数字和原始报告身份只以当前关键证据为准：同一完整边界、GW2AR-LV18QN88C8/I7、54MHz、两套布局，setup/hold 均为零。统计包含549位动态输入和六个输出观察寄存器，共555个探针 FF；不是无探针核心面积，也不是外部 SDRAM 控制器的时序资格。
 
@@ -38,7 +38,7 @@ Final 用两项旧态容量切断输出 ACK 到输入信用的组合反馈，空
 
 表外还有父级胶合、Light/Sample 结果银行与探针。BSRAM 总体为前半11、结果池4、Lighting3、Light/Sample结果2、采样包与系数2、纹理缓存7、ROP4；装填器和路由没有额外 payload FIFO。DSP 按物理原语计费，不能把组合体误当一个18×18槽。
 
-## 端到端性能
+## Historical stage-4 end-to-end performance
 
 box 使用单面九顶点八三角输入；兔子使用真实的一个64顶点、93三角 meshlet，变化 UV 来自程序生成。兔子压力把相同几何再按 RGB 解释，以覆盖旧结果尚存时换局部模式和真实 LESS 拒绝。它们不是完整兔子或完整场景的一帧，不能换算成整场景帧率。
 

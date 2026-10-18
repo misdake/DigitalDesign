@@ -4,6 +4,8 @@ use super::vliw_quad_pool as pool;
 use super::{direct_lod, quad_ingress};
 use crate::{framebuffer::ports::MaterializedSurface, texture::ports::Slot};
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "framebuffer_tdp.rs"]
+mod framebuffer_tdp;
 pub const MODULE: &str = "gpu_v2_vliw_backend";
 pub const SOURCE: &str = include_str!("vliw_backend.v");
 fn span(source: &str, name: &str) -> Result<(usize, usize), String> {
@@ -209,6 +211,36 @@ pub fn verilog_selected(
     // original shared Final reference remains unchanged for independent replay.
     let (final_a, final_b) = span(&source, "gpu_v2_final_ordered_two_cycle")?;
     source.replace_range(final_a..final_b, include_str!("vliw_backend_final.v"));
+    source = framebuffer_tdp::lower(source, surface, native)?;
+    patch(
+        &mut source,
+        top,
+        " wire basic_read,basic_valid,basic_collision;",
+        " wire framebuffer_prefetch_valid;wire[8:0]framebuffer_prefetch_tile;\n wire basic_read,basic_valid,basic_collision;",
+    )?;
+    patch(
+        &mut source,
+        top,
+        " gpu_v2_vliw_sampling front(",
+        " gpu_v2_vliw_sampling front(\n .prefetch_valid(framebuffer_prefetch_valid),.prefetch_tile(framebuffer_prefetch_tile),",
+    )?;
+    patch(
+        &mut source,
+        top,
+        " gpu_v2_pixel_framebuffer_sink sink(",
+        " gpu_v2_pixel_framebuffer_sink sink(\n .prefetch_valid(framebuffer_prefetch_valid),.prefetch_tile(framebuffer_prefetch_tile),.prefetch_abort(abort||stopped),",
+    )?;
+    // The held XY header already contains the complete raw tile identity.
+    // Remove its duplicate register and both load paths after old lowering.
+    patch(
+        &mut source,
+        top,
+        "reg[8:0]header_tile;",
+        "wire[8:0]header_tile={header[22:19],header[15:11]};",
+    )?;
+    patch(&mut source, top, "header_tile<=0;", "")?;
+    patch(&mut source, top, "header_tile<=head_tile;", "")?;
+    patch(&mut source, top, "header_tile<=next_tile;", "")?;
     let result = reachable(&source, MODULE)?;
     Ok(format!(
         "{}{}{}",

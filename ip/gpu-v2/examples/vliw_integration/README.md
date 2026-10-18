@@ -53,7 +53,7 @@ python ip/gpu-v2/examples/vliw_integration/audit_stage2.py --tag full-box-new --
 
 ## 当前采用点与维护测试
 
-[阶段4关键证据](stage4-evidence.json)是当前采用点；较早的阶段收据保持原始身份，不能把历史raw源SHA当成新文件SHA。入库身份使用LF规范化SHA，Vertex来源目录保留原始字节。完整边界与资源分布见[合体资格](../../docs/vliw-qualification.md)。
+The [TDP framebuffer receipt](framebuffer-tdp-evidence.json) is the current adoption point. [Stage 4](stage4-evidence.json) and earlier receipts retain their historical source identities. Tracked hashes normalize CRLF to LF; immutable Vertex sources keep their original bytes. See the [implementation contract](../../docs/framebuffer-tdp.md) for static II2 ROP, independent maintenance and simple prefetch, and [qualification](../../docs/vliw-qualification.md) for evidence boundaries and historical resource breakdowns.
 
 结果池只接正式固定日历：G14、N13/17/21/25、W14至28、RGB L15／UV L50。小后半回放曾使用人工提前返回，现已修正；新旧该微测的总拍不可直接比较。持续16CE供给和真实box／rabbit的原时间轴保持不变。
 

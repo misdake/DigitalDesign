@@ -6,6 +6,7 @@ module gpu_v2_vliw_quad_pool(
  input quad_valid,output quad_ready,output[2:0]quad_id,
  input[7:0]quad_x,input[6:0]quad_y,input quad_rgb,
  input quad_end_valid,input[2:0]quad_end_id,input[3:0]quad_end_mask,
+ output prefetch_valid,output[8:0]prefetch_tile,
  input result_we,input[6:0]result_wa,input[35:0]result_wd,
  input depth_event_valid,input[4:0]depth_event_pid,input[15:0]depth_event_z16,input depth_event_pass,
  input lod_valid,input[2:0]lod_id,input[7:0]lod_value,
@@ -51,17 +52,22 @@ module gpu_v2_vliw_quad_pool(
  wire mask_write=depth_event&&depth_pixel[1:0]==3;
  wire[18:0]header_write={quad_y,quad_x,1'b0,quad_rgb,draw_unlit,draw_bank};
  wire[18:0]issue_meta,light_meta,publish_meta;wire[2:0]sample_meta;
- wire[27:0]head_record,next_record;wire[18:0]head_meta=head_record[18:0],next_meta=next_record[18:0];
+ wire[18:0]head_meta,next_meta;
  wire[4:0]next_slot=retired[4:0]+5'd1;
- wire[8:0]tile_y={5'd0,quad_y[6:3]},tile_x={4'd0,quad_x[7:3]};
- wire[8:0]header_tile=(tile_y<<4)+(tile_y<<3)+tile_y+tile_x;
- assign descriptor_head_tile=head_record[27:19];assign descriptor_next_tile=next_record[27:19];
+ // Keep tile identity as {Y4,X5}; only B maintenance needs linear addresses.
+ wire[8:0]header_tile={quad_y[6:3],quad_x[7:3]};
+ // G14 precedes coordinate advance on this edge. Hints may be dropped by the
+ // cache, never allocate a pool owner, and have no ready path back to raster.
+ assign prefetch_valid=front_ce&&quad_end_valid&&(|quad_end_mask)&&!reset&&!fault;
+ assign prefetch_tile=header_tile;
+ assign descriptor_head_tile={head_meta[18:15],head_meta[11:7]};
+ assign descriptor_next_tile={next_meta[18:15],next_meta[11:7]};
  wire[3:0]issue_mask,head_mask,next_mask,light_mask,sample_mask,publish_mask;
  wire[7:0]sample_lod;
  // Every physical read view is paid, including independent publish/empty heads.
  gpu_v2_vliw_pool_meta #(.WIDTH(19)) mi(clk,reset,allocate,allocated[4:0],header_write,descriptor_issue_slot,issue_meta);
- gpu_v2_vliw_pool_meta #(.WIDTH(28)) mh(clk,reset,allocate,allocated[4:0],{header_tile,header_write},retired[4:0],head_record);
- gpu_v2_vliw_pool_meta #(.WIDTH(28)) mn(clk,reset,allocate,allocated[4:0],{header_tile,header_write},next_slot,next_record);
+ gpu_v2_vliw_pool_meta #(.WIDTH(19)) mh(clk,reset,allocate,allocated[4:0],header_write,retired[4:0],head_meta);
+ gpu_v2_vliw_pool_meta #(.WIDTH(19)) mn(clk,reset,allocate,allocated[4:0],header_write,next_slot,next_meta);
  gpu_v2_vliw_pool_meta #(.WIDTH(19)) ml(clk,reset,allocate,allocated[4:0],header_write,light_cursor[4:0],light_meta);
  gpu_v2_vliw_pool_meta #(.WIDTH(3)) ms(clk,reset,allocate,allocated[4:0],header_write[2:0],sample_cursor[4:0],sample_meta);
  gpu_v2_vliw_pool_meta #(.WIDTH(19)) mp(clk,reset,allocate,allocated[4:0],header_write,publish_ptr[4:0],publish_meta);

@@ -17,6 +17,19 @@ pub fn verilog(
 ) -> Result<String, String> {
     let source = super::vliw::verilog(slots, surface, backend)?;
     let mut source = super::vliw_memory::split_backend(&source)?;
+    // Bind only the enclosing geometry/backend module. A private cache may
+    // legitimately expose the same memory-port spelling as this wrapper.
+    let marker = "module gpu_v2_vliw(";
+    if source.matches(marker).count() != 1 {
+        return Err("VLIW full memory top declaration changed".into());
+    }
+    let start = source.find(marker).unwrap();
+    let end = start
+        + source[start..]
+            .find("endmodule")
+            .ok_or("VLIW full memory top endmodule")?
+        + 9;
+    let mut top = source[start..end].to_owned();
     for (a, b) in [
         ("module gpu_v2_vliw(", "module gpu_v2_vliw_three_port("),
         (
@@ -26,11 +39,12 @@ pub fn verilog(
         (OLD_PORTS, NEW_PORTS),
         (OLD_CONNECTIONS, NEW_CONNECTIONS),
     ] {
-        if source.matches(a).count() != 1 {
+        if top.matches(a).count() != 1 {
             return Err(format!("VLIW full memory binding changed: {a:?}"));
         }
-        source = source.replacen(a, b, 1);
+        top = top.replacen(a, b, 1);
     }
+    source.replace_range(start..end, &top);
     let mut result = include_str!("vliw_sdram.v").to_owned();
     result.push('\n');
     result.push_str(&source);

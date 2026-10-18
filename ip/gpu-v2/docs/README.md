@@ -10,6 +10,7 @@
 | [Triangle](triangle.md) | Oracle clipping/coverage and perspective fields; explicit single-albedo numerical/visual study and independent registered attribute recovery leaf |
 | [Texture](texture.md) | UNORM9 oracle/counted; universal periodic preparation, bounded cache/color and cycle-MC timed composition |
 | [Framebuffer](framebuffer.md) | Materialized ROP oracle, actual registered ROP/cache and bounded MC qualification |
+| [VLIW dual-port framebuffer](framebuffer-tdp.md) | Selected static II2 ROP, independent maintenance and lossy tile prefetch |
 | [Pixel composition](pixel-system.md) | Published row/SPSC foundation, two draw banks, pipelined Final, actual Lighting/Sampling and serial ROP/shared-MC qualification |
 | [Post-quad performance](postquad-performance.md) | Selected II4 post-interpolator RTL, retained Group48 references, independent cache scenarios and matched fit evidence |
 | [最终LOD直接接入](direct-lod.md) | 前半最终U5F3 LOD、无helper准备链、物理纹理边界和阶段验证入口 |
