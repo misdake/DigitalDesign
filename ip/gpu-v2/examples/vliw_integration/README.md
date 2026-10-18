@@ -68,3 +68,26 @@ python ip/gpu-v2/tests/vliw_backend_failstop.py --tag current-fault-new --mode b
 每次回放使用新tag，避免覆盖保留证据。`VLIW_POOL_TEST_TAG`可指定池矩阵输出目录。故障脚本另外支持texture与abort，全部回放都有有限沿上限和宿主超时。
 
 `audit_stage2.py` 默认只审指定合法回放；故障资格需要显式传入同源 `--error-contract` 聚合收据，不自动借用历史版本。`audit_stage1.py` 是在对应阶段冻结源上审查保留工件的历史工具，不是从空 `target` 开始生成资格的入口。
+
+## Complete-model replay
+
+`full_bunny.py` partitions every face of an official Stanford ASCII PLY exactly
+once into meshlets of at most 64V/96T. Model-wide position and normal generation
+preserves duplicate vertices. Actual SDRAM services load alternating V96/index
+pages, followed by backend drain and flush. The selected workload and evidence
+boundary are described in [complete bunny performance](../../docs/full-bunny-performance.md).
+Portable primitives are the default; this is not board qualification.
+
+```powershell
+python ip/gpu-v2/examples/vliw_integration/full_bunny.py --ply PATH/bun_zipper_res4.ply --tag complete-front-new --camera front --max-cycles 2000000 --sim-timeout 600
+```
+
+`--camera side|back` selects additional views. Extract the desired PLY from the
+official bunny archive and set explicit cycle/time limits. A 948-triangle result
+does not qualify the 69,451-triangle model. Use a fresh tag; generated data,
+netlists and frames stay in ignored target directories.
+
+The selected [preparation receipt](frontend-preparation-evidence.json) binds
+the current hardware and fit. Maintained component regressions are
+`cargo test --release -p gpu-v2 --test vliw_prepare_chain -- --ignored --nocapture`
+and `cargo test --release -p gpu-v2 --test vliw_light_tuple -- --ignored --nocapture`.

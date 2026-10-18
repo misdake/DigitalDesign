@@ -25,7 +25,7 @@ module gpu_v2_vliw_frontend(
  wire[1:0]sample_lane;wire run_enable,sample_valid,sample_cover,sample_anchor;
  wire[29:0]sample_h;wire[7:0]qx;wire[6:0]qy;wire[3:0]qm;
  wire s_busy,s_done;wire header_take;
- wire bound_valid,bound_empty,origin_we;wire[4:0]bound_xlo,bound_xhi;wire[3:0]bound_ylo,bound_yhi;wire[1:0]origin_edge;wire[29:0]origin_data;
+ wire bound_valid,bound_empty;wire[4:0]bound_xlo,bound_xhi;wire[3:0]bound_ylo,bound_yhi;
  reg active_config,table_window,packet_window;
  assign quad_valid=rqv&&run_enable;
  assign quad_x=qx;assign quad_y=qy;assign quad_end_mask=qm;
@@ -49,14 +49,14 @@ module gpu_v2_vliw_frontend(
   .emit_valid(emit_valid),.emit_addr(emit_addr),.emit_data(emit_data)
  );
  rc_raster raster(
- .bbox_done(bound_valid),.bbox_empty(bound_empty),.bbox_xlo(bound_xlo),.bbox_xhi(bound_xhi),.bbox_ylo(bound_ylo),.bbox_yhi(bound_yhi),.bbox_rf_we(origin_we),.bbox_edge(origin_edge),.bbox_rf_wd(origin_data),
+ .bbox_done(bound_valid),.bbox_empty(bound_empty),.bbox_xlo(bound_xlo),.bbox_xhi(bound_xhi),.bbox_ylo(bound_ylo),.bbox_yhi(bound_yhi),
   .clk(clk),.reset(reset),.ce(ce),.start(packet_valid),
   .geo_we(geo_we),.geo_wa(geo_wa),.geo_wd(geo_wd),
   .phase(phase),.run_enable(run_enable),.quad_valid(rqv),.quad_ready(rqr),.quad_x(qx),.quad_y(qy),.quad_mask(qm),
  .sample_valid(sample_valid),.sample_lane(sample_lane),.sample_cover(sample_cover),.sample_anchor(sample_anchor),.sample_h(sample_h),.quad_end_valid(quad_end_valid),
   .busy(raster_busy),.done(done_raster),.error(core_error));
  gpu_v2_vliw_interpolator interpolator(
- .bound_valid(bound_valid),.bound_empty(bound_empty),.bound_xlo(bound_xlo),.bound_xhi(bound_xhi),.bound_ylo(bound_ylo),.bound_yhi(bound_yhi),.origin_we(origin_we),.origin_edge(origin_edge),.origin_data(origin_data),
+ .bound_valid(bound_valid),.bound_empty(bound_empty),.bound_xlo(bound_xlo),.bound_xhi(bound_xhi),.bound_ylo(bound_ylo),.bound_yhi(bound_yhi),
   .clk(clk),.reset(reset),.ce(ce),.table_valid(table_valid&&allow_table),.table_ready(i_table_ready),.table_index(table_index),.table_data(table_data),
   .prepare_start(header_take),.descriptor(fd),.raw_valid(raw_word_valid),.raw_ready(bridge_input_ready),.raw_index(fwi),.raw_data(fwd),
   .geo_we(geo_we),.geo_wa(geo_wa),.geo_wd(geo_wd),

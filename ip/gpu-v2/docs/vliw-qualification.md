@@ -1,6 +1,37 @@
 # VLIW GPU 合体资格与资源判断
 
-The selected independent GPU IP is exported by `system::vliw_sdram::verilog`; its current qualification is the [TDP framebuffer receipt](../examples/vliw_integration/framebuffer-tdp-evidence.json) and [implementation contract](framebuffer-tdp.md). `stage1-evidence.json` through [stage4-evidence.json](../examples/vliw_integration/stage4-evidence.json) retain their historical identities. The stage-4 breakdown and small scenes below are historical baselines, not measurements of the TDP implementation. Generated outputs and rejected experiments remain outside Git.
+The selected independent GPU IP is exported by `system::vliw_sdram::verilog`.
+The [frontend preparation receipt](../examples/vliw_integration/frontend-preparation-evidence.json)
+binds the current sources, matched P0 fit and complete-model performance.
+The [TDP framebuffer receipt](../examples/vliw_integration/framebuffer-tdp-evidence.json)
+and [contract](framebuffer-tdp.md) retain the preceding cache implementation identity.
+Stage receipts and the tables below are historical measurements. Generated
+outputs and rejected experiments remain outside Git.
+
+## Selected preparation and Lighting dataflow
+
+R generates geometry-only step rows while I computes the bounding box. Once the
+box is available, R restores the aligned origin with its existing work/step
+ports and ALU, then generates only the root support rows it needs. I no longer
+computes or exports the origin; its old ROM loop, duplicate coordinate logic
+and R's external work-pool write selection have been removed. A rejected final
+CHECK ends scanning directly. Zero-bit origin slots still pay their control
+cycle; synchronous reads, retirement and CE stalls remain explicit.
+
+The selected version also retains exact 4/2/1 coefficient downshifts, four-bit
+Y tile search, and Normal/NDC memory Q ownership through Lighting acceptance.
+The latter removes the normal shadow and row-data mux while preserving the
+READ/X/CONTEXT/PIXEL calendar. Vertex, precision, RAM/DSP allocation and pixel
+order are unchanged. Later address-specialization and shared-work experiments
+are excluded from this selection.
+
+The receipt is a single-placement independent-GPU result, including probe FFs
+and the SDRAM transaction wrapper, excluding the physical MC, CPU and display.
+Scene cycles use the actual MC model and include startup through final flush.
+They are not board or CPU-plus-GPU qualification. The maintained origin smoke
+test is `vliw_prepare_chain`; the Lighting handshake regression is
+`vliw_light_tuple`. See [complete-model performance](full-bunny-performance.md)
+for workload details and reproduction.
 
 ## 采用的结构
 
@@ -40,7 +71,7 @@ Final 用两项旧态容量切断输出 ACK 到输入信用的组合反馈，空
 
 ## Historical stage-4 end-to-end performance
 
-box 使用单面九顶点八三角输入；兔子使用真实的一个64顶点、93三角 meshlet，变化 UV 来自程序生成。兔子压力把相同几何再按 RGB 解释，以覆盖旧结果尚存时换局部模式和真实 LESS 拒绝。它们不是完整兔子或完整场景的一帧，不能换算成整场景帧率。
+box 用例只提交 `box_x_minus` 一个面，九顶点八三角，覆盖24400个像素样本，约占400×240屏幕的25.4%；不是封闭box的六个面，也不是全屏填充。兔子使用真实的一个64顶点、93三角 meshlet，变化 UV 来自程序生成。兔子压力把相同几何再按 RGB 解释，以覆盖旧结果尚存时换局部模式和真实 LESS 拒绝。它们不是完整兔子或完整场景的一帧，不能换算成整场景帧率。完整400384字节内存比对包括未触碰区域，不表示全部屏幕像素经过着色。
 
 box 是填充／后半压力：6292个 quad，仅1个空 quad，结果池峰值24，满池有效沿31300。后半吞吐和内存服务确实回压前半，不能用 R/I 的16CE稳态替代总拍。兔子压力有418个 quad、108个空 quad、704个有效像素，峰值槽17且满池计数为零，不能把其长间隔归因于结果池容量不足；小任务的 V/T、准备、遍历和切包成本需要一起考虑。
 

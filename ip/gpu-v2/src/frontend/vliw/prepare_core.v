@@ -8,7 +8,6 @@ module rp_prepare_core(
  output c_re,output[3:0]c_ra,output c_we,output[3:0]c_wa,output[53:0]c_wd,
  output wide_valid,wide_asign,output reg active,done,
  output bound_valid,output bound_empty,output reg[4:0]xlo,xhi,output reg[3:0]ylo,yhi,
- output origin_we,output[1:0]origin_edge,output[29:0]origin_data,
  output attr_read,attr_send,output[1:0]attr_index,output attr_bank,output round_init
 );
  reg[5:0]pc;reg axis;reg[1:0]index,d_kind;reg sign0,nonzero0,empty;
@@ -28,11 +27,6 @@ module rp_prepare_core(
  wire[5:0]lower={1'b0,final_prefix}+6'd1;
  wire lower_empty=axis?lower>{2'd0,yhi}:lower>{1'b0,xhi};
  wire upper_empty=axis?{1'b0,final_prefix}<{2'd0,ylo}:{1'b0,final_prefix}<{1'b0,xlo};
- wire[4:0]difference=(xlo^xhi)|{1'b0,(ylo^yhi)};
- wire[3:0]root=difference[4]?9:difference[3]?8:difference[2]?7:difference[1]?6:difference[0]?5:4;
- reg[4:0]keep;
- always @*case(root)4:keep=31;5:keep=30;6:keep=28;7:keep=24;8:keep=16;default:keep=0;endcase
- wire[8:0]ox={(xlo&keep),4'd0},oy={({1'b0,ylo}&keep),4'd0};
  always @*begin
   next_pc=u[11:6];
   case(op)
@@ -47,9 +41,8 @@ module rp_prepare_core(
     if(search_bit!=0)next_pc=17;
     else if((d_kind==1&&lower_empty)||(d_kind==2&&upper_empty))next_pc=22;
    end
-   20:if(last_pair)begin if((|ox)||(|oy))next_pc=23;else next_pc=21;end
+   20:if(last_pair)next_pc=21;
    21:if(rgb)next_pc=40;
-   30:if(index==2)next_pc=21;
    39:if(last_n)next_pc=40;
    default:begin end
   endcase
@@ -76,9 +69,6 @@ module rp_prepare_core(
    4:br=geo_row(axis,j);
    5:br=4'd12+index;
    6:br=4'd12+j;
-   7:br=4'd6+index;
-   8:br=4'd9+index;
-   9:br=4'd12+index;
    10:br=geo_row(next_axis,next_index);
    11:br=6;
    12:br={1'b0,index,axis};
@@ -107,7 +97,8 @@ module rp_prepare_core(
  assign c_we=active&&cw!=0&&!reset;
  assign c_wa=cw==2?{3'd0,axis}:cw==3?{2'd0,1'b1,axis}:4'd11;
  assign c_wd=result;
- wire[2:0]factor_bit=op==16?3'd4:search_bit-1'b1;
+ // Y searches tiles 0..15; X needs 0..31. Endpoint checks remain unchanged.
+ wire[2:0]factor_bit=op==16?(axis?3'd3:3'd4):search_bit-1'b1;
  wire factor_positive=op==16||candidate_accept;
  reg[17:0]factor;
  always @*case(factor_bit)
@@ -118,10 +109,9 @@ module rp_prepare_core(
   default:begin if(factor_positive)factor=18'd32;else factor=-18'sd32;end
  endcase
  assign a_we=active&&aw!=0&&!reset;
- assign a_wd=aw==1?18'd30:aw==2?factor:op==31?18'h3ffff:op==23?{8'd0,ox,1'b0}:op==24?{8'd0,oy,1'b0}:18'd1;
+ assign a_wd=aw==1?18'd30:aw==2?factor:18'h3ffff;
  assign bound_valid=active&&(op==21||op==22)&&!reset;
  assign bound_empty=empty||op==22;
- assign origin_we=active&&op==30&&!reset;assign origin_edge=index;assign origin_data=result[29:0];
  assign attr_read=active&&op==2&&!reset;
  // C地址最高位在非C读指令中作为属性发布标志；42复用20的全部循环控制。
  assign attr_send=active&&u[23]&&!reset;
@@ -138,7 +128,7 @@ module rp_prepare_core(
     case(op)
      1:begin sign0<=bq[35];nonzero0<=bq!=0;end
      8:begin if(result==0)d_kind<=0;else if(result[53])d_kind<=2;else d_kind<=1;end
-     16:begin search_bit<=4;prefix<=0;delta_positive<=1;end
+     16:begin search_bit<=axis?3'd3:3'd4;prefix<=0;delta_positive<=1;end
      19:begin
       if(candidate_accept)prefix<=trial;delta_positive<=candidate_accept;
       if(search_bit!=0)search_bit<=search_bit-1'b1;
@@ -152,7 +142,6 @@ module rp_prepare_core(
      end
      20:begin axis<=!axis;if(axis)begin if(index==2)index<=0;else index<=index+1'b1;end end
      22:empty<=1;
-     30:if(index!=2)index<=index+1'b1;
      31:begin axis<=0;index<=0;end
      39:begin index<=next_index;axis<=next_axis;end
      40:begin active<=0;done<=1;end

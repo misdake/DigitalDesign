@@ -15,8 +15,9 @@ module gpu_v2_vliw_quad_pool(
  output[8:0]descriptor_head_tile,descriptor_next_tile,
  input basic_read,input[7:0]basic_read_address,output reg basic_return_valid,
  output[23:0]basic_return_data,output basic_collision,
- input light_ready,output light_valid,output[35:0]light_data,output[2:0]light_row,
- output light_last,output[9:0]light_descriptor,
+ input light_ready,output light_valid,light_context_valid,
+ output[35:0]light_normal,output[31:0]light_position,output reg[1:0]light_lane,
+ output[9:0]light_descriptor,
  input sample_ready,output sample_valid,output[35:0]sample_data,output[1:0]sample_row,
  output sample_last,output[18:0]sample_descriptor,
  input retire_valid,input[4:0]retire_id,input empty_skip,
@@ -90,8 +91,8 @@ module gpu_v2_vliw_quad_pool(
  wire skip_empty=backend_ce&&empty_skip&&empty_skip_ready;
  wire regular_retire=backend_ce&&retire_valid&&!reset&&!fault;
 
- localparam L_READ=0,L_X=1,L_NORMAL=2,L_POSITION=3;
- reg[1:0]light_state,light_lane,sample_lane;reg[15:0]ndc_x;reg sample_loaded;
+ localparam L_READ=0,L_X=1,L_CONTEXT=2,L_PIXEL=3;
+ reg[1:0]light_state,sample_lane;reg[15:0]ndc_x;reg sample_loaded;
  wire light_exists=light_cursor!=publish_ptr;
  wire light_skip=light_state==L_READ&&light_exists&&(light_mask==0||light_meta[1]);
  wire light_fetch=light_state==L_READ&&light_exists&&!light_skip;
@@ -102,12 +103,13 @@ module gpu_v2_vliw_quad_pool(
  gpu_v2_vliw_ndc_rom ndc(clk,reset,ndc_read,ndc_ra,ndc_q);
  gpu_v2_vliw_pool_ram normal_bank(clk,reset,normal_write,{2'd0,attr_pixel[6:0]},
   {result_wd[11:0],normal_xy},light_read,{2'd0,light_cursor[4:0],light_lane},normal_q);
- assign light_valid=!reset&&!fault&&(light_state==L_NORMAL||light_state==L_POSITION);
- assign light_row={light_lane,light_state==L_POSITION};
- assign light_last=light_row==7;
+ // NormalQ and Y-ROM Q remain owned by this pixel through its acceptance.
+ assign light_context_valid=!reset&&!fault&&(light_state==L_CONTEXT||light_state==L_PIXEL);
+ assign light_valid=!reset&&!fault&&light_state==L_PIXEL;
+ assign light_normal=normal_q;
  assign light_descriptor=light_descriptor_q;
  wire[15:0]ndc_y=light_lane[1]?ndc_q[31:16]:ndc_q[15:0];
- assign light_data=light_state==L_NORMAL?normal_q:{4'd0,ndc_y,ndc_x};
+ assign light_position={ndc_y,ndc_x};
  wire light_take=backend_ce&&light_valid&&light_ready;
 
  wire sample_exists=sample_cursor!=publish_ptr;
@@ -153,9 +155,9 @@ module gpu_v2_vliw_quad_pool(
     if(light_skip)light_cursor<=light_cursor+1'b1;
     else case(light_state)
      L_READ:if(light_fetch)light_state<=L_X;
-     L_X:begin ndc_x<=light_lane[0]?ndc_q[31:16]:ndc_q[15:0];light_state<=L_NORMAL;end
-     L_NORMAL:if(light_take)light_state<=L_POSITION;
-     L_POSITION:if(light_take)begin
+     L_X:begin ndc_x<=light_lane[0]?ndc_q[31:16]:ndc_q[15:0];light_state<=L_CONTEXT;end
+     L_CONTEXT:light_state<=L_PIXEL;
+     L_PIXEL:if(light_take)begin
       light_state<=L_READ;light_lane<=light_lane+1'b1;
       if(light_lane==3)light_cursor<=light_cursor+1'b1;
      end

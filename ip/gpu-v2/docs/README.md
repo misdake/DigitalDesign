@@ -17,6 +17,7 @@
 | [VLIW前后半合体](vliw-integration.md) | 当前几何与插值、唯一结果池、静态读写、发布／退休与验证边界 |
 | [VLIW主仓内存接入](vliw-memory.md) | 静态meshlet装填、固定页目的地址、三类主仓内存端口和阶段3关键证据 |
 | [VLIW合体资格](vliw-qualification.md) | 当前采用点、分层资源、总拍瓶颈、固定生产日历与整机预算边界 |
+| [Complete bunny performance](full-bunny-performance.md) | Selected 948-triangle model, overlapping SDRAM pages, front-camera timing and per-pixel validation |
 | [Experiment consolidation](experiment-review.md) | Retained implementations and replay tools, rejected alternatives and retired evidence boundaries |
 | [II4 qualification receipt](postquad-ii4-qualification.txt) | Current source identities, complete-chain resource/timing counts and bounded verification scope |
 | [Quad output protocol draft](quad-output-protocol-draft.md) | Proposed eight-row rasterizer/interpolator output and immutable draw/transport lifetime |

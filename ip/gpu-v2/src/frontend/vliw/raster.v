@@ -3,7 +3,7 @@
 module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  input clk,reset,ce,input[1:0]phase,
  input bbox_done,bbox_empty,input[4:0]bbox_xlo,bbox_xhi,input[3:0]bbox_ylo,bbox_yhi,
- input bbox_rf_we,input[1:0]bbox_edge,input[29:0]bbox_rf_wd,input run_enable,
+ input run_enable,
  input start,
  input geo_we,input[3:0]geo_wa,input[29:0]geo_wd,
  output quad_valid,input quad_ready,output quad_take,output[7:0]quad_x,output[6:0]quad_y,
@@ -56,14 +56,22 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  // Walker独占ROM、16×30工作池、同步step B口和30位ALU。
  reg rom_valid;reg[4:0]rom_pc;wire[35:0]uop;
  reg rom_re;reg[4:0]rom_ra;
- wire[3:0]bbox_rf_wa={2'b10,bbox_edge};wire[8:0]bbox_origin_x,bbox_origin_y;
+ wire[8:0]bbox_origin_x,bbox_origin_y;
  rc_raster_program program_store(clk,reset,ce,rom_re,{2'd0,rom_ra},uop);
  wire rom_match=rom_valid&&rom_pc==w_pc;
  wire start_tile=life==EXEC&&scan_mode==OFF&&!tile_empty;
- wire walk_allowed=life==EXEC&&!walk_done&&(INTERLEAVE||scan_mode==OFF&&!start_tile);
+ // PC0..5 has no bbox dependency; origin/support wait for the existing bound event.
+ wire walk_allowed=(life==EXEC||(life==BOUND&&w_pc<6))&&!walk_done&&
+  !(bbox_done&&bbox_empty)&&(INTERLEAVE||scan_mode==OFF&&!start_tile);
+ wire origin_op=uop[30:27]==8||uop[30:27]==9;
+ wire origin_axis=uop[30:27]==9;
+ wire origin_bit=origin_axis?ybit:xbit;
+ wire origin_last=level<=root_level;
+ wire[4:0]origin_next_pc=origin_last?(origin_axis||root_level>=8?5'd6:5'd15):w_pc;
+ wire fast_origin=origin_op&&(!origin_bit||level<root_level);
  wire enqueue_block=uop[30:27]==6&&w_edge==0&&tile_full;
  wire fast_w=walk_allowed&&rom_match&&w_edge==0&&!w_branch_pending&&
-  ((uop[30:27]==7&&level==root_level)||(uop[30:27]==4&&outside));
+  ((uop[30:27]==7&&level==root_level)||(uop[30:27]==4&&outside)||fast_origin);
  wire micro_issue=walk_allowed&&rom_match&&w_edge<3&&!enqueue_block&&!fast_w&&!w_branch_pending;
  reg[5:0]micro_step;reg micro_sub;
  always @*begin
@@ -116,8 +124,8 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  reg[4:0]root_keep;
  always @*begin case(bbox_root)4:root_keep=31;5:root_keep=30;6:root_keep=28;7:root_keep=24;8:root_keep=16;default:root_keep=0;endcase end
  assign bbox_origin_x={(bbox_xlo&root_keep),4'd0};assign bbox_origin_y={({1'b0,bbox_ylo}&root_keep),4'd0};
- rp_raster_rf #(.AB(4)) work_store(clk,reset,ce,micro_issue,rf_we||bbox_rf_we,
-  w_ra,bbox_rf_we?bbox_rf_wa:rf_wa,bbox_rf_we?bbox_rf_wd:rf_wd,work_q);
+ rp_raster_rf #(.AB(4)) work_store(clk,reset,ce,micro_issue,rf_we,
+  w_ra,rf_wa,rf_wd,work_q);
 
  // 两槽tile邮箱只存六个h；walker写、scanner独立同步读，不复制工作池。
  wire load_issue=life==EXEC&&scan_mode==LOAD&&s_edge<3;
@@ -177,11 +185,13 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  assign quad_end_valid=scan_cover_valid&&lane==3&&!reset;
  assign quad_mask=cover_mask|((sample_cover?4'b0001:4'd0)<<lane);
 
+ wire[3:0]prep_last=w_pc<6?4'd8:root_level-1'b1;
  reg[4:0]issue_next_pc;
  always @*begin
   issue_next_pc=uop[35:31];
   case(uop[30:27])
-   2,3:if(prep_level!=root_level-1'b1)issue_next_pc=w_pc;
+   2,3:if(prep_level!=prep_last)issue_next_pc=w_pc;
+   8,9:issue_next_pc=origin_next_pc;
    7:if(!xbit&&ybit)issue_next_pc=13;
    default:begin end
   endcase
@@ -190,10 +200,13 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
   (b_all_pass||level<=2?5'd12:5'd10);
  always @*begin
   rom_re=0;rom_ra=w_pc;
-  if(life==EXEC&&!rom_match)rom_re=1;
+  if((life==EXEC||life==BOUND&&w_pc<6)&&!rom_match)rom_re=1;
   if(w_static_tail)begin rom_re=1;rom_ra=issue_next_pc;end
   if(w_branch_pending)begin rom_re=1;rom_ra=branch_target;end
-  if(fast_w)begin rom_re=1;rom_ra=13;end
+  if(fast_w)begin
+   if(origin_op)begin if(origin_next_pc!=w_pc)begin rom_re=1;rom_ra=origin_next_pc;end end
+   else begin rom_re=1;rom_ra=13;end
+  end
   if(life==IMPORT&&input_take&&geo_wa==4'ha)begin rom_re=1;rom_ra=0;end
  end
  wire evt_walk_issue=micro_issue;
@@ -203,8 +216,11 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  wire evt_early_out=w_early;
  wire evt_walk_discard=cancelled;
  assign evt_import=life==IMPORT;
- assign evt_prep=life==BOUND||(life==EXEC&&((!walk_done&&w_pc<10)||(r_valid&&r_pc<10)));
- assign evt_traverse=life==EXEC&&((evt_walk_issue&&w_pc>=10)||(w_retire&&r_pc>=10)||fast_w);
+ wire evt_early_prep=(micro_issue&&w_pc<6)||(w_retire&&r_pc<6);
+ wire evt_origin=life==EXEC&&((micro_issue&&origin_op)||(w_retire&&(r_pc==14||r_pc==15))||(fast_w&&origin_op));
+ wire evt_support=(micro_issue&&w_pc>=6&&w_pc<=9)||(w_retire&&r_pc>=6&&r_pc<=9);
+ assign evt_prep=life==BOUND||(life==EXEC&&((!walk_done&&(w_pc<10||w_pc>=14))||(r_valid&&(r_pc<10||r_pc>=14))));
+ assign evt_traverse=life==EXEC&&((evt_walk_issue&&w_pc>=10&&w_pc<=13)||(w_retire&&r_pc>=10&&r_pc<=13)||(fast_w&&!origin_op));
  assign evt_node=evt_walk_issue&&w_pc==10&&w_edge==0||fast_w&&uop[30:27]==4;
  assign evt_row=load_issue||row_issue||s_load_retire||s_row_retire;
  assign evt_align=life==EXEC&&(scan_mode==ALIGN||scan_mode==SCAN&&lane==0&&!scan_inflight&&!scan_start&&run_enable&&quad_ready);
@@ -258,8 +274,12 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
     w_edge<=0;w_pc<=issue_next_pc;
     case(uop[30:27])
      1:prep_level<=1;
-     2,3:begin if(prep_level!=root_level-1'b1)prep_level<=prep_level+1'b1;
+     2,3:begin if(prep_level!=prep_last)prep_level<=prep_level+1'b1;
        end
+     8,9:begin
+      if(origin_last)begin if(origin_axis||root_level>=8)level<=root_level;else level<=7;end
+      else level<=level-1'b1;
+     end
      7:begin
       // 加减方向正好由被翻转位决定，不可能发生进位/借位。
       if(xbit==ybit)nx<=nx^return_side;
@@ -276,11 +296,18 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
     w_branch_pending<=0;w_pc<=branch_target;w_edge<=0;
     if(b_kind==5)begin if(b_all_pass||level<=2)found_full<=b_all_pass;else level<=level-1'b1;end
    end
-   if(fast_w)begin w_edge<=0;if(uop[30:27]==7)walk_done<=1;else w_pc<=13;end
+   if(fast_w)begin
+    w_edge<=0;
+    if(origin_op)begin
+     w_pc<=origin_next_pc;
+     if(origin_last)begin if(origin_axis||root_level>=8)level<=root_level;else level<=7;end
+     else level<=level-1'b1;
+    end else if(uop[30:27]==7)walk_done<=1;else w_pc<=13;
+   end
    if(bbox_done&&life==BOUND)begin
-    life<=EXEC;rom_valid<=0;w_pc<=0;w_edge<=0;
+    life<=EXEC;
     if(bbox_empty)walk_done<=1;
-    else begin nx<=bbox_origin_x;ny<=bbox_origin_y;level<=bbox_root;end
+    else begin nx<=bbox_origin_x;ny<=bbox_origin_y;level<=8;end
    end
    if(start_tile)begin
     scan_slot<=tile_head[0];scan_full<=head_meta[22];origin_x<=head_meta[8:0];sx<=head_meta[8:0];sy<=head_meta[17:9];
@@ -296,7 +323,11 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
    if(check_start||skip_start)begin scan_qvalid<=0;scan_inflight<=1;end
    if(s_check_retire)begin
     if(s_return_edge==0)check_pass<=s_check_pass;else check_pass<=check_pass&&s_check_pass;
-    if(check_finish)begin if(check_pass&&s_check_pass)scan_mode<=SCAN;else scan_mode<=SKIP;end
+    if(check_finish)begin
+     if(check_pass&&s_check_pass)scan_mode<=SCAN;
+     else if(scan_end)scan_mode<=OFF;
+     else scan_mode<=SKIP;
+    end
    end
    if(scan_start)begin
     scan_qvalid<=0;scan_inflight<=1;cover_acc<=pass_h(scan_work_q,tau[0]);

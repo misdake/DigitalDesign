@@ -17,7 +17,6 @@ module rp_prepare(
  output operand_re,output[3:0]operand_ra,
  output wide_valid,output wide_asign,
  output bound_valid,bound_empty,output[4:0]bound_xlo,bound_xhi,output[3:0]bound_ylo,bound_yhi,
- output origin_we,output[1:0]origin_edge,output[29:0]origin_data,
  input[53:0]wide_result_data,
  output busy,import_busy,math_busy,done,output reg[3:0]error
 );
@@ -151,7 +150,7 @@ module rp_prepare(
  rp_prepare_core core(clk,reset,ce,core_start,rgb,{seed_sign_y,seed_sign_x},pw_q[35:0],pw_q[89:36],wide_result_data,
   core_a_re,core_ar,core_a_we,core_ad,core_b_re,core_br,core_b_we,core_bw,core_bd,
   core_c_re,core_cr,core_c_we,core_cw,core_cd,core_issue,core_asign,core_active,core_done,
-  bound_valid,bound_empty,bound_xlo,bound_xhi,bound_ylo,bound_yhi,origin_we,origin_edge,origin_data,core_attr_read,core_attr_send,core_attr_index,core_attr_bank,core_round_init);
+  bound_valid,bound_empty,bound_xlo,bound_xhi,bound_ylo,bound_yhi,core_attr_read,core_attr_send,core_attr_index,core_attr_bank,core_round_init);
  wire attr_first=tail_first&&input_attr;
  wire attr_second=state==SECOND&&input_attr;
  assign operand_we=!reset&&(state==CORE?(core_a_we||factor_write):factor_write||attr_first||attr_second||(state==Q_SEND&&q_take&&field<2));
@@ -261,8 +260,12 @@ module rp_prepare(
       if(edge_exp==0)state<=Q_SEND;else state<=DOWN;
      end
      DOWN:begin
-      if(remaining==1)magnitude<=magnitude>>1;else magnitude<=magnitude>>2;
-      if(remaining<=2)begin remaining<=0;state<=Q_SEND;end else remaining<=remaining-2;
+      if(remaining>=4)magnitude<=magnitude>>4;
+      else if(remaining==1)magnitude<=magnitude>>1;else magnitude<=magnitude>>2;
+      if(remaining<=4)begin
+       if(remaining==3)remaining<=1;
+       else begin remaining<=0;state<=Q_SEND;end
+      end else remaining<=remaining-4;
      end
      Q_SEND:if(q_take)begin
       if(field==2)begin

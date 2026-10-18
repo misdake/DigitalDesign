@@ -63,9 +63,8 @@ module gpu_v2_vliw_sampling(
  assign preflight_bad=quad_bad||sampling_bad||backend_bad||cache_bad||color_bad;
  assign fault=abort||quad_fault||sampling_fault||backend_fault||cache_fault||color_fault;
  assign advance=ce&&!reset&&allow;
- wire light_ready,light_valid,light_last,sample_last;
- wire[35:0] light_data;
- wire[2:0] light_row;
+ wire light_ready,light_valid,light_context_valid,sample_last;
+ wire[35:0]light_normal;wire[31:0]light_position;wire[1:0]light_lane;
  wire[9:0] light_descriptor;
  assign light_bank=light_descriptor[9];
  assign sample_fire=advance&&sample_valid&&sample_ready;
@@ -87,9 +86,9 @@ module gpu_v2_vliw_sampling(
  .descriptor_issue(descriptor_issue),.descriptor_head(descriptor_head),.descriptor_next(descriptor_next),.descriptor_head_tile(descriptor_head_tile),.descriptor_next_tile(descriptor_next_tile),
  .basic_read(basic_read),.basic_read_address(basic_read_address),.basic_return_valid(basic_return_valid),
  .basic_return_data(basic_return_data),.basic_collision(basic_collision),
- .light_ready(light_ready),.sample_ready(sample_ready),.light_valid(light_valid),.sample_valid(sample_valid),
- .light_data(light_data),.sample_data(sample_data),.light_row(light_row),.sample_row(sample_row),
- .light_last(light_last),.sample_last(sample_last),.light_descriptor(light_descriptor),.sample_descriptor(sample_descriptor),
+ .light_ready(light_ready),.sample_ready(sample_ready),.light_valid(light_valid),.light_context_valid(light_context_valid),.sample_valid(sample_valid),
+ .light_normal(light_normal),.light_position(light_position),.light_lane(light_lane),.sample_data(sample_data),.sample_row(sample_row),
+ .sample_last(sample_last),.light_descriptor(light_descriptor),.sample_descriptor(sample_descriptor),
  .retire_valid(rop_row7_accepted),.retire_id(rop_slot),.empty_skip(empty_skip),.empty_head(empty_head),.empty_skip_ready(empty_skip_ready),
  .retire_slot(retire_slot),.global_used(global_used),.producer_used(producer_used),.light_pending(light_used),.sample_pending(sample_used),.busy(),.fault(quad_fault));
  gpu_v2_texture_runtime_rows sampling(
@@ -106,7 +105,8 @@ module gpu_v2_vliw_sampling(
  .store_reads(),.store_writes());
  gpu_v2_pixel_lighting_consumer light(
  .clk(clk),.reset(reset),.ce(advance),.compute_tick(light_compute_tick),
- .source_valid(light_valid),.source_ready(light_ready),.source_row(light_row),.source_data(light_data),
+ .source_context_valid(light_context_valid),.source_valid(light_valid),.source_ready(light_ready),
+ .source_lane(light_lane),.source_normal(light_normal),.source_position(light_position),
  .source_slot(light_descriptor[4:0]),.source_mask(light_descriptor[8:5]),.source_bank(light_bank),
  .retire_valid(retire_valid),.retire_bank(retire_bank),
  .context_epoch(context_epoch),.context_mode(context_mode),.context_code(context_code),

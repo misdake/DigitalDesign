@@ -241,6 +241,10 @@ pub fn verilog_selected(
     patch(&mut source, top, "header_tile<=0;", "")?;
     patch(&mut source, top, "header_tile<=head_tile;", "")?;
     patch(&mut source, top, "header_tile<=next_tile;", "")?;
+    // The VLIW pool owns Normal/NDC Q through the complete pixel handshake.
+    // Replace the selected consumer as one unit; the independent Light2 reference remains.
+    let (light_a, light_b) = span(&source, "gpu_v2_pixel_lighting_consumer")?;
+    source.replace_range(light_a..light_b, include_str!("vliw_lighting_tuple.v"));
     let result = reachable(&source, MODULE)?;
     Ok(format!(
         "{}{}{}",

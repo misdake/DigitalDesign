@@ -1,0 +1,103 @@
+"""Small bounded R-owned-origin replay; no external fixture or old origin port."""
+from pathlib import Path
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[3]
+HERE = Path(__file__).resolve().parent
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def packets():
+    # Large root, offscreen cancellation, partial small root, and zero origin bits.
+    shapes = [
+        [(-1024, -1024), (2048, -1024), (-1024, 2048)],
+        [(1000, 1000), (1010, 1000), (1000, 1010)],
+        [(-2000, -2000), (-1980, -2000), (-2000, -1980)],
+        [(0, 0), (800, 0), (0, 480)],
+        [(383, 223), (399, 223), (383, 239)],
+        [(0, 0), (16, 0), (0, 16)],
+    ]
+    descriptors, words = [], []
+    def cross(a, b):
+        return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+    for scale in (1, 16):
+        for reverse in (False, True):
+            for xy in shapes:
+                p = [((2*x-399)*scale, (2*y-239)*scale, 512*scale) for x, y in xy]
+                if reverse:
+                    p[1], p[2] = p[2], p[1]
+                assert all(-(1 << 17) <= v < (1 << 17) for xyz in p for v in xyz)
+                a, b, c = p
+                n = [cross(b, c), cross(c, a), cross(a, b)]
+                det = sum(x*y for x, y in zip(a, n[0]))
+                assert 0 < abs(det) < (1 << 53)
+                descriptors.append(int(det < 0) << 22)
+                for nx, ny, nz in n:
+                    cv = -399*nx-239*ny+512*nz
+                    assert -(1 << 35) <= nx < (1 << 35)
+                    assert -(1 << 35) <= ny < (1 << 35)
+                    assert -(1 << 46) <= cv < (1 << 46)
+                    words += [nx & ((1 << 36)-1), ny & ((1 << 36)-1), cv & ((1 << 47)-1)]
+                words += [abs(det)] + [0]*9
+    return descriptors, words
+
+
+def main():
+    ap = argparse.ArgumentParser(__doc__)
+    ap.add_argument('--tag', required=True)
+    ap.add_argument('--export-root', type=Path, required=True)
+    ap.add_argument('--mode', choices=['portable', 'native', 'both'], default='both')
+    args = ap.parse_args()
+    assert re.fullmatch(r'[A-Za-z0-9_.-]+', args.tag)
+    out = ROOT/'target/gpu-vliw-prepare-chain'/args.tag
+    out.mkdir(parents=True, exist_ok=False)
+    snapshot = out/'source'
+    snapshot.mkdir()
+    files = [Path(__file__), HERE/'vliw_prepare_chain_tb.v', HERE/'vliw_prepare_chain.rs']
+    files += [args.export_root/f'frontend-{m}.v' for m in ('portable', 'native')]
+    manifest = {}
+    for p in files:
+        shutil.copyfile(p, snapshot/p.name)
+        manifest[p.name] = sha(snapshot/p.name)
+    (out/'manifest.json').write_text(json.dumps(manifest, indent=2))
+    desc, words = packets()
+    rows = []
+    for mode in (['portable', 'native'] if args.mode == 'both' else [args.mode]):
+        run = out/mode
+        run.mkdir()
+        (run/'descriptors.hex').write_text(''.join(f'{v:09x}\n' for v in desc))
+        (run/'words.hex').write_text(''.join(f'{v:014x}\n' for v in words))
+        tb = (snapshot/'vliw_prepare_chain_tb.v').read_text()
+        for k, v in dict(N=len(desc), LAST=len(desc)-1, WLAST=len(words)-1).items():
+            tb = tb.replace('@'+k+'@', str(v))
+        (run/'tb.v').write_text(tb)
+        command = [os.environ.get('IVERILOG_EXE', 'iverilog'), '-g2012', '-s', 'tb', '-o', str(run/'sim.vvp')]
+        if mode == 'native':
+            command += [str(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v')]
+        command += [str(snapshot/f'frontend-{mode}.v'), str(run/'tb.v')]
+        for label, cmd in [('compile', command), ('run', [os.environ.get('VVP_EXE', 'vvp'), str(run/'sim.vvp')])]:
+            result = subprocess.run(cmd, cwd=run, capture_output=True, timeout=90)
+            (run/f'{label}.log').write_bytes(result.stdout+result.stderr)
+            assert result.returncode == 0, (result.stdout+result.stderr).decode(errors='replace')[-4000:]
+        log = result.stdout.decode(errors='replace')
+        assert 'PASS RROOT' in log
+        rows.append(dict(mode=mode, packets=len(desc), trace_sha256=sha(run/'roots.txt'), log=log))
+        print(log, flush=True)
+    if len(rows) == 2:
+        assert rows[0]['trace_sha256'] == rows[1]['trace_sha256']
+    (out/'receipt.json').write_text(json.dumps(dict(status='pass', runs=rows,
+        scope='Small real I-to-R origin replay: modular old-Q updates, root9, empty-bound cancellation, CE hold and reset; no full scanning or whole-chain qualification',
+        manifest_sha256=sha(out/'manifest.json')), ensure_ascii=False, indent=2))
+
+
+if __name__ == '__main__':
+    main()

@@ -15,7 +15,7 @@ reg ev=0;reg[2:0]eid;reg[3:0]emask;reg rw=0;reg[6:0]ra;reg[35:0]rd;
 reg dv=0;reg[4:0]dpid;reg[15:0]dz;reg dpass;reg lv=0;reg[2:0]lid;reg[7:0]lod;
 reg pr=0;wire pub;wire[4:0]ps;wire[22:0]pb;reg[4:0]di=0;wire[22:0]dis,dhs,dns;wire[8:0]tile,nexttile;
 reg br=0;reg[7:0]ba;wire bv,bcol;wire[23:0]bd;
-reg lr=0,sr=0;wire lvalid,llast,svalid,slast;wire[35:0]ldata,sdata;wire[2:0]lrow;wire[1:0]srow;wire[9:0]ldesc;wire[18:0]sdesc;
+reg lr=0,sr=0;wire lvalid,lcontext,svalid,slast;wire[35:0]lnormal,sdata;wire[31:0]lposition;wire[1:0]llane;wire[1:0]srow;wire[9:0]ldesc;wire[18:0]sdesc;
 reg retire=0,skip=0;reg[4:0]rid;wire empty,skipready;wire[4:0]rs;wire[5:0]used,prod,lp,sp;wire busy,fault;
 wire hint_valid;wire[8:0]hint_tile;
 gpu_v2_vliw_quad_pool dut(.clk(clk),.reset(reset),.front_ce(fc),.backend_ce(bc),.phase(phase),.draw_bank(bank),.draw_unlit(unlit),
@@ -25,7 +25,7 @@ gpu_v2_vliw_quad_pool dut(.clk(clk),.reset(reset),.front_ce(fc),.backend_ce(bc),
  .lod_valid(lv),.lod_id(lid),.lod_value(lod),.publish_ready(pr),.published(pub),.published_slot(ps),.published_begin(pb),
  .descriptor_issue_slot(di),.descriptor_issue(dis),.descriptor_head(dhs),.descriptor_head_tile(tile),.descriptor_next(dns),.descriptor_next_tile(nexttile),
  .basic_read(br),.basic_read_address(ba),.basic_return_valid(bv),.basic_return_data(bd),.basic_collision(bcol),
- .light_ready(lr),.light_valid(lvalid),.light_data(ldata),.light_row(lrow),.light_last(llast),.light_descriptor(ldesc),
+ .light_ready(lr),.light_valid(lvalid),.light_context_valid(lcontext),.light_normal(lnormal),.light_position(lposition),.light_lane(llane),.light_descriptor(ldesc),
  .sample_ready(sr),.sample_valid(svalid),.sample_data(sdata),.sample_row(srow),.sample_last(slast),.sample_descriptor(sdesc),
  .retire_valid(retire),.retire_id(rid),.empty_skip(skip),.empty_head(empty),.empty_skip_ready(skipready),.retire_slot(rs),
  .global_used(used),.producer_used(prod),.light_pending(lp),.sample_pending(sp),.busy(busy),.fault(fault));
@@ -33,7 +33,7 @@ integer reset_count=0;integer starts[0:NQ-1];integer ft=0,bt=0,sent=0,published=
 integer lq=0,lrows=0,sq=0,srows=0,brow=0,breturned=0,emptycount=0,peaku=0,peakp=0,waits=0,holds=0;
 integer j,k,delta,ln,wr,addrq,addrr,fd,last_lq=-2,last_ltick=-100,ii16=0;
 reg[31:0]rng=32'h1482fd6e;reg b_pending=0;reg[23:0]b_expected;
-reg lhold=0,shold=0;reg[49:0]lh;reg[57:0]sh;reg[3:0]m;
+reg lhold=0,shold=0;reg[79:0]lh;reg[57:0]sh;reg[3:0]m;
 function[3:0]geom;input integer q;begin if(STRESS==0)geom=15;else if(q%5==0)geom=0;else geom=(q%15)+1;end endfunction
 function covered;input integer q,l;reg[3:0]g;begin g=geom(q);covered=g[l];end endfunction
 function pass;input integer q,l;begin pass=covered(q,l)&&(STRESS==0||(q+l)%7!=0);end endfunction
@@ -75,7 +75,7 @@ begin
   end
  end
  pr=STRESS==0||(ft>=160&&cycles%113>23&&rng[9:8]!=0);
- lr=(lrow[0]==0||bt%4==0)&&(STRESS==0||(ft>=600&&(cycles%211>47&&rng[12:10]!=0)));
+ lr=(bt%4==0)&&(STRESS==0||(ft>=600&&(cycles%211>47&&rng[12:10]!=0)));
  sr=bt%4==0&&(STRESS==0||(ft>=600&&(cycles%197>51&&rng[15:13]!=0)));
  // Random producer-independent queries exercise both metadata read views.
  di=published>retired?(retired+(rng[20:17]%(published-retired)))%32:retired%32;
@@ -92,9 +92,9 @@ always @(posedge clk)if(!reset)begin
  if(hint_valid!==(fc&&ev&&(|emask)))$fatal(1,"geometry hint validity");
  if(hint_valid&&hint_tile!==((qy/8)*32+qx/8))$fatal(1,"geometry hint raw tile");
  if(fault||bcol)$fatal(1,"pool fault");
- if(lhold&&(!lvalid||{ldesc,lrow,llast,ldata}!==lh))$fatal(1,"Light hold changed");
+ if(lhold&&(!lvalid||{ldesc,llane,lnormal,lposition}!==lh))$fatal(1,"Light hold changed");
  if(shold&&(!svalid||{sdesc,srow,slast,sdata}!==sh))$fatal(1,"Sample hold changed");
- lhold=lvalid&&!(bc&&lr);lh={ldesc,lrow,llast,ldata};shold=svalid&&!(bc&&sr);sh={sdesc,srow,slast,sdata};
+ lhold=lvalid&&!(bc&&lr);lh={ldesc,llane,lnormal,lposition};shold=svalid&&!(bc&&sr);sh={sdesc,srow,slast,sdata};
  if(lhold||shold)holds=holds+1;
  if(bv!==b_pending)$fatal(1,"Basic return validity");
  if(b_pending)begin if(bd!==b_expected)$fatal(1,"Basic got%h expected%h q%0d",bd,b_expected,retired);breturned=breturned+1;end
@@ -117,12 +117,12 @@ always @(posedge clk)if(!reset)begin
   while(lq<published&&(mask(lq)==0||unlight(lq)))lq=lq+1;
   while(sq<published&&(mask(sq)==0||RGB))sq=sq+1;
   if(lvalid&&lr)begin
-   if(lq>=published||lrow!==lrows[2:0]||ldesc!=={lq[0],mask(lq),lq[4:0]})$fatal(1,"Light descriptor q%0d row%0d",lq,lrows);
-   if(!lrow[0])begin
-    if(ldata!=={nval(lq,lrows/2,2),nval(lq,lrows/2,1),nval(lq,lrows/2,0)})$fatal(1,"normal q%0d row%0d %h",lq,lrows,ldata);
-    if(lrows==0)begin if(STRESS==0&&lq>1&&last_lq==lq-1)begin if(bt-last_ltick!=16)$fatal(1,"Light II not16 q%0d bt%0d prev%0d gap%0d",lq,bt,last_ltick,bt-last_ltick);ii16=ii16+1;end last_lq=lq;last_ltick=bt;end
-   end else if(ldata!=={4'd0,ndc(lq,lrows/2)})$fatal(1,"NDC q%0d lane%0d got%h exp%h",lq,lrows/2,ldata,ndc(lq,lrows/2));
-   $fdisplay(fd,"L %0d %0d %h",lq,lrows,ldata);if(lrows==7)begin lrows=0;lq=lq+1;end else lrows=lrows+1;
+   if(lq>=published||llane!==lrows[1:0]||ldesc!=={lq[0],mask(lq),lq[4:0]})$fatal(1,"Light descriptor q%0d lane%0d",lq,lrows);
+   if(!lcontext)$fatal(1,"pixel without stable context");
+   if(lnormal!=={nval(lq,lrows,2),nval(lq,lrows,1),nval(lq,lrows,0)})$fatal(1,"normal q%0d lane%0d %h",lq,lrows,lnormal);
+   if(lposition!==ndc(lq,lrows))$fatal(1,"NDC q%0d lane%0d got%h exp%h",lq,lrows,lposition,ndc(lq,lrows));
+   if(lrows==0)begin if(STRESS==0&&lq>1&&last_lq==lq-1)begin if(bt-last_ltick!=16)$fatal(1,"Light II not16 q%0d bt%0d prev%0d gap%0d",lq,bt,last_ltick,bt-last_ltick);ii16=ii16+1;end last_lq=lq;last_ltick=bt;end
+   $fdisplay(fd,"L %0d %0d %h %h",lq,lrows,lnormal,lposition);if(lrows==3)begin lrows=0;lq=lq+1;end else lrows=lrows+1;
   end
   if(svalid&&sr)begin
    if(sq>=published||srow!==srows[1:0]||sdesc!=={level(sq),1'b0,sq[0],mask(sq),sq[4:0]})$fatal(1,"Sample descriptor q%0d row%0d",sq,srows);

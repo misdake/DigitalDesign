@@ -1,7 +1,7 @@
 // R到计算无像素FIFO；仅最终quad槽有信用。
 module gpu_v2_vliw_interpolator(
 input clk,reset,ce,
- output bound_valid,bound_empty,output[4:0]bound_xlo,bound_xhi,output[3:0]bound_ylo,bound_yhi,output origin_we,output[1:0]origin_edge,output[29:0]origin_data,
+ output bound_valid,bound_empty,output[4:0]bound_xlo,bound_xhi,output[3:0]bound_ylo,bound_yhi,
  
  input table_valid,output table_ready,input[7:0]table_index,input[35:0]table_data,
  input prepare_start,input[35:0]descriptor,
@@ -66,7 +66,7 @@ input clk,reset,ce,
  .lod_cfg_tex_u(lc_tex_u),.lod_cfg_tex_v(lc_tex_v),.lod_cfg_max_mip(lc_max),.lod_cfg_bias(lc_bias),
  .operand_we(operand_we),.operand_wa(operand_wa),.operand_wd(operand_wd),.operand_re(operand_re),.operand_ra(operand_ra),
  .wide_valid(wide_valid),.wide_asign(wide_asign),
- .bound_valid(bound_valid),.bound_empty(bound_empty),.bound_xlo(bound_xlo),.bound_xhi(bound_xhi),.bound_ylo(bound_ylo),.bound_yhi(bound_yhi),.origin_we(origin_we),.origin_edge(origin_edge),.origin_data(origin_data),
+ .bound_valid(bound_valid),.bound_empty(bound_empty),.bound_xlo(bound_xlo),.bound_xhi(bound_xhi),.bound_ylo(bound_ylo),.bound_yhi(bound_yhi),
  .wide_result_data(result_data),
  .busy(s_busy),.import_busy(prepare_import_busy),.done(s_done),.error(s_error));
 
