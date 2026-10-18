@@ -47,7 +47,7 @@ def packets():
                     assert -(1 << 35) <= ny < (1 << 35)
                     assert -(1 << 46) <= cv < (1 << 46)
                     words += [nx & ((1 << 36)-1), ny & ((1 << 36)-1), cv & ((1 << 47)-1)]
-                words += [abs(det)] + [0]*9
+                words += [abs(det)] + [0]*6
     return descriptors, words
 
 

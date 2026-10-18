@@ -13,8 +13,9 @@ module gpu_v2_vliw_quad_pool(
  input publish_ready,output published,output[4:0]published_slot,output[22:0]published_begin,
  input[4:0]descriptor_issue_slot,output[22:0]descriptor_issue,descriptor_head,descriptor_next,
  output[8:0]descriptor_head_tile,descriptor_next_tile,
- input basic_read,input[7:0]basic_read_address,output reg basic_return_valid,
+ input basic_read,input[6:0]basic_read_address,
  output[23:0]basic_return_data,output basic_collision,
+ input depth_read,input[6:0]depth_read_address,output[15:0]depth_data,
  input light_ready,output light_valid,light_context_valid,
  output[35:0]light_normal,output[31:0]light_position,output reg[1:0]light_lane,
  output[9:0]light_descriptor,
@@ -26,9 +27,9 @@ module gpu_v2_vliw_quad_pool(
  output busy,output reg fault
 );
  reg[5:0]allocated,publish_ptr,retired,complete_tail,light_cursor,sample_cursor;
- reg[7:0]attr_pixel,depth_pixel;reg[1:0]attr_word;
+ reg[7:0]attr_pixel;
  reg[9:0]light_descriptor_q;reg[18:0]sample_descriptor_q;
- reg[23:0]normal_xy;reg[15:0]u_or_red;reg[3:0]depth_mask;
+ reg[5:0]normal_y_high;reg[3:0]depth_mask;
  assign global_used=allocated-retired;assign producer_used=allocated-publish_ptr;
  assign light_pending=publish_ptr-light_cursor;assign sample_pending=publish_ptr-sample_cursor;
  assign quad_ready=!reset&&!fault&&global_used<24&&producer_used<8;
@@ -37,20 +38,26 @@ module gpu_v2_vliw_quad_pool(
  wire depth_event=front_ce&&depth_event_valid&&!reset;
  wire lod_event=front_ce&&lod_valid&&!reset;
  // Closed producer: RGB L arrives before W; UV L arrives after G/N/W.
- wire complete_event=(quad_rgb&&attr_event&&attr_word==2&&attr_pixel[1:0]==3)||(!quad_rgb&&lod_event);
+ wire complete_event=(quad_rgb&&attr_event&&phase==0&&attr_pixel[1:0]==3)||(!quad_rgb&&lod_event);
  wire uv_lod_event=lod_event&&!quad_rgb;
- wire normal_write=attr_event&&attr_word==1;
- wire uv_write=attr_event&&attr_word==2;
- wire color_write=uv_write;
- wire basic_write=color_write||depth_event;
- wire[8:0]basic_wa=depth_event?{1'b0,depth_pixel[6:0],1'b1}:{1'b0,attr_pixel[6:0],1'b0};
- wire[23:0]color=quad_rgb?{result_wd[15:0],u_or_red[7:0]}:24'hffffff;
- wire[35:0]basic_wd=depth_event?{20'd0,depth_event_z16}:{12'd0,color};
+ wire normal_write=attr_event&&phase[1];
+ wire uv_write=attr_event&&(phase==3||phase==0)&&!quad_rgb;
+ wire basic_write=attr_event&&(phase==3||phase==0);
+ wire[8:0]basic_wa={2'd0,attr_pixel[6:0]};
+ // DI is fixed wiring: only the column enables select the I return edge.
+ // Unwritten columns need no phase-dependent data or zero selection.
+ wire[35:0]normal_wd={result_wd[11:0],normal_y_high,result_wd[17:0]};
+ wire[35:0]uv_wd={2'd0,result_wd[15:0],2'd0,result_wd[27:12]};
+ wire[35:0]basic_wd={9'd0,1'b0,quad_rgb?result_wd[15:8]:8'hff,
+  1'b0,quad_rgb?result_wd[7:0]:8'hff,1'b0,quad_rgb?result_wd[19:12]:8'hff};
+ wire[3:0]normal_mask=phase[0]?4'b1100:4'b0011;
+ wire[3:0]uv_mask=phase[0]?4'b0011:4'b1100;
+ wire[3:0]basic_mask=phase[0]?4'b0001:4'b0110;
  wire basic_re=backend_ce&&basic_read&&!reset&&!fault;
  wire[35:0]normal_q,uv_q,basic_q;
- wire[3:0]next_depth_mask=(depth_pixel[1:0]==0?4'd0:depth_mask)|
-  ((depth_event_pass?4'b0001:4'd0)<<depth_pixel[1:0]);
- wire mask_write=depth_event&&depth_pixel[1:0]==3;
+ wire[3:0]next_depth_mask=(attr_pixel[1:0]==0?4'd0:depth_mask)|
+  ((depth_event_pass?4'b0001:4'd0)<<attr_pixel[1:0]);
+ wire mask_write=depth_event&&attr_pixel[1:0]==3;
  wire[18:0]header_write={quad_y,quad_x,1'b0,quad_rgb,draw_unlit,draw_bank};
  wire[18:0]issue_meta,light_meta,publish_meta;wire[2:0]sample_meta;
  wire[18:0]head_meta,next_meta;
@@ -72,12 +79,12 @@ module gpu_v2_vliw_quad_pool(
  gpu_v2_vliw_pool_meta #(.WIDTH(19)) ml(clk,reset,allocate,allocated[4:0],header_write,light_cursor[4:0],light_meta);
  gpu_v2_vliw_pool_meta #(.WIDTH(3)) ms(clk,reset,allocate,allocated[4:0],header_write[2:0],sample_cursor[4:0],sample_meta);
  gpu_v2_vliw_pool_meta #(.WIDTH(19)) mp(clk,reset,allocate,allocated[4:0],header_write,publish_ptr[4:0],publish_meta);
- gpu_v2_vliw_pool_meta #(.WIDTH(4)) fi(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,descriptor_issue_slot,issue_mask);
- gpu_v2_vliw_pool_meta #(.WIDTH(4)) fh(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,retired[4:0],head_mask);
- gpu_v2_vliw_pool_meta #(.WIDTH(4)) fn(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,next_slot,next_mask);
- gpu_v2_vliw_pool_meta #(.WIDTH(4)) fl(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,light_cursor[4:0],light_mask);
- gpu_v2_vliw_pool_meta #(.WIDTH(4)) fs(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,sample_cursor[4:0],sample_mask);
- gpu_v2_vliw_pool_meta #(.WIDTH(4)) fp(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,publish_ptr[4:0],publish_mask);
+ gpu_v2_vliw_pool_meta #(.WIDTH(4)) fi(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,descriptor_issue_slot,issue_mask);
+ gpu_v2_vliw_pool_meta #(.WIDTH(4)) fh(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,retired[4:0],head_mask);
+ gpu_v2_vliw_pool_meta #(.WIDTH(4)) fn(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,next_slot,next_mask);
+ gpu_v2_vliw_pool_meta #(.WIDTH(4)) fl(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,light_cursor[4:0],light_mask);
+ gpu_v2_vliw_pool_meta #(.WIDTH(4)) fs(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,sample_cursor[4:0],sample_mask);
+ gpu_v2_vliw_pool_meta #(.WIDTH(4)) fp(clk,reset,mask_write,attr_pixel[6:2],next_depth_mask,publish_ptr[4:0],publish_mask);
  gpu_v2_vliw_pool_meta #(.WIDTH(8)) ls(clk,reset,uv_lod_event,complete_tail[4:0],lod_value,sample_cursor[4:0],sample_lod);
  // Publication and the two parent descriptor views never arbitrate a read port.
  assign published_slot=publish_ptr[4:0];
@@ -101,8 +108,8 @@ module gpu_v2_vliw_quad_pool(
  wire[8:0]ndc_ra=light_state==L_X?9'd200+{2'd0,light_meta[18:12]}:{1'b0,light_meta[11:4]};
  wire[31:0]ndc_q;
  gpu_v2_vliw_ndc_rom ndc(clk,reset,ndc_read,ndc_ra,ndc_q);
- gpu_v2_vliw_pool_ram normal_bank(clk,reset,normal_write,{2'd0,attr_pixel[6:0]},
-  {result_wd[11:0],normal_xy},light_read,{2'd0,light_cursor[4:0],light_lane},normal_q);
+ gpu_v2_vliw_pool_ram normal_bank(clk,reset,normal_write,normal_mask,{2'd0,attr_pixel[6:0]},
+  normal_wd,light_read,{2'd0,light_cursor[4:0],light_lane},normal_q);
  // NormalQ and Y-ROM Q remain owned by this pixel through its acceptance.
  assign light_context_valid=!reset&&!fault&&(light_state==L_CONTEXT||light_state==L_PIXEL);
  assign light_valid=!reset&&!fault&&light_state==L_PIXEL;
@@ -115,27 +122,29 @@ module gpu_v2_vliw_quad_pool(
  wire sample_exists=sample_cursor!=publish_ptr;
  wire sample_skip=!sample_loaded&&sample_lane==0&&sample_exists&&(sample_mask==0||sample_meta[2]);
  wire sample_fetch=backend_ce&&!sample_loaded&&sample_exists&&!sample_skip&&!reset&&!fault;
- gpu_v2_vliw_pool_ram uv_bank(clk,reset,uv_write,{2'd0,attr_pixel[6:0]},
-  {4'd0,result_wd[15:0],u_or_red},sample_fetch,{2'd0,sample_cursor[4:0],sample_lane},uv_q);
+ gpu_v2_vliw_pool_ram uv_bank(clk,reset,uv_write,uv_mask,{2'd0,attr_pixel[6:0]},
+  uv_wd,sample_fetch,{2'd0,sample_cursor[4:0],sample_lane},uv_q);
  assign sample_valid=sample_loaded&&!reset&&!fault;
- assign sample_data={2'd0,uv_q[31:16],2'd0,uv_q[15:0]};
+ assign sample_data=uv_q;
  assign sample_row=sample_lane;assign sample_last=sample_lane==3;
  assign sample_descriptor=sample_descriptor_q;
  wire sample_take=backend_ce&&sample_valid&&sample_ready;
- gpu_v2_vliw_pool_ram basic_bank(clk,reset,basic_write,basic_wa,basic_wd,
-  basic_re,{1'b0,basic_read_address},basic_q);
- assign basic_return_data=basic_q[23:0];
- assign basic_collision=basic_re&&basic_write&&basic_wa=={1'b0,basic_read_address};
- assign busy=allocated!=retired||light_state!=L_READ||sample_loaded||basic_return_valid;
+ gpu_v2_vliw_pool_ram basic_bank(clk,reset,basic_write,basic_mask,basic_wa,basic_wd,
+  basic_re,{2'd0,basic_read_address},basic_q);
+ assign basic_return_data={basic_q[25:18],basic_q[16:9],basic_q[7:0]};
+ assign basic_collision=basic_re&&basic_write&&basic_wa=={2'd0,basic_read_address};
+ // C acceptance pays this independent synchronous read. Q is held through D.
+ gpu_v2_vliw_pool_depth_ram depth_bank(clk,reset,depth_event,attr_pixel[6:0],depth_event_z16,
+  backend_ce&&depth_read&&!reset&&!fault,depth_read_address,depth_data);
+ assign busy=allocated!=retired||light_state!=L_READ||sample_loaded;
  always @(posedge clk)begin
   if(reset)begin
    allocated<=0;publish_ptr<=0;retired<=0;complete_tail<=0;
-   light_cursor<=0;sample_cursor<=0;attr_pixel<=0;depth_pixel<=0;attr_word<=0;
+   light_cursor<=0;sample_cursor<=0;attr_pixel<=0;
    light_descriptor_q<=0;sample_descriptor_q<=0;
-   normal_xy<=0;u_or_red<=0;depth_mask<=0;light_state<=L_READ;light_lane<=0;ndc_x<=0;
-   sample_loaded<=0;sample_lane<=0;basic_return_valid<=0;fault<=0;
+   normal_y_high<=0;depth_mask<=0;light_state<=L_READ;light_lane<=0;ndc_x<=0;
+   sample_loaded<=0;sample_lane<=0;fault<=0;
   end else begin
-   basic_return_valid<=basic_re;
    // Metadata pays the same read edge as its payload; cursor changes cannot
    // propagate through consumers' public-credit/preflight/CE on this edge.
    if(light_read)light_descriptor_q<={light_meta[0],light_mask,light_cursor[4:0]};
@@ -143,12 +152,11 @@ module gpu_v2_vliw_quad_pool(
    if(allocate)allocated<=allocated+1'b1;
    if(complete_event)complete_tail<=complete_tail+1'b1;
    if(attr_event)begin
-    if(attr_word==0)normal_xy<=result_wd[23:0];
-    if(attr_word==1)u_or_red<=result_wd[27:12];
-    if(attr_word==2)begin attr_word<=0;attr_pixel<=attr_pixel+1'b1;end else attr_word<=attr_word+1'b1;
+    if(phase==2)normal_y_high<=result_wd[23:18];
+    if(phase==0)attr_pixel<=attr_pixel+1'b1;
    end
    if(depth_event)begin
-    depth_mask<=next_depth_mask;depth_pixel<=depth_pixel+1'b1;
+    depth_mask<=next_depth_mask;
    end
    if(published)publish_ptr<=publish_ptr+1'b1;
    if(backend_ce&&!fault)begin
@@ -180,16 +188,17 @@ module gpu_v2_vliw_quad_pool(
  end
 `ifndef SYNTHESIS
  // Original completion facts and ID checks are simulation-only. Fixed producer.
+ reg[7:0]depth_pixel;
  wire geom_event=front_ce&&quad_end_valid&&!reset;
  wire[5:0]attr_tail=attr_pixel[7:2],depth_tail=depth_pixel[7:2];
- reg[5:0]shadow_end_tail,shadow_lod_tail;
+ reg[5:0]shadow_end_tail,shadow_lod_tail;reg[1:0]attr_word;
  reg shadow_rgb[0:31];reg shadow_geometry_seen[0:31],shadow_lod_seen[0:31];
  reg[3:0]shadow_depth_seen[0:31];reg[11:0]shadow_attributes[0:31];
  wire shadow_complete_head=publish_ptr!=allocated&&publish_ptr!=attr_tail&&publish_ptr!=depth_tail&&
   publish_ptr!=shadow_end_tail&&publish_ptr!=shadow_lod_tail;
  wire[5:0]shadow_unfinished=allocated-complete_tail,shadow_ready=complete_tail-publish_ptr;
  always @(posedge clk)begin
-  if(reset)begin shadow_end_tail<=0;shadow_lod_tail<=0;end
+  if(reset)begin shadow_end_tail<=0;shadow_lod_tail<=0;attr_word<=0;depth_pixel<=0;end
   else begin
    if(allocate)begin
     shadow_rgb[allocated[4:0]]<=quad_rgb;
@@ -205,11 +214,14 @@ module gpu_v2_vliw_quad_pool(
     shadow_lod_tail<=shadow_lod_tail+1'b1;shadow_lod_seen[shadow_lod_tail[4:0]]<=1;
    end
    if(attr_event)begin
+    if(attr_word==2)attr_word<=0;else attr_word<=attr_word+1'b1;
     if(result_wa!={attr_pixel[4:0],attr_word}||attr_tail==allocated)$fatal(1,"shadow attributes prefix/order");
     if(shadow_attributes[attr_pixel[6:2]][attr_pixel[1:0]*3+attr_word])$fatal(1,"duplicate attribute word");
     shadow_attributes[attr_pixel[6:2]][attr_pixel[1:0]*3+attr_word]<=1;
    end
    if(depth_event)begin
+    if(depth_pixel!=attr_pixel)$fatal(1,"depth/attribute source cursor diverged");
+    depth_pixel<=depth_pixel+1'b1;
     if(depth_event_pid!=depth_pixel[4:0]||depth_tail==allocated||phase!=1)$fatal(1,"shadow depth prefix/order");
     if(shadow_depth_seen[depth_pixel[6:2]][depth_pixel[1:0]])$fatal(1,"duplicate depth event");
     shadow_depth_seen[depth_pixel[6:2]][depth_pixel[1:0]]<=1;
@@ -248,28 +260,48 @@ module gpu_v2_vliw_quad_pool(
   if(allocate&&(phase!=0||quad_x>=200||quad_y>=120))$fatal(1,"pool quad admission range/phase");
   if(attr_event&&((attr_word==0&&phase!=2)||(attr_word==1&&phase!=3)||(attr_word==2&&phase!=0)))$fatal(1,"pool attribute phase");
   if(attr_event&&!quad_rgb&&((attr_word==1&&|result_wd[29:28])||(attr_word==2&&|result_wd[17:16])))$fatal(1,"UV outside U16 source envelope");
-  if(depth_event&&color_write)$fatal(1,"Basic phi0/phi1 writers overlap");
   if(fault)$fatal(1,"pool protocol fault");
  end
 `endif
 endmodule
 
 // Each instance is a real 1W1R bank. The caller gates its separate clock enables.
-module gpu_v2_vliw_pool_ram(input clk,reset,we,input[8:0]wa,input[35:0]wd,
+module gpu_v2_vliw_pool_ram(input clk,reset,we,input[3:0]wm,input[8:0]wa,input[35:0]wd,
  input re,input[8:0]ra,output[35:0]q);
 `ifdef GPU_VLIW_POOL_PORTABLE
  reg[35:0]memory[0:511];reg[35:0]held;assign q=held;
+ integer column;
+ always @(posedge clk)begin
+  if(we&&!reset)for(column=0;column<4;column=column+1)
+   if(wm[column])memory[wa][column*9+:9]<=wd[column*9+:9];
+  if(reset)held<=0;else if(re)held<=memory[ra];
+ end
+`else
+ SDPX9B #(.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC")) ram(
+  .DO(q),.DI(wd),.ADA({wa,1'b0,wm}),.ADB({ra,5'b0}),.CLKA(clk),.CLKB(clk),
+  .CEA(we&&!reset),.CEB(re&&!reset),.OCE(1'b1),.RESETA(1'b0),.RESETB(reset),.BLKSELA(3'd0),.BLKSELB(3'd0));
+`endif
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&we&&re&&wa==ra)$fatal(1,"pool physical bank collision");
+`endif
+endmodule
+
+module gpu_v2_vliw_pool_depth_ram(input clk,reset,we,input[6:0]wa,input[15:0]wd,
+ input re,input[6:0]ra,output[15:0]q);
+`ifdef GPU_VLIW_POOL_PORTABLE
+ reg[15:0]memory[0:127];reg[15:0]held;assign q=held;
  always @(posedge clk)begin
   if(we&&!reset)memory[wa]<=wd;
   if(reset)held<=0;else if(re)held<=memory[ra];
  end
 `else
- SDPX9B #(.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC")) ram(
-  .DO(q),.DI(wd),.ADA({wa,1'b0,4'b1111}),.ADB({ra,5'b0}),.CLKA(clk),.CLKB(clk),
+ wire[35:0]raw;assign q=raw[15:0];
+ SDPX9B #(.BIT_WIDTH_0(18),.BIT_WIDTH_1(18),.READ_MODE(0),.RESET_MODE("SYNC")) ram(
+  .DO(raw),.DI({20'd0,wd}),.ADA({3'd0,wa,4'b0011}),.ADB({3'd0,ra,4'b0000}),.CLKA(clk),.CLKB(clk),
   .CEA(we&&!reset),.CEB(re&&!reset),.OCE(1'b1),.RESETA(1'b0),.RESETB(reset),.BLKSELA(3'd0),.BLKSELB(3'd0));
 `endif
 `ifndef SYNTHESIS
- always @(posedge clk)if(!reset&&we&&re&&wa==ra)$fatal(1,"pool physical bank collision");
+ always @(posedge clk)if(!reset&&we&&re&&wa==ra)$fatal(1,"pool depth bank collision");
 `endif
 endmodule
 

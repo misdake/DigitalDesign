@@ -1,4 +1,4 @@
-// V/T/R/I arithmetic is adopted unchanged; output pool lifetime is external.
+// V/T/R/I arithmetic is preserved; N36/attr32 transport uses sixteen T items.
 // 全V→全T；按edge寻址微核与标量h插值流水，无raw quad FIFO。
 // 本T的准备与算术返回排空后换T；已发布结果由后半独立持有。
 module gpu_v2_vliw_frontend(
@@ -86,7 +86,7 @@ module gpu_v2_vliw_frontend(
   if(reset)begin sim_import_complete<=0;sim_raster_done_seen<=0;end
   else if(ce)begin
    if(header_take)begin sim_import_complete<=0;sim_raster_done_seen<=0;end
-   if(fwv&&fwr&&fwi==18)sim_import_complete<=1;
+   if(fwv&&fwr&&fwi==15)sim_import_complete<=1;
    if(done_raster)sim_raster_done_seen<=1;
    if(local_drain&&bridge_busy)$fatal(1,"模块排空未涵盖导入");
    if(header_take&&(active_config||!local_drain))$fatal(1,"T配置生命周期重叠");

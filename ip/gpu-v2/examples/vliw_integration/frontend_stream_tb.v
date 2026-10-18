@@ -74,15 +74,15 @@ always @(posedge clk)begin
    if(consumer_busy)headers_with_pending=headers_with_pending+1;
   end
   if(dut.fwv&&dut.fwr)begin
-   if(wi>=19||dut.fwi!==wi[4:0]||dut.fwd!==words[(pi-1)*19+wi])$fatal(1,"raw19 packet%0d word%0d",pi-1,wi);
+   if(wi>=16||dut.fwi!==wi[4:0]||dut.fwd!==words[(pi-1)*16+wi])$fatal(1,"raw16 packet%0d word%0d",pi-1,wi);
    wi=wi+1;
   end
   if(dut.meshlet.core.launch_t)begin
-   if(vi!=NV*6||ti>=NT||dut.meshlet.core.triangle_descriptor!==admissions[ti])$fatal(1,"allV then allT");
+   if(vi!=NV*5||ti>=NT||dut.meshlet.core.triangle_descriptor!==admissions[ti])$fatal(1,"allV then allT");
    ti=ti+1;
   end
   if(emit_valid&&output_ready)begin
-   if(vi>=NV*6||emit_addr!==vi[9:0]||emit_data!==vertices[vi])$fatal(1,"V96 output %0d",vi);
+   if(vi>=NV*5||emit_addr!==vi[9:0]||emit_data!==vertices[vi])$fatal(1,"V96 output %0d",vi);
    vi=vi+1;
   end
   if(quad_valid&&quad_ready)begin
@@ -126,8 +126,8 @@ task tick;begin
  end
 end endtask
 initial begin
- $readmemh({DATA,"/vertices.hex"},vertices,0,NV*6-1);$readmemh({DATA,"/admissions.hex"},admissions,0,NT-1);
- $readmemh({DATA,"/descriptors.hex"},descriptors,0,NP-1);$readmemh({DATA,"/words.hex"},words,0,NP*19-1);$readmemh({DATA,"/rom.hex"},rom);
+ $readmemh({DATA,"/vertices.hex"},vertices,0,NV*5-1);$readmemh({DATA,"/admissions.hex"},admissions,0,NT-1);
+ $readmemh({DATA,"/descriptors.hex"},descriptors,0,NP-1);$readmemh({DATA,"/words.hex"},words,0,NP*16-1);$readmemh({DATA,"/rom.hex"},rom);
  fd=$fopen({DATA,"/events.txt"},"w");if(fd==0)$fatal(1,"event file");tick();reset=0;
  for(j=0;j<256;j=j+1)begin table_valid=1;table_index=j;table_data=rom[j];accepted=0;while(!accepted)begin tick();accepted=table_taken;end end table_valid=0;
  dm=$fopen({DATA,"/dma.txt"},"r");
@@ -136,7 +136,7 @@ initial begin
  end end $fclose(dm);dma_we=0;
  while(!idle||!meshlet_ready)tick();start=1;accepted=0;while(!accepted)begin tick();accepted=start_taken;end start=0;
  while(!saw_done||!idle||consumer_busy)tick();
- if(vi!=NV*6||ti!=NT||pi!=NP||published_vertices!=NV)$fatal(1,"final counts");
+ if(vi!=NV*5||ti!=NT||pi!=NP||published_vertices!=NV)$fatal(1,"final counts");
  $display("PASS FRONTEND cycles=%0d quads=%0d peak=%0d full_ce=%0d headers_pending=%0d ce0=%0d",cycle,sequence_id,peak,full_ce,headers_with_pending,ce0_checks);$fclose(fd);$finish;
 end
 initial begin #@MAXTIME@;$fatal(1,"HDL timeout");end

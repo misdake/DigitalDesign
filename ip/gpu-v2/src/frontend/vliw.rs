@@ -1,7 +1,8 @@
 //! Adopted V96 all-vertex/all-triangle front end, with direct result writes.
 
 /// Current arithmetic source; the result pool belongs to the combined parent.
-/// Vertex bytes are identical to vliw-v2@72488fd (see vliw/origin.json).
+/// Vertex arithmetic and its control ROM retain the recorded origin.
+/// Output transport stores S12F10 normals in one N36 row and exports 16 T items.
 pub fn verilog(portable: bool) -> String {
     let mut source = if portable {
         "`define PORTABLE\n".to_owned()

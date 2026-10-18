@@ -43,6 +43,6 @@ python ip/gpu-v2/tests/vliw_sdram.py --tag replay-stage3-new --mode both --stres
 
 每次完整回放必须使用新 tag。环境使用 `IVERILOG_EXE`、`VVP_EXE`、`GOWIN_HOME`；并行 Cargo 作业应使用独立 `CARGO_TARGET_DIR`。完整 runner 有有限周期上限和进程超时，保存实际硬件依赖清单并检查运行中源码未变。
 
-portable 运行真实兔子与 box，native 运行两页完整兔子；两份硬件源清单相同，但负载不同，不要求跨负载 trace 相等。它们从真实 SDRAM 引脚装填输入，逐项核对 V/T/raw19/h/I、Lighting、采样、Final 和物理 framebuffer。portable 定向覆盖脏 flush 阻挡 config；重复兔子的 native 用例覆盖真实 LESS 拒绝，末尾缓存可能已干净。
+portable 运行真实兔子与 box，native 运行两页完整兔子；两份硬件源清单相同，但负载不同，不要求跨负载 trace 相等。它们从真实 SDRAM 引脚装填输入，逐项核对 V/T/h/I、Lighting、采样、Final 和物理 framebuffer。早期阶段3使用V6／T19；当前维护脚本使用V5／T16，格式见[合体实现](vliw-integration.md)，当前重放身份见[布局证据](../examples/vliw_integration/layout-evidence.json)。portable 定向覆盖脏 flush 阻挡 config；重复兔子的 native 用例覆盖真实 LESS 拒绝，末尾缓存可能已干净。
 
 引脚仿真的相关时钟约为49.5MHz逻辑／99MHz控制器，属于功能模型证据。它不代替54MHz布局布线、CPU／显示共同争用、任意纹理工作集或板测。malformed／abort 的详细故障注入属于冻结 loader／router 单体收据；不能把正常整链回放扩大为全部故障资格。

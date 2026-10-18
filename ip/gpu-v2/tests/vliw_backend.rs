@@ -36,6 +36,20 @@ fn emit_vliw_backend() {
         ] {
             assert!(!s.contains(dead), "{dead}");
         }
+        let top = &s[s.find("module gpu_v2_vliw_backend(").unwrap()..];
+        let top = &top[..top.find("endmodule").unwrap()];
+        for dead in [
+            "depth_rows",
+            "join_depth_read",
+            "depth_reserved",
+            "depth_pending",
+            "depth_tag",
+            "depth_valid",
+        ] {
+            assert!(!top.contains(dead), "selected join still contains {dead}");
+        }
+        assert!(top.contains(".depth_read(sink_color_accept)"));
+        assert!(top.contains("wire output_issued=issue_ahead||(issue_lane>out_lane)"));
         fs::write(out.join(format!("backend-{name}.v")), s).unwrap();
     }
 }

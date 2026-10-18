@@ -173,18 +173,18 @@ end endtask
 task prepare_task;input integer taskno,vn,tn,pn;input use_slot;
 reg[1023:0]path;begin
  while(!frontend_idle||!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;wi=0;saw_done=0;
- $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*6-1);
+ $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*5-1);
  $sformat(path,"task%0d/admissions.hex",taskno);$readmemh(path,admissions,0,nt-1);
  if(np>0)begin
   $sformat(path,"task%0d/descriptors.hex",taskno);$readmemh(path,descriptors,0,np-1);
-  $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*19-1);
+  $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*16-1);
  end
  start=1;start_taken=0;while(!start_taken)tick();start=0;mesh_start=cycle;
  $display("START task=%0d cycle=%0d",task_id,cycle);
 end endtask
 task finish_task;begin
  while(!saw_done||!frontend_idle)tick();mesh_front_end=cycle;
- if(vi!=nv*6||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
+ if(vi!=nv*5||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
  $display("MESH task=%0d cycles=%0d end=%0d V=%0d T=%0d P=%0d",task_id,cycle-mesh_start,cycle,vi/6,ti,pi);
 end endtask
 '''
@@ -290,6 +290,7 @@ def main():
     S=load('full_bunny_sdram_helpers',ROOT/'ip/gpu-v2/tests/vliw_sdram.py')
     V=load('full_bunny_integer_audit',HERE/'verify_stage2.py')
     O=load('full_bunny_front_oracle',HERE/'reference/scene/oracle.py')
+    O = load('current_transport', HERE / 'transport.py').adapt_oracle(O)
     batches,info=mesh(a.ply);assert 0<len(batches)<=2048
     camera=camera_for(a.camera)
     uniform=camera['uniform'];packets=[];metas=[];instances=[]
@@ -335,7 +336,8 @@ def main():
     receipt=dict(status='pass',info=info,counts=counts,timing=timing,activity=activity,exclusive_wall=wall,simulation_seconds=seconds,
         at_54MHz=dict(frame_ms=timing['total']/54000,fps=54000000/timing['total']),
         boundary='All source faces; current GPU RTL with actual main arbiter/bridge/controller and independent pin model; no CPU/display contention; preclear/ROM setup excluded; first load and final flush included. Functional clocks 49.5/99 MHz; 54 MHz is cycle scaling only.',
-        source_sha256=origins,runner_sha256=runner_sha,rtl_sources={p.name:SHA(p) for p in out.glob('*.v')},
+        source_sha256=origins,runner_sha256=runner_sha,
+        runner_support_sha256={p.name:SHA(p) for p in [HERE/'transport.py',HERE/'stage2_tb.v',HERE/'verify_stage2.py',ROOT/'ip/gpu-v2/tests/vliw_sdram.py']},rtl_sources={p.name:SHA(p) for p in out.glob('*.v')},
         dut_sha256=SHA(out/'dut.v'),front_sha256=SHA(out/'front.txt'),back_sha256=SHA(out/'back.txt'),memory_sha256=SHA(out/'memory.mem'))
     (out/'receipt.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2))
     print(json.dumps({k:v for k,v in receipt.items() if k not in ['source_sha256']},ensure_ascii=False,indent=2),flush=True)

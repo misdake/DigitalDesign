@@ -1,6 +1,6 @@
 """共享权威池→实际完整后半的小型整数回放；不含前半RTL资格。"""
 from pathlib import Path
-import importlib.util,sys,inspect,hashlib
+import importlib.util,sys,inspect,hashlib,os
 P=Path(__file__).with_name('direct_lod_complete.py')
 spec=importlib.util.spec_from_file_location('stage1_frozen_replay',P);m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
 m.O=m.R/'target/gpu-vliw-integration-20261018/stage2';m.O.mkdir(exist_ok=True)
@@ -65,6 +65,10 @@ t=t.replace('  clk=1;#2;clk=0;#1;','''  clk=1;#2;clk=0;#1;
    front_ticks=front_ticks+1;
   end'''.replace('@SERIAL_DRAIN@',SERIAL_DRAIN))
 t=t.replace('integer wall=0,','integer peak=0,wraps=0;integer wall=0,')
+t=t.replace('integer peak=0,', 'integer source_reads=0,source_skips=0;integer z_reads=0,z_depths=0;reg z_owner=0,z_pending=0,z_keep=0;reg[6:0]z_key;reg[15:0]z_expected,z_held;integer peak=0,')
+hold_cycles=int(os.environ.get('VLIW_SOURCE_HOLD_CYCLES','0'));assert 0<=hold_cycles<=200
+t=t.replace('integer source_reads=0,', 'integer source_hold_left=0,source_hold_steps=0;reg source_hold_used=0,source_q_hold=0;reg[75:0]source_q;integer source_reads=0,')
+t=t.replace('  quad_valid=0;', '  if(source_hold_left>0)begin ce=0;source_hold_left=source_hold_left-1;source_hold_steps=source_hold_steps+1;end\n  quad_valid=0;')
 t=t.replace('  if(published)pubs=pubs+1;','  if(global_used>peak)peak=global_used;\n  if(published)begin pubs=pubs+1;if(published_slot==31)wraps=wraps+1;end')
 t=t.replace('liveQ=%0d pixels=', 'publishedQ=%0d pixels=')
 t=t.replace('   for(i=0;i<@BYTES@;', '   $display("POOL peak=%0d fullslot31=%0d empty_skips=%0d",peak,wraps,skips);\n   for(i=0;i<@BYTES@;')
@@ -72,11 +76,32 @@ t=t.replace('   for(i=0;i<@BYTES@;', '   $display("POOL peak=%0d fullslot31=%0d 
 t=t.replace('  if(published)pubs=pubs+1;', '  if(published)pubs=pubs+1;')
 t=t.replace('  if(dut.advance)enabled=enabled+1;', '\n'.join([
  '  if(dut.advance)enabled=enabled+1;',
+ '  if(source_q_hold&&{dut.basic_data,dut.light_data,dut.sample_data,dut.input_bypass,dut.issue_slot,dut.issue_lane,dut.state}!==source_q)$fatal(1,"CE0 changed J_WAIT source ownership");',
+ '  source_q_hold=!ce&&dut.state==dut.J_WAIT;source_q={dut.basic_data,dut.light_data,dut.sample_data,dut.input_bypass,dut.issue_slot,dut.issue_lane,dut.state};',
+ f'  if(dut.advance&&dut.read_values&&!source_hold_used)begin source_hold_used=1;source_hold_left={hold_cycles};end',
+ '  if(dut.advance&&dut.read_values)begin if(!dut.covered)$fatal(1,"masked source RAM read");source_reads=source_reads+1;end',
+ '  if(dut.advance&&dut.skip_issue)begin',
+ '   if(dut.covered||dut.basic_read||dut.state!=dut.J_READ||dut.final_in_valid||!dut.issue_room)$fatal(1,"masked lane did not bypass operands and wait");',
+ '   source_skips=source_skips+1;',
+ '  end',
+ '  if(z_pending&&dut.depth_data!==z_expected)$fatal(1,"C-paid Z return mismatch");',
+ '  if(z_keep&&dut.depth_data!==z_held)$fatal(1,"Z Q changed without a C acceptance");',
+ '  z_pending=dut.sink_color_accept;z_keep=!dut.sink_color_accept;z_held=dut.depth_data;',
+ '  if(dut.sink_color_accept)begin',
+ '   if(z_owner||!dut.output_issued)$fatal(1,"C overtook paired D or source issue");',
+ '   z_owner=1;z_key={dut.retire_slot,dut.out_lane};z_reads=z_reads+1;',
+ '   z_expected=rom[slot_job[dut.retire_slot]*8+dut.out_lane*2+1]>>76;',
+ '  end',
+ '  if(dut.lane_accept)begin',
+ '   if(!z_owner||!dut.color_paid||z_key!=={dut.retire_slot,dut.out_lane}||dut.depth_data!==z_expected)$fatal(1,"D without its C-paid Z Q");',
+ '   z_owner=0;z_depths=z_depths+1;',
+ '  end',
  '  $fdisplay(fd,"B %0d %h %0d %0d",wall,{ce,front_ce,(front_ce&&quad_valid&&quad_ready),dut.advance,published,dut.front.quad.normal_write,dut.front.quad.uv_write,dut.front.quad.basic_write,(dut.advance&&dut.basic_read),dut.front.light.pixel_accepted,light_result,dut.front.sample_fire,dut.front.sampling.c_issue,dut.front.coefficient_accept,dut.front.backend.member_issue,dut.front.demand.read_issue,dut.front.color.input_fire,dut.public_publish,sample_result,final_issue,final_result,dut.lane_accept,quad_accepted,empty_skipped,commit_valid,(mem_req_valid&&mem_req_ready),mem_read_valid,(mem_write_valid&&mem_write_ready),mem_complete_valid},dut.issue_slot,dut.retire_slot);',
  '  if(dut.front.quad.normal_write)$fdisplay(fd,"N %0d %h %h",wall,dut.front.quad.normal_bank.wa,dut.front.quad.normal_bank.wd);',
  '  if(dut.front.quad.uv_write)$fdisplay(fd,"U %0d %h %h",wall,dut.front.quad.uv_bank.wa,dut.front.quad.uv_bank.wd);',
  '  if(dut.front.quad.basic_write)$fdisplay(fd,"D %0d %h %h",wall,dut.front.quad.basic_bank.wa,dut.front.quad.basic_bank.wd);'
 ]))
+t=t.replace('   for(i=0;i<@BYTES@;', f'   if(source_hold_steps!={hold_cycles})$fatal(1,"source CE0 hold coverage");\n   if(z_owner||z_reads!=@LIVE@*4||z_depths!=z_reads)$fatal(1,"paired Z conservation");\n   if(source_reads!=@PIXELS@||source_skips!=@LIVE@*4-@PIXELS@)$fatal(1,"covered read/masked skip conservation");\n   $display("SOURCE reads=%0d skips=%0d holdCE0=%0d",source_reads,source_skips,source_hold_steps);\n   for(i=0;i<@BYTES@;')
 m.TB=t
 s=inspect.getsource(m.main)
 s=s.replace("ap.add_argument('--tag',default='v2')","ap.add_argument('--tag',default='producer-calendar-v1')")

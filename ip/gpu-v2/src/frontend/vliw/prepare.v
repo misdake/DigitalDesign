@@ -25,7 +25,7 @@ module rp_prepare(
  CFG_COMMIT=26,FINISH=28,FAULT=29,Q_READ=30;
  reg[4:0]state,expected;reg[1:0]edge_no,field;
  reg[4:0]edge_exp,remaining,exp0,exp1,exp2,common_e;
- reg[52:0]work;wire[46:0]magnitude=work[46:0];reg negative,sigma,rgb,normal_mode;reg[3:0]tri_shift;
+ reg[52:0]work;wire[46:0]magnitude=work[46:0];reg negative,sigma,rgb;reg[3:0]tri_shift;
  reg[31:0]far_z;reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
  wire[52:0]delta;reg[5:0]delta_e;reg normalizing;
 
@@ -35,9 +35,8 @@ module rp_prepare(
  assign busy=state!=IDLE;assign import_busy=(state>=COLLECT&&state<=THIRD)||state==Q_READ;
  assign math_busy=state==CORE||state==CFG_COMMIT||state==FINISH;
  assign done=state==FINISH;
- wire input_xy,input_z,input_attr;
- assign in_ready=!reset&&(state==COLLECT||(state==TAIL&&(in_index==9||input_z))||
-  (state==SECOND&&input_xy)||state==THIRD);
+ wire input_normal,input_attr;
+ assign in_ready=!reset&&(state==COLLECT||(state==TAIL&&in_index==9)||state==THIRD);
  wire input_take=in_valid&&in_ready;
  wire is_c=in_index==2||in_index==5||in_index==8;
  wire[46:0]raw_value=is_c ? in_data[46:0] : {{11{in_data[35]}},in_data[35:0]};
@@ -58,42 +57,33 @@ module rp_prepare(
  assign geo_wa={field,edge_no};
  assign geo_wd=field==2 ? canonical[29:0] : {canonical[28:0],1'b0};
  wire q_take=geo_we;
- assign input_xy=in_index==10||in_index==13||in_index==16;
- assign input_z=in_index==11||in_index==14||in_index==17;
- assign input_attr=in_index==12||in_index==15||in_index==18;
+ assign input_normal=in_index==10||in_index==12||in_index==14;
+ assign input_attr=in_index==11||in_index==13||in_index==15;
  reg[1:0]input_vertex;
- always @*case(in_index)10,11,12:input_vertex=0;13,14,15:input_vertex=1;default:input_vertex=2;endcase
- function [11:0] normal12;
-  input [17:0] raw;input mode;
-  reg [17:0] value;reg signed [12:0] rounded;
-  begin
-   if(mode)value=raw;else value={raw[15:0],2'b0};
-   rounded=$signed({value[17],value[17:6]});
-   if(value[5]&&((|value[4:0])||value[6]))rounded=rounded+13'sd1;
-   if(rounded>13'sd2047)normal12=12'h7ff;
-   else if(rounded< -13'sd2048)normal12=12'h800;
-   else normal12=rounded[11:0];
-  end
- endfunction
- // 直接消费前端保持Q；在本字最后固定写槽确认，所有子项只存最终参数池。
- wire[17:0]normal_input=state==SECOND ? in_data[35:18] : in_data[17:0];
- wire[11:0]normal_value=normal12(normal_input,normal_mode);
+ always @*case(in_index)10,11:input_vertex=0;12,13:input_vertex=1;default:input_vertex=2;endcase
+ reg[11:0]normal_value;
+ always @*case(state)
+  TAIL:normal_value=in_data[11:0];
+  SECOND:normal_value=in_data[23:12];
+  default:normal_value=in_data[35:24];
+ endcase
  reg[15:0]raw_attribute;
  always @*begin
   if(state==TAIL)begin
-   if(input_xy||input_z)raw_attribute={{4{normal_value[11]}},normal_value};
+   if(input_normal)raw_attribute={{4{normal_value[11]}},normal_value};
    else if(rgb)raw_attribute={8'd0,in_data[7:0]};else raw_attribute=in_data[15:0];
   end else if(state==SECOND)begin
-   if(!input_attr)raw_attribute={{4{normal_value[11]}},normal_value};
+   if(input_normal)raw_attribute={{4{normal_value[11]}},normal_value};
    else if(rgb)raw_attribute={8'd0,in_data[15:8]};else raw_attribute=in_data[31:16];
   end else begin
-   if(rgb)raw_attribute={8'd0,in_data[23:16]};else raw_attribute=0;
+   if(input_normal)raw_attribute={{4{normal_value[11]}},normal_value};
+   else if(rgb)raw_attribute={8'd0,in_data[23:16]};else raw_attribute=0;
   end
  end
  wire tail_first=state==TAIL&&in_valid&&!reset;
- wire attribute_write=(tail_first&&(input_xy||input_z||input_attr))||state==SECOND||state==THIRD;
- wire[3:0]attribute_row=state==TAIL ? (input_xy ? 4'd0 : input_z ? 4'd2 : 4'd3) :
-  state==SECOND ? (input_attr ? 4'd4 : 4'd1) : 4'd5;
+ wire attribute_write=(tail_first&&(input_normal||input_attr))||state==SECOND||state==THIRD;
+ wire[3:0]attribute_row=state==TAIL ? (input_normal ? 4'd0 : 4'd3) :
+  state==SECOND ? (input_normal ? 4'd1 : 4'd4) : (input_normal ? 4'd2 : 4'd5);
  wire[1:0]attribute_vertex=input_vertex;
  assign pw_low_we=pw_low0_we||pw_low1_we;
  // PW6..8复用当前edge的三份48bit原记录，不另建量化池。
@@ -146,7 +136,7 @@ module rp_prepare(
  end
  wire core_a_re,core_a_we,core_b_re,core_b_we,core_c_re,core_c_we,core_issue,core_asign,core_active,core_done;
  wire[3:0]core_ar,core_br,core_bw,core_cr,core_cw;wire[17:0]core_ad;wire[35:0]core_bd;wire[53:0]core_cd;
- wire core_start=state==THIRD&&in_index==18&&!reset;
+ wire core_start=state==THIRD&&in_index==15&&!reset;
  rp_prepare_core core(clk,reset,ce,core_start,rgb,{seed_sign_y,seed_sign_x},pw_q[35:0],pw_q[89:36],wide_result_data,
   core_a_re,core_ar,core_a_we,core_ad,core_b_re,core_br,core_b_we,core_bw,core_bd,
   core_c_re,core_cr,core_c_we,core_cw,core_cd,core_issue,core_asign,core_active,core_done,
@@ -258,7 +248,7 @@ module rp_prepare(
  always @(posedge clk)begin
   if(reset)begin
    state<=IDLE;expected<=0;edge_no<=0;field<=0;edge_exp<=0;remaining<=0;
-   exp0<=0;exp1<=0;exp2<=0;common_e<=0;negative<=0;sigma<=0;rgb<=0;normal_mode<=0;tri_shift<=0;
+   exp0<=0;exp1<=0;exp2<=0;common_e<=0;negative<=0;sigma<=0;rgb<=0;tri_shift<=0;
    far_z<=0;tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;
    delta_e<=0;normalizing<=0;
    seed_sign_x<=0;seed_sign_y<=0;error<=0;
@@ -275,7 +265,7 @@ module rp_prepare(
     else begin
      state<=COLLECT;expected<=0;edge_no<=0;field<=0;edge_exp<=0;normalizing<=0;
      exp0<=0;exp1<=0;exp2<=0;common_e<=0;error<=0;
-     sigma<=descriptor[22];rgb<=descriptor[23];normal_mode<=descriptor[24];tri_shift<=descriptor[21:18];
+     sigma<=descriptor[22];rgb<=descriptor[23];tri_shift<=descriptor[21:18];
      far_z<=cfg_far_z;tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;bias<=cfg_bias;
     end
    end else begin
@@ -322,13 +312,11 @@ module rp_prepare(
        expected<=expected+1'b1;
        if(in_data==0||in_data[53])error[1]<=1;
        delta_e<=52;normalizing<=1;
-      end else if(input_xy||input_attr)state<=SECOND;
-      else if(input_z)expected<=expected+1'b1;
+      end else if(input_normal||input_attr)state<=SECOND;
       else begin error[0]<=1;state<=FAULT;end
      end
-     SECOND:if(input_attr)state<=THIRD;
-      else begin expected<=expected+1'b1;state<=TAIL;end
-     THIRD:begin expected<=expected+1'b1;if(in_index==18)state<=CORE;else state<=TAIL;end
+     SECOND:state<=THIRD;
+     THIRD:begin expected<=expected+1'b1;if(in_index==15)state<=CORE;else state<=TAIL;end
     CORE:if(core_done)state<=CFG_COMMIT;
     CFG_COMMIT:if(cfg_apply)state<=FINISH;
     FINISH:state<=IDLE;

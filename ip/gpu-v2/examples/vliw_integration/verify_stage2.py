@@ -157,6 +157,7 @@ def main():
     execute([cargo,'build','--release','-p','gpu-v2','--example','vliw_integration'],ROOT,out/'gold-build.log')
     exe=Path(env['CARGO_TARGET_DIR'])/'release/examples/vliw_integration.exe'
     ref=HERE/'reference';spec=importlib.util.spec_from_file_location('stage2_independent_oracle',ref/'scene/oracle.py');O=importlib.util.module_from_spec(spec);spec.loader.exec_module(O)
+    ts=importlib.util.spec_from_file_location('current_transport',HERE/'transport.py');T=importlib.util.module_from_spec(ts);ts.loader.exec_module(T);O=T.adapt_oracle(O)
     fixtures=json.loads((ref/'uv-inputs.json').read_text());original=next(x for x in fixtures['scenes'][0]['meshlets'] if x['name']==a.name)
     instances=[copy.deepcopy(original)]
     if a.rgb_repeat:instances.append(copy.deepcopy(original));instances[-1]['color_mode']=1
@@ -167,7 +168,7 @@ def main():
     # 阶段3的未使用SDRAM/DMA工厂由另一个线程开发，不是本工厂的依赖。
     unrelated={'vliw_sdram.rs','vliw_sdram.v','vliw_memory.rs','vliw_memory.v','vliw_dma.rs','vliw_dma.v','mod.rs'}
     sources={str(p.relative_to(ROOT)).replace('\\','/'):SHA(p) for p in (ROOT/'ip/gpu-v2/src').rglob('*') if p.suffix in ('.rs','.v','.vh') and p.name not in unrelated}
-    for p in list(ref.rglob('*'))+[Path(__file__),HERE/'stage2_tb.v',HERE/'main.rs']:
+    for p in list(ref.rglob('*'))+[Path(__file__),HERE/'transport.py',HERE/'stage2_tb.v',HERE/'main.rs']:
         if p.is_file() and p.suffix in ('.json','.py','.v','.rs'):sources[str(p.relative_to(ROOT)).replace('\\','/')]=SHA(p)
     (out/'source-manifest.json').write_text(json.dumps(sources,indent=2));reports=[]
     for rel,h in sources.items():

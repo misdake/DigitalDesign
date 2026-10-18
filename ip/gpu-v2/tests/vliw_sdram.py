@@ -178,17 +178,17 @@ end endtask
 task prepare_task;input integer taskno,vn,tn,pn;input use_slot;
 reg[1023:0]path;begin
  while(!frontend_idle||!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;wi=0;saw_done=0;
- $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*6-1);
+ $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*5-1);
  $sformat(path,"task%0d/admissions.hex",taskno);$readmemh(path,admissions,0,nt-1);
  $sformat(path,"task%0d/descriptors.hex",taskno);$readmemh(path,descriptors,0,np-1);
- $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*19-1);
+ $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*16-1);
 end endtask
 task launch_task;begin
  start=1;start_taken=0;while(!start_taken)tick();start=0;
 end endtask
 task finish_task;begin
  while(!saw_done||!frontend_idle)tick();
- if(vi!=nv*6||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
+ if(vi!=nv*5||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
 end endtask
 '''
 
@@ -325,6 +325,7 @@ def main():
     out = OUT / a.tag; out.mkdir(parents=True, exist_ok=False)
     V = load('stage3_reuse_stage2_gold', HERE / 'verify_stage2.py')
     O = load('stage3_independent_front_math', HERE / 'reference/scene/oracle.py')
+    O = load('current_transport', HERE / 'transport.py').adapt_oracle(O)
     fixtures = json.loads((HERE / 'reference/uv-inputs.json').read_text())
     instances = [copy.deepcopy(next(x for x in fixtures['scenes'][0]['meshlets'] if x['name'] == name)) for name in ['bunny_patch_1', 'box_x_minus']]
     packets, metas = [], []
@@ -339,7 +340,7 @@ def main():
     execute([cargo, 'test', '-p', 'gpu-v2', '--test', 'vliw_sdram', 'export_real_shared_sdram_peer', '--', '--nocapture'], ROOT, out / 'mc-export.log', env=env)
     gold_exe = Path(env['CARGO_TARGET_DIR']) / 'release/examples/vliw_integration.exe'
     exporter = Path(env['CARGO_TARGET_DIR']) / 'release/gpu-v2-vliw-export.exe'
-    snapshots = [Path(__file__), ROOT / 'ip/gpu-v2/tests/vliw_sdram.rs', HERE / 'verify_stage2.py', HERE / 'stage2_tb.v', HERE / 'main.rs']
+    snapshots = [Path(__file__), ROOT / 'ip/gpu-v2/tests/vliw_sdram.rs', HERE / 'verify_stage2.py', HERE / 'transport.py', HERE / 'stage2_tb.v', HERE / 'main.rs']
     snapshots += [p for p in (HERE / 'reference').rglob('*') if p.is_file() and p.suffix in ('.py', '.json', '.rs', '.v')]
     sources = {str(p.relative_to(ROOT)).replace('\\', '/'): SHA(p) for p in snapshots}
     reports = []; origins = None

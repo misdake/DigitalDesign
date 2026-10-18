@@ -1,6 +1,6 @@
 {
   "origin_commit": "72488fde0f6e529b65a69c45868b2804462e9b25",
-  "scope": "当前V/T/R/I算术源；独立旧transport/top/pipeline不纳入，Vertex字节保持",
+  "scope": "初次采用V/T/R/I时的历史来源身份；独立旧transport/top/pipeline不纳入。以下哈希保留初次采用记录，不表示当前全部源码仍逐字节相同；当前N12/T16布局见examples/vliw_integration/layout-evidence.json，Vertex乘加、位置和控制ROM保持。",
   "files": {
     "vliw/prepare.v": {
       "original_sha256": "a13d9e8ea895196bbb1860c68fe095f07b9d432a4a94d681d6fcad5da5a517f3",

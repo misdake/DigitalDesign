@@ -252,6 +252,7 @@ pub fn verilog_selected(
     // Replace the selected consumer as one unit; the independent Light2 reference remains.
     let (light_a, light_b) = span(&source, "gpu_v2_pixel_lighting_consumer")?;
     source.replace_range(light_a..light_b, include_str!("vliw_lighting_tuple.v"));
+    lower_pool_layout(&mut source)?;
     let result = reachable(&source, MODULE)?;
     Ok(format!(
         "{}{}{}",
@@ -267,6 +268,214 @@ pub fn verilog_selected(
         },
         result
     ))
+}
+
+/// Replace the selected join calendar as a unit. Z is owned by the producer
+/// bank until the paired ROP depth acceptance; it never enters a staging ring.
+fn lower_pool_layout(source: &mut String) -> Result<(), String> {
+    let top = MODULE;
+    patch(
+        source,
+        top,
+        "wire basic_read,basic_valid,basic_collision;",
+        "wire basic_read,basic_collision;",
+    )?;
+    patch(source, top, ".basic_return_valid(basic_valid),", "")?;
+    patch(source, top, "wire[7:0]basic_address;wire[23:0]basic_data;",
+        "wire[6:0]basic_address;wire[23:0]basic_data;wire[15:0]depth_data;\n wire sink_color_accept;reg[1:0]out_lane;")?;
+    patch(source, top, ".basic_return_data(basic_data),.basic_collision(basic_collision),",
+        ".basic_return_data(basic_data),.basic_collision(basic_collision),\n .depth_read(sink_color_accept),.depth_read_address({retire_slot,out_lane}),.depth_data(depth_data),")?;
+    patch(source, top, "reg[2:0]state;reg[1:0]issue_lane,out_lane;\n reg paid;reg[3:0]depth_valid,depth_reserved;\n reg[15:0]depth_rows[0:3];\n reg depth_pending;reg[1:0]depth_tag,input_bypass;\n localparam J_READ=0,J_WAIT=1,J_ISSUE=2,J_DEPTH=3,J_DEPTH_WAIT=4,J_DRAIN=5;",
+        "reg state;reg[1:0]issue_lane;\n reg[1:0]input_bypass;\n localparam J_READ=0,J_WAIT=1;")?;
+    patch(
+        source,
+        top,
+        "wire lane_ready,lane_accept,sink_color_accept,sink_color_ready;",
+        "wire lane_ready,lane_accept,sink_color_ready;",
+    )?;
+    patch(source, top, "wire join_value_read=active&&(|issue_header[3:0])&&state==J_READ&&issue_exists&&issue_light_ready&&issue_sample_ready&&!depth_reserved[issue_lane];\n // Only old free rows pay reads. A retirement or publication on this edge\n // cannot fund a reservation. The producer never crosses a second quad.\n wire join_depth_read=active&&state==J_WAIT&&(paid||basic_valid)&&(!covered||final_in_ready)&&(!issue_ahead||issue_lane!=3);\n wire read_values=join_value_read;\n assign basic_read=join_value_read||join_depth_read;\n assign basic_address={issue_slot,issue_lane,state==J_WAIT};",
+        r#"wire source_exists=active&&(|issue_header[3:0])&&issue_exists;
+ wire issue_room=!issue_ahead||issue_lane!=3;
+ wire join_value_read=source_exists&&state==J_READ&&covered&&issue_light_ready&&issue_sample_ready;
+ // READ_MODE0 updates all three Qs on the J_READ edge. J_WAIT itself
+ // owns complete source Q until Final accepts; CE0 freezes state and Q.
+ // The cursor may enter the next quad, but cannot cross its final lane.
+ wire join_issue=active&&state==J_WAIT&&final_in_ready&&issue_room;
+ // A masked lane owns no arithmetic operands: advance its ordered prefix
+ // directly, with no source RAM read, paid return or J_WAIT transition.
+ wire skip_issue=source_exists&&state==J_READ&&!covered&&issue_room;
+ wire source_advance=join_issue||skip_issue;
+ wire read_values=join_value_read;
+ assign basic_read=join_value_read;
+ assign basic_address=read_key;
+ // This ordered prefix also covers lanes which produce no Final token.
+ // A lane cannot reach ROP until its real source/issue cursor has passed it.
+ wire output_issued=issue_ahead||(issue_lane>out_lane);"#)?;
+    patch(source, top, "issue_slot==retire_slot&&state==J_READ&&issue_lane==0&&!paid&&!depth_pending&&\n  depth_reserved==0&&depth_valid==0&&!color_paid&&!final_out_valid;",
+        "issue_slot==retire_slot&&state==J_READ&&issue_lane==0&&!color_paid&&!final_out_valid;")?;
+    patch(source, top, "wire lane_valid=active&&depth_valid[out_lane]&&(!out_covered||final_out_valid||color_paid);",
+        "wire lane_valid=active&&output_issued&&(!out_covered||final_out_valid||color_paid);")?;
+    patch(
+        source,
+        top,
+        ".depth(depth_rows[out_lane])",
+        ".depth(depth_data)",
+    )?;
+    patch(source, top, "stopped<=0;active<=0;state<=J_READ;paid<=0;depth_valid<=0;color_paid<=0;issue_slot<=0;depth_reserved<=0;depth_pending<=0;depth_tag<=0;input_bypass<=0;",
+        "stopped<=0;active<=0;state<=J_READ;color_paid<=0;issue_slot<=0;input_bypass<=0;")?;
+    patch(source, top, "// A paid depth return owns its tagged ring row even on CE0.\n   depth_pending<=advance&&join_depth_read;\n   if(advance&&join_depth_read)depth_tag<=issue_lane;\n   if(depth_pending&&basic_valid)begin\n    depth_rows[depth_tag]<=basic_data[15:0];depth_valid[depth_tag]<=1;\n   end\n   if(active&&state==J_WAIT&&basic_valid&&!depth_pending)paid<=1;",
+        "// J_WAIT owns synchronous RGB/GH/texture Q through CE0 and backpressure.")?;
+    patch(
+        source,
+        top,
+        "state<=J_WAIT;paid<=0;depth_reserved[issue_lane]<=1;",
+        "state<=J_WAIT;",
+    )?;
+    patch(source, top, "wire final_in_valid=active&&state==J_WAIT&&(paid||basic_valid)&&covered&&(!issue_ahead||issue_lane!=3);",
+        "wire final_in_valid=active&&state==J_WAIT&&issue_room;")?;
+    patch(
+        source,
+        top,
+        "    if(active)case(state)\n     J_READ:if(join_value_read)begin",
+        "    if(join_value_read)begin",
+    )?;
+    patch(source, top, "     end\n     J_WAIT:if(join_depth_read)begin\n      state<=J_READ;paid<=0;\n      if(issue_lane==3)begin issue_lane<=0;issue_slot<=issue_slot+5'd1;end\n      else issue_lane<=issue_lane+1'b1;\n     end\n    endcase\n    if(empty_skip)issue_slot<=issue_slot+5'd1;",
+        r#"    end
+    if(source_advance)state<=J_READ;
+    // Every source prefix step, including a whole empty quad, has one owner.
+    if(source_advance||empty_skip)begin
+     if(empty_skip||issue_lane==3)begin issue_lane<=0;issue_slot<=issue_slot+5'd1;end
+     else issue_lane<=issue_lane+1'b1;
+    end"#)?;
+    patch(source, top, "if(lane_accept)begin out_lane<=out_lane+1'b1;color_paid<=0;depth_valid[out_lane]<=0;depth_reserved[out_lane]<=0;end",
+        "if(lane_accept)begin out_lane<=out_lane+1'b1;color_paid<=0;end")?;
+    patch(
+        source,
+        top,
+        "wire light_return,sample_return,light_collision,sample_collision;",
+        "wire light_collision,sample_collision;",
+    )?;
+    patch(source, top, ".return_valid(light_return),", "")?;
+    patch(source, top, ".return_valid(sample_return),", "")?;
+    // These selected banks have exactly the same synchronous Q ownership.
+    // Remove their unused validity pipelines too, in both physical backends.
+    for bank in ["gpu_v2_postquad_light_bank", "gpu_v2_postquad_sample_bank"] {
+        patch(source, bank, " output reg return_valid,\n", "")?;
+        patch(
+            source,
+            bank,
+            "if(reset) return_valid<=1'b0;",
+            "if(reset)begin end",
+        )?;
+        patch(
+            source,
+            bank,
+            "   return_valid<=read_en && !collision;\n",
+            "",
+        )?;
+    }
+    // Occupancy below32 makes the existing publish cursor unambiguous. The
+    // parent does not need another increment/decrement copy of that interval.
+    patch(source, top, "reg[5:0]published_count;", "")?;
+    patch(
+        source,
+        top,
+        "wire issue_exists=published_count>{5'd0,issue_ahead};",
+        "wire issue_exists=issue_slot!=published_slot;",
+    )?;
+    patch(source, top, "published_count!=0&&empty_head", "empty_head")?;
+    patch(source, top, "published_count<=0;", "")?;
+    patch(source, top, "    case({published,quad_accepted||empty_skip})\n     2'b10:published_count<=published_count+1'b1;\n     2'b01:published_count<=published_count-1'b1;\n    endcase\n", "")?;
+    patch(
+        source,
+        top,
+        "if(!active&&published_count!=0&&!empty_head)begin",
+        "if(!active&&retire_slot!=published_slot&&!empty_head)begin",
+    )?;
+    patch(
+        source,
+        top,
+        "if(published_count>1)begin",
+        "if((retire_slot+5'd1)!=published_slot)begin",
+    )?;
+    // The sink's registered C/D phase already is the C-paid fact. On a sink
+    // fault it resets while the global sticky stop suppresses every consumer.
+    patch(source, top, "reg color_paid;", "wire color_paid;")?;
+    patch(
+        source,
+        top,
+        "state<=J_READ;color_paid<=0;issue_slot",
+        "state<=J_READ;issue_slot",
+    )?;
+    patch(source, top, "    if(sink_color_accept)color_paid<=1;\n    if(lane_accept)begin out_lane<=out_lane+1'b1;color_paid<=0;end",
+        "    if(lane_accept)out_lane<=out_lane+1'b1;")?;
+    patch(
+        source,
+        top,
+        " gpu_v2_pixel_framebuffer_sink sink(",
+        " gpu_v2_pixel_framebuffer_sink sink(\n .depth_phase(color_paid),",
+    )?;
+    let sink = "gpu_v2_pixel_framebuffer_sink";
+    patch(
+        source,
+        sink,
+        " output wire raw_head_retire,",
+        " output wire depth_phase,raw_head_retire,",
+    )?;
+    patch(
+        source,
+        sink,
+        " reg phase;",
+        " reg phase;\n assign depth_phase=phase;",
+    )?;
+    // The same paired-D acceptance advances both former lane registers.
+    // Use the sink's canonical lane directly; no independent lane can mismatch.
+    patch(source, top, "reg[1:0]out_lane;", "wire[1:0]out_lane;")?;
+    patch(
+        source,
+        top,
+        "issue_lane<=0;out_lane<=0;light_complete",
+        "issue_lane<=0;light_complete",
+    )?;
+    patch(
+        source,
+        top,
+        "active<=1;header<=head_descriptor;out_lane<=0;",
+        "active<=1;header<=head_descriptor;",
+    )?;
+    patch(
+        source,
+        top,
+        "    if(lane_accept)out_lane<=out_lane+1'b1;\n",
+        "",
+    )?;
+    patch(source, top, ".lane(out_lane),", ".active_lane(out_lane),")?;
+    patch(
+        source,
+        sink,
+        " input wire lane_valid,input wire[1:0]lane,",
+        " input wire lane_valid,output wire[1:0]active_lane,",
+    )?;
+    patch(
+        source,
+        sink,
+        " wire lane_matches=(lane==expected_lane);",
+        " assign active_lane=expected_lane;",
+    )?;
+    patch(
+        source,
+        sink,
+        "wire[2:0]row_index={lane,phase};",
+        "wire[2:0]row_index={expected_lane,phase};",
+    )?;
+    let (a, b) = span(source, sink)?;
+    let body = &source[a..b];
+    if body.matches("&&lane_matches").count() != 6 {
+        return Err("selected sink lane-match ownership anchors changed".into());
+    }
+    let body = body.replace("&&lane_matches", "");
+    source.replace_range(a..b, &body);
+    Ok(())
 }
 const PRODUCER_PORTS: &str = r#" input wire front_ce,input wire[1:0]phase,input wire draw_bank,draw_unlit,
  input wire quad_valid,output wire quad_ready,output wire[2:0]quad_id,

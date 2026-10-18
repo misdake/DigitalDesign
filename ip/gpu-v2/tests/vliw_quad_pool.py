@@ -14,7 +14,7 @@ reg[7:0]qx;reg[6:0]qy;reg bank,unlit;
 reg ev=0;reg[2:0]eid;reg[3:0]emask;reg rw=0;reg[6:0]ra;reg[35:0]rd;
 reg dv=0;reg[4:0]dpid;reg[15:0]dz;reg dpass;reg lv=0;reg[2:0]lid;reg[7:0]lod;
 reg pr=0;wire pub;wire[4:0]ps;wire[22:0]pb;reg[4:0]di=0;wire[22:0]dis,dhs,dns;wire[8:0]tile,nexttile;
-reg br=0;reg[7:0]ba;wire bv,bcol;wire[23:0]bd;
+reg br=0,zr=0;reg[6:0]ba,za;wire bcol;wire[23:0]bd;wire[15:0]zd;
 reg lr=0,sr=0;wire lvalid,lcontext,svalid,slast;wire[35:0]lnormal,sdata;wire[31:0]lposition;wire[1:0]llane;wire[1:0]srow;wire[9:0]ldesc;wire[18:0]sdesc;
 reg retire=0,skip=0;reg[4:0]rid;wire empty,skipready;wire[4:0]rs;wire[5:0]used,prod,lp,sp;wire busy,fault;
 wire hint_valid;wire[8:0]hint_tile;
@@ -24,7 +24,8 @@ gpu_v2_vliw_quad_pool dut(.clk(clk),.reset(reset),.front_ce(fc),.backend_ce(bc),
  .result_we(rw),.result_wa(ra),.result_wd(rd),.depth_event_valid(dv),.depth_event_pid(dpid),.depth_event_z16(dz),.depth_event_pass(dpass),
  .lod_valid(lv),.lod_id(lid),.lod_value(lod),.publish_ready(pr),.published(pub),.published_slot(ps),.published_begin(pb),
  .descriptor_issue_slot(di),.descriptor_issue(dis),.descriptor_head(dhs),.descriptor_head_tile(tile),.descriptor_next(dns),.descriptor_next_tile(nexttile),
- .basic_read(br),.basic_read_address(ba),.basic_return_valid(bv),.basic_return_data(bd),.basic_collision(bcol),
+ .basic_read(br),.basic_read_address(ba),.basic_return_data(bd),.basic_collision(bcol),
+ .depth_read(zr),.depth_read_address(za),.depth_data(zd),
  .light_ready(lr),.light_valid(lvalid),.light_context_valid(lcontext),.light_normal(lnormal),.light_position(lposition),.light_lane(llane),.light_descriptor(ldesc),
  .sample_ready(sr),.sample_valid(svalid),.sample_data(sdata),.sample_row(srow),.sample_last(slast),.sample_descriptor(sdesc),
  .retire_valid(retire),.retire_id(rid),.empty_skip(skip),.empty_head(empty),.empty_skip_ready(skipready),.retire_slot(rs),
@@ -32,7 +33,7 @@ gpu_v2_vliw_quad_pool dut(.clk(clk),.reset(reset),.front_ce(fc),.backend_ce(bc),
 integer reset_count=0;integer starts[0:NQ-1];integer ft=0,bt=0,sent=0,published=0,retired=0,cycles=0,laststart=-16;
 integer lq=0,lrows=0,sq=0,srows=0,brow=0,breturned=0,emptycount=0,peaku=0,peakp=0,waits=0,holds=0;
 integer j,k,delta,ln,wr,addrq,addrr,fd,last_lq=-2,last_ltick=-100,ii16=0;
-reg[31:0]rng=32'h1482fd6e;reg b_pending=0;reg[23:0]b_expected;
+reg[31:0]rng=32'h1482fd6e;reg b_pending=0;reg[23:0]b_expected;reg z_pending=0;reg[15:0]z_expected,z_held;reg z_hold=0;
 reg lhold=0,shold=0;reg[79:0]lh;reg[57:0]sh;reg[3:0]m;
 function[3:0]geom;input integer q;begin if(STRESS==0)geom=15;else if(q%5==0)geom=0;else geom=(q%15)+1;end endfunction
 function covered;input integer q,l;reg[3:0]g;begin g=geom(q);covered=g[l];end endfunction
@@ -79,11 +80,11 @@ begin
  sr=bt%4==0&&(STRESS==0||(ft>=600&&(cycles%197>51&&rng[15:13]!=0)));
  // Random producer-independent queries exercise both metadata read views.
  di=published>retired?(retired+(rng[20:17]%(published-retired)))%32:retired%32;
- br=0;retire=0;skip=0;rid=retired%32;
+ br=0;zr=0;retire=0;skip=0;rid=retired%32;
  if(published>retired)begin
   if(mask(retired)==0)skip=skipready;
   else begin
-   if(brow<8&&(STRESS==0||rng[23:21]!=0))begin br=1;ba=((retired%32)*8)+brow;end
+   if(brow<8&&(STRESS==0||rng[23:21]!=0))begin if(brow%2)begin zr=1;za=((retired%32)*4)+brow/2;end else begin br=1;ba=((retired%32)*4)+brow/2;end end
    if(breturned==8&&dut.light_cursor!=dut.retired&&dut.sample_cursor!=dut.retired)retire=1;
   end
  end
@@ -96,9 +97,13 @@ always @(posedge clk)if(!reset)begin
  if(shold&&(!svalid||{sdesc,srow,slast,sdata}!==sh))$fatal(1,"Sample hold changed");
  lhold=lvalid&&!(bc&&lr);lh={ldesc,llane,lnormal,lposition};shold=svalid&&!(bc&&sr);sh={sdesc,srow,slast,sdata};
  if(lhold||shold)holds=holds+1;
- if(bv!==b_pending)$fatal(1,"Basic return validity");
  if(b_pending)begin if(bd!==b_expected)$fatal(1,"Basic got%h expected%h q%0d",bd,b_expected,retired);breturned=breturned+1;end
- b_pending=bc&&br;if(b_pending)begin b_expected=basic(retired,brow);brow=brow+1;end
+ if(z_pending)begin if(zd!==z_expected)$fatal(1,"Depth got%h expected%h",zd,z_expected);breturned=breturned+1;end
+ if(z_hold&&zd!==z_held)$fatal(1,"Depth Q hold changed");
+ z_hold=!(bc&&zr);z_held=zd;
+ b_pending=bc&&br;z_pending=bc&&zr;
+ if(b_pending)begin b_expected=basic(retired,brow);brow=brow+1;end
+ if(z_pending)begin z_expected=zval(retired,brow/2);brow=brow+1;end
  if(published>retired)begin
   if(dhs!==header(retired))$fatal(1,"head descriptor %0d %h %h",retired,dhs,header(retired));
   if(tile!==((y(retired)/8)*32+x(retired)/8))$fatal(1,"head raw tile %0d",retired);
@@ -140,22 +145,22 @@ initial begin
  repeat(2)@(negedge clk);reset=0;
  while(retired<NQ)begin @(negedge clk);
  if(RESTART&&((reset_count==0&&cycles==19)||(reset_count==1&&cycles==58)||(reset_count==2&&cycles==149)))begin
-  reset=1;fc=0;bc=0;rw=0;ev=0;dv=0;lv=0;qv=0;retire=0;skip=0;br=0;
-  @(posedge clk);#2;if(used||prod||fault||lvalid||svalid||pub||bv)$fatal(1,"inflight CE0 reset");
+  reset=1;fc=0;bc=0;rw=0;ev=0;dv=0;lv=0;qv=0;retire=0;skip=0;br=0;zr=0;
+  @(posedge clk);#2;if(used||prod||fault||lvalid||svalid||pub)$fatal(1,"inflight CE0 reset");
   ft=0;bt=0;sent=0;published=0;retired=0;laststart=-16;lq=0;lrows=0;sq=0;srows=0;brow=0;breturned=0;
-  b_pending=0;lhold=0;shold=0;last_lq=-2;last_ltick=-100;ii16=0;peaku=0;peakp=0;emptycount=0;holds=0;
+  b_pending=0;z_pending=0;z_hold=0;lhold=0;shold=0;last_lq=-2;last_ltick=-100;ii16=0;peaku=0;peakp=0;emptycount=0;holds=0;
   for(k=0;k<NQ;k=k+1)starts[k]=-99999;
   reset_count=reset_count+1;$fdisplay(fd,"RESET %0d",reset_count);@(negedge clk);reset=0;
  end
  drive();@(posedge clk);#2;cycles=cycles+1;if(cycles>100000)$fatal(1,"pool bounded timeout sent%0d pub%0d ret%0d",sent,published,retired);end
- @(negedge clk);fc=0;bc=0;qv=0;rw=0;ev=0;dv=0;lv=0;pr=0;br=0;retire=0;skip=0;
+ @(negedge clk);fc=0;bc=0;qv=0;rw=0;ev=0;dv=0;lv=0;pr=0;br=0;zr=0;retire=0;skip=0;
  repeat(3)@(negedge clk);
  if(sent!=NQ||published!=NQ||lq!=NQ||sq!=NQ||busy)$fatal(1,"pool final conservation");
  if(RESTART&&reset_count!=3)$fatal(1,"reset coverage");
  if(STRESS==0&&ii16<NQ-3)$fatal(1,"steady II coverage");
  if(STRESS!=0&&(emptycount<10||holds<100||peaku!=24||peakp!=8))$fatal(1,"stress coverage");
  // Reset both domains while deliberately disabled.
- reset=1;@(posedge clk);#2;if(used||prod||fault||lvalid||svalid||pub||bv)$fatal(1,"CE0 reset");
+ reset=1;@(posedge clk);#2;if(used||prod||fault||lvalid||svalid||pub)$fatal(1,"CE0 reset");
  $display("PASS POOL rgb=%0d stress=%0d Q=%0d cycles=%0d peak=%0d unpub=%0d empty=%0d holds=%0d II16=%0d",RGB,STRESS,NQ,cycles,peaku,peakp,emptycount,holds,ii16);$fclose(fd);$finish;
 end
 initial begin #1200000;$fatal(1,"absolute timeout");end

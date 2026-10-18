@@ -1,73 +1,37 @@
-# Complete bunny performance replay
+# 完整兔子性能回放
 
-The current independent GPU and memory-transport replay are qualified by the
-[Color completion receipt](../examples/vliw_integration/color-direct-evidence.json).
-The [frontend preparation receipt](../examples/vliw_integration/frontend-preparation-evidence.json)
-retains the preceding preparation and older-memory measurement identity.
-It uses the complete `bun_zipper_res4.ply` from the Stanford bunny dataset:
-453 source vertices and 948 triangles, submitted exactly once without further
-decimation. This is the complete version of the earlier small fixture, not the
-69,451-triangle original scan. Vertex arithmetic and numerical precision are unchanged.
+当前独立 GPU 和内存链由[布局关键证据](../examples/vliw_integration/layout-evidence.json)限定；[Color 收据](../examples/vliw_integration/color-direct-evidence.json)保留本轮直接基线。模型为官方 Stanford `bun_zipper_res4.ply`，453个源顶点、948个三角形，全部面恰好提交一次，没有进一步减面。它是早期小夹具对应减面版本的完整模型，不是69451面的原始扫描。Vertex 乘加、位置计算与最终数值精度不变；法线量化提前，运输格式变为 V5／T16。
 
-## Workload and timing boundary
+## 负载和计时边界
 
-The replay uses a 400x240 target, single-sided triangles, a front camera about
-2.8 units from the model and a focal length of 180 pixels. The longest model
-extent is scaled to 1.5. One position grid and accumulated vertex normals are
-shared across the complete source mesh, so duplicated meshlet vertices remain
-bit-identical. UVs and the 64x64 mip texture are generated, not scan materials.
-Lighting is diffuse, specular is zero, alpha is 255, blending is disabled, and
-LESS depth testing and depth writes are enabled.
+400×240，单面，正面机位距模型约2.8，焦距180像素，最长模型尺寸缩放为1.5。统一位置网格及累积顶点法线保证跨 meshlet 的重复顶点一致。UV 和64×64 mip纹理由程序生成，不是扫描材质。漫反射开启、高光为零、alpha255、混合关闭，采用 LESS 和深度写。
 
-The mesh is partitioned into 17 meshlets, each within 64 vertices and 96
-triangles. Boundary duplication requires 670 executed vertices. Payload is
-10,648 bytes, metadata 544 bytes and configuration 128 bytes. Two input pages
-allow the next DMA to overlap the active meshlet without draining the backend.
+全模型分成17个 meshlet，各不超过64V／96T；边界复制后实际执行670个顶点。payload10648字节、metadata544字节、配置128字节。两个输入页让后继 DMA 与当前 meshlet 重叠，后半不逐 meshlet 排空。
 
-Timing starts at the first loading descriptor and ends after the final backend
-drain and dirty framebuffer flush. It includes memory service and SDRAM startup;
-the startup interval is not a recurring per-frame DMA cost. ROM initialization
-and preclear are excluded. The actual arbiter, bridge, controller and separate
-SDRAM pin model are present, without CPU or display contention. Functional
-clocks are approximately 49.5/99 MHz; conversion to 54 MHz is only cycle scaling,
-not board performance or renewed MC timing qualification.
+计时从第一条装填 descriptor 到最后后半排空和脏 framebuffer flush。包含 SDRAM 启动和真实内存服务；启动不是每帧重复的 DMA 成本。ROM 装表和预清显存不计。实际 arbiter、bridge、controller 和独立引脚模型均在，未加入 CPU／显示争用。功能时钟约49.5／99MHz；换算54MHz仅是拍数缩放，不是板测或 MC 重新取得时序资格。
 
-## Selected front-camera result
+## 当前正面机位
 
-| Measurement | Result |
+| 项目 | 结果 |
 | --- | ---: |
-| Total wall cycles | 294680 |
-| Triangles accepted / backface rejected | 417 / 531 |
-| Traversal nodes | 10653 |
-| Quads / empty quads | 3559 / 532 |
-| Covered pixel samples | 7107 |
-| ROP depth pass / reject | 6753 / 354 |
-| Pool-full / R credit-wait cycles | 0 / 0 |
+| 总墙钟拍 | 292662 |
+| 三角接受／背面拒绝 | 417／531 |
+| 遍历节点 | 10653 |
+| quad／空quad | 3559／532 |
+| 覆盖像素样本 | 7107 |
+| ROP深度通过／拒绝 | 6753／354 |
+| 满池／R信用等待拍 | 0／0 |
 
-Samples include overlap across triangles; they are not unique final pixels.
-Empty quads skip the expensive backend, while their frontend cost remains in
-the total. The selected box comparison submits only `box_x_minus`: eight
-triangles covering 24,400 samples, not a full-screen or closed six-face box.
-Its total is 134982 cycles. Complete cycle partitions and source/output hashes
-are in the receipt. The old side-camera measurement predates this preparation
-rewrite and is not claimed as a current-version result.
+相同当前内存链基线为294680拍，新版减少2018拍。样本包含三角形重叠，不等于最终不同屏幕像素数。空quad跳过昂贵后半，其前半代价仍计入总拍。
 
-## Validation and reproduction
+box 比较只提交 `box_x_minus` 一个面：八个三角形、24400个覆盖样本，不是全屏或封闭六面 box。当前134952拍，基线134982拍。完整分段、队列计数、源和最终内存身份均在关键证据中。旧侧面机位数据不作为本版结果。
 
-Replay checks all V outputs, triangle indices and records, h values,
-interpolated attributes, depth and LOD, independent Lighting integer results,
-sampling, Final, ROP order, and all 400,384 final memory bytes including untouched
-regions. The selected numerical output and final memory match the remeasured current-base
-implementation exactly, with no total-cycle regression. The baseline was rerun
-after the shared memory-transport changes; that earlier improvement is not a Color
-optimization result.
+## 验证与复现
+
+回放逐项检查 V5、三角索引与 T16、h、插值属性、Z／LOD、独立整数 Lighting、采样、Final、ROP顺序，以及包括未触碰区域在内的全部400384字节最终内存。有效数值和最终内存与重新测量的当前基线一致。阶段重叠的 busy 计数不能相加当总拍。
 
 ```powershell
 python ip/gpu-v2/examples/vliw_integration/full_bunny.py --ply PATH/bun_zipper_res4.ply --tag complete-front-new --camera front --max-cycles 2000000 --sim-timeout 600
 ```
 
-Each tag creates a fresh ignored target directory. `side` and `back` are also
-supported, but a new camera requires a new measurement. Inputs are the official
-ASCII PLY extracted from Stanford's bunny archive; generated fixtures, netlists,
-frames and historical snapshots are not committed. The high-resolution original
-has only a capacity study, not a measured frame rate in this qualification.
+每个 tag 创建新的忽略目录；支持 `side`、`back`，新机位需新测量。输入取自官方 bunny 压缩包的 ASCII PLY，生成夹具、网表、画面和历史快照不入库。高分辨率原始模型只有容量研究，本资格没有其帧率测量。

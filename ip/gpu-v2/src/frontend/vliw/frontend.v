@@ -1,4 +1,4 @@
-// Triangle尾程序复用原SP/RF/MAC；Vertex控制ROM与算术不变。
+// Original V/T arithmetic calendar; normals travel once as packed S12F10.
 // 同一ROM、RF与双DSP，V/T分时；所有状态变更均采样旧值。
 module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,parameter SOURCE_READ=0)(
  input clk,reset,ce,start_v,start_t,meshlet_reset,
@@ -20,17 +20,17 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  reg sigma,delta_zero,delta_negative,collecting;reg any_front;
  reg [35:0] desc0,desc1;reg [1:0] count;reg write_slot,read_slot;
  // 位置与导出数据分bank：两个独立同步Q，导出背压不会保持位置口。
- localparam Q_EMPTY=2'd0,Q_HI=2'd2,Q_DATA=2'd3;
- reg [1:0] result_owner;reg core_qvalid;reg [4:0] response_index,fetch_index;
- reg fetch_low,export_valid;reg [2:0] import_state;
- reg [17:0] import_hi;reg [17:0] import_refs;reg [1:0] attr_field;
+ localparam Q_EMPTY=1'b0,Q_DATA=1'b1;
+ reg result_owner;reg core_qvalid;reg [4:0] response_index,fetch_index;
+ reg export_valid;reg [1:0] import_state;
+ reg [17:0] import_refs;reg attr_field;
  wire import_active=import_state!=0;
  assign descriptor=read_slot?desc1:desc0;
  assign packet_valid=count!=0 && import_state==0 && !reset;
  assign word_valid=export_valid && !reset;
  wire packet_take=ce&&packet_valid&&packet_ready;
  wire word_take=ce&&word_valid&&word_ready;
- wire release_slot=word_take&&word_index==18;
+ wire release_slot=word_take&&word_index==15;
  wire refs_valid=triangle_descriptor[5:0]<published_vertices && triangle_descriptor[11:6]<published_vertices && triangle_descriptor[17:12]<published_vertices;
  wire [10:0] vertex_last_word={vertex_base,1'b0}+{4'd0,vertex_count}+{3'd0,vertex_count,1'b0};
  wire compact_invalid=SP_COMPACT&&(uniform_base[5]||config_base[8]||vertex_base[9]||vertex_last_word>1024);
@@ -44,10 +44,11 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  reg [53:0]acc;wire [35:0]lq,rq;
  wire [71:0] control;
  `include "control_fields.vh"
- wire core_base=ce&&busy&&!reset&&(!emit||triangle_mode||output_ready);
+ wire vertex_emit=emit!=0&&!(vfield==3&&emit==1);
+ wire core_base=ce&&busy&&!reset&&(!vertex_emit||triangle_mode||output_ready);
  wire core_uses_q=triangle_mode&&up_push==4;
  wire output_room=!export_valid||word_ready;
- wire q_can_retire=result_owner==Q_EMPTY||result_owner==Q_HI||
+ wire q_can_retire=result_owner==Q_EMPTY||
    (result_owner==Q_DATA&&output_room);
  wire step=core_base&&(!core_uses_q||core_qvalid);
  wire core_read=step&&pos_re;
@@ -77,7 +78,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  rs_static_scratchpad #(.COMPACT(SP_COMPACT)) sp(.clk(clk),.reset(reset),.dma_we(dma_we&&dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),
  .le(source_take||(step&&l_src!=0)),.re(source_take||(step&&(r_src!=0||work_en))),.work_we((step&&work_we)),.la(sp_la),.ra(sp_ra),.work_wa(work_wa),.work_data(emit_data),.lq(lq),.rq(rq));
  wire [35:0] left=swap?rq:lq;wire [35:0] right=(swap&&!triangle_mode)?lq:rq;
- wire [35:0] pq,export_q;
+ wire [35:0] pq,export_q;wire [17:0] export_hi;
  reg [31:0] origin_x,origin_y,origin_z;reg [4:0] quant_shift;reg normal18;
  reg [31:0] unpacked;reg [2:0] unpack_kind;reg [1:0] phase;reg [31:0] origin;
  wire [9:0] component=unpacked[9:0];
@@ -112,28 +113,45 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  shared_mac mac(.clk(clk),.reset(reset),.en(ce&&step&&mul_en),.a(mac_value),.b(right),.c(acc_input),.y(acc_next));
  wire [17:0] normal16_pack={{2{pack_value[17]}},pack_value[17:2]};
  wire [17:0] packed_normal=normal18?pack_value[17:0]:normal16_pack;
+ // Preserve the original normal16 low-two-bit discard before S12F10 RNE.
+ function [11:0] normal12;
+  input [17:0] raw;input mode;
+  reg [17:0] value;reg signed [12:0] rounded;
+  begin
+   if(mode)value=raw;else value={raw[15:0],2'b0};
+   rounded=$signed({value[17],value[17:6]});
+   if(value[5]&&((|value[4:0])||value[6]))rounded=rounded+13'sd1;
+   if(rounded>13'sd2047)normal12=12'h7ff;
+   else if(rounded< -13'sd2048)normal12=12'h800;
+   else normal12=rounded[11:0];
+  end
+ endfunction
+ wire [11:0] packed_normal12=normal12(packed_normal,normal18);
  reg [53:0] packed_buffer;
- assign emit_valid=busy&&emit!=0&&!triangle_mode&&!reset;
+ assign emit_valid=busy&&vertex_emit&&!triangle_mode&&!reset;
  assign emit_addr=op;
- assign emit_data=emit==2?{18'd0,packed_buffer[53:36]}:packed_buffer[35:0];
- wire vwrite=step&&!triangle_mode&&emit!=0;
+ assign emit_data=packed_buffer[35:0];
+ wire vwrite=step&&!triangle_mode&&vertex_emit;
  wire [1:0] vout_field=vfield<3?vfield[1:0]:vfield[1:0]-2'd3;
- wire [8:0] wa=RESULT_COMPACT?(triangle_mode?{3'b110,write_slot,trow,(emit==2)}:{vfield,vid}):(triangle_mode?{4'b1000,write_slot,trow}:{1'b0,vid,vout_field});
- // 位置bank只保留plane0..2。导出bank保存plane3..5和两槽T系数，内容不镜像。
- wire[2:0]attr_plane=3'd3+{1'b0,attr_field};
+ wire [8:0] wa=RESULT_COMPACT?(triangle_mode?{3'b110,write_slot,trow,1'b0}:{vfield,vid}):(triangle_mode?{4'b1000,write_slot,trow}:{1'b0,vid,vout_field});
+ // Position planes0..2; N36/attr32 planes3..4; two T slots in plane6.
+ wire[2:0]attr_plane=3'd3+{2'b0,attr_field};
  wire[8:0]export_addr=fetch_index<10 ?
-  {3'b110,read_slot,fetch_index[3:0],!fetch_low} : {attr_plane,import_refs[5:0]};
+  {3'b110,read_slot,fetch_index[3:0],1'b0} : {attr_plane,import_refs[5:0]};
  rp_results_split results(.clk(clk),.reset(reset),.ce(ce),
-  .position_we(vwrite&&vfield<3),.export_we((vwrite&&vfield>=3)||(step&&twrite&&(emit==1||emit==2))),
+  .position_we(vwrite&&vfield<3),.export_we((vwrite&&vfield>=3)||(step&&twrite&&emit==1)),
   .wa(wa),.wd(emit_data),.position_re(core_read),.position_ra({1'b0,u_off[1:0],refs[5:0]}),
   .export_re(export_read),.export_ra(export_addr),.position_q(pq),.export_q(export_q));
+ // Coefficient high words have the same item address and synchronous read edge.
+ iz_ram18 coefficient_high(clk,reset,ce,step&&twrite&&emit==2,wa,packed_buffer[53:36],
+  export_read&&fetch_index<10,export_addr,export_hi);
  always @(posedge clk)begin
  if(reset)begin
  any_front<=0;busy<=0;done_v<=0;done_t<=0;
  error<=0;published_vertices<=0;pc<=0;remaining<=0;ub<=0;cb<=0;vp<=0;op<=0;vid<=0;vfield<=0;triangle_mode<=0;
- refs<=0;scale<=0;cull<=0;building_desc<=0;sigma<=0;delta_zero<=0;delta_negative<=0;collecting<=0;import_hi<=0;
+ refs<=0;scale<=0;cull<=0;building_desc<=0;sigma<=0;delta_zero<=0;delta_negative<=0;collecting<=0;
  desc0<=0;desc1<=0;count<=0;write_slot<=0;read_slot<=0;import_state<=0;import_refs<=0;attr_field<=0;word_index<=0;word_data<=0;
- result_owner<=Q_EMPTY;core_qvalid<=0;response_index<=0;fetch_index<=0;fetch_low<=0;export_valid<=0;
+ result_owner<=Q_EMPTY;core_qvalid<=0;response_index<=0;fetch_index<=0;export_valid<=0;
  origin_x<=0;origin_y<=0;origin_z<=0;quant_shift<=0;normal18<=0;unpacked<=0;unpack_kind<=0;phase<=0;acc<=0;packed_buffer<=0;
  end else if(ce)begin
  if(SP_COMPACT&&dma_we&&dma_addr[9])error<=4;
@@ -143,29 +161,26 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  if(write_slot)desc1<={building_desc[35:23],sigma,building_desc[21:0]};else desc0<={building_desc[35:23],sigma,building_desc[21:0]};
  write_slot<=!write_slot;
  end
- if(packet_take)begin import_state<=1;fetch_index<=0;fetch_low<=0;import_refs<=descriptor[17:0];attr_field<=0;end
+ if(packet_take)begin import_state<=1;fetch_index<=0;import_refs<=descriptor[17:0];attr_field<=0;end
  if(word_take)begin
  export_valid<=0;
- if(word_index==18)begin import_state<=0;read_slot<=!read_slot;end
+ if(word_index==15)begin import_state<=0;read_slot<=!read_slot;end
  end
  if(!busy||!triangle_mode||(step&&core_uses_q))core_qvalid<=0;
  if(core_read)core_qvalid<=1;
  if(q_can_retire)result_owner<=Q_EMPTY;
- if(result_owner==Q_HI)import_hi<=export_q[17:0];
  if(result_owner==Q_DATA&&output_room)begin
- word_data<=response_index<10 ? {import_hi,export_q} : {18'd0,export_q};
+ word_data<=response_index<10 ? {export_hi,export_q} : {18'd0,export_q};
  word_index<=response_index;export_valid<=1;
  end
  // 位置Q与导出Q各自消费旧态并发起下一读，不存在跨消费者所有权。
  if(export_read)begin
  response_index<=fetch_index;
- if(RESULT_COMPACT&&fetch_index<10&&!fetch_low)begin result_owner<=Q_HI;fetch_low<=1;end
- else begin
- result_owner<=Q_DATA;fetch_low<=0;
- if(fetch_index==18)import_state<=2;else fetch_index<=fetch_index+1'b1;
+ result_owner<=Q_DATA;
+ if(fetch_index==15)import_state<=2;else fetch_index<=fetch_index+1'b1;
  if(fetch_index>=10)begin
- if(attr_field==2)begin attr_field<=0;import_refs<={import_refs[5:0],import_refs[17:6]};end else attr_field<=attr_field+1'b1;
- end
+  attr_field<=!attr_field;
+  if(attr_field)import_refs<={import_refs[5:0],import_refs[17:6]};
  end
  end
  if(meshlet_reset&&!busy&&count==0&&!import_active)begin published_vertices<=0;error<=0;end
@@ -187,9 +202,9 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  if(flow==3)remaining<=remaining-1'b1;
  if(flow==4)begin busy<=0;done_v<=1;end
  if(l_src==2||r_src==2)vp<=vp+1'b1;
- if(emit!=0)begin
+ if(vertex_emit)begin
  op<=op+1'b1;
- if(vfield==5)begin vfield<=0;vid<=vid+1'b1;published_vertices<=published_vertices+1'b1;end else vfield<=vfield+1'b1;
+ if(vfield==4)begin vfield<=0;vid<=vid+1'b1;published_vertices<=published_vertices+1'b1;end else vfield<=vfield+1'b1;
  end
  end else begin
  // 原Z读顺序为p1.z、p2.z、p0.z；第三个Z写回就在step15。
@@ -208,9 +223,9 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  if(cfg_we)case(cfg_idx)0:origin_x<=left[31:0];1:origin_y<=left[31:0];2:origin_z<=left[31:0];3:begin quant_shift<=left[4:0];normal18<=left[8];end endcase
  case(pack_op)
  1:packed_buffer<={22'd0,pack_value};
- 2:packed_buffer<={36'd0,packed_normal};
- 3:packed_buffer[35:18]<=packed_normal;
- 4:packed_buffer[53:36]<=packed_normal;
+ 2:packed_buffer<={42'd0,packed_normal12};
+ 3:packed_buffer[23:12]<=packed_normal12;
+ 4:packed_buffer[35:24]<=packed_normal12;
  5:begin packed_buffer<=acc;if(delta_capture)begin delta_zero<=acc==0;delta_negative<=acc[53];sigma<=acc[53];end end
  6:packed_buffer<={{22{pack_value[31]}},pack_value};
  default:begin end
@@ -219,6 +234,24 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  end
  end
 `ifndef SYNTHESIS
+ reg sim_output_held;reg [58:0] sim_output;
+ reg [4:0] sim_export_reads;
+ always @(posedge clk)begin
+  if(reset)begin sim_output_held<=0;sim_output<=0;sim_export_reads<=0;end
+  else begin
+   if(sim_output_held&&(!word_valid||{word_index,word_data}!==sim_output))
+    $fatal(1,"T output changed before acceptance");
+   sim_output_held<=word_valid&&(!ce||!word_ready);
+   if(word_valid)sim_output<={word_index,word_data};
+   if(ce)begin
+    if(packet_take)sim_export_reads<=0;
+    if(export_read)sim_export_reads<=sim_export_reads+1'b1;
+    if(release_slot&&sim_export_reads!=16)$fatal(1,"T release before sixteen paid reads");
+    if(vwrite&&vfield==3&&emit!=2)$fatal(1,"N36 written outside final normal slot");
+    if(vwrite&&vfield==4&&emit!=1)$fatal(1,"attribute written outside final vertex slot");
+   end
+  end
+ end
  initial if(!RESULT_COMPACT||!SP_COMPACT)$fatal(1,"独立结果口候选仅支持选定compact布局");
  always @(posedge clk)if(ce&&!reset)begin
   if(core_read&&core_qvalid&&!(step&&core_uses_q))$fatal(1,"位置Q被未消费的后继读覆盖");

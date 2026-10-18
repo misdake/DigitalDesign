@@ -124,7 +124,7 @@ def main():
       '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
     for r in rows:
         c,m=r['counts'],r['wall_metrics'];lines.append(f'| {r["tag"]} | {r["mode"]} | {m["cycles"]} | {m["CE"]} | {c["quads"]}（{c["empty"]}） | {c["live_pixels"]} | {c["ROP_pass"]}/{c["ROP_depth_reject"]} | {m["peak"]} | {m["requests"]} |')
-    lines+=['','所有V六字、Triangle原19字、H30几何/空quad、I自然lane属性/Z/最终LOD均已逐项比较。Lighting使用主仓独立整数模型及真实N12与像素中心；采样使用最终LOD码，无helper推导。最终纹理与两帧缓冲共400384字节全部一致。','',
+    lines+=['','All five V rows, sixteen Triangle items, H30 coverage and empty quads, and I attributes/Z/final LOD are checked. Lighting使用主仓独立整数模型及真实N12与像素中心；采样使用最终LOD码，无helper推导。最终纹理与两帧缓冲共400384字节全部一致。','',
       '箱体单实例与兔子局部meshlet均不是完整场景帧；RGB复画是同geometry/attr32的显式模式切换定向测试。全局参数保持不变，I texlog=6匹配实际64×64纹理。纹理UV来自程序生成，并非兔子原贴图。','',
       '压力回放包含有限内存长暂停、输出/CE暂停、全部V后全部T、真实旧pool存活跨批启动、实际LESS深度拒绝。空quad没有Lighting/Sampling/Final输出；源码中两个分支的零mask跳过门也已审阅。','',
       '总wall沿包含开机ROM装载、DMA/V/T/R/I/后半/最终flush。前后半重叠，不能把事件跨度相加或以任务总沿宣称稳态II。本组固定diffuse、specular=0、alpha255、blend关、LESS及深度写，未扩展为所有材料/混合模式证明。未覆盖物理SDRAM仲裁器、CPU软件驱动、显示与板测。']

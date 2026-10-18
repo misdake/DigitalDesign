@@ -1,4 +1,4 @@
-//! Direct I-result pool: three independent payload banks and dense tombstones.
+//! Direct I-result pool: four independent payload banks and dense tombstones.
 //!
 //! Front CE qualifies the fixed I return calendar; backend CE qualifies publish,
 //! consumers and retirement. Unpublished credit8 protects the producer's low3

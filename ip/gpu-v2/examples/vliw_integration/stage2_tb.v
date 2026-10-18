@@ -55,14 +55,14 @@ always @(posedge clk)begin
     if(STRESS&&task_id==0&&pi==np)memory_hold_until=cycle+1500;
    end
    if(dut.front.fwv&&dut.front.fwr)begin
-    if(wi>=19||dut.front.fwi!==wi[4:0]||dut.front.fwd!==words[(pi-1)*19+wi])$fatal(1,"raw19 task%0d packet%0d word%0d",task_id,pi-1,wi);
+    if(wi>=16||dut.front.fwi!==wi[4:0]||dut.front.fwd!==words[(pi-1)*16+wi])$fatal(1,"raw16 task%0d packet%0d word%0d",task_id,pi-1,wi);
     wi=wi+1;
    end
    if(dut.front.meshlet.core.launch_t)begin
-    if(vi!=nv*6||ti>=nt||dut.front.meshlet.core.triangle_descriptor!==admissions[ti])$fatal(1,"all V then T order");ti=ti+1;
+    if(vi!=nv*5||ti>=nt||dut.front.meshlet.core.triangle_descriptor!==admissions[ti])$fatal(1,"all V then T order");ti=ti+1;
    end
    if(emit_valid&&output_ready)begin
-    if(vi>=nv*6||emit_addr!==vi[9:0]||emit_data!==vertices[vi])$fatal(1,"V output task%0d word%0d",task_id,vi);vi=vi+1;
+    if(vi>=nv*5||emit_addr!==vi[9:0]||emit_data!==vertices[vi])$fatal(1,"V output task%0d word%0d",task_id,vi);vi=vi+1;
    end
    if(quad_admitted)begin
     slot_seq[dut.qid]=sequence_id;physical_seq[dut.back.front.quad.allocated[4:0]]=sequence_id;
@@ -108,16 +108,16 @@ end endtask
 task load_and_start;input integer taskno;input integer vn,tn,pn;input use_slot;
 reg[1023:0]path;begin
  while(!frontend_idle||!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;wi=0;saw_done=0;
- $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*6-1);
+ $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*5-1);
  $sformat(path,"task%0d/admissions.hex",taskno);$readmemh(path,admissions,0,nt-1);
  $sformat(path,"task%0d/descriptors.hex",taskno);$readmemh(path,descriptors,0,np-1);
- $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*19-1);
+ $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*16-1);
  $sformat(path,"task%0d/dma.txt",taskno);dm=$fopen(path,"r");
  while(!$feof(dm))begin rc=$fscanf(dm,"%d %h",addr,dma_value);if(rc==2)begin
   dma_addr=addr;dma_data=dma_value;dma_we=1;dma_taken=0;while(!dma_taken)tick();
  end end $fclose(dm);dma_we=0;start=1;start_taken=0;while(!start_taken)tick();start=0;
  while(!saw_done||!frontend_idle)tick();
- if(vi!=nv*6||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
+ if(vi!=nv*5||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
 end endtask
 initial begin
  fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");$readmemh("initial.mem",memory);$readmemh("task0/rom.hex",rom);

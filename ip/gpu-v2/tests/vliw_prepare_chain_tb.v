@@ -62,12 +62,12 @@ always @(posedge clk)begin
 end
 task drive;input integer cutoff;integer wi,taken,n;begin: body
  descriptor=descs[p];start=1;@(posedge clk);while(!ce)@(posedge clk);@(negedge clk);start=0;
- wi=0;n=0;raw_valid=1;raw_index=0;raw_data=words[p*19];
- while(wi<19||sbusy||!(seen_node||(empty_seen&&!rb)))begin
+ wi=0;n=0;raw_valid=1;raw_index=0;raw_data=words[p*16];
+ while(wi<16||sbusy||!(seen_node||(empty_seen&&!rb)))begin
   @(posedge clk);taken=ready&&ce;if(ce)n=n+1;
   @(negedge clk);
   if(cutoff!=0&&n>=cutoff)begin raw_valid=0;resetcuts=resetcuts+1;disable body;end
-  if(taken&&wi<19)begin wi=wi+1;if(wi<19)begin raw_index=wi;raw_data=words[p*19+wi];end else raw_valid=0;end
+  if(taken&&wi<16)begin wi=wi+1;if(wi<16)begin raw_index=wi;raw_data=words[p*16+wi];end else raw_valid=0;end
   if(n>1200)$fatal(1,"per packet bound %0d",p);
  end
 end endtask

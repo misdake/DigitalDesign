@@ -1,0 +1,633 @@
+{
+  "status": "selected-uncommitted",
+  "base_commit": "35c3a301c61057cd56d69c57f15e831ef04273cd",
+  "baseline_receipt": "color-direct-evidence.json",
+  "decision": "采用原精确N12/T16与A6分列结果池/Z；撤销以未改前半映射增加否决整条路线的结论。完整normal后继已配套比较，本轮按Logic与时序保留已有精确N12；未提交。",
+  "scope": {
+    "fit": "完整独立GPU注册事务边界；同器件、P0、54MHz，含555探针FF；不含物理MC、CPU和Display。",
+    "performance": "同一真实当前arbiter/bridge/controller及独立SDRAM引脚模型，从首次descriptor到最终flush；约49.5/99MHz功能时钟，无CPU/Display争用。",
+    "native": "当前前半/准备链/完整小兔子UV与RGB双布局；完整948面与box使用portable真实MC回放。",
+    "board": false
+  },
+  "source_hash_format": "SHA256 of UTF-8 text after CRLF-to-LF normalization",
+  "selected_source": {
+    "ip/gpu-v2/src/bin/gpu-v2-vliw-export.rs": "bb1e3064bde5f59fe895d0bff6a658f5a45977ec2d65ab77e036200e7c2a6ba6",
+    "ip/gpu-v2/src/framebuffer/ports.rs": "18a336178863b83a1d4cffebf5c8e53480741066b035af6d0d4dbd7c6140d2cf",
+    "ip/gpu-v2/src/frontend/vliw/compute.v": "4466f3c704d8f8de893bd424d5256ceaa056e2b39461d49c2c134780e3103a00",
+    "ip/gpu-v2/src/frontend/vliw/frontend.v": "c92905de082ed5fe70d35e4c064ab6eb551ad88efac414209aedda73a51fda22",
+    "ip/gpu-v2/src/frontend/vliw/input_storage.v": "24c0348b9ded6575dd640297747642369a0551f76090c8c6e70e3b7a0e8b0afc",
+    "ip/gpu-v2/src/frontend/vliw/input_t_work.v": "fd5cddc482649bd2ea6779f6d6628c6d9e6daac057a7b885eafcf3deb673840c",
+    "ip/gpu-v2/src/frontend/vliw/interpolator_stream.v": "51118a01047a069939d2e7c6b7566eb884fe21d13aeddc19e5aa6db5ca85d3a7",
+    "ip/gpu-v2/src/frontend/vliw/lod.v": "1aef91629b01c6e39113ca251fef18fa527ae9c3361af2b234dc660283ea20e7",
+    "ip/gpu-v2/src/frontend/vliw/meshlet.v": "41d5ffe299071f9f852be85821e5a636d8c61c8d018195ad8fc49ca1ef7133a6",
+    "ip/gpu-v2/src/frontend/vliw/pipeline_stream.v": "da932fb6f000770d4bee3fb21d27011cd8669762fba921faa815e261406c52b9",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "21a5bffe8cc6d3940619055d4c0752fc3864c93ef3563551eb2567a5378418bd",
+    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "164057d7c95cf826ef468772f52f77adafe032c08180ffc9bfb298d3049f2546",
+    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "a68aa19a50af5031a7803148d3e045b3f626a85f0abd732ac985993113750018",
+    "ip/gpu-v2/src/frontend/vliw/primitives/dsp.v": "322fe8718aff4f3323c9d8764b713c91e4b7f33b1769d797660bf39dc4770970",
+    "ip/gpu-v2/src/frontend/vliw/primitives/ram.v": "d47ee35614ad3e248b5858b9ca8dc2563ce30acea24e41c4fbb668b4716599b8",
+    "ip/gpu-v2/src/frontend/vliw/primitives/window.v": "a9e7de48c1ea6599f71dfcad1a4c03b1021116e9fcf55031d931231953a1c873",
+    "ip/gpu-v2/src/frontend/vliw/raster.v": "6b20ba9e65a149eda07b89ccd1bbcce81fac58acc02d5db8c91beb398285d312",
+    "ip/gpu-v2/src/frontend/vliw/raster_program.v": "94ccf3036788c29b450aa2c1b9af3e538bc1cebed0f40f67d827304d917e66ca",
+    "ip/gpu-v2/src/frontend/vliw/raster_storage.v": "428ef1e71bc04b2d89317294af3aaa90295513f54c073fd2534a1ee754bd1bc1",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_fields.vh": "c31ba52dfb929d373650a24e8b062e939a85a6bb1cb77e9f4f8fd9428bb79432",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_rom.v": "9b1813f10d181477756aa0b851a3671860221b4c36f7173f8b1ccfc06055cc43",
+    "ip/gpu-v2/src/frontend/vliw/vertex/mac.v": "4fb22768c24f05996d006f4145964afe901cc47cc23c03ae38e2b4105b9b8753",
+    "ip/gpu-v2/src/frontend/vliw/vertex/rf.v": "e8b038cba9dc2c1319535bd6d759eac81793e44305e65f7c33cbc410a39e154a",
+    "ip/gpu-v2/src/frontend/vliw/vertex/storage.v": "a078892f2a6f9f6abfd7fb0a97ccdc8f4d8456889cf8ca0e6cc64441bd82d36d",
+    "ip/gpu-v2/src/frontend/vliw.rs": "45190bafc4facf381a9bc11d925e0d7cc5dcfedf790345b8aa929ec63376a989",
+    "ip/gpu-v2/src/frontend/vliw_dma.rs": "9aa3ebf34105a617e4c29b083b5811e3ce17cab2ee601c0f068e66c0435b32dc",
+    "ip/gpu-v2/src/frontend/vliw_dma.v": "c7e1e57908f5b8356f640ebec2d67c5a325e340df26008bfe01e15e1d7502a79",
+    "ip/gpu-v2/src/lighting/ports.rs": "3ec6c311d8e1ab05ba084f513e2f42451d5c9a0684ff2284efd2306b7deea402",
+    "ip/gpu-v2/src/system/pixel/direct_lod.rs": "2ef916fcb8fe3f707201b44b82e0e47728c3bf402b1a8eb73813f9c1715e507c",
+    "ip/gpu-v2/src/system/pixel/framebuffer_sink.rs": "ff8724e5df921911350203905086336601a6732ba2c132b2dadaea2d59f935dd",
+    "ip/gpu-v2/src/system/pixel/framebuffer_sink.v": "ae20c030062cf3e2dbe7ca885d98f590e7fa831c27a3a2dde2388c73dbd4e974",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp.rs": "2456fe902a168ca60e076e9c9dbdcf69afe8d672c6129e858c8b6ab34b39e810",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp.v": "3d2c0d40cc47e9ca1274dcd30fafb599948dbf2fd5a90d8f6af9d612fed9656c",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_bank.v": "28d63c3f5c2a577d80113a0571f32518e3d59cda63f3898728d75541327a94d7",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_cache.v": "3a7f562868585790dd2cc994ccd8258a81f92615188fab1f8f8ac302667b5f08",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_leaf.v": "5fe9cc46f0e187aee1a777b0c2b4e8813846520ea8f25e8d780440b4ee9308a9",
+    "ip/gpu-v2/src/system/pixel/lighting_consumer.rs": "e64e69302ad495fb84b943b5016c157eef5518cbaecf3d71c9584fc46286c7c6",
+    "ip/gpu-v2/src/system/pixel/lighting_consumer.v": "9d6e22306647f21e34bcc9fbef6ab2a64a99f9f428aa15a9c16cb9a5c5f5a4af",
+    "ip/gpu-v2/src/system/pixel/postquad.rs": "7dd7434c74f705e9d5241ff472d0e0859707ee1fd5ddd96e36488e27639d4e3c",
+    "ip/gpu-v2/src/system/pixel/postquad_ii4.rs": "276a0898733eea0f93a4681439f53b5575e7e96c4a196593a98add54ffc63b0b",
+    "ip/gpu-v2/src/system/pixel/postquad_ii4_color.v": "70440c420f8e5fcca4bc00d94cd4fdfdff125ec506d226e250ab2c40eda258d3",
+    "ip/gpu-v2/src/system/pixel/postquad_unique_weights.rs": "04990f9fe512f66ebeb1a33c3f1b6a3623718e6b1d957445cb5ff28b1b7dc2a1",
+    "ip/gpu-v2/src/system/pixel/postquad_unique_weights_packet.v": "64a7142363bd0f5d4e9dba270ad31cad52122fb5658c05e22eac1114b61e0704",
+    "ip/gpu-v2/src/system/pixel/vliw_backend.rs": "a795c2767a95be71e72c84b758e6aa7521e04ef80671336252d6ffc0444006b4",
+    "ip/gpu-v2/src/system/pixel/vliw_backend.v": "b43a50b90a385145637fabbd82fb1790a2fb8a78e36d9ffeaf4d5fe02194e241",
+    "ip/gpu-v2/src/system/pixel/vliw_backend_final.v": "4de1cb72adb1cea467768296dbc60752eb3ea3a04c9e0c86bf6bc278125b6a88",
+    "ip/gpu-v2/src/system/pixel/vliw_color_direct.v": "6956ed986d57ac02aa196cb5b1f333df455be1bd5aba6f379df8695c9f6a8611",
+    "ip/gpu-v2/src/system/pixel/vliw_lighting_tuple.v": "fe8ab37655960ff011e1adbcdbc1d65ef4db484b93db05430ec64cf1f855c0cb",
+    "ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs": "46982cdf4aadf33fa18fed8dc986c06fd30622c7e0f3f168bd671ecc7b137603",
+    "ip/gpu-v2/src/system/pixel/vliw_quad_pool.v": "0b9c39e2643578b5ab07a4598cb6718c86b571b8f86de96af6e4f0605fa83175",
+    "ip/gpu-v2/src/system/vliw.rs": "ceedd79d6abe3e07a164bbc17824b3a09d6bcf6ed496770fea351ca6890de8e8",
+    "ip/gpu-v2/src/system/vliw.v": "69754d349256a3a92c6b0c3e78e20f3f6cde78405c06962283f2e166db3108fb",
+    "ip/gpu-v2/src/system/vliw_memory.rs": "bf4cd807e3be2c67e6c7b64f1b7cf729941e7d0300e8fde1fa6b3c2ff68f4c9e",
+    "ip/gpu-v2/src/system/vliw_memory.v": "92abf8c451f2e17c73d3d8d472c73add8b0c0543325099f57b39d47539bf5a0a",
+    "ip/gpu-v2/src/system/vliw_sdram.rs": "256fc5ba16d47508ffd52368ee60003b77d4dbd47916407a49ff9dcb7e9224cf",
+    "ip/gpu-v2/src/system/vliw_sdram.v": "181ba016123d0212c391efb00e0557b15e20f97f7bcc61547b306fb9bad125bb",
+    "ip/gpu-v2/src/texture/ports.rs": "85aa8cf970d6ec3e9dced12fcd91ddc4fd545af16d7eaa754a64634539f1c5fc",
+    "ip/gpu-v2/src/texture/rtl/compact_leaves.rs": "5fbcbb70ab9e16e82a674f4539cfc7daa702441a85429f4fbef97fa688e6b056",
+    "ip/gpu-v2/src/texture/rtl/compact_membership.v": "bb19359e1cec2391086f1d4616b5dbf5626f2d7ff537604b199536e0e9a5c256",
+    "ip/gpu-v2/src/texture/rtl/direct_lod.rs": "1294463d3765616da2c80b9dfbf239a3fcacd2fcf450d13139a9492ca2bd2025",
+    "ip/gpu-v2/src/texture/rtl/direct_lod.v": "e3d83d976a88921c8673ab4cd7c369ebc6c75ac129aef4b25a083923f8c10220",
+    "ip/gpu-v2/src/texture/rtl/runtime_color.rs": "213314643f040586e92c88c6a4f4b16d1bbff47ec895458d0e089c8ebc4adefd",
+    "ip/gpu-v2/src/texture/rtl/runtime_color.v": "3eac4a3629fb2df07a574ca5f63e3333205ee666c6e50661d8d0efdcd822de35",
+    "ip/gpu-v2/src/texture/rtl/runtime_rows.rs": "2ec691c8e73fe3874d6a1fb3c09f8a4ca61f3b6f8065983f71a29862e07e7af3",
+    "ip/gpu-v2/src/texture/rtl/runtime_rows.v": "6c509e78d0319a406e409700d7d35165251a88e4997dadd657f4dcd654c8c1b1",
+    "ip/gpu-v2/src/texture/sim/staged/bound/runtime_rtl/membership_leaf.v": "0d416d8120c6ae1a5f5f93147491442f22a0e8540bcd7a123df0f7793331eabe",
+    "ip/gpu-v2/src/texture/sim/staged/bound/runtime_rtl.rs": "2ba8e3edfba2f8ca2028798b8a67b951feb09deca40060c9fa67ff64f49ae273"
+  },
+  "test_source": {
+    "ip/gpu-v2/examples/vliw_integration/audit_stage2.py": "6807ea7866dfd218afde8895f463b1d39958281f3ff5e228fbbbadec3c6a0b3e",
+    "ip/gpu-v2/examples/vliw_integration/frontend_stream_tb.v": "7c90ba06abed2cb3288e40d91b20439b72e412230bba44c983eb3a4fc965c831",
+    "ip/gpu-v2/examples/vliw_integration/full_bunny.py": "97320f63249cdd9f732687111c5f95924ea33f0f4a51aa93c94e120eea5ed654",
+    "ip/gpu-v2/examples/vliw_integration/stage2_tb.v": "543a077fc993b67f8419cc2c8080cb506d09dfe97ccad867cf50c578d4a2701a",
+    "ip/gpu-v2/examples/vliw_integration/verify_frontend_stream.py": "3606dccad05062377fcb769f4bf43d8645b05af0247472db017b1d8d83f9ee95",
+    "ip/gpu-v2/examples/vliw_integration/verify_stage2.py": "dd4b17125d44faba3b117a2c58a7cddf9bfa24cc99964eb4cea0b93704690a86",
+    "ip/gpu-v2/tests/vliw_prepare_chain.py": "f38db06094999835fcfe09c8ec1677ab34bff4cfbb7651ee36be6b5b2aed4e90",
+    "ip/gpu-v2/tests/vliw_prepare_chain_tb.v": "7bd83b555a8a3d25329b015e1a2cadae9b0c56aa20a50d0c24ad913cebce54bc",
+    "ip/gpu-v2/tests/vliw_sdram.py": "f81485c0800bc044c947f6a8922d0ba07db449e04633814074d0e9d3800b95fb",
+    "ip/gpu-v2/examples/vliw_integration/transport.py": "ca31e29a1d5384720c569ac1a79be30aa9b3f29e3211595b053deab3f678ab60",
+    "ip/gpu-v2/tests/vliw_normal_quantization.py": "33de9f4fd7d5f3e3ec1e503bf033c5ddc8038dd4e73fe4d7208cd1a549180bed",
+    "ip/gpu-v2/tests/vliw_quad_pool.py": "8ae3621b0df961272c67e86a984957aed4435dec372cdef3423150a4b075b31e",
+    "ip/gpu-v2/tests/vliw_backend.rs": "b718fd0ad7df9e82c2a7c0b35697af1927766ed74ba8ab52e7ddea4c4657d611",
+    "ip/gpu-v2/tests/vliw_backend_complete.py": "ed37ba62960573b295d60361b4bde3971851aa14f261b0b74b0acc1af5946407",
+    "ip/gpu-v2/tests/vliw_backend_paced.py": "a29f007868fe2f5c226bc57445cc7093c7a1ae047a62aa2ba1de8fd182da344a",
+    "ip/gpu-v2/tests/vliw_backend_failstop.py": "f342f7b9a0e2972aeea2a1e4b3bd0228102ee606a5bff24829f22c48d628d6d2"
+  },
+  "vertex_invariants": {
+    "normal_transport_changed": true,
+    "position_mac_rf_control_rom_unchanged": true,
+    "covered_output_bit_exact": true,
+    "normal16_order": "保留原pack_value[17:2]有符号16位截位，再恢复四倍，使用旧RNE/saturation；normal18保留原低18位回绕。",
+    "normal_scalar_exhaustive_cases": 524288,
+    "reference_math_unchanged": true
+  },
+  "exports": {
+    "native": {
+      "normalized_sha256": "6e85b99cfd259405f225fa1ce90d8ed6b4f816a5c3a72ab287c55f324a163029",
+      "raw_sha256": "ec50897a0762d1b6afe9b442f857a98af6da17d6a318277d1b1bc7f0de928c2b"
+    },
+    "portable": {
+      "normalized_sha256": "65827ed9de68fe739362a5ebbb402ef08994331d24251ce33e12d2168622ba72",
+      "raw_sha256": "8fafd2500a9498f4d266a40229fe85374e9d6734609cbbd43f2a05ed47c7b707"
+    }
+  },
+  "fit": {
+    "baseline": {
+      "logic": 11999,
+      "logic_ff": 5122.0,
+      "register": 5129,
+      "ssram": 204,
+      "bsram": 33.0,
+      "dsp": 18.0,
+      "fmax": 54.738,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "primitives": {
+        "MULT9X9": 24,
+        "MULT18X18": 10,
+        "MULTALU36X18": 3,
+        "MULTADDALU18X18": 3,
+        "ALU54D": 1
+      }
+    },
+    "selected": {
+      "logic": 11797,
+      "logic_ff": 5032.0,
+      "ssram": 200,
+      "bsram": 35.0,
+      "dsp": 18.0,
+      "fmax": 55.186,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "primitives": {
+        "MULT9X9": 24,
+        "MULT18X18": 10,
+        "MULTALU36X18": 3,
+        "MULTADDALU18X18": 3,
+        "ALU54D": 1
+      }
+    },
+    "placement": 0,
+    "constraint_mhz": 54,
+    "device": "GW2AR-LV18QN88C8/I7",
+    "source_sha256": "76129924bb21933e355b39545d4cf711aa5c0a4b2588b5b94ffc5987266e7275",
+    "wrapper_sha256": "0ab55c7bed1244ced43065aef2d260bd6899fd88d7e224fa0d428cbf4d439ed9",
+    "export_sha256": "59a72c8c297d34d20adca0e8e85c6891d9d8fd126f2ea0079774e0216f7eb1cc",
+    "note": "同器件、注册边界、P0/54MHz，实际采用A6生产导出与已拟合候选归一化文本完全一致；不含物理MC、CPU或Display。"
+  },
+  "scenes": {
+    "box": {
+      "counts": {
+        "V_T_checked": true,
+        "attributes": 75504,
+        "depth_events": 25168,
+        "lod": 6292,
+        "empty": 1,
+        "quads": 6292,
+        "packets": 8,
+        "geometry_quads": 6291,
+        "live_quads": 6291,
+        "live_pixels": 24400,
+        "ROP_pass": 24400,
+        "ROP_depth_reject": 0,
+        "light": 24400,
+        "sample": 24400,
+        "final": 24400,
+        "memory_bytes": 400384,
+        "lod_values": [
+          0
+        ]
+      },
+      "timing": {
+        "total": 134952,
+        "preload": 10625,
+        "frontend": 122603,
+        "tail": 1724,
+        "Q": 6292,
+        "empty": 1,
+        "peak": 24,
+        "fullCE": 13449,
+        "packets": 8,
+        "light": 24400,
+        "sample": 24400,
+        "final": 24400,
+        "commits": 6291,
+        "RO": 43,
+        "FBread": 1144,
+        "FBwrite": 1144,
+        "RObeats": 664,
+        "FBreadbeats": 18304,
+        "FBwritebeats": 18304,
+        "overlapDMA": 0,
+        "pendingStarts": 0
+      },
+      "activity": {
+        "Vwork": 208,
+        "Vwait": 0,
+        "Twork": 440,
+        "Twait": 0,
+        "prepare": 1640,
+        "Rbusy": 122194,
+        "Ibusy": 111945,
+        "nodes": 1352,
+        "traversal": 13916,
+        "leaf": 106564,
+        "row": 8302,
+        "Rprep": 1132,
+        "Rcredit": 11120,
+        "pixels": 25168,
+        "covered": 24400,
+        "emptyScan": 1,
+        "invalidLanes": 768
+      },
+      "baseline_timing": {
+        "total": 134982,
+        "preload": 10625,
+        "frontend": 122635,
+        "tail": 1722,
+        "Q": 6292,
+        "empty": 1,
+        "peak": 24,
+        "fullCE": 13437,
+        "packets": 8,
+        "light": 24400,
+        "sample": 24400,
+        "final": 24400,
+        "commits": 6291,
+        "RO": 43,
+        "FBread": 1144,
+        "FBwrite": 1144,
+        "RObeats": 664,
+        "FBreadbeats": 18304,
+        "FBwritebeats": 18304,
+        "overlapDMA": 0,
+        "pendingStarts": 0
+      },
+      "cycle_delta": -30,
+      "memory_sha256": "02cce6e0a4741e7274a7aeb622e42b9b485c3b358e2a2a040fb9b2ffcf4efc63",
+      "semantic_events_checked": true,
+      "independent_lighting_input_equal": true,
+      "same_mc_rtl": {
+        "bridge.v": "f2c10789675b0b787aba404af82f8b09f0217df67e14acdbef94c21a13aeb4ef",
+        "combination.v": "9bace0d8204f02549d5509c8a066a6c98b24f28cb53529cd23370ee971eb47c7",
+        "controller.v": "b22d6a39c49ba2ed0da287176c479cca5f54426a2766e4b47055d35cefd94b0c",
+        "cpu_v3_memory_arbiter.v": "85c2da9a1aab57165c420b4534ad76354b4b0dcd4f7293673bbfcf0b43cdd3ee",
+        "pins.v": "841bb2916f4170f1eca23e067f8a770ed62f1f2fe1d687a1cf1c4227a85264d1",
+        "shared_port.v": "09d6c6255874f72c8fc4cfb1127201826f32362d0e70c363ef6063a9558cc57a"
+      },
+      "artifact": {
+        "path": "target/gpu-layout-20261018/runs/final-a6-box/receipt.json",
+        "sha256": "e6e787b99110c5735a4b3839da3c6c14d593472b2a40943fcb101c5b09e75767"
+      }
+    },
+    "bunny": {
+      "counts": {
+        "V_T_checked": true,
+        "attributes": 42708,
+        "depth_events": 14236,
+        "lod": 3559,
+        "empty": 532,
+        "quads": 3559,
+        "packets": 417,
+        "geometry_quads": 3027,
+        "live_quads": 3027,
+        "live_pixels": 7107,
+        "ROP_pass": 6753,
+        "ROP_depth_reject": 354,
+        "light": 7107,
+        "sample": 7107,
+        "final": 7107,
+        "memory_bytes": 400384,
+        "lod_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          20,
+          21,
+          24,
+          29
+        ]
+      },
+      "timing": {
+        "total": 292662,
+        "preload": 10789,
+        "frontend": 280378,
+        "tail": 1495,
+        "Q": 3559,
+        "empty": 532,
+        "peak": 22,
+        "fullCE": 0,
+        "packets": 417,
+        "light": 7107,
+        "sample": 7107,
+        "final": 7107,
+        "commits": 3027,
+        "RO": 224,
+        "FBread": 936,
+        "FBwrite": 816,
+        "RObeats": 2976,
+        "FBreadbeats": 14976,
+        "FBwritebeats": 13056,
+        "overlapDMA": 1268,
+        "pendingStarts": 0
+      },
+      "activity": {
+        "Vwork": 14393,
+        "Vwait": 0,
+        "Twork": 45237,
+        "Twait": 0,
+        "prepare": 108282,
+        "Rbusy": 248822,
+        "Ibusy": 106917,
+        "nodes": 10653,
+        "traversal": 81142,
+        "leaf": 103668,
+        "row": 13616,
+        "Rprep": 81462,
+        "Rcredit": 0,
+        "pixels": 14236,
+        "covered": 7107,
+        "emptyScan": 532,
+        "invalidLanes": 7129
+      },
+      "baseline_timing": {
+        "total": 294680,
+        "preload": 10789,
+        "frontend": 282402,
+        "tail": 1489,
+        "Q": 3559,
+        "empty": 532,
+        "peak": 21,
+        "fullCE": 0,
+        "packets": 417,
+        "light": 7107,
+        "sample": 7107,
+        "final": 7107,
+        "commits": 3027,
+        "RO": 224,
+        "FBread": 936,
+        "FBwrite": 816,
+        "RObeats": 2976,
+        "FBreadbeats": 14976,
+        "FBwritebeats": 13056,
+        "overlapDMA": 1268,
+        "pendingStarts": 2
+      },
+      "cycle_delta": -2018,
+      "memory_sha256": "7f3d0b18f968c4addfbc975b16360f7d358d5fbf0fdf0663cd30431592885e92",
+      "semantic_events_checked": true,
+      "independent_lighting_input_equal": true,
+      "same_mc_rtl": {
+        "bridge.v": "f2c10789675b0b787aba404af82f8b09f0217df67e14acdbef94c21a13aeb4ef",
+        "combination.v": "9bace0d8204f02549d5509c8a066a6c98b24f28cb53529cd23370ee971eb47c7",
+        "controller.v": "b22d6a39c49ba2ed0da287176c479cca5f54426a2766e4b47055d35cefd94b0c",
+        "cpu_v3_memory_arbiter.v": "85c2da9a1aab57165c420b4534ad76354b4b0dcd4f7293673bbfcf0b43cdd3ee",
+        "pins.v": "841bb2916f4170f1eca23e067f8a770ed62f1f2fe1d687a1cf1c4227a85264d1",
+        "shared_port.v": "09d6c6255874f72c8fc4cfb1127201826f32362d0e70c363ef6063a9558cc57a"
+      },
+      "artifact": {
+        "path": "target/gpu-layout-20261018/runs/final-a6-bunny/receipt.json",
+        "sha256": "95186a2ff61999053b93787e6ea54e03afecdc5206db37396c05b6e24daa88be"
+      }
+    }
+  },
+  "qualification": {
+    "gpu_model_tests": "143 passed, 26 ignored; scoped clippy passed",
+    "core_cosim": "本轮完整43个ignored CPU core共仿通过（预先提供研究用输出目录），CPU源码未改。",
+    "system_cosim": "本轮2个system共仿通过，系统源码未改。",
+    "scalar_and_prepare": "当前normal数值与原精确B完全一致；A6池/后半P/N CE0、在途reset、稀疏、abort及sink fault均通过；最终主仓两导出与已资格candidate完全一致。"
+  },
+  "artifacts": {
+    "selected_fit": {
+      "path": "target/gpu-mapping-audit-20261018/a6-fit-p0/receipt.json",
+      "sha256": "dad0d9bc9d545cd811328ec5b2feaf922b3e8bb8b68eeacec46bd6d2a190b421"
+    },
+    "normal_rne_exhaustive": {
+      "path": "target/gpu-vliw-normal-quantization/main-selected-rne-20261018/receipt.json",
+      "sha256": "1b0cfac7ba32cd4e2b9dc46e69ab3ca41313359882a4c5e43ef8b7d3e85e7bd0"
+    },
+    "prepare_chain": {
+      "path": "target/gpu-vliw-prepare-chain/main-selected-layout-20261018/receipt.json",
+      "sha256": "82d390b96b8b380a98b6913fd4c62c647729fd3b5fc6c39339b7ee7990418ccc"
+    },
+    "frontend_normal18": {
+      "path": "target/gpu-layout-commit-evidence-20261018/worker-f207/target/gpu-vliw-integration-20261018/n12-both/receipt.json",
+      "sha256": "7becf640072a69a29ed33c18f9b851d03c0ac58aff92c77f1b492d2fdb5e4366"
+    },
+    "frontend_normal16": {
+      "path": "target/gpu-layout-commit-evidence-20261018/worker-f207/target/gpu-vliw-integration-20261018/n12-normal16/receipt.json",
+      "sha256": "10784accf2ebaef48b958efacc11cd0c22d4a751764a4b3cc77b43450265a4b3"
+    },
+    "complete_uv_rgb": {
+      "path": "target/gpu-layout-commit-evidence-20261018/worker-f207/target/gpu-vliw-integration-20261018/stage2/n12-final-rgb/receipt.json",
+      "sha256": "a8f3c910b1d11dbfcabfd0c9d573eac7c381dbdca63e5feee1ca0ad70dc749b8"
+    },
+    "worker_b_cleanup": {
+      "path": "target/gpu-layout-commit-evidence-20261018/worker-f207/target/gpu-normal-reaudit-20261018/cleanup-receipt.json",
+      "sha256": "215499651c0f57d8d44cd758891e74030fdbf3fa82eb32cb9e438d0c62e84b06"
+    },
+    "worker_a_cleanup": {
+      "path": "target/gpu-layout-commit-evidence-20261018/worker-60c7/target/gpu-pool-z-layout/a6/cleanup-audit.json",
+      "sha256": "a17f143d105c7c0a255607e3308209bf873cdfdbf73bdd6393e8ee71078c814a"
+    },
+    "final_source": {
+      "path": "target/gpu-layout-20261018/final-source-check.json",
+      "sha256": "74722a9a9a54785b31dc81bcc8ed505b225fde18cdf72a8f176204669fdf9b13"
+    },
+    "core_cosim": {
+      "path": "target/cargo-summaries/gpu-mapping-required-core-release.json",
+      "sha256": "073837c69f758d5fff6ad61514bad7d600f06a658e2a775ece99e4590b752b76"
+    },
+    "core_study_retry": {
+      "path": "target/cargo-summaries/gpu-layout-required-core-study-release.json",
+      "sha256": "8c1936766059c6d460b526a7fd5afca8c900bb47e0c157c8d74494f79e962641"
+    },
+    "system_cosim": {
+      "path": "target/cargo-summaries/gpu-mapping-required-system-release.json",
+      "sha256": "57f0aae242119e95a265943cd0a760c3c8a4d3ba19b099ac459c608b924d5565"
+    },
+    "selected_models": {
+      "path": "target/cargo-summaries/gpu-mapping-model-release.json",
+      "sha256": "167d41bf8c9c4e14c7847da29b0ea3a7a652fb9000f20d8667e9ac7f17591b0a"
+    },
+    "selected_clippy": {
+      "path": "target/cargo-summaries/gpu-mapping-clippy-release.json",
+      "sha256": "31bbdd0610632986ce8a0d398dee25e26e9881b98ca52bb1d3201dd787c8c2ff"
+    },
+    "adoption_identity": {
+      "path": "target/gpu-mapping-audit-20261018/adoption-identity.json",
+      "sha256": "e84517adf6b7382d8a52888859af09af15477dbe4ec82cfe2bfa1ec8008f32fd"
+    },
+    "layout_followup_decision": "target/gpu-light-sparse-evidence-20261018/main/decision.json"
+  },
+  "prior_selected_fit": {
+    "logic": 11840,
+    "logic_ff": 5097.0,
+    "ssram": 204,
+    "bsram": 34.0,
+    "dsp": 18.0,
+    "fmax": 56.219,
+    "setup_violations": 0.0,
+    "hold_violations": 0.0,
+    "primitives": {
+      "MULT9X9": 24,
+      "MULT18X18": 10,
+      "MULTALU36X18": 3,
+      "MULTADDALU18X18": 3,
+      "ALU54D": 1
+    }
+  },
+  "prior_selected_scene_cycles": {
+    "box": 134952,
+    "bunny": 292662
+  },
+  "controlled_review": {
+    "cause": "重复综合逐项复现；仅交换两个实例声明顺序即可令未改前半差额+85→-109，属于综合阶段全局输入顺序敏感映射，不是前半新增计算。未宣称读出加密网表的逐LUT函数或工具内部算法。",
+    "unchanged_front_reachable_modules": 26,
+    "summary": {
+      "path": "target/gpu-mapping-audit-20261018/controlled-summary.json",
+      "sha256": "d41a31ca08ed54a00e2765b08d3fa0038e6fce2d80872a8af9adcea0e0b1a7ac"
+    },
+    "isolated_front_identity": {
+      "path": "target/gpu-mapping-audit-20261018/isolated-identity.json",
+      "sha256": "e7a360f96e2fa0a61e7e1c2340ae08b981972b23c8c93078f380d5dd19fe814e"
+    },
+    "back_only_same_registered_boundary": {
+      "baseline_logic_estimate": 5804,
+      "a4_logic_estimate": 5770,
+      "note": "LUT+ALU+6*RAM16，非PnR Logic；结构收益真实。"
+    },
+    "same_behavior_instance_order_matrix": {
+      "back_first": {
+        "b_whole_estimate": 11559,
+        "a4_whole_estimate": 11579,
+        "front_delta": 85,
+        "back_delta": -48
+      },
+      "front_first": {
+        "b_whole_estimate": 11802,
+        "a4_whole_estimate": 11552,
+        "front_delta": -109,
+        "back_delta": -139
+      }
+    },
+    "adopted_a6_changes": [
+      "Normal/UV/RGB固定DI与9位列写",
+      "Z在I phi1直接落独立银行，真实C接受发读，D消费Q",
+      "删除旧Z四行/标签/预约",
+      "J_WAIT代表完整同步Q，删除paid/return-valid链",
+      "masked lane直接跨过Final取源",
+      "属性相位替代字号，属性像素游标兼供Z写地址",
+      "既有发布/退休游标替代父发布计数",
+      "sink相位/lane替代父镜像FF与lane_matches网络"
+    ],
+    "normal_potential_review": {
+      "implemented": [
+        "ACC高18直写，删除18位buffer和旧高字写槽",
+        "仅C/det需高位，Nx/Ny严格符号扩展",
+        "高bank的SSRAM与BSRAM同端口实现",
+        "删除重复META3配置读和两态/normal_mode元数据",
+        "删除三个过期V运输emit及特殊门控，保留MAC/RF/flow有效沿",
+        "精确RNE只保留模式相关低2位sticky，完整floor producer删除模式/舍入"
+      ],
+      "rne_ssram": {
+        "logic": 11869,
+        "logic_ff": 5017.0,
+        "ssram": 205,
+        "bsram": 34.0,
+        "dsp": 18.0,
+        "fmax": 54.439,
+        "setup_violations": 0.0,
+        "hold_violations": 0.0,
+        "primitives": {
+          "MULT9X9": 24,
+          "MULT18X18": 10,
+          "MULTALU36X18": 3,
+          "MULTADDALU18X18": 3,
+          "ALU54D": 1
+        }
+      },
+      "floor_ssram": {
+        "logic": 11876,
+        "logic_ff": 5016.0,
+        "ssram": 205,
+        "bsram": 34.0,
+        "dsp": 18.0,
+        "fmax": 58.426,
+        "setup_violations": 0.0,
+        "hold_violations": 0.0,
+        "primitives": {
+          "MULT9X9": 24,
+          "MULT18X18": 10,
+          "MULTALU36X18": 3,
+          "MULTADDALU18X18": 3,
+          "ALU54D": 1
+        }
+      },
+      "floor_bsram": {
+        "logic": 11814,
+        "logic_ff": 5013.0,
+        "ssram": 200,
+        "bsram": 35.0,
+        "dsp": 18.0,
+        "fmax": 54.389,
+        "setup_violations": 0.0,
+        "hold_violations": 0.0,
+        "primitives": {
+          "MULT9X9": 24,
+          "MULT18X18": 10,
+          "MULTALU36X18": 3,
+          "MULTADDALU18X18": 3,
+          "ALU54D": 1
+        }
+      },
+      "floor_bsram_front_first_synthesis": {
+        "Lut": 8885,
+        "Alu": 1602,
+        "Ssram": 200,
+        "Bsram": 35,
+        "Register": 5020,
+        "logic_estimate": 11687
+      },
+      "quantizer_exact_body_lut": {
+        "old": 27,
+        "new": 24,
+        "floor": 0
+      },
+      "decision": "完整normal路线并非无效；本轮逻辑目标下A6+已有精确N12较小且时序较好，故不默认采用后继。SSRAM不是免费面积，额外BSRAM允许时必须计入存储对照。",
+      "rne_full_scene": {
+        "box": {
+          "path": "target/gpu-layout-20261018/runs/reaudit-rne-box/receipt.json",
+          "sha256": "d7f940b08dbaca9afb9d28fce168100a9f1fea24b4a6a3241f2480783797ac31"
+        },
+        "bunny": {
+          "path": "target/gpu-layout-20261018/runs/reaudit-rne-bunny/receipt.json",
+          "sha256": "335880886d4872c093915073a0d083eafa568bb6495c2f5803ad075bc020e66d"
+        }
+      },
+      "floor_full_bunny": {
+        "path": "target/gpu-layout-20261018/runs/reaudit-floor-bunny/receipt.json",
+        "sha256": "67a87a8a16bbaee9629e1bfc635451960626074413992e45f3f748f02f8d0d05"
+      },
+      "floor_full_bunny_scope": "独立floor三顶点法线oracle→真实I→独立Lighting金值→Final/ROP，全部内存对gold；相对精确基线仅56颜色字节变化，Z完全相同；不是位精确颜色声明。",
+      "new_pipeline_cycles": {
+        "box": 134952,
+        "bunny": 292622
+      },
+      "visual_url": "http://127.0.0.1:8771/raycast-precision-20261014/interpolator/normal-floor/index.html?sample=2",
+      "visual_scope": "8帧变化曲面、真实整数I/LightingEmu H9/Final/ROP；全码等价式绑定新floor producer。用户已接受误差，未设为RTL默认。"
+    },
+    "remaining_unimplemented": {
+      "followup_status": "Light两轮完整实现和受控综合后本轮未采用；Z/Sample/低36位寿命已纸面闭合审查，详见后继裁决。",
+      "report": "target/gpu-light-sparse-evidence-20261018/main/report.md",
+      "receipt": "target/gpu-light-sparse-evidence-20261018/main/decision.json",
+      "source_kept": "原精确N12/T16 B+A6；未提交。"
+    }
+  },
+  "retention": {
+    "cleanup_receipt": "target/gpu-layout-cleanup-20261018/verification.json",
+    "note": "采用源/实际导出/关键收据保留；未采用历史源码快照和生成物按用户要求清理。后继Light候选未进入生产源。",
+    "followup_cleanup": "用户已删除原四个实验目录，现场复核全部不存在；关键证据集中在target/gpu-light-sparse-evidence-20261018，采用源/测试hash不变，两个worker clean。"
+  },
+  "artifact_path_base": "repository root; retained raw artifacts are local and not committed"
+}

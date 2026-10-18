@@ -1,16 +1,22 @@
 # VLIW GPU 合体资格与资源判断
 
-The selected independent GPU IP is exported by `system::vliw_sdram::verilog`.
-The [Color direct-completion receipt](../examples/vliw_integration/color-direct-evidence.json)
-binds the current sources, matched P0 fit and current-memory complete-model performance.
-The [frontend preparation receipt](../examples/vliw_integration/frontend-preparation-evidence.json)
-retains the preceding preparation implementation and measurement identity.
-The [TDP framebuffer receipt](../examples/vliw_integration/framebuffer-tdp-evidence.json)
-and [contract](framebuffer-tdp.md) retain the preceding cache implementation identity.
-Stage receipts and the tables below are historical measurements. Generated
-outputs and rejected experiments remain outside Git.
+当前独立 GPU 由 `system::vliw_sdram::verilog` 导出，[布局关键证据](../examples/vliw_integration/layout-evidence.json)绑定当前精确 N12／T16 源码、P0 拟合与当前内存链完整场景比较。[Color 收据](../examples/vliw_integration/color-direct-evidence.json)是本轮直接基线，[准备收据](../examples/vliw_integration/frontend-preparation-evidence.json)、[TDP 收据](../examples/vliw_integration/framebuffer-tdp-evidence.json)和[帧缓冲合同](framebuffer-tdp.md)保留前序身份。下面的阶段表格均为历史测量；生成物与失败候选源码不入库。
 
-## Selected Color completion ownership
+## 当前采用的 N12／T16 布局
+
+法线在 Vertex 原有顺序 pack 槽中共用一个原精度量化器，直接形成最终 S12F10 的 N36；准备链不再做第二份格式转换。高18位系数用独立同步银行与低36位同时读，删除高／低字二次读取、标签和等待。生产、存储、消费者与所有包末项均已切换为 V5／T16，详见[数据结构和逐拍契约](vliw-integration.md)。原 Vertex 位置计算、乘加和控制 ROM 未改。
+
+实际量化器两模式共524288码与冻结数学参考逐码相同。前半与完整小兔子 UV／RGB 回放覆盖两种原语布局、随机 CE、导出和内存暂停；准备链覆盖在途复位。完整 box 与948面兔子另用真实当前 MC 及独立引脚模型检查所有有效数值事件和400384字节最终内存。总拍包含初始装填和最终 flush，不是单独 II4 的推算。
+
+分列结果池／独立Z的早期否决已更正。同源重新综合复现旧结果；仅交换两个实例声明顺序、保留连线和行为，就使未改前半的面积差由增加变为减少。独立前半可达源逐字相同，独立后半固定注册接口也确实更小，说明整链存在可复现的全局顺序敏感映射，不能把未改前半的增加当成必要算法成本。综合LUT／ALU估算与PnR Logic分开记录，教育版综合网表加密，未声称已读取每个LUT函数或确定工具内部启发式。
+
+进一步删除重复像素游标、发布计数和sink相位／lane镜像后，结果池方案取得实际整机收益，已采用。Z直接在真实C接受时读取并供D消费，9位分列写、源同步Q所有权、稀疏lane跳过及原有故障边界均完成配套，见[当前契约](vliw-integration.md)。
+
+normal后继已完整实现ACC高字直写、只保存C/det高字、重复配置读／元数据及空emit删除、精确sticky化简和完整floor producer。精确／floor的小SSRAM版、floor的BSRAM版及既定两种实例顺序已定价；完整回放验证数值，floor另重算独立Lighting金值。当前Logic目标下仍选择已有精确N12加新结果池，后继路线未默认采用；结论、源身份和关键报告保留，未采用源码快照与生成中间物已按用户要求清理。没有再用一个局部函数试验代表完整路线。
+
+本轮采用点是单次 P0、54MHz 注册事务边界的独立 GPU 结果，包含555个探针 FF，排除物理 MC、CPU 和 Display。场景回放使用约49.5／99MHz功能时钟；不代表 CPU＋GPU 合体或板测。
+
+## 保留的 Color 完成所有权
 
 The closed VLIW Color path writes its completed packed accumulator directly to
 the existing final sample bank. That bank accepts every completion on the common
@@ -33,7 +39,7 @@ memory-transport baseline, so its cycle totals are not the Color comparison.
 Area/timing remain a single-placement independent-GPU result without physical MC,
 CPU or Display; this is not board or CPU-plus-GPU qualification.
 
-## Selected preparation and Lighting dataflow
+## 保留的准备与光照数据流
 
 R generates geometry-only step rows while I computes the bounding box. Once the
 box is available, R restores the aligned origin with its existing work/step
@@ -81,7 +87,7 @@ Final 用两项旧态容量切断输出 ACK 到输入信用的组合反馈，空
 
 生产者模式在全部旧返回完成后才可能随下一 T 的配置改变。CE 暂停冻结整套日历；24个活动槽、8个未发布槽和消费者退休规则不变。旧 G/N/W/L、标签、模式及完整发布条件留作非综合断言，逐物理沿核对。此池只服务闭合的固定顺序生产者，不再承诺任意缺失、乱序返回或提前换模式的运行时硬件诊断。没有改变 Vertex 或精度，也没有把必要工作转移到 T 或下游。
 
-## Historical stage-4 fit
+## 历史阶段4拟合
 
 数字和原始报告身份只以当前关键证据为准：同一完整边界、GW2AR-LV18QN88C8/I7、54MHz、两套布局，setup/hold 均为零。统计包含549位动态输入和六个输出观察寄存器，共555个探针 FF；不是无探针核心面积，也不是外部 SDRAM 控制器的时序资格。
 
@@ -107,7 +113,7 @@ Final 用两项旧态容量切断输出 ACK 到输入信用的组合反馈，空
 
 表外还有父级胶合、Light/Sample 结果银行与探针。BSRAM 总体为前半11、结果池4、Lighting3、Light/Sample结果2、采样包与系数2、纹理缓存7、ROP4；装填器和路由没有额外 payload FIFO。DSP 按物理原语计费，不能把组合体误当一个18×18槽。
 
-## Historical stage-4 end-to-end performance
+## 历史阶段4端到端性能
 
 box 用例只提交 `box_x_minus` 一个面，九顶点八三角，覆盖24400个像素样本，约占400×240屏幕的25.4%；不是封闭box的六个面，也不是全屏填充。兔子使用真实的一个64顶点、93三角 meshlet，变化 UV 来自程序生成。兔子压力把相同几何再按 RGB 解释，以覆盖旧结果尚存时换局部模式和真实 LESS 拒绝。它们不是完整兔子或完整场景的一帧，不能换算成整场景帧率。完整400384字节内存比对包括未触碰区域，不表示全部屏幕像素经过着色。
 

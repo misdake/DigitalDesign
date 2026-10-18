@@ -115,6 +115,7 @@ def main():
     ap.add_argument('--mode',choices=['portable','native','both'],default='both')
     ap.add_argument('--name',choices=['bunny_patch_1','box_x_minus','both'],default='both')
     ap.add_argument('--stress',action='store_true')
+    ap.add_argument('--normal-mode',choices=['fixture','16','18'],default='fixture')
     ap.add_argument('--max-cycles',type=int,default=300000)
     a=ap.parse_args()
     assert re.fullmatch('[A-Za-z0-9_.-]+',a.tag)
@@ -123,7 +124,7 @@ def main():
     out.mkdir(parents=True)
     vendor=ROOT/'ip/gpu-v2/src/frontend/vliw'
     files=[p for p in vendor.rglob('*') if p.suffix in ('.v','.vh','.json')]
-    files += [HERE/'frontend_stream_tb.v',Path(__file__)] + [p for p in (HERE/'reference').rglob('*') if p.is_file()]
+    files += [HERE/'frontend_stream_tb.v',HERE/'transport.py',Path(__file__)] + [p for p in (HERE/'reference').rglob('*') if p.is_file()]
     source=out/'source'
     hashes={}
     for p in files:
@@ -133,10 +134,14 @@ def main():
     ref=source/HERE.relative_to(ROOT)/'reference'
     sp=importlib.util.spec_from_file_location('adopted_front_oracle',ref/'scene/oracle.py')
     O=importlib.util.module_from_spec(sp);sp.loader.exec_module(O)
+    transport=importlib.util.spec_from_file_location('current_transport',source/HERE.relative_to(ROOT)/'transport.py')
+    helper=importlib.util.module_from_spec(transport);transport.loader.exec_module(helper);O=helper.adapt_oracle(O)
     scene=json.loads((ref/'uv-inputs.json').read_text())['scenes'][0]
     rows=[]
     for instance in scene['meshlets']:
         if a.name!='both' and instance['name']!=a.name:continue
+        if a.normal_mode!='fixture':
+            instance['config'][3]=(instance['config'][3]&~256)|(256 if a.normal_mode=='18' else 0)
         data=out/instance['name'];meta,packets=O.prepare(instance,data)
         for mode in (['portable','native'] if a.mode=='both' else [a.mode]):
             run=data/mode;run.mkdir()
