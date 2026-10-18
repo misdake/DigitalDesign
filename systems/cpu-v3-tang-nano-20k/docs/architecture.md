@@ -310,39 +310,34 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-10-18 complete-chain batch starts from `785669b9` plus the retained,
-uncommitted shared-fetch payload changes. It selects two frontend payload slots,
-two request slots and direct 108-MHz pair-Q to final 54-MHz adapter capture.
-I-cache response-error ownership is fixed together with its value model and
-independent full-queue fault tests; successor acceptance preserves a held error.
-D-cache port rewriting, Display layout/ROM variants and FPU ALU inlining are not adopted.
+The 2026-10-18 Display address-chain batch follows CPU-chain commit `4c40d91a`.
+Shadow/pending/active/tile-row address ownership uses aligned transaction units;
+invalid high and low halves retain separate predicates, and one group cursor
+supplies both frame and tile-local progress. MMIO values, exact bounds,
+atomic frame/format swaps, four-row storage and scanout layout are unchanged.
 
-| Matched pre-commit CPU-system fit | Shared-payload baseline | Selected chain |
+| Matched pre-commit CPU-system fit | Base `4c40d91a` | Selected address chain |
 | --- | ---: | ---: |
-| Logic | 7,977 | 7,896 |
-| RAM16 / Logic FF / CLS | 24 / 3,018 / 5,161 | 24 / 2,924 / 5,052 |
+| Logic | 7,896 | 7,882 |
+| RAM16 / Logic FF / CLS | 24 / 2,924 / 5,052 | 24 / 2,897 / 5,060 |
 | BSRAM / MULT36X36 | 11 / 1 | 11 / 1 |
-| CPU fitted Fmax | 57.990 MHz | 56.680 MHz |
+| CPU fitted Fmax | 56.680 MHz | 55.514 MHz |
 
-Both use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C, identical
-CST/SDC and implementation options. All three internal clocks pass setup/hold;
-runtime remains 54/108 MHz. The inherited external SDRAM-output setup issue is
-excluded at the user's direction; the raw strict audit failure is retained.
-These are CPU-system fits with an inactive GPU shell, not complete GPU v2 or
-new physical-board evidence. Actual main exports reproduce the final V2 fit. The same I-cache repair on
-the four-credit control costs 8,150 Logic / 56.232 MHz; the primary net area gain
-is still measured against the original starting system in the table.
+Both use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C,
+identical CST/SDC and implementation options. All three internal clocks pass
+setup/hold; runtime remains 54/108 MHz. Strict external SDRAM-output setup
+failure is retained and excluded at the user's direction. The fit includes
+the inactive GPU shell, not complete GPU v2; no new board result is claimed.
 
-The frozen 22-program legacy model adds 0.048% geometric-mean completion cycles
-(worst 0.380%); the separately pin-calibrated native128 model reduces them 0.133%
-with no per-program regression. Both include final clean; they are separate
-model comparisons, not CPU-plus-pin RTL or measured board performance.
-Source identities, complete candidate comparisons, qualification and rejected
-alternatives are in [the batch report](../../../target/cpu-system-chain-batch-20261018/report.md).
-This is pre-commit evidence; no commit, ledger promotion or board programming
-is implied. The [record](cpu-v3-optimization-record.md#2026-10-18-two-slot-fetch-and-single-adapter-read-capture)
-describes the complete replacement. [Earlier shared-payload evidence](../../../target/cpu-fetch-btc-shared-payload-20261018/report.md)
-remains a separate checkpoint.
+Full 2x/3x scanout checks both formats and the maximum legal framebuffer,
+misalignment, out-of-range staging, atomic swaps, faults and underflow.
+CPU/system co-simulation, complete Flash RTL and affected-crate strict lint
+pass. Candidate source/fit/qualification and rejected alternatives are in
+[the batch report](../../../target/cpu-display-boot-batch-20261018/report.md).
+Fixed-calendar and TMDS precode successors remain experiments until separately
+qualified and measured. The earlier two-slot fetch/native-pair replacement
+and its performance tradeoff are documented in [its report](../../../target/cpu-system-chain-batch-20261018/report.md).
+Boot images/layout are unchanged by this address-only batch.
 
 ## Earlier storage and product-issuer checkpoint
 

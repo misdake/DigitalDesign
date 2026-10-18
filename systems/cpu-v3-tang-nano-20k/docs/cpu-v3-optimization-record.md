@@ -1925,3 +1925,27 @@ comparisons and actual-main qualification are linked from the current
 Boot simplification remains a proposal; current Boot images/layout and runtime
 clock are unchanged. The independent GPU files and WIP are outside this batch.
 No new commit, board programming or complete-GPU fit is claimed.
+
+
+## 2026-10-18 Display aligned address ownership
+
+Pending, active and tile-row framebuffer bases are stored in one 32-byte
+transaction unit. Shadow writes keep the aligned address plus independent
+upper-range and low-alignment predicates; writing the other half cannot erase
+an invalid predicate. Accepted addresses restore their zero low bits at public
+readback/request boundaries. One two-row group cursor also supplies the
+local tile row, eliminating independently maintained copies of progress.
+The actual width-derived tile-row stride and concatenated offset feed the
+memory request. Response writes, both BSRAM banks, table addresses, publication,
+release and scanout consumers retain their original layout and lifetime.
+
+The aligned/grouped-only implementation loses the complete-system Logic
+comparison despite its local saving. The compressed-shadow composition is
+retained after the matched complete-system comparison and complete qualification;
+resources and evidence live in the current [architecture section](architecture.md#current-fitted-result-and-validation-boundary)
+and the linked batch report. Full-frame tests now exercise the maximum legal
+base, both invalid half-write orders, the first aligned address above the limit,
+held pending values, format snapshots, swaps, both scales, errors and underflow.
+The expected exclusive upper memory bound uses 23 bits. Core/system co-simulation,
+actual Flash RTL, system tests and affected strict lint pass. No GPU implementation,
+boot/layout change or new board result belongs to this batch.

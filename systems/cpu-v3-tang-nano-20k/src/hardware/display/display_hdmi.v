@@ -28,11 +28,19 @@ reg [1:0] release_meta=0, release_sync=0;
 reg fill_slot=0;
 // fill_y/local_y identify the even first row of a two-row group. Fetch both
 // rows of one tile before advancing burst_index to the next tile column.
-reg [7:0] fill_y=0;
-reg [21:0] active_base=FB_BASE, tile_row_base=FB_BASE;
-reg [3:0] local_y=0;
-reg [31:0] shadow_base=32'h00200000;
-reg [21:0] pending_base=FB_BASE;
+// One group cursor is the authority for frame and tile-local rows.
+reg [6:0] fill_group=0;
+wire [7:0] fill_y={fill_group,1'b0};
+wire [3:0] local_y={fill_group[2:0],1'b0};
+// Addresses are stored in one 32-byte SDRAM transaction unit.
+reg [17:0] active_base_units=FB_BASE[21:4], tile_row_base_units=FB_BASE[21:4];
+wire [21:0] active_base={active_base_units,4'b0};
+wire [21:0] tile_row_base={tile_row_base_units,4'b0};
+
+reg [17:0] shadow_base_units=FB_BASE[21:4];
+reg shadow_high_bad=0,shadow_low_bad=0;
+reg [17:0] pending_base_units=FB_BASE[21:4];
+wire [21:0] pending_base={pending_base_units,4'b0};
 reg shadow_linear=0, pending_linear=0, active_linear=0;
 reg [1:0] group_linear=0;
 reg next_low_written=0, next_high_written=0;
@@ -52,8 +60,10 @@ assign memory_request_valid = fill_slot_free && !burst_active &&
 // Adjacent rows of each tile are fetched consecutively. The arbiter retains
 // its fixed 32-byte display transactions: the pair is two requests, not a
 // longer non-preemptible owner interval.
-assign memory_address = tile_row_base + {9'b0,burst_index,8'b0} +
-                        {14'b0,local_y,4'b0} + (fill_second ? 22'd16 : 22'd0);
+// Column, even-row pair and second-row bits are disjoint.
+wire [17:0] request_units=tile_row_base_units +
+    {9'b0,burst_index,local_y[3:1],fill_second};
+assign memory_address={request_units,4'b0};
 // Each shared address holds four RGB565 pixels across the two banks. One row
 // uses 100 addresses, one group 200; addresses 400..447 are unused and 448..511
 // are the read-only sRGB tables. SDRAM beats can therefore bypass staging.
@@ -78,9 +88,9 @@ always @(posedge clk) begin
     underflow_meta <= underflow_sticky;
     underflow_sync <= underflow_meta;
     if (reset) begin
-        published<=0; fill_slot<=0; fill_y<=0; active_base<=FB_BASE;
-        tile_row_base<=FB_BASE; local_y<=0;
-        shadow_base<=32'h00200000; pending_base<=FB_BASE;
+        published<=0; fill_slot<=0; fill_group<=0; active_base_units<=FB_BASE[21:4];
+        tile_row_base_units<=FB_BASE[21:4];
+        shadow_base_units<=FB_BASE[21:4];shadow_high_bad<=0;shadow_low_bad<=0; pending_base_units<=FB_BASE[21:4];
         next_low_written<=0; next_high_written<=0;
         next_pending<=0; invalid_address<=0; frame_complete<=0;
         frame_index<=0; frame_meta<=0; frame_sync<=0; frame_seen<=0;
@@ -93,14 +103,14 @@ always @(posedge clk) begin
             frame_seen<=frame_sync;
             frame_index<=frame_index+1'b1;
             if (frame_complete) begin
-                fill_y<=0;
-                local_y<=0;
+                fill_group<=0;
+
                 frame_complete<=0;
                 if (next_pending) begin
-                    active_base<=pending_base; active_linear<=pending_linear;
-                    tile_row_base<=pending_base;
+                    active_base_units<=pending_base_units; active_linear<=pending_linear;
+                    tile_row_base_units<=pending_base_units;
                     next_pending<=0;
-                end else tile_row_base<=active_base;
+                end else tile_row_base_units<=active_base_units;
             end
         end
         // Process device writes after the frame event so a NEXT_SWAP arriving
@@ -108,11 +118,11 @@ always @(posedge clk) begin
         // active frame still receives the previously submitted address.
         if (device_write_enable && device_index==DISPLAY_DEVICE) begin
             if (device_channel==4'd1) begin
-                shadow_base[15:0]<=device_write_data;
+                shadow_base_units[11:0]<=device_write_data[15:4];shadow_low_bad<=|device_write_data[3:0];
                 next_low_written<=1;
                 invalid_address<=0;
             end else if (device_channel==4'd2) begin
-                shadow_base[31:16]<=device_write_data;
+                shadow_base_units[17:12]<=device_write_data[5:0];shadow_high_bad<=|device_write_data[15:6];
                 next_high_written<=1;
                 invalid_address<=0;
             end else if (device_channel==4'd4) begin
@@ -121,9 +131,9 @@ always @(posedge clk) begin
                          next_low_written && next_high_written) begin
                 next_low_written<=0;
                 next_high_written<=0;
-                if (shadow_base[31:22]==0 && shadow_base[3:0]==0 &&
-                    shadow_base<=LAST_VALID_FB_BASE) begin
-                    pending_base<=shadow_base[21:0]; pending_linear<=shadow_linear;
+                if (!shadow_high_bad && !shadow_low_bad &&
+                    shadow_base_units<=LAST_VALID_FB_BASE[21:4]) begin
+                    pending_base_units<=shadow_base_units; pending_linear<=shadow_linear;
                     next_pending<=1;
                     invalid_address<=0;
                 end else begin
@@ -150,10 +160,10 @@ always @(posedge clk) begin
                         burst_index<=0; fill_slot<=~fill_slot;
                         if (fill_y==LAST_FILL_Y-1) frame_complete<=1;
                         else begin
-                            fill_y<=fill_y+8'd2;
+                            fill_group<=fill_group+1'b1;
                             if (local_y==4'd14) begin
-                                local_y<=0; tile_row_base<=tile_row_base+TILE_ROW_STRIDE;
-                            end else local_y<=local_y+4'd2;
+                                 tile_row_base_units<=tile_row_base_units+{9'b0,TILE_ROW_STRIDE[12:4]};
+                            end
                         end
                     end else burst_index<=burst_index+1'b1;
                 end
