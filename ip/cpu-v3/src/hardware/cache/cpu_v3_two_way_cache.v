@@ -263,7 +263,8 @@ always @(posedge clk) begin
             pending_write <= cpu_write;
             pending_address <= cpu_address;
             pending_write_data <= cpu_write_data;
-            response_error <= 0;
+            // A successor owns lookup state, not the still-held response.
+            // Publish data/error together only when that response slot is free.
             refill_discard <= 0;
             lookup_valid <= 1;
         end

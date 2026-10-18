@@ -1841,3 +1841,87 @@ LUT count. Its matched results and source identity are linked from the current
 Expanded protocol replay checks repeated slot replacement, distinct halfwords,
 both replay holds, PC wrap and cancelled first-word fills against the independent
 model and frozen original RTL. No runtime clock increase or board result is claimed.
+
+## 2026-10-18: Shared fetch queue and BTC payload
+
+The memory-response producer, queue references, BTC publication and final read
+are replaced together. One 16-bit distributed RAM stores low BTC pairs plus a
+spare and four ordinary queue slots at its high addresses. An ordered two-word
+response countdown places target words directly into the spare pair. Every
+payload is written once from the accepted memory response; the separate ordinary
+queue FF bank and CPU-to-BTC copy writes are removed.
+
+A queue slot retains one bit identifying a spare reference. The matched core
+address and stable target tag select its halfword. Both target references expire
+before the second CPU acceptance exchanges the spare/victim pointers. Complete
+entries survive partial, faulted and cancelled fills, including responses
+buffered before either core acceptance. Installation and a continuation enqueue
+can share an edge. The final queue/BTC choice selects a RAM address instead of
+multiplexing separate 16-bit payload banks; direct response bypass is retained.
+
+Queue capacity, BTC capacity, full address checks, PC wrap, exact LRU, stale
+metadata ownership, reset/flush and all external transaction schedules remain
+unchanged. The independent cycle model keeps its separate queue data and rank
+representation. Expanded protocol cases and frozen original RTL replay check
+fully buffered target pairs, install plus enqueue, both faulted halves, abort
+before the first acceptance, replay holds and continued ordinary traffic. The
+zero/four/eight-entry configurations retain their public build contract.
+
+Whole-system resource/timing results and validation boundaries are linked from
+the current [architecture section](architecture.md#current-fitted-result-and-validation-boundary).
+The runtime clock is unchanged and no new board result is claimed.
+
+## 2026-10-18: Two-slot fetch and single adapter read capture
+
+The selected chain changes I-cache response holding, request provenance,
+frontend payload allocation, response bypass, BTC installation/replay and the
+board instruction-source router together. Two payload slots and two request
+slots have separate capacity checks; the existing I-cache owns blocked upstream
+data. The aggregate reservation adder/comparison, independent downstream cursor
+and head equality check are removed. FIFO order and live current bits preserve
+full stream ownership across PC wrap, faults, flush and arbitrarily many redirects.
+
+The high two addresses of the shared queue/BTC RAM hold ordinary words; target
+responses write the spare pair directly. One memory-response writer serves both.
+Same-edge pop/replacement consumes old asynchronous Q, and the second CPU
+acceptance can publish a BTC pair while a continuation enqueues. Complete entries,
+atomic spare/victim ownership and exact LRU retain their original semantics.
+The independent model keeps separate payload arrays and rank-based replacement.
+Official RAM16SDP4 and inferred replays share the same address/value fixture and
+require collision plus install/enqueue coverage for the supported BTC settings.
+All test memory producers now retain a blocked response through acceptance.
+
+Independent full-chain review also finds and fixes an upstream ownership bug:
+I-cache successor acceptance cleared an unconsumed response's error. The old
+aggregate credits masked that backpressure combination; independent payload and
+request capacities expose it. Remove the clear from both RTL and model so only
+response publication updates data/error. Direct value assertions reproduce old
+failures despite model/RTL agreement; a real Fetch/I-cache fixture queues two
+good boundary words, injects a next-line error, accepts its successor and requires
+the original fault plus correct retry. Portable/vendor DPB and all BTC settings
+pass. The four-credit control and the selected composition are re-fitted after
+the same repair, with the original starting system still the primary area baseline.
+
+The SDRAM bridge's 108-MHz pair Q and pre-edge read-toggle event feed the adapter's
+existing final 54-MHz capture. The intermediate bridge payload and valid registers
+are deleted together; the adapter retains scalar lane selection, held LAST and
+independent done ownership. Write-pair slots and native write timing are unchanged.
+A permanent bounded distinct-pair regression checks both clock phases, consecutive
+lines, scalar lanes, terminal backpressure, done order, timeout and reset.
+The native128 benchmark service calendar is calibrated to that actual port timing;
+the frozen legacy profile stays separate and unchanged.
+
+D-cache shared store-port addressing/formatting passes the complete chain but
+grows the selected composition, so it is not retained. Display interleaved layout,
+direct ROM16 address/schedule fields and their combination all grow whole-system
+Logic after complete producer/consumer replacement. FPU shared-ALU inlining only
+moves hierarchy ownership and grows its synthesized tree; no FPU change is adopted.
+A one-slot frontend saves slightly more Logic but loses more short-workload cycles;
+the selected two-slot chain preserves the better performance tradeoff.
+
+Matched complete-system resources, internal timing, both 22-program completion
+comparisons and actual-main qualification are linked from the current
+[architecture section](architecture.md#current-fitted-result-and-validation-boundary).
+Boot simplification remains a proposal; current Boot images/layout and runtime
+clock are unchanged. The independent GPU files and WIP are outside this batch.
+No new commit, board programming or complete-GPU fit is claimed.

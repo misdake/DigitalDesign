@@ -1,6 +1,8 @@
 // Adapt one arbiter-owned request to the native 32-bit SDRAM transaction.
 // The controller owns rows, refresh and timing; the board bridge owns 54/108
-// MHz transport. This module owns only 16-bit scalar and 64-bit line packing.
+// MHz transport. The bridge exposes its 108 MHz pair Q with a pre-edge event;
+// this module captures the pair at 54 MHz and owns the only response payload,
+// including scalar-lane selection and terminal hold through done/backpressure.
 module SharedSdramPort #(parameter EARLY_GRANT = 0, parameter CHAIN_GROUP_FOUR = 0) (
     input wire clk,
     input wire reset,

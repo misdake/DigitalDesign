@@ -146,4 +146,44 @@ mod tests {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+
+    /// Distinct consecutive pairs expose a delayed-valid/live-data mismatch.
+    /// Adapter LAST holds across done and backpressure, including done-late.
+    #[test]
+    #[ignore = "explicit bounded pre-edge pair/adapter capture regression"]
+    fn native_pair_capture_preserves_old_q_and_terminal_ownership() {
+        let vendor = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let rtl = vendor.join("src/sdram_memory_controller/rtl");
+        let executable = std::env::temp_dir().join(format!(
+            "cpu-v3-native-pair-capture-{}.vvp",
+            std::process::id()
+        ));
+        let compile =
+            Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()))
+                .args(["-g2012", "-s", "tb", "-o"])
+                .arg(&executable)
+                .arg(rtl.join("sdram_controller.v"))
+                .arg(rtl.join("native_bridge_108m_54m.v"))
+                .arg(rtl.join("display_sdram.v"))
+                .arg(rtl.join("native_pair_capture_tb.v"))
+                .output()
+                .unwrap();
+        assert!(
+            compile.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+            .arg(&executable)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&executable);
+        assert!(
+            run.status.success()
+                && String::from_utf8_lossy(&run.stdout).contains("PASS old-Q phase probe"),
+            "{} {}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
 }

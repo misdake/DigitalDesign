@@ -23,8 +23,8 @@ module TangNano20KSdramNativeBridge108M54M #(
     output wire request_ready,
     output wire stream_active,
     output wire write_data_ready,
-    output reg [63:0] read_data = 0,
-    output reg read_valid = 0,
+    output wire [63:0] read_data,
+    output wire read_valid,
     output reg done = 0,
     output wire initialized,
     output wire O_sdram_clk,
@@ -114,6 +114,12 @@ module TangNano20KSdramNativeBridge108M54M #(
     wire push_pair_54 = write_data_valid && write_data_ready;
 
     assign initialized = init_54;
+    // The related-clock pair Q is stable at the consuming logic edge. A pair
+    // produced on that same controller edge updates only after the consumer
+    // samples old Q. SharedSdramPort owns the sole 54 MHz payload/terminal hold.
+    // This is an edge-valid event, not a registered post-edge logic pulse.
+    assign read_data = read_pair_108;
+    assign read_valid = !reset && read_toggle_108 != read_seen_54;
     assign stream_active = stream_active_54;
     assign request_ready = init_54 && !occupied_54 && !reset;
     // Keep the 108 MHz word index out of the GPU/arbiter ready path. Two
@@ -133,14 +139,12 @@ module TangNano20KSdramNativeBridge108M54M #(
             stream_active_54 <= 0;
             cpu_edge_toggle_54 <= 0;
             done <= 0;
-            read_valid <= 0;
         end else begin
             cpu_edge_toggle_54 <= !cpu_edge_toggle_54;
             init_54 <= core_initialized;
             stream_active_54 <= occupied_54 &&
                 (core_phase[4:0] == 5'd15 || core_phase[4:0] == 5'd18);
             done <= 0;
-            read_valid <= 0;
             if (request_valid && request_ready) begin
                 occupied_54 <= 1;
                 request_toggle_54 <= !request_toggle_54;
@@ -172,8 +176,6 @@ module TangNano20KSdramNativeBridge108M54M #(
             end
             if (read_toggle_108 != read_seen_54) begin
                 read_seen_54 <= read_toggle_108;
-                read_data <= read_pair_108;
-                read_valid <= 1;
             end
             if (done_toggle_108 != done_seen_54) begin
                 done_seen_54 <= done_toggle_108;

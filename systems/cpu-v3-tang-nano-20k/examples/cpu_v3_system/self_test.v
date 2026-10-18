@@ -111,7 +111,13 @@ reg [9:0] boot_read_address = 0;
 wire boot_request_ready = !boot_pending && !boot_response_valid;
 reg instruction_source_active = 0;
 reg instruction_source_boot = 0;
-reg [2:0] instruction_source_count = 0;
+// Each instruction producer has at most two accepted requests. Match the
+// frontend provenance FIFO; boot itself has only one response slot.
+reg [1:0] instruction_source_count = 0;
+`ifdef __ICARUS__
+always @(posedge clk) if (!reset && instruction_source_count > 2)
+    $fatal(1, "instruction source exceeded the two-request contract");
+`endif
 wire icache_cpu_request_ready;
 wire instruction_source_allowed = !instruction_source_active ||
                                   instruction_source_boot == boot_selected;

@@ -210,6 +210,14 @@ fn write_btc_diagnostics(directory: Option<&Path>, stats: cpu_v3::CpuV3BtcStatis
     };
     let mut out = BufWriter::new(File::create(directory.join("btc.txt")).unwrap());
     writeln!(out, "btc_entries={}", cpu_v3::CPU_V3_BTC_ENTRIES).unwrap();
+    writeln!(out, "queue_cycles={:?}", stats.queue_cycles).unwrap();
+    writeln!(out, "outstanding_cycles={:?}", stats.outstanding_cycles).unwrap();
+    writeln!(out, "joint_cycles={:?}", stats.joint_cycles).unwrap();
+    writeln!(out, "direct_words={}", stats.direct_words).unwrap();
+    writeln!(out, "queued_words={}", stats.queued_words).unwrap();
+    writeln!(out, "demand_wait_cycles={}", stats.demand_wait_cycles).unwrap();
+    writeln!(out, "credit_blocked_cycles={}", stats.credit_blocked_cycles).unwrap();
+    writeln!(out, "requests_accepted={}", stats.requests_accepted).unwrap();
     writeln!(out, "lookups={}", stats.lookups).unwrap();
     writeln!(out, "complete_hits={}", stats.hits).unwrap();
     writeln!(out, "installed={}", stats.installed).unwrap();
@@ -512,13 +520,18 @@ impl SdramModel {
                     native.elapsed = 0;
                     native.write_fed = 0;
                     native.write_resume = 4 + row_penalty;
-                    native.first_read = 7 + u8::from(row_penalty == 2);
+                    // The sole 54 MHz payload capture is now in the adapter.
+                    // Independent native/pin calendars give first/last read edges 6/9.
+                    native.first_read = 6 + u8::from(row_penalty == 2);
                     native.response_cycle = if write {
                         10 + row_penalty
                     } else {
                         native.first_read + 3
                     };
-                    native.ready_cycle = native.response_cycle + 1;
+                    // Closed/conflicting rows still wait for unchanged native
+                    // completion. A row hit can retire on the earlier LAST.
+                    native.ready_cycle =
+                        native.response_cycle + if !write && row_penalty != 0 { 2 } else { 1 };
                     self.pending_write = write;
                     self.pending_line = line;
                     self.pending_address = address as usize;
@@ -612,12 +625,12 @@ mod native_timing_tests {
     #[test]
     fn bank_striped_service_matches_pin_level_cpu_port_timings() {
         let mut model = SdramModel::new_native_128b(vec![0; 0x4000]);
-        assert_eq!(line_service(&mut model, 0, false), (7, 10, 11, vec![]));
-        assert_eq!(line_service(&mut model, 16, false), (7, 10, 11, vec![]));
-        assert_eq!(line_service(&mut model, 64, false), (7, 10, 11, vec![]));
-        assert_eq!(line_service(&mut model, 2048, false), (8, 11, 12, vec![]));
+        assert_eq!(line_service(&mut model, 0, false), (6, 9, 11, vec![]));
+        assert_eq!(line_service(&mut model, 16, false), (6, 9, 10, vec![]));
+        assert_eq!(line_service(&mut model, 64, false), (6, 9, 11, vec![]));
+        assert_eq!(line_service(&mut model, 2048, false), (7, 10, 12, vec![]));
         // Bank 1 remains open while bank 0 changes row.
-        assert_eq!(line_service(&mut model, 64, false), (7, 10, 11, vec![]));
+        assert_eq!(line_service(&mut model, 64, false), (6, 9, 10, vec![]));
         assert_eq!(
             line_service(&mut model, 0, true),
             (12, 12, 13, vec![1, 2, 6, 7])

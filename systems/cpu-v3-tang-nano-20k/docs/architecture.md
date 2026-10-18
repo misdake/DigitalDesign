@@ -29,7 +29,7 @@ in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable pr
 `CpuV3System` is the final composition boundary for the Tang Nano 20K target. It connects:
 
 - the revision 0.9 `CpuV3Core` at the Stage 12 microarchitecture level;
-- a four-entry instruction fetch queue with a four-entry, two-word resolved-target BTC;
+- a two-slot instruction payload queue with two request slots and a four-entry, two-word resolved-target BTC;
 - a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
 - the seven-owner CPU V3 memory arbiter, boot DMA, and reserved GPU ports;
 - the related-clock SDRAM/display port and native controller boundary;
@@ -52,8 +52,11 @@ retire at one instruction per cycle. Loads, multiply, FPU, control transfers, de
 invalid cases, and stores while the one-entry asynchronous store buffer is busy remain barriers.
 The full rules are in [`hardware-architecture.md`](../../../ip/cpu-v3/docs/hardware-architecture.md).
 
-The instruction fetch queue reserves at most four fetched or outstanding downstream words.
-Per-slot current bits discard late responses across any number of redirects. A four-entry,
+The instruction path has two frontend payload slots and two request-provenance slots.
+Its independent capacity checks use the I-cache's existing response/lookup holding slots;
+same-edge dequeue/enqueue and response/request slot reuse preserve direct throughput.
+The board source router also tracks at most two accepted requests. Per-slot current bits
+discard late responses across any number of redirects. A four-entry,
 two-word resolved-target BTC can deliver a target immediately while the queue requests its
 second successor. Redirects retain complete BTC entries; fault, halt, reset and global I-cache
 invalidation clear them together with pending replay/fill state. Sequential fetch wraps the
@@ -64,6 +67,9 @@ Physical instruction words `0x00000000..0x000003ff` select the initialized Stage
 instruction addresses use the SDRAM-backed I-cache. The I-cache is read-only and serves demand
 fetches only (the Stage 6 next-line prefetch was removed after measurement); redirects and
 software-controlled invalidation preserve precise handoff semantics.
+The I-cache may hold one response and a successor lookup independently. Its
+response data/error stay stable through backpressure even when that successor
+is accepted; only publishing a new response may replace those fields.
 
 ## Cache and memory path
 
@@ -128,7 +134,11 @@ conversion drops only the halfword lane bit, so the permutation is applied exact
 The bridge preloads two 64-bit write pairs, then replaces the consumed head as the controller
 samples its high half. A write begins on the CPU falling edge; the following rising edge both
 consumes the old high half and may accept the next pair. Reads group two native return words into
-one ordered 64-bit response. Transaction completion and reset clear the bridge's ownership token.
+one ordered 64-bit pair at 108 MHz. Its stable Q and pre-edge related-clock toggle event
+feed the adapter's existing final 54-MHz capture directly; the duplicate bridge payload/valid
+register stage is removed. Scalar lane selection, LAST holding and done ownership remain
+in the adapter. Same-edge production changes Q only after the adapter consumes the old
+pair. Transaction completion and reset clear the bridge's ownership token.
 Command and tile-list fetches remain one line, while framebuffer cache refill and clean use four
 line transactions. Near the end of an active line transfer, the arbiter may grant one successor
 before the current response completes. That grant fixes the next owner and descriptor; the current
@@ -300,33 +310,39 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-10-18 BTC payload batch starts at `e5f769069b68670549663f74220e6c14529269c5`.
-The two fill acceptances write an unreferenced spare pair in 16-bit distributed
-RAM. Complete installation exchanges the spare/victim pointers atomically;
-replay reads the final pair/halfword. Exact LRU uses relative-order bits.
-Capacity, full physical tags, stale-response handling and fetch schedules are retained.
+The 2026-10-18 complete-chain batch starts from `785669b9` plus the retained,
+uncommitted shared-fetch payload changes. It selects two frontend payload slots,
+two request slots and direct 108-MHz pair-Q to final 54-MHz adapter capture.
+I-cache response-error ownership is fixed together with its value model and
+independent full-queue fault tests; successor acceptance preserves a held error.
+D-cache port rewriting, Display layout/ROM variants and FPU ALU inlining are not adopted.
 
-| Matched pre-commit CPU-system fit | Base `e5f7690` | Selected batch |
+| Matched pre-commit CPU-system fit | Shared-payload baseline | Selected chain |
 | --- | ---: | ---: |
-| Logic | 8,077 | 8,058 |
-| RAM16 / Logic FF / CLS | 20 / 3,207 / 5,358 | 24 / 3,076 / 5,259 |
+| Logic | 7,977 | 7,896 |
+| RAM16 / Logic FF / CLS | 24 / 3,018 / 5,161 | 24 / 2,924 / 5,052 |
 | BSRAM / MULT36X36 | 11 / 1 | 11 / 1 |
-| CPU fitted Fmax | 57.841 MHz | 57.609 MHz |
+| CPU fitted Fmax | 57.990 MHz | 56.680 MHz |
 
 Both use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C, identical
-CST/SDC and placement/routing options. CPU same-clock setup/hold has no violated
-endpoints. External SDRAM-output timing is excluded from this batch's acceptance
-at the user's direction; the unchanged strict audit still reports it in the raw
-logs. No constraints or SDRAM implementation were changed to suppress it.
-These fits cover the CPU system and inactive GPU shell, not complete GPU v2.
-The source-bound reports, rejected candidates and validation are in
-[`target/cpu-btc-payload-20261018/report.md`](../../../target/cpu-btc-payload-20261018/report.md).
-This table records the source-bound pre-commit comparison; subsequent committed
-builds and workload runs have separate project ledger evidence. The
-[record](cpu-v3-optimization-record.md#2026-10-18-btc-spare-pair-payload-storage)
-describes the retained structure and verification boundary. Earlier FPU port/commit
-evidence remains in [its report](../../../target/fpu-port-writeback-20261017/report.md).
-No new board result is claimed.
+CST/SDC and implementation options. All three internal clocks pass setup/hold;
+runtime remains 54/108 MHz. The inherited external SDRAM-output setup issue is
+excluded at the user's direction; the raw strict audit failure is retained.
+These are CPU-system fits with an inactive GPU shell, not complete GPU v2 or
+new physical-board evidence. Actual main exports reproduce the final V2 fit. The same I-cache repair on
+the four-credit control costs 8,150 Logic / 56.232 MHz; the primary net area gain
+is still measured against the original starting system in the table.
+
+The frozen 22-program legacy model adds 0.048% geometric-mean completion cycles
+(worst 0.380%); the separately pin-calibrated native128 model reduces them 0.133%
+with no per-program regression. Both include final clean; they are separate
+model comparisons, not CPU-plus-pin RTL or measured board performance.
+Source identities, complete candidate comparisons, qualification and rejected
+alternatives are in [the batch report](../../../target/cpu-system-chain-batch-20261018/report.md).
+This is pre-commit evidence; no commit, ledger promotion or board programming
+is implied. The [record](cpu-v3-optimization-record.md#2026-10-18-two-slot-fetch-and-single-adapter-read-capture)
+describes the complete replacement. [Earlier shared-payload evidence](../../../target/cpu-fetch-btc-shared-payload-20261018/report.md)
+remains a separate checkpoint.
 
 ## Earlier storage and product-issuer checkpoint
 

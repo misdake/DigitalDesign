@@ -2,7 +2,7 @@
 
 Status: concise milestone index
 Repository: `../../../`
-Updated: 2026-10-11
+Updated: 2026-10-18
 
 Add exactly one short sentence here for each completed optimization; append implementation detail,
 measurements, rejected alternatives, and validation evidence to
@@ -11,6 +11,10 @@ numbers belong in [`architecture.md`](architecture.md); exact resource and bench
 generated outside this document.
 
 ## Completed milestones
+
+- 2026-10-18 — Two frontend payload slots reuse I-cache holding capacity, and the native pair-Q feeds the sole adapter response capture; whole-chain comparisons retain the fetch/interconnect combination and reject the D-cache, Display and FPU alternatives. See the [record](cpu-v3-optimization-record.md#2026-10-18-two-slot-fetch-and-single-adapter-read-capture).
+
+- 2026-10-18 — The ordinary fetch queue and BTC share one payload RAM written only by accepted memory responses; queue references expire at atomic BTC publication and final reads select an address. Capacity and the fetch calendar are unchanged. See the [record](cpu-v3-optimization-record.md#2026-10-18-shared-fetch-queue-and-btc-payload).
 
 - 2026-10-18 — BTC payload fills write a spare RAM pair directly and install it by atomic pointer exchange; replay reads the final halfword and exact LRU uses relative-order bits. Capacity and the fetch calendar are unchanged. See the [record](cpu-v3-optimization-record.md#2026-10-18-btc-spare-pair-payload-storage).
 

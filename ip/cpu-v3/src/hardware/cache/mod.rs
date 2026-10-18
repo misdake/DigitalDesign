@@ -878,7 +878,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                 address: input.cpu_address as u32,
                 write_data: input.cpu_write_data as u16,
             };
-            next.response_error = false;
+            // Accepting a successor must preserve the held response's error.
             next.refill_discard = false;
             next.lookup_valid = true;
         }
@@ -2879,3 +2879,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "icache_held_error_tests.rs"]
+mod held_error_tests;

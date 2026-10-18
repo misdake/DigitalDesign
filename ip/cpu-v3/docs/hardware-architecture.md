@@ -18,27 +18,34 @@ updates neither retirement nor a partially computed FPU destination; the
 documented four-beat store exception still keeps memory writes acknowledged
 before a later beat faults.
 
-The fitted system places a four-entry instruction fetch queue in front of the
-core. It reserves fetched and outstanding words and uses per-slot current bits:
-a redirect or flush marks all older requests stale, and their ordered responses
-are drained without delivery. New requests win when a slot is drained and reused
-in the same cycle. This remains correct across arbitrarily many redirects before
-an old response returns. Sequential word addresses wrap PC without carrying into
-CSEG. A queued word or matching memory-response bypass can be accepted directly
-in FetchRequest or in the Stage 12 pipelineable Execute subset; backpressured
-responses are queued.
+The fitted system has two ordinary payload slots and two request-provenance
+slots. The I-cache already holds a response and a lookup while backpressured;
+those slots and the frontend queue have separate capacity checks. A full queue
+can consume its old head and accept its replacement on the same edge. Request
+slots likewise drain and refill together. This replaces the aggregate
+fetched-plus-outstanding reservation adder/comparison without adding upstream
+storage. The board instruction-source router uses the same two-request bound.
 
-Live queue and request-metadata slots do not store individual addresses. Ordered
-delivery uses one 16-bit downstream head offset, advanced only when the core
-consumes an ordinary queued or bypassed word. Restart initializes it to the target
-(plus two on a BTC hit). Full stream addresses still participate in restart
-detection. Every restart clears queue occupancy and marks old requests stale
-before a late response can enter the new stream. BTC replay does not advance the
-downstream head; BTC tags retain full physical targets across ordinary redirects.
-An accepted ordinary response proves that the core address equals the downstream
-head. That address's successor therefore advances both the expected-core cursor
-and downstream head; restart and downstream request bookkeeping reuse explicit
-successor values without changing the acceptance calendar.
+A redirect or flush clears live request bits before late ordered responses can
+enter the new stream; a new request wins if that edge reuses a drained slot.
+This remains correct across arbitrarily many redirects. Sequential word addresses
+wrap PC without carrying into CSEG. Queued words and direct response bypass can
+feed FetchRequest or the Stage 12 pipelineable Execute subset at one word per
+cycle. Backpressure propagates to the existing I-cache holding slots.
+
+The I-cache owns a held response independently from its successor lookup.
+Accepting a successor must not clear the old error flag. Data/error publish
+together and remain stable until consumption; the Rust model uses the same
+ownership rule. Independent portable/vendor-DPB fixtures assert fault delivery
+after a full frontend queue, including a cold-line continuation error following
+two successful target words. The old four-total-credit reservation masked this
+held-error case in the composed frontend; the shorter queue needs this repair.
+
+Live queue and request slots store no addresses. Full expected-core-address
+matching, FIFO order and current ownership establish the next ordinary word.
+The independent downstream head offset and its equality comparator are removed;
+BTC replay leaves the ordinary queue in order. Full physical BTC target tags
+remain necessary because complete entries survive redirects.
 
 The queue also contains a fully associative resolved-target BTC, defaulting to
 four entries of two 16-bit instruction words (not necessarily two instructions).
@@ -60,17 +67,30 @@ BTC and replay/fill state. Ordinary redirects retain complete entries. The BTC
 neither predicts a target nor adds memory traffic to complete a partial entry;
 software-controlled instruction coherency applies exactly as to the I-cache.
 
-The payload is one asynchronous-read, synchronous-write 16-bit distributed RAM.
-Each tag owns a physical pair through a small pointer; one additional pair is
-reserved for incomplete fills. The two successful words write that spare pair
-directly on their acceptance edges. Installing the second word swaps the spare
-and victim pointers atomically, so a partial fill never overwrites a visible
-entry. Replay selects the owned pair and halfword directly, without a first-word
-staging register or a separate two-word output mux. Reset clears validity and
-restores unique pair ownership; flush retains the pointer permutation while
-clearing validity. Exact LRU uses one relative-order bit per unordered entry
-pair, updated on the same install/first-word acceptance events as before. The
-independent cycle model retains its rank-based reference representation.
+The ordinary queue and BTC share one asynchronous-read, synchronous-write
+16-bit distributed RAM. BTC tags own low physical pairs through small pointers;
+one extra pair holds incomplete fills. The high two words hold ordinary queue
+slots. The first two live responses after a target miss write the spare pair,
+while later responses write their ordinary tail slot. This is the sole payload
+writer: CPU acceptance never copies an instruction word into BTC. Ordinary
+bypass does not write RAM unless the response also fills a target pair.
+
+A queued word stores one bit selecting its ordinary slot or the current spare.
+For a spare reference, the matched core address and stable fill tag identify the
+halfword, including PC wrap. Both target references expire by the second core
+acceptance, which atomically exchanges the spare/victim pointers and publishes
+the complete pair. A later continuation can enqueue on that same edge. Errors
+and cancelled fills never replace complete entries. Queue and BTC replay select
+an address before the shared RAM read; the ordinary FF bank and wide final
+queue/BTC data selector are absent. Memory-response bypass remains direct. A same-address enqueue consumes the
+old asynchronous RAM Q before replacing it. The official RAM16SDP4 regression
+checks that event and simultaneous BTC installation/continuation enqueue for
+zero/four/eight-entry configurations; inferred and official runs share one
+independent address/value fixture.
+Reset restores unique pair ownership; flush retains the pair permutation while
+clearing validity and live queue references. Exact LRU keeps relative-order bits
+and its original events. The independent cycle model retains rank-based BTC
+state and separate queue payloads as its reference representation.
 
 `CPU_V3_BTC_ENTRIES=0|4|8` is a build-time environment setting, default 4.
 The CPU crate build script generates one constant used by both the Rust model
