@@ -22,8 +22,21 @@ The selected version also retains exact 4/2/1 coefficient downshifts, four-bit
 Y tile search, and Normal/NDC memory Q ownership through Lighting acceptance.
 The latter removes the normal shadow and row-data mux while preserving the
 READ/X/CONTEXT/PIXEL calendar. Vertex, precision, RAM/DSP allocation and pixel
-order are unchanged. Later address-specialization and shared-work experiments
-are excluded from this selection.
+order are unchanged. Address specialization, ones-complement quantization and
+delayed PA writes remain excluded.
+
+The preparation stage now shares one 53-bit work register between the disjoint
+geometry-magnitude and Delta lifetimes. Fixed bit-reversed wiring lets Delta
+normalization use the same 1/2/4-bit right-shift window; the old separate work
+register and shift path are removed. Quantization, rounding, ROM timing and
+the external interface are unchanged. The backend instance is declared before
+the frontend with identical named-port connections, preserving the measured
+synthesis ordering. Controlled pairs showed that this ordering affects whole
+design mapping, so the total Logic reduction is not solely a register-sharing
+gain. The current receipt binds the actual production export, its new P0 fit,
+and box/full 948-triangle bunny replays with identical numeric events, event
+cycles, queue counters and final memory. The parent receipt remains in Git
+history; no experiment source snapshots or generated outputs are tracked.
 
 The receipt is a single-placement independent-GPU result, including probe FFs
 and the SDRAM transaction wrapper, excluding the physical MC, CPU and display.

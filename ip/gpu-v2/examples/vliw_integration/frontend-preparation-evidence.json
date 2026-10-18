@@ -1,7 +1,7 @@
 {
   "status": "selected",
-  "measured_base_commit": "9a866760964e39d373c9dd8f26d03599532169e5",
-  "measurement_tree": "uncommitted selected hardware; source hashes below bind it to this commit",
+  "measured_base_commit": "12039c7b854b7e18d12ec4954fcc7d3a3492e833",
+  "measurement_tree": "Selected hardware in this commit, bound by normalized source hashes; independent GPU only",
   "scope": {
     "fit": "Independent GPU with SDRAM transaction wrapper; no physical MC, CPU or display; one P0, 54 MHz",
     "performance": "Portable GPU with actual main arbiter/bridge/controller and SDRAM pin model; first descriptor through final flush; no CPU/display contention; ROM setup/preclear excluded; SDRAM startup included",
@@ -20,7 +20,7 @@
     "ip/gpu-v2/src/frontend/vliw/lod.v": "1aef91629b01c6e39113ca251fef18fa527ae9c3361af2b234dc660283ea20e7",
     "ip/gpu-v2/src/frontend/vliw/meshlet.v": "41d5ffe299071f9f852be85821e5a636d8c61c8d018195ad8fc49ca1ef7133a6",
     "ip/gpu-v2/src/frontend/vliw/pipeline_stream.v": "1b680166b672b4d267fa3f5a6164bad9ff9bbbbd56d8ed7a090f5fedb2b315a2",
-    "ip/gpu-v2/src/frontend/vliw/prepare.v": "dbd572b01f501662416a376bbf3805ae6ad96713855a054272b5775613396ab5",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "d76e46bb1288090786083b625dd9c8000fc4d3b3dbc6b96a2799eced69df58f6",
     "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "164057d7c95cf826ef468772f52f77adafe032c08180ffc9bfb298d3049f2546",
     "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "a68aa19a50af5031a7803148d3e045b3f626a85f0abd732ac985993113750018",
     "ip/gpu-v2/src/frontend/vliw/primitives/dsp.v": "322fe8718aff4f3323c9d8764b713c91e4b7f33b1769d797660bf39dc4770970",
@@ -60,7 +60,7 @@
     "ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs": "e486a8073e25130218bc3fa4c34e508fe88efc918def4835d690d146ec0cbfbc",
     "ip/gpu-v2/src/system/pixel/vliw_quad_pool.v": "21592b11fe7c62890662a3e36ea0dfa36916249f5cae3dfb180974b53f98caf0",
     "ip/gpu-v2/src/system/vliw.rs": "ceedd79d6abe3e07a164bbc17824b3a09d6bcf6ed496770fea351ca6890de8e8",
-    "ip/gpu-v2/src/system/vliw.v": "4ec70449d1fff17d84d9d2c4c5809265d16759a8d4642df4a95b57e74ecbe1c4",
+    "ip/gpu-v2/src/system/vliw.v": "69754d349256a3a92c6b0c3e78e20f3f6cde78405c06962283f2e166db3108fb",
     "ip/gpu-v2/src/system/vliw_memory.rs": "bf4cd807e3be2c67e6c7b64f1b7cf729941e7d0300e8fde1fa6b3c2ff68f4c9e",
     "ip/gpu-v2/src/system/vliw_memory.v": "92abf8c451f2e17c73d3d8d472c73add8b0c0543325099f57b39d47539bf5a0a",
     "ip/gpu-v2/src/system/vliw_sdram.rs": "256fc5ba16d47508ffd52368ee60003b77d4dbd47916407a49ff9dcb7e9224cf",
@@ -78,13 +78,13 @@
     "ip/gpu-v2/src/texture/sim/staged/bound/runtime_rtl.rs": "2ba8e3edfba2f8ca2028798b8a67b951feb09deca40060c9fa67ff64f49ae273"
   },
   "export_sha256": {
-    "native": "a2681e456cd71f0dc97c3a80c1992e7e6da74e34e59cd22bf3bc32cdf05f27c1",
-    "portable": "78013c73e126b411f9026f376d7080a771b91d2d1f215be8b5db262d19cfee7a"
+    "native": "3dafec5a067860f0d52488844c28f28d1268381d229cf6a2a6c063f6ab11e463",
+    "portable": "11d45b9c69500a474826a39d9f8cbf4f3eacbd5cd5477d2d7d11c8d0749a5a1f"
   },
   "fit": {
-    "logic": 12175,
-    "logic_ff": 5187.0,
-    "register": 5194,
+    "logic": 12088,
+    "logic_ff": 5140.0,
+    "register": 5147,
     "ssram": 212,
     "bsram": 33.0,
     "dsp": 18.0,
@@ -95,8 +95,8 @@
       "MULTADDALU18X18": 3,
       "ALU54D": 1
     },
-    "fmax": 55.082,
-    "cls": 8300,
+    "fmax": 56.59,
+    "cls": 8225,
     "cls_capacity": 10368,
     "setup_violations": 0.0,
     "hold_violations": 0.0
@@ -108,13 +108,13 @@
     "wrapper_sha256": "0ab55c7bed1244ced43065aef2d260bd6899fd88d7e224fa0d428cbf4d439ed9"
   },
   "fit_evidence_sha256": {
-    "report_sha256": "921f9ac5a4b38581f4bafa337de251e63e2f5f1aaaf902202f4c488a1b7fc79a",
-    "timing_sha256": "7d89afda65e4e19f6f98a7f1cacdd1f6ca112303a6da5259f43b81618e578b89",
-    "source_sha256": "53f367be0e83140d5c59459d8e8eda44e37dbc6ee11c2443c657a04b8230be49"
+    "report_sha256": "7937933661e8ea00fcba6449bcf3d913499e8a82c692a18fe2d16741f1218f16",
+    "timing_sha256": "4a60a486a60f4a68bd394593d186e07927835a56bf650dcda6dd05661cf2949d",
+    "source_sha256": "36d92744b745e59adf1c4db18179a1179acac6aa85db5ba4b50d1a428c33768a"
   },
   "scenes": {
     "box": {
-      "receipt_sha256": "e71521781ee39ba08e851bd5836021e7879355e3997373b09f1a6f2e5ee69b13",
+      "receipt_sha256": "5c82f81282cb2f60e53e4e3c4179712b83d9a8142e672d75636bd5f58a083453",
       "timing": {
         "total": 135808,
         "preload": 10629,
@@ -188,12 +188,13 @@
           0
         ]
       },
-      "export_sha256": "78013c73e126b411f9026f376d7080a771b91d2d1f215be8b5db262d19cfee7a",
+      "export_sha256": "11d45b9c69500a474826a39d9f8cbf4f3eacbd5cd5477d2d7d11c8d0749a5a1f",
       "final_memory_sha256": "02cce6e0a4741e7274a7aeb622e42b9b485c3b358e2a2a040fb9b2ffcf4efc63",
-      "input_model_sha256": "dc7c08caa32a3b6c1bf59bef8d6ced1d7b367fea049f3a1f326c892ecd792f5b"
+      "input_model_sha256": "dc7c08caa32a3b6c1bf59bef8d6ced1d7b367fea049f3a1f326c892ecd792f5b",
+      "values_cycles_and_queue_counters_equal_parent": true
     },
     "bunny": {
-      "receipt_sha256": "63efb543c7648aaa871629075793cc59263639b9817a4a318958254278819272",
+      "receipt_sha256": "d6f5ec32d4138f0e18f155436c685ee8fad9bca701397e3ef579980cb9fa323c",
       "timing": {
         "total": 294706,
         "preload": 10801,
@@ -289,36 +290,62 @@
           29
         ]
       },
-      "export_sha256": "78013c73e126b411f9026f376d7080a771b91d2d1f215be8b5db262d19cfee7a",
+      "export_sha256": "11d45b9c69500a474826a39d9f8cbf4f3eacbd5cd5477d2d7d11c8d0749a5a1f",
       "final_memory_sha256": "7f3d0b18f968c4addfbc975b16360f7d358d5fbf0fdf0663cd30431592885e92",
-      "input_model_sha256": "2ca4b1c9206eb2768f10eeb06f30d2dcf576c21f69243335660c896605d1f0ab"
+      "input_model_sha256": "2ca4b1c9206eb2768f10eeb06f30d2dcf576c21f69243335660c896605d1f0ab",
+      "values_cycles_and_queue_counters_equal_parent": true
     }
   },
   "verification": {
-    "main_adoption_receipt_sha256": "0fc7847ab206eabcff6ff804bfa552a5a99edd6e1235fd48c3c04e913ee1cc1a",
+    "main_adoption_comparison_sha256": "60b156f8c4968e3c0f02c7feb6217bb343b371072e63529f08339965045354e6",
+    "source_manifest_sha256": "fd1c6af3fdc2f61fd5382b19666f0ee718cfc0405addf18fc6723fb33172e1f6",
     "maintained_origin_test": "cargo test --release -p gpu-v2 --test vliw_prepare_chain -- --ignored --nocapture",
-    "lighting_test": "cargo test --release -p gpu-v2 --test vliw_light_tuple -- --ignored --nocapture",
-    "equivalence": "Matched prior-WIP input, all per-kind numeric events and final frame memory; vertex and precision unchanged"
+    "maintained_origin_receipt_sha256": "f5d8b1f6a56e83e100ccaa922709ba434138a83ef1939cdf0bae484220484721",
+    "portable_native_packets_each": 24,
+    "equivalence": "Same parent inputs, per-kind numeric events including wall cycles, all stage/queue counters and final frame bytes; vertex and precision unchanged",
+    "bounded_scene_max_cycles": 1500000,
+    "bounded_scene_host_timeout_seconds": 420,
+    "documentation": true,
+    "source_hygiene": true
   },
   "excluded": [
     "R-address 12169 experiment",
     "ones-complement quantization and delayed PA writes",
-    "shared-work register experiment",
     "history snapshots, netlists, build trees and generated framebuffers"
   ],
-  "baseline_checks": {
-    "gpu_library_models": {
-      "passed": 141,
-      "ignored": 26
-    },
-    "bounded_component_suites": {
-      "passed": 3,
-      "scope": "Origin P/N, Lighting handshake P/N, result pool P/N"
-    },
-    "gpu_fmt": true,
-    "gpu_clippy": "pass with warnings",
-    "layering": true,
-    "source_hygiene": true,
-    "documentation": true
+  "previous_selection": {
+    "commit": "12039c7b854b7e18d12ec4954fcc7d3a3492e833",
+    "receipt_path": "ip/gpu-v2/examples/vliw_integration/frontend-preparation-evidence.json",
+    "logic": 12175,
+    "note": "Parent commit retains the prior complete receipt; no historical source snapshot is duplicated here"
+  },
+  "export_hash_format": "SHA256 of raw exported bytes",
+  "inherited_validation_at_base": {
+    "commit": "12039c7b854b7e18d12ec4954fcc7d3a3492e833",
+    "checks": {
+      "gpu_library_models": {
+        "passed": 141,
+        "ignored": 26
+      },
+      "bounded_component_suites": {
+        "passed": 3,
+        "scope": "Origin P/N, Lighting handshake P/N, result pool P/N"
+      },
+      "gpu_fmt": true,
+      "gpu_clippy": "pass with warnings",
+      "layering": true,
+      "source_hygiene": true,
+      "documentation": true
+    }
+  },
+  "selection": {
+    "shared_work_bits": 53,
+    "retired_work_bits": 47,
+    "delta_layout": "Fixed bit-reversed wiring; both lifetimes use the right-shift 1/2/4 window",
+    "synthesis_instance_order": "backend before frontend; complete named instances and connections are unchanged",
+    "controlled_other_subtree_delta_front_first": 106,
+    "controlled_other_subtree_delta_back_first": -5,
+    "controlled_net_delta_back_first": -31,
+    "note": "Local preparation saves 26 to 29 LUT/ALU in matched contexts; total 87 Logic gain versus parent includes declaration-order mapping, not solely register sharing"
   }
 }

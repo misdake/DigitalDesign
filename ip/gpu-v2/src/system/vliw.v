@@ -41,19 +41,6 @@ module gpu_v2_vliw(
  wire frontend_table_ready;
  assign table_ready=frontend_table_ready&&pipeline_idle;
  assign quad_admitted=front_ce&&qvalid&&qready;
- gpu_v2_vliw_frontend front(
- .clk(clk),.reset(reset),.ce(front_ce),.start(start&&!fault),.slot(slot),
- .dma_we(dma_we),.dma_ready(dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),.output_ready(output_ready),
- .table_valid(table_allow),.table_ready(frontend_table_ready),.table_index(table_index),.table_data(table_data),
- .cfg_far_z(cfg_far_z),.cfg_tex_w_log2(cfg_tex_w_log2),.cfg_tex_h_log2(cfg_tex_h_log2),.cfg_max_mip(cfg_max_mip),.cfg_lod_bias(cfg_lod_bias),
- .quad_valid(qvalid),.quad_ready(qready),.quad_id(qid),.quad_x(qx),.quad_y(qy),.quad_rgb(qrgb),.phase(phase),
- .quad_end_valid(qend),.quad_end_id(qend_id),.quad_end_mask(qmask),
- .result_we(result_we),.result_wa(result_wa),.result_wd(result_wd),
- .depth_event_valid(depth_valid),.depth_event_pid(depth_pid),.depth_event_z16(depth_z),.depth_event_pass(depth_pass),
- .lod_valid(lod_valid),.lod_id(lod_id),.lod_value(lod_value),
- .frontend_busy(),.raster_busy(),.interpolator_busy(),.meshlet_done(meshlet_done),.meshlet_ready(meshlet_ready),.done_raster(),
- .frontend_error(frontend_error),.raster_error(raster_error),.interpolator_error(interpolator_error),
- .published_vertices(published_vertices),.idle(frontend_idle),.emit_valid(emit_valid),.emit_addr(emit_addr),.emit_data(emit_data));
  gpu_v2_vliw_backend back(
  .clk(clk),.reset(reset),.ce(ce),.abort(abort||math_stopped),.front_ce(front_ce),.phase(phase),.draw_bank(draw_bank),.draw_unlit(draw_unlit),
  .quad_valid(qvalid),.quad_ready(qready),.quad_id(qid),.quad_x(qx),.quad_y(qy),.quad_rgb(qrgb),
@@ -71,6 +58,19 @@ module gpu_v2_vliw(
  .mem_req_valid(mem_req_valid),.mem_req_write(mem_req_write),.mem_req_addr(mem_req_addr),.mem_req_ready(mem_req_ready),
  .mem_read_data(mem_read_data),.mem_read_valid(mem_read_valid),.mem_write_valid(mem_write_valid),.mem_write_data(mem_write_data),
  .mem_write_ready(mem_write_ready),.mem_complete_valid(mem_complete_valid),.mem_complete_ok(mem_complete_ok));
+ gpu_v2_vliw_frontend front(
+ .clk(clk),.reset(reset),.ce(front_ce),.start(start&&!fault),.slot(slot),
+ .dma_we(dma_we),.dma_ready(dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),.output_ready(output_ready),
+ .table_valid(table_allow),.table_ready(frontend_table_ready),.table_index(table_index),.table_data(table_data),
+ .cfg_far_z(cfg_far_z),.cfg_tex_w_log2(cfg_tex_w_log2),.cfg_tex_h_log2(cfg_tex_h_log2),.cfg_max_mip(cfg_max_mip),.cfg_lod_bias(cfg_lod_bias),
+ .quad_valid(qvalid),.quad_ready(qready),.quad_id(qid),.quad_x(qx),.quad_y(qy),.quad_rgb(qrgb),.phase(phase),
+ .quad_end_valid(qend),.quad_end_id(qend_id),.quad_end_mask(qmask),
+ .result_we(result_we),.result_wa(result_wa),.result_wd(result_wd),
+ .depth_event_valid(depth_valid),.depth_event_pid(depth_pid),.depth_event_z16(depth_z),.depth_event_pass(depth_pass),
+ .lod_valid(lod_valid),.lod_id(lod_id),.lod_value(lod_value),
+ .frontend_busy(),.raster_busy(),.interpolator_busy(),.meshlet_done(meshlet_done),.meshlet_ready(meshlet_ready),.done_raster(),
+ .frontend_error(frontend_error),.raster_error(raster_error),.interpolator_error(interpolator_error),
+ .published_vertices(published_vertices),.idle(frontend_idle),.emit_valid(emit_valid),.emit_addr(emit_addr),.emit_data(emit_data));
 `ifndef SYNTHESIS
  // Pin configurations obey the existing immutable-draw contract. This detects
  // accidental mutation; it does not add a second hardware configuration bank.

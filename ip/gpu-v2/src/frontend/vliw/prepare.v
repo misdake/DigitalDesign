@@ -25,9 +25,9 @@ module rp_prepare(
  CFG_COMMIT=26,FINISH=28,FAULT=29,Q_READ=30;
  reg[4:0]state,expected;reg[1:0]edge_no,field;
  reg[4:0]edge_exp,remaining,exp0,exp1,exp2,common_e;
- reg[46:0]magnitude;reg negative,sigma,rgb,normal_mode;reg[3:0]tri_shift;
+ reg[52:0]work;wire[46:0]magnitude=work[46:0];reg negative,sigma,rgb,normal_mode;reg[3:0]tri_shift;
  reg[31:0]far_z;reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
- reg[52:0]delta;reg[5:0]delta_e;reg normalizing;
+ wire[52:0]delta;reg[5:0]delta_e;reg normalizing;
 
  reg[2:0]seed_sign_x,seed_sign_y;
  wire core_attr_read,core_attr_send,core_attr_bank,core_round_init;wire[1:0]core_attr_index;
@@ -211,19 +211,63 @@ module rp_prepare(
   if(reset)begin pw_low0_we=0;pw_low1_we=0;pw_high_we=0;pw_re=0;pw_acc_re=0;end
  end
 
+ // One physical work vector; Delta is stored in reversed bit order.
+ wire[52:0]work_delta_input;
+ genvar work_bit;
+ generate for(work_bit=0;work_bit<53;work_bit=work_bit+1)begin:work_reverse
+  assign delta[work_bit]=work[52-work_bit];
+  assign work_delta_input[work_bit]=in_data[52-work_bit];
+ end endgenerate
+ wire work_load_geo=!start&&state==LOAD;
+ wire work_load_delta=!start&&state==TAIL&&in_valid&&in_index==expected&&in_index==9;
+ wire work_shift_geo=!start&&state==DOWN;
+ // Keep the original invalid-start behavior: an active Delta may still shift.
+ wire work_shift_delta=normalizing&&(|delta)&&!delta[52];
+ reg[2:0]work_shift;
+ reg[52:0]work_shifted;
+ always @*begin
+  work_shift=3'd2;
+  if(work_shift_geo)begin
+   if(remaining>=4)work_shift=3'd4;
+   else if(remaining==1)work_shift=3'd1;
+  end else if(delta[51])work_shift=3'd1;
+  case(work_shift)
+   3'd1:work_shifted={1'b0,work[52:1]};
+   3'd4:work_shifted={4'b0,work[52:4]};
+   default:work_shifted={2'b0,work[52:2]};
+  endcase
+ end
+ always @(posedge clk)begin
+  if(reset)work<=0;
+  else if(ce)begin
+   if(work_load_delta)work<=work_delta_input;
+   else if(work_load_geo)work<={6'b0,pool_q[46:0]};
+   else if(work_shift_geo||work_shift_delta)work<=work_shifted;
+  end
+ end
+`ifndef SYNTHESIS
+ always @(posedge clk)if(ce&&!reset)begin
+  if(normalizing&&(state==COLLECT||state==Q_READ||state==LOAD||state==DOWN||state==Q_SEND))
+   $fatal(1,"shared work lifetime overlap");
+  if(work_load_delta&&(work_load_geo||work_shift_geo||work_shift_delta))
+   $fatal(1,"shared work load priority collision");
+  if(work_shift_geo&&work_shift_delta)$fatal(1,"shared work shift collision");
+ end
+`endif
+
  always @(posedge clk)begin
   if(reset)begin
    state<=IDLE;expected<=0;edge_no<=0;field<=0;edge_exp<=0;remaining<=0;
-   exp0<=0;exp1<=0;exp2<=0;common_e<=0;magnitude<=0;negative<=0;sigma<=0;rgb<=0;normal_mode<=0;tri_shift<=0;
+   exp0<=0;exp1<=0;exp2<=0;common_e<=0;negative<=0;sigma<=0;rgb<=0;normal_mode<=0;tri_shift<=0;
    far_z<=0;tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;
-   delta<=0;delta_e<=0;normalizing<=0;
+   delta_e<=0;normalizing<=0;
    seed_sign_x<=0;seed_sign_y<=0;error<=0;
   end else if(ce)begin
    if(normalizing)begin
     if(delta==0)begin normalizing<=0;error[1]<=1;end
     else if(!delta[52])begin
-     if(delta[51])begin delta<=delta<<1;delta_e<=delta_e-1'b1;end
-     else begin delta<=delta<<2;delta_e<=delta_e-2;end
+     if(delta[51])begin delta_e<=delta_e-1'b1;end
+     else begin delta_e<=delta_e-2;end
     end else normalizing<=0;
    end
    if(start)begin
@@ -256,12 +300,10 @@ module rp_prepare(
       end
      end
      Q_READ:state<=LOAD;
-     LOAD:begin magnitude<=pool_q[46:0];negative<=pool_q[47];remaining<=edge_exp;
+     LOAD:begin negative<=pool_q[47];remaining<=edge_exp;
       if(edge_exp==0)state<=Q_SEND;else state<=DOWN;
      end
      DOWN:begin
-      if(remaining>=4)magnitude<=magnitude>>4;
-      else if(remaining==1)magnitude<=magnitude>>1;else magnitude<=magnitude>>2;
       if(remaining<=4)begin
        if(remaining==3)remaining<=1;
        else begin remaining<=0;state<=Q_SEND;end
@@ -279,7 +321,7 @@ module rp_prepare(
       else if(in_index==9)begin
        expected<=expected+1'b1;
        if(in_data==0||in_data[53])error[1]<=1;
-       delta<=in_data[52:0];delta_e<=52;normalizing<=1;
+       delta_e<=52;normalizing<=1;
       end else if(input_xy||input_attr)state<=SECOND;
       else if(input_z)expected<=expected+1'b1;
       else begin error[0]<=1;state<=FAULT;end
