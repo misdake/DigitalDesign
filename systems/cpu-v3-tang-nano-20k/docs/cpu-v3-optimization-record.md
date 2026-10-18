@@ -1949,3 +1949,37 @@ held pending values, format snapshots, swaps, both scales, errors and underflow.
 The expected exclusive upper memory bound uses 23 bits. Core/system co-simulation,
 actual Flash RTL, system tests and affected strict lint pass. No GPU implementation,
 boot/layout change or new board result belongs to this batch.
+
+
+## 2026-10-18 Display fixed calendar and TMDS precode
+
+Row-group readiness is already fixed for the whole output row. The replacement
+calendar therefore pays the source and R/G/B RAM edges before their fixed
+consumer edges, emits the first pixel directly and retains one pair for the
+remaining repeats. Both scales use the same consumer-owned schedule, with an
+initiation interval of four or six. FIFO storage, pointers, occupancy, in-flight
+reservations, independent repeat state and production factory/resource claims
+are removed together. The standalone legacy FIFO leaf is outside production.
+
+Spare words and bits in the two existing line-buffer BSRAMs hold complete
+linear/encoded color-to-q_m tables. Five-bit encoded R/B have their own 32-word
+table; six-bit encoded G shares words with linear conversion. Every downstream
+capture, pair, pixel packet and TMDS input uses the nine-bit format. Black and
+border colors are encoded constants. Running disparity is still evaluated on
+every output pixel. No symbol is incorrectly reused across repeated pixels.
+
+The complete 13-bit q_m+popcount alternative makes each color formatter smaller
+but increases packet state and selection cost; its complete-system Logic grows
+and it is rejected. The nine-bit composition is retained. The fixed calendar
+alone and original producer combination are separately measured so local savings
+are not mistaken for complete-system savings. Matched default/actual-3x fits,
+raw reports, source identities, qualification and performance are linked from
+[the current architecture](architecture.md#current-fitted-result-and-validation-boundary).
+
+Full-frame tests retain independent coordinate RGB/sync/format checks and add
+the original encoder as a test-only symbol/disparity oracle. Exhaustive host
+table checks cover every RGB565 value in both formats. The two physical banks,
+table protection and old-Q calendar also pass official SDPB mini scanout.
+Maximum-base/error/underflow tests, mandatory CPU/system co-simulation and actual
+Flash boot RTL remain part of the final qualification. No GPU change or new
+physical-board result belongs to this batch.

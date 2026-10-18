@@ -3,8 +3,9 @@
 //! injected into the RTL and its testbench, so both always follow the single
 //! `ACTIVE_DISPLAY_CONFIG` constant.
 
+use super::line_buffer::TMDS_PRECODE_BITS;
 use crate::display::{DisplayConfig, ACTIVE_DISPLAY_CONFIG};
-use crate::{DisplayLineBuffer, DisplayPairFifo};
+use crate::DisplayLineBuffer;
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, ModuleIo, VerilogDependency};
 
@@ -64,10 +65,7 @@ impl Module for FramebufferHdmi {
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![
-            VerilogDependency::new::<DisplayLineBuffer>("u_line_buffer"),
-            VerilogDependency::new::<DisplayPairFifo>("u_pair_fifo"),
-        ]
+        vec![VerilogDependency::new::<DisplayLineBuffer>("u_line_buffer")]
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -78,14 +76,11 @@ impl Module for FramebufferHdmi {
 fn verilog_source_for(config: &DisplayConfig) -> Option<String> {
     Some(
         include_str!("display_hdmi.v")
+            .replace("__TMDS_PRECODE_BITS__", &TMDS_PRECODE_BITS.to_string())
             .replace("__DISPLAY_CONFIG__", &config.verilog_localparams())
             .replace(
                 "__LINE_BUFFER__",
                 &DisplayLineBuffer::verilog_identity().module_name(),
-            )
-            .replace(
-                "__PAIR_FIFO__",
-                &DisplayPairFifo::verilog_identity().module_name(),
             ),
     )
 }
@@ -121,7 +116,7 @@ mod tests {
                 .sum::<u64>()
         };
         assert_eq!(amount(ResourceKind::Bsram18K), 2);
-        assert_eq!(amount(ResourceKind::SsramBit), 12 * 64);
+        assert_eq!(amount(ResourceKind::SsramBit), 0);
     }
 
     #[test]
@@ -149,7 +144,6 @@ mod tests {
             assert!(!source.contains("__DISPLAY_CONFIG__"));
             assert!(source.contains(&format!("H_ACTIVE_END={}", config.h_active_end)));
             assert!(!source.contains("__PAIR_"));
-            assert!(source.contains("fifo_count<3"));
             let testbench = verilog_testbench_for(&config).unwrap();
             assert!(!testbench.contains("__DISPLAY_CONFIG__"));
         }

@@ -272,12 +272,17 @@ the second row's final vertical repeat. An unavailable row is black and sets sti
 an error or malformed LAST stops filling without publishing the incomplete group. Reset clears
 the faults and restores producer/consumer ownership.
 
-Each bank's spare addresses 448..511 contain a 64-entry linear-to-sRGB table, one byte per
-32-bit word. Green indexes its six bits; red/blue replicate five bits to six. Values evaluate
-the sRGB transfer at `i/63`, rounded to nearest 8-bit output. Device 3 channel 4 writes the staged
-format bit (`0`: encoded RGB565, the reset default; `1`: linear RGB565) and reads the active bit.
-NEXT_SWAP snapshots format and address together; later staging cannot change a pending swap.
-The host display-device model and renderer follow the same selection.
+The two existing banks also hold complete color-to-TMDS transition-minimized
+precodes. Addresses 416..447 contain the 32 encoded R/B expansions; addresses
+448..511 pack the linear six-bit table and encoded six-bit G table in one word.
+The nine-bit precode contains q_m and its XOR/XNOR flag. Linear transfer values
+still evaluate sRGB at `i/63`, rounded to nearest byte. Encoded R/B and G retain
+their distinct five-bit and six-bit expansion rules. Pixel data stays at 0..399;
+400..415 remain unused. No additional RAM or read port is required.
+
+Device 3 channel 4 stages the format (`0`: encoded RGB565, the reset default;
+`1`: linear RGB565) and reads the active bit. NEXT_SWAP snapshots format and
+address together. The host display model and renderer follow the same selection.
 
 The scanout mode is a single compile-time configuration
 (`display::ACTIVE_DISPLAY_CONFIG`), selected by mutually exclusive Cargo features
@@ -291,13 +296,19 @@ the six LEDs until the first software LED write, after which software owns them 
 patterns are progress evidence only; UART frames and system-level checks establish boot success or a
 structured boot failure.
 
-The pixel-clock conversion pipeline starts a pair every four clocks when the completed-pair
-queue has room. Each row starts reading sixteen clocks before its first framebuffer output.
-A separate four-entry, 48-bit asynchronous-read FIFO stores completed RGB888 pairs in
-twelve RAM16 cells. The occupancy guard reserves space for the in-flight conversion.
-Scanout consumes a pair every four clocks in 2x or six clocks in 3x, and one 48-bit output
-register holds the popped pair for the remaining repeats. SDRAM latency is absorbed by
-the published line groups before conversion begins.
+The published row's readiness is sampled before output. A fixed pixel calendar
+reads source Q four clocks before its first pixel, then R/G/B precodes using
+the synchronous RAM's old Q at each edge. Conversion starts every four clocks
+in 2x and every six in 3x; in 2x the next source read overlaps the previous
+blue capture. A completed pair feeds its first pixel directly and one 54-bit
+register retains the pair for its remaining repeats. There is no completed-pair
+FIFO, occupancy, reservation or independent repeat counter. Dynamic SDRAM
+latency is absorbed by the published row groups before this calendar starts.
+
+The output pipe carries three precodes, including valid black and border
+constants. Three per-color TMDS formatters still count q_m bits and update
+running disparity on every output pixel, including repeats. Repeating a cached
+ten-bit symbol would be incorrect. Serializer and sync alignment are preserved.
 
 Display retains strict priority. A caught-up refill is 50 segments per two source rows;
 initial fill is at most 100 segments. The conditional ideal scheduling estimate and its
@@ -310,34 +321,37 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-10-18 Display address-chain batch follows CPU-chain commit `4c40d91a`.
-Shadow/pending/active/tile-row address ownership uses aligned transaction units;
-invalid high and low halves retain separate predicates, and one group cursor
-supplies both frame and tile-local progress. MMIO values, exact bounds,
-atomic frame/format swaps, four-row storage and scanout layout are unchanged.
+The 2026-10-18 Display calendar/precode batch composes with address-chain
+commit `d84e88d7` and CPU-chain commit `4c40d91a`. It removes the complete
+pair FIFO/control path and uses the existing BSRAM color tables for nine-bit
+TMDS precodes. Address ownership, publication, physical row layout, device
+format/address snapshots and visible pixels retain their contracts.
 
-| Matched pre-commit CPU-system fit | Base `4c40d91a` | Selected address chain |
+| Matched pre-commit CPU-system fit | Address chain `d84e88d7` | Calendar + 9-bit precode |
 | --- | ---: | ---: |
-| Logic | 7,896 | 7,882 |
-| RAM16 / Logic FF / CLS | 24 / 2,924 / 5,052 | 24 / 2,897 / 5,060 |
+| Logic | 7,882 | 7,752 |
+| RAM16 / Logic FF / CLS | 24 / 2,897 / 5,060 | 12 / 2,888 / 4,953 |
 | BSRAM / MULT36X36 | 11 / 1 | 11 / 1 |
-| CPU fitted Fmax | 56.680 MHz | 55.514 MHz |
+| CPU / controller / pixel Fmax | 55.514 / 133.102 / 91.272 MHz | 63.452 / 126.437 / 128.810 MHz |
 
 Both use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C,
-identical CST/SDC and implementation options. All three internal clocks pass
-setup/hold; runtime remains 54/108 MHz. Strict external SDRAM-output setup
-failure is retained and excluded at the user's direction. The fit includes
-the inactive GPU shell, not complete GPU v2; no new board result is claimed.
+identical CST/SDC and implementation options; runtime remains 54/108 MHz.
+All three internal setup/hold domains pass. A separate actual `display-3x`
+build uses 7,850 Logic, 2,895 FF, 12 RAM16 and 11 BSRAM; its CPU/controller/
+pixel Fmax is 57.676/119.401/119.633 MHz, passing the 74.25-MHz pixel target.
+The inherited strict external SDRAM-output setup failure remains excluded at
+the user's direction. This fit includes the inactive GPU shell, not GPU v2;
+no new board result is claimed.
 
-Full 2x/3x scanout checks both formats and the maximum legal framebuffer,
-misalignment, out-of-range staging, atomic swaps, faults and underflow.
-CPU/system co-simulation, complete Flash RTL and affected-crate strict lint
-pass. Candidate source/fit/qualification and rejected alternatives are in
-[the batch report](../../../target/cpu-display-boot-batch-20261018/report.md).
-Fixed-calendar and TMDS precode successors remain experiments until separately
-qualified and measured. The earlier two-slot fetch/native-pair replacement
-and its performance tradeoff are documented in [its report](../../../target/cpu-system-chain-batch-20261018/report.md).
-Boot images/layout are unchanged by this address-only batch.
+Both full modes check every visible pixel, formats, borders, sync, swaps,
+maximum addresses, faults and underflow. A test-only old TMDS encoder also
+compares every color symbol/disparity; all RGB565 inputs exercise both table
+formats. Official SDPB mini scanout checks physical RAM ports and old-Q timing.
+Core/system co-simulation, complete Flash RTL and affected strict lint qualify
+the retained chain. Frozen CPU performance and postcommit identity are recorded
+in [the batch report](../../../target/cpu-display-boot-batch-20261018/report.md).
+The larger 13-bit precode candidate is rejected after complete-system fit.
+Boot images/layout are unchanged by this Display batch.
 
 ## Earlier storage and product-issuer checkpoint
 

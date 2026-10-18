@@ -239,4 +239,44 @@ always @(posedge pixel_clock) begin
   if (dut.rgb_pipe!==color(16'h1082,0)) $fatal(1,"border pixel mismatch");
  end
 end
+
+wire [9:0] reference_blue,reference_green,reference_red;
+DisplayTmdsReference ref_b(.clk(pixel_clock),.reset(dut.pixel_reset),.de(dut.visible_pipe3),
+ .control({dut.vsync_pipe3,dut.hsync_pipe3}),.data(dut.rgb_pipe[7:0]),.symbol(reference_blue));
+DisplayTmdsReference ref_g(.clk(pixel_clock),.reset(dut.pixel_reset),.de(dut.visible_pipe3),
+ .control(2'b00),.data(dut.rgb_pipe[15:8]),.symbol(reference_green));
+DisplayTmdsReference ref_r(.clk(pixel_clock),.reset(dut.pixel_reset),.de(dut.visible_pipe3),
+ .control(2'b00),.data(dut.rgb_pipe[23:16]),.symbol(reference_red));
+always @(posedge pixel_clock) begin
+ #1;
+ if({dut.blue_symbol,dut.green_symbol,dut.red_symbol} !==
+    {reference_blue,reference_green,reference_red}) $fatal(1,"TMDS symbol/disparity mismatch");
+end
 endmodule
+
+module DisplayTmdsReference(input wire clk,input wire reset,input wire de,
+ input wire [1:0] control,input wire [7:0] data,output reg [9:0] symbol);
+integer i; reg [3:0] data_ones,qm_ones; reg [8:0] qm; reg signed [5:0] disparity=0;
+wire signed [5:0] qm_delta=$signed({1'b0,qm_ones,1'b0})-6'sd8;
+always @* begin
+ data_ones=data[0]+data[1]+data[2]+data[3]+data[4]+data[5]+data[6]+data[7]; qm[0]=data[0];
+ if(data_ones>4 || (data_ones==4 && data[0]==0)) begin
+  for(i=1;i<8;i=i+1) qm[i]=~(qm[i-1]^data[i]); qm[8]=0;
+ end else begin for(i=1;i<8;i=i+1) qm[i]=qm[i-1]^data[i]; qm[8]=1; end
+ qm_ones=qm[0]+qm[1]+qm[2]+qm[3]+qm[4]+qm[5]+qm[6]+qm[7];
+end
+always @(posedge clk) begin
+ if(reset) begin disparity<=0; symbol<=10'b1101010100; end
+ else if(!de) begin disparity<=0; case(control)
+  0:symbol<=10'b1101010100; 1:symbol<=10'b0010101011;
+  2:symbol<=10'b0101010100; default:symbol<=10'b1010101011; endcase end
+ else if(disparity==0 || qm_ones==4) begin
+  symbol[9]<=~qm[8]; symbol[8]<=qm[8]; symbol[7:0]<=qm[8]?qm[7:0]:~qm[7:0];
+  if(qm[8]) disparity<=disparity+qm_delta; else disparity<=disparity-qm_delta;
+ // The unsized alternatives below are literal zero, so narrowing them to the
+ // six-bit signed disparity datapath is exact. Sized zero changes Gowin's
+ // signed-expression inference and costs substantial logic on GW2AR-18.
+ end else if((disparity>0&&qm_ones>4)||(disparity<0&&qm_ones<4)) begin
+  symbol<={1'b1,qm[8],~qm[7:0]}; disparity<=disparity-qm_delta+(qm[8]?6'sd2:0); // gowin-lint: allow EX3791
+ end else begin symbol<={1'b0,qm[8],qm[7:0]}; disparity<=disparity+qm_delta-(qm[8]?0:6'sd2); end // gowin-lint: allow EX3791
+end endmodule

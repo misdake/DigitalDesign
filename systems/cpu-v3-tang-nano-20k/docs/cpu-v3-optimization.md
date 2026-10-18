@@ -12,6 +12,8 @@ generated outside this document.
 
 ## Completed milestones
 
+- 2026-10-18 — Display uses one fixed source/R/G/B/pixel calendar without a pair FIFO; existing BSRAM tables supply nine-bit TMDS precodes through final per-pixel disparity formatting. See the [record](cpu-v3-optimization-record.md#2026-10-18-display-fixed-calendar-and-tmds-precode).
+
 - 2026-10-18 — Display address ownership uses aligned transaction units, separate invalid-half predicates and one row-group cursor through MMIO, SDRAM requests and publication; see the [record](cpu-v3-optimization-record.md#2026-10-18-display-aligned-address-ownership).
 
 - 2026-10-18 — Two frontend payload slots reuse I-cache holding capacity, and the native pair-Q feeds the sole adapter response capture; whole-chain comparisons retain the fetch/interconnect combination and reject the D-cache, Display and FPU alternatives. See the [record](cpu-v3-optimization-record.md#2026-10-18-two-slot-fetch-and-single-adapter-read-capture).

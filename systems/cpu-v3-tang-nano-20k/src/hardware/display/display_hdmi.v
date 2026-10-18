@@ -20,6 +20,7 @@ localparam [15:0] BORDER_COLOR=16'h1082;
 // injected by the Rust host model so the RTL, testbench, and board video PLL
 // all derive from the single `ACTIVE_DISPLAY_CONFIG` constant.
 __DISPLAY_CONFIG__
+localparam integer PRECODE_BITS=__TMDS_PRECODE_BITS__;
 // Two published groups, each containing two source rows. A group is released
 // only after the final vertical repeat of its second row. Toggle metadata is
 // stable until release and crosses through the publish synchronizer.
@@ -65,8 +66,8 @@ wire [17:0] request_units=tile_row_base_units +
     {9'b0,burst_index,local_y[3:1],fill_second};
 assign memory_address={request_units,4'b0};
 // Each shared address holds four RGB565 pixels across the two banks. One row
-// uses 100 addresses, one group 200; addresses 400..447 are unused and 448..511
-// are the read-only sRGB tables. SDRAM beats can therefore bypass staging.
+// uses 100 addresses, one group 200; 416..511 hold packed color/TMDS tables.
+// SDRAM beats bypass staging and never touch those read-only addresses.
 wire [8:0] fill_slot_base = fill_slot ? 9'd200 : 9'd0;
 wire [8:0] line_write_address = fill_slot_base +
     (fill_second ? 9'd100 : 9'd0) + {2'b0,burst_index,2'b00} + {7'b0,beat_index};
@@ -195,62 +196,97 @@ wire line_ready = publish_sync[display_slot] != released[display_slot];
 reg scan_line_ready=0, scan_linear=0;
 reg visible_pipe3=0, framebuffer_pipe3=0;
 reg hsync_pipe3=0, vsync_pipe3=0;
-reg [23:0] rgb_pipe=0;
+function [PRECODE_BITS-1:0] encode_byte;
+    input [7:0] data;
+    integer bit_index, ones, count;
+    reg xnor_mode;
+    reg [8:0] q;
+    begin
+        ones=0;
+        for(bit_index=0;bit_index<8;bit_index=bit_index+1) ones=ones+data[bit_index];
+        xnor_mode=ones>4 || (ones==4 && !data[0]);
+        q[0]=data[0]; q[8]=!xnor_mode;
+        for(bit_index=1;bit_index<8;bit_index=bit_index+1)
+            q[bit_index]=q[bit_index-1]^data[bit_index]^xnor_mode;
+        count=0;
+        for(bit_index=0;bit_index<8;bit_index=bit_index+1) count=count+q[bit_index];
+        encode_byte=q;
+        if(PRECODE_BITS==13) encode_byte=encode_byte | (count<<9);
+    end
+endfunction
+localparam [3*PRECODE_BITS-1:0] BLACK_PRECODE={3{encode_byte(8'd0)}};
+localparam [3*PRECODE_BITS-1:0] BORDER_PRECODE={
+    encode_byte({BORDER_COLOR[15:11],BORDER_COLOR[15:13]}),
+    encode_byte({BORDER_COLOR[10:5],BORDER_COLOR[10:9]}),
+    encode_byte({BORDER_COLOR[4:0],BORDER_COLOR[4:2]})};
+reg [3*PRECODE_BITS-1:0] precode_pipe=BLACK_PRECODE;
+`ifdef __ICARUS__
+// Test-only inverse feeds the independent RGB oracle and old encoder miter.
+// The production datapath transports only precodes.
+function [7:0] decode_byte;
+    input [PRECODE_BITS-1:0] q;
+    integer bit_index;
+    begin
+        decode_byte[0]=q[0];
+        for(bit_index=1;bit_index<8;bit_index=bit_index+1)
+            decode_byte[bit_index]=q[bit_index]^q[bit_index-1]^~q[8];
+    end
+endfunction
+wire [23:0] rgb_pipe={decode_byte(precode_pipe[3*PRECODE_BITS-1:2*PRECODE_BITS]),
+    decode_byte(precode_pipe[2*PRECODE_BITS-1:PRECODE_BITS]),
+    decode_byte(precode_pipe[PRECODE_BITS-1:0])};
+`endif
 // Independent bank addresses use seven of eight read slots per pixel pair:
 // source qword, then two R, two G, two B lookups. The next source read
 // overlaps the previous pair's blue capture. Initiation interval is four.
-reg [2:0] read_phase=0;
+// The consumer's fixed cadence owns the entire source/R/G/B calendar.
+// There is no independently stalled stage within a ready output row.
+localparam integer PAIR_PHASE_BITS = SCALE==2 ? 2 : 3;
+localparam [2:0] PAIR_CLOCKS = SCALE==2 ? 3'd4 : 3'd6;
+localparam [2:0] EMIT_PHASE = SCALE==2 ? 3'd0 : 3'd4;
+localparam [10:0] FRAMEBUFFER_FIRST = H_ACTIVE_START+SIDE_BORDER;
+localparam [10:0] FRAMEBUFFER_END = H_ACTIVE_END-SIDE_BORDER;
+reg [PAIR_PHASE_BITS-1:0] read_phase=0;
 reg [7:0] fetch_pair=0;
 reg pair_bank=0;
 reg [31:0] raw_pair=0;
-reg [7:0] r0=0,r1=0,g0=0,g1=0;
+reg [PRECODE_BITS-1:0] r0=0,r1=0,g0=0,g1=0;
 wire [31:0] source_pair = pair_bank ? line_read_data_b : line_read_data_a;
 wire [5:0] source_r0 = {source_pair[15:11],source_pair[15]};
 wire [5:0] source_r1 = {source_pair[31:27],source_pair[31]};
 wire [5:0] raw_g0 = raw_pair[10:5], raw_g1 = raw_pair[26:21];
 wire [5:0] raw_b0 = {raw_pair[4:0],raw_pair[4]};
 wire [5:0] raw_b1 = {raw_pair[20:16],raw_pair[20]};
-reg [1:0] fifo_write=0, fifo_read=0;
-reg [2:0] fifo_count=0;
-// Converted pairs enter a four-slot FIFO; the output register retains a popped
-// pair while its two pixels repeat SCALE times. Both sides use pixel_clock.
-// Conversion can start every four clocks; consumption takes four clocks in 2x
-// and six in 3x, so 3x relies on the occupancy guard to pause conversion.
-reg [47:0] output_pair=0;
-reg [2:0] output_repeat=0;
-reg output_second=0;
-wire push_pair = read_phase==4;
-wire pop_pair = started && framebuffer_x && scan_line_ready &&
-                output_repeat==0 && !output_second && fifo_count!=0;
-// Starting with at most two queued pairs reserves room for the pair still in
-// flight. At phase 4, the previous push can overlap the next source read, so
-// admission must account for that push before the new conversion completes.
-// Sixteen clocks of row lead-in prefill the queue before the first pop.
-wire start_pair = (read_phase==0 || read_phase==4) && started && scan_line_ready &&
+// One completed pair is the only output holding state. Its first pixel
+// is consumed directly at completion; subsequent repeats use this register.
+reg [6*PRECODE_BITS-1:0] output_pair=0;
+wire conversion_active = started && scan_line_ready &&
     v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END &&
-    h_count>=H_ACTIVE_START+SIDE_BORDER-16 && h_count<H_ACTIVE_END-SIDE_BORDER &&
-    fetch_pair<FB_WIDTH/2 && fifo_count<3;
-wire [47:0] fifo_head;
-wire [47:0] current_pair = pop_pair ? fifo_head : output_pair;
-wire [23:0] current_rgb = output_second ? current_pair[47:24] : current_pair[23:0];
-function [23:0] expand565;
-    input [15:0] p;
-    begin expand565={p[15:11],p[15:13],p[10:5],p[10:9],p[4:0],p[4:2]}; end
-endfunction
-wire [47:0] fifo_write_data = scan_linear ?
-    {r1,g1,line_read_data_b[7:0],r0,g0,line_read_data_a[7:0]} :
-    {expand565(raw_pair[31:16]),expand565(raw_pair[15:0])};
-__PAIR_FIFO__ u_pair_fifo(.write_clock(pixel_clock),
-    .write_enable(push_pair && !pixel_reset && h_count!=0),
-    .write_address(fifo_write), .write_data(fifo_write_data),
-    .read_address(fifo_read), .read_data(fifo_head));
+    h_count>=FRAMEBUFFER_FIRST-11'd4 && h_count<FRAMEBUFFER_END;
+wire issue_pair = conversion_active && read_phase==0 &&
+    h_count<FRAMEBUFFER_END-11'd4;
+wire emit_pair = conversion_active && h_count>=FRAMEBUFFER_FIRST &&
+    read_phase==EMIT_PHASE;
+wire output_second = SCALE==2 ? read_phase[1] :
+    (read_phase>=1 && read_phase<=3);
+wire [6*PRECODE_BITS-1:0] converted_pair =
+    {r1,g1,line_read_data_b[PRECODE_BITS-1:0],r0,g0,line_read_data_a[PRECODE_BITS-1:0]};
+wire [6*PRECODE_BITS-1:0] current_pair = emit_pair ? converted_pair : output_pair;
+wire [3*PRECODE_BITS-1:0] current_precode = output_second ?
+    current_pair[6*PRECODE_BITS-1:3*PRECODE_BITS] : current_pair[3*PRECODE_BITS-1:0];
 always @* begin
     line_read_address_a=display_slot_base+{2'b0,fetch_pair[7:1]};
     line_read_address_b=line_read_address_a;
     case (read_phase)
-        1: begin line_read_address_a={3'b111,source_r0}; line_read_address_b={3'b111,source_r1}; end
+        1: begin
+            if(scan_linear) begin line_read_address_a={3'b111,source_r0}; line_read_address_b={3'b111,source_r1}; end
+            else begin line_read_address_a={4'b1101,source_pair[15:11]}; line_read_address_b={4'b1101,source_pair[31:27]}; end
+        end
         2: begin line_read_address_a={3'b111,raw_g0}; line_read_address_b={3'b111,raw_g1}; end
-        3: begin line_read_address_a={3'b111,raw_b0}; line_read_address_b={3'b111,raw_b1}; end
+        3: begin
+            if(scan_linear) begin line_read_address_a={3'b111,raw_b0}; line_read_address_b={3'b111,raw_b1}; end
+            else begin line_read_address_a={4'b1101,raw_pair[4:0]}; line_read_address_b={4'b1101,raw_pair[20:16]}; end
+        end
         default: begin end
     endcase
 end
@@ -259,9 +295,9 @@ always @(posedge pixel_clock) begin
     if (pixel_reset) begin
         h_count<=0; v_count<=0; released<=0; display_slot<=0; display_second<=0; frame_toggle<=0;
         vertical_repeat<=0; started<=0; underflow_sticky<=0;
-        visible_pipe3<=0; framebuffer_pipe3<=0; hsync_pipe3<=0; vsync_pipe3<=0; rgb_pipe<=0;
+        visible_pipe3<=0; framebuffer_pipe3<=0; hsync_pipe3<=0; vsync_pipe3<=0; precode_pipe<=BLACK_PRECODE;
         scan_line_ready<=0; scan_linear<=0; read_phase<=0; fetch_pair<=0;
-        fifo_write<=0; fifo_read<=0; fifo_count<=0; output_repeat<=0; output_second<=0;
+
     end else begin
         if (h_count==H_TOTAL-1) begin
             h_count<=0;
@@ -274,46 +310,40 @@ always @(posedge pixel_clock) begin
         visible_pipe3<=started && active;
         framebuffer_pipe3<=started && framebuffer_x;
         hsync_pipe3<=hsync; vsync_pipe3<=vsync;
-        rgb_pipe<=0;
+        precode_pipe<=BLACK_PRECODE;
         if (started && active) begin
-            if (!framebuffer_x) rgb_pipe<=expand565(BORDER_COLOR);
-            else if (scan_line_ready) begin
-                if (output_repeat==0 && !output_second && fifo_count==0) underflow_sticky<=1;
-                else rgb_pipe<=current_rgb;
-                if (output_repeat==SCALE-1) begin
-                    output_repeat<=0; output_second<=~output_second;
-                end else output_repeat<=output_repeat+1'b1;
-            end
+            if (!framebuffer_x) precode_pipe<=BORDER_PRECODE;
+            else if (scan_line_ready) precode_pipe<=current_precode;
         end
         if (h_count==0) begin
             // Readiness is sampled for the whole output row. A late publish
             // cannot reveal a partial row or consume data from a failed fill.
             scan_line_ready<=line_ready; scan_linear<=group_linear[display_slot];
-            read_phase<=0; fetch_pair<=0; fifo_write<=0; fifo_read<=0; fifo_count<=0;
-            output_repeat<=0; output_second<=0;
-        end else begin
-            case (read_phase)
-                1: begin raw_pair<=source_pair; read_phase<=2; end
-                2: begin r0<=line_read_data_a[7:0]; r1<=line_read_data_b[7:0]; read_phase<=3; end
-                3: begin g0<=line_read_data_a[7:0]; g1<=line_read_data_b[7:0]; read_phase<=4; end
-                default: begin
-                    read_phase<=0;
-                    if (start_pair) begin
-                        pair_bank<=fetch_pair[0]; fetch_pair<=fetch_pair+1'b1; read_phase<=1;
-                    end
-                end
-            endcase
-            if (push_pair) begin
-                fifo_write<=fifo_write+1'b1;
+            read_phase<=0; fetch_pair<=0;
+
+        end else if (conversion_active) begin
+            if (SCALE==2) read_phase<=read_phase+1'b1;
+            else if (read_phase==3'd5) read_phase<=0;
+            else read_phase<=read_phase+1'b1;
+            if (issue_pair) begin
+                pair_bank<=fetch_pair[0]; fetch_pair<=fetch_pair+1'b1;
             end
-            // The asynchronous old head feeds this edge's RGB and is retained
-            // for subsequent repeats. Simultaneous push/pop preserves count.
-            if (pop_pair) begin output_pair<=fifo_head; fifo_read<=fifo_read+1'b1; end
-            case ({push_pair,pop_pair})
-                2'b10: fifo_count<=fifo_count+1'b1;
-                2'b01: fifo_count<=fifo_count-1'b1;
-                default: begin end
-            endcase
+            // At edge S the RAM produces source Q. At S+1 the old source Q
+            // supplies R addresses and raw_pair; S+2/S+3 capture old R/G Q.
+            // S+4 consumes old B Q directly, overlapping the next source in
+            // 2x. The 3x mode has two idle edges before the following source.
+            if (h_count<FRAMEBUFFER_END-PAIR_CLOCKS) begin
+                case (read_phase)
+                    1: raw_pair<=source_pair;
+                    2: begin r0<=line_read_data_a[PRECODE_BITS-1:0]; r1<=line_read_data_b[PRECODE_BITS-1:0]; end
+                    3: begin
+                        if(scan_linear) begin g0<=line_read_data_a[PRECODE_BITS-1:0]; g1<=line_read_data_b[PRECODE_BITS-1:0]; end
+                        else begin g0<=line_read_data_a[2*PRECODE_BITS-1:PRECODE_BITS]; g1<=line_read_data_b[2*PRECODE_BITS-1:PRECODE_BITS]; end
+                    end
+                    default: begin end
+                endcase
+            end
+            if (emit_pair) output_pair<=converted_pair;
         end
         if (started && h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END) begin
             if (vertical_repeat==LAST_REPEAT) begin
@@ -343,15 +373,17 @@ always @* begin
     end
 end
 assign underflow = underflow_sticky | memory_error_sticky;
-wire [7:0] red=rgb_pipe[23:16], green=rgb_pipe[15:8], blue=rgb_pipe[7:0];
+wire [PRECODE_BITS-1:0] red=precode_pipe[3*PRECODE_BITS-1:2*PRECODE_BITS];
+wire [PRECODE_BITS-1:0] green=precode_pipe[2*PRECODE_BITS-1:PRECODE_BITS];
+wire [PRECODE_BITS-1:0] blue=precode_pipe[PRECODE_BITS-1:0];
 
 wire [9:0] blue_symbol,green_symbol,red_symbol;
-HdmiTmdsEncoder u_blue(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
- .control({vsync_pipe3,hsync_pipe3}),.data(blue),.symbol(blue_symbol));
-HdmiTmdsEncoder u_green(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
- .control(2'b00),.data(green),.symbol(green_symbol));
-HdmiTmdsEncoder u_red(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
- .control(2'b00),.data(red),.symbol(red_symbol));
+HdmiTmdsEncoder #(.PRECODE_BITS(PRECODE_BITS)) u_blue(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
+ .control({vsync_pipe3,hsync_pipe3}),.precode(blue),.symbol(blue_symbol));
+HdmiTmdsEncoder #(.PRECODE_BITS(PRECODE_BITS)) u_green(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
+ .control(2'b00),.precode(green),.symbol(green_symbol));
+HdmiTmdsEncoder #(.PRECODE_BITS(PRECODE_BITS)) u_red(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
+ .control(2'b00),.precode(red),.symbol(red_symbol));
 wire [3:0] serialized;
 `ifdef __ICARUS__
 assign serialized={pixel_clock,red_symbol[0],green_symbol[0],blue_symbol[0]};
@@ -369,17 +401,17 @@ ELVDS_OBUF ob3(.I(serialized[2]),.O(tmds_data_p[2]),.OB(tmds_data_n[2]));
 `endif
 endmodule
 
-module HdmiTmdsEncoder(input wire clk,input wire reset,input wire de,
- input wire [1:0] control,input wire [7:0] data,output reg [9:0] symbol);
-integer i; reg [3:0] data_ones,qm_ones; reg [8:0] qm; reg signed [5:0] disparity=0;
+module HdmiTmdsEncoder #(parameter PRECODE_BITS=9)(input wire clk,input wire reset,input wire de,
+ input wire [1:0] control,input wire [PRECODE_BITS-1:0] precode,output reg [9:0] symbol);
+wire [8:0] qm=precode[8:0];
+wire [3:0] qm_ones;
+generate if(PRECODE_BITS==13) begin
+ assign qm_ones=precode[12:9];
+end else begin
+ assign qm_ones=qm[0]+qm[1]+qm[2]+qm[3]+qm[4]+qm[5]+qm[6]+qm[7];
+end endgenerate
+reg signed [5:0] disparity=0;
 wire signed [5:0] qm_delta=$signed({1'b0,qm_ones,1'b0})-6'sd8;
-always @* begin
- data_ones=data[0]+data[1]+data[2]+data[3]+data[4]+data[5]+data[6]+data[7]; qm[0]=data[0];
- if(data_ones>4 || (data_ones==4 && data[0]==0)) begin
-  for(i=1;i<8;i=i+1) qm[i]=~(qm[i-1]^data[i]); qm[8]=0;
- end else begin for(i=1;i<8;i=i+1) qm[i]=qm[i-1]^data[i]; qm[8]=1; end
- qm_ones=qm[0]+qm[1]+qm[2]+qm[3]+qm[4]+qm[5]+qm[6]+qm[7];
-end
 always @(posedge clk) begin
  if(reset) begin disparity<=0; symbol<=10'b1101010100; end
  else if(!de) begin disparity<=0; case(control)

@@ -1,9 +1,7 @@
 //! Four completed RGB888 pairs in twelve RAM16 cells.
 //!
-//! The physical width, rather than the four-entry depth, determines the cell
-//! count. This separate HDL leaf matches the selected whole-system fit; changing
-//! its structure requires another complete fit, since unrelated module mapping
-//! changed in the smaller local alternatives. See the display optimization record.
+//! Standalone reference leaf. Production scanout uses a fixed pixel calendar
+//! and does not instantiate this FIFO or claim its RAM16 storage.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{Hardware, Module, ModuleIo, SsramBits, TargetResourceRequest};
