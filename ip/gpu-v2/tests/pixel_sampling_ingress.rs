@@ -43,9 +43,9 @@ fn tb() -> String {
             let y = (u32::from(g.top_left_local[1]) + (tap as u32 >> 1)) & 7;
             let t = u32::from(texel(base + 2 * (8 * y + x)));
             let channels = [
-                ((t >> 11) & 31) * 8 | ((t >> 13) & 7),
-                ((t >> 5) & 63) * 4 | ((t >> 9) & 3),
-                (t & 31) * 8 | ((t >> 2) & 7),
+                (((t >> 11) & 31) * 8) | ((t >> 13) & 7),
+                (((t >> 5) & 63) * 4) | ((t >> 9) & 3),
+                ((t & 31) * 8) | ((t >> 2) & 7),
             ];
             weights += g.coefficients[tap];
             for axis in 0..3 {

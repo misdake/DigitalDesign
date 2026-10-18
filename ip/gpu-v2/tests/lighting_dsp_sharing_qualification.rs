@@ -311,7 +311,6 @@ initial begin
             assert!(wall < 1999, "bounded batch timeout");
         }
     }
-    drop(edge);
     assert_eq!(contexts, 51);
     assert!(accepted >= 700 && ce0 > 200 && blocked > 100 && checks > 10000);
     writeln!(tb,"$display(\"PASS cycles={cycles} accepted={accepted} contexts={contexts} CE0={ce0} blocked={blocked} output_checks={results} stages={checks}\");$finish;end endmodule").unwrap();

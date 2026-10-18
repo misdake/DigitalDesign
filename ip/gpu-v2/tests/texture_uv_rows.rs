@@ -20,13 +20,13 @@ fn helpers(q: usize) -> [[i64; 2]; 4] {
 fn metadata(q: usize) -> u64 {
     Raw {
         bias: [-8192, -257, 0, 255, 8192][q % 5],
-        force_coarsest: q % 7 == 0,
+        force_coarsest: q.is_multiple_of(7),
         header: Header {
             quad: (q % 16) as u8,
             mask: [0, 1, 6, 15][q % 4],
             slot: (q % 16) as u8,
             max_n: (q % 11) as u8,
-            has_mip: q % 2 == 0,
+            has_mip: q.is_multiple_of(2),
             filter: (q % 3) as u8,
         },
     }
@@ -218,7 +218,7 @@ fn vectors() -> Vec<Vector> {
             if quad < 64
                 && store.input_ready()
                 && (lane != 0 || remaining[quad % 8] == 0)
-                && random % 5 != 0
+                && !random.is_multiple_of(5)
             {
                 let mut offer = row(quad, lane);
                 if lane != 0 {
@@ -228,18 +228,17 @@ fn vectors() -> Vec<Vector> {
                 }
                 t.row = Some(offer);
             }
-            if phase == 0 && d.is_some() && random % 3 != 0 {
+            if let (0, Some((slot, uv)), true) = (phase, d, !random.is_multiple_of(3)) {
                 t.take_derivative = true;
-                let (slot, uv) = d.unwrap();
                 assert_eq!(uv, std::array::from_fn(|i| payloads[slot][i / 2][i % 2]));
                 let actual = Raw::unpack(raw[slot]);
                 let expected = Raw::unpack(metadata(derivatives));
                 assert_eq!(actual, expected);
                 derivatives += 1;
             }
-            if phase & 1 == 0 && c.is_some() && random % 4 != 0 {
+            if let (0, Some(output), true) = (phase & 1, c, !random.is_multiple_of(4)) {
                 t.take_coordinate = true;
-                remaining[c.unwrap().0.slot] -= 1;
+                remaining[output.0.slot] -= 1;
                 coordinate_takes += 1;
             }
             if phase & 1 != 0 && store.coordinate_empty() {

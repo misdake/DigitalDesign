@@ -32,9 +32,9 @@ fn begin(q: usize) -> Begin {
     Begin {
         mask: [15, 1, 0, 6, 8, 3, 10][q % 7],
         draw: q >= 22,
-        unlit: q % 5 == 0,
-        untextured: q % 3 == 0,
-        force_coarsest: q % 4 == 0,
+        unlit: q.is_multiple_of(5),
+        untextured: q.is_multiple_of(3),
+        force_coarsest: q.is_multiple_of(4),
         origin: (q * 137) as u16,
     }
 }

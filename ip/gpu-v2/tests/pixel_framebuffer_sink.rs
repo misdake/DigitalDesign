@@ -1021,7 +1021,7 @@ fn closed_bank_prefix_faults_abandon_private_tile() {
         assert_eq!(bytes, image(), "Fault prohibits partial tile writeback");
         assert!(output.contains("fault=1"));
         if name.contains("late-owned") {
-            assert!(commits.len() >= 1 && commits.len() < 6);
+            assert!(!commits.is_empty() && commits.len() < 6);
         }
         println!("{name}: {output}");
     }

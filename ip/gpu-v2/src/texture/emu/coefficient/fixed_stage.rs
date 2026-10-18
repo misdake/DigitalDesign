@@ -28,85 +28,6 @@ pub struct Registers {
     pub fine_corners: [u16; 4],
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn sample(parent: u16, fractions: [[u8; 2]; 2]) -> super::super::Input {
-        super::super::Input {
-            parents: [parent, 511 - parent],
-            fractions,
-            nearest: false,
-            metadata: super::super::Metadata {
-                coordinates: [[0, 1, 0, 1]; 2],
-                levels: [5, 4],
-                slot: 2,
-                key: 17,
-                last_fine: parent == 511,
-            },
-        }
-    }
-    fn drain(e: &mut FixedCoefficientEmu) -> Output {
-        for _ in 0..100 {
-            let s = e.tick(Tick::default()).unwrap();
-            if s.consumed {
-                return s.output.unwrap();
-            }
-        }
-        panic!("bounded selected coefficient drain");
-    }
-    #[test]
-    fn retained_fraction_changes_actual_result() {
-        let mut e = FixedCoefficientEmu::new(100).unwrap();
-        e.tick(Tick {
-            input: Some(sample(511, [[128; 2]; 2])),
-            ..Tick::default()
-        })
-        .unwrap();
-        e.registers.input_fractions[0][0] ^= 128;
-        assert_eq!(drain(&mut e).weights, [[256, 0, 255, 0], [0; 4]]);
-    }
-    #[test]
-    fn returned_product_is_consumed_without_recomputation() {
-        let mut e = FixedCoefficientEmu::new(100).unwrap();
-        e.tick(Tick {
-            input: Some(sample(511, [[128; 2]; 2])),
-            ..Tick::default()
-        })
-        .unwrap();
-        e.tick(Tick::default()).unwrap();
-        assert_eq!(e.products[0], 65408);
-        e.products[0] = 0;
-        assert_eq!(drain(&mut e).weights, [[256, 255, 0, 0], [0; 4]]);
-    }
-    #[test]
-    fn shared_row_corruption_reaches_only_its_old_plane_before_overwrite() {
-        for fine in [true, false] {
-            let mut e = FixedCoefficientEmu::new(100).unwrap();
-            e.tick(Tick {
-                input: Some(sample(200, [[128, 192], [64, 128]])),
-                ..Tick::default()
-            })
-            .unwrap();
-            for _ in 0..if fine { 2 } else { 3 } {
-                e.tick(Tick::default()).unwrap();
-            }
-            if fine {
-                e.registers.row_totals[0] += 1;
-            } else {
-                e.registers.row_totals[1] += 1;
-            }
-            let out = drain(&mut e);
-            assert_eq!(
-                out.weights,
-                if fine {
-                    [[26, 25, 75, 75], [117, 39, 117, 38]]
-                } else {
-                    [[25, 25, 75, 75], [117, 39, 118, 38]]
-                }
-            );
-        }
-    }
-}
 pub struct FixedCoefficientEmu {
     registers: Registers,
     products: [u32; 3],
@@ -401,5 +322,85 @@ impl FixedCoefficientEmu {
             events,
             snapshot: self.snapshot(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn sample(parent: u16, fractions: [[u8; 2]; 2]) -> super::super::Input {
+        super::super::Input {
+            parents: [parent, 511 - parent],
+            fractions,
+            nearest: false,
+            metadata: super::super::Metadata {
+                coordinates: [[0, 1, 0, 1]; 2],
+                levels: [5, 4],
+                slot: 2,
+                key: 17,
+                last_fine: parent == 511,
+            },
+        }
+    }
+    fn drain(e: &mut FixedCoefficientEmu) -> Output {
+        for _ in 0..100 {
+            let s = e.tick(Tick::default()).unwrap();
+            if s.consumed {
+                return s.output.unwrap();
+            }
+        }
+        panic!("bounded selected coefficient drain");
+    }
+    #[test]
+    fn retained_fraction_changes_actual_result() {
+        let mut e = FixedCoefficientEmu::new(100).unwrap();
+        e.tick(Tick {
+            input: Some(sample(511, [[128; 2]; 2])),
+            ..Tick::default()
+        })
+        .unwrap();
+        e.registers.input_fractions[0][0] ^= 128;
+        assert_eq!(drain(&mut e).weights, [[256, 0, 255, 0], [0; 4]]);
+    }
+    #[test]
+    fn returned_product_is_consumed_without_recomputation() {
+        let mut e = FixedCoefficientEmu::new(100).unwrap();
+        e.tick(Tick {
+            input: Some(sample(511, [[128; 2]; 2])),
+            ..Tick::default()
+        })
+        .unwrap();
+        e.tick(Tick::default()).unwrap();
+        assert_eq!(e.products[0], 65408);
+        e.products[0] = 0;
+        assert_eq!(drain(&mut e).weights, [[256, 255, 0, 0], [0; 4]]);
+    }
+    #[test]
+    fn shared_row_corruption_reaches_only_its_old_plane_before_overwrite() {
+        for fine in [true, false] {
+            let mut e = FixedCoefficientEmu::new(100).unwrap();
+            e.tick(Tick {
+                input: Some(sample(200, [[128, 192], [64, 128]])),
+                ..Tick::default()
+            })
+            .unwrap();
+            for _ in 0..if fine { 2 } else { 3 } {
+                e.tick(Tick::default()).unwrap();
+            }
+            if fine {
+                e.registers.row_totals[0] += 1;
+            } else {
+                e.registers.row_totals[1] += 1;
+            }
+            let out = drain(&mut e);
+            assert_eq!(
+                out.weights,
+                if fine {
+                    [[26, 25, 75, 75], [117, 39, 117, 38]]
+                } else {
+                    [[25, 25, 75, 75], [117, 39, 118, 38]]
+                }
+            );
+        }
     }
 }

@@ -441,11 +441,10 @@ fn ordinary_rows(r: &mut Replay, quads: &[Quad], pause: bool) {
         if e.input_fire {
             pending.pop_front();
         }
-        if next.is_some() && e.advance && (row != 0 || e.free) {
+        if let (Some(q), true) = (next, e.advance && (row != 0 || e.free)) {
             beats += 1;
             if row == 3 {
                 assert!(e.publish_fire);
-                let q = next.unwrap();
                 r.unpassed[usize::from(q.id)] = q.groups.len();
                 pending.extend(q.groups.iter().copied());
                 published += 1;

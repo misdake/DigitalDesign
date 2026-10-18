@@ -31,13 +31,13 @@ fn beat(q: usize, row: usize) -> Beat {
     Beat {
         begin: Begin {
             mask: if q % 13 == 4 { 0 } else { [1, 6, 15, 8][q % 4] },
-            draw: q % 2 != 0,
-            unlit: q % 3 == 0,
+            draw: !q.is_multiple_of(2),
+            unlit: q.is_multiple_of(3),
             untextured: q % 7 == 2,
-            force_coarsest: q % 5 == 0,
+            force_coarsest: q.is_multiple_of(5),
             origin: ((q * 127) & 0x7fff) as u16,
         },
-        basic: if row % 2 == 0 {
+        basic: if row.is_multiple_of(2) {
             ((q * 1957 + row * 149) & 0xffffff) as u32
         } else {
             ((q * 937 + row * 211) & 0xffff) as u32
@@ -125,16 +125,20 @@ fn trace(paused: bool) -> Vec<Vector> {
             t.config = CONFIGS[usize::from(s.descriptor.draw)];
         }
         if ce {
-            if phase == 0 && preview.derivative.is_some() {
-                let slot = preview.derivative.unwrap().0;
-                if enabled >= leases[slot].unwrap().committed + 4 && (!paused || rng % 3 != 0) {
+            if let (0, Some((slot, _))) = (phase, preview.derivative) {
+                if enabled >= leases[slot].unwrap().committed + 4
+                    && (!paused || !rng.is_multiple_of(3))
+                {
                     t.take_derivative = true;
                 }
             }
-            if phase % 2 == 0 && preview.coordinate.is_some() && (!paused || rng % 5 != 0) {
+            if phase.is_multiple_of(2)
+                && preview.coordinate.is_some()
+                && (!paused || !rng.is_multiple_of(5))
+            {
                 t.take_coordinate = true;
             }
-            if phase % 2 != 0 && preview.coordinate_empty && wall > 700 {
+            if !phase.is_multiple_of(2) && preview.coordinate_empty && wall > 700 {
                 t.coordinate = jobs.front().copied();
             }
         }
@@ -310,10 +314,10 @@ fn trace(paused: bool) -> Vec<Vector> {
             c_remaining[slot] = 4;
             d_count += 1;
         }
-        if t.coordinate.is_some() && s.quad.advance {
+        if let (Some(coordinate), true) = (t.coordinate, s.quad.advance) {
             assert_eq!(
                 step.uv.read.unwrap().address,
-                jobs.pop_front().unwrap().slot * 4 + t.coordinate.unwrap().lane
+                jobs.pop_front().unwrap().slot * 4 + coordinate.lane
             );
         }
         if t.take_coordinate && s.quad.advance {
@@ -329,8 +333,8 @@ fn trace(paused: bool) -> Vec<Vector> {
                     .sample_done = true;
             }
         }
-        if t.quad.rop_row7.is_some() && s.quad.advance {
-            assert_eq!(globals.pop_front().unwrap().slot, t.quad.rop_row7.unwrap());
+        if let (Some(row7), true) = (t.quad.rop_row7, s.quad.advance) {
+            assert_eq!(globals.pop_front().unwrap().slot, row7);
         }
         ce0_returns += usize::from(!s.quad.advance && step.uv.returned.is_some());
         simultaneous += usize::from(step.uv.read.is_some() && step.uv.write.is_some());

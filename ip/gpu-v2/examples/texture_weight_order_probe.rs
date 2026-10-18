@@ -186,8 +186,8 @@ fn main() {
             let vb = sb.output.unwrap();
             assert_eq!(transformed(va.payload), vb.payload);
             let map = rtl_map(Group4::unpack72(va.payload).unwrap().top_left_local);
-            for k in 0..4 {
-                assert_eq!(va.texels[k], vb.texels[map[k]])
+            for (k, &mapped) in map.iter().enumerate() {
+                assert_eq!(va.texels[k], vb.texels[mapped])
             }
             pairs.push((
                 Input {

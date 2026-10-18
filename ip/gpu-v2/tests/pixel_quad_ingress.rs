@@ -27,9 +27,9 @@ fn beat(quad: usize, row: usize, profile: usize) -> Beat {
             [1, 5, 15, 8][quad % 4]
         },
         draw: quad & 1 != 0,
-        unlit: profile == 0 || profile == 2 || (profile == 3 && quad % 3 == 0),
-        untextured: profile == 0 || profile == 1 || (profile == 3 && quad % 5 == 0),
-        force_coarsest: quad % 7 == 0,
+        unlit: profile == 0 || profile == 2 || (profile == 3 && quad.is_multiple_of(3)),
+        untextured: profile == 0 || profile == 1 || (profile == 3 && quad.is_multiple_of(5)),
+        force_coarsest: quad.is_multiple_of(7),
         origin: ((quad * 613) & 0x7fff) as u16,
     };
     Beat {

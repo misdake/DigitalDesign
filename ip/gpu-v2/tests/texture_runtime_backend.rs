@@ -109,17 +109,17 @@ pub(crate) fn fixture() -> String {
         }
         let out = core.output().unwrap();
         let mut weight_word = 0u128;
-        for p in 0..2 {
-            assert_eq!(out.weights[p].iter().sum::<u16>(), parents[p]);
-            assert_eq!(out.weights[p][0] != 0, parents[p] != 0);
+        for (p, &parent) in parents.iter().enumerate() {
+            assert_eq!(out.weights[p].iter().sum::<u16>(), parent);
+            assert_eq!(out.weights[p][0] != 0, parent != 0);
             for t in 0..4 {
                 weight_word |= u128::from(out.weights[p][t]) << (p * 36 + t * 9);
             }
         }
         let meta = compact::Metadata::capture(input).unwrap().0;
         writeln!(init,"owners[{q}]=38'h{:x};results[{q}]=36'h{result:x};weights[{q}]=72'h{weight_word:x};metas[{q}]=36'h{meta:x};costs[{q}]={};",owner.pack().unwrap(),parents.iter().filter(|&&v|v!=0).count()).unwrap();
-        for plane in 0..2 {
-            if parents[plane] == 0 {
+        for (plane, &parent) in parents.iter().enumerate() {
+            if parent == 0 {
                 continue;
             }
             let c = out.metadata.coordinates[plane];

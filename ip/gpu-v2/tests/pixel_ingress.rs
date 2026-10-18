@@ -49,12 +49,12 @@ fn beat(q: usize, row: usize) -> quad::Beat {
         begin: quad::Begin {
             mask: if q % 9 == 2 { 0 } else { [1, 6, 15, 8][q % 4] },
             draw: q >= 18,
-            unlit: q % 5 == 0,
+            unlit: q.is_multiple_of(5),
             untextured: q % 7 == 2,
-            force_coarsest: q % 4 == 0,
+            force_coarsest: q.is_multiple_of(4),
             origin: (q * 173) as u16,
         },
-        basic: if row % 2 == 0 {
+        basic: if row.is_multiple_of(2) {
             ((q * 119731 + row * 713) & 0xffffff) as u32
         } else {
             (55000 - q * 191 - row * 23) as u32
@@ -130,8 +130,9 @@ fn trace() -> Vec<Vector> {
         if ce {
             s.take_derivative =
                 phase == 0 && preview.derivative.is_some() && !(180..260).contains(&wall);
-            s.take_coordinate = phase % 2 == 0 && preview.coordinate.is_some() && wall % 11 != 4;
-            if phase % 2 != 0 && preview.coordinate_empty && wall > 130 {
+            s.take_coordinate =
+                phase.is_multiple_of(2) && preview.coordinate.is_some() && wall % 11 != 4;
+            if !phase.is_multiple_of(2) && preview.coordinate_empty && wall > 130 {
                 s.coordinate = jobs.front().copied();
             }
         }
@@ -313,8 +314,8 @@ fn trace() -> Vec<Vector> {
                 }
             }
         }
-        if s.quad.rop_row7.is_some() && signals.quad.advance {
-            assert_eq!(globals.pop_front().unwrap().slot, s.quad.rop_row7.unwrap());
+        if let (Some(row7), true) = (s.quad.rop_row7, signals.quad.advance) {
+            assert_eq!(globals.pop_front().unwrap().slot, row7);
         }
         ce0_return += usize::from(!signals.quad.advance && step.sampling.uv.returned.is_some());
         mixed_access +=
@@ -484,7 +485,12 @@ fn tb(vectors: &[Vector]) -> String {
             check("c_uv", 32, u64::from(data[0]) | (u64::from(data[1]) << 16));
         }
         if let Some((_, words)) = e.sampling.signals.derivative {
-            let packed: Vec<_> = words.chunks_exact(2).map(|w| word([w[0], w[1]])).collect();
+            let packed: Vec<_> = words
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|w| word([w[0], w[1]]))
+                .collect();
             writeln!(
                 text,
                 "if(d_uv!==144'h{:09x}{:09x}{:09x}{:09x})$fatal(1,\"D payload edge {i}\");",

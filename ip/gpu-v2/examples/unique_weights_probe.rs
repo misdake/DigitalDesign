@@ -172,11 +172,10 @@ fn main() {
             (reads < 512 && wall % 13 != 0 && (store.paid.is_none() || capture)).then(|| {
                 let a = reads % 128;
                 reads += 1;
-                let g = (((a / 8) as u64) << 30)
+                (((a / 8) as u64) << 30)
                     | ((((a / 2) % 4) as u64) << 34)
                     | (((a % 2) as u64) << 4)
-                    | (15u64 << 36);
-                g
+                    | (15u64 << 36)
             });
         if pop {
             let (g, w) = store.result.unwrap();

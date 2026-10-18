@@ -174,10 +174,12 @@ fn vectors() -> Vec<Vector> {
             ..Default::default()
         };
         let allow = wall % 11 != 0;
-        if admitted < 1400 && (s.count < 6 && rng % 3 != 0 || s.count == 6 && wall % 13 == 0) {
+        if admitted < 1400
+            && (s.count < 6 && !rng.is_multiple_of(3) || s.count == 6 && wall % 13 == 0)
+        {
             t.issue = Some(owner(admitted));
         }
-        if s.count > s.ready && rng % 4 != 0 || s.count == s.ready && wall % 19 == 0 {
+        if s.count > s.ready && !rng.is_multiple_of(4) || s.count == s.ready && wall % 19 == 0 {
             let n = rows[s.returned].levels[0];
             let mask = compact::side_mask(n);
             let raw = u64::from((rng & 255) as u8)
@@ -186,7 +188,7 @@ fn vectors() -> Vec<Vector> {
                 | (u64::from(((rng >> 13) as u16) & mask) << 26);
             t.returned = Some(compact::expand_result(raw, n));
         }
-        if s.ready != 0 && (wall > 40 && rng % 5 != 0) || s.ready == 0 && wall % 17 == 0 {
+        if s.ready != 0 && (wall > 40 && !rng.is_multiple_of(5)) || s.ready == 0 && wall % 17 == 0 {
             t.take = true;
         }
         let bad = !t.reset

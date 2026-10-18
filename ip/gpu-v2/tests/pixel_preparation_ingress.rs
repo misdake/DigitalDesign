@@ -1,6 +1,6 @@
 //! Real Quad/Lighting/preparation ports; independent counted Group72 goldens.
 #[path = "pixel_runtime_ingress.rs"]
-mod reference;
+mod runtime_reference;
 use gpu_v2::{
     system::pixel::{pixel_preparation_ingress, quad_ingress},
     texture::{
@@ -65,7 +65,7 @@ pub(crate) fn preparation_tb() -> String {
             group_count += 1;
         }
     }
-    let mut tb = reference::tb()
+    let mut tb = runtime_reference::tb()
         .replace("gpu_v2_pixel_runtime_ingress dut(.*);", "gpu_v2_pixel_preparation_ingress dut(.*);")
         .replace("reg sample_out_ready=0;", "wire sample_out_ready;")
         .replace("gpu_v2_pixel_preparation_ingress dut(.*);", &format!("reg packet_enable=0,packet_out_ready=0;wire packet_out_valid,coefficient_accept;wire[71:0]packet_out_payload;wire[4:0]work_reserved,work_count,producer_count,unwritten_count;wire[5:0]group_count,row_count;reg[71:0]group_gold[0:{}];integer group_read=0,held_group=0,peak_reserved=0,peak_work=0;\ngpu_v2_pixel_preparation_ingress dut(.*);", group_count-1))

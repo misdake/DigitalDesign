@@ -1,8 +1,6 @@
 //! Actual portable/native paid descriptor ownership, independent wide queue.
 //! This qualifies the isolated lowering and head lifetime, not the whole top.
-use gpu_v2::system::pixel::row_store;
-#[path = "../src/system/pixel/postquad_descriptor.rs"]
-mod descriptor;
+use gpu_v2::system::pixel::postquad_descriptor as descriptor;
 use std::{collections::VecDeque, fmt::Write, fs, path::Path, process::Command};
 
 const WALLS: usize = 4096;

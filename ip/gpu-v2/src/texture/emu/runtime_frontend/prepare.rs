@@ -32,7 +32,11 @@ mod qualification {
         for wall in 0..6000 {
             let ce = wall % 13 != 2 && wall % 7 != 4;
             let allow = wall % 11 != 3;
-            let mask = if reference.c_head % 3 == 0 { 0 } else { 15 };
+            let mask = if reference.c_head.is_multiple_of(3) {
+                0
+            } else {
+                15
+            };
             let lane = reference
                 .lane(mask)
                 .unwrap()

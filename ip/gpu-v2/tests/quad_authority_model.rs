@@ -17,8 +17,8 @@ fn bounded_canonical_private_publish_wrap_ce0() {
         let begin = reference::Begin {
             mask: if job % 23 == 22 { 0 } else { 15 },
             draw: job & 1 != 0,
-            unlit: job < 40 || job % 3 == 0,
-            untextured: job < 40 || job % 5 == 0,
+            unlit: job < 40 || job.is_multiple_of(3),
+            untextured: job < 40 || job.is_multiple_of(5),
             force_coarsest: job & 2 != 0,
             origin: ((job * 71) & 32767) as u16,
         };
