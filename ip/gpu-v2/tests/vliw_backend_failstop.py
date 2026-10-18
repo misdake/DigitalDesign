@@ -2,6 +2,7 @@
 from pathlib import Path
 import importlib.util,sys,argparse
 ap=argparse.ArgumentParser(add_help=False);ap.add_argument('--fault',choices=['final','texture','abort'],default='final');o,rest=ap.parse_known_args();sys.argv=[sys.argv[0]]+rest
+if '--tag' not in sys.argv:sys.argv+=['--tag',f'producer-calendar-fault-{o.fault}-v1']
 p=Path(__file__).with_name('vliw_backend_complete.py');sp=importlib.util.spec_from_file_location('fault_complete_base',p);b=importlib.util.module_from_spec(sp);sys.modules[sp.name]=b;sp.loader.exec_module(b);m=b.m
 t=m.TB.replace('integer front_ticks=','integer injected=0,fault_age=0,failwall=0,held_requests=0;integer front_ticks=')
 a=t.index('  if(fault)$fatal');z=t.index('\n',a);t=t[:a]+t[z+1:]
@@ -42,7 +43,7 @@ m.TB=t
 if __name__=='__main__':
     m.main()
     import json
-    tag=sys.argv[sys.argv.index('--tag')+1] if '--tag' in sys.argv else 'v2'
+    tag=sys.argv[sys.argv.index('--tag')+1] if '--tag' in sys.argv else 'producer-calendar-v1'
     receipt=m.O/f'complete-{tag}-receipt.json';v=json.loads(receipt.read_text())
     v.update(boundary='injected illegal local proposal/texture return/external abort only; local reject, sticky global failstop, no postfault compute/writes, finite accepted memory drain, reset and capacity bounds; does not compare complete final framebuffer after fault',fault_kind=o.fault)
     receipt.write_text(json.dumps(v,ensure_ascii=False,indent=2)+'\n')

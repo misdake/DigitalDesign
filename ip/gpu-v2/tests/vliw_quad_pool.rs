@@ -43,7 +43,8 @@ fn producer_pool_portable_and_native_protocol_qualification() {
         time::{Duration, Instant},
     };
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let tag = std::env::var("VLIW_POOL_TEST_TAG").unwrap_or_else(|_| "pool-fixed-head-v1".into());
+    let tag = std::env::var("VLIW_POOL_TEST_TAG")
+        .unwrap_or_else(|_| "pool-completion-contract-v1".into());
     let out = root
         .join("target/gpu-vliw-integration-20261018/stage2")
         .join(tag);

@@ -99,8 +99,8 @@ def main():
     out=Path(a.output);out.mkdir(parents=True,exist_ok=True)
     fits=audit_fit(Path(a.fit),next(ROOT/'target/gpu-vliw-integration-20261018/stage2'/r['tag']/r['mode']/'dut.v' for r in rows if r['mode']=='native')) if a.fit else None
     error_evidence=None
-    if all(r['error_policy'].startswith('registered') for r in rows):
-        path=Path(a.error_contract) if a.error_contract else ROOT/'target/gpu-vliw-integration-20261018/stage2/backend-failstop-v1.json';e=json.loads(path.read_text());assert e['status']=='pass'
+    if a.error_contract and all(r['error_policy'].startswith('registered') for r in rows):
+        path=Path(a.error_contract);e=json.loads(path.read_text());assert e['status']=='pass'
         for tag in a.tag:
             manifest=json.loads((ROOT/'target/gpu-vliw-integration-20261018/stage2'/tag/'source-manifest.json').read_text())
             verified=0
@@ -131,6 +131,7 @@ def main():
     if fits:lines+=['',f'原始PnR及完整453输入/214输出探针已复核。54MHz资格：{fits["timing_qualified"]}；数据只引用同源收据 `{fits["receipt"]}`，包含459个探针FF，不能默扣或混作无探针核心。']
     if all(r['error_policy'].startswith('registered') for r in rows):
         lines+=['','合体错误语义：本版保留各leaf本地ready、credit、冲突及非法写入拒绝；顶层在物理沿把诊断union锁入既有sticky stopped，下一沿全链停止，已接受的内存事务继续付费排空。它不承诺原跨全链组合preflight在同一沿撤销所有其它合法操作。外部abort仍立即停止计算。本组是合法输入完整整数资格，非法定向的独立作者收据另行绑定。']
+    if error_evidence is None:lines+=['','本次没有绑定故障注入收据；合法输入回放不构成故障资格。需要时显式传入 --error-contract，不能自动借用另一个硬件版本的历史收据。']
     if historical:lines+=['','完整箱体原语回放来自前一冻结硬件版本，已经与本版完整便携回放逐沿事件、数值、最终内存比较完全相同。新版物理池原语另有作者96Q回绕资格，新版整体原语只运行兔子压力用例。不能把组合证据写成新版完整箱体原语测试已经执行。']
     (out/'review.md').write_text('\n'.join(lines)+'\n',encoding='utf8');print(json.dumps(dict(status='pass',runs=len(rows),output=str(out)),ensure_ascii=False))
 

@@ -2,7 +2,7 @@
 from pathlib import Path
 import hashlib,json,os,subprocess
 ROOT=Path(__file__).resolve().parents[3]
-OUT=ROOT/'target/gpu-vliw-integration-20261018/stage2'/os.environ.get('VLIW_POOL_TEST_TAG','pool-fixed-head-v1')
+OUT=ROOT/'target/gpu-vliw-integration-20261018/stage2'/os.environ.get('VLIW_POOL_TEST_TAG','pool-completion-contract-v1')
 TB=r'''`timescale 1ns/1ps
 module tb;
 reg clk=0;always #5 clk=~clk;
@@ -61,7 +61,7 @@ begin
  for(j=0;j<sent;j=j+1)begin
   delta=ft-starts[j];
   if(delta==14)begin ev=1;eid=j%8;emask=geom(j);end
-  if(delta==32)begin lv=1;lid=j%8;lod=level(j);end
+  if(delta==(RGB?15:50))begin lv=1;lid=j%8;lod=RGB?8'd0:level(j);end
   for(ln=0;ln<4;ln=ln+1)begin
    if(delta==13+4*ln)begin dv=1;dpid=((j%8)*4+ln);dz=zval(j,ln);dpass=pass(j,ln);end
    for(wr=0;wr<3;wr=wr+1)if(delta==14+4*ln+wr)begin
@@ -176,6 +176,6 @@ def main():
     r=dict(mode=mode,rgb=rgb,stress=stress,restart=restart,summary=p.stdout,trace_sha256=sha(d/'trace.txt'));reports.append(r);print(p.stdout,flush=True)
  for rgb in (0,1):
   for stress,restart in ((0,0),(1,0),(1,1)):assert len({r['trace_sha256'] for r in reports if r['rgb']==rgb and r['stress']==stress and r['restart']==restart})==1
- (OUT/'receipt.json').write_text(json.dumps(dict(status='pass',reports=reports,sources={str(p.relative_to(ROOT)):sha(p) for p in [ROOT/'ip/gpu-v2/src/system/pixel/vliw_quad_pool.v',ROOT/'ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs',Path(__file__)]},scope='Independent pool formatting/port/lifetime/NDC qualification; not full GPU arithmetic'),indent=2)+'\n')
+ (OUT/'receipt.json').write_text(json.dumps(dict(status='pass',reports=reports,generated={str(OUT/f'{mode}.v'):sha(OUT/f'{mode}.v') for mode in ('portable','native')},sources={str(p.relative_to(ROOT)):sha(p) for p in [ROOT/'ip/gpu-v2/src/system/pixel/vliw_quad_pool.v',ROOT/'ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs',Path(__file__)]},scope='Independent pool formatting/port/lifetime/NDC qualification; not full GPU arithmetic'),indent=2)+'\n')
  print('PASS POOL MATRIX',flush=True)
 if __name__=='__main__':main()

@@ -2,6 +2,7 @@
 from pathlib import Path
 import importlib.util,sys,argparse
 ap=argparse.ArgumentParser(add_help=False);ap.add_argument("--different-screen-quads",action="store_true");extra,rest=ap.parse_known_args();sys.argv=[sys.argv[0]]+rest
+if '--tag' not in sys.argv:sys.argv+=['--tag','producer-calendar-paced-v1']
 p=Path(__file__).with_name('vliw_backend_complete.py');sp=importlib.util.spec_from_file_location('paced_base',p);b=importlib.util.module_from_spec(sp);sys.modules[sp.name]=b;sp.loader.exec_module(b);m=b.m
 for opt in ['--steady','--single-texture-tile','--paced']:
  if opt not in sys.argv:sys.argv.append(opt)
@@ -33,7 +34,8 @@ t=t[:a]+'''  if(cursor<@TOTAL@*8)begin
   end
 '''+t[z:]
 t=t.replace('slot_job[(cursor/8)%32]=cursor/8;start_tick=front_ticks;input_ce[cursor/8]=external_ce;', 'slot_job[(cursor/8)%32]=cursor/8;admit_tick[cursor/8]=front_ticks;input_ce[cursor/8]=external_ce;input_used[cursor/8]=global_used;admitted=admitted+1;cursor=cursor+8;')
-t=t.replace('   if(start_tick>=0&&front_ticks-start_tick==18)begin cursor=cursor+8;start_tick=-1;end', '''   if(result_we&&result_wa[1:0]==2)ret_pixel=ret_pixel+1;
+assert t.count(b.SERIAL_DRAIN)==1
+t=t.replace(b.SERIAL_DRAIN, '''   if(result_we&&result_wa[1:0]==2)ret_pixel=ret_pixel+1;
    if(quad_end_valid)geom_cursor=geom_cursor+1;
    if(lod_valid)lod_cursor=lod_cursor+1;''')
 t=t.replace('   for(i=0;i<@BYTES@;', '''   $display("SUSTAIN tail31 inputCE=%0d commitCE=%0d lagStart=%0d lagEnd=%0d usedStart=%0d usedEnd=%0d",input_ce[@WB@]-input_ce[@WA@],commit_ce[@WB@]-commit_ce[@WA@],commit_ce[@WA@]-input_ce[@WA@],commit_ce[@WB@]-input_ce[@WB@],input_used[@WA@],input_used[@WB@]);

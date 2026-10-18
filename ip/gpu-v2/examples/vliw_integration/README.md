@@ -50,3 +50,21 @@ python ip/gpu-v2/examples/vliw_integration/audit_stage2.py --tag full-box-new --
 所有仿真均限制最大 wall 沿和进程时间。压力包含 CE/Vertex 导出暂停、有限内存长暂停与 CE0 付费返回。ROP 的 `commit_valid` 是 wall 事件，不能再以 CE 门控丢失；其 mask 是输入 mask，真实深度拒绝由独立逐像素比较及最终 framebuffer 金值证明。
 
 本阶段固定 diffuse、specular=0、alpha255、blend关、LESS及深度写。任务总沿包含开机装表、DMA、全部V/T、R/I、后半和 flush，不能当作整帧性能或任意工作集稳态吞吐。物理 SDRAM 仲裁器、CPU 驱动、显示和板测另属后续阶段。
+
+## 当前采用点与维护测试
+
+[阶段4关键证据](stage4-evidence.json)是当前采用点；较早的阶段收据保持原始身份，不能把历史raw源SHA当成新文件SHA。入库身份使用LF规范化SHA，Vertex来源目录保留原始字节。完整边界与资源分布见[合体资格](../../docs/vliw-qualification.md)。
+
+结果池只接正式固定日历：G14、N13/17/21/25、W14至28、RGB L15／UV L50。小后半回放曾使用人工提前返回，现已修正；新旧该微测的总拍不可直接比较。持续16CE供给和真实box／rabbit的原时间轴保持不变。
+
+```powershell
+cargo test -p gpu-v2 --test vliw_backend -- --nocapture
+cargo test -p gpu-v2 --test vliw_quad_pool -- --include-ignored --nocapture
+python ip/gpu-v2/tests/vliw_backend_complete.py --tag current-small-new --mode both
+python ip/gpu-v2/tests/vliw_backend_paced.py --tag current-paced-new --mode both
+python ip/gpu-v2/tests/vliw_backend_failstop.py --tag current-fault-new --mode both --fault final
+```
+
+每次回放使用新tag，避免覆盖保留证据。`VLIW_POOL_TEST_TAG`可指定池矩阵输出目录。故障脚本另外支持texture与abort，全部回放都有有限沿上限和宿主超时。
+
+`audit_stage2.py` 默认只审指定合法回放；故障资格需要显式传入同源 `--error-contract` 聚合收据，不自动借用历史版本。`audit_stage1.py` 是在对应阶段冻结源上审查保留工件的历史工具，不是从空 `target` 开始生成资格的入口。

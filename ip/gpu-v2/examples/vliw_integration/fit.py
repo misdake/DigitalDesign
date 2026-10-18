@@ -38,6 +38,10 @@ def main():
     assert result.returncode == 0, 'See fit log'
     receipt_path = output / 'receipt.json'
     receipt = json.loads(receipt_path.read_text())
+    physical_report = output / f'fits/selected-native-p{args.placement}-m54/impl/pnr/leaf.rpt.txt'
+    cls = re.search(r'^\s*CLS\s*\|\s*(\d+)/(\d+)', physical_report.read_text(), re.M)
+    assert cls, 'Missing physical CLS utilization'
+    receipt.update(cls=int(cls[1]), cls_capacity=int(cls[2]))
     receipt.update(export_top=top[1], export_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                    scope='完整导出顶层的注册探针；包含探针FF，排除CPU、显示和板测。')
     receipt_path.write_text(json.dumps(receipt, indent=2, ensure_ascii=False))

@@ -23,11 +23,10 @@ module gpu_v2_vliw_quad_pool(
  output[5:0]global_used,producer_used,light_pending,sample_pending,
  output busy,output reg fault
 );
- reg[5:0]allocated,publish_ptr,retired,end_tail,lod_tail,light_cursor,sample_cursor;
+ reg[5:0]allocated,publish_ptr,retired,complete_tail,light_cursor,sample_cursor;
  reg[7:0]attr_pixel,depth_pixel;reg[1:0]attr_word;
  reg[9:0]light_descriptor_q;reg[18:0]sample_descriptor_q;
  reg[23:0]normal_xy;reg[15:0]u_or_red;reg[3:0]depth_mask;
- wire[5:0]attr_tail=attr_pixel[7:2],depth_tail=depth_pixel[7:2];
  assign global_used=allocated-retired;assign producer_used=allocated-publish_ptr;
  assign light_pending=publish_ptr-light_cursor;assign sample_pending=publish_ptr-sample_cursor;
  assign quad_ready=!reset&&!fault&&global_used<24&&producer_used<8;
@@ -35,7 +34,9 @@ module gpu_v2_vliw_quad_pool(
  wire attr_event=front_ce&&result_we&&!reset;
  wire depth_event=front_ce&&depth_event_valid&&!reset;
  wire lod_event=front_ce&&lod_valid&&!reset;
- wire geom_event=front_ce&&quad_end_valid&&!reset;
+ // Closed producer: RGB L arrives before W; UV L arrives after G/N/W.
+ wire complete_event=(quad_rgb&&attr_event&&attr_word==2&&attr_pixel[1:0]==3)||(!quad_rgb&&lod_event);
+ wire uv_lod_event=lod_event&&!quad_rgb;
  wire normal_write=attr_event&&attr_word==1;
  wire uv_write=attr_event&&attr_word==2;
  wire color_write=uv_write;
@@ -70,11 +71,10 @@ module gpu_v2_vliw_quad_pool(
  gpu_v2_vliw_pool_meta #(.WIDTH(4)) fl(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,light_cursor[4:0],light_mask);
  gpu_v2_vliw_pool_meta #(.WIDTH(4)) fs(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,sample_cursor[4:0],sample_mask);
  gpu_v2_vliw_pool_meta #(.WIDTH(4)) fp(clk,reset,mask_write,depth_pixel[6:2],next_depth_mask,publish_ptr[4:0],publish_mask);
- gpu_v2_vliw_pool_meta #(.WIDTH(8)) ls(clk,reset,lod_event,lod_tail[4:0],lod_value,sample_cursor[4:0],sample_lod);
+ gpu_v2_vliw_pool_meta #(.WIDTH(8)) ls(clk,reset,uv_lod_event,complete_tail[4:0],lod_value,sample_cursor[4:0],sample_lod);
  // Publication and the two parent descriptor views never arbitrate a read port.
  assign published_slot=publish_ptr[4:0];
- wire complete_head=publish_ptr!=allocated&&publish_ptr!=attr_tail&&publish_ptr!=depth_tail&&
-  publish_ptr!=end_tail&&publish_ptr!=lod_tail;
+ wire complete_head=publish_ptr!=complete_tail;
  assign published=backend_ce&&publish_ready&&complete_head&&!reset&&!fault;
  assign published_begin={publish_meta,publish_mask};
  assign descriptor_issue={issue_meta,issue_mask};assign descriptor_head={head_meta,head_mask};assign descriptor_next={next_meta,next_mask};
@@ -121,7 +121,7 @@ module gpu_v2_vliw_quad_pool(
  assign busy=allocated!=retired||light_state!=L_READ||sample_loaded||basic_return_valid;
  always @(posedge clk)begin
   if(reset)begin
-   allocated<=0;publish_ptr<=0;retired<=0;end_tail<=0;lod_tail<=0;
+   allocated<=0;publish_ptr<=0;retired<=0;complete_tail<=0;
    light_cursor<=0;sample_cursor<=0;attr_pixel<=0;depth_pixel<=0;attr_word<=0;
    light_descriptor_q<=0;sample_descriptor_q<=0;
    normal_xy<=0;u_or_red<=0;depth_mask<=0;light_state<=L_READ;light_lane<=0;ndc_x<=0;
@@ -133,19 +133,13 @@ module gpu_v2_vliw_quad_pool(
    if(light_read)light_descriptor_q<={light_meta[0],light_mask,light_cursor[4:0]};
    if(sample_fetch)sample_descriptor_q<={sample_lod,1'b0,sample_meta[0],sample_mask,sample_cursor[4:0]};
    if(allocate)allocated<=allocated+1'b1;
-   if(geom_event)begin
-    if(quad_end_id!=end_tail[2:0]||end_tail==allocated||phase!=2)fault<=1;
-    end_tail<=end_tail+1'b1;
-   end
-   if(lod_event)begin if(lod_id!=lod_tail[2:0]||lod_tail==allocated)fault<=1;lod_tail<=lod_tail+1'b1;end
+   if(complete_event)complete_tail<=complete_tail+1'b1;
    if(attr_event)begin
-    if(result_wa!={attr_pixel[4:0],attr_word}||attr_tail==allocated)fault<=1;
     if(attr_word==0)normal_xy<=result_wd[23:0];
     if(attr_word==1)u_or_red<=result_wd[27:12];
     if(attr_word==2)begin attr_word<=0;attr_pixel<=attr_pixel+1'b1;end else attr_word<=attr_word+1'b1;
    end
    if(depth_event)begin
-    if(depth_event_pid!=depth_pixel[4:0]||depth_tail==allocated||phase!=1)fault<=1;
     depth_mask<=next_depth_mask;depth_pixel<=depth_pixel+1'b1;
    end
    if(published)publish_ptr<=publish_ptr+1'b1;
@@ -176,6 +170,59 @@ module gpu_v2_vliw_quad_pool(
    if(regular_retire&&skip_empty||basic_collision)fault<=1;
   end
  end
+`ifndef SYNTHESIS
+ // Original completion facts and ID checks are simulation-only. Fixed producer.
+ wire geom_event=front_ce&&quad_end_valid&&!reset;
+ wire[5:0]attr_tail=attr_pixel[7:2],depth_tail=depth_pixel[7:2];
+ reg[5:0]shadow_end_tail,shadow_lod_tail;
+ reg shadow_rgb[0:31];reg shadow_geometry_seen[0:31],shadow_lod_seen[0:31];
+ reg[3:0]shadow_depth_seen[0:31];reg[11:0]shadow_attributes[0:31];
+ wire shadow_complete_head=publish_ptr!=allocated&&publish_ptr!=attr_tail&&publish_ptr!=depth_tail&&
+  publish_ptr!=shadow_end_tail&&publish_ptr!=shadow_lod_tail;
+ wire[5:0]shadow_unfinished=allocated-complete_tail,shadow_ready=complete_tail-publish_ptr;
+ always @(posedge clk)begin
+  if(reset)begin shadow_end_tail<=0;shadow_lod_tail<=0;end
+  else begin
+   if(allocate)begin
+    shadow_rgb[allocated[4:0]]<=quad_rgb;
+    shadow_geometry_seen[allocated[4:0]]<=0;shadow_lod_seen[allocated[4:0]]<=0;
+    shadow_depth_seen[allocated[4:0]]<=0;shadow_attributes[allocated[4:0]]<=0;
+   end
+   if(geom_event)begin
+    if(quad_end_id!=shadow_end_tail[2:0]||shadow_end_tail==allocated||phase!=2)$fatal(1,"shadow geometry prefix/order");
+    shadow_end_tail<=shadow_end_tail+1'b1;shadow_geometry_seen[shadow_end_tail[4:0]]<=1;
+   end
+   if(lod_event)begin
+    if(lod_id!=shadow_lod_tail[2:0]||shadow_lod_tail==allocated)$fatal(1,"shadow LOD prefix/order");
+    shadow_lod_tail<=shadow_lod_tail+1'b1;shadow_lod_seen[shadow_lod_tail[4:0]]<=1;
+   end
+   if(attr_event)begin
+    if(result_wa!={attr_pixel[4:0],attr_word}||attr_tail==allocated)$fatal(1,"shadow attributes prefix/order");
+    if(shadow_attributes[attr_pixel[6:2]][attr_pixel[1:0]*3+attr_word])$fatal(1,"duplicate attribute word");
+    shadow_attributes[attr_pixel[6:2]][attr_pixel[1:0]*3+attr_word]<=1;
+   end
+   if(depth_event)begin
+    if(depth_event_pid!=depth_pixel[4:0]||depth_tail==allocated||phase!=1)$fatal(1,"shadow depth prefix/order");
+    if(shadow_depth_seen[depth_pixel[6:2]][depth_pixel[1:0]])$fatal(1,"duplicate depth event");
+    shadow_depth_seen[depth_pixel[6:2]][depth_pixel[1:0]]<=1;
+   end
+   if(complete_event)begin
+    if(complete_tail==allocated||shadow_rgb[complete_tail[4:0]]!=quad_rgb)$fatal(1,"completion exceeds allocation or mode changed");
+    if(!shadow_geometry_seen[complete_tail[4:0]]||shadow_depth_seen[complete_tail[4:0]]!=4'b1111)$fatal(1,"completion before geometry/four depth events");
+    if(quad_rgb)begin
+     if(attr_tail!=complete_tail||attr_word!=2||attr_pixel[1:0]!=3||shadow_lod_tail==complete_tail)$fatal(1,"RGB completion before W or old L");
+     if(shadow_attributes[complete_tail[4:0]]!=12'h7ff||!shadow_lod_seen[complete_tail[4:0]])$fatal(1,"RGB missing old eleven W or L");
+    end else begin
+     if(attr_tail==complete_tail||shadow_lod_tail!=complete_tail||lod_id!=complete_tail[2:0])$fatal(1,"UV completion before W or wrong old L");
+     if(shadow_attributes[complete_tail[4:0]]!=12'hfff||shadow_lod_seen[complete_tail[4:0]])$fatal(1,"UV missing twelve W or duplicate L");
+    end
+   end
+   if(complete_head!==shadow_complete_head)$fatal(1,"compressed and original publication barrier differ");
+   if(shadow_unfinished>24||shadow_ready>24)$fatal(1,"compressed prefix overtook allocation/publication");
+   if(sample_fetch&&sample_meta[2])$fatal(1,"RGB must skip LOD/UV consumer");
+  end
+ end
+`endif
 `ifndef SYNTHESIS
  // Front mode may change after all I attribute writes, even with old published
  // slots alive. All backend decode uses that slot's stored header instead.
