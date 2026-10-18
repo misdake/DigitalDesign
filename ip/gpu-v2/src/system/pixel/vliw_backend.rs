@@ -241,6 +241,13 @@ pub fn verilog_selected(
     patch(&mut source, top, "header_tile<=0;", "")?;
     patch(&mut source, top, "header_tile<=head_tile;", "")?;
     patch(&mut source, top, "header_tile<=next_tile;", "")?;
+    // The closed VLIW path accepts every completed Color pixel in its final bank.
+    // Keep the generic buffered Color factory unchanged.
+    let (color_a, color_b) = span(&source, "gpu_v2_texture_runtime_color_checked")?;
+    source.replace_range(
+        color_a..color_b,
+        include_str!("vliw_color_direct.v").trim_end(),
+    );
     // The VLIW pool owns Normal/NDC Q through the complete pixel handshake.
     // Replace the selected consumer as one unit; the independent Light2 reference remains.
     let (light_a, light_b) = span(&source, "gpu_v2_pixel_lighting_consumer")?;

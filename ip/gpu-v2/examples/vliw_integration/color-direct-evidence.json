@@ -1,0 +1,341 @@
+{
+  "status": "selected",
+  "measured_base_commit": "934faa7d70918da58614b610a8d0411d25e35fac",
+  "measurement_tree": "Only the final Color factory/module delta over current main; source identity below",
+  "scope": {
+    "fit": "Complete independent GPU with registered SDRAM transaction boundary, P0 at54MHz; physical MC, CPU and Display excluded",
+    "performance": "Current real arbiter/adapter/bridge/controller plus SDRAM pin model; first descriptor through final flush; no CPU/Display contention; functional49.5/99MHz",
+    "native": "Color arithmetic/ownership miter with actual Gowin primitives; no whole-scene native claim",
+    "board": false
+  },
+  "source_hash_format": "SHA256 after CRLF-to-LF normalization",
+  "selected_source": {
+    "ip/gpu-v2/src/bin/gpu-v2-vliw-export.rs": "bb1e3064bde5f59fe895d0bff6a658f5a45977ec2d65ab77e036200e7c2a6ba6",
+    "ip/gpu-v2/src/framebuffer/ports.rs": "18a336178863b83a1d4cffebf5c8e53480741066b035af6d0d4dbd7c6140d2cf",
+    "ip/gpu-v2/src/frontend/vliw/compute.v": "4466f3c704d8f8de893bd424d5256ceaa056e2b39461d49c2c134780e3103a00",
+    "ip/gpu-v2/src/frontend/vliw/frontend.v": "4c05858db1579f7d1b6b2fb16798d81a4e17e99be0a4860c5142063084e9d9c7",
+    "ip/gpu-v2/src/frontend/vliw/input_storage.v": "8340b2212e21a8fde90af48f9eea9134829693d874704d7173a9364e22f4e5f2",
+    "ip/gpu-v2/src/frontend/vliw/input_t_work.v": "fd5cddc482649bd2ea6779f6d6628c6d9e6daac057a7b885eafcf3deb673840c",
+    "ip/gpu-v2/src/frontend/vliw/interpolator_stream.v": "51118a01047a069939d2e7c6b7566eb884fe21d13aeddc19e5aa6db5ca85d3a7",
+    "ip/gpu-v2/src/frontend/vliw/lod.v": "1aef91629b01c6e39113ca251fef18fa527ae9c3361af2b234dc660283ea20e7",
+    "ip/gpu-v2/src/frontend/vliw/meshlet.v": "41d5ffe299071f9f852be85821e5a636d8c61c8d018195ad8fc49ca1ef7133a6",
+    "ip/gpu-v2/src/frontend/vliw/pipeline_stream.v": "1b680166b672b4d267fa3f5a6164bad9ff9bbbbd56d8ed7a090f5fedb2b315a2",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "d76e46bb1288090786083b625dd9c8000fc4d3b3dbc6b96a2799eced69df58f6",
+    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "164057d7c95cf826ef468772f52f77adafe032c08180ffc9bfb298d3049f2546",
+    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "a68aa19a50af5031a7803148d3e045b3f626a85f0abd732ac985993113750018",
+    "ip/gpu-v2/src/frontend/vliw/primitives/dsp.v": "322fe8718aff4f3323c9d8764b713c91e4b7f33b1769d797660bf39dc4770970",
+    "ip/gpu-v2/src/frontend/vliw/primitives/ram.v": "c7e04efedccc44833b927ed9858131b0949683660a0e8ced0b3b94137e8237eb",
+    "ip/gpu-v2/src/frontend/vliw/primitives/window.v": "a9e7de48c1ea6599f71dfcad1a4c03b1021116e9fcf55031d931231953a1c873",
+    "ip/gpu-v2/src/frontend/vliw/raster.v": "6b20ba9e65a149eda07b89ccd1bbcce81fac58acc02d5db8c91beb398285d312",
+    "ip/gpu-v2/src/frontend/vliw/raster_program.v": "94ccf3036788c29b450aa2c1b9af3e538bc1cebed0f40f67d827304d917e66ca",
+    "ip/gpu-v2/src/frontend/vliw/raster_storage.v": "428ef1e71bc04b2d89317294af3aaa90295513f54c073fd2534a1ee754bd1bc1",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_fields.vh": "c31ba52dfb929d373650a24e8b062e939a85a6bb1cb77e9f4f8fd9428bb79432",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_rom.v": "9b1813f10d181477756aa0b851a3671860221b4c36f7173f8b1ccfc06055cc43",
+    "ip/gpu-v2/src/frontend/vliw/vertex/mac.v": "4fb22768c24f05996d006f4145964afe901cc47cc23c03ae38e2b4105b9b8753",
+    "ip/gpu-v2/src/frontend/vliw/vertex/rf.v": "e8b038cba9dc2c1319535bd6d759eac81793e44305e65f7c33cbc410a39e154a",
+    "ip/gpu-v2/src/frontend/vliw/vertex/storage.v": "a078892f2a6f9f6abfd7fb0a97ccdc8f4d8456889cf8ca0e6cc64441bd82d36d",
+    "ip/gpu-v2/src/frontend/vliw.rs": "c2f560c6a6e3bd236588fd64aa765fbef914321bfbeca96f38250bdf2c2e4c86",
+    "ip/gpu-v2/src/frontend/vliw_dma.rs": "9aa3ebf34105a617e4c29b083b5811e3ce17cab2ee601c0f068e66c0435b32dc",
+    "ip/gpu-v2/src/frontend/vliw_dma.v": "c7e1e57908f5b8356f640ebec2d67c5a325e340df26008bfe01e15e1d7502a79",
+    "ip/gpu-v2/src/lighting/ports.rs": "3ec6c311d8e1ab05ba084f513e2f42451d5c9a0684ff2284efd2306b7deea402",
+    "ip/gpu-v2/src/system/pixel/direct_lod.rs": "2ef916fcb8fe3f707201b44b82e0e47728c3bf402b1a8eb73813f9c1715e507c",
+    "ip/gpu-v2/src/system/pixel/framebuffer_sink.rs": "ff8724e5df921911350203905086336601a6732ba2c132b2dadaea2d59f935dd",
+    "ip/gpu-v2/src/system/pixel/framebuffer_sink.v": "ae20c030062cf3e2dbe7ca885d98f590e7fa831c27a3a2dde2388c73dbd4e974",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp.rs": "2456fe902a168ca60e076e9c9dbdcf69afe8d672c6129e858c8b6ab34b39e810",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp.v": "3d2c0d40cc47e9ca1274dcd30fafb599948dbf2fd5a90d8f6af9d612fed9656c",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_bank.v": "28d63c3f5c2a577d80113a0571f32518e3d59cda63f3898728d75541327a94d7",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_cache.v": "3a7f562868585790dd2cc994ccd8258a81f92615188fab1f8f8ac302667b5f08",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_leaf.v": "5fe9cc46f0e187aee1a777b0c2b4e8813846520ea8f25e8d780440b4ee9308a9",
+    "ip/gpu-v2/src/system/pixel/lighting_consumer.rs": "e64e69302ad495fb84b943b5016c157eef5518cbaecf3d71c9584fc46286c7c6",
+    "ip/gpu-v2/src/system/pixel/lighting_consumer.v": "9d6e22306647f21e34bcc9fbef6ab2a64a99f9f428aa15a9c16cb9a5c5f5a4af",
+    "ip/gpu-v2/src/system/pixel/postquad.rs": "7dd7434c74f705e9d5241ff472d0e0859707ee1fd5ddd96e36488e27639d4e3c",
+    "ip/gpu-v2/src/system/pixel/postquad_ii4.rs": "276a0898733eea0f93a4681439f53b5575e7e96c4a196593a98add54ffc63b0b",
+    "ip/gpu-v2/src/system/pixel/postquad_ii4_color.v": "70440c420f8e5fcca4bc00d94cd4fdfdff125ec506d226e250ab2c40eda258d3",
+    "ip/gpu-v2/src/system/pixel/postquad_unique_weights.rs": "04990f9fe512f66ebeb1a33c3f1b6a3623718e6b1d957445cb5ff28b1b7dc2a1",
+    "ip/gpu-v2/src/system/pixel/postquad_unique_weights_packet.v": "64a7142363bd0f5d4e9dba270ad31cad52122fb5658c05e22eac1114b61e0704",
+    "ip/gpu-v2/src/system/pixel/vliw_backend.rs": "2fe56fbcabdfaa1ccdc564e35f51dd162d294dea2212c2a0621632634979e704",
+    "ip/gpu-v2/src/system/pixel/vliw_backend.v": "7a5bfab81b9edcf93383beb3b359ea68393d5c5321042a12111ef44bb7a344ac",
+    "ip/gpu-v2/src/system/pixel/vliw_backend_final.v": "4de1cb72adb1cea467768296dbc60752eb3ea3a04c9e0c86bf6bc278125b6a88",
+    "ip/gpu-v2/src/system/pixel/vliw_color_direct.v": "6956ed986d57ac02aa196cb5b1f333df455be1bd5aba6f379df8695c9f6a8611",
+    "ip/gpu-v2/src/system/pixel/vliw_lighting_tuple.v": "fe8ab37655960ff011e1adbcdbc1d65ef4db484b93db05430ec64cf1f855c0cb",
+    "ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs": "e486a8073e25130218bc3fa4c34e508fe88efc918def4835d690d146ec0cbfbc",
+    "ip/gpu-v2/src/system/pixel/vliw_quad_pool.v": "21592b11fe7c62890662a3e36ea0dfa36916249f5cae3dfb180974b53f98caf0",
+    "ip/gpu-v2/src/system/vliw.rs": "ceedd79d6abe3e07a164bbc17824b3a09d6bcf6ed496770fea351ca6890de8e8",
+    "ip/gpu-v2/src/system/vliw.v": "69754d349256a3a92c6b0c3e78e20f3f6cde78405c06962283f2e166db3108fb",
+    "ip/gpu-v2/src/system/vliw_memory.rs": "bf4cd807e3be2c67e6c7b64f1b7cf729941e7d0300e8fde1fa6b3c2ff68f4c9e",
+    "ip/gpu-v2/src/system/vliw_memory.v": "92abf8c451f2e17c73d3d8d472c73add8b0c0543325099f57b39d47539bf5a0a",
+    "ip/gpu-v2/src/system/vliw_sdram.rs": "256fc5ba16d47508ffd52368ee60003b77d4dbd47916407a49ff9dcb7e9224cf",
+    "ip/gpu-v2/src/system/vliw_sdram.v": "181ba016123d0212c391efb00e0557b15e20f97f7bcc61547b306fb9bad125bb",
+    "ip/gpu-v2/src/texture/ports.rs": "85aa8cf970d6ec3e9dced12fcd91ddc4fd545af16d7eaa754a64634539f1c5fc",
+    "ip/gpu-v2/src/texture/rtl/compact_leaves.rs": "5fbcbb70ab9e16e82a674f4539cfc7daa702441a85429f4fbef97fa688e6b056",
+    "ip/gpu-v2/src/texture/rtl/compact_membership.v": "bb19359e1cec2391086f1d4616b5dbf5626f2d7ff537604b199536e0e9a5c256",
+    "ip/gpu-v2/src/texture/rtl/direct_lod.rs": "1294463d3765616da2c80b9dfbf239a3fcacd2fcf450d13139a9492ca2bd2025",
+    "ip/gpu-v2/src/texture/rtl/direct_lod.v": "e3d83d976a88921c8673ab4cd7c369ebc6c75ac129aef4b25a083923f8c10220",
+    "ip/gpu-v2/src/texture/rtl/runtime_color.rs": "213314643f040586e92c88c6a4f4b16d1bbff47ec895458d0e089c8ebc4adefd",
+    "ip/gpu-v2/src/texture/rtl/runtime_color.v": "3eac4a3629fb2df07a574ca5f63e3333205ee666c6e50661d8d0efdcd822de35",
+    "ip/gpu-v2/src/texture/rtl/runtime_rows.rs": "2ec691c8e73fe3874d6a1fb3c09f8a4ca61f3b6f8065983f71a29862e07e7af3",
+    "ip/gpu-v2/src/texture/rtl/runtime_rows.v": "6c509e78d0319a406e409700d7d35165251a88e4997dadd657f4dcd654c8c1b1",
+    "ip/gpu-v2/src/texture/sim/staged/bound/runtime_rtl/membership_leaf.v": "0d416d8120c6ae1a5f5f93147491442f22a0e8540bcd7a123df0f7793331eabe",
+    "ip/gpu-v2/src/texture/sim/staged/bound/runtime_rtl.rs": "2ba8e3edfba2f8ca2028798b8a67b951feb09deca40060c9fa67ff64f49ae273"
+  },
+  "test_source": {
+    "ip/gpu-v2/tests/vliw_color_direct.rs": "f1544b23f5c5f8f117651d28920aabbe6d67b51ee89c5de6e6dd4617dab08426",
+    "ip/gpu-v2/tests/vliw_color_direct.py": "7fdacd8fa79170c2f372c8cb90ba7d19ff8271022e282e730d19b6c499716ce1",
+    "ip/gpu-v2/tests/vliw_color_direct_tb.v": "a8aa3e2eba116171540503c82d7c46c555e4277508d3349b4f8d21ab1c02f447"
+  },
+  "changed_modules": {
+    "portable": [
+      "gpu_v2_texture_runtime_color_checked"
+    ],
+    "native": [
+      "gpu_v2_texture_runtime_color_checked"
+    ]
+  },
+  "fit": {
+    "baseline": {
+      "logic": 12088,
+      "logic_ff": 5140.0,
+      "register": 5147,
+      "ssram": 212,
+      "bsram": 33.0,
+      "dsp": 18.0,
+      "fmax": 56.59,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "primitives": {
+        "MULT9X9": 24,
+        "MULT18X18": 10,
+        "MULTALU36X18": 3,
+        "MULTADDALU18X18": 3,
+        "ALU54D": 1
+      }
+    },
+    "candidate": {
+      "logic": 11999,
+      "logic_ff": 5122.0,
+      "register": 5129,
+      "ssram": 204,
+      "bsram": 33.0,
+      "dsp": 18.0,
+      "fmax": 54.738,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "primitives": {
+        "MULT9X9": 24,
+        "MULT18X18": 10,
+        "MULTALU36X18": 3,
+        "MULTADDALU18X18": 3,
+        "ALU54D": 1
+      }
+    },
+    "baseline_exact_export_reuse": true,
+    "wrapper_sha256": "0ab55c7bed1244ced43065aef2d260bd6899fd88d7e224fa0d428cbf4d439ed9",
+    "baseline_receipt_sha256": "b42c45496fe327636ecdf5682c423b72651205d2eaffd98a1ae100bd29c655dc",
+    "candidate_receipt_sha256": "caee76f60fff65266046052ae6ec965084ca5536982c02a00cc8e53344b79789"
+  },
+  "gate": {
+    "numerical": true,
+    "area": true,
+    "timing": true,
+    "performance": true,
+    "bsram": true,
+    "dsp": true
+  },
+  "verification": {
+    "color_miter": [
+      {
+        "mode": "portable",
+        "passed": true,
+        "summary": "PASS color miter epochs=3 groups=6144 pixels=4608 CE0_and_inflight_reset=1 invalid_packet_fault=3\r\n\\?\\E:\\worktrees\\f207\\DigitalDesign-code\\target\\vliw-color-direct\\current-main-recheck\\replay\\portable\\tb.v:56: $finish called at 142548000 (1ps)\r\n",
+        "source_sha256": "e8bf7f45d45643378bb3fae6021e170321c9f582f020ac3ab52bdfae486c750c"
+      },
+      {
+        "mode": "native",
+        "passed": true,
+        "summary": "PASS color miter epochs=3 groups=6144 pixels=4608 CE0_and_inflight_reset=1 invalid_packet_fault=3\r\n\\?\\E:\\worktrees\\f207\\DigitalDesign-code\\target\\vliw-color-direct\\current-main-recheck\\replay\\native\\tb.v:56: $finish called at 142548000 (1ps)\r\n",
+        "source_sha256": "4f6f5c496dd7feb7df1ec1004eee3c8e679741d8429d7aee46a633e6d54be0a8"
+      }
+    ],
+    "scenes": [
+      {
+        "name": "box",
+        "baseline_cycles": 134982,
+        "candidate_cycles": 134982,
+        "cycle_delta": 0,
+        "baseline_timing": {
+          "total": 134982,
+          "preload": 10625,
+          "frontend": 122635,
+          "tail": 1722,
+          "Q": 6292,
+          "empty": 1,
+          "peak": 24,
+          "fullCE": 13437,
+          "packets": 8,
+          "light": 24400,
+          "sample": 24400,
+          "final": 24400,
+          "commits": 6291,
+          "RO": 43,
+          "FBread": 1144,
+          "FBwrite": 1144,
+          "RObeats": 664,
+          "FBreadbeats": 18304,
+          "FBwritebeats": 18304,
+          "overlapDMA": 0,
+          "pendingStarts": 0
+        },
+        "candidate_timing": {
+          "total": 134982,
+          "preload": 10625,
+          "frontend": 122635,
+          "tail": 1722,
+          "Q": 6292,
+          "empty": 1,
+          "peak": 24,
+          "fullCE": 13437,
+          "packets": 8,
+          "light": 24400,
+          "sample": 24400,
+          "final": 24400,
+          "commits": 6291,
+          "RO": 43,
+          "FBread": 1144,
+          "FBwrite": 1144,
+          "RObeats": 664,
+          "FBreadbeats": 18304,
+          "FBwritebeats": 18304,
+          "overlapDMA": 0,
+          "pendingStarts": 0
+        },
+        "activity_equal": true,
+        "probe_equal": false,
+        "identical": {
+          "seed.txt": "ae1960c7a918989501cfc15605fa30aee2ebb3df50eba335c2ca27e62520054d",
+          "jobs.hex": "d961670b326ee3dcd4d607605d0853f8460dd5563f7d7768b74d711ac7d9a813",
+          "expected-dma.hex": "3d48015d613ffd4b18cbf48d86a05e08f8a3d53acc004b40696168bf8de7c257",
+          "expected-valid.hex": "761775371f4972e45c06b8e7877d8f701335ecf852554c3aac9b06bd3ac70416",
+          "gold.mem": "02cce6e0a4741e7274a7aeb622e42b9b485c3b358e2a2a040fb9b2ffcf4efc63",
+          "memory.mem": "02cce6e0a4741e7274a7aeb622e42b9b485c3b358e2a2a040fb9b2ffcf4efc63",
+          "bridge.v": "f2c10789675b0b787aba404af82f8b09f0217df67e14acdbef94c21a13aeb4ef",
+          "combination.v": "9bace0d8204f02549d5509c8a066a6c98b24f28cb53529cd23370ee971eb47c7",
+          "controller.v": "b22d6a39c49ba2ed0da287176c479cca5f54426a2766e4b47055d35cefd94b0c",
+          "cpu_v3_memory_arbiter.v": "85c2da9a1aab57165c420b4534ad76354b4b0dcd4f7293673bbfcf0b43cdd3ee",
+          "pins.v": "841bb2916f4170f1eca23e067f8a770ed62f1f2fe1d687a1cf1c4227a85264d1",
+          "shared_port.v": "09d6c6255874f72c8fc4cfb1127201826f32362d0e70c363ef6063a9558cc57a",
+          "front.txt-values": true,
+          "front.txt-values-and-cycles": true,
+          "back.txt-values": true,
+          "back.txt-values-and-cycles": false
+        },
+        "source_changed": [
+          "ip/gpu-v2/src/system/pixel/vliw_backend.rs"
+        ],
+        "source_added": [
+          "ip/gpu-v2/src/system/pixel/vliw_color_direct.v"
+        ],
+        "baseline_receipt_sha256": "930b097a53f076e07dc382e6e297ba2a39f5b7fbb81b4b8a5ff718c47ef85c94",
+        "candidate_receipt_sha256": "a568d70414e81aed460008ec070408cc296fd179827a61eee4c0da295ee0e339"
+      },
+      {
+        "name": "bunny",
+        "baseline_cycles": 294680,
+        "candidate_cycles": 294680,
+        "cycle_delta": 0,
+        "baseline_timing": {
+          "total": 294680,
+          "preload": 10789,
+          "frontend": 282402,
+          "tail": 1489,
+          "Q": 3559,
+          "empty": 532,
+          "peak": 21,
+          "fullCE": 0,
+          "packets": 417,
+          "light": 7107,
+          "sample": 7107,
+          "final": 7107,
+          "commits": 3027,
+          "RO": 224,
+          "FBread": 936,
+          "FBwrite": 816,
+          "RObeats": 2976,
+          "FBreadbeats": 14976,
+          "FBwritebeats": 13056,
+          "overlapDMA": 1268,
+          "pendingStarts": 2
+        },
+        "candidate_timing": {
+          "total": 294680,
+          "preload": 10789,
+          "frontend": 282402,
+          "tail": 1489,
+          "Q": 3559,
+          "empty": 532,
+          "peak": 21,
+          "fullCE": 0,
+          "packets": 417,
+          "light": 7107,
+          "sample": 7107,
+          "final": 7107,
+          "commits": 3027,
+          "RO": 224,
+          "FBread": 936,
+          "FBwrite": 816,
+          "RObeats": 2976,
+          "FBreadbeats": 14976,
+          "FBwritebeats": 13056,
+          "overlapDMA": 1268,
+          "pendingStarts": 2
+        },
+        "activity_equal": true,
+        "probe_equal": false,
+        "identical": {
+          "seed.txt": "108e31ec2c835c43b1bba19b924691f443b1e1e74c99650b1de68ae6d689ca20",
+          "jobs.hex": "337c6e26ef4ed22b5ed95e51b4fb91b6b2ccad0bb1e551fd7edf045c3424b2fa",
+          "expected-dma.hex": "ae5a50b9ac96e28d122164d1e4224f0e750ed59582497fd8697e416ae1ef5d33",
+          "expected-valid.hex": "44a8896e9cdb7ece6d0b03643d450327f6115ba10f3f5e2b38418d250c935b4f",
+          "gold.mem": "7f3d0b18f968c4addfbc975b16360f7d358d5fbf0fdf0663cd30431592885e92",
+          "memory.mem": "7f3d0b18f968c4addfbc975b16360f7d358d5fbf0fdf0663cd30431592885e92",
+          "bridge.v": "f2c10789675b0b787aba404af82f8b09f0217df67e14acdbef94c21a13aeb4ef",
+          "combination.v": "9bace0d8204f02549d5509c8a066a6c98b24f28cb53529cd23370ee971eb47c7",
+          "controller.v": "b22d6a39c49ba2ed0da287176c479cca5f54426a2766e4b47055d35cefd94b0c",
+          "cpu_v3_memory_arbiter.v": "85c2da9a1aab57165c420b4534ad76354b4b0dcd4f7293673bbfcf0b43cdd3ee",
+          "pins.v": "841bb2916f4170f1eca23e067f8a770ed62f1f2fe1d687a1cf1c4227a85264d1",
+          "shared_port.v": "09d6c6255874f72c8fc4cfb1127201826f32362d0e70c363ef6063a9558cc57a",
+          "front.txt-values": true,
+          "front.txt-values-and-cycles": true,
+          "back.txt-values": true,
+          "back.txt-values-and-cycles": false
+        },
+        "source_changed": [
+          "ip/gpu-v2/src/system/pixel/vliw_backend.rs"
+        ],
+        "source_added": [
+          "ip/gpu-v2/src/system/pixel/vliw_color_direct.v"
+        ],
+        "baseline_receipt_sha256": "5af6148bae3e1f9ccd67aaaab1db9d0b92743fec832f018cacf32393f2cbbe8f",
+        "candidate_receipt_sha256": "041b9190f3af9e8cfdb33c801cad7a32f991a48f4d9301e315e719b4e9ac88ae"
+      }
+    ],
+    "new_full_workspace_suite": false,
+    "new_cpu_benchmark": false,
+    "new_cpu_pnr": false
+  },
+  "exports": {
+    "native": {
+      "baseline_sha256": "118d383bdca93920fb4615921115115acfe36ed80fbbf53e4c3a8dd4e09d62f0",
+      "candidate_sha256": "0dffd1aa0eae12a8b5d9027f6886f8148509e0770d2bde918ddc58894016ab91"
+    },
+    "portable": {
+      "baseline_sha256": "af8dec5819bc9599bbd89bad1757f16daaf4d719d28c016a494dad3853d528a1",
+      "candidate_sha256": "79253c144cd4085466b4821b908bbf2f6937bc4537c3295ee6455934ead1b272"
+    }
+  },
+  "scope_notes": [
+    "The old f20712209->12162 comparison is historical and not used as this adoption gate.",
+    "Current baseline scenes were regenerated after CPU memory-transport changes; no cycle improvement from those changes is attributed to Color.",
+    "The generic FIFO-backed Color retains independent output backpressure.",
+    "Single P0 qualified; fit includes unchanged555 wrapper probe FF."
+  ]
+}

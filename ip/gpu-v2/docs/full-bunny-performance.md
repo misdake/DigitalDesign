@@ -1,7 +1,9 @@
 # Complete bunny performance replay
 
-The selected preparation implementation is qualified by the
-[frontend preparation receipt](../examples/vliw_integration/frontend-preparation-evidence.json).
+The current independent GPU and memory-transport replay are qualified by the
+[Color completion receipt](../examples/vliw_integration/color-direct-evidence.json).
+The [frontend preparation receipt](../examples/vliw_integration/frontend-preparation-evidence.json)
+retains the preceding preparation and older-memory measurement identity.
 It uses the complete `bun_zipper_res4.ply` from the Stanford bunny dataset:
 453 source vertices and 948 triangles, submitted exactly once without further
 decimation. This is the complete version of the earlier small fixture, not the
@@ -34,7 +36,7 @@ not board performance or renewed MC timing qualification.
 
 | Measurement | Result |
 | --- | ---: |
-| Total wall cycles | 294706 |
+| Total wall cycles | 294680 |
 | Triangles accepted / backface rejected | 417 / 531 |
 | Traversal nodes | 10653 |
 | Quads / empty quads | 3559 / 532 |
@@ -46,7 +48,7 @@ Samples include overlap across triangles; they are not unique final pixels.
 Empty quads skip the expensive backend, while their frontend cost remains in
 the total. The selected box comparison submits only `box_x_minus`: eight
 triangles covering 24,400 samples, not a full-screen or closed six-face box.
-Its total is 135808 cycles. Complete cycle partitions and source/output hashes
+Its total is 134982 cycles. Complete cycle partitions and source/output hashes
 are in the receipt. The old side-camera measurement predates this preparation
 rewrite and is not claimed as a current-version result.
 
@@ -55,7 +57,10 @@ rewrite and is not claimed as a current-version result.
 Replay checks all V outputs, triangle indices and records, h values,
 interpolated attributes, depth and LOD, independent Lighting integer results,
 sampling, Final, ROP order, and all 400,384 final memory bytes including untouched
-regions. The selected output matches the preceding implementation exactly.
+regions. The selected numerical output and final memory match the remeasured current-base
+implementation exactly, with no total-cycle regression. The baseline was rerun
+after the shared memory-transport changes; that earlier improvement is not a Color
+optimization result.
 
 ```powershell
 python ip/gpu-v2/examples/vliw_integration/full_bunny.py --ply PATH/bun_zipper_res4.ply --tag complete-front-new --camera front --max-cycles 2000000 --sim-timeout 600

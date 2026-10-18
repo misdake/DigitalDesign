@@ -1,12 +1,37 @@
 # VLIW GPU 合体资格与资源判断
 
 The selected independent GPU IP is exported by `system::vliw_sdram::verilog`.
+The [Color direct-completion receipt](../examples/vliw_integration/color-direct-evidence.json)
+binds the current sources, matched P0 fit and current-memory complete-model performance.
 The [frontend preparation receipt](../examples/vliw_integration/frontend-preparation-evidence.json)
-binds the current sources, matched P0 fit and complete-model performance.
+retains the preceding preparation implementation and measurement identity.
 The [TDP framebuffer receipt](../examples/vliw_integration/framebuffer-tdp-evidence.json)
 and [contract](framebuffer-tdp.md) retain the preceding cache implementation identity.
 Stage receipts and the tables below are historical measurements. Generated
 outputs and rejected experiments remain outside Git.
+
+## Selected Color completion ownership
+
+The closed VLIW Color path writes its completed packed accumulator directly to
+the existing final sample bank. That bank accepts every completion on the common
+compute enable. The intermediate sixteen-entry result RAM, pointers, occupancy
+and reservation counters are removed; arithmetic, tap-group rules, pixel keys
+and final-bank ownership remain unchanged. Generic Color keeps its FIFO and
+independent output-backpressure contract.
+
+The completion token, key and accumulator hold together during CE pauses. On an
+enabled edge the final bank consumes old accumulator Q before the next group can
+update it. An assertion checks the closed acceptance obligation; parent reset,
+abort and fault suppress writes. The maintained `vliw_color_direct` miter compares
+the complete result sequence to the generic reference with multi-group pixels,
+CE pauses, in-flight reset and malformed-packet faults, in portable and native RTL.
+
+The current receipt compares fresh box and full 948-triangle bunny replays using
+the current memory transport. Both numerical events and all final memory bytes
+match; total cycles do not regress. The earlier preparation receipt used an older
+memory-transport baseline, so its cycle totals are not the Color comparison.
+Area/timing remain a single-placement independent-GPU result without physical MC,
+CPU or Display; this is not board or CPU-plus-GPU qualification.
 
 ## Selected preparation and Lighting dataflow
 

@@ -53,7 +53,7 @@ python ip/gpu-v2/examples/vliw_integration/audit_stage2.py --tag full-box-new --
 
 ## 当前采用点与维护测试
 
-The [TDP framebuffer receipt](framebuffer-tdp-evidence.json) is the current adoption point. [Stage 4](stage4-evidence.json) and earlier receipts retain their historical source identities. Tracked hashes normalize CRLF to LF; immutable Vertex sources keep their original bytes. See the [implementation contract](../../docs/framebuffer-tdp.md) for static II2 ROP, independent maintenance and simple prefetch, and [qualification](../../docs/vliw-qualification.md) for evidence boundaries and historical resource breakdowns.
+The [Color direct-completion receipt](color-direct-evidence.json) is the current complete independent-GPU adoption point. The [preparation receipt](frontend-preparation-evidence.json) and [TDP framebuffer receipt](framebuffer-tdp-evidence.json) retain their preceding source identities. [Stage 4](stage4-evidence.json) and earlier receipts retain their historical source identities. Tracked hashes normalize CRLF to LF; immutable Vertex sources keep their original bytes. See the [implementation contract](../../docs/framebuffer-tdp.md) for static II2 ROP, independent maintenance and simple prefetch, and [qualification](../../docs/vliw-qualification.md) for evidence boundaries and historical resource breakdowns.
 
 结果池只接正式固定日历：G14、N13/17/21/25、W14至28、RGB L15／UV L50。小后半回放曾使用人工提前返回，现已修正；新旧该微测的总拍不可直接比较。持续16CE供给和真实box／rabbit的原时间轴保持不变。
 
@@ -87,7 +87,10 @@ official bunny archive and set explicit cycle/time limits. A 948-triangle result
 does not qualify the 69,451-triangle model. Use a fresh tag; generated data,
 netlists and frames stay in ignored target directories.
 
-The selected [preparation receipt](frontend-preparation-evidence.json) binds
-the current hardware and fit. Maintained component regressions are
+The selected [Color completion receipt](color-direct-evidence.json) binds
+the current hardware, fit and current-memory scene comparison. The generic Color
+reference retains its FIFO. Run `cargo test --release -p gpu-v2 --test vliw_color_direct -- --include-ignored --nocapture`
+for the closed factory and portable/native result-sequence regressions.
+Maintained preparation component regressions are
 `cargo test --release -p gpu-v2 --test vliw_prepare_chain -- --ignored --nocapture`
 and `cargo test --release -p gpu-v2 --test vliw_light_tuple -- --ignored --nocapture`.
