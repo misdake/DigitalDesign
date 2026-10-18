@@ -3,7 +3,7 @@
 Full-stack digital design in Rust: a gate-level circuit simulator, a hardware
 description framework that targets Gowin FPGAs, custom 16-bit CPU IP, a
 Rust-subset compiler (`rcc`), and fitted FPGA systems — including a complete
-CPU V3 machine running on the Tang Nano 20K board with single-stage flash boot,
+CPU V3 machine running on the Tang Nano 20K board with single-application cold Flash boot,
 SDRAM, and HDMI display.
 
 Everything is developed and verified in one workspace. Design flow, CPU
@@ -37,7 +37,7 @@ benchmark evidence live at the same commit.
   info.
 - **Fitted FPGA system** (`systems/cpu-v3-tang-nano-20k`): 22-bit physical
   memory map, 320x240 HDMI framebuffer, system-control/boot/display device
-  channels, single-stage flash boot, and the boot package. Simulator tools and
+  channels, single-application cold Flash boot, and the boot package. Simulator tools and
   a single-page web debugger (`cpu-v3-dbg`) target the same sources the build
   script compiles into boot images.
 - **Verification depth**: modules are tested against emulation, NAND, and
@@ -128,14 +128,16 @@ cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v3 --code-base 0x
 cargo run -p cpu-v2-sim --bin rcc-run -- input.bin 1000000
 cargo run -p cpu-v2-sim --bin rcc-dbg -- input.bin
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-dbg -- input.rs
-cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- manifest
+cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- application.v3bin
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
 ```
 
-The FPGA system's S1/default and S2-selected RCC applications are the only
-manual inputs in `systems/cpu-v3-tang-nano-20k/boot-applications.conf`. The
-build derives their entries and package layout and exports an independently
-repackable manifest through `cpu-v3-boot-assets`.
+The FPGA system selects one RCC application in
+`systems/cpu-v3-tang-nano-20k/boot-applications.conf`. Cargo `OUT_DIR` is the sole
+byte authority; `cpu-v3-boot-assets` exports that application and its fixed v5
+Flash package. `cpu-v3-pack application.v3bin` independently reproduces the bytes.
+The hardware loader accepts application-only Flash updates without rebuilding
+the FPGA; a cold configuration/power cycle starts the updated image.
 
 `cpu-v3-dbg` compiles a CPU V3 rcc source file (or a directory whose `main.rs`
 is the entry) in-process and serves a single-page web debugger. Library code

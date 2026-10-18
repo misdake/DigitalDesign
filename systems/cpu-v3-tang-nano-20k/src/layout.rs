@@ -57,15 +57,9 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
     const PHYSICAL_ADDRESS_BITS: u8 = 22;
     const REGIONS: &'static [MemoryRegion] = &[
         MemoryRegion {
-            name: "boot",
-            base: PhysicalWordAddress::new(0),
-            words: 0x100,
-            kind: MemoryRegionKind::Boot,
-        },
-        MemoryRegion {
             name: "main-before-framebuffer",
-            base: PhysicalWordAddress::new(0x100),
-            words: FRAMEBUFFER_BASE_WORD - 0x100,
+            base: PhysicalWordAddress::new(0),
+            words: FRAMEBUFFER_BASE_WORD,
             kind: MemoryRegionKind::Main,
         },
         MemoryRegion {
@@ -99,29 +93,6 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
                 crate::boot::SYSCTL_UART,
                 crate::boot::D_CLEAN_ALL,
                 crate::boot::CACHE_MAINTENANCE_STATUS,
-            ],
-        },
-        DeviceAllocation {
-            name: "boot-select",
-            device: crate::boot::BOOT_SELECT_DEVICE,
-            channels: &[crate::boot::BOOT_SELECT_VALUE],
-        },
-        DeviceAllocation {
-            name: "boot-dma",
-            device: crate::boot::BOOT_DMA_DEVICE,
-            channels: &[
-                crate::boot::DMA_COMMAND,
-                crate::boot::DMA_STATUS,
-                crate::boot::DMA_FLASH_OFFSET_LOW,
-                crate::boot::DMA_FLASH_OFFSET_HIGH,
-                crate::boot::DMA_DESTINATION_LOW,
-                crate::boot::DMA_DESTINATION_HIGH,
-                crate::boot::DMA_FILE_SIZE_LOW,
-                crate::boot::DMA_FILE_SIZE_HIGH,
-                crate::boot::DMA_MEMORY_SIZE_LOW,
-                crate::boot::DMA_MEMORY_SIZE_HIGH,
-                crate::boot::DMA_ERROR,
-                crate::boot::DMA_COMPLETED_WORDS_LOW,
             ],
         },
         DeviceAllocation {

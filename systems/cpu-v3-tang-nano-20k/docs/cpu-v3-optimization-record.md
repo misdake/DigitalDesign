@@ -1983,3 +1983,50 @@ table protection and old-Q calendar also pass official SDPB mini scanout.
 Maximum-base/error/underflow tests, mandatory CPU/system co-simulation and actual
 Flash boot RTL remain part of the final qualification. No GPU change or new
 physical-board result belongs to this batch.
+
+
+The 3x mode described in historical measurements above was removed on
+2026-10-18 at the user's request. Production retains only fixed 800x480 2x;
+no 3x feature, selector, fallback comment or dedicated 3x regression remains.
+
+
+## 2026-10-18 Single Boot, cold state and fixed 2x
+
+The sole configured RCC display application is unchanged. OUT_DIR generation,
+the v5 packer, host installer, board tooling, simulator entry and actual SPI
+loader use one fixed header and one payload destination. Header validation,
+static clearing, code writes and final completion all precede CPU release.
+There is no software Boot program, Boot BSRAM, instruction-source router,
+reset-time selection, section interpreter or programmable DMA MMIO. The former
+Boot device indices are unassigned; the loader reuses the existing narrow
+arbiter client. The board validator accepts only the sole application's test
+identity, and resource decomposition counts the new hardware loader.
+
+Production reset inputs are constants; declared FPGA state and initialized
+metadata supply cold ownership. Generic reusable IP reset interfaces remain.
+Minimal monotonic PLL/SDRAM-ready gates control startup. Established lock loss
+or a fail-stop requires reconfiguration. A cold-start audit found BTC pair
+pointers had only reset initialization; their declared initial bijection is
+now explicit. Bounded no-reset installs/replays pass at BTC0/4/8, and removing
+that initialization produces an independent unknown-payload failure.
+
+The application still sets SP and nonzero statics. The loader now supplies the
+missing zero-static contract with actual successful writes before any fetch.
+Different-size application builds preserve all production HDL/CST/SDC bytes;
+changing the application requires updating Flash and a cold configuration,
+using the same FPGA image. Complete real-SPI fixtures verify nonzero SDRAM,
+zero/nonzero static values, real FPU work, exact first fetch and last-write
+failure. Generic CPU/benchmark CSEG remains zero; only the board starts in 7.
+
+At the user's direction the 3x feature, mode constant, switch/fallback comments,
+dedicated test and pixel-calendar branches are removed. Host rendering, factory
+parameters, board pixel PLL and RTL now share fixed 800x480 2x timing. Physical
+ports, old-Q color reads, final symbol disparity, both formats and publication
+ownership remain independently checked. Earlier 3x measurements are historical.
+
+The complete replacement reduces whole CPU-system area. Matched resources,
+timing, unchanged frozen execution metrics, modeled startup cost and evidence
+are in [the current architecture](architecture.md#current-fitted-result-and-validation-boundary)
+and its batch report. This is an offline result; no new GPU or board result is
+claimed. An unimplemented SINCOS duplicate-phase opportunity remains a proposal
+and contributes no claimed saving.

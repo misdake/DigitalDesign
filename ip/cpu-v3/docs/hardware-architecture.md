@@ -6,6 +6,12 @@ microarchitecture, not an intended future pipeline. The maintainable PlantUML so
 
 ## Execution model
 
+The generic core and benchmark model start at CSEG0:PC0 with data pages
+0/1/2/3. `INITIAL_CODE_SEGMENT` permits an explicit board specialization;
+the fixed cold-boot system selects CSEG7 while retaining the generic default.
+`CpuV3Sim::with_initial_code_segment` constructs the corresponding cold model.
+Independent IP reset remains available even when a board ties it inactive.
+
 `CpuV3Core` is precise and in order, with a conservative two-stage frontend rather
 than a general pipeline. A single-cycle instruction with sequential control flow
 may accept the next queued word in its Execute cycle and remain in Execute, so an
@@ -24,7 +30,8 @@ those slots and the frontend queue have separate capacity checks. A full queue
 can consume its old head and accept its replacement on the same edge. Request
 slots likewise drain and refill together. This replaces the aggregate
 fetched-plus-outstanding reservation adder/comparison without adding upstream
-storage. The board instruction-source router uses the same two-request bound.
+storage. A system may connect this frontend directly to its sole I-cache;
+any additional instruction-source routing belongs to the system.
 
 A redirect or flush clears live request bits before late ordered responses can
 enter the new stream; a new request wins if that edge reuses a drained slot.
@@ -87,7 +94,8 @@ old asynchronous RAM Q before replacing it. The official RAM16SDP4 regression
 checks that event and simultaneous BTC installation/continuation enqueue for
 zero/four/eight-entry configurations; inferred and official runs share one
 independent address/value fixture.
-Reset restores unique pair ownership; flush retains the pair permutation while
+FPGA configuration initial values and independent reset restore unique pair
+ownership; flush retains the pair permutation while
 clearing validity and live queue references. Exact LRU keeps relative-order bits
 and its original events. The independent cycle model retains rank-based BTC
 state and separate queue payloads as its reference representation.
@@ -200,7 +208,7 @@ consumed. The victim is invalid throughout refill, so an error or invalidate
 cannot expose a partial line. Dirty eviction primes the synchronous DPB outputs,
 then streams four ordered 64-bit beats without a private line buffer. The board
 gearbox pairs/splits those logical beats against the 32-bit SDRAM controller at
-the related 108 MHz clock. The boot DMA keeps
+the related 108 MHz clock. The cold-boot loader keeps
 single-word transactions. Full D-cache clean and clean-plus-invalidate read one
 metadata set per cycle. A single pending line index lets that scan overlap an
 in-flight write-back. Dirty clears only after successful write completion. A

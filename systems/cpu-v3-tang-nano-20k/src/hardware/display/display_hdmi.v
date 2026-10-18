@@ -15,10 +15,7 @@ module FramebufferHdmi(
 localparam [21:0] FB_BASE=22'h200000;
 localparam [2:0] DISPLAY_DEVICE=3'd3;
 localparam [31:0] LAST_VALID_FB_BASE=32'h003e8900;
-localparam [15:0] BORDER_COLOR=16'h1082;
-// Compile-time scanout configuration. The active mode's localparam block is
-// injected by the Rust host model so the RTL, testbench, and board video PLL
-// all derive from the single `ACTIVE_DISPLAY_CONFIG` constant.
+// Fixed 800x480 2x timing shared with the host model, testbench and board PLL.
 __DISPLAY_CONFIG__
 localparam integer PRECODE_BITS=__TMDS_PRECODE_BITS__;
 // Two published groups, each containing two source rows. A group is released
@@ -182,7 +179,7 @@ wire pixel_reset = ~pixel_reset_sync[2];
 reg display_slot=0, display_second=0;
 wire [8:0] display_slot_base = (display_slot ? 9'd200 : 9'd0) +
                                              (display_second ? 9'd100 : 9'd0);
-reg [1:0] vertical_repeat=0;
+reg vertical_repeat=0;
 reg started=0;
 reg [10:0] h_count=0;
 reg [9:0] v_count=0;
@@ -190,8 +187,7 @@ wire hsync = h_count < H_SYNC_END;
 wire vsync = v_count < V_SYNC_END;
 wire active = h_count>=H_ACTIVE_START && h_count<H_ACTIVE_END &&
                v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END;
-wire framebuffer_x = active && h_count>=H_ACTIVE_START+SIDE_BORDER &&
-                     h_count<H_ACTIVE_END-SIDE_BORDER;
+wire framebuffer_x = active;
 wire line_ready = publish_sync[display_slot] != released[display_slot];
 reg scan_line_ready=0, scan_linear=0;
 reg visible_pipe3=0, framebuffer_pipe3=0;
@@ -215,10 +211,6 @@ function [PRECODE_BITS-1:0] encode_byte;
     end
 endfunction
 localparam [3*PRECODE_BITS-1:0] BLACK_PRECODE={3{encode_byte(8'd0)}};
-localparam [3*PRECODE_BITS-1:0] BORDER_PRECODE={
-    encode_byte({BORDER_COLOR[15:11],BORDER_COLOR[15:13]}),
-    encode_byte({BORDER_COLOR[10:5],BORDER_COLOR[10:9]}),
-    encode_byte({BORDER_COLOR[4:0],BORDER_COLOR[4:2]})};
 reg [3*PRECODE_BITS-1:0] precode_pipe=BLACK_PRECODE;
 `ifdef __ICARUS__
 // Test-only inverse feeds the independent RGB oracle and old encoder miter.
@@ -241,12 +233,7 @@ wire [23:0] rgb_pipe={decode_byte(precode_pipe[3*PRECODE_BITS-1:2*PRECODE_BITS])
 // overlaps the previous pair's blue capture. Initiation interval is four.
 // The consumer's fixed cadence owns the entire source/R/G/B calendar.
 // There is no independently stalled stage within a ready output row.
-localparam integer PAIR_PHASE_BITS = SCALE==2 ? 2 : 3;
-localparam [2:0] PAIR_CLOCKS = SCALE==2 ? 3'd4 : 3'd6;
-localparam [2:0] EMIT_PHASE = SCALE==2 ? 3'd0 : 3'd4;
-localparam [10:0] FRAMEBUFFER_FIRST = H_ACTIVE_START+SIDE_BORDER;
-localparam [10:0] FRAMEBUFFER_END = H_ACTIVE_END-SIDE_BORDER;
-reg [PAIR_PHASE_BITS-1:0] read_phase=0;
+reg [1:0] read_phase=0;
 reg [7:0] fetch_pair=0;
 reg pair_bank=0;
 reg [31:0] raw_pair=0;
@@ -262,13 +249,12 @@ wire [5:0] raw_b1 = {raw_pair[20:16],raw_pair[20]};
 reg [6*PRECODE_BITS-1:0] output_pair=0;
 wire conversion_active = started && scan_line_ready &&
     v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END &&
-    h_count>=FRAMEBUFFER_FIRST-11'd4 && h_count<FRAMEBUFFER_END;
+    h_count>=H_ACTIVE_START-11'd4 && h_count<H_ACTIVE_END;
 wire issue_pair = conversion_active && read_phase==0 &&
-    h_count<FRAMEBUFFER_END-11'd4;
-wire emit_pair = conversion_active && h_count>=FRAMEBUFFER_FIRST &&
-    read_phase==EMIT_PHASE;
-wire output_second = SCALE==2 ? read_phase[1] :
-    (read_phase>=1 && read_phase<=3);
+    h_count<H_ACTIVE_END-11'd4;
+wire emit_pair = conversion_active && h_count>=H_ACTIVE_START &&
+    read_phase==0;
+wire output_second = read_phase[1];
 wire [6*PRECODE_BITS-1:0] converted_pair =
     {r1,g1,line_read_data_b[PRECODE_BITS-1:0],r0,g0,line_read_data_a[PRECODE_BITS-1:0]};
 wire [6*PRECODE_BITS-1:0] current_pair = emit_pair ? converted_pair : output_pair;
@@ -311,10 +297,7 @@ always @(posedge pixel_clock) begin
         framebuffer_pipe3<=started && framebuffer_x;
         hsync_pipe3<=hsync; vsync_pipe3<=vsync;
         precode_pipe<=BLACK_PRECODE;
-        if (started && active) begin
-            if (!framebuffer_x) precode_pipe<=BORDER_PRECODE;
-            else if (scan_line_ready) precode_pipe<=current_precode;
-        end
+        if (started && active && scan_line_ready) precode_pipe<=current_precode;
         if (h_count==0) begin
             // Readiness is sampled for the whole output row. A late publish
             // cannot reveal a partial row or consume data from a failed fill.
@@ -322,17 +305,14 @@ always @(posedge pixel_clock) begin
             read_phase<=0; fetch_pair<=0;
 
         end else if (conversion_active) begin
-            if (SCALE==2) read_phase<=read_phase+1'b1;
-            else if (read_phase==3'd5) read_phase<=0;
-            else read_phase<=read_phase+1'b1;
+            read_phase<=read_phase+1'b1;
             if (issue_pair) begin
                 pair_bank<=fetch_pair[0]; fetch_pair<=fetch_pair+1'b1;
             end
             // At edge S the RAM produces source Q. At S+1 the old source Q
             // supplies R addresses and raw_pair; S+2/S+3 capture old R/G Q.
-            // S+4 consumes old B Q directly, overlapping the next source in
-            // 2x. The 3x mode has two idle edges before the following source.
-            if (h_count<FRAMEBUFFER_END-PAIR_CLOCKS) begin
+            // S+4 consumes old B Q directly and issues the next source read.
+            if (h_count<H_ACTIVE_END-11'd4) begin
                 case (read_phase)
                     1: raw_pair<=source_pair;
                     2: begin r0<=line_read_data_a[PRECODE_BITS-1:0]; r1<=line_read_data_b[PRECODE_BITS-1:0]; end
@@ -346,7 +326,7 @@ always @(posedge pixel_clock) begin
             if (emit_pair) output_pair<=converted_pair;
         end
         if (started && h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END) begin
-            if (vertical_repeat==LAST_REPEAT) begin
+            if (vertical_repeat) begin
                 vertical_repeat<=0;
                 if (scan_line_ready) begin
                     display_second<=~display_second;
@@ -354,7 +334,7 @@ always @(posedge pixel_clock) begin
                         released[display_slot]<=~released[display_slot]; display_slot<=~display_slot;
                     end
                 end else underflow_sticky<=1;
-            end else vertical_repeat<=vertical_repeat+1'b1;
+            end else vertical_repeat<=1;
         end
     end
 end

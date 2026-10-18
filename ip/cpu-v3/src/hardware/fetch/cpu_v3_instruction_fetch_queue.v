@@ -59,6 +59,13 @@ reg [BTC_STORAGE-1:0] btc_valid = 0;
 // Complete entries exclude the spare pair, so partial fills preserve old data.
 (* syn_ramstyle = "distributed_ram" *) reg [15:0] payload [0:PAYLOAD_WORDS-1];
 (* syn_ramstyle = "registers" *) reg [PAIR_BITS-1:0] entry_pair [0:BTC_STORAGE-1];
+// Pair ownership is needed on the first victim exchange even while btc_valid
+// is zero. FPGA cold configuration must establish the same bijection as reset.
+integer initial_pair;
+initial begin
+    for (initial_pair=0; initial_pair<BTC_STORAGE; initial_pair=initial_pair+1)
+        entry_pair[initial_pair]=initial_pair;
+end
 reg [PAIR_BITS-1:0] spare_pair = BTC_ENTRIES;
 // Exact LRU stores one relative-order bit for each unordered entry pair.
 // Touching an entry updates only its incident bits; no rank mux/add/saturation.

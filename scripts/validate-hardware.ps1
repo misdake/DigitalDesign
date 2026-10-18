@@ -51,7 +51,7 @@ function Invoke-Cargo {
 
 function Invoke-BootArtifactValidation {
     $bootDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
-    $manifest = Join-Path $bootDirectory "boot.cpu-v3-manifest"
+    $application = Join-Path $bootDirectory "application.v3bin"
     $generatedPackage = Join-Path $bootDirectory "cpu-v3-boot.bin"
     $repackedPackage = Join-Path $bootDirectory "cpu-v3-boot.repacked.bin"
     $repackedMap = Join-Path $bootDirectory "cpu-v3-boot.repacked.map"
@@ -59,9 +59,9 @@ function Invoke-BootArtifactValidation {
     Invoke-Cargo "materialize generated CPU V3 boot assets" "run" @(
         "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets", "--", $bootDirectory
     )
-    Invoke-Cargo "repack CPU V3 boot manifest" "run" @(
+    Invoke-Cargo "pack CPU V3 single application" "run" @(
         "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
-        $manifest, "-o", $repackedPackage, "--map", $repackedMap
+        $application, "-o", $repackedPackage, "--map", $repackedMap
     )
 
     Write-Host ""

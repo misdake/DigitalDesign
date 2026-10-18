@@ -563,13 +563,14 @@ impl TangNano20K {
         wide_2x: bool,
         video_mode: TangNano20KVideoMode,
     ) -> GowinBoardBinding<Self> {
-        Self::sdram_debug_uart_binding_with_options(video, wide_2x, video_mode, false)
+        Self::sdram_debug_uart_binding_with_options(video, wide_2x, video_mode, false, false)
     }
     fn sdram_debug_uart_binding_with_options(
         video: bool,
         wide_2x: bool,
         video_mode: TangNano20KVideoMode,
         chained_groups: bool,
+        cold_only: bool,
     ) -> GowinBoardBinding<Self> {
         assert!(!chained_groups || (wide_2x && !video));
         let wrapper = if wide_2x && !video {
@@ -585,6 +586,12 @@ impl TangNano20K {
             wrapper.replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .CHAIN_GROUP_FOUR(1)")
         } else {
             wrapper.to_string()
+        };
+        let wrapper = if cold_only {
+            format!("{}\nreg [1:0] cold_lock_sync=0;\nreg cold_sdram_ready=0;\nalways @(posedge controller_clk) if(!cold_sdram_ready) begin\n cold_lock_sync<={{cold_lock_sync[0],sdram_pll_locked}};\n if(cold_lock_sync[1])cold_sdram_ready<=1;\nend\n",
+                wrapper.replace(".reset(!sdram_pll_locked || (|buttons))", ".reset(!cold_sdram_ready)").replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .COLD_START_ONLY(1)"))
+        } else {
+            wrapper
         };
         let mut extension = GowinBoardExtension::new(wrapper)
             .with_logic_clock("logic_clk")
@@ -986,6 +993,7 @@ impl TangNano20K {
                     true,
                     TangNano20KVideoMode::Hdmi720p60,
                     chained_groups,
+                    false,
                 )
                 .with_process_option("-ioreg_in_iob", "1"),
             ),
@@ -1088,6 +1096,45 @@ impl TangNano20K {
             )
             .with_process_option("-use_mspi_as_gpio", "1")
             .with_process_option("-ioreg_in_iob", "1");
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
+    }
+
+    /// Fixed cold-start system binding. Buttons never restart SDRAM.
+    pub fn cold_boot_hdmi_memory_project<M>(
+        project_name: impl Into<String>,
+        video_mode: TangNano20KVideoMode,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KBootHdmiWideInputs, Output = TangNano20KBootHdmiWideOutputs>,
+    {
+        let binding =
+            Self::sdram_debug_uart_binding_with_options(true, true, video_mode, false, true)
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "flash_clk",
+                    "flash_clk",
+                    [Self::SPI_FLASH_CLK],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "flash_cs_n",
+                    "flash_cs_n",
+                    [Self::SPI_FLASH_CS_N],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "flash_mosi",
+                    "flash_mosi",
+                    [Self::SPI_FLASH_MOSI],
+                )
+                .bind_port(
+                    GowinPortDirection::Input,
+                    "flash_miso",
+                    "flash_miso",
+                    [Self::SPI_FLASH_MISO],
+                )
+                .with_process_option("-use_mspi_as_gpio", "1")
+                .with_process_option("-ioreg_in_iob", "1");
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 

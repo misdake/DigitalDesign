@@ -30,11 +30,11 @@ in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable pr
 
 - the revision 0.9 `CpuV3Core` at the Stage 12 microarchitecture level;
 - a two-slot instruction payload queue with two request slots and a four-entry, two-word resolved-target BTC;
-- a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
-- the seven-owner CPU V3 memory arbiter, boot DMA, and reserved GPU ports;
+- separate 4-KiB I-cache and D-cache with initialized invalid metadata;
+- the seven-owner CPU V3 memory arbiter, fixed boot loader, and reserved GPU ports;
 - the related-clock SDRAM/display port and native controller boundary;
-- SPI-Flash boot DMA, system-control, boot-select, and framebuffer devices;
-- boot-progress reporting, UART, LEDs, and the HDMI output path (compile-time
+- SPI-Flash fixed boot loader, system-control, and framebuffer devices;
+- fixed-loader status, UART, LEDs, and the HDMI output path (compile-time
   display mode from `display::ACTIVE_DISPLAY_CONFIG`).
 
 The system owns concrete memory layout, device indices and channels, board clocks, boot packaging,
@@ -55,7 +55,7 @@ The full rules are in [`hardware-architecture.md`](../../../ip/cpu-v3/docs/hardw
 The instruction path has two frontend payload slots and two request-provenance slots.
 Its independent capacity checks use the I-cache's existing response/lookup holding slots;
 same-edge dequeue/enqueue and response/request slot reuse preserve direct throughput.
-The board source router also tracks at most two accepted requests. Per-slot current bits
+The instruction path has no boot overlay or source router. Per-slot current bits
 discard late responses across any number of redirects. A four-entry,
 two-word resolved-target BTC can deliver a target immediately while the queue requests its
 second successor. Redirects retain complete BTC entries; fault, halt, reset and global I-cache
@@ -63,8 +63,8 @@ invalidation clear them together with pending replay/fill state. Sequential fetc
 16-bit PC without carrying into `CSEG`. Replacement and handshake details are specified in
 [hardware-architecture.md](../../../ip/cpu-v3/docs/hardware-architecture.md).
 
-Physical instruction words `0x00000000..0x000003ff` select the initialized Stage0 BSRAM. Other
-instruction addresses use the SDRAM-backed I-cache. The I-cache is read-only and serves demand
+All instruction addresses use the SDRAM-backed I-cache; Boot BSRAM and its
+source-selection path are absent. The I-cache is read-only and serves demand
 fetches only (the Stage 6 next-line prefetch was removed after measurement); redirects and
 software-controlled invalidation preserve precise handoff semantics.
 The I-cache may hold one response and a successor lookup independently. Its
@@ -116,12 +116,12 @@ still waits for the response. The adapter has no duplicate 256-bit fixed-line wr
 The fitted SDRAM is 8 MiB: 23 byte-address bits or 22 CPU word-address bits. The system rejects
 larger architectural physical addresses instead of truncating or aliasing them.
 
-`CpuV3MemoryArbiter` serializes display, boot DMA, I-cache, D-cache, GPU command reads, GPU
+`CpuV3MemoryArbiter` serializes display, fixed boot loader, I-cache, D-cache, GPU command reads, GPU
 framebuffer reads, and GPU framebuffer writes onto the CPU-side memory port. Display has strict
 priority at transaction boundaries. The other six owners use round-robin selection with one
 three-bit cursor; no age or score arrays remain. An accepted owner remains selected through its
 last response or error. GPU framebuffer reads and writes are both active cache traffic. The I-cache,
-D-cache, and display paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word mode.
+D-cache, and display paths transfer fixed 4x64-bit lines; fixed boot loader retains its narrow-word mode.
 The three GPU ports use `line_count_minus_one` to request 32, 64 or 128 bytes; encoding 2 is
 reserved and the adapter rejects it. Each burst is naturally aligned. Reads return 4, 8 or 16
 unstallable 64-bit beats. All line writes advance their cache source only when the bridge accepts
@@ -138,7 +138,8 @@ one ordered 64-bit pair at 108 MHz. Its stable Q and pre-edge related-clock togg
 feed the adapter's existing final 54-MHz capture directly; the duplicate bridge payload/valid
 register stage is removed. Scalar lane selection, LAST holding and done ownership remain
 in the adapter. Same-edge production changes Q only after the adapter consumes the old
-pair. Transaction completion and reset clear the bridge's ownership token.
+pair. Transaction completion releases the bridge's ownership token; FPGA
+configuration initializes its cold-only production transport state.
 Command and tile-list fetches remain one line, while framebuffer cache refill and clean use four
 line transactions. Near the end of an active line transfer, the arbiter may grant one successor
 before the current response completes. That grant fixes the next owner and descriptor; the current
@@ -151,7 +152,7 @@ four-sector group is a separate protocol and remains disabled in the CPU V3 syst
 
 ## Clock domains
 
-- CPU core, fetch queue, caches, arbiter, boot DMA, devices, and the CPU side of the SDRAM bridge run
+- CPU core, fetch queue, caches, arbiter, fixed boot loader, devices, and the CPU side of the SDRAM bridge run
   at 54 MHz.
 - The native controller and physical 32-bit SDRAM beat side run at the related 108-MHz clock.
   The SDRAM output clock is shifted by 292.5 degrees from the controller clock.
@@ -163,20 +164,16 @@ clock-domain boundary.
 
 ## Boot chain
 
-Reset starts the single boot stage from initialized BSRAM with `CSEG = 0`,
-`DSEG0..3 = {0,1,2,3}`, and `PC = 0`. The manifest's legacy `DSEG` value is a
-four-page base; Stage0 writes it once to establish four consecutive mappings.
-It validates the fixed package descriptor, DMAs the extensible section manifest into its own static
-buffer, validates it, DMAs the reset-selected application from SPI Flash to SDRAM, initializes the
-application segments and stack, and enters it through adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`
-instructions. There is no separate Stage1 image; the same stage understands both metadata levels.
-
-The package format is defined in [`boot-image-format.md`](boot-image-format.md); physical Flash
-placement and programming are defined in [`flash-layout.md`](flash-layout.md). The project names
-exactly two RCC application sources in `boot-applications.conf`; the build derives their fixed
-S1/S2 slots, entries, section layout, boot-stage selection module, pack manifest, fingerprints, and
-package. Generated boot-stage, application, and package bytes come only from the system build
-output. No second checked-in instruction or Flash byte array is maintained.
+The fixed hardware loader validates the [v5 single-application header](boot-image-format.md),
+clears exactly 16 KiB of low static memory and copies code to physical word `0x70000`.
+Only successful completion of every write and the Flash stream releases the CPU
+at CSEG7:PC0, data pages 0/1/2/3; RCC initializes SP=0xc000 and nonzero statics.
+There is no Boot ROM, overlay, section interpreter, selection latch or DMA MMIO.
+Declared FPGA initial state and cache metadata initialization replace production
+global reset distribution. The local SDRAM controller cold reset is released only
+after PLL readiness; CPU release additionally waits for loader success. Generic IP
+reset ports remain available to independent tests. Runtime buttons cannot restart
+the machine. See [cold-start workflow](flash-layout.md) for update and error behavior.
 
 ## Devices and ownership transfer
 
@@ -185,8 +182,8 @@ The fitted device allocation is:
 | Device | Owner | Purpose |
 | ---: | --- | --- |
 | 0 | System control | I-cache invalidation, blocking D-cache maintenance, LEDs, and UART TX |
-| 1 | Boot select | Latched reset-time application selection |
-| 2 | Boot DMA | SPI-Flash source, SDRAM destination, length, start, and status registers |
+| 1 | Unassigned | Former Boot selection removed |
+| 2 | Unassigned | Former programmable DMA removed |
 | 3 | Display | Framebuffer configuration and scanout control |
 | 4 | GPU | Two-entry submit FIFO, temporary commands, viewport triangle rasterizer, and an eight-entry tile cache |
 
@@ -197,25 +194,13 @@ UART byte and reports transmitter busy on reads. Channels 6 and 7 implement a ge
 watch: software writes `{channel[3:0], device[2:0]}` to channel 6, then writes the value it most
 recently observed to channel 7. The second write holds only CPU retirement while a registered probe
 continues reading the selected device; the first unequal value releases the CPU. A change between
-the software read and arm is therefore detected by the first probe rather than lost. Display, DMA,
+the software read and arm is therefore detected by the first probe rather than lost. Display, loader,
 GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and watch holds have
 independent state so neither completion source can release the other.
 
-Device 1 channel 0 returns the reset-time boot selection. The board-level selection latch powers up
-at `10`, so the boot stage selects the configured S2 application by default; holding the S1 button
-(`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project selects
-the primary diagnostic as S1 and the GPU raster demo as S2. S2 alternates two permanent,
-32-byte-aligned heap command buffers and the two framebuffer slots; it clears each slot to black
-once, then renders only the viewport triangle and reports DDHT test ID `0x0b`
-after each completed GPU render and display vblank. S1 reports test ID `0x07`.
-
-Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
-byte address, a 22-bit physical SDRAM word destination, and file and memory byte sizes. Writing one
-to channel 0 starts a command; channel 1 reports idle (`0`), busy (`1`), done (`2`), or error
-(`0x8000`). Channels 14 and 15 report the stable error code and low completed-word count. The DMA
-zero-fills `memory_size - file_size`. Error codes are `1` for file size exceeding memory size, `2`
-for an invalid Flash extent, `3` for an invalid physical-memory extent, and `4` or `5` for Flash or
-SDRAM transport failures.
+Device indices 1 and 2 are unassigned in this system; the former selection and
+programmable DMA register banks are absent. The sole display application remains
+`rcc/display-demo.rs`; its existing GPU-rejection behavior is independent of Boot.
 
 Device 4 stages a 22-bit command-buffer word address and a word count on write channels 0..3;
 channel 4 submits, and channel 5 performs an idle-only soft reset or sticky-error clear. Read
@@ -269,8 +254,8 @@ consecutively as two separate transactions. Every 64-bit response beat writes tw
 occupy qword addresses 0..399 in two groups of two. Publication toggles cross through two-stage
 synchronizers; group metadata is stable until release. The consumer releases a group only after
 the second row's final vertical repeat. An unavailable row is black and sets sticky underflow;
-an error or malformed LAST stops filling without publishing the incomplete group. Reset clears
-the faults and restores producer/consumer ownership.
+an error or malformed LAST stops filling without publishing the incomplete group. The standalone IP reset clears faults and ownership; production recovery
+requires FPGA reconfiguration.
 
 The two existing banks also hold complete color-to-TMDS transition-minimized
 precodes. Addresses 416..447 contain the 32 encoded R/B expansions; addresses
@@ -284,22 +269,15 @@ Device 3 channel 4 stages the format (`0`: encoded RGB565, the reset default;
 `1`: linear RGB565) and reads the active bit. NEXT_SWAP snapshots format and
 address together. The host display model and renderer follow the same selection.
 
-The scanout mode is a single compile-time configuration
-(`display::ACTIVE_DISPLAY_CONFIG`), selected by mutually exclusive Cargo features
-`display-2x` (the default when neither is specified) or `display-3x`. The default
-is 800x480@60 with a 2x upscale and no
-side border; the retained 1280x720p60 3x mode is the other build option and
-leaves 40-pixel side borders. The framebuffer is always upscaled uniformly and
-centered, with encoded dark-gray borders (`BORDER_COLOR`). The board video
-PLL follows the same switch through the example project. Boot progress owns
-the six LEDs until the first software LED write, after which software owns them until reset. LED
-patterns are progress evidence only; UART frames and system-level checks establish boot success or a
-structured boot failure.
+The display has one fixed 800x480@60, 2x mode with no side border.
+RTL, host rendering, testbench timing and the 33.3-MHz pixel PLL share
+`ACTIVE_DISPLAY_CONFIG`. There is no alternate display Cargo feature or
+runtime mode switch. The cold loader owns LEDs until CPU release, then
+system-control software owns them.
 
 The published row's readiness is sampled before output. A fixed pixel calendar
 reads source Q four clocks before its first pixel, then R/G/B precodes using
-the synchronous RAM's old Q at each edge. Conversion starts every four clocks
-in 2x and every six in 3x; in 2x the next source read overlaps the previous
+the synchronous RAM's old Q at each edge. Conversion starts every four clocks; the next source read overlaps the previous
 blue capture. A completed pair feeds its first pixel directly and one 54-bit
 register retains the pair for its remaining repeats. There is no completed-pair
 FIFO, occupancy, reservation or independent repeat counter. Dynamic SDRAM
@@ -314,44 +292,43 @@ Display retains strict priority. A caught-up refill is 50 segments per two sourc
 initial fill is at most 100 segments. The conditional ideal scheduling estimate and its
 refresh/contention limitations are in the upgrade comparison (archived work-1 report).
 
-On boot failure, the boot stage repeatedly emits a ten-byte UART frame containing ASCII `CV3B`,
-stage, category, error code, two detail bytes, and an XOR checksum. The stage byte is always `1` for
-the single first stage. The LED error value combines the stage and category. The host loader exposes
-the same stable mapping through `LoaderError::boot_report`.
+On a cold-loader failure, the CPU stays held and LEDs show `11xxxx`, where the
+low nibble identifies header, length, Flash, memory or timeout failure. There
+is no software loader or automatic boot-failure UART frame. The application
+retains its own system-control UART reporting after successful release.
 
 ## Current fitted result and validation boundary
 
-The 2026-10-18 Display calendar/precode batch composes with address-chain
-commit `d84e88d7` and CPU-chain commit `4c40d91a`. It removes the complete
-pair FIFO/control path and uses the existing BSRAM color tables for nine-bit
-TMDS precodes. Address ownership, publication, physical row layout, device
-format/address snapshots and visible pixels retain their contracts.
+The 2026-10-18 fixed-2x cold-start batch follows Display commit `4640181b`,
+address-chain commit `d84e88d7` and CPU-chain commit `4c40d91a`. One hardware
+loader replaces Boot ROM, overlay, selection and programmable DMA. Production
+uses deterministic FPGA initial state and monotonic clock/SDRAM startup gates;
+there is no button/software/global runtime reset. Only 800x480 2x remains.
 
-| Matched pre-commit CPU-system fit | Address chain `d84e88d7` | Calendar + 9-bit precode |
-| --- | ---: | ---: |
-| Logic | 7,882 | 7,752 |
-| RAM16 / Logic FF / CLS | 24 / 2,897 / 5,060 | 12 / 2,888 / 4,953 |
-| BSRAM / MULT36X36 | 11 / 1 | 11 / 1 |
-| CPU / controller / pixel Fmax | 55.514 / 133.102 / 91.272 MHz | 63.452 / 126.437 / 128.810 MHz |
+| Matched pre-commit CPU-system fit | CPU chain `4c40d91a` | Display `4640181b` | Single Boot / fixed 2x |
+| --- | ---: | ---: | ---: |
+| Logic | 7,896 | 7,752 | 7,123 |
+| RAM16 / Logic FF / CLS | 24 / 2,924 / 5,052 | 12 / 2,888 / 4,953 | 12 / 2,633 / 4,539 |
+| BSRAM / MULT36X36 | 11 / 1 | 11 / 1 | 10 / 1 |
+| CPU Fmax | 56.680 MHz | 63.452 MHz | 60.665 MHz |
+| Controller / pixel Fmax | 123.213 / 89.060 MHz | 126.437 / 128.810 MHz | 108.135 / 123.792 MHz |
 
-Both use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C,
-identical CST/SDC and implementation options; runtime remains 54/108 MHz.
-All three internal setup/hold domains pass. A separate actual `display-3x`
-build uses 7,850 Logic, 2,895 FF, 12 RAM16 and 11 BSRAM; its CPU/controller/
-pixel Fmax is 57.676/119.401/119.633 MHz, passing the 74.25-MHz pixel target.
-The inherited strict external SDRAM-output setup failure remains excluded at
-the user's direction. This fit includes the inactive GPU shell, not GPU v2;
-no new board result is claimed.
+All use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C and matched
+CST/SDC/options. Internal CPU/controller/pixel setup and hold pass at the
+unchanged 54/108/33.3-MHz runtime clocks. The strict external SDRAM-output
+setup failure remains excluded at the user's direction; no constraint is
+relaxed. The fit contains the inactive GPU shell, not complete GPU v2, and
+does not establish a new physical-board result.
 
-Both full modes check every visible pixel, formats, borders, sync, swaps,
-maximum addresses, faults and underflow. A test-only old TMDS encoder also
-compares every color symbol/disparity; all RGB565 inputs exercise both table
-formats. Official SDPB mini scanout checks physical RAM ports and old-Q timing.
-Core/system co-simulation, complete Flash RTL and affected strict lint qualify
-the retained chain. Frozen CPU performance and postcommit identity are recorded
-in [the batch report](../../../target/cpu-display-boot-batch-20261018/report.md).
-The larger 13-bit precode candidate is rejected after complete-system fit.
-Boot images/layout are unchanged by this Display batch.
+The frozen 22-program suite retains all 41 nonidentity metrics. Exact source,
+postcommit identity, full-pixel/TMDS, cold no-reset BTC, malformed/last-write
+Boot, complete real-SPI, co-simulation, physical native-port and host/tool
+qualification are in [the batch report](../../../target/cpu-display-boot-batch-20261018/report.md).
+Two different-size applications produce identical gateware/CST/SDC. Only their
+Flash packages change. Startup from SDRAM-ready is 89,136 versus 64,336 cycles
+in the bounded SPI/system RTL model, adding the formerly missing 16-KiB
+static clear; this is not native-pin-composed or board startup timing.
+The 13-bit precode alternative is rejected; 3x is retired by user direction.
 
 ## Earlier storage and product-issuer checkpoint
 

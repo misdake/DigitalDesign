@@ -116,14 +116,27 @@ mod tests {
     #[test]
     #[ignore = "explicit CL2 pin-model validation of the related-clock native bridge"]
     fn native_bridge_bank_striping_runs_in_iverilog() {
+        run_native_bridge(false);
+    }
+
+    #[test]
+    #[ignore = "cold-only transport declared state, native initialization, four banks, masks and physical pin timings"]
+    fn cold_native_bridge_runs_in_iverilog() {
+        run_native_bridge(true);
+    }
+
+    fn run_native_bridge(cold_only: bool) {
         let vendor = Path::new(env!("CARGO_MANIFEST_DIR"));
         let display = vendor.join("src/sdram_memory_controller/rtl");
         let controller = display.clone();
-        let executable =
-            std::env::temp_dir().join(format!("cpu-v3-native-sdram-{}.vvp", std::process::id()));
+        let executable = std::env::temp_dir().join(format!(
+            "cpu-v3-native-sdram-{}-{cold_only}.vvp",
+            std::process::id()
+        ));
         let iverilog = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
         let vvp = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
         let compile = Command::new(iverilog)
+            .arg(format!("-Ptb.COLD_START_ONLY={}", u8::from(cold_only)))
             .args(["-g2012", "-s", "tb", "-o"])
             .arg(&executable)
             .arg(controller.join("sdram_controller.v"))

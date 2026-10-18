@@ -1,8 +1,8 @@
-//! Host display simulator for the configured S2 application.
+//! Host display simulator for the configured single application.
 //!
-//! The S2 application (`rcc/display-demo.rs`) renders tile-gradient waves and
+//! The application (`rcc/display-demo.rs`) renders tile-gradient waves and
 //! an inline viewport triangle. `boot-applications.conf` selects the source,
-//! and the build script compiles it into `DISPLAY_DEMO_PROGRAM`.
+//! and the build script generates the same fixed-entry Flash package as the FPGA.
 
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]
@@ -10,7 +10,8 @@ use cpu_v3_tang_nano_20k::display::{ACTIVE_DISPLAY_CONFIG, HDMI_HEIGHT, HDMI_WID
 use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
 use std::path::PathBuf;
 
-include!(concat!(env!("OUT_DIR"), "/display_image.rs"));
+const GENERATED_APPLICATION_PACKAGE: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.bin"));
 
 struct Options {
     max_cpu_steps: usize,
@@ -56,11 +57,12 @@ fn options() -> Result<Options, String> {
 
 fn main() -> Result<(), String> {
     let options = options()?;
-    let mut system = CpuV3SystemSim::new(VBlankMode::Manual);
-    system
-        .cpu_mut()
-        .load_program(0, DISPLAY_DEMO_PROGRAM)
-        .map_err(|error| format!("cannot load display demo: {error:?}"))?;
+    let mut system = CpuV3SystemSim::from_single_flash(
+        GENERATED_APPLICATION_PACKAGE,
+        0xd00d,
+        VBlankMode::Manual,
+    )
+    .map_err(|error| format!("cannot cold-boot display application: {error}"))?;
 
     #[cfg(feature = "display-window")]
     let mut window = options.window.then(|| {

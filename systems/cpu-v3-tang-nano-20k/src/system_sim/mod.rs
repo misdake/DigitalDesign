@@ -41,7 +41,23 @@ impl Default for CpuV3SystemSim {
 
 impl CpuV3SystemSim {
     pub fn new(vblank_mode: VBlankMode) -> Self {
-        let mut cpu = CpuV3Sim::default();
+        Self::with_cpu(CpuV3Sim::default(), vblank_mode)
+    }
+
+    /// Functional cold boot of the same fixed CSEG7 image as the FPGA loader.
+    /// `memory_seed` makes the static-zero responsibility explicit in tests.
+    pub fn from_single_flash(
+        package: &[u8],
+        memory_seed: u16,
+        vblank_mode: VBlankMode,
+    ) -> Result<Self, crate::boot::SingleBootError> {
+        let mut cpu = CpuV3Sim::with_initial_code_segment(1 << 22, 7);
+        cpu.physical_memory_mut().fill(memory_seed);
+        crate::boot::install_single_application(package, cpu.physical_memory_mut())?;
+        Ok(Self::with_cpu(cpu, vblank_mode))
+    }
+
+    fn with_cpu(mut cpu: CpuV3Sim, vblank_mode: VBlankMode) -> Self {
         cpu.attach_device(SYSTEM_CONTROL_DEVICE, Box::<SystemControlDevice>::default());
         cpu.attach_device(
             DISPLAY_DEVICE,

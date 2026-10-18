@@ -1,108 +1,72 @@
-//! Builds a validated CpuV3 boot package from an offline section manifest.
-
-use cpu_v3_tang_nano_20k::boot::{build_boot_image, PackManifest};
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
-
-const HELP: &str = "\
-cpu-v3-pack: build a versioned CpuV3 Flash payload
-
-usage: cpu-v3-pack <manifest.cpu-v3-manifest> [-o image.cpu-v3-boot] [--map image.map]
-                [--configuration-bin design.bin] [--flash-image complete.bin]
-
-manifest format:
-  format 1
-  target tang-nano-20k
-  application-entry <cseg> <offset> <dseg> <stack-offset>
-  load <name> <physical-word> <rwx-flags> <alignment-bytes> <memory-bytes> <file>
-  zero <name> <physical-word> <rw-flags> <alignment-bytes> <memory-bytes>
-
-Numbers are decimal or 0x-prefixed hexadecimal. File paths are relative to the
-manifest and may not contain whitespace. The output contains package-relative
-Flash offsets. Supplying a Gowin-converted configuration binary also produces
-a checked complete Flash image with the package at the target payload base.";
-
+//! Pack the one fixed-destination application; no section/entry manifest.
+use cpu_v3_tang_nano_20k::boot::{pack_single_application, SINGLE_BOOT_FLASH_BASE};
+use std::{path::PathBuf, process::ExitCode};
+const HELP:&str="cpu-v3-pack <application.v3bin> [-o package.bin] [--map package.map] [--configuration-bin design.bin] [--flash-image complete.bin]";
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            eprintln!("cpu-v3-pack: error: {message}");
+        Err(e) => {
+            eprintln!("cpu-v3-pack: {e}");
             ExitCode::FAILURE
         }
     }
 }
-
-fn run(args: impl Iterator<Item = String>) -> Result<(), String> {
-    let mut input = None;
-    let mut output = None;
-    let mut map = None;
-    let mut configuration = None;
-    let mut flash_image = None;
-    let mut args = args;
-    while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "-h" | "--help" => {
+fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    let (mut input, mut output, mut map, mut configuration, mut flash_image) =
+        (None, None, None, None, None);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--help" | "-h" => {
                 println!("{HELP}");
                 return Ok(());
             }
-            "-o" => output = Some(next_path(&mut args, "-o")?),
-            "--map" => map = Some(next_path(&mut args, "--map")?),
-            "--configuration-bin" => {
-                configuration = Some(next_path(&mut args, "--configuration-bin")?)
-            }
-            "--flash-image" => flash_image = Some(next_path(&mut args, "--flash-image")?),
-            value if value.starts_with('-') => return Err(format!("unknown option `{value}`")),
-            value if input.is_none() => input = Some(PathBuf::from(value)),
-            value => return Err(format!("unexpected second input `{value}`")),
+            "-o" => output = Some(next(&mut args, "-o")?),
+            "--map" => map = Some(next(&mut args, "--map")?),
+            "--configuration-bin" => configuration = Some(next(&mut args, "--configuration-bin")?),
+            "--flash-image" => flash_image = Some(next(&mut args, "--flash-image")?),
+            x if x.starts_with('-') => return Err(format!("unknown option {x}")),
+            x if input.is_none() => input = Some(PathBuf::from(x)),
+            x => return Err(format!("unexpected input {x}")),
         }
     }
-
-    let input = input.ok_or_else(|| "missing manifest input; see --help".to_owned())?;
+    let input = input.ok_or_else(|| format!("missing application; {HELP}"))?;
     let output = output.unwrap_or_else(|| input.with_extension("cpu-v3-boot"));
     let map = map.unwrap_or_else(|| output.with_extension("map"));
-    let text = std::fs::read_to_string(&input)
-        .map_err(|source| format!("cannot read {}: {source}", input.display()))?;
-    let manifest = PackManifest::parse(&text).map_err(|error| error.to_string())?;
-    let base = input.parent().unwrap_or_else(|| Path::new("."));
-    let spec = manifest.load(base).map_err(|error| error.to_string())?;
-    let image = build_boot_image(spec).map_err(|error| error.to_string())?;
-    std::fs::write(&output, &image.bytes)
-        .map_err(|source| format!("cannot write {}: {source}", output.display()))?;
-    std::fs::write(&map, image.map())
-        .map_err(|source| format!("cannot write {}: {source}", map.display()))?;
+    let code = std::fs::read(&input).map_err(|e| format!("read {}: {e}", input.display()))?;
+    let package = pack_single_application(&code).map_err(|e| e.to_string())?;
     if flash_image.is_some() && configuration.is_none() {
         return Err("--flash-image requires --configuration-bin".into());
     }
-    if let Some(configuration) = configuration {
-        let configuration_bytes = std::fs::read(&configuration).map_err(|source| {
-            format!(
-                "cannot read configuration {}: {source}",
-                configuration.display()
-            )
-        })?;
-        let placed = image
-            .place_after_configuration(&configuration_bytes)
-            .map_err(|error| error.to_string())?;
-        let flash_image = flash_image.unwrap_or_else(|| output.with_extension("flash.bin"));
-        std::fs::write(&flash_image, placed.bytes)
-            .map_err(|source| format!("cannot write {}: {source}", flash_image.display()))?;
-        println!(
-            "placed package at Flash {:#010x} -> {}",
-            placed.payload_offset,
-            flash_image.display()
-        );
+    let placed = if let Some(configuration) = configuration {
+        let bytes = std::fs::read(configuration).map_err(|e| e.to_string())?;
+        if bytes.len() > SINGLE_BOOT_FLASH_BASE {
+            return Err("FPGA configuration exceeds its 1 MiB reserve".into());
+        }
+        let mut full = vec![0xff; SINGLE_BOOT_FLASH_BASE];
+        full[..bytes.len()].copy_from_slice(&bytes);
+        full.extend_from_slice(&package);
+        Some(full)
+    } else {
+        None
+    };
+    std::fs::write(&output, &package).map_err(|e| e.to_string())?;
+    std::fs::write(&map,format!("format=5\ncode_bytes={}\nflash_base=0x100000\npayload_offset=128\ncode_segment=7\nentry=0\ndata_pages=0,1,2,3\nstack=0xc000\nstatic_zero_bytes=16384\n",code.len())).map_err(|e|e.to_string())?;
+    if let Some(bytes) = placed {
+        std::fs::write(
+            flash_image.unwrap_or_else(|| output.with_extension("flash.bin")),
+            bytes,
+        )
+        .map_err(|e| e.to_string())?;
     }
     println!(
-        "packed {} sections, {} bytes -> {} (+ {})",
-        image.sections.len(),
-        image.bytes.len(),
-        output.display(),
-        map.display(),
+        "packed one application, {} code bytes, {} package bytes -> {}",
+        code.len(),
+        package.len(),
+        output.display()
     );
     Ok(())
 }
-
-fn next_path(args: &mut impl Iterator<Item = String>, option: &str) -> Result<PathBuf, String> {
+fn next(args: &mut impl Iterator<Item = String>, option: &str) -> Result<PathBuf, String> {
     args.next()
         .map(PathBuf::from)
         .ok_or_else(|| format!("{option} needs a path"))

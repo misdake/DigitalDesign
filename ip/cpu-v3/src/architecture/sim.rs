@@ -103,6 +103,14 @@ impl Default for CpuV3Sim {
 }
 
 impl CpuV3Sim {
+    /// Construct a board cold state with a fixed entry segment. The generic
+    /// CPU and all existing benchmark constructors retain segment zero.
+    pub fn with_initial_code_segment(words: usize, segment: Word) -> Self {
+        let mut cpu = Self::with_physical_memory_words(words);
+        cpu.code_segment = segment;
+        cpu
+    }
+
     pub fn with_physical_memory_words(words: usize) -> Self {
         assert!(
             words > 0,

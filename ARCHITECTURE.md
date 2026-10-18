@@ -25,7 +25,7 @@ compiler/
 systems/
   cpu-v1-sim/                    CPU V1 memory, devices, display, and programs
   cpu-v2-sim/                    CPU V2 runner and debugger
-  cpu-v3-tang-nano-20k/          fitted full FPGA system (single-stage flash boot,
+  cpu-v3-tang-nano-20k/          fitted full FPGA system (single-application cold Flash boot,
                                  CPU, SDRAM, flash, and display/HDMI) and boot chain
 ```
 
@@ -88,18 +88,22 @@ while device and complete-program tests stay with the system.
 
 Directory migration must not change ISA encodings, compiler listings, boot bytes, generated
 Verilog identities, resource claims, or simulator results. The CPU V3 system build script compiles
-the single boot stage and the two applications selected by `boot-applications.conf` from their real
-RCC sources and writes generated arrays only to Cargo `OUT_DIR`; no checked-in byte array is
-maintained in parallel. The immutable 673-word boot stage retains its FNV-1a baseline. The
-application-dependent Flash package is fingerprinted in the generated asset manifest and
-independently repacked from the generated offline manifest for byte-for-byte validation.
+the one application selected by `boot-applications.conf` from RCC and writes
+all executable/package bytes only to Cargo `OUT_DIR`; no checked-in byte array
+is maintained in parallel. The fixed v5 header carries only a bounded length,
+with fixed CSEG7/DSEG0/SP0xc000 layout. The hardware loader owns code copy and
+16 KiB static zeroing before CPU release. The former software Boot/673-word ROM
+contract is superseded by this explicitly authorized single-application change.
+An independent packer recreates the generated package byte for byte.
 
 ## Board bring-up and diagnostics
 
 Reusable board control belongs in `hardware/common`, not in processor or memory test harnesses.
 `ResetController` synchronizes an external reset and clock-ready indication, then holds reset for a
-specialization-defined number of complete clock cycles. A system chooses that interval; an IP only
-receives the resulting active-high reset.
+specialization-defined number of complete clock cycles. Debug systems choose that interval; an IP receives the resulting active-high reset.
+The CPU V3 production binding instead uses FPGA initial state and monotonic cold
+PLL/SDRAM-ready gates. Its runtime global reset and button selection are absent;
+only the native SDRAM controller retains a local PLL-acquisition reset.
 
 `DiagnosticReporter` owns serialization of the eight-byte DDHT v1 status frame. A test harness
 provides only `report_enable` and an atomically sampled status byte. This keeps the UART protocol

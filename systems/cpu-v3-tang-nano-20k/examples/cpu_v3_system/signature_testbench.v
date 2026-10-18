@@ -1,9 +1,5 @@
 `timescale 1ns/1ps
-// Signature testbench for the single-stage flash boot. Phase 1 preloads the
-// Flash model with the packed boot package and verifies the default S2
-// application's rejected legacy GPU submit, followed by the button-01 S1 application. Later phases
-// corrupt the descriptor and manifest metadata and check the boot stage's
-// failure reports.
+// Real SPI reader + full CPU/cache/arbiter/adapter, abstract native completion.
 module tb;
 reg clk = 0;
 reg [1:0] buttons = 0;
@@ -60,19 +56,13 @@ reg [20:0] idx;
 reg [20:0] idx2;
 integer cycle;
 
-assign sdram_request_ready = !(|buttons) && !write_pending &&
+assign sdram_request_ready = !write_pending &&
     read_delay == 0 && read_pairs == 0;
-always @(*) sdram_write_data_ready = !(|buttons) && write_pending;
+always @(*) sdram_write_data_ready = write_pending;
 
 always @(posedge clk) begin
     sdram_done <= 0;
     sdram_read_valid <= 0;
-    if (|buttons) begin
-        write_pending <= 0;
-        read_delay <= 0;
-        read_pairs <= 0;
-        transfer_pair <= 0;
-    end else begin
     if (sdram_request_valid && sdram_request_ready) begin
         if (sdram_words != 1 && sdram_words != 8 &&
             sdram_words != 16 && sdram_words != 32)
@@ -130,52 +120,27 @@ always @(posedge clk) begin
         read_pairs <= read_pairs - 1;
         if (read_pairs == 1) sdram_done <= 1;
     end
-    end
 end
 
-always @(posedge clk) begin
-    if (dut.code_segment == 16'd7 && dut.memory_response_valid && dut.memory_error)
-        $fatal(1, "SDRAM native adapter error: state=%0d fed=%0d/%0d words=%0d address=%h",
-            dut.u_shared_sdram_port.state, dut.u_shared_sdram_port.line_fed,
-            dut.u_shared_sdram_port.line_total, transfer_words, transfer_address);
-    if (dut.icache_memory_request_ready &&
-        (!dut.memory_request_valid || dut.memory_write || !dut.memory_line ||
-         dut.memory_address != dut.icache_memory_address)) begin
-        $display("FAIL: instruction acceptance routed mismatched request");
-        $finish(1);
-    end
-end
 
-// SPI Flash model: standard read command 03h plus a 24-bit byte address,
-// then package bytes MSB-first. Addresses outside the packed boot package
-// (placed at Flash byte 0x100000) read as erased Flash.
-localparam integer FLASH_BASE = 32'h00100000;
-localparam integer FLASH_PACKAGE_SIZE = __FLASH_PACKAGE_SIZE__;
-localparam integer S1_BASE = __S1_BASE__;
-localparam integer S2_BASE = __S2_BASE__;
-localparam integer S1_IMAGE_WORDS = __S1_IMAGE_WORDS__;
-localparam integer S2_IMAGE_WORDS = __S2_IMAGE_WORDS__;
-
-reg [7:0] flash_image [0:FLASH_PACKAGE_SIZE-1];
-reg [15:0] expected_s1 [0:S1_IMAGE_WORDS-1];
-reg [15:0] expected_s2 [0:S2_IMAGE_WORDS-1];
-reg [31:0] flash_command = 0;
-integer flash_command_bits = 0;
-reg [23:0] flash_byte_address = 0;
-integer flash_data_bit = 0;
-reg [7:0] flash_current_byte = 0;
-reg [1:0] corrupt_metadata = 0;
-integer flash_init_index;
-integer image_word;
-
-integer framebuffer_word;
-
-initial begin
-    for (flash_init_index = 0; flash_init_index < FLASH_PACKAGE_SIZE; flash_init_index = flash_init_index + 1)
-        flash_image[flash_init_index] = 8'hff;
-__FLASH_PACKAGE_INIT__
-end
-
+localparam integer FLASH_BASE=32'h100000;
+localparam integer FLASH_PACKAGE_SIZE=__FLASH_PACKAGE_SIZE__;
+localparam integer CODE_WORDS=__CODE_WORDS__;
+localparam integer EXPECT_ERROR=__EXPECT_ERROR__;
+localparam integer EXPECT_HALT=__EXPECT_HALT__;
+reg [7:0]flash_image[0:FLASH_PACKAGE_SIZE-1];
+reg [15:0]expected_code[0:CODE_WORDS-1];
+reg [31:0]flash_command=0;integer flash_command_bits=0;
+reg [23:0]flash_byte_address=0;integer flash_data_bit=0;reg [7:0]flash_current_byte=0;
+integer n,start_cycle=0,release_cycle=0,first_fetch_cycle=0,ready_cycle=0,receipt_file;
+reg released=0,first_fetch_seen=0;
+task save_startup;
+begin
+ receipt_file=$fopen("__STARTUP_RESULT_PATH__","w");
+ if(receipt_file==0)$fatal(1,"cannot save startup receipt");
+ $fdisplay(receipt_file,"{\"sdram_ready_cycle\":%0d,\"release_cycle\":%0d,\"first_fetch_cycle\":%0d,\"end_cycle\":%0d,\"code_words\":%0d,\"expected_halt\":%0d,\"boot_error\":%0d}",ready_cycle,release_cycle,first_fetch_cycle,start_cycle,CODE_WORDS,EXPECT_HALT,dut.boot_error);
+ $fclose(receipt_file);
+end endtask
 always @(posedge flash_cs_n) begin
     flash_command_bits = 0;
     flash_data_bit = 0;
@@ -198,10 +163,6 @@ always @(negedge flash_clk) begin
                 flash_current_byte = flash_image[flash_byte_address - FLASH_BASE];
             else
                 flash_current_byte = 8'hff;
-            if (corrupt_metadata == 1 && flash_byte_address == FLASH_BASE)
-                flash_current_byte = flash_current_byte ^ 8'h01;
-            if (corrupt_metadata == 2 && flash_byte_address == FLASH_BASE + 64)
-                flash_current_byte = flash_current_byte ^ 8'h01;
             flash_byte_address = flash_byte_address + 1;
         end
         flash_miso <= flash_current_byte[7 - flash_data_bit];
@@ -209,269 +170,50 @@ always @(negedge flash_clk) begin
     end
 end
 
-// UART monitor: 8N1 at the system control device's 469 clocks per bit,
-// keeping the last ten received bytes in a window for frame matching.
-localparam integer CLOCKS_PER_BIT = 469;
-integer uart_count = 0;
-integer uart_bit = 0;
-reg [7:0] uart_shift = 0;
-reg uart_receiving = 0;
-reg [7:0] uart_history [0:9];
-reg ddht_frame_seen = 0;
-reg display_frame_seen = 0;
-reg descriptor_error_frame_seen = 0;
-reg manifest_error_frame_seen = 0;
-reg wait_sdram_phase_seen = 0;
-reg boot_phase_seen = 0;
-reg dma_phase_seen = 0;
-reg application_phase_seen = 0;
-integer pre_submit_stall_cycles = 0;
-reg [31:0] pre_submit_last_retired = 0;
-always @(posedge clk) begin
-    if ({dut.gpu_ro_memory_request_valid, dut.gpu_fb_r_memory_request_valid,
-         dut.gpu_fb_w_memory_request_valid} !== 3'b000)
-        $fatal(1,"retired GPU issued a memory request");
-
-    case (dut.boot_phase)
-        1: wait_sdram_phase_seen <= 1;
-        2: boot_phase_seen <= 1;
-        3: dma_phase_seen <= 1;
-        5: application_phase_seen <= 1;
-        default: begin end
-    endcase
-end
-
-// Before the first GPU submission there is no intentional long CPU sleep.
-// Catch a cache/CPU deadlock substantially earlier than the global scenario
-// timeout while leaving the later GPU and vblank waits unconstrained here.
-always @(posedge clk) begin
-    if (dut.code_segment != 16'd7 || dut.halted ||
-        dut.retired_words != pre_submit_last_retired) begin
-        pre_submit_last_retired <= dut.retired_words;
-        pre_submit_stall_cycles <= 0;
-    end else begin
-        pre_submit_stall_cycles <= pre_submit_stall_cycles + 1;
-        if (pre_submit_stall_cycles == 1000000) begin
-            $display("FAIL: pre-submit CPU stall (pc=0x%04x retired=%0d core_state=%0d halted=%0d fault=%0d fault_code=0x%02x hold=%0d if_req=%0d if_ready=%0d icache_state=%0d refill_beat=%0d pending_addr=0x%08x ic_mem_req=%0d ic_mem_ready=%0d ic_mem_resp=%0d mem_resp=%0d/%0d port_state=%0d port_pending=%0d/%0d/0x%06x beats=%0d/%0d sdram_cmd=%0d/%0d sdram_read=%0d clean_valid=%0d clean_addr=0x%06x line_ready=%0d dcache_state=%0d maint_busy=%0d maint_done=%0d)",
-                dut.pc, dut.retired_words, dut.u_core.state, dut.halted,
-                dut.faulted, dut.fault_code, dut.sysctl_cpu_hold,
-                dut.core_instruction_request_valid, dut.core_instruction_request_ready,
-                dut.u_instruction_cache.u_cache.state,
-                dut.u_instruction_cache.u_cache.refill_beat,
-                dut.u_instruction_cache.u_cache.pending_address,
-                dut.icache_memory_request_valid, dut.icache_memory_request_ready,
-                dut.icache_memory_response_valid, dut.memory_response_valid,
-                dut.memory_response_last, dut.u_shared_sdram_port.state,
-                dut.u_shared_sdram_port.pending_write,
-                dut.u_shared_sdram_port.pending_line,
-                dut.memory_address,
-                dut.u_shared_sdram_port.read_beats, dut.u_shared_sdram_port.line_total,
-                dut.sdram_request_valid, dut.sdram_done, dut.sdram_read_valid,
-                dut.core_data_line_clean_valid, dut.core_data_line_clean_address,
-                dut.dcache_line_copy_ready, dut.u_data_cache.state,
-                dut.dcache_maintenance_busy, dut.dcache_maintenance_done);
-            $finish(1);
-        end
-    end
-end
-
-always @(posedge clk) begin
-    if (!uart_receiving) begin
-        if (!uart_tx) begin
-            uart_receiving <= 1;
-            uart_count <= CLOCKS_PER_BIT + CLOCKS_PER_BIT / 2;
-            uart_bit <= 0;
-        end
-    end else if (uart_count == 0) begin
-        if (uart_bit == 8) begin
-            uart_receiving <= 0;
-            if (uart_tx) begin
-                uart_history[0] = uart_history[1];
-                uart_history[1] = uart_history[2];
-                uart_history[2] = uart_history[3];
-                uart_history[3] = uart_history[4];
-                uart_history[4] = uart_history[5];
-                uart_history[5] = uart_history[6];
-                uart_history[6] = uart_history[7];
-                uart_history[7] = uart_history[8];
-                uart_history[8] = uart_history[9];
-                uart_history[9] = uart_shift;
-                // DDHT success frame: magic, version 1, test ID 0x07,
-                // status 0, XOR checksum of bytes 0..6.
-                if (uart_history[2] == 8'h44 && uart_history[3] == 8'h44 &&
-                    uart_history[4] == 8'h48 && uart_history[5] == 8'h54 &&
-                    uart_history[6] == 8'h01 && uart_history[7] == 8'h07 &&
-                    uart_history[8] == 8'h00 &&
-                    (uart_history[2] ^ uart_history[3] ^ uart_history[4] ^
-                     uart_history[5] ^ uart_history[6] ^ uart_history[7] ^
-                     uart_history[8] ^ uart_history[9]) == 0)
-                    ddht_frame_seen = 1;
-                // Display success frame: same layout with test ID 0x0b.
-                if (uart_history[2] == 8'h44 && uart_history[3] == 8'h44 &&
-                    uart_history[4] == 8'h48 && uart_history[5] == 8'h54 &&
-                    uart_history[6] == 8'h01 && uart_history[7] == 8'h0b &&
-                    uart_history[8] == 8'h00 &&
-                    (uart_history[2] ^ uart_history[3] ^ uart_history[4] ^
-                     uart_history[5] ^ uart_history[6] ^ uart_history[7] ^
-                     uart_history[8] ^ uart_history[9]) == 0)
-                    display_frame_seen = 1;
-                // Boot error frame: magic CV3B, stage 1, category 1, code 1,
-                // detail 0, XOR checksum of bytes 0..8.
-                if (uart_history[0] == 8'h43 && uart_history[1] == 8'h56 &&
-                    uart_history[2] == 8'h33 && uart_history[3] == 8'h42 &&
-                    uart_history[4] == 8'h01 && uart_history[5] == 8'h01 &&
-                    uart_history[6] == 8'h01 && uart_history[7] == 8'h00 &&
-                    uart_history[8] == 8'h00 &&
-                    (uart_history[0] ^ uart_history[1] ^ uart_history[2] ^
-                     uart_history[3] ^ uart_history[4] ^ uart_history[5] ^
-                     uart_history[6] ^ uart_history[7] ^ uart_history[8] ^
-                     uart_history[9]) == 0)
-                    descriptor_error_frame_seen = 1;
-                // Manifest error: stage 1, category 2, code 6, detail 0,
-                // followed by the XOR checksum.
-                if (uart_history[0] == 8'h43 && uart_history[1] == 8'h56 &&
-                    uart_history[2] == 8'h33 && uart_history[3] == 8'h42 &&
-                    uart_history[4] == 8'h01 && uart_history[5] == 8'h02 &&
-                    uart_history[6] == 8'h06 && uart_history[7] == 8'h00 &&
-                    uart_history[8] == 8'h00 &&
-                    (uart_history[0] ^ uart_history[1] ^ uart_history[2] ^
-                     uart_history[3] ^ uart_history[4] ^ uart_history[5] ^
-                     uart_history[6] ^ uart_history[7] ^ uart_history[8] ^
-                     uart_history[9]) == 0)
-                    manifest_error_frame_seen = 1;
-            end
-        end else begin
-            uart_shift[uart_bit] <= uart_tx;
-            uart_bit <= uart_bit + 1;
-            uart_count <= CLOCKS_PER_BIT - 1;
-        end
-    end else
-        uart_count <= uart_count - 1;
-end
 
 initial begin
-    for (cycle = 0; cycle < 524288; cycle = cycle + 1)
-        memory[cycle] = 0;
-    for (cycle = 0; cycle < 96000; cycle = cycle + 1) begin
-        memory[22'h200000 + cycle] = 16'h5a5a;
-        memory[22'h218000 + cycle] = 16'h5a5a;
-    end
-    memory[22'h217700] = 16'hbeef;
-    memory[22'h22f700] = 16'hbeef;
-    // Seed each application slot with the complement of its generated image.
-    // The comparisons below follow image length and contents automatically.
-__S1_IMAGE_INIT__
-__S2_IMAGE_INIT__
-    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
-        memory[S1_BASE + image_word] = ~expected_s1[image_word];
-    for (image_word = 0; image_word < S2_IMAGE_WORDS; image_word = image_word + 1)
-        memory[S2_BASE + image_word] = ~expected_s2[image_word];
-    repeat (16) @(posedge clk);
-    sdram_init_done = 1;
-
-    // Phase 1: the intact package boots the default S2 display application
-    // (no button held). The display application never writes the LEDs, so the
-    // boot monitor keeps ownership and shows the application phase. Its first
-    // legacy GPU submit must halt with 0x0b01 and have no rendering effects.
-    wait (dut.code_segment == 16'd7);
-    wait (dut.halted);
-    if (dut.halt_signal !== 16'h0b01 || dut.faulted)
-        $fatal(1,"retired S2 GPU must halt on submit rejection: signal=%h fault=%b",dut.halt_signal,dut.faulted);
-    if (display_frame_seen || dut.u_display.next_pending)
-        $fatal(1,"rejected S2 draw reported success or requested a swap");
-    repeat (4) @(posedge clk);
-    if (dut.data_segment !== 16'h0000 && dut.data_segment !== 16'h0020 &&
-        dut.data_segment !== 16'h0021)
-        $fatal(1, "S2 display application data segment is not a framebuffer store: dseg=0x%04x",
-            dut.data_segment);
-    for (image_word = 0; image_word < S2_IMAGE_WORDS; image_word = image_word + 1)
-        if (memory[S2_BASE + image_word] !== expected_s2[image_word])
-            $fatal(1, "selected S2 application word %0d: expected=%04x actual=%04x",
-                image_word, expected_s2[image_word], memory[S2_BASE + image_word]);
-    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
-        if (memory[S1_BASE + image_word] !== ~expected_s1[image_word])
-            $fatal(1, "unselected S1 application word %0d changed", image_word);
-    if (word_read_seen)
-        $fatal(1, "a word read reached the SDRAM adapter; line refills must burst");
-    if (!line_burst_seen)
-        $fatal(1, "no line burst reached the SDRAM adapter");
-    // The boot stage runs from BSRAM and never touches the I-cache; only the
-    // application fetches through it. I-cache refill behavior is covered by
-    // the system co-simulation's `icache_loop` program.
-    if (!wait_sdram_phase_seen || !boot_phase_seen || !dma_phase_seen ||
-        !application_phase_seen)
-        $fatal(1, "boot observer missed phases: wait=%0d boot=%0d dma=%0d app=%0d",
-            wait_sdram_phase_seen, boot_phase_seen, dma_phase_seen,
-            application_phase_seen);
-    if (dut.diagnostic_active !== 1 || leds !== 6'b100000)
-        $fatal(1, "display application must leave diagnostic ownership at phase 5: active=%0d leds=%b",
-            dut.diagnostic_active, leds);
-    // Every seeded framebuffer word and guard must survive the rejected
-    // submission. Boot DMA and CPU command-buffer stores use other regions.
-    for (framebuffer_word=0; framebuffer_word<96000; framebuffer_word=framebuffer_word+1)
-        if (memory[22'h200000+framebuffer_word] !== 16'h5a5a ||
-            memory[22'h218000+framebuffer_word] !== 16'h5a5a)
-            $fatal(1,"rejected GPU modified framebuffer offset=%0d",framebuffer_word);
-    if (memory[22'h217700] !== 16'hbeef || memory[22'h22f700] !== 16'hbeef)
-        $fatal(1, "rejected GPU draw changed framebuffer guards");
-`ifdef CPU_V3_S2_REJECTION_ONLY
-    $display("DIGITAL_DESIGN_PASS");
-    $finish;
-`endif
-
-    // Phase 2: holding the S1 button (01) resets the CPU and latches the
-    // slider boot. The live pins are 00 after release, so reaching CSEG 3 /
-    // DSEG 4 proves the reset-time selection survived into the boot stage.
-    ddht_frame_seen = 0;
-    buttons = 2'b01;
-    repeat (8) @(posedge clk);
-    buttons = 2'b00;
-    wait (ddht_frame_seen);
-    @(posedge clk);
-    if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
-        $fatal(1, "S1 slider application segments not reached: cseg=0x%04x dseg=0x%04x",
-            dut.code_segment, dut.data_segment);
-    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
-        if (memory[S1_BASE + image_word] !== expected_s1[image_word])
-            $fatal(1, "selected S1 application word %0d: expected=%04x actual=%04x",
-                image_word, expected_s1[image_word], memory[S1_BASE + image_word]);
-    if (leds !== 6'b000001)
-        $fatal(1, "slider application must light logical LED 000001, got %b", leds);
-
-    // Phase 3: corrupt the descriptor magic, reset through button 01,
-    // and expect the descriptor boot error report.
-    corrupt_metadata = 1;
-    buttons = 2'b01;
-    repeat (8) @(posedge clk);
-    buttons = 2'b00;
-    wait (descriptor_error_frame_seen);
-    @(posedge clk);
-    if (leds !== 6'b010001)
-        $fatal(1, "descriptor failure must light LEDs 6'b010001, got %b", leds);
-    if (dut.code_segment !== 16'd0)
-        $fatal(1, "failed boot must stay in the boot segment, cseg=0x%04x", dut.code_segment);
-
-    // Phase 4: allow Stage0 to run, corrupt the manifest magic, and prove the
-    // boot stage reports the failure without entering the application.
-    corrupt_metadata = 2;
-    buttons = 2'b01;
-    repeat (8) @(posedge clk);
-    buttons = 2'b00;
-    wait (manifest_error_frame_seen);
-    @(posedge clk);
-    if (leds !== 6'b010010)
-        $fatal(1, "manifest failure must light LEDs 6'b010010, got %b", leds);
-    if (dut.code_segment !== 16'd0)
-        $fatal(1, "manifest failure must stay in the boot segment, cseg=0x%04x", dut.code_segment);
-    $display("DIGITAL_DESIGN_PASS");
-    $finish;
+ for(n=0;n<4194304;n=n+1)memory[n]=16'hd00d;
+__FLASH_PACKAGE_INIT__
+__CODE_INIT__
+ repeat(11)@(negedge clk);sdram_clock_ready=0;
+ repeat(7)@(negedge clk);sdram_clock_ready=1;
+ repeat(9)@(negedge clk);sdram_init_done=1;
 end
-
-initial begin
-    repeat (8000000) @(posedge clk);
-    $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d halted=%0d halt_signal=%h display_seen=%0d)",
-        dut.code_segment, dut.data_segment, dut.pc, leds, dut.retired_words,
-        dut.halted, dut.halt_signal, display_frame_seen);
-    $finish(1);
+always @(posedge clk)begin
+ start_cycle=start_cycle+1;
+ if(sdram_init_done && ready_cycle==0)ready_cycle=start_cycle;
+ if(start_cycle>3000000)$fatal(1,"bounded full Flash boot");
+ if(!dut.boot_done && (dut.core_instruction_request_valid || dut.device_write_enable || dut.core_data_request_valid))$fatal(1,"CPU side effect before boot completion");
+ if(dut.reset!==1'b0)$fatal(1,"production runtime reset remained active");
+ if(dut.boot_error)begin
+  if(!EXPECT_ERROR)$fatal(1,"boot failure %0d",dut.boot_error_code);
+  if(dut.retired_words!=0 || dut.boot_done)$fatal(1,"failed image executed");
+  $display("DIGITAL_DESIGN_PASS single Flash rejection cycles%0d",start_cycle);save_startup();$display("DIGITAL_DESIGN_PASS");$finish;
+ end
+ if(EXPECT_ERROR && dut.boot_done)$fatal(1,"malformed image released CPU");
+ if(dut.boot_done && !released)begin
+  released=1;release_cycle=start_cycle;
+  if(dut.pc!==0 || dut.code_segment!==7 || dut.data_segment!==0)$fatal(1,"cold entry mapping");
+  if(write_pending || dut.u_boot_loader.word_index!=CODE_WORDS)$fatal(1,"release before final completed write");
+  for(n=0;n<8192;n=n+1)if(memory[n]!==0)$fatal(1,"static zero %0d",n);
+  if(memory[8192]!==16'hd00d)$fatal(1,"clear exceeds fixed static arena");
+  for(n=0;n<CODE_WORDS;n=n+1)if(memory[32'h70000+n]!==expected_code[n])$fatal(1,"code mismatch %0d",n);
+  if(memory[32'h70000+CODE_WORDS]!==16'hd00d)$fatal(1,"copy exceeds code extent");
+ end
+ if(dut.core_instruction_request_valid && !first_fetch_seen)begin
+  first_fetch_seen=1;first_fetch_cycle=start_cycle;
+  if(!released || dut.core_instruction_address!==32'h70000)$fatal(1,"first application fetch");
+ end
+ if(dut.faulted)$fatal(1,"application fault %0d at %h instruction%h expected%h prefix%h cseg%h",dut.fault_code,dut.fault_pc,dut.u_core.instruction,expected_code[dut.fault_pc],dut.u_core.prefix_high,dut.code_segment);
+ if(released && start_cycle==release_cycle+2)buttons<=2'b11;
+ if(released && start_cycle==release_cycle+5)buttons<=0;
+ if(EXPECT_HALT!=0 && dut.halted)begin
+  if(dut.halt_signal!==EXPECT_HALT || (EXPECT_HALT==16'h5a35 && dut.u_core.u_gpr_ram.words[13]!==16'hc000))$fatal(1,"static fixture/stack failed signal%h SP%h",dut.halt_signal,dut.u_core.u_gpr_ram.words[13]);
+  $display("DIGITAL_DESIGN_PASS single Flash static fixture release%0d firstfetch%0d halt%0d",release_cycle,first_fetch_cycle,start_cycle);save_startup();$display("DIGITAL_DESIGN_PASS");$finish;
+ end
+ if(EXPECT_HALT==0 && first_fetch_seen && dut.device_write_enable)begin
+  $display("DIGITAL_DESIGN_PASS single Flash production application release%0d firstfetch%0d firstdevice%0d",release_cycle,first_fetch_cycle,start_cycle);save_startup();$display("DIGITAL_DESIGN_PASS");$finish;
+ end
 end
+initial begin #31000000;$fatal(1,"full Flash boot wall watchdog");end
 endmodule

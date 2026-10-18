@@ -1,4 +1,4 @@
-module CpuV3Core (
+module CpuV3Core #(parameter [15:0] INITIAL_CODE_SEGMENT = 0) (
     input wire clk,
     input wire reset,
     input wire hold,
@@ -72,7 +72,7 @@ localparam [1:0] TEST_GREATER = 2;
 
 reg [4:0] state = ST_FETCH_REQUEST;
 reg [15:0] pc_register = 0;
-reg [15:0] code_segment_register = 0;
+reg [15:0] code_segment_register = INITIAL_CODE_SEGMENT;
 reg [7:0] data_segment_0 = 0;
 reg [7:0] data_segment_1 = 1;
 reg [7:0] data_segment_2 = 2;
@@ -592,7 +592,7 @@ always @(posedge clk) begin
         instruction_gpr_b <= 0;
         clear_index <= 0;
         pc_register <= 0;
-        code_segment_register <= 0;
+        code_segment_register <= INITIAL_CODE_SEGMENT;
         data_segment_0 <= 0;
         data_segment_1 <= 1;
         data_segment_2 <= 2;

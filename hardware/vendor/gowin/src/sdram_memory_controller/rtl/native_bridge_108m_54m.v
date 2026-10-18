@@ -4,6 +4,7 @@
 module TangNano20KSdramNativeBridge108M54M #(
     // BANK_BIT=5 stripes 128-byte sectors over four banks; 19 keeps contiguous banks.
     parameter PREPARE_NEXT = 0,
+    parameter COLD_START_ONLY = 0,
     parameter CHAIN_GROUP_FOUR = 0,
     parameter BANK_BIT = 5
 ) (
@@ -49,6 +50,10 @@ module TangNano20KSdramNativeBridge108M54M #(
     reg [63:0] pair_next_54 = 0;
     reg [1:0] queued_54 = 0;
     reg done_seen_54 = 0;
+    // Production cold-only transport uses FPGA declaration initial values.
+    // The external cold pulse still resets the native SDRAM controller while
+    // its PLL is acquiring lock; it does not fan out through transport FFs.
+    wire transport_reset = COLD_START_ONLY ? 1'b0 : reset;
     reg read_seen_54 = 0;
     reg init_54 = 0;
     reg stream_active_54 = 0;
@@ -119,16 +124,16 @@ module TangNano20KSdramNativeBridge108M54M #(
     // samples old Q. SharedSdramPort owns the sole 54 MHz payload/terminal hold.
     // This is an edge-valid event, not a registered post-edge logic pulse.
     assign read_data = read_pair_108;
-    assign read_valid = !reset && read_toggle_108 != read_seen_54;
+    assign read_valid = !transport_reset && read_toggle_108 != read_seen_54;
     assign stream_active = stream_active_54;
-    assign request_ready = init_54 && !occupied_54 && !reset;
+    assign request_ready = init_54 && !occupied_54 && !transport_reset;
     // Keep the 108 MHz word index out of the GPU/arbiter ready path. Two
     // 64-bit entries allow the source to get ahead of WRITE_LAUNCH while the
     // head pair is consumed low/high without a bubble.
     assign write_data_ready = pair_needed_54 && queued_54 < 2;
 
     always @(posedge logic_clk) begin
-        if (reset) begin
+        if (transport_reset) begin
             occupied_54 <= 0;
             request_toggle_54 <= 0;
             pairs_fed_54 <= 0;
@@ -190,7 +195,7 @@ module TangNano20KSdramNativeBridge108M54M #(
     // rising-edge stages preserve the CPU-falling launch phase while moving
     // the controller's WRITE_LAUNCH command path off the half-cycle boundary.
     always @(negedge controller_clk) begin
-        if (reset) begin
+        if (transport_reset) begin
             cpu_edge_seen_108 <= 0;
             slot_detect_108 <= 0;
             done_toggle_108 <= 0;
@@ -204,7 +209,7 @@ module TangNano20KSdramNativeBridge108M54M #(
     end
 
     always @(posedge controller_clk) begin
-        if (reset) begin
+        if (transport_reset) begin
             request_seen_108 <= 0;
             next_valid_108 <= 0;
             slot_pipe_108 <= 0;

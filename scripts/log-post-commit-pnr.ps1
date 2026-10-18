@@ -159,7 +159,7 @@ $componentRoots = [ordered]@{
     dcache     = @("u_data_cache")
     sdram_port = @("u_shared_sdram_port")
     display    = @("u_display")
-    boot       = @("u_boot", "u_boot_dma_engine", "u_boot_dma_device")
+    boot       = @("u_boot", "u_boot_dma_engine", "u_boot_dma_device", "u_boot_loader")
     flash      = @("u_flash")
     # Keep the core-only category across the legacy and native wrappers.
     sdram_ctrl = @("u_sdram_controller", "u_controller")

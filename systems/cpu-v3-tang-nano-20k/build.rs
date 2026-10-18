@@ -1,308 +1,49 @@
 #![allow(dead_code, hidden_glob_reexports, unused_imports)]
-
 pub use cpu_v3::*;
-
 #[path = "src/boot/mod.rs"]
 mod boot;
-
-use boot::{
-    build_boot_image, ApplicationLayout, BootApplicationProject, BootImageSpec, BootTarget,
-    InputSection, SectionKind, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT, SECTION_EXECUTE,
-    SECTION_READ,
-};
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
-
-const PROJECT_CONFIG: &str = "boot-applications.conf";
-const SELECTION_MODULE: &str = "boot_selection";
-
-fn compile(
-    path: &Path,
-    options: &CompilerOptions,
-    generated_modules: &[(&str, &Path)],
-) -> Vec<u16> {
+fn compile(path: &Path, options: &CompilerOptions) -> Vec<u16> {
     println!("cargo:rerun-if-changed={}", path.display());
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("read RCC source {}: {error}", path.display()));
-    let source_dir = path.parent().expect("RCC source directory");
+    let source = std::fs::read_to_string(path).unwrap();
+    let source_dir = path.parent().unwrap();
     let program =
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-            let module_path = generated_modules
-                .iter()
-                .find_map(|(module, path)| (*module == name).then_some(*path))
-                .map(Path::to_owned)
-                .unwrap_or_else(|| source_dir.join(format!("{name}.rs")));
-            if !generated_modules
-                .iter()
-                .any(|(_, generated)| *generated == module_path)
-            {
-                println!("cargo:rerun-if-changed={}", module_path.display());
-            }
-            std::fs::read_to_string(&module_path).map_err(|error| {
-                format!(
-                    "read module `{name}` from {}: {error}",
-                    module_path.display()
-                )
-            })
+            let module = source_dir.join(format!("{name}.rs"));
+            println!("cargo:rerun-if-changed={}", module.display());
+            std::fs::read_to_string(&module).map_err(|error| format!("read module {name}: {error}"))
         })
-        .unwrap_or_else(|error| panic!("compile RCC source {}: {error}", path.display()));
+        .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
     rcc_backend::try_compile(program, options, "main")
-        .unwrap_or_else(|error| panic!("compile RCC source {}: {error}", path.display()))
+        .unwrap()
         .words
-}
-
-fn options(layout: ApplicationLayout) -> CompilerOptions {
-    assert_ne!(
-        layout.entry.code_segment, layout.entry.data_segment,
-        "segmented application layout requires distinct CSEG and DSEG"
-    );
-    let mut options = CompilerOptions::for_separate_code_and_data_segments(layout.entry.offset);
-    options.stack_init = layout.entry.stack_offset;
-    options
-}
-
-fn word_bytes(words: &[u16]) -> Vec<u8> {
-    words.iter().flat_map(|word| word.to_le_bytes()).collect()
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
-    })
-}
-
-fn write_artifact(output: &Path, name: &str, bytes: &[u8]) {
-    std::fs::write(output.join(name), bytes)
-        .unwrap_or_else(|error| panic!("write generated boot artifact {name}: {error}"));
-}
-
-fn application_section(layout: ApplicationLayout, data: Vec<u8>) -> InputSection {
-    InputSection {
-        name: layout.section_name.into(),
-        kind: SectionKind::Load,
-        flags: SECTION_READ | SECTION_EXECUTE,
-        destination: layout.destination(),
-        memory_size_bytes: data.len() as u32,
-        data,
-        alignment_bytes: 32,
-    }
-}
-
-fn selection_source() -> String {
-    let s1 = S1_APPLICATION_LAYOUT.entry;
-    let s2 = S2_APPLICATION_LAYOUT.entry;
-    format!(
-        "// Generated from {PROJECT_CONFIG}; do not edit.\n\
-         pub const S1_CODE_SEGMENT: u16 = {s1_cseg};\n\
-         pub const S1_ENTRY_OFFSET: u16 = {s1_offset};\n\
-         pub const S1_DATA_SEGMENT: u16 = {s1_dseg};\n\
-         pub const S2_CODE_SEGMENT: u16 = {s2_cseg};\n\
-         pub const S2_ENTRY_OFFSET: u16 = {s2_offset};\n\
-         pub const S2_DATA_SEGMENT: u16 = {s2_dseg};\n",
-        s1_cseg = s1.code_segment,
-        s1_offset = s1.offset,
-        s1_dseg = s1.data_segment,
-        s2_cseg = s2.code_segment,
-        s2_offset = s2.offset,
-        s2_dseg = s2.data_segment,
-    )
-}
-
-fn pack_manifest(s1_bytes: usize, s2_bytes: usize) -> String {
-    let s1 = S1_APPLICATION_LAYOUT.entry;
-    format!(
-        "# Generated from {PROJECT_CONFIG}; paths are relative to this file.\n\
-         format 1\n\
-         target tang-nano-20k\n\
-         application-entry {s1_cseg:#06x} {s1_offset:#06x} {s1_dseg:#06x} {s1_sp:#06x}\n\n\
-         load {s1_name} {s1_destination:#010x} rx 32 {s1_bytes} {s1_asset}\n\
-         load {s2_name} {s2_destination:#010x} rx 32 {s2_bytes} {s2_asset}\n",
-        s1_name = S1_APPLICATION_LAYOUT.section_name,
-        s1_cseg = s1.code_segment,
-        s1_offset = s1.offset,
-        s1_dseg = s1.data_segment,
-        s1_sp = s1.stack_offset,
-        s1_destination = S1_APPLICATION_LAYOUT.destination().get(),
-        s1_asset = S1_APPLICATION_LAYOUT.asset_name,
-        s2_name = S2_APPLICATION_LAYOUT.section_name,
-        s2_destination = S2_APPLICATION_LAYOUT.destination().get(),
-        s2_asset = S2_APPLICATION_LAYOUT.asset_name,
-    )
-}
-
-fn project_map(project: &BootApplicationProject, s1_bytes: &[u8], s2_bytes: &[u8]) -> String {
-    let mut text = format!("format=1\nconfig={PROJECT_CONFIG}\n");
-    for (slot, source, layout, bytes) in [
-        (
-            "s1",
-            project.s1_source.as_path(),
-            S1_APPLICATION_LAYOUT,
-            s1_bytes,
-        ),
-        (
-            "s2",
-            project.s2_source.as_path(),
-            S2_APPLICATION_LAYOUT,
-            s2_bytes,
-        ),
-    ] {
-        let entry = layout.entry;
-        writeln!(text, "{slot}.source={}", source.display()).unwrap();
-        writeln!(text, "{slot}.asset={}", layout.asset_name).unwrap();
-        writeln!(text, "{slot}.section={}", layout.section_name).unwrap();
-        writeln!(
-            text,
-            "{slot}.entry={:04x}:{:04x} dseg={:04x} sp={:04x}",
-            entry.code_segment, entry.offset, entry.data_segment, entry.stack_offset
-        )
-        .unwrap();
-        writeln!(
-            text,
-            "{slot}.destination={:#010x}",
-            layout.destination().get()
-        )
-        .unwrap();
-        writeln!(text, "{slot}.bytes={}", bytes.len()).unwrap();
-        writeln!(text, "{slot}.fnv1a64={:016x}", fnv1a64(bytes)).unwrap();
-    }
-    text
-}
-
-fn asset_bindings() -> String {
-    let assets = [
-        "stage0.v3bin",
-        S1_APPLICATION_LAYOUT.asset_name,
-        S2_APPLICATION_LAYOUT.asset_name,
-        "cpu-v3-boot.bin",
-        "cpu-v3-boot.map",
-        "boot.cpu-v3-manifest",
-        "boot-project.map",
-        "boot-selection.generated.rs",
-    ];
-    let mut source = String::from("const ASSETS: &[(&str, &[u8])] = &[\n");
-    for asset in assets {
-        writeln!(
-            source,
-            "    ({asset:?}, include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{asset}\"))),"
-        )
-        .unwrap();
-    }
-    source.push_str("];\n");
-    source
 }
 
 fn main() {
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let config_path = root.join(PROJECT_CONFIG);
-    println!("cargo:rerun-if-changed={}", config_path.display());
-    let config = std::fs::read_to_string(&config_path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", config_path.display()));
-    let project = BootApplicationProject::parse(&config)
-        .unwrap_or_else(|error| panic!("parse {}: {error}", config_path.display()));
-
-    let s1_path = root.join(&project.s1_source);
-    let s2_path = root.join(&project.s2_source);
-    let selection_path = output.join("boot-selection.generated.rs");
-    write_artifact(
-        &output,
-        "boot-selection.generated.rs",
-        selection_source().as_bytes(),
-    );
-
-    let stage0 = compile(
-        &root.join("rcc/stage0.rs"),
-        &CompilerOptions::default(),
-        &[(SELECTION_MODULE, selection_path.as_path())],
-    );
-    let s1_application = compile(&s1_path, &options(S1_APPLICATION_LAYOUT), &[]);
-    let s2_application = compile(&s2_path, &options(S2_APPLICATION_LAYOUT), &[]);
-    let s2_simulator = compile(
-        &s2_path,
-        &CompilerOptions {
-            stack_init: S2_APPLICATION_LAYOUT.entry.stack_offset,
-            // The standalone simulator image shares code and data, so keep
-            // its legacy data/heap bases while ending the heap below the new
-            // 0xc000 stack top.
-            heap_size: 0x3fff,
-            ..CompilerOptions::default()
-        },
-        &[],
-    );
-
-    // The merged first stage must fit the 0x400-word BSRAM boot window.
-    assert!(
-        stage0.len() < 0x400,
-        "merged Stage0 uses {} words; the BSRAM boot window holds 0x400",
-        stage0.len()
-    );
-    let stage0_bytes = word_bytes(&stage0);
-    let s1_bytes = word_bytes(&s1_application);
-    let s2_bytes = word_bytes(&s2_application);
-    let image = build_boot_image(BootImageSpec {
-        target: BootTarget::TangNano20K,
-        application_entry: S1_APPLICATION_LAYOUT.entry,
-        sections: vec![
-            application_section(S1_APPLICATION_LAYOUT, s1_bytes.clone()),
-            application_section(S2_APPLICATION_LAYOUT, s2_bytes.clone()),
-        ],
-    })
-    .expect("build boot image");
-
-    // The single-stage boot merge changed the Stage0 words; this FNV-1a
-    // baseline is re-pinned for the final merged compiler output. Note that
-    // Stage0 now also compiles the generated `boot_selection` constants, so a
-    // change to the S1/S2 layout changes these bytes too. The ISA 0.8
-    // amendment (unsigned ADDI/SUBI, LDC/ADDC) changed the compiler's
-    // immediate emission, and the split CSEG/DSEG layout later moved each
-    // application entry and stack to offset zero. Both were re-pinned
-    // deliberately. Any such change must re-baseline deliberately, never
-    // silently.
-    assert_eq!(
-        fnv1a64(&stage0_bytes),
-        18_227_800_129_459_938_807,
-        "Stage0 bytes changed from the CPU V3 boot-format baseline"
-    );
-
-    write_artifact(&output, "stage0.v3bin", &stage0_bytes);
-    write_artifact(&output, S1_APPLICATION_LAYOUT.asset_name, &s1_bytes);
-    write_artifact(&output, S2_APPLICATION_LAYOUT.asset_name, &s2_bytes);
-    write_artifact(&output, "cpu-v3-boot.bin", &image.bytes);
-    write_artifact(&output, "cpu-v3-boot.map", image.map().as_bytes());
-    write_artifact(
-        &output,
-        "boot.cpu-v3-manifest",
-        pack_manifest(s1_bytes.len(), s2_bytes.len()).as_bytes(),
-    );
-    write_artifact(
-        &output,
-        "boot-project.map",
-        project_map(&project, &s1_bytes, &s2_bytes).as_bytes(),
-    );
-    write_artifact(
-        &output,
-        "boot_asset_bindings.rs",
-        asset_bindings().as_bytes(),
-    );
-
-    let mut generated = String::new();
-    writeln!(generated, "const STAGE0_PROGRAM: &[u16] = &{:?};", stage0).unwrap();
-    writeln!(
-        generated,
-        "const FLASH_PACKAGE: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/cpu-v3-boot.bin\"));"
-    )
-    .unwrap();
-    write_artifact(&output, "boot_images.rs", generated.as_bytes());
-    write_artifact(
-        &output,
-        "display_image.rs",
-        format!(
-            "// Generated from the configured S2 application.\n\
-             pub const DISPLAY_DEMO_PROGRAM: &[u16] = &{:?};\n",
-            s2_simulator
-        )
-        .as_bytes(),
-    );
+    let config = root.join("boot-applications.conf");
+    println!("cargo:rerun-if-changed={}", config.display());
+    let source = boot::single_application_source(&std::fs::read_to_string(config).unwrap())
+        .expect("single application project");
+    let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
+    options.stack_init = boot::SINGLE_BOOT_STACK;
+    let words = compile(&root.join(&source), &options);
+    let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+    let image = boot::pack_single_application(&code).expect("single application image");
+    std::fs::write(output.join("application.v3bin"), &code).unwrap();
+    std::fs::write(output.join("cpu-v3-boot.bin"), &image).unwrap();
+    let map=format!("format=5\napplication={}\ncode_segment=7\nentry=0\ndata_pages=0,1,2,3\nstack=0xc000\ncode_bytes={}\nstatic_zero_bytes=16384\nflash_base=0x100000\npayload_offset=128\n",source.display(),code.len());
+    std::fs::write(output.join("cpu-v3-boot.map"), map).unwrap();
+    let assets = ["application.v3bin", "cpu-v3-boot.bin", "cpu-v3-boot.map"];
+    let mut bindings = String::from("const ASSETS: &[(&str, &[u8])] = &[\n");
+    for name in assets {
+        bindings.push_str(&format!(
+            "({name:?},include_bytes!(concat!(env!(\"OUT_DIR\"),\"/{name}\"))),\n"
+        ));
+    }
+    bindings.push_str("];\n");
+    std::fs::write(output.join("boot_asset_bindings.rs"), bindings).unwrap();
 }

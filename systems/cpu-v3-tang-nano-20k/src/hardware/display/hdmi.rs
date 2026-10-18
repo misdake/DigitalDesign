@@ -1,5 +1,5 @@
 //! Multi-clock framebuffer fetch, line buffering, and HDMI TMDS output. The
-//! scanout timing is a compile-time [`DisplayConfig`]: the active mode is
+//! fixed 800x480 2x timing is a shared [`DisplayConfig`]: the timing is
 //! injected into the RTL and its testbench, so both always follow the single
 //! `ACTIVE_DISPLAY_CONFIG` constant.
 
@@ -100,7 +100,6 @@ fn verilog_testbench_for(config: &DisplayConfig) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display::DISPLAY_MODES;
     use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
@@ -136,8 +135,9 @@ mod tests {
     }
 
     #[test]
-    fn both_display_modes_inject_their_localparam_blocks() {
-        for config in DISPLAY_MODES {
+    fn fixed_display_injects_its_localparam_block() {
+        {
+            let config = ACTIVE_DISPLAY_CONFIG;
             assert!(config.verilog_localparams().contains("H_TOTAL"));
             assert!(config.verilog_localparams().contains("V_TOTAL"));
             let source = verilog_source_for(&config).unwrap();
@@ -153,38 +153,6 @@ mod tests {
     #[ignore = "explicit external simulation of active HDMI timing and burst fetch"]
     fn framebuffer_hdmi_runs_in_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<FramebufferHdmi>().unwrap();
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests/display_720p")]
-    struct FramebufferHdmi720p;
-
-    impl Module for FramebufferHdmi720p {
-        type Input = FramebufferHdmiInput;
-        type Output = FramebufferHdmiOutput;
-        type EmuState = ();
-        const USES_MAIN_CLOCK: bool = true;
-        const EMU_AVAILABLE: bool = false;
-        fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
-            panic!("Verilog-only test");
-        }
-        fn verilog_source() -> Option<String> {
-            verilog_source_for(&crate::display::VGA_720P_3X)
-                .map(|s| s.replace("FramebufferHdmi", "FramebufferHdmi720p"))
-        }
-        fn verilog_testbench() -> Option<String> {
-            verilog_testbench_for(&crate::display::VGA_720P_3X)
-                .map(|s| s.replace("FramebufferHdmi", "FramebufferHdmi720p"))
-        }
-        fn verilog_dependencies() -> Vec<VerilogDependency> {
-            FramebufferHdmi::verilog_dependencies()
-        }
-    }
-
-    #[test]
-    #[ignore = "explicit full-frame scanout in the alternative 3x video mode"]
-    fn framebuffer_hdmi_720p_runs_in_iverilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<FramebufferHdmi720p>().unwrap();
     }
 
     #[derive(Hardware)]

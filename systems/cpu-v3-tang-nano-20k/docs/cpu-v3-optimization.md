@@ -12,6 +12,8 @@ generated outside this document.
 
 ## Completed milestones
 
+- 2026-10-18 — One fixed-header hardware loader, initialized cold state and fixed 2x scanout replace Boot ROM/selection/overlay/DMA and runtime reset distribution; see the [record](cpu-v3-optimization-record.md#2026-10-18-single-boot-cold-state-and-fixed-2x).
+
 - 2026-10-18 — Display uses one fixed source/R/G/B/pixel calendar without a pair FIFO; existing BSRAM tables supply nine-bit TMDS precodes through final per-pixel disparity formatting. See the [record](cpu-v3-optimization-record.md#2026-10-18-display-fixed-calendar-and-tmds-precode).
 
 - 2026-10-18 — Display address ownership uses aligned transaction units, separate invalid-half predicates and one row-group cursor through MMIO, SDRAM requests and publication; see the [record](cpu-v3-optimization-record.md#2026-10-18-display-aligned-address-ownership).
@@ -73,7 +75,7 @@ generated outside this document.
 - 2026-09-27 — CPU B-source predecode and two-stage pixel AABB improved fitted timing with unchanged ISA and pixel results; offline and loaded-UART validation passed, with cold boot pending.
 - 2026-09-27 — Compact raster ownership, shared edge stepping, stable BSRAM inference and shared cache/control RAM16 ports reduced Logic; tile wins at both quad rates, and the two-pixel default passed complete Flash Verify and loaded UART, with cold boot pending.
 
-- 2026-09-27 — Four-row display buffering in two BSRAMs removed response staging and added linear RGB565-to-sRGB conversion; the completed-pair RAM16 FIFO is retained after whole-system comparisons, with mutually exclusive 2x/3x build features.
+- 2026-09-27 — Four-row display buffering in two BSRAMs removed response staging and added linear RGB565-to-sRGB conversion; the completed-pair RAM16 FIFO is retained after whole-system comparisons, with the then-supported 2x/3x build features (3x retired on 2026-10-18).
 
 - 2026-09-28 — Stream-owned fetch offsets, owner-qualified response broadcast and synchronous I/D-cache tag DPBs reduce whole-system Logic while preserving cache cycles and GPU behavior; matched RAM16, staging and arbitration alternatives remain in the local resource audit.
 

@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 module tb;
+    parameter COLD_START_ONLY=0;
     reg controller_clk = 0;
     reg logic_clk = 0;
     reg phy_clk = 0;
@@ -35,7 +36,7 @@ module tb;
     wire [31:0] IO_sdram_dq;
     integer pin_cycle, refreshes;
     reg checking_read = 0;
-    TangNano20KSdramNativeBridge108M54M dut(.*);
+    TangNano20KSdramNativeBridge108M54M #(.COLD_START_ONLY(COLD_START_ONLY)) dut(.*);
     LabPinModel #(.PERIOD_NS(10.102), .RETURN_MIN(1), .RETURN_MAX(4)) pin (
         .sclk(O_sdram_clk), .reset(reset), .cke(O_sdram_cke),
         .cs(O_sdram_cs_n), .ras(O_sdram_ras_n), .cas(O_sdram_cas_n),
@@ -194,6 +195,10 @@ module tb;
             write_sector(sector);
         for (sector = 0; sector < 4; sector = sector + 1)
             read_sector(sector);
+        // The generic transport retains its runtime reset contract. The
+        // cold-only production specialization starts from declared state and
+        // never receives another board reset after PLL acquisition.
+        if (!COLD_START_ONLY) begin
         // An external reset during a return stream must discard that owner.
         offer(0, 0, 32);
         wait (dut.core_phase[4:0] == 18);
@@ -205,12 +210,14 @@ module tb;
             @(posedge logic_clk); #1;
             if (read_valid || done) $fatal(1, "orphan return after reset");
         end
+        end
+        if(COLD_START_ONLY && dut.transport_reset!==0)$fatal(1,"cold transport reset was not eliminated");
         read_sector(0);
         write_scalar(4'b0000, 64'h0000000011223344);
         write_scalar(4'b0011, 64'h00000000aabbccdd);
         read_scalar(32'haabb3344);
         if (refreshes < 2) $fatal(1, "controller never refreshed");
-        $display("PASS native 64/32 bridge, four bank-striped sectors, masked scalar, reset and pin timings");
+        $display("PASS native 64/32 bridge, four bank-striped sectors, masked scalar and pin timings; cold_only=%0d",COLD_START_ONLY);
         $finish;
     end
 endmodule

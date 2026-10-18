@@ -834,3 +834,7 @@ mod tests {
 #[cfg(test)]
 #[path = "fetch_btc_tests.rs"]
 mod btc_tests;
+
+#[cfg(test)]
+#[path = "fetch_cold_tests.rs"]
+mod cold_tests;

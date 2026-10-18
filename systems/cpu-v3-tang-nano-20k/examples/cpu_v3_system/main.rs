@@ -1,147 +1,88 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
-use cpu_v3_tang_nano_20k::boot::{S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT};
 use cpu_v3_tang_nano_20k::display::ACTIVE_DISPLAY_CONFIG;
 use cpu_v3_tang_nano_20k::{
-    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3Gpu, CpuV3MemoryArbiter,
-    FramebufferHdmi, SharedSdramPort, SystemControlDevice,
+    CpuV3Gpu, CpuV3MemoryArbiter, FramebufferHdmi, SharedSdramPort, SingleBootLoader,
+    SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
-use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
-    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, ErasedSpiFlashImage, GowinCliError,
-    GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
-    TangNano20KBootHdmiWideInputs, TangNano20KBootHdmiWideOutputs, TangNano20KVideoMode,
-    BSRAM_1024_DEPTH,
+    run_gowin_project_cli, ErasedSpiFlashImage, GowinCliError, GowinModuleProject,
+    ResourceCountExpectation, SpiFlashReader, TangNano20K, TangNano20KBootHdmiWideInputs,
+    TangNano20KBootHdmiWideOutputs, TangNano20KVideoMode,
 };
-use std::cell::Cell;
-
-thread_local! {
-    static S2_REJECTION_ONLY: Cell<bool> = const { Cell::new(false) };
-}
-
+use std::cell::RefCell;
+const GENERATED_APPLICATION_PACKAGE: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.bin"));
+type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
+type SystemControl = SystemControlDevice<469>;
+thread_local! {static TEST_IMAGE:RefCell<Option<(Vec<u8>,bool,u16)>>=const{RefCell::new(None)};}
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_system_gowin")
 }
-
-include!(concat!(env!("OUT_DIR"), "/boot_images.rs"));
-
-const S1_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/application-s1.v3bin"));
-const S2_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/application-s2.v3bin"));
-
-struct BootImage;
-
-const fn boot_image() -> [u64; BSRAM_1024_DEPTH] {
-    let mut words = [0; BSRAM_1024_DEPTH];
-    let mut index = 0;
-    while index < words.len() {
-        words[index] = (((index as u64) * 0x9e37) ^ 0x5aa5) & 0xffff;
-        index += 1;
-    }
-    index = 0;
-    while index < STAGE0_PROGRAM.len() {
-        words[index] = STAGE0_PROGRAM[index] as u64;
-        index += 1;
-    }
-    words
-}
-
-impl BsramImage<16> for BootImage {
-    const WORDS: [u64; BSRAM_1024_DEPTH] = boot_image();
-}
-
-type BootMemory = Bsram1R1Rw1024<16, BootImage>;
-type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
-type SystemControl = SystemControlDevice<469>;
-type BoardReset = ResetController<8>;
-
 #[derive(Hardware)]
 #[hardware(namespace = "examples/cpu_v3_system")]
 struct CpuV3System;
-
 impl Module for CpuV3System {
     type Input = TangNano20KBootHdmiWideInputs;
     type Output = TangNano20KBootHdmiWideOutputs;
     type EmuState = ();
-
     const USES_MAIN_CLOCK: bool = true;
     const EMU_AVAILABLE: bool = false;
-
-    fn execute_emu(
-        _state: &mut Self::EmuState,
-        _circuit: &mut CircuitWires,
-        _input: &Self::Input,
-        _output: &Self::Output,
-    ) {
-        panic!("CpuV3System is a Verilog-only hardware integration test")
+    fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
+        panic!("Verilog-only system integration")
     }
-
     fn verilog_source() -> Option<String> {
-        Some(
-            include_str!("self_test.v")
-                .replace(
-                    "__BOOT_MEMORY__",
-                    &BootMemory::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__CPU_V3_CORE__",
-                    &CpuV3Core::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__FETCH_QUEUE__",
-                    &CpuV3InstructionFetchQueue::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__CACHE__",
-                    &CpuV3InstructionCache::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__DATA_CACHE__",
-                    &CpuV3DataCache::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__ARBITER__",
-                    &CpuV3MemoryArbiter::verilog_identity().module_name(),
-                )
-                .replace("__GPU__", &CpuV3Gpu::verilog_identity().module_name())
-                .replace(
-                    "__SYSTEM_CONTROL__",
-                    &SystemControl::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__BOOT_DMA_DEVICE__",
-                    &BootDmaDevice::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__BOOT_DMA_ENGINE__",
-                    &BootDmaEngine::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__FLASH_READER__",
-                    &FittedFlashReader::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__SHARED_SDRAM_PORT__",
-                    &SharedSdramPort::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__FRAMEBUFFER_HDMI__",
-                    &FramebufferHdmi::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__RESET_CONTROLLER__",
-                    &BoardReset::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__BOOT_PROGRESS_MONITOR__",
-                    &BootProgressMonitor::verilog_identity().module_name(),
-                ),
-        )
+        let mut text = include_str!("self_test.v").to_string();
+        for (key, name) in [
+            (
+                "__CPU_V3_CORE__",
+                CpuV3Core::verilog_identity().module_name(),
+            ),
+            (
+                "__FETCH_QUEUE__",
+                CpuV3InstructionFetchQueue::verilog_identity().module_name(),
+            ),
+            (
+                "__CACHE__",
+                CpuV3InstructionCache::verilog_identity().module_name(),
+            ),
+            (
+                "__DATA_CACHE__",
+                CpuV3DataCache::verilog_identity().module_name(),
+            ),
+            (
+                "__ARBITER__",
+                CpuV3MemoryArbiter::verilog_identity().module_name(),
+            ),
+            ("__GPU__", CpuV3Gpu::verilog_identity().module_name()),
+            (
+                "__SYSTEM_CONTROL__",
+                SystemControl::verilog_identity().module_name(),
+            ),
+            (
+                "__SINGLE_BOOT_LOADER__",
+                SingleBootLoader::verilog_identity().module_name(),
+            ),
+            (
+                "__FLASH_READER__",
+                FittedFlashReader::verilog_identity().module_name(),
+            ),
+            (
+                "__SHARED_SDRAM_PORT__",
+                SharedSdramPort::verilog_identity().module_name(),
+            ),
+            (
+                "__FRAMEBUFFER_HDMI__",
+                FramebufferHdmi::verilog_identity().module_name(),
+            ),
+        ] {
+            text = text.replace(key, &name);
+        }
+        Some(text)
     }
-
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<BootMemory>("u_boot"),
             VerilogDependency::new::<CpuV3Core>("u_core"),
             VerilogDependency::new::<CpuV3InstructionFetchQueue>("u_instruction_fetch_queue"),
             VerilogDependency::new::<CpuV3InstructionCache>("u_instruction_cache"),
@@ -149,210 +90,130 @@ impl Module for CpuV3System {
             VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
             VerilogDependency::new::<CpuV3Gpu>("u_gpu"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
-            VerilogDependency::new::<BootDmaDevice>("u_boot_dma_device"),
-            VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
+            VerilogDependency::new::<SingleBootLoader>("u_boot_loader"),
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
             VerilogDependency::new::<SharedSdramPort>("u_shared_sdram_port"),
             VerilogDependency::new::<FramebufferHdmi>("u_display"),
-            VerilogDependency::new::<BoardReset>("u_reset"),
-            VerilogDependency::new::<BootProgressMonitor>("u_boot_progress"),
         ]
     }
-
     fn verilog_testbench() -> Option<String> {
+        let fixture = TEST_IMAGE.with(|x| x.borrow().clone());
+        let (package, error, halt) =
+            fixture.unwrap_or_else(|| (GENERATED_APPLICATION_PACKAGE.to_vec(), false, 0x0b01));
         let mut flash_init = String::new();
-        for (index, byte) in FLASH_PACKAGE.iter().enumerate() {
-            flash_init.push_str(&format!("        flash_image[{index}] = 8'h{byte:02x};\n"));
+        let mut code_init = String::new();
+        for (index, byte) in package.iter().enumerate() {
+            flash_init.push_str(&format!(" flash_image[{index}]=8'h{byte:02x};\n"));
         }
-        let image_init = |name: &str, image: &[u8]| {
-            let (words, remainder) = image.as_chunks::<2>();
-            assert!(
-                remainder.is_empty(),
-                "application image must contain whole words"
-            );
-            let mut init = String::new();
-            for (index, bytes) in words.iter().enumerate() {
-                let word = u16::from_le_bytes([bytes[0], bytes[1]]);
-                init.push_str(&format!("        {name}[{index}] = 16'h{word:04x};\n"));
-            }
-            init
-        };
-        let testbench = include_str!("signature_testbench.v")
-            .replace("__FLASH_PACKAGE_SIZE__", &FLASH_PACKAGE.len().to_string())
-            .replace("__FLASH_PACKAGE_INIT__", &flash_init)
-            .replace(
-                "__S1_BASE__",
-                &S1_APPLICATION_LAYOUT.destination().get().to_string(),
-            )
-            .replace(
-                "__S2_BASE__",
-                &S2_APPLICATION_LAYOUT.destination().get().to_string(),
-            )
-            .replace("__S1_IMAGE_WORDS__", &(S1_IMAGE.len() / 2).to_string())
-            .replace("__S2_IMAGE_WORDS__", &(S2_IMAGE.len() / 2).to_string())
-            .replace("__S1_IMAGE_INIT__", &image_init("expected_s1", S1_IMAGE))
-            .replace("__S2_IMAGE_INIT__", &image_init("expected_s2", S2_IMAGE));
-        Some(if S2_REJECTION_ONLY.with(Cell::get) {
-            format!("`define CPU_V3_S2_REJECTION_ONLY\n{testbench}")
-        } else {
-            testbench
-        })
+        let code = &package[128..];
+        for (index, word) in code.as_chunks::<2>().0.iter().enumerate() {
+            let value = u16::from_le_bytes([word[0], word[1]]);
+            code_init.push_str(&format!(" expected_code[{index}]=16'h{value:04x};\n"));
+        }
+        let receipt = std::env::var_os("SINGLE_BOOT_EVIDENCE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("startup-{halt:04x}-{}.json", u8::from(error)));
+        Some(
+            include_str!("signature_testbench.v")
+                .replace(
+                    "__STARTUP_RESULT_PATH__",
+                    &receipt.to_string_lossy().replace('\\', "/"),
+                )
+                .replace("__FLASH_PACKAGE_SIZE__", &package.len().to_string())
+                .replace("__FLASH_PACKAGE_INIT__", &flash_init)
+                .replace("__CODE_WORDS__", &(code.len() / 2).to_string())
+                .replace("__CODE_INIT__", &code_init)
+                .replace("__EXPECT_ERROR__", &u8::from(error).to_string())
+                .replace("__EXPECT_HALT__", &halt.to_string()),
+        )
     }
 }
-
 fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
-    // The board video PLL follows the single display-mode switch so the fitted
-    // pixel clock always matches the compiled-in scanout timing.
-    let video_mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
-    TangNano20K::boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system", video_mode)
+    let mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
+    TangNano20K::cold_boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system", mode)
         .with_timing_driven_implementation()
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
-    // The per-mode MULT18X18=Claimed expectation was dropped when FPU v2
-    // brought a MULT36X36 into the design: the audit's per-mode count no
-    // longer commutes with lane-based claims. The aggregate
-    // actual-versus-claimed lane audit (MULT36X36-aware) remains in force.
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-    use cpu_v3_tang_nano_20k::boot::{
-        build_boot_image, PackManifest, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
-    };
+    use cpu_v3_tang_nano_20k::boot::pack_single_application;
     use digital_design_hardware::{ResourceKind, VerilogProject};
-    use rcc::frontend::compile_program_named;
-    use std::path::Path;
-
-    fn compile_cpu_v3(file: &str, options: &CompilerOptions) -> CpuV3Program {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("rcc")
-            .join(file);
-        let source = std::fs::read_to_string(&path).expect("read rcc source");
-        let source_dir = path.parent().expect("rcc source directory");
-        let program =
-            compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-                let path = if name == "boot_selection" {
-                    std::path::PathBuf::from(env!("OUT_DIR")).join("boot-selection.generated.rs")
-                } else {
-                    source_dir.join(format!("{name}.rs"))
-                };
-                std::fs::read_to_string(path)
-                    .map_err(|error| format!("read module `{name}`: {error}"))
-            })
-            .expect("rcc compile failed");
-        rcc_backend::try_compile(program, options, "main")
-            .unwrap_or_else(|error| panic!("cpu-v3 compile failed: {error}"))
-    }
-
-    fn format_words(words: &[u16]) -> String {
-        let items = words
-            .iter()
-            .map(|word| format!("0x{word:04x}"))
-            .collect::<Vec<_>>();
-        format!("&[{}]", items.join(", "))
-    }
-
-    #[test]
-    fn stage0_image_is_the_current_compiler_output() {
-        let compiled = compile_cpu_v3("stage0.rs", &CompilerOptions::default()).words;
-        assert!(
-            compiled.len() < BSRAM_1024_DEPTH,
-            "stage0 uses {} words; the boot window holds {BSRAM_1024_DEPTH}",
-            compiled.len()
-        );
-        assert_eq!(
-            compiled.len(),
-            STAGE0_PROGRAM.len(),
-            "stage0 changed; new STAGE0_PROGRAM = {}",
-            format_words(&compiled)
-        );
-        if compiled != STAGE0_PROGRAM {
-            panic!(
-                "stage0 changed; new STAGE0_PROGRAM = {}",
-                format_words(&compiled)
-            );
-        }
-        assert_eq!(
-            BootImage::WORDS[..compiled.len()],
-            compiled.iter().copied().map(u64::from).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn generated_manifest_repackages_the_embedded_flash_bytes() {
-        let manifest = PackManifest::parse(include_str!(concat!(
-            env!("OUT_DIR"),
-            "/boot.cpu-v3-manifest"
-        )))
+    fn fixture() -> Vec<u8> {
+        let source = include_str!("../../rcc/boot-contract.rs");
+        let mut options =
+            cpu_v3::rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.stack_init = 0xc000;
+        let program = rcc::frontend::compile_program_named(
+            "boot-contract.rs",
+            source,
+            &options,
+            &mut |name| Err(format!("unexpected module {name}")),
+        )
         .unwrap();
-        let spec = manifest.load(Path::new(env!("OUT_DIR"))).unwrap();
-        let package = build_boot_image(spec).unwrap().bytes;
-        assert_eq!(package, FLASH_PACKAGE);
+        let program = cpu_v3::rcc_backend::try_compile(program, &options, "main").unwrap();
+        let bytes: Vec<u8> = program.words.iter().flat_map(|x| x.to_le_bytes()).collect();
+        pack_single_application(&bytes).unwrap()
     }
-
     #[test]
-    fn generated_manifest_contains_the_derived_two_section_layout() {
-        let manifest = PackManifest::parse(include_str!(concat!(
-            env!("OUT_DIR"),
-            "/boot.cpu-v3-manifest"
-        )))
-        .unwrap();
-        assert_eq!(manifest.sections.len(), 2);
-        let s1_section = manifest
-            .sections
-            .iter()
-            .find(|section| section.name == S1_APPLICATION_LAYOUT.section_name)
-            .unwrap();
-        let s2_section = manifest
-            .sections
-            .iter()
-            .find(|section| section.name == S2_APPLICATION_LAYOUT.section_name)
-            .unwrap();
-        assert_eq!(manifest.application_entry, S1_APPLICATION_LAYOUT.entry);
-        assert_eq!(s1_section.destination, S1_APPLICATION_LAYOUT.destination());
+    fn single_application_assets_repack_exactly() {
         assert_eq!(
-            s1_section.source.as_deref(),
-            Some(Path::new(S1_APPLICATION_LAYOUT.asset_name))
-        );
-        assert_eq!(s2_section.destination, S2_APPLICATION_LAYOUT.destination());
-        assert_eq!(
-            s2_section.source.as_deref(),
-            Some(Path::new(S2_APPLICATION_LAYOUT.asset_name))
+            pack_single_application(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/application.v3bin"
+            )))
+            .unwrap(),
+            GENERATED_APPLICATION_PACKAGE
         );
     }
-
     #[test]
-    fn project_contains_full_system_memory_flash_and_display() {
-        let verilog = VerilogProject::generate::<CpuV3System>().unwrap();
-        assert!(!verilog.resource_claims.is_empty());
-        // The top-level GPU source is present in the generated project.
-        assert!(verilog
+    fn application_updates_do_not_change_gateware() {
+        let before = VerilogProject::generate::<CpuV3System>().unwrap().files;
+        TEST_IMAGE.with(|x| *x.borrow_mut() = Some((fixture(), false, 0x5a35)));
+        let after = VerilogProject::generate::<CpuV3System>().unwrap().files;
+        TEST_IMAGE.with(|x| *x.borrow_mut() = None);
+        assert_eq!(before, after);
+    }
+    #[test]
+    fn full_system_omits_rom_overlay_dma_and_runtime_reset() {
+        let project = VerilogProject::generate::<CpuV3System>().unwrap();
+        let text = project
             .files
-            .keys()
-            .any(|path| path.to_string_lossy().contains("gpu")));
-        let project = gowin_project().generate().unwrap();
-        assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
-        assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
-        // Current board claims: boot ROM (1), FPU registers (2),
-        // I/D cache data and tags (6), and display line buffers (2).
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 11);
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains("BootDmaEngine")
+                && !text.contains("ResetController")
+                && !text.contains("instruction_source_count")
+                && !text.contains("u_boot (")
+        );
+        let board = gowin_project().generate().unwrap();
+        assert_eq!(board.resources.claimed[&ResourceKind::Bsram18K], 10);
     }
-
     #[test]
-    #[ignore = "explicit external simulator validation"]
+    #[ignore = "complete real-SPI production application cold boot"]
     fn flash_boot_executes_in_verilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>().unwrap();
     }
-
     #[test]
-    #[ignore = "explicit external simulator validation"]
-    fn flash_boot_rejects_retired_s2_gpu_in_verilog() {
-        S2_REJECTION_ONLY.with(|flag| flag.set(true));
+    #[ignore = "complete real-SPI nonzero memory / zero-and-nonzero-static fixture"]
+    fn flash_boot_statics_in_verilog() {
+        TEST_IMAGE.with(|x| *x.borrow_mut() = Some((fixture(), false, 0x5a35)));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
-        S2_REJECTION_ONLY.with(|flag| flag.set(false));
+        TEST_IMAGE.with(|x| *x.borrow_mut() = None);
+        result.unwrap();
+    }
+    #[test]
+    #[ignore = "malformed image must never release CPU or write a device"]
+    fn flash_boot_rejects_header_in_verilog() {
+        let mut bad = fixture();
+        bad[0] ^= 1;
+        TEST_IMAGE.with(|x| *x.borrow_mut() = Some((bad, true, 0)));
+        let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
+        TEST_IMAGE.with(|x| *x.borrow_mut() = None);
         result.unwrap();
     }
 }

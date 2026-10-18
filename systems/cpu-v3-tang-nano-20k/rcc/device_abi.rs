@@ -17,25 +17,6 @@ pub fn sysctl_watch_target(device: u16, channel: u16) -> u16 {
     ((channel & 15) << 3) | (device & 7)
 }
 
-pub const BOOT_SELECT_DEVICE: u16 = 1;
-pub const BOOT_SELECT_VALUE: u16 = 0;
-
-pub const BOOT_DMA_DEVICE: u16 = 2;
-pub const DMA_COMMAND: u16 = 0;
-pub const DMA_STATUS: u16 = 1;
-pub const DMA_FLASH_OFFSET_LOW: u16 = 2;
-pub const DMA_FLASH_OFFSET_HIGH: u16 = 3;
-pub const DMA_DESTINATION_LOW: u16 = 4;
-pub const DMA_DESTINATION_HIGH: u16 = 5;
-pub const DMA_FILE_SIZE_LOW: u16 = 6;
-pub const DMA_FILE_SIZE_HIGH: u16 = 7;
-pub const DMA_MEMORY_SIZE_LOW: u16 = 8;
-pub const DMA_MEMORY_SIZE_HIGH: u16 = 9;
-pub const DMA_ERROR: u16 = 14;
-pub const DMA_COMMAND_START: u16 = 1;
-pub const DMA_STATUS_BUSY: u16 = 1;
-pub const DMA_STATUS_ERROR: u16 = 0x8000;
-
 pub const DISPLAY_DEVICE: u16 = 3;
 pub const DISPLAY_FRAME_INDEX: u16 = 0;
 pub const DISPLAY_STAGE_FRAMEBUFFER_LOW: u16 = 1;

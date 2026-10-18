@@ -43,9 +43,8 @@ function Get-ProfileConfiguration {
                 Package = "cpu-v3-tang-nano-20k"
                 Example = "cpu_v3_system"
                 Output = "target/cpu_v3_system_gowin"
-                # The S2 display application reports 0x0b; the S1 slider
-                # diagnostic reports 0x07. Both are acceptable captures.
-                TestIds = "0x0b,0x07"
+                # The sole configured display application reports 0x0b.
+                TestIds = "0x0b"
             }
         }
     }
@@ -156,16 +155,16 @@ try {
     if ($WriteBootFlash -or $WriteCompleteFlash) {
         $bootAssetsDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
         $bootPackagePath = Join-Path $bootAssetsDirectory "cpu-v3-boot.bin"
-        $packManifestPath = Join-Path $bootAssetsDirectory "boot.cpu-v3-manifest"
+        $applicationPath = Join-Path $bootAssetsDirectory "application.v3bin"
         $repackedPackagePath = Join-Path $runDirectory "cpu-v3-boot.repacked.bin"
         $repackedMapPath = Join-Path $runDirectory "cpu-v3-boot.repacked.map"
         Invoke-CargoStage "materialize generated boot package" "run" @(
             "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets",
             "--", $bootAssetsDirectory
         )
-        Invoke-CargoStage "independently repack generated boot manifest" "run" @(
+        Invoke-CargoStage "independently pack generated single application" "run" @(
             "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
-            $packManifestPath, "-o", $repackedPackagePath, "--map", $repackedMapPath
+            $applicationPath, "-o", $repackedPackagePath, "--map", $repackedMapPath
         )
         $generatedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash
         $repackedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $repackedPackagePath).Hash
@@ -193,7 +192,7 @@ try {
         $completeFlashPath = Join-Path $runDirectory "cpu-v3-complete-flash.bin"
         Invoke-CargoStage "build complete power-on Flash image" "run" @(
             "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
-            $packManifestPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
+            $applicationPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
             "--configuration-bin", $configurationBinPath, "--flash-image", $completeFlashPath
         )
         Invoke-CargoStage "program complete power-on Flash image once" "run" @(

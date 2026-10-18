@@ -25,13 +25,8 @@ pub const fn sysctl_watch_target(device: u8, channel: u8) -> u16 {
     ((channel as u16 & 0x0f) << 3) | (device as u16 & 0x07)
 }
 
-/// Boot-selection strap device. The fitted system latches a stable one-hot
-/// button value during reset and exposes it to the boot stage after button release.
-pub const BOOT_SELECT_DEVICE: u8 = 1;
-pub const BOOT_SELECT_VALUE: u8 = 0;
-
-/// Boot DMA device selected by `dev_recv(BOOT_DMA_DEVICE, channel)` and
-/// `dev_send(BOOT_DMA_DEVICE, channel, value)`.
+/// Legacy generic DMA unit-test contract. Device 2 is unassigned in the
+/// production cold-boot system; no programmable DMA register bank is fitted.
 pub const BOOT_DMA_DEVICE: u8 = 2;
 
 pub const DMA_COMMAND: u8 = 0;
