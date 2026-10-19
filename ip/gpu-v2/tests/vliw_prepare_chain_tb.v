@@ -31,6 +31,8 @@ reg[255:0]held;
 reg[90:0]held_attribute;
 reg[58:0]held_quant;
 reg[59:0]held_origin;
+reg[67:0]held_geometry;
+integer quant_issues=0,quant_writes=0,quant_aborted=0,geometry_holds=0,geometry_cuts=0,geometry_overlap=0;
 reg[47:0]packed_expected;
 reg[31:0]uv_word;
 reg[17:0]uv_expected;
@@ -39,6 +41,8 @@ integer zero_reads=0,bias_reads=0;
 always @(posedge clk)begin
  wall=wall+1;if(wall>80000)$fatal(1,"bounded root test");
  if(reset)begin seen_node=0;seen_bound=0;empty_seen=0;
+  if(I.prepare.quant_pipe[0]===1'b1)quant_aborted=quant_aborted+1;
+  if(I.prepare.quant_pipe[1]===1'b1)quant_aborted=quant_aborted+1;
   origin_aborted=origin_aborted+(mac_valid[0]?1:0)+(mac_valid[1]?1:0);
   mac_valid<=0;mac_edge0<=0;mac_edge1<=0;mac_want0<=0;mac_want1<=0;
   param_writes=0;normal_writes=0;attribute_writes=0;packed_reads=0;attr0_takes=0;attr1_takes=0;uv_writes=0;
@@ -90,10 +94,13 @@ always @(posedge clk)begin
    $fdisplay(fd,"P %0d %0d %h",p,param_row,expanded_param);
   end
   if(gwe)begin
+   quant_writes=quant_writes+1;
+   if(I.prepare.state==1&&raw_valid&&ready)geometry_overlap=geometry_overlap+1;
    if(geo_writes>=9||gwd!==geometry[p*9+geo_writes])$fatal(1,"quantized geometry packet%0d item%0d",p,geo_writes);
    geo_writes=geo_writes+1;
    e=gwa[1:0];case(gwa[3:2])0:aa[e]=$signed(gwd);1:bb[e]=$signed(gwd);2:begin cc[e]=$signed(gwd);shadow[e]=gwd;end default:$fatal(1,"geo row");endcase
   end
+  if(I.prepare.read_valid)quant_issues=quant_issues+1;
   if(bvalid)begin
    seen_bound=1;empty_seen=bempty;
    if(bempty&&R.w_pc<6)early_cancel=early_cancel+1;
@@ -134,11 +141,14 @@ always @(posedge clk)begin
   held_attribute={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.compute.lod.pw_acc_read_address,I.compute.lod.pw_q[83:36]};
   held_quant={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative};
   held_origin={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result};
+  held_geometry={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1};
+  if(|I.prepare.quant_pipe)geometry_holds=geometry_holds+1;
   if(|R.origin_valid)origin_holds=origin_holds+1;
   #1;if(held!=={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny})$fatal(1,"CE hold");
   if(held_attribute!=={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.compute.lod.pw_acc_read_address,I.compute.lod.pw_q[83:36]})$fatal(1,"attribute prefetch CE hold");
   if(held_quant!=={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative})$fatal(1,"quantization retire CE hold");
   if(held_origin!=={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result})$fatal(1,"DSP pipeline CE hold");
+  if(held_geometry!=={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1})$fatal(1,"geometry scale pipeline CE hold");
  end
 end
 task drive;input integer cutoff;integer wi,taken,n;begin: body
@@ -147,8 +157,9 @@ task drive;input integer cutoff;integer wi,taken,n;begin: body
  while(wi<16||sbusy||!(seen_node||(empty_seen&&!rb)))begin
   @(posedge clk);taken=ready&&ce;if(ce)n=n+1;
   @(negedge clk);
-  if((cutoff>0&&n>=cutoff)||(cutoff<0&&(|R.origin_valid)))begin
-   if(cutoff<0)dsp_resetcuts=dsp_resetcuts+1;
+  if((cutoff>0&&n>=cutoff)||(cutoff==-1&&(|R.origin_valid))||(cutoff==-2&&(|I.prepare.quant_pipe)))begin
+   if(cutoff==-1)dsp_resetcuts=dsp_resetcuts+1;
+   if(cutoff==-2)geometry_cuts=geometry_cuts+1;
    raw_valid=0;resetcuts=resetcuts+1;disable body;
   end
   if(taken&&wi<16)begin wi=wi+1;if(wi<16)begin raw_index=wi;raw_data=words[p*16+wi];end else raw_valid=0;end
@@ -166,10 +177,13 @@ initial begin
   reset=1;raw_valid=0;start=0;repeat(2)@(negedge clk);reset=0;
   if(p<24)begin drive(5+(p%8)*20);reset=1;raw_valid=0;start=0;repeat(2)@(negedge clk);reset=0;end
   if(p==4)begin drive(-1);reset=1;raw_valid=0;start=0;repeat(2)@(negedge clk);reset=0;end
+  if(p==1)begin drive(-2);reset=1;raw_valid=0;start=0;repeat(2)@(negedge clk);reset=0;end
   drive(0);
  end
  if(nodes==0||roots9==0||origin_writes==0||early_cancel==0||zero_slots==0||ce0==0||resetcuts==0||zero_reads==0||bias_reads==0)$fatal(1,"required boundary not exercised");
  if(origin_issues!=origin_writes+origin_aborted||origin_holds==0||dsp_resetcuts==0||origin_aborted==0)$fatal(1,"DSP issue/retire/reset conservation");
+ if(quant_issues!=quant_writes+quant_aborted||geometry_holds==0||geometry_cuts==0||geometry_overlap==0)$fatal(1,"geometry issue/retire/reset conservation");
+ $display("GEOMETRY_DSP issues=%0d writes=%0d aborted=%0d holds=%0d cuts=%0d overlaps=%0d",quant_issues,quant_writes,quant_aborted,geometry_holds,geometry_cuts,geometry_overlap);
  $display("DSP_ORIGIN issues=%0d writes=%0d aborted=%0d holds=%0d resetcuts=%0d",origin_issues,origin_writes,origin_aborted,origin_holds,dsp_resetcuts);
  $display("PASS RROOT packets=@N@ nodes=%0d originwrites=%0d roots9=%0d earlycancel=%0d zeros=%0d ce0=%0d cuts=%0d wall=%0d",nodes,origin_writes,roots9,early_cancel,zero_slots,ce0,resetcuts,wall);$finish;
 end

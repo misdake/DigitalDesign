@@ -61,10 +61,10 @@ def packets():
                         if packet == 0:
                             attr = (65535 if vertex == 1 else 0) | ((0 if vertex == 1 else 65535) << 16)
                     words += [packed, attr]
-    # Small integer rays exercise zero and short reduction counts, including
-    # consecutive LOAD/retire edges. Source attributes keep the existing modes.
+    # Integer rays cover zero/short exponents and 7/8/15/16 window boundaries.
+    # Source attributes keep the existing modes.
     for reverse in (False, True):
-        for scale in (1, 256, 384, 512, 768, 131071):
+        for scale in (1, 256, 384, 512, 768, 2048, 2897, 32768, 46341, 131071):
             p = [(-scale, -scale, scale), (scale, -scale, scale), (-scale, scale, scale)]
             if reverse:
                 p[1], p[2] = p[2], p[1]
@@ -169,7 +169,7 @@ def main():
     if len(rows) == 2:
         assert rows[0]['trace_sha256'] == rows[1]['trace_sha256']
     (out/'receipt.json').write_text(json.dumps(dict(status='pass', runs=rows,
-        scope='Small real I-to-R origin replay: independent root equations, fused-DSP old-Q operands and fixed retirement, root9, empty-bound cancellation, CE hold and in-flight reset; no full scanning or whole-chain qualification',
+        scope='Small real I-to-R replay: exact geometry scaling, independent root equations, fused-DSP old-Q operands and fixed retirement, root9, empty-bound cancellation, CE hold and in-flight reset; no full scanning or whole-chain qualification',
         manifest_sha256=sha(out/'manifest.json')), ensure_ascii=False, indent=2))
 
 

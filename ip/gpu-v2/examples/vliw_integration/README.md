@@ -45,14 +45,20 @@ backpressure. The small set bounds vendor-primitive runtime; omit `--small` and
 use `--mode portable` to include the full-screen traversal cases.
 The tile-prefetch checks exercise both full and partial destinations and the
 ordinary LOAD fallback.
+They also exercise first-word metadata publication with h0 reads overlapping
+h2 writes at different addresses, and check publication/completion conservation.
 The same test asserts that CHECK only advances a stored rejected predicate and
 that each partial-quad admission has a stored possible predicate. Classification
 uses tile-load, prefetch and next-origin writeback values; the test covers their
 CE holds and admission backpressure together with all emitted pixel h values.
 
 The preparation regression checks raw-to-reduced coefficients, packed attributes,
-old-work retirement during the next LOAD, CE holds and reset cuts. It includes
-zero/short shift counts and large admitted integer rays.
+continuous geometry-DSP retirement during the next raw collection, CE holds and
+in-flight reset cuts. It includes zero/short shifts, coarse-window boundaries
+and large admitted integer rays. Independent full-width division defines each
+expected coefficient; issue/write/cancel counts check the geometry pipeline.
+The independent bounds replay enumerates integer tile inequalities, and checks
+four consecutive D/C launches and final retirement for each single-axis pair.
 
 Origin checks sample old C and packed Nx/Ny when the DSP consumes RAM Q, then
 check the fixed two-enabled-edge retirement against an independent root equation.

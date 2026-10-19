@@ -26,31 +26,43 @@ No implicit equality or shared fence is defined between these identities.
 ### Geometry reduction and publication
 
 Each edge first collects its three raw coefficients in PC[8..10] and determines
-their common reduction exponent. LOAD reads the selected row through the held
-PC address and performs the first 0/1/2/4-bit magnitude shift through the shared
-work window. DOWN performs any remaining steps. All shifts retain the original
-truncation toward zero and common exponent.
+their common reduction exponent e. C acceptance requests Nx immediately; two
+READ edges request Ny and C. A synchronous read returns its magnitude, sign and
+held exponent directly to a dedicated `MULTALU36X18` scaler. No geometric
+LOAD/DOWN loop or geometric work-vector copy remains.
 
-On the edge completing a component, work receives its final magnitude and the
-field/edge address enters a one-edge valid pipeline. The next edge consumes
-that old work value and sign for all final writes while work can receive the
-next component. Only four address bits and valid are delayed; there is no
-second magnitude register or SEND state.
+Let k=8*floor(e/8), r=e mod 8 and w be magnitude bits[k+34:k], zero-extended
+where necessary. The DSP computes w*2^(7-r), then fixed bits[34:7] provide the
+28-bit unsigned magnitude. N17/C27 magnitude bounds imply w has at most 34
+significant bits and the product fits 34 bits. Thus the selected window loses
+no significant bit and the result is exactly floor(magnitude/2^e). Three fixed
+windows and eight one-hot constants replace the iterative geometry shifts.
+Restoring the delayed sign in S28 and sign-extending to PB preserves the prior
+truncation toward zero, sigma orientation and common exponent.
 
-| Enabled edge | Producer and PC read | Consumer of old work |
-| --- | --- | --- |
-| Component finish | Store final shifted magnitude; request the next PC row | Previous completed component, if any |
-| Following LOAD | Read the next PC Q and apply its first shift | Canonical coefficient to PB and R; magnitude/sign to PA and seed flags |
-| Last C finish | Enter tail collection | Previous completed component, if any |
-| Determinant acceptance | Load the reversed determinant into work | Last C coefficient, with its delayed field/edge address |
+Offsets below are enabled edges relative to one C input acceptance:
+
+| Edge | PC read / input | DSP issue | Final write |
+| --- | --- | --- | --- |
+| 0 | Store C in PC10; read Nx from PC8 | None | None |
+| 1 | Read Ny from PC9 | Old Nx Q | None |
+| 2 | Read C from PC10; release collection | Old Ny Q | None |
+| 3 | Accept next edge's Nx in PC8 | Old C Q | Nx |
+| 4 | Accept next edge's Ny in PC9 | None | Ny |
+| 5 | Accept next C; read next Nx | None | C |
+
+The final physical write address advances Nx/Ny/C in edge order. It needs two
+two-bit counters, not per-component edge/field tags through the DSP. Two valid
+bits and two sign bits follow the fixed latency. The last edge drains before
+determinant/attribute acceptance; no geometry writer survives into CORE.
 
 PB rows 6+edge, 9+edge and 12+edge receive canonical Nx, Ny and C. R receives
 the corresponding physical field/edge address, with Nx/Ny doubled for pixel
 stepping. PA receives the unsigned Nx/Ny magnitudes at the operand rows defined
 below. These final writes use PB's low bank while the next source read uses
-PC's high bank. A raw write for the next edge or the determinant load can
-therefore overlap retirement without sharing a write port. CE freezes work,
-sign, delayed address and valid together.
+PC's high bank. The next edge's raw writes overlap retirement without sharing
+a write port. Delta alone uses the reversed 53-bit work vector. CE freezes it,
+the DSP, read exponent, sign/valid pipeline and final address together.
 
 ### Packed attribute parameters
 
@@ -108,11 +120,11 @@ PC physically retains signed48, exposed as signed54, without an additional
 rounding step. Endpoint testing evaluates `C+30*D` for positive D and C for
 nonpositive D; PA supplies the corresponding constant 30 or zero.
 
-The enabled-edge arithmetic calendar is:
+For two eligible axes, the enabled-edge arithmetic calendar is:
 
 | Slot | DSP A/B launch | Read request | Result retirement |
 | --- | --- | --- | --- |
-| D0, op4 | Primary first product | Secondary first operands, or primary second when single-axis; zero C | None |
+| D0, op4 | Primary first product | Secondary first operands; zero C | None |
 | D1, op5 | Secondary first product, if eligible | Primary second operands; zero C | None |
 | D2, op6 | Primary second product | Secondary second operands; primary feedback C | Primary first product to PC |
 | D3, op7 | Secondary second product, if eligible | Secondary feedback C | Secondary first product to PC |
@@ -129,6 +141,28 @@ select the launch's C row on t, while first-product retirement may update that
 same row. Independent primary/secondary rows prevent interference. No wide
 result bypass, extra operand register, or port arbiter is present.
 
+With only one eligible axis, ROM slots41..46 interleave its D and C products.
+The final attribute slot still prefetches the first D operands. The unused
+axis's PC row holds C's first product, so D and C have independent feedback
+lifetimes without an extra bank or read port:
+
+| Slot | DSP launch | Read / result retirement |
+| --- | --- | --- |
+| op41 | D first product | Read C first operands and zero C |
+| op42 | C first product | Read D second operands and C's seed |
+| op43 | D second product | Read C second operands and primary PC; write D first product to primary PC |
+| op44 | C second product | Read secondary PC; write C first product there |
+| op45 | None | Write final D to primary PB and capture its sign class |
+| op46 | None | Write final C to primary PC; read endpoint A/B |
+| op14 | Endpoint | Read final C for its following C-sampling edge |
+| op15 | None | Fixed DSP latency |
+| op16 | None | Retire endpoint and select search or next pair |
+
+The four products launch consecutively. First-product PC writes precede their
+DSP C sampling by one enabled edge. The secondary row is scratch for this
+single eligible axis; analytic LOD subsequently replaces both rows. No second
+numeric approximation, wide bypass or dynamically selected port is introduced.
+
 After endpoint tests, searching uses X as primary when both axes still need a
 bound; a single remaining Y constraint uses Y directly. The three-slot loop is:
 
@@ -138,9 +172,17 @@ bound; a single remaining Y constraint uses Y directly. The three-slot loop is:
 | S1, op19 | Secondary trial, if another one is needed | Select secondary C |
 | S2, op20 | None | Retire primary, decide its next sign and request its next PA step/PB D |
 
-Dual-axis search covers five X bits and four Y bits in five loop iterations.
+Search starts at the highest bit of the current interval's high endpoint,
+with zero using bit0. If X and Y both search, the initial primary bit is
+`max(high_bit(xhi), high_bit(yhi)+1)`, since Y's first trial is one bit behind
+X. The representable final prefix is at least the current high endpoint: a
+farther upper bound cannot tighten it, while a farther lower bound still
+rejects the interval. Omitting those high trials preserves the exact
+intersection with all preceding edge-pair constraints.
+
+A maximum-width dual search covers five X bits and four Y bits in five iterations.
 The last S0 retires Y's last trial, the last S1 is inactive, and S2 retires X's
-last trial. Single-axis search retains three slots per bit. The final retirement
+last trial. Single-axis search retains three slots per required bit. The final retirement
 also advances the edge-pair index; no separate loop-advance operation remains.
 Endpoint or interval rejection publishes empty bounds. Partial attribute rows
 from an empty triangle are not consumed. CE freezes the ROM, addresses, DSP,
@@ -163,7 +205,13 @@ Data writes are unsigned17, with bit17 fixed zero: geometry magnitudes are below
 131072 and UV/anchors are at most 65535. Constants include signed18 values and
 are initialized with the image. No inverse-power decoder, PA constant write,
 held A read-address register or additional DSP constant bypass is present.
-The preparation ROM has 34 live bits; its obsolete A-write field is absent.
+The preparation ROM uses all 36 bits of its existing physical word. The top
+two bits select the UV family and current/next vertex before one shared row
+adder. Alignment similarly selects the vertex before the exponent window.
+A/B address fields directly name the single-axis, dual-axis and search sources;
+there is no later opcode override of either read address. C-write fields name
+physical result rows, with a separate conditional auxiliary code. The obsolete
+A-write field is absent.
 
 The table Q replaces the previous address-register/async-RAM pair. Request an
 address on one enabled edge and let the DSP sample Q on the next; CE freezes
@@ -187,13 +235,33 @@ forbidden. New triangles and pixel execution still use disjoint lifetimes.
 
 ## Raster origin restoration
 
-Before bounds publication, the walker executes PC0..5 and PC17/18. The latter
-two instructions form `2*dy-2*dx` and `3*dx-dy` for all three edges, writing
-step rows58/59 through the existing ALU and step port. These six issues depend
-only on imported geometry and overlap the independent bounding-box search.
-Support, root selection and origin restoration still wait for published bounds.
-The ROM graph reaches no other high PC during this interval; a simulation
-assertion checks that property. No new operand source or arbitration is added.
+Before bounds publication, the walker executes PC0..9 and PC16..18. Base
+production follows PCs0/1/3/5/17/18/8/6/16: zero, dx, dy, three scanner row
+conversions, upper/lower support bases and the quad threshold. PC17/18 form
+`2*dy-2*dx` and `3*dx-dy` in step rows58/59. Each vector instruction reads
+edges0/1/2 consecutively and writes their results one enabled edge later.
+
+Higher levels use PCs2/4/7/9, in that order, for every level l. X/Y read their
+previous physical step row and add its Q to itself. The original Nx/Ny work-RF
+rows are dead after base construction and become the lower/upper support
+accumulators. Each support recurrence is `s[l]=2*s[l-1]+s[0]`; its fixed base
+comes from the step Q. Thus `s[l]=(2^(l+1)-1)*s[0]`, preserving the full signed30
+modular extent. The old shared temporary-vector address and four separate
+whole-table loops are absent. One static ALU input choice doubles step Q; no
+new bank, read port, or operand arbitration is added. The work/step format controls are
+decoded before the 30-bit operands: zeroing and sign masks form one live mask
+per source, and the fixed doubled-work choice precedes that mask. Step
+doubling uses the same unmasked B operand as ordinary addition. Destination
+bank bits alias the already registered instruction instead of a second tag.
+
+All four rows of level l finish before level l+1 starts. Unknown bounds allow
+production through level8. Once bounds arrive, only levels through
+`root_level-1` are required. If publication finds a higher level in flight, its
+current three-edge instruction finishes and the remaining rows of that level
+are omitted. Lower complete levels need no restoration or copy. All pre-origin
+work depends only on imported geometry and overlaps the independent bounding
+search; PC14 is the only bounds-dependent instruction. Root level is installed
+with the bounding-box origin, before the first node can issue.
 
 The two physical 18-bit step BSRAM lanes store one 30-bit value per ordinary
 row. Row `{edge,62}` instead holds signed18 Nx in bits17:0 and signed18 Ny in
@@ -218,18 +286,42 @@ output register; the next edge writes that old output into the work RF.
 | --- | --- | --- |
 | 0 | C0 and packed N0 | None |
 | 1 | C1/N1; DSP edge0 | None |
-| 2 | C2/N2; DSP edge1 | Prefetch the support instruction and advance ROM PC |
+| 2 | C2/N2; DSP edge1 | Prefetch the first node instruction and advance ROM PC |
 | 3 | DSP edge2 | Write origin h0; ordinary walker issue held |
 | 4 | None | Write origin h1; ordinary walker issue held |
-| 5 | Read the support instruction's Nx0/Ny0 | Write origin h2 and install root level |
-| 6 | Read support edge1 | Retire support edge0 through the ordinary ALU |
+| 5 | Read node h0 and the root-level upper support | Write origin h2 |
+| 6 | Read node edge1 | Test node edge0 through the ordinary ALU |
 
-The same-edge origin write and support read address different RF rows. Two
+The same-edge origin write and node read address different RF rows. Two
 valid bits and delayed edge indices track the fixed DSP latency; reset clears
 them and CE freezes them with the DSP and RAM Q. Origin and ordinary RF writes
 are mutually exclusive. The import, DSP and ALU write-data sources use their
 exclusive write enables rather than a priority chain. Step-bank writes and
 scanner reads remain statically disjoint.
+
+## Tile mailbox publication
+
+The two-entry FIFO holds metadata and three h words per tile. Metadata and the
+tail publish on the first h retirement; the producer holds that physical slot
+for all three words. Publication exposes a fixed fill schedule, rather than a
+completed-vector claim. Relative to the first write, an immediately idle
+scanner uses this enabled-edge calendar:
+
+| Edge | Producer | Scanner |
+| --- | --- | --- |
+| 0 | Write h0, metadata and tail | Sees the old FIFO state |
+| 1 | Write h1 | Take metadata and enter LOAD |
+| 2 | Write h2 | Request h0 |
+| 3 | None | Request h1; write old h0 Q into scan storage |
+| 4 | None | Request h2; write old h1 Q into scan storage |
+| 5 | None | Write old h2 Q; release mailbox head |
+
+Every read occurs after its word's write. The earliest read overlaps the last
+write at different addresses. Old-state FIFO capacity decides producer entry;
+no mid-vector stall, bypass, extra h buffer, or reservation handshake is used.
+CE freezes both sides together. The existing final-quad PREFETCH uses the same
+written-word guarantee and retains ownership until its fixed handoff. Simulation
+shadows check each word was already written before either read path accesses it.
 
 ## A quad's storage lifetime
 

@@ -105,6 +105,7 @@ GSR GSR(.GSRI(1'b1));
 reg clk=0;always #5 clk=~clk;
 reg reset=1,ce=0,start=0,raw_valid=0;reg[35:0]descriptor;reg[4:0]raw_index;reg[53:0]raw_data;
 integer tick=0,wall=0,p=0,wi=0,taken=0,seen=0,attr_count=0,empty_count=0;
+integer single_pairs=0,single_issues=0,single_returns=0;
 always @(negedge clk)begin tick=tick+1;ce=!reset&&(tick%11!=3&&tick%11!=4);end
 wire ready,busy,done,bvalid,bempty;wire[4:0]xl,xh;wire[3:0]yl,yh;wire[16:0]error;
 gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start),.descriptor(descriptor),
@@ -119,6 +120,13 @@ always @(posedge clk)begin
  wall=wall+1;if(wall>@LIMIT@)$fatal(1,"bounded bounds replay");
  if(!reset&&ce)begin
   if(error)$fatal(1,"preparation error packet%0d code%h",p,error);
+`ifdef SINGLE_AXIS_CALENDAR
+  if(I.prepare.core.active)begin
+   if(I.prepare.core.op==41)single_pairs=single_pairs+1;
+   if(I.prepare.core.op>=41&&I.prepare.core.wide_valid)single_issues=single_issues+1;
+   if(I.prepare.core.op==46)single_returns=single_returns+1;
+  end
+`endif
   if(start)begin seen=0;attr_count=0;end
   if(I.prepare.stream_param_valid)begin
    if({I.prepare.stream_param_index,I.prepare.stream_param_bank}!=attr_count||
@@ -145,6 +153,10 @@ initial begin
   raw_valid=0;while(busy)@(negedge clk);
   if(!seen||(!bs[p][18]&&attr_count!=6))$fatal(1,"incomplete packet%0d",p);
  end
+`ifdef SINGLE_AXIS_CALENDAR
+ if(single_pairs==0||single_issues!=4*single_pairs||single_returns!=single_pairs)$fatal(1,"single-axis calendar conservation");
+ $display("SINGLE pairs=%0d issues=%0d returns=%0d",single_pairs,single_issues,single_returns);
+`endif
  $display("PASS BOUNDS packets=%0d empty=%0d wall=%0d",p,empty_count,wall);$finish;
 end
 initial begin #@TIME@;$fatal(1,"absolute replay timeout");end
@@ -156,6 +168,8 @@ endmodule
     (out/'tb.v').write_text(tb)
     source = args.export.resolve()
     command = [os.environ['IVERILOG_EXE'], '-g2012', '-s', 'tb', '-o', str(out/'sim.vvp')]
+    if 'else if(!dual_math)next_pc=41;' in source.read_text():
+        command.append('-DSINGLE_AXIS_CALENDAR')
     if args.native:
         command.append(str(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'))
     command += [str(source), str(out/'tb.v')]

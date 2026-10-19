@@ -72,13 +72,14 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  rc_raster_program program_store(clk,reset,ce,rom_re,{2'd0,rom_ra},uop);
  wire rom_match=rom_valid&&rom_pc==w_pc;
  wire start_tile=life==EXEC&&(scanner_finishing||prefetch_handoff)&&!tile_empty;
- // BOUND reaches PC0..5 and PC17/18; other high PCs are EXEC-only or unused.
- // Row steps need only imported geometry. One ROM address bit classifies them.
- wire early_prep_pc=w_pc<6||w_pc[4];
+ // Base rows and scanner row conversions precede one level-major loop:
+ // X, Y, lower support, upper support. Bounds cap every completed level.
+ // Only origin restoration depends on bounds; its independent DSP is unchanged.
+ wire early_prep_pc=w_pc!=14;
  wire walk_allowed=(life==EXEC||(life==BOUND&&early_prep_pc))&&!walk_done&&
   !(bbox_done&&bbox_empty)&&(INTERLEAVE||scan_mode==OFF&&!start_tile);
  wire origin_op=uop[30:27]==8;
- wire[4:0]origin_next_pc=5'd6;
+ wire[4:0]origin_next_pc=5'd10;
  wire fast_origin=origin_op&&nx==0&&ny==0;
  wire enqueue_block=uop[30:27]==6&&w_edge==0&&tile_full;
  wire fast_w=walk_allowed&&rom_match&&w_edge==0&&
@@ -92,33 +93,30 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
   case(uop[26:25])
    1:micro_step=uop[11:6]+level-1'b1;
    2:begin micro_step=(xbit==ybit?6'd32:6'd48)+level;micro_sub=ybit;end
+   3:micro_step=uop[11:6]+prep_level-1'b1;
    default:begin end
   endcase
   if(origin_op)micro_step=6'd62;
  end
  wire[5:0]micro_tw=uop[17:12]+(uop[24]?prep_level:4'd0);
- function[1:0]walk_vec;input[2:0]v;begin walk_vec=v==5?2'd3:v[1:0];end endfunction
- wire[3:0]w_ra={walk_vec(uop[2:0]),w_edge};
+ wire[3:0]w_ra={uop[1:0],w_edge};
  wire[7:0]w_step_ra={w_edge,micro_step};
  wire[29:0]work_q,step_q;wire[35:0]packed_step_q;
  assign step_q=packed_step_q[29:0];
- reg r_valid,r_sub;reg[1:0]r_edge;reg[1:0]r_dst;reg r_tile,r_tile_slot;
+ reg r_valid,r_sub;reg[1:0]r_edge;reg r_tile,r_tile_slot;
  reg[7:0]r_tw;reg[35:0]r_uop;reg[4:0]r_pc;reg r_epoch;
- reg[29:0]fmt_a,fmt_b;
- always @*begin
-  fmt_a=work_q;fmt_b=step_q;
-  case(r_uop[19:18])
-   1:fmt_a=work_q<<1;
-   2:if(!work_q[29])fmt_a=0;
-   3:if(work_q[29])fmt_a=0;
-  endcase
-  case(r_uop[21:20])
-   2:if(!step_q[29])fmt_b=0;
-   3:if(step_q[29])fmt_b=0;
-  endcase
-  if(r_uop[30:27]==12)begin fmt_a=0;fmt_b=0;end
-  if(r_uop[30:27]==13)fmt_a=0;
- end
+ wire[1:0]r_dst=r_uop[4:3];
+ // Fixed format controls are decoded before the wide operands. In particular,
+ // step doubling consumes the step Q and does not pass through a work-Q mux.
+ wire double_step=r_uop[30:27]==14;
+ wire zero_work=r_uop[30:27]==12||r_uop[30:27]==13;
+ wire work_live=!zero_work&&!double_step&&
+  !(r_uop[19:18]==2&&!work_q[29])&&!(r_uop[19:18]==3&&work_q[29]);
+ wire step_live=r_uop[30:27]!=12&&
+  !(r_uop[21:20]==2&&!step_q[29])&&!(r_uop[21:20]==3&&step_q[29]);
+ wire[29:0]formatted_work=r_uop[19:18]==1?{work_q[28:0],1'b0}:work_q;
+ wire[29:0]fmt_a=(formatted_work&{30{work_live}})|(step_q&{30{double_step}});
+ wire[29:0]fmt_b=step_q&{30{step_live}};
  // The threshold operation produces tau-support-1 for a strict signed compare.
  // Its carry is the edge's top-left bit, rather than the normal subtract carry.
  wire threshold_return=r_uop[30:27]==13;
@@ -247,12 +245,15 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  assign quad_end_valid=scan_cover_valid&&lane==3&&!reset;
  assign quad_mask=cover_mask|((sample_cover?4'b0001:4'd0)<<lane);
 
- wire[3:0]prep_last=w_pc<6?4'd8:root_level-1'b1;
+ wire[3:0]prep_last=life==BOUND?4'd8:root_level-1'b1;
  reg[4:0]issue_next_pc;
  always @*begin
   issue_next_pc=uop[35:31];
   case(uop[30:27])
-   2,3:if(prep_level!=prep_last)issue_next_pc=w_pc;
+   3:if(prep_level<prep_last)issue_next_pc=2;
+   // Once bounds arrive, all lower levels are already complete. An in-flight
+   // unneeded high row may retire, then the remaining rows can be omitted.
+   2,14:if(w_pc!=17&&life==EXEC&&prep_level>prep_last)issue_next_pc=14;
    7:if(!xbit&&ybit)issue_next_pc=13;
    default:begin end
   endcase
@@ -261,8 +262,16 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  // successor still carries the old epoch and is discarded on the next edge.
  wire branch_all_pass=r_edge==2&&all_pass;
  wire terminal_tile=(branch_all_pass&&level<=4)||level<=2;
- wire[4:0]branch_target=r_uop[30:27]==4?(branch_all_pass?5'd11:5'd13):
-  (terminal_tile?5'd12:5'd10);
+ // Full nodes above the framebuffer locality unit must descend regardless
+ // of their lower-bound result. The upper test is sufficient at those levels.
+ wire upper_split=branch_all_pass&&level>4;
+ // Branch destinations 10..13 share upper bits. Within a predicate return,
+ // opcode bit0 distinguishes upper (4) from lower (5); the two address bits
+ // also encode publish/reject versus split/full-test without a 5-bit mux.
+ wire branch_finish=r_uop[27]?terminal_tile:!branch_all_pass;
+ wire branch_low=!r_uop[27]&&!upper_split;
+ wire branch_split=!branch_finish&&!branch_low;
+ wire[4:0]branch_target={2'b01,branch_finish,!branch_finish,branch_low};
  always @*begin
   rom_re=0;rom_ra=w_pc;
   if((life==EXEC||life==BOUND&&early_prep_pc)&&!rom_match)rom_re=1;
@@ -303,7 +312,7 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
    tile_head<=0;tile_tail<=0;tile_meta0<=0;tile_meta1<=0;scan_slot<=0;
    scan_mode<=OFF;scan_full<=0;scan_qvalid<=0;scan_inflight<=0;anchor_seen<=0;scan_bank<=0;prefetch_active<=0;scan_classify_pending<=0;
    check_mask<=0;origin_x<=0;sx<=0;sy<=0;end_x<=0;end_y<=0;lane<=0;cover_acc<=0;cover_mask<=0;
-   rom_valid<=0;rom_pc<=0;r_valid<=0;r_sub<=0;r_edge<=0;r_dst<=0;r_tile<=0;r_tile_slot<=0;r_tw<=0;r_uop<=0;r_pc<=0;r_epoch<=0;
+   rom_valid<=0;rom_pc<=0;r_valid<=0;r_sub<=0;r_edge<=0;r_tile<=0;r_tile_slot<=0;r_tw<=0;r_uop<=0;r_pc<=0;r_epoch<=0;
    s_valid<=0;s_kind<=0;s_return_edge<=0;s_sub<=0;
    origin_valid<=0;origin_edge0<=0;origin_edge1<=0;
   end else if(ce)begin
@@ -314,7 +323,10 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
    if(rom_re)begin rom_valid<=1;rom_pc<=rom_ra;end
    r_valid<=micro_issue;
    if(micro_issue)begin
-    r_edge<=w_edge;r_sub<=micro_sub;r_dst<=walk_vec(uop[5:3]);r_tile<=uop[5:3]==6;r_tile_slot<=tile_tail[0];
+    r_edge<=w_edge;r_sub<=micro_sub;r_tile<=uop[5:3]==6;
+    // Metadata is published at the first return. Hold the physical slot for
+    // all three vector words while the producer tail has already advanced.
+    if(w_edge==0)r_tile_slot<=tile_tail[0];
     r_tw<={w_edge,micro_tw};r_uop<=uop;r_pc<=rom_pc;r_epoch<=w_epoch;
    end
    s_valid<=load_issue||scan_rf_re||prefetch_issue;
@@ -335,7 +347,7 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
     if(w_cond_retire)begin if(r_edge==0)w_pass<={1'b0,cond_pass};else w_pass<=pass_next;end
     if(r_uop[19:18]==2&&r_uop[23])tau[r_edge]<=!((!work_q[29]&&(|work_q))||(work_q==0&&!step_q[29]&&(|step_q)));
    end
-   if(w_last&&r_tile)begin
+   if(w_retire&&r_tile&&r_edge==0)begin
     if(tile_full)error[1]<=1;
     if(tile_tail[0])tile_meta1<={found_full,level,ny,nx};else tile_meta0<={found_full,level,ny,nx};
     tile_tail<=tile_tail+1'b1;
@@ -344,7 +356,7 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
     w_edge<=0;w_pc<=issue_next_pc;
     case(uop[30:27])
      1:prep_level<=1;
-     2,3:begin if(prep_level!=prep_last)prep_level<=prep_level+1'b1;
+     3:begin if(prep_level<prep_last)prep_level<=prep_level+1'b1;
        end
      7:begin
       // 加减方向正好由被翻转位决定，不可能发生进位/借位。
@@ -356,22 +368,19 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
    end
    if(w_decide)begin
     w_epoch<=!w_epoch;w_pass<=0;w_pc<=branch_target;w_edge<=0;
-    if(r_uop[30:27]==5)begin if(terminal_tile)found_full<=branch_all_pass;else level<=level-1'b1;end
-   end
-   if(origin_finish)begin
-    level<=root_level;
+    if(r_uop[27]&&branch_finish)found_full<=branch_all_pass;
+    if(branch_split)level<=level-1'b1;
    end
    if(fast_w)begin
     w_edge<=0;
     if(origin_op)begin
      w_pc<=origin_next_pc;
-     level<=root_level;
     end else if(uop[30:27]==7)walk_done<=1;else w_pc<=13;
    end
    if(bbox_done&&life==BOUND)begin
     life<=EXEC;
     if(bbox_empty)walk_done<=1;
-    else begin nx<=bbox_origin_x;ny<=bbox_origin_y;level<=8;end
+    else begin nx<=bbox_origin_x;ny<=bbox_origin_y;level<=root_level;end
    end
    if(start_tile)begin
     scan_slot<=tile_head[0];scan_full<=head_meta[22];origin_x<=head_meta[8:0];sx<=head_meta[8:0];sy<=head_meta[17:9];
@@ -427,8 +436,30 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
 `ifndef SYNTHESIS
  always @(posedge clk)if(ce&&!reset&&origin_retire&&(import_we||(w_retire&&r_uop[22]&&!r_tile)))
   $fatal(1,"origin and walker RF writers overlap");
- always @(posedge clk)if(ce&&!reset&&life==BOUND&&micro_issue&&!(w_pc<6||w_pc==17||w_pc==18))
+ always @(posedge clk)if(ce&&!reset&&life==BOUND&&micro_issue&&!(w_pc<=9||w_pc==16||w_pc==17||w_pc==18))
   $fatal(1,"bbox-dependent R instruction issued before bounds");
+ always @(posedge clk)if(ce&&!reset&&r_valid&&r_uop[30:27]==14)begin
+  if(r_uop[21:20]!=0||r_sub)$fatal(1,"step doubling B source is not fixed by ROM");
+ end
+ reg[2:0]sim_mail_written0,sim_mail_written1;
+ always @(posedge clk)begin
+  if(reset)begin sim_mail_written0<=0;sim_mail_written1<=0;end
+  else if(ce)begin
+   if(packet_take)begin sim_mail_written0<=0;sim_mail_written1<=0;end
+   if(mailbox_we)begin
+    if(r_tile_slot)begin
+     if(r_edge==0)sim_mail_written1<=3'b001;else sim_mail_written1[r_edge]<=1;
+    end else begin
+     if(r_edge==0)sim_mail_written0<=3'b001;else sim_mail_written0[r_edge]<=1;
+    end
+   end
+   if(load_issue||prefetch_issue)begin
+    if((prefetch_issue?tile_head[0]:scan_slot)?
+     !sim_mail_written1[prefetch_issue?lane:s_edge]:!sim_mail_written0[prefetch_issue?lane:s_edge])
+     $fatal(1,"mailbox read before its statically scheduled write");
+   end
+  end
+ end
  integer sim_geo_count;
  always @(posedge clk)begin
   if(reset)sim_geo_count<=0;

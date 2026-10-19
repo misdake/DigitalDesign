@@ -117,6 +117,8 @@ def main():
             command += ['-DRASTER_LOCALITY_LIMIT']
         if 'wire reject_tail=' in rtl:
             command += ['-DRASTER_REJECT_TAIL']
+        if 'sim_mail_written0' in rtl:
+            command += ['-DRASTER_STATIC_TILE_PUSH']
         command += ['-DPORTABLE'] if mode == 'portable' else [Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v']
         command += [out/'dut.v', out/'tb.v']
         for label, cmd in [('compile', command), ('run', [os.environ['VVP_EXE'], out/(mode+'.vvp')])]:

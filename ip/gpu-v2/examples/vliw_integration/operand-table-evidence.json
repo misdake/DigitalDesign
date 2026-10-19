@@ -1,6 +1,6 @@
 {
   "status": "selected",
-  "delivery_base_commit": "b3079b0ec05a0ab13ca8532aefa1f751e2e5edec",
+  "delivery_base_commit": "11a49a982af8ed92a763186c8ecde64d53df437c",
   "source_hash_format": "SHA256 bytes with CRLF normalized to LF",
   "selected_source": {
     "ip/gpu-v2/examples/vliw_integration/float_reference.py": "19e8090e53a2a3b4794a0591338dba9b96b8a9ef8f1bc6c7e236e0b97e4d40a2",
@@ -11,11 +11,11 @@
     "ip/gpu-v2/examples/vliw_integration/solid_scene.py": "c9d2d4bd0eca407441ed4ae89d3ca3194fdfdfeaa5d5fea89decc96be13db622",
     "ip/gpu-v2/examples/vliw_integration/test_material_scene.py": "c32f030236b71e368f120e9d45025e01560823e2c5e823318447c019247e1188",
     "ip/gpu-v2/examples/vliw_integration/verify_stage2.py": "bf8f789049bb8ac6acf220bbfa339f501c717f615f6d32a6662cbac489cd80cb",
-    "ip/gpu-v2/src/frontend/vliw/prepare.v": "23964e8e3362f0e7fb2a66f74be1642b56c44aa1f03d0680286db73419ff709d",
-    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "e4419ab81d03b2680b573815d748e527e46265965a108fca712b9af0a6bc6310",
-    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "0b0c723e7c3b02726e5c63ef6d82be09a179425e3e2a601151c466bdba9a7a76",
-    "ip/gpu-v2/src/frontend/vliw/raster.v": "547ac2488f807a215c58905c31a2d63c4314667840b36ca667ead3a2c1e3c4fe",
-    "ip/gpu-v2/src/frontend/vliw/raster_program.v": "769fc69f736b2abb6b58484b5db645b1fb655081dcccb9581f56ea5d3f46066d",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "12fa0a2345d7843a5cdf98918e3e9223458b29dde67904d9c791904d31a18f74",
+    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "708826cb359d48294c9ee0e7acfaa6dff777edf22224fcca5489e3e00fd21e76",
+    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "c18bcec34280b3d71f95a40692324b8b9f223973aedc90bcef2e4c9e1cd5d019",
+    "ip/gpu-v2/src/frontend/vliw/raster.v": "25ef1a3a25278c28b34e8a3a9754abf2746c85e0f7524bd2dcf36c3a438873e1",
+    "ip/gpu-v2/src/frontend/vliw/raster_program.v": "5bcfd26feafd92900f4d2a1c270a2cb6e461b3b3ae92bbecc58798ff617de90b",
     "ip/gpu-v2/src/frontend/vliw/raster_storage.v": "99978ff5c1d5283aab9216fc0c481578290b4d4cd91173a91769de913602c3e4",
     "ip/gpu-v2/src/system/pixel/framebuffer_tdp.v": "5face383ee2f54c4b1b3423956acfccb68f7a8a000dd377fe085e4509aa28b14",
     "ip/gpu-v2/src/system/pixel/framebuffer_tdp_cache.v": "9a417a33474d4447b8fbd20a6f1dcd07a42040b5ce46146c1223e87abff7ba2d",
@@ -24,12 +24,12 @@
     "ip/gpu-v2/src/system/pixel/vliw_quad_pool.v": "99335fe75573cb8ed55f86570a29afa834ade84790dd7f635daabae53909e644",
     "ip/gpu-v2/tests/framebuffer_tdp.py": "589997897584a27855155e355aa3c5c62d878b858a268ac74d832420b7c11952",
     "ip/gpu-v2/tests/framebuffer_tdp_prefetch.py": "247d2a7a4b0c26d5dff3309433819569563613f856ec6bade691d872fb75909b",
-    "ip/gpu-v2/tests/vliw_bounds.py": "bc6e8a4c5ef7c51df775c7ec9127ca28f6c90020be7a0b80a4c12fdde41af443",
-    "ip/gpu-v2/tests/vliw_prepare_chain.py": "a33588f5bf165543a7c313f198abe6ae0d8e9997eee8ad0faa555daa2e33a006",
-    "ip/gpu-v2/tests/vliw_prepare_chain_tb.v": "7314dc18fc1555f40563e1c6b9a3b988a6ca5099dfde66bdc3f2d9ef670696e3",
+    "ip/gpu-v2/tests/vliw_bounds.py": "8ee6e97bb2797e0fe495601f57360825c15370705657d7ea1c4895f197a8548f",
+    "ip/gpu-v2/tests/vliw_prepare_chain.py": "0dd14ccf795e52496da724ec148bfc838e4c8b6d03a36d8aa464b9dceaaa38c0",
+    "ip/gpu-v2/tests/vliw_prepare_chain_tb.v": "60428b50d3e6b9d23d759b18a322413848200f1ed73161af83bdcc12d1e2d275",
     "ip/gpu-v2/tests/vliw_quad_pool.py": "a35792c50db4f4dfa8b9e27f33b9d760fa00743add4913d96f37518e92fcfeca",
-    "ip/gpu-v2/tests/vliw_raster_scan.py": "596bfc576370d70205706dda79dc8e12a2115e242ba678a9843d1771b578045b",
-    "ip/gpu-v2/tests/vliw_raster_scan_tb.v": "b5c47fa3157cab8db0fdc598794b07c40e938759fc19337cc40dced1d57b16c3"
+    "ip/gpu-v2/tests/vliw_raster_scan.py": "0094d1fe9407080ddbeb1984dc300750f8d904c647cb381208ed31b3c4a4557e",
+    "ip/gpu-v2/tests/vliw_raster_scan_tb.v": "403aafa8ce007e34cd94e087e0762427e0da1404ccfa68b9c1ce45b350e79357"
   },
   "protected_vertex": {
     "ip/gpu-v2/src/frontend/vliw/vertex/control_fields.vh": "c31ba52dfb929d373650a24e8b062e939a85a6bb1cb77e9f4f8fd9428bb79432",
@@ -40,45 +40,45 @@
   },
   "scope": {
     "fit": "Independent complete GPU registered transaction boundary; GW2AR-LV18QN88C8/I7, P0, 54MHz. Includes registered observers; excludes physical MC, CPU and Display.",
-    "replay": "Real arbiter/bridge/controller and SDRAM pin model; first load and final flush included. No CPU/Display contention.",
+    "replay": "Separate single-face box and first two complete bunny meshlets; real arbiter/bridge/controller and pin model, first load and final flush included. Full 948-face front-scene qualification remains at committed 11a49a98 and was not repeated for this candidate.",
     "board": false
   },
   "fit": {
-    "logic": 12038,
-    "logic_ff": 5111.0,
+    "logic": 11964,
+    "logic_ff": 5114.0,
     "ssram": 198,
     "bsram": 36.0,
-    "dsp": 19.0,
+    "dsp": 20.0,
     "primitives": {
       "MULT9X9": 24,
       "MULT18X18": 10,
-      "MULTALU36X18": 3,
+      "MULTALU36X18": 4,
       "MULTADDALU18X18": 4,
       "ALU54D": 1
     },
-    "fmax": 54.359,
+    "fmax": 55.075,
     "setup_violations": 0.0,
     "hold_violations": 0.0,
-    "report_sha256": "2ed1d4a43a4bb7907714a9d22aab10a95505cd2181ddbe1f379947d06de67f35",
-    "timing_sha256": "e9a502019dd60774c65974b51d56302575a3ac8d0196804782bcd5c0b39d8fbb",
+    "report_sha256": "79fe46f81b5ed8e7cc2ce5bf97fdb2bac7973be4a180823fbcfd0be700aec18a",
+    "timing_sha256": "a355e55fbb3e7123278484bd6b968bebf20e5df8195d9ae24672a2c46c6ecf0a",
     "wrapper_sha256": "0ab55c7bed1244ced43065aef2d260bd6899fd88d7e224fa0d428cbf4d439ed9",
-    "original_source_sha256": "190047fed9b8ec1670352a23ffb590ef218dfc878d44fc26d59cf70f2b8485d0"
+    "original_source_sha256": "1601dc46e54f3186b7448428698829b7ab978d894a70dfc7394a2cd0055f670d"
   },
   "canonical_exports": {
-    "portable": "76bc7de7e5a06da02af54d69841ec625e665550dac417f17ebe8e0fc748ef4d1",
-    "native": "07e22fe7d03235061cfde1040fec6130b63eedd8f85fd5c9a60f4c4e22afcd1c"
+    "portable": "27a1bd1f6e6941a7820f69c17b3bfcd4f02b45e125308eae8d52b6bfdab916c0",
+    "native": "750647cfc117d5a65107f9d96c781ab52db64d02741438871c51eff0cfe7c09b"
   },
   "replay": {
     "box": {
       "timing": {
-        "total": 116518,
+        "total": 116044,
         "preload": 10625,
-        "frontend": 105027,
+        "frontend": 104553,
         "tail": 866,
         "Q": 6292,
         "empty": 1,
         "peak": 24,
-        "fullCE": 872,
+        "fullCE": 879,
         "packets": 8,
         "light": 24400,
         "sample": 24400,
@@ -93,8 +93,24 @@
         "overlapDMA": 0,
         "pendingStarts": 0
       },
-      "groups": {
-        "box": 105026
+      "activity": {
+        "Vwork": 208,
+        "Vwait": 0,
+        "Twork": 440,
+        "Twait": 0,
+        "prepare": 1036,
+        "Rbusy": 104116,
+        "Ibusy": 102762,
+        "nodes": 1384,
+        "traversal": 13993,
+        "leaf": 101972,
+        "row": 8446,
+        "Rprep": 720,
+        "Rcredit": 532,
+        "pixels": 25168,
+        "covered": 24400,
+        "emptyScan": 1,
+        "invalidLanes": 768
       },
       "counts": {
         "V_T_checked": true,
@@ -125,20 +141,19 @@
         "expected-dma.hex": "3d48015d613ffd4b18cbf48d86a05e08f8a3d53acc004b40696168bf8de7c257",
         "expected-valid.hex": "761775371f4972e45c06b8e7877d8f701335ecf852554c3aac9b06bd3ac70416"
       },
-      "gold_sha256": "5b9ffa6c30c82d03ceb8d817c2cf66956474aadabb22ee8aa051553cf6326e35",
-      "dut_sha256": "b4ae44149c897cd6aa263100dd6d944e922c3f28d327bd44167e562c9cd63b4f",
-      "receipt_sha256": "95ecdbe9c2f7163a867161863f554f95a95b5f62e5b3eb0717ff1309c95a4b18"
+      "gold_sha256": "97c2a0c3365d660dfd9370d3b38ffa134138c3e285a58e0186505f9c394c4308",
+      "dut_sha256": "27a1bd1f6e6941a7820f69c17b3bfcd4f02b45e125308eae8d52b6bfdab916c0"
     },
     "two_meshlet_bunny": {
       "timing": {
-        "total": 69654,
+        "total": 62371,
         "preload": 10789,
-        "frontend": 57985,
-        "tail": 880,
+        "frontend": 50697,
+        "tail": 885,
         "Q": 1075,
         "empty": 132,
-        "peak": 19,
-        "fullCE": 0,
+        "peak": 24,
+        "fullCE": 3,
         "packets": 116,
         "light": 2292,
         "sample": 2292,
@@ -153,8 +168,24 @@
         "overlapDMA": 122,
         "pendingStarts": 2
       },
-      "groups": {
-        "bunny": 57983
+      "activity": {
+        "Vwork": 2579,
+        "Vwait": 0,
+        "Twork": 9404,
+        "Twait": 0,
+        "prepare": 19501,
+        "Rbusy": 44193,
+        "Ibusy": 24646,
+        "nodes": 2908,
+        "traversal": 21847,
+        "leaf": 21016,
+        "row": 2822,
+        "Rprep": 12425,
+        "Rcredit": 168,
+        "pixels": 4300,
+        "covered": 2292,
+        "emptyScan": 132,
+        "invalidLanes": 2008
       },
       "counts": {
         "V_T_checked": true,
@@ -198,91 +229,16 @@
         "expected-dma.hex": "4360d62be6d12b518a1c18d3149acfde55089f702521003a12b12b771010dcc0",
         "expected-valid.hex": "cccb4ec4585613967d87fd481823eae2df8c7fb62d98b2b10aa2c0eda76f6cb5"
       },
-      "gold_sha256": "5b9ffa6c30c82d03ceb8d817c2cf66956474aadabb22ee8aa051553cf6326e35",
-      "dut_sha256": "b4ae44149c897cd6aa263100dd6d944e922c3f28d327bd44167e562c9cd63b4f",
-      "receipt_sha256": "5a84759e8c4f1a137117c89f412f235ab3ec98c22ab909321a1e45fb953f9b22"
-    },
-    "front_material_room": {
-      "timing": {
-        "total": 725694,
-        "preload": 10671,
-        "frontend": 714266,
-        "tail": 757,
-        "Q": 30304,
-        "empty": 564,
-        "peak": 24,
-        "fullCE": 14709,
-        "packets": 584,
-        "light": 8693,
-        "sample": 96000,
-        "final": 105953,
-        "commits": 29740,
-        "RO": 276,
-        "FBread": 6476,
-        "FBwrite": 6400,
-        "RObeats": 3628,
-        "FBreadbeats": 103616,
-        "FBwritebeats": 102400,
-        "overlapDMA": 1674,
-        "pendingStarts": 25
-      },
-      "groups": {
-        "box": 481376,
-        "vertex_color": 6411,
-        "bunny": 226051
-      },
-      "counts": {
-        "V_T_checked": true,
-        "attributes": 363648,
-        "depth_events": 121216,
-        "lod": 30304,
-        "empty": 564,
-        "quads": 30304,
-        "packets": 584,
-        "geometry_quads": 29740,
-        "live_quads": 29740,
-        "live_pixels": 105953,
-        "ROP_pass": 105535,
-        "ROP_depth_reject": 418,
-        "light": 8693,
-        "sample": 96000,
-        "final": 105953,
-        "memory_bytes": 400384,
-        "lod_values": [
-          0,
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10
-        ],
-        "specular_nonzero": 3637,
-        "specular_peak": 192
-      },
-      "memory_sha256": "21389e5ccc7300f2ad045ad6159ee3ed320ab2111e10b8c927536042ee770ba4",
-      "fixture_sha256": {
-        "input.json": "5a40fd4d665162ee7fdd7a3599939313f166c36e22229e48689dc61084a60160",
-        "seed.txt": "95292828b61d09a0a6a0c740f4d57cc13b77a34133e143d329585851eb25c1f0",
-        "jobs.hex": "0fa657f907298cdb82274a2e0dffdeae7c0778fd261f56690760a484d5ed54c2",
-        "expected-dma.hex": "0767aca8701e90101cddce36c17c3be6b7b9f3169107775d9fd32dbd5b57b151",
-        "expected-valid.hex": "4ccad13595da78d2489110e7a04a56bf1d650764595bda56d2ffef36cfc502d5"
-      },
-      "gold_sha256": "5b9ffa6c30c82d03ceb8d817c2cf66956474aadabb22ee8aa051553cf6326e35",
-      "dut_sha256": "76bc7de7e5a06da02af54d69841ec625e665550dac417f17ebe8e0fc748ef4d1",
-      "receipt_sha256": "c255ac5298cfff26632a3f8b5e58f29f917a65bb2dcfd8514446d40942a27381"
+      "gold_sha256": "97c2a0c3365d660dfd9370d3b38ffa134138c3e285a58e0186505f9c394c4308",
+      "dut_sha256": "27a1bd1f6e6941a7820f69c17b3bfcd4f02b45e125308eae8d52b6bfdab916c0"
     }
   },
   "checks": {
     "vertex_unchanged": true,
     "precision_unchanged": true,
     "canonical_export_matches_measured_rtl_tokens": true,
-    "independent_bounds": "68 directed/random packets passed",
-    "raster": "Native and portable exact h/masks with CE and backpressure passed",
+    "independent_bounds": "76 directed/random packets in both modes; independent interval enumeration and 47 single-axis pairs with four useful launches each.",
+    "raster": "Both modes: 16 packets, 1296 pixels with all three h values, 324 quad masks, CE/backpressure; 104 first/last publications and 12 overlapped first loads.",
     "framebuffer": "Native/portable integer, eviction, prefetch lifecycle/fault/reset/flush passed",
     "result_pool": "Native/portable RGB/UV/CE/backpressure/reset protocol matrix passed",
     "gpu_library": "141 passed, 26 ignored",
@@ -291,12 +247,16 @@
     "layering": "Passed",
     "docs": "Passed",
     "material_asset_reference": "4 tests passed",
-    "prepare_origin": "Formal Cargo entry passed in portable/native: 36 packets, 28 roots, 13 DSP issues, 12 writes, 1 reset cancellation, 6 in-flight CE holds; independent coefficients/root formula, geometry and attribute conservation retained.",
-    "rtl_reused": "RTL source and exports unchanged from 864de082; reuse its matched fit and replay receipts. Only the origin regression and its description changed."
+    "prepare_origin": "Both modes: 44 packets, exact geometry/root equations, operand constants, CE and in-flight reset; final factory export used.",
+    "cpu_cosim": "CPU sources unchanged; retained prior 43-pass CPU evidence, no CPU rerun for control/address-only changes.",
+    "system_cosim": "System sources unchanged; retained prior 2-pass system evidence, no system rerun for control/address-only changes.",
+    "controlled_area": "Identical registered boundaries independently fitted preparation control/program and R; final whole-GPU mapped and routed at P0/54MHz. Isolated savings are not added to whole-GPU Logic."
   },
   "reproduction": {
     "export": "gpu-v2-vliw-export OUTPUT sdram [portable]",
-    "replay": "python -B ip/gpu-v2/examples/vliw_integration/replay_export.py --export EXPORT --output FRESH --gold GOLD --peer PEER --scene materials --camera front --ply PLY --max-cycles 1200000 --timeout 900",
+    "replay": "python -B ip/gpu-v2/examples/vliw_integration/replay_export.py --export EXPORT --output FRESH --gold GOLD --peer PEER --scene bunny --meshlet-limit 2 --ply PLY --max-cycles 180000 --timeout 300; use --scene box and --max-cycles 250000 for the separate fill test",
     "source_ply_sha256": "2ca4b1c9206eb2768f10eeb06f30d2dcf576c21f69243335660c896605d1f0ab"
-  }
+  },
+  "resource_note": "20 vendor DSP macros = 40 physical DSP18 slots, 36 BSRAM and 198 RAM16. Preparation uses all 36 bits in the existing program ROM; direct address fields and predecoded R operand masks add no memory, arithmetic unit, port or pipeline edge.",
+  "selected_scheduling": "Single-axis D/C interleaving, interval-bounded search, level-major R tables with row-level exit after bounds, and first-word tile metadata publication. Read/write selectors directly name their bank rows; UV/alignment source selection precedes address generation; R operand format masks precede the wide ALU."
 }

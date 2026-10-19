@@ -24,6 +24,7 @@ integer wall=0,en=0,readywait=0,ce0=0,p=0,j=0,x=0,y=0,q=0,live=0,totalq=0,empty=
 integer prefetched=0,fallback=0,prefetch_full=0,prefetch_partial=0;
 integer predicted=0,known_skip=0;
 integer rejected_tail_bypasses=0;
+integer tile_first=0,tile_last=0,overlapped_loads=0;
 reg pixel_live=0;reg[1:0]lane;
 reg signed[63:0]want_h;
 always @(negedge clk)begin
@@ -36,6 +37,16 @@ always @(posedge clk)begin
  else if(ce)begin
   en=en+1;phase<=phase+1'b1;
   if(error)$fatal(1,"raster error %h packet %0d",error,p);
+`ifdef RASTER_STATIC_TILE_PUSH
+  if(dut.w_retire&&dut.r_tile&&dut.r_edge==0)tile_first=tile_first+1;
+  if(dut.w_last&&dut.r_tile)tile_last=tile_last+1;
+  // Exercise the paid schedule: the first mailbox read may coincide with
+  // the last word's write, but never read that still-unwritten address.
+  if(dut.load_issue&&dut.w_last&&dut.r_tile&&dut.scan_slot==dut.r_tile_slot)begin
+   if(dut.s_edge!=0)$fatal(1,"early mailbox read is not the first word");
+   overlapped_loads=overlapped_loads+1;
+  end
+`endif
 `ifdef RASTER_LOCALITY_LIMIT
   if(dut.start_tile&&dut.head_meta[22]&&dut.head_meta[21:18]>4)$fatal(1,"full tile exceeds locality unit");
 `endif
@@ -111,6 +122,10 @@ initial begin
   if(live!=counts[p])$fatal(1,"missing covered quads packet%0d got%0d want%0d",p,live,counts[p]);
  end
  if(samples!=4*totalq||readywait==0||ce0==0)$fatal(1,"missing scan/stall coverage");
+`ifdef RASTER_STATIC_TILE_PUSH
+ if(tile_first==0||tile_first!=tile_last||overlapped_loads==0)$fatal(1,"missing static mailbox publication coverage");
+ $display("PUBLICATION first=%0d last=%0d overlapped_loads=%0d",tile_first,tile_last,overlapped_loads);
+`endif
 `ifdef RASTER_REJECT_TAIL
  if(rejected_tail_bypasses==0)$fatal(1,"missing rejected-tail bypass coverage");
  $display("TAIL bypasses=%0d",rejected_tail_bypasses);

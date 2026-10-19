@@ -77,9 +77,13 @@ At pixel `(x,y)`, its reduced field is `2*Nx*x + 2*Ny*y + C`.
 An edge with `A=2*Nx`, `B=2*Ny` includes zero when
 `A>0 || (A==0 && B>0)`; other edges require a strictly positive value.
 
-R prepares geometry step rows while I prepares a tile bounding box. R then
+R prepares geometry step and sign-support rows while I prepares a tile bounding box. R then
 restores the aligned origin and walks supported regions with fixed 4/2/1
 alignment and Y tile search. A terminal rejected region check ends traversal.
+After base construction, X/Y and both support tables advance together one
+level at a time. X/Y double the preceding step Q; support accumulators reuse
+the now-dead Nx/Ny RF rows. Published bounds end unnecessary higher-level work
+after the current vector instruction, without copying a partially prepared table.
 Origin restoration reads packed signed18 Nx/Ny through the two existing
 18-bit step lanes and C through the work RF, then directly writes
 `C+Nx*(2*x_root)+Ny*(2*y_root)` through a fused dual-product DSP. It does not
@@ -93,11 +97,16 @@ integer tile-interval tests, conservative seed and signed results. Its
 [physical calendar](/ip/gpu-v2/docs/execution.md#interleaved-tile-bounds)
 uses temporary PB/PC axis rows and retires one axis while launching the other;
 it does not increase the multiplier or memory-port count.
-The 53-bit work register serves magnitude and delta lifetimes, with bit-reversed
-wiring sharing its normalization window. The final magnitude can retire on the
-same edge that loads the determinant; the consumer samples the old register
-value. The [publication calendar](/ip/gpu-v2/docs/execution.md#geometry-reduction-and-publication)
-also overlaps a completed component's writes with the following LOAD.
+For a single eligible axis, D and C products instead launch consecutively,
+using the two PC rows as independent first-product feedback. Search omits high
+bits already excluded by preceding constraints, preserving the same final interval.
+Geometry reduction uses three fixed magnitude windows and a dedicated 36x18
+DSP, retaining exact truncation and the existing per-edge exponents. It reads
+Nx/Ny/C consecutively and writes the final banks while collecting the next
+edge. Delta alone uses the reversed 53-bit work register. The
+[publication calendar](/ip/gpu-v2/docs/execution.md#geometry-reduction-and-publication)
+defines the fixed latency and final-address sequence; no component tags or
+iterative geometry-shift states remain.
 
 The walker requests the target ROM word on the same enabled edge that retires
 the deciding edge predicate. The epoch changes on that edge, invalidating any
@@ -105,8 +114,9 @@ younger speculative result. The next instruction's reads use the updated level
 and coordinates; there is no additional pending-branch handoff state.
 
 Full tiles keep a row-start vector and stream four pixels per quad through the
-existing 16-cycle calendar. A full traversal node above level4 descends through
-the existing walker; it does not publish a larger full tile. Full scan blocks
+existing 16-cycle calendar. Above level4, a node whose upper support passes
+descends immediately; a lower/full-coverage test cannot change that decision
+and is omitted. Level4 and smaller nodes retain both tests. Full scan blocks
 therefore stay within one external 16 x 16 framebuffer tile. Descendant tests
 and mailbox traffic remain part of traversal rather than receiving an implicit
 zero-cost full-region loop. Partial tiles arrive only at 4 x 4 pixels. Their
@@ -172,6 +182,13 @@ quad admission.
 Threshold writes belong to preparation, while scanner reads belong to
 execution, with no dynamic port arbitration. Full-tile row handling remains
 independent of the partial-tile bank alternation.
+
+The tile FIFO exposes metadata at its first h write. Its fixed fill schedule
+guarantees each subsequent LOAD or PREFETCH read follows that word's write;
+the producer holds one physical slot throughout all three writes. The earliest
+LOAD reads h0 while h2 is written at a different address. This
+[publication calendar](/ip/gpu-v2/docs/execution.md#tile-mailbox-publication)
+needs no data bypass, extra buffer or complete-vector waiting state.
 
 At admission of the final quad of a tile, an already available next mailbox
 entry enables a fixed prefetch calendar. Lanes 0, 1 and 2 read its three h

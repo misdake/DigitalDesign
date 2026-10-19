@@ -1,4 +1,4 @@
-// Two independent bounds axes share the fixed PA/PB/PC ports and DSP calendar.
+// Single- and dual-axis bounds share fixed PA/PB/PC ports and one DSP calendar.
 // PB0/1 and PC0/1 are temporary axis rows, dead before analytic LOD starts.
 module rp_prepare_core(
  input clk,reset,ce,start,input rgb,input[5:0]seed_sign,
@@ -16,7 +16,7 @@ module rp_prepare_core(
  reg sign0,nonzero0,empty;reg[1:0]eligible;
  reg search_main,dual_search,aux_pending;
  reg[2:0]search_bit;reg[4:0]prefix;reg[3:0]aux_prefix;
- wire[33:0]u;wire[5:0]op=u[5:0];reg[5:0]next_pc;
+ wire[35:0]u;wire[5:0]op=u[5:0];reg[5:0]next_pc;
  wire normal_pair=index==0||(index==1&&!axis);
  wire last_pair=index==2,last_n=axis&&index==2;
  wire[1:0]j=index==2?2'd0:index+1'b1;
@@ -54,7 +54,7 @@ module rp_prepare_core(
  always @*begin
   next_pc=u[11:6];
   case(op)
-   3:begin if(!axis)next_pc=0;else if(eligible==0)next_pc=21;end
+   3:begin if(!axis)next_pc=0;else if(eligible==0)next_pc=21;else if(!dual_math)next_pc=41;end
    16:begin
     if(endpoint_fail)next_pc=22;
     else if(!dual_math)begin if(endpoint_search)next_pc=18;else next_pc=21;end
@@ -77,30 +77,38 @@ module rp_prepare_core(
  wire c_axis=axis^aux_issue;
  wire search_start=(op==16&&!dual_math&&endpoint_search)||(op==17&&(search_main||aux_search));
  wire search_axis=op==17&&!search_main?!axis:axis;
+ // A previous edge pair has already bounded the live tile interval. Searching
+ // above its high endpoint cannot change that intersection. A dual search
+ // reserves one more primary bit because Y launches one bit behind X.
+ function[2:0]high_bit;input[4:0]v;begin
+  if(v[4])high_bit=4;else if(v[3])high_bit=3;else if(v[2])high_bit=2;
+  else if(v[1])high_bit=1;else high_bit=0;
+ end endfunction
+ wire[2:0]x_search_bit=high_bit(xhi),y_search_bit=high_bit({1'b0,yhi});
+ wire[2:0]main_search_bit=search_axis?y_search_bit:x_search_bit;
+ wire[2:0]paired_search_bit=y_search_bit+3'd1;
+ wire[2:0]initial_search_bit=(op==17&&search_main&&aux_search&&paired_search_bit>main_search_bit)?paired_search_bit:main_search_bit;
+ wire[1:0]a_vertex=u[35]?next_index:index;
+ wire[3:0]uv_row=(u[34]?4'd4:4'd1)+{2'd0,a_vertex};
+ wire[1:0]align_vertex=op==31?2'd0:next_index;
  reg[6:0]ar;reg[3:0]br,cr;
  always @*begin
   ar=81;br=15;cr=6;
   case(u[15:12])
    1:ar={3'd0,weight_row(!axis,j)};
    2:ar={3'd0,weight_row(!axis,index)};
-   3:ar=alignment_row(index);
-   4:ar=7'd1+index;
-   5:ar=7'd4+index;
-   6:ar=alignment_row(next_index);
-   7:ar=7'd1+next_index;
-   8:ar=alignment_row(0);
+   3:ar=alignment_row(align_vertex);
+   4:ar={3'd0,uv_row};
+   6:ar={4'b1000,initial_search_bit};
+   7:ar={3'b100,aux_pending&&!aux_accept,search_bit-3'd1};
+   8:ar={3'b100,!candidate_accept,search_bit-3'd1};
    9:ar={3'd0,weight_row(axis,j)};
    10:ar={3'd0,weight_row(axis,index)};
-   11:if(dual_math)ar={3'd0,weight_row(axis,j)};else ar={3'd0,weight_row(!axis,index)};
+   11:ar={3'd0,weight_row(eligible[0],j)};
    12:if(d_kind==1)ar=80;else ar=50;
    13:if(aux_kind==1)ar=80;else ar=50;
    default:begin end
   endcase
-  // The final attribute slot primes the first arithmetic input directly.
-  if(op==3)ar={3'd0,weight_row(eligible[0]?1'b1:1'b0,j)};
-  if(op==16||op==17)ar=search_axis?7'd67:7'd68;
-  if(op==18)ar={3'b100,aux_pending&&!aux_accept,search_bit-3'd1};
-  if(op==20)ar={3'b100,!candidate_accept,search_bit-3'd1};
   case(u[19:16])
    1:br=geo_row(!axis,index);
    2:br=geo_row(!axis,j);
@@ -108,19 +116,14 @@ module rp_prepare_core(
    4:br=geo_row(axis,j);
    5:br=4'd12+index;
    6:br=4'd12+j;
-   7:br=geo_row(!axis,index);
-   8:br=geo_row(!axis,j);
+   7:br=geo_row(!eligible[0],index);
    10:br=geo_row(next_axis,next_index);
    11:br=6;
-   12:if(op==4)begin
-     if(dual_math)br=geo_row(!axis,index);else br=geo_row(axis,j);
-    end else if(dual_math)br=4'd12+index;else br=4'd12+j;
    13:br={3'd0,axis};
    14:br={3'd0,!axis};
+   15:br={3'd0,search_axis};
    default:begin end
   endcase
-  if(op==3)br=geo_row(!eligible[0],index);
-  if(op==16||op==17)br={3'd0,search_axis};
   case(u[22:20])
    1:cr={3'd0,c_axis};
    2:if(seed_sign[(c_axis?3:0)+index])cr=7;
@@ -135,6 +138,7 @@ module rp_prepare_core(
    end
    default:begin end
   endcase
+  if(op==44)cr={3'd0,!axis};
  end
  wire aux_prefetch=op==5||op==6||op==10||op==11||op==14;
  wire search_aux=dual_search&&search_bit!=0;
@@ -149,11 +153,18 @@ module rp_prepare_core(
  assign wide_asign=u[28];
  wire[1:0]bw=u[30:29];wire[2:0]cw=u[33:31];
  assign b_we=active&&(bw==1||bw==2||(bw==3&&index==2))&&(op!=9||dual_math)&&!reset;
- assign b_wa=op<31?{3'd0,axis^(op==9)}:bw==3?{3'd0,axis}:4'd15;
+ assign b_wa=bw==1?{3'd0,axis^(op==9)}:bw==3?{3'd0,axis}:4'd15;
  assign b_wd=bw==2?{{18{result[34]}},result[34:17]}:result[35:0];
- wire aux_write=op<31&&cw==4;
- assign c_we=active&&cw!=0&&(!aux_write||(op==18?aux_pending:dual_math))&&!reset;
- assign c_wa=aux_write?{3'd0,!axis}:cw==2?{3'd0,axis}:cw==3?{2'd0,1'b1,axis}:op<31?{3'd0,axis}:4'd11;
+ wire conditional_aux=cw==5;
+ assign c_we=active&&cw!=0&&(!conditional_aux||(op==18?aux_pending:dual_math))&&!reset;
+ reg[3:0]c_write_row;
+ always @*case(cw)
+  2:c_write_row={3'd0,axis};
+  3:c_write_row={2'd0,1'b1,axis};
+  5,6:c_write_row={3'd0,!axis};
+  default:c_write_row=11;
+ endcase
+ assign c_wa=c_write_row;
  assign c_wd=result;
  assign bound_valid=active&&(op==21||op==22)&&!reset;
  assign bound_empty=empty||op==22;
@@ -172,7 +183,7 @@ module rp_prepare_core(
      1:begin sign0<=bq[35];nonzero0<=bq!=0;end
      2:eligible[axis]<=pair_eligible;
      3:begin if(!axis)axis<=1;else axis<=!eligible[0];end
-     8:d_kind<=kind(result);
+     8,45:d_kind<=kind(result);
      9:if(dual_math)aux_kind<=kind(result);
      16:search_main<=endpoint_search;
      17:begin dual_search<=search_main&&aux_search;if(!search_main)begin axis<=!axis;d_kind<=aux_kind;end end
@@ -203,7 +214,7 @@ module rp_prepare_core(
      default:begin end
     endcase
     if(search_start)begin
-     search_bit<=search_axis?3'd3:3'd4;prefix<=0;aux_prefix<=0;aux_pending<=0;
+     search_bit<=initial_search_bit;prefix<=0;aux_prefix<=0;aux_pending<=0;
      if(op==16)dual_search<=0;
     end
     if(pair_finish)begin axis<=0;index<=index+1'b1;eligible<=0;aux_pending<=0;end
@@ -213,7 +224,7 @@ module rp_prepare_core(
 `ifndef SYNTHESIS
  always @(posedge clk)if(ce&&!reset&&active)begin
   if(op!=pc)$fatal(1,"preparation ROM alignment pc%0d op%0d",pc,op);
-  if((op==8||(op==9&&dual_math))&&result[53:35]!={19{result[35]}})$fatal(1,"bbox D overflow");
+  if((op==8||op==45||(op==9&&dual_math))&&result[53:35]!={19{result[35]}})$fatal(1,"bbox D overflow");
   if((op==37||op==38||op==39)&&result[53:35]!={19{result[35]}})$fatal(1,"G/S overflow");
   if(op==18&&aux_pending&&!dual_search)$fatal(1,"unexpected auxiliary retire");
  end

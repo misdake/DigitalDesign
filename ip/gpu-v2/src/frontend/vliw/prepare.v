@@ -20,20 +20,25 @@ module rp_prepare(
  input[53:0]wide_result_data,
  output busy,import_busy,math_busy,done,output reg[3:0]error
 );
- localparam IDLE=0,COLLECT=1,LOAD=2,DOWN=3,TAIL=5,
+ localparam IDLE=0,COLLECT=1,READ=2,DRAIN=4,TAIL=5,
  CORE=8,
- CFG_COMMIT=26,FINISH=28,FAULT=29,Q_READ=30;
+ CFG_COMMIT=26,FINISH=28,FAULT=29;
  reg[4:0]state,expected;reg[1:0]edge_no,field;
- reg quant_valid;reg[1:0]quant_edge,quant_field;wire quant_finish;
- reg[4:0]edge_exp,remaining,exp0,exp1,exp2,common_e;
- reg[52:0]work;wire[46:0]magnitude=work[46:0];reg negative,sigma,rgb;reg[3:0]tri_shift;
+ reg read_valid;reg[4:0]read_exp_q;
+ reg[1:0]quant_pipe;reg[1:0]quant_edge,quant_field;
+ reg quant_negative0,quant_negative1;
+ wire quant_read;wire[1:0]quant_read_field;
+ wire quant_valid=quant_pipe[1];
+ wire negative=quant_negative1;
+ reg[4:0]edge_exp,exp0,exp1,exp2,common_e;
+ reg[52:0]work;reg sigma,rgb;reg[3:0]tri_shift;
  reg[31:0]far_z;reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
  wire[52:0]delta;reg[5:0]delta_e;reg normalizing;
 
  reg[2:0]seed_sign_x,seed_sign_y;
  wire core_attr_send,core_attr_bank;wire[1:0]core_attr_index;
  wire[35:0]low_q=pw_q[35:0];
- assign busy=state!=IDLE;assign import_busy=(state>=COLLECT&&state<=TAIL)||state==Q_READ;
+ assign busy=state!=IDLE;assign import_busy=state>=COLLECT&&state<=TAIL;
  assign math_busy=state==CORE||state==CFG_COMMIT||state==FINISH;
  assign done=state==FINISH;
  wire input_normal,input_attr;
@@ -52,7 +57,10 @@ module rp_prepare(
  endfunction
  wire [4:0] need=required_shift(raw_magnitude,is_c);
  wire [4:0] next_exp=need>edge_exp ? need : edge_exp;
- wire[35:0]canonical=(negative^sigma)?36'd0-magnitude[35:0]:magnitude[35:0];
+ wire[53:0]quant_result;
+ wire[27:0]magnitude=quant_result[34:7];
+ wire[27:0]canonical28=(negative^sigma)?28'd0-magnitude:magnitude;
+ wire[35:0]canonical={{8{canonical28[27]}},canonical28};
  assign geo_we=!reset&&quant_valid;
  // 按最终R工作池的物理行发射；符号方向直接复用PB已经需要的canonical。
  assign geo_wa={quant_field,quant_edge};
@@ -72,7 +80,7 @@ module rp_prepare(
  wire normal_write=state==TAIL&&input_take&&input_normal;
  wire packed_write=state==TAIL&&input_take&&(input_normal||input_attr);
  assign pw_low_we=pw_low0_we||pw_low1_we;
- // PW6..8复用当前edge的三份48bit原记录，不另建量化池。
+ // PC8..10 hold the current edge's raw records; no separate quantization pool.
  wire[47:0]pool_q=pw_q[83:36];
  function[1:0]collect_field;input[4:0]i;begin
   case(i)0,3,6:collect_field=0;1,4,7:collect_field=1;default:collect_field=2;endcase
@@ -142,17 +150,15 @@ module rp_prepare(
    pw_high_we=1;pw_high_wa=4'd8+{2'd0,collect_field(in_index)};
    pw_high_wd={6'd0,raw_value[46],raw_magnitude};
   end
-  if(state==COLLECT&&input_take&&in_index==expected&&is_c)begin pw_acc_re=1;pw_acc_ra=8;end
+  if(quant_read)begin pw_acc_re=1;pw_acc_ra=4'd8+{2'd0,quant_read_field};end
   if(geo_we)begin
    pw_low0_we=1;pw_low1_we=1;
    pw_wa=(quant_field==0?4'd6:quant_field==1?4'd9:4'd12)+{2'd0,quant_edge};pw_low_wd=canonical;
   end
-  if(quant_finish&&field<2)begin pw_acc_re=1;pw_acc_ra=4'd9+{2'd0,field};end
   if(packed_write)begin
    pw_high_we=1;pw_high_wa={1'b1,input_normal,2'b00}+{2'd0,input_vertex};pw_high_wd={{6{packed_input[47]}},packed_input};
   end
   case(state)
-   Q_READ:begin pw_acc_re=1;pw_acc_ra=4'd8+{2'd0,field};end
    CORE:begin
     pw_re=core_b_re;pw_ra=core_br;pw_acc_re=core_c_re;pw_acc_ra=core_cr;
     pw_low0_we=core_b_we;pw_low1_we=core_b_we;pw_wa=core_bw;pw_low_wd=core_bd;
@@ -173,67 +179,67 @@ module rp_prepare(
   assign delta[work_bit]=work[52-work_bit];
   assign work_delta_input[work_bit]=in_data[52-work_bit];
  end endgenerate
- wire work_load_geo=!start&&state==LOAD;
  wire work_load_delta=!start&&state==TAIL&&in_valid&&in_index==expected&&in_index==9;
- wire work_shift_geo=!start&&state==DOWN;
- // Keep the original invalid-start behavior: an active Delta may still shift.
  wire work_shift_delta=normalizing&&(|delta)&&!delta[52];
- // A geometry load uses the same shift window as subsequent steps. The first
- // 1/2/4-bit reduction is performed before writing work, rather than one edge
- // after the read. Delta keeps its reversed-bit, feedback-only lifetime.
- wire[52:0]work_source=work_load_geo?{6'b0,pool_q[46:0]}:work;
- reg[2:0]work_shift;
- reg[52:0]work_shifted;
- always @*begin
-  work_shift=3'd2;
-  if(work_load_geo)begin
-   if(edge_exp>=4)work_shift=3'd4;
-   else if(edge_exp>=2)work_shift=3'd2;
-   else work_shift={2'd0,edge_exp[0]};
-  end else if(work_shift_geo)begin
-   if(remaining>=4)work_shift=3'd4;
-   else if(remaining==1)work_shift=3'd1;
-  end else if(delta[51])work_shift=3'd1;
-  case(work_shift)
-   3'd0:work_shifted=work_source;
-   3'd1:work_shifted={1'b0,work_source[52:1]};
-   3'd4:work_shifted={4'b0,work_source[52:4]};
-   default:work_shifted={2'b0,work_source[52:2]};
-  endcase
- end
- assign quant_finish=(state==LOAD&&edge_exp==work_shift)||
-  (state==DOWN&&remaining<=4&&remaining!=3);
- // The completed work value is consumed on the following edge while LOAD
- // writes the next value into that same register. Only its address is delayed;
- // no second magnitude/canonical buffer or dedicated SEND state is needed.
- always @(posedge clk)begin
-  if(reset)begin quant_valid<=0;quant_edge<=0;quant_field<=0;end
-  else if(ce)begin
-   quant_valid<=quant_finish&&!start;
-   if(quant_finish)begin quant_edge<=edge_no;quant_field<=field;end
-  end
- end
+ wire[52:0]work_shifted=delta[51]?{1'b0,work[52:1]}:{2'b0,work[52:2]};
  always @(posedge clk)begin
   if(reset)work<=0;
   else if(ce)begin
    if(work_load_delta)work<=work_delta_input;
-   else if(work_load_geo||work_shift_geo||work_shift_delta)work<=work_shifted;
+   else if(work_shift_delta)work<=work_shifted;
+  end
+ end
+
+ // PC reads Nx/Ny/C in consecutive slots. C capture requests Nx immediately;
+ // the final read releases collection while its Q still feeds the DSP.
+ assign quant_read=(state==COLLECT&&input_take&&in_index==expected&&is_c)||state==READ;
+ assign quant_read_field=state==READ?field:2'd0;
+ reg[34:0]quant_window;
+ always @*begin
+  case(read_exp_q[4:3])
+   0:quant_window=pool_q[34:0];
+   1:quant_window=pool_q[42:8];
+   default:quant_window={4'd0,pool_q[46:16]};
+  endcase
+ end
+ // Only eight one-hot constants. For the admitted N17/C27 ranges, the
+ // selected 35-bit window includes every bit that can reach the result.
+ wire[17:0]quant_scale=18'd128>>read_exp_q[2:0];
+ iz_widemac geometry_dsp(clk,reset,ce,quant_scale,1'b0,{1'b0,quant_window},54'd0,quant_result);
+ always @(posedge clk)begin
+  if(reset)begin
+   read_valid<=0;read_exp_q<=0;quant_pipe<=0;quant_edge<=0;quant_field<=0;
+   quant_negative0<=0;quant_negative1<=0;
+  end else if(ce)begin
+   if(start)begin read_valid<=0;quant_pipe<=0;quant_edge<=0;quant_field<=0;end
+   else begin
+    read_valid<=quant_read;quant_pipe<={quant_pipe[0],read_valid};
+    if(quant_read)begin
+     read_exp_q<=state==COLLECT?next_exp:edge_exp;
+    end
+    if(read_valid)begin
+     quant_negative0<=pool_q[47];
+    end
+    quant_negative1<=quant_negative0;
+    // Every return is Nx, Ny, C in edge order. Its final physical address
+    // advances only at writeback; no edge/field tags travel through the DSP.
+    if(quant_valid)begin
+     if(quant_field==2)begin quant_field<=0;quant_edge<=quant_edge+1'b1;end
+     else quant_field<=quant_field+1'b1;
+    end
+   end
   end
  end
 `ifndef SYNTHESIS
  always @(posedge clk)if(ce&&!reset)begin
-  if(normalizing&&(state==COLLECT||state==Q_READ||state==LOAD||state==DOWN))
-   $fatal(1,"shared work lifetime overlap");
-  if(work_load_delta&&(work_load_geo||work_shift_geo||work_shift_delta))
-   $fatal(1,"shared work load priority collision");
-  if(work_shift_geo&&work_shift_delta)$fatal(1,"shared work shift collision");
+  if(quant_valid&&(state==CORE||state==CFG_COMMIT))$fatal(1,"geometry pipeline overlaps parameter execution");
  end
 `endif
 
  always @(posedge clk)begin
   if(reset)begin
-   state<=IDLE;expected<=0;edge_no<=0;field<=0;edge_exp<=0;remaining<=0;
-   exp0<=0;exp1<=0;exp2<=0;common_e<=0;negative<=0;sigma<=0;rgb<=0;tri_shift<=0;
+   state<=IDLE;expected<=0;edge_no<=0;field<=0;edge_exp<=0;
+   exp0<=0;exp1<=0;exp2<=0;common_e<=0;sigma<=0;rgb<=0;tri_shift<=0;
    far_z<=0;tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;
    delta_e<=0;normalizing<=0;
    seed_sign_x<=0;seed_sign_y<=0;error<=0;
@@ -270,20 +276,18 @@ module rp_prepare(
          if(exp0>=exp1&&exp0>=next_exp)common_e<=exp0;
          else if(exp1>=next_exp)common_e<=exp1;else common_e<=next_exp;
         end endcase
-        state<=LOAD;
+        state<=READ;field<=1;
        end
       end
      end
-     Q_READ:state<=LOAD;
-     LOAD:begin negative<=pool_q[47];remaining<=edge_exp-work_shift;
-      state<=DOWN;
+     READ:begin
+      if(field==2)begin
+       field<=0;edge_exp<=0;
+       if(edge_no==2)state<=DRAIN;
+       else begin edge_no<=edge_no+1'b1;state<=COLLECT;end
+      end else field<=field+1'b1;
      end
-     DOWN:begin
-      if(remaining<=4)begin
-       if(remaining==3)remaining<=1;
-       else remaining<=0;
-      end else remaining<=remaining-4;
-     end
+     DRAIN:if(quant_valid&&quant_field==2&&quant_edge==2)state<=TAIL;
      TAIL:if(in_valid)begin
       if(in_index!=expected)begin error[0]<=1;state<=FAULT;end
       else if(in_index==9)begin
@@ -298,13 +302,7 @@ module rp_prepare(
     FINISH:state<=IDLE;
      default:begin end
     endcase
-    if(quant_finish)begin
-     if(field==2)begin
-      field<=0;edge_exp<=0;
-      if(edge_no==2)state<=TAIL;
-      else begin edge_no<=edge_no+1'b1;state<=COLLECT;end
-     end else begin field<=field+1'b1;state<=LOAD;end
-    end
+
    end
   end
  end
