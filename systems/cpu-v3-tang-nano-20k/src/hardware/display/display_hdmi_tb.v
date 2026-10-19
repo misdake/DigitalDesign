@@ -17,6 +17,16 @@ wire memory_request_valid,memory_urgent,underflow,tmds_clk_p,tmds_clk_n;
 wire [21:0] memory_address; wire [2:0] tmds_data_p,tmds_data_n;
 wire [15:0] device_read_data;
 FramebufferHdmi dut(.*);
+reg observed_start=0;
+always @(negedge pixel_clock) begin
+ if(dut.pixel_reset) observed_start=0;
+ else if(dut.started && !observed_start) begin
+  if(dut.h_count!=0 || dut.v_count!=0 ||
+     (dut.publish_sync ^ dut.released)!=2'b11)
+   $fatal(1,"startup did not use two complete groups at frame origin");
+  observed_start=1;
+ end
+end
 integer beat=0,requests=0,cycles=0,bursts=0;
 integer memory_cycles=0;
 integer col=0,bad=0,sampled=0,border_sampled=0,de_col=0,de_runs=0;
