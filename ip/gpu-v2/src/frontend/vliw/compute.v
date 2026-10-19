@@ -12,7 +12,7 @@ module rc_compute(
  input cfg_valid,input signed[7:0]cfg_z_bias,input[31:0]cfg_far,input cfg_rgb,
  input[4:0]cfg_shift0,cfg_shift1,cfg_shift2,
  input table_valid,output table_ready,input[7:0]table_index,input[35:0]table_data,
- input param_valid,input[1:0]param_index,input param_bank,input[53:0]param_data,
+ input param_valid,input[1:0]param_index,input param_bank,input[50:0]param_data,
  input[4:0]cfg_tex_u,cfg_tex_v,cfg_max_mip,input signed[7:0]cfg_bias,
  input quad_end_valid,input[2:0]quad_end_qid,input[3:0]quad_end_mask,
  output result_we,output[6:0]result_wa,output reg[35:0]result_wd,
@@ -123,16 +123,18 @@ module rc_compute(
    endcase
   end
  end
- wire[53:0]p0q,p1q;
- iz_params_async #(.WIDTH(54)) param0(clk,reset,ce,param_valid&&!reset&&!param_bank,
+ // S17 base/differences are exact for signed N12 and unsigned UV16/RGB8.
+ // Store 51 bits per row; restore the redundant sign bits at the DSP pins.
+ wire[50:0]p0q,p1q;
+ iz_params_async #(.WIDTH(51)) param0(clk,reset,ce,param_valid&&!reset&&!param_bank,
   {2'd0,param_index},param_data,{2'd0,param_read_row},p0q);
- iz_params_async #(.WIDTH(54)) param1(clk,reset,ce,param_valid&&!reset&&param_bank,
+ iz_params_async #(.WIDTH(51)) param1(clk,reset,ce,param_valid&&!reset&&param_bank,
   {2'd0,param_index},param_data,{2'd0,param_read_row},p1q);
- wire signed[53:0]base0={{20{p0q[53]}},p0q[53:36],16'h8000};
- wire signed[53:0]base1={{20{p1q[53]}},p1q[53:36],16'h8000};
+ wire signed[53:0]base0={{21{p0q[50]}},p0q[50:34],16'h8000};
+ wire signed[53:0]base1={{21{p1q[50]}},p1q[50:34],16'h8000};
  wire signed[53:0]pair0_result,pair1_result;
- iz_pairmac pair0(clk,reset,ce,weight0,weight1,p0q[17:0],p0q[35:18],base0,pair0_result);
- iz_pairmac pair1(clk,reset,ce,weight0,weight1,p1q[17:0],p1q[35:18],base1,pair1_result);
+ iz_pairmac pair0(clk,reset,ce,weight0,weight1,{p0q[16],p0q[16:0]},{p0q[33],p0q[33:17]},base0,pair0_result);
+ iz_pairmac pair1(clk,reset,ce,weight0,weight1,{p1q[16],p1q[16:0]},{p1q[33],p1q[33:17]},base1,pair1_result);
  // C低16位已加半LSB；仅半分位由取偶改成向正无穷取整。
  wire[17:0]attr0=pair0_result[33:16],attr1=pair1_result[33:16];
  wire operand_we,operand_re;wire[3:0]operand_wa,operand_ra;wire[17:0]operand_wd,operand_value;

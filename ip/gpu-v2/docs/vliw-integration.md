@@ -24,11 +24,11 @@ R/I 直接向结果池写原始固定延迟返回。删除旧 I 的13字串行�
 | --- | --- | --- |
 | T 导出发读 | 前10项同时读低36／高18银行；后6项读属性银行 | 两银行各自一沿同步 Q，没有高字标签和第二次读 |
 | 下一有效沿 | 旧 Q 形成54位输出，同时可发后继读 | 输出被 CE／背压暂停时保持，末项15被接受后释放 T 槽 |
-| 准备 TAIL | 同一 N36 源 Q 的低12位写最终 Nx 行 | 不提前接受源字，不另存完整 N |
-| 准备 SECOND | Q 的中12位写最终 Ny 行 | 源 Q 继续保持 |
-| 准备 THIRD | Q 的高12位写最终 Nz 行 | 接受 N36；属性字按原三相写入 UV／RGB 最终行 |
+| Prepare TAIL | Write N36/UV32/RGB24 as three padded 16-bit PC lanes in one enabled edge | Accept the word on that write; normal rows 12..14, attribute rows 8..10 |
+| ROM op0/1/2 | Read vertices 2/0/1; capture a2, then d0=a0-a2 | Reuse one signed17 subtractor and short operands; no source-word hold |
+| ROM op3 or op42 | Form d1=a1-a2 and publish the final parameter row | U/V write PA in the same fixed return slots; CE freezes all owners |
 
-每顶点仍有六次最终参数写入；读取减少不能直接当作总拍等量减少。旧 `fetch_low`、`import_hi`、`Q_HI`、准备阶段 normal18 转换／RNE／模式寄存与 Nxy/Nz 分支已删除。冻结数学参考继续计算原语义，测试的 `transport.py` 只将其打包为 V5／T16；活动 RTL 没有扩回旧19项。
+Each vertex imports one normal row and one attribute row. Six final parameter rows per triangle store three exact signed17 fields: d0[16:0], d1[33:17], base[50:34]. UV differences in -65535..65535 fit exactly; DSP input wiring restores redundant sign bits and retains the half-LSB bias. SECOND/THIRD expansion is removed. 旧 `fetch_low`、`import_hi`、`Q_HI`、准备阶段 normal18 转换／RNE／模式寄存与 Nxy/Nz 分支已删除。冻结数学参考继续计算原语义，测试的 `transport.py` 只将其打包为 V5／T16；活动 RTL 没有扩回旧19项。
 
 ### R/I 到后半
 

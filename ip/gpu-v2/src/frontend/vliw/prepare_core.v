@@ -8,11 +8,13 @@ module rp_prepare_core(
  output c_re,output[3:0]c_ra,output c_we,output[3:0]c_wa,output[53:0]c_wd,
  output wide_valid,wide_asign,output reg active,done,
  output bound_valid,output bound_empty,output reg[4:0]xlo,xhi,output reg[3:0]ylo,yhi,
- output attr_read,attr_send,output[1:0]attr_index,output attr_bank,output round_init
+ output attr_read,attr_send,output[1:0]attr_index,output attr_bank,output round_init,
+ output attr0_take,attr1_take
 );
  reg[5:0]pc;reg axis;reg[1:0]index,d_kind;reg sign0,nonzero0,empty;
  reg[2:0]search_bit;reg[4:0]prefix;reg delta_positive;
  wire[35:0]u;wire[5:0]op=u[5:0];reg[5:0]next_pc;
+ wire normal_pair=index==0||(index==1&&!axis);
  wire last_pair=axis&&index==2,last_n=last_pair;
  wire[1:0]j=index==2?2'd0:index+1'b1;
  wire[1:0]next_index=index==2?2'd0:index+1'b1;
@@ -71,7 +73,6 @@ module rp_prepare_core(
    6:br=4'd12+j;
    10:br=geo_row(next_axis,next_index);
    11:br=6;
-   12:br={1'b0,index,axis};
    default:begin end
   endcase
   case(u[22:20])
@@ -81,13 +82,19 @@ module rp_prepare_core(
    4:if(index!=0)cr={2'd0,1'b1,axis};
    5:if(index!=0)cr=11;
    6:if(seed_sign[(next_axis?3:0)+next_index])cr=7;
-   7:cr={1'b0,index,axis};
+   7:begin
+    if(op==0)cr={1'b1,normal_pair,2'b10};
+    else if(op==1)cr={1'b1,normal_pair,2'b00};
+    else cr={1'b1,normal_pair,2'b01};
+   end
    default:begin end
   endcase
  end
  assign a_re=active&&u[24]&&!reset;assign a_ra=ar;
  assign b_re=active&&u[25]&&!reset;assign b_ra=br;
  assign c_re=active&&u[26]&&!reset;assign c_ra=cr;
+ assign attr0_take=active&&op==1&&!reset;
+ assign attr1_take=active&&op==2&&!reset;
  assign wide_valid=active&&u[27]&&!(op==39&&last_n)&&!reset;
  assign wide_asign=u[28];
  wire[1:0]bw=u[30:29],aw=u[35:34];wire[2:0]cw=u[33:31];

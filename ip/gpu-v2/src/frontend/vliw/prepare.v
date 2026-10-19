@@ -10,7 +10,7 @@ module rp_prepare(
  output signed[7:0]stream_cfg_z_bias,output[31:0]stream_cfg_far,output stream_cfg_rgb,
  output[4:0]stream_cfg_shift0,stream_cfg_shift1,stream_cfg_shift2,
  output stream_param_valid,output[1:0]stream_param_index,
- output stream_param_bank,output[53:0]stream_param_data,
+ output stream_param_bank,output[50:0]stream_param_data,
  
  output[4:0]lod_cfg_tex_u,lod_cfg_tex_v,lod_cfg_max_mip,output signed[7:0]lod_cfg_bias,
  output operand_we,output[3:0]operand_wa,output[17:0]operand_wd,
@@ -20,7 +20,7 @@ module rp_prepare(
  input[53:0]wide_result_data,
  output busy,import_busy,math_busy,done,output reg[3:0]error
 );
- localparam IDLE=0,COLLECT=1,LOAD=2,DOWN=3,Q_SEND=4,TAIL=5,SECOND=6,THIRD=7,
+ localparam IDLE=0,COLLECT=1,LOAD=2,DOWN=3,Q_SEND=4,TAIL=5,
  CORE=8,
  CFG_COMMIT=26,FINISH=28,FAULT=29,Q_READ=30;
  reg[4:0]state,expected;reg[1:0]edge_no,field;
@@ -32,11 +32,11 @@ module rp_prepare(
  reg[2:0]seed_sign_x,seed_sign_y;
  wire core_attr_read,core_attr_send,core_attr_bank,core_round_init;wire[1:0]core_attr_index;
  wire[35:0]low_q=pw_q[35:0];
- assign busy=state!=IDLE;assign import_busy=(state>=COLLECT&&state<=THIRD)||state==Q_READ;
+ assign busy=state!=IDLE;assign import_busy=(state>=COLLECT&&state<=TAIL)||state==Q_READ;
  assign math_busy=state==CORE||state==CFG_COMMIT||state==FINISH;
  assign done=state==FINISH;
  wire input_normal,input_attr;
- assign in_ready=!reset&&(state==COLLECT||(state==TAIL&&in_index==9)||state==THIRD);
+ assign in_ready=!reset&&(state==COLLECT||state==TAIL);
  wire input_take=in_valid&&in_ready;
  wire is_c=in_index==2||in_index==5||in_index==8;
  wire[46:0]raw_value=is_c ? in_data[46:0] : {{11{in_data[35]}},in_data[35:0]};
@@ -61,30 +61,16 @@ module rp_prepare(
  assign input_attr=in_index==11||in_index==13||in_index==15;
  reg[1:0]input_vertex;
  always @*case(in_index)10,11:input_vertex=0;12,13:input_vertex=1;default:input_vertex=2;endcase
- reg[11:0]normal_value;
- always @*case(state)
-  TAIL:normal_value=in_data[11:0];
-  SECOND:normal_value=in_data[23:12];
-  default:normal_value=in_data[35:24];
- endcase
- reg[15:0]raw_attribute;
+ // Reuse PC8..10 after the last geometry record has been consumed. Each
+ // N36/UV32/RGB24 input writes three final 16-bit lanes in one cycle.
+ reg[47:0]packed_input;
  always @*begin
-  if(state==TAIL)begin
-   if(input_normal)raw_attribute={{4{normal_value[11]}},normal_value};
-   else if(rgb)raw_attribute={8'd0,in_data[7:0]};else raw_attribute=in_data[15:0];
-  end else if(state==SECOND)begin
-   if(input_normal)raw_attribute={{4{normal_value[11]}},normal_value};
-   else if(rgb)raw_attribute={8'd0,in_data[15:8]};else raw_attribute=in_data[31:16];
-  end else begin
-   if(input_normal)raw_attribute={{4{normal_value[11]}},normal_value};
-   else if(rgb)raw_attribute={8'd0,in_data[23:16]};else raw_attribute=0;
-  end
+  if(input_normal)packed_input={{4{in_data[35]}},in_data[35:24],{4{in_data[23]}},in_data[23:12],{4{in_data[11]}},in_data[11:0]};
+  else if(rgb)packed_input={8'd0,in_data[23:16],8'd0,in_data[15:8],8'd0,in_data[7:0]};
+  else packed_input={16'd0,in_data[31:0]};
  end
- wire tail_first=state==TAIL&&in_valid&&!reset;
- wire attribute_write=(tail_first&&(input_normal||input_attr))||state==SECOND||state==THIRD;
- wire[3:0]attribute_row=state==TAIL ? (input_normal ? 4'd0 : 4'd3) :
-  state==SECOND ? (input_normal ? 4'd1 : 4'd4) : (input_normal ? 4'd2 : 4'd5);
- wire[1:0]attribute_vertex=input_vertex;
+ wire normal_write=state==TAIL&&input_take&&input_normal;
+ wire packed_write=state==TAIL&&input_take&&(input_normal||input_attr);
  assign pw_low_we=pw_low0_we||pw_low1_we;
  // PW6..8复用当前edge的三份48bit原记录，不另建量化池。
  wire[47:0]pool_q=pw_q[83:36];
@@ -135,35 +121,51 @@ module rp_prepare(
   endcase
  end
  wire core_a_re,core_a_we,core_b_re,core_b_we,core_c_re,core_c_we,core_issue,core_asign,core_active,core_done;
+ wire core_attr0_take,core_attr1_take;
+ reg[15:0]component;
  wire[3:0]core_ar,core_br,core_bw,core_cr,core_cw;wire[17:0]core_ad;wire[35:0]core_bd;wire[53:0]core_cd;
- wire core_start=state==THIRD&&in_index==15&&!reset;
+ wire core_start=state==TAIL&&input_take&&in_index==15;
  rp_prepare_core core(clk,reset,ce,core_start,rgb,{seed_sign_y,seed_sign_x},pw_q[35:0],pw_q[89:36],wide_result_data,
   core_a_re,core_ar,core_a_we,core_ad,core_b_re,core_br,core_b_we,core_bw,core_bd,
   core_c_re,core_cr,core_c_we,core_cw,core_cd,core_issue,core_asign,core_active,core_done,
-  bound_valid,bound_empty,bound_xlo,bound_xhi,bound_ylo,bound_yhi,core_attr_read,core_attr_send,core_attr_index,core_attr_bank,core_round_init);
- wire attr_first=tail_first&&input_attr;
- wire attr_second=state==SECOND&&input_attr;
- assign operand_we=!reset&&(state==CORE?(core_a_we||factor_write):factor_write||attr_first||attr_second||(state==Q_SEND&&q_take&&field<2));
+  bound_valid,bound_empty,bound_xlo,bound_xhi,bound_ylo,bound_yhi,core_attr_read,core_attr_send,core_attr_index,core_attr_bank,core_round_init,
+  core_attr0_take,core_attr1_take);
+ // U/V reach PA in the same prefetch return slots used by parameter export.
+ // Normal factors use those slots only for components 0..2, so the writes
+ // are statically disjoint. RGB has no PA/analytic-LOD consumer.
+ wire uv_component=factor_index==3||factor_index==4;
+ wire uv_write=!rgb&&uv_component&&(core_attr0_take||core_attr1_take||core_attr_send);
+ wire[1:0]uv_vertex=core_attr0_take?2'd2:core_attr1_take?2'd0:2'd1;
+ wire[3:0]uv_address=(core_attr_index==1?4'd1:4'd4)+{2'd0,uv_vertex};
+ assign operand_we=!reset&&(state==CORE?(core_a_we||factor_write||uv_write):(state==Q_SEND&&q_take&&field<2));
  wire[3:0]weight_address=field==1?4'd9+{2'd0,edge_no}:edge_no==0?4'd0:4'd6+{2'd0,edge_no};
- assign operand_wa=state==CORE?(factor_write?4'd12+{1'b0,factor_index}:4'd15):state==Q_SEND?weight_address:
-  factor_write?4'd12+{1'b0,factor_index}:attr_first?4'd1+{2'd0,input_vertex}:4'd4+{2'd0,input_vertex};
- // PA属性直接来自同一份保持Q的低/高16位，包含RGB无消费者部分也保持原值。
- assign operand_wd=state==CORE?(factor_write?factor:core_ad):state==Q_SEND?magnitude[17:0]:
-  factor_write?factor:attr_first?{2'd0,in_data[15:0]}:{2'd0,in_data[31:16]};
+ assign operand_wa=state==CORE?(factor_write?4'd12+{1'b0,factor_index}:uv_write?uv_address:4'd15):weight_address;
+ assign operand_wd=state==CORE?(factor_write?factor:uv_write?{2'd0,component}:core_ad):magnitude[17:0];
  assign operand_re=state==CORE&&core_a_re;assign operand_ra=core_ar;
  assign wide_valid=state==CORE&&core_issue;assign wide_asign=core_asign;
- // 尾属性第一项在接受沿落池，余项独占SECOND/THIRD；最后写入沿启动准备ROM。
- // 输入直接形成列：B低16为A0、高16为A1，C低16为A2；4位切片填充不参与运算。
+ // Read the consumer's base first: op0/1/2 read vertices 2/0/1.
+ // op1 captures a2, op2 stores a0-a2, op3 (or op42) consumes a1-a2.
+ // One subtractor serves both differences; all three stored fields are S17.
  wire signed_attribute=core_attr_index==0||(core_attr_index==1&&!core_attr_bank);
- reg signed[17:0]a0,a1,current_a;
- always @*begin
-  a0={2'd0,pw_q[15:0]};a1={2'd0,pw_q[35:20]};current_a={2'd0,pw_q[51:36]};
-  if(signed_attribute)begin
-   a0={{2{pw_q[15]}},pw_q[15:0]};a1={{2{pw_q[35]}},pw_q[35:20]};current_a={{2{pw_q[51]}},pw_q[51:36]};
+ reg[15:0]attribute_base;
+ reg signed[16:0]difference0;
+ // Unsigned16 differences fit signed17 exactly; normals and RGB are narrower.
+ wire signed[16:0]current_a={signed_attribute&&component[15],component};
+ wire signed[16:0]base_a={signed_attribute&&attribute_base[15],attribute_base};
+ wire signed[16:0]difference=current_a-base_a;
+ always @*case(factor_index)
+  0,3:component=pw_q[51:36];
+  1,4:component=pw_q[67:52];
+  default:component=pw_q[83:68];
+ endcase
+ always @(posedge clk)begin
+  if(reset)begin attribute_base<=0;difference0<=0;end
+  else if(ce)begin
+   if(core_attr0_take)attribute_base<=component;
+   if(core_attr1_take)difference0<=difference;
   end
  end
- wire signed[17:0]da0=a0-current_a,da1=a1-current_a;
- assign stream_param_data={current_a,da1,da0};
+ assign stream_param_data={base_a,difference,difference0};
 
  always @*begin
   pw_low0_we=0;pw_low1_we=0;pw_high_we=0;pw_wa=0;pw_low_wd=0;pw_high_wd=0;pw_high_wa=0;pw_re=0;pw_ra=0;pw_acc_re=0;pw_acc_ra=0;
@@ -178,14 +180,10 @@ module rp_prepare(
    if(field<2)begin pw_acc_re=1;pw_acc_ra=4'd9+{2'd0,field};end
   end
   if(state==TAIL&&input_take&&in_index==9)begin pw_high_we=1;pw_high_wa=6;end
-  if(core_round_init)begin pw_high_we=1;pw_high_wa=7;pw_high_wd=54'd131071;end
-  if(attribute_write)begin
-   pw_wa=attribute_row;pw_high_wa=attribute_row;
-   pw_low_wd={raw_attribute,4'd0,raw_attribute};pw_high_wd={20'd0,raw_attribute};
-   if(attribute_vertex==0)pw_low0_we=1;
-   else if(attribute_vertex==1)pw_low1_we=1;
-   else pw_high_we=1;
+  if(packed_write)begin
+   pw_high_we=1;pw_high_wa={1'b1,input_normal,2'b00}+{2'd0,input_vertex};pw_high_wd={{6{packed_input[47]}},packed_input};
   end
+  if(core_round_init)begin pw_high_we=1;pw_high_wa=7;pw_high_wd=54'd131071;end
   case(state)
    Q_READ:begin pw_acc_re=1;pw_acc_ra=4'd8+{2'd0,field};end
    CORE:begin
@@ -312,11 +310,9 @@ module rp_prepare(
        expected<=expected+1'b1;
        if(in_data==0||in_data[53])error[1]<=1;
        delta_e<=52;normalizing<=1;
-      end else if(input_normal||input_attr)state<=SECOND;
+      end else if(input_normal||input_attr)begin expected<=expected+1'b1;if(in_index==15)state<=CORE;end
       else begin error[0]<=1;state<=FAULT;end
      end
-     SECOND:state<=THIRD;
-     THIRD:begin expected<=expected+1'b1;if(in_index==15)state<=CORE;else state<=TAIL;end
     CORE:if(core_done)state<=CFG_COMMIT;
     CFG_COMMIT:if(cfg_apply)state<=FINISH;
     FINISH:state<=IDLE;
@@ -326,27 +322,14 @@ module rp_prepare(
   end
  end
 `ifndef SYNTHESIS
- // 总线由源单一保持，必须覆盖本字全部写槽；不是逐字申请或端口共享。
- reg sim_hold;reg[58:0]sim_word;
- always @(posedge clk)begin
-  if(reset)begin sim_hold<=0;sim_word<=0;end
-  else begin
-   if(sim_hold&&(!in_valid||{in_index,in_data}!==sim_word))$fatal(1,"尾字固定子调度期间源Q改变");
-   if(ce)begin
-    if(state==TAIL&&in_valid&&!in_ready)begin sim_hold<=1;sim_word<={in_index,in_data};end
-    else if(in_ready)sim_hold<=0;
-    if((state==SECOND||state==THIRD)&&(!in_valid||in_index!=expected))$fatal(1,"尾字子调度缺少稳定源");
-    if(attribute_write&&(attribute_vertex==3||in_index!=expected))$fatal(1,"尾属性最终地址错误");
-   end
-  end
- end
  always @(posedge clk)if(ce&&!reset&&geo_we)begin
   if(field<2&&canonical[35:17]!={19{canonical[17]}})$fatal(1,"几何N不能精确存入18位");
   if(field==2&&canonical[35:27]!={9{canonical[27]}})$fatal(1,"几何C不能精确存入28位");
  end
  always @(posedge clk)if(ce&&!reset)begin
-  if(core_a_we&&factor_write)$fatal(1,"统一PA写日历冲突");
-  if(attribute_write&&state==CORE&&core_c_we)$fatal(1,"尾属性与统一PC退休重叠");
+  if((core_a_we&&(factor_write||uv_write))||(factor_write&&uv_write))$fatal(1,"PA static write collision");
+  if(packed_write&&(pw_low0_we||pw_low1_we||in_index!=expected))$fatal(1,"packed import layout");
+  if(state==CORE&&core_c_we&&core_cw>=8&&core_cw!=11)$fatal(1,"packed lifetime overwritten");
  end
 `endif
 endmodule

@@ -23,7 +23,7 @@ input clk,reset,ce,
  wire operand_we,operand_re,wide_valid,wide_asign;wire[3:0]operand_wa,operand_ra;
  wire[17:0]operand_wd;wire[53:0]result_data;
  wire cfg_apply,sc_rgb;wire signed[7:0]sc_z_bias;wire[31:0]sc_far;
- wire sp_valid,sp_bank;wire[1:0]sp_index;wire[53:0]sp_data;
+ wire sp_valid,sp_bank;wire[1:0]sp_index;wire[50:0]sp_data;
  wire[4:0]sc_shift0,sc_shift1,sc_shift2;
  wire[4:0]lc_tex_u,lc_tex_v,lc_max;wire signed[7:0]lc_bias;
 

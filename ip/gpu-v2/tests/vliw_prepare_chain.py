@@ -40,14 +40,27 @@ def packets():
                 n = [cross(b, c), cross(c, a), cross(a, b)]
                 det = sum(x*y for x, y in zip(a, n[0]))
                 assert 0 < abs(det) < (1 << 53)
-                descriptors.append(int(det < 0) << 22)
+                packet = len(descriptors)
+                rgb = bool(packet & 1)
+                descriptors.append((int(det < 0) << 22) | (int(rgb) << 23))
                 for nx, ny, nz in n:
                     cv = -399*nx-239*ny+512*nz
                     assert -(1 << 35) <= nx < (1 << 35)
                     assert -(1 << 35) <= ny < (1 << 35)
                     assert -(1 << 46) <= cv < (1 << 46)
                     words += [nx & ((1 << 36)-1), ny & ((1 << 36)-1), cv & ((1 << 47)-1)]
-                words += [abs(det)] + [0]*6
+                words += [abs(det)]
+                corners = (-2048, 2047, -1, 0, 1, -1024, 1023)
+                for vertex in range(3):
+                    normal = [corners[(packet + 2*vertex + axis) % len(corners)] for axis in range(3)]
+                    packed = sum((value & 4095) << (12*axis) for axis, value in enumerate(normal))
+                    if rgb:
+                        attr = sum(((packet*37 + vertex*71 + channel*83) & 255) << (8*channel) for channel in range(3))
+                    else:
+                        attr = ((packet*12347 + vertex*32767) & 65535) | (((65535 - packet*977 - vertex*19001) & 65535) << 16)
+                        if packet == 0:
+                            attr = (65535 if vertex == 1 else 0) | ((0 if vertex == 1 else 65535) << 16)
+                    words += [packed, attr]
     return descriptors, words
 
 
@@ -70,12 +83,25 @@ def main():
         manifest[p.name] = sha(snapshot/p.name)
     (out/'manifest.json').write_text(json.dumps(manifest, indent=2))
     desc, words = packets()
+    params = []
+    for packet, descriptor in enumerate(desc):
+        values = []
+        for vertex in range(3):
+            normal, attr = words[packet*16+10+vertex*2:packet*16+12+vertex*2]
+            n = [(normal >> (axis*12)) & 4095 for axis in range(3)]
+            n = [value-4096 if value & 2048 else value for value in n]
+            attributes = [(attr >> (channel*8)) & 255 for channel in range(3)] if descriptor & (1 << 23) else [attr & 65535, attr >> 16, 0]
+            values.append(n + attributes)
+        for component in range(6):
+            a, b, c = (value[component] for value in values)
+            params.append(((c & 262143) << 36) | (((b-c) & 262143) << 18) | ((a-c) & 262143))
     rows = []
     for mode in (['portable', 'native'] if args.mode == 'both' else [args.mode]):
         run = out/mode
         run.mkdir()
         (run/'descriptors.hex').write_text(''.join(f'{v:09x}\n' for v in desc))
         (run/'words.hex').write_text(''.join(f'{v:014x}\n' for v in words))
+        (run/'params.hex').write_text(''.join(f'{v:014x}\n' for v in params))
         tb = (snapshot/'vliw_prepare_chain_tb.v').read_text()
         for k, v in dict(N=len(desc), LAST=len(desc)-1, WLAST=len(words)-1).items():
             tb = tb.replace('@'+k+'@', str(v))
