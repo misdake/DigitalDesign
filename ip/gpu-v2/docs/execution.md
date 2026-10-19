@@ -25,20 +25,39 @@ No implicit equality or shared fence is defined between these identities.
 
 ### Geometry reduction and publication
 
-Each edge first collects its three raw coefficients in PC[8..10] and determines
-their common reduction exponent e. C acceptance requests Nx immediately; two
-READ edges request Ny and C. A synchronous read returns its magnitude, sign and
-held exponent directly to a dedicated `MULTALU36X18` scaler. No geometric
-LOAD/DOWN loop or geometric work-vector copy remains.
+Each edge first collects its three signed raw coefficients in PC[8..10] and
+determines their common reduction exponent e. The 48-bit record sign-extends
+the original signed47 C or signed36 N; it is not a sign/magnitude conversion.
+Exact exponent detection uses the 20 high bits above each retained width,
+their sign complement and a low-zero carry. Shared suffix-OR and prefix-AND
+chains directly test magnitude thresholds without a 47-bit absolute value.
 
-Let k=8*floor(e/8), r=e mod 8 and w be magnitude bits[k+34:k], zero-extended
-where necessary. The DSP computes w*2^(7-r), then fixed bits[34:7] provide the
-28-bit unsigned magnitude. N17/C27 magnitude bounds imply w has at most 34
-significant bits and the product fits 34 bits. Thus the selected window loses
-no significant bit and the result is exactly floor(magnitude/2^e). Three fixed
-windows and eight one-hot constants replace the iterative geometry shifts.
-Restoring the delayed sign in S28 and sign-extending to PB preserves the prior
-truncation toward zero, sigma orientation and common exponent.
+C acceptance requests Nx immediately; two READ edges request Ny and C. Each
+synchronous return feeds a dedicated `MULTALU36X18`. Let k=8*floor(e/8),
+r=e mod8, m=2^(7-r), q=floor(raw/2^k), and s denote raw's negative sign.
+Three wired signed windows produce q in 36 bits; no variable arithmetic shifter
+is added. Sigma selects the signed factor (-1)^sigma*m. The fused DSP result is
+`p=(-1)^sigma*q*m+bias` with the following live C operand:
+
+| Sigma | Raw sign | Discarded k-bit tail | Bias |
+| --- | --- | --- | --- |
+| 0 | Nonnegative | Any | 0 |
+| 0 | Negative | Zero / nonzero | 127 / 127+m |
+| 1 | Nonnegative | Any | 127 |
+| 1 | Negative | Zero / nonzero | 0 / -m |
+
+At k=0 the discarded tail is empty and zero. Signed bits[34:7] equal
+`(-1)^sigma*trunc(raw/2^e)` exactly, including negative coefficients and zero
+results. PB and R use that canonical result directly. Only PA's N weights take
+an unsigned17 absolute value; C has no magnitude consumer. There is no full
+input absolute value or 28-bit output sign-restoration datapath.
+
+The DSP registers A/B but consumes unregistered C on the following enabled
+edge. The existing delayed raw sign and one added lost-tail predicate select
+the bias. All three launches share one exponent, which cannot change before
+their final C-sampling edge, so the scale and its bias constants need no extra
+delay register. A simulation assertion protects that lifetime. Reset cuts and
+CE holds retain the same valid/sign/retirement behavior.
 
 Offsets below are enabled edges relative to one C input acceptance:
 
@@ -58,11 +77,18 @@ determinant/attribute acceptance; no geometry writer survives into CORE.
 
 PB rows 6+edge, 9+edge and 12+edge receive canonical Nx, Ny and C. R receives
 the corresponding physical field/edge address, with Nx/Ny doubled for pixel
-stepping. PA receives the unsigned Nx/Ny magnitudes at the operand rows defined
+stepping. PA receives the unsigned17 Nx/Ny magnitudes at the operand rows defined
 below. These final writes use PB's low bank while the next source read uses
 PC's high bank. The next edge's raw writes overlap retirement without sharing
 a write port. Delta alone uses the reversed 53-bit work vector. CE freezes it,
 the DSP, read exponent, sign/valid pipeline and final address together.
+
+The PB/PC write-data selection depends only on its owning phase. Geometry
+retirement selects canonical PB data while collection selects raw PC records;
+tail collection selects packed attributes, CORE selects arithmetic returns,
+and configuration commit selects PB's depth factor. Write-valid is kept solely
+in the existing write enables; inactive write-data values have no zeroing
+contract. Addresses, CE/reset gating and read/return calendars are unchanged.
 
 ### Packed attribute parameters
 

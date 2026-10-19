@@ -46,20 +46,29 @@ module rp_prepare(
  wire input_take=in_valid&&in_ready;
  wire is_c=in_index==2||in_index==5||in_index==8;
  wire[46:0]raw_value=is_c ? in_data[46:0] : {{11{in_data[35]}},in_data[35:0]};
- wire[46:0]raw_magnitude=raw_value[46] ? 47'd0-raw_value : raw_value;
- function [4:0] required_shift;
-  input [46:0] value;input c;integer b;
-  begin
-   required_shift=0;
-   if(c)begin for(b=27;b<47;b=b+1)if(value[b])required_shift=b-26;end
-   else begin for(b=17;b<47;b=b+1)if(value[b])required_shift=b-16;end
-  end
- endfunction
- wire [4:0] need=required_shift(raw_magnitude,is_c);
+ // Raw signed coefficients are stored directly. Only the small exponent
+ // detector needs a ones-magnitude high word and a low-zero carry.
+ wire[19:0]excess_signed=is_c?raw_value[46:27]:{raw_value[35],raw_value[35:17]};
+ wire[19:0]excess_ones=excess_signed^{20{raw_value[46]}};
+ wire excess_carry=raw_value[46]&&(is_c?(~|raw_value[26:0]):(~|raw_value[16:0]));
+ wire[20:0]leading_any,low_carry;
+ assign leading_any[20]=1'b0;assign low_carry[0]=excess_carry;
+ genvar prefix_bit;
+ generate for(prefix_bit=0;prefix_bit<20;prefix_bit=prefix_bit+1)begin:exponent_prefix
+  assign leading_any[prefix_bit]=leading_any[prefix_bit+1]||excess_ones[prefix_bit];
+  assign low_carry[prefix_bit+1]=low_carry[prefix_bit]&&excess_ones[prefix_bit];
+ end endgenerate
+ reg[4:0]need;integer need_bit;
+ always @*begin
+  need=0;
+  for(need_bit=0;need_bit<20;need_bit=need_bit+1)
+   if(leading_any[need_bit]||low_carry[need_bit])need=need_bit+1;
+ end
  wire [4:0] next_exp=need>edge_exp ? need : edge_exp;
  wire[53:0]quant_result;
- wire[27:0]magnitude=quant_result[34:7];
- wire[27:0]canonical28=(negative^sigma)?28'd0-magnitude:magnitude;
+ wire[27:0]canonical28=quant_result[34:7];
+ // Only PA's N coefficients need an unsigned magnitude; PB/R use signed Q.
+ wire[16:0]normal_magnitude=canonical28[27]?17'd0-canonical28[16:0]:canonical28[16:0];
  wire[35:0]canonical={{8{canonical28[27]}},canonical28};
  assign geo_we=!reset&&quant_valid;
  // 按最终R工作池的物理行发射；符号方向直接复用PB已经需要的canonical。
@@ -117,7 +126,7 @@ module rp_prepare(
  assign operand_we=!reset&&(state==CORE?uv_write:(geo_we&&quant_field<2));
  wire[3:0]weight_address=quant_field==1?4'd9+{2'd0,quant_edge}:quant_edge==0?4'd0:4'd6+{2'd0,quant_edge};
  assign operand_wa=state==CORE?uv_address:weight_address;
- assign operand_wd=state==CORE?{2'd0,component}:magnitude[17:0];
+ assign operand_wd=state==CORE?{2'd0,component}:{1'b0,normal_magnitude};
  assign operand_re=state==CORE&&core_a_re;assign operand_ra=core_ar;
  assign wide_valid=state==CORE&&core_issue;assign wide_asign=core_asign;
  // Read the consumer's base first: op0/1/2 read vertices 2/0/1.
@@ -145,29 +154,36 @@ module rp_prepare(
  assign stream_param_data={base_a,difference,difference0};
 
  always @*begin
-  pw_low0_we=0;pw_low1_we=0;pw_high_we=0;pw_wa=0;pw_low_wd=0;pw_high_wd=0;pw_high_wa=0;pw_re=0;pw_ra=0;pw_acc_re=0;pw_acc_ra=0;
+  pw_low0_we=0;pw_low1_we=0;pw_high_we=0;pw_wa=0;pw_high_wa=0;pw_re=0;pw_ra=0;pw_acc_re=0;pw_acc_ra=0;
   if(state==COLLECT&&input_take&&in_index==expected)begin
    pw_high_we=1;pw_high_wa=4'd8+{2'd0,collect_field(in_index)};
-   pw_high_wd={6'd0,raw_value[46],raw_magnitude};
   end
   if(quant_read)begin pw_acc_re=1;pw_acc_ra=4'd8+{2'd0,quant_read_field};end
   if(geo_we)begin
    pw_low0_we=1;pw_low1_we=1;
-   pw_wa=(quant_field==0?4'd6:quant_field==1?4'd9:4'd12)+{2'd0,quant_edge};pw_low_wd=canonical;
+   pw_wa=(quant_field==0?4'd6:quant_field==1?4'd9:4'd12)+{2'd0,quant_edge};
   end
   if(packed_write)begin
-   pw_high_we=1;pw_high_wa={1'b1,input_normal,2'b00}+{2'd0,input_vertex};pw_high_wd={{6{packed_input[47]}},packed_input};
+   pw_high_we=1;pw_high_wa={1'b1,input_normal,2'b00}+{2'd0,input_vertex};
   end
   case(state)
    CORE:begin
     pw_re=core_b_re;pw_ra=core_br;pw_acc_re=core_c_re;pw_acc_ra=core_cr;
-    pw_low0_we=core_b_we;pw_low1_we=core_b_we;pw_wa=core_bw;pw_low_wd=core_bd;
-    if(core_c_we)begin pw_high_we=1;pw_high_wa=core_cw;pw_high_wd=core_cd;end
+    pw_low0_we=core_b_we;pw_low1_we=core_b_we;pw_wa=core_bw;
+    if(core_c_we)begin pw_high_we=1;pw_high_wa=core_cw;end
    end
    CFG_COMMIT:if(cfg_apply)begin
-    pw_low0_we=1;pw_low1_we=1;pw_wa=4;pw_low_wd={5'd0,depth_k};
+    pw_low0_we=1;pw_low1_we=1;pw_wa=4;
    end
    default:begin end
+  endcase
+  // Data is selected by the owner phase, independently of write-valid.
+  // No reader observes a write-data value unless its unchanged enable fires.
+  case(state)
+   CORE:begin pw_low_wd=core_bd;pw_high_wd=core_cd;end
+   CFG_COMMIT:begin pw_low_wd={5'd0,depth_k};pw_high_wd={{6{packed_input[47]}},packed_input};end
+   COLLECT:begin pw_low_wd=canonical;pw_high_wd={6'd0,raw_value[46],raw_value};end
+   default:begin pw_low_wd=canonical;pw_high_wd={{6{packed_input[47]}},packed_input};end
   endcase
   if(reset)begin pw_low0_we=0;pw_low1_we=0;pw_high_we=0;pw_re=0;pw_acc_re=0;end
  end
@@ -194,18 +210,73 @@ module rp_prepare(
  // the final read releases collection while its Q still feeds the DSP.
  assign quant_read=(state==COLLECT&&input_take&&in_index==expected&&is_c)||state==READ;
  assign quant_read_field=state==READ?field:2'd0;
- reg[34:0]quant_window;
+ reg signed[35:0]quant_window;
  always @*begin
   case(read_exp_q[4:3])
-   0:quant_window=pool_q[34:0];
-   1:quant_window=pool_q[42:8];
-   default:quant_window={4'd0,pool_q[46:16]};
+   0:quant_window=pool_q[35:0];
+   1:quant_window=pool_q[43:8];
+   default:quant_window={{5{pool_q[46]}},pool_q[46:16]};
   endcase
  end
- // Only eight one-hot constants. For the admitted N17/C27 ranges, the
- // selected 35-bit window includes every bit that can reach the result.
- wire[17:0]quant_scale=18'd128>>read_exp_q[2:0];
- iz_widemac geometry_dsp(clk,reset,ce,quant_scale,1'b0,{1'b0,quant_window},54'd0,quant_result);
+ // Sigma changes only once per triangle. The DSP consumes signed raw Q and
+ // a signed power of two, returning canonical coefficients in their final form.
+ reg[17:0]quant_scale;
+ reg signed[8:0]plus_bias,minus_bias;
+ always @*begin
+  case({sigma,read_exp_q[2:0]})
+   4'd0:quant_scale=18'h00080;
+   4'd1:quant_scale=18'h00040;
+   4'd2:quant_scale=18'h00020;
+   4'd3:quant_scale=18'h00010;
+   4'd4:quant_scale=18'h00008;
+   4'd5:quant_scale=18'h00004;
+   4'd6:quant_scale=18'h00002;
+   4'd7:quant_scale=18'h00001;
+   4'd8:quant_scale=18'h3ff80;
+   4'd9:quant_scale=18'h3ffc0;
+   4'd10:quant_scale=18'h3ffe0;
+   4'd11:quant_scale=18'h3fff0;
+   4'd12:quant_scale=18'h3fff8;
+   4'd13:quant_scale=18'h3fffc;
+   4'd14:quant_scale=18'h3fffe;
+   4'd15:quant_scale=18'h3ffff;
+  endcase
+  case(read_exp_q[2:0])
+   3'd0:begin plus_bias=9'd255;minus_bias=-9'sd128;end
+   3'd1:begin plus_bias=9'd191;minus_bias=-9'sd64;end
+   3'd2:begin plus_bias=9'd159;minus_bias=-9'sd32;end
+   3'd3:begin plus_bias=9'd143;minus_bias=-9'sd16;end
+   3'd4:begin plus_bias=9'd135;minus_bias=-9'sd8;end
+   3'd5:begin plus_bias=9'd131;minus_bias=-9'sd4;end
+   3'd6:begin plus_bias=9'd129;minus_bias=-9'sd2;end
+   3'd7:begin plus_bias=9'd128;minus_bias=-9'sd1;end
+  endcase
+ end
+ reg tail_nonzero;
+ always @*case(read_exp_q[4:3])
+  0:tail_nonzero=0;
+  1:tail_nonzero=pool_q[47]&&(|pool_q[7:0]);
+  default:tail_nonzero=pool_q[47]&&(|pool_q[15:0]);
+ endcase
+ reg quant_tail;
+ always @(posedge clk)begin
+  if(reset)quant_tail<=0;
+  else if(ce)begin
+   if(start)quant_tail<=0;
+   else if(read_valid)quant_tail<=tail_nonzero;
+  end
+ end
+ // A/B are registered; C is live on their output edge. The common exponent
+ // stays live across all three launches. Only the lost-tail predicate is delayed.
+ reg signed[8:0]geometry_bias9;
+ always @*begin
+  geometry_bias9=0;
+  if(quant_tail)begin
+   if(sigma)geometry_bias9=minus_bias;else geometry_bias9=plus_bias;
+  end else if(quant_negative0^sigma)geometry_bias9=9'sd127;
+ end
+ iz_widemac geometry_dsp(clk,reset,ce,quant_scale,1'b1,quant_window,
+  {{45{geometry_bias9[8]}},geometry_bias9},quant_result);
  always @(posedge clk)begin
   if(reset)begin
    read_valid<=0;read_exp_q<=0;quant_pipe<=0;quant_edge<=0;quant_field<=0;
@@ -231,6 +302,15 @@ module rp_prepare(
   end
  end
 `ifndef SYNTHESIS
+ reg[2:0]sim_issue_fraction;
+ always @(posedge clk)begin
+  if(reset)sim_issue_fraction<=0;
+  else if(ce)begin
+   if(quant_pipe[0]&&read_exp_q[2:0]!==sim_issue_fraction)
+    $fatal(1,"raw geometry scale changed before its C sampling edge");
+   if(read_valid)sim_issue_fraction<=read_exp_q[2:0];
+  end
+ end
  always @(posedge clk)if(ce&&!reset)begin
   if(quant_valid&&(state==CORE||state==CFG_COMMIT))$fatal(1,"geometry pipeline overlaps parameter execution");
  end

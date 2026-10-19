@@ -32,6 +32,10 @@ reg[90:0]held_attribute;
 reg[58:0]held_quant;
 reg[59:0]held_origin;
 reg[67:0]held_geometry;
+`ifdef RAW_GEOMETRY_DSP
+reg[3:0]raw_modes=0,raw_bias_modes=0;reg[2:0]raw_windows=0;
+reg[27:0]held_raw_dsp;
+`endif
 integer quant_issues=0,quant_writes=0,quant_aborted=0,geometry_holds=0,geometry_cuts=0,geometry_overlap=0;
 reg[47:0]packed_expected;
 reg[31:0]uv_word;
@@ -101,6 +105,18 @@ always @(posedge clk)begin
    e=gwa[1:0];case(gwa[3:2])0:aa[e]=$signed(gwd);1:bb[e]=$signed(gwd);2:begin cc[e]=$signed(gwd);shadow[e]=gwd;end default:$fatal(1,"geo row");endcase
   end
   if(I.prepare.read_valid)quant_issues=quant_issues+1;
+`ifdef RAW_GEOMETRY_DSP
+  if(I.prepare.read_valid)begin
+   raw_modes[{I.prepare.sigma,I.prepare.pool_q[47]}]=1;
+   raw_windows[I.prepare.read_exp_q[4:3]]=1;
+  end
+  if(I.prepare.quant_pipe[0])begin
+   if($signed(I.prepare.geometry_bias9)<0)raw_bias_modes[0]=1;
+   else if(I.prepare.geometry_bias9==0)raw_bias_modes[1]=1;
+   else if(I.prepare.geometry_bias9==127)raw_bias_modes[2]=1;
+   else raw_bias_modes[3]=1;
+  end
+`endif
   if(bvalid)begin
    seen_bound=1;empty_seen=bempty;
    if(bempty&&R.w_pc<6)early_cancel=early_cancel+1;
@@ -142,6 +158,9 @@ always @(posedge clk)begin
   held_quant={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative};
   held_origin={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result};
   held_geometry={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1};
+`ifdef RAW_GEOMETRY_DSP
+  held_raw_dsp={I.prepare.quant_tail,I.prepare.geometry_bias9,I.prepare.quant_scale};
+`endif
   if(|I.prepare.quant_pipe)geometry_holds=geometry_holds+1;
   if(|R.origin_valid)origin_holds=origin_holds+1;
   #1;if(held!=={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny})$fatal(1,"CE hold");
@@ -149,6 +168,9 @@ always @(posedge clk)begin
   if(held_quant!=={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative})$fatal(1,"quantization retire CE hold");
   if(held_origin!=={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result})$fatal(1,"DSP pipeline CE hold");
   if(held_geometry!=={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1})$fatal(1,"geometry scale pipeline CE hold");
+`ifdef RAW_GEOMETRY_DSP
+  if(held_raw_dsp!=={I.prepare.quant_tail,I.prepare.geometry_bias9,I.prepare.quant_scale})$fatal(1,"raw geometry bias CE hold");
+`endif
  end
 end
 task drive;input integer cutoff;integer wi,taken,n;begin: body
@@ -183,6 +205,10 @@ initial begin
  if(nodes==0||roots9==0||origin_writes==0||early_cancel==0||zero_slots==0||ce0==0||resetcuts==0||zero_reads==0||bias_reads==0)$fatal(1,"required boundary not exercised");
  if(origin_issues!=origin_writes+origin_aborted||origin_holds==0||dsp_resetcuts==0||origin_aborted==0)$fatal(1,"DSP issue/retire/reset conservation");
  if(quant_issues!=quant_writes+quant_aborted||geometry_holds==0||geometry_cuts==0||geometry_overlap==0)$fatal(1,"geometry issue/retire/reset conservation");
+`ifdef RAW_GEOMETRY_DSP
+ if(raw_modes!=15||raw_bias_modes!=15||raw_windows!=7)$fatal(1,"raw geometry coverage modes=%h biases=%h windows=%h",raw_modes,raw_bias_modes,raw_windows);
+ $display("RAW_GEOMETRY modes=%h biases=%h windows=%h",raw_modes,raw_bias_modes,raw_windows);
+`endif
  $display("GEOMETRY_DSP issues=%0d writes=%0d aborted=%0d holds=%0d cuts=%0d overlaps=%0d",quant_issues,quant_writes,quant_aborted,geometry_holds,geometry_cuts,geometry_overlap);
  $display("DSP_ORIGIN issues=%0d writes=%0d aborted=%0d holds=%0d resetcuts=%0d",origin_issues,origin_writes,origin_aborted,origin_holds,dsp_resetcuts);
  $display("PASS RROOT packets=@N@ nodes=%0d originwrites=%0d roots9=%0d earlycancel=%0d zeros=%0d ce0=%0d cuts=%0d wall=%0d",nodes,origin_writes,roots9,early_cancel,zero_slots,ce0,resetcuts,wall);$finish;

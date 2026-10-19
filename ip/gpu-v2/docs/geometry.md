@@ -100,10 +100,11 @@ it does not increase the multiplier or memory-port count.
 For a single eligible axis, D and C products instead launch consecutively,
 using the two PC rows as independent first-product feedback. Search omits high
 bits already excluded by preceding constraints, preserving the same final interval.
-Geometry reduction uses three fixed magnitude windows and a dedicated 36x18
-DSP, retaining exact truncation and the existing per-edge exponents. It reads
-Nx/Ny/C consecutively and writes the final banks while collecting the next
-edge. Delta alone uses the reversed 53-bit work register. The
+Geometry reduction stores signed raw coefficients and uses three fixed signed
+windows with a dedicated 36x18 DSP. A one-bit lost-tail marker and live DSP bias
+preserve exact truncation and the existing per-edge exponents. It reads Nx/Ny/C
+consecutively and writes canonical results directly to the final banks while
+collecting the next edge; only PA's N weights form an unsigned17 magnitude. Delta alone uses the reversed 53-bit work register. The
 [publication calendar](/ip/gpu-v2/docs/execution.md#geometry-reduction-and-publication)
 defines the fixed latency and final-address sequence; no component tags or
 iterative geometry-shift states remain.

@@ -143,6 +143,8 @@ def main():
             tb = tb.replace('@'+k+'@', str(v))
         (run/'tb.v').write_text(tb)
         command = [os.environ.get('IVERILOG_EXE', 'iverilog'), '-g2012', '-s', 'tb', '-o', str(run/'sim.vvp')]
+        if 'reg quant_tail;' in (snapshot/f'frontend-{mode}.v').read_text():
+            command.append('-DRAW_GEOMETRY_DSP')
         if mode == 'native':
             command += [str(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v')]
         command += [str(snapshot/f'frontend-{mode}.v'), str(run/'tb.v')]
