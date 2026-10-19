@@ -137,7 +137,11 @@ read-A selections remain ahead of the asynchronous operand path.
 
 Within the FPU ALU, ADD/SUB, MIN/MAX, CMP and NEG/ABS share one wrapping
 32-bit add/subtract path. Signed comparison checks differing operand signs
-before using the subtraction sign. CEIL, half-up ROUND and TRUNC only need the
+before using the subtraction sign; CMP equality reduces that same difference
+to zero. MIN/MAX select their shared operand result using signed ordering and
+the operation direction, without putting equality detection on the wide data
+path. Equal operands have identical bits. Comparison flags remain specified
+only for CMP. CEIL, half-up ROUND and TRUNC only need the
 integer half, so they share one 16-bit increment followed by sixteen zero bits.
 No execution or vector-lane stage is added, and the defined wrap boundaries remain.
 
