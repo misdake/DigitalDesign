@@ -61,6 +61,23 @@ def packets():
                         if packet == 0:
                             attr = (65535 if vertex == 1 else 0) | ((0 if vertex == 1 else 65535) << 16)
                     words += [packed, attr]
+    # Small integer rays exercise zero and short reduction counts, including
+    # consecutive LOAD/retire edges. Source attributes keep the existing modes.
+    for reverse in (False, True):
+        for scale in (1, 256, 384, 512, 768, 131071):
+            p = [(-scale, -scale, scale), (scale, -scale, scale), (-scale, scale, scale)]
+            if reverse:
+                p[1], p[2] = p[2], p[1]
+            a, b, c = p
+            n = [cross(b, c), cross(c, a), cross(a, b)]
+            det = sum(x*y for x, y in zip(a, n[0]))
+            packet = len(descriptors)
+            descriptors.append((int(det < 0) << 22) | ((packet & 1) << 23))
+            tail = words[(packet % 24)*16+10:(packet % 24)*16+16]
+            for nx, ny, nz in n:
+                cv = -399*nx-239*ny+512*nz
+                words += [nx & ((1 << 36)-1), ny & ((1 << 36)-1), cv & ((1 << 47)-1)]
+            words += [abs(det), *tail]
     return descriptors, words
 
 
@@ -86,6 +103,21 @@ def main():
         manifest[p.name] = sha(snapshot/p.name)
     (out/'manifest.json').write_text(json.dumps(manifest, indent=2))
     desc, words = packets()
+    geometry = []
+    for packet, descriptor in enumerate(desc):
+        for edge in range(3):
+            values = []
+            for component in range(3):
+                width = 47 if component == 2 else 36
+                value = words[packet*16+edge*3+component] & ((1 << width)-1)
+                values.append(value-(1 << width) if value & (1 << (width-1)) else value)
+            shift = max(0, *(abs(value).bit_length()-(27 if k == 2 else 17)
+                             for k, value in enumerate(values)))
+            for k, value in enumerate(values):
+                reduced = (abs(value) >> shift) * (-1 if value < 0 else 1)
+                if descriptor & (1 << 22):
+                    reduced = -reduced
+                geometry.append((reduced*(1 if k == 2 else 2)) & ((1 << 30)-1))
     params = []
     for packet, descriptor in enumerate(desc):
         values = []
@@ -104,6 +136,7 @@ def main():
         run.mkdir()
         (run/'descriptors.hex').write_text(''.join(f'{v:09x}\n' for v in desc))
         (run/'words.hex').write_text(''.join(f'{v:014x}\n' for v in words))
+        (run/'geometry.hex').write_text(''.join(f'{v:08x}\n' for v in geometry))
         (run/'params.hex').write_text(''.join(f'{v:014x}\n' for v in params))
         tb = (snapshot/'vliw_prepare_chain_tb.v').read_text()
         for k, v in dict(N=len(desc), LAST=len(desc)-1, WLAST=len(words)-1).items():

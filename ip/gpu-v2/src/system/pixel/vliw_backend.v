@@ -5,7 +5,7 @@ module gpu_v2_vliw_sampling(
  input wire quad_valid,output wire quad_ready,output wire[2:0]quad_id,
  input wire[7:0]quad_x,input wire[6:0]quad_y,input wire quad_rgb,
  input wire quad_end_valid,input wire[2:0]quad_end_id,input wire[3:0]quad_end_mask,
- output wire prefetch_valid,output wire[8:0]prefetch_tile,
+ output wire prefetch_valid,output wire[9:0]prefetch_tile,
  input wire result_we,input wire[6:0]result_wa,input wire[35:0]result_wd,
  input wire depth_event_valid,input wire[4:0]depth_event_pid,input wire[15:0]depth_event_z16,input wire depth_event_pass,
  input wire lod_valid,input wire[2:0]lod_id,input wire[7:0]lod_value,

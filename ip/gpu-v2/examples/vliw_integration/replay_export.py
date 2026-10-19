@@ -38,12 +38,16 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--gold', type=Path, required=True)
     parser.add_argument('--peer', type=Path, required=True)
-    parser.add_argument('--scene', choices=('box', 'bunny'), required=True)
+    parser.add_argument('--scene', choices=('box', 'bunny', 'quick', 'solid-room', 'materials'), required=True)
+    parser.add_argument('--camera', choices=('front', 'side', 'oblique'), default='front')
     parser.add_argument('--ply', type=Path)
+    parser.add_argument('--meshlet-limit', type=int, help='Bound the standalone bunny scene to its first N complete meshlets')
     parser.add_argument('--native', action='store_true')
     parser.add_argument('--max-cycles', type=int, default=1200000)
     parser.add_argument('--timeout', type=int, default=600)
     args = parser.parse_args()
+    if args.meshlet_limit is not None:
+        assert args.scene == 'bunny' and args.meshlet_limit > 0
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     source = args.export.resolve()
@@ -59,7 +63,24 @@ def main():
     O = load('export_replay_oracle', HERE/'reference/scene/oracle.py')
     O = load('export_replay_transport', HERE/'transport.py').adapt_oracle(O)
     fixtures = json.loads((HERE/'reference/uv-inputs.json').read_text())
-    if args.scene == 'box':
+    shading = None
+    solid = None
+    texture = None
+    if args.scene in ('solid-room', 'materials'):
+        assert args.ply and sha(args.ply) == fixtures['source']['member_sha256']
+        solid = load('solid_room_scene', HERE/'solid_scene.py')
+        support.append(HERE/'solid_scene.py')
+        checker_hashes[str((HERE/'solid_scene.py').relative_to(ROOT))] = sha(HERE/'solid_scene.py')
+        instances, info, shading = solid.instances(B, args.ply, O, args.camera)
+        if args.scene == 'materials':
+            sys.path.insert(0, str(HERE))
+            materials = load('mixed_material_scene', HERE/'material_scene.py')
+            instances, info, shading = materials.instances(B, args.ply, O, args.camera)
+            texture = materials.texture_levels()
+            for path in (HERE/'material_scene.py', HERE/'assets/room-tiles.png'):
+                support.append(path)
+                checker_hashes[str(path.relative_to(ROOT))] = sha(path)
+    elif args.scene == 'box':
         instances = [copy.deepcopy(next(v for v in fixtures['scenes'][0]['meshlets']
                                        if v['name'] == 'box_x_minus'))]
         instances[0].update(slot=0, cfg_tex_w_log2=6, cfg_tex_h_log2=6, cfg_max_mip=6)
@@ -70,7 +91,10 @@ def main():
         assert info['triangles'] == 948
         uniform = B.camera_for('front')['uniform']
         instances = []
-        for i, batch in enumerate(batches):
+        selected_batches = batches[:2] if args.scene == 'quick' else batches[:args.meshlet_limit]
+        if args.meshlet_limit is not None:
+            assert args.meshlet_limit <= len(batches)
+        for i, batch in enumerate(selected_batches):
             instance = dict(name=f'bunny_full_{i}', group='bunny', slot=i%2,
                 uniform=uniform, config=info['config'], vertices=batch['vertices'],
                 triangles=batch['triangles'], color_mode=0, cull_negative=1,
@@ -83,22 +107,57 @@ def main():
                 instance['scale_s'] += 1
             assert instance['scale_s'] < 16
             instances.append(instance)
+        if args.scene == 'bunny' and args.meshlet_limit is not None:
+            info.update(source_triangles=info['triangles'], source_vertices=info['vertices'],
+                        source_meshlets=info['meshlets'], source_used_vertices=info.pop('used_vertices'),
+                        source_submitted_vertices=info['submitted_vertices'],
+                        triangles=sum(len(b['triangles']) for b in selected_batches),
+                        vertices=sum(len(b['vertices']) for b in selected_batches),
+                        submitted_vertices=sum(len(b['vertices']) for b in selected_batches),
+                        meshlets=len(selected_batches),
+                        note='Standalone prefix of complete bunny meshlets; no box or inherited cache contents.')
+        if args.scene == 'quick':
+            face = copy.deepcopy(next(v for v in fixtures['scenes'][0]['meshlets']
+                                      if v['name'] == 'box_x_minus'))
+            face.update(group='box', slot=0, cfg_tex_w_log2=6, cfg_tex_h_log2=6, cfg_max_mip=6)
+            instances.insert(0, face)
+            for task, instance in enumerate(instances):
+                instance['slot'] = task % 2
+            bunny_triangles = sum(len(b['triangles']) for b in selected_batches)
+            source_vertices, source_meshlets = info['vertices'], info['meshlets']
+            source_used_vertices = info.pop('used_vertices')
+            source_submitted_vertices = info['submitted_vertices']
+            info.update(scene='single_box_face_two_bunny_meshlets', source_triangles=948,
+                        source_vertices=source_vertices, source_meshlets=source_meshlets,
+                        source_used_vertices=source_used_vertices,
+                        source_submitted_vertices=source_submitted_vertices,
+                        vertices=sum(len(v['vertices']) for v in instances), meshlets=len(instances),
+                        submitted_vertices=sum(len(v['vertices']) for v in instances),
+                        note='Subset: existing single box face and first two complete bunny meshlets.',
+                        bunny_triangles=bunny_triangles, box_triangles=len(face['triangles']),
+                        triangles=bunny_triangles+len(face['triangles']))
     packets, metas = [], []
     for i, instance in enumerate(instances):
         meta, ps = O.prepare(instance, out/f'task{i}')
+        for packet in ps:
+            packet['unlit'] = instance.get('unlit', False)
         metas.append(meta)
         packets.extend(ps)
     classes = Counter()
     for meta in metas:
         classes.update(meta['classes'])
     info.update(classes=dict(classes), packets=len(packets))
-    info['memory'] = B.dma_fixture(out, V, metas)
+    info['memory'] = B.dma_fixture(out, V, metas, initial=V.initial_memory(texture))
     (out/'input.json').write_text(json.dumps(dict(info=info, instances=instances), indent=2))
     shutil.copyfile(source, out/'dut.v')
     for path in args.peer.resolve().iterdir():
         if path.suffix in ('.v', '.vh'):
             shutil.copyfile(path, out/path.name)
     bench = B.bench(S, V, metas, args.max_cycles)
+    if args.scene == 'materials':
+        bench = materials.configure_bench(bench, shading, instances)
+    elif shading is not None:
+        bench = solid.configure_bench(bench, shading)
     (out/'tb.v').write_text(bench)
     command = [os.environ['IVERILOG_EXE'], '-g2012', '-D__ICARUS__',
                '-I', out, '-s', 'tb', '-o', out/'sim.vvp']
@@ -109,7 +168,7 @@ def main():
     log, seconds = B.execute([os.environ['VVP_EXE'], out/'sim.vvp'],
                              out, out/'run.log', args.timeout)
     assert 'PASS BUNNY' in log
-    counts = V.audit(out, packets, O, args.gold.resolve())
+    counts = V.audit(out, packets, O, args.gold.resolve(), shading=shading, texture=texture)
     def parse(prefix):
         return {k: int(v) for k, v in re.findall(r'(\w+)=(\d+)',
                 next(line for line in log.splitlines() if line.startswith(prefix)))}
@@ -133,6 +192,9 @@ def main():
         memory_sha256=sha(out/'memory.mem'),
         boundary='Complete GPU plus current real arbiter/bridge/controller and pin model; '
                  'first load and final flush included; no CPU/display contention or board proof.')
+    if solid is not None:
+        assert (counts['sample'] > 0) == (texture is not None) and counts['specular_nonzero'] > 0
+        receipt.update(shading=shading, **solid.render(out, ROOT))
     (out/'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps({k: receipt[k] for k in ('scene', 'timing', 'activity',
                                             'memory_sha256', 'simulation_seconds')}, indent=2), flush=True)

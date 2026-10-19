@@ -20,10 +20,11 @@ module rp_prepare(
  input[53:0]wide_result_data,
  output busy,import_busy,math_busy,done,output reg[3:0]error
 );
- localparam IDLE=0,COLLECT=1,LOAD=2,DOWN=3,Q_SEND=4,TAIL=5,
+ localparam IDLE=0,COLLECT=1,LOAD=2,DOWN=3,TAIL=5,
  CORE=8,
  CFG_COMMIT=26,FINISH=28,FAULT=29,Q_READ=30;
  reg[4:0]state,expected;reg[1:0]edge_no,field;
+ reg quant_valid;reg[1:0]quant_edge,quant_field;wire quant_finish;
  reg[4:0]edge_exp,remaining,exp0,exp1,exp2,common_e;
  reg[52:0]work;wire[46:0]magnitude=work[46:0];reg negative,sigma,rgb;reg[3:0]tri_shift;
  reg[31:0]far_z;reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
@@ -52,11 +53,10 @@ module rp_prepare(
  wire [4:0] need=required_shift(raw_magnitude,is_c);
  wire [4:0] next_exp=need>edge_exp ? need : edge_exp;
  wire[35:0]canonical=(negative^sigma)?36'd0-magnitude[35:0]:magnitude[35:0];
- assign geo_we=!reset&&state==Q_SEND;
+ assign geo_we=!reset&&quant_valid;
  // 按最终R工作池的物理行发射；符号方向直接复用PB已经需要的canonical。
- assign geo_wa={field,edge_no};
- assign geo_wd=field==2 ? canonical[29:0] : {canonical[28:0],1'b0};
- wire q_take=geo_we;
+ assign geo_wa={quant_field,quant_edge};
+ assign geo_wd=quant_field==2 ? canonical[29:0] : {canonical[28:0],1'b0};
  assign input_normal=in_index==10||in_index==12||in_index==14;
  assign input_attr=in_index==11||in_index==13||in_index==15;
  reg[1:0]input_vertex;
@@ -86,7 +86,7 @@ module rp_prepare(
  assign stream_param_index=core_attr_index;assign stream_param_bank=core_attr_bank;
  
  assign lod_cfg_tex_u=tex_u;assign lod_cfg_tex_v=tex_v;assign lod_cfg_max_mip=max_mip;assign lod_cfg_bias=bias;
- wire seed_take=state==Q_SEND&&q_take&&field<2;
+ wire seed_take=geo_we&&quant_field<2;
  // Component selection also identifies the UV return slots.
  wire[2:0]factor_index={core_attr_index,core_attr_bank};
  wire core_a_re,core_b_re,core_b_we,core_c_re,core_c_we,core_issue,core_asign,core_active,core_done;
@@ -106,8 +106,8 @@ module rp_prepare(
  wire uv_write=!rgb&&uv_component&&(core_attr0_take||core_attr1_take||core_attr_send);
  wire[1:0]uv_vertex=core_attr0_take?2'd2:core_attr1_take?2'd0:2'd1;
  wire[3:0]uv_address=(core_attr_index==1?4'd1:4'd4)+{2'd0,uv_vertex};
- assign operand_we=!reset&&(state==CORE?uv_write:(state==Q_SEND&&q_take&&field<2));
- wire[3:0]weight_address=field==1?4'd9+{2'd0,edge_no}:edge_no==0?4'd0:4'd6+{2'd0,edge_no};
+ assign operand_we=!reset&&(state==CORE?uv_write:(geo_we&&quant_field<2));
+ wire[3:0]weight_address=quant_field==1?4'd9+{2'd0,quant_edge}:quant_edge==0?4'd0:4'd6+{2'd0,quant_edge};
  assign operand_wa=state==CORE?uv_address:weight_address;
  assign operand_wd=state==CORE?{2'd0,component}:magnitude[17:0];
  assign operand_re=state==CORE&&core_a_re;assign operand_ra=core_ar;
@@ -143,11 +143,11 @@ module rp_prepare(
    pw_high_wd={6'd0,raw_value[46],raw_magnitude};
   end
   if(state==COLLECT&&input_take&&in_index==expected&&is_c)begin pw_acc_re=1;pw_acc_ra=8;end
-  if(state==Q_SEND&&q_take)begin
+  if(geo_we)begin
    pw_low0_we=1;pw_low1_we=1;
-   pw_wa=(field==0?4'd6:field==1?4'd9:4'd12)+{2'd0,edge_no};pw_low_wd=canonical;
-   if(field<2)begin pw_acc_re=1;pw_acc_ra=4'd9+{2'd0,field};end
+   pw_wa=(quant_field==0?4'd6:quant_field==1?4'd9:4'd12)+{2'd0,quant_edge};pw_low_wd=canonical;
   end
+  if(quant_finish&&field<2)begin pw_acc_re=1;pw_acc_ra=4'd9+{2'd0,field};end
   if(packed_write)begin
    pw_high_we=1;pw_high_wa={1'b1,input_normal,2'b00}+{2'd0,input_vertex};pw_high_wd={{6{packed_input[47]}},packed_input};
   end
@@ -178,31 +178,51 @@ module rp_prepare(
  wire work_shift_geo=!start&&state==DOWN;
  // Keep the original invalid-start behavior: an active Delta may still shift.
  wire work_shift_delta=normalizing&&(|delta)&&!delta[52];
+ // A geometry load uses the same shift window as subsequent steps. The first
+ // 1/2/4-bit reduction is performed before writing work, rather than one edge
+ // after the read. Delta keeps its reversed-bit, feedback-only lifetime.
+ wire[52:0]work_source=work_load_geo?{6'b0,pool_q[46:0]}:work;
  reg[2:0]work_shift;
  reg[52:0]work_shifted;
  always @*begin
   work_shift=3'd2;
-  if(work_shift_geo)begin
+  if(work_load_geo)begin
+   if(edge_exp>=4)work_shift=3'd4;
+   else if(edge_exp>=2)work_shift=3'd2;
+   else work_shift={2'd0,edge_exp[0]};
+  end else if(work_shift_geo)begin
    if(remaining>=4)work_shift=3'd4;
    else if(remaining==1)work_shift=3'd1;
   end else if(delta[51])work_shift=3'd1;
   case(work_shift)
-   3'd1:work_shifted={1'b0,work[52:1]};
-   3'd4:work_shifted={4'b0,work[52:4]};
-   default:work_shifted={2'b0,work[52:2]};
+   3'd0:work_shifted=work_source;
+   3'd1:work_shifted={1'b0,work_source[52:1]};
+   3'd4:work_shifted={4'b0,work_source[52:4]};
+   default:work_shifted={2'b0,work_source[52:2]};
   endcase
+ end
+ assign quant_finish=(state==LOAD&&edge_exp==work_shift)||
+  (state==DOWN&&remaining<=4&&remaining!=3);
+ // The completed work value is consumed on the following edge while LOAD
+ // writes the next value into that same register. Only its address is delayed;
+ // no second magnitude/canonical buffer or dedicated SEND state is needed.
+ always @(posedge clk)begin
+  if(reset)begin quant_valid<=0;quant_edge<=0;quant_field<=0;end
+  else if(ce)begin
+   quant_valid<=quant_finish&&!start;
+   if(quant_finish)begin quant_edge<=edge_no;quant_field<=field;end
+  end
  end
  always @(posedge clk)begin
   if(reset)work<=0;
   else if(ce)begin
    if(work_load_delta)work<=work_delta_input;
-   else if(work_load_geo)work<={6'b0,pool_q[46:0]};
-   else if(work_shift_geo||work_shift_delta)work<=work_shifted;
+   else if(work_load_geo||work_shift_geo||work_shift_delta)work<=work_shifted;
   end
  end
 `ifndef SYNTHESIS
  always @(posedge clk)if(ce&&!reset)begin
-  if(normalizing&&(state==COLLECT||state==Q_READ||state==LOAD||state==DOWN||state==Q_SEND))
+  if(normalizing&&(state==COLLECT||state==Q_READ||state==LOAD||state==DOWN))
    $fatal(1,"shared work lifetime overlap");
   if(work_load_delta&&(work_load_geo||work_shift_geo||work_shift_delta))
    $fatal(1,"shared work load priority collision");
@@ -235,8 +255,8 @@ module rp_prepare(
     end
    end else begin
     if(seed_take)begin
-     if(field==0)seed_sign_x[edge_no]<=negative^sigma;
-     else seed_sign_y[edge_no]<=negative^sigma;
+     if(quant_field==0)seed_sign_x[quant_edge]<=negative^sigma;
+     else seed_sign_y[quant_edge]<=negative^sigma;
     end
     case(state)
      COLLECT:if(input_take)begin
@@ -255,21 +275,14 @@ module rp_prepare(
       end
      end
      Q_READ:state<=LOAD;
-     LOAD:begin negative<=pool_q[47];remaining<=edge_exp;
-      if(edge_exp==0)state<=Q_SEND;else state<=DOWN;
+     LOAD:begin negative<=pool_q[47];remaining<=edge_exp-work_shift;
+      state<=DOWN;
      end
      DOWN:begin
       if(remaining<=4)begin
        if(remaining==3)remaining<=1;
-       else begin remaining<=0;state<=Q_SEND;end
+       else remaining<=0;
       end else remaining<=remaining-4;
-     end
-     Q_SEND:if(q_take)begin
-      if(field==2)begin
-       field<=0;edge_exp<=0;
-       if(edge_no==2)state<=TAIL;
-       else begin edge_no<=edge_no+1'b1;state<=COLLECT;end
-      end else begin field<=field+1'b1;state<=LOAD;end
      end
      TAIL:if(in_valid)begin
       if(in_index!=expected)begin error[0]<=1;state<=FAULT;end
@@ -285,13 +298,20 @@ module rp_prepare(
     FINISH:state<=IDLE;
      default:begin end
     endcase
+    if(quant_finish)begin
+     if(field==2)begin
+      field<=0;edge_exp<=0;
+      if(edge_no==2)state<=TAIL;
+      else begin edge_no<=edge_no+1'b1;state<=COLLECT;end
+     end else begin field<=field+1'b1;state<=LOAD;end
+    end
    end
   end
  end
 `ifndef SYNTHESIS
  always @(posedge clk)if(ce&&!reset&&geo_we)begin
-  if(field<2&&canonical[35:17]!={19{canonical[17]}})$fatal(1,"几何N不能精确存入18位");
-  if(field==2&&canonical[35:27]!={9{canonical[27]}})$fatal(1,"几何C不能精确存入28位");
+  if(quant_field<2&&canonical[35:17]!={19{canonical[17]}})$fatal(1,"几何N不能精确存入18位");
+  if(quant_field==2&&canonical[35:27]!={9{canonical[27]}})$fatal(1,"几何C不能精确存入28位");
  end
  always @(posedge clk)if(ce&&!reset)begin
   if(packed_write&&(pw_low0_we||pw_low1_we||in_index!=expected))$fatal(1,"packed import layout");

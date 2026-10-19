@@ -14,7 +14,7 @@ def execute(cmd,cwd,log,timeout=240):
 
 def pattern(n,x,y):return ((x*3+y*7+n*5)%32<<11)|((y*5+x*11+n*13)%64<<5)|((x*13+y*3+n*17)%32)
 def expand(w):return [(w>>11<<3)|(w>>13),(((w>>5)&63)<<2)|((w>>9)&3),((w&31)<<3)|((w>>2)&7)]
-def sample(uv,lod):
+def sample(uv,lod,texture=None):
     d=min(lod//8,MAX_N);n=MAX_N-d;f=lod%8 if d<MAX_N else 0;p1=(511*f+4)//8;sums=[0]*3
     fine=[(v*(1<<max(1,n))//256)-128 for v in uv]
     for level,parent in [(n,511-p1),(max(0,n-1),p1)]:
@@ -24,21 +24,25 @@ def sample(uv,lod):
         bot=parent*frac[1]//256;top=parent-bot;tr=top*frac[0]//256;br=bot*frac[0]//256
         for tap,w in enumerate([top-tr,tr,bot-br,br]):
             side=1<<level;x=(base[0]+tap%2)%side;y=(base[1]+tap//2)%side
-            for c,v in enumerate(expand(pattern(level,x,y))):sums[c]+=(w*v+256)//512
+            texel=pattern(level,x,y) if texture is None else texture[level][y*side+x]
+            for c,v in enumerate(expand(texel)):sums[c]+=(w*v+256)//512
     return sums
 
-def initial_memory():
+def initial_memory(texture=None):
     b=bytearray(TEX+2*FB);b[TEX+FB:]=b'\xff'*FB;off=0
     for n in range(MAX_N+1):
         logical=1<<n
         for ty in range((logical+7)//8):
             for tx in range((logical+7)//8):
                 for y in range(8):
-                    for x in range(8):b[off:off+2]=pattern(n,(tx*8+x)%logical,(ty*8+y)%logical).to_bytes(2,'little');off+=2
+                    for x in range(8):
+                        xx,yy=(tx*8+x)%logical,(ty*8+y)%logical
+                        texel=pattern(n,xx,yy) if texture is None else texture[n][yy*logical+xx]
+                        b[off:off+2]=texel.to_bytes(2,'little');off+=2
     assert off<=TEX
     return b
 
-def audit(run,packets,O,gold_exe):
+def audit(run,packets,O,gold_exe,shading=None,texture=None):
     front=[s.split() for s in (run/'front.txt').read_text().splitlines()]
     ends={int(a[2]):(int(a[3],16),int(a[4],16)) for a in front if a[0]=='E'}
     qs=[];coverage=[set() for _ in packets];np=0;counts=dict(V_T_checked=True,attributes=0,depth_events=0,lod=0,empty=0)
@@ -92,16 +96,24 @@ def audit(run,packets,O,gold_exe):
             uv=v['uv'] if v else p['triangle'].uv[2];rgb=v['rgb'] if v else p['triangle'].rgb[2]
             x=q['qi']%200*2+(lane&1);y=q['qi']//200*2+(lane>>1)
             pixels[seq,lane]=dict(normal=normal,uv=uv,rgb=rgb,x=x,y=y,v=v)
-            if q['math']['passed']>>lane&1:rows.append(f'{seq*4+lane} '+ ' '.join(map(str,(*normal,x,y)))+'\n')
+            if q['math']['passed']>>lane&1 and not p.get('unlit'):rows.append(f'{seq*4+lane} '+ ' '.join(map(str,(*normal,x,y)))+'\n')
     (run/'lighting-input.txt').write_text(''.join(rows))
-    execute([gold_exe,run/'lighting-input.txt',run/'lighting-gold.txt'],ROOT,run/'lighting.log')
+    command=[gold_exe,run/'lighting-input.txt',run/'lighting-gold.txt']
+    if shading is not None:
+        context=[*shading['light'],shading['ambient'],shading['directional'],
+                 *shading['ray_scale'],shading['ray_k'],shading['shininess'],*shading['specular']]
+        assert len(context)==12
+        (run/'lighting-context.txt').write_text(' '.join(map(str,context))+'\n')
+        command.append(run/'lighting-context.txt')
+    execute(command,ROOT,run/'lighting.log')
     gs={int(a[0]):tuple(map(int,a[1:])) for l in (run/'lighting-gold.txt').read_text().splitlines() if (a:=l.split())}
     for (seq,lane),v in pixels.items():
-        p=packets[qs[seq]['packet']];tex=[255]*3 if p['rgb'] else sample(v['uv'],qs[seq]['expected']['words'][0]>>19&255 if qs[seq]['expected'] else 0)
-        g,h=gs.get(seq*4+lane,(0,0));tint=v['rgb'] if p['rgb'] else (255,255,255)
+        p=packets[qs[seq]['packet']];tex=[255]*3 if p['rgb'] else sample(v['uv'],qs[seq]['expected']['words'][0]>>19&255 if qs[seq]['expected'] else 0,texture)
+        g,h=(256,0) if p.get('unlit') else gs.get(seq*4+lane,(0,0));tint=v['rgb'] if p['rgb'] else (255,255,255)
         rgb=[]
-        for tintc,c in zip(tint,tex):
-            s=tintc*c+128;base=(s+(s>>8))>>8;rgb.append(min(255,base*g//256))
+        spec=shading['specular'] if shading is not None else (0,0,0)
+        for tintc,c,sc in zip(tint,tex,spec):
+            s=tintc*c+128;base=(s+(s>>8))>>8;rgb.append(min(255,base*g//256+sc*h//256))
         v.update(tex=tex,final=rgb,g=g,h=h)
     back=[s.split() for s in (run/'back.txt').read_text().splitlines()]
     seen={k:set() for k in ('P','E','L','S','F','R')};commit_records=[]
@@ -123,9 +135,10 @@ def audit(run,packets,O,gold_exe):
             assert got==sum(c<<(8*i) for i,c in enumerate(want)),(typ,seq,lane,hex(got),want)
     nonempty={i for i,q in enumerate(qs) if q['math']['passed']};live={(i,l) for i in nonempty for l in range(4) if qs[i]['math']['passed']>>l&1}
     assert seen['P']==set(range(len(qs)));assert seen['E']==set(range(len(qs)))-nonempty;assert seen['R']==nonempty
-    assert seen['L']==seen['F']==live
+    assert seen['L']=={(i,l) for i,l in live if not packets[qs[i]['packet']].get('unlit')}
+    assert seen['F']==live
     assert seen['S']=={(i,l) for i,l in live if not packets[qs[i]['packet']]['rgb']}
-    gold=initial_memory();depth_rejected=0;accepted=0;want_commits=[]
+    gold=initial_memory(texture);depth_rejected=0;accepted=0;want_commits=[]
     def rnd(v,d):q,r=divmod(v,d);return q+int(2*r>d or 2*r==d and q&1)
     for seq,q in enumerate(qs):
         if not q['math']['passed']:continue
@@ -144,6 +157,9 @@ def audit(run,packets,O,gold_exe):
         ix=next(i for i,(a,b) in enumerate(zip(got,gold)) if a!=b);raise AssertionError(('whole framebuffer',ix,got[ix],gold[ix]))
     assert commit_records==want_commits,('ROP completion order',len(commit_records),len(want_commits))
     counts.update(quads=len(qs),packets=np,geometry_quads=sum(map(len,coverage)),live_quads=len(nonempty),live_pixels=len(live),ROP_pass=accepted,ROP_depth_reject=depth_rejected,light=len(seen['L']),sample=len(seen['S']),final=len(seen['F']),memory_bytes=len(got),lod_values=sorted({q['expected']['words'][0]>>19&255 for q in qs if q['expected']}))
+    if shading is not None:
+        counts['specular_nonzero']=sum(pixels[k]['h']>0 for k in live)
+        counts['specular_peak']=max((pixels[k]['h'] for k in live),default=0)
     (run/'gold.mem').write_text(''.join(f'{v:02x}\n' for v in gold))
     return counts
 

@@ -14,7 +14,7 @@ The standalone GPU specification is [one level above](/ip/gpu-v2/docs/README.md)
 | Color | Per-tap half-up shift9, bounded pair/accumulator lanes | Full products, one exact nearest division by 511 |
 | Final | Separate diffuse/specular truncation | RNE of the combined diffuse/specular sum |
 | Lighting power | Direct h9,544 used 9-bit base / 7-bit delta entries | Ordinary886-entry 16-bit base / 12-bit delta alternative and explicit calendars |
-| Framebuffer | Q6 alpha, eight resident TDP tiles, explicit maintenance | Ideal alpha/255 oracle; serial/overlapped model calendars |
+| Framebuffer | Q6 alpha, eight resident 16x8 TDP half-tiles, explicit maintenance | Ideal alpha/255 oracle; serial/overlapped model calendars |
 | Memory | Three halfword-addressed masters | Byte-addressed burst facade and vendor-service adapters |
 | Timing | Enabled compute edges plus independent wall maintenance | Functional/count/cycle/emu contracts selected per API |
 

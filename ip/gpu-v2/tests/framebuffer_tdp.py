@@ -22,7 +22,7 @@ def make_vectors(d):
  # Cold fills, both bank rotations, and repeated identical quad at true II2.
  tiles=[0]+[0]*12+[1,2,3,4,5,6,7]+[0]*8+[8]+[8]*8+[2,9,2,10,0,3,11,3,24,25,49,350,374,25,350]
  for q,tile in enumerate(tiles):
-  x=(tile%25)*16+(2 if q%2 and q>12 else 0);y=(tile//25)*16+(2 if q%3 and q>12 else 0);mask=15 if q%4 else 5;f=q%8;dw=(q%5)!=0;blend=bool(q%2)
+  x=(tile%25)*16+(2 if q%2 and q>12 else 0);y=(tile//25)*16+([0,2,8,14][(q//2)%4] if q>12 else 0);mask=15 if q%4 else 5;f=q%8;dw=(q%5)!=0;blend=bool(q%2)
   raw_tile=(tile//25)*32+tile%25
   quads.append(x|(y<<9)|(mask<<17)|(f<<21)|(dw<<24)|(blend<<25)|(raw_tile<<26))
   for lane in range(4):
@@ -61,7 +61,7 @@ module tb;
 GSR GSR(.GSRI(1'b1));
 `endif
 reg clk=0,reset=1,ce=0,commit_allow=1,shade_phase=0;
-reg prefetch_abort=0,prefetch_valid=0;reg[8:0]prefetch_tile=0;
+reg prefetch_abort=0,prefetch_valid=0;reg[9:0]prefetch_tile=0;
 reg row_valid=0;reg[8:0]row_tile,row_x;reg[7:0]row_y;reg[3:0]row_mask;reg[2:0]row_index=0;reg[31:0]row_data;
 wire row_accept,row_ready;reg[2:0]depth_func;reg depth_write,blend;
 wire[53:0]shared_rop_product;wire shared_rop_offer,shared_rop_ce;wire[26:0]shared_rop_a;wire[7:0]shared_rop_b;
@@ -88,7 +88,7 @@ initial begin
   // Hints use wall-clock pulses even while the backend CE is paused.
   prefetch_valid=@PFEN@&&rows<@NQ@*8&&wall%3!=0;
   // Early stale target, look-ahead useful tiles, and dirty-only late pressure.
-  if(@LOOK@&&qn<@NQ@)prefetch_tile=quads[qn][34:26];
+  if(@LOOK@&&qn<@NQ@)prefetch_tile={quads[qn][34:31],quads[qn][12],quads[qn][30:26]};
   else if(wall<10)prefetch_tile=0;
   else if(qn<30)prefetch_tile=(qn+2)%12;
   else prefetch_tile=12+(wall/180)%6;

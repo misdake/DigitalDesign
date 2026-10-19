@@ -80,8 +80,113 @@ An edge with `A=2*Nx`, `B=2*Ny` includes zero when
 R prepares geometry step rows while I prepares a tile bounding box. R then
 restores the aligned origin and walks supported regions with fixed 4/2/1
 alignment and Y tile search. A terminal rejected region check ends traversal.
-The 53-bit work register serves disjoint magnitude and delta lifetimes, and
-bit-reversed wiring shares its normalization window.
+Origin restoration reads packed signed18 Nx/Ny through the two existing
+18-bit step lanes and C through the work RF, then directly writes
+`C+Nx*(2*x_root)+Ny*(2*y_root)` through a fused dual-product DSP. It does not
+walk origin coordinate bits or save an intermediate X-restored vector. The
+[origin calendar](/ip/gpu-v2/docs/execution.md#raster-origin-restoration)
+overlaps the last DSP write with the next support read, without changing
+the 30-bit field arithmetic or the pixel-admission interval.
+Bounds preparation interleaves independent X/Y constraints from each adjacent
+edge pair through the existing DSP and parameter ports. It retains the same
+integer tile-interval tests, conservative seed and signed results. Its
+[physical calendar](/ip/gpu-v2/docs/execution.md#interleaved-tile-bounds)
+uses temporary PB/PC axis rows and retires one axis while launching the other;
+it does not increase the multiplier or memory-port count.
+The 53-bit work register serves magnitude and delta lifetimes, with bit-reversed
+wiring sharing its normalization window. The final magnitude can retire on the
+same edge that loads the determinant; the consumer samples the old register
+value. The [publication calendar](/ip/gpu-v2/docs/execution.md#geometry-reduction-and-publication)
+also overlaps a completed component's writes with the following LOAD.
+
+The walker requests the target ROM word on the same enabled edge that retires
+the deciding edge predicate. The epoch changes on that edge, invalidating any
+younger speculative result. The next instruction's reads use the updated level
+and coordinates; there is no additional pending-branch handoff state.
+
+Full tiles keep a row-start vector and stream four pixels per quad through the
+existing 16-cycle calendar. A full traversal node above level4 descends through
+the existing walker; it does not publish a larger full tile. Full scan blocks
+therefore stay within one external 16 x 16 framebuffer tile. Descendant tests
+and mailbox traffic remain part of traversal rather than receiving an implicit
+zero-cost full-region loop. Partial tiles arrive only at 4 x 4 pixels. Their
+scanner uses two current/future vectors in one 16 x 30 local register file;
+the address bank changes only when a rejected quad advances. A separate
+three-entry S20 table stores each edge's strict rejection threshold:
+
+```text
+dx = 2*Nx; dy = 2*Ny
+support = max(dx,0) + max(dy,0)
+threshold = tau - support - 1   // tau=0 includes zero, tau=1 excludes zero
+quad_possible = all(current_h[i] > threshold[i])
+```
+
+This is exactly the upper-bound test on the four pixels, without adding support
+to h in the test path. Since support is at most 524284, threshold lies in
+`[-524285,0]` and fits S20. A negative h outside S20 cannot pass; a nonnegative
+h passes except when both h and threshold are zero. The bounded negative tail
+uses a 19-bit unsigned comparison. Predicate results are registered before
+they control the bank, coordinates and next synchronous read.
+
+The existing scan-store write word also feeds the threshold comparator. A tile
+LOAD or PREFETCH classifies its first quad while writing its initial h vector.
+The last pixel of a partial SCAN classifies the following quad while writing
+that quad's origin. CHECK is entered only for an already rejected quad: it
+computes and classifies the successor, rather than repeating the current test.
+No second comparator, wide predicate buffer or operand port is added.
+
+A registered rejected tail needs no successor calculation. At phi3, if SCAN
+has classified the final quad as impossible, it finishes the tile directly.
+When a CHECK on the first quad of the final 4 x 4 tile row classifies the last
+quad as impossible, that same finish retires both rejected positions. No pixel
+or result-pool slot is created for these tails. The next mailbox load can start
+on that edge; without a next tile the scanner enters OFF. No scan-store/step
+read is issued for the discarded tail, and no combinational ALU predicate
+bypasses the existing flags.
+
+For CHECK, the scanner ALU step is `2*dx`, or `2*dy-2*dx` at the end of the
+two-quad row. The preparation ROM produces that row step and `3*dx-dy`, which
+converts the last scanned pixel of a row into the following row's origin.
+
+| Phase | Known rejected current quad | ALU/write and next read |
+| --- | --- | --- |
+| Previous phi3 | Request edge 0 | Read current vector |
+| phi0 | Advance edge 0 | Write future edge 0, register its predicate; request edge 1 |
+| phi1 | Advance edge 1 | Write future edge 1, register its predicate; request edge 2 |
+| phi2 | Advance edge 2 | Write future edge 2 and register its predicate |
+| phi3 | Select future bank and advance coordinates | Read future edge 0 for SCAN when its stored predicates pass, otherwise for another CHECK |
+
+Partial SCAN's last-lane h writes register the next quad's predicates in the
+same way. One phase marker defers the mode decision until phi3, after all three
+bits are stable; it does not add a quad-admission cycle. ALIGN similarly selects
+SCAN or CHECK from the loaded tile's predicates. If the last ordinary LOAD
+return coincides with ALIGN's phi3, only that load's edge-2 predicate bypasses
+the flag register. The scan ALU result has no same-edge mode-decision bypass.
+
+Possible quads enter the original pixel calendar directly. Rejected quads need
+no separate SKIP operation or row-start copy. A rejected tile-end quad can start
+the next mailbox load on the same phi3. A final-quad PREFETCH owns the next
+tile's predicate flags; the old tile's last quad does not overwrite them.
+All state and RAM Q registers freeze under CE; output backpressure holds at
+quad admission.
+Threshold writes belong to preparation, while scanner reads belong to
+execution, with no dynamic port arbitration. Full-tile row handling remains
+independent of the partial-tile bank alternation.
+
+At admission of the final quad of a tile, an already available next mailbox
+entry enables a fixed prefetch calendar. Lanes 0, 1 and 2 read its three h
+values at phi2 and write them into the scan store at phi3, when the current
+pixel update has finished. A following partial tile uses the inactive vector;
+a following full tile uses the row-start vector, whose old value is dead after
+the current final quad's first pixel. No additional h buffer is present.
+
+The mailbox entry remains owned until lane 3 phi2. Handoff then installs its
+metadata, advances the mailbox head and enters ALIGN; phi3 reads the next
+tile's edge 0 directly. The current quad's final coverage still uses its old
+metadata. If no next entry was available at final-quad admission, the scanner
+uses the ordinary LOAD path; it does not start a partial prefetch or arbitrate
+for the scan-store port. CE pauses freeze the calendar, and quad backpressure
+is resolved before that admission.
 
 The geometric mask and numerical mask are distinct. Numerical depth/denominator
 checks may clear covered lanes, but the quad keeps its place in the ordered

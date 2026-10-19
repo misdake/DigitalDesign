@@ -16,6 +16,7 @@ not replace those implemented contracts or define a CPU submission ABI.
 | tests/vliw_sdram.py | Actual main arbiter/bridge/controller and independent SDRAM pin model |
 | full_bunny.py | Meshlet partition, two-page loading and complete supplied PLY traversal |
 | replay_export.py | Matched box/full-bunny audit of an explicitly supplied export with a prebuilt current MC peer |
+| solid_scene.py | Complete 948-face bunny inside a six-face subdivided room; constant RGB albedos, directional light and selected H9 specular |
 | tests/vliw_prepare_chain.py | Small native/portable preparation regression; optional exhaustive operand-table check |
 | tests/vliw_normal_quantization.py | Exact normal16/18 truncation, RNE and saturation |
 
@@ -35,6 +36,27 @@ python ip/gpu-v2/examples/vliw_integration/verify_stage2.py --tag full-box-new -
 python ip/gpu-v2/examples/vliw_integration/verify_stage2.py --tag full-rabbit-new --name bunny_patch_1 --mode both --stress --rgb-repeat
 python ip/gpu-v2/tests/vliw_backend_complete.py --tag current-small-new --mode both
 python ip/gpu-v2/tests/vliw_backend_failstop.py --tag current-fault-new --mode both --fault final
+python -B ip/gpu-v2/tests/vliw_raster_scan.py --output target/raster-scan-small-new --mode both --small --limit 16
+```
+
+The focused raster replay compares every emitted h value and quad mask against
+independent integer edge equations, including row ends, CE pauses and admission
+backpressure. The small set bounds vendor-primitive runtime; omit `--small` and
+use `--mode portable` to include the full-screen traversal cases.
+The tile-prefetch checks exercise both full and partial destinations and the
+ordinary LOAD fallback.
+The same test asserts that CHECK only advances a stored rejected predicate and
+that each partial-quad admission has a stored possible predicate. Classification
+uses tile-load, prefetch and next-origin writeback values; the test covers their
+CE holds and admission backpressure together with all emitted pixel h values.
+
+The preparation regression checks raw-to-reduced coefficients, packed attributes,
+old-work retirement during the next LOAD, CE holds and reset cuts. It includes
+zero/short shift counts and large admitted integer rays. Its Cargo entry also
+checks every operand-table constant in portable and native modes:
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label gpu-prepare-chain -CargoArgs @('-p','gpu-v2','--test','vliw_prepare_chain','--','--ignored','--nocapture','--test-threads=1')
 ```
 
 For a supplied Stanford PLY, keep source bounds and runtime limits explicit:
@@ -62,13 +84,96 @@ Use `--scene bunny --ply PATH/bun_zipper_res4.ply` for all 948 faces, or
 limits are explicit options (`--max-cycles`, `--timeout`). The supplied export
 is frozen; the driver does not silently rebuild it or select another version.
 
+For routine performance comparisons, `--scene quick --ply
+PATH/bun_zipper_res4.ply --max-cycles 400000 --timeout 240` submits the existing
+single box face and the first two complete bunny meshlets. All three jobs use
+the real DMA/memory path, share one framebuffer, and include first load, drain
+and flush. The receipt records the selected face/triangle counts; this is a
+bounded subset, not a full-model throughput claim. Keep this scene, source PLY,
+camera, material and memory settings identical between candidates. Full bunny
+and material-room runs are separate final checks.
+
+Bounds can be checked without running pixels or external memory:
+
+```powershell
+python -B ip/gpu-v2/tests/vliw_bounds.py --export PATH/dut-portable.v --output target/bounds-small --count 128
+```
+
+This bounded test checks the existing directed preparation fixtures plus seeded
+random signed18 positions, both orientations and RGB/UV attributes under CE
+pauses. Its independent integer reference enumerates allowable tile coordinates
+from each constraint, rather than reproducing the RTL search schedule. A native
+export additionally requires `--native` and the Gowin simulation primitives.
+
+For the combined solid-material scene, select `--scene solid-room --camera
+front|side|oblique --ply PATH/bun_zipper_res4.ply` and allow at least 3,000,000
+wall cycles. All 192 inward-facing room triangles and 948 bunny triangles are
+submitted through the same meshlet DMA path and share one depth surface.
+Lighting, specular, ROP and the memory controller remain real RTL. Constant RGB
+attributes bypass Sampling. The lighting reference accepts an optional context
+file and checks its selected H9 result against counted arithmetic samples.
+
+Successful solid-room runs save `framebuffer-raw.png` (RGB565 bit expansion)
+and `framebuffer-srgb.png` (the existing Display linear-RGB565 lookup), plus
+nearest-neighbor 2x versions. Images come from final SDRAM readback after flush;
+the lookup preview does not claim CPU/Display integration. Receipts retain
+timing, context, source and image hashes, and nonzero specular counts.
+
+`--scene materials --camera front|side|oblique` uses a prepared, muted tile
+texture on the unlit room, an unlit RGB vertex-color triangle in the bottom
+corner, and the solid lit/specular bunny. All objects use actual V96/index DMA,
+Sampling/Lighting/Final/ROP and one shared depth surface. The box texture is
+`assets/room-tiles.png`, RGB565 with a complete box-filtered mip chain; seed and
+integer sampler reference consume the same asset. Changing from the unlit group
+to the lit bunny waits for `pipeline_idle` and pulses `draw_rebind`; the barrier
+and memory work are included in the measured frame cycles.
+
+The supplied zipper PLY contains opposite duplicate faces. A few vertex normals
+have an area-weighted sum within 1e-12 of their incident total area. The fixture
+generator repairs only those undefined directions using an incident face oriented
+toward reliable neighboring normals, instead of normalizing floating-point
+cancellation residue. It preserves all 948 source faces, positions and meshlet
+partitioning. Repaired source vertex IDs are recorded in the scene input.
+
+Run the small asset/reference checks with:
+
+```powershell
+python -B ip/gpu-v2/examples/vliw_integration/test_material_scene.py
+```
+
+After a completed solid-room or materials replay, independently render and audit:
+
+```powershell
+python -B ip/gpu-v2/examples/vliw_integration/float_reference.py target/explicit-materials
+```
+
+This second reference directly decodes V96 inputs and uses float64 matrix
+transforms, ray/triangle intersection, perspective interpolation, normalization
+and Blinn-Phong powers. It does not call the fixed-point geometry/interpolation
+oracle or use RTL lighting values to produce its image. Its floating texture
+filter models the public coordinate convention but omits integer tap rounding.
+`float-reference.png` and `float-reference.json` complement the exact integer
+audit: interior statistics require the same winning source triangle and a
+distance of at least one pixel from every exact edge. Normal, diffuse, specular
+and color errors are reported separately, including lit-only color errors;
+edge/ownership differences are not silently counted as lighting errors.
+
 Audit tools consume their explicitly supplied source/replay artifacts; they do
 not generate missing runs or inherit a different source version's fault results.
 Resource-fit scripts are optional verification tools, not a historical ledger
 maintenance requirement. Generated seeds, netlists, traces and images stay under
 target rather than in docs.
 
-The current PC constants and A operand table qualification is bound to source
+For independent fill-rate and small-triangle measurements, replay `--scene box`
+and `--scene bunny --meshlet-limit 2` into separate fresh output directories.
+Each run starts from reset, seeds its own memory, and includes first load and
+final flush in its total. The bunny limit selects complete meshlets and records
+both the selected counts and the original 948-face model counts. Omit the limit
+for the complete model. Keep the same export, PLY, golden executable, memory
+peer and cycle/time limits on both sides of a comparison; combined-scene job
+intervals alone do not establish isolated throughput.
+
+The current standalone GPU qualification is bound to source
 and report hashes in [the selected receipt](/ip/gpu-v2/examples/vliw_integration/operand-table-evidence.json).
 It contains only the selected implementation's acceptance evidence; generated
 exports, project files, traces and rejected mapping experiments are not inputs

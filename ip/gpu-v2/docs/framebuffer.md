@@ -43,9 +43,17 @@ The packer implements those nearest values using bounded head/low-bit
 corrections. The selected source-over rule is Q6 alpha; the generic framebuffer
 oracle's ideal alpha/255 is a separate numerical profile.
 
-## Resident tiles and row ownership
+## Resident half-tiles and row ownership
 
-Eight resident tiles hold color/depth in four 1024 × 16 true-dual-port DPB banks.
+Eight resident 16 × 8 half-tiles hold color/depth in four 1024 × 16
+true-dual-port DPB banks. Each line contains 256 bytes per plane, 512 bytes
+total. Its key is `{y[7:3],x[8:4]}`. The external 16 × 16 layout is unchanged:
+the key's low Y bit selects byte256 within the external plane tile.
+
+The physical bank address is `{plane,0,line3,y[2:1],lane_y,x[3:2]}`. Bit8 is
+fixed zero; four banks remain necessary for the independent lane accesses.
+The directory covers 4 KiB of live payload. Small lines reduce the transfer
+granularity without adding directory ways or changing the physical port count.
 Port A serves ROP on enabled edges. Port B refills/writes back on wall edges.
 A maintenance-owned line cannot become a ROP owner; a ROP-owned line cannot be
 a maintenance victim. At most two distinct ROP lines are owned. After invalid
@@ -79,7 +87,7 @@ reading another. None of these local releases means dirty data reached memory.
 flowchart TD
     A["Port A: ROP / compute enabled edges"] --> R["At most two ROP-owned lines"]
     B["Port B: one maintenance context / wall edges"] --> M["Maintenance-owned line"]
-    R --> Pool["Eight resident tile slots: color + depth"]
+    R --> Pool["Eight resident 16x8 slots: color + depth"]
     M --> Pool
     Exclusion["One tile cannot have both owners"] -.-> R
     Exclusion -.-> M
@@ -97,7 +105,8 @@ pause. The edge table above remains the authoritative local ROP calendar.
 
 ## Refill and flush
 
-One maintenance context serializes a victim's dirty writeback and replacement
+Each half-plane transfers as two ordered 128-byte sectors. One maintenance
+context serializes a victim's dirty writeback and replacement
 refill. It reserves a complete return destination before admission. Request and
 write data hold through stalls. Both color/depth planes must complete before a
 replacement becomes resident. Dirty state clears only after all required sector
@@ -117,7 +126,7 @@ through the terminal boundary. Partial external writes are not rolled back.
 
 ## Optional tile hints
 
-A nonzero geometric-mask event emits a 9-bit raw `{Ytile[3:0],Xtile[4:0]}` hint
+A nonzero geometric-mask event emits a 10-bit raw `{Yhalf[4:0],Xtile[4:0]}` hint
 without ready. This occurs at geometry's G14 return; a later numerical rejection
 can still make the quad empty. Hints never reserve a result-pool or ROP owner.
 
@@ -129,7 +138,9 @@ Speculation reuses the demand candidate instead of scanning every victim.
 Offered rows, ROP owners and unused prefetched lines are protected. Unsafe hints
 drop. Successful replacement or an unsafe nonresident drop advances the
 round-robin cursor once. Dirty replacement uses the same maintenance context.
-Only B converts raw tile XY into the external linear tile number.
+Only B converts the half-tile key into the external linear tile number and
+half-plane offset. Neither the source record nor the memory-controller burst
+contract changes.
 
 Implementation anchors: [surface validation](/ip/gpu-v2/src/framebuffer/ports.rs),
 [ROP](/ip/gpu-v2/src/system/pixel/framebuffer_tdp_leaf.v),

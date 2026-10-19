@@ -6,7 +6,7 @@ module gpu_v2_vliw_quad_pool(
  input quad_valid,output quad_ready,output[2:0]quad_id,
  input[7:0]quad_x,input[6:0]quad_y,input quad_rgb,
  input quad_end_valid,input[2:0]quad_end_id,input[3:0]quad_end_mask,
- output prefetch_valid,output[8:0]prefetch_tile,
+ output prefetch_valid,output[9:0]prefetch_tile,
  input result_we,input[6:0]result_wa,input[35:0]result_wd,
  input depth_event_valid,input[4:0]depth_event_pid,input[15:0]depth_event_z16,input depth_event_pass,
  input lod_valid,input[2:0]lod_id,input[7:0]lod_value,
@@ -63,7 +63,8 @@ module gpu_v2_vliw_quad_pool(
  wire[18:0]head_meta,next_meta;
  wire[4:0]next_slot=retired[4:0]+5'd1;
  // Keep tile identity as {Y4,X5}; only B maintenance needs linear addresses.
- wire[8:0]header_tile={quad_y[6:3],quad_x[7:3]};
+ wire[9:0]header_tile={quad_y[6:2],quad_x[7:3]};
+ // Half-tile hints use Y/8 and X/16; descriptor tiles retain their Y/16 ABI.
  // G14 precedes coordinate advance on this edge. Hints may be dropped by the
  // cache, never allocate a pool owner, and have no ready path back to raster.
  assign prefetch_valid=front_ce&&quad_end_valid&&(|quad_end_mask)&&!reset&&!fault;

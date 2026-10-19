@@ -216,7 +216,7 @@ pub fn verilog_selected(
         &mut source,
         top,
         " wire basic_read,basic_valid,basic_collision;",
-        " wire framebuffer_prefetch_valid;wire[8:0]framebuffer_prefetch_tile;\n wire basic_read,basic_valid,basic_collision;",
+        " wire framebuffer_prefetch_valid;wire[9:0]framebuffer_prefetch_tile;\n wire basic_read,basic_valid,basic_collision;",
     )?;
     patch(
         &mut source,

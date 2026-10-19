@@ -25,6 +25,47 @@ def execute(cmd, cwd, log, timeout=1800, env=None):
     return p.stdout.decode(errors='replace'), time.monotonic() - t
 
 
+def smooth_normals(world, faces):
+    """Area-weighted normals with a deterministic cancellation fallback.
+
+    Zipper meshes can contain opposite copies of a face and vertices incident
+    only to that pair. Never normalize floating-point cancellation residue.
+    Preserve every source triangle; repair only undefined vertex normals using
+    an incident face oriented toward its reliable neighboring vertex normals.
+    """
+    normals = [[0.0]*3 for _ in world]
+    area = [0.0]*len(world)
+    incident = [[] for _ in world]
+    for triangle in faces:
+        a, b, c = triangle
+        u = [world[b][k]-world[a][k] for k in range(3)]
+        w = [world[c][k]-world[a][k] for k in range(3)]
+        n = (u[1]*w[2]-u[2]*w[1], u[2]*w[0]-u[0]*w[2], u[0]*w[1]-u[1]*w[0])
+        length = math.sqrt(sum(x*x for x in n))
+        for i in triangle:
+            area[i] += length
+            incident[i].append((triangle, n, length))
+            for k in range(3):
+                normals[i][k] += n[k]
+    reliable = [math.sqrt(sum(x*x for x in n)) > area[i]*1e-12 for i, n in enumerate(normals)]
+    repaired = []
+    for i, n in enumerate(normals):
+        if not reliable[i] and incident[i]:
+            triangle, face, length = max(incident[i], key=lambda v: v[2])
+            assert length > 0, ('isolated degenerate vertex', i)
+            adjacent = [j for j in triangle if reliable[j]]
+            assert adjacent, ('undefined surface orientation', i)
+            score = sum(sum(face[k]*normals[j][k] for k in range(3)) for j in adjacent)
+            assert abs(score) > 0, ('ambiguous surface orientation', i)
+            normals[i] = [v*(1 if score > 0 else -1) for v in face]
+            repaired.append(i)
+    for n in normals:
+        length = math.sqrt(sum(x*x for x in n)) or 1
+        for k in range(3):
+            n[k] /= length
+    return normals, repaired
+
+
 def mesh(path):
     lines = path.read_text().splitlines()
     assert lines[0] == 'ply' and lines[1] == 'format ascii 1.0'
@@ -37,16 +78,7 @@ def mesh(path):
     center = [(min(p[k] for p in v) + max(p[k] for p in v))/2 for k in range(3)]
     scale = 1.5/max(max(p[k] for p in v)-min(p[k] for p in v) for k in range(3))
     world = [tuple((p[k]-center[k])*scale for k in range(3)) for p in v]
-    normals = [[0.0]*3 for _ in v]
-    for a,b,c in f:
-        u = [world[b][k]-world[a][k] for k in range(3)]
-        w = [world[c][k]-world[a][k] for k in range(3)]
-        n = (u[1]*w[2]-u[2]*w[1], u[2]*w[0]-u[0]*w[2], u[0]*w[1]-u[1]*w[0])
-        for i in (a,b,c):
-            for k in range(3): normals[i][k] += n[k]
-    for n in normals:
-        length = math.sqrt(sum(x*x for x in n)) or 1
-        for k in range(3): n[k] /= length
+    normals, repaired = smooth_normals(world, f)
     # One model-wide decompression grid keeps duplicated meshlet vertices bit-identical.
     raw = [tuple(round(x*65536) for x in p) for p in world]
     origin = [min(p[k] for p in raw) for k in range(3)]
@@ -79,6 +111,7 @@ def mesh(path):
     return batches, dict(vertices=nv,triangles=nf,used_vertices=len({x for t in f for x in t}),
         meshlets=len(batches),submitted_vertices=sum(len(b['vertices']) for b in batches),
         config=[*origin,shift|256],source_sha256=SHA(path),world_center=center,world_scale=scale,
+        normal_fallback_vertices=repaired,
         note='Every source face exactly once; no further decimation; shared model-wide position grid and normals; generated UVs')
 
 
@@ -185,7 +218,7 @@ end endtask
 task finish_task;begin
  while(!saw_done||!frontend_idle)tick();mesh_front_end=cycle;
  if(vi!=nv*5||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
- $display("MESH task=%0d cycles=%0d end=%0d V=%0d T=%0d P=%0d",task_id,cycle-mesh_start,cycle,vi/6,ti,pi);
+ $display("MESH task=%0d cycles=%0d end=%0d V=%0d T=%0d P=%0d",task_id,cycle-mesh_start,cycle,vi/5,ti,pi);
 end endtask
 '''
 
@@ -246,8 +279,8 @@ initial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end
     return result
 
 
-def dma_fixture(out,V,metas):
-    seed={};b=V.initial_memory();jobs=[];expected=[0]*(512*len(metas));valid=[0]*len(expected)
+def dma_fixture(out,V,metas,initial=None):
+    seed={};b=V.initial_memory() if initial is None else initial;jobs=[];expected=[0]*(512*len(metas));valid=[0]*len(expected)
     for off in range(0,len(b),4):
         a=0x1000+off if off<V.TEX else 0x100000+off-V.TEX if off<V.TEX+V.FB else 0x140000+off-V.TEX-V.FB
         seed[a]=int.from_bytes(b[off:off+4],'little')
