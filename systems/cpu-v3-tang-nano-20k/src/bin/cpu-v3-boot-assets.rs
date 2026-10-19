@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn generated_assets_have_only_one_application_and_fixed_package() {
-        assert_eq!(ASSETS.len(), 3);
+        assert_eq!(ASSETS.len(), 4);
         assert!(asset_manifest().contains("asset=application.v3bin"));
         assert!(asset_manifest().contains("asset=cpu-v3-boot.bin"));
         assert!(!ASSETS.iter().any(|(name, _)| name.contains("stage0")

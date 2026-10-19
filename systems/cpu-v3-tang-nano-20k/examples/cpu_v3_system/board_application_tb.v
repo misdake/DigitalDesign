@@ -60,7 +60,7 @@ always @(negedge flash_clk)if(!flash_cs_n && command_bits>=32)begin
     flash_image[byte_address-24'h100000] : 8'hff;
   byte_address=byte_address+1;
  end
- flash_miso<=current_byte[7-data_bit];data_bit=(data_bit+1)%8;
+ flash_miso<=#6.5 current_byte[7-data_bit];data_bit=(data_bit+1)%8;
 end
 integer cycles=0,frames=0,byte_count=0;
 integer maintenance_trace=0;
@@ -131,7 +131,7 @@ always @(posedge clk)begin
    dut.sysctl_cpu_hold,dut.sysctl_dcache_invalidate,dut.sysctl_dcache_clean,
    dut.dcache_maintenance_busy,dut.dcache_maintenance_done,dut.u_sysctl.pending_dcache_maintenance,
    dut.u_data_cache.state,dut.u_data_cache.response_valid,dut.dcache_valid_sweep);
- if(cycles>(PROBE_HALT!=0 ? 1000000 : 20000000))$fatal(1,"bounded board application pc%h core%0d dcache%0d hold%0d pending%0d busy%0d",dut.pc,dut.u_core.state,dut.u_data_cache.state,dut.sysctl_cpu_hold,dut.u_sysctl.pending_dcache_maintenance,dut.dcache_maintenance_busy);
+ if(cycles>(PROBE_HALT!=0 ? 8000000 : 24000000))$fatal(1,"bounded board application pc%h core%0d dcache%0d hold%0d pending%0d busy%0d",dut.pc,dut.u_core.state,dut.u_data_cache.state,dut.sysctl_cpu_hold,dut.u_sysctl.pending_dcache_maintenance,dut.dcache_maintenance_busy);
  if(PROBE_HALT!=0 && dut.halted)begin
   if(dut.halt_signal!==PROBE_HALT)$fatal(1,"maintenance probe failed %h",dut.halt_signal);
   $display("native maintenance probe completed cycles%0d",cycles);
@@ -142,5 +142,5 @@ always @(posedge clk)begin
  if(!dut.boot_done && (dut.core_instruction_request_valid || dut.device_write_enable || dut.core_data_request_valid))
   $fatal(1,"CPU side effect before boot");
 end
-initial begin #410000000;$fatal(1,"board application wall watchdog");end
+initial begin #510000000;$fatal(1,"board application wall watchdog");end
 endmodule

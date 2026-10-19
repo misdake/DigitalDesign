@@ -14,9 +14,19 @@ use digital_design_hardware_gowin::{
 use std::cell::{Cell, RefCell};
 const GENERATED_APPLICATION_PACKAGE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.bin"));
-type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
+// The sealed board baseline stays at 2. Set 1 only for the 27 MHz candidate.
+const SPI_HALF_PERIOD: u64 = match option_env!("CPU_V3_SPI_HALF_PERIOD") {
+    None => 2,
+    Some(value) => {
+        let bytes = value.as_bytes();
+        assert!(bytes.len() == 1 && (bytes[0] == b'1' || bytes[0] == b'2'));
+        (bytes[0] - b'0') as u64
+    }
+};
+type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, SPI_HALF_PERIOD>;
 type SystemControl = SystemControlDevice<469>;
 thread_local! {static TEST_IMAGE:RefCell<Option<(Vec<u8>,bool,u16)>>=const{RefCell::new(None)};}
+thread_local! {static TEST_ERROR_CODE:Cell<u8>=const{Cell::new(1)};}
 thread_local! {static BOARD_APPLICATION_TEST:Cell<bool>=const{Cell::new(false)};}
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_system_gowin")
@@ -111,7 +121,7 @@ impl Module for CpuV3System {
                 .replace("__PACKAGE_INIT__", &init)
                 .replace("__PROBE_HALT__", &halt.to_string());
             let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/system-board-ready/audit/native-progress.log");
+                .join("../../target/cb06-validation/native-progress.log");
             let evidence = if halt != 0 {
                 evidence.with_file_name("native-maintenance-progress.log")
             } else {
@@ -138,10 +148,43 @@ impl Module for CpuV3System {
             fixture.unwrap_or_else(|| (GENERATED_APPLICATION_PACKAGE.to_vec(), false, 0));
         let mut flash_init = String::new();
         let mut code_init = String::new();
-        for (index, byte) in package.iter().enumerate() {
-            flash_init.push_str(&format!(" flash_image[{index}]=8'h{byte:02x};\n"));
+        if package.len() <= 65536 {
+            for (index, byte) in package.iter().enumerate() {
+                flash_init.push_str(&format!(" flash_image[{index}]=8'h{byte:02x};\n"));
+            }
         }
-        let code = &package[128..];
+        if package.len() > 65536 {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/cb06-validation/flash");
+            std::fs::create_dir_all(&dir).unwrap();
+            let hash = package.iter().fold(0xcbf29ce484222325u64, |h, b| {
+                (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+            });
+            let file = dir.join(format!("{hash:016x}-spi{SPI_HALF_PERIOD}.hex"));
+            let mut hex = String::with_capacity(package.len() * 3);
+            for byte in &package {
+                use std::fmt::Write;
+                writeln!(hex, "{byte:02x}").unwrap();
+            }
+            std::fs::write(&file, hex).unwrap();
+            flash_init = format!(
+                "$readmemh(\"{}\",flash_image);\n",
+                file.to_string_lossy().replace('\\', "/")
+            );
+        }
+        let mut resource_check = String::new();
+        if let Ok(commands) = cpu_v3_tang_nano_20k::boot::single_boot_commands(&package) {
+            for command in commands {
+                if let Some(data) = command.payload {
+                    if command.address == 0xe0000 {
+                        continue;
+                    }
+                    let offset = data.as_ptr() as usize - package.as_ptr() as usize;
+                    resource_check.push_str(&format!("for(n=0;n<{};n=n+1)if(memory[{}+n]!=={{flash_image[{}+2*n+1],flash_image[{}+2*n]}})$fatal(1,\"resource COPY mismatch %0d\",n);\n",command.length/2,command.address/2,offset,offset));
+                }
+            }
+        }
+        let code = cpu_v3_tang_nano_20k::boot::single_boot_code(&package).unwrap_or(&[]);
         for (index, word) in code.as_chunks::<2>().0.iter().enumerate() {
             let value = u16::from_le_bytes([word[0], word[1]]);
             code_init.push_str(&format!(" expected_code[{index}]=16'h{value:04x};\n"));
@@ -149,7 +192,12 @@ impl Module for CpuV3System {
         let receipt = std::env::var_os("SINGLE_BOOT_EVIDENCE")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir)
-            .join(format!("startup-{halt:04x}-{}.json", u8::from(error)));
+            .join(format!(
+                "startup-{halt:04x}-{}-spi{SPI_HALF_PERIOD}-{}.json",
+                u8::from(error),
+                package.len()
+            ));
+        std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
         Some(
             include_str!("signature_testbench.v")
                 .replace(
@@ -160,7 +208,17 @@ impl Module for CpuV3System {
                 .replace("__FLASH_PACKAGE_INIT__", &flash_init)
                 .replace("__CODE_WORDS__", &(code.len() / 2).to_string())
                 .replace("__CODE_INIT__", &code_init)
+                .replace("__RESOURCE_CHECK__", &resource_check)
+                .replace("__SPI_HALF_PERIOD__", &SPI_HALF_PERIOD.to_string())
+                .replace(
+                    "__BOOT_MAX_CYCLES__",
+                    &(6_000_000 + package.len() * 40).to_string(),
+                )
                 .replace("__EXPECT_ERROR__", &u8::from(error).to_string())
+                .replace(
+                    "__EXPECT_ERROR_CODE__",
+                    &TEST_ERROR_CODE.with(Cell::get).to_string(),
+                )
                 .replace("__EXPECT_HALT__", &halt.to_string()),
         )
     }
@@ -250,11 +308,16 @@ mod tests {
     }
     #[test]
     fn single_application_assets_repack_exactly() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let project = cpu_v3_tang_nano_20k::boot::parse_boot_project(
+            &std::fs::read_to_string(root.join("boot-applications.conf")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
-            pack_single_application(include_bytes!(concat!(
-                env!("OUT_DIR"),
-                "/application.v3bin"
-            )))
+            cpu_v3_tang_nano_20k::boot::pack_application_resources(
+                include_bytes!(concat!(env!("OUT_DIR"), "/application.v3bin")),
+                &project.resources(root).unwrap()
+            )
             .unwrap(),
             GENERATED_APPLICATION_PACKAGE
         );
@@ -299,6 +362,24 @@ mod tests {
         result.unwrap();
     }
     #[test]
+    #[ignore = "bounded real SPI full-system 2MiB resource load and byte comparison"]
+    fn flash_boot_large_resources_in_verilog() {
+        let base = fixture();
+        let code = cpu_v3_tang_nano_20k::boot::single_boot_code(&base).unwrap();
+        let data = (0..0x200000).map(|n| (n ^ (n >> 8) ^ 0x53) as u8).collect();
+        let package = cpu_v3_tang_nano_20k::boot::pack_application_resources(
+            code,
+            &[cpu_v3_tang_nano_20k::boot::BootResource::copy(
+                0x100000, data,
+            )],
+        )
+        .unwrap();
+        TEST_IMAGE.with(|x| *x.borrow_mut() = Some((package, false, 0x5a35)));
+        let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
+        TEST_IMAGE.with(|x| *x.borrow_mut() = None);
+        result.unwrap();
+    }
+    #[test]
     #[ignore = "malformed image must never release CPU or write a device"]
     fn flash_boot_rejects_header_in_verilog() {
         let mut bad = fixture();
@@ -306,6 +387,19 @@ mod tests {
         TEST_IMAGE.with(|x| *x.borrow_mut() = Some((bad, true, 0)));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
         TEST_IMAGE.with(|x| *x.borrow_mut() = None);
+        result.unwrap();
+    }
+    #[test]
+    #[ignore = "real SPI must reject an overflowing ZERO before any aliased DRAM write"]
+    fn flash_boot_rejects_wrapping_zero_in_verilog() {
+        let mut bad = fixture();
+        bad[12..16].copy_from_slice(&0x7ffffeu32.to_le_bytes());
+        bad[16..20].copy_from_slice(&0x80c00002u32.to_le_bytes());
+        TEST_IMAGE.with(|x| *x.borrow_mut() = Some((bad, true, 0)));
+        TEST_ERROR_CODE.with(|x| x.set(2));
+        let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
+        TEST_IMAGE.with(|x| *x.borrow_mut() = None);
+        TEST_ERROR_CODE.with(|x| x.set(1));
         result.unwrap();
     }
 }

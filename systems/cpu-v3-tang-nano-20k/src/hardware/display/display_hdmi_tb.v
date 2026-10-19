@@ -4,6 +4,8 @@ module tb;
 // whichever HDMI mode the DUT was compiled with.
 __DISPLAY_CONFIG__
 reg clk=0,pixel_clock=0,serial_clock=0,reset=1,video_locked=0;
+reg boot_enable=0,boot_failed=0;
+wire started_ack,startup_error;
 always #9.259 clk=~clk;
 always #(__PIXEL_HALF_PERIOD__) pixel_clock=~pixel_clock;
 always #1 serial_clock=~serial_clock;
@@ -57,8 +59,8 @@ wire fb_vis = dut.framebuffer_pipe3 && vis;
 
 // Every wait below must complete within the roughly three-frame scenario.
 initial begin
- repeat(4*H_TOTAL*V_TOTAL) @(posedge pixel_clock);
- $fatal(1,"display test exceeded four frames");
+ repeat(6*H_TOTAL*V_TOTAL) @(posedge pixel_clock);
+ $fatal(1,"display test exceeded six frames");
 end
 
 task device_write;
@@ -118,6 +120,10 @@ always @(posedge clk) begin
 end
 initial begin
  repeat(4) @(posedge clk); reset=0; video_locked=1;
+ repeat(H_TOTAL*V_TOTAL+1000) @(posedge pixel_clock);
+ if(requests!=0 || dut.frame_index!=0 || dut.released!=0 || underflow || started_ack)
+  $fatal(1,"cold disabled Display made progress");
+ @(negedge clk);boot_enable=1;
  // A command with only half an address is ignored and keeps the staged half.
  device_write(1,16'h8000);
  expect_status(16'h0003,16'h0002);
@@ -236,7 +242,9 @@ always @(posedge pixel_clock) begin
  end
  if (vis && !fb_vis) begin
   border_sampled=border_sampled+1;
-  if (dut.rgb_pipe!==color(16'h1082,0)) $fatal(1,"border pixel mismatch");
+  if (!dut.started) begin
+   if(dut.rgb_pipe!==0) $fatal(1,"cold visible video was not black");
+  end else if (dut.rgb_pipe!==color(16'h1082,0)) $fatal(1,"border pixel mismatch");
  end
 end
 

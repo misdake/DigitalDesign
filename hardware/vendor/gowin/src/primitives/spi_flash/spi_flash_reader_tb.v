@@ -1,3 +1,4 @@
+`timescale 1ns/1ps
 module tb;
 reg clk = 0;
 reg start = 0;
@@ -31,7 +32,8 @@ wire flash_mosi;
     .flash_mosi(flash_mosi)
 );
 
-always #5 clk = ~clk;
+// 54 MHz logic: divisor 1/2 gives nominal 27/13.5 MHz SCK.
+always #9.259 clk = ~clk;
 
 reg [31:0] captured_command = 0;
 integer command_bits = 0;
@@ -42,13 +44,16 @@ reg [23:0] model_address = 0;
 reg [7:0] model_data = 0;
 localparam integer CAPACITY = {{ capacity_bytes }};
 localparam integer HALF_PERIOD = {{ half_period_cycles }};
-time last_spi_edge = 0;
+realtime last_spi_edge = 0;
+realtime minimum_half_ns = 1.0e9;
 
 always @(flash_clk) begin
     if (!flash_cs_n) begin
-        if ($time - last_spi_edge < 10 * HALF_PERIOD)
+        if ($realtime-last_spi_edge < minimum_half_ns)
+            minimum_half_ns=$realtime-last_spi_edge;
+        if ($realtime - last_spi_edge < 18.517 * HALF_PERIOD)
             $fatal(1, "SPI clock violated the configured half period");
-        last_spi_edge = $time;
+        last_spi_edge = $realtime;
     end
 end
 
@@ -71,7 +76,7 @@ always @(negedge flash_cs_n) begin
     output_bit = 7;
     stream_started = 0;
     commands = commands + 1;
-    last_spi_edge = $time;
+    last_spi_edge = $realtime;
 end
 
 always @(posedge flash_clk) begin
@@ -90,7 +95,8 @@ always @(negedge flash_clk) begin
             stream_started = 1;
         end
         model_data = image_byte(model_address);
-        flash_miso = model_data[output_bit];
+        // Reference-device tCLQV only; board/FPGA I/O delay is not modeled.
+        flash_miso <= #6.5 model_data[output_bit];
         if (output_bit == 0) begin
             output_bit = 7;
             model_address = model_address + 1'b1;
@@ -191,6 +197,9 @@ initial begin
     read_bytes(CAPACITY - 3, 3);
     read_bytes(CAPACITY - 1, 1);
     read_bytes(1, 3);
+    if(minimum_half_ns > 18.519*HALF_PERIOD)
+        $fatal(1,"SPI never reached its configured active frequency");
+    $display("SPI_REF half_period_cycles=%0d minimum_half_ns=%0.3f output_delay_ns=6.5",HALF_PERIOD,minimum_half_ns);
     $display("DIGITAL_DESIGN_PASS");
     $finish;
 end

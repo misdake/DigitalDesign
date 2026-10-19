@@ -55,7 +55,8 @@ end
 reg [2:0] video_cold_ready_sync=0;
 always @(posedge pixel_clock) if(!video_cold_ready_sync[2])
     video_cold_ready_sync<={video_cold_ready_sync[1:0],video_locked};
-wire boot_done,boot_error;
+wire boot_done,boot_error,boot_load_done;
+wire display_started_ack,display_startup_error;
 wire [3:0] boot_error_code;
 
 wire core_instruction_request_valid;
@@ -235,6 +236,8 @@ __SINGLE_BOOT_LOADER__ u_boot_loader (
     .flash_done(flash_done),.flash_error(flash_error),
     .memory_request_ready(dma_memory_request_ready),
     .memory_response_valid(dma_memory_response_valid),.memory_error(dma_memory_error),
+    .display_started(display_started_ack),.display_error(display_startup_error),
+    .cache_ready(!dcache_valid_sweep),.load_done(boot_load_done),
     .flash_start(flash_start),.flash_address(flash_address),.flash_length(flash_length),
     .flash_data_ready(flash_data_ready),.memory_request_valid(dma_memory_request_valid),
     .memory_address(dma_memory_address),.memory_write_data(dma_memory_write_data),
@@ -503,17 +506,17 @@ __ARBITER__ u_memory_arbiter (
     .display_request_valid(display_memory_request_valid),
     .display_address(display_memory_address),
     .display_response_ready(1'b1),
-    .gpu_ro_request_valid(gpu_ro_memory_request_valid),
+    .gpu_ro_request_valid(gpu_ro_memory_request_valid && boot_done),
     .gpu_ro_write(gpu_ro_memory_write),
     .gpu_ro_address(gpu_ro_memory_address),
     .gpu_ro_line_count_minus_1(gpu_ro_memory_line_count_minus_1),
     .gpu_ro_write_data(gpu_ro_memory_write_data),
-    .gpu_fb_r_request_valid(gpu_fb_r_memory_request_valid),
+    .gpu_fb_r_request_valid(gpu_fb_r_memory_request_valid && boot_done),
     .gpu_fb_r_write(gpu_fb_r_memory_write),
     .gpu_fb_r_address(gpu_fb_r_memory_address),
     .gpu_fb_r_line_count_minus_1(gpu_fb_r_memory_line_count_minus_1),
     .gpu_fb_r_write_data(gpu_fb_r_memory_write_data),
-    .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid),
+    .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid && boot_done),
     .gpu_fb_w_write(gpu_fb_w_memory_write),
     .gpu_fb_w_address(gpu_fb_w_memory_address),
     .gpu_fb_w_line_count_minus_1(gpu_fb_w_memory_line_count_minus_1),
@@ -611,6 +614,8 @@ __FRAMEBUFFER_HDMI__ u_display (
     .pixel_clock(pixel_clock),
     .serial_clock(serial_clock),
     .video_locked(video_cold_ready_sync[2]),
+    .boot_enable(boot_load_done),.boot_failed(boot_error),
+    .started_ack(display_started_ack),.startup_error(display_startup_error),
     .memory_request_ready(display_memory_request_ready),
     .memory_data_valid(display_memory_data_valid),
     .memory_read_data(display_memory_read_data),

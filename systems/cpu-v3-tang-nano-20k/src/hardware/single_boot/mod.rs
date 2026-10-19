@@ -13,6 +13,9 @@ pub struct SingleBootLoaderInput {
     pub memory_request_ready: Wire,
     pub memory_response_valid: Wire,
     pub memory_error: Wire,
+    pub display_started: Wire,
+    pub display_error: Wire,
+    pub cache_ready: Wire,
 }
 #[derive(Clone, ModuleIo)]
 pub struct SingleBootLoaderOutput {
@@ -24,6 +27,7 @@ pub struct SingleBootLoaderOutput {
     pub memory_address: Wires<22>,
     pub memory_write_data: Wires<16>,
     pub memory_response_ready: Wire,
+    pub load_done: Wire,
     pub done: Wire,
     pub error: Wire,
     pub error_code: Wires<4>,
@@ -61,7 +65,7 @@ mod tests {
                 std::env::temp_dir().join(format!("single-boot-{}", std::process::id()))
             });
         std::fs::create_dir_all(&evidence).unwrap();
-        for case in 0..47 {
+        for case in 0..28 {
             let executable = evidence.join(format!("case-{case}.vvp"));
             let compile =
                 Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()))

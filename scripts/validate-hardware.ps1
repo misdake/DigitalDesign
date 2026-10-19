@@ -62,6 +62,7 @@ function Invoke-BootArtifactValidation {
     Invoke-Cargo "pack CPU V3 single application" "run" @(
         "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
         $application, "-o", $repackedPackage, "--map", $repackedMap
+        "--project", (Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/boot-applications.conf")
     )
 
     Write-Host ""

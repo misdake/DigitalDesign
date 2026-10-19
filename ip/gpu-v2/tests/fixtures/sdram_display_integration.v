@@ -22,6 +22,7 @@ LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
  .ras(O_sdram_ras_n),.cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),
  .a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes(refreshes));
 FramebufferHdmi display(.clk(clk),.reset(reset),.pixel_clock(pixel_clock),.serial_clock(serial_clock),.video_locked(video_locked),
+ .boot_enable(1'b1),.boot_failed(1'b0),
  .memory_request_ready(display_request_ready),.memory_data_valid(display_response_valid),
  .memory_read_data(display_read_data),.memory_last(display_response_last),.memory_error(display_error),
  .memory_request_valid(memory_request_valid),.memory_urgent(memory_urgent),.memory_address(memory_address),.underflow(underflow),

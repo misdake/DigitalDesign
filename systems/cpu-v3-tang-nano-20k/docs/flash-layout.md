@@ -2,24 +2,46 @@
 
 | Flash byte range | Owner |
 | --- | --- |
-| `0x000000..0x0fffff` | FPGA configuration reserve |
-| `0x100000..0x10001f` | Fixed single-application v5 header |
-| `0x100020..0x10007f` | Alignment padding |
-| `0x100080..` | Nonzero even application payload, at most 128 KiB |
+| [0,0x100000) | FPGA configuration reserve |
+| [0x100000,0x100004) | CB06 signature |
+| [0x100004,image end) | Sequential COPY/ZERO commands, inline COPY data and END |
 
-The package ABI is defined once in [boot-image-format.md](boot-image-format.md).
-`boot-applications.conf` selects `rcc/system-display-test.rs`, the
-[CPU-only Display diagnostic](system-display-test.md). CSEG7/DSEG0 and SP=0xc000
-remain the application layout. There is no alternate button-selected image.
+The [image encoding](boot-image-format.md) has one authority. The total image
+must fit the 8-MiB device. ZERO regions and DRAM address holes occupy no payload.
 
-Use `cpu-v3-boot-assets` to materialize the build-generated `application.v3bin`, package and map, then `cpu-v3-pack application.v3bin` to independently repack and compare bytes. The optional `--configuration-bin` packer argument produces a full erased-padded Flash image and rejects configuration overlap with the 1 MiB application base. The board-validation script consumes the generated application directly rather than a section manifest.
+boot-applications.conf selects one RCC application and optional named resources.
+The build fixes resource addresses, generates boot_resources.rs, compiles the
+application, checks host layout ownership and packs the stream. OUT_DIR is the
+sole generated-byte authority; cpu-v3-boot-assets exports its four files.
 
-For an application-only update, program the generated package at `0x100000`. The FPGA loader logic is unchanged by application bytes or length. A new application starts on a cold FPGA configuration/power cycle; runtime buttons, a software reset command and the old repeatable global reset tree are absent. Reconfiguration may reuse the same audited FPGA image. Programming or observing the board is a separate authorized physical procedure; these source changes alone are not board evidence.
+Independently repack application.v3bin with cpu-v3-pack --project followed by the
+project configuration path, and compare bytes. The optional --configuration-bin
+and --flash-image arguments create the complete persistent image: configuration
+at 0, package at 0x100000, and an erased-value gap. A configuration exceeding its
+1-MiB reserve is rejected. The board script passes the selected project file so
+resource COPY data cannot silently disappear from its independent repack.
 
-Declared FPGA register state and initialized RAM metadata define power-up. A monotonic synchronized PLL-ready latch releases only the native SDRAM controller's local cold reset; bridge transport and system modules use declaration initial state. A synchronized SDRAM-ready gate starts the fixed loader. The CPU remains held until complete successful code and static writes. Once released, buttons do not restart SDRAM, caches or the CPU. Loss of established clock lock requires reconfiguration and does not trigger a partial runtime restart.
+V5 and CB06 images are incompatible. The first CB06 deployment must pair new
+gateware and a CB06 image. Later application/resource updates can program only
+the package at 0x100000 while retaining the same format/layout gateware.
+Configuration or power cycling runs boot again; buttons and software do not.
 
-During boot the LEDs show `000001`; a sticky hardware failure shows `11xxxx`
-with the error codes in the format document. After release the application
-owns LEDs and UART. The selected diagnostic writes through the CPU memory
-path and reports DDHT `0x0b` only after an actual Display target switch;
-it does not submit GPU commands.
+Cold PLL/SDRAM readiness starts the loader. CPU and GPU remain quiet during
+COPY/ZERO, and Display emits black timing without framebuffer requests.
+The static arena and both full framebuffer slots are zeroed, code/resources
+reach their final locations, and END plus all actual write responses produces
+load_done. Display then prefetches both initial groups and acknowledges a new
+frame beginning from A. After cache cold-ready, boot_done releases the CPU.
+Depth remains untouched until GPU Pass Clear. Clock loss requires cold
+reconfiguration, rather than a partial automatic reset.
+
+The default build preserves nominal 13.5-MHz single-line reading. Setting
+CPU_V3_SPI_HALF_PERIOD=1 builds the nominal 27-MHz candidate; retain separate
+output directories and source/image hashes when comparing them. An offline
+build or protocol simulation is not physical Flash qualification.
+
+Boot owns LEDs until release, using the failure codes in the format document.
+Afterward the selected [Display diagnostic](system-display-test.md) owns LEDs
+and UART, reports DDHT 0x0b after actual target switches and keeps the GPU idle.
+Programming, UART observation and cold-power verification require their own
+authorized physical procedure; offline preparation does not perform them.

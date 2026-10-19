@@ -1,7 +1,7 @@
 # CPU-only cold-boot and Display diagnostic
 
 `rcc/system-display-test.rs` is the application selected by
-`boot-applications.conf`. It uses the fixed v5 cold loader and the production
+`boot-applications.conf`. It uses the CB06 cold loader and the production
 CPU, caches, seven-owner arbiter, related-clock gear, native SDRAM controller
 and 800x480 HDMI Display. The GPU remains inactive. The retained
 `rcc/display-demo.rs` requires the retired GPU ABI and is not this diagnostic.
