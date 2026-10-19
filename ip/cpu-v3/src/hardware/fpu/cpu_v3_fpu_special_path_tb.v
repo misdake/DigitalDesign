@@ -807,6 +807,20 @@ initial begin
     run_rsqrt(6'd8, 32'h00080000); //  8.0
     run_rsqrt(6'd9, 32'h00020000); //  2.0
 
+    // Every nonzero CLZ/exponent boundary and its immediate neighbours. Random
+    // full-width words rarely reach the tiny-input left-scaling/saturation end.
+    // The references retain independent direction/distance arithmetic.
+    for (i = 0; i < 31; i = i + 1) begin
+        rnd_x = 32'h00000001 << i;
+        run_rcp(6'd10, rnd_x);
+        run_rcp(6'd10, rnd_x - 32'd1);
+        run_rcp(6'd10, rnd_x + 32'd1);
+        run_rcp(6'd10, ~rnd_x + 32'd1);
+        run_rsqrt(6'd11, rnd_x);
+        run_rsqrt(6'd11, rnd_x - 32'd1);
+        run_rsqrt(6'd11, rnd_x + 32'd1);
+    end
+
     for (i = 0; i < 2500; i = i + 1) begin
         rnd = $random(seed);
         run_rcp(6'd10, rnd);

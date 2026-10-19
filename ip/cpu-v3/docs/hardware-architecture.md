@@ -369,6 +369,14 @@ reciprocal magnitude/sign select before one 32-bit conditional negation. Right
 shift precedes negation. Zero and invalid-RSQRT overrides retain priority;
 the live SINCOS return ignores stale reciprocal context.
 
+  Reciprocal scaling places the 17-bit interpolated magnitude above sixteen
+  zero bits in one 33-bit window. Its registered right-shift position is
+  `31 - CLZ` for RCP and `23 - (CLZ >> 1)` for RSQRT; no direction bit or
+  bidirectional data selection is retained. RCP's zero-input CLZ of 32 uses
+  the existing constant-result override, so its shifted payload is unused.
+  Bits 32 and 31 remain available for reciprocal saturation before truncation,
+  sign application and the existing RF write edge.
+
 
 The hidden BSRAM tables are generated from one Rust reference model in the
 architecture crate (`fpu_lut`), which also backs the architectural emulator and
