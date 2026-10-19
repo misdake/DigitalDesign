@@ -52,8 +52,14 @@ CE holds and admission backpressure together with all emitted pixel h values.
 
 The preparation regression checks raw-to-reduced coefficients, packed attributes,
 old-work retirement during the next LOAD, CE holds and reset cuts. It includes
-zero/short shift counts and large admitted integer rays. Its Cargo entry also
-checks every operand-table constant in portable and native modes:
+zero/short shift counts and large admitted integer rays.
+
+Origin checks sample old C and packed Nx/Ny when the DSP consumes RAM Q, then
+check the fixed two-enabled-edge retirement against an independent root equation.
+An explicit reset cuts an in-flight product; issue/write/cancel conservation and
+DSP-output/tag stability during CE holds remain part of both RAM-mode runs.
+
+Its Cargo entry also checks every operand-table constant in portable and native modes:
 
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label gpu-prepare-chain -CargoArgs @('-p','gpu-v2','--test','vliw_prepare_chain','--','--ignored','--nocapture','--test-threads=1')

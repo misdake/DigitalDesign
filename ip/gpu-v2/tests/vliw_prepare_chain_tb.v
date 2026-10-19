@@ -22,11 +22,15 @@ reg[29:0]geometry[0:@N@*9-1];integer geo_writes=0;
  wire[50:0]stored_param=I.prepare.stream_param_data;
  wire[53:0]expanded_param={stored_param[50],stored_param[50:34],stored_param[33],stored_param[33:17],stored_param[16],stored_param[16:0]};
 reg signed[63:0]aa[0:2],bb[0:2],cc[0:2],expected[0:2],tmp;
-reg[29:0]shadow[0:2];reg seen_node=0,seen_bound=0,empty_seen=0;reg[3:0]saved_level=0;
-integer root,ox,oy,diff,j,e,origin_writes=0,roots9=0,nodes=0,early_cancel=0,zero_slots=0,ce0=0,resetcuts=0,fd;
+reg[29:0]shadow[0:2];reg seen_node=0,seen_bound=0,empty_seen=0;
+reg[1:0]mac_valid=0,mac_edge0=0,mac_edge1=0;
+reg[29:0]mac_want0=0,mac_want1=0;
+integer root,ox,oy,diff,j,e,origin_writes=0,origin_issues=0,origin_aborted=0,origin_holds=0,dsp_resetcuts=0;
+integer roots9=0,nodes=0,early_cancel=0,zero_slots=0,ce0=0,resetcuts=0,fd;
 reg[255:0]held;
 reg[90:0]held_attribute;
 reg[58:0]held_quant;
+reg[59:0]held_origin;
 reg[47:0]packed_expected;
 reg[31:0]uv_word;
 reg[17:0]uv_expected;
@@ -34,7 +38,9 @@ integer param_writes=0,normal_writes=0,attribute_writes=0,packed_reads=0,attr0_t
 integer zero_reads=0,bias_reads=0;
 always @(posedge clk)begin
  wall=wall+1;if(wall>80000)$fatal(1,"bounded root test");
- if(reset)begin seen_node=0;seen_bound=0;empty_seen=0;saved_level<=0;
+ if(reset)begin seen_node=0;seen_bound=0;empty_seen=0;
+  origin_aborted=origin_aborted+(mac_valid[0]?1:0)+(mac_valid[1]?1:0);
+  mac_valid<=0;mac_edge0<=0;mac_edge1<=0;mac_want0<=0;mac_want1<=0;
   param_writes=0;normal_writes=0;attribute_writes=0;packed_reads=0;attr0_takes=0;attr1_takes=0;uv_writes=0;
   geo_writes=0;
   for(j=0;j<3;j=j+1)begin aa[j]=0;bb[j]=0;cc[j]=0;shadow[j]=0;end end
@@ -95,15 +101,25 @@ always @(posedge clk)begin
    ox=(xl>>(root-4))<<root;oy=(yl>>(root-4))<<root;
    for(j=0;j<3;j=j+1)expected[j]=cc[j]+aa[j]*ox+bb[j]*oy;
   end
-  if(R.rf_we&&R.rf_wa[3:2]==2&&!gwe&&!seen_node)begin
-   e=R.rf_wa[1:0];
-   if(!(R.r_pc==14||R.r_pc==15))$fatal(1,"unexpected root writer");
-   if(R.work_q!==shadow[e])$fatal(1,"RF old Q packet%0d edge%0d",p,e);
-   if(R.r_pc==14)tmp=aa[e];else tmp=bb[e];
-   tmp=shadow[e]+(tmp<<saved_level);
-   if(R.rf_wd!==tmp[29:0])$fatal(1,"origin add packet%0d edge%0d got%h want%h",p,e,R.rf_wd,tmp[29:0]);
-   shadow[e]=tmp[29:0];origin_writes=origin_writes+1;
+  // Check old RAM Q when the DSP consumes it, not two edges later at writeback.
+  // Expected values come from imported equations and independently derived root.
+  if(R.origin_issue)begin
+   e=R.r_edge;
+   if(!seen_bound||empty_seen||R.work_q!==cc[e][29:0])$fatal(1,"DSP old C packet%0d edge%0d",p,e);
+   tmp=$signed(R.packed_step_q[17:0]);if(tmp*2!=aa[e])$fatal(1,"DSP Nx operand");
+   tmp=$signed(R.packed_step_q[35:18]);if(tmp*2!=bb[e])$fatal(1,"DSP Ny operand");
+   if(R.nx!=ox||R.ny!=oy)$fatal(1,"DSP root operand");
+   mac_edge0<=e;mac_want0<=expected[e][29:0];origin_issues=origin_issues+1;
   end
+  mac_valid<={mac_valid[0],R.origin_issue};mac_edge1<=mac_edge0;mac_want1<=mac_want0;
+  if(R.origin_retire!==mac_valid[1])$fatal(1,"DSP enabled-edge retirement latency");
+  if(R.origin_retire)begin
+   e=mac_edge1;
+   if(!R.rf_we||R.rf_wa!={2'd2,mac_edge1}||R.rf_wd!==mac_want1)$fatal(1,"DSP root retirement packet%0d edge%0d",p,e);
+   if(shadow[e]!==cc[e][29:0])$fatal(1,"root row overwritten before DSP retirement");
+   shadow[e]=mac_want1;origin_writes=origin_writes+1;
+  end
+  if(R.rf_we&&R.rf_wa[3:2]==2&&!gwe&&!seen_node&&!R.origin_retire)$fatal(1,"unexpected root writer");
   if(R.micro_issue&&R.w_pc==10&&R.w_edge==0&&!seen_node)begin
    if(!seen_bound||empty_seen)$fatal(1,"node before bound/empty");
    if(R.level!=root||R.nx!=ox||R.ny!=oy)$fatal(1,"root coordinates p%0d",p);
@@ -112,15 +128,17 @@ always @(posedge clk)begin
    $fdisplay(fd,"H %0d %0d %0d %0d %h %h %h",p,root,ox,oy,shadow[0],shadow[1],shadow[2]);
   end
   if(R.fast_w&&R.origin_op)zero_slots=zero_slots+1;
-  if(R.micro_issue)saved_level<=R.level;
  end
  if(!reset&&!ce)begin
   ce0=ce0+1;held={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny};
   held_attribute={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.compute.lod.pw_acc_read_address,I.compute.lod.pw_q[83:36]};
   held_quant={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative};
+  held_origin={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result};
+  if(|R.origin_valid)origin_holds=origin_holds+1;
   #1;if(held!=={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny})$fatal(1,"CE hold");
   if(held_attribute!=={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.compute.lod.pw_acc_read_address,I.compute.lod.pw_q[83:36]})$fatal(1,"attribute prefetch CE hold");
   if(held_quant!=={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative})$fatal(1,"quantization retire CE hold");
+  if(held_origin!=={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result})$fatal(1,"DSP pipeline CE hold");
  end
 end
 task drive;input integer cutoff;integer wi,taken,n;begin: body
@@ -129,7 +147,10 @@ task drive;input integer cutoff;integer wi,taken,n;begin: body
  while(wi<16||sbusy||!(seen_node||(empty_seen&&!rb)))begin
   @(posedge clk);taken=ready&&ce;if(ce)n=n+1;
   @(negedge clk);
-  if(cutoff!=0&&n>=cutoff)begin raw_valid=0;resetcuts=resetcuts+1;disable body;end
+  if((cutoff>0&&n>=cutoff)||(cutoff<0&&(|R.origin_valid)))begin
+   if(cutoff<0)dsp_resetcuts=dsp_resetcuts+1;
+   raw_valid=0;resetcuts=resetcuts+1;disable body;
+  end
   if(taken&&wi<16)begin wi=wi+1;if(wi<16)begin raw_index=wi;raw_data=words[p*16+wi];end else raw_valid=0;end
   if(n>1200)$fatal(1,"per packet bound %0d",p);
  end
@@ -144,9 +165,12 @@ initial begin
  for(p=0;p<@N@;p=p+1)begin
   reset=1;raw_valid=0;start=0;repeat(2)@(negedge clk);reset=0;
   if(p<24)begin drive(5+(p%8)*20);reset=1;raw_valid=0;start=0;repeat(2)@(negedge clk);reset=0;end
+  if(p==4)begin drive(-1);reset=1;raw_valid=0;start=0;repeat(2)@(negedge clk);reset=0;end
   drive(0);
  end
  if(nodes==0||roots9==0||origin_writes==0||early_cancel==0||zero_slots==0||ce0==0||resetcuts==0||zero_reads==0||bias_reads==0)$fatal(1,"required boundary not exercised");
+ if(origin_issues!=origin_writes+origin_aborted||origin_holds==0||dsp_resetcuts==0||origin_aborted==0)$fatal(1,"DSP issue/retire/reset conservation");
+ $display("DSP_ORIGIN issues=%0d writes=%0d aborted=%0d holds=%0d resetcuts=%0d",origin_issues,origin_writes,origin_aborted,origin_holds,dsp_resetcuts);
  $display("PASS RROOT packets=@N@ nodes=%0d originwrites=%0d roots9=%0d earlycancel=%0d zeros=%0d ce0=%0d cuts=%0d wall=%0d",nodes,origin_writes,roots9,early_cancel,zero_slots,ce0,resetcuts,wall);$finish;
 end
 initial begin #800100;$fatal(1,"absolute bound");end

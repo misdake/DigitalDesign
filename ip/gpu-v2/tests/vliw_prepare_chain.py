@@ -169,7 +169,7 @@ def main():
     if len(rows) == 2:
         assert rows[0]['trace_sha256'] == rows[1]['trace_sha256']
     (out/'receipt.json').write_text(json.dumps(dict(status='pass', runs=rows,
-        scope='Small real I-to-R origin replay: modular old-Q updates, root9, empty-bound cancellation, CE hold and reset; no full scanning or whole-chain qualification',
+        scope='Small real I-to-R origin replay: independent root equations, fused-DSP old-Q operands and fixed retirement, root9, empty-bound cancellation, CE hold and in-flight reset; no full scanning or whole-chain qualification',
         manifest_sha256=sha(out/'manifest.json')), ensure_ascii=False, indent=2))
 
 

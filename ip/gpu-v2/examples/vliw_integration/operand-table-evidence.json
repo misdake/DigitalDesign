@@ -25,8 +25,8 @@
     "ip/gpu-v2/tests/framebuffer_tdp.py": "589997897584a27855155e355aa3c5c62d878b858a268ac74d832420b7c11952",
     "ip/gpu-v2/tests/framebuffer_tdp_prefetch.py": "247d2a7a4b0c26d5dff3309433819569563613f856ec6bade691d872fb75909b",
     "ip/gpu-v2/tests/vliw_bounds.py": "bc6e8a4c5ef7c51df775c7ec9127ca28f6c90020be7a0b80a4c12fdde41af443",
-    "ip/gpu-v2/tests/vliw_prepare_chain.py": "0ff96a793137312c7432488e11d3af2b1423708b6e7e46e71668e97fd723cde5",
-    "ip/gpu-v2/tests/vliw_prepare_chain_tb.v": "80ecc3b86dc75465f162c75ae4c773b0e8dc3c7ff23af13ccad7085b6d151f9e",
+    "ip/gpu-v2/tests/vliw_prepare_chain.py": "a33588f5bf165543a7c313f198abe6ae0d8e9997eee8ad0faa555daa2e33a006",
+    "ip/gpu-v2/tests/vliw_prepare_chain_tb.v": "7314dc18fc1555f40563e1c6b9a3b988a6ca5099dfde66bdc3f2d9ef670696e3",
     "ip/gpu-v2/tests/vliw_quad_pool.py": "a35792c50db4f4dfa8b9e27f33b9d760fa00743add4913d96f37518e92fcfeca",
     "ip/gpu-v2/tests/vliw_raster_scan.py": "596bfc576370d70205706dda79dc8e12a2115e242ba678a9843d1771b578045b",
     "ip/gpu-v2/tests/vliw_raster_scan_tb.v": "b5c47fa3157cab8db0fdc598794b07c40e938759fc19337cc40dced1d57b16c3"
@@ -290,7 +290,9 @@
     "source_hygiene": "Passed",
     "layering": "Passed",
     "docs": "Passed",
-    "material_asset_reference": "4 tests passed"
+    "material_asset_reference": "4 tests passed",
+    "prepare_origin": "Formal Cargo entry passed in portable/native: 36 packets, 28 roots, 13 DSP issues, 12 writes, 1 reset cancellation, 6 in-flight CE holds; independent coefficients/root formula, geometry and attribute conservation retained.",
+    "rtl_reused": "RTL source and exports unchanged from 864de082; reuse its matched fit and replay receipts. Only the origin regression and its description changed."
   },
   "reproduction": {
     "export": "gpu-v2-vliw-export OUTPUT sdram [portable]",
