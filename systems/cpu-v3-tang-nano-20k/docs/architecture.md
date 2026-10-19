@@ -320,10 +320,7 @@ setup failure remains excluded at the user's direction; no constraint is
 relaxed. The fit contains the inactive GPU shell, not complete GPU v2, and
 does not establish a new physical-board result.
 
-The frozen 22-program suite retains all 41 nonidentity metrics. Exact source,
-postcommit identity, full-pixel/TMDS, cold no-reset BTC, malformed/last-write
-Boot, complete real-SPI, co-simulation, physical native-port and host/tool
-qualification are in [the batch report](../../../target/cpu-display-boot-batch-20261018/report.md).
+The frozen 22-program suite retains all 41 nonidentity metrics.
 Two different-size applications produce identical gateware/CST/SDC. Only their
 Flash packages change. Startup from SDRAM-ready is 89,136 versus 64,336 cycles
 in the bounded SPI/system RTL model, adding the formerly missing 16-KiB
