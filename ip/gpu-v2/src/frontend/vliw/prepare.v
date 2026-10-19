@@ -14,7 +14,7 @@ module rp_prepare(
  
  output[4:0]lod_cfg_tex_u,lod_cfg_tex_v,lod_cfg_max_mip,output signed[7:0]lod_cfg_bias,
  output operand_we,output[3:0]operand_wa,output[17:0]operand_wd,
- output operand_re,output[3:0]operand_ra,
+ output operand_re,output[6:0]operand_ra,
  output wide_valid,output wide_asign,
  output bound_valid,bound_empty,output[4:0]bound_xlo,bound_xhi,output[3:0]bound_ylo,bound_yhi,
  input[53:0]wide_result_data,
@@ -30,7 +30,7 @@ module rp_prepare(
  wire[52:0]delta;reg[5:0]delta_e;reg normalizing;
 
  reg[2:0]seed_sign_x,seed_sign_y;
- wire core_attr_read,core_attr_send,core_attr_bank,core_round_init;wire[1:0]core_attr_index;
+ wire core_attr_send,core_attr_bank;wire[1:0]core_attr_index;
  wire[35:0]low_q=pw_q[35:0];
  assign busy=state!=IDLE;assign import_busy=(state>=COLLECT&&state<=TAIL)||state==Q_READ;
  assign math_busy=state==CORE||state==CFG_COMMIT||state==FINISH;
@@ -87,60 +87,29 @@ module rp_prepare(
  
  assign lod_cfg_tex_u=tex_u;assign lod_cfg_tex_v=tex_v;assign lod_cfg_max_mip=max_mip;assign lod_cfg_bias=bias;
  wire seed_take=state==Q_SEND&&q_take&&field<2;
- // 在已有A_READ空闲写槽形成三份公共指数对齐常量；不增加阶段。
+ // Component selection also identifies the UV return slots.
  wire[2:0]factor_index={core_attr_index,core_attr_bank};
- wire factor_write=core_attr_read&&factor_index<3&&!rgb;
- reg[4:0]factor_shift;
- always @*case(factor_index)
-  0:factor_shift=common_e-exp0;
-  1:factor_shift=common_e-exp1;
-  default:factor_shift=common_e-exp2;
- endcase
- reg[17:0]factor;
- always @*begin
-  case(factor_shift)
-   5'd0:factor=18'd131072;
-   5'd1:factor=18'd65536;
-   5'd2:factor=18'd32768;
-   5'd3:factor=18'd16384;
-   5'd4:factor=18'd8192;
-   5'd5:factor=18'd4096;
-   5'd6:factor=18'd2048;
-   5'd7:factor=18'd1024;
-   5'd8:factor=18'd512;
-   5'd9:factor=18'd256;
-   5'd10:factor=18'd128;
-   5'd11:factor=18'd64;
-   5'd12:factor=18'd32;
-   5'd13:factor=18'd16;
-   5'd14:factor=18'd8;
-   5'd15:factor=18'd4;
-   5'd16:factor=18'd2;
-   5'd17:factor=18'd1;
-   default:factor=0;
-  endcase
- end
- wire core_a_re,core_a_we,core_b_re,core_b_we,core_c_re,core_c_we,core_issue,core_asign,core_active,core_done;
+ wire core_a_re,core_b_re,core_b_we,core_c_re,core_c_we,core_issue,core_asign,core_active,core_done;
  wire core_attr0_take,core_attr1_take;
  reg[15:0]component;
- wire[3:0]core_ar,core_br,core_bw,core_cr,core_cw;wire[17:0]core_ad;wire[35:0]core_bd;wire[53:0]core_cd;
+ wire[6:0]core_ar;wire[3:0]core_br,core_bw,core_cr,core_cw;wire[35:0]core_bd;wire[53:0]core_cd;
  wire core_start=state==TAIL&&input_take&&in_index==15;
- rp_prepare_core core(clk,reset,ce,core_start,rgb,{seed_sign_y,seed_sign_x},pw_q[35:0],pw_q[89:36],wide_result_data,
-  core_a_re,core_ar,core_a_we,core_ad,core_b_re,core_br,core_b_we,core_bw,core_bd,
+ rp_prepare_core core(clk,reset,ce,core_start,rgb,{seed_sign_y,seed_sign_x},stream_cfg_shift0,stream_cfg_shift1,stream_cfg_shift2,pw_q[35:0],pw_q[89:36],wide_result_data,
+  core_a_re,core_ar,core_b_re,core_br,core_b_we,core_bw,core_bd,
   core_c_re,core_cr,core_c_we,core_cw,core_cd,core_issue,core_asign,core_active,core_done,
-  bound_valid,bound_empty,bound_xlo,bound_xhi,bound_ylo,bound_yhi,core_attr_read,core_attr_send,core_attr_index,core_attr_bank,core_round_init,
+  bound_valid,bound_empty,bound_xlo,bound_xhi,bound_ylo,bound_yhi,core_attr_send,core_attr_index,core_attr_bank,
   core_attr0_take,core_attr1_take);
  // U/V reach PA in the same prefetch return slots used by parameter export.
- // Normal factors use those slots only for components 0..2, so the writes
- // are statically disjoint. RGB has no PA/analytic-LOD consumer.
+ // Constants are read-only table rows; only actual UV data reach this write port.
+ // RGB has no PA/analytic-LOD consumer.
  wire uv_component=factor_index==3||factor_index==4;
  wire uv_write=!rgb&&uv_component&&(core_attr0_take||core_attr1_take||core_attr_send);
  wire[1:0]uv_vertex=core_attr0_take?2'd2:core_attr1_take?2'd0:2'd1;
  wire[3:0]uv_address=(core_attr_index==1?4'd1:4'd4)+{2'd0,uv_vertex};
- assign operand_we=!reset&&(state==CORE?(core_a_we||factor_write||uv_write):(state==Q_SEND&&q_take&&field<2));
+ assign operand_we=!reset&&(state==CORE?uv_write:(state==Q_SEND&&q_take&&field<2));
  wire[3:0]weight_address=field==1?4'd9+{2'd0,edge_no}:edge_no==0?4'd0:4'd6+{2'd0,edge_no};
- assign operand_wa=state==CORE?(factor_write?4'd12+{1'b0,factor_index}:uv_write?uv_address:4'd15):weight_address;
- assign operand_wd=state==CORE?(factor_write?factor:uv_write?{2'd0,component}:core_ad):magnitude[17:0];
+ assign operand_wa=state==CORE?uv_address:weight_address;
+ assign operand_wd=state==CORE?{2'd0,component}:magnitude[17:0];
  assign operand_re=state==CORE&&core_a_re;assign operand_ra=core_ar;
  assign wide_valid=state==CORE&&core_issue;assign wide_asign=core_asign;
  // Read the consumer's base first: op0/1/2 read vertices 2/0/1.
@@ -179,11 +148,9 @@ module rp_prepare(
    pw_wa=(field==0?4'd6:field==1?4'd9:4'd12)+{2'd0,edge_no};pw_low_wd=canonical;
    if(field<2)begin pw_acc_re=1;pw_acc_ra=4'd9+{2'd0,field};end
   end
-  if(state==TAIL&&input_take&&in_index==9)begin pw_high_we=1;pw_high_wa=6;end
   if(packed_write)begin
    pw_high_we=1;pw_high_wa={1'b1,input_normal,2'b00}+{2'd0,input_vertex};pw_high_wd={{6{packed_input[47]}},packed_input};
   end
-  if(core_round_init)begin pw_high_we=1;pw_high_wa=7;pw_high_wd=54'd131071;end
   case(state)
    Q_READ:begin pw_acc_re=1;pw_acc_ra=4'd8+{2'd0,field};end
    CORE:begin
@@ -192,7 +159,7 @@ module rp_prepare(
     if(core_c_we)begin pw_high_we=1;pw_high_wa=core_cw;pw_high_wd=core_cd;end
    end
    CFG_COMMIT:if(cfg_apply)begin
-    pw_low0_we=1;pw_low1_we=1;pw_high_we=1;pw_wa=4;pw_high_wa=4;pw_low_wd={5'd0,depth_k};
+    pw_low0_we=1;pw_low1_we=1;pw_wa=4;pw_low_wd={5'd0,depth_k};
    end
    default:begin end
   endcase
@@ -327,7 +294,6 @@ module rp_prepare(
   if(field==2&&canonical[35:27]!={9{canonical[27]}})$fatal(1,"几何C不能精确存入28位");
  end
  always @(posedge clk)if(ce&&!reset)begin
-  if((core_a_we&&(factor_write||uv_write))||(factor_write&&uv_write))$fatal(1,"PA static write collision");
   if(packed_write&&(pw_low0_we||pw_low1_we||in_index!=expected))$fatal(1,"packed import layout");
   if(state==CORE&&core_c_we&&core_cw>=8&&core_cw!=11)$fatal(1,"packed lifetime overwritten");
  end

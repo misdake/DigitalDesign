@@ -45,10 +45,54 @@ A single signed17 subtractor serves both differences. The final banks store
 redundant sign bit, preserving the arithmetic and half-LSB bias.
 
 UV writes PA[1+v] for U and PA[4+v] for V in the same return slots, in vertex
-order 2/0/1. These writes and normal-factor writes are statically disjoint.
+order 2/0/1. Constants have no runtime writer.
 There is one shared 16-bit component selector, no PC read-modify-write, and no
 SECOND/THIRD input expansion. CE freezes the ROM, Q owners and short operands
 together.
+
+PC[4] and PC[6] are zero; PC[7] is 131071. RAM16 configuration initialization
+sets these immutable rows in both native and portable realizations. Reset does
+not rewrite the bank. Input collection and preparation only write actual data;
+there is no constant write at determinant acceptance, component capture or
+configuration commit. Configuration commit still writes the depth factor to PB.
+
+### A operand data and constants
+
+One 18-bit BSRAM supplies preparation operands and the two runtime UV anchor
+pages through one synchronous read port. Mutable rows retain their four-bit
+write address; constant reads use a seven-bit address:
+
+| Rows | Contents |
+| --- | --- |
+| 0..15 | Geometric magnitudes and UV; runtime anchors reuse 4..7 |
+| 32+d, d=0..31 | 131072 shifted right by d for d<=17, otherwise zero |
+| 64+8*negative+b, b=0..7 | Signed 32 shifted left by b for b<=4; b>4 uses 32 |
+| 80 / 81 | 30 / signed18 -1 |
+
+Data writes are unsigned17, with bit17 fixed zero: geometry magnitudes are below
+131072 and UV/anchors are at most 65535. Constants include signed18 values and
+are initialized with the image. No inverse-power decoder, PA constant write,
+held A read-address register or additional DSP constant bypass is present.
+The preparation ROM has 34 live bits; its obsolete A-write field is absent.
+
+The table Q replaces the previous address-register/async-RAM pair. Request an
+address on one enabled edge and let the DSP sample Q on the next; CE freezes
+both. The C input retains its existing schedule and is not given another register.
+
+| Operation | A read request | Consumer |
+| --- | --- | --- |
+| op13 | 80 | Existing endpoint calculation |
+| op16 | Initial signed bbox step | op17 |
+| op19 with another search step | Next signed step, using old search bit and current acceptance | Next op17 |
+| Final op19 | None | No unused next step |
+| op31 | 32+first exponent difference | op32 |
+| op32 / op35 | Current U / V | op35 / op36 |
+| op36 | 81 | op37 |
+| op38 | 32+next exponent difference | op39 |
+| Runtime phi2 | Anchor page/channel, rows4..7 | LOD at phi3 |
+
+Reads and writes are statically scheduled; cross-port same-address access is
+forbidden. New triangles and pixel execution still use disjoint lifetimes.
 
 ## A quad's storage lifetime
 

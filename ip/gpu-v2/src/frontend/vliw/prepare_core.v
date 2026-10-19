@@ -2,18 +2,19 @@
 // bbox和N/S/G共用PC、索引、axis与ROM；没有独立bbox操作数mux或退休队列。
 module rp_prepare_core(
  input clk,reset,ce,start,input rgb,input[5:0]seed_sign,
+ input[4:0]shift0,shift1,shift2,
  input[35:0]bq,input[53:0]cq,input[53:0]result,
- output a_re,output[3:0]a_ra,output a_we,output[17:0]a_wd,
+ output a_re,output[6:0]a_ra,
  output b_re,output[3:0]b_ra,output b_we,output[3:0]b_wa,output[35:0]b_wd,
  output c_re,output[3:0]c_ra,output c_we,output[3:0]c_wa,output[53:0]c_wd,
  output wide_valid,wide_asign,output reg active,done,
  output bound_valid,output bound_empty,output reg[4:0]xlo,xhi,output reg[3:0]ylo,yhi,
- output attr_read,attr_send,output[1:0]attr_index,output attr_bank,output round_init,
+ output attr_send,output[1:0]attr_index,output attr_bank,
  output attr0_take,attr1_take
 );
  reg[5:0]pc;reg axis;reg[1:0]index,d_kind;reg sign0,nonzero0,empty;
  reg[2:0]search_bit;reg[4:0]prefix;reg delta_positive;
- wire[35:0]u;wire[5:0]op=u[5:0];reg[5:0]next_pc;
+ wire[33:0]u;wire[5:0]op=u[5:0];reg[5:0]next_pc;
  wire normal_pair=index==0||(index==1&&!axis);
  wire last_pair=axis&&index==2,last_n=last_pair;
  wire[1:0]j=index==2?2'd0:index+1'b1;
@@ -50,20 +51,27 @@ module rp_prepare_core(
   endcase
  end
  rp_prepare_program program_store(clk,reset,ce,(start||active)&&!reset,start?6'd0:next_pc,u);
- reg[3:0]ar,br,cr;
+ function[6:0]alignment_row;input[1:0]v;begin
+  case(v)0:alignment_row={2'b01,shift0};1:alignment_row={2'b01,shift1};default:alignment_row={2'b01,shift2};endcase
+ end endfunction
+ wire[2:0]factor_bit=op==16?(axis?3'd3:3'd4):search_bit-1'b1;
+ wire factor_positive=op==16||candidate_accept;
+ reg[6:0]ar;reg[3:0]br,cr;
  always @*begin
-  ar=15;br=15;cr=6;
+  ar=81;br=15;cr=6;
   case(u[15:12])
-   1:ar=weight_row(!axis,j);
-   2:ar=weight_row(!axis,index);
-   3:ar=4'd12+index;
-   4:ar=4'd1+index;
-   5:ar=4'd4+index;
-   6:ar=4'd12+next_index;
-   7:ar=4'd1+next_index;
-   8:ar=12;
+   1:ar={3'd0,weight_row(!axis,j)};
+   2:ar={3'd0,weight_row(!axis,index)};
+   3:ar=alignment_row(index);
+   4:ar=7'd1+index;
+   5:ar=7'd4+index;
+   6:ar=alignment_row(next_index);
+   7:ar=7'd1+next_index;
+   8:ar=alignment_row(0);
    default:begin end
   endcase
+  if(op==13)ar=80;
+  if(op==16||op==19)ar={3'b100,!factor_positive,factor_bit};
   case(u[19:16])
    1:br=geo_row(!axis,index);
    2:br=geo_row(!axis,j);
@@ -90,40 +98,27 @@ module rp_prepare_core(
    default:begin end
   endcase
  end
- assign a_re=active&&u[24]&&!reset;assign a_ra=ar;
+ // op19 used to update held async Q by writing PA15. Read the next
+ // immutable factor instead, on the same enabled edge and only if consumed.
+ assign a_re=active&&(u[24]||(op==19&&search_bit!=0))&&!reset;assign a_ra=ar;
  assign b_re=active&&u[25]&&!reset;assign b_ra=br;
  assign c_re=active&&u[26]&&!reset;assign c_ra=cr;
  assign attr0_take=active&&op==1&&!reset;
  assign attr1_take=active&&op==2&&!reset;
  assign wide_valid=active&&u[27]&&!(op==39&&last_n)&&!reset;
  assign wide_asign=u[28];
- wire[1:0]bw=u[30:29],aw=u[35:34];wire[2:0]cw=u[33:31];
+ wire[1:0]bw=u[30:29];wire[2:0]cw=u[33:31];
  assign b_we=active&&(bw==1||bw==2||(bw==3&&index==2))&&!reset;
  assign b_wa=bw==3?{3'd0,axis}:4'd15;
  assign b_wd=bw==2?{{18{result[34]}},result[34:17]}:result[35:0];
  assign c_we=active&&cw!=0&&!reset;
  assign c_wa=cw==2?{3'd0,axis}:cw==3?{2'd0,1'b1,axis}:4'd11;
  assign c_wd=result;
- // Y searches tiles 0..15; X needs 0..31. Endpoint checks remain unchanged.
- wire[2:0]factor_bit=op==16?(axis?3'd3:3'd4):search_bit-1'b1;
- wire factor_positive=op==16||candidate_accept;
- reg[17:0]factor;
- always @*case(factor_bit)
-  4:begin if(factor_positive)factor=18'd512;else factor=-18'sd512;end
-  3:begin if(factor_positive)factor=18'd256;else factor=-18'sd256;end
-  2:begin if(factor_positive)factor=18'd128;else factor=-18'sd128;end
-  1:begin if(factor_positive)factor=18'd64;else factor=-18'sd64;end
-  default:begin if(factor_positive)factor=18'd32;else factor=-18'sd32;end
- endcase
- assign a_we=active&&aw!=0&&!reset;
- assign a_wd=aw==1?18'd30:aw==2?factor:18'h3ffff;
  assign bound_valid=active&&(op==21||op==22)&&!reset;
  assign bound_empty=empty||op==22;
- assign attr_read=active&&op==2&&!reset;
  // C地址最高位在非C读指令中作为属性发布标志；42复用20的全部循环控制。
  assign attr_send=active&&u[23]&&!reset;
  assign attr_index=index;assign attr_bank=axis;
- assign round_init=active&&op==1&&!reset;
  always @(posedge clk)begin
   if(reset)begin active<=0;done<=0;pc<=0;axis<=0;index<=0;d_kind<=0;sign0<=0;nonzero0<=0;empty<=0;
    search_bit<=0;prefix<=0;delta_positive<=1;xlo<=0;xhi<=24;ylo<=0;yhi<=14;end

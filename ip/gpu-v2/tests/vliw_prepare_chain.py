@@ -69,6 +69,7 @@ def main():
     ap.add_argument('--tag', required=True)
     ap.add_argument('--export-root', type=Path, required=True)
     ap.add_argument('--mode', choices=['portable', 'native', 'both'], default='both')
+    ap.add_argument('--operand-table', action='store_true')
     args = ap.parse_args()
     assert re.fullmatch(r'[A-Za-z0-9_.-]+', args.tag)
     out = ROOT/'target/gpu-vliw-prepare-chain'/args.tag
@@ -76,6 +77,8 @@ def main():
     snapshot = out/'source'
     snapshot.mkdir()
     files = [Path(__file__), HERE/'vliw_prepare_chain_tb.v', HERE/'vliw_prepare_chain.rs']
+    if args.operand_table:
+        files.append(HERE/'vliw_operand_table_tb.v')
     files += [args.export_root/f'frontend-{m}.v' for m in ('portable', 'native')]
     manifest = {}
     for p in files:
@@ -118,6 +121,18 @@ def main():
         assert 'PASS RROOT' in log
         rows.append(dict(mode=mode, packets=len(desc), trace_sha256=sha(run/'roots.txt'), log=log))
         print(log, flush=True)
+        if args.operand_table:
+            unit = run/'operand-table.vvp'
+            cmd = command[:]
+            cmd[cmd.index('-o')+1] = str(unit)
+            cmd[-1] = str(snapshot/'vliw_operand_table_tb.v')
+            for label, command2 in [('table-compile', cmd), ('table-run', [os.environ.get('VVP_EXE', 'vvp'), str(unit)])]:
+                result = subprocess.run(command2, cwd=run, capture_output=True, timeout=90)
+                (run/f'{label}.log').write_bytes(result.stdout+result.stderr)
+                assert result.returncode == 0, (result.stdout+result.stderr).decode(errors='replace')[-4000:]
+            assert b'PASS operand table' in result.stdout
+            rows[-1]['operand_table_log'] = result.stdout.decode(errors='replace')
+            print(rows[-1]['operand_table_log'], flush=True)
     if len(rows) == 2:
         assert rows[0]['trace_sha256'] == rows[1]['trace_sha256']
     (out/'receipt.json').write_text(json.dumps(dict(status='pass', runs=rows,

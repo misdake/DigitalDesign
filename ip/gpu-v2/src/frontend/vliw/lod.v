@@ -75,7 +75,7 @@ module rc_lod(
  iz_params_async #(.WIDTH(16)) parameters_offset(clk,reset,ce,offset_write,offset_write_row,offset_data,pw_read_address,pw_q[15:0]);
  iz_params_async #(.WIDTH(4)) parameters_low0(clk,reset,ce,prep_low0_write,prep_pw_wa,prep_pw_low_wd[19:16],pw_read_address,pw_q[19:16]);
  iz_params_async #(.WIDTH(16)) parameters_low1(clk,reset,ce,prep_low1_write,prep_pw_wa,prep_pw_low_wd[35:20],pw_read_address,pw_q[35:20]);
- iz_params_async #(.WIDTH(48)) parameters_high(clk,reset,ce,prep_high_write,prep_pw_high_wa,prep_pw_high_wd[47:0],pw_acc_read_address,pw_q[83:36]);
+ iz_params_async #(.WIDTH(48),.PC_CONSTANTS(1)) parameters_high(clk,reset,ce,prep_high_write,prep_pw_high_wa,prep_pw_high_wd[47:0],pw_acc_read_address,pw_q[83:36]);
  assign pw_q[89:84]={6{pw_q[83]}};
  // S20符号扩展到B36；G36符号扩展到C54，无补偿码或高字加法。
  assign wide_b=pw_q[35:0];assign wide_c=pw_q[89:36];

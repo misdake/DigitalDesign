@@ -5,7 +5,7 @@ module rc_compute(
  input prepare_owner,input prep_pw_re,input[3:0]prep_pw_ra,input prep_pw_acc_re,input[3:0]prep_pw_acc_ra,
  input prep_pw_low0_we,prep_pw_low1_we,prep_pw_high_we,input[3:0]prep_pw_wa,
  input[35:0]prep_pw_low_wd,input[53:0]prep_pw_high_wd,input[3:0]prep_pw_high_wa,output[89:0]prep_pw_q,
- input prep_operand_we,prep_operand_re,input[3:0]prep_operand_wa,prep_operand_ra,input[17:0]prep_operand_wd,
+ input prep_operand_we,prep_operand_re,input[3:0]prep_operand_wa,input[6:0]prep_operand_ra,input[17:0]prep_operand_wd,
  input prep_wide_valid,input prep_wide_asign,
  output[53:0]prep_result_data,
  input sample_valid,input[4:0]sample_pid,input sample_cover,sample_anchor,input[29:0]sample_h,
@@ -139,10 +139,9 @@ module rc_compute(
  wire[17:0]attr0=pair0_result[33:16],attr1=pair1_result[33:16];
  wire operand_we,operand_re;wire[3:0]operand_wa,operand_ra;wire[17:0]operand_wd,operand_value;
  wire a_read=prepare_owner?prep_operand_re:operand_re;
- reg[3:0]a_read_address;
- always @(posedge clk)if(reset)a_read_address<=0;else if(ce&&a_read)a_read_address<=prepare_owner?prep_operand_ra:operand_ra;
- iz_params_async #(.WIDTH(18)) wide_operand(clk,reset,ce,prepare_owner?prep_operand_we:operand_we,
-  prepare_owner?prep_operand_wa:operand_wa,prepare_owner?prep_operand_wd:operand_wd,a_read_address,operand_value);
+ iz_operand_table wide_operand(clk,reset,ce,prepare_owner?prep_operand_we:operand_we,
+  prepare_owner?prep_operand_wa:operand_wa,prepare_owner?prep_operand_wd[16:0]:operand_wd[16:0],
+  a_read,prepare_owner?prep_operand_ra:{3'd0,operand_ra},operand_value);
  wire wide_valid;wire signed[35:0]wide_b;wire signed[53:0]wide_c;wire[4:0]wide_tag;
  reg[1:0]wide_valid_pipe;reg[4:0]wide_tag0,wide_tag1;
  wire[17:0]wide_a=phase==1&&!prepare_owner ? r : operand_value;
@@ -254,6 +253,10 @@ module rc_compute(
   end
  end
 `ifndef SYNTHESIS
+ always @(posedge clk)if(ce&&!reset)begin
+  if(prepare_owner&&prep_operand_we&&prep_operand_wd[17])$fatal(1,"PA preparation width");
+  if(!prepare_owner&&operand_we&&operand_wd[17])$fatal(1,"PA anchor width");
+ end
  always @(posedge clk)if(ce&&!reset&&param_valid&&busy)$fatal(1,"固定属性发布与运行期重叠");
  always @(posedge clk)if(ce&&!reset&&cfg_valid&&busy)$fatal(1,"固定配置提交时计算流水未排空");
  // 所有输入选择均由准备/运行生命周期或phi互斥，绝不以优先级丢弃请求。

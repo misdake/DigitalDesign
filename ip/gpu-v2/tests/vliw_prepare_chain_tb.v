@@ -29,6 +29,7 @@ reg[47:0]packed_expected;
 reg[31:0]uv_word;
 reg[17:0]uv_expected;
 integer param_writes=0,normal_writes=0,attribute_writes=0,packed_reads=0,attr0_takes=0,attr1_takes=0,param_row,uv_writes=0,uv_v,uv_row;
+integer zero_reads=0,bias_reads=0;
 always @(posedge clk)begin
  wall=wall+1;if(wall>80000)$fatal(1,"bounded root test");
  if(reset)begin seen_node=0;seen_bound=0;empty_seen=0;saved_level<=0;
@@ -36,6 +37,19 @@ always @(posedge clk)begin
   for(j=0;j<3;j=j+1)begin aa[j]=0;bb[j]=0;cc[j]=0;shadow[j]=0;end end
  else if(ce)begin
   if(ie||re)$fatal(1,"diagnostic packet %0d I%h R%h",p,ie,re);
+  if(I.compute.lod.prep_high_write&&(I.prepare.pw_high_wa==4||I.prepare.pw_high_wa==6||I.prepare.pw_high_wa==7))
+   $fatal(1,"runtime write to PC constant");
+  case(I.compute.lod.pw_acc_read_address)
+   4,6:begin
+    if(I.compute.lod.pw_q[83:36]!==48'd0)$fatal(1,"PC zero initialization");
+    zero_reads=zero_reads+1;
+   end
+   7:begin
+    if(I.compute.lod.pw_q[83:36]!==48'd131071)$fatal(1,"PC bias initialization");
+    bias_reads=bias_reads+1;
+   end
+   default:begin end
+  endcase
   if(I.prepare.packed_write)begin
    if(raw_index[0])begin
     if(descriptor[23])packed_expected={8'd0,raw_data[23:16],8'd0,raw_data[15:8],8'd0,raw_data[7:0]};
@@ -124,7 +138,7 @@ initial begin
   if(p<24)begin drive(5+(p%8)*20);reset=1;raw_valid=0;start=0;repeat(2)@(negedge clk);reset=0;end
   drive(0);
  end
- if(nodes==0||roots9==0||origin_writes==0||early_cancel==0||zero_slots==0||ce0==0||resetcuts==0)$fatal(1,"required boundary not exercised");
+ if(nodes==0||roots9==0||origin_writes==0||early_cancel==0||zero_slots==0||ce0==0||resetcuts==0||zero_reads==0||bias_reads==0)$fatal(1,"required boundary not exercised");
  $display("PASS RROOT packets=@N@ nodes=%0d originwrites=%0d roots9=%0d earlycancel=%0d zeros=%0d ce0=%0d cuts=%0d wall=%0d",nodes,origin_writes,roots9,early_cancel,zero_slots,ce0,resetcuts,wall);$finish;
 end
 initial begin #800100;$fatal(1,"absolute bound");end

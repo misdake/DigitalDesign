@@ -20,7 +20,7 @@ input clk,reset,ce,
  output busy,drained,output[16:0]error,output s_busy,s_done
 );
  wire pw_low_we,pw_low0_we,pw_low1_we,pw_high_we,pw_re,pw_acc_re;wire[3:0]pw_acc_ra;wire[3:0]pw_wa,pw_ra;wire[35:0]pw_low_wd;wire[53:0]pw_high_wd;wire[3:0]pw_high_wa;wire[89:0]pw_q;
- wire operand_we,operand_re,wide_valid,wide_asign;wire[3:0]operand_wa,operand_ra;
+ wire operand_we,operand_re,wide_valid,wide_asign;wire[3:0]operand_wa;wire[6:0]operand_ra;
  wire[17:0]operand_wd;wire[53:0]result_data;
  wire cfg_apply,sc_rgb;wire signed[7:0]sc_z_bias;wire[31:0]sc_far;
  wire sp_valid,sp_bank;wire[1:0]sp_index;wire[50:0]sp_data;

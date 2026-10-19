@@ -1,0 +1,129 @@
+{
+  "status": "selected",
+  "delivery_base_commit": "ded1a7fafca112904e003ddf4e4c59727c0ab744",
+  "measured_base_commit": "a922804b92be52665930e584341ffe965b09dc4a",
+  "base_migration": "GPU sources unchanged across the documentation-only base migration",
+  "source_hash_format": "UTF-8 bytes with CRLF normalized to LF",
+  "selected_source": {
+    "ip/gpu-v2/src/frontend/vliw/compute.v": "4b4e3d03d0887dab2aac8ae5f112fb51ebc00468e33f33089692e5d6130e90aa",
+    "ip/gpu-v2/src/frontend/vliw/interpolator_stream.v": "c02ed88319ec7680402ece3832721dee5c99eb10f1bbf5f58cd040664fbbfde6",
+    "ip/gpu-v2/src/frontend/vliw/lod.v": "73c73ef3823900243cc247a1453ade614375f4fb9597d4eef35644a195c0cb1e",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "2c100761240b9e8387e63ea241d7083262cd512cfe2ccd61f87405e797d02c1b",
+    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "9e7688ce00a749a36363ecedab68782ed7dece83b079ef54e12e3633209fc7c9",
+    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "f0347a706cb20d825588b1e5cc1aba3fbafff5ccb6d7397cd0f9126bd85ddd8a",
+    "ip/gpu-v2/src/frontend/vliw/primitives/ram.v": "10ddc9c83c7ffb56a5c7179d8cb770229b9fe26f00de7e38556dc9da3c0279fb",
+    "ip/gpu-v2/tests/vliw_prepare_chain.py": "33e466ee1165e4e0ed3407f8079528a48f048ecca615f8ec27af3e85775b7da9",
+    "ip/gpu-v2/tests/vliw_prepare_chain.rs": "3f20e1a050f708bcbdeb1bda082dcde28dc6b8056eae35af23ceb621950565c0",
+    "ip/gpu-v2/tests/vliw_prepare_chain_tb.v": "d9d61a9e0e9ed516f1befc82a2602fd2586fbac8ba0bf9a2d34ffd82530ebfac",
+    "ip/gpu-v2/examples/vliw_integration/replay_export.py": "b78f5b22a7f5c290ad0a8e9396b4b36a8441be5fec2ad8bda026f692450128b5",
+    "ip/gpu-v2/tests/vliw_operand_table_tb.v": "96ae7aeb95995e8e08066426e363392b21bbbe4282749e58000a76f067d84f99"
+  },
+  "protected_vertex": {
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_fields.vh": "c31ba52dfb929d373650a24e8b062e939a85a6bb1cb77e9f4f8fd9428bb79432",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_rom.v": "9b1813f10d181477756aa0b851a3671860221b4c36f7173f8b1ccfc06055cc43",
+    "ip/gpu-v2/src/frontend/vliw/vertex/mac.v": "4fb22768c24f05996d006f4145964afe901cc47cc23c03ae38e2b4105b9b8753",
+    "ip/gpu-v2/src/frontend/vliw/vertex/rf.v": "e8b038cba9dc2c1319535bd6d759eac81793e44305e65f7c33cbc410a39e154a",
+    "ip/gpu-v2/src/frontend/vliw/vertex/storage.v": "a078892f2a6f9f6abfd7fb0a97ccdc8f4d8456889cf8ca0e6cc64441bd82d36d"
+  },
+  "scope": {
+    "fit": "Independent complete GPU registered transaction boundary: 549 input bits, 270 output bits, 555 probe FF; GW2AR-LV18QN88C8/I7, P0, 54MHz; excludes physical MC, CPU and Display",
+    "replay": "Box and complete 948-face bunny with actual current arbiter/bridge/controller and SDRAM pin model; first load and final flush included; no CPU/Display contention",
+    "board": false
+  },
+  "fit": {
+    "tool": "Gowin V1.9.11.03 Education",
+    "device": "GW2AR-LV18QN88C8/I7",
+    "placement": 0,
+    "target_mhz": 54,
+    "input_bits": 549,
+    "output_bits": 270,
+    "probe_ff": 555,
+    "logic": 11758,
+    "logic_ff": 5061.0,
+    "ssram": 193,
+    "bsram": 36.0,
+    "dsp": 18.0,
+    "fmax": 55.872,
+    "setup_violations": 0.0,
+    "hold_violations": 0.0,
+    "export_sha256": "44e348e047dd6bd0169487e7b369578efbf5326555537f543eab6bb105e3aa66",
+    "wrapper_sha256": "0ab55c7bed1244ced43065aef2d260bd6899fd88d7e224fa0d428cbf4d439ed9",
+    "report_sha256": "e0d8222e54e2e6f6edc4dc2531ae1b0d7ff1e2750a44edd86454a5e0f78fb072",
+    "timing_sha256": "c3120fef8cba1dd3014851ea36ae3a9938fee27aa43304fe8ad96effe0c708bb"
+  },
+  "reference": {
+    "baseline": {
+      "logic": 11804,
+      "logic_ff": 5065.0,
+      "ssram": 198,
+      "bsram": 35.0,
+      "dsp": 18.0,
+      "fmax": 54.75,
+      "setup_violations": 0.0,
+      "hold_violations": 0.0,
+      "export_sha256": "7ae9658dab7052dafee44ced7b5f55294a44f20d7074deda8ead4a899672c326",
+      "wrapper_sha256": "0ab55c7bed1244ced43065aef2d260bd6899fd88d7e224fa0d428cbf4d439ed9",
+      "report_sha256": "b33357244d7d818b8dcca7c0821b8dc64dcd881c8841e972e333fff9595fe72d",
+      "timing_sha256": "cefabc410739f43d465c9e0b6e766ecfebf34f20d750e75a3c2cdd90f9bd0035"
+    },
+    "logic_delta": -46,
+    "ram16_delta": -5,
+    "bsram_delta": 1,
+    "precision_unchanged": true,
+    "vertex_unchanged": true
+  },
+  "replay": {
+    "box": {
+      "dut_sha256": "5bb68bf25f837625de81bc5bfdbe8f8eb522e436142f17b9e6b51876a06aeafd",
+      "receipt_sha256": "929eda942b84e6750ff304d22f2e45a27c72a6d48779c07c35447ca906d7652c",
+      "front_sha256": "63655ce889c1813a0981a79159be6e27f3c6a6e11883581d8ebbba050b9a2837",
+      "back_sha256": "f3bc9255dec4d3202dc60117d4a158db46b2cc1fc22b9385b5511b450aa6e18a",
+      "memory_sha256": "02cce6e0a4741e7274a7aeb622e42b9b485c3b358e2a2a040fb9b2ffcf4efc63",
+      "total_cycles": 134859,
+      "coverage_pixels": 24400,
+      "baseline_all_counters_and_traces_equal": true
+    },
+    "bunny": {
+      "dut_sha256": "5bb68bf25f837625de81bc5bfdbe8f8eb522e436142f17b9e6b51876a06aeafd",
+      "receipt_sha256": "ac9f3f9196e787589a62a57cb8e1cb32f99a7b4f8aeafffbd76c16eefa2b01f0",
+      "front_sha256": "f47231ef9fe530cfbbce4d281403dac37d0eaf1c51b5ddff74ba1cf7e1a81782",
+      "back_sha256": "fd0b3e4ab7250a064e6bc6c86da4b935c5f0b15eb75dc87d7a27d8b1d1ae33d5",
+      "memory_sha256": "7f3d0b18f968c4addfbc975b16360f7d358d5fbf0fdf0663cd30431592885e92",
+      "total_cycles": 287752,
+      "coverage_pixels": 7107,
+      "baseline_all_counters_and_traces_equal": true,
+      "input": "All 948 triangles of bun_zipper_res4.ply"
+    },
+    "native_box": {
+      "receipt_sha256": "9db30a2be77b9bec543254cc9ea9567f5123173f084e5363418048bf0a8acc32",
+      "total_cycles": 134859,
+      "portable_counters_and_traces_equal": true
+    }
+  },
+  "prepare_regression": {
+    "status": "pass",
+    "modes": [
+      "portable",
+      "native"
+    ],
+    "packets_per_mode": 24,
+    "wall_cycles": 7943,
+    "reset_cuts": 20,
+    "ce_frozen_cycles": 1462,
+    "trace_sha256": "726895f0810de9c9fc59e6b96fff04deb8f1e55671512c86fd0815e4be755988",
+    "operand_table_cycles": 89,
+    "operand_table": "All inverse and signed bbox constants, mutable rows, CE, read hold and reset"
+  },
+  "checks": {
+    "prepare": "Re-executed current native/portable test before delivery",
+    "operand_table": "Native and portable: all inverse factors, bbox signed constants, data rows, CE, read hold and reset",
+    "models": "141 passed, 26 ignored",
+    "clippy": "pass with -D warnings",
+    "layering": "pass",
+    "hygiene": "pass",
+    "rustfmt": "touched test clean",
+    "docs": "Known unrelated failure: system architecture links to absent target/cpu-display-boot-batch-20261018/report.md",
+    "native_complete_box": "Native vendor primitives and portable real-MC replay match outputs, activity, wall attribution and total=134859"
+  },
+  "evidence_reuse": "Full fit and scene results reused after exact selected-source and fresh export identity checks; not new PnR or scene measurements at delivery"
+}
