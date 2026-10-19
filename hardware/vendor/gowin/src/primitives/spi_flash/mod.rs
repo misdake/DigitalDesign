@@ -27,6 +27,11 @@ impl SpiFlashImage for ErasedSpiFlashImage {
 /// without touching the physical device. For a non-empty command, response
 /// bytes are held with `data_valid` until `data_ready`; the SPI clock pauses
 /// low while backpressured. `done` pulses after the final byte is accepted.
+/// Busy commands ignore `start` and descriptor changes. A nonempty range past
+/// the fitted capacity completes with `done && error` without selecting Flash;
+/// address plus length is checked before narrowing to the 24-bit address bus.
+/// The final buffered byte can hold `data_valid` after chip select is released,
+/// but the reader remains busy until the consumer accepts that byte.
 ///
 /// This is a target-resource leaf because it owns the complete fitted Flash
 /// device. The physical `flash_*` signals must be connected by the selected
@@ -109,6 +114,8 @@ struct SpiFlashReaderTemplate<'a> {
 #[template(path = "primitives/spi_flash/spi_flash_reader_tb.v", escape = "none")]
 struct SpiFlashReaderTestbenchTemplate<'a> {
     module_name: &'a str,
+    capacity_bytes: u32,
+    half_period_cycles: u64,
     expected_0: u8,
     expected_1: u8,
     expected_2: u8,
@@ -248,6 +255,8 @@ where
         Some(
             SpiFlashReaderTestbenchTemplate {
                 module_name: &module_name,
+                capacity_bytes: CAPACITY_BYTES,
+                half_period_cycles: HALF_PERIOD_CYCLES,
                 expected_0: image_byte::<I>(1),
                 expected_1: image_byte::<I>(2),
                 expected_2: image_byte::<I>(3),
@@ -386,5 +395,13 @@ mod tests {
     #[ignore = "explicit external simulator validation of the SPI device protocol"]
     fn verify_verilog_with_iverilog() {
         crate::verify_verilog_with_iverilog::<Reader>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "bounded production and odd SPI divisors, capacity edges and 24-bit overflow"]
+    fn verify_verilog_production_and_address_boundaries() {
+        crate::verify_verilog_with_iverilog::<SpiFlashReader<TestImage, 8_388_608, 2>>().unwrap();
+        crate::verify_verilog_with_iverilog::<SpiFlashReader<TestImage, 8_388_608, 3>>().unwrap();
+        crate::verify_verilog_with_iverilog::<SpiFlashReader<TestImage, 16_777_216, 1>>().unwrap();
     }
 }

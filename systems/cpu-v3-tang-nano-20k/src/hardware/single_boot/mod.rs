@@ -61,7 +61,7 @@ mod tests {
                 std::env::temp_dir().join(format!("single-boot-{}", std::process::id()))
             });
         std::fs::create_dir_all(&evidence).unwrap();
-        for case in 0..13 {
+        for case in 0..47 {
             let executable = evidence.join(format!("case-{case}.vvp"));
             let compile =
                 Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()))

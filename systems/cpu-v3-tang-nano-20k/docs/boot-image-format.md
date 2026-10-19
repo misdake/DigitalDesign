@@ -36,4 +36,10 @@ The CPU is held before it can issue an instruction, data request, or device writ
 
 Malformed headers, invalid lengths, Flash error, memory error (including the last response), or progress timeout enter a permanent fail-stop state. LEDs show `11xxxx`, where `xxxx` is 1=header, 2=length, 3=Flash, 4=memory, 5=timeout. The CPU remains held. This hardware status replaces the old software loader's UART failure frame. An erased/truncated stream must fail or time out; it cannot release partial code.
 
+The loader holds a write request's address and data until acceptance, then waits
+for its response before advancing. Flash completion may precede or follow the
+last code-write response; both are required for success. A Flash error takes
+priority over a coincident memory error. Success or failure remains latched for
+the cold-start interval, and toggling the startup-ready gate cannot restart it.
+
 The independent host installer is a functional model, not a cycle or pin model. RTL tests separately cover real SPI shifting, nonzero SDRAM, static initialization, final-write ownership, first fetch and fixed entry. Resource and startup performance require source-matched complete-system measurement; no board result is implied by these contracts.
