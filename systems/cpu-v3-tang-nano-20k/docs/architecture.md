@@ -198,9 +198,19 @@ the software read and arm is therefore detected by the first probe rather than l
 GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and watch holds have
 independent state so neither completion source can release the other.
 
+On this baseline, software must drain older CPU stores before issuing a global
+D-cache maintenance command. The system-control busy input covers cache
+maintenance, while the cache accepts the global pulse only when idle with no
+unconsumed response. A pulse during an ordinary store miss can therefore be
+lost after CPU hold has already blocked the old store response. The selected
+[diagnostic](system-display-test.md) supplies an explicit in-function
+`DCLEANL`/`DWAIT` boundary; the general maintenance interface is not repaired.
+
 Device indices 1 and 2 are unassigned in this system; the former selection and
-programmable DMA register banks are absent. The sole display application remains
-`rcc/display-demo.rs`; its existing GPU-rejection behavior is independent of Boot.
+programmable DMA register banks are absent. The selected application is the
+[CPU-only Display diagnostic](system-display-test.md),
+`rcc/system-display-test.rs`. The retained `rcc/display-demo.rs` exercises the
+retired GPU-rejection behavior and is not selected for this board diagnostic.
 
 Device 4 stages a 22-bit command-buffer word address and a word count on write channels 0..3;
 channel 4 submits, and channel 5 performs an idle-only soft reset or sticky-error clear. Read

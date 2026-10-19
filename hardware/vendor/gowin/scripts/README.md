@@ -32,12 +32,11 @@ read-only artifact checks, observation, and hardware mutation:
 Supported profiles are the standalone GPU v2 `lighting-floor` qualification and
 the full CPU V3
 `cpu-v3-system` system (single-stage flash boot plus the SDRAM and HDMI datapaths).
-The board's selection latch powers up in the S2 slot, so `cpu-v3-system` boots the
-display application by default. That display application reports its own DDHT status
-frame (test ID `0x0b`) once per published frame, so a default `Observe`/`Full` capture
-validates over UART without touching the board. The S1 slider diagnostic reports
-`0x07`; hold the S1 button during reset to capture that application instead. The
-`cpu-v3-system` profile accepts either test ID.
+`cpu-v3-system` boots the sole application selected by `boot-applications.conf`.
+The current CPU-only Display diagnostic reports DDHT test ID `0x0b` after each
+actual framebuffer switch. There is no button-selected alternate application
+or runtime global reset. The retained LED-only boot demo reports `0x07` when
+explicitly selected and rebuilt; the current runner expects `0x0b`.
 Every attempted run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
 including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
 The runner never resets USB and never retries programming after a failure.
@@ -122,8 +121,8 @@ Assigned test IDs:
 | ---: | --- |
 | `0x01` | Tang Nano 20K BSRAM shapes self-test |
 | `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
-| `0x07` | CPU V3 full system single-stage flash boot, S1 slider diagnostic (application reached) |
-| `0x0b` | CPU V3 S2 display application per-frame status |
+| `0x07` | CPU V3 retained LED-only boot demo, when explicitly selected |
+| `0x0b` | CPU V3 CPU-only Display diagnostic, actual target-switch status |
 | `0x0c` | GPU v2 selected Floor free per-edge Lighting, independent-oracle g/h and identity scoreboard |
 
 The former CPU V3 CPU-execution (`0x04`), SDRAM (`0x05`), boot-DMA (`0x06`),
