@@ -21,4 +21,6 @@ a board. The wrapper's 407 registers are included in resource totals.
 
 The fixtures were extracted from independently replayed experiments. Their
 manifest is immutable; changing a fixture requires a new oracle review.
-See [the experiment review](../../docs/experiment-review.md).
+The selected VLIW pool and backend contract is in
+[pixel-system](/ip/gpu-v2/docs/execution.md); this standalone replay keeps its
+own external eight-row input boundary.

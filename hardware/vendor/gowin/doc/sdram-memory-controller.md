@@ -159,7 +159,7 @@ queue capacity, lifetime submissions and total logic clocks; external fixture
 processes additionally have a wall watchdog.
 
 GPU-owned reproduction and tests are documented in
-[GPU SDRAM integration](../../../../ip/gpu-v2/docs/sdram-memory-controller.md).
+[GPU SDRAM integration](../../../../ip/gpu-v2/docs/memory.md).
 The bounded probe writes calibration.csv and profiles.txt under the selected target
 directory. Preserve those reports with the source/configuration used to create them;
 they are estimates, not physical bandwidth evidence.

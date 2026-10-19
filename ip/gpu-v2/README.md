@@ -1,67 +1,30 @@
-# GPU v2 IP
+# Reusable GPU v2 IP
 
-Reusable GPU components live here. The `gpu-v2` crate depends on the generic
-[`audited`](../../modeling/audited/README.md) modeling tool and has no CPU or
-board-system dependency. The earlier standalone cmodel remains under the Tang
-Nano system as a historical development harness; new components belong here.
+GPU components and standalone composition live in this crate. Board systems own
+CPU/device submission, physical memory integration, clocks, firmware and Display.
+The CPU system's GPU integration point remains a placeholder.
 
-See [architecture](docs/architecture.md) for component ownership and the model
-directions, [lighting](docs/lighting.md) for the numerical models, independent
-cycle emulator, synthesizable RTL and matched isolated PnR evidence, and
-[frontend](docs/frontend.md) for the bounded Rust frontend models and independent
-command/vertex kernels. Those kernels remain separate from the connected Rust
-frontend and from the post-quad RTL.
-Lighting provides the Fast resource profile with scalar H
-normalization, fixed DSP roles and checked synchronous retained storage.
-The explicit SystemFast comparison uses scalar N/H, direct squares and a complete
-ID FIFO at II2; it remains separate from the selected lit-queue configuration.
-The [functional oracle chain](docs/oracle-chain.md) renders actual meshes through
-fetch, vertex, setup/coverage, lighting/sampling, final, ROP and atomic caches.
-Its two configurable native Rust pipelines compare frontend precision and normal
-transport without executing counted/timed code or a JavaScript shader.
-Optional Rayon acceleration preserves the same ordered numerical results. The
-[lighting workbench model](docs/lighting.md) exposes the real bound DAG's repeated
-calendar, with independent resource checks. Historical browser assets and their
-build instructions are not included in this checkout.
-The [triangle setup oracle](docs/triangle.md) is complete only through its first
-Rust step; counted/timed and hardware directions remain future work.
-The [texture models](docs/texture.md) implement oracle/counting and universal
-periodic preparation connected to bounded cache/color and cycle-MC execution.
-An independent serial sampler now executes the complete numerical,
-demand-cache/refill and Color path, with bounded whole-sampler RTL differential
-tests and two lossless preparation optimizations. Its conservative serial
-calendar complements the periodic Runtime. Native complete serial fit checkpoints
-are documented separately from the still-open complete Runtime/GPU fit. The
-[texture documentation](docs/texture.md) describes certified leaf calendars
-and actual preparation/cache/controller traces from the project models.
-The [framebuffer model](docs/framebuffer.md) provides a materialized depth/blend
-oracle and bounded serial/overlapped control through the common burst port.
-The older control fixtures retain their assumed arithmetic latency; a separate
-audited ROP leaf, actual registered cache emulator and synthesizable cache/leaf
-RTL now have independent numerical and complete-image differential tests.
-The [controlled pixel composition](docs/pixel-system.md) connects global16
-basic/light/sample stores, ordered join and exact final to the existing double
-output/ROP and actual serial cycle MC. The original J1 uses external branch
-stimulus. New compact quad/status/common-context dispatch connects actual
-Lighting/Sampling, registered Final/ROP/cache and a single shared MC clock owner,
-with CPU/display traffic and whole-image guards. Unlit/untextured bypass their
-branch queues. The integrated dispatcher/geometry path is still Rust-only;
-isolated component RTL is not an integrated GPU RTL or board result.
-The [selected post-quad RTL](docs/postquad-performance.md) closes Quad,
-Lighting, overlapping Runtime Sampling, texture cache, Final, ROP and framebuffer
-cache through one shared burst port. Export `combined-group48-pool64` for the
-qualified successor; the historical `selected` export remains a reference.
-Its bounded two-backend tests and source-matched fits exclude geometry and the
-physical memory controller. Device 4 and the board system are not connected to
-this standalone composition yet.
-The [SDRAM memory controller combination](docs/sdram-memory-controller.md) is
-provided by the Gowin vendor crate through a dev dependency. Its Rust oracle
-supports real data, calibrated average service and configured CPU/display loads.
-The independent [scheduler](../../modeling/scheduler/README.md) supports bounded
-batch planning. Target specifications and ongoing experiments remain in the local
-GPU v2 design documents until their contracts have been implemented and verified.
+The [specification index](/ip/gpu-v2/docs/README.md) follows a render from host submission
+to memory-visible output. Start with the [overview](/ip/gpu-v2/docs/overview.md) and
+[submission sequence](/ip/gpu-v2/docs/submission.md), then consult encodings, arithmetic
+and execution details as needed. The selected standalone factory is
+`system::vliw_sdram::verilog`.
+
+[Independent reference APIs](/ip/gpu-v2/docs/references/README.md) have explicitly different
+formats and execution scopes. CPU command ABI, resource handles and Display
+ownership remain project design work.
+
+Unimplemented top-level, module and software designs stay outside Git in the
+local project design directory. After a part is implemented and verified, its
+actual spec and implementation approach are merged into docs and the completed
+design part is removed. Development progress belongs in project todo and daily/
+weekly logs, not in this specification directory. Each directory maintains its
+own README list; historical performance/resource ledgers are not updated.
 
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label gpu-v2 -CargoArgs @('-p','gpu-v2')
 & scripts/run-cargo.ps1 -Subcommand clippy -Label gpu-v2-lint -CargoArgs @('-p','gpu-v2','--all-targets','--','-D','warnings')
 ```
+
+Bounded RTL replay usage is in the owning [integration example](/ip/gpu-v2/examples/vliw_integration/README.md).
+Validation of a component or standalone GPU is not full CPU/GPU/Display or board validation.

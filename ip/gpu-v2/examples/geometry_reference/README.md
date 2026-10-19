@@ -18,4 +18,5 @@ against the immutable fixture manifest before execution. The captured gold is
 historical oracle evidence; these replay tests do not replace a new numerical
 accuracy or integration qualification.
 
-See [the experiment review](../../docs/experiment-review.md) for disposition.
+See [the component boundary](/ip/gpu-v2/docs/references/README.md) for the distinction
+between retained numerical/control APIs and the selected VLIW hardware.

@@ -1,24 +1,36 @@
-# GPU v2 documentation
+# GPU v2 specification
 
-| Document | Scope |
+GPU v2 transforms packed meshlets into a materialized RGB565/D16 framebuffer.
+These documents describe the implemented standalone GPU and explain how its
+storage and arithmetic realize that behavior. Start with the work flowing
+through the GPU; use the later chapters to look up encodings and schedules.
+
+## Read the GPU from input to output
+
+| Chapter | Question answered |
 | --- | --- |
-| [Architecture](architecture.md) | Crate boundary, component ports and model ownership |
-| [Functional oracle chain](oracle-chain.md) | Shared Rust mesh-to-framebuffer composition, configurable frontend precision, bounded FIFOs and A/B WebSocket review |
-| [Triangle-record transport](geometry-record-transport.md) | Bounded Rust two-slot publication, shared read-return credit, consumer release and normal-path source lease connection |
-| [Lighting](lighting.md) | Reference cores and selected direct H9/shared B calendar, per-pixel V/H and bounded component qualification |
-| [Frontend](frontend.md) | Bounded frontend models, physical Command payload owner, selected Vertex90 and explicit references, plus the ordered single-RAM source-record component |
-| [Triangle](triangle.md) | Oracle clipping/coverage and perspective fields; explicit single-albedo numerical/visual study and independent registered attribute recovery leaf |
-| [Texture](texture.md) | UNORM9 oracle/counted; universal periodic preparation, bounded cache/color and cycle-MC timed composition |
-| [Framebuffer](framebuffer.md) | Materialized ROP oracle, actual registered ROP/cache and bounded MC qualification |
-| [VLIW dual-port framebuffer](framebuffer-tdp.md) | Selected static II2 ROP, independent maintenance and lossy tile prefetch |
-| [Pixel composition](pixel-system.md) | Published row/SPSC foundation, two draw banks, pipelined Final, actual Lighting/Sampling and serial ROP/shared-MC qualification |
-| [Post-quad performance](postquad-performance.md) | Selected II4 post-interpolator RTL, retained Group48 references, independent cache scenarios and matched fit evidence |
-| [最终LOD直接接入](direct-lod.md) | 前半最终U5F3 LOD、无helper准备链、物理纹理边界和阶段验证入口 |
-| [VLIW前后半合体](vliw-integration.md) | 当前几何与插值、唯一结果池、静态读写、发布／退休与验证边界 |
-| [VLIW主仓内存接入](vliw-memory.md) | 静态meshlet装填、固定页目的地址、三类主仓内存端口和阶段3关键证据 |
-| [VLIW合体资格](vliw-qualification.md) | 当前采用点、分层资源、总拍瓶颈、固定生产日历与整机预算边界 |
-| [完整兔子性能](full-bunny-performance.md) | 当前948面模型、重叠SDRAM双页、正面机位总拍及逐像素验证 |
-| [Experiment consolidation](experiment-review.md) | Retained implementations and replay tools, rejected alternatives and retired evidence boundaries |
-| [II4 qualification receipt](postquad-ii4-qualification.txt) | Current source identities, complete-chain resource/timing counts and bounded verification scope |
-| [Quad output protocol draft](quad-output-protocol-draft.md) | Proposed eight-row rasterizer/interpolator output and immutable draw/transport lifetime |
-| [SDRAM memory controller](sdram-memory-controller.md) | GPU-owned 128B read/write transport, vendor test adapters and bounded service/calibration tests |
+| [Overview](/ip/gpu-v2/docs/overview.md) | What does the GPU do, and what owns each part of a render? |
+| [Submitting work](/ip/gpu-v2/docs/submission.md) | How do I configure, load, start, drain and flush one meshlet? |
+| [Data formats](/ip/gpu-v2/docs/formats.md) | How are vertices, indices, matrices, metadata and texture assets encoded? |
+| [Geometry](/ip/gpu-v2/docs/geometry.md) | How do transformed vertices become covered, interpolated fragments? |
+| [Fragment arithmetic](/ip/gpu-v2/docs/fragment-math.md) | How do normal, UV or RGB become the final RGBA value? |
+| [Execution and storage](/ip/gpu-v2/docs/execution.md) | How are partial results held, scheduled and retired under stalls? |
+| [Framebuffer](/ip/gpu-v2/docs/framebuffer.md) | How do fragments update color/depth and reach external memory? |
+| [Memory interface](/ip/gpu-v2/docs/memory.md) | How do the three masters transfer and terminate transactions? |
+
+For first use, read Overview and Submitting work, then consult the format tables
+needed for your input. For numerical changes, follow Geometry, Fragment
+arithmetic and Framebuffer in that order. For control or storage changes, read
+Execution and storage together with Memory interface.
+
+## Independent component APIs
+
+The crate also implements numerical oracles, serial/cycle models and reusable
+control components. Their [own index and difference table](/ip/gpu-v2/docs/references/README.md)
+identify their inputs and arithmetic. They are separate compositions; choose
+an API explicitly before using its formats or output as a comparison.
+
+Specifications belong here after implementation and verification. Pending
+top-level, module and software designs remain in the local project design tree.
+Each directory maintains its own document index. Development notes belong in
+the project daily/weekly journal.
