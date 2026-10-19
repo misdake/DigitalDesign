@@ -580,6 +580,160 @@ assign pc = pc_register;
 assign code_segment = code_segment_register;
 assign data_segment = {10'b0, data_segment_0[7:2]};
 
+// One publication boundary owns the RAM write and both forwarding inputs.
+// Result classes share decode across ordinary, control and immediate forms.
+// No data/address hold is needed for an invalid publication; hold freezes the
+// entire existing slot, including when its old valid bit remains asserted.
+localparam GPR_ALU = 0, GPR_AND = 1, GPR_OR = 2, GPR_XOR = 3,
+           GPR_SHIFT = 4, GPR_MOVE = 5, GPR_NOT = 6, GPR_SEXT = 7,
+           GPR_CLZ = 8, GPR_POP = 9, GPR_EQ = 10, GPR_SLT = 11,
+           GPR_ULT = 12, GPR_SIMM = 13, GPR_UIMM = 14, GPR_CONST = 15,
+           GPR_SEGMENT = 16, GPR_DEVICE = 17, GPR_LINK = 18,
+           GPR_LOAD = 19, GPR_PRODUCT = 20, GPR_AUX_LOW = 21,
+           GPR_AUX_HIGH = 22, GPR_CLEAR = 23;
+reg [23:0] gpr_result_select;
+reg [3:0] gpr_commit_address;
+reg gpr_condition;
+always @* begin
+    case (field_d[2:0])
+        0: gpr_condition = pending_test_result == TEST_EQUAL;
+        1: gpr_condition = pending_test_result != TEST_EQUAL;
+        2: gpr_condition = pending_test_result == TEST_LESS;
+        3: gpr_condition = pending_test_result != TEST_LESS;
+        4: gpr_condition = pending_test_result == TEST_GREATER;
+        default: gpr_condition = pending_test_result != TEST_GREATER;
+    endcase
+end
+always @* begin
+    gpr_result_select = 0;
+    gpr_commit_address = field_a;
+    case (state)
+        ST_EXECUTE: begin
+            case (opcode)
+                4'h0, 4'h1, 4'h3, 4'h4, 4'h5: begin
+                    gpr_commit_address = field_d;
+                    case (opcode)
+                        4'h3: gpr_result_select[GPR_AND] = 1;
+                        4'h4: gpr_result_select[GPR_OR] = 1;
+                        4'h5: gpr_result_select[GPR_XOR] = 1;
+                        default: gpr_result_select[GPR_ALU] = 1;
+                    endcase
+                end
+                4'h2: begin
+                    case (field_d)
+                        0, 1, 2, 4, 5, 6: gpr_result_select[GPR_SHIFT] = 1;
+                        default: ;
+                    endcase
+                end
+                4'h6: begin
+                    case (field_d)
+                        0: gpr_result_select[GPR_MOVE] = 1;
+                        1: gpr_result_select[GPR_NOT] = 1;
+                        2: gpr_result_select[GPR_ALU] = 1;
+                        3: gpr_result_select[GPR_SEXT] = 1;
+                        4: gpr_result_select[GPR_CLZ] = 1;
+                        5: gpr_result_select[GPR_POP] = 1;
+                        6: gpr_result_select[GPR_EQ] = 1;
+                        8: gpr_result_select[GPR_SLT] = 1;
+                        9: gpr_result_select[GPR_ULT] = 1;
+                        13: gpr_result_select[GPR_SEGMENT] = field_b <= 5;
+                        default: ;
+                    endcase
+                end
+                4'h7: begin
+                    gpr_commit_address = field_b;
+                    gpr_result_select[GPR_DEVICE] = !field_d[3];
+                end
+                4'ha: begin
+                    case (field_d)
+                        0, 1, 11: gpr_result_select[GPR_ALU] = 1;
+                        2: gpr_result_select[GPR_SIMM] = 1;
+                        3: gpr_result_select[GPR_UIMM] = 1;
+                        4: gpr_result_select[GPR_AND] = 1;
+                        5: gpr_result_select[GPR_OR] = 1;
+                        6: gpr_result_select[GPR_XOR] = 1;
+                        7: gpr_result_select[GPR_CONST] = 1;
+                        8: gpr_result_select[GPR_EQ] = 1;
+                        9: gpr_result_select[GPR_SLT] = 1;
+                        10: gpr_result_select[GPR_ULT] = 1;
+                        default: ;
+                    endcase
+                end
+                4'hb: begin
+                    if (field_d >= 8 && field_d <= 13)
+                        gpr_result_select[GPR_MOVE] = pending_test_valid && gpr_condition;
+                    if (field_d == 7 || (field_d == 15 && field_a == 14)) begin
+                        gpr_commit_address = 14;
+                        gpr_result_select[GPR_LINK] = 1;
+                    end
+                end
+                default: ;
+            endcase
+        end
+        ST_DATA_RESPONSE: begin
+            gpr_commit_address = pending_destination;
+            gpr_result_select[GPR_LOAD] = data_response_valid && !data_error && !pending_write;
+        end
+        ST_MULTIPLY_COMMIT: begin
+            gpr_commit_address = multiply_destination;
+            gpr_result_select[GPR_PRODUCT] = 1;
+        end
+        ST_FPU2_AUX_APPLY: begin
+            gpr_commit_address = fpu2_word0[11:8];
+            gpr_result_select[GPR_AUX_LOW] = fpu2_subop == 6'h04;
+            gpr_result_select[GPR_AUX_HIGH] = fpu2_subop == 6'h05 || fpu2_subop == 6'h07;
+        end
+        ST_RESET_CLEAR: begin
+            gpr_commit_address = clear_index;
+            gpr_result_select[GPR_CLEAR] = 1;
+        end
+        default: ;
+    endcase
+end
+reg [15:0] gpr_segment_result;
+always @* begin
+    case (field_b)
+        0: gpr_segment_result = code_segment_register;
+        1: gpr_segment_result = {10'b0, data_segment_0[7:2]};
+        2: gpr_segment_result = {8'b0, data_segment_0};
+        3: gpr_segment_result = {8'b0, data_segment_1};
+        4: gpr_segment_result = {8'b0, data_segment_2};
+        default: gpr_segment_result = {8'b0, data_segment_3};
+    endcase
+end
+// Preserve the existing FTOI16 truncate-toward-zero expression. Only its
+// result classification and publication move into the shared boundary.
+wire [15:0] gpr_aux_truncate = (fpu2_aux_data +
+    (fpu2_aux_data[31] && fpu2_aux_data[15:0] != 16'b0 ?
+     32'h0001_0000 : 32'h0)) >> 16;
+wire [15:0] gpr_aux_high = fpu2_subop == 6'h07 ?
+    gpr_aux_truncate : fpu2_aux_data[31:16];
+wire [15:0] gpr_commit_data =
+    ({16{gpr_result_select[GPR_ALU]}} & integer_result) |
+    ({16{gpr_result_select[GPR_AND]}} & integer_and) |
+    ({16{gpr_result_select[GPR_OR]}} & integer_or) |
+    ({16{gpr_result_select[GPR_XOR]}} & integer_xor) |
+    ({16{gpr_result_select[GPR_SHIFT]}} & shift_result) |
+    ({16{gpr_result_select[GPR_MOVE]}} & gpr_read_b_data) |
+    ({16{gpr_result_select[GPR_NOT]}} & ~gpr_read_b_data) |
+    ({16{gpr_result_select[GPR_SEXT]}} & {{8{gpr_read_b_data[7]}}, gpr_read_b_data[7:0]}) |
+    ({16{gpr_result_select[GPR_CLZ]}} & count_leading_zeros(gpr_read_b_data)) |
+    ({16{gpr_result_select[GPR_POP]}} & population_count(gpr_read_b_data)) |
+    {15'd0, ((gpr_result_select[GPR_EQ] && integer_equal) |
+             (gpr_result_select[GPR_SLT] && integer_signed_less) |
+             (gpr_result_select[GPR_ULT] && integer_unsigned_less))} |
+    ({16{gpr_result_select[GPR_SIMM]}} & immediate_signed(instruction)) |
+    ({16{gpr_result_select[GPR_UIMM]}} & immediate_unsigned(instruction)) |
+    ({16{gpr_result_select[GPR_CONST]}} & constant_table(instruction[3:0])) |
+    ({16{gpr_result_select[GPR_SEGMENT]}} & gpr_segment_result) |
+    ({16{gpr_result_select[GPR_DEVICE]}} & device_read_data) |
+    ({16{gpr_result_select[GPR_LINK]}} & pc_register) |
+    ({16{gpr_result_select[GPR_LOAD]}} & data_read_data) |
+    ({16{gpr_result_select[GPR_PRODUCT]}} & multiplier_product[multiply_shift +: 16]) |
+    ({16{gpr_result_select[GPR_AUX_LOW]}} & fpu2_aux_data[15:0]) |
+    ({16{gpr_result_select[GPR_AUX_HIGH]}} & gpr_aux_high);
+wire gpr_commit_valid = |gpr_result_select;
+
 reg [15:0] right_value;
 reg [15:0] logical_address;
 reg branch_taken;
@@ -613,7 +767,12 @@ always @(posedge clk) begin
         fpu2_pending_index <= 0;
         fpu2_gpr_x_valid <= 0;
     end else if (!hold) begin
-        gpr_write_enable <= 0;
+        // RAM consumes the OLD slot on this edge. Publish the next slot only
+        // after that consumption, with global asynchronous-store fault priority.
+        gpr_write_enable <= gpr_commit_valid &&
+            !(async_store_valid && async_store_issued && data_response_valid && data_error);
+        gpr_write_address <= gpr_commit_address;
+        gpr_write_data <= gpr_commit_data;
         fpu2_word_valid <= 0;
         fpu2_abort <= 0;
         fpu2_gpr_x_valid <= 0;
@@ -683,16 +842,10 @@ always @(posedge clk) begin
                     pending_test_valid <= 0;
                     case (opcode)
                         4'h0: begin
-                            gpr_write_enable <= 1;
-                            gpr_write_address <= field_d;
-                            gpr_write_data <= integer_result;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h1: begin
-                            gpr_write_enable <= 1;
-                            gpr_write_address <= field_d;
-                            gpr_write_data <= integer_result;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
@@ -700,17 +853,11 @@ always @(posedge clk) begin
                             case (field_d)
                                 // Destructive register-count shifts.
                                 4'h0, 4'h1, 4'h2: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= shift_result;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 // Destructive immediate shifts.
                                 4'h4, 4'h5, 4'h6: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= shift_result;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
@@ -731,88 +878,52 @@ always @(posedge clk) begin
                             endcase
                         end
                         4'h3: begin
-                            gpr_write_enable <= 1;
-                            gpr_write_address <= field_d;
-                            gpr_write_data <= integer_and;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h4: begin
-                            gpr_write_enable <= 1;
-                            gpr_write_address <= field_d;
-                            gpr_write_data <= integer_or;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h5: begin
-                            gpr_write_enable <= 1;
-                            gpr_write_address <= field_d;
-                            gpr_write_data <= integer_xor;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h6: begin
                             case (field_d)
                                 0: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= gpr_read_b_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 1: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= ~gpr_read_b_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 2: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= integer_result;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 3: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= {{8{gpr_read_b_data[7]}}, gpr_read_b_data[7:0]};
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 4: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= count_leading_zeros(gpr_read_b_data);
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 5: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= population_count(gpr_read_b_data);
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 6: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= integer_equal;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 8: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= integer_signed_less;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 9: begin
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= field_a;
-                                    gpr_write_data <= integer_unsigned_less;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
@@ -862,22 +973,7 @@ always @(posedge clk) begin
                                     end
                                 end
                                 13: begin
-                                    if (field_b == 0) begin
-                                        gpr_write_enable <= 1;
-                                        gpr_write_address <= field_a;
-                                        gpr_write_data <= code_segment_register;
-                                    end else if (field_b >= 1 && field_b <= 5) begin
-                                        gpr_write_enable <= 1;
-                                        gpr_write_address <= field_a;
-                                        case (field_b)
-                                            1: gpr_write_data <= {10'b0, data_segment_0[7:2]};
-                                            2: gpr_write_data <= {8'b0, data_segment_0};
-                                            3: gpr_write_data <= {8'b0, data_segment_1};
-                                            4: gpr_write_data <= {8'b0, data_segment_2};
-                                            default: gpr_write_data <= {8'b0, data_segment_3};
-                                        endcase
-                                    end
-                                    else begin
+                                    if (field_b > 5) begin
                                         fault_code <= FAULT_INVALID_INSTRUCTION;
                                         fault_pc <= current_fault_pc;
                                         state <= ST_FAULT;
@@ -942,11 +1038,6 @@ always @(posedge clk) begin
                             endcase
                         end
                         4'h7: begin
-                            if (!field_d[3]) begin
-                                gpr_write_enable <= 1;
-                                gpr_write_address <= field_b;
-                                gpr_write_data <= device_read_data;
-                            end
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
@@ -973,25 +1064,7 @@ always @(posedge clk) begin
                         end
                         4'ha: begin
                             case (field_d)
-                                // ADDI/SUBI read the unprefixed immediate as
-                                // an unsigned u4; the prefixed form uses the
-                                // full 16-bit pattern.
-                                4'h0: gpr_write_data <= integer_result;
-                                4'h1: gpr_write_data <= integer_result;
-                                4'h2: gpr_write_data <= prefix_valid ?
-                                    immediate_unsigned(instruction) : sign_extend4(instruction[3:0]);
-                                4'h3: gpr_write_data <= immediate_unsigned(instruction);
-                                4'h4: gpr_write_data <= integer_and;
-                                4'h5: gpr_write_data <= integer_or;
-                                4'h6: gpr_write_data <= integer_xor;
-                                // LDC/ADDC index the shared constant table; a
-                                // pending prefix expires unused (these never
-                                // consume it).
-                                4'h7: gpr_write_data <= constant_table(instruction[3:0]);
-                                4'h8: gpr_write_data <= integer_equal;
-                                4'h9: gpr_write_data <= integer_signed_less;
-                                4'ha: gpr_write_data <= integer_unsigned_less;
-                                4'hb: gpr_write_data <= integer_result;
+                                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11: ;
                                 // CMPSI/CMPUI set the pending test result and
                                 // write no register.
                                 4'hc: begin
@@ -1014,10 +1087,6 @@ always @(posedge clk) begin
                                     state <= ST_FAULT;
                                 end
                             endcase
-                            if (field_d <= 4'hb) begin
-                                gpr_write_enable <= 1;
-                                gpr_write_address <= field_a;
-                            end
                             if (field_d <= 4'hd) begin
                                 retired_words <= retired_words + success_retire_words;
                                 state <= ST_FETCH_REQUEST;
@@ -1033,22 +1102,10 @@ always @(posedge clk) begin
                                     fault_pc <= current_fault_pc;
                                     state <= ST_FAULT;
                                 end else begin
-                                    case (field_d[2:0])
-                                        0: branch_taken = pending_test_result == TEST_EQUAL;
-                                        1: branch_taken = pending_test_result != TEST_EQUAL;
-                                        2: branch_taken = pending_test_result == TEST_LESS;
-                                        3: branch_taken = pending_test_result != TEST_LESS;
-                                        4: branch_taken = pending_test_result == TEST_GREATER;
-                                        default: branch_taken = pending_test_result != TEST_GREATER;
-                                    endcase
+                                    branch_taken = gpr_condition;
                                     if (field_d <= 4'h5) begin
                                         if (branch_taken)
                                             pc_register <= integer_result;
-                                    end else if (branch_taken) begin
-                                        // MOVcc rd, rs
-                                        gpr_write_enable <= 1;
-                                        gpr_write_address <= field_a;
-                                        gpr_write_data <= gpr_read_b_data;
                                     end
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
@@ -1060,9 +1117,6 @@ always @(posedge clk) begin
                                 state <= ST_FETCH_REQUEST;
                             // JALREL: link the fall-through address into r14.
                             end else if (field_d == 4'h7) begin
-                                gpr_write_enable <= 1;
-                                gpr_write_address <= 4'he;
-                                gpr_write_data <= pc_register;
                                 pc_register <= integer_result;
                                 retired_words <= retired_words + success_retire_words;
                                 state <= ST_FETCH_REQUEST;
@@ -1081,9 +1135,6 @@ always @(posedge clk) begin
                             end else begin
                                 if (field_a == 4'he) begin
                                     jump_target = gpr_read_b_data;
-                                    gpr_write_enable <= 1;
-                                    gpr_write_address <= 4'he;
-                                    gpr_write_data <= pc_register;
                                     pc_register <= jump_target;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
@@ -1169,11 +1220,6 @@ always @(posedge clk) begin
                         fault_pc <= pending_fault_pc;
                         state <= ST_FAULT;
                     end else begin
-                        if (!pending_write) begin
-                            gpr_write_enable <= 1;
-                            gpr_write_address <= pending_destination;
-                            gpr_write_data <= data_read_data;
-                        end
                         retired_words <= retired_words + pending_retire_words;
                         state <= ST_FETCH_REQUEST;
                     end
@@ -1181,11 +1227,6 @@ always @(posedge clk) begin
             end
             ST_MULTIPLY_WAIT: state <= ST_MULTIPLY_COMMIT;
             ST_MULTIPLY_COMMIT: begin
-                gpr_write_enable <= 1;
-                gpr_write_address <= multiply_destination;
-                // The indexed part-select picks the [15:0]/[23:8]/[31:16] window
-                // of the full unsigned 32-bit product.
-                gpr_write_data <= multiplier_product[multiply_shift +: 16];
                 retired_words <= retired_words + multiply_retire_words;
                 state <= ST_FETCH_REQUEST;
             end
@@ -1279,30 +1320,6 @@ always @(posedge clk) begin
                 // F writes were driven combinationally through the ext write
                 // port this cycle; the GPR-writing bridges stage their result
                 // through the normal synchronous GPR write.
-                case (fpu2_subop)
-                    6'h04: begin
-                        gpr_write_enable <= 1;
-                        gpr_write_address <= fpu2_word0[11:8];
-                        gpr_write_data <= fpu2_aux_data[15:0];
-                    end
-                    6'h05: begin
-                        gpr_write_enable <= 1;
-                        gpr_write_address <= fpu2_word0[11:8];
-                        gpr_write_data <= fpu2_aux_data[31:16];
-                    end
-                    6'h07: begin
-                        // FTOI16: truncate toward zero, then take the high
-                        // half. Adding 0x10000 for a negative fraction makes
-                        // the arithmetic high half the ceiling.
-                        gpr_write_enable <= 1;
-                        gpr_write_address <= fpu2_word0[11:8];
-                        gpr_write_data <= (fpu2_aux_data +
-                            (fpu2_aux_data[31] &&
-                             fpu2_aux_data[15:0] != 16'b0 ? 32'h0001_0000 : 32'h0))
-                            >> 16;
-                    end
-                    default: ;
-                endcase
                 retired_words <= retired_words + 2;
                 state <= ST_FETCH_REQUEST;
             end
@@ -1364,9 +1381,6 @@ always @(posedge clk) begin
             ST_RESET_CLEAR: begin
                 // Reset walks the scalar register file back to zero one word
                 // per cycle through its synchronous write port.
-                gpr_write_enable <= 1;
-                gpr_write_address <= clear_index;
-                gpr_write_data <= 0;
                 if (clear_index == 15)
                     state <= ST_FETCH_REQUEST;
                 else

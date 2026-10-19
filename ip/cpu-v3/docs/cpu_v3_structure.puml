@@ -19,6 +19,7 @@ rectangle "CpuV3Core: precise, in-order, limited two-stage frontend" as Core {
   component "Fetch / execute FSM\nExecute may accept the next queued word\nprecise single retirement" as FSM
   storage "Instruction state\nPC 16, CSEG 16, four DSEG pages x 8\nPFX12 prefix\npending comparison" as ControlState
   storage "GPR file\n16 x 16-bit\ncombinational read\nsynchronous write" as GPR
+  storage "GPR publication slot\nvalid + address4 + data16\nRAM write + both source forwards" as GprCommit
   component "Integer lane\n16-bit ALU, shifts, compare\nCLZ / popcount" as IntAlu
 
   package "Two-word Q16.16 FPU v2 (opcodes C/D/E)" {
@@ -27,9 +28,9 @@ rectangle "CpuV3Core: precise, in-order, limited two-stage frontend" as Core {
     component "Scalar / vector lane ALU\n32-bit Q16.16 wrap\nADD/SUB/MIN/MAX/ABS/NEG\nFLOOR/CEIL/ROUND/TRUNC/MOV" as LaneAlu
     component "Shared RF port and lane owner\nALU/product read cursors and lane calendar\ncommon destination context\nexclusive final write-event bus" as Ports
     storage "Next-edge commit slot\none 32-bit ALU / DOTSTORE result\naddress + valid" as Commit
-    component "Shared CPU/FPU multiply pipe\nsigned 36 x 36, 2 stages, II=1\n9-bit return tag" as FpuDsp
+    component "Shared CPU/FPU multiply pipe\nsigned 36 x 36, 2 stages, II=1\n9-bit owner/destination tag\npending from both real valid/tag slots" as FpuDsp
     storage "ACC\nsigned 64-bit Q32.32\nfull-product accumulate" as Acc
-    component "Special path\nblocking RCP / RSQRT / SINCOS\nshared-pipe range and interpolation\nrelative result destination" as Special
+    component "Special path\nblocking RCP / RSQRT / SINCOS\nsole 18-bit phase / direct lookup\nshared interpolation + final sign\nrelative result destination" as Special
   }
 }
 
@@ -48,11 +49,16 @@ Masters ..> ICache : invalidate
 Masters ..> DCache : invalidate
 
 FSM <--> ControlState
-FSM <--> GPR
+FSM --> GPR : read addresses
+GPR --> FSM : operand reads
+FSM --> GprCommit : result class / publication
+GprCommit --> FSM : pending operand forwarding
 GPR --> IntAlu
-IntAlu --> GPR
+IntAlu --> GprCommit
+GprCommit --> GPR : synchronous old-slot write
+GprCommit --> IntAlu : two-source pending forwarding
 GPR --> FpuDsp : unsigned integer operands\nexclusive integer issue
-FpuDsp --> GPR : integer result window
+FpuDsp --> GprCommit : integer result window
 FSM --> Fe : two-word pair (0xC/0xD/0xE)
 Fe --> FSM : word-pair complete
 Fe --> Ports : accepted descriptor
@@ -80,7 +86,7 @@ Issue policy:
 * FPU instructions are fetch barriers and never consume PFX12
 * scalar ALU writes at T1; vector ALU lane k writes at T(k+2)
 * vector lanes retain II=1; shared multiplication has two enabled stages
-* RCP/RSQRT are blocking T0..T4; SINCOS T0..T8 dual / T0..T7 single
+* RCP/RSQRT are blocking T0..T4; SINCOS T0..T7 dual / T0..T6 single
 * abort cancels pending writes; RF reads retain read-first semantics
 end note
 

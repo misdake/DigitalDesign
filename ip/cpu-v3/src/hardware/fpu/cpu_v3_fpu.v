@@ -50,28 +50,35 @@ CpuV3FpuFrontend frontend (
 // multiply, dot and SINCOS range-reduction owners are never active at once.
 // The operand buses are signed 36 bits; the ordinary multiply/dot paths
 // sign-extend their architectural signed-32 operands, and SINCOS drives the
-// positive 36-bit K constant. The special path's in-valid is the highest
-// priority arm (its one range product is issued at its T0), followed by the
-// unified multiply/dot product owner, so the select is always defined.
+// positive 36-bit K constant. The integer owner has first priority, followed
+// by the special path (range at its T0) and ordinary multiply/dot. Their
+// valid lifetimes are serialized; tags retain explicit return ownership.
 wire product_mul_in_valid;
-wire signed [35:0] product_mul_in_a;
-wire signed [35:0] product_mul_in_b;
 wire [8:0] product_mul_in_tag;
 wire sf_mul_in_valid;
 wire signed [35:0] sf_mul_in_a;
 wire signed [35:0] sf_mul_in_b;
 wire [8:0] sf_mul_in_tag;
+wire [31:0] rf_read_a_data, rf_read_b_data;
 wire mul_in_valid = integer_in_valid || sf_mul_in_valid || product_mul_in_valid;
-wire signed [35:0] mul_in_a = integer_in_valid ? $signed({20'b0, integer_in_a}) :
-    sf_mul_in_valid ? sf_mul_in_a :
-    product_mul_in_a;
-wire signed [35:0] mul_in_b = integer_in_valid ? $signed({20'b0, integer_in_b}) :
-    sf_mul_in_valid ? sf_mul_in_b :
-    product_mul_in_b;
+// Ordinary products and range reduction consume the same RF A word. Only
+// interpolation substitutes a signed ten-bit delta. Form extension bits
+// after source selection instead of selecting independent wide owner buses.
+wire sf_range_operand = sf_mul_in_valid && sf_mul_in_tag == 9'h081;
+wire sf_interp_operand = sf_mul_in_valid && !sf_range_operand;
+wire [31:0] mul_a_word = integer_in_valid ? {16'd0,integer_in_a} :
+    sf_interp_operand ? {{22{sf_mul_in_a[9]}},sf_mul_in_a[9:0]} : rf_read_a_data;
+wire signed [35:0] mul_in_a = {{4{mul_a_word[31]}},mul_a_word};
+wire [31:0] mul_b_word = integer_in_valid ? {16'd0,integer_in_b} :
+    sf_range_operand ? 32'hA2F9836E :
+    sf_interp_operand ? {23'd0,sf_mul_in_b[8:0]} : rf_read_b_data;
+wire mul_b_negative = !integer_in_valid && !sf_mul_in_valid && rf_read_b_data[31];
+wire signed [35:0] mul_in_b = {{4{mul_b_negative}},mul_b_word};
 wire [8:0] mul_in_tag = integer_in_valid ? 9'h100 :
     sf_mul_in_valid ? sf_mul_in_tag :
     product_mul_in_tag;
 wire pipe_out_valid;
+wire ordinary_product_pending;
 wire signed [63:0] mul_out_product;
 wire [8:0] mul_out_tag;
 wire mul_out_valid = pipe_out_valid && !mul_out_tag[8];
@@ -90,7 +97,8 @@ CpuV3FpuMulPipe mul_pipe (
     .in_tag(mul_in_tag),
     .out_valid(pipe_out_valid),
     .out_product(mul_out_product),
-    .out_tag(mul_out_tag)
+    .out_tag(mul_out_tag),
+    .ordinary_pending(ordinary_product_pending)
 );
 
 
@@ -125,8 +133,6 @@ reg dot_r = 0, store_mode_r = 0;
 reg [2:0] lane_r = 0, last_lane_r = 0, stride_r = 1;
 reg [5:0] read_a_r = 0, read_b_r = 0;
 reg [8:0] destination_r = 0;
-reg [3:0] outstanding_r = 0;
-reg [2:0] acc_lane_r = 0;
 reg signed [63:0] acc_r = 0;
 // ALU results and the final DOTSTORE result have disjoint lifetimes and the
 // same next-edge consumer. One commit slot preserves both existing schedules.
@@ -136,11 +142,13 @@ reg [31:0] commit_data = 0;
 reg flag_lt_r = 0, flag_eq_r = 0, flag_gt_r = 0;
 wire reading = run_r && !abort && lane_r <= last_lane_r;
 wire data_valid = run_r && !abort && lane_r >= 1 && lane_r-3'd1 <= last_lane_r;
-wire own_return = mul_out_valid && outstanding_r != 0;
+// Ordinary destinations are 0..66 (Fd <= 63, at most four lanes); special
+// tags all set bit7, and integer tags set bit8. Keep all nine address bits.
+wire own_return = mul_out_valid && !mul_out_tag[7];
 wire signed [63:0] acc_plus = acc_r + mul_out_product;
 wire vector_busy = (vector_load || (vector_r && (run_r || commit_valid))) && !abort;
 wire product_busy = (product_load || (product_r &&
-    (run_r || outstanding_r != 0 || commit_valid))) && !abort;
+    (run_r || ordinary_product_pending || commit_valid))) && !abort;
 wire normal_ports = vector_busy || product_busy;
 wire [8:0] normal_address_a = normal_load ? {3'b0,base_a} :
     reading ? {3'b0,read_a_r} : 9'd0;
@@ -155,7 +163,6 @@ wire [8:0] rf_read_a_address = sf_busy ? sf_read_a_address :
     normal_ports ? normal_address_a : {3'b0,base_a};
 wire [8:0] rf_read_b_address = sf_busy ? sf_read_b_address :
     normal_ports ? normal_address_b : ext_access ? ext_read_address : {3'b0,base_b};
-wire [31:0] rf_read_a_data, rf_read_b_data;
 
 function [3:0] vector_alu_op;
     input [4:0] subop;
@@ -186,7 +193,6 @@ always @(posedge clk) begin
         run_r <= 0;
         scalar_active_r <= 0;
         commit_valid <= 0;
-        outstanding_r <= 0;
         store_mode_r <= 0;
     end else begin
         scalar_active_r <= scalar_load;
@@ -218,8 +224,6 @@ always @(posedge clk) begin
             stride_r <= decoded_stride;
             dot_r <= dot_op;
             store_mode_r <= dot_op && vector_subop == 5'h0F;
-            outstanding_r <= 0;
-            acc_lane_r <= 0;
             if (dot_op && vector_subop != 5'h0E) acc_r <= 0;
         end else begin
             if (run_r) begin
@@ -236,11 +240,9 @@ always @(posedge clk) begin
                     commit_data <= shared_alu_result;
                 end
             end
-            outstanding_r <= outstanding_r + {3'd0,product_mul_in_valid} - {3'd0,own_return};
             if (own_return && dot_r) begin
                 acc_r <= acc_plus;
-                acc_lane_r <= acc_lane_r + 3'd1;
-                if (store_mode_r && acc_lane_r == last_lane_r) begin
+                if (store_mode_r && mul_out_tag[2:0] == last_lane_r) begin
                     commit_data <= acc_plus[47:16];
                     commit_address <= destination_r;
                     commit_valid <= 1;
@@ -253,8 +255,6 @@ always @(posedge clk) begin
 end
 
 assign product_mul_in_valid = data_valid && product_r;
-assign product_mul_in_a = {{4{rf_read_a_data[31]}},rf_read_a_data};
-assign product_mul_in_b = {{4{rf_read_b_data[31]}},rf_read_b_data};
 assign product_mul_in_tag = dot_r ? {6'd0,lane_r-3'd1} : destination_r;
 
 // Exactly one live producer can use the final write port. Keep direct MUL

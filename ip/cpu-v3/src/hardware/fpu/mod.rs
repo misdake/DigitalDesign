@@ -732,8 +732,6 @@ pub struct CpuV3FpuSpecialPathState {
     sc_stage: u8,
     sc_fd: u8,
     sc_mode: u8,
-    sc_q: u8,
-    sc_f: u16,
     sc_phase_reg: u32,
 }
 
@@ -766,8 +764,6 @@ struct CpuV3FpuSpecialPathComputed {
     capture_base: u32,
     fd: u8,
     sc_mode: u8,
-    sc_q_next: u8,
-    sc_f_next: u16,
 }
 
 impl CpuV3FpuSpecialPathState {
@@ -811,19 +807,21 @@ impl CpuV3FpuSpecialPathState {
             256u16 | u16::from(norm_index)
         };
 
-        let sc_u_sin = if self.sc_q & 1 == 1 {
-            0x1_0000 - i64::from(self.sc_f)
+        let sc_q = ((self.sc_phase_reg >> 16) & 3) as u8;
+        let sc_f = self.sc_phase_reg as u16;
+        let sc_u_sin = if sc_q & 1 == 1 {
+            0x1_0000 - i64::from(sc_f)
         } else {
-            i64::from(self.sc_f)
+            i64::from(sc_f)
         };
-        let sc_u_cos = if self.sc_q & 1 == 1 {
-            i64::from(self.sc_f)
+        let sc_u_cos = if sc_q & 1 == 1 {
+            i64::from(sc_f)
         } else {
-            0x1_0000 - i64::from(self.sc_f)
+            0x1_0000 - i64::from(sc_f)
         };
         let sc_single = matches!(self.sc_mode, 1 | 2);
         let sc_first_is_cos = self.sc_mode == 2;
-        let sc_interp_is_cos = sc_first_is_cos || (!sc_single && self.sc_stage == 6);
+        let sc_interp_is_cos = sc_first_is_cos || (!sc_single && self.sc_stage == 5);
         let sc_interp_u = if sc_interp_is_cos { sc_u_cos } else { sc_u_sin };
         let sc_residue = sc_interp_u & 0xFF;
 
@@ -851,17 +849,13 @@ impl CpuV3FpuSpecialPathState {
         let mul_product = input.mul_out_product as i64;
         let interpolated = (self.meta_s2_base as i32 + (mul_product >> 9) as i32) as u32;
 
-        let sc_phase18 = u64::from(self.sc_phase_reg);
-        let sc_q_comb = ((sc_phase18 >> 16) & 0x3) as u8;
-        let sc_f_comb = (sc_phase18 & 0xFFFF) as u16;
-
         let interp_issue = self.s1_valid
-            || (self.sc_valid && (self.sc_stage == 5 || (!sc_single && self.sc_stage == 6)));
+            || (self.sc_valid && (self.sc_stage == 4 || (!sc_single && self.sc_stage == 5)));
         let range_issue = load_now && is_sincos;
         let issue_sign = if sc_interp_is_cos {
-            ((self.sc_q >> 1) & 1) ^ (self.sc_q & 1)
+            ((sc_q >> 1) & 1) ^ (sc_q & 1)
         } else {
-            (self.sc_q >> 1) & 1
+            (sc_q >> 1) & 1
         };
         let mul_in_valid = (range_issue || interp_issue) && !input.abort;
         let mul_in_a = if range_issue {
@@ -871,14 +865,14 @@ impl CpuV3FpuSpecialPathState {
         };
         let mul_in_b = if range_issue { SINCOS_K } else { mul_y };
         let mul_in_tag = if range_issue {
-            0
+            0x81
         } else if self.sc_valid {
             0xc0 | (((sc_interp_u >> 15) as u16) & 2) | u16::from(issue_sign)
         } else {
             0x80
         };
 
-        let sc_addr_u = if self.sc_stage == 5 || sc_first_is_cos {
+        let sc_addr_u = if self.sc_stage == 4 || sc_first_is_cos {
             sc_u_cos
         } else {
             sc_u_sin
@@ -887,7 +881,7 @@ impl CpuV3FpuSpecialPathState {
 
         let read_a_address = if self.p0_valid && self.p0_rcp {
             table_address
-        } else if self.sc_valid && (self.sc_stage == 4 || (!sc_single && self.sc_stage == 5)) {
+        } else if self.sc_valid && (self.sc_stage == 3 || (!sc_single && self.sc_stage == 4)) {
             sc_lut_address
         } else {
             0
@@ -947,22 +941,11 @@ impl CpuV3FpuSpecialPathState {
         let rcp_return = input.mul_out_valid && input.mul_out_tag == 0x80;
         let write_enable = (rcp_return || sc_write) && !input.abort;
         let write_address = if sc_write {
-            u16::from(self.sc_fd.wrapping_add(u8::from(self.sc_stage == 8)) & 0x3F)
+            u16::from(self.sc_fd.wrapping_add(u8::from(self.sc_stage == 7)) & 0x3F)
         } else {
             u16::from(self.p0_fd)
         };
         let write_data = if sc_write { sc_result } else { rcp_result };
-
-        let sc_q_next = if self.sc_stage == 3 {
-            sc_q_comb
-        } else {
-            self.sc_q
-        };
-        let sc_f_next = if self.sc_stage == 3 {
-            sc_f_comb
-        } else {
-            self.sc_f
-        };
 
         CpuV3FpuSpecialPathComputed {
             load_now,
@@ -981,9 +964,9 @@ impl CpuV3FpuSpecialPathState {
             w_wait: if load_now {
                 if is_sincos {
                     if matches!(mode, 1 | 2) {
-                        8
+                        7
                     } else {
-                        9
+                        8
                     }
                 } else {
                     5
@@ -994,9 +977,9 @@ impl CpuV3FpuSpecialPathState {
             x_wait: if load_now {
                 if is_sincos {
                     if matches!(mode, 1 | 2) {
-                        8
+                        7
                     } else {
-                        9
+                        8
                     }
                 } else {
                     5
@@ -1028,8 +1011,6 @@ impl CpuV3FpuSpecialPathState {
             },
             fd,
             sc_mode: mode,
-            sc_q_next,
-            sc_f_next,
         }
     }
 
@@ -1063,7 +1044,7 @@ impl CpuV3FpuSpecialPathState {
         if old_meta_valid {
             self.meta_s2_base = old_meta_base;
         }
-        if input.mul_out_valid && input.mul_out_tag == 0 {
+        if input.mul_out_valid && input.mul_out_tag == 0x81 {
             self.sc_phase_reg = ((input.mul_out_product as i64) >> 32) as u32 & 0x3_FFFF;
         }
         if input.abort {
@@ -1095,21 +1076,17 @@ impl CpuV3FpuSpecialPathState {
             let sc_stage = self.sc_stage;
             let sc_single = matches!(self.sc_mode, 1 | 2);
             match sc_stage {
-                3 => {
-                    self.sc_q = c.sc_q_next;
-                    self.sc_f = c.sc_f_next;
-                }
-                7 if sc_single => {
+                6 if sc_single => {
                     self.sc_valid = false;
                     self.sc_stage = 0;
                 }
-                8 => {
+                7 => {
                     self.sc_valid = false;
                     self.sc_stage = 0;
                 }
                 _ => {}
             }
-            if sc_stage != 8 && !(sc_stage == 7 && sc_single) {
+            if sc_stage != 7 && !(sc_stage == 6 && sc_single) {
                 self.sc_stage = sc_stage + 1;
             }
         } else if self.p0_valid {
@@ -1378,10 +1355,11 @@ pub struct CpuV3FpuMulPipeOutput {
     pub out_valid: Wire,
     pub out_product: Wires<64>,
     pub out_tag: Wires<9>,
+    pub ordinary_pending: Wire,
 }
 
 /// Shared FPU v2 36x36 multiply pipeline (one MULT36X36 = four 18x18 DSP
-/// lanes): three register stages, tag-carrying FIFO. The multiply and dot
+/// lanes): two register stages, tag-carrying FIFO. The multiply and dot
 /// paths share it because the core serializes instructions. Emu lives in the
 /// unit top; this leaf is verified through its Verilog testbench.
 pub struct CpuV3FpuMulPipe;
@@ -1715,7 +1693,7 @@ impl CpuV3FpuState {
             || self.product_store)
             && !input.abort;
         // Special path (RCP/RSQRT/SINCOS): blocking, so its busy window is
-        // exactly the T0..T3 or T0..T7 pipeline its own state tracks.
+        // the T0..T4 reciprocal or T0..T6/T7 SINCOS state calendar.
         let sf_load_now = self.frontend.instr_complete
             && self.frontend.instr_opcode == encoding::OPCODE_SCALAR
             && matches!(
@@ -2635,8 +2613,8 @@ mod tests {
 
     /// Drives the private special-path cycle model through one SINCOS the same
     /// way the parent does (operand on the pre-T0 RF read, packed interval on
-    /// the one-cycle RF read) with the shared pipe returning at T2 and the
-    /// special path capturing its registered phase at T3. Check writes against
+    /// the one-cycle RF read) with the shared range return captured at T2 and
+    /// the first synchronous LUT read at T3. Check writes against
     /// the fixed T6/T7 schedule and the frozen
     /// `lut::sincos_q16` reference (itself the two-term C0/C1 reducer). This is
     /// the leaf-level model/RTL agreement guard: the Verilog leaf testbench
@@ -2650,7 +2628,7 @@ mod tests {
 
         let mut check = |a: i32, mode: u16| {
             let word1 = (fd << 10) | (u16::from(encoding::SINCOS) << 4) | mode;
-            let cycles = if matches!(mode, 1 | 2) { 8 } else { 9 };
+            let cycles = if matches!(mode, 1 | 2) { 7 } else { 8 };
             let mut state = CpuV3FpuSpecialPathState::default();
             let mut pipe = PipeStub::default();
             let mut read_a = a as u32;
@@ -2715,16 +2693,16 @@ mod tests {
             assert_eq!(
                 product_cycles,
                 if matches!(mode, 1 | 2) {
-                    vec![2, 7]
+                    vec![2, 6]
                 } else {
-                    vec![2, 7, 8]
+                    vec![2, 6, 7]
                 },
                 "range/interpolation shared returns"
             );
             let expected_write_cycles = if matches!(mode, 1 | 2) {
-                vec![7]
+                vec![6]
             } else {
-                vec![7, 8]
+                vec![6, 7]
             };
             assert_eq!(write_cycles, expected_write_cycles, "SINCOS write schedule");
             checked += 1;
@@ -2761,11 +2739,11 @@ mod tests {
         assert!(checked > 1000, "expected a dense sweep, checked={checked}");
     }
 
-    /// Abort from issue through the first write must gate the cancelled
-    /// writes. An immediate restart with a different operand must use its own
-    /// phase, including abort on the T2 return or T3 phase-capture beat.
+    /// Abort through either final write edge gates the remaining results but
+    /// preserves an earlier published result. Immediate restart must use its
+    /// own phase, including abort on T2 capture or T3 synchronous lookup.
     #[test]
-    fn sincos_cycle_model_abort_cancels_without_writes() {
+    fn sincos_cycle_model_abort_cancels_remaining_writes() {
         let packed = lut::packed_sincos_lut();
         let fd = 8u16;
         let a = 0x0001_0000i32;
@@ -2795,10 +2773,15 @@ mod tests {
                 } else {
                     assert!(!out.busy, "abort must clear busy at cycle {cycle}");
                 }
-                assert!(
-                    !out.rf_write_enable,
-                    "abort must not present a write at cycle {cycle}"
+                let published_before_abort = cycle == 6 && cycle < abort_cycle;
+                assert_eq!(
+                    out.rf_write_enable, published_before_abort,
+                    "abort must preserve only earlier writes at cycle {cycle}"
                 );
+                if published_before_abort {
+                    assert_eq!(out.rf_write_address, u64::from(fd));
+                    assert_eq!(out.rf_write_data, u64::from(lut::sincos_q16(a).0 as u32));
+                }
                 pipe.step(
                     abort,
                     out.mul_in_valid,

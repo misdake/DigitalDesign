@@ -31,7 +31,11 @@ module CpuV3FpuMulPipe (
     // dot accumulator wraps mod 2^64 identically either way. (The harness IO
     // layer is u64-wide.)
     output wire signed [63:0] out_product,
-    output wire [8:0] out_tag
+    output wire [8:0] out_tag,
+    // Include the visible output slot until its consumer's write edge.
+    // Ordinary destinations use 0..66; special bit7 and integer bit8 exclude
+    // their entries. This derives ownership from the two physical slots.
+    output wire ordinary_pending
 );
 
 // Stage 1: latched operands (sign-extended to 36 bits) plus the tag.
@@ -73,5 +77,8 @@ end
 assign out_valid = s2_valid_r && !abort;
 assign out_product = s2_prod_r[63:0];
 assign out_tag = s2_tag_r;
+assign ordinary_pending = !abort &&
+    ((s1_valid_r && s1_tag_r[8:7] == 2'b00) ||
+     (s2_valid_r && s2_tag_r[8:7] == 2'b00));
 
 endmodule

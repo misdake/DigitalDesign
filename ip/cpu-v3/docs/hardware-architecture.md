@@ -111,17 +111,29 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 
 | Block | Current implementation | Per-cycle capability |
 |---|---|---|
-| GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One registered write per cycle; a forwarding mux exposes the pending write to a matching next instruction |
+| GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One 21-bit valid/address/data publication slot feeds the synchronous RAM write and both independent source-forwarding selects |
 | Control state | 16-bit PC, CSEG, four 8-bit DSEG page mappings, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | One common operand pair for register/immediate add/sub/logic/compare; the add/subtract lane also forms effective addresses and relative targets; separate shift, CLZ and popcount paths | One non-multiply integer result; sequential PC increment remains independent for overlapped instruction acceptance |
 | Integer multiplier | Unsigned 16-bit operands zero-extended into the shared signed 36 x 36 CPU/FPU pipe, with integer-owner tag `0x100` | The blocking core retains `Execute -> MultiplyWait -> MultiplyCommit`; the returned low 32 bits supply the selected 16-bit product window |
 | FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
-| FPR file | Two mirrored 512 x 32 SDPB BSRAMs giving 2R1W; architectural `F0..F63` are addresses `0..63`, the hidden LUT region is `64..511` (mirror A: RCP and SINCOS; mirror B: RSQRT even/odd) | Two registered-address synchronous reads and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
+| FPR file | Two 512 x 32 SDPB banks giving 2R1W, with broadcast writes and distinct initialized hidden tables; architectural `F0..F63` are addresses `0..63`, hidden tables occupy `64..511` (A: RCP and SINCOS; B: RSQRT even/odd) | One synchronous read per bank and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
 | FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), using the common FPU lane issuer and commit slot | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
 | CPU/FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit owner/destination tag | Integer multiply, FPU multiply/dot, SINCOS range reduction and all LUT interpolation products time-share it; the core serializes owners |
-| FPU operand-port issuer and commit | ALU and product instructions share one lane calendar, two six-bit read cursors and destination context. One next-edge result/address slot serves ALU and final `DOTSTORE`; the product outstanding count retains direct multiplier returns | One synchronous RF operand pair per enabled beat; ALU and product vector II = 1, direct MUL/special returns and all existing write beats are retained |
+| FPU operand-port issuer and commit | ALU and product instructions share one lane calendar, two six-bit read cursors and destination context. One next-edge result/address slot serves ALU and final `DOTSTORE`; both physical DSP valid/tag slots retain direct-return ownership, and the returned DOT lane identifies completion | One synchronous RF operand pair per enabled beat; ALU and product vector II = 1, direct MUL/special returns and all existing write beats are retained |
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
-| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables; range reduction and delta/residue interpolation use the shared CPU/FPU pipe, with two LUT-base metadata stages and direct result writeback | RCP/RSQRT `T0..T4`; SINCOS `T0..T8` dual, `T0..T7` single; owns both RF read ports while active |
+| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables; range reduction and delta/residue interpolation use the shared CPU/FPU pipe, with two LUT-base metadata stages and direct result writeback | RCP/RSQRT `T0..T4`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
+
+The GPR result class is selected once across integer operations, immediate forms,
+loads/device returns, multiply/AUX completion, link and segment reads. At E0 an
+instruction publishes the single 21-bit valid/address/data slot. After E0 either
+or both operands of the next instruction can forward from that same slot. At E1
+RAM consumes the old slot while the next result may publish, preserving Execute
+II=1. Hold retains the entire valid slot; RAM may repeat its idempotent write.
+Address/data need not retain an invalid payload after a non-held edge. CMP,
+false conditional moves and failed loads publish no GPR write. A global async
+store fault suppresses a new publication; a next-instruction fetch error does not
+erase the current successful instruction's result. The registered read-B and AUX
+read-A selections remain ahead of the asynchronous operand path.
 
 Within the FPU ALU, ADD/SUB, MIN/MAX, CMP and NEG/ABS share one wrapping
 32-bit add/subtract path. Signed comparison checks differing operand signs
@@ -136,7 +148,7 @@ physical ports. A single destination context serves ordinary and special work;
 the special leaf receives operation fields and returns only a relative destination.
 ALU results and final DOTSTORE values share their mutually exclusive next-edge
 commit storage. Ordinary products and special-function results still write the RF
-directly on their original return beat. Write events form one mutually exclusive
+directly on their scheduled return beat. Write events form one mutually exclusive
 final bus, with no new queue or arbitration state. Standalone ALU/ProductPath
 leaves remain test references and are absent from the production dependency graph.
 The independent value model commits the old scalar/vector write registers after
@@ -280,10 +292,14 @@ the pair retires as two words.
 - The shared 36 x 36 pipe has two registered stages and II = 1. For
   `VMUL`/`VMULS`/scalar `MUL`, lane k's RF address is presented at `T(k)`,
   its operands issue at `T(k+1)`, and its product writes back during `T(k+3)`.
-  This removes one beat from the previous three-stage pipe. Its
-  return-valid signal is not path ownership: one ProductPath issuer retains
-  the shared operand mux through its common outstanding-return count until
-  every issued product has returned. The former separate multiply and dot
+  Return-valid alone is not ownership. Ordinary pending is derived from
+  both real pipeline slots' valid/tag bits, including the visible output
+  slot until its RF write edge; there is no outstanding counter. A returned
+  DOT lane tag, rather than a second counter, identifies the last lane.
+  Product write addresses retain all nine bits: a six-bit base and up to
+  four emitted lanes can produce physical addresses through 66, without
+  masking at F63. Architectural instruction validation is unchanged.
+  The former separate multiply and dot
   controllers remain standalone test references, outside the selected unit.
   At T0 the RF reads the live bases; those existing six-bit fields then hold
   lane-one cursors. A advances by one, while B advances by zero for VMULS or
@@ -295,22 +311,29 @@ the pair retires as two words.
   narrows once into its final 32-bit slot and writes/clears ACC on the next
   enabled beat. Abort gates writes and clears pending ownership, while already
   written MUL lanes and the accumulated ACC prefix survive.
-- RCP/RSQRT are blocking `T0..T4`; SINCOS is `T0..T8` for the dual
-  `sin`/`cos` output and `T0..T7` for a single output. The special path
+- RCP/RSQRT are blocking `T0..T4`; SINCOS is `T0..T7` for the dual
+  `sin`/`cos` output and `T0..T6` for a single output. The special path
   monopolizes both RF read ports and uses the shared CPU/FPU pipe for both
   range reduction and delta/residue interpolation. RCP/RSQRT read the packed
   LUT at `T1`, issue signed delta times unsigned residue at `T2`, and write
-  at `T4`. SINCOS range reduction returns at `T2`; the retained 18-bit phase
-  supplies the `T3` capture. Its interpolation requests issue at `T5` and
-  `T6`; a single output writes at `T7`, and dual outputs at `T7` and `T8`.
+  at `T4`. SINCOS captures the range phase at `T2` in its sole 18-bit
+  phase register; quadrant/fraction are views of that held value. The first
+  synchronous table read is at `T3`, first interpolation plus the second
+  dual table read at `T4`, and second dual interpolation at `T5`. A single
+  output writes at `T6`, and dual outputs at `T6` and `T7`. Busy clears only
+  after the final RF write edge. Modes 00/01/10 mean dual/sin/cos; mode 11
+  remains reserved and is rejected by the core.
   Two 17-bit base metadata stages accompany tagged products; the returned
   product feeds the existing correction, scaling and sign logic directly
   into the synchronous RF write. Arithmetic shifts, endpoint handling,
   normalization, saturation and architectural widths retain their numerical
   contract. Abort gates writes on the abort edge; a new instruction may
   start on the following edge with its own operand and destination.
-- Integer requests use tag bit 8; interpolation uses bit 7, with bit 6
-  selecting SINCOS and bits 1/0 carrying endpoint/sign. The input mux gives
+- Integer requests use tag `0x100` (bit8). Every special return sets bit7:
+  `0x081` is range reduction, `0x080` reciprocal interpolation, and
+  `0x0C0..0x0C3` SINCOS interpolation with endpoint/sign in bits 1/0.
+  Ordinary product tags clear bits 8/7 and retain the physical destination
+  or DOT lane. Range no longer aliases ordinary tag zero. The input mux gives
   integer, special and ordinary product requests priority in that order;
   there is no concurrent-client retry queue. Core instruction serialization
   excludes overlapping owners. Integer returns are suppressed from FPU
@@ -321,6 +344,27 @@ the pair retires as two words.
   variable-latency handshake; loads stay blocking until the destination
   registers are written, while stores drain through the core's early-release
   store buffer after the source values are captured.
+
+The shared DSP input forms extension bits after source selection. Ordinary and
+range work consume RF A as signed32; interpolation substitutes signed10 delta.
+The other operand is ordinary signed32, interpolation unsigned9 residue, or the
+positive 36-bit range constant. Integer operands remain zero-extended unsigned16.
+
+Reciprocal normalization finds CLZ and normalized [30:15] in the same staged
+16/8/4/2/1 network. After the 8/4/2 steps, [31:8], [31:12] and [31:14] retain
+every source bit reachable by the remaining shifts. Zero yields CLZ32 and a zero
+window. The seven-bit index and nine-bit residue feed the same T1 lookup/capture;
+bank A holds reciprocal/SINCOS and bank B the distinct RSQRT tables.
+
+One modulo-2^17 interpolation adder serves both return types. RCP correction is
+independently arithmetic-shifted by 9, truncated to signed10, then extended;
+SINCOS correction is independently arithmetic-shifted by 8 and consumes low17.
+Two base metadata slots overlap for dual SINCOS and stay aligned with the real
+two-stage DSP. Endpoint-adjusted SINCOS magnitude/sign or scaled/saturated
+reciprocal magnitude/sign select before one 32-bit conditional negation. Right
+shift precedes negation. Zero and invalid-RSQRT overrides retain priority;
+the live SINCOS return ignores stale reciprocal context.
+
 
 The hidden BSRAM tables are generated from one Rust reference model in the
 architecture crate (`fpu_lut`), which also backs the architectural emulator and

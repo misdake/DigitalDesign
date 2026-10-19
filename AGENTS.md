@@ -17,11 +17,12 @@ through `.agent/projects/README.md`.
    `.agent/projects/<project>/design/<topic>/`, outside Git. Include the target specification,
    changes from implemented behavior, implementation approach and acceptance conditions. Maintain
    the project's todo throughout. Design documents contain pending work, not development logs.
-3. **Implement incrementally.** Once the project design is ready, use a dedicated project branch
-   for implementation. After each part is implemented and verified, merge its actual specification
-   and implementation description into the owning tracked `docs/`, remove that completed part
-   from local design, and update todo. The user backs up the design process. Honour the hard
-   constraints and run the mandatory validation for each implementation path touched.
+3. **Implement incrementally.** Once the project design is ready, read `.agent/conventions.md`
+   for the development, integration and delivery workflow. After each part is implemented and
+   verified, merge its actual specification and implementation description into the owning tracked
+   `docs/`, remove that completed part from local design, and update todo. The user backs up the
+   design process. Honour the hard constraints and run the mandatory validation for each
+   implementation path touched.
 4. **Document ownership.** `docs/` describes implemented interfaces, formats, behavior, storage,
    scheduling and brief tradeoffs. Pending specifications stay in local design. Maintain each
    document list only in its own directory's README; local documents have
@@ -32,9 +33,8 @@ through `.agent/projects/README.md`.
    recreate them, append ledger rows, or run legacy logging scripts. Required implementation
    validation still applies.
 
-Read on demand, never by default: `.agent/conventions.md`, `.agent/commit-checklist.md`,
-`.agent/logs.md`. When a document's home, or whether a change counts as a finished unit, is
-unclear, ask instead of deciding silently.
+Read `.agent/commit-checklist.md` and `.agent/logs.md` on demand. When a document's home, or whether
+a change counts as a finished unit, is unclear, ask instead of deciding silently.
 
 ## Hard constraints
 

@@ -14,11 +14,13 @@ reg [8:0] in_tag = 0;
 wire out_valid;
 wire signed [63:0] out_product;
 wire [8:0] out_tag;
+wire ordinary_pending;
 
 CpuV3FpuMulPipe dut (
     .clk(clk), .abort(abort),
     .in_valid(in_valid), .in_a(in_a), .in_b(in_b), .in_tag(in_tag),
-    .out_valid(out_valid), .out_product(out_product), .out_tag(out_tag)
+    .out_valid(out_valid), .out_product(out_product), .out_tag(out_tag),
+    .ordinary_pending(ordinary_pending)
 );
 
 localparam integer MAX_CYCLES = 20000;
@@ -42,10 +44,15 @@ reg signed [63:0] ref_b = 0;
 reg [8:0] ref_tag = 0;
 reg ref_valid = 0;
 reg signed [63:0] ref_product;
+reg expected_pending;
 
 // Check after the current capture edge, before advancing the reference.
 task check_output;
     begin
+        if (ordinary_pending !== expected_pending) begin
+            $display("DIGITAL_DESIGN_FAIL: ordinary pending omitted a real slot or included another owner");
+            $finish;
+        end
         if (out_valid !== ref_valid) begin
             $display("DIGITAL_DESIGN_FAIL: out_valid=%b want %b", out_valid, ref_valid);
             $finish;
@@ -75,6 +82,7 @@ task push_wide;
         in_b = b;
         in_tag = tg;
         @(posedge clk); #1;
+        expected_pending = (v && tg[8:7] == 0) || (ref_valid && ref_tag[8:7] == 0);
         check_output;
         ref_valid = v;
         if (v) begin
@@ -117,13 +125,13 @@ initial begin
     push(1, 32'h00050000, 32'h00060000, 9'd11);
     @(negedge clk); in_valid = 0; abort = 1;
     #1;
-    if (out_valid !== 1'b0) begin
+    if (out_valid !== 1'b0 || ordinary_pending !== 1'b0) begin
         $display("DIGITAL_DESIGN_FAIL: abort did not gate the visible return");
         $finish;
     end
     check_count = check_count + 1;
     @(posedge clk); #1;
-    if (out_valid !== 1'b0) begin
+    if (out_valid !== 1'b0 || ordinary_pending !== 1'b0) begin
         $display("DIGITAL_DESIGN_FAIL: abort did not clear the pipeline");
         $finish;
     end
