@@ -69,15 +69,13 @@ always @(posedge clk)begin
   endcase
   if(I.prepare.packed_write)begin
    if(raw_index[0])begin
-    if(descriptor[23])packed_expected={8'd0,raw_data[23:16],8'd0,raw_data[15:8],8'd0,raw_data[7:0]};
-    else packed_expected={16'd0,raw_data[31:0]};
     if(I.prepare.pw_high_wa!=8+(raw_index-11)/2)$fatal(1,"attribute row");
     attribute_writes=attribute_writes+1;
    end else begin
-    packed_expected={{4{raw_data[35]}},raw_data[35:24],{4{raw_data[23]}},raw_data[23:12],{4{raw_data[11]}},raw_data[11:0]};
     if(I.prepare.pw_high_wa!=12+(raw_index-10)/2)$fatal(1,"normal row");
     normal_writes=normal_writes+1;
    end
+   packed_expected={12'd0,raw_data[35:0]};
    if(!ready||I.prepare.pw_high_wd!=={{6{packed_expected[47]}},packed_expected})$fatal(1,"packed direct write");
   end
   if(I.prepare.state==8&&I.prepare.core_c_re&&(I.prepare.core_cr>=12||(I.prepare.core_cr>=8&&I.prepare.core_cr<=10)))packed_reads=packed_reads+1;

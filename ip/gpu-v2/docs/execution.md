@@ -94,9 +94,11 @@ contract. Addresses, CE/reset gating and read/return calendars are unchanged.
 
 Each accepted N36/attr32 tail word writes PC once. For source vertex v, normal
 uses PC[12+v] and UV/RGB uses PC[8+v], after the old geometry in those rows is
-dead. Each row contains three 16-bit lanes: sign-extended N12, zero-extended
-RGB8, or U16/V16/zero. Input acceptance completes that write; no later component
-write requires the source word to remain held.
+dead. PC stores the input low36 bits directly, with its upper12 bits zero:
+three contiguous S12 normals, U16/V16, or RGB888 in the low24 bits. There is no
+input lane expansion. Collection and tail writes share the input low36 data
+wires. Input acceptance completes that write; no later component write requires
+the source word to remain held.
 
 For one selected component, the local preparation ROM uses this enabled-edge
 calendar. PC has one enabled-edge synchronous read latency:
@@ -115,9 +117,11 @@ redundant sign bit, preserving the arithmetic and half-LSB bias.
 
 UV writes PA[1+v] for U and PA[4+v] for V in the same return slots, in vertex
 order 2/0/1. Constants have no runtime writer.
-There is one shared 16-bit component selector, no PC read-modify-write, and no
-SECOND/THIRD input expansion. CE freezes the ROM, Q owners and short operands
-together.
+The consumer selects normal12 and RGB8 before extending them to16 bits; UV uses
+a two-way 16-bit selection. Normal sign extension and attribute zero extension feed
+the same signed17 difference unit and existing PA write slots. There is no PC
+read-modify-write or later component expansion write. CE freezes the ROM, Q
+owners and short operands together.
 
 PC[4] and PC[6] are zero; PC[7] is 131071. RAM16 configuration initialization
 sets these immutable rows in both native and portable realizations. Reset does
@@ -231,13 +235,31 @@ Data writes are unsigned17, with bit17 fixed zero: geometry magnitudes are below
 131072 and UV/anchors are at most 65535. Constants include signed18 values and
 are initialized with the image. No inverse-power decoder, PA constant write,
 held A read-address register or additional DSP constant bypass is present.
-The preparation ROM uses all 36 bits of its existing physical word. The top
-two bits select the UV family and current/next vertex before one shared row
-adder. Alignment similarly selects the vertex before the exponent window.
-A/B address fields directly name the single-axis, dual-axis and search sources;
-there is no later opcode override of either read address. C-write fields name
-physical result rows, with a separate conditional auxiliary code. The obsolete
-A-write field is absent.
+The preparation ROM uses one 512x36 physical BSRAM. Its address concatenates the
+two-bit vertex context, one-bit axis context and six-bit operation address.
+The context for the next synchronous read follows the same updates as the loop
+state. Op3 instead fetches the operand context selected by X eligibility while
+its attribute publication retains the current axis. The hard ROM's operation
+field is the current phase; no separate hardware PC register is required.
+
+| Word bits | Meaning |
+| --- | --- |
+| 5:0 / 11:6 | Current operation / default next operation |
+| 16:12 | PA literal row or dynamic window family |
+| 20:17 / 24:21 | PB / PC read row |
+| 27:25 | Three-read-enable and DSP-issue pattern |
+| 28 / 29 | DSP signed-A mode / attribute publication |
+| 31:30 | PB write destination: none, row0, row1, row15 |
+| 32 | Reserved zero |
+| 35:33 | PC write destination and conditional auxiliary write |
+
+Fixed geometric/UV rows and next-vertex rows are resolved in the ROM image.
+PA retains the data-dependent exponent and search windows. PC seed aliases
+select zero or131071 from live edge signs; the secondary-only search selects
+its PB axis at op17. Compact write codes preserve the physical row constraints.
+PB row15 also implies the signed result[34:17] format, so no independent wide
+write-format selector crosses the preparation boundary. Branches, early exits,
+port counts and enabled-edge calendars are unchanged.
 
 The table Q replaces the previous address-register/async-RAM pair. Request an
 address on one enabled edge and let the DSP sample Q on the next; CE freezes

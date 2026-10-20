@@ -1,19 +1,19 @@
 {
   "status": "selected",
-  "delivery_base_commit": "152f4628626e8886a4228b38906698dc1ba6b860",
+  "delivery_base_commit": "d3b3f16d569dac71e5973e6c12ab76a9ce5a9921",
   "source_hash_format": "SHA256 bytes with CRLF normalized to LF",
   "selected_source": {
     "ip/gpu-v2/examples/vliw_integration/float_reference.py": "19e8090e53a2a3b4794a0591338dba9b96b8a9ef8f1bc6c7e236e0b97e4d40a2",
     "ip/gpu-v2/examples/vliw_integration/full_bunny.py": "53d37566e3d385c7ae08275078f7b0706da82b01a01915624f2568ed4cba267f",
     "ip/gpu-v2/examples/vliw_integration/main.rs": "b7ca60826805e89ae0ebc16d2ae4e96f14f6cd9f39f9a25450e37ae176049cc8",
     "ip/gpu-v2/examples/vliw_integration/material_scene.py": "fc5e9beede7e4248030a257f2464e2af7a2c21f814d6e0bead9141f4c15fb348",
-    "ip/gpu-v2/examples/vliw_integration/replay_export.py": "07a2d20866828d27a63a6e90f6b58fc9d301d3243d78d9356afc318c99a5db95",
+    "ip/gpu-v2/examples/vliw_integration/replay_export.py": "b171846e08674ee51a675905e9f2dbf0fa39b65b69285997d74709a48a3a5891",
     "ip/gpu-v2/examples/vliw_integration/solid_scene.py": "c9d2d4bd0eca407441ed4ae89d3ca3194fdfdfeaa5d5fea89decc96be13db622",
     "ip/gpu-v2/examples/vliw_integration/test_material_scene.py": "c32f030236b71e368f120e9d45025e01560823e2c5e823318447c019247e1188",
     "ip/gpu-v2/examples/vliw_integration/verify_stage2.py": "bf8f789049bb8ac6acf220bbfa339f501c717f615f6d32a6662cbac489cd80cb",
-    "ip/gpu-v2/src/frontend/vliw/prepare.v": "44d110b464539e52e03a50f609481ec507a643365f142e6b9cbb040207cd97be",
-    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "708826cb359d48294c9ee0e7acfaa6dff777edf22224fcca5489e3e00fd21e76",
-    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "c18bcec34280b3d71f95a40692324b8b9f223973aedc90bcef2e4c9e1cd5d019",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "93ab521ed0d877fd5d7f76666370ea0c70a4d5d9ed9fdf864438ae29bd916595",
+    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "e9682b307294b801c381b034c481a1f1ac195d078082b03ce7e252ee552108a2",
+    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "b2abd4eac5247e52a2ca01dc48788d6eb0fee9b8f56696dfd32e03588b4a8f3d",
     "ip/gpu-v2/src/frontend/vliw/raster.v": "25ef1a3a25278c28b34e8a3a9754abf2746c85e0f7524bd2dcf36c3a438873e1",
     "ip/gpu-v2/src/frontend/vliw/raster_program.v": "5bcfd26feafd92900f4d2a1c270a2cb6e461b3b3ae92bbecc58798ff617de90b",
     "ip/gpu-v2/src/frontend/vliw/raster_storage.v": "99978ff5c1d5283aab9216fc0c481578290b4d4cd91173a91769de913602c3e4",
@@ -26,10 +26,11 @@
     "ip/gpu-v2/tests/framebuffer_tdp_prefetch.py": "247d2a7a4b0c26d5dff3309433819569563613f856ec6bade691d872fb75909b",
     "ip/gpu-v2/tests/vliw_bounds.py": "8ee6e97bb2797e0fe495601f57360825c15370705657d7ea1c4895f197a8548f",
     "ip/gpu-v2/tests/vliw_prepare_chain.py": "32402fe763aed768de74dcdfc1a4bec0f8d840955bb2dc3f2c08b12a4266e426",
-    "ip/gpu-v2/tests/vliw_prepare_chain_tb.v": "2fa82cbecd14c376b78ea30865069ffdaf9812da4108d7c29aece197c4fac59c",
+    "ip/gpu-v2/tests/vliw_prepare_chain_tb.v": "75392668f7920e53fb9710b836d4d9c5b14b527da6e72bd176f90188f4cc5330",
     "ip/gpu-v2/tests/vliw_quad_pool.py": "a35792c50db4f4dfa8b9e27f33b9d760fa00743add4913d96f37518e92fcfeca",
     "ip/gpu-v2/tests/vliw_raster_scan.py": "0094d1fe9407080ddbeb1984dc300750f8d904c647cb381208ed31b3c4a4557e",
-    "ip/gpu-v2/tests/vliw_raster_scan_tb.v": "403aafa8ce007e34cd94e087e0762427e0da1404ccfa68b9c1ce45b350e79357"
+    "ip/gpu-v2/tests/vliw_raster_scan_tb.v": "403aafa8ce007e34cd94e087e0762427e0da1404ccfa68b9c1ce45b350e79357",
+    "ip/gpu-v2/examples/vliw_integration/test_replay_export.py": "47dc1af1b73e12d545876ccace7d005fbf51facc105af331b603264a13481a7b"
   },
   "protected_vertex": {
     "ip/gpu-v2/src/frontend/vliw/vertex/control_fields.vh": "c31ba52dfb929d373650a24e8b062e939a85a6bb1cb77e9f4f8fd9428bb79432",
@@ -40,11 +41,11 @@
   },
   "scope": {
     "fit": "Independent complete GPU registered transaction boundary; GW2AR-LV18QN88C8/I7, P0, 54MHz. Includes registered observers; excludes physical MC, CPU and Display.",
-    "replay": "Separate single-face box and first two complete bunny meshlets; real arbiter/bridge/controller and pin model, first load and final flush included. Full 948-face front-scene qualification remains at committed 11a49a98 and was not repeated for this candidate.",
+    "replay": "Separate single-face box and first two complete bunny meshlets; real arbiter/bridge/controller and pin model, first load and final flush included. Full948-face front-scene replay was not repeated for this candidate; the prior d3b3f16 qualification is not extrapolated.",
     "board": false
   },
   "fit": {
-    "logic": 11901,
+    "logic": 11829,
     "logic_ff": 5115.0,
     "ssram": 198,
     "bsram": 36.0,
@@ -56,17 +57,17 @@
       "MULTADDALU18X18": 4,
       "ALU54D": 1
     },
-    "fmax": 54.574,
+    "fmax": 54.117,
     "setup_violations": 0.0,
     "hold_violations": 0.0,
-    "report_sha256": "d5f22167254bd4a1767fe7760af7a74eea865f337229b92eb88892308cc217b1",
-    "timing_sha256": "9e06b808123dfa45c66db9cb5abc0b319ceca3640aa5c3bf0bdb4bf10a608de6",
+    "report_sha256": "8132b049d68cf249d974a0956c2d5321710a9f05b87a1ffa601d349d6b9d86ee",
+    "timing_sha256": "c547c0e3f880b2cfb550bc60a1dd40fa28f964d35fa5b552699633dba1829f4b",
     "wrapper_sha256": "0ab55c7bed1244ced43065aef2d260bd6899fd88d7e224fa0d428cbf4d439ed9",
-    "original_source_sha256": "83dd60c23765c6d44d2e71b1a685adaa7af69954d33a2c8ff01bdd272527686b"
+    "original_source_sha256": "3bc9406d1caa408352ed49405e70e405652bbe2f6237863f91f97951b143c871"
   },
   "canonical_exports": {
-    "portable": "cc9106254b5370dd58b50ef8629d06efcdd7b6b8cc0d67be066505e7468dcb42",
-    "native": "4e1a2eb271d16e39e9bf897d8b2bd67250d2568f06f92b56aa2bac38a87fd3ab"
+    "native": "bfc30f08e4e9d9b88e626e1b7df195f6525f7f9a3135363f01d7e662edf609ef",
+    "portable": "13618eaa53a31223bb26c88b88d31845adc3c5d8f548eee15ed3c67275c64660"
   },
   "replay": {
     "box": {
@@ -142,7 +143,7 @@
         "expected-valid.hex": "761775371f4972e45c06b8e7877d8f701335ecf852554c3aac9b06bd3ac70416"
       },
       "gold_sha256": "97c2a0c3365d660dfd9370d3b38ffa134138c3e285a58e0186505f9c394c4308",
-      "dut_sha256": "cc9106254b5370dd58b50ef8629d06efcdd7b6b8cc0d67be066505e7468dcb42"
+      "dut_sha256": "0200f637b706e7d1e553d695e39aca7de5785015e2d30f8b72bd458d6d7aabd5"
     },
     "two_meshlet_bunny": {
       "timing": {
@@ -230,14 +231,14 @@
         "expected-valid.hex": "cccb4ec4585613967d87fd481823eae2df8c7fb62d98b2b10aa2c0eda76f6cb5"
       },
       "gold_sha256": "97c2a0c3365d660dfd9370d3b38ffa134138c3e285a58e0186505f9c394c4308",
-      "dut_sha256": "cc9106254b5370dd58b50ef8629d06efcdd7b6b8cc0d67be066505e7468dcb42"
+      "dut_sha256": "0200f637b706e7d1e553d695e39aca7de5785015e2d30f8b72bd458d6d7aabd5"
     }
   },
   "checks": {
     "vertex_unchanged": true,
     "precision_unchanged": true,
     "canonical_export_matches_measured_rtl_tokens": true,
-    "independent_bounds": "60 directed/random portable packets; independent interval enumeration and 21 single-axis pairs with four useful launches each. Native/portable preparation chain separately covered 44 packets.",
+    "independent_bounds": "60 directed/random portable packets; exact interval enumeration. Final native/portable preparation separately covered44 packets.",
     "raster": "Both modes: 16 packets, 1296 pixels with all three h values, 324 quad masks, CE/backpressure; 104 first/last publications and 12 overlapped first loads.",
     "framebuffer": "Native/portable integer, eviction, prefetch lifecycle/fault/reset/flush passed",
     "result_pool": "Native/portable RGB/UV/CE/backpressure/reset protocol matrix passed",
@@ -247,18 +248,26 @@
     "layering": "Passed",
     "docs": "Passed",
     "material_asset_reference": "4 tests passed",
-    "prepare_origin": "Both modes: 44 packets, exact geometry/root equations, four raw-sign/sigma combinations, four truncation-bias classes, all three coarse windows, CE and in-flight reset. RTL-identical final factory export.",
+    "prepare_origin": "Both modes:44 packets, exact geometry/root equations, all raw-sign/sigma/bias/window classes, attributes, PA writes, CE and in-flight reset. Final canonical exports used.",
     "cpu_cosim": "43 passed on current worktree; SHARED_WIDE_EVIDENCE supplied.",
     "system_cosim": "2 passed on current worktree.",
-    "controlled_area": "Same registered boundaries compared complete raw coefficient storage, exact exponent detection, DSP truncation correction and PA/PB/R publication. Final whole-GPU P0/54MHz fit determines acceptance; isolated observer savings are not added.",
+    "controlled_area": "Same296-input/344-output registered preparation boundary and P0/54MHz whole-GPU fit. Whole-GPU resource/timing determines selection; isolated savings are not added.",
     "write_phase_contract": "Enabled PC/PB writes and whole-scene results match the selected baseline; only invalid write-data values change.",
-    "raw_geometry_bias": "Coverage modes=f, biases=f, windows=7 in both modes; scale lifetime assertion and bias/scale/tail CE hold passed."
+    "raw_geometry_bias": "Coverage modes=f, biases=f, windows=7 in both modes; scale lifetime assertion and bias/scale/tail CE hold passed.",
+    "raw_attribute_PC": "Raw N36/UV32/RGB24 stored once in PC with upper12 zero; narrow selection precedes extension; exact final base/difference and PA UV values verified.",
+    "context_rom": "All512 portable/native ROM words, phase tags and reserved bit32 checked. Expanded static physical addresses retain exact branch/CE calendars.",
+    "replay_identity": "Reserved peer dut.v/tb.v excluded case-insensitively; source/staged DUT hashes checked before compile, before simulation and after replay. Seven small guard/logging tests passed."
   },
   "reproduction": {
     "export": "gpu-v2-vliw-export OUTPUT sdram [portable]",
     "replay": "python -B ip/gpu-v2/examples/vliw_integration/replay_export.py --export EXPORT --output FRESH --gold GOLD --peer PEER --scene bunny --meshlet-limit 2 --ply PLY --max-cycles 180000 --timeout 300; use --scene box and --max-cycles 250000 for the separate fill test",
     "source_ply_sha256": "2ca4b1c9206eb2768f10eeb06f30d2dcf576c21f69243335660c896605d1f0ab"
   },
-  "resource_note": "20 vendor DSP macros = 40 physical DSP18 slots, 36 BSRAM and 198 RAM16. Signed raw geometry uses the existing 36x18 scaler, one added lost-tail FF, live exact truncation bias and an unsigned17 magnitude only for PA. No new port, pipeline edge or wait.",
-  "selected_scheduling": "Single-axis D/C interleaving, interval-bounded search, level-major R tables with row-level exit after bounds, and first-word tile metadata publication. Read/write selectors directly name their bank rows; UV/alignment source selection precedes address generation; R operand format masks precede the wide ALU. PW write data is selected by owner phase independently of write-valid; existing write enables determine all visibility. Raw coefficients remain signed through PC and the geometry DSP; a shared exponent outlives all three C samples, so only the lost-tail predicate is delayed."
+  "resource_note": "20 vendor DSP macros =40 physical DSP18 slots,36 BSRAM and198 RAM16. The preparation context ROM uses the existing512x36 block. Raw attribute PC storage adds no port, pipeline edge or arithmetic unit.",
+  "selected_scheduling": "Single-axis D/C interleaving, interval-bounded search, level-major R tables and first-word tile publication remain unchanged. Context-expanded ROM resolves fixed vertex/axis rows; compact write destinations retain structured addresses and imply PB truncation format. PC accepts raw N36/UV32/RGB24 directly; narrow consumer selection feeds the existing signed17 differences and PA UV write slots. Signed raw geometry and exact DSP truncation remain unchanged.",
+  "measured_exports": {
+    "portable": "0200f637b706e7d1e553d695e39aca7de5785015e2d30f8b72bd458d6d7aabd5",
+    "native": "c12a7bd1fa9d3ffe178876a159c08a87ec5235c9c15b1151b9dadb41ab18a2b2"
+  },
+  "validation_equivalence": "Current canonical exports are token-identical to measured exports; only a source comment and whitespace were corrected after qualification."
 }

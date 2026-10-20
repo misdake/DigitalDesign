@@ -12,21 +12,15 @@ module rp_prepare_core(
  output attr_send,output[1:0]attr_index,output attr_bank,
  output attr0_take,attr1_take
 );
- reg[5:0]pc;reg axis;reg[1:0]index,d_kind,aux_kind;
+ reg axis;reg[1:0]index,d_kind,aux_kind;
  reg sign0,nonzero0,empty;reg[1:0]eligible;
  reg search_main,dual_search,aux_pending;
  reg[2:0]search_bit;reg[4:0]prefix;reg[3:0]aux_prefix;
- wire[35:0]u;wire[5:0]op=u[5:0];reg[5:0]next_pc;
- wire normal_pair=index==0||(index==1&&!axis);
+ wire[35:0]u;wire[5:0]op=u[5:0];wire[5:0]pc=op;reg[5:0]next_pc;
  wire last_pair=index==2,last_n=axis&&index==2;
- wire[1:0]j=index==2?2'd0:index+1'b1;
  wire[1:0]next_index=index==2?2'd0:index+1'b1;
  wire next_axis=index==2?!axis:axis;
  wire dual_math=&eligible;
- function[3:0]weight_row;input a;input[1:0]v;begin
-  if(a)weight_row=4'd9+v;else if(v==0)weight_row=0;else weight_row=4'd6+v;
- end endfunction
- function[3:0]geo_row;input a;input[1:0]v;begin geo_row=(a?4'd9:4'd6)+v;end endfunction
  function[1:0]kind;input[53:0]v;begin
   if(v==0)kind=0;else if(v[53])kind=2;else kind=1;
  end endfunction
@@ -69,10 +63,23 @@ module rp_prepare_core(
   endcase
   if(pair_finish)next_pc=last_pair?6'd21:6'd0;
  end
- rp_prepare_program program_store(clk,reset,ce,(start||active)&&!reset,start?6'd0:next_pc,u);
- function[6:0]alignment_row;input[1:0]v;begin
-  case(v)0:alignment_row={2'b01,shift0};1:alignment_row={2'b01,shift1};default:alignment_row={2'b01,shift2};endcase
- end endfunction
+ reg fetch_axis;reg[1:0]fetch_index;
+ always @*begin
+  fetch_axis=axis;fetch_index=index;
+  case(op)
+   3:if(!axis)fetch_axis=1;else fetch_axis=!eligible[0];
+   17:if(!search_main)fetch_axis=!axis;
+   31:begin fetch_axis=0;fetch_index=0;end
+   39:begin fetch_axis=next_axis;fetch_index=next_index;end
+   default:begin end
+  endcase
+  if(pair_finish)begin fetch_axis=0;fetch_index=index+1'b1;end
+  // op3 only prefetches arithmetic for the selected primary. Its actual
+  // attribute bank remains the sequential axis, outside this ROM address.
+  if(next_pc==3)fetch_axis=eligible[0];
+ end
+ rp_prepare_program program_store(clk,reset,ce,(start||active)&&!reset,
+  start?9'd0:{fetch_index,fetch_axis,next_pc},u);
  wire aux_issue=op==5||op==7||op==10||op==12||op==15||op==19;
  wire c_axis=axis^aux_issue;
  wire search_start=(op==16&&!dual_math&&endpoint_search)||(op==17&&(search_main||aux_search));
@@ -88,97 +95,67 @@ module rp_prepare_core(
  wire[2:0]main_search_bit=search_axis?y_search_bit:x_search_bit;
  wire[2:0]paired_search_bit=y_search_bit+3'd1;
  wire[2:0]initial_search_bit=(op==17&&search_main&&aux_search&&paired_search_bit>main_search_bit)?paired_search_bit:main_search_bit;
- wire[1:0]a_vertex=u[35]?next_index:index;
- wire[3:0]uv_row=(u[34]?4'd4:4'd1)+{2'd0,a_vertex};
- wire[1:0]align_vertex=op==31?2'd0:next_index;
+ wire[4:0]a_code=u[16:12];wire[3:0]c_code=u[24:21];
+ reg[3:0]port_enable;
+ always @*case(u[27:25])
+  0:port_enable=0;1:port_enable=2;2:port_enable=3;3:port_enable=4;
+  4:port_enable=6;5:port_enable=12;6:port_enable=13;7:port_enable=15;
+ endcase
  reg[6:0]ar;reg[3:0]br,cr;
  always @*begin
-  ar=81;br=15;cr=6;
-  case(u[15:12])
-   1:ar={3'd0,weight_row(!axis,j)};
-   2:ar={3'd0,weight_row(!axis,index)};
-   3:ar=alignment_row(align_vertex);
-   4:ar={3'd0,uv_row};
-   6:ar={4'b1000,initial_search_bit};
-   7:ar={3'b100,aux_pending&&!aux_accept,search_bit-3'd1};
-   8:ar={3'b100,!candidate_accept,search_bit-3'd1};
-   9:ar={3'd0,weight_row(axis,j)};
-   10:ar={3'd0,weight_row(axis,index)};
-   11:ar={3'd0,weight_row(eligible[0],j)};
-   12:if(d_kind==1)ar=80;else ar=50;
-   13:if(aux_kind==1)ar=80;else ar=50;
+  ar={2'd0,a_code};br=u[20:17];cr=c_code;
+  if(a_code>=16&&a_code<=18)begin
+   case(a_code[1:0])
+    0:ar={2'b01,shift0};1:ar={2'b01,shift1};default:ar={2'b01,shift2};
+   endcase
+  end
+  case(a_code)
+   19:ar={4'b1000,initial_search_bit};
+   20:ar={3'b100,aux_pending&&!aux_accept,search_bit-3'd1};
+   21:ar={3'b100,!candidate_accept,search_bit-3'd1};
+   22:if(d_kind==1)ar=80;else ar=50;
+   23:if(aux_kind==1)ar=80;else ar=50;
+   24:ar=80;25:ar=81;
    default:begin end
   endcase
-  case(u[19:16])
-   1:br=geo_row(!axis,index);
-   2:br=geo_row(!axis,j);
-   3:br=geo_row(axis,index);
-   4:br=geo_row(axis,j);
-   5:br=4'd12+index;
-   6:br=4'd12+j;
-   7:br=geo_row(!eligible[0],index);
-   10:br=geo_row(next_axis,next_index);
-   11:br=6;
-   13:br={3'd0,axis};
-   14:br={3'd0,!axis};
-   15:br={3'd0,search_axis};
-   default:begin end
-  endcase
-  case(u[22:20])
-   1:cr={3'd0,c_axis};
-   2:if(seed_sign[(c_axis?3:0)+index])cr=7;
-   3:if(index!=0)cr={3'd0,axis};
-   4:if(index!=0)cr={2'd0,1'b1,axis};
-   5:if(index!=0)cr=11;
-   6:if(seed_sign[(next_axis?3:0)+next_index])cr=7;
-   7:begin
-    if(op==0)cr={1'b1,normal_pair,2'b10};
-    else if(op==1)cr={1'b1,normal_pair,2'b00};
-    else cr={1'b1,normal_pair,2'b01};
-   end
-   default:begin end
-  endcase
-  if(op==44)cr={3'd0,!axis};
+  if(op==17&&!search_main)br={3'd0,!axis};
+  if(c_code==5)cr={3'b011,seed_sign[(c_axis?3:0)+index]};
+  if(c_code==15)cr={3'b011,seed_sign[(next_axis?3:0)+next_index]};
  end
  wire aux_prefetch=op==5||op==6||op==10||op==11||op==14;
  wire search_aux=dual_search&&search_bit!=0;
  wire read_gate=op==3?(axis&&eligible!=0):
   (op==16||op==17)?search_start:op==18?search_aux:op==20?search_bit!=0:!aux_prefetch||dual_math;
- assign a_re=active&&u[24]&&read_gate&&!reset;assign a_ra=ar;
- assign b_re=active&&u[25]&&read_gate&&!reset;assign b_ra=br;
- assign c_re=active&&u[26]&&(!aux_issue||(op==19?search_aux:dual_math))&&!reset;assign c_ra=cr;
+ assign a_re=active&&port_enable[0]&&read_gate&&!reset;assign a_ra=ar;
+ assign b_re=active&&port_enable[1]&&read_gate&&!reset;assign b_ra=br;
+ assign c_re=active&&port_enable[2]&&(!aux_issue||(op==19?search_aux:dual_math))&&!reset;assign c_ra=cr;
  assign attr0_take=active&&op==1&&!reset;
  assign attr1_take=active&&op==2&&!reset;
- assign wide_valid=active&&u[27]&&(!aux_issue||(op==19?search_aux:dual_math))&&!(op==39&&last_n)&&!reset;
+ assign wide_valid=active&&port_enable[3]&&(!aux_issue||(op==19?search_aux:dual_math))&&!(op==39&&last_n)&&!reset;
  assign wide_asign=u[28];
- wire[1:0]bw=u[30:29];wire[2:0]cw=u[33:31];
- assign b_we=active&&(bw==1||bw==2||(bw==3&&index==2))&&(op!=9||dual_math)&&!reset;
- assign b_wa=bw==1?{3'd0,axis^(op==9)}:bw==3?{3'd0,axis}:4'd15;
- assign b_wd=bw==2?{{18{result[34]}},result[34:17]}:result[35:0];
- wire conditional_aux=cw==5;
- assign c_we=active&&cw!=0&&(!conditional_aux||(op==18?aux_pending:dual_math))&&!reset;
- reg[3:0]c_write_row;
- always @*case(cw)
-  2:c_write_row={3'd0,axis};
-  3:c_write_row={2'd0,1'b1,axis};
-  5,6:c_write_row={3'd0,!axis};
-  default:c_write_row=11;
+ wire[1:0]b_dest=u[31:30];wire[2:0]c_dest=u[35:33];
+ assign b_we=active&&b_dest!=0&&(op!=9||dual_math)&&!reset;
+ assign b_wa=b_dest==3?4'd15:{3'd0,b_dest[1]};
+ assign b_wd=b_dest==3?{{18{result[34]}},result[34:17]}:result[35:0];
+ assign c_we=active&&c_dest!=0&&(c_dest<6||(op==18?aux_pending:dual_math))&&!reset;
+ reg[3:0]c_row;
+ always @*case(c_dest)
+  1,6:c_row=0;2,7:c_row=1;3:c_row=2;4:c_row=3;default:c_row=11;
  endcase
- assign c_wa=c_write_row;
+ assign c_wa=c_row;
  assign c_wd=result;
  assign bound_valid=active&&(op==21||op==22)&&!reset;
  assign bound_empty=empty||op==22;
- assign attr_send=active&&u[23]&&!reset;
+ assign attr_send=active&&u[29]&&!reset;
  assign attr_index=index;assign attr_bank=axis;
  always @(posedge clk)begin
-  if(reset)begin active<=0;done<=0;pc<=0;axis<=0;index<=0;d_kind<=0;aux_kind<=0;
+  if(reset)begin active<=0;done<=0;axis<=0;index<=0;d_kind<=0;aux_kind<=0;
    sign0<=0;nonzero0<=0;empty<=0;eligible<=0;search_main<=0;dual_search<=0;aux_pending<=0;
    search_bit<=0;prefix<=0;aux_prefix<=0;xlo<=0;xhi<=24;ylo<=0;yhi<=14;end
   else if(ce)begin
    done<=0;
-   if(start)begin active<=1;pc<=0;axis<=0;index<=0;empty<=0;eligible<=0;aux_pending<=0;xlo<=0;xhi<=24;ylo<=0;yhi<=14;end
+   if(start)begin active<=1;axis<=0;index<=0;empty<=0;eligible<=0;aux_pending<=0;xlo<=0;xhi<=24;ylo<=0;yhi<=14;end
    else if(active)begin
-    pc<=next_pc;
     case(op)
      1:begin sign0<=bq[35];nonzero0<=bq!=0;end
      2:eligible[axis]<=pair_eligible;
@@ -223,7 +200,6 @@ module rp_prepare_core(
  end
 `ifndef SYNTHESIS
  always @(posedge clk)if(ce&&!reset&&active)begin
-  if(op!=pc)$fatal(1,"preparation ROM alignment pc%0d op%0d",pc,op);
   if((op==8||op==45||(op==9&&dual_math))&&result[53:35]!={19{result[35]}})$fatal(1,"bbox D overflow");
   if((op==37||op==38||op==39)&&result[53:35]!={19{result[35]}})$fatal(1,"G/S overflow");
   if(op==18&&aux_pending&&!dual_search)$fatal(1,"unexpected auxiliary retire");

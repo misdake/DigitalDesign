@@ -79,14 +79,8 @@ module rp_prepare(
  reg[1:0]input_vertex;
  always @*case(in_index)10,11:input_vertex=0;12,13:input_vertex=1;default:input_vertex=2;endcase
  // Reuse PC8..10 after the last geometry record has been consumed. Each
- // N36/UV32/RGB24 input writes three final 16-bit lanes in one cycle.
- reg[47:0]packed_input;
- always @*begin
-  if(input_normal)packed_input={{4{in_data[35]}},in_data[35:24],{4{in_data[23]}},in_data[23:12],{4{in_data[11]}},in_data[11:0]};
-  else if(rgb)packed_input={8'd0,in_data[23:16],8'd0,in_data[15:8],8'd0,in_data[7:0]};
-  else packed_input={16'd0,in_data[31:0]};
- end
- wire normal_write=state==TAIL&&input_take&&input_normal;
+ // Store N36/UV32/RGB24 unchanged; select a narrow component at consumption.
+ wire[47:0]packed_input={12'd0,in_data[35:0]};
  wire packed_write=state==TAIL&&input_take&&(input_normal||input_attr);
  assign pw_low_we=pw_low0_we||pw_low1_we;
  // PC8..10 hold the current edge's raw records; no separate quantization pool.
@@ -139,11 +133,18 @@ module rp_prepare(
  wire signed[16:0]current_a={signed_attribute&&component[15],component};
  wire signed[16:0]base_a={signed_attribute&&attribute_base[15],attribute_base};
  wire signed[16:0]difference=current_a-base_a;
- always @*case(factor_index)
-  0,3:component=pw_q[51:36];
-  1,4:component=pw_q[67:52];
-  default:component=pw_q[83:68];
- endcase
+ reg[11:0]normal_component;reg[7:0]rgb_component;
+ always @*begin
+  case({core_attr_index[0],core_attr_bank})
+   0:normal_component=pw_q[47:36];1:normal_component=pw_q[59:48];default:normal_component=pw_q[71:60];
+  endcase
+  if(!core_attr_index[1])rgb_component=pw_q[43:36];
+  else if(!core_attr_bank)rgb_component=pw_q[51:44];else rgb_component=pw_q[59:52];
+  if(signed_attribute)component={{4{normal_component[11]}},normal_component};
+  else if(rgb)component={8'd0,rgb_component};
+  else if(core_attr_index[1]&&core_attr_bank)component=0;
+  else if(core_attr_index[1])component=pw_q[67:52];else component=pw_q[51:36];
+ end
  always @(posedge clk)begin
   if(reset)begin attribute_base<=0;difference0<=0;end
   else if(ce)begin
