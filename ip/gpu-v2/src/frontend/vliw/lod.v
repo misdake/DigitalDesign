@@ -2,9 +2,9 @@
 // quad_end后16/20/24/28CE读G及anchor；33CE按完成编号读公共offset。
 module rc_lod(
  input clk,reset,ce,input[1:0]phase,
- input prepare_owner,input prep_pw_re,input[3:0]prep_pw_ra,input prep_pw_acc_re,input[3:0]prep_pw_acc_ra,
- input prep_pw_low0_we,prep_pw_low1_we,prep_pw_high_we,input[3:0]prep_pw_wa,
- input[35:0]prep_pw_low_wd,input[53:0]prep_pw_high_wd,input[3:0]prep_pw_high_wa,output[89:0]prep_pw_q,
+ input read_bank,write_bank,
+ input coefficient_bwe,coefficient_cwe,input[3:0]coefficient_bwa,coefficient_cwa,
+ input[35:0]coefficient_bwd,coefficient_cwd,
  input cfg_valid,
  input[4:0]cfg_tex_u,cfg_tex_v,cfg_max_mip,input signed[7:0]cfg_bias,input cfg_rgb,
  input quad_end_valid,input[2:0]quad_end_qid,input[3:0]quad_end_mask,
@@ -52,33 +52,31 @@ module rc_lod(
  wire[2:0]meta_id=result_id;
  wire pw_re=z_read||meta_read||issue_read;
  wire[3:0]pw_ra=phase==0 ? 4'd4 : phase==3 ? {1'b1,meta_id} : {2'd0,axis};
- reg[3:0]pw_read_address,pw_acc_read_address;wire[89:0]pw_q;
- wire pw_read=prepare_owner?prep_pw_re:pw_re;
- wire[3:0]runtime_b_row=issue_read?{3'd0,axis[0]}:pw_ra;
- wire[3:0]pw_read_row=prepare_owner?prep_pw_ra:runtime_b_row;
- // 运行期只写offset银行，其余77位直接连接准备器，取消旧回灌通路。
- wire[3:0]offset_write_row=prepare_owner?prep_pw_wa:{1'b1,reciprocal_pid[4:2]};
- wire offset_write=prepare_owner?prep_pw_low0_we:meta_write;
- wire[15:0]offset_data=prepare_owner?prep_pw_low_wd[15:0]:quad_offset;
- wire prep_low0_write=prepare_owner&&prep_pw_low0_we;
- wire prep_low1_write=prepare_owner&&prep_pw_low1_we;
- wire prep_high_write=prepare_owner&&prep_pw_high_we;
- assign prep_pw_q=pw_q;
+ // Only final S20/G36/Z31 coefficients cross from prepare to runtime.
+ // Each half uses inactive rows in one 16-word 1W1R bank; the offset bank
+ // retains its independent writer, so no simultaneous write is arbitrated.
+ reg[3:0]pw_read_address,pw_acc_read_address;
+ reg[2:0]offset_read_address;wire[15:0]offset_q;
+ wire[35:0]coefficient_b_q,coefficient_c_q;
+
  always @(posedge clk)begin
-  if(reset)begin pw_read_address<=0;pw_acc_read_address<=0;end
+  if(reset)begin pw_read_address<=0;pw_acc_read_address<=0;offset_read_address<=0;end
   else if(ce)begin
-   if(pw_read)pw_read_address<=pw_read_row;
-   if(prepare_owner)begin if(prep_pw_acc_re)pw_acc_read_address<=prep_pw_acc_ra;end
-   else if(z_read||issue_read)pw_acc_read_address<=pw_ra;
+   if(z_read||issue_read)begin
+    pw_read_address<={read_bank,z_read?3'd4:{2'd0,axis[0]}};
+    pw_acc_read_address<={read_bank,z_read?3'd4:{1'b0,axis}};
+   end
+   if(meta_read)offset_read_address<=meta_id;
   end
  end
- iz_params_async #(.WIDTH(16)) parameters_offset(clk,reset,ce,offset_write,offset_write_row,offset_data,pw_read_address,pw_q[15:0]);
- iz_params_async #(.WIDTH(4)) parameters_low0(clk,reset,ce,prep_low0_write,prep_pw_wa,prep_pw_low_wd[19:16],pw_read_address,pw_q[19:16]);
- iz_params_async #(.WIDTH(16)) parameters_low1(clk,reset,ce,prep_low1_write,prep_pw_wa,prep_pw_low_wd[35:20],pw_read_address,pw_q[35:20]);
- iz_params_async #(.WIDTH(48),.PC_CONSTANTS(1)) parameters_high(clk,reset,ce,prep_high_write,prep_pw_high_wa,prep_pw_high_wd[47:0],pw_acc_read_address,pw_q[83:36]);
- assign pw_q[89:84]={6{pw_q[83]}};
- // S20符号扩展到B36；G36符号扩展到C54，无补偿码或高字加法。
- assign wide_b=pw_q[35:0];assign wide_c=pw_q[89:36];
+ iz_params_async #(.WIDTH(16)) parameters_offset(clk,reset,ce,meta_write,
+  {1'b0,reciprocal_pid[4:2]},quad_offset,{1'b0,offset_read_address},offset_q);
+ iz_params_async #(.WIDTH(36)) coefficients_b(clk,reset,ce,coefficient_bwe,
+  coefficient_bwa,coefficient_bwd,pw_read_address,coefficient_b_q);
+ iz_params_async #(.WIDTH(36),.PC_CONSTANTS(2)) coefficients_c(clk,reset,ce,coefficient_cwe,
+  coefficient_cwa,coefficient_cwd,pw_acc_read_address,coefficient_c_q);
+ assign wide_b=coefficient_b_q;
+ assign wide_c={{18{coefficient_c_q[35]}},coefficient_c_q};
  assign wide_valid=issue_live&&phase==3&&!reset;assign wide_tag=issue_tag;
  assign norm_input_valid=wide_result_valid;assign norm_input_value=wide_result_data[35:0];
  // 导数晚两CE发射，直接在phi3消费两CE归一化返回，删除旧lookup等待寄存。
@@ -134,7 +132,7 @@ module rc_lod(
 
     finish_valid<={finish_valid[0],kernel_valid&&axis==3};finish_run<={finish_run[0],kernel_run};
     if(finish_valid[1])begin
-     finish_pending<=1;pending_run<=finish_run[1];finish_offset<=pw_q[15:0];
+     finish_pending<=1;pending_run<=finish_run[1];finish_offset<=offset_q;
     end
    end
    if(phase==2)begin
@@ -175,13 +173,10 @@ module rc_lod(
   end
  end
  always @(posedge clk)if(ce&&!reset)begin
-  if(prep_high_write&&!(prep_pw_high_wa>=8&&prep_pw_high_wa<=10)&&prep_pw_high_wd[53:47]!={7{prep_pw_high_wd[47]}})
-   $fatal(1,"PC算术数据不能精确存入48位");
   if(wide_result_valid&&wide_result_data[53:35]!={19{wide_result_data[35]}})$fatal(1,"LOD导数溢出signed36");
   if(phase==3&&calendar_valid[2]&&kernel_valid)$fatal(1,"固定LOD核重叠：输入quad小于16CE");
   if(norm_valid&&phase!=3)$fatal(1,"LOD归一化未落在phi1");
   if(log_result_valid&&phase!=0)$fatal(1,"LOD查表未落在phi0");
-  if(prepare_owner&&meta_write)$fatal(1,"准备与quad offset生命周期重叠");
   if(phase==0&&finish_valid[1]&&finish_run[1]&&(!log_result_valid||log_result_tag!={result_id,2'd3}))
    $fatal(1,"LOD完成日历与算术流水不一致");
  end

@@ -108,12 +108,12 @@ integer tick=0,wall=0,p=0,wi=0,taken=0,seen=0,attr_count=0,empty_count=0;
 integer single_pairs=0,single_issues=0,single_returns=0;
 always @(negedge clk)begin tick=tick+1;ce=!reset&&(tick%11!=3&&tick%11!=4);end
 wire ready,busy,done,bvalid,bempty;wire[4:0]xl,xh;wire[3:0]yl,yh;wire[16:0]error;
-gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start),.descriptor(descriptor),
+gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start),.execution_idle(1'b1),.descriptor(descriptor),
  .raw_valid(raw_valid),.raw_ready(ready),.raw_index(raw_index),.raw_data(raw_data),
  .cfg_far_z(32'd13041664),.cfg_tex_u(5'd6),.cfg_tex_v(5'd6),.cfg_max_mip(5'd6),.cfg_bias(8'sd0),
  .table_valid(1'b0),.table_index(8'd0),.table_data(36'd0),.quad_valid(1'b0),.quad_x(8'd0),.quad_y(7'd0),
  .sample_valid(1'b0),.sample_lane(2'd0),.sample_cover(1'b0),.sample_anchor(1'b0),.sample_h(30'd0),
- .quad_end_valid(1'b0),.quad_mask(4'd0),.pool_ready(1'b1),.pool_quad_id(3'd0),.s_busy(busy),.s_done(done),.error(error),
+ .quad_end_valid(1'b0),.quad_mask(4'd0),.pool_ready(1'b1),.pool_quad_id(3'd0),.busy(busy),.s_done(done),.error(error),
  .bound_valid(bvalid),.bound_empty(bempty),.bound_xlo(xl),.bound_xhi(xh),.bound_ylo(yl),.bound_yhi(yh));
 reg[35:0]ds[0:@N@-1];reg[53:0]ws[0:16*@N@-1];reg[18:0]bs[0:@N@-1];reg[50:0]ps[0:6*@N@-1];
 always @(posedge clk)begin

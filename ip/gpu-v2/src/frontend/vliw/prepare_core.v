@@ -1,7 +1,8 @@
 // Single- and dual-axis bounds share fixed PA/PB/PC ports and one DSP calendar.
 // PB0/1 and PC0/1 are temporary axis rows, dead before analytic LOD starts.
 module rp_prepare_core(
- input clk,reset,ce,start,input rgb,input[5:0]seed_sign,
+ input clk,reset,ce,start,input input_take,normalize_wait,
+ output[5:0]operation,output[3:0]import_row,output[2:0]import_kind,input rgb,input[5:0]seed_sign,
  input[4:0]shift0,shift1,shift2,
  input[35:0]bq,input[53:0]cq,input[53:0]result,
  output a_re,output[6:0]a_ra,
@@ -17,6 +18,7 @@ module rp_prepare_core(
  reg search_main,dual_search,aux_pending;
  reg[2:0]search_bit;reg[4:0]prefix;reg[3:0]aux_prefix;
  wire[35:0]u;wire[5:0]op=u[5:0];wire[5:0]pc=op;reg[5:0]next_pc;
+ assign operation=op;assign import_row=u[24:21];assign import_kind=u[14:12];
  wire last_pair=index==2,last_n=axis&&index==2;
  wire[1:0]next_index=index==2?2'd0:index+1'b1;
  wire next_axis=index==2?!axis:axis;
@@ -47,7 +49,9 @@ module rp_prepare_core(
   (op==20&&search_bit==0&&!empty&&!main_empty);
  always @*begin
   next_pc=u[11:6];
+  if(op>=48)next_pc=input_take?u[11:6]:op;
   case(op)
+   23:next_pc=normalize_wait?6'd23:6'd24;
    3:begin if(!axis)next_pc=0;else if(eligible==0)next_pc=21;else if(!dual_math)next_pc=41;end
    16:begin
     if(endpoint_fail)next_pc=22;
@@ -79,7 +83,7 @@ module rp_prepare_core(
   if(next_pc==3)fetch_axis=eligible[0];
  end
  rp_prepare_program program_store(clk,reset,ce,(start||active)&&!reset,
-  start?9'd0:{fetch_index,fetch_axis,next_pc},u);
+  start?9'd48:{fetch_index,fetch_axis,next_pc},u);
  wire aux_issue=op==5||op==7||op==10||op==12||op==15||op==19;
  wire c_axis=axis^aux_issue;
  wire search_start=(op==16&&!dual_math&&endpoint_search)||(op==17&&(search_main||aux_search));
@@ -187,7 +191,7 @@ module rp_prepare_core(
      22:empty<=1;
      31:begin axis<=0;index<=0;end
      39:begin index<=next_index;axis<=next_axis;end
-     40:begin active<=0;done<=1;end
+     24:begin active<=0;done<=1;end
      default:begin end
     endcase
     if(search_start)begin

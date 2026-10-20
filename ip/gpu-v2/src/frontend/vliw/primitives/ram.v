@@ -27,7 +27,10 @@ module iz_params_async #(parameter WIDTH=54,parameter PC_CONSTANTS=0)(input clk,
 `ifdef PORTABLE
  reg [WIDTH-1:0] memory[0:15];assign q=memory[ra];
  // Configuration-time constants share the data bank without runtime writes.
- initial if(PC_CONSTANTS)begin memory[4]=0;memory[6]=0;memory[7]=131071;end
+ initial if(PC_CONSTANTS)begin
+  memory[4]=0;memory[6]=0;memory[7]=131071;
+  if(PC_CONSTANTS==2)memory[12]=0;
+ end
  always @(posedge clk)if(ce&&!reset&&we)memory[wa]<=wd;
 `else
  localparam LANES=(WIDTH+3)/4;
@@ -44,7 +47,7 @@ module iz_params_async #(parameter WIDTH=54,parameter PC_CONSTANTS=0)(input clk,
  assign q=lanes[WIDTH-1:0];
 `endif
 `ifndef SYNTHESIS
- always @(posedge clk)if(PC_CONSTANTS&&ce&&!reset&&we&&(wa==4||wa==6||wa==7))
+ always @(posedge clk)if(PC_CONSTANTS&&ce&&!reset&&we&&(wa==4||wa==6||wa==7||(PC_CONSTANTS==2&&wa==12)))
   $fatal(1,"iz_params_async write to constant row");
 `endif
 endmodule
@@ -110,6 +113,10 @@ module iz_operand_table(input clk,reset,ce,input we,input[3:0]wa,input[16:0]wd,
    end
    else if(address==80)constant_value=30;
    else if(address==81)constant_value=18'h3ffff;
+   else if(address>=96&&address<112)begin
+    step=18'd128>>(address%8);
+    if(address>=104)constant_value=18'd0-step;else constant_value=step;
+   end
   end
  endfunction
 `ifdef PORTABLE
@@ -128,7 +135,8 @@ module iz_operand_table(input clk,reset,ce,input we,input[3:0]wa,input[16:0]wd,
  wire[35:0]data;assign q=data[17:0];
  SDPX9B #(.BIT_WIDTH_0(18),.BIT_WIDTH_1(18),.READ_MODE(0),.RESET_MODE("SYNC"),
   .INIT_RAM_02(constant_block(32)),.INIT_RAM_03(constant_block(48)),
-  .INIT_RAM_04(constant_block(64)),.INIT_RAM_05(constant_block(80))) ram(
+   .INIT_RAM_04(constant_block(64)),.INIT_RAM_05(constant_block(80)),
+  .INIT_RAM_06(constant_block(96)),.INIT_RAM_07(constant_block(112))) ram(
   .DO(data),.DI({19'd0,wd}),.ADA({6'd0,wa,4'b1111}),.ADB({3'd0,ra,4'd0}),
   .CLKA(clk),.CLKB(clk),.CEA(ce&&we&&!reset),.CEB(ce&&re&&!reset),.OCE(ce),
   .RESETA(1'b0),.RESETB(reset),.BLKSELA(3'b0),.BLKSELB(3'b0));

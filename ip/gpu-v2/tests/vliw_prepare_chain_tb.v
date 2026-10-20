@@ -9,13 +9,13 @@ always @(negedge clk)begin tick=tick+1;ce=!reset&&(tick%11!=3&&tick%11!=4);end
 reg[35:0]descriptor=0;reg[4:0]raw_index=0;reg[53:0]raw_data=0;
 wire ready,sbusy,sdone,run_enable;wire[16:0]ie;wire[3:0]re;
 wire gwe,bvalid,bempty;wire[3:0]gwa;wire[29:0]gwd;wire[4:0]xl,xh;wire[3:0]yl,yh;wire[1:0]phase;
-wire rb,rd;
-gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start),.descriptor(descriptor),.raw_valid(raw_valid),.raw_ready(ready),.raw_index(raw_index),.raw_data(raw_data),
+wire rb,rd,rstart;
+gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start),.execution_idle(!rb),.raster_start(rstart),.descriptor(descriptor),.raw_valid(raw_valid),.raw_ready(ready),.raw_index(raw_index),.raw_data(raw_data),
 .cfg_far_z(32'd13041664),.cfg_tex_u(5'd6),.cfg_tex_v(5'd6),.cfg_max_mip(5'd6),.cfg_bias(8'sd0),
 .table_valid(1'b0),.table_index(8'd0),.table_data(36'd0),.quad_valid(1'b0),.quad_x(8'd0),.quad_y(7'd0),
 .sample_valid(1'b0),.sample_lane(2'd0),.sample_cover(1'b0),.sample_anchor(1'b0),.sample_h(30'd0),.quad_end_valid(1'b0),.quad_mask(4'd0),.pool_ready(1'b1),.pool_quad_id(3'd0),.s_busy(sbusy),.s_done(sdone),.error(ie),
 .geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bound_valid(bvalid),.bound_empty(bempty),.bound_xlo(xl),.bound_xhi(xh),.bound_ylo(yl),.bound_yhi(yh),.phase(phase),.run_enable(run_enable));
-rc_raster R(.clk(clk),.reset(reset),.ce(ce),.start(start),.geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bbox_done(bvalid),.bbox_empty(bempty),.bbox_xlo(xl),.bbox_xhi(xh),.bbox_ylo(yl),.bbox_yhi(yh),.run_enable(run_enable),.phase(phase),.quad_ready(1'b0),.busy(rb),.done(rd),.error(re));
+rc_raster R(.clk(clk),.reset(reset),.ce(ce),.start(rstart),.geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bbox_done(bvalid),.bbox_empty(bempty),.bbox_xlo(xl),.bbox_xhi(xh),.bbox_ylo(yl),.bbox_yhi(yh),.run_enable(run_enable),.phase(phase),.quad_ready(1'b0),.busy(rb),.done(rd),.error(re));
 reg[35:0]descs[0:@LAST@];reg[53:0]words[0:@WLAST@];
 reg[53:0]params[0:@N@*6-1];
 reg[29:0]geometry[0:@N@*9-1];integer geo_writes=0;
@@ -31,7 +31,7 @@ reg[255:0]held;
 reg[90:0]held_attribute;
 reg[58:0]held_quant;
 reg[59:0]held_origin;
-reg[67:0]held_geometry;
+reg[70:0]held_geometry;
 `ifdef RAW_GEOMETRY_DSP
 reg[3:0]raw_modes=0,raw_bias_modes=0;reg[2:0]raw_windows=0;
 reg[27:0]held_raw_dsp;
@@ -54,15 +54,15 @@ always @(posedge clk)begin
   for(j=0;j<3;j=j+1)begin aa[j]=0;bb[j]=0;cc[j]=0;shadow[j]=0;end end
  else if(ce)begin
   if(ie||re)$fatal(1,"diagnostic packet %0d I%h R%h",p,ie,re);
-  if(I.compute.lod.prep_high_write&&(I.prepare.pw_high_wa==4||I.prepare.pw_high_wa==6||I.prepare.pw_high_wa==7))
+  if(I.prepare.pw_high_we&&(I.prepare.pw_high_wa==4||I.prepare.pw_high_wa==6||I.prepare.pw_high_wa==7))
    $fatal(1,"runtime write to PC constant");
-  case(I.compute.lod.pw_acc_read_address)
+  case(I.pc_read_address)
    4,6:begin
-    if(I.compute.lod.pw_q[83:36]!==48'd0)$fatal(1,"PC zero initialization");
+    if(I.private_c!==48'd0)$fatal(1,"PC zero initialization");
     zero_reads=zero_reads+1;
    end
    7:begin
-    if(I.compute.lod.pw_q[83:36]!==48'd131071)$fatal(1,"PC bias initialization");
+    if(I.private_c!==48'd131071)$fatal(1,"PC bias initialization");
     bias_reads=bias_reads+1;
    end
    default:begin end
@@ -95,9 +95,12 @@ always @(posedge clk)begin
    param_writes=param_writes+1;
    $fdisplay(fd,"P %0d %0d %h",p,param_row,expanded_param);
   end
-  if(gwe)begin
+  if(I.canonical_we)begin
    quant_writes=quant_writes+1;
    if(I.prepare.state==1&&raw_valid&&ready)geometry_overlap=geometry_overlap+1;
+  end
+  if(gwe)begin
+
    if(geo_writes>=9||gwd!==geometry[p*9+geo_writes])$fatal(1,"quantized geometry packet%0d item%0d",p,geo_writes);
    geo_writes=geo_writes+1;
    e=gwa[1:0];case(gwa[3:2])0:aa[e]=$signed(gwd);1:bb[e]=$signed(gwd);2:begin cc[e]=$signed(gwd);shadow[e]=gwd;end default:$fatal(1,"geo row");endcase
@@ -152,37 +155,41 @@ always @(posedge clk)begin
  end
  if(!reset&&!ce)begin
   ce0=ce0+1;held={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny};
-  held_attribute={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.compute.lod.pw_acc_read_address,I.compute.lod.pw_q[83:36]};
+  held_attribute={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.pc_read_address,I.private_c};
   held_quant={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative};
   held_origin={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result};
-  held_geometry={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1};
+  held_geometry={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1,I.prepare.quant_fraction};
 `ifdef RAW_GEOMETRY_DSP
   held_raw_dsp={I.prepare.quant_tail,I.prepare.geometry_bias9,I.prepare.quant_scale};
 `endif
   if(|I.prepare.quant_pipe)geometry_holds=geometry_holds+1;
   if(|R.origin_valid)origin_holds=origin_holds+1;
   #1;if(held!=={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny})$fatal(1,"CE hold");
-  if(held_attribute!=={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.compute.lod.pw_acc_read_address,I.compute.lod.pw_q[83:36]})$fatal(1,"attribute prefetch CE hold");
+  if(held_attribute!=={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.pc_read_address,I.private_c})$fatal(1,"attribute prefetch CE hold");
   if(held_quant!=={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative})$fatal(1,"quantization retire CE hold");
   if(held_origin!=={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result})$fatal(1,"DSP pipeline CE hold");
-  if(held_geometry!=={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1})$fatal(1,"geometry scale pipeline CE hold");
+  if(held_geometry!=={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1,I.prepare.quant_fraction})$fatal(1,"geometry scale pipeline CE hold");
 `ifdef RAW_GEOMETRY_DSP
   if(held_raw_dsp!=={I.prepare.quant_tail,I.prepare.geometry_bias9,I.prepare.quant_scale})$fatal(1,"raw geometry bias CE hold");
 `endif
  end
 end
-task drive;input integer cutoff;integer wi,taken,n;begin: body
+task drive;input integer cutoff;integer wi,taken,n,gap_left;begin: body
  descriptor=descs[p];start=1;@(posedge clk);while(!ce)@(posedge clk);@(negedge clk);start=0;
- wi=0;n=0;raw_valid=1;raw_index=0;raw_data=words[p*16];
+ wi=0;n=0;gap_left=0;raw_valid=1;raw_index=0;raw_data=words[p*16];
  while(wi<16||sbusy||!(seen_node||(empty_seen&&!rb)))begin
-  @(posedge clk);taken=ready&&ce;if(ce)n=n+1;
+  @(posedge clk);taken=raw_valid&&ready&&ce;if(ce)n=n+1;
   @(negedge clk);
   if((cutoff>0&&n>=cutoff)||(cutoff==-1&&(|R.origin_valid))||(cutoff==-2&&(|I.prepare.quant_pipe)))begin
    if(cutoff==-1)dsp_resetcuts=dsp_resetcuts+1;
    if(cutoff==-2)geometry_cuts=geometry_cuts+1;
    raw_valid=0;resetcuts=resetcuts+1;disable body;
   end
-  if(taken&&wi<16)begin wi=wi+1;if(wi<16)begin raw_index=wi;raw_data=words[p*16+wi];end else raw_valid=0;end
+  if(taken&&wi<16)begin
+   wi=wi+1;
+   if(wi<16)begin raw_index=wi;raw_data=words[p*16+wi];if(wi%5==3)begin raw_valid=0;gap_left=1;end end
+   else raw_valid=0;
+  end else if(gap_left!=0)begin gap_left=0;raw_valid=1;end
   if(n>1200)$fatal(1,"per packet bound %0d",p);
  end
  if(geo_writes!=9||normal_writes!=3||attribute_writes!=3||attr0_takes!=param_writes||attr1_takes!=param_writes||packed_reads!=3*param_writes)

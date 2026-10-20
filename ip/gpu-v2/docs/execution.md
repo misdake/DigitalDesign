@@ -25,7 +25,7 @@ No implicit equality or shared fence is defined between these identities.
 
 ### Geometry reduction and publication
 
-Each edge first collects its three signed raw coefficients in PC[8..10] and
+Each edge stores its three signed raw coefficients in private PC[8..10] and
 determines their common reduction exponent e. The 48-bit record sign-extends
 the original signed47 C or signed36 N; it is not a sign/magnitude conversion.
 Exact exponent detection uses the 20 high bits above each retained width,
@@ -52,43 +52,79 @@ results. PB and R use that canonical result directly. Only PA's N weights take
 an unsigned17 absolute value; C has no magnitude consumer. There is no full
 input absolute value or 28-bit output sign-restoration datapath.
 
-The DSP registers A/B but consumes unregistered C on the following enabled
-edge. The existing delayed raw sign and one added lost-tail predicate select
-the bias. All three launches share one exponent, which cannot change before
-their final C-sampling edge, so the scale and its bias constants need no extra
-delay register. A simulation assertion protects that lifetime. Reset cuts and
-CE holds retain the same valid/sign/retirement behavior.
+The private preparation DSP registers A/B and consumes unregistered C on the
+following enabled edge. PA supplies the signed power of two from initialized
+rows96..111. The exponent selects the raw B window; its low three bits follow
+A/B to select the next edge's C bias. Sign, lost-tail predicate and this fraction
+freeze with CE. This also permits the next edge's exponent to change while the
+previous edge's final C input is sampled.
 
-Offsets below are enabled edges relative to one C input acceptance:
+All sixteen input words can be accepted consecutively. Relative to one C input:
 
-| Edge | PC read / input | DSP issue | Final write |
+| Edge | PC write / read | DSP launch | Canonical PB write |
 | --- | --- | --- | --- |
-| 0 | Store C in PC10; read Nx from PC8 | None | None |
-| 1 | Read Ny from PC9 | Old Nx Q | None |
-| 2 | Read C from PC10; release collection | Old Ny Q | None |
-| 3 | Accept next edge's Nx in PC8 | Old C Q | Nx |
-| 4 | Accept next edge's Ny in PC9 | None | Ny |
-| 5 | Accept next C; read next Nx | None | C |
+| 0 | Write C; read Nx | None | None |
+| 1 | Write next Nx; read Ny | Nx | None |
+| 2 | Write next Ny; read C | Ny | None |
+| 3 | Write next C; read next Nx | C | Nx |
+| 4 | Write following Nx; read next Ny | Next Nx | Ny |
+| 5 | Write following Ny; read next C | Next Ny | C |
 
-The final physical write address advances Nx/Ny/C in edge order. It needs two
-two-bit counters, not per-component edge/field tags through the DSP. Two valid
-bits and two sign bits follow the fixed latency. The last edge drains before
-determinant/attribute acceptance; no geometry writer survives into CORE.
+Each read and the overlapping next-edge write address differ. The last edge
+continues reading while determinant and attributes arrive; N36/attribute PC
+rows are not overwritten until their previous geometry reads have completed.
+There is no READ or DRAIN input state. An external input gap pauses only that
+input instruction; already-issued reads and returns continue on fixed slots.
+The final physical write address advances Nx/Ny/C in edge order, using two
+two-bit counters rather than tags on every DSP stage.
 
-PB rows 6+edge, 9+edge and 12+edge receive canonical Nx, Ny and C. R receives
-the corresponding physical field/edge address, with Nx/Ny doubled for pixel
-stepping. PA receives the unsigned17 Nx/Ny magnitudes at the operand rows defined
-below. These final writes use PB's low bank while the next source read uses
-PC's high bank. The next edge's raw writes overlap retirement without sharing
-a write port. Delta alone uses the reversed 53-bit work vector. CE freezes it,
-the DSP, read exponent, sign/valid pipeline and final address together.
+Private PB rows6+edge,9+edge,12+edge retain canonical Nx,Ny,C. PA receives the
+unsigned17 Nx/Ny magnitudes. One private DSP then executes the bounds and LOD
+preparation ROM through the same private PA/PB/PC ports. It is not shared with
+live pixel Z/LOD. PC's low36 input bits are written directly; only its high12
+input bits distinguish signed raw geometry from zero-extended packed attributes.
+The ROM supplies the physical input row. Canonical PB returns, core arithmetic
+returns and the depth factor use their fixed write phases.
 
-The PB/PC write-data selection depends only on its owning phase. Geometry
-retirement selects canonical PB data while collection selects raw PC records;
-tail collection selects packed attributes, CORE selects arithmetic returns,
-and configuration commit selects PB's depth factor. Write-valid is kept solely
-in the existing write enables; inactive write-data values have no zeroing
-contract. Addresses, CE/reset gating and read/return calendars are unchanged.
+### Overlapping next-triangle preparation
+
+The next header may enter when the private preparer is free, while the previous
+R/I executes. Only final values cross to the runtime consumer:
+
+| Storage | Layout and physical ports |
+| --- | --- |
+| Private PA/PB/PC | PA18 BSRAM, PB36 and PC48 RAM16; each has independent 1W1R preparation ports |
+| Runtime B coefficients | 16x36 RAM16: row `{context,field}`, Sx/Sy at fields0/1 and K at field4; 1W1R |
+| Runtime C coefficients | 16x36 RAM16: four G/S rows per context; fields4 are immutable zero; 1W1R |
+| Attribute pair banks | Existing two 16x51 RAM16 banks; row `{0,context,component}`; 1W1R |
+| Quad log offsets | Independent 16x16 RAM16 bank; runtime writer and reader only |
+| UV anchors | Independent four-entry unsigned17 values in RAM16, with a synchronous18-bit Q |
+
+Preparation publishes into the inactive context. Runtime reads only the active
+context; its offset and anchor writers cannot compete with preparation writes.
+No mirrored read port, request, reservation or dynamic port arbitration is used.
+After preparation finishes and old R drains, R starts independently of old I.
+The parent snapshots bbox metadata and a one-bit pending-context flag blocks
+new R samples. Geometry import, step preparation, traversal and tile loading
+can proceed while old I, including LOD, still reads the old active context.
+Once old I drains, one configuration commit toggles the active context and
+releases new R samples. If I was already idle, start and commit coincide.
+This switches triangle-local parameters, not global draw or Lighting state;
+global changes still require the whole old work to drain. The preparer holds
+its completed context until that commit, so a second prepared context cannot
+overwrite the values being handed off.
+
+At R start, private PB geometry rows
+are replayed with nine consecutive read/write slots: Nx0,Ny0,C0 through
+Nx2,Ny2,C2. Nx/Ny are doubled only at R's input. The first read occurs on the
+R-start edge, its R write on the following edge; bbox_done follows the ninth
+write. Replay and a following triangle's preparation have disjoint fixed PB
+access slots; assertions reject a shared read or same-row overwrite. The
+interpolator remains busy through replay. No raw quad FIFO, per-pixel context
+tag or full geometry copy is introduced. The pending-context flag changes only
+on enabled edges and resets with R/I. R can start only while old R is idle;
+I configuration can change only while old I is idle. There is no new memory
+port competition or dynamic ownership request.
 
 ### Packed attribute parameters
 
@@ -127,7 +163,7 @@ PC[4] and PC[6] are zero; PC[7] is 131071. RAM16 configuration initialization
 sets these immutable rows in both native and portable realizations. Reset does
 not rewrite the bank. Input collection and preparation only write actual data;
 there is no constant write at determinant acceptance, component capture or
-configuration commit. Configuration commit still writes the depth factor to PB.
+configuration commit. Configuration commit writes the depth factor to private PB and the inactive runtime B context.
 
 ### Interleaved tile bounds
 
@@ -220,19 +256,20 @@ prefixes and secondary-retirement marker together.
 
 ### A operand data and constants
 
-One 18-bit BSRAM supplies preparation operands and the two runtime UV anchor
-pages through one synchronous read port. Mutable rows retain their four-bit
+One 18-bit BSRAM supplies private preparation operands through one synchronous
+read port. Runtime UV anchors have their own small RAM16 bank. Mutable rows retain their four-bit
 write address; constant reads use a seven-bit address:
 
 | Rows | Contents |
 | --- | --- |
-| 0..15 | Geometric magnitudes and UV; runtime anchors reuse 4..7 |
+| 0..15 | Private geometric magnitudes and UV |
 | 32+d, d=0..31 | 131072 shifted right by d for d<=17, otherwise zero |
 | 64+8*negative+b, b=0..7 | Signed 32 shifted left by b for b<=4; b>4 uses 32 |
 | 80 / 81 | 30 / signed18 -1 |
+| 96+8*sigma+f, f=0..7 | Signed `(128 >> f)`, negated for sigma=1 |
 
 Data writes are unsigned17, with bit17 fixed zero: geometry magnitudes are below
-131072 and UV/anchors are at most 65535. Constants include signed18 values and
+131072 and UV values are at most 65535. Constants include signed18 values and
 are initialized with the image. No inverse-power decoder, PA constant write,
 held A read-address register or additional DSP constant bypass is present.
 The preparation ROM uses one 512x36 physical BSRAM. Its address concatenates the
@@ -240,7 +277,12 @@ two-bit vertex context, one-bit axis context and six-bit operation address.
 The context for the next synchronous read follows the same updates as the loop
 state. Op3 instead fetches the operand context selected by X eligibility while
 its attribute publication retains the current axis. The hard ROM's operation
-field is the current phase; no separate hardware PC register is required.
+field is the current phase; no separate hardware PC or input-index register is
+required. Slots48..63 accept and validate the sixteen input items; their PA
+field encodes input kind and their PC field encodes the input write row.
+Slots23/24 commit and finish. R may start once determinant normalization and
+old R finish; commit waits for old I to drain and then releases new samples.
+No outer legacy state decoder drives the data ports.
 
 | Word bits | Meaning |
 | --- | --- |
@@ -259,7 +301,7 @@ select zero or131071 from live edge signs; the secondary-only search selects
 its PB axis at op17. Compact write codes preserve the physical row constraints.
 PB row15 also implies the signed result[34:17] format, so no independent wide
 write-format selector crosses the preparation boundary. Branches, early exits,
-port counts and enabled-edge calendars are unchanged.
+arithmetic issue/retirement calendars remain fixed.
 
 The table Q replaces the previous address-register/async-RAM pair. Request an
 address on one enabled edge and let the DSP sample Q on the next; CE freezes
@@ -276,10 +318,11 @@ both. The C input retains its existing schedule and is not given another registe
 | op32 / op35 | Current U / V | op35 / op36 |
 | op36 | 81 | op37 |
 | op38 | 32+next exponent difference | op39 |
-| Runtime phi2 | Anchor page/channel, rows4..7 | LOD at phi3 |
+| Runtime phi2, separate anchor RAM16 | Anchor page/channel | LOD at phi3 |
 
 Reads and writes are statically scheduled; cross-port same-address access is
-forbidden. New triangles and pixel execution still use disjoint lifetimes.
+forbidden. New preparation and old pixel execution use independent ports; only
+the final context publication waits for the old consumers to drain.
 
 ## Raster origin restoration
 

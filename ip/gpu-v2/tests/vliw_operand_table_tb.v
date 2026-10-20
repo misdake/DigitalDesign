@@ -25,6 +25,10 @@ module tb;
    read_row(64+i,expected);
   end
   read_row(80,30);read_row(81,18'h3ffff);
+  for(i=0;i<16;i=i+1)begin
+   expected=18'd128>>(i%8);if(i>=8)expected=18'd0-expected;
+   read_row(96+i,expected);
+  end
   // Exercise every data row and both physical nine-bit write lanes.
   for(i=0;i<16;i=i+1)begin wa=i;wd=17'h10001+i*513;we=1;tick();end
   we=0;

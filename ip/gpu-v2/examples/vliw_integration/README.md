@@ -16,6 +16,8 @@ not replace those implemented contracts or define a CPU submission ABI.
 | tests/vliw_sdram.py | Actual main arbiter/bridge/controller and independent SDRAM pin model |
 | full_bunny.py | Meshlet partition, two-page loading and complete supplied PLY traversal |
 | replay_export.py | Matched box/full-bunny audit of an explicitly supplied export with a prebuilt current MC peer |
+| profile_prepare.py | Observer-only replay separating R-only/I-only/shared publication waits and an exclusive R lifetime partition; other activity counters overlap |
+| profile_prepare.py | Same bounded replay with observers separating preparation work, inactive-context publication wait and R/I overlap |
 | test_replay_export.py | Small source-identity, peer-isolation and bounded-log regression; includes a tiny Icarus simulation |
 | solid_scene.py | Complete 948-face bunny inside a six-face subdivided room; constant RGB albedos, directional light and selected H9 specular |
 | tests/vliw_prepare_chain.py | Small native/portable preparation regression; optional exhaustive operand-table check |
@@ -103,6 +105,19 @@ again before starting the simulator; the final identity check remains enabled.
 Full compiler/simulator output stays in `compile.log`/`run.log`. The terminal
 prints a compact result and receipt path; detailed counters remain in the receipt.
 Tool failures include only the final 4096 log bytes and the full log path.
+
+For the current private preparer, `profile_prepare.py` accepts the same replay
+arguments and additionally writes `prepare-profile.json`. Its observers do not
+drive DUT inputs. `work` is a union of input transfer, quantization, ROM work,
+normalization and commit; its subcounts overlap. `publish_wait` is time spent
+holding a finished inactive context before the I context switch. Its exclusive
+`publish_r_only`, `publish_i_only` and `publish_both` counters sum to that wait;
+after split handoff, R may already belong to the new triangle while old I
+drains. `r_active_i_tail` measures that overlap. The exclusive R lifetime
+partition is listed in the profile receipt; walker/scanner activity counters
+overlap that partition and must not be added to it. The older `prepare`
+activity counter remains the entire preparer lifetime and must not be compared
+as computation time across the change to overlapping preparation.
 
 Check these replay protections without rendering a full scene:
 

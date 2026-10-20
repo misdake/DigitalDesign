@@ -24,6 +24,7 @@ localparam STRESS=@STRESS@,MAXC=@MAXC@,BYTES=@BYTES@,FB=192000,TEX=16384;
 reg[7:0]memory[0:BYTES-1];reg[35:0]vertices[0:383],admissions[0:95],descriptors[0:95],rom[0:255];reg[53:0]words[0:1823];
 integer cycle=0,en=0,pending=0,address=0,beat=0,delay_count=0,requests=0,paid_ce0=0,k,mi0;
 integer fd,bd,ff,dm,rc,addr,j,task_id=-1,vi=0,ti=0,pi=0,wi=0,all_pi=0,nv,nt,np;
+integer pending_packet=-1,executing_packet=-1;
 integer slot_seq[0:7],physical_seq[0:31],sequence_id=0,peak=0,full_ce=0,headers_pending=0,starts_pending=0;
 integer qpub=0,skips=0,commits=0,nlight=0,nsample=0,nfinal=0,ce0_checks=0;
 integer memory_hold_until=0;
@@ -49,11 +50,13 @@ always @(posedge clk)begin
    if(global_used>peak)peak=global_used;if(global_used==24)full_ce=full_ce+1;
    if(global_used>24||producer_used>8)$fatal(1,"physical pool credits");
    if(dut.front.header_take)begin
+    pending_packet=all_pi;
     if(pi>=np||dut.front.fd!==descriptors[pi])$fatal(1,"descriptor task%0d packet%0d",task_id,pi);
     $fdisplay(fd,"P %0d %0d %h",cycle,all_pi,dut.front.fd);pi=pi+1;all_pi=all_pi+1;wi=0;
     if(global_used)headers_pending=headers_pending+1;
     if(STRESS&&task_id==0&&pi==np)memory_hold_until=cycle+1500;
    end
+   if(dut.front.raster.packet_take)executing_packet=pending_packet;
    if(dut.front.fwv&&dut.front.fwr)begin
     if(wi>=16||dut.front.fwi!==wi[4:0]||dut.front.fwd!==words[(pi-1)*16+wi])$fatal(1,"raw16 task%0d packet%0d word%0d",task_id,pi-1,wi);
     wi=wi+1;
@@ -66,7 +69,8 @@ always @(posedge clk)begin
    end
    if(quad_admitted)begin
     slot_seq[dut.qid]=sequence_id;physical_seq[dut.back.front.quad.allocated[4:0]]=sequence_id;
-    $fdisplay(fd,"A %0d %0d %0d %0d %0d %0d",cycle,sequence_id,all_pi-1,dut.qid,dut.qx,dut.qy);sequence_id=sequence_id+1;
+    if(executing_packet<0)$fatal(1,"quad before execution packet");
+    $fdisplay(fd,"A %0d %0d %0d %0d %0d %0d",cycle,sequence_id,executing_packet,dut.qid,dut.qx,dut.qy);sequence_id=sequence_id+1;
    end
    if(dut.front.sample_valid)begin scalar_active=1;scalar_lane=dut.front.sample_lane;end
    if(scalar_active&&dut.phase<3)begin if(scalar_lane==0)h00[dut.phase*30+:30]=dut.front.sample_h;if(dut.phase==2)scalar_active=0;end

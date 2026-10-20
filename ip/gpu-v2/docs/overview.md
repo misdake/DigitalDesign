@@ -40,9 +40,12 @@ flowchart TD
 Arrows show data dependencies. They do not imply simultaneous admission or equal
 branch latency; the ordered pool retains copied values between these steps.
 
-Triangles execute in submission order. A triangle's geometry returns drain
-before its working state is replaced. Quads already copied into result storage
-can continue through shading while the next triangle runs. Loading the inactive
+Triangles rasterize in submission order. Private preparation of the next
+triangle can overlap current R/I execution. Final coefficient and attribute
+contexts switch after old I and LOD drain. R can import nine retained geometry
+values and begin preparation/traversal as soon as old R finishes; its new
+samples wait for that context switch. Quads copied into result storage can continue through shading
+independently. Loading the inactive
 input page can overlap this work. Global configuration has one live version:
 changing it waits for the whole old GPU and its memory ownership to drain.
 
