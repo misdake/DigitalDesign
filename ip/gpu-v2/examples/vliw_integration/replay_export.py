@@ -13,7 +13,9 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
@@ -30,6 +32,53 @@ def load(name, path):
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def copy_peer_sources(peer, out):
+    """The selected export and generated bench own their reserved file names."""
+    sources = []
+    for path in sorted(peer.iterdir()):
+        if (not path.is_file() or path.suffix.lower() not in ('.v', '.vh')
+                or path.name.casefold() in ('dut.v', 'tb.v')):
+            continue
+        target = out/path.name
+        shutil.copyfile(path, target)
+        if path.suffix.lower() == '.v':
+            sources.append(target)
+    return sources
+
+
+def verify_dut_identity(source, staged, expected):
+    for label, path in (('selected export', source), ('staged DUT', staged)):
+        actual = sha(path)
+        if actual != expected:
+            raise ValueError(f'{label} hash mismatch before tool execution: '
+                             f'{path}; expected {expected}, got {actual}')
+
+
+def execute_logged(command, cwd, log, timeout):
+    """Keep complete tool output on disk and return only replay counters."""
+    started = time.monotonic()
+    with log.open('wb') as output:
+        result = subprocess.run(list(map(str, command)), cwd=cwd, stdout=output,
+                                stderr=subprocess.STDOUT, timeout=timeout)
+    seconds = time.monotonic()-started
+    if result.returncode:
+        with log.open('rb') as output:
+            output.seek(max(0, log.stat().st_size-4096))
+            tail = output.read().decode(errors='replace')
+        raise RuntimeError(f'Tool exited {result.returncode}; full log: {log}\n{tail}')
+    with log.open(errors='replace') as output:
+        summary = ''.join(line for line in output
+                          if line.startswith(('PASS ', 'ACTIVITY ', 'WALL ')))
+    return summary, seconds
+
+
+def run_checked_simulation(execute, command, vvp, out, source, export_sha, timeout):
+    verify_dut_identity(source, out/'dut.v', export_sha)
+    execute(command, out, out/'compile.log', 180)
+    verify_dut_identity(source, out/'dut.v', export_sha)
+    return execute([vvp, out/'sim.vvp'], out, out/'run.log', timeout)
 
 
 def main():
@@ -150,9 +199,7 @@ def main():
     info['memory'] = B.dma_fixture(out, V, metas, initial=V.initial_memory(texture))
     (out/'input.json').write_text(json.dumps(dict(info=info, instances=instances), indent=2))
     shutil.copyfile(source, out/'dut.v')
-    for path in args.peer.resolve().iterdir():
-        if path.suffix in ('.v', '.vh'):
-            shutil.copyfile(path, out/path.name)
+    peer_sources = copy_peer_sources(args.peer.resolve(), out)
     bench = B.bench(S, V, metas, args.max_cycles)
     if args.scene == 'materials':
         bench = materials.configure_bench(bench, shading, instances)
@@ -163,10 +210,9 @@ def main():
                '-I', out, '-s', 'tb', '-o', out/'sim.vvp']
     if args.native:
         command.append(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v')
-    command.extend(sorted(out.glob('*.v')))
-    B.execute(command, out, out/'compile.log', 180)
-    log, seconds = B.execute([os.environ['VVP_EXE'], out/'sim.vvp'],
-                             out, out/'run.log', args.timeout)
+    command.extend([out/'dut.v', *peer_sources, out/'tb.v'])
+    log, seconds = run_checked_simulation(
+        execute_logged, command, os.environ['VVP_EXE'], out, source, export_sha, args.timeout)
     assert 'PASS BUNNY' in log
     counts = V.audit(out, packets, O, args.gold.resolve(), shading=shading, texture=texture)
     def parse(prefix):
@@ -196,8 +242,11 @@ def main():
         assert (counts['sample'] > 0) == (texture is not None) and counts['specular_nonzero'] > 0
         receipt.update(shading=shading, **solid.render(out, ROOT))
     (out/'receipt.json').write_text(json.dumps(receipt, indent=2))
-    print(json.dumps({k: receipt[k] for k in ('scene', 'timing', 'activity',
-                                            'memory_sha256', 'simulation_seconds')}, indent=2), flush=True)
+    print(json.dumps(dict(status=receipt['status'], scene=args.scene,
+        timing={k: timing[k] for k in ('total', 'preload', 'frontend', 'tail')},
+        quads=counts['quads'], covered=activity['covered'],
+        memory_sha256=receipt['memory_sha256'], simulation_seconds=seconds,
+        receipt=str(out/'receipt.json')), indent=2), flush=True)
 
 
 if __name__ == '__main__':

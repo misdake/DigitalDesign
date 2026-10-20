@@ -16,6 +16,7 @@ not replace those implemented contracts or define a CPU submission ABI.
 | tests/vliw_sdram.py | Actual main arbiter/bridge/controller and independent SDRAM pin model |
 | full_bunny.py | Meshlet partition, two-page loading and complete supplied PLY traversal |
 | replay_export.py | Matched box/full-bunny audit of an explicitly supplied export with a prebuilt current MC peer |
+| test_replay_export.py | Small source-identity, peer-isolation and bounded-log regression; includes a tiny Icarus simulation |
 | solid_scene.py | Complete 948-face bunny inside a six-face subdivided room; constant RGB albedos, directional light and selected H9 specular |
 | tests/vliw_prepare_chain.py | Small native/portable preparation regression; optional exhaustive operand-table check |
 | tests/vliw_normal_quantization.py | Exact normal16/18 truncation, RNE and saturation |
@@ -95,6 +96,19 @@ Use `--scene bunny --ply PATH/bun_zipper_res4.ply` for all 948 faces, or
 `--native` with a native export to include vendor primitives. Both simulation
 limits are explicit options (`--max-cycles`, `--timeout`). The supplied export
 is frozen; the driver does not silently rebuild it or select another version.
+Peer `dut.v` and `tb.v` files are excluded regardless of case. Only the selected
+export, copied peer sources and generated bench are passed to the compiler.
+The selected export and staged DUT hashes must match before compilation and
+again before starting the simulator; the final identity check remains enabled.
+Full compiler/simulator output stays in `compile.log`/`run.log`. The terminal
+prints a compact result and receipt path; detailed counters remain in the receipt.
+Tool failures include only the final 4096 log bytes and the full log path.
+
+Check these replay protections without rendering a full scene:
+
+```powershell
+python -B ip/gpu-v2/examples/vliw_integration/test_replay_export.py
+```
 
 For routine performance comparisons, `--scene quick --ply
 PATH/bun_zipper_res4.ply --max-cycles 400000 --timeout 240` submits the existing
