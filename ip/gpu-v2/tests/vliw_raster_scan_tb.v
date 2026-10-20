@@ -47,6 +47,17 @@ always @(posedge clk)begin
    overlapped_loads=overlapped_loads+1;
   end
 `endif
+`ifdef RASTER_PREDICATE_TILE_PUSH
+  if(dut.mailbox_we)begin
+   if(dut.tile_full)$fatal(1,"predicate writes a published mailbox slot");
+   tile_first=tile_first+1;
+  end
+  if(dut.tile_publish)begin
+   if((dut.tile_tail[0]?dut.sim_mail_written1:dut.sim_mail_written0)!=7)
+    $fatal(1,"predicate publishes an incomplete vector");
+   tile_last=tile_last+1;
+  end
+`endif
 `ifdef RASTER_LOCALITY_LIMIT
   if(dut.start_tile&&dut.head_meta[22]&&dut.head_meta[21:18]>4)$fatal(1,"full tile exceeds locality unit");
 `endif
@@ -97,6 +108,9 @@ always @(posedge clk)begin
    if(phase==2)begin pixel_live=0;samples=samples+1;end
   end
   if(quad_end_valid)begin
+`ifdef RASTER_EXACT_QUAD_COVERAGE
+   if(quad_mask==0)$fatal(1,"empty quad escaped exact corner classification");
+`endif
    if(quad_mask!==masks[p*24000+q])$fatal(1,"quad mask packet%0d q%0d got%h want%h",p,q,quad_mask,masks[p*24000+q]);
    if(seen[q])$fatal(1,"quad visited twice");seen[q]=1;
    if(quad_mask!=0)live=live+1;else empty=empty+1;
@@ -125,6 +139,10 @@ initial begin
 `ifdef RASTER_STATIC_TILE_PUSH
  if(tile_first==0||tile_first!=tile_last||overlapped_loads==0)$fatal(1,"missing static mailbox publication coverage");
  $display("PUBLICATION first=%0d last=%0d overlapped_loads=%0d",tile_first,tile_last,overlapped_loads);
+`endif
+`ifdef RASTER_PREDICATE_TILE_PUSH
+ if(tile_first<3*tile_last||tile_last==0)$fatal(1,"missing predicate publication coverage");
+ $display("PREDICATE_PUBLICATION writes=%0d publishes=%0d",tile_first,tile_last);
 `endif
 `ifdef RASTER_REJECT_TAIL
  if(rejected_tail_bypasses==0)$fatal(1,"missing rejected-tail bypass coverage");

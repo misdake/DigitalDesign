@@ -26,11 +26,11 @@ module gpu_v2_vliw_frontend(
  wire[29:0]sample_h;wire[7:0]qx;wire[6:0]qy;wire[3:0]qm;
  wire s_busy,s_done;wire header_take;
  wire bound_valid,bound_empty;wire[4:0]bound_xlo,bound_xhi;wire[3:0]bound_ylo,bound_yhi;
- wire raster_start,exec_idle;reg live_empty;reg[4:0]live_xlo,live_xhi;reg[3:0]live_ylo,live_yhi;
+ wire raster_start,exec_idle;reg[4:0]live_xlo,live_xhi;reg[3:0]live_ylo,live_yhi;
  always @(posedge clk)begin
-  if(reset)begin live_empty<=0;live_xlo<=0;live_xhi<=24;live_ylo<=0;live_yhi<=14;end
+  if(reset)begin live_xlo<=0;live_xhi<=24;live_ylo<=0;live_yhi<=14;end
   else if(ce&&raster_start)begin
-   live_empty<=bound_empty;live_xlo<=bound_xlo;live_xhi<=bound_xhi;live_ylo<=bound_ylo;live_yhi<=bound_yhi;
+   live_xlo<=bound_xlo;live_xhi<=bound_xhi;live_ylo<=bound_ylo;live_yhi<=bound_yhi;
   end
  end
  reg table_window,packet_window;
@@ -56,7 +56,7 @@ module gpu_v2_vliw_frontend(
   .emit_valid(emit_valid),.emit_addr(emit_addr),.emit_data(emit_data)
  );
  rc_raster raster(
- .bbox_done(bound_valid),.bbox_empty(live_empty),.bbox_xlo(live_xlo),.bbox_xhi(live_xhi),.bbox_ylo(live_ylo),.bbox_yhi(live_yhi),
+ .bbox_done(bound_valid&&!bound_empty),.bbox_empty(1'b0),.bbox_xlo(live_xlo),.bbox_xhi(live_xhi),.bbox_ylo(live_ylo),.bbox_yhi(live_yhi),
   .clk(clk),.reset(reset),.ce(ce),.start(raster_start),
   .geo_we(geo_we),.geo_wa(geo_wa),.geo_wd(geo_wd),
   .phase(phase),.run_enable(run_enable),.quad_valid(rqv),.quad_ready(rqr),.quad_x(qx),.quad_y(qy),.quad_mask(qm),

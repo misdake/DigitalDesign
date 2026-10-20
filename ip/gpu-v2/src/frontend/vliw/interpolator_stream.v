@@ -29,6 +29,7 @@ input clk,reset,ce,
 
  wire[3:0]s_error;wire[7:0]p_error;
  wire p_busy,s_raw_ready;reg rgb,active_bank,raster_pending;reg[2:0]current_id;reg replay;reg[3:0]replay_slot;
+ wire engine_bound_valid,engine_bound_empty;
 
  wire quad_take=quad_valid&&quad_ready;
  wire[2:0]quad_id=pool_quad_id;
@@ -41,8 +42,11 @@ input clk,reset,ce,
  assign exec_idle=!p_busy;
  // R owns geometry only. It can import and traverse the next triangle while
  // old I returns still read the active coefficient/attribute context.
- assign raster_start=context_ready&&execution_idle&&!raster_pending;
- wire execute_grant=(execution_idle||raster_pending)&&!p_busy;
+ wire discard_context=context_ready&&engine_bound_empty;
+ assign raster_start=context_ready&&!engine_bound_empty&&execution_idle&&!raster_pending;
+ // Empty work owns only the inactive page. Retire without touching the live
+ // I context or waiting for old R/I; the next preparation reuses that page.
+ wire execute_grant=discard_context||((execution_idle||raster_pending)&&!p_busy);
  wire canonical_we;wire[3:0]canonical_wa;wire[29:0]canonical_wd;
  wire[17:0]operand_value,dsp_a;wire dsp_asign;wire[35:0]dsp_b;wire[53:0]dsp_c;
  reg[3:0]pb_read_address,pc_read_address;
@@ -65,8 +69,7 @@ input clk,reset,ce,
  assign geo_we=replay&&replay_slot<=9&&!reset;
  assign geo_wa=return_address;
  assign geo_wd=return_address[3]?private_b[29:0]:{private_b[28:0],1'b0};
- wire engine_bound_valid,engine_bound_empty;
- assign bound_valid=replay&&replay_slot==10&&!reset;
+ assign bound_valid=((replay&&replay_slot==10)||discard_context)&&!reset;
  assign bound_empty=engine_bound_empty;
  wire coefficient_bwe=(pw_low0_we||pw_low1_we)&&(pw_wa==0||pw_wa==1||pw_wa==4);
  wire coefficient_cwe=pw_high_we&&pw_high_wa<4;
@@ -95,6 +98,7 @@ input clk,reset,ce,
   if(cfg_apply&&!execute_grant)$fatal(1,"configuration published before old execution drain");
   if(raster_start&&!execution_idle)$fatal(1,"geometry handoff before old raster drain");
   if(sample_valid&&raster_pending)$fatal(1,"new raster sample before I context switch");
+  if(discard_context&&(cfg_apply||raster_start||replay))$fatal(1,"empty context acquired runtime ownership");
  end
 `endif
  assign raw_ready=s_raw_ready;assign prepare_error=s_error;

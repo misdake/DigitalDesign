@@ -15,7 +15,7 @@ gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start)
 .table_valid(1'b0),.table_index(8'd0),.table_data(36'd0),.quad_valid(1'b0),.quad_x(8'd0),.quad_y(7'd0),
 .sample_valid(1'b0),.sample_lane(2'd0),.sample_cover(1'b0),.sample_anchor(1'b0),.sample_h(30'd0),.quad_end_valid(1'b0),.quad_mask(4'd0),.pool_ready(1'b1),.pool_quad_id(3'd0),.s_busy(sbusy),.s_done(sdone),.error(ie),
 .geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bound_valid(bvalid),.bound_empty(bempty),.bound_xlo(xl),.bound_xhi(xh),.bound_ylo(yl),.bound_yhi(yh),.phase(phase),.run_enable(run_enable));
-rc_raster R(.clk(clk),.reset(reset),.ce(ce),.start(rstart),.geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bbox_done(bvalid),.bbox_empty(bempty),.bbox_xlo(xl),.bbox_xhi(xh),.bbox_ylo(yl),.bbox_yhi(yh),.run_enable(run_enable),.phase(phase),.quad_ready(1'b0),.busy(rb),.done(rd),.error(re));
+rc_raster R(.clk(clk),.reset(reset),.ce(ce),.start(rstart),.geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bbox_done(bvalid&&!bempty),.bbox_empty(1'b0),.bbox_xlo(xl),.bbox_xhi(xh),.bbox_ylo(yl),.bbox_yhi(yh),.run_enable(run_enable),.phase(phase),.quad_ready(1'b0),.busy(rb),.done(rd),.error(re));
 reg[35:0]descs[0:@LAST@];reg[53:0]words[0:@WLAST@];
 reg[53:0]params[0:@N@*6-1];
 reg[29:0]geometry[0:@N@*9-1];integer geo_writes=0;
@@ -192,7 +192,7 @@ task drive;input integer cutoff;integer wi,taken,n,gap_left;begin: body
   end else if(gap_left!=0)begin gap_left=0;raw_valid=1;end
   if(n>1200)$fatal(1,"per packet bound %0d",p);
  end
- if(geo_writes!=9||normal_writes!=3||attribute_writes!=3||attr0_takes!=param_writes||attr1_takes!=param_writes||packed_reads!=3*param_writes)
+ if(geo_writes!=(empty_seen?0:9)||normal_writes!=3||attribute_writes!=3||attr0_takes!=param_writes||attr1_takes!=param_writes||packed_reads!=3*param_writes)
   $fatal(1,"packed read/write conservation p%0d NW%0d AW%0d R%0d P%0d",p,normal_writes,attribute_writes,packed_reads,param_writes);
  if(uv_writes!=((descriptor[23]||param_writes<4)?0:(param_writes==4?3:6)))$fatal(1,"UV prefetch count");
  if(!empty_seen&&param_writes!=6)$fatal(1,"incomplete nonempty parameters");

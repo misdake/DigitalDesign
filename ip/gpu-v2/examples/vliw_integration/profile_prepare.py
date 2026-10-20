@@ -25,6 +25,9 @@ def observe(bench):
         raster_start_i_busy='dut.core.front.raster_start && pw_i',
         context_switch_r_busy='dut.core.front.interpolator.cfg_apply && pw_r',
         r_active_i_tail='pw_r && !dut.core.front.run_enable && pw_i',
+        empty_context='pw_empty',
+        empty_with_old_r='pw_empty && pw_r',
+        empty_with_old_i='pw_empty && pw_i',
     )
     declarations = '''
 wire pw_r=dut.core.front.raster_busy,pw_i=dut.core.front.interpolator.p_busy;
@@ -38,8 +41,12 @@ wire pw_quant=dut.core.front.interpolator.prepare.quant_read ||
 wire pw_work=dut.core.front.interpolator.prepare.input_take || pw_quant ||
  dut.core.front.interpolator.prepare.math_phase ||
  dut.core.front.interpolator.prepare.normalizing ||
- dut.core.front.interpolator.cfg_apply || dut.core.front.s_done;
+ dut.core.front.interpolator.cfg_apply || dut.core.front.s_done || pw_empty;
 '''
+    export = Path(sys.argv[sys.argv.index('--export')+1])
+    empty = ('dut.core.front.interpolator.discard_context'
+             if 'wire discard_context=' in export.read_text() else "1'b0")
+    declarations = 'wire pw_empty='+empty+';\n'+declarations
     raster = 'dut.core.front.raster.'
     # R lifetime is partitioned exclusively. The additional activity counters
     # deliberately overlap it, and must not be added to this partition.

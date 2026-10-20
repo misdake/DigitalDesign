@@ -109,7 +109,11 @@ new R samples. Geometry import, step preparation, traversal and tile loading
 can proceed while old I, including LOD, still reads the old active context.
 Once old I drains, one configuration commit toggles the active context and
 releases new R samples. If I was already idle, start and commit coincide.
-This switches triangle-local parameters, not global draw or Lighting state;
+A finished empty bbox retires only private preparation: no R start, geometry
+replay or active-context switch occurs, and it does not wait for old R/I. Its
+bounds-completion event remains visible to diagnostics but is filtered from R.
+The next preparer reuses the same inactive page. This switches triangle-local
+parameters, not global draw or Lighting state;
 global changes still require the whole old work to drain. The preparer holds
 its completed context until that commit, so a second prepared context cannot
 overwrite the values being handed off.
@@ -326,40 +330,30 @@ the final context publication waits for the old consumers to drain.
 
 ## Raster origin restoration
 
-Before bounds publication, the walker executes PC0..9 and PC16..18. Base
-production follows PCs0/1/3/5/17/18/8/6/16: zero, dx, dy, three scanner row
-conversions, upper/lower support bases and the quad threshold. PC17/18 form
-`2*dy-2*dx` and `3*dx-dy` in step rows58/59. Each vector instruction reads
-edges0/1/2 consecutively and writes their results one enabled edge later.
+Geometry import writes final dx/dy step rows32/48 through BSRAM A while B
+writes the packed Nx/Ny row62 halves. C import needs only the work RF. There
+is no zero row or subsequent zero/dx/dy copy. Both ports are statically free
+of walker/scanner reads during import. A single exclusive import/origin/ALU
+write word feeds the RF and step store; there is no second wide import mux.
 
-Higher levels use PCs2/4/7/9, in that order, for every level l. X/Y read their
-previous physical step row and add its Q to itself. The original Nx/Ny work-RF
-rows are dead after base construction and become the lower/upper support
-accumulators. Each support recurrence is `s[l]=2*s[l-1]+s[0]`; its fixed base
-comes from the step Q. Thus `s[l]=(2^(l+1)-1)*s[0]`, preserving the full signed30
-modular extent. The old shared temporary-vector address and four separate
-whole-table loops are absent. One static ALU input choice doubles step Q; no
-new bank, read port, or operand arbitration is added. The work/step format controls are
-decoded before the 30-bit operands: zeroing and sign masks form one live mask
-per source, and the fixed doubled-work choice precedes that mask. Step
-doubling uses the same unmasked B operand as ordinary addition. Destination
-bank bits alias the already registered instruction instead of a second tag.
+Base preparation follows PCs5/17/18/8/6: `dy-dx`, `2*dy-2*dx`, `3*dx-dy`,
+upper support and lower support. Each vector reads edges0/1/2 consecutively
+and retires one enabled edge later. Nx/Ny RF rows then become support
+accumulators. X/Y doubling and upper support advance at every required level;
+lower support stops at level3 because nodes above level4 never consume it.
+For support, `s[l]=2*s[l-1]+s[0]=(2^(l+1)-1)*s[0]`, preserving signed30
+modular arithmetic. Root bounds cap production at `root_level-1`; an already
+issued unneeded vector may finish before the rest is skipped. PC14 restores
+the aligned origin before the first node. There is no preparation loop for a
+quad diagonal or corner threshold.
 
-All four rows of level l finish before level l+1 starts. Unknown bounds allow
-production through level8. Once bounds arrive, only levels through
-`root_level-1` are required. If publication finds a higher level in flight, its
-current three-edge instruction finishes and the remaining rows of that level
-are omitted. Lower complete levels need no restoration or copy. All pre-origin
-work depends only on imported geometry and overlaps the independent bounding
-search; PC14 is the only bounds-dependent instruction. Root level is installed
-with the bounding-box origin, before the first node can issue.
-
-The two physical 18-bit step BSRAM lanes store one 30-bit value per ordinary
-row. Row `{edge,62}` instead holds signed18 Nx in bits17:0 and signed18 Ny in
-bits35:18. Geometry import writes these halves independently from the doubled
-coefficients, using fixed bits18:1. The original work-RF write occurs on the
-same edge. Import, step preparation and scanning have disjoint write lifetimes;
-no additional RAM, temporary N vector or memory-port arbitration is present.
+Each of the two physical18-bit step lanes provides one half of ordinary30-bit
+rows. Packed row `{edge,62}` instead holds signed18 Nx/Ny. After preparation,
+A serves the scanner and B serves the walker/origin DSP independently. Import,
+preparation writes and scanner reads have disjoint lifetimes. Exact quad
+classification has two independent signed18 RAM16 coefficient banks, written
+at import and read with the scanner's fixed edge address. No mirror or dynamic
+port request is used.
 
 After bounding-box completion, the origin instruction reads the current C
 vector from the work RF and the packed N row from the step B port. One fused
@@ -392,27 +386,25 @@ scanner reads remain statically disjoint.
 
 ## Tile mailbox publication
 
-The two-entry FIFO holds metadata and three h words per tile. Metadata and the
-tail publish on the first h retirement; the producer holds that physical slot
-for all three words. Publication exposes a fixed fill schedule, rather than a
-completed-vector claim. Relative to the first write, an immediately idle
-scanner uses this enabled-edge calendar:
+The two-entry FIFO holds metadata and three h words per tile. At level4 or
+below, upper-test retirements write their original work-Q h directly into the
+unpublished tail. The producer waits for capacity before the first such read;
+no published slot can be overwritten. A successful upper test supplies all
+three words before any lower-test decision. Lower retirement publishes metadata
+and tail when the region is full or is a partial level2 leaf. A failed lower
+test at level2 can publish immediately because the upper test already filled
+the whole vector. Rejected candidates leave only unpublished data. No enqueue
+copy instruction, zero-add transfer, full flag register or slot tag is needed.
 
-| Edge | Producer | Scanner |
-| --- | --- | --- |
-| 0 | Write h0, metadata and tail | Sees the old FIFO state |
-| 1 | Write h1 | Take metadata and enter LOAD |
-| 2 | Write h2 | Request h0 |
-| 3 | None | Request h1; write old h0 Q into scan storage |
-| 4 | None | Request h2; write old h1 Q into scan storage |
-| 5 | None | Write old h2 Q; release mailbox head |
-
-Every read occurs after its word's write. The earliest read overlaps the last
-write at different addresses. Old-state FIFO capacity decides producer entry;
-no mid-vector stall, bypass, extra h buffer, or reservation handshake is used.
-CE freezes both sides together. The existing final-quad PREFETCH uses the same
-written-word guarantee and retains ownership until its fixed handoff. Simulation
-shadows check each word was already written before either read path accesses it.
+The scanner takes old FIFO metadata and requests h0 on that edge when its
+phase is1/2/3. At phase0 it enters LOAD and requests h0 at the following phase1.
+Subsequent reads request h1/h2 on consecutive edges. Thus the h2 return is
+always phase0/1/2, and all four-bit corner predicates are registered before
+ALIGN's phase3 decision. This preserves the existing first-SCAN phase without
+a same-edge predicate-to-step-address bypass. The last LOAD return releases
+the head. The final-quad PREFETCH path retains its fixed three-word calendar
+and releases the head at handoff. All accesses are after the producer wrote
+their words; CE freezes both sides and simulation shadows check that ordering.
 
 ## A quad's storage lifetime
 

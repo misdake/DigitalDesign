@@ -77,13 +77,13 @@ At pixel `(x,y)`, its reduced field is `2*Nx*x + 2*Ny*y + C`.
 An edge with `A=2*Nx`, `B=2*Ny` includes zero when
 `A>0 || (A==0 && B>0)`; other edges require a strictly positive value.
 
-R prepares geometry step and sign-support rows while I prepares a tile bounding box. R then
-restores the aligned origin and walks supported regions with fixed 4/2/1
-alignment and Y tile search. A terminal rejected region check ends traversal.
-After base construction, X/Y and both support tables advance together one
-level at a time. X/Y double the preceding step Q; support accumulators reuse
-the now-dead Nx/Ny RF rows. Published bounds end unnecessary higher-level work
-after the current vector instruction, without copying a partially prepared table.
+After private bounds preparation, nonempty work starts R independently of
+old I's tail. Empty bounds retire without R import or an I context switch.
+R imports final dx/dy and packed N in parallel, then prepares scanner row
+steps and sign-support bases. X/Y and upper support advance one level at a
+time through the root's required depth. Lower support stops at level3, since
+only nodes at levels2..4 consume it. The accumulators reuse dead Nx/Ny RF
+rows; there is no later zero/dx/dy copy or diagonal-parameter preparation.
 Origin restoration reads packed signed18 Nx/Ny through the two existing
 18-bit step lanes and C through the work RF, then directly writes
 `C+Nx*(2*x_root)+Ny*(2*y_root)` through a fused dual-product DSP. It does not
@@ -122,29 +122,33 @@ therefore stay within one external 16 x 16 framebuffer tile. Descendant tests
 and mailbox traffic remain part of traversal rather than receiving an implicit
 zero-cost full-region loop. Partial tiles arrive only at 4 x 4 pixels. Their
 scanner uses two current/future vectors in one 16 x 30 local register file;
-the address bank changes only when a rejected quad advances. A separate
-three-entry S20 table stores each edge's strict rejection threshold:
+the address bank changes only when a rejected quad advances. Import writes
+two signed18 Nx/Ny banks. Their fixed synchronous reads align with each
+edge's stored h. Exact four-pixel feasibility is:
 
 ```text
-dx = 2*Nx; dy = 2*Ny
-support = max(dx,0) + max(dy,0)
-threshold = tau - support - 1   // tau=0 includes zero, tau=1 excludes zero
-quad_possible = all(current_h[i] > threshold[i])
+f = floor(h/2)
+inclusive = (tau == 0) || (h is odd)
+edge_mask[i] = bitmask(pass_h(h), pass(f+Nx), pass(f+Ny), pass(f+Nx+Ny))
+pass(sum) = sum > 0 || (sum == 0 && inclusive)
+quad_possible = any(edge_mask[0] & edge_mask[1] & edge_mask[2])
 ```
 
-This is exactly the upper-bound test on the four pixels, without adding support
-to h in the test path. Since support is at most 524284, threshold lies in
-`[-524285,0]` and fits S20. A negative h outside S20 cannot pass; a nonnegative
-h passes except when both h and threshold are zero. The bounded negative tail
-uses a 19-bit unsigned comparison. Predicate results are registered before
-they control the bank, coordinates and next synchronous read.
+The first `pass(h)` uses the ordinary signed30 top-left test. Each remaining
+sum uses signed20 arithmetic. `abs(Nx),abs(Ny)<=131071`; when h fits signed20,
+the half-h sums fit signed20, including the sequential diagonal sum. Outside
+that window, positive h makes every corner pass and negative h makes every
+corner fail. This follows from the maximum full-pixel offset524284. No h,
+coefficient, exponent or rounding precision changes. Four mask bits identify
+actual common corners, rather than accepting edges with different possible
+corners. An empty quad therefore never enters I or allocates a result slot.
 
-The existing scan-store write word also feeds the threshold comparator. A tile
-LOAD or PREFETCH classifies its first quad while writing its initial h vector.
-The last pixel of a partial SCAN classifies the following quad while writing
-that quad's origin. CHECK is entered only for an already rejected quad: it
-computes and classifies the successor, rather than repeating the current test.
-No second comparator, wide predicate buffer or operand port is added.
+The scan-store write word feeds this classification. LOAD/PREFETCH classify
+the first quad; the final pixel of a partial SCAN classifies its successor.
+CHECK advances an already rejected quad and classifies the next position.
+Each edge intersects a four-bit aggregate, which is registered before it
+controls coordinates, banks or synchronous reads. The classifier uses local
+RAM16 reads and adds no arbitration or pixel FIFO.
 
 A registered rejected tail needs no successor calculation. At phi3, if SCAN
 has classified the final quad as impossible, it finishes the tile directly.
@@ -169,10 +173,10 @@ converts the last scanned pixel of a row into the following row's origin.
 
 Partial SCAN's last-lane h writes register the next quad's predicates in the
 same way. One phase marker defers the mode decision until phi3, after all three
-bits are stable; it does not add a quad-admission cycle. ALIGN similarly selects
-SCAN or CHECK from the loaded tile's predicates. If the last ordinary LOAD
-return coincides with ALIGN's phi3, only that load's edge-2 predicate bypasses
-the flag register. The scan ALU result has no same-edge mode-decision bypass.
+edge contributions are stable; it does not add a quad-admission cycle. ALIGN similarly selects
+SCAN or CHECK from the loaded tile's predicates. The first LOAD read is scheduled so its
+last return precedes phi3. Neither a LOAD predicate nor a scan ALU result
+bypasses the flag register into the next memory address.
 
 Possible quads enter the original pixel calendar directly. Rejected quads need
 no separate SKIP operation or row-start copy. A rejected tile-end quad can start

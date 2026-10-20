@@ -98,7 +98,7 @@ module rp_prepare(
  // PC8..10 hold the current edge's raw records; no separate quantization pool.
  wire[47:0]pool_q=pw_q[83:36];
  assign context_ready=commit_phase&&!normalizing&&!reset;
- assign cfg_apply=context_ready&&execute_grant;
+ assign cfg_apply=context_ready&&execute_grant&&!bound_empty;
  wire[30:0]depth_k=delta[52:22];
  assign stream_cfg_z_bias=8'sd38+$signed({3'd0,common_e})-$signed({2'd0,delta_e})-$signed({4'd0,tri_shift});
  assign stream_cfg_far=far_z;assign stream_cfg_rgb=rgb;
