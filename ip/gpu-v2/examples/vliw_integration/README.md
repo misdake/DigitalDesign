@@ -17,6 +17,8 @@ not replace those implemented contracts or define a CPU submission ABI.
 | full_bunny.py | Meshlet partition, two-page loading and complete supplied PLY traversal |
 | replay_export.py | Matched box/full-bunny audit of an explicitly supplied export with a prebuilt current MC peer |
 | profile_prepare.py | Observer-only replay separating R-only/I-only/shared publication waits and an exclusive R lifetime partition; other activity counters overlap |
+| profile_triangle_queue.py | Observer-only per-meshlet T queue peak/full waits, last T completion and remaining frontend tail |
+| tests/vliw_triangle_queue.py | Bounded integer-reference T queue fill, wrap, full-queue reset, CE and output-stall checks in portable/native RAM modes |
 | test_replay_export.py | Small source-identity, peer-isolation and bounded-log regression; includes a tiny Icarus simulation |
 | solid_scene.py | Complete 948-face bunny inside a six-face subdivided room; constant RGB albedos, directional light and selected H9 specular |
 | tests/vliw_prepare_chain.py | Small native/portable preparation regression; optional exhaustive operand-table check |

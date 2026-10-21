@@ -287,6 +287,21 @@ read low 36 and high 18 banks simultaneously at the same item address. A read
 returns on the next enabled edge; data/index and both Q owners hold during CE
 or downstream pause. Acceptance of item 15 releases the T record slot.
 
+The default T queue has sixteen slots. Coefficients use ten field-major planes
+of sixteen rows in the existing result banks; V addresses and numeric formats
+are unchanged. Descriptors reside in independent 16-deep distributed RAM. Its
+head stays immutable through item 15 acceptance, so attribute export selects
+vertex references directly from that head instead of copying and rotating them.
+The existing fetch index selects both vertex and N/attribute component. Header
+acceptance requests coefficient 0 on the same enabled edge. Extended read/write
+cursors supply full/empty tests without a separate occupancy counter.
+
+`TRIANGLE_SLOT_BITS` selects power-of-two depths from 2 through 32 at elaboration. At depth 32, a
+four-bit coefficient-plane remap skips the unchanged V attribute rows 192..319;
+descriptor RAM uses two 16-deep banks. Deeper queues do not release the V
+normal/attribute bank before its last indexed export, and do not change global
+state ownership or the frontend-drain requirement.
+
 The implementation shares V/T ROM, register file and arithmetic; interpolation
 preparation has its own local ROM schedule. Later returns write the result pool
 directly. [Execution](/ip/gpu-v2/docs/execution.md) defines their reserved storage and calendar.
