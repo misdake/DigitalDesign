@@ -17,7 +17,7 @@ reg pr=0;wire pub;wire[4:0]ps;wire[22:0]pb;reg[4:0]di=0;wire[22:0]dis,dhs,dns;wi
 reg br=0,zr=0;reg[6:0]ba,za;wire bcol;wire[23:0]bd;wire[15:0]zd;
 reg lr=0,sr=0;wire lvalid,lcontext,svalid,slast;wire[35:0]lnormal,sdata;wire[31:0]lposition;wire[1:0]llane;wire[1:0]srow;wire[9:0]ldesc;wire[18:0]sdesc;
 reg retire=0,skip=0;reg[4:0]rid;wire empty,skipready;wire[4:0]rs;wire[5:0]used,prod,lp,sp;wire busy,fault;
-wire hint_valid;wire[8:0]hint_tile;
+wire hint_valid;wire[9:0]hint_tile;
 gpu_v2_vliw_quad_pool dut(.clk(clk),.reset(reset),.front_ce(fc),.backend_ce(bc),.phase(phase),.draw_bank(bank),.draw_unlit(unlit),
  .quad_valid(qv),.quad_ready(qr),.quad_id(qid),.quad_x(qx),.quad_y(qy),.quad_rgb(rgb),.quad_end_valid(ev),.quad_end_id(eid),.quad_end_mask(emask),
  .prefetch_valid(hint_valid),.prefetch_tile(hint_tile),
@@ -91,7 +91,7 @@ begin
 end endtask
 always @(posedge clk)if(!reset)begin
  if(hint_valid!==(fc&&ev&&(|emask)))$fatal(1,"geometry hint validity");
- if(hint_valid&&hint_tile!==((qy/8)*32+qx/8))$fatal(1,"geometry hint raw tile");
+ if(hint_valid&&hint_tile!==((qy/4)*32+qx/8))$fatal(1,"geometry hint raw tile");
  if(fault||bcol)$fatal(1,"pool fault");
  if(lhold&&(!lvalid||{ldesc,llane,lnormal,lposition}!==lh))$fatal(1,"Light hold changed");
  if(shold&&(!svalid||{sdesc,srow,slast,sdata}!==sh))$fatal(1,"Sample hold changed");

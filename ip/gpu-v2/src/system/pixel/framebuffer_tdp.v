@@ -8,7 +8,7 @@ module gpu_v2_pixel_framebuffer_sink #(
  input wire shade_phase,
  input wire [53:0] shared_rop_product, output wire shared_rop_offer,shared_rop_ce, output wire [26:0] shared_rop_a, output wire [7:0] shared_rop_b,
  input wire clk,reset,ce,commit_allow,
- input wire prefetch_abort,prefetch_valid,input wire[8:0]prefetch_tile,
+ input wire prefetch_abort,prefetch_valid,input wire[9:0]prefetch_tile,
  output wire preflight_bad,
  input wire lane_valid,input wire[1:0]lane,
  input wire[31:0]rgba,input wire[15:0]depth,

@@ -8,7 +8,6 @@ GSR GSR(.GSRI(1'b1));
 localparam DATA="@DATA@", NV=@NV@, NT=@NT@, NP=@NP@, MAXC=@MAXC@, STRESS=@STRESS@;
 reg reset=1,ce=1,start=0,slot=@SLOT@,dma_we=0,output_ready=1;
 reg[9:0]dma_addr=0;reg[63:0]dma_data=0;wire dma_ready;
-reg table_valid=0;wire table_ready;reg[7:0]table_index=0;reg[35:0]table_data=0;
 reg[31:0]cfg_far_z=@FAR@;reg[4:0]cfg_tex_w_log2=@TW@,cfg_tex_h_log2=@TH@,cfg_max_mip=@MIP@;
 reg signed[7:0]cfg_lod_bias=@BIAS@;
 wire quad_valid,quad_ready,quad_rgb;wire[2:0]quad_id;wire[7:0]quad_x;wire[6:0]quad_y;wire[1:0]phase;
@@ -48,21 +47,21 @@ always @(posedge clk)begin
   if(consumer_busy&&out_ready&&(&written_words[released[2:0]])&&(&written_depth[released[2:0]])&&written_lod[released[2:0]]&&written_geometry[released[2:0]])released<=released+1;
  end
 end
-reg[35:0]vertices[0:383],descriptors[0:95],admissions[0:95],rom[0:255];reg[53:0]words[0:1823];
+reg[35:0]vertices[0:383],descriptors[0:95],admissions[0:95];reg[53:0]words[0:1823];
 integer cycle=0,en=0,fd,dm,rc,addr,j,vi=0,ti=0,pi=0,wi=0,qn=0,qw=0,qr=0,due[0:7];
 integer slot_seq[0:7],sequence_id=0,slot_packet[0:7],slot_qi[0:7],saw_done=0;
 integer peak=0,full_ce=0,headers_with_pending=0,ce0_checks=0;
 reg[255:0]frozen_state;
 integer qid,packet,qi,index,seq,slot_index;
 reg[63:0]dma_value;reg[89:0]h00;reg scalar_active=0;reg[1:0]scalar_lane;
-reg[467:0]record;reg accepted,table_taken,dma_taken,start_taken;
+reg[467:0]record;reg accepted,dma_taken,start_taken;
 reg[31:0]rng=32'h92cd3471;reg oh=0,dh=0;reg[39:0]held_out;reg[32:0]held_depth;
 always @(posedge clk)begin
  cycle=cycle+1;if(cycle>MAXC)$fatal(1,"frontend bounded watchdog");
- table_taken=ce&&!reset&&table_valid&&table_ready;
+
  // DMA has an independent clock-enable contract in the adopted input bank.
  dma_taken=!reset&&dma_we&&dma_ready;
- start_taken=ce&&!reset&&start&&idle&&meshlet_ready&&!table_valid;
+ start_taken=ce&&!reset&&start&&idle&&meshlet_ready;
  if(!reset&&ce)begin
   en=en+1;if(meshlet_done)saw_done=1;
   if(occupancy>peak)peak=occupancy;
@@ -127,9 +126,8 @@ task tick;begin
 end endtask
 initial begin
  $readmemh({DATA,"/vertices.hex"},vertices,0,NV*5-1);$readmemh({DATA,"/admissions.hex"},admissions,0,NT-1);
- $readmemh({DATA,"/descriptors.hex"},descriptors,0,NP-1);$readmemh({DATA,"/words.hex"},words,0,NP*16-1);$readmemh({DATA,"/rom.hex"},rom);
+ $readmemh({DATA,"/descriptors.hex"},descriptors,0,NP-1);$readmemh({DATA,"/words.hex"},words,0,NP*16-1);
  fd=$fopen({DATA,"/events.txt"},"w");if(fd==0)$fatal(1,"event file");tick();reset=0;
- for(j=0;j<256;j=j+1)begin table_valid=1;table_index=j;table_data=rom[j];accepted=0;while(!accepted)begin tick();accepted=table_taken;end end table_valid=0;
  dm=$fopen({DATA,"/dma.txt"},"r");
  while(!$feof(dm))begin rc=$fscanf(dm,"%d %h",addr,dma_value);if(rc==2)begin
   dma_addr=addr;dma_data=dma_value;dma_we=1;accepted=0;while(!accepted)begin tick();accepted=dma_taken;end

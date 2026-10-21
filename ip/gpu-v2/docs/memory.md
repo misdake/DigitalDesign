@@ -51,6 +51,8 @@ write data beat does not itself acknowledge the transaction. Terminal response
 ends the owner. Earlier writes survive an error.
 
 RO arbitration is round-robin per transaction between geometry and texture.
+An optional third control client supports command fetch, staging DMA and
+directory reads in the same router; it adds no physical memory master.
 It locks that choice until actual last/error; it never interleaves owners at
 beat granularity. Framebuffer read/write have their own master ownership. The
 vendor arbiter controls contention between all system clients.

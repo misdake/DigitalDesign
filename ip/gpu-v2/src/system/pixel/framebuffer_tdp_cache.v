@@ -1,4 +1,4 @@
-// Eight lines, four TDP banks. A compute clock-enable never gates B maintenance.
+// Eight 16x8 half-tile lines, four TDP banks with fixed zero padding. A compute clock-enable never gates B maintenance.
 module gpu_v2_framebuffer_tdp #(
  parameter[31:0]COLOR_BASE=0,DEPTH_BASE=16384,
  parameter[9:0]WIDTH=400,parameter[8:0]HEIGHT=240,
@@ -12,18 +12,18 @@ module gpu_v2_framebuffer_tdp #(
  input[2:0]depth_func,input depth_write,blend,
  output reg commit_valid,output reg[8:0]commit_x,output reg[7:0]commit_y,output reg[3:0]commit_mask,
  input flush_request,output reg flush_complete,output fault,idle,
- input prefetch_abort,prefetch_valid,input[8:0]prefetch_tile,
+ input prefetch_abort,prefetch_valid,input[9:0]prefetch_tile,
  output mem_req_valid,mem_req_write,output[31:0]mem_req_addr,input mem_req_ready,
  input[63:0]mem_read_data,input mem_read_valid,
  output mem_write_valid,output[63:0]mem_write_data,input mem_write_ready,mem_complete_valid,mem_complete_ok
 );
  localparam M_IDLE=0,M_RPRE=1,M_RREQ=2,M_RBEAT=3,M_RACK=4,M_WPRE=5,M_WREQ=6,M_WBEAT=7,M_WACK=8;
  reg[3:0]mst;reg mt_active;reg[2:0]mt_line;reg mt_tvalid;
- reg[15:0]mt_target;reg mt_write,mt_plane;reg[1:0]mt_remaining,mt_sector;
+ reg[9:0]mt_target;reg mt_write,mt_plane;reg[1:0]mt_remaining;reg mt_sector;
  reg[4:0]mt_beat;reg mt_accepted,mt_presented,req_valid,wr_beat_valid,flushing;
- reg[15:0]tag[0:7];reg tvalid[0:7],dirc[0:7],dird[0:7];reg[2:0]victim;
+ reg[9:0]tag[0:7];reg tvalid[0:7],dirc[0:7],dird[0:7];reg[2:0]victim;
  // Lossy wall-clock hints never reserve a ROP context or a public credit.
- reg[8:0]hint0,hint1;reg[1:0]hint_count;
+ reg[9:0]hint0,hint1;reg[1:0]hint_count;
  reg mt_prefetch,prefetch_protect_valid;reg[2:0]prefetch_protect_line;
  reg fault_c,fault_m;assign fault=fault_c||fault_m;
  reg[1:0]cal;reg[2:0]fill_row;
@@ -34,9 +34,10 @@ module gpu_v2_framebuffer_tdp #(
  reg[8:0]result_addr;reg[1:0]result_bank;reg result_depth_flag,result_color_flag,result_last,result_context;
  wire actual_ce=ce&&commit_allow;
  wire rop_active=ctx_valid[0]||ctx_valid[1];
+ wire[9:0]row_key={row_tile[8:5],row_y[3],row_tile[4:0]};
  wire[7:0]resident_hits;genvar n;
  generate for(n=0;n<8;n=n+1)begin:resident_compare
-  assign resident_hits[n]=tvalid[n]&&!(mt_active&&mt_line==n)&&tag[n]=={7'd0,row_tile};
+  assign resident_hits[n]=tvalid[n]&&!(mt_active&&mt_line==n)&&tag[n]==row_key;
  end endgenerate
  wire hit=|resident_hits;
  wire[2:0]hit_line={|resident_hits[7:4],resident_hits[2]|resident_hits[3]|resident_hits[6]|resident_hits[7],resident_hits[1]|resident_hits[3]|resident_hits[5]|resident_hits[7]};
@@ -64,7 +65,7 @@ module gpu_v2_framebuffer_tdp #(
  wire color_fire_write=leaf_ce&&color_pending;
  wire[2:0]incoming_line=fill_row==0?hit_line:ctx_line[tail];
  wire[1:0]incoming_bank=row_index[2:1]^{row_x[1],1'b0};
- wire[9:0]incoming_addr={row_index[0],incoming_line,row_y[3:1],row_index[2],row_x[3:2]};
+ wire[9:0]incoming_addr={row_index[0],1'b0,incoming_line,row_y[2:1],row_index[2],row_x[3:2]};
  wire incoming_covered=ctx_mask[tail][row_index[2:1]];
  wire need_old_color=row_mask[row_index[2:1]]&&blend;
  wire need_old_depth=row_mask[row_index[2:1]]&&depth_func!=0&&depth_func!=7;
@@ -84,14 +85,14 @@ module gpu_v2_framebuffer_tdp #(
  wire use_nxt=(mst==M_WREQ)||(mst==M_WBEAT);
  wire m_rd_issue=mt_active&&mt_write&&((mst==M_WPRE)||(mst==M_WREQ&&wbeat)||(mst==M_WBEAT&&wbeat&&mt_beat<15));
  wire[3:0]maintenance_read_beat=use_nxt?mt_beat[3:0]+4'd1:mt_beat[3:0];
- wire[9:0]maintenance_read_addr={mt_plane,mt_line,mt_sector,maintenance_read_beat};
- wire[9:0]maintenance_write_addr={mt_plane,mt_line,mt_sector,mt_beat[3:0]};
+ wire[9:0]maintenance_read_addr={mt_plane,1'b0,mt_line,mt_sector,maintenance_read_beat};
+ wire[9:0]maintenance_write_addr={mt_plane,1'b0,mt_line,mt_sector,mt_beat[3:0]};
  wire[5:0]beats_total={1'b0,mt_beat}+{5'd0,rbeat}+{5'd0,wbeat};
  wire stop_publication=fault||source_bad;
- wire[15:0]mt_tile=mt_write?tag[mt_line]:mt_target;
- // Raw {Y4,X5} tag is shared by the queue/cache; linearize only after selecting
- // the held victim/new tag. WIDTH <= 512 gives at most 512 physical tiles.
- wire[8:0]mt_tile_y={5'd0,mt_tile[8:5]};
+ wire[9:0]mt_tile=mt_write?tag[mt_line]:mt_target;
+ // Raw {Y/8[4:0],X/16[4:0]} key is shared by the queue/cache. Linearize
+ // the held victim/new 16x16 tile, retaining key bit5 as its half selector.
+ wire[8:0]mt_tile_y={5'd0,mt_tile[9:6]};
  // WIDTH is elaboration-time constant. Explicit constant shifts keep this
  // address conversion in fabric rather than spending a DSP on multiply-add.
  wire[8:0]mt_linear_sum[0:6];assign mt_linear_sum[0]={4'd0,mt_tile[4:0]};
@@ -101,7 +102,7 @@ module gpu_v2_framebuffer_tdp #(
  end endgenerate
  wire[8:0]mt_linear_tile=mt_linear_sum[6];
  assign mem_req_valid=req_valid;assign mem_req_write=mt_write;
- assign mem_req_addr=(mt_plane?DEPTH_BASE:COLOR_BASE)+{14'd0,mt_linear_tile,9'b0}+{23'd0,mt_sector,7'b0};
+ assign mem_req_addr=(mt_plane?DEPTH_BASE:COLOR_BASE)+{14'd0,mt_linear_tile,mt_tile[5],mt_sector,7'b0};
  assign mem_write_valid=wr_beat_valid;
  // B's native Q is the single held beat: next read occurs only when old beat fires.
  assign mem_write_data=mt_beat[2]?{b_q[1],b_q[0],b_q[3],b_q[2]}:{b_q[3],b_q[2],b_q[1],b_q[0]};
@@ -155,8 +156,8 @@ module gpu_v2_framebuffer_tdp #(
  always @*begin
   hint_resident=0;incoming_resident=0;
   for(hk=0;hk<8;hk=hk+1)begin
-   if(tvalid[hk]&&tag[hk]=={7'd0,hint0})hint_resident=1;
-   if(tvalid[hk]&&tag[hk]=={7'd0,prefetch_tile})incoming_resident=1;
+   if(tvalid[hk]&&tag[hk]==hint0)hint_resident=1;
+   if(tvalid[hk]&&tag[hk]==prefetch_tile)incoming_resident=1;
 
   end
  end
@@ -167,8 +168,8 @@ module gpu_v2_framebuffer_tdp #(
  wire hint_unsafe=hint_service&&!hint_resident&&!spec_found;
  wire hint_pop=hint_service; // Stale/no-victim hints are deliberately dropped.
  wire hint_duplicate=(hint_count!=0&&hint0==prefetch_tile)||(hint_count==2&&hint1==prefetch_tile)||
-                     incoming_resident||(mt_active&&mt_tvalid&&mt_target=={7'd0,prefetch_tile});
- wire hint_tile_legal=(prefetch_tile[4:0]<(WIDTH>>4))&&(prefetch_tile[8:5]<(HEIGHT>>4));
+                     incoming_resident||(mt_active&&mt_tvalid&&mt_target==prefetch_tile);
+ wire hint_tile_legal=(prefetch_tile[4:0]<(WIDTH>>4))&&(prefetch_tile[9:5]<(HEIGHT>>3));
  wire hint_push=PREFETCH_ENABLE&&prefetch_valid&&hint_tile_legal&&hint_count<2&&
                 !hint_duplicate&&!prefetch_abort&&!fault&&!source_bad&&!flushing&&!flush_request;
  // This queue uses old-state capacity; a full hint is lossy even on a pop edge.
@@ -226,8 +227,8 @@ module gpu_v2_framebuffer_tdp #(
                         fault_m <= 1'b1;
                         mt_active <= 1'b0; mst <= M_IDLE;
                         req_valid <= 1'b0; wr_beat_valid <= 1'b0;
-                    end else if (mt_sector != 2'd3) begin
-                        mt_sector <= mt_sector + 2'd1;
+                    end else if (!mt_sector) begin
+                        mt_sector <= mt_sector + 1'b1;
                         mt_beat <= 5'd0;
                         mt_accepted <= 1'b0;
                         mt_presented <= 1'b0;
@@ -240,14 +241,14 @@ module gpu_v2_framebuffer_tdp #(
                         mt_remaining[mt_plane] <= 1'b0;
                         if (mt_plane ? mt_remaining[0] : mt_remaining[1]) begin
                             mt_plane <= !mt_plane;
-                            mt_sector <= 2'd0; mt_beat <= 5'd0;
+                            mt_sector <= 1'b0; mt_beat <= 5'd0;
                             mt_accepted <= 1'b0; mt_presented <= 1'b0;
                             req_valid <= 1'b0; wr_beat_valid <= 1'b0;
                             mst <= M_WPRE;
                         end else if (mt_tvalid) begin
                             mt_write <= 1'b0;
                             mt_plane <= 1'b0;
-                            mt_sector <= 2'd0; mt_beat <= 5'd0;
+                            mt_sector <= 1'b0; mt_beat <= 5'd0;
                             mt_accepted <= 1'b0; mt_presented <= 1'b0;
                             req_valid <= 1'b0; wr_beat_valid <= 1'b0;
                             tvalid[mt_line] <= 1'b0;
@@ -257,7 +258,7 @@ module gpu_v2_framebuffer_tdp #(
                         end
                     end else if (mt_plane == 1'b0) begin
                         mt_plane <= 1'b1;
-                        mt_sector <= 2'd0; mt_beat <= 5'd0;
+                        mt_sector <= 1'b0; mt_beat <= 5'd0;
                         mt_accepted <= 1'b0; mt_presented <= 1'b0;
                         req_valid <= 1'b0; wr_beat_valid <= 1'b0;
                         mst <= M_RPRE;
@@ -323,6 +324,7 @@ module gpu_v2_framebuffer_tdp #(
                     endcase
                 end
             end
+   if(!flush_request&&!flushing)flush_complete<=0;
    if(flush_request&&!flushing&&!flush_complete&&!fault)begin flushing<=1;flush_complete<=0;end
    if(fault)begin ctx_valid[0]<=0;ctx_valid[1]<=0;fill_row<=0;depth_pending<=0;color_pending<=0;end
    if(!mt_active&&!fault&&!source_bad)begin
@@ -331,15 +333,18 @@ module gpu_v2_framebuffer_tdp #(
       mt_active<=1;mt_prefetch<=0;mt_line<=dirty_line;mt_tvalid<=0;mt_write<=1;
       mt_remaining<={dird[dirty_line],dirc[dirty_line]};mt_plane<=!dirc[dirty_line];mt_sector<=0;mt_beat<=0;
       mt_accepted<=0;mt_presented<=0;req_valid<=0;wr_beat_valid<=0;mst<=M_WPRE;
-     end else if(!any_dirty&&!rop_active)begin flushing<=0;flush_complete<=1;end
+     end else if(!any_dirty&&!rop_active)begin
+      flushing<=0;flush_complete<=1;prefetch_protect_valid<=0;
+      for(f=0;f<8;f=f+1)tvalid[f]<=0;
+     end
     end else if(ce&&row_valid&&fill_row==0&&!hit&&maintenance_available)begin
      mt_active<=1;mt_prefetch<=0;mt_line<=sel_line;victim<=sel_line+3'd1;mt_tvalid<=1;
-     if(prefetch_protect_line==sel_line)prefetch_protect_valid<=0;mt_target<={7'd0,row_tile};
+     if(prefetch_protect_line==sel_line)prefetch_protect_valid<=0;mt_target<=row_key;
      mt_remaining<={sel_dird,sel_dirc};mt_write<=sel_dirty;mt_plane<=sel_dirty?sel_plane:1'b0;
      mt_sector<=0;mt_beat<=0;mt_accepted<=0;mt_presented<=0;req_valid<=0;wr_beat_valid<=0;
      if(!sel_dirty)begin tvalid[sel_line]<=0;mst<=M_RPRE;end else mst<=M_WPRE;
     end else if(hint_start)begin
-     mt_active<=1;mt_prefetch<=1;mt_line<=sel_line;victim<=sel_line+3'd1;mt_tvalid<=1;mt_target<={7'd0,hint0};
+     mt_active<=1;mt_prefetch<=1;mt_line<=sel_line;victim<=sel_line+3'd1;mt_tvalid<=1;mt_target<=hint0;
      mt_remaining<={sel_dird,sel_dirc};mt_write<=sel_dirty;mt_plane<=sel_plane;
      mt_sector<=0;mt_beat<=0;mt_accepted<=0;mt_presented<=0;req_valid<=0;wr_beat_valid<=0;
      if(sel_dirty)mst<=M_WPRE;
@@ -363,13 +368,13 @@ module gpu_v2_framebuffer_tdp #(
     if(return_fire)begin
      depth_data<=leaf_new_depth;color_data<=leaf_new_color;result_depth_flag<=leaf_dw;result_color_flag<=leaf_cw;
      result_bank<=return_key^{ctx_x[result_owner][1],1'b0};
-     result_addr<={ctx_line[result_owner],ctx_y[result_owner][3:1],return_key[1],ctx_x[result_owner][3:2]};
+     result_addr<={1'b0,ctx_line[result_owner],ctx_y[result_owner][2:1],return_key[1],ctx_x[result_owner][3:2]};
      result_last<=return_key==3;result_context<=result_owner;
      return_key<=return_key+2'd1;if(return_key==3)result_owner<=!result_owner;
     end
-    if(depth_fire&&result_depth_flag)dird[result_addr[8:6]]<=1;
+    if(depth_fire&&result_depth_flag)dird[result_addr[7:5]]<=1;
     if(color_fire_write)begin
-     if(result_color_flag)dirc[result_addr[8:6]]<=1;
+     if(result_color_flag)dirc[result_addr[7:5]]<=1;
      if(result_last)begin
       commit_valid<=1;commit_x<=ctx_x[result_context];commit_y<=ctx_y[result_context];commit_mask<=ctx_mask[result_context];ctx_valid[result_context]<=0;
      end

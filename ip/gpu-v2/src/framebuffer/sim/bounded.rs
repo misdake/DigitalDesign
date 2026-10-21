@@ -499,6 +499,9 @@ impl Model {
                 self.begin(line, None);
             } else {
                 self.flush = false;
+                for line in &mut self.lines {
+                    line.tag = None;
+                }
                 self.flush_complete = true;
             }
         }
@@ -822,6 +825,9 @@ impl Model {
                 self.begin(line, None);
             } else {
                 self.flush = false;
+                for line in &mut self.lines {
+                    line.tag = None;
+                }
                 self.flush_complete = true;
             }
         }

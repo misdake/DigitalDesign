@@ -1,11 +1,13 @@
 // Transaction boundary only: no compute CE, payload FIFO or SDRAM policy.
 // Geometry and texture share RO; framebuffer read/write use independent masters.
-module gpu_vliw_memory_router(
+module gpu_vliw_memory_router #(parameter CONTROL=0)(
  input clk,reset,
  input geometry_request_valid,output geometry_request_ready,
  input[21:0]geometry_request_address,input[1:0]geometry_request_count,
  output geometry_response_valid,geometry_response_last,geometry_response_error,
  output[63:0]geometry_response_data,
+ input control_request_valid,output control_request_ready,input[21:0]control_request_address,input[1:0]control_request_count,
+ output control_response_valid,control_response_last,control_response_error,output[63:0]control_response_data,
  input texture_request_valid,input[31:0]texture_request_address,
  output texture_request_ready,texture_read_valid,output[3:0]texture_read_index,
  output[63:0]texture_read_data,output texture_complete,texture_ok,
@@ -24,7 +26,7 @@ module gpu_vliw_memory_router(
 );
  localparam IDLE=0,REQUEST=1,ACTIVE=2,LOCAL_ERROR=3;
  reg[1:0]rs,fs;
- reg owner,prefer_texture,ro_legal,fb_legal,fb_write;
+ reg[1:0]owner,prefer_owner;reg ro_legal,fb_legal,fb_write;
  reg[21:0]ra,fa;reg[1:0]rc;
  reg[4:0]rb,fb;reg ro_bad,fb_bad;
  function legal_byte_sector;
@@ -40,22 +42,46 @@ module gpu_vliw_memory_router(
    default:legal_halfword_burst=0;
   endcase end
  endfunction
- wire choose_texture=texture_request_valid&&(!geometry_request_valid||prefer_texture);
+ reg[1:0]choose_owner;
+ always @*begin
+  choose_owner=0;
+  case(prefer_owner)
+   1:begin
+    if(texture_request_valid)choose_owner=1;
+    else if(CONTROL&&control_request_valid)choose_owner=2;
+   end
+   2:begin
+    if(CONTROL&&control_request_valid)choose_owner=2;
+    else if(!geometry_request_valid&&texture_request_valid)choose_owner=1;
+   end
+   default:begin
+    if(!geometry_request_valid)begin
+     if(texture_request_valid)choose_owner=1;
+     else if(CONTROL&&control_request_valid)choose_owner=2;
+    end
+   end
+  endcase
+ end
  wire[4:0]ro_beats=rc==3?5'd16:rc==1?5'd8:5'd4;
  wire ro_terminal=ro_response_valid&&(ro_response_last||ro_response_error);
  wire ro_malformed=ro_response_valid&&!ro_response_error&&
   (rb>=ro_beats||(ro_response_last!=(rb==ro_beats-1'b1)));
  assign ro_request_valid=rs==REQUEST&&ro_legal&&!reset;
  assign ro_address=ra;assign ro_count=rc;
- assign geometry_request_ready=rs==REQUEST&&!owner&&(ro_legal?ro_request_ready:1'b1)&&!reset;
- assign texture_request_ready=rs==REQUEST&&owner&&(ro_legal?ro_request_ready:1'b1)&&!reset;
- assign geometry_response_valid=!reset&&!owner&&((rs==ACTIVE&&ro_response_valid)||rs==LOCAL_ERROR);
+ assign geometry_request_ready=rs==REQUEST&&owner==0&&(ro_legal?ro_request_ready:1'b1)&&!reset;
+ assign texture_request_ready=rs==REQUEST&&owner==1&&(ro_legal?ro_request_ready:1'b1)&&!reset;
+ assign geometry_response_valid=!reset&&owner==0&&((rs==ACTIVE&&ro_response_valid)||rs==LOCAL_ERROR);
  assign geometry_response_last=rs==LOCAL_ERROR||(rs==ACTIVE&&ro_response_last);
  assign geometry_response_error=rs==LOCAL_ERROR||(rs==ACTIVE&&ro_response_error);
  assign geometry_response_data=ro_data;
- assign texture_read_valid=rs==ACTIVE&&owner&&ro_response_valid&&!ro_response_error&&rb<16&&!reset;
+ assign texture_read_valid=rs==ACTIVE&&owner==1&&ro_response_valid&&!ro_response_error&&rb<16&&!reset;
  assign texture_read_index=rb[3:0];assign texture_read_data=ro_data;
- assign texture_complete=!reset&&owner&&((rs==ACTIVE&&ro_terminal)||rs==LOCAL_ERROR);
+ assign control_request_ready=CONTROL&&rs==REQUEST&&owner==2&&(ro_legal?ro_request_ready:1'b1)&&!reset;
+ assign control_response_valid=CONTROL&&!reset&&owner==2&&((rs==ACTIVE&&ro_response_valid)||rs==LOCAL_ERROR);
+ assign control_response_last=rs==LOCAL_ERROR||(rs==ACTIVE&&ro_response_last);
+ assign control_response_error=rs==LOCAL_ERROR||(rs==ACTIVE&&ro_response_error);
+ assign control_response_data=ro_data;
+ assign texture_complete=!reset&&owner==1&&((rs==ACTIVE&&ro_terminal)||rs==LOCAL_ERROR);
  assign texture_ok=rs==ACTIVE&&!ro_response_error&&!ro_bad&&!ro_malformed;
 
  // The framebuffer cache has one held transaction. Split its mode once here;
@@ -84,17 +110,22 @@ module gpu_vliw_memory_router(
  assign busy=rs!=IDLE||fs!=IDLE;
  always @(posedge clk)begin
   if(reset)begin
-   rs<=IDLE;fs<=IDLE;owner<=0;prefer_texture<=0;ro_legal<=0;fb_legal<=0;fb_write<=0;
+   rs<=IDLE;fs<=IDLE;owner<=0;prefer_owner<=0;ro_legal<=0;fb_legal<=0;fb_write<=0;
    ra<=0;fa<=0;rc<=0;rb<=0;fb<=0;ro_bad<=0;fb_bad<=0;fault<=0;
   end else begin
    case(rs)
-    IDLE:if(geometry_request_valid||texture_request_valid)begin
-     rs<=REQUEST;owner<=choose_texture;rb<=0;ro_bad<=0;
-     if(choose_texture)begin ra<=texture_request_address[22:1];rc<=3;ro_legal<=legal_byte_sector(texture_request_address);end
-     else begin ra<=geometry_request_address;rc<=geometry_request_count;ro_legal<=legal_halfword_burst(geometry_request_address,geometry_request_count);end
+    IDLE:if(geometry_request_valid||texture_request_valid||(CONTROL&&control_request_valid))begin
+     rs<=REQUEST;owner<=choose_owner;rb<=0;ro_bad<=0;
+     case(choose_owner)
+      1:begin ra<=texture_request_address[22:1];rc<=3;ro_legal<=legal_byte_sector(texture_request_address);end
+      2:begin ra<=control_request_address;rc<=control_request_count;ro_legal<=legal_halfword_burst(control_request_address,control_request_count);end
+      default:begin ra<=geometry_request_address;rc<=geometry_request_count;ro_legal<=legal_halfword_burst(geometry_request_address,geometry_request_count);end
+     endcase
     end
-    REQUEST:if(geometry_request_ready||texture_request_ready)begin
-     rs<=ro_legal?ACTIVE:LOCAL_ERROR;prefer_texture<=!owner;
+    REQUEST:if(geometry_request_ready||texture_request_ready||control_request_ready)begin
+     rs<=ro_legal?ACTIVE:LOCAL_ERROR;
+     if(CONTROL)prefer_owner<=owner==2?2'd0:owner+1'b1;
+     else prefer_owner<=owner==0?2'd1:2'd0;
      if(!ro_legal)fault<=1;
     end
     ACTIVE:if(ro_response_valid)begin
@@ -129,9 +160,12 @@ module gpu_vliw_memory_router(
 `ifndef SYNTHESIS
  always @(posedge clk)if(!reset)begin
   if(rs==REQUEST)begin
-   if(owner)begin
+   if(owner==1)begin
     if(!texture_request_valid||texture_request_address[22:1]!=ra||
        legal_byte_sector(texture_request_address)!=ro_legal)$fatal(1,"texture presented request changed");
+   end else if(owner==2)begin
+    if(!control_request_valid||control_request_address!=ra||control_request_count!=rc)
+     $fatal(1,"control presented request changed");
    end else if(!geometry_request_valid||geometry_request_address!=ra||geometry_request_count!=rc)
     $fatal(1,"geometry presented request changed");
   end
@@ -143,7 +177,7 @@ module gpu_vliw_memory_router(
 endmodule
 
 // Standalone factory: frozen geometry loader plus the three-master boundary.
-module gpu_vliw_memory(
+module gpu_vliw_memory #(parameter CONTROL=0)(
  input clk,reset,geometry_abort,
  input descriptor_valid,output descriptor_ready,input page_writable,gpu_drained,
  input descriptor_page,input[7:0]descriptor_tag,
@@ -153,6 +187,8 @@ module gpu_vliw_memory(
  output dma_we,output[9:0]dma_addr,output[63:0]dma_data,
  output completion_valid,input completion_ready,output completion_publish,completion_page,
  output[7:0]completion_tag,output[3:0]completion_error,
+ input control_request_valid,output control_request_ready,input[21:0]control_request_address,input[1:0]control_request_count,
+ output control_response_valid,control_response_last,control_response_error,output[63:0]control_response_data,
  input texture_request_valid,input[31:0]texture_request_address,
  output texture_request_ready,texture_read_valid,output[3:0]texture_read_index,
  output[63:0]texture_read_data,output texture_complete,texture_ok,
@@ -184,8 +220,12 @@ module gpu_vliw_memory(
  .dma_we(dma_we),.dma_addr(dma_addr),.dma_data(dma_data),
  .completion_valid(completion_valid),.completion_ready(completion_ready),.completion_publish(completion_publish),
  .completion_page(completion_page),.completion_tag(completion_tag),.completion_error(completion_error),.busy(loader_busy));
- gpu_vliw_memory_router router(
+ gpu_vliw_memory_router #(.CONTROL(CONTROL)) router(
  .clk(clk),.reset(reset),.geometry_request_valid(grv),.geometry_request_ready(grr),
+ .control_request_valid(control_request_valid),.control_request_ready(control_request_ready),
+ .control_request_address(control_request_address),.control_request_count(control_request_count),
+ .control_response_valid(control_response_valid),.control_response_last(control_response_last),
+ .control_response_error(control_response_error),.control_response_data(control_response_data),
  .geometry_request_address(gra),.geometry_request_count(grc),.geometry_response_valid(gsv),
  .geometry_response_last(gsl),.geometry_response_error(gse),.geometry_response_data(gsd),
  .texture_request_valid(texture_request_valid),

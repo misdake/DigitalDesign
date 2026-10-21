@@ -18,7 +18,7 @@ module tb;
 GSR GSR(.GSRI(1'b1));
 `endif
 reg clk=0,reset=1,ce=0,commit_allow=1,shade_phase=0;
-reg prefetch_valid=0,prefetch_abort=0;reg[8:0]prefetch_tile=0;
+reg prefetch_valid=0,prefetch_abort=0;reg[9:0]prefetch_tile=0;
 reg row_valid=0;reg[8:0]row_tile=0,row_x=0;reg[7:0]row_y=0;reg[3:0]row_mask=15;reg[2:0]row_index=0;reg[31:0]row_data=0;
 wire row_accept,row_ready,preflight_bad,commit_valid,fault,idle,flush_complete;
 wire[8:0]commit_x;wire[7:0]commit_y;wire[3:0]commit_mask;
@@ -30,9 +30,9 @@ reg race_arm=0,race_seen=0;
 integer wall=0,requests=0,pending=0,beat=0,fd,n,i;reg enable_req=1,force_complete=0,washeld=0;reg[32:0]held;reg[1:0]calold;
 task tick;begin
  mem_req_ready=enable_req&&pending==0;mem_read_valid=pending==1;mem_complete_valid=(pending==2)||force_complete;mem_complete_ok=1;mem_read_data=0;
- if(race_arm&&mem_complete_valid&&dut.mt_active&&!dut.mt_write&&dut.mt_plane&&dut.mt_sector==3)begin row_valid=1;ce=1;end
+ if(race_arm&&mem_complete_valid&&dut.mt_active&&!dut.mt_write&&dut.mt_plane&&dut.mt_sector==1)begin row_valid=1;ce=1;end
  #2;
- if(race_arm&&dut.row0_fire&&mem_complete_valid&&dut.mt_plane&&dut.mt_sector==3)race_seen=1;
+ if(race_arm&&dut.row0_fire&&mem_complete_valid&&dut.mt_plane&&dut.mt_sector==1)race_seen=1;
  if(washeld&&{mem_req_write,mem_req_addr}!==held)$fatal(1,"presented descriptor changed");
  washeld=mem_req_valid&&!mem_req_ready;held={mem_req_write,mem_req_addr};calold=dut.cal;
  if(mem_req_valid&&mem_req_ready)begin if(mem_req_write)$fatal(1,"clean hint wrote back");pending=1;beat=0;requests=requests+1;end
@@ -48,7 +48,7 @@ task restart;begin
  reset=1;prefetch_valid=0;prefetch_abort=0;row_valid=0;ce=0;shade_phase=0;flush_request=0;enable_req=1;force_complete=0;pending=0;washeld=0;requests=0;tick;reset=0;
  if(dut.hint_count!=0||dut.mt_active||!idle)$fatal(1,"reset state");
 end endtask
-task hint;input[8:0]v;begin prefetch_valid=1;prefetch_tile=v;tick;prefetch_valid=0;end endtask
+task hint;input[9:0]v;begin prefetch_valid=1;prefetch_tile=v;tick;prefetch_valid=0;end endtask
 initial begin
  fd=$fopen("trace.txt","w");restart;
  // Wall-clock enqueue and full-drop while the first descriptor is held.
@@ -61,19 +61,19 @@ initial begin
  enable_req=1;
  for(n=0;n<40&&dut.mt_active;n=n+1)tick;
  if(dut.mt_active||requests!=1)$fatal(1,"abort terminal drain");
- for(i=0;i<8;i=i+1)if(dut.tvalid[i])$fatal(1,"partial prefetch published");
+ for(i=0;i<$size(dut.tvalid);i=i+1)if(dut.tvalid[i])$fatal(1,"partial prefetch published");
  restart;
  // Hint queued simultaneously with demand fill becomes resident before service.
  row_valid=1;ce=1;hint(0);ce=0;
  for(n=0;n<220&&dut.mt_active;n=n+1)tick;
  row_valid=0;tick;tick;
- if(requests!=8||dut.hint_count!=0||!idle)$fatal(1,"stale queued hint relaunched resident tile");
+ if(requests!=4||dut.hint_count!=0||!idle)$fatal(1,"stale queued hint relaunched resident tile");
  restart;
  // Flush drops queued hints, rejects new hints, and drains current clean fill.
  hint(0);tick;tick;hint(1);hint(2);flush_request=1;hint(3);
  if(dut.hint_count!=0)$fatal(1,"flush left queued hints");
  for(n=0;n<220&&!flush_complete;n=n+1)tick;
- if(!flush_complete||requests!=8||!idle)$fatal(1,"flush did not drain");
+ if(!flush_complete||requests!=4||!idle)$fatal(1,"flush did not drain");
  restart;
  hint(0);tick;tick;tick;hint(1);
  // Reset while a transport is in flight discards every local owner/queue.
@@ -83,16 +83,16 @@ initial begin
  if(!fault||dut.hint_count!=0)$fatal(1,"fault not latched/cancelled");
  for(n=0;n<8;n=n+1)tick;
  if(dut.mt_active||mem_req_valid)$fatal(1,"fault restarted maintenance");
- for(i=0;i<8;i=i+1)if(dut.tvalid[i])$fatal(1,"bad completion published tag");
+ for(i=0;i<$size(dut.tvalid);i=i+1)if(dut.tvalid[i])$fatal(1,"bad completion published tag");
  restart;
- // Two real eight-transaction fills: consuming the old protected line must
+ // Two real four-transaction fills: consuming the old protected line must
  // not clear the new line's protection on its final depth ACK edge.
  hint(0);
  for(n=0;n<240&&!dut.prefetch_protect_valid;n=n+1)tick;
- if(!dut.prefetch_protect_valid||dut.prefetch_protect_line!=0||requests!=8)$fatal(1,"first race fill did not publish");
+ if(!dut.prefetch_protect_valid||dut.prefetch_protect_line!=0||requests!=4)$fatal(1,"first race fill did not publish");
  hint(1);race_arm=1;
  for(n=0;n<240&&!race_seen;n=n+1)tick;
- if(!race_seen||requests!=16||dut.mt_active||!dut.tvalid[1]||dut.tag[1]!=1)$fatal(1,"second race publication not reached");
+ if(!race_seen||requests!=8||dut.mt_active||!dut.tvalid[1]||dut.tag[1]!=1)$fatal(1,"second race publication not reached");
  if(!dut.ctx_valid[0]||dut.ctx_line[0]!=0)$fatal(1,"old protected row0 not actually accepted");
  if(!dut.prefetch_protect_valid||dut.prefetch_protect_line!=1)$fatal(1,"new protection lost to old consumption");
  $display("PASS prefetch lifecycle wall=%0d",wall);$fclose(fd);$finish;

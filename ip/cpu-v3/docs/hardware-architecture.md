@@ -137,7 +137,11 @@ read-A selections remain ahead of the asynchronous operand path.
 
 Within the FPU ALU, ADD/SUB, MIN/MAX, CMP and NEG/ABS share one wrapping
 32-bit add/subtract path. Signed comparison checks differing operand signs
-before using the subtraction sign. CEIL, half-up ROUND and TRUNC only need the
+before using the subtraction sign; CMP equality reduces that same difference
+to zero. MIN/MAX select their shared operand result using signed ordering and
+the operation direction, without putting equality detection on the wide data
+path. Equal operands have identical bits. Comparison flags remain specified
+only for CMP. CEIL, half-up ROUND and TRUNC only need the
 integer half, so they share one 16-bit increment followed by sixteen zero bits.
 No execution or vector-lane stage is added, and the defined wrap boundaries remain.
 
@@ -364,6 +368,14 @@ two-stage DSP. Endpoint-adjusted SINCOS magnitude/sign or scaled/saturated
 reciprocal magnitude/sign select before one 32-bit conditional negation. Right
 shift precedes negation. Zero and invalid-RSQRT overrides retain priority;
 the live SINCOS return ignores stale reciprocal context.
+
+  Reciprocal scaling places the 17-bit interpolated magnitude above sixteen
+  zero bits in one 33-bit window. Its registered right-shift position is
+  `31 - CLZ` for RCP and `23 - (CLZ >> 1)` for RSQRT; no direction bit or
+  bidirectional data selection is retained. RCP's zero-input CLZ of 32 uses
+  the existing constant-result override, so its shifted payload is unused.
+  Bits 32 and 31 remain available for reciprocal saturation before truncation,
+  sign application and the existing RF write edge.
 
 
 The hidden BSRAM tables are generated from one Rust reference model in the

@@ -83,19 +83,12 @@ wire [5:0] clz = p0_zero ? 6'd32 :
 wire [6:0] norm_index = norm_window[15:9];
 wire [8:0] norm_residue = norm_window[8:0];
 
-wire rcp_left = (clz >= 6'd15);
-wire [4:0] rcp_shift = rcp_left
-    ? (clz[4:0] - 5'd15)
-    : (5'd15 - clz[4:0]);
-
+// Align the interpolated magnitude at bit 16 of a 33-bit window. The
+// final RCP exponent is CLZ-15; RSQRT uses its rounded half exponent. Encode
+// the required right-window position directly, rather than direction/distance.
+// RCP CLZ=32 is zero and is handled by s1_zero before architectural writeback.
+wire [4:0] scale_distance = p0_rcp ? ~clz[4:0] : (5'd23 - clz[5:1]);
 wire rsqrt_odd = !clz[0];
-wire rsqrt_left = (clz > 6'd15);
-wire [5:0] rsqrt_distance = rsqrt_left
-    ? (clz - 6'd15)
-    : (6'd15 - clz);
-wire [4:0] rsqrt_shift = rsqrt_left
-    ? ((rsqrt_distance + 6'd1) >> 1)
-    : (rsqrt_distance >> 1);
 
 wire [8:0] table_address = p0_rcp
     ? {2'b01, norm_index}
@@ -103,8 +96,7 @@ wire [8:0] table_address = p0_rcp
 
 reg s1_valid = 1'b0;
 reg [8:0] s1_residue = 9'd0;
-reg [4:0] s1_shift = 5'd0;
-reg s1_left = 1'b0;
+reg [4:0] s1_scale_distance = 5'd0;
 reg s1_zero = 1'b0;
 
 reg interp_wait = 1'b0;
@@ -201,15 +193,13 @@ wire [16:0] sc_interp_mag = mul_out_tag[1] ? 17'h10000 : return_interpolated;
 assign sc_result_sign = sc_interp_is_cos ? (sc_q[1] ^ sc_q[0]) : sc_q[1];
 wire sc_write = sc_valid && sc_return && !abort;
 
-wire [31:0] right_scaled = {15'b0, s2_interpolated} >> s1_shift;
-wire [32:0] left_scaled_wide = {16'b0, s2_interpolated} << s1_shift;
-wire rcp_left_overflow = |left_scaled_wide[32:31];
-wire [31:0] left_scaled = p0_rcp && rcp_left_overflow
-    ? 32'h7FFFFFFF
-    : left_scaled_wide[31:0];
-wire [31:0] scaled = s1_left
-    ? left_scaled
-    : right_scaled;
+// One right-shifted window produces both scaling directions without data
+// reversal muxes. Preserve bit 32 and bit 31 until reciprocal saturation;
+// the existing magnitude/sign and zero/invalid overrides consume this result.
+wire [32:0] scale_result = {s2_interpolated,16'd0} >> s1_scale_distance;
+wire rcp_left_overflow = |scale_result[32:31];
+wire [31:0] scaled = p0_rcp && rcp_left_overflow
+    ? 32'h7FFFFFFF : scale_result[31:0];
 // Select the final architectural magnitude/sign before a single 32-bit
 // conditional negation. A 17-bit SINCOS magnitude fits signed18, so zero
 // extension followed by negation is exactly its old sign-extended result.
@@ -274,8 +264,7 @@ always @(posedge clk) begin
         p0_valid <= 1'b0;
         s1_valid <= 1'b1;
         s1_residue <= norm_residue;
-        s1_shift <= p0_rcp ? rcp_shift : rsqrt_shift;
-        s1_left <= p0_rcp ? rcp_left : rsqrt_left;
+        s1_scale_distance <= scale_distance;
         s1_zero <= p0_rcp ? p0_zero : (p0_negative || p0_zero);
         interp_wait <= 1'b0;
     end else if (s1_valid) begin

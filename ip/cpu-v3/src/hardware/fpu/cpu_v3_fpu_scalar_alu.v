@@ -46,10 +46,15 @@ wire [31:0] arithmetic_result = arithmetic_left + arithmetic_rhs + subtract;
 wire [31:0] abs_a = a_signed[31] ? arithmetic_result : a;
 
 wire signed_lt = a[31] != b[31] ? a[31] : arithmetic_result[31];
-wire signed_eq = (a_signed == b_signed);
+// CMP and MIN/MAX use subtraction; their equality result is already present
+// in the shared difference. Flags for other operations remain unspecified.
+wire signed_eq = ~|arithmetic_result;
 wire signed_gt = !signed_lt && !signed_eq;
-wire [31:0] min_ab = signed_lt ? a : b;
-wire [31:0] max_ab = signed_gt ? a : b;
+// MIN/MAX publish one selected operand. Equality is needed only by CMP;
+// tie operands have identical bits, so one ordering/direction control serves
+// the common wide result mux without waiting for equality reduction.
+wire select_a = signed_lt ^ (op == 4'h4);
+wire [31:0] minmax_result = select_a ? a : b;
 
 wire frac_nonzero = |a[15:0];
 
@@ -75,8 +80,7 @@ always @(*) begin
     case (op)
         4'h0: result = arithmetic_result;
         4'h1: result = arithmetic_result;
-        4'h3: result = min_ab;
-        4'h4: result = max_ab;
+        4'h3, 4'h4: result = minmax_result;
         4'h5: result = abs_a;
         4'h6: result = arithmetic_result;
         4'h7: result = floor_a;

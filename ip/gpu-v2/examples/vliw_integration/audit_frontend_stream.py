@@ -56,7 +56,7 @@ def main():
             assert r['status']=='pass' and r['max_cycles']==300000
         receipts.append(dict(path=str(base/'receipt.json'),sha256=SHA(base/'receipt.json'),runs=result['runs']))
     for name in ('bunny_patch_1','box_x_minus'):
-        for filename in ('quads.jsonl','packets.json','vertices.hex','words.hex','descriptors.hex','dma.txt','rom.hex'):
+        for filename in ('quads.jsonl','packets.json','vertices.hex','words.hex','descriptors.hex','dma.txt'):
             assert SHA(OUT/'uv-inputs-selfcontained'/name/filename)==SHA(OUT/'uv-inputs-final'/name/filename)
     adopted=ROOT/'ip/gpu-v2/src/frontend'
     vendor=json.loads((adopted/'vliw/origin.json').read_text())

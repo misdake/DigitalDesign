@@ -4,7 +4,6 @@
 module gpu_v2_vliw(
  input clk,reset,ce,abort,start,slot,
  input dma_we,output dma_ready,input[9:0]dma_addr,input[63:0]dma_data,input output_ready,
- input table_valid,output table_ready,input[7:0]table_index,input[35:0]table_data,
  input[31:0]cfg_far_z,input[4:0]cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed[7:0]cfg_lod_bias,
  input draw_bank,draw_unlit,input[26:0]draw_config,input[23:0]specular,input[7:0]alpha,
  input[2:0]depth_func,input depth_write,blend,draw_rebind,
@@ -37,9 +36,6 @@ module gpu_v2_vliw(
  wire[2:0]qid,qend_id,lod_id;wire[7:0]qx,lod_value;wire[6:0]qy,result_wa;
  wire[1:0]phase;wire[3:0]qmask;wire[35:0]result_wd;
  wire[4:0]depth_pid;wire[15:0]depth_z;
- wire table_allow=table_valid&&pipeline_idle;
- wire frontend_table_ready;
- assign table_ready=frontend_table_ready&&pipeline_idle;
  assign quad_admitted=front_ce&&qvalid&&qready;
  gpu_v2_vliw_backend back(
  .clk(clk),.reset(reset),.ce(ce),.abort(abort||math_stopped),.front_ce(front_ce),.phase(phase),.draw_bank(draw_bank),.draw_unlit(draw_unlit),
@@ -61,7 +57,6 @@ module gpu_v2_vliw(
  gpu_v2_vliw_frontend front(
  .clk(clk),.reset(reset),.ce(front_ce),.start(start&&!fault),.slot(slot),
  .dma_we(dma_we),.dma_ready(dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),.output_ready(output_ready),
- .table_valid(table_allow),.table_ready(frontend_table_ready),.table_index(table_index),.table_data(table_data),
  .cfg_far_z(cfg_far_z),.cfg_tex_w_log2(cfg_tex_w_log2),.cfg_tex_h_log2(cfg_tex_h_log2),.cfg_max_mip(cfg_max_mip),.cfg_lod_bias(cfg_lod_bias),
  .quad_valid(qvalid),.quad_ready(qready),.quad_id(qid),.quad_x(qx),.quad_y(qy),.quad_rgb(qrgb),.phase(phase),
  .quad_end_valid(qend),.quad_end_id(qend_id),.quad_end_mask(qmask),
@@ -82,7 +77,7 @@ module gpu_v2_vliw(
   if(reset)begin was_active<=0;held_config<=0;end
   else begin
    if(was_active&&!pipeline_idle&&live_config!==held_config)$fatal(1,"global configuration changed before whole GPU drain");
-   was_active<=!pipeline_idle||(front_ce&&start&&frontend_idle&&!table_allow);
+   was_active<=!pipeline_idle||(front_ce&&start&&meshlet_ready);
    held_config<=live_config;
    if(draw_rebind&&!pipeline_idle)$fatal(1,"draw rebind before whole GPU drain");
   end

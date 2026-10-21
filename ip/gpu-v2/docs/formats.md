@@ -66,7 +66,8 @@ origins use signed 32-bit F16 values.
 | --- | --- |
 | 0..11 | Position 3 × 4 matrix, row-major: three coefficients then translation per row |
 | 12..20 | Normal 3 × 3 matrix, row-major |
-| 21..31 | Unused padding, written zero |
+| 21 | F16 homogeneous constant 1 (`65536`), read by the Vertex bootstrap |
+| 22..31 | Unused padding, written zero |
 
 Translation is a coefficient in the fourth column, not an extra source vertex
 component. A block's position result has three components; there is no implied
@@ -74,7 +75,7 @@ fourth clip-Z output or once-rounded 4 × 4 transform.
 
 ## Interpolation table
 
-Initialize every index j=0..255 with a 36-bit word:
+FPGA configuration initializes every index j=0..255 with a 36-bit word:
 
 ```text
 seed[j]  = RNE(2^25 / (256+j))                  # j=0..256 for generation
@@ -84,8 +85,12 @@ word[j]  = slope[j] | (seed[j]<<9) | (log[j>>2]<<27)
 ```
 
 Bits 8:0 hold 9-bit slope, bits 26:9 18-bit seed, bits 34:27 8-bit log; bit 35 is zero. Generation
-uses mathematical log2; runtime performs table lookup. The write handshake and
-whole-GPU initialization boundary are in [submission](/ip/gpu-v2/docs/submission.md#prepare-the-gpu).
+uses mathematical log2; runtime performs table lookup. The exporter generates these
+constants once for both native INIT_RAM parameters and portable simulation.
+The existing 512x36 BSRAM holds this immutable table at rows 0..255 and four
+mutable H rows at 256..259. Its only write address selects those four H rows;
+there is no runtime numerical-table input or command. Reset clears Q and pipeline
+state, not the RAM contents. Table contents survive ordinary reset.
 
 ## Texture assets
 

@@ -31,7 +31,7 @@ fn prepare_to_raster_origin_portable_native_smoke() {
     }
     let mut child = Command::new("python")
         .arg(repo.join("ip/gpu-v2/tests/vliw_prepare_chain.py"))
-        .args(["--tag", &tag, "--export-root"])
+        .args(["--operand-table", "--tag", &tag, "--export-root"])
         .arg(exports)
         .spawn()
         .unwrap();

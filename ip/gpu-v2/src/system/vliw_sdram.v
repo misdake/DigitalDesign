@@ -9,7 +9,6 @@ module gpu_v2_vliw_sdram(
  input[21:0]config_source,metadata_source,payload_source,input[10:0]config_bytes,payload_bytes,
  output completion_valid,input completion_ready,output completion_publish,completion_page,
  output[7:0]completion_tag,output[3:0]completion_error,
- input table_valid,output table_ready,input[7:0]table_index,input[35:0]table_data,
  input[31:0]cfg_far_z,input[4:0]cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed[7:0]cfg_lod_bias,
  input draw_bank,draw_unlit,input[26:0]draw_config,input[23:0]specular,input[7:0]alpha,
  input[2:0]depth_func,input depth_write,blend,draw_rebind,
@@ -30,21 +29,21 @@ module gpu_v2_vliw_sdram(
  output[63:0]fb_w_data,input fb_w_data_ready,
  input fb_w_response_valid,fb_w_response_last,fb_w_response_error
 );
- wire dma_we,dma_ready,core_table_ready;wire[9:0]dma_addr;wire[63:0]dma_data;
+ wire dma_we,dma_ready;wire[9:0]dma_addr;wire[63:0]dma_data;
  wire compute_fault,compute_pipeline_idle,compute_idle,memory_busy,memory_fault;
- reg active_page,job_active,job_page,job_config;reg[1:0]page_valid;
- wire page_writable=frontend_idle||descriptor_page!=active_page;
+ reg active_page,input_active,job_active,job_page,job_config;reg[1:0]page_valid;
+ // Input ownership ends at V/T completion, independently of retained attributes.
+ wire page_writable=!input_active||descriptor_page!=active_page;
  wire config_drained=compute_idle&&!memory_busy&&!job_active;
  wire descriptor_take=descriptor_valid&&descriptor_ready;
  wire job_writing=job_active&&!completion_valid;
  wire incoming_conflict=descriptor_valid&&(config_bytes!=0||descriptor_page==slot);
- assign start_ready=frontend_idle&&meshlet_ready&&page_valid[slot]&&!fault&&!table_valid&&
+ assign start_ready=meshlet_ready&&page_valid[slot]&&!fault&&
   (!job_writing||(!job_config&&job_page!=slot))&&!incoming_conflict;
  wire start_fire=ce&&start&&start_ready;
  assign pipeline_idle=compute_pipeline_idle&&!memory_busy&&!job_active;
  assign idle=compute_idle&&!memory_busy&&!job_active;
  assign fault=abort||compute_fault||memory_fault;
- assign table_ready=core_table_ready&&pipeline_idle;
  wire texture_request_valid;
  wire[31:0] texture_request_address;
  wire texture_request_ready;
@@ -65,9 +64,10 @@ module gpu_v2_vliw_sdram(
  wire framebuffer_complete;
  wire framebuffer_ok;
  always @(posedge clk)begin
-  if(reset)begin active_page<=0;job_active<=0;job_page<=0;job_config<=0;page_valid<=0;end
+  if(reset)begin active_page<=0;input_active<=0;job_active<=0;job_page<=0;job_config<=0;page_valid<=0;end
   else begin
-   if(start_fire)active_page<=slot;
+   if(meshlet_done)input_active<=0;
+   if(start_fire)begin active_page<=slot;input_active<=1;end
    if(descriptor_take)begin
     job_active<=1;job_page<=descriptor_page;job_config<=config_bytes!=0;
     page_valid[descriptor_page]<=0;
@@ -91,10 +91,6 @@ module gpu_v2_vliw_sdram(
  .dma_addr(dma_addr),
  .dma_data(dma_data),
  .output_ready(output_ready),
- .table_valid(table_valid&&pipeline_idle),
- .table_ready(core_table_ready),
- .table_index(table_index),
- .table_data(table_data),
  .cfg_far_z(cfg_far_z),
  .cfg_tex_w_log2(cfg_tex_w_log2),
  .cfg_tex_h_log2(cfg_tex_h_log2),

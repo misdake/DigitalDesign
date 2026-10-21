@@ -25,6 +25,47 @@ def execute(cmd, cwd, log, timeout=1800, env=None):
     return p.stdout.decode(errors='replace'), time.monotonic() - t
 
 
+def smooth_normals(world, faces):
+    """Area-weighted normals with a deterministic cancellation fallback.
+
+    Zipper meshes can contain opposite copies of a face and vertices incident
+    only to that pair. Never normalize floating-point cancellation residue.
+    Preserve every source triangle; repair only undefined vertex normals using
+    an incident face oriented toward its reliable neighboring vertex normals.
+    """
+    normals = [[0.0]*3 for _ in world]
+    area = [0.0]*len(world)
+    incident = [[] for _ in world]
+    for triangle in faces:
+        a, b, c = triangle
+        u = [world[b][k]-world[a][k] for k in range(3)]
+        w = [world[c][k]-world[a][k] for k in range(3)]
+        n = (u[1]*w[2]-u[2]*w[1], u[2]*w[0]-u[0]*w[2], u[0]*w[1]-u[1]*w[0])
+        length = math.sqrt(sum(x*x for x in n))
+        for i in triangle:
+            area[i] += length
+            incident[i].append((triangle, n, length))
+            for k in range(3):
+                normals[i][k] += n[k]
+    reliable = [math.sqrt(sum(x*x for x in n)) > area[i]*1e-12 for i, n in enumerate(normals)]
+    repaired = []
+    for i, n in enumerate(normals):
+        if not reliable[i] and incident[i]:
+            triangle, face, length = max(incident[i], key=lambda v: v[2])
+            assert length > 0, ('isolated degenerate vertex', i)
+            adjacent = [j for j in triangle if reliable[j]]
+            assert adjacent, ('undefined surface orientation', i)
+            score = sum(sum(face[k]*normals[j][k] for k in range(3)) for j in adjacent)
+            assert abs(score) > 0, ('ambiguous surface orientation', i)
+            normals[i] = [v*(1 if score > 0 else -1) for v in face]
+            repaired.append(i)
+    for n in normals:
+        length = math.sqrt(sum(x*x for x in n)) or 1
+        for k in range(3):
+            n[k] /= length
+    return normals, repaired
+
+
 def mesh(path):
     lines = path.read_text().splitlines()
     assert lines[0] == 'ply' and lines[1] == 'format ascii 1.0'
@@ -37,16 +78,7 @@ def mesh(path):
     center = [(min(p[k] for p in v) + max(p[k] for p in v))/2 for k in range(3)]
     scale = 1.5/max(max(p[k] for p in v)-min(p[k] for p in v) for k in range(3))
     world = [tuple((p[k]-center[k])*scale for k in range(3)) for p in v]
-    normals = [[0.0]*3 for _ in v]
-    for a,b,c in f:
-        u = [world[b][k]-world[a][k] for k in range(3)]
-        w = [world[c][k]-world[a][k] for k in range(3)]
-        n = (u[1]*w[2]-u[2]*w[1], u[2]*w[0]-u[0]*w[2], u[0]*w[1]-u[1]*w[0])
-        for i in (a,b,c):
-            for k in range(3): normals[i][k] += n[k]
-    for n in normals:
-        length = math.sqrt(sum(x*x for x in n)) or 1
-        for k in range(3): n[k] /= length
+    normals, repaired = smooth_normals(world, f)
     # One model-wide decompression grid keeps duplicated meshlet vertices bit-identical.
     raw = [tuple(round(x*65536) for x in p) for p in world]
     origin = [min(p[k] for p in raw) for k in range(3)]
@@ -79,6 +111,7 @@ def mesh(path):
     return batches, dict(vertices=nv,triangles=nf,used_vertices=len({x for t in f for x in t}),
         meshlets=len(batches),submitted_vertices=sum(len(b['vertices']) for b in batches),
         config=[*origin,shift|256],source_sha256=SHA(path),world_center=center,world_scale=scale,
+        normal_fallback_vertices=repaired,
         note='Every source face exactly once; no further decimation; shared model-wide position grid and normals; generated UVs')
 
 
@@ -172,34 +205,34 @@ task present_job;input integer n;begin
 end endtask
 task prepare_task;input integer taskno,vn,tn,pn;input use_slot;
 reg[1023:0]path;begin
- while(!frontend_idle||!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;wi=0;saw_done=0;
+ while(!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;saw_done=0;
  $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*5-1);
  $sformat(path,"task%0d/admissions.hex",taskno);$readmemh(path,admissions,0,nt-1);
  if(np>0)begin
   $sformat(path,"task%0d/descriptors.hex",taskno);$readmemh(path,descriptors,0,np-1);
   $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*16-1);
  end
+ expect_task(taskno,np);
  start=1;start_taken=0;while(!start_taken)tick();start=0;mesh_start=cycle;
  $display("START task=%0d cycle=%0d",task_id,cycle);
 end endtask
 task finish_task;begin
- while(!saw_done||!frontend_idle)tick();mesh_front_end=cycle;
- if(vi!=nv*5||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
- $display("MESH task=%0d cycles=%0d end=%0d V=%0d T=%0d P=%0d",task_id,cycle-mesh_start,cycle,vi/6,ti,pi);
+ while(!saw_done)tick();mesh_front_end=cycle;
+ if(vi!=nv*5||ti!=nt||published_vertices!=nv)$fatal(1,"task computation counts");
+ $display("MESH task=%0d cycles=%0d end=%0d V=%0d T=%0d P=%0d exported=%0d",task_id,cycle-mesh_start,cycle,vi/5,ti,np,observed_packets[task_id]);
 end endtask
 '''
 
 INITIAL = r'''
 initial begin
  frame_begin=0;for(j=0;j<8;j=j+1)wall[j]=0;
- fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");$readmemh("task0/rom.hex",rom);
+ fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");
  $readmemh("jobs.hex",jobs);$readmemh("expected-dma.hex",expected_dma);$readmemh("expected-valid.hex",expected_valid);
  seed_handle=$fopen("seed.txt","r");if(!seed_handle)$fatal(1,"seed missing");
  while(!$feof(seed_handle))begin seed_rc=$fscanf(seed_handle,"%h %h",raw_seed_addr,seed_value);
   if(seed_rc==2)pin.seed_word(native_word(raw_seed_addr),seed_value);
  end $fclose(seed_handle);
  tick();tick();reset=0;
- for(j=0;j<256;j=j+1)begin table_valid=1;table_index=j;table_data=rom[j];table_taken=0;while(!table_taken)tick();end table_valid=0;
  frame_begin=cycle;present_job(0);render_begin=cycle;
  @SEQUENCE@
  render_end=cycle;inputs_done=1;while(!idle)tick();flush_request=1;while(!flush_complete)tick();frame_end=cycle;
@@ -233,7 +266,7 @@ initial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end
     declarations += S.PORTS + S.MC[:S.MC.index('reg descriptor_valid')]
     common = base[base.index('localparam STRESS='):base.index('function integer mi;')].replace(',requests=0,paid_ce0=0','')
     monitor = base[base.index('always @(posedge clk)begin'):base.index('task tick;')].replace('dut.','dut.core.')
-    monitor = monitor.replace('start_taken=ce&&!reset&&start&&frontend_idle&&meshlet_ready&&!dut.core.table_allow;', 'start_taken=ce&&!reset&&start&&start_ready;')
+    monitor = monitor.replace('start_taken=ce&&!reset&&start&&meshlet_ready;', 'start_taken=ce&&!reset&&start&&start_ready;')
     sequence = []
     for i,m in enumerate(metas):
         sequence.append(f'prepare_task({i},{m["vertices"]},{m["triangles"]},{m["packets"]},{i%2});')
@@ -246,8 +279,8 @@ initial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end
     return result
 
 
-def dma_fixture(out,V,metas):
-    seed={};b=V.initial_memory();jobs=[];expected=[0]*(512*len(metas));valid=[0]*len(expected)
+def dma_fixture(out,V,metas,initial=None):
+    seed={};b=V.initial_memory() if initial is None else initial;jobs=[];expected=[0]*(512*len(metas));valid=[0]*len(expected)
     for off in range(0,len(b),4):
         a=0x1000+off if off<V.TEX else 0x100000+off-V.TEX if off<V.TEX+V.FB else 0x140000+off-V.TEX-V.FB
         seed[a]=int.from_bytes(b[off:off+4],'little')

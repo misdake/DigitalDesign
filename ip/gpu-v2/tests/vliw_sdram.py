@@ -177,24 +177,25 @@ task acknowledge;begin
 end endtask
 task prepare_task;input integer taskno,vn,tn,pn;input use_slot;
 reg[1023:0]path;begin
- while(!frontend_idle||!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;wi=0;saw_done=0;
+ while(!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;saw_done=0;
  $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*5-1);
  $sformat(path,"task%0d/admissions.hex",taskno);$readmemh(path,admissions,0,nt-1);
  $sformat(path,"task%0d/descriptors.hex",taskno);$readmemh(path,descriptors,0,np-1);
  $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*16-1);
+ expect_task(taskno,np);
 end endtask
 task launch_task;begin
  start=1;start_taken=0;while(!start_taken)tick();start=0;
 end endtask
 task finish_task;begin
- while(!saw_done||!frontend_idle)tick();
- if(vi!=nv*5||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
+ while(!saw_done)tick();
+ if(vi!=nv*5||ti!=nt||published_vertices!=nv)$fatal(1,"task computation counts");
 end endtask
 '''
 
 INITIAL = r'''
 initial begin
- fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");$readmemh("task0/rom.hex",rom);
+ fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");
  $readmemh("jobs.hex",jobs);$readmemh("expected-dma.hex",expected_dma);$readmemh("expected-valid.hex",expected_valid);
  for(j=0;j<2560;j=j+1)dma_seen[j]=0;
  for(j=0;j<5;j=j+1)observed_dma[j]=0;
@@ -203,7 +204,6 @@ initial begin
   if(seed_rc==2)begin pin.seed_word(native_word(raw_seed_addr),seed_value);seed_count=seed_count+1;end
  end $fclose(seed_handle);
  tick();tick();reset=0;
- for(j=0;j<256;j=j+1)begin table_valid=1;table_index=j;table_data=rom[j];table_taken=0;while(!table_taken)tick();end table_valid=0;
  // A successful page is later invalidated by a failed refresh. Present a
  // same-page start on the refresh acceptance edge: it must never race through.
  present_job(0,0);wait_completion(0);acknowledge();
@@ -271,7 +271,7 @@ initial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end
     declarations += common
     monitor = base[base.index('always @(posedge clk)begin'):base.index('task tick;')]
     monitor = monitor.replace('dut.', 'dut.core.')
-    monitor = monitor.replace('start_taken=ce&&!reset&&start&&frontend_idle&&meshlet_ready&&!dut.core.table_allow;', 'start_taken=ce&&!reset&&start&&start_ready;')
+    monitor = monitor.replace('start_taken=ce&&!reset&&start&&meshlet_ready;', 'start_taken=ce&&!reset&&start&&start_ready;')
     result = declarations + monitor + TICK + INITIAL
     replacements = dict(STRESS=int(stress), MAXC=max_cycles, BYTES=len(V.initial_memory()), MAXTIME=int(max_cycles * 21 + 200000), REQUIREWAIT=int(require_dirty_flush_wait),
         PREP0=f'prepare_task(0,{metas[0]["vertices"]},{metas[0]["triangles"]},{metas[0]["packets"]},0);',

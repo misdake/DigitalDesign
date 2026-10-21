@@ -2,16 +2,12 @@
 // 标量sample_h按phi0/1/2依次消费；cover/anchor仅phi2有效。
 module rc_compute(
  input clk,reset,ce,output reg[1:0]phase,
- input prepare_owner,input prep_pw_re,input[3:0]prep_pw_ra,input prep_pw_acc_re,input[3:0]prep_pw_acc_ra,
- input prep_pw_low0_we,prep_pw_low1_we,prep_pw_high_we,input[3:0]prep_pw_wa,
- input[35:0]prep_pw_low_wd,input[53:0]prep_pw_high_wd,input[3:0]prep_pw_high_wa,output[89:0]prep_pw_q,
- input prep_operand_we,prep_operand_re,input[3:0]prep_operand_wa,prep_operand_ra,input[17:0]prep_operand_wd,
- input prep_wide_valid,input prep_wide_asign,
- output[53:0]prep_result_data,
+ input read_bank,write_bank,
+ input coefficient_bwe,coefficient_cwe,input[3:0]coefficient_bwa,coefficient_cwa,
+ input[35:0]coefficient_bwd,coefficient_cwd,
  input sample_valid,input[4:0]sample_pid,input sample_cover,sample_anchor,input[29:0]sample_h,
  input cfg_valid,input signed[7:0]cfg_z_bias,input[31:0]cfg_far,input cfg_rgb,
  input[4:0]cfg_shift0,cfg_shift1,cfg_shift2,
- input table_valid,output table_ready,input[7:0]table_index,input[35:0]table_data,
  input param_valid,input[1:0]param_index,input param_bank,input[50:0]param_data,
  input[4:0]cfg_tex_u,cfg_tex_v,cfg_max_mip,input signed[7:0]cfg_bias,
  input quad_end_valid,input[2:0]quad_end_qid,input[3:0]quad_end_mask,
@@ -32,8 +28,6 @@ module rc_compute(
  wire lod_busy;wire[3:0]lod_error;
  assign busy=(|valid_pipe)||lod_busy;
  assign error={lod_error,compute_error};
- wire idle=!busy;
- assign table_ready=idle&&!reset;
  wire launch=sample_valid&&phase==0&&!reset;
 
  wire signed[53:0]wide_result;
@@ -55,7 +49,7 @@ module rc_compute(
  wire[31:0]aligned_h={2'd0,shifted};
  // 两个交替pixel各H0/H1：M1地址256..259，低区0..255仍为只读数值表。
  wire h_we=launch||(phase==1&&valid_pipe[0]);
- wire[8:0]h_wa={7'b1000000,(phase==0 ? sample_pid[0] : pid0[0]),(phase==1)};
+ wire[1:0]h_wa={(phase==0 ? sample_pid[0] : pid0[0]),(phase==1)};
  wire[35:0]table_q;
  // H<=D及窗口定义保证hmant bit17恒0；保留17位无损值与旧pixel的e/D0。
  reg[16:0]hm0,hm1;reg[4:0]hm_exponent;reg hm_zero;
@@ -70,9 +64,6 @@ module rc_compute(
 
  wire log_valid,log_result_valid;wire[5:0]log_index;wire[4:0]log_tag,log_result_tag;
  wire log_take=log_valid&&phase==3&&!reset;
- wire table_we=(table_valid&&table_ready)||h_we;
- wire[8:0]table_wa=table_valid&&table_ready ? {1'b0,table_index} : h_wa;
- wire[35:0]table_wd=table_valid&&table_ready ? table_data : {4'd0,aligned_h};
  wire table_re=log_take||(phase==0&&valid_pipe[0])||((phase==1||phase==2)&&valid_pipe[1]);
  reg[8:0]table_ra;
  always @*begin
@@ -83,7 +74,7 @@ module rc_compute(
    default:table_ra={1'b0,log_index,2'b00};
   endcase
  end
- iz_ram36 reciprocal_ram(clk,reset,ce,table_we,table_wa,table_wd,table_re,table_ra,table_q);
+ iz_numeric_ram reciprocal_ram(clk,reset,ce,h_we,h_wa,aligned_h,table_re,table_ra,table_q);
  reg log_return_valid;reg[4:0]log_return_tag;
  assign log_result_valid=log_return_valid;
  assign log_result_tag=log_return_tag;
@@ -127,9 +118,9 @@ module rc_compute(
  // Store 51 bits per row; restore the redundant sign bits at the DSP pins.
  wire[50:0]p0q,p1q;
  iz_params_async #(.WIDTH(51)) param0(clk,reset,ce,param_valid&&!reset&&!param_bank,
-  {2'd0,param_index},param_data,{2'd0,param_read_row},p0q);
+  {1'b0,write_bank,param_index},param_data,{1'b0,read_bank,param_read_row},p0q);
  iz_params_async #(.WIDTH(51)) param1(clk,reset,ce,param_valid&&!reset&&param_bank,
-  {2'd0,param_index},param_data,{2'd0,param_read_row},p1q);
+  {1'b0,write_bank,param_index},param_data,{1'b0,read_bank,param_read_row},p1q);
  wire signed[53:0]base0={{21{p0q[50]}},p0q[50:34],16'h8000};
  wire signed[53:0]base1={{21{p1q[50]}},p1q[50:34],16'h8000};
  wire signed[53:0]pair0_result,pair1_result;
@@ -138,19 +129,18 @@ module rc_compute(
  // C低16位已加半LSB；仅半分位由取偶改成向正无穷取整。
  wire[17:0]attr0=pair0_result[33:16],attr1=pair1_result[33:16];
  wire operand_we,operand_re;wire[3:0]operand_wa,operand_ra;wire[17:0]operand_wd,operand_value;
- wire a_read=prepare_owner?prep_operand_re:operand_re;
- reg[3:0]a_read_address;
- always @(posedge clk)if(reset)a_read_address<=0;else if(ce&&a_read)a_read_address<=prepare_owner?prep_operand_ra:operand_ra;
- iz_params_async #(.WIDTH(18)) wide_operand(clk,reset,ce,prepare_owner?prep_operand_we:operand_we,
-  prepare_owner?prep_operand_wa:operand_wa,prepare_owner?prep_operand_wd:operand_wd,a_read_address,operand_value);
+ // Runtime A only holds four per-quad anchors. Preparation owns its
+ // independent BSRAM table; no read/write owner mux joins these lifetimes.
+ iz_params #(.WIDTH(18)) wide_anchor(clk,reset,ce,operand_we,
+  {2'd0,operand_wa[1:0]},operand_wd,operand_re,{2'd0,operand_ra[1:0]},operand_value);
  wire wide_valid;wire signed[35:0]wide_b;wire signed[53:0]wide_c;wire[4:0]wide_tag;
  reg[1:0]wide_valid_pipe;reg[4:0]wide_tag0,wide_tag1;
- wire[17:0]wide_a=phase==1&&!prepare_owner ? r : operand_value;
- iz_widemac wide(clk,reset,ce,wide_a,prepare_owner&&prep_wide_asign,wide_b,wide_c,wide_result);
+ wire[17:0]wide_a=phase==1 ? r : operand_value;
+ iz_widemac wide(clk,reset,ce,wide_a,1'b0,wide_b,wide_c,wide_result);
  wire wide_result_valid=wide_valid_pipe[1];
- wire wide_issue=prepare_owner?prep_wide_valid:wide_valid;
+ wire wide_issue=wide_valid;
  wire[4:0]wide_issue_tag=wide_tag;
- assign prep_result_data=wide_result;
+
  wire z_overflow=z_shift<9'sd15||(z_shift==9'sd15&&wide_result[47]);
  wire[24:0]depth_word=(z_shift>=9'sd48||output_shift[5]) ? 25'd0:shifted[24:0];
  wire[15:0]z16=depth_word[15:0];
@@ -182,17 +172,18 @@ module rc_compute(
 
  rc_lod lod(
   .clk(clk),.reset(reset),.ce(ce),.phase(phase),
-  .prepare_owner(prepare_owner),.prep_pw_re(prep_pw_re),.prep_pw_ra(prep_pw_ra),.prep_pw_acc_re(prep_pw_acc_re),.prep_pw_acc_ra(prep_pw_acc_ra),
-  .prep_pw_low0_we(prep_pw_low0_we),.prep_pw_low1_we(prep_pw_low1_we),.prep_pw_high_we(prep_pw_high_we),.prep_pw_wa(prep_pw_wa),
-  .prep_pw_low_wd(prep_pw_low_wd),.prep_pw_high_wd(prep_pw_high_wd),.prep_pw_high_wa(prep_pw_high_wa),.prep_pw_q(prep_pw_q),
-  .cfg_valid(cfg_valid),
+  .read_bank(read_bank),.write_bank(write_bank),
+ .coefficient_bwe(coefficient_bwe),.coefficient_cwe(coefficient_cwe),
+ .coefficient_bwa(coefficient_bwa),.coefficient_cwa(coefficient_cwa),
+ .coefficient_bwd(coefficient_bwd),.coefficient_cwd(coefficient_cwd),
+ .cfg_valid(cfg_valid),
   .cfg_tex_u(cfg_tex_u),.cfg_tex_v(cfg_tex_v),.cfg_max_mip(cfg_max_mip),.cfg_bias(cfg_bias),.cfg_rgb(cfg_rgb),
   .quad_end_valid(quad_end_valid),.quad_end_qid(quad_end_qid),.quad_end_mask(quad_end_mask),
   .reciprocal_valid(reciprocal_valid),.reciprocal_pid(pid1),.reciprocal_anchor(anchor_pipe[1]),.reciprocal_log_q8(reciprocal_log_q8),
   .tap_valid(tap_valid),.tap_pid(tap_pid),.tap_index(tap_index),.tap_anchor(anchor_pipe[3]),.tap_a(tap_a),.tap_b(tap_b),
   .operand_we(operand_we),.operand_wa(operand_wa),.operand_wd(operand_wd),.operand_re(operand_re),.operand_ra(operand_ra),.operand_value(operand_value),
   .wide_valid(wide_valid),.wide_b(wide_b),.wide_c(wide_c),.wide_tag(wide_tag),
-  .wide_result_valid(wide_result_valid&&!prepare_owner),.wide_result_tag(wide_tag1),.wide_result_data(wide_result),
+  .wide_result_valid(wide_result_valid),.wide_result_tag(wide_tag1),.wide_result_data(wide_result),
   .norm_input_valid(lod_norm_valid),.norm_input_value(lod_norm_value),
   .norm_valid(shared_norm_valid),.norm_zero(shared_norm_zero),.norm_exp(shared_norm_exp),
   .norm_index(mant[16:11]),.norm_pending(shared_norm_pending),
@@ -216,7 +207,7 @@ module rc_compute(
    if(sample_valid&&phase!=0)compute_error[0]<=1;
    if(quad_end_valid&&(phase!=2||!valid_pipe[0]||pid0[1:0]!=3||pid0[4:2]!=quad_end_qid))compute_error[3]<=1;
    if(phase==2&&valid_pipe[0]&&sample_cover&&(negative_prefix||raw_h[29]))compute_error[1]<=1;
-   if(launch&&(cfg_valid||table_valid||param_valid))compute_error[2]<=1;
+   if(launch&&(cfg_valid||(param_valid&&write_bank==read_bank)))compute_error[2]<=1;
    if(phase==0)begin
     valid_pipe<={valid_pipe[2:0],launch};cover_pipe<={cover_pipe[2:0],1'b0};
     anchor_pipe<={anchor_pipe[2:0],1'b0};
@@ -254,16 +245,12 @@ module rc_compute(
   end
  end
 `ifndef SYNTHESIS
- always @(posedge clk)if(ce&&!reset&&param_valid&&busy)$fatal(1,"固定属性发布与运行期重叠");
- always @(posedge clk)if(ce&&!reset&&cfg_valid&&busy)$fatal(1,"固定配置提交时计算流水未排空");
- // 所有输入选择均由准备/运行生命周期或phi互斥，绝不以优先级丢弃请求。
  always @(posedge clk)if(ce&&!reset)begin
-  if(prepare_owner&&sample_valid)$fatal(1,"准备与像素运行生命期重叠");
-  if(!prepare_owner)begin
-   if(log_take&&phase!=3)$fatal(1,"M1 log日历错误");
-   if(wide_valid&&phase!=3)$fatal(1,"LOD占用Z专属DSP相位");
-   if(table_valid&&(h_we||(|valid_pipe)))$fatal(1,"表初始化与运行重叠");
-  end
+  if(operand_we&&operand_wd[17])$fatal(1,"anchor does not fit unsigned17");
+  if(param_valid&&busy&&write_bank==read_bank)$fatal(1,"attribute write to live context");
+  if(cfg_valid&&busy)$fatal(1,"configuration commit before pixel drain");
+  if(log_take&&phase!=3)$fatal(1,"M1 log calendar");
+  if(wide_valid&&phase!=3)$fatal(1,"LOD occupied the Z phase");
  end
 `endif
 endmodule
