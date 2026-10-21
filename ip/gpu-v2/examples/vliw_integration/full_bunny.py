@@ -205,34 +205,34 @@ task present_job;input integer n;begin
 end endtask
 task prepare_task;input integer taskno,vn,tn,pn;input use_slot;
 reg[1023:0]path;begin
- while(!frontend_idle||!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;wi=0;saw_done=0;
+ while(!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;saw_done=0;
  $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*5-1);
  $sformat(path,"task%0d/admissions.hex",taskno);$readmemh(path,admissions,0,nt-1);
  if(np>0)begin
   $sformat(path,"task%0d/descriptors.hex",taskno);$readmemh(path,descriptors,0,np-1);
   $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*16-1);
  end
+ expect_task(taskno,np);
  start=1;start_taken=0;while(!start_taken)tick();start=0;mesh_start=cycle;
  $display("START task=%0d cycle=%0d",task_id,cycle);
 end endtask
 task finish_task;begin
- while(!saw_done||!frontend_idle)tick();mesh_front_end=cycle;
- if(vi!=nv*5||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
- $display("MESH task=%0d cycles=%0d end=%0d V=%0d T=%0d P=%0d",task_id,cycle-mesh_start,cycle,vi/5,ti,pi);
+ while(!saw_done)tick();mesh_front_end=cycle;
+ if(vi!=nv*5||ti!=nt||published_vertices!=nv)$fatal(1,"task computation counts");
+ $display("MESH task=%0d cycles=%0d end=%0d V=%0d T=%0d P=%0d exported=%0d",task_id,cycle-mesh_start,cycle,vi/5,ti,np,observed_packets[task_id]);
 end endtask
 '''
 
 INITIAL = r'''
 initial begin
  frame_begin=0;for(j=0;j<8;j=j+1)wall[j]=0;
- fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");$readmemh("task0/rom.hex",rom);
+ fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");
  $readmemh("jobs.hex",jobs);$readmemh("expected-dma.hex",expected_dma);$readmemh("expected-valid.hex",expected_valid);
  seed_handle=$fopen("seed.txt","r");if(!seed_handle)$fatal(1,"seed missing");
  while(!$feof(seed_handle))begin seed_rc=$fscanf(seed_handle,"%h %h",raw_seed_addr,seed_value);
   if(seed_rc==2)pin.seed_word(native_word(raw_seed_addr),seed_value);
  end $fclose(seed_handle);
  tick();tick();reset=0;
- for(j=0;j<256;j=j+1)begin table_valid=1;table_index=j;table_data=rom[j];table_taken=0;while(!table_taken)tick();end table_valid=0;
  frame_begin=cycle;present_job(0);render_begin=cycle;
  @SEQUENCE@
  render_end=cycle;inputs_done=1;while(!idle)tick();flush_request=1;while(!flush_complete)tick();frame_end=cycle;
@@ -266,7 +266,7 @@ initial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end
     declarations += S.PORTS + S.MC[:S.MC.index('reg descriptor_valid')]
     common = base[base.index('localparam STRESS='):base.index('function integer mi;')].replace(',requests=0,paid_ce0=0','')
     monitor = base[base.index('always @(posedge clk)begin'):base.index('task tick;')].replace('dut.','dut.core.')
-    monitor = monitor.replace('start_taken=ce&&!reset&&start&&frontend_idle&&meshlet_ready&&!dut.core.table_allow;', 'start_taken=ce&&!reset&&start&&start_ready;')
+    monitor = monitor.replace('start_taken=ce&&!reset&&start&&meshlet_ready;', 'start_taken=ce&&!reset&&start&&start_ready;')
     sequence = []
     for i,m in enumerate(metas):
         sequence.append(f'prepare_task({i},{m["vertices"]},{m["triangles"]},{m["packets"]},{i%2});')

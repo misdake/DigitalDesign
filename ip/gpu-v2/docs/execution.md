@@ -99,6 +99,7 @@ R/I executes. Only final values cross to the runtime consumer:
 | Attribute pair banks | Existing two 16x51 RAM16 banks; row `{0,context,component}`; 1W1R |
 | Quad log offsets | Independent 16x16 RAM16 bank; runtime writer and reader only |
 | UV anchors | Independent four-entry unsigned17 values in RAM16, with a synchronous18-bit Q |
+| Reciprocal/log and H | One 512x36 BSRAM, synchronous 1W1R; configuration-initialized constant rows0..255, only H rows256..259 writable |
 
 Preparation publishes into the inactive context. Runtime reads only the active
 context; its offset and anchor writers cannot compete with preparation writes.

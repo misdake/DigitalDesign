@@ -6,7 +6,6 @@ GSR GSR(.GSRI(1'b1));
 `endif
 reg clk=0,reset=1,ce=1,abort=0,start=0,slot=0,dma_we=0,output_ready=1;
 reg[9:0]dma_addr=0;reg[63:0]dma_data=0;wire dma_ready;
-reg table_valid=0;wire table_ready;reg[7:0]table_index=0;reg[35:0]table_data=0;
 reg[31:0]cfg_far_z=199*65536;reg[4:0]cfg_tex_w_log2=6,cfg_tex_h_log2=6,cfg_max_mip=6;reg signed[7:0]cfg_lod_bias=0;
 reg draw_bank=0,draw_unlit=0;reg[26:0]draw_config=(2<<25)|(1<<24)|(6<<20);
 reg[23:0]specular=0;reg[7:0]alpha=255;reg[2:0]depth_func=1;reg depth_write=1,blend=0,draw_rebind=0;
@@ -21,15 +20,27 @@ wire mem_req_valid,mem_req_write,mem_write_valid;wire[31:0]mem_req_addr;wire[63:
 reg mem_req_ready=0,mem_read_valid=0,mem_write_ready=0,mem_complete_valid=0,mem_complete_ok=1;reg[63:0]mem_read_data=0;
 gpu_v2_vliw dut(.*);
 localparam STRESS=@STRESS@,MAXC=@MAXC@,BYTES=@BYTES@,FB=192000,TEX=16384;
-reg[7:0]memory[0:BYTES-1];reg[35:0]vertices[0:383],admissions[0:95],descriptors[0:95],rom[0:255];reg[53:0]words[0:1823];
+reg[7:0]memory[0:BYTES-1];reg[35:0]vertices[0:383],admissions[0:95],descriptors[0:95];reg[53:0]words[0:1823];
 integer cycle=0,en=0,pending=0,address=0,beat=0,delay_count=0,requests=0,paid_ce0=0,k,mi0;
 integer fd,bd,ff,dm,rc,addr,j,task_id=-1,vi=0,ti=0,pi=0,wi=0,all_pi=0,nv,nt,np;
 integer pending_packet=-1,executing_packet=-1;
+// Ordered expectations outlive the submitting meshlet, like the DUT T FIFO.
+reg[35:0]queued_descriptors[0:4095];reg[53:0]queued_words[0:65535];
+integer queued_task[0:4095],observed_packets[0:255],expected_packets=0;
+task expect_task;input integer owner,count;integer q;begin
+ if(owner>=256||expected_packets+count>4096)$fatal(1,"expected queue capacity");
+ observed_packets[owner]=0;
+ for(q=0;q<count;q=q+1)begin
+  queued_descriptors[expected_packets+q]=descriptors[q];queued_task[expected_packets+q]=owner;
+ end
+ for(q=0;q<count*16;q=q+1)queued_words[expected_packets*16+q]=words[q];
+ expected_packets=expected_packets+count;
+end endtask
 integer slot_seq[0:7],physical_seq[0:31],sequence_id=0,peak=0,full_ce=0,headers_pending=0,starts_pending=0;
 integer qpub=0,skips=0,commits=0,nlight=0,nsample=0,nfinal=0,ce0_checks=0;
 integer memory_hold_until=0;
 reg[63:0]dma_value;reg[89:0]h00;reg scalar_active=0;reg[1:0]scalar_lane;
-reg table_taken,dma_taken,start_taken,saw_done=0,inputs_done=0;
+reg dma_taken,start_taken,saw_done=0,inputs_done=0;
 reg[31:0]rng=32'h193fa2a7;reg[127:0]frozen;
 function integer mi;input[31:0]a;begin
  if(a>=32'h140000)mi=TEX+FB+a-32'h140000;
@@ -39,26 +50,28 @@ function integer mi;input[31:0]a;begin
 end endfunction
 always @(posedge clk)begin
  cycle=cycle+1;if(cycle>MAXC)$fatal(1,"bounded full GPU watchdog");
- table_taken=ce&&!reset&&table_valid&&table_ready;dma_taken=!reset&&dma_we&&dma_ready;
- start_taken=ce&&!reset&&start&&frontend_idle&&meshlet_ready&&!dut.table_allow;
+ dma_taken=!reset&&dma_we&&dma_ready;
+ start_taken=ce&&!reset&&start&&meshlet_ready;
  if(!reset)begin
   if(fault)$fatal(1,"full GPU fault cycle%0d front%h R%h I%h backend%0d",cycle,dut.frontend_error,dut.raster_error,dut.interpolator_error,dut.backend_fault);
   // ROP commit is a paid wall-clock event pulse, including a following CE0 edge.
   if(commit_valid)begin $fdisplay(bd,"C %0d %0d %0d %h",cycle,commit_x,commit_y,commit_mask);commits=commits+1;end
   if(ce)begin
-   en=en+1;if(meshlet_done)saw_done=1;
+   en=en+1;if(meshlet_done&&!start_taken)saw_done=1;
    if(global_used>peak)peak=global_used;if(global_used==24)full_ce=full_ce+1;
    if(global_used>24||producer_used>8)$fatal(1,"physical pool credits");
    if(dut.front.header_take)begin
     pending_packet=all_pi;
-    if(pi>=np||dut.front.fd!==descriptors[pi])$fatal(1,"descriptor task%0d packet%0d",task_id,pi);
-    $fdisplay(fd,"P %0d %0d %h",cycle,all_pi,dut.front.fd);pi=pi+1;all_pi=all_pi+1;wi=0;
+    if(all_pi>=expected_packets||dut.front.fd!==queued_descriptors[all_pi])$fatal(1,"descriptor packet%0d",all_pi);
+    observed_packets[queued_task[all_pi]]=observed_packets[queued_task[all_pi]]+1;
+    pi=observed_packets[task_id];
+    $fdisplay(fd,"P %0d %0d %h",cycle,all_pi,dut.front.fd);all_pi=all_pi+1;wi=0;
     if(global_used)headers_pending=headers_pending+1;
     if(STRESS&&task_id==0&&pi==np)memory_hold_until=cycle+1500;
    end
    if(dut.front.raster.packet_take)executing_packet=pending_packet;
    if(dut.front.fwv&&dut.front.fwr)begin
-    if(wi>=16||dut.front.fwi!==wi[4:0]||dut.front.fwd!==words[(pi-1)*16+wi])$fatal(1,"raw16 task%0d packet%0d word%0d",task_id,pi-1,wi);
+    if(wi>=16||dut.front.fwi!==wi[4:0]||dut.front.fwd!==queued_words[(all_pi-1)*16+wi])$fatal(1,"raw16 packet%0d word%0d",all_pi-1,wi);
     wi=wi+1;
    end
    if(dut.front.meshlet.core.launch_t)begin
@@ -85,6 +98,7 @@ always @(posedge clk)begin
    if(final_result)begin $fdisplay(bd,"F %0d %0d %0d %h",cycle,physical_seq[dut.back.retire_slot],dut.back.out_lane,dut.back.final_RGB);nfinal=nfinal+1;end
    if(quad_accepted)$fdisplay(bd,"R %0d %0d",cycle,physical_seq[dut.back.retire_slot]);
    if(start_taken&&global_used)starts_pending=starts_pending+1;
+  if(inputs_done&&frontend_idle&&all_pi!=expected_packets)$fatal(1,"missing indexed exports");
   end
  end
 end
@@ -111,22 +125,22 @@ task tick;begin
 end endtask
 task load_and_start;input integer taskno;input integer vn,tn,pn;input use_slot;
 reg[1023:0]path;begin
- while(!frontend_idle||!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;wi=0;saw_done=0;
+ while(!meshlet_ready)tick();task_id=taskno;nv=vn;nt=tn;np=pn;slot=use_slot;vi=0;ti=0;pi=0;saw_done=0;
  $sformat(path,"task%0d/vertices.hex",taskno);$readmemh(path,vertices,0,nv*5-1);
  $sformat(path,"task%0d/admissions.hex",taskno);$readmemh(path,admissions,0,nt-1);
  $sformat(path,"task%0d/descriptors.hex",taskno);$readmemh(path,descriptors,0,np-1);
  $sformat(path,"task%0d/words.hex",taskno);$readmemh(path,words,0,np*16-1);
+ expect_task(taskno,np);
  $sformat(path,"task%0d/dma.txt",taskno);dm=$fopen(path,"r");
  while(!$feof(dm))begin rc=$fscanf(dm,"%d %h",addr,dma_value);if(rc==2)begin
   dma_addr=addr;dma_data=dma_value;dma_we=1;dma_taken=0;while(!dma_taken)tick();
  end end $fclose(dm);dma_we=0;start=1;start_taken=0;while(!start_taken)tick();start=0;
- while(!saw_done||!frontend_idle)tick();
- if(vi!=nv*5||ti!=nt||pi!=np||published_vertices!=nv)$fatal(1,"task completion counts");
+ while(!saw_done)tick();
+ if(vi!=nv*5||ti!=nt||published_vertices!=nv)$fatal(1,"task computation counts");
 end endtask
 initial begin
- fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");$readmemh("initial.mem",memory);$readmemh("task0/rom.hex",rom);
+ fd=$fopen("front.txt","w");bd=$fopen("back.txt","w");$readmemh("initial.mem",memory);
  tick();tick();reset=0;
- for(j=0;j<256;j=j+1)begin table_valid=1;table_index=j;table_data=rom[j];table_taken=0;while(!table_taken)tick();end table_valid=0;
  @TASKS@
  inputs_done=1;while(!idle)tick();flush_request=1;while(!flush_complete)tick();
  ff=$fopen("memory.mem","w");for(j=0;j<BYTES;j=j+1)$fdisplay(ff,"%h",memory[j]);$fclose(ff);

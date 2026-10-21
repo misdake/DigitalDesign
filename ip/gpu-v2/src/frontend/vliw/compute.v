@@ -8,7 +8,6 @@ module rc_compute(
  input sample_valid,input[4:0]sample_pid,input sample_cover,sample_anchor,input[29:0]sample_h,
  input cfg_valid,input signed[7:0]cfg_z_bias,input[31:0]cfg_far,input cfg_rgb,
  input[4:0]cfg_shift0,cfg_shift1,cfg_shift2,
- input table_valid,output table_ready,input[7:0]table_index,input[35:0]table_data,
  input param_valid,input[1:0]param_index,input param_bank,input[50:0]param_data,
  input[4:0]cfg_tex_u,cfg_tex_v,cfg_max_mip,input signed[7:0]cfg_bias,
  input quad_end_valid,input[2:0]quad_end_qid,input[3:0]quad_end_mask,
@@ -29,8 +28,6 @@ module rc_compute(
  wire lod_busy;wire[3:0]lod_error;
  assign busy=(|valid_pipe)||lod_busy;
  assign error={lod_error,compute_error};
- wire idle=!busy;
- assign table_ready=idle&&!reset;
  wire launch=sample_valid&&phase==0&&!reset;
 
  wire signed[53:0]wide_result;
@@ -52,7 +49,7 @@ module rc_compute(
  wire[31:0]aligned_h={2'd0,shifted};
  // 两个交替pixel各H0/H1：M1地址256..259，低区0..255仍为只读数值表。
  wire h_we=launch||(phase==1&&valid_pipe[0]);
- wire[8:0]h_wa={7'b1000000,(phase==0 ? sample_pid[0] : pid0[0]),(phase==1)};
+ wire[1:0]h_wa={(phase==0 ? sample_pid[0] : pid0[0]),(phase==1)};
  wire[35:0]table_q;
  // H<=D及窗口定义保证hmant bit17恒0；保留17位无损值与旧pixel的e/D0。
  reg[16:0]hm0,hm1;reg[4:0]hm_exponent;reg hm_zero;
@@ -67,9 +64,6 @@ module rc_compute(
 
  wire log_valid,log_result_valid;wire[5:0]log_index;wire[4:0]log_tag,log_result_tag;
  wire log_take=log_valid&&phase==3&&!reset;
- wire table_we=(table_valid&&table_ready)||h_we;
- wire[8:0]table_wa=table_valid&&table_ready ? {1'b0,table_index} : h_wa;
- wire[35:0]table_wd=table_valid&&table_ready ? table_data : {4'd0,aligned_h};
  wire table_re=log_take||(phase==0&&valid_pipe[0])||((phase==1||phase==2)&&valid_pipe[1]);
  reg[8:0]table_ra;
  always @*begin
@@ -80,7 +74,7 @@ module rc_compute(
    default:table_ra={1'b0,log_index,2'b00};
   endcase
  end
- iz_ram36 reciprocal_ram(clk,reset,ce,table_we,table_wa,table_wd,table_re,table_ra,table_q);
+ iz_numeric_ram reciprocal_ram(clk,reset,ce,h_we,h_wa,aligned_h,table_re,table_ra,table_q);
  reg log_return_valid;reg[4:0]log_return_tag;
  assign log_result_valid=log_return_valid;
  assign log_result_tag=log_return_tag;
@@ -213,7 +207,7 @@ module rc_compute(
    if(sample_valid&&phase!=0)compute_error[0]<=1;
    if(quad_end_valid&&(phase!=2||!valid_pipe[0]||pid0[1:0]!=3||pid0[4:2]!=quad_end_qid))compute_error[3]<=1;
    if(phase==2&&valid_pipe[0]&&sample_cover&&(negative_prefix||raw_h[29]))compute_error[1]<=1;
-   if(launch&&(cfg_valid||table_valid||(param_valid&&write_bank==read_bank)))compute_error[2]<=1;
+   if(launch&&(cfg_valid||(param_valid&&write_bank==read_bank)))compute_error[2]<=1;
    if(phase==0)begin
     valid_pipe<={valid_pipe[2:0],launch};cover_pipe<={cover_pipe[2:0],1'b0};
     anchor_pipe<={anchor_pipe[2:0],1'b0};
@@ -257,7 +251,6 @@ module rc_compute(
   if(cfg_valid&&busy)$fatal(1,"configuration commit before pixel drain");
   if(log_take&&phase!=3)$fatal(1,"M1 log calendar");
   if(wide_valid&&phase!=3)$fatal(1,"LOD occupied the Z phase");
-  if(table_valid&&(h_we||(|valid_pipe)))$fatal(1,"table initialization overlaps pixels");
  end
 `endif
 endmodule

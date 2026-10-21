@@ -1,0 +1,40 @@
+// One existing 512x36 BSRAM: immutable math rows 0..255, H rows 256..259.
+// Only the four H rows have a write address. Reset changes Q, not RAM contents.
+module iz_numeric_ram(input clk,reset,ce,we,input[1:0]wa,input[31:0]wd,
+ input re,input[8:0]ra,output[35:0]q);
+ function[35:0]constant_value;
+  input integer address;
+  begin
+   case(address)
+@VALUES@
+    default:constant_value=0;
+   endcase
+  end
+ endfunction
+`ifdef PORTABLE
+ reg[35:0]memory[0:511];reg[35:0]rd;integer k;
+ initial for(k=0;k<256;k=k+1)memory[k]=constant_value(k);
+ assign q=rd;
+ always @(posedge clk)begin
+  if(reset)rd<=0;
+  else if(ce)begin
+   if(we)memory[{7'b1000000,wa}]<={4'd0,wd};
+   if(re)rd<=memory[ra];
+  end
+ end
+`else
+ function[287:0]constant_block;
+  input integer base;integer k;
+  begin for(k=0;k<8;k=k+1)constant_block[k*36+:36]=constant_value(base+k);end
+ endfunction
+ SDPX9B #(.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC"),
+@BLOCKS@) ram(
+  .DO(q),.DI({4'd0,wd}),.ADA({7'b1000000,wa,5'b01111}),.ADB({ra,5'd0}),
+  .CLKA(clk),.CLKB(clk),.CEA(ce&&we&&!reset),.CEB(ce&&re&&!reset),.OCE(ce),
+  .RESETA(1'b0),.RESETB(reset),.BLKSELA(3'd0),.BLKSELB(3'd0));
+`endif
+`ifndef SYNTHESIS
+ always @(posedge clk)if(ce&&!reset&&we&&re&&ra=={7'b1000000,wa})
+  $fatal(1,"numeric RAM cross-port address collision");
+`endif
+endmodule

@@ -19,6 +19,7 @@ not replace those implemented contracts or define a CPU submission ABI.
 | profile_prepare.py | Observer-only replay separating R-only/I-only/shared publication waits and an exclusive R lifetime partition; other activity counters overlap |
 | profile_triangle_queue.py | Observer-only per-meshlet T queue peak/full waits, last T completion and remaining frontend tail |
 | tests/vliw_triangle_queue.py | Bounded integer-reference T queue fill, wrap, full-queue reset, CE and output-stall checks in portable/native RAM modes |
+| tests/vliw_numeric_ram.py | Independent constant-table checks before/after H writes and reset, including CE hold, in portable/native RAM modes |
 | test_replay_export.py | Small source-identity, peer-isolation and bounded-log regression; includes a tiny Icarus simulation |
 | solid_scene.py | Complete 948-face bunny inside a six-face subdivided room; constant RGB albedos, directional light and selected H9 specular |
 | tests/vliw_prepare_chain.py | Small native/portable preparation regression; optional exhaustive operand-table check |
@@ -208,6 +209,15 @@ target rather than in docs.
 
 For independent fill-rate and small-triangle measurements, replay `--scene box`
 and `--scene bunny --meshlet-limit 2` into separate fresh output directories.
+
+Meshlet submission completes at the V/T computation boundary. The replay keeps
+ordered expected T records independently of the current V/T meshlet, allowing
+old indexed attribute exports and R/I to overlap the next meshlet. Final
+frontend idle still checks that every expected T record was exported. The
+bounded `tests/vliw_meshlet_pingpong.py` replay checks two live attribute epochs,
+third-epoch reuse blocking, CE pauses, and (with `--full-queue`) next-V progress
+while all sixteen T slots are occupied. Supply an explicit current frontend
+export and a fresh output directory, plus `--native` for Gowin primitives.
 Each run starts from reset, seeds its own memory, and includes first load and
 final flush in its total. The bunny limit selects complete meshlets and records
 both the selected counts and the original 948-face model counts. Omit the limit
@@ -216,7 +226,7 @@ peer and cycle/time limits on both sides of a comparison; combined-scene job
 intervals alone do not establish isolated throughput.
 
 The current standalone GPU qualification is bound to source
-and report hashes in [the selected receipt](/ip/gpu-v2/examples/vliw_integration/operand-table-evidence.json).
+and report hashes in [the selected receipt](/ip/gpu-v2/examples/vliw_integration/meshlet-pingpong-evidence.json).
 It contains only the selected implementation's acceptance evidence; generated
 exports, project files, traces and rejected mapping experiments are not inputs
 to the implementation.

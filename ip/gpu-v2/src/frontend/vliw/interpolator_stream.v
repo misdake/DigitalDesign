@@ -3,7 +3,6 @@ module gpu_v2_vliw_interpolator(
 input clk,reset,ce,
  output bound_valid,bound_empty,output[4:0]bound_xlo,bound_xhi,output[3:0]bound_ylo,bound_yhi,
  
- input table_valid,output table_ready,input[7:0]table_index,input[35:0]table_data,
  input prepare_start,execution_idle,output raster_start,exec_idle,input[35:0]descriptor,
  input raw_valid,output raw_ready,input[4:0]raw_index,input[53:0]raw_data,
  output geo_we,output[3:0]geo_wa,output[29:0]geo_wd,
@@ -36,7 +35,6 @@ input clk,reset,ce,
  wire[4:0]sample_pid={quad_take?quad_id:current_id,sample_lane};
  assign pool_rgb=rgb;
  assign pool_end_id=current_id;
- wire pixel_table_ready;
  assign busy=s_busy||p_busy||replay;
  assign drained=!busy;
  assign exec_idle=!p_busy;
@@ -104,7 +102,6 @@ input clk,reset,ce,
  assign raw_ready=s_raw_ready;assign prepare_error=s_error;
  assign run_enable=!raster_pending;
  assign quad_ready=pool_ready&&run_enable;
- assign table_ready=pixel_table_ready&&drained;
  // 低四位保留外层诊断接口布局；确定性内部生产次序改由仿真断言验证。
  assign error={1'b0,p_error,s_error,4'b0};
 
@@ -143,7 +140,6 @@ input clk,reset,ce,
  .sample_valid(sample_valid),.sample_pid(sample_pid),.sample_cover(sample_cover),.sample_anchor(sample_anchor),.sample_h(sample_h),
  .cfg_valid(cfg_apply),.cfg_z_bias(sc_z_bias),.cfg_far(sc_far),.cfg_rgb(sc_rgb),
  .cfg_shift0(sc_shift0),.cfg_shift1(sc_shift1),.cfg_shift2(sc_shift2),
- .table_valid(table_valid&&drained),.table_ready(pixel_table_ready),.table_index(table_index),.table_data(table_data),
  .param_valid(sp_valid),.param_index(sp_index),.param_bank(sp_bank),.param_data(sp_data),
  .cfg_tex_u(lc_tex_u),.cfg_tex_v(lc_tex_v),.cfg_max_mip(lc_max),.cfg_bias(lc_bias),
  .quad_end_valid(quad_end_valid),.quad_end_qid(current_id),.quad_end_mask(quad_mask),

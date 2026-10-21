@@ -288,19 +288,47 @@ returns on the next enabled edge; data/index and both Q owners hold during CE
 or downstream pause. Acceptance of item 15 releases the T record slot.
 
 The default T queue has sixteen slots. Coefficients use ten field-major planes
-of sixteen rows in the existing result banks; V addresses and numeric formats
-are unchanged. Descriptors reside in independent 16-deep distributed RAM. Its
+of sixteen rows in the existing result banks; numeric formats are unchanged.
+Descriptors reside in independent 16-deep distributed RAM, with one private
+attribute-epoch bit in addition to the unchanged public 36-bit descriptor. Its
 head stays immutable through item 15 acceptance, so attribute export selects
 vertex references directly from that head instead of copying and rotating them.
 The existing fetch index selects both vertex and N/attribute component. Header
 acceptance requests coefficient 0 on the same enabled edge. Extended read/write
 cursors supply full/empty tests without a separate occupancy counter.
 
-`TRIANGLE_SLOT_BITS` selects power-of-two depths from 2 through 32 at elaboration. At depth 32, a
-four-bit coefficient-plane remap skips the unchanged V attribute rows 192..319;
-descriptor RAM uses two 16-deep banks. Deeper queues do not release the V
-normal/attribute bank before its last indexed export, and do not change global
-state ownership or the frontend-drain requirement.
+The two existing 512x36 result memories retain independent read/write ports:
+
+| Memory | Address | Lifetime |
+| --- | --- | --- |
+| Positions | `{0,component2,vertex6}`; 192 live rows | Last T computation of this meshlet |
+| Export low | `{field4,slot4}`; rows 0..159 at depth16 | T item15 acceptance |
+| Export low, N36 | `{1,0,epoch1,vertex6}`; rows 256..383 | Last indexed export of that epoch |
+| Export low, attr32 | `{1,1,epoch1,vertex6}`; rows 384..511 | Last indexed export of that epoch |
+
+The coefficient high18 memory is unchanged. No position copy or additional
+BSRAM is needed. New V writes positions in place and attributes into the other
+epoch while old T exports read the retained epoch. Shared V/T arithmetic still
+executes all V before T; it is not duplicated.
+
+Epochs alternate at a validated meshlet boundary. With at most two live epochs,
+the alternate epoch is free exactly when the T FIFO is empty or its head belongs
+to the current epoch. FIFO order and item15 retirement establish this condition;
+there are no per-epoch reference counters. An empty/rejected meshlet can make
+this test conservative, but cannot permit early overwrite. Input-page identity
+is independent of attribute epoch. While the controller is idle, this condition
+can only become true, so admission latches it on an enabled edge and clears the
+latch on start acceptance. `meshlet_ready` therefore has no combinational path
+from the FIFO head to the enclosing start logic. Availability becoming true can
+cost one enabled admission edge. A validated header then resets the V count and
+toggles the epoch directly; the invariant is checked in simulation instead of
+repeating the admission predicate in the reset fanout. Full frontend idle still
+requires the complete T FIFO and R/I pipeline to drain.
+
+`TRIANGLE_SLOT_BITS` selects power-of-two depths from 2 through 16 at elaboration.
+Two attribute epochs reserve the upper half of the export-low memory; a 32-slot
+T queue does not fit this layout. The public T record and global state ownership
+are unchanged.
 
 The implementation shares V/T ROM, register file and arithmetic; interpolation
 preparation has its own local ROM schedule. Later returns write the result pool

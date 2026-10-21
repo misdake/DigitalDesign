@@ -7,19 +7,18 @@ hardware is emitted. Slots describe physical texture assets; the surface fixes
 color/depth bases and dimensions. Runtime draw pins select how work uses them.
 The selected factory requires a 400 × 240 surface.
 
-After a coordinated reset, allow enabled edges until the initialization port is
-ready. Load all 256 numerical-table words through
-`ce && table_valid && table_ready`; hold index/data until that transfer. The
-[table encoding](/ip/gpu-v2/docs/formats.md#interpolation-table) includes reciprocal seeds,
-slopes and logarithms. Its RAM is not a reset-provided numerical constant.
+The reciprocal/log table is embedded in the existing interpolation BSRAM at
+FPGA configuration. No host initialization writes or ready handshake exist.
+Its [constant encoding](/ip/gpu-v2/docs/formats.md#interpolation-table) is identical
+in native and portable realizations. Coordinated reset clears the pipeline
+without changing the immutable table rows.
 
 Choose global draw and Lighting configuration, then keep it stable while old
 work can read it. At a drained boundary, pulse `draw_rebind` for one enabled edge to invalidate
 the cached Lighting binding tagged bank 0. It has no separate ready/ACK pin;
 use `pipeline_idle` as its precondition. The selected top wires this retirement
 to bank 0, so keep `draw_bank=0` when using this same-bank rebind sequence.
-Table loading and configuration changes wait for `pipeline_idle` and their local
-ready conditions. An ordinary T-local drain is insufficient.
+Configuration changes wait for `pipeline_idle` and their local ready conditions. An ordinary T-local drain is insufficient.
 
 | Runtime configuration | Width and meaning |
 | --- | --- |
@@ -81,7 +80,7 @@ started. A failed config job invalidates both pages.
 ## Start and overlap the next load
 
 Select `slot` and transfer `ce && start && start_ready` on an enabled edge.
-Ready requires a valid page, frontend readiness, no fault or table loading, and
+Ready requires a valid page, frontend readiness, no fault, and
 no conflicting offered descriptor. An offered conflicting descriptor takes
 priority over start, even before its acceptance. Deassert `start` after transfer.
 
@@ -90,10 +89,20 @@ frontend publication. Continue servicing all three memory masters and accepting
 loader completions, including while compute CE is low.
 
 Another page's payload/metadata can prefetch while the current meshlet runs.
-Leave `config_bytes=0` for that overlap. Wait for `frontend_idle` before reusing
-the active input page. `meshlet_done` reports meshlet-controller progress;
-frontend idle is the page-reuse condition after remaining R/I work drains.
-Quads copied to the pool can continue shading after that point.
+Leave `config_bytes=0` for that overlap. `meshlet_done` means that all V/T
+computation and index reads have completed, including rejected triangles. It
+does not mean that queued T records or R/I have drained. `meshlet_ready` admits
+the next meshlet after its alternate attribute epoch is free and that permission
+has latched on an enabled idle edge; it no longer waits for R/I idle. Input-page
+ownership is tracked separately from attribute readiness: start acceptance marks
+the selected input page active, and `meshlet_done` releases it. The previous
+active input page can therefore be refilled even while attribute-epoch reuse
+is still blocked. Descriptor conflicts and page-valid checks still apply; a
+simultaneous accepted new start takes priority over the old completion in the
+input-ownership register. New V/T can overlap old indexed T export, R/I and shading.
+`frontend_idle` remains the full frontend drain condition, including both
+attribute epochs' queued exports and R/I. Global changes still wait for
+`pipeline_idle`.
 
 ## Finish the render or change configuration
 
@@ -122,7 +131,7 @@ This interface supplies no implicit CPU fence or Display present protocol.
 The following byte addresses are an illustrative nonoverlapping host allocation
 within 8 MiB; they are not reserved addresses. Emit the GPU with valid, disjoint
 framebuffer planes and use RGB/unlit mode to avoid texture and Lighting inputs
-for the example. Initialize the numerical table as above.
+for the example. No numerical-table loading is required.
 
 | Object | Host byte address | Descriptor halfword address | Length | Local qword destination |
 | --- | --- | --- | --- | --- |

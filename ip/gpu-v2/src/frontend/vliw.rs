@@ -9,6 +9,7 @@ pub fn verilog(portable: bool) -> String {
     } else {
         String::new()
     };
+    source.push_str(&super::vliw_numeric::verilog());
     for part in [
         include_str!("vliw/primitives/dsp.v"),
         include_str!("vliw/primitives/ram.v"),

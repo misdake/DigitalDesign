@@ -13,7 +13,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  output wire word_valid,output reg [4:0] word_index,output reg [53:0] word_data,
  output wire dma_ready,output wire emit_valid,output wire [9:0] emit_addr,output wire [35:0] emit_data,
  input source_re,input [9:0] source_addr,output [63:0] source_data,
- output source_ready,triangle_ready,drained
+ output source_ready,triangle_ready,meshlet_ready,drained
 );
  reg [8:0] pc;reg [6:0] remaining;reg [5:0] ub;reg [8:0] cb;
  reg [10:0] vp;reg [9:0] op;reg [5:0] vid;reg [2:0] vfield;reg triangle_mode;
@@ -26,6 +26,10 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  wire[TRIANGLE_SLOT_BITS:0]count=produced-consumed;
  wire queue_empty=produced==consumed;
  wire queue_full=(produced[TRIANGLE_SLOT_BITS]!=consumed[TRIANGLE_SLOT_BITS])&&write_slot==read_slot;
+ reg vertex_epoch;wire export_epoch;
+ // At most two consecutive meshlets own attributes. FIFO order makes the
+ // alternate epoch free once the head reaches this epoch, or the FIFO empties.
+ assign meshlet_ready=!busy&&!reset&&(queue_empty||export_epoch==vertex_epoch);
  // 位置与导出数据分bank：两个独立同步Q，导出背压不会保持位置口。
  localparam Q_EMPTY=1'b0,Q_DATA=1'b1;
  reg result_owner;reg core_qvalid;reg [4:0] response_index,fetch_index;
@@ -62,8 +66,8 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
   assign dma_ready=!reset&&!(SP_COMPACT&&dma_addr[9]);
  wire publish=step&&triangle_mode&&flow==6;
  rp_triangle_descriptors #(.AB(TRIANGLE_SLOT_BITS)) descriptors(.clk(clk),.we(ce&&!reset&&publish),
-  .wa(write_slot),.wd({building_desc[35:23],sigma,building_desc[21:0]}),
-  .ra(read_slot),.q(descriptor));
+  .wa(write_slot),.wd({vertex_epoch,building_desc[35:23],sigma,building_desc[21:0]}),
+  .ra(read_slot),.q({export_epoch,descriptor}));
  reg [8:0] next_pc;
  always @*begin
  next_pc=pc+1'b1;
@@ -140,18 +144,10 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  assign emit_addr=op;
  assign emit_data=packed_buffer[35:0];
  wire vwrite=step&&!triangle_mode&&vertex_emit;
- // Field-major T rows use the existing banks; V N36/attr32 stay at 192..319.
- // At depth32, skip field planes6..9 with a four-bit wiring transform.
- function [3:0] coefficient_plane;
-  input [3:0] field;
-  begin
-   if(TRIANGLE_SLOT_BITS==5)
-    coefficient_plane={field[3]|(field[2]&field[1]),field[3]|(field[2]&!field[1]),field[1:0]};
-   else coefficient_plane=field;
-  end
- endfunction
- wire[8:0]coefficient_wa={coefficient_plane(trow),write_slot};
- wire [8:0] wa=triangle_mode?coefficient_wa:{vfield,vid};
+ // The exported upper half is exactly {1,attribute,epoch,vertex}.
+ // Position writes need no epoch and never pass through the export address mux.
+ wire[8:0]coefficient_wa={trow,write_slot};
+ wire[8:0]export_wa=triangle_mode?coefficient_wa:{1'b1,vfield[2],vertex_epoch,vid};
  // The descriptor head stays immutable through item15 acceptance. Read its
  // indexed vertex directly; no copied/rotating refs or component state exists.
  reg[5:0]attribute_ref;
@@ -160,22 +156,21 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
   6:attribute_ref=descriptor[11:6];
   default:attribute_ref=descriptor[17:12];
  endcase
- wire[2:0]attr_plane={fetch_index[0],!fetch_index[0],!fetch_index[0]};
  wire[8:0]export_addr=fetch_index<10 ?
-  {coefficient_plane(fetch_index[3:0]),read_slot} : {attr_plane,attribute_ref};
+  {fetch_index[3:0],read_slot} : {1'b1,fetch_index[0],export_epoch,attribute_ref};
  rp_results_split results(.clk(clk),.reset(reset),.ce(ce),
   .position_we(vwrite&&vfield<3),.export_we((vwrite&&vfield>=3)||(step&&twrite&&emit==1)),
-  .wa(wa),.wd(emit_data),.position_re(core_read),.position_ra({1'b0,u_off[1:0],refs[5:0]}),
+  .position_wa({vfield[1:0],vid}),.export_wa(export_wa),.wd(emit_data),.position_re(core_read),.position_ra({1'b0,u_off[1:0],refs[5:0]}),
   .export_re(export_read),.export_ra(export_addr),.position_q(pq),.export_q(export_q));
  // Coefficient high words have the same item address and synchronous read edge.
- iz_ram18 coefficient_high(clk,reset,ce,step&&twrite&&emit==2,wa,packed_buffer[53:36],
+ iz_ram18 coefficient_high(clk,reset,ce,step&&twrite&&emit==2,coefficient_wa,packed_buffer[53:36],
   export_read&&fetch_index<10,export_addr,export_hi);
  always @(posedge clk)begin
  if(reset)begin
  any_front<=0;busy<=0;done_v<=0;done_t<=0;
  error<=0;published_vertices<=0;pc<=0;remaining<=0;ub<=0;cb<=0;vp<=0;op<=0;vid<=0;vfield<=0;triangle_mode<=0;
  refs<=0;scale<=0;cull<=0;building_desc<=0;sigma<=0;delta_zero<=0;delta_negative<=0;collecting<=0;
- produced<=0;consumed<=0;import_state<=0;word_index<=0;word_data<=0;
+ produced<=0;consumed<=0;vertex_epoch<=0;import_state<=0;word_index<=0;word_data<=0;
  result_owner<=Q_EMPTY;core_qvalid<=0;response_index<=0;fetch_index<=0;export_valid<=0;
  origin_x<=0;origin_y<=0;origin_z<=0;quant_shift<=0;normal18<=0;unpacked<=0;unpack_kind<=0;phase<=0;acc<=0;packed_buffer<=0;
  end else if(ce)begin
@@ -200,7 +195,10 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  result_owner<=Q_DATA;
  if(fetch_index==15)import_state<=2;else fetch_index<=fetch_index+1'b1;
  end
- if(meshlet_reset&&!busy&&queue_empty&&!import_active)begin published_vertices<=0;error<=0;end
+ // The meshlet controller only pulses this after admission and header checks.
+ // Export can only free epochs during that interval; rechecking FIFO readiness
+ // here would put its complete predicate into the count/epoch reset fanout.
+ if(meshlet_reset)begin published_vertices<=0;error<=0;vertex_epoch<=!vertex_epoch;end
  if(launch_v)begin
  error<=0;triangle_mode<=0;
  if(compact_invalid)begin busy<=0;done_v<=1;error<=4;end
@@ -270,12 +268,15 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
   end
  end
  initial if(!RESULT_COMPACT||!SP_COMPACT)$fatal(1,"独立结果口候选仅支持选定compact布局");
- initial if(TRIANGLE_SLOT_BITS<1||TRIANGLE_SLOT_BITS>5)$fatal(1,"Unsupported T queue depth");
+ initial if(TRIANGLE_SLOT_BITS<1||TRIANGLE_SLOT_BITS>4)$fatal(1,"Pingpong supports T queue depths 2..16");
  always @(posedge clk)if(ce&&!reset)begin
   if(count>TRIANGLE_SLOTS)$fatal(1,"T result queue overflow");
   if(step&&triangle_mode&&twrite&&trow>=10)$fatal(1,"T coefficient row outside record");
-  if(step&&triangle_mode&&twrite&&coefficient_wa>=192&&coefficient_wa<320)
+  if(step&&triangle_mode&&twrite&&coefficient_wa[8])
    $fatal(1,"T coefficient write overlaps V attributes");
+  if(meshlet_reset&&!meshlet_ready)$fatal(1,"attribute epoch reused before final indexed export");
+  if(vwrite&&vfield>=3&&!queue_empty&&export_epoch==vertex_epoch)
+   $fatal(1,"V writes an attribute epoch still owned by queued T");
   if(core_read&&core_qvalid&&!(step&&core_uses_q))$fatal(1,"位置Q被未消费的后继读覆盖");
   if(export_read&&!q_can_retire)$fatal(1,"导出Q被未消费的后继读覆盖");
  end

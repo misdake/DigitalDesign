@@ -38,6 +38,7 @@ def main():
     assert result.returncode == 0, 'See fit log'
     receipt_path = output / 'receipt.json'
     receipt = json.loads(receipt_path.read_text())
+    assert receipt['returncode'] == 0 and receipt.get('logic') is not None, 'Fit failed; inspect Gowin log'
     physical_report = output / f'fits/selected-native-p{args.placement}-m54/impl/pnr/leaf.rpt.txt'
     cls = re.search(r'^\s*CLS\s*\|\s*(\d+)/(\d+)', physical_report.read_text(), re.M)
     assert cls, 'Missing physical CLS utilization'

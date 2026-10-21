@@ -1,0 +1,50 @@
+{
+  "status": "qualified",
+  "scope": "Standalone gpu_v2_vliw_sdram registered boundary at 54 MHz; CP/CPU/display/MC synthesis and board proof excluded. Full 948-face replay delegated to maintainer.",
+  "vertex_arithmetic": "unchanged",
+  "pixel_precision": "unchanged",
+  "triangle_slots": 16,
+  "attribute_epochs": 2,
+  "numeric_table": "Configuration-time constants in existing BSRAM; native/portable lookup checked before and after reset/H writes.",
+  "implementation": "Registered idle admission, separate input-page lifetime, FIFO-head epoch reuse; V/T share arithmetic.",
+  "fit": {
+    "logic": 12036,
+    "logic_ff": 5067.0,
+    "ssram": 237,
+    "bsram": 36.0,
+    "primitives": {
+      "MULT9X9": 24,
+      "MULT18X18": 10,
+      "MULTALU36X18": 4,
+      "MULTADDALU18X18": 4,
+      "ALU54D": 1
+    },
+    "fmax": 54.196,
+    "setup_violations": 0.0,
+    "hold_violations": 0.0
+  },
+  "normalized_synth_input_sha256": "544c7ae6baf6b1f733ac816f1699930cb144972bf4119f9c1648e5d5377b7222",
+  "validation": {
+    "gpu_lib": "pass",
+    "memory_rtl": "2 passed",
+    "pingpong_native": "pass: full FIFO, CE, simultaneous attribute read/write",
+    "pingpong_portable": "pass: full FIFO, CE, blocked third epoch",
+    "numeric_ram_native_and_portable": "520 checks each pass",
+    "framebuffer_native": "repeat flush, invalidation and dirty writeback pass",
+    "scenes": {
+      "bunny": {
+        "before_total": 50179,
+        "after_total": 50179,
+        "memory_sha256": "0eaf6632d2185b10f1ea5e8457399332c6efdd90f7f8135c33675887068b6f23",
+        "dut_sha256": "c9b7bfa204d45c26209ea56c44318a252b1f052dce666598778fa2c88d5c90c5",
+        "quads": 943,
+        "receipt": "target\\gpu-meshlet-pingpong\\controlled\\final-bunny\\receipt.json"
+      }
+    }
+  },
+  "artifact_boundary": "Current implementation and bounded checks only; historical experiments and generated RTL/replay files are excluded.",
+  "normalized_export_sha256": {
+    "native": "e617cdb15b6bfd6c4d1de93c1392a56965f0179fa6f466ce3b59f5f0f3c68198",
+    "portable": "813f93a4f40a3fdf00fe1c115a83afd3b53521a027230b85d97d67a338796cb9"
+  }
+}

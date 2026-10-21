@@ -12,7 +12,7 @@ wire gwe,bvalid,bempty;wire[3:0]gwa;wire[29:0]gwd;wire[4:0]xl,xh;wire[3:0]yl,yh;
 wire rb,rd,rstart;
 gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start),.execution_idle(!rb),.raster_start(rstart),.descriptor(descriptor),.raw_valid(raw_valid),.raw_ready(ready),.raw_index(raw_index),.raw_data(raw_data),
 .cfg_far_z(32'd13041664),.cfg_tex_u(5'd6),.cfg_tex_v(5'd6),.cfg_max_mip(5'd6),.cfg_bias(8'sd0),
-.table_valid(1'b0),.table_index(8'd0),.table_data(36'd0),.quad_valid(1'b0),.quad_x(8'd0),.quad_y(7'd0),
+.quad_valid(1'b0),.quad_x(8'd0),.quad_y(7'd0),
 .sample_valid(1'b0),.sample_lane(2'd0),.sample_cover(1'b0),.sample_anchor(1'b0),.sample_h(30'd0),.quad_end_valid(1'b0),.quad_mask(4'd0),.pool_ready(1'b1),.pool_quad_id(3'd0),.s_busy(sbusy),.s_done(sdone),.error(ie),
 .geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bound_valid(bvalid),.bound_empty(bempty),.bound_xlo(xl),.bound_xhi(xh),.bound_ylo(yl),.bound_yhi(yh),.phase(phase),.run_enable(run_enable));
 rc_raster R(.clk(clk),.reset(reset),.ce(ce),.start(rstart),.geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bbox_done(bvalid&&!bempty),.bbox_empty(1'b0),.bbox_xlo(xl),.bbox_xhi(xh),.bbox_ylo(yl),.bbox_yhi(yh),.run_enable(run_enable),.phase(phase),.quad_ready(1'b0),.busy(rb),.done(rd),.error(re));

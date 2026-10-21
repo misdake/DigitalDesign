@@ -71,7 +71,6 @@ def prepare(instance,out):
     (out/'admissions.hex').write_text(''.join(f'{v:09x}\n' for v in admissions));(out/'classes.hex').write_text(''.join(f'{v:x}\n' for v in classes))
     (out/'descriptors.hex').write_text(''.join(f'{p["descriptor"]:09x}\n' for p in packets) or '0\n')
     (out/'words.hex').write_text(''.join(f'{v:014x}\n' for p in packets for v in p['words']) or '0\n')
-    (out/'rom.hex').write_text(''.join(f'{M.SLOPE[j]|M.SEED[j]<<9|M.LOG[j>>2]<<27:09x}\n' for j in range(256)))
     meta=dict(name=instance['name'],group=instance['group'],vertices=len(vertices),triangles=len(triangles),packets=len(packets),slot=slot,draw=draw,classes=dict(stats),R_quads=sum(len(p['masks']) for p in packets),coverage_pixels=sum(m.bit_count() for p in packets for m in p['masks'].values()),dma_words=len(image))
     (out/'oracle.json').write_text(json.dumps(meta,ensure_ascii=False,indent=2));return meta,packets
 
