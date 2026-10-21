@@ -112,13 +112,15 @@ write data hold through stalls. Both color/depth planes must complete before a
 replacement becomes resident. Dirty state clears only after all required sector
 terminal-success responses; a last beat alone is insufficient.
 
-A flush stops hint speculation, waits for ROP owners and writes required dirty
-tiles. It remains active between sectors and transactions. The caller stops
+A flush stops hint speculation, waits for ROP owners, writes required dirty
+tiles and invalidates all coordinate tags after successful terminal writebacks.
+It remains active between sectors and transactions. The caller stops
 new submissions and waits for `flush_complete` as described in
 [submission](/ip/gpu-v2/docs/submission.md#finish-the-render-or-change-configuration). Changing
-uniforms alone does not require a full writeback. The completion flag
-has the [single-flush lifetime](/ip/gpu-v2/docs/submission.md#finish-the-render-or-change-configuration)
-defined by the host interface. Display/present synchronization
+uniforms alone does not require a full writeback. Dropping the request clears
+the held completion and rearms the next flush, as defined by the
+[host interface](/ip/gpu-v2/docs/submission.md#finish-the-render-or-change-configuration).
+Display/present synchronization
 belongs to board integration, not this cache protocol.
 
 Abort or fault clears hints but preserves presented/accepted memory ownership

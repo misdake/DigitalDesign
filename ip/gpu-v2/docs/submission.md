@@ -111,12 +111,10 @@ cache maintenance latches it on a wall edge and continues during CE0. Deassert
 the request after completion. Completion includes dirty writeback terminal
 responses, including the gaps between sectors.
 
-In the current selected cache, `flush_complete` stays set until reset. A second
-request does not rearm it, and later ROP writes do not clear it. Thus this is a
-single flush-completion indication per reset interval, not a reusable per-frame
-fence. Another independent flush requires coordinated reset/reinitialization;
-normal rendering alone does not establish another completion boundary.
-A gap in request-valid is insufficient.
+Successful flush invalidates all coordinate tags. `flush_complete` holds while
+the request remains asserted; dropping the request clears completion on a wall
+edge and rearms a later flush. Wait for that clear before presenting another
+request. A uniform change alone still does not require flush/invalidation.
 This interface supplies no implicit CPU fence or Display present protocol.
 
 ## Addressing example
@@ -171,7 +169,7 @@ sequenceDiagram
     Note over H,B: Global changes wait for this whole-GPU boundary
     H->>B: Hold flush_request (first flush after reset)
     B->>B: Drain ROP and required sector writebacks
-    B-->>H: flush_complete, latched until reset
+    B-->>H: flush_complete, held until request drops
     H->>B: Deassert flush_request
 ```
 

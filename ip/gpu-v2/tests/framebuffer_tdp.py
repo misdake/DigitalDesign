@@ -41,18 +41,28 @@ def run(cmd,cwd,path,t=120):
  p=subprocess.run(list(map(str,cmd)),cwd=cwd,capture_output=True,timeout=t);path.write_bytes(p.stdout+p.stderr);assert p.returncode==0,(p.stdout+p.stderr).decode(errors='replace')[-6000:];return p.stdout.decode(errors='replace')
 
 def main():
- ap=argparse.ArgumentParser(__doc__);ap.add_argument('--tag',default='scalar-v1');ap.add_argument('--mode',choices=['portable','native','both'],default='both');ap.add_argument('--hint-pattern',choices=['adversarial','lookahead'],default='adversarial');ap.add_argument('--prefetch',choices=['off','clean','dirty'],default='off');ap.add_argument('--export-root',type=Path,default=R/'target/gpu-vliw-integration-20261018/stage2/backend-export');a=ap.parse_args();root=O/a.tag;root.mkdir(parents=True,exist_ok=False);records=[]
+ ap=argparse.ArgumentParser(__doc__);ap.add_argument('--tag',default='scalar-v1');ap.add_argument('--repeat-flush',action='store_true');ap.add_argument('--mode',choices=['portable','native','both'],default='both');ap.add_argument('--hint-pattern',choices=['adversarial','lookahead'],default='adversarial');ap.add_argument('--prefetch',choices=['off','clean','dirty'],default='off');ap.add_argument('--export-root',type=Path,default=R/'target/gpu-vliw-integration-20261018/stage2/backend-export');a=ap.parse_args();root=O/a.tag;root.mkdir(parents=True,exist_ok=False);records=[]
  for mode in ['portable','native'] if a.mode=='both' else [a.mode]:
   d=root/mode;d.mkdir();nq=make_vectors(d)
   # Use the actual shared product bank from the selected frozen main export.
   base=a.export_root/f'backend-{mode}.v';s=base.read_text();x=s.index('module gpu_v2_final_rop_bank(');y=s.index('endmodule',x)+9
   source='\n'.join((S/f).read_text() for f in ['framebuffer_tdp_cache.v','framebuffer_tdp_leaf.v','framebuffer_tdp_bank.v'])+'\n'+s[x:y]
   (d/'dut.v').write_text(('`define GPU_VLIW_POOL_PORTABLE\n' if mode=='portable' else '`define NATIVE\n')+source)
-  tb=TB.replace('@NQ@',str(nq)).replace('@BYTES@',str(DB+FB)).replace('@DEPTH@',str(DB)).replace('@PFEN@',str(int(a.prefetch!='off'))).replace('@PFDIRTY@',str(int(a.prefetch=='dirty'))).replace('@LOOK@',str(int(a.hint_pattern=='lookahead')));(d/'tb.v').write_text(tb)
+  tb=TB.replace('@NQ@',str(nq)).replace('@BYTES@',str(DB+FB)).replace('@DEPTH@',str(DB)).replace('@PFEN@',str(int(a.prefetch!='off'))).replace('@PFDIRTY@',str(int(a.prefetch=='dirty'))).replace('@LOOK@',str(int(a.hint_pattern=='lookahead')))
+  if a.repeat_flush:
+   tb=tb.replace('reg flush_request=0;', 'reg flush_request=0;integer flush_round=0;')
+   tb=tb.replace('if(rows==@NQ@*8&&idle)flush_request=1;'.replace('@NQ@',str(nq)), 'if(rows=='+str(nq)+'*8&&idle&&flush_round==0)flush_request=1;')
+   tb=tb.replace('  if(flush_complete)begin', '''  if(flush_complete&&flush_round==0)begin
+   flush_request=0;flush_round=1;
+   for(i=0;i<8;i=i+1)if(dut.tvalid[i]!==0)$fatal(1,"flush retained a coordinate tag");
+  end
+  if(flush_round==1&&!flush_complete)begin flush_request=1;flush_round=2;end
+  if(flush_complete&&flush_round==2)begin''')
+  (d/'tb.v').write_text(tb)
   cmd=[os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',d/'sim.vvp']
   if mode=='native':cmd+=[Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v']
   run(cmd+[d/'dut.v',d/'tb.v'],d,d/'compile.log');log=run([os.environ['VVP_EXE'],d/'sim.vvp'],d,d/'run.log');print(mode,log,flush=True)
-  records.append(dict(mode=mode,log=log,dut_sha256=SHA(d/'dut.v'),trace_sha256=SHA(d/'trace.txt'),shared_bank_source_sha256=SHA(base)))
+  records.append(dict(mode=mode,repeat_flush=a.repeat_flush,log=log,dut_sha256=SHA(d/'dut.v'),trace_sha256=SHA(d/'trace.txt'),shared_bank_source_sha256=SHA(base)))
  if len(records)==2:assert records[0]['trace_sha256']==records[1]['trace_sha256']
  (root/'receipt.json').write_text(json.dumps(dict(status='pass',prefetch=a.prefetch,hint_pattern=a.hint_pattern,reports=records,sources={str(p.relative_to(R)):SHA(p) for p in [S/'framebuffer_tdp_cache.v',S/'framebuffer_tdp_leaf.v',S/'framebuffer_tdp_bank.v',Path(__file__)]}),indent=2))
 TB=r'''`timescale 1ns/1ps

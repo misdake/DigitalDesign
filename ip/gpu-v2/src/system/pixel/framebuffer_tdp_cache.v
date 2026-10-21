@@ -324,6 +324,7 @@ module gpu_v2_framebuffer_tdp #(
                     endcase
                 end
             end
+   if(!flush_request&&!flushing)flush_complete<=0;
    if(flush_request&&!flushing&&!flush_complete&&!fault)begin flushing<=1;flush_complete<=0;end
    if(fault)begin ctx_valid[0]<=0;ctx_valid[1]<=0;fill_row<=0;depth_pending<=0;color_pending<=0;end
    if(!mt_active&&!fault&&!source_bad)begin
@@ -332,7 +333,10 @@ module gpu_v2_framebuffer_tdp #(
       mt_active<=1;mt_prefetch<=0;mt_line<=dirty_line;mt_tvalid<=0;mt_write<=1;
       mt_remaining<={dird[dirty_line],dirc[dirty_line]};mt_plane<=!dirc[dirty_line];mt_sector<=0;mt_beat<=0;
       mt_accepted<=0;mt_presented<=0;req_valid<=0;wr_beat_valid<=0;mst<=M_WPRE;
-     end else if(!any_dirty&&!rop_active)begin flushing<=0;flush_complete<=1;end
+     end else if(!any_dirty&&!rop_active)begin
+      flushing<=0;flush_complete<=1;prefetch_protect_valid<=0;
+      for(f=0;f<8;f=f+1)tvalid[f]<=0;
+     end
     end else if(ce&&row_valid&&fill_row==0&&!hit&&maintenance_available)begin
      mt_active<=1;mt_prefetch<=0;mt_line<=sel_line;victim<=sel_line+3'd1;mt_tvalid<=1;
      if(prefetch_protect_line==sel_line)prefetch_protect_valid<=0;mt_target<=row_key;
