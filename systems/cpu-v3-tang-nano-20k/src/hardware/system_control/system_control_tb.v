@@ -6,7 +6,7 @@ reg [3:0] device_channel = 0;
 reg device_read_enable = 0;
 reg device_write_enable = 0;
 reg [15:0] device_write_data = 0;
-reg dcache_maintenance_busy = 0;
+reg dcache_maintenance_ready = 1;
 reg dcache_maintenance_done = 0;
 reg dcache_maintenance_error = 0;
 reg [15:0] watch_read_data = 0;
@@ -77,7 +77,7 @@ initial begin
     if (uart_tx !== 1'b1) fail("uart must idle high");
     if (leds !== 6'd0) fail("reset must clear leds");
 
-    // Channel 0/1 pulse the cache invalidate outputs for one clock.
+    // Channel 0 pulses; D-cache requests remain valid until ready.
     write_channel(0, 0, 16'hffff);
     if (icache_invalidate !== 1'b1 || dcache_invalidate !== 1'b0)
         fail("channel 0 must pulse icache_invalidate");
@@ -99,18 +99,18 @@ initial begin
     // A maintenance request made while LCOPY owns the cache is deferred. The
     // LCOPY completion coincides with release of busy, but must not release
     // the CPU before the deferred invalidate itself completes.
-    dcache_maintenance_busy = 1;
+    dcache_maintenance_ready = 0;
     write_channel(0, 1, 16'd0);
-    if (dcache_invalidate || !cpu_hold)
-        fail("busy dcache must defer invalidate and hold CPU");
+    if (!dcache_invalidate || !cpu_hold)
+        fail("unready dcache must retain invalidate and hold CPU");
     @(posedge clk); #1;
-    if (dcache_invalidate) fail("invalidate must remain deferred while busy");
-    dcache_maintenance_busy = 0;
+    if (!dcache_invalidate) fail("invalidate valid must remain asserted until ready");
+    dcache_maintenance_ready = 1;
     dcache_maintenance_done = 1;
     @(posedge clk); #1;
     dcache_maintenance_done = 0;
-    if (!dcache_invalidate || !cpu_hold)
-        fail("deferred invalidate must ignore prior operation completion");
+    if (dcache_invalidate || !cpu_hold)
+        fail("accepted invalidate must ignore prior operation completion");
     @(posedge clk); #1;
     if (dcache_invalidate || !cpu_hold)
         fail("deferred invalidate pulse width or hold is wrong");
@@ -211,6 +211,20 @@ initial begin
     if (!cpu_hold) fail("watch must enter hold on the arm edge");
     @(posedge clk); #1;
     if (cpu_hold) fail("pre-arm target change must not be missed");
+
+    // A held request survives unavailable admission and ignores stale done;
+    // reset cancels it without manufacturing an architectural completion.
+    dcache_maintenance_ready=0;
+    write_channel(0,1,0);
+    dcache_maintenance_done=1;
+    write_channel(0,4,0);
+    if(!dcache_invalidate || dcache_clean || !cpu_hold)
+        fail("unaccepted request replaced or released by stale completion");
+    reset=1;
+    @(posedge clk);#1;
+    reset=0;dcache_maintenance_done=0;dcache_maintenance_ready=1;
+    if(dcache_invalidate || dcache_clean || cpu_hold)
+        fail("reset must cancel pending maintenance");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;

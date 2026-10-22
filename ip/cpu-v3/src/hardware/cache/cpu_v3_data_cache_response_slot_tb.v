@@ -14,7 +14,7 @@ wire [15:0] cpu_read_data;
 wire memory_request_valid, memory_write, memory_line, memory_response_ready;
 wire [21:0] memory_address;
 wire [63:0] memory_write_data;
-wire maintenance_busy, maintenance_done, maintenance_error, valid_sweep;
+wire maintenance_ready, maintenance_busy, maintenance_done, maintenance_error, valid_sweep;
 CpuV3DataCache dut(.*);
 always #5 clk=~clk;
 integer cycles=0, word_index, prefix, beat, scenario=0;

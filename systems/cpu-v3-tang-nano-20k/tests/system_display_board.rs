@@ -94,7 +94,7 @@ fn application_instruction_boundaries_are_safe() {
     }
     assert!(
         drained && waited,
-        "full maintenance needs a completed store-draining DCLEANL"
+        "the diagnostic retains its conservative completed DCLEANL sequence"
     );
     let evidence = root.join("../../target/system-board-ready/audit");
     std::fs::create_dir_all(&evidence).unwrap();

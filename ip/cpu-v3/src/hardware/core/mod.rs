@@ -526,6 +526,7 @@ impl CpuV3CoreState {
         device_read_data: u16,
         line_copy_ready: bool,
         cache_command_error: bool,
+        cache_command_wait: bool,
     ) {
         let instruction = self.instruction;
         let opcode = encoding::opcode(instruction);
@@ -628,6 +629,9 @@ impl CpuV3CoreState {
                 cache_command_error,
             ),
             7 => {
+                if cache_command_wait {
+                    return;
+                }
                 if dst & 8 == 0 {
                     self.write_gpr(rhs, device_read_data);
                 }
@@ -903,12 +907,12 @@ impl CpuV3CoreState {
                 }
                 self.data_segments[usize::from(dst - 2)] = value;
             }
-            14 if matches!(dst, 6 | 7) => {
+            14 if dst == 6 => {
                 if self.async_store.valid || self.fpu2_pending != 0 || !line_copy_ready {
                     return;
                 }
             }
-            14 if dst == 8 => {
+            14 if dst == 8 && src == 0 => {
                 if !line_copy_ready {
                     return;
                 }
@@ -1081,7 +1085,11 @@ impl Module for CpuV3Core {
                 device_index: u64::from(device_field & 7),
                 device_channel: u64::from(field(state.instruction, 4)),
                 device_read_enable: !input.hold && device_instruction && device_field & 8 == 0,
-                device_write_enable: !input.hold && device_instruction && device_field & 8 != 0,
+                device_write_enable: !input.hold
+                    && device_instruction
+                    && device_field & 8 != 0
+                    && !(full_cache_command(state.instruction)
+                        && (store.valid || state.fpu2_pending != 0)),
                 device_write_data: u64::from(read_gpr(device_register)),
                 halted: state.phase == Phase::Halted
                     && !store.valid
@@ -1208,10 +1216,15 @@ impl Module for CpuV3Core {
                 }
             }
             Phase::Execute => {
+                // The waiting instruction still expires an unused prefix/test
+                // just like other Execute waiters. Drain gating uses old owners.
+                let cache_wait = full_cache_command(state.instruction)
+                    && (async_store_was_valid || fpu2_pending_was != 0);
                 state.execute(
                     input.device_read_data as u16,
                     input.data_line_copy_ready,
                     input.data_cache_command_error,
+                    cache_wait,
                 );
                 if execute_pipelineable
                     && input.instruction_request_ready
@@ -1516,4 +1529,9 @@ fn is_prefix_consumer(instruction: u16) -> bool {
         11 => matches!(function, 0..=7),
         _ => false,
     }
+}
+
+// Device-0 clean/invalidate commands are ordered after the core's old stores.
+fn full_cache_command(instruction: u16) -> bool {
+    instruction & 0xff00 == 0x7800 && matches!(field(instruction, 4), 1 | 4)
 }

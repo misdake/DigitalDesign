@@ -78,6 +78,7 @@ wire sysctl_icache_invalidate;
 wire sysctl_dcache_invalidate;
 wire sysctl_dcache_clean;
 wire sysctl_cpu_hold;
+wire dcache_maintenance_ready;
 wire dcache_maintenance_busy;
 wire dcache_maintenance_done;
 wire dcache_maintenance_error;
@@ -193,7 +194,7 @@ __SYSTEM_CONTROL__ u_sysctl (
     .device_read_enable(device_query_read_enable),
     .device_write_enable(device_query_write_enable),
     .device_write_data(device_write_data),
-    .dcache_maintenance_busy(dcache_maintenance_busy),
+    .dcache_maintenance_ready(dcache_maintenance_ready),
     .dcache_maintenance_done(dcache_maintenance_done),
     .dcache_maintenance_error(dcache_maintenance_error),
     .watch_read_data(device_read_data),
@@ -309,6 +310,7 @@ __DATA_CACHE__ u_data_cache (
     .memory_address(dcache_memory_address),
     .memory_write_data(dcache_memory_write_data),
     .memory_response_ready(dcache_memory_response_ready),
+    .maintenance_ready(dcache_maintenance_ready),
     .maintenance_busy(dcache_maintenance_busy),
     .maintenance_done(dcache_maintenance_done),
     .maintenance_error(dcache_maintenance_error),

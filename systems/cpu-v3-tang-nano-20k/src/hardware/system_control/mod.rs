@@ -12,6 +12,10 @@
 //!   transmitter; (read): bit 0 is the transmitter busy flag.
 //! - channel 4 (write): start blocking D-cache clean;
 //! - channel 5 (read): return the final maintenance status.
+//!
+//! The CPU orders channel-1/channel-4 writes after its old stores/FST tails.
+//! This device then retains the cache command until maintenance_ready accepts
+//! it, and holds CPU progress until that accepted command's done/error.
 //! - channel 6 (write): stage a generic watch target as `{channel[3:0], device[2:0]}`;
 //! - channel 7 (write): arm a CPU-local sleep while the target equals the written value.
 //!
@@ -42,7 +46,8 @@ pub struct SystemControlDeviceInput {
     pub device_read_enable: Wire,
     pub device_write_enable: Wire,
     pub device_write_data: Wires<16>,
-    pub dcache_maintenance_busy: Wire,
+    /// Acceptance of the current retained request, not maintenance-busy.
+    pub dcache_maintenance_ready: Wire,
     pub dcache_maintenance_done: Wire,
     pub dcache_maintenance_error: Wire,
     /// Readback from the device/channel selected by the watch probe outputs.
@@ -79,8 +84,6 @@ pub struct SystemControlDevice<const CLOCKS_PER_BIT: u16>;
 
 pub struct SystemControlDeviceState {
     icache_invalidate: bool,
-    dcache_invalidate: bool,
-    dcache_clean: bool,
     maintenance_hold: bool,
     watch_active: bool,
     watch_device_index: u8,
@@ -99,8 +102,6 @@ impl Default for SystemControlDeviceState {
     fn default() -> Self {
         Self {
             icache_invalidate: false,
-            dcache_invalidate: false,
-            dcache_clean: false,
             maintenance_hold: false,
             watch_active: false,
             watch_device_index: 0,
@@ -174,8 +175,8 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
             &SystemControlDeviceOutputValue {
                 device_read_data: u64::from(read_data),
                 icache_invalidate: state.icache_invalidate,
-                dcache_invalidate: state.dcache_invalidate,
-                dcache_clean: state.dcache_clean,
+                dcache_invalidate: state.pending_dcache_maintenance == 1,
+                dcache_clean: state.pending_dcache_maintenance == 2,
                 cpu_hold: state.maintenance_hold || state.watch_active,
                 watch_device_index: u64::from(state.watch_device_index),
                 watch_device_channel: u64::from(state.watch_device_channel),
@@ -198,13 +199,10 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
             return;
         }
         state.icache_invalidate = false;
-        state.dcache_invalidate = false;
-        state.dcache_clean = false;
 
         let maintenance_was_pending = state.pending_dcache_maintenance != 0;
-        if state.maintenance_hold && maintenance_was_pending && !input.dcache_maintenance_busy {
-            state.dcache_invalidate = state.pending_dcache_maintenance == 1;
-            state.dcache_clean = state.pending_dcache_maintenance == 2;
+        let held_before_edge = state.maintenance_hold || state.watch_active;
+        if maintenance_was_pending && input.dcache_maintenance_ready {
             state.pending_dcache_maintenance = 0;
         }
 
@@ -244,25 +242,13 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         let value = input.device_write_data as u16;
         match input.device_channel as u8 {
             SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED => state.icache_invalidate = true,
-            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL
-                if !state.maintenance_hold && !state.watch_active =>
-            {
+            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL if !held_before_edge => {
                 state.maintenance_hold = true;
-                if input.dcache_maintenance_busy {
-                    state.pending_dcache_maintenance = 1;
-                } else {
-                    state.dcache_invalidate = true;
-                }
+                state.pending_dcache_maintenance = 1;
             }
-            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL
-                if !state.maintenance_hold && !state.watch_active =>
-            {
+            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL if !held_before_edge => {
                 state.maintenance_hold = true;
-                if input.dcache_maintenance_busy {
-                    state.pending_dcache_maintenance = 2;
-                } else {
-                    state.dcache_clean = true;
-                }
+                state.pending_dcache_maintenance = 2;
             }
             SYSTEM_CONTROL_CHANNEL_LEDS => state.leds = (value & 0x3f) as u8,
             // A write while busy is dropped; software polls the busy flag.
@@ -276,9 +262,7 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
                 state.watch_device_index = (value & 7) as u8;
                 state.watch_device_channel = ((value >> 3) & 15) as u8;
             }
-            SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED
-                if !state.maintenance_hold && !state.watch_active =>
-            {
+            SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED if !held_before_edge => {
                 state.watch_expected = value;
                 state.watch_active = true;
             }
@@ -331,7 +315,7 @@ mod tests {
         device_read_enable: false,
         device_write_enable: false,
         device_write_data: 0,
-        dcache_maintenance_busy: false,
+        dcache_maintenance_ready: true,
         dcache_maintenance_done: false,
         dcache_maintenance_error: false,
         watch_read_data: 0,
@@ -427,7 +411,7 @@ mod tests {
             // Channel 0 pulses icache_invalidate for exactly one clock.
             TestStep::new(write(0, 0xffff), output(0, true, false, 0, true)),
             TestStep::new(IDLE, output(0, false, false, 0, true)),
-            // Channel 1 pulses dcache_invalidate for exactly one clock.
+            // Ready accepts a retained D-cache request on the following edge.
             TestStep::new(write(1, 0), maintenance_output(0, true, false, true, 0)),
             TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
             TestStep::new(
@@ -442,24 +426,24 @@ mod tests {
             // completion when the deferred command is finally emitted.
             TestStep::new(
                 SystemControlDeviceInputValue {
-                    dcache_maintenance_busy: true,
+                    dcache_maintenance_ready: false,
                     ..write(1, 0)
                 },
-                maintenance_output(0, false, false, true, 0),
+                maintenance_output(0, true, false, true, 0),
             ),
             TestStep::new(
                 SystemControlDeviceInputValue {
-                    dcache_maintenance_busy: true,
+                    dcache_maintenance_ready: false,
                     ..IDLE
                 },
-                maintenance_output(0, false, false, true, 0),
+                maintenance_output(0, true, false, true, 0),
             ),
             TestStep::new(
                 SystemControlDeviceInputValue {
                     dcache_maintenance_done: true,
                     ..IDLE
                 },
-                maintenance_output(0, true, false, true, 0),
+                maintenance_output(0, false, false, true, 0),
             ),
             TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
             TestStep::new(
@@ -625,6 +609,54 @@ mod tests {
     #[test]
     fn emulator_matches_the_documented_cycle_behavior() {
         system_control_test().run_emu();
+    }
+
+    #[test]
+    fn pending_request_reset_and_completion_edge_ownership() {
+        ModuleTest::<TestDevice>::new(vec![
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_ready: false,
+                    ..write(1, 0)
+                },
+                maintenance_output(0, true, false, true, 0),
+            ),
+            // Another write and stale completion cannot replace an unaccepted request.
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_ready: false,
+                    dcache_maintenance_done: true,
+                    ..write(4, 0)
+                },
+                maintenance_output(0, true, false, true, 0),
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(write(4, 0), maintenance_output(0, false, true, true, 0)),
+            TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
+            // Hold was high before this edge: release, but do not accept a new write.
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_done: true,
+                    ..write(1, 0)
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(IDLE, output(0, false, false, 0, true)),
+        ])
+        .run_emu();
     }
 
     #[test]
