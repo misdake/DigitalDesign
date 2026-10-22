@@ -17,10 +17,14 @@ module gpu_v2_framebuffer_tdp #(
  input[63:0]mem_read_data,input mem_read_valid,
  output mem_write_valid,output[63:0]mem_write_data,input mem_write_ready,mem_complete_valid,mem_complete_ok
 );
- localparam M_IDLE=0,M_RPRE=1,M_RREQ=2,M_RBEAT=3,M_RACK=4,M_WPRE=5,M_WREQ=6,M_WBEAT=7,M_WACK=8;
- reg[3:0]mst;reg mt_active;reg[2:0]mt_line;reg mt_tvalid;
- reg[9:0]mt_target;reg mt_write,mt_plane;reg[1:0]mt_remaining;reg mt_sector;
- reg[4:0]mt_beat;reg mt_accepted,mt_presented,req_valid,wr_beat_valid,flushing;
+ // One maintenance context; request, payload and retirement advance independently.
+ // Segment index is {plane,sector}; no payload queue or per-sector owner table.
+ reg mt_active,mt_tvalid,mt_write;reg[2:0]mt_line;
+ reg[9:0]mt_target;reg[1:0]mt_remaining;
+ reg[2:0]mt_issue,mt_retire;reg[6:0]mt_data;
+ reg wr_beat_valid,flushing,mt_cancel,mt_request;
+ wire[2:0]mt_end=mt_write&&!mt_remaining[1]?3'd2:3'd4;
+ wire[6:0]mt_data_end={mt_end,4'd0};
  reg[9:0]tag[0:7];reg tvalid[0:7],dirc[0:7],dird[0:7];reg[2:0]victim;
  // Lossy wall-clock hints never reserve a ROP context or a public credit.
  reg[9:0]hint0,hint1;reg[1:0]hint_count;
@@ -47,8 +51,8 @@ module gpu_v2_framebuffer_tdp #(
  wire ingress_error=ce&&!reset&&!fault&&row_valid&&row_credit&&(
   row_index!=fill_row || (row_index[0]&&|row_data[31:16]) ||
   (fill_row==0&&(row_x[0]||row_y[0]||{1'b0,row_x}+10'd1>=WIDTH||{1'b0,row_y}+9'd1>=HEIGHT||row_mask==0)));
- wire req_accept=req_valid&&mem_req_ready;
- wire extra_read=mt_active&&mem_read_valid&&(mt_write||!(mt_accepted||req_accept)||mt_beat>=16);
+ wire req_accept=mem_req_valid&&mem_req_ready;
+ wire extra_read=mem_read_valid&&(!mt_active||mt_write||mt_data>=mt_data_end||mt_data[6:4]>=mt_issue);
  wire leaf_out_valid,leaf_cw,leaf_dw,shared_mul_pending;
  wire[15:0]leaf_new_color,leaf_new_depth;
  wire return_bad=ce&&!reset&&!fault&&leaf_out_valid&&(!ctx_valid[result_owner]||depth_pending||!shade_phase);
@@ -79,15 +83,22 @@ module gpu_v2_framebuffer_tdp #(
   .out_valid(leaf_out_valid),.new_color(leaf_new_color),.new_depth(leaf_new_depth),.color_written(leaf_cw),.depth_written(leaf_dw),
   .shared_rop_product(shared_rop_product),.shared_mul_pending(shared_mul_pending),.shared_rop_ce(shared_rop_ce),.shared_rop_a(shared_rop_a),.shared_rop_b(shared_rop_b));
  assign shared_rop_offer=ce&&!reset&&!fault&&shared_mul_pending;
- wire wbeat=mt_active&&mt_write&&wr_beat_valid&&mem_write_ready&&(mt_accepted||req_accept);
- wire rbeat=mt_active&&!mt_write&&(mt_accepted||req_accept)&&mt_beat<16&&mem_read_valid;
+ // Payload never passes issue; only equality means no accepted sector.
+ wire data_owned=mt_data[6:4]!=mt_issue||req_accept;
+ wire only_color=mt_write&&!mt_remaining[1];
+ wire data_left=only_color?!mt_data[5]:!mt_data[6];
+ wire data_last=(&mt_data[4:0])&&(mt_data[5]||only_color);
+ wire retire_last=mt_retire[0]&&(mt_retire[1]||only_color);
+ wire issue_last=mt_issue[0]&&(mt_issue[1]||only_color);
+ wire wbeat=mt_active&&mt_write&&wr_beat_valid&&mem_write_ready&&data_owned;
+ wire rbeat=mt_active&&!mt_write&&data_left&&data_owned&&mem_read_valid;
  wire refill_write=rbeat;
- wire use_nxt=(mst==M_WREQ)||(mst==M_WBEAT);
- wire m_rd_issue=mt_active&&mt_write&&((mst==M_WPRE)||(mst==M_WREQ&&wbeat)||(mst==M_WBEAT&&wbeat&&mt_beat<15));
- wire[3:0]maintenance_read_beat=use_nxt?mt_beat[3:0]+4'd1:mt_beat[3:0];
- wire[9:0]maintenance_read_addr={mt_plane,1'b0,mt_line,mt_sector,maintenance_read_beat};
- wire[9:0]maintenance_write_addr={mt_plane,1'b0,mt_line,mt_sector,mt_beat[3:0]};
- wire[5:0]beats_total={1'b0,mt_beat}+{5'd0,rbeat}+{5'd0,wbeat};
+ // A successful old-Q consumption launches the following word, including across
+ // a 128B boundary. CE affects only ROP; B maintenance never freezes with it.
+ wire m_rd_issue=mt_active&&mt_write&&data_left&&(!wr_beat_valid||(wbeat&&!data_last));
+ wire[6:0]maintenance_read_word=mt_data+{6'd0,wbeat};
+ wire[9:0]maintenance_read_addr={maintenance_read_word[5],1'b0,mt_line,maintenance_read_word[4:0]};
+ wire[9:0]maintenance_write_addr={mt_data[5],1'b0,mt_line,mt_data[4:0]};
  wire stop_publication=fault||source_bad;
  wire[9:0]mt_tile=mt_write?tag[mt_line]:mt_target;
  // Raw {Y/8[4:0],X/16[4:0]} key is shared by the queue/cache. Linearize
@@ -101,11 +112,11 @@ module gpu_v2_framebuffer_tdp #(
   else assign mt_linear_sum[n+1]=mt_linear_sum[n];
  end endgenerate
  wire[8:0]mt_linear_tile=mt_linear_sum[6];
- assign mem_req_valid=req_valid;assign mem_req_write=mt_write;
- assign mem_req_addr=(mt_plane?DEPTH_BASE:COLOR_BASE)+{14'd0,mt_linear_tile,mt_tile[5],mt_sector,7'b0};
- assign mem_write_valid=wr_beat_valid;
+ assign mem_req_valid=mt_request&&!reset;assign mem_req_write=mt_write;
+ assign mem_req_addr=(mt_issue[1]?DEPTH_BASE:COLOR_BASE)+{14'd0,mt_linear_tile,mt_tile[5],mt_issue[0],7'b0};
+ assign mem_write_valid=wr_beat_valid&&!reset;
  // B's native Q is the single held beat: next read occurs only when old beat fires.
- assign mem_write_data=mt_beat[2]?{b_q[1],b_q[0],b_q[3],b_q[2]}:{b_q[3],b_q[2],b_q[1],b_q[0]};
+ assign mem_write_data=mt_data[2]?{b_q[1],b_q[0],b_q[3],b_q[2]}:{b_q[3],b_q[2],b_q[1],b_q[0]};
  generate for(n=0;n<4;n=n+1)begin:banks
   wire a_write_d=depth_fire&&result_depth_flag&&result_bank==n;
   wire a_write_c=color_fire_write&&result_color_flag&&result_bank==n;
@@ -116,7 +127,7 @@ module gpu_v2_framebuffer_tdp #(
   wire[15:0]a_data=depth_pending?depth_data:color_data;
   wire b_en=m_rd_issue||refill_write;wire b_we=refill_write;
   wire[9:0]b_addr=refill_write?maintenance_write_addr:maintenance_read_addr;
-  wire[15:0]b_data=mt_beat[2]?mem_read_data[(n^2)*16+:16]:mem_read_data[n*16+:16];
+  wire[15:0]b_data=mt_data[2]?mem_read_data[(n^2)*16+:16]:mem_read_data[n*16+:16];
   gpu_v2_framebuffer_tdp_bank ram(.clk(clk),.reset(reset),.a_en(a_en),.a_we(a_we),.a_addr(a_addr),.a_data(a_data),.a_q(a_q[n]),
    .b_en(b_en),.b_we(b_we),.b_addr(b_addr),.b_data(b_data),.b_q(b_q[n]));
 `ifndef SYNTHESIS
@@ -188,8 +199,8 @@ module gpu_v2_framebuffer_tdp #(
  integer f;
  always @(posedge clk)begin
   if(reset)begin
-   mst<=M_IDLE;mt_active<=0;mt_accepted<=0;mt_presented<=0;req_valid<=0;wr_beat_valid<=0;mt_remaining<=0;
-   mt_write<=0;mt_plane<=0;mt_sector<=0;mt_beat<=0;mt_line<=0;mt_tvalid<=0;mt_target<=0;
+   mt_active<=0;mt_cancel<=0;mt_request<=0;mt_issue<=0;mt_retire<=0;mt_data<=0;wr_beat_valid<=0;mt_remaining<=0;
+   mt_write<=0;mt_line<=0;mt_tvalid<=0;mt_target<=0;
    flushing<=0;flush_complete<=0;fault_c<=0;fault_m<=0;commit_valid<=0;victim<=0;
    cal<=0;fill_row<=0;tail<=0;result_owner<=0;return_key<=0;depth_pending<=0;color_pending<=0;
    ctx_valid[0]<=0;ctx_valid[1]<=0;compare_bank<=0;
@@ -203,152 +214,71 @@ module gpu_v2_framebuffer_tdp #(
     prefetch_protect_valid<=0;
    if(ingress_error||return_bad)fault_c<=1;
    if(extra_read)fault_m<=1;
-            // A fault cancels only work that has never been presented. A
-            // presented request stays stable until accepted; accepted transport
-            // runs to its terminal response.
-            if (mt_active && (fault || (prefetch_abort && mt_prefetch)) && !mt_accepted && !mt_presented) begin
-                mt_active <= 1'b0;
-                mst <= M_IDLE;
-                req_valid <= 1'b0;
-                wr_beat_valid <= 1'b0;
-            end else if (mt_active) begin
-                if ((mt_accepted || req_accept) && mem_complete_valid) begin
-                    // Terminal response: validate the accumulated beat count.
-                    if (stop_publication) begin
-                        // Already faulted: terminate without publishing.
-                        mt_active <= 1'b0; mst <= M_IDLE;
-                        req_valid <= 1'b0; wr_beat_valid <= 1'b0;
-                    end else if (!mem_complete_ok) begin
-                        fault_m <= 1'b1;
-                        mt_active <= 1'b0; mst <= M_IDLE;
-                        req_valid <= 1'b0; wr_beat_valid <= 1'b0;
-                    end else if (beats_total != 6'd16) begin
-                        // A success terminal before 16 beats is a protocol fault.
-                        fault_m <= 1'b1;
-                        mt_active <= 1'b0; mst <= M_IDLE;
-                        req_valid <= 1'b0; wr_beat_valid <= 1'b0;
-                    end else if (!mt_sector) begin
-                        mt_sector <= mt_sector + 1'b1;
-                        mt_beat <= 5'd0;
-                        mt_accepted <= 1'b0;
-                        mt_presented <= 1'b0;
-                        req_valid <= 1'b0;
-                        wr_beat_valid <= 1'b0;
-                        mst <= mt_write ? M_WPRE : M_RPRE;
-                    end else if (mt_write) begin
-                        if (mt_plane == 1'b0) dirc[mt_line] <= 1'b0;
-                        else dird[mt_line] <= 1'b0;
-                        mt_remaining[mt_plane] <= 1'b0;
-                        if (mt_plane ? mt_remaining[0] : mt_remaining[1]) begin
-                            mt_plane <= !mt_plane;
-                            mt_sector <= 1'b0; mt_beat <= 5'd0;
-                            mt_accepted <= 1'b0; mt_presented <= 1'b0;
-                            req_valid <= 1'b0; wr_beat_valid <= 1'b0;
-                            mst <= M_WPRE;
-                        end else if (mt_tvalid) begin
-                            mt_write <= 1'b0;
-                            mt_plane <= 1'b0;
-                            mt_sector <= 1'b0; mt_beat <= 5'd0;
-                            mt_accepted <= 1'b0; mt_presented <= 1'b0;
-                            req_valid <= 1'b0; wr_beat_valid <= 1'b0;
-                            tvalid[mt_line] <= 1'b0;
-                            mst <= M_RPRE;
-                        end else begin
-                            mt_active <= 1'b0; mst <= M_IDLE;
-                        end
-                    end else if (mt_plane == 1'b0) begin
-                        mt_plane <= 1'b1;
-                        mt_sector <= 1'b0; mt_beat <= 5'd0;
-                        mt_accepted <= 1'b0; mt_presented <= 1'b0;
-                        req_valid <= 1'b0; wr_beat_valid <= 1'b0;
-                        mst <= M_RPRE;
-                    end else begin
-                        tag[mt_line] <= mt_target;
-                        tvalid[mt_line] <= 1'b1;
-                        if(mt_prefetch)begin prefetch_protect_valid<=1;prefetch_protect_line<=mt_line;end
-                        mt_active <= 1'b0; mst <= M_IDLE;
-                    end
-                end else begin
-                    case (mst)
-                        M_RPRE: begin
-                            req_valid <= 1'b1;
-                            mt_presented <= 1'b1;
-                            mst <= M_RREQ;
-                        end
-                        M_RREQ: begin
-                            if (req_accept) begin
-                                req_valid <= 1'b0;
-                                mt_accepted <= 1'b1;
-                                if (rbeat) mt_beat <= 5'd1;
-                                mst <= M_RBEAT;
-                            end
-                        end
-                        M_RBEAT: begin
-                            if (rbeat && mt_beat == 5'd15) begin
-                                mt_beat <= 5'd16;
-                                mst <= M_RACK;
-                            end else if (rbeat) begin
-                                mt_beat <= mt_beat + 5'd1;
-                            end
-                        end
-                        M_RACK: begin
-                        end
-                        M_WPRE: begin
-                            req_valid <= 1'b1;
-                            wr_beat_valid <= 1'b1;
-                            mt_presented <= 1'b1;
-                            mst <= M_WREQ;
-                        end
-                        M_WREQ: begin
-                            if (req_accept) begin
-                                req_valid <= 1'b0;
-                                mt_accepted <= 1'b1;
-                                if (wbeat) mt_beat <= 5'd1;
-                                mst <= M_WBEAT;
-                            end
-                        end
-                        M_WBEAT: begin
-                            if (wbeat) begin
-                                if (mt_beat == 5'd15) begin
-                                    mt_beat <= 5'd16;
-                                    wr_beat_valid <= 1'b0;
-                                    mst <= M_WACK;
-                                end else begin
-                                    mt_beat <= mt_beat + 5'd1;
-                                end
-                            end
-                        end
-                        M_WACK: begin
-                        end
-                        default: mst <= M_IDLE;
-                    endcase
-                end
-            end
+   if(mt_active)begin
+    if(mt_prefetch&&prefetch_abort)mt_cancel<=1;
+    // The offered descriptor itself is the hold state. Its address advances
+    // only on acceptance; cancellation never crosses the arbiter combinationally.
+    if(!mt_request&&mt_issue<mt_end&&!mt_cancel&&!(mt_prefetch&&prefetch_abort))mt_request<=1;
+    if(req_accept)begin
+     mt_issue<=mt_issue+3'd1;
+     mt_request<=!issue_last&&!mt_cancel&&!(mt_prefetch&&prefetch_abort);
+    end
+    // Abort stops only descriptors never presented. A held request and every
+    // accepted sector drain, but the partial speculative line is not published.
+    if(mt_cancel&&mt_retire==mt_issue&&!mem_req_valid)begin mt_active<=0;mt_request<=0;wr_beat_valid<=0;end
+    if(m_rd_issue)wr_beat_valid<=1;
+    if(wbeat||rbeat)begin
+     mt_data<=mt_data+7'd1;
+     if(data_last)wr_beat_valid<=0;
+    end
+    if(mem_complete_valid)begin
+     mt_retire<=mt_retire+3'd1;
+     if(!mem_complete_ok)fault_m<=1;
+     if(mt_write&&mt_retire[0])begin
+      if(mt_retire[1])dird[mt_line]<=0;else dirc[mt_line]<=0;
+     end
+     if(retire_last||(mt_cancel&&mt_retire+3'd1==mt_issue&&!mem_req_valid))begin
+      if(mt_write&&mt_tvalid&&!stop_publication&&!mt_cancel)begin
+       // The old line is no longer needed only after every write has retired.
+       mt_write<=0;mt_remaining<=3;mt_issue<=0;mt_retire<=0;mt_data<=0;
+       mt_request<=0;wr_beat_valid<=0;tvalid[mt_line]<=0;
+      end else begin
+       mt_active<=0;mt_request<=0;
+       if(!mt_write&&!stop_publication&&!mt_cancel)begin
+        tag[mt_line]<=mt_target;tvalid[mt_line]<=1;
+        if(mt_prefetch&&!prefetch_abort)begin prefetch_protect_valid<=1;prefetch_protect_line<=mt_line;end
+       end
+      end
+     end
+    end
+   end
    if(!flush_request&&!flushing)flush_complete<=0;
    if(flush_request&&!flushing&&!flush_complete&&!fault)begin flushing<=1;flush_complete<=0;end
    if(fault)begin ctx_valid[0]<=0;ctx_valid[1]<=0;fill_row<=0;depth_pending<=0;color_pending<=0;end
    if(!mt_active&&!fault&&!source_bad)begin
     if(flushing)begin
      if(dirty_found)begin
-      mt_active<=1;mt_prefetch<=0;mt_line<=dirty_line;mt_tvalid<=0;mt_write<=1;
-      mt_remaining<={dird[dirty_line],dirc[dirty_line]};mt_plane<=!dirc[dirty_line];mt_sector<=0;mt_beat<=0;
-      mt_accepted<=0;mt_presented<=0;req_valid<=0;wr_beat_valid<=0;mst<=M_WPRE;
+      mt_active<=1;mt_cancel<=0;mt_request<=0;mt_prefetch<=0;mt_line<=dirty_line;mt_tvalid<=0;mt_write<=1;
+      mt_remaining<={dird[dirty_line],dirc[dirty_line]};
+      mt_issue<=dirc[dirty_line]?0:2;mt_retire<=dirc[dirty_line]?0:2;
+      mt_data<=dirc[dirty_line]?0:32;wr_beat_valid<=0;
      end else if(!any_dirty&&!rop_active)begin
       flushing<=0;flush_complete<=1;prefetch_protect_valid<=0;
       for(f=0;f<8;f=f+1)tvalid[f]<=0;
      end
     end else if(ce&&row_valid&&fill_row==0&&!hit&&maintenance_available)begin
-     mt_active<=1;mt_prefetch<=0;mt_line<=sel_line;victim<=sel_line+3'd1;mt_tvalid<=1;
+     mt_active<=1;mt_cancel<=0;mt_request<=0;mt_prefetch<=0;mt_line<=sel_line;victim<=sel_line+3'd1;mt_tvalid<=1;
      if(prefetch_protect_line==sel_line)prefetch_protect_valid<=0;mt_target<=row_key;
-     mt_remaining<={sel_dird,sel_dirc};mt_write<=sel_dirty;mt_plane<=sel_dirty?sel_plane:1'b0;
-     mt_sector<=0;mt_beat<=0;mt_accepted<=0;mt_presented<=0;req_valid<=0;wr_beat_valid<=0;
-     if(!sel_dirty)begin tvalid[sel_line]<=0;mst<=M_RPRE;end else mst<=M_WPRE;
+     mt_remaining<={sel_dird,sel_dirc};mt_write<=sel_dirty;
+     mt_issue<=(sel_dirty&&sel_plane)?2:0;mt_retire<=(sel_dirty&&sel_plane)?2:0;
+     mt_data<=(sel_dirty&&sel_plane)?32:0;wr_beat_valid<=0;
+     if(!sel_dirty)tvalid[sel_line]<=0;
     end else if(hint_start)begin
-     mt_active<=1;mt_prefetch<=1;mt_line<=sel_line;victim<=sel_line+3'd1;mt_tvalid<=1;mt_target<=hint0;
-     mt_remaining<={sel_dird,sel_dirc};mt_write<=sel_dirty;mt_plane<=sel_plane;
-     mt_sector<=0;mt_beat<=0;mt_accepted<=0;mt_presented<=0;req_valid<=0;wr_beat_valid<=0;
-     if(sel_dirty)mst<=M_WPRE;
-     else begin tvalid[sel_line]<=0;mt_plane<=0;mst<=M_RPRE;end
+     mt_active<=1;mt_cancel<=0;mt_request<=0;mt_prefetch<=1;mt_line<=sel_line;victim<=sel_line+3'd1;mt_tvalid<=1;mt_target<=hint0;
+     mt_remaining<={sel_dird,sel_dirc};mt_write<=sel_dirty;
+     mt_issue<=(sel_dirty&&sel_plane)?2:0;mt_retire<=(sel_dirty&&sel_plane)?2:0;
+     mt_data<=(sel_dirty&&sel_plane)?32:0;wr_beat_valid<=0;
+     if(!sel_dirty)tvalid[sel_line]<=0;
     end else if(hint_unsafe)begin
      // Lossy hint: no retry state and no same-edge demand credit is borrowed.
      // Advance once so later hints do not stick on one protected/dirty line.
@@ -402,6 +332,11 @@ module gpu_v2_framebuffer_tdp #(
   if(leaf_ce&&cal[0]!==shade_phase)$fatal(1,"TDP/common shared DSP phase mismatch");
   if(depth_pending&&color_pending)$fatal(1,"overlapping fixed result slots");
   if(shared_rop_ce&&!shade_phase)$fatal(1,"ROP shared DSP wrong phase");
+  if(mt_active&&(mt_data>mt_data_end||mt_data[6:4]>mt_issue))$fatal(1,"framebuffer monotonic cursor proof");
+  if(mt_active&&mem_complete_valid)begin
+   if(mt_retire>=mt_issue)$fatal(1,"framebuffer completion without accepted descriptor");
+   if(mt_data+{6'd0,rbeat}+{6'd0,wbeat}<{mt_retire+3'd1,4'd0})$fatal(1,"framebuffer completion before payload");
+  end
   if(mt_active&&pinned[mt_line])$fatal(1,"maintenance target is ROP pinned");
   if(row0_fire&&ctx_valid[tail])$fatal(1,"new owner overwrote a pinned context");
   if(leaf_ce&&fill_row[0]&&!depth_input_fire)$fatal(1,"paired source D missing after accepted C");

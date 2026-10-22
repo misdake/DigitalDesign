@@ -68,8 +68,9 @@ device-channel allocation.
 the reserved GPU data plane. The former production GPU was retired during the v2 redesign; its
 earlier standalone cmodel remains at `systems/cpu-v3-tang-nano-20k/src/hardware/gpu/sim`.
 New reusable development lives in `ip/gpu-v2`, with the generic framework in
-`modeling/audited`; see [GPU component ownership](ip/gpu-v2/docs/overview.md). Device 4 currently
-reports submit rejected and its three memory masters remain idle. The CPU D-cache is
+`modeling/audited`; see [GPU component ownership](ip/gpu-v2/docs/overview.md). Device4 binds the single-CB command GPU through the system target leaf; its
+two-SEND/busy-RECV ABI is specified in `/ip/gpu-v2/docs/commands.md`. The host
+control adapter requires a GPU executor; it never fabricates rendering completion. The CPU D-cache is
 write-back. When the new GPU is integrated, CPU-to-GPU ownership transfer requires a blocking full
 clean to make CPU writes visible in DRAM, and GPU completion must make its writes visible before CPU
 ownership resumes after system-control D-cache invalidation. There is no MMU, snooping, transaction

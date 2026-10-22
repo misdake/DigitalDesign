@@ -2,6 +2,9 @@
 // 外部DMA负责把原始字送入SP；不实现SDRAM或Mesh目录的地址遍历。
 module shared_meshlet(
  input clk,reset,ce,start,slot,
+`ifdef GPU_V2_COMMAND_PORTS
+ input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
+`endif
  input dma_we,input [9:0] dma_addr,input [63:0] dma_data,
  input output_ready,packet_ready,word_ready,
  output reg ready,output busy,drained,output reg done,output reg [3:0] error,
@@ -37,7 +40,20 @@ module shared_meshlet(
  // 活动输入页和uniform不得被覆盖；另一payload/metadata页仍允许DMA预取。
  wire inactive_payload=dma_addr[9:8]==0&&dma_addr[7]!=active_slot;
  wire inactive_metadata=dma_addr[9:3]==7'd32&&dma_addr[2]!=active_slot;
- wire write_safe=state==IDLE||inactive_payload||inactive_metadata;
+`ifdef GPU_V2_COMMAND_PORTS
+ wire cp_write_region=dma_addr[8:6]==3'b111||
+  (dma_addr[8:6]==3'b100&&dma_addr[5:3]!=0);
+ wire cp_access=state==IDLE&&!start;
+ assign cp_ready=cp_access&&source_ready;
+ assign cp_q=source_data;
+ wire memory_source_re=source_re||(cp_access&&cp_re);
+ wire[9:0]memory_source_addr=cp_access?{1'b0,cp_addr}:source_addr;
+`else
+ wire cp_write_region=1'b0;
+ wire memory_source_re=source_re;
+ wire[9:0]memory_source_addr=source_addr;
+`endif
+ wire write_safe=state==IDLE||inactive_payload||inactive_metadata||cp_write_region;
  assign dma_ready=core_dma_ready&&write_safe;
  wire [8:0] vertex_words={2'd0,vertices}+{1'd0,vertices,1'b0}+9'd1;
  wire [7:0] vertex_rows=vertex_words[8:1];
@@ -53,7 +69,7 @@ module shared_meshlet(
   .published_vertices(published_vertices),.packet_valid(packet_valid),.descriptor(descriptor),
   .word_valid(word_valid),.word_index(word_index),.word_data(word_data),
   .dma_ready(core_dma_ready),.emit_valid(emit_valid),.emit_addr(emit_addr),.emit_data(emit_data),
-  .source_re(source_re),.source_addr(source_addr),.source_data(source_data),
+  .source_re(memory_source_re),.source_addr(memory_source_addr),.source_data(source_data),
   .source_ready(source_ready),.triangle_ready(triangle_ready),.meshlet_ready(core_meshlet_ready),.drained(drained)
  );
  always @(posedge clk)begin

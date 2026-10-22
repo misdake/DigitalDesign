@@ -444,7 +444,9 @@ wire display_memory_error;
 
 __GPU__ u_gpu (
     .clk(clk),
-    .reset(reset),
+    // GPU state uses synchronous initialization, unlike declaration-initialized CPU state.
+    // Reuse the monotonic cold gate; buttons/lock loss never reassert this reset.
+    .reset(!cold_ready),
     .device_index(device_query_index),
     .device_channel(device_query_channel),
     .device_read_enable(device_query_read_enable),

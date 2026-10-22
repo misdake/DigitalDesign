@@ -2,12 +2,13 @@
 
 This document records the Stage 12 CPU system and its offline fitting evidence. GPU resource,
 timing, raster, and framebuffer results from the former implementation below are historical,
-not measurements of the current GPU integration leaf. Device 4 now rejects legacy submissions and issues no memory requests;
-new components live in `ip/gpu-v2`, while `src/hardware/gpu/sim/` is a historical harness.
-Host and RTL Flash boot tests verify that the historical S2 application halts on
-its first rejected submit without changing either framebuffer or requesting a swap.
-The retired leaf's bounded RTL test checks every device/channel/read/write/reset
-combination and inactive memory ports; this does not qualify a production GPU.
+not measurements of the current GPU integration leaf. Device4 now binds the
+single-CB GPU command closure from `ip/gpu-v2` to the three system memory masters.
+The old GPU ABI is not supported. `src/hardware/gpu/sim/` remains historical.
+The current Device4 protocol and completion boundary are specified in
+[GPU commands](/ip/gpu-v2/docs/commands.md). Bounded interface/RTL tests do not
+qualify a new full-board image; existing system timing evidence below predates
+this real GPU binding.
 
 The 2026-10-02 development baseline passes workspace regression, strict lint,
 core/system co-simulation, generated Flash boot checks and whole-system Gowin
@@ -42,7 +43,8 @@ firmware, display scheduling, and physical validation. The CPU IP sees only phys
 data word ports plus the narrow device port.
 
 The [eight-DPB C16/Z16 storage and quad owner](framebuffer-cache.md) describes the
-retired GPU implementation. The current integration leaf has no framebuffer storage.
+retired GPU implementation. The current leaf instead uses the production GPU framebuffer cache described in
+[GPU memory](/ip/gpu-v2/docs/memory.md).
 
 ## Processor and instruction path
 
@@ -192,7 +194,7 @@ The fitted device allocation is:
 | 1 | Unassigned | Former Boot selection removed |
 | 2 | Unassigned | Former programmable DMA removed |
 | 3 | Display | Framebuffer configuration and scanout control |
-| 4 | GPU | Two-entry submit FIFO, temporary commands, viewport triangle rasterizer, and an eight-entry tile cache |
+| 4 | GPU | Single-CB Device4, explicit DMA/meshlet commands, production V/T/R/I and framebuffer cache |
 
 Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalidation pulse. Channel
 1 starts blocking D-cache clean-plus-invalidate, channel 4 starts blocking D-cache clean, and channel
@@ -239,44 +241,62 @@ condition.
 
 Device indices 1 and 2 are unassigned in this system; the former selection and
 programmable DMA register banks are absent. The selected application is the
-[CPU-only Display diagnostic](system-display-test.md),
-`rcc/system-display-test.rs`. The retained `rcc/display-demo.rs` exercises the
-retired GPU-rejection behavior and is not selected for this board diagnostic.
+[CPU-only Display diagnostic](/systems/cpu-v3-tang-nano-20k/docs/system-display-test.md),
+`rcc/system-display-test.rs`. The historical `rcc/display-demo.rs` and GPU
+constants in `rcc/device_abi.rs` use the retired command ABI and are not selected
+for this board diagnostic. They are not a supported driver for the new GPU
+leaf; compilation of those assets does not qualify GPU execution. A migrated
+RCC renderer and full board boot/Display qualification remain separate work.
 
-Device 4 stages a 22-bit command-buffer word address and a word count on write channels 0..3;
-channel 4 submits, and channel 5 performs an idle-only soft reset or sticky-error clear. Read
-channels 0..3 return accepted count, retired count, busy/full/error status, and queued depth. The
-queue holds two submissions in addition to the active one. Full or malformed submissions are
-rejected without incrementing the accepted count. The temporary command processor accepts
-`SET_TARGET`, `FAKE_DRAW`, `TRIANGLE`, and `END`; it fetches one 32-byte command or tile-list line at a time.
-`FAKE_DRAW` supplies a 32-byte-aligned list of `u16` tile indices, a LOAD or CLEAR operation, two
-RGB565 colors, a 16-row write mask, and a temporary tile-local XY-gradient flag. Solid and gradient
-writes share the same cache path; the gradient uses channel-high bits plus local x/y and four-bit
-x+y, without multipliers. The framebuffer cache is eight-entry direct-mapped and
-stores eight complete 16x16 C16/Z16 tiles in eight explicit true-dual-port DPBs.
-Bank selection is `(x + 2*y) mod 4`; each plane transfers horizontal 64-bit memory
-beats and the render owner reads/writes a masked quad in two clocks.
-A miss blocks while a dirty
-victim is cleaned or a LOAD tile is refilled; each tile transfer is four 128-byte transactions.
-`TRIANGLE` (`0xe2`) is four qwords: a zero-argument header followed by three viewport vertices,
-each packed as `{y:s12.4, x:s12.4}` in the low 32 bits of one qword. The rasterizer emits covered
-RGB565 quads in tile order. A ready/valid prefetch acquisition admits one outstanding tile (K=1);
-the source FIFO head is retained until the owner completes the write. Uncovered lanes
-retain the LOAD contents. The Phase-1 pixel record carries a draw epoch and triangle ID. The draw
-marker follows all accepted pixels and remains at the raster boundary until the cache returns the
-matching epoch/triangle retirement ACK; the command processor then waits for scene done.
-`END` drains every dirty entry before incrementing the retired count, so completion fences all
-visible framebuffer writes. This is a bring-up ABI, not the future geometry command-buffer
-contract.
+Device4 accepts two16-bit SENDs: channel0 stages the u32 instruction count
+minus1 (14 bits), and channel1 takes byte base/128 and starts execution. Base is
+128-byte aligned, a CB is at most64KiB, and the padded allocation fits below8MiB.
+RECV channel2 returns busy in bit0 and a reset-only sticky transport error in
+bit1. There is no hardware submission queue, token counter, result receipt or
+ACK. Software retains the CB and all indirect allocations while busy. A new CB
+can be launched immediately after true completion; final END follows explicit
+WAIT(all) and FLUSH. Configuration changes remain explicitly fenced commands.
+The GPU keeps its command/data DMA overlap and meshlet pingpong inside one CB.
 
-The default coverage producer tests two pixels per clock, with one-pixel and experimental
-scanline alternatives measured in [gpu-raster-comparison.md](gpu-raster-comparison.md).
-Its quad/marker FIFO explicitly uses BSRAM. A locked viewport setup record is shared across
-compact tile jobs; the full-geometry path retains its separate setup/fan records. Command and
-tile-list lines occupy independent halves of one RAM16 array, sharing the serial FSM's port;
-cache tags also share their lookup/clean read port. Cache memory-port reads are enabled during
-clean, preserving the four independent render banks. This does not add concurrent refill/render
-or the earlier prefetch intended for a future pixel-processing pipeline.
+The target leaf connects the real GPU's RO, framebuffer-read and framebuffer-
+write masters to the existing system ports. Its execution CE is always enabled;
+CPU device strobes are accepted in wall time. Read masters drive write=false;
+the write master drives write=true and supplies data independently of request
+acceptance and terminal response. There is no per-device shadow base/count bank.
+
+The production top initializes GPU state while the existing monotonic
+`cold_ready` gate is low. The GPU relies on synchronous reset for its control
+and pipeline state; tying its reset to the global constant-zero runtime reset
+does not initialize it. The gate releases once SDRAM is ready and never reasserts
+on buttons or later lock loss. CPU, boot and Display retain their existing cold
+contracts, and CPU device writes remain blocked until boot completes.
+The fixed native GPU leaf declares its 36 BSRAMs and 257 RAM16 cells in the target
+resource model; the complete system therefore plans 46 BSRAMs. The existing
+physical-resource audit can then reject a build whose GPU was swept, rather
+than treating the CPU/Display-only claim as the complete board allocation.
+
+The host `GpuDevice` models only this control-plane ownership. A host executor
+must take the accepted descriptor and call `complete` after actual memory drain;
+without such an executor busy remains asserted. The Rust circuit emulator has
+no GPU executor and explicitly fails on GPU launch, rather than reporting false
+rendering success. The production rendering reference remains the bounded RTL
+harness (`vliw_command.py --system-leaf`) and the full GPU/MC replay.
+
+`CpuV3Gpu` registers an explicit Device4 testbench for the standard project
+dependency validator. The bounded native-model fixture fetches two valid
+NOP/WAIT/FLUSH/END buffers, checks request backpressure, byte-to-word addressing,
+busy through the final read response, and immediate resubmission without ACK.
+Run it with `cargo test -p cpu-v3-tang-nano-20k --test gpu_device_rtl -- --ignored`
+and `IVERILOG_EXE`, `VVP_EXE`, `GOWIN_HOME` set. It checks the control binding;
+rendering correctness remains covered by the GPU/MC replay.
+
+The example's ignored `cold_boot_cpu_submits_gpu_commands_in_verilog` test boots
+a compiled CPU program through the production top and Flash loader, then submits
+and waits for a real Device4 command buffer. It checks defined GPU state during
+cold start and no runtime reset reassertion. The bounded
+`current_state_command.py --native --production-cold` fixture additionally uses
+the production top's cold gate and GPU reset binding to render and flush real
+triangles. Neither fixture injects a manual GPU reset pulse.
 
 CPU, DMA, display, and GPU clients share physical SDRAM without hardware snooping. Software
 transfers ownership explicitly: CPU-produced data becomes visible after blocking D-cache clean;

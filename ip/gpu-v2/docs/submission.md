@@ -1,5 +1,9 @@
 # Submitting, completing and flushing work
 
+This chapter describes the host-driven `sdram` factory. The autonomous `command`
+factory executes [DRAM commands](/ip/gpu-v2/docs/commands.md) instead of exposing
+per-meshlet loading and start pins.
+
 ## Prepare the GPU
 
 The texture slot table and framebuffer surface are supplied when the standalone

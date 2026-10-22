@@ -15,6 +15,19 @@ pub fn verilog(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
+    let source = compute_verilog(slots, surface, backend)?;
+    Ok(format!(
+        "{}\n{source}\n{}",
+        include_str!("vliw_sdram.v"),
+        super::vliw_memory::verilog()
+    ))
+}
+
+pub(super) fn compute_verilog(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+) -> Result<String, String> {
     let source = super::vliw::verilog(slots, surface, backend)?;
     let mut source = super::vliw_memory::split_backend(&source)?;
     // Bind only the enclosing geometry/backend module. A private cache may
@@ -45,10 +58,5 @@ pub fn verilog(
         top = top.replacen(a, b, 1);
     }
     source.replace_range(start..end, &top);
-    let mut result = include_str!("vliw_sdram.v").to_owned();
-    result.push('\n');
-    result.push_str(&source);
-    result.push('\n');
-    result.push_str(&super::vliw_memory::verilog());
-    Ok(result)
+    Ok(source)
 }

@@ -3,6 +3,9 @@
 // may overlap that tail; samples wait for the context switch.
 module gpu_v2_vliw_frontend(
  input clk,reset,ce,start,slot,
+`ifdef GPU_V2_COMMAND_PORTS
+ input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
+`endif
  input dma_we,output dma_ready,input [9:0] dma_addr,input [63:0] dma_data,input output_ready,
  input [31:0] cfg_far_z,input [4:0] cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed [7:0] cfg_lod_bias,
  output quad_valid,input quad_ready,input[2:0]quad_id,
@@ -45,6 +48,9 @@ module gpu_v2_vliw_frontend(
  assign idle=packet_window&&local_drain&&!s_busy&&!frontend_busy&&meshlet_drained;
  assign raster_error=core_error|bridge_error;
  shared_meshlet meshlet(
+`ifdef GPU_V2_COMMAND_PORTS
+ .cp_re(cp_re),.cp_addr(cp_addr),.cp_q(cp_q),.cp_ready(cp_ready),
+`endif
   .clk(clk),.reset(reset),.ce(ce),.start(start),.slot(slot),.drained(meshlet_drained),
   .dma_we(dma_we),.dma_ready(dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),.output_ready(output_ready),
   .packet_ready(fpr),.word_ready(fwr),.busy(frontend_busy),.done(meshlet_done),.ready(meshlet_ready),.error(frontend_error),

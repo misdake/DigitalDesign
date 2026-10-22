@@ -3,6 +3,9 @@
 // coupled to old quads in the backend. Memory return/drain is independent of CE.
 module gpu_v2_vliw(
  input clk,reset,ce,abort,start,slot,
+`ifdef GPU_V2_COMMAND_PORTS
+ input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
+`endif
  input dma_we,output dma_ready,input[9:0]dma_addr,input[63:0]dma_data,input output_ready,
  input[31:0]cfg_far_z,input[4:0]cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed[7:0]cfg_lod_bias,
  input draw_bank,draw_unlit,input[26:0]draw_config,input[23:0]specular,input[7:0]alpha,
@@ -55,6 +58,9 @@ module gpu_v2_vliw(
  .mem_read_data(mem_read_data),.mem_read_valid(mem_read_valid),.mem_write_valid(mem_write_valid),.mem_write_data(mem_write_data),
  .mem_write_ready(mem_write_ready),.mem_complete_valid(mem_complete_valid),.mem_complete_ok(mem_complete_ok));
  gpu_v2_vliw_frontend front(
+`ifdef GPU_V2_COMMAND_PORTS
+ .cp_re(cp_re),.cp_addr(cp_addr),.cp_q(cp_q),.cp_ready(cp_ready),
+`endif
  .clk(clk),.reset(reset),.ce(front_ce),.start(start&&!fault),.slot(slot),
  .dma_we(dma_we),.dma_ready(dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),.output_ready(output_ready),
  .cfg_far_z(cfg_far_z),.cfg_tex_w_log2(cfg_tex_w_log2),.cfg_tex_h_log2(cfg_tex_h_log2),.cfg_max_mip(cfg_max_mip),.cfg_lod_bias(cfg_lod_bias),

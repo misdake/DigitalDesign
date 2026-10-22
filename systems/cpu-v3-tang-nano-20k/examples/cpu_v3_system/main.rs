@@ -28,6 +28,7 @@ type SystemControl = SystemControlDevice<469>;
 thread_local! {static TEST_IMAGE:RefCell<Option<(Vec<u8>,bool,u16)>>=const{RefCell::new(None)};}
 thread_local! {static TEST_ERROR_CODE:Cell<u8>=const{Cell::new(1)};}
 thread_local! {static BOARD_APPLICATION_TEST:Cell<bool>=const{Cell::new(false)};}
+thread_local! {static GPU_COLD_TEST:Cell<bool>=const{Cell::new(false)};}
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_system_gowin")
 }
@@ -198,29 +199,56 @@ impl Module for CpuV3System {
                 package.len()
             ));
         std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
-        Some(
-            include_str!("signature_testbench.v")
-                .replace(
-                    "__STARTUP_RESULT_PATH__",
-                    &receipt.to_string_lossy().replace('\\', "/"),
-                )
-                .replace("__FLASH_PACKAGE_SIZE__", &package.len().to_string())
-                .replace("__FLASH_PACKAGE_INIT__", &flash_init)
-                .replace("__CODE_WORDS__", &(code.len() / 2).to_string())
-                .replace("__CODE_INIT__", &code_init)
-                .replace("__RESOURCE_CHECK__", &resource_check)
-                .replace("__SPI_HALF_PERIOD__", &SPI_HALF_PERIOD.to_string())
-                .replace(
-                    "__BOOT_MAX_CYCLES__",
-                    &(6_000_000 + package.len() * 40).to_string(),
-                )
-                .replace("__EXPECT_ERROR__", &u8::from(error).to_string())
-                .replace(
-                    "__EXPECT_ERROR_CODE__",
-                    &TEST_ERROR_CODE.with(Cell::get).to_string(),
-                )
-                .replace("__EXPECT_HALT__", &halt.to_string()),
-        )
+        let mut testbench = include_str!("signature_testbench.v")
+            .replace(
+                "__STARTUP_RESULT_PATH__",
+                &receipt.to_string_lossy().replace('\\', "/"),
+            )
+            .replace("__FLASH_PACKAGE_SIZE__", &package.len().to_string())
+            .replace("__FLASH_PACKAGE_INIT__", &flash_init)
+            .replace("__CODE_WORDS__", &(code.len() / 2).to_string())
+            .replace("__CODE_INIT__", &code_init)
+            .replace("__RESOURCE_CHECK__", &resource_check)
+            .replace("__SPI_HALF_PERIOD__", &SPI_HALF_PERIOD.to_string())
+            .replace(
+                "__BOOT_MAX_CYCLES__",
+                &if GPU_COLD_TEST.with(Cell::get) {
+                    1_100_000
+                } else {
+                    6_000_000 + package.len() * 40
+                }
+                .to_string(),
+            )
+            .replace("__EXPECT_ERROR__", &u8::from(error).to_string())
+            .replace(
+                "__EXPECT_ERROR_CODE__",
+                &TEST_ERROR_CODE.with(Cell::get).to_string(),
+            )
+            .replace("__EXPECT_HALT__", &halt.to_string());
+        if GPU_COLD_TEST.with(Cell::get) {
+            testbench = testbench.replacen("module tb;", "module tb;\nGSR GSR(.GSRI(1'b1));", 1);
+            testbench = testbench.replacen(
+                "endmodule",
+                &format!("{}\nendmodule", include_str!("gpu_cold_monitor.vh")),
+                1,
+            );
+            let result_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/gpu-device-cold/production-cpu.json");
+            std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
+            testbench = testbench.replace(
+                "__GPU_COLD_RESULT_PATH__",
+                &result_path.to_string_lossy().replace('\\', "/"),
+            );
+            testbench = testbench.replace(
+                "if(EXPECT_HALT!=0 && dut.halted)begin",
+                "if(EXPECT_HALT!=0 && dut.halted)begin\n gpu_cold_complete();",
+            );
+            let models =
+                std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").expect("GOWIN_HOME"))
+                    .join("IDE/simlib/gw2a/prim_sim.v");
+            testbench.push_str(&std::fs::read_to_string(models).unwrap());
+        }
+        Some(testbench)
     }
 }
 fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
@@ -240,6 +268,50 @@ mod tests {
         BOARD_APPLICATION_TEST.with(|x| x.set(true));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
         BOARD_APPLICATION_TEST.with(|x| x.set(false));
+        result.unwrap();
+    }
+
+    #[test]
+    #[ignore = "bounded production cold boot, actual CPU Device4 submission and native GPU models"]
+    fn cold_boot_cpu_submits_gpu_commands_in_verilog() {
+        let source = r#"
+            fn main() {
+                if dev_recv(4,2)!=0 { halt(0xff01); }
+                dev_send(4,0,3);
+                dev_send(4,1,0x400);
+                let mut status=dev_recv(4,2);
+                while (status&1)!=0 { status=dev_recv(4,2); }
+                if status!=0 { halt(0xff02); }
+                halt(0x5a36);
+            }
+        "#;
+        let mut options =
+            cpu_v3::rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.stack_init = 0xc000;
+        let parsed =
+            rcc::frontend::compile_program_named("gpu-cold.rs", source, &options, &mut |_| {
+                Err("unexpected module".into())
+            })
+            .unwrap();
+        let program = cpu_v3::rcc_backend::try_compile(parsed, &options, "main").unwrap();
+        let code: Vec<u8> = program.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut commands: Vec<u8> = [0u32, 0x40000003, 0x70000000, 0xf0000000]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        commands.resize(128, 0);
+        let package = cpu_v3_tang_nano_20k::boot::pack_application_resources(
+            &code,
+            &[cpu_v3_tang_nano_20k::boot::BootResource::copy(
+                0x20000, commands,
+            )],
+        )
+        .unwrap();
+        TEST_IMAGE.with(|x| *x.borrow_mut() = Some((package, false, 0x5a36)));
+        GPU_COLD_TEST.with(|x| x.set(true));
+        let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
+        GPU_COLD_TEST.with(|x| x.set(false));
+        TEST_IMAGE.with(|x| *x.borrow_mut() = None);
         result.unwrap();
     }
     #[test]
@@ -346,7 +418,7 @@ mod tests {
                 && !text.contains("u_boot (")
         );
         let board = gowin_project().generate().unwrap();
-        assert_eq!(board.resources.claimed[&ResourceKind::Bsram18K], 10);
+        assert_eq!(board.resources.claimed[&ResourceKind::Bsram18K], 46);
     }
     #[test]
     #[ignore = "complete real-SPI production application cold boot"]

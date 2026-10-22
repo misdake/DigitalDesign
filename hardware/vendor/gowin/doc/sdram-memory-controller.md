@@ -12,8 +12,9 @@ The Rust service oracle and calibration experiments are executable, and the GPU
 frontend oracle consumes their real DMA responses. System all-targets compilation
 checks the relocated dependencies. Module identities and generated source paths
 are preserved. `RtlSources` provides the authoritative bundle used by the target.
-Production continuation remains off; independent configurations exercise early
-admission and explicit four-sector groups below.
+The board-target legacy closure keeps physical continuation off. The standalone
+early-admission RTL factory also has the independent GPU continuation path below;
+explicit four-sector groups remain a separate diagnostic configuration.
 
 The independent `emu::Combination` now executes arbiter, adapter, two-entry pair
 gearbox and rising-capture native controller state on related clock edges.
@@ -196,6 +197,92 @@ a closed *other* bank while the current DQ stream continues, subject to refresh
 age and tRCD/tRP. It never precharges the active bank or an already open conflicting
 row in this mode. CHAIN/READ_CHAIN remain zero: every segment still has its own
 native completion, adapter LAST and remaining transport gaps.
+
+## Independent GPU continuation in the RTL factory
+
+`combination::rtl_sources_with_options(init, true, false)` selects
+`stream_sdram.v` and `stream_bridge.v`. The serial/default factory and board
+`RtlSources` compatibility exports retain their legacy implementations. The
+existing Rust cycle engine models the legacy transport calendar; it is not a
+cycle oracle for this streaming RTL. Its functional requests and independent
+completion contract are unchanged.
+
+The unchanged arbiter associates each accepted descriptor with a two-bit
+continuation class: GPU RO, GPU framebuffer write, GPU framebuffer refill,
+or conservative fallback.
+Only the same nonzero class, direction and line transfer can overlap native
+commands. CPU/scalar, cross-owner, direction changes and backpressured responses
+retain serial data ownership. An accepted successor is irrevocable; Display
+can arbitrate the next unaccepted request. Neither framebuffer maintenance, CLEAR nor meshlet payload
+holds the bus across its entire logical job.
+
+The endpoint is the sole owner of the two descriptor credits, declared read
+lengths and ordered response retirement. Request issue, write supply and read
+return advance independently. It proves same-owner/direction line overlap once
+and sends one continuation-permission bit with the bridge request; the bridge
+does not keep another class comparator, read-length array or retirement queue.
+
+The bridge has a request-toggle mailbox, a full-native-edge offer snapshot,
+a32-to64-bit read pair and the existing two64-bit write pair slots. Mailbox
+release follows snapshot acceptance and does not release an upstream transaction
+credit. Native write completion crosses as a write-only event after the final
+word commits. Read framing remains entirely in the endpoint. Scalar completion
+clears the unused upper write half. The logic-clock read-response register is
+retained as a timing boundary and provides the CPU's held LAST/scalar response.
+CPU lookahead preparation uses the registered native offer address, without an
+address mux on last-cycle chain qualification.
+
+The streaming bridge enables `SdramController(NEXT_TAGGED=1)`. A one-bit
+`next_generation` identifies the address behind the registered next-row lookup.
+New hint windows and unhinted offers toggle it; an ordered continuation promotes
+the same hint without changing it. The endpoint publishes a hint only while its
+two-descriptor queue is full, when the hinted descriptor cannot be replaced.
+The controller captures row-hit and generation on the same native edge and
+qualifies chaining with their one-bit equality. There is no second wide identity
+comparison in either the producer or final chain path. Passive assertions verify
+hint stability, promotion identity and cached lookup coherence.
+
+Speculative preparation waits for a coherent lookup instead of interpreting a
+changed generation as a miss. With `RCD_CYCLES>=2`, `prep_wait` also covers the
+registered lookup's ACT update; shorter RCD configurations retain the live
+preparation comparison. The default `NEXT_TAGGED=0` keeps full bank/row identity
+qualification for independently driven controllers and the legacy native bridge.
+This query pipeline does not delay an already qualified column issue or change
+data/terminal ownership. A previously unseen late hint may need one lookup edge
+before preparation can start.
+
+Write supply uses one4-bit sequential beat cursor and a supplied flag per slot,
+not two full beat counters. The next permitted descriptor can feed immediately
+after the old payload, before its write acknowledgement. Scalar writes cannot
+be accepted ahead of the current transaction and therefore keep one16-bit
+payload register. Scalar reads and ordinary line requests keep their normal
+two-descriptor admission rules. No payload FIFO, BSRAM or DSP is added.
+
+`SdramController(CONTINUE=1)` accepts individual8/16/32-word successor lengths.
+Its read-capture countdown survives arbitrarily long chains without an8-bit
+cumulative age wrapping. The normal per-transaction read/write completion and
+refresh fallback remain. While CHAIN/READ_CHAIN is enabled, an other-bank
+successor can trigger PRE/ACT when its stable descriptor arrives after the first
+word, including an open conflicting row. The current bank is never precharged.
+READ preparation emits PRE/ACT only before the final column boundary; the
+continuation/termination tail owns the command port after that boundary. Bank
+state changes therefore always correspond to an emitted physical command. An
+unfinished preparation prevents chaining and falls back to ordinary row
+resolution instead of treating a pending ACT as an already open row.
+A missed readiness/refresh window falls back to normal completion and restart.
+With chaining disabled, PREPARE_NEXT still prepares only a closed other bank.
+
+Native writes retire after the old final word is committed; reads retire after
+the declared returned words. Write completion events cross at the related-clock
+calendar and emit one pulse per transaction; endpoint read framing follows the
+returned pairs. Scalar write completion also
+releases its unused upper pair half. No BSRAM, DSP or payload FIFO is added.
+The endpoint data register samples independently of the native return-valid
+event, except while holding a backpressured response. Invalid-cycle data is not
+owned. This leaves the half-cycle return-valid signal on framing/control only,
+instead of enabling all64 payload registers; no response pipeline stage is added.
+Standalone pin tests and registered-boundary timing do not imply a complete
+system fit or physical board qualification.
 
 ## Optional four-sector physical groups
 

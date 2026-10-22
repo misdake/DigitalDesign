@@ -271,7 +271,8 @@ bias, derivative or logarithm stage.
 
 ## Retained V and T records
 
-These are internal storage records, separate from the external V96/T64 layout.
+These are internal storage records, separate from96-bit source vertices and
+three-triangle/64-bit index words. Meshlet capacity remains64 vertices/96 triangles.
 
 | Record | Contents and read boundary |
 | --- | --- |
@@ -280,7 +281,7 @@ These are internal storage records, separate from the external V96/T64 layout.
 | V item 4 | attr32, interpreted by the meshlet's RGB/UV mode |
 | T items 0..8 | Three triples `(Nx,Ny,C)` in 54-bit containers |
 | T item 9 | Positive determinant magnitude in a 54-bit container |
-| T items 10..15 | Source vertex 0 N36/attr32, then vertex 1, then vertex 2; upper 18 zero |
+| T items 10..15 | Source vertex0 N36/attr32, then vertex1, then vertex2; command profile uses item10 high18 and item11 high14 for mesh uniform RGBA |
 
 V position and attribute reads have separate synchronous Q owners. T items 0..9
 read low 36 and high 18 banks simultaneously at the same item address. A read

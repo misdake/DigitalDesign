@@ -588,7 +588,7 @@ impl TangNano20K {
             wrapper.to_string()
         };
         let wrapper = if cold_only {
-            format!("{}\nreg [1:0] cold_lock_sync=0;\nreg cold_sdram_ready=0;\nalways @(posedge controller_clk) if(!cold_sdram_ready) begin\n cold_lock_sync<={{cold_lock_sync[0],sdram_pll_locked}};\n if(cold_lock_sync[1])cold_sdram_ready<=1;\nend\n",
+            format!("reg [1:0] cold_lock_sync=0;\nreg cold_sdram_ready=0;\n{}\nalways @(posedge controller_clk) if(!cold_sdram_ready) begin\n cold_lock_sync<={{cold_lock_sync[0],sdram_pll_locked}};\n if(cold_lock_sync[1])cold_sdram_ready<=1;\nend\n",
                 wrapper.replace(".reset(!sdram_pll_locked || (|buttons))", ".reset(!cold_sdram_ready)").replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .COLD_START_ONLY(1)"))
         } else {
             wrapper

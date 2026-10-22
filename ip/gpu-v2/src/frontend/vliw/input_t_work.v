@@ -2,6 +2,9 @@
 // 两颗原输入BSRAM只接DMA，私有16x36 SSRAM同时提供T的一写一读。
 module rs_static_scratchpad #(parameter COMPACT=1)(input clk,reset,dma_we,input[9:0]dma_addr,
  input[63:0]dma_data,input le,re,work_we,input[9:0]la,ra,work_wa,input[35:0]work_data,
+`ifdef GPU_V2_COMMAND_PORTS
+ output[35:0]source_rq,
+`endif
  output[35:0]lq,rq);
  function[3:0]slot;
   input[5:0]a;
@@ -31,6 +34,11 @@ module rs_static_scratchpad #(parameter COMPACT=1)(input clk,reset,dma_we,input[
   end
  end
  assign rq=read_work ? work_q : source_q;
+`ifdef GPU_V2_COMMAND_PORTS
+ // Source readers never address the private T workspace. Their Q bypasses
+ // its selection; T MAC reads still use the original independently held mux.
+ assign source_rq=source_q;
+`endif
 `ifndef SYNTHESIS
  reg[5:0]logical_owner[0:15];reg[15:0]known;
  integer i;

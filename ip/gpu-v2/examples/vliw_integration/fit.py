@@ -30,7 +30,8 @@ def main():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'postquad_ii4'))
     from wrapper import wrapper
     _, boundary = wrapper(normalized_text)
-    assert boundary['input_bits'] > 300 and boundary['output_bits'] > 100, 'Incomplete physical boundary'
+    minimum_inputs = 64 if top[1] == 'gpu_v2_vliw_command' else 300
+    assert boundary['input_bits'] > minimum_inputs and boundary['output_bits'] > 100, 'Incomplete physical boundary'
     fit = Path(__file__).resolve().parents[1] / 'postquad_ii4/fit.py'
     with output.with_name(output.name + '.log').open('w') as log:
         result = subprocess.run([sys.executable, str(fit), str(normalized), str(output), str(args.placement)],

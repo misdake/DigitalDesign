@@ -83,12 +83,21 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  wire [9:0] la=l_src==1?{ub,u_off[4:1]}:l_src==3?{cb,cfg_off[1]}:vp[10:1];
  wire [9:0] ra=(work_en||work_we)?{(SP_COMPACT?4'b0110:4'b1000),work_addr}:r_src==1?{ub,u_off[4:1]}:r_src==3?{cb,cfg_off[1]}:vp[10:1];
  
+`ifdef GPU_V2_COMMAND_PORTS
+ wire[35:0]source_rq;
+ assign source_data={source_rq[31:0],lq[31:0]};
+`else
  assign source_data={rq[31:0],lq[31:0]};
+`endif
  wire [9:0] sp_la=source_take?source_addr:la;
  wire [9:0] sp_ra=source_take?source_addr:ra;
  // SDP的工作写地址独立；T普通指令复用target低六位，不改变V跳转语义。
  wire [9:0] work_wa=(SP_COMPACT&&triangle_mode)?{4'b0110,target[5:0]}:ra;
- rs_static_scratchpad #(.COMPACT(SP_COMPACT)) sp(.clk(clk),.reset(reset),.dma_we(dma_we&&dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),
+ rs_static_scratchpad #(.COMPACT(SP_COMPACT)) sp(
+`ifdef GPU_V2_COMMAND_PORTS
+ .source_rq(source_rq),
+`endif
+ .clk(clk),.reset(reset),.dma_we(dma_we&&dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),
  .le(source_take||(step&&l_src!=0)),.re(source_take||(step&&(r_src!=0||work_en))),.work_we((step&&work_we)),.la(sp_la),.ra(sp_ra),.work_wa(work_wa),.work_data(emit_data),.lq(lq),.rq(rq));
  wire [35:0] left=swap?rq:lq;wire [35:0] right=(swap&&!triangle_mode)?lq:rq;
  reg [31:0] origin_x,origin_y,origin_z;reg [4:0] quant_shift;reg normal18;

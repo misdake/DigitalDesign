@@ -107,18 +107,12 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
             ],
         },
         DeviceAllocation {
-            // Read and write channels share one 4-bit channel space, so each
-            // GPU channel number appears once even though channels 0..3 are
-            // read/write pairs.
             name: "gpu",
             device: crate::GPU_DEVICE,
             channels: &[
-                crate::GPU_CMD_BASE_LOW,
-                crate::GPU_CMD_BASE_HIGH,
-                crate::GPU_CMD_WORDS_LOW,
-                crate::GPU_CMD_WORDS_HIGH,
-                crate::GPU_SUBMIT,
-                crate::GPU_CONTROL,
+                crate::GPU_COMMAND_COUNT,
+                crate::GPU_COMMAND_START,
+                crate::GPU_STATUS,
             ],
         },
     ];

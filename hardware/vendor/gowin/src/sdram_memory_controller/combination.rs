@@ -10,8 +10,8 @@ pub fn rtl_sources(init_cycles: u32) -> Result<BTreeMap<PathBuf, String>, String
     rtl_sources_with_early_grant(init_cycles, false)
 }
 
-/// One irrevocable successor slot and native closed-bank preparation. Physical
-/// READ/WRITE chaining remains disabled; final responses stay per transaction.
+/// One irrevocable successor slot. Nonblocking GPU streams may continue native
+/// READ/WRITE commands; every 32/64/128-byte request still retires independently.
 pub fn rtl_sources_with_early_grant(
     init_cycles: u32,
     early_grant: bool,
@@ -70,6 +70,7 @@ pub fn rtl_sources_with_options(
         ]
         .map(str::to_string),
     );
+    let streaming = early_grant && !chained_groups;
     let mut text = format!(
         "module GowinSdramCombination (\n{}\n);\n{}\n{} arbiter (\n{}\n);\n",
         ports.join(",\n"),
@@ -77,8 +78,13 @@ pub fn rtl_sources_with_options(
         CpuV3MemoryArbiter::verilog_identity().module_name(),
         links.join(",\n")
     );
+    let connections = if streaming {
+        include_str!("rtl/stream_connections.vh")
+    } else {
+        include_str!("rtl/combination_connections.vh")
+    };
     text.push_str(
-        &include_str!("rtl/combination_connections.vh")
+        &connections
             .replace("__EARLY_GRANT__", if early_grant { "1'b1" } else { "1'b0" })
             .replace(
                 "__CHAIN_GROUP_FOUR__",
@@ -93,7 +99,12 @@ pub fn rtl_sources_with_options(
     files.insert("combination.v".into(), text);
     files.insert(
         "shared_port.v".into(),
-        RtlSources::SHARED_PORT.replace(
+        (if streaming {
+            include_str!("rtl/stream_sdram.v")
+        } else {
+            RtlSources::SHARED_PORT
+        })
+        .replace(
             "module SharedSdramPort",
             &format!(
                 "module {}",
@@ -103,7 +114,12 @@ pub fn rtl_sources_with_options(
     );
     files.insert(
         "bridge.v".into(),
-        RtlSources::GEARBOX.replace(
+        (if streaming {
+            include_str!("rtl/stream_bridge.v")
+        } else {
+            RtlSources::GEARBOX
+        })
+        .replace(
             ".BANK_BIT(BANK_BIT)",
             &format!(".BANK_BIT(BANK_BIT), .INIT_CYCLES({init_cycles})"),
         ),

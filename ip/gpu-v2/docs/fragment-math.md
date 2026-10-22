@@ -4,8 +4,10 @@
 
 A fragment carries pixel position, S12F10 normal, D16 depth, and either RGB888
 or two periodic UV16 fractions. The quad supplies a final unsigned U5F3 LOD.
-Depth goes to ROP unchanged by shading. Global context supplies Lighting inputs,
-specular RGB and alpha. The two material routes are:
+Depth goes to ROP unchanged by shading. Global context supplies Lighting inputs
+and specular RGB. The command profile's mesh uniform supplies optional RGB
+modulation and the sole alpha. Generic components retain their independent
+alpha input. Before command-profile uniform modulation, the two material routes are:
 
 | Meshlet attribute | Tint | Sample branch |
 | --- | --- | --- |
@@ -85,8 +87,10 @@ there is no general runtime divider.
 
 Shininess codes 0..16 select
 `4,5,6,7,8,10,12,14,16,20,24,28,32,40,48,56,64`.
-The selected SmoothH9Reference-derived path forms h9 directly. A context-prepared
-three-bit shift selects a cosine-distance grid. Each table entry is 9-bit base / 7-bit delta;
+The selected SmoothH9Reference-derived path forms h9 directly. A three-bit shift
+selects a cosine-distance grid. In the drained command profile it is decoded
+from the CP-owned stable shininess code, with no local context copy; independent
+Lighting APIs retain their explicit context preparation. Each table entry is 9-bit base / 7-bit delta;
 544 entries are used in an allocated 1024-entry ROM. Six fraction bits interpolate:
 
 ```text
@@ -137,19 +141,23 @@ and generic exact-normalization Color are distinct arithmetic profiles.
 
 ## Final RGBA
 
-Once the required branches complete, Final combines each channel:
+Once the required branches complete, Final combines each channel. In the command
+profile, RGB uses `(tint,texture)=(uniform RGB,interpolated RGB)` and UV uses
+`(uniform RGB,sampled RGB)`. The driver supplies white for no modulation; the
+same single product implements both modes without preapplying Lighting:
 
 ```text
 p = tint8 * texture8
 t = p + 128
 base = (t + (t >> 8)) >> 8
 color8 = min(255, floor(base*g/256) + floor(specular8*h/256))
-alpha8 = global alpha
+alpha8 = mesh uniform alpha (command profile; driver default255)
 ```
 
 The base step is exact nearest tint×texture/255. The diffuse and specular terms
-truncate separately before addition and saturation. Alpha comes from context,
-not the texture. RGB565 packing, alpha quantization and depth comparison happen
+truncate separately before addition and saturation. In the command profile,
+alpha comes only from the mesh uniform, not the texture or Render state.
+RGB565 packing, alpha quantization and depth comparison happen
 later in [framebuffer](/ip/gpu-v2/docs/framebuffer.md#pixel-update).
 
 The [reference difference table](/ip/gpu-v2/docs/references/README.md) identifies which APIs use

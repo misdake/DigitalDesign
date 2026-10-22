@@ -5,8 +5,11 @@
 The GPU materializes disjoint RGB565 color and unsigned D16 depth planes in
 external memory. Each plane is tile-linear, with 16 × 16 pixels and 512 bytes
 per tile. Generic surface dimensions are width 16..512 and height 16..256, both
-multiples of 16; the selected GPU factory fixes 400 × 240. Plane bases are
-512-byte aligned. Their full allocations must be disjoint and fit actual memory.
+multiples of 16; the selected GPU factory fixes 400 × 240. The command profile
+installs both plane bases at runtime with SET_TARGET; other factories retain
+their elaboration-time surface parameters. Command-profile plane bases are64-KiB
+aligned; generic surface bases are512-byte aligned. Their full allocations must
+be disjoint and fit actual memory.
 
 ```text
 tile = (y>>4)*(width/16) + (x>>4)
@@ -28,6 +31,12 @@ interpolated D16. Depth encodings 0..7 are NEVER, LESS, EQUAL, LESS_EQUAL,
 GREATER, NOT_EQUAL, GREATER_EQUAL, ALWAYS. A covered passing fragment writes
 color and optionally depth. Zero alpha does not disable a passing depth write.
 The depth test occurs here, after shading.
+
+In the command profile, the producer's depth result RAM stores `{alpha8,Z16}`
+in one36-bit BSRAM row. C acceptance requests that row; its synchronous Q is held
+through the paired D acceptance, when ROP consumes both fields. C carries RGB
+only, and its source register has no alpha. This reuses the existing ports and
+calendar without a separate quad-alpha memory or an additional read edge.
 
 With blending enabled, quantize source alpha to `a=floor((alpha8+2)/4)` in0..64.
 Without blending use a=64. Expand destination RGB565 to RGB888, then per channel:

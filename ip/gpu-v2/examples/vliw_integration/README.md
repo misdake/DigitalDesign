@@ -18,6 +18,9 @@ not replace those implemented contracts or define a CPU submission ABI.
 | replay_export.py | Matched box/full-bunny audit of an explicitly supplied export with a prebuilt current MC peer |
 | profile_prepare.py | Observer-only replay separating R-only/I-only/shared publication waits and an exclusive R lifetime partition; other activity counters overlap |
 | profile_triangle_queue.py | Observer-only per-meshlet T queue peak/full waits, last T completion and remaining frontend tail |
+| replay_command.py | Explicit 32-bit DRAM command stream, native state and prefixed meshlet records; shared input RAM, real memory peer and independent pixel audit; replay_export options plus optional --stress |
+| tests/direct_global.py | Bounded paired native GPU runs across drained light/ray/mode/code/far replacements; compare exact shade results and framebuffer bytes under CE pauses and memory backpressure |
+| tests/vliw_command.py | Bounded full GPU/CP test: three culled meshlets, pingpong DMA, 128-byte command-page wrap, native state, CE0, size-aligned local copies, error and abort; portable/native existing input RAM |
 | tests/vliw_triangle_queue.py | Bounded integer-reference T queue fill, wrap, full-queue reset, CE and output-stall checks in portable/native RAM modes |
 | tests/vliw_numeric_ram.py | Independent constant-table checks before/after H writes and reset, including CE hold, in portable/native RAM modes |
 | test_replay_export.py | Small source-identity, peer-isolation and bounded-log regression; includes a tiny Icarus simulation |

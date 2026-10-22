@@ -1,11 +1,10 @@
-//! Retired GPU integration point. New reusable components are developed in
-//! `ip/gpu-v2`; this directory's `sim/` crate is a historical cmodel harness.
-//!
-//! This leaf preserves the system wiring while explicitly rejecting the old
-//! command ABI. It does not execute commands or issue memory requests.
+//! Device4 and the three shared-memory masters of the production GPU.
+//! The Rust circuit emulator has no GPU executor; launching there fails explicitly.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
-use digital_design_hardware::{Hardware, Module, ModuleIo};
+use digital_design_hardware::{
+    BsramBlocks, Hardware, Module, ModuleIo, SsramBits, TargetResourceRequest,
+};
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3GpuInput {
@@ -65,6 +64,16 @@ impl Module for CpuV3Gpu {
 
     const USES_MAIN_CLOCK: bool = true;
 
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // Fixed native layout: the complete leaf owns its explicit DPB/RAM16 cells.
+        let mut memory = TargetResourceRequest::new(BsramBlocks::new(36));
+        memory.component = "GpuNativeMemory";
+        memory
+            .resources
+            .extend(TargetResourceRequest::new(SsramBits::new(257 * 64)).resources);
+        vec![memory]
+    }
+
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
 
     fn execute_emu(
@@ -74,12 +83,15 @@ impl Module for CpuV3Gpu {
         output: &Self::Output,
     ) {
         let selected = sample_wires(&input.device_index, circuit) == 4;
-        let status = sample_wires(&input.device_channel, circuit) == 2;
-        let read_data = if selected && status && input.device_read_enable.get(circuit) != 0 {
-            4 // Legacy GPU_STATUS_SUBMIT_REJECTED.
-        } else {
-            0
-        };
+        if selected
+            && sample_wires(&input.device_channel, circuit) == 1
+            && input.device_write_enable.get(circuit) != 0
+        {
+            panic!(
+                "GPU execution requires the RTL harness; the circuit emulator has no GPU executor"
+            );
+        }
+        let read_data = 0;
         output.drive(
             circuit,
             &CpuV3GpuOutputValue {
@@ -104,7 +116,20 @@ impl Module for CpuV3Gpu {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("gpu.v").to_owned())
+        let mut source = include_str!("gpu.v").to_owned();
+        source.push_str(
+            &gpu_v2::system::vliw_command::verilog(
+                gpu_v2::framebuffer::ports::MaterializedSurface {
+                    color_base_bytes: 0x100000,
+                    depth_base_bytes: 0x140000,
+                    width: 400,
+                    height: 240,
+                },
+                gpu_v2::system::pixel::quad_ingress::rtl::Backend::Native,
+            )
+            .expect("Production GPU export"),
+        );
+        Some(source)
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -124,9 +149,21 @@ fn sample_wires<const W: usize>(wires: &Wires<W>, circuit: &CircuitWires) -> u64
 
 #[cfg(test)]
 mod tests {
+    use digital_design_hardware::Module;
     #[test]
-    #[ignore = "explicit retired GPU status and inactive-memory-port RTL validation"]
-    fn retired_gpu_rejects_legacy_commands_in_verilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<super::CpuV3Gpu>().unwrap();
+    fn production_device_uses_the_command_closure() {
+        digital_design_hardware::VerilogProject::generate::<super::CpuV3Gpu>().unwrap();
+        let source = super::CpuV3Gpu::verilog_source().unwrap();
+        assert!(source.contains("gpu_v2_vliw_command core("));
+        assert!(source.contains("module gpu_command_processor("));
+        let cp = source
+            .split("module gpu_command_processor(")
+            .nth(1)
+            .unwrap()
+            .split("endmodule")
+            .next()
+            .unwrap();
+        assert!(!cp.contains("result_ready"));
+        assert!(!cp.contains("result_offset"));
     }
 }

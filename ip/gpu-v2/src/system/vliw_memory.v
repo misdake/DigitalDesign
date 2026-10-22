@@ -4,7 +4,7 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
  input clk,reset,
  input geometry_request_valid,output geometry_request_ready,
  input[21:0]geometry_request_address,input[1:0]geometry_request_count,
- output geometry_response_valid,geometry_response_last,geometry_response_error,
+ output geometry_response_valid,geometry_response_last,geometry_response_error,geometry_response_bad,
  output[63:0]geometry_response_data,
  input control_request_valid,output control_request_ready,input[21:0]control_request_address,input[1:0]control_request_count,
  output control_response_valid,control_response_last,control_response_error,output[63:0]control_response_data,
@@ -25,10 +25,18 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
  output busy,output reg fault
 );
  localparam IDLE=0,REQUEST=1,ACTIVE=2,LOCAL_ERROR=3;
- reg[1:0]rs,fs;
- reg[1:0]owner,prefer_owner;reg ro_legal,fb_legal,fb_write;
- reg[21:0]ra,fa;reg[1:0]rc;
- reg[4:0]rb,fb;reg ro_bad,fb_bad;
+ reg present;reg[1:0]offer_owner;
+ reg[1:0]rput,rhead;reg[1:0]r_owner[0:1],r_count[0:1];reg r_error[0:1];
+ wire[1:0]rused=rput-rhead;wire[1:0]owner=r_owner[rhead[0]];
+ wire[1:0]rs=present?REQUEST:(rused!=0?ACTIVE:IDLE);
+ reg[1:0]prefer_owner;reg ro_legal;
+ reg[21:0]ra;reg[1:0]rc;
+ reg[4:0]rb;reg ro_bad,fb_bad;
+ // Descriptor credit only. The cache owns address order and the sole BSRAM Q;
+ // no payload or second copy of an address is stored at this boundary.
+ reg[1:0]fused,f_error,fdata_done;reg fb_write;reg[3:0]fbeat;
+ wire fb_legal=legal_byte_sector(framebuffer_request_address);
+ wire fcapacity=fused<2&&(fused==0||framebuffer_request_write==fb_write);
  function legal_byte_sector;
   input[31:0]a;
   begin legal_byte_sector=a[31:23]==0&&a[6:0]==0;end
@@ -62,116 +70,131 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
    end
   endcase
  end
- wire[4:0]ro_beats=rc==3?5'd16:rc==1?5'd8:5'd4;
- wire ro_terminal=ro_response_valid&&(ro_response_last||ro_response_error);
+ wire[4:0]ro_beats=r_count[rhead[0]]==3?5'd16:r_count[rhead[0]]==1?5'd8:5'd4;
+ wire local_ro_error=rused!=0&&r_error[rhead[0]];
+ wire rv=rused!=0&&(local_ro_error||ro_response_valid);
+ wire ro_terminal=local_ro_error||(ro_response_valid&&(ro_response_last||ro_response_error));
  wire ro_malformed=ro_response_valid&&!ro_response_error&&
   (rb>=ro_beats||(ro_response_last!=(rb==ro_beats-1'b1)));
- assign ro_request_valid=rs==REQUEST&&ro_legal&&!reset;
+ assign ro_request_valid=present&&rused<2&&ro_legal&&!reset;
  assign ro_address=ra;assign ro_count=rc;
- assign geometry_request_ready=rs==REQUEST&&owner==0&&(ro_legal?ro_request_ready:1'b1)&&!reset;
- assign texture_request_ready=rs==REQUEST&&owner==1&&(ro_legal?ro_request_ready:1'b1)&&!reset;
- assign geometry_response_valid=!reset&&owner==0&&((rs==ACTIVE&&ro_response_valid)||rs==LOCAL_ERROR);
- assign geometry_response_last=rs==LOCAL_ERROR||(rs==ACTIVE&&ro_response_last);
- assign geometry_response_error=rs==LOCAL_ERROR||(rs==ACTIVE&&ro_response_error);
+ wire offer_ready=present&&rused<2&&(ro_legal?ro_request_ready:1'b1)&&!reset;
+ assign geometry_request_ready=offer_ready&&offer_owner==0;
+ assign texture_request_ready=offer_ready&&offer_owner==1;
+ assign control_request_ready=CONTROL&&offer_ready&&offer_owner==2;
+ assign geometry_response_valid=!reset&&owner==0&&rv;
+ assign geometry_response_last=local_ro_error||ro_response_last;
+ assign geometry_response_error=local_ro_error||ro_response_error;
+ assign geometry_response_bad=geometry_response_valid&&(local_ro_error||ro_response_error||ro_bad||ro_malformed);
  assign geometry_response_data=ro_data;
- assign texture_read_valid=rs==ACTIVE&&owner==1&&ro_response_valid&&!ro_response_error&&rb<16&&!reset;
+ assign texture_read_valid=rused!=0&&owner==1&&ro_response_valid&&!ro_response_error&&rb<16&&!reset;
  assign texture_read_index=rb[3:0];assign texture_read_data=ro_data;
- assign control_request_ready=CONTROL&&rs==REQUEST&&owner==2&&(ro_legal?ro_request_ready:1'b1)&&!reset;
- assign control_response_valid=CONTROL&&!reset&&owner==2&&((rs==ACTIVE&&ro_response_valid)||rs==LOCAL_ERROR);
- assign control_response_last=rs==LOCAL_ERROR||(rs==ACTIVE&&ro_response_last);
- assign control_response_error=rs==LOCAL_ERROR||(rs==ACTIVE&&ro_response_error);
+ assign texture_complete=!reset&&owner==1&&rused!=0&&ro_terminal;
+ assign texture_ok=!local_ro_error&&!ro_response_error&&!ro_bad&&!ro_malformed;
+ assign control_response_valid=CONTROL&&!reset&&owner==2&&rv;
+ assign control_response_last=local_ro_error||ro_response_last;
+ assign control_response_error=local_ro_error||ro_response_error;
  assign control_response_data=ro_data;
- assign texture_complete=!reset&&owner==1&&((rs==ACTIVE&&ro_terminal)||rs==LOCAL_ERROR);
- assign texture_ok=rs==ACTIVE&&!ro_response_error&&!ro_bad&&!ro_malformed;
 
- // The framebuffer cache has one held transaction. Split its mode once here;
- // do not arbitrate it again with the RO source or buffer its payload.
- assign fb_r_request_valid=fs==REQUEST&&fb_legal&&!fb_write&&!reset;
- assign fb_w_request_valid=fs==REQUEST&&fb_legal&&fb_write&&framebuffer_write_valid&&!reset;
- assign fb_r_address=fa;assign fb_w_address=fa;
+ // Consecutive sectors may be accepted before the preceding terminal response.
+ // The maintenance phase holds direction until all its sectors have retired.
+ wire f_source=framebuffer_request_valid&&fcapacity&&!reset;
+ assign fb_r_request_valid=f_source&&fb_legal&&!framebuffer_request_write;
+ assign fb_w_request_valid=f_source&&fb_legal&&framebuffer_request_write&&framebuffer_write_valid;
+ assign fb_r_address=framebuffer_request_address[22:1];assign fb_w_address=framebuffer_request_address[22:1];
  assign fb_r_count=2'd3;assign fb_w_count=2'd3;
  assign fb_w_data=framebuffer_write_data;
- wire f_ready=fb_write?(fb_w_request_ready&&framebuffer_write_valid):fb_r_request_ready;
- assign framebuffer_request_ready=fs==REQUEST&&(fb_legal?f_ready:1'b1)&&!reset;
+ wire f_ready=framebuffer_request_write?(fb_w_request_ready&&framebuffer_write_valid):fb_r_request_ready;
+ assign framebuffer_request_ready=fcapacity&&(fb_legal?f_ready:1'b1)&&!reset;
+ wire f_accept=framebuffer_request_valid&&framebuffer_request_ready;
+ wire local_fb_error=fused!=0&&f_error[0];
  wire fv=fb_write?fb_w_response_valid:fb_r_response_valid;
  wire fl=fb_write?fb_w_response_last:fb_r_response_last;
  wire fe=fb_write?fb_w_response_error:fb_r_response_error;
- wire f_terminal=fv&&(fl||fe);
- wire wbeat=fs==ACTIVE&&fb_write&&fb_w_data_ready&&fb<16&&!reset;
- wire rbeat=fs==ACTIVE&&!fb_write&&fv&&!fe&&fb<16&&!reset;
- wire[5:0]f_total={1'b0,fb}+{5'd0,wbeat}+{5'd0,rbeat};
- wire f_malformed=(!fb_write&&fv&&!fe&&(fb>=16||(fl!=(fb==15))))||
-  (fb_write&&((wbeat&&!framebuffer_write_valid)||(fv&&!fe&&!fl)));
+ wire f_terminal=local_fb_error||(fused!=0&&fv&&(fl||fe));
+ wire wbeat=fused!=0&&!local_fb_error&&fb_write&&fb_w_data_ready&&!reset;
+ wire rbeat=fused!=0&&!local_fb_error&&!fb_write&&fv&&!fe&&!reset;
+ wire f_malformed=(!fb_write&&fv&&!fe&&(fl!=(fbeat==15)))||
+  (fb_write&&((wbeat&&!framebuffer_write_valid)||(fv&&!fe&&(!fl||(fdata_done==0&&!(wbeat&&fbeat==15))))));
  assign framebuffer_write_ready=wbeat;
  assign framebuffer_read_valid=rbeat;
  assign framebuffer_read_data=fb_r_data;
- assign framebuffer_complete=!reset&&((fs==ACTIVE&&f_terminal)||fs==LOCAL_ERROR);
- assign framebuffer_ok=fs==ACTIVE&&!fe&&!fb_bad&&!f_malformed&&f_total==16;
- assign busy=rs!=IDLE||fs!=IDLE;
+ assign framebuffer_complete=!reset&&f_terminal;
+ assign framebuffer_ok=!local_fb_error&&!fe&&!fb_bad&&!f_malformed;
+ assign busy=present||rused!=0||fused!=0;
  always @(posedge clk)begin
   if(reset)begin
-   rs<=IDLE;fs<=IDLE;owner<=0;prefer_owner<=0;ro_legal<=0;fb_legal<=0;fb_write<=0;
-   ra<=0;fa<=0;rc<=0;rb<=0;fb<=0;ro_bad<=0;fb_bad<=0;fault<=0;
+   present<=0;rput<=0;rhead<=0;offer_owner<=0;prefer_owner<=0;ro_legal<=0;
+   ra<=0;rc<=0;rb<=0;ro_bad<=0;fb_bad<=0;fault<=0;
+   fused<=0;fdata_done<=0;fbeat<=0;fb_write<=0;f_error<=0;
   end else begin
-   case(rs)
-    IDLE:if(geometry_request_valid||texture_request_valid||(CONTROL&&control_request_valid))begin
-     rs<=REQUEST;owner<=choose_owner;rb<=0;ro_bad<=0;
-     case(choose_owner)
-      1:begin ra<=texture_request_address[22:1];rc<=3;ro_legal<=legal_byte_sector(texture_request_address);end
-      2:begin ra<=control_request_address;rc<=control_request_count;ro_legal<=legal_halfword_burst(control_request_address,control_request_count);end
-      default:begin ra<=geometry_request_address;rc<=geometry_request_count;ro_legal<=legal_halfword_burst(geometry_request_address,geometry_request_count);end
-     endcase
+   if(!present&&rused<2&&(geometry_request_valid||texture_request_valid||(CONTROL&&control_request_valid)))begin
+    present<=1;offer_owner<=choose_owner;
+    case(choose_owner)
+     1:begin ra<=texture_request_address[22:1];rc<=3;ro_legal<=legal_byte_sector(texture_request_address);end
+     2:begin ra<=control_request_address;rc<=control_request_count;ro_legal<=legal_halfword_burst(control_request_address,control_request_count);end
+     default:begin ra<=geometry_request_address;rc<=geometry_request_count;ro_legal<=legal_halfword_burst(geometry_request_address,geometry_request_count);end
+    endcase
+   end
+   if(offer_ready)begin
+    present<=0;r_owner[rput[0]]<=offer_owner;r_count[rput[0]]<=rc;r_error[rput[0]]<=!ro_legal;rput<=rput+1'b1;
+    if(CONTROL)prefer_owner<=offer_owner==2?2'd0:offer_owner+1'b1;
+    else prefer_owner<=offer_owner==0?2'd1:2'd0;
+    if(!ro_legal)fault<=1;
+   end
+   if(rused!=0&&rv)begin
+    if(ro_malformed||ro_response_error)begin fault<=1;ro_bad<=1;end
+    if(ro_terminal)begin rhead<=rhead+1'b1;rb<=0;ro_bad<=0;end
+    else if(rb!=31)rb<=rb+1'b1;
+   end
+   if(f_accept)begin
+    if(fused==0)fb_write<=framebuffer_request_write;
+    if(!fb_legal)fault<=1;
+   end
+   case({f_accept,f_terminal})
+    2'b10:begin
+     fused<=fused+1'b1;
+     if(fused==0)f_error[0]<=!fb_legal;else f_error[1]<=!fb_legal;
     end
-    REQUEST:if(geometry_request_ready||texture_request_ready||control_request_ready)begin
-     rs<=ro_legal?ACTIVE:LOCAL_ERROR;
-     if(CONTROL)prefer_owner<=owner==2?2'd0:owner+1'b1;
-     else prefer_owner<=owner==0?2'd1:2'd0;
-     if(!ro_legal)fault<=1;
+    2'b01:begin fused<=fused-1'b1;f_error[0]<=f_error[1];end
+    2'b11:begin
+     if(fused==1)f_error[0]<=!fb_legal;
+     else begin f_error[0]<=f_error[1];f_error[1]<=!fb_legal;end
     end
-    ACTIVE:if(ro_response_valid)begin
-     if(ro_malformed||ro_response_error)fault<=1;
-     if(ro_malformed)ro_bad<=1;
-     if(rb!=31)rb<=rb+1'b1;
-     if(ro_terminal)rs<=IDLE;
-    end
-    LOCAL_ERROR:rs<=IDLE;
    endcase
-   case(fs)
-    IDLE:if(framebuffer_request_valid)begin
-     fs<=REQUEST;fa<=framebuffer_request_address[22:1];fb_write<=framebuffer_request_write;
-     fb_legal<=legal_byte_sector(framebuffer_request_address);fb<=0;fb_bad<=0;
-    end
-    REQUEST:if(framebuffer_request_ready)begin
-     fs<=fb_legal?ACTIVE:LOCAL_ERROR;if(!fb_legal)fault<=1;
-    end
-    ACTIVE:begin
-     if(wbeat||rbeat)fb<=fb+1'b1;
-     if(f_malformed)begin fb_bad<=1;fault<=1;end
-     if(fv&&fe)fault<=1;
-     if(f_terminal)begin fs<=IDLE;if(f_total!=16&&!fe)fault<=1;end
-    end
-    LOCAL_ERROR:fs<=IDLE;
+   if(wbeat||rbeat)fbeat<=fbeat+1'b1;
+   case({wbeat&&fbeat==15,f_terminal&&fb_write&&!local_fb_error})
+    2'b10:fdata_done<=fdata_done+1'b1;
+    2'b01:fdata_done<=fdata_done-1'b1;
    endcase
-   if(ro_response_valid&&rs!=ACTIVE)fault<=1;
-   if((fb_r_response_valid&&(fs!=ACTIVE||fb_write))||
-      (fb_w_response_valid&&(fs!=ACTIVE||!fb_write)))fault<=1;
+   if(fused!=0&&f_malformed)begin fault<=1;fb_bad<=1;end
+   if(fused!=0&&fv&&fe)fault<=1;
+   if(f_terminal)begin
+    fb_bad<=0;
+    if(local_fb_error)fbeat<=0;
+    // Completion never resets the payload cursor; the following write
+    // sector may already be supplying data from the same maintenance phase.
+   end
+   if(ro_response_valid&&rused==0)fault<=1;
+   if((fb_r_response_valid&&(fused==0||fb_write))||
+      (fb_w_response_valid&&(fused==0||!fb_write)))fault<=1;
   end
  end
 `ifndef SYNTHESIS
  always @(posedge clk)if(!reset)begin
-  if(rs==REQUEST)begin
-   if(owner==1)begin
+  if(present)begin
+   if(offer_owner==1)begin
     if(!texture_request_valid||texture_request_address[22:1]!=ra||
        legal_byte_sector(texture_request_address)!=ro_legal)$fatal(1,"texture presented request changed");
-   end else if(owner==2)begin
+   end else if(offer_owner==2)begin
     if(!control_request_valid||control_request_address!=ra||control_request_count!=rc)
      $fatal(1,"control presented request changed");
    end else if(!geometry_request_valid||geometry_request_address!=ra||geometry_request_count!=rc)
     $fatal(1,"geometry presented request changed");
   end
-  if(fs==REQUEST&&(!framebuffer_request_valid||framebuffer_request_address[22:1]!=fa||
-    framebuffer_request_write!=fb_write||legal_byte_sector(framebuffer_request_address)!=fb_legal))
-   $fatal(1,"framebuffer presented request changed");
+  if(fused>2)$fatal(1,"framebuffer descriptor overflow");
+  if(fused!=0&&framebuffer_request_valid&&framebuffer_request_write!=fb_write&&framebuffer_request_ready)
+   $fatal(1,"framebuffer direction changed before drain");
  end
 `endif
 endmodule

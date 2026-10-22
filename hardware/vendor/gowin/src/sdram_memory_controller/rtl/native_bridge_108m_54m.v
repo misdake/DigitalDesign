@@ -284,7 +284,7 @@ module TangNano20KSdramNativeBridge108M54M #(
                     (PREPARE_NEXT && !CHAIN_GROUP_FOUR && next_valid_108)),
         .next_address(group_active ? group_next_address : next_address_108),
         .chain_accept(core_chain_accept), .read_chain_accept(core_read_chain_accept),
-        .read_boundary(group_active && core_read_valid && read_word_108 == 31), .read_chain_pending(),
+        .next_generation(1'b0), .read_boundary(group_active && core_read_valid && read_word_108 == 31), .read_chain_pending(),
         .ready(core_ready), .done(core_done),
         .write_data(core_write_data), .write_mask(CHAIN_GROUP_FOUR ? mask_108 : mask_54),
         .write_index(core_write_index), .read_data(core_read_data),

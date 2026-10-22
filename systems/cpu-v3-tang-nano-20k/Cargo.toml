@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+gpu-v2 = { path = "../../ip/gpu-v2" }
 cpu-v3 = { path = "../../ip/cpu-v3" }
 rcc = { path = "../../compiler/rcc" }
 digital-design-ip-common = { path = "../../ip/common" }

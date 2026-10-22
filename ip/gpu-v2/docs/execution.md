@@ -546,6 +546,30 @@ Color result FIFO; independent generic Color APIs retain their output credits.
 
 ## Pause, fault and reset
 
+The command profile has one live Lighting context. Its production closure omits
+draw-bank fields, bank selection and local copies of raw global parameters.
+CP FFs own light/ray vectors, intensities, mode/code/epoch and far through the
+whole render. Preparation and I borrow far directly. Lighting reads those same
+stable global wires and derives its small power-grid selection from the stable
+code; it has no configured/loaded-valid flag or context-install transaction.
+Reset initializes the one-hot arithmetic calendar, which then advances on the
+original compute CE. The quad reader requests X/normal and then Y; the Y return
+feeds L_PIXEL directly, without the former context-only wait state. The four-edge
+arithmetic initiation interval and every pixel valid/identity remain unchanged.
+Global replacement still requires full render drain before CP writes any field.
+Mesh uniform RGBA is separate from that live context: it follows retained V/T
+attribute epochs, prepares beside the next triangle and switches with the active
+I context. Quad allocation copies RGB into a24-bit distributed-RAM issue view.
+The depth-event write stores alpha beside D16 in the existing depth BSRAM; the
+paired late read delivers both directly to ROP. Final and ROP therefore read
+their own owners without a shared-port arbiter or whole-GPU wait between mesh colors.
+
+The command factory removes diagnostic feedback from the independently checked
+components below. Its simulation monitors never control CE, writes, ready or
+state transitions; synthesis removes only the monitors. Normal backpressure
+and explicit abort remain functional. See
+[command diagnostics](/ip/gpu-v2/docs/commands.md#diagnostics-cancellation-and-scope).
+
 | State | Compute CE0 | Fault/abort |
 | --- | --- | --- |
 | Scheduled arithmetic, phases, tokens and owned Q | Hold together | Stop new computation; suppress invalid result writes |

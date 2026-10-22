@@ -14,7 +14,7 @@ def normal_word(words, normal18, math):
     return sum((math.normal12_from18(v) & 4095) << (12*i) for i,v in enumerate(values))
 
 
-def adapt_oracle(oracle):
+def adapt_oracle(oracle, *, mesh_uniform_color=False):
     original = oracle.prepare
     def prepare(instance, out):
         meta, packets = original(instance, out)
@@ -30,6 +30,14 @@ def adapt_oracle(oracle):
             assert len(old) == 19
             packet['words'] = tuple(old[:10]) + tuple(v for i in range(10,19,3)
                 for v in (normal_word(old[i:i+2],mode,oracle.M),old[i+2]))
+            if mesh_uniform_color:
+                rgba = instance.get('mesh_uniform_color', [255, 255, 255, 255])
+                assert len(rgba) == 4 and all(0 <= v <= 255 for v in rgba)
+                color = int.from_bytes(bytes(rgba), 'little')
+                words = list(packet['words'])
+                words[10] |= (color & ((1 << 18)-1)) << 36
+                words[11] |= (color >> 18) << 36
+                packet['words'] = tuple(words)
         (out/'words.hex').write_text(''.join(f'{v:014x}\n' for p in packets for v in p['words']) or '0\n')
         return meta, packets
     oracle.prepare = prepare
