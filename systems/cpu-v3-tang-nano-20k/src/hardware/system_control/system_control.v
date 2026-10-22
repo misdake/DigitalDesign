@@ -6,14 +6,14 @@ module {{ module_name }} (
     input wire device_read_enable,
     input wire device_write_enable,
     input wire [15:0] device_write_data,
-    input wire dcache_maintenance_busy,
+    input wire dcache_maintenance_ready,
     input wire dcache_maintenance_done,
     input wire dcache_maintenance_error,
     input wire [15:0] watch_read_data,
     output reg [15:0] device_read_data,
     output reg icache_invalidate = 0,
-    output reg dcache_invalidate = 0,
-    output reg dcache_clean = 0,
+    output wire dcache_invalidate,
+    output wire dcache_clean,
     // This hold is deliberately CPU-local. Cache write-back traffic and all
     // non-CPU clients of the shared SDRAM continue to run during maintenance.
     output reg cpu_hold = 0,
@@ -34,6 +34,10 @@ reg [3:0] uart_bit = 0;
 reg [15:0] uart_divider = 0;
 reg [15:0] cache_maintenance_status = 0;
 reg [1:0] pending_dcache_maintenance = 0;
+// Pending owns the request until the cache's actual acceptance edge. After
+// acceptance cpu_hold with pending==0 owns precisely the subsequent done/error.
+assign dcache_invalidate = pending_dcache_maintenance == 1;
+assign dcache_clean = pending_dcache_maintenance == 2;
 reg watch_active = 0;
 reg [2:0] watch_index = 0;
 reg [3:0] watch_channel = 0;
@@ -57,8 +61,6 @@ end
 always @(posedge clk) begin
     if (reset) begin
         icache_invalidate <= 0;
-        dcache_invalidate <= 0;
-        dcache_clean <= 0;
         cpu_hold <= 0;
         watch_active <= 0;
         watch_index <= 0;
@@ -73,16 +75,10 @@ always @(posedge clk) begin
         uart_divider <= 0;
     end else begin
         icache_invalidate <= 0;
-        dcache_invalidate <= 0;
-        dcache_clean <= 0;
-        if (cpu_hold && !watch_active && pending_dcache_maintenance != 0 &&
-            !dcache_maintenance_busy) begin
-            dcache_invalidate <= pending_dcache_maintenance == 1;
-            dcache_clean <= pending_dcache_maintenance == 2;
+        if (pending_dcache_maintenance != 0 && dcache_maintenance_ready)
             pending_dcache_maintenance <= 0;
-        end
-        // Ignore a completion from the operation that just released the
-        // D-cache while a deferred command is being emitted.
+        // A completion on the accepting edge still belongs to the previous
+        // cache owner. Fast clean can complete without ever asserting busy.
         if (cpu_hold && !watch_active && pending_dcache_maintenance == 0 &&
             dcache_maintenance_done) begin
             cpu_hold <= 0;
@@ -109,10 +105,7 @@ always @(posedge clk) begin
                 0: icache_invalidate <= 1;
                 1: if (!cpu_hold) begin
                     cpu_hold <= 1;
-                    if (dcache_maintenance_busy)
-                        pending_dcache_maintenance <= 1;
-                    else
-                        dcache_invalidate <= 1;
+                    pending_dcache_maintenance <= 1;
                 end
                 2: leds <= device_write_data[5:0];
                 3: if (!uart_busy) begin
@@ -123,10 +116,7 @@ always @(posedge clk) begin
                 end
                 4: if (!cpu_hold) begin
                     cpu_hold <= 1;
-                    if (dcache_maintenance_busy)
-                        pending_dcache_maintenance <= 2;
-                    else
-                        dcache_clean <= 1;
+                    pending_dcache_maintenance <= 2;
                 end
                 6: begin
                     watch_index <= device_write_data[2:0];

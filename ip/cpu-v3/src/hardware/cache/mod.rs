@@ -966,6 +966,7 @@ pub struct CpuV3DataCacheOutput {
     pub memory_address: Wires<22>,
     pub memory_write_data: Wires<64>,
     pub memory_response_ready: Wire,
+    pub maintenance_ready: Wire,
     pub maintenance_busy: Wire,
     pub maintenance_done: Wire,
     pub maintenance_error: Wire,
@@ -1495,6 +1496,10 @@ impl Module for CpuV3DataCache {
                     state.phase,
                     DataMemoryPhase::ReadReceive | DataMemoryPhase::WriteResponse
                 ),
+                maintenance_ready: state.phase == DataMemoryPhase::Idle
+                    && !state.response_valid
+                    && !state.maintenance_active
+                    && !state.sweep_active,
                 maintenance_busy: state.maintenance_active,
                 maintenance_done: state.maintenance_done,
                 maintenance_error: state.maintenance_error,
@@ -1521,12 +1526,11 @@ impl Module for CpuV3DataCache {
         // Acceptance is decided from pre-edge ownership and sweep state.
         // Clearing response-valid or finishing scrub on this edge must not
         // consume a held CPU request until ready was actually asserted.
-        let command_ready = state.phase == DataMemoryPhase::Idle
+        let maintenance_ready = state.phase == DataMemoryPhase::Idle
             && !state.response_valid
             && !state.maintenance_active
-            && !state.sweep_active
-            && !input.clean_all
-            && !input.invalidate_all;
+            && !state.sweep_active;
+        let command_ready = maintenance_ready && !input.clean_all && !input.invalidate_all;
         let accept_cpu = command_ready
             && !input.line_copy_start
             && !input.line_clean_start
@@ -1556,11 +1560,7 @@ impl Module for CpuV3DataCache {
             }
         }
 
-        if state.phase == DataMemoryPhase::Idle
-            && !state.response_valid
-            && !state.maintenance_active
-            && (input.clean_all || input.invalidate_all)
-        {
+        if maintenance_ready && (input.clean_all || input.invalidate_all) {
             state.maintenance_active = true;
             state.maintenance_error = false;
             state.maintenance_invalidate = input.invalidate_all;

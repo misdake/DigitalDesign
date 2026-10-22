@@ -205,13 +205,37 @@ the software read and arm is therefore detected by the first probe rather than l
 GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and watch holds have
 independent state so neither completion source can release the other.
 
-On this baseline, software must drain older CPU stores before issuing a global
-D-cache maintenance command. The system-control busy input covers cache
-maintenance, while the cache accepts the global pulse only when idle with no
-unconsumed response. A pulse during an ordinary store miss can therefore be
-lost after CPU hold has already blocked the old store response. The selected
-[diagnostic](system-display-test.md) supplies an explicit in-function
-`DCLEANL`/`DWAIT` boundary; the general maintenance interface is not repaired.
+Global D-cache maintenance is ordered in hardware. The core retains the
+channel-1/channel-4 `DEVSEND` in Execute until older asynchronous stores and
+FST tails have drained; their requests and responses continue progressing.
+Ordinary FPU work finishes before later instructions execute. The maintenance
+device write then retires, and SystemControl holds subsequent CPU execution.
+The cache, arbiter and memory remain clocked. No software pre-drain sequence
+or instruction adjacency is required.
+
+SystemControl retains one clean/invalidate command until D-cache
+`maintenance_ready` acknowledges acceptance. Ready includes ordinary miss,
+held-response and metadata-sweep ownership; `maintenance_busy` describes an
+already accepted operation and is not a ready signal. After acceptance only
+that command's subsequent completion releases the maintenance hold and records
+status (zero on success, `0x8000` on failure). A completion from an earlier
+cache command on the acceptance edge is ignored. The cache's sweep hold still
+prevents CPU restart during error cleanup. Reset cancels pending maintenance;
+repeated writes while held do not overwrite its command.
+
+```mermaid
+flowchart LR
+  Request[CPU reaches maintenance DEVSEND] --> Drain[Stop later instructions; drain old CPU stores and FST]
+  Drain -->|device write retires| Pending[Hold CPU; retain cache command]
+  Pending -->|valid and maintenance_ready| Accepted[Wait for this command]
+  Accepted -->|done and error status captured| Resume[Release maintenance hold]
+```
+
+The first boundary belongs to the CPU; cache acceptance and completion are
+separate edges. Other masters keep running through every phase. The
+[diagnostic](/systems/cpu-v3-tang-nano-20k/docs/system-display-test.md) retains a
+conservative explicit drain, but it is not the general interface's correctness
+condition.
 
 Device indices 1 and 2 are unassigned in this system; the former selection and
 programmable DMA register banks are absent. The selected application is the
@@ -325,35 +349,28 @@ retains its own system-control UART reporting after successful release.
 
 ## Current fitted result and validation boundary
 
-The CB06 loader, Display cold gate and existing CPU/cache/SDRAM composition
-use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C. The matched
-divider builds use identical CST/SDC and options, with runtime CPU/controller/
-pixel clocks unchanged at 54/108/33.3 MHz. The GPU remains an inactive shell.
+The CB06 loader, Display cold gate and ordered CPU/cache maintenance use
+Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C. The default
+SPI divider is 2, with CPU/controller/pixel clocks at 54/108/33.3 MHz.
+The GPU remains an inactive shell.
 
-| Complete-system offline candidate | SPI divider 2 | SPI divider 1 |
-| --- | ---: | ---: |
-| Nominal active SCK | 13.5 MHz | 27 MHz |
-| Logic | 6,878 | 7,011 |
-| Total register / logic FF / I/O FF | 2,734 / 2,651 / 83 | 2,739 / 2,656 / 83 |
-| RAM16 / BSRAM / MULT36X36 | 12 / 10 / 1 | 12 / 10 / 1 |
-| CLS | 4,397 | 4,487 |
-| CPU / controller / pixel Fmax | 64.336 / 129.440 / 129.356 MHz | 63.643 / 120.065 / 123.375 MHz |
-| Overall setup / hold violated endpoints | 57 / 0 | 59 / 0 |
+| Complete-system offline fit | Default SPI divider 2 |
+| --- | ---: |
+| Nominal active SCK | 13.5 MHz |
+| Logic | 6,899 |
+| Total register / logic FF / I/O FF | 2,732 / 2,650 / 82 |
+| RAM16 / BSRAM / MULT36X36 | 12 / 10 / 1 |
+| CLS | 4,384 |
+| CPU / controller / pixel Fmax | 55.247 / 119.114 / 116.439 MHz |
+| Overall setup / hold violated endpoints | 63 / 0 |
 
-Both builds produce bitstreams, but strict timing audit fails. Violating paths
-include external SDRAM DQM/DQ outputs and the controller-falling to CPU-rising
+This build produces a bitstream, but strict timing audit fails. Violating paths
+include external SDRAM DQM/DQ outputs and controller-falling to CPU-rising
 read-toggle/bridge response paths. Same-clock Fmax does not establish global
 timing closure. No constraints, waiver or suppression were added; no successful
-build manifest is asserted.
-
-The divider change adds no buffer, RAM or new clock domain. The whole-build
-difference is 133 Logic and five registers; this does not establish an intrinsic
-area cost of faster SPI. The reader itself changes from 217 to 213 LUT with
-120 registers in both synthesis reports. Unchanged CPU/cache/Display/controller
-modules also map differently; the extra five registers are in the controller.
-The precise synthesis cause has not been isolated. The default remains divider 2;
-divider 1 is an optional offline candidate pending physical qualification.
-These images do not establish a new board result or full GPU integration.
+strict build manifest or new board result is asserted. The optional SPI divider
+1 has not been requalified against this maintenance implementation. This fit
+does not represent a complete independent GPU composition.
 
 ## Earlier storage and product-issuer checkpoint
 

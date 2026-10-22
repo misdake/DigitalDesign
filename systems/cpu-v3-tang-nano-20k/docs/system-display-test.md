@@ -17,14 +17,13 @@ selected physical page. `DWAIT` completes each copy before scratch reuse.
 LCOPY preserves source dirty state; blocking clean-plus-invalidate subsequently
 completes scratch writeback and removes CPU read aliases.
 
-Before each global maintenance command, the diagnostic issues `DCLEANL` for
-scratch line `0x4000` and completes it with `DWAIT`. `DCLEANL` admission waits
-for older CPU stores to drain, including the helper's stack save. This baseline's
-system-control pulse requires an idle cache: `maintenance_busy` alone does not
-describe an ordinary store miss or an unconsumed response. This application
-supplies that precondition; it does not repair the general maintenance interface.
-The final instruction audit permits no load, store, call or FPU operation
-between this drain and the global command.
+Before each global maintenance command, the diagnostic retains an explicit
+`DCLEANL`/`DWAIT` for scratch line `0x4000`, including the helper's stack save.
+This is a conservative application sequence. The general interface itself
+orders the maintenance `DEVSEND` after old asynchronous stores/FST tails and
+uses a retained cache request with explicit acceptance and completion; the
+application's pre-drain is not required for correctness. Its final instruction
+audit still preserves this conservative sequence.
 
 Color A begins at `0x200000` (physical page 128), B at `0x218000` (page 134).
 Each surface initializes exactly 375 tile-linear 16x16 tiles, 96,000 words;

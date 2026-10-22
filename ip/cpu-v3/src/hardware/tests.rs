@@ -127,7 +127,7 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
 
     // A nonzero SIGNAL retires as a NOP and records the event.
     state.instruction = cpu_v3::signal(5, 1);
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert_eq!(state.retired_words, 1);
     assert_eq!(
@@ -145,13 +145,13 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
     // A fresh nonzero SIGNAL re-arms the event; the next executed
     // instruction ends the single-cycle window.
     state.instruction = cpu_v3::signal(5, 15);
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(
         state.signal_event().map(|event| event.signal_type),
         Some(15)
     );
     state.instruction = 0x0322; // ADD r3, r2, r2 (any ordinary instruction)
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.signal_event(), None);
 
     // Type 0 halts and latches the selected register, exactly like the
@@ -159,7 +159,7 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
     let mut state = CpuV3CoreState::default();
     state.registers[7] = 0x1234;
     state.instruction = cpu_v3::signal(7, 0);
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::Halted);
     assert_eq!(state.halt_signal, 0x1234);
     assert_eq!(state.retired_words, 1);
@@ -173,7 +173,7 @@ fn emulator_async_store_overlaps_alu_and_blocks_next_memory_operation() {
     state.registers[2] = 10;
 
     state.instruction = 0x9210; // STORE r2, [r1]
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert!(state.async_store.valid);
     assert!(!state.async_store.issued);
@@ -181,14 +181,14 @@ fn emulator_async_store_overlaps_alu_and_blocks_next_memory_operation() {
     assert_eq!(state.async_store.write_data, 10);
 
     state.instruction = 0x0322; // ADD r3, r2, r2
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert!(state.async_store.valid);
     assert!(state.gpr_write_enable);
     assert_eq!(state.gpr_write_data, 20);
 
     state.instruction = 0x8010; // LOAD r0, [r1]
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::AsyncStoreWait);
     assert!(!state.pending_data.write);
     assert_eq!(state.pending_data.address, 0x0100);
@@ -200,24 +200,24 @@ fn emulator_line_copy_waits_for_prior_stores_and_cache_acceptance() {
     state.phase = Phase::Execute;
     state.registers[4] = 3;
     state.instruction = cpu_v3::write_data_segment(4);
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     state.phase = Phase::Execute;
     state.retired_words = 0;
     state.registers[1] = 0x0120;
     state.registers[2] = 5;
     state.instruction = cpu_v3::line_copy(1, 2);
 
-    state.execute(0, false, false);
+    state.execute(0, false, false, false);
     assert_eq!(state.phase, Phase::Execute);
     assert_eq!(state.retired_words, 0);
 
     state.async_store.valid = true;
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::Execute);
     assert_eq!(state.retired_words, 0);
 
     state.async_store.valid = false;
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert_eq!(state.retired_words, 1);
 }
@@ -1453,3 +1453,73 @@ fn verify_fpu_mul_pipe_with_iverilog() {
 
 #[path = "shared_wide_study.rs"]
 mod shared_wide_study;
+
+#[test]
+#[ignore = "bounded reserved cache-control encoding emulator/RTL comparison"]
+fn core_emu_matches_rtl_reserved_cache_encodings() {
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    for word in (0..16)
+        .map(|n| 0x6e70 | n)
+        .chain((1..16).map(|n| 0x6e80 | n))
+    {
+        assert_eq!(cpu_v3::decode(word), cpu_v3::Instruction::Invalid { word });
+        let program = [word, cpu_v3::halt()];
+        let emu = run_core_emu_trace(&program, 200);
+        let rtl = run_core_rtl_trace(&build_core_cosim_tb(&program, &module_name, 200));
+        assert_eq!(emu.len(), rtl.len(), "encoding {word:04x} trace length");
+        for (e, r) in emu.iter().zip(&rtl) {
+            assert!(
+                r.equal_core(e),
+                "encoding {word:04x}: expected {e:?}, got {r:?}"
+            );
+        }
+        let end = rtl.last().unwrap();
+        assert!(end.fault && !end.halted, "encoding {word:04x} must fault");
+        assert_eq!(end.fault_code, CPU_V3_FAULT_INVALID_INSTRUCTION);
+        assert_eq!(end.fault_pc, 0);
+        assert_eq!(end.retired_words, 0);
+    }
+}
+
+#[test]
+#[ignore = "bounded FST maintenance barrier and prefix emulator/RTL comparison"]
+fn core_emu_matches_rtl_maintenance_barrier_prefix() {
+    let mut p = cpu_v3::load_immediate16(1, 0x4000).to_vec();
+    for lane in 0..4 {
+        for subop in [2, 3] {
+            p.extend(cpu_v3::fpu_aux_raw(
+                cpu_v3::FpuAuxKind::IntegerRegister,
+                0,
+                0,
+                lane,
+                subop,
+                0,
+            ));
+        }
+    }
+    p.extend(cpu_v3::fpu_aux_raw(
+        cpu_v3::FpuAuxKind::IntegerRegister,
+        1,
+        0,
+        0,
+        1,
+        3,
+    ));
+    p.push(0xf123); // Unused prefix expires while the maintenance write waits.
+    p.push(cpu_v3::device_send(0, 0, 4));
+    p.push(cpu_v3::halt());
+    let emu = run_core_emu_trace(&p, 2000);
+    let rtl = run_core_rtl_trace(&build_core_cosim_tb(
+        &p,
+        &CpuV3Core::verilog_identity().module_name(),
+        2000,
+    ));
+    assert_eq!(emu.len(), rtl.len());
+    for (e, r) in emu.iter().zip(&rtl) {
+        assert!(
+            r.equal_core(e),
+            "maintenance prefix: expected {e:?}, got {r:?}"
+        );
+    }
+    assert!(rtl.last().unwrap().halted);
+}

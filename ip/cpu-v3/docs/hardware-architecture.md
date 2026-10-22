@@ -240,6 +240,29 @@ bulk DSEG write still establishes four consecutive pages atomically; individual
 page writes support a fixed three-page application arena plus a remappable
 fourth window without widening program pointers.
 
+Device-0 channel-1/channel-4 `DEVSEND` is a full-maintenance ordering
+boundary. Execute retains the instruction while older asynchronous stores,
+early-release FST halfwords remain. Ordinary FPU arithmetic and AUX register
+writes have already completed before their instructions retire; they need no
+second busy check at this boundary. The remaining FST count and asynchronous
+store slot together cover the sole early-release FPU path. New instruction acceptance is
+blocked, while old request issue, response/error consumption and FST refill
+continue under the existing clock. Only after that core-owned work drains does
+the device write retire and SystemControl assert CPU hold. Other device writes
+retain their existing schedule. An older store fault wins before this write.
+
+D-cache `maintenance_ready` means Idle with no held CPU response, active
+maintenance or metadata sweep. A clean/invalidate request is retained until
+`valid && maintenance_ready`; ordinary accesses cannot be accepted on that
+edge. SystemControl then waits for the accepted command's `done/error`, ignoring
+an earlier owner's completion on the acceptance edge. An empty clean may
+complete without a visible busy interval. Reset cancels pending control and
+restarts the cache metadata sweep. Neither the arbiter nor memory clock is held.
+
+The extended cache-control selector 7 is reserved. `DWAIT` requires selector 8
+and a zero low nibble; reserved variants fault as invalid instructions without
+retirement. Canonical `DCLEANL` and `DWAIT` keep their existing scheduling.
+
 `LCOPY` reuses the same lookup/refill and four-beat write-back path. The core
 waits for older buffered stores and command acceptance, then retires the
 instruction; only later D-cache users wait while the copy remains active, so

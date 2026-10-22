@@ -29,6 +29,7 @@ module CpuV3DataCache (
     output wire [21:0] memory_address,
     output wire [63:0] memory_write_data,
     output wire memory_response_ready,
+    output wire maintenance_ready,
     output wire maintenance_busy,
     output reg maintenance_done = 0,
     output reg maintenance_error = 0,
@@ -214,10 +215,12 @@ __CACHE_METADATA__ u_metadata(.clk(clk),.read_set(tag_read_set),
 // negative terms; the core never issues a normal access for the same
 // instruction, and removing those redundant terms keeps maintenance decode
 // off the cache-state clock-enable path.
-assign cpu_request_ready = state == ST_IDLE && !response_valid &&
-    !maintenance_active && !clean_all && !invalidate_all && !sweep_active;
-assign line_copy_ready = state == ST_IDLE && !response_valid &&
-    !maintenance_active && !clean_all && !invalidate_all && !sweep_active;
+// Ready acknowledges command acceptance, including held response and scrub.
+// Busy describes an already accepted maintenance and is not an admission test.
+assign maintenance_ready = state == ST_IDLE && !response_valid &&
+    !maintenance_active && !sweep_active;
+assign cpu_request_ready = maintenance_ready && !clean_all && !invalidate_all;
+assign line_copy_ready = cpu_request_ready;
 assign cpu_response_valid = response_valid;
 assign cpu_read_data = response_data;
 assign cpu_error = response_valid && response_error;
@@ -299,7 +302,7 @@ always @(posedge clk) begin
         end
         case (state)
             ST_IDLE: begin
-                if (!response_valid && (clean_all || invalidate_all)) begin
+                if (maintenance_ready && (clean_all || invalidate_all)) begin
                     maintenance_active <= 1;
                     line_copy_active <= 0;
                     wb_for_line_copy <= 0;

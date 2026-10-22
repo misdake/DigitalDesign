@@ -569,7 +569,15 @@ assign data_line_clean_address = data_physical_address(gpr_read_b_data);
 assign device_index = field_d[2:0];
 assign device_channel = field_a;
 assign device_read_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 && !field_d[3];
-assign device_write_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 && field_d[3];
+// Device-0 full-cache commands are drain barriers. Keep this instruction
+// parked while older async/FST stores issue and complete; only the accepted
+// device write may ask SystemControl to hold architectural progress.
+wire full_cache_command = opcode == 4'h7 && field_d == 4'h8 &&
+    (field_a == 4'h1 || field_a == 4'h4);
+wire cache_command_wait = full_cache_command &&
+    (async_store_valid || fpu2_pending != 0);
+assign device_write_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 &&
+    field_d[3] && !cache_command_wait;
 assign device_write_data = gpr_read_b_data;
 // Do not expose HALT until the last buffered store is globally observed and
 // the FST early-release drain has fully left the core.
@@ -1001,13 +1009,13 @@ always @(posedge clk) begin
                                         endcase
                                         retired_words <= retired_words + success_retire_words;
                                         state <= ST_FETCH_REQUEST;
-                                    end else if (field_a == 6 || field_a == 7) begin
+                                    end else if (field_a == 6) begin
                                         if (!async_store_valid && fpu2_pending == 0 &&
                                             data_line_copy_ready) begin
                                             retired_words <= retired_words + success_retire_words;
                                             state <= ST_FETCH_REQUEST;
                                         end
-                                    end else if (field_a == 8) begin
+                                    end else if (field_a == 8 && field_b == 0) begin
                                         if (data_line_copy_ready) begin
                                             if (data_cache_command_error) begin
                                                 fault_code <= FAULT_DATA_MEMORY;
@@ -1038,8 +1046,10 @@ always @(posedge clk) begin
                             endcase
                         end
                         4'h7: begin
-                            retired_words <= retired_words + success_retire_words;
-                            state <= ST_FETCH_REQUEST;
+                            if (!cache_command_wait) begin
+                                retired_words <= retired_words + success_retire_words;
+                                state <= ST_FETCH_REQUEST;
+                            end
                         end
                         4'h8, 4'h9: begin
                             logical_address = integer_result;
