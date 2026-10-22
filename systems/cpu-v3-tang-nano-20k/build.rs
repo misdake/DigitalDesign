@@ -5,12 +5,15 @@ mod boot;
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
 use std::path::{Path, PathBuf};
-fn compile(path: &Path, options: &CompilerOptions) -> Vec<u16> {
+fn compile(path: &Path, options: &CompilerOptions, constants: &str) -> Vec<u16> {
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
     let program =
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
+            if name == "boot_resources" {
+                return Ok(constants.to_owned());
+            }
             let module = source_dir.join(format!("{name}.rs"));
             println!("cargo:rerun-if-changed={}", module.display());
             std::fs::read_to_string(&module).map_err(|error| format!("read module {name}: {error}"))
@@ -26,18 +29,35 @@ fn main() {
     let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let config = root.join("boot-applications.conf");
     println!("cargo:rerun-if-changed={}", config.display());
-    let source = boot::single_application_source(&std::fs::read_to_string(config).unwrap())
+    let project = boot::parse_boot_project(&std::fs::read_to_string(config).unwrap())
         .expect("single application project");
+    let source = &project.application;
+    for (_, _, path) in &project.copies {
+        println!("cargo:rerun-if-changed={}", root.join(path).display());
+    }
+    let constants = project.constants();
+    std::fs::write(output.join("boot_resources.rs"), &constants).unwrap();
+    let resources = project.resources(&root).expect("boot resources");
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
     options.stack_init = boot::SINGLE_BOOT_STACK;
-    let words = compile(&root.join(&source), &options);
+    let words = compile(&root.join(source), &options, &constants);
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-    let image = boot::pack_single_application(&code).expect("single application image");
+    let image =
+        boot::pack_application_resources(&code, &resources).expect("single application image");
     std::fs::write(output.join("application.v3bin"), &code).unwrap();
     std::fs::write(output.join("cpu-v3-boot.bin"), &image).unwrap();
-    let map=format!("format=5\napplication={}\ncode_segment=7\nentry=0\ndata_pages=0,1,2,3\nstack=0xc000\ncode_bytes={}\nstatic_zero_bytes=16384\nflash_base=0x100000\npayload_offset=128\n",source.display(),code.len());
+    let map = format!(
+        "application={}\n{}",
+        source.display(),
+        boot::boot_image_map(&code, &image)
+    );
     std::fs::write(output.join("cpu-v3-boot.map"), map).unwrap();
-    let assets = ["application.v3bin", "cpu-v3-boot.bin", "cpu-v3-boot.map"];
+    let assets = [
+        "application.v3bin",
+        "cpu-v3-boot.bin",
+        "cpu-v3-boot.map",
+        "boot_resources.rs",
+    ];
     let mut bindings = String::from("const ASSETS: &[(&str, &[u8])] = &[\n");
     for name in assets {
         bindings.push_str(&format!(

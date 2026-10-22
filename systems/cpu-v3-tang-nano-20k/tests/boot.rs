@@ -21,7 +21,7 @@ fn fixture() -> Vec<u8> {
     pack_single_application(&bytes).unwrap()
 }
 #[test]
-fn cold_flash_clears_only_statics_and_executes_nonzero_initializers() {
+fn cold_flash_clears_statics_and_framebuffers_and_executes_initializers() {
     let package = fixture();
     let mut system =
         CpuV3SystemSim::from_single_flash(&package, 0xd00d, VBlankMode::Manual).unwrap();
@@ -49,12 +49,12 @@ fn cold_flash_clears_only_statics_and_executes_nonzero_initializers() {
 #[test]
 fn malformed_or_truncated_flash_never_constructs_a_running_system() {
     let good = fixture();
-    for index in (0..12).chain(16..32) {
+    for index in 0..4 {
         let mut bad = good.clone();
         bad[index] ^= 1;
         assert!(CpuV3SystemSim::from_single_flash(&bad, 0xd00d, VBlankMode::Manual).is_err());
     }
-    for len in [0, 31, 127, good.len() - 1] {
+    for len in [0, 3, 11, good.len() - 1] {
         assert!(
             CpuV3SystemSim::from_single_flash(&good[..len], 0xd00d, VBlankMode::Manual).is_err()
         );
@@ -63,4 +63,86 @@ fn malformed_or_truncated_flash_never_constructs_a_running_system() {
 #[test]
 fn generic_cpu_entry_remains_segment_zero() {
     assert_eq!(cpu_v3::CpuV3Sim::default().code_segment(), 0);
+}
+
+#[test]
+fn generated_resource_constants_compile_before_the_image_is_packed() {
+    let project =
+        parse_boot_project("format 2\napplication app.rs\ncopy MESH 0x100000 mesh.bin").unwrap();
+    let constants = project.constants();
+    let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
+    options.stack_init = SINGLE_BOOT_STACK;
+    let parsed = rcc::frontend::compile_program_named(
+        "resources.rs",
+        "mod boot_resources; use boot_resources::*; fn main() { halt(MESH_WORD_ADDRESS_HIGH); }",
+        &options,
+        &mut |name| {
+            if name == "boot_resources" {
+                Ok(constants.clone())
+            } else {
+                Err(name.into())
+            }
+        },
+    )
+    .unwrap();
+    let compiled = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+    let code: Vec<u8> = compiled
+        .words
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    let image =
+        pack_application_resources(&code, &[BootResource::copy(0x100000, b"asset".to_vec())])
+            .unwrap();
+    let mut system = CpuV3SystemSim::from_single_flash(&image, 0xd00d, VBlankMode::Manual).unwrap();
+    assert_eq!(
+        system.cpu_mut().physical_memory_mut()[0x80000],
+        u16::from_le_bytes(*b"as")
+    );
+    assert!(matches!(
+        system.run(2000).unwrap(),
+        RunOutcome::Halted { signal: 8, .. }
+    ));
+}
+
+#[test]
+fn command_line_repack_uses_the_project_resource_files() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../target/cb06-validation/cli-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let package = fixture();
+    let code = single_boot_code(&package).unwrap();
+    std::fs::write(root.join("application.v3bin"), code).unwrap();
+    std::fs::write(root.join("mesh.bin"), b"asset").unwrap();
+    std::fs::write(
+        root.join("project.conf"),
+        "format 2\napplication app.rs\ncopy MESH 0x100000 mesh.bin\nzero 0x490000 32\n",
+    )
+    .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cpu-v3-pack"))
+        .arg(root.join("application.v3bin"))
+        .arg("--project")
+        .arg(root.join("project.conf"))
+        .arg("-o")
+        .arg(root.join("image.bin"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read(root.join("image.bin")).unwrap(),
+        pack_application_resources(
+            code,
+            &[
+                BootResource::copy(0x100000, b"asset".to_vec()),
+                BootResource::zero(0x490000, 32)
+            ]
+        )
+        .unwrap()
+    );
 }

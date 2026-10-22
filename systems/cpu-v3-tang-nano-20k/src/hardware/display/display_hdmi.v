@@ -1,6 +1,7 @@
 module FramebufferHdmi(
     input wire clk, input wire reset,
     input wire pixel_clock, input wire serial_clock, input wire video_locked,
+    input wire boot_enable, input wire boot_failed,
     input wire memory_request_ready, input wire memory_data_valid,
     input wire [63:0] memory_read_data, input wire memory_last, input wire memory_error,
     input wire [2:0] device_index, input wire [3:0] device_channel,
@@ -8,6 +9,7 @@ module FramebufferHdmi(
     input wire [15:0] device_write_data,
     output wire memory_request_valid, output wire memory_urgent,
     output wire [21:0] memory_address, output wire underflow,
+    output wire started_ack, output wire startup_error,
     output reg [15:0] device_read_data,
     output wire tmds_clk_p, output wire tmds_clk_n,
     output wire [2:0] tmds_data_p, output wire [2:0] tmds_data_n
@@ -53,7 +55,7 @@ reg [1:0] beat_index=0;
 reg burst_active=0, memory_error_sticky=0;
 wire fill_slot_free = published[fill_slot] == release_sync[fill_slot];
 assign memory_urgent = 1'b1;
-assign memory_request_valid = fill_slot_free && !burst_active &&
+assign memory_request_valid = boot_enable && !boot_failed && fill_slot_free && !burst_active &&
                               !frame_complete && !memory_error_sticky;
 // Adjacent rows of each tile are fetched consecutively. The arbiter retains
 // its fixed 32-byte display transactions: the pair is two requests, not a
@@ -69,7 +71,7 @@ wire [8:0] fill_slot_base = fill_slot ? 9'd200 : 9'd0;
 wire [8:0] line_write_address = fill_slot_base +
     (fill_second ? 9'd100 : 9'd0) + {2'b0,burst_index,2'b00} + {7'b0,beat_index};
 wire line_write = burst_active && memory_data_valid && !memory_error &&
-                  !memory_error_sticky && !reset;
+                  !memory_error_sticky && !boot_failed && !reset;
 reg [8:0] line_read_address_a, line_read_address_b;
 wire [31:0] line_read_data_a, line_read_data_b;
 __LINE_BUFFER__ u_line_buffer(
@@ -170,6 +172,19 @@ always @(posedge clk) begin
     end
 end
 reg [1:0] publish_meta=0, publish_sync=0;
+reg started=0;
+reg [1:0] enable_sync=0, failure_sync=0;
+reg started_meta=0, started_sync=0;
+always @(posedge clk) begin
+    started_meta<=started;
+    started_sync<=started_meta;
+end
+assign started_ack=started_sync;
+assign startup_error=memory_error_sticky | underflow_sync;
+always @(posedge pixel_clock) begin
+    enable_sync<={enable_sync[0],boot_enable};
+    failure_sync<={failure_sync[0],boot_failed | memory_error_sticky};
+end
 // Reset/PLL lock are asynchronous to pixel_clock. Delay their release here
 // before scanout consumes the line-group publication toggles or queue state.
 reg [2:0] pixel_reset_sync=0;
@@ -180,7 +195,7 @@ reg display_slot=0, display_second=0;
 wire [8:0] display_slot_base = (display_slot ? 9'd200 : 9'd0) +
                                              (display_second ? 9'd100 : 9'd0);
 reg vertical_repeat=0;
-reg started=0;
+wire scan_enabled=started && !failure_sync[1];
 reg [10:0] h_count=0;
 reg [9:0] v_count=0;
 wire hsync = h_count < H_SYNC_END;
@@ -247,7 +262,7 @@ wire [5:0] raw_b1 = {raw_pair[20:16],raw_pair[20]};
 // One completed pair is the only output holding state. Its first pixel
 // is consumed directly at completion; subsequent repeats use this register.
 reg [6*PRECODE_BITS-1:0] output_pair=0;
-wire conversion_active = started && scan_line_ready &&
+wire conversion_active = scan_enabled && scan_line_ready &&
     v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END &&
     h_count>=H_ACTIVE_START-11'd4 && h_count<H_ACTIVE_END;
 wire issue_pair = conversion_active && read_phase==0 &&
@@ -287,21 +302,22 @@ always @(posedge pixel_clock) begin
     end else begin
         if (h_count==H_TOTAL-1) begin
             h_count<=0;
-            if (v_count==V_ACTIVE_END-1) frame_toggle<=~frame_toggle;
+            if (scan_enabled && v_count==V_ACTIVE_END-1) frame_toggle<=~frame_toggle;
             if (v_count==V_TOTAL-1) begin
                 v_count<=0;
-                if (!started && publish_sync!=released) started<=1;
+                if (!started && enable_sync[1] && !failure_sync[1] &&
+                    (publish_sync ^ released)==2'b11) started<=1;
             end else v_count<=v_count+1'b1;
         end else h_count<=h_count+1'b1;
-        visible_pipe3<=started && active;
-        framebuffer_pipe3<=started && framebuffer_x;
+        visible_pipe3<=active;
+        framebuffer_pipe3<=scan_enabled && framebuffer_x;
         hsync_pipe3<=hsync; vsync_pipe3<=vsync;
         precode_pipe<=BLACK_PRECODE;
-        if (started && active && scan_line_ready) precode_pipe<=current_precode;
+        if (scan_enabled && active && scan_line_ready) precode_pipe<=current_precode;
         if (h_count==0) begin
             // Readiness is sampled for the whole output row. A late publish
             // cannot reveal a partial row or consume data from a failed fill.
-            scan_line_ready<=line_ready; scan_linear<=group_linear[display_slot];
+            scan_line_ready<=scan_enabled && line_ready; scan_linear<=group_linear[display_slot];
             read_phase<=0; fetch_pair<=0;
 
         end else if (conversion_active) begin
@@ -325,7 +341,7 @@ always @(posedge pixel_clock) begin
             end
             if (emit_pair) output_pair<=converted_pair;
         end
-        if (started && h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END) begin
+        if (scan_enabled && h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END) begin
             if (vertical_repeat) begin
                 vertical_repeat<=0;
                 if (scan_line_ready) begin

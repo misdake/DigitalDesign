@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 // Real SPI reader + full CPU/cache/arbiter/adapter, abstract native completion.
 module tb;
+localparam BULK_VIDEO_DELAY=__FLASH_PACKAGE_SIZE__>65536;
 reg clk = 0;
 reg [1:0] buttons = 0;
 reg flash_miso = 1;
@@ -35,9 +36,11 @@ wire [2:0] tmds_data_p;
 wire [2:0] tmds_data_n;
 
 CpuV3System dut(.*);
-always #5 clk = ~clk;
-always #2 pixel_clock = ~pixel_clock;
-always #1 serial_clock = ~serial_clock;
+always #9.259 clk = ~clk;
+// The bulk case also verifies late video-clock availability. Ordinary cases
+// and the native-pin composition keep video running throughout cold loading.
+always #15.015 if(!BULK_VIDEO_DELAY || dut.boot_load_done) pixel_clock = ~pixel_clock;
+always #3.003 if(!BULK_VIDEO_DELAY || dut.boot_load_done) serial_clock = ~serial_clock;
 
 // Abstract native 32-bit controller port. Address is a 32-bit word address.
 // The board bridge groups two native words into each 64-bit system beat.
@@ -132,13 +135,13 @@ reg [7:0]flash_image[0:FLASH_PACKAGE_SIZE-1];
 reg [15:0]expected_code[0:CODE_WORDS-1];
 reg [31:0]flash_command=0;integer flash_command_bits=0;
 reg [23:0]flash_byte_address=0;integer flash_data_bit=0;reg [7:0]flash_current_byte=0;
-integer n,start_cycle=0,release_cycle=0,first_fetch_cycle=0,ready_cycle=0,receipt_file;
+integer n,start_cycle=0,release_cycle=0,first_fetch_cycle=0,ready_cycle=0,load_cycle=0,receipt_file;
 reg released=0,first_fetch_seen=0;
 task save_startup;
 begin
  receipt_file=$fopen("__STARTUP_RESULT_PATH__","w");
  if(receipt_file==0)$fatal(1,"cannot save startup receipt");
- $fdisplay(receipt_file,"{\"sdram_ready_cycle\":%0d,\"release_cycle\":%0d,\"first_fetch_cycle\":%0d,\"end_cycle\":%0d,\"code_words\":%0d,\"expected_halt\":%0d,\"boot_error\":%0d}",ready_cycle,release_cycle,first_fetch_cycle,start_cycle,CODE_WORDS,EXPECT_HALT,dut.boot_error);
+ $fdisplay(receipt_file,"{\"sdram_ready_cycle\":%0d,\"load_cycle\":%0d,\"release_cycle\":%0d,\"first_fetch_cycle\":%0d,\"end_cycle\":%0d,\"code_words\":%0d,\"image_bytes\":%0d,\"spi_half_period\":%0d,\"late_video_clock\":%0d,\"expected_halt\":%0d,\"boot_error\":%0d}",ready_cycle,load_cycle,release_cycle,first_fetch_cycle,start_cycle,CODE_WORDS,FLASH_PACKAGE_SIZE,__SPI_HALF_PERIOD__,BULK_VIDEO_DELAY,EXPECT_HALT,dut.boot_error);
  $fclose(receipt_file);
 end endtask
 always @(posedge flash_cs_n) begin
@@ -165,7 +168,7 @@ always @(negedge flash_clk) begin
                 flash_current_byte = 8'hff;
             flash_byte_address = flash_byte_address + 1;
         end
-        flash_miso <= flash_current_byte[7 - flash_data_bit];
+        flash_miso <= #6.5 flash_current_byte[7 - flash_data_bit];
         flash_data_bit = (flash_data_bit + 1) % 8;
     end
 end
@@ -182,11 +185,14 @@ end
 always @(posedge clk)begin
  start_cycle=start_cycle+1;
  if(sdram_init_done && ready_cycle==0)ready_cycle=start_cycle;
- if(start_cycle>3000000)$fatal(1,"bounded full Flash boot");
+ if(start_cycle>__BOOT_MAX_CYCLES__)$fatal(1,"bounded full Flash boot");
+ if(dut.boot_load_done && load_cycle==0)load_cycle=start_cycle;
+ if(!dut.boot_load_done && dut.display_memory_request_valid)$fatal(1,"Display fetched before load completion");
  if(!dut.boot_done && (dut.core_instruction_request_valid || dut.device_write_enable || dut.core_data_request_valid))$fatal(1,"CPU side effect before boot completion");
  if(dut.reset!==1'b0)$fatal(1,"production runtime reset remained active");
  if(dut.boot_error)begin
   if(!EXPECT_ERROR)$fatal(1,"boot failure %0d",dut.boot_error_code);
+  if(dut.boot_error_code!=__EXPECT_ERROR_CODE__)$fatal(1,"incorrect boot failure category %0d",dut.boot_error_code);
   if(dut.retired_words!=0 || dut.boot_done)$fatal(1,"failed image executed");
   $display("DIGITAL_DESIGN_PASS single Flash rejection cycles%0d",start_cycle);save_startup();$display("DIGITAL_DESIGN_PASS");$finish;
  end
@@ -194,11 +200,15 @@ always @(posedge clk)begin
  if(dut.boot_done && !released)begin
   released=1;release_cycle=start_cycle;
   if(dut.pc!==0 || dut.code_segment!==7 || dut.data_segment!==0)$fatal(1,"cold entry mapping");
-  if(write_pending || dut.u_boot_loader.word_index!=CODE_WORDS)$fatal(1,"release before final completed write");
+  if(write_pending || dut.u_boot_loader.remaining!=0 || !dut.boot_load_done || !dut.display_started_ack)
+   $fatal(1,"release before completed writes and Display start");
+  for(n=32'h200000;n<32'h230000;n=n+1)if(memory[n]!==0)$fatal(1,"framebuffer not black at boot");
   for(n=0;n<8192;n=n+1)if(memory[n]!==0)$fatal(1,"static zero %0d",n);
   if(memory[8192]!==16'hd00d)$fatal(1,"clear exceeds fixed static arena");
   for(n=0;n<CODE_WORDS;n=n+1)if(memory[32'h70000+n]!==expected_code[n])$fatal(1,"code mismatch %0d",n);
   if(memory[32'h70000+CODE_WORDS]!==16'hd00d)$fatal(1,"copy exceeds code extent");
+__RESOURCE_CHECK__
+  for(n=32'h230000;n<32'h248000;n=n+1)if(memory[n]!==16'hd00d)$fatal(1,"boot wrote Depth");
  end
  if(dut.core_instruction_request_valid && !first_fetch_seen)begin
   first_fetch_seen=1;first_fetch_cycle=start_cycle;
@@ -215,5 +225,5 @@ always @(posedge clk)begin
   $display("DIGITAL_DESIGN_PASS single Flash production application release%0d firstfetch%0d firstdevice%0d",release_cycle,first_fetch_cycle,start_cycle);save_startup();$display("DIGITAL_DESIGN_PASS");$finish;
  end
 end
-initial begin #31000000;$fatal(1,"full Flash boot wall watchdog");end
+initial begin #(__BOOT_MAX_CYCLES__*20.0);$fatal(1,"full Flash boot wall watchdog");end
 endmodule

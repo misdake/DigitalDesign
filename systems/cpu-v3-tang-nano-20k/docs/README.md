@@ -15,9 +15,11 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
   framebuffer-control savings, rejected alternatives, and full-GPU preservation boundaries.
 - [`framebuffer-cache.md`](framebuffer-cache.md): accepted eight-DPB storage and fused quad-owner
   contract, independent resource/throughput results, and the pending system-integration boundary.
-- [`boot-image-format.md`](boot-image-format.md): single-application v5 header, initialization and fail-stop contract.
+- [`boot-image-format.md`](boot-image-format.md): CB06 COPY/ZERO stream, host layout checks, Display startup and completion contract.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   boot-progress reporting.
+- [`system-display-test.md`](system-display-test.md): CPU-only cold-boot diagnostic,
+  scratch/LCOPY ownership, continuous framebuffer presentation and UART results.
 
 Add one sentence to `cpu-v3-optimization.md` in the same milestone change as every CPU V3
 optimization and append its evidence to `cpu-v3-optimization-record.md`. Update `architecture.md`

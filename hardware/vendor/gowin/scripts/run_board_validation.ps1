@@ -164,7 +164,8 @@ try {
         )
         Invoke-CargoStage "independently pack generated single application" "run" @(
             "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
-            $applicationPath, "-o", $repackedPackagePath, "--map", $repackedMapPath
+            $applicationPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
+            "--project", (Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/boot-applications.conf")
         )
         $generatedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash
         $repackedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $repackedPackagePath).Hash
@@ -193,6 +194,7 @@ try {
         Invoke-CargoStage "build complete power-on Flash image" "run" @(
             "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
             $applicationPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
+            "--project", (Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/boot-applications.conf"),
             "--configuration-bin", $configurationBinPath, "--flash-image", $completeFlashPath
         )
         Invoke-CargoStage "program complete power-on Flash image once" "run" @(

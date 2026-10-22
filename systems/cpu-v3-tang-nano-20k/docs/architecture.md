@@ -164,11 +164,18 @@ clock-domain boundary.
 
 ## Boot chain
 
-The fixed hardware loader validates the [v5 single-application header](boot-image-format.md),
-clears exactly 16 KiB of low static memory and copies code to physical word `0x70000`.
-Only successful completion of every write and the Flash stream releases the CPU
-at CSEG7:PC0, data pages 0/1/2/3; RCC initializes SP=0xc000 and nonzero statics.
-There is no Boot ROM, overlay, section interpreter, selection latch or DMA MMIO.
+The cold hardware loader executes the [CB06 COPY/ZERO stream](boot-image-format.md)
+through the existing narrow DMA arbiter client, holding one word and waiting for
+each successful write response. The host packer inserts the 16-KiB static ZERO,
+code COPY at physical word `0x70000`, optional resources and complete A/B ZERO.
+The FPGA checks only small command/range constraints; there is no checksum or
+second metadata pass. Depth remains reserved for GPU Pass Clear.
+END and the completed Flash/memory transactions produce `load_done`, enabling
+Display prefetch. After both initial groups are available, Display starts at a
+full frame boundary and returns `started_ack`. That event and cache cold-ready
+permit `boot_done` and CPU release at CSEG7:PC0, data pages 0/1/2/3; RCC initializes
+SP=0xc000 and nonzero statics. GPU readiness does not delay CPU release.
+There is no Boot ROM, overlay, selection latch or DMA MMIO.
 Declared FPGA initial state and cache metadata initialization replace production
 global reset distribution. The local SDRAM controller cold reset is released only
 after PLL readiness; CPU release additionally waits for loader success. Generic IP
@@ -198,9 +205,19 @@ the software read and arm is therefore detected by the first probe rather than l
 GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and watch holds have
 independent state so neither completion source can release the other.
 
+On this baseline, software must drain older CPU stores before issuing a global
+D-cache maintenance command. The system-control busy input covers cache
+maintenance, while the cache accepts the global pulse only when idle with no
+unconsumed response. A pulse during an ordinary store miss can therefore be
+lost after CPU hold has already blocked the old store response. The selected
+[diagnostic](system-display-test.md) supplies an explicit in-function
+`DCLEANL`/`DWAIT` boundary; the general maintenance interface is not repaired.
+
 Device indices 1 and 2 are unassigned in this system; the former selection and
-programmable DMA register banks are absent. The sole display application remains
-`rcc/display-demo.rs`; its existing GPU-rejection behavior is independent of Boot.
+programmable DMA register banks are absent. The selected application is the
+[CPU-only Display diagnostic](system-display-test.md),
+`rcc/system-display-test.rs`. The retained `rcc/display-demo.rs` exercises the
+retired GPU-rejection behavior and is not selected for this board diagnostic.
 
 Device 4 stages a 22-bit command-buffer word address and a word count on write channels 0..3;
 channel 4 submits, and channel 5 performs an idle-only soft reset or sticky-error clear. Read
@@ -292,6 +309,15 @@ Display retains strict priority. A caught-up refill is 50 segments per two sourc
 initial fill is at most 100 segments. The conditional ideal scheduling estimate and its
 refresh/contention limitations are in the upgrade comparison (archived work-1 report).
 
+Cold `boot_enable` gates framebuffer requests until the image writes complete.
+Before pixel scanout starts, HDMI still emits valid black active video, with no
+row-group consumption, underflow or framebuffer frame-index advancement. Both
+published initial groups and the synchronized enable are required at a complete
+frame boundary. Sticky `started_ack` returns through two logic-domain stages;
+`startup_error` combines the logic-domain memory fault and synchronized underflow.
+`boot_failed` stops new requests and crosses to the pixel domain to blank output.
+After CPU release, ordinary Display faults do not restart boot.
+
 On a cold-loader failure, the CPU stays held and LEDs show `11xxxx`, where the
 low nibble identifies header, length, Flash, memory or timeout failure. There
 is no software loader or automatic boot-failure UART frame. The application
@@ -299,33 +325,35 @@ retains its own system-control UART reporting after successful release.
 
 ## Current fitted result and validation boundary
 
-The 2026-10-18 fixed-2x cold-start batch follows Display commit `4640181b`,
-address-chain commit `d84e88d7` and CPU-chain commit `4c40d91a`. One hardware
-loader replaces Boot ROM, overlay, selection and programmable DMA. Production
-uses deterministic FPGA initial state and monotonic clock/SDRAM startup gates;
-there is no button/software/global runtime reset. Only 800x480 2x remains.
+The CB06 loader, Display cold gate and existing CPU/cache/SDRAM composition
+use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C. The matched
+divider builds use identical CST/SDC and options, with runtime CPU/controller/
+pixel clocks unchanged at 54/108/33.3 MHz. The GPU remains an inactive shell.
 
-| Matched pre-commit CPU-system fit | CPU chain `4c40d91a` | Display `4640181b` | Single Boot / fixed 2x |
-| --- | ---: | ---: | ---: |
-| Logic | 7,896 | 7,752 | 7,123 |
-| RAM16 / Logic FF / CLS | 24 / 2,924 / 5,052 | 12 / 2,888 / 4,953 | 12 / 2,633 / 4,539 |
-| BSRAM / MULT36X36 | 11 / 1 | 11 / 1 | 10 / 1 |
-| CPU Fmax | 56.680 MHz | 63.452 MHz | 60.665 MHz |
-| Controller / pixel Fmax | 123.213 / 89.060 MHz | 126.437 / 128.810 MHz | 108.135 / 123.792 MHz |
+| Complete-system offline candidate | SPI divider 2 | SPI divider 1 |
+| --- | ---: | ---: |
+| Nominal active SCK | 13.5 MHz | 27 MHz |
+| Logic | 6,878 | 7,011 |
+| Total register / logic FF / I/O FF | 2,734 / 2,651 / 83 | 2,739 / 2,656 / 83 |
+| RAM16 / BSRAM / MULT36X36 | 12 / 10 / 1 | 12 / 10 / 1 |
+| CLS | 4,397 | 4,487 |
+| CPU / controller / pixel Fmax | 64.336 / 129.440 / 129.356 MHz | 63.643 / 120.065 / 123.375 MHz |
+| Overall setup / hold violated endpoints | 57 / 0 | 59 / 0 |
 
-All use Gowin 1.9.11.03 Education, GW2AR-LV18QN88C8/I7 version C and matched
-CST/SDC/options. Internal CPU/controller/pixel setup and hold pass at the
-unchanged 54/108/33.3-MHz runtime clocks. The strict external SDRAM-output
-setup failure remains excluded at the user's direction; no constraint is
-relaxed. The fit contains the inactive GPU shell, not complete GPU v2, and
-does not establish a new physical-board result.
+Both builds produce bitstreams, but strict timing audit fails. Violating paths
+include external SDRAM DQM/DQ outputs and the controller-falling to CPU-rising
+read-toggle/bridge response paths. Same-clock Fmax does not establish global
+timing closure. No constraints, waiver or suppression were added; no successful
+build manifest is asserted.
 
-The frozen 22-program suite retains all 41 nonidentity metrics.
-Two different-size applications produce identical gateware/CST/SDC. Only their
-Flash packages change. Startup from SDRAM-ready is 89,136 versus 64,336 cycles
-in the bounded SPI/system RTL model, adding the formerly missing 16-KiB
-static clear; this is not native-pin-composed or board startup timing.
-The 13-bit precode alternative is rejected; 3x is retired by user direction.
+The divider change adds no buffer, RAM or new clock domain. The whole-build
+difference is 133 Logic and five registers; this does not establish an intrinsic
+area cost of faster SPI. The reader itself changes from 217 to 213 LUT with
+120 registers in both synthesis reports. Unchanged CPU/cache/Display/controller
+modules also map differently; the extra five registers are in the controller.
+The precise synthesis cause has not been isolated. The default remains divider 2;
+divider 1 is an optional offline candidate pending physical qualification.
+These images do not establish a new board result or full GPU integration.
 
 ## Earlier storage and product-issuer checkpoint
 
