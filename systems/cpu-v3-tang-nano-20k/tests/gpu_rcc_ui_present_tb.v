@@ -163,7 +163,7 @@ task check_surface;input[15:0]frame;integer q,x,y,off,half,diff;reg[63:0]expecte
    if(q>='h400000/8&&q<('h400000+192000)/8&&frame==2)expected=mem[q];
    if(q>='h430000/8&&q<('h430000+192000)/8)expected=mem[q];
    else if(q>='h460000/8&&q<('h460000+192000)/8)expected=mem[q];
-   // CPU owns only the first command sector and the 32-byte object in each slot.
+   // CPU owns the submitted command/padding span and the private object arena.
    else if((q>='h490000/8&&q<('h490000+((command_bytes+127)&~127))/8)||(q>='h4a0000/8&&q<'h4b0000/8))expected=mem[q];
    if(q>='h4b0000/8)expected=asset_initial[q-'h4b0000/8];
    if(mem[q]!==expected)$fatal(1,"Framebuffer/padding/Front mismatch q=%h got=%h expected=%h",q,mem[q],expected);
@@ -182,7 +182,8 @@ task check_surface;input[15:0]frame;integer q,x,y,off,half,diff;reg[63:0]expecte
    if(actual!==want)$fatal(1,"Color mismatch frame=%0d x=%0d y=%0d actual=%h expected=%h",frame,x,y,actual,want);
    actual=mem[('h460000+off)/8]>>half;
    if(depth_gold[y*400+x]==65535)begin if(actual!==16'hffff)$fatal(1,"Depth touched outside coverage");end
-   else begin diff=actual>256?actual-256:256-actual;if(diff>1)$fatal(1,"Depth mismatch x=%0d y=%0d value=%h",x,y,actual);end
+   else begin if((^actual)===1'bx)$fatal(1,"Unknown Depth x=%0d y=%0d value=%h",x,y,actual);
+    diff=actual>256?actual-256:256-actual;if(diff>1)$fatal(1,"Depth mismatch x=%0d y=%0d value=%h",x,y,actual);end
  end
  $display("UI_SURFACE_PASS frame=%0d command_bytes=%0d",frame,command_bytes);
 end endtask

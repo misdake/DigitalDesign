@@ -19,5 +19,6 @@ minifb = { version = "0.24", optional = true }
 display-window = ["dep:minifb"]
 
 [build-dependencies]
+serde_json = "1"
 cpu-v3 = { path = "../../ip/cpu-v3" }
 rcc = { path = "../../compiler/rcc" }
