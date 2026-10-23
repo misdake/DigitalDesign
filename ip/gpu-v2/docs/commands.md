@@ -60,6 +60,7 @@ Each instruction is one little-endian u32. Unlisted/reserved bits are zero.
 | 8 | CLEAR | 16 selects depth (1) or color (0); 15:0 repeated value; 27:17 zero |
 | 9 | TEX_INVALIDATE | Zero; explicit WAIT(all) required |
 | 10 | SET_TARGET | 6:0 source local byte address/32; 27:7 zero |
+| 11 | UI_GRID | Same slot encoding; serial 50x15 char grid, described in [UI](/ip/gpu-v2/docs/ui.md) |
 | 15 | END | Zero; must be the last valid instruction |
 
 DMA_LOCAL size codes0/1/2 mean32/64/128 B. Code3 is invalid. Local destinations

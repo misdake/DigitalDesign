@@ -12,6 +12,7 @@ through the GPU; use the later chapters to look up encodings and schedules.
 | [Overview](/ip/gpu-v2/docs/overview.md) | What does the GPU do, and what owns each part of a render? |
 | [Submitting work](/ip/gpu-v2/docs/submission.md) | How do I configure, load, start, drain and flush one meshlet? |
 | [Command streams](/ip/gpu-v2/docs/commands.md) | How do explicit DMA, meshlet draws, CLEAR and state changes execute? |
+| [Fixed-grid UI](/ip/gpu-v2/docs/ui.md) | How do 8x16 chars draw through shared DMA and framebuffer storage? |
 | [DRAM commands](/ip/gpu-v2/docs/commands.md) | How does a prewritten command buffer execute a complete standalone frame? |
 | [Data formats](/ip/gpu-v2/docs/formats.md) | How are vertices, indices, matrices, metadata and texture assets encoded? |
 | [Geometry](/ip/gpu-v2/docs/geometry.md) | How do transformed vertices become covered, interpolated fragments? |
