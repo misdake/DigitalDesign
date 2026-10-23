@@ -11,7 +11,7 @@ use time::*;
 mod boot_resources;
 use boot_resources::*;
 
-static MATRIX: Buf<u16, 42> = Buf::new([0; 42]);
+static MATRIX: Buf<u16, 45> = Buf::new([0; 45]);
 static CELLS: Buf<u16, 375> = Buf::new([0; 375]);
 static STATS: Buf<u16, 4> = Buf::new([0; 4]);
 
@@ -70,7 +70,7 @@ fn demo_run(limit: u16, budget: u16) {
     let mut mesh: GpuMesh = GpuMesh {
         directory_sector: DEMO_MESH_DIRECTORY,
         directory_word: 0,
-        count: DEMO_MESH_COUNT,
+        count: DEMO_ROOM_COUNT,
         first_sector: DEMO_MESH_DIRECTORY,
         sectors: DEMO_MESH_SECTORS,
     };
@@ -86,17 +86,17 @@ fn demo_run(limit: u16, budget: u16) {
     };
     let mut global: GpuGlobal = GpuGlobal {
         far_low: 0,
-        far_high: 100,
+        far_high: 199,
         light_x: 0,
         light_y: 0,
         light_z: 16384,
-        ray_x: 0,
-        ray_y: 0,
+        ray_x: -8192,
+        ray_y: -4915,
         ray_k: 8192,
-        ambient: 256,
-        directional: 0,
-        mode: 0,
-        shininess: 0,
+        ambient: 64,
+        directional: 192,
+        mode: 3,
+        shininess: 12,
         epoch: 0,
     };
     let mut render: GpuRender = GpuRender {
@@ -105,8 +105,8 @@ fn demo_run(limit: u16, budget: u16) {
         size_log2: 0,
         full_mip: 0,
         filter: 2,
-        specular_low: 0,
-        specular_high: 0,
+        specular_low: 41120,
+        specular_high: 160,
         depth_func: 1,
         depth_write: 1,
         blend: 0,
@@ -122,7 +122,10 @@ fn demo_run(limit: u16, budget: u16) {
         demo_overlay_begin(CELLS.as_array(), STATS.as_array(), now, completed);
         demo_report(if completed { 1 } else { 0 }, frame, STATS.as_array()[1u16]);
         completed = false;
-        demo_camera(MATRIX.as_array(), phase);
+        demo_require(demo_camera(MATRIX.as_array(), phase), 14);
+        global.light_x = MATRIX[42u16] as i16;
+        global.light_y = MATRIX[43u16] as i16;
+        global.light_z = MATRIX[44u16] as i16;
         dev_send(7, 6, phase);
         let cb = gpu_cb_begin();
         demo_require(cb == GPU_CB_HANDLE, 2);
@@ -137,6 +140,26 @@ fn demo_run(limit: u16, budget: u16) {
             gpu_pass_draw_mesh(pass, view_of(&mut mesh), MATRIX.as_array(), 65535, 65535),
             6,
         );
+        mesh.directory_word = DEMO_RGB_WORD;
+        mesh.count = 1;
+        demo_require(
+            gpu_pass_draw_mesh(pass, view_of(&mut mesh), MATRIX.as_array(), 65535, 65535),
+            6,
+        );
+        render.unlit = 0;
+        demo_require(
+            gpu_pass_set_render(pass, view_of(&mut texture), view_of(&mut render)),
+            5,
+        );
+        mesh.directory_word = DEMO_BUNNY_WORD;
+        mesh.count = DEMO_BUNNY_COUNT;
+        demo_require(
+            gpu_pass_draw_mesh(pass, view_of(&mut mesh), MATRIX.as_array(), 65535, 65535),
+            6,
+        );
+        mesh.directory_word = 0;
+        mesh.count = DEMO_ROOM_COUNT;
+        render.unlit = 1;
         demo_require(
             gpu_pass_draw_ui_grid(pass, view_of(&mut atlas), CELLS.as_array()),
             7,
@@ -150,7 +173,7 @@ fn demo_run(limit: u16, budget: u16) {
         dev_send(7, 2, frame + 1);
         completed = true;
         frame += 1;
-        phase += 128;
+        phase += 256;
         dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, frame & 31);
     }
     // Bounded verification waits for the last complete visible scan as well.

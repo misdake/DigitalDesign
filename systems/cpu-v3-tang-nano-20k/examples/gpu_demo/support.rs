@@ -12,7 +12,7 @@ pub fn compile(source: &str, constants: &str, entry: &'static str) -> CpuV3Progr
     options.stack_init = cpu_v3_tang_nano_20k::boot::SINGLE_BOOT_STACK;
     let parsed = rcc::frontend::compile_program_named("GPU demo", source, &options, &mut |n| {
         resolver::load_module(
-            &root.join("examples/gpu_demo/rcc"),
+            &root.join("tests/fixtures/gpu_demo_room/rcc"),
             &root.join("rcc"),
             constants,
             n,

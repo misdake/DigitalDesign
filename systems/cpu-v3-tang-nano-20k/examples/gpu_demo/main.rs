@@ -48,6 +48,10 @@ fn main(){
  i=0;while i<375{out[1125+i]=cells[i];i+=1;}
  demo_overlay_begin(cells,STATE.as_array(),109,true);
  i=0;while i<375{out[1500+i]=cells[i];i+=1;}
+ demo_overlay_begin(cells,STATE.as_array(),109,true);
+ i=0;while i<375{out[1875+i]=cells[i];i+=1;}
+ demo_overlay_begin(cells,STATE.as_array(),119,true);
+ i=0;while i<375{out[2250+i]=cells[i];i+=1;}
  // Every cell, including row boundaries and the last cell, retains its neighbor.
  i=0;while i<750{
    let before=cells[i>>1];check(demo_cell_set(cells,i,i&255));
@@ -59,12 +63,9 @@ fn main(){
  halt(0x600d);
 }
 "#);
-    for (frame, digits) in ["-----", "-----", "00017", "-----", "00009"]
-        .into_iter()
-        .enumerate()
-    {
+    for (frame, digits) in ["", "", "17", "", "9", "0", "10"].into_iter().enumerate() {
         let mut wanted = [255u8; 750];
-        wanted[52..66].copy_from_slice(format!("FRAME {digits} MS").as_bytes());
+        wanted[52..52 + digits.len()].copy_from_slice(digits.as_bytes());
         for (i, pair) in wanted.as_chunks::<2>().0.iter().enumerate() {
             assert_eq!(
                 read(&cpu, 0x6000 + (frame * 375 + i) as u32),

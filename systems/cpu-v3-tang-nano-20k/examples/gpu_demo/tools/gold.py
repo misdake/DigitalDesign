@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import sys
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]/"tests/fixtures/gpu_demo_room/tools"))
 import assets
 import verify_stage2
 
