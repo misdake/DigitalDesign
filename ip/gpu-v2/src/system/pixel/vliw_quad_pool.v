@@ -130,7 +130,7 @@ module gpu_v2_vliw_quad_pool(
  assign sample_row=sample_lane;assign sample_last=sample_lane==3;
  assign sample_descriptor=sample_descriptor_q;
  wire sample_take=backend_ce&&sample_valid&&sample_ready;
- gpu_v2_vliw_pool_ram basic_bank(clk,reset,basic_write,basic_mask,basic_wa,basic_wd,
+ gpu_v2_vliw_pool_ram #(.BASIC(1)) basic_bank(clk,reset,basic_write,basic_mask,basic_wa,basic_wd,
   basic_re,{2'd0,basic_read_address},basic_q);
  assign basic_return_data={basic_q[25:18],basic_q[16:9],basic_q[7:0]};
  assign basic_collision=basic_re&&basic_write&&basic_wa=={2'd0,basic_read_address};
@@ -267,7 +267,7 @@ module gpu_v2_vliw_quad_pool(
 endmodule
 
 // Each instance is a real 1W1R bank. The caller gates its separate clock enables.
-module gpu_v2_vliw_pool_ram(input clk,reset,we,input[3:0]wm,input[8:0]wa,input[35:0]wd,
+module gpu_v2_vliw_pool_ram #(parameter BASIC=0)(input clk,reset,we,input[3:0]wm,input[8:0]wa,input[35:0]wd,
  input re,input[8:0]ra,output[35:0]q);
 `ifdef GPU_VLIW_POOL_PORTABLE
  reg[35:0]memory[0:511];reg[35:0]held;assign q=held;
@@ -278,8 +278,15 @@ module gpu_v2_vliw_pool_ram(input clk,reset,we,input[3:0]wm,input[8:0]wa,input[3
   if(reset)held<=0;else if(re)held<=memory[ra];
  end
 `else
- SDPX9B #(.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC")) ram(
-  .DO(q),.DI(wd),.ADA({wa,1'b0,wm}),.ADB({ra,5'b0}),.CLKA(clk),.CLKB(clk),
+ // GW2AR: use a complete 18-bit write, not a masked 36-bit update.
+ // Normal/UV already write aligned halves. Basic stores R in half0, G/B in half1.
+ wire write_half=BASIC?wm[1]:wm[2];
+ wire[17:0]write_data=BASIC?(write_half?{2'd0,wd[25:18],wd[16:9]}:{10'd0,wd[7:0]}):
+  (write_half?wd[35:18]:wd[17:0]);
+ wire[35:0]raw;
+ assign q=BASIC?{9'd0,1'b0,raw[33:26],1'b0,raw[25:18],1'b0,raw[7:0]}:raw;
+ SDPX9B #(.BIT_WIDTH_0(18),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC")) ram(
+  .DO(raw),.DI({18'd0,write_data}),.ADA({wa,write_half,4'b0011}),.ADB({ra,5'b0}),.CLKA(clk),.CLKB(clk),
   .CEA(we&&!reset),.CEB(re&&!reset),.OCE(1'b1),.RESETA(1'b0),.RESETB(reset),.BLKSELA(3'd0),.BLKSELB(3'd0));
 `endif
 `ifndef SYNTHESIS

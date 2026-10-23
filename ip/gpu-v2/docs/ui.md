@@ -71,6 +71,8 @@ UI temporary lines are never published as normal cache residents. Depth is not
 refilled or written. Accepted memory work drains independently of compute CE;
 completion remains visible until the decoder consumes it. Explicit abort drains
 accepted DMA/maintenance work without reporting successful CB completion.
+Each alpha bit gates an entire independent 16-bit bank write. Transparency does
+not use a partial native BSRAM write or require a read-modify-write of a pixel.
 
 ## Focused verification
 
@@ -80,6 +82,16 @@ MC and SDRAM pin model. It covers sparse/dense/empty grids, ID0/254, one-sided
 FF, binary transparency, edge cells, CE pauses, repeated UI commands and abort.
 The bounded runner records exact DUT/peer hashes. Its standalone MC profile and
 cycles are separate from full-system CL3 timing and physical-board qualification.
+
+`tests/ui_draw_transition.py` executes DRAW, WAIT/FLUSH, UI_GRID, a fresh
+DMA_MESHLET, another DRAW, WAIT/FLUSH and END in one DRAM command buffer. It
+checks retained 3D pixels before/after UI, binary transparency, the later draw,
+and actual write terminals. Pin-write guards forbid writes outside the target;
+full depth and immutable command/asset comparisons run at each checkpoint.
+Separate disjoint layouts exercise the highest grid extent and atlas base.
+Abort cases interrupt an in-flight UI write and the last output burst: accepted
+work must drain while busy/fault remain asserted, without reaching the later
+draw or reporting normal command-buffer completion.
 
 `tests/ui_showcase.py` additionally takes an external WenQuanYi Bitmap Song font
 zip, builds a shared atlas of ASCII, colored static icons and CJK halves, then

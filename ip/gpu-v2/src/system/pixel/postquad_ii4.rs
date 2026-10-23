@@ -189,6 +189,36 @@ fn mac_register(source: &mut String) -> Result<(), String> {
     replace(source, &old, &body)
 }
 
+fn square_operand_boundary(source: &mut String) -> Result<(), String> {
+    let old = module(source, "gpu_v2_lighting")?;
+    let mut body = old.clone();
+    // The split-square correction must sample the high and low parts of the
+    // same prescaled Q. Full-system Gowin mapping substituted current D for
+    // only the low seven bits without these explicit register/net boundaries.
+    for (coordinate, producer, consumer) in [("z", 12, 24), ("y", 11, 28)] {
+        replace(
+            &mut body,
+            &format!("reg [15:0] unit{producer}_p0;"),
+            &format!(
+                "(* syn_preserve=1, syn_keep=1 *) reg [15:0] unit{producer}_p0;\n\
+                 (* syn_keep=1 *) wire [6:0] square_{coordinate}_tail_q=unit{producer}_p0[6:0];"
+            ),
+        )?;
+        let begin = body
+            .find(&format!(") dsp{consumer}("))
+            .ok_or("II4 split-square DSP")?;
+        let end = begin + body[begin..].find("\n);").ok_or("II4 DSP end")?;
+        let mut instance = body[begin..end].to_owned();
+        replace(
+            &mut instance,
+            &format!(".B(unit{consumer}_a1[8:0])"),
+            &format!(".B({{2'b00,square_{coordinate}_tail_q}})"),
+        )?;
+        body.replace_range(begin..end, &instance);
+    }
+    replace(source, &old, &body)
+}
+
 fn private_lighting(source: &mut String) -> Result<(), String> {
     // Only this closed parent guarantees compute_tick => core.out_ready.
     // Public acknowledgments and result writes still use the common commit CE.
@@ -305,6 +335,7 @@ pub fn verilog_profile(
     metadata(&mut source)?;
     direct_weights(&mut source)?;
     mac_register(&mut source)?;
+    square_operand_boundary(&mut source)?;
     tile_address(&mut source, surface.width)?;
     private_lighting(&mut source)?;
     Ok(source)
