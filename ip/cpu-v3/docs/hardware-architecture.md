@@ -75,7 +75,9 @@ neither predicts a target nor adds memory traffic to complete a partial entry;
 software-controlled instruction coherency applies exactly as to the I-cache.
 
 The ordinary queue and BTC share one asynchronous-read, synchronous-write
-16-bit distributed RAM. BTC tags own low physical pairs through small pointers;
+16-bit distributed RAM. Resource reservation follows the physical array depth:
+16 words (256 bits) for BTC0/BTC4, or 32 words (512 bits) for BTC8, including
+unused physical slots. BTC tags own low physical pairs through small pointers;
 one extra pair holds incomplete fills. The high two words hold ordinary queue
 slots. The first two live responses after a target miss write the spare pair,
 while later responses write their ordinary tail slot. This is the sole payload

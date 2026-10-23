@@ -57,7 +57,7 @@ module SdramController #(
     output            O_sdram_cas_n,
     output            O_sdram_ras_n,
     output            O_sdram_wen_n,
-    output reg [ 3:0] O_sdram_dqm = 15,
+    output reg [ 3:0] O_sdram_dqm /* synthesis syn_preserve = 1 */ = 15,
     output reg [10:0] O_sdram_addr = 0,
     output reg [ 1:0] O_sdram_ba = 0,
     inout      [31:0] IO_sdram_dq
@@ -105,12 +105,17 @@ module SdramController #(
 
     // Registered SDRAM command and output data path.
     reg [2:0] command = 7;
-    reg dq_drive = 0;
+    reg dq_drive /* synthesis syn_keep = 1 */ = 0;
+    reg [3:0] dqm_state /* synthesis syn_keep = 1 */ = 15;
+    reg [31:0] dq_oe_n_pins /* synthesis syn_preserve = 1 */ = 32'hffffffff;
     reg [31:0] dq_out = 0;
     assign {O_sdram_ras_n, O_sdram_cas_n, O_sdram_wen_n} = command;
     assign O_sdram_clk = sdram_clk;
     assign O_sdram_cs_n = 0;
-    assign IO_sdram_dq = dq_drive ? dq_out : 32'bz;
+    genvar dq_pin;
+    generate for (dq_pin=0;dq_pin<32;dq_pin=dq_pin+1) begin : dq_output_pins
+        assign IO_sdram_dq[dq_pin] = !dq_oe_n_pins[dq_pin] ? dq_out[dq_pin] : 1'bz;
+    end endgenerate
 
     // Transaction state, command timers and four independent active-row records.
     reg [4:0] state = ST_POWER_WAIT, after_wait = ST_POWER_WAIT;
@@ -233,6 +238,16 @@ module SdramController #(
             end
         end
     endgenerate
+    // Owner state remains local; each physical output captures the same next
+    // value on this edge. No protocol cycle is added and pad Q never feeds back.
+    wire [3:0] dqm_next = reset ? 4'b1111 : state == ST_WRITE_LAUNCH ? saved_mask :
+        state == ST_READ_LAUNCH ? 4'b0000 : dqm_state;
+    wire dq_oe_n_next = reset ? 1'b1 : state == ST_WRITE_LAUNCH ? 1'b0 :
+        state == ST_WRITE_END ? 1'b1 : !dq_drive;
+    always @(posedge clk) begin
+        O_sdram_dqm <= dqm_next;
+        dq_oe_n_pins <= {32{dq_oe_n_next}};
+    end
     always @(posedge clk) begin
         command <= 7;
         done <= 0;
@@ -388,7 +403,7 @@ module SdramController #(
                 command <= 4;
                 O_sdram_ba <= saved_address[20:19];
                 O_sdram_addr <= {3'b0, saved_address[7:0]};
-                O_sdram_dqm <= saved_mask;
+                dqm_state <= saved_mask;
                 dq_drive <= 1;
                 dq_out <= write_data;
                 write_index <= 1;
@@ -460,7 +475,7 @@ module SdramController #(
                 read_prepare_window <= saved_words > 1;
                 command <= 5;
                 O_sdram_addr <= {3'b0, saved_address[7:0]};
-                O_sdram_dqm <= 0;
+                dqm_state <= 0;
                 read_active <= 1;
                 read_age <= 0;
                 if(CONTINUE)begin stream_left<=saved_words;stream_delay<=CAPTURE_LATENCY;stream_tail<=0;end
@@ -574,7 +589,7 @@ module SdramController #(
             state <= ST_POWER_WAIT;
             command <= 7;
             O_sdram_cke <= 0;
-            O_sdram_dqm <= 15;
+            dqm_state <= 15;
             dq_drive <= 0;
             initialized <= 0;
             init_count <= 0;

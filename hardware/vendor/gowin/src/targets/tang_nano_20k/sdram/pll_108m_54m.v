@@ -1,4 +1,6 @@
-module TangNano20KSdramPll108M54M (
+module TangNano20KSdramPll108M54M #(
+    parameter PHASE_SEL = "1101"
+) (
     input wire clkin,
     output wire controller_clk,
     output wire logic_clk,
@@ -8,8 +10,8 @@ module TangNano20KSdramPll108M54M (
 wire clkoutd3_unused;
 
 // 27 MHz * 4 = 108 MHz. CLKOUTD is the exact divide-by-two CPU clock;
-// CLKOUTP advances the physical SDRAM clock by 292.5 degrees, matching the
-// 108 MHz CL2 board-qualified native controller configuration.
+// PHASE_SEL selects CLKOUTP in 22.5-degree steps. Legacy CL2 diagnostics use
+// 13 (292.5 degrees); the full-system CL3 binding selects 7 (157.5 degrees).
 rPLL rpll_inst (
     .CLKOUT(controller_clk), .LOCK(locked), .CLKOUTP(sdram_clk),
     .CLKOUTD(logic_clk), .CLKOUTD3(clkoutd3_unused),
@@ -24,7 +26,7 @@ defparam rpll_inst.ODIV_SEL = 8;
 defparam rpll_inst.DYN_IDIV_SEL = "false";
 defparam rpll_inst.DYN_FBDIV_SEL = "false";
 defparam rpll_inst.DYN_ODIV_SEL = "false";
-defparam rpll_inst.PSDA_SEL = "1101";
+defparam rpll_inst.PSDA_SEL = PHASE_SEL;
 defparam rpll_inst.DYN_DA_EN = "false";
 defparam rpll_inst.DUTYDA_SEL = "1000";
 defparam rpll_inst.CLKOUT_FT_DIR = 1'b1;

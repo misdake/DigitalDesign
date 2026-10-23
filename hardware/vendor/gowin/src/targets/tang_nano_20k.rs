@@ -589,7 +589,8 @@ impl TangNano20K {
         };
         let wrapper = if cold_only {
             format!("reg [1:0] cold_lock_sync=0;\nreg cold_sdram_ready=0;\n{}\nalways @(posedge controller_clk) if(!cold_sdram_ready) begin\n cold_lock_sync<={{cold_lock_sync[0],sdram_pll_locked}};\n if(cold_lock_sync[1])cold_sdram_ready<=1;\nend\n",
-                wrapper.replace(".reset(!sdram_pll_locked || (|buttons))", ".reset(!cold_sdram_ready)").replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .COLD_START_ONLY(1)"))
+                wrapper.replace(".reset(!sdram_pll_locked || (|buttons))", ".reset(!cold_sdram_ready)").replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .COLD_START_ONLY(1), .CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .REGISTER_READ_RETURN(1)")
+                    .replace("TangNano20KSdramPll108M54M u_sdram_pll", "TangNano20KSdramPll108M54M #(.PHASE_SEL(\"0111\")) u_sdram_pll"))
         } else {
             wrapper
         };
@@ -876,7 +877,9 @@ impl TangNano20K {
                 // dual-clock line buffer, so the crossings must not be timed
                 // as synchronous paths. The PLL-derived 54 MHz clock gets an
                 // explicit generated-clock name so the group can reference it.
-                .add_sdc_constraint(if wide_2x {
+                .add_sdc_constraint(if cold_only {
+                    "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 -phase 157.5 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
+                } else if wide_2x {
                     "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 -phase 292.5 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
                 } else {
                     "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 2 [get_pins {u_sdram_pll/rpll_inst/CLKOUT}]"
@@ -887,6 +890,18 @@ impl TangNano20K {
                     } else {
                         "set_clock_groups -asynchronous -group [get_clocks {pixel_clk}] -group [get_clocks {sdram_clk}]"
                     },
+                );
+        }
+
+        if cold_only {
+            // CLKOUTP is upstream of the forwarded-clock route and OBUF. Audit
+            // this envelope against each final routed SDF, not only PLL phase.
+            extension = extension
+                .add_sdc_constraint(
+                    "set_clock_latency -source -early 3.75 [get_clocks {sdram_clk}]",
+                )
+                .add_sdc_constraint(
+                    "set_clock_latency -source -late 6.25 [get_clocks {sdram_clk}]",
                 );
         }
 
@@ -1099,7 +1114,8 @@ impl TangNano20K {
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 
-    /// Fixed cold-start system binding. Buttons never restart SDRAM.
+    /// Fixed cold-start CL3 system binding with registered read return.
+    /// Buttons never restart SDRAM; the target owns its phase and route options.
     pub fn cold_boot_hdmi_memory_project<M>(
         project_name: impl Into<String>,
         video_mode: TangNano20KVideoMode,
@@ -1134,7 +1150,12 @@ impl TangNano20K {
                     [Self::SPI_FLASH_MISO],
                 )
                 .with_process_option("-use_mspi_as_gpio", "1")
-                .with_process_option("-ioreg_in_iob", "1");
+                .with_process_option("-ioreg_in_iob", "1")
+                .with_process_option("-place_option", "1")
+                .with_process_option("-route_option", "2")
+                .with_process_option("-gen_posp", "1")
+                .with_process_option("-gen_verilog_sim_netlist", "1")
+                .with_process_option("-gen_sdf", "1");
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 

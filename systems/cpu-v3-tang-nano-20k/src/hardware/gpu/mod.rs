@@ -71,6 +71,14 @@ impl Module for CpuV3Gpu {
         memory
             .resources
             .extend(TargetResourceRequest::new(SsramBits::new(257 * 64)).resources);
+        // Aggregate 18x18 lanes: 24x9x9 / 2 + 10x18x18 + 4x36x18 * 2
+        // + 4 dual-18x18 multiply-add cells * 2. ALU54D has no multiplier lane.
+        memory.resources.extend(
+            TargetResourceRequest::new(
+                digital_design_hardware::resources::components::DspMultipliers::new(38),
+            )
+            .resources,
+        );
         vec![memory]
     }
 

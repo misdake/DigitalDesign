@@ -4,6 +4,11 @@
 module TangNano20KSdramNativeBridge108M54M #(
     // BANK_BIT=5 stripes 128-byte sectors over four banks; 19 keeps contiguous banks.
     parameter PREPARE_NEXT = 0,
+    parameter REGISTER_READ_RETURN = 0,
+    parameter CAS = 2,
+    parameter RCD_CYCLES = 2,
+    parameter RP_CYCLES = 2,
+    parameter CAPTURE_LATENCY = 2,
     parameter COLD_START_ONLY = 0,
     parameter CHAIN_GROUP_FOUR = 0,
     parameter BANK_BIT = 5
@@ -119,12 +124,28 @@ module TangNano20KSdramNativeBridge108M54M #(
     wire push_pair_54 = write_data_valid && write_data_ready;
 
     assign initialized = init_54;
-    // The related-clock pair Q is stable at the consuming logic edge. A pair
-    // produced on that same controller edge updates only after the consumer
-    // samples old Q. SharedSdramPort owns the sole 54 MHz payload/terminal hold.
-    // This is an edge-valid event, not a registered post-edge logic pulse.
-    assign read_data = read_pair_108;
-    assign read_valid = !transport_reset && read_toggle_108 != read_seen_54;
+    // Capture the complete stable old pair Q together with its event. The
+    // optional register adds one logic cycle without reducing pair throughput.
+    // SharedSdramPort still owns terminal/LAST and backpressure retention.
+    // Legacy diagnostic profiles keep the original edge-valid return.
+    generate if (REGISTER_READ_RETURN) begin : registered_read_return
+        reg [63:0] payload_54 = 0;
+        reg valid_54 = 0;
+        always @(posedge logic_clk) begin
+            if (transport_reset) begin
+                payload_54 <= 0;
+                valid_54 <= 0;
+            end else begin
+                valid_54 <= read_toggle_108 != read_seen_54;
+                if (read_toggle_108 != read_seen_54) payload_54 <= read_pair_108;
+            end
+        end
+        assign read_data = payload_54;
+        assign read_valid = !transport_reset && valid_54;
+    end else begin : edge_read_return
+        assign read_data = read_pair_108;
+        assign read_valid = !transport_reset && read_toggle_108 != read_seen_54;
+    end endgenerate
     assign stream_active = stream_active_54;
     assign request_ready = init_54 && !occupied_54 && !transport_reset;
     // Keep the 108 MHz word index out of the GPU/arbiter ready path. Two
@@ -275,7 +296,9 @@ module TangNano20KSdramNativeBridge108M54M #(
         end
     end
 
-    SdramController #(.BANK_BIT(BANK_BIT), .PREPARE_NEXT(PREPARE_NEXT),
+    SdramController #(.CAS(CAS), .RCD_CYCLES(RCD_CYCLES), .RP_CYCLES(RP_CYCLES),
+        .CAPTURE_LATENCY(CAPTURE_LATENCY),
+        .BANK_BIT(BANK_BIT), .PREPARE_NEXT(PREPARE_NEXT),
         .CHAIN(CHAIN_GROUP_FOUR), .READ_CHAIN(CHAIN_GROUP_FOUR)) u_controller (
         .clk(controller_clk), .sdram_clk(sdram_clk), .reset(reset),
         .request(core_request), .writing(core_writing), .address(core_address),

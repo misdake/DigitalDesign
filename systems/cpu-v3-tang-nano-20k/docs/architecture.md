@@ -7,8 +7,8 @@ single-CB GPU command closure from `ip/gpu-v2` to the three system memory master
 The old GPU ABI is not supported. `src/hardware/gpu/sim/` remains historical.
 The current Device4 protocol and completion boundary are specified in
 [GPU commands](/ip/gpu-v2/docs/commands.md). Bounded interface/RTL tests do not
-qualify a new full-board image; existing system timing evidence below predates
-this real GPU binding.
+qualify a new full-board image. Historical Stage 12 timing tables below predate
+this binding; the current complete-system profile is specified under Clock domains.
 
 The 2026-10-02 development baseline passes workspace regression, strict lint,
 core/system co-simulation, generated Flash boot checks and whole-system Gowin
@@ -157,9 +157,26 @@ four-sector group is a separate protocol and remains disabled in the CPU V3 syst
 - CPU core, fetch queue, caches, arbiter, fixed boot loader, devices, and the CPU side of the SDRAM bridge run
   at 54 MHz.
 - The native controller and physical 32-bit SDRAM beat side run at the related 108-MHz clock.
-  The SDRAM output clock is shifted by 292.5 degrees from the controller clock.
+  The SDRAM output clock is shifted by 157.5 degrees from the controller clock.
 - HDMI scanout uses separate pixel and serialization clocks. The display path owns the explicit
   crossings and line buffering; CPU IP does not depend on video clocks.
+
+The production cold-start target selects CL3/RCD3/RP3, capture latency 3,
+RFC9/WR2, routing option 2 and registered 64-bit read return. DQM and each DQ
+enable have physical output registers driven by local owner state without an
+extra SDRAM protocol cycle. The read pair and valid cross into a complete
+54 MHz register stage, adding one logic cycle before client consumption.
+The [vendor memory contract](/hardware/vendor/gowin/doc/sdram-memory-controller.md#full-system-tang-nano-20k-profile)
+defines the parameters and return/terminal ownership.
+
+The SDRAM generated-clock reference includes 3.75/6.25 ns early/late forwarded
+clock latency. Every complete fit must preserve the GPU and all clients, pass
+global setup and hold checks, and verify this envelope against its routed SDF.
+The emitted SDF is part of this audit; passing an internal-domain Fmax alone is
+insufficient. Physical boot and visible animation have been demonstrated with
+this configuration, but the observed texture speckles and green surface rings
+remain unresolved. Successful programming and timing closure do not establish
+rendering correctness.
 
 A clock enable is not treated as a timing exception or as a replacement for an explicit pipeline or
 clock-domain boundary.
@@ -270,8 +287,12 @@ and pipeline state; tying its reset to the global constant-zero runtime reset
 does not initialize it. The gate releases once SDRAM is ready and never reasserts
 on buttons or later lock loss. CPU, boot and Display retain their existing cold
 contracts, and CPU device writes remain blocked until boot completes.
-The fixed native GPU leaf declares its 36 BSRAMs and 257 RAM16 cells in the target
-resource model; the complete system therefore plans 46 BSRAMs. The existing
+The fixed native GPU leaf declares its 36 BSRAMs, 257 RAM16 cells and 38 aggregate
+18x18 multiplier lanes in the target resource model. The CPU contributes four
+more multiplier lanes; the complete system plans 46 BSRAMs. The audit counts
+MULTALU36X18 as two multiplier lanes and retains ALU54D as a recognized cell
+without multiplier lanes. These aggregate reservations do not describe spare
+compatible DSP macro placements. The existing
 physical-resource audit can then reject a build whose GPU was swept, rather
 than treating the CPU/Display-only claim as the complete board allocation.
 

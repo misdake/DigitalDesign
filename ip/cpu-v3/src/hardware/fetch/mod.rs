@@ -1,7 +1,7 @@
 //! 2-slot instruction payload queue with two requests and a two-word BTC.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
-use digital_design_hardware::{Hardware, Module, ModuleIo};
+use digital_design_hardware::{Hardware, Module, ModuleIo, SsramBits, TargetResourceRequest};
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3InstructionFetchQueueInput {
@@ -30,7 +30,7 @@ pub struct CpuV3InstructionFetchQueueOutput {
 /// Keeps 2 payload slots and two request-provenance slots. Current bits invalidate
 /// late responses across arbitrarily many redirects, without epoch wraparound.
 #[derive(Hardware)]
-#[hardware(namespace = "components/cpu/cpu_v3")]
+#[hardware(namespace = "components/cpu/cpu_v3", target_leaf)]
 pub struct CpuV3InstructionFetchQueue;
 
 include!(concat!(env!("OUT_DIR"), "/fetch_config.rs"));
@@ -378,6 +378,12 @@ impl Module for CpuV3InstructionFetchQueue {
     type Output = CpuV3InstructionFetchQueueOutput;
     type EmuState = CpuV3InstructionFetchQueueState;
     const USES_MAIN_CLOCK: bool = true;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // Match PAYLOAD_WORDS, including the physical 16-word RAM granularity.
+        let words = if CPU_V3_BTC_ENTRIES == 8 { 32 } else { 16 };
+        vec![TargetResourceRequest::new(SsramBits::new(words * 16))]
+    }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
         Self::EmuState::default()

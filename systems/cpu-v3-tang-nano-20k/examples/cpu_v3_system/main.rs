@@ -254,7 +254,6 @@ impl Module for CpuV3System {
 fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
     let mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
     TangNano20K::cold_boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system", mode)
-        .with_timing_driven_implementation()
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
 }
 #[cfg(test)]
@@ -419,6 +418,18 @@ mod tests {
         );
         let board = gowin_project().generate().unwrap();
         assert_eq!(board.resources.claimed[&ResourceKind::Bsram18K], 46);
+        let top = &board.files[std::path::Path::new("src/generated/board_top.v")];
+        assert!(top.contains(
+            ".CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .REGISTER_READ_RETURN(1)"
+        ));
+        assert!(top.contains(".PHASE_SEL(\"0111\")"));
+        let sdc = &board.files[std::path::Path::new("src/generated/board.sdc")];
+        assert!(sdc.contains("-phase 157.5"));
+        assert!(sdc.contains("-source -early 3.75"));
+        assert!(sdc.contains("-source -late 6.25"));
+        let build = &board.files[std::path::Path::new("build.tcl")];
+        assert!(build.contains("set_option -route_option 2"));
+        assert!(build.contains("set_option -gen_sdf 1"));
     }
     #[test]
     #[ignore = "complete real-SPI production application cold boot"]

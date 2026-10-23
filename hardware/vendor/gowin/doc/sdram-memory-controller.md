@@ -25,7 +25,47 @@ model, including scalar lanes, refresh, invalid requests, reset and response wai
 The approximate timing study remains separate from this cycle implementation.
 The standalone [traffic probes](sdram-traffic-probe.md) have passed PnR. The serial
 baseline has physical measurements; updated early/group qualification is pending
-usable UART data. CPU tests/system co-simulation were not run in this unit.
+usable UART data. Complete-system qualification additionally uses core/system
+co-simulation and the final target's audited artifacts.
+
+## Full-system Tang Nano 20K profile
+
+`TangNano20K::cold_boot_hdmi_memory_project` selects the complete CPU/GPU/Display
+profile: 54 MHz logic, 108 MHz controller, CAS/RCD/RP/capture latency 3 cycles,
+RFC 9 cycles and write recovery 2 cycles. The bridge exposes the timing parameters
+explicitly; legacy diagnostic and standalone profiles retain CL2 defaults.
+The actual PLL `PSDA_SEL` and the SDC generated clock both select 157.5 degrees.
+The complete-system target selects placement option 1, routing option 2, I/O
+register absorption and routed SDF generation.
+
+The SDRAM reference includes the PLL-to-clock-port route and output buffer:
+`set_clock_latency -source -early 3.75` and `-late 6.25` ns. These bounds must be
+checked against the final routed SDF after every fit; PLL phase alone does not
+include this delay. Input delays remain 2/6 ns, output setup/hold remain 1.5/1 ns,
+and the existing input setup/hold multicycle values remain 2/0. Pixel and memory
+clock groups remain asynchronous; the controller and logic clocks remain related.
+
+DQM and DQ output-enable state has a local logical owner. Four DQM registers and
+32 independent active-low enable registers capture the owner's next value on the
+same controller edge. DQM becomes the saved mask at WRITE_LAUNCH, zero at
+READ_LAUNCH, and all ones on reset. Output enable asserts at WRITE_LAUNCH and
+releases at WRITE_END or reset. Pad-register Q does not feed the owner back.
+Preservation attributes prevent physical copies from being merged; this adds no
+SDRAM command cycle. Per-pin enable registers do not imply that every register
+is absorbed into an I/O tri-state register.
+
+`REGISTER_READ_RETURN=1` captures the complete stable 64-bit pair and valid event
+at the 54 MHz edge. Clients consume it one logic cycle later, still at up to one
+pair per cycle. The generic default remains zero. With runtime reset enabled,
+reset clears registered valid and payload; cold-only operation uses declaration
+initial values. `SharedSdramPort` retains LAST, terminal response and
+backpressure ownership; the extra stage does not change native completion or
+transaction admission semantics. This profile adds no BSRAM or DSP.
+
+The independent pin oracle supports explicit `CAS_LATENCY=2|3`, checks the loaded
+mode, and keeps device launch latency independent of FPGA capture latency. Its
+legacy CL2 defaults remain unchanged. CL3 pin qualification uses explicit
+conservative reference parameters, not an identification of the board's embedded die.
 
 ## Host service and data boundary
 
@@ -277,7 +317,7 @@ the declared returned words. Write completion events cross at the related-clock
 calendar and emit one pulse per transaction; endpoint read framing follows the
 returned pairs. Scalar write completion also
 releases its unused upper pair half. No BSRAM, DSP or payload FIFO is added.
-The endpoint data register samples independently of the native return-valid
+In the legacy edge-return profile, the endpoint data register samples independently of the native return-valid
 event, except while holding a backpressured response. Invalid-cycle data is not
 owned. This leaves the half-cycle return-valid signal on framing/control only,
 instead of enabling all64 payload registers; no response pipeline stage is added.
