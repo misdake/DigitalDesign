@@ -1,4 +1,5 @@
 //! CB06 sequential COPY/ZERO cold-boot image; layout validation belongs to the host.
+use crate::gpu_layout as driver_layout;
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -174,7 +175,10 @@ fn resource_range(resource: &BootResource) -> Result<std::ops::Range<usize>, Sin
     if ![
         (0x20000, 0xe0000),
         (0x100000, 0x400000),
-        (0x490000, 0x800000),
+        (
+            usize::from(driver_layout::GPU_ASSET_FIRST_SECTOR) * 128,
+            0x800000,
+        ),
     ]
     .into_iter()
     .any(|(a, b)| r.start >= a && r.end <= b)
@@ -347,7 +351,7 @@ mod tests {
         let data: Vec<u8> = (0..0x20_0000).map(|i| (i ^ (i >> 8)) as u8).collect();
         let resources = [
             BootResource::copy(0x100000, data.clone()),
-            BootResource::zero(0x490000, 34),
+            BootResource::zero(0x4b0000, 34),
         ];
         let image = pack_application_resources(&code, &resources).unwrap();
         let mut memory = vec![0xa55a; BOOT_MEMORY_BYTES / 2];
@@ -366,8 +370,9 @@ mod tests {
         }
         assert!(memory[0x200000..0x230000].iter().all(|w| *w == 0));
         assert!(memory[0x230000..0x248000].iter().all(|w| *w == 0xa55a));
-        assert!(memory[0x248000..0x248011].iter().all(|w| *w == 0));
-        assert_eq!(memory[0x248011], 0xa55a);
+        assert!(memory[0x248000..0x258000].iter().all(|w| *w == 0xa55a));
+        assert!(memory[0x258000..0x258011].iter().all(|w| *w == 0));
+        assert_eq!(memory[0x258011], 0xa55a);
         assert_eq!(
             pack_single_application(&code).unwrap().len(),
             4 + 4 * 8 + code.len()
@@ -382,6 +387,11 @@ mod tests {
             0x400000,
             0x460000,
             0x48fffe,
+            0x490000,
+            0x498000,
+            0x4a0000,
+            0x4a8000,
+            0x4afffe,
             0x800000,
             usize::MAX,
         ] {
@@ -418,11 +428,11 @@ mod tests {
     #[test]
     fn project_resource_constants_and_one_application() {
         let p = parse_boot_project(
-            "format 2\napplication rcc/a.rs\ncopy MESH 0x100000 assets/m.bin\nzero 0x490000 32",
+            "format 2\napplication rcc/a.rs\ncopy MESH 0x100000 assets/m.bin\nzero 0x4b0000 32",
         )
         .unwrap();
         assert!(p.constants().contains("MESH_WORD_ADDRESS_HIGH: u16 = 8;"));
-        assert_eq!(p.zeros, vec![(0x490000, 32)]);
+        assert_eq!(p.zeros, vec![(0x4b0000, 32)]);
         assert_eq!(
             single_application_source("format 2\napplication rcc/a.rs").unwrap(),
             PathBuf::from("rcc/a.rs")

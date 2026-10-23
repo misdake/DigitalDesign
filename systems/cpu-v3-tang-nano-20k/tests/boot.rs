@@ -118,7 +118,7 @@ fn command_line_repack_uses_the_project_resource_files() {
     std::fs::write(root.join("mesh.bin"), b"asset").unwrap();
     std::fs::write(
         root.join("project.conf"),
-        "format 2\napplication app.rs\ncopy MESH 0x100000 mesh.bin\nzero 0x490000 32\n",
+        "format 2\napplication app.rs\ncopy MESH 0x100000 mesh.bin\nzero 0x4b0000 32\n",
     )
     .unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_cpu-v3-pack"))
@@ -140,7 +140,7 @@ fn command_line_repack_uses_the_project_resource_files() {
             code,
             &[
                 BootResource::copy(0x100000, b"asset".to_vec()),
-                BootResource::zero(0x490000, 32)
+                BootResource::zero(0x4b0000, 32)
             ]
         )
         .unwrap()

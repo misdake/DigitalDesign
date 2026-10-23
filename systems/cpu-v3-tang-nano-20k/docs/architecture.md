@@ -259,11 +259,14 @@ condition.
 Device indices 1 and 2 are unassigned in this system; the former selection and
 programmable DMA register banks are absent. The selected application is the
 [CPU-only Display diagnostic](/systems/cpu-v3-tang-nano-20k/docs/system-display-test.md),
-`rcc/system-display-test.rs`. The historical `rcc/display-demo.rs` and GPU
-constants in `rcc/device_abi.rs` use the retired command ABI and are not selected
-for this board diagnostic. They are not a supported driver for the new GPU
-leaf; compilation of those assets does not qualify GPU execution. A migrated
-RCC renderer and full board boot/Display qualification remain separate work.
+`rcc/system-display-test.rs`. The historical `rcc/display-demo.rs` is not a
+driver for the current GPU. `rcc/device_abi.rs` now names the two-SEND ABI;
+the [RCC driver](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md) provides one
+opaque command buffer, high-memory storage, scoped DSEG3 access and a complete
+Clear/Store Pass with ordered multi-Mesh/Instance recording, immutable high-memory
+asset directories, state snapshots and affine/Camera helpers. It is verified by
+separately compiled fixtures, not selected as the default boot application. Display present and new board
+qualification remain separate work.
 
 Device4 accepts two16-bit SENDs: channel0 stages the u32 instruction count
 minus1 (14 bits), and channel1 takes byte base/128 and starts execution. Base is
@@ -274,6 +277,14 @@ ACK. Software retains the CB and all indirect allocations while busy. A new CB
 can be launched immediately after true completion; final END follows explicit
 WAIT(all) and FLUSH. Configuration changes remain explicitly fenced commands.
 The GPU keeps its command/data DMA overlap and meshlet pingpong inside one CB.
+
+Software reserves physical bytes [0x400000,0x800000) for the GPU, including
+fixed Color A/B and Depth. General memory allocations exclude that entire
+domain. The driver owns command [0x490000,0x4a0000) and object
+[0x4a0000,0x4b0000) storage; immutable assets start at 0x4b0000. This allocation
+changes no RTL address decoder or timing configuration. Boot resource packing
+rejects overlap with the whole command/object arena. The driver changes only
+DSEG3 while accessing it; DSEG0..2 and the stack remain mapped throughout.
 
 The target leaf connects the real GPU's RO, framebuffer-read and framebuffer-
 write masters to the existing system ports. Its execution CE is always enabled;

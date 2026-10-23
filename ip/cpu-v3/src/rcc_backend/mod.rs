@@ -603,6 +603,13 @@ fn lower_instruction(
             let sr = match sr {
                 SpecialReg::Cseg => SpecialRegister::CodeSegment,
                 SpecialReg::Dseg => SpecialRegister::DataSegment,
+                SpecialReg::DsegPage(index) => match index {
+                    0 => SpecialRegister::DataSegment0,
+                    1 => SpecialRegister::DataSegment1,
+                    2 => SpecialRegister::DataSegment2,
+                    3 => SpecialRegister::DataSegment3,
+                    _ => unreachable!("validated DSEG page index"),
+                },
             };
             lines.word(cpu_v3::read_special(register(*dst), sr));
         }
@@ -673,7 +680,10 @@ fn lower_instruction(
             lines.word(cpu_v3::clean_data_line(register(*address)))
         }
         Instr::DcacheWait => lines.word(cpu_v3::wait_data_cache()),
-        Instr::MtsrDseg { src } => lines.word(cpu_v3::write_data_segment(register(*src))),
+        Instr::MtsrDseg { src, index } => lines.word(match index {
+            Some(index) => cpu_v3::write_data_segment_page(*index, register(*src)),
+            None => cpu_v3::write_data_segment(register(*src)),
+        }),
         Instr::Jseg { cseg, target } => {
             lines.word(cpu_v3::jump_segment(register(*cseg), register(*target)))
         }

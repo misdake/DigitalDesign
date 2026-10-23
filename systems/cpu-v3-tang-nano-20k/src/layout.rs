@@ -1,3 +1,4 @@
+pub use crate::gpu_layout::*;
 use digital_design_ip_common::{
     DeviceAllocation, MemoryRegion, MemoryRegionKind, PhysicalWordAddress, SystemDeviceLayout,
     SystemMemoryLayout,
@@ -18,8 +19,8 @@ pub const FRAMEBUFFER_TILE_ROW_STRIDE_WORDS: u32 =
 pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT;
 /// Per-framebuffer slot, including the padding that 16x16 tiles leave after
 /// the last tile row.
-pub const FRAMEBUFFER_SLOT_WORDS: u32 = 0x0001_8000;
-pub const FRAMEBUFFER_A_BASE_WORD: u32 = 0x0020_0000;
+pub const FRAMEBUFFER_SLOT_WORDS: u32 = GPU_PLANE_SECTORS as u32 * 64;
+pub const FRAMEBUFFER_A_BASE_WORD: u32 = GPU_COLOR_A_SECTOR as u32 * 64;
 pub const FRAMEBUFFER_B_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD + FRAMEBUFFER_SLOT_WORDS;
 pub const FRAMEBUFFER_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD;
 pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_B_BASE_WORD + FRAMEBUFFER_SLOT_WORDS;
@@ -69,10 +70,10 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
             kind: MemoryRegionKind::Shared,
         },
         MemoryRegion {
-            name: "main-high-after-framebuffer",
+            name: "gpu-depth-arenas-assets",
             base: PhysicalWordAddress::new(FRAMEBUFFER_END_WORD),
             words: (1 << 22) - FRAMEBUFFER_END_WORD,
-            kind: MemoryRegionKind::Main,
+            kind: MemoryRegionKind::Shared,
         },
     ];
 }
@@ -194,6 +195,21 @@ mod tests {
         validate_device_layout::<TangNano20kDeviceLayout>().unwrap();
         assert!(SdramWordAddress::try_from(PhysicalWordAddress::new((1 << 22) - 1)).is_ok());
         assert!(SdramWordAddress::try_from(PhysicalWordAddress::new(1 << 22)).is_err());
+    }
+
+    #[test]
+    fn fixed_gpu_domain_is_excluded_from_general_memory() {
+        let first = u32::from(GPU_DOMAIN_FIRST_SECTOR) * 64;
+        for region in TangNano20kMemoryLayout::REGIONS {
+            if region.kind == MemoryRegionKind::Main {
+                assert!(region.base.get() + region.words <= first);
+            }
+        }
+        assert_eq!(u32::from(GPU_COMMAND_FIRST_SECTOR) * 128, 0x490000);
+        assert_eq!(u32::from(GPU_COMMAND_CAPACITY_SECTORS) * 128, 65536);
+        assert_eq!(u32::from(GPU_OBJECT_FIRST_SECTOR) * 128, 0x4a0000);
+        assert_eq!(u32::from(GPU_OBJECT_CAPACITY_SECTORS) * 128, 65536);
+        assert_eq!(u32::from(GPU_ASSET_FIRST_SECTOR) * 128, 0x4b0000);
     }
 
     #[test]

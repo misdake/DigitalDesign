@@ -71,6 +71,7 @@ pub enum MulWindow {
 pub enum SpecialReg {
     Cseg,
     Dseg,
+    DsegPage(u8),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -293,6 +294,7 @@ pub enum Instr {
     /// CpuV3-only: write the DSEG special register (MTSR DSEG)
     MtsrDseg {
         src: VReg,
+        index: Option<u8>,
     },
     /// CpuV3-only: atomically switch CSEG and jump (JSEG); never returns
     Jseg {
@@ -508,7 +510,7 @@ impl Instr {
             }
             Instr::DcacheCleanLine { address } => f(*address),
             Instr::DevSend { src, .. }
-            | Instr::MtsrDseg { src }
+            | Instr::MtsrDseg { src, .. }
             | Instr::StoreSp { src, .. }
             | Instr::StoreLocal { src, .. } => f(*src),
             Instr::Jseg { cseg, target } => {
@@ -613,7 +615,7 @@ impl Instr {
             }
             Instr::DcacheCleanLine { address } => f(address),
             Instr::DevSend { src, .. }
-            | Instr::MtsrDseg { src }
+            | Instr::MtsrDseg { src, .. }
             | Instr::StoreSp { src, .. }
             | Instr::StoreLocal { src, .. } => f(src),
             Instr::Jseg { cseg, target } => {
@@ -968,9 +970,13 @@ impl fmt::Display for Instr {
                 write!(f, "signal {signal_type}, v{value}")
             }
             Instr::Mfsr { dst, sr } => {
+                if let SpecialReg::DsegPage(index) = sr {
+                    return write!(f, "v{dst} = mfsr DSEG{index}");
+                }
                 let sr = match sr {
                     SpecialReg::Cseg => "CSEG",
                     SpecialReg::Dseg => "DSEG",
+                    SpecialReg::DsegPage(_) => unreachable!(),
                 };
                 write!(f, "v{dst} = mfsr {sr}")
             }
@@ -1021,7 +1027,10 @@ impl fmt::Display for Instr {
             } => write!(f, "dcache_line_copy v{source}, v{destination_page}"),
             Instr::DcacheCleanLine { address } => write!(f, "dcache_clean_line v{address}"),
             Instr::DcacheWait => write!(f, "dcache_wait"),
-            Instr::MtsrDseg { src } => write!(f, "mtsr_dseg v{src}"),
+            Instr::MtsrDseg { src, index } => match index {
+                Some(i) => write!(f, "mtsr_dseg_page {i}, v{src}"),
+                None => write!(f, "mtsr_dseg v{src}"),
+            },
             Instr::Jseg { cseg, target } => write!(f, "jseg v{cseg}, v{target}"),
             Instr::LoadSp { dst, slot } => write!(f, "v{dst} = load_sp #{slot}"),
             Instr::StoreSp { slot, src } => write!(f, "store_sp #{slot} = v{src}"),

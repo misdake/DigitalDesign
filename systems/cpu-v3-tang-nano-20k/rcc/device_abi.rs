@@ -29,12 +29,8 @@ pub const DISPLAY_RGB565: u16 = 0;
 pub const DISPLAY_LINEAR_RGB565: u16 = 1;
 
 pub const GPU_DEVICE: u16 = 4;
-pub const GPU_CMD_BASE_LOW: u16 = 0;
-pub const GPU_CMD_BASE_HIGH: u16 = 1;
-pub const GPU_CMD_WORDS_LOW: u16 = 2;
-pub const GPU_CMD_WORDS_HIGH: u16 = 3;
-pub const GPU_SUBMIT: u16 = 4;
-pub const GPU_EXECUTED_COUNT: u16 = 1;
+pub const GPU_COMMAND_COUNT: u16 = 0;
+pub const GPU_COMMAND_START: u16 = 1;
 pub const GPU_STATUS: u16 = 2;
-pub const GPU_STATUS_SUBMIT_REJECTED: u16 = 1 << 2;
-pub const GPU_STATUS_COMMAND_ERROR: u16 = 1 << 3;
+pub const GPU_STATUS_BUSY: u16 = 1;
+pub const GPU_STATUS_TRANSPORT_ERROR: u16 = 2;
