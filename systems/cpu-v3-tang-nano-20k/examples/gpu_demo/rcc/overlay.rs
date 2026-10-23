@@ -24,21 +24,6 @@ pub fn demo_overlay_init(mut cells: Array<u16>, state: Array<u16>) {
         word += 1;
     }
     frame_stats_reset(state);
-    // Row 1, column 2: FRAME ----- MS. Spaces use the transparent glyph.
-    demo_cell_set(cells, 52, 70);
-    demo_cell_set(cells, 53, 82);
-    demo_cell_set(cells, 54, 65);
-    demo_cell_set(cells, 55, 77);
-    demo_cell_set(cells, 56, 69);
-    demo_cell_set(cells, 57, 32);
-    let mut cell: u16 = 58;
-    while cell < 63 {
-        demo_cell_set(cells, cell, 45);
-        cell += 1;
-    }
-    demo_cell_set(cells, 63, 32);
-    demo_cell_set(cells, 64, 77);
-    demo_cell_set(cells, 65, 83);
 }
 
 // completed requires successful GPU execution AND actual presentation of the
@@ -49,7 +34,20 @@ pub fn demo_overlay_begin(cells: Array<u16>, state: Array<u16>, now: u16, comple
     frame_stats_digits(state, digits.as_array());
     let mut i: u16 = 0;
     while i < 5 {
-        demo_cell_set(cells, 58 + i, digits[i]);
+        demo_cell_set(cells, 52 + i, 255);
+        i += 1;
+    }
+    if state[3u16] == 0 {
+        return;
+    }
+    i = 0;
+    while i < 4 && digits[i] == 48 {
+        i += 1;
+    }
+    let mut cell: u16 = 52;
+    while i < 5 {
+        demo_cell_set(cells, cell, digits[i]);
+        cell += 1;
         i += 1;
     }
 }

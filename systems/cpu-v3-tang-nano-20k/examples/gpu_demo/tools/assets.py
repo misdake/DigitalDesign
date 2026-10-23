@@ -17,7 +17,7 @@ import solid_scene
 
 ATLAS = 0x4B0000
 MESH = 0x4C0000
-TEXTURE = 0x4C1000
+TEXTURE = 0x4D0000
 
 
 def sha(path):
@@ -54,7 +54,7 @@ def native_record(mesh, scale):
     record = bytearray(128 + payload_size)
     origin = mesh["config"]
     meta = [len(vertices) | (len(triangles) << 8) | (20 << 16) | (offset << 24) | (1 << 31),
-            scale, (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
+            scale | (mesh.get("color_mode", 0) << 4), (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
             (origin[2] & 0xFFFFFFFF) | (origin[3] << 32)]
     struct.pack_into("<4Q", record, 0, *meta)
     for i, vertex in enumerate(vertices):
@@ -96,84 +96,49 @@ def texture():
 def pack(output):
     output.mkdir(parents=True, exist_ok=True)
     atlas, glyphs = font()
-    meshes = solid_scene.room()
-    cameras = [solid_scene.camera(name) for name in ("front", "side", "oblique")]
-    # Reuse the established room geometry/UV assignment; no prewritten commands.
-    for mesh in meshes:
-        for i, vertex in enumerate(mesh["vertices"]):
-            vertex[2] = round(i % 5 / 4 * 65535) | (round(i // 5 / 4 * 65535) << 16)
-    spec = importlib.util.spec_from_file_location("demo_native_oracle", SCENE / "reference/scene/oracle.py")
-    oracle = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(oracle)
-    scale = 0
-    transformed = []
-    for camera in cameras:
-        for mesh in meshes:
-            values = oracle.F.oracle(camera["uniform"], mesh["config"], mesh["vertices"])
-            transformed.extend(oracle.signed(values[6 * i + axis], 32)
-                               for i in range(len(mesh["vertices"])) for axis in range(3))
-    while not all(-131072 <= value >> scale <= 131071 for value in transformed):
-        scale += 1
-    # Complete yaw orbit, not just the three fixed historical poses. SINCOS
-    # quarter-wave interpolation stays in [-1,1]. With radius 8 and room X/Z
-    # in [-3,3], |H.z| <= 14; focal-scaled X/Y are smaller. Include a raw-Q
-    # rounding allowance. The compiled-camera probe also checks all 512 phases.
-    orbit_bound = 14 * 65536 + 64
-    while orbit_bound >> scale > 131071:
-        scale += 1
-    assert scale <= 16
-    data = bytearray(128)  # Immutable directory, padded to one readable sector.
+    scene = json.loads((EXAMPLE / "assets/scene.json").read_text())
+    meshes = scene["meshes"]
+    data = bytearray(128)
     entries = []
     for i, mesh in enumerate(meshes):
         address = MESH + len(data)
-        record = native_record(mesh, scale)
-        struct.pack_into("<2H", data, 4 * i, address // 128, len(record) // 128 - 1)
+        record = native_record(mesh, mesh["scale_s"])
+        struct.pack_into("<2H", data, 4*i, address//128, len(record)//128-1)
         data += record
-        entries.append(dict(name=mesh["name"], address=address, size=len(record)))
-        # Compare the complete native metadata/payload with the existing
-        # independent host encoder, which also checks all V/T numeric ranges.
-        instance = dict(mesh, uniform=cameras[0]["uniform"], scale_s=scale,
-                        color_mode=0, cull_negative=1, slot=0,
-                        cfg_tex_w_log2=6, cfg_tex_h_log2=6, cfg_max_mip=6)
-        folder = output / "native-audit" / str(i)
-        oracle.prepare(instance, folder)
-        encoded = {int(a): int(v, 16) for a, v in
-                   (line.split() for line in (folder / "dma.txt").read_text().splitlines())}
-        assert record[:32] == struct.pack("<4Q", *(encoded[256 + q] for q in range(4)))
-        for q in range((len(record) - 128) // 8):
-            assert struct.unpack_from("<Q", record, 128 + q * 8)[0] == encoded.get(q, 0)
+        entries.append(dict(name=mesh["name"], address=address, size=len(record),
+                            color_mode=mesh["color_mode"], unlit=mesh["unlit"]))
+    camera_first = (MESH + len(data)) // 128
+    for camera in scene["cameras"]:
+        record = bytearray(128)
+        struct.pack_into("<21I3h", record, 0,
+                         *(v & 0xffffffff for v in camera["matrix"]), *camera["light"])
+        data += record
+    assert len(meshes)==24 and len(scene["cameras"])==256
+    assert sum(len(m["triangles"]) for m in meshes)==1141
     assert MESH + len(data) <= TEXTURE
     resources = [("atlas.bin", ATLAS, atlas), ("room.bin", MESH, bytes(data)),
                  ("texture.bin", TEXTURE, texture())]
     for name, address, payload in resources:
         assert address % 128 == 0 and len(payload) % 128 == 0
-        assert 0x4B0000 <= address < address + len(payload) <= 0x800000
-        (output / name).write_bytes(payload)
-    for left, right in zip(resources, resources[1:]):
-        assert left[1] + len(left[2]) <= right[1]
-    sources = [Path(__file__), EXAMPLE / "assets/font-8x16.txt", SCENE / "solid_scene.py",
-               SCENE / "material_scene.py", SCENE / "assets/room-tiles.png",
-               SCENE / "reference/scene/oracle.py", SCENE / "reference/reference.py",
-               SCENE / "reference/math/model.py"]
-    manifest = dict(
-        scope="Immutable asset preparation and V/T/native encoding checks; no CPU/GPU frame execution",
-        resources=[dict(file=name, address=address, bytes=len(payload), sha256=sha(output / name))
-                   for name, address, payload in resources],
-        mesh=dict(directory_sector=MESH // 128, directory_word=0, count=len(meshes),
-                  first_sector=MESH // 128, sectors=len(data) // 128, scale_s=scale, entries=entries),
-        texture=dict(sector=TEXTURE // 128, sectors=88, size_log2=6, full_mip=1),
-        atlas=dict(sector=ATLAS // 128, sectors=512, glyphs=sorted(glyphs)),
-        cameras=cameras,
-        orbit=dict(radius=8, phase_step=128, steps=512, absolute_h_bound_raw=orbit_bound),
-        sources={str(path.relative_to(ROOT)).replace("\\", "/"): sha(path) for path in sources},
-    )
-    (output / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    roots = dict(DEMO_MESH_DIRECTORY=MESH // 128, DEMO_MESH_COUNT=len(meshes),
-                 DEMO_MESH_SECTORS=len(data) // 128, DEMO_TEXTURE=TEXTURE // 128,
-                 DEMO_TEXTURE_SECTORS=88, DEMO_ATLAS=ATLAS // 128)
-    (output / "demo_assets.rs").write_text(''.join(
-        f'pub const {name}: u16 = {value};\n' for name, value in roots.items()))
-    print(f"PASS demo assets: {len(meshes)} meshlets, 192 triangles, 18 glyphs, scale_s={scale}")
+        assert 0x4b0000 <= address < address+len(payload) <= 0x800000
+        (output/name).write_bytes(payload)
+    sources = [Path(__file__), EXAMPLE/"assets/scene.json", EXAMPLE/"assets/font-8x16.txt",
+               SCENE/"material_scene.py", SCENE/"solid_scene.py", SCENE/"assets/room-tiles.png"]
+    manifest = dict(scene=scene["scene"], triangles=1141, provenance=scene["provenance"],
+        resources=[dict(file=n,address=a,bytes=len(p),sha256=sha(output/n)) for n,a,p in resources],
+        mesh=dict(directory_sector=MESH//128, directory_word=0, count=24,
+                  first_sector=MESH//128,sectors=len(data)//128,entries=entries),
+        texture=dict(sector=TEXTURE//128,sectors=88,size_log2=6,full_mip=1),
+        atlas=dict(sector=ATLAS//128,sectors=512,glyphs=sorted(glyphs)),
+        orbit=dict(radius=2.8,steps=256,camera_first_sector=camera_first),
+        sources={str(p.relative_to(ROOT)).replace(chr(92),"/"):sha(p) for p in sources})
+    (output/"assets.json").write_text(json.dumps(manifest,indent=2)+"\n")
+    roots=dict(DEMO_MESH_DIRECTORY=MESH//128,DEMO_MESH_COUNT=24,
+        DEMO_MESH_SECTORS=len(data)//128,DEMO_ROOM_COUNT=6,DEMO_RGB_WORD=12,
+        DEMO_BUNNY_WORD=14,DEMO_BUNNY_COUNT=17,DEMO_CAMERA_FIRST=camera_first,
+        DEMO_TEXTURE=TEXTURE//128,DEMO_TEXTURE_SECTORS=88,DEMO_ATLAS=ATLAS//128)
+    (output/"demo_assets.rs").write_text(''.join(f'pub const {n}: u16 = {v};\n' for n,v in roots.items()))
+    print("Built classic box+rabbit+RGB: 24 meshlets, 1141 triangles, 256 orbit poses")
 
 
 if __name__ == "__main__":

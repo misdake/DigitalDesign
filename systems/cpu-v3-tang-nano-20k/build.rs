@@ -41,12 +41,10 @@ fn main() {
         for input in [
             example_dir.join("tools/assets.py"),
             example_dir.join("assets/font-8x16.txt"),
+            example_dir.join("assets/scene.json"),
             root.join("../../ip/gpu-v2/examples/vliw_integration/solid_scene.py"),
             root.join("../../ip/gpu-v2/examples/vliw_integration/material_scene.py"),
             root.join("../../ip/gpu-v2/examples/vliw_integration/assets/room-tiles.png"),
-            root.join("../../ip/gpu-v2/examples/vliw_integration/reference/scene/oracle.py"),
-            root.join("../../ip/gpu-v2/examples/vliw_integration/reference/reference.py"),
-            root.join("../../ip/gpu-v2/examples/vliw_integration/reference/math/model.py"),
         ] {
             println!("cargo:rerun-if-changed={}", input.display());
         }

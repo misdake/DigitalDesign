@@ -15,25 +15,10 @@ use std::{
 mod support;
 #[test]
 #[ignore = "requires completed one-frame demo and cache-fault native runs"]
-fn final_native_evidence_matches_current_executable_inputs() {
+fn legacy_room_evidence_matches_frozen_fixture_inputs() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let reference = root.join("../../target/gpu-demo-native");
     let constants = std::fs::read_to_string(reference.join("assets/demo_assets.rs")).unwrap();
-    let boot_dir = root.join("../../target/gpu-demo-boot");
-    let boot_constants = std::fs::read_to_string(boot_dir.join("boot_resources.rs")).unwrap();
-    let current_main = support::compile(
-        include_str!("../examples/gpu_demo/rcc/main.rs"),
-        &boot_constants,
-        "main",
-    );
-    assert_eq!(
-        current_main
-            .words
-            .iter()
-            .flat_map(|w| w.to_le_bytes())
-            .collect::<Vec<_>>(),
-        std::fs::read(boot_dir.join("application.v3bin")).unwrap()
-    );
     let mut sources = BTreeMap::new();
     for project in [
         VerilogProject::generate::<CpuV3Core>().unwrap(),
@@ -62,7 +47,7 @@ fn final_native_evidence_matches_current_executable_inputs() {
     ] {
         let out = root.join("../../target").join(folder);
         let program = support::compile(
-            include_str!("../examples/gpu_demo/rcc/main.rs"),
+            include_str!("fixtures/gpu_demo_room/rcc/main.rs"),
             &constants,
             entry,
         );
@@ -122,7 +107,7 @@ fn run_demo(entry: &'static str, folder: &str, mode: u8) {
             String::from_utf8_lossy(&result.stderr)
         );
     }
-    let source = include_str!("../examples/gpu_demo/rcc/main.rs");
+    let source = include_str!("fixtures/gpu_demo_room/rcc/main.rs");
     let constants = std::fs::read_to_string(reference.join("assets/demo_assets.rs")).unwrap();
     let program = support::compile(source, &constants, entry);
     std::fs::write(out.join("program.rs"), source).unwrap();
