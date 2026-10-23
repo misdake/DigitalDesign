@@ -24,7 +24,7 @@ const SPI_HALF_PERIOD: u64 = match option_env!("CPU_V3_SPI_HALF_PERIOD") {
     }
 };
 type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, SPI_HALF_PERIOD>;
-type SystemControl = SystemControlDevice<469>;
+type SystemControl = SystemControlDevice<469, 54000>;
 thread_local! {static TEST_IMAGE:RefCell<Option<(Vec<u8>,bool,u16)>>=const{RefCell::new(None)};}
 thread_local! {static TEST_ERROR_CODE:Cell<u8>=const{Cell::new(1)};}
 thread_local! {static BOARD_APPLICATION_TEST:Cell<bool>=const{Cell::new(false)};}
