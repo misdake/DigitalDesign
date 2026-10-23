@@ -374,6 +374,22 @@ pub fn mtsr_dseg(v: u16) {
     unimplemented!("segment registers are not available on the host")
 }
 
+/// Read one CPU V3 DSEG entry. `index` is a target compile-time constant 0..3.
+pub fn read_dseg_page(index: u16) -> u16 {
+    let _ = index;
+    unimplemented!("DSEG pages are not available on the host")
+}
+
+/// Write exactly one DSEG entry, an observable memory/control barrier.
+///
+/// # Safety
+/// `index` is constant 0..3, `page` must fit eight bits, and all live memory
+/// accesses must remain valid. The caller owns drain, coherence and restoration.
+pub unsafe fn write_dseg_page(index: u16, page: u16) {
+    let _ = (index, page);
+    unimplemented!("DSEG pages are not available on the host")
+}
+
 /// Atomically switch CSEG to `cseg` and jump to `target` (CpuV3-only; not
 /// available on the Rust host). Never returns.
 pub fn jseg(cseg: u16, target: u16) -> ! {

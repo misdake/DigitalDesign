@@ -43,7 +43,8 @@ input and programmer Verify are the intended workflow.
 | [0x100000,0x400000) | Resource allocations |
 | [0x400000,0x460000) | One mandatory ZERO covering both complete framebuffer slots |
 | [0x460000,0x490000) | Reserved Depth; never initialized by boot |
-| [0x490000,0x800000) | Resource allocations |
+| [0x490000,0x4b0000) | Driver-owned command/object arena; optional COPY/ZERO resources rejected |
+| [0x4b0000,0x800000) | Fixed GPU asset allocations |
 
 Code is nonempty, even, and at most 128 KiB. A=0x400000 and B=0x430000, with
 0x30000 bytes per slot. Depth is cleared by each GPU Pass. Optional resource
@@ -56,7 +57,7 @@ The project file retains format 2 and one application, with optional entries:
 format 2
 application rcc/system-display-test.rs
 copy MESH 0x100000 assets/mesh.bin
-zero 0x490000 4096
+zero 0x4b0000 4096
 ~~~
 
 Paths are relative to the project directory. COPY symbols are unique upper

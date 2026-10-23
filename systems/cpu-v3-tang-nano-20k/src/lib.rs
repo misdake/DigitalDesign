@@ -5,6 +5,8 @@ pub mod debugger;
 pub mod display;
 mod display_device;
 mod gpu_device;
+#[path = "../rcc/gpu_layout.rs"]
+mod gpu_layout;
 pub mod hardware;
 mod layout;
 pub mod system_sim;

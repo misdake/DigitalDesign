@@ -4720,6 +4720,35 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             l.b.end_if(join);
             return Ok(Val::Unit);
         }
+        "read_dseg_page" => {
+            if call.args.len() != 1 {
+                return Err(err(call, "read_dseg_page(index) takes 1 argument"));
+            }
+            let index = constant_below(&call.args[0], "DSEG page index", 4, l.consts)?;
+            return Ok(Val::V(
+                l.b.mfsr(crate::SpecialReg::DsegPage(index)),
+                Ty::U16,
+            ));
+        }
+        "write_dseg_page" => {
+            if call.args.len() != 2 {
+                return Err(err(call, "write_dseg_page(index, page) takes 2 arguments"));
+            }
+            let index = constant_below(&call.args[0], "DSEG page index", 4, l.consts)?;
+            if l.unsafe_depth == 0 {
+                return Err(err(call, "write_dseg_page requires unsafe"));
+            }
+            l.unsafe_ops += 1;
+            if let Ok(value) = const_eval(&call.args[1], l.consts) {
+                if value > 255 {
+                    return Err(err(&call.args[1], "DSEG physical page must fit eight bits"));
+                }
+            }
+            let (value, from) = expr(l, &call.args[1])?.reg(l, &call.args[1], "DSEG page")?;
+            let (value, _) = coerce(l, value, &from, &Ty::U16, &call.args[1])?;
+            l.b.mtsr_dseg_page(index, value);
+            return Ok(Val::Unit);
+        }
         "dev_recv" => {
             if call.args.len() != 2 {
                 return Err(err(call, "dev_recv(dev, ch) takes 2 arguments"));

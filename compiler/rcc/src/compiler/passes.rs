@@ -562,10 +562,7 @@ fn cse(f: &mut IrFunc) -> bool {
         }
     }
 
-    // Copy/CSE aliasing is only sound for a vreg with a single definition. The
-    // if-conversion pass deliberately redefines its destination (a Mov/LoadImm
-    // feeding a CMov), and aliasing that vreg would replace the uses after the
-    // conditional write and drop it.
+    // Copy/CSE aliasing is only sound for a vreg with a single definition.
     let mut seen_defs: HashSet<VReg> = HashSet::new();
     let mut multi_def: HashSet<VReg> = HashSet::new();
     for b in &f.blocks {
@@ -1020,12 +1017,21 @@ pub fn convert_diamonds(f: &mut IrFunc) -> bool {
             };
             let true_def = arm_def(&true_value);
             let false_def = arm_def(&false_value);
-            // dst = false value; dst = true value when the condition holds
+            // Keep both arms as SSA inputs. Initializing dst here would give
+            // it two definitions and incorrectly expose the false constant to
+            // constant propagation even when the condition selects the true arm.
+            let fallback = f.fresh_vreg(crate::RegClass::Gpr);
             match &false_value {
-                ArmValue::Imm(value) => insts.push(Instr::LoadImm { dst, value: *value }),
-                ArmValue::Reg(src) => insts.push(Instr::Mov { dst, src: *src }),
+                ArmValue::Imm(value) => insts.push(Instr::LoadImm {
+                    dst: fallback,
+                    value: *value,
+                }),
+                ArmValue::Reg(src) => insts.push(Instr::Mov {
+                    dst: fallback,
+                    src: *src,
+                }),
                 ArmValue::Expr(_) => insts.push(Instr::Mov {
-                    dst,
+                    dst: fallback,
                     src: false_def.expect("computed arm has a defined value"),
                 }),
             }
@@ -1038,7 +1044,12 @@ pub fn convert_diamonds(f: &mut IrFunc) -> bool {
                 ArmValue::Reg(src) => src,
                 ArmValue::Expr(_) => true_def.expect("computed arm has a defined value"),
             };
-            insts.push(Instr::CMov { dst, cmp, src });
+            insts.push(Instr::CMov {
+                dst,
+                cmp,
+                src,
+                fallback,
+            });
         }
 
         let block = &mut f.blocks[b];
@@ -1091,6 +1102,61 @@ mod tests {
         let text = f.to_string();
         assert!(text.contains("imm 5"), "{text}");
         assert!(!text.contains("add "), "{text}");
+    }
+
+    #[test]
+    fn conditional_value_remains_single_definition_before_constant_propagation() {
+        let (mut b, params) = FuncBuilder::new("selection", 1, 1);
+        let x = b.get(params[0]);
+        let zero = b.load_imm(0);
+        let result = b.new_var();
+        let cmp = b.cmp(x, CmpRhs::Reg(zero), CompareOp::Equal);
+        b.if_else(
+            cmp,
+            |b| {
+                let two = b.load_imm(2);
+                b.set(result, two);
+            },
+            |b| {
+                let one = b.load_imm(1);
+                b.set(result, one);
+            },
+        );
+        let selected = b.get(result);
+        let one = b.load_imm(1);
+        let output = b.bin(BinOp::Add, selected, one);
+        b.ret(&[output]);
+        let mut f = b.finish();
+        assert!(convert_diamonds(&mut f));
+        let mut definitions = HashSet::new();
+        for inst in f.blocks.iter().flat_map(|b| &b.insts) {
+            for def in crate::compiler::regalloc::inst_defs(inst) {
+                assert!(definitions.insert(def), "redefined v{def}");
+            }
+        }
+        opt(&mut f);
+        assert!(
+            f.blocks
+                .iter()
+                .flat_map(|b| &b.insts)
+                .any(|i| matches!(i, Instr::CMov { .. })),
+            "{f}"
+        );
+        let returned = f
+            .blocks
+            .iter()
+            .find_map(|b| match &b.term {
+                Some(Terminator::Ret { values }) => Some(values[0]),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            !f.blocks
+                .iter()
+                .flat_map(|b| &b.insts)
+                .any(|i| matches!(i,Instr::LoadImm{dst,..}if *dst==returned)),
+            "conditional result was folded to one arm: {f}"
+        );
     }
 
     #[test]

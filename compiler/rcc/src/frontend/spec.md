@@ -178,6 +178,8 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `unsafe dcache_clean_line(address: Ptr)` | CPU V3-only: asynchronously write back one dirty resident line; miss/clean hit is a no-op |
 | `dcache_wait()` | CPU V3-only: wait for the asynchronous D-cache command and surface its remembered error |
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
+| `read_dseg_page(index: u16) -> u16` | CPU V3-only: read exactly one entry; index is a compile-time constant 0..3 |
+| `unsafe write_dseg_page(index: u16, page: u16)` | CPU V3-only memory/control barrier; write only the selected entry, never the legacy four-page mapping. Index is constant 0..3; page must fit eight bits (invalid constant pages are rejected). Caller drains older accesses, maintains coherence and restores live mappings. |
 | `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
 | `icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> !` | CPU V3-only: terminal barrier lowered to adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`; never returns |
 
@@ -596,6 +598,14 @@ and page-register contract.
 | `heap_begin` | backend | heap region start |
 | `heap_size` | backend | heap region size in words |
 | `vec_init_cap` | 4 | `vec_new()` initial capacity |
+
+CPU V3 may lower a pure integer if-expression to a conditional move. Its IR
+retains both selected values as inputs and defines the result once, so constant
+propagation cannot mistake the default arm for the final result. Register
+allocation keeps the comparison operands and true value live while the backend
+initializes the result from the false value, before the compare/conditional move.
+The compare uses the operand's register class, including the FPU comparison for
+`fix32` conditions selecting integer values.
 
 ### 13.3 Artifacts
 

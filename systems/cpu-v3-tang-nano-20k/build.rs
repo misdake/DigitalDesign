@@ -2,6 +2,8 @@
 pub use cpu_v3::*;
 #[path = "src/boot/mod.rs"]
 mod boot;
+#[path = "rcc/gpu_layout.rs"]
+mod gpu_layout;
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
 use std::path::{Path, PathBuf};
