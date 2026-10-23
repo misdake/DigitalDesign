@@ -30,13 +30,80 @@ fn main() {
     let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let config = root.join("boot-applications.conf");
     println!("cargo:rerun-if-changed={}", config.display());
-    let project = boot::parse_boot_project(&std::fs::read_to_string(config).unwrap())
+    let mut project = boot::parse_boot_project(&std::fs::read_to_string(config).unwrap())
         .expect("single application project");
+    println!("cargo:rerun-if-env-changed=CPU_V3_BOOT_EXAMPLE");
+    let mut generated = String::new();
+    let mut extra_assets: Vec<String> = Vec::new();
+    if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
+        assert_eq!(example, "gpu_demo", "unsupported CPU_V3_BOOT_EXAMPLE");
+        let example_dir = root.join("examples/gpu_demo");
+        for input in [
+            example_dir.join("tools/assets.py"),
+            example_dir.join("assets/font-8x16.txt"),
+            root.join("../../ip/gpu-v2/examples/vliw_integration/solid_scene.py"),
+            root.join("../../ip/gpu-v2/examples/vliw_integration/material_scene.py"),
+            root.join("../../ip/gpu-v2/examples/vliw_integration/assets/room-tiles.png"),
+            root.join("../../ip/gpu-v2/examples/vliw_integration/reference/scene/oracle.py"),
+            root.join("../../ip/gpu-v2/examples/vliw_integration/reference/reference.py"),
+            root.join("../../ip/gpu-v2/examples/vliw_integration/reference/math/model.py"),
+        ] {
+            println!("cargo:rerun-if-changed={}", input.display());
+        }
+        let assets = output.join("gpu-demo-assets");
+        let status = std::process::Command::new("python")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .arg(example_dir.join("tools/assets.py"))
+            .arg("--output")
+            .arg(&assets)
+            .status()
+            .expect("demo native asset packer");
+        assert!(status.success(), "demo native asset validation failed");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap()).unwrap();
+        project.application = PathBuf::from("examples/gpu_demo/rcc/main.rs");
+        project.copies = manifest["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["file"]
+                        .as_str()
+                        .unwrap()
+                        .trim_end_matches(".bin")
+                        .to_uppercase(),
+                    r["address"].as_u64().unwrap() as usize,
+                    assets.join(r["file"].as_str().unwrap()),
+                )
+            })
+            .collect();
+        project.zeros.clear();
+        generated = std::fs::read_to_string(assets.join("demo_assets.rs")).unwrap();
+        let mut repack = format!("format 2\napplication {}\n", project.application.display());
+        for (name, address, path) in &project.copies {
+            let relative = path
+                .strip_prefix(&output)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            repack.push_str(&format!("copy {name} {address:#x} {relative}\n"));
+            extra_assets.push(relative);
+        }
+        std::fs::write(output.join("demo-repack.conf"), repack).unwrap();
+        extra_assets.extend([
+            "gpu-demo-assets/assets.json".to_owned(),
+            "demo-repack.conf".to_owned(),
+        ]);
+    }
     let source = &project.application;
     for (_, _, path) in &project.copies {
-        println!("cargo:rerun-if-changed={}", root.join(path).display());
+        // Generated OUT_DIR resources depend on the audited producer inputs.
+        if !path.starts_with(&output) {
+            println!("cargo:rerun-if-changed={}", root.join(path).display());
+        }
     }
-    let constants = project.constants();
+    let constants = project.constants() + &generated;
     std::fs::write(output.join("boot_resources.rs"), &constants).unwrap();
     let resources = project.resources(&root).expect("boot resources");
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
@@ -53,12 +120,16 @@ fn main() {
         boot::boot_image_map(&code, &image)
     );
     std::fs::write(output.join("cpu-v3-boot.map"), map).unwrap();
-    let assets = [
+    let mut assets: Vec<String> = [
         "application.v3bin",
         "cpu-v3-boot.bin",
         "cpu-v3-boot.map",
         "boot_resources.rs",
-    ];
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assets.extend(extra_assets);
     let mut bindings = String::from("const ASSETS: &[(&str, &[u8])] = &[\n");
     for name in assets {
         bindings.push_str(&format!(

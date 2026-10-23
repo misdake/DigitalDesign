@@ -185,6 +185,7 @@ dependencies = [
  "gpu-v2",
  "minifb",
  "rcc",
+ "serde_json",
 ]
 
 [[package]]

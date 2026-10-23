@@ -75,6 +75,10 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if std::fs::read(path).ok().as_deref() == Some(bytes) {
         return Ok(());
     }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
     std::fs::write(path, bytes).map_err(|error| format!("cannot write {}: {error}", path.display()))
 }
 
@@ -102,7 +106,11 @@ mod tests {
 
     #[test]
     fn generated_assets_have_only_one_application_and_fixed_package() {
-        assert_eq!(ASSETS.len(), 4);
+        assert!(ASSETS.len() == 4 || ASSETS.len() == 9);
+        assert!(ASSETS
+            .iter()
+            .skip(4)
+            .all(|(name, _)| name.starts_with("gpu-demo-assets/") || *name == "demo-repack.conf"));
         assert!(asset_manifest().contains("asset=application.v3bin"));
         assert!(asset_manifest().contains("asset=cpu-v3-boot.bin"));
         assert!(!ASSETS.iter().any(|(name, _)| name.contains("stage0")

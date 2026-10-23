@@ -94,7 +94,7 @@ def texture():
 
 
 def pack(output):
-    output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(parents=True, exist_ok=True)
     atlas, glyphs = font()
     meshes = solid_scene.room()
     cameras = [solid_scene.camera(name) for name in ("front", "side", "oblique")]
@@ -113,6 +113,13 @@ def pack(output):
             transformed.extend(oracle.signed(values[6 * i + axis], 32)
                                for i in range(len(mesh["vertices"])) for axis in range(3))
     while not all(-131072 <= value >> scale <= 131071 for value in transformed):
+        scale += 1
+    # Complete yaw orbit, not just the three fixed historical poses. SINCOS
+    # quarter-wave interpolation stays in [-1,1]. With radius 8 and room X/Z
+    # in [-3,3], |H.z| <= 14; focal-scaled X/Y are smaller. Include a raw-Q
+    # rounding allowance. The compiled-camera probe also checks all 512 phases.
+    orbit_bound = 14 * 65536 + 64
+    while orbit_bound >> scale > 131071:
         scale += 1
     assert scale <= 16
     data = bytearray(128)  # Immutable directory, padded to one readable sector.
@@ -146,7 +153,8 @@ def pack(output):
         assert left[1] + len(left[2]) <= right[1]
     sources = [Path(__file__), EXAMPLE / "assets/font-8x16.txt", SCENE / "solid_scene.py",
                SCENE / "material_scene.py", SCENE / "assets/room-tiles.png",
-               SCENE / "reference/scene/oracle.py", SCENE / "reference/reference.py"]
+               SCENE / "reference/scene/oracle.py", SCENE / "reference/reference.py",
+               SCENE / "reference/math/model.py"]
     manifest = dict(
         scope="Immutable asset preparation and V/T/native encoding checks; no CPU/GPU frame execution",
         resources=[dict(file=name, address=address, bytes=len(payload), sha256=sha(output / name))
@@ -156,9 +164,15 @@ def pack(output):
         texture=dict(sector=TEXTURE // 128, sectors=88, size_log2=6, full_mip=1),
         atlas=dict(sector=ATLAS // 128, sectors=512, glyphs=sorted(glyphs)),
         cameras=cameras,
+        orbit=dict(radius=8, phase_step=128, steps=512, absolute_h_bound_raw=orbit_bound),
         sources={str(path.relative_to(ROOT)).replace("\\", "/"): sha(path) for path in sources},
     )
     (output / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    roots = dict(DEMO_MESH_DIRECTORY=MESH // 128, DEMO_MESH_COUNT=len(meshes),
+                 DEMO_MESH_SECTORS=len(data) // 128, DEMO_TEXTURE=TEXTURE // 128,
+                 DEMO_TEXTURE_SECTORS=88, DEMO_ATLAS=ATLAS // 128)
+    (output / "demo_assets.rs").write_text(''.join(
+        f'pub const {name}: u16 = {value};\n' for name, value in roots.items()))
     print(f"PASS demo assets: {len(meshes)} meshlets, 192 triangles, 18 glyphs, scale_s={scale}")
 
 
