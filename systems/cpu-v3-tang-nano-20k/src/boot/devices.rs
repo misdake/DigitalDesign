@@ -1,9 +1,10 @@
 //! Functional model of the retained system-control device.
 use super::device_abi::{
-    D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED, SYSCTL_LED, SYSCTL_UART,
+    D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED, SYSCTL_LED, SYSCTL_MILLISECONDS, SYSCTL_UART,
     SYSCTL_WATCH_EXPECTED, SYSCTL_WATCH_TARGET,
 };
 use crate::{Device, Word};
+use std::cell::Cell;
 /// Device-0 model of the system-control block. The UART transmitter is never
 /// busy; writes are captured for test assertions.
 #[derive(Default)]
@@ -16,9 +17,17 @@ pub struct SystemControlDevice {
     watch_channel: u8,
     watch_expected: u16,
     watch_active: bool,
+    milliseconds: Cell<u16>,
 }
 
 impl SystemControlDevice {
+    /// Host-scheduled functional time, independent of instructions and reads.
+    /// This model has no cycle timing; the caller supplies elapsed wall time.
+    pub fn advance_milliseconds(&self, elapsed: u16) {
+        self.milliseconds
+            .set(self.milliseconds.get().wrapping_add(elapsed));
+    }
+
     pub fn active_watch(&self) -> Option<(u8, u8, u16)> {
         self.watch_active
             .then_some((self.watch_device, self.watch_channel, self.watch_expected))
@@ -32,8 +41,12 @@ impl SystemControlDevice {
 }
 
 impl Device for SystemControlDevice {
-    fn read(&mut self, _memory: &mut [Word], _channel: u8) -> Word {
-        0
+    fn read(&mut self, _memory: &mut [Word], channel: u8) -> Word {
+        if channel == SYSCTL_MILLISECONDS {
+            self.milliseconds.get()
+        } else {
+            0
+        }
     }
 
     fn write(&mut self, _memory: &mut [Word], channel: u8, value: Word) {

@@ -8,6 +8,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 - [`architecture.md`](architecture.md): current complete-system composition, clock and memory paths,
   boot chain, device ownership, display integration, and validation boundary.
+- [Wall clock](/systems/cpu-v3-tang-nano-20k/docs/wall-clock.md): SystemControl millisecond timestamps, RCC access, wrap limits and functional-model time.
 - [`cpu-v3-optimization.md`](cpu-v3-optimization.md): concise one-sentence optimization index.
 - [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md): append-only implementation,
   measurement, rejected-alternative, and validation detail normally consulted only for archaeology.

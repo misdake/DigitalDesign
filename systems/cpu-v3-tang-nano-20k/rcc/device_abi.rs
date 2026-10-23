@@ -12,6 +12,7 @@ pub const CACHE_MAINTENANCE_STATUS_SUCCESS: u16 = 0;
 pub const CACHE_MAINTENANCE_STATUS_ERROR: u16 = 0x8000;
 pub const SYSCTL_WATCH_TARGET: u16 = 6;
 pub const SYSCTL_WATCH_EXPECTED: u16 = 7;
+pub const SYSCTL_MILLISECONDS: u16 = 10;
 
 pub fn sysctl_watch_target(device: u16, channel: u16) -> u16 {
     ((channel & 15) << 3) | (device & 7)

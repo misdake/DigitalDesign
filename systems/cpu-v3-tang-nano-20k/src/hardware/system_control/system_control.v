@@ -32,6 +32,9 @@ reg uart_busy = 0;
 reg [9:0] uart_frame = 10'h3ff;
 reg [3:0] uart_bit = 0;
 reg [15:0] uart_divider = 0;
+// Always main-clocked: never use CPU hold or a device enable as its CE.
+reg [15:0] millisecond_divider = 0;
+reg [15:0] milliseconds = 0;
 reg [15:0] cache_maintenance_status = 0;
 reg [1:0] pending_dcache_maintenance = 0;
 // Pending owns the request until the cache's actual acceptance edge. After
@@ -53,6 +56,7 @@ always @* begin
         case (device_channel)
             3: device_read_data = {15'b0, uart_busy};
             5: device_read_data = cache_maintenance_status;
+            10: device_read_data = milliseconds;
             default: device_read_data = 0;
         endcase
     end
@@ -73,7 +77,15 @@ always @(posedge clk) begin
         uart_frame <= 10'h3ff;
         uart_bit <= 0;
         uart_divider <= 0;
+        millisecond_divider <= 0;
+        milliseconds <= 0;
     end else begin
+        if (millisecond_divider == 16'd{{ clocks_per_ms_minus_one }}) begin
+            millisecond_divider <= 0;
+            milliseconds <= milliseconds + 16'd1;
+        end else begin
+            millisecond_divider <= millisecond_divider + 1'b1;
+        end
         icache_invalidate <= 0;
         if (pending_dcache_maintenance != 0 && dcache_maintenance_ready)
             pending_dcache_maintenance <= 0;
