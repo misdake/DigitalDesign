@@ -2,6 +2,8 @@
 use crate::dsl_rt::*;
 mod gpu_assets;
 use gpu_assets::*;
+mod gpu_ui;
+use gpu_ui::*;
 
 // owner, phase(open=1/ended=2/ready=3), used staging words,
 // valid Global, valid Render, speculative command cursor.
@@ -327,6 +329,72 @@ fn gpu_builder_draw(
     }
     cb[0u16].command_words = GPU_BUILD.as_array()[5u16];
     cb[0u16].object_words = word + 64;
+    true
+}
+fn gpu_builder_ui(mut cb: Array<GpuBuffer>, atlas: Array<GpuUiAtlas>, cells: Array<u16>) -> bool {
+    if !gpu_builder_open(cb)
+        || !gpu_ui_atlas_valid(atlas)
+        || !gpu_ui_cells_valid(cells)
+        || cb[0u16].object_words > 32368
+        || !gpu_builder_room(cb, 10, 6)
+    {
+        return false;
+    }
+    let word = (cb[0u16].object_words + 63) & 65472;
+    if word > 32368 {
+        return false;
+    }
+    if cb[0u16].high_slot != 0 {
+        if !gpu_high_slot_valid(cb) {
+            return false;
+        }
+    } else {
+        let mut objects = cb[0u16].objects;
+        if !gpu_storage_room(view_of(&mut objects), word, 400, 64) {
+            return false;
+        }
+    }
+    let base = atlas[0u16].sector;
+    let count = atlas[0u16].sectors;
+    if gpu_extents_overlap(
+        base,
+        count,
+        cb[0u16].commands.sector,
+        cb[0u16].commands.sectors,
+    ) || gpu_extents_overlap(
+        base,
+        count,
+        cb[0u16].objects.sector,
+        cb[0u16].objects.sectors,
+    ) || gpu_extents_overlap(base, count, cb[0u16].color, 1536)
+        || gpu_extents_overlap(base, count, cb[0u16].depth, 1536)
+    {
+        return false;
+    }
+    // Upload the caller's packed words directly. Only the final 18 padding bytes
+    // and 32-byte descriptor need a small low-memory buffer, not another grid.
+    let mut tail: Buf<u16, 25> = Buf::new([0; 25]);
+    let mut i: u16 = 0;
+    while i < 9 {
+        tail[i] = 65535;
+        i += 1;
+    }
+    tail[9u16] = cb[0u16].objects.sector + (word >> 6);
+    tail[10u16] = base >> 9;
+    if !gpu_builder_write(cb, true, word, cells, 375)
+        || !gpu_builder_write(cb, true, word + 375, tail.as_array(), 25)
+        || !gpu_builder_emit(cb, 3, 0x4000)
+        || !gpu_builder_emit(cb, 0, 0x7000)
+        || !gpu_builder_dma(cb, word + 384, 276, 32)
+        || !gpu_builder_emit(cb, 1, 0x4000)
+        || !gpu_builder_emit(cb, 69, 0xb000)
+    {
+        return false;
+    }
+    // UI preserves Global/Render/uniforms. Every later draw already reloads
+    // its Instance and first meshlet, then prefetches each subsequent page.
+    cb[0u16].object_words = word + 400;
+    cb[0u16].command_words = GPU_BUILD.as_array()[5u16];
     true
 }
 fn gpu_builder_end(mut cb: Array<GpuBuffer>) -> bool {

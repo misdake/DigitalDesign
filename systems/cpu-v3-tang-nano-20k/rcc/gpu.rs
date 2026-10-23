@@ -13,6 +13,8 @@ mod gpu_assets;
 use gpu_assets::*;
 mod gpu_builder;
 use gpu_builder::*;
+mod gpu_ui;
+use gpu_ui::*;
 mod gpu_display;
 use gpu_display::*;
 
@@ -126,6 +128,12 @@ pub fn gpu_pass_draw_mesh(
         return false;
     }
     gpu_builder_draw(view_of(&mut GPU_CB), mesh, matrix, rgba_low, rgba_high)
+}
+pub fn gpu_pass_draw_ui_grid(pass: u16, atlas: Array<GpuUiAtlas>, cells: Array<u16>) -> bool {
+    if pass != GPU_CB_HANDLE || GPU_RECORDING != 2 {
+        return false;
+    }
+    gpu_builder_ui(view_of(&mut GPU_CB), atlas, cells)
 }
 pub fn gpu_pass_end(pass: u16) -> bool {
     if pass != GPU_CB_HANDLE || GPU_RECORDING != 2 {
