@@ -614,9 +614,16 @@ fn lower_instruction(
             lines.word(cpu_v3::read_special(register(*dst), sr));
         }
         Instr::Bool { dst, cmp } => lower_bool(register(*dst), cmp, function, register, lines),
-        Instr::CMov { dst, cmp, src } => {
-            lower_compare(lines, cmp, register);
-            let condition = test_condition(cmp.cond);
+        Instr::CMov {
+            dst,
+            cmp,
+            src,
+            fallback,
+        } => {
+            if register(*dst) != register(*fallback) {
+                lines.word(cpu_v3::move_register(register(*dst), register(*fallback)));
+            }
+            let condition = lower_comparison(function, cmp, register, lines);
             lines.word(cpu_v3::conditional_move(
                 condition,
                 register(*dst),
@@ -1074,33 +1081,6 @@ fn test_condition(cond: CompareOp) -> TestCondition {
         CompareOp::Never | CompareOp::Always => {
             unreachable!("diamond conversion never emits degenerate conditions")
         }
-    }
-}
-
-/// Emits the CMP-class instruction feeding a conditional move (registers or
-/// immediate, signed or unsigned).
-fn lower_compare(lines: &mut Lines, cmp: &Cmp, register: &dyn Fn(VReg) -> u8) {
-    let lhs = register(cmp.lhs);
-    match &cmp.rhs {
-        CmpRhs::Reg(r) => {
-            let r = register(*r);
-            lines.word(if cmp.signed {
-                cpu_v3::compare_signed(lhs, r)
-            } else {
-                cpu_v3::compare_unsigned(lhs, r)
-            });
-        }
-        CmpRhs::Imm(value) => emit_immediate(
-            lines,
-            if cmp.signed {
-                ImmediateOp::CompareSigned
-            } else {
-                ImmediateOp::CompareUnsigned
-            },
-            lhs,
-            *value,
-            cmp.signed,
-        ),
     }
 }
 
@@ -1976,6 +1956,52 @@ fn wide_call(offset: i16) -> [Word; 2] {
 mod tests {
     use super::*;
     use rcc::frontend::parse_source_with;
+
+    #[test]
+    fn conditional_integer_values_survive_constant_propagation() {
+        let conditional = r#"
+            fn pick(x:u16)->u16 {let v:u16=if x==0{2}else{1};v+1}
+            fn main(){halt(pick(0)*10+pick(5));}
+        "#;
+        assert_eq!(run(conditional), 32);
+        let source = r#"
+            fn move_it(mut state:Array<u16>,command:u16){
+                let mut x=state[0u16];let mut z=state[1u16];let mut orient=state[2u16];
+                if orient==0 {
+                    if command==0{x+=1;orient=1;}
+                    if command==1{x-=2;orient=1;}
+                    if command==2{z+=1;orient=2;}
+                    if command==3{z-=2;orient=2;}
+                }
+                state[0u16]=x;state[1u16]=z;state[2u16]=orient;
+            }
+            fn main(){let mut s:Buf<u16,3>=Buf::new([0,1,0]);move_it(s.as_array(),2);halt(s[1u16]);}
+        "#;
+        assert_eq!(run(source), 2);
+    }
+
+    #[test]
+    fn conditional_array_selection_preserves_both_integer_arms() {
+        let source = r#"
+            static A:Buf<u16,32>=Buf::new([0;32]);static B:Buf<u16,16>=Buf::new([0;16]);
+            fn state(which:bool)->u16 {
+                let n:u16=if which{32}else{16};let index:u16=if which{3}else{4};
+                let mut data=if which{A.as_array()}else{B.as_array()};
+                data[0u16]=n;data[1u16]=index;n+index
+            }
+            fn main(){halt(state(true)*100+state(false));}
+        "#;
+        assert_eq!(run(source), 3520);
+    }
+
+    #[test]
+    fn conditional_integer_selection_preserves_fixed_point_comparison() {
+        let source = r#"
+            fn select(x:fix32)->u16 {let v=if x<fix32::from_int(1){2}else{3};v+1}
+            fn main(){halt(select(fix32::zero())*10+select(fix32::from_int(2)));}
+        "#;
+        assert_eq!(run(source), 34);
+    }
 
     /// Scalar `fix32` lowers end to end through the two-word v2 ISA:
     /// construction, arithmetic, unary operations, and numeric conversion.

@@ -797,6 +797,16 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
             for u in inst_uses(inst) {
                 end[u as usize] = end[u as usize].max(pos);
             }
+            if let Instr::CMov { cmp, src, .. } = inst {
+                // Lowering initializes dst from fallback before comparing.
+                // Keep the compare operands and true arm live through dst's
+                // definition, so that initialization cannot overwrite them.
+                end[cmp.lhs as usize] = end[cmp.lhs as usize].max(pos + 1);
+                if let CmpRhs::Reg(rhs) = cmp.rhs {
+                    end[rhs as usize] = end[rhs as usize].max(pos + 1);
+                }
+                end[*src as usize] = end[*src as usize].max(pos + 1);
+            }
             if let Instr::Call { .. } | Instr::CallPtr { .. } = inst {
                 calls.push((pos, pos + 1));
             }
@@ -937,6 +947,7 @@ fn compute_affinity(f: &IrFunc) -> HashMap<VReg, Vec<VReg>> {
         for inst in &b.insts {
             match inst {
                 Instr::Mov { dst, src } | Instr::FpuMov { dst, src } => pair(*src, *dst),
+                Instr::CMov { dst, fallback, .. } => pair(*fallback, *dst),
                 // Destructive two-address forms: the backend copies the first
                 // operand into the destination before the operation whenever
                 // the allocator cannot place them together. Prefer coalescing

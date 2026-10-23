@@ -599,6 +599,14 @@ and page-register contract.
 | `heap_size` | backend | heap region size in words |
 | `vec_init_cap` | 4 | `vec_new()` initial capacity |
 
+CPU V3 may lower a pure integer if-expression to a conditional move. Its IR
+retains both selected values as inputs and defines the result once, so constant
+propagation cannot mistake the default arm for the final result. Register
+allocation keeps the comparison operands and true value live while the backend
+initializes the result from the false value, before the compare/conditional move.
+The compare uses the operand's register class, including the FPU comparison for
+`fix32` conditions selecting integer values.
+
 ### 13.3 Artifacts
 
 - `rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt]
