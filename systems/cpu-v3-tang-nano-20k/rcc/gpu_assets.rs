@@ -16,6 +16,11 @@ pub struct GpuMesh {
     pub first_sector: u16,
     pub sectors: u16,
 }
+// Complete immutable 64-KiB native RGBA5551 atlas, including unused slot 255.
+pub struct GpuUiAtlas {
+    pub sector: u16,
+    pub sectors: u16,
+}
 pub struct GpuTexture {
     pub sector: u16,
     pub sectors: u16,

@@ -67,6 +67,20 @@ and NAME_WORD_ADDRESS_LOW/HIGH u16 constants. Full addresses are split explicitl
 because this RCC frontend has no u32 type; no compiler or far-pointer ISA is added.
 RCC still initializes nonzero statics and sets SP=0xc000.
 
+The system module resolver checks `<application-directory>/<name>.rs` first,
+then `<system>/rcc/<name>.rs` only when the local read reports NotFound. All
+other I/O/UTF-8 errors and all selected-source compile errors remain errors;
+there is no fallback after a bad local source. The generated `boot_resources`
+module takes precedence over both directories. Transitive modules use the same
+lookup policy, allowing independent examples to share `gpu`, `time` and their
+dependencies without source copies or a compiler-specific example search path.
+
+Cargo tracks the application/config/resource inputs and each actual module.
+When a shared module is selected, it also tracks the existing application
+directory so creating a local override invalidates the build. It does not watch
+a nonexistent local file on every successful build. The default project and
+application selection are unchanged; examples select their own project explicitly.
+
 The build emits application.v3bin, cpu-v3-boot.bin, cpu-v3-boot.map and
 boot_resources.rs only in Cargo OUT_DIR. cpu-v3-boot-assets materializes these
 exact artifacts. cpu-v3-pack application.v3bin --project boot-applications.conf

@@ -7,18 +7,17 @@ mod gpu_layout;
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
 use std::path::{Path, PathBuf};
-fn compile(path: &Path, options: &CompilerOptions, constants: &str) -> Vec<u16> {
+#[path = "build_support/rcc_modules.rs"]
+mod rcc_modules;
+fn compile(path: &Path, options: &CompilerOptions, constants: &str, shared: &Path) -> Vec<u16> {
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
     let program =
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-            if name == "boot_resources" {
-                return Ok(constants.to_owned());
-            }
-            let module = source_dir.join(format!("{name}.rs"));
-            println!("cargo:rerun-if-changed={}", module.display());
-            std::fs::read_to_string(&module).map_err(|error| format!("read module {name}: {error}"))
+            rcc_modules::load_module(source_dir, shared, constants, name, &mut |module| {
+                println!("cargo:rerun-if-changed={}", module.display());
+            })
         })
         .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
     rcc_backend::try_compile(program, options, "main")
@@ -42,7 +41,7 @@ fn main() {
     let resources = project.resources(&root).expect("boot resources");
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
     options.stack_init = boot::SINGLE_BOOT_STACK;
-    let words = compile(&root.join(source), &options, &constants);
+    let words = compile(&root.join(source), &options, &constants, &root.join("rcc"));
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     let image =
         boot::pack_application_resources(&code, &resources).expect("single application image");

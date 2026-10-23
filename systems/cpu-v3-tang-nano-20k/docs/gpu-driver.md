@@ -1,7 +1,7 @@
 # RCC GPU driver
 
 The application interface is `rcc/gpu.rs`. It manages one command buffer and a
-single Clear/Store Pass with ordered Mesh/Instance draws and fixed A/B/Depth
+single Clear/Store Pass with ordered Mesh/Instance and UI draws and fixed A/B/Depth
 allocations. Initialization reads actual Display active/pending/format; it can
 adopt either A or B as Front and chooses the other plane for rendering. The
 driver presents through one serialized entry point. Runtime recovery is separate. The default CPU
@@ -18,6 +18,8 @@ Display diagnostic remains selected in the boot config.
 | `gpu_pass_set_global(pass, global)` | Encode/snapshot native Global64; identical encoded values consume no commands or object space. |
 | `gpu_pass_set_render(pass, texture, render)` | Bind an immutable Texture handle and snapshot the remaining Render fields. Texture address/dimensions come from the handle. |
 | `gpu_pass_draw_mesh(pass, mesh, matrix, rgba_low, rgba_high)` | Snapshot the native 21-u32 Instance matrix prefix and RGBA; expand the immutable compact directory in original order. |
+| `gpu_pass_draw_ui_grid(pass, atlas, cells)` | Snapshot the packed cell table and private descriptor into the current Pass. Uses its reserved color and leaves Depth unchanged. |
+| `gpu_ui_fill(cells, id)` / `gpu_ui_set_cell(cells, x, y, id)` | Edit the application's packed table; reject coordinates/IDs outside the fixed grid without modifying it. |
 | `gpu_pass_end(pass)` / `gpu_cb_finish(cb)` | Drain/store the Pass, then append END and zero fetch padding and seal Ready. Each transition occurs once. |
 | `gpu_submit_idle(cb)` | Pending after successful cache handoff and both SENDs; Rejected if ownership/state prevents acceptance; CacheError faults the driver, retains the Ready CB and sends neither GPU command. |
 | `gpu_poll(cb)` | Idle, Pending, Completed, Fault or Rejected. Completed transfers the CB back exactly once; later polls return Idle. |
@@ -222,6 +224,66 @@ previous R/I/backend continues. Global/Render changes still require full render
 drain. No cross-Mesh prefetch or transparent draw reordering occurs.
 Clear-only wraps this same begin/end/finish Builder.
 
+## Packed UI snapshots
+
+`GpuUiAtlas { sector, sectors }` describes a trusted immutable native atlas in
+GPU asset space. Its base is 64-KiB aligned and its allocation includes all
+65536 bytes, including unused slot255. It cannot overlap the CB, objects or
+output planes. The native format and bank order are defined by
+[GPU UI](/ip/gpu-v2/docs/ui.md); a UI atlas is separate from a filtered RGB565
+Texture. Pixel data stays immutable until GPU completion.
+
+Applications allocate `Buf<u16,375>` for 750 row-major IDs. Low byte is the
+first cell, high byte the next; each 50-cell row uses 25 words. IDs0..254 draw
+and255 skips. `gpu_ui_fill` accepts an ID0..255; `gpu_ui_set_cell` accepts
+x0..49/y0..14 and preserves the other byte. Like other RCC Array views, the
+argument must refer to the declared allocated storage: Array carries no runtime
+allocation length. Helpers and recording check the full 375-word source span
+stays below the DSEG3 window. They do not interpret a CPU pointer as physical.
+
+Recording copies the caller's 375 packed words directly to a private 128-byte
+aligned object position. It then writes nine FFFF padding words and a zero-padded
+16-word descriptor using a 25-word temporary. There is no second full-grid CPU
+buffer or per-cell window switch. Both batches use existing bounded DSEG3 scopes,
+including split-page transfers, old store/FST drain and restoration. The caller
+can edit its table and atlas root fields after a successful record; those edits
+do not alter the recorded snapshot or descriptor. Actual atlas pixel storage
+remains in-flight read-only.
+
+One UI call reserves 400 object words (800 bytes), plus0..63 words of initial
+alignment. It preflights atlas extents, source span, both complete arenas and
+five commands with the existing Pass drain/END/padding allowance before any
+writes. Invalid arguments or insufficient capacity leave CB cursors, staging
+and prior recording unchanged. A reported transfer failure can leave partial
+private bytes; the sticky memory fault retains the CB and prevents submission,
+cancel/discard and presentation rather than claiming rollback.
+
+The ordered commands are WAIT(all), FLUSH, DMA of the descriptor into the old
+Target staging slot, WAIT(data), then UI_GRID. The installed target survives
+staging reuse. UI completion includes its actual write terminals. Global/Render
+bindings remain cached; no texture invalidation is inserted. UI invalidates both
+meshlet input pages, but each subsequent `gpu_pass_draw_mesh` already reloads its
+Instance and first page and prefetches all later pages, so no duplicate page
+validity state is needed. Pass end still emits WAIT(all)/FLUSH before END.
+
+```mermaid
+flowchart LR
+  C[Editable packed cells] --> S[CB private grid and descriptor]
+  A[Immutable atlas] --> U[UI execution]
+  D[Earlier 3D draws] --> F[WAIT all and FLUSH]
+  S --> P[Descriptor DMA and WAIT data]
+  F --> P --> U
+  U --> T[Actual write terminals]
+  T --> E[Pass end and GPU completion]
+  E --> R[Ready output then D3 present]
+```
+
+UI uses only the Pass's reserved color, with the normal Front/Pending/Rendering
+protection and failed-handoff retention. FF and alpha0 preserve existing pixels;
+UI does not clear its background. A later 3D draw can overwrite UI, so a final
+text overlay belongs after the scene. UI does not independently present or
+change the Display completion boundary.
+
 ## Affine and Camera helpers
 
 `gpu_transform.rs` uses existing fix32, vec3/4, fdot, frcp and fsincos operations.
@@ -296,6 +358,16 @@ serializer as in the existing Display tests. This is not the board's PLL ratio,
 TMDS/SDRAM pin timing or physical visual qualification. Control-only peers cover
 initial takeover, unstable snapshots, pending deferral, wrap, faults and timeout;
 they do not replace the real scan/arbiter fixture.
+
+The UI scan fixture records actual 3D/UI/3D/UI sequences on the real CPU and
+presents two frames through the production arbiter and Display. It modifies the
+application table after each recording, includes all-FF and alpha0 cells, left/
+right edge IDs0/254, verifies later DRAW reloads and crosses a DSEG3 page with
+the second frame's private grid. Full Color and independent Depth expectations,
+atlas/asset guards, write terminals and visible RGB samples are checked. Its
+companion injects a real UI-grid maintenance writeback error and requires
+restoration, retained resources and no GPU/present. Software controls cover
+packed setters, command/object capacity and recording lifecycle rejections.
 
 Its memory peer models the 64-bit shared-port contract, not SDRAM pins. The
 required legacy system co-simulation remains separate from this native GPU
