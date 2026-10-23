@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "poses": 180,
+  "cameras": 3,
+  "files": {
+    "src/core/state.js": "5fa199cce3814b8d7e4dbbc41b63372b2425df7154e6e4adf0fc08ac5c7511c1",
+    "src/render/camera.js": "b45da3f265f5a43d3ba0472ceababc8f994c4a11f50caa563c870f9f56e55656",
+    "src/render/ground-shadow.js": "702a85436dcf438ecadfbf2fc39ff250508793f58f51ccdb6f68cb454b2e49ba",
+    "node_modules/three/package.json": "f9c474a27c920b9435353a6235968f4453436bee0444fac7e5fd289c8fa463de"
+  }
+}
