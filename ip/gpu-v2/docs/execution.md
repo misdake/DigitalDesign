@@ -459,16 +459,30 @@ derive from this header rather than allocating a new quad identity.
 
 | Bank | Physical representation | Reader |
 | --- | --- | --- |
-| Normal | 512 × 36 BSRAM;32 × 4 rows used | Independent synchronous Lighting port |
-| UV | 512 × 36 BSRAM, `{pad2,V16,pad2,U16}` | Independent Sampling port |
-| Basic RGB | 512 × 36 BSRAM; three 9-bit columns, low 8 used | Independent Final port |
+| Normal | One BSRAM, 18-bit writes / 512 × 36-bit reads;32 × 4 rows used | Independent synchronous Lighting port |
+| UV | One BSRAM, 18-bit writes / 512 × 36-bit reads, `{pad2,V16,pad2,U16}` | Independent Sampling port |
+| Basic RGB | One BSRAM, 18-bit writes / 512 × 36-bit reads; R in low half, G/B in high half | Independent Final port |
 | Z | 18-bit 1W1R BSRAM carrying Z16 | Sink color acceptance issues read, paired depth phase consumes Q |
 | NDC | 320 × 32 read-only BSRAM; two adjacent F14 coordinates/word | Lighting synchronous read |
 | Header, masks, LOD | Per-reader distributed RAM | Independent ordered cursor views |
 
-Normal/UV/RGB have fixed data wiring with column write enables. A synchronous
-read's Q remains owned through CE and consumer stalls. The geometry record
-ports have the same ownership rule but separate banks and identities.
+Native Normal/UV/RGB writes replace one complete 18-bit half at address
+`{row,half}`. Normal/UV select the corresponding half of the existing data bus.
+Basic stores `{zero10,R8}` in half0 and `{zero2,B8,G8}` in half1; fixed read wiring
+restores the original three padded RGB bytes before Final consumes them.
+There is no native 36-bit read-modify-write or byte-enable dependency. The
+logical portable model retains the existing field-update interface. A synchronous
+read's Q remains owned through CE and consumer stalls. Capacities, read latency
+and return calendars are unchanged. The geometry record ports have the same
+ownership rule but separate banks and identities.
+
+GW2AR native bindings use complete writes rather than assuming the vendor
+functional model's partial-write behavior is a physical device guarantee.
+In the command composition, the depth bank stores `{alpha8,D16}` as a complete
+36-bit word with its upper12 bits zero; it does not mask out unused bits.
+`tests/gw2ar_write_contract.rs` checks emitted bindings separately from model
+co-simulation. The pool qualification sweeps both half layouts across all512
+rows and two epochs, including held synchronous Q.
 
 ## Fixed return calendar
 
@@ -508,6 +522,13 @@ ROM banks. The dot MAC keeps its hard output register. Private core CE advances
 under the parent's guaranteed result-bank acceptance; public ACKs and bank
 writes commit on common CE, so a pause cannot spend a result twice.
 
+The Y/Z split-square corrections take their high and low parts from the same
+prescaled register Q. Those two registers have explicit synthesis preservation;
+kept seven-bit Q nets feed the native DSP B ports directly. Current combinational
+D must not replace only one operand half. This changes neither arithmetic nor
+latency. `tests/lighting_square_boundary.py --netlist <post-PnR.vo> --output <dir>`
+checks that the fourteen low operand bits are driven by registered outputs.
+
 Final's three source banks return after one enabled edge. Its wait phase owns
 all Q values until consumed. Two old-state result credits admit arithmetic only
 when `qcount+arith_live<2`. A simultaneous output ACK adds no admission credit.
@@ -533,6 +554,11 @@ slot/level/tile XY; set=`((tile_y&3)<<2)|(tile_x&3)`. Invalid ways precede
 tree-PLRU. Bank=`{y0 XOR x1,x0}`, local=`{y2:0,x2}`; form virtual +1 taps before
 bank selection. Only old READY tags hit. Captured reads pin the owner and retain
 payload, preventing replacement from altering accepted taps.
+
+Each native tag bank writes one complete 18-bit tag and reads an adjacent pair
+as36 bits. The write address includes the way's low bit instead of masking a
+36-bit row. Both the runtime and independent component cache use this binding;
+tag lookup width, capacity and latency stay unchanged.
 
 A miss reserves one line and presents an aligned 128-byte request. It receives
 16 indexed 64-bit beats and a terminal ACK. Last beat alone does not publish

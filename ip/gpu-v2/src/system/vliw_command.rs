@@ -6,6 +6,8 @@ mod current_state;
 mod current_texture;
 #[path = "simulation_checks.rs"]
 mod simulation_checks;
+#[path = "ui_grid.rs"]
+mod ui_grid;
 pub const MODULE: &str = "gpu_v2_vliw_command";
 pub fn verilog(
     surface: MaterializedSurface,
@@ -25,9 +27,12 @@ pub fn verilog(
         surface,
         backend,
     )?;
-    source.push_str(&current_state::lower(current_texture::lower(numerical)?)?);
+    source.push_str(&ui_grid::lower(current_state::lower(
+        current_texture::lower(numerical)?,
+    )?)?);
     source.push_str(include_str!("command_processor.v"));
     source.push_str(include_str!("command_dma.v"));
+    source.push_str(include_str!("ui_grid.v"));
     let router = super::vliw_memory::RTL
         .split("module gpu_vliw_memory #")
         .next()
@@ -130,10 +135,40 @@ impl Command {
     pub fn set_target(qword: u16) -> Result<Self, &'static str> {
         Self::set(10, qword, 32)
     }
+    /// Fixed 50x15 UI grid, after explicit WAIT(all) and FLUSH.
+    pub fn ui_grid(qword: u16) -> Result<Self, &'static str> {
+        Self::set(11, qword, 32)
+    }
     pub const END: Self = Self(15 << 28);
     pub const fn encode(self) -> [u8; 4] {
         self.0.to_le_bytes()
     }
+}
+/// UI object: padded 750-byte cell table and a 64-KiB RGBA5551 atlas.
+pub fn ui_params(grid: u32, atlas: u32) -> Result<[u8; 32], &'static str> {
+    if !grid.is_multiple_of(128)
+        || grid > 0x800000 - 768
+        || !atlas.is_multiple_of(65536)
+        || atlas > 0x800000 - 65536
+    {
+        return Err("UI asset extent/alignment");
+    }
+    let mut bytes = [0; 32];
+    let word = (grid / 128) | ((atlas / 65536) << 16);
+    bytes[..4].copy_from_slice(&word.to_le_bytes());
+    Ok(bytes)
+}
+/// Offline bank order. Odd rows exchange the two pairs in each four-pixel group.
+/// Input is row-major R5:G5:B5:A1; output is one 256-byte atlas entry.
+pub fn ui_char(pixels: &[[u16; 8]; 16]) -> [u8; 256] {
+    let mut bytes = [0; 256];
+    for (y, row) in pixels.iter().enumerate() {
+        for x in 0..8 {
+            let source = x ^ ((y & 1) * 2);
+            bytes[(y * 8 + x) * 2..(y * 8 + x + 1) * 2].copy_from_slice(&row[source].to_le_bytes());
+        }
+    }
+    bytes
 }
 /// Driver-validated two-SEND descriptor. All addresses here are bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

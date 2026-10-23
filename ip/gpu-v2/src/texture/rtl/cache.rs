@@ -323,11 +323,11 @@ module {MODULE}(
   genvar tg;
   generate for(tg=0;tg<2;tg=tg+1)begin:tag_pair
     wire[35:0] pair_q;
-    wire[3:0] byte_mask=vic_line[0]?4'b1100:4'b0011;
-    SDPX9B #(.READ_MODE(1'b0),.BIT_WIDTH_0(36),.BIT_WIDTH_1(36)) bank(
-      .DO(pair_q),.DI({{head_tag,head_tag}}),
+    // GW2AR writes one complete tag; the read port returns both adjacent tags.
+    SDPX9B #(.READ_MODE(1'b0),.BIT_WIDTH_0(18),.BIT_WIDTH_1(36)) bank(
+      .DO(pair_q),.DI({{18'd0,head_tag}}),
       .BLKSELA(3'b000),.BLKSELB(3'b000),
-      .ADA({{5'd0,vic_line[5:2],1'b0,byte_mask}}),
+      .ADA({{5'd0,vic_line[5:2],vic_line[0],4'b0011}}),
       .ADB({{5'd0,tag_set,5'd0}}),.CLKA(clk),.CLKB(clk),
       .CEA(tag_write && vic_line[1]==tg),.CEB(tag_read),
       .OCE(1'b1),.RESETA(1'b0),.RESETB(1'b0));

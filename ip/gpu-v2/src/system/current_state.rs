@@ -218,7 +218,7 @@ pub fn lower(mut source: String) -> Result<String, String> {
         once(
             s,
             ".DI({20'd0,wd}),.ADA({3'd0,wa,4'b0011}),.ADB({3'd0,ra,4'b0000})",
-            ".DI({12'd0,wd}),.ADA({2'd0,wa,1'b0,4'b0111}),.ADB({2'd0,ra,5'd0})",
+            ".DI({12'd0,wd}),.ADA({2'd0,wa,1'b0,4'b1111}),.ADB({2'd0,ra,5'd0})",
         )
     })?;
     edit(&mut source, "gpu_v2_pixel_lighting_consumer", |s| {

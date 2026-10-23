@@ -39,6 +39,16 @@ module gpu_v2_vliw_command(
  assign device_read_data=device_selected&&device_read_enable&&device_channel==2?
   {14'd0,transport_error,busy}:16'd0;
  wire start,slot,stop,cp_re,cp_ready;wire[8:0]cp_addr;wire[63:0]cp_q;
+ wire processor_cp_re;wire[8:0]processor_cp_addr;
+ wire processor_work_valid,processor_work_mesh,processor_work_slot;
+ wire[21:0]processor_work_source;wire[6:0]processor_work_destination;
+ wire[1:0]processor_work_size;wire[2:0]processor_work_blocks;
+ wire ui_start,ui_active,ui_done,ui_cp_re,ui_work_valid;
+ wire[8:0]ui_cp_addr,ui_tile;wire[21:0]ui_work_source;wire[6:0]ui_work_destination;
+ wire ui_cmd_valid,ui_cmd_write,ui_cmd_half,ui_cmd_ready,ui_cmd_done,ui_pixel_valid,ui_pixel_half;
+ wire[4:0]ui_pixel_word;wire[63:0]ui_pixels;
+ assign cp_re=ui_active?ui_cp_re:processor_cp_re;
+ assign cp_addr=ui_active?ui_cp_addr:processor_cp_addr;
  wire start_ready=meshlet_ready;wire start_fire=ce&&start&&start_ready;
  wire dma_we,dma_ready;wire[8:0]dma_local_addr;wire[9:0]dma_addr={1'b0,dma_local_addr};wire[63:0]dma_data;
  wire work_valid,work_ready,work_mesh,work_slot,work_busy,work_done,dma_idle,dma_fault,mesh_loading;
@@ -56,6 +66,13 @@ module gpu_v2_vliw_command(
  wire flush_request,flush_complete,texture_invalidate;
  wire clear_active,clear_request,clear_ready,clear_complete,clear_ok;
  wire[31:0]clear_address;wire[15:0]clear_value;
+ assign work_valid=ui_active?ui_work_valid:processor_work_valid;
+ assign work_mesh=!ui_active&&processor_work_mesh;
+ assign work_source=ui_active?ui_work_source:processor_work_source;
+ assign work_destination=ui_active?ui_work_destination:processor_work_destination;
+ assign work_size=ui_active?2'd2:processor_work_size;
+ assign work_blocks=ui_active?3'd0:processor_work_blocks;
+ assign work_slot=!ui_active&&processor_work_slot;
  wire control_request_valid,control_request_ready;wire[21:0]control_request_address;wire[1:0]control_request_count;
  wire control_response_valid,control_response_last,control_response_error,control_response_bad;wire[63:0]control_data;
  reg input_active,active_page;
@@ -63,16 +80,16 @@ module gpu_v2_vliw_command(
   if(reset)begin input_active<=0;active_page<=0;end
   else begin if(meshlet_done)input_active<=0;if(start_fire)begin input_active<=1;active_page<=slot;end end
  end
- assign pipeline_idle=compute_pipeline_idle&&!memory_busy&&dma_idle&&!clear_active;
+ assign pipeline_idle=compute_pipeline_idle&&!memory_busy&&dma_idle&&!clear_active&&!ui_active;
  assign idle=!busy&&compute_idle&&!memory_busy&&dma_idle;
  assign fault=stop||compute_fault||memory_fault||dma_fault;
  gpu_command_processor processor(
  .clk(clk),.reset(reset),.ce(ce),.abort(abort),.load_count(load_count),.submit(submit),.control_data(device_write_data),
  .submit_ready(submit_ready),.busy(busy),.stop(stop),
  .render_idle(compute_idle),.render_fault(compute_fault||memory_fault),.memory_busy(memory_busy),.meshlet_ready(meshlet_ready),.meshlet_done(meshlet_done),
- .start(start),.draw_slot(slot),.cp_re(cp_re),.cp_addr(cp_addr),.cp_q(cp_q),.cp_ready(cp_ready),
+ .start(start),.draw_slot(slot),.cp_re(processor_cp_re),.cp_addr(processor_cp_addr),.cp_q(cp_q),.cp_ready(cp_ready),
  .cache_valid(cache_valid),.cache_ready(cache_ready),.cache_source(cache_source),.cache_bank(cache_bank),.cache_done(cache_done),.cache_done_bank(cache_done_bank),
- .work_valid(work_valid),.work_ready(work_ready),.work_mesh(work_mesh),.work_source(work_source),.work_destination(work_destination),.work_size(work_size),.work_blocks(work_blocks),.work_slot(work_slot),
+ .work_valid(processor_work_valid),.work_ready(work_ready),.work_mesh(processor_work_mesh),.work_source(processor_work_source),.work_destination(processor_work_destination),.work_size(processor_work_size),.work_blocks(processor_work_blocks),.work_slot(processor_work_slot),
  .work_busy(work_busy),.dma_idle(dma_idle),.dma_fault(dma_fault),.mesh_loading(mesh_loading),.mesh_begin(mesh_begin),.mesh_done(mesh_done),.mesh_slot(mesh_slot),.mesh_begin_slot(mesh_begin_slot),.mesh_done_slot(mesh_done_slot),
  .uniform_done(uniform_done),.uniform_bank(uniform_bank),.header_we(header_we),.header_slot(dma_addr[2]),.header_data(dma_data),
  .cfg_far_z(cfg_far_z),.cfg_lod_bias(cfg_lod_bias),
@@ -82,7 +99,12 @@ module gpu_v2_vliw_command(
  .context_epoch(context_epoch),.context_mode(context_mode),.context_code(context_code),.light_x(light_x),.light_y(light_y),.light_z(light_z),.ray_x(ray_x),.ray_y(ray_y),.ray_k(ray_k),
  .ambient(ambient),.directional(directional),.flush_request(flush_request),.flush_complete(flush_complete),
  .clear_active(clear_active),.clear_request(clear_request),.clear_address(clear_address),.clear_value(clear_value),
- .clear_ready(clear_ready),.clear_complete(clear_complete),.clear_ok(clear_ok));
+ .clear_ready(clear_ready),.clear_complete(clear_complete),.clear_ok(clear_ok),.ui_start(ui_start),.ui_done(ui_done));
+ gpu_ui_grid ui(.clk(clk),.reset(reset),.ce(ce),.start(ui_start),.stop(stop),.grid_base(cp_q[15:0]),.atlas_base(cp_q[22:16]),
+ .active(ui_active),.done(ui_done),.cp_re(ui_cp_re),.cp_addr(ui_cp_addr),.cp_ready(cp_ready),.cp_q(cp_q),
+ .work_valid(ui_work_valid),.work_ready(work_ready),.work_source(ui_work_source),.work_destination(ui_work_destination),.dma_idle(dma_idle),
+ .cmd_valid(ui_cmd_valid),.cmd_write(ui_cmd_write),.cmd_half(ui_cmd_half),.tile(ui_tile),.cmd_ready(ui_cmd_ready),.cmd_done(ui_cmd_done),
+ .pixel_valid(ui_pixel_valid),.pixel_half(ui_pixel_half),.pixel_word(ui_pixel_word),.pixels(ui_pixels));
  gpu_command_dma dma(
  .clk(clk),.reset(reset),.ce(ce),.stop(stop||compute_fault||memory_fault),
  .cache_valid(cache_valid),.cache_ready(cache_ready),.cache_source(cache_source),.cache_bank(cache_bank),.cache_done(cache_done),.cache_done_bank(cache_done_bank),
@@ -121,6 +143,8 @@ module gpu_v2_vliw_command(
  assign clear_complete=fb_w_response_valid&&(fb_w_response_last||fb_w_response_error);
  assign clear_ok=!fb_w_response_error;
  gpu_v2_vliw_three_port core(
+ .ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_cmd_half(ui_cmd_half),.ui_tile(ui_tile),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),
+ .ui_pixel_valid(ui_pixel_valid),.ui_pixel_half(ui_pixel_half),.ui_pixel_word(ui_pixel_word),.ui_pixels(ui_pixels),
  .cp_re(cp_re),.cp_addr(cp_addr),.cp_q(cp_q),.cp_ready(cp_ready),
  .clk(clk),
  .reset(reset),

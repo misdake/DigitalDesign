@@ -166,7 +166,66 @@ end
 initial begin #1200000;$fatal(1,"absolute timeout");end
 endmodule
 '''
+HALVES=r'''`timescale 1ns/1ps
+module tb;
+reg clk=0;always #5 clk=~clk;
+reg reset=1,we=0,re=0;reg[3:0]wm0=0,wm1=0;
+reg[8:0]wa=0,ra=0;reg[35:0]wd0=0,wd1=0;wire[35:0]q0,q1;
+gpu_v2_vliw_pool_ram normal_uv(clk,reset,we,wm0,wa,wd0,re,ra,q0);
+gpu_v2_vliw_pool_ram #(.BASIC(1)) basic(clk,reset,we,wm1,wa,wd1,re,ra,q1);
+reg[35:0]gold0[0:511],gold1[0:511],held0,held1;
+integer cycle=0,epoch,row,c;
+function[35:0]pattern;input integer row,epoch;begin
+ pattern=36'h123456789^(row*36'h025395a07)^(epoch?36'habcdef012:36'd0);
+end endfunction
+always@(posedge clk)begin
+ cycle=cycle+1;if(cycle>12000)$fatal(1,"bounded full-half RAM check");
+ if(we&&!reset)for(c=0;c<4;c=c+1)begin
+  if(wm0[c])gold0[wa][c*9+:9]<=wd0[c*9+:9];
+  if(wm1[c])gold1[wa][c*9+:9]<=wd1[c*9+:9];
+ end
+ if(reset)begin held0<=0;held1<=0;end
+ else if(re)begin held0<=gold0[ra];held1<=gold1[ra];end
+end
+task check;begin
+ #1;
+ if(q0!==held0)$fatal(1,"normal/UV half or row alias row%0d",ra);
+ if({q1[25:18],q1[16:9],q1[7:0]}!=={held1[25:18],held1[16:9],held1[7:0]})
+  $fatal(1,"Basic RGB layout row%0d",ra);
+end endtask
+initial begin
+ repeat(4)@(negedge clk);reset=0;
+ for(epoch=0;epoch<2;epoch=epoch+1)begin
+  for(row=0;row<512;row=row+1)begin
+   @(negedge clk);wa=row;we=1;wm0=3;wm1=1;wd0=pattern(row,epoch);wd1=pattern(row,epoch);
+   @(negedge clk);wm0=12;wm1=6;wd0=~pattern(row,epoch);wd1=~pattern(row,epoch);
+   @(negedge clk);we=0;
+  end
+  for(row=0;row<512;row=row+1)begin
+   @(negedge clk);re=1;ra=row;
+   @(posedge clk);check();
+   @(negedge clk);re=0;ra=511-row;
+   @(posedge clk);check();
+  end
+ end
+ $display("PASS POOL_HALVES epochs=2 rows=512 layouts=2 held_Q=true");$finish;
+end
+endmodule
+'''
+
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
+
+def check_halves(mode):
+ d=OUT/f'{mode}-full-halves';d.mkdir(parents=True,exist_ok=True)
+ (d/'tb.v').write_text(HALVES)
+ args=[os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',str(d/'test.vvp'),str(OUT/f'{mode}.v'),str(d/'tb.v')]
+ if mode=='native':args+=[str(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v')]
+ for stage,command in [('compile',args),('run',[os.environ['VVP_EXE'],str(d/'test.vvp')])]:
+  with (d/f'{stage}.log').open('w') as log:p=subprocess.run(command,cwd=d,stdout=log,stderr=subprocess.STDOUT,timeout=60)
+  text=(d/f'{stage}.log').read_text();assert p.returncode==0,text[-2000:]
+ assert 'PASS POOL_HALVES' in text
+ print(text,flush=True)
+ return dict(mode=mode,summary=text)
 def main():
  reports=[]
  for mode in ('portable','native'):
@@ -185,6 +244,7 @@ def main():
     r=dict(mode=mode,rgb=rgb,stress=stress,restart=restart,summary=p.stdout,trace_sha256=sha(d/'trace.txt'));reports.append(r);print(p.stdout,flush=True)
  for rgb in (0,1):
   for stress,restart in ((0,0),(1,0),(1,1)):assert len({r['trace_sha256'] for r in reports if r['rgb']==rgb and r['stress']==stress and r['restart']==restart})==1
- (OUT/'receipt.json').write_text(json.dumps(dict(status='pass',reports=reports,generated={str(OUT/f'{mode}.v'):sha(OUT/f'{mode}.v') for mode in ('portable','native')},sources={str(p.relative_to(ROOT)):sha(p) for p in [ROOT/'ip/gpu-v2/src/system/pixel/vliw_quad_pool.v',ROOT/'ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs',Path(__file__)]},scope='Independent pool formatting/port/lifetime/NDC qualification; not full GPU arithmetic'),indent=2)+'\n')
+ halves=[check_halves(mode) for mode in ('portable','native')]
+ (OUT/'receipt.json').write_text(json.dumps(dict(status='pass',reports=reports,full_halves=halves,generated={str(OUT/f'{mode}.v'):sha(OUT/f'{mode}.v') for mode in ('portable','native')},sources={str(p.relative_to(ROOT)):sha(p) for p in [ROOT/'ip/gpu-v2/src/system/pixel/vliw_quad_pool.v',ROOT/'ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs',Path(__file__)]},scope='Independent pool formatting/port/lifetime/NDC and512-row half-write qualification; not full GPU arithmetic'),indent=2)+'\n')
  print('PASS POOL MATRIX',flush=True)
 if __name__=='__main__':main()

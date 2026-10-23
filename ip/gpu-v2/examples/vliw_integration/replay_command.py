@@ -24,7 +24,7 @@ def align(value, size=128):
 
 class CommandBuffer:
     OPS = dict(NOP=0, DMA=1, DMA_MESHLET=2, DRAW_MESHLET=3, WAIT=4,
-               SET_GLOBAL=5, SET_RENDER=6, FLUSH=7, CLEAR=8, TEX_INVALIDATE=9, SET_TARGET=10, END=15)
+               SET_GLOBAL=5, SET_RENDER=6, FLUSH=7, CLEAR=8, TEX_INVALIDATE=9, SET_TARGET=10, UI_GRID=11, END=15)
 
     def __init__(self):
         self.records = []
@@ -42,7 +42,7 @@ class CommandBuffer:
         elif name == 'CLEAR':
             assert slot in (0,1) and 0 <= a <= 65535
             word = (op<<28) | (slot<<16) | a
-        elif name in ('SET_GLOBAL','SET_RENDER','SET_TARGET'):
+        elif name in ('SET_GLOBAL','SET_RENDER','SET_TARGET','UI_GRID'):
             assert slot % 4 == 0
             word = (op<<28) | (slot//4)
         else:
