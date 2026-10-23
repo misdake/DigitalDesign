@@ -8,7 +8,7 @@ or present a frame.
 - [System wall-clock contract](/systems/cpu-v3-tang-nano-20k/docs/wall-clock.md)
 - [SystemControl](/systems/cpu-v3-tang-nano-20k/src/hardware/system_control/mod.rs): continuously running main-clock timer, device 0 / channel 10.
 - [RCC time](/systems/cpu-v3-tang-nano-20k/rcc/time.rs): timestamp and modular elapsed-time helpers.
-- `rcc/frame_stats.rs`: four-word frame state and five glyph IDs.
+- [RCC frame statistics](/systems/cpu-v3-tang-nano-20k/rcc/frame_stats.rs): shared four-word frame state and five glyph IDs.
 - `main.rs`: bounded compiled CPU V3 tests, using the default optimizer.
 
 Run the CPU check with `cargo test -p cpu-v3-tang-nano-20k --example frame_stats`.

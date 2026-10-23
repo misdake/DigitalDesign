@@ -2,7 +2,7 @@
 
 Timestamp access, resolution, reset and wrap rules are defined by the
 [system wall-clock contract](/systems/cpu-v3-tang-nano-20k/docs/wall-clock.md).
-This example owns only the frame-interval state and character formatting.
+This example checks the shared [RCC frame-interval and character helpers](/systems/cpu-v3-tang-nano-20k/rcc/frame_stats.rs).
 
 ## RCC state and characters
 

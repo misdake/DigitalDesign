@@ -22,7 +22,7 @@ fn validate_cpu() -> usize {
     let parsed =
         rcc::frontend::compile_program_named("Frame statistics", PROGRAM, &options, &mut |name| {
             match name {
-                "frame_stats" => Ok(include_str!("rcc/frame_stats.rs").to_owned()),
+                "frame_stats" => Ok(include_str!("../../rcc/frame_stats.rs").to_owned()),
                 _ => Err(format!("unexpected module {name}")),
             }
         })
