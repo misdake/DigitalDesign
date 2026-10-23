@@ -265,8 +265,11 @@ the [RCC driver](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md) provides one
 opaque command buffer, high-memory storage, scoped DSEG3 access and a complete
 Clear/Store Pass with ordered multi-Mesh/Instance recording, immutable high-memory
 asset directories, state snapshots and affine/Camera helpers. It is verified by
-separately compiled fixtures, not selected as the default boot application. Display present and new board
-qualification remain separate work.
+separately compiled fixtures, not selected as the default boot application.
+Display ownership and present use actual active/pending/format confirmation: GPU completion
+leaves color Ready, and only a confirmed Display switch releases the old Front.
+The real scanout/arbiter fixture is a memory-port protocol qualification; new
+board and SDRAM-pin qualification remain separate work.
 
 Device4 accepts two16-bit SENDs: channel0 stages the u32 instruction count
 minus1 (14 bits), and channel1 takes byte base/128 and starts execution. Base is

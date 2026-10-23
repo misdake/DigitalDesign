@@ -16,7 +16,7 @@ mod draw_fixture;
 #[ignore = "bounded D2 real CPU/cache/Device4/GPU draw; requires Python, Icarus and Gowin models"]
 fn rcc_records_and_renders_two_ordered_passes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = root.join("../../target/gpu-rcc-draw");
+    let out = root.join("../../target/gpu-rcc-draw-current");
     std::fs::create_dir_all(&out).unwrap();
     assert_eq!(draw_fixture::expected_commands(16368).len(), 384);
     let source = draw_fixture::program();
@@ -209,7 +209,7 @@ fn rcc_builds_high_command_buffers_and_submits_twice() {
  check(gpu_wait(cb,1)==GPU_TIMEOUT);check(!gpu_pass_clear(cb,0,0));
  check(gpu_init()==GPU_REJECTED);
  check(gpu_wait(cb,65535)==GPU_COMPLETED);dev_send(7,0,1);
- check(gpu_poll(cb)==GPU_IDLE);let next=gpu_cb_begin();check(next==GPU_CB_HANDLE);
+ check(gpu_poll(cb)==GPU_IDLE);check(gpu_discard_ready(cb));let next=gpu_cb_begin();check(next==GPU_CB_HANDLE);
  check(gpu_cb_begin()==GPU_CB_NONE);check(gpu_pass_clear(next,0xabcd,0x5678));
  check(gpu_submit_idle(next)==GPU_PENDING);
  check(gpu_wait(next,65535)==GPU_COMPLETED);dev_send(7,0,2);

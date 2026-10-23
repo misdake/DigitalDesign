@@ -1,20 +1,20 @@
 # RCC GPU driver
 
 The application interface is `rcc/gpu.rs`. It manages one command buffer and a
-single Clear/Store Pass with ordered Mesh/Instance draws for fixed Color B and Depth. The boot profile
-starts Display on A; this driver does not present or change that selection.
-Using it after another owner selects B for scanout violates the D1 precondition.
-Display handoff and runtime recovery are separate features. The default CPU
+single Clear/Store Pass with ordered Mesh/Instance draws and fixed A/B/Depth
+allocations. Initialization reads actual Display active/pending/format; it can
+adopt either A or B as Front and chooses the other plane for rendering. The
+driver presents through one serialized entry point. Runtime recovery is separate. The default CPU
 Display diagnostic remains selected in the boot config.
 
 ## Application calls
 
 | Call | Result and ownership |
 |---|---|
-| `gpu_init()` | Initialize once; Idle, Pending for unknown hardware busy, or Fault. Repeated init is rejected without forgetting work. |
+| `gpu_init()` | Initialize once from actual GPU/Display state; Pending for an unknown in-flight owner or unstable snapshot, Fault for invalid active/format/health. Repeated init is rejected without forgetting work. |
 | `gpu_cb_begin()` | Return an opaque nonzero identity, or zero when recording/reuse is unavailable. Only a new or explicitly completed CB can begin. |
 | `gpu_pass_clear(cb, rgb565, d16)` | Record the complete pass. False preserves cursors/state on validation or capacity failure. No raw command, address, length or DMA/window pointer is an application argument. |
-| `gpu_pass_begin(cb, rgb565, d16)` | Begin the sole Pass, returning its opaque identity or zero. Clears B and Depth. |
+| `gpu_pass_begin(cb, rgb565, d16)` | Reserve the confirmed Writable non-Front color, begin the sole Pass, and clear it and Depth. Return an opaque identity or zero. |
 | `gpu_pass_set_global(pass, global)` | Encode/snapshot native Global64; identical encoded values consume no commands or object space. |
 | `gpu_pass_set_render(pass, texture, render)` | Bind an immutable Texture handle and snapshot the remaining Render fields. Texture address/dimensions come from the handle. |
 | `gpu_pass_draw_mesh(pass, mesh, matrix, rgba_low, rgba_high)` | Snapshot the native 21-u32 Instance matrix prefix and RGBA; expand the immutable compact directory in original order. |
@@ -22,6 +22,10 @@ Display diagnostic remains selected in the boot config.
 | `gpu_submit_idle(cb)` | Pending after successful cache handoff and both SENDs; Rejected if ownership/state prevents acceptance; CacheError faults the driver, retains the Ready CB and sends neither GPU command. |
 | `gpu_poll(cb)` | Idle, Pending, Completed, Fault or Rejected. Completed transfers the CB back exactly once; later polls return Idle. |
 | `gpu_wait(cb, limit)` | At most `limit` polls; Timeout retains ownership and permits later observation. A zero limit performs no poll. |
+| `gpu_cb_cancel(cb)` | Cancel only an unstarted Building CB, including an open/ended Pass; release its reservation after a healthy ownership check. |
+| `gpu_discard_ready(cb)` | Explicitly discard an unsubmitted Ready CB or a completed Ready output. Never release InFlight, Pending or Front. |
+| `gpu_present(cb)` | Accept only the completed Ready output, with no Pending; stage base/format then NEXT_SWAP and return Pending. |
+| `gpu_present_poll()` / `gpu_present_wait(limit)` | Observe Display separately from GPU completion; Completed means stable actual active/format and old-request drain are confirmed. Timeout preserves Pending. |
 
 Status values are Idle=0, Pending=1, Completed=2, Fault=3, Timeout=4,
 Rejected=5, CacheError=6, NotInitialized=7. Handles are identities of the one
@@ -29,6 +33,8 @@ fixed CB, not physical addresses or allocation tokens. Begin cannot discard
 Ready/InFlight work, repeated pass recording cannot overwrite Ready work, and
 repeated Completed polling cannot reclaim storage twice. Fixed targets/assets
 change usage ownership; they are not deleted, relocated or reconstructed.
+GPU completion leaves its color Ready: beginning another CB cannot implicitly
+discard that output. The application must present it or explicitly discard it.
 
 The module loader flattens RCC names. Internal `gpu_*` implementation modules
 and raw/native encoders are not an application API or a memory-security boundary.
@@ -43,8 +49,8 @@ boot packing. Addresses below are physical **bytes**, with exclusive ends.
 
 | Range | Owner |
 |---|---|
-| 0x400000..0x430000 | Fixed Color A, initial Front |
-| 0x430000..0x460000 | Fixed Color B, D1 output |
+| 0x400000..0x430000 | Fixed Color A, boot's initial Front |
+| 0x430000..0x460000 | Fixed Color B, alternating output/Front |
 | 0x460000..0x490000 | Fixed Depth |
 | 0x490000..0x4a0000 | Driver command allocation, 64 KiB |
 | 0x4a0000..0x4b0000 | Driver object allocation, 64 KiB |
@@ -116,6 +122,63 @@ status. It saves in-flight ownership before serial count/start SENDs. Only
 busy=0 **and** error=0 completes. Error is checked first, even when busy is zero;
 sticky transport or software memory fault retains resources and stops new work.
 Timeout does not clear busy, ACK, reset, cancel, present or release an allocation.
+
+## Color ownership and Display completion
+
+One private record holds Front, Pending, Ready, Reserved and Rendering identities.
+Targets come only from this record; application Pass/present calls take no raw
+target address. Depth is owned by the sole GPU execution. All plane allocations
+are disjoint and cache-line aligned; an adjacent/misaligned identity is rejected.
+
+```mermaid
+stateDiagram-v2
+    Writable --> Reserved: begin Pass
+    Reserved --> Writable: cancel or discard unsubmitted CB
+    Reserved --> Rendering: cache handoff and two SENDs
+    Rendering --> Ready: GPU busy=0 and error=0
+    Ready --> Writable: explicit discard
+    Ready --> Pending: stage address and format, NEXT_SWAP
+    Pending --> Front: stable actual active/format confirmation
+    Front --> Writable: replacement confirmed after old scan reads drain
+```
+
+GPU and Display completion are distinct. `gpu_poll` can report Idle while
+Display remains Pending; that does not make either color Writable. The driver
+never infers swap completion from frame_index, GPU idle or the NEXT_SWAP write.
+Other driver calls may also advance a confirmed Display transition while
+checking ownership; Completed is an observation result, not a hardware ticket.
+
+A Display observation reads status, active low/high, format, then status again.
+Changing status yields Pending and retries within the caller's bound. A stable
+pending=0 snapshot must match the expected A/B target and tiled RGB565 format.
+While an owned swap is still pending the active address must remain the old
+Front. Only one software writer may stage/submit Display; unknown pending after
+initialization, unexpected active changes, partial staging, invalid address,
+underflow, memory error or incompatible format fault the owner and retain all
+protected resources. A transport error wins even if GPU busy is zero; unexplained
+GPU busy after the driver was idle likewise stops ownership changes.
+
+At startup unknown GPU busy and unknown Display pending are observed without
+inventing a completed CB. Both colors stay unavailable until actual Display
+pending clears into a valid active/format and the old GPU owner becomes idle.
+No local ACK/reset or driver reinitialization can erase retained ownership.
+
+The existing Display RTL applies pending only on a synchronized frame event
+with `frame_complete`. That bit follows the final successful response of the
+last old-frame segment. No further old external reads are issued before the
+switch. Private line-buffer pixels can finish after the boundary without owning
+the old external plane. Stable readback of this transition is what releases the
+old Front. Frame-count wrap and pending across multiple events require no special
+case. Timeout is an observation limit and later polling may still complete.
+
+Before launching GPU writes, the existing blocking clean+invalidate drains dirty
+CPU input and old output aliases. Cleaning after GPU writes cannot repair a
+dirty old output alias: it would overwrite the new image. CPU must not access
+Front, Pending or Rendering planes or their cache lines, and must not mutate
+in-flight inputs. The trusted library provides no raw plane upload API; unsafe
+pointer/device access outside this contract is not prevented by hardware.
+Present needs no post-render CPU clean: successful GPU FLUSH already published
+the frame. Software faults hold resources until coordinated recovery.
 
 ## Static assets and ordered recording
 
@@ -215,7 +278,26 @@ that placement is not an application API. Separate compiled tests cover director
 crossing and rejection without modifying the existing recording. These compact
 fixtures do not qualify arbitrary interpolants, lighting or full-scene capacity.
 
+The Display ownership fixture connects actual RCC/CPU/cache/SystemControl, GPU,
+FramebufferHdmi and the production seven-client memory arbiter to one retained
+64-bit memory service. It renders compact RGB and UV geometry into B then A,
+presents both, and compares every visible RGB sample of the complete 800x480
+scanouts with independent expected 400x240 surfaces. GPU writes are checked both
+at acceptance and true write terminal against active Front and any outstanding
+old Display read. Dirty old output aliases and an FST tail precede handoff;
+they must be visible before GPU start, and cannot be cleaned over a new image.
+The companion real-maintenance-error case must launch neither GPU nor present.
+
+The scan fixture compresses cold blank startup, then uses pixel clock twice the
+logic clock to stress the memory-port protocol within a bounded simulation.
+Production timing constants, complete source-frame fetches and Display CDC remain
+in the RTL; no internal frame or ownership state is forced. Icarus bypasses the
+serializer as in the existing Display tests. This is not the board's PLL ratio,
+TMDS/SDRAM pin timing or physical visual qualification. Control-only peers cover
+initial takeover, unstable snapshots, pending deferral, wrap, faults and timeout;
+they do not replace the real scan/arbiter fixture.
+
 Its memory peer models the 64-bit shared-port contract, not SDRAM pins. The
 required legacy system co-simulation remains separate from this native GPU
-chain; neither is a new CL3 pin/timing, full boot, present or board qualification.
+chain; neither establishes CL3 pin timing, full boot or physical board qualification.
 Pure software changes do not create a new fitted-area or timing measurement.

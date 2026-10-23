@@ -107,7 +107,9 @@ fn gpu_builder_begin(mut cb: Array<GpuBuffer>, color: u16, depth: u16, cv: u16, 
         return false;
     }
     if cb[0u16].high_slot != 0
-        && (!gpu_high_slot_valid(cb) || color != GPU_COLOR_B_SECTOR || depth != GPU_DEPTH_SECTOR)
+        && (!gpu_high_slot_valid(cb)
+            || (color != GPU_COLOR_A_SECTOR && color != GPU_COLOR_B_SECTOR)
+            || depth != GPU_DEPTH_SECTOR)
     {
         return false;
     }

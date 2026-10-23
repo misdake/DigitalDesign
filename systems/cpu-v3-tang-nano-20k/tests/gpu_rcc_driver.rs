@@ -35,6 +35,7 @@ impl cpu_v3::Device for ControlPeer {
         let s = self.state.borrow();
         match (self.kind, channel) {
             (4, 2) => s.status,
+            (3, 2) => 0x20,
             (0, 5) => {
                 u16::from(
                     s.cache_error
@@ -85,7 +86,7 @@ fn main() {
  let mut a:GpuBuffer=gpu_buffer_empty();let mut b:GpuBuffer=gpu_buffer_empty();let mut duplicate:GpuBuffer=gpu_buffer_empty();
  check(gpu_high_slot_init(view_of(&mut a),0));check(!gpu_high_slot_init(view_of(&mut b),1));
  check(!gpu_high_slot_init(view_of(&mut duplicate),0));
- check(!gpu_build_clear(view_of(&mut a),GPU_COLOR_A_SECTOR,GPU_DEPTH_SECTOR,0,0));
+ check(!gpu_build_clear(view_of(&mut a),GPU_COLOR_A_SECTOR,GPU_COLOR_A_SECTOR,0,0));
  check(a.state==GPU_CB_BUILDING && a.command_words==0);
  let mut data:Buf<u16,8>=Buf::new([0x2345;8]);let mut out:Buf<u16,8>=Buf::new([0;8]);
  check(gpu_slot_upload(view_of(&mut a),true,32760,data.as_array(),8));
@@ -204,7 +205,7 @@ fn compiled_driver_control_ownership_faults_and_timeout() {
         check(gpu_submit_idle(cb)==GPU_REJECTED);check(gpu_cb_begin()==0);
         check(gpu_wait(cb,1)==GPU_TIMEOUT);check(!gpu_pass_clear(cb,0,0));
         check(gpu_poll(2)==GPU_REJECTED);dev_send(7,0,0);
-        check(gpu_poll(cb)==GPU_COMPLETED);check(gpu_poll(cb)==GPU_IDLE);
+        check(gpu_poll(cb)==GPU_COMPLETED);check(gpu_poll(cb)==GPU_IDLE);check(gpu_discard_ready(cb));
         let next=gpu_cb_begin();check(next==1);check(gpu_cb_begin()==0);
         check(gpu_pass_clear(next,0xabba,0x4321));check(gpu_submit_idle(next)==GPU_PENDING);
         dev_send(7,0,0);check(gpu_wait(next,4)==GPU_COMPLETED);"#,
@@ -238,7 +239,7 @@ fn compiled_driver_control_ownership_faults_and_timeout() {
         }));
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&words);
-        for kind in [0, 4, 7] {
+        for kind in [0, 3, 4, 7] {
             cpu.attach_device(
                 kind,
                 Box::new(ControlPeer {

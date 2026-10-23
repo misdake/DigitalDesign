@@ -252,7 +252,7 @@ pub fn gpu_buffer_valid(cb: Array<GpuBuffer>) -> bool {
             && cb[0u16].command_words & 1 == 0
             && cb[0u16].object_words >= 16
             && cb[0u16].object_words <= 32768
-            && cb[0u16].color == GPU_COLOR_B_SECTOR
+            && (cb[0u16].color == GPU_COLOR_A_SECTOR || cb[0u16].color == GPU_COLOR_B_SECTOR)
             && cb[0u16].depth == GPU_DEPTH_SECTOR;
     }
     let mut c: GpuStorage = cb[0u16].commands;

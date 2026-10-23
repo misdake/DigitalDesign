@@ -137,7 +137,7 @@ fn main(){
    check(!gpu_pass_set_global(pass,view_of(&mut g)));
    check(read_dseg_page(3)==19);
    check(gpu_submit_idle(cb)==GPU_PENDING);check(gpu_wait(cb,65535)==GPU_COMPLETED);
-   dev_send(7,0,iteration+1);iteration+=1;
+   dev_send(7,0,iteration+1);check(gpu_discard_ready(cb));iteration+=1;
  }
  check(read_dseg_page(3)==19&&read_dseg_page(0)==0&&read_dseg_page(1)==1&&read_dseg_page(2)==2);
  halt(0x600d);

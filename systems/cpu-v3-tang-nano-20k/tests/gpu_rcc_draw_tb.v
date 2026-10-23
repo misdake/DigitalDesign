@@ -21,7 +21,7 @@ __CORE__ cpu(.clk(clk),.reset(reset),.hold(hold||sweep||pause),
  .data_line_copy_valid(lc),.data_line_copy_source(ls),.data_line_copy_destination_page(lp),.data_line_clean_valid(cl),.data_line_clean_address(ca),
  .device_index(di),.device_channel(ch),.device_read_enable(ren),.device_write_enable(wen),.device_write_data(wdata),.device_read_data(rdata),
  .halted(halted),.halt_signal(signal),.fault(fault),.fault_code(fault_code),.pc(pc));
-assign rdata=di==0?sdata:di==4?gdata:16'd0;
+assign rdata=di==0?sdata:di==4?gdata:di==3&&ch==2?16'h0020:16'd0;
 __SYSCTL__ sysctl(.clk(clk),.reset(reset),.device_index(di),.device_channel(ch),.device_read_enable(ren),.device_write_enable(wen),.device_write_data(wdata),.device_read_data(sdata),
  .dcache_maintenance_ready(ready),.dcache_maintenance_done(done),.dcache_maintenance_error(error),.watch_read_data(16'd0),
  .cpu_hold(hold),.dcache_clean(clean),.dcache_invalidate(invalidate));

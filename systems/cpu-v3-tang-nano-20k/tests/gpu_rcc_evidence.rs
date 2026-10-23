@@ -8,6 +8,18 @@ use std::{collections::BTreeMap, path::Path};
 #[test]
 #[ignore = "requires completed D2 and retained Clear/fault native evidence"]
 fn native_evidence_matches_final_d2_sources() {
+    check_evidence(&[
+        ("gpu-rcc-draw", "program", true),
+        ("gpu-rcc-submit", "repeat-clear", false),
+        ("gpu-rcc-submit", "cache-error", false),
+    ]);
+}
+#[test]
+#[ignore = "requires current complete two-page draw native evidence"]
+fn current_two_page_draw_evidence_matches_final_sources() {
+    check_evidence(&[("gpu-rcc-draw-current", "program", true)]);
+}
+fn check_evidence(cases: &[(&str, &str, bool)]) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let mut dut = BTreeMap::new();
@@ -25,11 +37,7 @@ fn native_evidence_matches_final_d2_sources() {
             }
         }
     }
-    for (folder, name, draw) in [
-        ("gpu-rcc-draw", "program", true),
-        ("gpu-rcc-submit", "repeat-clear", false),
-        ("gpu-rcc-submit", "cache-error", false),
-    ] {
+    for &(folder, name, draw) in cases {
         let out = root.join("../../target").join(folder);
         let source = std::fs::read_to_string(out.join(format!("{name}.rs"))).unwrap();
         if draw {

@@ -20,8 +20,12 @@ struct Peer {
     state: Rc<RefCell<(usize, usize)>>,
 }
 impl cpu_v3::Device for Peer {
-    fn read(&mut self, _: &mut [u16], _: u8) -> u16 {
-        0
+    fn read(&mut self, _: &mut [u16], channel: u8) -> u16 {
+        if self.kind == 3 && channel == 2 {
+            0x20
+        } else {
+            0
+        }
     }
     fn write(&mut self, _: &mut [u16], channel: u8, _: u16) {
         if self.kind == 0 && channel == 1 {
@@ -58,7 +62,7 @@ fn run(source: &str, assets: bool) -> (CpuV3Sim, usize) {
         }
     }
     let count = Rc::new(RefCell::new((0, 0)));
-    for kind in [0, 4] {
+    for kind in [0, 3, 4] {
         cpu.attach_device(
             kind,
             Box::new(Peer {
