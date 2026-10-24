@@ -913,7 +913,7 @@ fn main(){
 }
 
 #[test]
-fn inplace_demo_numbers_have_no_leading_zeros_and_clear_unused_cells() {
+fn inplace_demo_numbers_preserve_unselected_cells_and_omit_hidden_ui() {
     let words = compile(
         r#"mod overlay_gpu;
 fn check(ok:bool){if !ok{halt(0xbad);}}
@@ -925,7 +925,9 @@ fn main(){
  stats[1u16]=9;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
  stats[1u16]=10;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
  stats[1u16]=65535;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ let objects=GPU_CB.object_words;let commands=GPU_CB.command_words;
  stats[3u16]=0;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ check(GPU_CB.object_words==objects&&GPU_CB.command_words==commands);
  check(gpu_pass_end(pass));check(gpu_cb_finish(cb));halt(0x600d);
 }"#,
     );
@@ -947,11 +949,41 @@ fn main(){
         matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
         "{result:?}"
     );
-    for (i, text) in ["0", "9", "10", "65535", ""].iter().enumerate() {
-        let mut cells = [255u8; 750];
-        cells[52..52 + text.len()].copy_from_slice(text.as_bytes());
+    let texts = ["0", "9", "10", "65535"];
+    for (i, text) in texts.iter().enumerate() {
         let word = 64 + i as u32 * 448;
-        assert_eq!(bytes(&cpu, 0x4a0000 / 2 + word, 750), cells);
-        assert_eq!(bytes(&cpu, 0x4a0000 / 2 + word + 375, 18), [255; 18]);
+        let at = 0x4a0000 / 2 + word;
+        // Only intersecting packed words are initialized. An odd-length run's
+        // unused neighbor is FF; all other grid/padding bytes keep the sentinel.
+        let mut expected: Vec<u8> = [0x5a, 0xa5].into_iter().cycle().take(800).collect();
+        let packed_end = 52 + text.len().div_ceil(2) * 2;
+        expected[52..packed_end].fill(255);
+        expected[52..52 + text.len()].copy_from_slice(text.as_bytes());
+        expected[768..]
+            .copy_from_slice(&gpu_v2::system::vliw_command::ui_params(at * 2, 0x4c0000).unwrap());
+        assert_eq!(bytes(&cpu, at, 800), expected, "text={text}");
+        assert_eq!(bytes(&cpu, at - 1, 2), [0x5a, 0xa5]);
+        assert_eq!(bytes(&cpu, at + 400, 2), [0x5a, 0xa5]);
     }
+    let code = bytes(&cpu, 0x490000 / 2, 128);
+    let commands: Vec<u32> = code
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect();
+    let draws: Vec<usize> = commands
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| (*c >> 28 == 11).then_some(i))
+        .collect();
+    assert_eq!(draws, [11, 14, 17, 20]);
+    for (index, text) in draws.into_iter().zip(texts) {
+        let expected = GpuCommand::ui_grid_range(276, 52, 52 + text.len() as u16).unwrap();
+        assert_eq!(commands[index], u32::from_le_bytes(expected.encode()));
+    }
+    assert_eq!(commands[23], 0xf0000000);
+    let hidden_slot = 0x4a0000 / 2 + 64 + 4 * 448;
+    let untouched: Vec<u8> = [0x5a, 0xa5].into_iter().cycle().take(800).collect();
+    assert_eq!(bytes(&cpu, hidden_slot, 800), untouched);
 }
