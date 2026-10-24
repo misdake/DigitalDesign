@@ -164,6 +164,38 @@ the same signed17 difference unit and existing PA write slots. There is no PC
 read-modify-write or later component expansion write. CE freezes the ROM, Q
 owners and short operands together.
 
+### Preparation control word
+
+The private preparation ROM remains one synchronous 512x36 block. Its read
+address is `{index,axis,next_operation}`. Six FFs capture the low address bits
+on exactly the same enabled read edge as the ROM Q; reset clears both owners,
+and CE0 holds both. The returned operation is that registered value when bit35
+is set, otherwise zero. Zero-filled unused words therefore retain operation0.
+The ROM no longer stores a second copy of the operation number.
+
+| Bits | Meaning |
+| --- | --- |
+| 5:0 | Default next operation |
+| 10:6 | PA read code; imported kind also uses bits8:6 |
+| 14:11 | PB read row |
+| 18:15 | PC read code; imported row uses the same field |
+| 22:19 | Direct PA-read, PB-read, PC-read and DSP-issue enables, low to high |
+| 23 | DSP A signedness |
+| 24 | Attribute parameter publication |
+| 25,26,27 | PB write enable, row1 select, and short-result/row15 select |
+| 28,32:29,33 | PC write enable, physical write row, and conditional-write flag |
+| 34 | Auxiliary-axis issue |
+| 35 | Nonempty instruction |
+
+PB's short-result flag selects row15 and the existing sign-extended result
+window; otherwise its row is0 or1. PC's physical row needs no destination
+decoder. Conditional PC writes still use `aux_pending` at op18 and dual-axis
+eligibility elsewhere. The existing dynamic bounds/read gates remain after
+the direct controls. PA/PC read codes retain their runtime exponent, search
+bit and seed-sign substitutions. This changes control representation only:
+read latency, DSP returns, arithmetic windows, write edges and publication
+slots remain unchanged. There is no additional data-memory port or wait slot.
+
 PC[4] and PC[6] are zero; PC[7] is 131071. RAM16 configuration initialization
 sets these immutable rows in both native and portable realizations. Reset does
 not rewrite the bank. Input collection and preparation only write actual data;

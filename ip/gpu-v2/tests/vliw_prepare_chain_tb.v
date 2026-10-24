@@ -29,6 +29,7 @@ integer root,ox,oy,diff,j,e,origin_writes=0,origin_issues=0,origin_aborted=0,ori
 integer roots9=0,nodes=0,early_cancel=0,zero_slots=0,ce0=0,resetcuts=0,fd;
 reg[255:0]held;
 reg[90:0]held_attribute;
+reg[41:0]held_prepare_control;
 reg[58:0]held_quant;
 reg[59:0]held_origin;
 reg[70:0]held_geometry;
@@ -156,6 +157,7 @@ always @(posedge clk)begin
  if(!reset&&!ce)begin
   ce0=ce0+1;held={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny};
   held_attribute={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.pc_read_address,I.private_c};
+  held_prepare_control={I.prepare.core.issued_op,I.prepare.core.u};
   held_quant={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative};
   held_origin={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result};
   held_geometry={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1,I.prepare.quant_fraction};
@@ -166,6 +168,7 @@ always @(posedge clk)begin
   if(|R.origin_valid)origin_holds=origin_holds+1;
   #1;if(held!=={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny})$fatal(1,"CE hold");
   if(held_attribute!=={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.pc_read_address,I.private_c})$fatal(1,"attribute prefetch CE hold");
+  if(held_prepare_control!=={I.prepare.core.issued_op,I.prepare.core.u})$fatal(1,"prepare ROM/address owner CE hold");
   if(held_quant!=={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative})$fatal(1,"quantization retire CE hold");
   if(held_origin!=={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result})$fatal(1,"DSP pipeline CE hold");
   if(held_geometry!=={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1,I.prepare.quant_fraction})$fatal(1,"geometry scale pipeline CE hold");
