@@ -14,7 +14,9 @@ reg reset=1;
 initial begin repeat(8)@(negedge controller_clk);reset=0;end
 reg [1:0]buttons=0;
 reg flash_miso=1;
-wire [5:0]leds;wire uart_tx,flash_clk,flash_cs_n,flash_mosi;
+wire [1:0]leds;wire uart_tx,flash_clk,flash_cs_n,flash_mosi;
+wire ds2_dat=1'b1;
+wire ds2_clk,ds2_cmd,ds2_att;
 wire tmds_clk_p,tmds_clk_n;wire [2:0]tmds_data_p,tmds_data_n;
 wire video_locked=1,sdram_clock_ready=1;
 wire [63:0]sdram_read_data,sdram_write_data;

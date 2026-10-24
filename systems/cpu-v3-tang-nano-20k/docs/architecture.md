@@ -35,12 +35,17 @@ in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable pr
 - the seven-owner CPU V3 memory arbiter, fixed boot loader, and reserved GPU ports;
 - the related-clock SDRAM/display port and native controller boundary;
 - SPI-Flash fixed boot loader, system-control, and framebuffer devices;
+- Device5 single-byte DS2 engine and CPU-owned protocol/axis snapshots;
 - fixed-loader status, UART, LEDs, and the HDMI output path (compile-time
   display mode from `display::ACTIVE_DISPLAY_CONFIG`).
 
 The system owns concrete memory layout, device indices and channels, board clocks, boot packaging,
 firmware, display scheduling, and physical validation. The CPU IP sees only physical instruction and
 data word ports plus the narrow device port.
+
+The full-system board uses the [DS2 left-port profile](/systems/cpu-v3-tang-nano-20k/docs/dualshock2.md),
+with CLK/CMD/DAT/ATT on pins17/20/19/18 and only LED0/1 on pins15/16.
+Legacy six-LED target profiles remain available for other applications.
 
 The [eight-DPB C16/Z16 storage and quad owner](framebuffer-cache.md) describes the
 retired GPU implementation. The current leaf instead uses the production GPU framebuffer cache described in

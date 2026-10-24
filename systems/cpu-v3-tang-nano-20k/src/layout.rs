@@ -116,6 +116,11 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
                 crate::GPU_STATUS,
             ],
         },
+        DeviceAllocation {
+            name: "dualshock2",
+            device: 5,
+            channels: &[0, 1, 2, 3],
+        },
     ];
 }
 

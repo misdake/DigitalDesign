@@ -1,0 +1,66 @@
+mod device_abi;
+mod time;
+mod dualshock2;
+fn check(ok: bool, code: u16) { if !ok { halt(code); } }
+fn service(mut s: Array<u16>, rx: Array<u16>) -> bool {
+    // Force eligibility to focus this fixture on protocol transitions.
+    s[13u16] = 0; time_clear_microseconds(); return ds2_service(s, rx);
+}
+fn connect(s: Array<u16>, rx: Array<u16>) {
+    let mut i: u16 = 0;
+    while i < 5 { service(s, rx); i += 1; }
+    check(s[0u16] == 1 && s[1u16] == 115, 0xb001);
+}
+fn main() {
+    let mut s: Buf<u16,16> = Buf::new([0;16]);
+    let mut rx: Buf<u16,21> = Buf::new([0;21]);
+    ds2_init(s.as_array());
+    // Actual Device0 watch probes of Device5 must never consume the result.
+    dev_send(7,0,9);time_clear_microseconds();dev_send(5,0,1);
+    check(ds2_wait_idle(time_microseconds()),0xb002);
+    dev_send(5,1,0x96);
+    dev_send(0,6,sysctl_watch_target(5,0));dev_send(0,7,5);
+    check(dev_recv(5,0)==6 && dev_recv(5,2)==255 && dev_recv(5,2)==255,0xb003);
+    dev_send(5,2,1);ds2_abort();dev_send(7,0,0);
+    connect(s.as_array(),rx.as_array());
+    check(s[2u16]==0x1234 && s[3u16]==0 && s[4u16]==255 && s[5u16]==127 && s[6u16]==128,0xb004);
+    check(s[8u16]==0 && s[9u16]==0,0xb005);
+    // Cadence is a wall-time gate; an early service sends no packet.
+    check(!ds2_service(s.as_array(),rx.as_array()),0xb006);
+    dev_send(7,0,1);check(service(s.as_array(),rx.as_array()),0xb007);
+    check(s[1u16]==121 && rx[20u16]==0x94,0xb008);
+    // Four raw axes stay independent over the full boundary set.
+    let mut i: u16 = 0;
+    while i<4 {
+        dev_send(7,1,i);check(service(s.as_array(),rx.as_array()),0xb009);
+        let mut a: u16=0;
+        if i==1 {a=127;} if i==2 {a=128;} if i==3 {a=255;}
+        check(s[3u16]==a && s[4u16]==255-a && s[5u16]==(a^128) && s[6u16]==(a^127),0xb00a);
+        i+=1;
+    }
+    check(ds2_axis(0,16)==-128 && ds2_axis(255,16)==127,0xb00b);
+    check(ds2_axis(112,16)==0 && ds2_axis(144,16)==0 && ds2_axis(111,16)==-17 && ds2_axis(145,16)==17,0xb00c);
+    // Unknown ID, bad header, missing header byte, unplug, long pause, saturation.
+    i=2;
+    while i<=7 {
+        dev_send(7,0,i);check(!service(s.as_array(),rx.as_array()),0xb010+i);
+        check(s[0u16]==0 && s[2u16]==0 && s[3u16]==128 && s[8u16]==0,0xb020+i);
+        dev_send(7,0,0);check(service(s.as_array(),rx.as_array()),0xb030+i);
+        check(s[8u16]==0,0xb040+i);
+        i+=1;
+    }
+    // Active-low changes produce edges; reconnect establishes a new baseline.
+    dev_send(7,2,0x1235);check(service(s.as_array(),rx.as_array()),0xb050);
+    check(s[8u16]==1 && s[9u16]==0,0xb051);
+    dev_send(7,2,0x1234);check(service(s.as_array(),rx.as_array()),0xb052);
+    check(s[8u16]==0 && s[9u16]==1,0xb053);
+    // A controller stuck in digital mode has a bounded 3-round attempt budget.
+    dev_send(7,0,8);ds2_init(s.as_array());i=0;
+    while i<13 {service(s.as_array(),rx.as_array());i+=1;}
+    check(s[0u16]==0 && s[13u16]==250 && s[10u16]==0,0xb054);
+    // A controller found already in config state exits before publishing input.
+    dev_send(7,0,11);ds2_init(s.as_array());
+    check(!service(s.as_array(),rx.as_array()) && s[10u16]==3,0xb055);
+    service(s.as_array(),rx.as_array());check(service(s.as_array(),rx.as_array()),0xb056);
+    halt(0x600d);
+}
