@@ -135,8 +135,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  shared_rf rf(.clk(clk),.we((step&&rf_wsrc!=0)),.wa(rf_dst),.wd(rf_write),.aa(rf_mac),.ba(rf_pack),.aq(mac_value),.bq(pack_value));
  wire acc_clear=acc_op==1;
  wire [53:0] acc_input=acc_clear?54'd0:acc;wire [53:0] acc_next;
- wire[35:0]mac_right=right|{{19{control[70]}},17'd0};
- shared_mac mac(.clk(clk),.reset(reset),.en(ce&&step&&mul_en),.a(mac_value),.b(mac_right),.c(acc_input),.y(acc_next));
+ shared_mac mac(.clk(clk),.reset(reset),.en(ce&&step&&mul_en),.a(mac_value),.b(right),.c(acc_input),.y(acc_next));
  wire [17:0] normal16_pack={{2{pack_value[17]}},pack_value[17:2]};
  wire [17:0] packed_normal=normal18?pack_value[17:0]:normal16_pack;
  // Preserve the original normal16 low-two-bit discard before S12F10 RNE.
@@ -228,7 +227,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  end else if(step)begin
  pc<=next_pc;
  if(bounds_run)begin
- if(control[71])bounds_safe<=bounds_safe&&quant_shift<=14&&!
+ if(control[51])bounds_safe<=bounds_safe&&quant_shift<=14&&!
   ((control[43]&&(unpacked[31]?negative_over[2]:positive_over[2]))||
    (control[44]&&(unpacked[31]?negative_over[7]:positive_over[7]))||
    (control[45]&&(unpacked[31]?negative_over[12]:positive_over[12])));
@@ -258,9 +257,9 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  if(rf_wsrc==1&&unpack_kind<3)unpacked<={10'd0,unpacked[31:10]};
  if(up_push!=0)begin
  unpacked<=up_push==4?pq[31:0]:left[31:0];
- if(up_push==6)unpacked[9:0]<={10{left[31]==control[70]}};
- unpack_kind<=up_push==6?3'd1:up_push;
- phase<=up_push==6?cfg_idx:2'd0;
+ if(control[71])unpacked[9:0]<={10{left[31]==control[70]}};
+ unpack_kind<=up_push;
+ phase<=triangle_mode?2'd0:cfg_idx;
  
  end
  if(cfg_we)case(cfg_idx)0:origin_x<=left[31:0];1:origin_y<=left[31:0];2:origin_z<=left[31:0];3:begin quant_shift<=left[4:0];normal18<=left[8];end endcase

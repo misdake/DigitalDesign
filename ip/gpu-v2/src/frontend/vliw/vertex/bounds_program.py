@@ -6,7 +6,9 @@ import re
 FIELDS = dict(l=(0, 2), r=(2, 2), u=(4, 5), cfgoff=(9, 2), swap=(11, 1),
               up=(12, 2), cfg=(15, 2), dst=(17, 4), mac=(21, 4), write=(29, 2),
               mul=(31, 1), acc=(32, 2), flow=(40, 3), targetlo=(43, 7),
-              uphi=(50, 1), targethi=(51, 2), minimum=(70, 1), check=(71, 1))
+              uphi=(50, 1), targethi=(51, 2), minimum=(70, 1), corner=(71, 1), check=(51, 1),
+              pack=(35, 3), rfpack=(25, 4), worken=(53, 1),
+              workwe=(54, 1), workaddr=(55, 6))
 
 
 def program(bootstrap):
@@ -33,16 +35,25 @@ def program(bootstrap):
         emit(up=3, swap=dimension & 1)
         emit(check=1, target=2)
 
-    def dot(row, minimum=0):
-        emit(l=1, r=1, u=row)
-        emit(up=6, cfg=0, minimum=minimum, l=1, r=1, u=row+1)
-        emit(write=1, dst=1, up=6, cfg=1, minimum=minimum, swap=1,
-             l=1, r=1, u=row+2, target=1, check=1)
-        emit(write=1, dst=2, up=6, cfg=2, minimum=minimum,
-             l=1, r=1, u=row, target=1, check=1)
+    def dot(row, minimum=0, prepare_negative_z=False):
+        emit(l=1, r=1, u=row,
+             **(dict(pack=6, rfpack=10) if prepare_negative_z else {}))
+        emit(up=1, corner=1, cfg=0, minimum=minimum, l=1, r=1, u=row+1)
+        # The old right Q supplies Y on this edge. Do not also read the
+        # work row being written; only the independent left read is needed.
+        emit(write=1, dst=1, up=1, corner=1, cfg=1, minimum=minimum, swap=1,
+             l=1, r=0 if prepare_negative_z else 1, u=row+2, target=1, check=1,
+             **(dict(workwe=1, workaddr=0) if prepare_negative_z else {}))
+        emit(write=1, dst=2, up=1, corner=1, cfg=2, minimum=minimum,
+             l=1, r=1, u=row, target=1, check=1,
+             **(dict(worken=1, workaddr=0) if prepare_negative_z else {}))
+        # swap1 uses left Q for MAC B and right work Q for the unpacker.
+        # RF3 consumes the previous endpoint while kind5 starts -Z.
         emit(write=1, dst=3, mul=1, mac=1, swap=1,
-             l=1, r=1, u=row+1, check=1, target=1)
-        emit(acc=1, mul=1, mac=2, l=1, r=1, u=row+2)
+             l=1, r=1, u=row+1, check=1, target=1,
+             **(dict(up=5) if prepare_negative_z else {}))
+        emit(acc=1, mul=1, mac=2, l=1, r=1, u=row+2,
+             **(dict(write=1, dst=11) if prepare_negative_z else {}))
         emit(acc=2, mul=1, mac=3, swap=1, l=1, r=1, u=row+3)
         emit(acc=2, mul=1, mac=0, u=row+3)
         emit(acc=2, up=3, swap=1)
@@ -54,13 +65,13 @@ def program(bootstrap):
 
     def add_z(kind):
         emit(r=1, u=21)
-        emit(mul=1, mac=10, u=21, minimum=int(kind == 2))
+        emit(mul=1, mac=11 if kind == 2 else 10, u=21)
         emit(acc=2)
         decision(kind, last=kind == 2)
 
     dot(8)
     decision(write=2, dst=10)
-    dot(0)
+    dot(0, prepare_negative_z=True)
     add_z(1)
     dot(0, minimum=1)
     add_z(2)
@@ -81,6 +92,10 @@ def render(source):
     assert all(len(image) == 512 for image in images)
     # The regular T program occupies this address range; only the compact
     # meshlet composition has room for the bounds prologue.
+    # V never used cfg_idx while pushing the unpacker. Direct ROM phase
+    # selection must preserve that zero-phase contract. T forces phase zero.
+    assert all((w >> 15) & 3 == 0 for w in images[0][:128]
+               if ((w >> 12) & 3) or ((w >> 50) & 1))
     rows = program(images[0][:7])
     images[0][256:320] = rows+[0]*(64-len(rows))
 
