@@ -184,6 +184,54 @@ impl HardwareIdentity for CpuV3Core {
     }
 }
 
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3StoreBufferInput {
+    pub write_enable: Wire,
+    pub write_address: Wires<2>,
+    pub write_data: Wires<32>,
+    pub read_address: Wires<2>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3StoreBufferOutput {
+    pub read_data: Wires<32>,
+}
+
+/// Single-write, asynchronous-read FSTV snapshot. The core model owns the
+/// equivalent four architectural values; this leaf provides physical pricing.
+pub struct CpuV3StoreBuffer;
+impl HardwareIdentity for CpuV3StoreBuffer {
+    const TARGET_RESOURCE_LEAF: bool = true;
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3StoreBuffer").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+impl Module for CpuV3StoreBuffer {
+    type Input = CpuV3StoreBufferInput;
+    type Output = CpuV3StoreBufferOutput;
+    type EmuState = ();
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(SsramBits::new(8 * 64))]
+    }
+    fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
+        panic!("The core emulator owns the FSTV snapshot")
+    }
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_store_buffer.v").to_owned())
+    }
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_store_buffer_tb.v").to_owned())
+    }
+}
+
+#[test]
+#[ignore = "bounded distributed FSTV snapshot read/write and disabled-write check"]
+fn fst_store_buffer_runs_in_iverilog() {
+    digital_design_hardware::verify_verilog_with_iverilog::<CpuV3StoreBuffer>().unwrap();
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Phase {
     FetchRequest,
@@ -1471,15 +1519,23 @@ impl Module for CpuV3Core {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_core.v").replace(
-            "__GPR_RAM__",
-            &CpuV3GprRam::verilog_identity().module_name(),
-        ))
+        Some(
+            include_str!("cpu_v3_core.v")
+                .replace(
+                    "__GPR_RAM__",
+                    &CpuV3GprRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__STORE_BUFFER__",
+                    &CpuV3StoreBuffer::verilog_identity().module_name(),
+                ),
+        )
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<CpuV3GprRam>("u_gpr_ram"),
+            VerilogDependency::new::<CpuV3StoreBuffer>("u_store_buffer"),
             VerilogDependency::new::<CpuV3Fpu>("u_fpu"),
         ]
     }

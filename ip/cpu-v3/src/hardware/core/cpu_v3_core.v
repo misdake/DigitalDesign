@@ -174,10 +174,6 @@ reg [15:0] fpu2_fault_pc = 0;
 // existing async store channel, low half first, while the core keeps
 // executing. The address/fault pc are latched here so a following FPU memory
 // instruction cannot disturb an in-flight drain.
-reg [31:0] fpu2_buf0 = 0;
-reg [31:0] fpu2_buf1 = 0;
-reg [31:0] fpu2_buf2 = 0;
-reg [31:0] fpu2_buf3 = 0;
 reg [3:0] fpu2_pending = 0;
 reg [3:0] fpu2_pending_index = 0;
 reg [31:0] fpu2_store_address = 0;
@@ -534,11 +530,15 @@ wire async_store_free = !async_store_valid || async_store_completing;
 wire fpu2_refill = fpu2_pending != 0 && async_store_free &&
                    !cpu_store_enqueue && !cpu_mem_active &&
                    !fpu2_mem_active;
-wire [1:0] fpu2_word_reg = fpu2_pending_index[2:1];
-wire [31:0] fpu2_word_data =
-    fpu2_word_reg == 2'd0 ? fpu2_buf0 :
-    fpu2_word_reg == 2'd1 ? fpu2_buf1 :
-    fpu2_word_reg == 2'd2 ? fpu2_buf2 : fpu2_buf3;
+wire [31:0] fpu2_word_data;
+wire fpu2_capture_write = !reset && !hold && state == ST_FPU2_CAPTURE &&
+    fpu2_beat < 4 &&
+    !(async_store_valid && async_store_issued && data_response_valid && data_error);
+__STORE_BUFFER__ u_store_buffer (
+    .clk(clk), .write_enable(fpu2_capture_write),
+    .write_address(fpu2_beat[1:0]), .write_data(fpu2_ext_read_data),
+    .read_address(fpu2_pending_index[2:1]), .read_data(fpu2_word_data)
+);
 wire [15:0] fpu2_word_half =
     fpu2_pending_index[0] ? fpu2_word_data[31:16] : fpu2_word_data[15:0];
 assign data_write = async_store_valid ? 1'b1 :
@@ -1339,12 +1339,6 @@ always @(posedge clk) begin
                 // it now while presenting fa+beat+1 for the next beat. The last
                 // capture retires the instruction with the whole vector pending
                 // for the early-release drain.
-                case (fpu2_beat)
-                    4'd0: fpu2_buf0 <= fpu2_ext_read_data;
-                    4'd1: fpu2_buf1 <= fpu2_ext_read_data;
-                    4'd2: fpu2_buf2 <= fpu2_ext_read_data;
-                    4'd3: fpu2_buf3 <= fpu2_ext_read_data;
-                endcase
                 if (fpu2_beat == fpu2_len - 1'b1) begin
                     fpu2_store_address <= fpu2_address;
                     fpu2_store_fault_pc <= fpu2_fault_pc;

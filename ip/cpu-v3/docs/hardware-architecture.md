@@ -384,6 +384,16 @@ the pair retires as two words.
   registers are written, while stores drain through the core's early-release
   store buffer after the source values are captured.
 
+The early-release FST/FSTV snapshot uses a single-write, asynchronous-read
+16x32 distributed RAM, with four live rows and eight physical RAM16 cells.
+Each capture edge writes one complete F register. The final capture publishes
+the pending halfword count; the following edge may refill the existing async
+store slot from row zero. Row selection uses the pending halfword index and
+bit0 selects the low/high half. No capture, retirement or drain cycle is added.
+Hold suppresses capture and drain, and the global store-fault priority is
+preserved. RAM contents are not reset: reset clears pending ownership, and a
+new snapshot is fully captured before any of its words can be consumed.
+
 The shared DSP input forms extension bits after source selection. Ordinary and
 range work consume RF A as signed32; interpolation substitutes signed10 delta.
 The other operand is ordinary signed32, interpolation unsigned9 residue, or the
