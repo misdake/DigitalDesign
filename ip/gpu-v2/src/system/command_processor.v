@@ -23,7 +23,7 @@ module gpu_command_processor(
  output reg[8:0]ambient,directional,output flush_request,input flush_complete,
  output clear_active,clear_request,output[31:0]clear_address,output[15:0]clear_value,
  input clear_ready,clear_complete,clear_ok,
- output ui_start,input ui_done
+ output ui_start,input ui_done,output[9:0]ui_first,ui_last
 );
  localparam NOP=0,DMA_LOCAL=1,DMA_MESHLET=2,DRAW=3,WAIT=4,SET_GLOBAL=5,SET_RENDER=6,FLUSH=7,CLEAR=8,TEX_INVALIDATE=9,SET_TARGET=10,UI_GRID=11,END=15;
  localparam IDLE=0,FETCH=1,EXEC=2,DRAW_WAIT=3,APPLY_R=4,APPLY_W=5,
@@ -86,6 +86,9 @@ module gpu_command_processor(
  assign clear_address={9'd0,clear_page,clear_sector[8:0],7'd0};
  assign clear_value=command[15:0];
  assign ui_start=ce&&!stop&&state==APPLY_W&&opcode==UI_GRID;
+ // The instruction remains resident throughout UI_WAIT; no extra range FFs.
+ assign ui_first=command[27]?command[16:7]:10'd0;
+ assign ui_last=command[27]?command[26:17]:10'd749;
  wire waits_done=(!wait_mask[0]||!work_busy)&&(!wait_mask[1]||render_idle);
  reg object_bad;
  always @*begin
@@ -230,7 +233,8 @@ module gpu_command_processor(
    SET_GLOBAL,SET_RENDER:if(!object_legal||!all_fence||!render_idle||work_busy)$fatal(1,"CP state command contract");
    CLEAR:if(command[27:17]!=0||!target_valid||!all_fence||!render_idle||work_busy)$fatal(1,"CP plane CLEAR contract");
    SET_TARGET:if(!object_legal||!all_fence||!stored||!render_idle||work_busy)$fatal(1,"CP target drain contract");
-   UI_GRID:if(!object_legal||!all_fence||!stored||!render_idle||work_busy||!target_valid)$fatal(1,"CP UI drain contract");
+   UI_GRID:if(command[6:4]!=3'b100||command[3:0]<2||ui_first>ui_last||ui_last>=750||
+    (!command[27]&&command[26:7]!=0)||!all_fence||!stored||!render_idle||work_busy||!target_valid)$fatal(1,"CP UI drain contract");
    FLUSH,TEX_INVALIDATE:if(command[27:0]!=0||!all_fence||!render_idle||work_busy)$fatal(1,"CP drain contract");
    END:if(command[27:0]!=0||diagnostic_pc+17'd4!=limit||!stored||!all_fence||work_busy)$fatal(1,"CP END contract");
    default:$fatal(1,"CP opcode contract");

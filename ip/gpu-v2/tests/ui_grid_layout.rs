@@ -28,3 +28,19 @@ fn ui_descriptor_uses_checked_aligned_physical_ranges() {
     assert!(ui_params(0x50000, 0x60080).is_err());
     assert!(ui_params(0x7fff80, 0x60000).is_err());
 }
+
+#[test]
+fn ui_range_is_self_contained_in_the_existing_instruction() {
+    for (first, end) in [(0, 1), (1, 2), (127, 130), (0, 750), (749, 750)] {
+        let command = Command::ui_grid_range(276, first, end).unwrap().0;
+        assert_eq!(command >> 28, 11);
+        assert_eq!((command >> 27) & 1, 1);
+        assert_eq!((command >> 7) & 1023, first as u32);
+        assert_eq!((command >> 17) & 1023, end as u32 - 1);
+        assert_eq!(command & 127, 69);
+    }
+    for (first, end) in [(0, 0), (3, 2), (749, 751)] {
+        assert!(Command::ui_grid_range(276, first, end).is_err());
+    }
+    assert!(Command::ui_grid_range(277, 0, 1).is_err());
+}

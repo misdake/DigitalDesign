@@ -311,6 +311,15 @@ it keeps only five temporary digit words and no complete low-memory cell table.
 Both UI interfaces share the atlas, native encoding, command order and output
 ownership described below.
 
+Both currently emit the full-grid UI_GRID encoding. The first/count arguments
+of `gpu_pass_ui_write` select an object edit, not a GPU draw interval; unwritten
+cells retain the begin fill. The GPU also implements an optional per-command
+range with the same descriptor, specified in [UI](/ip/gpu-v2/docs/ui.md#assets-and-command),
+but these RCC Pass APIs do not encode it. Their per-object WAIT/FLUSH sequence
+remains conservative and valid even though consecutive hardware UI commands
+can execute without an intervening fence. Hardware changes to whole-tile
+maintenance and atlas scheduling do not change either recording interface.
+
 ## Packed UI snapshots
 
 `GpuUiAtlas { sector, sectors }` describes a trusted immutable native atlas in

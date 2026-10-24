@@ -42,6 +42,9 @@ class CommandBuffer:
         elif name == 'CLEAR':
             assert slot in (0,1) and 0 <= a <= 65535
             word = (op<<28) | (slot<<16) | a
+        elif name == 'UI_GRID' and b:
+            assert slot % 4 == 0 and 0 <= a < b <= 750
+            word = (op<<28) | (1<<27) | ((b-1)<<17) | (a<<7) | (slot//4)
         elif name in ('SET_GLOBAL','SET_RENDER','SET_TARGET','UI_GRID'):
             assert slot % 4 == 0
             word = (op<<28) | (slot//4)
