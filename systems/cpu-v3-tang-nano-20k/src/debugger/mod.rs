@@ -1266,11 +1266,23 @@ mod tests {
 
     #[test]
     fn halted_session_keeps_its_final_rgb888_frame() {
-        let mut session = session(vec![halt()]);
+        let mut words = Vec::new();
+        words.extend(load_immediate16(1, FRAMEBUFFER_A_BASE_WORD as u16));
+        words.extend(load_immediate16(2, (FRAMEBUFFER_A_BASE_WORD >> 16) as u16));
+        words.extend(load_immediate16(3, DISPLAY_NEXT_SWAP));
+        words.extend([
+            device_send(1, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_LOW),
+            device_send(2, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH),
+            device_send(3, DISPLAY_DEVICE, DISPLAY_CONTROL),
+            halt(),
+        ]);
+        let mut session = session(words);
         let base = FRAMEBUFFER_A_BASE_WORD as usize;
         session.system.cpu_mut().physical_memory_mut()[base] = 0xf800;
-        session.step();
+        session.continue_run(16);
         assert_eq!(session.halted(), Some(0));
+        assert!(session.framebuffer_rgb888().iter().all(|b| *b == 0));
+        assert!(session.system.advance_vblank());
 
         let bytes = session.framebuffer_rgb888();
         assert_eq!(

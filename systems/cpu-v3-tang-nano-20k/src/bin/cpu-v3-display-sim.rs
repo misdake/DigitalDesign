@@ -94,7 +94,19 @@ fn main() -> Result<(), String> {
             executed += 1;
         }
         let _ = system.advance_vblank();
-        pixels = render_frame_at(system.cpu(), system.display_state().active_base);
+        pixels = if system
+            .cpu()
+            .device::<cpu_v3_tang_nano_20k::DisplayDevice>(cpu_v3_tang_nano_20k::DISPLAY_DEVICE)
+            .is_some_and(cpu_v3_tang_nano_20k::DisplayDevice::front_valid)
+        {
+            render_frame_at(system.cpu(), system.display_state().active_base)
+        } else {
+            vec![
+                0;
+                cpu_v3_tang_nano_20k::display::HDMI_WIDTH
+                    * cpu_v3_tang_nano_20k::display::HDMI_HEIGHT
+            ]
+        };
         #[cfg(feature = "display-window")]
         if let Some(window) = window.as_mut() {
             if !window.is_open() {

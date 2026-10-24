@@ -29,6 +29,9 @@ pub struct Program {
 /// pc->line table to complete the picture)
 #[derive(Default)]
 pub struct FrontendDebug {
+    /// Exclusive word address of allocated statics, before function linking.
+    /// Includes imported modules and the standard library; not the arena limit.
+    pub static_data_end: usize,
     pub files: Vec<String>,
     pub funcs: Vec<FnDebug>,
     pub globals: Vec<DebugVar>,
@@ -286,7 +289,7 @@ fn parse_files(
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
-        next_addr: data_base,
+        next_addr: usize::from(data_base),
         limit: static_data_limit,
         limit_name: static_data_limit_name,
         ..Globals::default()
@@ -424,6 +427,7 @@ fn parse_files(
     let mut out = vec![];
     let mut debug = FrontendDebug {
         files: file_names.to_vec(),
+        static_data_end: globals.next_addr,
         ..FrontendDebug::default()
     };
     for (name, (fi, f)) in names.into_iter().zip(fns) {
@@ -580,7 +584,7 @@ struct Globals {
     aggregates: HashMap<String, (u16, Ty)>,
     /// (addr, value) words for __data_init
     data_words: Vec<(u16, u16)>,
-    next_addr: u16,
+    next_addr: usize,
     limit: usize,
     limit_name: &'static str,
     /// resolved struct layouts, by name
@@ -1160,7 +1164,7 @@ fn reserve_static(
     words: usize,
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
-    let start = g.next_addr as usize;
+    let start = g.next_addr;
     let end = start
         .checked_add(words)
         .ok_or_else(|| err(at, "static data address overflow"))?;
@@ -1173,7 +1177,7 @@ fn reserve_static(
             ),
         ));
     }
-    g.next_addr = end as u16;
+    g.next_addr = end;
     Ok(start as u16)
 }
 
@@ -5921,6 +5925,37 @@ fn check_fn_sig(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn static_extent_includes_modules_libraries_and_aggregate_padding() {
+        let options = crate::RccOptions {
+            data_base: 32,
+            ..Default::default()
+        };
+        let source = "mod extra; static A: u16 = 7; #[repr(align(8))] struct S { x: u16 } static B: S = S { x: 0 }; fn main() { halt(0); }";
+        let program = super::compile_program_named("extent.rs", source, &options, &mut |name| {
+            assert_eq!(name, "extra");
+            Ok("static C: Buf<u16, 3> = Buf::new([0; 3]);".into())
+        })
+        .unwrap();
+        // A + C + nine standard-library words + four-word padded S.
+        assert_eq!(program.debug.static_data_end, 32 + 1 + 3 + 9 + 4);
+        assert_eq!(
+            super::parse_source_with("fn main() { halt(0); }", 32)
+                .unwrap()
+                .debug
+                .static_data_end,
+            32
+        );
+        // The exclusive end may be 65536; it must not wrap to zero.
+        let full = super::parse_source_with("static A: u16 = 0; fn main() { halt(0); }", u16::MAX)
+            .unwrap();
+        assert_eq!(full.debug.static_data_end, 65536);
+        assert!(super::parse_source_with(
+            "static A: Buf<u16, 2> = Buf::new([0; 2]); fn main() { halt(0); }",
+            u16::MAX
+        )
+        .is_err());
+    }
     use super::parse_source_with;
 
     #[test]

@@ -91,9 +91,12 @@ Directory migration must not change ISA encodings, compiler listings, boot bytes
 Verilog identities, resource claims, or simulator results. The CPU V3 system build script compiles
 the one application selected by `boot-applications.conf` from RCC and writes
 all executable/package bytes only to Cargo `OUT_DIR`; no checked-in byte array
-is maintained in parallel. The fixed v5 header carries only a bounded length,
+is maintained in parallel. The CB06 stream carries sequential COPY/ZERO commands,
 with fixed CSEG7/DSEG0/SP0xc000 layout. The hardware loader owns code copy and
-16 KiB static zeroing before CPU release. The former software Boot/673-word ROM
+zeroing only the compiler-allocated static prefix within its protected 16-KiB
+arena before CPU release. The materialized application.static-words metadata
+lets the independent packer reproduce that extent without inspecting instructions.
+The former software Boot/673-word ROM
 contract is superseded by this explicitly authorized single-application change.
 An independent packer recreates the generated package byte for byte.
 

@@ -136,7 +136,8 @@ The FPGA system selects one RCC application in
 `systems/cpu-v3-tang-nano-20k/boot-applications.conf`. Cargo `OUT_DIR` is the sole
 byte authority; `cpu-v3-boot-assets` exports that application and its CB06
 COPY/ZERO Flash image. `cpu-v3-pack application.v3bin --project
-systems/cpu-v3-tang-nano-20k/boot-applications.conf` independently reproduces it.
+systems/cpu-v3-tang-nano-20k/boot-applications.conf` independently reproduces it,
+reading the adjacent generated `application.static-words` length file.
 The hardware loader accepts application-only Flash updates without rebuilding
 the FPGA; a cold configuration/power cycle starts the updated image.
 

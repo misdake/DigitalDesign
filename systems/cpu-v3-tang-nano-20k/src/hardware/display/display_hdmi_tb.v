@@ -69,7 +69,7 @@ wire fb_vis = dut.framebuffer_pipe3 && vis;
 
 // Every wait below must complete within the roughly three-frame scenario.
 initial begin
- repeat(6*H_TOTAL*V_TOTAL) @(posedge pixel_clock);
+ repeat(10*H_TOTAL*V_TOTAL) @(posedge pixel_clock);
  $fatal(1,"display test exceeded six frames");
 end
 
@@ -90,13 +90,15 @@ task expect_status;
  end
 endtask
 always @(posedge clk) begin
+ if(!reset && !dut.front_valid && (memory_request_valid || dut.line_write))
+  $fatal(1,"unpresented framebuffer was accessed");
  memory_cycles=memory_cycles+1;
  memory_request_ready<=memory_cycles%19>=4;
  previous_frame_complete<=dut.frame_complete;
  if(dut.frame_complete && !previous_frame_complete) begin
-  if(frame_requests!=6000)
+  if(frame_requests!=(dut.front_valid ? 6000 : 0))
    $fatal(1,"source frame used %0d segments instead of 6000",frame_requests);
-  completed_source_frames<=completed_source_frames+1;
+  if(dut.front_valid)completed_source_frames<=completed_source_frames+1;
   frame_requests<=0;
  end
  memory_data_valid<=0; memory_last<=0;
@@ -150,6 +152,18 @@ initial begin
  wait(dut.frame_index!=old_frame);
  if(dut.active_base!==22'h200000)
   $fatal(1,"partial or unsubmitted address changed active base");
+ if(requests!=0 || dut.front_valid || dut.scan_valid || underflow)
+  $fatal(1,"black startup fetched or displayed uninitialized memory");
+
+ // The first explicit same-base present activates A. Until both groups have
+ // arrived and crossed a frame origin, visible video must stay black.
+ device_write(1,16'h0000);device_write(2,16'h0020);device_write(3,16'h0001);
+ wait(dut.front_valid);
+ wait(dut.scan_valid);
+ old_frame=dut.frame_index;
+ wait(dut.frame_index!=old_frame);
+ // Restore the staged address used by the following pending-swap tests.
+ device_write(1,16'h8900);device_write(2,16'h003e);
 
  // NEXT_SWAP snapshots the complete shadow address. Later staging cannot mutate
  // this pending swap, even though writes remain accepted while it is pending.
@@ -252,7 +266,7 @@ always @(posedge pixel_clock) begin
  end
  if (vis && !fb_vis) begin
   border_sampled=border_sampled+1;
-  if (!dut.started) begin
+  if (!dut.scan_valid) begin
    if(dut.rgb_pipe!==0) $fatal(1,"cold visible video was not black");
   end else if (dut.rgb_pipe!==color(16'h1082,0)) $fatal(1,"border pixel mismatch");
  end

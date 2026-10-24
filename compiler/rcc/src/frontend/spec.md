@@ -294,6 +294,11 @@ static TICK: i16 = -1;
 
 One word in data memory at a compiler-assigned address; the compiler emits a hidden
 `__data_init` routine at the start of `main` that stores each non-zero initializer.
+The target startup must zero the allocated static range first. The frontend
+publishes its exclusive end word address as `Program.debug.static_data_end`;
+the start is the configured `data_base`. This includes imported-module and
+standard-library statics and aggregate padding, before function linking.
+It does not require zeroing the unused capacity of the static arena.
 - Reading `SCORE` as a value loads the word.
 - Writing goes through the address: `addr_of(&SCORE).write(0, v)` (immutable `static` reads
   are safe Rust, so rust-analyzer stays quiet; mutation is intentionally explicit).

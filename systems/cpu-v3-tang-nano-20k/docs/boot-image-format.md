@@ -26,8 +26,8 @@ narrowing to the 22-bit word address, and the end calculation retains its carry.
 The existing SPI reader rejects commands exceeding the 8-MiB Flash capacity.
 A malformed stream can fail after partial writes; there is no rollback.
 
-The host packer checks full layout ownership, nonoverlap, required code/static/
-framebuffer initialization and the complete Flash image size. Hardware does
+The host packer checks full layout ownership, nonoverlap, required code/static
+initialization and the complete Flash image size. Hardware does
 not duplicate these checks. A corrupted payload can execute incorrectly, and a
 hand-made stream missing required code can reach END: trusted host-generated
 input and programmer Verify are the intended workflow.
@@ -36,12 +36,12 @@ input and programmer Verify are the intended workflow.
 
 | DRAM byte range | Ownership |
 | --- | --- |
-| [0,0x4000) | One mandatory ZERO: 16-KiB compiler static arena |
+| [0,0x4000) | Protected static arena; ZERO only the compiler-allocated prefix |
 | [0x4000,0x20000) | Protected low heap/stack window |
 | [0x20000,0xe0000) | Resource allocations |
 | [0xe0000,0x100000) | One code COPY at 0xe0000; unused tail remains reserved |
 | [0x100000,0x400000) | Resource allocations |
-| [0x400000,0x460000) | One mandatory ZERO covering both complete framebuffer slots |
+| [0x400000,0x460000) | Reserved framebuffer slots; boot leaves both untouched |
 | [0x460000,0x490000) | Reserved Depth; never initialized by boot |
 | [0x490000,0x4b0000) | Driver-owned command/object arena; optional COPY/ZERO resources rejected |
 | [0x4b0000,0x800000) | Fixed GPU asset allocations |
@@ -66,6 +66,12 @@ application can import mod boot_resources and use NAME_BYTE_ADDRESS_LOW/HIGH
 and NAME_WORD_ADDRESS_LOW/HIGH u16 constants. Full addresses are split explicitly
 because this RCC frontend has no u32 type; no compiler or far-pointer ISA is added.
 RCC still initializes nonzero statics and sets SP=0xc000.
+The compiler publishes the exclusive end of its static allocation in words.
+With the system's fixed data base of zero, the packer emits one ZERO of twice
+that word count; a zero count omits the command. The count includes module and
+standard-library statics and aggregate padding, including statics whose functions
+are later discarded by linking. The unused arena tail is left untouched and
+remains protected from resource allocations. The 8192-word capacity is unchanged.
 
 The system module resolver checks `<application-directory>/<name>.rs` first,
 then `<system>/rcc/<name>.rs` only when the local read reports NotFound. All
@@ -81,10 +87,15 @@ directory so creating a local override invalidates the build. It does not watch
 a nonexistent local file on every successful build. The default project and
 application selection are unchanged; examples select their own project explicitly.
 
-The build emits application.v3bin, cpu-v3-boot.bin, cpu-v3-boot.map and
+The build emits application.v3bin, application.static-words, cpu-v3-boot.bin, cpu-v3-boot.map and
 boot_resources.rs only in Cargo OUT_DIR. cpu-v3-boot-assets materializes these
 exact artifacts. cpu-v3-pack application.v3bin --project boot-applications.conf
-independently reproduces the package, using the same resource files. Omitting
+independently reproduces the package, using the same resource files and the
+adjacent application.static-words file (a decimal word count followed by a newline).
+For externally compiled binaries, --static-words N supplies that count explicitly.
+Missing or malformed metadata is an error; raw instructions do not encode the
+static allocation extent. Keep each binary and its generated length file together.
+The CPU instruction bytes are unchanged by this packaging metadata. Omitting
 --project packs code plus mandatory initialization only. Asset SHA-256
 identities can be recorded with the offline image bundle.
 
@@ -96,7 +107,7 @@ resource-only `demo-repack.conf` for independently packing the compiled code.
 The [demo build entry](/systems/cpu-v3-tang-nano-20k/examples/gpu_demo/README.md#build-and-flash-handoff)
 restores the caller's environment and requires matching generated/repacked CB06
 SHA-256. Generated resources are tracked by producer inputs rather than treated
-as new Cargo input files. The ordinary four-artifact/default path is unchanged.
+as new Cargo input files. The ordinary application selection is unchanged.
 
 ## Transfers and completion
 
@@ -132,13 +143,20 @@ permanently stops issuing memory requests and enables Display prefetch.
 The normal arbiter remains connected throughout.
 
 Display starts scanout from A at a full frame boundary after both complete
-initial row groups have crossed into the pixel domain. Its sticky started_ack
+initial black row-group markers have crossed into the pixel domain. Those
+markers use the normal publication/release handshake without DRAM reads or
+line-buffer data writes. Its sticky started_ack
 returns through two logic-domain synchronizer stages. CPU release additionally
 requires cache metadata cold-ready and no startup error. The fixed entry is
 CSEG7:PC0, DSEG0/1/2/3. Generic CPU IP still starts in CSEG0.
 
-The acknowledged initial ownership is A=Front, B=Free and no Pending, without
-another clear. GPU DRAM masters wait for boot_done;
+The acknowledged initial ownership is A=Front (virtual black), B=Free and no
+Pending. Neither framebuffer nor Depth is initialized by boot. The first
+NEXT_SWAP consumed at a normal frame boundary activates real DRAM fetches,
+including a same-address present of A. Real content remains black until two
+complete real groups are available at a frame origin; incomplete groups are
+retained rather than consumed as black. Software must fully initialize the
+first target and wait for completed GPU writes before presenting it. GPU DRAM masters wait for boot_done;
 GPU table/binding readiness independently gates GPU submission. Boot does not
 initialize GPU internal memory or wait for gpu_ready.
 

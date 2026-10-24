@@ -193,8 +193,12 @@ fn append_command(image: &mut Vec<u8>, address: usize, length: usize, zero: bool
 }
 pub fn pack_application_resources(
     code: &[u8],
+    static_words: usize,
     resources: &[BootResource],
 ) -> Result<Vec<u8>, SingleBootError> {
+    if static_words > SINGLE_BOOT_STATIC_WORDS {
+        return Err(SingleBootError("statics exceed the 16-KiB arena"));
+    }
     if code.is_empty() || code.len() & 1 != 0 || code.len() > SINGLE_BOOT_MAX_CODE_BYTES {
         return Err(SingleBootError(
             "code length must be nonzero, even, and at most 128 KiB",
@@ -209,7 +213,7 @@ pub fn pack_application_resources(
         return Err(SingleBootError("overlapping resources"));
     }
     let size = 4usize
-        .checked_add(4 * 8 + code.len())
+        .checked_add((2 + usize::from(static_words != 0)) * 8 + code.len())
         .and_then(|n| {
             resources
                 .iter()
@@ -221,24 +225,23 @@ pub fn pack_application_resources(
     }
     let mut image = Vec::with_capacity(size);
     image.extend_from_slice(MAGIC);
-    append_command(&mut image, 0, SINGLE_BOOT_STATIC_WORDS * 2, true);
+    if static_words != 0 {
+        append_command(&mut image, 0, static_words * 2, true);
+    }
     append_command(&mut image, SINGLE_BOOT_CODE_WORD * 2, code.len(), false);
     image.extend_from_slice(code);
     for r in resources {
         append_command(&mut image, r.address, r.length(), r.zero_bytes != 0);
         image.extend_from_slice(&r.data);
     }
-    append_command(
-        &mut image,
-        BOOT_FRAMEBUFFER_BYTES.start,
-        BOOT_FRAMEBUFFER_BYTES.len(),
-        true,
-    );
     append_command(&mut image, 0, 0, false);
     Ok(image)
 }
-pub fn pack_single_application(code: &[u8]) -> Result<Vec<u8>, SingleBootError> {
-    pack_application_resources(code, &[])
+pub fn pack_single_application(
+    code: &[u8],
+    static_words: usize,
+) -> Result<Vec<u8>, SingleBootError> {
+    pack_application_resources(code, static_words, &[])
 }
 #[derive(Debug, Clone)]
 pub struct BootCommand<'a> {
@@ -307,7 +310,12 @@ pub fn single_boot_code(package: &[u8]) -> Result<&[u8], SingleBootError> {
         .ok_or(SingleBootError("missing code"))
 }
 pub fn boot_image_map(code: &[u8], image: &[u8]) -> String {
-    let mut map=format!("format=6\nsignature=CB06\ncode_segment=7\nentry=0\ndata_pages=0,1,2,3\nstack=0xc000\ncode_bytes={}\nstatic_zero_bytes=16384\nflash_base=0x100000\nimage_bytes={}\n",code.len(),image.len());
+    let static_bytes = single_boot_commands(image)
+        .expect("packer commands")
+        .iter()
+        .find(|c| c.address == 0 && c.payload.is_none())
+        .map_or(0, |c| c.length);
+    let mut map=format!("format=6\nsignature=CB06\ncode_segment=7\nentry=0\ndata_pages=0,1,2,3\nstack=0xc000\ncode_bytes={}\nstatic_zero_bytes={}\nflash_base=0x100000\nimage_bytes={}\n",code.len(),static_bytes,image.len());
     for c in single_boot_commands(image).expect("packer commands") {
         map.push_str(&format!(
             "{} byte_address=0x{:06x} bytes={}\n",
@@ -346,6 +354,31 @@ pub fn install_single_application(
 mod tests {
     use super::*;
     #[test]
+    fn static_zero_uses_the_allocated_prefix_and_keeps_the_arena_protected() {
+        for words in [0, 1, 17, SINGLE_BOOT_STATIC_WORDS] {
+            let image = pack_single_application(&[0x34, 0x12], words).unwrap();
+            let mut memory = vec![0xd00d; BOOT_MEMORY_BYTES / 2];
+            install_single_application(&image, &mut memory).unwrap();
+            assert!(memory[..words].iter().all(|w| *w == 0));
+            assert!(memory[words..SINGLE_BOOT_STATIC_WORDS + 1]
+                .iter()
+                .all(|w| *w == 0xd00d));
+            let commands = single_boot_commands(&image).unwrap();
+            assert_eq!(commands.len(), 1 + usize::from(words != 0));
+            assert!(boot_image_map(&[0x34, 0x12], &image)
+                .contains(&format!("static_zero_bytes={}\n", words * 2)));
+            assert!(pack_application_resources(
+                &[0, 0],
+                words,
+                &[BootResource::copy(0x3ffe, vec![1, 2])]
+            )
+            .is_err());
+        }
+        for words in [SINGLE_BOOT_STATIC_WORDS + 1, usize::MAX] {
+            assert!(pack_single_application(&[0, 0], words).is_err());
+        }
+    }
+    #[test]
     fn multi_megabyte_copy_zero_and_protected_holes() {
         let code = [0x34, 0x12, 0xcd, 0xab];
         let data: Vec<u8> = (0..0x20_0000).map(|i| (i ^ (i >> 8)) as u8).collect();
@@ -353,11 +386,11 @@ mod tests {
             BootResource::copy(0x100000, data.clone()),
             BootResource::zero(0x4b0000, 34),
         ];
-        let image = pack_application_resources(&code, &resources).unwrap();
+        let image = pack_application_resources(&code, 17, &resources).unwrap();
         let mut memory = vec![0xa55a; BOOT_MEMORY_BYTES / 2];
         assert_eq!(install_single_application(&image, &mut memory).unwrap(), 2);
-        assert!(memory[..SINGLE_BOOT_STATIC_WORDS].iter().all(|w| *w == 0));
-        assert_eq!(memory[SINGLE_BOOT_STATIC_WORDS], 0xa55a);
+        assert!(memory[..17].iter().all(|w| *w == 0));
+        assert_eq!(memory[17], 0xa55a);
         assert_eq!(
             &memory[SINGLE_BOOT_CODE_WORD..SINGLE_BOOT_CODE_WORD + 2],
             &[0x1234, 0xabcd]
@@ -368,14 +401,14 @@ mod tests {
         {
             assert_eq!(*word, u16::from_le_bytes(*pair));
         }
-        assert!(memory[0x200000..0x230000].iter().all(|w| *w == 0));
+        assert!(memory[0x200000..0x230000].iter().all(|w| *w == 0xa55a));
         assert!(memory[0x230000..0x248000].iter().all(|w| *w == 0xa55a));
         assert!(memory[0x248000..0x258000].iter().all(|w| *w == 0xa55a));
         assert!(memory[0x258000..0x258011].iter().all(|w| *w == 0));
         assert_eq!(memory[0x258011], 0xa55a);
         assert_eq!(
-            pack_single_application(&code).unwrap().len(),
-            4 + 4 * 8 + code.len()
+            pack_single_application(&code, 17).unwrap().len(),
+            4 + 3 * 8 + code.len()
         );
     }
     #[test]
@@ -396,19 +429,21 @@ mod tests {
             usize::MAX,
         ] {
             assert!(
-                pack_application_resources(&[0, 0], &[BootResource::copy(a, vec![1, 2])]).is_err()
+                pack_application_resources(&[0, 0], 0, &[BootResource::copy(a, vec![1, 2])])
+                    .is_err()
             );
         }
-        assert!(pack_application_resources(&[0, 0], &[BootResource::zero(0x20000, 3)]).is_err());
+        assert!(pack_application_resources(&[0, 0], 0, &[BootResource::zero(0x20000, 3)]).is_err());
         assert!(pack_application_resources(
             &[0, 0],
+            0,
             &[
                 BootResource::zero(0x20000, 4),
                 BootResource::zero(0x20002, 4)
             ]
         )
         .is_err());
-        let mut image = pack_single_application(&[0x34, 0x12]).unwrap();
+        let mut image = pack_single_application(&[0x34, 0x12], 17).unwrap();
         for i in 0..image.len() {
             assert!(single_boot_commands(&image[..i]).is_err());
         }
@@ -420,9 +455,9 @@ mod tests {
         image[20] ^= 1; // First payload byte; no production checksum.
         assert!(single_boot_commands(&image).is_ok());
         for n in [0, 1, SINGLE_BOOT_MAX_CODE_BYTES + 2] {
-            assert!(pack_single_application(&vec![0; n]).is_err());
+            assert!(pack_single_application(&vec![0; n], 0).is_err());
         }
-        assert!(pack_single_application(&vec![0; SINGLE_BOOT_MAX_CODE_BYTES]).is_ok());
+        assert!(pack_single_application(&vec![0; SINGLE_BOOT_MAX_CODE_BYTES], 0).is_ok());
         assert_eq!(BootResource::copy(0x20000, vec![1]).data, vec![1, 0]);
     }
     #[test]

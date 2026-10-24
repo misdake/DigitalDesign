@@ -189,6 +189,11 @@ impl Module for CpuV3System {
                 }
             }
         }
+        let static_words = cpu_v3_tang_nano_20k::boot::single_boot_commands(&package)
+            .unwrap_or_default()
+            .iter()
+            .find(|c| c.address == 0 && c.payload.is_none())
+            .map_or(0, |c| c.length / 2);
         let code = cpu_v3_tang_nano_20k::boot::single_boot_code(&package).unwrap_or(&[]);
         for (index, word) in code.as_chunks::<2>().0.iter().enumerate() {
             let value = u16::from_le_bytes([word[0], word[1]]);
@@ -210,6 +215,7 @@ impl Module for CpuV3System {
             )
             .replace("__FLASH_PACKAGE_SIZE__", &package.len().to_string())
             .replace("__FLASH_PACKAGE_INIT__", &flash_init)
+            .replace("__STATIC_WORDS__", &static_words.to_string())
             .replace("__CODE_WORDS__", &(code.len() / 2).to_string())
             .replace("__CODE_INIT__", &code_init)
             .replace("__RESOURCE_CHECK__", &resource_check)
@@ -248,8 +254,8 @@ impl Module for CpuV3System {
                 &TEST_ERROR_CODE.with(Cell::get).to_string(),
             )
             .replace("__EXPECT_HALT__", &halt.to_string());
+        testbench = testbench.replacen("module tb;", "module tb;\nGSR GSR(.GSRI(1'b1));", 1);
         if GPU_COLD_TEST.with(Cell::get) {
-            testbench = testbench.replacen("module tb;", "module tb;\nGSR GSR(.GSRI(1'b1));", 1);
             testbench = testbench.replacen(
                 "endmodule",
                 &format!("{}\nendmodule", include_str!("gpu_cold_monitor.vh")),
@@ -266,11 +272,12 @@ impl Module for CpuV3System {
                 "if(EXPECT_HALT!=0 && dut.halted)begin",
                 "if(EXPECT_HALT!=0 && dut.halted)begin\n gpu_cold_complete();",
             );
-            let models =
-                std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").expect("GOWIN_HOME"))
-                    .join("IDE/simlib/gw2a/prim_sim.v");
-            testbench.push_str(&std::fs::read_to_string(models).unwrap());
         }
+        // The production GPU exists in every composed system fixture, including
+        // COPY/ZERO-only boot tests. All of them require its vendor primitives.
+        let models = std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").expect("GOWIN_HOME"))
+            .join("IDE/simlib/gw2a/prim_sim.v");
+        testbench.push_str(&std::fs::read_to_string(models).unwrap());
         Some(testbench)
     }
 }
@@ -315,6 +322,7 @@ mod tests {
                 Err("unexpected module".into())
             })
             .unwrap();
+        let static_words = parsed.debug.static_data_end;
         let program = cpu_v3::rcc_backend::try_compile(parsed, &options, "main").unwrap();
         let code: Vec<u8> = program.words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut commands: Vec<u8> = [0u32, 0x40000003, 0x70000000, 0xf0000000]
@@ -324,6 +332,7 @@ mod tests {
         commands.resize(128, 0);
         let mut package = cpu_v3_tang_nano_20k::boot::pack_application_resources(
             &code,
+            static_words,
             &[cpu_v3_tang_nano_20k::boot::BootResource::copy(
                 0x20000, commands,
             )],
@@ -379,6 +388,7 @@ mod tests {
             &mut |_| Err("unexpected module".into()),
         )
         .unwrap();
+        let static_words = parsed.debug.static_data_end;
         let program = cpu_v3::rcc_backend::try_compile(parsed, &options, "main").unwrap();
         let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/system-board-ready/audit");
@@ -390,7 +400,7 @@ mod tests {
         .unwrap();
         std::fs::write(evidence.join("native-maintenance-probe.rcc"), source).unwrap();
         let bytes: Vec<_> = program.words.iter().flat_map(|x| x.to_le_bytes()).collect();
-        let package = pack_single_application(&bytes).unwrap();
+        let package = pack_single_application(&bytes, static_words).unwrap();
         TEST_IMAGE.with(|x| *x.borrow_mut() = Some((package, false, 0x5a35)));
         BOARD_APPLICATION_TEST.with(|x| x.set(true));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
@@ -410,9 +420,10 @@ mod tests {
             &mut |name| Err(format!("unexpected module {name}")),
         )
         .unwrap();
+        let static_words = program.debug.static_data_end;
         let program = cpu_v3::rcc_backend::try_compile(program, &options, "main").unwrap();
         let bytes: Vec<u8> = program.words.iter().flat_map(|x| x.to_le_bytes()).collect();
-        pack_single_application(&bytes).unwrap()
+        pack_single_application(&bytes, static_words).unwrap()
     }
     #[test]
     fn single_application_assets_repack_exactly() {
@@ -424,6 +435,10 @@ mod tests {
         assert_eq!(
             cpu_v3_tang_nano_20k::boot::pack_application_resources(
                 include_bytes!(concat!(env!("OUT_DIR"), "/application.v3bin")),
+                include_str!(concat!(env!("OUT_DIR"), "/application.static-words"))
+                    .trim()
+                    .parse()
+                    .unwrap(),
                 &project.resources(root).unwrap()
             )
             .unwrap(),
@@ -499,6 +514,7 @@ mod tests {
         let data = (0..0x200000).map(|n| (n ^ (n >> 8) ^ 0x53) as u8).collect();
         let package = cpu_v3_tang_nano_20k::boot::pack_application_resources(
             code,
+            cpu_v3_tang_nano_20k::boot::single_boot_commands(&base).unwrap()[0].length / 2,
             &[cpu_v3_tang_nano_20k::boot::BootResource::copy(
                 0x100000, data,
             )],
