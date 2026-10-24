@@ -21,6 +21,46 @@ one live version even though several identity fields travel with work.
 No implicit equality or shared fence is defined between these identities.
 [Overview](/ip/gpu-v2/docs/overview.md#completion-is-tied-to-an-owner) maps completion to reuse.
 
+## Shared V/T bounds prologue
+
+Only the compact meshlet ROM uses words256..310 for a fixed 55-word bounds
+prologue. Words0..6 are the existing bootstrap; a kept meshlet jumps directly to
+original V word7 and pays 48 additional enabled edges. Original compact V/T
+words0..255 and the entire regular-layout program remain unchanged. Native
+BSRAM INIT fields and the portable view are emitted together by
+`frontend/vliw/vertex/bounds_program.py`; `--check` verifies regeneration.
+
+| ROM words | Existing ports / work | Lifetime and decision |
+| --- | --- | --- |
+| 256..262 | Read the original configuration/uniform bootstrap | Initialize origins, shift and RF0 |
+| 263..271 | Serial configuration reads through unpacker | Test all origins using signed25 prefix taps |
+| 272..281 | Z-row support point into RF1..3; MAC dot | Check signed20 coefficients and signed30 translation |
+| 282 | Existing MAC-to-RF writeback into RF10 | Reject nonpositive transformed maximum Z |
+| 283..292 | X maximum support dot | Finish X-row eligibility |
+| 293..296 | RF10 times the existing F16-one uniform constant | Reject left; retain Z for the final test |
+| 297..306 | X minimum support dot through the same ports | No second position or matrix buffer |
+| 307..310 | RF10 times minus F16-one, then final decision | Reject right, or toggle epoch and jump to V word7 |
+
+Unpacker kind6 substitutes one ten-bit endpoint from a coefficient sign, then
+uses the original position decode and selected axis. It adds no wide shifter
+or box-position register bank. RF1..3 hold a support point only until its MAC
+consumers; RF10 holds the truncated maximum Z through the two horizontal tests.
+A constant sign extension on MAC B supplies minus-one for the last test. ROM
+bits43..45 select three fixed taps in the existing sign-prefix tree; bit71
+checks eligibility. Bit70 selects minimum/negative-one and marks the final
+keep decision. Flow7 branches or retires through the existing V completion.
+No additional memory, DSP, FIFO, reservation or dynamically arbitrated port is
+introduced.
+
+The prologue and original V control run independently on the same CE. Every
+prologue word has no V emit, no vertex-input advance, and no V loop/end flow;
+the assembler asserts those conditions. An outer bounds-versus-V mux is not
+required. All reads, RF writes, DSP launch/return and decisions freeze together
+when CE is low. A reject returns `done_v` with zero published vertices, and the
+meshlet controller skips its index/T phase. It neither changes an old queued
+T's epoch nor waits for that T to retire. The [numerical contract](/ip/gpu-v2/docs/geometry.md#conservative-meshlet-rejection)
+defines the conservative predicates and fallback.
+
 ## Triangle parameter storage and reads
 
 ### Geometry reduction and publication

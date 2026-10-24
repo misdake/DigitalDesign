@@ -1,6 +1,6 @@
 // Original V/T arithmetic calendar; normals travel once as packed S12F10.
 // 同一ROM、RF与双DSP，V/T分时；所有状态变更均采样旧值。
-module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,parameter SOURCE_READ=0,
+module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,parameter SOURCE_READ=0,parameter BOUNDS_CULL=0,
  parameter TRIANGLE_SLOT_BITS=4)(
  input clk,reset,ce,start_v,start_t,meshlet_reset,
  input [6:0] vertex_count,input [5:0] uniform_base,input [8:0] config_base,
@@ -19,6 +19,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  reg [10:0] vp;reg [9:0] op;reg [5:0] vid;reg [2:0] vfield;reg triangle_mode;
  reg [17:0] refs;reg [3:0] scale;reg cull;reg [35:0] building_desc;
  reg sigma,delta_zero,delta_negative,collecting;reg any_front;
+ wire bounds_run=BOUNDS_CULL&&pc[8];reg bounds_safe;
  localparam TRIANGLE_SLOTS=1<<TRIANGLE_SLOT_BITS;
  reg [TRIANGLE_SLOT_BITS:0] produced,consumed;
  wire[TRIANGLE_SLOT_BITS-1:0]write_slot=produced[TRIANGLE_SLOT_BITS-1:0];
@@ -72,14 +73,14 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  always @*begin
  next_pc=pc+1'b1;
  case(flow)
-  1,3:next_pc=target;
+  1,3,7:next_pc=target;
   2:if(remaining==1)next_pc=target;
   4:next_pc=pc;
   5:if(delta_negative&&!cull)next_pc=target;
   default:begin end
  endcase
  end
- shared_control_rom #(.SP_COMPACT(SP_COMPACT)) rom(.clk(clk),.reset(reset),.en(launch||step),.addr(launch?(launch_v?9'd0:9'd128):next_pc),.q(control));
+ shared_control_rom #(.SP_COMPACT(SP_COMPACT)) rom(.clk(clk),.reset(reset),.en(launch||step),.addr(launch?(launch_v?(BOUNDS_CULL?9'd256:9'd0):9'd128):next_pc),.q(control));
  wire [9:0] la=l_src==1?{ub,u_off[4:1]}:l_src==3?{cb,cfg_off[1]}:vp[10:1];
  wire [9:0] ra=(work_en||work_we)?{(SP_COMPACT?4'b0110:4'b1000),work_addr}:r_src==1?{ub,u_off[4:1]}:r_src==3?{cb,cfg_off[1]}:vp[10:1];
  
@@ -124,6 +125,9 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  wire z_write=step&&triangle_mode&&rf_wsrc==1&&unpack_kind==4&&(rf_dst==3||rf_dst==6||rf_dst==9);
  wire reject_behind=z_write&&rf_dst==3&&!any_front&&!raw_front;
  wire p_range_error=unpack_kind==4&&(scale_over||excluded_min);
+ wire raw_bound_front=!acc[47]&&(|acc[46:16]);
+ wire bound_left=acc[53]&&!(&acc[52:32]);
+ wire bound_right=!acc[53]&&((|acc[52:33])||(acc[32]&&(|acc[31:0])));
  wire [31:0] acc_wb=acc[47:16];reg [31:0] constant_value;
  always @*case(cfg_idx)0:constant_value=-32'sd399;1:constant_value=-32'sd239;default:constant_value=32'd512;endcase
  wire [31:0] rf_write=rf_wsrc==1?unp_value:rf_wsrc==3?constant_value:acc_wb;
@@ -131,7 +135,8 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  shared_rf rf(.clk(clk),.we((step&&rf_wsrc!=0)),.wa(rf_dst),.wd(rf_write),.aa(rf_mac),.ba(rf_pack),.aq(mac_value),.bq(pack_value));
  wire acc_clear=acc_op==1;
  wire [53:0] acc_input=acc_clear?54'd0:acc;wire [53:0] acc_next;
- shared_mac mac(.clk(clk),.reset(reset),.en(ce&&step&&mul_en),.a(mac_value),.b(right),.c(acc_input),.y(acc_next));
+ wire[35:0]mac_right=right|{{19{control[70]}},17'd0};
+ shared_mac mac(.clk(clk),.reset(reset),.en(ce&&step&&mul_en),.a(mac_value),.b(mac_right),.c(acc_input),.y(acc_next));
  wire [17:0] normal16_pack={{2{pack_value[17]}},pack_value[17:2]};
  wire [17:0] packed_normal=normal18?pack_value[17:0]:normal16_pack;
  // Preserve the original normal16 low-two-bit discard before S12F10 RNE.
@@ -176,7 +181,7 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
   export_read&&fetch_index<10,export_addr,export_hi);
  always @(posedge clk)begin
  if(reset)begin
- any_front<=0;busy<=0;done_v<=0;done_t<=0;
+ any_front<=0;busy<=0;done_v<=0;done_t<=0;bounds_safe<=0;
  error<=0;published_vertices<=0;pc<=0;remaining<=0;ub<=0;cb<=0;vp<=0;op<=0;vid<=0;vfield<=0;triangle_mode<=0;
  refs<=0;scale<=0;cull<=0;building_desc<=0;sigma<=0;delta_zero<=0;delta_negative<=0;collecting<=0;
  produced<=0;consumed<=0;vertex_epoch<=0;import_state<=0;word_index<=0;word_data<=0;
@@ -207,13 +212,13 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  // The meshlet controller only pulses this after admission and header checks.
  // Export can only free epochs during that interval; rechecking FIFO readiness
  // here would put its complete predicate into the count/epoch reset fanout.
- if(meshlet_reset)begin published_vertices<=0;error<=0;vertex_epoch<=!vertex_epoch;end
+ if(meshlet_reset)begin published_vertices<=0;error<=0;if(!BOUNDS_CULL)vertex_epoch<=!vertex_epoch;end
  if(launch_v)begin
  error<=0;triangle_mode<=0;
  if(compact_invalid)begin busy<=0;done_v<=1;error<=4;end
  else if(vertex_count+published_vertices>64)begin busy<=0;done_v<=1;error<=3;end
  else begin
- busy<=vertex_count!=0;done_v<=vertex_count==0;pc<=0;remaining<=vertex_count;ub<=uniform_base;cb<=config_base;
+ busy<=vertex_count!=0;done_v<=vertex_count==0;pc<=BOUNDS_CULL?9'd256:9'd0;bounds_safe<=1;remaining<=vertex_count;ub<=uniform_base;cb<=config_base;
  vp<={vertex_base,1'b0};op<=0;vid<=published_vertices[5:0];vfield<=0;
  end
  end else if(launch_t)begin
@@ -222,6 +227,14 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  else begin busy<=1;pc<=128;refs<=triangle_descriptor[17:0];scale<=triangle_descriptor[21:18];cull<=cull_negative;building_desc<=triangle_descriptor;sigma<=0;collecting<=1;end
  end else if(step)begin
  pc<=next_pc;
+ if(bounds_run)begin
+ if(control[71])bounds_safe<=bounds_safe&&quant_shift<=14&&!
+  ((control[43]&&(unpacked[31]?negative_over[2]:positive_over[2]))||
+   (control[44]&&(unpacked[31]?negative_over[7]:positive_over[7]))||
+   (control[45]&&(unpacked[31]?negative_over[12]:positive_over[12])));
+ if(flow==7&&bounds_safe&&((cfg_idx==0&&!raw_bound_front)||(cfg_idx==1&&bound_left)||(cfg_idx==2&&bound_right)))begin busy<=0;done_v<=1;end
+ if(flow==7&&control[70]&&!(bounds_safe&&((cfg_idx==0&&!raw_bound_front)||(cfg_idx==1&&bound_left)||(cfg_idx==2&&bound_right))))vertex_epoch<=!vertex_epoch;
+ end
  if(!triangle_mode)begin
  if(flow==3)remaining<=remaining-1'b1;
  if(flow==4)begin busy<=0;done_v<=1;end
@@ -243,7 +256,13 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  if(acc_op!=0)acc<=acc_next;
  if(rf_wsrc==1)phase<=phase==2||unpack_kind>=3?2'd0:phase+1'b1;
  if(rf_wsrc==1&&unpack_kind<3)unpacked<={10'd0,unpacked[31:10]};
- if(up_push!=0)begin unpacked<=up_push==4?pq[31:0]:left[31:0];unpack_kind<=up_push;phase<=0;end
+ if(up_push!=0)begin
+ unpacked<=up_push==4?pq[31:0]:left[31:0];
+ if(up_push==6)unpacked[9:0]<={10{left[31]==control[70]}};
+ unpack_kind<=up_push==6?3'd1:up_push;
+ phase<=up_push==6?cfg_idx:2'd0;
+ 
+ end
  if(cfg_we)case(cfg_idx)0:origin_x<=left[31:0];1:origin_y<=left[31:0];2:origin_z<=left[31:0];3:begin quant_shift<=left[4:0];normal18<=left[8];end endcase
  case(pack_op)
  1:packed_buffer<={22'd0,pack_value};

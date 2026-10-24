@@ -1,6 +1,6 @@
 // 本地SP中的32B metadata + 最大1KB V/index；先全部V，再按三个索引一组跑T。
 // 外部DMA负责把原始字送入SP；不实现SDRAM或Mesh目录的地址遍历。
-module shared_meshlet(
+module shared_meshlet #(parameter BOUNDS_CULL=1)( 
  input clk,reset,ce,start,slot,
 `ifdef GPU_V2_COMMAND_PORTS
  input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
@@ -59,7 +59,7 @@ module shared_meshlet(
  wire [7:0] vertex_rows=vertex_words[8:1];
  wire invalid_header=vertices>64||triangles>96||uniform_base[5:2]!=4'd5||
                      (triangles!=0&&(vertices==0||index_cursor<vertex_rows));
- shared_frontend #(.RESULT_COMPACT(1),.SP_COMPACT(1),.SOURCE_READ(1)) core(
+ shared_frontend #(.RESULT_COMPACT(1),.SP_COMPACT(1),.SOURCE_READ(1),.BOUNDS_CULL(BOUNDS_CULL)) core(
   .clk(clk),.reset(reset),.ce(ce),.start_v(state==VSTART),.start_t(state==TSTART),
   .meshlet_reset(state==CHECK&&!invalid_header),.vertex_count(vertices),.uniform_base(uniform_base),
   .config_base(config_base),.vertex_base(vertex_base),.triangle_descriptor(triangle_descriptor),
@@ -98,7 +98,7 @@ module shared_meshlet(
     VSTART:state<=VWAIT;
     VWAIT:if(done_v)begin
      if(core_error!=0)begin error<={1'b0,core_error};done<=1;state<=IDLE;end
-     else if(triangles==0)begin done<=1;state<=IDLE;end else state<=INDEX;
+     else if(triangles==0||published_vertices==0)begin done<=1;state<=IDLE;end else state<=INDEX;
     end
     INDEX:if(index_cursor[7])begin error<=6;done<=1;state<=IDLE;end
           else if(source_ready)begin index_cursor<=index_cursor+1'b1;state<=INDEX_Q;end
