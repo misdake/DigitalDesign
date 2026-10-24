@@ -59,6 +59,10 @@ fn classic_frame_timing_profile() {
     // exercised without rendering a warm-up frame. Only setup/stop differ.
     let source = include_str!("../examples/gpu_demo/rcc/main.rs").replace("\r\n", "\n");
     let source = source.replace("let mut completed = false;", "let mut completed = true; STATS.as_array()[0u16] = time_milliseconds() - 17; STATS.as_array()[2u16] = 1;");
+    let source = source.replace(
+        "let elapsed = time_microseconds();",
+        "let elapsed = if frame == 0 { 17000 } else { time_microseconds() };",
+    );
     let begin = source.find("    // Bounded verification waits").unwrap();
     let end = source[begin..].find("\n}").unwrap() + begin;
     let mut source = source;
@@ -71,14 +75,14 @@ fn classic_frame_timing_profile() {
     let reference_source = if experiment.is_some() {
         source.replacen("use crate::dsl_rt::*;", "use crate::dsl_rt::*;\nmod overlay; use overlay::*;\nstatic CELLS:Buf<u16,375>=Buf::new([0;375]);", 1)
             .replace("demo_ui_reset(STATS.as_array())", "demo_overlay_init(CELLS.as_array(), STATS.as_array())")
-            .replace("demo_ui_frame_begin(STATS.as_array(), now, completed)", "demo_overlay_begin(CELLS.as_array(), STATS.as_array(), now, completed)")
+            .replace("demo_ui_frame_begin(STATS.as_array(), elapsed, completed)", "demo_overlay_begin(CELLS.as_array(), STATS.as_array(), now, completed)")
     } else {
         source.clone()
     };
     if let Some(mode) = &experiment {
         source = source.replacen("use crate::dsl_rt::*;", "use crate::dsl_rt::*;\nmod overlay; use overlay::*;\nstatic CELLS:Buf<u16,375>=Buf::new([0;375]);", 1)
             .replace("demo_ui_reset(STATS.as_array())", "demo_overlay_init(CELLS.as_array(), STATS.as_array())")
-            .replace("demo_ui_frame_begin(STATS.as_array(), now, completed)", "demo_overlay_begin(CELLS.as_array(), STATS.as_array(), now, completed)");
+            .replace("demo_ui_frame_begin(STATS.as_array(), elapsed, completed)", "demo_overlay_begin(CELLS.as_array(), STATS.as_array(), now, completed)");
         for (marker, index, size) in [
             (5, 0, 32),
             (7, 1, 64),

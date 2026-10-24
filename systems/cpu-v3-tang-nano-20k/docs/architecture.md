@@ -261,6 +261,14 @@ the software read and arm is therefore detected by the first probe rather than l
 GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and watch holds have
 independent state so neither completion source can release the other.
 
+Device0 channel11 reads a saturating 16-bit microsecond interval. A write
+with bit0 set clears its count and prescaler, with clear taking priority over
+a tick. Reads and watch probes are passive. The main-clock timer runs during
+CPU holds and saturates at65535us; the application owns interval clear.
+Channel10 retains the independent millisecond clock for long deadlines.
+The complete edge, range and software contract is in
+[wall clock](/systems/cpu-v3-tang-nano-20k/docs/wall-clock.md).
+
 UART TX shifts a ten-bit 8N1 frame toward its output bit. The stop bit is the
 last nonzero bit, so no separate bit index is required. A registered busy bit
 keeps the frame reduction off the CPU device-read path and clears when the

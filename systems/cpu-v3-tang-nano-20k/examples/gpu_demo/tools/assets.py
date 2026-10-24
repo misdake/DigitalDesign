@@ -40,7 +40,7 @@ def font():
                 # UI source-bank ordering is static; alpha controls a full word.
                 at = glyph * 256 + (y * 8 + (x ^ ((y & 1) * 2))) * 2
                 struct.pack_into("<H", atlas, at, 65535 if row & (128 >> x) else 0)
-    assert set(b"FRAME 0123456789-MS") <= rows.keys()
+    assert set(b"FRAME 0123456789-MS.") <= rows.keys()
     assert atlas[255 * 256:] == bytes(256)
     return bytes(atlas), rows
 

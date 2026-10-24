@@ -37,6 +37,9 @@ reg [{{ uart_divider_msb }}:0] uart_divider = 0;
 // Always main-clocked: never use CPU hold or a device enable as its CE.
 reg [15:0] millisecond_divider = 0;
 reg [15:0] milliseconds = 0;
+// Bounded interval timer: one word, explicit clear, no multiword snapshot.
+reg [{{ microsecond_divider_msb }}:0] microsecond_divider = 0;
+reg [15:0] microseconds = 0;
 reg [15:0] cache_maintenance_status = 0;
 reg [1:0] pending_dcache_maintenance = 0;
 // Pending owns the request until the cache's actual acceptance edge. After
@@ -59,6 +62,7 @@ always @* begin
             3: device_read_data = {15'b0, uart_busy};
             5: device_read_data = cache_maintenance_status;
             10: device_read_data = milliseconds;
+            11: device_read_data = microseconds;
             default: device_read_data = 0;
         endcase
     end
@@ -80,7 +84,15 @@ always @(posedge clk) begin
         uart_divider <= 0;
         millisecond_divider <= 0;
         milliseconds <= 0;
+        microsecond_divider <= 0;
+        microseconds <= 0;
     end else begin
+        if (microsecond_divider == {{ clocks_per_us_minus_one }}) begin
+            microsecond_divider <= 0;
+            if (microseconds != 16'hffff) microseconds <= microseconds + 1'b1;
+        end else begin
+            microsecond_divider <= microsecond_divider + 1'b1;
+        end
         if (millisecond_divider == 16'd{{ clocks_per_ms_minus_one }}) begin
             millisecond_divider <= 0;
             milliseconds <= milliseconds + 16'd1;
@@ -130,6 +142,10 @@ always @(posedge clk) begin
                 6: begin
                     watch_index <= device_write_data[2:0];
                     watch_channel <= device_write_data[6:3];
+                end
+                11: if (device_write_data[0]) begin
+                    microsecond_divider <= 0;
+                    microseconds <= 0;
                 end
                 7: if (!cpu_hold) begin
                     watch_expected <= device_write_data;

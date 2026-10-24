@@ -22,6 +22,8 @@ pub const SYSCTL_WATCH_TARGET: u8 = 6;
 pub const SYSCTL_WATCH_EXPECTED: u8 = 7;
 /// Free-running millisecond timestamp modulo 65536; read-only.
 pub const SYSCTL_MILLISECONDS: u8 = 10;
+/// Saturating microsecond interval; write bit 0 clears count and prescaler.
+pub const SYSCTL_MICROSECONDS: u8 = 11;
 
 pub const fn sysctl_watch_target(device: u8, channel: u8) -> u16 {
     ((channel as u16 & 0x0f) << 3) | (device as u16 & 0x07)

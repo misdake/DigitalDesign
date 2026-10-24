@@ -15,6 +15,7 @@ pub const SYSCTL_WATCH_EXPECTED: u16 = 7;
 // Board integration only; raw two-stage synchronized buttons, bit0 is pin88.
 pub const SYSCTL_BUTTONS: u16 = 8;
 pub const SYSCTL_MILLISECONDS: u16 = 10;
+pub const SYSCTL_MICROSECONDS: u16 = 11;
 
 pub fn sysctl_watch_target(device: u16, channel: u16) -> u16 {
     ((channel & 15) << 3) | (device & 7)

@@ -922,9 +922,9 @@ fn main(){
  let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
  let mut stats:Buf<u16,4>=Buf::new([0;4]);stats[3u16]=1;
  stats[1u16]=0;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
- stats[1u16]=9;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
- stats[1u16]=10;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
- stats[1u16]=65535;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ stats[1u16]=900;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ stats[1u16]=1000;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ stats[1u16]=65534;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
  let objects=GPU_CB.object_words;let commands=GPU_CB.command_words;
  stats[3u16]=0;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
  check(GPU_CB.object_words==objects&&GPU_CB.command_words==commands);
@@ -949,7 +949,7 @@ fn main(){
         matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
         "{result:?}"
     );
-    let texts = ["0", "9", "10", "65535"];
+    let texts = ["0.0", "0.9", "1.0", "65.5"];
     for (i, text) in texts.iter().enumerate() {
         let word = 64 + i as u32 * 448;
         let at = 0x4a0000 / 2 + word;

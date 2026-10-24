@@ -1,7 +1,7 @@
 //! Functional model of the retained system-control device.
 use super::device_abi::{
-    D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED, SYSCTL_LED, SYSCTL_MILLISECONDS, SYSCTL_UART,
-    SYSCTL_WATCH_EXPECTED, SYSCTL_WATCH_TARGET,
+    D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED, SYSCTL_LED, SYSCTL_MICROSECONDS,
+    SYSCTL_MILLISECONDS, SYSCTL_UART, SYSCTL_WATCH_EXPECTED, SYSCTL_WATCH_TARGET,
 };
 use crate::{Device, Word};
 use std::cell::Cell;
@@ -18,14 +18,24 @@ pub struct SystemControlDevice {
     watch_expected: u16,
     watch_active: bool,
     milliseconds: Cell<u16>,
+    microsecond_remainder: Cell<u16>,
+    microseconds: Cell<u16>,
 }
 
 impl SystemControlDevice {
     /// Host-scheduled functional time, independent of instructions and reads.
     /// This model has no cycle timing; the caller supplies elapsed wall time.
     pub fn advance_milliseconds(&self, elapsed: u16) {
+        self.advance_microseconds(u32::from(elapsed) * 1000);
+    }
+
+    pub fn advance_microseconds(&self, elapsed: u32) {
+        let micros = u64::from(self.microsecond_remainder.get()) + u64::from(elapsed);
         self.milliseconds
-            .set(self.milliseconds.get().wrapping_add(elapsed));
+            .set(self.milliseconds.get().wrapping_add((micros / 1000) as u16));
+        self.microsecond_remainder.set((micros % 1000) as u16);
+        self.microseconds
+            .set((u32::from(self.microseconds.get()).saturating_add(elapsed)).min(65535) as u16);
     }
 
     pub fn active_watch(&self) -> Option<(u8, u8, u16)> {
@@ -44,6 +54,8 @@ impl Device for SystemControlDevice {
     fn read(&mut self, _memory: &mut [Word], channel: u8) -> Word {
         if channel == SYSCTL_MILLISECONDS {
             self.milliseconds.get()
+        } else if channel == SYSCTL_MICROSECONDS {
+            self.microseconds.get()
         } else {
             0
         }
@@ -54,6 +66,7 @@ impl Device for SystemControlDevice {
             ICACHE_INVALIDATE_ALL_DELAYED => self.icache_invalidations += 1,
             D_INVALIDATE_ALL => self.dcache_invalidations += 1,
             SYSCTL_LED => self.led = Some(value),
+            SYSCTL_MICROSECONDS if value & 1 != 0 => self.microseconds.set(0),
             SYSCTL_UART => self.uart.push(value as u8),
             SYSCTL_WATCH_TARGET => {
                 self.watch_device = (value & 7) as u8;

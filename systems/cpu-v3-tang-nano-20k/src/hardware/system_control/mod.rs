@@ -20,6 +20,8 @@
 //! - channel 7 (write): arm a CPU-local sleep while the target equals the written value.
 //! - channel 10 (read): free-running milliseconds modulo 65536. CPU hold,
 //!   cache maintenance, and watch sleep never gate this wall clock.
+//! - channel 11 (read): microsecond interval, saturating at 65535; a write
+//!   with bit 0 set clears its count and prescaler. Reads have no side effects.
 //!
 //! Writes while the UART is busy are dropped; software must poll the busy
 //! flag before enqueueing the next byte. All accesses with a device index
@@ -34,6 +36,7 @@ pub use crate::boot::D_CLEAN_ALL as SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL;
 pub use crate::boot::D_INVALIDATE_ALL as SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL;
 pub use crate::boot::ICACHE_INVALIDATE_ALL_DELAYED as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED;
 pub use crate::boot::SYSCTL_LED as SYSTEM_CONTROL_CHANNEL_LEDS;
+pub use crate::boot::SYSCTL_MICROSECONDS as SYSTEM_CONTROL_CHANNEL_MICROSECONDS;
 pub use crate::boot::SYSCTL_MILLISECONDS as SYSTEM_CONTROL_CHANNEL_MILLISECONDS;
 pub use crate::boot::SYSCTL_UART as SYSTEM_CONTROL_CHANNEL_UART;
 pub use crate::boot::SYSCTL_WATCH_EXPECTED as SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED;
@@ -103,6 +106,8 @@ pub struct SystemControlDeviceState {
     uart_divider: u16,
     millisecond_divider: u16,
     milliseconds: u16,
+    microsecond_divider: u16,
+    microseconds: u16,
 }
 
 impl Default for SystemControlDeviceState {
@@ -123,6 +128,8 @@ impl Default for SystemControlDeviceState {
             uart_divider: 0,
             millisecond_divider: 0,
             milliseconds: 0,
+            microsecond_divider: 0,
+            microseconds: 0,
         }
     }
 }
@@ -142,6 +149,8 @@ struct SystemControlTemplate<'a> {
     clocks_per_bit_minus_one: u16,
     uart_divider_msb: u32,
     clocks_per_ms_minus_one: u16,
+    clocks_per_us_minus_one: u16,
+    microsecond_divider_msb: u32,
 }
 
 #[derive(Template)]
@@ -180,6 +189,7 @@ impl<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16> Module
                 SYSTEM_CONTROL_CHANNEL_UART => u16::from(state.uart_busy),
                 SYSTEM_CONTROL_CHANNEL_CACHE_MAINTENANCE_STATUS => state.cache_maintenance_status,
                 SYSTEM_CONTROL_CHANNEL_MILLISECONDS => state.milliseconds,
+                SYSTEM_CONTROL_CHANNEL_MICROSECONDS => state.microseconds,
                 _ => 0,
             }
         } else {
@@ -214,6 +224,13 @@ impl<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16> Module
             return;
         }
         state.icache_invalidate = false;
+        let microsecond_period = (CLOCKS_PER_MS / 1000).max(1);
+        if state.microsecond_divider == microsecond_period - 1 {
+            state.microsecond_divider = 0;
+            state.microseconds = state.microseconds.saturating_add(1);
+        } else {
+            state.microsecond_divider += 1;
+        }
         // Physical wall time advances even while the CPU is held or no device
         // read is active. This rate is independent of the UART divider.
         if state.millisecond_divider == CLOCKS_PER_MS - 1 {
@@ -274,6 +291,10 @@ impl<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16> Module
                 state.pending_dcache_maintenance = 2;
             }
             SYSTEM_CONTROL_CHANNEL_LEDS => state.leds = (value & 0x3f) as u8,
+            SYSTEM_CONTROL_CHANNEL_MICROSECONDS if value & 1 != 0 => {
+                state.microseconds = 0;
+                state.microsecond_divider = 0;
+            }
             // A write while busy is dropped; software polls the busy flag.
             SYSTEM_CONTROL_CHANNEL_UART if !was_busy => {
                 state.uart_frame = 0x200 | (u16::from(value as u8) << 1);
@@ -302,6 +323,11 @@ impl<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16> Module
                 clocks_per_bit_minus_one: CLOCKS_PER_BIT - 1,
                 uart_divider_msb: (u16::BITS - (CLOCKS_PER_BIT - 1).leading_zeros()).max(1) - 1,
                 clocks_per_ms_minus_one: CLOCKS_PER_MS - 1,
+                clocks_per_us_minus_one: (CLOCKS_PER_MS / 1000).max(1) - 1,
+                microsecond_divider_msb: (u16::BITS
+                    - ((CLOCKS_PER_MS / 1000).max(1) - 1).leading_zeros())
+                .max(1)
+                    - 1,
             }
             .render()
             .expect("system control Verilog template must render"),
@@ -711,7 +737,7 @@ mod tests {
             TestStep::new(write(10, 65535), output(0, false, false, 0, true)),
             TestStep::new(read(10), output(1, false, false, 0, true)),
         ];
-        for ch in [0, 1, 2, 4, 6, 7, 8, 9, 11, 12, 13, 14, 15] {
+        for ch in [0, 1, 2, 4, 6, 7, 8, 9, 12, 13, 14, 15] {
             steps.push(TestStep::new(read(ch), output(0, false, false, 0, true)));
         }
         steps.push(TestStep::new(
@@ -774,6 +800,26 @@ mod tests {
             TestStep::new(read(10), output(65535, false, false, 0, true)).after_cycles(131071),
             TestStep::new(read(10), output(0, false, false, 0, true)),
             TestStep::new(read(10), output(1, false, false, 0, true)).after_cycles(2),
+        ])
+        .run_emu();
+    }
+
+    #[test]
+    fn microseconds_emulator_saturates_and_clear_wins_over_tick() {
+        ModuleTest::<SystemControlDevice<4, 1000>>::new(vec![
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(read(11), output(1, false, false, 0, true)),
+            TestStep::new(read(11), output(65535, false, false, 0, true)).after_cycles(65540),
+            TestStep::new(write(11, 2), output(0, false, false, 0, true)),
+            TestStep::new(read(11), output(65535, false, false, 0, true)),
+            TestStep::new(write(11, 1), output(0, false, false, 0, true)),
+            TestStep::new(read(11), output(1, false, false, 0, true)),
         ])
         .run_emu();
     }

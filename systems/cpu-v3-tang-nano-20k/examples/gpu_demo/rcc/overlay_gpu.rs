@@ -9,19 +9,19 @@ pub fn demo_ui_reset(state: Array<u16>) {
     frame_stats_reset(state);
 }
 pub fn demo_ui_frame_begin(state: Array<u16>, now: u16, completed: bool) {
-    frame_stats_begin(state, now, completed);
+    frame_stats_elapsed_begin(state, now, completed);
 }
 pub fn demo_ui_record(pass: u16, atlas: Array<GpuUiAtlas>, state: Array<u16>) -> bool {
     if state[3u16] == 0 {
         return true;
     }
-    let mut digits: Buf<u16, 5> = Buf::new([0; 5]);
-    frame_stats_digits(state, digits.as_array());
+    let mut digits: Buf<u16, 4> = Buf::new([0; 4]);
+    frame_stats_tenths_digits(state, digits.as_array());
     let mut first: u16 = 0;
-    while first < 4 && digits[first] == 48 {
-        first += 1;
+    if digits[0u16] == 48 {
+        first = 1;
     }
-    let count = 5 - first;
+    let count = 4 - first;
     let ui = gpu_pass_ui_begin_range(pass, atlas, 255, 52, 52 + count);
     if ui == GPU_CB_NONE {
         return false;

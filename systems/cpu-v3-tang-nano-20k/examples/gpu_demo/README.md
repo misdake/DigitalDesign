@@ -33,14 +33,24 @@ RGB565 scanout through gpu_init_with_format, retaining the original scene
 linear-to-screen conversion. Raw RGB565 bypasses that conversion and appears
 darker with the same framebuffer colors; mesh colors and lighting are unchanged.
 
-Only the preceding successful full-loop millisecond number appears at row1,
-column2, with no leading zeros or FRAME/MS labels. Zero is one `0`; invalid and
-first intervals are blank and emit no UI call. The demo sets the final UI object,
-then draws only the current digits' row-major range `[52,52+digits)`, initializing
-only their packed words. Each frame's 3D clear/redraw removes prior text.
-Consecutive range draws reuse the descriptor without extra DMA, WAIT or FLUSH.
-Existing DDGD UART telemetry, failure retention and2000ms polling
-budgets remain unchanged. Timing includes CPU preparation, GPU and present.
+Only the preceding successful full-loop time appears at row1,column2 as
+`0.0` through `65.5` milliseconds, truncating microseconds to0.1ms, with no
+leading zeros or FRAME/MS labels. The CPU performs bounded subtraction-based
+decimal conversion and the atlas includes a decimal-point glyph. First,
+failed and saturated intervals are blank and emit no UI call. At each frame
+boundary the application reads Device0 channel11, then explicitly clears it;
+its65535us saturation is not a wrapped short frame. The read-to-clear CPU
+handoff is a small excluded boundary overhead. Timing includes CPU
+preparation, GPU, UART reporting and the presentation wait.
+
+The demo sets its final UI object and draws only the visible glyph range
+`[52,52+glyphs)`, initializing only intersecting packed words. Each frame's
+3D redraw removes old text. Descriptor reuse and button visibility remain.
+DDGD telemetry version2 carries the previous interval in raw microseconds;
+packet length/checksum/status/completed count are unchanged;65535 denotes
+an overrange interval and is not a valid displayed duration. The2000ms
+polling budgets and20ms button debounce retain the independent millisecond
+clock. No full scene or image comparison is required for timer validation.
 
 | Allocation | Physical byte base | Contents |
 | --- | --- | --- |

@@ -17,14 +17,14 @@ static BUTTONS: Buf<u16, 4> = Buf::new([0; 4]);
 static MATRIX: Buf<u16, 45> = Buf::new([0; 45]);
 static STATS: Buf<u16, 4> = Buf::new([0; 4]);
 
-// DDGD, version, status, completed count, previous full-loop ms, XOR checksum.
-fn demo_report(status: u16, frame: u16, ms: u16) {
-    let mut bytes: Buf<u16, 11> = Buf::new([68, 68, 71, 68, 1, 0, 0, 0, 0, 0, 0]);
+// DDGD v2: status, completed count, previous full-loop us, XOR checksum.
+fn demo_report(status: u16, frame: u16, us: u16) {
+    let mut bytes: Buf<u16, 11> = Buf::new([68, 68, 71, 68, 2, 0, 0, 0, 0, 0, 0]);
     bytes[5u16] = status;
     bytes[6u16] = frame & 255;
     bytes[7u16] = frame >> 8;
-    bytes[8u16] = ms & 255;
-    bytes[9u16] = ms >> 8;
+    bytes[8u16] = us & 255;
+    bytes[9u16] = us >> 8;
     let mut i: u16 = 4;
     let mut sum: u16 = 0;
     while i < 10 {
@@ -123,8 +123,11 @@ fn demo_run(limit: u16, budget: u16) {
         dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
         time_milliseconds(),
     );
+    time_clear_microseconds();
     while limit == 0 || frame < limit {
         let now = time_milliseconds();
+        let elapsed = time_microseconds();
+        time_clear_microseconds();
         dev_send(7, 5, now);
         dev_send(7, 1, 1);
         let show_numbers = demo_buttons_update(
@@ -132,7 +135,7 @@ fn demo_run(limit: u16, budget: u16) {
             dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
             now,
         );
-        demo_ui_frame_begin(STATS.as_array(), now, completed);
+        demo_ui_frame_begin(STATS.as_array(), elapsed, completed);
         demo_report(if completed { 1 } else { 0 }, frame, STATS.as_array()[1u16]);
         completed = false;
         dev_send(7, 1, 2);

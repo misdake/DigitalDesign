@@ -31,3 +31,14 @@ optimizer. It checks first-frame invalidity, failed-frame invalidity, recovery,
 zero duration, wrap, decimal boundaries, 65535 ms, and 128 deterministic inputs.
 These tests do not exercise GPU UI, display, full-system synthesis, or physical
 hardware. The example emits five IDs but does not own an atlas or UI grid.
+
+## Microsecond interval variant
+
+`frame_stats_elapsed_begin(state, elapsed_us, completed)` accepts an explicitly
+read/cleared interval rather than subtracting two millisecond timestamps.
+It rejects first, failed and65535us saturated intervals. The rotating demo
+uses this variant; the timestamp-based component above remains available.
+`frame_stats_tenths_digits` emits four glyph IDs `00.0` through `65.5`, or
+`--.-` when invalid, truncating below100us through bounded subtraction. The
+UI omits one leading zero while retaining `0.0`. It needs four output words
+and no multiplication, division or allocation.

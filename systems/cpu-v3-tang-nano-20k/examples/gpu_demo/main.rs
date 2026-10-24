@@ -112,7 +112,7 @@ fn validate_font() {
             }
         }
     }
-    for glyph in b"FRAME 0123456789-MS" {
+    for glyph in b"FRAME 0123456789-MS." {
         assert!(seen[usize::from(*glyph)]);
     }
 }
