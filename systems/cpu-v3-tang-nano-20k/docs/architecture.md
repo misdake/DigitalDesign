@@ -185,7 +185,8 @@ clock-domain boundary.
 
 The cold hardware loader executes the [CB06 COPY/ZERO stream](boot-image-format.md)
 through the existing narrow DMA arbiter client, holding one word and waiting for
-each successful write response. The host packer inserts the 16-KiB static ZERO,
+each successful write response. The host packer inserts a ZERO for the actual
+compiler-allocated static prefix (within the protected 16-KiB arena),
 code COPY at physical word `0x70000`, optional resources and END. A/B and Depth
 remain untouched; software initializes a target before its first present.
 The FPGA checks only small command/range constraints; there is no checksum or

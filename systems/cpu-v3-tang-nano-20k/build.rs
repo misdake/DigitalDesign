@@ -9,7 +9,12 @@ use rcc::frontend::compile_program_named;
 use std::path::{Path, PathBuf};
 #[path = "build_support/rcc_modules.rs"]
 mod rcc_modules;
-fn compile(path: &Path, options: &CompilerOptions, constants: &str, shared: &Path) -> Vec<u16> {
+fn compile(
+    path: &Path,
+    options: &CompilerOptions,
+    constants: &str,
+    shared: &Path,
+) -> (Vec<u16>, usize) {
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
@@ -20,9 +25,11 @@ fn compile(path: &Path, options: &CompilerOptions, constants: &str, shared: &Pat
             })
         })
         .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
-    rcc_backend::try_compile(program, options, "main")
+    let static_words = program.debug.static_data_end;
+    let words = rcc_backend::try_compile(program, options, "main")
         .unwrap()
-        .words
+        .words;
+    (words, static_words)
 }
 
 fn main() {
@@ -106,11 +113,17 @@ fn main() {
     let resources = project.resources(&root).expect("boot resources");
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
     options.stack_init = boot::SINGLE_BOOT_STACK;
-    let words = compile(&root.join(source), &options, &constants, &root.join("rcc"));
+    let (words, static_words) =
+        compile(&root.join(source), &options, &constants, &root.join("rcc"));
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-    let image =
-        boot::pack_application_resources(&code, &resources).expect("single application image");
+    let image = boot::pack_application_resources(&code, static_words, &resources)
+        .expect("single application image");
     std::fs::write(output.join("application.v3bin"), &code).unwrap();
+    std::fs::write(
+        output.join("application.static-words"),
+        format!("{static_words}\n"),
+    )
+    .unwrap();
     std::fs::write(output.join("cpu-v3-boot.bin"), &image).unwrap();
     let map = format!(
         "application={}\n{}",
@@ -123,6 +136,7 @@ fn main() {
         "cpu-v3-boot.bin",
         "cpu-v3-boot.map",
         "boot_resources.rs",
+        "application.static-words",
     ]
     .into_iter()
     .map(str::to_owned)

@@ -12,10 +12,13 @@ must fit the 8-MiB device. ZERO regions and DRAM address holes occupy no payload
 boot-applications.conf selects one RCC application and optional named resources.
 The build fixes resource addresses, generates boot_resources.rs, compiles the
 application, checks host layout ownership and packs the stream. OUT_DIR is the
-sole generated-byte authority; cpu-v3-boot-assets exports its four files.
+sole generated-byte authority; cpu-v3-boot-assets exports its five files,
+including application.static-words, the compiler's decimal static word count.
 
 Independently repack application.v3bin with cpu-v3-pack --project followed by the
-project configuration path, and compare bytes. The optional --configuration-bin
+project configuration path, and compare bytes. The packer reads the adjacent
+application.static-words; externally compiled binaries require that metadata
+or an explicit --static-words N. The optional --configuration-bin
 and --flash-image arguments create the complete persistent image: configuration
 at 0, package at 0x100000, and an erased-value gap. A configuration exceeding its
 1-MiB reserve is rejected. The board script passes the selected project file so
@@ -31,7 +34,7 @@ Existing CB06 streams with explicit ZERO commands remain accepted.
 
 Cold PLL/SDRAM readiness starts the loader. CPU and GPU remain quiet during
 COPY/ZERO, and Display emits black timing without framebuffer requests.
-The static arena is zeroed, code/resources
+Only the allocated static prefix is zeroed; the unused static tail is untouched. Code/resources
 reach their final locations, and END plus all actual write responses produces
 load_done. Display then publishes black group markers without touching DRAM
 and acknowledges black timing at a frame origin. After cache cold-ready,

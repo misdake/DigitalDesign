@@ -129,6 +129,7 @@ end
 localparam integer FLASH_BASE=32'h100000;
 localparam integer FLASH_PACKAGE_SIZE=__FLASH_PACKAGE_SIZE__;
 localparam integer CODE_WORDS=__CODE_WORDS__;
+localparam integer STATIC_WORDS=__STATIC_WORDS__;
 localparam integer EXPECT_ERROR=__EXPECT_ERROR__;
 localparam integer EXPECT_HALT=__EXPECT_HALT__;
 reg [7:0]flash_image[0:FLASH_PACKAGE_SIZE-1];
@@ -205,8 +206,8 @@ always @(posedge clk)begin
   if(write_pending || dut.u_boot_loader.remaining!=0 || !dut.boot_load_done || !dut.display_started_ack)
    $fatal(1,"release before completed writes and Display start");
   for(n=32'h200000;n<32'h230000;n=n+1)if(memory[n]!==16'hd00d)$fatal(1,"boot wrote an unpresented framebuffer");
-  for(n=0;n<8192;n=n+1)if(memory[n]!==0)$fatal(1,"static zero %0d",n);
-  if(memory[8192]!==16'hd00d)$fatal(1,"clear exceeds fixed static arena");
+  for(n=0;n<STATIC_WORDS;n=n+1)if(memory[n]!==0)$fatal(1,"static zero %0d",n);
+  for(n=STATIC_WORDS;n<8192;n=n+1)if(memory[n]!==16'hd00d)$fatal(1,"clear exceeds allocated statics %0d",n);
   for(n=0;n<CODE_WORDS;n=n+1)if(memory[32'h70000+n]!==expected_code[n])$fatal(1,"code mismatch %0d",n);
   if(memory[32'h70000+CODE_WORDS]!==16'hd00d)$fatal(1,"copy exceeds code extent");
 __RESOURCE_CHECK__

@@ -16,26 +16,27 @@ fn fixture() -> Vec<u8> {
             Err(format!("unexpected module {name}"))
         })
         .unwrap();
+    let static_words = parsed.debug.static_data_end;
+    assert_eq!(static_words, 17);
     let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
     let bytes: Vec<u8> = program.words.iter().flat_map(|x| x.to_le_bytes()).collect();
-    pack_single_application(&bytes).unwrap()
+    pack_single_application(&bytes, static_words).unwrap()
 }
 #[test]
-fn cold_flash_clears_statics_and_framebuffers_and_executes_initializers() {
+fn cold_flash_clears_only_allocated_statics_and_executes_initializers() {
     let package = fixture();
     let mut system =
         CpuV3SystemSim::from_single_flash(&package, 0xd00d, VBlankMode::Manual).unwrap();
     assert_eq!(system.cpu().code_segment(), 7);
     assert_eq!(system.cpu().data_segments(), [0, 1, 2, 3]);
     assert_eq!(system.cpu().retired_words(), 0);
+    assert!(system.cpu_mut().physical_memory_mut()[..17]
+        .iter()
+        .all(|x| *x == 0));
     assert!(
-        system.cpu_mut().physical_memory_mut()[..SINGLE_BOOT_STATIC_WORDS]
+        system.cpu_mut().physical_memory_mut()[17..SINGLE_BOOT_STATIC_WORDS]
             .iter()
-            .all(|x| *x == 0)
-    );
-    assert_eq!(
-        system.cpu_mut().physical_memory_mut()[SINGLE_BOOT_STATIC_WORDS],
-        0xd00d
+            .all(|x| *x == 0xd00d)
     );
     let result = system.run(2000).unwrap();
     assert!(
@@ -85,15 +86,19 @@ fn generated_resource_constants_compile_before_the_image_is_packed() {
         },
     )
     .unwrap();
+    let static_words = parsed.debug.static_data_end;
     let compiled = rcc_backend::try_compile(parsed, &options, "main").unwrap();
     let code: Vec<u8> = compiled
         .words
         .iter()
         .flat_map(|w| w.to_le_bytes())
         .collect();
-    let image =
-        pack_application_resources(&code, &[BootResource::copy(0x100000, b"asset".to_vec())])
-            .unwrap();
+    let image = pack_application_resources(
+        &code,
+        static_words,
+        &[BootResource::copy(0x100000, b"asset".to_vec())],
+    )
+    .unwrap();
     let mut system = CpuV3SystemSim::from_single_flash(&image, 0xd00d, VBlankMode::Manual).unwrap();
     assert_eq!(
         system.cpu_mut().physical_memory_mut()[0x80000],
@@ -115,6 +120,7 @@ fn command_line_repack_uses_the_project_resource_files() {
     let package = fixture();
     let code = single_boot_code(&package).unwrap();
     std::fs::write(root.join("application.v3bin"), code).unwrap();
+    std::fs::write(root.join("application.static-words"), "17\n").unwrap();
     std::fs::write(root.join("mesh.bin"), b"asset").unwrap();
     std::fs::write(
         root.join("project.conf"),
@@ -138,6 +144,7 @@ fn command_line_repack_uses_the_project_resource_files() {
         std::fs::read(root.join("image.bin")).unwrap(),
         pack_application_resources(
             code,
+            17,
             &[
                 BootResource::copy(0x100000, b"asset".to_vec()),
                 BootResource::zero(0x4b0000, 32)
@@ -145,4 +152,27 @@ fn command_line_repack_uses_the_project_resource_files() {
         )
         .unwrap()
     );
+    // A raw binary alone cannot reveal its static allocation size.
+    std::fs::write(root.join("raw.v3bin"), code).unwrap();
+    let pack = |extra: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_cpu-v3-pack"))
+            .arg(root.join("raw.v3bin"))
+            .arg("-o")
+            .arg(root.join("raw.bin"))
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    assert!(!pack(&[]).status.success());
+    assert!(!pack(&["--static-words", "8193"]).status.success());
+    assert!(!pack(&["--static-words", "bad"]).status.success());
+    assert!(pack(&["--static-words", "0"]).status.success());
+    assert_eq!(
+        single_boot_commands(&std::fs::read(root.join("raw.bin")).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+    std::fs::write(root.join("raw.static-words"), "bad\n").unwrap();
+    assert!(!pack(&[]).status.success());
 }
