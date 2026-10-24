@@ -63,13 +63,14 @@ fn dui_panel(ui: u16, x: u16) -> bool {
     }
     return true;
 }
-pub fn dui_plot(value: i16) -> u16 {
+pub fn dui_plot(value: fix32) -> u16 {
     let mut absolute = value;
-    if absolute < 0 {
+    if absolute < fix32::zero() {
         absolute = -absolute;
     }
-    let delta = ((((absolute as u16) * 14) + 128) >> 8) * 2;
-    if value < 0 {
+    // Quantize only the final two-pixel sprite coordinate.
+    let delta = (absolute * fix32::from_int(14)).round().to_int() as u16 * 2;
+    if value < fix32::zero() {
         return 32 - delta;
     }
     return 32 + delta;
@@ -180,12 +181,20 @@ pub fn dui_record(s: Array<u16>, pressed: u16, released: u16, samples: u16) -> u
         || !dui_axis(ui, 167, s[6u16])
         || !dui_axis(ui, 184, s[3u16])
         || !dui_axis(ui, 193, s[4u16])
-        || !dui_signed(ui, 453, l.dir_x)
-        || !dui_signed(ui, 458, l.dir_y)
-        || !dui_axis(ui, 464, l.magnitude)
-        || !dui_signed(ui, 479, r.dir_x)
-        || !dui_signed(ui, 484, r.dir_y)
-        || !dui_axis(ui, 490, r.magnitude)
+        || !dui_signed(ui, 453, (l.dir_x * fix32::from_int(256)).round().to_int())
+        || !dui_signed(ui, 458, (l.dir_y * fix32::from_int(256)).round().to_int())
+        || !dui_axis(
+            ui,
+            464,
+            (l.magnitude * fix32::from_int(256)).round().to_int() as u16,
+        )
+        || !dui_signed(ui, 479, (r.dir_x * fix32::from_int(256)).round().to_int())
+        || !dui_signed(ui, 484, (r.dir_y * fix32::from_int(256)).round().to_int())
+        || !dui_axis(
+            ui,
+            490,
+            (r.magnitude * fix32::from_int(256)).round().to_int() as u16,
+        )
         || !dui_axis(ui, 504, dui_deadzone())
         || !dui_panel(ui, 6)
         || !dui_panel(ui, 32)

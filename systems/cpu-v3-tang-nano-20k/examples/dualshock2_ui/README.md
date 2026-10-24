@@ -15,11 +15,13 @@ The400x240 screen (800x480 physical output) shows:
 - Two64x64 stick panels with a circular reference, crosshair and dead-zone fill.
   Yellow2x2 dots show calibrated input before the radial dead zone and may lie
   outside the circle when the controller has square-shaped travel. Green dots
-  show processed motion after dead-zone rescaling and radial limiting; a green
-  dot covers yellow when they coincide. There is no square-to-disc angle warp.
+  show square-ray mapped motion after dead-zone rescaling; a green dot covers
+  yellow when they coincide. The mapping preserves direction.
   Points use a28pixel unit radius and symmetric two-pixel quantization, leaving
   room for the dot inside the30pixel reference ring.
-- Signed direction components and strength (`P`) in Q8:256 means1.0. These are
+- Signed direction components and strength (`P`) displayed with256 meaning1.0.
+  The helper returns native `fix32`; scaling and integer rounding happen only
+  when formatting these labels or calculating final dot coordinates. These are
   independent of the unmodified raw decimal values above. Direction is zero
   inside the dead zone; outside it is approximately unit length.
 - All16 button labels with gray/green indicators. Mapping, from bit0, is
@@ -27,7 +29,11 @@ The400x240 screen (800x480 physical output) shows:
 
 The reusable [stick helper](../../docs/input-sticks.md) supplies asymmetric
 min/center/max calibration, radial inner/outer thresholds, direction/strength and
-an optional four-way activation gate. This diagnostic adds an explicit policy:
+an optional four-way activation gate. The diagnostic prepares each configuration
+at reset and accepted calibration/dead-zone changes; `dui_left`/`dui_right` reuse
+those snapshots. Ordinary button-free service calls skip settings work. Call
+`dui_controls_reset()` before recording the first diagnostic panel, as `dui_run`
+does. This diagnostic adds an explicit policy:
 
 - D-pad UP/DOWN pressed edges adjust the shared inner dead zone by4/256, clamped
   to0..60. The `DZ` value and circular shaded center change together. Holding a

@@ -184,8 +184,8 @@ fn actual_recorded_panel_has_axes_buttons_and_bounded_stick_overlays() {
         ("disconnected", 0, [128, 128, 128, 128], 0),
     ] {
         let source = format!(
-            r#"mod gpu;mod panel;static S:Buf<u16,16>=Buf::new([0;16]);
-fn main(){{if gpu_init()!=GPU_IDLE{{halt(1);}}
+            r#"mod gpu;mod panel;mod stick_controls;static S:Buf<u16,16>=Buf::new([0;16]);
+fn main(){{dui_controls_reset();if gpu_init()!=GPU_IDLE{{halt(1);}}
 S[0u16]={connected};S[1u16]=115;S[2u16]={buttons};
 S[3u16]={rx};S[4u16]={ry};S[5u16]={lx};S[6u16]={ly};
 if dui_record(S.as_array(),18,256,52)==0{{halt(2);}}
@@ -255,7 +255,8 @@ dev_send(7,0,GPU_CB.command_words);dev_send(7,1,GPU_CB.object_words);halt(0x600d
                 };
                 if processed != 0 {
                     let length = dx.hypot(dy);
-                    let strength = ((length - 24.0 / 256.0) / (1.0 - 24.0 / 256.0)).clamp(0.0, 1.0);
+                    let strength = ((dx.abs().max(dy.abs()) - 24.0 / 256.0) / (1.0 - 24.0 / 256.0))
+                        .clamp(0.0, 1.0);
                     if length == 0.0 {
                         dx = 0.0;
                         dy = 0.0;
@@ -265,9 +266,8 @@ dev_send(7,0,GPU_CB.command_words);dev_send(7,1,GPU_CB.object_words);halt(0x600d
                     }
                 }
                 let plot = |v: f64| {
-                    let q = (v * 256.0).round() as i32;
-                    let d = ((q.abs() * 14 + 128) >> 8) * 2;
-                    (32 + if q < 0 { -d } else { d }) as u32
+                    let d = (v.abs() * 14.0).round() as i32 * 2;
+                    (32 + if v < 0.0 { -d } else { d }) as u32
                 };
                 let px = plot(dx);
                 let py = plot(dy);
@@ -307,15 +307,18 @@ fn diagnostic_controls_clamp_deadzone_and_calibrate_only_on_explicit_edges() {
         r#"mod stick_controls;static S:Buf<u16,16>=Buf::new([0;16]);
 fn check(ok:bool){if !ok{halt(0xbad);}}
 fn main(){dui_controls_reset();check(dui_deadzone()==24);S[0u16]=1;
+S[5u16]=140;S[6u16]=128;let edge=dui_left(S.as_array());check(edge.magnitude>fix32::zero());
+S[8u16]=16;dui_controls(S.as_array());let dead=dui_left(S.as_array());check(dead.magnitude==fix32::zero());
+S[8u16]=64;dui_controls(S.as_array());let restored=dui_left(S.as_array());check(restored.magnitude>fix32::zero());
 S[3u16]=126;S[4u16]=130;S[5u16]=124;S[6u16]=132;
 S[8u16]=16;dui_controls(S.as_array());check(dui_deadzone()==28&&S[8u16]==16);
 S[8u16]=0;dui_controls(S.as_array());check(dui_deadzone()==28);
 S[8u16]=80;dui_controls(S.as_array());check(dui_deadzone()==28);
 let mut i:u16=0;S[8u16]=16;while i<30{dui_controls(S.as_array());i+=1;}check(dui_deadzone()==60);
 i=0;S[8u16]=64;while i<30{dui_controls(S.as_array());i+=1;}check(dui_deadzone()==0);
-S[8u16]=1;dui_controls(S.as_array());let mut l=dui_left(S.as_array());let r=dui_right(S.as_array());check(l.cal_x==0&&l.cal_y==0&&r.cal_x==0&&r.cal_y==0);
-S[5u16]=255;dui_controls(S.as_array());S[5u16]=124;l=dui_left(S.as_array());check(l.cal_x==0);
-S[8u16]=8;dui_controls(S.as_array());check(dui_deadzone()==24);l=dui_left(S.as_array());check(l.cal_x==-8&&l.cal_y==8);
+S[8u16]=1;dui_controls(S.as_array());let mut l=dui_left(S.as_array());let r=dui_right(S.as_array());check(l.cal_x==fix32::zero()&&l.cal_y==fix32::zero()&&r.cal_x==fix32::zero()&&r.cal_y==fix32::zero());
+S[5u16]=255;dui_controls(S.as_array());S[5u16]=124;l=dui_left(S.as_array());check(l.cal_x==fix32::zero());
+S[8u16]=8;dui_controls(S.as_array());check(dui_deadzone()==24);l=dui_left(S.as_array());check(l.cal_x==fix32::from_words(63488,65535)&&l.cal_y>fix32::from_words(2060,0)&&l.cal_y<fix32::from_words(2070,0));
 S[8u16]=16;dui_controls(S.as_array());S[0u16]=0;S[8u16]=8;dui_controls(S.as_array());check(dui_deadzone()==28);
 halt(0x600d);}"#,
         "main",

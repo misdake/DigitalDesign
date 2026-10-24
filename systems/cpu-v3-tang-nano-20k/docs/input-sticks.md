@@ -6,27 +6,38 @@ validity. Positive X points right and positive Y points down.
 
 ## Configuration and results
 
-`StickConfig` contains `min_x/center_x/max_x`, `min_y/center_y/max_y`, and radial
+`StickConfig` contains `min_x/center_x/max_x`, `min_y/center_y/max_y`, and mapped radial
 `inner/outer` thresholds. Each axis must satisfy `min < center < max <= 255`;
 thresholds must satisfy `0 <= inner < outer <= 256`. `stick_default()` selects
-0/128/255 on each axis and inner24/outer256. Thresholds and results use Q8:
+0/128/255 on each axis and inner24/outer256. Configuration thresholds use Q8:
 256 represents 1.0, so the default inner dead zone is 9.375% of full radius.
+Result components use the native FPU Q16.16 `fix32` type, with 1.0 representing
+full travel; there is no intermediate Q8 result quantization.
 
-`stick_read(config, raw_x, raw_y, connected)` returns `StickSample`:
+`stick_prepare(config)` validates configuration and returns a `StickPrepared`
+snapshot. It stores endpoint/center values, four refined FPU axis-span
+reciprocals, the FPU inner threshold and refined range reciprocal. Rebuild it
+explicitly after changing calibration or dead-zone settings. A rejected
+configuration produces `valid=0`; it cannot become valid without rebuilding.
+Changing the source `StickConfig` does not change an existing snapshot.
+
+`stick_read(prepared, raw_x, raw_y, connected)` returns `StickSample`:
 
 | Field | Meaning |
 |---|---|
-| `cal_x`, `cal_y` | Signed calibrated components before radial processing, each -256..256 |
-| `x`, `y` | Signed motion vector after dead zone, rescaling and radial limiting |
+| `cal_x`, `cal_y` | Signed calibrated components before square-ray processing, each approximately -1..1 |
+| `x`, `y` | Signed motion vector after square-ray mapping and dead-zone rescaling |
 | `dir_x`, `dir_y` | Approximately unit-length direction outside the dead zone |
-| `magnitude` | Processed strength, 0..256 |
+| `magnitude` | Processed strength, 0..1 (`fix32`) |
 | `valid` | 1 for connected, valid configuration and eight-bit inputs; otherwise 0 |
 
 Invalid or disconnected input returns all zeros. Valid input inside the inclusive
 inner dead zone retains its calibrated components and validity, but motion,
-direction and strength are zero. Outside the geometric dead zone, direction is
-available even if a very small processed strength rounds to zero in Q8.
-`stick_fixed(component)` converts a Q8 value to the CPU's Q16.16 `fix32` type.
+direction and strength are zero. Outside the mapped dead zone, direction is
+available even for very small processed strength. All seven numeric fields retain
+native FPU precision; `valid` alone is a `u16`. Games consume these values directly.
+Only presentation converts to integers: the diagnostic quantizes final pixel
+coordinates and formats its numeric labels. There is no Q8 conversion helper.
 
 `stick_set_center(config, x, y)` explicitly updates both centers, only when the
 configuration and both new centers are valid; rejection changes neither axis.
@@ -41,38 +52,63 @@ Below center, an axis uses `(raw-center)/(center-min)`; above center it uses
 The asymmetric spans preserve exact center and endpoints without discarding the
 positive endpoint of an eight-bit axis.
 
-For calibrated vector `v`, radius `r=length(v)` and `r > inner`:
+For calibrated vector `v=(x,y)`, let `r=length(v)` and
+`t=max(abs(x),abs(y))`. The ray from the center through `v` meets the unit
+square at distance `r/t`; the fraction of that travel already covered is
+`r/(r/t)=t`. For `t > inner`:
 
 ```text
 direction = v / r
-strength  = clamp((r - inner) / (outer - inner), 0, 1)
+strength  = clamp((t - inner) / (outer - inner), 0, 1)
 motion    = direction * strength
 ```
 
-Computation uses existing CPU Q16.16 arithmetic, reciprocal and reciprocal square
-root instructions with one Newton refinement, then rounds/clamps Q8 results.
-These are finite-precision vectors; rounded components need not lie exactly on
-the mathematical unit circle. The independent numeric tests cover 2304 samples
-over full axial travel, a two-dimensional grid, asymmetric calibration and a
-reduced outer threshold, allowing two Q8 codes per component.
+With inner0/outer1, each ray's square boundary maps to the circle, angles remain
+unchanged, and every fractional position along that ray preserves its strength.
+A half-travel diagonal is half strength; it does not saturate early as it would
+under an uncorrected Euclidean-radius clamp. Inner/outer are radii *after* this
+square-to-disc mapping. The inclusive inner dead zone is therefore
+`max(abs(x),abs(y)) <= inner` in the calibrated square. A reduced outer threshold
+intentionally reaches full strength early along every ray, not just diagonals.
 
-A square-shaped raw travel envelope remains visible in calibrated components.
-Only motion length saturates at the outer radius; angles are preserved. There is
-no square-to-disc warp, smoothing, axis snapping or independent per-axis dead
-zone. The radial dead-zone/rescaling pattern also appears in Microsoft's
-[XInput guidance](https://learn.microsoft.com/en-us/windows/win32/xinput/getting-started-with-xinput#dead-zone);
-the thresholds here are this software's configuration, not XInput constants.
+Calibrated components retain the raw square envelope for diagnostics. There is
+no smoothing, axis snapping or independent per-axis dead zone. Computation uses
+existing CPU Q16.16 arithmetic. Reciprocal Newton refinement runs only during
+configuration preparation. The sample path uses the existing RSQRT seed directly,
+with a two-lane DOTSTORE and vector multiply, without a Newton correction or
+per-sample1.5/0.5 constants. Before the length calculation, both calibrated components are
+multiplied by64: this leaves the normalized direction unchanged and avoids losing
+small squared lengths in Q16.16. The largest squared length is8192, within range.
+Finite precision means components need not lie exactly on the ideal unit circle.
+Independent floating-point checks cover2304 samples across axial travel, a
+two-dimensional grid, asymmetric calibration and reduced outer travel, plus
+explicit fractional-ray cases; tolerance is1/128 per component. A separate check
+requires fractional result bits below the former Q8 precision to survive further
+FPU arithmetic. An exhaustive compiled sweep also covers all65536 default axis
+pairs with a zero dead zone, checking the same component error and unit-disc
+bounds, including the shortest nonzero vectors.
+
+The valid `stick_read` path stays in one function and returns a struct literal
+directly into the caller's destination. It checks connection, raw-byte range
+and prepared validity; endpoint coefficients are loaded only for interior,
+noncentered axes. Scalar ABS avoids branch-and-copy absolute values. The raw
+configuration is not revalidated and no reciprocal is computed per sample.
+There are no hot-path helper calls or intermediate aggregate copies. Runtime
+`fix32` fields occupy two16-bit words and use lossless FLD/FST access. Adjacent
+full-vector lane results can use one FSTV; storing a result does not quantize it.
+Prepared storage is19words and each sample is15words. The caller owns both
+lifetimes; preparation belongs to settings changes, not to every frame.
 
 ## Optional digital direction
 
 `stick_cardinal(sample, previous, enter, release)` returns 0 neutral, 1 right,
-2 down, 3 left or 4 up. Thresholds use processed Q8 strength and require
-`0 <= release < enter <= 256`. At or below release it returns neutral; below
+2 down, 3 left or 4 up. Thresholds are `fix32` processed strength and require
+`0 <= release < enter <= 1`. At or below release it returns neutral; below
 enter it retains a valid previous direction; at or above enter it selects the
 dominant direction component, with X winning equal-component ties. Invalid input
 or thresholds return neutral. The caller owns the previous value. This is
 activation hysteresis, without angular hysteresis or repeat timing.
 
-The [circular DS2 diagnostic](../examples/dualshock2_ui/README.md) demonstrates
+The [circular DS2 diagnostic](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md) demonstrates
 raw versus processed travel and explicit center/dead-zone adjustment. It does
 not assign game actions to this shared helper.
