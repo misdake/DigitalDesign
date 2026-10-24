@@ -12,6 +12,31 @@ can be replaced after its own imports, scan and arithmetic returns drain;
 previously copied quads remain owned by downstream processing. This permits
 triangle overlap without changing global uniforms while old fragments are live.
 
+## Conservative meshlet rejection
+
+Before V admission, the meshlet controller tests the quantizer's loose cube:
+`origin[k] <= p[k] <= origin[k] + (1023 << quant_shift)`. It needs no additional
+metadata or payload scan. Supporting corners give maximum camera Z and maximum/
+minimum camera X through the existing V/T MAC. Y participates in every dot
+product; there is no independent vertical-plane test.
+
+The optimization requires signed25 origins and `quant_shift <= 14`. Each tested
+matrix row requires signed20 nontranslation coefficients and signed30 translation.
+These bounds keep every corner transform within signed32 F16 and the MAC within
+signed54. Ineligible input continues through normal V/T without rejection.
+
+Let Z be `floor(max_raw_Z / 65536)`. Z<=0 rejects the whole meshlet. Otherwise
+reject left when `max_raw_X + 65536*Z < -2^32`, or right when
+`min_raw_X - 65536*Z > 2^32`. This uses a deliberately wider `|X|<=Z` cone than
+the actual viewport, plus one camera-unit margin for the existing `scale_s`
+truncation. Crossing or uncertain cases remain. The loose cube can retain a
+meshlet whose actual vertices are all behind; this is conservative admission,
+not polygon clipping or tight vertex-derived bounds.
+
+Rejected meshlets emit no vertices or T records and do not toggle the attribute
+epoch. DMA remains unchanged, so this saves compute rather than input traffic.
+Retained meshlets execute the original vertex/triangle arithmetic and ROM words.
+
 ## Vertex transform
 
 For component k, decode source position and normal as integer codes:
@@ -315,16 +340,13 @@ executes all V before T; it is not duplicated.
 Epochs alternate at a validated meshlet boundary. With at most two live epochs,
 the alternate epoch is free exactly when the T FIFO is empty or its head belongs
 to the current epoch. FIFO order and item15 retirement establish this condition;
-there are no per-epoch reference counters. An empty/rejected meshlet can make
-this test conservative, but cannot permit early overwrite. Input-page identity
-is independent of attribute epoch. While the controller is idle, this condition
-can only become true, so admission latches it on an enabled edge and clears the
-latch on start acceptance. `meshlet_ready` therefore has no combinational path
-from the FIFO head to the enclosing start logic. Availability becoming true can
-cost one enabled admission edge. A validated header then resets the V count and
-toggles the epoch directly; the invariant is checked in simulation instead of
-repeating the admission predicate in the reset fanout. Full frontend idle still
-requires the complete T FIFO and R/I pipeline to drain.
+there are no per-epoch reference counters. Input-page identity is independent
+of attribute epoch. Header/bounds admission latches readiness on an enabled idle
+edge without waiting for that epoch. A rejected meshlet can therefore complete
+while old indexed exports are blocked. A retained meshlet waits at V admission,
+then resets the V count and toggles the epoch before starting V. This preserves
+the indexed attributes and epoch color of old queued triangles. Full frontend
+idle still requires the complete T FIFO and R/I pipeline to drain.
 
 `TRIANGLE_SLOT_BITS` selects power-of-two depths from 2 through 16 at elaboration.
 Two attribute epochs reserve the upper half of the export-low memory; a 32-slot

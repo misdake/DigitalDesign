@@ -6,4 +6,5 @@ pub mod source_record;
 pub mod vliw;
 pub mod vliw_dma;
 
+pub mod meshlet_bounds;
 mod vliw_numeric;

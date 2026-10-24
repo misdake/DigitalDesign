@@ -36,8 +36,9 @@ wire ready,busy,done,drained,dma_ready,packet_valid,word_valid,emit_valid;
 wire[3:0]error;wire[6:0]published_vertices;wire[35:0]descriptor,emit_data;
 wire[4:0]word_index;wire[53:0]word_data;wire[9:0]emit_addr;
 shared_meshlet dut(.*);
-localparam FIRST=@FIRST@,TOTAL=FIRST+4,STREAM=@STREAM@;
-reg[35:0]expected_v[0:44],expected_d[0:TOTAL-1];reg[53:0]expected_w[0:TOTAL*16-1];
+localparam FIRST=@FIRST@,TOTAL=FIRST+@EXTRA@,STREAM=@STREAM@,REJECT_THIRD=@REJECT_THIRD@;
+localparam VWORDS=REJECT_THIRD?30:45;
+reg[35:0]expected_v[0:VWORDS-1],expected_d[0:TOTAL-1];reg[53:0]expected_w[0:TOTAL*16-1];
 integer cycle=0,vi=0,pi=0,wi=0,di=0,overlap=0,reuse_blocked=0,paused=0;
 integer task_id=0,dm,rc,a,j;reg[63:0]value;reg[1023:0]path;
 integer concurrent_attributes=0;
@@ -106,20 +107,25 @@ initial begin
  completed(2);
  @(negedge clk);packet_ready=0;word_ready=0;
  if(overlap!=15||dut.core.count<2)$fatal(1,"second V/T did not overlap old T export");
- // Reusing the first attribute epoch is forbidden even though the V/T ALU is idle.
- repeat(23)begin tick();if(ready)$fatal(1,"third meshlet can overwrite first epoch");reuse_blocked=reuse_blocked+1;end
+ // Header/bounds may run early; only V admission owns an attribute epoch.
+ repeat(23)begin tick();if(dut.core.meshlet_ready)$fatal(1,"third meshlet can overwrite first epoch");reuse_blocked=reuse_blocked+1;end
+ load_task(2);launch();
+ if(REJECT_THIRD)begin
+  completed(3);
+  if(vi!=30||dut.core.meshlet_ready||dut.core.count<2)$fatal(1,"culled meshlet changed retained epoch");
+ end else repeat(100)begin
+  tick();if(vi!=30||di!=2||!busy||dut.core.meshlet_ready)$fatal(1,"bounds must wait before reusing first attribute epoch");
+ end
  @(negedge clk);packet_ready=1;word_ready=1;
  // Reuse becomes legal immediately after the first epoch's last indexed word.
  while(wi<FIRST*16)tick();
- // Admission latches availability on the next enabled idle edge. With one
- // isolated CE0 edge every seven clocks, two clocks cover that paid edge.
- tick();tick();if(!ready||drained)$fatal(1,"epoch release did not preserve queued second meshlet");
+ if(drained)$fatal(1,"epoch release lost queued second meshlet");
  @(negedge clk);packet_ready=0;word_ready=0;
- load_task(2);launch();completed(3);
- if(overlap<30)$fatal(1,"third V did not overlap old second meshlet");
+ completed(3);
+ if(!REJECT_THIRD&&overlap<30)$fatal(1,"third V did not overlap old second meshlet");
  @(negedge clk);packet_ready=1;word_ready=1;
  while(!drained)tick();
- if(vi!=45||pi!=TOTAL||wi!=TOTAL*16||di!=3||paused==0)$fatal(1,"completion counts");
+ if(vi!=VWORDS||pi!=TOTAL||wi!=TOTAL*16||di!=3||paused==0)$fatal(1,"completion counts");
  if(STREAM&&concurrent_attributes==0)$fatal(1,"missing concurrent attribute read/write");
  $display("PASS MESHLET PINGPONG cycles=%0d Vwords=%0d T=%0d words=%0d overlapV=%0d concurrentAttributes=%0d reuseBlocked=%0d CE0=%0d",cycle,vi,pi,wi,overlap,concurrent_attributes,reuse_blocked,paused);
  $finish;
@@ -136,7 +142,9 @@ def main():
     ap.add_argument('--native', action='store_true')
     ap.add_argument('--full-queue', action='store_true')
     ap.add_argument('--stream-reads', action='store_true')
+    ap.add_argument('--reject-third', action='store_true')
     args = ap.parse_args()
+    assert not (args.reject_third and args.stream_reads), 'Separate retained-epoch rejection and streaming probes'
     args.full_queue = args.full_queue or args.stream_reads
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -154,15 +162,22 @@ def main():
         for j, v in enumerate(instance['vertices']):
             v[1] = ((40+i*31+j*7) & 1023) | (((-70+i*11-j*5) & 1023) << 10) | ((220+i*17) << 20)
             v[2] = 0x123456 + i*0x231107 + j*0x010203
+        rejected = args.reject_third and i == 2
+        if rejected:
+            instance['uniform'][11] -= 20*65536
+            instance['scale_s'] = 5
         meta, packets = oracle.prepare(instance, out / f'task{i}')
-        assert meta['vertices'] == 3 and meta['packets'] == triangle_count
-        vectors += (out / f'task{i}/vertices.hex').read_text().splitlines()
-        descriptors += (out / f'task{i}/descriptors.hex').read_text().splitlines()
-        words += (out / f'task{i}/words.hex').read_text().splitlines()
+        assert meta['vertices'] == 3 and meta['packets'] == (0 if rejected else triangle_count)
+        if not rejected:
+            vectors += (out / f'task{i}/vertices.hex').read_text().splitlines()
+            descriptors += (out / f'task{i}/descriptors.hex').read_text().splitlines()
+            words += (out / f'task{i}/words.hex').read_text().splitlines()
     for name, values in [('vertices', vectors), ('descriptors', descriptors), ('words', words)]:
         (out / (name+'.hex')).write_text('\n'.join(values)+'\n')
     (out / 'tb.v').write_text(TB.replace('@FIRST@', '16' if args.full_queue else '2')
-                             .replace('@STREAM@', str(int(args.stream_reads))))
+                             .replace('@STREAM@', str(int(args.stream_reads)))
+                             .replace('@EXTRA@', '2' if args.reject_third else '4')
+                             .replace('@REJECT_THIRD@', str(int(args.reject_third))))
     export = args.export.resolve()
     (out / 'dut.v').write_bytes(export.read_bytes())
     command = [os.environ.get('IVERILOG_EXE', 'iverilog'), '-g2012', '-s', 'tb', '-o', str(out / 'sim.vvp')]
@@ -176,6 +191,7 @@ def main():
         (out / (label+'.log')).write_bytes(result.stdout+result.stderr)
         assert result.returncode == 0, (result.stdout+result.stderr).decode(errors='replace')[-3000:]
     receipt = dict(status='pass', native=args.native, full_queue=args.full_queue, stream_reads=args.stream_reads,
+                   reject_third=args.reject_third,
                    export_sha256=hashlib.sha256(export.read_bytes()).hexdigest(),
                    log=result.stdout.decode(errors='replace'))
     (out / 'receipt.json').write_text(json.dumps(receipt, indent=2))
