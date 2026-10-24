@@ -17,8 +17,9 @@ module rp_prepare_core(
  reg sign0,nonzero0,empty;reg[1:0]eligible;
  reg search_main,dual_search,aux_pending;
  reg[2:0]search_bit;reg[4:0]prefix;reg[3:0]aux_prefix;
- wire[35:0]u;wire[5:0]op=u[5:0];wire[5:0]pc=op;reg[5:0]next_pc;
- assign operation=op;assign import_row=u[24:21];assign import_kind=u[14:12];
+ wire[35:0]u;reg[5:0]issued_op;reg[5:0]next_pc;
+ wire[5:0]op=u[35]?issued_op:6'd0;wire[5:0]pc=op;
+ assign operation=op;assign import_row=u[18:15];assign import_kind=u[8:6];
  wire last_pair=index==2,last_n=axis&&index==2;
  wire[1:0]next_index=index==2?2'd0:index+1'b1;
  wire next_axis=index==2?!axis:axis;
@@ -48,8 +49,8 @@ module rp_prepare_core(
   (op==17&&!aux_fail&&!search_main&&!aux_search)||
   (op==20&&search_bit==0&&!empty&&!main_empty);
  always @*begin
-  next_pc=u[11:6];
-  if(op>=48)next_pc=input_take?u[11:6]:op;
+  next_pc=u[5:0];
+  if(op>=48)next_pc=input_take?u[5:0]:op;
   case(op)
    23:next_pc=normalize_wait?6'd23:6'd24;
    3:begin if(!axis)next_pc=0;else if(eligible==0)next_pc=21;else if(!dual_math)next_pc=41;end
@@ -82,9 +83,15 @@ module rp_prepare_core(
   // attribute bank remains the sequential axis, outside this ROM address.
   if(next_pc==3)fetch_axis=eligible[0];
  end
- rp_prepare_program program_store(clk,reset,ce,(start||active)&&!reset,
-  start?9'd48:{fetch_index,fetch_axis,next_pc},u);
- wire aux_issue=op==5||op==7||op==10||op==12||op==15||op==19;
+ wire program_read=(start||active)&&!reset;
+ wire[8:0]program_address=start?9'd48:{fetch_index,fetch_axis,next_pc};
+ // The address owner and ROM Q advance on the same enabled edge.
+ always @(posedge clk)begin
+  if(reset)issued_op<=0;
+  else if(ce&&program_read)issued_op<=program_address[5:0];
+ end
+ rp_prepare_program program_store(clk,reset,ce,program_read,program_address,u);
+ wire aux_issue=u[34];
  wire c_axis=axis^aux_issue;
  wire search_start=(op==16&&!dual_math&&endpoint_search)||(op==17&&(search_main||aux_search));
  wire search_axis=op==17&&!search_main?!axis:axis;
@@ -99,15 +106,11 @@ module rp_prepare_core(
  wire[2:0]main_search_bit=search_axis?y_search_bit:x_search_bit;
  wire[2:0]paired_search_bit=y_search_bit+3'd1;
  wire[2:0]initial_search_bit=(op==17&&search_main&&aux_search&&paired_search_bit>main_search_bit)?paired_search_bit:main_search_bit;
- wire[4:0]a_code=u[16:12];wire[3:0]c_code=u[24:21];
- reg[3:0]port_enable;
- always @*case(u[27:25])
-  0:port_enable=0;1:port_enable=2;2:port_enable=3;3:port_enable=4;
-  4:port_enable=6;5:port_enable=12;6:port_enable=13;7:port_enable=15;
- endcase
+ wire[4:0]a_code=u[10:6];wire[3:0]c_code=u[18:15];
+ wire[3:0]port_enable=u[22:19];
  reg[6:0]ar;reg[3:0]br,cr;
  always @*begin
-  ar={2'd0,a_code};br=u[20:17];cr=c_code;
+  ar={2'd0,a_code};br=u[14:11];cr=c_code;
   if(a_code>=16&&a_code<=18)begin
    case(a_code[1:0])
     0:ar={2'b01,shift0};1:ar={2'b01,shift1};default:ar={2'b01,shift2};
@@ -136,21 +139,18 @@ module rp_prepare_core(
  assign attr0_take=active&&op==1&&!reset;
  assign attr1_take=active&&op==2&&!reset;
  assign wide_valid=active&&port_enable[3]&&(!aux_issue||(op==19?search_aux:dual_math))&&!(op==39&&last_n)&&!reset;
- assign wide_asign=u[28];
- wire[1:0]b_dest=u[31:30];wire[2:0]c_dest=u[35:33];
- assign b_we=active&&b_dest!=0&&(op!=9||dual_math)&&!reset;
- assign b_wa=b_dest==3?4'd15:{3'd0,b_dest[1]};
- assign b_wd=b_dest==3?{{18{result[34]}},result[34:17]}:result[35:0];
- assign c_we=active&&c_dest!=0&&(c_dest<6||(op==18?aux_pending:dual_math))&&!reset;
- reg[3:0]c_row;
- always @*case(c_dest)
-  1,6:c_row=0;2,7:c_row=1;3:c_row=2;4:c_row=3;default:c_row=11;
- endcase
- assign c_wa=c_row;
+ assign wide_asign=u[23];
+ // ROM bits name physical destinations and data windows directly.
+ wire b_short=u[27];
+ assign b_we=active&&u[25]&&(op!=9||dual_math)&&!reset;
+ assign b_wa={ {3{b_short}},(b_short||u[26]) };
+ assign b_wd=b_short?{{18{result[34]}},result[34:17]}:result[35:0];
+ assign c_we=active&&u[28]&&(!u[33]||(op==18?aux_pending:dual_math))&&!reset;
+ assign c_wa=u[32:29];
  assign c_wd=result;
  assign bound_valid=active&&(op==21||op==22)&&!reset;
  assign bound_empty=empty||op==22;
- assign attr_send=active&&u[29]&&!reset;
+ assign attr_send=active&&u[24]&&!reset;
  assign attr_index=index;assign attr_bank=axis;
  always @(posedge clk)begin
   if(reset)begin active<=0;done<=0;axis<=0;index<=0;d_kind<=0;aux_kind<=0;
