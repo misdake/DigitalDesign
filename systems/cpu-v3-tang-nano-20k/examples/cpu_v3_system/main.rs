@@ -236,7 +236,7 @@ impl Module for CpuV3System {
                 "__BOOT_MAX_CYCLES__",
                 &if GPU_COLD_TEST.with(Cell::get) {
                     // Focused Device4 fixture: real SPI/code/static loading,
-                    // pre-zeroed video memory and an independent video pre-roll.
+                    // virtual-black startup and an independent video pre-roll.
                     let words: usize = cpu_v3_tang_nano_20k::boot::single_boot_commands(&package)
                         .unwrap()
                         .iter()
@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bounded cold SPI/code/static load, pre-zeroed video, actual CPU Device4 and native GPU"]
+    #[ignore = "bounded cold SPI/code/static load, virtual-black Display, actual CPU Device4 and native GPU"]
     fn cold_boot_cpu_submits_gpu_commands_in_verilog() {
         let source = r#"
             fn main() {
@@ -330,7 +330,7 @@ mod tests {
             .flat_map(u32::to_le_bytes)
             .collect();
         commands.resize(128, 0);
-        let mut package = cpu_v3_tang_nano_20k::boot::pack_application_resources(
+        let package = cpu_v3_tang_nano_20k::boot::pack_application_resources(
             &code,
             static_words,
             &[cpu_v3_tang_nano_20k::boot::BootResource::copy(
@@ -338,20 +338,8 @@ mod tests {
             )],
         )
         .unwrap();
-        // This test checks cold CPU/Device4 admission, not bulk VRAM clearing.
-        // Preserve the packer's exact code/resource bytes and omit only its
-        // final framebuffer ZERO; the testbench supplies that memory fixture.
-        let decoded = cpu_v3_tang_nano_20k::boot::single_boot_commands(&package).unwrap();
-        let last = decoded.last().unwrap();
-        let framebuffer = cpu_v3_tang_nano_20k::boot::BOOT_FRAMEBUFFER_BYTES;
-        assert_eq!(
-            (last.address, last.length),
-            (framebuffer.start, framebuffer.len())
-        );
-        assert!(last.payload.is_none());
-        let zero_header = package.len() - 16;
-        package.drain(zero_header..zero_header + 8);
-        cpu_v3_tang_nano_20k::boot::single_boot_commands(&package).unwrap();
+        // Keep the production packer's complete byte stream. Virtual-black
+        // startup leaves both framebuffer slots poisoned until first present.
         TEST_IMAGE.with(|x| *x.borrow_mut() = Some((package, false, 0x5a36)));
         GPU_COLD_TEST.with(|x| x.set(true));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();

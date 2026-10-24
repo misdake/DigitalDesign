@@ -626,13 +626,13 @@ board success at this point is empirical overclock evidence, not a PVT guarantee
 
 The focused `cold_boot_cpu_submits_gpu_commands_in_verilog` fixture checks real
 SPI code/static loading, cold cache/core release, Device4 submission and the
-production native GPU. It pre-seeds the packer's framebuffer ZERO effect and
-omits that one bulk command; code and resource bytes still come from the packer.
+production native GPU. It executes the production packer's complete stream;
+both framebuffer slots retain poisoned memory under virtual-black startup.
 The independent video clock runs before the logic clock, selecting a bounded
 startup phase without forcing Display state or acknowledgement. Display must
 publish both groups and reach its natural frame origin. This short fixture is
-not complete framebuffer-zero or physical-pin evidence; the separate full-Flash
-fixtures retain their original boot images.
+not full-scene or physical-pin evidence; the native controller/pad and full
+Display pixel/fault tests qualify their separate boundaries.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus

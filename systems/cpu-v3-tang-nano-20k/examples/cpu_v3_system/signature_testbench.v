@@ -185,8 +185,6 @@ end
 
 initial begin
  for(n=0;n<4194304;n=n+1)memory[n]=16'hd00d;
- if(GPU_COLD_FIXTURE)
-  for(n=__FRAMEBUFFER_START_WORD__;n<__FRAMEBUFFER_END_WORD__;n=n+1)memory[n]=0;
 __FLASH_PACKAGE_INIT__
 __CODE_INIT__
  repeat(11)@(negedge clk);sdram_clock_ready=0;
