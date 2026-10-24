@@ -62,7 +62,7 @@ microsecond source replaces a separate controller-specific timer proposal.
 
 RCC programs include `device_abi` and `time`, then call `time_milliseconds()`
 and `time_elapsed_ms(start, end)`. `time_microseconds()` and
-`time_clear_microseconds()` access the bounded interval. The latter performs unsigned 16-bit modular
+`time_clear_microseconds()` access the bounded interval. `time_elapsed_ms` performs unsigned 16-bit modular
 subtraction; it does not detect missed full wraps or validate a deadline.
 
 The architecture-only `boot::SystemControlDevice` exposes

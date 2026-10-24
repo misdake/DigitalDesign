@@ -328,7 +328,7 @@ fn production_demo_encodes_only_visible_digits_and_skips_invalid_interval() {
  let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
  let mut state:Buf<u16,4>=Buf::new([0,0,1,0]);let before=GPU_CB.command_words;
  check(demo_ui_record(p,view_of(&mut a),state.as_array()));check(GPU_CB.command_words==before);
- state[1u16]=17;state[3u16]=1;check(demo_ui_record(p,view_of(&mut a),state.as_array()));
+ state[1u16]=17000;state[3u16]=1;check(demo_ui_record(p,view_of(&mut a),state.as_array()));
  check(GPU_CB.command_words==before+10);
  state[1u16]=0;check(demo_ui_record(p,view_of(&mut a),state.as_array()));
  check(GPU_CB.command_words==before+16);
@@ -339,13 +339,15 @@ fn production_demo_encodes_only_visible_digits_and_skips_invalid_interval() {
     use gpu_v2::system::vliw_command::Command as C;
     assert_eq!(
         command(11),
-        u32::from_le_bytes(C::ui_grid_range(276, 52, 54).unwrap().encode())
+        u32::from_le_bytes(C::ui_grid_range(276, 52, 56).unwrap().encode())
     );
     assert_eq!(
         command(14),
-        u32::from_le_bytes(C::ui_grid_range(276, 52, 53).unwrap().encode())
+        u32::from_le_bytes(C::ui_grid_range(276, 52, 55).unwrap().encode())
     );
     assert_eq!(word(0x4a0080 + 52), 0x3731); // "17"
-    assert_eq!(word(0x4a0400 + 52), 0xff30); // "0", adjacent byte masked
+    assert_eq!(word(0x4a0080 + 54), 0x302e); // ".0"
+    assert_eq!(word(0x4a0400 + 52), 0x2e30); // "0."
+    assert_eq!(word(0x4a0400 + 54), 0xff30); // "0", adjacent byte masked
     assert_eq!(word(0x4a0080 + 50), 0); // no full-grid FF initialization
 }
