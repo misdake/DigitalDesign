@@ -62,6 +62,11 @@ Software gaps may lengthen high CLK/ATT setup, never shorten edges or guard.
 DAT is sampled two main-clock stages after the pin; an external controller must
 settle before the sampling edge with that synchronizer delay allowed.
 
+The shared five-bit counter increments for both phases. Eight sampled bits
+advance it from 0 to 8; guard then advances through 31 and wraps to 7 before
+publishing the result on the next half-period tick. Both phases test the same
+terminal value7, sharing arithmetic without changing the 32-tick guard.
+
 The RTL declares 31 state bits: shift8, divider8, shared bit/guard count5,
 phase3, CLK/CMD/ATT3, DAT synchronizer2, result-valid1, rejected1 (31 bits total).
 It contains no memory primitive, DSP, general multiply/divide or new clock

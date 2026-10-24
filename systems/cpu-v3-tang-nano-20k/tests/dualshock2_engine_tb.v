@@ -52,7 +52,7 @@ initial begin
   // Busy writes must not restart or consume; rejected is sticky.
   send(1,~tx);send(0,2);send(2,1);
   idle();if(result!==14)$fatal(1,"busy completion/rejection status %h",result);
-  if(cycles-last_rise<6912)$fatal(1,"early valid");
+  if(cycles-last_rise!=6912)$fatal(1,"guard completion must be exactly 6912 clocks");
   read(2);if(result!==reply)$fatal(1,"DAT shift/sync %h %h",result,reply);
   saved=result;
   // CPU is stopped for longer than a complete byte; result must persist.

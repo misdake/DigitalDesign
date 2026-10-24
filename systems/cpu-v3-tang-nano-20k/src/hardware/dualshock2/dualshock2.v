@@ -13,6 +13,8 @@ localparam IDLE=3'd0, SETUP=3'd1, FALL=3'd2, RISE=3'd3,
            GUARD=3'd4, RELEASE=3'd5;
 reg [2:0] state=IDLE;
 reg [7:0] divider=0;
+// Bits use 0..7. Guard starts at 8 and wraps through 7: exactly 32 ticks.
+// Both phases share increment and terminal comparison; no decrement datapath.
 reg [4:0] count=0;
 reg [7:0] shift=0;
 reg result_valid=0, rejected=0;
@@ -44,11 +46,11 @@ always @(posedge clk) begin
      FALL: begin ds2_clk<=0;cmd<=shift[0];state<=RISE;end
      RISE: begin
       ds2_clk<=1; shift<={dat_sync,shift[7:1]};
-      if(count==7) begin state<=GUARD;count<=31;end
+      if(count==7) begin state<=GUARD;count<=count+1'b1;end
       else begin count<=count+1'b1;state<=FALL;end
      end
-     GUARD: if(count==0)begin state<=IDLE;result_valid<=1;cmd<=1;end
-            else count<=count-1'b1;
+     GUARD: if(count==7)begin state<=IDLE;result_valid<=1;cmd<=1;end
+            else count<=count+1'b1;
      RELEASE: begin att<=1;cmd<=1;state<=IDLE;end
      default: state<=IDLE;
     endcase
