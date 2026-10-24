@@ -45,43 +45,58 @@ def camera(name):
                 normal_basis=normal_basis, uniform=uniform, shading=shading)
 
 
-def room():
+def room(divisions=4, meshlet_faces=1):
     low, high = [-3, -.8125, -3], [3, 3.1875, 3]
     faces = [('left', 0, 1, [133, 141, 153]), ('right', 0, -1, [146, 134, 120]),
              ('floor', 1, 1, [115, 123, 134]), ('ceiling', 1, -1, [151, 151, 151]),
              ('back', 2, 1, [125, 142, 159]), ('front', 2, -1, [146, 142, 135])]
-    batches = []
+    assert divisions > 0 and meshlet_faces in (1, 2, 3, 6)
+    batches, pending = [], []
     for name, axis, sign, color in faces:
         u, v = (axis+1) % 3, (axis+2) % 3
         positions = []
-        for y in range(5):
-            for x in range(5):
+        for y in range(divisions+1):
+            for x in range(divisions+1):
                 p = [0.0]*3
                 p[axis] = low[axis] if sign > 0 else high[axis]
-                p[u] = low[u]+(high[u]-low[u])*x/4
-                p[v] = low[v]+(high[v]-low[v])*y/4
+                p[u] = low[u]+(high[u]-low[u])*x/divisions
+                p[v] = low[v]+(high[v]-low[v])*y/divisions
                 positions.append([round(value*65536) for value in p])
+        normal = (sign*511 & 1023) << (10*axis)
+        attribute = sum(c << (8*i) for i, c in enumerate(color))
+        triangles = []
+        for y in range(divisions):
+            for x in range(divisions):
+                a = y*(divisions+1)+x
+                for triangle in ([a, a+1, a+divisions+2], [a, a+divisions+2, a+divisions+1]):
+                    triangles.append(triangle if sign > 0 else triangle[::-1])
+        pending.append(dict(name=name, positions=positions, normal=normal,
+                            attribute=attribute, triangles=triangles, color=color))
+        if len(pending) != meshlet_faces:
+            continue
+        positions = [p for face in pending for p in face['positions']]
         origin = [min(p[k] for p in positions) for k in range(3)]
         extent = max(max(p[k] for p in positions)-origin[k] for k in range(3))
         shift = max(0, extent.bit_length()-10)
         while round(extent/(1 << shift)) > 1023:
             shift += 1
-        normal = (sign*511 & 1023) << (10*axis)
-        attribute = sum(c << (8*i) for i, c in enumerate(color))
-        vertices = []
-        for p in positions:
-            values = [round((p[k]-origin[k])/(1 << shift)) for k in range(3)]
-            assert all(0 <= x <= 1023 for x in values)
-            vertices.append([sum(x << (10*k) for k, x in enumerate(values)), normal, attribute])
-        triangles = []
-        for y in range(4):
-            for x in range(4):
-                a = y*5+x
-                for triangle in ([a, a+1, a+6], [a, a+6, a+5]):
-                    triangles.append(triangle if sign > 0 else triangle[::-1])
-        batches.append(dict(name='room_'+name, group='box', vertices=vertices,
-                            triangles=triangles, config=origin+[shift | 256], color=color))
-    assert sum(len(b['triangles']) for b in batches) == 192
+        vertices, triangles, texcoords = [], [], []
+        for face in pending:
+            base = len(vertices)
+            for i, p in enumerate(face['positions']):
+                values = [round((p[k]-origin[k])/(1 << shift)) for k in range(3)]
+                assert all(0 <= x <= 1023 for x in values)
+                vertices.append([sum(x << (10*k) for k, x in enumerate(values)), face['normal'], face['attribute']])
+                texcoords.append(round(i % (divisions+1)/divisions*65535) |
+                                 round(i//(divisions+1)/divisions*65535) << 16)
+            triangles.extend([[base+j for j in t] for t in face['triangles']])
+        assert len(vertices) <= 64 and len(triangles) <= 96
+        batches.append(dict(name='room_'+'_'.join(f['name'] for f in pending), group='box',
+                            vertices=vertices, texcoords=texcoords, triangles=triangles,
+                            config=origin+[shift | 256], color=pending[0]['color']))
+        pending = []
+    assert not pending
+    assert sum(len(b['triangles']) for b in batches) == 12*divisions*divisions
     return batches
 
 
@@ -89,7 +104,7 @@ def instances(bunny, ply, oracle, view):
     cam = camera(view)
     batches, model = bunny.mesh(ply)
     assert model['triangles'] == 948
-    objects = room()
+    objects = room(divisions=3, meshlet_faces=3)
     color = [165, 85, 47]
     for i, batch in enumerate(batches):
         vertices = [row[:2]+[sum(c << (8*k) for k, c in enumerate(color))]
@@ -103,6 +118,8 @@ def instances(bunny, ply, oracle, view):
             triangles=obj['triangles'], color_mode=1, cull_negative=1,
             seq_base=0, generation=i % 16, scale_s=0,
             cfg_tex_w_log2=6, cfg_tex_h_log2=6, cfg_max_mip=6)
+        if obj['group'] == 'box':
+            instance['texcoords'] = obj['texcoords']
         values = oracle.F.oracle(instance['uniform'], instance['config'], instance['vertices'])
         maximum = max(abs(oracle.signed(values[6*j+k], 32))
                       for j in range(len(instance['vertices'])) for k in range(3))
@@ -111,8 +128,8 @@ def instances(bunny, ply, oracle, view):
         assert instance['scale_s'] < 16
         result.append(instance)
     return result, dict(scene='solid_box_complete_bunny', camera=cam,
-        box=dict(faces=6, triangles=192, meshlets=6, subdivisions_per_axis=4),
-        bunny=model, submitted_triangles=1140,
+        box=dict(faces=6, triangles=108, meshlets=2, meshes=1, subdivisions_per_axis=3),
+        bunny=model, submitted_triangles=1056,
         material=dict(route='RGB888 constant albedo per object/face; texture bypass',
                       bunny_rgb=color, specular=cam['shading']['specular'], shininess=32)), cam['shading']
 
