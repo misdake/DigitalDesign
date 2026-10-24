@@ -52,4 +52,3 @@ initial begin
  $display("TIME_PASS microseconds: 54-clock tick, clear priority/bit/index, saturation, reset, CPU holds and disabled reads");$finish;
 end
 endmodule
-
