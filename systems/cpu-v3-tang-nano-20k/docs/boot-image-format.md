@@ -26,8 +26,8 @@ narrowing to the 22-bit word address, and the end calculation retains its carry.
 The existing SPI reader rejects commands exceeding the 8-MiB Flash capacity.
 A malformed stream can fail after partial writes; there is no rollback.
 
-The host packer checks full layout ownership, nonoverlap, required code/static/
-framebuffer initialization and the complete Flash image size. Hardware does
+The host packer checks full layout ownership, nonoverlap, required code/static
+initialization and the complete Flash image size. Hardware does
 not duplicate these checks. A corrupted payload can execute incorrectly, and a
 hand-made stream missing required code can reach END: trusted host-generated
 input and programmer Verify are the intended workflow.
@@ -41,7 +41,7 @@ input and programmer Verify are the intended workflow.
 | [0x20000,0xe0000) | Resource allocations |
 | [0xe0000,0x100000) | One code COPY at 0xe0000; unused tail remains reserved |
 | [0x100000,0x400000) | Resource allocations |
-| [0x400000,0x460000) | One mandatory ZERO covering both complete framebuffer slots |
+| [0x400000,0x460000) | Reserved framebuffer slots; boot leaves both untouched |
 | [0x460000,0x490000) | Reserved Depth; never initialized by boot |
 | [0x490000,0x4b0000) | Driver-owned command/object arena; optional COPY/ZERO resources rejected |
 | [0x4b0000,0x800000) | Fixed GPU asset allocations |
@@ -132,13 +132,20 @@ permanently stops issuing memory requests and enables Display prefetch.
 The normal arbiter remains connected throughout.
 
 Display starts scanout from A at a full frame boundary after both complete
-initial row groups have crossed into the pixel domain. Its sticky started_ack
+initial black row-group markers have crossed into the pixel domain. Those
+markers use the normal publication/release handshake without DRAM reads or
+line-buffer data writes. Its sticky started_ack
 returns through two logic-domain synchronizer stages. CPU release additionally
 requires cache metadata cold-ready and no startup error. The fixed entry is
 CSEG7:PC0, DSEG0/1/2/3. Generic CPU IP still starts in CSEG0.
 
-The acknowledged initial ownership is A=Front, B=Free and no Pending, without
-another clear. GPU DRAM masters wait for boot_done;
+The acknowledged initial ownership is A=Front (virtual black), B=Free and no
+Pending. Neither framebuffer nor Depth is initialized by boot. The first
+NEXT_SWAP consumed at a normal frame boundary activates real DRAM fetches,
+including a same-address present of A. Real content remains black until two
+complete real groups are available at a frame origin; incomplete groups are
+retained rather than consumed as black. Software must fully initialize the
+first target and wait for completed GPU writes before presenting it. GPU DRAM masters wait for boot_done;
 GPU table/binding readiness independently gates GPU submission. Boot does not
 initialize GPU internal memory or wait for gpu_ready.
 

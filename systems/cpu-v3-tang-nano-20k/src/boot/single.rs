@@ -209,7 +209,7 @@ pub fn pack_application_resources(
         return Err(SingleBootError("overlapping resources"));
     }
     let size = 4usize
-        .checked_add(4 * 8 + code.len())
+        .checked_add(3 * 8 + code.len())
         .and_then(|n| {
             resources
                 .iter()
@@ -228,12 +228,6 @@ pub fn pack_application_resources(
         append_command(&mut image, r.address, r.length(), r.zero_bytes != 0);
         image.extend_from_slice(&r.data);
     }
-    append_command(
-        &mut image,
-        BOOT_FRAMEBUFFER_BYTES.start,
-        BOOT_FRAMEBUFFER_BYTES.len(),
-        true,
-    );
     append_command(&mut image, 0, 0, false);
     Ok(image)
 }
@@ -368,14 +362,14 @@ mod tests {
         {
             assert_eq!(*word, u16::from_le_bytes(*pair));
         }
-        assert!(memory[0x200000..0x230000].iter().all(|w| *w == 0));
+        assert!(memory[0x200000..0x230000].iter().all(|w| *w == 0xa55a));
         assert!(memory[0x230000..0x248000].iter().all(|w| *w == 0xa55a));
         assert!(memory[0x248000..0x258000].iter().all(|w| *w == 0xa55a));
         assert!(memory[0x258000..0x258011].iter().all(|w| *w == 0));
         assert_eq!(memory[0x258011], 0xa55a);
         assert_eq!(
             pack_single_application(&code).unwrap().len(),
-            4 + 4 * 8 + code.len()
+            4 + 3 * 8 + code.len()
         );
     }
     #[test]

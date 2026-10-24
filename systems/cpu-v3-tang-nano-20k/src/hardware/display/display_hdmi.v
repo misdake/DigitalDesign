@@ -43,6 +43,11 @@ reg [17:0] pending_base_units=FB_BASE[21:4];
 wire [21:0] pending_base={pending_base_units,4'b0};
 reg shadow_linear=0, pending_linear=0, active_linear=0;
 reg [1:0] group_linear=0;
+// Before the first applied NEXT_SWAP, groups describe black output without
+// reading uninitialized DRAM or writing line-buffer data. Metadata stays
+// stable until the existing published/released handshake returns ownership.
+reg front_valid=0;
+reg [1:0] group_valid=0;
 reg next_low_written=0, next_high_written=0;
 reg next_pending=0, invalid_address=0;
 reg frame_complete=0;
@@ -55,8 +60,13 @@ reg [1:0] beat_index=0;
 reg burst_active=0, memory_error_sticky=0;
 wire fill_slot_free = published[fill_slot] == release_sync[fill_slot];
 assign memory_urgent = 1'b1;
-assign memory_request_valid = boot_enable && !boot_failed && fill_slot_free && !burst_active &&
-                              !frame_complete && !memory_error_sticky;
+wire fill_allowed = boot_enable && !boot_failed && fill_slot_free && !burst_active &&
+                    !frame_complete && !memory_error_sticky;
+assign memory_request_valid = front_valid && fill_allowed;
+wire black_group = !front_valid && fill_allowed;
+wire publish_group = black_group || (burst_active && memory_data_valid &&
+    !memory_error_sticky && !memory_error && memory_last && beat_index==3 &&
+    fill_second && burst_index==LAST_BURST);
 // Adjacent rows of each tile are fetched consecutively. The arbiter retains
 // its fixed 32-byte display transactions: the pair is two requests, not a
 // longer non-preemptible owner interval.
@@ -97,6 +107,7 @@ always @(posedge clk) begin
         underflow_meta<=0; underflow_sync<=0;
         burst_index<=0; beat_index<=0; burst_active<=0; memory_error_sticky<=0;
         fill_second<=0; shadow_linear<=0; pending_linear<=0; active_linear<=0; group_linear<=0;
+        front_valid<=0; group_valid<=0;
     end else begin
         if (memory_error) begin memory_error_sticky<=1; burst_active<=0; end
         if (frame_sync != frame_seen) begin
@@ -109,6 +120,7 @@ always @(posedge clk) begin
                 if (next_pending) begin
                     active_base_units<=pending_base_units; active_linear<=pending_linear;
                     tile_row_base_units<=pending_base_units;
+                    front_valid<=1;
                     next_pending<=0;
                 end else tile_row_base_units<=active_base_units;
             end
@@ -155,19 +167,22 @@ always @(posedge clk) begin
                 else begin
                     fill_second<=0;
                     if (burst_index==LAST_BURST) begin
-                        published[fill_slot]<=~published[fill_slot];
-                        group_linear[fill_slot]<=active_linear;
-                        burst_index<=0; fill_slot<=~fill_slot;
-                        if (fill_y==LAST_FILL_Y-1) frame_complete<=1;
-                        else begin
-                            fill_group<=fill_group+1'b1;
-                            if (local_y==4'd14) begin
-                                 tile_row_base_units<=tile_row_base_units+{9'b0,TILE_ROW_STRIDE[12:4]};
-                            end
-                        end
+                        burst_index<=0;
                     end else burst_index<=burst_index+1'b1;
                 end
             end else beat_index<=beat_index+1'b1;
+        end
+        if (publish_group) begin
+            published[fill_slot]<=~published[fill_slot];
+            group_linear[fill_slot]<=active_linear;
+            group_valid[fill_slot]<=front_valid;
+            fill_slot<=~fill_slot;
+            if (fill_y==LAST_FILL_Y-1) frame_complete<=1;
+            else begin
+                fill_group<=fill_group+1'b1;
+                if (local_y==4'd14)
+                    tile_row_base_units<=tile_row_base_units+{9'b0,TILE_ROW_STRIDE[12:4]};
+            end
         end
     end
 end
@@ -204,7 +219,7 @@ wire active = h_count>=H_ACTIVE_START && h_count<H_ACTIVE_END &&
                v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END;
 wire framebuffer_x = active;
 wire line_ready = publish_sync[display_slot] != released[display_slot];
-reg scan_line_ready=0, scan_linear=0;
+reg scan_line_ready=0, scan_linear=0, scan_valid=0;
 reg visible_pipe3=0, framebuffer_pipe3=0;
 reg hsync_pipe3=0, vsync_pipe3=0;
 function [PRECODE_BITS-1:0] encode_byte;
@@ -262,7 +277,7 @@ wire [5:0] raw_b1 = {raw_pair[20:16],raw_pair[20]};
 // One completed pair is the only output holding state. Its first pixel
 // is consumed directly at completion; subsequent repeats use this register.
 reg [6*PRECODE_BITS-1:0] output_pair=0;
-wire conversion_active = scan_enabled && scan_line_ready &&
+wire conversion_active = scan_enabled && scan_line_ready && scan_valid &&
     v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END &&
     h_count>=H_ACTIVE_START-11'd4 && h_count<H_ACTIVE_END;
 wire issue_pair = conversion_active && read_phase==0 &&
@@ -297,7 +312,7 @@ always @(posedge pixel_clock) begin
         h_count<=0; v_count<=0; released<=0; display_slot<=0; display_second<=0; frame_toggle<=0;
         vertical_repeat<=0; started<=0; underflow_sticky<=0;
         visible_pipe3<=0; framebuffer_pipe3<=0; hsync_pipe3<=0; vsync_pipe3<=0; precode_pipe<=BLACK_PRECODE;
-        scan_line_ready<=0; scan_linear<=0; read_phase<=0; fetch_pair<=0;
+        scan_line_ready<=0; scan_linear<=0; scan_valid<=0; read_phase<=0; fetch_pair<=0;
 
     end else begin
         if (h_count==H_TOTAL-1) begin
@@ -307,13 +322,19 @@ always @(posedge pixel_clock) begin
                 v_count<=0;
                 if (!started && enable_sync[1] && !failure_sync[1] &&
                     (publish_sync ^ released)==2'b11) started<=1;
+                // Real content, like initial timing, starts only with two
+                // complete groups at a frame origin. Until then keep black
+                // and retain any real groups that have already arrived.
+                if (!scan_valid && enable_sync[1] && !failure_sync[1] &&
+                    group_valid==2'b11 && (publish_sync ^ released)==2'b11)
+                    scan_valid<=1;
             end else v_count<=v_count+1'b1;
         end else h_count<=h_count+1'b1;
         visible_pipe3<=active;
-        framebuffer_pipe3<=scan_enabled && framebuffer_x;
+        framebuffer_pipe3<=scan_enabled && scan_valid && framebuffer_x;
         hsync_pipe3<=hsync; vsync_pipe3<=vsync;
         precode_pipe<=BLACK_PRECODE;
-        if (scan_enabled && active && scan_line_ready) precode_pipe<=current_precode;
+        if (scan_enabled && active && scan_line_ready && scan_valid) precode_pipe<=current_precode;
         if (h_count==0) begin
             // Readiness is sampled for the whole output row. A late publish
             // cannot reveal a partial row or consume data from a failed fill.
@@ -341,7 +362,8 @@ always @(posedge pixel_clock) begin
             end
             if (emit_pair) output_pair<=converted_pair;
         end
-        if (scan_enabled && h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END) begin
+        if (scan_enabled && (scan_valid || !group_valid[display_slot]) &&
+            h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END) begin
             if (vertical_repeat) begin
                 vertical_repeat<=0;
                 if (scan_line_ready) begin

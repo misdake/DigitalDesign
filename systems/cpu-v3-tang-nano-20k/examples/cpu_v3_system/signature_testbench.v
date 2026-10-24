@@ -188,6 +188,8 @@ always @(posedge clk)begin
  if(start_cycle>__BOOT_MAX_CYCLES__)$fatal(1,"bounded full Flash boot");
  if(dut.boot_load_done && load_cycle==0)load_cycle=start_cycle;
  if(!dut.boot_load_done && dut.display_memory_request_valid)$fatal(1,"Display fetched before load completion");
+ if(!dut.u_display.front_valid && dut.display_memory_request_valid)
+  $fatal(1,"Display fetched before first applied present");
  if(!dut.boot_done && (dut.core_instruction_request_valid || dut.device_write_enable || dut.core_data_request_valid))$fatal(1,"CPU side effect before boot completion");
  if(dut.reset!==1'b0)$fatal(1,"production runtime reset remained active");
  if(dut.boot_error)begin
@@ -202,7 +204,7 @@ always @(posedge clk)begin
   if(dut.pc!==0 || dut.code_segment!==7 || dut.data_segment!==0)$fatal(1,"cold entry mapping");
   if(write_pending || dut.u_boot_loader.remaining!=0 || !dut.boot_load_done || !dut.display_started_ack)
    $fatal(1,"release before completed writes and Display start");
-  for(n=32'h200000;n<32'h230000;n=n+1)if(memory[n]!==0)$fatal(1,"framebuffer not black at boot");
+  for(n=32'h200000;n<32'h230000;n=n+1)if(memory[n]!==16'hd00d)$fatal(1,"boot wrote an unpresented framebuffer");
   for(n=0;n<8192;n=n+1)if(memory[n]!==0)$fatal(1,"static zero %0d",n);
   if(memory[8192]!==16'hd00d)$fatal(1,"clear exceeds fixed static arena");
   for(n=0;n<CODE_WORDS;n=n+1)if(memory[32'h70000+n]!==expected_code[n])$fatal(1,"code mismatch %0d",n);

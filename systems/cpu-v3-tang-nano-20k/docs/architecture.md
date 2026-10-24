@@ -186,11 +186,12 @@ clock-domain boundary.
 The cold hardware loader executes the [CB06 COPY/ZERO stream](boot-image-format.md)
 through the existing narrow DMA arbiter client, holding one word and waiting for
 each successful write response. The host packer inserts the 16-KiB static ZERO,
-code COPY at physical word `0x70000`, optional resources and complete A/B ZERO.
+code COPY at physical word `0x70000`, optional resources and END. A/B and Depth
+remain untouched; software initializes a target before its first present.
 The FPGA checks only small command/range constraints; there is no checksum or
 second metadata pass. Depth remains reserved for GPU Pass Clear.
 END and the completed Flash/memory transactions produce `load_done`, enabling
-Display prefetch. After both initial groups are available, Display starts at a
+Display black-group publication. After both initial markers are available, Display starts at a
 full frame boundary and returns `started_ack`. That event and cache cold-ready
 permit `boot_done` and CPU release at CSEG7:PC0, data pages 0/1/2/3; RCC initializes
 SP=0xc000 and nonzero statics. GPU readiness does not delay CPU release.
@@ -401,7 +402,14 @@ Display retains strict priority. A caught-up refill is 50 segments per two sourc
 initial fill is at most 100 segments. The conditional ideal scheduling estimate and its
 refresh/contention limitations are in the upgrade comparison (archived work-1 report).
 
-Cold `boot_enable` gates framebuffer requests until the image writes complete.
+Cold `boot_enable` gates row-group publication until the image writes complete.
+Before the first applied NEXT_SWAP, groups carry a black marker and generate
+neither framebuffer requests nor line-buffer data writes. A=Front remains
+virtual black while the frame index and normal swap interface are usable.
+The first applied present, including A to A, enables real framebuffer reads.
+Per-group validity follows the existing stable-metadata publication boundary.
+Both real initial groups must be available at a frame origin before real video
+starts; until then they are retained and output stays black without underflow.
 Before pixel scanout starts, HDMI still emits valid black active video, with no
 row-group consumption, underflow or framebuffer frame-index advancement. Both
 published initial groups and the synchronized enable are required at a complete

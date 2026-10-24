@@ -33,9 +33,16 @@ task reset_dut;
   memory_data_valid=0; memory_last=0; memory_error=0; beat=0; requests=0;
   repeat(12) @(negedge clk);
   reset=0; memory_request_ready=1;
+  // Establish a real Front through the public interface. Black startup itself
+  // needs no SDRAM; failures below concern the first real line-group fill.
+  @(negedge clk);device_write_enable=1;device_channel=1;device_write_data=0;
+  @(negedge clk);device_channel=2;device_write_data=16'h0020;
+  @(negedge clk);device_channel=3;device_write_data=1;
+  @(negedge clk);device_write_enable=0;device_write_data=0;
+  wait(dut.front_valid);
  end
 endtask
-initial begin repeat(6*1056*525) @(posedge pixel_clock); $fatal(1,"fault watchdog scenario=%0d requests=%0d beat=%0d published=%b active=%b error=%b",scenario,requests,beat,dut.published,dut.burst_active,dut.memory_error_sticky); end
+initial begin repeat(32*1056*525) @(posedge pixel_clock); $fatal(1,"fault watchdog scenario=%0d requests=%0d beat=%0d published=%b active=%b error=%b",scenario,requests,beat,dut.published,dut.burst_active,dut.memory_error_sticky); end
 initial begin
  // Error at each beat and malformed LAST at each early position/final beat.
  for(scenario=0;scenario<8;scenario=scenario+1) begin
@@ -65,15 +72,15 @@ initial begin
  wait(dut.published==2'b01);
  @(negedge clk);auto_response=0;memory_request_ready=0;memory_data_valid=0;memory_last=0;
  repeat(1056*525+10)@(posedge pixel_clock);
- if(started_ack || dut.started || dut.released!=0 || dut.frame_index!=0 || underflow)
-  $fatal(1,"one group prematurely started Display");
+ if(!started_ack || dut.scan_valid || dut.released!=0 || underflow)
+  $fatal(1,"one real group prematurely replaced black output");
  // Failure in group 1 cannot turn the complete group 0 into a startup ack.
  @(negedge clk);memory_request_ready=1;
  wait(dut.burst_active);
  @(negedge clk);memory_error=1;
  @(negedge clk);memory_error=0;
  repeat(20)@(posedge pixel_clock);
- if(started_ack || !startup_error || memory_request_valid)$fatal(1,"second-group failure published startup");
+ if(dut.scan_valid || !startup_error || memory_request_valid)$fatal(1,"second-group failure published real content");
  // Fill exactly four rows, then hold SDRAM indefinitely. The consumer must
  // show black and set sticky underflow after exhausting those rows. No read
  // may release an unpublished group; black is observed across the failed row.

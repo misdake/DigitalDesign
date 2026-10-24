@@ -38,6 +38,7 @@ const MAX_FRAMEBUFFER_BASE: u32 = (1 << 22) - FRAMEBUFFER_WORDS;
 pub struct DisplayDevice {
     frame_index: Cell<u16>,
     active_base: Cell<u32>,
+    front_valid: Cell<bool>,
     shadow_base: Cell<u32>,
     pending_base: Cell<u32>,
     active_linear: Cell<bool>,
@@ -57,6 +58,7 @@ impl Default for DisplayDevice {
         Self {
             frame_index: Cell::new(0),
             active_base: Cell::new(FRAMEBUFFER_A_BASE_WORD),
+            front_valid: Cell::new(false),
             shadow_base: Cell::new(FRAMEBUFFER_A_BASE_WORD),
             pending_base: Cell::new(FRAMEBUFFER_A_BASE_WORD),
             active_linear: Cell::new(false),
@@ -89,6 +91,11 @@ impl DisplayDevice {
         self.active_base.get()
     }
 
+    /// The initial A ownership is black until a pending swap is applied.
+    pub fn front_valid(&self) -> bool {
+        self.front_valid.get()
+    }
+
     pub fn swap_pending(&self) -> bool {
         self.pending.get()
     }
@@ -110,6 +117,7 @@ impl DisplayDevice {
         if swap_applied {
             self.active_base.set(self.pending_base.get());
             self.active_linear.set(self.pending_linear.get());
+            self.front_valid.set(true);
         }
         swap_applied
     }

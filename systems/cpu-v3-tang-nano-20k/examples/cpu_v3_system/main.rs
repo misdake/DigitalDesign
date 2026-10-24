@@ -225,8 +225,8 @@ impl Module for CpuV3System {
                 &TEST_ERROR_CODE.with(Cell::get).to_string(),
             )
             .replace("__EXPECT_HALT__", &halt.to_string());
+        testbench = testbench.replacen("module tb;", "module tb;\nGSR GSR(.GSRI(1'b1));", 1);
         if GPU_COLD_TEST.with(Cell::get) {
-            testbench = testbench.replacen("module tb;", "module tb;\nGSR GSR(.GSRI(1'b1));", 1);
             testbench = testbench.replacen(
                 "endmodule",
                 &format!("{}\nendmodule", include_str!("gpu_cold_monitor.vh")),
@@ -243,11 +243,12 @@ impl Module for CpuV3System {
                 "if(EXPECT_HALT!=0 && dut.halted)begin",
                 "if(EXPECT_HALT!=0 && dut.halted)begin\n gpu_cold_complete();",
             );
-            let models =
-                std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").expect("GOWIN_HOME"))
-                    .join("IDE/simlib/gw2a/prim_sim.v");
-            testbench.push_str(&std::fs::read_to_string(models).unwrap());
         }
+        // The production GPU exists in every composed system fixture, including
+        // COPY/ZERO-only boot tests. All of them require its vendor primitives.
+        let models = std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").expect("GOWIN_HOME"))
+            .join("IDE/simlib/gw2a/prim_sim.v");
+        testbench.push_str(&std::fs::read_to_string(models).unwrap());
         Some(testbench)
     }
 }

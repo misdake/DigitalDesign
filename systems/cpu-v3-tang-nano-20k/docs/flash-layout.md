@@ -25,14 +25,19 @@ V5 and CB06 images are incompatible. The first CB06 deployment must pair new
 gateware and a CB06 image. Later application/resource updates can program only
 the package at 0x100000 while retaining the same format/layout gateware.
 Configuration or power cycling runs boot again; buttons and software do not.
+Packages omitting framebuffer ZERO require the matching virtual-black-start
+gateware; do not install them alone over gateware that assumes cleared A/B.
+Existing CB06 streams with explicit ZERO commands remain accepted.
 
 Cold PLL/SDRAM readiness starts the loader. CPU and GPU remain quiet during
 COPY/ZERO, and Display emits black timing without framebuffer requests.
-The static arena and both full framebuffer slots are zeroed, code/resources
+The static arena is zeroed, code/resources
 reach their final locations, and END plus all actual write responses produces
-load_done. Display then prefetches both initial groups and acknowledges a new
-frame beginning from A. After cache cold-ready, boot_done releases the CPU.
-Depth remains untouched until GPU Pass Clear. Clock loss requires cold
+load_done. Display then publishes black group markers without touching DRAM
+and acknowledges black timing at a frame origin. After cache cold-ready,
+boot_done releases the CPU. A/B and Depth remain untouched. The first completed
+software present activates real framebuffer reads and the first two complete
+groups enable real video at a frame origin. Clock loss requires cold
 reconfiguration, rather than a partial automatic reset.
 
 The default build preserves nominal 13.5-MHz single-line reading. Setting
