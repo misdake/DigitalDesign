@@ -43,63 +43,70 @@ fn main() {
     let mut generated = String::new();
     let mut extra_assets: Vec<String> = Vec::new();
     if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
-        assert_eq!(example, "gpu_demo", "unsupported CPU_V3_BOOT_EXAMPLE");
-        let example_dir = root.join("examples/gpu_demo");
-        for input in [
-            example_dir.join("tools/assets.py"),
-            example_dir.join("assets/font-8x16.txt"),
-            example_dir.join("assets/scene.json"),
-            root.join("../../ip/gpu-v2/examples/vliw_integration/solid_scene.py"),
-            root.join("../../ip/gpu-v2/examples/vliw_integration/material_scene.py"),
-            root.join("../../ip/gpu-v2/examples/vliw_integration/assets/room-tiles.png"),
-        ] {
-            println!("cargo:rerun-if-changed={}", input.display());
-        }
-        let assets = output.join("gpu-demo-assets");
-        let status = std::process::Command::new("python")
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .arg(example_dir.join("tools/assets.py"))
-            .arg("--output")
-            .arg(&assets)
-            .status()
-            .expect("demo native asset packer");
-        assert!(status.success(), "demo native asset validation failed");
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap()).unwrap();
-        project.application = PathBuf::from("examples/gpu_demo/rcc/main.rs");
-        project.copies = manifest["resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| {
-                (
-                    r["file"]
-                        .as_str()
-                        .unwrap()
-                        .trim_end_matches(".bin")
-                        .to_uppercase(),
-                    r["address"].as_u64().unwrap() as usize,
-                    assets.join(r["file"].as_str().unwrap()),
-                )
-            })
-            .collect();
-        project.zeros.clear();
-        generated = std::fs::read_to_string(assets.join("demo_assets.rs")).unwrap();
-        let mut repack = format!("format 2\napplication {}\n", project.application.display());
-        for (name, address, path) in &project.copies {
-            let relative = path
-                .strip_prefix(&output)
+        if example == "dualshock2" {
+            project.application = PathBuf::from("examples/dualshock2/rcc/main.rs");
+            project.copies.clear();
+            project.zeros.clear();
+        } else {
+            assert_eq!(example, "gpu_demo", "unsupported CPU_V3_BOOT_EXAMPLE");
+            let example_dir = root.join("examples/gpu_demo");
+            for input in [
+                example_dir.join("tools/assets.py"),
+                example_dir.join("assets/font-8x16.txt"),
+                example_dir.join("assets/scene.json"),
+                root.join("../../ip/gpu-v2/examples/vliw_integration/solid_scene.py"),
+                root.join("../../ip/gpu-v2/examples/vliw_integration/material_scene.py"),
+                root.join("../../ip/gpu-v2/examples/vliw_integration/assets/room-tiles.png"),
+            ] {
+                println!("cargo:rerun-if-changed={}", input.display());
+            }
+            let assets = output.join("gpu-demo-assets");
+            let status = std::process::Command::new("python")
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .arg(example_dir.join("tools/assets.py"))
+                .arg("--output")
+                .arg(&assets)
+                .status()
+                .expect("demo native asset packer");
+            assert!(status.success(), "demo native asset validation failed");
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
+                    .unwrap();
+            project.application = PathBuf::from("examples/gpu_demo/rcc/main.rs");
+            project.copies = manifest["resources"]
+                .as_array()
                 .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
-            repack.push_str(&format!("copy {name} {address:#x} {relative}\n"));
-            extra_assets.push(relative);
+                .iter()
+                .map(|r| {
+                    (
+                        r["file"]
+                            .as_str()
+                            .unwrap()
+                            .trim_end_matches(".bin")
+                            .to_uppercase(),
+                        r["address"].as_u64().unwrap() as usize,
+                        assets.join(r["file"].as_str().unwrap()),
+                    )
+                })
+                .collect();
+            project.zeros.clear();
+            generated = std::fs::read_to_string(assets.join("demo_assets.rs")).unwrap();
+            let mut repack = format!("format 2\napplication {}\n", project.application.display());
+            for (name, address, path) in &project.copies {
+                let relative = path
+                    .strip_prefix(&output)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                repack.push_str(&format!("copy {name} {address:#x} {relative}\n"));
+                extra_assets.push(relative);
+            }
+            std::fs::write(output.join("demo-repack.conf"), repack).unwrap();
+            extra_assets.extend([
+                "gpu-demo-assets/assets.json".to_owned(),
+                "demo-repack.conf".to_owned(),
+            ]);
         }
-        std::fs::write(output.join("demo-repack.conf"), repack).unwrap();
-        extra_assets.extend([
-            "gpu-demo-assets/assets.json".to_owned(),
-            "demo-repack.conf".to_owned(),
-        ]);
     }
     let source = &project.application;
     for (_, _, path) in &project.copies {

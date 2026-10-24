@@ -285,6 +285,52 @@ pub struct TangNano20KBootHdmiStreamOutputs {
     pub tmds_data_n: Wires<3>,
 }
 
+/// CPU V3 streaming full-system inputs from the native SDRAM bridge.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootHdmiStreamDs2Inputs {
+    pub buttons: Wires<2>,
+    pub ds2_dat: digital_design_circuit::Wire,
+    pub flash_miso: digital_design_circuit::Wire,
+    pub sdram_read_data: Wires<64>,
+    pub sdram_read_valid: digital_design_circuit::Wire,
+    pub sdram_init_done: digital_design_circuit::Wire,
+    pub sdram_request_ready: digital_design_circuit::Wire,
+    pub sdram_stream_active: digital_design_circuit::Wire,
+    pub sdram_clock_ready: digital_design_circuit::Wire,
+    pub sdram_write_done: digital_design_circuit::Wire,
+    pub sdram_write_data_ready: digital_design_circuit::Wire,
+    pub pixel_clock: digital_design_circuit::Wire,
+    pub serial_clock: digital_design_circuit::Wire,
+    pub video_locked: digital_design_circuit::Wire,
+}
+
+/// CPU V3 streaming full-system outputs driving the native SDRAM bridge.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootHdmiStreamDs2Outputs {
+    pub leds: Wires<2>,
+    pub ds2_clk: digital_design_circuit::Wire,
+    pub ds2_cmd: digital_design_circuit::Wire,
+    pub ds2_att: digital_design_circuit::Wire,
+    pub uart_tx: digital_design_circuit::Wire,
+    pub flash_clk: digital_design_circuit::Wire,
+    pub flash_cs_n: digital_design_circuit::Wire,
+    pub flash_mosi: digital_design_circuit::Wire,
+    pub sdram_request_valid: digital_design_circuit::Wire,
+    pub sdram_request_continuation: digital_design_circuit::Wire,
+    pub sdram_next_valid: digital_design_circuit::Wire,
+    pub sdram_next_address: Wires<21>,
+    pub sdram_write: digital_design_circuit::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<64>,
+    pub sdram_write_data_valid: digital_design_circuit::Wire,
+    pub sdram_words: Wires<6>,
+    pub tmds_clk_p: digital_design_circuit::Wire,
+    pub tmds_clk_n: digital_design_circuit::Wire,
+    pub tmds_data_p: Wires<3>,
+    pub tmds_data_n: Wires<3>,
+}
+
 /// Native 54/108 MHz SDRAM service without Flash or video circuitry.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KSdramWideInputs {
@@ -622,6 +668,7 @@ impl TangNano20K {
             chained_groups,
             cold_only,
             false,
+            false,
         )
     }
     fn sdram_debug_uart_transport_binding(
@@ -631,6 +678,7 @@ impl TangNano20K {
         chained_groups: bool,
         cold_only: bool,
         streaming: bool,
+        ds2: bool,
     ) -> GowinBoardBinding<Self> {
         assert!(!streaming || (video && wide_2x && !chained_groups));
         let wrapper = if wide_2x && !video {
@@ -1004,16 +1052,20 @@ impl TangNano20K {
                 "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 -phase 292.5 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
             );
         }
-        let mut binding = Self::user_io_binding()
-            .require(DebugUartTx)
-            .require(Pll)
-            .require(SdrSdram)
-            .bind_port(
-                GowinPortDirection::Output,
-                "uart_tx",
-                "uart_tx",
-                [Self::DEBUG_UART_TX],
-            );
+        let mut binding = (if ds2 {
+            Self::ds2_user_io_binding()
+        } else {
+            Self::user_io_binding()
+        })
+        .require(DebugUartTx)
+        .require(Pll)
+        .require(SdrSdram)
+        .bind_port(
+            GowinPortDirection::Output,
+            "uart_tx",
+            "uart_tx",
+            [Self::DEBUG_UART_TX],
+        );
         if video {
             binding = binding
                 .require(Pll)
@@ -1219,42 +1271,132 @@ impl TangNano20K {
                 .with_board_binding(Self::cold_boot_hdmi_binding(video_mode, true)),
         )
     }
+    /// Left DS2 port owns pins 17/20/19/18; only LED0/1 remain outputs.
+    pub fn cold_boot_hdmi_stream_ds2_memory_project<M>(
+        project_name: impl Into<String>,
+        video_mode: TangNano20KVideoMode,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<
+            Input = TangNano20KBootHdmiStreamDs2Inputs,
+            Output = TangNano20KBootHdmiStreamDs2Outputs,
+        >,
+    {
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(
+            Self::cold_boot_hdmi_binding_with_ds2(video_mode, true, true),
+        ))
+    }
+    fn ds2_user_io_binding() -> GowinBoardBinding<Self> {
+        GowinBoardBinding::new("tang_nano_20k_ds2_top", "clk", "clk", Self::CLOCK_27M)
+            .require(Clock27M)
+            .require(UserButtons::<2>)
+            .require(UserLeds::<2>)
+            .bind_port(
+                GowinPortDirection::Input,
+                "buttons",
+                "buttons",
+                Self::USER_BUTTONS,
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "leds",
+                "leds",
+                [Self::USER_LEDS[0], Self::USER_LEDS[1]],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "ds2_clk",
+                "ds2_clk",
+                [GowinPin {
+                    location: 17,
+                    io_type: "LVCMOS33",
+                    pull_mode: None,
+                    drive: Some(8),
+                    active_low: false,
+                }],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "ds2_cmd",
+                "ds2_cmd",
+                [GowinPin {
+                    location: 20,
+                    io_type: "LVCMOS33",
+                    pull_mode: None,
+                    drive: Some(8),
+                    active_low: false,
+                }],
+            )
+            .bind_port(
+                GowinPortDirection::Input,
+                "ds2_dat",
+                "ds2_dat",
+                [GowinPin {
+                    location: 19,
+                    io_type: "LVCMOS33",
+                    pull_mode: Some("UP"),
+                    drive: None,
+                    active_low: false,
+                }],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "ds2_att",
+                "ds2_att",
+                [GowinPin {
+                    location: 18,
+                    io_type: "LVCMOS33",
+                    pull_mode: None,
+                    drive: Some(8),
+                    active_low: false,
+                }],
+            )
+    }
     fn cold_boot_hdmi_binding(
         video_mode: TangNano20KVideoMode,
         streaming: bool,
     ) -> GowinBoardBinding<Self> {
-        Self::sdram_debug_uart_transport_binding(true, true, video_mode, false, true, streaming)
-            .bind_port(
-                GowinPortDirection::Output,
-                "flash_clk",
-                "flash_clk",
-                [Self::SPI_FLASH_CLK],
-            )
-            .bind_port(
-                GowinPortDirection::Output,
-                "flash_cs_n",
-                "flash_cs_n",
-                [Self::SPI_FLASH_CS_N],
-            )
-            .bind_port(
-                GowinPortDirection::Output,
-                "flash_mosi",
-                "flash_mosi",
-                [Self::SPI_FLASH_MOSI],
-            )
-            .bind_port(
-                GowinPortDirection::Input,
-                "flash_miso",
-                "flash_miso",
-                [Self::SPI_FLASH_MISO],
-            )
-            .with_process_option("-use_mspi_as_gpio", "1")
-            .with_process_option("-ioreg_in_iob", "1")
-            .with_process_option("-place_option", "1")
-            .with_process_option("-route_option", "2")
-            .with_process_option("-gen_posp", "1")
-            .with_process_option("-gen_verilog_sim_netlist", "1")
-            .with_process_option("-gen_sdf", "1")
+        Self::cold_boot_hdmi_binding_with_ds2(video_mode, streaming, false)
+    }
+    fn cold_boot_hdmi_binding_with_ds2(
+        video_mode: TangNano20KVideoMode,
+        streaming: bool,
+        ds2: bool,
+    ) -> GowinBoardBinding<Self> {
+        Self::sdram_debug_uart_transport_binding(
+            true, true, video_mode, false, true, streaming, ds2,
+        )
+        .bind_port(
+            GowinPortDirection::Output,
+            "flash_clk",
+            "flash_clk",
+            [Self::SPI_FLASH_CLK],
+        )
+        .bind_port(
+            GowinPortDirection::Output,
+            "flash_cs_n",
+            "flash_cs_n",
+            [Self::SPI_FLASH_CS_N],
+        )
+        .bind_port(
+            GowinPortDirection::Output,
+            "flash_mosi",
+            "flash_mosi",
+            [Self::SPI_FLASH_MOSI],
+        )
+        .bind_port(
+            GowinPortDirection::Input,
+            "flash_miso",
+            "flash_miso",
+            [Self::SPI_FLASH_MISO],
+        )
+        .with_process_option("-use_mspi_as_gpio", "1")
+        .with_process_option("-ioreg_in_iob", "1")
+        .with_process_option("-place_option", "1")
+        .with_process_option("-route_option", "2")
+        .with_process_option("-gen_posp", "1")
+        .with_process_option("-gen_verilog_sim_netlist", "1")
+        .with_process_option("-gen_sdf", "1")
     }
 
     fn user_io_binding() -> GowinBoardBinding<Self> {

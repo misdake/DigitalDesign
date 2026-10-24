@@ -1,15 +1,16 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
 use cpu_v3_tang_nano_20k::display::ACTIVE_DISPLAY_CONFIG;
 use cpu_v3_tang_nano_20k::{
-    CpuV3Gpu, CpuV3MemoryArbiter, FramebufferHdmi, SingleBootLoader, SystemControlDevice,
+    CpuV3Gpu, CpuV3MemoryArbiter, DualShock2, FramebufferHdmi, SingleBootLoader,
+    SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
 use digital_design_hardware_gowin::sdram_memory_controller::StreamingSdramPort;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, ErasedSpiFlashImage, GowinCliError, GowinModuleProject,
-    ResourceCountExpectation, SpiFlashReader, TangNano20K, TangNano20KBootHdmiStreamInputs,
-    TangNano20KBootHdmiStreamOutputs, TangNano20KVideoMode,
+    ResourceCountExpectation, SpiFlashReader, TangNano20K, TangNano20KBootHdmiStreamDs2Inputs,
+    TangNano20KBootHdmiStreamDs2Outputs, TangNano20KVideoMode,
 };
 use std::cell::{Cell, RefCell};
 const GENERATED_APPLICATION_PACKAGE: &[u8] =
@@ -36,8 +37,8 @@ fn main() -> Result<(), GowinCliError> {
 #[hardware(namespace = "examples/cpu_v3_system")]
 struct CpuV3System;
 impl Module for CpuV3System {
-    type Input = TangNano20KBootHdmiStreamInputs;
-    type Output = TangNano20KBootHdmiStreamOutputs;
+    type Input = TangNano20KBootHdmiStreamDs2Inputs;
+    type Output = TangNano20KBootHdmiStreamDs2Outputs;
     type EmuState = ();
     const USES_MAIN_CLOCK: bool = true;
     const EMU_AVAILABLE: bool = false;
@@ -67,6 +68,7 @@ impl Module for CpuV3System {
                 "__ARBITER__",
                 CpuV3MemoryArbiter::verilog_identity().module_name(),
             ),
+            ("__DS2__", DualShock2::verilog_identity().module_name()),
             ("__GPU__", CpuV3Gpu::verilog_identity().module_name()),
             (
                 "__SYSTEM_CONTROL__",
@@ -101,6 +103,7 @@ impl Module for CpuV3System {
             VerilogDependency::new::<CpuV3DataCache>("u_data_cache"),
             VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
             VerilogDependency::new::<CpuV3Gpu>("u_gpu"),
+            VerilogDependency::new::<DualShock2>("u_ds2"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
             VerilogDependency::new::<SingleBootLoader>("u_boot_loader"),
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
@@ -283,7 +286,7 @@ impl Module for CpuV3System {
 }
 fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
     let mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
-    TangNano20K::cold_boot_hdmi_stream_memory_project::<CpuV3System>("cpu_v3_system", mode)
+    TangNano20K::cold_boot_hdmi_stream_ds2_memory_project::<CpuV3System>("cpu_v3_system", mode)
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
 }
 #[cfg(test)]
@@ -458,7 +461,34 @@ mod tests {
         );
         let board = gowin_project().generate().unwrap();
         assert_eq!(board.resources.claimed[&ResourceKind::Bsram18K], 46);
+        assert_eq!(board.resources.claimed[&ResourceKind::Multiplier18x18], 42);
+        assert_eq!(board.resources.claimed[&ResourceKind::UserLed], 2);
+        let cst = &board.files[std::path::Path::new("src/generated/board.cst")];
+        let mut pins = std::collections::BTreeMap::new();
+        for line in cst.lines().filter(|line| line.starts_with("IO_LOC ")) {
+            let parts: Vec<_> = line.split_whitespace().collect();
+            let pin = parts[2].trim_end_matches(';').parse::<u16>().unwrap();
+            assert!(
+                pins.insert(pin, parts[1].trim_matches('"')).is_none(),
+                "duplicate CST pin {pin}"
+            );
+        }
+        for (pin, name) in [
+            (15, "leds[0]"),
+            (16, "leds[1]"),
+            (17, "ds2_clk"),
+            (20, "ds2_cmd"),
+            (19, "ds2_dat"),
+            (18, "ds2_att"),
+        ] {
+            assert_eq!(pins[&pin], name);
+        }
+        assert!(!cst.contains("leds[2]") && !cst.contains("leds[5]"));
+        assert!(cst.contains("IO_PORT \"ds2_dat\" IO_TYPE=LVCMOS33 PULL_MODE=UP;"));
+        assert!(text.contains(".dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att)"));
+        assert!(text.contains("gpu_read_data | ds2_read_data"));
         let top = &board.files[std::path::Path::new("src/generated/board_top.v")];
+        assert!(top.contains("input wire ds2_dat") && !top.contains("output wire ds2_dat"));
         assert!(top.contains(
             ".CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .REGISTER_READ_RETURN(1)"
         ));

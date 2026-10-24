@@ -21,7 +21,9 @@ module CpuV3System (
     input wire pixel_clock,
     input wire serial_clock,
     input wire video_locked,
-    output wire [5:0] leds,
+    input wire ds2_dat,
+    output wire ds2_clk, ds2_cmd, ds2_att,
+    output wire [1:0] leds,
     output wire uart_tx,
     output wire flash_clk,
     output wire flash_cs_n,
@@ -190,10 +192,17 @@ always @(posedge clk) begin
 end
 wire [15:0] button_read_data = device_query_read_enable &&
     device_query_index == 0 && device_query_channel == 8 ? {14'd0, button_sync} : 16'd0;
+wire [15:0] ds2_read_data;
 // Unselected devices read back zero, so the core sees the OR of all buses.
 assign device_read_data =
     sysctl_read_data | display_read_data | button_read_data |
-    gpu_read_data;
+    gpu_read_data | ds2_read_data;
+
+__DS2__ u_ds2(.clk(clk),.reset(reset),
+ .device_index(device_query_index),.device_channel(device_query_channel),
+ .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
+ .device_write_data(device_write_data),.device_read_data(ds2_read_data),
+ .dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att));
 
 // Device 0: cache invalidate pulses, LEDs, and the reporting UART.
 __SYSTEM_CONTROL__ u_sysctl (
@@ -390,7 +399,7 @@ __CPU_V3_CORE__ #(.INITIAL_CODE_SEGMENT(16'd7)) u_core (
 );
 
 // Boot status is observable without firmware. Software owns LEDs after release.
-assign leds=boot_error ? {2'b11,boot_error_code} : !boot_done ? 6'b000001 : software_leds;
+assign leds=boot_error ? 2'b11 : !boot_done ? 2'b01 : software_leds[1:0];
 
 wire memory_request_valid;
 wire memory_write;
