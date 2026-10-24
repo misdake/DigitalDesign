@@ -49,11 +49,13 @@ def pack(output):
     output.mkdir(parents=True, exist_ok=True)
     pixels = [[[0]*8 for _ in range(16)] for _ in range(256)]
     for char, rows in FONT.items():
-        for y,row in enumerate(rows):
+        # Resample the seven source rows to ten, centered in the16px cell.
+        # Three transparent rows above/below leave a6px interline gap.
+        for y in range(10):
+            row = rows[y*7//10]
             for x in range(5):
                 if row & (1<<(4-x)):
-                    pixels[ord(char)][1+y*2][x+1] = 0xffff
-                    pixels[ord(char)][2+y*2][x+1] = 0xffff
+                    pixels[ord(char)][3+y][x+1] = 0xffff
     for id, color, solid in [(1,rgba(8,10,12),False),(2,rgba(8,31,12),True)]:
         for y in range(4,12):
             for x in range(8):

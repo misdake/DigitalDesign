@@ -55,8 +55,10 @@ assets below `target/dualshock2-ui-boot`, independently repacks CB06 and compare
 it byte for byte by SHA256. It also exports hardware for source comparison;
 it does not synthesize, place/route, access the board or program Flash.
 
-`tools/assets.py` generates an original geometric5x7 font expanded into8x16
-cells, button icons, panel tiles and dot phases in one64KiB RGBA5551 atlas at
+`tools/assets.py` generates an original geometric5x7 font resampled to5x10,
+centered in8x16 cells with three transparent rows above and below. Consecutive
+text rows have a six-pixel vertical gap without changing the grid or panel layout.
+It also generates button icons, panel tiles and dot phases in one64KiB RGBA5551 atlas at
 0x4b0000, including native odd-row pixel ordering. Generated compact label data
 is part of `boot_resources`; no duplicate executable/Flash array is maintained.
 The boot pack contains only code, actual static initialization and this atlas.
