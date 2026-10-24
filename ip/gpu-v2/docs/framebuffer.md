@@ -68,6 +68,15 @@ A maintenance-owned line cannot become a ROP owner; a ROP-owned line cannot be
 a maintenance victim. At most two distinct ROP lines are owned. After invalid
 checking, demand examines three consecutive round-robin candidates.
 
+Each ROP context captures the directory's eight-bit one-hot resident hit on
+its first accepted color row, alongside the binary line used for bank
+addresses. Both representations stay in FFs. Valid context masks form the
+pinned-line set; the returning context's mask selects the dirty bits on actual
+depth/color writes. The binding holds through the final color write, when the
+context retires. Compute pauses retain it; reset/fault invalidates ownership
+without needing to clear the mask payload. This adds no acceptance or return
+edge and avoids decoding the binary context line again for ownership updates.
+
 The sink presents a color row C, then its paired depth row D, for each lane.
 C acceptance reserves the corresponding cache tail until D acceptance. This
 pairing also owns the [result-pool depth Q](/ip/gpu-v2/docs/execution.md#stored-header-and-payload).

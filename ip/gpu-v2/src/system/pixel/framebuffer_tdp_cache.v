@@ -31,7 +31,12 @@ module gpu_v2_framebuffer_tdp #(
  reg mt_prefetch,prefetch_protect_valid;reg[2:0]prefetch_protect_line;
  reg fault_c,fault_m;assign fault=fault_c||fault_m;
  reg[1:0]cal;reg[2:0]fill_row;
- reg ctx_valid[0:1];reg[2:0]ctx_line[0:1];reg[8:0]ctx_x[0:1];reg[7:0]ctx_y[0:1];reg[3:0]ctx_mask[0:1];
+ reg ctx_valid[0:1];
+ // Keep both binary addresses in FFs: two independent A readers need them.
+ (* syn_ramstyle="registers" *) reg[2:0]ctx_line[0:1];
+ reg[8:0]ctx_x[0:1];reg[7:0]ctx_y[0:1];reg[3:0]ctx_mask[0:1];
+ // Capture the directory's one-hot hit at binding; retain binary line for A addresses.
+ (* syn_ramstyle="registers" *) reg[7:0]ctx_line_mask[0:1];
  reg tail,result_owner;reg[1:0]return_key;
  reg[31:0]source_rgba;reg[1:0]compare_bank;
  reg depth_pending,color_pending;reg[15:0]depth_data,color_data;
@@ -138,13 +143,14 @@ module gpu_v2_framebuffer_tdp #(
 `endif
  end endgenerate
  // Physical ownership, not global ROP busy, excludes maintenance victims.
- reg[7:0]pinned;reg free_found,dirty_found,any_dirty;reg[2:0]free_line,dirty_line;
+ wire[7:0]pinned=({8{ctx_valid[0]}}&ctx_line_mask[0])|({8{ctx_valid[1]}}&ctx_line_mask[1]);
+ // The context remains owned through its final color write, including both dirty updates.
+ wire[7:0]result_line_mask=ctx_line_mask[result_context];
+ reg free_found,dirty_found,any_dirty;reg[2:0]free_line,dirty_line;
  integer k;
  wire[2:0]victim1=victim+3'd1,victim2=victim+3'd2;
  wire[2:0]select_line=!pinned[victim]?victim:(!pinned[victim1]?victim1:victim2);
  always @*begin
-  pinned=0;
-  for(k=0;k<8;k=k+1)pinned[k]=(ctx_valid[0]&&ctx_line[0]==k)||(ctx_valid[1]&&ctx_line[1]==k);
   free_found=0;dirty_found=0;any_dirty=0;free_line=0;dirty_line=0;
   for(k=0;k<8;k=k+1)begin
    if(!pinned[k]&&!tvalid[k]&&!free_found)begin free_found=1;free_line=k;end
@@ -293,7 +299,8 @@ module gpu_v2_framebuffer_tdp #(
      if(!row_index[0])source_rgba<=row_data;
      else begin compare_bank<=incoming_bank;if(row_index==7)tail<=!tail;end
      if(row0_fire)begin
-      ctx_valid[tail]<=1;ctx_line[tail]<=hit_line;ctx_x[tail]<=row_x;ctx_y[tail]<=row_y;ctx_mask[tail]<=row_mask;end
+      ctx_valid[tail]<=1;ctx_line[tail]<=hit_line;ctx_line_mask[tail]<=resident_hits;
+      ctx_x[tail]<=row_x;ctx_y[tail]<=row_y;ctx_mask[tail]<=row_mask;end
     end
     if(return_fire)begin
      depth_data<=leaf_new_depth;color_data<=leaf_new_color;result_depth_flag<=leaf_dw;result_color_flag<=leaf_cw;
@@ -302,9 +309,11 @@ module gpu_v2_framebuffer_tdp #(
      result_last<=return_key==3;result_context<=result_owner;
      return_key<=return_key+2'd1;if(return_key==3)result_owner<=!result_owner;
     end
-    if(depth_fire&&result_depth_flag)dird[result_addr[7:5]]<=1;
+    for(f=0;f<8;f=f+1)begin
+     if(depth_fire&&result_depth_flag&&result_line_mask[f])dird[f]<=1;
+     if(color_fire_write&&result_color_flag&&result_line_mask[f])dirc[f]<=1;
+    end
     if(color_fire_write)begin
-     if(result_color_flag)dirc[result_addr[7:5]]<=1;
      if(result_last)begin
       commit_valid<=1;commit_x<=ctx_x[result_context];commit_y<=ctx_y[result_context];commit_mask<=ctx_mask[result_context];ctx_valid[result_context]<=0;
      end
@@ -316,6 +325,10 @@ module gpu_v2_framebuffer_tdp #(
  integer pin_count,pi,ti,tj;
  always @*begin pin_count=0;for(pi=0;pi<8;pi=pi+1)pin_count=pin_count+pinned[pi];end
  always @(posedge clk)if(!reset)begin
+  for(ti=0;ti<2;ti=ti+1)
+   if(ctx_valid[ti]&&ctx_line_mask[ti]!== (8'b1<<ctx_line[ti]))$fatal(1,"context line mask binding");
+  if((depth_fire||color_fire_write)&&(!ctx_valid[result_context]||result_line_mask!==(8'b1<<result_addr[7:5])))
+   $fatal(1,"dirty line mask lifetime");
   for(ti=0;ti<8;ti=ti+1)for(tj=ti+1;tj<8;tj=tj+1)
    if(tvalid[ti]&&tvalid[tj]&&tag[ti]==tag[tj])$fatal(1,"duplicate resident tag");
   // All B launch classes exclude a simultaneous new owner independently:
