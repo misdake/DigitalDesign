@@ -94,7 +94,9 @@ loader completions, including while compute CE is low.
 
 Another page's payload/metadata can prefetch while the current meshlet runs.
 Leave `config_bytes=0` for that overlap. `meshlet_done` means that all V/T
-computation and index reads have completed, including rejected triangles. It
+computation and index reads have completed, including rejected triangles. A
+conservatively rejected meshlet can complete with zero published vertices and
+no index/T reads; its already loaded input page is still released normally. It
 does not mean that queued T records or R/I have drained. `meshlet_ready` admits
 the next meshlet after its alternate attribute epoch is free and that permission
 has latched on an enabled idle edge; it no longer waits for R/I idle. Input-page

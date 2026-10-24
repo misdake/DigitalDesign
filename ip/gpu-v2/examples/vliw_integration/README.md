@@ -23,6 +23,7 @@ not replace those implemented contracts or define a CPU submission ABI.
 | tests/vliw_command.py | Bounded full GPU/CP test: three culled meshlets, pingpong DMA, 128-byte command-page wrap, native state, CE0, size-aligned local copies, error and abort; portable/native existing input RAM |
 | tests/vliw_triangle_queue.py | Bounded integer-reference T queue fill, wrap, full-queue reset, CE and output-stall checks in portable/native RAM modes |
 | tests/vliw_numeric_ram.py | Independent constant-table checks before/after H writes and reset, including CE hold, in portable/native RAM modes |
+| tests/vliw_meshlet_cull.py | Conservative X/Z meshlet rejection, independent eight-corner/coverage oracle, CE/backpressure and rejected-epoch lifetime |
 | test_replay_export.py | Small source-identity, peer-isolation and bounded-log regression; includes a tiny Icarus simulation |
 | solid_scene.py | Complete 948-face bunny inside a six-face subdivided room; constant RGB albedos, directional light and selected H9 specular |
 | tests/vliw_prepare_chain.py | Small native/portable preparation regression; optional exhaustive operand-table check |
@@ -233,3 +234,14 @@ and report hashes in [the selected receipt](/ip/gpu-v2/examples/vliw_integration
 It contains only the selected implementation's acceptance evidence; generated
 exports, project files, traces and rejected mapping experiments are not inputs
 to the implementation.
+
+
+For bounded meshlet rejection checks, export the current `frontend` profile and
+run `python ip/gpu-v2/tests/vliw_meshlet_cull.py --export PATH/frontend.v
+--output target/cull-check --native`. Use a fresh output directory. Add
+`--command-export PATH/command.v` to check retained mesh color across a rejected
+meshlet while old T output is held. Without `--native`, use a portable export.
+The test verifies both ROM views, all live retained V/T words, zero reference
+coverage on every rejection, conservative range fallback, CE/backpressure and
+non-consuming attribute-epoch rejection. The selected same-source acceptance
+summary is [meshlet-cull-evidence.json](/ip/gpu-v2/examples/vliw_integration/meshlet-cull-evidence.json).

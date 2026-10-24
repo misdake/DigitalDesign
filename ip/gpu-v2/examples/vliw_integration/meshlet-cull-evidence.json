@@ -1,0 +1,114 @@
+{
+  "scope": "Selected compact meshlet X/Z cull; frozen85f53cee whole-chip comparison, not subsequent maintainer system changes or board proof.",
+  "baseline_commit": "85f53cee4759eba023bff88d119255c1c3d2e75a",
+  "vertex_arithmetic": "unchanged",
+  "precision": "unchanged",
+  "prologue_words": 55,
+  "retained_extra_enabled_cycles": 48,
+  "source_normalized_sha256": {
+    "ip/gpu-v2/src/frontend/vliw/frontend.v": "2fdfcf9bca0148a67e7ec174300a0bfdcac30f2ee77df9f1b3b02be7ebfa686c",
+    "ip/gpu-v2/src/frontend/vliw/meshlet.v": "1a8287f697cf0bc0c32fc5aeb395bbec2244f3e5e299799cc38bcff84965282e",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_rom.v": "48740ab4af25c2e08beb5e32b0a3ff8021cd0c9675dbfe5d4b9fcf9cec3d2109",
+    "ip/gpu-v2/src/frontend/vliw/vertex/bounds_program.py": "ff10c09c3b08a30e09330f12a592996e9366fab50c2bb75c6fddbd5a22488533"
+  },
+  "production_equivalence": {
+    "frontend_and_meshlet": "Text identical to fitted candidate",
+    "compact_rom": "All512 selected words and both native BSRAM banks identical to fitted candidate; only inactive regular branch restored before commit",
+    "compact_image_sha256": "c816e5fdcef4903470e8e39cc2dcc3b22a8972ab054c9302e0558276a9dff285",
+    "regular_image_sha256": "6aebb3e90f886febd2b62420d9c5cc74cf13cdba3ae2bf22c3014310162ac625",
+    "regular_rom": "Entire original85f53cee image restored; compact V/T words0..255 unchanged"
+  },
+  "whole_chip": {
+    "baseline": {
+      "logic": 19579,
+      "cls": 10185,
+      "register": 7900,
+      "bsram": 46,
+      "dsp": 22,
+      "fmax": {
+        "pixel_clk": {
+          "required": 33.3,
+          "reported": 109.377
+        },
+        "controller_clk": {
+          "required": 108.0,
+          "reported": 131.28
+        },
+        "cpu_clk": {
+          "required": 54.0,
+          "reported": 59.668
+        }
+      }
+    },
+    "selected": {
+      "logic": 19576,
+      "cls": 10194,
+      "register": 7902,
+      "bsram": 46,
+      "dsp": 22,
+      "setup_violations": 0,
+      "hold_violations": 0,
+      "fmax": {
+        "pixel_clk": {
+          "required": 33.3,
+          "reported": 108.133
+        },
+        "controller_clk": {
+          "required": 108.0,
+          "reported": 110.5
+        },
+        "cpu_clk": {
+          "required": 54.0,
+          "reported": 55.1
+        }
+      },
+      "report_sha256": "b7f7b43f766747d327fa310e548b94c0f3b31a5993b75e0555ac5a0e730001d9",
+      "timing_sha256": "bfd6743fef78f706c799dfbfd865f4a5f5431a1293036451bb6de03188b9d0c4"
+    },
+    "controls": "Same original place1/route2,54/108MHz CL3, board CST and SDC; only3 GPU modules differ, other30 input files byte-identical.",
+    "attribution": "Net-3 Logic includes unchanged-module mapping changes; it is not the intrinsic cull cost. CLS+9 and smaller timing margin remain visible."
+  },
+  "validation": {
+    "native": "14 cases, enabled/disabled, CE/backpressure and held-T rejected-epoch/mesh-color overlap passed",
+    "portable": "14 cases, enabled/disabled, CE/backpressure and held-T rejected-epoch overlap passed",
+    "rom": "Both compact/regular, native/portable views checked; regeneration exact",
+    "native_export_sha256": "3e82360093e71a678d40165a1779f39ed4ebd6f8c7a06b0d62142492e9127e1f",
+    "portable_export_sha256": "a5a3f6a1bcbe75a99442e35bb2d36de23c48308234df467c6a00127490d1ab65",
+    "command_export_sha256": "6c93653d1b411ef8721856efcbcba4bb5e5a399d505c8a82d8b85f2117eb208d",
+    "gpu_tests": "826 passed,0 failed,151 ignored; release gpu-v2 test targets",
+    "clippy": "gpu-v2 --all-targets -- -D warnings passed",
+    "static_checks": "Layering, source hygiene, docs and diff checks passed"
+  },
+  "performance": [
+    {
+      "name": "box",
+      "baseline_total": 115305,
+      "candidate_total": 115353,
+      "coverage_pixels": 24400,
+      "culled_meshlets": 0,
+      "input_meshlets": 1,
+      "outputs_identical": true
+    },
+    {
+      "name": "rabbit-front",
+      "baseline_total": 49869,
+      "candidate_total": 49912,
+      "coverage_pixels": 2292,
+      "culled_meshlets": 0,
+      "input_meshlets": 2,
+      "outputs_identical": true
+    },
+    {
+      "name": "rabbit-behind",
+      "baseline_total": 16989,
+      "candidate_total": 11313,
+      "coverage_pixels": 0,
+      "culled_meshlets": 2,
+      "input_meshlets": 2,
+      "outputs_identical": true,
+      "camera_translation_z_f16": -262144
+    }
+  ],
+  "replay_scope": "Complete GPU plus identical MC/pin-model/golden; initial load and final flush included; box single face and first2 complete rabbit meshlets, not full948 faces.",
+  "artifact_boundary": "Only current implementation, bounded regression, specifications and this selected evidence; no generated RTL, images, raw logs or rejected variants."
+}

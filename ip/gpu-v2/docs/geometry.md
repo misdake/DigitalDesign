@@ -12,6 +12,53 @@ can be replaced after its own imports, scan and arithmetic returns drain;
 previously copied quads remain owned by downstream processing. This permits
 triangle overlap without changing global uniforms while old fragments are live.
 
+## Conservative meshlet rejection
+
+The compact meshlet composition runs an X/Z support test before the first V.
+It uses the quantized input box already implied by the metadata:
+`origin[k] <= p[k] <= origin[k] + (1023 << quant_shift)`. No new header,
+precomputed plane, driver table or DMA transaction is required. This rejects a
+box entirely behind the camera or sufficiently outside either horizontal side.
+It does not test the vertical sides, near/far distance, occlusion or backfaces.
+
+The projection contract is that every horizontal viewport ray satisfies
+`abs(ray_x) <= ray_z` in camera coordinates. Producers using a wider horizontal
+field of view must disable `BOUNDS_CULL` at elaboration; this is not a runtime
+cull-state bit. The ordinary frontend defaults it off; `shared_meshlet` enables
+it with `SP_COMPACT=1`. The regular, noncompact T ROM is preserved and does not
+support this prologue.
+
+For the raw signed accumulation `Rj = sum(p[k]*M[4*j+k]) + (M[4*j+3] << 16)`,
+select each box endpoint from the coefficient sign to obtain the maximum or
+minimum. The existing MAC computes the three support dots. With
+`z = floor(max(Rz)/65536)`, the predicates are:
+
+```text
+if z <= 0:                         reject behind
+if max(Rx) + (z << 16) < -2^32:    reject left
+if min(Rx) - (z << 16) >  2^32:    reject right
+otherwise:                         run the unchanged V/T program
+```
+
+A maximum positive raw Z that truncates to zero cannot produce a positive
+transformed Z. The horizontal guard band deliberately permits false negatives;
+it does not reject a box intersecting the supported viewport cone. This is an
+automatic conservative optimization, independent of triangle winding culling.
+
+Eligibility is checked serially through the existing unpacker sign-prefix taps.
+All origins must fit signed25, `quant_shift <= 14`, and each used matrix row
+must have signed20 coefficients and signed30 translation. Failure clears one
+sticky safety bit and retains the meshlet. Z eligibility is complete before the
+behind test; the X row is checked before either side test. A valid Z test does
+not require the later X row to be valid. The bounds imply `abs(p[k]) < 2^25` and
+`abs(Rj) < 5*2^44 < 2^47`, so the original 54-bit MAC and signed32 V result do not
+overflow during an eligible test. Ineligible inputs retain the original V/T
+behavior rather than acquiring a new input-format restriction.
+
+Retained V and T arithmetic, quantization and result words are unchanged.
+Rejected meshlets publish no V or T records, complete normally, and leave the
+alternate attribute epoch free. Already completed payload DMA is not saved.
+
 ## Vertex transform
 
 For component k, decode source position and normal as integer codes:
@@ -315,14 +362,16 @@ executes all V before T; it is not duplicated.
 Epochs alternate at a validated meshlet boundary. With at most two live epochs,
 the alternate epoch is free exactly when the T FIFO is empty or its head belongs
 to the current epoch. FIFO order and item15 retirement establish this condition;
-there are no per-epoch reference counters. An empty/rejected meshlet can make
-this test conservative, but cannot permit early overwrite. Input-page identity
+there are no per-epoch reference counters. A meshlet rejected by the bounds
+prologue does not toggle the epoch or consume that permission. Input-page identity
 is independent of attribute epoch. While the controller is idle, this condition
 can only become true, so admission latches it on an enabled edge and clears the
 latch on start acceptance. `meshlet_ready` therefore has no combinational path
 from the FIFO head to the enclosing start logic. Availability becoming true can
-cost one enabled admission edge. A validated header then resets the V count and
-toggles the epoch directly; the invariant is checked in simulation instead of
+cost one enabled admission edge. A validated header resets the V count. With
+bounds enabled, the final keep/fallback decision toggles the epoch before the
+first V; a rejection leaves it unchanged. With bounds disabled, the header
+boundary toggles it directly. The invariant is checked in simulation instead of
 repeating the admission predicate in the reset fanout. Full frontend idle still
 requires the complete T FIFO and R/I pipeline to drain.
 
