@@ -16,7 +16,6 @@ pub mod system_sim;
 // visible at composition sites.
 pub(crate) use cpu_v3::*;
 pub(crate) use digital_design_hardware::*;
-pub(crate) use digital_design_hardware_gowin::*;
 pub use display_device::*;
 pub use gpu_device::*;
 pub use hardware::*;

@@ -1,5 +1,11 @@
 # Eight-DPB framebuffer storage and quad owner
 
+This is a historical component record for retired RTL, not the current
+framebuffer specification. Implementation and pending-work statements below
+refer to that historical baseline. Current behavior belongs to
+[GPU framebuffer](/ip/gpu-v2/docs/framebuffer.md) and
+[GPU memory](/ip/gpu-v2/docs/memory.md).
+
 Accepted on 2026-09-27. The independently verified component consists of
 `framebuffer_lane_array.v` and `fused_framebuffer_pipe.v` under `src/hardware/gpu`.
 It is instantiated by the production GPU export on the display work-1 baseline.
@@ -229,21 +235,6 @@ are assertions. Suppressed Z writes, a wrong read bank, premature source release
 write address theft each reproduce the expected independent failure. A stuck
 execution lane-order bit also fails the full-source-bit oracle. All waits are bounded.
 
-```powershell
-# Set IVERILOG_EXE, VVP_EXE and GOWIN_HOME for the installed tools.
-scripts/run-cargo.ps1 -Subcommand test -Label framebuffer-native -CargoArgs @(
-  '-p','cpu-v3-tang-nano-20k','--lib','hardware::gpu::fused_framebuffer_tests',
-  '--','--ignored','--nocapture','--test-threads=1')
-python scripts/measure-gpu-framebuffer.py
-scripts/run-cargo.ps1 -Subcommand test -Label framebuffer-production -CargoArgs @(
-  '-p','cpu-v3-tang-nano-20k','--test','gpu_trace_cosim',
-  '--','--ignored','--nocapture','--test-threads=1')
-```
-
-Production source retention and ordered END retirement are integrated. Real
-execution and concurrent sector lifecycle/cleaner correctness remain pending.
-Early raster prefetch must carry tile/sector intent, acquire ownership before
-use and preserve target/generation/error semantics; it is a retained requirement,
-not implemented by this component. See the production attachment above for the
-current integration boundary. Physical validation of the new integration remains
-pending.
+The retired component fit script and its test entry points are no longer
+supported. These measurements do not qualify the current GPU integration or
+board image; use the current GPU specifications and audited system workflow.

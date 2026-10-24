@@ -1,8 +1,8 @@
 //! Host display simulator for the configured single application.
 //!
-//! The application (`rcc/display-demo.rs`) renders tile-gradient waves and
-//! an inline viewport triangle. `boot-applications.conf` selects the source,
-//! and the build script generates the same fixed-entry Flash package as the FPGA.
+//! `boot-applications.conf` selects the source. The build script generates the
+//! same CB06 Flash package as the FPGA; the default CPU-only diagnostic fills
+//! and presents alternating RGB565 surfaces.
 
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]

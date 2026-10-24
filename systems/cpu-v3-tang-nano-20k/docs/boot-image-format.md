@@ -66,6 +66,10 @@ application can import mod boot_resources and use NAME_BYTE_ADDRESS_LOW/HIGH
 and NAME_WORD_ADDRESS_LOW/HIGH u16 constants. Full addresses are split explicitly
 because this RCC frontend has no u32 type; no compiler or far-pointer ISA is added.
 RCC still initializes nonzero statics and sets SP=0xc000.
+
+Device2 is unassigned. The cold loader has no software-programmable DMA register
+bank; it starts after PLL/SDRAM readiness and is controlled by the CB06 stream.
+
 The compiler publishes the exclusive end of its static allocation in words.
 With the system's fixed data base of zero, the packer emits one ZERO of twice
 that word count; a zero count omits the command. The count includes module and

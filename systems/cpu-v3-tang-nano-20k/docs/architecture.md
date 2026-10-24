@@ -325,8 +325,7 @@ condition.
 Device indices 1 and 2 are unassigned in this system; the former selection and
 programmable DMA register banks are absent. The selected application is the
 [CPU-only Display diagnostic](/systems/cpu-v3-tang-nano-20k/docs/system-display-test.md),
-`rcc/system-display-test.rs`. The historical `rcc/display-demo.rs` is not a
-driver for the current GPU. `rcc/device_abi.rs` now names the two-SEND ABI;
+`rcc/system-display-test.rs`. `rcc/device_abi.rs` names the two-SEND ABI;
 the [RCC driver](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md) provides one
 opaque command buffer, high-memory storage, scoped DSEG3 access and a complete
 Clear/Store Pass with ordered multi-Mesh/Instance recording, immutable high-memory
