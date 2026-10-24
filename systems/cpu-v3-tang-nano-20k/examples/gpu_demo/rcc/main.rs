@@ -69,7 +69,7 @@ fn demo_wait(cb: u16, present: bool, budget: u16) -> u16 {
 }
 fn demo_run(limit: u16, budget: u16) {
     demo_overlay_init(CELLS.as_array(), STATS.as_array());
-    demo_require(gpu_init() == GPU_IDLE, 1);
+    demo_require(gpu_init_with_format(DISPLAY_LINEAR_RGB565) == GPU_IDLE, 1);
     let mut mesh: GpuMesh = GpuMesh {
         directory_sector: DEMO_MESH_DIRECTORY,
         directory_word: 0,

@@ -27,7 +27,10 @@ Each frame reads45 words containing21 Q16.16 matrix values and three signed
 light values through the existing bounded DSEG3 window. It records room,
 RGB triangle, then rabbit with matching material transitions, followed by UI.
 One CB is reused after actual GPU completion, presentation and old-read drain.
-The shared driver, hardware and default boot configuration are unchanged.
+The default boot selection is unchanged. The demo explicitly requests linear
+RGB565 scanout through gpu_init_with_format, retaining the original scene
+linear-to-screen conversion. Raw RGB565 bypasses that conversion and appears
+darker with the same framebuffer colors; mesh colors and lighting are unchanged.
 
 Only the preceding successful full-loop millisecond number appears at row1,
 column2, with no leading zeros or FRAME/MS labels. Zero is one `0`; invalid and

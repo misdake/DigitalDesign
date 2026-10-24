@@ -41,10 +41,17 @@ pub const GPU_CB_NONE: u16 = 0;
 pub const GPU_CB_HANDLE: u16 = 1;
 
 pub fn gpu_init() -> u16 {
+    gpu_init_with_format(DISPLAY_RGB565)
+}
+// Linear GPU colors need Display's existing linear-to-screen encoding.
+pub fn gpu_init_with_format(format: u16) -> u16 {
+    if format > DISPLAY_LINEAR_RGB565 {
+        return GPU_REJECTED;
+    }
     if GPU_DRIVER.as_array()[0u16] != 0 {
         return GPU_REJECTED;
     }
-    let display = gpu_display_init();
+    let display = gpu_display_init_format(format);
     if display != GPU_IDLE && display != GPU_PENDING {
         return display;
     }

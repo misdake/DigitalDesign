@@ -12,6 +12,7 @@ Display diagnostic remains selected in the boot config.
 | Call | Result and ownership |
 |---|---|
 | `gpu_init()` | Initialize once from actual GPU/Display state; Pending for an unknown in-flight owner or unstable snapshot, Fault for invalid active/format/health. Repeated init is rejected without forgetting work. |
+| `gpu_init_with_format(format)` | Explicit output encoding: DISPLAY_RGB565=0 or DISPLAY_LINEAR_RGB565=1. Linear mode can adopt a valid raw or linear Front and stages linear encoding with the next actual swap; unsupported values reject before initialization. |
 | `gpu_cb_begin()` | Return an opaque nonzero identity, or zero when recording/reuse is unavailable. Only a new or explicitly completed CB can begin. |
 | `gpu_pass_clear(cb, rgb565, d16)` | Record the complete pass. False preserves cursors/state on validation or capacity failure. No raw command, address, length or DMA/window pointer is an application argument. |
 | `gpu_pass_begin(cb, rgb565, d16)` | Reserve the confirmed Writable non-Front color, begin the sole Pass, and clear it and Depth. Return an opaque identity or zero. |
@@ -152,7 +153,13 @@ checking ownership; Completed is an observation result, not a hardware ticket.
 
 A Display observation reads status, active low/high, format, then status again.
 Changing status yields Pending and retries within the caller's bound. A stable
-pending=0 snapshot must match the expected A/B target and tiled RGB565 format.
+pending=0 snapshot must match the expected A/B target and its expected tiled format.
+Default `gpu_init()` retains strict raw RGB565 behavior. Explicit linear initialization
+tracks the old Front encoding separately from the requested encoding: Pending must
+retain the old format, and actual swap completion must expose the requested one.
+Linear RGB565 uses Display's existing linear-to-screen conversion; it does not
+change GPU color data or lighting. The desired format is staged with the address
+before NEXT_SWAP and becomes Front's format only after actual confirmation.
 While an owned swap is still pending the active address must remain the old
 Front. Only one software writer may stage/submit Display; unknown pending after
 initialization, unexpected active changes, partial staging, invalid address,

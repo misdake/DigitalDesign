@@ -5,6 +5,8 @@ use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
 struct State {
     active: u32,
     format: u16,
+    shadow_format: u16,
+    next_format: u16,
     pending: bool,
     next: u32,
     shadow: u32,
@@ -53,12 +55,16 @@ impl cpu_v3::Device for Peer {
             }
             (3, 1) => s.shadow = (s.shadow & 0xffff0000) | u32::from(value),
             (3, 2) => s.shadow = (s.shadow & 65535) | (u32::from(value) << 16),
-            (3, 4) => assert_eq!(value, 0),
+            (3, 4) => {
+                assert!(value <= 1);
+                s.shadow_format = value;
+            }
             (3, 3) => {
                 assert_eq!(value, 1);
                 assert!(!s.pending);
                 s.pending = true;
                 s.next = s.shadow;
+                s.next_format = s.shadow_format;
                 s.swaps += 1;
             }
             (7, 0) => match value {
@@ -69,6 +75,7 @@ impl cpu_v3::Device for Peer {
                     s.frame = s.frame.wrapping_add(1);
                     if s.pending {
                         s.active = s.next;
+                        s.format = s.next_format;
                         s.pending = false;
                     }
                 }
@@ -209,4 +216,46 @@ fn compiled_invalid_target_and_maintenance_failure_do_not_launch() {
         initial(),
     );
     assert_eq!((s.starts, s.swaps), (0, 0));
+}
+
+#[test]
+fn compiled_linear_format_tracks_old_front_until_actual_swap() {
+    let s = run(
+        r#"
+ check(gpu_init_with_format(2)==GPU_REJECTED);
+ check(gpu_init_with_format(DISPLAY_LINEAR_RGB565)==GPU_IDLE);
+ check(dev_recv(3,4)==DISPLAY_RGB565);
+ let c=gpu_cb_begin();check(gpu_pass_clear(c,0,65535));check(gpu_submit_idle(c)==GPU_PENDING);
+ dev_send(7,0,0);check(gpu_poll(c)==GPU_COMPLETED);check(gpu_present(c)==GPU_PENDING);
+ check(dev_recv(3,4)==DISPLAY_RGB565);check(gpu_present_poll()==GPU_PENDING);check(gpu_cb_begin()==0);
+ dev_send(7,0,3);check(gpu_present_poll()==GPU_COMPLETED);check(dev_recv(3,4)==DISPLAY_LINEAR_RGB565);
+ let c=gpu_cb_begin();check(gpu_pass_clear(c,0,65535));check(gpu_submit_idle(c)==GPU_PENDING);
+ dev_send(7,0,0);check(gpu_poll(c)==GPU_COMPLETED);check(gpu_present(c)==GPU_PENDING);
+ check(gpu_present_poll()==GPU_PENDING);dev_send(7,0,3);check(gpu_present_poll()==GPU_COMPLETED);
+ "#,
+        initial(),
+    );
+    assert_eq!(s.swaps, 2);
+    assert_eq!(s.format, 1);
+    run(
+        "check(gpu_init_with_format(DISPLAY_LINEAR_RGB565)==GPU_IDLE);check(gpu_cb_begin()==1);",
+        State {
+            format: 1,
+            ..initial()
+        },
+    );
+}
+#[test]
+fn compiled_unexpected_early_linear_format_retains_pending() {
+    let s = run(
+        r#"
+ check(gpu_init_with_format(DISPLAY_LINEAR_RGB565)==GPU_IDLE);
+ let c=gpu_cb_begin();check(gpu_pass_clear(c,0,65535));check(gpu_submit_idle(c)==GPU_PENDING);
+ dev_send(7,0,0);check(gpu_poll(c)==GPU_COMPLETED);check(gpu_present(c)==GPU_PENDING);
+ dev_send(7,0,10);check(gpu_present_poll()==GPU_FAULT);check(gpu_cb_begin()==0);
+ "#,
+        initial(),
+    );
+    assert!(s.pending);
+    assert_eq!(s.swaps, 1);
 }

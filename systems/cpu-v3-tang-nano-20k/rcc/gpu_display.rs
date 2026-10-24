@@ -5,8 +5,9 @@ use device_abi::*;
 mod gpu_layout;
 use gpu_layout::*;
 // phase(0=new,1=unknown pending,2=owned,3=fault), Front, Pending,
-// Ready, Reserved, Rendering. Color identities are A=1/B=2, never addresses.
-static GPU_DISPLAY: Buf<u16, 6> = Buf::new([0; 6]);
+// Ready, Reserved, Rendering, Front format, desired format.
+// Color identities are A=1/B=2, never addresses.
+static GPU_DISPLAY: Buf<u16, 8> = Buf::new([0; 8]);
 fn gpu_display_fault() -> u16 {
     GPU_DISPLAY.as_array()[0u16] = 3;
     GPU_FAULT
@@ -68,16 +69,27 @@ fn gpu_display_refresh() -> u16 {
     if s[1u16] == GPU_COLOR_B_SECTOR << 6 && s[2u16] == GPU_COLOR_B_SECTOR >> 10 {
         active = 2;
     }
-    if active == 0 || s[3u16] != DISPLAY_RGB565 {
+    if active == 0 || s[3u16] > DISPLAY_LINEAR_RGB565 {
         return gpu_display_fault();
     }
     if d[0u16] == 1 {
+        if d[7u16] == DISPLAY_RGB565 && s[3u16] != DISPLAY_RGB565 {
+            return gpu_display_fault();
+        }
         if s[0u16] != 0 {
             return GPU_PENDING;
         }
         d[1u16] = active;
+        d[6u16] = s[3u16];
         d[0u16] = 2;
         return GPU_IDLE;
+    }
+    let mut expected_format = d[6u16];
+    if d[2u16] != 0 && s[0u16] == 0 {
+        expected_format = d[7u16];
+    }
+    if s[3u16] != expected_format {
+        return gpu_display_fault();
     }
     if d[2u16] != 0 {
         if s[0u16] != 0 {
@@ -92,6 +104,7 @@ fn gpu_display_refresh() -> u16 {
         // The RTL clears Pending only at frame event + frame_complete,
         // after the final old external read response, not after NEXT_SWAP.
         d[1u16] = active;
+        d[6u16] = s[3u16];
         d[2u16] = 0;
         return GPU_COMPLETED;
     }
@@ -101,10 +114,14 @@ fn gpu_display_refresh() -> u16 {
     GPU_IDLE
 }
 fn gpu_display_init() -> u16 {
+    gpu_display_init_format(DISPLAY_RGB565)
+}
+fn gpu_display_init_format(format: u16) -> u16 {
     let mut d = GPU_DISPLAY.as_array();
     if d[0u16] != 0 {
         return GPU_REJECTED;
     }
+    d[7u16] = format;
     d[0u16] = 1;
     gpu_display_refresh()
 }
@@ -218,7 +235,7 @@ fn gpu_display_present(sector: u16) -> u16 {
     d[3u16] = 0;
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, sector << 6);
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, sector >> 10);
-    dev_send(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT, DISPLAY_RGB565);
+    dev_send(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT, d[7u16]);
     dev_send(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND, DISPLAY_NEXT_SWAP);
     GPU_PENDING
 }
