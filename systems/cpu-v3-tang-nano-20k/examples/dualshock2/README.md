@@ -1,9 +1,9 @@
 # Standalone DS2 cold-boot test
 
-This RCC application uses the actual CPU-system Device5 packet engine. It configures
-analog mode and reports connection, ID, buttons, and four independent raw axes
+This RCC application uses the actual CPU-system autonomous Device5 receiver. Hardware configures
+analog mode; the application reads the latest snapshot and reports connection, ID, buttons, and four independent raw axes
 on the system UART (115200 baud, 8N1). It does not submit GPU work or draw 3D.
-LED0 means application running; LED1 means a valid analog snapshot is connected.
+LED0 means application running; LED1 means a valid digital or analog snapshot is connected.
 The existing cold-start Display remains virtual black until explicitly presented.
 
 For an on-screen diagnostic with numeric axes, button indicators and two stick
@@ -25,7 +25,7 @@ The same environment selects this application for a later approved full build.
 
 The main artifact is `cpu-v3-boot.bin` (CB06), with `application.v3bin`, static
 word count, map, source-derived resource constants and asset manifest. Do not
-manually copy instruction or Flash arrays into source. Gateware must use this packet-engine DS2 profile; old byte-engine software
+manually copy instruction or Flash arrays into source. Gateware must use this latest-snapshot DS2 profile; old packet/byte-engine software
 and hardware are incompatible: the older six-LED bitstream drives DAT/pin19 and is
 unsuitable. The Maintainer owns final combined synthesis, PnR, STA/SDF, resource
 and image-identity audits. No physical qualification is claimed by export.
@@ -94,7 +94,7 @@ test.
 ```
 
 Evidence is written under `target/dualshock2-validation`. Each simulator has a
-global cycle limit; CPU tests use the actual production packet engine and an
+global cycle limit; CPU tests use the actual production autonomous receiver and an
 independent serial controller, plus real CPU/D-cache and wall-clock/watch logic.
 The preserved sibling `examples/dualshock2_protocol` is an independent Python
 research reference, not an implementation dependency or hardware proof.

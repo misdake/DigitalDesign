@@ -119,7 +119,7 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
         DeviceAllocation {
             name: "dualshock2",
             device: 5,
-            channels: &[0, 1],
+            channels: &[0, 1, 2, 3, 4, 5, 6, 7, 8],
         },
     ];
 }

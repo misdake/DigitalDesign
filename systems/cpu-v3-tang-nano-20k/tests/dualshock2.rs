@@ -3,7 +3,7 @@ use cpu_v3_tang_nano_20k::DualShock2;
 use digital_design_hardware::{GeneratedVerilogProject, HardwareIdentity, VerilogProject};
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
-fn run_rtl(name: &str, projects: Vec<GeneratedVerilogProject>, tb: String) {
+fn run_rtl(name: &str, projects: Vec<GeneratedVerilogProject>, tb: String, native: bool) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/dualshock2-validation")
         .join(name);
@@ -27,14 +27,20 @@ fn run_rtl(name: &str, projects: Vec<GeneratedVerilogProject>, tb: String) {
     let path = root.join("tb.v");
     std::fs::write(&path, tb).unwrap();
     let image = root.join("tb.vvp");
-    let output =
-        Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()))
-            .args(["-g2012", "-s", "tb", "-o"])
-            .arg(&image)
-            .args(paths)
-            .arg(path)
-            .output()
-            .unwrap();
+    let mut command =
+        Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()));
+    command.args(["-g2012", "-s", "tb", "-o"]).arg(&image);
+    if native {
+        command.arg(
+            PathBuf::from(
+                std::env::var_os("GOWIN_HOME").expect("native RAM test needs GOWIN_HOME"),
+            )
+            .join("IDE/simlib/gw2a/prim_sim.v"),
+        );
+    } else {
+        command.arg("-DPORTABLE");
+    }
+    let output = command.args(paths).arg(path).output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -62,12 +68,26 @@ fn packet_engine_serial_peer() {
         vec![VerilogProject::generate::<DualShock2>().unwrap()],
         include_str!("dualshock2_engine_tb.v")
             .replace("__DS2__", &DualShock2::verilog_identity().module_name()),
+        false,
+    );
+}
+
+#[test]
+#[ignore = "bounded production divider and native RAM16SDP4 models; needs Gowin"]
+fn native_ram_default_wire_timing() {
+    run_rtl(
+        "native-default",
+        vec![VerilogProject::generate::<DualShock2>().unwrap()],
+        include_str!("dualshock2_engine_tb.v")
+            .replace("__DS2__", &DualShock2::verilog_identity().module_name())
+            .replace("parameter DIV_BITS=2;", "parameter DIV_BITS=8;"),
+        true,
     );
 }
 
 #[test]
 #[ignore = "bounded actual CPU, D-cache, Device0 clock/watch and serial Device5"]
-fn actual_cpu_configures_and_polls_serial_peer() {
+fn actual_cpu_reads_autonomous_serial_snapshots() {
     use cpu_v3::{rcc_backend, CpuV3Core, CpuV3DataCache};
     use cpu_v3_tang_nano_20k::SystemControlDevice;
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
@@ -102,7 +122,7 @@ fn actual_cpu_configures_and_polls_serial_peer() {
         )
         .replace("rom[0:255]", "rom[0:65535]")
         .replace("rom[iaddr[7:0]]", "rom[iaddr[15:0]]")
-        .replace("cycles>5000", "cycles>30000000")
+        .replace("cycles>5000", "cycles>4000000")
         .replace(
             "wire finite_pause = CASE==1 && dresp && pause_count<5;",
             "wire finite_pause = pause_left>0;",
@@ -115,7 +135,7 @@ fn actual_cpu_configures_and_polls_serial_peer() {
         .replace(".device_write_enable(device_write_enable)",".device_write_enable(device_write_enable&&!watch_enable)")
         .replace(".device_read_data(device_read_data)",".device_read_data(sysctl_data)")
         .replace(".watch_read_data(16'd0),",".watch_read_data(device_read_data),.watch_device_index(watch_index),.watch_device_channel(watch_channel),.watch_read_enable(watch_enable),");
-    tb.replace_range(start..end,&format!("wire [2:0] watch_index;wire [3:0] watch_channel;wire watch_enable;wire [15:0] sysctl_data;\nwire [2:0] query_index=watch_enable?watch_index:device_index;\nwire [3:0] query_channel=watch_enable?watch_channel:device_channel;\nassign device_read_data=sysctl_data|ds2_read_data;\n{instance}"));
+    tb.replace_range(start..end,&format!("wire [2:0] watch_index;wire [3:0] watch_channel;wire watch_enable;wire [15:0] sysctl_data,test_data;\nwire [2:0] query_index=watch_enable?watch_index:device_index;\nwire [3:0] query_channel=watch_enable?watch_channel:device_channel;\nassign device_read_data=sysctl_data|ds2_read_data|test_data;\n{instance}"));
     tb.push_str(include_str!("dualshock2_cpu_peer.vh"));
     tb = tb
         .replace("__PROGRAM__", &init)
@@ -138,6 +158,7 @@ fn actual_cpu_configures_and_polls_serial_peer() {
             VerilogProject::generate::<DualShock2>().unwrap(),
         ],
         tb,
+        false,
     );
 }
 
@@ -151,5 +172,5 @@ fn packet_buffer_claims_only_distributed_ram() {
         .collect();
     assert_eq!(amounts.len(), 1);
     assert_eq!(amounts[0].kind, ResourceKind::SsramBit);
-    assert_eq!(amounts[0].amount, 256);
+    assert_eq!(amounts[0].amount, 128);
 }

@@ -6,8 +6,8 @@ and default boot selection unchanged. No 3D scene or game is included.
 
 The400x240 screen (800x480 physical output) shows:
 
-- Connection state, reply ID, and successful analog sample count. ID and sample
-  count are hexadecimal; configuration replies never count as analog samples.
+- Connection state, reply ID, and observed input sample count. ID and sample
+  count are hexadecimal; configuration replies never count as input samples.
 - Held buttons and accumulated press/release masks, all hexadecimal. Events
   since the preceding UI recording are consumed only after that recording.
 - LX/LY and RX/RY in decimal000..255. Center is128. Positive X is right and
@@ -77,20 +77,19 @@ After the true GPU completion, it presents through the existing A/B ownership
 API and waits for the actual Display handoff before reusing storage. Palette
 values are raw display RGB565, selected by `gpu_init()`.
 
-`dui_service` starts/checks/collects a packet without waiting for serial bits.
+`dui_service` reads the latest complete snapshot without waiting for serial bits.
 It runs before each recording and during GPU/present polling, accumulating
-button events. Its16ms connected cadence is start-to-start; a once-per-frame
-caller can collect and restart together. It does not own or clear the shared
-microsecond timer. GPU/Display waits use the millisecond clock with a2s deadline.
+observed button events. Hardware polls every9.71ms even when the CPU is busy.
+It does not own or clear the shared microsecond timer. GPU/Display waits use the millisecond clock with a2s deadline.
 Driver faults halt with0xd500|stage and light both LEDs. LED0 means running;
-LED1 means connected analog input.
+LED1 means connected digital or analog input.
 
 The calibrated yellow point retains square travel. The green point maps each
 ray's fractional square travel into a circle before dead-zone rescaling; a
 partially pushed diagonal no longer reaches full strength prematurely.
 
-This application requires the **packet-engine** DS2 full-system bitstream.
-Earlier single-byte DS2 images are incompatible and cannot be reused. Left
+This application requires the **autonomous latest-snapshot** DS2 full-system bitstream.
+Earlier packet/byte DS2 images are incompatible and cannot be reused. Left
 CLK/CMD/DAT/ATT remain17/20/19/18 with only LED0/1 outputs. The old six-LED profile
 is unsuitable. Pin orientation,3.3V/GND and physical checks are in the minimal
 README. Building is offline; full source/configuration, complete routed timing

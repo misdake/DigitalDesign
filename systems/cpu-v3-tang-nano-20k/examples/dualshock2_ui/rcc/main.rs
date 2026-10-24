@@ -8,8 +8,8 @@ mod time;
 use panel::*;
 use stick_controls::*;
 
-static INPUT: Buf<u16, 16> = Buf::new([0; 16]);
-static PACKET: Buf<u16, 21> = Buf::new([0; 21]);
+static INPUT: Buf<u16, 10> = Buf::new([0; 10]);
+static PACKET: Buf<u16, 9> = Buf::new([0; 9]);
 static EVENTS: Buf<u16, 3> = Buf::new([0; 3]);
 
 fn dui_require(ok: bool, code: u16) {
@@ -46,7 +46,7 @@ fn dui_wait(cb: u16, present: bool) -> u16 {
         if time_elapsed_ms(begin, time_milliseconds()) >= 2000 {
             return GPU_TIMEOUT;
         }
-        // Start/check/collect only; serial progress never holds this CPU loop.
+        // Read the latest complete snapshot; acquisition never waits for this loop.
         dui_service();
     }
     return GPU_TIMEOUT;
