@@ -5,7 +5,7 @@ module tb;
 __DISPLAY_CONFIG__
 reg clk=0,pixel_clock=0,serial_clock=0,reset=1,video_locked=0;
 reg boot_enable=0,boot_failed=0;
-wire started_ack,startup_error;
+wire started_ack,startup_error,frame_event;
 always #9.259 clk=~clk;
 always #(__PIXEL_HALF_PERIOD__) pixel_clock=~pixel_clock;
 always #1 serial_clock=~serial_clock;

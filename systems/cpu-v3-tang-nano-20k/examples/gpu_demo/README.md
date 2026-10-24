@@ -55,15 +55,22 @@ zeros or FRAME/MS labels. First, failed and saturated intervals emit no UI call.
 The application clears Device0 channel11 before input/camera/CB preparation and
 reads it after actual GPU completion/drain, before calling present. Thus the
 interval includes CPU preparation/upload and GPU work but excludes present,
-vblank and subsequent UART reporting. A65535us reading is invalid, not wrapped.
+vblank and idle UART waiting. Nonblocking report work can overlap GPU waits;
+there is no UART-ready spin inside a running frame. A65535us reading is invalid, not wrapped.
 Only successful presentation promotes that locked interval to the next display.
 
 The demo sets its final UI object and draws only the visible glyph range
 `[52,52+glyphs)`, initializing only intersecting packed words. Each frame's
 3D redraw removes old text. Descriptor reuse and button visibility remain.
-DDGD telemetry version3 reports each newly completed frame's locked rendering
-interval after presentation, in raw microseconds;
-packet length/checksum/status/completed count are unchanged;65535 denotes
+DDGD telemetry version3 reports a successfully presented frame's locked rendering
+interval in raw microseconds. Immediately after present returns, the next loop
+reads input before preparing that report. Bytes are sent nonblocking, one at a
+time, only while GPU/present remains pending. An unusually short frame or slow
+UART preserves an in-flight complete packet and may omit a success report; the
+reported frame count makes omissions observable. Error reporting drains the
+previous packet and reliably sends the error before halting. Bounded test exit
+may drain remaining reports. There is no report wait between present return and
+the next input read. Packet length/checksum/status/completed count are unchanged;65535 denotes
 an overrange interval and is not a valid displayed duration. The2000ms
 polling budgets and20ms button debounce retain the independent millisecond
 clock. No full scene or image comparison is required for timer validation.

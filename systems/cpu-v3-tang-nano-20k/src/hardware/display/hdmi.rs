@@ -37,6 +37,7 @@ pub struct FramebufferHdmiOutput {
     pub underflow: Wire,
     pub started_ack: Wire,
     pub startup_error: Wire,
+    pub frame_event: Wire,
     pub device_read_data: Wires<16>,
     pub tmds_clk_p: Wire,
     pub tmds_clk_n: Wire,

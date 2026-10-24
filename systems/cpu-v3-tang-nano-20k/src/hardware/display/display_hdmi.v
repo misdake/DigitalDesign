@@ -9,7 +9,7 @@ module FramebufferHdmi(
     input wire [15:0] device_write_data,
     output wire memory_request_valid, output wire memory_urgent,
     output wire [21:0] memory_address, output wire underflow,
-    output wire started_ack, output wire startup_error,
+    output wire started_ack, output wire startup_error, output wire frame_event,
     output reg [15:0] device_read_data,
     output wire tmds_clk_p, output wire tmds_clk_n,
     output wire [2:0] tmds_data_p, output wire [2:0] tmds_data_n
@@ -53,6 +53,7 @@ reg next_pending=0, invalid_address=0;
 reg frame_complete=0;
 reg [15:0] frame_index=0;
 reg frame_meta=0, frame_sync=0, frame_seen=0, frame_toggle=0;
+assign frame_event=frame_sync!=frame_seen;
 reg underflow_sticky=0, underflow_meta=0, underflow_sync=0;
 reg [4:0] burst_index=0;
 reg fill_second=0;

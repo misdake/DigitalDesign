@@ -80,7 +80,37 @@ fn native_ram_default_wire_timing() {
         vec![VerilogProject::generate::<DualShock2>().unwrap()],
         include_str!("dualshock2_engine_tb.v")
             .replace("__DS2__", &DualShock2::verilog_identity().module_name())
-            .replace("parameter DIV_BITS=2;", "parameter DIV_BITS=8;"),
+            .replace("parameter DIV_BITS=2;", "parameter DIV_BITS=7;"),
+        true,
+    );
+}
+
+#[test]
+#[ignore = "bounded real 54/33.3MHz Display CDC, phase alignment and autonomous recovery"]
+fn display_phase_complete_samples() {
+    use cpu_v3_tang_nano_20k::FramebufferHdmi;
+    let base = include_str!("dualshock2_engine_tb.v").replace("\r\n", "\n");
+    let prefix = base
+        .split("initial begin\n if(DIV_BITS>=7)")
+        .next()
+        .unwrap();
+    assert!(prefix.len() < base.len());
+    let tb = format!("{prefix}{}", include_str!("dualshock2_phase_cases.vh"))
+        .replace("parameter DIV_BITS=2;", "parameter DIV_BITS=7;")
+        .replace("`timescale 1ns/1ps", "`timescale 1ns/1fs")
+        .replace("always #5 clk=~clk;", "always #9.259259 clk=~clk;")
+        .replace("wire frame_event=1'b0;", "wire frame_event;")
+        .replace("cycle>FRAME*45", "cycle>FRAME*100")
+        .replace("if(previous_att>=0&&cycle-previous_att!=FRAME)$fatal(1,\"CPU-independent polling period\");", "if(previous_att>=0&&cycle-previous_att>FRAME*3)$fatal(1,\"autonomous polling stalled\");")
+        .replace("__DS2__", &DualShock2::verilog_identity().module_name())
+        .replace("__DISPLAY__", &FramebufferHdmi::verilog_identity().module_name());
+    run_rtl(
+        "display-phase",
+        vec![
+            VerilogProject::generate::<DualShock2>().unwrap(),
+            VerilogProject::generate::<FramebufferHdmi>().unwrap(),
+        ],
+        tb,
         true,
     );
 }

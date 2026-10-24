@@ -59,7 +59,7 @@ reg [2:0] video_cold_ready_sync=0;
 always @(posedge pixel_clock) if(!video_cold_ready_sync[2])
     video_cold_ready_sync<={video_cold_ready_sync[1:0],video_locked};
 wire boot_done,boot_error,boot_load_done;
-wire display_started_ack,display_startup_error;
+wire display_started_ack,display_startup_error,display_frame_event;
 wire [3:0] boot_error_code;
 
 wire core_instruction_request_valid;
@@ -198,7 +198,7 @@ assign device_read_data =
     sysctl_read_data | display_read_data | button_read_data |
     gpu_read_data | ds2_read_data;
 
-__DS2__ u_ds2(.clk(clk),.reset(reset),
+__DS2__ u_ds2(.clk(clk),.reset(reset),.frame_event(display_frame_event),
  .device_index(device_query_index),.device_channel(device_query_channel),
  .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
  .device_write_data(device_write_data),.device_read_data(ds2_read_data),
@@ -678,6 +678,7 @@ __FRAMEBUFFER_HDMI__ u_display (
     .video_locked(video_cold_ready_sync[2]),
     .boot_enable(boot_load_done),.boot_failed(boot_error),
     .started_ack(display_started_ack),.startup_error(display_startup_error),
+    .frame_event(display_frame_event),
     .memory_request_ready(display_memory_request_ready),
     .memory_data_valid(display_memory_data_valid),
     .memory_read_data(display_memory_read_data),

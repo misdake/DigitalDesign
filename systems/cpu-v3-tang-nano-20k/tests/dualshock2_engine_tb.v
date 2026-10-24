@@ -3,7 +3,7 @@ module tb;
 parameter DIV_BITS=2;
 localparam HALF=1<<DIV_BITS,FRAME=HALF*64*32;
 reg clk=0;always #5 clk=~clk;
-reg reset=1,dat=1;
+reg reset=1,dat=1;wire frame_event=1'b0;
 reg[2:0]device_index=5;reg[3:0]device_channel=8;
 reg device_read_enable=0,device_write_enable=0;reg[15:0]device_write_data=0;
 wire[15:0]device_read_data;wire ds2_clk,cmd,att;
@@ -110,9 +110,9 @@ task coherent_snapshot;begin
  for(integer j=0;j<8;j=j+1)if(read_bytes[j]!==sample_payload[{dut.front,j[2:0]}])$fatal(1,"snapshot raw byte%0d got%h want%h",j,read_bytes[j],sample_payload[{dut.front,j[2:0]}]);
 end endtask
 initial begin
- if(DIV_BITS==8)mode_id=8'h79;
+ if(DIV_BITS>=7)mode_id=8'h79;
  tick();tick();@(negedge clk);reset=0;
- if(DIV_BITS==8)begin
+ if(DIV_BITS>=7)begin
   end_transaction(2);coherent_snapshot();
   if(last_transaction_bytes!=21)$fatal(1,"default-rate pressure tail");
   $display("DS2_PASS default timing half=%0d frame=%0d completeBytes=%0d",HALF,FRAME,bytes);$finish;
