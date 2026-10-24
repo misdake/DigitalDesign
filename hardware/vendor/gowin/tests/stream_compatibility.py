@@ -1,9 +1,13 @@
 """Bounded real-pin CPU scalar/LAST holds and GPU successor compatibility."""
 from pathlib import Path
-import re,os,subprocess,json,hashlib
+import re,os,subprocess,json,hashlib,sys
+sys.dont_write_bytecode=True
+from cl3_pins import with_cl3_pins, cl3_bridge_parameters
 import argparse
 ap=argparse.ArgumentParser(__doc__);ap.add_argument('--peer',type=Path,required=True);ap.add_argument('--output',type=Path,required=True);ap.add_argument('--bursts',type=int,default=8)
 ap.add_argument('--late-bank',action='store_true',help='Vary read arrival, bank and row to cover preparation at the READ tail')
+ap.add_argument('--display',action='store_true',help='Insert one strict-priority Display burst during GPU writes')
+ap.add_argument('--cl3',action='store_true',help='Use board CL3/108 MHz and registered logic-clock read return')
 args=ap.parse_args()
 assert 2 <= args.bursts <= (64 if args.late_bank else 32)
 peer=args.peer.resolve();out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
@@ -63,9 +67,9 @@ always @(posedge logic_clk)if(!reset)begin
    end else read_words=read_words+1;
   end
  end else begin
- if(gpu_ro_request_valid&&gpu_ro_request_ready)begin gpu_pending=1;gpu_requests=gpu_requests+1;end
+ if(gpu_ro_request_valid&&gpu_ro_request_ready)begin gpu_pending=1;gpu_requests=gpu_requests+1;gpu_ro_request_valid<=0;end
  if(gpu_ro_response_valid)begin
-  if(gpu_ro_error||!gpu_pending||received<4||gpu_ro_read_data!=={seed32('h2000+gpu_words*8+4),seed32('h2000+gpu_words*8)})$fatal(1,"GPU after held CPU LAST");
+  if(gpu_ro_error||!gpu_pending||received<4||gpu_ro_read_data!=={seed32('h2000+gpu_words*8+4),seed32('h2000+gpu_words*8)})$fatal(1,"GPU after held CPU LAST got=%h expected=%h words=%0d received=%0d error=%0d",gpu_ro_read_data,{seed32('h2000+gpu_words*8+4),seed32('h2000+gpu_words*8)},gpu_words,received,gpu_ro_error);
   if(gpu_ro_response_last!==(gpu_words==15))$fatal(1,"GPU response framing");
   gpu_words=gpu_words+1;
  end
@@ -128,13 +132,36 @@ initial begin
 end
 endmodule
 """.replace('@PORTS@','\n'.join(ports)).replace('@BURSTS@',str(args.bursts)).replace('@LATE_BANK@',str(int(args.late_bank)))
+if args.display:
+ tb=tb.replace('initial begin\n for(i=0;', r"""reg display_armed=0;integer display_grants=0,display_words=0;
+always @(negedge logic_clk)if(!reset&&write_test&&write_requests>=2&&!display_armed)begin
+ display_armed=1;display_request_valid=1;display_address='hc00;display_response_ready=1;
+end
+always @(posedge logic_clk)if(!reset)begin
+ if(display_request_valid&&gpu_fb_w_request_valid&&gpu_fb_w_request_ready)$fatal(1,"Display priority lost");
+ if(display_request_valid&&display_request_ready)begin display_request_valid<=0;display_grants=display_grants+1;end
+ if(display_response_valid)begin
+  if(display_error||display_read_data!=={seed32('h1800+display_words*8+4),seed32('h1800+display_words*8)}||display_response_last!==(display_words==3))$fatal(1,"Display data/framing");
+  display_words=display_words+1;
+ end
+end
+initial begin
+ for(i=0;""",1)
+ tb=tb.replace(' $display("PASS CPU compatibility', ' if(display_grants!=1||display_words!=4)$fatal(1,"Display coverage");\n $display("DISPLAY_CONTENTION grants=%0d words=%0d",display_grants,display_words);\n $display("PASS CPU compatibility',1)
+if args.cl3:
+ tb=with_cl3_pins(tb,'dut.bridge.u_controller')
+ tb=tb.replace('integer cycle=0,', 'integer write_chains=0,read_chains=0;\nalways @(posedge controller_clk)if(!reset)begin if(dut.bridge.chain_accept)write_chains=write_chains+1;if(dut.bridge.read_chain_accept)read_chains=read_chains+1;end\ninteger cycle=0,',1)
+ tb=tb.replace(' $display("PASS CPU compatibility', ' if(write_chains==0||read_chains==0)$fatal(1,"missing physical continuation write=%0d read=%0d",write_chains,read_chains);\n $display("PHYSICAL_CHAIN write=%0d read=%0d",write_chains,read_chains);\n $display("PASS CPU compatibility',1)
 (out/'tb.v').write_text(tb)
 files=[]
 for name in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v']:
- p=out/name;p.write_bytes((peer/name).read_bytes());files.append(p)
+ p=out/name;source=(peer/name).read_text()
+ if args.cl3 and name=='combination.v':
+  source=cl3_bridge_parameters(source)
+ p.write_text(source);files.append(p)
 for name,cmd in [('compile',[os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',out/'sim.vvp',*files,out/'tb.v']),('run',[os.environ['VVP_EXE'],out/'sim.vvp'])]:
  r=subprocess.run(list(map(str,cmd)),cwd=out,capture_output=True,timeout=90)
  (out/(name+'.log')).write_bytes(r.stdout+r.stderr)
  if r.returncode:raise RuntimeError((r.stdout+r.stderr).decode()[-1800:])
-result=dict(status='pass',case=next(s for s in (out/'run.log').read_text().splitlines() if s.startswith('PASS')),burst_timing=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('BURST_TIMING')], source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in files},test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+result=dict(status='pass',cl3=args.cl3,display_contention=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('DISPLAY_CONTENTION')],physical_chain=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('PHYSICAL_CHAIN')],case=next(s for s in (out/'run.log').read_text().splitlines() if s.startswith('PASS')),burst_timing=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('BURST_TIMING')], source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in files},test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
 (out/'receipt.json').write_text(json.dumps(result,indent=2));print(json.dumps({k:v for k,v in result.items() if k != 'source_sha256'}))

@@ -46,6 +46,35 @@ The [eight-DPB C16/Z16 storage and quad owner](framebuffer-cache.md) describes t
 retired GPU implementation. The current leaf instead uses the production GPU framebuffer cache described in
 [GPU memory](/ip/gpu-v2/docs/memory.md).
 
+## Streaming memory admission
+
+The complete board uses the typed streaming SDRAM endpoint and bridge, with
+CL3 timing and the existing logic-clock read return register. The detailed
+contract is in [the vendor service](/hardware/vendor/gowin/doc/sdram-memory-controller.md#streaming-board-admission).
+Three system-side GPU descriptor registers cut the address-computation path
+before arbitration; they hold only address, length and direction. The actual
+arbiter grant identifies continuation class. GPU payload/response ownership
+continues until real completion, including abort drain. CPU D-cache line writes
+can use the same ordered streaming service during clean/invalidate. CPU reads,
+scalar writes, boot DMA and Display keep conservative admission and response
+backpressure. Direction matching separates CPU line writes from GPU framebuffer
+reads even though they share a two-bit continuation-class value.
+
+```mermaid
+flowchart LR
+  G[GPU request producers] --> S[Three descriptor registers]
+  S --> A[Seven-client arbiter]
+  C[CPU caches and boot DMA] --> A
+  D[Display] --> A
+  A --> E[Two-descriptor stream endpoint]
+  E --> B[Related-clock bridge]
+  B --> M[Native SDRAM controller]
+```
+
+Arrows carry descriptor admission; payload and returns keep their existing
+ordered direct routes. Register admission does not complete GPU work or reserve
+the SDRAM bus. Only real terminal responses release in-flight GPU resources.
+
 ## Processor and instruction path
 
 The core is precise and in order. Stage 12 adds a conservative two-stage frontend: eligible
@@ -96,8 +125,16 @@ does not issue requests while its reset or error-scrub sweep runs.
 The D-cache is write-back and write-allocate. Stores dirty resident or newly allocated lines. A dirty
 victim is written back before replacement. Full clean preserves valid lines; full invalidate first
 writes dirty lines and then clears validity. Maintenance scans the synchronous metadata one
-set per cycle. A single pending line index overlaps this scan with write-back, preserving dense
-clean throughput without a complete dirty bitmap. A conservative dirty hint skips repeated
+set per cycle. One pending metadata candidate overlaps the scan with write-back.
+A separate completed-source retirement context allows a successor request and
+its data before the old terminal, with at most two accepted line writes. The
+existing data RAM directly supplies four ready-qualified beats per line; the
+last beat launches the next line's first read. Metadata clears only for its
+successful ordered terminal, and scan reads interrupted by metadata writes are
+replayed. Full invalidate waits for all terminals before the 64-set sweep.
+Full-maintenance memory errors enter fail-stop until whole-system reset; an
+accepted successor is not cancelled. There is no full dirty bitmap or added
+payload RAM. A conservative dirty hint skips repeated
 empty full cleans; single-line clean leaves the hint set. The system-control device holds the CPU
 internally until full maintenance reports success or failure. `DCLEANL` and `DWAIT` support
 explicit single-line ownership handoff; there is no hardware snoop or range-maintenance interface.
@@ -225,8 +262,9 @@ GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and
 independent state so neither completion source can release the other.
 
 UART TX shifts a ten-bit 8N1 frame toward its output bit. The stop bit is the
-last nonzero bit, so an all-zero frame also encodes idle without a separate
-bit index or busy register. Busy remains asserted for the complete stop-bit
+last nonzero bit, so no separate bit index is required. A registered busy bit
+keeps the frame reduction off the CPU device-read path and clears when the
+final stop bit shifts out. Busy remains asserted for the complete stop-bit
 interval. Writes while busy, including the edge ending that interval, are
 dropped; reset aborts transmission and drives idle high. The baud divider
 uses only the bits required by the configured clocks per bit.
@@ -568,6 +606,16 @@ integrated image is checked on the board. The 108-MHz CL2 clock is 9.259 ns, bel
 board success at this point is empirical overclock evidence, not a PVT guarantee.
 
 ## Verification and physical evidence
+
+The focused `cold_boot_cpu_submits_gpu_commands_in_verilog` fixture checks real
+SPI code/static loading, cold cache/core release, Device4 submission and the
+production native GPU. It pre-seeds the packer's framebuffer ZERO effect and
+omits that one bulk command; code and resource bytes still come from the packer.
+The independent video clock runs before the logic clock, selecting a bounded
+startup phase without forcing Display state or acknowledgement. Display must
+publish both groups and reach its natural frame origin. This short fixture is
+not complete framebuffer-zero or physical-pin evidence; the separate full-Flash
+fixtures retain their original boot images.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus

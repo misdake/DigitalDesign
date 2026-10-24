@@ -30,8 +30,9 @@ co-simulation and the final target's audited artifacts.
 
 ## Full-system Tang Nano 20K profile
 
-`TangNano20K::cold_boot_hdmi_memory_project` selects the complete CPU/GPU/Display
-profile: 54 MHz logic, 108 MHz controller, CAS/RCD/RP/capture latency 3 cycles,
+`TangNano20K::cold_boot_hdmi_stream_memory_project` selects the production CPU/GPU/Display
+streaming profile; `cold_boot_hdmi_memory_project` retains the legacy transport with
+the same physical settings: 54 MHz logic, 108 MHz controller, CAS/RCD/RP/capture latency 3 cycles,
 RFC 9 cycles and write recovery 2 cycles. The bridge exposes the timing parameters
 explicitly; legacy diagnostic and standalone profiles retain CL2 defaults.
 The actual PLL `PSDA_SEL` and the SDC generated clock both select 157.5 degrees.
@@ -66,6 +67,79 @@ The independent pin oracle supports explicit `CAS_LATENCY=2|3`, checks the loade
 mode, and keeps device launch latency independent of FPGA capture latency. Its
 legacy CL2 defaults remain unchanged. CL3 pin qualification uses explicit
 conservative reference parameters, not an identification of the board's embedded die.
+
+## Streaming board admission
+
+The streaming board interface uses `TangNano20KBootHdmiStreamInputs/Outputs`.
+`sdram_write_done` is only a successful physical write terminal; read framing
+belongs to the endpoint's declared descriptor length. The source cannot send a
+read completion through the write-completion port. `sdram_request_continuation`
+travels with the stable bridge mailbox and permits only the endpoint-proven
+same-class/direction overlap. Legacy board types cannot select this profile.
+
+Each of the three GPU masters has one system-owned descriptor register containing
+address, line count, direction and valid. It can capture a future GPU request
+while earlier payload/retirement progresses. The register holds its descriptor
+unchanged until arbiter acceptance, admits no replacement while full, and is
+initialized by the monotonic cold/boot gate. No payload is copied or buffered.
+GPU payload and response routes retain their existing ordered owner and lifetime.
+The descriptor stage adds one logic edge before arbitration and does not reserve
+the SDRAM bus; Display retains strict priority at actual grant decisions.
+
+In the cold-only bridge, native PLL startup reset drives the controller only.
+Logic-domain request admission waits for registered initialization; request and
+write-data handshakes do not depend combinationally on the native reset. The
+transport registers use FPGA initial values. The ordinary runtime-reset profile
+still clears and gates transport through its reset input.
+
+Native continuation separates descriptor identity from write supply.
+`next_chainable` proves the stable continuation descriptor; `next_write_ready`
+checks pair availability only for independent write continuation. READ admission
+does not depend on write-pair credit. Legacy `CONTINUE=0` ignores that supply input.
+The bridge registers this credit on the native clock. Even-length line writes
+end on the logic pop slot, where the preceding native sample equals the pre-pop
+credit. A passive boundary assertion checks that calendar; it adds no command
+cycle and does not release payload ownership early.
+
+The streaming controller may stage a candidate READ bank/column on NOP or STOP
+([EM638325 Table4](https://etron.com/wp-content/uploads/2022/04/EM638325_Rev-3.2.pdf#page=6)),
+independently of final continuation credit. These address pins have no command
+ownership then. PRE/ACT preparation excludes that staging window; only a real
+READ/WRITE commits the column and changes transaction state. Thus write supply
+does not gate the wide address-output register. The legacy pin calendar remains
+unchanged. READ and WRITE preparation windows are recorded at launch/boundary
+rather than recomputing a length comparison in the address-enable cone.
+Refresh-due and write-chain refresh eligibility predict the incremented counter
+one native edge early; every counter restart resets the predicates with it.
+These registers preserve refresh/chain command edges, checked by a passive
+calendar assertion, and add no transaction latency.
+
+The successor window opens when one forwarded line descriptor owns an active
+physical stream and the second descriptor credit is free. It does not wait for
+late read responses: CL3 capture and registered return would otherwise leave too
+little time for next-row preparation. This earlier grant is still irrevocable
+and bounded to one reserved successor. Cross-class/direction descriptors can be
+queued but cannot overlap native payload or responses.
+
+Continuation class is generated from the **arbiter-accepted registered request**,
+not from the earlier GPU-to-register handshake. RO, framebuffer write and
+framebuffer read use classes1/2/3. CPU D-cache line writes also use class3:
+its read direction is exclusively GPU framebuffer refill, while its write
+direction is exclusively CPU data. The endpoint requires both class and direction
+to match, so those owners cannot overlap. CPU scalar writes and reads, DMA and
+Display remain class0. D-cache full clean/invalidate separates its feed and
+retirement contexts and can present a successor before the preceding terminal;
+no line-count ABI, payload FIFO or BSRAM is added. This does not implement
+Display prefetch.
+The endpoint keeps its two descriptor credits, independent payload cursors and
+real terminal retirement. A GPU abort must drain requests already captured in
+the system registers, even if those requests have not reached the controller.
+
+The stream bridge supports the same explicit CAS/RCD/RP/capture, registered-read
+return and cold-only settings as the legacy board bridge. The read-stop age is
+computed when its descriptor is captured; scalar tail and read-chain stop edges
+retain their existing timing. It is not recalculated through the pin-command
+selection path each native cycle.
 
 ## Host service and data boundary
 
@@ -167,8 +241,9 @@ Profile generation requires samples for all eight direction/size classes, fails
 for empty buckets, and rounds means upward once. It validates sector ordering.
 Compare Solo/CpuOnly/DisplayOnly/Both using the same foreground trace; nonlinear
 contention means separate CPU/display increments need not sum to the Both result.
-ExistingUnchained is the production configuration; ChainedCandidate only studies
-the controller's continuation potential until gearbox/arbiter integration is tested.
+`ExistingUnchained` describes the legacy modeled transport. `ChainedCandidate`
+is an idealized continuation study; neither is a cycle oracle for the streaming
+board RTL described above.
 
 ## Independent cycle protocol boundary
 
@@ -209,11 +284,11 @@ they are estimates, not physical bandwidth evidence.
 
 `Combination::with_early_grant`, `combination::rtl_sources_with_early_grant` and
 `emu::service::Config::early_grant` enable the same one-slot protocol. The
-reusable combination remains serial by default. The CPU V3 full-system board
-build enables `EARLY_GRANT=1` on `SharedSdramPort` and `PREPARE_NEXT=1`
+reusable combination remains serial by default. The legacy board profile
+enables `EARLY_GRANT=1` on `SharedSdramPort` and `PREPARE_NEXT=1`
 on the 54/108 MHz bridge, connecting the adapter's lookahead and reserved
 address to the seven-owner arbiter and native controller. The board PLL lock
-also conditions the system reset. This is one reserved successor per active
+also conditions startup. This is one reserved successor per active
 request; it does not turn four 128 B sectors into an indivisible transaction.
 
 The adapter opens its successor slot in the last four logic beats of an active
@@ -241,17 +316,19 @@ native completion, adapter LAST and remaining transport gaps.
 ## Independent GPU continuation in the RTL factory
 
 `combination::rtl_sources_with_options(init, true, false)` selects
-`stream_sdram.v` and `stream_bridge.v`. The serial/default factory and board
-`RtlSources` compatibility exports retain their legacy implementations. The
+`stream_sdram.v` and `stream_bridge.v`. The serial/default factory and `RtlSources::SHARED_PORT/GEARBOX` compatibility
+exports retain their legacy implementations. The full-system board instead uses
+`StreamingSdramPort` and `RtlSources::STREAM_GEARBOX`, with distinct typed board
+ports for write-only completion and request continuation. The
 existing Rust cycle engine models the legacy transport calendar; it is not a
 cycle oracle for this streaming RTL. Its functional requests and independent
 completion contract are unchanged.
 
 The unchanged arbiter associates each accepted descriptor with a two-bit
-continuation class: GPU RO, GPU framebuffer write, GPU framebuffer refill,
-or conservative fallback.
+continuation class: GPU RO, GPU framebuffer write, direction-disjoint GPU
+framebuffer refill/CPU data-line write, or conservative fallback.
 Only the same nonzero class, direction and line transfer can overlap native
-commands. CPU/scalar, cross-owner, direction changes and backpressured responses
+commands. CPU reads/scalars, cross-owner, direction changes and backpressured responses
 retain serial data ownership. An accepted successor is irrevocable; Display
 can arbitrate the next unaccepted request. Neither framebuffer maintenance, CLEAR nor meshlet payload
 holds the bus across its entire logical job.

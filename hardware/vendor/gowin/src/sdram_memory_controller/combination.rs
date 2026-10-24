@@ -100,7 +100,7 @@ pub fn rtl_sources_with_options(
     files.insert(
         "shared_port.v".into(),
         (if streaming {
-            include_str!("rtl/stream_sdram.v")
+            RtlSources::STREAM_SHARED_PORT
         } else {
             RtlSources::SHARED_PORT
         })
@@ -115,7 +115,7 @@ pub fn rtl_sources_with_options(
     files.insert(
         "bridge.v".into(),
         (if streaming {
-            include_str!("rtl/stream_bridge.v")
+            RtlSources::STREAM_GEARBOX
         } else {
             RtlSources::GEARBOX
         })

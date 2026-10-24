@@ -243,6 +243,48 @@ pub struct TangNano20KBootHdmiWideOutputs {
     pub tmds_data_n: Wires<3>,
 }
 
+/// CPU V3 streaming full-system inputs from the native SDRAM bridge.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootHdmiStreamInputs {
+    pub buttons: Wires<2>,
+    pub flash_miso: digital_design_circuit::Wire,
+    pub sdram_read_data: Wires<64>,
+    pub sdram_read_valid: digital_design_circuit::Wire,
+    pub sdram_init_done: digital_design_circuit::Wire,
+    pub sdram_request_ready: digital_design_circuit::Wire,
+    pub sdram_stream_active: digital_design_circuit::Wire,
+    pub sdram_clock_ready: digital_design_circuit::Wire,
+    pub sdram_write_done: digital_design_circuit::Wire,
+    pub sdram_write_data_ready: digital_design_circuit::Wire,
+    pub pixel_clock: digital_design_circuit::Wire,
+    pub serial_clock: digital_design_circuit::Wire,
+    pub video_locked: digital_design_circuit::Wire,
+}
+
+/// CPU V3 streaming full-system outputs driving the native SDRAM bridge.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootHdmiStreamOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_circuit::Wire,
+    pub flash_clk: digital_design_circuit::Wire,
+    pub flash_cs_n: digital_design_circuit::Wire,
+    pub flash_mosi: digital_design_circuit::Wire,
+    pub sdram_request_valid: digital_design_circuit::Wire,
+    pub sdram_request_continuation: digital_design_circuit::Wire,
+    pub sdram_next_valid: digital_design_circuit::Wire,
+    pub sdram_next_address: Wires<21>,
+    pub sdram_write: digital_design_circuit::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<64>,
+    pub sdram_write_data_valid: digital_design_circuit::Wire,
+    pub sdram_words: Wires<6>,
+    pub tmds_clk_p: digital_design_circuit::Wire,
+    pub tmds_clk_n: digital_design_circuit::Wire,
+    pub tmds_data_p: Wires<3>,
+    pub tmds_data_n: Wires<3>,
+}
+
 /// Native 54/108 MHz SDRAM service without Flash or video circuitry.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KSdramWideInputs {
@@ -573,6 +615,24 @@ impl TangNano20K {
         cold_only: bool,
     ) -> GowinBoardBinding<Self> {
         assert!(!chained_groups || (wide_2x && !video));
+        Self::sdram_debug_uart_transport_binding(
+            video,
+            wide_2x,
+            video_mode,
+            chained_groups,
+            cold_only,
+            false,
+        )
+    }
+    fn sdram_debug_uart_transport_binding(
+        video: bool,
+        wide_2x: bool,
+        video_mode: TangNano20KVideoMode,
+        chained_groups: bool,
+        cold_only: bool,
+        streaming: bool,
+    ) -> GowinBoardBinding<Self> {
+        assert!(!streaming || (video && wide_2x && !chained_groups));
         let wrapper = if wide_2x && !video {
             include_str!("tang_nano_20k/sdram/service_108m_54m.v")
         } else if wide_2x {
@@ -581,6 +641,13 @@ impl TangNano20K {
             include_str!("tang_nano_20k/sdram/service_54m_hdmi.v")
         } else {
             include_str!("tang_nano_20k/sdram/service_54m.v")
+        };
+        let wrapper = if streaming {
+            wrapper.replace("wire sdram_done;", "wire sdram_write_done;\nwire sdram_request_continuation;")
+                .replace(".done(sdram_done)", ".write_done(sdram_write_done)")
+                .replace(".request_valid(sdram_request_valid)", ".request_valid(sdram_request_valid), .request_continuation(sdram_request_continuation)")
+        } else {
+            wrapper.to_string()
         };
         let wrapper = if chained_groups {
             wrapper.replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .CHAIN_GROUP_FOUR(1)")
@@ -689,7 +756,7 @@ impl TangNano20K {
                     "sdram_request_ready", GowinPortDirection::Input, 1, "sdram_request_ready",
                 ))
                 .connect_logic(GowinLogicConnection::new(
-                    "sdram_done", GowinPortDirection::Input, 1, "sdram_done",
+                    if streaming { "sdram_write_done" } else { "sdram_done" }, GowinPortDirection::Input, 1, if streaming { "sdram_write_done" } else { "sdram_done" },
                 ))
                 .connect_logic(GowinLogicConnection::new(
                     "sdram_request_valid", GowinPortDirection::Output, 1, "sdram_request_valid",
@@ -718,7 +785,7 @@ impl TangNano20K {
                 )
                 .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/native_bridge_108m_54m.v",
-                    crate::sdram_memory_controller::RtlSources::GEARBOX,
+                    if streaming { crate::sdram_memory_controller::RtlSources::STREAM_GEARBOX } else { crate::sdram_memory_controller::RtlSources::GEARBOX },
                 )
                 .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/pll_108m_54m.v",
@@ -805,6 +872,14 @@ impl TangNano20K {
                 );
         }
 
+        if streaming {
+            extension = extension.connect_logic(GowinLogicConnection::new(
+                "sdram_request_continuation",
+                GowinPortDirection::Output,
+                1,
+                "sdram_request_continuation",
+            ));
+        }
         if video && wide_2x {
             extension = extension
                 .connect_logic(GowinLogicConnection::new(
@@ -1123,40 +1198,63 @@ impl TangNano20K {
     where
         M: Module<Input = TangNano20KBootHdmiWideInputs, Output = TangNano20KBootHdmiWideOutputs>,
     {
-        let binding =
-            Self::sdram_debug_uart_binding_with_options(true, true, video_mode, false, true)
-                .bind_port(
-                    GowinPortDirection::Output,
-                    "flash_clk",
-                    "flash_clk",
-                    [Self::SPI_FLASH_CLK],
-                )
-                .bind_port(
-                    GowinPortDirection::Output,
-                    "flash_cs_n",
-                    "flash_cs_n",
-                    [Self::SPI_FLASH_CS_N],
-                )
-                .bind_port(
-                    GowinPortDirection::Output,
-                    "flash_mosi",
-                    "flash_mosi",
-                    [Self::SPI_FLASH_MOSI],
-                )
-                .bind_port(
-                    GowinPortDirection::Input,
-                    "flash_miso",
-                    "flash_miso",
-                    [Self::SPI_FLASH_MISO],
-                )
-                .with_process_option("-use_mspi_as_gpio", "1")
-                .with_process_option("-ioreg_in_iob", "1")
-                .with_process_option("-place_option", "1")
-                .with_process_option("-route_option", "2")
-                .with_process_option("-gen_posp", "1")
-                .with_process_option("-gen_verilog_sim_netlist", "1")
-                .with_process_option("-gen_sdf", "1");
-        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
+        GowinModuleProject::new(
+            GowinProject::new(project_name)
+                .with_board_binding(Self::cold_boot_hdmi_binding(video_mode, false)),
+        )
+    }
+    /// Cold-start CL3 board profile with independent GPU transaction continuation.
+    pub fn cold_boot_hdmi_stream_memory_project<M>(
+        project_name: impl Into<String>,
+        video_mode: TangNano20KVideoMode,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<
+            Input = TangNano20KBootHdmiStreamInputs,
+            Output = TangNano20KBootHdmiStreamOutputs,
+        >,
+    {
+        GowinModuleProject::new(
+            GowinProject::new(project_name)
+                .with_board_binding(Self::cold_boot_hdmi_binding(video_mode, true)),
+        )
+    }
+    fn cold_boot_hdmi_binding(
+        video_mode: TangNano20KVideoMode,
+        streaming: bool,
+    ) -> GowinBoardBinding<Self> {
+        Self::sdram_debug_uart_transport_binding(true, true, video_mode, false, true, streaming)
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_clk",
+                "flash_clk",
+                [Self::SPI_FLASH_CLK],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_cs_n",
+                "flash_cs_n",
+                [Self::SPI_FLASH_CS_N],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_mosi",
+                "flash_mosi",
+                [Self::SPI_FLASH_MOSI],
+            )
+            .bind_port(
+                GowinPortDirection::Input,
+                "flash_miso",
+                "flash_miso",
+                [Self::SPI_FLASH_MISO],
+            )
+            .with_process_option("-use_mspi_as_gpio", "1")
+            .with_process_option("-ioreg_in_iob", "1")
+            .with_process_option("-place_option", "1")
+            .with_process_option("-route_option", "2")
+            .with_process_option("-gen_posp", "1")
+            .with_process_option("-gen_verilog_sim_netlist", "1")
+            .with_process_option("-gen_sdf", "1")
     }
 
     fn user_io_binding() -> GowinBoardBinding<Self> {

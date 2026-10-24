@@ -282,6 +282,30 @@ impl DataCache {
         (self.store.valid[way][set] && self.dirty[way][set]).then(|| self.line_address(way, set))
     }
 
+    /// Independent data view for the cycle wrapper's two ordered maintenance
+    /// contexts. Inspection does not clear dirty state or claim a terminal.
+    pub(crate) fn maintenance_line(&self, index: u8) -> MainMemoryRequest {
+        let way = usize::from(index / 64);
+        let set = usize::from(index % 64);
+        let line_address = self
+            .dirty_line_address(way, set)
+            .expect("dirty maintenance candidate");
+        MainMemoryRequest::WriteLine {
+            line_address,
+            words: self.store.line_words(way, set),
+        }
+    }
+
+    pub(crate) fn retire_maintenance_line(&mut self, index: u8) {
+        let way = usize::from(index / 64);
+        let set = usize::from(index % 64);
+        assert!(
+            self.dirty_line_address(way, set).is_some(),
+            "ordered dirty retirement"
+        );
+        self.dirty[way][set] = false;
+    }
+
     /// Cleans one resident line. A miss or an already-clean hit completes
     /// without memory traffic and does not allocate a line.
     pub fn clean_line(&mut self, address: PhysicalWordAddress) -> Result<CacheAction, CacheError> {

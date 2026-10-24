@@ -1,15 +1,15 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
 use cpu_v3_tang_nano_20k::display::ACTIVE_DISPLAY_CONFIG;
 use cpu_v3_tang_nano_20k::{
-    CpuV3Gpu, CpuV3MemoryArbiter, FramebufferHdmi, SharedSdramPort, SingleBootLoader,
-    SystemControlDevice,
+    CpuV3Gpu, CpuV3MemoryArbiter, FramebufferHdmi, SingleBootLoader, SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_gowin::sdram_memory_controller::StreamingSdramPort;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, ErasedSpiFlashImage, GowinCliError, GowinModuleProject,
-    ResourceCountExpectation, SpiFlashReader, TangNano20K, TangNano20KBootHdmiWideInputs,
-    TangNano20KBootHdmiWideOutputs, TangNano20KVideoMode,
+    ResourceCountExpectation, SpiFlashReader, TangNano20K, TangNano20KBootHdmiStreamInputs,
+    TangNano20KBootHdmiStreamOutputs, TangNano20KVideoMode,
 };
 use std::cell::{Cell, RefCell};
 const GENERATED_APPLICATION_PACKAGE: &[u8] =
@@ -36,8 +36,8 @@ fn main() -> Result<(), GowinCliError> {
 #[hardware(namespace = "examples/cpu_v3_system")]
 struct CpuV3System;
 impl Module for CpuV3System {
-    type Input = TangNano20KBootHdmiWideInputs;
-    type Output = TangNano20KBootHdmiWideOutputs;
+    type Input = TangNano20KBootHdmiStreamInputs;
+    type Output = TangNano20KBootHdmiStreamOutputs;
     type EmuState = ();
     const USES_MAIN_CLOCK: bool = true;
     const EMU_AVAILABLE: bool = false;
@@ -82,7 +82,7 @@ impl Module for CpuV3System {
             ),
             (
                 "__SHARED_SDRAM_PORT__",
-                SharedSdramPort::verilog_identity().module_name(),
+                StreamingSdramPort::verilog_identity().module_name(),
             ),
             (
                 "__FRAMEBUFFER_HDMI__",
@@ -104,7 +104,7 @@ impl Module for CpuV3System {
             VerilogDependency::new::<SystemControl>("u_sysctl"),
             VerilogDependency::new::<SingleBootLoader>("u_boot_loader"),
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
-            VerilogDependency::new::<SharedSdramPort>("u_shared_sdram_port"),
+            VerilogDependency::new::<StreamingSdramPort>("u_shared_sdram_port"),
             VerilogDependency::new::<FramebufferHdmi>("u_display"),
         ]
     }
@@ -137,11 +137,15 @@ impl Module for CpuV3System {
             // The shared test runner selects Verilog-2005. Preserve the pin
             // model's unknown-data assertion without the SystemVerilog task.
             let pins = RtlSources::PIN_MODEL.replace("$isunknown(dq)", "((^dq) === 1'bx)");
+            let models =
+                std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").expect("GOWIN_HOME"))
+                    .join("IDE/simlib/gw2a/prim_sim.v");
             return Some(format!(
-                "{text}\n{}\n{}\n{}",
-                RtlSources::GEARBOX,
+                "{text}\n{}\n{}\n{}\n{}",
+                RtlSources::STREAM_GEARBOX,
                 RtlSources::CONTROLLER,
-                pins
+                pins,
+                std::fs::read_to_string(models).unwrap()
             ));
         }
         let fixture = TEST_IMAGE.with(|x| x.borrow().clone());
@@ -211,9 +215,28 @@ impl Module for CpuV3System {
             .replace("__RESOURCE_CHECK__", &resource_check)
             .replace("__SPI_HALF_PERIOD__", &SPI_HALF_PERIOD.to_string())
             .replace(
+                "__GPU_COLD_FIXTURE__",
+                &u8::from(GPU_COLD_TEST.with(Cell::get)).to_string(),
+            )
+            .replace(
+                "__FRAMEBUFFER_START_WORD__",
+                &(cpu_v3_tang_nano_20k::boot::BOOT_FRAMEBUFFER_BYTES.start / 2).to_string(),
+            )
+            .replace(
+                "__FRAMEBUFFER_END_WORD__",
+                &(cpu_v3_tang_nano_20k::boot::BOOT_FRAMEBUFFER_BYTES.end / 2).to_string(),
+            )
+            .replace(
                 "__BOOT_MAX_CYCLES__",
                 &if GPU_COLD_TEST.with(Cell::get) {
-                    1_100_000
+                    // Focused Device4 fixture: real SPI/code/static loading,
+                    // pre-zeroed video memory and an independent video pre-roll.
+                    let words: usize = cpu_v3_tang_nano_20k::boot::single_boot_commands(&package)
+                        .unwrap()
+                        .iter()
+                        .map(|command| command.length / 2)
+                        .sum();
+                    (words * 7 + package.len() * 40 + 20_000).max(150_000)
                 } else {
                     6_000_000 + package.len() * 40
                 }
@@ -253,7 +276,7 @@ impl Module for CpuV3System {
 }
 fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
     let mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
-    TangNano20K::cold_boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system", mode)
+    TangNano20K::cold_boot_hdmi_stream_memory_project::<CpuV3System>("cpu_v3_system", mode)
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
 }
 #[cfg(test)]
@@ -271,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bounded production cold boot, actual CPU Device4 submission and native GPU models"]
+    #[ignore = "bounded cold SPI/code/static load, pre-zeroed video, actual CPU Device4 and native GPU"]
     fn cold_boot_cpu_submits_gpu_commands_in_verilog() {
         let source = r#"
             fn main() {
@@ -299,13 +322,27 @@ mod tests {
             .flat_map(u32::to_le_bytes)
             .collect();
         commands.resize(128, 0);
-        let package = cpu_v3_tang_nano_20k::boot::pack_application_resources(
+        let mut package = cpu_v3_tang_nano_20k::boot::pack_application_resources(
             &code,
             &[cpu_v3_tang_nano_20k::boot::BootResource::copy(
                 0x20000, commands,
             )],
         )
         .unwrap();
+        // This test checks cold CPU/Device4 admission, not bulk VRAM clearing.
+        // Preserve the packer's exact code/resource bytes and omit only its
+        // final framebuffer ZERO; the testbench supplies that memory fixture.
+        let decoded = cpu_v3_tang_nano_20k::boot::single_boot_commands(&package).unwrap();
+        let last = decoded.last().unwrap();
+        let framebuffer = cpu_v3_tang_nano_20k::boot::BOOT_FRAMEBUFFER_BYTES;
+        assert_eq!(
+            (last.address, last.length),
+            (framebuffer.start, framebuffer.len())
+        );
+        assert!(last.payload.is_none());
+        let zero_header = package.len() - 16;
+        package.drain(zero_header..zero_header + 8);
+        cpu_v3_tang_nano_20k::boot::single_boot_commands(&package).unwrap();
         TEST_IMAGE.with(|x| *x.borrow_mut() = Some((package, false, 0x5a36)));
         GPU_COLD_TEST.with(|x| x.set(true));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
@@ -423,6 +460,16 @@ mod tests {
             ".CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .REGISTER_READ_RETURN(1)"
         ));
         assert!(top.contains(".PHASE_SEL(\"0111\")"));
+        assert!(top.contains(".request_continuation(sdram_request_continuation)"));
+        assert!(top.contains(".write_done(sdram_write_done)"));
+        assert!(text.contains(".cpu_chain_class(memory_chain_class)"));
+        assert!(text.contains("controller_request_continuation"));
+        assert!(text.contains("Ordered two-descriptor endpoint"));
+        let bridge = &board.files[std::path::Path::new(
+            "src/generated/target/tang_nano_20k/sdram/native_bridge_108m_54m.v",
+        )];
+        assert!(bridge.contains(".CONTINUE(1),.NEXT_TAGGED(1)"));
+        assert!(bridge.contains("generate if(REGISTER_READ_RETURN)"));
         let sdc = &board.files[std::path::Path::new("src/generated/board.sdc")];
         assert!(sdc.contains("-phase 157.5"));
         assert!(sdc.contains("-source -early 3.75"));

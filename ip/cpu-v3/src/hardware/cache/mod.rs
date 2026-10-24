@@ -1110,6 +1110,7 @@ enum DataMemoryPhase {
     CleanLookup,
     ScanPrime,
     Scan,
+    Fault,
 }
 
 /// Cloneable so a test harness can snapshot and restore the emulated cache
@@ -1148,6 +1149,9 @@ pub struct CpuV3DataCacheState {
     scan_read_set: u8,
     scan_return_set: u8,
     found_index: Option<u8>,
+    found_granted: bool,
+    found_other: Option<crate::PhysicalWordAddress>,
+    retire_index: Option<u8>,
     wb_index: u8,
     // Metadata valid/dirty scrub timing: reset, a full invalidate, or
     // a memory error clears one set of both ways per cycle; requests are
@@ -1190,6 +1194,9 @@ impl Default for CpuV3DataCacheState {
             scan_read_set: 0,
             scan_return_set: 0,
             found_index: None,
+            found_granted: false,
+            found_other: None,
+            retire_index: None,
             wb_index: 0,
             maintenance_invalidate: false,
             sweep_active: false,
@@ -1200,6 +1207,54 @@ impl Default for CpuV3DataCacheState {
 }
 
 impl CpuV3DataCacheState {
+    fn next_request_valid(&self) -> bool {
+        self.full_maintenance
+            && matches!(
+                self.phase,
+                DataMemoryPhase::WriteStream | DataMemoryPhase::WriteResponse
+            )
+            && self.found_index.is_some()
+            && !self.found_granted
+            && self.retire_index.is_none()
+    }
+
+    fn write_response_ready(&self) -> bool {
+        matches!(
+            self.phase,
+            DataMemoryPhase::ReadReceive | DataMemoryPhase::WriteResponse
+        ) || (self.full_maintenance
+            && self.phase != DataMemoryPhase::Fault
+            && (self.retire_index.is_some() || self.phase == DataMemoryPhase::WriteStream))
+    }
+
+    fn promote_maintenance(&mut self, index: u8, granted: bool) {
+        let other = self.found_other;
+        let request = self.next_maintenance_request(index);
+        self.request = Some(request);
+        self.beat = 0;
+        self.phase = if granted {
+            DataMemoryPhase::WriteStream
+        } else {
+            DataMemoryPhase::Request
+        };
+        self.scan_set = index % 64;
+        self.found_index = None;
+        self.found_granted = false;
+        self.scan_valid = false;
+        self.scan_done = false;
+        if index < 64 && other.is_some() {
+            self.found_index = Some(index + 64);
+            self.found_other = None;
+            self.scan_active = false;
+        } else if index % 64 == 63 {
+            self.scan_active = false;
+            self.scan_done = true;
+        } else {
+            self.scan_active = true;
+            self.scan_read_set = index % 64 + 1;
+            self.scan_return_set = self.scan_read_set;
+        }
+    }
     fn start_request(&mut self, request: crate::MainMemoryRequest) {
         let write_line = matches!(request, crate::MainMemoryRequest::WriteLine { .. });
         self.request = Some(request);
@@ -1250,7 +1305,9 @@ impl CpuV3DataCacheState {
         let scanning = self.scan_active
             && matches!(
                 self.phase,
-                DataMemoryPhase::Request | DataMemoryPhase::WriteStream
+                DataMemoryPhase::Request
+                    | DataMemoryPhase::WriteStream
+                    | DataMemoryPhase::WriteResponse
             );
         if scanning {
             self.scan_read_set
@@ -1274,19 +1331,8 @@ impl CpuV3DataCacheState {
     /// The cycle wrapper selects one addressed entry and starts its existing
     /// single-line operation; it never snapshots a full dirty bitmap.
     fn next_maintenance_request(&mut self, index: u8) -> crate::MainMemoryRequest {
-        let address = self
-            .cache
-            .dirty_line_address(usize::from(index / 64), usize::from(index % 64))
-            .expect("selected metadata record must still be resident and dirty");
         self.wb_index = index;
-        match self
-            .cache
-            .clean_line(address)
-            .expect("full maintenance exclusively owns the cache")
-        {
-            crate::CacheAction::MainMemoryRequest(request) => request,
-            crate::CacheAction::CpuResponse(_) => unreachable!("dirty entry must write back"),
-        }
+        self.cache.maintenance_line(index)
     }
 
     fn finish_maintenance(&mut self) {
@@ -1319,11 +1365,20 @@ impl CpuV3DataCacheState {
     /// Capture only a single future candidate while the source data DPBs are
     /// independently streaming. A pending synchronous lookup is retested if
     /// completion interrupts it; no metadata read is consumed on the clear edge.
-    fn background_scan_step(&mut self) {
+    fn background_scan_step(&mut self, metadata_write: bool) {
+        if self.scan_active && metadata_write {
+            if self.scan_valid {
+                self.scan_read_set = self.scan_return_set;
+            }
+            self.scan_valid = false;
+            return;
+        }
         if !self.scan_active
             || !matches!(
                 self.phase,
-                DataMemoryPhase::Request | DataMemoryPhase::WriteStream
+                DataMemoryPhase::Request
+                    | DataMemoryPhase::WriteStream
+                    | DataMemoryPhase::WriteResponse
             )
         {
             return;
@@ -1336,6 +1391,7 @@ impl CpuV3DataCacheState {
         if old_valid {
             if let Some(index) = self.metadata_candidate(tested_set) {
                 self.found_index = Some(index);
+                self.found_other = self.metadata_output[1];
                 self.scan_active = false;
                 self.scan_valid = false;
             } else if tested_set == 63 {
@@ -1397,14 +1453,7 @@ impl CpuV3DataCacheState {
                 .expect("clean-line completion must match a line write");
             self.apply_action(action);
         } else if self.full_maintenance {
-            let action = self
-                .cache
-                .complete(crate::MainMemoryResponse::WriteComplete)
-                .expect("maintenance completion must match the selected single-line write");
-            assert!(matches!(
-                action,
-                crate::CacheAction::CpuResponse(crate::CpuMemoryResponse::WriteComplete)
-            ));
+            self.cache.retire_maintenance_line(self.wb_index);
             if let Some(index) = self.found_index.take() {
                 let request = self.next_maintenance_request(index);
                 self.scan_set = index % 64;
@@ -1446,7 +1495,7 @@ impl Module for CpuV3DataCache {
         output: &Self::Output,
     ) {
         let input = input.sample(circuit);
-        let (write, address, write_data) = match state.request {
+        let (write, mut address, write_data) = match state.request {
             Some(crate::MainMemoryRequest::ReadLine { line_address }) => {
                 (false, line_address.get(), 0)
             }
@@ -1469,6 +1518,14 @@ impl Module for CpuV3DataCache {
             }
             None => (false, 0, 0),
         };
+        if state.next_request_valid() {
+            let index = state.found_index.unwrap();
+            address = state
+                .cache
+                .dirty_line_address(usize::from(index / 64), usize::from(index % 64))
+                .unwrap()
+                .get();
+        }
         output.drive(
             circuit,
             &CpuV3DataCacheOutputValue {
@@ -1487,15 +1544,13 @@ impl Module for CpuV3DataCache {
                 cpu_response_valid: state.response_valid,
                 cpu_read_data: u64::from(state.response_data),
                 cpu_error: state.response_valid && state.response_error,
-                memory_request_valid: state.phase == DataMemoryPhase::Request,
+                memory_request_valid: state.phase == DataMemoryPhase::Request
+                    || state.next_request_valid(),
                 memory_write: write,
                 memory_line: state.request.is_some(),
                 memory_address: u64::from(address),
                 memory_write_data: write_data,
-                memory_response_ready: matches!(
-                    state.phase,
-                    DataMemoryPhase::ReadReceive | DataMemoryPhase::WriteResponse
-                ),
+                memory_response_ready: state.write_response_ready(),
                 maintenance_ready: state.phase == DataMemoryPhase::Idle
                     && !state.response_valid
                     && !state.maintenance_active
@@ -1537,9 +1592,53 @@ impl Module for CpuV3DataCache {
             && input.cpu_request_valid;
         let metadata_next = state.metadata_at(state.metadata_read_set());
         let metadata_old = state.metadata_output;
-        state.background_scan_step();
-        state.metadata_output = metadata_next;
+        let old_phase = state.phase;
+        let old_found = state.found_index;
+        let old_retire = state.retire_index;
+        let terminal =
+            state.full_maintenance && input.memory_response_valid && state.write_response_ready();
+        let current_terminal = terminal && old_retire.is_none();
+        let next_accept = state.next_request_valid() && input.memory_request_ready;
+        let promoted = state.full_maintenance
+            && old_found.is_some()
+            && old_retire.is_none()
+            && !input.memory_error
+            && (old_phase == DataMemoryPhase::WriteResponse
+                || (old_phase == DataMemoryPhase::WriteStream
+                    && state.beat == 3
+                    && input.memory_write_data_ready));
+        let next_granted = state.found_granted || next_accept;
+        let old_wb_index = state.wb_index;
+        let metadata_write = terminal && !input.memory_error;
+        state.background_scan_step(metadata_write);
+        // A write holds that way's DPB output; the scan tag is replayed above.
+        state.metadata_output = std::array::from_fn(|way| {
+            if metadata_write && usize::from(old_retire.unwrap_or(old_wb_index) / 64) == way {
+                metadata_old[way]
+            } else {
+                metadata_next[way]
+            }
+        });
         state.maintenance_done = false;
+        if next_accept {
+            state.found_granted = true;
+        }
+        if terminal {
+            if let Some(index) = old_retire {
+                if !input.memory_error {
+                    state.cache.retire_maintenance_line(index);
+                }
+                state.retire_index = None;
+            }
+        }
+        if state.full_maintenance && input.memory_response_valid && input.memory_error {
+            state.phase = DataMemoryPhase::Fault;
+            state.maintenance_error = true;
+            state.maintenance_done = old_phase != DataMemoryPhase::Fault;
+            state.scan_active = false;
+            state.found_index = None;
+            return;
+        }
         if state.response_valid && input.cpu_response_ready {
             state.response_valid = false;
         }
@@ -1672,8 +1771,9 @@ impl Module for CpuV3DataCache {
                     state.scan_valid = false;
                     state.scan_done = false;
                     let other = 1 - state.wb_index / 64;
-                    if metadata_old[usize::from(other)].is_some() {
+                    if state.wb_index < 64 && metadata_old[usize::from(other)].is_some() {
                         state.found_index = Some(other * 64 + state.wb_index % 64);
+                        state.found_other = None;
                         state.scan_active = false;
                     } else if state.wb_index % 64 == 63 {
                         state.scan_active = false;
@@ -1709,14 +1809,20 @@ impl Module for CpuV3DataCache {
                 }
             }
             DataMemoryPhase::WriteStream => {}
-            DataMemoryPhase::WriteResponse if input.memory_response_valid => {
+            DataMemoryPhase::WriteResponse
+                if input.memory_response_valid
+                    && (!state.full_maintenance || old_retire.is_none()) =>
+            {
                 if input.memory_error {
                     state.fail_transaction();
+                } else if state.full_maintenance && old_found.is_some() {
+                    state.cache.retire_maintenance_line(old_wb_index);
                 } else {
                     state.complete_write();
                 }
             }
             DataMemoryPhase::WriteResponse => {}
+            DataMemoryPhase::Fault => {}
             DataMemoryPhase::CopyPrepare => {
                 state.phase = DataMemoryPhase::CopyInvalidate;
             }
@@ -1770,6 +1876,14 @@ impl Module for CpuV3DataCache {
                 }
             }
             DataMemoryPhase::ReadReceive => {}
+        }
+        if promoted {
+            if !current_terminal {
+                state.retire_index = Some(old_wb_index);
+            } else if old_phase == DataMemoryPhase::WriteStream {
+                state.cache.retire_maintenance_line(old_wb_index);
+            }
+            state.promote_maintenance(old_found.unwrap(), next_granted);
         }
     }
 

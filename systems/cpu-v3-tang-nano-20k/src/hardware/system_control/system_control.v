@@ -29,9 +29,10 @@ module {{ module_name }} (
 // bit. A channel-3 write while busy is dropped; software polls the busy
 // readback before enqueueing the next byte.
 // The stop bit is the final nonzero bit: shifting it out ends the frame.
-// No independent bit index or busy register is needed.
+// Keep the public busy bit registered so status/watch queries do not reduce
+// the entire frame on the CPU device-read timing path. No bit index is needed.
 reg [9:0] uart_frame = 0;
-wire uart_busy = |uart_frame;
+reg uart_busy = 0;
 reg [{{ uart_divider_msb }}:0] uart_divider = 0;
 // Always main-clocked: never use CPU hold or a device enable as its CE.
 reg [15:0] millisecond_divider = 0;
@@ -75,6 +76,7 @@ always @(posedge clk) begin
         pending_dcache_maintenance <= 0;
         leds <= 0;
         uart_frame <= 0;
+        uart_busy <= 0;
         uart_divider <= 0;
         millisecond_divider <= 0;
         milliseconds <= 0;
@@ -103,6 +105,7 @@ always @(posedge clk) begin
             if (uart_divider == 16'd{{ clocks_per_bit_minus_one }}) begin
                 uart_divider <= 0;
                 uart_frame <= {1'b0, uart_frame[9:1]};
+                if (uart_frame == 10'd1) uart_busy <= 0;
             end else begin
                 uart_divider <= uart_divider + 1'b1;
             end
@@ -117,6 +120,7 @@ always @(posedge clk) begin
                 2: leds <= device_write_data[5:0];
                 3: if (!uart_busy) begin
                     uart_frame <= {1'b1, device_write_data[7:0], 1'b0};
+                    uart_busy <= 1;
                     uart_divider <= 0;
                 end
                 4: if (!cpu_hold) begin

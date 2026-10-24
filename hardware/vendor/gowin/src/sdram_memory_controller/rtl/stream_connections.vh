@@ -5,7 +5,9 @@ wire [3:0] mask;
 wire [63:0] write_data, read_data;
 wire read_valid, write_done, initialized, stream_active, lookahead_window, next_valid;
 wire request_continuation;
-wire[1:0] cpu_chain_class=(gpu_ro_request_valid&&gpu_ro_request_ready)?2'd1:(gpu_fb_w_request_valid&&gpu_fb_w_request_ready)?2'd2:(gpu_fb_r_request_valid&&gpu_fb_r_request_ready)?2'd3:2'd0;
+// Class three is direction-disjoint: GPU framebuffer reads or CPU line writes.
+// Direction matching in the endpoint prevents those owners from being chained.
+wire[1:0] cpu_chain_class=(gpu_ro_request_valid&&gpu_ro_request_ready)?2'd1:(gpu_fb_w_request_valid&&gpu_fb_w_request_ready)?2'd2:(gpu_fb_r_request_valid&&gpu_fb_r_request_ready)?2'd3:(data_request_valid&&data_request_ready&&data_write&&data_line)?2'd3:2'd0;
 wire [20:0] next_address;
 assign lookahead_enable = __EARLY_GRANT__ && lookahead_window;
 __SHARED_PORT__ #(.EARLY_GRANT(__EARLY_GRANT__), .CHAIN_GROUP_FOUR(__CHAIN_GROUP_FOUR__)) adapter (

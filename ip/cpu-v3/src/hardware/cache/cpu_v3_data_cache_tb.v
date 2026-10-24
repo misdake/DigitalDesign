@@ -22,7 +22,9 @@ always #5 clk=~clk;
 reg [15:0] memory [0:262143];
 integer i, j, cycles=0, line_reads=0, line_writes=0;
 integer copy_start_cycle=0;
-always @(negedge clk) memory_request_ready = cycles % 7 >= 3;
+// This legacy peer deliberately has one descriptor of capacity. The separate
+// continuation bench exercises the two-descriptor native path.
+
 reg request_stalled=0;
 reg [21:0] held_request_address;
 reg [63:0] held_request_data;
@@ -32,6 +34,9 @@ reg [21:0] transfer_base=0;
 reg write_response_pending=0;
 reg inject_write_error=0, write_error_pending=0;
 integer error_after_beats=0, failed_accepted_beats=0;
+always @(negedge clk) memory_request_ready = cycles % 7 >= 3 &&
+    read_remaining==0 && write_remaining==0 && !write_response_pending &&
+    !write_error_pending && !memory_response_valid;
 wire [3:0] read_index = 4-read_remaining;
 wire [3:0] write_index = 4-write_remaining;
 // Burst-ready windows exercise all beat stalls and consecutive transfers.
@@ -47,8 +52,8 @@ always @(posedge clk) begin
       dut.state,dut.pending_address,dut.pending_address_valid,dut.pending_hit,
       dut.response_valid,read_remaining,write_remaining);
   if (request_stalled && (!memory_request_valid || !memory_write ||
-      memory_address !== held_request_address || memory_write_data !== held_request_data))
-    $fatal(1,"write request/data changed before address acceptance");
+      memory_address !== held_request_address))
+    $fatal(1,"write descriptor changed before address acceptance");
   request_stalled <= memory_request_valid && memory_write && !memory_request_ready;
   held_request_address <= memory_address;
   held_request_data <= memory_write_data;

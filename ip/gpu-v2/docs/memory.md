@@ -164,9 +164,13 @@ the ACT/RCD update. Request ownership and real terminal responses are unchanged.
 
 CLEAR supplies its constant directly. Consecutive CP DMA requests and meshlet
 segments use the same path, without a separate filler or payload storage.
-The board target's legacy `RtlSources::GEARBOX`/`SharedSdramPort` closure remains
-separate; standalone pin simulation and isolated timing do not qualify a
-changed complete board image.
+The complete CPU board uses the distinct streaming endpoint/bridge and three
+system-owned descriptor registers before arbitration; see
+[system admission](/systems/cpu-v3-tang-nano-20k/docs/architecture.md#streaming-memory-admission).
+UI uses four-sector color maintenance and grouped atlas reads as described in
+[UI](/ip/gpu-v2/docs/ui.md#storage-and-pipeline). The vendor's legacy
+`RtlSources::GEARBOX`/`SharedSdramPort` closure remains separate. Standalone pin
+simulation and isolated timing do not qualify a changed complete board image.
 
 The bounded `tests/framebuffer_continuation.py` fixture exercises the actual
 production cache/router modules from `--gpu --release`, native DPB/shared DSP,

@@ -1,5 +1,5 @@
 // Ordered two-descriptor endpoint. Return tags and write supply are independent
-// of physical retirement; only the same nonblocking GPU owner may overlap data.
+// of physical retirement; only a qualified same-owner/direction stream overlaps.
 module SharedSdramPort #(parameter EARLY_GRANT=1,CHAIN_GROUP_FOUR=0)(
  input clk,reset,input cpu_request_valid,cpu_write,cpu_line,input[21:0]cpu_address,
  input[1:0]cpu_line_count_minus_1,cpu_chain_class,input[63:0]cpu_write_data,input cpu_response_ready,
@@ -17,7 +17,6 @@ module SharedSdramPort #(parameter EARLY_GRANT=1,CHAIN_GROUP_FOUR=0)(
  wire[1:0]used=put-head;
  wire legal=!cpu_line||(cpu_line_count_minus_1==0?cpu_address[3:0]==0:
   cpu_line_count_minus_1==1?cpu_address[4:0]==0:cpu_line_count_minus_1==3&&cpu_address[5:0]==0);
- wire[4:0]head_words=!ql[head[0]]?5'd1:({1'b0,qlen[head[0]],2'd0}+5'd4);
  wire[4:0]rx_words=!ql[rx[0]]?5'd1:({1'b0,qlen[rx[0]],2'd0}+5'd4);
  wire[1:0]forwarded=sent-head;
  wire same_next=used==2&&qc[head[0]]!=0&&qc[head[0]]==qc[!head[0]]&&
@@ -31,9 +30,11 @@ module SharedSdramPort #(parameter EARLY_GRANT=1,CHAIN_GROUP_FOUR=0)(
  assign controller_words=!ql[sent[0]]?6'd1:qlen[sent[0]]==0?6'd8:qlen[sent[0]]==1?6'd16:6'd32;
  assign controller_write_mask=qw[sent[0]]&&!ql[sent[0]]?(qa[sent[0]][0]?4'b0011:4'b1100):4'd0;
  assign controller_next_valid=used==2;assign controller_next_address=qa[!head[0]][21:1];
- wire[4:0]progress=qw[head[0]]?(supplied[head[0]]?head_words:{1'b0,tx_beat}):rx_beat;
- assign cpu_lookahead_window=EARLY_GRANT&&used==1&&ql[head[0]]&&controller_stream_active&&
-  ({1'b0,progress}+6'd8>={1'b0,head_words});
+ // Descriptor credit, not delayed return data, bounds successor admission.
+ // CL3 plus registered read return must leave time for the native next-row
+ // lookup/PRE/ACT before the old column stream reaches its chain boundary.
+ assign cpu_lookahead_window=EARLY_GRANT&&used==1&&ql[head[0]]&&
+  forwarded!=0&&controller_stream_active;
  wire next_feed=forwarded==2&&same_next&&qw[head[0]]&&supplied[head[0]];
  wire tx_slot=next_feed?!head[0]:head[0];
  wire[4:0]tx_words=!ql[tx_slot]?5'd1:({1'b0,qlen[tx_slot],2'd0}+5'd4);

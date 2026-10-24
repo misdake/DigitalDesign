@@ -16,7 +16,7 @@ module CpuV3System (
     input wire sdram_request_ready,
     input wire sdram_stream_active,
     input wire sdram_clock_ready,
-    input wire sdram_done,
+    input wire sdram_write_done,
     input wire sdram_write_data_ready,
     input wire pixel_clock,
     input wire serial_clock,
@@ -27,6 +27,7 @@ module CpuV3System (
     output wire flash_cs_n,
     output wire flash_mosi,
     output wire sdram_request_valid,
+    output wire sdram_request_continuation,
     output wire sdram_next_valid,
     output wire [20:0] sdram_next_address,
     output wire sdram_write,
@@ -338,6 +339,8 @@ wire [15:0] pc;
 wire [15:0] code_segment;
 wire [31:0] retired_words;
 
+
+
 __CPU_V3_CORE__ #(.INITIAL_CODE_SEGMENT(16'd7)) u_core (
     .clk(clk),
     .reset(reset),
@@ -498,6 +501,35 @@ __GPU__ u_gpu (
 
 wire sdram_lookahead_window;
 
+// Register descriptors at the system boundary. Payload and responses stay
+// on their original ordered paths; no payload buffer or RAM is introduced.
+wire [2:0] gpu_slot_valid,gpu_slot_write,gpu_slot_ready;
+wire [21:0] gpu_slot_address[0:2];wire [1:0] gpu_slot_count[0:2];
+CpuV3GpuMemoryRequestSlot gpu_ro_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_ro_memory_request_valid),.in_ready(gpu_ro_memory_request_ready),
+    .in_write(gpu_ro_memory_write),.in_address(gpu_ro_memory_address),
+    .in_count(gpu_ro_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[0]),.out_ready(gpu_slot_ready[0]),
+    .out_write(gpu_slot_write[0]),.out_address(gpu_slot_address[0]),.out_count(gpu_slot_count[0])
+);
+CpuV3GpuMemoryRequestSlot gpu_fb_r_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_fb_r_memory_request_valid),.in_ready(gpu_fb_r_memory_request_ready),
+    .in_write(gpu_fb_r_memory_write),.in_address(gpu_fb_r_memory_address),
+    .in_count(gpu_fb_r_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[1]),.out_ready(gpu_slot_ready[1]),
+    .out_write(gpu_slot_write[1]),.out_address(gpu_slot_address[1]),.out_count(gpu_slot_count[1])
+);
+CpuV3GpuMemoryRequestSlot gpu_fb_w_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_fb_w_memory_request_valid),.in_ready(gpu_fb_w_memory_request_ready),
+    .in_write(gpu_fb_w_memory_write),.in_address(gpu_fb_w_memory_address),
+    .in_count(gpu_fb_w_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[2]),.out_ready(gpu_slot_ready[2]),
+    .out_write(gpu_slot_write[2]),.out_address(gpu_slot_address[2]),.out_count(gpu_slot_count[2])
+);
+
 __ARBITER__ u_memory_arbiter (
     .lookahead_enable(sdram_lookahead_window),
     .clk(clk),
@@ -519,20 +551,20 @@ __ARBITER__ u_memory_arbiter (
     .display_request_valid(display_memory_request_valid),
     .display_address(display_memory_address),
     .display_response_ready(1'b1),
-    .gpu_ro_request_valid(gpu_ro_memory_request_valid && boot_done),
-    .gpu_ro_write(gpu_ro_memory_write),
-    .gpu_ro_address(gpu_ro_memory_address),
-    .gpu_ro_line_count_minus_1(gpu_ro_memory_line_count_minus_1),
+    .gpu_ro_request_valid(gpu_slot_valid[0]),
+    .gpu_ro_write(gpu_slot_write[0]),
+    .gpu_ro_address(gpu_slot_address[0]),
+    .gpu_ro_line_count_minus_1(gpu_slot_count[0]),
     .gpu_ro_write_data(gpu_ro_memory_write_data),
-    .gpu_fb_r_request_valid(gpu_fb_r_memory_request_valid && boot_done),
-    .gpu_fb_r_write(gpu_fb_r_memory_write),
-    .gpu_fb_r_address(gpu_fb_r_memory_address),
-    .gpu_fb_r_line_count_minus_1(gpu_fb_r_memory_line_count_minus_1),
+    .gpu_fb_r_request_valid(gpu_slot_valid[1]),
+    .gpu_fb_r_write(gpu_slot_write[1]),
+    .gpu_fb_r_address(gpu_slot_address[1]),
+    .gpu_fb_r_line_count_minus_1(gpu_slot_count[1]),
     .gpu_fb_r_write_data(gpu_fb_r_memory_write_data),
-    .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid && boot_done),
-    .gpu_fb_w_write(gpu_fb_w_memory_write),
-    .gpu_fb_w_address(gpu_fb_w_memory_address),
-    .gpu_fb_w_line_count_minus_1(gpu_fb_w_memory_line_count_minus_1),
+    .gpu_fb_w_request_valid(gpu_slot_valid[2]),
+    .gpu_fb_w_write(gpu_slot_write[2]),
+    .gpu_fb_w_address(gpu_slot_address[2]),
+    .gpu_fb_w_line_count_minus_1(gpu_slot_count[2]),
     .gpu_fb_w_write_data(gpu_fb_w_memory_write_data),
     .memory_request_ready(memory_request_ready),
     .memory_write_data_ready(memory_write_data_ready),
@@ -558,19 +590,19 @@ __ARBITER__ u_memory_arbiter (
     .display_read_data(display_memory_read_data),
     .display_response_last(display_memory_last),
     .display_error(display_memory_error),
-    .gpu_ro_request_ready(gpu_ro_memory_request_ready),
+    .gpu_ro_request_ready(gpu_slot_ready[0]),
     .gpu_ro_write_data_ready(gpu_ro_memory_write_data_ready),
     .gpu_ro_response_valid(gpu_ro_memory_response_valid),
     .gpu_ro_read_data(gpu_ro_memory_read_data),
     .gpu_ro_response_last(gpu_ro_memory_response_last),
     .gpu_ro_error(gpu_ro_memory_error),
-    .gpu_fb_r_request_ready(gpu_fb_r_memory_request_ready),
+    .gpu_fb_r_request_ready(gpu_slot_ready[1]),
     .gpu_fb_r_write_data_ready(gpu_fb_r_memory_write_data_ready),
     .gpu_fb_r_response_valid(gpu_fb_r_memory_response_valid),
     .gpu_fb_r_read_data(gpu_fb_r_memory_read_data),
     .gpu_fb_r_response_last(gpu_fb_r_memory_response_last),
     .gpu_fb_r_error(gpu_fb_r_memory_error),
-    .gpu_fb_w_request_ready(gpu_fb_w_memory_request_ready),
+    .gpu_fb_w_request_ready(gpu_slot_ready[2]),
     .gpu_fb_w_write_data_ready(gpu_fb_w_memory_write_data_ready),
     .gpu_fb_w_response_valid(gpu_fb_w_memory_response_valid),
     .gpu_fb_w_read_data(gpu_fb_w_memory_read_data),
@@ -585,6 +617,12 @@ __ARBITER__ u_memory_arbiter (
     .memory_response_ready(memory_response_ready)
 );
 
+// Class is sampled with the arbiter's accepted descriptor; held payload and
+// response ownership remain with the active owner until its true terminal.
+wire [1:0] memory_chain_class = gpu_slot_valid[0] && gpu_slot_ready[0] ? 2'd1 :
+    gpu_slot_valid[2] && gpu_slot_ready[2] ? 2'd2 :
+    gpu_slot_valid[1] && gpu_slot_ready[1] ? 2'd3 :
+    dcache_memory_request_valid && dcache_memory_request_ready && dcache_memory_write ? 2'd3 : 2'd0;
 __SHARED_SDRAM_PORT__ #(.EARLY_GRANT(1)) u_shared_sdram_port (
     .clk(clk),
     .reset(reset),
@@ -593,6 +631,7 @@ __SHARED_SDRAM_PORT__ #(.EARLY_GRANT(1)) u_shared_sdram_port (
     .cpu_line(memory_line),
     .cpu_address(memory_address),
     .cpu_line_count_minus_1(memory_line_count_minus_1),
+    .cpu_chain_class(memory_chain_class),
     .cpu_write_data(memory_write_data),
     .cpu_response_ready(memory_response_ready),
     .controller_read_data(sdram_read_data),
@@ -600,7 +639,8 @@ __SHARED_SDRAM_PORT__ #(.EARLY_GRANT(1)) u_shared_sdram_port (
     .controller_init_done(sdram_init_done),
     .controller_request_ready(sdram_request_ready),
     .controller_stream_active(sdram_stream_active),
-    .controller_done(sdram_done),
+    .controller_write_done(sdram_write_done),
+    .controller_request_continuation(sdram_request_continuation),
     .controller_write_data_ready(sdram_write_data_ready),
     .cpu_request_ready(memory_request_ready),
     .cpu_lookahead_window(sdram_lookahead_window),
@@ -650,4 +690,22 @@ __FRAMEBUFFER_HDMI__ u_display (
     .tmds_data_n(tmds_data_n)
 );
 
+
+
+endmodule
+
+// One irrevocable descriptor, one registered address boundary. The GPU master
+// owns its payload until the real terminal, independently of this slot.
+module CpuV3GpuMemoryRequestSlot(
+ input clk,reset,in_valid,in_write,input[21:0]in_address,input[1:0]in_count,
+ output in_ready,output reg out_valid=0,output reg out_write=0,
+ output reg[21:0]out_address=0,output reg[1:0]out_count=0,input out_ready
+);
+ assign in_ready=!out_valid&&!reset;
+ always @(posedge clk)begin
+  if(reset)out_valid<=0;
+  else if(in_valid&&in_ready)begin
+   out_valid<=1;out_write<=in_write;out_address<=in_address;out_count<=in_count;
+  end else if(out_valid&&out_ready)out_valid<=0;
+ end
 endmodule

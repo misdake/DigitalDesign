@@ -1,12 +1,13 @@
 `timescale 1ns/1ps
-// Pin-model qualification uses the existing 10.102 ns CL2 profile (99 MHz).
-// The emitted FPGA remains at 54/108 MHz. This is not 108 MHz timing proof.
+// CL3 108/54 MHz functional pin model; physical IO qualification is separate.
 module tb;
+GSR GSR(.GSRI(1'b1));
 localparam [15:0] PROBE_HALT=__PROBE_HALT__;
-reg clk=0,controller_clk=0,phy_clk=0,pixel_clock=0,serial_clock=0;
-always #5.051 controller_clk=!controller_clk;
+reg clk=0,source_clk=0,phy_clk=0,pixel_clock=0,serial_clock=0;
+wire controller_clk;assign #(2.271) controller_clk=source_clk;
+always #4.629629 source_clk=!source_clk;
 always @(posedge controller_clk)clk=!clk;
-initial begin #13.259;forever begin phy_clk=!phy_clk;#5.051;end end
+initial begin #12.430556;forever begin phy_clk=!phy_clk;#4.629629;end end
 always #15.015 pixel_clock=!pixel_clock;
 always #3.003 serial_clock=!serial_clock;
 reg reset=1;
@@ -18,29 +19,39 @@ wire tmds_clk_p,tmds_clk_n;wire [2:0]tmds_data_p,tmds_data_n;
 wire video_locked=1,sdram_clock_ready=1;
 wire [63:0]sdram_read_data,sdram_write_data;
 wire sdram_read_valid,sdram_init_done,sdram_request_ready,sdram_stream_active;
-wire sdram_done,sdram_write_data_ready,sdram_request_valid,sdram_next_valid;
+wire sdram_write_done,sdram_write_data_ready,sdram_request_valid,sdram_next_valid;
+wire sdram_request_continuation;
 wire [20:0]sdram_next_address,sdram_address;
 wire sdram_write,sdram_write_data_valid;wire [5:0]sdram_words;
 wire [3:0]sdram_write_mask;
 CpuV3System dut(.*);
 wire O_sdram_clk,O_sdram_cke,O_sdram_cs_n,O_sdram_cas_n,O_sdram_ras_n,O_sdram_wen_n;
 wire [3:0]O_sdram_dqm;wire [10:0]O_sdram_addr;wire [1:0]O_sdram_ba;wire [31:0]IO_sdram_dq;
-TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(1),.COLD_START_ONLY(1)) bridge(
+TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(1),.COLD_START_ONLY(1),.CAS(3),.RCD_CYCLES(3),.RP_CYCLES(3),.CAPTURE_LATENCY(3),.REGISTER_READ_RETURN(1)) bridge(
  .logic_clk(clk),.controller_clk(controller_clk),.sdram_clk(phy_clk),.reset(reset),
- .request_valid(sdram_request_valid),.next_valid(sdram_next_valid),.next_address(sdram_next_address),
+ .request_valid(sdram_request_valid),.request_continuation(sdram_request_continuation),.next_valid(sdram_next_valid),.next_address(sdram_next_address),
  .writing(sdram_write),.address(sdram_address),.words(sdram_words),.write_mask(sdram_write_mask),
  .write_data(sdram_write_data),.write_data_valid(sdram_write_data_valid),
  .request_ready(sdram_request_ready),.stream_active(sdram_stream_active),
  .write_data_ready(sdram_write_data_ready),.read_data(sdram_read_data),.read_valid(sdram_read_valid),
- .done(sdram_done),.initialized(sdram_init_done),
+ .write_done(sdram_write_done),.initialized(sdram_init_done),
  .O_sdram_clk(O_sdram_clk),.O_sdram_cke(O_sdram_cke),.O_sdram_cs_n(O_sdram_cs_n),
  .O_sdram_cas_n(O_sdram_cas_n),.O_sdram_ras_n(O_sdram_ras_n),.O_sdram_wen_n(O_sdram_wen_n),
  .O_sdram_dqm(O_sdram_dqm),.O_sdram_addr(O_sdram_addr),.O_sdram_ba(O_sdram_ba),.IO_sdram_dq(IO_sdram_dq));
+// Reference board delay corner; final fitted SDF is qualified separately.
+wire pin_cke,pin_cs,pin_ras,pin_cas,pin_we,pin_write_drive;
+wire [3:0]pin_dqm;wire [10:0]pin_a;wire [1:0]pin_ba;wire [31:0]pin_dq,pin_output_data;
+assign #(3.916) {pin_cke,pin_cs,pin_ras,pin_cas,pin_we,pin_dqm,pin_a,pin_ba}=
+ {O_sdram_cke,O_sdram_cs_n,O_sdram_ras_n,O_sdram_cas_n,O_sdram_wen_n,O_sdram_dqm,O_sdram_addr,O_sdram_ba};
+assign #(2.300) pin_write_drive=bridge.u_controller.dq_drive;
+assign #(3.916) pin_output_data=bridge.u_controller.dq_out;
+assign pin_dq=pin_write_drive?pin_output_data:32'bz;
+assign IO_sdram_dq=bridge.u_controller.dq_drive?32'bz:pin_dq;
 wire [31:0]pin_cycles,refreshes;
-LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4)) memory(
- .sclk(O_sdram_clk),.reset(reset),.cke(O_sdram_cke),.cs(O_sdram_cs_n),.ras(O_sdram_ras_n),
- .cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),.a(O_sdram_addr),.ba(O_sdram_ba),
- .dq(IO_sdram_dq),.cycle(pin_cycles),.refreshes(refreshes));
+LabPinModel #(.PERIOD_NS(9.259259),.CAS_LATENCY(3),.TAC(5.4),.TOH(2.5),.THZ(5.4),.RCD_MIN(3),.RP_MIN(3),.RETURN_MIN(1.392),.RETURN_MAX(2.314)) memory(
+ .sclk(O_sdram_clk),.reset(reset),.cke(pin_cke),.cs(pin_cs),.ras(pin_ras),
+ .cas(pin_cas),.we(pin_we),.dqm(pin_dqm),.a(pin_a),.ba(pin_ba),
+ .dq(pin_dq),.cycle(pin_cycles),.refreshes(refreshes));
 reg [7:0]flash_image[0:__PACKAGE_BYTES__-1];
 reg [31:0]command=0;integer command_bits=0,data_bit=0;reg [23:0]byte_address=0;
 reg [7:0]current_byte=0;
@@ -91,7 +102,7 @@ always @(negedge uart_tx)begin
   $display("native board frame%0d cycles%0d refreshes%0d",frames,cycles,refreshes);
   if(frames==2)begin
    if(refreshes==0)$fatal(1,"no refresh contention exercised");
-   $display("CPU/gear/MC/Display real SPI and SDRAM pins; CL2 model 99 MHz");
+   $display("CPU/gear/MC/Display real SPI and SDRAM pins; CL3 model 108 MHz");
    $display("DIGITAL_DESIGN_PASS");$finish;
   end
   byte_count=0;
@@ -120,7 +131,7 @@ always @(posedge clk)begin
  if(cycles%100000==0)begin
   $fdisplay(progress_fd,"cycles%0d boot%0d pc%h frame%0d target%h core%0d dcache%0d bridge%0d controller%0d r1=%h r2=%h r3=%h r6=%h r8=%h r9=%h r10=%h r11=%h SP=%h",cycles,
    dut.boot_done,dut.pc,dut.u_display.frame_index,dut.u_display.active_base,
-   dut.u_core.state,dut.u_data_cache.state,bridge.occupied_54,bridge.core_phase,
+   dut.u_core.state,dut.u_data_cache.state,dut.u_shared_sdram_port.used,bridge.core_phase,
    dut.u_core.u_gpr_ram.words[1],dut.u_core.u_gpr_ram.words[2],dut.u_core.u_gpr_ram.words[3],
    dut.u_core.u_gpr_ram.words[6],dut.u_core.u_gpr_ram.words[8],dut.u_core.u_gpr_ram.words[9],
    dut.u_core.u_gpr_ram.words[10],dut.u_core.u_gpr_ram.words[11],dut.u_core.u_gpr_ram.words[13]);

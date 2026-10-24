@@ -36,6 +36,7 @@ module SdramController #(
     input      [20:0] next_address,
     input      [5:0] next_words,
     input             next_chainable,
+    input             next_write_ready,
     input             next_generation,
     output            chain_accept,
     output            read_chain_accept,
@@ -131,12 +132,15 @@ module SdramController #(
     wire capture_valid=CONTINUE?stream_capture:(read_active&&read_age>=CAPTURE_LATENCY&&read_age<read_limit);
     reg [11:0] refresh_age = 0;
     reg prep_refresh_ok = 1;
+    (* syn_keep=1, syn_preserve=1 *) reg refresh_due_q = 0;
+    (* syn_keep=1, syn_preserve=1 *) reg chain_refresh_ok = 1;
     reg [3:0] row_valid = 0;
     reg [10:0] row[0:3];
 
     // Latched group descriptor and speculative preparation of the next bank.
     reg [20:0] saved_address = 0;
     reg [5:0] saved_words = 0;
+    reg [7:0] read_stop_age = 0;
     reg write_chain_eligible = 0;
     wire [7:0] scalar_tail = saved_words == 1 ? SCALAR_TAIL_CYCLES : 0;
     reg [7:0] read_finish = 0;
@@ -189,16 +193,22 @@ module SdramController #(
     wire next_needs_prepare = (NEXT_TAGGED && RCD_CYCLES >= 2) ?
         (next_lookup_current && !next_matches_q && prep_wait == 0) : !next_matches;
     reg read_chain_slot_q = 0;
-    reg read_prepare_window = 0;
+    (* syn_keep=1, syn_preserve=1 *) reg read_prepare_window = 0;
+    (* syn_keep=1, syn_preserve=1 *) reg write_prepare_window = 0;
     wire read_chain_issue = READ_CHAIN && read_chain_slot_q && next_valid && (!CONTINUE||next_chainable) && qualified_next_match &&
         !prep_needed && prep_wait == 0;
     assign read_chain_accept = read_chain_issue;
     reg [7:0] launch_age = 0;
     reg observed_chain = 0;
     assign chain_accept = CHAIN && OPEN_ROW && state == ST_WRITE_STREAM &&
-        write_index == saved_last && write_chain_eligible && next_valid && (!CONTINUE||next_chainable) && qualified_next_match &&
-        !prep_needed && prep_wait == 0 && refresh_age < 1000 && (CONTINUE||group_extra_segments != 3);
-    assign ready = state == ST_IDLE && initialized && refresh_age < 1100 &&
+        write_index == saved_last && write_chain_eligible && next_valid && (!CONTINUE||(next_chainable&&next_write_ready)) && qualified_next_match &&
+        !prep_needed && prep_wait == 0 && chain_refresh_ok && (CONTINUE||group_extra_segments != 3);
+    // Address has no ownership on NOP/STOP. Stage the potential next column
+    // independently of the final payload-credit decision; only command issue
+    // commits it. A PRE/ACT preparation retains exclusive pin ownership.
+    wire column_candidate = CONTINUE && READ_CHAIN && read_chain_slot_q &&
+        next_valid && !prep_needed && prep_wait == 0;
+    assign ready = state == ST_IDLE && initialized && !refresh_due_q &&
         prep_wait == 0 && prep_rp == 0;
     // Capture validity gates ownership; free-running data may be meaningless.
     generate
@@ -281,6 +291,10 @@ module SdramController #(
         end
         if (refresh_age < 4095) refresh_age <= refresh_age + 1'b1;
         prep_refresh_ok <= refresh_age < 989;
+        // Predict the incremented counter's predicates on the preceding edge.
+        // Every counter restart overrides these alongside refresh_age below.
+        refresh_due_q <= refresh_age >= 1099;
+        chain_refresh_ok <= refresh_age < 999;
         if(CONTINUE&&read_active)begin
             if(stream_delay!=0)stream_delay<=stream_delay-1'b1;
             else if(stream_left!=0)begin
@@ -332,14 +346,14 @@ module SdramController #(
             end
             ST_INIT_DONE: begin
                 initialized <= 1;
-                refresh_age <= 0;
+                refresh_age <= 0; refresh_due_q<=0; chain_refresh_ok<=1;
                 state <= ST_IDLE;
             end
             ST_IDLE:
             if (prep_wait != 0 || prep_rp != 0) begin
                 // A prepared bank must satisfy tRCD/tRP before a new column
                 // command or an all-bank refresh can consume its row state.
-            end else if (refresh_age >= 1100) begin
+            end else if (refresh_due_q) begin
                 if (row_valid != 0) begin
                     command <= 2;
                     O_sdram_addr <= 11'h400;
@@ -353,6 +367,7 @@ module SdramController #(
                 group_extra_segments <= 0;
                 saved_address <= mapped_address;
                 saved_words <= words;
+                read_stop_age <= {2'd0,words} + (words==1 ? SCALAR_TAIL_CYCLES : 0);
                 saved_last <= words - 1'b1;
                 saved_write <= writing;
                 saved_mask <= write_mask;
@@ -383,7 +398,7 @@ module SdramController #(
             end
             ST_REFRESH: begin
                 command <= 1;
-                refresh_age <= 0;
+                refresh_age <= 0; refresh_due_q<=0; chain_refresh_ok<=1;
                 wait_count <= RFC_CYCLES - 1;
                 after_wait <= ST_IDLE;
                 state <= ST_TIMING_WAIT;
@@ -407,24 +422,26 @@ module SdramController #(
                 dq_drive <= 1;
                 dq_out <= write_data;
                 write_index <= 1;
+                write_prepare_window <= saved_words > 1;
                 state <= ST_WRITE_STREAM;
                 prep_needed <= 0;
             end
             ST_WRITE_STREAM: begin
+                if (write_index == saved_last) write_prepare_window <= 0;
                 // Other-bank preparation uses free command slots while current DQ writes.
                 // A separately arbitrated successor may arrive after word 1.
                 // Prepare its other bank when the stable descriptor is available,
                 // including an open conflicting row, rather than missing the
                 // only early sample. The current bank is never disturbed.
                 if ((CHAIN || PREPARE_NEXT) && next_valid && next_other_bank &&
-                    next_needs_prepare && !prep_needed && prep_refresh_ok && write_index < saved_words &&
+                    next_needs_prepare && !prep_needed && prep_refresh_ok && write_prepare_window &&
                     (CHAIN || !row_valid[mapped_next_address[20:19]])) begin
                     prep_needed <= 1;
                     prep_open <= row_valid[mapped_next_address[20:19]];
                     prep_address <= mapped_next_address;
                 end
                 if ((CHAIN || PREPARE_NEXT) && prep_needed && prep_rp == 0 &&
-                    write_index < saved_words) begin
+                    write_prepare_window) begin
                     O_sdram_ba <= prep_address[20:19];
                     if (prep_open) begin
                         command <= 2;
@@ -485,7 +502,7 @@ module SdramController #(
             end
             ST_READ_STREAM: begin
                 if ((READ_CHAIN || PREPARE_NEXT) && next_valid && next_other_bank &&
-                    next_needs_prepare && !prep_needed && prep_refresh_ok && command_age < saved_last &&
+                    next_needs_prepare && !prep_needed && prep_refresh_ok && read_prepare_window &&
                     (READ_CHAIN || !row_valid[mapped_next_address[20:19]])) begin
                     prep_needed <= 1;
                     prep_open <= row_valid[mapped_next_address[20:19]];
@@ -521,7 +538,7 @@ module SdramController #(
                 // One extra physical read word is discarded; the returned length stays
                 // unchanged. Chained READs still issue exactly every saved_words clocks.
                 if ((CAPTURE_FALLING || CAPTURE_LATENCY >= CAS) &&
-                    command_age == saved_words + scalar_tail)
+                    command_age == read_stop_age)
                     command <= 6;
                 if (CONTINUE?(stream_left==0&&stream_delay==0&&stream_tail==1):(read_age==read_finish)) begin
                     read_active <= 0;
@@ -569,18 +586,24 @@ module SdramController #(
             end
             default: state <= ST_POWER_WAIT;
         endcase
+        if (column_candidate) begin
+            O_sdram_ba <= mapped_next_address[20:19];
+            O_sdram_addr <= {3'b0, mapped_next_address[7:0]};
+        end
         if (read_chain_issue) begin
             read_prepare_window <= 1;
             group_extra_segments <= group_extra_segments + 1'b1;
             command <= 5;
-            O_sdram_ba <= mapped_next_address[20:19];
-            O_sdram_addr <= {3'b0, mapped_next_address[7:0]};
+            if (!CONTINUE) begin
+                O_sdram_ba <= mapped_next_address[20:19];
+                O_sdram_addr <= {3'b0, mapped_next_address[7:0]};
+            end
             saved_address <= mapped_next_address;
             command_age <= 0;
             read_limit <= read_limit + saved_words;
             if(CONTINUE)begin
                 stream_left<=stream_left+next_words-(stream_capture?7'd1:7'd0);
-                saved_words<=next_words;saved_last<=next_words-1'b1;
+                saved_words<=next_words;saved_last<=next_words-1'b1;read_stop_age<={2'd0,next_words};
             end
             read_chain_pending <= 1;
         end
@@ -593,7 +616,7 @@ module SdramController #(
             dq_drive <= 0;
             initialized <= 0;
             init_count <= 0;
-            refresh_age <= 0;
+            refresh_age <= 0; refresh_due_q<=0; chain_refresh_ok<=1;
             prep_refresh_ok <= 1;
             row_valid <= 0;
             read_active <= 0;
@@ -618,11 +641,19 @@ module SdramController #(
             write_chain_eligible <= 0;
             read_chain_slot_q <= 0;stream_left<=0;stream_delay<=0;stream_tail<=0;
             read_prepare_window <= 0;
+            write_prepare_window <= 0;
+            read_stop_age <= 0;
         end
     end
 `ifndef SYNTHESIS
     always @(posedge clk) if (!reset && NEXT_TAGGED && next_valid && next_lookup_current &&
         next_row_identity_q != mapped_next_address[20:8])
         $fatal(1,"Native next-generation/row identity mismatch");
+`endif
+`ifndef SYNTHESIS
+    always @(posedge clk) if(!reset && initialized) begin
+        if(refresh_due_q !== (refresh_age>=1100) || chain_refresh_ok !== (refresh_age<1000))
+            $fatal(1,"refresh predicate lookahead calendar");
+    end
 `endif
 endmodule

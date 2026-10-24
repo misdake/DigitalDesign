@@ -228,8 +228,18 @@ then streams four ordered 64-bit beats without a private line buffer. The board
 gearbox pairs/splits those logical beats against the 32-bit SDRAM controller at
 the related 108 MHz clock. The cold-boot loader keeps
 single-word transactions. Full D-cache clean and clean-plus-invalidate read one
-metadata set per cycle. A single pending line index lets that scan overlap an
-in-flight write-back. Dirty clears only after successful write completion. A
+metadata set per cycle. The scan holds one candidate's identity and metadata,
+while separate feed and retirement contexts permit at most two accepted line
+writes. A successor descriptor can be offered during the predecessor's data or
+terminal wait. The predecessor's fourth accepted beat launches the successor's
+beat-zero DPB read; no line payload FIFO or additional BSRAM is required. Dirty
+clears only for the matching successful ordered terminal. A metadata write
+holds DPB DO, so the scan invalidates and replays its pending read on that edge.
+Way zero precedes way one within a set, preventing rediscovery of a line whose
+terminal has not arrived. Full invalidate waits for all writes before its
+64-set validity sweep. A full-maintenance memory error stops request admission
+and holds the cache unavailable until whole-system reset; it cannot cancel an
+already accepted successor. Single-line commands keep their existing contract. A
 conservative one-bit hint skips scans after a completed full clean; single-line
 clean never clears that hint. The CPU is held during full maintenance; there is
 no per-line snoop interface. The system-control I-cache invalidation pulse is

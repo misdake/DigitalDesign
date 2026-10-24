@@ -43,7 +43,7 @@ localparam [4:0] ST_IDLE=0, ST_LOOKUP=1, ST_LINE_REQUEST=2,
     ST_LINE_RECEIVE=3, ST_COPY_RESPONSE=4, ST_WB_PRIME=5,
     ST_WB_CAPTURE=6, ST_WB_REQUEST=7, ST_WB_STREAM=8,
     ST_WB_RESPONSE=9, ST_SCAN=10, ST_COPY_PREPARE=11,
-    ST_COPY_INVALIDATE=12, ST_SCAN_PRIME=13, ST_META_REFRESH=14;
+    ST_COPY_INVALIDATE=12, ST_SCAN_PRIME=13, ST_META_REFRESH=14, ST_FAULT=15;
 
 reg [4:0] state = ST_IDLE;
 reg pending_write = 0;
@@ -90,7 +90,23 @@ reg may_have_dirty=0;
 
 reg [5:0] bg_read_set=0,bg_pipe_set=0;
 reg [6:0] found_index=0;
-wire bg_state=state==ST_WB_REQUEST || state==ST_WB_STREAM;
+reg [15:0] found_metadata=0,found_other_metadata=0;
+reg found_granted=0;
+// One completed data source can await its ordered terminal while the same
+// data DPBs feed the successor. No payload is duplicated here.
+reg retire_valid=0;
+reg [6:0] retire_index=0;
+reg [15:0] retire_metadata=0;
+wire full_wb=wb_for_maintenance && maintenance_active;
+wire bg_state=state==ST_WB_REQUEST || state==ST_WB_STREAM ||
+    (full_wb && state==ST_WB_RESPONSE);
+wire next_request=full_wb && (state==ST_WB_STREAM || state==ST_WB_RESPONSE) &&
+    found_valid && !found_granted && !retire_valid;
+wire next_accept=next_request && memory_request_ready;
+wire maintenance_terminal=full_wb && memory_response_valid && memory_response_ready;
+wire current_terminal=maintenance_terminal && !retire_valid;
+wire promote_found=full_wb && found_valid && !retire_valid && !memory_error &&
+    ((state==ST_WB_STREAM && memory_write_data_ready && wb_beat==3) || state==ST_WB_RESPONSE);
 wire bg_hit=(meta0[12]&&meta0[13]) || (meta1[12]&&meta1[13]);
 wire bg_way=!(meta0[12]&&meta0[13]);
 wire [5:0] pending_set = pending_address[9:4];
@@ -124,11 +140,13 @@ wire refill_commit = state == ST_LINE_RECEIVE && memory_response_valid &&
 assign way_0_tag=meta0[11:0]; assign way_1_tag=meta1[11:0];
 assign way_0_valid_read=meta0[12]; assign way_1_valid_read=meta1[12];
 assign victim_read=meta0[14];
+wire next_data_read=full_wb && found_valid && !retire_valid &&
+    (state==ST_WB_RESPONSE || (state==ST_WB_STREAM && wb_beat==3 && memory_write_data_ready));
 wire writeback_read_mode = state == ST_WB_PRIME || state == ST_WB_CAPTURE ||
-    state == ST_WB_REQUEST || state == ST_WB_STREAM;
+    state == ST_WB_REQUEST || state == ST_WB_STREAM || next_data_read;
 // Hold the current DPB beat during stalls; read the next beat on consumption.
 // Consecutive ready edges transfer consecutive beats without FF staging.
-wire [1:0] writeback_read_beat = state == ST_WB_STREAM ?
+wire [1:0] writeback_read_beat = next_data_read ? 2'd0 : state == ST_WB_STREAM ?
     wb_beat[1:0] + {1'b0, memory_write_data_ready} : 2'd0;
 wire [5:0] data_read_set = writeback_read_mode ? wb_set :
     (state == ST_IDLE && cpu_request_valid ? cpu_address[9:4] : pending_set);
@@ -136,8 +154,9 @@ wire [3:0] data_read_word = state == ST_IDLE && cpu_request_valid ?
     cpu_address[3:0] : pending_word;
 wire [9:0] lookup_way_0_address = {1'b0, data_read_set, data_read_word[3:1]};
 wire [9:0] lookup_way_1_address = {1'b1, data_read_set, data_read_word[3:1]};
-wire [9:0] wb_read_address_a = {wb_way, wb_set, writeback_read_beat, 1'b0};
-wire [9:0] wb_read_address_b = {wb_way, wb_set, writeback_read_beat, 1'b1};
+wire [6:0] data_source_index=next_data_read?found_index:{wb_way,wb_set};
+wire [9:0] wb_read_address_a = {data_source_index, writeback_read_beat, 1'b0};
+wire [9:0] wb_read_address_b = {data_source_index, writeback_read_beat, 1'b1};
 wire [15:0] bank_0_a_read_data, bank_0_b_read_data;
 wire [15:0] bank_1_a_read_data, bank_1_b_read_data;
 wire [15:0] way_0_read_data = pending_word[0] ? bank_1_a_read_data : bank_0_a_read_data;
@@ -187,7 +206,9 @@ wire prepared_line_copy_destination_way_1_hit =
     prepared_line_copy_destination_tag != pending_tag && way_1_valid_read &&
     way_1_tag == prepared_line_copy_destination_tag;
 wire dest_invalidate=state==ST_COPY_INVALIDATE && line_copy_destination_hit_latched;
-wire wb_clear=state==ST_WB_RESPONSE && memory_response_valid && !memory_error;
+wire wb_clear=(maintenance_terminal || (!full_wb && state==ST_WB_RESPONSE && memory_response_valid)) && !memory_error;
+wire [6:0] clear_index=full_wb && retire_valid?retire_index:{wb_way,wb_set};
+wire [15:0] clear_metadata=full_wb && retire_valid?retire_metadata:wb_metadata;
 wire refill_prime=state==ST_LINE_REQUEST;
 wire meta_update=hit_store || refill_prime || refill_commit || dest_invalidate;
 wire update_way=hit_store?hit_way:dest_invalidate?line_copy_destination_way_latched:pending_way;
@@ -197,13 +218,13 @@ wire [15:0] update_word=refill_commit?install_word:
     hit_store?(old_word | 16'h2000):(old_word & 16'hcfff);
 // A way-one install also updates the victim bit in the current way-zero word.
 // No stale pre-eviction snapshot is reused here.
-wire meta_write0=sweep_active || (wb_clear&&!wb_way) ||
+wire meta_write0=sweep_active || (wb_clear&&!clear_index[6]) ||
     (meta_update&&!update_way) || (refill_commit&&pending_way);
-wire meta_write1=sweep_active || (wb_clear&&wb_way) || (meta_update&&update_way);
-wire [5:0] meta_set0=sweep_active?sweep_set:wb_clear?wb_set:pending_set;
-wire [5:0] meta_set1=sweep_active?sweep_set:wb_clear?wb_set:pending_set;
+wire meta_write1=sweep_active || (wb_clear&&clear_index[6]) || (meta_update&&update_way);
+wire [5:0] meta_set0=sweep_active?sweep_set:wb_clear?clear_index[5:0]:pending_set;
+wire [5:0] meta_set1=sweep_active?sweep_set:wb_clear?clear_index[5:0]:pending_set;
 wire [15:0] wb_cleared=wb_for_maintenance || wb_for_line_clean ?
-    (wb_metadata & 16'hdfff):(wb_metadata & 16'hcfff);
+    (clear_metadata & 16'hdfff):(clear_metadata & 16'hcfff);
 wire [15:0] meta_word0=sweep_active?16'b0:wb_clear?wb_cleared:
     (refill_commit&&pending_way)?(meta0 & 16'hbfff):update_word;
 wire [15:0] meta_word1=sweep_active?16'b0:wb_clear?wb_cleared:update_word;
@@ -224,13 +245,14 @@ assign line_copy_ready = cpu_request_ready;
 assign cpu_response_valid = response_valid;
 assign cpu_read_data = response_data;
 assign cpu_error = response_valid && response_error;
-assign memory_request_valid = state == ST_LINE_REQUEST || state == ST_WB_REQUEST;
+assign memory_request_valid = state == ST_LINE_REQUEST || state == ST_WB_REQUEST || next_request;
 assign memory_write = state == ST_WB_REQUEST || state == ST_WB_STREAM ||
     state == ST_WB_RESPONSE || state == ST_COPY_RESPONSE;
 assign memory_line = state != ST_IDLE && state != ST_LOOKUP;
-assign memory_address = memory_write ? wb_address : {pending_address[21:4],4'b0};
+assign memory_address = next_request ? {found_metadata[11:0],found_index[5:0],4'b0} :
+    memory_write ? wb_address : {pending_address[21:4],4'b0};
 assign memory_write_data = wb_read_data;
-assign memory_response_ready = state == ST_LINE_RECEIVE ||
+assign memory_response_ready = (full_wb && state!=ST_FAULT && (retire_valid || state==ST_WB_STREAM || state==ST_WB_RESPONSE)) || state == ST_LINE_RECEIVE ||
     state == ST_WB_RESPONSE || state == ST_COPY_RESPONSE;
 assign maintenance_busy = maintenance_active;
 assign valid_sweep = sweep_active;
@@ -239,7 +261,7 @@ assign valid_sweep = sweep_active;
 // single-line clean/copy does not attempt to subtract from the hint.
 // Set has priority over done/scrub if interfaces are ever extended to overlap.
 wire full_clean_finished=(state==ST_SCAN && scan_set==63 && !bg_hit) ||
-    (state==ST_WB_RESPONSE && wb_for_maintenance && memory_response_valid &&
+    (state==ST_WB_RESPONSE && wb_for_maintenance && !retire_valid && memory_response_valid &&
      !memory_error && !found_valid && bg_done);
 wire fault_scrub=(state==ST_LINE_RECEIVE || state==ST_WB_RESPONSE ||
     state==ST_COPY_RESPONSE) && memory_response_valid && memory_error;
@@ -265,6 +287,7 @@ always @(posedge clk) begin
         line_copy_destination_way_latched <= 0;
         maintenance_error <= 0;
         scan_set <= 0; bg_active<=0; bg_valid<=0; bg_done<=0; found_valid<=0;
+        retire_valid<=0; found_granted<=0;
         sweep_active <= 1;
         sweep_set <= 0;
         sweep_finishes_maintenance <= 0;
@@ -285,15 +308,22 @@ always @(posedge clk) begin
                 end
             end
         end
-        // One synchronous set lookup per WB cycle, at most one pending hit.
-        // Never scan on the response/metadata-clear edge: DPB writes hold DO.
-        if(bg_active && bg_state) begin
+        if(next_accept) found_granted<=1;
+        if(maintenance_terminal && retire_valid) retire_valid<=0;
+        // A metadata write holds one DPB output. Replay the not-yet-consumed
+        // read and invalidate its pipeline tag rather than testing stale DO.
+        if(bg_active && wb_clear) begin
+            if(bg_valid) bg_read_set<=bg_pipe_set;
+            bg_valid<=0;
+        end else if(bg_active && bg_state) begin
             bg_pipe_set<=bg_read_set;
             bg_valid<=1;
             if(bg_read_set!=63) bg_read_set<=bg_read_set+1'b1;
             if(bg_valid) begin
                 if(bg_hit) begin
                     found_valid<=1; found_index<={bg_way,bg_pipe_set};
+                    found_metadata<=bg_way?meta1:meta0;
+                    found_other_metadata<=meta1;
                     bg_active<=0; bg_valid<=0;
                 end else if(bg_pipe_set==63) begin
                     bg_active<=0; bg_valid<=0; bg_done<=1;
@@ -312,6 +342,7 @@ always @(posedge clk) begin
                     maintenance_invalidate <= invalidate_all;
                     maintenance_error <= 0;
                     wb_for_maintenance <= 1;
+                    retire_valid<=0; found_granted<=0;
                     scan_set <= 0;
                     if(!may_have_dirty) begin
                         if(invalidate_all) begin
@@ -437,9 +468,10 @@ always @(posedge clk) begin
                 wb_metadata <= wb_way?meta1:meta0;
                 if(wb_for_maintenance) begin
                     found_valid<=0; bg_valid<=0; bg_done<=0;
-                    if((wb_way ? meta0[12]&&meta0[13] : meta1[12]&&meta1[13])) begin
+                    if(!wb_way && meta1[12] && meta1[13]) begin
                         // The other way in this set can already be queued.
                         found_valid<=1; found_index<={!wb_way,wb_set}; bg_active<=0;
+                        found_metadata<=meta1;found_other_metadata<=0;
                     end else if(wb_set==63) begin
                         bg_active<=0; bg_done<=1;
                     end else begin
@@ -489,7 +521,7 @@ always @(posedge clk) begin
                     state <= ST_IDLE;
                 end
             end
-            ST_WB_RESPONSE: if (memory_response_valid) begin
+            ST_WB_RESPONSE: if (memory_response_valid && (!full_wb || !retire_valid)) begin
                 if (memory_error) begin
                     // Scrub every line with a sweep; the error itself is
                     // reported immediately.
@@ -512,9 +544,8 @@ always @(posedge clk) begin
                 end else begin
                     if (wb_for_maintenance) begin
                         if(found_valid) begin
-                            wb_way<=found_index[6];wb_set<=found_index[5:0];
-                            scan_set<=found_index[5:0];wb_beat<=0;found_valid<=0;
-                            state<=ST_WB_PRIME;
+                            // The shared promotion below has already primed
+                            // beat zero and preserves a possible early grant.
                         end else if(bg_done) begin
                             if(maintenance_invalidate) begin
                                 sweep_active<=1;sweep_set<=0;sweep_finishes_maintenance<=1;
@@ -612,8 +643,38 @@ always @(posedge clk) begin
                     end else refill_beat <= refill_beat + 1'b1;
                 end
             end
+            ST_FAULT: begin end
             default: state <= ST_IDLE;
         endcase
+        if(promote_found) begin
+            if(!current_terminal) begin
+                retire_valid<=1;retire_index<={wb_way,wb_set};retire_metadata<=wb_metadata;
+            end
+            wb_way<=found_index[6];wb_set<=found_index[5:0];
+            wb_metadata<=found_metadata;
+            wb_address<={found_metadata[11:0],found_index[5:0],4'b0};
+            scan_set<=found_index[5:0];wb_beat<=0;
+            state<=found_granted || next_accept?ST_WB_STREAM:ST_WB_REQUEST;
+            found_valid<=0;found_granted<=0;bg_valid<=0;bg_done<=0;
+            // Maintenance visits way zero then way one within each set.
+            // The preceding way can still be dirty until its terminal;
+            // its saved metadata must never be rediscovered as a new line.
+            if(!found_index[6] && found_other_metadata[12] && found_other_metadata[13]) begin
+                found_valid<=1;found_index<={1'b1,found_index[5:0]};
+                found_metadata<=found_other_metadata;found_other_metadata<=0;bg_active<=0;
+            end else if(found_index[5:0]==63) begin
+                bg_active<=0;bg_done<=1;
+            end else begin
+                bg_active<=1;bg_read_set<=found_index[5:0]+1'b1;
+                bg_pipe_set<=found_index[5:0]+1'b1;
+            end
+        end
+        // An accepted successor cannot be cancelled safely. A failed full
+        // maintenance therefore stops admission until a whole-system reset.
+        if(full_wb && state!=ST_FAULT && memory_response_valid && memory_error) begin
+            state<=ST_FAULT;maintenance_error<=1;maintenance_done<=1;
+            maintenance_active<=1;sweep_active<=0;bg_active<=0;found_valid<=0;
+        end
     end
 end
 

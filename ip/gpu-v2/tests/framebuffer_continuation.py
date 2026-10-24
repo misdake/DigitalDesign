@@ -60,6 +60,10 @@ def main():
     if a.release:
         tb=tb.replace("#(.COLOR_BASE('h100000),.DEPTH_BASE('h140000),.PREFETCH_ENABLE(0))", "#(.PREFETCH_ENABLE(0))")
         tb=tb.replace('.preflight_bad(preflight_bad),', ".color_base(14'h800),.depth_base(14'ha00),.row_alpha(8'hff),.preflight_bad(preflight_bad),")
+    if 'input ui_active' in (out/'framebuffer_tdp_cache.v').read_text():
+        ui_gate=".ui_lower_ready(1'b1)," if 'ui_lower_ready' in (out/'framebuffer_tdp_cache.v').read_text() else ".ui_cmd_half(1'b0),"
+        tb=tb.replace('.clk(clk),.reset(reset),.ce(ce),.commit_allow',
+            ".ui_active(1'b0),.ui_cmd_valid(1'b0),.ui_cmd_write(1'b0),"+ui_gate+".ui_tile(9'd0),.ui_pixel_valid(1'b0),.ui_pixel_half(1'b0),.ui_pixel_word(5'd0),.ui_pixels(64'd0),.clk(clk),.reset(reset),.ce(ce),.commit_allow",1)
     (out/'tb.v').write_text(tb)
     compile_files=[p for p in sources if p.suffix=='.v']
     run([os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',out/'sim.vvp',

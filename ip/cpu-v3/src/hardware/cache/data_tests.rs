@@ -15,6 +15,7 @@ struct Harness {
     output: CpuV3DataCacheOutput,
     memory: Vec<u16>,
     transfer: Option<Transfer>,
+    reserved: Option<Transfer>,
     cycles: usize,
     writes: usize,
     reads: usize,
@@ -60,6 +61,7 @@ impl Harness {
                 .map(|word| 0x8a31 ^ (word as u16).wrapping_mul(73) ^ (word >> 4) as u16)
                 .collect(),
             transfer: None,
+            reserved: None,
             cycles: 0,
             writes: 0,
             reads: 0,
@@ -77,7 +79,8 @@ impl Harness {
 
     fn step(&mut self, mut input: CpuV3DataCacheInputValue) -> CpuV3DataCacheOutputValue {
         assert!(self.cycles < 200000, "cache harness cycle limit");
-        input.memory_request_ready = !self.stalled || self.cycles % 7 >= 3;
+        input.memory_request_ready =
+            self.reserved.is_none() && (!self.stalled || self.cycles % 7 >= 3);
         match self.transfer {
             Some(Transfer::Read { base, beat }) => {
                 input.memory_response_valid = true;
@@ -121,15 +124,23 @@ impl Harness {
             _ => {}
         }
         if out.memory_request_valid && input.memory_request_ready {
-            assert!(self.transfer.is_none(), "one memory transaction owner");
             let base = out.memory_address as usize;
-            if out.memory_write {
+            let transfer = if out.memory_write {
                 self.writes += 1;
-                self.transfer = Some(Transfer::Write { base, beat: 0 });
+                Transfer::Write { base, beat: 0 }
             } else {
                 self.reads += 1;
-                self.transfer = Some(Transfer::Read { base, beat: 0 });
+                Transfer::Read { base, beat: 0 }
+            };
+            if self.transfer.is_none() {
+                self.transfer = Some(transfer);
+            } else {
+                assert!(self.reserved.is_none());
+                self.reserved = Some(transfer);
             }
+        }
+        if self.transfer.is_none() {
+            self.transfer = self.reserved.take();
         }
         self.circuit.clock_tick();
         self.cycles += 1;
@@ -326,6 +337,48 @@ fn metadata_cycle_model_matches_rtl() {
         }
     }
     assert!(accepted);
+    let tb = trace_tb(&h.trace);
+    for vendor in [false, true] {
+        run_rtl_golden(&tb, vendor);
+    }
+}
+
+#[test]
+#[ignore = "ordered maintenance error with an accepted successor; portable and vendor DPB replay"]
+fn full_maintenance_error_keeps_reserved_owner_until_reset() {
+    let mut h = Harness::new(true);
+    h.access(true, 0x20, 0x7654);
+    h.access(true, 0x420, 0x8abc);
+    let writes = h.writes;
+    let mut command = idle();
+    command.clean_all = true;
+    h.step(command);
+    let mut injected = false;
+    for _ in 0..500 {
+        let mut input = idle();
+        if h.writes == writes + 2 && matches!(h.transfer, Some(Transfer::Response)) {
+            input.memory_error = true;
+            injected = true;
+        }
+        h.step(input);
+        if injected {
+            break;
+        }
+    }
+    assert!(injected, "both descriptors accepted before the error");
+    // Freeze the external service after its fault; accepted transactions are
+    // deliberately not retracted or reported successful by this test.
+    for cycle in 0..32 {
+        let value = idle();
+        h.input.drive(&mut h.circuit, &value);
+        h.circuit.execute_gates();
+        let out = h.output.sample(&h.circuit);
+        assert!(!out.cpu_request_ready && !out.maintenance_ready && !out.memory_request_valid);
+        assert!(out.maintenance_busy && out.maintenance_error);
+        assert_eq!(out.maintenance_done, cycle == 0);
+        h.trace.push((value, out));
+        h.circuit.clock_tick();
+    }
     let tb = trace_tb(&h.trace);
     for vendor in [false, true] {
         run_rtl_golden(&tb, vendor);
