@@ -22,3 +22,6 @@ display-window = ["dep:minifb"]
 serde_json = "1"
 cpu-v3 = { path = "../../ip/cpu-v3" }
 rcc = { path = "../../compiler/rcc" }
+
+[dev-dependencies]
+serde_json = "1"

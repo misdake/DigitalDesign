@@ -2,6 +2,8 @@
 use crate::dsl_rt::*;
 mod gpu;
 use gpu::*;
+mod dualshock2;
+use dualshock2::*;
 mod controls;
 use controls::*;
 mod camera;
@@ -13,13 +15,16 @@ use time::*;
 mod boot_resources;
 use boot_resources::*;
 
+static INPUT: Buf<u16, 10> = Buf::new([0; 10]);
+static PACKET: Buf<u16, 9> = Buf::new([0; 9]);
+static CAMERA: Buf<u16, 12> = Buf::new([0; 12]);
 static BUTTONS: Buf<u16, 4> = Buf::new([0; 4]);
 static MATRIX: Buf<u16, 45> = Buf::new([0; 45]);
 static STATS: Buf<u16, 4> = Buf::new([0; 4]);
 
-// DDGD v2: status, completed count, previous full-loop us, XOR checksum.
+// DDGD v3: status, completed count, rendered interval us excluding present, XOR checksum.
 fn demo_report(status: u16, frame: u16, us: u16) {
-    let mut bytes: Buf<u16, 11> = Buf::new([68, 68, 71, 68, 2, 0, 0, 0, 0, 0, 0]);
+    let mut bytes: Buf<u16, 11> = Buf::new([68, 68, 71, 68, 3, 0, 0, 0, 0, 0, 0]);
     bytes[5u16] = status;
     bytes[6u16] = frame & 255;
     bytes[7u16] = frame >> 8;
@@ -116,18 +121,22 @@ fn demo_run(limit: u16, budget: u16) {
         lod_bias: 0,
     };
     let mut frame: u16 = 0;
-    let mut phase: u16 = 0;
+    let mut rendered_us: u16 = 65535;
     let mut completed = false;
     demo_buttons_init(
         BUTTONS.as_array(),
         dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
         time_milliseconds(),
     );
-    time_clear_microseconds();
+    ds2_init(INPUT.as_array());
+    demo_require(
+        demo_camera_init(MATRIX.as_array(), CAMERA.as_array(), time_milliseconds()),
+        14,
+    );
     while limit == 0 || frame < limit {
-        let now = time_milliseconds();
-        let elapsed = time_microseconds();
         time_clear_microseconds();
+        let now = time_milliseconds();
+        ds2_service(INPUT.as_array(), PACKET.as_array());
         dev_send(7, 5, now);
         dev_send(7, 1, 1);
         let show_numbers = demo_buttons_update(
@@ -135,15 +144,17 @@ fn demo_run(limit: u16, budget: u16) {
             dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
             now,
         );
-        demo_ui_frame_begin(STATS.as_array(), elapsed, completed);
-        demo_report(if completed { 1 } else { 0 }, frame, STATS.as_array()[1u16]);
+        demo_ui_frame_begin(STATS.as_array(), rendered_us, completed);
         completed = false;
         dev_send(7, 1, 2);
-        demo_require(demo_camera(MATRIX.as_array(), phase), 14);
+        demo_require(
+            demo_camera_update(MATRIX.as_array(), CAMERA.as_array(), INPUT.as_array(), now),
+            14,
+        );
         global.light_x = MATRIX[42u16] as i16;
         global.light_y = MATRIX[43u16] as i16;
         global.light_z = MATRIX[44u16] as i16;
-        dev_send(7, 6, phase);
+        dev_send(7, 6, frame);
         dev_send(7, 1, 3);
         let cb = gpu_cb_begin();
         demo_require(cb == GPU_CB_HANDLE, 2);
@@ -197,6 +208,8 @@ fn demo_run(limit: u16, budget: u16) {
         demo_require(gpu_submit_idle(cb) == GPU_PENDING, 9);
         dev_send(7, 1, 13);
         demo_require(demo_wait(cb, false, budget) == GPU_COMPLETED, 10);
+        rendered_us = time_microseconds();
+        dev_send(7, 4, rendered_us);
         dev_send(7, 0, frame + 1);
         dev_send(7, 1, 14);
         demo_require(gpu_present(cb) == GPU_PENDING, 11);
@@ -205,7 +218,7 @@ fn demo_run(limit: u16, budget: u16) {
         dev_send(7, 1, 15);
         completed = true;
         frame += 1;
-        phase += 256;
+        demo_report(1, frame, rendered_us);
         dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, frame & 31);
     }
     // Bounded verification waits for the last complete visible scan as well.

@@ -28,8 +28,8 @@ fn hex(value: u16) {
     }
 }
 fn main() {
-    let mut state: Buf<u16, 16> = Buf::new([0; 16]);
-    let mut packet: Buf<u16, 21> = Buf::new([0; 21]);
+    let mut state: Buf<u16, 10> = Buf::new([0; 10]);
+    let mut packet: Buf<u16, 9> = Buf::new([0; 9]);
     ds2_init(state.as_array());
     put(68);
     put(83);

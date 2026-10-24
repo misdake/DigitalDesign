@@ -51,12 +51,12 @@ at 54 MHz is 6+16 bits and two incrementers; no BCD logic, RAM, DSP, multiword
 snapshot, general division, or new clock domain is added. Final area/timing
 qualification is performed with the complete peripheral combination.
 
-The application owns clear. The rotating demo reads then clears once per
-frame boundary, so the current frame shows the preceding completed full-loop
-interval. DS2 byte/packet helpers may read but must not independently reset an
-active frame measurement. A standalone DS2 test may own clear per packet;
-long retries and button debounce continue to use channel 10. This shared
-microsecond source replaces a separate controller-specific timer proposal.
+The application owns clear. The first-person demo clears immediately before
+frame preparation and locks the interval after GPU completion, before present.
+The next frame displays that interval only after successful presentation;
+vblank and later UART reporting are excluded. Autonomous DS2 never clears or
+uses this timer for transport progress. Movement and button debounce use the
+independent millisecond wall clock, including time spent presenting.
 
 ## Software and functional simulation
 

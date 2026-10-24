@@ -22,7 +22,7 @@ struct State {
     starts: usize,
     swaps: usize,
     packet_until: u64,
-    word: usize,
+    changed: bool,
     valid: bool,
     packets: usize,
     during_gpu: usize,
@@ -41,17 +41,6 @@ impl cpu_v3::Device for Peer {
             s.format = s.shadow_format;
             s.pending = false;
         }
-        if self.kind == 5 && s.packet_until != 0 && s.us >= s.packet_until {
-            s.packet_until = 0;
-            s.valid = true;
-            s.packets += 1;
-            if s.us < s.gpu_until {
-                s.during_gpu += 1;
-            }
-            if s.pending {
-                s.during_present += 1;
-            }
-        }
         match (self.kind, ch) {
             (0, 10) => (s.us / 1000) as u16,
             (0, 11) => (s.us - s.clear).min(65535) as u16,
@@ -61,10 +50,10 @@ impl cpu_v3::Device for Peer {
             (3, 3) => u16::from(s.pending),
             (3, 4) => s.format,
             (4, 2) => u16::from(s.us < s.gpu_until),
-            (5, 0) => 16 + u16::from(s.packet_until != 0) * 5 + u16::from(s.valid) * 2,
-            (5, 1) => {
+            (5, 8..=15) => u16::from(s.valid) | (u16::from(s.changed) << 1),
+            (5, 0..=7) => {
                 let response = [0x73u16, 0x5a, 0xa5, 0x5a, 0, 255, 128, 64];
-                (response[s.word * 2] << 8) | response[s.word * 2 + 1]
+                response[(usize::from(ch) + 6) & 7]
             }
             _ => 0,
         }
@@ -86,27 +75,7 @@ impl cpu_v3::Device for Peer {
                 s.present_until = s.us + 35000;
                 s.swaps += 1;
             }
-            (5, 0) => match value {
-                1 => {
-                    assert!(s.valid);
-                    s.word += 1;
-                    if s.word == 4 {
-                        s.valid = false;
-                    }
-                }
-                3 => {
-                    s.packet_until = 0;
-                    s.valid = false;
-                }
-                2 => {}
-                _ => panic!("unexpected DS2 command"),
-            },
-            (5, 1) => {
-                assert!(!s.valid && s.packet_until == 0);
-                assert_eq!(value, 0);
-                s.packet_until = s.us + 1736;
-                s.word = 0;
-            }
+            (5, 8..=15) => s.changed = false,
             (7, 0) => s.counts[0] = value,
             (7, 1) => s.counts[1] = value,
             _ => {}
@@ -147,6 +116,7 @@ fn run(source: &str, entry: &'static str, out: &Path) -> (CpuV3Sim, Rc<RefCell<S
     cpu.set_boot_window(&code.words);
     let s = Rc::new(RefCell::new(State {
         active: 0x200000,
+        packet_until: 9709,
         ..State::default()
     }));
     for kind in [0, 3, 4, 5, 7] {
@@ -155,7 +125,22 @@ fn run(source: &str, entry: &'static str, out: &Path) -> (CpuV3Sim, Rc<RefCell<S
     // Host-controlled logical time; not physical CPU-cycle timing evidence.
     let mut halted = false;
     for step in 0..4_000_000 {
-        s.borrow_mut().us = step / 10;
+        {
+            let mut s = s.borrow_mut();
+            s.us = step / 10;
+            if s.us >= s.packet_until {
+                s.packet_until += 9709;
+                s.valid = true;
+                s.changed = true;
+                s.packets += 1;
+                if s.us < s.gpu_until {
+                    s.during_gpu += 1;
+                }
+                if s.pending {
+                    s.during_present += 1;
+                }
+            }
+        }
         if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
             assert_eq!(signal, 0x600d);
             halted = true;
@@ -351,7 +336,7 @@ fn complete_one_frame_services_ds2_during_render_and_present_waits() {
 }
 
 #[test]
-fn one_call_per_frame_collects_and_restarts_without_halving_sample_rate() {
+fn one_call_per_frame_reads_latest_without_controlling_acquisition() {
     let out = assets("cadence");
     let (_, s) = run(
         r#"mod device_abi;mod dualshock2;mod time;
@@ -361,10 +346,10 @@ fn main(){ds2_init(S.as_array());check(!ds2_service(S.as_array(),RX.as_array()))
 let mut frame:u16=0;while frame<3{
 let start=time_milliseconds();while time_elapsed_ms(start,time_milliseconds())<17{}
 time_clear_microseconds();check(ds2_service(S.as_array(),RX.as_array()));
-check(S[0u16]==1&&S[15u16]==1);frame+=1;}halt(0x600d);}"#,
+check(S[0u16]==1);frame+=1;}halt(0x600d);}"#,
         "main",
         &out,
     );
-    assert_eq!(s.borrow().packets, 3);
+    assert!(s.borrow().packets >= 5);
     assert!(s.borrow().packet_until != 0);
 }

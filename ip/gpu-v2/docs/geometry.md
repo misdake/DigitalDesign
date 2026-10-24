@@ -55,6 +55,13 @@ not require the later X row to be valid. The bounds imply `abs(p[k]) < 2^25` and
 overflow during an eligible test. Ineligible inputs retain the original V/T
 behavior rather than acquiring a new input-format restriction.
 
+The55-word prologue occupies compact ROM addresses256..310. Its endpoint
+selector feeds the existing unpacker phase directly. To subtract retained Z,
+the packer prepares negative Z in the idle T-work row0, then the ordinary
+unpacker loads RF11 while the next support dot issues. MAC B reads its original
+RAM output unchanged: no bounds-only sign OR spans that36-bit input. Work0 and
+RF10/11 belong to this pre-V interval; ordinary V/T scheduling is unchanged.
+
 Retained V and T arithmetic, quantization and result words are unchanged.
 Rejected meshlets publish no V or T records, complete normally, and leave the
 alternate attribute epoch free. Already completed payload DMA is not saved.
