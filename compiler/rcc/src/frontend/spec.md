@@ -193,7 +193,7 @@ they are not part of this surface.
 |---|---|---|
 | zero | `fix32::zero()`, `vec2::zero()`, `vec3::zero()`, `vec4::zero()` | all lanes are Q16.16 zero |
 | numeric conversion | `fix32::from_int(x: i16) -> fix32`, `x.to_int() -> i16` | `I16TOF`; `FTOI16` truncates toward zero and wraps on overflow |
-| raw construction | `fix32::from_words(lo: u16, hi: u16) -> fix32` | construct the exact 32-bit Q16.16 pattern, low half first (`ILO2F`, `IHI2F`) |
+| raw construction | `fix32::from_words(lo: u16, hi: u16) -> fix32` | construct the exact 32-bit Q16.16 pattern, low half first (`ILO2F`, `IHI2F`); a compile-time zero low half uses one exact `I16TOF` |
 | raw extraction | `x.lo_bits() -> u16`, `x.hi_bits() -> u16` | extract the exact low/high half (`FLO2I`, `FHI2I`) |
 | vector construction | `vec2::new(x, y)`, `vec3::new(x, y, z)`, `vec4::new(x, y, z, w)` | build a consecutive F-register range from `fix32` lanes |
 | lane extraction | `.x()`, `.y()`, `.z()`, `.w()` as applicable to the type | return one `fix32` lane; no memory access |
@@ -343,7 +343,7 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
 ```
 
 - Fields keep declaration order and each occupies whole 16-bit words: a scalar
-  (`u16`/`i16`/`Ptr`/`bool`) one word, a `Buf<T, N>` `N * sizeof(T)` words, a nested struct its own
+  (`u16`/`i16`/`Ptr`/`bool`) one word, a `fix32` two words (low half first), a `Buf<T, N>` `N * sizeof(T)` words, a nested struct its own
   size. There is no packing, because the machine has no byte accesses.
 - The total size is padded up to the struct's alignment. Alignment is one word by default;
   `#[repr(align(N))]` raises it. As in Rust `N` is in *bytes*, so on this 16-bit-word target
@@ -371,7 +371,16 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
   `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
   Array<Point>` parameter may write through it, which is how a callee updates the caller's struct.
-- Out of scope for now (§12): `impl` methods, `fix32`/`vecN` fields, and recursive layouts.
+- Scalar `fix32` fields preserve the full Q16.16 bit pattern through existing FLD/FST
+  operations, with one-word alignment. They support runtime literals, field reads and plain
+  assignments, nested structs, struct buffers, copies and aggregate returns. Compound field
+  assignments remain integer-only. Static fields accept constant `fix32::zero()`,
+  `fix32::from_int(integer)` and `fix32::from_words(lo, hi)` constructors, emitted
+  as exact low/high data words. Arbitrary static FPU expressions and `Buf<fix32, N>`
+  are not supported. With optimization enabled, an uninterrupted full-vector lane
+  extract/store sequence to adjacent fields with the same base may use one FSTV;
+  loads, calls or other writes between fields prevent this combination.
+- Out of scope for now (§12): `impl` methods, `vecN` fields, and recursive layouts.
   (`static` structs are supported since §9.4.)
 
 ## 9c. Tuples
@@ -528,7 +537,7 @@ them unchanged (a struct local is just an address plus offsets).
 `&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
 inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
-aggregate-returning fn pointers, `impl`, `fix32`/`vecN` fields, recursive layouts, enum payloads,
+aggregate-returning fn pointers, `impl`, `vecN` fields, arbitrary static FPU expressions, recursive layouts, enum payloads,
 and enum statics).
 
 A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,

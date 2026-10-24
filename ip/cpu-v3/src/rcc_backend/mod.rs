@@ -3016,6 +3016,121 @@ mod tests {
     }
 
     #[test]
+    fn fix32_struct_fields_preserve_bits_across_layout_views_and_returns() {
+        let source = r#"
+            struct Sample { head: u16, x: fix32, y: fix32, tail: u16 }
+            struct Nested { tag: u16, value: Sample, end: u16 }
+            fn check(ok: bool) { if !ok { halt(0xbad); } }
+            fn make(x: fix32) -> Sample {
+                Sample { head: 17, x, y: fix32::from_words(0xabcd, 0xffff), tail: 29 }
+            }
+            fn forwarded(x: fix32) -> Sample { make(x) }
+            fn change(mut p: Array<Sample>, i: u16, value: fix32) {
+                p[i].x = value;
+            }
+            fn main() {
+                let f = fix32::from_words(0x1234, 1);
+                let mut a = forwarded(f);
+                check(a.head == 17 && a.tail == 29);
+                check(a.x.lo_bits() == 0x1234 && a.x.hi_bits() == 1);
+                check(a.y.lo_bits() == 0xabcd && a.y.hi_bits() == 0xffff);
+                let mut n: Nested = Nested { tag: 5, value: a, end: 7 };
+                n.value.x = n.value.x + fix32::from_int(2);
+                check(n.value.x.lo_bits() == 0x1234 && n.value.x.hi_bits() == 3);
+                check(n.tag == 5 && n.end == 7);
+                let mut list: Buf<Sample, 2> = Buf::new([a, n.value]);
+                change(list.as_array(), 1, fix32::from_words(0x8001, 0xfffe));
+                check(list[0u16].x == f);
+                check(list[1u16].x.lo_bits() == 0x8001 && list[1u16].x.hi_bits() == 0xfffe);
+                check(list[1u16].head == 17 && list[1u16].tail == 29);
+                a = list[1u16];
+                check(a.x == list[1u16].x && a.y == list[0u16].y);
+                // One-word head, then two-word x/y, then one-word tail.
+                let raw = addr_of(&a);
+                unsafe {
+                    check(raw.read(0) == 17 && raw.read(1) == 0x8001 && raw.read(2) == 0xfffe);
+                    check(raw.read(3) == 0xabcd && raw.read(4) == 0xffff && raw.read(5) == 29);
+                };
+                halt(0x600d);
+            }
+        "#;
+        assert_eq!(run_with_std_capped(source, 100_000), 0x600d);
+    }
+
+    #[test]
+    fn static_fix32_fields_keep_exact_constant_constructor_bits() {
+        let source = r#"
+            struct State { head: u16, zero: fix32, negative: fix32, fraction: fix32, tail: u16 }
+            static S: State = State { head: 19, zero: fix32::zero(),
+                negative: fix32::from_int(-2), fraction: fix32::from_words(0x8123, 1), tail: 31 };
+            fn check(ok: bool) { if !ok { halt(0xbad); } }
+            fn main() {
+                check(S.head == 19 && S.tail == 31);
+                check(S.zero.lo_bits() == 0 && S.zero.hi_bits() == 0);
+                check(S.negative.lo_bits() == 0 && S.negative.hi_bits() == 0xfffe);
+                check(S.fraction.lo_bits() == 0x8123 && S.fraction.hi_bits() == 1);
+                S.fraction = S.fraction + fix32::from_words(0, 0xffff);
+                check(S.fraction.lo_bits() == 0x8123 && S.fraction.hi_bits() == 0);
+                check(S.negative.hi_bits() == 0xfffe && S.tail == 31);
+                halt(0x600d);
+            }
+        "#;
+        assert_eq!(run_with_std_capped(source, 40_000), 0x600d);
+    }
+
+    #[test]
+    fn vector_lane_struct_returns_use_batched_stores_without_changing_field_bits() {
+        for lanes in 2..=4 {
+            let fields = ["x", "y", "z", "w"];
+            let declarations = fields[..lanes]
+                .iter()
+                .map(|n| format!("{n}:fix32,"))
+                .collect::<String>();
+            let values = (0..lanes)
+                .map(|i| {
+                    format!(
+                        "fix32::from_words({}, {})",
+                        100 + i * 257,
+                        if i % 2 == 0 { 0 } else { 65535 }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let initializers = fields[..lanes]
+                .iter()
+                .map(|n| format!("{n}:v.{n}(),"))
+                .collect::<String>();
+            let checks = fields[..lanes]
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    format!(
+                        "check(s.{n}.lo_bits()=={} && s.{n}.hi_bits()=={});",
+                        100 + i * 257,
+                        if i % 2 == 0 { 0 } else { 65535 }
+                    )
+                })
+                .collect::<String>();
+            let source = format!(
+                r#"
+                struct Result {{ head:u16,{declarations}tail:u16 }}
+                fn check(ok:bool) {{ if !ok {{ halt(0xbad); }} }}
+                fn make()->Result {{ let v=vec{lanes}::new({values});
+                    Result {{ head:17,{initializers}tail:31 }} }}
+                fn main() {{ let s=make();check(s.head==17&&s.tail==31);{checks}halt(0x600d); }}
+            "#
+            );
+            let program = compile_with_std(&source);
+            assert!(
+                program.listing.contains(&format!("fstv.{lanes}")),
+                "{}",
+                program.listing
+            );
+            assert_eq!(execute_capped(program, 100_000).0, 0x600d);
+        }
+    }
+
+    #[test]
     fn buf_returns_and_struct_field_shorthand() {
         let source = r#"
             struct Pair { a: u16, b: u16 }

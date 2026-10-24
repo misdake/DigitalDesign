@@ -48,6 +48,7 @@ pub fn optimize(f: &mut IrFunc, opts: &Opts) {
         }
         if opts.cse {
             changed |= cse(f);
+            changed |= combine_vector_lane_stores(f);
         }
         if opts.dce {
             changed |= dce(f);
@@ -527,6 +528,7 @@ enum Key {
     Un(UnOp, VReg),
     Shift(ShiftOp, VReg, IntOperand),
     Imm(u16),
+    FpuFromInt(VReg),
 }
 
 fn canon_operand(replace: &HashMap<VReg, VReg>, operand: IntOperand) -> IntOperand {
@@ -622,6 +624,9 @@ fn cse(f: &mut IrFunc) -> bool {
                 *dst,
             )),
             Instr::LoadImm { dst, value } => Some((Key::Imm(*value), *dst)),
+            Instr::FpuFromInt { dst, src_gpr } => {
+                Some((Key::FpuFromInt(canon(replace, *src_gpr)), *dst))
+            }
             _ => None,
         }
     }
@@ -647,6 +652,10 @@ fn cse(f: &mut IrFunc) -> bool {
                     }
                 }
                 _ => {
+                    if matches!(inst, Instr::FpuFromInt { src_gpr, .. } if multi_def.contains(src_gpr))
+                    {
+                        continue;
+                    }
                     if let Some((key, dst)) = pure_key(inst, replace) {
                         if let Some(&found) = scope.get(&key) {
                             if !multi_def.contains(&dst) {
@@ -683,6 +692,62 @@ fn cse(f: &mut IrFunc) -> bool {
 
     if changed {
         subst_uses(f, &replace);
+    }
+    changed
+}
+
+// Fold a full vector's adjacent lane-extract/store pairs into one FSTV.
+// Match only an uninterrupted sequence with the same base and increasing offsets:
+// no load/call/other store may move across this transformation. Keep lane defs for
+// any later users; ordinary DCE removes them when the scalar stores were the only use.
+fn combine_vector_lane_stores(f: &mut IrFunc) -> bool {
+    let mut changed = false;
+    let lanes = &f.vreg_lanes;
+    for block in &mut f.blocks {
+        let old = std::mem::take(&mut block.insts);
+        let lines = std::mem::take(&mut block.lines);
+        let mut at = 0;
+        while at < old.len() {
+            let matched = match old.get(at..at + 2) {
+                Some(
+                    [Instr::FpuVecLane { dst, src, lane: 0 }, Instr::FpuStore {
+                        base_gpr,
+                        offset,
+                        src: value,
+                    }],
+                ) if dst == value => {
+                    let count = usize::from(lanes[*src as usize]);
+                    ((2..=4).contains(&count)
+                        && (0..count).all(|i| {
+                            matches!(old.get(at + i*2..at + i*2 + 2),
+                            Some([Instr::FpuVecLane { dst: d, src: s, lane },
+                                  Instr::FpuStore { base_gpr: b, offset: o, src: v }])
+                            if s == src && usize::from(*lane) == i && d == v &&
+                               b == base_gpr && i32::from(*o) == i32::from(*offset) + (i as i32)*2)
+                        }))
+                    .then_some((count, *base_gpr, *offset, *src))
+                }
+                _ => None,
+            };
+            if let Some((count, base_gpr, offset, src)) = matched {
+                for i in 0..count {
+                    block.insts.push(old[at + i * 2].clone());
+                    block.lines.push(lines[at + i * 2]);
+                }
+                block.insts.push(Instr::FpuVecStore {
+                    base_gpr,
+                    offset,
+                    src,
+                });
+                block.lines.push(lines[at + 1]);
+                at += count * 2;
+                changed = true;
+            } else {
+                block.insts.push(old[at].clone());
+                block.lines.push(lines[at]);
+                at += 1;
+            }
+        }
     }
     changed
 }
@@ -1204,6 +1269,67 @@ mod tests {
             .filter(|i| matches!(i, Instr::Bin { .. }))
             .count();
         assert_eq!(adds, 2, "{}", f);
+    }
+
+    #[test]
+    fn repeated_fpu_integer_conversions_share_the_same_value() {
+        let (mut b, args) = FuncBuilder::new("f", 1, 1);
+        let input = b.get(args[0]);
+        let a = b.fpu_from_int(input);
+        let c = b.fpu_from_int(input);
+        let sum = b.fpu_bin(FpuBinOp::Add, a, c);
+        let result = b.fpu_to_int(sum);
+        b.ret(&[result]);
+        let mut f = b.finish();
+        opt(&mut f);
+        assert_eq!(
+            f.blocks
+                .iter()
+                .flat_map(|b| &b.insts)
+                .filter(|i| matches!(i, Instr::FpuFromInt { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn vector_field_stores_batch_only_uninterrupted_full_lane_sequences() {
+        let (mut b, args) = FuncBuilder::new("f", 1, 0);
+        let ptr = b.get(args[0]);
+        let zero = b.load_imm(0);
+        let scalar = b.fpu_from_int(zero);
+        let v = b.fpu_vec_construct(&[scalar, scalar]);
+        let x = b.fpu_vec_lane(v, 0);
+        b.fpu_store(ptr, 1, x);
+        let y = b.fpu_vec_lane(v, 1);
+        b.fpu_store(ptr, 3, y);
+        // A memory access between the two stores prevents their combination.
+        let a = b.fpu_vec_lane(v, 0);
+        b.fpu_store(ptr, 5, a);
+        b.store_mem(ptr, 0, zero);
+        let c = b.fpu_vec_lane(v, 1);
+        b.fpu_store(ptr, 7, c);
+        b.ret(&[]);
+        let mut f = b.finish();
+        opt(&mut f);
+        let instrs = f.blocks.iter().flat_map(|b| &b.insts).collect::<Vec<_>>();
+        assert_eq!(
+            instrs
+                .iter()
+                .filter(|i| matches!(i, Instr::FpuVecStore { offset: 1, .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            instrs
+                .iter()
+                .filter(|i| matches!(i, Instr::FpuStore { .. }))
+                .count(),
+            2
+        );
+        assert!(instrs
+            .iter()
+            .any(|i| matches!(i, Instr::StoreMem { offset: 0, .. })));
     }
 
     #[test]

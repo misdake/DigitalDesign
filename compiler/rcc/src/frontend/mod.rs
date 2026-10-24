@@ -638,14 +638,15 @@ struct EnumDef {
 /// resolved enums by name
 type EnumTable = std::collections::BTreeMap<String, EnumDef>;
 
-/// storage size of a value in 16-bit words (spec §1: every scalar is one word)
+/// Storage size in 16-bit words; a native Q16.16 scalar occupies two words.
 fn word_size(
     ty: &Ty,
     structs: &StructTable,
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
     match ty {
-        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::Fix32 | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
+        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
+        Ty::Fix32 => Ok(2),
         Ty::FnPtr { .. } => Ok(1),
         Ty::Tuple(elems) => u16::try_from(elems.len())
             .map_err(|_| err(at, "tuple is larger than the 16-bit address space")),
@@ -805,10 +806,10 @@ impl LayoutBuilder<'_> {
                     let Some(ident) = &field.ident else { continue };
                     let fname = ident.to_string();
                     let fty = ty_of_maybe_array(&field.ty, self.consts, self.names)?;
-                    if matches!(fty, Ty::Fix32 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4) {
+                    if matches!(fty, Ty::Vec2 | Ty::Vec3 | Ty::Vec4) {
                         return Err(err(
                             &field.ty,
-                            "fix32/vecN struct fields are not supported yet (spec §12)",
+                            "vecN struct fields are not supported yet (spec §12)",
                         ));
                     }
                     // Owned buffers also depend on their element's layout;
@@ -1144,6 +1145,38 @@ fn const_words(
             for (i, e) in elements.into_iter().enumerate() {
                 const_words(elem, e, consts, structs, base + (i as u16) * size, out)?;
             }
+            Ok(())
+        }
+        Ty::Fix32 => {
+            let Expr::Call(call) = expr else {
+                return Err(err(
+                    expr,
+                    "a static fix32 needs zero(), from_int() or from_words()",
+                ));
+            };
+            let Expr::Path(path) = call.func.as_ref() else {
+                return Err(err(expr, "a static fix32 needs a constant constructor"));
+            };
+            let segments = &path.path.segments;
+            if segments.len() != 2 || segments[0].ident != "fix32" {
+                return Err(err(expr, "a static fix32 needs a constant constructor"));
+            }
+            let words = match (segments[1].ident.to_string().as_str(), call.args.len()) {
+                ("zero", 0) => (0, 0),
+                ("from_int", 1) => (0, const_eval(&call.args[0], consts)?),
+                ("from_words", 2) => (
+                    const_eval(&call.args[0], consts)?,
+                    const_eval(&call.args[1], consts)?,
+                ),
+                _ => {
+                    return Err(err(
+                        expr,
+                        "a static fix32 needs zero(), from_int() or from_words()",
+                    ))
+                }
+            };
+            out.push((base, words.0));
+            out.push((base + 1, words.1));
             Ok(())
         }
         scalar => {
@@ -1805,7 +1838,7 @@ fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Resul
             _ => {
                 let (v, from) = expr(l, &value.expr)?.reg(l, &value.expr, "struct field")?;
                 let (v, _) = coerce(l, v, &from, &field_ty, &value.expr)?;
-                l.b.store_mem(base, field_offset, v);
+                store_field(l, base, field_offset, v, &field_ty);
             }
         }
     }
@@ -2735,7 +2768,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 }
                 let (v, from) = expr(l, &a.right)?.reg(l, &a.right, "field assignment")?;
                 let (v, _) = coerce(l, v, &from, &ty, &a.right)?;
-                l.b.store_mem(base, offset, v);
+                store_field(l, base, offset, v, &ty);
                 return Ok(());
             }
             if let Expr::Index(index) = a.left.as_ref() {
@@ -3953,7 +3986,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         Expr::MethodCall(m) => method_call(l, m),
         Expr::Field(f) => {
             let (base, offset, ty, _) = struct_field_place(l, f)?;
-            Ok(Val::V(l.b.load_mem(base, offset), ty))
+            Ok(Val::V(load_field(l, base, offset, &ty), ty))
         }
         Expr::Index(index) => {
             let (base, off, elem, _) = array_index_addr(l, index)?;
@@ -4052,6 +4085,24 @@ fn place_addr(l: &mut FnLower, base: VReg, offset: i16) -> VReg {
     } else {
         let off = l.b.load_imm(offset as u16);
         l.b.bin(BinOp::Add, base, off)
+    }
+}
+
+// Scalar FPU fields use the existing lossless two-word FLD/FST operations.
+// Their addresses need only word alignment, just like ordinary struct fields.
+fn load_field(l: &mut FnLower, base: VReg, offset: i16, ty: &Ty) -> VReg {
+    if *ty == Ty::Fix32 {
+        l.b.fpu_load(base, offset)
+    } else {
+        l.b.load_mem(base, offset)
+    }
+}
+
+fn store_field(l: &mut FnLower, base: VReg, offset: i16, value: VReg, ty: &Ty) {
+    if *ty == Ty::Fix32 {
+        l.b.fpu_store(base, offset, value);
+    } else {
+        l.b.store_mem(base, offset, value);
     }
 }
 
@@ -5239,6 +5290,11 @@ fn fpu_associated_call(
             let (lo, _) = coerce(l, lo, &lo_ty, &Ty::U16, &call.args[0])?;
             let (hi, hi_ty) = args[1].clone().reg(l, &call.args[1], "fix32::from_words")?;
             let (hi, _) = coerce(l, hi, &hi_ty, &Ty::U16, &call.args[1])?;
+            // A zero low half is exactly a signed integer-to-Q16.16 move.
+            // Avoid ILO2F + IHI2F for the common integral raw constructor.
+            if const_eval(&call.args[0], l.consts).is_ok_and(|v| v == 0) {
+                return Ok(Val::V(l.b.fpu_from_int(hi), Ty::Fix32));
+            }
             let low = l.b.fpu_from_lo(lo);
             Ok(Val::V(l.b.fpu_from_hi(low, hi), Ty::Fix32))
         }
