@@ -126,6 +126,7 @@ fn demo_run(limit: u16, budget: u16) {
     while limit == 0 || frame < limit {
         let now = time_milliseconds();
         dev_send(7, 5, now);
+        dev_send(7, 1, 1);
         let show_numbers = demo_buttons_update(
             BUTTONS.as_array(),
             dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
@@ -134,35 +135,43 @@ fn demo_run(limit: u16, budget: u16) {
         demo_ui_frame_begin(STATS.as_array(), now, completed);
         demo_report(if completed { 1 } else { 0 }, frame, STATS.as_array()[1u16]);
         completed = false;
+        dev_send(7, 1, 2);
         demo_require(demo_camera(MATRIX.as_array(), phase), 14);
         global.light_x = MATRIX[42u16] as i16;
         global.light_y = MATRIX[43u16] as i16;
         global.light_z = MATRIX[44u16] as i16;
         dev_send(7, 6, phase);
+        dev_send(7, 1, 3);
         let cb = gpu_cb_begin();
         demo_require(cb == GPU_CB_HANDLE, 2);
         let pass = gpu_pass_begin(cb, 0, 65535);
         demo_require(pass == GPU_CB_HANDLE, 3);
+        dev_send(7, 1, 4);
         demo_require(gpu_pass_set_global(pass, view_of(&mut global)), 4);
+        dev_send(7, 1, 5);
         demo_require(
             gpu_pass_set_render(pass, view_of(&mut texture), view_of(&mut render)),
             5,
         );
+        dev_send(7, 1, 6);
         demo_require(
             gpu_pass_draw_mesh(pass, view_of(&mut mesh), MATRIX.as_array(), 65535, 65535),
             6,
         );
+        dev_send(7, 1, 7);
         mesh.directory_word = DEMO_RGB_WORD;
         mesh.count = 1;
         demo_require(
             gpu_pass_draw_mesh(pass, view_of(&mut mesh), MATRIX.as_array(), 65535, 65535),
             6,
         );
+        dev_send(7, 1, 8);
         render.unlit = 0;
         demo_require(
             gpu_pass_set_render(pass, view_of(&mut texture), view_of(&mut render)),
             5,
         );
+        dev_send(7, 1, 9);
         mesh.directory_word = DEMO_BUNNY_WORD;
         mesh.count = DEMO_BUNNY_COUNT;
         demo_require(
@@ -172,19 +181,25 @@ fn demo_run(limit: u16, budget: u16) {
         mesh.directory_word = 0;
         mesh.count = DEMO_ROOM_COUNT;
         render.unlit = 1;
+        dev_send(7, 1, 10);
         if show_numbers {
             demo_require(
                 demo_ui_record(pass, view_of(&mut atlas), STATS.as_array()),
                 7,
             );
         }
+        dev_send(7, 1, 11);
         demo_require(gpu_pass_end(pass) && gpu_cb_finish(cb), 8);
+        dev_send(7, 1, 12);
         demo_require(gpu_submit_idle(cb) == GPU_PENDING, 9);
+        dev_send(7, 1, 13);
         demo_require(demo_wait(cb, false, budget) == GPU_COMPLETED, 10);
         dev_send(7, 0, frame + 1);
+        dev_send(7, 1, 14);
         demo_require(gpu_present(cb) == GPU_PENDING, 11);
         demo_require(demo_wait(cb, true, budget) == GPU_COMPLETED, 12);
         dev_send(7, 2, frame + 1);
+        dev_send(7, 1, 15);
         completed = true;
         frame += 1;
         phase += 256;

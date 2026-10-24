@@ -11,7 +11,7 @@ The texture is room-tiles.png with its real mip chain, not diagnostic mip colors
 - `rcc/main.rs`: formal driver recording, 3D/UI, completion and A/B presentation.
 - `rcc/camera.rs`: bounded read of immutable matrix/light data.
 - `rcc/overlay_gpu.rs`: previous-frame decimal number generated in the final UI object.
-- `rcc/overlay.rs`: packed-grid helper retained for component tests.
+- `rcc/overlay.rs`: packed-grid helper retained for component tests and template diagnostics.
 - `rcc/controls.rs`: button0/pin88 toggles numeric visibility after20ms stable level; hold does not repeat, default visible.
 - `assets/scene.json`: native geometry and camera/light asset data from the
   existing audited fullscene producer, with source provenance hashes.
@@ -72,12 +72,84 @@ full-scene/two-frame scans. For this revision the user explicitly waived all
 functional tests and requested direct programming after build/package. No new
 simulation, frame comparison, hardware fit or board qualification is claimed.
 
-## Button-controlled numeric overlay
+
+## Button and one-frame profiling
 
 The fitted board exposes synchronized buttons through Device0 RECV8. A stable
 low-to-high transition of bit0 toggles the timing overlay; releasing only rearms
 it. The timer, camera and rendering continue while hidden. The next recorded
 frame omits UI_GRID when hidden. No CPU/GPU reset is tied to this input.
+
+`tests/gpu_demo_profile.rs` runs one production classic-scene frame through real
+CPU/D-cache/GPU/Display RTL and the production arbiter. It records CPU stage
+wall cycles/retired16-bit words, CP command spans and each meshlet's V/T enabled
+steps and wall time. It has a12-million-cycle/3600-second watchdog and does not
+compute a gold image or compare framebuffer samples. Its instruction ROM and
+controlled64-bit memory peer omit instruction-cache misses and SDRAM pin timing;
+54MHz logic and33.3MHz pixels do not make that peer a board performance model.
+UART uses the shorter test divider; boot and full instruction fetch are outside this profile.
+Frontend meshlet spans and backend work can overlap; they must not be summed as
+sequential whole-frame time. The profiling setup seeds a17ms previous-interval text fixture, without a warm-up
+render, so the numeric UI path is exercised. The stop policy ends after the one
+actual presentation and old-read drain, omitting the legacy full-scan tail.
+
+Setting `GPU_DEMO_CPU_PREP_PROFILE=1` runs the same ignored test only through
+CPU submission, with a 200000-cycle limit. It requires the accepted frame's
+`profile/program.hex`, checks exact program identity, and writes separate
+`cpu-prep/` artifacts. Falling-edge PC/state residency and rising-edge cache
+handshakes separate scalar recording, window copying and cache maintenance.
+PC residency includes stalls, and function boundaries can shift a few samples;
+data request/response states include ordinary cache-hit latency. This mode
+does not render another frame or modify the deployed image.
+
+For a software candidate, also set `GPU_DEMO_PROFILE_VARIANT` to a short name
+containing only letters, digits or hyphens. Its `cpu-prep-<name>/` output retains
+the exact accepted RTL while allowing new software. Bounded CPU-only recording
+of both old and new images must produce identical complete command/object
+arenas, and the candidate RTL's post-barrier memory dump must match those bytes.
+The control peer never executes GPU commands; only the real RTL prefix supplies
+cycle measurements. Original frame/preparation artifacts remain intact.
+
+## Retained preparation and two-input-slot experiment
+
+`rcc/template_experiment.rs` is a diagnostic program loaded only by the profiling
+fixture. It does not replace the production driver, boot selection or demo.
+Set `GPU_DEMO_CPU_PREP_PROFILE=1`, a unique `GPU_DEMO_PROFILE_VARIANT`, and
+`GPU_DEMO_PREPARE_MODE` to select one of these bounded experiments:
+
+- `retained`: build the classic scene once, capture/rebase a second input slot,
+  publish initialization, then measure the next pose's button/text/UART work,
+  dynamic input patching and actual submission barrier. No frame is rendered.
+- `pingpong`: one wall meshlet, RGB and two rabbit meshlets, with two actual GPU
+  submissions. CPU prepares the alternate input slot during GPU execution.
+  Output B is explicitly discarded after completion; Front A stays protected.
+- `pingpong-present`: the same compact submissions, with an actual first B swap
+  before rendering the second result into released A. The second completed
+  output is discarded, avoiding a second Display scan wait.
+
+The two command slots are 0x490000/0x498000 and object slots are
+0x4a0000/0x4a8000, each 32 KiB inside the original fixed allocations. The
+experiment retains command order and static snapshots, patching three Instance
+matrix prefixes, light XYZ and three packed digit words. Template initialization
+uses the formal builder; its DMA_LOCAL sources and UI grid identity are rebased
+for slot1. Generic topology/material/UI visibility changes require rebuilding
+the template. The previous-time text remains the fixture's synthetic 17 ms.
+
+Only Free/Completed input slots may be prepared. GPU submission still waits
+for Idle and a confirmed Writable output target, then completes cache handoff.
+Preparing CB data does not reserve or modify its future output plane. The
+one-frame-ahead policy prepares n+1 while GPU executes n; only after submitting
+n+1 does CPU reuse the completed input slot for n+2. GPU executes one CB at a
+time; physical memory bandwidth and Display frame boundaries remain shared.
+
+The fixture compares retained inputs against a fresh formal-builder recording
+at the next pose. Real RTL dumps both submission inputs, rejects any CPU write
+to the currently executing input slot, checks actual GPU write terminals, and
+preserves Front/old-read protection. Prefix and pipeline limits are 200000 and
+2000000 cycles respectively; CPU-only reference execution is also bounded.
+`gpu_demo_prepare_profile` shares the same implementation in a separate test
+executable so Windows can run one frozen GPU experiment while compiling another
+host harness. No image oracle is generated or compared by these experiments.
 
 ## Direct command and object recording
 
@@ -89,3 +161,11 @@ interface to fill its final object and write only the visible decimal glyphs.
 There is no complete low-memory cell table or grid snapshot in this demo.
 The legacy packed-grid snapshot API remains available to other callers. The
 fixed capacity and full validation/ordering contract remain unchanged.
+
+Use `GPU_DEMO_CPU_PREP_PROFILE=1` and a unique `GPU_DEMO_PROFILE_VARIANT` with the
+ignored `gpu_demo_prepare_profile` test for a submission-prefix measurement.
+There is no alternate builder module or `GPU_DEMO_DIRECT_BUILDER` selection.
+`gpu_demo_direct_fault` checks the accepted unrecoverable halt/fault policy and
+zero GPU starts after injected memory errors. Its source-identity test matches
+the final driver against the completed ui-inplace-v1 timing instructions. These
+prefix/fault checks do not render or compare a complete frame.
