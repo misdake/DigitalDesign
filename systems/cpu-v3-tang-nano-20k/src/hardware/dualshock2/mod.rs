@@ -6,6 +6,7 @@ use digital_design_hardware::{SsramBits, TargetResourceRequest};
 #[derive(Clone, ModuleIo)]
 pub struct DualShock2Input {
     pub reset: Wire,
+    pub frame_event: Wire,
     pub device_index: Wires<3>,
     pub device_channel: Wires<4>,
     pub device_read_enable: Wire,

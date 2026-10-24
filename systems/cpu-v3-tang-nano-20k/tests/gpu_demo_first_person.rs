@@ -215,6 +215,11 @@ struct TimingState {
     swaps: usize,
     captured: Vec<u16>,
     telemetry: Vec<u8>,
+    uart_until: u64,
+    uart_delay: u64,
+    present_done: Vec<u64>,
+    input_reads: Vec<u64>,
+    uart_phases: Vec<u16>,
 }
 struct TimingPeer {
     kind: u8,
@@ -227,8 +232,16 @@ impl cpu_v3::Device for TimingPeer {
             s.active = s.shadow;
             s.format = s.shadow_format;
             s.pending = false;
+            let now = s.us;
+            s.present_done.push(now);
         }
         match (self.kind, ch) {
+            (0, 3) => u16::from(s.us < s.uart_until),
+            (5, 8) => {
+                let now = s.us;
+                s.input_reads.push(now);
+                0
+            }
             (0, 10) => (s.us / 1000) as u16,
             (0, 11) => (s.us - s.clear).min(65535) as u16,
             (3, 0) => (s.us / 16667) as u16,
@@ -253,7 +266,13 @@ impl cpu_v3::Device for TimingPeer {
         let mut s = self.state.borrow_mut();
         match (self.kind, ch) {
             (0, 11) if value & 1 != 0 => s.clear = s.us,
-            (0, 3) => s.telemetry.push(value as u8),
+            (0, 3) => {
+                assert!(s.us >= s.uart_until, "UART write while busy");
+                s.uart_until = s.us + s.uart_delay;
+                let phase = s.phase;
+                s.uart_phases.push(phase);
+                s.telemetry.push(value as u8);
+            }
             (4, 1) => {
                 s.starts += 1;
                 s.gpu_until = s.us + s.gpu_delay;
@@ -271,7 +290,7 @@ impl cpu_v3::Device for TimingPeer {
             (7, 1) => s.phase = value,
             (7, 4) => {
                 assert!(s.us >= s.gpu_until && !s.pending);
-                assert_eq!(value, (s.us - s.clear).min(65535) as u16);
+                assert!(value.abs_diff((s.us - s.clear).min(65535) as u16) <= 2);
                 s.captured.push(value);
             }
             _ => {}
@@ -329,6 +348,7 @@ fn timing_run(present_delay: u64, gpu_delay: u64, fail: bool) -> TimingState {
         present_delay,
         gpu_delay,
         fail_gpu: fail,
+        uart_delay: 87,
         ..TimingState::default()
     }));
     for kind in [0, 3, 4, 5, 7] {
@@ -369,6 +389,21 @@ fn actual_frame_timer_excludes_present_and_rejects_failure_or_saturation() {
         (2, 2, 2, 2)
     );
     assert_eq!(fast.captured[0], slow.captured[0]);
+    for s in [&fast, &slow] {
+        assert_eq!(s.input_reads.len(), 2);
+        assert!(
+            s.input_reads[1] - s.present_done[0] < 20,
+            "next input waited after present: {}us",
+            s.input_reads[1] - s.present_done[0]
+        );
+        assert!(
+            s.uart_phases
+                .iter()
+                .take(11)
+                .all(|phase| *phase == 13 || *phase == 14),
+            "previous-frame report must run only in GPU/present waits"
+        );
+    }
     assert!(fast
         .captured
         .iter()

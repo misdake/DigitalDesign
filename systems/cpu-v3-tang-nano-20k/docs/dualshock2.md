@@ -49,33 +49,33 @@ configuration data. A poll reporting F3 invalidates input and schedules exit.
 
 ## Fixed main-clock schedule
 
-All state uses the54MHz main clock, with no derived internal clock. A19-bit
-free-running counter supplies low8 divider bits, six half-period phases and
+All state uses the54MHz main clock, with no derived internal clock. An18-bit
+time coordinate supplies low7 divider bits, six half-period phases and
 five byte slots. CPU timers, sleep, watch, cache stalls and stopped retirement
 cannot change serial progress. Simulation can reduce `DIV_BITS` to at least2;
-production uses8 and has no runtime divider programming.
+production uses7 and has no runtime divider programming.
 
 | Boundary | Action |
 |---|---|
-|Counter zero / slot0|Assert ATT and clear header predicates; setup slot|
+|Counter zero / slot0, unless a near-frame poll is pending|Assert ATT and clear header predicates; setup slot|
 |Slots1..N, phases0,2,..14|Register the next command bit; output stage follows one main clock later|
 |Odd phases1,3,..15|Registered CLK low; controller drives DAT|
 |Even phases2,4,..16|Sample synchronized DAT before registered CLK rises; last bit completes the received byte|
 |Byte completion in poll slots2..9|Write received8 directly to background RAM|
 |Remaining byte-slot phases|CLK high; no receive work|
 |Last slot, phase32|Release ATT, validate/publish or advance configuration step|
-|Next19-bit wrap|Start next transaction, independent of CPU|
+|Next18-bit wrap|Start fallback transaction, independent of CPU|
 
-Half-period is256 main clocks (4.7407407us), SCLK105.46875kHz. The final rise
-of a byte to the next first fall is49 half-periods (232.2963us). CMD has255 main
+Half-period is128 main clocks (2.3703704us), SCLK210.9375kHz. The final rise
+of a byte to the next first fall is49 half-periods (116.1481us). CMD has127 main
 clocks of setup before a fall and at least one main clock of hold after a rise.
 CLK, CMD and ATT are registered outputs; DAT uses two preserved synchronizers.
 The last receive bit is included in the RAM write on that same edge.
 
 Poll42 sends9 bytes, including digital41; pressure79 sends21. Entry43 sends5,
 analog+lock44 and exit43 each send9. Unknown IDs and bad FF/5A headers release
-after3 bytes. Full polling period is524288 clocks (9.709037ms). The last phase32
-release is155648 clocks for9 bytes and352256 clocks for21 bytes, measured from
+after3 bytes. Fallback polling period is262144 clocks (4.854519ms). The last phase32
+release is77824 clocks for9 bytes and176128 clocks for21 bytes, measured from
 ATT assertion; these are transaction lengths, not the fixed polling period.
 There is no ACK handshake. Longer guard/slower SCLK still require board testing
 with the actual controller/adapter; local RTL tests are not electrical evidence.
@@ -86,6 +86,53 @@ poll schedules exit. Bad configuration/header returns to poll. Digital-only
 controllers continue reporting buttons while hardware retries configuration.
 Recognized IDs are exact41,73,79,F3; other IDs are unsupported. No4F pressure
 configuration or4D vibration configuration is sent.
+
+## Display phase scheduling
+
+The Display exports its existing main-clock pulse `frame_sync != frame_seen`,
+after the pixel-domain toggle crosses two synchronizing FFs. The event occurs
+at the end of the final visible line, before present can complete its old-read
+drain; it is not the end of vertical blank. Display ownership and present
+semantics are unchanged. DS2 has one additional synchronous `frame_event` input.
+An isolated engine ties it low and remains fully autonomous.
+
+```mermaid
+flowchart LR
+    P[Pixel frame toggle] --> S[Existing Display two-FF synchronizer]
+    S --> E[Main-domain frame event]
+    E --> L[7-bit slot countdown + pending bit]
+    T[DS2 byte-slot tick] --> L
+    L --> A[Idle-only packet start]
+    F[18-bit wrap fallback] --> A
+    A --> W[Complete packet then publish]
+```
+
+At54/33.3MHz, the1056x525 scan period is899027.027 main clocks,
+or109.74451 DS2 byte slots. Each slot is8192 clocks. A9-byte poll takes9.5
+slots and a21-byte poll takes21.5. A frame event loads99 slots for ordinary
+poll/configuration or87 for the last observed pressure mode. The first slot
+tick decrements the counter; a subsequent tick seeing zero starts the packet.
+With a stable observed mode, publication is2003..10195 main clocks
+(37.1..188.8us) before the next synchronized event. Slot quantization supplies
+the safety margin; there is no wide frame timer, runtime division or software
+phase prediction. CPU consumption is later by its present-drain/read overhead.
+Button/axis acquisition precedes publication by the remaining wire transfer,
+so this publication age must not be reported as the age of every sampled bit.
+
+Fallback starts are suppressed during the final32 slots before the scheduled
+start, leaving enough time for the longest complete packet. An active packet
+is never reset, shortened or overwritten by a frame event. After the scheduled
+start, pending clears and fallback resumes. Missing events therefore cannot
+stop acquisition; recovery schedules only the following frame. With no events,
+the original fixed wrap cadence is exact.
+
+The previous reply determines the predicted length. An unannounced9-to21-byte
+change can finish the first affected packet up to1.784ms after the predicted
+frame event; a21-to9 change can publish up to2.010ms early. The following
+prediction uses the new ID. Configuration transactions do not publish input,
+and malformed/disconnected replies invalidate it; freshness near every frame
+is a steady-state property, not a promise during reconnect or mode changes.
+All21 pressure bytes are still received before publication.
 
 ## Coherent latest-only CPU service
 
@@ -118,6 +165,9 @@ tail, page publication and same-edge sticky-bit races. Native RAM models and
 default divider checks cover the production memory and timing geometry. The
 actual CPU/cache fixture checks autonomous configuration, timer clears, latest
 reads, raw axes, button edges and continued reception during CPU/cache pauses.
+A separate native-RAM test runs the production Display at real54/33.3MHz
+noninteger clocks, including its actual toggle synchronizer, and checks phase,
+complete9/21-byte publication, beacon loss/recovery, reconnect and slow reads.
 UI control peers exercise rendering/present waits separately from wire timing.
 
 There is no CRC: arbitrary payload corruption, or disappearance after a valid

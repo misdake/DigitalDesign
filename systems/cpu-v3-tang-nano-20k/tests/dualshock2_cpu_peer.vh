@@ -4,7 +4,7 @@ wire sclk,cmd,att; reg dat=1;
 __DS2__ #(.DIV_BITS(4)) ds2(.clk(clk),.reset(reset),.device_index(query_index),.device_channel(query_channel),
  .device_read_enable(device_read_enable||watch_enable),.device_write_enable(device_write_enable&&!watch_enable),
  .device_write_data(device_write_data),.device_read_data(ds2_read_data),
- .dat(dat),.ds2_clk(sclk),.cmd(cmd),.att(att));
+ .dat(dat),.frame_event(1'b0),.ds2_clk(sclk),.cmd(cmd),.att(att));
 integer test_mode=0,axis_case=-1,buttons=16'h1234,config_mode=0,analog_mode=0;
 integer byte_index=0,bit_index=0,command=0,arg=0,packets=0,completed=0,transfers=0,tail_bytes=0;
 integer select_cycle=0,last_rise=0,last_fall=0,pause_triggered=0,paused_bytes=0;

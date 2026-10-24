@@ -1,7 +1,7 @@
 // Fixed-schedule, latest-only DS2 receiver. All state uses the main clock.
-// DIV_BITS=8 gives105.46875kHz serial and103Hz polling at54MHz.
-module DualShock2 #(parameter DIV_BITS=8)(
- input wire clk,reset,
+// DIV_BITS=7 gives210.9375kHz serial and206Hz fallback polling at54MHz.
+module DualShock2 #(parameter DIV_BITS=7)(
+ input wire clk,reset,frame_event,
  input wire[2:0]device_index,input wire[3:0]device_channel,
  input wire device_read_enable,device_write_enable,
  input wire[15:0]device_write_data,input wire dat,
@@ -14,8 +14,18 @@ reg[DIV_BITS+10:0]timebase=0;
 wire[5:0]phase=timebase[DIV_BITS+:6];
 wire[4:0]slot=timebase[DIV_BITS+6+:5];
 wire tick=~|timebase[DIV_BITS-1:0];
-wire frame_start=~|timebase;
+// One byte-slot tick is8192 main clocks. The fixed Display period is
+// 109.74451 slots. A complete9/21-byte packet takes9.5/21.5 slots.
+// Count99/87 after the next slot tick: publication precedes the next frame
+// by2003..10195 main clocks (37..189us), including slot quantization.
+// This input is the Display's existing main-domain synchronized event.
+reg[6:0]lead_slots=0;
+reg phase_pending=0;
 wire active=!att;
+wire slot_tick=tick&&phase==0;
+wire phase_start=slot_tick&&phase_pending&&lead_slots==0;
+wire fallback_start=(~|timebase)&&(!phase_pending||lead_slots>32);
+wire frame_start=!active&&(phase_start||fallback_start);
 wire serial_window=slot!=0&&phase[5:4]==0;
 wire sample_phase=!phase[0]&&((phase[5:4]==0&&phase[3:1]!=0)||phase==16);
 wire sample=tick&&active&&slot!=0&&sample_phase;
@@ -72,11 +82,23 @@ end
 always @(posedge clk)begin
  if(reset)begin
   timebase<=0;dat_meta<=1;dat_sync<=1;shift<=0;
+  lead_slots<=0;phase_pending<=0;
   operation<=POLL;kind<=DIGITAL;header_good<=0;
   front<=0;valid<=0;read_changed<=0;ds2_clk<=1;cmd_phase<=1;att<=1;cmd<=1;
  end else begin
   cmd<=cmd_phase;
   timebase<=timebase+1'b1;
+  if(slot_tick&&phase_pending&&lead_slots!=0)lead_slots<=lead_slots-1'b1;
+  if(frame_start)begin
+   timebase<=1;
+   if(phase_start)phase_pending<=0;
+  end
+  // A new beacon schedules the following frame; it never retimes an active
+  // wire transaction. A missing beacon simply leaves autonomous fallback.
+  if(frame_event)begin
+   lead_slots<=(operation==POLL&&kind==PRESSURE)?7'd87:7'd99;
+   phase_pending<=1;
+  end
   dat_meta<=dat;dat_sync<=dat_meta;
   // CMD changes one main-clock after a rise, preserving sampling-edge hold.
   // DAT is sampled at the low-to-high event, before the CLK pin register.
@@ -115,7 +137,7 @@ end
 `ifndef SYNTHESIS
 always @(posedge clk)if(!reset)begin
  if(storing&&wa==ra)$fatal(1,"DS2 snapshot read/write page collision");
- if(frame_start&&active)$fatal(1,"DS2 transaction exceeded the fixed frame");
+ if((~|timebase)&&active)$fatal(1,"DS2 transaction exceeded the fixed frame");
 end
 initial if(DIV_BITS<2)$fatal(1,"DS2 divider must cover two DAT synchronizers");
 `endif

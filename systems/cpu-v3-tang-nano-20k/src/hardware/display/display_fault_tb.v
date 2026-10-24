@@ -3,7 +3,7 @@ module tb;
 reg clk=0,pixel_clock=0,serial_clock=0,reset=1,video_locked=1;
 wire boot_enable=1;
 reg boot_failed=0;
-wire started_ack,startup_error;
+wire started_ack,startup_error,frame_event;
 always #9.259 clk=~clk; always #15.015 pixel_clock=~pixel_clock; always #1 serial_clock=~serial_clock;
 reg memory_request_ready=1,memory_data_valid=0,memory_last=0,memory_error=0;
 reg [63:0] memory_read_data=64'h1122334455667788;

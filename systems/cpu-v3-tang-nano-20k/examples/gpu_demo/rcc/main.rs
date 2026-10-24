@@ -22,32 +22,47 @@ static BUTTONS: Buf<u16, 4> = Buf::new([0; 4]);
 static MATRIX: Buf<u16, 45> = Buf::new([0; 45]);
 static STATS: Buf<u16, 4> = Buf::new([0; 4]);
 
-// DDGD v3: status, completed count, rendered interval us excluding present, XOR checksum.
-fn demo_report(status: u16, frame: u16, us: u16) {
-    let mut bytes: Buf<u16, 11> = Buf::new([68, 68, 71, 68, 3, 0, 0, 0, 0, 0, 0]);
-    bytes[5u16] = status;
-    bytes[6u16] = frame & 255;
-    bytes[7u16] = frame >> 8;
-    bytes[8u16] = us & 255;
-    bytes[9u16] = us >> 8;
+// One previous completed report, streamed only while GPU/present is pending.
+// A slow UART never stalls input collection or command construction.
+static REPORT: Buf<u16, 12> = Buf::new([0; 12]);
+fn demo_report_queue(status: u16, frame: u16, us: u16) {
+    REPORT[0u16] = 68;
+    REPORT[1u16] = 68;
+    REPORT[2u16] = 71;
+    REPORT[3u16] = 68;
+    REPORT[4u16] = 3;
+    REPORT[5u16] = status;
+    REPORT[6u16] = frame & 255;
+    REPORT[7u16] = frame >> 8;
+    REPORT[8u16] = us & 255;
+    REPORT[9u16] = us >> 8;
     let mut i: u16 = 4;
     let mut sum: u16 = 0;
     while i < 10 {
-        sum ^= bytes[i];
+        sum ^= REPORT[i];
         i += 1;
     }
-    bytes[10u16] = sum;
-    i = 0;
-    while i < 11 {
-        while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 {}
-        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, bytes[i]);
-        i += 1;
+    REPORT[10u16] = sum;
+    REPORT[11u16] = 0;
+}
+fn demo_report_step() {
+    let i = REPORT[11u16];
+    if i < 11 && dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 == 0 {
+        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, REPORT[i]);
+        REPORT[11u16] = i + 1;
+    }
+}
+fn demo_report_drain() {
+    while REPORT[11u16] < 11 {
+        demo_report_step();
     }
 }
 fn demo_fail(code: u16) {
     frame_stats_reset(STATS.as_array());
     dev_send(7, 7, GPU_CB.state);
-    demo_report(128 | code, 0, 0);
+    demo_report_drain();
+    demo_report_queue(128 | code, 0, 0);
+    demo_report_drain();
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 32 | code);
     halt(0xd000 | code);
 }
@@ -65,6 +80,9 @@ fn demo_wait(cb: u16, present: bool, budget: u16) -> u16 {
         } else {
             gpu_poll(cb)
         };
+        if status == GPU_PENDING {
+            demo_report_step();
+        }
         if status == GPU_PENDING && time_elapsed_ms(begin, time_milliseconds()) >= budget {
             return GPU_TIMEOUT;
         }
@@ -72,6 +90,7 @@ fn demo_wait(cb: u16, present: bool, budget: u16) -> u16 {
     status
 }
 fn demo_run(limit: u16, budget: u16) {
+    REPORT[11u16] = 11;
     demo_ui_reset(STATS.as_array());
     demo_require(gpu_init_with_format(DISPLAY_LINEAR_RGB565) == GPU_IDLE, 1);
     let mut mesh: GpuMesh = GpuMesh {
@@ -137,6 +156,13 @@ fn demo_run(limit: u16, budget: u16) {
         time_clear_microseconds();
         let now = time_milliseconds();
         ds2_service(INPUT.as_array(), PACKET.as_array());
+        // Input has priority over even the short report-buffer preparation.
+        // Preserve an unusually slow in-flight UART packet; success telemetry
+        // is best effort and its frame count exposes any omitted reports.
+        if completed && REPORT[11u16] == 11 {
+            demo_report_queue(1, frame, rendered_us);
+        }
+        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, frame & 31);
         dev_send(7, 5, now);
         dev_send(7, 1, 1);
         let show_numbers = demo_buttons_update(
@@ -218,8 +244,11 @@ fn demo_run(limit: u16, budget: u16) {
         dev_send(7, 1, 15);
         completed = true;
         frame += 1;
-        demo_report(1, frame, rendered_us);
-        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, frame & 31);
+    }
+    demo_report_drain();
+    if completed {
+        demo_report_queue(1, frame, rendered_us);
+        demo_report_drain();
     }
     // Bounded verification waits for the last complete visible scan as well.
     let scan = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);

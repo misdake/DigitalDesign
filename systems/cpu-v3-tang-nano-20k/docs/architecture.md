@@ -35,7 +35,7 @@ in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable pr
 - the seven-owner CPU V3 memory arbiter, fixed boot loader, and reserved GPU ports;
 - the related-clock SDRAM/display port and native controller boundary;
 - SPI-Flash fixed boot loader, system-control, and framebuffer devices;
-- Device5 nonblocking DS2 packet engine and CPU-owned protocol/axis snapshots;
+- Device5 autonomous latest-only DS2 snapshots, with fixed Display-phase polling and CPU-side coherent reads;
 - fixed-loader status, UART, LEDs, and the HDMI output path (compile-time
   display mode from `display::ACTIVE_DISPLAY_CONFIG`).
 
