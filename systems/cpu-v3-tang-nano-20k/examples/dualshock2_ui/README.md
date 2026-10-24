@@ -12,11 +12,34 @@ The400x240 screen (800x480 physical output) shows:
   since the preceding UI recording are consumed only after that recording.
 - LX/LY and RX/RY in decimal000..255. Center is128. Positive X is right and
   positive Y is down. Disconnection clears buttons and uses neutral axes.
-- Two64x64 stick panels with a border, center crosshair and green2x2 dot.
-  Raw values quantize to32positions per axis (`raw>>3`, two pixels per step),
-  mapping0..7 to0 and248..255 to62. Numeric values retain full precision.
+- Two64x64 stick panels with a circular reference, crosshair and dead-zone fill.
+  Yellow2x2 dots show calibrated input before the radial dead zone and may lie
+  outside the circle when the controller has square-shaped travel. Green dots
+  show processed motion after dead-zone rescaling and radial limiting; a green
+  dot covers yellow when they coincide. There is no square-to-disc angle warp.
+  Points use a28pixel unit radius and symmetric two-pixel quantization, leaving
+  room for the dot inside the30pixel reference ring.
+- Signed direction components and strength (`P`) in Q8:256 means1.0. These are
+  independent of the unmodified raw decimal values above. Direction is zero
+  inside the dead zone; outside it is approximately unit length.
 - All16 button labels with gray/green indicators. Mapping, from bit0, is
   SEL,L3,R3,START,UP,RIGHT,DOWN,LEFT,L2,R2,L1,R1,TRI,CIR,CROSS,SQR.
+
+The reusable [stick helper](../../docs/input-sticks.md) supplies asymmetric
+min/center/max calibration, radial inner/outer thresholds, direction/strength and
+an optional four-way activation gate. This diagnostic adds an explicit policy:
+
+- D-pad UP/DOWN pressed edges adjust the shared inner dead zone by4/256, clamped
+  to0..60. The `DZ` value and circular shaded center change together. Holding a
+  button does not repeat; simultaneous UP+DOWN does nothing.
+- Release both sticks, then press SELECT to set both current centers. All four
+  raw axes must be96..160 or the entire request is ignored. There is no automatic
+  startup calibration.
+- START resets both centers to128, endpoints to0/255 and the dead zone to24/256.
+  It takes priority over other controls. Settings live only in RAM.
+
+Disconnect neutralizes input and preserves settings. Outer radius stays256 in
+this UI. No smoothing or direction snapping hides the controller's travel shape.
 
 ## Build and runtime
 
@@ -40,7 +63,8 @@ The boot pack contains only code, actual static initialization and this atlas.
 
 The CPU initializes a reusable CB, clears the non-Front plane, writes labels,
 numbers, panel tiles and indicators directly into the final UI object, then
-records two one-cell dot overlays. There is no full-screen CPU grid snapshot.
+records two overlay objects, each drawing one cell for each stick. In total,
+three objects supply five UI draw commands. There is no full-screen CPU grid snapshot.
 After the true GPU completion, it presents through the existing A/B ownership
 API and waits for the actual Display handoff before reusing storage. Palette
 values are raw display RGB565, selected by `gpu_init()`.
@@ -64,16 +88,20 @@ authorization; building is offline.
 
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label ds2-ui-functional -CargoArgs @(
-  '-p','cpu-v3-tang-nano-20k','--test','dualshock2_ui','--','--nocapture')
+  '-p','cpu-v3-tang-nano-20k','--test','stick','--test','dualshock2_ui','--','--nocapture')
 python systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/tools/preview.py `
-  --fixture target/ds2-ui-validation/layout/center.json `
+  --fixture target/ds2-ui-validation/layout/edges.json `
   --atlas target/ds2-ui-validation/layout/atlas.bin `
-  --output target/ds2-ui-validation/preview.png
+  --output target/ds2-ui-validation/circular-preview.png
 ```
 
 The layout test executes compiled production panel code, verifies actual command
 and object memory for connection/disconnection, axis endpoints, all button bits,
-numeric masks and the two overlay ranges. The one-frame entry executes the
+numeric masks and all four overlay ranges. Control tests check explicit center
+calibration, rejection, dead-zone bounds and button edges. Separate bounded tests
+execute the shared stick RCC against an independent floating-point reference for
+2304 samples, plus invalid/disconnected input and digital activation hysteresis.
+The one-frame entry executes the
 actual application with GPU/Display/Device5 control peers and explicitly advanced
 host time, bounded to4million CPU steps. It checks one submission/presentation
 and DS2 service during both waits. The peers do not render pixels or exchange

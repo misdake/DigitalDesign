@@ -180,6 +180,7 @@ fn actual_recorded_panel_has_axes_buttons_and_bounded_stick_overlays() {
     for (name, connected, axes, buttons) in [
         ("center", 1, [128, 128, 128, 128], 0x5aa5u16),
         ("edges", 1, [255, 0, 0, 255], 65535),
+        ("deadzone", 1, [139, 128, 128, 139], 0),
         ("disconnected", 0, [128, 128, 128, 128], 0),
     ] {
         let source = format!(
@@ -196,7 +197,6 @@ dev_send(7,0,GPU_CB.command_words);dev_send(7,1,GPU_CB.object_words);halt(0x600d
         );
         let (cpu, s) = run(&source, "main", &out);
         let grid = 0x4a0080;
-        let overlay = 0x4a0400;
         assert_eq!(
             text(&cpu, grid, 57, if connected == 0 { 12 } else { 9 }),
             if connected == 0 {
@@ -233,32 +233,65 @@ dev_send(7,0,GPU_CB.command_words);dev_send(7,1,GPU_CB.object_words);halt(0x600d
             })
             .filter(|c| c >> 28 == 11)
             .collect();
-        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges.len(), 5);
         let mut layers = vec![format!(
             "{{\"first\":0,\"end\":750,\"cells\":{:?}}}",
             (0..750).map(|i| byte(&cpu, grid + i)).collect::<Vec<_>>()
         )];
-        for (i, (x, rx, ry)) in positions.into_iter().enumerate() {
-            let cell = (5 + ry / 64) * 50 + x + rx / 32;
-            let id = 128 + ((ry / 8) % 8) * 4 + (rx / 8) % 4;
-            assert_eq!(u32::from(byte(&cpu, overlay + cell)), id);
-            assert_eq!(
-                ranges[i + 1],
-                gpu_v2::system::vliw_command::Command::ui_grid_range(
-                    276,
-                    cell as u16,
-                    cell as u16 + 1
-                )
-                .unwrap()
-                .0
-            );
-            layers.push(format!(
-                "{{\"first\":{cell},\"end\":{},\"cells\":{:?}}}",
-                cell + 1,
-                (0..750)
-                    .map(|j| byte(&cpu, overlay + j))
-                    .collect::<Vec<_>>()
-            ));
+        for processed in 0..2 {
+            let overlay = if processed == 0 { 0x4a0400 } else { 0x4a0780 };
+            for (i, (x, rx, ry)) in positions.into_iter().enumerate() {
+                let axis = |raw: u32| {
+                    if raw < 128 {
+                        (f64::from(raw) - 128.0) / 128.0
+                    } else {
+                        (f64::from(raw) - 128.0) / 127.0
+                    }
+                };
+                let (mut dx, mut dy) = if connected == 0 {
+                    (0.0, 0.0)
+                } else {
+                    (axis(rx), axis(ry))
+                };
+                if processed != 0 {
+                    let length = dx.hypot(dy);
+                    let strength = ((length - 24.0 / 256.0) / (1.0 - 24.0 / 256.0)).clamp(0.0, 1.0);
+                    if length == 0.0 {
+                        dx = 0.0;
+                        dy = 0.0;
+                    } else {
+                        dx = dx / length * strength;
+                        dy = dy / length * strength;
+                    }
+                }
+                let plot = |v: f64| {
+                    let q = (v * 256.0).round() as i32;
+                    let d = ((q.abs() * 14 + 128) >> 8) * 2;
+                    (32 + if q < 0 { -d } else { d }) as u32
+                };
+                let px = plot(dx);
+                let py = plot(dy);
+                let cell = (5 + py / 16) * 50 + x + px / 8;
+                let id = if processed == 0 { 96 } else { 128 } + ((py % 16) / 2) * 4 + (px % 8) / 2;
+                assert_eq!(u32::from(byte(&cpu, overlay + cell)), id);
+                assert_eq!(
+                    ranges[1 + processed * 2 + i],
+                    gpu_v2::system::vliw_command::Command::ui_grid_range(
+                        276,
+                        cell as u16,
+                        cell as u16 + 1
+                    )
+                    .unwrap()
+                    .0
+                );
+                layers.push(format!(
+                    "{{\"first\":{cell},\"end\":{},\"cells\":{:?}}}",
+                    cell + 1,
+                    (0..750)
+                        .map(|j| byte(&cpu, overlay + j))
+                        .collect::<Vec<_>>()
+                ));
+            }
         }
         std::fs::write(
             out.join(format!("{name}.json")),
@@ -266,6 +299,28 @@ dev_send(7,0,GPU_CB.command_words);dev_send(7,1,GPU_CB.object_words);halt(0x600d
         )
         .unwrap();
     }
+}
+#[test]
+fn diagnostic_controls_clamp_deadzone_and_calibrate_only_on_explicit_edges() {
+    let out = assets("controls");
+    run(
+        r#"mod stick_controls;static S:Buf<u16,16>=Buf::new([0;16]);
+fn check(ok:bool){if !ok{halt(0xbad);}}
+fn main(){dui_controls_reset();check(dui_deadzone()==24);S[0u16]=1;
+S[3u16]=126;S[4u16]=130;S[5u16]=124;S[6u16]=132;
+S[8u16]=16;dui_controls(S.as_array());check(dui_deadzone()==28&&S[8u16]==16);
+S[8u16]=0;dui_controls(S.as_array());check(dui_deadzone()==28);
+S[8u16]=80;dui_controls(S.as_array());check(dui_deadzone()==28);
+let mut i:u16=0;S[8u16]=16;while i<30{dui_controls(S.as_array());i+=1;}check(dui_deadzone()==60);
+i=0;S[8u16]=64;while i<30{dui_controls(S.as_array());i+=1;}check(dui_deadzone()==0);
+S[8u16]=1;dui_controls(S.as_array());let mut l=dui_left(S.as_array());let r=dui_right(S.as_array());check(l.cal_x==0&&l.cal_y==0&&r.cal_x==0&&r.cal_y==0);
+S[5u16]=255;dui_controls(S.as_array());S[5u16]=124;l=dui_left(S.as_array());check(l.cal_x==0);
+S[8u16]=8;dui_controls(S.as_array());check(dui_deadzone()==24);l=dui_left(S.as_array());check(l.cal_x==-8&&l.cal_y==8);
+S[8u16]=16;dui_controls(S.as_array());S[0u16]=0;S[8u16]=8;dui_controls(S.as_array());check(dui_deadzone()==28);
+halt(0x600d);}"#,
+        "main",
+        &out,
+    );
 }
 #[test]
 fn complete_one_frame_services_ds2_during_render_and_present_waits() {

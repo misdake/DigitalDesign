@@ -155,5 +155,8 @@ documents cold-boot packaging, UART fields, wiring and user hardware checks.
 
 The separate [GPU UI diagnostic](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md)
 displays raw axes, connection/mode, held and accumulated edge masks,16button
-indicators and two stick panels. It keeps polling during GPU/present waits,
+indicators and two circular stick panels with calibrated raw/processed points.
+The separate [stick helper](input-sticks.md) owns calibration, radial dead zones,
+direction, strength and optional four-way activation hysteresis.
+The diagnostic keeps polling during GPU/present waits,
 owns the interval timer clear, and reuses the same Device5 hardware.

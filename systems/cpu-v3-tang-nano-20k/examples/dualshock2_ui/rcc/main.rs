@@ -3,8 +3,10 @@ mod gpu;
 use gpu::*;
 mod dualshock2;
 mod panel;
+mod stick_controls;
 mod time;
 use panel::*;
+use stick_controls::*;
 
 static INPUT: Buf<u16, 16> = Buf::new([0; 16]);
 static PACKET: Buf<u16, 21> = Buf::new([0; 21]);
@@ -20,6 +22,7 @@ fn dui_service() {
     // Sole timer-clear owner. No frame timing measurement runs in this example.
     time_clear_microseconds();
     if ds2_service(INPUT.as_array(), PACKET.as_array()) {
+        dui_controls(INPUT.as_array());
         EVENTS[0u16] |= INPUT[8u16];
         EVENTS[1u16] |= INPUT[9u16];
         EVENTS[2u16] += 1;
@@ -51,6 +54,7 @@ fn dui_wait(cb: u16, present: bool) -> u16 {
     return GPU_TIMEOUT;
 }
 pub fn dui_run(limit: u16) {
+    dui_controls_reset();
     ds2_init(INPUT.as_array());
     dui_require(gpu_init() == GPU_IDLE, 1);
     let mut frame: u16 = 0;

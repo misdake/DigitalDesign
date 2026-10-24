@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import struct
 
@@ -26,15 +27,16 @@ FONT = {
     '6': [14,16,16,30,17,17,14], '7': [31,1,2,4,8,8,8],
     '8': [14,17,17,14,17,17,14], '9': [14,17,17,15,1,1,14],
     ' ': [0]*7, ':': [0,4,4,0,4,4,0], '-': [0,0,0,31,0,0,0],
+    '+': [0,4,4,31,4,4,0],
     '/': [1,2,2,4,8,8,16], '.': [0,0,0,0,0,4,4],
 }
 LABELS = [
-    (11,0,'DUALSHOCK 2 INPUT TEST'), (1,1,'LINK:'), (22,1,'ID:'), (32,1,'SAMPLES:'),
+    (6,0,'DS2 YELLOW RAW / GREEN OUTPUT'), (1,1,'LINK:'), (22,1,'ID:'), (32,1,'SAMPLES:'),
     (1,2,'BUTTONS:'), (17,2,'PRESS:'), (33,2,'RELEASE:'),
     (5,3,'LX:'), (14,3,'LY:'), (31,3,'RX:'), (40,3,'RY:'),
     (6,4,'LEFT'), (32,4,'RIGHT'),
-    (3,9,'X RIGHT / Y DOWN    RAW 0..255 CENTER 128'),
-    (1,10,'BUTTONS - GREEN IS HELD'),
+    (1,9,'L'), (13,9,'P'), (27,9,'R'), (39,9,'P'),
+    (1,10,'DZ:'), (8,10,'U/D  SEL:CENTER  START:RESET'),
 ]
 BUTTONS = ['SEL','L3','R3','START','UP','RIGHT','DOWN','LEFT',
            'L2','R2','L1','R1','TRI','CIR','CROSS','SQR']
@@ -57,23 +59,40 @@ def pack(output):
             for x in range(8):
                 if solid or x in (0,7) or y in (4,11):
                     pixels[id][y][x] = color
-    # 32 two-by-two dot positions per cell. The application maps raw>>3 to
-    # 32 positions across each64px panel, so both axes use two-pixel steps.
-    for phase in range(32):
-        x,y = (phase%4)*2,(phase//4)*2
-        for yy in (y,y+1):
-            for xx in (x,x+1):
-                pixels[128+phase][yy][xx] = rgba(8,31,12)
-    for flags in range(64):
-        for y in range(16):
-            for x in range(8):
-                color = rgba(1,3,5)
-                if (flags&16 and x==0) or (flags&32 and y==0):
-                    color = rgba(9,12,15)
-                if ((flags&1 and x==0) or (flags&2 and x==7) or
-                    (flags&4 and y==0) or (flags&8 and y==15)):
-                    color = rgba(6,20,24)
-                pixels[160+flags][y][x] = color
+    # Two colors share32 sub-cell positions. Components map symmetrically
+    # to even pixel coordinates, with room for a2x2 marker inside the ring.
+    for base,color in [(96,rgba(31,25,0)),(128,rgba(8,31,12))]:
+        for phase in range(32):
+            x,y=(phase%4)*2,(phase//4)*2
+            for yy in (y,y+1):
+                for xx in (x,x+1):
+                    pixels[base+phase][yy][xx]=color
+    def panel(x,y,deadzone):
+        radius=math.hypot(x-32,y-32)
+        color=rgba(1,3,5)
+        if radius<=30:
+            color=rgba(2,4,7)
+            if deadzone and radius<=28*deadzone/256:
+                color=rgba(5,7,16)
+            if x==32 or y==32:
+                color=rgba(9,12,15)
+        if deadzone and abs(radius-28*deadzone/256)<=0.65:
+            color=rgba(8,12,24)
+        if abs(radius-30)<=0.65:
+            color=rgba(6,20,24)
+        return color
+    for row in range(4):
+        for col in range(8):
+            for y in range(16):
+                for x in range(8):
+                    pixels[160+row*8+col][y][x]=panel(col*8+x,row*16+y,0)
+    # Only the four central tiles change for inner dead zones4..60/256.
+    for level in range(1,16):
+        for tile in range(4):
+            col,row=3+tile%2,1+tile//2
+            for y in range(16):
+                for x in range(8):
+                    pixels[192+(level-1)*4+tile][y][x]=panel(col*8+x,row*16+y,level*4)
     atlas = bytearray(65536)
     for id in range(255):
         for y in range(16):
