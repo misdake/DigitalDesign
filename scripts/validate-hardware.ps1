@@ -1,6 +1,7 @@
 param(
     [ValidateSet("quick", "iverilog", "audit", "pnr", "all")]
-    [string]$Mode = "quick"
+    [string]$Mode = "quick",
+    [switch]$ExtendedSimulations
 )
 
 $ErrorActionPreference = "Stop"
@@ -110,15 +111,25 @@ function Invoke-IverilogValidation {
     Invoke-Cargo "Gowin example Icarus" "test" @(
         "-p", "digital-design-hardware-gowin", "--examples", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "CPU V3 RTL Icarus" "test" @(
-        "-p", "cpu-v3", "--", "--ignored", "--nocapture"
-    )
+    $savedSharedWideEvidence = $env:SHARED_WIDE_EVIDENCE
+    try {
+        if ([string]::IsNullOrEmpty($savedSharedWideEvidence)) {
+            $env:SHARED_WIDE_EVIDENCE = Join-Path $evidenceDirectory "shared-wide"
+        }
+        Invoke-Cargo "CPU V3 RTL Icarus" "test" @(
+            "-p", "cpu-v3", "--", "--ignored", "--nocapture"
+        )
+    } finally {
+        $env:SHARED_WIDE_EVIDENCE = $savedSharedWideEvidence
+    }
     Invoke-Cargo "CPU V3 system RTL Icarus" "test" @(
         "-p", "cpu-v3-tang-nano-20k", "--lib", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "CPU V3 system example Icarus" "test" @(
+    $systemExampleArgs = @(
         "-p", "cpu-v3-tang-nano-20k", "--examples", "--", "--ignored", "--nocapture"
     )
+    if (-not $ExtendedSimulations) { $systemExampleArgs += @("--skip", "extended_") }
+    Invoke-Cargo "CPU V3 system example Icarus" "test" $systemExampleArgs
 }
 
 function Invoke-GowinBuild {
@@ -169,6 +180,7 @@ try {
     $evidence = [ordered]@{
         schema = 1
         mode = $Mode
+        extended_simulations = [bool]$ExtendedSimulations
         commit = $commit
         worktree_dirty = $dirty
         started_utc = $startedAt.ToString("o")

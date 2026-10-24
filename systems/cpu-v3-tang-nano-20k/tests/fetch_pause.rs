@@ -31,7 +31,7 @@ mod system_emu;
 use cpu_v3::{alu, halt, load_immediate16, store, AluOp, CpuV3Sim, RunOutcome, Word};
 use cpu_v3::{fpu_aux, fpu_vector, FpuAuxKind, FpuAuxSubop, FpuVectorLength, FpuVectorSubop};
 use system_emu::{
-    compile_cpu_v3_source, run_benchmark_paused_memory, run_from_checkpoint, ArchitecturalView,
+    compile_cpu_v3_source, run_from_checkpoint, run_system_paused_memory, ArchitecturalView,
     Checkpoint,
 };
 
@@ -129,7 +129,7 @@ fn emu_register_dump(memory: &[u16]) -> Vec<Word> {
 /// One cycle-by-cycle `(cycle, retired_words)` timeline from a no-pause run.
 fn retired_timeline(program: &[u16]) -> Vec<(usize, u32)> {
     let mut timeline = Vec::new();
-    let _ = run_benchmark_paused_memory(program, 2_000_000, |cycle, retired| {
+    let _ = run_system_paused_memory(program, 2_000_000, |cycle, retired| {
         timeline.push((cycle, retired));
         false
     });
@@ -178,7 +178,7 @@ fn paused_emulator_alignment_against_naive_sim() {
         let paused_retired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let observed_retired = paused_retired.clone();
         let (emu, emu_memory) =
-            run_benchmark_paused_memory(&words, 2_000_000, move |cycle, retired| {
+            run_system_paused_memory(&words, 2_000_000, move |cycle, retired| {
                 let active = (pause_cycle..pause_cycle + HOLD_CYCLES).contains(&cycle);
                 if active {
                     observed_retired.borrow_mut().push(retired);
@@ -323,7 +323,7 @@ fn main() {
 
     // No pause in this test: it pins that a compiler-produced program runs on
     // both models and reaches the same retired count and halt signal.
-    let (emu, _memory) = run_benchmark_paused_memory(&words, 50_000, |_, _| false);
+    let (emu, _memory) = run_system_paused_memory(&words, 50_000, |_, _| false);
     println!(
         "compiled program: sim retired={sim_retired} halt={sim_halt} emu cycles={} retired={} halt={}",
         emu.cycles, emu.retired_words, emu.halt_signal
@@ -368,7 +368,7 @@ fn several_sync_points_align_with_the_naive_sim() {
             target < sim_retired as u32,
             "checkpoint {target} must fall before the halt at {sim_retired}"
         );
-        let (emu, emu_memory) = run_benchmark_paused_memory(
+        let (emu, emu_memory) = run_system_paused_memory(
             &words,
             2_000_000,
             pause_for_cycles_after_retired(target, 40),
@@ -430,7 +430,7 @@ fn a_checkpoint_resumes_without_replaying_the_prefix() {
     let sled = sled_start();
 
     // Reference: the whole run, no pause.
-    let (reference, _) = run_benchmark_paused_memory(&words, 2_000_000, |_, _| false);
+    let (reference, _) = run_system_paused_memory(&words, 2_000_000, |_, _| false);
 
     // First run: pause at the sled and snapshot the machine while it is paused
     // and quiescent.
@@ -498,8 +498,7 @@ fn a_checkpoint_resumes_without_replaying_the_prefix() {
     assert_eq!(
         resumed_memory,
         {
-            let (_, reference_memory) =
-                run_benchmark_paused_memory(&words, 2_000_000, |_, _| false);
+            let (_, reference_memory) = run_system_paused_memory(&words, 2_000_000, |_, _| false);
             reference_memory
         },
         "a resumed run must produce the same architectural memory as the reference"
@@ -529,8 +528,7 @@ fn a_checkpoint_resumes_without_replaying_the_prefix() {
 fn snapshot_round_trip_matches_the_reference_at_several_points() {
     let words = program(0x5a5a, 600);
 
-    let (reference, reference_memory) =
-        run_benchmark_paused_memory(&words, 2_000_000, |_, _| false);
+    let (reference, reference_memory) = run_system_paused_memory(&words, 2_000_000, |_, _| false);
     let (sim, sim_halt) = run_sim(&words, 200_000);
     assert_eq!(reference.halt_signal, sim_halt, "reference vs naive sim");
 

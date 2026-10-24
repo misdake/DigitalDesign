@@ -337,10 +337,10 @@ def main():
     env = os.environ.copy();env['CARGO_TARGET_DIR'] = str(OUT / 'cargo-stage3-validation')
     cargo = Path.home() / '.cargo/bin/cargo.exe'
     execute([cargo, 'build', '--release', '-p', 'gpu-v2', '--bin', 'gpu-v2-vliw-export', '--example', 'vliw_integration'], ROOT, out / 'build.log', env=env)
-    execute([cargo, 'test', '-p', 'gpu-v2', '--test', 'vliw_sdram', 'export_real_shared_sdram_peer', '--', '--nocapture'], ROOT, out / 'mc-export.log', env=env)
+    execute([cargo, 'test', '-p', 'gpu-v2', '--test', 'host', 'vliw_sdram::export_real_shared_sdram_peer', '--', '--nocapture'], ROOT, out / 'mc-export.log', env=env)
     gold_exe = Path(env['CARGO_TARGET_DIR']) / 'release/examples/vliw_integration.exe'
     exporter = Path(env['CARGO_TARGET_DIR']) / 'release/gpu-v2-vliw-export.exe'
-    snapshots = [Path(__file__), ROOT / 'ip/gpu-v2/tests/vliw_sdram.rs', HERE / 'verify_stage2.py', HERE / 'transport.py', HERE / 'stage2_tb.v', HERE / 'main.rs']
+    snapshots = [Path(__file__), ROOT / 'ip/gpu-v2/tests/host/vliw_sdram.rs', HERE / 'verify_stage2.py', HERE / 'transport.py', HERE / 'stage2_tb.v', HERE / 'main.rs']
     snapshots += [p for p in (HERE / 'reference').rglob('*') if p.is_file() and p.suffix in ('.py', '.json', '.rs', '.v')]
     sources = {str(p.relative_to(ROOT)).replace('\\', '/'): SHA(p) for p in snapshots}
     reports = []; origins = None

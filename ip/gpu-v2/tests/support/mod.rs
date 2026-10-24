@@ -32,24 +32,26 @@ pub fn representative() -> Vec<(PixelInput, Material, Light, Projection)> {
         [0, 16384, 0],
         [9459, 9459, 9459],
     ];
+    // Pairwise coverage: every normal/position, normal/direction and
+    // position/direction pair, and all three representative shininess codes.
+    // Avoid repeating the full four-way Cartesian product in every model test.
     let mut result = Vec::new();
-    for normal in normals {
-        for ndc in positions {
-            for direction in directions {
-                for code in [0, 8, 16] {
-                    result.push((
-                        PixelInput { normal, ndc },
-                        Material {
-                            shininess_code: code,
-                            ..Material::default()
-                        },
-                        Light {
-                            direction,
-                            ..Light::default()
-                        },
-                        Projection::default(),
-                    ));
-                }
+    for (ni, normal) in normals.into_iter().enumerate() {
+        for (pi, ndc) in positions.into_iter().enumerate() {
+            for (ci, code) in [0, 8, 16].into_iter().enumerate() {
+                let direction = directions[(ni + pi + ci) % directions.len()];
+                result.push((
+                    PixelInput { normal, ndc },
+                    Material {
+                        shininess_code: code,
+                        ..Material::default()
+                    },
+                    Light {
+                        direction,
+                        ..Light::default()
+                    },
+                    Projection::default(),
+                ));
             }
         }
     }

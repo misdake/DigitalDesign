@@ -1,5 +1,10 @@
 # GPU raster and framebuffer control comparison
 
+This is a historical comparison for the retired GPU implementation. Its RTL,
+fit tools and test entry points are no longer part of the supported build.
+Implementation and deferred-work statements below refer to that historical baseline.
+Current behavior is specified in [GPU v2](/ip/gpu-v2/docs/README.md).
+
 ## Measured candidates, 2026-09-27
 
 The preferred configurations are **tile traversal with 2 pixels/clock** for throughput
@@ -224,27 +229,9 @@ Its later design must retain pin/hazard, LOAD/CLEAR, draw/epoch, dirty-victim an
 error semantics. No speculative second cleaner/tag port or extra in-flight buffering
 is paid for before that schedule is defined.
 
-## Reproduction and evidence boundary
+## Evidence boundary
 
-The accepted, independently validated C16/Z16 replacement component is documented in
-[`framebuffer-cache.md`](framebuffer-cache.md). Its matched resource and throughput results
-have a different boundary from the fitted color-only GPU described here.
-
-```powershell
-scripts/measure-gpu-raster.ps1 -Jobs 4 -GowinHome $env:GOWIN_HOME
-scripts/run-cargo.ps1 -Subcommand test -Label raster-matrix -CargoArgs @(
-  '-p','cpu-v3-tang-nano-20k','--lib','rasteremu::rtl_tests','--',
-  '--ignored','--nocapture','--test-threads=1')
-scripts/run-cargo.ps1 -Subcommand test -Label gpu-integration -CargoArgs @(
-  '-p','cpu-v3-tang-nano-20k','--test','gpu_trace_cosim','--',
-  '--ignored','--nocapture','--test-threads=1')
-```
-
-The fit script captures source/constraint hashes, writes candidate and module-owner
-CSVs, and fails if a candidate violates timing. The tests emit producer and cache
-throughput CSVs and fail on image, ordering, conservation or error-path divergence.
-Six raster RTL tests, eight GPU integration tests, both mandatory CPU/system co-sims,
-full Flash simulation and aggregate hardware/artifact checks are required for promotion.
-Simulation, PnR, SRAM loading, complete Flash Verify, cold boot and HDMI observation
-are separate evidence. The current board/image boundary belongs only to the
-[architecture validation section](architecture.md#current-fitted-result-and-validation-boundary).
+These archived measurements do not qualify the current GPU or board image.
+The retired raster candidate fit script and its reproduction tests are no
+longer supported. Use the current GPU specifications and the system's audited
+build/validation workflow for current implementation changes.

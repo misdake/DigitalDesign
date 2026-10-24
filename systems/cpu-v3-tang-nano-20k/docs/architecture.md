@@ -325,8 +325,7 @@ condition.
 Device indices 1 and 2 are unassigned in this system; the former selection and
 programmable DMA register banks are absent. The selected application is the
 [CPU-only Display diagnostic](/systems/cpu-v3-tang-nano-20k/docs/system-display-test.md),
-`rcc/system-display-test.rs`. The historical `rcc/display-demo.rs` is not a
-driver for the current GPU. `rcc/device_abi.rs` now names the two-SEND ABI;
+`rcc/system-display-test.rs`. `rcc/device_abi.rs` names the two-SEND ABI;
 the [RCC driver](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md) provides one
 opaque command buffer, high-memory storage, scoped DSEG3 access and a complete
 Clear/Store Pass with ordered multi-Mesh/Instance recording, immutable high-memory
@@ -391,7 +390,7 @@ Run it with `cargo test -p cpu-v3-tang-nano-20k --test gpu_device_rtl -- --ignor
 and `IVERILOG_EXE`, `VVP_EXE`, `GOWIN_HOME` set. It checks the control binding;
 rendering correctness remains covered by the GPU/MC replay.
 
-The example's ignored `cold_boot_cpu_submits_gpu_commands_in_verilog` test boots
+The example's ignored `extended_cold_boot_cpu_submits_gpu_commands_in_verilog` test boots
 a compiled CPU program through the production top and Flash loader, then submits
 and waits for a real Device4 command buffer. It checks defined GPU state during
 cold start and no runtime reset reassertion. The bounded
@@ -641,7 +640,7 @@ Display pixel/fault tests qualify their separate boundaries.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus
-against the cycle-accurate Rust system model shared with `tests/bench_emu.rs`, comparing the core
+against the cycle-accurate Rust system model shared with the fetch/checkpoint regressions, comparing the core
 ports cycle by cycle and the post-flush SDRAM contents exactly. It is ignored by default; run it
 with `cargo test -p cpu-v3-tang-nano-20k --test system_cosim -- --ignored --test-threads=1`.
 Differential equality is not treated as a semantic oracle by itself: cache-command scenarios also

@@ -348,7 +348,7 @@ def main():
     gold=Path(env['CARGO_TARGET_DIR'])/'release/examples/vliw_integration.exe'
     execute([exporter,out/'dut.v','sdram','portable'],ROOT,out/'export.log',env=env)
     origins=S.wiring_origins(out/'dut.v')
-    execute([Path.home()/'.cargo/bin/cargo.exe','test','--release','-p','gpu-v2','--test','vliw_sdram','export_real_shared_sdram_peer','--','--nocapture'],ROOT,out/'mc-export.log',env=env)
+    execute([Path.home()/'.cargo/bin/cargo.exe','test','--release','-p','gpu-v2','--test','host','vliw_sdram::export_real_shared_sdram_peer','--','--nocapture'],ROOT,out/'mc-export.log',env=env)
     for p in (ROOT/'target/gpu-vliw-integration-20261018/stage3/mc-peer').iterdir():shutil.copy2(p,out/p.name)
     (out/'tb.v').write_text(bench(S,V,metas,a.max_cycles))
     execute([env['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-I',out,'-s','tb','-o',out/'sim.vvp',*sorted(out.glob('*.v'))],out,out/'compile.log',env=env)

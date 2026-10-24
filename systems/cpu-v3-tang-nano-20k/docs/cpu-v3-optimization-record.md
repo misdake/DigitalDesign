@@ -4,6 +4,10 @@ Status: append-only detail record; normally read only when investigating an old 
 Repository: `../../../`
 Updated: 2026-10-09
 
+The CPU V3 benchmark suite and runners referenced below were retired on
+2026-10-24. These entries preserve historical evidence; their benchmark commands
+are no longer active validation entry points.
+
 The concise milestone index lives in [`cpu-v3-optimization.md`](cpu-v3-optimization.md). This file
 preserves the former long-form roadmap, measurements, rejected alternatives, and validation notes.
 New milestones add one sentence to the concise index and append their detailed evidence here; old
@@ -923,7 +927,7 @@ Implemented on `701c7f3+dirty`, without a new Stage number. The architecture and
 handshake contract live in the CPU IP
 [hardware-architecture.md](../../../ip/cpu-v3/docs/hardware-architecture.md);
 configuration and diagnostic semantics live in the
-[benchmark contract](../benchmarks/README.md#btc-comparison-diagnostics).
+former benchmark contract (retired with the CPU V3 benchmark suite).
 This adds no branch prediction, ISA changes, compiler changes or frozen workload revision.
 
 All three configurations ran the same 22 programs with the same compiler/options

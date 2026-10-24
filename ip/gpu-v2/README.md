@@ -27,4 +27,6 @@ own README list; historical performance/resource ledgers are not updated.
 ```
 
 Bounded RTL replay usage is in the owning [integration example](/ip/gpu-v2/examples/vliw_integration/README.md).
+Host grouping, corpus coverage and protocol replay are described in the
+[test guide](/ip/gpu-v2/tests/README.md).
 Validation of a component or standalone GPU is not full CPU/GPU/Display or board validation.

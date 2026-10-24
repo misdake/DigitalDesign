@@ -3,8 +3,8 @@
 //! Wires the core, instruction fetch queue, I-cache, D-cache and the memory
 //! arbiter through their Rust emulators, and drives them against a cycle-faithful
 //! model of the Tang Nano 20K SDRAM word port (ACTIVE / READ 4x64 / WRITE /
-//! RECOVERY / periodic refresh). Used by `bench_emu.rs` for performance
-//! benchmarks and by `system_cosim.rs` for emulator-vs-RTL co-simulation.
+//! RECOVERY / periodic refresh). Shared by bounded fetch/checkpoint tests and
+//! emulator-vs-RTL system co-simulation.
 //!
 //! This module is compiled into several integration test crates; not every
 //! crate uses every entry point.
@@ -232,7 +232,7 @@ fn write_btc_diagnostics(directory: Option<&Path>, stats: cpu_v3::CpuV3BtcStatis
     .unwrap();
 }
 
-const BENCHMARK_SDRAM_WORDS: usize = 0x10000;
+const SYSTEM_SDRAM_WORDS: usize = 0x10000;
 const SYSTEM_COSIM_SDRAM_WORDS: usize = 0x20000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -252,8 +252,8 @@ enum SdramState {
 }
 
 /// CPU-port timing calibrated against the native controller, two-pair bridge,
-/// adapter, and SDRAM pin model at BANK_BIT=5. Only the benchmark harness opts
-/// into this profile; the system co-simulation retains its matched RTL oracle.
+/// adapter, and SDRAM pin model at BANK_BIT=5. Explicit test runs opt into this
+/// profile; the system co-simulation retains its matched RTL oracle.
 #[derive(Clone)]
 struct NativeSdramService {
     open_rows: [Option<u16>; 4],
@@ -493,7 +493,7 @@ impl SdramModel {
         address: u32,
         write_data: u64,
     ) {
-        // Keep the legacy refresh cadence in this paired benchmark so the
+        // Keep the legacy refresh cadence in this paired timing check so the
         // comparison isolates request service. The controller's real refresh
         // interval is checked separately by the pin-level integration test.
         let refresh_due = self.refresh_count >= 600;
@@ -646,7 +646,7 @@ mod native_timing_tests {
     }
 }
 
-pub struct BenchResult {
+pub struct SystemRunResult {
     pub program_words: usize,
     pub cycles: usize,
     pub halt_signal: u16,
@@ -746,7 +746,7 @@ impl TraceRecorder {
 }
 
 impl TraceRecorder {
-    fn summary(&mut self, directory: Option<&Path>, result: &BenchResult) {
+    fn summary(&mut self, directory: Option<&Path>, result: &SystemRunResult) {
         let Some(directory) = directory else {
             return;
         };
@@ -1071,32 +1071,32 @@ pub fn compile_cpu_v3_source(source: &str) -> Vec<u16> {
 
 /// Runs `words` from physical word zero (code and data share segment zero) until
 /// the core halts, returning the cycle count and the profile counters.
-pub fn run_benchmark(words: &[u16], maximum_cycles: usize) -> BenchResult {
-    run_benchmark_paused_memory(words, maximum_cycles, |_, _| false).0
+pub fn run_system(words: &[u16], maximum_cycles: usize) -> SystemRunResult {
+    run_system_paused_memory(words, maximum_cycles, |_, _| false).0
 }
 
 /// Runs `words` with a per-cycle emulator-only fetch-pause hook: returning
 /// `true` holds the fetch queue off the core for that cycle,
 /// and returning `false` releases a pause previously requested by the hook.
 /// There is no guest-visible device register or hardware port.
-pub fn run_benchmark_paused(
+pub fn run_system_paused(
     words: &[u16],
     maximum_cycles: usize,
     pause_at: impl FnMut(usize, u32) -> bool,
-) -> BenchResult {
-    run_benchmark_paused_memory(words, maximum_cycles, pause_at).0
+) -> SystemRunResult {
+    run_system_paused_memory(words, maximum_cycles, pause_at).0
 }
 
-/// As `run_benchmark_paused`, but also returns the final SDRAM image after the
+/// As `run_system_paused`, but also returns the final SDRAM image after the
 /// post-halt D-cache clean, for comparing architectural memory against another
 /// model.
-pub fn run_benchmark_paused_memory(
+pub fn run_system_paused_memory(
     words: &[u16],
     maximum_cycles: usize,
     mut pause_at: impl FnMut(usize, u32) -> bool,
-) -> (BenchResult, Vec<u16>) {
+) -> (SystemRunResult, Vec<u16>) {
     let (result, memory, _) =
-        run_benchmark_profiled_inner(words, maximum_cycles, None, &mut pause_at, None, None);
+        run_system_profiled_inner(words, maximum_cycles, None, &mut pause_at, None, None);
     (result, memory)
 }
 
@@ -1128,7 +1128,7 @@ impl Checkpoint {
 /// take more than one checkpoint by returning `true` more than once.
 type CheckpointFn<'a> = &'a mut dyn FnMut(usize, &SystemHandles, bool) -> bool;
 
-/// As `run_benchmark_paused_memory`, but able to start from a checkpoint and to
+/// As `run_system_paused_memory`, but able to start from a checkpoint and to
 /// hand one back.
 ///
 /// * `start_from` restores a previously taken checkpoint before the run begins,
@@ -1143,8 +1143,8 @@ pub fn run_from_checkpoint(
     mut pause_at: impl FnMut(usize, u32) -> bool,
     start_from: Option<&Checkpoint>,
     checkpoint_at: Option<CheckpointFn<'_>>,
-) -> (BenchResult, Vec<u16>, Option<Checkpoint>) {
-    run_benchmark_profiled_inner(
+) -> (SystemRunResult, Vec<u16>, Option<Checkpoint>) {
+    run_system_profiled_inner(
         words,
         maximum_cycles,
         None,
@@ -1154,12 +1154,12 @@ pub fn run_from_checkpoint(
     )
 }
 
-pub fn run_benchmark_profiled(
+pub fn run_system_profiled(
     words: &[u16],
     maximum_cycles: usize,
     trace_directory: Option<&Path>,
-) -> BenchResult {
-    run_benchmark_profiled_inner(
+) -> SystemRunResult {
+    run_system_profiled_inner(
         words,
         maximum_cycles,
         trace_directory,
@@ -1170,15 +1170,15 @@ pub fn run_benchmark_profiled(
     .0
 }
 
-fn run_benchmark_profiled_inner(
+fn run_system_profiled_inner(
     words: &[u16],
     maximum_cycles: usize,
     trace_directory: Option<&Path>,
     pause_at: &mut impl FnMut(usize, u32) -> bool,
     start_from: Option<&Checkpoint>,
     mut checkpoint_at: Option<CheckpointFn<'_>>,
-) -> (BenchResult, Vec<u16>, Option<Checkpoint>) {
-    let mut memory = vec![0u16; BENCHMARK_SDRAM_WORDS];
+) -> (SystemRunResult, Vec<u16>, Option<Checkpoint>) {
+    let mut memory = vec![0u16; SYSTEM_SDRAM_WORDS];
     for (offset, word) in words.iter().copied().enumerate() {
         memory[offset] = word;
     }
@@ -1363,11 +1363,11 @@ fn run_benchmark_profiled_inner(
         live_handles.restore(&checkpoint.snapshot);
     }
 
-    let memory_profile = std::env::var("CPU_V3_BENCH_SDRAM_PROFILE").ok();
+    let memory_profile = std::env::var("CPU_V3_TEST_SDRAM_PROFILE").ok();
     let mut sdram = start_sdram.unwrap_or_else(|| match memory_profile.as_deref() {
         None | Some("legacy") => SdramModel::new(memory),
         Some("native128") => SdramModel::new_native_128b(memory),
-        Some(other) => panic!("unknown CPU_V3_BENCH_SDRAM_PROFILE={other}"),
+        Some(other) => panic!("unknown CPU_V3_TEST_SDRAM_PROFILE={other}"),
     });
     let mut trace = TraceRecorder::new(trace_directory);
     let mut previous_retired = start_from
@@ -1673,7 +1673,7 @@ fn run_benchmark_profiled_inner(
                 panic!("D-cache flush failed after benchmark completion");
             }
             if dcache.maintenance_done {
-                let result = BenchResult {
+                let result = SystemRunResult {
                     program_words: words.len(),
                     cycles: main_cycles,
                     halt_signal,

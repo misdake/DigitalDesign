@@ -3,14 +3,15 @@
 `rcc/system-display-test.rs` is the application selected by
 `boot-applications.conf`. It uses the CB06 cold loader and the production
 CPU, caches, seven-owner arbiter, related-clock gear, native SDRAM controller
-and 800x480 HDMI Display. The GPU remains inactive. The retained
-`rcc/display-demo.rs` requires the retired GPU ABI and is not this diagnostic.
+and 800x480 HDMI Display. The GPU remains inactive.
 
 ## Memory and ownership
 
 All addresses below are 16-bit word addresses. The application uses no heap.
-Logical words `0x4000..0x7fff` are private scratch, outside the loader-cleared
+Logical words `0x4000..0x7fff` are private scratch, outside the reserved
 static arena `0x0000..0x1fff` and below the stack starting at `0xc000`.
+The loader clears only the compiler-allocated static prefix; the diagnostic
+initializes each scratch line before use.
 Normal legacy DSEG is zero. A scratch line at `0x4000 + offset` is filled with
 16 RGB565 words and copied by `LCOPY` to the same low 14-bit offset in the
 selected physical page. `DWAIT` completes each copy before scratch reuse.

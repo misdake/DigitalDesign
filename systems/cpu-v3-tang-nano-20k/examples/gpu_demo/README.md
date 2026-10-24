@@ -174,9 +174,9 @@ at the next pose. Real RTL dumps both submission inputs, rejects any CPU write
 to the currently executing input slot, checks actual GPU write terminals, and
 preserves Front/old-read protection. Prefix and pipeline limits are 200000 and
 2000000 cycles respectively; CPU-only reference execution is also bounded.
-`gpu_demo_prepare_profile` shares the same implementation in a separate test
-executable so Windows can run one frozen GPU experiment while compiling another
-host harness. No image oracle is generated or compared by these experiments.
+Preparation and full-frame profiles share the `gpu_demo_profile` test
+executable. Run these experiments serially when rebuilding it on Windows.
+No image oracle is generated or compared by these experiments.
 
 ## Direct command and object recording
 
@@ -190,7 +190,7 @@ The legacy packed-grid snapshot API remains available to other callers. The
 fixed capacity and full validation/ordering contract remain unchanged.
 
 Use `GPU_DEMO_CPU_PREP_PROFILE=1` and a unique `GPU_DEMO_PROFILE_VARIANT` with the
-ignored `gpu_demo_prepare_profile` test for a submission-prefix measurement.
+ignored `--test gpu_demo_profile` target for a submission-prefix measurement.
 There is no alternate builder module or `GPU_DEMO_DIRECT_BUILDER` selection.
 `gpu_demo_direct_fault` checks the accepted unrecoverable halt/fault policy and
 zero GPU starts after injected memory errors. Its source-identity test matches
