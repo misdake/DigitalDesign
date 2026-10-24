@@ -96,9 +96,8 @@ Another page's payload/metadata can prefetch while the current meshlet runs.
 Leave `config_bytes=0` for that overlap. `meshlet_done` means that all V/T
 computation and index reads have completed, including rejected triangles. It
 does not mean that queued T records or R/I have drained. `meshlet_ready` admits
-the next header/bounds operation once the shared ALU is idle and permission
-has latched on an enabled idle edge. A retained meshlet waits for its alternate
-attribute epoch before writing V; a culled meshlet needs no epoch. Input-page
+the next meshlet after its alternate attribute epoch is free and that permission
+has latched on an enabled idle edge; it no longer waits for R/I idle. Input-page
 ownership is tracked separately from attribute readiness: start acceptance marks
 the selected input page active, and `meshlet_done` releases it. The previous
 active input page can therefore be refilled even while attribute-epoch reuse

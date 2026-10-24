@@ -21,45 +21,6 @@ one live version even though several identity fields travel with work.
 No implicit equality or shared fence is defined between these identities.
 [Overview](/ip/gpu-v2/docs/overview.md#completion-is-tied-to-an-owner) maps completion to reuse.
 
-## Shared V/T meshlet prologue
-
-The shared 512x72 control ROM keeps the original V/T words0..255. Bounds executes
-rows256..299, including seven existing configuration-load operations. PC bit8
-identifies this phase; there is no independent bounds-running register or
-special mid-program PC redirect. Retained V starts at row7 using the already
-loaded origins, quantizer and RF0=65536; T still starts at128. The meshlet
-controller distinguishes the shared completion pulse by its waiting phase.
-
-Each supporting dot product uses the following enabled-edge calendar. Both
-scratchpad halves return synchronously; a read and old-Q consumption can overlap.
-Coefficient signs encode0/1023 directly into the existing unpack latch's low10
-bits, then the unchanged position unpacker produces the chosen coordinate.
-
-| Edge | Read / unpack / RF write | Shared MAC |
-| --- | --- | --- |
-| 0 | Request coefficient0 | None |
-| 1 | Capture support delta0; request coefficient1 | None |
-| 2 | RF1=position0; capture delta1; request coefficient2 | None |
-| 3 | RF2=position1; capture delta2; request coefficient0 | None |
-| 4 | RF3=position2; request coefficient1 | Issue RF1*coefficient0 |
-| 5 | Request coefficient2 | Retire first product with clear; issue RF2*coefficient1 |
-| 6 | Request translation | Add second product; issue RF3*coefficient2 |
-| 7 | Keep translation Q | Add third product; issue RF0*translation |
-| 8 | No read | Add translation product |
-
-Only Zmax survives the row, in RF10. Horizontal checks multiply it by the existing
-uniform constant+65536; the right check fills that constant's high19 bits to
-make -65536. This fixed issue never overlaps min-corner capture. There is no
-negative-Z copy or accumulator-to-unpacker input. The complete path uses44
-enabled core edges; behind/left/right checks finish after17/30/43 respectively.
-Header, controller, stalls and final T export are separate from these counts.
-
-The T index-group register loads54 bits, then shifts only its low36 bits for
-three ordered descriptors. The upper18 bits remain until the next group load.
-The packed result's high18 bits update only from T pack operations5/6; V clears
-only its consumed low36 bits. Simulation checks the high-half producer before
-every coefficient write, so stale unused high bits cannot reach a live record.
-
 ## Triangle parameter storage and reads
 
 ### Geometry reduction and publication

@@ -1,7 +1,7 @@
 # Classic rotating GPU scene
 
 The reusable scene is the original brick-textured box, complete 948-face lit
-rabbit and RGB triangle: 20 meshlets and1057 triangles. The audited256-pose
+rabbit and RGB triangle: 24 meshlets and1141 triangles. The audited256-pose
 radius2.8 orbit retains its original pitch and rotating light. Room and RGB
 are unlit; rabbit uses the original full-H9 diffuse/specular settings.
 The texture is room-tiles.png with its real mip chain, not diagnostic mip colors.
@@ -58,11 +58,8 @@ clock. No full scene or image comparison is required for timer validation.
 | room.bin |0x4c0000|Full scene directory/records plus256 camera records|
 | texture.bin |0x4d0000|Original64-square brick image and full mip chain|
 
-The box is one mesh with two meshlets: three faces,48 vertices and54 triangles
-per meshlet (3x3 subdivisions per face). Face normals and UV seams remain
-independent. Directory entries0..1 are box, entry2 is RGB and entries3..19 are
-all rabbit meshlets. Camera records and existing rabbit/RGB records retain
-their original full-orbit scale_s. Camera records
+Directory entries0..5 are room, entry6 is RGB and entries7..23 are all rabbit
+meshlets. Each record retains the audited full-orbit scale_s. Camera records
 occupy128 bytes each; manifest/generated roots own the exact lengths.
 
 ## Build and verification boundary

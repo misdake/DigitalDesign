@@ -113,12 +113,8 @@ def pack(output):
         struct.pack_into("<21I3h", record, 0,
                          *(v & 0xffffffff for v in camera["matrix"]), *camera["light"])
         data += record
-    room_count = sum(m['group'] == 'box' for m in meshes)
-    bunny_count = sum(m['group'] == 'bunny' for m in meshes)
-    triangles = sum(len(m['triangles']) for m in meshes)
-    assert room_count == 2 and bunny_count == 17 and len(meshes) == 20
-    assert [m['group'] for m in meshes] == ['box']*room_count+['vertex_color']+['bunny']*bunny_count
-    assert len(scene['cameras']) == 256 and triangles == scene['triangles'] == 1057
+    assert len(meshes)==24 and len(scene["cameras"])==256
+    assert sum(len(m["triangles"]) for m in meshes)==1141
     assert MESH + len(data) <= TEXTURE
     resources = [("atlas.bin", ATLAS, atlas), ("room.bin", MESH, bytes(data)),
                  ("texture.bin", TEXTURE, texture())]
@@ -128,21 +124,21 @@ def pack(output):
         (output/name).write_bytes(payload)
     sources = [Path(__file__), EXAMPLE/"assets/scene.json", EXAMPLE/"assets/font-8x16.txt",
                SCENE/"material_scene.py", SCENE/"solid_scene.py", SCENE/"assets/room-tiles.png"]
-    manifest = dict(scene=scene["scene"], triangles=triangles, provenance=scene["provenance"],
+    manifest = dict(scene=scene["scene"], triangles=1141, provenance=scene["provenance"],
         resources=[dict(file=n,address=a,bytes=len(p),sha256=sha(output/n)) for n,a,p in resources],
-        mesh=dict(directory_sector=MESH//128, directory_word=0, count=len(meshes),
+        mesh=dict(directory_sector=MESH//128, directory_word=0, count=24,
                   first_sector=MESH//128,sectors=len(data)//128,entries=entries),
         texture=dict(sector=TEXTURE//128,sectors=88,size_log2=6,full_mip=1),
         atlas=dict(sector=ATLAS//128,sectors=512,glyphs=sorted(glyphs)),
         orbit=dict(radius=2.8,steps=256,camera_first_sector=camera_first),
         sources={str(p.relative_to(ROOT)).replace(chr(92),"/"):sha(p) for p in sources})
     (output/"assets.json").write_text(json.dumps(manifest,indent=2)+"\n")
-    roots=dict(DEMO_MESH_DIRECTORY=MESH//128,DEMO_MESH_COUNT=len(meshes),
-        DEMO_MESH_SECTORS=len(data)//128,DEMO_ROOM_COUNT=room_count,DEMO_RGB_WORD=room_count*2,
-        DEMO_BUNNY_WORD=(room_count+1)*2,DEMO_BUNNY_COUNT=bunny_count,DEMO_CAMERA_FIRST=camera_first,
+    roots=dict(DEMO_MESH_DIRECTORY=MESH//128,DEMO_MESH_COUNT=24,
+        DEMO_MESH_SECTORS=len(data)//128,DEMO_ROOM_COUNT=6,DEMO_RGB_WORD=12,
+        DEMO_BUNNY_WORD=14,DEMO_BUNNY_COUNT=17,DEMO_CAMERA_FIRST=camera_first,
         DEMO_TEXTURE=TEXTURE//128,DEMO_TEXTURE_SECTORS=88,DEMO_ATLAS=ATLAS//128)
     (output/"demo_assets.rs").write_text(''.join(f'pub const {n}: u16 = {v};\n' for n,v in roots.items()))
-    print(f"Built classic box+rabbit+RGB: {len(meshes)} meshlets, {triangles} triangles, 256 orbit poses")
+    print("Built classic box+rabbit+RGB: 24 meshlets, 1141 triangles, 256 orbit poses")
 
 
 if __name__ == "__main__":

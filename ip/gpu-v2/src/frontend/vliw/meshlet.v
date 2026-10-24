@@ -1,6 +1,6 @@
 // 本地SP中的32B metadata + 最大1KB V/index；先全部V，再按三个索引一组跑T。
 // 外部DMA负责把原始字送入SP；不实现SDRAM或Mesh目录的地址遍历。
-module shared_meshlet #(parameter BOUNDS_CULL=1)(
+module shared_meshlet(
  input clk,reset,ce,start,slot,
 `ifdef GPU_V2_COMMAND_PORTS
  input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
@@ -15,7 +15,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
 );
  localparam IDLE=0,META0=1,META0_Q=2,META1=3,META1_Q=4,
             META3=5,META3_Q=6,CHECK=7,VSTART=9,VWAIT=10,
-            INDEX=11,INDEX_Q=12,TSTART=13,TWAIT=14,BWAIT=15,ADMIT=8;
+            INDEX=11,INDEX_Q=12,TSTART=13,TWAIT=14;
  reg [3:0] state;
  reg active_slot;
  reg [6:0] vertices,triangles;
@@ -27,7 +27,6 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  reg attr_mode,normal_mode,cull_negative;
  reg [6:0] sequence_id;
  wire core_busy,done_v,done_t,triangle_ready,core_meshlet_ready,source_ready,core_dma_ready;
- wire done_bounds,bounds_reject;
  wire [2:0] core_error;
  wire [63:0] source_data;
  wire [9:0] vertex_base={2'b00,active_slot,7'd0};
@@ -60,10 +59,9 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  wire [7:0] vertex_rows=vertex_words[8:1];
  wire invalid_header=vertices>64||triangles>96||uniform_base[5:2]!=4'd5||
                      (triangles!=0&&(vertices==0||index_cursor<vertex_rows));
- shared_frontend #(.RESULT_COMPACT(1),.SP_COMPACT(1),.SOURCE_READ(1),.BOUNDS_CULL(BOUNDS_CULL)) core(
+ shared_frontend #(.RESULT_COMPACT(1),.SP_COMPACT(1),.SOURCE_READ(1)) core(
   .clk(clk),.reset(reset),.ce(ce),.start_v(state==VSTART),.start_t(state==TSTART),
-  .start_bounds(BOUNDS_CULL&&state==CHECK&&!invalid_header),.done_bounds(done_bounds),.bounds_reject(bounds_reject),
-  .meshlet_reset(BOUNDS_CULL?(state==ADMIT&&core_meshlet_ready):(state==CHECK&&!invalid_header)),.vertex_count(vertices),.uniform_base(uniform_base),
+  .meshlet_reset(state==CHECK&&!invalid_header),.vertex_count(vertices),.uniform_base(uniform_base),
   .config_base(config_base),.vertex_base(vertex_base),.triangle_descriptor(triangle_descriptor),
   .cull_negative(cull_negative),.dma_we(dma_we&&write_safe),.dma_addr(dma_addr),.dma_data(dma_data),
   .output_ready(output_ready),.packet_ready(packet_ready),.word_ready(word_ready),
@@ -81,7 +79,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
    scale<=0;generation<=0;attr_mode<=0;normal_mode<=0;cull_negative<=0;sequence_id<=0;
   end else if(ce)begin
    done<=0;
-   if(state==IDLE&&(BOUNDS_CULL?!core_busy:core_meshlet_ready))ready<=1;
+   if(state==IDLE&&core_meshlet_ready)ready<=1;
    case(state)
     IDLE:if(start&&ready)begin ready<=0;active_slot<=slot;error<=0;state<=META0;end
     META0:if(source_ready)state<=META0_Q;
@@ -96,11 +94,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
     end
     META3:if(source_ready)state<=META3_Q;
     META3_Q:begin normal_mode<=source_data[40];state<=CHECK;end
-    CHECK:if(invalid_header)begin error<=5;done<=1;state<=IDLE;end else state<=BOUNDS_CULL?BWAIT:VSTART;
-    BWAIT:if(done_bounds)begin
-     if(bounds_reject)begin done<=1;state<=IDLE;end else state<=ADMIT;
-    end
-    ADMIT:if(core_meshlet_ready)state<=VSTART;
+    CHECK:if(invalid_header)begin error<=5;done<=1;state<=IDLE;end else state<=VSTART;
     VSTART:state<=VWAIT;
     VWAIT:if(done_v)begin
      if(core_error!=0)begin error<={1'b0,core_error};done<=1;state<=IDLE;end
@@ -115,9 +109,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
      else if(triangles==1)begin triangles<=0;done<=1;state<=IDLE;end
      else begin
       triangles<=triangles-1'b1;sequence_id<=sequence_id+1'b1;
-      // Only the low two lanes shift. Lane2 is consumed through them before
-      // the next group load; its upper register never needs a shift/clear mux.
-      index_group[35:0]<=index_group[53:18];
+      index_group<={18'd0,index_group[53:18]};
       if(group_position==2)state<=INDEX;
       else begin group_position<=group_position+1'b1;state<=TSTART;end
      end
