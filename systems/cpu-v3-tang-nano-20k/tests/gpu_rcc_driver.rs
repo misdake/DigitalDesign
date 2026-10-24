@@ -12,7 +12,12 @@ fn compile(source: &str) -> Vec<u16> {
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let parsed =
         rcc::frontend::compile_program_named("GPU driver fixture", source, &options, &mut |name| {
-            std::fs::read_to_string(root.join(format!("{name}.rs"))).map_err(|e| e.to_string())
+            let path = if name == "overlay_gpu" {
+                root.join("../examples/gpu_demo/rcc/overlay_gpu.rs")
+            } else {
+                root.join(format!("{name}.rs"))
+            };
+            std::fs::read_to_string(path).map_err(|e| e.to_string())
         })
         .unwrap();
     rcc_backend::try_compile(parsed, &options, "main")
@@ -794,5 +799,159 @@ fn main(){{
         assert_eq!(bytes(&cpu, 0x490000 / 2 + cursor, expected.len()), expected);
         assert_eq!(bytes(&cpu, 0x490000 / 2 + cursor - 1, 2), [0x5a, 0xa5]);
         assert_eq!(bytes(&cpu, 0x490000 / 2 + cursor + 102, 2), [0x5a, 0xa5]);
+    }
+}
+
+#[test]
+fn inplace_ui_crosses_window_preserves_neighbors_and_rejects_atomically() {
+    for fill in [255u16, 42] {
+        let source = format!(
+            r#"mod gpu;
+fn check(ok:bool){{if !ok{{halt(0xbad);}}}}
+fn main(){{
+ unsafe{{write_dseg_page(3,19);}}
+ check(gpu_init()==GPU_IDLE);let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,65535);check(pass==1);
+ let mut atlas:GpuUiAtlas=GpuUiAtlas{{sector:0x9800,sectors:512}};
+ let mut ids:Buf<u16,4>=Buf::new([49,50,51,256]);
+ GPU_CB.object_words=16320;let commands=GPU_CB.command_words;
+ check(gpu_pass_ui_begin(0,view_of(&mut atlas),{fill})==0);
+ check(gpu_pass_ui_begin(pass,view_of(&mut atlas),256)==0);
+ atlas.sector=0x9801;check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);atlas.sector=0x9800;
+ GPU_CB.object_words=32368;check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);
+ GPU_CB.object_words=16320;GPU_CB.command_words=32760;
+ check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);GPU_CB.command_words=commands;
+ check(GPU_CB.object_words==16320&&GPU_CB.command_words==commands&&GPU_BUILD[1u16]==1);
+ let ui=gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill});check(ui==pass);
+ check(read_dseg_page(3)==19);check(GPU_CB.object_words==16320&&GPU_CB.command_words==commands);
+ check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);
+ check(!gpu_pass_end(pass));check(!gpu_cb_finish(cb));check(!gpu_pass_clear(cb,0,0));
+ check(!gpu_pass_ui_write(ui,127,ids.as_array(),4));
+ check(!gpu_pass_ui_write(ui,749,ids.as_array(),2));
+ check(!gpu_pass_ui_write(ui,751,ids.as_array(),0));
+ check(!gpu_pass_ui_write(ui,0,unsafe{{Ptr::from_addr(0xbfff).as_u16_array()}},2));
+ check(gpu_pass_ui_write(ui,750,ids.as_array(),0));
+ check(gpu_pass_ui_write(ui,127,ids.as_array(),3));
+ ids[0u16]=0;check(gpu_pass_ui_write(ui,749,ids.as_array(),1));
+ check(read_dseg_page(3)==19);check(gpu_pass_ui_end(ui));
+ check(GPU_CB.object_words==16720&&GPU_CB.command_words==commands+10);
+ check(!gpu_pass_ui_end(ui));check(!gpu_pass_ui_write(ui,0,ids.as_array(),1));
+ check(gpu_pass_end(pass));check(gpu_cb_finish(cb));check(read_dseg_page(3)==19);
+ halt(0x600d);
+}}"#
+        );
+        let words = compile(&source);
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&words);
+        cpu.physical_memory_mut()[0x4a0000 / 2..0x4b0000 / 2].fill(0xa55a);
+        let state = Rc::new(RefCell::new(PeerState::default()));
+        for kind in [0, 3, 4] {
+            cpu.attach_device(
+                kind,
+                Box::new(ControlPeer {
+                    state: state.clone(),
+                    kind,
+                }),
+            );
+        }
+        let result = cpu.run(2_000_000).unwrap();
+        assert!(
+            matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
+            "fill={fill} {result:?}"
+        );
+        let at = 0x4a0000 / 2 + 16320;
+        let mut expected = vec![fill | (fill << 8); 375];
+        for (cell, id) in [(127usize, 49u16), (128, 50), (129, 51), (749, 0)] {
+            let old = expected[cell / 2];
+            expected[cell / 2] = if cell % 2 == 0 {
+                (old & 0xff00) | id
+            } else {
+                (old & 0xff) | (id << 8)
+            };
+        }
+        expected.extend([0xffff; 9]);
+        expected.extend([0x94ff, 0x4c]);
+        expected.extend([0; 14]);
+        let expected: Vec<u8> = expected.iter().flat_map(|x| x.to_le_bytes()).collect();
+        assert_eq!(bytes(&cpu, at, 800), expected);
+        assert_eq!(bytes(&cpu, at - 1, 2), [0x5a, 0xa5]);
+        assert_eq!(bytes(&cpu, at + 400, 2), [0x5a, 0xa5]);
+    }
+}
+
+#[test]
+fn inplace_ui_cancel_discards_unsealed_object_and_stale_operations() {
+    let words = compile(
+        r#"mod gpu;
+fn check(ok:bool){if !ok{halt(0xbad);}}
+fn main(){
+ check(gpu_init()==GPU_IDLE);let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,0);
+ let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+ let mut ids:Buf<u16,1>=Buf::new([65]);
+ let ui=gpu_pass_ui_begin(pass,view_of(&mut atlas),255);check(ui!=0);
+ check(gpu_cb_cancel(cb));check(!gpu_pass_ui_end(ui));check(!gpu_pass_ui_write(ui,0,ids.as_array(),1));
+ let next=gpu_cb_begin();check(next==1);check(gpu_pass_clear(next,0,0));halt(0x600d);
+}"#,
+    );
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&words);
+    let state = Rc::new(RefCell::new(PeerState::default()));
+    for kind in [0, 3, 4] {
+        cpu.attach_device(
+            kind,
+            Box::new(ControlPeer {
+                state: state.clone(),
+                kind,
+            }),
+        );
+    }
+    let result = cpu.run(2_000_000).unwrap();
+    assert!(
+        matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
+        "{result:?}"
+    );
+    assert_eq!(state.borrow().starts, 0);
+}
+
+#[test]
+fn inplace_demo_numbers_have_no_leading_zeros_and_clear_unused_cells() {
+    let words = compile(
+        r#"mod overlay_gpu;
+fn check(ok:bool){if !ok{halt(0xbad);}}
+fn main(){
+ check(gpu_init()==GPU_IDLE);let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,0);
+ let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+ let mut stats:Buf<u16,4>=Buf::new([0;4]);stats[3u16]=1;
+ stats[1u16]=0;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ stats[1u16]=9;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ stats[1u16]=10;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ stats[1u16]=65535;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ stats[3u16]=0;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
+ check(gpu_pass_end(pass));check(gpu_cb_finish(cb));halt(0x600d);
+}"#,
+    );
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&words);
+    cpu.physical_memory_mut()[0x4a0000 / 2..0x4b0000 / 2].fill(0xa55a);
+    let state = Rc::new(RefCell::new(PeerState::default()));
+    for kind in [0, 3, 4] {
+        cpu.attach_device(
+            kind,
+            Box::new(ControlPeer {
+                state: state.clone(),
+                kind,
+            }),
+        );
+    }
+    let result = cpu.run(2_000_000).unwrap();
+    assert!(
+        matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
+        "{result:?}"
+    );
+    for (i, text) in ["0", "9", "10", "65535", ""].iter().enumerate() {
+        let mut cells = [255u8; 750];
+        cells[52..52 + text.len()].copy_from_slice(text.as_bytes());
+        let word = 64 + i as u32 * 448;
+        assert_eq!(bytes(&cpu, 0x4a0000 / 2 + word, 750), cells);
+        assert_eq!(bytes(&cpu, 0x4a0000 / 2 + word + 375, 18), [255; 18]);
     }
 }

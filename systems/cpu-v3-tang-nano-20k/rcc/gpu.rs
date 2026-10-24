@@ -15,6 +15,8 @@ mod gpu_builder;
 use gpu_builder::*;
 mod gpu_ui;
 use gpu_ui::*;
+mod gpu_ui_builder;
+use gpu_ui_builder::*;
 mod gpu_display;
 use gpu_display::*;
 
@@ -141,6 +143,27 @@ pub fn gpu_pass_draw_ui_grid(pass: u16, atlas: Array<GpuUiAtlas>, cells: Array<u
         return false;
     }
     gpu_builder_ui(view_of(&mut GPU_CB), atlas, cells)
+}
+pub fn gpu_pass_ui_begin(pass: u16, atlas: Array<GpuUiAtlas>, fill: u16) -> u16 {
+    if pass != GPU_CB_HANDLE
+        || GPU_RECORDING != 2
+        || !gpu_builder_ui_begin(view_of(&mut GPU_CB), atlas, fill)
+    {
+        return GPU_CB_NONE;
+    }
+    GPU_CB_HANDLE
+}
+pub fn gpu_pass_ui_write(ui: u16, first: u16, ids: Array<u16>, count: u16) -> bool {
+    if ui != GPU_CB_HANDLE || GPU_RECORDING != 2 {
+        return false;
+    }
+    gpu_builder_ui_write(view_of(&mut GPU_CB), first, ids, count)
+}
+pub fn gpu_pass_ui_end(ui: u16) -> bool {
+    if ui != GPU_CB_HANDLE || GPU_RECORDING != 2 {
+        return false;
+    }
+    gpu_builder_ui_end(view_of(&mut GPU_CB))
 }
 pub fn gpu_pass_end(pass: u16) -> bool {
     if pass != GPU_CB_HANDLE || GPU_RECORDING != 2 {

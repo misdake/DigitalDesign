@@ -10,7 +10,8 @@ The texture is room-tiles.png with its real mip chain, not diagnostic mip colors
 
 - `rcc/main.rs`: formal driver recording, 3D/UI, completion and A/B presentation.
 - `rcc/camera.rs`: bounded read of immutable matrix/light data.
-- `rcc/overlay.rs`: packed cells and previous-frame decimal number.
+- `rcc/overlay_gpu.rs`: previous-frame decimal number generated in the final UI object.
+- `rcc/overlay.rs`: packed-grid helper retained for component tests.
 - `rcc/controls.rs`: button0/pin88 toggles numeric visibility after20ms stable level; hold does not repeat, default visible.
 - `assets/scene.json`: native geometry and camera/light asset data from the
   existing audited fullscene producer, with source provenance hashes.
@@ -83,6 +84,8 @@ frame omits UI_GRID when hidden. No CPU/GPU reset is tied to this input.
 The application now uses the formal driver's [direct high-memory recording](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md#direct-high-memory-recording).
 Commands and Target/Global/Render/Instance objects are generated at their final
 addresses. Meshlet command combinations are appended as batches with a local
-cursor; END padding is zeroed directly. UI grid recording still snapshots the
-caller's table once. The
+cursor; END padding is zeroed directly. UI uses the driver's begin/write/end
+interface to fill its final object and write only the visible decimal glyphs.
+There is no complete low-memory cell table or grid snapshot in this demo.
+The legacy packed-grid snapshot API remains available to other callers. The
 fixed capacity and full validation/ordering contract remain unchanged.

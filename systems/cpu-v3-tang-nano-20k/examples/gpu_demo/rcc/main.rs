@@ -6,8 +6,8 @@ mod controls;
 use controls::*;
 mod camera;
 use camera::*;
-mod overlay;
-use overlay::*;
+mod overlay_gpu;
+use overlay_gpu::*;
 mod time;
 use time::*;
 mod boot_resources;
@@ -15,7 +15,6 @@ use boot_resources::*;
 
 static BUTTONS: Buf<u16, 4> = Buf::new([0; 4]);
 static MATRIX: Buf<u16, 45> = Buf::new([0; 45]);
-static CELLS: Buf<u16, 375> = Buf::new([0; 375]);
 static STATS: Buf<u16, 4> = Buf::new([0; 4]);
 
 // DDGD, version, status, completed count, previous full-loop ms, XOR checksum.
@@ -68,7 +67,7 @@ fn demo_wait(cb: u16, present: bool, budget: u16) -> u16 {
     status
 }
 fn demo_run(limit: u16, budget: u16) {
-    demo_overlay_init(CELLS.as_array(), STATS.as_array());
+    demo_ui_reset(STATS.as_array());
     demo_require(gpu_init_with_format(DISPLAY_LINEAR_RGB565) == GPU_IDLE, 1);
     let mut mesh: GpuMesh = GpuMesh {
         directory_sector: DEMO_MESH_DIRECTORY,
@@ -132,7 +131,7 @@ fn demo_run(limit: u16, budget: u16) {
             dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS),
             now,
         );
-        demo_overlay_begin(CELLS.as_array(), STATS.as_array(), now, completed);
+        demo_ui_frame_begin(STATS.as_array(), now, completed);
         demo_report(if completed { 1 } else { 0 }, frame, STATS.as_array()[1u16]);
         completed = false;
         demo_require(demo_camera(MATRIX.as_array(), phase), 14);
@@ -175,7 +174,7 @@ fn demo_run(limit: u16, budget: u16) {
         render.unlit = 1;
         if show_numbers {
             demo_require(
-                gpu_pass_draw_ui_grid(pass, view_of(&mut atlas), CELLS.as_array()),
+                demo_ui_record(pass, view_of(&mut atlas), STATS.as_array()),
                 7,
             );
         }

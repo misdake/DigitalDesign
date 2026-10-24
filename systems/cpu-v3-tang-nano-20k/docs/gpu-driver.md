@@ -20,6 +20,9 @@ Display diagnostic remains selected in the boot config.
 | `gpu_pass_set_render(pass, texture, render)` | Bind an immutable Texture handle and snapshot the remaining Render fields. Texture address/dimensions come from the handle. |
 | `gpu_pass_draw_mesh(pass, mesh, matrix, rgba_low, rgba_high)` | Snapshot the native 21-u32 Instance matrix prefix and RGBA; expand the immutable compact directory in original order. |
 | `gpu_pass_draw_ui_grid(pass, atlas, cells)` | Snapshot the packed cell table and private descriptor into the current Pass. Uses its reserved color and leaves Depth unchanged. |
+| `gpu_pass_ui_begin(pass, atlas, fill)` | Initialize a private UI object directly in its final arena; return a nonzero UI identity, or zero on rejection. |
+| `gpu_pass_ui_write(ui, first, ids, count)` | Write a run of unpacked glyph IDs into the active object's packed cells; validate the complete run before changing it. |
+| `gpu_pass_ui_end(ui)` | Seal the active UI object and append its ordered commands, then resume normal Pass recording. |
 | `gpu_ui_fill(cells, id)` / `gpu_ui_set_cell(cells, x, y, id)` | Edit the application's packed table; reject coordinates/IDs outside the fixed grid without modifying it. |
 | `gpu_pass_end(pass)` / `gpu_cb_finish(cb)` | Drain/store the Pass, then append END and zero fetch padding and seal Ready. Each transition occurs once. |
 | `gpu_submit_idle(cb)` | Pending after successful cache handoff and both SENDs; Rejected if ownership/state prevents acceptance. A callable cache-error path returns CacheError and sends neither GPU command; a physical memory error is unrecoverable and may halt/fault instead. |
@@ -276,6 +279,37 @@ carry physical addresses, so these scopes can change mapping without aliasing
 old data. GPU output surfaces are excluded. Final submission still drains old
 CPU/FST work and performs blocking clean+invalidate before either Device4 SEND.
 No CPU/GPU cache coherence, extra hardware or second in-flight CB is introduced.
+
+## In-place UI construction
+
+`gpu_ui_builder.rs` implements the begin/write/end interface. Begin checks the
+atlas, complete 400-word object extent, alignment and command capacity before
+writing. It generates 375 packed cell words with the requested fill ID0..255,
+nine FFFF padding words and the native 16-word descriptor at the final address.
+An all-255 fill uses one contiguous store-only fill for the first 384 words.
+There is no caller grid, grid source read or intermediate object upload.
+
+While a UI object is open, the sole builder is locked in UI construction phase4.
+Other draw/state calls, a second UI begin and Pass end cannot advance it.
+`first` is a row-major cell index in 0..750; `count` cannot exceed `750-first`.
+The source holds one u16 per glyph ID0..255 and its complete extent must remain
+below logical 0xc000. An empty run at cell750 is valid. Every source ID is
+checked before the first write; invalid IDs/ranges leave the object unchanged.
+Writes preserve the neighboring byte of each packed word. Fill and glyph runs
+split at 32-KiB boundaries, and each entry restores/verifies incoming DSEG3.
+No mapped pointer is exposed to the caller.
+
+End emits the same five commands as the snapshot API below, publishes object
+and command cursors, and releases the UI construction lock. Begin/write do not
+publish an unfinished object. A healthy `gpu_cb_cancel` can discard the entire
+unsubmitted Building CB, including an unfinished UI; subsequent UI write/end
+operations reject. Memory failures follow the same sticky fault/fail-stop rules
+as other recording. Final submission retains its cache handoff barrier.
+
+The demo generates its blank grid and decimal glyph run through this interface;
+it keeps only five temporary digit words and no complete low-memory cell table.
+Both UI interfaces share the atlas, native encoding, command order and output
+ownership described below.
 
 ## Packed UI snapshots
 
