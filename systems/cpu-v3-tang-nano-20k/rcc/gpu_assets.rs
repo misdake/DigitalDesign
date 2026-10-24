@@ -52,12 +52,11 @@ fn gpu_mesh_batch(m: Array<GpuMesh>, index: u16, mut words: Array<u16>, count: u
     if count == 0 || count > 16 || index > m[0u16].count || count > m[0u16].count - index {
         return false;
     }
-    gpu_window_copy(
+    gpu_window_asset_read(
         words,
         m[0u16].directory_sector,
         m[0u16].directory_word + index * 2,
         count * 2,
-        true,
     )
 }
 fn gpu_mesh_entries_valid(m: Array<GpuMesh>, words: Array<u16>, count: u16) -> bool {

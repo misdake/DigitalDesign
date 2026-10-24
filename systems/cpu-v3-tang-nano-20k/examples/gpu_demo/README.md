@@ -77,3 +77,12 @@ The fitted board exposes synchronized buttons through Device0 RECV8. A stable
 low-to-high transition of bit0 toggles the timing overlay; releasing only rearms
 it. The timer, camera and rendering continue while hidden. The next recorded
 frame omits UI_GRID when hidden. No CPU/GPU reset is tied to this input.
+
+## Direct command and object recording
+
+The application now uses the formal driver's [direct high-memory recording](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md#direct-high-memory-recording).
+Commands and Target/Global/Render/Instance objects are generated at their final
+addresses. Meshlet command combinations are appended as batches with a local
+cursor; END padding is zeroed directly. UI grid recording still snapshots the
+caller's table once. The
+fixed capacity and full validation/ordering contract remain unchanged.

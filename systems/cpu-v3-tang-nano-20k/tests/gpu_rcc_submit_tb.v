@@ -149,8 +149,8 @@ initial begin
  $readmemh("__PROGRAM__",rom);
  repeat(3)@(posedge clk);@(negedge clk);reset=0;
  wait(halted||fault);#1;
- if(fault||signal!==16'h600d)$fatal(1,"RCC failure pc=%h code=%0d signal=%h",pc,fault_code,signal);
- if(FAULT)begin if(!injected||starts!=0||writes!=0)$fatal(1,"Maintenance fault launched GPU");end
+ if(!FAULT&&(fault||signal!==16'h600d))$fatal(1,"RCC failure pc=%h code=%0d signal=%h",pc,fault_code,signal);
+ if(FAULT)begin if(!injected||starts!=0||writes!=0||(!halted&&!fault))$fatal(1,"Memory failure must stop before GPU launch");end
  else if(starts!=2||completions!=2||writes!=6000||terms!=writes||blocked==0||ce0==0||fst_cycles==0||held_response<5)
    $fatal(1,"Coverage starts=%0d done=%0d writes=%0d terms=%0d blocked=%0d ce0=%0d FST=%0d response=%0d",starts,completions,writes,terms,blocked,ce0,fst_cycles,held_response);
  $display("RCC_GPU_PASS fault_case=%0d cycles=%0d starts=%0d completions=%0d writes=%0d true_terminals=%0d maintenance=%0d CPU_high_writebacks=%0d",FAULT,cycle,starts,completions,writes,terms,maintenance,cpu_high_writes);

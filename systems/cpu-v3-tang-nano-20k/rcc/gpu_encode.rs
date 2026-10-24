@@ -99,9 +99,8 @@ fn gpu_unit_light(x: i16, y: i16, z: i16) -> bool {
     (high == 4095 && low >= 32768) || (high == 4096 && low <= 32768)
 }
 
-pub fn gpu_encode_global(s: Array<GpuStorage>, word: u16, g: Array<GpuGlobal>) -> bool {
-    if !gpu_storage_room(s, word, 32, 32)
-        || g[0u16].far_high >= 200
+fn gpu_global_valid(g: Array<GpuGlobal>) -> bool {
+    if g[0u16].far_high >= 200
         || (g[0u16].far_high == 0 && g[0u16].far_low == 0)
         || g[0u16].ambient > 256
         || g[0u16].directional > 256
@@ -115,6 +114,12 @@ pub fn gpu_encode_global(s: Array<GpuStorage>, word: u16, g: Array<GpuGlobal>) -
         || g[0u16].ray_k > 12288
         || !gpu_unit_light(g[0u16].light_x, g[0u16].light_y, g[0u16].light_z)
     {
+        return false;
+    }
+    true
+}
+pub fn gpu_encode_global(s: Array<GpuStorage>, word: u16, g: Array<GpuGlobal>) -> bool {
+    if !gpu_storage_room(s, word, 32, 32) || !gpu_global_valid(g) {
         return false;
     }
     let p = s[0u16].cpu.add(word as i16);
@@ -138,9 +143,8 @@ pub fn gpu_encode_global(s: Array<GpuStorage>, word: u16, g: Array<GpuGlobal>) -
     true
 }
 
-pub fn gpu_encode_render(s: Array<GpuStorage>, word: u16, r: Array<GpuRender>) -> bool {
-    if !gpu_storage_room(s, word, 16, 16)
-        || r[0u16].size_log2 > 10
+fn gpu_render_valid(r: Array<GpuRender>) -> bool {
+    if r[0u16].size_log2 > 10
         || r[0u16].full_mip > 1
         || r[0u16].filter > 2
         || r[0u16].specular_high > 255
@@ -170,6 +174,12 @@ pub fn gpu_encode_render(s: Array<GpuStorage>, word: u16, r: Array<GpuRender>) -
         level += 1;
     }
     if sectors > r[0u16].texture_sectors {
+        return false;
+    }
+    true
+}
+pub fn gpu_encode_render(s: Array<GpuStorage>, word: u16, r: Array<GpuRender>) -> bool {
+    if !gpu_storage_room(s, word, 16, 16) || !gpu_render_valid(r) {
         return false;
     }
     let p = s[0u16].cpu.add(word as i16);

@@ -22,7 +22,7 @@ Display diagnostic remains selected in the boot config.
 | `gpu_pass_draw_ui_grid(pass, atlas, cells)` | Snapshot the packed cell table and private descriptor into the current Pass. Uses its reserved color and leaves Depth unchanged. |
 | `gpu_ui_fill(cells, id)` / `gpu_ui_set_cell(cells, x, y, id)` | Edit the application's packed table; reject coordinates/IDs outside the fixed grid without modifying it. |
 | `gpu_pass_end(pass)` / `gpu_cb_finish(cb)` | Drain/store the Pass, then append END and zero fetch padding and seal Ready. Each transition occurs once. |
-| `gpu_submit_idle(cb)` | Pending after successful cache handoff and both SENDs; Rejected if ownership/state prevents acceptance; CacheError faults the driver, retains the Ready CB and sends neither GPU command. |
+| `gpu_submit_idle(cb)` | Pending after successful cache handoff and both SENDs; Rejected if ownership/state prevents acceptance. A callable cache-error path returns CacheError and sends neither GPU command; a physical memory error is unrecoverable and may halt/fault instead. |
 | `gpu_poll(cb)` | Idle, Pending, Completed, Fault or Rejected. Completed transfers the CB back exactly once; later polls return Idle. |
 | `gpu_wait(cb, limit)` | At most `limit` polls; Timeout retains ownership and permits later observation. A zero limit performs no poll. |
 | `gpu_cb_cancel(cb)` | Cancel only an unstarted Building CB, including an open/ended Pass; release its reservation after a healthy ownership check. |
@@ -74,6 +74,10 @@ length or address conversion silently masks an invalid input.
 The software state/CB descriptor and small encoding staging buffers stay in
 ordinary CPU memory. They do not share cache lines with the GPU input arena.
 There is no dynamic allocator, compaction, pingpong scheduler or second CB.
+Completed-buffer reuse resets the command/object used lengths to zero while
+retaining both 64-KiB allocations and their ownership. It does not zero or free
+the capacity. The builder appends commands again; it does not retain/replay a
+previous frame's encoded scene.
 
 ## Scoped DSEG3 access
 
@@ -83,18 +87,33 @@ constant 0..3. Invalid constant physical pages are rejected; dynamic raw writes
 have the documented eight-bit precondition. A write is retained as a compiler
 memory/control barrier. No legacy bulk `mtsr_dseg` occurs in the GPU driver.
 
-The driver validates its fixed allocation, word range and low-memory staging
+The generic window helper validates its fixed allocation, word range and low-memory staging
 extent before touching memory. A bounded copy splits at 16384-word page
 boundaries. For each chunk it saves DSEG3, completes blocking full
 clean+invalidate, installs the checked physical page, verifies readback, copies,
 completes another clean+invalidate, and restores/verifies the saved page.
 Only logical 0xc000..0xffff is remapped; stack growth from 0xc000 stays below
 the window, and DSEG0..2 remain unchanged. No window pointer escapes a call.
+The copy kernel handles four 16-bit words at a time with constant offsets and
+a scalar tail. Direction is selected outside that kernel. Bounds are checked
+for the complete transfer before entering a mapping scope; expansion never
+reads or writes beyond the requested words.
+
+The D-cache is physically tagged, and accepted scalar stores retain physical
+addresses. Remapping alone therefore does not alias an old cached page to a
+new page. The generic window helper nevertheless retains its conservative
+entry/exit clean+invalidate contract. These fences also publish writes and
+discard stale data for external owners; GPU/CPU are not cache coherent.
+The final submission barrier remains mandatory. A window is a bounded access
+mechanism, not a persistently mapped arena or an implicit ownership transfer.
 
 Ordinary CPU stores, accepted old responses and early-release FST tails drain
 through the existing CPU maintenance barrier. On a maintenance or mapping
 failure the driver restores the old page if it installed a new one, records a
-sticky software memory fault and permits no GPU submission. Completed chunks
+sticky software memory fault and permits no GPU submission when execution can
+return normally. Physical memory errors are fail-stop: dirty CPU stack data may
+be lost, and callers must not rely on recovery, retry or a returned status.
+Whole-system reset is required. Completed chunks
 may already be visible after an I/O failure: cursors are not published, the
 resource stays held and the driver does not claim a byte rollback or visibility
 success. Validation/capacity failures occur before destination writes.
@@ -202,17 +221,18 @@ The generator validates native metadata, indices, decoded positions, uniform20,
 padding and numerical assumptions once. The driver validates the root, complete
 directory extent and every entry's range/non-aliasing before recording a draw;
 it does not decode all vertices each frame or safely import arbitrary bytes.
-The checked directory is immutable through completion. A second bounded read
-emits its commands after preflight; no directory-sized low-memory allocation is
-needed. Batches contain at most 16 entries, including when crossing 128-byte or
+The checked directory is immutable through completion. Up to 32 entries remain
+in a fixed 64-word buffer after preflight and are reused for recording. Larger
+meshes use a second bounded read after complete preflight. Batches contain at
+most 16 entries, including when crossing 128-byte or
 32-KiB boundaries. `GpuTexture` holds a fixed base/allocation and POT/mip fields.
 Render encoding checks the complete allocation. Assets stay resident across CBs;
 binding a Texture neither uploads it nor invalidates its physically tagged cache.
 
-Commands use a 128-word (256-byte) low-memory staging buffer. Objects use bounded
-encoding scratch and are uploaded per snapshot; directories use 32-word scratch.
-Window scopes retain both maintenance fences. The staging buffer is flushed in
-batches and at finish, rather than switching DSEG3 for each command/word.
+The high-memory Pass builder writes commands and encoded objects directly at
+their final addresses, as specified below. Its legacy low-memory path retains
+128-word command staging and bounded encoding scratch. Raw native snapshot
+helpers are compatibility entry points, not the application Pass recording path.
 Capacity preflight includes alignment, Pass drain, END and final 128-byte padding.
 Rejected operations leave the previous command/object cursors and staged prefix
 unchanged. An I/O failure holds the CB under the sticky memory-fault rule above.
@@ -230,6 +250,32 @@ retirement establishes V/T completion, allowing page/uniform reuse while the
 previous R/I/backend continues. Global/Render changes still require full render
 drain. No cross-Mesh prefetch or transparent draw reordering occurs.
 Clear-only wraps this same begin/end/finish Builder.
+
+## Direct high-memory recording
+
+The fixed high-memory command/object allocations retain their capacity across
+reuse; reset clears lengths and state, not the complete allocations. A command
+append batch maps its final page once, keeps a local word cursor and writes
+native command halves at that cursor. Meshlet DMA/DRAW/WAIT combinations are
+written as one directory batch; only a 32-KiB crossing falls back to per-command
+page transition. The complete draw is capacity/entry validated first, and its
+original prefetch/WAIT/DRAW ordering is preserved.
+
+Target, Global, Render and Instance encode directly at their aligned object
+positions, including every reserved zero word. No intermediate packet upload
+occurs. Global and Render semantic identity caches preserve encoded deduplication;
+Render allocation slack is validated but is not part of encoded identity.
+Global parameters and Instance matrix inputs remain below logical 0xc000, outside
+the remapped window. Every builder entry restores/verifies the incoming DSEG3.
+END is followed by directly zeroed fetch padding up to the next 128-byte boundary;
+old frame contents are overwritten even when the allocation is reused.
+
+Only CPU-owned input arenas and immutable assets use internal mapping scopes
+without entry/exit maintenance. Cache tags, pending scalar stores and FST tails
+carry physical addresses, so these scopes can change mapping without aliasing
+old data. GPU output surfaces are excluded. Final submission still drains old
+CPU/FST work and performs blocking clean+invalidate before either Device4 SEND.
+No CPU/GPU cache coherence, extra hardware or second in-flight CB is introduced.
 
 ## Packed UI snapshots
 
@@ -251,8 +297,12 @@ stays below the DSEG3 window. They do not interpret a CPU pointer as physical.
 Recording copies the caller's 375 packed words directly to a private 128-byte
 aligned object position. It then writes nine FFFF padding words and a zero-padded
 16-word descriptor using a 25-word temporary. There is no second full-grid CPU
-buffer or per-cell window switch. Both batches use existing bounded DSEG3 scopes,
-including split-page transfers, old store/FST drain and restoration. The caller
+buffer or per-cell window switch. For high-memory recording, the grid and tail
+are two source spans of one contiguous upload: each physical page is mapped
+once under the CPU-owned-input scope, even when it contains the end of the grid and the descriptor.
+Both low source extents and the entire high destination are checked first.
+Transfers still split at 32-KiB boundaries and restore the mapping. The final
+submission barrier drains old stores/FST and publishes the completed snapshot. The caller
 can edit its table and atlas root fields after a successful record; those edits
 do not alter the recorded snapshot or descriptor. Actual atlas pixel storage
 remains in-flight read-only.

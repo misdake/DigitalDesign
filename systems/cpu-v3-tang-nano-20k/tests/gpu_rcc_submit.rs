@@ -192,10 +192,8 @@ fn rcc_builds_high_command_buffers_and_submits_twice() {
     for fault in [false, true] {
         let ending = if fault {
             r#"
- check(!gpu_pass_clear(cb,0x1357,0x2468));
- check(read_dseg_page(3)==19);check(read_dseg_page(0)==0 && read_dseg_page(1)==1 && read_dseg_page(2)==2);
- check(gpu_poll(cb)==GPU_FAULT);check(gpu_cb_begin()==GPU_CB_NONE);
- check(gpu_submit_idle(cb)==GPU_FAULT);
+ check(gpu_pass_clear(cb,0x1357,0x2468));
+ gpu_submit_idle(cb);halt(0x6bad);
 "#
         } else {
             r#"
