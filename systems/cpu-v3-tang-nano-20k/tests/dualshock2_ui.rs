@@ -28,6 +28,8 @@ struct State {
     during_gpu: usize,
     during_present: usize,
     counts: [u16; 2],
+    wire_header: [u16; 3],
+    wire_monitor: u16,
 }
 struct Peer {
     kind: u8,
@@ -50,6 +52,8 @@ impl cpu_v3::Device for Peer {
             (3, 3) => u16::from(s.pending),
             (3, 4) => s.format,
             (4, 2) => u16::from(s.us < s.gpu_until),
+            (5, 9..=11) => s.wire_header[usize::from(ch - 9)],
+            (5, 12) => s.wire_monitor,
             (5, 8..=15) => u16::from(s.valid) | (u16::from(s.changed) << 1),
             (5, 0..=7) => {
                 let response = [0x73u16, 0x5a, 0xa5, 0x5a, 0, 255, 128, 64];
@@ -78,6 +82,10 @@ impl cpu_v3::Device for Peer {
             (5, 8..=15) => s.changed = false,
             (7, 0) => s.counts[0] = value,
             (7, 1) => s.counts[1] = value,
+            (7, 2) => {
+                s.valid = value & 1 != 0;
+                s.changed = value & 2 != 0;
+            }
             _ => {}
         }
     }
@@ -99,6 +107,14 @@ fn assets(name: &str) -> PathBuf {
     out
 }
 fn run(source: &str, entry: &'static str, out: &Path) -> (CpuV3Sim, Rc<RefCell<State>>) {
+    run_wire(source, entry, out, None)
+}
+fn run_wire(
+    source: &str,
+    entry: &'static str,
+    out: &Path,
+    wire: Option<[u16; 4]>,
+) -> (CpuV3Sim, Rc<RefCell<State>>) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let generated = std::fs::read_to_string(out.join("ui_layout.rs")).unwrap();
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
@@ -116,7 +132,9 @@ fn run(source: &str, entry: &'static str, out: &Path) -> (CpuV3Sim, Rc<RefCell<S
     cpu.set_boot_window(&code.words);
     let s = Rc::new(RefCell::new(State {
         active: 0x200000,
-        packet_until: 9709,
+        packet_until: if wire.is_some() { u64::MAX } else { 9709 },
+        wire_header: wire.map(|v| [v[0], v[1], v[2]]).unwrap_or([0; 3]),
+        wire_monitor: wire.map(|v| v[3]).unwrap_or(0),
         ..State::default()
     }));
     for kind in [0, 3, 4, 5, 7] {
@@ -352,4 +370,44 @@ check(S[0u16]==1);frame+=1;}halt(0x600d);}"#,
     );
     assert!(s.borrow().packets >= 5);
     assert!(s.borrow().packet_until != 0);
+}
+
+#[test]
+fn failed_headers_are_visible_without_promoting_invalid_input() {
+    let out = assets("wire-diagnosis");
+    let source = r#"mod gpu;mod panel;mod stick_controls;mod dualshock2;
+static S:Buf<u16,10>=Buf::new([0;10]);
+fn main(){dui_controls_reset();ds2_init(S.as_array());if gpu_init()!=GPU_IDLE{halt(1);}
+dui_probe_wire();if dui_record(S.as_array(),0,0,0)==0{halt(2);}halt(0x600d);}"#;
+    for (header, stage) in [
+        ([0, 0, 0], 1),
+        ([255, 255, 255], 2),
+        ([255, 115, 165], 3),
+        ([255, 243, 90], 4),
+        ([255, 115, 90], 5),
+    ] {
+        let monitor = (3 << 11) | (32 << 5) | 1;
+        let (cpu, _) = run_wire(
+            source,
+            "main",
+            &out,
+            Some([header[0], header[1], header[2], monitor]),
+        );
+        let grid = 0x4a0080;
+        assert_eq!(text(&cpu, grid, 57, 12), "DISCONNECTED");
+        assert_eq!(text(&cpu, grid, 76, 2), "00");
+        for (at, byte) in [(511, header[0]), (517, header[1]), (523, header[2])] {
+            assert_eq!(text(&cpu, grid, at, 2), format!("{byte:02X}"));
+        }
+        assert_eq!(text(&cpu, grid, 529, 4), format!("{monitor:04X}"));
+        assert_eq!(text(&cpu, grid, 537, 1), format!("{stage:X}"));
+        assert_eq!(text(&cpu, grid, 541, 1), "0");
+    }
+    // A software-disconnected state with a valid hardware page is a different
+    // diagnosis from no wire reply; V must expose it without fabricating input.
+    let source = source.replace("dui_probe_wire();", "dev_send(7,2,3);dui_probe_wire();");
+    let (cpu, _) = run_wire(&source, "main", &out, Some([0, 0, 0, 0]));
+    assert_eq!(text(&cpu, 0x4a0080, 57, 12), "DISCONNECTED");
+    assert_eq!(text(&cpu, 0x4a0080, 537, 1), "0");
+    assert_eq!(text(&cpu, 0x4a0080, 541, 1), "3");
 }

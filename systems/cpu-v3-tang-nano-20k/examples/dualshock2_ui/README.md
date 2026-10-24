@@ -27,6 +27,20 @@ The400x240 screen (800x480 physical output) shows:
 - All16 button labels with gray/green indicators. Mapping, from bit0, is
   SEL,L3,R3,START,UP,RIGHT,DOWN,LEFT,L2,R2,L1,R1,TRI,CIR,CROSS,SQR.
 
+When disconnected, row10 shows a last observed failed wire header instead of
+the calibration hint: `FF:xx ID:xx MK:xx CT:xxxx ST:x V:x`. CT is the live monitor
+sample described in [Device5](/systems/cpu-v3-tang-nano-20k/docs/dualshock2.md).
+ST means0=no stable idle observation,1=bad prefix,2=unsupported ID,3=bad marker,
+4=F3/config response,5=otherwise valid-looking header without an input snapshot.
+V is the latest hardware valid/read-changed status, allowing a valid hardware
+snapshot to be distinguished from software read retries. This row never changes
+LINK, normal ID, sample count or neutral axes. Captures
+are best effort, with invalid/idle/same-slot checks before and after the raw
+reads; they are not complete input packets. All00/allFF and shifted/incorrect
+IDs therefore remain visible even when the normal driver refuses the packet.
+It requires gateware with diagnostic channels9..12; older snapshot gateware
+returns status aliases there and cannot provide this diagnosis.
+
 The reusable [stick helper](../../docs/input-sticks.md) supplies asymmetric
 min/center/max calibration, radial inner/outer thresholds, direction/strength and
 an optional four-way activation gate. The diagnostic prepares each configuration

@@ -47,9 +47,11 @@ wire finish=active&&tick&&phase==32&&((slot==3&&!header_good)||last_slot);
 wire publish=finish&&operation==POLL&&header_good&&kind!=CONFIG;
 wire invalidate=finish&&(!header_good||(operation==POLL&&kind==CONFIG));
 wire begin_read=device_index==5&&device_write_enable&&device_channel[3];
-wire storing=byte_end&&operation==POLL&&slot>=2&&slot<=9&&!reset;
+// Reuse the background page for failure diagnosis. Slot1 retains raw FF until
+// a complete poll overwrites it with LY at slot9; no extra header registers.
+wire storing=byte_end&&(slot<=3||(operation==POLL&&kind!=CONFIG&&slot<=9))&&!reset;
 wire[3:0]wa={!front,slot[2:0]};
-wire[3:0]ra={front,device_channel[2:0]};
+wire[3:0]ra={front^device_channel[3],device_channel[2:0]};
 wire[7:0]sample_q;
 `ifdef PORTABLE
 reg[7:0]samples[0:15];
@@ -75,8 +77,11 @@ wire command_bit=(slot==1&&bit_index==0)||
 always @*begin
  device_read_data=0;
  if(device_index==5)begin
-  if(device_channel[3])device_read_data={14'd0,read_changed,valid};
-  else device_read_data={8'd0,sample_q};
+  if(!device_channel[3]||(!device_channel[2]&&(|device_channel[1:0])))
+   device_read_data={8'd0,sample_q};
+  else if(device_channel==12)
+   device_read_data={slot,phase,operation,header_good,dat_sync,att};
+  else device_read_data={14'd0,read_changed,valid};
  end
 end
 always @(posedge clk)begin
@@ -136,7 +141,9 @@ always @(posedge clk)begin
 end
 `ifndef SYNTHESIS
 always @(posedge clk)if(!reset)begin
- if(storing&&wa==ra)$fatal(1,"DS2 snapshot read/write page collision");
+ // Diagnostic high channels intentionally observe the writing page; they are
+ // not coherent input. Normal low-channel reads must stay on the front page.
+ if(storing&&!device_channel[3]&&wa==ra)$fatal(1,"DS2 snapshot read/write page collision");
  if((~|timebase)&&active)$fatal(1,"DS2 transaction exceeded the fixed frame");
 end
 initial if(DIV_BITS<2)$fatal(1,"DS2 divider must cover two DAT synchronizers");

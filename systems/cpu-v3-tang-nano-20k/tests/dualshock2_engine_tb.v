@@ -109,6 +109,19 @@ task coherent_snapshot;begin
  read_status();if(status[1])$fatal(1,"unexpected retry in short coherent read");
  for(integer j=0;j<8;j=j+1)if(read_bytes[j]!==sample_payload[{dut.front,j[2:0]}])$fatal(1,"snapshot raw byte%0d got%h want%h",j,read_bytes[j],sample_payload[{dut.front,j[2:0]}]);
 end endtask
+task raw_failure;begin
+ if(dut.valid||!att)$fatal(1,"diagnosis requires idle invalid input");
+ @(negedge clk);device_channel=9;#1;
+ if(device_read_data!=={8'd0,response(0)})$fatal(1,"raw failure prefix");
+ @(negedge clk);device_channel=10;#1;
+ if(device_read_data!=={8'd0,response(1)})$fatal(1,"raw failure ID");
+ @(negedge clk);device_channel=11;#1;
+ if(device_read_data!=={8'd0,response(2)})$fatal(1,"raw failure marker");
+ @(negedge clk);device_channel=12;#1;
+ if(device_read_data!=={dut.slot,dut.phase,dut.operation,dut.header_good,dut.dat_sync,att})
+  $fatal(1,"live wire monitor layout");
+ read_status();if(status[0])$fatal(1,"raw observation published invalid data");
+end endtask
 initial begin
  if(DIV_BITS>=7)mode_id=8'h79;
  tick();tick();@(negedge clk);reset=0;
@@ -130,17 +143,17 @@ initial begin
  // Pressure receives all21 bytes but publishes only the eight useful fields.
  mode_id=8'h79;end_transaction(transactions+2);if(last_transaction_bytes!=21)$fatal(1,"pressure receive");coherent_snapshot();
  // Bad marker and bad prefix invalidate, never publish partially overwritten pages.
- begin_snapshot();bad_marker=1;end_transaction(transactions+2);read_status();if(status[0]||!status[1])$fatal(1,"bad marker invalidation");
+ begin_snapshot();bad_marker=1;end_transaction(transactions+2);read_status();if(status[0]||!status[1])$fatal(1,"bad marker invalidation");raw_failure();
  begin_snapshot();end_transaction(transactions+2);read_status();if(status!=0)$fatal(1,"stable invalid state falsely changed");
  bad_marker=0;end_transaction(transactions+2);if(!dut.valid)$fatal(1,"recovery before invalidate race");
  bad_marker=1;while(!(dut.invalidate&&dut.valid))begin @(negedge clk);#1;end
  device_channel=8;device_write_enable=1;tick();@(negedge clk);device_write_enable=0;
  read_status();if(status[0]||!status[1])$fatal(1,"invalidate/begin priority");changed_checks=changed_checks+1;
- bad_marker=0;bad_prefix=1;end_transaction(transactions+2);read_status();if(status[0])$fatal(1,"bad prefix valid");
- bad_prefix=0;unknown=1;end_transaction(transactions+2);read_status();if(status[0])$fatal(1,"unknown mode valid");
- unknown=0;connected=0;end_transaction(transactions+2);read_status();if(status[0])$fatal(1,"disconnect valid");
+ bad_marker=0;bad_prefix=1;end_transaction(transactions+2);read_status();if(status[0])$fatal(1,"bad prefix valid");raw_failure();
+ bad_prefix=0;unknown=1;end_transaction(transactions+2);read_status();if(status[0])$fatal(1,"unknown mode valid");raw_failure();
+ unknown=0;connected=0;end_transaction(transactions+2);read_status();if(status[0])$fatal(1,"disconnect valid");raw_failure();
  // Reconnect while already in config mode: hardware exits and polls again.
- connected=1;mode_id=8'hf3;end_transaction(transactions+4);if(!dut.valid||mode_id!=8'h73)$fatal(1,"F3 recovery");coherent_snapshot();
+ connected=1;mode_id=8'hf3;end_transaction(transactions+1);raw_failure();end_transaction(transactions+3);if(!dut.valid||mode_id!=8'h73)$fatal(1,"F3 recovery");coherent_snapshot();
  // A different device's SEND cannot clear read_changed or disturb acquisition.
  begin_snapshot();end_transaction(transactions+2);
  @(negedge clk);device_index=4;device_channel=8;device_write_enable=1;tick();

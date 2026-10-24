@@ -9,6 +9,42 @@ use stick_controls::*;
 mod boot_resources;
 use boot_resources::*;
 
+// Best-effort last failed wire header, separate from the coherent input state.
+// stage0=no observation,1=prefix,2=ID,3=marker,4=F3/config,5=other.
+static WIRE: Buf<u16, 6> = Buf::new([0; 6]);
+pub fn dui_probe_wire() {
+    let status = dev_recv(5, 8);
+    WIRE[5u16] = status;
+    if status & 1 != 0 {
+        return;
+    }
+    let before = dev_recv(5, 12);
+    if before & 1 == 0 || before >> 11 < 3 {
+        return;
+    }
+    let prefix = dev_recv(5, 9);
+    let id = dev_recv(5, 10);
+    let marker = dev_recv(5, 11);
+    let after = dev_recv(5, 12);
+    if after & 1 == 0 || before >> 11 != after >> 11 || dev_recv(5, 8) & 1 != 0 {
+        return;
+    }
+    let mut stage: u16 = 5;
+    if prefix != 255 {
+        stage = 1;
+    } else if id != 65 && id != 115 && id != 121 && id != 243 {
+        stage = 2;
+    } else if marker != 90 {
+        stage = 3;
+    } else if id == 243 {
+        stage = 4;
+    }
+    WIRE[0u16] = stage;
+    WIRE[1u16] = prefix;
+    WIRE[2u16] = id;
+    WIRE[3u16] = marker;
+    WIRE[4u16] = after;
+}
 fn dui_write(ui: u16, first: u16, data: Array<u16>, count: u16) -> bool {
     gpu_pass_ui_write(ui, first, data, count)
 }
@@ -27,6 +63,19 @@ fn dui_hex(ui: u16, first: u16, value: u16, count: u16) -> bool {
         i += 1;
     }
     dui_write(ui, first, ids.as_array(), count)
+}
+fn dui_wire_overlay(ui: u16) -> bool {
+    let mut label: Buf<u16, 42> = Buf::new([
+        70, 70, 58, 48, 48, 32, 73, 68, 58, 48, 48, 32, 77, 75, 58, 48, 48, 32, 67, 84, 58, 48, 48,
+        48, 48, 32, 83, 84, 58, 48, 32, 86, 58, 48, 32, 32, 32, 32, 32, 32, 32, 32,
+    ]);
+    dui_write(ui, 508, label.as_array(), 42)
+        && dui_hex(ui, 511, WIRE[1u16], 2)
+        && dui_hex(ui, 517, WIRE[2u16], 2)
+        && dui_hex(ui, 523, WIRE[3u16], 2)
+        && dui_hex(ui, 529, WIRE[4u16], 4)
+        && dui_hex(ui, 537, WIRE[0u16], 1)
+        && dui_hex(ui, 541, WIRE[5u16], 1)
 }
 fn dui_axis(ui: u16, first: u16, value: u16) -> bool {
     let mut ids: Buf<u16, 3> = Buf::new([48; 3]);
@@ -199,6 +248,9 @@ pub fn dui_record(s: Array<u16>, pressed: u16, released: u16, samples: u16) -> u
         || !dui_panel(ui, 6)
         || !dui_panel(ui, 32)
     {
+        return GPU_CB_NONE;
+    }
+    if s[0u16] == 0 && !dui_wire_overlay(ui) {
         return GPU_CB_NONE;
     }
     let mut icon: Buf<u16, 1> = Buf::new([0]);

@@ -14,16 +14,19 @@ packet/byte engines and requires matching gateware and application software.
 |2,3|reply ID, marker5A|Ignored|
 |4,5|active-low button byte0, byte1|Ignored|
 |6,7|right X, right Y|Ignored|
-|8..15|bit0 valid, bit1 sticky read-changed; other bits zero|Begin a snapshot read: clear read-changed; data ignored|
+|8,13..15|bit0 valid, bit1 sticky read-changed; other bits zero|Begin a snapshot read: clear read-changed; data ignored|
+|9,10,11|Background page bytes at addresses1,2,3: failed prefix, ID, marker|Begin a snapshot read; diagnostic readers use RECV only|
+|12|Live wire monitor, layout below|Begin a snapshot read; diagnostic readers use RECV only|
 
-Unselected devices read zero. RECV/watch is side-effect free; unused upper bits
-are zero. Sample bytes are unspecified while invalid. Low-channel SEND has no
+Unselected devices read zero. RECV/watch is side-effect free; raw-byte upper8
+bits and reserved status bits are zero. Sample bytes are unspecified while invalid. Low-channel SEND has no
 effect. A high-channel SEND cannot change acquisition or connection state.
 
 The receiver stores wire bytes1..8 (ID, marker, buttons and four axes) directly
 into a16x8 distributed RAM: two independent-address RAM16SDP4 cells,128 bits,
 no BSRAM or DSP. Write address is `{!front, serial_slot[2:0]}`; read address is
-`{front, device_channel[2:0]}`. Wire bytes1..8 occupy channels2,3,4,5,6,7,0,1.
+`{front ^ device_channel[3], device_channel[2:0]}` (high diagnostic channels
+select the background page; ordinary input always selects front). Wire bytes1..8 occupy channels2,3,4,5,6,7,0,1.
 There is no byte-pair register, CPU cursor, snapshot copy or dynamic arbitration.
 The complete79 tail is clocked but pressure bytes are not retained.
 
@@ -47,6 +50,38 @@ partly written page. CPU reading never prevents writes to the background page.
 Successful configuration commands retain the previous input without publishing
 configuration data. A poll reporting F3 invalidates input and schedules exit.
 
+## Failed-wire diagnostics without extra storage
+
+The existing background page also receives the first three bytes of every
+transaction. For a valid input poll, slot9 later overwrites the temporary
+prefix at address1 with LY before page publication. F3 polls and configuration
+commands retain only the three header bytes, and never publish input. Bad
+headers terminate after three bytes, leaving raw prefix/ID/marker at background
+addresses1/2/3. This adds no header FFs, memory blocks or receive queue.
+
+Channels9..11 expose those addresses. They are diagnostic observations, not
+coherent input: while valid they may belong to an old packet, and during ATT
+low they may be partly updated. A reader wanting the last failure first checks
+invalid status, ATT high and slot>=3, reads all three, then checks invalid,
+ATT high and the same slot again. This is best effort without a version counter;
+a long CPU stall can miss packets. It must never promote raw diagnostic bytes
+to the normal connected input state.
+
+Channel12 directly selects existing wire state, adding no monitor registers:
+
+| Bits | Meaning |
+|---|---|
+|15..11|Current byte slot0..31|
+|10..5|Half-period phase0..63|
+|4..3|Operation:0 poll,1 enter43,2 mode44,3 exit43|
+|2|Current cumulative FF/ID/5A header-good predicate|
+|1|Two-FF synchronized DAT level|
+|0|ATT pin;1 means no active transaction|
+
+The monitor changes with wire progress. It is not a latched failure record;
+operation may already describe the next command when ATT is high. Diagnostic
+reads do not acknowledge `read_changed`, stall sampling or alter serial pins.
+
 ## Fixed main-clock schedule
 
 All state uses the54MHz main clock, with no derived internal clock. An18-bit
@@ -61,7 +96,7 @@ production uses7 and has no runtime divider programming.
 |Slots1..N, phases0,2,..14|Register the next command bit; output stage follows one main clock later|
 |Odd phases1,3,..15|Registered CLK low; controller drives DAT|
 |Even phases2,4,..16|Sample synchronized DAT before registered CLK rises; last bit completes the received byte|
-|Byte completion in poll slots2..9|Write received8 directly to background RAM|
+|Byte completion, header slots1..3 and input poll slots4..9|Write received8 directly to background RAM; F3/config keeps only header|
 |Remaining byte-slot phases|CLK high; no receive work|
 |Last slot, phase32|Release ATT, validate/publish or advance configuration step|
 |Next18-bit wrap|Start fallback transaction, independent of CPU|

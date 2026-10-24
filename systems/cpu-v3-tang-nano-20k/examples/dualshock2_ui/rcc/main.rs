@@ -29,6 +29,7 @@ fn dui_service() {
         EVENTS[0u16] = 0;
         EVENTS[1u16] = 0;
     }
+    dui_probe_wire();
     dev_send(0, 2, 1 | (INPUT[0u16] << 1));
 }
 fn dui_wait(cb: u16, present: bool) -> u16 {
