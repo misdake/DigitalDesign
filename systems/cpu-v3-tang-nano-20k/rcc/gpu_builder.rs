@@ -6,8 +6,9 @@ mod gpu_ui;
 use gpu_ui::*;
 
 // owner, phase(open=1/ended=2/ready=3), used staging words,
-// valid Global, valid Render, speculative command cursor.
-static GPU_BUILD: Buf<u16, 6> = Buf::new([0; 6]);
+// valid Global, valid Render, speculative command cursor, clean for UI,
+// installed UI first/end (end=0 means none).
+static GPU_BUILD: Buf<u16, 9> = Buf::new([0; 9]);
 // Recording is serialized by GPU_BUILD. Encoders fully overwrite their active
 // 16/32/64-word output, including padding; do not clear the alignment slack.
 static GPU_ENCODING: Buf<u16, 127> = Buf::new([0; 127]);
@@ -179,6 +180,9 @@ fn gpu_builder_begin_record(
     b[3u16] = 0;
     b[4u16] = 0;
     b[5u16] = 0;
+    b[6u16] = 0;
+    b[7u16] = 0;
+    b[8u16] = 0;
     if !gpu_builder_commands(cb)
         || !gpu_builder_emit(cb, 3, 0x4000)
         || !gpu_builder_emit(cb, 0, 0x7000)
@@ -461,6 +465,7 @@ fn gpu_builder_draw_record(
     }
     cb[0u16].command_words = GPU_BUILD.as_array()[5u16];
     cb[0u16].object_words = word + 64;
+    GPU_BUILD[6u16] = 0;
     true
 }
 
@@ -535,12 +540,18 @@ fn gpu_builder_ui_record(
     mut cb: Array<GpuBuffer>,
     atlas: Array<GpuUiAtlas>,
     cells: Array<u16>,
+    first: u16,
+    end: u16,
+    draw: bool,
 ) -> bool {
+    let commands: u16 = if draw { 6 } else { 4 };
     if !gpu_builder_open(cb)
+        || first >= end
+        || end > 750
         || !gpu_ui_atlas_valid(atlas)
         || !gpu_ui_cells_valid(cells)
         || cb[0u16].object_words > 32368
-        || !gpu_builder_room(cb, 10, 6)
+        || !gpu_builder_room(cb, gpu_builder_ui_command_words(commands), 6)
     {
         return false;
     }
@@ -585,33 +596,101 @@ fn gpu_builder_ui_record(
     }
     tail[9u16] = cb[0u16].objects.sector + (word >> 6);
     tail[10u16] = base >> 9;
-    let uploaded = if cb[0u16].high_slot != 0 {
-        gpu_window_record_pair(
+    let mut uploaded: bool = false;
+    if first != 0 || end != 750 {
+        let start = first >> 1;
+        let source = unsafe { cells.as_ptr().add(start as i16).as_u16_array() };
+        uploaded = gpu_builder_write(cb, true, word + start, source, ((end + 1) >> 1) - start)
+            && gpu_builder_write(cb, true, word + 375, tail.as_array(), 25);
+    } else if cb[0u16].high_slot != 0 {
+        uploaded = gpu_window_record_pair(
             cells,
             375,
             tail.as_array(),
             25,
             cb[0u16].objects.sector,
             word,
-        )
+        );
     } else {
-        gpu_builder_write(cb, true, word, cells, 375)
-            && gpu_builder_write(cb, true, word + 375, tail.as_array(), 25)
-    };
-    if !uploaded
-        || !gpu_builder_commands(cb)
-        || !gpu_builder_emit(cb, 3, 0x4000)
-        || !gpu_builder_emit(cb, 0, 0x7000)
-        || !gpu_builder_dma(cb, word + 384, 276, 32)
-        || !gpu_builder_emit(cb, 1, 0x4000)
-        || !gpu_builder_emit(cb, 69, 0xb000)
-    {
+        uploaded = gpu_builder_write(cb, true, word, cells, 375)
+            && gpu_builder_write(cb, true, word + 375, tail.as_array(), 25);
+    }
+    if !uploaded || !gpu_builder_ui_commands(cb, word, first, end, draw) {
         return false;
     }
     // UI preserves Global/Render/uniforms. Every later draw already reloads
     // its Instance and first meshlet, then prefetches each subsequent page.
     cb[0u16].object_words = word + 400;
     cb[0u16].command_words = GPU_BUILD.as_array()[5u16];
+    true
+}
+
+fn gpu_builder_ui_command_words(payload: u16) -> u16 {
+    if GPU_BUILD[6u16] != 0 {
+        return payload;
+    }
+    payload + 4
+}
+
+// UI retires after its final physical write. Only a draw can dirty the ROP
+// cache again; descriptor DMA still needs its own data-completion wait.
+fn gpu_builder_ui_fence(cb: Array<GpuBuffer>) -> bool {
+    if !gpu_builder_commands(cb) {
+        return false;
+    }
+    if GPU_BUILD[6u16] == 0
+        && (!gpu_builder_emit(cb, 3, 0x4000) || !gpu_builder_emit(cb, 0, 0x7000))
+    {
+        return false;
+    }
+    GPU_BUILD[6u16] = 1;
+    true
+}
+
+fn gpu_builder_ui_range_command(cb: Array<GpuBuffer>, first: u16, end: u16) -> bool {
+    let mut low: u16 = 69;
+    let mut high: u16 = 0xb000;
+    if first != 0 || end != 750 {
+        low |= first << 7;
+        high |= 0x0800 | (first >> 9) | ((end - 1) << 1);
+    }
+    gpu_builder_emit(cb, low, high)
+}
+
+fn gpu_builder_ui_commands(
+    cb: Array<GpuBuffer>,
+    word: u16,
+    first: u16,
+    end: u16,
+    draw: bool,
+) -> bool {
+    if !gpu_builder_ui_fence(cb)
+        || !gpu_builder_dma(cb, word + 384, 276, 32)
+        || !gpu_builder_emit(cb, 1, 0x4000)
+    {
+        return false;
+    }
+    GPU_BUILD[7u16] = first;
+    GPU_BUILD[8u16] = end;
+    if draw {
+        return gpu_builder_ui_range_command(cb, first, end);
+    }
+    true
+}
+
+fn gpu_builder_ui_draw_record(mut cb: Array<GpuBuffer>, first: u16, end: u16) -> bool {
+    if !gpu_builder_open(cb)
+        || first >= end
+        || first < GPU_BUILD[7u16]
+        || end > GPU_BUILD[8u16]
+        || !gpu_builder_room(cb, gpu_builder_ui_command_words(2), 6)
+    {
+        return false;
+    }
+    if !gpu_builder_ui_fence(cb) || !gpu_builder_ui_range_command(cb, first, end) {
+        return false;
+    }
+    cb[0u16].command_words = GPU_BUILD[5u16];
     true
 }
 fn gpu_builder_end_record(mut cb: Array<GpuBuffer>) -> bool {
@@ -800,9 +879,22 @@ fn gpu_builder_draw(
     gpu_builder_restore(saved, result)
 }
 
-fn gpu_builder_ui(cb: Array<GpuBuffer>, atlas: Array<GpuUiAtlas>, cells: Array<u16>) -> bool {
+fn gpu_builder_ui(
+    cb: Array<GpuBuffer>,
+    atlas: Array<GpuUiAtlas>,
+    cells: Array<u16>,
+    first: u16,
+    end: u16,
+    draw: bool,
+) -> bool {
     let saved = read_dseg_page(3);
-    let result = gpu_builder_ui_record(cb, atlas, cells);
+    let result = gpu_builder_ui_record(cb, atlas, cells, first, end, draw);
+    gpu_builder_restore(saved, result)
+}
+
+fn gpu_builder_ui_draw(cb: Array<GpuBuffer>, first: u16, end: u16) -> bool {
+    let saved = read_dseg_page(3);
+    let result = gpu_builder_ui_draw_record(cb, first, end);
     gpu_builder_restore(saved, result)
 }
 

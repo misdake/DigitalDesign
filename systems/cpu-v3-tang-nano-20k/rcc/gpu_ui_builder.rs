@@ -3,7 +3,8 @@ use crate::dsl_rt::*;
 mod gpu_builder;
 use gpu_builder::*;
 
-static GPU_UI_POSITION: Buf<u16, 1> = Buf::new([0; 1]);
+// Final object word, first cell, exclusive end cell.
+static GPU_UI_POSITION: Buf<u16, 3> = Buf::new([0; 3]);
 
 fn gpu_builder_ui_active(cb: Array<GpuBuffer>) -> bool {
     cb[0u16].state == GPU_CB_BUILDING
@@ -57,13 +58,21 @@ fn gpu_ui_fill_final(cb: Array<GpuBuffer>, start: u16, count: u16, value: u16) -
     }
     true
 }
-fn gpu_builder_ui_begin_record(cb: Array<GpuBuffer>, atlas: Array<GpuUiAtlas>, fill: u16) -> bool {
+fn gpu_builder_ui_begin_record(
+    cb: Array<GpuBuffer>,
+    atlas: Array<GpuUiAtlas>,
+    fill: u16,
+    first: u16,
+    end: u16,
+) -> bool {
     if !gpu_builder_open(cb)
+        || first >= end
+        || end > 750
         || !gpu_high_slot_valid(cb)
         || fill > 255
         || !gpu_ui_atlas_valid(atlas)
         || cb[0u16].object_words > 32368
-        || !gpu_builder_room(cb, 10, 6)
+        || !gpu_builder_room(cb, gpu_builder_ui_command_words(6), 6)
     {
         return false;
     }
@@ -88,7 +97,17 @@ fn gpu_builder_ui_begin_record(cb: Array<GpuBuffer>, atlas: Array<GpuUiAtlas>, f
     {
         return false;
     }
-    if fill == 255 {
+    if first != 0 || end != 750 {
+        let start = first >> 1;
+        if !gpu_ui_fill_final(
+            cb,
+            word + start,
+            ((end + 1) >> 1) - start,
+            fill | (fill << 8),
+        ) {
+            return false;
+        }
+    } else if fill == 255 {
         if !gpu_ui_fill_final(cb, word, 384, 65535) {
             return false;
         }
@@ -107,6 +126,8 @@ fn gpu_builder_ui_begin_record(cb: Array<GpuBuffer>, atlas: Array<GpuUiAtlas>, f
     }
     gpu_zero(p.add(2), 14);
     GPU_UI_POSITION[0u16] = word;
+    GPU_UI_POSITION[1u16] = first;
+    GPU_UI_POSITION[2u16] = end;
     GPU_BUILD[1u16] = 4;
     true
 }
@@ -117,8 +138,9 @@ fn gpu_builder_ui_write_record(
     count: u16,
 ) -> bool {
     if !gpu_builder_ui_active(cb)
-        || first > 750
-        || count > 750 - first
+        || first < GPU_UI_POSITION[1u16]
+        || first > GPU_UI_POSITION[2u16]
+        || count > GPU_UI_POSITION[2u16] - first
         || !gpu_window_low_valid(ids, count)
     {
         return false;
@@ -160,18 +182,12 @@ fn gpu_builder_ui_write_record(
     }
     true
 }
-fn gpu_builder_ui_end_record(mut cb: Array<GpuBuffer>) -> bool {
+fn gpu_builder_ui_end_record(mut cb: Array<GpuBuffer>, draw: bool) -> bool {
     if !gpu_builder_ui_active(cb) {
         return false;
     }
     let word = GPU_UI_POSITION[0u16];
-    if !gpu_builder_commands(cb)
-        || !gpu_builder_emit(cb, 3, 0x4000)
-        || !gpu_builder_emit(cb, 0, 0x7000)
-        || !gpu_builder_dma(cb, word + 384, 276, 32)
-        || !gpu_builder_emit(cb, 1, 0x4000)
-        || !gpu_builder_emit(cb, 69, 0xb000)
-    {
+    if !gpu_builder_ui_commands(cb, word, GPU_UI_POSITION[1u16], GPU_UI_POSITION[2u16], draw) {
         return false;
     }
     cb[0u16].object_words = word + 400;
@@ -179,9 +195,15 @@ fn gpu_builder_ui_end_record(mut cb: Array<GpuBuffer>) -> bool {
     GPU_BUILD[1u16] = 1;
     true
 }
-fn gpu_builder_ui_begin(cb: Array<GpuBuffer>, atlas: Array<GpuUiAtlas>, fill: u16) -> bool {
+fn gpu_builder_ui_begin(
+    cb: Array<GpuBuffer>,
+    atlas: Array<GpuUiAtlas>,
+    fill: u16,
+    first: u16,
+    end: u16,
+) -> bool {
     let saved = read_dseg_page(3);
-    let result = gpu_builder_ui_begin_record(cb, atlas, fill);
+    let result = gpu_builder_ui_begin_record(cb, atlas, fill, first, end);
     gpu_builder_restore(saved, result)
 }
 fn gpu_builder_ui_write(cb: Array<GpuBuffer>, first: u16, ids: Array<u16>, count: u16) -> bool {
@@ -189,8 +211,8 @@ fn gpu_builder_ui_write(cb: Array<GpuBuffer>, first: u16, ids: Array<u16>, count
     let result = gpu_builder_ui_write_record(cb, first, ids, count);
     gpu_builder_restore(saved, result)
 }
-fn gpu_builder_ui_end(cb: Array<GpuBuffer>) -> bool {
+fn gpu_builder_ui_end(cb: Array<GpuBuffer>, draw: bool) -> bool {
     let saved = read_dseg_page(3);
-    let result = gpu_builder_ui_end_record(cb);
+    let result = gpu_builder_ui_end_record(cb, draw);
     gpu_builder_restore(saved, result)
 }

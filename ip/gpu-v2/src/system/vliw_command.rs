@@ -139,6 +139,16 @@ impl Command {
     pub fn ui_grid(qword: u16) -> Result<Self, &'static str> {
         Self::set(11, qword, 32)
     }
+    /// Draw only row-major cells in [first, end), with no retained UI binding.
+    pub fn ui_grid_range(qword: u16, first: u16, end: u16) -> Result<Self, &'static str> {
+        if first >= end || end > 750 {
+            return Err("UI cell range");
+        }
+        let full = Self::ui_grid(qword)?;
+        Ok(Self(
+            full.0 | (1 << 27) | ((first as u32) << 7) | (((end - 1) as u32) << 17),
+        ))
+    }
     pub const END: Self = Self(15 << 28);
     pub const fn encode(self) -> [u8; 4] {
         self.0.to_le_bytes()

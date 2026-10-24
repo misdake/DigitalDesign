@@ -44,8 +44,9 @@ module gpu_v2_vliw_command(
  wire[21:0]processor_work_source;wire[6:0]processor_work_destination;
  wire[1:0]processor_work_size;wire[2:0]processor_work_blocks;
  wire ui_start,ui_active,ui_done,ui_cp_re,ui_work_valid;
+ wire[9:0]ui_first,ui_last;
  wire[8:0]ui_cp_addr,ui_tile;wire[21:0]ui_work_source;wire[6:0]ui_work_destination;
- wire ui_cmd_valid,ui_cmd_write,ui_cmd_half,ui_cmd_ready,ui_cmd_done,ui_pixel_valid,ui_pixel_half;
+ wire ui_cmd_valid,ui_cmd_write,ui_lower_ready,ui_cmd_ready,ui_cmd_done,ui_pixel_valid,ui_pixel_half;
  wire[4:0]ui_pixel_word;wire[63:0]ui_pixels;
  assign cp_re=ui_active?ui_cp_re:processor_cp_re;
  assign cp_addr=ui_active?ui_cp_addr:processor_cp_addr;
@@ -99,11 +100,12 @@ module gpu_v2_vliw_command(
  .context_epoch(context_epoch),.context_mode(context_mode),.context_code(context_code),.light_x(light_x),.light_y(light_y),.light_z(light_z),.ray_x(ray_x),.ray_y(ray_y),.ray_k(ray_k),
  .ambient(ambient),.directional(directional),.flush_request(flush_request),.flush_complete(flush_complete),
  .clear_active(clear_active),.clear_request(clear_request),.clear_address(clear_address),.clear_value(clear_value),
- .clear_ready(clear_ready),.clear_complete(clear_complete),.clear_ok(clear_ok),.ui_start(ui_start),.ui_done(ui_done));
+ .clear_ready(clear_ready),.clear_complete(clear_complete),.clear_ok(clear_ok),.ui_start(ui_start),.ui_done(ui_done),.ui_first(ui_first),.ui_last(ui_last));
  gpu_ui_grid ui(.clk(clk),.reset(reset),.ce(ce),.start(ui_start),.stop(stop),.grid_base(cp_q[15:0]),.atlas_base(cp_q[22:16]),
+ .first_cell(ui_first),.last_cell(ui_last),
  .active(ui_active),.done(ui_done),.cp_re(ui_cp_re),.cp_addr(ui_cp_addr),.cp_ready(cp_ready),.cp_q(cp_q),
  .work_valid(ui_work_valid),.work_ready(work_ready),.work_source(ui_work_source),.work_destination(ui_work_destination),.dma_idle(dma_idle),
- .cmd_valid(ui_cmd_valid),.cmd_write(ui_cmd_write),.cmd_half(ui_cmd_half),.tile(ui_tile),.cmd_ready(ui_cmd_ready),.cmd_done(ui_cmd_done),
+ .cmd_valid(ui_cmd_valid),.cmd_write(ui_cmd_write),.lower_ready(ui_lower_ready),.tile(ui_tile),.cmd_ready(ui_cmd_ready),.cmd_done(ui_cmd_done),
  .pixel_valid(ui_pixel_valid),.pixel_half(ui_pixel_half),.pixel_word(ui_pixel_word),.pixels(ui_pixels));
  gpu_command_dma dma(
  .clk(clk),.reset(reset),.ce(ce),.stop(stop||compute_fault||memory_fault),
@@ -143,7 +145,7 @@ module gpu_v2_vliw_command(
  assign clear_complete=fb_w_response_valid&&(fb_w_response_last||fb_w_response_error);
  assign clear_ok=!fb_w_response_error;
  gpu_v2_vliw_three_port core(
- .ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_cmd_half(ui_cmd_half),.ui_tile(ui_tile),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),
+ .ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_lower_ready(ui_lower_ready),.ui_tile(ui_tile),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),
  .ui_pixel_valid(ui_pixel_valid),.ui_pixel_half(ui_pixel_half),.ui_pixel_word(ui_pixel_word),.ui_pixels(ui_pixels),
  .cp_re(cp_re),.cp_addr(cp_addr),.cp_q(cp_q),.cp_ready(cp_ready),
  .clk(clk),

@@ -21,6 +21,11 @@ Display diagnostic remains selected in the boot config.
 | `gpu_pass_draw_mesh(pass, mesh, matrix, rgba_low, rgba_high)` | Snapshot the native 21-u32 Instance matrix prefix and RGBA; expand the immutable compact directory in original order. |
 | `gpu_pass_draw_ui_grid(pass, atlas, cells)` | Snapshot the packed cell table and private descriptor into the current Pass. Uses its reserved color and leaves Depth unchanged. |
 | `gpu_pass_ui_begin(pass, atlas, fill)` | Initialize a private UI object directly in its final arena; return a nonzero UI identity, or zero on rejection. |
+| `gpu_pass_ui_begin_range(pass, atlas, fill, first, end)` | Initialize packed words intersecting the nonempty `[first,end)` cell interval. |
+| `gpu_pass_ui_set(ui)` | Finish construction and install the descriptor without drawing; the declared interval becomes the valid drawing span. |
+| `gpu_pass_set_ui_grid(pass, atlas, cells)` | Snapshot and install a full packed grid without drawing. |
+| `gpu_pass_set_ui_grid_range(pass, atlas, cells, first, end)` | Snapshot and install only selected packed words, retaining grid indexing. |
+| `gpu_pass_draw_ui_range(pass, first, end)` | Draw a subinterval of the installed span; consecutive calls append one instruction each. |
 | `gpu_pass_ui_write(ui, first, ids, count)` | Write a run of unpacked glyph IDs into the active object's packed cells; validate the complete run before changing it. |
 | `gpu_pass_ui_end(ui)` | Seal the active UI object and append its ordered commands, then resume normal Pass recording. |
 | `gpu_ui_fill(cells, id)` / `gpu_ui_set_cell(cells, x, y, id)` | Edit the application's packed table; reject coordinates/IDs outside the fixed grid without modifying it. |
@@ -299,17 +304,45 @@ Writes preserve the neighboring byte of each packed word. Fill and glyph runs
 split at 32-KiB boundaries, and each entry restores/verifies incoming DSEG3.
 No mapped pointer is exposed to the caller.
 
-End emits the same five commands as the snapshot API below, publishes object
+End emits the same convenience sequence as the snapshot API below, publishes object
 and command cursors, and releases the UI construction lock. Begin/write do not
 publish an unfinished object. A healthy `gpu_cb_cancel` can discard the entire
 unsubmitted Building CB, including an unfinished UI; subsequent UI write/end
 operations reject. Memory failures follow the same sticky fault/fail-stop rules
 as other recording. Final submission retains its cache handoff barrier.
 
-The demo generates its blank grid and decimal glyph run through this interface;
-it keeps only five temporary digit words and no complete low-memory cell table.
+The demo computes its decimal length before begin and selects `[52,52+digits)`.
+It initializes only the one to three packed words touched by the number and
+keeps five temporary digit words, with no complete low-memory cell table.
+It finishes with `gpu_pass_ui_set`, then calls `gpu_pass_draw_ui_range`.
+An invalid timing interval emits no UI object or command. Each new frame's 3D
+pass clears/redraws the surface, so shorter numbers leave no prior-frame tail.
 Both UI interfaces share the atlas, native encoding, command order and output
 ownership described below.
+
+The original begin and snapshot convenience APIs still select the full grid.
+The `_range` APIs declare `0 <= first < end <= 750`. In-place edits must stay
+inside that span (an empty edit at end is valid); only intersecting packed words,
+including any unused boundary byte, are initialized. Other grid bytes and padding
+need not be initialized. The complete 800-byte object remains allocated and its
+intersecting 128-byte sectors readable. Snapshot sources retain the existing
+375-word low-memory allocation and grid indexing; only intersecting words and
+the descriptor tail are copied. GPU edge masks preserve pixels outside a draw
+interval even when neighboring object bytes are non-FF.
+
+The normal split sequence is begin/write/set, then one or more draw-range calls.
+Set installs the descriptor with DMA and WAIT(data), without drawing. Each
+subsequent range draw consumes the installed immutable object directly; it
+allocates no object, performs no descriptor DMA and needs no WAIT/FLUSH between
+UI calls. Draws must stay inside the installed span. Installing another UI
+replaces the binding; beginning a new Pass clears it. Writes to a finalized
+object are rejected, so recording later ranges cannot change earlier draws.
+
+For an unchanged UI object the command stream is one descriptor DMA and
+WAIT(data), followed by any number of UI_GRID(first,end) instructions. There
+is no hardware SET_UI opcode: setting uses the existing scratchpad descriptor
+slot. The once-per-transition WAIT(all)/FLUSH precedes that sequence when 3D
+has run. Each UI_GRID still fetches its selected ID sectors and glyph data.
 
 ## Packed UI snapshots
 
@@ -343,14 +376,22 @@ remains in-flight read-only.
 
 One UI call reserves 400 object words (800 bytes), plus0..63 words of initial
 alignment. It preflights atlas extents, source span, both complete arenas and
-five commands with the existing Pass drain/END/padding allowance before any
+up to five commands with the existing Pass drain/END/padding allowance before any
 writes. Invalid arguments or insufficient capacity leave CB cursors, staging
 and prior recording unchanged. A reported transfer failure can leave partial
 private bytes; the sticky memory fault retains the CB and prevents submission,
 cancel/discard and presentation rather than claiming rollback.
 
-The ordered commands are WAIT(all), FLUSH, DMA of the descriptor into the old
-Target staging slot, WAIT(data), then UI_GRID. The installed target survives
+The first convenience call emits WAIT(all), FLUSH, descriptor DMA into the old
+Target staging slot, WAIT(data), UI_GRID. A set-only call omits UI_GRID. The
+builder records whether any nonempty mesh draw has dirtied the ROP since the
+last UI fence: if not, another set emits only DMA/WAIT(data), and range drawing
+emits only UI_GRID. A 3D draw preserves the UI descriptor but restores
+WAIT(all)/FLUSH before the next set or range draw. Global/Render setters cannot
+dirty the framebuffer and do not invalidate the binding; their scratchpad
+spans, Instance data and meshlet pages do not overlap qword276. Failed
+argument/capacity checks do not change this state. No new hardware UI registers
+or commands are introduced. The installed target survives
 staging reuse. UI completion includes its actual write terminals. Global/Render
 bindings remain cached; no texture invalidation is inserted. UI invalidates both
 meshlet input pages, but each subsequent `gpu_pass_draw_mesh` already reloads its
@@ -363,8 +404,11 @@ flowchart LR
   A[Immutable atlas] --> U[UI execution]
   D[Earlier 3D draws] --> F[WAIT all and FLUSH]
   S --> P[Descriptor DMA and WAIT data]
-  F --> P --> U
+  F --> P --> B[Installed descriptor at qword276]
+  B --> U
+  G[Draw range instruction] --> U
   U --> T[Actual write terminals]
+  T -->|Next range with same descriptor| U
   T --> E[Pass end and GPU completion]
   E --> R[Ready output then D3 present]
 ```

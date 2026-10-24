@@ -35,8 +35,11 @@ darker with the same framebuffer colors; mesh colors and lighting are unchanged.
 
 Only the preceding successful full-loop millisecond number appears at row1,
 column2, with no leading zeros or FRAME/MS labels. Zero is one `0`; invalid and
-first intervals are blank. All five prior cells are cleared before shorter text
-is written. Existing DDGD UART telemetry, failure retention and2000ms polling
+first intervals are blank and emit no UI call. The demo sets the final UI object,
+then draws only the current digits' row-major range `[52,52+digits)`, initializing
+only their packed words. Each frame's 3D clear/redraw removes prior text.
+Consecutive range draws reuse the descriptor without extra DMA, WAIT or FLUSH.
+Existing DDGD UART telemetry, failure retention and2000ms polling
 budgets remain unchanged. Timing includes CPU preparation, GPU and present.
 
 | Allocation | Physical byte base | Contents |
