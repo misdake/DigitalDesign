@@ -59,14 +59,15 @@ checker, and retires its final physical writes before the next call executes.
 The initial transition from3D still needs the explicit WAIT/FLUSH above. A
 masked-out neighbor in a shared16x16 tile is preserved by the background read.
 
-The current RCC Pass APIs retain the full-grid command (`0xb0000045` for
-qword276). Both snapshot recording and in-place begin/write/end construction
-remain compatible. In-place `gpu_pass_ui_write` selects which cells to edit in
-the private object; its first/count arguments do not encode a hardware draw
-range. That driver still emits WAIT/FLUSH for each UI object. The optional
-hardware range and omitted fences between consecutive UI commands are exposed
-by the Rust command helper and Python command producer, independently of that
-conservative RCC recording policy. See the [driver](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md#in-place-ui-construction).
+The RCC path separates setting data from drawing intervals. Snapshot APIs
+`gpu_pass_set_ui_grid` / `gpu_pass_set_ui_grid_range` install one private grid;
+in-place begin/write construction finishes with `gpu_pass_ui_set` instead.
+`gpu_pass_draw_ui_range(pass, first, end)` reuses that descriptor and appends
+one UI_GRID instruction. Consecutive range draws need no descriptor DMA,
+WAIT or FLUSH between them. A 3D draw preserves the descriptor but restores
+WAIT(all)/FLUSH before the next UI draw. No additional hardware state is needed.
+The original full-grid snapshot and begin/write/end convenience APIs remain
+compatible. See the [driver](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md#in-place-ui-construction).
 
 ## Storage and pipeline
 
@@ -144,6 +145,18 @@ independent range calls, comparing
 the entire color plane including excluded neighbors and checking the exact
 number of grid/atlas read requests and framebuffer requests. Ranges can cross
 character-table sectors; empty-content ranges emit no framebuffer work.
+`--rcc-records path` instead loads exact compiled-CPU command/object bytes
+exported by the RCC UI test with `GPU_RCC_UI_RANGE_FIXTURE=path`. That fixture
+omits only the pass's two initial CLEAR commands to retain a patterned surface;
+all range, descriptor DMA and fence bytes come from the production RCC builder.
+It compares all color pixels and depth words, including unselected neighbors
+with valid glyph IDs in the same tiles and grid sectors.
+The `GPU_RCC_UI_BATCH_FIXTURE=path` variant installs one immutable grid and draws
+three disjoint ranges. The replay counts actual CP DMA accepts and UI starts,
+rejects any DMA/WAIT/FLUSH between these range instructions, and checks that
+every framebuffer read/write request addresses the color plane. Its two local
+DMAs are the initial Target and the single UI descriptor installation; glyph
+and grid-sector reads are separate, necessary UI execution traffic.
 The bounded runner records exact DUT/peer hashes. Its standalone MC profile and
 cycles are separate from full-system CL3 timing and physical-board qualification.
 

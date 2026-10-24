@@ -161,6 +161,50 @@ fn compiled_directory_crossing_and_capacity_failures_preserve_prefix() {
         3
     );
 }
+
+#[test]
+fn draw_between_ui_calls_restores_the_cache_publication_fence() {
+    let setup = fixture::program();
+    let prefix = setup.split(" let mut iteration:u16=0;").next().unwrap();
+    let source = format!(
+        r#"{prefix}
+ let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,65535);
+ check(gpu_pass_set_global(pass,view_of(&mut g)));
+ check(gpu_pass_set_render(pass,view_of(&mut texture),view_of(&mut r)));
+ gpu_affine_identity(MATRIX.as_array());
+ let mut a:GpuUiAtlas=GpuUiAtlas{{sector:0x9800,sectors:512}};
+ let mut cursor=GPU_CB.command_words;
+ let ui=gpu_pass_ui_begin_range(pass,view_of(&mut a),1,1,2);check(ui==1);
+ check(gpu_pass_ui_end(ui));check(GPU_CB.command_words==cursor+10);
+ cursor=GPU_CB.command_words;
+ let ui2=gpu_pass_ui_begin_range(pass,view_of(&mut a),2,2,3);check(ui2==1);
+ check(gpu_pass_ui_end(ui2));check(GPU_CB.command_words==cursor+6);
+ check(gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),65535,65535));
+ cursor=GPU_CB.command_words;
+ // The installed descriptor survives a 3D draw; only the fence is needed.
+ check(gpu_pass_draw_ui_range(pass,2,3));check(GPU_CB.command_words==cursor+6);
+ check(gpu_pass_end(pass));check(gpu_cb_finish(cb));halt(0x600d);
+}}"#
+    );
+    let (cpu, _) = run(&source, true);
+    let code = bytes(&cpu, 0x490000, 256);
+    let commands: Vec<u32> = code
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b))
+        .take_while(|w| *w != 0xf0000000)
+        .collect();
+    let ui: Vec<usize> = commands
+        .iter()
+        .enumerate()
+        .filter_map(|(i, w)| (*w >> 28 == 11).then_some(i))
+        .collect();
+    assert_eq!(ui.len(), 3);
+    assert_eq!(&commands[ui[0] - 4..ui[0] - 2], &[0x40000003, 0x70000000]);
+    assert_eq!(ui[1] - ui[0], 3);
+    assert_eq!(&commands[ui[2] - 2..ui[2]], &[0x40000003, 0x70000000]);
+}
 fn bytes(cpu: &CpuV3Sim, address: u32, count: usize) -> Vec<u8> {
     (0..count / 2)
         .flat_map(|i| {

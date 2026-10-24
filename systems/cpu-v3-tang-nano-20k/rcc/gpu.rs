@@ -142,12 +142,47 @@ pub fn gpu_pass_draw_ui_grid(pass: u16, atlas: Array<GpuUiAtlas>, cells: Array<u
     if pass != GPU_CB_HANDLE || GPU_RECORDING != 2 {
         return false;
     }
-    gpu_builder_ui(view_of(&mut GPU_CB), atlas, cells)
+    gpu_builder_ui(view_of(&mut GPU_CB), atlas, cells, 0, 750, true)
+}
+// Row-major cell interval [first, end); the packed source retains grid indexing.
+pub fn gpu_pass_set_ui_grid_range(
+    pass: u16,
+    atlas: Array<GpuUiAtlas>,
+    cells: Array<u16>,
+    first: u16,
+    end: u16,
+) -> bool {
+    if pass != GPU_CB_HANDLE || GPU_RECORDING != 2 {
+        return false;
+    }
+    gpu_builder_ui(view_of(&mut GPU_CB), atlas, cells, first, end, false)
+}
+// Install one immutable grid; subsequent ranges reuse its scratchpad descriptor.
+pub fn gpu_pass_set_ui_grid(pass: u16, atlas: Array<GpuUiAtlas>, cells: Array<u16>) -> bool {
+    if pass != GPU_CB_HANDLE || GPU_RECORDING != 2 {
+        return false;
+    }
+    gpu_builder_ui(view_of(&mut GPU_CB), atlas, cells, 0, 750, false)
+}
+pub fn gpu_pass_draw_ui_range(pass: u16, first: u16, end: u16) -> bool {
+    if pass != GPU_CB_HANDLE || GPU_RECORDING != 2 {
+        return false;
+    }
+    gpu_builder_ui_draw(view_of(&mut GPU_CB), first, end)
 }
 pub fn gpu_pass_ui_begin(pass: u16, atlas: Array<GpuUiAtlas>, fill: u16) -> u16 {
+    gpu_pass_ui_begin_range(pass, atlas, fill, 0, 750)
+}
+pub fn gpu_pass_ui_begin_range(
+    pass: u16,
+    atlas: Array<GpuUiAtlas>,
+    fill: u16,
+    first: u16,
+    end: u16,
+) -> u16 {
     if pass != GPU_CB_HANDLE
         || GPU_RECORDING != 2
-        || !gpu_builder_ui_begin(view_of(&mut GPU_CB), atlas, fill)
+        || !gpu_builder_ui_begin(view_of(&mut GPU_CB), atlas, fill, first, end)
     {
         return GPU_CB_NONE;
     }
@@ -163,7 +198,14 @@ pub fn gpu_pass_ui_end(ui: u16) -> bool {
     if ui != GPU_CB_HANDLE || GPU_RECORDING != 2 {
         return false;
     }
-    gpu_builder_ui_end(view_of(&mut GPU_CB))
+    gpu_builder_ui_end(view_of(&mut GPU_CB), true)
+}
+// Finish construction and install the descriptor, without drawing any cells.
+pub fn gpu_pass_ui_set(ui: u16) -> bool {
+    if ui != GPU_CB_HANDLE || GPU_RECORDING != 2 {
+        return false;
+    }
+    gpu_builder_ui_end(view_of(&mut GPU_CB), false)
 }
 pub fn gpu_pass_end(pass: u16) -> bool {
     if pass != GPU_CB_HANDLE || GPU_RECORDING != 2 {
