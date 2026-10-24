@@ -60,8 +60,8 @@ fn classic_frame_timing_profile() {
     let source = include_str!("../examples/gpu_demo/rcc/main.rs").replace("\r\n", "\n");
     let source = source.replace("let mut completed = false;", "let mut completed = true; STATS.as_array()[0u16] = time_milliseconds() - 17; STATS.as_array()[2u16] = 1;");
     let source = source.replace(
-        "let elapsed = time_microseconds();",
-        "let elapsed = if frame == 0 { 17000 } else { time_microseconds() };",
+        "let mut rendered_us: u16 = 65535;",
+        "let mut rendered_us: u16 = 17000;",
     );
     let begin = source.find("    // Bounded verification waits").unwrap();
     let end = source[begin..].find("\n}").unwrap() + begin;

@@ -33,3 +33,9 @@ startup or the native memory path require selecting the affected extended
 case. This split changes validation cost, not the qualification supplied by a
 short protocol or functional test. A full-frame profile is not a default test,
 and no offline test substitutes for board verification.
+
+The `gpu_demo_first_person` target runs the production RCC camera/control flow
+with bounded CPU steps and a separate floating basis/light reference. Its frame
+control peers verify that render timing excludes present/vblank, retains linear
+RGB565, and rejects failed/saturated measurements. Pixel and serial timing stay
+in the dedicated native GPU/DS2 RTL tests.

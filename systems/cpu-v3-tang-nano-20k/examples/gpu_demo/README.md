@@ -1,15 +1,16 @@
-# Classic rotating GPU scene
+# DS2 first-person GPU scene
 
 The reusable scene is the original brick-textured box, complete 948-face lit
-rabbit and RGB triangle: 24 meshlets and1141 triangles. The audited256-pose
-radius2.8 orbit retains its original pitch and rotating light. Room and RGB
+rabbit and RGB triangle: 24 meshlets and1141 triangles. The initial camera is
+the original radius2.8 orbit phase0. Position, orientation, normals and light
+then follow the autonomous DS2 input; the scene no longer advances an orbit. Room and RGB
 are unlit; rabbit uses the original full-H9 diffuse/specular settings.
 The texture is room-tiles.png with its real mip chain, not diagnostic mip colors.
 
 ## Files
 
 - `rcc/main.rs`: formal driver recording, 3D/UI, completion and A/B presentation.
-- `rcc/camera.rs`: bounded read of immutable matrix/light data.
+- `rcc/camera.rs`: initial classic pose, Prepared/FPU stick control and matching matrix/light updates.
 - `rcc/overlay_gpu.rs`: previous-frame decimal number generated in the final UI object.
 - `rcc/overlay.rs`: packed-grid helper retained for component tests and template diagnostics.
 - `rcc/controls.rs`: button0/pin88 toggles numeric visibility after20ms stable level; hold does not repeat, default visible.
@@ -24,8 +25,10 @@ The texture is room-tiles.png with its real mip chain, not diagnostic mip colors
 
 ## Runtime and layout
 
-Each frame reads45 words containing21 Q16.16 matrix values and three signed
-light values through the existing bounded DSEG3 window. It records room,
+Initialization reads the original45-word phase0 matrix/light record through
+the bounded DSEG3 window. Stationary input preserves its exact codes. Each
+frame reads one coherent latest DS2 snapshot and updates the camera only when
+needed, using native Q16 FPU arithmetic. It records room,
 RGB triangle, then rabbit with matching material transitions, followed by UI.
 One CB is reused after actual GPU completion, presentation and old-read drain.
 The default boot selection is unchanged. The demo explicitly requests linear
@@ -33,20 +36,33 @@ RGB565 scanout through gpu_init_with_format, retaining the original scene
 linear-to-screen conversion. Raw RGB565 bypasses that conversion and appears
 darker with the same framebuffer colors; mesh colors and lighting are unchanged.
 
-Only the preceding successful full-loop time appears at row1,column2 as
-`0.0` through `65.5` milliseconds, truncating microseconds to0.1ms, with no
-leading zeros or FRAME/MS labels. The CPU performs bounded subtraction-based
-decimal conversion and the atlas includes a decimal-point glyph. First,
-failed and saturated intervals are blank and emit no UI call. At each frame
-boundary the application reads Device0 channel11, then explicitly clears it;
-its65535us saturation is not a wrapped short frame. The read-to-clear CPU
-handoff is a small excluded boundary overhead. Timing includes CPU
-preparation, GPU, UART reporting and the presentation wait.
+Left stick moves horizontally relative to yaw, independent of pitch. L1 moves
+world-down and R1 world-up; together they cancel. Right stick turns right/left
+and looks up/down. Both sticks share the default Prepared calibration and radial
+dead zone, without a Q8 output conversion or automatic recentering. Disconnection
+stops motion; digital-only input supplies buttons and neutral analog axes.
+Movement is2 world units/s and rotation3 radians/s, using the independent wall
+millisecond delta including presentation waits. Updates cap dt at100ms; yaw
+wraps at +/-pi, pitch clamps to +/-1.5rad, and each position component clamps to
++/-16 to stay inside the existing affine representation. These are numerical
+limits, not scene collision. The classic basis is preserved: position uses
+right/down/forward while normals and the camera-space light use right/up/back.
+The F14 light is checked/repaired within the existing unit-length contract.
+
+The preceding successfully presented frame's rendering interval appears at
+row1,column2 as `0.0` through `65.5`ms, truncated to0.1ms without extra leading
+zeros or FRAME/MS labels. First, failed and saturated intervals emit no UI call.
+The application clears Device0 channel11 before input/camera/CB preparation and
+reads it after actual GPU completion/drain, before calling present. Thus the
+interval includes CPU preparation/upload and GPU work but excludes present,
+vblank and subsequent UART reporting. A65535us reading is invalid, not wrapped.
+Only successful presentation promotes that locked interval to the next display.
 
 The demo sets its final UI object and draws only the visible glyph range
 `[52,52+glyphs)`, initializing only intersecting packed words. Each frame's
 3D redraw removes old text. Descriptor reuse and button visibility remain.
-DDGD telemetry version2 carries the previous interval in raw microseconds;
+DDGD telemetry version3 reports each newly completed frame's locked rendering
+interval after presentation, in raw microseconds;
 packet length/checksum/status/completed count are unchanged;65535 denotes
 an overrange interval and is not a valid displayed duration. The2000ms
 polling budgets and20ms button debounce retain the independent millisecond
@@ -59,8 +75,9 @@ clock. No full scene or image comparison is required for timer validation.
 | texture.bin |0x4d0000|Original64-square brick image and full mip chain|
 
 Directory entries0..5 are room, entry6 is RGB and entries7..23 are all rabbit
-meshlets. Each record retains the audited full-orbit scale_s. Camera records
-occupy128 bytes each; manifest/generated roots own the exact lengths.
+meshlets. Each record retains the audited full-orbit scale_s. The original256
+camera records remain immutable for provenance, but live rendering loads only
+phase0 at initialization. Records occupy128 bytes; generated roots own lengths.
 
 ## Build and verification boundary
 
@@ -196,3 +213,12 @@ There is no alternate builder module or `GPU_DEMO_DIRECT_BUILDER` selection.
 zero GPU starts after injected memory errors. Its source-identity test matches
 the final driver against the completed ui-inplace-v1 timing instructions. These
 prefix/fault checks do not render or compare a complete frame.
+
+## Bounded first-person checks
+
+`cargo test --release -p cpu-v3-tang-nano-20k --test gpu_demo_first_person`
+executes the production RCC camera against an independent floating reference,
+checks controls/disconnection/dt/limits, and runs the actual frame body with
+small asset counts and control peers. It deliberately varies presentation wait,
+GPU delay, failure and saturation. These peers do not render pixels or claim
+serial/pin timing; the separate GPU/DS2 RTL qualifications own those boundaries.
