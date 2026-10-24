@@ -28,10 +28,11 @@ module {{ module_name }} (
 // bit, eight data bits (LSB first), one stop bit, CLOCKS_PER_BIT clocks per
 // bit. A channel-3 write while busy is dropped; software polls the busy
 // readback before enqueueing the next byte.
-reg uart_busy = 0;
-reg [9:0] uart_frame = 10'h3ff;
-reg [3:0] uart_bit = 0;
-reg [15:0] uart_divider = 0;
+// The stop bit is the final nonzero bit: shifting it out ends the frame.
+// No independent bit index or busy register is needed.
+reg [9:0] uart_frame = 0;
+wire uart_busy = |uart_frame;
+reg [{{ uart_divider_msb }}:0] uart_divider = 0;
 // Always main-clocked: never use CPU hold or a device enable as its CE.
 reg [15:0] millisecond_divider = 0;
 reg [15:0] milliseconds = 0;
@@ -73,9 +74,7 @@ always @(posedge clk) begin
         cache_maintenance_status <= 0;
         pending_dcache_maintenance <= 0;
         leds <= 0;
-        uart_busy <= 0;
-        uart_frame <= 10'h3ff;
-        uart_bit <= 0;
+        uart_frame <= 0;
         uart_divider <= 0;
         millisecond_divider <= 0;
         milliseconds <= 0;
@@ -103,11 +102,7 @@ always @(posedge clk) begin
         if (uart_busy) begin
             if (uart_divider == 16'd{{ clocks_per_bit_minus_one }}) begin
                 uart_divider <= 0;
-                if (uart_bit == 4'd9) begin
-                    uart_busy <= 0;
-                end else begin
-                    uart_bit <= uart_bit + 1'b1;
-                end
+                uart_frame <= {1'b0, uart_frame[9:1]};
             end else begin
                 uart_divider <= uart_divider + 1'b1;
             end
@@ -122,9 +117,7 @@ always @(posedge clk) begin
                 2: leds <= device_write_data[5:0];
                 3: if (!uart_busy) begin
                     uart_frame <= {1'b1, device_write_data[7:0], 1'b0};
-                    uart_bit <= 0;
                     uart_divider <= 0;
-                    uart_busy <= 1;
                 end
                 4: if (!cpu_hold) begin
                     cpu_hold <= 1;
@@ -145,6 +138,6 @@ always @(posedge clk) begin
     end
 end
 
-assign uart_tx = uart_busy ? uart_frame[uart_bit] : 1'b1;
+assign uart_tx = uart_busy ? uart_frame[0] : 1'b1;
 
 endmodule

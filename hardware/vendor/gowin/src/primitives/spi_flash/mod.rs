@@ -107,6 +107,7 @@ pub struct SpiFlashReaderState {
 struct SpiFlashReaderTemplate<'a> {
     module_name: &'a str,
     half_period_cycles: u64,
+    divider_msb: u32,
     capacity_bytes: u32,
 }
 
@@ -243,6 +244,9 @@ where
             SpiFlashReaderTemplate {
                 module_name: &module_name,
                 half_period_cycles: HALF_PERIOD_CYCLES,
+                // Retain the original 32-bit counter limit for large divisors.
+                divider_msb: (u64::BITS - (HALF_PERIOD_CYCLES - 1).leading_zeros()).clamp(1, 32)
+                    - 1,
                 capacity_bytes: CAPACITY_BYTES,
             }
             .render()
