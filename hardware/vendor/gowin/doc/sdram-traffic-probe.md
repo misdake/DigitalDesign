@@ -331,7 +331,7 @@ buffer/CDC path, in addition to long repeated physical probe measurements.
 
 ### Bounded active-demand cycle check
 
-`ip/gpu-v2/tests/sdram_display_load.rs` additionally drives the actual Rust cycle
+`ip/gpu-v2/tests/host/sdram_display_load.rs` additionally drives the actual Rust cycle
 Service with the active 2x interval rounded down to 6849 logic clocks and the
 3x interval of 7200. Each run releases 100 initial Display segments, then six
 batches of 50, at phases 0 and 73. CPU I-cache reads use period 1728; D-cache
@@ -358,7 +358,7 @@ The connected production-display check below covers those components within a
 bounded scope; neither check is a complete production-system qualification.
 
 Reproduce only this additional check with `cargo test --release -p gpu-v2
---test sdram_display_load -- --nocapture`; detailed output is in the corresponding
+--test host sdram_display_load:: -- --nocapture`; detailed output is in the corresponding
 `target/cargo-summaries/mc-active-display-bounded-release.log`.
 
 ### Bounded production display and CDC check

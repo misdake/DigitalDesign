@@ -28,9 +28,11 @@ use gpu_v2::framebuffer::{
     sim::{bounded::OutputRow, fixture::Fixture},
 };
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::{Mutex, OnceLock},
     thread::sleep,
     time::{Duration, Instant},
 };
@@ -87,38 +89,62 @@ fn wait_reap(child: &mut Child, limit: Duration, label: &str, root: &Path) {
     }
 }
 
-fn run_iverilog(root: &Path, sources: &[(&str, String)]) {
-    let iverilog = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
-    let vvp = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
-    fs::write(root.join("run.out"), b"").unwrap();
-    fs::write(root.join("run.err"), b"").unwrap();
-    let mut compile = Command::new(iverilog);
-    compile
-        .current_dir(root)
-        .args(["-g2012", "-s", "tb", "-o", "test.vvp"])
-        .stdout(Stdio::from(
-            fs::File::create(root.join("compile.out")).unwrap(),
-        ))
-        .stderr(Stdio::from(
-            fs::File::create(root.join("compile.err")).unwrap(),
-        ));
+fn run_iverilog(
+    root: &Path,
+    sources: &[(&str, String)],
+    parameters: &[String],
+    shape: (u16, u16, u32, usize),
+) {
+    type Shape = (u16, u16, u32, usize);
+    static COMPILED: OnceLock<Mutex<BTreeMap<Shape, PathBuf>>> = OnceLock::new();
     for (name, text) in sources {
         fs::write(root.join(name), text).unwrap();
-        if name.ends_with(".v") {
-            compile.arg(name);
-        }
     }
-    let mut compile_child = compile.spawn().unwrap();
-    wait_reap(&mut compile_child, MAX_RUN, "iverilog compile", root);
-    let mut run = Command::new(vvp);
+    let mut compiled_cache = COMPILED.get_or_init(Default::default).lock().unwrap();
+    let executable = compiled_cache
+        .entry(shape)
+        .or_insert_with(|| {
+            let compiled = evidence_root(&format!(
+                "compiled-{}-{}-{}-{}-{}",
+                std::process::id(),
+                shape.0,
+                shape.1,
+                shape.2,
+                shape.3
+            ));
+            let mut compile =
+                Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()));
+            compile
+                .current_dir(&compiled)
+                .args(["-g2012", "-s", "tb", "-o", "test.vvp"])
+                .stdout(Stdio::from(
+                    fs::File::create(compiled.join("compile.out")).unwrap(),
+                ))
+                .stderr(Stdio::from(
+                    fs::File::create(compiled.join("compile.err")).unwrap(),
+                ));
+            for (name, text) in sources {
+                if name.ends_with(".v") {
+                    fs::write(compiled.join(name), text).unwrap();
+                    compile.arg(name);
+                }
+            }
+            let mut child = compile.spawn().unwrap();
+            wait_reap(&mut child, MAX_RUN, "iverilog compile", &compiled);
+            compiled.join("test.vvp")
+        })
+        .clone();
+    drop(compiled_cache);
+    let mut run = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()));
     run.current_dir(root)
-        .arg("test.vvp")
+        .arg(executable)
+        .args(parameters)
         .stdout(Stdio::from(fs::File::create(root.join("run.out")).unwrap()))
         .stderr(Stdio::from(fs::File::create(root.join("run.err")).unwrap()));
     let mut child = run.spawn().unwrap();
     wait_reap(&mut child, MAX_RUN, "vvp run", root);
-    let out = fs::read_to_string(root.join("run.out")).unwrap_or_default();
-    assert!(out.contains("PASS"), "no PASS marker:\n{out}");
+    let text = fs::read_to_string(root.join("run.out")).unwrap();
+    assert!(text.contains("PASS"), "no PASS marker:\n{text}");
 }
 
 fn hex_bytes(path: &Path) -> Vec<u8> {
@@ -319,26 +345,26 @@ fn run_cache_rtl(
     let maxc = cases.len() + 8;
     let watchdog = (stim as u64) * 64 + 500_000;
     let tb = include_str!("fixtures/framebuffer_cache_actual_tb.v")
-        .replace("__STIM__", &stim.to_string())
-        .replace("__BYTES__", &bytes.to_string())
-        .replace("__MAXC__", &maxc.to_string())
-        .replace("__COLOR__", "0")
-        .replace("__DEPTH__", &depth_base.to_string())
         .replace("__WIDTH__", &width.to_string())
         .replace("__HEIGHT__", &height.to_string())
-        .replace("__CE__", &ce_period.to_string())
-        .replace("__FAIL_READ__", if fail_read { "1" } else { "0" })
-        .replace("__FAIL_WRITE__", if fail_write { "1" } else { "0" })
-        .replace("__STALL__", if stall { "1" } else { "0" })
-        .replace(
-            "__READ_ON_ACCEPT__",
-            if case.contains("accept_read") {
-                "1"
-            } else {
-                "0"
-            },
-        )
-        .replace("__WATCH__", &watchdog.to_string());
+        .replace("__DEPTH__", &depth_base.to_string())
+        .replace("__BYTES_CAP__", &bytes.to_string());
+    let parameters = [
+        ("STIM", stim as u64),
+        ("BYTES", bytes as u64),
+        ("MAXC", maxc as u64),
+        ("COLOR", 0),
+        ("DEPTH", u64::from(depth_base)),
+        ("WIDTH", u64::from(width)),
+        ("HEIGHT", u64::from(height)),
+        ("CE", ce_period),
+        ("FAIL_READ", u64::from(fail_read)),
+        ("FAIL_WRITE", u64::from(fail_write)),
+        ("STALL", u64::from(stall)),
+        ("READ_ON_ACCEPT", u64::from(case.contains("accept_read"))),
+        ("WATCH", watchdog),
+    ]
+    .map(|(name, value)| format!("+{name}={value}"));
     let mem_hex: String = initial.iter().map(|b| format!("{b:02x}\n")).collect();
     run_iverilog(
         &root,
@@ -349,6 +375,8 @@ fn run_cache_rtl(
             ("rows.hex", rows),
             ("mem.hex", mem_hex),
         ],
+        &parameters,
+        (width, height, depth_base, bytes),
     );
     let run = fs::read_to_string(root.join("run.out")).unwrap();
     let fault = run.contains("fault=1");

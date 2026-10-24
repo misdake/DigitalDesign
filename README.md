@@ -9,7 +9,7 @@ SDRAM, and HDMI display.
 Everything is developed and verified in one workspace. Design flow, CPU
 microarchitecture, and compiler are version-controlled together, so the
 hardware-under-test, its emulator, the compiler that programs it, and the
-benchmark evidence live at the same commit.
+verification evidence live at the same commit.
 
 ## Highlights
 
@@ -43,7 +43,7 @@ benchmark evidence live at the same commit.
 - **Verification depth**: modules are tested against emulation, NAND, and
   explicit Icarus HDL simulation from one shared typed-vector test; CPU V3 has
   cycle-by-cycle emulator-vs-RTL co-simulation (core, fetch queue, cache, and
-  full system) plus a frozen benchmark suite.
+  full system), with bounded functional and protocol regressions.
 
 ## Repository layout
 
@@ -106,6 +106,14 @@ powershell -ExecutionPolicy Bypass -File scripts/check-source-hygiene.ps1
 powershell -ExecutionPolicy Bypass -File scripts/check-docs.ps1
 powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode quick
 ```
+
+Pure GPU and system host regressions share one integration executable per
+package; component names remain filterable. See the
+[GPU test guide](/ip/gpu-v2/tests/README.md) and
+[system test guide](/systems/cpu-v3-tang-nano-20k/tests/README.md).
+Whole-board success and bulk-load simulations are explicit extended tests;
+pass `-ExtendedSimulations` with `iverilog`/`all` to include them. The former
+CPU V3 benchmark suite and its history/image tools are removed.
 
 `validate-hardware.ps1` accepts `quick | iverilog | audit | pnr | all`. Run
 cargo through `scripts/run-cargo.ps1` when raw output would be large — it tees

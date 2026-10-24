@@ -12,7 +12,7 @@ or present a frame.
 - `main.rs`: bounded compiled CPU V3 tests, using the default optimizer.
 
 Run the CPU check with `cargo test -p cpu-v3-tang-nano-20k --example frame_stats`.
-Run `cargo test -p cpu-v3-tang-nano-20k --test time_device -- --include-ignored`
+Run `cargo test -p cpu-v3-tang-nano-20k --test host time_device:: -- --include-ignored`
 with `IVERILOG_EXE` and `VVP_EXE` set for production device RTL, actual CPU/cache
 RECV, maintenance/DWAIT/watch, and functional-model checks. The timer testbench
 has a fixed watchdog and tests 131080 active clock edges.

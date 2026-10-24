@@ -199,8 +199,8 @@ arithmetic oracle. Uniform values, datapath stalls and payload queues still need
 an IP-specific cycle executor.
 
 The public physical/lifecycle/flow acceptance tests live in
-`ip/gpu-v2/tests/physical.rs`, with composed logic certificates in
-`ip/gpu-v2/tests/logic_cones.rs`. This milestone runs `cargo test -p gpu-v2` only.
+`ip/gpu-v2/tests/host/physical.rs`, with composed logic certificates in
+`ip/gpu-v2/tests/host/logic_cones.rs`. This milestone runs `cargo test -p gpu-v2` only.
 
 ## Experience from the GPU components
 

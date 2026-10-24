@@ -296,7 +296,7 @@ mod tests {
     use digital_design_hardware::{ResourceKind, VerilogProject};
     #[test]
     #[ignore = "bounded CPU-only application, real SPI, caches, arbiter, gear, native controller, SDRAM pins and Display"]
-    fn board_application_with_native_sdram_in_verilog() {
+    fn extended_board_application_with_native_sdram_in_verilog() {
         BOARD_APPLICATION_TEST.with(|x| x.set(true));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
         BOARD_APPLICATION_TEST.with(|x| x.set(false));
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     #[ignore = "bounded cold SPI/code/static load, virtual-black Display, actual CPU Device4 and native GPU"]
-    fn cold_boot_cpu_submits_gpu_commands_in_verilog() {
+    fn extended_cold_boot_cpu_submits_gpu_commands_in_verilog() {
         let source = r#"
             fn main() {
                 if dev_recv(4,2)!=0 { halt(0xff01); }
@@ -352,7 +352,7 @@ mod tests {
     }
     #[test]
     #[ignore = "bounded native SDRAM source-dirty LCOPY followed by full clean/invalidate"]
-    fn native_sdram_maintenance_probe_in_verilog() {
+    fn extended_native_sdram_maintenance_probe_in_verilog() {
         let source = r#"
             fn fail(status: u16) { dev_send(0,2,status); halt(0xff01); }
             fn invalidate() {
@@ -513,12 +513,12 @@ mod tests {
     }
     #[test]
     #[ignore = "complete real-SPI production application cold boot"]
-    fn flash_boot_executes_in_verilog() {
+    fn extended_flash_boot_executes_in_verilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>().unwrap();
     }
     #[test]
     #[ignore = "complete real-SPI nonzero memory / zero-and-nonzero-static fixture"]
-    fn flash_boot_statics_in_verilog() {
+    fn extended_flash_boot_statics_in_verilog() {
         TEST_IMAGE.with(|x| *x.borrow_mut() = Some((fixture(), false, 0x5a35)));
         let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
         TEST_IMAGE.with(|x| *x.borrow_mut() = None);
@@ -526,7 +526,7 @@ mod tests {
     }
     #[test]
     #[ignore = "bounded real SPI full-system 2MiB resource load and byte comparison"]
-    fn flash_boot_large_resources_in_verilog() {
+    fn extended_flash_boot_large_resources_in_verilog() {
         let base = fixture();
         let code = cpu_v3_tang_nano_20k::boot::single_boot_code(&base).unwrap();
         let data = (0..0x200000).map(|n| (n ^ (n >> 8) ^ 0x53) as u8).collect();
