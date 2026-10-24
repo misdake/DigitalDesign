@@ -152,3 +152,8 @@ These checks do not qualify a routed image or prove electrical compatibility.
 
 The [standalone test](/systems/cpu-v3-tang-nano-20k/examples/dualshock2/README.md)
 documents cold-boot packaging, UART fields, wiring and user hardware checks.
+
+The separate [GPU UI diagnostic](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md)
+displays raw axes, connection/mode, held and accumulated edge masks,16button
+indicators and two stick panels. It keeps polling during GPU/present waits,
+owns the interval timer clear, and reuses the same Device5 hardware.

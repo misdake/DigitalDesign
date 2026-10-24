@@ -47,6 +47,37 @@ fn main() {
             project.application = PathBuf::from("examples/dualshock2/rcc/main.rs");
             project.copies.clear();
             project.zeros.clear();
+        } else if example == "dualshock2_ui" {
+            let producer = root.join("examples/dualshock2_ui/tools/assets.py");
+            println!("cargo:rerun-if-changed={}", producer.display());
+            let assets = output.join("ds2-ui-assets");
+            let status = std::process::Command::new("python")
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .arg(producer)
+                .arg("--output")
+                .arg(&assets)
+                .status()
+                .expect("DS2 UI native atlas packer");
+            assert!(status.success(), "DS2 UI asset validation failed");
+            project.application = PathBuf::from("examples/dualshock2_ui/rcc/main.rs");
+            project.copies = vec![(
+                "DS2_UI_ATLAS".to_owned(),
+                0x4b0000,
+                assets.join("atlas.bin"),
+            )];
+            project.zeros.clear();
+            generated = std::fs::read_to_string(assets.join("ui_layout.rs")).unwrap();
+            std::fs::write(
+                output.join("ds2-ui-repack.conf"),
+                "format 2\napplication examples/dualshock2_ui/rcc/main.rs\ncopy DS2_UI_ATLAS 0x4b0000 ds2-ui-assets/atlas.bin\n",
+            )
+            .unwrap();
+            extra_assets.extend([
+                "ds2-ui-assets/atlas.bin".to_owned(),
+                "ds2-ui-assets/assets.json".to_owned(),
+                "ds2-ui-assets/ui_layout.rs".to_owned(),
+                "ds2-ui-repack.conf".to_owned(),
+            ]);
         } else {
             assert_eq!(example, "gpu_demo", "unsupported CPU_V3_BOOT_EXAMPLE");
             let example_dir = root.join("examples/gpu_demo");

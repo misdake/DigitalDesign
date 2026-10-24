@@ -6,6 +6,10 @@ on the system UART (115200 baud, 8N1). It does not submit GPU work or draw 3D.
 LED0 means application running; LED1 means a valid analog snapshot is connected.
 The existing cold-start Display remains virtual black until explicitly presented.
 
+For an on-screen diagnostic with numeric axes, button indicators and two stick
+plots, use the separate [GPU UI example](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md).
+This UART-only application remains the smaller bring-up option.
+
 Run from the repository root:
 
 ```powershell
