@@ -96,6 +96,20 @@ sequential whole-frame time. The profiling setup seeds a17ms previous-interval t
 render, so the numeric UI path is exercised. The stop policy ends after the one
 actual presentation and old-read drain, omitting the legacy full-scan tail.
 
+For native-memory timing, `GPU_DEMO_NATIVE_PROFILE=1` exports the same compiler's
+single-wall/RGB/two-rabbit-meshlet program and assets, with the numeric UI enabled.
+Run `python systems/cpu-v3-tang-nano-20k/tests/gpu_stream_frame.py` with `legacy`,
+`stream-old-cache`, or `stream-cache` to compare the actual arbiter, CL3 bridge,
+controller and delayed pin model. Each variant uses identical program/assets;
+the committed cache is the baseline. The native profile ends at the driver's
+real GPU-complete marker after checking four draws, one UI and all write
+terminals. It measures CPU preparation/cache maintenance, command spans,
+meshlet V/T and overlapping frontend/backend activity. Concurrent Display reads
+retain priority and ownership checks; a subsequent display-boundary wait is
+outside the rendering interval. The 12-million-cycle/1200-second bounds remain
+explicit. Instruction fetch is direct ROM and boot is excluded; this is an RTL
+memory-service comparison, not a board FPS measurement or an image oracle.
+
 Setting `GPU_DEMO_CPU_PREP_PROFILE=1` runs the same ignored test only through
 CPU submission, with a 200000-cycle limit. It requires the accepted frame's
 `profile/program.hex`, checks exact program identity, and writes separate

@@ -21,6 +21,8 @@ mod resolver;
 fn classic_frame_timing_profile() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let cpu_prep = std::env::var_os("GPU_DEMO_CPU_PREP_PROFILE").is_some();
+    let native_profile = std::env::var_os("GPU_DEMO_NATIVE_PROFILE").is_some();
+    let small = native_profile || std::env::var_os("GPU_DEMO_PROFILE_SMALL").is_some();
     let artifacts = root.join("../../target/maintainer/demo-toggle-20261023");
     let variant = std::env::var("GPU_DEMO_PROFILE_VARIANT").ok();
     let experiment = std::env::var("GPU_DEMO_PREPARE_MODE").ok();
@@ -39,11 +41,15 @@ fn classic_frame_timing_profile() {
                 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         );
     }
-    let out = artifacts.join(match &variant {
-        Some(name) => format!("cpu-prep-{name}"),
-        None if cpu_prep => "cpu-prep".into(),
-        None => "profile".into(),
-    });
+    let out = if native_profile {
+        root.join("../../target/maintainer/stream-frame-20261024/input")
+    } else {
+        artifacts.join(match &variant {
+            Some(name) => format!("cpu-prep-{name}"),
+            None if cpu_prep => "cpu-prep".into(),
+            None => "profile".into(),
+        })
+    };
     let boot = artifacts.join("boot");
     std::fs::create_dir_all(&out).unwrap();
     let constants = std::fs::read_to_string(boot.join("boot_resources.rs")).unwrap();
@@ -57,7 +63,7 @@ fn classic_frame_timing_profile() {
     let end = source[begin..].find("\n}").unwrap() + begin;
     let mut source = source;
     source.replace_range(begin..end, "    halt(0x600d);\n");
-    if pipeline {
+    if pipeline || small {
         source = source
             .replace("count: DEMO_ROOM_COUNT,", "count: 1,")
             .replace("mesh.count = DEMO_BUNNY_COUNT;", "mesh.count = 2;");
@@ -191,6 +197,9 @@ fn classic_frame_timing_profile() {
             "__ARBITER__",
             &CpuV3MemoryArbiter::verilog_identity().module_name(),
         );
+    if small {
+        tb = tb.replace("draws!=24", "draws!=4");
+    }
     for (key, file) in [("__PROGRAM__", "program.hex"), ("__ASSETS__", "assets.hex")] {
         tb = tb.replace(key, &out.join(file).to_string_lossy().replace('\\', "/"));
     }
@@ -237,6 +246,19 @@ fn classic_frame_timing_profile() {
         }
     }
     std::fs::write(out.join("assets.hex"), seed).unwrap();
+    if native_profile {
+        std::fs::write(out.join("tb.v"), tb).unwrap();
+        for (name, early, groups) in [("legacy", false, false), ("stream", true, false)] {
+            let dir = out.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (path, source) in digital_design_hardware_gowin::sdram_memory_controller::combination::rtl_sources_with_options(40, early, groups).unwrap() {
+                let source = if name == "legacy" { source.replace(".EARLY_GRANT(1'b0)", ".EARLY_GRANT(1'b1)") } else { source };
+                std::fs::write(dir.join(path.file_name().unwrap()), source).unwrap();
+            }
+        }
+        println!("NATIVE_FRAME_INPUT_READY {}", out.display());
+        return;
+    }
     let mut reference = None;
     let expected = if experiment.is_some() {
         let compile = |phase: u16| {
