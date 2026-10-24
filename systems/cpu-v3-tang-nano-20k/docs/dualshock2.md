@@ -1,162 +1,180 @@
 # DualShock 2 input
 
-The full CPU system binds Device5 to an original single-byte serial engine in
-`src/hardware/dualshock2/`. Software in `rcc/dualshock2.rs` owns complete packets,
-configuration, validation, buttons, all four axes, event baselines and reconnect.
-There is no packet FIFO, DMA, pressure decoder or vibration controller.
+The full CPU system binds Device5 to an autonomous packet engine in
+`src/hardware/dualshock2/`. Software in `rcc/dualshock2.rs` starts and collects
+packets without waiting for serial progress, and owns configuration, complete
+ID/header validation, buttons, all four axes, event baselines and reconnect.
+There is one in-flight or unread packet, no queue, DMA, pressure interpretation
+or vibration configuration. The old single-byte Device5 ABI is replaced; old
+applications and byte-engine bitstreams must not be mixed with this driver.
 
 ## Device5 contract
 
-All accesses use the normal CPU device bus. Unselected devices and unused read
-channels return zero. Device0 allocations are unchanged. Device5 uses channels
-0 through 3 in `TangNano20kDeviceLayout`.
+All accesses use the ordinary CPU device bus. Device0 allocations are unchanged.
+Unselected devices and unused read channels return zero. Device5 owns channels0/1.
 
 | Channel | RECV | SEND |
 |---|---|---|
-| 0 | bit0 busy; bit1 result-valid; bit2 selected (ATT low); bit3 sticky rejected; other bits zero | Exact value 1 selects; 2 deselects; 3 aborts; other values reject |
-| 1 | zero | Transfer low eight data bits; upper bits ignored |
-| 2 | Shift register in low eight bits | Explicitly consume pending result; data ignored |
-| 3 | zero | Clear sticky rejected if bit0 is one; otherwise no effect |
+| 0 | bit0 busy; bit1 result-valid; bit2 ATT selected; bit3 sticky rejected; bit4 first received byte was FF; other bits zero | Exact1 consumes one result word; exact2 clears rejected; exact3 aborts; other values reject |
+| 1 | Current packed result word: earlier wire byte in high8, later byte in low8 | Start: bits1:0 select0 poll42,1 config43,2 analog44;3 rejects. Bit8 supplies fourth-byte argument0/1; other bits ignored |
 
-Select is accepted only while idle, deselected, with no pending result. Transfer
-is accepted only while idle, selected, with no pending result. Deselect is
-accepted only while idle, selected, after result consumption. Consumption is
-accepted only while idle with a pending result. Invalid operations set rejected
-without modifying the active transfer, existing result, or ATT. Unknown write
-channels also reject. Clearing rejected never consumes data or stops work.
-Rejected does not itself prevent a later legal operation.
+Start is accepted only while idle without an unread result. It selects ATT,
+clears header-good and starts the complete transaction. The engine sends
+01/command/00/argument, followed by zero, except analog44 sends03 at byte4 and
+config43 with argument0 sends5A from byte4 onwards. CPU software selects the
+configuration sequence; hardware does not run a reconnect or initialization loop.
 
-Synchronous active-high reset and abort have priority over progress. They clear
-the state, result and rejected, and drive ATT/CLK/CMD high. Abort deliberately
-terminates a partial packet and may shorten a low CLK pulse; it is a recovery
-operation. Reset also initializes both DAT synchronizer FFs high. Normal
-deselect cannot truncate a byte or its guard.
+A read never advances or acknowledges data, including Device0 watch probes.
+Consume is accepted only while idle with result-valid. Each consume advances
+one16-bit word; consuming the final word clears result-valid. Another start
+cannot overwrite an unread packet. Busy starts/consumes and unsupported writes
+set rejected without modifying traffic or unread results. Clearing rejected
+neither stops traffic nor consumes data. Rejected does not prohibit a later legal
+operation. Acceptance on a completion edge uses the old busy/valid values.
 
-RECV and Device0 watch probes are entirely side-effect-free. Result-valid rises
-only after guard completion and stays high until explicit consumption or
-reset/abort. Channel2 is meaningful only with result-valid; while busy it can
-expose the intermediate shared shift value. Consumption clears valid but need
-not erase that value. No SEND in the accepting edge of completion is implicitly
-accepted: acceptance uses the old busy/valid values.
+Reset and abort have priority. Both clear progress, valid, rejected and header
+state, and drive CLK/CMD/ATT high. Abort can truncate a low CLK pulse and is only
+for recovery. Reset initializes both DAT synchronizer FFs high. Packet memory
+is deliberately not reset; only valid words may be read. Channel1 while busy,
+after final consume, or before publication has no specified value. Header-good
+remains until the next start/reset/abort and alone does not imply valid input.
+
+## Storage and lifetime
+
+Bytes1..20 occupy ten packed words at addresses1..10 in a16x16 asynchronous-read,
+synchronous-write distributed RAM. Gowin maps it to four RAM16S4 cells,256bits;
+there is no BSRAM or DSP. Byte0 is represented by header-good, rather than a
+second raw register. On success software reconstructs its known valueFF.
+
+The eight-bit serial shift register is shared for transmit/receive. Odd byte
+completion captures a high-byte FF; even byte completion writes the pair into
+RAM at `byte_index[4:1]`. The first byte also writes unused address0; that value
+is never consumed. No dynamic lane mask or array read mux is built in FF logic.
+On packet completion the same byte index becomes the CPU cursor2,4,...,20.
+The two phases never access RAM concurrently, so no arbitration, copy, extra
+read pointer or packet alignment shifter is needed. The final wire word address
+also determines when consumption releases the packet.
+
+| Boundary | Stored state and ownership |
+|---|---|
+| Accepted start | Serial engine owns packet RAM; busy rises, old bytes are invalid |
+| Byte0 completed | Record exactFF predicate |
+| Odd/even payload bytes | First byte held in pair FF; second completes one RAM word |
+| Guard and ATT release completed | CPU owns all result words; cursor points to ID/5A |
+| RECV1 | Word remains stable; repeated reads have no side effects |
+| SEND0=1 | Advance cursor; final word releases valid for the next start |
+| Reset/abort | Invalidate snapshot and release lines; RAM contents are irrelevant |
 
 ## Main-clock serial schedule
 
-All engine state and the two DAT synchronizer stages run on the ungated 54 MHz
-main clock. CLK is an output, never an internal clock. CPU hold, cache stalls,
-watch sleep, or stopped instruction retirement do not stop the engine.
+All state and both DAT synchronizer stages use the ungated54MHz main clock.
+CLK is an output, never an internal clock. CPU sleep, watch, cache stalls or
+stopped retirement do not stop the packet.
 
-| Boundary | Action and lifetime |
+| Boundary | Action |
 |---|---|
-| Accepted select | ATT low; CLK/CMD high; busy for 216 clocks (4 us setup) |
-| Accepted transfer | Load one 8-bit Tx/Rx register; busy; wait 216 clocks |
-| Falling CLK | Present old shift bit0 on separate CMD FF; hold CMD through following rise |
-| 216 clocks later, rising CLK | Shift right, insert second DAT synchronizer FF into bit7 |
-| Next falling CLK | 216 clocks after previous rise; repeat for eight LSB-first bits |
-| Eighth rising CLK | Shared register now contains received byte; start guard |
-| 32 half-periods later | 6912 clocks = 128 us guard elapsed; busy low, result-valid high, CMD high |
-| Accepted deselect | Hold selected, CLK/CMD high for 216 clocks, then ATT high and busy low |
+| Accepted start | ATT low;216clocks setup, then216clocks before first falling CLK |
+| Falling CLK | Present old shift bit0 on CMD and hold through following rise |
+|216clocks later, rising CLK | Sample second DAT FF and shift right; eight bits LSB-first |
+| Eighth rise | Capture received byte and begin exactly32 half-period ticks of guard |
+| Guard completed | Load next transmit byte, or start final216clock ATT release |
+| Next falling CLK |216clocks after guard;7128clocks after preceding byte's last rise |
+| Final release | ATT high, busy low and result-valid high together |
 
-The first falling edge follows transfer acceptance by 216 clocks. Transfer
-acceptance to result publication is 48 half-periods = 10368 clocks = 192 us.
-Software gaps may lengthen high CLK/ATT setup, never shorten edges or guard.
-DAT is sampled two main-clock stages after the pin; an external controller must
-settle before the sampling edge with that synchronizer delay allowed.
+Half-period216clocks is4us:125kHz SCLK,64us wire time per byte,128us guard.
+A packet takes `N*10368+432` main clocks:93744 for9bytes and218160 for21bytes.
+CPU start/collection instructions are separate. DAT must settle before the
+sampling edge with the two-clock synchronizer delay allowed.
 
-The shared five-bit counter increments for both phases. Eight sampled bits
-advance it from 0 to 8; guard then advances through 31 and wraps to 7 before
-publishing the result on the next half-period tick. Both phases test the same
-terminal value7, sharing arithmetic without changing the 32-tick guard.
+The existing five-bit counter is shared by bits0..7 and the guard, incrementing
+from8 through wrap to7 for exactly32ticks. The byte index increments by one on
+wire progress and by two on CPU word consume. It and the final word index are
+shared across serial and CPU ownership, rather than maintained twice.
 
-The RTL declares 31 state bits: shift8, divider8, shared bit/guard count5,
-phase3, CLK/CMD/ATT3, DAT synchronizer2, result-valid1, rejected1 (31 bits total).
-It contains no memory primitive, DSP, general multiply/divide or new clock
-domain. Actual mapped logic, routing and physical timing require the complete
-board build; declarations and resource reservations are not fitted results.
+The reply ID's low nibble selects bounded lengths:1 gives5bytes,3 gives9,
+9 gives21, everything else gives3. This is framing only: the CPU requires exact
+FF/known ID/5A. An unknown ID sharing a recognized nibble is still rejected.
+A malformed packet cannot request an unbounded hardware transfer. Every selected
+bounded length is completely clocked before normal ATT release, including the
+full79 pressure tail.
 
-## CPU protocol and snapshot
+## Nonblocking CPU service and snapshot
 
-`ds2_packet(rx, command, arg)` selects, transfers 01/command/00, and validates
-FF/ID/5A before accepting a recognized length. IDs 41, 73, 79 and F3 select
-5, 9, 21 and 9 bytes respectively. Unknown IDs never control an unchecked length.
-Every recognized packet is completely clocked before normal deselect. F3 denotes
-configuration and is never published as input. No 4F pressure or 4D vibration
-configuration is sent; a 79 reply's pressure tail is received and ignored.
+`ds2_service(state, rx)` starts a transaction and returns false immediately,
+checks an in-flight transaction and returns false immediately, or copies a
+completed result in one bounded CPU call. It has no wire-wait or retry loop.
+It reads ID/5A first, validates header-good and the exact known ID, then reads and
+consumes2/4/10 words for5/9/21byte packets. `rx[0..length]` contains the complete
+recognized reply; trailing array capacity is unspecified. A failed packet is
+never published as input. Only complete73/79 polls return true.
 
-`ds2_service(state, rx)` performs at most one packet per call. A digital 41 poll
-starts 43(entry, arg1), 44(analog+lock 01/03), 43(exit, arg0 with 5A fill), then
-polls again. Only a complete 73/79 poll establishes connected input. Startup in
-F3 schedules exit and reprobe. Integer wall-time gating uses two millisecond
-ticks after configuration packets, guaranteeing at least 1 ms despite timer
-quantization. Normal connected polls wait 16 ms after the preceding packet.
-The caller must service regularly; long blocking render/wait loops must arrange
-their own service opportunities.
+A digital41 poll schedules43(entry,arg1),44(analog+lock01/03),43(exit,arg0,
+5A fill), then reprobes. F3 means configuration and is never published as input;
+startup in F3 schedules exit first. Each configuration stage completes in a
+separate call and waits two integer milliseconds after completion before the
+next start, guaranteeing at least1ms despite timestamp quantization.
 
-Three unsuccessful configuration rounds lead to a 250 ms digital retry delay.
-Transport failures retry after 10 ms, then 250 ms after three failures. A later
-valid analog packet resets the failure count. There are no blocking retry loops.
-Configuration packets span multiple calls, with ATT released between packets.
+Connected polling uses a16ms **start-to-start** cadence. A completed poll
+collected at/after its next deadline immediately launches the next poll in that
+same call. Thus a once-per-frame caller can collect the preceding packet and
+start the following one without halving the input rate. Earlier collection
+leaves the next start for a later eligible call. Applications must service often
+enough to meet the timeout below; no CPU callback is required between bytes.
+
+Three unsuccessful configuration rounds use a250ms digital retry delay.
+Transport/header failures retry after10ms, then250ms after three failures. A
+valid analog reply resets the failure count. There is no blocking retry loop.
 
 The caller supplies state[16] and rx[21] in CPU memory:
 
 | State index | Meaning |
 |---|---|
-| 0,1,2 | Analog connected flag, last packet ID (zero on transport/header failure), active-high buttons |
-| 3,4,5,6 | Raw right X/Y, left X/Y, each 0..255 |
-| 7,8,9 | Prior buttons, newly pressed, newly released |
-| 10,11 | Configuration phase (0 poll, 1 enter, 2 mode, 3 exit), bounded failure count |
-| 12,13,14,15 | Last completion ms, delay ms, started flag, reserved |
+|0,1,2|Analog connected, last packet ID (zero on failure), active-high buttons|
+|3,4,5,6|Raw rightX/Y,leftX/Y, each0..255|
+|7,8,9|Previous buttons, newly pressed, newly released|
+|10,11|Configuration phase0/1/2/3, bounded failure count|
+|12,13|Current packet start or last configuration/failure completion ms; delay ms|
+|14,15|Cadence initialized; packet in-flight|
 
-Buttons decode active-low little-endian packet bytes3/4. Axes are bytes5..8.
-No axes are inferred from a digital reply. Disconnect, malformed header or
-timeout clears connected/buttons/events and sets raw axes neutral128, whose
-validity is explicitly false. Reconnect establishes prior buttons without a
-synthetic press. New edges last until the next service call. Consumers requiring
-queued events must accumulate them themselves. `ds2_axis(raw, deadzone)` subtracts
-128 and removes the inclusive symmetric dead zone; use raw<=255 and
-deadzone<=127. Raw values stay available and no startup calibration is performed.
+Buttons decode active-low little-endian bytes3/4; axes are bytes5..8. No analog
+axes are inferred from41. Invalid input clears connected/buttons/events and sets
+axes neutral128; connection validity remains explicit. Reconnect establishes a
+new button baseline without synthetic presses. Edges last until the next
+service call; consumers accumulate them if needed. `ds2_axis` remains a simple
+legacy center/dead-zone helper; raw bytes and the separate stick helper remain
+available without startup calibration.
 
-## Timeout and timer ownership
+## Timeout and validity limits
 
-Each packet reads a Device0 channel11 start value. Byte helpers only read this
-timer and never clear it. At >=20000 us elapsed, saturation65535, or a detected
-backward clear during a packet, software aborts and rejects the packet. This is
-an elapsed-time bound, independent of instruction counts. A CPU stopped past the
-deadline rejects the result on resumption even if serial transfer completed.
-The minimum program owns clear once per service; a future frame scheduler must
-provide the shared clear boundary and never clear during a packet. Saturation
-cannot represent a valid zero or wrapped elapsed interval.
+An in-flight packet is rejected if service resumes20ms or more after start, or
+if rejected is set. Timeout uses the independent modulo65536 millisecond clock;
+it neither reads nor clears the shared microsecond interval. Applications may
+clear their frame timer while serial work is in flight. Intervals must remain
+below the millisecond counter's wrap period. A CPU stopped beyond the deadline
+rejects even a completed snapshot on resumption. The hardware transaction itself
+is bounded to at most21bytes and cannot depend on software to release ATT.
 
-There is no ACK input and no CRC. Header/known-length validation cannot detect
-every bit error. In particular, a controller that stops driving after a valid
-header can leave high bits indistinguishable from legal FF payload or ignored
-pressure bytes. A missing/short header is rejected; arbitrary short payloads
-cannot be guaranteed detectable with this six-wire contract.
+There is no ACK input or CRC. Known header/length checks cannot detect all data
+errors: a controller that stops driving after a valid header can produce high
+payload bits indistinguishable from legitimateFF data. Full pressure bytes are
+retained but not interpreted. No4F pressure or4D vibration configuration is sent.
 
-## Board ownership and validation boundary
+## Board and verification boundary
 
-`cold_boot_hdmi_stream_ds2_memory_project` retains the existing 54/108 MHz CL3
-memory/CPU/GPU/Display profile and SDC, while replacing the user-I/O binding.
-Only LEDs0/1 (pins15/16, active-low) remain. DS2 CLK/CMD/DAT/ATT bind to
-17/20/19/18 at LVCMOS33; DAT is input-only with weak pull-up. Existing six-LED
-profiles remain available for other targets. The onboard LED physical loads
-on these pins remain present and must be measured with actual cabling.
+The board remains54/108MHz CL3. Left CLK/CMD/DAT/ATT use17/20/19/18 at LVCMOS33;
+DAT is input-only with pull-up and two preserved main-clock synchronization FFs.
+Only LEDs0/1 at15/16 remain. No new clock or pin is added. LED loading and
+controller wiring still require physical measurement.
 
-Bounded independent serial-peer tests cover duplex bytes, exact edges/guard,
-DAT synchronization, backpressure, illegal starts, reset/abort and CPU pause.
-Actual CPU/D-cache/Device0/Device5 tests execute configuration and full polling,
-including 79 tail, four-axis boundaries, bad/short headers, unknown ID,
-unplug/reconnect, watch, long pause and saturation. They exchange wire bits;
-they do not preload decoded button/axis results. Pin/export checks assert unique
-CST ownership, preserved SDRAM constraints and unchanged DSP/BSRAM reservations.
-These checks do not qualify a routed image or prove electrical compatibility.
+Bounded independent serial peers cover complete packets/configuration/pressure,
+exact edges and guard, CPU absence, stable readback, illegal overwrites, explicit
+consume and reset/abort phases. Actual CPU/cache/Device0/Device5 tests cover
+configuration, reconnect, raw axes, edges, malformed packets, watch and long
+pauses. The control-peer UI test exercises one frame and once-per-frame polling;
+it does not simulate pixels or wire timing. Local synthesis does not qualify
+complete-board routing, timing or electrical compatibility.
 
-The [standalone test](/systems/cpu-v3-tang-nano-20k/examples/dualshock2/README.md)
-documents cold-boot packaging, UART fields, wiring and user hardware checks.
-
-The separate [GPU UI diagnostic](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md)
-displays raw axes, connection/mode, held and accumulated edge masks,16button
-indicators and two circular stick panels with calibrated raw/processed points.
-The separate [stick helper](input-sticks.md) owns calibration, radial dead zones,
-direction, strength and optional four-way activation hysteresis.
-The diagnostic keeps polling during GPU/present waits,
-owns the interval timer clear, and reuses the same Device5 hardware.
+The [minimal UART test](/systems/cpu-v3-tang-nano-20k/examples/dualshock2/README.md)
+and [GPU UI diagnostic](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md)
+use this driver. The [stick helper](input-sticks.md) owns calibration, square-ray
+mapping, dead zones, direction, strength and optional activation hysteresis.

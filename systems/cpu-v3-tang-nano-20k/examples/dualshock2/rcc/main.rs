@@ -39,8 +39,6 @@ fn main() {
     let mut previous: u16 = 65535;
     let mut report = time_milliseconds();
     loop {
-        // This standalone application owns the interval timer, once per service.
-        time_clear_microseconds();
         ds2_service(state.as_array(), packet.as_array());
         let connected = state[0u16];
         dev_send(0, 2, 1 | (connected << 1));

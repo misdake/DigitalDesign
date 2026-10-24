@@ -77,20 +77,24 @@ After the true GPU completion, it presents through the existing A/B ownership
 API and waits for the actual Display handoff before reusing storage. Palette
 values are raw display RGB565, selected by `gpu_init()`.
 
-`dui_service` owns the shared microsecond clear boundary and collects events.
-It runs before each recording and during GPU/present polling. Packet helpers
-never clear the timer; protocol edges/guard remain autonomous. GPU and Display
-waits use the independent millisecond clock with a2s deadline. Driver faults
-halt with0xd500|stage and light both remaining LEDs. LED0 otherwise means
-running; LED1 means connected analog input.
+`dui_service` starts/checks/collects a packet without waiting for serial bits.
+It runs before each recording and during GPU/present polling, accumulating
+button events. Its16ms connected cadence is start-to-start; a once-per-frame
+caller can collect and restart together. It does not own or clear the shared
+microsecond timer. GPU/Display waits use the millisecond clock with a2s deadline.
+Driver faults halt with0xd500|stage and light both LEDs. LED0 means running;
+LED1 means connected analog input.
 
-Use the existing DS2 full-system bitstream, with left-port CLK/CMD/DAT/ATT on
-17/20/19/18 and only LED0/1 outputs. The old six-LED profile is unsuitable.
-Pin orientation,3.3V/GND and real input checks are in the minimal test README.
-The visual test replaces its software Flash package; it does not require new
-RTL. Reuse a routed artifact only after comparing its complete exported source
-and configuration identity. Programming and physical acceptance require user
-authorization; building is offline.
+The calibrated yellow point retains square travel. The green point maps each
+ray's fractional square travel into a circle before dead-zone rescaling; a
+partially pushed diagonal no longer reaches full strength prematurely.
+
+This application requires the **packet-engine** DS2 full-system bitstream.
+Earlier single-byte DS2 images are incompatible and cannot be reused. Left
+CLK/CMD/DAT/ATT remain17/20/19/18 with only LED0/1 outputs. The old six-LED profile
+is unsuitable. Pin orientation,3.3V/GND and physical checks are in the minimal
+README. Building is offline; full source/configuration, complete routed timing
+and physical image identity must be qualified before authorized programming.
 
 ## Bounded verification and preview
 

@@ -19,8 +19,6 @@ fn dui_require(ok: bool, code: u16) {
     }
 }
 fn dui_service() {
-    // Sole timer-clear owner. No frame timing measurement runs in this example.
-    time_clear_microseconds();
     if ds2_service(INPUT.as_array(), PACKET.as_array()) {
         dui_controls(INPUT.as_array());
         EVENTS[0u16] |= INPUT[8u16];
@@ -48,7 +46,7 @@ fn dui_wait(cb: u16, present: bool) -> u16 {
         if time_elapsed_ms(begin, time_milliseconds()) >= 2000 {
             return GPU_TIMEOUT;
         }
-        // Serial engine remains autonomous while the CPU serves one packet.
+        // Start/check/collect only; serial progress never holds this CPU loop.
         dui_service();
     }
     return GPU_TIMEOUT;

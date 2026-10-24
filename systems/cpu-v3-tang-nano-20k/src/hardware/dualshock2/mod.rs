@@ -1,6 +1,7 @@
-//! Device5: autonomous 54 MHz single-byte DS2 serial engine.
+//! Device5: autonomous 54 MHz bounded packet DS2 serial engine.
 use crate::{Hardware, HardwareIdentity, Module, ModuleIo};
 use digital_design_circuit::{CircuitWires, Wire, Wires};
+use digital_design_hardware::{SsramBits, TargetResourceRequest};
 
 #[derive(Clone, ModuleIo)]
 pub struct DualShock2Input {
@@ -20,7 +21,7 @@ pub struct DualShock2Output {
     pub att: Wire,
 }
 #[derive(Hardware)]
-#[hardware(namespace = "components/dualshock2")]
+#[hardware(namespace = "components/dualshock2", target_leaf)]
 pub struct DualShock2;
 impl Module for DualShock2 {
     type Input = DualShock2Input;
@@ -28,6 +29,10 @@ impl Module for DualShock2 {
     type EmuState = ();
     const USES_MAIN_CLOCK: bool = true;
     const EMU_AVAILABLE: bool = false;
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // 16 words x16 bits, mapped to four16x4 distributed RAM cells.
+        vec![TargetResourceRequest::new(SsramBits::new(256))]
+    }
     fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
         panic!("DS2 is verified against an independent serial peer in RTL")
     }

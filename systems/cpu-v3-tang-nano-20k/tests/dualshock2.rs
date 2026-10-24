@@ -55,8 +55,8 @@ fn run_rtl(name: &str, projects: Vec<GeneratedVerilogProject>, tb: String) {
 }
 
 #[test]
-#[ignore = "bounded production RTL with independent LSB serial controller"]
-fn byte_engine_serial_peer() {
+#[ignore = "bounded autonomous packet RTL with independent LSB serial controller"]
+fn packet_engine_serial_peer() {
     run_rtl(
         "engine",
         vec![VerilogProject::generate::<DualShock2>().unwrap()],
@@ -139,4 +139,17 @@ fn actual_cpu_configures_and_polls_serial_peer() {
         ],
         tb,
     );
+}
+
+#[test]
+fn packet_buffer_claims_only_distributed_ram() {
+    use digital_design_hardware::{Module, ResourceKind};
+    let claims = DualShock2::target_resources();
+    let amounts: Vec<_> = claims
+        .iter()
+        .flat_map(|request| &request.resources)
+        .collect();
+    assert_eq!(amounts.len(), 1);
+    assert_eq!(amounts[0].kind, ResourceKind::SsramBit);
+    assert_eq!(amounts[0].amount, 256);
 }

@@ -1,111 +1,46 @@
-//! Device5 wire-protocol driver. Include device_abi and time alongside it.
+//! Nonblocking Device5 packet driver. Include time alongside it.
 use crate::dsl_rt::*;
 
-// Reads never consume a byte. Only SEND5,2 acknowledges a completed result.
 pub fn ds2_abort() {
     dev_send(5, 0, 3);
 }
-
-pub fn ds2_expired(start: u16) -> bool {
-    let now = time_microseconds();
-    return now == 65535 || now < start || now - start >= 20000;
-}
-
-pub fn ds2_wait_idle(start: u16) -> bool {
-    while (dev_recv(5, 0) & 1) != 0 {
-        if ds2_expired(start) {
-            ds2_abort();
-            return false;
-        }
+// The stable 16-bit port presents two consecutive wire bytes, first in high8.
+// SEND5,0,1 advances one whole word; final consumption releases the snapshot.
+fn ds2_collect(mut rx: Array<u16>, header_good: bool) -> u16 {
+    let first = dev_recv(5, 1);
+    let id = first >> 8;
+    let mut length: u16 = 0;
+    if id == 65 {
+        length = 5;
     }
-    if ds2_expired(start) || (dev_recv(5, 0) & 8) != 0 {
-        ds2_abort();
-        return false;
+    if id == 115 || id == 243 {
+        length = 9;
     }
-    return true;
-}
-
-// 0..255 on success, 256 on timeout/rejection. Never clears the shared timer.
-pub fn ds2_byte(tx: u16, start: u16) -> u16 {
-    dev_send(5, 1, tx);
-    if !ds2_wait_idle(start) {
-        return 256;
+    if id == 121 {
+        length = 21;
     }
-    if (dev_recv(5, 0) & 2) == 0 {
-        ds2_abort();
-        return 256;
-    }
-    let value = dev_recv(5, 2) & 255;
-    dev_send(5, 2, 1);
-    return value;
-}
-
-// Complete one bounded packet. command=42/43/44; arg is its fourth byte.
-// Only recognized IDs determine length; F3 is configuration state, never input.
-pub fn ds2_packet(mut rx: Array<u16>, command: u16, arg: u16) -> u16 {
-    let start = time_microseconds();
-    if start == 65535 {
+    if !header_good || (first & 255) != 90 || length == 0 {
         ds2_abort();
         return 0;
     }
-    ds2_abort();
+    rx[0u16] = 255;
+    rx[1u16] = id;
+    rx[2u16] = first & 255;
     dev_send(5, 0, 1);
-    if !ds2_wait_idle(start) {
-        return 0;
+    let mut at: u16 = 3;
+    while at < length {
+        let word = dev_recv(5, 1);
+        rx[at] = word >> 8;
+        rx[at + 1] = word & 255;
+        dev_send(5, 0, 1);
+        at += 2;
     }
-    let mut length: u16 = 3;
-    let mut i: u16 = 0;
-    while i < length {
-        let mut tx: u16 = 0;
-        if i == 0 {
-            tx = 1;
-        }
-        if i == 1 {
-            tx = command;
-        }
-        if i == 3 {
-            tx = arg;
-        }
-        if command == 68 && i == 4 {
-            tx = 3;
-        }
-        if command == 67 && arg == 0 && i >= 4 {
-            tx = 90;
-        }
-        let value = ds2_byte(tx, start);
-        if value > 255 {
-            return 0;
-        }
-        rx[i] = value;
-        if i == 2 {
-            if rx[0u16] != 255 || value != 90 {
-                ds2_abort();
-                return 0;
-            }
-            let id = rx[1u16];
-            if id == 65 {
-                length = 5;
-            } else if id == 115 || id == 243 {
-                length = 9;
-            } else if id == 121 {
-                length = 21;
-            } else {
-                ds2_abort();
-                return 0;
-            }
-        }
-        i += 1;
-    }
-    dev_send(5, 0, 2);
-    if !ds2_wait_idle(start) {
-        return 0;
-    }
-    return rx[1u16];
+    return id;
 }
 
 // State[16]: connected, ID, active-high buttons, RX,RY,LX,LY,
 // previous buttons, pressed, released, config phase, failed attempts,
-// last service ms, delay ms, started, reserved. Invalid axes are neutral 128.
+// last completion/start ms, delay ms, started, in-flight. Invalid axes are neutral 128.
 pub fn ds2_disconnect(mut s: Array<u16>) {
     s[0u16] = 0;
     s[2u16] = 0;
@@ -129,32 +64,50 @@ pub fn ds2_init(mut s: Array<u16>) {
     ds2_abort();
 }
 
-// One packet per service, including configuration. Caller services frequently
-// and owns timer clear. Return true only when a new analog snapshot is ready.
+// Calls never wait; collection can immediately rearm the following packet.
+// Independent millisecond timeout permits shared microsecond timer clears.
 pub fn ds2_service(mut s: Array<u16>, mut rx: Array<u16>) -> bool {
     s[8u16] = 0;
     s[9u16] = 0;
     let now = time_milliseconds();
-    if s[14u16] != 0 && time_elapsed_ms(s[12u16], now) < s[13u16] {
+    if s[15u16] == 0 {
+        if s[14u16] != 0 && time_elapsed_ms(s[12u16], now) < s[13u16] {
+            return false;
+        }
+        let phase = s[10u16];
+        let mut descriptor: u16 = 0;
+        if phase == 1 {
+            descriptor = 257;
+        }
+        if phase == 2 {
+            descriptor = 258;
+        }
+        if phase == 3 {
+            descriptor = 1;
+        }
+        dev_send(5, 1, descriptor);
+        s[14u16] = 1;
+        s[15u16] = 1;
+        s[12u16] = now;
         return false;
     }
-    s[14u16] = 1;
-    s[12u16] = now;
+    let status = dev_recv(5, 0);
+    let mut id: u16 = 0;
+    if time_elapsed_ms(s[12u16], now) >= 20 || (status & 8) != 0 {
+        ds2_abort();
+    } else {
+        if (status & 1) != 0 {
+            return false;
+        }
+        if (status & 2) != 0 {
+            id = ds2_collect(rx, (status & 16) != 0);
+        } else {
+            ds2_abort();
+        }
+    }
+    let started = s[12u16];
+    s[15u16] = 0;
     let phase = s[10u16];
-    let mut command: u16 = 66;
-    let mut arg: u16 = 0;
-    if phase == 1 {
-        command = 67;
-        arg = 1;
-    }
-    if phase == 2 {
-        command = 68;
-        arg = 1;
-    }
-    if phase == 3 {
-        command = 67;
-    }
-    let id = ds2_packet(rx, command, arg);
     s[12u16] = time_milliseconds();
     s[1u16] = id;
     // Two integer ticks guarantee at least 1 ms after packet completion.
@@ -209,7 +162,16 @@ pub fn ds2_service(mut s: Array<u16>, mut rx: Array<u16>) -> bool {
     s[6u16] = rx[8u16];
     s[10u16] = 0;
     s[11u16] = 0;
+    // Connected cadence is start-to-start. A once-per-frame caller may collect
+    // the preceding packet and immediately launch the next, retaining overlap.
+    s[12u16] = started;
     s[13u16] = 16;
+    let next = time_milliseconds();
+    if time_elapsed_ms(started, next) >= 16 {
+        dev_send(5, 1, 0);
+        s[12u16] = next;
+        s[15u16] = 1;
+    }
     return true;
 }
 

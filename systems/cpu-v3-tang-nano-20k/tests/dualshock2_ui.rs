@@ -21,10 +21,9 @@ struct State {
     pending: bool,
     starts: usize,
     swaps: usize,
-    selected: bool,
+    packet_until: u64,
+    word: usize,
     valid: bool,
-    byte: usize,
-    result: u16,
     packets: usize,
     during_gpu: usize,
     during_present: usize,
@@ -42,6 +41,17 @@ impl cpu_v3::Device for Peer {
             s.format = s.shadow_format;
             s.pending = false;
         }
+        if self.kind == 5 && s.packet_until != 0 && s.us >= s.packet_until {
+            s.packet_until = 0;
+            s.valid = true;
+            s.packets += 1;
+            if s.us < s.gpu_until {
+                s.during_gpu += 1;
+            }
+            if s.pending {
+                s.during_present += 1;
+            }
+        }
         match (self.kind, ch) {
             (0, 10) => (s.us / 1000) as u16,
             (0, 11) => (s.us - s.clear).min(65535) as u16,
@@ -51,8 +61,11 @@ impl cpu_v3::Device for Peer {
             (3, 3) => u16::from(s.pending),
             (3, 4) => s.format,
             (4, 2) => u16::from(s.us < s.gpu_until),
-            (5, 0) => u16::from(s.selected) * 4 + u16::from(s.valid) * 2,
-            (5, 2) => s.result,
+            (5, 0) => 16 + u16::from(s.packet_until != 0) * 5 + u16::from(s.valid) * 2,
+            (5, 1) => {
+                let response = [0x73u16, 0x5a, 0xa5, 0x5a, 0, 255, 128, 64];
+                (response[s.word * 2] << 8) | response[s.word * 2 + 1]
+            }
             _ => 0,
         }
     }
@@ -75,38 +88,24 @@ impl cpu_v3::Device for Peer {
             }
             (5, 0) => match value {
                 1 => {
-                    assert!(!s.selected);
-                    s.selected = true;
-                    s.byte = 0;
-                }
-                2 => {
-                    assert!(s.selected && !s.valid);
-                    s.selected = false;
-                    s.packets += 1;
-                    if s.us < s.gpu_until {
-                        s.during_gpu += 1;
-                    }
-                    if s.pending {
-                        s.during_present += 1;
+                    assert!(s.valid);
+                    s.word += 1;
+                    if s.word == 4 {
+                        s.valid = false;
                     }
                 }
                 3 => {
-                    s.selected = false;
+                    s.packet_until = 0;
                     s.valid = false;
                 }
+                2 => {}
                 _ => panic!("unexpected DS2 command"),
             },
             (5, 1) => {
-                assert!(s.selected && !s.valid);
-                let response = [255, 0x73, 0x5a, 0xa5, 0x5a, 0, 255, 128, 64];
-                assert!(s.byte < response.len());
-                s.result = response[s.byte];
-                s.byte += 1;
-                s.valid = true;
-            }
-            (5, 2) => {
-                assert!(s.valid);
-                s.valid = false;
+                assert!(!s.valid && s.packet_until == 0);
+                assert_eq!(value, 0);
+                s.packet_until = s.us + 1736;
+                s.word = 0;
             }
             (7, 0) => s.counts[0] = value,
             (7, 1) => s.counts[1] = value,
@@ -349,4 +348,23 @@ fn complete_one_frame_services_ds2_during_render_and_present_waits() {
         ),
     )
     .unwrap();
+}
+
+#[test]
+fn one_call_per_frame_collects_and_restarts_without_halving_sample_rate() {
+    let out = assets("cadence");
+    let (_, s) = run(
+        r#"mod device_abi;mod dualshock2;mod time;
+static S:Buf<u16,16>=Buf::new([0;16]);static RX:Buf<u16,21>=Buf::new([0;21]);
+fn check(ok:bool){if !ok{halt(0xbad);}}
+fn main(){ds2_init(S.as_array());check(!ds2_service(S.as_array(),RX.as_array()));
+let mut frame:u16=0;while frame<3{
+let start=time_milliseconds();while time_elapsed_ms(start,time_milliseconds())<17{}
+time_clear_microseconds();check(ds2_service(S.as_array(),RX.as_array()));
+check(S[0u16]==1&&S[15u16]==1);frame+=1;}halt(0x600d);}"#,
+        "main",
+        &out,
+    );
+    assert_eq!(s.borrow().packets, 3);
+    assert!(s.borrow().packet_until != 0);
 }

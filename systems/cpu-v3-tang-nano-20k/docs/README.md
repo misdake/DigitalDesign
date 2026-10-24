@@ -9,7 +9,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [`architecture.md`](architecture.md): current complete-system composition, clock and memory paths,
   boot chain, device ownership, display integration, and validation boundary.
 - [Wall clock](/systems/cpu-v3-tang-nano-20k/docs/wall-clock.md): SystemControl millisecond timestamps, RCC access, wrap limits and functional-model time.
-- [DualShock 2](/systems/cpu-v3-tang-nano-20k/docs/dualshock2.md): Device5 byte engine, CPU packet/snapshot protocol, pin ownership and standalone cold-boot test.
+- [DualShock 2](/systems/cpu-v3-tang-nano-20k/docs/dualshock2.md): Device5 packet engine, nonblocking CPU snapshot protocol, pin ownership and standalone cold-boot test.
 - [Calibrated sticks](input-sticks.md): eight-bit calibration, radial dead zones, Q8 motion/direction/strength and optional four-way activation hysteresis.
 - [`cpu-v3-optimization.md`](cpu-v3-optimization.md): concise one-sentence optimization index.
 - [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md): historical implementation,
