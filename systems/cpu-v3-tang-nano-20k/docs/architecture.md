@@ -224,6 +224,12 @@ the software read and arm is therefore detected by the first probe rather than l
 GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and watch holds have
 independent state so neither completion source can release the other.
 
+The board integration adds Device0 read channel8: bits1:0 return the two raw
+buttons after two main-clock synchronizer stages (bit0 is pin88); other bits
+are zero. This board mux also participates in device watch queries. Buttons
+have no reset function. The generic SystemControl IP has no button input;
+software owns debounce and application actions.
+
 Global D-cache maintenance is ordered in hardware. The core retains the
 channel-1/channel-4 `DEVSEND` in Execute until older asynchronous stores and
 FST tails have drained; their requests and responses continue progressing.

@@ -6,6 +6,7 @@ fn compile(source: &str) -> Vec<u16> {
     let parsed =
         rcc::frontend::compile_program_named("GPU demo overlay", source, &options, &mut |name| {
             match name {
+                "controls" => Ok(include_str!("rcc/controls.rs").to_owned()),
                 "overlay" => Ok(include_str!("rcc/overlay.rs").to_owned()),
                 "frame_stats" => Ok(include_str!("../../rcc/frame_stats.rs").to_owned()),
                 _ => Err(format!("unexpected module {name}")),
@@ -132,4 +133,28 @@ mod tests {
     fn source_font_matches_native_ui_encoding() {
         super::validate_font();
     }
+}
+
+#[test]
+fn button_toggle_debounces_bounce_hold_release_and_timer_wrap() {
+    run(r#"
+use crate::dsl_rt::*;
+mod controls; use controls::*;
+fn check(v: bool) { if !v { halt(1); } }
+fn main() {
+ let mut s: Buf<u16,4> = Buf::new([0;4]);
+ demo_buttons_init(s.as_array(),0,65520);
+ check(demo_buttons_update(s.as_array(),1,65525));
+ check(demo_buttons_update(s.as_array(),0,65530));
+ check(demo_buttons_update(s.as_array(),1,65535));
+ check(demo_buttons_update(s.as_array(),1,18));
+ check(!demo_buttons_update(s.as_array(),1,19));
+ check(!demo_buttons_update(s.as_array(),1,100));
+ check(!demo_buttons_update(s.as_array(),0,101));
+ check(!demo_buttons_update(s.as_array(),0,121));
+ check(!demo_buttons_update(s.as_array(),1,130));
+ check(demo_buttons_update(s.as_array(),1,150));
+ halt(0x600d);
+}
+"#);
 }

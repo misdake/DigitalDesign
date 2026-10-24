@@ -180,9 +180,18 @@ wire [3:0] device_query_channel = watch_read_enable ? watch_device_channel : dev
 wire device_query_read_enable = device_read_enable || watch_read_enable;
 wire device_query_write_enable = device_write_enable && !watch_read_enable;
 
+// Board-only Device0 channel8: synchronized raw buttons (pin88 is bit0).
+// Runtime buttons never reset any subsystem; software owns debounce/actions.
+reg [1:0] button_meta = 0, button_sync = 0;
+always @(posedge clk) begin
+    button_meta <= buttons;
+    button_sync <= button_meta;
+end
+wire [15:0] button_read_data = device_query_read_enable &&
+    device_query_index == 0 && device_query_channel == 8 ? {14'd0, button_sync} : 16'd0;
 // Unselected devices read back zero, so the core sees the OR of all buses.
 assign device_read_data =
-    sysctl_read_data | display_read_data |
+    sysctl_read_data | display_read_data | button_read_data |
     gpu_read_data;
 
 // Device 0: cache invalidate pulses, LEDs, and the reporting UART.

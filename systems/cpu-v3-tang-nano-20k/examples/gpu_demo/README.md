@@ -11,6 +11,7 @@ The texture is room-tiles.png with its real mip chain, not diagnostic mip colors
 - `rcc/main.rs`: formal driver recording, 3D/UI, completion and A/B presentation.
 - `rcc/camera.rs`: bounded read of immutable matrix/light data.
 - `rcc/overlay.rs`: packed cells and previous-frame decimal number.
+- `rcc/controls.rs`: button0/pin88 toggles numeric visibility after20ms stable level; hold does not repeat, default visible.
 - `assets/scene.json`: native geometry and camera/light asset data from the
   existing audited fullscene producer, with source provenance hashes.
   It contains no commands, CPU instructions or Flash image.
@@ -66,3 +67,10 @@ Future routine checking can use one face and two rabbit meshlets instead of
 full-scene/two-frame scans. For this revision the user explicitly waived all
 functional tests and requested direct programming after build/package. No new
 simulation, frame comparison, hardware fit or board qualification is claimed.
+
+## Button-controlled numeric overlay
+
+The fitted board exposes synchronized buttons through Device0 RECV8. A stable
+low-to-high transition of bit0 toggles the timing overlay; releasing only rearms
+it. The timer, camera and rendering continue while hidden. The next recorded
+frame omits UI_GRID when hidden. No CPU/GPU reset is tied to this input.
