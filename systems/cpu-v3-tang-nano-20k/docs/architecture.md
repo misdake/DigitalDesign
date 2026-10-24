@@ -224,6 +224,13 @@ the software read and arm is therefore detected by the first probe rather than l
 GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and watch holds have
 independent state so neither completion source can release the other.
 
+UART TX shifts a ten-bit 8N1 frame toward its output bit. The stop bit is the
+last nonzero bit, so an all-zero frame also encodes idle without a separate
+bit index or busy register. Busy remains asserted for the complete stop-bit
+interval. Writes while busy, including the edge ending that interval, are
+dropped; reset aborts transmission and drives idle high. The baud divider
+uses only the bits required by the configured clocks per bit.
+
 The board integration adds Device0 read channel8: bits1:0 return the two raw
 buttons after two main-clock synchronizer stages (bit0 is pin88); other bits
 are zero. This board mux also participates in device watch queries. Buttons

@@ -163,6 +163,10 @@ The default fitted SPI divider remains 2: nominal 13.5-MHz active SCK from the
 SCK and byte transfer pause under backpressure. This does not imply a factor
 of two improvement in whole-boot latency.
 
+The SPI half-period counter is sized from its specialization rather than
+reserving 32 bits: the default divider 2 requires one bit. Its terminal
+comparison, SCK edges, backpressure and final-byte completion are unchanged.
+
 Protocol simulation uses a 6.5-ns Flash output-delay reference without board
 or FPGA I/O delay. It is not physical timing qualification for an unidentified
 part. The reader cannot exceed nominal 27-MHz SCK using this 54-MHz single-edge

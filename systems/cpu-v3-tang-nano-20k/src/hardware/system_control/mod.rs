@@ -140,6 +140,7 @@ fn validate<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16>() {
 struct SystemControlTemplate<'a> {
     module_name: &'a str,
     clocks_per_bit_minus_one: u16,
+    uart_divider_msb: u32,
     clocks_per_ms_minus_one: u16,
 }
 
@@ -299,6 +300,7 @@ impl<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16> Module
             SystemControlTemplate {
                 module_name: &module_name,
                 clocks_per_bit_minus_one: CLOCKS_PER_BIT - 1,
+                uart_divider_msb: (u16::BITS - (CLOCKS_PER_BIT - 1).leading_zeros()).max(1) - 1,
                 clocks_per_ms_minus_one: CLOCKS_PER_MS - 1,
             }
             .render()
@@ -780,5 +782,64 @@ mod tests {
     #[ignore = "explicit external simulator validation of the system control device"]
     fn verify_verilog_with_iverilog() {
         crate::verify_verilog_with_iverilog::<TestDevice>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "bounded 8N1 waveform oracle over all bytes and u16 period boundaries"]
+    fn uart_waveform_and_terminal_writes() {
+        fn check<const PERIOD: u16>() {
+            use std::{path::PathBuf, process::Command};
+            let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/system-control-uart-contract")
+                .join(PERIOD.to_string());
+            std::fs::create_dir_all(&directory).unwrap();
+            let source = directory.join("device.v");
+            let bench = directory.join("tb.v");
+            let executable = directory.join("tb.vvp");
+            std::fs::write(
+                &source,
+                SystemControlDevice::<PERIOD>::generated_verilog_source().unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                &bench,
+                include_str!("uart_contract_tb.v")
+                    .replace("__CLOCKS_PER_BIT__", &PERIOD.to_string())
+                    .replace(
+                        "__MODULE__",
+                        &SystemControlDevice::<PERIOD>::verilog_identity().module_name(),
+                    ),
+            )
+            .unwrap();
+            let compile =
+                Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()))
+                    .args(["-g2012", "-s", "tb", "-o"])
+                    .arg(&executable)
+                    .args([source, bench])
+                    .output()
+                    .unwrap();
+            assert!(
+                compile.status.success(),
+                "{}",
+                String::from_utf8_lossy(&compile.stderr)
+            );
+            let run = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+                .arg(executable)
+                .output()
+                .unwrap();
+            std::fs::write(directory.join("result.log"), &run.stdout).unwrap();
+            assert!(
+                run.status.success()
+                    && String::from_utf8_lossy(&run.stdout).contains("UART_CONTRACT_PASS"),
+                "period {PERIOD}: {} {}",
+                String::from_utf8_lossy(&run.stdout),
+                String::from_utf8_lossy(&run.stderr)
+            );
+        }
+        check::<1>();
+        check::<2>();
+        check::<3>();
+        check::<469>();
+        check::<65535>();
     }
 }
