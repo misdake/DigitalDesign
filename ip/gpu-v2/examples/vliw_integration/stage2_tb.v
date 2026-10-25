@@ -20,12 +20,12 @@ wire mem_req_valid,mem_req_write,mem_write_valid;wire[31:0]mem_req_addr;wire[63:
 reg mem_req_ready=0,mem_read_valid=0,mem_write_ready=0,mem_complete_valid=0,mem_complete_ok=1;reg[63:0]mem_read_data=0;
 gpu_v2_vliw dut(.*);
 localparam STRESS=@STRESS@,MAXC=@MAXC@,BYTES=@BYTES@,FB=192000,TEX=16384;
-reg[7:0]memory[0:BYTES-1];reg[35:0]vertices[0:383],admissions[0:95],descriptors[0:95];reg[53:0]words[0:1823];
+reg[7:0]memory[0:BYTES-1];reg[35:0]vertices[0:383];reg[31:0]admissions[0:95],descriptors[0:95];reg[53:0]words[0:1823];
 integer cycle=0,en=0,pending=0,address=0,beat=0,delay_count=0,requests=0,paid_ce0=0,k,mi0;
 integer fd,bd,ff,dm,rc,addr,j,task_id=-1,vi=0,ti=0,pi=0,wi=0,all_pi=0,nv,nt,np;
 integer pending_packet=-1,executing_packet=-1;
 // Ordered expectations outlive the submitting meshlet, like the DUT T FIFO.
-reg[35:0]queued_descriptors[0:4095];reg[53:0]queued_words[0:65535];
+reg[31:0]queued_descriptors[0:4095];reg[53:0]queued_words[0:65535];
 integer queued_task[0:4095],observed_packets[0:255],expected_packets=0;
 task expect_task;input integer owner,count;integer q;begin
  if(owner>=256||expected_packets+count>4096)$fatal(1,"expected queue capacity");

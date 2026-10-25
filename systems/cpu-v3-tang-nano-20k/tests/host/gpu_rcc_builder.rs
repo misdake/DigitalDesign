@@ -283,8 +283,13 @@ fn main(){
  check((gpu_fload(m.as_array(),7)-fix32::from_int(2)).abs()<fix32::from_words(64,0));
  check((gpu_fload(m.as_array(),12)-fix32::from_words(32768,0)).abs()<fix32::from_words(64,0));
  check((gpu_fload(m.as_array(),20)-fix32::from_int(2)).abs()<fix32::from_words(64,0));
- let mut b:Buf<u16,13>=Buf::new([0;13]);gpu_bounds_set(b.as_array(),vec3::zero(),vec3::new(fix32::from_words(16384,0),fix32::from_words(16384,0),fix32::from_words(16384,0)),1);
- check(gpu_instance_bounds(m.as_array(),b.as_array()));b[12u16]=0;check(!gpu_instance_bounds(m.as_array(),b.as_array()));
+ let mut b:Buf<u16,12>=Buf::new([0;12]);gpu_bounds_set(b.as_array(),vec3::zero(),vec3::new(fix32::from_words(16384,0),fix32::from_words(16384,0),fix32::from_words(16384,0)));
+ check(gpu_instance_bounds(m.as_array(),b.as_array()));
+ gpu_fstore(m.as_array(),0,fix32::from_int(4));gpu_fstore(m.as_array(),1,fix32::from_int(4));gpu_fstore(m.as_array(),2,fix32::zero());gpu_fstore(m.as_array(),3,fix32::zero());
+ gpu_bounds_set(b.as_array(),vec3::zero(),vec3::new(fix32::from_int(64),fix32::from_int(64),fix32::from_words(16384,0)));
+ check(!gpu_instance_bounds(m.as_array(),b.as_array()));
+ gpu_fstore(m.as_array(),0,-fix32::from_int(4));gpu_fstore(m.as_array(),1,-fix32::from_int(4));check(gpu_instance_bounds(m.as_array(),b.as_array()));
+ gpu_fstore(b.as_array(),4,fix32::from_words(1,64));check(!gpu_instance_bounds(m.as_array(),b.as_array()));
  gpu_fstore(p.as_array(),5,fix32::from_words(37408,1));
  check(gpu_instance_trs(m.as_array(),p.as_array(),c.as_array()));
  check(gpu_fload(m.as_array(),0).abs()<fix32::from_words(128,0));

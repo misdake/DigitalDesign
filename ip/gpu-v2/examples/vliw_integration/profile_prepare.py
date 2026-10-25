@@ -15,7 +15,7 @@ def observe(bench):
         rom='dut.core.front.interpolator.prepare.math_phase',
         quant='pw_quant',
         source_wait='dut.core.front.s_busy && dut.core.front.interpolator.prepare.input_phase && !dut.core.front.raw_word_valid',
-        publish_wait='dut.core.front.s_busy && dut.core.front.interpolator.prepare.commit_phase && !dut.core.front.interpolator.prepare.normalizing && !dut.core.front.interpolator.execute_grant',
+        publish_wait='dut.core.front.s_busy && dut.core.front.interpolator.prepare.commit_phase && !dut.core.front.interpolator.execute_grant',
         publish_r_only='pw_publish && pw_r && !pw_i',
         publish_i_only='pw_publish && !pw_r && pw_i',
         publish_both='pw_publish && pw_r && pw_i',
@@ -33,14 +33,12 @@ def observe(bench):
 wire pw_r=dut.core.front.raster_busy,pw_i=dut.core.front.interpolator.p_busy;
 wire pw_publish=dut.core.front.s_busy &&
  dut.core.front.interpolator.prepare.commit_phase &&
- !dut.core.front.interpolator.prepare.normalizing &&
  !dut.core.front.interpolator.execute_grant;
 wire pw_quant=dut.core.front.interpolator.prepare.quant_read ||
  dut.core.front.interpolator.prepare.read_valid ||
  (|dut.core.front.interpolator.prepare.quant_pipe);
 wire pw_work=dut.core.front.interpolator.prepare.input_take || pw_quant ||
  dut.core.front.interpolator.prepare.math_phase ||
- dut.core.front.interpolator.prepare.normalizing ||
  dut.core.front.interpolator.cfg_apply || dut.core.front.s_done || pw_empty;
 '''
     export = Path(sys.argv[sys.argv.index('--export')+1])

@@ -8,18 +8,18 @@ module tb;
  reg reset=1,ce=1,start=0,slot=@SLOT@,dma_we=0;
  reg[9:0]dma_addr=0;reg[63:0]dma_data=0;
  reg output_ready=1,packet_ready=0,word_ready=0;
- wire ready,busy,done,dma_ready,packet_valid,word_valid,emit_valid;
+ wire ready,busy,done,drained,dma_ready,packet_valid,word_valid,emit_valid;
  wire[3:0]error;wire[6:0]published_vertices;
- wire[35:0]descriptor,emit_data;wire[53:0]word_data;
+ wire[31:0]descriptor;wire[35:0]emit_data;wire[53:0]word_data;
  wire[4:0]word_index;wire[9:0]emit_addr;
  shared_meshlet dut(.*);
- reg[35:0]vertices[0:319],descriptors[0:95],admissions[0:95];
+ reg[35:0]vertices[0:319];reg[31:0]descriptors[0:95],admissions[0:95];
  reg[53:0]words[0:1535];
  integer cycle=0,vi=0,ti=0,pi=0,wi=0,retired=0,peak=0,wraps=0,full_cycles=0;
  integer ce_holds=0,j,dm,rc,addr;reg[63:0]value;
  reg saw_done=0,drain=0,full_seen=0,dma_taken,start_taken;
  reg[31:0]rng=32'h79a42f31;reg[31:0]frozen;
- reg header_held=0;reg[35:0]held_descriptor;
+ reg header_held=0;reg[31:0]held_descriptor;
  always @(posedge clk)begin
   if(reset)header_held=0;
   else begin

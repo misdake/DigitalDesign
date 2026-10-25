@@ -17,6 +17,7 @@ pub fn verilog(portable: bool) -> String {
         include_str!("vliw/vertex/control_rom.v"),
         include_str!("vliw/vertex/mac.v"),
         include_str!("vliw/vertex/rf.v"),
+        include_str!("vliw/t32_core.v"),
         include_str!("vliw/vertex/storage.v"),
         include_str!("vliw/raster_storage.v"),
         include_str!("vliw/input_storage.v"),

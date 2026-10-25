@@ -37,7 +37,7 @@ they do not coarsen the grid.
 
 Every vertex must decode exactly to its canonical coordinate. Duplicate
 endpoints, including those crossing meshlets, must decode bit for bit equally.
-The producer checks all 35 imported levels. Metadata keeps `scale_s=5`, normal18,
+The producer checks all 35 imported levels. Metadata reserves word1 bits3:0 as zero and keeps normal18,
 RGB mode and disabled culling. Position and normal matrices remain separate.
 Range checks examine unwrapped dot products before the oracle applies ABI
 truncation, so wrapped normal/position values cannot hide an overflow.

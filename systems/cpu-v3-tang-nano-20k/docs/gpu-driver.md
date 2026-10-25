@@ -439,14 +439,15 @@ It handles nonuniform positive scale analytically; it does not compute a general
 Camera axes are +X right, +Y down, +Z forward. The GPU's fixed projection uses
 pixel-center rays `(2*x-399,2*y-239,512)`, or screen `(199.5+256*X/Z,
 119.5+256*Y/Z)`. There is no configurable perspective matrix or near-plane fan
-clipping. `gpu_bounds_set` creates a 13-word AABB/scale_s descriptor;
-`gpu_instance_bounds` checks its eight corners after the actual signed scale_s
-shift, requiring every component in [-131071,131071] and forward Z positive.
-Bounds inputs are limited to +/-64. This conservative helper is optional for the
-native matrix path: the asset/caller must still establish its corresponding
-scale_s, normal-quantization and source bounds. It does not alter metadata or
-guarantee precision for an arbitrary imported asset. Shifting by scale_s loses
-that many raw position bits; depth compensation remains the existing GPU rule.
+clipping. `gpu_bounds_set` creates a12-word AABB descriptor containing minimum
+and maximum XYZ as six F16 pairs. `gpu_instance_bounds` checks its eight corners
+against the actual transformed signed26/F16 range `[-512,512)` and positive
+forward Z. Local bounds are limited to +/-100. This optional software helper
+conservatively admits a complete forward AABB; the GPU itself also handles
+triangles crossing Z=0. There is no per-meshlet coordinate scale or runtime
+metadata rewrite. Callers must still establish matrix arithmetic and normal
+quantization bounds; arbitrary matrix amplification is not admitted by the
+world-coordinate bound alone.
 
 ## Validation boundary
 

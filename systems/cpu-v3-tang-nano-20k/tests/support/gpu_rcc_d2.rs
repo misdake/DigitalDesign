@@ -159,7 +159,7 @@ pub fn assets() -> BTreeMap<u32, u8> {
     {
         let address = ASSET + 128 + i as u32 * 256;
         let mut record = [0u8; 256];
-        // Current V96/T64 host-native record, uniform20, normal18, scale_s=0.
+        // Current V96/T64 host-native record, uniform20, normal18.
         let meta = [
             3u64 | (1 << 8) | (20 << 16) | (5 << 24),
             u64::from(rgb) << 4,

@@ -17,7 +17,7 @@ def signed(value, width):
 
 def expected_bounds(descriptor, words):
     """Enumerate tile coordinates, independently of the RTL binary search."""
-    sigma = bool(descriptor & (1 << 22))
+    sigma = bool(descriptor & (1 << 18))
     coefficients, seeds = [], []
     for edge in range(3):
         raw = [signed(words[edge*3+k], 47 if k == 2 else 36) for k in range(3)]
@@ -54,18 +54,12 @@ def fixtures(count):
             p = [tuple(rng.randint(-131071, 131071) for _ in range(3)) for _ in range(3)]
             if sample % 3:
                 p = [(x, y, max(1, abs(z))) for x, y, z in p]
-            def cross(a, b):
-                return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
-            n = [cross(p[1], p[2]), cross(p[2], p[0]), cross(p[0], p[1])]
-            det = sum(a*b for a, b in zip(p[0], n[0]))
+            coefficients, det = module.coefficient_words(p)
             if det:
                 break
         rgb = bool(sample & 1)
-        descriptors.append((int(det < 0) << 22) | (int(rgb) << 23))
-        for nx, ny, nz in n:
-            words += [nx & ((1 << 36)-1), ny & ((1 << 36)-1),
-                      (-399*nx-239*ny+512*nz) & ((1 << 47)-1)]
-        words.append(abs(det))
+        descriptors.append((int(det < 0) << 18) | (int(rgb) << 19))
+        words += coefficients
         for vertex in range(3):
             words += [rng.getrandbits(36), rng.getrandbits(24 if rgb else 32)]
     params = []
@@ -74,7 +68,7 @@ def fixtures(count):
         for vertex in range(3):
             normal, attr = words[16*packet+10+2*vertex:16*packet+12+2*vertex]
             n = [signed(normal >> (12*k), 12) for k in range(3)]
-            a = [(attr >> (8*k)) & 255 for k in range(3)] if descriptor & (1 << 23) else [attr & 65535, attr >> 16, 0]
+            a = [(attr >> (8*k)) & 255 for k in range(3)] if descriptor & (1 << 19) else [attr & 65535, attr >> 16, 0]
             values.append(n+a)
         for component in range(6):
             a, b, c = (v[component] for v in values)
@@ -103,7 +97,7 @@ module tb;
 GSR GSR(.GSRI(1'b1));
 `endif
 reg clk=0;always #5 clk=~clk;
-reg reset=1,ce=0,start=0,raw_valid=0;reg[35:0]descriptor;reg[4:0]raw_index;reg[53:0]raw_data;
+reg reset=1,ce=0,start=0,raw_valid=0;reg[31:0]descriptor;reg[4:0]raw_index;reg[53:0]raw_data;
 integer tick=0,wall=0,p=0,wi=0,taken=0,seen=0,attr_count=0,empty_count=0;
 integer single_pairs=0,single_issues=0,single_returns=0;
 always @(negedge clk)begin tick=tick+1;ce=!reset&&(tick%11!=3&&tick%11!=4);end
@@ -115,7 +109,7 @@ gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start)
  .sample_valid(1'b0),.sample_lane(2'd0),.sample_cover(1'b0),.sample_anchor(1'b0),.sample_h(30'd0),
  .quad_end_valid(1'b0),.quad_mask(4'd0),.pool_ready(1'b1),.pool_quad_id(3'd0),.busy(busy),.s_done(done),.error(error),
  .bound_valid(bvalid),.bound_empty(bempty),.bound_xlo(xl),.bound_xhi(xh),.bound_ylo(yl),.bound_yhi(yh));
-reg[35:0]ds[0:@N@-1];reg[53:0]ws[0:16*@N@-1];reg[18:0]bs[0:@N@-1];reg[50:0]ps[0:6*@N@-1];
+reg[31:0]ds[0:@N@-1];reg[53:0]ws[0:16*@N@-1];reg[18:0]bs[0:@N@-1];reg[50:0]ps[0:6*@N@-1];
 always @(posedge clk)begin
  wall=wall+1;if(wall>@LIMIT@)$fatal(1,"bounded bounds replay");
  if(!reset&&ce)begin

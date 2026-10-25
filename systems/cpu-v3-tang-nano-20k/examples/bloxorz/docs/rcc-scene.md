@@ -62,7 +62,7 @@ checks. All cases use default CPU V3 compiler optimization settings.
 The source-coordinate candidate evaluated by the test is origin=-64256,
 quant_shift=7 and delta10=0/1004, giving symmetric Q16.16 corners +/-0.98046875.
 The test applies CPU-produced matrices through the documented signed native MAC
-and scale_s=5 calculation. It checks forward positive Z and the signed 18-bit
+and unshifted F16 calculation. It checks forward positive Z and the signed26
 range, then compares projected corner locations against the unquantized
 reference. Regression limits are 0.004 for matrix elements, 0.0002 for normal
 elements and 1/8 pixel for these sampled corners. Axis-aligned source normals at

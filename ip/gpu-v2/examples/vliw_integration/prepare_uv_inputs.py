@@ -62,7 +62,7 @@ def main():
                 packet_meta.append(dict(packet_id=packet_id, triangle_id=packet['tid'],
                     descriptor=packet['descriptor'], raw19=list(packet['words']),
                     edges=packet['edges'], edge_exponents=packet['triangle'].exps,
-                    delta=packet['triangle'].delta, tri_shift=packet['triangle'].tri_shift))
+                    delta=packet['triangle'].delta))
                 for qi in sorted(packet['masks']):
                     assert stats['quads'] < a.max_quads
                     assert time.monotonic() - start < a.timeout_seconds, 'Bounded oracle timeout'

@@ -25,8 +25,8 @@ The projection contract is that every horizontal viewport ray satisfies
 `abs(ray_x) <= ray_z` in camera coordinates. Producers using a wider horizontal
 field of view must disable `BOUNDS_CULL` at elaboration; this is not a runtime
 cull-state bit. The ordinary frontend defaults it off; `shared_meshlet` enables
-it with `SP_COMPACT=1`. The regular, noncompact T ROM is preserved and does not
-support this prologue.
+it with `SP_COMPACT=1`. The regular, noncompact composition does not support
+this prologue.
 
 For the raw signed accumulation `Rj = sum(p[k]*M[4*j+k]) + (M[4*j+3] << 16)`,
 select each box endpoint from the coefficient sign to obtain the maximum or
@@ -99,24 +99,40 @@ the MAC changes the output. Attributes pass through without acquiring alpha.
 
 ## Triangle coefficients and rejection
 
-T reads each indexed P and arithmetic-shifts every component by metadata
-`scale_s`. Every resulting component must lie in `[-131071,131071]`; signed 18-bit's
-minimum code is excluded. A range violation is an error. All-three nonpositive
-forward components reject wholly backward geometry. There is no near-clipping
-fan construction in this path.
+T consumes V's signed32 F16 position directly. Each component must fit signed26,
+that is raw codes `[-33554432,33554431]` or values `[-512,512)`. There is no
+per-meshlet coordinate scale or camera-dependent metadata. Local source decode
+still uses `origin + (delta10 << quant_shift)` before the unchanged V matrix MAC.
+World and camera components within +/-100, rigid camera/model rotations and
+projection row scales no greater than one fit this bound; arbitrary matrix
+amplification does not automatically fit it. Simulation asserts the input bound.
 
-For shifted vertices a,b,c, construct:
+For vertices a,b,c, T computes:
 
 ```text
-n0 = b cross c; n1 = c cross a; n2 = a cross b
-delta = a dot n0
-C_i = -399*n_i.x - 239*n_i.y + 512*n_i.z
+raw0 = b cross c; raw1 = c cross a; raw2 = a cross b  // exact signed52 in54
+q_i = max(0, max(bitlen(v if v>=0 else ~v) for v in raw_i)-26)
+n_i = trunc_toward_zero(raw_i / 2^q_i)              // signed27 per edge
+det_m = a dot n0                                  // signed54, exact MAC
+C_i = -399*n_i.x - 239*n_i.y + 512*n_i.z            // signed38
+ed = floor(log2(abs(det_m))) + q_0
+K = floor(abs(det_m) * 2^(30-floor(log2(abs(det_m)))))
 ```
 
-Zero determinant rejects a degenerate triangle. A negative determinant rejects
-when cull-negative is enabled; otherwise orientation is retained for canonical
-coverage. T exports each `(n_i.x,n_i.y,C_i)` and `abs(delta)`, plus source normals
-and attributes. The transport layout is described at the end of this chapter.
+The common exponent is chosen per edge, never per meshlet. Temporary work rows
+keep signed30 guard mantissas and a coarse exponent in multiples of four; the
+existing DSP performs the final alignment, equivalent to one toward-zero shift
+by q_i. Each original product difference is exact before this reduction.
+The determinant and viewport MACs reuse the existing 36x18 DSP decomposition;
+there is no additional DSP or BSRAM. Three negative coordinates are prefetched
+through the existing unpacker/RF rather than negated on the DSP input path.
+
+All-three nonpositive forward components reject wholly backward geometry. Zero
+determinant rejects degenerates. With cull-negative enabled, negative det_m
+rejects; otherwise its sign supplies canonical orientation. No near-plane fan
+is constructed. T exports `(n_i.x,n_i.y,C_i)` with q_i, normalized K/ed, and the
+source normal/attribute records. Subsequent N18/h30/R18/F16/D16 precision and
+Vertex arithmetic remain unchanged.
 
 ## Coverage and quad traversal
 
@@ -126,7 +142,8 @@ of signed coefficients truncate toward zero, preserving sign reversal. For an ed
 `e=max(0,bitlen(abs(Nx))-17,bitlen(abs(Ny))-17,bitlen(abs(C))-27)`, with
 `bitlen(0)=0`. Divide each signed coefficient by `2^e` toward zero. The retained
 Nx/Ny magnitudes are below `2^17`; C magnitude is below `2^27`. An exponent
-above 19 faults. Double the reduced Nx/Ny for pixel stepping in signed 30-bit storage.
+above 19 faults. The edge exponent carried to interpolation is `e+q_i`,
+including T's edge reduction; N/h storage remains unchanged. Double the reduced Nx/Ny for pixel stepping in signed 30-bit storage.
 At pixel `(x,y)`, its reduced field is `2*Nx*x + 2*Ny*y + C`.
 An edge with `A=2*Nx`, `B=2*Ny` includes zero when
 `A>0 || (A==0 && B>0)`; other edges require a strictly positive value.
@@ -302,7 +319,7 @@ defines the independent stored-data lifetime after input acceptance.
 
 Depth derives from the positive determinant and the same aligned denominator.
 Let `ed=floor(log2(abs(delta)))`, `K=floor(abs(delta)*2^(30-ed))`, and
-`right=e+E+38-ed-scale_s`. Form `Z_full=floor(r*K*2^-right)` under the admitted
+`right=e+E+38-ed`. Form `Z_full=floor(r*K*2^-right)` under the admitted
 integer widths; the output is `Z16=(Z_full>>8)&65535`. Live depth additionally
 requires nonzero D, `Z_full < 2^32` (no arithmetic overflow),
 `Z_full < 2^24` (upper depth-word bits zero), and
@@ -333,8 +350,8 @@ three-triangle/64-bit index words. Meshlet capacity remains64 vertices/96 triang
 | V items 0..2 | Three signed 32-bit F16 position results, retained for every indexed T reader |
 | V item 3 | N36: three S12F10 components packed once when Nz is complete |
 | V item 4 | attr32, interpreted by the meshlet's RGB/UV mode |
-| T items 0..8 | Three triples `(Nx,Ny,C)` in 54-bit containers |
-| T item 9 | Positive determinant magnitude in a 54-bit container |
+| T items 0..8 | Three triples `(Nx,Ny,C)` in54-bit containers; Nx low36 and edge exponent q_i in53:48 |
+| T item 9 | Normalized determinant: K31 in30:0, ed7 in37:31; other bits zero |
 | T items 10..15 | Source vertex0 N36/attr32, then vertex1, then vertex2; command profile uses item10 high18 and item11 high14 for mesh uniform RGBA |
 
 V position and attribute reads have separate synchronous Q owners. T items 0..9
@@ -345,7 +362,8 @@ or downstream pause. Acceptance of item 15 releases the T record slot.
 The default T queue has sixteen slots. Coefficients use ten field-major planes
 of sixteen rows in the existing result banks; numeric formats are unchanged.
 Descriptors reside in independent 16-deep distributed RAM, with one private
-attribute-epoch bit in addition to the unchanged public 36-bit descriptor. Its
+attribute-epoch bit in addition to the public32-bit descriptor (refs17:0, sign18, RGB19, normal-mode20,
+sequence27:21, generation31:28). Its
 head stays immutable through item 15 acceptance, so attribute export selects
 vertex references directly from that head instead of copying and rotating them.
 The existing fetch index selects both vertex and N/attribute component. Header

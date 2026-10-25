@@ -101,14 +101,8 @@ def instances(bunny, ply, oracle, view):
         instance = dict(name=obj['name'], group=obj['group'], slot=i % 2,
             uniform=cam['uniform'], config=obj['config'], vertices=obj['vertices'],
             triangles=obj['triangles'], color_mode=1, cull_negative=1,
-            seq_base=0, generation=i % 16, scale_s=0,
+            seq_base=0, generation=i % 16,
             cfg_tex_w_log2=6, cfg_tex_h_log2=6, cfg_max_mip=6)
-        values = oracle.F.oracle(instance['uniform'], instance['config'], instance['vertices'])
-        maximum = max(abs(oracle.signed(values[6*j+k], 32))
-                      for j in range(len(instance['vertices'])) for k in range(3))
-        while maximum >> instance['scale_s'] > 131071:
-            instance['scale_s'] += 1
-        assert instance['scale_s'] < 16
         result.append(instance)
     return result, dict(scene='solid_box_complete_bunny', camera=cam,
         box=dict(faces=6, triangles=192, meshlets=6, subdivisions_per_axis=4),

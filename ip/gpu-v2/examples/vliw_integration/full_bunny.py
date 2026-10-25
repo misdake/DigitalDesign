@@ -330,11 +330,7 @@ def main():
     for i,b in enumerate(batches):
         instance=dict(name=f'bunny_full_{i}',group='bunny',slot=i%2,uniform=uniform,config=info['config'],
             vertices=b['vertices'],triangles=b['triangles'],color_mode=0,cull_negative=1,seq_base=0,generation=i%16,
-            scale_s=0,cfg_tex_w_log2=6,cfg_tex_h_log2=6,cfg_max_mip=6)
-        values=O.F.oracle(uniform,info['config'],b['vertices'])
-        maximum=max(abs(O.signed(values[6*j+k],32)) for j in range(len(b['vertices'])) for k in range(3))
-        while maximum>>instance['scale_s']>131071:instance['scale_s']+=1
-        assert instance['scale_s']<16
+            cfg_tex_w_log2=6,cfg_tex_h_log2=6,cfg_max_mip=6)
         meta,ps=O.prepare(instance,out/f'task{i}');packets+=ps;metas.append(meta);instances.append(instance)
     classes=Counter()
     for m in metas:classes.update(m['classes'])

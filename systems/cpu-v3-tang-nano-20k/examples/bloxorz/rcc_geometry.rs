@@ -19,9 +19,9 @@ fn main(){
  if !blox_instance(INSTANCE.as_array(),POSE.as_array(),CAMERA.as_array()) {halt(4);}
  let mut i:u16=0;while i<24 {output[24+i]=VIEW[i];i+=1;}
  i=0;while i<42 {output[48+i]=INSTANCE[i];i+=1;}
- let mut bounds:Buf<u16,13>=Buf::new([0;13]);
+ let mut bounds:Buf<u16,12>=Buf::new([0;12]);
  let half=fix32::from_words(64256,0);
- gpu_bounds_set(bounds.as_array(),vec3::new(-half,-half,-half),vec3::new(half,half,half),5);
+ gpu_bounds_set(bounds.as_array(),vec3::new(-half,-half,-half),vec3::new(half,half,half));
  output[90u16]=if gpu_instance_bounds(INSTANCE.as_array(),bounds.as_array()) {1}else{0};
  halt(0x600d);
 }
@@ -97,7 +97,7 @@ fn rcc_fixed_camera_and_roll_match_original_geometry() {
                 input.extend(pair(drop));
                 input.extend([x as u16, z as u16]);
                 let (out, raw, bounded, steps) = run(&code, &input);
-                assert_eq!(bounded, 1, "source bounds/scale_s=5");
+                assert_eq!(bounded, 1, "bounded F16 source positions");
                 max_steps = max_steps.max(steps);
                 let mut world = reference;
                 world[0][3] += f64::from(x) - f64::from(width) / 2.0;
@@ -150,7 +150,7 @@ fn rcc_fixed_camera_and_roll_match_original_geometry() {
                         }
                     }
                 }
-                // Evaluate the native MAC/scale_s boundaries using CPU-produced
+                // Evaluate the native MAC/F16 boundaries using CPU-produced
                 // Q16.16 matrices and doubled local positions, without rendering.
                 for corner in 0..8 {
                     let p: [f64; 3] =
@@ -167,8 +167,8 @@ fn rcc_fixed_camera_and_roll_match_original_geometry() {
                             })
                             .sum::<i64>()
                             + 65536 * i64::from(raw[24 + r * 4 + 3]);
-                        let shifted = (sum >> 16) >> 5;
-                        assert!((-131071..=131071).contains(&shifted));
+                        let shifted = sum >> 16;
+                        assert!((-(1 << 25)..(1 << 25)).contains(&shifted));
                         if r == 2 {
                             assert!(shifted > 0);
                         }
@@ -185,7 +185,7 @@ fn rcc_fixed_camera_and_roll_match_original_geometry() {
             }
         }
     }
-    println!("RCC geometry: {count} cases, max matrix error {max_matrix_error}, max normal error {max_normal_error}, max pixel error after MAC/scale_s {max_pixel_error}, max normal coefficient {max_normal_coefficient}, max shifted coordinate {max_shifted}, max emulator instructions {max_steps}");
+    println!("RCC geometry: {count} cases, max matrix error {max_matrix_error}, max normal error {max_normal_error}, max pixel error after MAC/F16 {max_pixel_error}, max normal coefficient {max_normal_coefficient}, max F16 coordinate {max_shifted}, max emulator instructions {max_steps}");
     assert_eq!(count, 1620);
     assert!(max_matrix_error < 0.004);
     assert!(max_normal_error < 0.0002);

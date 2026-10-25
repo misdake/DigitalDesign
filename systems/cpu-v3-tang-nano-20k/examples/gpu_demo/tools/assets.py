@@ -45,7 +45,7 @@ def font():
     return bytes(atlas), rows
 
 
-def native_record(mesh, scale):
+def native_record(mesh):
     vertices, triangles = mesh["vertices"], mesh["triangles"]
     assert 0 < len(vertices) <= 64 and 0 < len(triangles) <= 96
     offset = (3 * len(vertices) + 1) // 2
@@ -54,7 +54,7 @@ def native_record(mesh, scale):
     record = bytearray(128 + payload_size)
     origin = mesh["config"]
     meta = [len(vertices) | (len(triangles) << 8) | (20 << 16) | (offset << 24) | (1 << 31),
-            scale | (mesh.get("color_mode", 0) << 4), (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
+            mesh.get("color_mode", 0) << 4, (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
             (origin[2] & 0xFFFFFFFF) | (origin[3] << 32)]
     struct.pack_into("<4Q", record, 0, *meta)
     for i, vertex in enumerate(vertices):
@@ -102,7 +102,7 @@ def pack(output):
     entries = []
     for i, mesh in enumerate(meshes):
         address = MESH + len(data)
-        record = native_record(mesh, mesh["scale_s"])
+        record = native_record(mesh)
         struct.pack_into("<2H", data, 4*i, address//128, len(record)//128-1)
         data += record
         entries.append(dict(name=mesh["name"], address=address, size=len(record),

@@ -57,10 +57,10 @@ reg clk=0;always #5 clk=~clk;
 reg reset=1,ce=1,start=0,slot=0,dma_we=0,output_ready=1,packet_ready=1,word_ready=1;
 reg[9:0]dma_addr=0;reg[63:0]dma_data=0;
 wire ready,busy,done,drained,dma_ready,packet_valid,word_valid,emit_valid;
-wire[3:0]error;wire[6:0]published_vertices;wire[35:0]descriptor,emit_data;
+wire[3:0]error;wire[6:0]published_vertices;wire[31:0]descriptor;wire[35:0]emit_data;
 wire[4:0]word_index;wire[53:0]word_data;wire[9:0]emit_addr;
 shared_meshlet #(.BOUNDS_CULL(@ENABLE@)) dut(.*);
-reg[35:0]expected_v[0:319],expected_d[0:95];reg[53:0]expected_w[0:1535];
+reg[35:0]expected_v[0:319];reg[31:0]expected_d[0:95];reg[53:0]expected_w[0:1535];
 integer cycle=0,task_id=0,fd,rc,a,nv,nt,di=0,vi=0,pi=0,wi=0,reject,first,issue,enabled=0,bounds_cycles=0;
 integer mode=0;reg[63:0]value;reg[1023:0]path;
 always @(negedge clk)if(!reset)begin
@@ -129,7 +129,7 @@ def fixtures():
     micro = dict(name='micro',group='micro',uniform=[65536,0,0,0,0,65536,0,0,0,0,65536,0,
         65536,0,0,0,65536,0,0,0,65536,65536]+[0]*10,
         vertices=[[0,511 << 20,0x123456],[100,511 << 20,0x234567],[100 << 10,511 << 20,0x345678]],
-        triangles=[[0,1,2]],config=[-16384,-16384,65536,256|6],scale_s=4,color_mode=1,cull_negative=0)
+        triangles=[[0,1,2]],config=[-16384,-16384,65536,256|6],color_mode=1,cull_negative=0)
     result=[]
     for label,x,z in [('visible',0,0),('behind',0,-4),('left',-8,0),('right',8,0),('margin',-1,0),('cross-z',0,-1)]:
         item=copy.deepcopy(micro);item['name']=label;item['uniform'][3]=x*65536;item['uniform'][11]=z*65536;result.append(item)
@@ -145,7 +145,7 @@ def fixtures():
     for source in (item for item in scenes if item['group'] == 'bunny'):
         for label,x,z in [('front',0,0),('behind',0,-20)]:
             item=copy.deepcopy(source);item['name']=source['group']+'-'+label
-            item['uniform'][3]+=x*65536;item['uniform'][11]+=z*65536;item['scale_s']=5
+            item['uniform'][3]+=x*65536;item['uniform'][11]+=z*65536
             result.append(item)
     item=copy.deepcopy(result[0]);item['name']='negative-coefficient'
     item['uniform'][0]=-65536;item['uniform'][8]=-65536;item['uniform'][11]=-4*65536

@@ -20,7 +20,7 @@ module gpu_v2_vliw_frontend(
  output idle,
  output emit_valid,output [9:0] emit_addr,output [35:0] emit_data
 );
- wire fpv,fpr,fwv,fwr,meshlet_drained;wire [35:0] fd;wire [4:0] fwi;wire [53:0] fwd;
+ wire fpv,fpr,fwv,fwr,meshlet_drained;wire [31:0] fd;wire [4:0] fwi;wire [53:0] fwd;
  wire bridge_input_ready,geo_we;wire [3:0]geo_wa;wire [29:0]geo_wd;
  wire bridge_busy;wire [3:0] bridge_error,core_error;
  wire rqv,rqr,i_drained;

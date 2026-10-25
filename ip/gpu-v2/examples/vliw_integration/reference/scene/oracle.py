@@ -1,4 +1,4 @@
-"""原始V96→冻结V/T数学→RF30几何→全新I整数gold；不读取被测RTL状态。"""
+"""Independent V96/F16 -> N27 triangle -> h30 interpolation oracle."""
 from pathlib import Path
 from collections import Counter
 import hashlib,importlib.util,json,sys
@@ -26,10 +26,10 @@ def coverage(edges):
 def prepare(instance,out):
     out=Path(out);out.mkdir(parents=True,exist_ok=True)
     vertices=instance['vertices'];triangles=instance['triangles'];uniform=instance['uniform'];config=instance['config']
-    s=int(instance.get('scale_s',0));rgb=instance.get('color_mode',1) not in (0,False,'uv','UV');cull=bool(instance.get('cull_negative',1));normal_mode=bool(config[3]&256)
+    rgb=instance.get('color_mode',1) not in (0,False,'uv','UV');cull=bool(instance.get('cull_negative',1));normal_mode=bool(config[3]&256)
     slot=int(instance.get('slot',0));base=slot*128;offset=(3*len(vertices)+1)//2
     seq=int(instance.get('seq_base',instance.get('sequence',0)))&127;generation=int(instance.get('generation',0))&15
-    metadata=[len(vertices)|(len(triangles)<<8)|(20<<16)|(offset<<24)|(int(cull)<<31),s|(int(rgb)<<4)|(seq<<5)|(generation<<12),
+    metadata=[len(vertices)|(len(triangles)<<8)|(20<<16)|(offset<<24)|(int(cull)<<31),(int(rgb)<<4)|(seq<<5)|(generation<<12),
               (config[0]&0xffffffff)|((config[1]&0xffffffff)<<32),(config[2]&0xffffffff)|((config[3]&0xffffffff)<<32)]
     image={320+i:(uniform[2*i]&0xffffffff)|((uniform[2*i+1]&0xffffffff)<<32) for i in range(16)}
     flat=[v for row in vertices for v in row]
@@ -42,34 +42,51 @@ def prepare(instance,out):
     draw=dict(far_raw=int(instance.get('cfg_far_z',199*65536)),tex_log=(int(instance.get('cfg_tex_w_log2',8)),int(instance.get('cfg_tex_h_log2',8))),max_mip=int(instance.get('cfg_max_mip',8)),bias_q4=int(instance.get('cfg_lod_bias',0)))
     admissions=[];classes=[];packets=[];stats=Counter()
     for tid,refs in enumerate(triangles):
-        desc=pack(refs,6)|(s<<18)|(int(rgb)<<23)|(int(normal_mode)<<24)|(((seq+tid)&127)<<25)|(generation<<32)
+        desc=pack(refs,6)|(int(rgb)<<19)|(int(normal_mode)<<20)|(((seq+tid)&127)<<21)|(generation<<28)
         admissions.append(desc)
         H=[tuple(signed(values[6*vi+j],32) for j in range(3)) for vi in refs]
-        P=[tuple(v>>s for v in h) for h in H];a,b,c=P
+        P=H;a,b,c=P
         N=[(b[1]*c[2]-b[2]*c[1],b[2]*c[0]-b[0]*c[2],b[0]*c[1]-b[1]*c[0]),
            (c[1]*a[2]-c[2]*a[1],c[2]*a[0]-c[0]*a[2],c[0]*a[1]-c[1]*a[0]),
            (a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])]
-        delta=sum(x*y for x,y in zip(a,N[0]));cls=3 if all(h[2]<=0 for h in H) else 2 if not delta else 1 if delta<0 and cull else 0
+        cross_q=[]
+        assert all(-(1<<25)<=v<(1<<25) for row in P for v in row), 'signed26/F16 geometry domain'
+        for index,row in enumerate(N):
+            q=max(0,max((v if v>=0 else ~v).bit_length() for v in row)-26)
+            cross_q.append(q);N[index]=tuple(M.trunc_scale(v,q) for v in row)
+        delta=sum(x*y for x,y in zip(a,N[0]))
+        delta <<= cross_q[0]
+        cls=3 if all(h[2]<=0 for h in H) else 2 if not delta else 1 if delta<0 and cull else 0
         classes.append(cls);stats[['admitted','backface','degenerate','behind'][cls]]+=1
-        words,error,_=F.triangle_oracle(values,refs,s,int(cull));assert not error
+        words=[];transport=[]
+        for nn,q in zip(N,cross_q):
+            raw=(nn[0],nn[1],-399*nn[0]-239*nn[1]+512*nn[2])
+            reduced=raw
+            transport.append((q,reduced))
+            words.extend([(reduced[0]&((1<<36)-1))|(q<<48),reduced[1]&((1<<54)-1),reduced[2]&((1<<54)-1)])
+        ed=abs(delta).bit_length()-1
+        k=M.floor_scale(abs(delta),ed-30) if delta else 0
+        words.append(k|(max(0,ed)<<31))
+        for vi in refs:words.extend(values[6*vi+3:6*vi+6])
         if cls:continue
         assert words is not None and len(words)==19
         sigma=1 if delta>0 else -1;edges=[];exps=[]
-        for nn in N:
+        for edge_index,nn in enumerate(N):
             C=-399*nn[0]-239*nn[1]+512*nn[2]
-            e=max(0,abs(nn[0]).bit_length()-17,abs(nn[1]).bit_length()-17,abs(C).bit_length()-27)
-            q=tuple(sigma*((-1 if v<0 else 1)*(abs(v)>>e)) for v in (nn[0],nn[1],C));edges.append(q);exps.append(e)
+            preliminary,raw=transport[edge_index]
+            e=max(0,abs(raw[0]).bit_length()-17,abs(raw[1]).bit_length()-17,abs(raw[2]).bit_length()-27)
+            q=tuple(sigma*M.trunc_scale(v,e) for v in raw);edges.append(q);exps.append(e+preliminary)
         normals=[];attrs=[]
         for vi in refs:
             v0,v1=values[6*vi+3:6*vi+5];n=[signed(v0,18),signed(v0>>18,18),signed(v1,18)]
             if not normal_mode:n=[x*4 for x in n]
             normals.append(tuple(M.normal12_from18(x) for x in n));attrs.append(values[6*vi+5]&0xffffffff)
-        t=M.Triangle(tuple(row[:2] for row in edges),tuple(exps),abs(delta),s,
+        t=M.Triangle(tuple(row[:2] for row in edges),tuple(exps),abs(delta),
                      tuple((v&65535,v>>16) for v in attrs),tuple(normals),tuple(tuple(v>>(8*j)&255 for j in range(3)) for v in attrs),**draw)
         t.validate();masks=coverage(edges)
-        packets.append(dict(tid=tid,descriptor=desc|((int(delta<0))<<22),words=tuple(words),triangle=t,edges=tuple(edges),masks=masks,rgb=rgb))
-    (out/'admissions.hex').write_text(''.join(f'{v:09x}\n' for v in admissions));(out/'classes.hex').write_text(''.join(f'{v:x}\n' for v in classes))
-    (out/'descriptors.hex').write_text(''.join(f'{p["descriptor"]:09x}\n' for p in packets) or '0\n')
+        packets.append(dict(tid=tid,descriptor=desc|((int(delta<0))<<18),words=tuple(words),triangle=t,edges=tuple(edges),masks=masks,rgb=rgb))
+    (out/'admissions.hex').write_text(''.join(f'{v:08x}\n' for v in admissions));(out/'classes.hex').write_text(''.join(f'{v:x}\n' for v in classes))
+    (out/'descriptors.hex').write_text(''.join(f'{p["descriptor"]:08x}\n' for p in packets) or '0\n')
     (out/'words.hex').write_text(''.join(f'{v:014x}\n' for p in packets for v in p['words']) or '0\n')
     meta=dict(name=instance['name'],group=instance['group'],vertices=len(vertices),triangles=len(triangles),packets=len(packets),slot=slot,draw=draw,classes=dict(stats),R_quads=sum(len(p['masks']) for p in packets),coverage_pixels=sum(m.bit_count() for p in packets for m in p['masks'].values()),dma_words=len(image))
     (out/'oracle.json').write_text(json.dumps(meta,ensure_ascii=False,indent=2));return meta,packets

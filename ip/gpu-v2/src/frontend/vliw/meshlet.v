@@ -9,7 +9,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  input output_ready,packet_ready,word_ready,
  output reg ready,output busy,drained,output reg done,output reg [3:0] error,
  output dma_ready,output [6:0] published_vertices,
- output packet_valid,output [35:0] descriptor,
+ output packet_valid,output [31:0] descriptor,
  output word_valid,output [4:0] word_index,output [53:0] word_data,
  output emit_valid,output [9:0] emit_addr,output [35:0] emit_data
 );
@@ -23,7 +23,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  reg [7:0] index_cursor;
  reg [1:0] group_position;
  reg [53:0] index_group;
- reg [3:0] scale,generation;
+ reg [3:0] generation;
  reg attr_mode,normal_mode,cull_negative;
  reg [6:0] sequence_id;
  wire core_busy,done_v,done_t,triangle_ready,core_meshlet_ready,source_ready,core_dma_ready;
@@ -31,7 +31,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  wire [63:0] source_data;
  wire [9:0] vertex_base={2'b00,active_slot,7'd0};
  wire [8:0] config_base={7'd32,active_slot,1'b1}; // 129或131：metadata最后两行。
- wire [35:0] triangle_descriptor={generation,sequence_id,normal_mode,attr_mode,1'b0,scale,index_group[17:0]};
+ wire [31:0] triangle_descriptor={generation,sequence_id,normal_mode,attr_mode,1'b0,index_group[17:0]};
  wire index_read=state==INDEX&&!index_cursor[7];
  wire source_re=state==META0||state==META1||state==META3||index_read;
  wire [1:0] metadata_word=state==META0?2'd0:state==META1?2'd1:2'd3;
@@ -76,7 +76,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
   if(reset)begin
    state<=IDLE;ready<=0;done<=0;error<=0;active_slot<=0;vertices<=0;triangles<=0;
    uniform_base<=0;index_cursor<=0;group_position<=0;index_group<=0;
-   scale<=0;generation<=0;attr_mode<=0;normal_mode<=0;cull_negative<=0;sequence_id<=0;
+   generation<=0;attr_mode<=0;normal_mode<=0;cull_negative<=0;sequence_id<=0;
   end else if(ce)begin
    done<=0;
    if(state==IDLE&&core_meshlet_ready)ready<=1;
@@ -89,7 +89,7 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
     end
     META1:if(source_ready)state<=META1_Q;
     META1_Q:begin
-     scale<=source_data[3:0];attr_mode<=source_data[4];sequence_id<=source_data[11:5];
+     attr_mode<=source_data[4];sequence_id<=source_data[11:5];
      generation<=source_data[15:12];state<=META3;
     end
     META3:if(source_ready)state<=META3_Q;

@@ -25,8 +25,8 @@ No implicit equality or shared fence is defined between these identities.
 
 Only the compact meshlet ROM uses words256..310 for a fixed 55-word bounds
 prologue. Words0..6 are the existing bootstrap; a kept meshlet jumps directly to
-original V word7 and pays 48 additional enabled edges. Original compact V/T
-words0..255 and the entire regular-layout program remain unchanged. Native
+original V word7 and pays 48 additional enabled edges. Original V words0..127 remain unchanged. T uses the bounded-F16 calendar below.
+The bounds prologue is only enabled in the compact composition. Native
 BSRAM INIT fields and the portable view are emitted together by
 `frontend/vliw/vertex/bounds_program.py`; `--check` verifies regeneration.
 
@@ -60,6 +60,28 @@ when CE is low. A reject returns `done_v` with zero published vertices, and the
 meshlet controller skips its index/T phase. It neither changes an old queued
 T's epoch nor waits for that T to retire. The [numerical contract](/ip/gpu-v2/docs/geometry.md#conservative-meshlet-rejection)
 defines the conservative predicates and fallback.
+
+## Shared bounded-F16 triangle calendar
+
+T's62 ROM slots compose reads, arithmetic issue, previous-result capture and
+writes on the same edge. Normalization slots repeat only while their magnitude
+predicate requires another fixed four-bit or one-bit step. There is no dynamic
+port reservation or per-instruction transaction FSM. All state advances on CE.
+
+| Phase | Physical dataflow and lifetime |
+| --- | --- |
+| Position fill | Position BSRAM reads ahead through Q and unpacker into RF1..9; constants fill unused RF write slots |
+| Cross components | Issue two products per component; capture product1 while issuing product2; registered accumulator retires the difference |
+| Edge alignment | Three private work rows retain guarded components; one read / one DSP issue / previous write overlap; qmax selects the common exponent |
+| Determinant | Three P0*N0 issues reuse RF/work Q; normalization and sign/zero decisions consume registered accumulator |
+| Viewport coefficients | The same work Q feeds output Nx/Ny and C MAC; C return launches the next edge's first product |
+| Publication | Ten field-major result writes finish before descriptor publication; indexed attributes remain in the original epoch banks |
+
+There are39 MAC issues,18 indexed position reads,18 work writes and21 work reads
+per kept triangle. The62-slot calendar is a base, not a fixed triangle latency:
+normalization repeats add cycles and early rejection removes the unused tail.
+The original V calculation, bounds prologue,16 result slots and downstream
+backpressure semantics remain intact.
 
 ## Triangle parameter storage and reads
 

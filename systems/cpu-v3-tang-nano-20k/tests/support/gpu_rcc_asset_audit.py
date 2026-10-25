@@ -40,7 +40,7 @@ for index in range(5):
         name=f"asset{index}", group=0, slot=0, uniform=uniform,
         config=[(0, 8192, 16384, 0, 8192)[index], 0, 65536, 264],
         vertices=vertices, triangles=[[0, 1, 2]], color_mode=index < 3,
-        cull_negative=0, scale_s=0, cfg_far_z=100 * 65536,
+        cull_negative=0, cfg_far_z=100 * 65536,
         cfg_tex_w_log2=0, cfg_tex_h_log2=0, cfg_max_mip=0,
     )
     folder = OUT / "native-assets" / f"record{index}"

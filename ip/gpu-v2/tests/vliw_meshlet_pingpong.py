@@ -33,15 +33,15 @@ reg clk=0;always #5 clk=~clk;
 reg reset=1,ce=1,start=0,slot=0,dma_we=0,output_ready=1,packet_ready=0,word_ready=0;
 reg[9:0]dma_addr=0;reg[63:0]dma_data=0;
 wire ready,busy,done,drained,dma_ready,packet_valid,word_valid,emit_valid;
-wire[3:0]error;wire[6:0]published_vertices;wire[35:0]descriptor,emit_data;
+wire[3:0]error;wire[6:0]published_vertices;wire[31:0]descriptor;wire[35:0]emit_data;
 wire[4:0]word_index;wire[53:0]word_data;wire[9:0]emit_addr;
 shared_meshlet dut(.*);
 localparam FIRST=@FIRST@,TOTAL=FIRST+4,STREAM=@STREAM@;
-reg[35:0]expected_v[0:44],expected_d[0:TOTAL-1];reg[53:0]expected_w[0:TOTAL*16-1];
+reg[35:0]expected_v[0:44];reg[31:0]expected_d[0:TOTAL-1];reg[53:0]expected_w[0:TOTAL*16-1];
 integer cycle=0,vi=0,pi=0,wi=0,di=0,overlap=0,reuse_blocked=0,paused=0;
 integer task_id=0,dm,rc,a,j;reg[63:0]value;reg[1023:0]path;
 integer concurrent_attributes=0;
-reg held=0;reg[58:0]last_word;reg[35:0]last_desc;reg desc_held=0;
+reg held=0;reg[58:0]last_word;reg[31:0]last_desc;reg desc_held=0;
 always @(negedge clk)begin
  ce=cycle%7!=2;output_ready=cycle%11!=3;
 end

@@ -6,7 +6,7 @@ GSR GSR(.GSRI(1'b1));
 reg clk=0;always #5 clk=~clk;
 reg reset=1,ce=0,start=0,raw_valid=0;integer tick=0,wall=0,p=0;
 always @(negedge clk)begin tick=tick+1;ce=!reset&&(tick%11!=3&&tick%11!=4);end
-reg[35:0]descriptor=0;reg[4:0]raw_index=0;reg[53:0]raw_data=0;
+reg[31:0]descriptor=0;reg[4:0]raw_index=0;reg[53:0]raw_data=0;
 wire ready,sbusy,sdone,run_enable;wire[16:0]ie;wire[3:0]re;
 wire gwe,bvalid,bempty;wire[3:0]gwa;wire[29:0]gwd;wire[4:0]xl,xh;wire[3:0]yl,yh;wire[1:0]phase;
 wire rb,rd,rstart;
@@ -16,7 +16,7 @@ gpu_v2_vliw_interpolator I(.clk(clk),.reset(reset),.ce(ce),.prepare_start(start)
 .sample_valid(1'b0),.sample_lane(2'd0),.sample_cover(1'b0),.sample_anchor(1'b0),.sample_h(30'd0),.quad_end_valid(1'b0),.quad_mask(4'd0),.pool_ready(1'b1),.pool_quad_id(3'd0),.s_busy(sbusy),.s_done(sdone),.error(ie),
 .geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bound_valid(bvalid),.bound_empty(bempty),.bound_xlo(xl),.bound_xhi(xh),.bound_ylo(yl),.bound_yhi(yh),.phase(phase),.run_enable(run_enable));
 rc_raster R(.clk(clk),.reset(reset),.ce(ce),.start(rstart),.geo_we(gwe),.geo_wa(gwa),.geo_wd(gwd),.bbox_done(bvalid&&!bempty),.bbox_empty(1'b0),.bbox_xlo(xl),.bbox_xhi(xh),.bbox_ylo(yl),.bbox_yhi(yh),.run_enable(run_enable),.phase(phase),.quad_ready(1'b0),.busy(rb),.done(rd),.error(re));
-reg[35:0]descs[0:@LAST@];reg[53:0]words[0:@WLAST@];
+reg[31:0]descs[0:@LAST@];reg[53:0]words[0:@WLAST@];
 reg[53:0]params[0:@N@*6-1];
 reg[29:0]geometry[0:@N@*9-1];integer geo_writes=0;
  wire[50:0]stored_param=I.prepare.stream_param_data;
@@ -30,7 +30,7 @@ integer roots9=0,nodes=0,early_cancel=0,zero_slots=0,ce0=0,resetcuts=0,fd;
 reg[255:0]held;
 reg[90:0]held_attribute;
 reg[41:0]held_prepare_control;
-reg[58:0]held_quant;
+reg[36:0]held_quant;
 reg[59:0]held_origin;
 reg[70:0]held_geometry;
 `ifdef RAW_GEOMETRY_DSP
@@ -38,6 +38,7 @@ reg[3:0]raw_modes=0,raw_bias_modes=0;reg[2:0]raw_windows=0;
 reg[27:0]held_raw_dsp;
 `endif
 integer quant_issues=0,quant_writes=0,quant_aborted=0,geometry_holds=0,geometry_cuts=0,geometry_overlap=0;
+reg[1:0]raw_pages_seen=0;
 reg[47:0]packed_expected;
 reg[31:0]uv_word;
 reg[17:0]uv_expected;
@@ -106,7 +107,12 @@ always @(posedge clk)begin
    geo_writes=geo_writes+1;
    e=gwa[1:0];case(gwa[3:2])0:aa[e]=$signed(gwd);1:bb[e]=$signed(gwd);2:begin cc[e]=$signed(gwd);shadow[e]=gwd;end default:$fatal(1,"geo row");endcase
   end
-  if(I.prepare.read_valid)quant_issues=quant_issues+1;
+  if(I.prepare.collecting&&I.pw_high_we)raw_pages_seen[I.pw_high_wa[2]]=1;
+  if(I.prepare.read_valid)begin
+   quant_issues=quant_issues+1;
+   if(I.pw_high_we&&I.pw_high_wa==I.pc_read_address)
+    $fatal(1,"raw geometry depends on same-edge SSRAM old Q");
+  end
 `ifdef RAW_GEOMETRY_DSP
   if(I.prepare.read_valid)begin
    raw_modes[{I.prepare.sigma,I.prepare.pool_q[47]}]=1;
@@ -158,7 +164,7 @@ always @(posedge clk)begin
   ce0=ce0+1;held={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny};
   held_attribute={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.pc_read_address,I.private_c};
   held_prepare_control={I.prepare.core.issued_op,I.prepare.core.u};
-  held_quant={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative};
+  held_quant={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.depth_mantissa,I.prepare.negative};
   held_origin={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result};
   held_geometry={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1,I.prepare.quant_fraction};
 `ifdef RAW_GEOMETRY_DSP
@@ -169,7 +175,7 @@ always @(posedge clk)begin
   #1;if(held!=={R.life,R.w_pc,R.w_edge,R.level,R.rom_pc,R.rom_valid,R.r_valid,R.r_pc,R.r_edge,R.work_q,R.step_q,R.nx,R.ny})$fatal(1,"CE hold");
   if(held_attribute!=={I.prepare.attribute_base,I.prepare.difference0,I.prepare.core.pc,I.pc_read_address,I.private_c})$fatal(1,"attribute prefetch CE hold");
   if(held_prepare_control!=={I.prepare.core.issued_op,I.prepare.core.u})$fatal(1,"prepare ROM/address owner CE hold");
-  if(held_quant!=={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.work,I.prepare.negative})$fatal(1,"quantization retire CE hold");
+  if(held_quant!=={I.prepare.quant_valid,I.prepare.quant_field,I.prepare.quant_edge,I.prepare.depth_mantissa,I.prepare.negative})$fatal(1,"quantization retire CE hold");
   if(held_origin!=={R.origin_valid,R.origin_edge0,R.origin_edge1,R.origin_result})$fatal(1,"DSP pipeline CE hold");
   if(held_geometry!=={I.prepare.quant_result,I.prepare.read_valid,I.prepare.read_exp_q,I.prepare.quant_pipe,I.prepare.quant_edge,I.prepare.quant_field,I.prepare.quant_negative0,I.prepare.quant_negative1,I.prepare.quant_fraction})$fatal(1,"geometry scale pipeline CE hold");
 `ifdef RAW_GEOMETRY_DSP
@@ -197,7 +203,7 @@ task drive;input integer cutoff;integer wi,taken,n,gap_left;begin: body
  end
  if(geo_writes!=(empty_seen?0:9)||normal_writes!=3||attribute_writes!=3||attr0_takes!=param_writes||attr1_takes!=param_writes||packed_reads!=3*param_writes)
   $fatal(1,"packed read/write conservation p%0d NW%0d AW%0d R%0d P%0d",p,normal_writes,attribute_writes,packed_reads,param_writes);
- if(uv_writes!=((descriptor[23]||param_writes<4)?0:(param_writes==4?3:6)))$fatal(1,"UV prefetch count");
+ if(uv_writes!=((descriptor[19]||param_writes<4)?0:(param_writes==4?3:6)))$fatal(1,"UV prefetch count");
  if(!empty_seen&&param_writes!=6)$fatal(1,"incomplete nonempty parameters");
 end endtask
 initial begin
@@ -214,9 +220,12 @@ initial begin
  if(origin_issues!=origin_writes+origin_aborted||origin_holds==0||dsp_resetcuts==0||origin_aborted==0)$fatal(1,"DSP issue/retire/reset conservation");
  if(quant_issues!=quant_writes+quant_aborted||geometry_holds==0||geometry_cuts==0||geometry_overlap==0)$fatal(1,"geometry issue/retire/reset conservation");
 `ifdef RAW_GEOMETRY_DSP
- if(raw_modes!=15||raw_bias_modes!=15||raw_windows!=7)$fatal(1,"raw geometry coverage modes=%h biases=%h windows=%h",raw_modes,raw_bias_modes,raw_windows);
+ // N27 viewport coefficients use exponent windows0/1; the old raw-C47 window2 is unreachable.
+ if(raw_modes!=15||raw_bias_modes!=15||raw_windows!=3)$fatal(1,"raw geometry coverage modes=%h biases=%h windows=%h",raw_modes,raw_bias_modes,raw_windows);
  $display("RAW_GEOMETRY modes=%h biases=%h windows=%h",raw_modes,raw_bias_modes,raw_windows);
 `endif
+ if(raw_pages_seen!=3)$fatal(1,"raw geometry page coverage");
+ $display("RAW_POOL pages=%h old_q_dependencies=0",raw_pages_seen);
  $display("GEOMETRY_DSP issues=%0d writes=%0d aborted=%0d holds=%0d cuts=%0d overlaps=%0d",quant_issues,quant_writes,quant_aborted,geometry_holds,geometry_cuts,geometry_overlap);
  $display("DSP_ORIGIN issues=%0d writes=%0d aborted=%0d holds=%0d resetcuts=%0d",origin_issues,origin_writes,origin_aborted,origin_holds,dsp_resetcuts);
  $display("PASS RROOT packets=@N@ nodes=%0d originwrites=%0d roots9=%0d earlycancel=%0d zeros=%0d ce0=%0d cuts=%0d wall=%0d",nodes,origin_writes,roots9,early_cancel,zero_slots,ce0,resetcuts,wall);$finish;

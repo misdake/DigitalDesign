@@ -16,16 +16,16 @@ module rp_results_split(input clk,reset,ce,
 endmodule
 
 // Immutable queue heads expose refs throughout export without a second copy.
-module rp_triangle_descriptors #(parameter AB=4)(input clk,we,input[AB-1:0]wa,input[36:0]wd,
- input[AB-1:0]ra,output[36:0]q);
+module rp_triangle_descriptors #(parameter AB=4)(input clk,we,input[AB-1:0]wa,input[32:0]wd,
+ input[AB-1:0]ra,output[32:0]q);
 `ifdef PORTABLE
- reg[36:0]mem[0:(1<<AB)-1];
+ reg[32:0]mem[0:(1<<AB)-1];
  always @(posedge clk)if(we)mem[wa]<=wd;
  assign q=mem[ra];
 `else
- wire[39:0]data={3'b0,wd};wire[39:0]result;
- assign q=result[36:0];genvar i;
- generate for(i=0;i<10;i=i+1)begin:lanes
+ wire[35:0]data={3'b0,wd};wire[35:0]result;
+ assign q=result[32:0];genvar i;
+ generate for(i=0;i<9;i=i+1)begin:lanes
   if(AB<=4)begin:single
    RAM16SDP4 ram(.DO(result[i*4+:4]),.DI(data[i*4+:4]),
     .WAD({{(4-AB){1'b0}},wa}),.RAD({{(4-AB){1'b0}},ra}),.WRE(we),.CLK(clk));

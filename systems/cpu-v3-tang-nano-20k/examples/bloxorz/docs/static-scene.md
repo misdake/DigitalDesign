@@ -30,7 +30,7 @@ Source coordinates are twice game coordinates, paired with half instance scale.
 The floor uses source half extents `(1, 0.2, 1)` and `quant_shift=8`; the block
 uses `(0.98, 0.98, 0.98)` and `quant_shift=7`. Origins are rounded to that grid,
 deltas fit unsigned 10 bits, normals use signed 10-bit axis values, and both
-meshlets use `scale_s=5` with the normal18 path. Position projection and normal
+meshlets retain unshifted F16 positions and use the normal18 path. Position projection and normal
 transforms remain separate. Culling is disabled; depth LESS with writes resolves
 the closed block. The fixture uses unlit RGB, not the imported atlas. Small dark seams in the
 quantized tiled surface also occur in the integer reference; this fixture is an

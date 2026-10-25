@@ -150,13 +150,6 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
         "shared_frontend" => {
             check(s, "compact_invalid", "1'b0", "launch_v", false)?;
             check(s, "refs_valid", "1'b1", "launch_t", true)?;
-            check(
-                s,
-                "p_range_error",
-                "1'b0",
-                "step&&triangle_mode&&rf_wsrc==1",
-                false,
-            )?;
             once(s, "vertex_count+published_vertices>64", "1'b0")?;
             monitor(
                 s,

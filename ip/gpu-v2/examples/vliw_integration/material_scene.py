@@ -49,17 +49,12 @@ def instances(bunny, ply, oracle, view):
             u, v = round(i % 5/4*65535), round(i//5/4*65535)
             vertex[2] = u | (v << 16)
     extra = rgb_triangle(info['camera'])
-    extra.update(uniform=info['camera']['uniform'], scale_s=0, cull_negative=1,
+    extra.update(uniform=info['camera']['uniform'], cull_negative=1,
                  seq_base=0, cfg_tex_w_log2=6, cfg_tex_h_log2=6, cfg_max_mip=6)
     values = room+[extra]+values[6:]
     for i, instance in enumerate(values):
         instance.update(slot=i % 2, generation=i % 16)
         instance.setdefault('unlit', False)
-        if instance is extra:
-            words = oracle.F.oracle(instance['uniform'], instance['config'], instance['vertices'])
-            maximum = max(abs(oracle.signed(words[6*j+k], 32)) for j in range(3) for k in range(3))
-            while maximum >> instance['scale_s'] > 131071:
-                instance['scale_s'] += 1
     info.update(scene='textured_room_rgb_triangle_lit_bunny', submitted_triangles=1141,
                 material=dict(box='unlit RGB565 texture with all seven mip levels',
                               triangle='unlit interpolated RGB888 vertex colors',
