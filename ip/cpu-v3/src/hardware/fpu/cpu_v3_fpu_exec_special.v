@@ -39,6 +39,9 @@ wire is_special = is_rcp || is_rsqrt || is_sincos;
 
 wire load_now = instr_complete && is_special && !abort;
 reg [2:0] phase = 0;
+// Capture only the function family at the existing launch edge. Late math
+// consumes this owner instead of decoding the frontend words through writeback.
+reg active_rcp = 0, active_sincos = 0;
 
 wire [31:0] x0 = rf_read_a_data;
 wire x0_negative = x0[31];
@@ -81,20 +84,20 @@ wire [8:0] table_address = p0_rcp
     ? {2'b01, norm_index}
     : (rsqrt_odd ? {2'b10, norm_index} : {2'b01, norm_index});
 
-wire s1_valid = phase == 1 && !is_sincos;
+wire s1_valid = phase == 1 && !active_sincos;
 reg [8:0] s1_residue = 9'd0;
 reg [4:0] s1_scale_distance = 5'd0;
 reg s1_zero = 1'b0;
 
 reg [1:0] meta_flags = 0;
 reg [16:0] meta_s1_base = 17'd0;
-wire rcp_return = mul_out_valid && phase == 2 && !is_sincos;
-wire sc_return = mul_out_valid && is_sincos && (phase == 3 || phase == 4);
+wire rcp_return = mul_out_valid && phase == 2 && !active_sincos;
+wire sc_return = mul_out_valid && active_sincos && (phase == 3 || phase == 4);
 wire [16:0] s2_interpolated;
 
 localparam [35:0] SINCOS_K = 36'h0_A2F9836E;
 
-wire sc_valid = phase != 0 && is_sincos;
+wire sc_valid = phase != 0 && active_sincos;
 wire [2:0] sc_stage = phase;
 
 wire [1:0] sc_mode = mode;
@@ -142,7 +145,7 @@ always @(posedge clk) begin
     end
 end
 
-wire [31:0] packed_interval = p0_rcp ? rf_read_a_data : rf_read_b_data;
+wire [31:0] packed_interval = active_rcp ? rf_read_a_data : rf_read_b_data;
 assign interval_current = packed_interval[16:0];
 wire signed [9:0] interval_delta = $signed(packed_interval[26:17]);
 wire signed [17:0] interp_delta = {{8{interval_delta[9]}}, interval_delta};
@@ -178,7 +181,7 @@ wire sc_write = sc_valid && sc_return && !abort;
 // the existing magnitude/sign and zero/invalid overrides consume this result.
 wire [32:0] scale_result = {s2_interpolated,16'd0} >> s1_scale_distance;
 wire rcp_left_overflow = |scale_result[32:31];
-wire [31:0] scaled = p0_rcp && rcp_left_overflow
+wire [31:0] scaled = active_rcp && rcp_left_overflow
     ? 32'h7FFFFFFF : scale_result[31:0];
 // Select the final architectural magnitude/sign before a single 32-bit
 // conditional negation. A 17-bit SINCOS magnitude fits signed18, so zero
@@ -186,9 +189,9 @@ wire [31:0] scaled = p0_rcp && rcp_left_overflow
 // Reciprocal right-shift/saturation precede sign; zero/invalid RSQRT overrides
 // still have priority over the signed result, except for a live SINCOS write.
 wire [31:0] result_magnitude = sc_write ? {15'd0,sc_interp_mag} : scaled;
-wire result_negative = sc_write ? meta_flags[0] : (p0_rcp && p0_negative);
+wire result_negative = sc_write ? meta_flags[0] : (active_rcp && p0_negative);
 wire [31:0] signed_result = result_negative ? (~result_magnitude + 32'd1) : result_magnitude;
-wire [31:0] zero_result = p0_rcp ?
+wire [31:0] zero_result = active_rcp ?
     (p0_negative ? 32'h80000001 : 32'h7FFFFFFF) : 32'd0;
 
 
@@ -204,11 +207,13 @@ always @(posedge clk) begin
     if (abort) phase <= 0;
     else if (load_now) begin
         phase <= 1;
+        active_rcp <= is_rcp;
+        active_sincos <= is_sincos;
         if (!is_sincos) begin
             p0_negative <= x0_negative;
         end
     end else if (phase != 0) begin
-        if ((!is_sincos && phase == 2) || (is_sincos &&
+        if ((!active_sincos && phase == 2) || (active_sincos &&
             ((sc_single && phase == 3) || phase == 4))) phase <= 0;
         else phase <= phase + 3'd1;
 
