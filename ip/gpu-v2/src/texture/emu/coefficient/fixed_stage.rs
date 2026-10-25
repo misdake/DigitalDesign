@@ -1,8 +1,8 @@
 //! Selected fixed-stage execution. No calendar addresses or retained whole input.
 //! The generic packed-bank emulator remains an independent reference.
 use super::{
-    pack_metadata, unpack_metadata, validate, Event, Fault, MetadataAccess, Output, ReadyAccess,
-    Site, Snapshot, Step, Tick, CAPTURE_AGE, VALID_MASK,
+    CAPTURE_AGE, Event, Fault, MetadataAccess, Output, ReadyAccess, Site, Snapshot, Step, Tick,
+    VALID_MASK, pack_metadata, unpack_metadata, validate,
 };
 pub use super::{
     COHORT_CAPACITY, METADATA_ROWS, READY_CAPACITY, READY_RAM16_BITS, READY_SDP4_CELLS,
@@ -183,7 +183,7 @@ impl FixedCoefficientEmu {
         let owners = std::array::from_fn::<_, 5, _>(|i| self.owner(i as u8 + 1));
         let metadata_access = MetadataAccess {
             write: incoming.map(|v| (self.cohort_write, pack_metadata(v.metadata))),
-            read_address: (publication || consumed)
+            read_address: (publication || (consumed && self.queued > 1))
                 .then_some((self.metadata_read + u8::from(consumed)) & 15),
         };
         let returned = metadata_access

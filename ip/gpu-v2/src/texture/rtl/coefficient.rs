@@ -208,7 +208,10 @@ pub fn verilog() -> &'static str {
   assign ready_value=rrd ? ready_ff1 : ready_ff0;
   wire input_fault=accepted && (bad_input || work_available>16);
   wire meta_we=!reset && !fault && accepted && !input_fault;
-  wire meta_re=!reset && !fault && !input_fault && (do_capture || do_consume);
+  // A pop from the sole ready row has no published successor to read.
+  // Hold DO until publication; speculative reads can collide with admission.
+  wire meta_re=!reset && !fault && !input_fault &&
+    (do_capture || (do_consume && queued[1]));
   wire [3:0] meta_ra=do_consume ? mrd+1'b1 : mrd;
   wire [107:0] meta_data={9'b0,meta_in};
   wire [107:0] meta_do;

@@ -282,6 +282,7 @@ pub fn lower(mut source: String) -> Result<String, String> {
         )
     })?;
     direct_global(&mut source)?;
+    registered_texture_return(&mut source)?;
     for old in [
         "draw_bank",
         "loaded_bank",
@@ -303,7 +304,32 @@ fn direct_global(source: &mut String) -> Result<(), String> {
     edit(source, "rp_prepare", |s| {
         once(s, "reg[31:0]far_z;", "wire[31:0]far_z=cfg_far_z;")?;
         once(s, "far_z<=0;", "")?;
-        once(s, "far_z<=cfg_far_z;", "")
+        once(s, "far_z<=cfg_far_z;", "")?;
+        once(
+            s,
+            "reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;",
+            "wire[4:0]tex_u=cfg_tex_u,tex_v=cfg_tex_v,max_mip=cfg_max_mip;wire signed[7:0]bias=cfg_bias;",
+        )?;
+        once(s, "tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;", "")?;
+        once(
+            s,
+            "tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;bias<=cfg_bias;",
+            "",
+        )
+    })?;
+    edit(source, "rc_lod", |s| {
+        // Keep the calculated bias register: its adder is outside the pixel path.
+        once(
+            s,
+            "reg[4:0]tex_u,tex_v,max_mip;",
+            "wire[4:0]tex_u=cfg_tex_u,tex_v=cfg_tex_v,max_mip=cfg_max_mip;",
+        )?;
+        once(s, "tex_u<=0;tex_v<=0;max_mip<=0;", "")?;
+        once(
+            s,
+            "tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;",
+            "",
+        )
     })?;
     edit(source, "rc_compute", |s| {
         once(s, "reg[31:0]far_z;", "wire[31:0]far_z=cfg_far;")?;
@@ -317,10 +343,16 @@ fn direct_global(source: &mut String) -> Result<(), String> {
             "",
         )?;
         once(s, "reg configured;reg [1:0] phase;", "reg [1:0] phase;")?;
-        once(s, "reg [1:0] ctx_mode; reg [4:0] ctx_code; reg [15:0] ctx_epoch;",
-            "wire[1:0]ctx_mode=context_mode;wire[4:0]ctx_code=context_code;wire[15:0]ctx_epoch=context_epoch;")?;
-        once(s, "reg signed [15:0] ctx_l0,ctx_l1,ctx_l2,ctx_p0,ctx_p1,ctx_p2;",
-            "wire signed[15:0]ctx_l0=light_x,ctx_l1=light_y,ctx_l2=light_z,ctx_p0=ray_x,ctx_p1=ray_y,ctx_p2=ray_k;")?;
+        once(
+            s,
+            "reg [1:0] ctx_mode; reg [4:0] ctx_code; reg [15:0] ctx_epoch;",
+            "wire[1:0]ctx_mode=context_mode;wire[4:0]ctx_code=context_code;wire[15:0]ctx_epoch=context_epoch;",
+        )?;
+        once(
+            s,
+            "reg signed [15:0] ctx_l0,ctx_l1,ctx_l2,ctx_p0,ctx_p1,ctx_p2;",
+            "wire signed[15:0]ctx_l0=light_x,ctx_l1=light_y,ctx_l2=light_z,ctx_p0=ray_x,ctx_p1=ray_y,ctx_p2=ray_k;",
+        )?;
         once(
             s,
             "reg [8:0] ctx_i0,ctx_i1; reg [3:0] ctx_power;",
@@ -393,7 +425,11 @@ fn direct_global(source: &mut String) -> Result<(), String> {
             " wire core_in_valid=source_valid&&covered&&!switching;",
             " wire core_in_valid=source_valid&&covered;",
         )?;
-        once(s, " assign context_wait=switching;\n assign context_accepted=ce&&switching&&core_context_ready;\n", "")?;
+        once(
+            s,
+            " assign context_wait=switching;\n assign context_accepted=ce&&switching&&core_context_ready;\n",
+            "",
+        )?;
         once(
             s,
             "(!covered||(!switching&&core_in_ready))",
@@ -419,7 +455,11 @@ fn direct_global(source: &mut String) -> Result<(), String> {
             "localparam L_READ=0,L_X=1,L_CONTEXT=2,L_PIXEL=3;",
             "localparam L_READ=0,L_X=1,L_PIXEL=2;",
         )?;
-        once(s, " assign light_context_valid=!reset&&!fault&&(light_state==L_CONTEXT||light_state==L_PIXEL);\n", "")?;
+        once(
+            s,
+            " assign light_context_valid=!reset&&!fault&&(light_state==L_CONTEXT||light_state==L_PIXEL);\n",
+            "",
+        )?;
         once(
             s,
             "light_state<=L_CONTEXT;end\n     L_CONTEXT:light_state<=L_PIXEL;",
@@ -456,5 +496,71 @@ fn direct_global(source: &mut String) -> Result<(), String> {
             "   if(draw_rebind&&!pipeline_idle)$fatal(1,\"draw rebind before whole GPU drain\");\n",
             "",
         )
+    })
+}
+
+/// The paid payload and line register drive the texel read on the next edge.
+/// Its synchronous DO is the result slot; no second 64-bit texel copy exists.
+/// Group II2 leaves a single pinned line across both pending and result phases.
+fn registered_texture_return(source: &mut String) -> Result<(), String> {
+    edit(source, "gpu_v2_texture_runtime_cache_unique", |s| {
+        once(s, "reg[15:0]res_tex[0:3];", "")?;
+        once(
+            s,
+            "wire pin_valid=rd_valid;",
+            "wire pin_valid=rd_valid||res_valid;",
+        )?;
+        once(
+            s,
+            " (!rd_valid||!res_valid||out_ready)&&hit_ready;",
+            " !rd_valid&&(!res_valid||out_ready)&&hit_ready;",
+        )?;
+        once(s, "wire[15:0]data_di[0:3],data_do[0:3];", "")?;
+        once(
+            s,
+            "wire head_valid=in_valid;",
+            "wire[15:0]data_di[0:3],data_do[0:3];\n wire head_valid=in_valid;",
+        )?;
+        *s = s.replace("res_tex[", "data_do[");
+        once(s, "for(b=0;b<4;b=b+1)data_do[b]<=data_do[b];", "")?;
+        let begin = s
+            .find("  // Direct four address bits;")
+            .ok_or("Texture registered row begin")?;
+        let end = s[begin..]
+            .find(" wire data_write=")
+            .ok_or("Texture registered row end")?
+            + begin;
+        let rows = s[begin..end]
+            .replace("head_tlx", "data_tlx")
+            .replace("head_tly", "data_tly");
+        s.replace_range(
+            begin..end,
+            &format!(
+                " wire[2:0]data_tlx=paid_payload[18:16],data_tly=paid_payload[21:19];\n{rows}"
+            ),
+        );
+        for bank in 0..4 {
+            once(
+                s,
+                &format!("data_ra[{bank}]={{hit_line,bank_row{bank}}}"),
+                &format!("data_ra[{bank}]={{pin_line,bank_row{bank}}}"),
+            )?;
+        }
+        let begin = s
+            .find("genvar db;generate")
+            .ok_or("Texture data bank begin")?;
+        let end = s[begin..]
+            .find("end endgenerate")
+            .ok_or("Texture data bank end")?
+            + begin
+            + "end endgenerate".len();
+        let banks = s[begin..end]
+            .replace(".CEB(read_issue)", ".CEB(return_capture)")
+            .replace(
+                "else if(read_issue)q<=mem[data_ra[db]]",
+                "else if(return_capture)q<=mem[data_ra[db]]",
+            );
+        s.replace_range(begin..end, &banks);
+        Ok(())
     })
 }

@@ -92,7 +92,10 @@ fn register(s: &mut String, name: &str, abort: bool) -> Result<(), String> {
         let text = if expression == "0" {
             "begin end ".to_owned()
         } else {
-            format!("begin\n`ifndef SYNTHESIS\n if(!reset&&{}(({expression})!=0))$fatal(1,\"GPU contract: {name}\");\n`endif\n end ", if abort { "!abort&&" } else { "" })
+            format!(
+                "begin\n`ifndef SYNTHESIS\n if(!reset&&{}(({expression})!=0))$fatal(1,\"GPU contract: {name}\");\n`endif\n end ",
+                if abort { "!abort&&" } else { "" }
+            )
         };
         s.replace_range(start..end, &text);
     }
@@ -178,6 +181,11 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             check(s, "bad", "1'b0", "1'b1", false)?;
         }
         "gpu_v2_runtime_coefficient_directweight" => {
+            monitor(
+                s,
+                "meta_we&&meta_re&&cwr==meta_ra",
+                "coefficient metadata cross-port collision",
+            );
             register(s, "fault", false)?;
             check(s, "preflight_bad", "1'b0", "1'b1", false)?;
         }
@@ -194,8 +202,16 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             check(s, "preflight_bad", "1'b0", "running&&!abort", false)?;
         }
         "gpu_v2_texture_runtime_cache_unique" => {
-            monitor(s,"!abort&&((mem_resp_valid&&(!eff_started||desc_next>=16||mem_resp_index!=desc_next[3:0]))||(mem_resp_complete&&(!eff_started||eff_next!=16)))","texture return framing");
-            once(s,"wire beat_ok=beat_present&&eff_started&&desc_next<16&&mem_resp_index==desc_next[3:0];","wire beat_ok=beat_present;")?;
+            monitor(
+                s,
+                "!abort&&((mem_resp_valid&&(!eff_started||desc_next>=16||mem_resp_index!=desc_next[3:0]))||(mem_resp_complete&&(!eff_started||eff_next!=16)))",
+                "texture return framing",
+            );
+            once(
+                s,
+                "wire beat_ok=beat_present&&eff_started&&desc_next<16&&mem_resp_index==desc_next[3:0];",
+                "wire beat_ok=beat_present;",
+            )?;
             once(
                 s,
                 "wire term_ok=terminal&&mem_resp_ok&&eff_started&&eff_next==16;",
@@ -217,7 +233,11 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
         }
         "gpu_v2_vliw_quad_pool" => register(s, "fault", false)?,
         "membership_leaf" => {
-            once(s,"if(in_valid&&(in_level>10 || !(|{in_w0,in_w1,in_w2,in_w3})))fault<=1;\n   else begin","begin")?;
+            once(
+                s,
+                "if(in_valid&&(in_level>10 || !(|{in_w0,in_w1,in_w2,in_w3})))fault<=1;\n   else begin",
+                "begin",
+            )?;
             monitor(
                 s,
                 "ce&&in_valid&&(in_level>10||!(|{in_w0,in_w1,in_w2,in_w3}))",
@@ -262,7 +282,9 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
                 let extra = if expression == "0" {
                     String::new()
                 } else {
-                    format!("\n`ifndef SYNTHESIS\n if(!({expression}))$fatal(1,\"GPU contract: RO request\");\n`endif\n")
+                    format!(
+                        "\n`ifndef SYNTHESIS\n if(!({expression}))$fatal(1,\"GPU contract: RO request\");\n`endif\n"
+                    )
                 };
                 s.replace_range(a..b, &format!("begin ro_legal<=1;{extra}end "));
             }

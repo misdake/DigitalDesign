@@ -514,7 +514,7 @@ impl CoefficientEmu {
         let publication = advance && self.valid & (1 << (CAPTURE_AGE - 1)) != 0;
         let metadata_access = MetadataAccess {
             write: incoming.map(|i| (self.cohort_write, pack_metadata(i.metadata))),
-            read_address: (publication || consumed)
+            read_address: (publication || (consumed && self.queued > 1))
                 .then_some((self.metadata_read + u8::from(consumed)) & 15),
         };
         // Sample the old backing row before any admission write. At most five

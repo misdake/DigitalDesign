@@ -111,6 +111,7 @@ def main():
     ap.add_argument('--output', type=Path, required=True)
     ap.add_argument('--native', action='store_true')
     ap.add_argument('--physical', action='store_true', help='Switch descriptors without invalidation; retained A must hit')
+    ap.add_argument('--vary-bias', action='store_true', help='Change signed LOD bias only after a full drain')
     ap.add_argument('--no-monitors', action='store_true', help='Same datapath with simulation assertions omitted')
     ap.add_argument('--hardware-errors', action='store_true', help='Legacy pre-monitor diagnostic baseline')
     args = ap.parse_args()
@@ -126,7 +127,8 @@ def main():
     for address, base, n, mip, filter_code in [(0x4100,0x2000,4,True,0),
                                               (0x4140,0x2800,3,False,1),
                                               (0x4180,0x2000,4,True,2)]:
-        put(address, struct.pack('<8I', texture_word(base,n,mip,filter_code),0,7|(1<<5),0,0,0,0,0))
+        lod_bias = [0, 3, -2][filter_code] if args.vary_bias else 0
+        put(address, struct.pack('<8I', texture_word(base,n,mip,filter_code),0,7|(1<<5),lod_bias & 255,0,0,0,0))
     def program(bad):
         cb = CommandBuffer()
         cb.emit('DMA',272,0x4000,64);cb.emit('DMA',320,0x4280,128)
@@ -160,6 +162,17 @@ def main():
     # nearest A tile must hit, while that newly demanded tile still pays a refill.
     tb = tb.replace('@INVALIDATES@',str(1 if args.physical else 3)).replace('@TEXTURE_READS@',str(3 if args.physical else 4))
     tb = tb.replace('@GSR@',"GSR GSR(.GSRI(1'b1));" if args.native else '')
+    if args.vary_bias:
+        tb = tb.replace('  if(dut.texture_invalidate)', """
+  if(ce&&dut.core.front.interpolator.cfg_apply)begin
+   if(dut.core.front.interpolator.lc_bias!==dut.cfg_lod_bias ||
+      dut.core.front.interpolator.lc_tex_u!=={1'b0,dut.texture_n} ||
+      dut.core.front.interpolator.lc_tex_v!=={1'b0,dut.texture_n} ||
+      dut.core.front.interpolator.lc_max!==(dut.texture_mip?{1'b0,dut.texture_n}:5'd0))
+    $fatal(1,"prepared current descriptor/bias diverged at context publication");
+  end
+  if(dut.texture_invalidate)""")
+
     outputs = ','.join(p['name'] for p in ports['ports'] if p['direction']=='output')
     tb = tb.replace('@TRACE@', '''integer trace_file=0;
 always @(negedge clk)begin #1;
@@ -188,7 +201,7 @@ end''')
         else:
             assert r.returncode==0,log_text[-1800:]
             results += [line for line in log_text.splitlines() if line.startswith('PASS ')]
-    receipt = dict(status='pass',native=args.native,physical=args.physical,monitors=not args.no_monitors,export_sha256=identity,cases=results,
+    receipt = dict(status='pass',native=args.native,physical=args.physical,vary_bias=args.vary_bias,monitors=not args.no_monitors,export_sha256=identity,cases=results,
                    output_trace_sha256=hashlib.sha256((out/'valid.trace').read_bytes()).hexdigest(),
                    test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     (out/'receipt.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(receipt))

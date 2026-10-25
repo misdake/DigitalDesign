@@ -212,7 +212,10 @@ pub fn verilog() -> &'static str {
   assign ready_value=rrd ? ready_ff1 : ready_ff0;
   wire input_fault=accepted && (bad_input || work_available>16);
   wire meta_we=!reset && !fault && accepted && !input_fault;
-  wire meta_re=!reset && !fault && !input_fault && (do_capture || do_consume);
+  // A pop from the sole ready row has no published successor to read.
+  // Hold DO until publication; speculative reads can collide with admission.
+  wire meta_re=!reset && !fault && !input_fault &&
+    (do_capture || (do_consume && queued[1]));
   wire [3:0] meta_ra=do_consume ? mrd+1'b1 : mrd;
   wire [35:0] meta_data=meta_in;
   wire [35:0] meta_do;
@@ -296,17 +299,34 @@ pub fn source() -> &'static str {
 /// Runtime and the independent generic interface continue to use `verilog()`.
 pub fn serial_verilog() -> String {
     let mut source = verilog().to_owned();
-    for (old,new) in [
- ("assign in_ready=advance && cohorts<3 && phase_even && work_available>={6'b0,cost};",
-  "assign in_ready=advance && cohorts<1 && queued==0 && phase_even && work_available>={6'b0,cost};"),
- ("if(do_consume) begin rrd<=~rrd; mrd<=mrd+1'b1; end",
-  "if(do_consume) begin rrd<=1'b0; mrd<=mrd+1'b1; end"),
- ("if(do_capture) rwr<=~rwr;","if(do_capture) rwr<=1'b0;"),
- ("reg [71:0] ready_ff0,ready_ff1;","reg [71:0] ready_ff0;"),
- ("if(ready_we && !rwr) ready_ff0<=out_w;","if(ready_we) ready_ff0<=out_w;"),
- ("    if(ready_we && rwr) ready_ff1<=out_w;\n",""),
- ("assign ready_value=rrd ? ready_ff1 : ready_ff0;","assign ready_value=ready_ff0;")
- ] {assert_eq!(source.matches(old).count(),1,"Serial specialization anchor {old}");source=source.replace(old,new);}
+    for (old, new) in [
+        (
+            "assign in_ready=advance && cohorts<3 && phase_even && work_available>={6'b0,cost};",
+            "assign in_ready=advance && cohorts<1 && queued==0 && phase_even && work_available>={6'b0,cost};",
+        ),
+        (
+            "if(do_consume) begin rrd<=~rrd; mrd<=mrd+1'b1; end",
+            "if(do_consume) begin rrd<=1'b0; mrd<=mrd+1'b1; end",
+        ),
+        ("if(do_capture) rwr<=~rwr;", "if(do_capture) rwr<=1'b0;"),
+        ("reg [71:0] ready_ff0,ready_ff1;", "reg [71:0] ready_ff0;"),
+        (
+            "if(ready_we && !rwr) ready_ff0<=out_w;",
+            "if(ready_we) ready_ff0<=out_w;",
+        ),
+        ("    if(ready_we && rwr) ready_ff1<=out_w;\n", ""),
+        (
+            "assign ready_value=rrd ? ready_ff1 : ready_ff0;",
+            "assign ready_value=ready_ff0;",
+        ),
+    ] {
+        assert_eq!(
+            source.matches(old).count(),
+            1,
+            "Serial specialization anchor {old}"
+        );
+        source = source.replace(old, new);
+    }
     source
 }
 

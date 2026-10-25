@@ -85,6 +85,18 @@ def packets():
             descriptors.append((int(det < 0) << 18) | ((packet & 1) << 19))
             tail = words[(packet % 24)*16+10:(packet % 24)*16+16]
             words += coefficients + tail
+    # Consumer range corners: N27/C38, including the negative power-of-two
+    # carry that requires e=11. These isolate the transport contract from mesh
+    # geometry; they need not describe one nondegenerate projected triangle.
+    for reverse in (False, True):
+        packet = len(descriptors)
+        descriptors.append((int(reverse) << 18) | (1 << 19))
+        for nx, ny, cv in [(-(1 << 26), (1 << 26)-1, -(1 << 37)),
+                           ((1 << 26)-1, -(1 << 26), (1 << 37)-1),
+                           (-1, 0, -(1 << 37)+1)]:
+            words += [nx & ((1 << 36)-1), ny & ((1 << 54)-1), cv & ((1 << 54)-1)]
+        words += [(1 << 30) | (30 << 31)]
+        words += words[(packet % 24)*16+10:(packet % 24)*16+16]
     return descriptors, words
 
 

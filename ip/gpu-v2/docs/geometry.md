@@ -142,7 +142,7 @@ of signed coefficients truncate toward zero, preserving sign reversal. For an ed
 `e=max(0,bitlen(abs(Nx))-17,bitlen(abs(Ny))-17,bitlen(abs(C))-27)`, with
 `bitlen(0)=0`. Divide each signed coefficient by `2^e` toward zero. The retained
 Nx/Ny magnitudes are below `2^17`; C magnitude is below `2^27`. An exponent
-above 19 faults. The edge exponent carried to interpolation is `e+q_i`,
+above 11 is outside T's N27/C38 transport contract. The edge exponent carried to interpolation is `e+q_i`,
 including T's edge reduction; N/h storage remains unchanged. Double the reduced Nx/Ny for pixel stepping in signed 30-bit storage.
 At pixel `(x,y)`, its reduced field is `2*Nx*x + 2*Ny*y + C`.
 An edge with `A=2*Nx`, `B=2*Ny` includes zero when

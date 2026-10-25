@@ -116,7 +116,7 @@ always @(posedge clk)begin
 `ifdef RAW_GEOMETRY_DSP
   if(I.prepare.read_valid)begin
    raw_modes[{I.prepare.sigma,I.prepare.pool_q[47]}]=1;
-   raw_windows[I.prepare.read_exp_q[4:3]]=1;
+   raw_windows[I.prepare.read_exp_q[3]]=1;
   end
   if(I.prepare.quant_pipe[0])begin
    if($signed(I.prepare.geometry_bias9)<0)raw_bias_modes[0]=1;
