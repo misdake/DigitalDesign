@@ -1,3 +1,5 @@
+// Rust type: cpu_v3::hardware::core::CpuV3Core
+// Verilog path: components/cpu/cpu_v3/cpu_v3_core.v
 module CpuV3Core #(parameter [15:0] INITIAL_CODE_SEGMENT = 0) (
     input wire clk,
     input wire reset,
@@ -138,9 +140,10 @@ wire [3:0] field_b = instruction[3:0];
 assign integer_mul_issue = !reset && !hold && state == ST_EXECUTE
     && opcode == 4'h2 && (field_d == 4'h8 || field_d == 4'h9
         || field_d == 4'ha || field_d == 4'hc);
-// Word0 latch (AUX fields X = [11:8], Fa = [7:2], kind = [1:0]) and the
-// word1 fields captured at the word1 response beat.
-reg [15:0] fpu2_word0 = 0;
+// The blocking pair owns instruction/instruction_pc until retirement. Reuse
+// that owner for word0, Fa and fault PC instead of retaining private copies.
+// Word1 fields are captured at their response beat.
+wire [15:0] fpu2_word0 = instruction;
 // AUX/FLD/FST GPR register/base address (word0 X, bits [11:8]). It is captured
 // once when the two-word pair is accepted and held in its own register, so the
 // GPR read-address mux selects a register instead of routing the live
@@ -149,7 +152,7 @@ reg [3:0] fpu2_gpr_x = 0;
 reg fpu2_gpr_x_valid = 0;
 reg [5:0] fpu2_subop = 0;
 reg [5:0] fpu2_fd = 0;
-reg [5:0] fpu2_fa = 0;
+wire [5:0] fpu2_fa = instruction[7:2];
 reg fpu2_is_memory = 0;
 reg fpu2_write_back = 0;
 reg [31:0] fpu2_aux_data = 0;
@@ -157,15 +160,16 @@ reg [31:0] fpu2_aux_data = 0;
 // `fpu2_beat` counts halves across the whole vector (2*len beats); bit 0
 // selects low/high and the upper bits select which F register. `fpu2_len` is
 // the register count (1 for scalar, 2..4 for the vector forms).
-reg [3:0] fpu2_beat = 0;
-reg [2:0] fpu2_len = 1;
-wire [2:0] fpu2_beat_index = fpu2_beat[3:1];
+reg [2:0] fpu2_beat = 0;
+reg [1:0] fpu2_last_lane = 0;
+wire [2:0] fpu2_beat_index = {1'b0, fpu2_beat[2:1]};
+wire [2:0] fpu2_len = {1'b0, fpu2_last_lane} + 3'd1;
 wire [3:0] fpu2_double_len = {fpu2_len, 1'b0};
-wire [3:0] fpu2_last_beat = fpu2_double_len - 1'b1;
+wire [2:0] fpu2_last_beat = {fpu2_last_lane, 1'b1};
 reg [31:0] fpu2_address = 0;
 reg [15:0] fpu2_low = 0;
 reg fpu2_seen_complete = 0;
-reg [15:0] fpu2_fault_pc = 0;
+wire [15:0] fpu2_fault_pc = instruction_pc;
 
 // FST(V) early-release store buffer (fpu-design-v2 section 18). Fpu2Exec
 // captures the `len` source F registers through the FPU ext read port (the
@@ -175,7 +179,7 @@ reg [15:0] fpu2_fault_pc = 0;
 // executing. The address/fault pc are latched here so a following FPU memory
 // instruction cannot disturb an in-flight drain.
 reg [3:0] fpu2_pending = 0;
-reg [3:0] fpu2_pending_index = 0;
+reg [2:0] fpu2_pending_index = 0;
 reg [31:0] fpu2_store_address = 0;
 reg [15:0] fpu2_store_fault_pc = 0;
 
@@ -407,7 +411,7 @@ assign multiplier_left = {2'b0, multiply_left_word};
 assign multiplier_right = {2'b0, multiply_right_word};
 // Integer issue is confined to the blocking Execute owner;
 
-__GPR_RAM__ u_gpr_ram (
+CpuV3GprRam u_gpr_ram (
     .clk(clk),
     .write_enable(gpr_write_enable),
     .write_address(gpr_write_address),
@@ -455,11 +459,11 @@ wire fpu2_ext_write_enable = (state == ST_FPU2_MEM_RESPONSE &&
     !fpu2_write_back && fpu2_beat[0] &&
     data_response_valid && !data_error) ||
     (state == ST_FPU2_AUX_APPLY && fpu2_aux_writes_f);
-// Capture pipelining: the register indexed by the current capture beat was
-// requested on the previous beat, so present beat+1 while capturing beat. The
-// FLD memory beats keep the two-half-per-register index.
-wire [3:0] fpu2_ext_read_index =
-    state == ST_FPU2_CAPTURE ? fpu2_beat + 1'b1 : fpu2_beat_index;
+// The synchronous RF Q is captured once per F register. Prefetch the next
+// source only on an enabled capture edge; a core hold must retain this source
+// address even though the RF clock itself continues running.
+wire [2:0] fpu2_ext_read_index =
+    state == ST_FPU2_CAPTURE ? fpu2_beat + {2'd0, !hold} : fpu2_beat_index;
 // The AUX bridges merge/extract F halves and sign-extend an integer into the
 // F high half; the FLD beats keep the memory path's assembled word.
 wire [31:0] fpu2_ext_write_data =
@@ -532,9 +536,8 @@ wire fpu2_refill = fpu2_pending != 0 && async_store_free &&
                    !fpu2_mem_active;
 wire [31:0] fpu2_word_data;
 wire fpu2_capture_write = !reset && !hold && state == ST_FPU2_CAPTURE &&
-    fpu2_beat < 4 &&
     !(async_store_valid && async_store_issued && data_response_valid && data_error);
-__STORE_BUFFER__ u_store_buffer (
+CpuV3StoreBuffer u_store_buffer (
     .clk(clk), .write_enable(fpu2_capture_write),
     .write_address(fpu2_beat[1:0]), .write_data(fpu2_ext_read_data),
     .read_address(fpu2_pending_index[2:1]), .read_data(fpu2_word_data)
@@ -774,7 +777,15 @@ always @(posedge clk) begin
         fpu2_pending <= 0;
         fpu2_pending_index <= 0;
         fpu2_gpr_x_valid <= 0;
-    end else if (!hold) begin
+    end else begin
+        // The FPU clocks independently of core hold. Submitted words are
+        // one-edge pulses, and pair completion must survive a paused core.
+        fpu2_word_valid <= 0;
+        fpu2_abort <= 0;
+        if (fpu2_instr_complete &&
+            (state == ST_FPU2_EXEC || state == ST_FPU2_AUX_READ))
+            fpu2_seen_complete <= 1;
+        if (!hold) begin
         // RAM consumes the OLD slot on this edge. Publish the next slot only
         // after that consumption, with global asynchronous-store fault priority.
         gpr_write_enable <= gpr_commit_valid &&
@@ -1162,10 +1173,8 @@ always @(posedge clk) begin
                         4'hc, 4'hd, 4'he: begin
                             fpu2_word <= instruction;
                             fpu2_word_valid <= 1;
-                            fpu2_word0 <= instruction;
                             fpu2_gpr_x <= instruction[11:8];
                             fpu2_gpr_x_valid <= 1;
-                            fpu2_fault_pc <= instruction_pc;
                             fpu2_seen_complete <= 0;
                             fpu2_is_memory <= 0;
                             fpu2_write_back <= 0;
@@ -1259,7 +1268,6 @@ always @(posedge clk) begin
                         // AUX kind 00, subops FLD (0x00) / FST (0x01).
                         fpu2_subop <= instruction_data[9:4];
                         fpu2_fd <= instruction_data[15:10];
-                        fpu2_fa <= fpu2_word0[7:2];
                         fpu2_is_memory <= instruction[15:12] == 4'he &&
                             fpu2_word0[1:0] == 2'b00 &&
                             instruction_data[9:4] <= 6'h01;
@@ -1269,8 +1277,8 @@ always @(posedge clk) begin
                         // defined to behave as the scalar form (len 1):
                         // software must not emit it, so no vector semantics
                         // are attached to the reserved bits.
-                        fpu2_len <= instruction_data[3:2] != 2'b00 ? 3'd1 :
-                                    {1'b0, instruction_data[1:0]} + 3'd1;
+                        fpu2_last_lane <= instruction_data[3:2] != 2'b00 ? 2'd0 :
+                                          instruction_data[1:0];
                         fpu2_address <= {10'b0, data_physical_address(gpr_read_a_data)};
                         fpu2_beat <= 0;
                         // AUX kind-00 integer bridges take the core-driven
@@ -1334,12 +1342,9 @@ always @(posedge clk) begin
                 state <= ST_FETCH_REQUEST;
             end
             ST_FPU2_CAPTURE: begin
-                // The F value indexed by `fpu2_beat` was requested through the
-                // ext read port on the previous beat (address fa+beat); capture
-                // it now while presenting fa+beat+1 for the next beat. The last
-                // capture retires the instruction with the whole vector pending
-                // for the early-release drain.
-                if (fpu2_beat == fpu2_len - 1'b1) begin
+                // Capture one complete source per edge. Publish pending only
+                // after the final source; drain never observes a partial snapshot.
+                if (fpu2_beat == {1'b0, fpu2_last_lane}) begin
                     fpu2_store_address <= fpu2_address;
                     fpu2_store_fault_pc <= fpu2_fault_pc;
                     fpu2_pending <= fpu2_double_len;
@@ -1406,6 +1411,7 @@ always @(posedge clk) begin
             async_store_fault_pc <= fpu2_store_fault_pc;
             fpu2_pending <= fpu2_pending - 1'b1;
             fpu2_pending_index <= fpu2_pending_index + 1'b1;
+        end
         end
         end
     end

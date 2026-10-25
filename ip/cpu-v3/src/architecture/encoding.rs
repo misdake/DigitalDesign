@@ -157,8 +157,8 @@ impl FpuVectorLength {
     }
 }
 
-/// Vector subop, word1 bits [7:3] (design section 6.3). `0x10..0x1F` are
-/// reserved (0x10 was the rejected CROSS3 candidate).
+/// Vector subop, word1 bits [7:3]. `0x08..0x0B` and `0x10..0x1F` are
+/// reserved. Rounding is available only through scalar subops.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum FpuVectorSubop {
@@ -170,10 +170,6 @@ pub enum FpuVectorSubop {
     VMax = 0x05,
     VAbs = 0x06,
     VNeg = 0x07,
-    VFloor = 0x08,
-    VCeil = 0x09,
-    VRound = 0x0a,
-    VTrunc = 0x0b,
     VMove = 0x0c,
     Dot = 0x0d,
     DotAdd = 0x0e,
@@ -191,10 +187,6 @@ impl FpuVectorSubop {
             0x05 => Some(Self::VMax),
             0x06 => Some(Self::VAbs),
             0x07 => Some(Self::VNeg),
-            0x08 => Some(Self::VFloor),
-            0x09 => Some(Self::VCeil),
-            0x0a => Some(Self::VRound),
-            0x0b => Some(Self::VTrunc),
             0x0c => Some(Self::VMove),
             0x0d => Some(Self::Dot),
             0x0e => Some(Self::DotAdd),
@@ -206,16 +198,7 @@ impl FpuVectorSubop {
     /// Unary subops ignore `Fb`; the front end still reads it, but the range
     /// check must not require `Fb` to cover the full vector.
     pub const fn ignores_second_source(self) -> bool {
-        matches!(
-            self,
-            Self::VAbs
-                | Self::VNeg
-                | Self::VFloor
-                | Self::VCeil
-                | Self::VRound
-                | Self::VTrunc
-                | Self::VMove
-        )
+        matches!(self, Self::VAbs | Self::VNeg | Self::VMove)
     }
 
     /// Whether `mode[1:0]` is the second-source stride (DOT family).
@@ -1133,7 +1116,7 @@ mod tests {
             FpuVectorLength::Vec4,
         ] {
             let last = 64 - len.lanes();
-            for subop in 0..=0x0fu8 {
+            for subop in (0..=0x07u8).chain(0x0c..=0x0f) {
                 let subop = FpuVectorSubop::from_field(subop).unwrap();
                 let mode = if subop.uses_stride_mode() { 0b01 } else { 0 };
                 let _ = fpu_vector(0, 0, last, len, subop, mode);

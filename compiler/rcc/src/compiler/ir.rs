@@ -117,6 +117,13 @@ pub enum FpuUnOp {
     Trunc,
 }
 
+/// Component-wise vector unary operations. Rounding is scalar-only.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FpuVecUnOp {
+    Abs,
+    Neg,
+}
+
 /// FPU v2 scalar special-function subops (design sections 7.3 and 9.3). `Rcp`
 /// and `Rsqrt` write one F register; `Sin`/`Cos` write one F register through
 /// the `SINCOS` subop's single-output modes; `SinCos` writes the contiguous
@@ -414,11 +421,11 @@ pub enum Instr {
         lhs: VReg,
         scalar: VReg,
     },
-    /// `D[i] = op(A[i])` over a contiguous range (VABS/VNEG/VFLOOR/VCEIL/
-    /// VROUND/VTRUNC); the second source is ignored by the hardware.
+    /// `D[i] = op(A[i])` over a contiguous range (VABS/VNEG); the second
+    /// source is ignored by the hardware.
     FpuVecUn {
         dst: VReg,
-        op: FpuUnOp,
+        op: FpuVecUnOp,
         src: VReg,
     },
     /// `D[i] = A[i]` over a contiguous range. Lowered as a cycle-safe
@@ -1113,12 +1120,8 @@ impl fmt::Display for Instr {
             }
             Instr::FpuVecUn { dst, op, src } => {
                 let op = match op {
-                    FpuUnOp::Abs => "vabs",
-                    FpuUnOp::Neg => "vneg",
-                    FpuUnOp::Floor => "vfloor",
-                    FpuUnOp::Ceil => "vceil",
-                    FpuUnOp::Round => "vround",
-                    FpuUnOp::Trunc => "vtrunc",
+                    FpuVecUnOp::Abs => "vabs",
+                    FpuVecUnOp::Neg => "vneg",
                 };
                 write!(f, "v{dst} = {op} v{src}")
             }

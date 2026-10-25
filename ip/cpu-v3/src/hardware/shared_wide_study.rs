@@ -74,9 +74,12 @@ fn shared_wide_mixed_owner_latency() {
     let expected = run_program_signal(&p, 20000);
     let emu = run_core_emu_trace(&p, 20000);
     assert_eq!(emu.last().unwrap().halt_signal, expected);
-    let directory = std::path::PathBuf::from(
-        std::env::var_os("SHARED_WIDE_EVIDENCE").expect("study evidence directory"),
-    );
+    let directory = std::env::var_os("SHARED_WIDE_EVIDENCE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/cpu-v3-shared-wide-study")
+        });
     std::fs::create_dir_all(&directory).unwrap();
     let project = VerilogProject::generate::<CpuV3Core>().unwrap();
     project.write_to(directory.join("core-export")).unwrap();
@@ -86,28 +89,26 @@ fn shared_wide_mixed_owner_latency() {
     )
     .unwrap();
     let monitor = r#"
-reg mon_q1_valid=0,mon_q2_valid=0;
-reg signed [71:0] mon_q1_product=0,mon_q2_product=0;
-reg [8:0] mon_q1_tag=0,mon_q2_tag=0;
+reg mon_q1_valid=0;
+reg signed [71:0] mon_q1_product=0;
+
 integer mon_returns=0;
 always @(posedge clk) begin
   if (!reset) begin
-    if (dut.u_fpu.sf_mul_in_valid && dut.u_fpu.product_mul_in_valid)
+    if (dut.u_fpu.sf_mul_in_valid && (dut.u_fpu.issue && dut.u_fpu.product_r))
       $fatal(1,"two FPU owners issue together");
     if (dut.u_fpu.mul_pipe.abort) begin
-      mon_q1_valid=0;mon_q2_valid=0;
+      mon_q1_valid=0;
     end else begin
-      if (dut.u_fpu.mul_pipe.out_valid !== mon_q2_valid)
+      if (dut.u_fpu.mul_pipe.out_valid !== mon_q1_valid)
         $fatal(1,"shared valid dropped or fabricated");
-      if(mon_q2_valid) begin
-        if (dut.u_fpu.mul_pipe.out_product !== mon_q2_product[63:0] || dut.u_fpu.mul_pipe.out_tag !== mon_q2_tag)
-          $fatal(1,"shared product/tag ownership mismatch");
+      if(mon_q1_valid) begin
+        if (dut.u_fpu.mul_pipe.out_product !== mon_q1_product[63:0])
+          $fatal(1,"shared product ownership mismatch");
         mon_returns=mon_returns+1;
       end
-      mon_q2_valid=mon_q1_valid;mon_q2_product=mon_q1_product;mon_q2_tag=mon_q1_tag;
       mon_q1_valid=dut.u_fpu.mul_pipe.in_valid;
       mon_q1_product=$signed(dut.u_fpu.mul_pipe.in_a)*$signed(dut.u_fpu.mul_pipe.in_b);
-      mon_q1_tag=dut.u_fpu.mul_pipe.in_tag;
     end
     if (dut.state==2 && dut.instruction[15:12]==2 &&
         (dut.instruction[11:8]==8 || dut.instruction[11:8]==9 || dut.instruction[11:8]==10 || dut.instruction[11:8]==12) && !hold)
@@ -123,11 +124,11 @@ end
 "#;
     let integer_monitor = r#"
 always @(posedge clk) if(!reset) begin
-  if(dut.integer_mul_issue && (dut.fpu2_busy || dut.u_fpu.sf_mul_in_valid || dut.u_fpu.product_mul_in_valid))
+  if(dut.integer_mul_issue && (dut.fpu2_busy || dut.u_fpu.sf_mul_in_valid || (dut.u_fpu.issue && dut.u_fpu.product_r)))
     $fatal(1,"integer/FPU owners overlap or drop a request");
   if(dut.u_fpu.integer_out_valid && dut.u_fpu.mul_out_valid)
     $fatal(1,"integer return delivered to FPU owner");
-  if(dut.state==6 && !hold && dut.u_fpu.mul_out_tag !== 9'h100)
+  if(dut.state==6 && !hold && !dut.u_fpu.integer_owner_r)
     $fatal(1,"integer commit does not own retained product");
 end
 "#;

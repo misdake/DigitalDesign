@@ -23,14 +23,13 @@ rectangle "CpuV3Core: precise, in-order, limited two-stage frontend" as Core {
   component "Integer lane\n16-bit ALU, shifts, compare\nCLZ / popcount" as IntAlu
 
   package "Two-word Q16.16 FPU v2 (opcodes C/D/E)" {
-    component "Two-word front-end\nretained word0 supplies parked Fa/Fb\nword1 Fd / subop / len / mode" as Fe
+    component "Two-word front-end\nword0 starts synchronous operand reads\nword1 installs source/destination cursors" as Fe
     storage "FPR file\n2 x 512 x 32 SDPB BSRAM (2R1W)\nF0..F63 signed Q16.16\nhidden RCP/RSQRT/SINCOS tables" as FPR
-    component "Scalar / vector lane ALU\n32-bit Q16.16 wrap\nADD/SUB/MIN/MAX/ABS/NEG\nFLOOR/CEIL/ROUND/TRUNC/MOV" as LaneAlu
+    component "Scalar / vector lane ALU\n32-bit Q16.16 wrap\nADD/SUB/MIN/MAX/ABS/NEG\nMOV; scalar FLOOR/CEIL/ROUND/TRUNC" as LaneAlu
     component "Shared RF port and lane owner\nALU/product read cursors and lane calendar\ncommon destination context\nexclusive final write-event bus" as Ports
-    storage "Next-edge commit slot\none 32-bit ALU / DOTSTORE result\naddress + valid" as Commit
-    component "Shared CPU/FPU multiply pipe\nsigned 36 x 36, 2 stages, II=1\n9-bit owner/destination tag\npending from both real valid/tag slots" as FpuDsp
+    component "Shared CPU/FPU multiply pipe\nsigned 36 x 36, 1 product stage, II=1\none valid; blocking instruction owner\nshared destination / last-item return slot" as FpuDsp
     storage "ACC\nsigned 64-bit Q32.32\nfull-product accumulate" as Acc
-    component "Special path\nblocking RCP / RSQRT / SINCOS\nsole 18-bit phase / direct lookup\nshared interpolation + final sign\nrelative result destination" as Special
+    component "Special path\nblocking RCP / RSQRT / SINCOS\ndirect normalize / phase-to-LUT reads\nshared interpolation + final sign\n10-bit second-result residue / flags" as Special
   }
 }
 
@@ -67,27 +66,27 @@ FSM <--> Ports : idle ext channel (FLD / FST beats)
 Ports --> FPR : two synchronous read addresses\none broadcast write
 FPR --> Ports : external read return
 FPR --> LaneAlu : one lane from each read port
-LaneAlu --> Commit : scalar/vector result
-Commit --> Ports : original next-edge write
+LaneAlu --> Ports : scalar/vector final write at issue edge
 FPR --> FpuDsp : ordinary product operands
-Ports --> FpuDsp : product issue / return tag
-FpuDsp --> Ports : direct tagged MUL write
+Ports --> FpuDsp : product issue
+FpuDsp --> Ports : direct MUL write / return slot
 FpuDsp --> Acc
-Acc --> Commit : final DOTSTORE window
+Acc --> Ports : final DOTSTORE sum window at return edge
 Special --> Ports : LUT addresses / direct write event
 FPR --> Special : packed LUT read return
 Special --> FpuDsp : range / interpolation products
-FpuDsp --> Special : tagged return
+FpuDsp --> Special : fixed-latency return
 
 note right of Fe
 Issue policy:
 * no scoreboard, forwarding, or dependency comparison
-* busy and final commit close each instruction before the next one issues
+* busy and final RF write close each instruction before the next one issues
 * FPU instructions are fetch barriers and never consume PFX12
-* scalar ALU writes at T1; vector ALU lane k writes at T(k+2)
-* vector lanes retain II=1; shared multiplication has two enabled stages
-* RCP/RSQRT are blocking T0..T4; SINCOS T0..T7 dual / T0..T6 single
+* scalar ALU writes at T0; vector ALU lane k writes at Tk
+* vector lanes retain II=1; shared multiplication has one product stage
+* RCP/RSQRT are blocking T0..T2; SINCOS T0..T4 dual / T0..T3 single
 * abort cancels pending writes; RF reads retain read-first semantics
+* core hold leaves FPU running; core remembers completion until release
 end note
 
 note bottom of Core
