@@ -2,7 +2,7 @@
 //! Euler angles are radians, R=Rz*Ry*Rx. No perspective/4x4 inverse is implied.
 use crate::dsl_rt::*;
 // Pose: translation XYZ, Euler XYZ, scale XYZ (nine native Q16.16 pairs).
-// Bounds: minimum XYZ, maximum XYZ, then one scale_s word.
+// Bounds: minimum XYZ and maximum XYZ (six native Q16.16 pairs).
 pub fn gpu_pose_set(out: Array<u16>, translation: vec3, angles: vec3, scale: vec3) {
     gpu_fstore(out, 0, translation.x());
     gpu_fstore(out, 1, translation.y());
@@ -14,14 +14,13 @@ pub fn gpu_pose_set(out: Array<u16>, translation: vec3, angles: vec3, scale: vec
     gpu_fstore(out, 7, scale.y());
     gpu_fstore(out, 8, scale.z());
 }
-pub fn gpu_bounds_set(mut out: Array<u16>, minimum: vec3, maximum: vec3, scale_s: u16) {
+pub fn gpu_bounds_set(out: Array<u16>, minimum: vec3, maximum: vec3) {
     gpu_fstore(out, 0, minimum.x());
     gpu_fstore(out, 1, minimum.y());
     gpu_fstore(out, 2, minimum.z());
     gpu_fstore(out, 3, maximum.x());
     gpu_fstore(out, 4, maximum.y());
     gpu_fstore(out, 5, maximum.z());
-    out[12u16] = scale_s;
 }
 fn gpu_fbounded(value: fix32, limit: fix32) -> bool {
     value >= -limit && value <= limit
@@ -260,11 +259,11 @@ pub fn gpu_instance_trs(mut out: Array<u16>, model: Array<u16>, camera: Array<u1
     }
     true
 }
-// Conservative AABB corner admission for the fixed asset's scale_s. Keep
-// all corners forward; this GPU does not construct near-clipped triangles.
+// Conservative software admission of the complete transformed AABB.
+// Signed26/F16 is the T input contract; all corners must also be forward.
+// This optional check does not replace the GPU's mixed-Z rasterization.
 pub fn gpu_instance_bounds(m: Array<u16>, bounds: Array<u16>) -> bool {
     if !gpu_affine_valid(m)
-        || bounds[12u16] > 15
         || gpu_fload(bounds, 0) > gpu_fload(bounds, 3)
         || gpu_fload(bounds, 1) > gpu_fload(bounds, 4)
         || gpu_fload(bounds, 2) > gpu_fload(bounds, 5)
@@ -288,9 +287,9 @@ pub fn gpu_instance_bounds(m: Array<u16>, bounds: Array<u16>) -> bool {
         } else {
             gpu_fload(bounds, 5)
         };
-        if !gpu_fbounded(x, fix32::from_int(64))
-            || !gpu_fbounded(y, fix32::from_int(64))
-            || !gpu_fbounded(z, fix32::from_int(64))
+        if !gpu_fbounded(x, fix32::from_int(100))
+            || !gpu_fbounded(y, fix32::from_int(100))
+            || !gpu_fbounded(z, fix32::from_int(100))
         {
             return false;
         }
@@ -306,20 +305,10 @@ pub fn gpu_instance_bounds(m: Array<u16>, bounds: Array<u16>) -> bool {
                     gpu_fload(m, row * 4 + 3),
                 ),
             );
-            let low = value.lo_bits();
-            let high = value.hi_bits();
-            let limit = fix32::from_words(65535, 1);
-            // Compare after the exact signed arithmetic shift using raw halves.
-            let mut shifted_low = low;
-            let mut shifted_high = high;
-            let mut shift: u16 = 0;
-            while shift < bounds[12u16] {
-                shifted_low = (shifted_low >> 1) | (shifted_high << 15);
-                shifted_high = ((shifted_high as i16) >> 1) as u16;
-                shift += 1;
-            }
-            let shifted = fix32::from_words(shifted_low, shifted_high);
-            if shifted > limit || shifted < -limit || (row == 2 && shifted <= fix32::zero()) {
+            if value < -fix32::from_int(512)
+                || value >= fix32::from_int(512)
+                || (row == 2 && value <= fix32::zero())
+            {
                 return false;
             }
             row += 1;

@@ -85,13 +85,15 @@ def program(bootstrap):
 
 def render(source):
     images = [[], []]
-    pattern = r"mem\[(\d+)\]=SP_COMPACT \? 72'h([0-9a-f]+) : 72'h([0-9a-f]+);"
-    for _, compact, regular in re.findall(pattern, source):
-        images[0].append(int(compact, 16))
-        images[1].append(int(regular, 16))
+    pattern = r"mem\[(\d+)\]=(.*?);"
+    for address, expression in re.findall(pattern, source):
+        values = [int(v, 16) for v in re.findall(r"72'h([0-9a-f]+)", expression)]
+        assert int(address) == len(images[0])
+        compact, regular = values if len(values) == 2 else values * 2
+        images[0].append(compact)
+        images[1].append(regular)
     assert all(len(image) == 512 for image in images)
-    # The regular T program occupies this address range; only the compact
-    # meshlet composition has room for the bounds prologue.
+    # Only the compact meshlet composition uses the bounds prologue.
     # V never used cfg_idx while pushing the unpacker. Direct ROM phase
     # selection must preserve that zero-phase contract. T forces phase zero.
     assert all((w >> 15) & 3 == 0 for w in images[0][:128]
@@ -101,18 +103,21 @@ def render(source):
 
     def portable(match):
         i = int(match[1])
-        return f"mem[{i}]=SP_COMPACT ? 72'h{images[0][i]:018x} : 72'h{images[1][i]:018x};"
+        compact, regular = images[0][i], images[1][i]
+        value = f"72'h{compact:018x}" if compact == regular else f"SP_COMPACT ? 72'h{compact:018x} : 72'h{regular:018x}"
+        return f"mem[{i}]={value};"
 
     result = re.sub(pattern, portable, source)
     for bank in range(2):
         for group in range(32, 40):
             values = [sum(((image[group*8+k] >> (bank*36)) & ((1 << 36)-1)) << (k*36)
                           for k in range(8)) for image in images]
-            pattern = rf"\.INIT_RAM_{group:02X}\(SP_COMPACT \? 288'h[0-9a-f]+ : 288'h[0-9a-f]+\)"
+            pattern = rf"\.INIT_RAM_{group:02X}\([^)]*\)"
             matches = list(re.finditer(pattern, result))
             assert len(matches) == 2
             m = matches[bank]
-            text = f".INIT_RAM_{group:02X}(SP_COMPACT ? 288'h{values[0]:072x} : 288'h{values[1]:072x})"
+            value = f"288'h{values[0]:072x}" if values[0] == values[1] else f"SP_COMPACT ? 288'h{values[0]:072x} : 288'h{values[1]:072x}"
+            text = f".INIT_RAM_{group:02X}({value})"
             result = result[:m.start()]+text+result[m.end():]
     return result
 

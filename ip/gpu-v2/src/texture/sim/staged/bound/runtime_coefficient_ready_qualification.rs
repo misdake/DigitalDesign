@@ -1,7 +1,7 @@
 //! Ready weights: independent semantic lifetime scoreboard and actual Runtime replay.
 use super::{qualification as q, *};
 use crate::texture::{
-    emu::coefficient::{self as c, fixed_stage::FixedCoefficientEmu, Input, Output, Tick},
+    emu::coefficient::{self as c, Input, Output, Tick, fixed_stage::FixedCoefficientEmu},
     ports::Filter,
     rtl,
 };
@@ -174,7 +174,7 @@ impl Audit {
         );
         assert_eq!(
             ma.read_address,
-            (s.ready_access.publish || s.consumed)
+            (s.ready_access.publish || (s.consumed && old_count > 1))
                 .then_some(((self.epoch_takes + usize::from(s.consumed)) & 15) as u8)
         );
         writeln!(
@@ -224,6 +224,10 @@ impl Audit {
         if old_count == 2 && s.consumed {
             self.full_pop += 1;
             assert!(!s.accepted);
+        }
+        if let (Some((wa, _)), Some(ra)) = (s.metadata_access.write, s.metadata_access.read_address)
+        {
+            assert_ne!(wa, ra, "native metadata port collision");
         }
         assert_eq!(s.ready_access.read_address, self.read);
         assert_eq!(s.consumed, t.ce && t.output_ready && expected.is_some());
@@ -288,6 +292,12 @@ impl Audit {
         )
         .unwrap();
         writeln!(self.tb,"if(fault!==0 || in_ready!=={} || in_accept!=={} || work_reserved!==2'd{} || out_valid!=={} || dut.queued!==2'd{} || dut.ready_we!=={} || dut.do_capture!=={}) $fatal(1,\"handshake wall{w}\");",u8::from(s.input_ready),u8::from(s.accepted),s.work_reserved,u8::from(expected.is_some()),old_count,u8::from(write.is_some()),u8::from(s.ready_access.publish)).unwrap();
+        writeln!(
+            self.tb,
+            "if(dut.meta_re!=={} || (dut.meta_we && dut.meta_re && dut.cwr==dut.meta_ra)) $fatal(1,\"metadata read/ownership wall{w}\");",
+            u8::from(s.metadata_access.read_address.is_some())
+        )
+        .unwrap();
         if let Some(o) = expected {
             writeln!(
                 self.tb,

@@ -1,4 +1,4 @@
-// 统一72位控制字段，低50位保留原Vertex编码。
+// Shared72-bit ROM: retain the original low50 Vertex fields.
 wire [1:0] l_src_raw = control[1:0];
 wire [1:0] r_src_raw = control[3:2];
 wire [4:0] u_off_raw = control[8:4];
@@ -23,12 +23,6 @@ wire [1:0] target_hi_raw = control[52:51];
 wire [0:0] work_en_raw = control[53:53];
 wire [0:0] work_we_raw = control[54:54];
 wire [5:0] work_addr_raw = control[60:55];
-wire [0:0] pos_re_raw = control[61:61];
-wire [0:0] twrite_raw = control[62:62];
-wire [3:0] trow_raw = control[66:63];
-wire [0:0] ref_rot_raw = control[67:67];
-wire [0:0] delta_capture_raw = control[68:68];
-wire [0:0] gather_end_raw = control[69:69];
 wire [2:0] up_push={up_hi_raw,up_push_raw};
 wire [8:0] target={target_hi_raw,target_raw};
 wire [1:0] l_src=l_src_raw;
@@ -51,9 +45,3 @@ wire [2:0] flow=flow_raw;
 wire [0:0] work_en=work_en_raw;
 wire [0:0] work_we=work_we_raw;
 wire [5:0] work_addr=work_addr_raw;
-wire [0:0] pos_re=pos_re_raw;
-wire [0:0] twrite=twrite_raw;
-wire [3:0] trow=trow_raw;
-wire [0:0] ref_rot=ref_rot_raw;
-wire [0:0] delta_capture=delta_capture_raw;
-wire [0:0] gather_end=gather_end_raw;

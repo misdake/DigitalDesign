@@ -47,7 +47,7 @@ always @(posedge clk)begin
   if(consumer_busy&&out_ready&&(&written_words[released[2:0]])&&(&written_depth[released[2:0]])&&written_lod[released[2:0]]&&written_geometry[released[2:0]])released<=released+1;
  end
 end
-reg[35:0]vertices[0:383],descriptors[0:95],admissions[0:95];reg[53:0]words[0:1823];
+reg[35:0]vertices[0:383];reg[31:0]descriptors[0:95],admissions[0:95];reg[53:0]words[0:1823];
 integer cycle=0,en=0,fd,dm,rc,addr,j,vi=0,ti=0,pi=0,wi=0,qn=0,qw=0,qr=0,due[0:7];
 integer slot_seq[0:7],sequence_id=0,slot_packet[0:7],slot_qi[0:7],saw_done=0;
 integer peak=0,full_ce=0,headers_with_pending=0,ce0_checks=0;

@@ -195,7 +195,11 @@ always @(posedge clk)if(!reset)begin
     text = text.replace(old, declarations+counters+'reg[3:0]old_cp_state=0;\nalways @(posedge clk)begin\n #1;\n if(!reset&&dut.processor.state==2&&old_cp_state!=2)\n  $display("CPCOMMIT cycle=%0d offset=%0d opcode=%0d",cycle,dut.processor.diagnostic_pc,dut.processor.opcode);\n old_cp_state=dut.processor.state;\nend\n')
     observer = '''
  if(!reset&&ce&&task_id>=0&&(saw_done||meshlet_done)&&!mesh_reported)begin
-  if(vi!=nv*5||ti!=nt||published_vertices!=nv)$fatal(1,"automatic meshlet computation counts");
+  // Bounds culling retires before V. An empty independent packet oracle
+  // admits that retirement only when no vertex or triangle was issued.
+  if(!((vi==nv*5&&ti==nt&&published_vertices==nv)||
+       (np==0&&vi==0&&ti==0&&published_vertices==0)))
+   $fatal(1,"automatic meshlet computation counts");
   mesh_reported=1;mesh_front_end=cycle;render_end=cycle;
   $display("MESH task=%0d cycles=%0d end=%0d V=%0d T=%0d P=%0d exported=%0d",task_id,cycle-mesh_start,cycle,vi/5,ti,np,observed_packets[task_id]);
  end

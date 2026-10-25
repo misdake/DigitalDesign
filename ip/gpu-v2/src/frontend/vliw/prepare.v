@@ -1,6 +1,6 @@
 // 统一准备生产链：几何/权重直接驻留最终物理银行，属性发布/bbox/N/S/G仅一套ROM。
 module rp_prepare(
- input clk,reset,ce,start,execute_grant,input[35:0]descriptor,
+ input clk,reset,ce,start,execute_grant,input[31:0]descriptor,
  input[17:0]operand_value,output[17:0]dsp_a,output dsp_asign,
  output[35:0]dsp_b,output[53:0]dsp_c,
  input[31:0]cfg_far_z,input[4:0]cfg_tex_u,cfg_tex_v,cfg_max_mip,input signed[7:0]cfg_bias,
@@ -38,16 +38,16 @@ module rp_prepare(
   commit_phase?CFG_COMMIT:finish_phase?FINISH:CORE;
 `endif
  reg[1:0]edge_no,field;wire[3:0]import_row;wire[2:0]import_kind;
- reg read_valid;reg[4:0]read_exp_q;
+ reg read_valid;reg[3:0]read_exp_q;
  reg[1:0]quant_pipe;reg[1:0]quant_edge,quant_field;
  reg quant_negative0,quant_negative1;
  wire quant_read;wire[1:0]quant_read_field;
  wire quant_valid=quant_pipe[1];
  wire negative=quant_negative1;
- reg[4:0]edge_exp,exp0,exp1,exp2,common_e;
- reg[52:0]work;reg sigma,rgb;reg[3:0]tri_shift;
+ reg[3:0]edge_exp;reg[5:0]exp0,exp1,exp2,common_e,raw_exponent;
+ reg[30:0]depth_mantissa;reg sigma,rgb;
  reg[31:0]far_z;reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
- wire[52:0]delta;reg[5:0]delta_e;reg normalizing;
+ wire[52:0]delta={depth_mantissa,22'd0};reg[6:0]delta_e;
 
  reg[2:0]seed_sign_x,seed_sign_y;
  wire core_attr_send,core_attr_bank;wire[1:0]core_attr_index;
@@ -59,26 +59,26 @@ module rp_prepare(
  assign in_ready=!reset&&core_active&&input_phase&&!(|{error[3],error[0]});
  wire input_take=in_valid&&in_ready;
  wire is_c=import_kind[0];
- wire[46:0]raw_value=is_c ? in_data[46:0] : {{11{in_data[35]}},in_data[35:0]};
- // Raw signed coefficients are stored directly. Only the small exponent
- // detector needs a ones-magnitude high word and a low-zero carry.
- wire[19:0]excess_signed=is_c?raw_value[46:27]:{raw_value[35],raw_value[35:17]};
- wire[19:0]excess_ones=excess_signed^{20{raw_value[46]}};
- wire excess_carry=raw_value[46]&&(is_c?(~|raw_value[26:0]):(~|raw_value[16:0]));
- wire[20:0]leading_any,low_carry;
- assign leading_any[20]=1'b0;assign low_carry[0]=excess_carry;
+ wire[37:0]raw_value=is_c ? in_data[37:0] : {{11{in_data[26]}},in_data[26:0]};
+ // T guarantees N27/C38. Preserve its exact code while detecting only the
+ // eleven excess bits above the retained geometry widths.
+ wire[10:0]excess_signed=is_c?raw_value[37:27]:{raw_value[37],raw_value[26:17]};
+ wire[10:0]excess_ones=excess_signed^{11{raw_value[37]}};
+ wire excess_carry=raw_value[37]&&(is_c?(~|raw_value[26:0]):(~|raw_value[16:0]));
+ wire[11:0]leading_any,low_carry;
+ assign leading_any[11]=1'b0;assign low_carry[0]=excess_carry;
  genvar prefix_bit;
- generate for(prefix_bit=0;prefix_bit<20;prefix_bit=prefix_bit+1)begin:exponent_prefix
+ generate for(prefix_bit=0;prefix_bit<11;prefix_bit=prefix_bit+1)begin:exponent_prefix
   assign leading_any[prefix_bit]=leading_any[prefix_bit+1]||excess_ones[prefix_bit];
   assign low_carry[prefix_bit+1]=low_carry[prefix_bit]&&excess_ones[prefix_bit];
  end endgenerate
- reg[4:0]need;integer need_bit;
+ reg[3:0]need;integer need_bit;
  always @*begin
   need=0;
-  for(need_bit=0;need_bit<20;need_bit=need_bit+1)
+  for(need_bit=0;need_bit<11;need_bit=need_bit+1)
    if(leading_any[need_bit]||low_carry[need_bit])need=need_bit+1;
  end
- wire [4:0] next_exp=need>edge_exp ? need : edge_exp;
+ wire [3:0] next_exp=need>edge_exp ? need : edge_exp;
  wire[53:0]quant_result;
  wire[27:0]canonical28=quant_result[34:7];
  // Only PA's N coefficients need an unsigned magnitude; PB/R use signed Q.
@@ -95,14 +95,19 @@ module rp_prepare(
  wire[47:0]packed_input={12'd0,in_data[35:0]};
  wire packed_write=tail_input&&input_take&&(input_normal||input_attr);
  assign pw_low_we=pw_low0_we||pw_low1_we;
- // PC8..10 hold the current edge's raw records; no separate quantization pool.
- wire[47:0]pool_q=pw_q[83:36];
- assign context_ready=commit_phase&&!normalizing&&!reset;
+ // Raw edges alternate PC8..10 and PC12..14. The previous edge remains live
+ // through its final DSP input edge; these rows are dead before math starts.
+ // Raw geometry occupies only38 effective bits; math still reads full PC54.
+ wire[47:0]pool_q={{10{pw_q[73]}},pw_q[73:36]};
+ assign context_ready=commit_phase&&!reset;
  assign cfg_apply=context_ready&&execute_grant&&!bound_empty;
  wire[30:0]depth_k=delta[52:22];
- assign stream_cfg_z_bias=8'sd38+$signed({3'd0,common_e})-$signed({2'd0,delta_e})-$signed({4'd0,tri_shift});
+ assign stream_cfg_z_bias=8'sd38+$signed({2'd0,common_e})-$signed({1'b0,delta_e});
  assign stream_cfg_far=far_z;assign stream_cfg_rgb=rgb;
- assign stream_cfg_shift0=common_e-exp0;assign stream_cfg_shift1=common_e-exp1;assign stream_cfg_shift2=common_e-exp2;
+ wire[5:0]difference_exp0=common_e-exp0,difference_exp1=common_e-exp1,difference_exp2=common_e-exp2;
+ assign stream_cfg_shift0=difference_exp0[5]?5'd31:difference_exp0[4:0];
+ assign stream_cfg_shift1=difference_exp1[5]?5'd31:difference_exp1[4:0];
+ assign stream_cfg_shift2=difference_exp2[5]?5'd31:difference_exp2[4:0];
  assign stream_param_valid=core_attr_send&&!reset;
  assign stream_param_index=core_attr_index;assign stream_param_bank=core_attr_bank;
  
@@ -116,7 +121,7 @@ module rp_prepare(
  wire[6:0]core_ar;wire[3:0]core_br,core_bw,core_cr,core_cw;wire[35:0]core_bd;wire[53:0]core_cd;
  wire core_start=start&&!busy;
  rp_prepare_core core(clk,reset,ce&&!(|{error[3],error[0]}),core_start,
-  input_take,normalizing||!execute_grant,operation,import_row,import_kind,rgb,{seed_sign_y,seed_sign_x},stream_cfg_shift0,stream_cfg_shift1,stream_cfg_shift2,pw_q[35:0],pw_q[89:36],wide_result_data,
+  input_take,!execute_grant,operation,import_row,import_kind,rgb,{seed_sign_y,seed_sign_x},stream_cfg_shift0,stream_cfg_shift1,stream_cfg_shift2,pw_q[35:0],pw_q[89:36],wide_result_data,
   core_a_re,core_ar,core_b_re,core_br,core_b_we,core_bw,core_bd,
   core_c_re,core_cr,core_c_we,core_cw,core_cd,core_issue,core_asign,core_active,core_done,
   bound_valid,bound_empty,bound_xlo,bound_xhi,bound_ylo,bound_yhi,core_attr_send,core_attr_index,core_attr_bank,
@@ -171,12 +176,15 @@ module rp_prepare(
  // The ROM supplies the input destination directly; no legacy state decoder
  // or second input writer survives alongside the common write path.
  wire input_write=core_active&&input_phase&&input_take&&expected!=9;
- wire[11:0]input_high=collecting?{raw_value[46],raw_value[46:36]}:12'd0;
+ wire[11:0]input_high=collecting?{{10{raw_value[37]}},raw_value[37:36]}:12'd0;
  always @*begin
   pw_low0_we=geo_we;pw_low1_we=geo_we;
   pw_wa=(quant_field==0?4'd6:quant_field==1?4'd9:4'd12)+{2'd0,quant_edge};
   pw_high_we=input_write;pw_high_wa=import_row;
-  pw_re=0;pw_ra=core_br;pw_acc_re=quant_read;pw_acc_ra=4'd8+{2'd0,quant_read_field};
+  // Field zero starts with the current edge; fields one/two follow after
+  // edge_no has advanced. The ROM writes the matching page without a mux.
+  pw_re=0;pw_ra=core_br;pw_acc_re=quant_read;
+  pw_acc_ra={1'b1,quant_read_field==0?edge_no[0]:!edge_no[0],quant_read_field};
   pw_low_wd=canonical;
   pw_high_wd={6'd0,input_high,in_data[35:0]};
   if(math_phase)begin
@@ -189,22 +197,12 @@ module rp_prepare(
   if(reset)begin pw_low0_we=0;pw_low1_we=0;pw_high_we=0;pw_re=0;pw_acc_re=0;end
  end
 
- // One physical work vector; Delta is stored in reversed bit order.
- wire[52:0]work_delta_input;
- genvar work_bit;
- generate for(work_bit=0;work_bit<53;work_bit=work_bit+1)begin:work_reverse
-  assign delta[work_bit]=work[52-work_bit];
-  assign work_delta_input[work_bit]=in_data[52-work_bit];
- end endgenerate
+ // T supplies normalized D31+E7. Only the live mantissa is stored;
+ // the existing DSP window uses constant alignment, with no shifter.
  wire work_load_delta=!start&&tail_input&&in_valid&&in_index==expected&&in_index==9;
- wire work_shift_delta=normalizing&&(|delta)&&!delta[52];
- wire[52:0]work_shifted=delta[51]?{1'b0,work[52:1]}:{2'b0,work[52:2]};
  always @(posedge clk)begin
-  if(reset)work<=0;
-  else if(ce)begin
-   if(work_load_delta)work<=work_delta_input;
-   else if(work_shift_delta)work<=work_shifted;
-  end
+  if(reset)depth_mantissa<=0;
+  else if(ce&&work_load_delta)depth_mantissa<=in_data[30:0];
  end
 
  // C acceptance starts three consecutive reads. The next edge writes its
@@ -213,14 +211,9 @@ module rp_prepare(
  wire edge_capture=collecting&&input_take&&in_index==expected&&is_c;
  assign quant_read=edge_capture||field!=0;
  assign quant_read_field=field;
- reg signed[35:0]quant_window;
- always @*begin
-  case(read_exp_q[4:3])
-   0:quant_window=pool_q[35:0];
-   1:quant_window=pool_q[43:8];
-   default:quant_window={{5{pool_q[46]}},pool_q[46:16]};
-  endcase
- end
+ // e<=11: only the original fixed zero/eight-bit windows are reachable.
+ wire signed[35:0]quant_window=read_exp_q[3]?
+  {{6{pool_q[37]}},pool_q[37:8]}:pool_q[35:0];
  // Sigma changes only once per triangle. The DSP consumes signed raw Q and
  // a signed power of two, returning canonical coefficients in their final form.
  wire[17:0]quant_scale=operand_value;
@@ -237,12 +230,7 @@ module rp_prepare(
    3'd7:begin plus_bias=9'd128;minus_bias=-9'sd1;end
   endcase
  end
- reg tail_nonzero;
- always @*case(read_exp_q[4:3])
-  0:tail_nonzero=0;
-  1:tail_nonzero=pool_q[47]&&(|pool_q[7:0]);
-  default:tail_nonzero=pool_q[47]&&(|pool_q[15:0]);
- endcase
+ wire tail_nonzero=read_exp_q[3]&&pool_q[37]&&(|pool_q[7:0]);
  reg quant_tail;
  always @(posedge clk)begin
   if(reset)quant_tail<=0;
@@ -307,24 +295,17 @@ module rp_prepare(
  always @(posedge clk)begin
   if(reset)begin
    edge_no<=0;field<=0;edge_exp<=0;
-   exp0<=0;exp1<=0;exp2<=0;common_e<=0;sigma<=0;rgb<=0;tri_shift<=0;
+   exp0<=0;exp1<=0;exp2<=0;common_e<=0;raw_exponent<=0;sigma<=0;rgb<=0;
    far_z<=0;tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;
-   delta_e<=0;normalizing<=0;
+   delta_e<=0;
    seed_sign_x<=0;seed_sign_y<=0;error<=0;
   end else if(ce)begin
-   if(normalizing)begin
-    if(delta==0)begin normalizing<=0;error[1]<=1;end
-    else if(!delta[52])begin
-     if(delta[51])begin delta_e<=delta_e-1'b1;end
-     else begin delta_e<=delta_e-2;end
-    end else normalizing<=0;
-   end
    if(start)begin
     if(busy)begin error[3]<=1;end
     else begin
-     edge_no<=0;field<=0;edge_exp<=0;normalizing<=0;
+     edge_no<=0;field<=0;edge_exp<=0;
      exp0<=0;exp1<=0;exp2<=0;common_e<=0;error<=0;
-     sigma<=descriptor[22];rgb<=descriptor[23];tri_shift<=descriptor[21:18];
+     sigma<=descriptor[18];rgb<=descriptor[19];
      far_z<=cfg_far_z;tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;bias<=cfg_bias;
     end
    end else begin
@@ -336,22 +317,23 @@ module rp_prepare(
     if(input_take)begin
      if(in_index!=expected)error[0]<=1;
      else if(collecting)begin
+      if(expected==0||expected==3||expected==6)raw_exponent<=in_data[53:48];
       edge_exp<=next_exp;
       if(is_c)begin
-       if(next_exp>19)error[1]<=1;
+       if(next_exp>11)error[1]<=1;
        case(edge_no)
-        0:exp0<=next_exp;1:exp1<=next_exp;
+        0:exp0<={2'd0,next_exp}+raw_exponent;1:exp1<={2'd0,next_exp}+raw_exponent;
         default:begin
-         exp2<=next_exp;
-         if(exp0>=exp1&&exp0>=next_exp)common_e<=exp0;
-         else if(exp1>=next_exp)common_e<=exp1;else common_e<=next_exp;
+         exp2<={2'd0,next_exp}+raw_exponent;
+         if(exp0>=exp1&&exp0>=({2'd0,next_exp}+raw_exponent))common_e<=exp0;
+         else if(exp1>=({2'd0,next_exp}+raw_exponent))common_e<=exp1;else common_e<={2'd0,next_exp}+raw_exponent;
         end
        endcase
        edge_exp<=0;edge_no<=edge_no+1'b1;
       end
      end else if(expected==9)begin
       if(in_data==0||in_data[53])error[1]<=1;
-      delta_e<=52;normalizing<=1;
+      delta_e<=in_data[37:31];
      end
     end
 

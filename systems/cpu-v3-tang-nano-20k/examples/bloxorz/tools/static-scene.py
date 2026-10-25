@@ -38,7 +38,7 @@ def box(name, half, faces, shift):
             vertices.append([O.pack(xyz, 10), O.pack(normal, 10), O.pack(colors[face], 8)])
         triangles.extend([[first, first + 1, first + 2], [first, first + 2, first + 3]])
     return dict(name=name, group=name, vertices=vertices, triangles=triangles,
-                config=origins + [shift | 256], scale_s=5, color_mode=1,
+                config=origins + [shift | 256], color_mode=1,
                 cull_negative=False, cfg_far_z=100 * 65536,
                 cfg_tex_w_log2=0, cfg_tex_h_log2=0, cfg_max_mip=0)
 

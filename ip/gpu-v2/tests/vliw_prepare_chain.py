@@ -16,6 +16,26 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def coefficient_words(p):
+    """T's independently encoded N27 edge records and normalized D31/E7."""
+    def cross(a, b):
+        return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
+    normals = [cross(p[1], p[2]), cross(p[2], p[0]), cross(p[0], p[1])]
+    result, reduced, exponents = [], [], []
+    for normal in normals:
+        q = max(0, max((v if v >= 0 else ~v).bit_length() for v in normal)-26)
+        n = [(-1 if v < 0 else 1)*(abs(v) >> q) for v in normal]
+        reduced.append(n)
+        exponents.append(q)
+        nx, ny, nz = n
+        result += [(nx & ((1 << 36)-1)) | (q << 48), ny & ((1 << 54)-1),
+                   (-399*nx-239*ny+512*nz) & ((1 << 54)-1)]
+    det = sum(a*b for a, b in zip(p[0], reduced[0]))
+    e = max(0, abs(det).bit_length()-1)
+    k = abs(det) >> (e-30) if e >= 30 else abs(det) << (30-e)
+    return result+[k | ((e+exponents[0]) << 31)], det
+
+
 def packets():
     # Large root, offscreen cancellation, partial small root, and zero origin bits.
     shapes = [
@@ -36,20 +56,12 @@ def packets():
                 if reverse:
                     p[1], p[2] = p[2], p[1]
                 assert all(-(1 << 17) <= v < (1 << 17) for xyz in p for v in xyz)
-                a, b, c = p
-                n = [cross(b, c), cross(c, a), cross(a, b)]
-                det = sum(x*y for x, y in zip(a, n[0]))
-                assert 0 < abs(det) < (1 << 53)
+                coefficients, det = coefficient_words(p)
+                assert det
                 packet = len(descriptors)
                 rgb = bool(packet & 1)
-                descriptors.append((int(det < 0) << 22) | (int(rgb) << 23))
-                for nx, ny, nz in n:
-                    cv = -399*nx-239*ny+512*nz
-                    assert -(1 << 35) <= nx < (1 << 35)
-                    assert -(1 << 35) <= ny < (1 << 35)
-                    assert -(1 << 46) <= cv < (1 << 46)
-                    words += [nx & ((1 << 36)-1), ny & ((1 << 36)-1), cv & ((1 << 47)-1)]
-                words += [abs(det)]
+                descriptors.append((int(det < 0) << 18) | (int(rgb) << 19))
+                words += coefficients
                 corners = (-2048, 2047, -1, 0, 1, -1024, 1023)
                 for vertex in range(3):
                     normal = [corners[(packet + 2*vertex + axis) % len(corners)] for axis in range(3)]
@@ -68,16 +80,23 @@ def packets():
             p = [(-scale, -scale, scale), (scale, -scale, scale), (-scale, scale, scale)]
             if reverse:
                 p[1], p[2] = p[2], p[1]
-            a, b, c = p
-            n = [cross(b, c), cross(c, a), cross(a, b)]
-            det = sum(x*y for x, y in zip(a, n[0]))
+            coefficients, det = coefficient_words(p)
             packet = len(descriptors)
-            descriptors.append((int(det < 0) << 22) | ((packet & 1) << 23))
+            descriptors.append((int(det < 0) << 18) | ((packet & 1) << 19))
             tail = words[(packet % 24)*16+10:(packet % 24)*16+16]
-            for nx, ny, nz in n:
-                cv = -399*nx-239*ny+512*nz
-                words += [nx & ((1 << 36)-1), ny & ((1 << 36)-1), cv & ((1 << 47)-1)]
-            words += [abs(det), *tail]
+            words += coefficients + tail
+    # Consumer range corners: N27/C38, including the negative power-of-two
+    # carry that requires e=11. These isolate the transport contract from mesh
+    # geometry; they need not describe one nondegenerate projected triangle.
+    for reverse in (False, True):
+        packet = len(descriptors)
+        descriptors.append((int(reverse) << 18) | (1 << 19))
+        for nx, ny, cv in [(-(1 << 26), (1 << 26)-1, -(1 << 37)),
+                           ((1 << 26)-1, -(1 << 26), (1 << 37)-1),
+                           (-1, 0, -(1 << 37)+1)]:
+            words += [nx & ((1 << 36)-1), ny & ((1 << 54)-1), cv & ((1 << 54)-1)]
+        words += [(1 << 30) | (30 << 31)]
+        words += words[(packet % 24)*16+10:(packet % 24)*16+16]
     return descriptors, words
 
 
@@ -115,7 +134,7 @@ def main():
                              for k, value in enumerate(values)))
             for k, value in enumerate(values):
                 reduced = (abs(value) >> shift) * (-1 if value < 0 else 1)
-                if descriptor & (1 << 22):
+                if descriptor & (1 << 18):
                     reduced = -reduced
                 geometry.append((reduced*(1 if k == 2 else 2)) & ((1 << 30)-1))
     params = []
@@ -125,7 +144,7 @@ def main():
             normal, attr = words[packet*16+10+vertex*2:packet*16+12+vertex*2]
             n = [(normal >> (axis*12)) & 4095 for axis in range(3)]
             n = [value-4096 if value & 2048 else value for value in n]
-            attributes = [(attr >> (channel*8)) & 255 for channel in range(3)] if descriptor & (1 << 23) else [attr & 65535, attr >> 16, 0]
+            attributes = [(attr >> (channel*8)) & 255 for channel in range(3)] if descriptor & (1 << 19) else [attr & 65535, attr >> 16, 0]
             values.append(n + attributes)
         for component in range(6):
             a, b, c = (value[component] for value in values)
@@ -134,7 +153,7 @@ def main():
     for mode in (['portable', 'native'] if args.mode == 'both' else [args.mode]):
         run = out/mode
         run.mkdir()
-        (run/'descriptors.hex').write_text(''.join(f'{v:09x}\n' for v in desc))
+        (run/'descriptors.hex').write_text(''.join(f'{v:08x}\n' for v in desc))
         (run/'words.hex').write_text(''.join(f'{v:014x}\n' for v in words))
         (run/'geometry.hex').write_text(''.join(f'{v:08x}\n' for v in geometry))
         (run/'params.hex').write_text(''.join(f'{v:014x}\n' for v in params))

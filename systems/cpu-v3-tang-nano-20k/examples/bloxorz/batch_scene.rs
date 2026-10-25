@@ -188,8 +188,8 @@ fn main(){
  let half=fix32::from_words(32768,0);
  gpu_pose_set(MODEL.as_array(),vec3::new(fix32::zero(),-fix32::from_words(6554,0),fix32::zero()),vec3::zero(),vec3::new(half,half,half));
  if !blox_instance(out,MODEL.as_array(),CAMERA.as_array()){halt(2);}
- let mut bounds:Buf<u16,13>=Buf::new([0;13]);let x=fix32::from_int(input[0u16] as i16);let z=fix32::from_int(input[1u16] as i16);let y=fix32::from_words(13056,0);
- gpu_bounds_set(bounds.as_array(),vec3::new(-x,-y,-z),vec3::new(x,y,z),5);
+ let mut bounds:Buf<u16,12>=Buf::new([0;12]);let x=fix32::from_int(input[0u16] as i16);let z=fix32::from_int(input[1u16] as i16);let y=fix32::from_words(13056,0);
+ gpu_bounds_set(bounds.as_array(),vec3::new(-x,-y,-z),vec3::new(x,y,z));
  if !gpu_instance_bounds(out,bounds.as_array()){halt(3);}halt(0x600d);
 }"#;
     let code = compile(PROBE);

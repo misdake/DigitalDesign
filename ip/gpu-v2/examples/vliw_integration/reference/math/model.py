@@ -29,7 +29,6 @@ SEED=tuple(rne_div(1<<25,256+j) for j in range(257))
 SLOPE=tuple(SEED[j]-SEED[j+1] for j in range(256))
 # 浮点只在生成不可变对数表时使用；像素数值不调用浮点log。
 LOG=tuple(round(log2(1+j/64)*256) for j in range(64))
-N_LIMIT=2*131071**2
 
 
 def reciprocal18(d):
@@ -60,7 +59,6 @@ class Triangle:
     n:tuple
     exps:tuple
     delta:int
-    tri_shift:int
     uv:tuple=((0,0),(65535,0),(0,65535))
     normal:tuple=((0,0,1024),)*3
     rgb:tuple=((255,0,0),(0,255,0),(0,0,255))
@@ -72,9 +70,8 @@ class Triangle:
     def validate(self):
         assert len(self.n)==len(self.exps)==3
         assert all(len(v)==2 and all(-131071<=x<=131071 for x in v) for v in self.n)
-        assert all(0<=e<=19 for e in self.exps)
-        assert all(abs(v<<e)<=N_LIMIT for row,e in zip(self.n,self.exps) for v in row),'真实P18叉积对称量化恢复的N36域'
-        assert 0<self.delta<(1<<53) and 0<=self.tri_shift<=15
+        assert all(0<=e<=47 for e in self.exps)
+        assert 0<self.delta<(1<<80)
         assert all(len(v)==2 and all(0<=x<=65535 for x in v) for v in self.uv)
         assert all(len(v)==3 and all(-2048<=x<=2047 for x in v) for v in self.normal)
         assert all(len(v)==3 and all(0<=x<=255 for x in v) for v in self.rgb)
@@ -122,7 +119,7 @@ def attribute(values,w,rounding='half_up'):
 
 def depth(t,alignment,rc):
     ed=t.delta.bit_length()-1;K=floor_scale(t.delta,ed-30)
-    P=rc['r']*K;right=rc['e']+alignment['E']+38-ed-t.tri_shift
+    P=rc['r']*K;right=rc['e']+alignment['E']+38-ed
     full=floor_scale(P,right);overflow=full>=(1<<32)
     valid=not alignment['zero'] and not overflow and full<(1<<24) and (full>>8)<=(t.far_raw>>8)
     return dict(delta_e=ed,K31=K,product=P,right=right,Z_full=full,Z32=full&0xffffffff,Z16=(full>>8)&65535,overflow=overflow,valid=valid)
@@ -165,9 +162,6 @@ def lod_coefficients(t,mode='exact'):
         n=tuple(tuple(v<<e for v in row) for row,e in zip(t.n,t.exps))
         S=tuple(sum(row[axis] for row in n) for axis in range(2))
         G=tuple(sum(t.uv[i][channel]*n[i][axis] for i in range(3)) for channel in range(2) for axis in range(2))
-        assert all(abs(v)<=N_LIMIT for row in n for v in row)
-        assert all(-(1<<37)<=v<(1<<37) for v in S) and all(-(1<<53)<=v<(1<<53) for v in G)
-        assert all(decompose_minus_s(v)['q'] in (-1,0,1) for v in S)
         return dict(Nc=0,n=n,S=S,G=G,all_zero=not any(v for row in n for v in row),lost_coefficients=0,bits=54)
     nonzero=[e+abs(v).bit_length()-1 for e,row in zip(t.exps,t.n) for v in row if v]
     Nc=max(nonzero)-16 if nonzero else 0

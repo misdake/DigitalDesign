@@ -25,8 +25,8 @@ No implicit equality or shared fence is defined between these identities.
 
 Only the compact meshlet ROM uses words256..310 for a fixed 55-word bounds
 prologue. Words0..6 are the existing bootstrap; a kept meshlet jumps directly to
-original V word7 and pays 48 additional enabled edges. Original compact V/T
-words0..255 and the entire regular-layout program remain unchanged. Native
+original V word7 and pays 48 additional enabled edges. Original V words0..127 remain unchanged. T uses the bounded-F16 calendar below.
+The bounds prologue is only enabled in the compact composition. Native
 BSRAM INIT fields and the portable view are emitted together by
 `frontend/vliw/vertex/bounds_program.py`; `--check` verifies regeneration.
 
@@ -61,21 +61,48 @@ meshlet controller skips its index/T phase. It neither changes an old queued
 T's epoch nor waits for that T to retire. The [numerical contract](/ip/gpu-v2/docs/geometry.md#conservative-meshlet-rejection)
 defines the conservative predicates and fallback.
 
+## Shared bounded-F16 triangle calendar
+
+T's62 ROM slots compose reads, arithmetic issue, previous-result capture and
+writes on the same edge. Normalization slots repeat only while their magnitude
+predicate requires another fixed four-bit or one-bit step. There is no dynamic
+port reservation or per-instruction transaction FSM. All state advances on CE.
+
+| Phase | Physical dataflow and lifetime |
+| --- | --- |
+| Position fill | Position BSRAM reads ahead through Q and unpacker into RF1..9; constants fill unused RF write slots |
+| Cross components | Issue two products per component; capture product1 while issuing product2; registered accumulator retires the difference |
+| Edge alignment | Three private work rows retain guarded components; one read / one DSP issue / previous write overlap; qmax selects the common exponent |
+| Determinant | Three P0*N0 issues reuse RF/work Q; normalization and sign/zero decisions consume registered accumulator |
+| Viewport coefficients | The same work Q feeds output Nx/Ny and C MAC; C return launches the next edge's first product |
+| Publication | Ten field-major result writes finish before descriptor publication; indexed attributes remain in the original epoch banks |
+
+There are39 MAC issues,18 indexed position reads,18 work writes and21 work reads
+per kept triangle. The62-slot calendar is a base, not a fixed triangle latency:
+normalization repeats add cycles and early rejection removes the unused tail.
+The original V calculation, bounds prologue,16 result slots and downstream
+backpressure semantics remain intact.
+
 ## Triangle parameter storage and reads
 
 ### Geometry reduction and publication
 
-Each edge stores its three signed raw coefficients in private PC[8..10] and
+Each edge stores its three signed raw coefficients alternately in private
+PC[8..10] and PC[12..14], keeping overlapping reads and writes separate, and
 determines their common reduction exponent e. The 48-bit record sign-extends
-the original signed47 C or signed36 N; it is not a sign/magnitude conversion.
-Exact exponent detection uses the 20 high bits above each retained width,
+T's signed38 C or signed27 N; it is not a sign/magnitude conversion.
+The other PC uses still retain full54-bit math results. Raw geometry reads only
+the low38 bits and explicitly sign-extends them at the consumer.
+Exact exponent detection uses the eleven high bits above each retained width,
 their sign complement and a low-zero carry. Shared suffix-OR and prefix-AND
-chains directly test magnitude thresholds without a 47-bit absolute value.
+chains directly test magnitude thresholds without a wide absolute value.
+The local reduction exponent is at most 11 and occupies four bits.
 
 C acceptance requests Nx immediately; two READ edges request Ny and C. Each
 synchronous return feeds a dedicated `MULTALU36X18`. Let k=8*floor(e/8),
 r=e mod8, m=2^(7-r), q=floor(raw/2^k), and s denote raw's negative sign.
-Three wired signed windows produce q in 36 bits; no variable arithmetic shifter
+Two wired signed windows, shifted by zero or eight bits, produce q in36 bits;
+the old sixteen-bit window is unreachable under N27/C38 and is absent. No variable arithmetic shifter
 is added. Sigma selects the signed factor (-1)^sigma*m. The fused DSP result is
 `p=(-1)^sigma*q*m+bias` with the following live C operand:
 
@@ -627,6 +654,19 @@ tree-PLRU. Bank=`{y0 XOR x1,x0}`, local=`{y2:0,x2}`; form virtual +1 taps before
 bank selection. Only old READY tags hit. Captured reads pin the owner and retain
 payload, preventing replacement from altering accepted taps.
 
+The command closure issues texel reads from the saved paid payload and line,
+not from a new tag result. On admission it saves the Group35 address and starts
+the existing weight read. On the next wall edge it reads the four texel banks,
+captures the weight Q, and publishes the synchronous texel Q directly. There
+is no separate 64-bit texel copy. One pin spans pending address and held result;
+replacement cannot reuse that line until consumption. Backpressure holds DO.
+The next address may be admitted on the old result's consume edge, giving
+Group II2; generic standalone cache exporters retain their original pipeline.
+
+The raw texture dimensions, mip limit and bias are driven directly from the
+immutable command-global context. They change only after a full drain; the
+calculated LOD bias retains its existing preparation register.
+
 Each native tag bank writes one complete 18-bit tag and reads an adjacent pair
 as36 bits. The write address includes the way's low bit instead of masking a
 36-bit row. Both the runtime and independent component cache use this binding;
@@ -661,6 +701,15 @@ I context. Quad allocation copies RGB into a24-bit distributed-RAM issue view.
 The depth-event write stores alpha beside D16 in the existing depth BSRAM; the
 paired late read delivers both directly to ROP. Final and ROP therefore read
 their own owners without a shared-port arbiter or whole-GPU wait between mesh colors.
+
+Texture coefficient metadata stays in its admission BSRAM row until retirement.
+Publication reads the current head; consumption reads a successor only when an
+already-ready row remains, or when that row publishes on the same edge. Popping
+the sole ready result holds the native output Q until publication. It never
+speculatively reads the unpublished admission row, so metadata read and write
+ports cannot overlap at the same address. No bypass, extra owner state or
+pipeline bubble is required. This contract also applies to the independent
+generic and compact execution models.
 
 The command factory removes diagnostic feedback from the independently checked
 components below. Its simulation monitors never control CE, writes, ready or

@@ -3,7 +3,7 @@ module gpu_v2_vliw_interpolator(
 input clk,reset,ce,
  output bound_valid,bound_empty,output[4:0]bound_xlo,bound_xhi,output[3:0]bound_ylo,bound_yhi,
  
- input prepare_start,execution_idle,output raster_start,exec_idle,input[35:0]descriptor,
+ input prepare_start,execution_idle,output raster_start,exec_idle,input[31:0]descriptor,
  input raw_valid,output raw_ready,input[4:0]raw_index,input[53:0]raw_data,
  output geo_we,output[3:0]geo_wa,output[29:0]geo_wd,
  input[31:0]cfg_far_z,input[4:0]cfg_tex_u,cfg_tex_v,cfg_max_mip,input signed[7:0]cfg_bias,

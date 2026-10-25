@@ -78,7 +78,7 @@ def run_checked_simulation(execute, command, vvp, out, source, export_sha, timeo
     verify_dut_identity(source, out/'dut.v', export_sha)
     execute(command, out, out/'compile.log', 180)
     verify_dut_identity(source, out/'dut.v', export_sha)
-    return execute([vvp, out/'sim.vvp'], out, out/'run.log', timeout)
+    return execute([vvp, '-i', out/'sim.vvp'], out, out/'run.log', timeout)
 
 
 def main():
@@ -87,7 +87,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--gold', type=Path, required=True)
     parser.add_argument('--peer', type=Path, required=True)
-    parser.add_argument('--scene', choices=('box', 'bunny', 'quick', 'solid-room', 'materials'), required=True)
+    parser.add_argument('--scene', choices=('box', 'bunny', 'quick', 'solid-room', 'materials', 'recorded'), required=True)
+    parser.add_argument('--recorded', type=Path, help='Recorded instances and shading; no camera or asset rewriting')
     parser.add_argument('--camera', choices=('front', 'side', 'oblique'), default='front')
     parser.add_argument('--ply', type=Path)
     parser.add_argument('--meshlet-limit', type=int, help='Bound the standalone bunny scene to its first N complete meshlets')
@@ -115,7 +116,17 @@ def main():
     shading = None
     solid = None
     texture = None
-    if args.scene in ('solid-room', 'materials'):
+    if args.scene == 'recorded':
+        assert args.recorded
+        recording = json.loads(args.recorded.read_text())
+        instances = recording['instances']
+        info = dict(recording.get('info', {}), recorded_sha256=sha(args.recorded))
+        shading = recording['shading']
+        solid = load('solid_room_scene', HERE/'solid_scene.py')
+        sys.path.insert(0, str(HERE))
+        materials = load('mixed_material_scene', HERE/'material_scene.py')
+        texture = materials.texture_levels()
+    elif args.scene in ('solid-room', 'materials'):
         assert args.ply and sha(args.ply) == fixtures['source']['member_sha256']
         solid = load('solid_room_scene', HERE/'solid_scene.py')
         support.append(HERE/'solid_scene.py')
@@ -147,14 +158,8 @@ def main():
             instance = dict(name=f'bunny_full_{i}', group='bunny', slot=i%2,
                 uniform=uniform, config=info['config'], vertices=batch['vertices'],
                 triangles=batch['triangles'], color_mode=0, cull_negative=1,
-                seq_base=0, generation=i%16, scale_s=0,
+                seq_base=0, generation=i%16,
                 cfg_tex_w_log2=6, cfg_tex_h_log2=6, cfg_max_mip=6)
-            values = O.F.oracle(uniform, info['config'], batch['vertices'])
-            maximum = max(abs(O.signed(values[6*j+k], 32))
-                          for j in range(len(batch['vertices'])) for k in range(3))
-            while maximum >> instance['scale_s'] > 131071:
-                instance['scale_s'] += 1
-            assert instance['scale_s'] < 16
             instances.append(instance)
         if args.scene == 'bunny' and args.meshlet_limit is not None:
             info.update(source_triangles=info['triangles'], source_vertices=info['vertices'],
@@ -201,7 +206,7 @@ def main():
     shutil.copyfile(source, out/'dut.v')
     peer_sources = copy_peer_sources(args.peer.resolve(), out)
     bench = B.bench(S, V, metas, args.max_cycles)
-    if args.scene == 'materials':
+    if args.scene in ('materials', 'recorded'):
         bench = materials.configure_bench(bench, shading, instances)
     elif shading is not None:
         bench = solid.configure_bench(bench, shading)

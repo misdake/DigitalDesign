@@ -28,10 +28,11 @@ module {{ module_name }} (
 // bit, eight data bits (LSB first), one stop bit, CLOCKS_PER_BIT clocks per
 // bit. A channel-3 write while busy is dropped; software polls the busy
 // readback before enqueueing the next byte.
-// The stop bit is the final nonzero bit: shifting it out ends the frame.
+// The final stop bit remains held after completion. TX is its registered Q,
+// with no busy/shift-register mux that could glitch on the completion edge.
 // Keep the public busy bit registered so status/watch queries do not reduce
 // the entire frame on the CPU device-read timing path. No bit index is needed.
-reg [9:0] uart_frame = 0;
+reg [9:0] uart_frame = 1;
 reg uart_busy = 0;
 reg [{{ uart_divider_msb }}:0] uart_divider = 0;
 // Always main-clocked: never use CPU hold or a device enable as its CE.
@@ -79,7 +80,7 @@ always @(posedge clk) begin
         cache_maintenance_status <= 0;
         pending_dcache_maintenance <= 0;
         leds <= 0;
-        uart_frame <= 0;
+        uart_frame <= 1;
         uart_busy <= 0;
         uart_divider <= 0;
         millisecond_divider <= 0;
@@ -116,8 +117,8 @@ always @(posedge clk) begin
         if (uart_busy) begin
             if (uart_divider == 16'd{{ clocks_per_bit_minus_one }}) begin
                 uart_divider <= 0;
-                uart_frame <= {1'b0, uart_frame[9:1]};
                 if (uart_frame == 10'd1) uart_busy <= 0;
+                else uart_frame <= {1'b0, uart_frame[9:1]};
             end else begin
                 uart_divider <= uart_divider + 1'b1;
             end
@@ -158,6 +159,6 @@ always @(posedge clk) begin
     end
 end
 
-assign uart_tx = uart_busy ? uart_frame[0] : 1'b1;
+assign uart_tx = uart_frame[0];
 
 endmodule

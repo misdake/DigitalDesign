@@ -67,7 +67,7 @@ def meshlet(level, cells, name):
         encoded.append([O.pack(delta,10),normal,color])
     assert len(encoded)<=64 and len(triangles)<=96
     return dict(name=name,group=name,vertices=encoded,triangles=triangles,config=origins+[9|256],
-                scale_s=5,color_mode=1,cull_negative=False,cfg_far_z=100*65536,
+                color_mode=1,cull_negative=False,cfg_far_z=100*65536,
                 cfg_tex_w_log2=0,cfg_tex_h_log2=0,cfg_max_mip=0,cells=cells)
 
 
@@ -163,7 +163,7 @@ def checked_vertices(mesh, uniform):
         n=[O.signed(normal>>(10*k),10)*128 for k in range(3)]
         for j in range(3):
             raw=(sum(xyz[k]*O.signed(uniform[4*j+k],32) for k in range(3))+65536*O.signed(uniform[4*j+3],32))>>16
-            assert -(1<<31)<=raw<(1<<31) and abs(raw>>mesh['scale_s'])<=131071
+            assert -(1<<25)<=raw<(1<<25)
             raw_normal=sum(n[k]*O.signed(uniform[12+3*j+k],32) for k in range(3))>>16
             assert -131072<=raw_normal<=131071
     return O.F.oracle(uniform,mesh['config'],mesh['vertices'])
@@ -222,8 +222,8 @@ def golden(out):
             values=checked_vertices(mesh,uniform)
             for vi in range(len(mesh['vertices'])):
                 for axis in range(3):
-                    v=O.signed(values[vi*6+axis],32)>>mesh['scale_s']
-                    assert -131072<=v<=131071
+                    v=O.signed(values[vi*6+axis],32)
+                    assert -(1<<25)<=v<(1<<25)
                     max_position=max(max_position,abs(v))
             _,_,packets,_=S.image_record(mesh,out/f'draw-{i}-{mid}',uniform)
             for packet in packets:
@@ -239,7 +239,7 @@ def golden(out):
                             depth[p]=pixel['Z16']
     for name,values in [('gold',color),('depth',depth)]:
         for frame in [1,2]:(out/f'{name}{frame}.hex').write_text(''.join(f'{v:04x}\n' for v in values))
-    report=dict(max_shifted_position=max_position,covered_pixels=sum(x!=0 for x in color))
+    report=dict(max_f16_position=max_position,covered_pixels=sum(x!=0 for x in color))
     (out/'reference-report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report))
 
 
@@ -264,14 +264,14 @@ if __name__=='__main__':
                     values=checked_vertices(mesh,uniform)
                     for vi in range(len(mesh['vertices'])):
                         for axis in range(3):
-                            value=O.signed(values[vi*6+axis],32)>>5
-                            assert -131072<=value<=131071
+                            value=O.signed(values[vi*6+axis],32)
+                            assert -(1<<25)<=value<(1<<25)
                             maximum=max(maximum,abs(value))
                         n0,n1=values[vi*6+3:vi*6+5]
                         normal_maximum=max(normal_maximum,*(abs(O.signed(v,18)) for v in [n0,n0>>18,n1]))
                     count+=len(mesh['vertices'])
             validate(all_levels[name])
-        report=dict(levels=len(all_levels),vertices=count,max_shifted_position=maximum,max_normal18=normal_maximum,exact_grid=True)
+        report=dict(levels=len(all_levels),vertices=count,max_f16_position=maximum,max_normal18=normal_maximum,exact_grid=True)
         (out/'range-report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report))
     elif mode=='golden':golden(out)
     elif mode=='compare':compare(out)

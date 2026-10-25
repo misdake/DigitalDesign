@@ -45,7 +45,7 @@ def font():
     return bytes(atlas), rows
 
 
-def native_record(mesh, scale):
+def native_record(mesh):
     vertices, triangles = mesh["vertices"], mesh["triangles"]
     assert 0 < len(vertices) <= 64 and 0 < len(triangles) <= 96
     offset = (3 * len(vertices) + 1) // 2
@@ -54,7 +54,7 @@ def native_record(mesh, scale):
     record = bytearray(128 + payload_size)
     origin = mesh["config"]
     meta = [len(vertices) | (len(triangles) << 8) | (20 << 16) | (offset << 24) | (1 << 31),
-            scale, (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
+            0, (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
             (origin[2] & 0xFFFFFFFF) | (origin[3] << 32)]
     struct.pack_into("<4Q", record, 0, *meta)
     for i, vertex in enumerate(vertices):
@@ -105,34 +105,30 @@ def pack(output):
     spec = importlib.util.spec_from_file_location("demo_native_oracle", SCENE / "reference/scene/oracle.py")
     oracle = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(oracle)
-    scale = 0
     transformed = []
     for camera in cameras:
         for mesh in meshes:
             values = oracle.F.oracle(camera["uniform"], mesh["config"], mesh["vertices"])
             transformed.extend(oracle.signed(values[6 * i + axis], 32)
                                for i in range(len(mesh["vertices"])) for axis in range(3))
-    while not all(-131072 <= value >> scale <= 131071 for value in transformed):
-        scale += 1
+    assert all(-(1 << 25) <= value < (1 << 25) for value in transformed)
     # Complete yaw orbit, not just the three fixed historical poses. SINCOS
     # quarter-wave interpolation stays in [-1,1]. With radius 8 and room X/Z
     # in [-3,3], |H.z| <= 14; focal-scaled X/Y are smaller. Include a raw-Q
     # rounding allowance. The compiled-camera probe also checks all 512 phases.
     orbit_bound = 14 * 65536 + 64
-    while orbit_bound >> scale > 131071:
-        scale += 1
-    assert scale <= 16
+    assert orbit_bound < (1 << 25)
     data = bytearray(128)  # Immutable directory, padded to one readable sector.
     entries = []
     for i, mesh in enumerate(meshes):
         address = MESH + len(data)
-        record = native_record(mesh, scale)
+        record = native_record(mesh)
         struct.pack_into("<2H", data, 4 * i, address // 128, len(record) // 128 - 1)
         data += record
         entries.append(dict(name=mesh["name"], address=address, size=len(record)))
         # Compare the complete native metadata/payload with the existing
         # independent host encoder, which also checks all V/T numeric ranges.
-        instance = dict(mesh, uniform=cameras[0]["uniform"], scale_s=scale,
+        instance = dict(mesh, uniform=cameras[0]["uniform"],
                         color_mode=0, cull_negative=1, slot=0,
                         cfg_tex_w_log2=6, cfg_tex_h_log2=6, cfg_max_mip=6)
         folder = output / "native-audit" / str(i)
@@ -160,7 +156,7 @@ def pack(output):
         resources=[dict(file=name, address=address, bytes=len(payload), sha256=sha(output / name))
                    for name, address, payload in resources],
         mesh=dict(directory_sector=MESH // 128, directory_word=0, count=len(meshes),
-                  first_sector=MESH // 128, sectors=len(data) // 128, scale_s=scale, entries=entries),
+                  first_sector=MESH // 128, sectors=len(data) // 128, entries=entries),
         texture=dict(sector=TEXTURE // 128, sectors=88, size_log2=6, full_mip=1),
         atlas=dict(sector=ATLAS // 128, sectors=512, glyphs=sorted(glyphs)),
         cameras=cameras,
@@ -173,7 +169,7 @@ def pack(output):
                  DEMO_TEXTURE_SECTORS=88, DEMO_ATLAS=ATLAS // 128)
     (output / "demo_assets.rs").write_text(''.join(
         f'pub const {name}: u16 = {value};\n' for name, value in roots.items()))
-    print(f"PASS demo assets: {len(meshes)} meshlets, 192 triangles, 18 glyphs, scale_s={scale}")
+    print(f"PASS demo assets: {len(meshes)} meshlets, 192 triangles, 18 glyphs, position=F16/signed26")
 
 
 if __name__ == "__main__":

@@ -25,7 +25,6 @@ def run(output, matrices):
     for mesh in meshes:
         for i, vertex in enumerate(mesh['vertices']):
             vertex[2] = round(i % 5 / 4 * 65535) | (round(i // 5 / 4 * 65535) << 16)
-    scale = manifest['mesh']['scale_s']
     minimum, maximum = 0, 0
     for matrix in cameras:
         uniform = matrix + [65536] + [0] * 10
@@ -35,8 +34,8 @@ def run(output, matrices):
                 for axis in range(3):
                     value = oracle.signed(values[6*i+axis], 32)
                     minimum, maximum = min(minimum, value), max(maximum, value)
-                    assert -131072 <= value >> scale <= 131071
-    (output / 'orbit-range.json').write_text(json.dumps(dict(steps=512, scale_s=scale,
+                    assert -(1 << 25) <= value < (1 << 25)
+    (output / 'orbit-range.json').write_text(json.dumps(dict(steps=512, position_format="F16/signed26",
         minimum_raw=minimum, maximum_raw=maximum, all_native_positions_fit=True), indent=2)+'\n')
     seed = {}
     for resource in manifest['resources']:
@@ -49,7 +48,7 @@ def run(output, matrices):
         color, depth = [0]*96000, [65535]*96000
         accepted = 0
         for index, mesh in enumerate(meshes):
-            instance = dict(mesh, uniform=matrix+[65536]+[0]*10, scale_s=scale,
+            instance = dict(mesh, uniform=matrix+[65536]+[0]*10,
                 color_mode=0,cull_negative=1,slot=index%2,
                 cfg_tex_w_log2=6,cfg_tex_h_log2=6,cfg_max_mip=6,cfg_far_z=100*65536)
             _, packets = oracle.prepare(instance, output / f'oracle-{frame}-{index}')
@@ -76,7 +75,7 @@ def run(output, matrices):
             (output / f'{name}.hex').write_text(''.join(f'{v:04x}\n' for v in values))
         (output / f'matrix{frame}.hex').write_text(''.join(f'{(v>>shift)&65535:04x}\n' for v in matrix for shift in (0,16)))
         print(f'PASS demo reference frame={frame} phase={(frame-1)*128} depth_passes={accepted}',flush=True)
-    print(f'PASS full orbit: 512 matrices, native scale_s={scale}, raw range={minimum}..{maximum}',flush=True)
+    print(f'PASS full orbit: 512 matrices, native F16/signed26, raw range={minimum}..{maximum}',flush=True)
 
 
 if __name__ == '__main__':

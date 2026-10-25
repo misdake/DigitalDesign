@@ -82,7 +82,8 @@ clock. No full scene or image comparison is required for timer validation.
 | texture.bin |0x4d0000|Original64-square brick image and full mip chain|
 
 Directory entries0..5 are room, entry6 is RGB and entries7..23 are all rabbit
-meshlets. Each record retains the audited full-orbit scale_s. The original256
+meshlets. Position results remain F16 without a per-meshlet shift; metadata
+word1 bits3:0 are zero. The original256
 camera records remain immutable for provenance, but live rendering loads only
 phase0 at initialization. Records occupy128 bytes; generated roots own lengths.
 

@@ -49,13 +49,14 @@ the page. Tight length is `8*(vwords+twords)` bytes. The maximum is
 | Qword | Bit fields |
 | --- | --- |
 | 0 | V count 6:0; T count 14:8; uniform base21:16; T qword offset 30:24; cull-negative 31 |
-| 1 | scale_s3:0; RGB mode 4 (0=UV, 1=RGB); sequence start 11:5; generation 15:12 |
+| 1 | reserved-zero3:0; RGB mode 4 (0=UV, 1=RGB); sequence start 11:5; generation 15:12 |
 | 2 | origin_x31:0; origin_y63:32 |
 | 3 | origin_z31:0; quant_shift36:32; normal18 bit 40 |
 
 All other metadata bits are producer-written zero. Nonempty T requires nonzero
-V. `scale_s` is an arithmetic right shift before T's signed 18-bit coordinate check;
-`quant_shift` controls source position decode. They are separate operations.
+V. Bits3:0 of word1 are reserved zero and are not read by hardware.
+`quant_shift` controls local source position decode; T consumes V's F16 position
+without a meshlet-wide shift.
 `normal18` selects the Vertex normal quantization path.
 
 ## Matrix block

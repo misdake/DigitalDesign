@@ -1,8 +1,8 @@
 //! Selected fixed-stage execution. No calendar addresses or retained whole input.
 //! The generic packed-bank emulator remains an independent reference.
 use super::{
-    validate, Event, Fault, MetadataAccess, Output, ReadyAccess, Site, Snapshot, Step, Tick,
-    CAPTURE_AGE, VALID_MASK,
+    CAPTURE_AGE, Event, Fault, MetadataAccess, Output, ReadyAccess, Site, Snapshot, Step, Tick,
+    VALID_MASK, validate,
 };
 pub use super::{
     COHORT_CAPACITY, METADATA_ROWS, READY_CAPACITY, READY_RAM16_BITS, READY_SDP4_CELLS,
@@ -202,7 +202,7 @@ impl<const ROWS: usize, const COHORTS: usize> CoefficientExecutor<ROWS, COHORTS>
                     ),
                 )
             }),
-            read_address: (publication || consumed)
+            read_address: (publication || (consumed && self.queued > 1))
                 .then_some((self.metadata_read + u8::from(consumed)) & 15),
         };
         let returned = metadata_access
