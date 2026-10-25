@@ -76,7 +76,7 @@ Channel12 directly selects existing wire state, adding no monitor registers:
 |4..3|Operation:0 poll,1 enter43,2 mode44,3 exit43|
 |2|Current cumulative FF/ID/5A header-good predicate|
 |1|Two-FF synchronized DAT level|
-|0|ATT pin;1 means no active transaction|
+|0|ATT pin;1 means physically unselected, including armed setup in slot0|
 
 The monitor changes with wire progress. It is not a latched failure record;
 operation may already describe the next command when ATT is high. Diagnostic
@@ -92,7 +92,8 @@ production uses7 and has no runtime divider programming.
 
 | Boundary | Action |
 |---|---|
-|Counter zero / slot0, unless a near-frame poll is pending|Assert ATT and clear header predicates; setup slot|
+|Counter zero / slot0, unless a near-frame poll is pending|Issue the transaction, arm ATT and clear header predicates|
+|Slot0, phase61 tick|Assert ATT and clear armed; the first CLK fall remains slot1 phase1|
 |Slots1..N, phases0,2,..14|Register the next command bit; output stage follows one main clock later|
 |Odd phases1,3,..15|Registered CLK low; controller drives DAT|
 |Even phases2,4,..16|Sample synchronized DAT before registered CLK rises; last bit completes the received byte|
@@ -105,13 +106,22 @@ Half-period is128 main clocks (2.3703704us), SCLK210.9375kHz. The final rise
 of a byte to the next first fall is49 half-periods (116.1481us). CMD has127 main
 clocks of setup before a fall and at least one main clock of hold after a rise.
 CLK, CMD and ATT are registered outputs; DAT uses two preserved synchronizers.
+One armed FF separates transaction issue from physical selection. ATT falls at
+slot0 phase61, exactly4 half-periods (512 main clocks,9.48148us) before the
+unchanged first CLK fall at slot1 phase1. The time coordinate still loads1 at
+issue, so byte slots, CLK/CMD, fallback/phase countdown and completion/publication
+retain their issue-relative timing. Reset cancels an armed transaction without
+asserting ATT. No frame may be issued while armed or active.
 The last receive bit is included in the RAM write on that same edge.
 
 Poll42 sends9 bytes, including digital41; pressure79 sends21. Entry43 sends5,
 analog+lock44 and exit43 each send9. Unknown IDs and bad FF/5A headers release
 after3 bytes. Fallback polling period is262144 clocks (4.854519ms). The last phase32
 release is77824 clocks for9 bytes and176128 clocks for21 bytes, measured from
-ATT assertion; these are transaction lengths, not the fixed polling period.
+transaction issue. ATT is asserted7808 clocks later, so actual ATT-low duration
+is70016 clocks (1.296593ms) for9 bytes or168320 clocks (3.117037ms) for21 bytes.
+These durations differ from both the fixed polling period and the issue-to-
+completion calendar. The deassertion/completion edge itself is unchanged.
 There is no ACK handshake. Longer guard/slower SCLK still require board testing
 with the actual controller/adapter; local RTL tests are not electrical evidence.
 
@@ -143,8 +153,9 @@ flowchart LR
 ```
 
 At54/33.3MHz, the1056x525 scan period is899027.027 main clocks,
-or109.74451 DS2 byte slots. Each slot is8192 clocks. A9-byte poll takes9.5
-slots and a21-byte poll takes21.5. A frame event loads99 slots for ordinary
+or109.74451 DS2 byte slots. Each slot is8192 clocks. Issue-to-completion is9.5
+slots for a9-byte poll and21.5 for a21-byte poll; the deferred ATT assertion does
+not move either completion point. A frame event loads99 slots for ordinary
 poll/configuration or87 for the last observed pressure mode. The first slot
 tick decrements the counter; a subsequent tick seeing zero starts the packet.
 With a stable observed mode, publication is2003..10195 main clocks
@@ -196,7 +207,8 @@ Events describe changes between CPU-observed snapshots and last one service call
 
 Bounded independent peers check complete command bytes, setup/hold/guard,
 41/73/79/F3, invalid prefix/marker/ID, reset, disconnect, CPU absence, pressure
-tail, page publication and same-edge sticky-bit races. Native RAM models and
+tail, page publication, exact four-half-period ATT setup, armed reset cancellation
+and same-edge sticky-bit races. Native RAM models and
 default divider checks cover the production memory and timing geometry. The
 actual CPU/cache fixture checks autonomous configuration, timer clears, latest
 reads, raw axes, button edges and continued reception during CPU/cache pauses.

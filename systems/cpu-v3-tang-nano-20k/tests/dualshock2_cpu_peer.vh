@@ -52,7 +52,8 @@ always @(negedge att)if(!reset)begin
  frame_axis=axis_case;frame_buttons=buttons;
 end
 always @(negedge sclk)if(!reset)begin
- if(att||cycles-select_cycle<HALF*64)$fatal(1,"CPU select setup");
+ if(att)$fatal(1,"CPU clock outside ATT");
+ if(byte_index==0&&bit_index==0&&cycles-select_cycle!=HALF*4)$fatal(1,"CPU select setup must be exactly4 half-periods");
  if(bit_index!=0&&cycles-last_rise!=HALF)$fatal(1,"CPU high half");
  if(byte_index!=0&&bit_index==0&&cycles-last_rise!=49*HALF)$fatal(1,"CPU byte guard");
  last_fall=cycles;#17 dat=reply(byte_index)>>bit_index;

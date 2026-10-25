@@ -20,12 +20,12 @@ wire tick=~|timebase[DIV_BITS-1:0];
 // by2003..10195 main clocks (37..189us), including slot quantization.
 // This input is the Display's existing main-domain synchronized event.
 reg[6:0]lead_slots=0;
-reg phase_pending=0;
+reg phase_pending=0,armed=0;
 wire active=!att;
 wire slot_tick=tick&&phase==0;
 wire phase_start=slot_tick&&phase_pending&&lead_slots==0;
 wire fallback_start=(~|timebase)&&(!phase_pending||lead_slots>32);
-wire frame_start=!active&&(phase_start||fallback_start);
+wire frame_start=!active&&!armed&&(phase_start||fallback_start);
 wire serial_window=slot!=0&&phase[5:4]==0;
 wire sample_phase=!phase[0]&&((phase[5:4]==0&&phase[3:1]!=0)||phase==16);
 wire sample=tick&&active&&slot!=0&&sample_phase;
@@ -87,7 +87,7 @@ end
 always @(posedge clk)begin
  if(reset)begin
   timebase<=0;dat_meta<=1;dat_sync<=1;shift<=0;
-  lead_slots<=0;phase_pending<=0;
+  lead_slots<=0;phase_pending<=0;armed<=0;
   operation<=POLL;kind<=DIGITAL;header_good<=0;
   front<=0;valid<=0;read_changed<=0;ds2_clk<=1;cmd_phase<=1;att<=1;cmd<=1;
  end else begin
@@ -110,7 +110,10 @@ always @(posedge clk)begin
   ds2_clk<=!(active&&serial_window&&phase[0]);
   if(tick&&active&&serial_window&&!phase[0])cmd_phase<=command_bit;
   if(sample)shift<=received;
-  if(frame_start)begin att<=0;header_good<=1;kind<=DIGITAL;end
+  // Keep the original issue/timebase and completion calendar. Only ATT is
+  // delayed: phase61 to the unchanged slot1 phase1 first fall is4 half-periods.
+  if(frame_start)begin armed<=1;header_good<=1;kind<=DIGITAL;end
+  if(armed&&tick&&slot==0&&phase==61)begin att<=0;armed<=0;end
   if(byte_end)case(slot)
    1:header_good<=received==8'hff;
    2:begin
@@ -144,6 +147,7 @@ always @(posedge clk)if(!reset)begin
  // Diagnostic high channels intentionally observe the writing page; they are
  // not coherent input. Normal low-channel reads must stay on the front page.
  if(storing&&!device_channel[3]&&wa==ra)$fatal(1,"DS2 snapshot read/write page collision");
+ if(armed&&active)$fatal(1,"DS2 armed transaction is already active");
  if((~|timebase)&&active)$fatal(1,"DS2 transaction exceeded the fixed frame");
 end
 initial if(DIV_BITS<2)$fatal(1,"DS2 divider must cover two DAT synchronizers");

@@ -64,7 +64,7 @@ always @(cmd)cmd_change=cycle;
 always @(negedge ds2_clk)if(!reset)begin
  if(cycle-cmd_change<HALF-1)$fatal(1,"CMD setup shorter than a half-period");
  if(att)$fatal(1,"CLK outside ATT");
- if(wire_byte==0&&wire_bit==0&&cycle-att_cycle<HALF*64)$fatal(1,"ATT setup shortened");
+ if(wire_byte==0&&wire_bit==0&&cycle-att_cycle!=HALF*4)$fatal(1,"ATT setup must be exactly4 half-periods");
  if(wire_bit==0&&wire_byte>0&&cycle-last_byte_rise!=49*HALF)$fatal(1,"byte guard");
  if(wire_bit!=0&&cycle-rise_cycle!=HALF)$fatal(1,"CLK high width");
  if(cycle-fall_cycle==0)$fatal(1,"duplicate CLK fall");
@@ -130,6 +130,10 @@ initial begin
   if(last_transaction_bytes!=21)$fatal(1,"default-rate pressure tail");
   $display("DS2_PASS default timing half=%0d frame=%0d completeBytes=%0d",HALF,FRAME,bytes);$finish;
  end
+ // Reset during the new pending setup must cancel it without an ATT edge.
+ while(!dut.armed)tick();@(negedge clk);reset=1;tick();
+ if(dut.armed||!att||!cmd||!ds2_clk||transactions!=0)$fatal(1,"reset armed setup");
+ @(negedge clk);reset=0;
  // CPU absent: configure digital->analog by hardware, then keep polling.
  end_transaction(6);if(mode_id!=8'h73||pubs<2)$fatal(1,"autonomous configuration/publication");
  coherent_snapshot();
@@ -161,7 +165,7 @@ initial begin
  read_status();if(!status[1])$fatal(1,"unselected write changed state");
  // Reset can interrupt traffic, but autonomous polling must resume.
  while(att)tick();@(negedge clk);reset=1;previous_att=-1;old_front=0;
- tick();if(!att||!cmd||!ds2_clk||dut.valid||dut.read_changed)$fatal(1,"reset outputs");
+ tick();if(!att||!cmd||!ds2_clk||dut.armed||dut.valid||dut.read_changed)$fatal(1,"reset outputs");
  @(negedge clk);reset=0;end_transaction(transactions+2);coherent_snapshot();
  $display("DS2_PASS autonomous frames=%0d bytes=%0d publications=%0d coherence=%0d divider=%0d",transactions,bytes,pubs,changed_checks,DIV_BITS);$finish;
 end
