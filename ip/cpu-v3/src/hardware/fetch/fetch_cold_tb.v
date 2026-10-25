@@ -44,7 +44,7 @@ initial begin
   end
  end
  if(accepted!=72)$fatal(1,"cold acceptance count");
- if(dut.BTC_ENTRIES!=0 && (installs<6 || replays<6))$fatal(1,"cold install/replay not exercised %0d/%0d",installs,replays);
+ if(installs<6 || replays<6)$fatal(1,"cold install/replay not exercised %0d/%0d",installs,replays);
  $display("PASS cold frontend accepted%0d installs%0d replays%0d BTC%0d",accepted,installs,replays,dut.BTC_ENTRIES);
  $finish;
 end

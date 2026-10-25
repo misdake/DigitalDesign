@@ -54,7 +54,7 @@ The independent downstream head offset and its equality comparator are removed;
 BTC replay leaves the ordinary queue in order. Full physical BTC target tags
 remain necessary because complete entries survive redirects.
 
-The queue also contains a fully associative resolved-target BTC, defaulting to
+The queue also contains a fully associative resolved-target BTC with exactly
 four entries of two 16-bit instruction words (not necessarily two instructions).
 It compares the full physical target using a 22-bit tag plus a zero check on the
 upper address bits. A restart hit supplies the first word combinationally and
@@ -76,10 +76,13 @@ software-controlled instruction coherency applies exactly as to the I-cache.
 
 The ordinary queue and BTC share one asynchronous-read, synchronous-write
 16-bit distributed RAM. Resource reservation follows the physical array depth:
-16 words (256 bits) for BTC0/BTC4, or 32 words (512 bits) for BTC8, including
-unused physical slots. BTC tags own low physical pairs through small pointers;
-one extra pair holds incomplete fills. The high two words hold ordinary queue
-slots. The first two live responses after a target miss write the spare pair,
+16 words (256 bits), including unused physical slots. BTC tags own low physical
+pairs through small pointers;
+one extra pair holds incomplete fills. The high four words hold the two logical
+ordinary slots using modulo-four head/tail pointers. Their low bits index the
+two metadata slots; a full FIFO's physical head and tail are two rows apart.
+Head and tail are two-bit registers within the same RAM allocation.
+The first two live responses after a target miss write the spare pair,
 while later responses write their ordinary tail slot. This is the sole payload
 writer: CPU acceptance never copies an instruction word into BTC. Ordinary
 bypass does not write RAM unless the response also fills a target pair.
@@ -91,10 +94,14 @@ acceptance, which atomically exchanges the spare/victim pointers and publishes
 the complete pair. A later continuation can enqueue on that same edge. Errors
 and cancelled fills never replace complete entries. Queue and BTC replay select
 an address before the shared RAM read; the ordinary FF bank and wide final
-queue/BTC data selector are absent. Memory-response bypass remains direct. A same-address enqueue consumes the
-old asynchronous RAM Q before replacing it. The official RAM16SDP4 regression
-checks that event and simultaneous BTC installation/continuation enqueue for
-zero/four/eight-entry configurations; inferred and official runs share one
+queue/BTC data selector are absent. Memory-response bypass remains direct.
+Full pop/push writes a different physical row from the head being consumed;
+no valid RAM consumer depends on the old output during a same-address write
+edge. Redirects and flushes reset both pointers, while stale responses retain
+their existing drain behavior. The official RAM16SDP4 regression checks
+full-FIFO pop/push, rejects an effective same-address overwrite, and covers
+simultaneous BTC installation/continuation enqueue for the fixed four entries;
+inferred and official runs share one
 independent address/value fixture.
 FPGA configuration initial values and independent reset restore unique pair
 ownership; flush retains the pair permutation while
@@ -102,11 +109,9 @@ clearing validity and live queue references. Exact LRU keeps relative-order bits
 and its original events. The independent cycle model retains rank-based BTC
 state and separate queue payloads as its reference representation.
 
-`CPU_V3_BTC_ENTRIES=0|4|8` is a build-time environment setting, default 4.
-The CPU crate build script generates one constant used by both the Rust model
-and generated Verilog. Zero disables BTC storage/lookup for comparison while
-retaining the per-slot stale-response fix. There are no new hardware ports or
-ISA controls. The tables below count Execute through retirement; fetch waits
+BTC capacity is fixed at four entries in the cycle model and RTL; it has no
+environment-variable configuration, hardware port or ISA control.
+The tables below count Execute through retirement; fetch waits
 are additional when neither the queue, BTC nor bypass can supply the word.
 
 ## Core storage and execution resources

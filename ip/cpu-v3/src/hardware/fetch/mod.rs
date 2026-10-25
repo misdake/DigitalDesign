@@ -33,14 +33,11 @@ pub struct CpuV3InstructionFetchQueueOutput {
 #[hardware(namespace = "components/cpu/cpu_v3", target_leaf)]
 pub struct CpuV3InstructionFetchQueue;
 
-include!(concat!(env!("OUT_DIR"), "/fetch_config.rs"));
+/// Fixed resolved-target capacity: four entries of two instruction words.
+pub const CPU_V3_BTC_ENTRIES: usize = 4;
 const QUEUE_DEPTH: usize = 2;
 const REQUEST_SLOTS: usize = 2;
-const BTC_STORAGE: usize = if CPU_V3_BTC_ENTRIES == 0 {
-    1
-} else {
-    CPU_V3_BTC_ENTRIES
-};
+const BTC_STORAGE: usize = CPU_V3_BTC_ENTRIES;
 
 /// Model-only diagnostics, intentionally absent from the hardware ports and
 /// frozen benchmark schema. A lookup/hit counts once when a replay starts,
@@ -138,8 +135,9 @@ impl CpuV3InstructionFetchQueueState {
         let current =
             self.metadata_count != 0 && self.metadata_current[self.metadata_head as usize];
         let queued = self.queue_count != 0;
-        // The frontend queue and I-cache holding slots have separate credits.
-        // A pop consumes old Q while that slot accepts its next word.
+        // Logical slots may pop/push together. RTL rotates their payloads
+        // through four physical RAM rows, so a full replacement cannot
+        // overwrite the asynchronous head consumed on this edge.
         let response_ready = !input.reset
             && self.metadata_count != 0
             && (input.flush
@@ -243,7 +241,7 @@ impl CpuV3InstructionFetchQueueState {
         if (input.flush || sig.restart) && self.replay_remaining != 0 {
             self.statistics.aborted_replays += 1;
         }
-        if sig.restart && !input.flush && CPU_V3_BTC_ENTRIES != 0 && address >> 22 == 0 {
+        if sig.restart && !input.flush && address >> 22 == 0 {
             self.statistics.lookups += 1;
             self.statistics.hits += u64::from(sig.hit.is_some());
         }
@@ -276,8 +274,7 @@ impl CpuV3InstructionFetchQueueState {
                 0
             };
             self.tracking_continuation = sig.hit.is_some();
-            self.fill_phase = if CPU_V3_BTC_ENTRIES != 0 && address >> 22 == 0 && sig.hit.is_none()
-            {
+            self.fill_phase = if address >> 22 == 0 && sig.hit.is_none() {
                 1
             } else {
                 0
@@ -381,8 +378,7 @@ impl Module for CpuV3InstructionFetchQueue {
 
     fn target_resources() -> Vec<TargetResourceRequest> {
         // Match PAYLOAD_WORDS, including the physical 16-word RAM granularity.
-        let words = if CPU_V3_BTC_ENTRIES == 8 { 32 } else { 16 };
-        vec![TargetResourceRequest::new(SsramBits::new(words * 16))]
+        vec![TargetResourceRequest::new(SsramBits::new(16 * 16))]
     }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
@@ -405,10 +401,7 @@ impl Module for CpuV3InstructionFetchQueue {
         state.clock(&input.sample(circuit));
     }
     fn verilog_source() -> Option<String> {
-        Some(
-            include_str!("cpu_v3_instruction_fetch_queue.v")
-                .replace("__BTC_ENTRIES__", &CPU_V3_BTC_ENTRIES.to_string()),
-        )
+        Some(include_str!("cpu_v3_instruction_fetch_queue.v").to_string())
     }
     fn verilog_testbench() -> Option<String> {
         Some(include_str!("cpu_v3_instruction_fetch_queue_tb.v").to_string())

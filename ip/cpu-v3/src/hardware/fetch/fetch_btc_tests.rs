@@ -497,7 +497,9 @@ fn bounded_btc_protocol_and_address_scoreboard() {
 
 fn btc_protocol_fixture() -> (String, usize) {
     let rig = scenarios();
-    let mut tb = String::from("module tb;\nreg clk=0; always #5 clk=~clk;\nreg reset=1,flush=0,core_request_valid=0,core_response_ready=0,memory_request_ready=0,memory_response_valid=0,memory_error=0;\nreg [31:0] core_address=0; reg [15:0] memory_read_data=0;\nwire core_request_ready,core_response_valid,core_error,memory_request_valid,memory_response_ready; wire [15:0] core_read_data; wire [31:0] memory_address;\nCpuV3InstructionFetchQueue dut(.*);\nreg [31:0] source_address;\ninitial begin repeat(2) @(negedge clk); reset=0;\n");
+    let mut tb = String::from(
+        "module tb;\nreg clk=0; always #5 clk=~clk;\nreg reset=1,flush=0,core_request_valid=0,core_response_ready=0,memory_request_ready=0,memory_response_valid=0,memory_error=0;\nreg [31:0] core_address=0; reg [15:0] memory_read_data=0;\nwire core_request_ready,core_response_valid,core_error,memory_request_valid,memory_response_ready; wire [15:0] core_read_data; wire [31:0] memory_address;\nCpuV3InstructionFetchQueue dut(.*);\nreg [31:0] source_address;\ninitial begin repeat(2) @(negedge clk); reset=0;\n",
+    );
     for (cycle, (i, o)) in rig.trace.iter().enumerate() {
         use std::fmt::Write;
         writeln!(tb, "reset={};", u8::from(i.reset)).unwrap();
@@ -557,7 +559,7 @@ fn btc_replace_once(source: &str, old: &str, new: &str) -> String {
 
 // Test-only substitution of the one inferred 16-bit payload RAM. All queue,
 // BTC publication, ownership and output logic stays byte-for-byte unchanged.
-// Four nibble slices implement a 16x16 bank; BTC8 needs two such banks.
+// Four nibble slices implement the fixed 16x16 payload bank.
 fn btc_vendor_payload_source(source: &str) -> String {
     let source = btc_replace_once(
         source,
@@ -572,71 +574,48 @@ fn btc_vendor_payload_source(source: &str) -> String {
         "payload[payload_read_address]",
         "vendor_payload_data",
     );
-    let banks = if CPU_V3_BTC_ENTRIES == 8 { 2 } else { 1 };
-    let write_bank = if banks == 1 {
-        "1'b1"
-    } else {
-        "(payload_write_address[4] == vb)"
-    };
-    let read_bank = if banks == 1 {
-        "vendor_q[0]"
-    } else {
-        "vendor_q[payload_read_address[4]]"
-    };
     let native = r#"
-wire [15:0] vendor_q [0:BANKS-1];
-genvar vb,vs;
-generate for(vb=0;vb<BANKS;vb=vb+1) begin:vendor_bank
- for(vs=0;vs<4;vs=vs+1) begin:vendor_slice
-  RAM16SDP4 ram(.DO(vendor_q[vb][vs*4+:4]),.DI(memory_read_data[vs*4+:4]),
-   .RAD(payload_read_address[3:0]),.WAD(payload_write_address[3:0]),
-   .WRE(payload_write && BANK_WRITE),.CLK(clk));
- end
+genvar vs;
+generate for(vs=0;vs<4;vs=vs+1) begin:vendor_slice
+ RAM16SDP4 ram(.DO(vendor_payload_data[vs*4+:4]),.DI(memory_read_data[vs*4+:4]),
+  .RAD(payload_read_address[3:0]),.WAD(payload_write_address[3:0]),
+  .WRE(payload_write),.CLK(clk));
 end endgenerate
-assign vendor_payload_data=READ_BANK;
-"#
-    .replace("BANKS", &banks.to_string())
-    .replace("BANK_WRITE", write_bank)
-    .replace("READ_BANK", read_bank);
+"#;
     btc_replace_once(&source, "\nendmodule", &format!("\n{native}\nendmodule"))
 }
 
 // These observers add coverage assertions only. Both tests run precisely the
 // same scenario-generated vectors, expected outputs and address scoreboard.
 fn btc_protocol_coverage(fixture: &str, source: &str) -> String {
-    let queued = if source.contains("reg queue_valid") {
-        "dut.queue_valid"
-    } else {
-        assert!(
-            source.contains("queue_count"),
-            "unknown BTC queue occupancy"
-        );
-        "(dut.queue_count != 0)"
-    };
+    assert!(
+        source.contains("queue_count"),
+        "unknown BTC queue occupancy"
+    );
     assert!(source.contains("enqueue_response"), "missing enqueue event");
     let monitor = r#"
 always @(posedge clk) if(!reset && !flush) begin
- if(dut.core_pop && !dut.btc_response && QUEUED && dut.payload_write &&
+ if(dut.core_pop && !dut.response_bypass && dut.payload_write &&
     dut.payload_read_address==dut.payload_write_address)
   ram_collision_events=ram_collision_events+1;
+ if(dut.queue_count==2 && dut.queue_pop && dut.enqueue_response)
+  full_pop_push_events=full_pop_push_events+1;
  if(dut.install && dut.enqueue_response)
   install_enqueue_events=install_enqueue_events+1;
 end
-"#
-    .replace("QUEUED", queued);
+"#;
     let tb = btc_replace_once(
         fixture,
         "module tb;",
-        "module tb;\ninteger ram_collision_events=0,install_enqueue_events=0;",
+        "module tb;\ninteger ram_collision_events=0,install_enqueue_events=0,full_pop_push_events=0;",
     );
     let tb = btc_replace_once(&tb, "\nendmodule", &format!("\n{monitor}\nendmodule"));
-    let checks = format!(
-        "$display(\"BTC_EVENTS collisions=%0d install_enqueue=%0d\",ram_collision_events,install_enqueue_events);\n\
-         if(ram_collision_events==0)$fatal(1,\"missing same-edge old-Q collision coverage\");\n\
-         if({CPU_V3_BTC_ENTRIES}>0 && install_enqueue_events==0)$fatal(1,\"missing BTC install plus enqueue coverage\");\n\
-         $display(\"BTC_PASS\");"
-    );
-    btc_replace_once(&tb, "$display(\"BTC_PASS\");", &checks)
+    let checks = "$display(\"BTC_EVENTS collisions=%0d full_pop_push=%0d install_enqueue=%0d\",ram_collision_events,full_pop_push_events,install_enqueue_events);\n\
+         if(ram_collision_events!=0)$fatal(1,\"same-edge payload overwrite consumed\");\n\
+         if(full_pop_push_events==0)$fatal(1,\"missing full payload FIFO pop/push coverage\");\n\
+         if(install_enqueue_events==0)$fatal(1,\"missing BTC install plus enqueue coverage\");\n\
+         $display(\"BTC_PASS\");";
+    btc_replace_once(&tb, "$display(\"BTC_PASS\");", checks)
 }
 
 fn btc_bounded_command(

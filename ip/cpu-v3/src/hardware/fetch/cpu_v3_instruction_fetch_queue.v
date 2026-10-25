@@ -20,11 +20,11 @@ module CpuV3InstructionFetchQueue (
 
 localparam [1:0] QUEUE_DEPTH = 2;
 localparam [1:0] REQUEST_SLOTS = 2;
-localparam integer BTC_ENTRIES = __BTC_ENTRIES__;
-localparam integer BTC_STORAGE = BTC_ENTRIES == 0 ? 1 : BTC_ENTRIES;
-localparam integer BTC_INDEX_BITS = BTC_ENTRIES == 8 ? 3 : 2;
-localparam integer PAIR_BITS = BTC_ENTRIES == 8 ? 4 : 3;
-localparam integer PAYLOAD_WORDS = BTC_ENTRIES == 8 ? 32 : 16;
+localparam integer BTC_ENTRIES = 4;
+localparam integer BTC_STORAGE = BTC_ENTRIES;
+localparam integer BTC_INDEX_BITS = 2;
+localparam integer PAIR_BITS = 3;
+localparam integer PAYLOAD_WORDS = 16;
 
 reg stream_valid = 0;
 reg [31:0] expected_core_address = 0;
@@ -33,15 +33,16 @@ reg [31:0] next_memory_address = 0;
 // Full stream ownership is checked against expected_core_address. Redirects
 // invalidate old request slots before responses can enter the new stream.
 // BTC tags remain full physical addresses because entries survive redirects.
-// Ordinary slots occupy the high 2 addresses of the shared payload RAM.
+// Two logical ordinary slots rotate through the high 4 payload addresses.
+// The extra pointer bit separates a full FIFO's old head from its new tail.
 // A target word instead references the uninstalled spare pair. That reference
 // expires before installation can exchange the pair with a victim.
 (* syn_ramstyle = "registers" *) reg queue_from_fill [0:1];
 (* syn_ramstyle = "registers" *) reg queue_error [0:1];
 // Current responses are ordered; queue order follows the expected core cursor.
 // Old-path requests are drained using their current bits.
-reg [0:0] queue_head = 0;
-reg [0:0] queue_tail = 0;
+reg [1:0] queue_head = 0;
+reg [1:0] queue_tail = 0;
 reg [1:0] queue_count = 0;
 
 // Clear live ownership on every restart. Unlike a toggled epoch, these bits
@@ -55,7 +56,7 @@ reg [1:0] metadata_count = 0;
 reg [BTC_STORAGE-1:0] btc_valid = 0;
 (* syn_ramstyle = "registers" *) reg [21:0] btc_tag [0:BTC_STORAGE-1];
 // One response write port serves ordinary queue words and pending BTC pairs.
-// BTC entries own low pairs; ordinary queue slots occupy the high 2 words.
+// BTC entries own low pairs; ordinary queue slots rotate through the high 4 words.
 // Complete entries exclude the spare pair, so partial fills preserve old data.
 (* syn_ramstyle = "distributed_ram" *) reg [15:0] payload [0:PAYLOAD_WORDS-1];
 (* syn_ramstyle = "registers" *) reg [PAIR_BITS-1:0] entry_pair [0:BTC_STORAGE-1];
@@ -69,7 +70,7 @@ end
 reg [PAIR_BITS-1:0] spare_pair = BTC_ENTRIES;
 // Exact LRU stores one relative-order bit for each unordered entry pair.
 // Touching an entry updates only its incident bits; no rank mux/add/saturation.
-localparam integer AGE_BITS = BTC_ENTRIES > 1 ? BTC_ENTRIES*(BTC_ENTRIES-1)/2 : 1;
+localparam integer AGE_BITS = BTC_ENTRIES*(BTC_ENTRIES-1)/2;
 reg [AGE_BITS-1:0] btc_newer = 0;
 wire [BTC_STORAGE-1:0] btc_oldest;
 function integer relation_index;
@@ -148,16 +149,18 @@ wire [BTC_INDEX_BITS-1:0] response_entry = btc_hit ? hit_entry : replay_entry;
 wire first_btc_word = btc_hit || replay_remaining == 2;
 // A live spare reference can only name the first or second target word.
 // Its half is derived from the matched core/head address, including PC wrap.
-wire [PAIR_BITS:0] queue_payload_address = queue_from_fill[queue_head] ?
+wire [PAIR_BITS:0] queue_payload_address = queue_from_fill[queue_head[0]] ?
     {spare_pair, core_address[0] ^ fill_tag[0]} :
-    {{(PAIR_BITS+1-1){1'b1}}, queue_head};
+    {{(PAIR_BITS-1){1'b1}}, queue_head};
 wire [PAIR_BITS:0] payload_read_address = btc_response ?
     {entry_pair[response_entry], !first_btc_word} : queue_payload_address;
 assign core_request_ready = core_pop;
 assign core_read_data = response_bypass ? memory_read_data : payload[payload_read_address];
 assign core_error = btc_response ? 1'b0 :
-    (response_bypass ? memory_error : queue_error[queue_head]);
+    (response_bypass ? memory_error : queue_error[queue_head[0]]);
 
+// Full pop/push uses distinct physical rows: tail is two positions ahead of
+// head modulo four. Metadata still uses two FF slots, indexed by bit zero.
 assign memory_response_ready = !reset && metadata_count != 0 &&
     (flush || restart || !response_is_current || queue_count < QUEUE_DEPTH || queue_pop);
 wire memory_response_fire = memory_response_valid && memory_response_ready;
@@ -175,7 +178,7 @@ wire response_fills_pair = fill_responses_left != 0;
 wire payload_write = memory_response_fire && response_is_current && !flush && !restart && (response_fills_pair || enqueue_response);
 wire [PAIR_BITS:0] payload_write_address = response_fills_pair ?
     {spare_pair, fill_responses_left == 1} :
-    {{(PAIR_BITS+1-1){1'b1}}, queue_tail};
+    {{(PAIR_BITS-1){1'b1}}, queue_tail};
 always @(posedge clk) begin
     if (payload_write)
         payload[payload_write_address] <= memory_read_data;
@@ -220,9 +223,9 @@ always @(posedge clk) begin
             if (restart) begin
                 replay_remaining <= btc_hit ? (core_pop ? 2'd1 : 2'd2) : 2'd0;
                 if (btc_hit) replay_entry <= hit_entry;
-                fill_phase <= BTC_ENTRIES != 0 && core_address[31:22] == 0 && !btc_hit ? 2'd1 : 2'd0;
+                fill_phase <= core_address[31:22] == 0 && !btc_hit ? 2'd1 : 2'd0;
                 fill_tag <= core_address[21:0];
-                fill_responses_left <= BTC_ENTRIES != 0 && core_address[31:22] == 0 && !btc_hit ? 2'd2 : 2'd0;
+                fill_responses_left <= core_address[31:22] == 0 && !btc_hit ? 2'd2 : 2'd0;
             end else begin
                 if (payload_write && response_fills_pair)
                     fill_responses_left <= fill_responses_left - 1'b1;
@@ -267,8 +270,8 @@ always @(posedge clk) begin
             if (core_pop) expected_core_address <= core_successor;
             if (queue_pop) queue_head <= queue_head + 1'b1;
             if (enqueue_response) begin
-                queue_from_fill[queue_tail] <= response_fills_pair;
-                queue_error[queue_tail] <= memory_error;
+                queue_from_fill[queue_tail[0]] <= response_fills_pair;
+                queue_error[queue_tail[0]] <= memory_error;
                 queue_tail <= queue_tail + 1'b1;
             end
             case ({enqueue_response, queue_pop})
@@ -293,4 +296,11 @@ always @(posedge clk) begin
         endcase
     end
 end
+`ifndef SYNTHESIS
+always @(posedge clk) begin
+    if (core_pop && !response_bypass && payload_write &&
+        payload_read_address == payload_write_address)
+        $fatal(1, "fetch payload overwritten on its consumption edge");
+end
+`endif
 endmodule
