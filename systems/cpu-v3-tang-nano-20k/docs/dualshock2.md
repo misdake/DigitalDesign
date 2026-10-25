@@ -82,6 +82,11 @@ The monitor changes with wire progress. It is not a latched failure record;
 operation may already describe the next command when ATT is high. Diagnostic
 reads do not acknowledge `read_changed`, stall sampling or alter serial pins.
 
+The UART-only `dualshock2` application reports connection, ID, buttons and all
+four raw axes on changes or every250ms. `W=prefix/ID/marker` is its last
+best-effort invalid-packet observation; `CT` is the current channel12 monitor
+and `V` the current valid/changed status. W does not describe connected input.
+
 ## Fixed main-clock schedule
 
 All state uses the54MHz main clock, with no derived internal clock. An18-bit
@@ -94,7 +99,7 @@ production uses7 and has no runtime divider programming.
 |---|---|
 |Counter zero / slot0, unless a near-frame poll is pending|Issue the transaction, arm ATT and clear header predicates|
 |Slot0, phase61 tick|Assert ATT and clear armed; the first CLK fall remains slot1 phase1|
-|Slots1..N, phases0,2,..14|Register the next command bit; output stage follows one main clock later|
+|Slots1..N, odd phases1,3,..15|Register CMD and lower CLK on the same main-clock edge|
 |Odd phases1,3,..15|Registered CLK low; controller drives DAT|
 |Even phases2,4,..16|Sample synchronized DAT before registered CLK rises; last bit completes the received byte|
 |Byte completion, header slots1..3 and input poll slots4..9|Write received8 directly to background RAM; F3/config keeps only header|
@@ -103,8 +108,10 @@ production uses7 and has no runtime divider programming.
 |Next18-bit wrap|Start fallback transaction, independent of CPU|
 
 Half-period is128 main clocks (2.3703704us), SCLK210.9375kHz. The final rise
-of a byte to the next first fall is49 half-periods (116.1481us). CMD has127 main
-clocks of setup before a fall and at least one main clock of hold after a rise.
+of a byte to the next first fall is49 half-periods (116.1481us). CMD changes
+on the CLK falling edge and remains stable for the whole low phase,
+rising edge and following high phase, until the next fall. There is no
+one-main-clock post-rise update stage.
 CLK, CMD and ATT are registered outputs; DAT uses two preserved synchronizers.
 One armed FF separates transaction issue from physical selection. ATT falls at
 slot0 phase61, exactly4 half-periods (512 main clocks,9.48148us) before the

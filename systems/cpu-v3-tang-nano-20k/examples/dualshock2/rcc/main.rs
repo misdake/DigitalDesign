@@ -30,6 +30,7 @@ fn hex(value: u16) {
 fn main() {
     let mut state: Buf<u16, 10> = Buf::new([0; 10]);
     let mut packet: Buf<u16, 9> = Buf::new([0; 9]);
+    let mut wire: Buf<u16, 3> = Buf::new([0; 3]);
     ds2_init(state.as_array());
     put(68);
     put(83);
@@ -40,6 +41,19 @@ fn main() {
     let mut report = time_milliseconds();
     loop {
         ds2_service(state.as_array(), packet.as_array());
+        // Failure headers are best-effort background-page diagnostics only.
+        let before = dev_recv(5, 12);
+        if dev_recv(5, 8) & 1 == 0 && before & 1 != 0 && before >> 11 >= 3 {
+            let prefix = dev_recv(5, 9);
+            let id = dev_recv(5, 10);
+            let marker = dev_recv(5, 11);
+            let after = dev_recv(5, 12);
+            if after & 1 != 0 && before >> 11 == after >> 11 && dev_recv(5, 8) & 1 == 0 {
+                wire[0u16] = prefix;
+                wire[1u16] = id;
+                wire[2u16] = marker;
+            }
+        }
         let connected = state[0u16];
         dev_send(0, 2, 1 | (connected << 1));
         let now = time_milliseconds();
@@ -77,6 +91,24 @@ fn main() {
             put(89);
             put(61);
             hex(state[6u16]);
+            // W=raw failure FF/ID/5A, CT=live serial monitor, V=valid/changed.
+            put(32);
+            put(87);
+            put(61);
+            hex(wire[0u16]);
+            put(47);
+            hex(wire[1u16]);
+            put(47);
+            hex(wire[2u16]);
+            put(32);
+            put(67);
+            put(84);
+            put(61);
+            hex(dev_recv(5, 12));
+            put(32);
+            put(86);
+            put(61);
+            hex(dev_recv(5, 8));
             put(13);
             put(10);
             report = now;

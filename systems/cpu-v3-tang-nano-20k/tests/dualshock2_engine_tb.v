@@ -60,9 +60,19 @@ always @(negedge att)if(!reset)begin
  frame_id=mode_id;frame_connected=connected;frame_bad_marker=bad_marker;frame_bad_prefix=bad_prefix;frame_unknown=unknown;operation=dut.operation;wire_bit=0;wire_byte=0;observed=0;
  fall_cycle=0;rise_cycle=0;last_byte_rise=0;reply=response(0);dat=1;
 end
-always @(cmd)cmd_change=cycle;
+always @(cmd)begin
+ cmd_change=cycle;
+ if(!reset&&!att&&ds2_clk!==0)$fatal(1,"CMD changed during CLK high");
+end
+// Sample CMD in the high phase, not only in the rising-edge delta cycle.
+// The controller/adapter may observe the edge after more than one main clock.
+always @(posedge ds2_clk)if(!reset&&!att&&fall_cycle>0)begin:delayed_command
+ reg held;
+ held=cmd;
+ #(HALF*5);
+ if(!att&&cmd!==held)$fatal(1,"CMD hold lost after rising edge");
+end
 always @(negedge ds2_clk)if(!reset)begin
- if(cycle-cmd_change<HALF-1)$fatal(1,"CMD setup shorter than a half-period");
  if(att)$fatal(1,"CLK outside ATT");
  if(wire_byte==0&&wire_bit==0&&cycle-att_cycle!=HALF*4)$fatal(1,"ATT setup must be exactly4 half-periods");
  if(wire_bit==0&&wire_byte>0&&cycle-last_byte_rise!=49*HALF)$fatal(1,"byte guard");

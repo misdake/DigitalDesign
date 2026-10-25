@@ -32,7 +32,6 @@ wire sample=tick&&active&&slot!=0&&sample_phase;
 wire byte_end=tick&&active&&slot!=0&&phase==16;
 (* syn_preserve=1 *) reg dat_meta=1,dat_sync=1;
 reg[7:0]shift=0;
-reg cmd_phase=1;
 wire[7:0]received={dat_sync,shift[7:1]};
 reg[1:0]operation=POLL,kind=DIGITAL;
 reg header_good=0,front=0,valid=0,read_changed=0;
@@ -89,9 +88,8 @@ always @(posedge clk)begin
   timebase<=0;dat_meta<=1;dat_sync<=1;shift<=0;
   lead_slots<=0;phase_pending<=0;armed<=0;
   operation<=POLL;kind<=DIGITAL;header_good<=0;
-  front<=0;valid<=0;read_changed<=0;ds2_clk<=1;cmd_phase<=1;att<=1;cmd<=1;
+  front<=0;valid<=0;read_changed<=0;ds2_clk<=1;att<=1;cmd<=1;
  end else begin
-  cmd<=cmd_phase;
   timebase<=timebase+1'b1;
   if(slot_tick&&phase_pending&&lead_slots!=0)lead_slots<=lead_slots-1'b1;
   if(frame_start)begin
@@ -105,10 +103,11 @@ always @(posedge clk)begin
    phase_pending<=1;
   end
   dat_meta<=dat;dat_sync<=dat_meta;
-  // CMD changes one main-clock after a rise, preserving sampling-edge hold.
+  // Change CMD with CLK falling, as in the board-qualified byte engine.
+  // Keep it through the complete low phase, rise and following high phase.
   // DAT is sampled at the low-to-high event, before the CLK pin register.
   ds2_clk<=!(active&&serial_window&&phase[0]);
-  if(tick&&active&&serial_window&&!phase[0])cmd_phase<=command_bit;
+  if(tick&&active&&serial_window&&phase[0])cmd<=command_bit;
   if(sample)shift<=received;
   // Keep the original issue/timebase and completion calendar. Only ATT is
   // delayed: phase61 to the unchanged slot1 phase1 first fall is4 half-periods.
@@ -124,7 +123,7 @@ always @(posedge clk)begin
    default:begin end
   endcase
   if(finish)begin
-   att<=1;cmd_phase<=1;
+   att<=1;cmd<=1;
    case(operation)
     POLL:if(!header_good)operation<=POLL;
          else if(kind==DIGITAL)operation<=ENTER;
