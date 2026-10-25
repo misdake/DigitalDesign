@@ -29,7 +29,7 @@ rectangle "CpuV3Core: precise, in-order, limited two-stage frontend" as Core {
     component "Shared RF port and lane owner\nALU/product read cursors and lane calendar\ncommon destination context\nexclusive final write-event bus" as Ports
     component "Shared CPU/FPU multiply pipe\nsigned 36 x 36, 1 product stage, II=1\none valid; blocking instruction owner\nshared destination / last-item return slot" as FpuDsp
     storage "ACC\nsigned 64-bit Q32.32\nfull-product accumulate" as Acc
-    component "Special path\nblocking RCP / RSQRT / SINCOS\ndirect normalize / phase-to-LUT reads\nshared interpolation + final sign\n10-bit second-result residue / flags" as Special
+    component "Special path\nblocking RCP / RSQRT / SINCOS\nfamily retained at existing launch\ndirect normalize / phase-to-LUT reads\nshared interpolation + final sign\n10-bit second-result residue / flags" as Special
   }
 }
 

@@ -111,6 +111,8 @@ pub struct CpuV3FpuState {
     product: i64,
     integer_owner: bool,
     phase: u8,
+    special_rcp: bool,
+    special_sincos: bool,
     negative: bool,
     residue: u16,
     scale: u8,
@@ -139,6 +141,7 @@ struct Special {
     load: bool,
     busy: bool,
     sc: bool,
+    rcp: bool,
     single: bool,
     read_a: usize,
     read_b: usize,
@@ -246,7 +249,7 @@ impl CpuV3FpuState {
         let load = self.frontend.instr_complete && scalar && matches!(op, 12..=14) && !input.abort;
         let mode = word1 & 3;
         let single = matches!(mode, 1 | 2);
-        let active_sc = self.phase != 0 && sc;
+        let active_sc = self.phase != 0 && self.special_sincos;
         let x = self.rf.read_a_data;
         let negative = x >> 31 != 0;
         let magnitude = if negative { x.wrapping_neg() } else { x };
@@ -301,14 +304,14 @@ impl CpuV3FpuState {
         } else {
             (q >> 1) as u16 & 1
         };
-        let packed = if active_sc || rcp {
+        let packed = if active_sc || self.special_rcp {
             self.rf.read_a_data
         } else {
             self.rf.read_b_data
         };
         let base = packed & 0x1ffff;
         let delta = (((packed >> 17) & 1023) as i32) << 22 >> 22;
-        let interpolate = (self.phase == 1 && !sc)
+        let interpolate = (self.phase == 1 && !self.special_sincos)
             || (active_sc && (self.phase == 2 || (!single && self.phase == 3)));
         let mul = if load && sc {
             Some((i64::from(x as i32), SINCOS_K))
@@ -326,7 +329,7 @@ impl CpuV3FpuState {
         };
         let flags = (((u >> 16) as u8 & 1) << 1) | sign as u8;
         let sc_return = active_sc && matches!(self.phase, 3 | 4);
-        let rcp_return = self.phase == 2 && !sc;
+        let rcp_return = self.phase == 2 && !self.special_sincos;
         let valid = self.mul_valid && !self.integer_owner && !input.abort;
         let write = if valid && (sc_return || rcp_return) {
             let correction = if sc_return {
@@ -347,7 +350,7 @@ impl CpuV3FpuState {
                     mag
                 }
             } else if self.zero {
-                if rcp {
+                if self.special_rcp {
                     if self.negative {
                         0x8000_0001
                     } else {
@@ -358,12 +361,12 @@ impl CpuV3FpuState {
                 }
             } else {
                 let scaled = (u64::from(interpolated) << 16) >> self.scale;
-                let mag = if rcp && scaled >> 31 != 0 {
+                let mag = if self.special_rcp && scaled >> 31 != 0 {
                     0x7fff_ffff
                 } else {
                     scaled as u32
                 };
-                if rcp && self.negative {
+                if self.special_rcp && self.negative {
                     mag.wrapping_neg()
                 } else {
                     mag
@@ -380,6 +383,7 @@ impl CpuV3FpuState {
             load,
             busy: (load || self.phase != 0) && !input.abort,
             sc,
+            rcp,
             single,
             read_a,
             read_b,
@@ -540,6 +544,8 @@ impl CpuV3FpuState {
             }
             if sf.load {
                 self.phase = 1;
+                self.special_rcp = sf.rcp;
+                self.special_sincos = sf.sc;
                 if !sf.sc {
                     self.negative = sf.negative;
                     self.residue = sf.residue;
@@ -547,11 +553,11 @@ impl CpuV3FpuState {
                     self.zero = sf.zero;
                 }
             } else if self.phase != 0 {
-                if sf.sc && self.phase == 2 {
+                if self.special_sincos && self.phase == 2 {
                     self.second_parameters = sf.next_second;
                 }
-                self.phase = if (!sf.sc && self.phase == 2)
-                    || (sf.sc && ((sf.single && self.phase == 3) || self.phase == 4))
+                self.phase = if (!self.special_sincos && self.phase == 2)
+                    || (self.special_sincos && ((sf.single && self.phase == 3) || self.phase == 4))
                 {
                     0
                 } else {

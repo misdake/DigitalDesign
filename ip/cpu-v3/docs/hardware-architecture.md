@@ -374,6 +374,10 @@ Vector subops 08 through 0B are reserved. FLOOR/CEIL/ROUND/TRUNC are
 scalar-only; vector callers apply the scalar operations to individual lanes.
 AUX bridges and FLD/FST belong to the core rather than this arithmetic calendar.
 
+- The special-function launch edge retains two family bits (reciprocal and
+  sine/cosine). Normalize and range issue use the incoming descriptor; later
+  interpolation, scale/sign/saturation and retirement use the retained family.
+  These bits share the existing phase lifetime and add no execution edge.
 - Word1 acceptance installs the source cursors, destination and last-lane index
   before T0. Every ordinary issue, including lane zero, consumes the current RF
   Q and requests the next operands. There is no separate first-lane data or
