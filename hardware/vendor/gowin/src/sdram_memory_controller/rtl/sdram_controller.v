@@ -13,6 +13,8 @@ module SdramController #(
     parameter RP_CYCLES = 2,
     parameter RFC_CYCLES = 9,
     parameter CAPTURE_LATENCY = 2,
+    // Physical input alignment only; zero bypasses the Gowin I/O delay cells.
+    parameter DQ_INPUT_DELAY_TAPS = 0,
     parameter INIT_CYCLES = 21600,
     parameter CAPTURE_FALLING = 0,
     parameter CHAIN = 0,
@@ -113,9 +115,20 @@ module SdramController #(
     assign {O_sdram_ras_n, O_sdram_cas_n, O_sdram_wen_n} = command;
     assign O_sdram_clk = sdram_clk;
     assign O_sdram_cs_n = 0;
-    genvar dq_pin;
+    genvar dq_pin, delay_pin;
     generate for (dq_pin=0;dq_pin<32;dq_pin=dq_pin+1) begin : dq_output_pins
         assign IO_sdram_dq[dq_pin] = !dq_oe_n_pins[dq_pin] ? dq_out[dq_pin] : 1'bz;
+    end endgenerate
+
+    wire [31:0] dq_sample;
+    generate if (DQ_INPUT_DELAY_TAPS == 0) begin : dq_input_bypass
+        assign dq_sample = IO_sdram_dq;
+    end else begin : dq_input_delay
+        for (delay_pin=0;delay_pin<32;delay_pin=delay_pin+1) begin : pins
+            IODELAY #(.C_STATIC_DLY(DQ_INPUT_DELAY_TAPS)) delay_cell (
+                .DI(IO_sdram_dq[delay_pin]), .DO(dq_sample[delay_pin]), .DF(),
+                .SDTAP(1'b0), .SETN(1'b1), .VALUE(1'b0));
+        end
     end endgenerate
 
     // Transaction state, command timers and four independent active-row records.
@@ -217,7 +230,7 @@ module SdramController #(
             reg [31:0] data_falling = 0;
             always @(negedge clk) begin
                 valid_falling <= capture_window;
-                if (READ_CAPTURE_ALWAYS || capture_window) data_falling <= IO_sdram_dq;
+                if (READ_CAPTURE_ALWAYS || capture_window) data_falling <= dq_sample;
                 if (reset) begin
                     valid_falling <= 0;
                     if (!READ_CAPTURE_ALWAYS) data_falling <= 0;
@@ -240,7 +253,7 @@ module SdramController #(
                 // permitting I/O register packing and keeping the DQ route off core logic.
                 if (READ_CAPTURE_ALWAYS ||
                     (capture_valid))
-                    read_data <= IO_sdram_dq;
+                    read_data <= dq_sample;
                 if (reset) begin
                     read_valid <= 0;
                     if (!READ_CAPTURE_ALWAYS) read_data <= 0;

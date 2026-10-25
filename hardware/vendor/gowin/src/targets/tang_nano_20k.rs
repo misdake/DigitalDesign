@@ -704,7 +704,7 @@ impl TangNano20K {
         };
         let wrapper = if cold_only {
             format!("reg [1:0] cold_lock_sync=0;\nreg cold_sdram_ready=0;\n{}\nalways @(posedge controller_clk) if(!cold_sdram_ready) begin\n cold_lock_sync<={{cold_lock_sync[0],sdram_pll_locked}};\n if(cold_lock_sync[1])cold_sdram_ready<=1;\nend\n",
-                wrapper.replace(".reset(!sdram_pll_locked || (|buttons))", ".reset(!cold_sdram_ready)").replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .COLD_START_ONLY(1), .CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .REGISTER_READ_RETURN(1)")
+                wrapper.replace(".reset(!sdram_pll_locked || (|buttons))", ".reset(!cold_sdram_ready)").replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .COLD_START_ONLY(1), .CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .DQ_INPUT_DELAY_TAPS(32), .REGISTER_READ_RETURN(1)")
                     .replace("TangNano20KSdramPll108M54M u_sdram_pll", "TangNano20KSdramPll108M54M #(.PHASE_SEL(\"0111\")) u_sdram_pll"))
         } else {
             wrapper

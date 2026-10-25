@@ -490,7 +490,7 @@ mod tests {
         let top = &board.files[std::path::Path::new("src/generated/board_top.v")];
         assert!(top.contains("input wire ds2_dat") && !top.contains("output wire ds2_dat"));
         assert!(top.contains(
-            ".CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .REGISTER_READ_RETURN(1)"
+            ".CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .DQ_INPUT_DELAY_TAPS(32), .REGISTER_READ_RETURN(1)"
         ));
         assert!(top.contains(".PHASE_SEL(\"0111\")"));
         assert!(top.contains(".request_continuation(sdram_request_continuation)"));
@@ -503,6 +503,7 @@ mod tests {
         )];
         assert!(bridge.contains(".CONTINUE(1),.NEXT_TAGGED(1)"));
         assert!(bridge.contains("generate if(REGISTER_READ_RETURN)"));
+        assert!(bridge.contains(".DQ_INPUT_DELAY_TAPS(DQ_INPUT_DELAY_TAPS)"));
         let sdc = &board.files[std::path::Path::new("src/generated/board.sdc")];
         assert!(sdc.contains("-phase 157.5"));
         assert!(sdc.contains("-source -early 3.75"));

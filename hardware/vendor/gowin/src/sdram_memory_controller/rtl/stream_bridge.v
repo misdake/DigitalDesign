@@ -2,7 +2,8 @@
 // This bridge owns a request mailbox, native offer and the existing pair slots.
 module TangNano20KSdramNativeBridge108M54M #(
  parameter PREPARE_NEXT=1, COLD_START_ONLY=0, CHAIN_GROUP_FOUR=0, BANK_BIT=5,
- parameter CAS=2, RCD_CYCLES=2, RP_CYCLES=2, CAPTURE_LATENCY=2, REGISTER_READ_RETURN=0
+ parameter CAS=2, RCD_CYCLES=2, RP_CYCLES=2, CAPTURE_LATENCY=2, REGISTER_READ_RETURN=0,
+ parameter DQ_INPUT_DELAY_TAPS=0
 )(
  input logic_clk,controller_clk,sdram_clk,reset,
  input request_valid,input request_continuation,input writing,input[20:0]address,
@@ -57,10 +58,11 @@ module TangNano20KSdramNativeBridge108M54M #(
  reg cpu_edge=0,cpu_edge_seen=0,slot_detect=0,slot_pipe=0,write_slot=0;
  wire raw_read_valid=read_visible!=read_seen&&!transport_reset;
  generate if(REGISTER_READ_RETURN)begin:registered_read_return
+  // Invalid payload is unowned; keep the event out of the wide data enable.
   reg[63:0]payload=0;reg valid=0;
   always @(posedge logic_clk)begin
    if(transport_reset)begin payload<=0;valid<=0;end
-   else begin valid<=raw_read_valid;if(raw_read_valid)payload<=read_pair;end
+   else begin valid<=raw_read_valid;payload<=read_pair;end
   end
   assign read_data=payload;assign read_valid=valid&&!transport_reset;
  end else begin:edge_read_return
@@ -139,7 +141,7 @@ module TangNano20KSdramNativeBridge108M54M #(
    write_visible<=write_event;read_visible<=read_event;
   end
  end
- SdramController #(.CAS(CAS),.RCD_CYCLES(RCD_CYCLES),.RP_CYCLES(RP_CYCLES),.CAPTURE_LATENCY(CAPTURE_LATENCY),.BANK_BIT(BANK_BIT),.PREPARE_NEXT(PREPARE_NEXT),.CHAIN(1),.READ_CHAIN(1),.CONTINUE(1),.NEXT_TAGGED(1)) u_controller(
+ SdramController #(.CAS(CAS),.RCD_CYCLES(RCD_CYCLES),.RP_CYCLES(RP_CYCLES),.CAPTURE_LATENCY(CAPTURE_LATENCY),.DQ_INPUT_DELAY_TAPS(DQ_INPUT_DELAY_TAPS),.BANK_BIT(BANK_BIT),.PREPARE_NEXT(PREPARE_NEXT),.CHAIN(1),.READ_CHAIN(1),.CONTINUE(1),.NEXT_TAGGED(1)) u_controller(
   .clk(controller_clk),.sdram_clk(sdram_clk),.reset(reset),
   .request(offer_valid&&(!offer_write||pair_count>=(offer_words==1?1:2))),.writing(offer_write),.address(offer_address),.words(offer_words),
   .write_slot(write_slot),.next_valid(offer_valid||hint_valid),.next_address(offer_address),.next_words(offer_words),.next_chainable(fast_next),.next_write_ready(next_write_ready_q),.next_generation(offer_generation),

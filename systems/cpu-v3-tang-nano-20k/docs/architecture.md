@@ -206,19 +206,26 @@ four-sector group is a separate protocol and remains disabled in the CPU V3 syst
 The production cold-start target selects CL3/RCD3/RP3, capture latency 3,
 RFC9/WR2, routing option 2 and registered 64-bit read return. DQM and each DQ
 enable have physical output registers driven by local owner state without an
-extra SDRAM protocol cycle. The read pair and valid cross into a complete
+extra SDRAM protocol cycle. The DQ read inputs use 32 static `IODELAY` taps per
+pin before the existing capture registers; write data and enable paths retain
+their original calendar. Other profiles default to bypassing these cells.
+The read pair and valid cross into a complete
 54 MHz register stage, adding one logic cycle before client consumption.
+The 64-bit payload samples every logic cycle; the original falling-edge event
+qualifies valid and its acknowledgement only. Invalid payload may change, while
+the adapter independently retains any response under backpressure. This keeps
+the half-native-cycle event out of the wide payload register enable without
+changing the valid calendar or transaction throughput.
 The [vendor memory contract](/hardware/vendor/gowin/doc/sdram-memory-controller.md#full-system-tang-nano-20k-profile)
 defines the parameters and return/terminal ownership.
 
 The SDRAM generated-clock reference includes 3.75/6.25 ns early/late forwarded
 clock latency. Every complete fit must preserve the GPU and all clients, pass
 global setup and hold checks, and verify this envelope against its routed SDF.
-The emitted SDF is part of this audit; passing an internal-domain Fmax alone is
-insufficient. Physical boot and visible animation have been demonstrated with
-this configuration, but the observed texture speckles and green surface rings
-remain unresolved. Successful programming and timing closure do not establish
-rendering correctness.
+The emitted SDF is part of this audit, including all 32 DQ input-delay chains;
+passing an internal-domain Fmax alone is insufficient. Rendering qualification
+also checks framebuffer contents and continued completion. Memory readback does
+not substitute for observation of the external HDMI output or a power-cycle test.
 
 A clock enable is not treated as a timing exception or as a replacement for an explicit pipeline or
 clock-domain boundary.

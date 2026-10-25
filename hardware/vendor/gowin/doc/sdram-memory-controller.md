@@ -39,6 +39,21 @@ The actual PLL `PSDA_SEL` and the SDC generated clock both select 157.5 degrees.
 The complete-system target selects placement option 1, routing option 2, I/O
 register absorption and routed SDF generation.
 
+The cold-start profile also selects `DQ_INPUT_DELAY_TAPS=32`. Each DQ input
+passes through its dedicated Gowin `IODELAY` before the existing capture register;
+DQ output data, output enable and command timing do not pass through this delay.
+The controller and both bridges default this parameter to zero, which bypasses
+the cells for other profiles. Nonzero values use static taps in the range 1..127,
+with adaptive adjustment disabled. This consumes 32 I/O delay cells and adds no
+transaction storage, command cycle or registered-return cycle.
+
+The input budget must include the routed `IOBUF.O -> IODELAY.DI -> DO -> capture.D`
+chain for every bit. The cell has an insertion delay as well as a tap-dependent
+delay; a nominal delay-per-tap estimate is not a qualification result. Check both
+the latest valid arrival and the earliest next-word transition, as well as output
+enable withdrawal after the final valid write. Internal Fmax and successful
+programming alone do not establish rendering correctness.
+
 The SDRAM reference includes the PLL-to-clock-port route and output buffer:
 `set_clock_latency -source -early 3.75` and `-late 6.25` ns. These bounds must be
 checked against the final routed SDF after every fit; PLL phase alone does not
@@ -57,7 +72,18 @@ is absorbed into an I/O tri-state register.
 
 `REGISTER_READ_RETURN=1` captures the complete stable 64-bit pair and valid event
 at the 54 MHz edge. Clients consume it one logic cycle later, still at up to one
-pair per cycle. The generic default remains zero. With runtime reset enabled,
+pair per cycle. The falling-edge event and its acknowledgement retain their
+original calendar. Payload samples every logic cycle, including invalid cycles;
+only valid qualifies consumption. Keeping the event out of the 64-bit register
+enable reduces the fanout of the half-native-cycle control path. The adapter
+holds any backpressured response in its own storage. Transport clocks continue
+through client pauses.
+
+Valid and payload enables are separate physical timing endpoints. A late
+event-derived payload enable can leave selected bits unchanged even when the
+valid register captures the new event. Sampling payload unconditionally removes
+that failure mode without publishing invalid data or changing the return latency.
+The generic default remains zero. With runtime reset enabled,
 reset clears registered valid and payload; cold-only operation uses declaration
 initial values. `SharedSdramPort` retains LAST, terminal response and
 backpressure ownership; the extra stage does not change native completion or
@@ -135,7 +161,7 @@ The endpoint keeps its two descriptor credits, independent payload cursors and
 real terminal retirement. A GPU abort must drain requests already captured in
 the system registers, even if those requests have not reached the controller.
 
-The stream bridge supports the same explicit CAS/RCD/RP/capture, registered-read
+The stream bridge supports the same explicit CAS/RCD/RP/capture, DQ input delay, registered-read
 return and cold-only settings as the legacy board bridge. The read-stop age is
 computed when its descriptor is captured; scalar tail and read-chain stop edges
 retain their existing timing. It is not recalculated through the pin-command

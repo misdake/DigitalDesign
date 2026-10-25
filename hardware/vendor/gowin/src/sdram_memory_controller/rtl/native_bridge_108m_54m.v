@@ -9,6 +9,7 @@ module TangNano20KSdramNativeBridge108M54M #(
     parameter RCD_CYCLES = 2,
     parameter RP_CYCLES = 2,
     parameter CAPTURE_LATENCY = 2,
+    parameter DQ_INPUT_DELAY_TAPS = 0,
     parameter COLD_START_ONLY = 0,
     parameter CHAIN_GROUP_FOUR = 0,
     parameter BANK_BIT = 5
@@ -129,6 +130,7 @@ module TangNano20KSdramNativeBridge108M54M #(
     // SharedSdramPort still owns terminal/LAST and backpressure retention.
     // Legacy diagnostic profiles keep the original edge-valid return.
     generate if (REGISTER_READ_RETURN) begin : registered_read_return
+        // Invalid payload is unowned; valid alone qualifies consumption.
         reg [63:0] payload_54 = 0;
         reg valid_54 = 0;
         always @(posedge logic_clk) begin
@@ -137,7 +139,7 @@ module TangNano20KSdramNativeBridge108M54M #(
                 valid_54 <= 0;
             end else begin
                 valid_54 <= read_toggle_108 != read_seen_54;
-                if (read_toggle_108 != read_seen_54) payload_54 <= read_pair_108;
+                payload_54 <= read_pair_108;
             end
         end
         assign read_data = payload_54;
@@ -298,6 +300,7 @@ module TangNano20KSdramNativeBridge108M54M #(
 
     SdramController #(.CAS(CAS), .RCD_CYCLES(RCD_CYCLES), .RP_CYCLES(RP_CYCLES),
         .CAPTURE_LATENCY(CAPTURE_LATENCY),
+        .DQ_INPUT_DELAY_TAPS(DQ_INPUT_DELAY_TAPS),
         .BANK_BIT(BANK_BIT), .PREPARE_NEXT(PREPARE_NEXT),
         .CHAIN(CHAIN_GROUP_FOUR), .READ_CHAIN(CHAIN_GROUP_FOUR)) u_controller (
         .clk(controller_clk), .sdram_clk(sdram_clk), .reset(reset),
