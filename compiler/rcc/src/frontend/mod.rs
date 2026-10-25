@@ -5,8 +5,8 @@
 
 use crate::CompareOp;
 use crate::{
-    BinOp, BlockId, Cmp, CmpRhs, FpuBinOp, FpuSpecialOp, FpuUnOp, Instr, IrFunc, ShiftOp, UnOp,
-    VReg,
+    BinOp, BlockId, Cmp, CmpRhs, FpuBinOp, FpuSpecialOp, FpuUnOp, FpuVecUnOp, Instr, IrFunc,
+    ShiftOp, UnOp, VReg,
 };
 use crate::{BoolExpr, FuncBuilder, RccConfig, VarId};
 use crate::{DebugVar, VarLoc};
@@ -3695,7 +3695,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     if ty == Ty::Fix32 {
                         return Ok(Val::V(l.b.fpu_un(FpuUnOp::Neg, v), Ty::Fix32));
                     }
-                    return Ok(Val::V(l.b.fpu_vec_un(FpuUnOp::Neg, v, ty.fpu_lanes()), ty));
+                    return Ok(Val::V(l.b.fpu_vec_un(FpuVecUnOp::Neg, v, ty.fpu_lanes()), ty));
                 }
                 if ty == Ty::U16 {
                     return Err(err(&u.op, "unary `-` is only allowed on i16"));
@@ -5373,19 +5373,22 @@ fn fpu_method(
             return Ok(Val::V(l.b.fpu_vec_lane(base, lane), Ty::Fix32));
         }
         match method.as_str() {
-            "abs" | "floor" | "ceil" | "round" | "trunc" => {
+            "abs" => {
                 if !m.args.is_empty() {
-                    return Err(err(&m.method, format!("{method}() takes no arguments")));
+                    return Err(err(&m.method, "abs() takes no arguments"));
                 }
-                let op = match method.as_str() {
-                    "abs" => FpuUnOp::Abs,
-                    "floor" => FpuUnOp::Floor,
-                    "ceil" => FpuUnOp::Ceil,
-                    "round" => FpuUnOp::Round,
-                    _ => FpuUnOp::Trunc,
-                };
-                Ok(Val::V(l.b.fpu_vec_un(op, base, lanes), base_ty.clone()))
+                Ok(Val::V(
+                    l.b.fpu_vec_un(FpuVecUnOp::Abs, base, lanes),
+                    base_ty.clone(),
+                ))
             }
+            "floor" | "ceil" | "round" | "trunc" => Err(err(
+                &m.method,
+                format!(
+                    "`{}::{method}` is not supported; apply `{method}()` to individual fix32 lanes",
+                    base_ty.display()
+                ),
+            )),
             "sat01" | "sign" => Err(err(
                 &m.method,
                 format!(
@@ -6033,6 +6036,35 @@ mod tests {
                 parse_source_with(src, 0).is_err(),
                 "`fix16` must not parse: `{src}`"
             );
+        }
+    }
+
+    #[test]
+    fn vector_rounding_is_rejected_but_scalar_rounding_and_vector_abs_remain() {
+        for method in ["floor", "ceil", "round", "trunc"] {
+            let scalar = format!(
+                "fn main() {{ let v = fix32::from_words(0x8000, 0xfffe); halt(v.{method}().to_int() as u16); }}"
+            );
+            parse_source_with(&scalar, 0).expect("scalar rounding must remain supported");
+            for ty in ["vec2", "vec3", "vec4"] {
+                let source = format!(
+                    "fn main() {{ let v = {ty}::zero(); let r = v.{method}(); halt(r.x().lo_bits()); }}"
+                );
+                let error = match parse_source_with(&source, 0) {
+                    Ok(_) => panic!("unsupported vector rounding compiled: {source}"),
+                    Err(error) => error.to_string(),
+                };
+                assert!(
+                    error.contains("individual fix32 lanes"),
+                    "{source}: {error}"
+                );
+            }
+        }
+        for ty in ["vec2", "vec3", "vec4"] {
+            let source = format!(
+                "fn main() {{ let v = {ty}::zero(); let r = (-v).abs(); halt(r.x().lo_bits()); }}"
+            );
+            parse_source_with(&source, 0).expect("vector negation and abs must remain supported");
         }
     }
 

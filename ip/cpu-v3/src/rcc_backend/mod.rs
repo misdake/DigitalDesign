@@ -888,12 +888,8 @@ fn lower_instruction(
         ),
         Instr::FpuVecUn { dst, op, src } => {
             let subop = match op {
-                FpuUnOp::Abs => FpuVectorSubop::VAbs,
-                FpuUnOp::Neg => FpuVectorSubop::VNeg,
-                FpuUnOp::Floor => FpuVectorSubop::VFloor,
-                FpuUnOp::Ceil => FpuVectorSubop::VCeil,
-                FpuUnOp::Round => FpuVectorSubop::VRound,
-                FpuUnOp::Trunc => FpuVectorSubop::VTrunc,
+                FpuVecUnOp::Abs => FpuVectorSubop::VAbs,
+                FpuVecUnOp::Neg => FpuVectorSubop::VNeg,
             };
             emit_fpu_vector(
                 lines,

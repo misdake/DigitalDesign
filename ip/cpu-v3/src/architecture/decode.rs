@@ -787,10 +787,6 @@ fn vector_subop_name(subop: FpuVectorSubop) -> &'static str {
         FpuVectorSubop::VMax => "vmax",
         FpuVectorSubop::VAbs => "vabs",
         FpuVectorSubop::VNeg => "vneg",
-        FpuVectorSubop::VFloor => "vfloor",
-        FpuVectorSubop::VCeil => "vceil",
-        FpuVectorSubop::VRound => "vround",
-        FpuVectorSubop::VTrunc => "vtrunc",
         FpuVectorSubop::VMove => "vmov",
         FpuVectorSubop::Dot => "dot",
         FpuVectorSubop::DotAdd => "dotadd",
@@ -1116,6 +1112,21 @@ mod tests {
         assert_eq!(lone.len(), 1);
         assert_eq!(lone[0].text, ".fpuword 0xd0c4");
         assert!(!lone[0].wide);
+    }
+
+    #[test]
+    fn vector_rounding_slots_are_reserved_for_every_length_and_mode() {
+        for subop in 0x08..=0x0b {
+            assert!(FpuVectorSubop::from_field(subop).is_none());
+            for len in 0..=3 {
+                for mode in 0..=7 {
+                    let word1 = (16 << 10) | (len << 8) | (u16::from(subop) << 3) | mode;
+                    let instruction = decode_fpu_pair(0xc000, word1);
+                    assert!(matches!(instruction, Instruction::FpuReserved { .. }));
+                    assert!(instruction.text(None).contains("reserved fpu"));
+                }
+            }
+        }
     }
 
     #[test]

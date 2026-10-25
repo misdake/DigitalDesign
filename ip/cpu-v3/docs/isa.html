@@ -304,7 +304,7 @@ register-range view, not an architectural type. The wide accumulator is signed
 <code>DOTSTORE</code> takes <code>ACC[47:16]</code> from that wrapped sum.</p>
 <table>
   <tr><th>opcode</th><th>Layout</th><th>Summary</th></tr>
-  <tr><td class="mono">C</td><td class="mono">word0: 0xC Fa Fb &middot; word1: Fd len subop mode</td><td>VADD, VSUB, VMUL, VMULS, VMIN, VMAX, VABS, VNEG, VFLOOR, VCEIL, VROUND, VTRUNC, VMOV, DOT, DOTADD, DOTSTORE; len 00/01/10 = vec2/3/4; DOT mode[1:0] selects stride 1/3/4.</td></tr>
+  <tr><td class="mono">C</td><td class="mono">word0: 0xC Fa Fb &middot; word1: Fd len subop mode</td><td>VADD, VSUB, VMUL, VMULS, VMIN, VMAX, VABS, VNEG, VMOV, DOT, DOTADD, DOTSTORE; subops 08..0B are reserved (rounding is scalar-only); len 00/01/10 = vec2/3/4; DOT mode[1:0] selects stride 1/3/4.</td></tr>
   <tr><td class="mono">D</td><td class="mono">word0: 0xD Fa Fb &middot; word1: Fd subop mode</td><td>ADD, SUB, MUL, MIN, MAX, ABS, NEG, FLOOR, CEIL, ROUND, TRUNC, CMP, RCP, RSQRT, SINCOS, MOV; CMP writes the pending test; SINCOS mode[1:0] selects sin+cos / sin / cos.</td></tr>
   <tr><td class="mono">E</td><td class="mono">word0: 0xE X Fa kind &middot; word1: Fd subop mode</td><td>kind 00: FLD, FST, ILO2F, IHI2F, FLO2I, FHI2I, I16TOF, FTOI16. FLD/FST move two words per register, <em>low half first</em>; mode[1:0] + 1 gives the vector length.</td></tr>
 </table>

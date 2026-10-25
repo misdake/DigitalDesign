@@ -988,6 +988,13 @@ fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
             let scaled = a * b;
             let kept = fix32::from_words(0x8000, 0x0001);
             let down = kept.trunc();
+            let negative = fix32::from_words(0x8000, 0xfffe); // -1.5
+            if kept.floor().to_int() != 1 || kept.ceil().to_int() != 2
+                || kept.round().to_int() != 2 || kept.trunc().to_int() != 1
+                || negative.floor().to_int() != -2 || negative.ceil().to_int() != -1
+                || negative.round().to_int() != -1 || negative.trunc().to_int() != -1 {
+                halt(0xdead);
+            }
             let pick = if s < down { s } else { down };
             let live = addfix(scaled, pick);
             halt((s + live + (kept - down)).to_int() as u16);

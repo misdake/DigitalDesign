@@ -201,7 +201,8 @@ they are not part of this surface.
 | vector arithmetic | same-width `vecN + vecN`, `-`, `*`, unary `-` | component-wise `VADD`, `VSUB`, `VMUL`, `VNEG` |
 | scalar-vector multiply | `vecN * fix32`, `fix32 * vecN` | broadcast scalar multiply (`VMULS`) |
 | comparison | `fix32 == != < <= > >= fix32` | signed scalar `CMP`; vectors have no compare/mask operation |
-| unary numeric methods | `x.abs()`, `.floor()`, `.ceil()`, `.round()`, `.trunc()` on `fix32` or `vecN` | scalar or component-wise ALU operation; `round` is round-half-up and `trunc` is toward zero |
+| absolute value | `x.abs()` on `fix32` or `vecN` | scalar or component-wise absolute value |
+| rounding | `.floor()`, `.ceil()`, `.round()`, `.trunc()` on `fix32` | scalar-only; vector methods are rejected, so apply to individual lanes; `round` is round-half-up and `trunc` is toward zero |
 | vec4 memory load | `vec4::import(ptr: Ptr) -> vec4` | `FLDV4`: four adjacent Q16.16 values, each stored as low word then high word |
 | vec4 memory store | `vec4::export(v: vec4, ptr: Ptr)` | `FSTV4`: store the same eight-word layout |
 | dot product | `fdot(a: vecN, b: vecN) -> fix32` | exact Q32.32 products accumulate in the 64-bit ACC, then one `DOTSTORE` narrowing |

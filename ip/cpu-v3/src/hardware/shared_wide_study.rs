@@ -74,9 +74,12 @@ fn shared_wide_mixed_owner_latency() {
     let expected = run_program_signal(&p, 20000);
     let emu = run_core_emu_trace(&p, 20000);
     assert_eq!(emu.last().unwrap().halt_signal, expected);
-    let directory = std::path::PathBuf::from(
-        std::env::var_os("SHARED_WIDE_EVIDENCE").expect("study evidence directory"),
-    );
+    let directory = std::env::var_os("SHARED_WIDE_EVIDENCE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/cpu-v3-shared-wide-study")
+        });
     std::fs::create_dir_all(&directory).unwrap();
     let project = VerilogProject::generate::<CpuV3Core>().unwrap();
     project.write_to(directory.join("core-export")).unwrap();

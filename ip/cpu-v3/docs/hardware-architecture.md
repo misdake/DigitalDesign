@@ -370,9 +370,8 @@ retirement and memory stalls. `n` is 2, 3 or 4.
 | SINCOS single result | 4 edges | RF write at T3 |
 | SINCOS dual result | 5 edges | RF writes at T3 and T4 |
 
-The hardware owner decode still does not execute VFLOOR/VCEIL/VROUND/VTRUNC
-(vector subops 08 through 0B), although the ISA defines them. They produce no
-busy window or RF write. This is a pre-existing functional coverage gap.
+Vector subops 08 through 0B are reserved. FLOOR/CEIL/ROUND/TRUNC are
+scalar-only; vector callers apply the scalar operations to individual lanes.
 AUX bridges and FLD/FST belong to the core rather than this arithmetic calendar.
 
 - Word1 acceptance installs the source cursors, destination and last-lane index
