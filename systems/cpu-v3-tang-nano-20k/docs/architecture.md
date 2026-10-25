@@ -278,9 +278,10 @@ The complete edge, range and software contract is in
 
 UART TX shifts a ten-bit 8N1 frame toward its output bit. The stop bit is the
 last nonzero bit, so no separate bit index is required. A registered busy bit
-keeps the frame reduction off the CPU device-read path and clears when the
-final stop bit shifts out. Busy remains asserted for the complete stop-bit
-interval. Writes while busy, including the edge ending that interval, are
+keeps the frame reduction off the CPU device-read path and clears after the
+complete stop-bit interval. The stop bit remains in the shift register after
+completion, and TX is driven directly from that registered output bit. Reset
+initializes the same bit high; no busy-to-idle output mux is required. Writes while busy, including the edge ending that interval, are
 dropped; reset aborts transmission and drives idle high. The baud divider
 uses only the bits required by the configured clocks per bit.
 
