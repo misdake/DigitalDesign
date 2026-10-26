@@ -8,6 +8,8 @@ use gpu_v2::{
 use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
 #[path = "gpu_persistent_ui.rs"]
 mod persistent;
+#[path = "gpu_resource_usage.rs"]
+mod resource_usage;
 
 #[derive(Default)]
 struct State {
@@ -28,6 +30,9 @@ struct State {
     maintenance: usize,
     persistent_ranges: Option<Vec<Vec<(u16, u16)>>>,
     ui_snapshots: Vec<Vec<u16>>,
+    automatic: bool,
+    gpu_reads_left: usize,
+    display_reads_left: usize,
 }
 struct Peer {
     kind: u8,
@@ -38,7 +43,21 @@ fn image(memory: &[u16], byte: usize, words: usize) -> Vec<u16> {
 }
 impl cpu_v3::Device for Peer {
     fn read(&mut self, _: &mut [u16], channel: u8) -> u16 {
-        let s = self.state.borrow();
+        let mut s = self.state.borrow_mut();
+        if s.automatic && self.kind == 4 && channel == 2 && s.gpu == 1 {
+            s.gpu_reads_left -= 1;
+            if s.gpu_reads_left == 0 {
+                s.gpu = 0;
+            }
+        }
+        if s.automatic && self.kind == 3 && channel == 3 && s.pending {
+            s.display_reads_left -= 1;
+            if s.display_reads_left == 0 {
+                s.active = s.next;
+                s.format = s.staged_format;
+                s.pending = false;
+            }
+        }
         match (self.kind, channel) {
             (0, 5) => {
                 if s.cache_error {
@@ -145,6 +164,7 @@ impl cpu_v3::Device for Peer {
                 assert_eq!(raw, golden.image().unwrap().storage);
                 s.starts.push((value, commands, target));
                 s.gpu = 1;
+                s.gpu_reads_left = 12;
             }
             (3, 1) => s.staged = (s.staged & 0xffff0000) | u32::from(value),
             (3, 2) => s.staged = (s.staged & 65535) | (u32::from(value) << 16),
@@ -155,6 +175,7 @@ impl cpu_v3::Device for Peer {
                 assert!(!s.pending);
                 s.next = s.staged;
                 s.pending = true;
+                s.display_reads_left = 8;
                 s.swaps += 1;
             }
             (7, 0) => match value {

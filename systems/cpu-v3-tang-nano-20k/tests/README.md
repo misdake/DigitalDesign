@@ -18,6 +18,16 @@ capacity rejection, cancellation, version wrap and retained fault references.
 GPU/Display completion peers do not establish actual rendering, scanout, cache
 publication timing or concurrent hardware qualification.
 
+gpu_pipeline::resource_usage compiles a test-only Renderer/Frame/Pass caller
+model over the native engine. It checks lexical early-return cancellation,
+post-Pass UI edits before seal, transfer/disarm, explicit close drain and implicit
+Renderer freeze without hidden submission or waiting. Concrete misuse examples
+must fail before lowering. The adapter in fixtures/gpu_renderer_scope_model.rs
+is not the production facade: helper-domain isolation still needs the accepted
+source-aware compiler capability. Camera, Mesh, frame statistics and the full
+first usage round are not supplied by this scope/UI model. GPU/Display progress
+is a controlled sequence of status reads, not elapsed hardware time.
+
 Core/cache/arbiter emulator-vs-RTL comparison remains the independent
 `system_cosim` target. Its functional machine and checkpoint support lives in
 `system_emu`; it is not a benchmark harness. The former benchmark directory,
