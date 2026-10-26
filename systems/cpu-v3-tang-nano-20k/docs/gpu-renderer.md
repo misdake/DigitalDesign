@@ -131,6 +131,25 @@ neither endpoint saturated at65535. Finalized preparation survives later clears;
 fields are never combined across different sequences. Millisecond differences
 wrap modulo65536 and require a true interval below65536ms.
 
+## Immutable logical mesh batches
+
+`renderer_mesh_batch(&mut Renderer, first, count)` creates a Mesh from a logical
+meshlet range in the single trusted boot package. It rejects empty, overflowing
+or out-of-package ranges before reading any entries. The facade derives the
+native directory sector/word, preserving sector crossings, and validates that
+subset once at construction. The returned Mesh has the same ownership and draw
+contract as `renderer_mesh`, which still selects the complete package. No native
+addresses or slots are supplied by the game. Each subset retains the immutable
+allocation and the package's conservative bounds; per-subset tighter bounds are
+not implied. Four simultaneous Mesh resources are supported.
+
+The build host may supply explicit ordinary module fallback directories, searched
+after local and shared files only on NotFound. Their actual canonical origins
+are retained; I/O/UTF-8 errors do not fall through. They gain no approved library
+identity, and shared Device ABI selection stays pinned. The Bloxorz-shaped
+[caller](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/README.md)
+uses this to read the existing pure rules without copying or modifying them.
+
 ## Verification boundary
 
 Bounded host execution covers real source origins, library isolation, concrete
@@ -182,3 +201,30 @@ adds a desired-field update. A dirty UI page still pays mapping/publication over
 even for one changed word. Once both pages converge, subsequent unchanged frames
 issue zero UI stores and preserve prepared scene data. The explicit publication
 fence, ordering and fault checks remain in this cost.
+
+## Game-shaped caller and cancellation
+
+The Bloxorz fixture holds a fixed Camera and changes the block Model from integer
+rules and a rolling pivot. Static floor and conditional bridge batches reuse a
+half-scale Model; level/reset selects another immutable floor batch. Input/time
+comes from one stable Frame observation. A no-new-packet tick retains held input
+without synthesizing a new edge; reconnect starts from the accepted input library
+contract. Moves and connection fields are the only UI.
+
+Its finish helper takes ownership of a Frame after completed 3D Passes. Returning
+on disconnect invokes Frame cleanup and cancels every recorded Pass. Only an
+explicit successful completion publishes; later Frames can reuse the canceled
+input slot. Two cancellations interleaved with continuous A/B submissions are
+checked using actual generated native commands and immutable earlier snapshots.
+This is a usage fixture, not full gameplay or legacy-demo migration.
+
+The shared fixed-port CPU cost runner also guards every scalar/FPU store to
+Recorded/InFlight command/object inputs. The sole permitted Recorded write is
+the builder-generated 16-word Target relocation, with no old GPU or Display
+pending, before the final publication fence. UI pages never have this exception.
+The game fixture separates acquisition/input, rule update, pose setter, UI edits,
+geometry preparation/recording, UI recording and seal/advance/cancel windows.
+Changed and steady frames are compared only at identical floor/bridge/block
+workload. Reports include cache comparison, temporary/spill and object-copy CPU
+work and model SIGNAL overhead. Host event time is independent of status reads.
+All previous peer and real-concurrency limitations apply.

@@ -277,3 +277,46 @@ let illegal=frame_ui_pass(&mut f);halt(0x600d);}"#;
     assert!(state.borrow().starts.is_empty());
     assert_eq!(record(&mut cpu, &program, "GPU_PIPE", 1), [3]);
 }
+
+#[test]
+fn logical_mesh_batches_reject_empty_out_of_range_and_wrapped_ranges_before_send() {
+    for (first, count) in [(0, 0), (1, 1), (0, 2), (65535, 2)] {
+        let source=format!("mod gpu_pipeline;fn main(){{let mut r=renderer_open();let mesh=renderer_mesh_batch(&mut r,{first},{count});halt(0);}}");
+        let (_, state, _) = execute_signal(&source, 0, 0xe02a, false);
+        assert!(state.borrow().starts.is_empty());
+    }
+}
+
+#[test]
+fn logical_mesh_batch_preserves_a_directory_sector_crossing() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
+    let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let metadata = RENDERER_METADATA.replace(
+        "GPU_RENDERER_MESH_COUNT:u16=1;",
+        "GPU_RENDERER_MESH_COUNT:u16=34;",
+    );
+    let ir=resolver::compile_renderer_program("crossing mesh subset","mod gpu_pipeline;fn main(){let mut r=renderer_open();let mesh=renderer_mesh_batch(&mut r,31,3);let next=renderer_mesh_batch(&mut r,33,1);halt(0x600d);}",&options,&root,&root,&metadata,&mut |_|{}).unwrap();
+    let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&program.words);
+    let state = attach(&mut cpu, Some(vec![]));
+    for i in 0..34 {
+        let at = 0x4b0000 / 2 + 2 * i;
+        cpu.physical_memory_mut()[at] = 0x9602;
+        cpu.physical_memory_mut()[at + 1] = 1;
+    }
+    assert!(matches!(
+        cpu.run(500_000).unwrap(),
+        RunOutcome::Halted { signal: 0x600d, .. }
+    ));
+    let a = super::changes::global(&program, "GPU_SCENE_MESHES");
+    assert_eq!(
+        &cpu.physical_memory_mut()[a..a + 6],
+        &[1, 0x9600, 62, 3, 0x9600, 32]
+    );
+    assert_eq!(
+        &cpu.physical_memory_mut()[a + 24..a + 30],
+        &[1, 0x9601, 2, 1, 0x9600, 32]
+    );
+    assert!(state.borrow().starts.is_empty());
+}

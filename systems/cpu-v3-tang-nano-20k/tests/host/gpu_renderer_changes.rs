@@ -6,7 +6,7 @@ fn application(name: &str) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>)
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let example = root.join("examples/gpu_renderer");
     let out = root
-        .join("../../target/gpu-renderer-round2-20261026")
+        .join("../../target/gpu-renderer-changes-validation")
         .join(name)
         .join("assets");
     assert!(std::process::Command::new("python")
@@ -49,7 +49,7 @@ fn application(name: &str) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>)
     let program = rcc_backend::try_compile(ir, &options, "renderer_changed_frames").unwrap();
     (program, resources)
 }
-fn preload(memory: &mut [u16], resources: &[(usize, Vec<u8>)]) {
+pub(super) fn preload(memory: &mut [u16], resources: &[(usize, Vec<u8>)]) {
     for (address, data) in resources {
         for (i, byte) in data.iter().enumerate() {
             let at = address + i;
@@ -131,7 +131,7 @@ fn actual_changed_application_records_completed_sequential_passes() {
 }
 
 const PAGE: usize = 0x7df800 / 2;
-fn global(program: &rcc_backend::CpuV3Program, name: &str) -> usize {
+pub(super) fn global(program: &rcc_backend::CpuV3Program, name: &str) -> usize {
     match program
         .debug
         .globals
@@ -451,22 +451,26 @@ impl digital_design_circuit::External for ObservedCore {
     }
 }
 #[derive(Clone, Copy, Debug)]
-struct CostMarker {
-    kind: u8,
-    frame: u16,
-    cycle: usize,
-    retired: u32,
-    stores: usize,
-    ui: usize,
+pub(super) struct CostMarker {
+    pub(super) kind: u8,
+    pub(super) frame: u16,
+    pub(super) cycle: usize,
+    pub(super) retired: u32,
+    pub(super) stores: usize,
+    pub(super) ui: usize,
 }
-#[test]
-fn actual_compiled_changes_run_on_the_production_core_and_report_bounded_recording_costs() {
+pub(super) type CoreRun = (Vec<CostMarker>, Rc<RefCell<State>>, Vec<u16>);
+pub(super) fn run_core(
+    program: &rcc_backend::CpuV3Program,
+    resources: &[(usize, Vec<u8>)],
+    mut marker: impl FnMut(u8, u16, &mut [u16], &mut State),
+) -> CoreRun {
     use digital_design_hardware::ModuleIo;
-    let (program, resources) = application("core");
     let mut memory = vec![0u16; 1 << 22];
-    preload(&mut memory, &resources);
-    let meta = global(&program, "GPU_PUI_PAGES");
-    let pipe = global(&program, "GPU_PIPE");
+    preload(&mut memory, resources);
+    let meta = global(program, "GPU_PUI_PAGES");
+    let pipe = global(program, "GPU_PIPE");
+    let targets = global(program, "GPU_SLOT_TARGETS");
     let state = Rc::new(RefCell::new(State {
         active: 0x200000,
         automatic: true,
@@ -555,6 +559,29 @@ fn actual_compiled_changes_run_on_the_production_core_and_report_bounded_recordi
             let address = value.data_address as usize;
             assert!(address < memory.len());
             if value.data_write {
+                for (slot, byte, bytes) in [
+                    (0, 0x490000, 32768),
+                    (0, 0x4a0000, 65536),
+                    (1, 0x7e0000, 32768),
+                    (1, 0x7f0000, 65536),
+                ] {
+                    if (byte / 2..(byte + bytes) / 2).contains(&address)
+                        && memory[meta + slot * 4] >= 2
+                    {
+                        // Recorded inputs permit only the builder's Target relocation,
+                        // after old GPU/Display retirement and before final publication.
+                        let target = memory[targets + slot];
+                        assert_eq!(memory[meta + slot * 4], 2);
+                        assert!(target != 0 && byte == if slot == 0 { 0x4a0000 } else { 0x7f0000 });
+                        let first = byte / 2 + usize::from(target) - 1;
+                        assert!((first..first + 16).contains(&address));
+                        assert_eq!(memory[pipe + 2], slot as u16 + 1);
+                        assert_eq!(memory[pipe + 3], 0);
+                        let s = state.borrow();
+                        assert_eq!(s.gpu, 0);
+                        assert!(!s.pending);
+                    }
+                }
                 if (PAGE..PAGE + 1024).contains(&address) {
                     let slot = (address - PAGE) / 512;
                     let word = (address - PAGE) % 512;
@@ -579,6 +606,12 @@ fn actual_compiled_changes_run_on_the_production_core_and_report_bounded_recordi
         data_response = next_data;
         let event = core.borrow_mut().take_signal_event();
         if let Some(event) = event {
+            marker(
+                event.signal_type,
+                event.value,
+                &mut memory,
+                &mut state.borrow_mut(),
+            );
             markers.push(CostMarker {
                 kind: event.signal_type,
                 frame: event.value,
@@ -590,8 +623,14 @@ fn actual_compiled_changes_run_on_the_production_core_and_report_bounded_recordi
         }
     }
     assert!(halted, "core exceeded bounded cost fixture");
-    assert_eq!(markers.len(), 33);
     assert_eq!(core.borrow().data_segments(), [0, 1, 2, 3]);
+    (markers, state, memory)
+}
+#[test]
+fn actual_compiled_changes_run_on_the_production_core_and_report_bounded_recording_costs() {
+    let (program, resources) = application("core");
+    let (markers, state, _) = run_core(&program, &resources, |_, _, _, _| {});
+    assert_eq!(markers.len(), 33);
     check_native_frames(&state.borrow());
     let mut rows = Vec::new();
     let mut page_stores = Vec::new();
@@ -604,6 +643,6 @@ fn actual_compiled_changes_run_on_the_production_core_and_report_bounded_recordi
     }
     assert_eq!(page_stores, [400, 400, 2, 2, 3, 3, 1, 1, 0, 0, 0]);
     let out = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/gpu-renderer-round2-20261026/cpu-costs.json");
+        .join("../../target/gpu-renderer-changes-validation/cpu-costs.json");
     std::fs::write(out,serde_json::to_string_pretty(&serde_json::json!({"model":"production CPU/FPU core emulator; separate instruction ROM and one-cycle data/control peers; no caches/SDRAM/GPU/Display timing","window":"record: after renderer_frame to before frame_complete; seal_advance: frame_complete through its return; includes model-only SIGNAL markers","frames":rows})).unwrap()).unwrap();
 }

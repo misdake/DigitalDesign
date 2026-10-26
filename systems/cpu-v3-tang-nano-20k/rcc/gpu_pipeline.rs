@@ -683,11 +683,15 @@ fn mesh_cleanup(m: Mesh) {
 fn material_cleanup(m: Material) {
     scene_material_release(m.word);
 }
-pub fn renderer_mesh(r: &mut Renderer) -> Mesh {
+fn renderer_mesh_slot(first: u16, count: u16) -> u16 {
+    if count == 0 || first >= GPU_RENDERER_MESH_COUNT || count > GPU_RENDERER_MESH_COUNT - first {
+        renderer_fault(42);
+    }
+    let offset = GPU_RENDERER_MESH_DIRECTORY_WORD + first * 2;
     let mut root: GpuMesh = GpuMesh {
-        directory_sector: GPU_RENDERER_MESH_DIRECTORY,
-        directory_word: GPU_RENDERER_MESH_DIRECTORY_WORD,
-        count: GPU_RENDERER_MESH_COUNT,
+        directory_sector: GPU_RENDERER_MESH_DIRECTORY + (offset >> 6),
+        directory_word: offset & 63,
+        count,
         first_sector: GPU_RENDERER_MESH_FIRST,
         sectors: GPU_RENDERER_MESH_SECTORS,
     };
@@ -705,7 +709,19 @@ pub fn renderer_mesh(r: &mut Renderer) -> Mesh {
     if slot == 0 {
         renderer_fault(42);
     }
-    Mesh { word: slot }
+    slot
+}
+pub fn renderer_mesh(r: &mut Renderer) -> Mesh {
+    Mesh {
+        word: renderer_mesh_slot(0, GPU_RENDERER_MESH_COUNT),
+    }
+}
+// Logical meshlet range in the boot package; no native address/ownership token.
+// All subsets retain the package conservative bounds and immutable allocation.
+pub fn renderer_mesh_batch(r: &mut Renderer, first: u16, count: u16) -> Mesh {
+    Mesh {
+        word: renderer_mesh_slot(first, count),
+    }
 }
 pub fn renderer_material(r: &mut Renderer, red: u16, green: u16, blue: u16, lit: bool) -> Material {
     let slot = scene_material_new(red, green, blue, lit);

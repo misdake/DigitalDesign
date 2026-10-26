@@ -23,7 +23,25 @@ pub fn load_module_source(
     name: &str,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::ModuleSource, String> {
-    let (source, path) = resolve_module(local_dir, shared_dir, constants, name, dependency)?;
+    load_module_source_with_sources(local_dir, shared_dir, constants, name, &[], dependency)
+}
+
+pub fn load_module_source_with_sources(
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    name: &str,
+    ordinary_dirs: &[PathBuf],
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::ModuleSource, String> {
+    let (source, path) = resolve_module_with_sources(
+        local_dir,
+        shared_dir,
+        constants,
+        name,
+        ordinary_dirs,
+        dependency,
+    )?;
     let origin = path
         .map(|path| {
             std::fs::canonicalize(&path)
@@ -44,6 +62,29 @@ pub fn compile_renderer_program(
     constants: &str,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
+    compile_renderer_program_with_sources(
+        main_name,
+        source,
+        options,
+        local_dir,
+        shared_dir,
+        constants,
+        &[],
+        dependency,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compile_renderer_program_with_sources(
+    main_name: &str,
+    source: &str,
+    options: &impl rcc::RccConfig,
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    ordinary_dirs: &[PathBuf],
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
     rcc::frontend::compile_program_named_with_libraries(
         main_name,
         source,
@@ -58,7 +99,12 @@ pub fn compile_renderer_program(
             } else {
                 local_dir
             };
-            load_module_source(local, shared_dir, constants, name, dependency)
+            let dirs = if name == "device_abi" {
+                &[][..]
+            } else {
+                ordinary_dirs
+            };
+            load_module_source_with_sources(local, shared_dir, constants, name, dirs, dependency)
         },
     )
 }
@@ -68,6 +114,17 @@ fn resolve_module(
     shared_dir: &Path,
     constants: &str,
     name: &str,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<(String, Option<PathBuf>), String> {
+    resolve_module_with_sources(local_dir, shared_dir, constants, name, &[], dependency)
+}
+
+fn resolve_module_with_sources(
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    name: &str,
+    ordinary_dirs: &[PathBuf],
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<(String, Option<PathBuf>), String> {
     if name == "boot_resources" {
@@ -80,7 +137,7 @@ fn resolve_module(
             return Ok((text, Some(local)));
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            if local_dir == shared_dir {
+            if local_dir == shared_dir && ordinary_dirs.is_empty() {
                 return Err(format!(
                     "read module {name} at {}: {error}",
                     local.display()
@@ -100,7 +157,30 @@ fn resolve_module(
     dependency(local_dir);
     let shared = shared_dir.join(format!("{name}.rs"));
     dependency(&shared);
-    std::fs::read_to_string(&shared)
+    let result = std::fs::read_to_string(&shared);
+    if result
+        .as_ref()
+        .is_err_and(|e| e.kind() == ErrorKind::NotFound)
+    {
+        for dir in ordinary_dirs {
+            dependency(shared_dir);
+            let path = dir.join(format!("{name}.rs"));
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    dependency(&path);
+                    return Ok((text, Some(path)));
+                }
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    dependency(dir);
+                }
+                Err(e) => {
+                    dependency(&path);
+                    return Err(format!("read module {name} at {}: {e}", path.display()));
+                }
+            }
+        }
+    }
+    result
         .map(|text| (text, Some(shared.clone())))
         .map_err(|error| {
             format!(

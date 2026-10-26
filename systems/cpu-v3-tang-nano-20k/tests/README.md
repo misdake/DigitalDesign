@@ -50,6 +50,17 @@ per-frame recording/seal costs and UI store counts under `target`; these exclude
 cache/SDRAM/GPU/Display latency. Sequential completed Passes and a later abandoned
 Pass are checked through the public resource facade.
 
+The `gpu_pipeline::bloxorz` caller reuses the original pure game rules and host
+rolling geometry. It executes 22 input/time ticks, two whole-Frame early-return
+cancellations and 20 submissions with logical floor/bridge/block batches. Native
+mesh selection, matrices, UI, observed input edges, reset/level transitions and
+continuous input reuse are checked independently. The shared production CPU/FPU
+fixed-port runner guards command/object stores as well as UI, with only the
+explicit pre-publication Recorded Target relocation permitted. Per-window costs
+compare changed/steady identical geometry work; none represents real GPU/cache/
+Display timing or full gameplay. The four original host geometry checks run with
+the imported reference module.
+
 Core/cache/arbiter emulator-vs-RTL comparison remains the independent
 `system_cosim` target. Its functional machine and checkpoint support lives in
 `system_emu`; it is not a benchmark harness. The former benchmark directory,

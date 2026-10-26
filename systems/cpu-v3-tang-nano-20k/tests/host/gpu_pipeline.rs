@@ -20,6 +20,8 @@ pub const GPU_RENDERER_MAX_X_LOW:u16=0;pub const GPU_RENDERER_MAX_X_HIGH:u16=1;
 pub const GPU_RENDERER_MAX_Y_LOW:u16=0;pub const GPU_RENDERER_MAX_Y_HIGH:u16=1;
 pub const GPU_RENDERER_MAX_Z_LOW:u16=0;pub const GPU_RENDERER_MAX_Z_HIGH:u16=1;
 ";
+#[path = "gpu_renderer_bloxorz.rs"]
+mod bloxorz;
 #[path = "gpu_renderer_changes.rs"]
 mod changes;
 #[path = "gpu_persistent_ui.rs"]
@@ -33,6 +35,9 @@ mod scene;
 
 #[derive(Default)]
 struct State {
+    input_status: u16,
+    input_bytes: [u16; 8],
+    now_ms: u16,
     gpu: u16,
     active: u32,
     staged: u32,
@@ -85,6 +90,9 @@ impl cpu_v3::Device for Peer {
             }
         }
         match (self.kind, channel) {
+            (0, 10) => s.now_ms,
+            (5, 8) => s.input_status,
+            (5, c) if c < 8 => s.input_bytes[usize::from(c)],
             (0, 5) => {
                 if s.cache_error {
                     0x8000
@@ -105,6 +113,9 @@ impl cpu_v3::Device for Peer {
     fn write(&mut self, memory: &mut [u16], channel: u8, value: u16) {
         let mut s = self.state.borrow_mut();
         match (self.kind, channel) {
+            (5, 8) => {
+                s.input_status &= !2;
+            }
             (4, 0) => {
                 assert_eq!(s.gpu, 0);
                 assert!(!s.pending);

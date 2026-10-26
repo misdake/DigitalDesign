@@ -20,13 +20,18 @@ fn compile(
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
     let program = if renderer {
-        rcc_modules::compile_renderer_program(
+        rcc_modules::compile_renderer_program_with_sources(
             &path.display().to_string(),
             &source,
             options,
             source_dir,
             shared,
             constants,
+            &if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
+                vec![shared.parent().unwrap().join("examples/bloxorz/rcc")]
+            } else {
+                vec![]
+            },
             &mut |module| {
                 println!("cargo:rerun-if-changed={}", module.display());
             },
@@ -96,8 +101,28 @@ fn main() {
                 "ds2-ui-assets/ui_layout.rs".to_owned(),
                 "ds2-ui-repack.conf".to_owned(),
             ]);
-        } else if example == "gpu_renderer" || example == "gpu_renderer_changes" {
-            let example_dir = root.join("examples/gpu_renderer");
+        } else if example == "gpu_renderer"
+            || example == "gpu_renderer_changes"
+            || example == "gpu_renderer_bloxorz"
+        {
+            let game = example == "gpu_renderer_bloxorz";
+            let example_dir = root.join(if game {
+                "examples/gpu_renderer_bloxorz"
+            } else {
+                "examples/gpu_renderer"
+            });
+            if game {
+                for path in [
+                    "examples/bloxorz/tools/batch-scene.py",
+                    "examples/bloxorz/tools/static-scene.py",
+                    "examples/bloxorz/assets/reference.txt",
+                    "examples/bloxorz/geometry.rs",
+                    "examples/gpu_demo/tools/assets.py",
+                    "examples/gpu_renderer/tools/assets.py",
+                ] {
+                    println!("cargo:rerun-if-changed={}", root.join(path).display());
+                }
+            }
             for input in [
                 example_dir.join("tools/assets.py"),
                 root.join("examples/gpu_demo/assets/font-8x16.txt"),
@@ -116,7 +141,9 @@ fn main() {
             let manifest: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
                     .unwrap();
-            project.application = PathBuf::from(if example == "gpu_renderer_changes" {
+            project.application = PathBuf::from(if game {
+                "examples/gpu_renderer_bloxorz/rcc/main.rs"
+            } else if example == "gpu_renderer_changes" {
                 "examples/gpu_renderer/rcc/changes.rs"
             } else {
                 "examples/gpu_renderer/rcc/main.rs"

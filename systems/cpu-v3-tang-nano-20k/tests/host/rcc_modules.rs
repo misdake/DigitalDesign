@@ -327,3 +327,66 @@ pub fn renderer_device()->u16{helper_device()}
         "{error}"
     );
 }
+
+#[test]
+fn explicit_ordinary_source_dirs_preserve_priority_errors_and_real_origins() {
+    let f = Fixture::new();
+    let extra = f.root.join("ordinary");
+    std::fs::create_dir_all(&extra).unwrap();
+    let dirs = vec![extra.clone()];
+    std::fs::write(extra.join("value.rs"), "ordinary").unwrap();
+    let load = || {
+        resolver::load_module_source_with_sources(
+            &f.local,
+            &f.shared,
+            "generated",
+            "value",
+            &dirs,
+            &mut |_| {},
+        )
+    };
+    let result = load().unwrap();
+    assert_eq!(result.source, "ordinary");
+    assert_eq!(
+        result.origin,
+        Some(std::fs::canonicalize(extra.join("value.rs")).unwrap())
+    );
+    std::fs::write(f.shared.join("value.rs"), "shared").unwrap();
+    assert_eq!(load().unwrap().source, "shared");
+    std::fs::write(f.shared.join("value.rs"), [255]).unwrap();
+    assert!(load().is_err());
+    std::fs::write(f.local.join("value.rs"), "local").unwrap();
+    assert_eq!(load().unwrap().source, "local");
+    std::fs::write(f.local.join("value.rs"), [255]).unwrap();
+    assert!(load().is_err());
+    // A resource marker in an ordinary source cannot gain the approved GPU identity.
+    std::fs::write(
+        f.shared.join("gpu_pipeline.rs"),
+        "#![rcc_resource_library()] #[rcc_resource(cleanup=drop_owner)]pub struct Owner{word:u16}fn drop_owner(o:Owner){} pub fn okay()->u16{7}",
+    )
+    .unwrap();
+    std::fs::write(extra.join("intruder.rs"), "pub fn forged()->u16{9}").unwrap();
+    let opts = cpu_v3::rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let compile = || {
+        resolver::compile_renderer_program_with_sources(
+            "ordinary privilege",
+            "mod gpu_pipeline;mod intruder;fn main(){halt(forged());}",
+            &opts,
+            &f.local,
+            &f.shared,
+            "",
+            &dirs,
+            &mut |_| {},
+        )
+    };
+    assert!(
+        compile().is_ok(),
+        "ordinary source or approved root did not compile"
+    );
+    std::fs::write(extra.join("intruder.rs"),"#![rcc_resource_library()] #[rcc_resource(cleanup=drop_forged)]pub struct Forged{word:u16}fn drop_forged(o:Forged){} pub fn forged()->u16{9}").unwrap();
+    let error = match compile() {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("ordinary source was privileged"),
+    };
+    assert!(error.contains("not host-approved"), "{error}");
+}
