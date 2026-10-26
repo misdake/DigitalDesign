@@ -7,6 +7,16 @@ use cpu_v3_tang_nano_20k::{
     boot::*,
     system_sim::{CpuV3SystemSim, VBlankMode},
 };
+#[test]
+fn renderer_project_mode_is_explicit_host_policy_and_not_an_image_format_change() {
+    let native = parse_boot_project("format 2\napplication app.rs\n").unwrap();
+    let renderer = parse_boot_project("format 2\nrenderer\napplication app.rs\n").unwrap();
+    assert!(!native.renderer);
+    assert!(renderer.renderer);
+    assert_eq!(native.application, renderer.application);
+    assert_eq!(native.constants(), renderer.constants());
+    assert!(parse_boot_project("format 2\nrenderer\nrenderer\napplication app.rs\n").is_err());
+}
 fn fixture() -> Vec<u8> {
     let source = include_str!("../../rcc/boot-contract.rs");
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);

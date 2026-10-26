@@ -62,6 +62,11 @@ copy MESH 0x100000 assets/mesh.bin
 zero 0x4b0000 4096
 ~~~
 
+A standalone `renderer` line optionally selects the host-approved resource
+compiler described in the [renderer API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md).
+It may appear once; default projects remain native. It changes host compilation
+authority only and adds no bytes or commands to CB06.
+
 Paths are relative to the project directory. COPY symbols are unique upper
 snake case. The build generates boot_resources.rs before compilation; an RCC
 application can import mod boot_resources and use NAME_BYTE_ADDRESS_LOW/HIGH

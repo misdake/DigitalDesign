@@ -368,7 +368,17 @@ fn gpu_builder_draw_record(
     rgba_low: u16,
     rgba_high: u16,
 ) -> bool {
-    if !gpu_builder_open(cb) || !gpu_mesh_root_valid(mesh) {
+    gpu_builder_draw_policy(cb, mesh, matrix, rgba_low, rgba_high, false)
+}
+fn gpu_builder_draw_policy(
+    mut cb: Array<GpuBuffer>,
+    mesh: Array<GpuMesh>,
+    matrix: Array<u16>,
+    rgba_low: u16,
+    rgba_high: u16,
+    known: bool,
+) -> bool {
+    if !gpu_builder_open(cb) || (!known && !gpu_mesh_root_valid(mesh)) {
         return false;
     }
     let count = mesh[0u16].count;
@@ -393,12 +403,14 @@ fn gpu_builder_draw_record(
     let entries = GPU_ENTRIES.as_array();
     let retained = count <= 32;
     let mut i: u16 = 0;
-    // Preflight the entire compact directory before modifying either arena.
-    while i < count {
+    // Native calls validate the whole directory before modifying either arena.
+    // Registered meshes only load the retained compact directory here.
+    while i < count && (!known || retained) {
         let n: u16 = if count - i > 16 { 16 } else { count - i };
         let offset: u16 = if retained { i * 2 } else { 0 };
         let batch = unsafe { entries.as_ptr().add(offset as i16).as_u16_array() };
-        if !gpu_mesh_batch(mesh, i, batch, n) || !gpu_mesh_entries_valid(mesh, batch, n) {
+        if !gpu_mesh_batch(mesh, i, batch, n) || (!known && !gpu_mesh_entries_valid(mesh, batch, n))
+        {
             return false;
         }
         i += n;
@@ -929,6 +941,17 @@ fn gpu_builder_draw(
 ) -> bool {
     let saved = read_dseg_page(3);
     let result = gpu_builder_draw_record(cb, mesh, matrix, rgba_low, rgba_high);
+    gpu_builder_restore(saved, result)
+}
+fn gpu_builder_draw_known(
+    cb: Array<GpuBuffer>,
+    mesh: Array<GpuMesh>,
+    matrix: Array<u16>,
+    rgba_low: u16,
+    rgba_high: u16,
+) -> bool {
+    let saved = read_dseg_page(3);
+    let result = gpu_builder_draw_policy(cb, mesh, matrix, rgba_low, rgba_high, true);
     gpu_builder_restore(saved, result)
 }
 

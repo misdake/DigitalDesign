@@ -20,6 +20,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
   current behavior belongs to [GPU framebuffer](/ip/gpu-v2/docs/framebuffer.md).
 - [`boot-image-format.md`](boot-image-format.md): CB06 COPY/ZERO stream, host layout checks, Display startup and completion contract.
 - [`gpu-driver.md`](gpu-driver.md): formal RCC native encoding, one opaque CB, fixed high-memory ownership, scoped DSEG3 access and submission/fault semantics.
+- [Resource renderer](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md): host-approved public resources, prepared scene snapshots, persistent text, frame input and observed statistics.
 - [GPU input pipeline](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md): internal double input slots, target relocation, persistent UI dirty pages and independent GPU/Display completion.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   cold-loader LED and application reporting.

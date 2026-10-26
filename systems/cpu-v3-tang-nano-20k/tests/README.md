@@ -31,15 +31,16 @@ disconnect cannot return stale results. Every run has an explicit
 CPU step bound. Serial timing remains in `dualshock2`'s actual-CPU RTL test;
 the snapshot peer does not qualify physical controller behavior.
 
-gpu_pipeline::resource_usage compiles a test-only Renderer/Frame/Pass caller
-model over the native engine. It checks lexical early-return cancellation,
-post-Pass UI edits before seal, transfer/disarm, explicit close drain and implicit
-Renderer freeze without hidden submission or waiting. Concrete misuse examples
-must fail before lowering. The adapter in fixtures/gpu_renderer_scope_model.rs
-is not the production facade: helper-domain isolation still needs the accepted
-source-aware compiler capability. Camera, Mesh, frame statistics and the full
-first usage round are not supplied by this scope/UI model. GPU/Display progress
-is a controlled sequence of status reads, not elapsed hardware time.
+The gpu_pipeline::resource_usage cases compile the actual approved production
+root, without the former scope adapter. They check raw/constructor/consumed-owner
+misuse, early cancellation, transfer failure, duplicate open, explicit close and
+implicit freeze, plus owned text tail/visibility/cleanup semantics. The scene
+cases use an independent float oracle and exact native bytes; the minimal caller
+executes examples/gpu_renderer/rcc/main.rs with its actual packed assets. Timing
+cases use a clock advanced only by host events, covering observer delay, clear
+epochs, saturation and wrap. Frame queries cannot reread live input; held input
+integrates on subsequent ticks without new packets. GPU/Display completion peers
+qualify software ownership/bytes, not actual GPU/cache/Display concurrency.
 
 Core/cache/arbiter emulator-vs-RTL comparison remains the independent
 `system_cosim` target. Its functional machine and checkpoint support lives in

@@ -1,8 +1,9 @@
 # Internal GPU input pipeline
 
-The internal RCC module gpu_pipeline implements a two-input scheduler using the
-existing builder, single GPU driver and Display ownership record. It is a
-diagnostic/internal interface, not a public resource or RAII API. The legacy
+The RCC module gpu_pipeline contains a private two-input scheduler using the
+existing builder, single GPU driver and Display ownership record. Its public
+[resource facade](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md) owns the host-approved
+library boundary; this document describes the private engine. The legacy
 gpu frontend and demo still use slot0. These frontends must not be mixed: slot
 initialization permanently associates each arena with its one descriptor.
 

@@ -1,15 +1,33 @@
 //! Actual RCC/CPU execution with explicit GPU and Display completion peers.
 //! These tests check software ownership and bytes, not rasterization/scanout.
+use super::shared_build_support_rcc_modules as resolver;
 use cpu_v3::{rcc_backend, CpuV3Sim, RunOutcome};
 use gpu_v2::{
     framebuffer::ports::MaterializedSurface,
     system::vliw_command::{target_params, Command, CommandBuffer},
 };
 use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
+pub(super) const RENDERER_METADATA: &str = "
+pub const GPU_RENDERER_ATLAS_BYTE_ADDRESS_LOW:u16=0;pub const GPU_RENDERER_ATLAS_BYTE_ADDRESS_HIGH:u16=0x4c;
+pub const GPU_RENDERER_MESH_DIRECTORY:u16=0x9600;pub const GPU_RENDERER_MESH_DIRECTORY_WORD:u16=0;
+pub const GPU_RENDERER_MESH_COUNT:u16=1;pub const GPU_RENDERER_MESH_FIRST:u16=0x9600;pub const GPU_RENDERER_MESH_SECTORS:u16=32;
+pub const GPU_RENDERER_TEXTURE:u16=0x9620;pub const GPU_RENDERER_TEXTURE_SECTORS:u16=1;
+pub const GPU_RENDERER_TEXTURE_LOG2:u16=0;pub const GPU_RENDERER_TEXTURE_MIP:u16=0;
+pub const GPU_RENDERER_MIN_X_LOW:u16=0;pub const GPU_RENDERER_MIN_X_HIGH:u16=65535;
+pub const GPU_RENDERER_MIN_Y_LOW:u16=0;pub const GPU_RENDERER_MIN_Y_HIGH:u16=65535;
+pub const GPU_RENDERER_MIN_Z_LOW:u16=0;pub const GPU_RENDERER_MIN_Z_HIGH:u16=65535;
+pub const GPU_RENDERER_MAX_X_LOW:u16=0;pub const GPU_RENDERER_MAX_X_HIGH:u16=1;
+pub const GPU_RENDERER_MAX_Y_LOW:u16=0;pub const GPU_RENDERER_MAX_Y_HIGH:u16=1;
+pub const GPU_RENDERER_MAX_Z_LOW:u16=0;pub const GPU_RENDERER_MAX_Z_HIGH:u16=1;
+";
 #[path = "gpu_persistent_ui.rs"]
 mod persistent;
+#[path = "gpu_renderer_time.rs"]
+mod renderer_time;
 #[path = "gpu_resource_usage.rs"]
 mod resource_usage;
+#[path = "gpu_scene.rs"]
+mod scene;
 
 #[derive(Default)]
 struct State {
@@ -33,6 +51,9 @@ struct State {
     automatic: bool,
     gpu_reads_left: usize,
     display_reads_left: usize,
+    expected_depth: Option<u16>,
+    fail_publication: bool,
+    scene_draw: bool,
 }
 struct Peer {
     kind: u8,
@@ -129,8 +150,11 @@ impl cpu_v3::Device for Peer {
                     Command::wait(true, false),
                     Command::set_target(276).unwrap(),
                     Command::clear(false, 0x1111 + number as u16),
-                    Command::clear(true, 0x2222),
+                    Command::clear(true, s.expected_depth.unwrap_or(0x2222)),
                 ];
+                if s.scene_draw {
+                    expected.extend(scene_commands_and_objects(memory, objects));
+                }
                 if let Some(ranges) = &s.persistent_ranges {
                     let page = if number.is_multiple_of(2) {
                         0x7df800
@@ -204,13 +228,89 @@ impl cpu_v3::Device for Peer {
                 }
                 _ => panic!("peer stimulus {value}"),
             },
-            (0, 1) => s.maintenance += 1,
+            (0, 1) => {
+                s.maintenance += 1;
+                if s.fail_publication {
+                    s.cache_error = true;
+                }
+            }
             _ => {}
         }
     }
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+fn scene_commands_and_objects(memory: &[u16], objects: usize) -> Vec<Command> {
+    use gpu_v2::system::vliw_command::TextureDescriptor;
+    let bytes = |word: usize, count: usize| {
+        image(memory, objects + word * 2, count)
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    let mut global = vec![0u32; 16];
+    global[0] = 199 << 16;
+    global[2] = 16384 | (((-8192i16) as u16 as u32) << 16);
+    global[3] = (-4915i16) as u16 as u32 | (8192 << 16);
+    global[4] = 64 | (192 << 16);
+    global[5] = 3 | (12 << 2);
+    assert_eq!(
+        bytes(32, 32),
+        global
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+    let mut render = vec![0u32; 8];
+    render[0] = TextureDescriptor {
+        base_sector: 0x9620,
+        size_log2: 0,
+        full_mip: false,
+        filter: 2,
+    }
+    .word();
+    render[1] = 0xa0a0a0;
+    render[2] = 9;
+    assert_eq!(
+        bytes(64, 16),
+        render
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+    let mut instance = vec![0u32; 32];
+    instance[0] = 51200;
+    instance[5] = (-51200i32) as u32;
+    instance[10] = (-65536i32) as u32;
+    instance[11] = 3 << 16;
+    for i in [12, 16, 20, 21] {
+        instance[i] = 65536;
+    }
+    instance[22] = u32::MAX;
+    assert_eq!(
+        bytes(128, 64),
+        instance
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+    vec![
+        Command::wait(true, true),
+        Command::dma_local((objects + 64) as u32, 264, 64).unwrap(),
+        Command::wait(true, false),
+        Command::set_global(264).unwrap(),
+        Command::wait(true, true),
+        Command::dma_local((objects + 128) as u32, 272, 32).unwrap(),
+        Command::wait(true, false),
+        Command::set_render(272).unwrap(),
+        Command::dma_local((objects + 256) as u32, 320, 128).unwrap(),
+        Command::wait(true, false),
+        Command::dma_meshlet(0x4b0080, 0, 128).unwrap(),
+        Command::wait(true, false),
+        Command::draw_meshlet(0).unwrap(),
+    ]
 }
 
 const READY: &str = r#"
@@ -288,14 +388,24 @@ fn run_with_globals(globals: &str, body: &str) -> (CpuV3Sim, Rc<RefCell<State>>)
     (cpu, state)
 }
 fn compile(globals: &str, body: &str) -> rcc_backend::CpuV3Program {
-    let source=format!("mod gpu_pipeline; {globals} fn check(ok:bool){{if !ok{{halt(0xbad);}}}} fn main(){{{body}halt(0x600d);}}");
+    let source = "mod gpu_pipeline;fn main(){pipeline_test_probe();}";
+    let probe=format!("\n{globals}\nfn check(ok:bool){{if !ok{{halt(0xbad);}}}} pub fn pipeline_test_probe(){{{body}halt(0x600d);}}");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let parsed = rcc::frontend::compile_program_named(
+    let parsed = rcc::frontend::compile_program_named_with_libraries(
         "internal GPU pipeline",
-        &source,
+        source,
         &options,
-        &mut |n| std::fs::read_to_string(root.join(format!("{n}.rs"))).map_err(|e| e.to_string()),
+        &[root.join("gpu_pipeline.rs")],
+        &mut |n| {
+            let mut module =
+                resolver::load_module_source(&root, &root, RENDERER_METADATA, n, &mut |_| {})?;
+            // Only the trusted test host injects a probe in its owning file.
+            if n == "gpu_pipeline" {
+                module.source.push_str(&probe);
+            }
+            Ok(module)
+        },
     )
     .unwrap();
     rcc_backend::try_compile(parsed, &options, "main").unwrap()
@@ -309,7 +419,7 @@ fn attach(
         persistent_ranges,
         ..State::default()
     }));
-    for kind in [0, 3, 4, 7] {
+    for kind in [0, 3, 4, 5, 7] {
         cpu.attach_device(
             kind,
             Box::new(Peer {
