@@ -6,6 +6,7 @@ UI, display-control and timer tests. Filter by module when checking one area:
 ```powershell
 cargo test --release -p cpu-v3-tang-nano-20k --test host boot::
 cargo test --release -p cpu-v3-tang-nano-20k --test host gpu_rcc_driver::
+cargo test --release -p cpu-v3-tang-nano-20k --test host gpu_pipeline::
 ```
 
 Core/cache/arbiter emulator-vs-RTL comparison remains the independent

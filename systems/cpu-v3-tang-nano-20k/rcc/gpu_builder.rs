@@ -198,6 +198,9 @@ fn gpu_builder_begin_record(
     cb[0u16].object_words = object + 16;
     cb[0u16].color = color;
     cb[0u16].depth = depth;
+    if cb[0u16].high_slot != 0 {
+        GPU_SLOT_TARGETS.as_array()[cb[0u16].high_slot - 1] = object + 1;
+    }
     true
 }
 fn gpu_builder_state(

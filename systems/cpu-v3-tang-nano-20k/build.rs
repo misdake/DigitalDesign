@@ -37,6 +37,10 @@ fn main() {
     let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let config = root.join("boot-applications.conf");
     println!("cargo:rerun-if-changed={}", config.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("tools/gpu_layout.py").display()
+    );
     let mut project = boot::parse_boot_project(&std::fs::read_to_string(config).unwrap())
         .expect("single application project");
     println!("cargo:rerun-if-env-changed=CPU_V3_BOOT_EXAMPLE");

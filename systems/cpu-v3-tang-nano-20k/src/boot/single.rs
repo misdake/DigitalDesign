@@ -177,7 +177,7 @@ fn resource_range(resource: &BootResource) -> Result<std::ops::Range<usize>, Sin
         (0x100000, 0x400000),
         (
             usize::from(driver_layout::GPU_ASSET_FIRST_SECTOR) * 128,
-            0x800000,
+            usize::from(driver_layout::GPU_ASSET_END_SECTOR) * 128,
         ),
     ]
     .into_iter()
@@ -425,6 +425,11 @@ mod tests {
             0x4a0000,
             0x4a8000,
             0x4afffe,
+            0x7df800,
+            0x7dfc00,
+            0x7e0000,
+            0x7f0000,
+            0x7ffffe,
             0x800000,
             usize::MAX,
         ] {
@@ -434,6 +439,9 @@ mod tests {
             );
         }
         assert!(pack_application_resources(&[0, 0], 0, &[BootResource::zero(0x20000, 3)]).is_err());
+        let end = usize::from(driver_layout::GPU_ASSET_END_SECTOR) * 128;
+        assert!(pack_application_resources(&[0, 0], 0, &[BootResource::zero(end - 2, 2)]).is_ok());
+        assert!(pack_application_resources(&[0, 0], 0, &[BootResource::zero(end - 2, 4)]).is_err());
         assert!(pack_application_resources(
             &[0, 0],
             0,

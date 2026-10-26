@@ -5,8 +5,11 @@ import json
 import math
 from pathlib import Path
 import struct
+import sys
 
 EXAMPLE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(EXAMPLE.parents[3] / "systems/cpu-v3-tang-nano-20k/tools"))
+from gpu_layout import validate_asset_range
 FONT = {
     'A': [14,17,17,31,17,17,17], 'B': [30,17,17,30,17,17,30],
     'C': [14,17,16,16,16,17,14], 'D': [30,17,17,17,17,17,30],
@@ -116,6 +119,7 @@ def pack(output):
     source+=f'static DS2_LABELS:Buf<u16,{len(ids)}>=Buf::new([{",".join(map(str,ids))}]);\n'
     source+='pub fn ds2_ui_labels(ui:u16)->bool{\n'+ ' &&\n'.join(calls)+'\n}\n'
     (output/'ui_layout.rs').write_text(source)
+    validate_asset_range(0x4b0000, len(atlas))
     (output/'atlas.bin').write_bytes(atlas)
     manifest={'resources':[{'file':'atlas.bin','address':0x4b0000,'bytes':len(atlas),
                             'sha256':hashlib.sha256(atlas).hexdigest()}],

@@ -10,7 +10,9 @@ mod gpu_layout;
 use gpu_layout::*;
 mod gpu_builder;
 use gpu_builder::*;
-static GPU_SLOT_OWNERS: Buf<u16, 1> = Buf::new([0; 1]);
+static GPU_SLOT_OWNERS: Buf<u16, 2> = Buf::new([0; 2]);
+// Target object word + 1. Zero means no relocation was recorded by the builder.
+static GPU_SLOT_TARGETS: Buf<u16, 2> = Buf::new([0; 2]);
 
 pub const GPU_CB_EMPTY: u16 = 0;
 pub const GPU_CB_BUILDING: u16 = 1;
@@ -81,7 +83,7 @@ pub fn gpu_buffer_init(
     true
 }
 pub fn gpu_high_slot_init(mut cb: Array<GpuBuffer>, slot: u16) -> bool {
-    if slot != 0
+    if slot >= GPU_INPUT_SLOTS
         || cb[0u16].state != GPU_CB_EMPTY
         || cb.as_ptr().addr() == 0
         || gpu_memory_faulted()
@@ -92,8 +94,8 @@ pub fn gpu_high_slot_init(mut cb: Array<GpuBuffer>, slot: u16) -> bool {
     if owners[slot] != 0 {
         return false;
     }
-    let c = GPU_COMMAND_FIRST_SECTOR;
-    let o = GPU_OBJECT_FIRST_SECTOR;
+    let c = gpu_slot_commands(slot);
+    let o = gpu_slot_objects(slot);
     cb[0u16].commands = GpuStorage {
         cpu: Ptr::from_addr(0),
         sector: c,
@@ -110,26 +112,70 @@ pub fn gpu_high_slot_init(mut cb: Array<GpuBuffer>, slot: u16) -> bool {
     cb[0u16].depth = 0;
     cb[0u16].state = GPU_CB_BUILDING;
     owners[slot] = cb.as_ptr().addr();
+    GPU_SLOT_TARGETS.as_array()[slot] = 0;
     cb[0u16].high_slot = slot + 1;
     true
 }
 fn gpu_high_slot_valid(cb: Array<GpuBuffer>) -> bool {
-    if cb[0u16].high_slot != 1 {
+    if cb[0u16].high_slot == 0 || cb[0u16].high_slot > GPU_INPUT_SLOTS {
         return false;
     }
     if cb[0u16].commands.cpu.addr() != 0 || cb[0u16].objects.cpu.addr() != 0 {
         return false;
     }
-    let slot: u16 = 0;
+    let slot = cb[0u16].high_slot - 1;
 
-    let c = GPU_COMMAND_FIRST_SECTOR;
-    let o = GPU_OBJECT_FIRST_SECTOR;
+    let c = gpu_slot_commands(slot);
+    let o = gpu_slot_objects(slot);
     GPU_SLOT_OWNERS.as_array()[slot] == cb.as_ptr().addr()
         && cb[0u16].high_slot == slot + 1
         && cb[0u16].commands.sector == c
         && cb[0u16].objects.sector == o
         && cb[0u16].commands.sectors == GPU_COMMAND_CAPACITY_SECTORS
         && cb[0u16].objects.sectors == GPU_OBJECT_CAPACITY_SECTORS
+}
+fn gpu_slot_commands(slot: u16) -> u16 {
+    if slot == 0 {
+        return GPU_COMMAND_FIRST_SECTOR;
+    }
+    GPU_SLOT1_COMMAND_FIRST_SECTOR
+}
+fn gpu_slot_objects(slot: u16) -> u16 {
+    if slot == 0 {
+        return GPU_OBJECT_FIRST_SECTOR;
+    }
+    GPU_SLOT1_OBJECT_FIRST_SECTOR
+}
+// Internal relocation only: Ready inputs are still CPU-owned/unpublished.
+// The scheduler reserves the real Writable plane before calling this, and the
+// driver performs the final cache handoff after this write, before either SEND.
+fn gpu_slot_bind_target(mut cb: Array<GpuBuffer>, color: u16) -> bool {
+    if cb[0u16].state != GPU_CB_READY
+        || !gpu_high_slot_valid(cb)
+        || (color != GPU_COLOR_A_SECTOR && color != GPU_COLOR_B_SECTOR)
+        || gpu_memory_faulted()
+    {
+        return false;
+    }
+    let patch = GPU_SLOT_TARGETS.as_array()[cb[0u16].high_slot - 1];
+    if patch == 0 || patch - 1 > cb[0u16].object_words || cb[0u16].object_words - (patch - 1) < 16 {
+        return false;
+    }
+    let mut storage = gpu_encoding_scratch(GPU_ENCODING.as_array());
+    if !gpu_encode_target(view_of(&mut storage), 0, color, GPU_DEPTH_SECTOR)
+        || !gpu_window_record_pair(
+            unsafe { storage.cpu.as_u16_array() },
+            16,
+            unsafe { storage.cpu.as_u16_array() },
+            0,
+            cb[0u16].objects.sector,
+            patch - 1,
+        )
+    {
+        return false;
+    }
+    cb[0u16].color = color;
+    true
 }
 pub fn gpu_slot_upload(
     cb: Array<GpuBuffer>,

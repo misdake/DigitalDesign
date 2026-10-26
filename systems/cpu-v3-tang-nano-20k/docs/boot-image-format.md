@@ -44,7 +44,9 @@ input and programmer Verify are the intended workflow.
 | [0x400000,0x460000) | Reserved framebuffer slots; boot leaves both untouched |
 | [0x460000,0x490000) | Reserved Depth; never initialized by boot |
 | [0x490000,0x4b0000) | Driver-owned command/object arena; optional COPY/ZERO resources rejected |
-| [0x4b0000,0x800000) | Fixed GPU asset allocations |
+| [0x4b0000,0x7df800) | Fixed GPU asset allocations |
+| [0x7df800,0x7e0000) | Reserved UI pages; optional resources rejected |
+| [0x7e0000,0x800000) | Second driver command/object arena; optional resources rejected |
 
 Code is nonempty, even, and at most 128 KiB. A=0x400000 and B=0x430000, with
 0x30000 bytes per slot. Depth is cleared by each GPU Pass. Optional resource

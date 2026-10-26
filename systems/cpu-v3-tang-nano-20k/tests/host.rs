@@ -3,6 +3,8 @@
 mod boot;
 #[path = "host/cache_maintenance_wiring.rs"]
 mod cache_maintenance_wiring;
+#[path = "host/gpu_pipeline.rs"]
+mod gpu_pipeline;
 #[path = "host/gpu_rcc_builder.rs"]
 mod gpu_rcc_builder;
 #[path = "host/gpu_rcc_driver.rs"]

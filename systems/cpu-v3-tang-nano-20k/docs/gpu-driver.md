@@ -2,7 +2,9 @@
 
 The application interface is `rcc/gpu.rs`. It manages one command buffer and a
 single Clear/Store Pass with ordered Mesh/Instance and UI draws and fixed A/B/Depth
-allocations. Initialization reads actual Display active/pending/format; it can
+allocations. This legacy frontend still uses slot0; the separately tested
+[internal two-input scheduler](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md) is not yet an application
+resource API. Initialization reads actual Display active/pending/format; it can
 adopt either A or B as Front and chooses the other plane for rendering. The
 driver presents through one serialized entry point. Runtime recovery is separate. The default CPU
 Display diagnostic remains selected in the boot config.
@@ -65,11 +67,14 @@ boot packing. Addresses below are physical **bytes**, with exclusive ends.
 | 0x460000..0x490000 | Fixed Depth |
 | 0x490000..0x4a0000 | Driver command allocation, 64 KiB |
 | 0x4a0000..0x4b0000 | Driver object allocation, 64 KiB |
-| 0x4b0000..0x800000 | Fixed GPU asset allocations |
+| 0x4b0000..0x7df800 | Fixed GPU asset allocations |
+| 0x7df800..0x7e0000 | Two reserved 1-KiB UI pages |
+| 0x7e0000..0x7f0000 | Second command allocation, 64 KiB |
+| 0x7f0000..0x800000 | Second object allocation, 64 KiB |
 
 The entire high 4 MiB domain is Shared in `TangNano20kMemoryLayout`, never Main.
-Boot's mandatory framebuffer ZERO remains legal, while optional COPY/ZERO
-resources cannot occupy the command/object allocation. No hardware decoder,
+Boot leaves both framebuffers untouched, and optional COPY/ZERO resources cannot
+occupy either command/object allocation or the reserved UI pages. No hardware decoder,
 PLL, CL3 memory timing, ordinary heap or FPGA image configuration is changed.
 
 Internal physical bases use 128-byte sectors. CPU pointers and arena cursors
@@ -81,7 +86,8 @@ length or address conversion silently masks an invalid input.
 
 The software state/CB descriptor and small encoding staging buffers stay in
 ordinary CPU memory. They do not share cache lines with the GPU input arena.
-There is no dynamic allocator, compaction, pingpong scheduler or second CB.
+There is no dynamic allocator or compaction. The legacy frontend does not use
+the internal pingpong scheduler or second CB.
 Completed-buffer reuse resets the command/object used lengths to zero while
 retaining both 64-KiB allocations and their ownership. It does not zero or free
 the capacity. The builder appends commands again; it does not retain/replay a

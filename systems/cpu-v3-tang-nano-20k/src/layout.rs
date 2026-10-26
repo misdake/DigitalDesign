@@ -215,6 +215,18 @@ mod tests {
         assert_eq!(u32::from(GPU_OBJECT_FIRST_SECTOR) * 128, 0x4a0000);
         assert_eq!(u32::from(GPU_OBJECT_CAPACITY_SECTORS) * 128, 65536);
         assert_eq!(u32::from(GPU_ASSET_FIRST_SECTOR) * 128, 0x4b0000);
+        assert_eq!(u32::from(GPU_ASSET_END_SECTOR) * 128, 0x7df800);
+        assert_eq!(GPU_UI_PAGE0_SECTOR, GPU_ASSET_END_SECTOR);
+        assert_eq!(
+            GPU_UI_PAGE1_SECTOR,
+            GPU_UI_PAGE0_SECTOR + GPU_UI_PAGE_SECTORS
+        );
+        assert_eq!(u32::from(GPU_SLOT1_COMMAND_FIRST_SECTOR) * 128, 0x7e0000);
+        assert_eq!(u32::from(GPU_SLOT1_OBJECT_FIRST_SECTOR) * 128, 0x7f0000);
+        assert_eq!(
+            u32::from(GPU_SLOT1_OBJECT_FIRST_SECTOR) + u32::from(GPU_OBJECT_CAPACITY_SECTORS),
+            65536
+        );
     }
 
     #[test]
