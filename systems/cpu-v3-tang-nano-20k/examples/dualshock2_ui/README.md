@@ -113,7 +113,7 @@ and physical image identity must be qualified before authorized programming.
 
 ```powershell
 & scripts/run-cargo.ps1 -Subcommand test -Label ds2-ui-functional -CargoArgs @(
-  '-p','cpu-v3-tang-nano-20k','--test','stick','--test','dualshock2_ui','--','--nocapture')
+  '-p','cpu-v3-tang-nano-20k','--test','host','--','stick::','dualshock2_ui::','--nocapture')
 python systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/tools/preview.py `
   --fixture target/ds2-ui-validation/layout/edges.json `
   --atlas target/ds2-ui-validation/layout/atlas.bin `

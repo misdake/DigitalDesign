@@ -112,7 +112,9 @@ package; component names remain filterable. See the
 [GPU test guide](/ip/gpu-v2/tests/README.md) and
 [system test guide](/systems/cpu-v3-tang-nano-20k/tests/README.md).
 Whole-board success and bulk-load simulations are explicit extended tests;
-pass `-ExtendedSimulations` with `iverilog`/`all` to include them. The former
+pass `-ExtendedSimulations` with `iverilog`/`all` to include them. System RTL
+validation selects `cpu_v3_system`; game/demo native replays require an explicit
+example selection. The former
 CPU V3 benchmark suite and its history/image tools are removed.
 
 `validate-hardware.ps1` accepts `quick | iverilog | audit | pnr | all`. Run

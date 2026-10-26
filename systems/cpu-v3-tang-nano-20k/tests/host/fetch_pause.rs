@@ -26,6 +26,7 @@
 //! These checks are part of the default suite; hardware co-simulation remains
 //! the explicitly invoked ignored workload.
 
+#[path = "../system_emu/mod.rs"]
 mod system_emu;
 
 use cpu_v3::{alu, halt, load_immediate16, store, AluOp, CpuV3Sim, RunOutcome, Word};

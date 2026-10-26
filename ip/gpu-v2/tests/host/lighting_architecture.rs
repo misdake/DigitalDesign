@@ -244,7 +244,7 @@ fn bounded_stream_preserves_ids_contexts_ce_and_outputs_across_modes() {
         })
         .collect();
     let h = Hardware::lighting_architecture_ii2();
-    let clean = stream(&inputs, &contexts, h, 10000, &Default::default()).unwrap();
+    let mut clean = stream(&inputs, &contexts, h, 10000, &Default::default()).unwrap();
     let pauses = (5..400)
         .filter(|i| i % 7 == 0 || (80..95).contains(i))
         .collect();
@@ -282,19 +282,22 @@ fn bounded_stream_preserves_ids_contexts_ce_and_outputs_across_modes() {
         assert_eq!((i128::from(r.output.g), i128::from(r.output.h)), (o.g, o.h));
     }
     clean.audit(&inputs, &contexts, h).unwrap();
-    let mut tampered = stream(&inputs, &contexts, h, 10000, &Default::default()).unwrap();
-    tampered.results[0].output.h ^= 1;
-    assert!(tampered
+    // Each fault starts from the same accepted run. Replaying 64 pixels for
+    // each independent audit mutation adds no stimulus or scheduler coverage.
+    let first = clean.results[0].clone();
+    clean.results[0].output.h ^= 1;
+    assert!(clean
         .audit(&inputs, &contexts, h)
         .unwrap_err()
         .contains("numerical"));
-    let mut tampered = stream(&inputs, &contexts, h, 10000, &Default::default()).unwrap();
-    tampered.results[0].accepted += 1;
-    assert!(tampered.audit(&inputs, &contexts, h).is_err());
+    clean.results[0] = first.clone();
+    clean.results[0].accepted += 1;
+    assert!(clean.audit(&inputs, &contexts, h).is_err());
+    clean.results[0] = first.clone();
     assert!(clean.audit(&[], &contexts, h).is_err());
-    let mut tampered = stream(&inputs, &contexts, h, 10000, &Default::default()).unwrap();
-    tampered.results[0].accepted = u64::MAX;
-    assert!(tampered.audit(&inputs, &contexts, h).is_err());
+    clean.results[0].accepted = u64::MAX;
+    assert!(clean.audit(&inputs, &contexts, h).is_err());
+    clean.results[0] = first;
     for (small, large, reads, expected) in [(5, 5, 4, [3, 1]), (4, 4, 3, [4, 2])] {
         let hardware = Hardware {
             small_multiply: small,

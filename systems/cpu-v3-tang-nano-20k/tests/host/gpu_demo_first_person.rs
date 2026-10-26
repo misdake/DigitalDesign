@@ -1,8 +1,7 @@
 //! Bounded production RCC control and independent floating camera reference.
+use crate::shared_build_support_rcc_modules as resolver;
 use cpu_v3::{rcc_backend, CpuV3Sim, PhysicalWordAddress, StepOutcome};
 use std::path::Path;
-#[path = "../build_support/rcc_modules.rs"]
-mod resolver;
 
 fn compile(source: &str, constants: &str, entry: &'static str) -> rcc_backend::CpuV3Program {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -38,7 +37,7 @@ fn pair(cpu: &CpuV3Sim, at: u32, index: u32) -> i32 {
 }
 fn camera_source(body: &str) -> String {
     let scene: serde_json::Value =
-        serde_json::from_str(include_str!("../examples/gpu_demo/assets/scene.json")).unwrap();
+        serde_json::from_str(include_str!("../../examples/gpu_demo/assets/scene.json")).unwrap();
     let c = &scene["cameras"][0];
     let mut words = Vec::new();
     for v in c["matrix"].as_array().unwrap() {
@@ -325,7 +324,7 @@ fn timing_run(present_delay: u64, gpu_delay: u64, fail: bool) -> TimingState {
         .replace("DEMO_ROOM_COUNT: u16 = 6;", "DEMO_ROOM_COUNT: u16 = 1;")
         .replace("DEMO_BUNNY_COUNT: u16 = 17;", "DEMO_BUNNY_COUNT: u16 = 2;");
     let p = compile(
-        include_str!("../examples/gpu_demo/rcc/main.rs"),
+        include_str!("../../examples/gpu_demo/rcc/main.rs"),
         &constants,
         "demo_native_main",
     );

@@ -1,7 +1,8 @@
 # System regression tests
 
 The `host` integration target groups boot packaging, module resolution, driver,
-UI, display-control and timer tests. Filter by module when checking one area:
+UI, display-control, timer, input, camera and fetch/checkpoint tests. Filter by
+module when checking one area:
 
 ```powershell
 cargo test --release -p cpu-v3-tang-nano-20k --test host boot::
@@ -18,7 +19,7 @@ capacity rejection, cancellation, version wrap and retained fault references.
 GPU/Display completion peers do not establish actual rendering, scanout, cache
 publication timing or concurrent hardware qualification.
 
-The `gamepad` target executes production RCC input code against an independent
+The `gamepad` module executes production RCC input code against an independent
 Device5 snapshot peer. It checks explicit edge accumulation/consumption,
 unchanged and torn snapshots, disconnect/reconnect, digital mode, configuration
 invalidation and held motion across ticks without a new sample. Cached motion,
@@ -45,6 +46,16 @@ Core/cache/arbiter emulator-vs-RTL comparison remains the independent
 `system_emu`; it is not a benchmark harness. The former benchmark directory,
 image exporter, calibration and folder-driven suite are removed.
 
+Input, first-person camera, retained-control, board-application
+and fetch/pause regressions also run in `host`; their module names remain filters.
+The classic 512-step camera exporter stays separate: it shares the demo asset
+producer, whose private resolver would duplicate the host resolver in one crate.
+The historical template identity check that required a dated maintainer target
+directory is removed; bounded retained-input and fault controls remain. The full
+65,536-pair stick oracle remains a routine regression because its measured release
+runtime is short. GPU model characterization and full-board extended workloads
+retain the existing explicit validation tiers.
+
 GPU rendering, fault and profiling tests retain explicit ignored entry points.
 Preparation and full-frame profiling use the same `gpu_demo_profile` executable;
 the former duplicate wrapper is removed. Run these serially when rebuilding
@@ -59,14 +70,23 @@ cargo test --release -p cpu-v3-tang-nano-20k --example cpu_v3_system extended_ -
 & scripts/validate-hardware.ps1 -Mode iverilog -ExtendedSimulations
 ```
 
-Routine `iverilog`/`all` validation excludes these expensive extended examples;
-bounded signature/range rejection tests still run. Changes to boot, Display
+Routine `iverilog`/`all` validation selects the production `cpu_v3_system`
+example and excludes its expensive extended cases; unrelated game/demo examples
+are selected explicitly, even when `-ExtendedSimulations` is enabled. This avoids
+implicitly running Bloxorz native scene replays. For example:
+
+```powershell
+cargo test --release -p cpu-v3-tang-nano-20k --example bloxorz -- --ignored --test-threads=1
+```
+
+For the production example, bounded signature/range rejection tests still run.
+Changes to boot, Display
 startup or the native memory path require selecting the affected extended
 case. This split changes validation cost, not the qualification supplied by a
 short protocol or functional test. A full-frame profile is not a default test,
 and no offline test substitutes for board verification.
 
-The `gpu_demo_first_person` target runs the production RCC camera/control flow
+The `gpu_demo_first_person` module runs the production RCC camera/control flow
 with bounded CPU steps and a separate floating basis/light reference. Its frame
 control peers verify that render timing excludes present/vblank, retains linear
 RGB565, and rejects failed/saturated measurements. Pixel and serial timing stay

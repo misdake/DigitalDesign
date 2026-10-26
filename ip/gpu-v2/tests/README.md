@@ -33,3 +33,9 @@ with an approved baseline. It exercises native/portable cache banks, all64 local
 origins, conflicting ways, CE and commit denial, refill stalls and held results.
 The 384 returned payload/texel records must match exactly; each simulation has
 a 30,000-cycle and 60-second bound.
+
+The lighting stream regression simulates the complete clean and CE-stalled
+64-pixel streams independently. Numerical/date/overflow audit faults reuse the
+accepted clean result, restoring the first record before each mutation; they do
+not repeat identical arithmetic simulation. The input corpus, context switches,
+II assertions, numerical oracle and watchdog checks are retained.
