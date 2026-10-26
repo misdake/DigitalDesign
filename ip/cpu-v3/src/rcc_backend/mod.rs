@@ -6,6 +6,8 @@
 //! is stable.
 
 mod options;
+#[cfg(test)]
+pub(crate) mod resource_tests;
 
 pub use options::CompilerOptions;
 

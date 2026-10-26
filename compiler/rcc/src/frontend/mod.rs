@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
 
 mod diagnostics;
+mod resource;
 pub use diagnostics::CompileError;
 
 #[cfg(doc)]
@@ -279,13 +280,14 @@ fn prepend_init_block(main: &mut IrFunc, insts: Vec<Instr>, detail: String) {
 }
 
 fn parse_files(
-    files: Vec<syn::File>,
+    mut files: Vec<syn::File>,
     data_base: u16,
     static_data_limit: usize,
     static_data_limit_name: &'static str,
     file_names: &[String],
     materialize_debug_locals: bool,
 ) -> Result<(Vec<IrFunc>, FrontendDebug), (usize, syn::Error)> {
+    resource::lower(&mut files)?;
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
@@ -2730,6 +2732,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
 /// statements that are also expressions (control flow, assignment, calls)
 fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
     match e {
+        Expr::Block(b) => block(l, &b.block),
         Expr::Assign(a) => {
             // whole-aggregate assignment: `p = q;` / `p = make();` (spec §14)
             if let Some(ty) = peek_type(l, &a.left) {

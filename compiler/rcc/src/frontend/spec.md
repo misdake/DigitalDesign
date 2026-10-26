@@ -25,7 +25,8 @@ Only these types exist; no other primitive types are supported:
 | an `enum` name | **one word: the variant's discriminant** | C-style fieldless variants in declaration order (spec §9d); `E::A` is a constant, `e as u16` and (with `#[derive(PartialEq)]`) `==` |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
-| a defined `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
+| a defined ordinary `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
+| `#[rcc_resource(...)]` struct | **affine one-word owner** | restricted lexical resource, checked before scalar ABI lowering; see §15 |
 | `fix32` | **signed Q16.16 fixed-point scalar** | CPU V3-only; occupies one scalar F register (16 fractional bits) |
 | `vec2` / `vec3` / `vec4` | **fix32 vectors** | CPU V3-only; a consecutive range of 2/3/4 scalar F registers (the host type keeps a zero tail) |
 | `()` | unit | return type of procedures |
@@ -146,6 +147,7 @@ blocks without one of those operations are errors. Ordinary buffers and local va
 - `if cond { } else if cond { } else { }` (statement form; `else` optional).
 - `if cond { a } else { b }` as an **expression** (both branches same type; C's `cond ? a : b`).
 - `while cond { }`, `loop { }`, `break;`, `continue;`.
+- Lexical `{ ... }` blocks as statements introduce a local scope; they are not general block-valued expressions.
 - `for i in a..b { }` and `for i in a..=b { }` (step is always 1; `i` takes the range's type).
 - Conditions are `bool` expressions (comparisons, `&&`, `||`, `!`). Loop-carried variables
   become phis automatically.
@@ -229,10 +231,10 @@ they are not part of this surface.
   produced when both operands are `i16`; mixed integer arithmetic is an error, because 
   implicit conversions hide too many bugs on a 16-bit machine.
 - **Unsupported means error**: these Rust features are rejected with a span — generics,
-  traits, impls and methods, closures, macros, references `&`, slices and native `[T; N]` arrays
+  traits, impls and methods, closures, macros, general references `&`, slices and native `[T; N]` arrays
   (§10), strings, floats, other integer types, unsafe operations other than the narrow `Ptr`
   boundary in §2, `extern`, lifetimes, items declared
-  inside a function body, attributes (except the ignored `#[allow(...)]` and the `#[doc]` /
+  inside a function body, attributes (except the resource marker in §15, the ignored `#[allow(...)]` and the `#[doc]` /
   `#[repr(...)]` / `#[derive(PartialEq)]` that §9b/§9d accept), and `use` (parsed but ignored; it
   exists for the IDE). Patterns are limited to a plain identifier or a tuple in `let` (§9c) and to
   a constant or `_` in `match` (§9d): struct patterns, bindings, guards, ranges and `|` are errors.
@@ -512,7 +514,7 @@ blit(TILE.as_array(), 8);
 
 ## 11. Taking addresses: `addr_of`
 
-There is no `&` operator (references are out of subset). The intrinsic
+There is no general `&` operator (except the direct resource-call borrow in §15). The intrinsic
 `addr_of(&x) -> Ptr` takes the address of a variable:
 
 - **globals** (`addr_of(&SCORE)`, or `TILE.as_ptr()`): the address is a **compile-time
@@ -535,7 +537,7 @@ them unchanged (a struct local is just an address plus offsets).
 
 ## 12. Out of scope for now
 
-`&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
+General `&x` references (outside §15), fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
 inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
 aggregate-returning fn pointers, `impl`, `vecN` fields, arbitrary static FPU expressions, recursive layouts, enum payloads,
@@ -729,3 +731,100 @@ stepping and the disassembly panel keep them visible as compiler-generated initi
 Static data initialization groups non-zero words by 256-word address page, temporarily uses `sp`
 as the page base, and writes each value with `store_sp`'s full u8 offset. After the section it
 restores the main frame's stack pointer before any user or runtime code executes.
+
+## 15. Lexical affine resources
+
+This opt-in target-language subset provides deterministic lexical cleanup without
+`Drop`, traits, closures, general references or a full Rust borrow checker:
+
+```rust
+#[rcc_resource(cleanup = renderer_cleanup)]
+pub struct Renderer { word: u16 }
+#[rcc_resource(cleanup = frame_cleanup, parent = Renderer)]
+pub struct Frame { word: u16 }
+#[rcc_resource(cleanup = pass_cleanup, parent = Frame)]
+pub struct Pass { word: u16 }
+
+// Resource definitions, factories, private raw operations and cleanup functions
+// are defined in the same loaded source file. Function bodies are omitted here.
+// renderer_open() -> Renderer
+// frame_open(renderer: &mut Renderer) -> Frame
+// pass_open(frame: &mut Frame) -> Pass
+// pass_draw(pass: &mut Pass, ...) -> ()
+// pass_end(pass: Pass) -> ()
+// frame_complete(frame: Frame) -> ()
+```
+
+A resource declaration has one private `u16` field, no generics/derive and one
+`rcc_resource` attribute (`doc`/`allow` are also accepted). The field is its scalar
+ABI representation, not an address to an ordinary struct. Only its definition
+file may construct the resource or read that field. The resource identity cannot
+be reassigned. `pub` permits other loaded files to name the resource.
+
+An owner is a simple initialized local or by-value function parameter. `let b=a`
+moves ownership; passing a resource by value moves it into the callee. Any later
+use of the old binding is rejected. Owned call arguments must name bound locals;
+bind factory results before passing them onward. This deliberately excludes
+untracked temporary siblings in nested calls. Resources cannot be embedded in another
+struct/tuple/array/static, converted to an ordinary type, address-taken, stored
+through `Ptr`/`Array`, or passed to a resource-signature function pointer. Such
+functions require direct calls. An ordinary value cannot initialize a resource.
+
+`&mut Resource` is supported only as a function parameter and a direct call
+argument naming a mutable owner (or a reborrowed resource parameter). It does
+not create a storable reference. Repeated arguments cannot alias an owner or
+borrow a parent while passing its child. Arguments are checked together, so a
+later argument cannot consume an earlier borrowed owner.
+An already evaluated owned argument retains its child/parent lock until all
+arguments have been evaluated and ownership is handed to the callee. Nested
+argument calls cannot borrow or destroy that parent. Return/break/continue
+through pending resource arguments are conservatively rejected; compute such
+values before moving the owner. A terminal fail-stop still retains the resources.
+
+A child-producing call must have exactly one borrowed parameter of its declared
+parent type. Its result locks the **actual parent argument's identity**, not all
+instances of that type. A live child prevents access, reborrowing, moving or
+closing its parent. Moving a child preserves that association. A factory may
+return a child tied to a borrowed parameter; returning a child of a local owned
+parent is rejected. A consumed child parameter has no proved borrowed-parent
+origin in the callee and cannot be returned/reparented by merely adding another
+parent argument. General resource-valued block/conditional expressions,
+resource reassignment and shadowing are outside this subset.
+
+Live owners are cleaned in reverse binding order on normal block/function exit,
+`return`, `break` and `continue`. A return value is evaluated before cleanup.
+By-value parameters are cleaned by the callee if it has not moved/disarmed them;
+borrowed parameters are not cleaned. Cleanup is a private same-file function
+with one by-value parameter of the matching resource and unit return. That
+parameter itself is exempt from automatic cleanup, preventing recursive drop.
+
+`resource_disarm(owner)` consumes without cleanup and is callable only inside
+the resource's definition file. Trusted completion code uses it **after**
+transferring ownership or freezing a failed operation. A successful transfer
+must not be auto-cancelled when the callee returns; a failure before transfer
+still follows the ordinary exactly-once cleanup path. Applications cannot use
+this intrinsic as a public `forget` operation. No new target opcode is needed:
+checking and cleanup insertion precede existing u16/ordinary-call lowering.
+
+Branch merges and loop backedges/exits require consistent outer ownership;
+inconsistent states are rejected rather than represented by runtime drop flags.
+Resource control flow supports `if`, unlabeled `while`/`loop` and their exits.
+`match`/`for` while resource bindings are in scope, labeled exits, break values
+and short-circuit expressions that change ownership are rejected. A fail-stop
+halt is not stack unwinding and need not execute cleanup.
+
+For files defining resources, the frontend enforces cross-file visibility of
+private functions and static/const storage, including flattened names and
+function-value access, module-level initializers and constant expressions in
+type lengths, independently of module load order. Ordinary lexical locals and
+parameters take precedence over global function/storage names. An ignored/renamed
+`use` cannot grant access. Resource
+fields and constructors retain their defining-file restriction. This is a
+safe-subset ownership guarantee, not protection against arbitrary unsafe memory,
+forged code pointers, device writes or an incorrectly implemented trusted owner.
+
+Cleanup scheduling does not itself define GPU completion: GPU resource cleanup
+must release/cancel only untransferred CPU recording rights and must not hide
+GPU/vblank waits. Explicit completion hands asynchronous resources to their
+scheduler; only an explicit close may drain. Those device contracts belong to
+the owning driver rather than to the language's resource representation.
