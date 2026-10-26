@@ -33,7 +33,10 @@ ordinary explicit mutable reborrows.
 flowchart LR
   R[Renderer] --> F[Frame recording]
   F --> P[Pass and prepared camera snapshot]
-  P -->|pass_complete| S[Sealed input after frame_complete]
+  P -->|pass_complete| F
+  F -->|frame_complete after completed Pass| S[Sealed input]
+  P -->|abandon| X[Invalid Frame]
+  X -->|Frame completion or cleanup| C
   F -->|implicit cancellation| C[Discard recording lengths]
   S -->|target bind and final cache publication| G[Single GPU]
   G -->|successful terminal| U[Release input and UI page]
@@ -41,8 +44,13 @@ flowchart LR
   D -->|actual retirement| W[Writable color]
 ```
 
-`pass_complete` ends the Pass; it does not submit. An abandoned Pass invalidates
-that Frame. `frame_complete` then either cancels an unfinished Frame or seals and
+`pass_complete` ends the Pass; it does not submit. The same Frame may then open
+another 3D or UI Pass. All Passes share that Frame's target and the fixed viewport;
+color/depth are cleared once at Frame begin. A new 3D Pass snapshots its current
+Camera; it cannot rewrite earlier draw/Pass data. An abandoned Pass invalidates
+the whole Frame, including previously completed Passes. No later Pass may reopen
+it; explicit Frame completion or cleanup cancels the recording. The next Frame
+starts with a fresh Pass status. `frame_complete` then either cancels an unfinished Frame or seals and
 transfers a completed one to the scheduler before advancing. A failed transfer
 consumes the Frame and freezes referenced state, with no cleanup retry.
 Frame cleanup only cancels its recording and retains desired UI. Renderer cleanup
@@ -135,3 +143,42 @@ uses the actual producer and only semantic public calls; its generated OUT_DIR
 boot image matches an independent repack. Controlled GPU/Display peers establish
 software ownership/bytes, not rasterization, scanout, real cache contention or
 physical board qualification.
+
+## Actual changing caller and CPU cost fixture
+
+The `gpu_renderer` example's `changes.rs` records one Mesh through two persistent
+Models, opaque/translucent Materials and separate 3D/UI Passes. Its eleven-frame
+entry covers steady state, Camera translation/rotation/projection/world light,
+Model pose/scale, Material color/lighting/specular setters, and text hide/edit/show
+with shorter numbers. Camera edits made inside a live Pass affect its next Pass;
+a Model/Material edit affects only subsequent draws. Calls retain their order,
+including transparent draws between opaque draws. No sorting or per-draw game
+objects are introduced.
+
+The bounded host case interprets actual native DMA/bind/draw/UI commands and
+checks each captured Global/Render/Instance against independent floating transforms
+and exact encoding predicates. It checks full-render waits before binding changes,
+the earlier input snapshots, both UI page histories and unchanged-scene counters.
+Completed sequential Passes and whole-Frame cancellation after a later abandoned
+Pass use actual public callers. Private probes do not replace this application.
+
+A second case executes the same compiled caller on the production CPU/FPU core
+emulator. It supplies a separate instruction ROM and one-cycle word-data/control
+peers; actual core store handshakes must target the Recording UI page, never a
+Recorded/InFlight page, including stores from FPU instructions. CPU cycle/retired
+word/store counts are recorded between model-only SIGNAL markers: recording after
+Frame acquisition to before completion, then seal/advance through its return.
+The marker overhead is included. Frame acquisition, input capture and waiting
+precede this window. There is no cache, fetch queue, SDRAM, real GPU/Display timing
+or board-frequency extrapolation. The Device0 time peer is fixed, not derived from
+RECV counts. These measurements compare actual generated CPU work; they are not
+end-to-end or real concurrent-system performance.
+
+Reports remain temporary worktree artifacts. A matched steady frame after Camera
+translation has the same final scene/UI/materials, avoiding comparisons between
+different draw counts. Multi-view/material-change frames do more draws/bindings
+and are reported separately. Hidden-text edits retain logical glyphs; showing them
+adds a desired-field update. A dirty UI page still pays mapping/publication overhead
+even for one changed word. Once both pages converge, subsequent unchanged frames
+issue zero UI stores and preserve prepared scene data. The explicit publication
+fence, ordering and fault checks remain in this cost.

@@ -32,3 +32,25 @@ The OBS interval includes final publication and delayed observation of GPU
 completion. It is not pure GPU execution time. Startup/invalid measurements show
 `OBS --.-`; valid sub-10-ms values omit the leading zero. See the
 [resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md).
+
+## Changing frames
+
+```powershell
+& systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/build.ps1 -Changes
+```
+
+The selector `CPU_V3_BOOT_EXAMPLE=gpu_renderer_changes` builds `rcc/changes.rs`
+with the same immutable assets, into a separate default output directory and
+separate cargo log labels. `renderer_changed_frames` executes eleven frames;
+its normal entry cycles through the semantic changes continuously. The first
+3D Pass retains its Camera snapshot while setters prepare a later Pass. One Mesh
+is reused by two Models; old draw inputs remain copied snapshots. Alpha drawing
+keeps call order. A later UI Pass changes visibility and a five-digit value to
+one/two digits without packed glyph manipulation.
+
+Host tests check the actual stream and objects independently and journal actual
+production-core memory stores/cycles under fixed one-cycle peers. They cover
+completed sequential Passes, cancellation of a Frame after any abandoned Pass,
+held UI pages and zero UI writes once both pages converge. The cost windows and
+limits are described in the [API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md#actual-changing-caller-and-cpu-cost-fixture).
+They do not establish real cache/GPU/Display concurrency or board timing.

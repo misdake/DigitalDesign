@@ -801,8 +801,11 @@ pub fn model_pose(m: &mut Model, position: vec3, angles: vec3, scale: vec3) {
         renderer_fault(40);
     }
 }
+fn renderer_pass_ready() -> bool {
+    GPU_RENDERER[0u16] == 2 && (GPU_RENDERER[1u16] == 0 || GPU_RENDERER[1u16] == 2)
+}
 pub fn frame_pass(f: &mut Frame, c: &mut Camera) -> Pass {
-    if GPU_RENDERER[0u16] != 2 || GPU_RENDERER[1u16] != 0 || !scene_view_begin(c.word) {
+    if !renderer_pass_ready() || !scene_view_begin(c.word) {
         renderer_fault(41);
     }
     GPU_RENDERER[0u16] = 3;
@@ -867,7 +870,7 @@ pub fn frame_number(f: &mut Frame, field: &mut TextField, number: u16) {
     }
 }
 pub fn frame_ui_pass(f: &mut Frame) -> Pass {
-    if GPU_RENDERER[0u16] != 2 || GPU_RENDERER[1u16] != 0 {
+    if !renderer_pass_ready() {
         renderer_fault(27);
     }
     GPU_RENDERER[0u16] = 3;

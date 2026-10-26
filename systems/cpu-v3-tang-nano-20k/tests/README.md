@@ -42,6 +42,14 @@ epochs, saturation and wrap. Frame queries cannot reread live input; held input
 integrates on subsequent ticks without new packets. GPU/Display completion peers
 qualify software ownership/bytes, not actual GPU/cache/Display concurrency.
 
+The `gpu_pipeline::changes` cases execute the real changing-frame application,
+interpret every native draw snapshot/state and UI range, and hold recorded/inflight
+UI images immutable. A production CPU/FPU core run uses fixed instruction/data/
+control peers and checks every UI store handshake, including FPU stores. It writes
+per-frame recording/seal costs and UI store counts under `target`; these exclude
+cache/SDRAM/GPU/Display latency. Sequential completed Passes and a later abandoned
+Pass are checked through the public resource facade.
+
 Core/cache/arbiter emulator-vs-RTL comparison remains the independent
 `system_cosim` target. Its functional machine and checkpoint support lives in
 `system_emu`; it is not a benchmark harness. The former benchmark directory,

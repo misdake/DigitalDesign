@@ -3,13 +3,13 @@ use super::*;
 use cpu_v3::StepOutcome;
 type Matrix = [[f64; 4]; 3];
 #[derive(Clone, Copy)]
-struct Case {
-    eye: [f64; 3],
-    camera: [f64; 3],
-    position: [f64; 3],
-    angles: [f64; 3],
-    scale: [f64; 3],
-    focal: f64,
+pub(super) struct Case {
+    pub(super) eye: [f64; 3],
+    pub(super) camera: [f64; 3],
+    pub(super) position: [f64; 3],
+    pub(super) angles: [f64; 3],
+    pub(super) scale: [f64; 3],
+    pub(super) focal: f64,
 }
 fn scalar(x: f64) -> String {
     let raw = (x * 65536.0).round() as i32 as u32;
@@ -26,7 +26,7 @@ fn vector(v: [f64; 3]) -> String {
 fn quant(x: f64) -> f64 {
     (x * 65536.0).round() / 65536.0
 }
-fn rotation(a: [f64; 3]) -> [[f64; 3]; 3] {
+pub(super) fn rotation(a: [f64; 3]) -> [[f64; 3]; 3] {
     let (sx, cx) = quant(a[0]).sin_cos();
     let (sy, cy) = quant(a[1]).sin_cos();
     let (sz, cz) = quant(a[2]).sin_cos();
@@ -36,7 +36,7 @@ fn rotation(a: [f64; 3]) -> [[f64; 3]; 3] {
         [-sy, cy * sx, cy * cx],
     ]
 }
-fn reference(c: Case) -> (Matrix, [[f64; 3]; 3]) {
+pub(super) fn reference(c: Case) -> (Matrix, [[f64; 3]; 3]) {
     let camera = rotation(c.camera);
     let model = rotation(c.angles);
     let view: [[f64; 3]; 3] = std::array::from_fn(|r| std::array::from_fn(|k| camera[k][r]));
@@ -62,7 +62,7 @@ fn reference(c: Case) -> (Matrix, [[f64; 3]; 3]) {
     }
     (h, normal)
 }
-fn fixed(words: &[u16], at: usize) -> f64 {
+pub(super) fn fixed(words: &[u16], at: usize) -> f64 {
     i32::from_le_bytes([
         words[at] as u8,
         (words[at] >> 8) as u8,

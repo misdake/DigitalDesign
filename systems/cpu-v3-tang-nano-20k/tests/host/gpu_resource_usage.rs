@@ -252,3 +252,28 @@ signal(1,7);}renderer_close(r);halt(0x600d);}"#;
       execute_signal(&format!("mod gpu_pipeline;fn main(){{let mut r=renderer_open();{body}halt(0x600d);}}"),0,signal,false);
     }
 }
+
+#[test]
+fn abandoning_any_sequential_pass_cancels_the_whole_frame_and_cannot_be_reopened() {
+    let source = r#"mod gpu_pipeline;
+fn main(){let mut r=renderer_open();let mut text=renderer_text(&mut r,0,0,8);
+{let mut f=renderer_frame(&mut r,0x1111);frame_number(&mut f,&mut text,7);
+{let mut first=frame_ui_pass(&mut f);pass_text(&mut first,&mut text);pass_complete(first);}
+{let mut abandoned=frame_ui_pass(&mut f);pass_text(&mut abandoned,&mut text);}
+frame_complete(f);}
+{let mut fresh=renderer_frame(&mut r,0x1111);frame_number(&mut fresh,&mut text,9);
+let mut p=frame_ui_pass(&mut fresh);pass_text(&mut p,&mut text);pass_complete(p);frame_complete(fresh);}
+renderer_close(r);halt(0x600d);}"#;
+    let (mut cpu, state, program) = execute(source, 1);
+    assert_eq!((state.borrow().starts.len(), state.borrow().swaps), (1, 1));
+    assert_eq!(state.borrow().ui_snapshots[0][0], 0xff39);
+    assert_eq!(record(&mut cpu, &program, "GPU_PIPE", 4), [1, 0, 0, 0]);
+    let invalid = r#"mod gpu_pipeline;
+fn main(){let mut r=renderer_open();let mut f=renderer_frame(&mut r,0x1111);
+{let p=frame_ui_pass(&mut f);pass_complete(p);}
+{let abandoned=frame_ui_pass(&mut f);}
+let illegal=frame_ui_pass(&mut f);halt(0x600d);}"#;
+    let (mut cpu, state, program) = execute_signal(invalid, 0, 0xe01b, false);
+    assert!(state.borrow().starts.is_empty());
+    assert_eq!(record(&mut cpu, &program, "GPU_PIPE", 1), [3]);
+}

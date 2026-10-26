@@ -20,6 +20,8 @@ pub const GPU_RENDERER_MAX_X_LOW:u16=0;pub const GPU_RENDERER_MAX_X_HIGH:u16=1;
 pub const GPU_RENDERER_MAX_Y_LOW:u16=0;pub const GPU_RENDERER_MAX_Y_HIGH:u16=1;
 pub const GPU_RENDERER_MAX_Z_LOW:u16=0;pub const GPU_RENDERER_MAX_Z_HIGH:u16=1;
 ";
+#[path = "gpu_renderer_changes.rs"]
+mod changes;
 #[path = "gpu_persistent_ui.rs"]
 mod persistent;
 #[path = "gpu_renderer_time.rs"]
@@ -54,6 +56,9 @@ struct State {
     expected_depth: Option<u16>,
     fail_publication: bool,
     scene_draw: bool,
+    capture_dynamic: bool,
+    object_snapshots: Vec<Vec<u16>>,
+    valid_command_lengths: Vec<usize>,
 }
 struct Peer {
     kind: u8,
@@ -142,50 +147,68 @@ impl cpu_v3::Device for Peer {
                     })
                     .unwrap()
                 );
-                let commands = image(memory, usize::from(value) * 128, 64);
-                let mut expected = vec![
-                    Command::wait(true, true),
-                    Command::FLUSH,
-                    Command::dma_local((objects + offset * 2) as u32, 276, 32).unwrap(),
-                    Command::wait(true, false),
-                    Command::set_target(276).unwrap(),
-                    Command::clear(false, 0x1111 + number as u16),
-                    Command::clear(true, s.expected_depth.unwrap_or(0x2222)),
-                ];
-                if s.scene_draw {
-                    expected.extend(scene_commands_and_objects(memory, objects));
-                }
-                if let Some(ranges) = &s.persistent_ranges {
+                let words = if s.capture_dynamic {
+                    ((usize::from(s.count) + 1) * 2).next_multiple_of(64)
+                } else {
+                    64
+                };
+                let commands = image(memory, usize::from(value) * 128, words);
+                if s.capture_dynamic {
+                    let valid = usize::from(s.count) + 1;
+                    assert!(valid <= 16384);
+                    s.valid_command_lengths.push(valid);
+                    s.object_snapshots.push(image(memory, objects, 32768));
                     let page = if number.is_multiple_of(2) {
                         0x7df800
                     } else {
                         0x7dfc00
                     };
-                    if !ranges[number].is_empty() {
-                        expected.extend([
-                            Command::wait(true, true),
-                            Command::FLUSH,
-                            Command::dma_local(page + 768, 276, 32).unwrap(),
-                            Command::wait(true, false),
-                        ]);
-                        for &(first, end) in &ranges[number] {
-                            expected.push(if first == 0 && end == 750 {
-                                Command::ui_grid(276).unwrap()
-                            } else {
-                                Command::ui_grid_range(276, first, end).unwrap()
-                            });
-                        }
+                    s.ui_snapshots.push(image(memory, page, 512));
+                } else {
+                    let mut expected = vec![
+                        Command::wait(true, true),
+                        Command::FLUSH,
+                        Command::dma_local((objects + offset * 2) as u32, 276, 32).unwrap(),
+                        Command::wait(true, false),
+                        Command::set_target(276).unwrap(),
+                        Command::clear(false, 0x1111 + number as u16),
+                        Command::clear(true, s.expected_depth.unwrap_or(0x2222)),
+                    ];
+                    if s.scene_draw {
+                        expected.extend(scene_commands_and_objects(memory, objects));
                     }
-                    s.ui_snapshots.push(image(memory, page as usize, 512));
+                    if let Some(ranges) = &s.persistent_ranges {
+                        let page = if number.is_multiple_of(2) {
+                            0x7df800
+                        } else {
+                            0x7dfc00
+                        };
+                        if !ranges[number].is_empty() {
+                            expected.extend([
+                                Command::wait(true, true),
+                                Command::FLUSH,
+                                Command::dma_local(page + 768, 276, 32).unwrap(),
+                                Command::wait(true, false),
+                            ]);
+                            for &(first, end) in &ranges[number] {
+                                expected.push(if first == 0 && end == 750 {
+                                    Command::ui_grid(276).unwrap()
+                                } else {
+                                    Command::ui_grid_range(276, first, end).unwrap()
+                                });
+                            }
+                        }
+                        s.ui_snapshots.push(image(memory, page as usize, 512));
+                    }
+                    expected.extend([Command::wait(true, true), Command::FLUSH, Command::END]);
+                    assert_eq!(usize::from(s.count), expected.len() - 1);
+                    let mut golden = CommandBuffer::new();
+                    for c in expected {
+                        golden.push(c);
+                    }
+                    let raw: Vec<u8> = commands.iter().flat_map(|w| w.to_le_bytes()).collect();
+                    assert_eq!(raw, golden.image().unwrap().storage);
                 }
-                expected.extend([Command::wait(true, true), Command::FLUSH, Command::END]);
-                assert_eq!(usize::from(s.count), expected.len() - 1);
-                let mut golden = CommandBuffer::new();
-                for c in expected {
-                    golden.push(c);
-                }
-                let raw: Vec<u8> = commands.iter().flat_map(|w| w.to_le_bytes()).collect();
-                assert_eq!(raw, golden.image().unwrap().storage);
                 s.starts.push((value, commands, target));
                 s.gpu = 1;
                 s.gpu_reads_left = 12;

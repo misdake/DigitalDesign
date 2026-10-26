@@ -1,15 +1,19 @@
-param([string]$OutputDirectory = 'target/gpu-renderer-boot')
+param([string]$OutputDirectory = '', [switch]$Changes)
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = if ($Changes) { 'target/gpu-renderer-changes-boot' } else { 'target/gpu-renderer-boot' }
+}
+$buildLabel = if ($Changes) { 'gpu-renderer-changes' } else { 'gpu-renderer' }
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
 $savedExample = $env:CPU_V3_BOOT_EXAMPLE
 Push-Location $repoRoot
 try {
-    $env:CPU_V3_BOOT_EXAMPLE = 'gpu_renderer'
-    & scripts/run-cargo.ps1 -Subcommand run -Label 'gpu-renderer-boot' -CargoArgs @(
+    $env:CPU_V3_BOOT_EXAMPLE = if ($Changes) { 'gpu_renderer_changes' } else { 'gpu_renderer' }
+    & scripts/run-cargo.ps1 -Subcommand run -Label "$buildLabel-boot" -CargoArgs @(
         '-p', 'cpu-v3-tang-nano-20k', '--bin', 'cpu-v3-boot-assets', '--', $OutputDirectory
     )
     if ($LASTEXITCODE -ne 0) { throw 'GPU renderer boot build failed' }
-    & scripts/run-cargo.ps1 -Subcommand run -Label 'gpu-renderer-independent-pack' -CargoArgs @(
+    & scripts/run-cargo.ps1 -Subcommand run -Label "$buildLabel-independent-pack" -CargoArgs @(
         '-p', 'cpu-v3-tang-nano-20k', '--bin', 'cpu-v3-pack', '--',
         (Join-Path $OutputDirectory 'application.v3bin'), '--project',
         (Join-Path $OutputDirectory 'renderer-repack.conf'), '-o',

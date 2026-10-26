@@ -96,7 +96,7 @@ fn main() {
                 "ds2-ui-assets/ui_layout.rs".to_owned(),
                 "ds2-ui-repack.conf".to_owned(),
             ]);
-        } else if example == "gpu_renderer" {
+        } else if example == "gpu_renderer" || example == "gpu_renderer_changes" {
             let example_dir = root.join("examples/gpu_renderer");
             for input in [
                 example_dir.join("tools/assets.py"),
@@ -116,7 +116,11 @@ fn main() {
             let manifest: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
                     .unwrap();
-            project.application = PathBuf::from("examples/gpu_renderer/rcc/main.rs");
+            project.application = PathBuf::from(if example == "gpu_renderer_changes" {
+                "examples/gpu_renderer/rcc/changes.rs"
+            } else {
+                "examples/gpu_renderer/rcc/main.rs"
+            });
             project.renderer = true;
             project.copies = manifest["resources"]
                 .as_array()
