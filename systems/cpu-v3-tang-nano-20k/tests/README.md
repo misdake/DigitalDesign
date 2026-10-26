@@ -9,6 +9,15 @@ cargo test --release -p cpu-v3-tang-nano-20k --test host gpu_rcc_driver::
 cargo test --release -p cpu-v3-tang-nano-20k --test host gpu_pipeline::
 ```
 
+The pipeline module includes persistent UI tests under gpu_pipeline::persistent.
+They journal scalar stores from actual compiled CPU execution, checking every
+UI write against the live Recording reference and recorder identity. Seven
+alternating submissions verify native command/descriptor bytes, page convergence
+and zero stores for unchanged contents. Separate cases cover field validation,
+capacity rejection, cancellation, version wrap and retained fault references.
+GPU/Display completion peers do not establish actual rendering, scanout, cache
+publication timing or concurrent hardware qualification.
+
 Core/cache/arbiter emulator-vs-RTL comparison remains the independent
 `system_cosim` target. Its functional machine and checkpoint support lives in
 `system_emu`; it is not a benchmark harness. The former benchmark directory,

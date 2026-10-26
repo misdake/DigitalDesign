@@ -23,6 +23,8 @@ mod gpu_window;
 use gpu_window::*;
 mod gpu_ui;
 use gpu_ui::*;
+mod gpu_ui_persistent;
+use gpu_ui_persistent::*;
 
 static GPU_PIPE_A: GpuBuffer = GpuBuffer {
     high_slot: 0,
@@ -149,6 +151,9 @@ fn gpu_pipeline_poll() -> u16 {
         {
             return gpu_pipeline_fail(6);
         }
+        if !gpu_persistent_ui_retire(slot) {
+            return gpu_pipeline_fail(15);
+        }
         p[3u16] = 0;
     }
     let display = gpu_display_refresh();
@@ -181,6 +186,10 @@ fn gpu_pipeline_begin(color_value: u16, depth_value: u16) -> u16 {
     if cb[0u16].state != GPU_CB_BUILDING || cb[0u16].command_words != 0 {
         return 0;
     }
+    if gpu_persistent_ui_reference(slot) != 0 {
+        gpu_pipeline_fail(14);
+        return 0;
+    }
     p[1u16] = slot;
     if !gpu_builder_begin(
         cb,
@@ -204,12 +213,17 @@ fn gpu_pipeline_seal() -> bool {
         return false;
     }
     let cb = gpu_pipeline_buffer(p[1u16]);
+    if !gpu_persistent_ui_prepare(p[1u16]) {
+        gpu_pipeline_fail(13);
+        return false;
+    }
     if !gpu_builder_end(cb) || !gpu_builder_finish(cb) {
         if gpu_memory_faulted() {
             gpu_pipeline_fail(9);
         }
         return false;
     }
+    gpu_persistent_ui_sealed(p[1u16]);
     p[2u16] = p[1u16];
     p[1u16] = 0;
     true
@@ -221,6 +235,10 @@ fn gpu_pipeline_cancel() -> bool {
     }
     let mut cb = gpu_pipeline_buffer(p[1u16]);
     if cb[0u16].state != GPU_CB_BUILDING {
+        return false;
+    }
+    if !gpu_persistent_ui_cancel(p[1u16]) {
+        gpu_pipeline_fail(14);
         return false;
     }
     cb[0u16].command_words = 0;
@@ -244,6 +262,9 @@ fn gpu_pipeline_advance() -> u16 {
     if p[2u16] == 0 {
         return result;
     }
+    if !gpu_persistent_ui_ready(p[2u16]) {
+        return gpu_pipeline_fail(14);
+    }
     let target = gpu_display_reserve();
     if target == 0 {
         if GPU_DISPLAY.as_array()[0u16] == 3 {
@@ -261,9 +282,39 @@ fn gpu_pipeline_advance() -> u16 {
     if gpu_driver_submit_idle(cb) != GPU_PENDING {
         return gpu_pipeline_fail(12);
     }
+    gpu_persistent_ui_submitted(slot);
     p[2u16] = 0;
     p[3u16] = slot;
     p[4u16] = 3 - slot;
     p[5u16] += 1;
     GPU_PENDING
+}
+// All persistent ranges in this frame use the same page. Its content is chosen
+// only when sealing; later desired edits belong to a future frame.
+fn gpu_pipeline_ui_range(first: u16, end: u16) -> bool {
+    if !gpu_persistent_ui_live() || GPU_PIPE[1u16] == 0 || first > end || end > 750 {
+        return false;
+    }
+    if first == end {
+        return true;
+    }
+    if GPU_PUI_CANVAS[0u16] == 0 {
+        return false;
+    }
+    let slot = GPU_PIPE[1u16];
+    let reference = gpu_persistent_ui_reference(slot);
+    if reference > 1 {
+        gpu_pipeline_fail(14);
+        return false;
+    }
+    let descriptor = gpu_persistent_ui_page(slot) + (GPU_UI_DESCRIPTOR_WORD >> 6);
+    let cb = gpu_pipeline_buffer(slot);
+    let result = gpu_builder_ui_page(cb, descriptor, first, end, reference == 0);
+    if result || gpu_memory_faulted() {
+        GPU_PUI_PAGES[(slot - 1) * 4] = 1;
+    }
+    if gpu_memory_faulted() {
+        gpu_pipeline_fail(13);
+    }
+    result
 }

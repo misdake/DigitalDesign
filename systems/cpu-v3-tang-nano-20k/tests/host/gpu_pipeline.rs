@@ -6,6 +6,8 @@ use gpu_v2::{
     system::vliw_command::{target_params, Command, CommandBuffer},
 };
 use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
+#[path = "gpu_persistent_ui.rs"]
+mod persistent;
 
 #[derive(Default)]
 struct State {
@@ -24,6 +26,8 @@ struct State {
     overlap: usize,
     counts: usize,
     maintenance: usize,
+    persistent_ranges: Option<Vec<Vec<(u16, u16)>>>,
+    ui_snapshots: Vec<Vec<u16>>,
 }
 struct Peer {
     kind: u8,
@@ -65,7 +69,6 @@ impl cpu_v3::Device for Peer {
             (4, 1) => {
                 assert_eq!(s.gpu, 0);
                 assert!(!s.pending);
-                assert_eq!(s.count, 9);
                 let number = s.starts.len();
                 let objects = if value == 0x9200 {
                     0x4a0000
@@ -73,7 +76,11 @@ impl cpu_v3::Device for Peer {
                     assert_eq!(value, 0xfc00);
                     0x7f0000
                 };
-                let offset = if number == 0 { 32 } else { 0 };
+                let offset = if number == 0 && s.persistent_ranges.is_none() {
+                    32
+                } else {
+                    0
+                };
                 let target = image(memory, objects + offset * 2, 16);
                 let mut bytes = Vec::new();
                 for w in &target {
@@ -96,8 +103,7 @@ impl cpu_v3::Device for Peer {
                     .unwrap()
                 );
                 let commands = image(memory, usize::from(value) * 128, 64);
-                let mut golden = CommandBuffer::new();
-                for c in [
+                let mut expected = vec![
                     Command::wait(true, true),
                     Command::FLUSH,
                     Command::dma_local((objects + offset * 2) as u32, 276, 32).unwrap(),
@@ -105,10 +111,34 @@ impl cpu_v3::Device for Peer {
                     Command::set_target(276).unwrap(),
                     Command::clear(false, 0x1111 + number as u16),
                     Command::clear(true, 0x2222),
-                    Command::wait(true, true),
-                    Command::FLUSH,
-                    Command::END,
-                ] {
+                ];
+                if let Some(ranges) = &s.persistent_ranges {
+                    let page = if number.is_multiple_of(2) {
+                        0x7df800
+                    } else {
+                        0x7dfc00
+                    };
+                    if !ranges[number].is_empty() {
+                        expected.extend([
+                            Command::wait(true, true),
+                            Command::FLUSH,
+                            Command::dma_local(page + 768, 276, 32).unwrap(),
+                            Command::wait(true, false),
+                        ]);
+                        for &(first, end) in &ranges[number] {
+                            expected.push(if first == 0 && end == 750 {
+                                Command::ui_grid(276).unwrap()
+                            } else {
+                                Command::ui_grid_range(276, first, end).unwrap()
+                            });
+                        }
+                    }
+                    s.ui_snapshots.push(image(memory, page as usize, 512));
+                }
+                expected.extend([Command::wait(true, true), Command::FLUSH, Command::END]);
+                assert_eq!(usize::from(s.count), expected.len() - 1);
+                let mut golden = CommandBuffer::new();
+                for c in expected {
                     golden.push(c);
                 }
                 let raw: Vec<u8> = commands.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -143,7 +173,12 @@ impl cpu_v3::Device for Peer {
                     assert_eq!(s.gpu, 1);
                     assert_eq!(s.starts.len(), 1);
                     assert_eq!(image(memory, 0x490000, 64), s.starts[0].1);
-                    assert_eq!(image(memory, 0x4a0040, 16), s.starts[0].2);
+                    let target = if s.persistent_ranges.is_some() {
+                        0x4a0000
+                    } else {
+                        0x4a0040
+                    };
+                    assert_eq!(image(memory, target, 16), s.starts[0].2);
                     s.overlap += 1;
                 }
                 _ => panic!("peer stimulus {value}"),
@@ -219,6 +254,19 @@ fn run(body: &str) -> (CpuV3Sim, Rc<RefCell<State>>) {
     run_with_globals("", body)
 }
 fn run_with_globals(globals: &str, body: &str) -> (CpuV3Sim, Rc<RefCell<State>>) {
+    let program = compile(globals, body);
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&program.words);
+    let state = attach(&mut cpu, None);
+    let result = cpu.run(5_000_000).unwrap();
+    assert!(
+        matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
+        "{result:?}"
+    );
+    assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
+    (cpu, state)
+}
+fn compile(globals: &str, body: &str) -> rcc_backend::CpuV3Program {
     let source=format!("mod gpu_pipeline; {globals} fn check(ok:bool){{if !ok{{halt(0xbad);}}}} fn main(){{{body}halt(0x600d);}}");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
@@ -229,11 +277,15 @@ fn run_with_globals(globals: &str, body: &str) -> (CpuV3Sim, Rc<RefCell<State>>)
         &mut |n| std::fs::read_to_string(root.join(format!("{n}.rs"))).map_err(|e| e.to_string()),
     )
     .unwrap();
-    let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
-    let mut cpu = CpuV3Sim::default();
-    cpu.set_boot_window(&program.words);
+    rcc_backend::try_compile(parsed, &options, "main").unwrap()
+}
+fn attach(
+    cpu: &mut CpuV3Sim,
+    persistent_ranges: Option<Vec<Vec<(u16, u16)>>>,
+) -> Rc<RefCell<State>> {
     let state = Rc::new(RefCell::new(State {
         active: 0x200000,
+        persistent_ranges,
         ..State::default()
     }));
     for kind in [0, 3, 4, 7] {
@@ -245,13 +297,7 @@ fn run_with_globals(globals: &str, body: &str) -> (CpuV3Sim, Rc<RefCell<State>>)
             }),
         );
     }
-    let result = cpu.run(5_000_000).unwrap();
-    assert!(
-        matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
-        "{result:?}"
-    );
-    assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
-    (cpu, state)
+    state
 }
 #[test]
 fn compiled_two_slots_late_bind_and_distinct_display_retirement() {
