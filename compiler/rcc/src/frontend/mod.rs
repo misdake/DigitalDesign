@@ -11,6 +11,7 @@ use crate::{
 use crate::{BoolExpr, FuncBuilder, RccConfig, VarId};
 use crate::{DebugVar, VarLoc};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
 
 mod diagnostics;
@@ -65,6 +66,7 @@ pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, CompileEr
         "target memory",
         &["<source>".to_string()],
         false,
+        None,
     )
     .map_err(|(_, error)| CompileError::from_syn(source_name, src, error))?;
     Ok(Program { funcs, debug })
@@ -104,8 +106,36 @@ pub fn compile_program_named(
     opts: &impl RccConfig,
     loader: &mut dyn FnMut(&str) -> Result<String, String>,
 ) -> Result<Program, CompileError> {
+    compile_program_named_with_libraries(main_name, src, opts, &[], &mut |name| {
+        loader(name).map(|source| ModuleSource {
+            source,
+            origin: None,
+        })
+    })
+}
+
+/// Source text and its trusted host-loader origin. Synthetic, non-library
+/// modules may omit the origin; source text cannot grant itself a library path.
+pub struct ModuleSource {
+    pub source: String,
+    pub origin: Option<PathBuf>,
+}
+
+/// Compile with explicitly approved resource-library roots. The host loader
+/// reads the actual named source; it must not label an override as a trusted
+/// file. Origins participating in a library must be absolute existing paths.
+/// Every approved root must be explicitly loaded with its library marker;
+/// omitting a root cannot disable protection of its raw helper modules.
+pub fn compile_program_named_with_libraries(
+    main_name: &str,
+    src: &str,
+    opts: &impl RccConfig,
+    approved_roots: &[PathBuf],
+    loader: &mut dyn FnMut(&str) -> Result<ModuleSource, String>,
+) -> Result<Program, CompileError> {
     // gather sources: main file + user modules (recursive) + std
     let mut srcs: Vec<(String, String)> = vec![(main_name.to_string(), src.to_string())];
+    let mut origins = vec![None];
     let mut seen: HashSet<String> = HashSet::new();
     let mut i = 0;
     while i < srcs.len() {
@@ -134,7 +164,8 @@ pub fn compile_program_named(
                             err(&m.ident, format!("cannot load module `{name}`: {error}")),
                         )
                     })?;
-                    srcs.push((format!("{name}.rs"), text2));
+                    origins.push(text2.origin);
+                    srcs.push((format!("{name}.rs"), text2.source));
                 }
             }
         }
@@ -145,6 +176,7 @@ pub fn compile_program_named(
             .iter()
             .map(|(n, t)| (n.to_string(), t.to_string())),
     );
+    origins.resize(srcs.len(), None);
 
     let mut files = vec![];
     let mut names = vec![];
@@ -161,6 +193,10 @@ pub fn compile_program_named(
         opts.static_data_limit_name(),
         &names,
         opts.optimizations().is_disabled(),
+        Some(resource::Sources {
+            origins: &origins,
+            approved_roots,
+        }),
     )
     .map_err(|(file, error)| {
         let (name, text) = &srcs[file.min(srcs.len() - 1)];
@@ -286,8 +322,9 @@ fn parse_files(
     static_data_limit_name: &'static str,
     file_names: &[String],
     materialize_debug_locals: bool,
+    resource_sources: Option<resource::Sources<'_>>,
 ) -> Result<(Vec<IrFunc>, FrontendDebug), (usize, syn::Error)> {
-    resource::lower(&mut files)?;
+    resource::lower(&mut files, file_names, resource_sources)?;
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {

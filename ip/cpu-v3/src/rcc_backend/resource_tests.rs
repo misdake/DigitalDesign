@@ -74,6 +74,27 @@ fn main(){if work()!=9||event_count()!=3||event_at(0)!=31||event_at(1)!=61||even
 }
 
 #[test]
+fn lexical_resources_mutable_borrowed_parameters_reborrow_and_keep_parent_lock() {
+    execute(
+        r#"mod resource_library;
+fn helper(mut r:&mut Renderer){let f=frame_open(&mut r);frame_complete(f,false);}
+fn nested(mut r:&mut Renderer){helper(&mut r);}
+fn main(){let mut r=renderer_open(2);nested(&mut r);
+ if renderer_query(&mut r)!=2||event_count()!=1||event_at(0)!=62{halt(0xbad);}
+ renderer_close(r);if event_count()!=2||event_at(1)!=72{halt(0xbad);}halt(0x600d);}"#,
+    );
+    let e = match parse(
+        r#"mod resource_library;
+fn helper(mut r:&mut Renderer){let f=frame_open(&mut r);renderer_query(&mut r);}
+fn main(){let mut r=renderer_open(2);helper(&mut r);}"#,
+    ) {
+        Ok(_) => panic!("accepted parent access with a live child through reborrow"),
+        Err(e) => e.to_string(),
+    };
+    assert!(e.contains("live child"), "{e}");
+}
+
+#[test]
 fn lexical_resources_transfer_cancel_and_parent_identity_execute() {
     execute(
         r#"mod resource_library;

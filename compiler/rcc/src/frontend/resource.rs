@@ -3,6 +3,14 @@
 use std::collections::{HashMap, HashSet};
 use syn::{parse_quote, spanned::Spanned, visit::Visit, visit_mut::VisitMut};
 use syn::{Expr, FnArg, Item, Pat, ReturnType, Stmt, Type};
+mod library;
+#[cfg(test)]
+mod library_tests;
+
+pub(super) struct Sources<'a> {
+    pub(super) origins: &'a [Option<std::path::PathBuf>],
+    pub(super) approved_roots: &'a [std::path::PathBuf],
+}
 
 #[derive(Clone)]
 struct Resource {
@@ -30,10 +38,17 @@ struct Function {
 struct Model {
     resources: HashMap<String, Resource>,
     functions: HashMap<String, Function>,
-    owners: HashSet<usize>,
     values: HashMap<String, (usize, bool)>,
+    domains: HashMap<usize, usize>,
 }
 impl Model {
+    fn can_access(&self, caller: usize, target: usize, public: bool) -> bool {
+        match self.domains.get(&target) {
+            None => true,
+            Some(root) if self.domains.get(&caller) == Some(root) => true,
+            Some(root) => target == *root && public,
+        }
+    }
     fn check_private_path(&self, file: usize, path: &syn::ExprPath) -> Result<(), syn::Error> {
         // Qualified builtin paths (Buf::new, enum variants, etc.) are handled
         // by the existing frontend; user functions/constants use flat names.
@@ -42,18 +57,18 @@ impl Model {
         }
         let n = path.path.segments.last().unwrap().ident.to_string();
         if let Some((owner, public)) = self.values.get(&n) {
-            if self.owners.contains(owner) && *owner != file && !public {
+            if !self.can_access(file, *owner, *public) {
                 return Err(error(
                     path,
-                    "private resource-module storage is not accessible across files",
+                    "private resource-module storage or internal resource-library storage is not accessible here",
                 ));
             }
         }
         if let Some(f) = self.functions.get(&n) {
-            if self.owners.contains(&f.file) && f.file != file && !f.public {
+            if !self.can_access(file, f.file, f.public) {
                 return Err(error(
                     path,
-                    "private resource-module function is not accessible across files",
+                    "private resource-module function or internal resource-library function is not accessible here",
                 ));
             }
             if f.result.is_some() || f.args.iter().any(|a| !matches!(a, Arg::Native)) {
@@ -170,12 +185,16 @@ fn classify(ty: &Type, model: &Model) -> Result<Arg, syn::Error> {
     Ok(Arg::Native)
 }
 
-pub(super) fn lower(files: &mut [syn::File]) -> Result<(), (usize, syn::Error)> {
+pub(super) fn lower(
+    files: &mut [syn::File],
+    file_names: &[String],
+    sources: Option<Sources<'_>>,
+) -> Result<(), (usize, syn::Error)> {
     let mut model = Model {
         resources: HashMap::new(),
         functions: HashMap::new(),
-        owners: HashSet::new(),
         values: HashMap::new(),
+        domains: HashMap::new(),
     };
     for (fi, file) in files.iter().enumerate() {
         for item in &file.items {
@@ -268,11 +287,31 @@ pub(super) fn lower(files: &mut [syn::File]) -> Result<(), (usize, syn::Error)> 
             {
                 return Err((fi, error(s, "duplicate resource type")));
             }
-            model.owners.insert(fi);
         }
     }
+    model.domains = library::domains(files, file_names, sources, &model.resources)?;
     if model.resources.is_empty() {
         return Ok(());
+    }
+    // The native frontend has separate function/constant/storage tables. A
+    // protected declaration must never borrow another kind's access decision
+    // while lowering still resolves the original storage or callable.
+    let mut definitions: HashMap<String, (usize, &str)> = HashMap::new();
+    for (fi, file) in files.iter().enumerate() {
+        for item in &file.items {
+            let (ident, kind) = match item {
+                Item::Fn(f) => (&f.sig.ident, "function"),
+                Item::Static(s) => (&s.ident, "static"),
+                Item::Const(c) => (&c.ident, "const"),
+                _ => continue,
+            };
+            let name = ident.to_string();
+            if let Some((previous, previous_kind)) = definitions.insert(name.clone(), (fi, kind)) {
+                if model.domains.contains_key(&previous) || model.domains.contains_key(&fi) {
+                    return Err((fi, error(ident, format!("resource-domain value name `{name}` is defined more than once ({previous_kind} and {kind})"))));
+                }
+            }
+        }
     }
     for resource in model.resources.values() {
         if resource
@@ -461,7 +500,7 @@ impl<'a> Checker<'a> {
                 }
             }
             if let Arg::Own(n) | Arg::Borrow(n) = mode {
-                let Pat::Ident(p) = param.pat.as_ref() else {
+                let Pat::Ident(p) = param.pat.as_mut() else {
                     return Err(error(param, "resource parameters need a simple name"));
                 };
                 if p.by_ref.is_some() || p.subpat.is_some() {
@@ -478,6 +517,12 @@ impl<'a> Checker<'a> {
                         && f.sig.ident != model.resources[n].cleanup,
                     mutable: p.mutability.is_some() || matches!(mode, Arg::Borrow(_)),
                 });
+                // Reborrowing a `mut r: &mut Resource` binding does not mutate
+                // the erased scalar identity. Keep mutability in the ownership
+                // model, not in the native u16 parameter ABI.
+                if matches!(mode, Arg::Borrow(_)) {
+                    p.mutability = None;
+                }
                 *param.ty = parse_quote!(u16);
             }
         }
@@ -1055,13 +1100,13 @@ impl<'a> Checker<'a> {
         let Some(function) = self.model.functions.get(&n).cloned() else {
             return self.native_call(call);
         };
-        if self.model.owners.contains(&function.file)
-            && function.file != self.file
-            && !function.public
+        if !self
+            .model
+            .can_access(self.file, function.file, function.public)
         {
             return Err(error(
                 call,
-                "private resource-module function is not callable across files",
+                "private resource-module function or internal resource-library function is not callable here",
             ));
         }
         if function.args.len() != call.args.len() {

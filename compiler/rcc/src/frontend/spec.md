@@ -775,6 +775,9 @@ argument naming a mutable owner (or a reborrowed resource parameter). It does
 not create a storable reference. Repeated arguments cannot alias an owner or
 borrow a parent while passing its child. Arguments are checked together, so a
 later argument cannot consume an earlier borrowed owner.
+`mut name: &mut Resource` parameters may be reborrowed with `&mut name`;
+their binding mutability is checked before erasing the reference to the existing
+scalar identity ABI. This does not enable ordinary stored references.
 An already evaluated owned argument retains its child/parent lock until all
 arguments have been evaluated and ownership is handed to the callee. Nested
 argument calls cannot borrow or destroy that parent. Return/break/continue
@@ -822,9 +825,75 @@ parameters take precedence over global function/storage names. An ignored/rename
 fields and constructors retain their defining-file restriction. This is a
 safe-subset ownership guarantee, not protection against arbitrary unsafe memory,
 forged code pointers, device writes or an incorrectly implemented trusted owner.
+Explicit host-authorized libraries extend the private implementation boundary
+as described in section 16; identity operations remain definition-local.
 
 Cleanup scheduling does not itself define GPU completion: GPU resource cleanup
 must release/cancel only untransferred CPU recording rights and must not hide
 GPU/vblank waits. Explicit completion hands asynchronous resources to their
 scheduler; only an explicit close may drain. Those device contracts belong to
 the owning driver rather than to the language's resource representation.
+
+## 16. Host-authorized resource libraries
+
+A resource-defining module may declare one file inner attribute containing an
+explicit, flat implementation list:
+
+```rust
+#![rcc_resource_library(device, commands)]
+mod device;
+mod commands;
+```
+
+Each listed name must also appear as a direct root-level `mod name;`. Merely
+loading a dependency, sharing a directory or adding a `use` does not make a
+module a member. Helpers cannot define another resource root, and a source or
+member cannot be claimed by multiple libraries. Misplaced or duplicate markers
+are rejected. A root must define at least one resource.
+
+The host opts in through
+`frontend::compile_program_named_with_libraries(main_name, source, options,
+approved_roots, loader)`. The approval list contains actual root-file paths.
+The loader returns `ModuleSource { source: String, origin: Option<PathBuf> }`.
+For every root and helper, origin must identify the absolute existing file that
+the trusted loader actually read. A local-first override must report its own
+path; labeling override text with an approved shared path violates the loader
+contract. Application source cannot supply approvals or origins. The main
+source has no trusted origin and cannot authorize itself. Synthetic non-library
+modules may omit origin and acquire no library privilege.
+Every approved root must be explicitly loaded with its library marker. Missing
+roots reject the whole compilation, including a helper-only program with no
+resource declaration; deleting the application's root `mod` cannot disable
+protection. Hosts use an empty approval list or the old String entry for
+ordinary unmarked native diagnostics.
+
+Origins and approvals are canonicalized, including symlink/junction resolution.
+The root must match a host-approved canonical path. Each helper's canonical
+origin must equal `<resolved root directory>/<loaded name>.rs`; a helper link
+resolving outside that directory is rejected. Windows comparisons normalize
+case and long DOS/UNC path prefixes. The older String-loader entry points
+provide no approval or origin and reject a library marker. They continue to
+compile ordinary unmarked native modules.
+
+Inside a domain, root and listed helpers may call each other's private native
+functions and access private static/const storage. Outside the domain, only
+the root's `pub` facade is accessible; helper functions and storage remain
+internal even when declared `pub`. Checks cover direct calls, function values,
+module initializers and type-length expressions regardless of load order.
+An extra application `mod`, `use`, resource declaration or forwarding module
+cannot join an existing domain. RCC still uses its existing flat symbol table;
+this feature does not introduce general Rust module resolution or re-exports.
+
+Resource construction, private identity fields, cleanup definitions and
+`resource_disarm` retain their exact defining-file rules from section 15.
+Library authorization adds no runtime state, instructions or memory fences;
+the checked program lowers through the existing scalar ABI. It is a safe-subset
+interface boundary with a trusted loader and library implementation, not a
+sandbox against arbitrary unsafe addresses, forged code pointers or device I/O.
+
+The flat function/constant/static value namespace rejects duplicate module-level
+names when either declaration belongs to a resource domain, including collisions
+between different declaration kinds and either loading order. An application
+constant cannot replace a private static's access decision while address lowering
+still selects that static. Ordinary lexical local/parameter shadowing remains
+supported; it does not replace a module-level declaration.
