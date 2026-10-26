@@ -2996,7 +2996,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 return Err(err(&a.left, "compound assignment only works on integers"));
             }
             let cur = l.read_var(&kind);
-            let (rhs, _) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
+            let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
             let op = match a.op {
                 SBinOp::AddEq(_) => BinOp::Add,
                 SBinOp::SubEq(_) => BinOp::Sub,
@@ -3010,7 +3010,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         cur,
                         &ty,
                         &a.right,
-                        Some((rhs, ty.clone())),
+                        Some((rhs, rhs_ty)),
                         matches!(a.op, SBinOp::RemEq(_)),
                     )?;
                     let (v, _) = result.reg(l, &a.right, "compound assignment")?;
@@ -3330,6 +3330,18 @@ fn divmod_value(
             (value, ty)
         }
     };
+    // Type unification also admits identical FPU types for phis/if expressions;
+    // it cannot decide whether an integer-only operator is supported.
+    if !lt.is_int() || !rt.is_int() {
+        return Err(err(
+            e,
+            format!(
+                "division and remainder only work on integers (got {} and {})",
+                lt.display(),
+                rt.display()
+            ),
+        ));
+    }
     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
         err(
             e,
@@ -6061,6 +6073,74 @@ mod tests {
     fn fix32_rejects_int_operands_without_conversion() {
         let src = "fn main() { let a = fix32::zero(); let b: u16 = 1; let c = a + b; halt(c.lo_bits()); }";
         assert!(parse_source_with(src, 0).is_err());
+    }
+
+    #[test]
+    fn division_and_remainder_reject_fpu_binary_operands() {
+        // The renderer caller previously compiled this as div_u16 and wrote zeros.
+        let probe = "use crate::dsl_rt::*;static TIME:Buf<u16,5>=Buf::new([0,25,50,75,100]);struct Value{a:fix32}static OUTPUT:Buf<Value,5>=Buf::new([Value{a:fix32::zero()};5]);fn main(){let mut i:u16=0;while i<5{OUTPUT[i].a=fix32::from_int(TIME[i] as i16)/fix32::from_int(100)*fix32::from_words(37408,1);i+=1;}halt(0x600d);}";
+        let mut sources = vec![probe.to_owned()];
+        for ty in ["fix32", "vec2", "vec3", "vec4"] {
+            for op in ["/", "%"] {
+                for (left, right) in [("v", "v"), ("v", "2u16"), ("2u16", "v")] {
+                    sources.push(format!(
+                        "fn main() {{ let v = {ty}::zero(); let result = {left} {op} {right}; halt(0); }}"
+                    ));
+                }
+            }
+        }
+        for source in sources {
+            let error = match parse_source_with(&source, 0) {
+                Ok(_) => panic!("non-integer division/remainder compiled: {source}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains("division and remainder only work on integers"),
+                "{source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn division_and_remainder_compound_assignments_check_both_operand_types() {
+        for ty in ["fix32", "vec2", "vec3", "vec4"] {
+            for op in ["/=", "%="] {
+                let mut sources = vec![
+                    format!("fn main() {{ let mut v = {ty}::zero(); v {op} v; halt(0); }}"),
+                    format!("fn main() {{ let mut v: u16 = 7; v {op} {ty}::zero(); halt(v); }}"),
+                    format!("struct S {{ v: u16 }} fn main() {{ let mut s: S = S {{ v: 7 }}; s.v {op} {ty}::zero(); halt(0); }}"),
+                    format!("fn bad(mut a: Array<u16>) {{ a[0u16] {op} {ty}::zero(); }}"),
+                ];
+                // Only fix32 (not vecN) currently supports struct-field storage.
+                if ty == "fix32" {
+                    sources.push(format!("struct S {{ v: fix32 }} fn main() {{ let mut s: S = S {{ v: fix32::zero() }}; s.v {op} fix32::zero(); halt(0); }}"));
+                    sources.push(format!("struct S {{ v: fix32 }} fn bad(mut a: Array<S>) {{ a[0u16].v {op} fix32::zero(); }}"));
+                }
+                for source in sources {
+                    let error = match parse_source_with(&source, 0) {
+                        Ok(_) => {
+                            panic!("non-integer compound division/remainder compiled: {source}")
+                        }
+                        Err(error) => error.to_string(),
+                    };
+                    assert!(
+                        error.contains("only work on integers")
+                            || error.contains("only works on integers")
+                            || error.contains("compound assignment operator")
+                            || error.contains("type mismatch"),
+                        "{source}: {error}"
+                    );
+                }
+            }
+        }
+        for op in ["/=", "%="] {
+            let source = format!("fn main() {{ let mut v: u16 = 7; v {op} 2i16; halt(v); }}");
+            let error = match parse_source_with(&source, 0) {
+                Ok(_) => panic!("mixed signedness compiled: {source}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("type mismatch"), "{source}: {error}");
+        }
     }
 
     /// The pre-rename spelling is no longer a type or an intrinsic namespace:

@@ -81,7 +81,10 @@ distinct. The complete FPU intrinsic surface is in §5.
 ### 1.2 Division and remainder
 
 `/` and `%` are integer-only and follow C: the quotient truncates toward zero and the remainder
-takes the sign of the dividend. Neither ISA has a divide, so the frontend lowers the operation to
+takes the sign of the dividend. Both operands must be integers of the same type, with unsuffixed
+literals adopting the other operand's type. `fix32` and vector operands are rejected, including
+in `/=` and `%=`; they never fall back to integer division or an implicit conversion.
+Neither ISA has a divide, so the frontend lowers the operation to
 the rcc_std `div` module: a 16-step shift-subtract core over `u16`, whose signed entry points take
 absolute values and restore the sign.
 
