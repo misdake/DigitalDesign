@@ -208,7 +208,23 @@ released buttons. rx contains reconstructedFF followed by the eight retained
 wire bytes; no pressure tail is exposed. Digital41 axes are absent and ignored,
 so software returns128 for all four. Invalid input clears connection, buttons
 and events and centers axes. Reconnect establishes a fresh button baseline.
-Events describe changes between CPU-observed snapshots and last one service call.
+`ds2_service(state, rx)` retains compatibility: it clears pressed/released at
+entry, so events describe changes observed by that service call only.
+
+`ds2_capture(state, rx)` uses the same coherent read/publication path and ORs
+observed pressed/released into the existing masks. An unchanged or torn read
+does not clear them. `ds2_consume_edges(state)` explicitly clears both masks;
+it preserves buttons, connection, axes and the previous-button baseline. Both
+masks may contain the same bit when a press and release were observed before
+consumption. Disconnect still clears the entire input/edge state, and reconnect
+establishes a new baseline without synthetic edges. Accumulation does not
+recover transitions that the latest-only hardware consumer never observed.
+
+Normal games can use the single-consumer
+[gamepad facade](/systems/cpu-v3-tang-nano-20k/docs/input-sticks.md#game-input-capture-and-consumption)
+to own the raw state, calibration and per-frame edge consumption. Do not mix
+independent raw readers with that facade: Device5 begin-read/changed belongs to
+one CPU consumer. Neither entry point waits for serial I/O or retries internally.
 
 ## Validation and limits
 

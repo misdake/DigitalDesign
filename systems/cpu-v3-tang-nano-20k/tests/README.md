@@ -18,6 +18,18 @@ capacity rejection, cancellation, version wrap and retained fault references.
 GPU/Display completion peers do not establish actual rendering, scanout, cache
 publication timing or concurrent hardware qualification.
 
+The `gamepad` target executes production RCC input code against an independent
+Device5 snapshot peer. It checks explicit edge accumulation/consumption,
+unchanged and torn snapshots, disconnect/reconnect, digital mode, configuration
+invalidation and held motion across ticks without a new sample. Cached motion,
+direction and strength must match the original stick kernel bit for bit across
+63 cases and three calibration/dead-zone profiles. A passive compiled-function
+entry counter proves repeated captures do not convert intermediate positions,
+first consumption resolves only pending results, and queries/configuration/
+disconnect cannot return stale results. Every run has an explicit
+CPU step bound. Serial timing remains in `dualshock2`'s actual-CPU RTL test;
+the snapshot peer does not qualify physical controller behavior.
+
 gpu_pipeline::resource_usage compiles a test-only Renderer/Frame/Pass caller
 model over the native engine. It checks lexical early-return cancellation,
 post-Pass UI edits before seal, transfer/disarm, explicit close drain and implicit
