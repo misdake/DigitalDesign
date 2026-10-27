@@ -658,10 +658,20 @@ The command closure issues texel reads from the saved paid payload and line,
 not from a new tag result. On admission it saves the Group35 address and starts
 the existing weight read. On the next wall edge it reads the four texel banks,
 captures the weight Q, and publishes the synchronous texel Q directly. There
-is no separate 64-bit texel copy. One pin spans pending address and held result;
-replacement cannot reuse that line until consumption. Backpressure holds DO.
-The next address may be admitted on the old result's consume edge, giving
-Group II2; generic standalone cache exporters retain their original pipeline.
+is no separate 64-bit texel copy. The paid-address slot and the held result are
+independent: a free paid slot can accept the next address while Color consumes
+the old result's first pair. Its texel read waits until the old result's final
+consume edge. The consumer samples old DO on that edge, and RAM updates DO after
+the edge. This gives Group II2, or four clocks per eight-tap trilinear pixel,
+when hits and continuous input allow it. Startup latency remains two edges.
+
+One pin protects the newest paid line through its read. Once an older result
+has reached native DO, it no longer needs the original memory line protected;
+the new pending address can take over the pin. A pending return holds its
+address and weight Q until the result slot is free or consumed. Backpressure
+therefore holds DO, metadata and weights together. Refill returns still run on
+wall edges during CE pauses; they cannot overwrite an occupied result. Generic
+standalone cache exporters retain their original pipeline.
 
 The raw texture dimensions, mip limit and bias are driven directly from the
 immutable command-global context. They change only after a full drain; the

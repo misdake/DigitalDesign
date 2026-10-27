@@ -501,19 +501,16 @@ fn direct_global(source: &mut String) -> Result<(), String> {
 
 /// The paid payload and line register drive the texel read on the next edge.
 /// Its synchronous DO is the result slot; no second 64-bit texel copy exists.
-/// Group II2 leaves a single pinned line across both pending and result phases.
+/// The paid slot may prefetch while Color holds the previous native DO. The
+/// next texel read replaces DO only on its previous consumer's final edge.
+/// One pin protects the newest paid line; a held DO no longer reads that line.
 fn registered_texture_return(source: &mut String) -> Result<(), String> {
     edit(source, "gpu_v2_texture_runtime_cache_unique", |s| {
         once(s, "reg[15:0]res_tex[0:3];", "")?;
         once(
             s,
-            "wire pin_valid=rd_valid;",
-            "wire pin_valid=rd_valid||res_valid;",
-        )?;
-        once(
-            s,
             " (!rd_valid||!res_valid||out_ready)&&hit_ready;",
-            " !rd_valid&&(!res_valid||out_ready)&&hit_ready;",
+            " !rd_valid&&hit_ready;",
         )?;
         once(s, "wire[15:0]data_di[0:3],data_do[0:3];", "")?;
         once(

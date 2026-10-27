@@ -28,6 +28,14 @@ input files through that executable. Geometry, buffer limits and the finite
 watchdog are checked before each replay; no compiled artifact survives as a
 trusted cache across runs.
 
+The ignored `texture_registered_return` Rust target exports the current command
+cache and connects its native DO directly to the production two-edge Color
+consumer. Eight bounded cases check native/portable RAM, one/two mip groups,
+447 consecutive hit intervals at II2, per-owner weights and keyed RGB results.
+Pressure cases combine CE pauses, consumer stalls, refill gaps and conflicting
+ways; they also check held Q and read/refill line exclusion. Each simulation is
+limited to 30,000 clocks and each process to 45 seconds.
+
 `texture_registered_return.py` compares a current physical Group35 command export
 with an approved baseline. It exercises native/portable cache banks, all64 local
 origins, conflicting ways, CE and commit denial, refill stalls and held results.
