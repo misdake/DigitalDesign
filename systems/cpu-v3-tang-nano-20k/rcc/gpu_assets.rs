@@ -28,7 +28,10 @@ pub struct GpuTexture {
     pub full_mip: u16,
 }
 pub fn gpu_asset_extent(first: u16, sectors: u16) -> bool {
-    first >= GPU_ASSET_FIRST_SECTOR && gpu_extent_valid(first, sectors)
+    first >= GPU_ASSET_FIRST_SECTOR
+        && first < GPU_ASSET_END_SECTOR
+        && sectors <= GPU_ASSET_END_SECTOR - first
+        && gpu_extent_valid(first, sectors)
 }
 fn gpu_mesh_root_valid(m: Array<GpuMesh>) -> bool {
     if !gpu_asset_extent(m[0u16].first_sector, m[0u16].sectors)

@@ -77,3 +77,9 @@ warm window; two-mip rates reflect their actual additional Groups. Output record
 separate first latency, steady intervals, final drain and warm/cold queue peaks.
 Each case is bounded to512pixels,30,000clocks and45seconds. The16-beat memory peer
 is not a physical-MC or full-GPU performance model.
+
+The lighting stream regression simulates the complete clean and CE-stalled
+64-pixel streams independently. Numerical/date/overflow audit faults reuse the
+accepted clean result, restoring the first record before each mutation; they do
+not repeat identical arithmetic simulation. The input corpus, context switches,
+II assertions, numerical oracle and watchdog checks are retained.

@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 #[path = "../build_support/rcc_modules.rs"]
+#[allow(dead_code)]
 mod resolver;
 
 #[test]

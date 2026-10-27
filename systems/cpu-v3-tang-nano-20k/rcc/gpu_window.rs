@@ -172,7 +172,16 @@ fn gpu_window_parts_mode(
 }
 
 fn gpu_window_asset_read(low: Array<u16>, sector: u16, word: u16, count: u16) -> bool {
-    if sector < GPU_ASSET_FIRST_SECTOR {
+    if sector < GPU_ASSET_FIRST_SECTOR
+        || sector >= GPU_ASSET_END_SECTOR
+        || count == 0
+        || count > 32768
+        || word >> 6 >= GPU_ASSET_END_SECTOR - sector
+    {
+        return false;
+    }
+    let first = sector + (word >> 6);
+    if ((word & 63) + (count - 1)) >> 6 >= GPU_ASSET_END_SECTOR - first {
         return false;
     }
     let mut parts: GpuWindowParts = GpuWindowParts {
@@ -191,7 +200,7 @@ fn gpu_window_record_pair(
     sector: u16,
     word: u16,
 ) -> bool {
-    if sector != GPU_OBJECT_FIRST_SECTOR
+    if (sector != GPU_OBJECT_FIRST_SECTOR && sector != GPU_SLOT1_OBJECT_FIRST_SECTOR)
         || word > 32768
         || count > 32768 - word
         || tail_count > 32768 - word - count

@@ -906,6 +906,36 @@ fn core_cosim_program_halts_in_the_simulators() {
     );
 }
 
+#[test]
+#[ignore = "bounded emulator-vs-Icarus execution of affine resource cleanup and transfer"]
+fn core_emu_matches_rtl_compiled_resource_scope_program() {
+    let program = crate::rcc_backend::resource_tests::protocol_program();
+    let emu = run_core_emu_trace(&program, 30_000);
+    let last = emu.last().expect("nonempty resource trace");
+    assert!(last.halted && !last.fault, "{last:?}");
+    assert_eq!(last.halt_signal, 0x600d);
+    // Like the architectural/cycle model and normal boot ZERO initialization,
+    // this fixture starts ordinary data as zero (including the event cursor).
+    let tb = build_core_cosim_tb(
+        &program,
+        &CpuV3Core::verilog_identity().module_name(),
+        emu.len() + 100,
+    )
+    .replacen(
+        "initial begin\n",
+        "initial begin\n    for (index = 0; index < 65536; index = index + 1) memory[index] = 0;\n",
+        1,
+    );
+    let rtl = run_core_rtl_trace(&tb);
+    assert_eq!(rtl.len(), emu.len());
+    for (cycle, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        assert!(
+            actual.equal_core(expected),
+            "resource trace differs at cycle {cycle}: {actual:?} vs {expected:?}"
+        );
+    }
+}
+
 /// FPU v2 back-to-back FLD after an async store: the reproducer for the
 /// one-cycle request slip seen at system level.
 #[test]

@@ -46,6 +46,11 @@ For example, a372 B stream at byte0x40000 submits0x005c on channel0 followed by
 0x0800 on channel1. CPU16-bit word addresses must first be converted to bytes.
 
 Each instruction is one little-endian u32. Unlisted/reserved bits are zero.
+The DRAM stream starts directly with its first instruction: it has no file
+header, magic or in-band ABI version. Submission base/count are supplied through
+Device4, not prefixed to the stream. CB06 is the system boot-image format and is
+not a GPU command-buffer header. Tool/snapshot envelopes must identify their GPU
+ABI separately and must not insert their metadata into executable command bytes.
 
 | Opcode31:28 | Command | Payload |
 | --- | --- | --- |

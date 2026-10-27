@@ -109,6 +109,74 @@ dominant direction component, with X winning equal-component ties. Invalid input
 or thresholds return neutral. The caller owns the previous value. This is
 activation hysteresis, without angular hysteresis or repeat timing.
 
+## Game input capture and consumption
+
+`rcc/gamepad.rs` is the single-consumer game facade. It owns the Device5
+state/scratch storage and two independently prepared stick caches; the game
+does not need raw channel numbers, raw array indices or polling loops.
+
+| Call | Contract |
+|---|---|
+| `gamepad_init()` | Reset software input/edge state and install default calibration for both sticks; no hardware transaction or wait |
+| `gamepad_capture()` | Make one bounded coherent raw snapshot attempt and accumulate observed edges; true means a complete new snapshot was published; no numerical conversion |
+| `gamepad_take_frame()` | Resolve pending stick results, copy a `GamepadFrame` and clear accumulated edges; no Device5 read |
+| `gamepad_configure(which, config)` | Set left=0 or right=1 calibration; validate first, rebuild Prepared and invalidate that result; rejected changes preserve the previous configuration/result |
+| `gamepad_direction(which)` | Resolve that stick if pending, then return its cached `vec2` direction |
+| `gamepad_strength(which)` | Resolve that stick if pending, then return cached Q16.16 strength |
+| `gamepad_stick_valid(which)` | Resolve that stick if pending, then report valid analog input |
+
+`GamepadFrame` occupies thirteen words: `connected`, `id`, active-high `buttons`,
+`pressed`, `released`, then `left_x`, `left_y`, `right_x`, `right_y` as native
+two-word `fix32` values. Returned frames are independent snapshots; a later
+capture does not change an already returned frame. Optional direction/strength
+queries resolve the current captured input, so read them before another capture or configuration change when
+they must accompany a particular frame. Invalid optional stick indices return
+zero/false. Before initialization capture/configure return false and a frame
+is neutral.
+
+```rust
+gamepad_init();
+// Once per bounded input-service opportunity:
+gamepad_capture();
+// Once per game tick, after the desired service opportunity:
+let input = gamepad_take_frame();
+```
+
+Extra captures cannot erase unconsumed observed edges. Taking a second frame
+without capture or reconfiguration returns the same held buttons/motion with zero edges. A false
+capture result does not mean no input: games continue integrating held motion
+with the elapsed time of every tick. A torn snapshot retains the previous
+coherent state and caches; disconnect clears buttons/edges and analog motion.
+Digital41 remains connected with usable buttons but zero, invalid analog sticks,
+even when custom analog calibration has a center other than128. Reconnect
+establishes a fresh button baseline. There is no hidden sleep, retry loop or
+software serial protocol.
+
+Each cache contains a nineteen-word Prepared snapshot, eleven result words
+(motion, direction, strength and validity), a packed raw X/Y byte pair and a
+key state (uninitialized/disabled/analog): exactly thirty-two words. Input-owned
+static storage totals84 words, excluding caller frames and call-stack temporaries.
+A fresh hardware sample with unchanged raw/analog keys reuses the corresponding
+result; the two sticks refresh independently. Capture compares keys and records
+pending bits in the existing initialized-state word. Multiple different captures
+before consumption therefore calculate only the final requested input. Returning
+to the already installed key cancels the intermediate pending change. The first
+frame or derived query resolves each pending stick once; later queries reuse it.
+Configuration changes invalidate that stick's key, so its first consumer sees
+the new configuration even without a new hardware sample. Editing the source
+configuration later does not mutate the prepared snapshot. No caller-side
+refresh/synchronization call is needed.
+
+A cache miss reuses `stick_read` and its unchanged arithmetic/order. Its local
+Sample is reduced to the eleven adjacent result words with a fixed native-word
+copy, avoiding a second FLD/FST round trip and retaining all fractional bits.
+The diagnostic calibrated X/Y values remain available through the original
+`stick_read`; games do not retain or copy them every tick. Cache hits avoid the
+numeric kernel; consumed misses pay the cache installation and key bookkeeping in
+addition to conversion. This is a reuse tradeoff, not a guarantee that every
+changing-input call costs less than direct conversion. Initialization and
+explicit reconfiguration also remain cold paths.
+
 The [circular DS2 diagnostic](/systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/README.md) demonstrates
 raw versus processed travel and explicit center/dead-zone adjustment. It does
 not assign game actions to this shared helper.

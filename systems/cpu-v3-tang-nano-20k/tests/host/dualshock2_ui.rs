@@ -331,7 +331,7 @@ halt(0x600d);}"#,
 fn complete_one_frame_services_ds2_during_render_and_present_waits() {
     let out = assets("loop");
     let (_, s) = run(
-        include_str!("../examples/dualshock2_ui/rcc/main.rs"),
+        include_str!("../../examples/dualshock2_ui/rcc/main.rs"),
         "dui_one_frame_main",
         &out,
     );

@@ -6,6 +6,8 @@
 //! is stable.
 
 mod options;
+#[cfg(test)]
+pub(crate) mod resource_tests;
 
 pub use options::CompilerOptions;
 
@@ -3210,6 +3212,33 @@ mod tests {
         "#;
         // a = ((3 * 5) / 2) % 4 = 3, buf[1] = 8, p.scale = 14
         assert_eq!(run_with_std_capped(source, 20_000), 25);
+    }
+
+    #[test]
+    fn integer_division_and_remainder_compound_places_run() {
+        let source = r#"
+            struct Pair { unsigned: u16, signed: i16 }
+            fn main() {
+                let divisor: u16 = 7;
+                let signed_divisor: i16 = 7;
+                let mut u: u16 = 1000;
+                let mut s: i16 = -1000;
+                let mut p: Pair = Pair { unsigned: 1000, signed: -1000 };
+                let mut ub: Buf<u16, 1> = Buf::new([1000]);
+                let mut sb: Buf<i16, 1> = Buf::new([-1000]);
+                u /= divisor; s /= signed_divisor;
+                p.unsigned /= divisor; p.signed /= signed_divisor;
+                ub[0u16] /= divisor; sb[0u16] /= signed_divisor;
+                u %= 16; s %= 16;
+                p.unsigned %= 16; p.signed %= 16;
+                ub[0u16] %= 16; sb[0u16] %= 16;
+                if u == 14 && s == -14 && p.unsigned == 14 && p.signed == -14
+                    && ub[0u16] == 14 && sb[0u16] == -14 {
+                    halt(0x600d);
+                } else { halt(0xbad); }
+            }
+        "#;
+        assert_eq!(run_with_std_capped(source, 60_000), 0x600d);
     }
 
     #[test]

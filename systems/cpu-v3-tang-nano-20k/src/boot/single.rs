@@ -62,6 +62,8 @@ impl BootResource {
 #[derive(Debug, Clone)]
 pub struct BootProject {
     pub application: PathBuf,
+    /// Host-approved GPU resource-library compilation; never inferred from imports.
+    pub renderer: bool,
     /// (symbol, physical byte address, source path); paths are project-relative.
     pub copies: Vec<(String, usize, PathBuf)>,
     pub zeros: Vec<(usize, usize)>,
@@ -85,8 +87,8 @@ fn relative_source(text: &str) -> Result<PathBuf, SingleBootError> {
     Ok(p)
 }
 pub fn parse_boot_project(text: &str) -> Result<BootProject, SingleBootError> {
-    let (mut format, mut application, mut copies, mut zeros) =
-        (false, None, Vec::new(), Vec::new());
+    let (mut format, mut application, mut copies, mut zeros, mut renderer) =
+        (false, None, Vec::new(), Vec::new(), false);
     for line in text
         .lines()
         .map(|l| l.split('#').next().unwrap().trim())
@@ -95,6 +97,7 @@ pub fn parse_boot_project(text: &str) -> Result<BootProject, SingleBootError> {
         let fields: Vec<_> = line.split_whitespace().collect();
         match fields.as_slice() {
             ["format", "2"] if !format => format = true,
+            ["renderer"] if !renderer => renderer = true,
             ["application", p] if application.is_none() => {
                 let p = relative_source(p)?;
                 if p.extension().and_then(|x| x.to_str()) != Some("rs") {
@@ -119,7 +122,7 @@ pub fn parse_boot_project(text: &str) -> Result<BootProject, SingleBootError> {
             ["zero", address, length] => zeros.push((number(address)?, number(length)?)),
             _ => {
                 return Err(SingleBootError(
-                    "expected format 2, application, copy NAME ADDRESS PATH or zero ADDRESS LENGTH",
+                    "expected format 2, application, renderer, copy NAME ADDRESS PATH or zero ADDRESS LENGTH",
                 ))
             }
         }
@@ -129,6 +132,7 @@ pub fn parse_boot_project(text: &str) -> Result<BootProject, SingleBootError> {
     }
     Ok(BootProject {
         application: application.ok_or(SingleBootError("missing application source"))?,
+        renderer,
         copies,
         zeros,
     })
@@ -177,7 +181,7 @@ fn resource_range(resource: &BootResource) -> Result<std::ops::Range<usize>, Sin
         (0x100000, 0x400000),
         (
             usize::from(driver_layout::GPU_ASSET_FIRST_SECTOR) * 128,
-            0x800000,
+            usize::from(driver_layout::GPU_ASSET_END_SECTOR) * 128,
         ),
     ]
     .into_iter()
@@ -425,6 +429,11 @@ mod tests {
             0x4a0000,
             0x4a8000,
             0x4afffe,
+            0x7df800,
+            0x7dfc00,
+            0x7e0000,
+            0x7f0000,
+            0x7ffffe,
             0x800000,
             usize::MAX,
         ] {
@@ -434,6 +443,9 @@ mod tests {
             );
         }
         assert!(pack_application_resources(&[0, 0], 0, &[BootResource::zero(0x20000, 3)]).is_err());
+        let end = usize::from(driver_layout::GPU_ASSET_END_SECTOR) * 128;
+        assert!(pack_application_resources(&[0, 0], 0, &[BootResource::zero(end - 2, 2)]).is_ok());
+        assert!(pack_application_resources(&[0, 0], 0, &[BootResource::zero(end - 2, 4)]).is_err());
         assert!(pack_application_resources(
             &[0, 0],
             0,

@@ -224,7 +224,7 @@ prefix/fault checks do not render or compare a complete frame.
 
 ## Bounded first-person checks
 
-`cargo test --release -p cpu-v3-tang-nano-20k --test gpu_demo_first_person`
+`cargo test --release -p cpu-v3-tang-nano-20k --test host gpu_demo_first_person::`
 executes the production RCC camera against an independent floating reference,
 checks controls/disconnection/dt/limits, and runs the actual frame body with
 small asset counts and control peers. It deliberately varies presentation wait,
