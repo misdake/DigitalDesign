@@ -10,6 +10,8 @@ import sys
 sys.dont_write_bytecode = True
 EXAMPLE = Path(__file__).resolve().parents[1]
 ROOT = EXAMPLE.parents[3]
+sys.path.insert(0, str(ROOT / "systems/cpu-v3-tang-nano-20k/tools"))
+from gpu_layout import validate_asset_range
 SCENE = ROOT / "ip/gpu-v2/examples/vliw_integration"
 sys.path.insert(0, str(SCENE))
 import material_scene
@@ -120,9 +122,11 @@ def pack(output):
                  ("texture.bin", TEXTURE, texture())]
     for name, address, payload in resources:
         assert address % 128 == 0 and len(payload) % 128 == 0
-        assert 0x4b0000 <= address < address+len(payload) <= 0x800000
+        validate_asset_range(address, len(payload))
         (output/name).write_bytes(payload)
     sources = [Path(__file__), EXAMPLE/"assets/scene.json", EXAMPLE/"assets/font-8x16.txt",
+               ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_layout.py",
+               ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_layout.rs",
                SCENE/"material_scene.py", SCENE/"solid_scene.py", SCENE/"assets/room-tiles.png"]
     manifest = dict(scene=scene["scene"], triangles=1141, provenance=scene["provenance"],
         resources=[dict(file=n,address=a,bytes=len(p),sha256=sha(output/n)) for n,a,p in resources],

@@ -44,7 +44,9 @@ input and programmer Verify are the intended workflow.
 | [0x400000,0x460000) | Reserved framebuffer slots; boot leaves both untouched |
 | [0x460000,0x490000) | Reserved Depth; never initialized by boot |
 | [0x490000,0x4b0000) | Driver-owned command/object arena; optional COPY/ZERO resources rejected |
-| [0x4b0000,0x800000) | Fixed GPU asset allocations |
+| [0x4b0000,0x7df800) | Fixed GPU asset allocations |
+| [0x7df800,0x7e0000) | Reserved UI pages; optional resources rejected |
+| [0x7e0000,0x800000) | Second driver command/object arena; optional resources rejected |
 
 Code is nonempty, even, and at most 128 KiB. A=0x400000 and B=0x430000, with
 0x30000 bytes per slot. Depth is cleared by each GPU Pass. Optional resource
@@ -59,6 +61,11 @@ application rcc/system-display-test.rs
 copy MESH 0x100000 assets/mesh.bin
 zero 0x4b0000 4096
 ~~~
+
+A standalone `renderer` line optionally selects the host-approved resource
+compiler described in the [renderer API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md).
+It may appear once; default projects remain native. It changes host compilation
+authority only and adds no bytes or commands to CB06.
 
 Paths are relative to the project directory. COPY symbols are unique upper
 snake case. The build generates boot_resources.rs before compilation; an RCC

@@ -1,3 +1,6 @@
 /target
 /systems/cpu-v3-tang-nano-20k/src/hardware/gpu/sim/target/
 /.agent/
+
+# Python module caches are derived producer output.
+__pycache__/

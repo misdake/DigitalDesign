@@ -3,6 +3,8 @@ use cpu_v3::{rcc_backend, CpuV3Sim, PhysicalWordAddress, RunOutcome};
 use gpu_v2::system::vliw_command::{Command as GpuCommand, DeviceSubmission};
 use std::path::PathBuf;
 use std::{any::Any, cell::RefCell, rc::Rc};
+#[path = "gpu_prepared.rs"]
+mod prepared;
 
 fn compile_direct(source: &str) -> Vec<u16> {
     compile(source)
@@ -92,14 +94,24 @@ fn check(ok:bool) { if !ok { halt(0xbad); } }
 fn main() {
  unsafe { write_dseg_page(3,17); }
  let mut a:GpuBuffer=gpu_buffer_empty();let mut b:GpuBuffer=gpu_buffer_empty();let mut duplicate:GpuBuffer=gpu_buffer_empty();
- check(gpu_high_slot_init(view_of(&mut a),0));check(!gpu_high_slot_init(view_of(&mut b),1));
+ check(gpu_high_slot_init(view_of(&mut a),0));check(gpu_high_slot_init(view_of(&mut b),1));
+ check(!gpu_high_slot_init(view_of(&mut duplicate),2));
  check(!gpu_high_slot_init(view_of(&mut duplicate),0));
+ check(gpu_asset_extent(GPU_ASSET_END_SECTOR-1,1));
+ check(!gpu_asset_extent(GPU_ASSET_END_SECTOR-1,2));
+ check(!gpu_asset_extent(GPU_UI_PAGE0_SECTOR,1));
+ check(!gpu_asset_extent(GPU_SLOT1_COMMAND_FIRST_SECTOR,512));
  check(!gpu_build_clear(view_of(&mut a),GPU_COLOR_A_SECTOR,GPU_COLOR_A_SECTOR,0,0));
  check(a.state==GPU_CB_BUILDING && a.command_words==0);
  let mut data:Buf<u16,8>=Buf::new([0x2345;8]);let mut out:Buf<u16,8>=Buf::new([0;8]);
+ check(gpu_window_asset_read(out.as_array(),GPU_ASSET_END_SECTOR-1,63,1));
+ check(!gpu_window_asset_read(out.as_array(),GPU_ASSET_END_SECTOR-1,63,2));
+ check(!gpu_window_asset_read(out.as_array(),GPU_ASSET_END_SECTOR,0,1));
  check(gpu_slot_upload(view_of(&mut a),true,32760,data.as_array(),8));
  check(!gpu_slot_upload(view_of(&mut a),true,32764,data.as_array(),8));
  check(gpu_slot_download(view_of(&mut a),true,32760,out.as_array(),8));check(out[7u16]==0x2345);
+ check(gpu_slot_upload(view_of(&mut b),true,32760,data.as_array(),8));
+ check(gpu_slot_download(view_of(&mut b),true,32760,out.as_array(),8));check(out[7u16]==0x2345);
  // Internal memory primitive under an explicitly owned synthetic asset fixture.
  check(gpu_window_copy(data.as_array(),GPU_ASSET_FIRST_SECTOR,16380,8,false));
  check(gpu_window_copy(out.as_array(),GPU_ASSET_FIRST_SECTOR,16380,8,true));check(out[0u16]==0x2345);

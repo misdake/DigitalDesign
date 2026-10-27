@@ -14,17 +14,54 @@ fn compile(
     options: &CompilerOptions,
     constants: &str,
     shared: &Path,
+    renderer: bool,
+    capture_enabled: bool,
 ) -> (Vec<u16>, usize) {
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
-    let program =
+    let capture = if capture_enabled {
+        let manifest_path = PathBuf::from(
+            std::env::var_os("GPU_PROFILER_MANIFEST")
+                .expect("gpu_profiler_board requires GPU_PROFILER_MANIFEST"),
+        );
+        println!("cargo:rerun-if-changed={}", manifest_path.display());
+        Some(
+            rcc_modules::CaptureConfiguration::from_manifest(
+                source_dir.join("profiler_gate.rs"),
+                &manifest_path,
+            )
+            .expect("explicit GPU profiler identity"),
+        )
+    } else {
+        None
+    };
+    let program = if renderer {
+        rcc_modules::compile_renderer_program_with_capture(
+            &path.display().to_string(),
+            &source,
+            options,
+            source_dir,
+            shared,
+            constants,
+            &if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
+                vec![shared.parent().unwrap().join("examples/bloxorz/rcc")]
+            } else {
+                vec![]
+            },
+            capture.as_ref(),
+            &mut |module| {
+                println!("cargo:rerun-if-changed={}", module.display());
+            },
+        )
+    } else {
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
             rcc_modules::load_module(source_dir, shared, constants, name, &mut |module| {
                 println!("cargo:rerun-if-changed={}", module.display());
             })
         })
-        .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
+    }
+    .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
     let static_words = program.debug.static_data_end;
     let words = rcc_backend::try_compile(program, options, "main")
         .unwrap()
@@ -37,10 +74,16 @@ fn main() {
     let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let config = root.join("boot-applications.conf");
     println!("cargo:rerun-if-changed={}", config.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("tools/gpu_layout.py").display()
+    );
     let mut project = boot::parse_boot_project(&std::fs::read_to_string(config).unwrap())
         .expect("single application project");
     println!("cargo:rerun-if-env-changed=CPU_V3_BOOT_EXAMPLE");
+    println!("cargo:rerun-if-env-changed=GPU_PROFILER_MANIFEST");
     let mut generated = String::new();
+    let mut capture_enabled = false;
     let mut extra_assets: Vec<String> = Vec::new();
     if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
         if example == "dualshock2" {
@@ -77,6 +120,101 @@ fn main() {
                 "ds2-ui-assets/assets.json".to_owned(),
                 "ds2-ui-assets/ui_layout.rs".to_owned(),
                 "ds2-ui-repack.conf".to_owned(),
+            ]);
+        } else if example == "gpu_renderer"
+            || example == "gpu_renderer_changes"
+            || example == "gpu_renderer_bloxorz"
+            || example == "gpu_profiler_board"
+        {
+            let game = example == "gpu_renderer_bloxorz";
+            let profiler = example == "gpu_profiler_board";
+            capture_enabled = profiler;
+            let example_dir = root.join(if game {
+                "examples/gpu_renderer_bloxorz"
+            } else if profiler {
+                "examples/gpu_profiler_board"
+            } else {
+                "examples/gpu_renderer"
+            });
+            if game {
+                for path in [
+                    "examples/bloxorz/tools/batch-scene.py",
+                    "examples/bloxorz/tools/static-scene.py",
+                    "examples/bloxorz/assets/reference.txt",
+                    "examples/bloxorz/geometry.rs",
+                    "examples/gpu_demo/tools/assets.py",
+                    "examples/gpu_renderer/tools/assets.py",
+                ] {
+                    println!("cargo:rerun-if-changed={}", root.join(path).display());
+                }
+            }
+            for input in [
+                example_dir.join("tools/assets.py"),
+                root.join("examples/gpu_demo/assets/font-8x16.txt"),
+            ] {
+                println!("cargo:rerun-if-changed={}", input.display());
+            }
+            let assets = output.join("gpu-renderer-assets");
+            let status = std::process::Command::new("python")
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .arg(example_dir.join("tools/assets.py"))
+                .arg("--output")
+                .arg(&assets)
+                .status()
+                .expect("renderer asset packer");
+            assert!(status.success(), "renderer asset validation failed");
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
+                    .unwrap();
+            project.application = PathBuf::from(if game {
+                "examples/gpu_renderer_bloxorz/rcc/main.rs"
+            } else if profiler {
+                "examples/gpu_profiler_board/rcc/main.rs"
+            } else if example == "gpu_renderer_changes" {
+                "examples/gpu_renderer/rcc/changes.rs"
+            } else {
+                "examples/gpu_renderer/rcc/main.rs"
+            });
+            project.renderer = true;
+            project.copies = manifest["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    (
+                        format!(
+                            "GPU_RENDERER_{}",
+                            r["file"]
+                                .as_str()
+                                .unwrap()
+                                .trim_end_matches(".bin")
+                                .to_uppercase()
+                        ),
+                        r["address"].as_u64().unwrap() as usize,
+                        assets.join(r["file"].as_str().unwrap()),
+                    )
+                })
+                .collect();
+            project.zeros.clear();
+            generated = std::fs::read_to_string(assets.join("renderer_assets.rs")).unwrap();
+            let mut repack = format!(
+                "format 2\nrenderer\napplication {}\n",
+                project.application.display()
+            );
+            for (name, address, path) in &project.copies {
+                let relative = path
+                    .strip_prefix(&output)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                repack.push_str(&format!("copy {name} {address:#x} {relative}\n"));
+                extra_assets.push(relative);
+            }
+            std::fs::write(output.join("renderer-repack.conf"), repack).unwrap();
+            extra_assets.extend([
+                "gpu-renderer-assets/assets.json".to_owned(),
+                "gpu-renderer-assets/renderer_assets.rs".to_owned(),
+                "renderer-repack.conf".to_owned(),
             ]);
         } else {
             assert_eq!(example, "gpu_demo", "unsupported CPU_V3_BOOT_EXAMPLE");
@@ -151,8 +289,14 @@ fn main() {
     let resources = project.resources(&root).expect("boot resources");
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
     options.stack_init = boot::SINGLE_BOOT_STACK;
-    let (words, static_words) =
-        compile(&root.join(source), &options, &constants, &root.join("rcc"));
+    let (words, static_words) = compile(
+        &root.join(source),
+        &options,
+        &constants,
+        &root.join("rcc"),
+        project.renderer,
+        capture_enabled,
+    );
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     let image = boot::pack_application_resources(&code, static_words, &resources)
         .expect("single application image");

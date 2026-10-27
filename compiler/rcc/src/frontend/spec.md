@@ -25,7 +25,8 @@ Only these types exist; no other primitive types are supported:
 | an `enum` name | **one word: the variant's discriminant** | C-style fieldless variants in declaration order (spec §9d); `E::A` is a constant, `e as u16` and (with `#[derive(PartialEq)]`) `==` |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
-| a defined `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
+| a defined ordinary `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
+| `#[rcc_resource(...)]` struct | **affine one-word owner** | restricted lexical resource, checked before scalar ABI lowering; see §15 |
 | `fix32` | **signed Q16.16 fixed-point scalar** | CPU V3-only; occupies one scalar F register (16 fractional bits) |
 | `vec2` / `vec3` / `vec4` | **fix32 vectors** | CPU V3-only; a consecutive range of 2/3/4 scalar F registers (the host type keeps a zero tail) |
 | `()` | unit | return type of procedures |
@@ -80,7 +81,10 @@ distinct. The complete FPU intrinsic surface is in §5.
 ### 1.2 Division and remainder
 
 `/` and `%` are integer-only and follow C: the quotient truncates toward zero and the remainder
-takes the sign of the dividend. Neither ISA has a divide, so the frontend lowers the operation to
+takes the sign of the dividend. Both operands must be integers of the same type, with unsuffixed
+literals adopting the other operand's type. `fix32` and vector operands are rejected, including
+in `/=` and `%=`; they never fall back to integer division or an implicit conversion.
+Neither ISA has a divide, so the frontend lowers the operation to
 the rcc_std `div` module: a 16-step shift-subtract core over `u16`, whose signed entry points take
 absolute values and restore the sign.
 
@@ -146,6 +150,7 @@ blocks without one of those operations are errors. Ordinary buffers and local va
 - `if cond { } else if cond { } else { }` (statement form; `else` optional).
 - `if cond { a } else { b }` as an **expression** (both branches same type; C's `cond ? a : b`).
 - `while cond { }`, `loop { }`, `break;`, `continue;`.
+- Lexical `{ ... }` blocks as statements introduce a local scope; they are not general block-valued expressions.
 - `for i in a..b { }` and `for i in a..=b { }` (step is always 1; `i` takes the range's type).
 - Conditions are `bool` expressions (comparisons, `&&`, `||`, `!`). Loop-carried variables
   become phis automatically.
@@ -229,10 +234,10 @@ they are not part of this surface.
   produced when both operands are `i16`; mixed integer arithmetic is an error, because 
   implicit conversions hide too many bugs on a 16-bit machine.
 - **Unsupported means error**: these Rust features are rejected with a span — generics,
-  traits, impls and methods, closures, macros, references `&`, slices and native `[T; N]` arrays
+  traits, impls and methods, closures, macros, general references `&`, slices and native `[T; N]` arrays
   (§10), strings, floats, other integer types, unsafe operations other than the narrow `Ptr`
   boundary in §2, `extern`, lifetimes, items declared
-  inside a function body, attributes (except the ignored `#[allow(...)]` and the `#[doc]` /
+  inside a function body, attributes (except the resource marker in §15, the ignored `#[allow(...)]` and the `#[doc]` /
   `#[repr(...)]` / `#[derive(PartialEq)]` that §9b/§9d accept), and `use` (parsed but ignored; it
   exists for the IDE). Patterns are limited to a plain identifier or a tuple in `let` (§9c) and to
   a constant or `_` in `match` (§9d): struct patterns, bindings, guards, ranges and `|` are errors.
@@ -512,7 +517,7 @@ blit(TILE.as_array(), 8);
 
 ## 11. Taking addresses: `addr_of`
 
-There is no `&` operator (references are out of subset). The intrinsic
+There is no general `&` operator (except the direct resource-call borrow in §15). The intrinsic
 `addr_of(&x) -> Ptr` takes the address of a variable:
 
 - **globals** (`addr_of(&SCORE)`, or `TILE.as_ptr()`): the address is a **compile-time
@@ -535,7 +540,7 @@ them unchanged (a struct local is just an address plus offsets).
 
 ## 12. Out of scope for now
 
-`&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
+General `&x` references (outside §15), fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
 inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
 aggregate-returning fn pointers, `impl`, `vecN` fields, arbitrary static FPU expressions, recursive layouts, enum payloads,
@@ -729,3 +734,169 @@ stepping and the disassembly panel keep them visible as compiler-generated initi
 Static data initialization groups non-zero words by 256-word address page, temporarily uses `sp`
 as the page base, and writes each value with `store_sp`'s full u8 offset. After the section it
 restores the main frame's stack pointer before any user or runtime code executes.
+
+## 15. Lexical affine resources
+
+This opt-in target-language subset provides deterministic lexical cleanup without
+`Drop`, traits, closures, general references or a full Rust borrow checker:
+
+```rust
+#[rcc_resource(cleanup = renderer_cleanup)]
+pub struct Renderer { word: u16 }
+#[rcc_resource(cleanup = frame_cleanup, parent = Renderer)]
+pub struct Frame { word: u16 }
+#[rcc_resource(cleanup = pass_cleanup, parent = Frame)]
+pub struct Pass { word: u16 }
+
+// Resource definitions, factories, private raw operations and cleanup functions
+// are defined in the same loaded source file. Function bodies are omitted here.
+// renderer_open() -> Renderer
+// frame_open(renderer: &mut Renderer) -> Frame
+// pass_open(frame: &mut Frame) -> Pass
+// pass_draw(pass: &mut Pass, ...) -> ()
+// pass_end(pass: Pass) -> ()
+// frame_complete(frame: Frame) -> ()
+```
+
+A resource declaration has one private `u16` field, no generics/derive and one
+`rcc_resource` attribute (`doc`/`allow` are also accepted). The field is its scalar
+ABI representation, not an address to an ordinary struct. Only its definition
+file may construct the resource or read that field. The resource identity cannot
+be reassigned. `pub` permits other loaded files to name the resource.
+
+An owner is a simple initialized local or by-value function parameter. `let b=a`
+moves ownership; passing a resource by value moves it into the callee. Any later
+use of the old binding is rejected. Owned call arguments must name bound locals;
+bind factory results before passing them onward. This deliberately excludes
+untracked temporary siblings in nested calls. Resources cannot be embedded in another
+struct/tuple/array/static, converted to an ordinary type, address-taken, stored
+through `Ptr`/`Array`, or passed to a resource-signature function pointer. Such
+functions require direct calls. An ordinary value cannot initialize a resource.
+
+`&mut Resource` is supported only as a function parameter and a direct call
+argument naming a mutable owner (or a reborrowed resource parameter). It does
+not create a storable reference. Repeated arguments cannot alias an owner or
+borrow a parent while passing its child. Arguments are checked together, so a
+later argument cannot consume an earlier borrowed owner.
+`mut name: &mut Resource` parameters may be reborrowed with `&mut name`;
+their binding mutability is checked before erasing the reference to the existing
+scalar identity ABI. This does not enable ordinary stored references.
+An already evaluated owned argument retains its child/parent lock until all
+arguments have been evaluated and ownership is handed to the callee. Nested
+argument calls cannot borrow or destroy that parent. Return/break/continue
+through pending resource arguments are conservatively rejected; compute such
+values before moving the owner. A terminal fail-stop still retains the resources.
+
+A child-producing call must have exactly one borrowed parameter of its declared
+parent type. Its result locks the **actual parent argument's identity**, not all
+instances of that type. A live child prevents access, reborrowing, moving or
+closing its parent. Moving a child preserves that association. A factory may
+return a child tied to a borrowed parameter; returning a child of a local owned
+parent is rejected. A consumed child parameter has no proved borrowed-parent
+origin in the callee and cannot be returned/reparented by merely adding another
+parent argument. General resource-valued block/conditional expressions,
+resource reassignment and shadowing are outside this subset.
+
+Live owners are cleaned in reverse binding order on normal block/function exit,
+`return`, `break` and `continue`. A return value is evaluated before cleanup.
+By-value parameters are cleaned by the callee if it has not moved/disarmed them;
+borrowed parameters are not cleaned. Cleanup is a private same-file function
+with one by-value parameter of the matching resource and unit return. That
+parameter itself is exempt from automatic cleanup, preventing recursive drop.
+
+`resource_disarm(owner)` consumes without cleanup and is callable only inside
+the resource's definition file. Trusted completion code uses it **after**
+transferring ownership or freezing a failed operation. A successful transfer
+must not be auto-cancelled when the callee returns; a failure before transfer
+still follows the ordinary exactly-once cleanup path. Applications cannot use
+this intrinsic as a public `forget` operation. No new target opcode is needed:
+checking and cleanup insertion precede existing u16/ordinary-call lowering.
+
+Branch merges and loop backedges/exits require consistent outer ownership;
+inconsistent states are rejected rather than represented by runtime drop flags.
+Resource control flow supports `if`, unlabeled `while`/`loop` and their exits.
+`match`/`for` while resource bindings are in scope, labeled exits, break values
+and short-circuit expressions that change ownership are rejected. A fail-stop
+halt is not stack unwinding and need not execute cleanup.
+
+For files defining resources, the frontend enforces cross-file visibility of
+private functions and static/const storage, including flattened names and
+function-value access, module-level initializers and constant expressions in
+type lengths, independently of module load order. Ordinary lexical locals and
+parameters take precedence over global function/storage names. An ignored/renamed
+`use` cannot grant access. Resource
+fields and constructors retain their defining-file restriction. This is a
+safe-subset ownership guarantee, not protection against arbitrary unsafe memory,
+forged code pointers, device writes or an incorrectly implemented trusted owner.
+Explicit host-authorized libraries extend the private implementation boundary
+as described in section 16; identity operations remain definition-local.
+
+Cleanup scheduling does not itself define GPU completion: GPU resource cleanup
+must release/cancel only untransferred CPU recording rights and must not hide
+GPU/vblank waits. Explicit completion hands asynchronous resources to their
+scheduler; only an explicit close may drain. Those device contracts belong to
+the owning driver rather than to the language's resource representation.
+
+## 16. Host-authorized resource libraries
+
+A resource-defining module may declare one file inner attribute containing an
+explicit, flat implementation list:
+
+```rust
+#![rcc_resource_library(device, commands)]
+mod device;
+mod commands;
+```
+
+Each listed name must also appear as a direct root-level `mod name;`. Merely
+loading a dependency, sharing a directory or adding a `use` does not make a
+module a member. Helpers cannot define another resource root, and a source or
+member cannot be claimed by multiple libraries. Misplaced or duplicate markers
+are rejected. A root must define at least one resource.
+
+The host opts in through
+`frontend::compile_program_named_with_libraries(main_name, source, options,
+approved_roots, loader)`. The approval list contains actual root-file paths.
+The loader returns `ModuleSource { source: String, origin: Option<PathBuf> }`.
+For every root and helper, origin must identify the absolute existing file that
+the trusted loader actually read. A local-first override must report its own
+path; labeling override text with an approved shared path violates the loader
+contract. Application source cannot supply approvals or origins. The main
+source has no trusted origin and cannot authorize itself. Synthetic non-library
+modules may omit origin and acquire no library privilege.
+Every approved root must be explicitly loaded with its library marker. Missing
+roots reject the whole compilation, including a helper-only program with no
+resource declaration; deleting the application's root `mod` cannot disable
+protection. Hosts use an empty approval list or the old String entry for
+ordinary unmarked native diagnostics.
+
+Origins and approvals are canonicalized, including symlink/junction resolution.
+The root must match a host-approved canonical path. Each helper's canonical
+origin must equal `<resolved root directory>/<loaded name>.rs`; a helper link
+resolving outside that directory is rejected. Windows comparisons normalize
+case and long DOS/UNC path prefixes. The older String-loader entry points
+provide no approval or origin and reject a library marker. They continue to
+compile ordinary unmarked native modules.
+
+Inside a domain, root and listed helpers may call each other's private native
+functions and access private static/const storage. Outside the domain, only
+the root's `pub` facade is accessible; helper functions and storage remain
+internal even when declared `pub`. Checks cover direct calls, function values,
+module initializers and type-length expressions regardless of load order.
+An extra application `mod`, `use`, resource declaration or forwarding module
+cannot join an existing domain. RCC still uses its existing flat symbol table;
+this feature does not introduce general Rust module resolution or re-exports.
+
+Resource construction, private identity fields, cleanup definitions and
+`resource_disarm` retain their exact defining-file rules from section 15.
+Library authorization adds no runtime state, instructions or memory fences;
+the checked program lowers through the existing scalar ABI. It is a safe-subset
+interface boundary with a trusted loader and library implementation, not a
+sandbox against arbitrary unsafe addresses, forged code pointers or device I/O.
+
+The flat function/constant/static value namespace rejects duplicate module-level
+names when either declaration belongs to a resource domain, including collisions
+between different declaration kinds and either loading order. An application
+constant cannot replace a private static's access decision while address lowering
+still selects that static. Ordinary lexical local/parameter shadowing remains
+supported; it does not replace a module-level declaration.

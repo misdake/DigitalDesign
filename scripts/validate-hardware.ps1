@@ -126,7 +126,7 @@ function Invoke-IverilogValidation {
         "-p", "cpu-v3-tang-nano-20k", "--lib", "--", "--ignored", "--nocapture"
     )
     $systemExampleArgs = @(
-        "-p", "cpu-v3-tang-nano-20k", "--examples", "--", "--ignored", "--nocapture"
+        "-p", "cpu-v3-tang-nano-20k", "--example", "cpu_v3_system", "--", "--ignored", "--nocapture"
     )
     if (-not $ExtendedSimulations) { $systemExampleArgs += @("--skip", "extended_") }
     Invoke-Cargo "CPU V3 system example Icarus" "test" $systemExampleArgs

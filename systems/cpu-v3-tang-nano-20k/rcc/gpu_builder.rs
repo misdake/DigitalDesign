@@ -198,6 +198,9 @@ fn gpu_builder_begin_record(
     cb[0u16].object_words = object + 16;
     cb[0u16].color = color;
     cb[0u16].depth = depth;
+    if cb[0u16].high_slot != 0 {
+        GPU_SLOT_TARGETS.as_array()[cb[0u16].high_slot - 1] = object + 1;
+    }
     true
 }
 fn gpu_builder_state(
@@ -365,7 +368,17 @@ fn gpu_builder_draw_record(
     rgba_low: u16,
     rgba_high: u16,
 ) -> bool {
-    if !gpu_builder_open(cb) || !gpu_mesh_root_valid(mesh) {
+    gpu_builder_draw_policy(cb, mesh, matrix, rgba_low, rgba_high, false)
+}
+fn gpu_builder_draw_policy(
+    mut cb: Array<GpuBuffer>,
+    mesh: Array<GpuMesh>,
+    matrix: Array<u16>,
+    rgba_low: u16,
+    rgba_high: u16,
+    known: bool,
+) -> bool {
+    if !gpu_builder_open(cb) || (!known && !gpu_mesh_root_valid(mesh)) {
         return false;
     }
     let count = mesh[0u16].count;
@@ -390,12 +403,14 @@ fn gpu_builder_draw_record(
     let entries = GPU_ENTRIES.as_array();
     let retained = count <= 32;
     let mut i: u16 = 0;
-    // Preflight the entire compact directory before modifying either arena.
-    while i < count {
+    // Native calls validate the whole directory before modifying either arena.
+    // Registered meshes only load the retained compact directory here.
+    while i < count && (!known || retained) {
         let n: u16 = if count - i > 16 { 16 } else { count - i };
         let offset: u16 = if retained { i * 2 } else { 0 };
         let batch = unsafe { entries.as_ptr().add(offset as i16).as_u16_array() };
-        if !gpu_mesh_batch(mesh, i, batch, n) || !gpu_mesh_entries_valid(mesh, batch, n) {
+        if !gpu_mesh_batch(mesh, i, batch, n) || (!known && !gpu_mesh_entries_valid(mesh, batch, n))
+        {
             return false;
         }
         i += n;
@@ -693,6 +708,56 @@ fn gpu_builder_ui_draw_record(mut cb: Array<GpuBuffer>, first: u16, end: u16) ->
     cb[0u16].command_words = GPU_BUILD[5u16];
     true
 }
+fn gpu_builder_ui_page_record(
+    mut cb: Array<GpuBuffer>,
+    descriptor: u16,
+    first: u16,
+    end: u16,
+    install: bool,
+) -> bool {
+    let words: u16 = if install { 6 } else { 2 };
+    if !gpu_builder_open(cb)
+        || !gpu_high_slot_valid(cb)
+        || first >= end
+        || end > 750
+        || (descriptor != GPU_UI_PAGE0_SECTOR + (GPU_UI_DESCRIPTOR_WORD >> 6)
+            && descriptor != GPU_UI_PAGE1_SECTOR + (GPU_UI_DESCRIPTOR_WORD >> 6))
+        || (!install && (GPU_BUILD[7u16] != 0 || GPU_BUILD[8u16] != 750))
+        || !gpu_builder_room(cb, gpu_builder_ui_command_words(words), 6)
+    {
+        return false;
+    }
+    let mut cmd: Buf<u16, 2> = Buf::new([0; 2]);
+    if install && !gpu_command_dma(cmd.as_ptr(), descriptor << 7, descriptor >> 9, 276, 32) {
+        return false;
+    }
+    if !gpu_builder_ui_fence(cb) {
+        return false;
+    }
+    if install {
+        if !gpu_builder_emit(cb, cmd[0u16], cmd[1u16]) || !gpu_builder_emit(cb, 1, 0x4000) {
+            return false;
+        }
+        GPU_BUILD[7u16] = 0;
+        GPU_BUILD[8u16] = 750;
+    }
+    if !gpu_builder_ui_range_command(cb, first, end) {
+        return false;
+    }
+    cb[0u16].command_words = GPU_BUILD[5u16];
+    true
+}
+fn gpu_builder_ui_page(
+    cb: Array<GpuBuffer>,
+    descriptor: u16,
+    first: u16,
+    end: u16,
+    install: bool,
+) -> bool {
+    let saved = read_dseg_page(3);
+    let result = gpu_builder_ui_page_record(cb, descriptor, first, end, install);
+    gpu_builder_restore(saved, result)
+}
 fn gpu_builder_end_record(mut cb: Array<GpuBuffer>) -> bool {
     if !gpu_builder_open(cb) || !gpu_builder_room(cb, 4, 2) {
         return false;
@@ -876,6 +941,17 @@ fn gpu_builder_draw(
 ) -> bool {
     let saved = read_dseg_page(3);
     let result = gpu_builder_draw_record(cb, mesh, matrix, rgba_low, rgba_high);
+    gpu_builder_restore(saved, result)
+}
+fn gpu_builder_draw_known(
+    cb: Array<GpuBuffer>,
+    mesh: Array<GpuMesh>,
+    matrix: Array<u16>,
+    rgba_low: u16,
+    rgba_high: u16,
+) -> bool {
+    let saved = read_dseg_page(3);
+    let result = gpu_builder_draw_policy(cb, mesh, matrix, rgba_low, rgba_high, true);
     gpu_builder_restore(saved, result)
 }
 

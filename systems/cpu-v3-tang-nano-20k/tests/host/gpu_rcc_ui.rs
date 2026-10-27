@@ -142,6 +142,7 @@ fn rejected_ui_preserves_recording_and_exact_object_capacity_is_usable() {
  a.sector=0x9801;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
  a.sector=0xfe00;a.sectors=513;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
  a.sectors=511;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));a.sectors=512;
+ check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));a.sector=0xf800;
  check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),unsafe{Ptr::from_addr(0xbfff).as_u16_array()}));
  GPU_CB.command_words=32754;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
  check(GPU_CB.command_words==32754&&GPU_CB.object_words==object&&GPU_BUILD.as_array()[2u16]==used);

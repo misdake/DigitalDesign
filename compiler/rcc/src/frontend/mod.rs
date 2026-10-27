@@ -11,9 +11,11 @@ use crate::{
 use crate::{BoolExpr, FuncBuilder, RccConfig, VarId};
 use crate::{DebugVar, VarLoc};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
 
 mod diagnostics;
+mod resource;
 pub use diagnostics::CompileError;
 
 #[cfg(doc)]
@@ -64,6 +66,7 @@ pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, CompileEr
         "target memory",
         &["<source>".to_string()],
         false,
+        None,
     )
     .map_err(|(_, error)| CompileError::from_syn(source_name, src, error))?;
     Ok(Program { funcs, debug })
@@ -103,8 +106,36 @@ pub fn compile_program_named(
     opts: &impl RccConfig,
     loader: &mut dyn FnMut(&str) -> Result<String, String>,
 ) -> Result<Program, CompileError> {
+    compile_program_named_with_libraries(main_name, src, opts, &[], &mut |name| {
+        loader(name).map(|source| ModuleSource {
+            source,
+            origin: None,
+        })
+    })
+}
+
+/// Source text and its trusted host-loader origin. Synthetic, non-library
+/// modules may omit the origin; source text cannot grant itself a library path.
+pub struct ModuleSource {
+    pub source: String,
+    pub origin: Option<PathBuf>,
+}
+
+/// Compile with explicitly approved resource-library roots. The host loader
+/// reads the actual named source; it must not label an override as a trusted
+/// file. Origins participating in a library must be absolute existing paths.
+/// Every approved root must be explicitly loaded with its library marker;
+/// omitting a root cannot disable protection of its raw helper modules.
+pub fn compile_program_named_with_libraries(
+    main_name: &str,
+    src: &str,
+    opts: &impl RccConfig,
+    approved_roots: &[PathBuf],
+    loader: &mut dyn FnMut(&str) -> Result<ModuleSource, String>,
+) -> Result<Program, CompileError> {
     // gather sources: main file + user modules (recursive) + std
     let mut srcs: Vec<(String, String)> = vec![(main_name.to_string(), src.to_string())];
+    let mut origins = vec![None];
     let mut seen: HashSet<String> = HashSet::new();
     let mut i = 0;
     while i < srcs.len() {
@@ -133,7 +164,8 @@ pub fn compile_program_named(
                             err(&m.ident, format!("cannot load module `{name}`: {error}")),
                         )
                     })?;
-                    srcs.push((format!("{name}.rs"), text2));
+                    origins.push(text2.origin);
+                    srcs.push((format!("{name}.rs"), text2.source));
                 }
             }
         }
@@ -144,6 +176,7 @@ pub fn compile_program_named(
             .iter()
             .map(|(n, t)| (n.to_string(), t.to_string())),
     );
+    origins.resize(srcs.len(), None);
 
     let mut files = vec![];
     let mut names = vec![];
@@ -160,6 +193,10 @@ pub fn compile_program_named(
         opts.static_data_limit_name(),
         &names,
         opts.optimizations().is_disabled(),
+        Some(resource::Sources {
+            origins: &origins,
+            approved_roots,
+        }),
     )
     .map_err(|(file, error)| {
         let (name, text) = &srcs[file.min(srcs.len() - 1)];
@@ -279,13 +316,15 @@ fn prepend_init_block(main: &mut IrFunc, insts: Vec<Instr>, detail: String) {
 }
 
 fn parse_files(
-    files: Vec<syn::File>,
+    mut files: Vec<syn::File>,
     data_base: u16,
     static_data_limit: usize,
     static_data_limit_name: &'static str,
     file_names: &[String],
     materialize_debug_locals: bool,
+    resource_sources: Option<resource::Sources<'_>>,
 ) -> Result<(Vec<IrFunc>, FrontendDebug), (usize, syn::Error)> {
+    resource::lower(&mut files, file_names, resource_sources)?;
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
@@ -2730,6 +2769,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
 /// statements that are also expressions (control flow, assignment, calls)
 fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
     match e {
+        Expr::Block(b) => block(l, &b.block),
         Expr::Assign(a) => {
             // whole-aggregate assignment: `p = q;` / `p = make();` (spec §14)
             if let Some(ty) = peek_type(l, &a.left) {
@@ -2956,7 +2996,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 return Err(err(&a.left, "compound assignment only works on integers"));
             }
             let cur = l.read_var(&kind);
-            let (rhs, _) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
+            let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
             let op = match a.op {
                 SBinOp::AddEq(_) => BinOp::Add,
                 SBinOp::SubEq(_) => BinOp::Sub,
@@ -2970,7 +3010,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         cur,
                         &ty,
                         &a.right,
-                        Some((rhs, ty.clone())),
+                        Some((rhs, rhs_ty)),
                         matches!(a.op, SBinOp::RemEq(_)),
                     )?;
                     let (v, _) = result.reg(l, &a.right, "compound assignment")?;
@@ -3290,6 +3330,18 @@ fn divmod_value(
             (value, ty)
         }
     };
+    // Type unification also admits identical FPU types for phis/if expressions;
+    // it cannot decide whether an integer-only operator is supported.
+    if !lt.is_int() || !rt.is_int() {
+        return Err(err(
+            e,
+            format!(
+                "division and remainder only work on integers (got {} and {})",
+                lt.display(),
+                rt.display()
+            ),
+        ));
+    }
     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
         err(
             e,
@@ -6021,6 +6073,74 @@ mod tests {
     fn fix32_rejects_int_operands_without_conversion() {
         let src = "fn main() { let a = fix32::zero(); let b: u16 = 1; let c = a + b; halt(c.lo_bits()); }";
         assert!(parse_source_with(src, 0).is_err());
+    }
+
+    #[test]
+    fn division_and_remainder_reject_fpu_binary_operands() {
+        // The renderer caller previously compiled this as div_u16 and wrote zeros.
+        let probe = "use crate::dsl_rt::*;static TIME:Buf<u16,5>=Buf::new([0,25,50,75,100]);struct Value{a:fix32}static OUTPUT:Buf<Value,5>=Buf::new([Value{a:fix32::zero()};5]);fn main(){let mut i:u16=0;while i<5{OUTPUT[i].a=fix32::from_int(TIME[i] as i16)/fix32::from_int(100)*fix32::from_words(37408,1);i+=1;}halt(0x600d);}";
+        let mut sources = vec![probe.to_owned()];
+        for ty in ["fix32", "vec2", "vec3", "vec4"] {
+            for op in ["/", "%"] {
+                for (left, right) in [("v", "v"), ("v", "2u16"), ("2u16", "v")] {
+                    sources.push(format!(
+                        "fn main() {{ let v = {ty}::zero(); let result = {left} {op} {right}; halt(0); }}"
+                    ));
+                }
+            }
+        }
+        for source in sources {
+            let error = match parse_source_with(&source, 0) {
+                Ok(_) => panic!("non-integer division/remainder compiled: {source}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains("division and remainder only work on integers"),
+                "{source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn division_and_remainder_compound_assignments_check_both_operand_types() {
+        for ty in ["fix32", "vec2", "vec3", "vec4"] {
+            for op in ["/=", "%="] {
+                let mut sources = vec![
+                    format!("fn main() {{ let mut v = {ty}::zero(); v {op} v; halt(0); }}"),
+                    format!("fn main() {{ let mut v: u16 = 7; v {op} {ty}::zero(); halt(v); }}"),
+                    format!("struct S {{ v: u16 }} fn main() {{ let mut s: S = S {{ v: 7 }}; s.v {op} {ty}::zero(); halt(0); }}"),
+                    format!("fn bad(mut a: Array<u16>) {{ a[0u16] {op} {ty}::zero(); }}"),
+                ];
+                // Only fix32 (not vecN) currently supports struct-field storage.
+                if ty == "fix32" {
+                    sources.push(format!("struct S {{ v: fix32 }} fn main() {{ let mut s: S = S {{ v: fix32::zero() }}; s.v {op} fix32::zero(); halt(0); }}"));
+                    sources.push(format!("struct S {{ v: fix32 }} fn bad(mut a: Array<S>) {{ a[0u16].v {op} fix32::zero(); }}"));
+                }
+                for source in sources {
+                    let error = match parse_source_with(&source, 0) {
+                        Ok(_) => {
+                            panic!("non-integer compound division/remainder compiled: {source}")
+                        }
+                        Err(error) => error.to_string(),
+                    };
+                    assert!(
+                        error.contains("only work on integers")
+                            || error.contains("only works on integers")
+                            || error.contains("compound assignment operator")
+                            || error.contains("type mismatch"),
+                        "{source}: {error}"
+                    );
+                }
+            }
+        }
+        for op in ["/=", "%="] {
+            let source = format!("fn main() {{ let mut v: u16 = 7; v {op} 2i16; halt(v); }}");
+            let error = match parse_source_with(&source, 0) {
+                Ok(_) => panic!("mixed signedness compiled: {source}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("type mismatch"), "{source}: {error}");
+        }
     }
 
     /// The pre-rename spelling is no longer a type or an intrinsic namespace:
