@@ -159,6 +159,75 @@ pub fn allocate_with_convention(
     panic!("register allocation for {} did not converge", f.name)
 }
 
+#[cfg(test)]
+mod phi_cleanup_tests {
+    use super::*;
+
+    fn function() -> IrFunc {
+        let (mut builder, _) = crate::FuncBuilder::new("phi_cleanup", 1, 1);
+        builder.ret(&[0]);
+        builder.finish()
+    }
+
+    #[test]
+    fn dead_phi_trampolines_do_not_require_register_assignments() {
+        let mut f = function();
+        let dead = f.fresh_vreg(RegClass::Gpr);
+        f.blocks.extend([
+            Block {
+                term: Some(Terminator::Jmp { target: 2 }),
+                ..Block::default()
+            },
+            Block {
+                preds: vec![1],
+                term: Some(Terminator::Jmp { target: 3 }),
+                ..Block::default()
+            },
+            Block {
+                preds: vec![2],
+                phis: vec![Phi {
+                    dst: dead,
+                    args: vec![(2, 0)],
+                }],
+                term: Some(Terminator::Ret { values: vec![dead] }),
+                ..Block::default()
+            },
+        ]);
+        let before = f.blocks.clone();
+        collapse_redundant_phi_trampolines(&mut f, &HashMap::from([(0, 2)]));
+        assert_eq!(f.blocks, before);
+    }
+
+    #[test]
+    fn live_phi_trampolines_still_collapse_when_the_register_is_shared() {
+        let mut f = function();
+        let value = f.fresh_vreg(RegClass::Gpr);
+        f.blocks[0].term = Some(Terminator::Jmp { target: 1 });
+        f.blocks.extend([
+            Block {
+                preds: vec![0],
+                term: Some(Terminator::Jmp { target: 2 }),
+                ..Block::default()
+            },
+            Block {
+                preds: vec![1],
+                phis: vec![Phi {
+                    dst: value,
+                    args: vec![(1, 0)],
+                }],
+                term: Some(Terminator::Ret {
+                    values: vec![value],
+                }),
+                ..Block::default()
+            },
+        ]);
+        collapse_redundant_phi_trampolines(&mut f, &HashMap::from([(0, 2), (value, 2)]));
+        assert_eq!(f.blocks[0].term, Some(Terminator::Jmp { target: 2 }));
+        assert_eq!(f.blocks[2].preds, [0]);
+        assert_eq!(f.blocks[2].phis[0].args, [(0, 0)]);
+    }
+}
+
 fn validate_convention(convention: RegisterConvention) {
     let mut roles = HashSet::new();
     for &register in convention.allocatable_registers {
@@ -234,7 +303,9 @@ fn validate_convention(convention: RegisterConvention) {
 /// trampolines so codegen can use the real successor as a branch target and
 /// fall through normally.
 fn collapse_redundant_phi_trampolines(f: &mut IrFunc, registers: &HashMap<VReg, u8>) {
-    for trampoline in 0..f.blocks.len() {
+    // Constant folding can leave dead phi edges. Their values have no assigned
+    // registers; only reachable edges participate in allocation and cleanup.
+    for trampoline in f.rpo() {
         let [source] = f.blocks[trampoline].preds.as_slice() else {
             continue;
         };
