@@ -569,20 +569,40 @@ fn native_group_head(source: &mut String) -> Result<(), String> {
         Ok(())
     })?;
     edit(source, "gpu_v2_texture_runtime_cache_unique", |s| {
+        // A miss keeps the Group head until refill completion and read_issue.
+        // Its registered sector already holds the request address throughout.
         once(
             s,
-            "wire[3:0]tag_set=(read_issue&&next_valid)?next_key[3:0]:head_set;",
-            "wire[3:0]tag_set=head_set;",
+            "reg[31:0]desc_addr;reg[4:0]desc_next;",
+            "reg[4:0]desc_next;",
         )?;
         once(
             s,
-            "else if(read_issue)tag_valid<=next_valid;",
-            "else if(read_issue)tag_valid<=0;",
+            "assign mem_req_addr=desc_addr;",
+            "assign mem_req_addr=hk_addr;",
         )?;
         once(
             s,
-            "wire tag_read=!reset&&!fault_eff&&head_valid&&!tag_write;",
-            "wire tag_read=!reset&&!fault_eff&&head_valid&&!tag_write&&!read_issue;",
-        )
+            "desc_line<=vic_line;desc_addr<=hk_addr;desc_started<=0;",
+            "desc_line<=vic_line;desc_started<=0;",
+        )?;
+        let end = s.rfind("endmodule").ok_or("missing cache end")?;
+        s.insert_str(
+            end,
+            r#"
+`ifndef SYNTHESIS
+ reg descriptor_was_valid;reg[31:0]descriptor_address;
+ always @(posedge clk)begin
+  if(reset)descriptor_was_valid<=0;
+  else begin
+   if(descriptor_was_valid&&hk_addr!==descriptor_address)
+    $fatal(1,"Group sector changed before its descriptor drained");
+   descriptor_was_valid<=desc_valid;descriptor_address<=hk_addr;
+  end
+ end
+`endif
+"#,
+        );
+        Ok(())
     })
 }

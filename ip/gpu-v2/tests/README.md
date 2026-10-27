@@ -55,9 +55,25 @@ Final/ROP results and the entire memory image, in portable and native RAM modes.
 The production pipeline probe also covers a four-tile fine footprint and its
 five-Group trilinear counterpart: their hit intervals remain8 and10 clocks.
 The Group-Q lifecycle probe checks256 distinct35-bit words through four address
-wraps, with native/portable RAM, CE pauses, both P16/G32 limits reached, a held
-head and concurrent writes/reads. Its simulation is bounded to10,000 clocks.
+wraps, with native/portable RAM, CE pauses, all48 FIFO credits reached, held
+current/registered native heads, in-flight reads, exclusive Q return/promotion,
+next-key order and concurrent writes/reads. Its simulation
+is bounded to10,000 clocks. `group_lookahead_overlaps_next_tag` joins the actual
+Group queue and cache:96 keyed Groups check resident hits at II2 and consecutive
+misses at20 clocks with a fixed16-beat memory peer, in both RAM modes. This is a
+bounded cache-schedule regression, not a physical MC throughput measurement.
 `direct_lod_stage1.py --production-source <gpu.v>` checks all mip sizes and
 filters against integer coordinate/owner gold while honoring the producer's
 U/V Q lifetime. `vliw_backend_complete.py --nearest` uses a nonuniform texture
 oracle for nearest filtering; it does not substitute the trilinear reference.
+
+`texture_registered_return::tile_crossings_preserve_nonuniform_texels_and_single_mip_quad_rate`
+uses the production coordinate-through-Color path with sector-dependent RGB565
+texels and an independent integer address/mip/weight/color reference. It checks
+actual lambda0 versus256, fine/coarse member conservation, single-mip bilinear
+and true trilinear,25%Xedge/25%XYcorner mixes, saturated rates and complete quads
+offered every16clocks. Both single-mip filters must retain16clocks/quad in the
+warm window; two-mip rates reflect their actual additional Groups. Output records
+separate first latency, steady intervals, final drain and warm/cold queue peaks.
+Each case is bounded to512pixels,30,000clocks and45seconds. The16-beat memory peer
+is not a physical-MC or full-GPU performance model.

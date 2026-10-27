@@ -668,22 +668,43 @@ calculation borrows the producer's UV and descriptor Q through the next enabled
 edge; a successor fetch changes those Qs only after that edge. There is no
 second V-input/configuration register bank. Simulation monitors this lifetime.
 
-The command Group queue retains Producer16 and Group32 limits in64 physical
-rows. Packet capture acquires a producer slot; its fixed two-edge write precedes
-ordered transfer into Group credit. The consumer head is the native Group RAM
-Q itself. Consuming a head can read its successor on the same edge; the old Q
-is sampled before replacement. A missing successor clears head-valid. Empty
-startup reads only an already transferred row, never a same-edge producer write.
-There are no two copied head payloads or separate head-capture phase. Physical
-occupancy is `Producer+Group`, at most48 rows; the held Q's row releases on
-consumption. Allocation/unwritten/row-count observations derive from these
-prefixes rather than introducing additional functional counter state.
+The command Group queue is one48-entry FIFO in64 physical RAM rows. Packet
+capture acquires a FIFO credit; its fixed two-edge write advances the published
+prefix. Reads use only that prefix, never a same-edge producer write. The former
+Producer16/Group32 transfer stage and separate tier counters are absent. Total
+occupancy includes unwritten entries, RAM entries, the in-flight read and both visible heads; the
+fixed write pipeline has at most two unwritten entries. Retirement releases a
+credit only when the cache consumes the current Group. Pointer observations
+derive from these prefixes rather than adding functional counter state.
 
-After a Group consumption replaces Q, the intervening edge reads the new
-head's tag. The following edge can admit that Group, preserving Group II2
-without a second head or a next-key tag-address mux. This is a tag lookup;
-texture misses still issue from the current head. The standalone generic
-component factories retain their separately tested interfaces and calendars.
+One35-bit copied current head precedes the native RAM's registered output Q,
+which holds the next entry. The BSRAM uses `READ_MODE=1`. A prefix read fills its
+internal first stage; the following enabled edge updates Q through OCE and
+marks it valid. One pending bit tracks this read. A Q promotion may issue the
+successor read, but never updates Q on that edge. The next key and copied head
+therefore consume a value that stays stable across their sampling edge. The
+48-entry bound retains the in-flight row and both live rows through retirement.
+There is no second copied head or external wide read-return register.
+
+Q promotion and Q return are mutually exclusive. CE pauses freeze the read
+calendar, OCE, validity and copied head together. The return edge is followed by
+a promotion/read edge, allowing steady Group II2 without relying on bypass Q's
+old value while a successor read changes that output. Registering the BSRAM
+output changes queue startup, not the cache's saturated two-clock cadence.
+
+On a consumption edge, the next key is already visible on registered Q. The
+cache reads that key's tag while the queue promotes Q and reads its successor's
+first stage. Tags are available on the following edge: a hit retains Group II2,
+and a miss can start its descriptor without an extra tag-read bubble. A missing
+next entry clears current-head valid and uses the ordinary two-edge prefix-read
+startup followed by promotion.
+
+The cache also borrows the copied head's registered sector for the refill
+request address. The queue cannot consume that head before the descriptor
+drains and its texel read issues, so no separate descriptor-address register is
+required. Simulation checks address stability across descriptor lifetime,
+including proposal CE pauses. The standalone generic component factories retain
+their separately tested interfaces and calendars.
 
 The cache has 16 sets, four ways and four synchronous 1024 × 16 banks. Keys are
 slot/level/tile XY; set=`((tile_y&3)<<2)|(tile_x&3)`. Invalid ways precede
@@ -701,6 +722,11 @@ the old result's first pair. Its texel read waits until the old result's final
 consume edge. The consumer samples old DO on that edge, and RAM updates DO after
 the edge. This gives Group II2, or four clocks per eight-tap trilinear pixel,
 when hits and continuous input allow it. Startup latency remains two edges.
+
+[Sampling throughput](/ip/gpu-v2/docs/sampling-throughput.md) distinguishes
+Group II, pixel/quad rates, first-result latency, cache misses and whole-GPU
+wall time. Four clocks per two-mip pixel is a resident interior capacity, not a
+universal bound across tile seams or sparse coverage.
 
 One pin protects the newest paid line through its read. Once an older result
 has reached native DO, it no longer needs the original memory line protected;

@@ -195,3 +195,113 @@ fn group_native_q_preserves_words_under_full_credit_and_stalls() {
         println!("{}", summary.unwrap());
     }
 }
+
+#[test]
+#[ignore = "requires Icarus and native Gowin RAM"]
+fn group_lookahead_overlaps_next_tag_for_hits_and_consecutive_misses() {
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/texture-group-lookahead");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("gpu.v"), production_source()).unwrap();
+    std::fs::write(
+        directory.join("tb.v"),
+        include_str!("fixtures/texture_group_lookahead_tb.v"),
+    )
+    .unwrap();
+    for native in [0, 1] {
+        let image = format!("probe-{native}.vvp");
+        let mut command = Command::new(std::env::var_os("IVERILOG_EXE").unwrap());
+        command.current_dir(&directory).args([
+            "-g2012",
+            "-D__ICARUS__",
+            "-s",
+            "tb",
+            &format!("-Ptb.NATIVE={native}"),
+            "-o",
+            &image,
+            "gpu.v",
+            "tb.v",
+        ]);
+        command.arg(
+            Path::new(&std::env::var_os("GOWIN_HOME").unwrap()).join("IDE/simlib/gw2a/prim_sim.v"),
+        );
+        bounded(command, &directory, &format!("compile-{native}"));
+        for thrash in [0, 1] {
+            let label = format!("run-{native}-{thrash}");
+            let mut command = Command::new(std::env::var_os("VVP_EXE").unwrap());
+            command
+                .current_dir(&directory)
+                .args([&image, &format!("+THRASH={thrash}")]);
+            bounded(command, &directory, &label);
+            let output = std::fs::read_to_string(directory.join(format!("{label}.out"))).unwrap();
+            let summary = output
+                .lines()
+                .find(|line| line.starts_with("PASS LOOKAHEAD "));
+            assert!(summary.is_some(), "missing Group lookahead completion");
+            println!("{}", summary.unwrap());
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires Icarus and native Gowin RAM/DSP primitives"]
+fn tile_crossings_preserve_nonuniform_texels_and_single_mip_quad_rate() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/texture-tile-throughput-production");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("gpu.v"), production_source()).unwrap();
+    std::fs::write(
+        directory.join("tb.v"),
+        include_str!("fixtures/texture_tile_throughput_tb.v"),
+    )
+    .unwrap();
+    let mut command = Command::new(std::env::var_os("IVERILOG_EXE").unwrap());
+    command.current_dir(&directory).args([
+        "-g2012",
+        "-D__ICARUS__",
+        "-s",
+        "tb",
+        "-o",
+        "probe.vvp",
+        "gpu.v",
+        "tb.v",
+    ]);
+    command.arg(
+        Path::new(&std::env::var_os("GOWIN_HOME").unwrap()).join("IDE/simlib/gw2a/prim_sim.v"),
+    );
+    bounded(command, &directory, "compile");
+    // profile2:25%Xedge, profile3:25%corner; a complete quad arrives every16clocks.
+    // Other rows expose saturated local capacity, including two real mip levels.
+    for (profile, filter, mips, pace, ii_x2) in [
+        (0, 1, 0, 0, 4),
+        (2, 1, 0, 0, 5),
+        (2, 1, 0, 16, 8),
+        (3, 1, 0, 0, 7),
+        (3, 1, 0, 16, 8),
+        (2, 2, 0, 16, 8),
+        (3, 2, 0, 16, 8),
+        (0, 2, 1, 0, 8),
+        (2, 2, 1, 0, 9),
+        (3, 2, 1, 0, 11),
+        (5, 2, 1, 0, 32),
+    ] {
+        let label = format!("p{profile}-f{filter}-m{mips}-pace{pace}");
+        let mut command = Command::new(std::env::var_os("VVP_EXE").unwrap());
+        command.current_dir(&directory).args([
+            "probe.vvp",
+            &format!("+PROFILE={profile}"),
+            &format!("+FILTER={filter}"),
+            &format!("+MIPS={mips}"),
+            &format!("+PACE={pace}"),
+            &format!("+II_X2={ii_x2}"),
+        ]);
+        bounded(command, &directory, &label);
+        let output = std::fs::read_to_string(directory.join(format!("{label}.out"))).unwrap();
+        let summary = output.lines().find(|line| line.starts_with("PASS TILE "));
+        assert!(
+            summary.is_some(),
+            "missing tile throughput completion in {label}"
+        );
+        println!("{}", summary.unwrap());
+    }
+}
