@@ -83,3 +83,12 @@ The lighting stream regression simulates the complete clean and CE-stalled
 accepted clean result, restoring the first record before each mutation; they do
 not repeat identical arithmetic simulation. The input corpus, context switches,
 II assertions, numerical oracle and watchdog checks are retained.
+
+The opt-in framebuffer-aligned texture experiment is documented in
+[Texture16x8](/ip/gpu-v2/studies/texture16x8/README.md).
+`test_texture16x8.py --export <command16x8.v> --output <fresh-directory>` checks
+independent mip/packet addresses, all128 local origins, asymmetric weights,
+native/portable bank data, stalls, the48-credit FIFO, actual Group/cache
+lookahead, child failures and abort drain. Each subprocess is bounded to60
+seconds and each bench has a finite cycle watchdog. The default command export
+remains byte-identical to the accepted sampling baseline.
