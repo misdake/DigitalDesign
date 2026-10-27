@@ -140,6 +140,18 @@ guarded negatives. Bounds are180000 cycles and180 seconds. These no-triangle
 fixtures and the original frozen49.5/99 CL2 scene result do not establish new
 54/108 board or producer qualification.
 
+`tests/producer_handoff.py` consumes an archived committed producer fixture with
+`--fixture`, `--producer-receipt`, `--producer-commit`, `--row-rtl` and fresh
+`--out`. Column also requires explicit `--frozen-column`/`--column-contract`.
+It checks archived file and build hashes, the real header/ranges, catalog byte
+closure and actual column origin. The generated wire is labeled host-encoded,
+not UART. Its independent oracle handles the supplied CLEAR plus fixed-grid UI
+caller, including odd-row glyph packing, untouched depth and physical padding;
+DRAW is rejected rather than assigned an invented result. `--expect-fault
+missing-read|forbidden-write` poisons a simulation mask without changing producer
+bytes. Limits remain180000 cycles/180seconds. No verified programming receipt or
+combined CPU/GPU source build is implied by this offline handoff check.
+
 The next frozen lease can expose the previous submission's actual output in its
 confirmed old Front and depth preimage. `compare.py` checks adjacency, addresses,
 formats, input identity and both complete output planes. An equal memory image
