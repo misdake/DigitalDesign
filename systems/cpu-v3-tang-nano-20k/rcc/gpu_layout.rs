@@ -19,3 +19,9 @@ pub const GPU_SLOT1_COMMAND_FIRST_SECTOR: u16 = GPU_UI_PAGE1_SECTOR + GPU_UI_PAG
 pub const GPU_SLOT1_OBJECT_FIRST_SECTOR: u16 =
     GPU_SLOT1_COMMAND_FIRST_SECTOR + GPU_COMMAND_CAPACITY_SECTORS;
 pub const GPU_INPUT_SLOTS: u16 = 2;
+
+// Ordinary POT asset footprint and alignment for this explicit hardware profile.
+pub const GPU_TEXTURE_MACRO_LOG2: u16 = 3;
+pub const GPU_TEXTURE_MIN_LEVEL_SECTORS: u16 = 1;
+pub const GPU_TEXTURE_ALIGNMENT_SECTORS: u16 = 1;
+pub const GPU_FRAMEBUFFER_PHYSICAL_SECTORS: u16 = 1500;

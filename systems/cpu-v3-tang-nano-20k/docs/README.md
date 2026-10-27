@@ -6,6 +6,8 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 ## Documents
 
+- [Column scene firmware](/systems/cpu-v3-tang-nano-20k/docs/gpu-column-scene.md): explicit non-RTT serial scene profile, offline assets, physical spans and firmware receipt.
+
 - [`architecture.md`](architecture.md): current complete-system composition, clock and memory paths,
   boot chain, device ownership, display integration, and validation boundary.
 - [Wall clock](/systems/cpu-v3-tang-nano-20k/docs/wall-clock.md): SystemControl millisecond timestamps, RCC access, wrap limits and functional-model time.

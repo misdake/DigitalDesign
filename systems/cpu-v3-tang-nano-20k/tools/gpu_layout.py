@@ -7,7 +7,10 @@ import re
 LAYOUT = Path(__file__).resolve().parents[1] / "rcc/gpu_layout.rs"
 
 
-def sectors():
+def sectors(profile="default"):
+    if profile not in ("default", "column16"):
+        raise ValueError("unsupported explicit GPU layout profile")
+    layout = LAYOUT if profile == "default" else LAYOUT.with_name("gpu_layout_column16.rs")
     values = {}
     operations = {ast.Add: operator.add, ast.Sub: operator.sub}
 
@@ -20,7 +23,7 @@ def sectors():
             return operations[type(node.op)](value(node.left), value(node.right))
         raise ValueError("unsupported GPU layout expression")
 
-    for name, expression in re.findall(r"pub const (\w+): u16\s*=\s*([^;]+);", LAYOUT.read_text()):
+    for name, expression in re.findall(r"pub const (\w+): u16\s*=\s*([^;]+);", layout.read_text()):
         result = value(ast.parse(expression.strip(), mode="eval").body)
         if not 0 <= result <= 65535:
             raise ValueError(f"GPU sector constant does not fit u16: {name}")
@@ -28,8 +31,8 @@ def sectors():
     return values
 
 
-def validate_asset_range(address, length):
-    bounds = sectors()
+def validate_asset_range(address, length, profile="default"):
+    bounds = sectors(profile)
     first = bounds["GPU_ASSET_FIRST_SECTOR"] * 128
     end = bounds["GPU_ASSET_END_SECTOR"] * 128
     if not (length > 0 and first <= address < address + length <= end):

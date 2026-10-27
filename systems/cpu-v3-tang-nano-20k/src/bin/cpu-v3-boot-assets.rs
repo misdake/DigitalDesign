@@ -106,11 +106,13 @@ mod tests {
 
     #[test]
     fn generated_assets_have_only_one_application_and_fixed_package() {
-        assert!(ASSETS.len() == 5 || ASSETS.len() == 10);
+        assert!(ASSETS.len() == 5 || ASSETS.len() == 10 || ASSETS.len() == 11);
         assert!(ASSETS
             .iter()
             .skip(5)
-            .all(|(name, _)| name.starts_with("gpu-demo-assets/") || *name == "demo-repack.conf"));
+            .all(|(name, _)| name.starts_with("gpu-demo-assets/")
+                || *name == "demo-repack.conf"
+                || *name == "gpu-column-layout.rs"));
         assert!(asset_manifest().contains("asset=application.v3bin"));
         assert!(asset_manifest().contains("asset=application.static-words"));
         assert!(asset_manifest().contains("asset=cpu-v3-boot.bin"));

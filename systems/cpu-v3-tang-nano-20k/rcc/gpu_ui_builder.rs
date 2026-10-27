@@ -1,5 +1,7 @@
 //! In-place native UI object construction; no mapped pointer escapes a call.
 use crate::dsl_rt::*;
+mod gpu_layout;
+use gpu_layout::*;
 mod gpu_builder;
 use gpu_builder::*;
 
@@ -92,8 +94,8 @@ fn gpu_builder_ui_begin_record(
         count,
         cb[0u16].objects.sector,
         cb[0u16].objects.sectors,
-    ) || gpu_extents_overlap(base, count, cb[0u16].color, 1536)
-        || gpu_extents_overlap(base, count, cb[0u16].depth, 1536)
+    ) || gpu_extents_overlap(base, count, cb[0u16].color, GPU_PLANE_SECTORS)
+        || gpu_extents_overlap(base, count, cb[0u16].depth, GPU_PLANE_SECTORS)
     {
         return false;
     }
