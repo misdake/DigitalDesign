@@ -1,5 +1,5 @@
-//! Private CPU scene caches. World axes are right/up/back; camera zero looks -Z.
-//! Position uses right/down/forward; normal/light use right/up/back.
+//! Private CPU scene caches. Camera zero looks along source-world -Z.
+//! Native view is diag(-1,1,1)*R_camera^T for position, normal and light.
 use crate::dsl_rt::*;
 mod gpu_assets;
 use gpu_assets::*;
@@ -434,11 +434,13 @@ fn scene_camera_prepare(slot: u16) -> bool {
         while row < 3 {
             let mut col: u16 = 0;
             while col < 3 {
-                scene_store(
-                    c,
-                    24 + 2 * (row * 3 + col),
-                    scene_load(rotation.as_array(), 2 * (col * 3 + row)),
-                );
+                // Match native look-at winding and the Lighting ray basis.
+                // Reflect before sharing this basis with position/normal/light.
+                let mut value = scene_load(rotation.as_array(), 2 * (col * 3 + row));
+                if row == 0 {
+                    value = -value;
+                }
+                scene_store(c, 24 + 2 * (row * 3 + col), value);
                 col += 1;
             }
             row += 1;

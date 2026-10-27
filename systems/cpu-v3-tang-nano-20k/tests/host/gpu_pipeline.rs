@@ -317,11 +317,12 @@ fn scene_commands_and_objects(memory: &[u16], objects: usize) -> Vec<Command> {
             .collect::<Vec<_>>()
     );
     let mut instance = vec![0u32; 32];
-    instance[0] = 51200;
+    instance[0] = (-51200i32) as u32;
     instance[5] = (-51200i32) as u32;
     instance[10] = (-65536i32) as u32;
     instance[11] = 3 << 16;
-    for i in [12, 16, 20, 21] {
+    instance[12] = (-65536i32) as u32;
+    for i in [16, 20, 21] {
         instance[i] = 65536;
     }
     instance[22] = u32::MAX;

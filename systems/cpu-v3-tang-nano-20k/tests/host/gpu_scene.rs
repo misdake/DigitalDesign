@@ -39,7 +39,9 @@ pub(super) fn rotation(a: [f64; 3]) -> [[f64; 3]; 3] {
 pub(super) fn reference(c: Case) -> (Matrix, [[f64; 3]; 3]) {
     let camera = rotation(c.camera);
     let model = rotation(c.angles);
-    let view: [[f64; 3]; 3] = std::array::from_fn(|r| std::array::from_fn(|k| camera[k][r]));
+    let view: [[f64; 3]; 3] = std::array::from_fn(|r| {
+        std::array::from_fn(|k| camera[k][r] * if r == 0 { -1.0 } else { 1.0 })
+    });
     let normal: [[f64; 3]; 3] = std::array::from_fn(|r| {
         std::array::from_fn(|k| (0..3).map(|n| view[r][n] * model[n][k]).sum())
     });
@@ -70,6 +72,171 @@ pub(super) fn fixed(words: &[u16], at: usize) -> f64 {
         (words[at + 1] >> 8) as u8,
     ]) as f64
         / 65536.0
+}
+
+#[test]
+fn public_camera_matches_canonical_native_projection_culling_and_light() {
+    // This oracle comes from the separately authored look-at scene, not the
+    // Euler/prepared-view formula used by the ordinary cache dependency tests.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let scene: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("examples/gpu_demo/assets/scene.json")).unwrap(),
+    )
+    .unwrap();
+    let expected: Vec<i64> = scene["cameras"][0]["matrix"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_i64().unwrap())
+        .collect();
+    let source = r#"mod gpu_pipeline;
+fn main(){let mut r=renderer_open();let zero=vec3::zero();let one=fix32::from_int(1);
+let mut c=renderer_camera(&mut r,
+vec3::new(fix32::zero(),fix32::from_words(14418,0),fix32::from_words(52429,2)),
+vec3::new(fix32::from_words(59932,65535),fix32::zero(),fix32::zero()),
+fix32::from_int(200),fix32::from_int(199));
+camera_light(&mut c,vec3::new(fix32::from_words(36045,65535),fix32::from_words(52429,0),fix32::from_words(6554,1)));
+let mut mesh=renderer_mesh(&mut r);
+let mut model=renderer_model(&mut r,zero,zero,vec3::new(one,one,one));
+let mut material=renderer_material(&mut r,255,255,255,true);
+let mut f=renderer_frame(&mut r,0x1111);let mut p=frame_pass(&mut f,&mut c);
+pass_draw(&mut p,&mut mesh,&mut model,&mut material);pass_complete(p);frame_complete(f);
+renderer_close(r);halt(0x600d);}"#;
+    let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let ir = resolver::compile_renderer_program(
+        "canonical native camera",
+        source,
+        &options,
+        &root.join("rcc"),
+        &root.join("rcc"),
+        RENDERER_METADATA,
+        &mut |_| {},
+    )
+    .unwrap();
+    let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&program.words);
+    for (address, byte) in crate::shared_support_gpu_rcc_d2::assets() {
+        let word = &mut cpu.physical_memory_mut()[address as usize / 2];
+        *word = (*word & !(255 << ((address % 2) * 8))) | (u16::from(byte) << ((address % 2) * 8));
+    }
+    let state = attach(&mut cpu, Some(vec![vec![]]));
+    {
+        let mut s = state.borrow_mut();
+        s.automatic = true;
+        s.capture_dynamic = true;
+    }
+    assert!(matches!(
+        cpu.run(5_000_000).unwrap(),
+        RunOutcome::Halted { signal: 0x600d, .. }
+    ));
+    let s = state.borrow();
+    assert_eq!((s.starts.len(), s.swaps, s.maintenance), (1, 1, 1));
+    let commands = &s.starts[0].1;
+    let objects = &s.object_snapshots[0];
+    let mut local = vec![0u16; 1536];
+    let mut global = vec![];
+    let mut instance = vec![];
+    for word in commands.as_chunks::<2>().0 {
+        let command = u32::from(word[0]) | (u32::from(word[1]) << 16);
+        match command >> 28 {
+            1 => {
+                let source = (((command >> 10) & 0x3ffff) * 32) as usize;
+                let destination = (((command >> 3) & 127) * 16) as usize;
+                let size = ((32 << ((command >> 1) & 3)) / 2) as usize;
+                let at = (source - 0x4a0000) / 2;
+                local[destination..destination + size].copy_from_slice(&objects[at..at + size]);
+            }
+            5 => {
+                let at = ((command & 127) * 16) as usize;
+                global = local[at..at + 32].to_vec();
+            }
+            3 => instance = local[1280..1344].to_vec(),
+            15 => break,
+            _ => {}
+        }
+    }
+    assert_eq!(instance.len(), 64);
+    let actual: Vec<i64> = instance
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|w| i64::from((u32::from(w[0]) | (u32::from(w[1]) << 16)) as i32))
+        .collect();
+    for (at, (&a, &b)) in actual.iter().zip(&expected).enumerate() {
+        assert!((a - b).abs() <= 4, "native matrix word {at}: {a} vs {b}");
+    }
+    for axis in 0..3 {
+        let light = i64::from(global[2 + axis] as i16);
+        let expected_light = scene["cameras"][0]["light"][axis].as_i64().unwrap();
+        assert!(
+            (light - expected_light).abs() <= 10,
+            "native light axis {axis}"
+        );
+    }
+    let transform = |matrix: &[i64], p: [i64; 3]| -> [i64; 3] {
+        std::array::from_fn(|r| {
+            ((0..3)
+                .map(|k| i128::from(matrix[4 * r + k]) * i128::from(p[k]))
+                .sum::<i128>()
+                + (i128::from(matrix[4 * r + 3]) << 16)) as i64
+                >> 16
+        })
+    };
+    let determinant = |p: [[i64; 3]; 3]| -> i128 {
+        let [a, b, c] = p.map(|v| v.map(i128::from));
+        a[0] * (b[1] * c[2] - b[2] * c[1])
+            + a[1] * (b[2] * c[0] - b[0] * c[2])
+            + a[2] * (b[0] * c[1] - b[1] * c[0])
+    };
+    let mut front = 0;
+    let mut back = 0;
+    for mesh in scene["meshes"].as_array().unwrap() {
+        let config = mesh["config"].as_array().unwrap();
+        let shift = config[3].as_u64().unwrap() & 31;
+        let points: Vec<[i64; 3]> = mesh["vertices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let packed = v[0].as_u64().unwrap();
+                std::array::from_fn(|k| {
+                    config[k].as_i64().unwrap() + ((((packed >> (10 * k)) & 1023) << shift) as i64)
+                })
+            })
+            .collect();
+        for triangle in mesh["triangles"].as_array().unwrap() {
+            let p: [[i64; 3]; 3] =
+                std::array::from_fn(|k| points[triangle[k].as_u64().unwrap() as usize]);
+            let reference = determinant(p.map(|v| transform(&expected, v)));
+            let observed = determinant(p.map(|v| transform(&actual, v)));
+            // Exclude genuinely near-edge-on faces from a quantized sign test.
+            if reference.abs() > (1i128 << 30) {
+                assert_eq!(
+                    observed.signum(),
+                    reference.signum(),
+                    "{} winding",
+                    mesh["name"]
+                );
+                if reference > 0 {
+                    front += 1;
+                } else {
+                    back += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        front > 100 && back > 100,
+        "both culling classes must be exercised"
+    );
+    // Native X grows toward screen right; the canonical source +X lies left.
+    let left = transform(&actual, [65536, 0, 0]);
+    let center = transform(&actual, [0, 0, 0]);
+    assert!(left[2] > 0 && center[2] > 0);
+    assert!(
+        i128::from(left[0]) * i128::from(center[2]) < i128::from(center[0]) * i128::from(left[2])
+    );
 }
 #[test]
 fn prepared_views_follow_changes_and_normal_excludes_scale_and_projection() {
@@ -208,7 +375,8 @@ check(scene_model_prepare(m.word,bounds.as_array()));pass_complete(p);signal(1,{
         let ry = (view[67] as i16) as f64 / 16384.0;
         assert!((rx + 100.0 / c.focal).abs() < 0.00015);
         assert!((ry + 60.0 / c.focal).abs() < 0.00015);
-        let expected_light = rotation(c.camera)[2];
+        let mut expected_light = rotation(c.camera)[2];
+        expected_light[0] = -expected_light[0];
         for k in 0..3 {
             assert!(((view[69 + k] as i16) as f64 / 16384.0 - expected_light[k]).abs() < 0.0003);
         }
@@ -425,7 +593,9 @@ let mut bounds:Buf<u16,12>=Buf::new([0,65535,0,65535,0,0,0,1,0,1,0,0]);"#,
                 for axis in 0..3 {
                     let actual = f64::from(memory[view + 69 + axis] as i16) / 16384.;
                     assert!(
-                        (actual - lights[seen][axis] / length).abs() < 0.0015,
+                        (actual - lights[seen][axis] / length * if axis == 0 { -1.0 } else { 1.0 })
+                            .abs()
+                            < 0.0015,
                         "sample {seen} axis {axis}: {actual}"
                     );
                 }

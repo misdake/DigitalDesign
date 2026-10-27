@@ -119,7 +119,7 @@ whole immutable directory.
 
 | API | Inputs and effect |
 | --- | --- |
-| `renderer_camera` / `camera_pose` | Eye and Euler radians; world right/up/back, zero camera looks -Z |
+| `renderer_camera` / `camera_pose` | Source-world eye and Euler radians; zero camera looks -Z; native basis below |
 | `camera_projection` | Focal 144..256, far strictly between0 and200 |
 | `camera_light` | Nonzero world-space light, normalized and quantized once per relevant change |
 | `renderer_model` / `model_pose` | Translation, Euler radians, scale per component0.5..2 |
@@ -135,6 +135,18 @@ asset AABB components to +/-100. Eight transformed AABB corners must fit signed
 all-positive-Z helper is not used. Euler rotation is Rz*Ry*Rx. Position is
 `K * V_pos * M`; normals are `V_normal * R_model`, with rotation only. Model
 scale and projection never enter the normal transform.
+
+For the source-world Camera rotation `R_camera`, native view basis is
+`B = diag(-1,1,1) * transpose(R_camera)`. Position uses
+`diag(focal/256,-focal/256,-1) * B * (world_position-eye)`;
+normals use `B * R_model`, and world-space light uses `B * normalize(light)`.
+The source-world +X direction projects left for the zero-angle Camera. This
+matches the canonical look-at assets, native triangle determinant/culling and
+Lighting's view rays. The reflection belongs to the shared prepared basis;
+changing only position or asset winding would leave normal/light inconsistent.
+`camera_light` accepts world-space light, not an already transformed native
+light. This resource Camera conversion is separate from the legacy generic
+`gpu_camera_view`/`gpu_instance_trs` helpers; do not apply it twice.
 
 Controlled setters compare actual values. Camera rotation/translation,
 projection rays and normalized light have separate dependencies. Each Pass

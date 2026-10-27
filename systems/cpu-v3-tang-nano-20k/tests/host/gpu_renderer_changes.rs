@@ -232,9 +232,12 @@ fn check_draw(expected: &Draw, global: &[u16], render: &[u16], instance: &[u16])
     let rotation = scene::rotation(expected.camera.camera);
     let length = expected.light.iter().map(|v| v * v).sum::<f64>().sqrt();
     for axis in 0..3 {
-        let component = (0..3)
+        let mut component = (0..3)
             .map(|k| rotation[k][axis] * expected.light[k] / length)
             .sum::<f64>();
+        if axis == 0 {
+            component = -component;
+        }
         let actual = global[2 + axis] as i16;
         assert!(
             (f64::from(actual) - component * 16384.).abs() < 10.,
