@@ -1,13 +1,16 @@
 # GPU profiler
 
-Read-only RTL capture, versioned multi-submission sessions and a self-contained
-offline viewer. Python uses the standard library. Node is needed for viewer
+Read-only RTL capture, frozen pre-submit memory snapshots, bounded cold replay
+and a self-contained offline viewer. Python uses the standard library. Node is needed for viewer
 regressions; Icarus and the Gowin simulation library are needed only for RTL capture.
-Production GPU/CPU logic and the driver ABI are unchanged.
+Production GPU/CPU datapaths and Device4 ABI are unchanged. The formal renderer
+owns its optional software capture lease and read bridges.
 
-The current tool captures simulation only. Board-side pause/dump and automatic
-replay of a board memory snapshot are not implemented; their contract and
-acceptance conditions are in [TODO.md](TODO.md).
+The [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md) owns
+resource freezing, publication and the sole later submission. The separate
+[board diagnostic](/systems/cpu-v3-tang-nano-20k/examples/gpu_profiler_board/README.md)
+owns the button gate and TX-only transport. Remaining qualification and future
+extensions are listed in [TODO.md](TODO.md).
 
 ## Commands
 
@@ -32,6 +35,56 @@ The small source fixture is **synthetic**, exercises A/B/A address reuse,
 backend retirement tails and CPU overlap, and is not a performance measurement.
 `check` runs bounded Python format/correlation and Node math/interaction tests.
 No command creates ZIP archives, flashes hardware, commits or pushes.
+
+## Frozen inputs and cold replay
+
+`snapshot_cli.py build-manifest spec.json --out build.json` creates a content
+declaration from an explicit source/export/options/catalog list. Header/range
+indices are read from the single driver-owned `rcc/gpu_capture_abi.rs`; they are
+not duplicated in Python. Build IDs bind logical file names, lengths and hashes;
+file locations can be relocated without changing content identity.
+
+```powershell
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/snapshot_cli.py receive --port COM4 --seconds 180 --out target/snapshot-receive
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/snapshot_cli.py decode path/to/uart.bin --out target/snapshot-decoded
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/snapshot_cli.py preflight path/to/complete-attempt --build build.json --receipt receipt.json --out target/preflight.json
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/replay.py path/to/complete-attempt --rtl path/to/fresh-export --build build.json --receipt receipt.json --out target/replay --max-cycles 2000000 --timeout 1800
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/compare.py previous-attempt next-attempt --replay target/replay --out target/comparison.json
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/qualify.py target/bound-board-run --out target/bound-board-run/qualification.json
+```
+
+Every attempt is independent. The decoder preserves an error report for a
+truncated/corrupt attempt and can accept a subsequent complete retry; it never
+combines their chunks. A complete attempt materializes `snapshot.json` and flat
+`range-NNN.bin` files with lengths, CRC32 and SHA256. Replay reloads and checks
+those files rather than trusting cached JSON. Command padding, objects, actual
+UI, every catalog allocation, color/depth preimages and old Front must be present.
+Version1 captures preimages even when the CB declares full CLEAR.
+
+The header ID is a declaration, not a hardware self-attestation. A separate
+verified programming receipt binds actual firmware and bitstream bytes. Missing
+files, changed identities, unsafe filenames, inconsistent aliases or incompatible
+ABIs refuse replay. Physical initialized-read guards additionally reject any
+native MC read not covered by captured bytes or an earlier replay write.
+
+Cold replay uses the production GPU, arbiter, streaming endpoint, registered
+CL3 native return and SDRAM controller. It has explicit cycle/wall limits and
+isolated, hash-checked exports. It includes no CPU/Display requests and restores
+no internal warm cache, FF or BSRAM contents. The pin model has explicit functional
+timing assumptions; it is not board/PVT qualification. `color.bin`/`depth.bin`
+are authoritative native output; `color.png` is a viewing aid.
+
+The next frozen lease can expose the previous submission's actual output in its
+confirmed old Front and depth preimage. `compare.py` checks adjacency, addresses,
+formats, input identity and both complete output planes. An equal memory image
+does not certify the HDMI link or infer whole-board GPU timing.
+
+`qualify.py` summarizes the diagnostic run's two repeated frozen dumps, adjacent
+output comparison and exact independent wire-encoder check. It reports the
+accepted-START-to-drained interval separately from observed CLEAR command time.
+Subtracting those intervals is accounting on that run, not a separate no-clear
+render. Arrival-offset CSV records support per-attempt transfer measurements;
+board dump milliseconds end when END is assembled, before its final bytes finish.
 
 ## Capture a harness
 

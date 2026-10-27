@@ -30,7 +30,7 @@ def main():
     if args.command == "check":
         root = Path(__file__).resolve().parent
         subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", str(root / "tests"),
-                        "-p", "test_profiler.py", "-v"], check=True, timeout=30)
+                        "-p", "test_*.py", "-v"], check=True, timeout=30)
         with tempfile.TemporaryDirectory() as temp:
             write_report(build_capture(root / "tests/fixtures/pingpong"), temp)
             for script, extra in [("math_checks.js", []), ("viewer_checks.js", [str(Path(temp) / "profile.json")])]:

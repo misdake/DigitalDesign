@@ -1,13 +1,14 @@
 ---
 id: system-gpu-profiler
 status: active
-last-verified: 2026-10-26
+last-verified: 2026-10-27
 ---
 
 # GPU profiling sessions
 
-The system-owned profiler is a passive simulation observer, correlator and offline
-viewer. Its [tool README](/systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/README.md)
+The system-owned profiler combines a software-only published-input snapshot,
+bounded cold replay, passive simulation observer, correlator and offline viewer.
+Its [tool README](/systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/README.md)
 owns usage and verification commands. It changes no synthesized logic or Device4
 ABI. A render frame, a CPU recording interval and a GPU submission are distinct.
 
@@ -33,6 +34,69 @@ zero; selecting CB3/PC0 cannot select CB1/PC0. Physical triangle/pool/context sl
 carry independent observer generation ownership; their reuse is not a meshlet ID.
 No frame is inferred from a CB address. The current hardware runs one CB at a time;
 CPU preparation may overlap its execution.
+
+## Published-input snapshot and transport
+
+The [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md) defines
+the unique 64-u16 descriptor and eight-u16 range entries. The renderer freezes
+after publication and prior completion, before either COUNT or START. The
+consumer reads that lease; it does not own a second GPU scheduler. Arbitrary
+in-flight pipeline state is outside this interface.
+
+```mermaid
+flowchart LR
+    Driver["Renderer: seal + publish + prepare"] --> Gate["Software gate: hold the same lease"]
+    Gate -->|"descriptor + bounded range reads"| UART["GPS1 TX frames: CRC32 + raw/RLE16"]
+    UART --> Host["PC: complete-attempt, identity and extent checks"]
+    Host --> Replay["Cold production GPU + streaming CL3 MC"]
+    Replay -->|"read-only events + load"| Viewer["Offline profiler"]
+    Replay -->|"RGB565 + D16 planes"| Compare["Compare next frozen Front/depth"]
+    Gate -->|"fresh explicit resume: same CB once"| Driver
+```
+
+Wire integers are little-endian. Every frame has a 24-byte envelope followed by
+its payload and a u32 CRC32 of envelope+payload:
+
+| Field | Width | Meaning |
+| --- | --- | --- |
+| Magic | 4 bytes | ASCII `GPS1` |
+| Version, kind | u8, u8 | Version1; kind below |
+| Flags | u16 | Zero |
+| Snapshot, attempt | u32, u32 | Prepared token; nonzero transfer-attempt identity |
+| Sequence, payload bytes | u32, u32 | Strictly increasing from0; at most4096 bytes |
+
+| Kind | Payload |
+| --- | --- |
+| BEGIN1 | Exact driver descriptor, 128 bytes |
+| RANGE2 | u16 sequential index + exact eight-u16 range |
+| DATA3 | u16 range, u16 codec, u32 byte offset, u32 decoded bytes, encoded body |
+| RANGE_END4 | u16 range, u16 zero, u32 decoded bytes, u32 decoded CRC32 |
+| END5 | u32 range count, bytes, chunks, canonical CRC32, board dump milliseconds |
+| ERROR6 | Diagnostic failure bytes; never a complete snapshot |
+
+All RANGE records precede DATA. DATA is contiguous within sequential ranges;
+one decoded chunk is even, nonzero and at most1024 bytes. Firmware uses at
+most512 bytes. Codec0 is raw; codec1 is RLE16: token bit15 selects repeat, low15
+plus1 is its word count. A repeat carries one u16, a literal carries that many.
+Raw is selected whenever compression is not shorter. Decoding is bounded before
+expansion. Canonical CRC32 covers descriptor bytes, RANGE payloads in table order,
+then decoded DATA in range order. No missing-END or partially closed range is
+accepted, and attempts cannot donate data to each other.
+
+Physical addresses and lengths are bytes; the driver reader's offset is a u32
+count of **u16 words**. Input SHA256 includes the descriptor, exact range entries
+and decoded bytes. Attempt/time/host file locations do not change that input
+identity. Per-file hashes and alias consistency are checked again on reload.
+Immutable catalog checks and initialized-read guards supplement framing integrity.
+
+Cold replay clears internal GPU/MC state and seeds captured DRAM bytes. It uses
+production streaming RTL at related54/108MHz clocks with an accelerated startup
+delay outside the measured submission. The functional pin model uses CL3,
+RCD3/RP3, tAC6ns/tOH2ns and an explicit fixed4ns return delay; these are replay
+assumptions, not measured PCB/PVT limits. CPU/Display traffic and warm caches are
+not recreated. A matching result therefore establishes exact output for these
+frozen inputs, without certifying board timing or reproducing every contention
+case.
 
 ## Observer records
 

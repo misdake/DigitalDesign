@@ -3,6 +3,8 @@ param(
     [int]$Baud = 115200,
     [int]$Seconds = 8,
     [Parameter(Mandatory = $true)][string]$Out,
+    [int]$StopAfterIdleSeconds = 0,
+    [switch]$WriteTiming,
     # Reboot the BL616 bridge MCU before capturing. Its USB VCP drops and
     # re-enumerates, clearing any UART route state left stuck by an earlier
     # interrupted capture. Usually more reliable than unplugging USB, and it
@@ -12,6 +14,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 if ($Seconds -le 0) { throw "capture duration must be positive" }
+if ($StopAfterIdleSeconds -lt 0 -or $StopAfterIdleSeconds -gt $Seconds) {
+    throw "idle bound must be zero or no greater than capture duration"
+}
 
 $serial = New-Object System.IO.Ports.SerialPort $Port, $Baud, ([System.IO.Ports.Parity]::None), 8, ([System.IO.Ports.StopBits]::One)
 $serial.ReadTimeout = 200
@@ -27,6 +32,8 @@ if (-not [System.IO.Path]::IsPathRooted($outPath)) {
 $parent = [System.IO.Path]::GetDirectoryName($outPath)
 if ($parent) { [System.IO.Directory]::CreateDirectory($parent) | Out-Null }
 $handshakePath = "$outPath.handshake.bin"
+$liveStream = $null
+$timingPath = "$outPath.timing.csv"
 
 function Read-BoundedAscii {
     param([System.IO.Ports.SerialPort]$Serial, [int]$MaximumBytes)
@@ -119,20 +126,42 @@ try {
     Write-Output "BL616 UART route selected; capturing for $Seconds second(s)"
 
     $deadline = (Get-Date).AddSeconds($Seconds)
+    $lastData = Get-Date
+    if ($WriteTiming) {
+        $liveStream = [System.IO.File]::Open($outPath, [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+        [System.IO.File]::WriteAllText($timingPath, "offset,count,utc`n")
+    }
     while ((Get-Date) -lt $deadline) {
         $available = $serial.BytesToRead
         if ($available -le 0) {
+            if ($StopAfterIdleSeconds -gt 0 -and $memory.Length -gt 0 -and
+                ((Get-Date) - $lastData).TotalSeconds -ge $StopAfterIdleSeconds) { break }
             Start-Sleep -Milliseconds 10
             continue
         }
         $count = $serial.Read($buffer, 0, [Math]::Min($buffer.Length, $available))
-        if ($count -gt 0) { $memory.Write($buffer, 0, $count) }
+        if ($count -gt 0) {
+            $lastData = Get-Date
+            if ($WriteTiming) {
+                [System.IO.File]::AppendAllText($timingPath,
+                    ("{0},{1},{2}`n" -f $memory.Length, $count, [DateTime]::UtcNow.ToString('o')))
+                $liveStream.Write($buffer, 0, $count)
+                $liveStream.Flush()
+            }
+            $memory.Write($buffer, 0, $count)
+        }
     }
 
     # Persist evidence before touching the routing mode or closing the FTDI
     # handle. Some BL616 firmware/driver combinations can block Close() while
     # the FPGA is continuously filling the receive queue.
-    [System.IO.File]::WriteAllBytes($outPath, $memory.ToArray())
+    if ($null -ne $liveStream) {
+        $liveStream.Dispose()
+        $liveStream = $null
+    } else {
+        [System.IO.File]::WriteAllBytes($outPath, $memory.ToArray())
+    }
     Write-Output ("persisted {0} captured byte(s); returning BL616 to its console" -f $memory.Length)
 
     # Return to the quiet BL616 console before Close(). This does not reset or
@@ -145,6 +174,7 @@ try {
     Start-Sleep -Milliseconds 300
     $null = Read-BoundedAscii $serial 65536
 } finally {
+    if ($null -ne $liveStream) { $liveStream.Dispose() }
     if ($serial.IsOpen) { $serial.Close() }
     $serial.Dispose()
     $memory.Dispose()

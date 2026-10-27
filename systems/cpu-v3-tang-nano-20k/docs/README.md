@@ -23,7 +23,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [GPU input pipeline](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md): internal double input slots, target relocation, persistent UI dirty pages and independent GPU/Display completion.
 - [GPU capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md): published-input lease, optional diagnostic gate, bounded dependency reads and paused timing semantics.
 - [`gpu-driver.md`](gpu-driver.md): lower-level native encoding and single-CB facade, fixed high-memory ownership, scoped DSEG3 access and submission/fault semantics.
-- [GPU profiler](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md): passive RTL capture, multi-submission trace identities, correlation and offline viewing.
+- [GPU profiler](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md): published-input snapshots, TX framing, cold GPU/MC replay, passive trace identities and offline viewing.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   cold-loader LED and application reporting.
 - [`system-display-test.md`](system-display-test.md): CPU-only cold-boot diagnostic,

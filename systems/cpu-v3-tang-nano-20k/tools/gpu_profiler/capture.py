@@ -86,7 +86,8 @@ def run(manifest_path, out, compile_only=False):
     with (out / "run.log").open("wb") as log:
         result = subprocess.run([os.environ.get("VVP_EXE", "vvp"), str(out / "capture.vvp"),
             f"+PROFILE_LIMIT={limit}", f"+PROFILE_SUBMISSIONS={config['submissions']}",
-            "+PROFILE_FINISH=1"], cwd=out, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+            f"+PROFILE_FINISH={int(config.get('finish_on_complete', True))}"],
+            cwd=out, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
     if result.returncode:
         raise RuntimeError("RTL capture failed; see " + str(out / "run.log"))
     print("Capture saved: " + str(out))
