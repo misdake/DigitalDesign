@@ -230,3 +230,12 @@ checks controls/disconnection/dt/limits, and runs the actual frame body with
 small asset counts and control peers. It deliberately varies presentation wait,
 GPU delay, failure and saturation. These peers do not render pixels or claim
 serial/pin timing; the separate GPU/DS2 RTL qualifications own those boundaries.
+
+
+## Explicit column hardware profile
+
+`build.ps1 -Profile column16 -OutputDirectory target/column-scene/firmware -LayoutContract <contract.json>`
+selects `gpu_demo_column16` without changing the default boot. It relocates the
+immutable roots and offline texture macros to the column contract while using
+this same serial application. See [column scene firmware](/systems/cpu-v3-tang-nano-20k/docs/gpu-column-scene.md)
+for the complete memory map, padding rules and firmware/hardware identity gate.

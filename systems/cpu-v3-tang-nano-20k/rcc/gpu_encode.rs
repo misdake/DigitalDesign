@@ -1,5 +1,7 @@
 //! Current native GPU ABI. RCC represents each u32 as low16/high16.
 use crate::dsl_rt::*;
+mod gpu_layout;
+use gpu_layout::*;
 mod gpu_memory;
 use gpu_memory::*;
 
@@ -145,6 +147,7 @@ pub fn gpu_encode_global(s: Array<GpuStorage>, word: u16, g: Array<GpuGlobal>) -
 
 fn gpu_render_valid(r: Array<GpuRender>) -> bool {
     if r[0u16].size_log2 > 10
+        || r[0u16].texture_sector & (GPU_TEXTURE_ALIGNMENT_SECTORS - 1) != 0
         || r[0u16].full_mip > 1
         || r[0u16].filter > 2
         || r[0u16].specular_high > 255
@@ -161,10 +164,10 @@ fn gpu_render_valid(r: Array<GpuRender>) -> bool {
     let mut sectors: u16 = 0;
     let mut level: u16 = 0;
     while level <= r[0u16].size_log2 {
-        let size: u16 = if level < 3 {
-            1
+        let size: u16 = if level < GPU_TEXTURE_MACRO_LOG2 {
+            GPU_TEXTURE_MIN_LEVEL_SECTORS
         } else {
-            1 << ((level - 3) << 1)
+            GPU_TEXTURE_MIN_LEVEL_SECTORS << ((level - GPU_TEXTURE_MACRO_LOG2) << 1)
         };
         if r[0u16].full_mip != 0 {
             sectors += size;
@@ -209,9 +212,9 @@ pub fn gpu_encode_render(s: Array<GpuStorage>, word: u16, r: Array<GpuRender>) -
 pub fn gpu_target_valid(color: u16, depth: u16) -> bool {
     color & 511 == 0
         && depth & 511 == 0
-        && gpu_extent_valid(color, 1536)
-        && gpu_extent_valid(depth, 1536)
-        && !gpu_extents_overlap(color, 1536, depth, 1536)
+        && gpu_extent_valid(color, GPU_PLANE_SECTORS)
+        && gpu_extent_valid(depth, GPU_PLANE_SECTORS)
+        && !gpu_extents_overlap(color, GPU_PLANE_SECTORS, depth, GPU_PLANE_SECTORS)
 }
 pub fn gpu_encode_target(s: Array<GpuStorage>, word: u16, color: u16, depth: u16) -> bool {
     if !gpu_storage_room(s, word, 16, 16) || !gpu_target_valid(color, depth) {
