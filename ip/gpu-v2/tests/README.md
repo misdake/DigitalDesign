@@ -41,3 +41,23 @@ with an approved baseline. It exercises native/portable cache banks, all64 local
 origins, conflicting ways, CE and commit denial, refill stalls and held results.
 The 384 returned payload/texel records must match exactly; each simulation has
 a 30,000-cycle and 60-second bound.
+
+The ignored `texture_registered_return::packed_coordinate_to_color` test connects
+the production coordinate, coefficient, membership, cache and Color modules.
+It checks 512 keyed, integer-reference pixels per case for bilinear, fractional
+trilinear and magnification, with CE pauses. Resident one-mip traffic must sustain
+II2; two-mip traffic must sustain II4. Each process is bounded to45 seconds and
+each simulation to30,000 clocks. `vliw_backend_complete.py --mask-matrix` separately
+checks all16 masks through the real producer pool and the complete backend:
+exact UV-read conservation, no helper reads, actual first/last lane ownership,
+Final/ROP results and the entire memory image, in portable and native RAM modes.
+
+The production pipeline probe also covers a four-tile fine footprint and its
+five-Group trilinear counterpart: their hit intervals remain8 and10 clocks.
+The Group-Q lifecycle probe checks256 distinct35-bit words through four address
+wraps, with native/portable RAM, CE pauses, both P16/G32 limits reached, a held
+head and concurrent writes/reads. Its simulation is bounded to10,000 clocks.
+`direct_lod_stage1.py --production-source <gpu.v>` checks all mip sizes and
+filters against integer coordinate/owner gold while honoring the producer's
+U/V Q lifetime. `vliw_backend_complete.py --nearest` uses a nonuniform texture
+oracle for nearest filtering; it does not substitute the trilinear reference.

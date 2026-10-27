@@ -67,7 +67,7 @@ t=t.replace('  clk=1;#2;clk=0;#1;','''  clk=1;#2;clk=0;#1;
 t=t.replace('integer wall=0,','integer peak=0,wraps=0;integer wall=0,')
 t=t.replace('integer peak=0,', 'integer source_reads=0,source_skips=0;integer z_reads=0,z_depths=0;reg z_owner=0,z_pending=0,z_keep=0;reg[6:0]z_key;reg[15:0]z_expected,z_held;integer peak=0,')
 hold_cycles=int(os.environ.get('VLIW_SOURCE_HOLD_CYCLES','0'));assert 0<=hold_cycles<=200
-t=t.replace('integer source_reads=0,', 'integer source_hold_left=0,source_hold_steps=0;reg source_hold_used=0,source_q_hold=0;reg[75:0]source_q;integer source_reads=0,')
+t=t.replace('integer source_reads=0,', 'integer sample_reads=0;integer source_hold_left=0,source_hold_steps=0;reg source_hold_used=0,source_q_hold=0;reg[75:0]source_q;integer source_reads=0,')
 t=t.replace('  quad_valid=0;', '  if(source_hold_left>0)begin ce=0;source_hold_left=source_hold_left-1;source_hold_steps=source_hold_steps+1;end\n  quad_valid=0;')
 t=t.replace('  if(published)pubs=pubs+1;','  if(global_used>peak)peak=global_used;\n  if(published)begin pubs=pubs+1;if(published_slot==31)wraps=wraps+1;end')
 t=t.replace('liveQ=%0d pixels=', 'publishedQ=%0d pixels=')
@@ -76,6 +76,10 @@ t=t.replace('   for(i=0;i<@BYTES@;', '   $display("POOL peak=%0d fullslot31=%0d 
 t=t.replace('  if(published)pubs=pubs+1;', '  if(published)pubs=pubs+1;')
 t=t.replace('  if(dut.advance)enabled=enabled+1;', '\n'.join([
  '  if(dut.advance)enabled=enabled+1;',
+ '  if(dut.front.quad.sample_fetch)begin',
+ '   if(!dut.front.quad.sample_mask[dut.front.quad.sample_read_lane])$fatal(1,"helper UV read");',
+ '   sample_reads=sample_reads+1;',
+ '  end',
  '  if(source_q_hold&&{dut.basic_data,dut.light_data,dut.sample_data,dut.input_bypass,dut.issue_slot,dut.issue_lane,dut.state}!==source_q)$fatal(1,"CE0 changed J_WAIT source ownership");',
  '  source_q_hold=!ce&&dut.state==dut.J_WAIT;source_q={dut.basic_data,dut.light_data,dut.sample_data,dut.input_bypass,dut.issue_slot,dut.issue_lane,dut.state};',
  f'  if(dut.advance&&dut.read_values&&!source_hold_used)begin source_hold_used=1;source_hold_left={hold_cycles};end',
@@ -102,11 +106,17 @@ t=t.replace('  if(dut.advance)enabled=enabled+1;', '\n'.join([
  '  if(dut.front.quad.basic_write)$fdisplay(fd,"D %0d %h %h",wall,dut.front.quad.basic_bank.wa,dut.front.quad.basic_bank.wd);'
 ]))
 t=t.replace('   for(i=0;i<@BYTES@;', f'   if(source_hold_steps!={hold_cycles})$fatal(1,"source CE0 hold coverage");\n   if(z_owner||z_reads!=@LIVE@*4||z_depths!=z_reads)$fatal(1,"paired Z conservation");\n   if(source_reads!=@PIXELS@||source_skips!=@LIVE@*4-@PIXELS@)$fatal(1,"covered read/masked skip conservation");\n   $display("SOURCE reads=%0d skips=%0d holdCE0=%0d",source_reads,source_skips,source_hold_steps);\n   for(i=0;i<@BYTES@;')
+t=t.replace("dut.front.sampling.c_issue", "dut.front.c_issue").replace("dut.front.sampling.direct.", "dut.front.sampling.")
+t=t.replace('   for(i=0;i<@BYTES@;', '   if(sample_reads!=@SAMPLE_READS@)$fatal(1,"packed UV read conservation");\n   $display("SAMPLING UV_reads=%0d",sample_reads);\n   for(i=0;i<@BYTES@;')
 m.TB=t
 s=inspect.getsource(m.main)
 s=s.replace("ap.add_argument('--tag',default='v2')","ap.add_argument('--tag',default='producer-calendar-v1')")
 s=s.replace("shutil.copy2(O/f'test-export/postquad-{mode}.v',d/'dut.v')","shutil.copy2(Path(os.environ.get('VLIW_BACKEND_EXPORT',str(O/'backend-export')))/f'backend-{mode}.v',d/'dut.v')")
 s=s.replace('    init=bytearray(',"    if opts.steady:\n        for j,q in enumerate(jobs):\n            q['textured']=j%5!=0;q['lit']=j%3!=0\n            if j%7==0:q['numerical_mask']=0\n            for l in q['lanes']:\n                l['uv_s18f16']=[4352+17*j,4864+13*j];l['depth_u16q8_8']=512+j\n    for q in jobs:\n        if q['textured']:q['tint']=[[255,255,255]]*4\n    init=bytearray(")
 s=s.replace("'boundary':'actual VLIW UV/LOD/Z codes on four quads; directed empty/RGB-lit/full cases; selected integer tap/Final/ROP and whole memory oracle; not whole GPU'","'boundary':'shared producer pool plus actual complete selected backend; real VLIW code fixture plus directed axis lighting; independent final/DRAM gold, not full frontend RTL; repeated mode tests finite wrap not arithmetic II'")
+s=s.replace('opts=ap.parse_args()', "ap.add_argument('--mask-matrix',action='store_true');ap.add_argument('--nearest',action='store_true');opts=ap.parse_args()\n    if opts.nearest:\n        global sample\n        def sample(uv,lod):\n            n=MAX_N-min(lod//8,MAX_N);side=1<<n;physical=1<<max(1,n)\n            return expand(pattern(n,(uv[0]*physical//65536)%side,(uv[1]*physical//65536)%side))")
+s=s.replace('    reports=[]', "    if opts.nearest:tb=tb.replace('(2<<25)', '(0<<25)')\n    reports=[]")
+s=s.replace('    init=bytearray(', "    if opts.mask_matrix:\n        q=next(q for q in jobs if q['textured'] and q['lit'])\n        jobs=[json.loads(json.dumps(q)) for _ in range(16)]\n        for mask,q in enumerate(jobs):q['numerical_mask']=mask;q['geometry_mask']=mask\n    init=bytearray(")
+s=s.replace('    tb=TB.replace(', "    packed_samples=sum(q['numerical_mask'].bit_count() for q in jobs if q['textured'])\n    tb=TB.replace('@SAMPLE_READS@',str(packed_samples)).replace(")
 exec(compile(s,str(P), 'exec'),m.__dict__)
 if __name__=='__main__':m.main()

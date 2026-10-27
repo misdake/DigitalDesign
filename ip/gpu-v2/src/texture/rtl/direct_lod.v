@@ -1,5 +1,5 @@
 // The producer supplies covered lanes in ascending order; mask/quad/slot are
-// immutable for that quad. Each input pays one of four CE phases; no helper RAM.
+// immutable for that quad. Each input pays the coordinate kernel's U phase.
 module gpu_v2_texture_direct_lod(
  input clk,reset,ce,commit_allow,
  input in_valid,input[31:0]in_uv,input[3:0]in_quad,in_mask,in_slot,
@@ -8,12 +8,11 @@ module gpu_v2_texture_direct_lod(
  output out_valid,output[37:0]out_owner,output[35:0]out_result,
  output[1:0]phase,output issue,returned,output[4:0]occupied,completed
 );
- reg[1:0]phase_q;reg stopped;
- assign phase=phase_q;assign fault=stopped;
- wire running=ce&&!reset&&!stopped;
+ reg stopped;
  wire queue_credit,queue_bad,c_ready,c_fault,c_return;
- wire phase_zero=phase_q==0;
- assign in_ready=!reset&&!stopped&&phase_zero&&queue_credit;
+ assign phase={1'b0,!c_ready};assign fault=stopped;
+ wire running=ce&&!reset&&!stopped;
+ assign in_ready=!reset&&!stopped&&c_ready&&queue_credit;
  wire proposed=running&&in_valid&&in_ready;
  wire input_bad=proposed&&(in_max_n>10||in_filter>2||!in_mask[in_lane]);
  assign preflight_bad=input_bad||queue_bad;
@@ -46,10 +45,10 @@ module gpu_v2_texture_direct_lod(
  .in_ready(queue_credit),.out_valid(out_valid),.bad(queue_bad),.out_owner(out_owner),.out_result(out_result),
  .owner_write(),.result_write(),.consume(),.write_row(),.return_row(),.read_row(),.occupied(occupied),.completed(completed));
  always @(posedge clk)begin
-  if(reset)begin phase_q<=0;stopped<=0;end
+  if(reset)begin stopped<=0;end
   else begin
    if(running&&preflight_bad)stopped<=1;
-   if(advance)begin phase_q<=phase_q+1'b1;if(c_fault)stopped<=1;end
+   if(advance&&c_fault)stopped<=1;
   end
  end
 endmodule

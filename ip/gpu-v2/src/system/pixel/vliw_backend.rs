@@ -104,6 +104,34 @@ pub fn verilog_selected(
     let mut source = direct_lod::verilog_selected(slots, surface, backend)?.replace("\r\n", "\n");
     let (a, b) = span(&source, "gpu_v2_pixel_sampling_ingress")?;
     source.replace_range(a..b, SOURCE);
+    let (a, b) = span(&source, "gpu_v2_texture_serial_coord")?;
+    source.replace_range(
+        a..b,
+        crate::texture::rtl::compact_coordinate::verilog_source_q(),
+    );
+    patch(&mut source, "gpu_v2_texture_direct_lod",
+        " wire signed[4:0]shift=$signed({1'b0,physical})-5'sd8;\n wire signed[17:0]shift_c={{13{shift[4]}},shift};\n wire signed[11:0]side0=12'd1<<physical;\n wire signed[11:0]side1=fine>1?side0>>1:12'd2;\n", "")?;
+    patch(
+        &mut source,
+        "gpu_v2_texture_direct_lod",
+        ".in_flags_0(in_filter==0),.in_flags_1(fine>1),.in_coordinate_shift_0(shift_c),",
+        ".in_nearest(in_filter==0),.in_size_log2(physical),",
+    )?;
+    patch(
+        &mut source,
+        "gpu_v2_texture_direct_lod",
+        ",.in_side_0(side0),.in_side_1(side1)",
+        "",
+    )?;
+    patch(
+        &mut source,
+        "gpu_v2_texture_direct_lod",
+        ",.out_f1_0(),.out_f1_1()",
+        "",
+    )?;
+    patch(&mut source, "gpu_v2_texture_direct_lod",
+        ".out_t0_0_0(x),.out_t0_0_1(),.out_t0_1_0(y),.out_t0_1_1(),\n .out_t1_0_0(),.out_t1_0_1(),.out_t1_1_0(),.out_t1_1_1()",
+        ".out_t0_0_0(x),.out_t0_1_0(y)")?;
     source.push_str(&pool::verilog(!native));
     let top = "gpu_v2_postquad_direct_lod";
     patch(

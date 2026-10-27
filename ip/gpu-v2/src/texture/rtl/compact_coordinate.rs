@@ -89,3 +89,47 @@ module gpu_v2_texture_serial_coord (
 endmodule
 "#
 }
+
+/// Producer-pool specialization. Its UV and descriptor Q remain owned through
+/// the following enabled V edge. That edge may fetch a successor, replacing Q
+/// only after the current V calculation has sampled the old value.
+pub fn verilog_source_q() -> &'static str {
+    r#"// Fine-only production kernel. The producer owns UV/config Q through V.
+module gpu_v2_texture_serial_coord(
+ input clk,ce,reset,in_valid,output in_ready,fault,out_valid,
+ input in_nearest,input[3:0]in_size_log2,
+ input[15:0]in_wrapped_uv_0,in_wrapped_uv_1,
+ output[7:0]out_f0_0,out_f0_1,output[9:0]out_t0_0_0,out_t0_1_0
+);
+ reg[35:0]result_bank;reg[1:0]phase;reg[2:0]valid;
+ assign in_ready=phase[0];assign fault=ce&&in_valid&&!in_ready;
+ assign out_valid=valid[2];
+ wire[3:0]distance=4'd10-in_size_log2;
+ wire[9:0]mask0={(in_size_log2>9),(in_size_log2>8),(in_size_log2>7),
+  (in_size_log2>6),(in_size_log2>5),(in_size_log2>4),(in_size_log2>3),
+  (in_size_log2>2),(in_size_log2>1),1'b1};
+ wire[15:0]axis_uv=phase[0]?in_wrapped_uv_0:in_wrapped_uv_1;
+ wire[17:0]scaled_uv={axis_uv,2'b0}>>distance;
+ wire signed[18:0]fine=$signed({1'b0,scaled_uv})-(in_nearest?19'sd0:19'sd128);
+ wire[17:0]axis_result={fine[17:8]&mask0,fine[7:0]};
+ assign out_f0_0=result_bank[7:0];assign out_f0_1=result_bank[15:8];
+ assign out_t0_0_0=result_bank[25:16];assign out_t0_1_0=result_bank[35:26];
+ always @(posedge clk)begin
+  if(reset)begin phase<=2'b01;valid<=0;end
+  else if(ce)begin
+   phase<={phase[0],phase[1]};valid<={valid[1],in_valid&&in_ready,1'b0};
+   if(in_valid&&in_ready){result_bank[25:16],result_bank[7:0]}<=axis_result;
+   if(valid[1]){result_bank[35:26],result_bank[15:8]}<=axis_result;
+  end
+ end
+`ifndef SYNTHESIS
+ reg[20:0]source_guard;
+ always @(posedge clk)if(ce&&!reset)begin
+  if(in_valid&&in_ready)source_guard<={in_wrapped_uv_1,in_size_log2,in_nearest};
+  if(valid[1]&&source_guard!=={in_wrapped_uv_1,in_size_log2,in_nearest})
+   $fatal(1,"coordinate V input changed before its source-Q consumption");
+ end
+`endif
+endmodule
+"#
+}

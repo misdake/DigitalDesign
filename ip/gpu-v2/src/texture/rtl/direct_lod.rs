@@ -2,7 +2,7 @@
 use super::{compact_coordinate, coordinate_store};
 
 pub const MODULE: &str = "gpu_v2_texture_direct_lod";
-pub const INITIATION_INTERVAL: usize = 4;
+pub const INITIATION_INTERVAL: usize = 2;
 
 pub fn verilog(native: bool) -> Result<String, String> {
     let queue = coordinate_store::canonical_source_trusted(6, native)?

@@ -283,6 +283,7 @@ pub fn lower(mut source: String) -> Result<String, String> {
     })?;
     direct_global(&mut source)?;
     registered_texture_return(&mut source)?;
+    native_group_head(&mut source)?;
     for old in [
         "draw_bank",
         "loaded_bank",
@@ -559,5 +560,29 @@ fn registered_texture_return(source: &mut String) -> Result<(), String> {
             );
         s.replace_range(begin..end, &banks);
         Ok(())
+    })
+}
+
+fn native_group_head(source: &mut String) -> Result<(), String> {
+    edit(source, "gpu_v2_packet_store_unique", |s| {
+        *s = include_str!("texture_group_q.v").to_owned();
+        Ok(())
+    })?;
+    edit(source, "gpu_v2_texture_runtime_cache_unique", |s| {
+        once(
+            s,
+            "wire[3:0]tag_set=(read_issue&&next_valid)?next_key[3:0]:head_set;",
+            "wire[3:0]tag_set=head_set;",
+        )?;
+        once(
+            s,
+            "else if(read_issue)tag_valid<=next_valid;",
+            "else if(read_issue)tag_valid<=0;",
+        )?;
+        once(
+            s,
+            "wire tag_read=!reset&&!fault_eff&&head_valid&&!tag_write;",
+            "wire tag_read=!reset&&!fault_eff&&head_valid&&!tag_write&&!read_issue;",
+        )
     })
 }

@@ -637,16 +637,53 @@ part of the schedule.
 
 ## Texture cache
 
-Sampling reserves public identity on the first sample row, before an early hit
+Sampling reserves public identity on the first covered sample lane, before an early hit
 can return. No two live owners share low 4 slot bits. Completion restores the
 saved fifth bit and the actual last Color write releases that public owner;
 this 16-owner limit does not shrink the 32-slot result pool.
 
-Coordinate admission takes four enabled phases per covered lane. Tile/mip/wrap
+The producer pool enumerates only lanes in the final numerical mask, in natural
+lane order. Helpers pay neither UV reads nor coordinate issues. The registered
+descriptor's bit10 marks the first covered lane; it can be lane1,2 or3. The
+last-covered-lane handshake advances the sample cursor. Empty and RGB quads
+bypass this reader entirely. UV Q and its descriptor remain stable through the
+V sampling edge after acceptance; that edge's successor read replaces Q only
+after the current calculation has sampled it.
+
+The selected path supplies these actual lane IDs directly to the coordinate
+kernel; it has no independent four-row adapter or four-phase inlet counter.
+An accepted U edge is followed by the V edge, which also reads the next UV.
+The next U edge consumes that UV and retires the old complete coordinates into
+the existing queue. Coordinate admission takes two enabled phases per covered
+lane. Coefficients, membership, cache and Color sustain II2 for a one-mip hit;
+fractional two-mip filtering still requires four clocks per pixel. Tile/mip/wrap
 seams split groups; misses add variable work. There is no universal 16-clock
 quad completion claim. Preparation writes exact coefficients once into the
 weight bank; private packets carry nonzero masks and identity. Group work
 credits reserve on admission and release on actual ACK.
+
+The fine-coordinate kernel receives the physical mip exponent directly. It
+does not construct side/shift fields and decode them back into a range. Its V
+calculation borrows the producer's UV and descriptor Q through the next enabled
+edge; a successor fetch changes those Qs only after that edge. There is no
+second V-input/configuration register bank. Simulation monitors this lifetime.
+
+The command Group queue retains Producer16 and Group32 limits in64 physical
+rows. Packet capture acquires a producer slot; its fixed two-edge write precedes
+ordered transfer into Group credit. The consumer head is the native Group RAM
+Q itself. Consuming a head can read its successor on the same edge; the old Q
+is sampled before replacement. A missing successor clears head-valid. Empty
+startup reads only an already transferred row, never a same-edge producer write.
+There are no two copied head payloads or separate head-capture phase. Physical
+occupancy is `Producer+Group`, at most48 rows; the held Q's row releases on
+consumption. Allocation/unwritten/row-count observations derive from these
+prefixes rather than introducing additional functional counter state.
+
+After a Group consumption replaces Q, the intervening edge reads the new
+head's tag. The following edge can admit that Group, preserving Group II2
+without a second head or a next-key tag-address mux. This is a tag lookup;
+texture misses still issue from the current head. The standalone generic
+component factories retain their separately tested interfaces and calendars.
 
 The cache has 16 sets, four ways and four synchronous 1024 × 16 banks. Keys are
 slot/level/tile XY; set=`((tile_y&3)<<2)|(tile_x&3)`. Invalid ways precede

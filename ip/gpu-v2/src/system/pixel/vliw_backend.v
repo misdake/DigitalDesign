@@ -93,18 +93,23 @@ module gpu_v2_vliw_sampling(
  .sample_last(sample_last),.light_descriptor(light_descriptor),.sample_descriptor(sample_descriptor),
  .retire_valid(rop_row7_accepted),.retire_id(rop_slot),.empty_skip(empty_skip),.empty_head(empty_head),.empty_skip_ready(empty_skip_ready),
  .retire_slot(retire_slot),.global_used(global_used),.producer_used(producer_used),.light_pending(light_used),.sample_pending(sample_used),.busy(),.fault(quad_fault));
- gpu_v2_texture_runtime_rows sampling(
- .clk(clk),.reset(reset),.ce(ce),.commit_allow(allow),.admission_allow(public_credit),
- .in_valid(sample_valid),.in_raw(raw_metadata),.in_uv(sample_data),.in_ready(sample_ready),
- .advance(),.preflight_bad(sampling_bad),.fault(sampling_fault),.in_row(),.in_slot(context_slot),
- .raw_write(raw_write),.admitted(committed),.reclaim_fire(),.reclaim_slot(),
+ wire sample_first=sample_descriptor[10];
+ wire coordinate_ready;
+ wire sample_admit=!sample_first||public_credit;
+ wire[1:0]coordinate_phase;
+ assign sample_ready=coordinate_ready&&sample_admit;
+ assign raw_write=sample_fire&&sample_first;assign committed=sample_fire&&sample_last;
+ assign phase={1'b0,coordinate_phase};assign context_slot=0;assign context_state=0;
+ assign d_issue=0;assign l_issue=0;assign d_return=0;assign l_return=0;
+ assign uv_write=0;assign uv_read=c_issue;assign uv_write_address=0;assign uv_read_address={3'd0,sample_row};
+ gpu_v2_texture_direct_lod sampling(
+ .clk(clk),.reset(reset),.ce(ce),.commit_allow(allow),
+ .in_valid(sample_valid&&sample_admit),.in_uv({sample_data[33:18],sample_data[15:0]}),
+ .in_quad(sample_descriptor[3:0]),.in_mask(sample_descriptor[8:5]),.in_slot(draw_config[19:16]),.in_lane(sample_row),
+ .in_lod(sample_descriptor[18:11]),.in_max_n(draw_config[23:20]),.in_has_mip(draw_config[24]),.in_filter(draw_config[26:25]),
+ .in_ready(coordinate_ready),.advance(),.preflight_bad(sampling_bad),.fault(sampling_fault),
  .out_valid(sample_out_valid),.out_ready(sample_out_ready),.out_owner(sample_out_owner),.out_result(sample_out_result),
- .phase(phase),.d_issue(d_issue),.l_issue(l_issue),.c_issue(c_issue),.c_empty(),
- .d_return(d_return),.l_return(l_return),.c_return(c_return),
- .d_slot(),.l_slot(),.c_slot(),.d_return_slot(),.l_return_slot(),.c_lane(),
- .context_state(context_state),.c_occupied(c_occupied),.c_completed(c_completed),
- .uv_write(uv_write),.uv_read(uv_read),.uv_write_address(uv_write_address),.uv_read_address(uv_read_address),
- .store_reads(),.store_writes());
+ .phase(coordinate_phase),.issue(c_issue),.returned(c_return),.occupied(c_occupied),.completed(c_completed));
  gpu_v2_pixel_lighting_consumer light(
  .clk(clk),.reset(reset),.ce(advance),.compute_tick(light_compute_tick),
  .source_context_valid(light_context_valid),.source_valid(light_valid),.source_ready(light_ready),
@@ -136,7 +141,7 @@ module gpu_v2_vliw_sampling(
  wire cache_valid,color_ready,color_valid,color_last,color_result;
  wire[71:0]cache_payload;wire[15:0]cache_tex0,cache_tex1,cache_tex2,cache_tex3;
  wire[5:0]color_key;wire[23:0]color_rgb;
- wire publish_proposal=ce&&!reset&&!fault&&sample_valid&&sample_ready&&sample_row==0;
+ wire publish_proposal=ce&&!reset&&!fault&&sample_valid&&sample_ready&&sample_first;
  gpu_v2_texture_runtime_cache_unique demand(
  .clk(clk),.reset(reset),.proposal_ce(ce),.commit_allow(allow),
  .abort(abort),

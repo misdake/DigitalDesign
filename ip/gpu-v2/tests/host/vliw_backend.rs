@@ -31,6 +31,7 @@ fn emit_vliw_backend() {
             "module gpu_v2_quad_authority(",
             "module gpu_v2_pixel_sampling_ingress(",
             "module gpu_v2_texture_runtime_d(",
+            "module gpu_v2_texture_runtime_rows(",
             "module framebuffer_cache ",
             "module rop_leaf ",
         ] {

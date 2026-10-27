@@ -121,13 +121,27 @@ module gpu_v2_vliw_quad_pool(
  wire light_take=backend_ce&&light_valid&&light_ready;
 
  wire sample_exists=sample_cursor!=publish_ptr;
+ function[1:0]first_live_lane;input[3:0]mask;begin
+  casez(mask)
+   4'b???1:first_live_lane=0;
+   4'b??10:first_live_lane=1;
+   4'b?100:first_live_lane=2;
+   default:first_live_lane=3;
+  endcase
+ end endfunction
+ // Zero is a between-quads sentinel. Subsequent live lanes are strictly higher.
+ wire[1:0]sample_read_lane=sample_lane==0?first_live_lane(sample_mask):sample_lane;
+ wire sample_more1=sample_mask[1]&&sample_lane==0;
+ wire sample_more2=sample_mask[2]&&!sample_lane[1];
+ wire sample_more3=sample_mask[3]&&sample_lane!=3;
+ wire[1:0]sample_next_lane={!sample_more1,sample_more1||!sample_more2};
  wire sample_skip=!sample_loaded&&sample_lane==0&&sample_exists&&(sample_mask==0||sample_meta[2]);
  wire sample_fetch=backend_ce&&!sample_loaded&&sample_exists&&!sample_skip&&!reset&&!fault;
  gpu_v2_vliw_pool_ram uv_bank(clk,reset,uv_write,uv_mask,{2'd0,attr_pixel[6:0]},
-  uv_wd,sample_fetch,{2'd0,sample_cursor[4:0],sample_lane},uv_q);
+  uv_wd,sample_fetch,{2'd0,sample_cursor[4:0],sample_read_lane},uv_q);
  assign sample_valid=sample_loaded&&!reset&&!fault;
  assign sample_data=uv_q;
- assign sample_row=sample_lane;assign sample_last=sample_lane==3;
+ assign sample_row=sample_lane;assign sample_last=!(sample_more1||sample_more2||sample_more3);
  assign sample_descriptor=sample_descriptor_q;
  wire sample_take=backend_ce&&sample_valid&&sample_ready;
  gpu_v2_vliw_pool_ram #(.BASIC(1)) basic_bank(clk,reset,basic_write,basic_mask,basic_wa,basic_wd,
@@ -149,7 +163,7 @@ module gpu_v2_vliw_quad_pool(
    // Metadata pays the same read edge as its payload; cursor changes cannot
    // propagate through consumers' public-credit/preflight/CE on this edge.
    if(light_read)light_descriptor_q<={light_meta[0],light_mask,light_cursor[4:0]};
-   if(sample_fetch)sample_descriptor_q<={sample_lod,1'b0,sample_meta[0],sample_mask,sample_cursor[4:0]};
+   if(sample_fetch)sample_descriptor_q<={sample_lod,sample_lane==0,sample_meta[0],sample_mask,sample_cursor[4:0]};
    if(allocate)allocated<=allocated+1'b1;
    if(complete_event)complete_tail<=complete_tail+1'b1;
    if(attr_event)begin
@@ -172,10 +186,11 @@ module gpu_v2_vliw_quad_pool(
      end
     endcase
     if(sample_skip)sample_cursor<=sample_cursor+1'b1;
-    if(sample_fetch)sample_loaded<=1;
+    if(sample_fetch)begin sample_loaded<=1;sample_lane<=sample_read_lane;end
     if(sample_take)begin
-     sample_loaded<=0;sample_lane<=sample_lane+1'b1;
-     if(sample_lane==3)sample_cursor<=sample_cursor+1'b1;
+     sample_loaded<=0;
+     if(sample_last)begin sample_cursor<=sample_cursor+1'b1;sample_lane<=0;end
+     else sample_lane<=sample_next_lane;
     end
    end
    if(regular_retire||skip_empty)begin

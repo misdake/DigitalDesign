@@ -64,23 +64,13 @@ pub fn lower(mut source: String) -> Result<String, String> {
         once(s, "assign raw_metadata={draw_config[26:25],draw_config[24],draw_config[23:20],\n   draw_config[19:16],sample_descriptor[8:5],sample_descriptor[3:0],",
             "assign raw_metadata={texture_filter,texture_mip,texture_n,\n   sample_descriptor[8:5],sample_descriptor[3:0],")?;
         once(s, ".draw_slot(draw_config[19:16]),", ".texture_base(texture_base),.texture_mip(texture_mip),.texture_invalidate(texture_invalidate),")?;
+        once(s, ".in_slot(draw_config[19:16]),", "")?;
+        once(s, ".in_max_n(draw_config[23:20]),.in_has_mip(draw_config[24]),.in_filter(draw_config[26:25])",
+            ".in_max_n(texture_n),.in_has_mip(texture_mip),.in_filter(texture_filter)")?;
         once(
             s,
             ".next_key({packet_next_key,draw_config[19:16]})",
             ".next_key(packet_next_key)",
-        )
-    })?;
-    edit(&mut source, "gpu_v2_texture_runtime_rows", |s| {
-        once(
-            s,
-            "input wire[35:0] in_raw,in_uv,",
-            "input wire[31:0]in_raw,input wire[35:0]in_uv,",
-        )?;
-        once(s, ".in_slot(in_raw[28:25]),", "")?;
-        once(
-            s,
-            ".in_max_n(in_raw[32:29]),.in_has_mip(in_raw[33]),.in_filter(in_raw[35:34])",
-            ".in_max_n(in_raw[28:25]),.in_has_mip(in_raw[29]),.in_filter(in_raw[31:30])",
         )
     })?;
     edit(&mut source, "gpu_v2_texture_direct_lod", |s| {

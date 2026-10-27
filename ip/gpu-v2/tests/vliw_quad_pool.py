@@ -31,7 +31,7 @@ gpu_v2_vliw_quad_pool dut(.clk(clk),.reset(reset),.front_ce(fc),.backend_ce(bc),
  .retire_valid(retire),.retire_id(rid),.empty_skip(skip),.empty_head(empty),.empty_skip_ready(skipready),.retire_slot(rs),
  .global_used(used),.producer_used(prod),.light_pending(lp),.sample_pending(sp),.busy(busy),.fault(fault));
 integer reset_count=0;integer starts[0:NQ-1];integer ft=0,bt=0,sent=0,published=0,retired=0,cycles=0,laststart=-16;
-integer lq=0,lrows=0,sq=0,srows=0,brow=0,breturned=0,emptycount=0,peaku=0,peakp=0,waits=0,holds=0;
+integer lq=0,lrows=0,sq=0,srows=0,sfirst=0,brow=0,breturned=0,emptycount=0,peaku=0,peakp=0,waits=0,holds=0;
 integer j,k,delta,ln,wr,addrq,addrr,fd,last_lq=-2,last_ltick=-100,ii16=0;
 reg[31:0]rng=32'h1482fd6e;reg b_pending=0;reg[23:0]b_expected;reg z_pending=0;reg[15:0]z_expected,z_held;reg z_hold=0;
 reg lhold=0,shold=0;reg[79:0]lh;reg[57:0]sh;reg[3:0]m;
@@ -77,7 +77,7 @@ begin
  end
  pr=STRESS==0||(ft>=160&&cycles%113>23&&rng[9:8]!=0);
  lr=(bt%4==0)&&(STRESS==0||(ft>=600&&(cycles%211>47&&rng[12:10]!=0)));
- sr=bt%4==0&&(STRESS==0||(ft>=600&&(cycles%197>51&&rng[15:13]!=0)));
+ sr=bt%2==0&&(STRESS==0||(ft>=600&&(cycles%197>51&&rng[15:13]!=0)));
  // Random producer-independent queries exercise both metadata read views.
  di=published>retired?(retired+(rng[20:17]%(published-retired)))%32:retired%32;
  br=0;zr=0;retire=0;skip=0;rid=retired%32;
@@ -129,10 +129,16 @@ always @(posedge clk)if(!reset)begin
    if(lrows==0)begin if(STRESS==0&&lq>1&&last_lq==lq-1)begin if(bt-last_ltick!=16)$fatal(1,"Light II not16 q%0d bt%0d prev%0d gap%0d",lq,bt,last_ltick,bt-last_ltick);ii16=ii16+1;end last_lq=lq;last_ltick=bt;end
    $fdisplay(fd,"L %0d %0d %h %h",lq,lrows,lnormal,lposition);if(lrows==3)begin lrows=0;lq=lq+1;end else lrows=lrows+1;
   end
+  // Expected lanes come from the coverage contract, independently of the RTL encoder.
+  if(dut.sample_fetch&&!(mask(sq)&(1<<dut.sample_read_lane)))$fatal(1,"helper UV read");
   if(svalid&&sr)begin
-   if(sq>=published||srow!==srows[1:0]||sdesc!=={level(sq),1'b0,sq[0],mask(sq),sq[4:0]})$fatal(1,"Sample descriptor q%0d row%0d",sq,srows);
+   sfirst=0;m=mask(sq);while(sfirst<4&&!m[sfirst])sfirst=sfirst+1;
+   while(srows<4&&!m[srows])srows=srows+1;
+   if(sq>=published||srow!==srows[1:0]||sdesc!=={level(sq),(srows==sfirst),sq[0],mask(sq),sq[4:0]})$fatal(1,"Sample descriptor q%0d row%0d",sq,srows);
    if(sdata!=={2'd0,vval(sq,srows),2'd0,uval(sq,srows)})$fatal(1,"UV q%0d row%0d",sq,srows);
-   $fdisplay(fd,"S %0d %0d %h",sq,srows,sdata);if(srows==3)begin srows=0;sq=sq+1;end else srows=srows+1;
+   $fdisplay(fd,"S %0d %0d %h",sq,srows,sdata);srows=srows+1;while(srows<4&&!m[srows])srows=srows+1;
+   if(slast!==(srows==4))$fatal(1,"last active lane");
+   if(srows==4)begin srows=0;sq=sq+1;end
   end
   if(retire||skip)begin if(rs!==retired%32)$fatal(1,"retire ordinal");if(skip)begin if(!empty||!skipready||mask(retired)!=0)$fatal(1,"empty skip");emptycount=emptycount+1;end $fdisplay(fd,"R %0d",retired);retired=retired+1;brow=0;breturned=0;end
   bt=bt+1;
