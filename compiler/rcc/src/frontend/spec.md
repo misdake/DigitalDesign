@@ -234,7 +234,7 @@ they are not part of this surface.
   produced when both operands are `i16`; mixed integer arithmetic is an error, because 
   implicit conversions hide too many bugs on a 16-bit machine.
 - **Unsupported means error**: these Rust features are rejected with a span — generics,
-  traits, impls and methods, closures, macros, general references `&`, slices and native `[T; N]` arrays
+  traits, general impls/methods (resource method sugar is described in §15.1), closures, macros, general references `&`, slices and native `[T; N]` arrays
   (§10), strings, floats, other integer types, unsafe operations other than the narrow `Ptr`
   boundary in §2, `extern`, lifetimes, items declared
   inside a function body, attributes (except the resource marker in §15, the ignored `#[allow(...)]` and the `#[doc]` /
@@ -386,7 +386,7 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   are not supported. With optimization enabled, an uninterrupted full-vector lane
   extract/store sequence to adjacent fields with the same base may use one FSTV;
   loads, calls or other writes between fields prevent this combination.
-- Out of scope for now (§12): `impl` methods, `vecN` fields, and recursive layouts.
+- Out of scope for ordinary structs (§12): `impl` methods, `vecN` fields, and recursive layouts.
   (`static` structs are supported since §9.4.)
 
 ## 9c. Tuples
@@ -543,7 +543,7 @@ them unchanged (a struct local is just an address plus offsets).
 General `&x` references (outside §15), fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
 inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
-aggregate-returning fn pointers, `impl`, `vecN` fields, arbitrary static FPU expressions, recursive layouts, enum payloads,
+aggregate-returning fn pointers, general `impl` (except §15.1), `vecN` fields, arbitrary static FPU expressions, recursive layouts, enum payloads,
 and enum statics).
 
 A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,
@@ -778,7 +778,7 @@ argument naming a mutable owner (or a reborrowed resource parameter). It does
 not create a storable reference. Repeated arguments cannot alias an owner or
 borrow a parent while passing its child. Arguments are checked together, so a
 later argument cannot consume an earlier borrowed owner.
-`mut name: &mut Resource` parameters may be reborrowed with `&mut name`;
+Mutable owned resource parameters and `mut name: &mut Resource` parameters may be reborrowed with `&mut name`;
 their binding mutability is checked before erasing the reference to the existing
 scalar identity ABI. This does not enable ordinary stored references.
 An already evaluated owned argument retains its child/parent lock until all
@@ -836,6 +836,49 @@ must release/cancel only untransferred CPU recording rights and must not hide
 GPU/vblank waits. Explicit completion hands asynchronous resources to their
 scheduler; only an explicit close may drain. Those device contracts belong to
 the owning driver rather than to the language's resource representation.
+
+### 15.1 Restricted inherent resource methods
+
+A lexical resource may have nongeneric inherent `impl` blocks in its exact
+definition file. Methods accept `self`, `mut self` or `&mut self`:
+
+```rust
+impl Pass {
+    pub fn draw(&mut self, code: u16) { device_write(self.word, code); }
+    pub fn finish(self) { pass_end(self); }
+}
+// Given a mutable bound owner:
+// pass.draw(7);
+// pass.finish();
+```
+
+The receiver at a call must be a simple unqualified local owner or resource
+parameter. `&mut self` calls insert a direct mutable borrow; `self` calls move
+the owner. Receiver arguments are checked before the remaining arguments under
+the same pending-call locks as free functions. A borrowed receiver may be
+reborrowed but cannot be consumed. Methods may return resources, including a
+child tied to the actual borrowed receiver's identity; bind returned resources
+before using them. By-value receivers retain ordinary exactly-once cleanup
+unless moved/disarmed. `mut self` permits reborrowing, not identity reassignment.
+
+Canonical library origins are validated before methods are lowered. Each method
+body becomes an internal function in its original source file before resource
+signature/ownership checking and scalar erasure. Method visibility and all
+definition-file restrictions on fields, construction and disarm remain in force.
+No forwarding wrapper grants library or owner permissions. The internal
+`__rcc_method_` namespace is reserved in source, including attributes and aliases.
+
+This sugar excludes ordinary struct impls, traits, generics/where clauses,
+overloading (duplicate names on one resource), `Deref`, shared `&self`, explicit
+receiver types, lifetimes, associated constructors/functions/constants/types,
+`Self` type spelling, method pointers and method type arguments. Use the explicit
+resource type in signatures and existing free factories for construction.
+Fields, parenthesized expressions, temporaries and chained resource receivers
+are diagnosed; they are never implicitly copied or evaluated twice. Existing
+native `Ptr`, buffer, array and FPU methods retain their existing lowering.
+The ordinary function restrictions (including the six-parameter limit with the
+receiver counted) still apply. This is restricted resource syntax, not general
+Rust method resolution.
 
 ## 16. Host-authorized resource libraries
 

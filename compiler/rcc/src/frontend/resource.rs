@@ -6,6 +6,7 @@ use syn::{Expr, FnArg, Item, Pat, ReturnType, Stmt, Type};
 mod library;
 #[cfg(test)]
 mod library_tests;
+mod methods;
 
 pub(super) struct Sources<'a> {
     pub(super) origins: &'a [Option<std::path::PathBuf>],
@@ -40,6 +41,7 @@ struct Model {
     functions: HashMap<String, Function>,
     values: HashMap<String, (usize, bool)>,
     domains: HashMap<usize, usize>,
+    methods: HashMap<(String, String), methods::Method>,
 }
 impl Model {
     fn can_access(&self, caller: usize, target: usize, public: bool) -> bool {
@@ -195,6 +197,7 @@ pub(super) fn lower(
         functions: HashMap::new(),
         values: HashMap::new(),
         domains: HashMap::new(),
+        methods: HashMap::new(),
     };
     for (fi, file) in files.iter().enumerate() {
         for item in &file.items {
@@ -293,6 +296,7 @@ pub(super) fn lower(
     if model.resources.is_empty() {
         return Ok(());
     }
+    methods::prepare(files, &mut model)?;
     // The native frontend has separate function/constant/storage tables. A
     // protected declaration must never borrow another kind's access decision
     // while lowering still resolves the original storage or callable.
@@ -517,12 +521,10 @@ impl<'a> Checker<'a> {
                         && f.sig.ident != model.resources[n].cleanup,
                     mutable: p.mutability.is_some() || matches!(mode, Arg::Borrow(_)),
                 });
-                // Reborrowing a `mut r: &mut Resource` binding does not mutate
-                // the erased scalar identity. Keep mutability in the ownership
-                // model, not in the native u16 parameter ABI.
-                if matches!(mode, Arg::Borrow(_)) {
-                    p.mutability = None;
-                }
+                // Reborrowing a mutable resource binding does not mutate the
+                // erased scalar identity. Keep owned/borrowed mutability in
+                // the ownership model, not in the native u16 parameter ABI.
+                p.mutability = None;
                 *param.ty = parse_quote!(u16);
             }
         }
@@ -744,6 +746,11 @@ impl<'a> Checker<'a> {
         Ok(kind)
     }
     fn expr(&mut self, expr: &mut Expr) -> Result<Kind, syn::Error> {
+        if let Expr::MethodCall(method) = expr {
+            if let Some(call) = self.method(method)? {
+                *expr = Expr::Call(call);
+            }
+        }
         match expr {
             Expr::Path(p) => {
                 let n = p.path.segments.last().unwrap().ident.to_string();

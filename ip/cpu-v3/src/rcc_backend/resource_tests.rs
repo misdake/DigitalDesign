@@ -20,6 +20,7 @@ pub fn renderer_open(word:u16)->Renderer{Renderer{word:word}}
 pub fn frame_open(r:&mut Renderer)->Frame{Frame{word:r.word}}
 pub fn pass_open(f:&mut Frame)->Pass{Pass{word:f.word}}
 pub fn renderer_query(r:&mut Renderer)->u16{r.word}
+pub fn free_query_then_cancel(mut r:Renderer)->u16{renderer_query(&mut r)}
 pub fn inspect_two(a:&mut Renderer,b:&mut Renderer)->u16{a.word+b.word}
 pub fn inspect_code(a:&mut Renderer,code:u16)->u16{a.word+code}
 pub fn consume_return(a:Renderer)->u16{resource_disarm(a);return 0;}
@@ -30,6 +31,7 @@ pub fn count_then_close(r:Renderer)->u16{event_count()}
 pub fn fpu_then_close(r:Renderer)->fix32{fix32::from_int(7)}
 pub fn identity(code:u16)->u16{code}
 pub fn pass_end(p:Pass){event(40+p.word);resource_disarm(p);}
+pub fn pass_draw(p:&mut Pass,code:u16){event(100+p.word+code);}
 pub fn end(p:Pass){resource_disarm(p);}
 pub fn both_frames(a:Frame,b:Frame){resource_disarm(a);resource_disarm(b);}
 pub fn frame_complete(f:Frame,fault:bool){if fault{event(50+f.word);}else{event(60+f.word);}resource_disarm(f);}
@@ -38,6 +40,26 @@ pub fn branch_close(r:Renderer,choice:bool){if choice{renderer_close(r);}else{re
 pub fn event_count()->u16{COUNT}
 pub fn event_at(i:u16)->u16{EVENTS.as_array()[i]}
 fn raw_word()->u16{7}
+impl Renderer {
+ pub fn query(&mut self)->u16{self.word}
+ pub fn reborrow(&mut self)->u16{self.query()}
+ pub fn frame(&mut self)->Frame{Frame{word:self.word}}
+ pub fn inspect(&mut self,other:&mut Renderer)->u16{self.word+other.word}
+ pub fn code(&mut self,code:u16)->u16{self.word+code}
+ pub fn finish(self){event(70+self.word);resource_disarm(self);}
+ pub fn cancel(self){}
+ pub fn query_then_cancel(mut self)->u16{self.query()}
+ fn secret(&mut self)->u16{self.word}
+}
+impl Frame {
+ pub fn pass(&mut self)->Pass{Pass{word:self.word}}
+ pub fn finish(self,fault:bool){frame_complete(self,fault);}
+ pub fn with_code(self,code:u16)->u16{code}
+}
+impl Pass {
+ pub fn draw(&mut self,code:u16){event(100+self.word+code);}
+ pub fn finish(self){event(40+self.word);resource_disarm(self);}
+}
 "#;
 
 fn parse(main: &str) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
@@ -64,9 +86,9 @@ fn execute(main: &str) {
 
 pub(crate) fn protocol_program() -> Vec<u16> {
     let source = r#"mod resource_library;
-fn work()->u16{let mut r=renderer_open(1);let mut f=frame_open(&mut r);
- {let p=pass_open(&mut f);}frame_complete(f,false);return 9;}
-fn main(){if work()!=9||event_count()!=3||event_at(0)!=31||event_at(1)!=61||event_at(2)!=11{halt(0xbad);}halt(0x600d);}"#;
+fn work()->u16{let mut r=renderer_open(1);let mut f=r.frame();
+ {let p=f.pass();}{let mut p=f.pass();p.draw(4);p.finish();}f.finish(false);return 9;}
+fn main(){if work()!=9||event_count()!=5||event_at(0)!=31||event_at(1)!=105||event_at(2)!=41||event_at(3)!=61||event_at(4)!=11{halt(0xbad);}halt(0x600d);}"#;
     let options = CompilerOptions::default();
     try_compile(parse(source).unwrap(), &options, "main")
         .unwrap()
@@ -347,4 +369,122 @@ let a=renderer_open(1);if close_and_zero(a)!=0||event_count()!=1||event_at(0)!=1
 let b=renderer_open(2);if count_then_close(b)!=1||event_count()!=2||event_at(1)!=12{halt(0xbad);}
 let c=renderer_open(3);if fpu_then_close(c).to_int()!=7||event_count()!=3||event_at(2)!=13{halt(0xbad);}halt(0x600d);}"#,
     );
+}
+
+#[test]
+fn resource_methods_and_free_functions_execute_equivalent_protocols() {
+    // Both forms produce the same complete event trace, including implicit
+    // cancellation, consuming completion, reborrow and parent identity.
+    for (open_frame, open_pass, draw, end_pass, end_frame, query, close, cancel, tail) in [
+        (
+            "frame_open(&mut r)",
+            "pass_open(&mut f)",
+            "pass_draw(&mut p,4)",
+            "pass_end(p)",
+            "frame_complete(f,false)",
+            "renderer_query(&mut other)",
+            "renderer_close(r)",
+            "close_and_zero(other)",
+            "free_query_then_cancel(last)",
+        ),
+        (
+            "r.frame()",
+            "f.pass()",
+            "p.draw(4)",
+            "p.finish()",
+            "f.finish(false)",
+            "other.reborrow()",
+            "r.finish()",
+            "other.cancel()",
+            "last.query_then_cancel()",
+        ),
+    ] {
+        let source = format!(
+            r#"mod resource_library;
+fn check(ok:bool){{if !ok{{halt(0xbad);}}}}
+fn main(){{
+ let mut r=renderer_open(1);let mut other=renderer_open(2);
+ {{let mut f={open_frame};let mut p={open_pass};check({query}==2);
+   {draw};{end_pass};{end_frame};}}
+ {{let mut f={open_frame};let p={open_pass};}}
+ {close};{cancel};
+ check(event_count()==7);
+ check(event_at(0)==105&&event_at(1)==41&&event_at(2)==61);
+ check(event_at(3)==31&&event_at(4)==21&&event_at(5)==71&&event_at(6)==12);
+ let last=renderer_open(3);check({tail}==3);
+ check(event_count()==8&&event_at(7)==13);halt(0x600d);
+}}"#
+        );
+        execute(&source);
+    }
+}
+
+#[test]
+fn resource_methods_reject_invalid_ownership_and_receivers() {
+    for (body, expected) in [
+        (
+            "let mut r=renderer_open(1);r.finish();r.query();",
+            "moved or consumed",
+        ),
+        (
+            "let mut r=renderer_open(1);r.inspect(&mut r);",
+            "pending call",
+        ),
+        (
+            "let mut r=renderer_open(1);r.code(consume_return(r));",
+            "pending call",
+        ),
+        (
+            "let mut r=renderer_open(1);let f=r.frame();r.query();",
+            "live child",
+        ),
+        (
+            "let mut r=renderer_open(1);let f=r.frame();r.finish();",
+            "live child",
+        ),
+        ("let r=renderer_open(1);r.query();", "mutable owner"),
+        ("let mut r=renderer_open(1);r.secret();", "not callable"),
+        (
+            "let mut r=renderer_open(1);r.missing();",
+            "unknown resource method",
+        ),
+        (
+            "let mut r=renderer_open(1);r.query::<u16>();",
+            "type arguments",
+        ),
+        ("renderer_open(1).query();", "simple bound local"),
+        (
+            "let mut r=renderer_open(1);(r).query();",
+            "simple bound local",
+        ),
+        (
+            "let mut r=renderer_open(1);r.word.query();",
+            "simple bound local",
+        ),
+        (
+            "let mut r=renderer_open(1);r.frame().finish(false);",
+            "simple bound local",
+        ),
+        (
+            "let r=renderer_open(1);r.finish();r.finish();",
+            "moved or consumed",
+        ),
+        ("let mut r=renderer_open(1);r.frame();", "bind or consume"),
+        (
+            "let mut r=renderer_open(1);let f=r.frame();f.with_code(r.query());",
+            "live child",
+        ),
+    ] {
+        let source = format!("mod resource_library;fn main(){{{body}}}");
+        let e = match parse(&source) {
+            Ok(_) => panic!("accepted {body}"),
+            Err(e) => e.to_string(),
+        };
+        assert!(e.contains(expected), "{body}: expected {expected}, got {e}");
+    }
+    let e = match parse("mod resource_library;fn wrong(r:&mut Renderer){r.finish();}fn main(){}") {
+        Ok(_) => panic!("moved a borrowed receiver"),
+        Err(e) => e.to_string(),
+    };
+    assert!(e.contains("cannot move a borrowed resource"), "{e}");
 }

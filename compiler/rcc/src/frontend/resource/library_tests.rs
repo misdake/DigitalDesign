@@ -14,6 +14,11 @@ fn release(h:Handle){}
 pub fn open()->Handle{Handle{word:1}}
 pub fn close(h:Handle){resource_disarm(h);}
 pub fn facade()->u16{raw_set(11);helper_value()}
+impl Handle {
+ pub fn finish(self){raw_set(12);resource_disarm(self);}
+ pub fn read(&mut self)->u16{helper_value()}
+ fn private(&mut self)->u16{self.word}
+}
 "#;
 const HELPER: &str = r#"static STATE:u16=7;
 fn helper_value()->u16{STATE+ROOT_STATE}
@@ -266,7 +271,7 @@ fn resource_library_cross_kind_global_names_cannot_override_access_decisions() {
 #[test]
 fn resource_library_requires_approved_actual_origins() {
     let mut f = Fixture::new();
-    let main = "mod owner;fn main(){halt(facade());}";
+    let main = "mod owner;fn main(){let mut h=open();let n=h.read();h.finish();halt(n);}";
     assert!(compile_program_named(
         "old string loader",
         main,
@@ -290,6 +295,42 @@ fn resource_library_requires_approved_actual_origins() {
     f.reject(main, "absolute paths");
     f.origins.insert("owner".into(), None);
     f.reject(main, "no approved host origin");
+}
+
+#[test]
+fn resource_library_methods_keep_owner_permissions_and_internal_namespace() {
+    let mut f = Fixture::new();
+    f.compile("mod owner;fn main(){let mut h=open();let n=h.read();h.finish();halt(n);}")
+        .unwrap();
+    f.reject(
+        "mod owner;fn main(){let mut h=open();halt(h.private());}",
+        "not callable",
+    );
+    for code in [
+        "impl Handle{pub fn steal(self){resource_disarm(self);}}",
+        "impl Handle{pub fn steal(&mut self)->u16{self.word}}",
+    ] {
+        // Membership in the approved library still cannot relocate an impl or
+        // acquire the definition-file identity-operation privileges.
+        f.write("helper", "lib/helper.rs", &format!("{HELPER}\n{code}"));
+        f.reject(
+            "mod owner;fn main(){}",
+            "impl must be in its definition file",
+        );
+    }
+    f.write("helper", "lib/helper.rs", HELPER);
+    f.reject(
+        "mod owner;impl Handle{pub fn steal(self){}}fn main(){}",
+        "impl must be in its definition file",
+    );
+    f.reject(
+        "mod owner;fn main(){let h=open();__rcc_method_0(h);}",
+        "reserved resource method name",
+    );
+    f.reject(
+        "mod owner;fn main(){let p=__rcc_method_0;}",
+        "reserved resource method name",
+    );
 }
 
 #[test]
