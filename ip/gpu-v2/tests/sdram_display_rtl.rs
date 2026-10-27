@@ -2,8 +2,7 @@
 //! No system crate dependency or replacement display/CDC model is introduced.
 use digital_design_hardware_gowin::sdram_memory_controller::{
     arbiter::{CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput},
-    combination, emu,
-    ports::OracleImage,
+    combination,
 };
 use digital_design_hardware_gowin::ModuleIo;
 use std::{
@@ -115,7 +114,7 @@ fn bounded(mut command: Command, root: &Path, name: &str) {
     }
 }
 
-fn run_case(name: &str, early: bool, group: bool, phase: u32, starve: bool) {
+fn run_case(name: &str, phase: u32, starve: bool) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/gpu-v2-sdram/display-integration")
         .join(name);
@@ -123,7 +122,7 @@ fn run_case(name: &str, early: bool, group: bool, phase: u32, starve: bool) {
     // Same model-safe related clocks as the existing connected pin fixture.
     // Preserve the exact nominal 54 MHz / 33.3 MHz ratio for real 2x scanout.
     let (params, pixel_hz) = display_params();
-    let mut sources = combination::rtl_sources_with_options(21600, early, group).unwrap();
+    let mut sources = combination::rtl_sources(21600).unwrap();
     sources.insert(
         "display.v".into(),
         DISPLAY
@@ -153,14 +152,13 @@ fn run_case(name: &str, early: bool, group: bool, phase: u32, starve: bool) {
     let init = display_precode::initialization(&values.try_into().unwrap());
     sources.insert("buffer.v".into(), BUFFER.replace("__SRGB_INIT__", &init));
     sources.insert("fifo.v".into(), FIFO.into());
-    let mut i = emu::idle_inputs();
+    let mut i = combination::idle_inputs();
     i.display_response_ready = true;
     i.instruction_response_ready = true;
     i.data_response_ready = true;
     i.dma_response_ready = true;
     i.data_line = true;
-    let c = emu::Combination::new(OracleImage::filled::<0>(0, 4096).unwrap(), 32).unwrap();
-    let o = c.output(&i);
+    let o = combination::idle_outputs();
     let mut declarations = String::new();
     for (values, dir) in [
         (CpuV3MemoryArbiterInput::verilog_values(&i), "reg"),
@@ -204,17 +202,29 @@ fn run_case(name: &str, early: bool, group: bool, phase: u32, starve: bool) {
         .replace("__PORTS__", &declarations)
         .replace(
             "__PIXEL_HALF__",
-            &(10.102 * 54_000_000.0 / pixel_hz).to_string(),
+            &((1_000_000_000.0
+                / f64::from(
+                    digital_design_hardware_gowin::sdram_memory_controller::profile::CONTROLLER_HZ,
+                ))
+                * 54_000_000.0
+                / pixel_hz)
+                .to_string(),
         )
         .replace("__PHASE__", &phase.to_string())
-        .replace("__FB_COUNT__", if group { "2" } else { "3" })
+        .replace("__FB_COUNT__", "3")
         .replace("__STARVE__", if starve { "1" } else { "0" });
     sources.insert("tb.v".into(), tb);
     let mut compile =
         Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()));
-    compile
-        .current_dir(&root)
-        .args(["-g2012", "-D__ICARUS__", "-s", "tb", "-o", "test.vvp"]);
+    compile.current_dir(&root).args([
+        "-g2012",
+        "-D__ICARUS__",
+        "-DSTREAM_STATIC_INPUT_DELAY",
+        "-s",
+        "tb",
+        "-o",
+        "test.vvp",
+    ]);
     for (path, text) in sources {
         let file = path.file_name().unwrap();
         fs::write(root.join(file), text).unwrap();
@@ -237,19 +247,7 @@ fn run_case(name: &str, early: bool, group: bool, phase: u32, starve: bool) {
 #[ignore = "explicit bounded production display/CDC and connected SDRAM pin simulation"]
 fn real_display_buffer_cdc_under_cpu_and_framebuffer_load() {
     for phase in [0, 73] {
-        for (profile, early, group) in [
-            ("serial", false, false),
-            ("early", true, false),
-            ("group", true, true),
-        ] {
-            run_case(
-                &format!("{profile}-phase{phase}"),
-                early,
-                group,
-                phase,
-                false,
-            );
-        }
+        run_case(&format!("stream-phase-{phase}"), phase, false);
     }
-    run_case("group-starvation-control", true, true, 0, true);
+    run_case("stream-starvation-control", 0, true);
 }

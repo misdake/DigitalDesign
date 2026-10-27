@@ -463,6 +463,9 @@ mod tests {
         assert_eq!(board.resources.claimed[&ResourceKind::Bsram18K], 46);
         assert_eq!(board.resources.claimed[&ResourceKind::Multiplier18x18], 42);
         assert_eq!(board.resources.claimed[&ResourceKind::UserLed], 2);
+        assert_eq!(board.resources.claimed[&ResourceKind::Pll], 2);
+        assert_eq!(board.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
+        assert_eq!(board.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
         let cst = &board.files[std::path::Path::new("src/generated/board.cst")];
         let mut pins = std::collections::BTreeMap::new();
         for line in cst.lines().filter(|line| line.starts_with("IO_LOC ")) {
@@ -489,9 +492,7 @@ mod tests {
         assert!(text.contains("gpu_read_data | ds2_read_data"));
         let top = &board.files[std::path::Path::new("src/generated/board_top.v")];
         assert!(top.contains("input wire ds2_dat") && !top.contains("output wire ds2_dat"));
-        assert!(top.contains(
-            ".CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .DQ_INPUT_DELAY_TAPS(32), .REGISTER_READ_RETURN(1)"
-        ));
+        assert!(top.contains("#(.COLD_START_ONLY(1)) u_sdram_bridge"));
         assert!(top.contains(".PHASE_SEL(\"0111\")"));
         assert!(top.contains(".request_continuation(sdram_request_continuation)"));
         assert!(top.contains(".write_done(sdram_write_done)"));
@@ -502,7 +503,8 @@ mod tests {
             "src/generated/target/tang_nano_20k/sdram/native_bridge_108m_54m.v",
         )];
         assert!(bridge.contains(".CONTINUE(1),.NEXT_TAGGED(1)"));
-        assert!(bridge.contains("generate if(REGISTER_READ_RETURN)"));
+        assert!(bridge.contains("REGISTER_READ_RETURN=1, DQ_INPUT_DELAY_TAPS=32"));
+        assert!(bridge.contains("CAS=3, RCD_CYCLES=3, RP_CYCLES=3, CAPTURE_LATENCY=3"));
         assert!(bridge.contains(".DQ_INPUT_DELAY_TAPS(DQ_INPUT_DELAY_TAPS)"));
         let sdc = &board.files[std::path::Path::new("src/generated/board.sdc")];
         assert!(sdc.contains("-phase 157.5"));

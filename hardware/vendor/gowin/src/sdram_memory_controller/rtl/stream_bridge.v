@@ -1,9 +1,7 @@
 // Related 2:1 clocks. The adapter owns transaction credits and read completion.
 // This bridge owns a request mailbox, native offer and the existing pair slots.
 module TangNano20KSdramNativeBridge108M54M #(
- parameter PREPARE_NEXT=1, COLD_START_ONLY=0, CHAIN_GROUP_FOUR=0, BANK_BIT=5,
- parameter CAS=2, RCD_CYCLES=2, RP_CYCLES=2, CAPTURE_LATENCY=2, REGISTER_READ_RETURN=0,
- parameter DQ_INPUT_DELAY_TAPS=0
+ parameter COLD_START_ONLY=0, INIT_CYCLES=21600
 )(
  input logic_clk,controller_clk,sdram_clk,reset,
  input request_valid,input request_continuation,input writing,input[20:0]address,
@@ -14,6 +12,8 @@ module TangNano20KSdramNativeBridge108M54M #(
  output O_sdram_clk,O_sdram_cke,O_sdram_cs_n,O_sdram_cas_n,O_sdram_ras_n,O_sdram_wen_n,
  output[3:0]O_sdram_dqm,output[10:0]O_sdram_addr,output[1:0]O_sdram_ba,inout[31:0]IO_sdram_dq
 );
+ localparam BANK_BIT=5, CAS=3, RCD_CYCLES=3, RP_CYCLES=3, CAPTURE_LATENCY=3,
+            REGISTER_READ_RETURN=1, DQ_INPUT_DELAY_TAPS=32;
  wire transport_reset=COLD_START_ONLY?1'b0:reset;
  reg[20:0]qa;reg[5:0]qn;reg[3:0]qm;reg qw;reg qcontinuation;
  reg request_toggle=0,request_seen_native=0,request_seen_logic=0;
@@ -141,7 +141,7 @@ module TangNano20KSdramNativeBridge108M54M #(
    write_visible<=write_event;read_visible<=read_event;
   end
  end
- SdramController #(.CAS(CAS),.RCD_CYCLES(RCD_CYCLES),.RP_CYCLES(RP_CYCLES),.CAPTURE_LATENCY(CAPTURE_LATENCY),.DQ_INPUT_DELAY_TAPS(DQ_INPUT_DELAY_TAPS),.BANK_BIT(BANK_BIT),.PREPARE_NEXT(PREPARE_NEXT),.CHAIN(1),.READ_CHAIN(1),.CONTINUE(1),.NEXT_TAGGED(1)) u_controller(
+ SdramController #(.CAS(CAS),.RCD_CYCLES(RCD_CYCLES),.RP_CYCLES(RP_CYCLES),.CAPTURE_LATENCY(CAPTURE_LATENCY),.DQ_INPUT_DELAY_TAPS(DQ_INPUT_DELAY_TAPS),.BANK_BIT(BANK_BIT),.PREPARE_NEXT(1),.INIT_CYCLES(INIT_CYCLES),.CHAIN(1),.READ_CHAIN(1),.CONTINUE(1),.NEXT_TAGGED(1)) u_controller(
   .clk(controller_clk),.sdram_clk(sdram_clk),.reset(reset),
   .request(offer_valid&&(!offer_write||pair_count>=(offer_words==1?1:2))),.writing(offer_write),.address(offer_address),.words(offer_words),
   .write_slot(write_slot),.next_valid(offer_valid||hint_valid),.next_address(offer_address),.next_words(offer_words),.next_chainable(fast_next),.next_write_ready(next_write_ready_q),.next_generation(offer_generation),

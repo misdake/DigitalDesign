@@ -850,9 +850,9 @@ fn drain_fault(
     s.abort_sampling();
     for wall in 0..4096 {
         ro.discard_edge().unwrap();
-        let clock = s.clocks();
+        let clock = s.model_edges();
         let t = dut.step(BranchTick::default(), ro, fb).unwrap();
-        assert_eq!(s.clocks(), (clock.0 + 1, clock.1 + 2));
+        assert_eq!(s.model_edges(), clock + 1);
         assert!(t.sampling.is_none() && t.sample_returned.is_none() && !dut.complete());
         reader
             .step(true, rec::Input::default(), true, false)
@@ -908,7 +908,7 @@ fn abort_case(target: &str, name: &str) {
         }
         let offer = reader.offer().cloned();
         let finish = producer.done() && reader.drained() && offer.is_none();
-        let clock = s.clocks();
+        let clock = s.model_edges();
         let t = dut
             .step(
                 BranchTick {
@@ -920,7 +920,7 @@ fn abort_case(target: &str, name: &str) {
                 &mut fb,
             )
             .unwrap();
-        assert_eq!(s.clocks(), (clock.0 + 1, clock.1 + 2));
+        assert_eq!(s.model_edges(), clock + 1);
         if t.live.model.framebuffer.response.accepted {
             let request = t.live.model.framebuffer.request.unwrap();
             if request.write {
@@ -1029,6 +1029,17 @@ fn poisoned_mc_does_not_become_global_drain_after_record_cancel() {
     let a = producer.action();
     let e = reader.step(true, a, true, false).unwrap();
     producer.observe(true, a, &e, &mut words);
+    // Wait for the current endpoint's write supply handshake, not a
+    // retired bridge's fixed edge offset.
+    let mut supplied = false;
+    for _ in 0..32 {
+        ro.step().unwrap();
+        if fb.cycle(None, Some(0x9876)).unwrap().write_accepted {
+            supplied = true;
+            break;
+        }
+    }
+    assert!(supplied, "write supply watchdog");
     ro.step().unwrap();
     ro.submit_read(u64::from(TEX_BASE), 128).unwrap();
     assert!(fb.cycle(None, Some(0x9876)).unwrap().write_accepted);
@@ -1036,11 +1047,11 @@ fn poisoned_mc_does_not_become_global_drain_after_record_cancel() {
     let e = reader.step(true, a, true, false).unwrap();
     producer.observe(true, a, &e, &mut words);
     ro.step().unwrap();
-    let clock = s.clocks();
+    let clock = s.model_edges();
     let error = fb.cycle(None, None).unwrap_err();
     assert!(error.contains("source underrun"));
     assert!(s.tick_poisoned() && !s.physical_error());
-    assert_eq!(s.clocks(), clock);
+    assert_eq!(s.model_edges(), clock);
     reader.cancel();
     for _ in 0..8 {
         reader
@@ -1055,7 +1066,7 @@ fn poisoned_mc_does_not_become_global_drain_after_record_cancel() {
         .cycle(None, Some(0x4321))
         .unwrap_err()
         .contains("no retry"));
-    assert_eq!(s.clocks(), clock);
+    assert_eq!(s.model_edges(), clock);
     reader.save(&artifacts(), "poison");
     s.save(&artifacts(), "poison");
 }
@@ -1122,7 +1133,7 @@ fn run_frame(pauses: bool, name: &str) {
         }
         let finish = ce && producer.done() && reader.drained() && offer.is_none();
         finish_sent |= finish;
-        let clock = s.clocks();
+        let clock = s.model_edges();
         let t = dut
             .step(
                 BranchTick {
@@ -1135,7 +1146,7 @@ fn run_frame(pauses: bool, name: &str) {
                 &mut fb,
             )
             .unwrap();
-        assert_eq!(s.clocks(), (clock.0 + 1, clock.1 + 2));
+        assert_eq!(s.model_edges(), clock + 1);
         if t.live.model.quad_accepted {
             compare_offer(offer.as_ref().unwrap(), &expected_quads[accepted].1);
             masks.push(offer.as_ref().unwrap().live.quad.header.mask);

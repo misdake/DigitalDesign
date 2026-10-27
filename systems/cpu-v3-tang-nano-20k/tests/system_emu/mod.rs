@@ -1,9 +1,9 @@
-//! Shared cycle-accurate full-system emulator for CpuV3 tests.
+//! Core/cache/arbiter edge reference with an independent abstract memory peer.
 //!
 //! Wires the core, instruction fetch queue, I-cache, D-cache and the memory
-//! arbiter through their Rust emulators, and drives them against a cycle-faithful
-//! model of the Tang Nano 20K SDRAM word port (ACTIVE / READ 4x64 / WRITE /
-//! RECOVERY / periodic refresh). Shared by bounded fetch/checkpoint tests and
+//! arbiter through their Rust emulators. The memory peer uses configured abstract
+//! request/response delays and refresh stalls; it is not an implementation of a
+//! retired MC or the current 54/108 MHz stream controller. Shared by bounded tests and
 //! emulator-vs-RTL system co-simulation.
 //!
 //! This module is compiled into several integration test crates; not every

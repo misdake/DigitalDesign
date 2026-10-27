@@ -774,9 +774,7 @@ fn real_cycle_mc_refill_dirty_rotation_and_flush_match_golden() {
     assert!(m.stats.misses > 8);
     assert!(writes > 0);
     assert_eq!(writes, acks * 16);
-    assert_eq!(port.combination.bridge.pins.bytes(), expected);
-    assert_eq!(port.combination.bridge.write_chains, 0);
-    assert_eq!(port.combination.bridge.read_chains, 0);
+    assert_eq!(port.combination.image.bytes(), expected);
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/framebuffer-real-mc");
     std::fs::create_dir_all(&root).unwrap();
@@ -1017,7 +1015,7 @@ fn forwarding_real_cycle_mc_same_address_chain_matches_golden() {
     assert!(commits.windows(2).all(|w| w[1] - w[0] == 8));
     assert_eq!(model.stats.forwarded_lanes, 79 * 4);
     assert_eq!(
-        port.combination.bridge.pins.bytes(),
+        port.combination.image.bytes(),
         golden(initial, &qs, surface(), context())
     );
 }

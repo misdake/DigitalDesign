@@ -148,9 +148,6 @@ device, bitstream length, or bitstream fingerprint, then reruns timing and
 physical-resource audits before invoking Programmer. This keeps a USB retry
 from silently changing the FPGA implementation under test.
 
-The `sdram_word_port` example predates this protocol and still sends a
-private `SDWP` frame; it is not validated by `check_uart_status.ps1`.
-
 The `lighting-floor` profile uses the module-owned `gpu-v2` example
 `lighting_board`. Lighting runs at 60 MHz and UART at 27 MHz (divider 234).
 It tests 1,408 outputs, including ambient/diffuse/full contexts, stalls and all

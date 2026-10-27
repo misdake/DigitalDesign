@@ -1,11 +1,11 @@
-//! Bounded end-to-end reservation and prepared-input cache/color measurements.
+//! Bounded cache/color scheduler experiment with synthetic memory delays.
+//! These counts do not qualify the production SDRAM timing or performance.
 #[path = "../tests/support/sdram/cycle.rs"]
 mod cycle;
 #[path = "../tests/support/texture.rs"]
 mod support;
 use digital_design_hardware_gowin::sdram_memory_controller::{
-    ports::OracleImage,
-    sim::{average, oracle as memory, traffic::*},
+    ports::OracleImage, sim::oracle as memory,
 };
 use gpu_v2::texture::{
     ports::*,
@@ -124,8 +124,8 @@ fn main() {
                     memory::Memory::new(
                         image(&bytes),
                         memory::Config {
-                            load: Load::display_and_cpu(50),
-                            chain: ChainPolicy::ExistingUnchained,
+                            read_latency: 19,
+                            beat_interval: 3,
                             ..Default::default()
                         },
                     )
@@ -133,12 +133,7 @@ fn main() {
                 ))
             } else {
                 Box::new(cycle::Adapter::new(
-                    average::Memory::new(
-                        image(&bytes),
-                        average::Profile::gpu_default().unwrap(),
-                        Default::default(),
-                    )
-                    .unwrap(),
+                    memory::Memory::new(image(&bytes), Default::default()).unwrap(),
                 ))
             };
             let report = run(&inputs, &[slot], &mut *service, h, |_| Control::default()).unwrap();
@@ -190,9 +185,9 @@ fn main() {
                 }
             }
             let mem = if loaded {
-                "display_cpu_unchained"
+                "synthetic_delay_19_stride_3"
             } else {
-                "calibrated_average"
+                "synthetic_delay_3_stride_1"
             };
             writeln!(csv, "{profile},{mem},{preparation:?},{group_capacity},{prefetch},{result_capacity},{},{},{},{:.6},{},{:.6},{},{:.6},{},{},{},{},{},{},{},{},{},{},{}",
                 inputs.len(), report.pixels.len(), s.wall_cycles, s.wall_cycles as f64 / report.pixels.len() as f64,
@@ -210,12 +205,7 @@ fn main() {
             let inputs = inputs("fractional", 64);
             let expected = golden(&inputs, slot, &bytes);
             let mut service = cycle::Adapter::new(
-                average::Memory::new(
-                    image(&bytes),
-                    average::Profile::gpu_default().unwrap(),
-                    Default::default(),
-                )
-                .unwrap(),
+                memory::Memory::new(image(&bytes), Default::default()).unwrap(),
             );
             let report = run(
                 &inputs,

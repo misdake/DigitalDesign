@@ -165,14 +165,7 @@ pub(crate) struct GowinBoardExtension {
     wrapper_source: String,
     logic_clock_signal: Option<String>,
     source_files: BTreeMap<PathBuf, String>,
-    installed_ide_files: Vec<GowinInstalledIdeFile>,
     sdc_constraints: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct GowinInstalledIdeFile {
-    path: PathBuf,
-    adjacent_project_files: Vec<PathBuf>,
 }
 
 impl GowinBoardExtension {
@@ -216,18 +209,6 @@ impl GowinBoardExtension {
 
     pub(crate) fn add_sdc_constraint(mut self, constraint: impl Into<String>) -> Self {
         self.sdc_constraints.push(constraint.into());
-        self
-    }
-
-    pub(crate) fn require_installed_ide_file(
-        mut self,
-        path: impl Into<PathBuf>,
-        adjacent_project_files: impl IntoIterator<Item = PathBuf>,
-    ) -> Self {
-        self.installed_ide_files.push(GowinInstalledIdeFile {
-            path: path.into(),
-            adjacent_project_files: adjacent_project_files.into_iter().collect(),
-        });
         self
     }
 }
@@ -631,12 +612,6 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
         }
         output
     }
-
-    fn installed_ide_files(&self) -> &[GowinInstalledIdeFile] {
-        self.extension
-            .as_ref()
-            .map_or(&[], |extension| extension.installed_ide_files.as_slice())
-    }
 }
 
 fn verilog_width(width: usize) -> String {
@@ -921,16 +896,6 @@ impl<T: GowinTarget> GowinProject<T> {
         for path in files.keys() {
             validate_project_path(path)?;
         }
-        let installed_ide_files = self
-            .board_binding
-            .as_ref()
-            .map_or(&[][..], GowinBoardBinding::installed_ide_files);
-        for installed in installed_ide_files {
-            validate_installed_ide_path(&installed.path)?;
-            for path in &installed.adjacent_project_files {
-                validate_project_path(path)?;
-            }
-        }
         for (path, content) in &verilog.files {
             let generated_path = Path::new("src/generated").join(path);
             validate_project_path(&generated_path)?;
@@ -962,7 +927,6 @@ impl<T: GowinTarget> GowinProject<T> {
                 &self.project_name,
                 &top_module,
                 &source_paths,
-                installed_ide_files,
                 self.board_binding
                     .as_ref()
                     .map_or(&BTreeMap::new(), |binding| &binding.process_options),
@@ -1074,13 +1038,6 @@ fn validate_project_path(path: &Path) -> Result<(), GowinError> {
     validate_safe_relative_path(path)
 }
 
-fn validate_installed_ide_path(path: &Path) -> Result<(), GowinError> {
-    if !path.starts_with("ipcore") {
-        return Err(GowinError::UnsafeProjectPath(path.to_path_buf()));
-    }
-    validate_safe_relative_path(path)
-}
-
 fn validate_safe_relative_path(path: &Path) -> Result<(), GowinError> {
     if path.is_absolute()
         || path.components().any(|component| {
@@ -1148,7 +1105,6 @@ fn render_build_tcl(
     project_name: &str,
     top_module: &str,
     paths: &[PathBuf],
-    installed_ide_files: &[GowinInstalledIdeFile],
     process_options: &BTreeMap<String, String>,
 ) -> Result<String, GowinError> {
     validate_verilog_identifier(project_name).map_err(ProjectError::from)?;
@@ -1156,57 +1112,10 @@ fn render_build_tcl(
     for path in paths {
         validate_project_path(path)?;
     }
-    for installed in installed_ide_files {
-        validate_installed_ide_path(&installed.path)?;
-        for path in &installed.adjacent_project_files {
-            validate_project_path(path)?;
-        }
-    }
     let files = paths
         .iter()
         .filter(|path| file_type(path).is_some())
         .map(|path| tcl_add_file(path))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let installed_files = installed_ide_files
-        .iter()
-        .enumerate()
-        .map(|(index, installed)| {
-            let components = installed
-                .path
-                .iter()
-                .map(|component| format!("{{{}}}", component.to_string_lossy()))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let staged_name = installed
-                .path
-                .file_name()
-                .expect("validated installed IDE path has a file name")
-                .to_string_lossy();
-            let adjacent = installed
-                .adjacent_project_files
-                .iter()
-                .map(|path| {
-                    let source = path
-                        .iter()
-                        .map(|component| format!("{{{}}}", component.to_string_lossy()))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!("file copy -force [file join $here {source}] $installed_stage_{index}")
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!(
-                "set installed_file_{index} [file join $gowin_ide {components}]\n\
-if {{![file isfile $installed_file_{index}]}} {{ error \"Required Gowin IDE file not found: $installed_file_{index}\" }}\n\
-set installed_stage_{index} [file join $here impl installed {index}]\n\
-file delete -force $installed_stage_{index}\n\
-file mkdir $installed_stage_{index}\n\
-file copy -force $installed_file_{index} [file join $installed_stage_{index} {{{staged_name}}}]\n\
-{adjacent}\n\
-add_file [file join $installed_stage_{index} {{{staged_name}}}]"
-            )
-        })
         .collect::<Vec<_>>()
         .join("\n");
     let process_options = process_options
@@ -1222,11 +1131,9 @@ add_file [file join $installed_stage_{index} {{{staged_name}}}]"
     } = device;
     Ok(format!(
         "set here [file normalize [file dirname [info script]]]\n\
-set gowin_ide [file normalize [file join [file dirname [info nameofexecutable]] ..]]\n\
 cd $here\n\
 set_device -name {device_name} -device_version {device_version} {part_number}\n\
 {files}\n\
-{installed_files}\n\
 set_option -synthesis_tool gowinsynthesis\n\
 set_option -top_module {top_module}\n\
 set_option -output_base_name {project_name}\n\

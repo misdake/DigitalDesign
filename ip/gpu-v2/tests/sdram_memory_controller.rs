@@ -1,28 +1,8 @@
 use digital_design_hardware_gowin::sdram_memory_controller::{
     ports::*,
-    sim::{
-        average::{Limits, Memory, Profile},
-        calibration::{self, Sample},
-        controller, oracle,
-        traffic::*,
-    },
+    sim::oracle::{Config, Memory},
     RtlSources,
 };
-fn burst(address: u64, bytes: usize, access: Access) -> Burst {
-    Burst {
-        address,
-        bytes,
-        access,
-    }
-}
-fn profile() -> Profile {
-    Profile {
-        read_first: [8; 4],
-        write_complete: [12, 16, 24, 80],
-        read_sector_first: [8, 24, 40, 56],
-        recovery: 1,
-    }
-}
 fn run(service: &mut impl Service, max: usize) -> Vec<Event> {
     let mut events = vec![];
     for _ in 0..max {
@@ -32,114 +12,6 @@ fn run(service: &mut impl Service, max: usize) -> Vec<Event> {
         }
     }
     panic!("SDRAM test watchdog");
-}
-fn image(bytes: Vec<u8>) -> OracleImage {
-    // SAFETY: supplied bytes are independent test stimuli, not computed audited intermediates.
-    unsafe { OracleImage::from_host(0, bytes, "integration test image").unwrap() }
-}
-#[test]
-fn geometry_and_four_sector_native_command_goldens() {
-    for (address, bank, row) in [
-        (0, 0, 0),
-        (128, 1, 0),
-        (384, 3, 0),
-        (512, 0, 0),
-        (4096, 0, 1),
-    ] {
-        assert_eq!(calibration::bank_row(address), (bank, row));
-    }
-    let cfg = controller::Config {
-        request_transport: 0,
-        read_transport: 0,
-        write_ack_transport: 0,
-        ..Default::default()
-    };
-    let mut core = controller::Controller::new(cfg).unwrap();
-    let group = burst(0, 512, Access::Read).sectors().unwrap();
-    let r = core.serve(&group, 0, true, |_| true).unwrap();
-    assert_eq!(
-        r.sectors.iter().map(|s| s.launch_core).collect::<Vec<_>>(),
-        [3, 35, 67, 99]
-    );
-    assert_eq!(r.done_core, 134); // first READ + 131, from CL2 diagram consumption edges.
-    assert_eq!(
-        r.sectors.iter().map(|s| s.bank).collect::<Vec<_>>(),
-        [0, 1, 2, 3]
-    );
-    assert_eq!(
-        r.sectors
-            .iter()
-            .skip(1)
-            .map(|s| s.hidden_prepare_core)
-            .collect::<Vec<_>>(),
-        [2, 2, 2]
-    );
-    let mut core = controller::Controller::new(cfg).unwrap();
-    let r = core
-        .serve(
-            &burst(0, 512, Access::Write).sectors().unwrap(),
-            0,
-            true,
-            |_| true,
-        )
-        .unwrap();
-    assert_eq!(
-        r.sectors
-            .iter()
-            .map(|s| s.launch_core - r.sectors[0].launch_core)
-            .collect::<Vec<_>>(),
-        [0, 32, 64, 96]
-    );
-    assert_eq!(r.done_core - r.sectors[0].launch_core, 129);
-}
-#[test]
-fn cancellation_and_same_bank_row_conflict_do_not_revoke_issued_sector() {
-    let mut core = controller::Controller::new(Default::default()).unwrap();
-    let group = burst(0, 512, Access::Read).sectors().unwrap();
-    let r = core.serve(&group, 0, true, |edge| edge < 39).unwrap();
-    assert_eq!(r.sectors.len(), 1);
-    assert!(r.priority_break);
-    assert_eq!(r.done_core, 42); // first sector READ7 + 35
-    let mut core = controller::Controller::new(Default::default()).unwrap();
-    let r = core
-        .serve(
-            &[burst(0, 128, Access::Read), burst(4096, 128, Access::Read)],
-            0,
-            true,
-            |_| true,
-        )
-        .unwrap();
-    assert_eq!(r.sectors.len(), 1);
-    assert!(r.bank_break);
-    let next = core
-        .serve(&[burst(4096, 128, Access::Read)], 100, false, |_| true)
-        .unwrap();
-    assert_eq!(next.sectors[0].row_state, controller::RowState::Conflict);
-    assert_eq!(next.sectors[0].launch_core - next.sectors[0].accept_core, 5);
-}
-#[test]
-fn refresh_blocks_admission_and_bounds_chain_age() {
-    let mut core = controller::Controller::new(controller::Config {
-        refresh_interval: 40,
-        continuation_age: 30,
-        ..Default::default()
-    })
-    .unwrap();
-    let r = core
-        .serve(
-            &burst(0, 512, Access::Read).sectors().unwrap(),
-            0,
-            true,
-            |_| true,
-        )
-        .unwrap();
-    assert!(r.refresh_break);
-    assert_eq!(r.sectors.len(), 1);
-    let r = core
-        .serve(&[burst(128, 32, Access::Read)], 20, false, |_| true)
-        .unwrap();
-    assert!(r.refresh_wait_core > 0);
-    assert_eq!(r.sectors[0].row_state, controller::RowState::Closed);
 }
 #[test]
 fn protected_payload_constant_and_host_sources_are_explicit() {
@@ -152,76 +24,10 @@ fn protected_payload_constant_and_host_sources_are_explicit() {
     assert!(unsafe { OracleWord::from_host(1, "") }.is_err());
 }
 #[test]
-fn stable_average_reads_all_sizes_and_preserves_group_gaps() {
-    let input: Vec<_> = (0..8192).map(|i| ((i * 17 + 31) & 255) as u8).collect();
-    let mut service = Memory::new(image(input.clone()), profile(), Default::default()).unwrap();
-    for bytes in BURST_BYTES {
-        service
-            .submit(Client::GpuReadOnly, Request::Read { address: 0, bytes })
-            .unwrap();
-    }
-    let events = run(&mut service, 1000);
-    let mut start = [0; 4];
-    let mut beats = [0; 4];
-    let mut complete = [0; 4];
-    for e in events {
-        match e {
-            Event::Started { id, cycle, .. } => start[id as usize] = cycle,
-            Event::ReadBeat {
-                id,
-                cycle,
-                index,
-                data,
-                last,
-            } => {
-                assert_eq!(data.to_le_bytes(), input[index * 8..index * 8 + 8]);
-                assert_eq!(data.origin(), Origin::Memory);
-                assert_eq!(
-                    cycle - start[id as usize],
-                    profile()
-                        .read_due(burst(0, BURST_BYTES[id as usize], Access::Read), index)
-                        .unwrap()
-                );
-                assert_eq!(last, index + 1 == BURST_BYTES[id as usize] / 8);
-                beats[id as usize] += 1;
-            }
-            Event::Complete { id, .. } => complete[id as usize] += 1,
-        }
-    }
-    assert_eq!(beats, [4, 8, 16, 64]);
-    assert_eq!(complete, [1; 4]);
-    let mut bad = profile();
-    bad.read_sector_first = [8, 25, 41, 60];
-    let mut service = Memory::new(image(input), bad, Default::default()).unwrap();
-    service
-        .submit(
-            Client::FramebufferRead,
-            Request::Read {
-                address: 0,
-                bytes: 512,
-            },
-        )
-        .unwrap();
-    let e = run(&mut service, 100);
-    let cycles: Vec<_> = e
-        .iter()
-        .filter_map(|e| {
-            if let Event::ReadBeat { cycle, .. } = e {
-                Some(*cycle)
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert_eq!(cycles[16] - cycles[15], 2);
-    assert_eq!(cycles[48] - cycles[47], 4);
-}
-#[test]
 fn masked_writes_and_following_reads_match_independent_byte_scoreboard() {
     for bytes in BURST_BYTES {
         let mut service = Memory::new(
             OracleImage::filled::<0xa7>(0, 1024).unwrap(),
-            profile(),
             Default::default(),
         )
         .unwrap();
@@ -266,13 +72,13 @@ fn masked_writes_and_following_reads_match_independent_byte_scoreboard() {
     }
 }
 #[test]
-fn rejected_requests_do_not_consume_ids_or_modify_data_and_limits_stop() {
-    let mut service = Memory::new(
+fn rejected_data_requests_preserve_ids_image_and_bounded_work() {
+    let mut memory = Memory::new(
         OracleImage::filled::<0x73>(128, 128).unwrap(),
-        profile(),
-        Limits {
-            max_cycles: 10,
+        Config {
+            max_cycles: 4,
             max_requests: 1,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -283,11 +89,11 @@ fn rejected_requests_do_not_consume_ids_or_modify_data_and_limits_stop() {
         (256, 32),
         (u64::MAX - 31, 32),
     ] {
-        assert!(service
+        assert!(memory
             .submit(Client::GpuReadOnly, Request::Read { address, bytes })
             .is_err());
     }
-    assert!(service
+    assert!(memory
         .submit(
             Client::FramebufferWrite,
             Request::Write {
@@ -298,7 +104,7 @@ fn rejected_requests_do_not_consume_ids_or_modify_data_and_limits_stop() {
         )
         .is_err());
     assert_eq!(
-        service
+        memory
             .submit(
                 Client::GpuReadOnly,
                 Request::Read {
@@ -309,168 +115,32 @@ fn rejected_requests_do_not_consume_ids_or_modify_data_and_limits_stop() {
             .unwrap(),
         0
     );
-    assert!(service.step().is_err());
-    assert_eq!(service.cycle(), 0);
-    assert_eq!(service.bytes(), &[0x73; 128]);
-}
-#[test]
-fn configured_load_is_reproducible_and_interrupted_groups_return_exactly_once() {
-    let initial: Vec<_> = (0..2048).map(|i| ((i * 39 + 9) & 255) as u8).collect();
-    let mut load = Load::display_and_cpu(1);
-    load.streams[0].period = 30;
-    load.streams[0].phase = 22;
-    let config = oracle::Config {
-        load,
-        chain: ChainPolicy::ChainedCandidate,
-        ..Default::default()
-    };
-    let replay = || {
-        let mut service = oracle::Memory::new(image(initial.clone()), config.clone()).unwrap();
-        service
-            .submit(
-                Client::FramebufferRead,
-                Request::Read {
-                    address: 0,
-                    bytes: 512,
-                },
-            )
-            .unwrap();
-        let events = run(&mut service, 1000);
-        assert!(service.background_requests() > 0);
-        assert!(service.runs.iter().any(|r| r.priority_break));
-        let data: Vec<_> = events
-            .iter()
-            .filter_map(|e| {
-                if let Event::ReadBeat { data, .. } = e {
-                    Some(data.to_le_bytes())
-                } else {
-                    None
-                }
-            })
-            .flatten()
-            .collect();
-        assert_eq!(data, initial[..512]);
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| matches!(e, Event::Started { .. }))
-                .count(),
-            1
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| matches!(e, Event::Complete { .. }))
-                .count(),
-            1
-        );
-        events
-    };
-    assert_eq!(replay(), replay());
-    assert!(oracle::Memory::new(
-        OracleImage::filled::<0>(4 * 1024 * 1024, 512).unwrap(),
-        config
-    )
-    .is_err());
-}
-#[test]
-fn calibration_weights_background_and_chain_effects_and_rounds_means_once() {
-    let trace = calibration::representative_trace(64).unwrap();
-    let solo = calibration::analyze(&trace, Default::default()).unwrap();
-    let fixed = Profile::from_calibration(&solo).unwrap();
-    for i in 0..8 {
-        assert_eq!(solo.classes[i].samples, 64);
-        let mean = if i < 4 {
-            solo.classes[i].mean_first()
-        } else {
-            solo.classes[i].mean_complete()
-        };
-        let rounded = if i < 4 {
-            fixed.read_first[i]
-        } else {
-            fixed.write_complete[i - 4]
-        } as f64;
-        assert!(rounded >= mean && rounded - mean < 1.0);
-    }
-    let again = calibration::analyze(&trace, Default::default()).unwrap();
-    assert_eq!(fixed, Profile::from_calibration(&again).unwrap());
-    let loaded = calibration::analyze(
-        &trace,
-        calibration::Config {
-            load: Load::display_and_cpu(1),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert!(loaded.background_requests > 0);
-    assert!(loaded.classes.iter().any(|s| s.sum_arbiter > 0));
-    let single = [Sample {
-        arrival: 0,
-        client: Client::FramebufferRead,
-        burst: burst(0, 512, Access::Read),
-    }];
-    let plain = calibration::analyze(&single, Default::default()).unwrap();
-    let chained = calibration::analyze(
-        &single,
-        calibration::Config {
-            chain: ChainPolicy::ChainedCandidate,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(plain.classes[3].sum_complete, 91); // four completions at 22,45,68,91
-    assert_eq!(chained.classes[3].sum_complete, 70);
-    assert_eq!(chained.classes[3].chained_sectors, 3);
-    assert!(Profile::from_calibration(&chained).is_err()); // no implicit fallback for empty buckets
-}
-#[test]
-fn background_overload_and_invalid_calibration_fail_with_bounded_work() {
-    let trace = calibration::representative_trace(4).unwrap();
-    let mut load = Load::display(1);
-    load.streams[0].period = 1;
-    assert!(calibration::analyze(
-        &trace,
-        calibration::Config {
-            load,
-            max_samples: 32,
-            max_cycles: 1000,
-            ..Default::default()
-        }
-    )
-    .is_err());
-    assert!(calibration::analyze(
-        &trace,
-        calibration::Config {
-            max_cycles: 10,
-            ..Default::default()
-        }
-    )
-    .is_err());
-    assert!(calibration::analyze(
-        &[
-            Sample {
-                arrival: 1,
-                client: Client::GpuReadOnly,
-                burst: burst(0, 32, Access::Read)
-            },
-            Sample {
-                arrival: 0,
-                client: Client::GpuReadOnly,
-                burst: burst(0, 32, Access::Read)
+    assert!(memory
+        .submit(
+            Client::GpuReadOnly,
+            Request::Read {
+                address: 128,
+                bytes: 32
             }
-        ],
-        Default::default()
-    )
-    .is_err());
+        )
+        .is_err());
+    for _ in 0..4 {
+        memory.step().unwrap();
+    }
+    assert!(memory.step().is_err());
+    assert_eq!(memory.bytes(), &[0x73; 128]);
 }
+
 #[test]
-fn migrated_rtl_bundle_preserves_existing_bridge_chain_default() {
-    assert!(RtlSources::GEARBOX.contains("parameter PREPARE_NEXT = 0"));
-    assert!(RtlSources::CONTROLLER.contains("parameter CHAIN = 0"));
-    assert!(RtlSources::CONTROLLER.contains("parameter READ_CHAIN = 0"));
-    assert!(RtlSources::SHARED_PORT.contains("parameter EARLY_GRANT = 0"));
+fn stream_rtl_bundle_has_only_the_current_endpoint_and_registered_cl3_return() {
+    assert!(
+        RtlSources::STREAM_GEARBOX.contains("CAS=3, RCD_CYCLES=3, RP_CYCLES=3, CAPTURE_LATENCY=3")
+    );
+    assert!(RtlSources::STREAM_GEARBOX.contains("REGISTER_READ_RETURN=1, DQ_INPUT_DELAY_TAPS=32"));
+    assert!(RtlSources::STREAM_GEARBOX.contains(".CONTINUE(1),.NEXT_TAGGED(1)"));
     assert!(RtlSources::CONTROLLER.contains("module SdramController"));
-    assert!(RtlSources::SHARED_PORT.contains("module SharedSdramPort"));
+    assert!(RtlSources::STREAM_SHARED_PORT.contains("Ordered two-descriptor endpoint"));
+    assert!(!RtlSources::STREAM_SHARED_PORT.contains("parameter EARLY_GRANT"));
 }
 
 #[test]

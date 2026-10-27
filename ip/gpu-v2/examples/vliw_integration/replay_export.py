@@ -20,6 +20,8 @@ import time
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
+sys.path.insert(0,str(ROOT/'hardware/vendor/gowin/tests'))
+from stream_contract import stage_peer
 
 
 def load(name, path):
@@ -36,16 +38,7 @@ def sha(path):
 
 def copy_peer_sources(peer, out):
     """The selected export and generated bench own their reserved file names."""
-    sources = []
-    for path in sorted(peer.iterdir()):
-        if (not path.is_file() or path.suffix.lower() not in ('.v', '.vh')
-                or path.name.casefold() in ('dut.v', 'tb.v')):
-            continue
-        target = out/path.name
-        shutil.copyfile(path, target)
-        if path.suffix.lower() == '.v':
-            sources.append(target)
-    return sources
+    return stage_peer(peer,out)
 
 
 def verify_dut_identity(source, staged, expected):
@@ -215,6 +208,8 @@ def main():
                '-I', out, '-s', 'tb', '-o', out/'sim.vvp']
     if args.native:
         command.append(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v')
+    else:
+        command.append('-DSTREAM_STATIC_INPUT_DELAY')
     command.extend([out/'dut.v', *peer_sources, out/'tb.v'])
     log, seconds = run_checked_simulation(
         execute_logged, command, os.environ['VVP_EXE'], out, source, export_sha, args.timeout)

@@ -29,7 +29,7 @@ fn actual_mc(inputs: &[support::Stimulus], pauses: bool, label: &str) {
         port.combination.cycle, model.stats.wall_cycles,
         "MC must advance exactly once per wall edge"
     );
-    assert_eq!(port.combination.bridge.pins.bytes(), expected);
+    assert_eq!(port.combination.image.bytes(), expected);
     assert!(proof.mc_reads > 8 && proof.mc_writes > 8);
     assert_eq!(proof.mc_read_beats, proof.mc_reads * 16);
     assert_eq!(proof.mc_write_beats, proof.mc_writes * 16);

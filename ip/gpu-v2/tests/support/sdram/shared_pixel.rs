@@ -1,7 +1,6 @@
-//! Test-only single physical clock owner. No Service or average-latency engine.
+//! Test-only single functional stream-reference owner; no MC/pad timing claim.
 use digital_design_hardware_gowin::sdram_memory_controller::{
-    emu::{idle_inputs, Combination},
-    ports::OracleImage,
+    combination::idle_inputs, ports::OracleImage, sim::fabric::Fabric,
 };
 use gpu_v2::{
     memory::ports::{MemoryPort, Request, Response, BURST_BEATS, BURST_BYTES},
@@ -88,7 +87,7 @@ struct Background {
     reads: u8,
 }
 struct Hub {
-    combination: Combination,
+    combination: Fabric,
     max_edges: u64,
     texture_range: (u64, u64),
     background_base: u64,
@@ -135,21 +134,21 @@ impl Shared {
         {
             return Err("shared immutable range alignment/overlap".into());
         }
-        let mut combination = Combination::with_options(image, 21600, false, false)?;
-        if !combination.bridge.pins.contains(
+        let mut combination = Fabric::new(image, 21600)?;
+        if !combination.contains(
             texture_range.0,
             (texture_range.1 - texture_range.0) as usize,
-        ) || !combination.bridge.pins.contains(background_base, 96)
+        ) || !combination.contains(background_base, 96)
         {
             return Err("shared fixture ranges".into());
         }
         for _ in 0..20_000 {
-            if combination.bridge.output(false).initialized {
+            if combination.initialized() {
                 break;
             }
             combination.tick(&idle_inputs())?;
         }
-        if !combination.bridge.output(false).initialized {
+        if !combination.initialized() {
             return Err("shared initialization watchdog".into());
         }
         let stats = Stats {
@@ -190,11 +189,11 @@ impl Shared {
         self.hub.borrow().trace.clone()
     }
     pub fn image(&self) -> Vec<u8> {
-        self.hub.borrow().combination.bridge.pins.bytes().to_vec()
+        self.hub.borrow().combination.image.bytes().to_vec()
     }
-    pub fn clocks(&self) -> (u64, u64) {
+    pub fn model_edges(&self) -> u64 {
         let h = self.hub.borrow();
-        (h.combination.cycle, h.combination.bridge.core_cycle)
+        h.combination.cycle
     }
     pub fn ro_active(&self) -> bool {
         self.hub
@@ -270,7 +269,7 @@ impl Shared {
         std::fs::write(directory.join(format!("{name}-mc.csv")), csv).unwrap();
         std::fs::write(
             directory.join(format!("{name}-stats.txt")),
-            format!("{:#?}\nclocks={:?}\n", h.stats, self.clocks()),
+            format!("{:#?}\nclocks={:?}\n", h.stats, self.model_edges()),
         )
         .unwrap();
     }
@@ -373,12 +372,7 @@ impl Hub {
         }
         if let Some(r) = request {
             r.validate()?;
-            if !self
-                .combination
-                .bridge
-                .pins
-                .contains(r.address_bytes, BURST_BYTES)
-            {
+            if !self.combination.contains(r.address_bytes, BURST_BYTES) {
                 return Err("FB request outside shared image".into());
             }
             let end = r.address_bytes + BURST_BYTES as u64;
@@ -696,10 +690,6 @@ impl Hub {
             return Err(format!("physical tick failed; no retry: {error}"));
         }
         assert_eq!(self.combination.cycle, old + 1);
-        assert_eq!(
-            self.combination.bridge.core_cycle,
-            2 * self.combination.cycle
-        );
         self.stats.frame_edges += 1;
         for (client, id, event, index, data, last) in records {
             self.log(Trace {
@@ -798,10 +788,10 @@ mod tests {
         assert_eq!(s.stats().ro_submitted, 1);
         fb.cycle(None, None).unwrap();
         assert_eq!(s.stats().ro_started, 0, "no submit-edge physical admission");
-        let clocks = s.clocks();
+        let clocks = s.model_edges();
         assert!(fb.cycle(None, None).unwrap_err().contains("destination"));
         assert_eq!(
-            s.clocks(),
+            s.model_edges(),
             clocks,
             "missing passive poll cannot cause second tick"
         );
@@ -836,7 +826,7 @@ mod tests {
         }
         assert!(complete && s.idle());
         assert_eq!(beats, 16);
-        assert_eq!(s.clocks().1, 2 * s.clocks().0);
+        assert!(s.model_edges() > 0);
     }
 
     #[test]
@@ -862,18 +852,29 @@ mod tests {
             .unwrap()
             .accepted
         );
+        // Wait for the current endpoint's write supply handshake, not a
+        // retired bridge's fixed edge offset.
+        let mut supplied = false;
+        for _ in 0..32 {
+            ro.step().unwrap();
+            if fb.cycle(None, Some(0x9876)).unwrap().write_accepted {
+                supplied = true;
+                break;
+            }
+        }
+        assert!(supplied, "write supply watchdog");
         ro.step().unwrap();
         ro.submit_read(0x10000, 128).unwrap();
         assert!(fb.cycle(None, Some(0x9876)).unwrap().write_accepted);
         ro.step().unwrap();
         assert!(!s.hub.borrow().ro.as_ref().unwrap().presented);
-        let before = s.clocks();
+        let before = s.model_edges();
         // Actual accepted-write supply violation, no fabricated MC response and
         // no vendor/controller state injection. The prior beat was consumed, so
         // this passes read-only blocked-beat preflight and fails inside evaluation.
         let error = fb.cycle(None, None).unwrap_err();
         assert!(error.contains("source underrun"), "{error}");
-        assert_eq!(s.clocks(), before, "MC tick was not reached");
+        assert_eq!(s.model_edges(), before, "MC tick was not reached");
         assert!(
             s.hub.borrow().ro.as_ref().unwrap().presented,
             "Hub was partly changed"
@@ -885,13 +886,13 @@ mod tests {
             .cycle(None, Some(0x4321))
             .unwrap_err()
             .contains("no retry"));
-        assert_eq!(s.clocks(), before);
+        assert_eq!(s.model_edges(), before);
         assert_eq!(s.stats().fb_write_beats, writes);
         assert_eq!(s.stats().ro_delivered_complete, 0);
     }
 
     #[test]
-    fn partial_native_tick_failure_poison_prevents_retry() {
+    fn reference_tick_failure_poison_prevents_retry() {
         let s = Shared::new(
             OracleImage::filled::<0x57>(0, 0x20000).unwrap(),
             (0x10000, 0x10080),
@@ -914,22 +915,33 @@ mod tests {
             .accepted
         );
         ro.step().unwrap();
-        // Deliberate controller-state corruption, labelled test-only. Native
-        // state15 consumes continuous write data; there is no source reservation.
-        // This calls the actual failing engine, not a fabricated error response.
-        s.hub.borrow_mut().combination.bridge.controller.state = 15;
-        let before = s.clocks();
-        let error = fb.cycle(None, Some(0x9876)).unwrap_err();
-        assert!(error.contains("physical tick failed"), "{error}");
+        // Deliberately replace the independent reference image while a write is
+        // live. Its real range error poisons the wrapper; no terminal is forged.
+        s.hub.borrow_mut().combination.image = OracleImage::filled::<0>(0, 128).unwrap();
+        let mut failed_edge = None;
+        for _ in 0..32 {
+            let before = s.model_edges();
+            match fb.cycle(None, Some(0x9876)) {
+                Ok(_) => {
+                    ro.step().unwrap();
+                }
+                Err(error) => {
+                    assert!(error.contains("physical tick failed"), "{error}");
+                    failed_edge = Some(before);
+                    break;
+                }
+            }
+        }
+        let before = failed_edge.expect("reference range failure watchdog");
         assert!(s.tick_poisoned());
         assert!(
             !s.gpu_idle() && !s.idle(),
             "failed physical state is not certified drained"
         );
-        let after_failure = s.clocks();
-        assert_eq!(before.0, after_failure.0);
+        let after_failure = s.model_edges();
+        assert_eq!(before, after_failure);
         let retry = fb.cycle(None, None).unwrap_err();
         assert!(retry.contains("no retry"));
-        assert_eq!(s.clocks(), after_failure);
+        assert_eq!(s.model_edges(), after_failure);
     }
 }

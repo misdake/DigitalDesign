@@ -1,2 +1,2 @@
-//! Compatibility exports; implementation belongs to the reusable Gowin service.
-pub use digital_design_hardware_gowin::sdram_memory_controller::shared_port::*;
+//! Current stream port exports; implementation belongs to the reusable Gowin service.
+pub use digital_design_hardware_gowin::sdram_memory_controller::streaming_port::*;

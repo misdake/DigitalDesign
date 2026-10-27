@@ -586,7 +586,7 @@ fn run_frame(pauses: bool, name: &str) {
             && reader.drained()
             && offer.is_none();
         finish_sent |= finish;
-        let clocks = s.clocks();
+        let clocks = s.model_edges();
         let tick = dut
             .step(
                 BranchTick {
@@ -599,11 +599,7 @@ fn run_frame(pauses: bool, name: &str) {
                 &mut fb,
             )
             .unwrap();
-        assert_eq!(
-            s.clocks(),
-            (clocks.0 + 1, clocks.1 + 2),
-            "sole physical MC clock"
-        );
+        assert_eq!(s.model_edges(), clocks + 1, "sole physical MC clock");
         if tick.live.model.quad_accepted {
             compare_offer(offer.as_ref().unwrap(), &expected_quads[accepted].1);
             let ticket = tick.live.model.ticket.unwrap();
@@ -1171,7 +1167,7 @@ fn source_link_cancel_is_terminal_but_real_accepted_fb_write_drains() {
             && lease.feedback().is_none()
             && offer.is_none();
         finish_intent |= finish;
-        let clocks = s.clocks();
+        let clocks = s.model_edges();
         let tick = dut
             .step(
                 BranchTick {
@@ -1183,7 +1179,7 @@ fn source_link_cancel_is_terminal_but_real_accepted_fb_write_drains() {
                 &mut fb,
             )
             .unwrap();
-        assert_eq!(s.clocks(), (clocks.0 + 1, clocks.1 + 2));
+        assert_eq!(s.model_edges(), clocks + 1);
         if tick.live.model.quad_accepted {
             compare_offer(offer.as_ref().unwrap(), &quads[accepted].1);
             accepted += 1;
@@ -1237,9 +1233,9 @@ fn source_link_cancel_is_terminal_but_real_accepted_fb_write_drains() {
     s.abort_sampling();
     for edge in 0..4096 {
         ro.discard_edge().unwrap();
-        let clocks = s.clocks();
+        let clocks = s.model_edges();
         let tick = dut.step(BranchTick::default(), &mut ro, &mut fb).unwrap();
-        assert_eq!(s.clocks(), (clocks.0 + 1, clocks.1 + 2));
+        assert_eq!(s.model_edges(), clocks + 1);
         assert!(tick.sampling.is_none() && tick.sample_returned.is_none() && !dut.complete());
         assert!(
             !tick.live.model.framebuffer.response.accepted,
@@ -1308,7 +1304,7 @@ fn held_snapshot_cancel_keeps_published_records_and_drains_accepted_texture() {
             break;
         }
         let offer = reader.offer().cloned();
-        let clocks = s.clocks();
+        let clocks = s.model_edges();
         let tick = dut
             .step(
                 BranchTick {
@@ -1319,7 +1315,7 @@ fn held_snapshot_cancel_keeps_published_records_and_drains_accepted_texture() {
                 &mut fb,
             )
             .unwrap();
-        assert_eq!(s.clocks(), (clocks.0 + 1, clocks.1 + 2));
+        assert_eq!(s.model_edges(), clocks + 1);
         if tick.live.model.quad_accepted {
             compare_offer(offer.as_ref().unwrap(), &quads[accepted].1);
             accepted += 1;
@@ -1366,9 +1362,9 @@ fn held_snapshot_cancel_keeps_published_records_and_drains_accepted_texture() {
     s.abort_sampling();
     for edge in 0..4096 {
         ro.discard_edge().unwrap();
-        let clocks = s.clocks();
+        let clocks = s.model_edges();
         let tick = dut.step(BranchTick::default(), &mut ro, &mut fb).unwrap();
-        assert_eq!(s.clocks(), (clocks.0 + 1, clocks.1 + 2));
+        assert_eq!(s.model_edges(), clocks + 1);
         assert!(tick.sampling.is_none() && !dut.complete());
         if dut.framebuffer_drained() && s.idle() {
             break;

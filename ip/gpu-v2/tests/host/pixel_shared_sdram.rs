@@ -205,16 +205,16 @@ fn artifacts() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/gpu-pixel-branches/shared-mc-integration")
 }
-fn assert_edge(s: &shared::Shared, before: (u64, u64)) {
-    let now = s.clocks();
+fn assert_edge(s: &shared::Shared, before: u64) {
+    let now = s.model_edges();
     assert_eq!(
         now,
-        (before.0 + 1, before.1 + 2),
+        before + 1,
         "one physical tick per successful wrapper edge"
     );
     assert!(!s.tick_poisoned() && !s.physical_error());
     let stats = s.stats();
-    assert_eq!(now.0, stats.init_edges + stats.frame_edges);
+    assert_eq!(now, stats.init_edges + stats.frame_edges);
     assert!(stats.init_edges > 10_000 && stats.init_edges < 12_000);
 }
 fn background_drain(s: &shared::Shared, ro: &mut shared::RoView, fb: &mut shared::FbView) -> u64 {
@@ -226,7 +226,7 @@ fn background_drain(s: &shared::Shared, ro: &mut shared::RoView, fb: &mut shared
             break;
         }
         ro.discard_edge().unwrap();
-        let before = s.clocks();
+        let before = s.model_edges();
         assert_eq!(fb.cycle(None, None).unwrap(), Default::default());
         assert_edge(s, before);
     }
@@ -260,7 +260,7 @@ fn render(loaded: bool, pauses: bool, name: &str) {
         }
         let ce = !pauses || (wall >= pause_until && wall % 17 > 3);
         let sample_ready = !pauses || wall >= 900;
-        let before = s.clocks();
+        let before = s.model_edges();
         let stats = s.stats();
         let offered = (dut.snapshot().live == 0)
             .then(|| i.quads.get(next).cloned())
@@ -458,7 +458,7 @@ fn stopped_background_drains_reserved_sinks_separately() {
     let s = fixture(&i, true);
     let (mut ro, mut fb) = s.views();
     tex::RefillPort::step(&mut ro).unwrap();
-    let before = s.clocks();
+    let before = s.model_edges();
     assert_eq!(fb.cycle(None, None).unwrap(), Default::default());
     assert_edge(&s, before);
     assert!(s.gpu_idle() && !s.idle());
@@ -484,7 +484,7 @@ fn fault_drain(
     s.abort_sampling();
     for wall in 0..MAX {
         ro.discard_edge().unwrap();
-        let before = s.clocks();
+        let before = s.model_edges();
         let t = dut
             .step(
                 BranchTick {
@@ -512,7 +512,7 @@ fn ro_abort(driver_failure: bool, name: &str) {
     let mut dut = PixelBranches::new(i.context, i.light, vec![i.slot], MAX).unwrap();
     let mut admitted = false;
     for wall in 0..MAX {
-        let before = s.clocks();
+        let before = s.model_edges();
         let t = dut
             .step(
                 BranchTick {
@@ -533,12 +533,16 @@ fn ro_abort(driver_failure: bool, name: &str) {
     assert!(s.ro_active() && !s.gpu_idle());
     if driver_failure {
         s.fail_next_ro_poll();
-        let before = s.clocks();
+        let before = s.model_edges();
         let error = dut
             .step(BranchTick::default(), &mut ro, &mut fb)
             .unwrap_err();
         assert!(error.contains("driver RO poll failure"), "{error}");
-        assert_eq!(s.clocks(), before, "failure occurred before FB clock owner");
+        assert_eq!(
+            s.model_edges(),
+            before,
+            "failure occurred before FB clock owner"
+        );
         assert!(dut.faulted() && !s.physical_error());
     } else {
         dut.abort();
@@ -582,7 +586,7 @@ fn abort_active_fb_write_keeps_continuous_source_until_real_ack() {
     let mut admitted = false;
     let mut accepted_writes = Vec::new();
     for wall in 0..MAX {
-        let before = s.clocks();
+        let before = s.model_edges();
         let t = dut
             .step(
                 BranchTick {

@@ -5,9 +5,9 @@ localparam STARVE=__STARVE__, PHASE=__PHASE__;
 reg controller_clk=0,clk=0,phy_clk=0,pixel_clock=0;
 wire logic_clk=clk, sdram_clk=phy_clk, serial_clock=1'b0;
 reg reset=1,video_locked=0;
-always #5.051 controller_clk=~controller_clk;
+always #4.629629 controller_clk=~controller_clk;
 always @(posedge controller_clk) clk=~clk;
-initial begin #13.259; forever begin phy_clk=~phy_clk; #5.051; end end
+initial begin #12.430556; forever begin phy_clk=~phy_clk; #4.629629; end end
 initial begin #(PHASE==0 ? 0 : 7.117); forever #(__PIXEL_HALF__) pixel_clock=~pixel_clock; end
 wire memory_request_valid,memory_urgent,underflow;
 wire [21:0] memory_address;
@@ -17,7 +17,7 @@ wire O_sdram_clk,O_sdram_cke,O_sdram_cs_n,O_sdram_cas_n,O_sdram_ras_n,O_sdram_we
 wire [3:0] O_sdram_dqm; wire [10:0] O_sdram_addr; wire [1:0] O_sdram_ba; wire [31:0] IO_sdram_dq;
 GowinSdramCombination mc(.*);
 integer refreshes;
-LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
+LabPinModel #(.PERIOD_NS(9.259259),.CAS_LATENCY(3),.RCD_MIN(3),.RP_MIN(3),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
  .sclk(O_sdram_clk),.reset(reset),.cke(O_sdram_cke),.cs(O_sdram_cs_n),
  .ras(O_sdram_ras_n),.cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),
  .a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes(refreshes));

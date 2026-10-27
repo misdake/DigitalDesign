@@ -2,12 +2,12 @@
 module tb;
 @PORTS@
 wire clk=logic_clk;
-always #5.051 controller_clk=~controller_clk;
+always #4.629629 controller_clk=~controller_clk;
 always @(posedge controller_clk)logic_clk=~logic_clk;
-initial begin #13.259;forever begin sdram_clk=~sdram_clk;#5.051;end end
+initial begin #12.430556;forever begin sdram_clk=~sdram_clk;#4.629629;end end
 GSR GSR(.GSRI(1'b1));
 GowinSdramCombination dut(.*);
-LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
+LabPinModel #(.PERIOD_NS(9.259259),.CAS_LATENCY(3),.RCD_MIN(3),.RP_MIN(3),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
  .sclk(O_sdram_clk),.reset(reset),.cke(O_sdram_cke),.cs(O_sdram_cs_n),.ras(O_sdram_ras_n),
  .cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),.a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes());
 reg clean=0,inval=0,q=0,wr=0;reg[31:0]addr=0;reg[15:0]value=0;

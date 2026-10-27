@@ -11,7 +11,7 @@ fn cl3_streaming_transport_with_cpu_holds() {
         .unwrap_or_else(|| root.join("../../../target/streaming-board"));
     let peer = out.join("peer");
     fs::create_dir_all(&peer).unwrap();
-    for (path, text) in combination::rtl_sources_with_options(40, true, false).unwrap() {
+    for (path, text) in combination::rtl_sources(40).unwrap() {
         fs::write(peer.join(path.file_name().unwrap()), text).unwrap();
     }
     let run = out.join(format!("run-{}", std::process::id()));
@@ -21,7 +21,7 @@ fn cl3_streaming_transport_with_cpu_holds() {
         .arg(peer)
         .arg("--output")
         .arg(run)
-        .args(["--cl3", "--display", "--bursts", "8"])
+        .args(["--display", "--bursts", "8"])
         .output()
         .unwrap();
     assert!(

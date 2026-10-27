@@ -1,6 +1,4 @@
-pub mod average;
-pub mod calibration;
-pub mod controller;
-pub mod cycle_calibration;
+pub mod endpoint;
+pub mod fabric;
 pub mod oracle;
-pub mod traffic;
+pub mod service;

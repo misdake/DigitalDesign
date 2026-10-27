@@ -2,6 +2,9 @@
 from pathlib import Path
 import argparse,hashlib,importlib.util,json,os,re,shutil,struct,subprocess,sys
 ROOT=Path(__file__).resolve().parents[3]
+import sys
+sys.path.insert(0,str(ROOT/'hardware/vendor/gowin/tests'))
+from stream_contract import load_contract, stage_peer
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(ROOT/'ip/gpu-v2/examples/vliw_integration'))
 from replay_command import CommandBuffer,target_params
@@ -197,6 +200,7 @@ endmodule
         for old,key in [('40000','command_base'),('100000','color_base'),('140000','depth_base')]:
             tb=tb.replace("32'h"+old,"32'h"+format(record[key],'x'))
     (out/'tb.v').write_text(tb)
+    load_contract(a.peer)
     files=[]
     for name in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v','ports.vh']:
         shutil.copyfile(a.peer/name,out/name)
