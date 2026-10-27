@@ -7,12 +7,50 @@ scheduler or recovery protocol. Normal applications use the shared no-op gate.
 
 ## Explicit consumer selection
 
-`compile_renderer_program_with_capture` takes
-`CaptureConfiguration { gate_path, manifest_id }`. Root/private helpers keep their
-actual shared canonical origins. The selected gate is an ordinary module at its
-real canonical path, without authority over private driver state. Normal builds
-pin the shared no-op gate, Device ABI and capture ABI. Local replacements cannot
-override them or the generated, unprivileged `gpu_capture_config`.
+The legacy `compile_renderer_program_with_capture` and public
+`CaptureConfiguration { gate_path, manifest_id }` remain fixed to row layout.
+`RendererCaptureConfiguration::from_manifest(gate_path, manifest_path)` binds
+one immutable profile, capture ID and immutable resource catalog. Pass it to
+`compile_renderer_program_with_capture_profile`, with an explicit host-owned
+`generated_sources` directory and the existing dependency callback. This entry
+returns `Result<Program, String>` so materialization and compiler failures are
+reported together; the legacy entry retains its compiler-error return type.
+
+| Manifest | Required selection | Header layout/command ABI | Physical plane bytes |
+| --- | --- | --- | --- |
+| v1 or absent version | No `layout`; optional `command_abi` must be 1 | 1 / 1 | 192000 |
+| v2 row | Exact row layout description; `command_abi: 1` | 1 / 1 | 192000 |
+| v2 column | Exact column-pad16 description and allocation map; `command_abi: 1` | 2 / 1 | 204800 |
+
+Unknown or mixed descriptions, invalid versions and the paused RTT tuple 2 / 2
+are rejected. The selected description includes dimensions, physical and
+allocation spans, macro order/pitch, texture layout and (for column) the complete
+memory allocation map. Selection never follows an application filename.
+
+The row profile uses the actual shared source directory. Column materializes an
+explicit derived source root: every shared RCC source keeps its exact bytes,
+except `gpu_layout.rs`, which receives the exact authoritative
+`gpu_layout_column16.rs` bytes. `source-origins.json` records the mapping back to
+those source files. RCC receives real canonical paths in that generated root;
+its root/helper filename and resource-domain checks remain enabled. This avoids
+loading both layouts into one resource domain or claiming a false source origin.
+The generated root is separate from ordinary application module search paths.
+
+The selected gate is an ordinary module at its real canonical path, without
+authority over private driver state. Normal builds pin the shared no-op gate,
+Device ABI, layout and capture ABI. Local replacements cannot override them or
+the generated, unprivileged `gpu_capture_config`. A disabled profile selection
+alone never enables capture.
+
+A v2 catalog supplies typed `mesh`, `texture` and `atlas` roots with physical
+byte addresses/lengths inside the selected asset pool. Resources are nonempty,
+128-byte aligned and nonoverlapping. Texture layout must match the profile;
+column textures need 256-byte base alignment and at least 512 bytes. Atlas keeps
+its aligned 64-KiB ABI. Optional `other` entries identify additional catalog
+storage without authorizing a known root. Before the gate runs, actual exported
+Mesh/Texture/Atlas ranges must exactly match their typed catalog roots; a
+mismatch becomes sticky `GPU_CAPTURE_IDENTITY_ERROR` and prevents SEND. Catalog
+hash validation and dependency closure remain the external consumer's job.
 
 `CPU_V3_BOOT_EXAMPLE=gpu_profiler_board` registers the diagnostic integration
 entry. Its separate profiler-owned example supplies `rcc/main.rs`,
@@ -67,9 +105,15 @@ it is ordinary CPU data, with no heap or new FPGA storage primitive.
 
 The producer includes CB padding, used objects, actual UI page, complete known
 Mesh/Texture/Atlas allocations, both target preimages and old Front. FULL_CLEAR
-does not omit preimages. A replay consumer must verify actual commands, bindings
-and dependency closure rather than trusting declarations. Native CB bytes have
-no snapshot header. The table supplies no external-buffer or RTT API.
+does not omit preimages. Column color, depth and old Front each cover all
+204800 physical bytes, including 12800 bytes of macro padding; their header and
+range length pair is 8192 / 3. Their 262144-byte allocations have a further
+57344-byte tail, which is neither exported nor marked WRITE/FULL_CLEAR. The
+current minimal hook rejects `options.capture_allocation_guards: true`; consumers
+requiring that tail must not treat this producer as guard-capable. A replay
+consumer must verify actual commands, bindings and dependency closure rather
+than trusting declarations. Native CB bytes have no snapshot header. The table
+supplies no external-buffer or RTT API.
 
 | Public diagnostic bridge | Contract |
 | --- | --- |
@@ -108,3 +152,13 @@ origin/manifest tests separate explicit consumers from local overrides.
 These peers do not qualify UART, rasterization, actual cache contention, scanout
 or board capture. Consumer and matched hardware qualification are separate.
 DRAM alone cannot reconstruct arbitrary warm-cache or internal pipeline state.
+
+The `capture_layout` integration target compiles and executes the real RCC/CPU
+producer for legacy row, explicit row and column. Its portable `build.json`
+binds copied source inputs, catalog and the selected effective RCC root. It emits
+actual `header.bin`, `ranges.bin`, `producer.v3bin` and frozen range payloads under
+`target/capture-layout`. First/last payload words pass through public read bridges;
+complete payload files are host copies while the gate holds ownership. Controlled
+GPU/Display peers establish identity, bounds and lease behavior, not UART delivery,
+triangle rasterization or board capture. Firmware hashes remain external to the
+manifest ID. No serial column demo capture is enabled by this test or selection.

@@ -111,3 +111,11 @@ with bounded CPU steps and a separate floating basis/light reference. Its frame
 control peers verify that render timing excludes present/vblank, retains linear
 RGB565, and rejects failed/saturated measurements. Pixel and serial timing stay
 in the dedicated native GPU/DS2 RTL tests.
+
+The bounded `capture_layout` target executes the actual formal renderer producer
+with legacy row, explicit row and pure column capture profiles. It emits portable
+manifest/source identities and real CPU header/range/public-read fixtures under
+`target/capture-layout`, checks exact physical spans, resource mismatches,
+end-bound rejection and lease expiry, and preserves legacy row bytes. Complete
+payloads are host copies during the frozen gate. It provides no UART, GPU pixel
+or board qualification; see [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).

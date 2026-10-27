@@ -9,16 +9,19 @@ import sys
 sys.dont_write_bytecode = True
 SYSTEM = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(SYSTEM / "tools"))
-from gpu_layout import validate_asset_range
+from gpu_layout import validate_asset_range, sectors
+from capture_layout import description
 
-MESH, TEXTURE, ATLAS = 0x4b0000, 0x4b1000, 0x4c0000
-
-
-def pack(output):
+def pack(output, profile="default"):
+    bounds=sectors(profile)
+    mesh_base=bounds['GPU_ASSET_FIRST_SECTOR']*128
+    texture_base=mesh_base+4096
+    atlas_base=mesh_base+65536
+    texture_sectors=bounds['GPU_TEXTURE_MIN_LEVEL_SECTORS']
     output.mkdir(parents=True, exist_ok=True)
     # 3 vertices, one two-sided triangle, uniform20; unsigned delta10/F16 decode.
     mesh = bytearray(384)
-    struct.pack_into("<2H", mesh, 0, (MESH + 128) // 128, 1)
+    struct.pack_into("<2H", mesh, 0, (mesh_base + 128) // 128, 1)
     struct.pack_into("<4Q", mesh, 128, 3 | (1 << 8) | (20 << 16) | (5 << 24),
                      0, 0xffff0000 | (0xffff0000 << 32), 8 << 32)
     points = [(0, 0), (512, 0), (256, 512)]
@@ -40,7 +43,7 @@ def pack(output):
     assert decoded == [(-65536, -65536, 0), (65536, -65536, 0), (0, 65536, 0)]
     assert struct.unpack_from("<Q", mesh, 296)[0] == 0 | (1 << 6) | (2 << 12)
     assert mesh[304:] == bytes(80)
-    texture = struct.pack("<64H", *([65535] * 64))
+    texture = struct.pack("<H", 65535) * (texture_sectors*64)
     atlas = bytearray(65536)
     font = SYSTEM / "examples/gpu_demo/assets/font-8x16.txt"
     rows = {}
@@ -60,16 +63,16 @@ def pack(output):
                 at = glyph * 256 + (y * 8 + (x ^ ((y & 1) * 2))) * 2
                 struct.pack_into("<H", atlas, at, 65535 if bits & (128 >> x) else 0)
     assert atlas[255 * 256:] == bytes(256)
-    resources = [("mesh.bin", MESH, mesh), ("texture.bin", TEXTURE, texture),
-                 ("atlas.bin", ATLAS, atlas)]
+    resources = [("mesh.bin", mesh_base, mesh), ("texture.bin", texture_base, texture),
+                 ("atlas.bin", atlas_base, atlas)]
     for name, address, payload in resources:
         assert address % 128 == 0 and len(payload) % 128 == 0
-        validate_asset_range(address, len(payload))
+        validate_asset_range(address, len(payload), profile)
         (output / name).write_bytes(payload)
-    constants = dict(GPU_RENDERER_MESH_DIRECTORY=MESH // 128,
+    constants = dict(GPU_RENDERER_MESH_DIRECTORY=mesh_base // 128,
                      GPU_RENDERER_MESH_DIRECTORY_WORD=0, GPU_RENDERER_MESH_COUNT=1,
-                     GPU_RENDERER_MESH_FIRST=MESH // 128, GPU_RENDERER_MESH_SECTORS=3,
-                     GPU_RENDERER_TEXTURE=TEXTURE // 128, GPU_RENDERER_TEXTURE_SECTORS=1,
+                     GPU_RENDERER_MESH_FIRST=mesh_base // 128, GPU_RENDERER_MESH_SECTORS=3,
+                     GPU_RENDERER_TEXTURE=texture_base // 128, GPU_RENDERER_TEXTURE_SECTORS=texture_sectors,
                      GPU_RENDERER_TEXTURE_LOG2=0, GPU_RENDERER_TEXTURE_MIP=0)
     for axis, minimum, maximum in [("X", -65536, 65536), ("Y", -65536, 65536), ("Z", 0, 0)]:
         for label, value in [("MIN", minimum), ("MAX", maximum)]:
@@ -77,15 +80,19 @@ def pack(output):
             constants[f"GPU_RENDERER_{label}_{axis}_HIGH"] = (value >> 16) & 65535
     (output / "renderer_assets.rs").write_text("".join(
         f"pub const {name}:u16={value};\n" for name, value in constants.items()))
-    manifest = dict(resources=[dict(file=n, address=a, bytes=len(p),
+    manifest = dict(capture_layout=description(profile),resources=[dict(file=n, address=a, bytes=len(p),
+                    kind={"mesh.bin":"mesh","texture.bin":"texture","atlas.bin":"atlas"}[n],
+                    **({"layout":description(profile)["texture_layout"]} if n=="texture.bin" else {}),
                     sha256=hashlib.sha256(p).hexdigest()) for n, a, p in resources],
                     triangles=1, vertices=3, bounds=[[-1, -1, 0], [1, 1, 0]],
                     glyphs=sorted(rows), sources={str(p.relative_to(SYSTEM)): hashlib.sha256(p.read_bytes()).hexdigest()
-                    for p in [Path(__file__).resolve(), font, SYSTEM / "tools/gpu_layout.py", SYSTEM / "rcc/gpu_layout.rs"]})
+                    for p in [Path(__file__).resolve(), font, SYSTEM / "tools/gpu_layout.py", SYSTEM / "rcc/gpu_layout.rs", SYSTEM / "rcc/gpu_layout_column16.rs", SYSTEM / "tools/capture_layout.py", SYSTEM / "rcc/gpu_capture_abi.rs"]})
     (output / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
-    pack(parser.parse_args().output)
+    parser.add_argument("--profile", choices=["default", "column16"], default="default")
+    args=parser.parse_args()
+    pack(args.output, args.profile)
