@@ -159,6 +159,31 @@ busy=0 **and** error=0 completes. Error is checked first, even when busy is zero
 sticky transport or software memory fault retains resources and stops new work.
 Timeout does not clear busy, ACK, reset, cancel, present or release an allocation.
 
+### Publication before launch
+
+The private driver also exposes a split boundary to diagnostic consumers:
+`gpu_driver_prepare_idle(cb)` performs the same validation and final blocking
+publication, then returns `GPU_PREPARED` (8) without sending COUNT or START.
+The CB becomes `GPU_CB_PREPARED` (5), and the driver's owner record retains its
+identity. Polling that idle hardware returns Prepared, never Completed. Builder
+writes, cancellation, discard, reset and new recording cannot reclaim this input.
+
+`gpu_driver_start_prepared(cb, republish)` consumes that held input once. It
+checks the owner, sealed base/count, CB validity and actual idle/error status.
+A diagnostic resume passes `true` to repeat the publication fence after its
+bounded read scopes. Publication, metadata or transport failure freezes the
+owner without either SEND. A duplicate start is rejected. Successful start
+changes the CB to InFlight before COUNT and START, using the prepared submission
+descriptor rather than re-encoding its count/base.
+
+The ordinary `gpu_driver_submit_idle` immediately prepares and starts with
+`republish=false`; it keeps one publication fence and returns the existing
+Pending result. These private functions do not implement a button loop,
+snapshot transport, a second scheduler or hardware pipeline checkpoints.
+Only the enclosing scheduler can establish Display/target ownership. A diagnostic
+consumer must keep the entire dependency set immutable while Prepared, and
+must separately preserve Display ownership and exclude its pause from timing.
+
 ## Color ownership and Display completion
 
 One private record holds Front, Pending, Ready, Reserved and Rendering identities.

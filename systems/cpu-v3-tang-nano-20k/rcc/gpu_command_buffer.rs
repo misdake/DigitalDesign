@@ -19,6 +19,8 @@ pub const GPU_CB_BUILDING: u16 = 1;
 pub const GPU_CB_READY: u16 = 2;
 pub const GPU_CB_INFLIGHT: u16 = 3;
 pub const GPU_CB_COMPLETED: u16 = 4;
+// Published input held by the driver, before either Device4 SEND.
+pub const GPU_CB_PREPARED: u16 = 5;
 pub struct GpuBuffer {
     pub high_slot: u16,
     pub commands: GpuStorage,

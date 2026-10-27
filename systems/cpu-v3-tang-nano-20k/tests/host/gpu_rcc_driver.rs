@@ -3,6 +3,8 @@ use cpu_v3::{rcc_backend, CpuV3Sim, PhysicalWordAddress, RunOutcome};
 use gpu_v2::system::vliw_command::{Command as GpuCommand, DeviceSubmission};
 use std::path::PathBuf;
 use std::{any::Any, cell::RefCell, rc::Rc};
+#[path = "gpu_prepared.rs"]
+mod prepared;
 
 fn compile_direct(source: &str) -> Vec<u16> {
     compile(source)

@@ -7,6 +7,54 @@ It retains one recording, one sealed successor and one running GPU; there is no
 second production scheduler. The native single-slot `gpu` facade remains a
 separate compilation mode and cannot be mixed with this root.
 
+## Application flow
+
+Applications describe a scene and its ordered draws. The library prepares the
+native matrices/state, records command/object bytes, schedules the two input
+slots, publishes CPU writes and presents completed colors. Neither an input
+slot nor a command-buffer address is an application handle.
+
+The following is the inner loop used by the
+[minimal runnable application](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/rcc/main.rs).
+Camera, Mesh, Model, Material and TextField are created once before the loop:
+
+```rust
+let mut frame = renderer_frame(&mut renderer, 0x1111);
+let input = frame_input(&mut frame);
+let elapsed = frame_elapsed_seconds(&mut frame);
+// Update game state and persistent Camera/Model/Material values here.
+let mut pass = frame_pass(&mut frame, &mut camera);
+pass_draw(&mut pass, &mut mesh, &mut model, &mut material);
+pass_observed_time(&mut pass, &mut stats);
+pass_complete(pass);
+frame_complete(frame);
+```
+
+`frame_complete` seals and advances; it does not promise that this Frame has
+already rendered or reached Display. CPU recording can overlap the preceding
+GPU execution. When closing the application, `renderer_close(renderer)` drains
+sealed inputs, GPU work and Display Pending within its fixed polling bound.
+
+```mermaid
+flowchart TD
+  A[Application scene and ordered API calls] --> R[Resource facade]
+  R --> S[Prepare Camera, Model and Material snapshots]
+  S --> B[Record native commands and objects in a free input slot]
+  B --> Q[Seal the Frame and pin its UI page]
+  Q --> T[Wait for GPU idle and a Writable color, then bind Target]
+  T --> C[Blocking CPU cache publication]
+  C --> G[Device4 COUNT then START]
+  G --> U[Successful GPU terminal releases input and UI page]
+  U --> P[Present completed color]
+  P --> D[Display switch after old external reads retire]
+  D --> W[Previous Front becomes Writable]
+```
+
+The arrows after sealing are ownership/completion boundaries, not equal-duration
+pipeline stages. Input reuse follows GPU completion; color reuse follows Display
+retirement. This distinction allows recording during Display Pending without
+allowing either protected color to be overwritten.
+
 ## Compile and ownership boundary
 
 A format2 boot project may contain the standalone line `renderer`. The build

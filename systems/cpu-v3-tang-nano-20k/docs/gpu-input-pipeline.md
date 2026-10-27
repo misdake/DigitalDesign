@@ -63,6 +63,39 @@ physical cache tags and latched scalar/FST addresses remain the prerequisite.
 It may not modify InFlight inputs. A reported final maintenance failure sends
 neither count nor start.
 
+```mermaid
+sequenceDiagram
+  participant CPU as Application CPU
+  participant Driver as Driver and scheduler
+  participant Memory as CPU cache and memory
+  participant GPU as GPU Device4
+  participant Display as Display
+  CPU->>Driver: Complete and seal Frame N
+  Driver->>Display: Observe actual Writable color
+  Driver->>Memory: Bind Target, then blocking clean and invalidate
+  Memory-->>Driver: Successful publication
+  Driver->>Driver: Prepared input held, zero SENDs so far
+  Driver->>GPU: COUNT, then START
+  par CPU prepares successor
+    CPU->>Driver: Record Frame N+1 in other input slot
+  and GPU executes N
+    GPU->>Memory: Render and flush through real write terminals
+  end
+  CPU->>Driver: Seal successor and advance
+  GPU-->>Driver: Observed busy=0 and error=0
+  Driver->>Driver: Release input N and its UI reference
+  Driver->>Display: Stage completed color and request NEXT_SWAP
+  Display->>Memory: Finish old Front external reads
+  Memory-->>Display: Final old read retires
+  Display-->>Driver: Observe stable new active and pending=0
+  Driver->>Driver: Old Front is now Writable
+```
+
+Observation can happen later than physical completion. The diagram shows one
+legal overlap, not a guaranteed frame/vblank latency. A private Prepared hold
+must not run this scheduler recursively; ordinary submission immediately starts
+the prepared input. Display retirement can continue independently of CPU polling.
+
 Poll never submits a successor. A successful GPU terminal marks that input
 Completed and automatically requests present; its color may still be Pending.
 Display frame count, GPU idle and NEXT_SWAP are not substitutes for stable
