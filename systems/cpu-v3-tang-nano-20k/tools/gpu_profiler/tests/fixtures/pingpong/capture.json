@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "title": "Synthetic A/B/A with CPU overlap and cache-commit tails",
+  "clock_hz": 1000000,
+  "origin": 0,
+  "synthetic": true,
+  "submission_labels": {
+    "1": {
+      "frame_id": 1,
+      "name": "A"
+    },
+    "2": {
+      "frame_id": 2,
+      "name": "B"
+    },
+    "3": {
+      "frame_id": 3,
+      "name": "A reused"
+    }
+  }
+}
