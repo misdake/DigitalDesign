@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import struct
 import zlib
+from layout import get_layout, header_layout
 
 
 MAGIC = b"GPS1"
@@ -66,7 +67,8 @@ class Abi:
                           for m in re.finditer(
                               r"^pub const (GPU_CAPTURE_\w+): u16 = (0x[0-9a-fA-F_]+|[0-9_]+);$",
                               raw.decode("utf-8-sig").replace("\r\n", "\n"), re.M)}
-        if self["VERSION"] != 1 or self["WORDS"] != 64 or self["RANGE_WORDS"] != 8:
+        if (self["VERSION"] != 1 or self["WORDS"] != 64 or self["RANGE_WORDS"] != 8 or
+                self['NATIVE_COMMAND_ABI'] != 1):
             raise SnapshotError("Unsupported driver capture ABI")
 
     def __getitem__(self, name):
@@ -93,8 +95,11 @@ class Abi:
             raise SnapshotError("Unpublished, unsupported or non-self-contained descriptor")
         if self.word(words, "H_GPU_STATUS") != 0:
             raise SnapshotError("GPU is busy or faulted at the alleged freeze point")
-        if (self.word(words, "H_LAYOUT_ABI") != self["LAYOUT_ABI"] or
-                self.word(words, "H_COMMAND_ABI") != self["NATIVE_COMMAND_ABI"] or
+        try:
+            layout = get_layout(self.word(words, "H_LAYOUT_ABI"))
+        except ValueError as error:
+            raise SnapshotError(str(error)) from error
+        if (self.word(words, "H_COMMAND_ABI") != self["NATIVE_COMMAND_ABI"] or
                 self.word(words, "H_RANGE_VERSION") != self["RANGE_VERSION"] or
                 self.word(words, "H_RANGE_WORDS") != self["RANGE_WORDS"]):
             raise SnapshotError("Incompatible layout/command/range ABI")
@@ -118,6 +123,10 @@ class Abi:
                       display_status=self.word(words, "H_DISPLAY_STATUS"),
                       publication=(self.word(words, "H_PUBLICATION_LOW") |
                                    self.word(words, "H_PUBLICATION_HIGH") << 16))
+        # Preserve the v1 manifest representation and input hash byte for byte.
+        if layout.abi != 1:
+            result['layout_abi'] = layout.abi
+            result['command_abi'] = 1
         at = self["H_MANIFEST"]
         result["manifest_id"] = words_to_bytes(words[at:at + self["MANIFEST_WORDS"]]).hex()
         valid, padded, base = result["cb_bytes"], result["cb_padded_bytes"], result["cb_base"]
@@ -127,22 +136,26 @@ class Abi:
                 padded % 128 or not (valid + 127) // 128 * 128 <= padded <= 65536 or
                 base + padded > MEMORY_BYTES):
             raise SnapshotError("Invalid CB, count, token or range bound")
-        if result["plane_bytes"] != 400 * 240 * 2:
+        if result["plane_bytes"] != layout.plane_bytes:
             raise SnapshotError("Unsupported target plane geometry")
         for key in ["color_base", "depth_base"]:
-            if result[key] % 128 or result[key] + result["plane_bytes"] > MEMORY_BYTES:
+            if result[key] % (65536 if layout.abi == 2 else 128) or result[key] + layout.allocation_bytes > MEMORY_BYTES:
                 raise SnapshotError("Invalid target plane address")
         for prefix in ["object", "ui"]:
             address, size = result[prefix + "_base"], result[prefix + "_bytes"]
             if size and (address % 2 or size % 2 or address + size > MEMORY_BYTES):
                 raise SnapshotError("Invalid optional input range")
         front = result["front_base"]
-        if front and (front % 128 or front + result["plane_bytes"] > MEMORY_BYTES):
+        if front and (front % (32 if layout.abi == 2 else 128) or front + layout.allocation_bytes > MEMORY_BYTES):
             raise SnapshotError("Invalid old Front address")
         if result["target_format"] not in [0, 1] or result["front_format"] not in [0, 1]:
             raise SnapshotError("Unknown Display encoding")
         if result["manifest_id"] == "0" * 64:
             raise SnapshotError("Missing build/catalog identity declaration")
+        try:
+            header_layout(result)
+        except ValueError as error:
+            raise SnapshotError(str(error)) from error
         return result
 
     def range(self, index, words):
@@ -320,6 +333,8 @@ class Attempt:
             raise SnapshotError("Invalid bounded memory read")
         result, covered = bytearray(length), bytearray(length)
         for item in self.ranges:
+            if len(self.data[item.index]) != item.length:
+                raise SnapshotError('Captured range bytes do not match their declared extent')
             lo, hi = max(address, item.address), min(address + length, item.address + item.length)
             if lo < hi:
                 result[lo - address:hi - address] = self.data[item.index][lo - item.address:hi - item.address]
@@ -329,6 +344,16 @@ class Attempt:
         return bytes(result)
 
     def validate_memory(self):
+        if self.header.get('layout_abi', 1) == 2:
+            layout=header_layout(self.header)
+            for item in self.ranges:
+                if item.tag in (self.abi['TAG_COLOR'],self.abi['TAG_DEPTH'],self.abi['TAG_FRONT']):
+                    base=self.header[{self.abi['TAG_COLOR']:'color_base',self.abi['TAG_DEPTH']:'depth_base',
+                                      self.abi['TAG_FRONT']:'front_base'}[item.tag]]
+                    if item.flags & self.abi['FULL_CLEAR'] and not base <= item.address < item.address+item.length <= base+layout.plane_bytes:
+                        raise SnapshotError('FULL_CLEAR cannot declare allocation guard bytes initialized')
+                    if item.flags & self.abi['WRITE'] and not base <= item.address < item.address+item.length <= base+layout.plane_bytes:
+                        raise SnapshotError('A column allocation guard is not a writable plane extent')
         for i, a in enumerate(self.ranges):
             for b in self.ranges[i + 1:]:
                 lo, hi = max(a.address, b.address), min(a.address + a.length, b.address + b.length)

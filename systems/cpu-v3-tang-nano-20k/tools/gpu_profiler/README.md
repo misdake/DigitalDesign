@@ -67,12 +67,78 @@ files, changed identities, unsafe filenames, inconsistent aliases or incompatibl
 ABIs refuse replay. Physical initialized-read guards additionally reject any
 native MC read not covered by captured bytes or an earlier replay write.
 
+Storage layout is independent of the unchanged GPS1 wire v1, 64-word header,
+range v1 and native command ABI1. Header indices remain driver-owned.
+Only `(layout,command)=(1,1)` and `(2,1)` are supported. Build v2 requires a
+top-level `command_abi:1`; paused RTT `(2,2)` is rejected, even when an old ABI
+constants file declares command2.
+
+| Storage | Header layout ABI | Logical pixels | Physical plane | Allocation policy |
+| --- | ---: | ---: | ---: | --- |
+| Row16x16, macro pitch25 | 1 | 96000 | 192000 bytes | Legacy captured extent |
+| Column16x16, padded macro height16 | 2 | 96000 | 204800 bytes | 262144 bytes reserved; tail capture explicit |
+
+Column addressing is `base + 512*((x>>4)*16+(y>>4)) + 32*(y&15) + 2*(x&15)`.
+The 6400 padding words occupy the last macro row of every column; they are not a
+contiguous tail. The extra57344 allocation bytes are a separate guard outside the
+physical plane. Full CLEAR initializes204800 bytes, never that guard. Build v2
+binds an exact layout description, the column memory map and typed resources.
+Ordinary POT textures declare column macro packing with minimum512-byte mips and
+16x8 cache lines. UI grid/glyph encoding is unchanged. Row build v1, descriptor
+representation, input hashes and decoding remain compatible; use the archived
+`--abi` source if the authoritative constants changed since capture. Old evidence
+is never relabeled.
+
+Physical plane preimages are mandatory. Build option
+`capture_allocation_guards: true` additionally requires the full allocation tails;
+otherwise they are not fabricated or implicitly compared. Referenced bytes must
+still be captured. A FULL_CLEAR range extending into a guard is rejected. Native
+writes are checked against captured writable byte masks, alongside initialized
+read guards. Reports distinguish visible pixels, physical padding words and
+captured guard bytes; equality includes every compared region. Physical-only
+replay explicitly reports zero compared guard bytes.
+
+New RTL exports include `layout.json` (`schema:1`, `layout_abi`, `gpu_profile`).
+The exporter checks the actual generated framebuffer/texture structure, not just
+an environment label. Replay rejects unknown/mixed layouts, a row texture path
+with a column target, or an unbound layout declaration. Missing layout metadata
+is accepted only for archived row exports. This is a structural sanity gate;
+actual source hashes remain bound to build/firmware identity.
+
+The private diagnostic preparation command accepts `--column-catalog` for a
+CPU-produced directory containing `assets.json`, `renderer_assets.rs` and its
+referenced resources. `assets.json.capture_layout` must match the versioned
+descriptor. Entries retain `file,address,bytes,sha256` and add `kind` (`mesh`,
+`texture`, `atlas`, `other`); textures also declare `layout`. Preparation checks
+hashes/bounds and copies bytes; it never converts row textures. Firmware rebuilds
+restore that same build-bound catalog through the existing boot-assets route.
+The formal CPU producer/profile selector remains row-only at this integration
+base: consumer fixture support is not a real column producer or button qualification.
+
+The MC export preserves a `peer/stream-contract.json` and its original source
+names. Replay validates the fixed stream profile and every peer source against
+that manifest; removed bridge-parameter text is not an identity check. Old
+exports without that contract are rejected rather than silently substituted.
+
 Cold replay uses the production GPU, arbiter, streaming endpoint, registered
 CL3 native return and SDRAM controller. It has explicit cycle/wall limits and
 isolated, hash-checked exports. It includes no CPU/Display requests and restores
 no internal warm cache, FF or BSRAM contents. The pin model has explicit functional
 timing assumptions; it is not board/PVT qualification. `color.bin`/`depth.bin`
 are authoritative native output; `color.png` is a viewing aid.
+`*-allocation.bin` contains exactly the declared comparison extent;
+`replay.json.captured_plane_bytes` distinguishes physical-only and guarded capture.
+Guard writes fail rather than being hidden as off-screen data.
+
+Offline `tests/layout_replay.py` takes explicit `--row-rtl`, `--frozen-column`,
+`--column-contract` and fresh `--out` paths. It binds the frozen GPU SHA to its
+contract and stages it beside the current validated CL3 peer, without changing
+production sources. Default NOP preserves independently enumerated pixel patterns.
+`--clear` exercises target installation/full-plane CLEAR only; `--physical-only`
+omits unreferenced allocation tails. `--missing-read` and `--forbidden-write` are
+guarded negatives. Bounds are180000 cycles and180 seconds. These no-triangle
+fixtures and the original frozen49.5/99 CL2 scene result do not establish new
+54/108 board or producer qualification.
 
 The next frozen lease can expose the previous submission's actual output in its
 confirmed old Front and depth preimage. `compare.py` checks adjacency, addresses,

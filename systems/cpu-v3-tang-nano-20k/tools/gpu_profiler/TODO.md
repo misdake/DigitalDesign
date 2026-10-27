@@ -5,6 +5,11 @@ Implemented interfaces belong in [README.md](README.md), the
 [driver bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).
 Detailed pending architecture remains in the local project design area.
 
+- [ ] Integrate the CPU-owned explicit column producer/profile selector, then
+  bind its actual firmware, generated catalog and qualified layout bitstream.
+  Current ABI2 support is consumer/fixture qualification; the formal producer at
+  this base still emits row ABI1. Do not relabel its snapshots or old board runs.
+
 - [ ] Qualify physical Button2 pause/resume and Button1 dump separately from
   automatic software stimulus, including held/simultaneous buttons and no resume
   merely because transfer finishes.

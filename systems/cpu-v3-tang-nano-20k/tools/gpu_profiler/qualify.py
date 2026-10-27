@@ -30,9 +30,15 @@ def qualify(folder, output, abi):
     for capture in captures[1:]:
         if capture.header["manifest_id"] != identity["manifest_id"]:
             raise SnapshotError("Capture build changed during qualification")
+        preflight(capture, folder / "build.json", folder / "receipt.json")
     hardware = json.loads((folder / "hardware-identity.json").read_text())
     if hardware.get("complete") is not True or len(hardware["files"]) != 32:
         raise SnapshotError("Missing complete controlled hardware-export comparison")
+    programmed=json.loads((folder/'receipt.json').read_text())
+    if (hardware.get('manifest_id') != identity['manifest_id'] or
+            hardware['bitstream_sha256'] != programmed['bitstream']['sha256'] or
+            hardware.get('layout',identity['layout'] if identity['layout']['abi']==1 else None) != identity['layout']):
+        raise SnapshotError('Hardware/layout comparison is not bound to this firmware/programming identity')
     raw = (folder / "device/uart.bin").read_bytes()
     if hashlib.sha256(raw).hexdigest() != received["raw_sha256"]:
         raise SnapshotError("Raw receive evidence changed after decoding")

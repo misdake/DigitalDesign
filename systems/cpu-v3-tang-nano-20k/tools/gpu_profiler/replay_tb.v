@@ -47,6 +47,7 @@ LabPinModel #(.CAS_LATENCY(3),.TAC(6),.TOH(2),.RETURN_MIN(4),.RETURN_MAX(4),.RCD
  .sclk(mclk),.reset(reset),.cke(cke),.cs(cs),.ras(ras),.cas(cas),.we(we),
  .dqm(dqm),.a(addr),.ba(bank),.dq(dq));
 reg[3:0]valid_bytes[0:2097151];
+reg[3:0]writable_bytes[0:2097151];
 function integer physical;
  input integer logical_word;
  integer remaining;
@@ -70,17 +71,19 @@ always @(posedge mclk)begin
  if(!reset&&cke&&!cs&&pins.writing_bus)begin
   last_col=pins.col-1'b1;
   write_location={pins.burst_bank,pins.rows[pins.burst_bank],last_col};
+  if((writable_bytes[write_location]&(~dqm)) !== (~dqm))
+   $fatal(1,"Write outside the captured writable extent: physical=%h mask=%h",write_location,~dqm);
   if(valid_bytes[write_location]===4'bxxxx)valid_bytes[write_location]=0;
   valid_bytes[write_location]=valid_bytes[write_location]|(~dqm);
  end
 end
 task tick;begin @(negedge clk);#1;end endtask
 task send;input[3:0]ch;input[15:0]value;begin channel=ch;control=value;wen=1;tick;wen=0;end endtask
-task dump_plane;input integer base;input[1023:0]name;
+task dump_plane;input integer base,length;input[1023:0]name;
  integer fd,offset,index;reg[31:0]word;
  begin
   fd=$fopen(name,"wb");if(!fd)$fatal(1,"Plane output open");
-  for(offset=0;offset<192000;offset=offset+4)begin
+  for(offset=0;offset<length;offset=offset+4)begin
    index=physical((base+offset)/4);
    if(valid_bytes[index]!==4'b1111)$fatal(1,"Output contains uninitialized bytes");
    word=pins.mem[index];
@@ -93,14 +96,17 @@ initial begin
  $readmemh("memory.hex",pins.mem);
  $readmemh("valid.hex",valid_bytes);
  $readmemh("marked.hex",pins.marked);
+ $readmemh("writable.hex",writable_bytes);
  tick;tick;reset=0;
  while(!mc.initialized)tick;
  tick;start_cycle=cycle;
  send(0,16'd@COUNT@);send(1,16'd@BASE_LINE@);
  while(busy)begin tick;if(fault)$fatal(1,"Production GPU fault");end
  repeat(3)tick;
- dump_plane(@COLOR_BASE@,"color.bin");
- dump_plane(@DEPTH_BASE@,"depth.bin");
+ dump_plane(@COLOR_BASE@,@PLANE_BYTES@,"color.bin");
+ dump_plane(@DEPTH_BASE@,@PLANE_BYTES@,"depth.bin");
+ dump_plane(@COLOR_BASE@,@ALLOCATION_BYTES@,"color-allocation.bin");
+ dump_plane(@DEPTH_BASE@,@ALLOCATION_BYTES@,"depth-allocation.bin");
  $display("REPLAY_COMPLETE cycles=%0d initialized_reads=checked",cycle-start_cycle);
  $finish;
 end

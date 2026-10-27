@@ -43,6 +43,29 @@ after publication and prior completion, before either COUNT or START. The
 consumer reads that lease; it does not own a second GPU scheduler. Arbitrary
 in-flight pipeline state is outside this interface.
 
+The PC storage decoder accepts layout ABI1 (row macrotiles,192000-byte planes)
+and ABI2 (column macrotiles with padded height16,204800-byte planes), both at
+400x240. Build declaration v1 retains implicit row storage; v2 binds the exact
+layout/profile, memory map and typed asset catalog. Wire/header/range versions
+do not change. The reader preserves old row descriptors and input identities.
+Supported combinations are `(layout,command)=(1,1)` and `(2,1)`; v2 build identity
+includes top-level `command_abi:1`. The paused RTT `(2,2)` combination is refused.
+
+ABI2 has96000 logical pixels and6400 additional physical padding words. Its
+262144-byte reserved allocation is distinct from the204800-byte physical plane;
+the57344-byte tail is not initialized by CLEAR. Physical preimages are required.
+Allocation-tail capture is explicit, and referenced bytes must be present.
+Native replay rejects uncaptured reads and writes outside the captured writable
+extent. Color/depth comparison reports logical, padding and guard differences
+separately, with an explicit compared guard size. A whole-plane match includes
+the physical padding, not just visible pixels.
+
+The private diagnostic can consume a hash-bound CPU-produced column asset
+catalog, retaining ordinary POT mip packing and unchanged UI data. It does not
+implement the formal renderer's producer/profile selector. A synthetic capture
+or frozen-export replay therefore cannot qualify the actual CPU capture hook,
+physical buttons, board timing or a newly compiled bitstream.
+
 ```mermaid
 flowchart LR
     Driver["Renderer: seal + publish + prepare"] --> Gate["Software gate: hold the same lease"]

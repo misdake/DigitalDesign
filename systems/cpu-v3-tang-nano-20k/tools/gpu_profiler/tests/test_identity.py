@@ -12,6 +12,7 @@ import identity as i
 import replay
 import snapshot as s
 from test_snapshot import fixture
+from layout import ROW, COLUMN
 
 
 class IdentityTests(unittest.TestCase):
@@ -19,24 +20,41 @@ class IdentityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.abi = s.Abi(os.environ.get("GPU_CAPTURE_ABI_SOURCE", s.DEFAULT_ABI))
 
-    def create(self, folder, planes=True):
+    def create(self, folder, planes=True, layout=ROW, guards=True):
         root = Path(folder)
         header, rows, blobs = fixture(self.abi)
-        for tag, address in [("COLOR", 0x430000), ("DEPTH", 0x460000), ("FRONT", 0x400000)]:
+        mesh_address = 0x100000
+        color, depth = 0x430000, 0x460000
+        if layout == COLUMN:
+            mesh_address, color, depth = 0x4e0000, 0x440000, 0x480000
+            header[self.abi['H_LAYOUT_ABI']] = 2
+            for name, value in [('COMMAND_BASE', 0x4c0000), ('COLOR_BASE', color),
+                                ('DEPTH_BASE', depth), ('PLANE_BYTES', layout.plane_bytes)]:
+                at = self.abi['H_' + name]
+                header[at:at + 2] = [value & 65535, value >> 16]
+            for row, address in [(rows[0], 0x4c0000), (rows[1], mesh_address)]:
+                at = self.abi['R_BASE']
+                row[at:at + 2] = [address & 65535, address >> 16]
+        for tag, address in [("COLOR", color), ("DEPTH", depth), ("FRONT", 0x400000)]:
             if not planes:
                 break
             row = [0] * 8
             row[self.abi["R_FLAGS"]] = self.abi["READ"] | self.abi["PREIMAGE"]
             row[self.abi["R_TAG"]] = self.abi["TAG_" + tag]
             row[self.abi["R_BASE"]:self.abi["R_BASE"] + 2] = [address & 65535, address >> 16]
-            row[self.abi["R_BYTES"]:self.abi["R_BYTES"] + 2] = [192000 & 65535, 192000 >> 16]
+            span=layout.allocation_bytes if guards else layout.plane_bytes
+            row[self.abi["R_BYTES"]:self.abi["R_BYTES"] + 2] = [span & 65535, span >> 16]
             rows.append(row)
-            blobs.append(bytes(192000))
+            blobs.append(bytes(span))
         header[self.abi["H_RANGE_COUNT"]] = len(rows)
         spec = dict(files=[dict(name="synthetic-source", path="source.txt")],
-                    resources=[dict(name="synthetic-mesh", address=0x100000, bytes=2048,
+                    resources=[dict(name="synthetic-mesh", address=mesh_address, bytes=2048,
                                     sha256=hashlib.sha256(blobs[1]).hexdigest())],
                     options={"test_only": True}, toolchain={"test_only": True}, source_commit="test-only")
+        if layout == COLUMN:
+            spec['layout'] = layout.description()
+            spec['options']['capture_allocation_guards']=guards
+            spec['resources'][0]['kind'] = 'mesh'
         (root / "source.txt").write_bytes(b"synthetic-code-not-hardware")
         (root / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
         build = i.create_build(root / "spec.json", root / "build.json")
