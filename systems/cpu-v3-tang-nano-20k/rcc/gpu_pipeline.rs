@@ -10,7 +10,8 @@
     gpu_window,
     gpu_ui,
     gpu_ui_persistent,
-    gpu_scene
+    gpu_scene,
+    gpu_capture
 )]
 //! Resource facade over the single native two-input scheduler.
 //! One recorder, one sealed successor, one GPU execution; no execution queue.
@@ -42,6 +43,14 @@ mod gpu_ui_persistent;
 use gpu_ui_persistent::*;
 mod gpu_scene;
 use gpu_scene::*;
+mod gpu_capture;
+use gpu_capture::*;
+mod gpu_capture_abi;
+use gpu_capture_abi::*;
+mod gpu_capture_config;
+use gpu_capture_config::*;
+mod profiler_gate;
+use profiler_gate::*;
 mod gamepad;
 use gamepad::*;
 mod frame_stats;
@@ -308,7 +317,7 @@ fn gpu_pipeline_advance() -> u16 {
     // This final driver fence drains old scalar/FST stores and every relocation.
     // Neither SEND occurs on a reported maintenance failure.
     renderer_submitting(slot);
-    if gpu_driver_submit_idle(cb) != GPU_PENDING {
+    if gpu_pipeline_capture_submit(cb, slot) != GPU_PENDING {
         return gpu_pipeline_fail(12);
     }
     gpu_persistent_ui_submitted(slot);
@@ -317,6 +326,29 @@ fn gpu_pipeline_advance() -> u16 {
     p[4u16] = 3 - slot;
     p[5u16] += 1;
     GPU_PENDING
+}
+fn gpu_pipeline_capture_submit(cb: Array<GpuBuffer>, slot: u16) -> u16 {
+    if GPU_CAPTURE_CONFIG_ENABLED == 0 {
+        return gpu_driver_submit_idle(cb);
+    }
+    if gpu_driver_prepare_idle(cb) != GPU_PREPARED
+        || !gpu_capture_begin(cb, slot, renderer_time(slot)[0u16])
+    {
+        return gpu_pipeline_fail(16);
+    }
+    let outcome = profiler_gate(GPU_CAPTURE_HEADER.as_array());
+    if outcome > GPU_CAPTURE_RESUMED || gpu_capture_health() != GPU_CAPTURE_OK {
+        gpu_capture_fail(GPU_CAPTURE_GATE_ERROR);
+        return gpu_pipeline_fail(17);
+    }
+    if outcome == GPU_CAPTURE_RESUMED {
+        renderer_capture_resumed(slot);
+    }
+    let submitted = gpu_driver_start_prepared(cb, outcome == GPU_CAPTURE_RESUMED);
+    if submitted == GPU_PENDING {
+        gpu_capture_submitted();
+    }
+    submitted
 }
 // All persistent ranges in this frame use the same page. Its content is chosen
 // only when sealing; later desired edits belong to a future frame.
@@ -348,6 +380,18 @@ fn gpu_pipeline_ui_range(first: u16, end: u16) -> bool {
     result
 }
 
+// Diagnostic consumer bridges. Only the synchronous Prepared lease can read;
+// callers choose a declared range and offset, never an arbitrary address.
+pub fn gpu_capture_range_word(range: u16, field: u16) -> u16 {
+    gpu_capture_range_value(range, field)
+}
+pub fn gpu_capture_read_word(range: u16, offset_low: u16, offset_high: u16) -> u16 {
+    gpu_capture_read_value(range, offset_low, offset_high)
+}
+pub fn gpu_capture_error() -> u16 {
+    gpu_capture_health()
+}
+
 #[rcc_resource(cleanup = renderer_cleanup)]
 pub struct Renderer {
     word: u16,
@@ -368,7 +412,7 @@ static GPU_RENDERER_TIMES: Buf<u16, 24> = Buf::new([0; 24]);
 // Own clear epoch, logical frame sequence, previous tick ms, started.
 static GPU_RENDERER_CLOCK: Buf<u16, 4> = Buf::new([0; 4]);
 // Available, sequence, prep valid/us, observed valid/us, queue ms, span ms.
-static GPU_RENDERER_LAST: Buf<u16, 8> = Buf::new([0; 8]);
+static GPU_RENDERER_LAST: Buf<u16, 9> = Buf::new([0; 9]);
 static GPU_RENDERER_TICK: Buf<u16, 2> = Buf::new([0; 2]);
 static GPU_RENDERER_INPUT: GamepadFrame = GamepadFrame {
     connected: 0,
@@ -390,6 +434,7 @@ pub struct FrameStats {
     pub submit_to_observed_done_us: u16,
     pub queue_ms: u16,
     pub span_ms: u16,
+    pub debug_paused: bool,
 }
 // TextField owns CPU metadata only. GPU page references belong to the scheduler.
 #[rcc_resource(cleanup=text_cleanup)]
@@ -577,6 +622,7 @@ fn renderer_recording(slot: u16) {
     t[2u16] = GPU_RENDERER_CLOCK[0u16];
     t[3u16] = now;
     t[10u16] = 0;
+    t[11u16] = 0;
     GPU_RENDERER_TICK[0u16] = now;
     GPU_RENDERER_TICK[1u16] = 0;
     if GPU_RENDERER_CLOCK[3u16] != 0 {
@@ -607,6 +653,17 @@ fn renderer_submitting(slot: u16) {
     t[9u16] = dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_MILLISECONDS);
     t[10u16] = 1;
 }
+fn renderer_capture_resumed(slot: u16) {
+    // The pause may exceed every u16 timer bound. Preserve finalized prep,
+    // invalidate this submission's intervals, and start the next game tick fresh.
+    renderer_time(slot)[11u16] = 1;
+    renderer_timer_clear();
+    GPU_RENDERER_CLOCK[2u16] = dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_MILLISECONDS);
+    GPU_RENDERER_CLOCK[3u16] = 1;
+    gamepad_capture();
+    GPU_RENDERER_INPUT = gamepad_take_frame();
+    renderer_submitting(slot);
+}
 fn renderer_observed(slot: u16, observed_us: u16, observed_ms: u16) {
     if GPU_RENDERER[0u16] != 1 {
         return;
@@ -629,6 +686,13 @@ fn renderer_observed(slot: u16, observed_us: u16, observed_ms: u16) {
     }
     last[6u16] = t[9u16] - t[4u16];
     last[7u16] = observed_ms - t[3u16];
+    last[8u16] = t[11u16];
+    if t[11u16] != 0 {
+        last[4u16] = 0;
+        last[5u16] = 0;
+        last[6u16] = 0;
+        last[7u16] = 0;
+    }
     t[10u16] = 0;
     // Observation happens only after a recording has sealed/cancelled. Thus
     // an already finalized successor's prep sample survives this new epoch.
@@ -645,6 +709,7 @@ pub fn frame_previous(f: &mut Frame) -> FrameStats {
         submit_to_observed_done_us: s[5u16],
         queue_ms: s[6u16],
         span_ms: s[7u16],
+        debug_paused: s[8u16] != 0,
     }
 }
 pub fn frame_input(f: &mut Frame) -> GamepadFrame {

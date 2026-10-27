@@ -209,9 +209,12 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
         "gpu_ui",
         "gpu_ui_persistent",
         "gpu_scene",
+        "gpu_capture",
     ];
     for name in helpers.iter().copied().chain([
         "device_abi",
+        "gpu_capture_abi",
+        "profiler_gate",
         "gamepad",
         "dualshock2",
         "stick",

@@ -22,6 +22,8 @@ pub const GPU_RENDERER_MAX_Z_LOW:u16=0;pub const GPU_RENDERER_MAX_Z_HIGH:u16=1;
 ";
 #[path = "gpu_renderer_bloxorz.rs"]
 mod bloxorz;
+#[path = "gpu_capture.rs"]
+mod capture;
 #[path = "gpu_renderer_changes.rs"]
 mod changes;
 #[path = "gpu_persistent_ui.rs"]

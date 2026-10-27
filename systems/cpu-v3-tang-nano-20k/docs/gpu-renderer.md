@@ -60,7 +60,7 @@ allowing either protected color to be overwritten.
 A format2 boot project may contain the standalone line `renderer`. The build
 then uses `compile_renderer_program`, always approving the actual shared
 `rcc/gpu_pipeline.rs` canonical path. Omitting the root is an error. The root
-names twelve direct helpers, including private `gpu_scene`; application imports
+names thirteen direct helpers, including private `gpu_scene` and `gpu_capture`; application imports
 cannot expose their raw state/functions or construct/disarm resource identities.
 The source loader reports the selected file's actual canonical origin. Local
 root/helper overrides fail approval; they never inherit a shared identity.
@@ -168,16 +168,21 @@ remains available without a new packet and is integrated each game tick.
 Do not mix direct gamepad consumption into a renderer application.
 
 `FrameStats` contains ready/sequence, prepare_valid/prepare_us,
-observed_valid/submit_to_observed_done_us, queue_ms and span_ms. It identifies the
+observed_valid/submit_to_observed_done_us, queue_ms, span_ms and debug_paused. It identifies the
 last successfully observed GPU/color transfer, potentially older than n-1 while
 another submission runs. `submit_to_observed_done_us` includes final publication
 and CPU observer delay, not pure GPU time or Display/vblank. No extra polls are
-added for measurements. The shared microsecond counter is cleared only at open
+added for measurements. In ordinary operation the shared microsecond counter is cleared only at open
 and healthy observation after an open recording has sealed/cancelled. Every
 microsecond interval requires matching clear epochs, ordered endpoints and
 neither endpoint saturated at65535. Finalized preparation survives later clears;
 fields are never combined across different sequences. Millisecond differences
 wrap modulo65536 and require a true interval below65536ms.
+
+An optional [capture gate](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md)
+holds published input before either SEND. After explicit resume, debug_paused
+marks submit/queue/span as invalid (zero), and time/input baselines are reset.
+The next uninterrupted submission restores ordinary observations.
 
 ## Immutable logical mesh batches
 

@@ -21,6 +21,7 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [`boot-image-format.md`](boot-image-format.md): CB06 COPY/ZERO stream, host layout checks, Display startup and completion contract.
 - [Resource renderer](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md): application entry, runnable call sequence, host-approved resources, prepared scene snapshots, persistent text, frame input and observed statistics.
 - [GPU input pipeline](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md): internal double input slots, target relocation, persistent UI dirty pages and independent GPU/Display completion.
+- [GPU capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md): published-input lease, optional diagnostic gate, bounded dependency reads and paused timing semantics.
 - [`gpu-driver.md`](gpu-driver.md): lower-level native encoding and single-CB facade, fixed high-memory ownership, scoped DSEG3 access and submission/fault semantics.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   cold-loader LED and application reporting.

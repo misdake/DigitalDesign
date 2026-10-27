@@ -96,6 +96,11 @@ legal overlap, not a guaranteed frame/vblank latency. A private Prepared hold
 must not run this scheduler recursively; ordinary submission immediately starts
 the prepared input. Display retirement can continue independently of CPU polling.
 
+The optional [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md)
+passes a versioned descriptor to an explicitly selected synchronous consumer at
+that Prepared boundary. The consumer never advances this scheduler; its successful
+dump still waits for explicit resume. Ordinary applications use the no-op gate.
+
 Poll never submits a successor. A successful GPU terminal marks that input
 Completed and automatically requests present; its color may still be Pending.
 Display frame count, GPU idle and NEXT_SWAP are not substitutes for stable
@@ -192,6 +197,8 @@ memory fault, 5 for GPU observation, 6 for completed-color/present transfer,
 7 for Display observation, 8/9 for begin/seal memory failures, 10 for target
 reservation, 11 for relocation/render ownership and 12 for final publication.
 Codes 13/14/15 identify UI preparation, reference transitions and retirement.
+Codes16/17 identify capture preparation and consumer/lease failure. Both freeze
+the existing owner records; neither grants cancellation or input reuse.
 
 Compiled RCC/CPU tests check slot0/slot1/slot0 reuse, exact native command and
 Target bytes at a nonzero relocation offset, recording while a controlled GPU

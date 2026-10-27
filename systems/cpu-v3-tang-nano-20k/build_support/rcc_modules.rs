@@ -85,28 +85,115 @@ pub fn compile_renderer_program_with_sources(
     ordinary_dirs: &[PathBuf],
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
+    compile_renderer_program_with_capture(
+        main_name,
+        source,
+        options,
+        local_dir,
+        shared_dir,
+        constants,
+        ordinary_dirs,
+        None,
+        dependency,
+    )
+}
+
+/// Only an explicit diagnostic host may replace the ordinary no-op consumer.
+/// It gains no resource-library membership or authority over private helpers.
+pub struct CaptureConfiguration {
+    pub gate_path: PathBuf,
+    pub manifest_id: [u16; 16],
+}
+impl CaptureConfiguration {
+    pub fn from_manifest(gate_path: PathBuf, manifest_path: &Path) -> Result<Self, String> {
+        let bytes = std::fs::read(manifest_path)
+            .map_err(|e| format!("read profiler manifest {}: {e}", manifest_path.display()))?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| format!("parse profiler manifest: {e}"))?;
+        let id = manifest["manifest_id"]
+            .as_str()
+            .ok_or("profiler manifest_id must be SHA256 hex")?;
+        if id.len() != 64 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err("profiler manifest_id must have exactly64 hex digits".into());
+        }
+        let mut manifest_id = [0; 16];
+        for (index, word) in manifest_id.iter_mut().enumerate() {
+            let start = index * 4;
+            let low = u8::from_str_radix(&id[start..start + 2], 16).unwrap();
+            let high = u8::from_str_radix(&id[start + 2..start + 4], 16).unwrap();
+            *word = u16::from_le_bytes([low, high]);
+        }
+        Ok(Self {
+            gate_path,
+            manifest_id,
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compile_renderer_program_with_capture(
+    main_name: &str,
+    source: &str,
+    options: &impl rcc::RccConfig,
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    ordinary_dirs: &[PathBuf],
+    capture: Option<&CaptureConfiguration>,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
     rcc::frontend::compile_program_named_with_libraries(
         main_name,
         source,
         options,
         &[shared_dir.join("gpu_pipeline.rs")],
         &mut |name| {
+            if name == "gpu_capture_config" {
+                return Ok(rcc::frontend::ModuleSource {
+                    source: capture_config_source(capture.map(|c| &c.manifest_id)),
+                    origin: None,
+                });
+            }
+            if name == "profiler_gate" {
+                if let Some(capture) = capture {
+                    dependency(&capture.gate_path);
+                    let origin = std::fs::canonicalize(&capture.gate_path).map_err(|e| {
+                        format!(
+                            "resolve explicit profiler gate {}: {e}",
+                            capture.gate_path.display()
+                        )
+                    })?;
+                    return Ok(rcc::frontend::ModuleSource {
+                        source: std::fs::read_to_string(&origin).map_err(|e| {
+                            format!("read explicit profiler gate {}: {e}", origin.display())
+                        })?,
+                        origin: Some(origin),
+                    });
+                }
+            }
             // This public constants module is shared with non-GPU clients;
             // it is not a private GPU domain member. Its hardware ABI still
             // comes from the system, never an application's local override.
-            let local = if name == "device_abi" {
-                shared_dir
-            } else {
-                local_dir
-            };
-            let dirs = if name == "device_abi" {
-                &[][..]
-            } else {
-                ordinary_dirs
-            };
+            let pinned = matches!(name, "device_abi" | "gpu_capture_abi" | "profiler_gate");
+            let local = if pinned { shared_dir } else { local_dir };
+            let dirs = if pinned { &[][..] } else { ordinary_dirs };
             load_module_source_with_sources(local, shared_dir, constants, name, dirs, dependency)
         },
     )
+}
+
+fn capture_config_source(manifest: Option<&[u16; 16]>) -> String {
+    let mut source = format!(
+        "pub const GPU_CAPTURE_CONFIG_ENABLED:u16={};\npub fn gpu_capture_manifest_word(index:u16)->u16{{\n",
+        u16::from(manifest.is_some())
+    );
+    if let Some(words) = manifest {
+        for (index, word) in words.iter().enumerate() {
+            source.push_str(&format!("if index=={index}{{return {word};}}\n"));
+        }
+    }
+    source.push_str("0\n}\n");
+    source
 }
 
 fn resolve_module(
@@ -127,6 +214,9 @@ fn resolve_module_with_sources(
     ordinary_dirs: &[PathBuf],
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<(String, Option<PathBuf>), String> {
+    if name == "gpu_capture_config" {
+        return Ok((capture_config_source(None), None));
+    }
     if name == "boot_resources" {
         return Ok((constants.to_owned(), None));
     }

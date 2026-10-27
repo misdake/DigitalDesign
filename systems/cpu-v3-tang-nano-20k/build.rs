@@ -15,12 +15,29 @@ fn compile(
     constants: &str,
     shared: &Path,
     renderer: bool,
+    capture_enabled: bool,
 ) -> (Vec<u16>, usize) {
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
+    let capture = if capture_enabled {
+        let manifest_path = PathBuf::from(
+            std::env::var_os("GPU_PROFILER_MANIFEST")
+                .expect("gpu_profiler_board requires GPU_PROFILER_MANIFEST"),
+        );
+        println!("cargo:rerun-if-changed={}", manifest_path.display());
+        Some(
+            rcc_modules::CaptureConfiguration::from_manifest(
+                source_dir.join("profiler_gate.rs"),
+                &manifest_path,
+            )
+            .expect("explicit GPU profiler identity"),
+        )
+    } else {
+        None
+    };
     let program = if renderer {
-        rcc_modules::compile_renderer_program_with_sources(
+        rcc_modules::compile_renderer_program_with_capture(
             &path.display().to_string(),
             &source,
             options,
@@ -32,6 +49,7 @@ fn compile(
             } else {
                 vec![]
             },
+            capture.as_ref(),
             &mut |module| {
                 println!("cargo:rerun-if-changed={}", module.display());
             },
@@ -63,7 +81,9 @@ fn main() {
     let mut project = boot::parse_boot_project(&std::fs::read_to_string(config).unwrap())
         .expect("single application project");
     println!("cargo:rerun-if-env-changed=CPU_V3_BOOT_EXAMPLE");
+    println!("cargo:rerun-if-env-changed=GPU_PROFILER_MANIFEST");
     let mut generated = String::new();
+    let mut capture_enabled = false;
     let mut extra_assets: Vec<String> = Vec::new();
     if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
         if example == "dualshock2" {
@@ -104,10 +124,15 @@ fn main() {
         } else if example == "gpu_renderer"
             || example == "gpu_renderer_changes"
             || example == "gpu_renderer_bloxorz"
+            || example == "gpu_profiler_board"
         {
             let game = example == "gpu_renderer_bloxorz";
+            let profiler = example == "gpu_profiler_board";
+            capture_enabled = profiler;
             let example_dir = root.join(if game {
                 "examples/gpu_renderer_bloxorz"
+            } else if profiler {
+                "examples/gpu_profiler_board"
             } else {
                 "examples/gpu_renderer"
             });
@@ -143,6 +168,8 @@ fn main() {
                     .unwrap();
             project.application = PathBuf::from(if game {
                 "examples/gpu_renderer_bloxorz/rcc/main.rs"
+            } else if profiler {
+                "examples/gpu_profiler_board/rcc/main.rs"
             } else if example == "gpu_renderer_changes" {
                 "examples/gpu_renderer/rcc/changes.rs"
             } else {
@@ -268,6 +295,7 @@ fn main() {
         &constants,
         &root.join("rcc"),
         project.renderer,
+        capture_enabled,
     );
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     let image = boot::pack_application_resources(&code, static_words, &resources)

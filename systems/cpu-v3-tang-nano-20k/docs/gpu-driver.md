@@ -184,6 +184,9 @@ Only the enclosing scheduler can establish Display/target ownership. A diagnosti
 consumer must keep the entire dependency set immutable while Prepared, and
 must separately preserve Display ownership and exclude its pause from timing.
 
+The resource scheduler's optional [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md)
+uses this boundary for a bounded read-only consumer and explicit resume.
+
 ## Color ownership and Display completion
 
 One private record holds Front, Pending, Ready, Reserved and Rendering identities.
