@@ -19,8 +19,8 @@ module gpu_v2_texture_work #(
     output wire [1:0] loaded,
     output reg fault
 );
-    reg [93:0] rows [0:PHYSICAL_ROWS-1];
-    reg [91:0] heads [0:1];
+    (* syn_ramstyle = "distributed_ram" *) reg [93:0] rows [0:PHYSICAL_ROWS-1];
+    reg [91:0] head0, head1;
     reg [1:0] cursors [0:1];
     reg [1:0] head_valid;
     reg consume_head, fill_head;
@@ -52,7 +52,7 @@ module gpu_v2_texture_work #(
 
     assign in_ready = ~reset & ~fault & (count < DEPTH);
     assign out_valid = ~reset & ~fault & head_valid[consume_head];
-    assign out_member = heads[consume_head];
+    assign out_member = consume_head ? head1 : head0;
     assign out_tap = cursors[consume_head];
     assign read_fire = fetch;
     assign write_fire = put;
@@ -89,7 +89,8 @@ module gpu_v2_texture_work #(
                     else write_ptr <= write_ptr + 1'b1;
                 end
                 if (fetch) begin
-                    heads[fill_head] <= read_data[91:0];
+                    if (fill_head) head1 <= read_data[91:0];
+                    else head0 <= read_data[91:0];
                     cursors[fill_head] <= first_tap(read_data[39:36]);
                     head_valid[fill_head] <= 1;
                     fill_head <= ~fill_head;

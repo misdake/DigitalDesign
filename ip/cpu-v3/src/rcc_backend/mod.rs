@@ -603,13 +603,27 @@ fn lower_instruction(
             let sr = match sr {
                 SpecialReg::Cseg => SpecialRegister::CodeSegment,
                 SpecialReg::Dseg => SpecialRegister::DataSegment,
+                SpecialReg::DsegPage(index) => match index {
+                    0 => SpecialRegister::DataSegment0,
+                    1 => SpecialRegister::DataSegment1,
+                    2 => SpecialRegister::DataSegment2,
+                    3 => SpecialRegister::DataSegment3,
+                    _ => unreachable!("validated DSEG page index"),
+                },
             };
             lines.word(cpu_v3::read_special(register(*dst), sr));
         }
         Instr::Bool { dst, cmp } => lower_bool(register(*dst), cmp, function, register, lines),
-        Instr::CMov { dst, cmp, src } => {
-            lower_compare(lines, cmp, register);
-            let condition = test_condition(cmp.cond);
+        Instr::CMov {
+            dst,
+            cmp,
+            src,
+            fallback,
+        } => {
+            if register(*dst) != register(*fallback) {
+                lines.word(cpu_v3::move_register(register(*dst), register(*fallback)));
+            }
+            let condition = lower_comparison(function, cmp, register, lines);
             lines.word(cpu_v3::conditional_move(
                 condition,
                 register(*dst),
@@ -673,7 +687,10 @@ fn lower_instruction(
             lines.word(cpu_v3::clean_data_line(register(*address)))
         }
         Instr::DcacheWait => lines.word(cpu_v3::wait_data_cache()),
-        Instr::MtsrDseg { src } => lines.word(cpu_v3::write_data_segment(register(*src))),
+        Instr::MtsrDseg { src, index } => lines.word(match index {
+            Some(index) => cpu_v3::write_data_segment_page(*index, register(*src)),
+            None => cpu_v3::write_data_segment(register(*src)),
+        }),
         Instr::Jseg { cseg, target } => {
             lines.word(cpu_v3::jump_segment(register(*cseg), register(*target)))
         }
@@ -871,12 +888,8 @@ fn lower_instruction(
         ),
         Instr::FpuVecUn { dst, op, src } => {
             let subop = match op {
-                FpuUnOp::Abs => FpuVectorSubop::VAbs,
-                FpuUnOp::Neg => FpuVectorSubop::VNeg,
-                FpuUnOp::Floor => FpuVectorSubop::VFloor,
-                FpuUnOp::Ceil => FpuVectorSubop::VCeil,
-                FpuUnOp::Round => FpuVectorSubop::VRound,
-                FpuUnOp::Trunc => FpuVectorSubop::VTrunc,
+                FpuVecUnOp::Abs => FpuVectorSubop::VAbs,
+                FpuVecUnOp::Neg => FpuVectorSubop::VNeg,
             };
             emit_fpu_vector(
                 lines,
@@ -1064,33 +1077,6 @@ fn test_condition(cond: CompareOp) -> TestCondition {
         CompareOp::Never | CompareOp::Always => {
             unreachable!("diamond conversion never emits degenerate conditions")
         }
-    }
-}
-
-/// Emits the CMP-class instruction feeding a conditional move (registers or
-/// immediate, signed or unsigned).
-fn lower_compare(lines: &mut Lines, cmp: &Cmp, register: &dyn Fn(VReg) -> u8) {
-    let lhs = register(cmp.lhs);
-    match &cmp.rhs {
-        CmpRhs::Reg(r) => {
-            let r = register(*r);
-            lines.word(if cmp.signed {
-                cpu_v3::compare_signed(lhs, r)
-            } else {
-                cpu_v3::compare_unsigned(lhs, r)
-            });
-        }
-        CmpRhs::Imm(value) => emit_immediate(
-            lines,
-            if cmp.signed {
-                ImmediateOp::CompareSigned
-            } else {
-                ImmediateOp::CompareUnsigned
-            },
-            lhs,
-            *value,
-            cmp.signed,
-        ),
     }
 }
 
@@ -1966,6 +1952,52 @@ fn wide_call(offset: i16) -> [Word; 2] {
 mod tests {
     use super::*;
     use rcc::frontend::parse_source_with;
+
+    #[test]
+    fn conditional_integer_values_survive_constant_propagation() {
+        let conditional = r#"
+            fn pick(x:u16)->u16 {let v:u16=if x==0{2}else{1};v+1}
+            fn main(){halt(pick(0)*10+pick(5));}
+        "#;
+        assert_eq!(run(conditional), 32);
+        let source = r#"
+            fn move_it(mut state:Array<u16>,command:u16){
+                let mut x=state[0u16];let mut z=state[1u16];let mut orient=state[2u16];
+                if orient==0 {
+                    if command==0{x+=1;orient=1;}
+                    if command==1{x-=2;orient=1;}
+                    if command==2{z+=1;orient=2;}
+                    if command==3{z-=2;orient=2;}
+                }
+                state[0u16]=x;state[1u16]=z;state[2u16]=orient;
+            }
+            fn main(){let mut s:Buf<u16,3>=Buf::new([0,1,0]);move_it(s.as_array(),2);halt(s[1u16]);}
+        "#;
+        assert_eq!(run(source), 2);
+    }
+
+    #[test]
+    fn conditional_array_selection_preserves_both_integer_arms() {
+        let source = r#"
+            static A:Buf<u16,32>=Buf::new([0;32]);static B:Buf<u16,16>=Buf::new([0;16]);
+            fn state(which:bool)->u16 {
+                let n:u16=if which{32}else{16};let index:u16=if which{3}else{4};
+                let mut data=if which{A.as_array()}else{B.as_array()};
+                data[0u16]=n;data[1u16]=index;n+index
+            }
+            fn main(){halt(state(true)*100+state(false));}
+        "#;
+        assert_eq!(run(source), 3520);
+    }
+
+    #[test]
+    fn conditional_integer_selection_preserves_fixed_point_comparison() {
+        let source = r#"
+            fn select(x:fix32)->u16 {let v=if x<fix32::from_int(1){2}else{3};v+1}
+            fn main(){halt(select(fix32::zero())*10+select(fix32::from_int(2)));}
+        "#;
+        assert_eq!(run(source), 34);
+    }
 
     /// Scalar `fix32` lowers end to end through the two-word v2 ISA:
     /// construction, arithmetic, unary operations, and numeric conversion.
@@ -2977,6 +3009,121 @@ mod tests {
         "#;
         // p = (3, 4), q = shifted(p, 1) = (4, 4), r = make(10, 20)
         assert_eq!(run_with_std_capped(source, 60_000), 3 + 4 + 4 + 4 + 10 + 20);
+    }
+
+    #[test]
+    fn fix32_struct_fields_preserve_bits_across_layout_views_and_returns() {
+        let source = r#"
+            struct Sample { head: u16, x: fix32, y: fix32, tail: u16 }
+            struct Nested { tag: u16, value: Sample, end: u16 }
+            fn check(ok: bool) { if !ok { halt(0xbad); } }
+            fn make(x: fix32) -> Sample {
+                Sample { head: 17, x, y: fix32::from_words(0xabcd, 0xffff), tail: 29 }
+            }
+            fn forwarded(x: fix32) -> Sample { make(x) }
+            fn change(mut p: Array<Sample>, i: u16, value: fix32) {
+                p[i].x = value;
+            }
+            fn main() {
+                let f = fix32::from_words(0x1234, 1);
+                let mut a = forwarded(f);
+                check(a.head == 17 && a.tail == 29);
+                check(a.x.lo_bits() == 0x1234 && a.x.hi_bits() == 1);
+                check(a.y.lo_bits() == 0xabcd && a.y.hi_bits() == 0xffff);
+                let mut n: Nested = Nested { tag: 5, value: a, end: 7 };
+                n.value.x = n.value.x + fix32::from_int(2);
+                check(n.value.x.lo_bits() == 0x1234 && n.value.x.hi_bits() == 3);
+                check(n.tag == 5 && n.end == 7);
+                let mut list: Buf<Sample, 2> = Buf::new([a, n.value]);
+                change(list.as_array(), 1, fix32::from_words(0x8001, 0xfffe));
+                check(list[0u16].x == f);
+                check(list[1u16].x.lo_bits() == 0x8001 && list[1u16].x.hi_bits() == 0xfffe);
+                check(list[1u16].head == 17 && list[1u16].tail == 29);
+                a = list[1u16];
+                check(a.x == list[1u16].x && a.y == list[0u16].y);
+                // One-word head, then two-word x/y, then one-word tail.
+                let raw = addr_of(&a);
+                unsafe {
+                    check(raw.read(0) == 17 && raw.read(1) == 0x8001 && raw.read(2) == 0xfffe);
+                    check(raw.read(3) == 0xabcd && raw.read(4) == 0xffff && raw.read(5) == 29);
+                };
+                halt(0x600d);
+            }
+        "#;
+        assert_eq!(run_with_std_capped(source, 100_000), 0x600d);
+    }
+
+    #[test]
+    fn static_fix32_fields_keep_exact_constant_constructor_bits() {
+        let source = r#"
+            struct State { head: u16, zero: fix32, negative: fix32, fraction: fix32, tail: u16 }
+            static S: State = State { head: 19, zero: fix32::zero(),
+                negative: fix32::from_int(-2), fraction: fix32::from_words(0x8123, 1), tail: 31 };
+            fn check(ok: bool) { if !ok { halt(0xbad); } }
+            fn main() {
+                check(S.head == 19 && S.tail == 31);
+                check(S.zero.lo_bits() == 0 && S.zero.hi_bits() == 0);
+                check(S.negative.lo_bits() == 0 && S.negative.hi_bits() == 0xfffe);
+                check(S.fraction.lo_bits() == 0x8123 && S.fraction.hi_bits() == 1);
+                S.fraction = S.fraction + fix32::from_words(0, 0xffff);
+                check(S.fraction.lo_bits() == 0x8123 && S.fraction.hi_bits() == 0);
+                check(S.negative.hi_bits() == 0xfffe && S.tail == 31);
+                halt(0x600d);
+            }
+        "#;
+        assert_eq!(run_with_std_capped(source, 40_000), 0x600d);
+    }
+
+    #[test]
+    fn vector_lane_struct_returns_use_batched_stores_without_changing_field_bits() {
+        for lanes in 2..=4 {
+            let fields = ["x", "y", "z", "w"];
+            let declarations = fields[..lanes]
+                .iter()
+                .map(|n| format!("{n}:fix32,"))
+                .collect::<String>();
+            let values = (0..lanes)
+                .map(|i| {
+                    format!(
+                        "fix32::from_words({}, {})",
+                        100 + i * 257,
+                        if i % 2 == 0 { 0 } else { 65535 }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let initializers = fields[..lanes]
+                .iter()
+                .map(|n| format!("{n}:v.{n}(),"))
+                .collect::<String>();
+            let checks = fields[..lanes]
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    format!(
+                        "check(s.{n}.lo_bits()=={} && s.{n}.hi_bits()=={});",
+                        100 + i * 257,
+                        if i % 2 == 0 { 0 } else { 65535 }
+                    )
+                })
+                .collect::<String>();
+            let source = format!(
+                r#"
+                struct Result {{ head:u16,{declarations}tail:u16 }}
+                fn check(ok:bool) {{ if !ok {{ halt(0xbad); }} }}
+                fn make()->Result {{ let v=vec{lanes}::new({values});
+                    Result {{ head:17,{initializers}tail:31 }} }}
+                fn main() {{ let s=make();check(s.head==17&&s.tail==31);{checks}halt(0x600d); }}
+            "#
+            );
+            let program = compile_with_std(&source);
+            assert!(
+                program.listing.contains(&format!("fstv.{lanes}")),
+                "{}",
+                program.listing
+            );
+            assert_eq!(execute_capped(program, 100_000).0, 0x600d);
+        }
     }
 
     #[test]

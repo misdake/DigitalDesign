@@ -127,7 +127,7 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
 
     // A nonzero SIGNAL retires as a NOP and records the event.
     state.instruction = cpu_v3::signal(5, 1);
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert_eq!(state.retired_words, 1);
     assert_eq!(
@@ -145,13 +145,13 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
     // A fresh nonzero SIGNAL re-arms the event; the next executed
     // instruction ends the single-cycle window.
     state.instruction = cpu_v3::signal(5, 15);
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(
         state.signal_event().map(|event| event.signal_type),
         Some(15)
     );
     state.instruction = 0x0322; // ADD r3, r2, r2 (any ordinary instruction)
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.signal_event(), None);
 
     // Type 0 halts and latches the selected register, exactly like the
@@ -159,7 +159,7 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
     let mut state = CpuV3CoreState::default();
     state.registers[7] = 0x1234;
     state.instruction = cpu_v3::signal(7, 0);
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::Halted);
     assert_eq!(state.halt_signal, 0x1234);
     assert_eq!(state.retired_words, 1);
@@ -173,7 +173,7 @@ fn emulator_async_store_overlaps_alu_and_blocks_next_memory_operation() {
     state.registers[2] = 10;
 
     state.instruction = 0x9210; // STORE r2, [r1]
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert!(state.async_store.valid);
     assert!(!state.async_store.issued);
@@ -181,14 +181,14 @@ fn emulator_async_store_overlaps_alu_and_blocks_next_memory_operation() {
     assert_eq!(state.async_store.write_data, 10);
 
     state.instruction = 0x0322; // ADD r3, r2, r2
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert!(state.async_store.valid);
     assert!(state.gpr_write_enable);
     assert_eq!(state.gpr_write_data, 20);
 
     state.instruction = 0x8010; // LOAD r0, [r1]
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::AsyncStoreWait);
     assert!(!state.pending_data.write);
     assert_eq!(state.pending_data.address, 0x0100);
@@ -200,24 +200,24 @@ fn emulator_line_copy_waits_for_prior_stores_and_cache_acceptance() {
     state.phase = Phase::Execute;
     state.registers[4] = 3;
     state.instruction = cpu_v3::write_data_segment(4);
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     state.phase = Phase::Execute;
     state.retired_words = 0;
     state.registers[1] = 0x0120;
     state.registers[2] = 5;
     state.instruction = cpu_v3::line_copy(1, 2);
 
-    state.execute(0, false, false);
+    state.execute(0, false, false, false);
     assert_eq!(state.phase, Phase::Execute);
     assert_eq!(state.retired_words, 0);
 
     state.async_store.valid = true;
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::Execute);
     assert_eq!(state.retired_words, 0);
 
     state.async_store.valid = false;
-    state.execute(0, true, false);
+    state.execute(0, true, false, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert_eq!(state.retired_words, 1);
 }
@@ -600,6 +600,14 @@ fn core_cosim_program() -> Vec<u16> {
 }
 
 fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
+    run_core_emu_trace_with_hold(program, max_cycles, |_| false)
+}
+
+fn run_core_emu_trace_with_hold(
+    program: &[u16],
+    max_cycles: usize,
+    hold: impl Fn(usize) -> bool,
+) -> Vec<CoreCosimOut> {
     let mut memory = vec![0u16; 65536];
     for (index, word) in program.iter().copied().enumerate() {
         memory[index] = word;
@@ -615,7 +623,7 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
     let mut prev_data_read: u16 = 0;
     let mut started = false;
     let mut trace = Vec::new();
-    for _ in 0..max_cycles {
+    for cycle in 0..max_cycles {
         let cin = CoreCosimIn {
             reset: false,
             instruction_request_ready: true,
@@ -626,7 +634,9 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
             data_read_data: prev_data_read,
             device_read_data: 0,
         };
-        input.drive(&mut circuit, &cin.into_value());
+        let mut cin = cin.into_value();
+        cin.hold = hold(cycle);
+        input.drive(&mut circuit, &cin);
         circuit.execute_gates();
         let value = output.sample(&circuit);
         if started || value.instruction_request_valid {
@@ -636,18 +646,20 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
                 break;
             }
         }
-        prev_instr_req = value.instruction_request_valid;
-        if value.instruction_request_valid {
-            prev_instr_word = memory[(value.instruction_address as usize) & 0xffff];
-        }
-        prev_data_req = value.data_request_valid;
-        if value.data_request_valid {
-            let address = (value.data_address as usize) & 0xffff;
-            if value.data_write {
-                memory[address] = value.data_write_data as u16;
-                prev_data_read = 0;
-            } else {
-                prev_data_read = memory[address];
+        if !cin.hold {
+            prev_instr_req = value.instruction_request_valid;
+            if value.instruction_request_valid {
+                prev_instr_word = memory[(value.instruction_address as usize) & 0xffff];
+            }
+            prev_data_req = value.data_request_valid;
+            if value.data_request_valid {
+                let address = (value.data_address as usize) & 0xffff;
+                if value.data_write {
+                    memory[address] = value.data_write_data as u16;
+                    prev_data_read = 0;
+                } else {
+                    prev_data_read = memory[address];
+                }
             }
         }
         circuit.clock_tick();
@@ -829,6 +841,9 @@ fn run_core_rtl_trace(tb: &str) -> Vec<CoreCosimOut> {
         String::from_utf8_lossy(&simulation.stderr)
     );
     let stdout = String::from_utf8_lossy(&simulation.stdout);
+    if let Some(path) = std::env::var_os("SHARED_WIDE_TRACE_FILE") {
+        std::fs::write(path, simulation.stdout.as_slice()).unwrap();
+    }
     let mut trace = Vec::new();
     for line in stdout.lines() {
         let line = line.trim();
@@ -973,6 +988,13 @@ fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
             let scaled = a * b;
             let kept = fix32::from_words(0x8000, 0x0001);
             let down = kept.trunc();
+            let negative = fix32::from_words(0x8000, 0xfffe); // -1.5
+            if kept.floor().to_int() != 1 || kept.ceil().to_int() != 2
+                || kept.round().to_int() != 2 || kept.trunc().to_int() != 1
+                || negative.floor().to_int() != -2 || negative.ceil().to_int() != -1
+                || negative.round().to_int() != -1 || negative.trunc().to_int() != -1 {
+                halt(0xdead);
+            }
             let pick = if s < down { s } else { down };
             let live = addfix(scaled, pick);
             halt((s + live + (kept - down)).to_int() as u16);
@@ -1446,4 +1468,260 @@ fn verify_fpu_dot_path_with_iverilog() {
 #[ignore = "explicit external simulation of the shared FPU v2 multiply pipe"]
 fn verify_fpu_mul_pipe_with_iverilog() {
     digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuMulPipe>().unwrap();
+}
+
+#[path = "shared_wide_study.rs"]
+mod shared_wide_study;
+
+#[test]
+#[ignore = "bounded reserved cache-control encoding emulator/RTL comparison"]
+fn core_emu_matches_rtl_reserved_cache_encodings() {
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    for word in (0..16)
+        .map(|n| 0x6e70 | n)
+        .chain((1..16).map(|n| 0x6e80 | n))
+    {
+        assert_eq!(cpu_v3::decode(word), cpu_v3::Instruction::Invalid { word });
+        let program = [word, cpu_v3::halt()];
+        let emu = run_core_emu_trace(&program, 200);
+        let rtl = run_core_rtl_trace(&build_core_cosim_tb(&program, &module_name, 200));
+        assert_eq!(emu.len(), rtl.len(), "encoding {word:04x} trace length");
+        for (e, r) in emu.iter().zip(&rtl) {
+            assert!(
+                r.equal_core(e),
+                "encoding {word:04x}: expected {e:?}, got {r:?}"
+            );
+        }
+        let end = rtl.last().unwrap();
+        assert!(end.fault && !end.halted, "encoding {word:04x} must fault");
+        assert_eq!(end.fault_code, CPU_V3_FAULT_INVALID_INSTRUCTION);
+        assert_eq!(end.fault_pc, 0);
+        assert_eq!(end.retired_words, 0);
+    }
+}
+
+#[test]
+#[ignore = "bounded FST maintenance barrier and prefix emulator/RTL comparison"]
+fn core_emu_matches_rtl_maintenance_barrier_prefix() {
+    let mut p = cpu_v3::load_immediate16(1, 0x4000).to_vec();
+    for lane in 0..4 {
+        for subop in [2, 3] {
+            p.extend(cpu_v3::fpu_aux_raw(
+                cpu_v3::FpuAuxKind::IntegerRegister,
+                0,
+                0,
+                lane,
+                subop,
+                0,
+            ));
+        }
+    }
+    p.extend(cpu_v3::fpu_aux_raw(
+        cpu_v3::FpuAuxKind::IntegerRegister,
+        1,
+        0,
+        0,
+        1,
+        3,
+    ));
+    p.push(0xf123); // Unused prefix expires while the maintenance write waits.
+    p.push(cpu_v3::device_send(0, 0, 4));
+    p.push(cpu_v3::halt());
+    let emu = run_core_emu_trace(&p, 2000);
+    let rtl = run_core_rtl_trace(&build_core_cosim_tb(
+        &p,
+        &CpuV3Core::verilog_identity().module_name(),
+        2000,
+    ));
+    assert_eq!(emu.len(), rtl.len());
+    for (e, r) in emu.iter().zip(&rtl) {
+        assert!(
+            r.equal_core(e),
+            "maintenance prefix: expected {e:?}, got {r:?}"
+        );
+    }
+    assert!(rtl.last().unwrap().halted);
+}
+
+#[test]
+#[ignore = "bounded scalar/vector FST snapshots, source reuse and capture holds"]
+fn core_emu_matches_rtl_fst_snapshot_lifetime() {
+    let values = [0x1234_5678u32, 0x8765_4321, 0x9abc_def0, 0x5a5a_a5a5];
+    for lanes in 1..=4u8 {
+        let mut p = Vec::new();
+        p.extend(cpu_v3::load_immediate16(1, 0x0100));
+        p.extend(cpu_v3::load_immediate16(2, 0x0200));
+        for (lane, value) in values.into_iter().enumerate() {
+            for (part, subop) in [(value as u16, 2), ((value >> 16) as u16, 3)] {
+                p.extend(cpu_v3::load_immediate16(0, part));
+                p.extend(cpu_v3::fpu_aux_raw(
+                    cpu_v3::FpuAuxKind::IntegerRegister,
+                    0,
+                    0,
+                    lane as u8,
+                    subop,
+                    0,
+                ));
+            }
+        }
+        let memory = |x, fa, fd, subop| {
+            cpu_v3::fpu_aux_raw(
+                cpu_v3::FpuAuxKind::IntegerRegister,
+                x,
+                fa,
+                fd,
+                subop,
+                lanes - 1,
+            )
+        };
+        p.extend(memory(1, 0, 0, 1));
+        // Reuse the original RF sources while their captured values drain.
+        p.extend(cpu_v3::fpu_vector(
+            0,
+            0,
+            0,
+            cpu_v3::FpuVectorLength::Vec4,
+            cpu_v3::FpuVectorSubop::VAdd,
+            0,
+        ));
+        p.extend(memory(1, 0, 8, 0));
+        p.extend(memory(2, 8, 0, 1));
+        p.push(cpu_v3::halt());
+        let emu = run_core_emu_trace(&p, 2000);
+        let tb = build_core_cosim_tb(&p, &CpuV3Core::verilog_identity().module_name(), 2000);
+        let rtl = run_core_rtl_trace(&tb);
+        assert_eq!(emu.len(), rtl.len());
+        for (e, r) in emu.iter().zip(&rtl) {
+            assert!(r.equal_core(e), "FST{lanes}: expected {e:?}, got {r:?}");
+        }
+        let writes = |trace: &[CoreCosimOut]| {
+            trace
+                .iter()
+                .filter(|r| r.data_request_valid && r.data_write)
+                .map(|r| (r.data_address, r.data_write_data))
+                .collect::<Vec<_>>()
+        };
+        let expected = [0x0100u32, 0x0200]
+            .into_iter()
+            .flat_map(|base| {
+                values[..usize::from(lanes)]
+                    .iter()
+                    .flat_map(|v| [*v as u16, (*v >> 16) as u16])
+                    .enumerate()
+                    .map(move |(i, v)| (base + i as u32, v))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(writes(&rtl), expected);
+        assert!(rtl.last().unwrap().halted);
+        for capture_beat in [0, lanes - 1] {
+            let monitor = format!(
+                "reg paused=0;integer pause_left=0;\n\
+                 always @(negedge clk)begin\n\
+                  if(pause_left>0)begin pause_left=pause_left-1;hold=pause_left!=0;end\n\
+                  else if(!reset&&!paused&&dut.state==13&&dut.fpu2_beat=={capture_beat})begin\n\
+                   paused=1;pause_left=3;hold=1;end else hold=0;end\n"
+            );
+            let held = run_core_rtl_trace(&tb.replacen("endmodule", &(monitor + "endmodule"), 1));
+            assert!(held.last().unwrap().halted);
+            assert_eq!(writes(&held), expected, "FST{lanes} hold at {capture_beat}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "bounded FPU word-pulse and completion ownership across core hold"]
+fn core_fpu_word_and_completion_survive_hold() {
+    let mut p = Vec::new();
+    for (lane, value) in [0x00018000u32, 0xffff4000, 0x00020000, 0x00008000]
+        .into_iter()
+        .enumerate()
+    {
+        for (half, subop) in [(value as u16, 2), ((value >> 16) as u16, 3)] {
+            p.extend(cpu_v3::load_immediate16(0, half));
+            p.extend(cpu_v3::fpu_aux_raw(
+                cpu_v3::FpuAuxKind::IntegerRegister,
+                0,
+                0,
+                lane as u8,
+                subop,
+                0,
+            ));
+        }
+    }
+    // Same-base broadcast is the source lifetime most affected by the new pipe.
+    p.extend([0xc000, 0x0218]); // VMULS4 f0, f0, f0
+    p.extend([0xd000, (8 << 10) | (12 << 4)]); // RCP f8, f0
+    p.extend([0xd000, (9 << 10) | (13 << 4)]); // RSQRT f9, f0
+    p.extend([0xd000, (10 << 10) | (14 << 4)]); // SINCOS f10/f11, f0
+    p.extend(cpu_v3::load_immediate16(1, 0x0100));
+    for fa in [0u8, 8] {
+        p.extend(cpu_v3::fpu_aux_raw(
+            cpu_v3::FpuAuxKind::IntegerRegister,
+            1,
+            fa,
+            0,
+            1,
+            3,
+        ));
+        p.extend(cpu_v3::load_immediate16(1, 0x0200));
+    }
+    p.push(cpu_v3::halt());
+    let tb = build_core_cosim_tb(&p, &CpuV3Core::verilog_identity().module_name(), 4000);
+    let reference = run_core_rtl_trace(&tb);
+    assert!(reference.last().unwrap().halted);
+    let writes = |trace: &[CoreCosimOut]| {
+        trace
+            .iter()
+            .filter(|r| r.data_request_valid && r.data_write)
+            .map(|r| (r.data_address, r.data_write_data))
+            .collect::<Vec<_>>()
+    };
+    let expected = writes(&reference);
+    for state in [9, 10, 13] {
+        let monitor = format!(
+            "reg[15:0] paused_pc=16'hffff;integer pause_left=0;\n\
+             always @(negedge clk)begin\n\
+              if(pause_left>0)begin pause_left=pause_left-1;hold=pause_left!=0;end\n\
+              else if(!reset&&dut.state=={state}&&paused_pc!=dut.instruction_pc)begin\n\
+               paused_pc=dut.instruction_pc;pause_left=6;hold=1;end else hold=0;end\n"
+        );
+        let held = run_core_rtl_trace(&tb.replacen("endmodule", &(monitor + "endmodule"), 1));
+        assert!(
+            held.last().unwrap().halted,
+            "hold in state {state} lost completion"
+        );
+        assert_eq!(
+            writes(&held),
+            expected,
+            "hold in state {state} changed FPU data"
+        );
+    }
+    for period in [17, 19] {
+        let emu =
+            run_core_emu_trace_with_hold(&p, 4000, |cycle| (5..11).contains(&(cycle % period)));
+        let anchor = "while (cycles < 4000 && !end_flag) begin\n";
+        assert!(tb.contains(anchor));
+        let mut held_tb = tb.replace(
+            anchor,
+            &format!("{anchor}#1;hold = started && hold_cycle%{period}>=5 && hold_cycle%{period}<11;#1;\n"),
+        );
+        held_tb = held_tb.replace("reg hold = 0;", "reg hold = 0; integer hold_cycle=0;");
+        held_tb = held_tb.replace(
+            "cycles = cycles + 1;\n",
+            "cycles = cycles + 1; if(started)hold_cycle=hold_cycle+1;\n",
+        );
+        held_tb = held_tb.replace(
+            "always @(posedge clk) begin\n",
+            "always @(posedge clk) if(!hold) begin\n",
+        );
+        let rtl = run_core_rtl_trace(&held_tb);
+        for (index, (e, r)) in emu.iter().zip(&rtl).enumerate() {
+            assert!(
+                r.equal_core(e),
+                "periodic hold {period} sample {index}: emu={e:?}, rtl={r:?}"
+            );
+        }
+        assert_eq!(emu.len(), rtl.len(), "periodic hold length {period}");
+        assert!(rtl.last().unwrap().halted);
+    }
 }

@@ -165,9 +165,11 @@ pub struct CacheDrain {
 
 /// Logical declaration inventory for this leaf. `bank_bits` are the explicit
 /// four synchronous 1024x16 banks (BSRAM-class in a fitted design); the two
-/// captured slots, tag, PLRU, read pipe, descriptor and control are registers.
-/// The slot parameter ROM and the mip-prefix ROM are declared separately. These
-/// are exact declared capacities, not a fitted Gowin cell result.
+/// captured slots, tag, PLRU, read pipe, descriptor and control are logical
+/// reference state. The slot and mip-prefix ROMs are declared separately.
+/// This inventory preserves independent semantic accounting; it is not the
+/// physical RTL's FF invoice. Its Gowin backend stores compressed tags in
+/// BSRAM and set state/PLRU in SRAM, and derives read tap permutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Allocation {
     pub tag_bits: usize,
@@ -331,6 +333,7 @@ struct OldState {
 }
 
 pub struct CacheEmu<M: MemoryPort> {
+    bank_order: bool,
     slots: Vec<Slot>,
     memory: M,
     lines: [Line; LINES],
@@ -359,6 +362,7 @@ impl<M: MemoryPort> CacheEmu<M> {
             slot.validate()?;
         }
         Ok(Self {
+            bank_order: false,
             slots,
             memory,
             lines: [Line {
@@ -377,6 +381,13 @@ impl<M: MemoryPort> CacheEmu<M> {
             enabled: 0,
             max_wall,
         })
+    }
+
+    /// Explicit candidate construction; only the returned lane representation changes.
+    pub fn new_bank_order(slots: Vec<Slot>, memory: M, max_wall: u64) -> Result<Self, String> {
+        let mut value = Self::new(slots, memory, max_wall)?;
+        value.bank_order = true;
+        Ok(value)
     }
 
     pub fn lookup(&self, key: TileKey) -> Option<(usize, LineState)> {
@@ -767,9 +778,20 @@ impl<M: MemoryPort> CacheEmu<M> {
                 for b in 0..BANKS {
                     ordered[usize::from(issue.tap_of_bank[b])] = texels[b];
                 }
-                self.result = Some(Output {
-                    payload: issue.payload,
-                    texels: ordered,
+                self.result = Some(if self.bank_order {
+                    let mut group = Group4::unpack72(issue.payload)?;
+                    let canonical = group.coefficients;
+                    group.coefficients =
+                        std::array::from_fn(|b| canonical[usize::from(issue.tap_of_bank[b])]);
+                    Output {
+                        payload: group.pack72()? as i128,
+                        texels,
+                    }
+                } else {
+                    Output {
+                        payload: issue.payload,
+                        texels: ordered,
+                    }
                 });
                 self.read = None;
                 self.pin = None;

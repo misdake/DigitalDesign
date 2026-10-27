@@ -91,7 +91,7 @@ fn trace(config: Config, random: bool) -> Vec<Edge> {
 #[test]
 fn published_entries_survive_independent_stalls_wrap_and_reset() {
     for entries in [1, 2, 8, 16, 32] {
-        for rows in [1, 3, 8, 16] {
+        for rows in 1..=16 {
             for read_timing in [ReadTiming::Capture, ReadTiming::Registered] {
                 trace(
                     Config {
@@ -140,6 +140,111 @@ fn continuous_rows_cross_entry_boundaries_without_bubbles() {
     // following entry to publish on its last row, without a writer restart edge.
     for pair in published[..16].windows(2) {
         assert_eq!(pair[1] - pair[0], 8);
+    }
+}
+
+#[test]
+fn row_identity_survives_ce_pause_and_reset_at_every_consumer_row() {
+    for rows in 1..=16 {
+        for phase in 0..rows {
+            for read_timing in [ReadTiming::Capture, ReadTiming::Registered] {
+                let mut q = Queue::new(Config {
+                    entries: 2,
+                    rows,
+                    width: 36,
+                    read_timing,
+                    max_wall: 2_048,
+                })
+                .unwrap();
+                // Fill and prefetch with the sink stopped; every row differs.
+                let mut sent = 0;
+                for _ in 0..2 * rows + 8 {
+                    let step = q
+                        .tick(Tick {
+                            ce: true,
+                            input: (sent < 2 * rows).then_some(0x3100 + sent as u64),
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    sent += usize::from(step.accepted);
+                }
+                assert_eq!(sent, 2 * rows);
+                let held = q.signals(true).output.unwrap();
+                for _ in 0..17 {
+                    let step = q
+                        .tick(Tick {
+                            ce: false,
+                            output_ready: true,
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    assert_eq!(step.signals.output, Some(held));
+                    assert!(!step.consumed && step.read_address.is_none());
+                }
+                let mut received = 0;
+                for _ in 0..128 {
+                    if received == phase {
+                        break;
+                    }
+                    let step = q
+                        .tick(Tick {
+                            ce: true,
+                            output_ready: true,
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    if step.consumed {
+                        let word = step.signals.output.unwrap();
+                        assert_eq!(
+                            (word.data, word.row, word.last),
+                            (0x3100 + received as u64, received, received + 1 == rows)
+                        );
+                        received += 1;
+                    }
+                }
+                assert_eq!(received, phase);
+                // Reset discards both prefetched and still-resident old words.
+                let reset = q
+                    .tick(Tick {
+                        reset: true,
+                        ce: false,
+                        output_ready: true,
+                        input: Some(0xdead),
+                    })
+                    .unwrap();
+                assert!(reset.signals.output.is_none() && !reset.accepted && !reset.consumed);
+                assert!(q.idle());
+                let mut sent = 0;
+                let mut received = 0;
+                for _ in 0..256 {
+                    let step = q
+                        .tick(Tick {
+                            ce: true,
+                            output_ready: true,
+                            input: (sent < 3 * rows).then_some(0x9200 + sent as u64),
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    sent += usize::from(step.accepted);
+                    if step.consumed {
+                        let word = step.signals.output.unwrap();
+                        assert_eq!(
+                            (word.data, word.row, word.last),
+                            (
+                                0x9200 + received as u64,
+                                received % rows,
+                                received % rows + 1 == rows
+                            )
+                        );
+                        received += 1;
+                    }
+                    if sent == 3 * rows && q.idle() {
+                        break;
+                    }
+                }
+                assert_eq!(received, 3 * rows, "reset/row watchdog");
+            }
+        }
     }
 }
 
@@ -241,11 +346,22 @@ fn bounded(mut command: std::process::Command, dir: &std::path::Path, name: &str
 fn published_spsc_iverilog_matches_every_edge() {
     for (entries, rows, width, read_timing, primitive) in [
         (1, 3, 18, ReadTiming::Capture, false),
+        (1, 3, 18, ReadTiming::Registered, false),
+        (2, 8, 36, ReadTiming::Registered, false),
         (2, 1, 64, ReadTiming::Capture, false),
         (8, 8, 36, ReadTiming::Registered, false),
         (16, 16, 32, ReadTiming::Capture, false),
         (32, 8, 32, ReadTiming::Capture, false),
+        (32, 8, 32, ReadTiming::Registered, false),
         (8, 4, 36, ReadTiming::Registered, true),
+        (32, 8, 32, ReadTiming::Registered, true),
+        (2, 8, 18, ReadTiming::Registered, true),
+        (2, 8, 36, ReadTiming::Registered, true),
+        (8, 4, 36, ReadTiming::Registered, false),
+        (1, 1, 18, ReadTiming::Registered, true),
+        (2, 3, 18, ReadTiming::Capture, false),
+        (2, 5, 36, ReadTiming::Registered, true),
+        (1, 16, 32, ReadTiming::Registered, true),
     ] {
         let config = Config {
             entries,
@@ -256,7 +372,7 @@ fn published_spsc_iverilog_matches_every_edge() {
         };
         let edges = trace(config, true);
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-            "../../target/pixel-foundation-20261007/spsc-{entries}-{rows}-{width}"
+            "../../target/pixel-foundation-20261007/spsc-{entries}-{rows}-{width}-{read_timing:?}-{primitive}"
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let source = if primitive {

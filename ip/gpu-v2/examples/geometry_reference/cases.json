@@ -1,0 +1,42 @@
+[
+  {
+    "case": "interpolator-n9t3-s201-c0-p1-cache",
+    "source": "interpolator_ii4.v",
+    "origin": "geometry-squeeze-20261014/tests/backend_final_ii4-backend_low_common5normal9cachechain-n9t3-s201-c0-p1-cache",
+    "timeout_seconds": 400,
+    "language": "2012",
+    "top_gsr": false
+  },
+  {
+    "case": "interpolator-n9t3-s200-c0-p0-cache",
+    "source": "interpolator_ii4.v",
+    "origin": "geometry-squeeze-20261014/tests/backend_final_ii4-backend_low_common5normal9cachechain-n9t3-s200-c0-p0-cache",
+    "timeout_seconds": 400,
+    "language": "2012",
+    "top_gsr": false
+  },
+  {
+    "case": "setup-tight-invalid",
+    "source": "setup_addressmin.v",
+    "origin": "triangle-setup-logic54-20261014/native-proof/addressmin/tight-invalid",
+    "timeout_seconds": 120,
+    "language": "2001",
+    "top_gsr": true
+  },
+  {
+    "case": "setup-tight-small-stalls",
+    "source": "setup_addressmin.v",
+    "origin": "triangle-setup-logic54-20261014/native-proof/addressmin/tight-small-stalls",
+    "timeout_seconds": 120,
+    "language": "2001",
+    "top_gsr": true
+  },
+  {
+    "case": "setup-tight-translation",
+    "source": "setup_addressmin.v",
+    "origin": "triangle-setup-logic54-20261014/native-proof/addressmin/tight-translation",
+    "timeout_seconds": 120,
+    "language": "2001",
+    "top_gsr": true
+  }
+]

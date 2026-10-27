@@ -10,7 +10,7 @@
 //! numerical-kernel baseline, not a complete sampler/cache or a fitted result.
 //! ROM tables lower to a literal `case`, a LUT case-ROM with one registered
 //! destination edge, not a physical BSRAM claim.
-use super::{Bit, Calendar, Op};
+use super::{Bit, Calendar, Instruction, Op};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -189,7 +189,20 @@ impl Ctx<'_> {
                     }
                 }
                 Bit::Root(root, sb) => {
-                    if age == 0 {
+                    if let Some(&(event, at)) = self
+                        .cal
+                        .combinational
+                        .get(&root)
+                        .filter(|(_, at)| *at == age)
+                    {
+                        debug_assert_eq!(at, age);
+                        part_select(
+                            &format!("r_e{event}"),
+                            sb,
+                            1,
+                            self.cal.values[root].format.bits,
+                        )
+                    } else if age == 0 {
                         if let Some(sig) = self.root_ports.get(&root) {
                             let total = self.cal.values[root].format.bits;
                             part_select(sig, sb, 1, total)
@@ -247,43 +260,143 @@ fn half_literal(n: u32) -> String {
     }
 }
 
+/// D has one axis cut at age0 and its isomorphic partner at age1. Validate
+/// every operation, format, constant bit and internal/boundary connection
+/// before reusing arithmetic; the certified one-hot phases are disjoint.
+fn shared_axes(cal: &Calendar) -> Result<BTreeMap<usize, &Instruction>, String> {
+    if !cal.inputs.iter().any(|i| i.name == "helper_uv") {
+        return Ok(BTreeMap::new());
+    }
+    if (cal.span, cal.ii, cal.period) != (3, 8, 8) {
+        return Err("shared D calendar must be span3/II8/period8".into());
+    }
+    let a: Vec<_> = cal.instructions.iter().filter(|i| i.age == 0).collect();
+    let b: Vec<_> = cal.instructions.iter().filter(|i| i.age == 1).collect();
+    if a.len() != 10 || b.len() != a.len() {
+        return Err("shared D axis instruction count".into());
+    }
+    let mut roots = BTreeMap::new();
+    for input in cal.inputs.iter().filter(|i| i.name == "helper_uv") {
+        let peer = cal
+            .inputs
+            .iter()
+            .find(|i| i.name == input.name && i.row == (input.row ^ 1))
+            .ok_or("shared D axis input pair")?;
+        roots.insert(input.value, peer.value);
+    }
+    for (first, second) in a.iter().zip(&b) {
+        roots.insert(first.output, second.output);
+    }
+    for (first, second) in a.iter().zip(&b) {
+        if first.op != second.op
+            || cal.values[first.output].format != cal.values[second.output].format
+            || first.operands.len() != second.operands.len()
+        {
+            return Err("shared D axis operation/format mismatch".into());
+        }
+        for (&x, &y) in first.operands.iter().zip(&second.operands) {
+            let x = &cal.values[x];
+            let y = &cal.values[y];
+            if x.format != y.format || x.view.len() != y.view.len() {
+                return Err("shared D operand format mismatch".into());
+            }
+            for (&x, &y) in x.view.iter().zip(&y.view) {
+                let mapped = match x {
+                    Bit::Constant(_) => x,
+                    Bit::Root(root, bit) => {
+                        Bit::Root(*roots.get(&root).ok_or("shared D unpaired root")?, bit)
+                    }
+                };
+                if mapped != y {
+                    return Err("shared D operand topology mismatch".into());
+                }
+            }
+        }
+    }
+    Ok(a.into_iter()
+        .zip(b)
+        .map(|(first, second)| (first.event, second))
+        .collect())
+}
+
 fn emit_arithmetic(ctx: &Ctx<'_>, decls: &mut String, body: &mut String) -> Result<(), String> {
+    let shared = shared_axes(ctx.cal)?;
+    let reverse: BTreeMap<_, _> = shared.iter().map(|(&a, b)| (b.event, a)).collect();
     for i in &ctx.cal.instructions {
-        let ev = i.event;
-        let out_bits = ctx.cal.values[i.output].format.bits;
-        match &i.op {
-            Op::Add | Op::Sub => {
-                let a = ctx.cal.values[i.operands[0]].format;
-                let b = ctx.cal.values[i.operands[1]].format;
-                let w = (a.bits.max(b.bits) + 1).max(out_bits);
-                let e0 = extend(&format!("op0_e{ev}"), a.bits, w, a.signed);
-                let e1 = extend(&format!("op1_e{ev}"), b.bits, w, b.signed);
-                writeln!(decls, "  wire signed [{}:0] e0_e{ev} = {e0};", w - 1).unwrap();
-                writeln!(decls, "  wire signed [{}:0] e1_e{ev} = {e1};", w - 1).unwrap();
-                let sym = if matches!(&i.op, Op::Add) { "+" } else { "-" };
-                writeln!(body, "  always @(*) r_e{ev} = e0_e{ev} {sym} e1_e{ev};").unwrap();
-            }
-            Op::Less | Op::Equal => {
-                let a = ctx.cal.values[i.operands[0]].format;
-                let b = ctx.cal.values[i.operands[1]].format;
-                let w = a.bits.max(b.bits) + 1;
-                let e0 = extend(&format!("op0_e{ev}"), a.bits, w, a.signed);
-                let e1 = extend(&format!("op1_e{ev}"), b.bits, w, b.signed);
-                writeln!(decls, "  wire signed [{}:0] e0_e{ev} = {e0};", w - 1).unwrap();
-                writeln!(decls, "  wire signed [{}:0] e1_e{ev} = {e1};", w - 1).unwrap();
-                let sym = if matches!(&i.op, Op::Less) { "<" } else { "==" };
-                writeln!(body, "  always @(*) r_e{ev} = (e0_e{ev} {sym} e1_e{ev});").unwrap();
-            }
-            Op::Select => {
+        if let Some(first) = reverse.get(&i.event) {
+            writeln!(body, "  always @(*) r_e{} = r_e{first};", i.event).unwrap();
+            continue;
+        }
+        let mut d = String::new();
+        let mut b = String::new();
+        emit_one_arithmetic(ctx, i, &mut d, &mut b)?;
+        if let Some(second) = shared.get(&i.event) {
+            for (k, &operand) in i.operands.iter().enumerate() {
+                let old = format!("op{k}_e{}", i.event);
+                let new = format!("shared_{old}");
+                let width = ctx.cal.values[operand].format.bits;
+                let range = if width == 1 {
+                    String::new()
+                } else {
+                    format!("[{}:0] ", width - 1)
+                };
                 writeln!(
-                    body,
-                    "  always @(*) r_e{ev} = op0_e{ev} ? op1_e{ev} : op2_e{ev};"
+                    decls,
+                    "  wire {range}{new} = phase[1] ? op{k}_e{} : {old};",
+                    second.event
                 )
                 .unwrap();
+                d = d.replace(&old, &new);
+                b = b.replace(&old, &new);
             }
-            Op::LeadingZeros => {
-                let n = ctx.cal.values[i.operands[0]].format.bits;
-                writeln!(
+        }
+        decls.push_str(&d);
+        body.push_str(&b);
+    }
+    Ok(())
+}
+
+fn emit_one_arithmetic(
+    ctx: &Ctx<'_>,
+    i: &Instruction,
+    decls: &mut String,
+    body: &mut String,
+) -> Result<(), String> {
+    let ev = i.event;
+    let out_bits = ctx.cal.values[i.output].format.bits;
+    match &i.op {
+        Op::Add | Op::Sub => {
+            let a = ctx.cal.values[i.operands[0]].format;
+            let b = ctx.cal.values[i.operands[1]].format;
+            let w = (a.bits.max(b.bits) + 1).max(out_bits);
+            let e0 = extend(&format!("op0_e{ev}"), a.bits, w, a.signed);
+            let e1 = extend(&format!("op1_e{ev}"), b.bits, w, b.signed);
+            writeln!(decls, "  wire signed [{}:0] e0_e{ev} = {e0};", w - 1).unwrap();
+            writeln!(decls, "  wire signed [{}:0] e1_e{ev} = {e1};", w - 1).unwrap();
+            let sym = if matches!(&i.op, Op::Add) { "+" } else { "-" };
+            writeln!(body, "  always @(*) r_e{ev} = e0_e{ev} {sym} e1_e{ev};").unwrap();
+        }
+        Op::Less | Op::Equal => {
+            let a = ctx.cal.values[i.operands[0]].format;
+            let b = ctx.cal.values[i.operands[1]].format;
+            let w = a.bits.max(b.bits) + 1;
+            let e0 = extend(&format!("op0_e{ev}"), a.bits, w, a.signed);
+            let e1 = extend(&format!("op1_e{ev}"), b.bits, w, b.signed);
+            writeln!(decls, "  wire signed [{}:0] e0_e{ev} = {e0};", w - 1).unwrap();
+            writeln!(decls, "  wire signed [{}:0] e1_e{ev} = {e1};", w - 1).unwrap();
+            let sym = if matches!(&i.op, Op::Less) { "<" } else { "==" };
+            writeln!(body, "  always @(*) r_e{ev} = (e0_e{ev} {sym} e1_e{ev});").unwrap();
+        }
+        Op::Select => {
+            writeln!(
+                body,
+                "  always @(*) r_e{ev} = op0_e{ev} ? op1_e{ev} : op2_e{ev};"
+            )
+            .unwrap();
+        }
+        Op::LeadingZeros => {
+            let n = ctx.cal.values[i.operands[0]].format.bits;
+            writeln!(
                     decls,
                     "  function [{}:0] lz_e{ev};\n    input [{}:0] a;\n    integer i;\n    begin\n      lz_e{ev} = {};\n      for (i=0;i<{};i=i+1) if (a[{} - i] && lz_e{ev} == {}) lz_e{ev} = i;\n    end\n  endfunction",
                     out_bits - 1,
@@ -294,67 +407,91 @@ fn emit_arithmetic(ctx: &Ctx<'_>, decls: &mut String, body: &mut String) -> Resu
                     n
                 )
                 .unwrap();
-                writeln!(body, "  always @(*) r_e{ev} = lz_e{ev}(op0_e{ev});").unwrap();
+            writeln!(body, "  always @(*) r_e{ev} = lz_e{ev}(op0_e{ev});").unwrap();
+        }
+        Op::Shift => {
+            let src = ctx.cal.values[i.operands[0]].format;
+            let amt = ctx.cal.values[i.operands[1]].format.bits;
+            let coordinate_amount = ctx.cal.inputs.iter().find(|v| v.name == "coordinate_shift");
+            let direct_coordinate_amount = coordinate_amount.is_some_and(|input| {
+                    ctx.cal.values[i.operands[1]]
+                        .view
+                        .iter()
+                        .enumerate()
+                        .all(|(bit, view)| {
+                            matches!(view, Bit::Root(root, b) if *root == input.value && *b == bit as u32)
+                        })
+                });
+            if direct_coordinate_amount
+                && src.bits == 20
+                && src.signed
+                && amt == 18
+                && out_bits == 20
+            {
+                // Distances >=32 already saturate this20-bit result. Keep
+                // the complete signed18 guard, but negate only five bits.
+                // This preserves every amount code, including -32 and the
+                // most-negative input, without an18-bit subtract/barrel.
+                writeln!(decls, "  wire [4:0] mag_e{ev} = 5'd0 - op1_e{ev}[4:0];").unwrap();
+                writeln!(body,
+                        "  always @(*) begin\n    if (op1_e{ev}[17]) begin\n      if ((&op1_e{ev}[17:5]) && (|op1_e{ev}[4:0]))\n        r_e{ev} = $signed(op0_e{ev}) >>> mag_e{ev};\n      else r_e{ev} = {{20{{op0_e{ev}[19]}}}};\n    end else begin\n      if (|op1_e{ev}[17:5]) r_e{ev} = 20'd0;\n      else r_e{ev} = op0_e{ev} << op1_e{ev}[4:0];\n    end\n  end").unwrap();
+                return Ok(());
             }
-            Op::Shift => {
-                let src = ctx.cal.values[i.operands[0]].format;
-                let amt = ctx.cal.values[i.operands[1]].format.bits;
-                writeln!(
-                    decls,
-                    "  wire [{}:0] mag_e{ev} = {{ {}'d0 }} - op1_e{ev};",
-                    amt - 1,
-                    amt
-                )
-                .unwrap();
-                let right = if src.signed {
-                    format!("$signed(op0_e{ev}) >>> mag_e{ev}")
-                } else {
-                    format!("op0_e{ev} >> mag_e{ev}")
-                };
-                writeln!(
+            writeln!(
+                decls,
+                "  wire [{}:0] mag_e{ev} = {{ {}'d0 }} - op1_e{ev};",
+                amt - 1,
+                amt
+            )
+            .unwrap();
+            let right = if src.signed {
+                format!("$signed(op0_e{ev}) >>> mag_e{ev}")
+            } else {
+                format!("op0_e{ev} >> mag_e{ev}")
+            };
+            writeln!(
                     body,
                     "  always @(*) begin\n    if (op1_e{ev}[{}]) r_e{ev} = {right};\n    else r_e{ev} = op0_e{ev} << op1_e{ev};\n  end",
                     amt - 1
                 )
                 .unwrap();
-            }
-            Op::Round(n) => {
-                let n = *n;
-                let bits = ctx.cal.values[i.operands[0]].format.bits;
-                let w = bits.max(n + 1);
-                let e = extend(
-                    &format!("op0_e{ev}"),
-                    bits,
-                    w,
-                    ctx.cal.values[i.operands[0]].format.signed,
-                );
-                let half = half_literal(n);
-                writeln!(decls, "  wire [{}:0] rx_e{ev} = {e};", w - 1).unwrap();
-                writeln!(
+        }
+        Op::Round(n) => {
+            let n = *n;
+            let bits = ctx.cal.values[i.operands[0]].format.bits;
+            let w = bits.max(n + 1);
+            let e = extend(
+                &format!("op0_e{ev}"),
+                bits,
+                w,
+                ctx.cal.values[i.operands[0]].format.signed,
+            );
+            let half = half_literal(n);
+            writeln!(decls, "  wire [{}:0] rx_e{ev} = {e};", w - 1).unwrap();
+            writeln!(
                     body,
                     "  always @(*) r_e{ev} = (rx_e{ev}[{}:0] > {half}) || (rx_e{ev}[{}:0] == {half} && rx_e{ev}[{n}]);",
                     n - 1,
                     n - 1
                 )
                 .unwrap();
+        }
+        Op::Rom(which) => {
+            let table = ctx
+                .cal
+                .roms
+                .get(*which)
+                .ok_or_else(|| "ROM descriptor missing".to_string())?;
+            let mut s = format!("  always @(*) begin\n    case (op0_e{ev})\n");
+            for (idx, code) in table.iter().enumerate() {
+                writeln!(s, "      {idx}: r_e{ev} = {out_bits}'d{code};").unwrap();
             }
-            Op::Rom(which) => {
-                let table = ctx
-                    .cal
-                    .roms
-                    .get(*which)
-                    .ok_or_else(|| "ROM descriptor missing".to_string())?;
-                let mut s = format!("  always @(*) begin\n    case (op0_e{ev})\n");
-                for (idx, code) in table.iter().enumerate() {
-                    writeln!(s, "      {idx}: r_e{ev} = {out_bits}'d{code};").unwrap();
-                }
-                writeln!(
-                    s,
-                    "      default: r_e{ev} = {out_bits}'d0;\n    endcase\n  end"
-                )
-                .unwrap();
-                body.push_str(&s);
-            }
+            writeln!(
+                s,
+                "      default: r_e{ev} = {out_bits}'d0;\n    endcase\n  end"
+            )
+            .unwrap();
+            body.push_str(&s);
         }
     }
     Ok(())
@@ -552,7 +689,8 @@ fn emit_checked(cal: &Calendar, name: &str, debug_bank: bool) -> Result<String, 
     writeln!(s, "  assign out_valid = valid[{}];", cal.span).unwrap();
     writeln!(
         s,
-        "  initial begin\n    bank = 0;\n    phase = 1;\n    valid = 0;\n  end"
+        "  initial begin\n    bank = 0;\n    phase = {};\n    valid = 0;\n  end",
+        1_u32 << cal.initial_phase
     )
     .unwrap();
 
@@ -576,7 +714,7 @@ fn emit_checked(cal: &Calendar, name: &str, debug_bank: bool) -> Result<String, 
     s.push_str(&body);
 
     // Clocked bank writes, destination cohorts selected by the one-hot phase.
-    s.push_str("  always @(posedge clk) begin\n    if (reset) begin\n      bank <= 0;\n      phase <= 1;\n      valid <= 0;\n    end else if (ce) begin\n");
+    writeln!(s, "  always @(posedge clk) begin\n    if (reset) begin\n      bank <= 0;\n      phase <= {};\n      valid <= 0;\n    end else if (ce) begin", 1_u32 << cal.initial_phase).unwrap();
     if iterations == 1 {
         emit_writes(&ctx, &mut s, None)?;
     } else {
@@ -691,7 +829,34 @@ fn emit_writes(ctx: &Ctx<'_>, s: &mut String, phase: Option<u32>) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::half_literal;
+    use super::*;
+
+    #[test]
+    fn shared_axes_reject_wrong_constant_root_format_and_phase() {
+        let (cal, _, _) =
+            crate::texture::sim::staged::bound::serial::structural_calendars().unwrap();
+        assert_eq!(shared_axes(&cal).unwrap().len(), 10);
+        let second = cal.instructions.iter().find(|i| i.age == 1).unwrap();
+        let operand = second.operands[0];
+        let mut wrong = cal.clone();
+        wrong.values[operand].view[0] = Bit::Constant(true);
+        assert!(shared_axes(&wrong).unwrap_err().contains("topology"));
+        let mut wrong = cal.clone();
+        let other_root = cal.inputs.iter().find(|i| i.name == "bias").unwrap().value;
+        wrong.values[operand].view[0] = Bit::Root(other_root, 0);
+        assert!(shared_axes(&wrong).unwrap_err().contains("topology"));
+        let mut wrong = cal.clone();
+        wrong.values[operand].format.signed = !wrong.values[operand].format.signed;
+        assert!(shared_axes(&wrong).unwrap_err().contains("format"));
+        let mut wrong = cal.clone();
+        wrong
+            .instructions
+            .iter_mut()
+            .find(|i| i.age == 1)
+            .unwrap()
+            .age = 0;
+        assert!(shared_axes(&wrong).unwrap_err().contains("count"));
+    }
 
     /// The RNE half for `RoundIncrement(n)` is `1 << (n - 1)`: a one followed by
     /// `n - 1` zero bits. The previous zero-padding-then-one encoding lowered the

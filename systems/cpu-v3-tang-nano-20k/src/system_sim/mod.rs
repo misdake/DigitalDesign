@@ -41,7 +41,23 @@ impl Default for CpuV3SystemSim {
 
 impl CpuV3SystemSim {
     pub fn new(vblank_mode: VBlankMode) -> Self {
-        let mut cpu = CpuV3Sim::default();
+        Self::with_cpu(CpuV3Sim::default(), vblank_mode)
+    }
+
+    /// Functional cold boot of the same fixed CSEG7 image as the FPGA loader.
+    /// `memory_seed` makes the static-zero responsibility explicit in tests.
+    pub fn from_single_flash(
+        package: &[u8],
+        memory_seed: u16,
+        vblank_mode: VBlankMode,
+    ) -> Result<Self, crate::boot::SingleBootError> {
+        let mut cpu = CpuV3Sim::with_initial_code_segment(1 << 22, 7);
+        cpu.physical_memory_mut().fill(memory_seed);
+        crate::boot::install_single_application(package, cpu.physical_memory_mut())?;
+        Ok(Self::with_cpu(cpu, vblank_mode))
+    }
+
+    fn with_cpu(mut cpu: CpuV3Sim, vblank_mode: VBlankMode) -> Self {
         cpu.attach_device(SYSTEM_CONTROL_DEVICE, Box::<SystemControlDevice>::default());
         cpu.attach_device(
             DISPLAY_DEVICE,
@@ -116,7 +132,11 @@ impl CpuV3SystemSim {
     }
 
     pub fn render_active_framebuffer(&self) -> Vec<u32> {
-        render_framebuffer_at(&self.cpu, self.display().active_base())
+        if self.display().front_valid() {
+            render_framebuffer_at(&self.cpu, self.display().active_base())
+        } else {
+            vec![0; FRAMEBUFFER_WIDTH as usize * FRAMEBUFFER_HEIGHT as usize]
+        }
     }
 
     pub const fn framebuffer_dimensions() -> (usize, usize) {
@@ -218,19 +238,22 @@ mod tests {
     #[test]
     fn system_control_and_framebuffer_render_are_functional() {
         let mut sim = CpuV3SystemSim::default();
-        sim.cpu_mut()
-            .load_program(
-                0,
-                &[
-                    device_receive(1, SYSTEM_CONTROL_DEVICE, CACHE_MAINTENANCE_STATUS),
-                    halt(),
-                ],
-            )
-            .unwrap();
-        assert!(matches!(
-            sim.run(2),
-            Ok(RunOutcome::Halted { steps: 2, .. })
-        ));
+        let mut program = vec![device_receive(
+            1,
+            SYSTEM_CONTROL_DEVICE,
+            CACHE_MAINTENANCE_STATUS,
+        )];
+        program.extend(crate::load_immediate16(2, 0));
+        program.extend(crate::load_immediate16(3, 0x20));
+        program.extend(crate::load_immediate16(4, 1));
+        program.extend([
+            device_send(2, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_LOW),
+            device_send(3, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH),
+            device_send(4, DISPLAY_DEVICE, DISPLAY_CONTROL),
+            halt(),
+        ]);
+        sim.cpu_mut().load_program(0, &program).unwrap();
+        assert!(matches!(sim.run(16), Ok(RunOutcome::Halted { .. })));
         assert_eq!(
             sim.cpu().register(1),
             Some(CACHE_MAINTENANCE_STATUS_SUCCESS)
@@ -239,6 +262,8 @@ mod tests {
         let base = PhysicalWordAddress::new(FRAMEBUFFER_A_BASE_WORD);
         sim.cpu_mut().physical_memory_mut()[base.get() as usize] = 0xf800;
         sim.cpu_mut().physical_memory_mut()[base.get() as usize + 1] = 0x07e0;
+        assert!(sim.render_active_framebuffer().iter().all(|p| *p == 0));
+        assert!(sim.advance_vblank());
         let pixels = sim.render_active_framebuffer();
         assert_eq!(
             pixels.len(),

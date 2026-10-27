@@ -58,9 +58,11 @@ wire busy;
 wire [3:0] sf_r_wait;
 wire [3:0] sf_w_wait;
 wire [3:0] sf_x_wait;
+integer published_writes = 0;
+always @(posedge clk) if (sf_write_enable) published_writes = published_writes + 1;
 
 // Read address seen by the RF: the parked operand address before T0, the
-// path's LUT address during T1 (the path asserts busy for T0..T3). Readback
+// path's LUT address during T1 (RCP/RSQRT owns T0..T4). Readback
 // for TB inspection uses the same port while idle.
 reg [8:0] parked_a = 9'd0;
 reg rb_sel = 0;
@@ -526,7 +528,7 @@ task set_operand;
     end
 endtask
 
-// Issues one special instruction and checks the T0..T3 window and the written
+// Issues one RCP/RSQRT and checks the T0..T4 window and the written
 // word against `expected`.
 task run_special;
     input [5:0] fd;
@@ -549,8 +551,8 @@ task run_special;
         word1_raw = {fd, subop, 4'h0};
         #1;
         check_value({31'b0, busy}, 32'h1, "T0 busy");
-        check_value({31'b0, sf_w_wait}, 32'h4, "T0 w_wait");
-        check_value({31'b0, sf_x_wait}, 32'h4, "T0 x_wait");
+        check_value({31'b0, sf_w_wait}, 32'h5, "T0 w_wait");
+        check_value({31'b0, sf_x_wait}, 32'h5, "T0 x_wait");
         check_value({31'b0, sf_r_wait}, 32'h0, "T0 r_wait");
         check_value({31'b0, sf_write_enable}, 32'h0, "T0 write idle");
 
@@ -560,9 +562,9 @@ task run_special;
         #1;
         t = 1;
         while (busy) begin
-            if (t == 3) begin
-                check_value({31'b0, sf_write_enable}, 32'h1, "T3 write enable");
-                check_value({23'b0, sf_write_address}, fd, "T3 write address");
+            if (t == 4) begin
+                check_value({31'b0, sf_write_enable}, 32'h1, "T4 write enable");
+                check_value({23'b0, sf_write_address}, fd, "T4 write address");
                 check_value(sf_write_data, expected, label);
             end else begin
                 check_value({31'b0, sf_write_enable}, 32'h0, "write idle");
@@ -572,7 +574,7 @@ task run_special;
             @(negedge clk);
             #1;
         end
-        check_value(busy_count, 4, "busy window length");
+        check_value(busy_count, 5, "busy window length");
         check_value({31'b0, busy}, 32'h0, "busy clear");
         check_value({31'b0, sf_write_enable}, 32'h0, "write clear");
         @(negedge clk);
@@ -597,6 +599,7 @@ endtask
 
 // Issues one SINCOS mode and checks its busy window and architectural writes.
 // mode 00 writes sin/cos in T6/T7; 01 and 10 write only sin or cos in T6.
+// Only legal ISA modes 00/01/10 are issued; the core rejects reserved 11.
 task run_sincos_mode;
     input [5:0] fd;
     input [31:0] a;
@@ -635,6 +638,15 @@ task run_sincos_mode;
         #1;
         t = 1;
         while (busy) begin
+            // Assert the new physical calendar independently of DUT stage.
+            check_value({31'b0,sf_write_enable},
+                (t==6 || (mode==0 && t==7)), "sincos exact RF write edge");
+            check_value({31'b0,sf_mul_in_valid},
+                (t==4 || (mode==0 && t==5)), "sincos exact DSP issue edge");
+            if(t==3 || (mode==0 && t==4))
+                check_value({31'b0,sf_read_a_address[8]},1,"sincos synchronous LUT edge");
+            else
+                check_value({23'b0,sf_read_a_address},0,"sincos no early or extra LUT edge");
             if (sf_write_enable) begin
                 writes = writes + 1;
                 if (writes == 1) begin
@@ -691,8 +703,11 @@ endtask
 task run_sincos_abort;
     input [5:0] fd;
     input [31:0] a;
+    input integer abort_age;
+    integer initial_writes;
     begin
         set_operand(a);
+        initial_writes = published_writes;
         parked_a = 9'd0;
         @(negedge clk);
         #1;
@@ -701,19 +716,21 @@ task run_sincos_abort;
         word1_raw = {fd, SINCOS_SUBOP, 4'h0};
         #1;
         check_value({31'b0, busy}, 32'h1, "abort T0 busy");
-        @(negedge clk);
-        instr_complete = 1'b0;
-        #1;
-        @(negedge clk);
-        #1;
-        @(negedge clk);
-        #1;
+        if (abort_age > 0) begin
+            @(negedge clk);
+            instr_complete = 1'b0;
+            #1;
+            repeat (abort_age-1) @(negedge clk);
+        end
         abort = 1'b1;
+        instr_complete = 1'b0;
         #1;
         check_value({31'b0, busy}, 32'h0, "abort clears busy");
         check_value({31'b0, sf_write_enable}, 32'h0, "abort gates write");
         @(posedge clk);
         #1;
+        check_value(published_writes - initial_writes,
+            (abort_age > 6) + (abort_age > 7), "abort keeps only already published results");
         abort = 1'b0;
         @(negedge clk);
         #1;
@@ -721,6 +738,45 @@ task run_sincos_abort;
         @(negedge clk);
         // The next SINCOS must compute normally from a clean context.
         run_sincos(fd, a);
+    end
+endtask
+
+// Launch the next range at the first negedge after the prior RF completion.
+// Explicit ages validate completion; no old/new busy equality is discarded.
+task run_sincos_adjacent;
+    input [31:0] a;
+    input [1:0] mode;
+    integer transaction, age, last_write;
+    reg [5:0] destination;
+    begin
+        set_operand(a);
+        parked_a=0;
+        @(negedge clk);
+        last_write=mode==0 ? 7 : 6;
+        for(transaction=0;transaction<2;transaction=transaction+1) begin
+            destination=8+transaction*2;
+            instr_complete=1;
+            instr_opcode=4'hd;
+            word1_raw={destination,SINCOS_SUBOP,2'b00,mode};
+            #1;
+            check_value({31'b0,busy},1,"adjacent load busy");
+            @(negedge clk);instr_complete=0;#1;
+            for(age=1;age<=last_write+1;age=age+1) begin
+                check_value({31'b0,busy},age<=last_write,"adjacent exact busy boundary");
+                check_value({31'b0,sf_write_enable},
+                    age==6 || (mode==0 && age==7),"adjacent exact write boundary");
+                if(age==6) begin
+                    check_value({23'b0,sf_write_address},destination,"adjacent first address");
+                    check_value(sf_write_data,mode==2 ? sincos_cos_ref(a) : sincos_sin_ref(a),"adjacent first value");
+                end
+                if(mode==0 && age==7) begin
+                    check_value({23'b0,sf_write_address},destination+1,"adjacent second address");
+                    check_value(sf_write_data,sincos_cos_ref(a),"adjacent second value");
+                end
+                if(age<last_write+1) begin @(negedge clk);#1;end
+            end
+        end
+        @(negedge clk);
     end
 endtask
 
@@ -750,6 +806,20 @@ initial begin
     run_rsqrt(6'd7, 32'h00090000); //  9.0
     run_rsqrt(6'd8, 32'h00080000); //  8.0
     run_rsqrt(6'd9, 32'h00020000); //  2.0
+
+    // Every nonzero CLZ/exponent boundary and its immediate neighbours. Random
+    // full-width words rarely reach the tiny-input left-scaling/saturation end.
+    // The references retain independent direction/distance arithmetic.
+    for (i = 0; i < 31; i = i + 1) begin
+        rnd_x = 32'h00000001 << i;
+        run_rcp(6'd10, rnd_x);
+        run_rcp(6'd10, rnd_x - 32'd1);
+        run_rcp(6'd10, rnd_x + 32'd1);
+        run_rcp(6'd10, ~rnd_x + 32'd1);
+        run_rsqrt(6'd11, rnd_x);
+        run_rsqrt(6'd11, rnd_x - 32'd1);
+        run_rsqrt(6'd11, rnd_x + 32'd1);
+    end
 
     for (i = 0; i < 2500; i = i + 1) begin
         rnd = $random(seed);
@@ -795,10 +865,16 @@ initial begin
     run_sincos_mode(6'd63, 32'h00010000, 2'b10);
     run_sincos_mode(6'd44, 32'h0006487F, 2'b01);
     run_sincos_mode(6'd45, 32'h0006487F, 2'b10);
+    run_sincos_adjacent(32'h00010000,2'b00);
+    run_sincos_adjacent(32'hfff9b781,2'b01);
+    run_sincos_adjacent(32'h00019220,2'b10);
 
-    // Abort cancels the context with no write, and the next SINCOS is clean.
-    run_sincos_abort(6'd40, 32'h00010000);
-    run_sincos_abort(6'd42, 32'hFFF9B781);
+    // Abort includes both final write edges and the interval between them;
+    // published results remain, later writes cancel, and the next pair is clean.
+    for (i=0;i<=8;i=i+1) begin
+        run_sincos_abort(6'd40, 32'h00010000, i);
+        run_sincos_abort(6'd42, 32'hFFF9B781, i);
+    end
 
     // Fine sweep around each quadrant boundary, where sin/cos cross zero and
     // the interpolation kink meets the range-reduction error.

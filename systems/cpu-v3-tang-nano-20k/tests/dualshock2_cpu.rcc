@@ -1,0 +1,65 @@
+mod device_abi;
+mod time;
+mod dualshock2;
+fn check(ok: bool, code: u16) { if !ok { halt(code); } }
+fn settle(mode: u16) {
+    let start = dev_recv(7, 3);
+    dev_send(7, 0, mode);
+    let mut attempts: u16 = 0;
+    while dev_recv(7, 3) - start < 2 {
+        time_clear_microseconds();
+        attempts += 1;
+        check(attempts < 8000, 0xb060);
+    }
+}
+fn sample(s: Array<u16>, rx: Array<u16>) {
+    let mut attempts: u16 = 0;
+    while !ds2_service(s, rx) {
+        attempts += 1;
+        check(attempts < 2000, 0xb061);
+    }
+}
+fn main() {
+    let mut s: Buf<u16,10> = Buf::new([0;10]);
+    let mut rx: Buf<u16,9> = Buf::new([0;9]);
+    ds2_init(s.as_array());
+    // Hardware configures and receives even though CPU does not service input.
+    let mut attempts: u16 = 0;
+    while dev_recv(7,3) < 6 { attempts += 1; check(attempts < 16000,0xb062); }
+    sample(s.as_array(),rx.as_array());
+    check(s[0u16]==1 && s[1u16]==115 && s[2u16]==0x1234,0xb001);
+    check(s[3u16]==0 && s[4u16]==255 && s[5u16]==127 && s[6u16]==128,0xb002);
+    check(s[8u16]==0 && s[9u16]==0,0xb003);
+    settle(1);sample(s.as_array(),rx.as_array());
+    check(s[1u16]==121 && rx[8u16]==128,0xb004);
+    let mut i: u16 = 0;
+    while i<4 {
+        dev_send(7,1,i);settle(1);sample(s.as_array(),rx.as_array());
+        let mut a: u16=0;
+        if i==1 {a=127;} if i==2 {a=128;} if i==3 {a=255;}
+        check(s[3u16]==a && s[4u16]==255-a && s[5u16]==(a^128) && s[6u16]==(a^127),0xb005);
+        i+=1;
+    }
+    // Bad header, unknown ID and unplug are rejected, followed by recovery.
+    i=2;
+    while i<=5 {
+        settle(i);check(!ds2_service(s.as_array(),rx.as_array()),0xb010+i);
+        check(s[0u16]==0 && s[2u16]==0 && s[3u16]==128 && s[8u16]==0,0xb020+i);
+        settle(0);sample(s.as_array(),rx.as_array());check(s[8u16]==0,0xb030+i);
+        i+=1;
+    }
+    dev_send(7,2,0x1235);settle(0);sample(s.as_array(),rx.as_array());
+    check(s[8u16]==1 && s[9u16]==0,0xb040);
+    dev_send(7,2,0x1234);settle(0);sample(s.as_array(),rx.as_array());
+    check(s[8u16]==0 && s[9u16]==1,0xb041);
+    // Retire/cache pauses do not stop serial reception or destroy latest input.
+    settle(6);sample(s.as_array(),rx.as_array());check(s[0u16]==1,0xb042);
+    // A digital-only controller is still useful: buttons valid, axes centered.
+    settle(8);sample(s.as_array(),rx.as_array());
+    check(s[1u16]==65 && s[3u16]==128 && s[6u16]==128,0xb043);
+    check(ds2_axis(0,16)==-128 && ds2_axis(255,16)==127,0xb044);
+    check(ds2_axis(112,16)==0 && ds2_axis(144,16)==0,0xb045);
+    settle(11);let start=dev_recv(7,3);while dev_recv(7,3)-start<4 {}
+    sample(s.as_array(),rx.as_array());check(s[1u16]==115,0xb046);
+    halt(0x600d);
+}

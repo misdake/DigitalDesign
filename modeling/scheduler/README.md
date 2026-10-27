@@ -59,9 +59,9 @@ Finite search independently checks every assignment, including candidates that
 miss the deadline. Width/capacity, fusion and bank legality belong to audited/IP
 certificates; the scheduler itself only sees scalar resource reservations.
 
-Public API regressions are currently hosted in `ip/gpu-v2/tests/scheduler.rs`
+Public API regressions are currently hosted in `ip/gpu-v2/tests/host/scheduler.rs`
 so this milestone's test command stays `cargo test -p gpu-v2`. The lighting
 adapter and reproducible experiment are described in
-[lighting](../../ip/gpu-v2/docs/lighting.md). The example `compare` is an
+[lighting](../../ip/gpu-v2/docs/fragment-math.md#lighting-factors). The example `compare` is an
 optional generic driver, and `scheduler_upgrade_probe` in `ip/gpu-v2` is the
 upgrade-specific probe; neither is the GPU acceptance command.

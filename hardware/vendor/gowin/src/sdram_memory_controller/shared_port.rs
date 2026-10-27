@@ -116,14 +116,27 @@ mod tests {
     #[test]
     #[ignore = "explicit CL2 pin-model validation of the related-clock native bridge"]
     fn native_bridge_bank_striping_runs_in_iverilog() {
+        run_native_bridge(false);
+    }
+
+    #[test]
+    #[ignore = "cold-only transport declared state, native initialization, four banks, masks and physical pin timings"]
+    fn cold_native_bridge_runs_in_iverilog() {
+        run_native_bridge(true);
+    }
+
+    fn run_native_bridge(cold_only: bool) {
         let vendor = Path::new(env!("CARGO_MANIFEST_DIR"));
         let display = vendor.join("src/sdram_memory_controller/rtl");
         let controller = display.clone();
-        let executable =
-            std::env::temp_dir().join(format!("cpu-v3-native-sdram-{}.vvp", std::process::id()));
+        let executable = std::env::temp_dir().join(format!(
+            "cpu-v3-native-sdram-{}-{cold_only}.vvp",
+            std::process::id()
+        ));
         let iverilog = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
         let vvp = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
         let compile = Command::new(iverilog)
+            .arg(format!("-Ptb.COLD_START_ONLY={}", u8::from(cold_only)))
             .args(["-g2012", "-s", "tb", "-o"])
             .arg(&executable)
             .arg(controller.join("sdram_controller.v"))
@@ -143,6 +156,46 @@ mod tests {
         assert!(
             run.status.success() && stdout.contains("PASS native 64/32 bridge"),
             "Icarus run: {stdout} {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    /// Distinct consecutive pairs expose a delayed-valid/live-data mismatch.
+    /// Adapter LAST holds across done and backpressure, including done-late.
+    #[test]
+    #[ignore = "explicit bounded pre-edge pair/adapter capture regression"]
+    fn native_pair_capture_preserves_old_q_and_terminal_ownership() {
+        let vendor = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let rtl = vendor.join("src/sdram_memory_controller/rtl");
+        let executable = std::env::temp_dir().join(format!(
+            "cpu-v3-native-pair-capture-{}.vvp",
+            std::process::id()
+        ));
+        let compile =
+            Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()))
+                .args(["-g2012", "-s", "tb", "-o"])
+                .arg(&executable)
+                .arg(rtl.join("sdram_controller.v"))
+                .arg(rtl.join("native_bridge_108m_54m.v"))
+                .arg(rtl.join("display_sdram.v"))
+                .arg(rtl.join("native_pair_capture_tb.v"))
+                .output()
+                .unwrap();
+        assert!(
+            compile.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+            .arg(&executable)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&executable);
+        assert!(
+            run.status.success()
+                && String::from_utf8_lossy(&run.stdout).contains("PASS old-Q phase probe"),
+            "{} {}",
+            String::from_utf8_lossy(&run.stdout),
             String::from_utf8_lossy(&run.stderr)
         );
     }

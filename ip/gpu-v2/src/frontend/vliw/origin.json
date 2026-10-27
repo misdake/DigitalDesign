@@ -1,0 +1,86 @@
+{
+  "origin_commit": "72488fde0f6e529b65a69c45868b2804462e9b25",
+  "scope": "初次采用V/T/R/I时的历史来源身份；独立旧transport/top/pipeline不纳入。以下哈希保留初次采用记录，不表示当前全部源码仍逐字节相同；当前N12/T16布局见examples/vliw_integration/layout-evidence.json，Vertex乘加、位置和控制ROM保持。",
+  "files": {
+    "vliw/prepare.v": {
+      "original_sha256": "a13d9e8ea895196bbb1860c68fe095f07b9d432a4a94d681d6fcad5da5a517f3",
+      "adopted_sha256": "a13d9e8ea895196bbb1860c68fe095f07b9d432a4a94d681d6fcad5da5a517f3"
+    },
+    "vliw/primitives/dsp.v": {
+      "original_sha256": "8169658113e9450fa3292c1cab8d467b5711cbfeed893d1e0b68a42a878f4969",
+      "adopted_sha256": "8169658113e9450fa3292c1cab8d467b5711cbfeed893d1e0b68a42a878f4969"
+    },
+    "vliw/primitives/ram.v": {
+      "original_sha256": "c7e04efedccc44833b927ed9858131b0949683660a0e8ced0b3b94137e8237eb",
+      "adopted_sha256": "c7e04efedccc44833b927ed9858131b0949683660a0e8ced0b3b94137e8237eb"
+    },
+    "vliw/primitives/window.v": {
+      "original_sha256": "a9e7de48c1ea6599f71dfcad1a4c03b1021116e9fcf55031d931231953a1c873",
+      "adopted_sha256": "a9e7de48c1ea6599f71dfcad1a4c03b1021116e9fcf55031d931231953a1c873"
+    },
+    "vliw/vertex/control_fields.vh": {
+      "original_sha256": "6aa32e93f11b36e79a45103657755fede8c980db93f98a9ff594726968a8f1d2",
+      "adopted_sha256": "6aa32e93f11b36e79a45103657755fede8c980db93f98a9ff594726968a8f1d2"
+    },
+    "vliw/vertex/control_rom.v": {
+      "original_sha256": "50ea390dfbee32dcb12c18cc8db67ae17fbbbbda093ae9bbabdf92e61b9f8cbf",
+      "adopted_sha256": "50ea390dfbee32dcb12c18cc8db67ae17fbbbbda093ae9bbabdf92e61b9f8cbf"
+    },
+    "vliw/vertex/mac.v": {
+      "original_sha256": "30efa61831c030194589a4275804e9511abf1ebb4fb7bdb08a8182d1954796b2",
+      "adopted_sha256": "30efa61831c030194589a4275804e9511abf1ebb4fb7bdb08a8182d1954796b2"
+    },
+    "vliw/vertex/rf.v": {
+      "original_sha256": "f27be4e65cfbf4839f734391aae0fa7ad51d6b66de821765787bec21a54c6cd1",
+      "adopted_sha256": "f27be4e65cfbf4839f734391aae0fa7ad51d6b66de821765787bec21a54c6cd1"
+    },
+    "vliw/vertex/storage.v": {
+      "original_sha256": "b89f75df55d0ccc32a7fcbef204eb05e2d43a6040be296153fa06c5e4cace2d9",
+      "adopted_sha256": "b89f75df55d0ccc32a7fcbef204eb05e2d43a6040be296153fa06c5e4cace2d9"
+    },
+    "vliw/raster_storage.v": {
+      "original_sha256": "8db784a79ef9d983bf54856b7e7889596d0c8f51541e62ab680af0cbf1036110",
+      "adopted_sha256": "8db784a79ef9d983bf54856b7e7889596d0c8f51541e62ab680af0cbf1036110"
+    },
+    "vliw/frontend.v": {
+      "original_sha256": "c22702e06492c9125128e4615d4914f766a91c737c5f7833716cf140d5713b22",
+      "adopted_sha256": "e8e14161d7d582648eb2521c6fc779b59dea8049606e7ab0eff30798aca14662"
+    },
+    "vliw/meshlet.v": {
+      "original_sha256": "cc46bc679204c5e16219269282fb98a9aa5ee8e2de6fc26457efc4089fee63b4",
+      "adopted_sha256": "cc46bc679204c5e16219269282fb98a9aa5ee8e2de6fc26457efc4089fee63b4"
+    },
+    "vliw/raster.v": {
+      "original_sha256": "f78f2ca7491f0714dec323287b2f2c0b8ca16db384a3d6cb22633ef482eeca1a",
+      "adopted_sha256": "f78f2ca7491f0714dec323287b2f2c0b8ca16db384a3d6cb22633ef482eeca1a"
+    },
+    "vliw/compute.v": {
+      "original_sha256": "5074080bbb5fa22573c9e455fdd90e19bfbecd2053f1f8ccf7554d278089c376",
+      "adopted_sha256": "5074080bbb5fa22573c9e455fdd90e19bfbecd2053f1f8ccf7554d278089c376"
+    },
+    "vliw/lod.v": {
+      "original_sha256": "a6caed33cd7c87f656f089dd2bf8cb04e6c0cdb35f83fe034813733afe80adf7",
+      "adopted_sha256": "a6caed33cd7c87f656f089dd2bf8cb04e6c0cdb35f83fe034813733afe80adf7"
+    },
+    "vliw/raster_program.v": {
+      "original_sha256": "394024f82dfa87dadc1c74dea6521cb44af1c8017fb291c8c0b0ce804c40946d",
+      "adopted_sha256": "394024f82dfa87dadc1c74dea6521cb44af1c8017fb291c8c0b0ce804c40946d"
+    },
+    "vliw/input_storage.v": {
+      "original_sha256": "8340b2212e21a8fde90af48f9eea9134829693d874704d7173a9364e22f4e5f2",
+      "adopted_sha256": "8340b2212e21a8fde90af48f9eea9134829693d874704d7173a9364e22f4e5f2"
+    },
+    "vliw/input_t_work.v": {
+      "original_sha256": "fd5cddc482649bd2ea6779f6d6628c6d9e6daac057a7b885eafcf3deb673840c",
+      "adopted_sha256": "fd5cddc482649bd2ea6779f6d6628c6d9e6daac057a7b885eafcf3deb673840c"
+    },
+    "vliw/prepare_core.v": {
+      "original_sha256": "6a0bd978eb38478bc8996fdac8ba26e177c64587a24c3a028f580fba08bdeab4",
+      "adopted_sha256": "6a0bd978eb38478bc8996fdac8ba26e177c64587a24c3a028f580fba08bdeab4"
+    },
+    "vliw/prepare_program.v": {
+      "original_sha256": "890daed9dfaa78072e264d19121a413f8e8d46b1b2738c0811f42971b63f9ec8",
+      "adopted_sha256": "890daed9dfaa78072e264d19121a413f8e8d46b1b2738c0811f42971b63f9ec8"
+    }
+  }
+}

@@ -31,7 +31,9 @@ wire flag_gt;
 wire instr_complete;
 wire [31:0] ext_read_data;
 
-CpuV3Fpu dut (.*);
+CpuV3Fpu dut (
+    .integer_in_valid(1'b0), .integer_in_a(16'd0), .integer_in_b(16'd0),
+    .integer_out_valid(), .integer_out_product(), .*);
 
 always #5 clk = ~clk;
 
@@ -242,7 +244,7 @@ task run_scalar;
         @(posedge clk);
         #1;
         // T1: writeback (except CMP) and the CMP flag capture.
-        check_value({31'b0, busy}, 32'h1, "T1 busy");
+        check_value({31'b0, busy}, 32'h0, "T1 committed and idle");
         if (is_cmp) begin
             check_value({31'b0, flag_lt}, (sa < sb) ? 32'h1 : 32'h0,
                 "T1 CMP flag_lt");
@@ -289,8 +291,7 @@ task run_abort_t0;
     end
 endtask
 
-// Streams a scalar ADD and aborts during T1: the already captured result must
-// be suppressed at the writeback edge.
+// Abort after the final RF edge cannot undo a committed ALU result.
 task run_abort_t1;
     input [5:0] fa;
     input [5:0] fb;
@@ -311,7 +312,8 @@ task run_abort_t1;
         @(posedge clk);
         #1;
         // T1: a pending writeback exists.
-        check_value({31'b0, busy}, 32'h1, "abort T1 busy pending");
+        check_value({31'b0, busy}, 32'h0, "abort T1 follows committed write");
+        alu_reference(ref_mem[fa], ref_mem[fb], subop, ref_mem[fd]);
         abort = 1'b1;
         @(posedge clk);
         #1;
@@ -365,7 +367,7 @@ initial begin
 
     ext_write(9'd21, 32'h89ABCDEF);
     run_abort_t1(6'd0, 6'd1, 6'd21, 4'h0);
-    ext_read_check(9'd21, 32'h89ABCDEF, "abort T1 leaves F21");
+    ext_read_check(9'd21, ref_mem[21], "abort T1 preserves committed F21");
     ext_release();
 
     // Random end-to-end sequences: external writes, one random scalar

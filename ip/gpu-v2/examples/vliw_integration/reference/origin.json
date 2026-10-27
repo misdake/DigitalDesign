@@ -1,0 +1,55 @@
+{
+  "origin_commit": "72488fde0f6e529b65a69c45868b2804462e9b25",
+  "original_root": "shared/throughput-v2/current",
+  "source_sha256": {
+    "reference.py": "f2a654389e7bb8b2fe599e19c52eedda819444edfdd8bbaab294f813e98bc710",
+    "uv-inputs.json": "f85650fc680cda5077f2bb4a48d0b8f7988182bf04e2f3c54fe4ca791952b8b8",
+    "math/model.py": "b772c954e761bf67cc974d7724641dcd94f846b4d4e2798972cccaccceb094a0",
+    "scene/oracle.py": "c88ea6b278b9a67fabd4224a022bc3b06a0e858770ee0b5e747dd847b6a0e147"
+  },
+  "selected_hardware_source_sha256": {
+    "shared/throughput-v2/current/prepare.v": "a13d9e8ea895196bbb1860c68fe095f07b9d432a4a94d681d6fcad5da5a517f3",
+    "shared/throughput-v2/current/primitives/dsp.v": "8169658113e9450fa3292c1cab8d467b5711cbfeed893d1e0b68a42a878f4969",
+    "shared/throughput-v2/current/primitives/ram.v": "c7e04efedccc44833b927ed9858131b0949683660a0e8ced0b3b94137e8237eb",
+    "shared/throughput-v2/current/primitives/window.v": "a9e7de48c1ea6599f71dfcad1a4c03b1021116e9fcf55031d931231953a1c873",
+    "shared/throughput-v2/current/vertex/control_fields.vh": "6aa32e93f11b36e79a45103657755fede8c980db93f98a9ff594726968a8f1d2",
+    "shared/throughput-v2/current/vertex/control_rom.v": "50ea390dfbee32dcb12c18cc8db67ae17fbbbbda093ae9bbabdf92e61b9f8cbf",
+    "shared/throughput-v2/current/vertex/mac.v": "30efa61831c030194589a4275804e9511abf1ebb4fb7bdb08a8182d1954796b2",
+    "shared/throughput-v2/current/vertex/rf.v": "f27be4e65cfbf4839f734391aae0fa7ad51d6b66de821765787bec21a54c6cd1",
+    "shared/throughput-v2/current/vertex/storage.v": "b89f75df55d0ccc32a7fcbef204eb05e2d43a6040be296153fa06c5e4cace2d9",
+    "shared/throughput-v2/current/raster_storage.v": "8db784a79ef9d983bf54856b7e7889596d0c8f51541e62ab680af0cbf1036110",
+    "shared/throughput-v2/current/pipeline.v": "391823539ca994b3c2435046098879521b8dd8a53d54f8d539ac021a4317028f",
+    "shared/throughput-v2/current/top.v": "5a137ee9bbafe29361d043625171b5d422d95705950bee694c67c73efc0e4620",
+    "shared/throughput-v2/current/frontend.v": "c22702e06492c9125128e4615d4914f766a91c737c5f7833716cf140d5713b22",
+    "shared/throughput-v2/current/meshlet.v": "cc46bc679204c5e16219269282fb98a9aa5ee8e2de6fc26457efc4089fee63b4",
+    "shared/throughput-v2/current/raster.v": "f78f2ca7491f0714dec323287b2f2c0b8ca16db384a3d6cb22633ef482eeca1a",
+    "shared/throughput-v2/current/compute.v": "5074080bbb5fa22573c9e455fdd90e19bfbecd2053f1f8ccf7554d278089c376",
+    "shared/throughput-v2/current/lod.v": "a6caed33cd7c87f656f089dd2bf8cb04e6c0cdb35f83fe034813733afe80adf7",
+    "shared/throughput-v2/current/transport.v": "cdc8d8e79db73e985c4cd74c36ca724cfa03b70974893831c94c945f273caa4f",
+    "shared/throughput-v2/current/raster_program.v": "394024f82dfa87dadc1c74dea6521cb44af1c8017fb291c8c0b0ce804c40946d",
+    "shared/throughput-v2/current/input_storage.v": "8340b2212e21a8fde90af48f9eea9134829693d874704d7173a9364e22f4e5f2",
+    "shared/throughput-v2/current/input_t_work.v": "fd5cddc482649bd2ea6779f6d6628c6d9e6daac057a7b885eafcf3deb673840c",
+    "shared/throughput-v2/current/prepare_core.v": "6a0bd978eb38478bc8996fdac8ba26e177c64587a24c3a028f580fba08bdeab4",
+    "shared/throughput-v2/current/prepare_program.v": "890daed9dfaa78072e264d19121a413f8e8d46b1b2738c0811f42971b63f9ec8"
+  },
+  "boundary": "Copied integer reference and two actual varying-UV inputs only; no old RTL or generated quads",
+  "fixture_original_sha256": "e7fd01495375a3100ee4f217cc5af4bb0b288fd90a56233878d1e195d7857a3a",
+  "fixture_selection": "front camera only; bunny_patch_1 and box_x_minus raw consumed fields unchanged; unused generated P/H/vertex/T/near caches and top-level meshlet copies omitted",
+  "omitted_cache_fields": [
+    "P",
+    "H",
+    "vertex_output6",
+    "triangle_truth",
+    "cull_counts",
+    "hz_min_raw",
+    "hz_max_raw",
+    "near_crossing_triangles"
+  ],
+  "adopted_source_sha256": {
+    "reference.py": "b4a4f3d3b01ce4092fff5c8565100cc91d43a392c013f66ad9a53bda7c8aff09",
+    "uv-inputs.json": "dc7c08caa32a3b6c1bf59bef8d6ced1d7b367fea049f3a1f326c892ecd792f5b",
+    "math/model.py": "d75d8da82520e88c0c11a2ee6c764e9d2f36d7011a4ed247802a2b82fa35d980",
+    "scene/oracle.py": "77b35ad87252a0c26e2ff5e6fdc869788c15116408b730bd7c9ec2c8bc9cad2d"
+  },
+  "adoption_note": "Reference text uses repository LF newlines; reference.py also trims extra EOF whitespace. source_sha256 retains original upstream bytes; adopted_source_sha256 binds repository bytes."
+}

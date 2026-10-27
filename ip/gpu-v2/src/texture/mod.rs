@@ -4,3 +4,5 @@ pub mod format;
 pub mod ports;
 pub mod rtl;
 pub mod sim;
+
+pub mod direct_lod;

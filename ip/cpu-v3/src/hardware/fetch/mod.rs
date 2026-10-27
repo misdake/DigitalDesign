@@ -1,7 +1,7 @@
-//! Four-entry instruction fetch queue with a resolved-target, two-word BTC.
+//! 2-slot instruction payload queue with two requests and a two-word BTC.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
-use digital_design_hardware::{Hardware, Module, ModuleIo};
+use digital_design_hardware::{Hardware, Module, ModuleIo, SsramBits, TargetResourceRequest};
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3InstructionFetchQueueInput {
@@ -27,19 +27,17 @@ pub struct CpuV3InstructionFetchQueueOutput {
     pub memory_response_ready: Wire,
 }
 
-/// Reserves four fetched/outstanding words. Per-slot current bits invalidate
+/// Keeps 2 payload slots and two request-provenance slots. Current bits invalidate
 /// late responses across arbitrarily many redirects, without epoch wraparound.
 #[derive(Hardware)]
-#[hardware(namespace = "components/cpu/cpu_v3")]
+#[hardware(namespace = "components/cpu/cpu_v3", target_leaf)]
 pub struct CpuV3InstructionFetchQueue;
 
-include!(concat!(env!("OUT_DIR"), "/fetch_config.rs"));
-const QUEUE_DEPTH: usize = 4;
-const BTC_STORAGE: usize = if CPU_V3_BTC_ENTRIES == 0 {
-    1
-} else {
-    CPU_V3_BTC_ENTRIES
-};
+/// Fixed resolved-target capacity: four entries of two instruction words.
+pub const CPU_V3_BTC_ENTRIES: usize = 4;
+const QUEUE_DEPTH: usize = 2;
+const REQUEST_SLOTS: usize = 2;
+const BTC_STORAGE: usize = CPU_V3_BTC_ENTRIES;
 
 /// Model-only diagnostics, intentionally absent from the hardware ports and
 /// frozen benchmark schema. A lookup/hit counts once when a replay starts,
@@ -55,6 +53,14 @@ pub struct CpuV3BtcStatistics {
     /// Core-request cycles waiting after both BTC words, until the first
     /// ordinary word is accepted or the stream is redirected/flushed.
     pub continuation_wait_cycles: u64,
+    pub queue_cycles: [u64; 5],
+    pub outstanding_cycles: [u64; 5],
+    pub joint_cycles: [[u64; 5]; 5],
+    pub direct_words: u64,
+    pub queued_words: u64,
+    pub demand_wait_cycles: u64,
+    pub credit_blocked_cycles: u64,
+    pub requests_accepted: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -73,11 +79,10 @@ pub struct CpuV3InstructionFetchQueueState {
     next_memory_address: u32,
     queue_data: [u16; QUEUE_DEPTH],
     queue_error: [bool; QUEUE_DEPTH],
-    downstream_head_offset: u16,
     queue_head: u8,
     queue_tail: u8,
     queue_count: u8,
-    metadata_current: [bool; QUEUE_DEPTH],
+    metadata_current: [bool; REQUEST_SLOTS],
     metadata_head: u8,
     metadata_tail: u8,
     metadata_count: u8,
@@ -114,11 +119,8 @@ impl CpuV3InstructionFetchQueueState {
 
     fn signals(&self, input: &CpuV3InstructionFetchQueueInputValue) -> FetchSignals {
         let address = input.core_address as u32;
-        let address_matches = self.stream_valid && address == self.expected_core_address;
-        let head_matches = self.queue_count != 0 && self.downstream_head_offset == address as u16;
-        let replay = self.replay_remaining != 0;
-        let restart = input.core_request_valid
-            && (!address_matches || (!replay && self.queue_count != 0 && !head_matches));
+        let matches = self.stream_valid && address == self.expected_core_address;
+        let restart = input.core_request_valid && !matches;
         let hit = if restart && address >> 22 == 0 && !input.flush && !input.reset {
             self.btc[..CPU_V3_BTC_ENTRIES]
                 .iter()
@@ -129,39 +131,35 @@ impl CpuV3InstructionFetchQueueState {
         let btc_response = !input.reset
             && !input.flush
             && input.core_request_valid
-            && (hit.is_some() || (!restart && address_matches && replay));
+            && (hit.is_some() || (!restart && matches && self.replay_remaining != 0));
         let current =
             self.metadata_count != 0 && self.metadata_current[self.metadata_head as usize];
-        let bypass = !input.reset
-            && !input.flush
-            && !restart
-            && !btc_response
-            && input.core_request_valid
-            && address_matches
-            && self.queue_count == 0
-            && input.memory_response_valid
-            && current
-            && self.downstream_head_offset == address as u16;
-        let valid = !input.reset
-            && !input.flush
-            && input.core_request_valid
-            && (btc_response || (!restart && address_matches && (head_matches || bypass)));
-        let core_pop = valid && input.core_response_ready;
-        let queue_pop = core_pop && !btc_response && !bypass;
+        let queued = self.queue_count != 0;
+        // Logical slots may pop/push together. RTL rotates their payloads
+        // through four physical RAM rows, so a full replacement cannot
+        // overwrite the asynchronous head consumed on this edge.
         let response_ready = !input.reset
             && self.metadata_count != 0
             && (input.flush
                 || restart
                 || !current
                 || self.queue_count < QUEUE_DEPTH as u8
-                || queue_pop);
+                || (!btc_response
+                    && input.core_request_valid
+                    && matches
+                    && input.core_response_ready));
         let response_fire = input.memory_response_valid && response_ready;
+        let bypass = !queued && input.memory_response_valid && current;
+        let valid = !input.reset
+            && !input.flush
+            && input.core_request_valid
+            && (btc_response || (!restart && matches && (queued || bypass)));
+        let core_pop = valid && input.core_response_ready;
+        let queue_pop = core_pop && !btc_response && queued;
         let request_valid = !input.reset
             && !input.flush
-            && ((restart && (self.metadata_count < QUEUE_DEPTH as u8 || response_fire))
-                || (!restart
-                    && self.stream_valid
-                    && self.queue_count + self.metadata_count < QUEUE_DEPTH as u8));
+            && (restart || self.stream_valid)
+            && (self.metadata_count < REQUEST_SLOTS as u8 || response_fire);
         let issue_address = if restart {
             next_word(address, if hit.is_some() { 2 } else { 0 })
         } else {
@@ -169,26 +167,24 @@ impl CpuV3InstructionFetchQueueState {
         };
         let (data, error) = if btc_response {
             let index = hit.unwrap_or(self.replay_entry);
-            let word = if hit.is_some() || self.replay_remaining == 2 {
-                0
-            } else {
-                1
-            };
-            (self.btc[index].words[word], false)
-        } else if bypass {
-            (input.memory_read_data as u16, input.memory_error)
-        } else {
+            (
+                self.btc[index].words[usize::from(!(hit.is_some() || self.replay_remaining == 2))],
+                false,
+            )
+        } else if queued {
             (
                 self.queue_data[self.queue_head as usize],
                 self.queue_error[self.queue_head as usize],
             )
+        } else {
+            (input.memory_read_data as u16, input.memory_error)
         };
         FetchSignals {
             output: CpuV3InstructionFetchQueueOutputValue {
                 core_request_ready: core_pop,
                 core_response_valid: valid,
                 core_read_data: data.into(),
-                core_error: error,
+                core_error: valid && error,
                 memory_request_valid: request_valid,
                 memory_address: issue_address.into(),
                 memory_response_ready: response_ready,
@@ -200,7 +196,11 @@ impl CpuV3InstructionFetchQueueState {
             queue_pop,
             request_fire: request_valid && input.memory_request_ready,
             response_fire,
-            enqueue: response_fire && current && !input.flush && !restart && !(core_pop && bypass),
+            enqueue: response_fire
+                && current
+                && !input.flush
+                && !restart
+                && !(core_pop && !btc_response && !queued),
         }
     }
 
@@ -221,6 +221,18 @@ impl CpuV3InstructionFetchQueueState {
             return;
         }
         let sig = self.signals(input);
+        self.statistics.queue_cycles[self.queue_count as usize] += 1;
+        self.statistics.outstanding_cycles[self.metadata_count as usize] += 1;
+        self.statistics.joint_cycles[self.queue_count as usize][self.metadata_count as usize] += 1;
+        self.statistics.direct_words +=
+            u64::from(sig.core_pop && !sig.btc_response && !sig.queue_pop);
+        self.statistics.queued_words += u64::from(sig.queue_pop);
+        self.statistics.demand_wait_cycles +=
+            u64::from(input.core_request_valid && !sig.output.core_response_valid);
+        self.statistics.credit_blocked_cycles += u64::from(
+            !input.flush && !sig.restart && self.stream_valid && !sig.output.memory_request_valid,
+        );
+        self.statistics.requests_accepted += u64::from(sig.request_fire);
         let address = input.core_address as u32;
         let issue_address = sig.output.memory_address as u32;
         if (input.flush || sig.restart) && self.fill_phase != 0 {
@@ -229,7 +241,7 @@ impl CpuV3InstructionFetchQueueState {
         if (input.flush || sig.restart) && self.replay_remaining != 0 {
             self.statistics.aborted_replays += 1;
         }
-        if sig.restart && !input.flush && CPU_V3_BTC_ENTRIES != 0 && address >> 22 == 0 {
+        if sig.restart && !input.flush && address >> 22 == 0 {
             self.statistics.lookups += 1;
             self.statistics.hits += u64::from(sig.hit.is_some());
         }
@@ -262,8 +274,7 @@ impl CpuV3InstructionFetchQueueState {
                 0
             };
             self.tracking_continuation = sig.hit.is_some();
-            self.fill_phase = if CPU_V3_BTC_ENTRIES != 0 && address >> 22 == 0 && sig.hit.is_none()
-            {
+            self.fill_phase = if address >> 22 == 0 && sig.hit.is_none() {
                 1
             } else {
                 0
@@ -321,8 +332,6 @@ impl CpuV3InstructionFetchQueueState {
             self.queue_count = 0;
             self.stream_valid = input.core_request_valid;
             if input.core_request_valid {
-                self.downstream_head_offset =
-                    if input.flush { address } else { issue_address } as u16;
                 self.expected_core_address = next_word(address, u32::from(sig.core_pop));
                 self.next_memory_address = if input.flush {
                     address
@@ -331,19 +340,16 @@ impl CpuV3InstructionFetchQueueState {
                 };
             }
         } else {
-            if sig.core_pop && !sig.btc_response {
-                self.downstream_head_offset = self.downstream_head_offset.wrapping_add(1);
-            }
             if sig.core_pop {
                 self.expected_core_address = next_word(self.expected_core_address, 1);
             }
             if sig.queue_pop {
-                self.queue_head = (self.queue_head + 1) & 3;
+                self.queue_head = (self.queue_head + 1) & 1;
             }
             if sig.enqueue {
                 self.queue_data[self.queue_tail as usize] = input.memory_read_data as u16;
                 self.queue_error[self.queue_tail as usize] = input.memory_error;
-                self.queue_tail = (self.queue_tail + 1) & 3;
+                self.queue_tail = (self.queue_tail + 1) & 1;
             }
             self.queue_count = self.queue_count + u8::from(sig.enqueue) - u8::from(sig.queue_pop);
             if sig.request_fire {
@@ -353,11 +359,11 @@ impl CpuV3InstructionFetchQueueState {
         // A new request wins if a full FIFO drains and reuses the same slot.
         if sig.response_fire {
             self.metadata_current[self.metadata_head as usize] = false;
-            self.metadata_head = (self.metadata_head + 1) & 3;
+            self.metadata_head = (self.metadata_head + 1) & 1;
         }
         if sig.request_fire {
             self.metadata_current[self.metadata_tail as usize] = true;
-            self.metadata_tail = (self.metadata_tail + 1) & 3;
+            self.metadata_tail = (self.metadata_tail + 1) & 1;
         }
         self.metadata_count =
             self.metadata_count + u8::from(sig.request_fire) - u8::from(sig.response_fire);
@@ -369,6 +375,11 @@ impl Module for CpuV3InstructionFetchQueue {
     type Output = CpuV3InstructionFetchQueueOutput;
     type EmuState = CpuV3InstructionFetchQueueState;
     const USES_MAIN_CLOCK: bool = true;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // Match PAYLOAD_WORDS, including the physical 16-word RAM granularity.
+        vec![TargetResourceRequest::new(SsramBits::new(16 * 16))]
+    }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
         Self::EmuState::default()
@@ -390,10 +401,7 @@ impl Module for CpuV3InstructionFetchQueue {
         state.clock(&input.sample(circuit));
     }
     fn verilog_source() -> Option<String> {
-        Some(
-            include_str!("cpu_v3_instruction_fetch_queue.v")
-                .replace("__BTC_ENTRIES__", &CPU_V3_BTC_ENTRIES.to_string()),
-        )
+        Some(include_str!("cpu_v3_instruction_fetch_queue.v").to_string())
     }
     fn verilog_testbench() -> Option<String> {
         Some(include_str!("cpu_v3_instruction_fetch_queue_tb.v").to_string())
@@ -506,14 +514,14 @@ mod tests {
         circuit: &mut Circuit,
         input: &CpuV3InstructionFetchQueueInput,
         output: &CpuV3InstructionFetchQueueOutput,
-        memory_pending: &mut Option<u32>,
+        memory_pending: &mut std::collections::VecDeque<u32>,
         flush: bool,
         core_request_valid: bool,
         core_address: u32,
         core_response_ready: bool,
         trace: &mut Vec<(QueueIn, QueueOut)>,
     ) -> QueueOut {
-        let memory_response = memory_pending.take();
+        let memory_response = memory_pending.front().copied();
         input.drive(
             circuit,
             &CpuV3InstructionFetchQueueInputValue {
@@ -530,9 +538,13 @@ mod tests {
         );
         circuit.execute_gates();
         let value = output.sample(circuit);
-        if value.memory_request_valid {
-            *memory_pending = Some(value.memory_address as u32);
+        if memory_response.is_some() && value.memory_response_ready {
+            memory_pending.pop_front();
         }
+        if value.memory_request_valid {
+            memory_pending.push_back(value.memory_address as u32);
+        }
+        assert!(memory_pending.len() <= 2);
         let out = QueueOut {
             core_request_ready: value.core_request_ready,
             core_response_valid: value.core_response_valid,
@@ -569,7 +581,7 @@ mod tests {
         circuit: &mut Circuit,
         input: &CpuV3InstructionFetchQueueInput,
         output: &CpuV3InstructionFetchQueueOutput,
-        memory_pending: &mut Option<u32>,
+        memory_pending: &mut std::collections::VecDeque<u32>,
         address: u32,
         trace: &mut Vec<(QueueIn, QueueOut)>,
     ) {
@@ -618,7 +630,7 @@ mod tests {
         circuit.execute_gates();
         circuit.clock_tick();
 
-        let mut memory_pending = None;
+        let mut memory_pending = std::collections::VecDeque::new();
         let mut trace = Vec::new();
 
         queue_consume(
@@ -821,3 +833,7 @@ mod tests {
 #[cfg(test)]
 #[path = "fetch_btc_tests.rs"]
 mod btc_tests;
+
+#[cfg(test)]
+#[path = "fetch_cold_tests.rs"]
+mod cold_tests;

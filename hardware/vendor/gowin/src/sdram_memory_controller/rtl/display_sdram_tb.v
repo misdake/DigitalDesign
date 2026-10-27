@@ -102,6 +102,55 @@ module tb;
         end
     endtask
 
+    // Native scalar data and completion are independently timed. The selected
+    // halfword is held in the final response register until both have arrived.
+    task scalar_read;
+        input lane;
+        input integer completion_order;
+        reg [15:0] expected;
+        integer stall;
+        begin
+            expected = lane ? 16'habcd : 16'h1234;
+            @(negedge clk);
+            cpu_write = 0; cpu_line = 0;
+            cpu_address = 22'h000100 | lane;
+            cpu_request_valid = 1;
+            cpu_response_ready = 0;
+            @(posedge clk); #1; cpu_request_valid = 0;
+            if (completion_order < 0) begin
+                @(negedge clk); controller_done = 1;
+                @(posedge clk); #1; controller_done = 0;
+                repeat (2) @(posedge clk);
+                #1;
+                if (cpu_response_valid) $fatal(1, "scalar completion preceded data");
+            end
+            @(negedge clk);
+            controller_read_data = 64'hdeadbeefabcd1234;
+            controller_read_valid = 1;
+            controller_done = completion_order == 0;
+            @(posedge clk); #1;
+            controller_read_valid = 0; controller_done = 0;
+            if (completion_order > 0) begin
+                if (cpu_response_valid) $fatal(1, "scalar data preceded completion");
+                repeat (2) @(posedge clk);
+                @(negedge clk); controller_done = 1;
+                @(posedge clk); #1; controller_done = 0;
+            end
+            controller_read_data = 64'h5555666677778888;
+            cpu_address = 22'h000201; cpu_write_data = 64'hffffffffffffffff;
+            for (stall = 0; stall < 3; stall = stall + 1) begin
+                if (!cpu_response_valid || !cpu_response_last || cpu_error ||
+                    cpu_read_data !== {48'b0, expected} || cpu_request_ready)
+                    $fatal(1, "scalar response changed lane=%0d completion=%0d", lane, completion_order);
+                @(posedge clk); #1;
+            end
+            @(negedge clk); cpu_response_ready = 1;
+            @(posedge clk); #1;
+            if (cpu_response_valid || !cpu_request_ready)
+                $fatal(1, "scalar response did not retire");
+        end
+    endtask
+
     initial begin
         repeat (2) @(posedge clk);
         @(negedge clk); controller_init_done = 1;
@@ -136,6 +185,9 @@ module tb;
         @(posedge clk); #1; controller_done = 0;
         @(posedge clk); #1;
         if (cpu_error) $fatal(1, "unexpected scalar error");
+        scalar_read(0, -1); scalar_read(1, -1);
+        scalar_read(0, 0); scalar_read(1, 0);
+        scalar_read(0, 1); scalar_read(1, 1);
         $display("DIGITAL_DESIGN_PASS"); $finish;
     end
 endmodule

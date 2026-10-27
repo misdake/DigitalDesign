@@ -103,6 +103,14 @@ impl Default for CpuV3Sim {
 }
 
 impl CpuV3Sim {
+    /// Construct a board cold state with a fixed entry segment. The generic
+    /// CPU and all existing benchmark constructors retain segment zero.
+    pub fn with_initial_code_segment(words: usize, segment: Word) -> Self {
+        let mut cpu = Self::with_physical_memory_words(words);
+        cpu.code_segment = segment;
+        cpu
+    }
+
     pub fn with_physical_memory_words(words: usize) -> Self {
         assert!(
             words > 0,
@@ -680,13 +688,7 @@ impl CpuV3Sim {
         // Unary subops ignore B; VMULS broadcasts lane 0; DOT uses a stride.
         let unary = matches!(
             subop,
-            FpuVectorSubop::VAbs
-                | FpuVectorSubop::VNeg
-                | FpuVectorSubop::VFloor
-                | FpuVectorSubop::VCeil
-                | FpuVectorSubop::VRound
-                | FpuVectorSubop::VTrunc
-                | FpuVectorSubop::VMove
+            FpuVectorSubop::VAbs | FpuVectorSubop::VNeg | FpuVectorSubop::VMove
         );
         let dot = matches!(
             subop,
@@ -731,10 +733,6 @@ impl CpuV3Sim {
                 FpuVectorSubop::VMax => a.max(b),
                 FpuVectorSubop::VAbs => fix32_abs(a),
                 FpuVectorSubop::VNeg => fix32_neg(a),
-                FpuVectorSubop::VFloor => fix32_floor(a),
-                FpuVectorSubop::VCeil => fix32_ceil(a),
-                FpuVectorSubop::VRound => fix32_round(a),
-                FpuVectorSubop::VTrunc => fix32_trunc(a),
                 FpuVectorSubop::VMove => a,
                 FpuVectorSubop::Dot | FpuVectorSubop::DotAdd | FpuVectorSubop::DotStore => {
                     unreachable!()
@@ -1740,6 +1738,31 @@ mod tests {
                 signal: 9
             }
         );
+    }
+
+    #[test]
+    fn vector_rounding_slots_fault_without_side_effects() {
+        for subop in 0x08..=0x0b {
+            for len in 0..=2 {
+                let word1 = (16 << 10) | (len << 8) | (subop << 3);
+                let mut machine = CpuV3Sim::default();
+                machine.load_program(0, &[0xc000, word1, halt()]).unwrap();
+                machine.fpu_write(0, -0x18000);
+                machine.fpu_write(16, 0x12345678);
+                let registers = machine.fpu_registers;
+                assert_eq!(
+                    machine.step(),
+                    Err(Fault {
+                        kind: FaultKind::InvalidInstruction,
+                        address: 0,
+                        instruction: 0xc000,
+                    }),
+                );
+                assert_eq!(machine.pc(), 0);
+                assert_eq!(machine.retired_words(), 0);
+                assert_eq!(machine.fpu_registers, registers);
+            }
+        }
     }
 
     #[test]

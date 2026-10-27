@@ -10,6 +10,8 @@
 //! Two completed head words keep successive reads in flight. Asynchronous RAM
 //! captures a head on the read edge, visible for transfer on the next edge.
 //! Registered RAM additionally owns its paid hardware DO return position.
+//! Row/last are derived from a single consumer cursor: ordered payload heads
+//! and the pending return do not carry duplicate row tags.
 //! All transfers and registers freeze with CE; reset invalidates pointers
 //! and heads without clearing payload RAM. RAM technology is selected by the
 //! integrating design; behavioral storage is not a fitted SSRAM/BSRAM claim.
@@ -21,7 +23,8 @@ pub mod rtl;
 pub enum ReadTiming {
     /// SSRAM asynchronous read into a head FF on the request edge.
     Capture,
-    /// Synchronous RAM hard DO captured on the request edge, then a head FF.
+    /// Synchronous RAM hard DO supplies a stable next-edge head directly when
+    /// the head ring is empty; otherwise its reserved return enters the ring.
     Registered,
 }
 

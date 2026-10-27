@@ -178,6 +178,8 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `unsafe dcache_clean_line(address: Ptr)` | CPU V3-only: asynchronously write back one dirty resident line; miss/clean hit is a no-op |
 | `dcache_wait()` | CPU V3-only: wait for the asynchronous D-cache command and surface its remembered error |
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
+| `read_dseg_page(index: u16) -> u16` | CPU V3-only: read exactly one entry; index is a compile-time constant 0..3 |
+| `unsafe write_dseg_page(index: u16, page: u16)` | CPU V3-only memory/control barrier; write only the selected entry, never the legacy four-page mapping. Index is constant 0..3; page must fit eight bits (invalid constant pages are rejected). Caller drains older accesses, maintains coherence and restores live mappings. |
 | `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
 | `icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> !` | CPU V3-only: terminal barrier lowered to adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`; never returns |
 
@@ -191,7 +193,7 @@ they are not part of this surface.
 |---|---|---|
 | zero | `fix32::zero()`, `vec2::zero()`, `vec3::zero()`, `vec4::zero()` | all lanes are Q16.16 zero |
 | numeric conversion | `fix32::from_int(x: i16) -> fix32`, `x.to_int() -> i16` | `I16TOF`; `FTOI16` truncates toward zero and wraps on overflow |
-| raw construction | `fix32::from_words(lo: u16, hi: u16) -> fix32` | construct the exact 32-bit Q16.16 pattern, low half first (`ILO2F`, `IHI2F`) |
+| raw construction | `fix32::from_words(lo: u16, hi: u16) -> fix32` | construct the exact 32-bit Q16.16 pattern, low half first (`ILO2F`, `IHI2F`); a compile-time zero low half uses one exact `I16TOF` |
 | raw extraction | `x.lo_bits() -> u16`, `x.hi_bits() -> u16` | extract the exact low/high half (`FLO2I`, `FHI2I`) |
 | vector construction | `vec2::new(x, y)`, `vec3::new(x, y, z)`, `vec4::new(x, y, z, w)` | build a consecutive F-register range from `fix32` lanes |
 | lane extraction | `.x()`, `.y()`, `.z()`, `.w()` as applicable to the type | return one `fix32` lane; no memory access |
@@ -199,7 +201,8 @@ they are not part of this surface.
 | vector arithmetic | same-width `vecN + vecN`, `-`, `*`, unary `-` | component-wise `VADD`, `VSUB`, `VMUL`, `VNEG` |
 | scalar-vector multiply | `vecN * fix32`, `fix32 * vecN` | broadcast scalar multiply (`VMULS`) |
 | comparison | `fix32 == != < <= > >= fix32` | signed scalar `CMP`; vectors have no compare/mask operation |
-| unary numeric methods | `x.abs()`, `.floor()`, `.ceil()`, `.round()`, `.trunc()` on `fix32` or `vecN` | scalar or component-wise ALU operation; `round` is round-half-up and `trunc` is toward zero |
+| absolute value | `x.abs()` on `fix32` or `vecN` | scalar or component-wise absolute value |
+| rounding | `.floor()`, `.ceil()`, `.round()`, `.trunc()` on `fix32` | scalar-only; vector methods are rejected, so apply to individual lanes; `round` is round-half-up and `trunc` is toward zero |
 | vec4 memory load | `vec4::import(ptr: Ptr) -> vec4` | `FLDV4`: four adjacent Q16.16 values, each stored as low word then high word |
 | vec4 memory store | `vec4::export(v: vec4, ptr: Ptr)` | `FSTV4`: store the same eight-word layout |
 | dot product | `fdot(a: vecN, b: vecN) -> fix32` | exact Q32.32 products accumulate in the 64-bit ACC, then one `DOTSTORE` narrowing |
@@ -292,6 +295,11 @@ static TICK: i16 = -1;
 
 One word in data memory at a compiler-assigned address; the compiler emits a hidden
 `__data_init` routine at the start of `main` that stores each non-zero initializer.
+The target startup must zero the allocated static range first. The frontend
+publishes its exclusive end word address as `Program.debug.static_data_end`;
+the start is the configured `data_base`. This includes imported-module and
+standard-library statics and aggregate padding, before function linking.
+It does not require zeroing the unused capacity of the static arena.
 - Reading `SCORE` as a value loads the word.
 - Writing goes through the address: `addr_of(&SCORE).write(0, v)` (immutable `static` reads
   are safe Rust, so rust-analyzer stays quiet; mutation is intentionally explicit).
@@ -336,7 +344,7 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
 ```
 
 - Fields keep declaration order and each occupies whole 16-bit words: a scalar
-  (`u16`/`i16`/`Ptr`/`bool`) one word, a `Buf<T, N>` `N * sizeof(T)` words, a nested struct its own
+  (`u16`/`i16`/`Ptr`/`bool`) one word, a `fix32` two words (low half first), a `Buf<T, N>` `N * sizeof(T)` words, a nested struct its own
   size. There is no packing, because the machine has no byte accesses.
 - The total size is padded up to the struct's alignment. Alignment is one word by default;
   `#[repr(align(N))]` raises it. As in Rust `N` is in *bytes*, so on this 16-bit-word target
@@ -364,7 +372,16 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
   `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
   Array<Point>` parameter may write through it, which is how a callee updates the caller's struct.
-- Out of scope for now (§12): `impl` methods, `fix32`/`vecN` fields, and recursive layouts.
+- Scalar `fix32` fields preserve the full Q16.16 bit pattern through existing FLD/FST
+  operations, with one-word alignment. They support runtime literals, field reads and plain
+  assignments, nested structs, struct buffers, copies and aggregate returns. Compound field
+  assignments remain integer-only. Static fields accept constant `fix32::zero()`,
+  `fix32::from_int(integer)` and `fix32::from_words(lo, hi)` constructors, emitted
+  as exact low/high data words. Arbitrary static FPU expressions and `Buf<fix32, N>`
+  are not supported. With optimization enabled, an uninterrupted full-vector lane
+  extract/store sequence to adjacent fields with the same base may use one FSTV;
+  loads, calls or other writes between fields prevent this combination.
+- Out of scope for now (§12): `impl` methods, `vecN` fields, and recursive layouts.
   (`static` structs are supported since §9.4.)
 
 ## 9c. Tuples
@@ -521,7 +538,7 @@ them unchanged (a struct local is just an address plus offsets).
 `&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
 inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
-aggregate-returning fn pointers, `impl`, `fix32`/`vecN` fields, recursive layouts, enum payloads,
+aggregate-returning fn pointers, `impl`, `vecN` fields, arbitrary static FPU expressions, recursive layouts, enum payloads,
 and enum statics).
 
 A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,
@@ -596,6 +613,14 @@ and page-register contract.
 | `heap_begin` | backend | heap region start |
 | `heap_size` | backend | heap region size in words |
 | `vec_init_cap` | 4 | `vec_new()` initial capacity |
+
+CPU V3 may lower a pure integer if-expression to a conditional move. Its IR
+retains both selected values as inputs and defines the result once, so constant
+propagation cannot mistake the default arm for the final result. Register
+allocation keeps the comparison operands and true value live while the backend
+initializes the result from the false value, before the compare/conditional move.
+The compare uses the operand's register class, including the FPU comparison for
+`fix32` conditions selecting integer values.
 
 ### 13.3 Artifacts
 

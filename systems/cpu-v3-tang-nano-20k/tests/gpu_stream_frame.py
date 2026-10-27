@@ -1,0 +1,122 @@
+"""One compact frame through real CL3 pins; compare legacy, stream and pipelined cache.
+
+Input program/assets come from GPU_DEMO_NATIVE_PROFILE's normal RCC compiler.
+Instruction ROM and preloaded SDRAM exclude boot; no framebuffer image oracle.
+"""
+from pathlib import Path
+import os,re,sys,subprocess,json,hashlib,shutil
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parents[3]
+sys.path.insert(0,str(root/'hardware/vendor/gowin/tests'))
+from cl3_pins import with_cl3_pins,cl3_bridge_parameters
+base=root/'target/maintainer/stream-frame-20261024';src=base/'input'
+baseline_ref=sys.argv[2] if len(sys.argv)>2 else 'af6a565cb22bd6cff6b2534966b8d76e0abece5f'
+variant=sys.argv[1];assert variant in ['legacy','stream-old-cache','stream-cache']
+out=base/variant;out.mkdir(exist_ok=True)
+peer=src/('legacy' if variant=='legacy' else 'stream')
+for p in peer.glob('*.v'):shutil.copy2(p,out/p.name)
+for p in src.glob('source_*.v'):shutil.copy2(p,out/p.name)
+files=list(out.glob('source_*.v'))
+cache=next(p for p in files if 'module CpuV3DataCache (' in p.read_text())
+if variant!='stream-cache':
+ old=subprocess.run(['git','show',baseline_ref+':ip/cpu-v3/src/hardware/cache/cpu_v3_data_cache.v'],cwd=root,capture_output=True,check=True,text=True).stdout
+ current=cache.read_text()
+ banks=re.search(r'(\w+) u_data_banks',current)[1];metadata=re.search(r'(\w+) u_metadata',current)[1]
+ cache.write_text(old.replace('__CACHE_DATA_BANKS__',banks).replace('__CACHE_METADATA__',metadata))
+if variant=='legacy':
+ old=subprocess.run(['git','show',baseline_ref+':hardware/vendor/gowin/src/sdram_memory_controller/rtl/sdram_controller.v'],cwd=root,capture_output=True,check=True).stdout
+ (out/'controller.v').write_bytes(old)
+s=(src/'tb.v').read_text()
+# The original real arbiter connections are reused verbatim; only its shared
+# memory peer is replaced by the native combination containing that arbiter.
+a=s.index('CpuV3MemoryArbiter arbiter(');b=s.index(');',a)+2
+inst=s[a:b].replace('CpuV3MemoryArbiter arbiter(', 'GowinSdramCombination mc(')
+inst=re.sub(r'\.lookahead_enable\([^)]*\),?','',inst)
+inst=re.sub(r'\.memory_\w+\([^)]*\),?','',inst)
+inst=inst.replace('.clk(clk)', '.logic_clk(clk),.controller_clk(controller_clk),.sdram_clk(sdram_clk)')
+inst=inst.replace(',\n );', '\n );')
+inst=inst.rstrip()[:-2].rstrip().rstrip(',')+',\n .O_sdram_clk(O_sdram_clk),.O_sdram_cke(O_sdram_cke),.O_sdram_cs_n(O_sdram_cs_n),.O_sdram_cas_n(O_sdram_cas_n),.O_sdram_ras_n(O_sdram_ras_n),.O_sdram_wen_n(O_sdram_wen_n),.O_sdram_dqm(O_sdram_dqm),.O_sdram_addr(O_sdram_addr),.O_sdram_ba(O_sdram_ba),.IO_sdram_dq(IO_sdram_dq));'
+slots=''
+if variant!='legacy':
+ for prefix,port in [('ro','gpu_ro'),('fr','gpu_fb_r'),('fw','gpu_fb_w')]:
+  ready={'ro':'ror','fr':'frr','fw':'fwr'}[prefix]
+  for suffix,signal in [('request_valid',prefix+'q'),('request_ready',ready),('address',prefix+'a'),('line_count_minus_1',prefix+'c')]:
+   inst=inst.replace(f'.{port}_{suffix}({signal})',f'.{port}_{suffix}({signal}_s)')
+  slots+=f'wire {prefix}q_s,{ready}_s;wire[21:0]{prefix}a_s;wire[1:0]{prefix}c_s;\nCpuV3GpuMemoryRequestSlot {prefix}_slot(.clk(clk),.reset(reset),.in_valid({prefix}q),.in_ready({ready}),.in_write(1\'b{int(prefix=="fw")}),.in_address({prefix}a),.in_count({prefix}c),.out_valid({prefix}q_s),.out_ready({ready}_s),.out_write(),.out_address({prefix}a_s),.out_count({prefix}c_s));\n'
+ slot=(root/'systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system/self_test.v').read_text().split('module CpuV3GpuMemoryRequestSlot',1)[1]
+ (out/'slots.v').write_text('module CpuV3GpuMemoryRequestSlot'+slot)
+ files.append(out/'slots.v')
+pins='''wire O_sdram_clk,O_sdram_cke,O_sdram_cs_n,O_sdram_cas_n,O_sdram_ras_n,O_sdram_wen_n;
+wire[3:0]O_sdram_dqm;wire[10:0]O_sdram_addr;wire[1:0]O_sdram_ba;wire[31:0]IO_sdram_dq;
+LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
+ .sclk(O_sdram_clk),.reset(reset),.cke(O_sdram_cke),.cs(O_sdram_cs_n),.ras(O_sdram_ras_n),.cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),.a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes());
+function[20:0]native_word;input integer bytes;integer w;begin w=bytes/4;native_word=((w>>5)&3)*524288+(w&31)+((w>>7)<<5);end endfunction
+'''
+s=s[:a]+slots+pins+inst+s[b:]
+s=s.replace('always #9.259259 clk=~clk;', '''reg controller_clk=0,sdram_clk=0;
+always #5.051 controller_clk=~controller_clk;
+always @(posedge controller_clk)clk=~clk;
+initial begin #13.259;forever begin sdram_clk=~sdram_clk;#5.051;end end
+''')
+s=re.sub(r'assign ar=ms==0.*?assign ae=1\'b0;', '', s,flags=re.S)
+a=s.index('  if(aq&&ar)begin');b=s.index('  if(wen&&di==3&&ch==3)',a)
+s=s[:a]+'''  if(fwv)terms<=terms+1;
+  if(mq&&mready&&mw)cpu_high_writes<=cpu_high_writes+1;
+'''+s[b:]
+s=s.replace('$readmemh("'+str(src/'assets.hex').replace('\\','/')+'",mem);', '$readmemh("'+str(src/'assets.hex').replace('\\','/')+'",mem);\n for(idx=0;idx<1048576;idx=idx+1)begin pin.seed_word(native_word(idx*8),mem[idx][31:0]);pin.seed_word(native_word(idx*8+4),mem[idx][63:32]);end')
+# Absolute input paths generated by Rust may retain /../; match syntactically.
+s=s.replace('$readmemh(', '$readmemh(',1)
+if 'pin.seed_word(native_word(idx*8)' not in s:
+ s=re.sub(r'(\$readmemh\("[^"]+",mem\);)',r'\1\n for(idx=0;idx<1048576;idx=idx+1)begin pin.seed_word(native_word(idx*8),mem[idx][31:0]);pin.seed_word(native_word(idx*8+4),mem[idx][63:32]);end',s,count=1)
+assert 'pin.seed_word(native_word(idx*8)' in s
+s=s.replace('end$readmemh', 'end\n $readmemh')
+s=with_cl3_pins(s,'mc.bridge.u_controller')
+combo=(out/'combination.v').read_text().replace(".PREPARE_NEXT(1'b0)", ".PREPARE_NEXT(1'b1)")
+if variant=='legacy':
+ combo=combo.replace("assign lookahead_enable = 1'b0", "assign lookahead_enable = 1'b1")
+(out/'combination.v').write_text(cl3_bridge_parameters(combo))
+metrics='''integer maint_start=0,maint_calls=0,maint_cycles=0,maint_writes=0,maint_kind=0,maint_base=0;
+integer dma_busy=0,vt_busy=0,front_busy=0,back_busy=0,ui_busy=0,ro_block=0,fr_block=0,fw_block=0;
+integer physical_read_chain=0,physical_write_chain=0;
+always @(posedge controller_clk)if(!reset)begin
+ if(mc.bridge.u_controller.read_chain_accept)physical_read_chain=physical_read_chain+1;
+ if(mc.bridge.u_controller.chain_accept)physical_write_chain=physical_write_chain+1;
+end
+always @(posedge clk)if(!reset)begin
+ if((clean||invalidate)&&ready)begin maint_start=cycle;maint_calls=maint_calls+1;maint_kind=invalidate;maint_base=maint_writes;end
+ if(mq&&mready&&mw&&busy)maint_writes=maint_writes+1;
+ if(done)begin maint_cycles=maint_cycles+cycle-maint_start;$display("CACHE_MAINT kind=%0d start=%0d cycles=%0d writes=%0d",maint_kind,maint_start,cycle-maint_start,maint_writes-maint_base);end
+ if(gpu.busy)begin
+  if(gpu.mesh_loading)dma_busy=dma_busy+1;
+  if(gpu.core.front.meshlet.core.busy)vt_busy=vt_busy+1;
+  if(!gpu.core.front.idle)front_busy=front_busy+1;
+  if(!gpu.core.back.pipeline_idle)back_busy=back_busy+1;
+  if(gpu.processor.state==18)ui_busy=ui_busy+1;
+  if(roq&&!ror)ro_block=ro_block+1;if(frq&&!frr)fr_block=fr_block+1;if(fwq&&!fwr)fw_block=fw_block+1;
+ end
+end
+'''
+s=s.replace('integer command_bytes=0',metrics+'\ninteger command_bytes=0',1)
+s=s.replace(' $finish;\nend\nendmodule',''' $display("FRAME_COMPONENTS maint_calls=%0d maint_cycles=%0d maint_writes=%0d dma_busy=%0d vt_busy=%0d frontend_busy=%0d backend_busy=%0d ui_busy=%0d ro_block=%0d fb_read_block=%0d fb_write_block=%0d read_chains=%0d write_chains=%0d",maint_calls,maint_cycles,maint_writes,dma_busy,vt_busy,front_busy,back_busy,ui_busy,ro_block,fr_block,fw_block,physical_read_chain,physical_write_chain);
+ $finish;
+end
+endmodule''')
+# A measured frame ends at the driver's real GPU-complete marker. Scanout
+# continues concurrently, but waiting a whole display boundary is outside the
+# rendering workload; no second frame or framebuffer image oracle is needed.
+s=s.replace('wait(halted||fault);#1;', 'wait(completions==1||fault);#1;')
+s=s.replace('||swaps!=1', '').replace("||display.active_linear!==1'b1", '')
+s=s.replace("||signal!==16'h600d", '')
+s=s.replace('CLASSIC_PROFILE_PASS', 'CLASSIC_RENDER_PROFILE_PASS')
+if variant=='legacy':
+ s=s.replace('if(mc.bridge.u_controller.read_chain_accept)physical_read_chain=physical_read_chain+1;','')
+(out/'tb.v').write_text(s)
+# The wrapper's arbiter is byte-identical to the exported profile arbiter; use
+# one definition only. All remaining CPU/GPU/Display modules are shared.
+files +=[out/n for n in ['bridge.v','combination.v','controller.v','pins.v','shared_port.v','tb.v']]
+p=subprocess.run([os.environ['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-s','tb','-o',str(out/'frame.vvp'),str(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'),*map(str,files)],capture_output=True,timeout=90)
+(out/'compile.log').write_bytes(p.stdout+p.stderr);assert p.returncode==0,p.stderr.decode()[-3500:]
+(out/'identity.json').write_text(json.dumps(dict(variant=variant,baseline_ref=baseline_ref,program=hashlib.sha256((src/'program.hex').read_bytes()).hexdigest(),assets=hashlib.sha256((src/'assets.hex').read_bytes()).hexdigest(),sources={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in files}),indent=2))
+with (out/'run.log').open('wb') as log:
+ p=subprocess.run([os.environ['VVP_EXE'],str(out/'frame.vvp')],stdout=log,stderr=subprocess.STDOUT,timeout=1200)
+text=(out/'run.log').read_text();print(text[-3000:]);assert p.returncode==0 and 'CLASSIC_RENDER_PROFILE_PASS' in text

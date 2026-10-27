@@ -30,6 +30,8 @@ initial begin
     if (cycles - first_retire_cycle > 10)
         $fatal(1, "eight post-first-retire instructions took %0d cycles, expected <=10",
                cycles - first_retire_cycle);
+    $display("FETCH_PERF cycles=%0d retired=%0d post_first=%0d",
+             cycles, retired_words, cycles - first_retire_cycle);
     $display("DIGITAL_DESIGN_PASS");
     $finish;
 end

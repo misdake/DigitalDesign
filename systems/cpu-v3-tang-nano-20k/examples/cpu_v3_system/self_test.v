@@ -1,6 +1,6 @@
-// Full CPU V3 system board harness. The single-stage BSRAM boot ROM loads the
-// application from SPI Flash through the boot DMA engine, and the
-// application reports through the device-0 system control UART. The 320x240
+// CPU V3 cold-start system. A fixed hardware loader copies the single
+// application from SPI Flash and clears the static arena before CPU release; the
+// application reports through the device-0 system control UART. The 400x240
 // RGB565 framebuffer scanout is written to SDRAM by the CPU and scanned out
 // through the SharedSdramPort adapter and the fitted HDMI datapath (the
 // compiled-in mode from `ACTIVE_DISPLAY_CONFIG`). Reporting is
@@ -16,17 +16,20 @@ module CpuV3System (
     input wire sdram_request_ready,
     input wire sdram_stream_active,
     input wire sdram_clock_ready,
-    input wire sdram_done,
+    input wire sdram_write_done,
     input wire sdram_write_data_ready,
     input wire pixel_clock,
     input wire serial_clock,
     input wire video_locked,
-    output wire [5:0] leds,
+    input wire ds2_dat,
+    output wire ds2_clk, ds2_cmd, ds2_att,
+    output wire [1:0] leds,
     output wire uart_tx,
     output wire flash_clk,
     output wire flash_cs_n,
     output wire flash_mosi,
     output wire sdram_request_valid,
+    output wire sdram_request_continuation,
     output wire sdram_next_valid,
     output wire [20:0] sdram_next_address,
     output wire sdram_write,
@@ -41,17 +44,23 @@ module CpuV3System (
     output wire [2:0] tmds_data_n
 );
 
-wire reset;
-wire clock_ready_synchronized;
-wire external_reset_seen;
-__RESET_CONTROLLER__ u_reset(
-    .clk(clk),
-    .external_reset(|buttons),
-    .clock_ready(sdram_clock_ready),
-    .reset(reset),
-    .clock_ready_synchronized(clock_ready_synchronized),
-    .external_reset_seen(external_reset_seen)
-);
+// No global runtime reset tree. Module declaration initial values are the
+// FPGA configuration state. This monotonic gate only releases cold-start work.
+wire reset=1'b0;
+reg [1:0] cold_ready_sync=0;
+reg cold_ready=0;
+always @(posedge clk) if(!cold_ready) begin
+    cold_ready_sync<={cold_ready_sync[0],sdram_clock_ready && sdram_init_done};
+    if(cold_ready_sync[1])cold_ready<=1;
+end
+// The existing video-domain startup guard sees a monotonic ready flag;
+// established lock loss cannot become a hidden runtime pipeline reset.
+reg [2:0] video_cold_ready_sync=0;
+always @(posedge pixel_clock) if(!video_cold_ready_sync[2])
+    video_cold_ready_sync<={video_cold_ready_sync[1:0],video_locked};
+wire boot_done,boot_error,boot_load_done;
+wire display_started_ack,display_startup_error,display_frame_event;
+wire [3:0] boot_error_code;
 
 wire core_instruction_request_valid;
 wire [31:0] core_instruction_address;
@@ -72,6 +81,7 @@ wire sysctl_icache_invalidate;
 wire sysctl_dcache_invalidate;
 wire sysctl_dcache_clean;
 wire sysctl_cpu_hold;
+wire dcache_maintenance_ready;
 wire dcache_maintenance_busy;
 wire dcache_maintenance_done;
 wire dcache_maintenance_error;
@@ -100,56 +110,9 @@ __FETCH_QUEUE__ u_instruction_fetch_queue (
     .memory_response_ready(instruction_response_ready)
 );
 
-// Boot window: physical instruction words 0x0000..0x03ff fetch the Stage0
-// BSRAM image while every data access reaches SDRAM through the data cache.
-wire boot_selected = instruction_address[31:10] == 0;
-wire [15:0] boot_read_data;
-wire [15:0] unused_boot_rw_data;
-reg boot_pending = 0;
-reg boot_response_valid = 0;
-reg [9:0] boot_read_address = 0;
-wire boot_request_ready = !boot_pending && !boot_response_valid;
-reg instruction_source_active = 0;
-reg instruction_source_boot = 0;
-reg [2:0] instruction_source_count = 0;
+// There is no instruction overlay or source-selection FIFO.
 wire icache_cpu_request_ready;
-wire instruction_source_allowed = !instruction_source_active ||
-                                  instruction_source_boot == boot_selected;
-wire selected_instruction_request_ready = boot_selected ?
-    boot_request_ready : icache_cpu_request_ready;
-assign instruction_request_ready = instruction_source_allowed &&
-                                   selected_instruction_request_ready;
-wire instruction_request_fire = instruction_request_valid &&
-                                instruction_request_ready;
-wire boot_accept = instruction_request_fire && boot_selected;
-
-__BOOT_MEMORY__ u_boot (
-    .clk(clk),
-    .read_address(boot_accept ? instruction_address[9:0] : boot_read_address),
-    .rw_write_enable(1'b0),
-    .rw_address(10'b0),
-    .rw_write_data(16'b0),
-    .read_data(boot_read_data),
-    .rw_read_data(unused_boot_rw_data)
-);
-
-always @(posedge clk) begin
-    if (reset) begin
-        boot_pending <= 0;
-        boot_response_valid <= 0;
-        boot_read_address <= 0;
-    end else if (boot_response_valid) begin
-        if (instruction_response_ready && instruction_source_active &&
-            instruction_source_boot)
-            boot_response_valid <= 0;
-    end else if (boot_pending) begin
-        boot_pending <= 0;
-        boot_response_valid <= 1;
-    end else if (boot_accept) begin
-        boot_read_address <= instruction_address[9:0];
-        boot_pending <= 1;
-    end
-end
+assign instruction_request_ready=icache_cpu_request_ready;
 
 wire icache_cpu_response_valid;
 wire [15:0] icache_cpu_read_data;
@@ -166,11 +129,9 @@ __CACHE__ u_instruction_cache (
     .clk(clk),
     .reset(reset),
     .invalidate_all(sysctl_icache_invalidate),
-    .cpu_request_valid(instruction_request_valid && !boot_selected &&
-                       instruction_source_allowed),
+    .cpu_request_valid(instruction_request_valid),
     .cpu_address(instruction_address),
-    .cpu_response_ready(instruction_response_ready && instruction_source_active &&
-                        !instruction_source_boot),
+    .cpu_response_ready(instruction_response_ready),
     .memory_request_ready(icache_memory_request_ready),
     .memory_response_valid(icache_memory_response_valid),
     .memory_read_data(icache_memory_read_data),
@@ -184,34 +145,9 @@ __CACHE__ u_instruction_cache (
     .memory_response_ready(icache_memory_response_ready)
 );
 
-assign instruction_response_valid = instruction_source_active &&
-    (instruction_source_boot ? boot_response_valid : icache_cpu_response_valid);
-assign instruction_data = instruction_source_boot ? boot_read_data : icache_cpu_read_data;
-assign instruction_error = instruction_source_boot ? 1'b0 : icache_cpu_error;
-wire instruction_response_fire = instruction_response_valid &&
-                                 instruction_response_ready;
-
-always @(posedge clk) begin
-    if (reset) begin
-        instruction_source_active <= 0;
-        instruction_source_boot <= 0;
-        instruction_source_count <= 0;
-    end else begin
-        if (instruction_request_fire && !instruction_source_active) begin
-            instruction_source_active <= 1;
-            instruction_source_boot <= boot_selected;
-        end
-        case ({instruction_request_fire, instruction_response_fire})
-            2'b10: instruction_source_count <= instruction_source_count + 1'b1;
-            2'b01: begin
-                instruction_source_count <= instruction_source_count - 1'b1;
-                if (instruction_source_count == 1)
-                    instruction_source_active <= 0;
-            end
-            default: instruction_source_count <= instruction_source_count;
-        endcase
-    end
-end
+assign instruction_response_valid=icache_cpu_response_valid;
+assign instruction_data=icache_cpu_read_data;
+assign instruction_error=icache_cpu_error;
 
 wire core_data_request_valid;
 wire core_data_write;
@@ -236,8 +172,6 @@ wire device_write_enable;
 wire [15:0] device_write_data;
 wire [15:0] device_read_data;
 wire [15:0] sysctl_read_data;
-wire [15:0] boot_select_read_data;
-wire [15:0] dma_device_read_data;
 wire [15:0] display_read_data;
 wire [15:0] gpu_read_data;
 wire [5:0] software_leds;
@@ -249,31 +183,26 @@ wire [3:0] device_query_channel = watch_read_enable ? watch_device_channel : dev
 wire device_query_read_enable = device_read_enable || watch_read_enable;
 wire device_query_write_enable = device_write_enable && !watch_read_enable;
 
+// Board-only Device0 channel8: synchronized raw buttons (pin88 is bit0).
+// Runtime buttons never reset any subsystem; software owns debounce/actions.
+reg [1:0] button_meta = 0, button_sync = 0;
+always @(posedge clk) begin
+    button_meta <= buttons;
+    button_sync <= button_meta;
+end
+wire [15:0] button_read_data = device_query_read_enable &&
+    device_query_index == 0 && device_query_channel == 8 ? {14'd0, button_sync} : 16'd0;
+wire [15:0] ds2_read_data;
 // Unselected devices read back zero, so the core sees the OR of all buses.
 assign device_read_data =
-    sysctl_read_data | boot_select_read_data | dma_device_read_data | display_read_data |
-    gpu_read_data;
+    sysctl_read_data | display_read_data | button_read_data |
+    gpu_read_data | ds2_read_data;
 
-// Buttons are reset inputs, so their live value is 00 by the time the boot
-// stage can run. Synchronize and remember only the two valid one-hot
-// selections while a button is held; 00 retains the last selection and 11 is
-// deliberately ignored. The power-on default is S2 (`10`), so the board boots
-// the display application unless a button is held.
-reg [1:0] buttons_meta = 0;
-reg [1:0] buttons_synchronized = 0;
-reg [1:0] boot_select = 2'b10;
-always @(posedge clk) begin
-    buttons_meta <= buttons;
-    buttons_synchronized <= buttons_meta;
-    case (buttons_synchronized)
-        2'b01, 2'b10: boot_select <= buttons_synchronized;
-        default: boot_select <= boot_select;
-    endcase
-end
-assign boot_select_read_data =
-    device_query_read_enable && device_query_index == 3'd1 && device_query_channel == 4'd0
-        ? {14'b0, boot_select}
-        : 16'b0;
+__DS2__ u_ds2(.clk(clk),.reset(reset),.frame_event(display_frame_event),
+ .device_index(device_query_index),.device_channel(device_query_channel),
+ .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
+ .device_write_data(device_write_data),.device_read_data(ds2_read_data),
+ .dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att));
 
 // Device 0: cache invalidate pulses, LEDs, and the reporting UART.
 __SYSTEM_CONTROL__ u_sysctl (
@@ -284,7 +213,7 @@ __SYSTEM_CONTROL__ u_sysctl (
     .device_read_enable(device_query_read_enable),
     .device_write_enable(device_query_write_enable),
     .device_write_data(device_write_data),
-    .dcache_maintenance_busy(dcache_maintenance_busy),
+    .dcache_maintenance_ready(dcache_maintenance_ready),
     .dcache_maintenance_done(dcache_maintenance_done),
     .dcache_maintenance_error(dcache_maintenance_error),
     .watch_read_data(device_read_data),
@@ -298,39 +227,6 @@ __SYSTEM_CONTROL__ u_sysctl (
     .watch_read_enable(watch_read_enable),
     .leds(software_leds),
     .uart_tx(uart_tx)
-);
-
-wire dma_start;
-wire [23:0] dma_flash_offset;
-wire [21:0] dma_destination;
-wire [31:0] dma_file_size_bytes;
-wire [31:0] dma_memory_size_bytes;
-wire dma_busy;
-wire dma_done;
-wire dma_error;
-wire [7:0] dma_error_code;
-wire [31:0] dma_completed_words;
-
-// Device 2: boot DMA command/status register bank.
-__BOOT_DMA_DEVICE__ u_boot_dma_device (
-    .clk(clk),
-    .reset(reset),
-    .device_index(device_query_index),
-    .device_channel(device_query_channel),
-    .device_read_enable(device_query_read_enable),
-    .device_write_enable(device_query_write_enable),
-    .device_write_data(device_write_data),
-    .dma_busy(dma_busy),
-    .dma_done(dma_done),
-    .dma_error(dma_error),
-    .dma_error_code(dma_error_code),
-    .dma_completed_words(dma_completed_words),
-    .device_read_data(dma_device_read_data),
-    .dma_start(dma_start),
-    .flash_offset(dma_flash_offset),
-    .destination(dma_destination),
-    .file_size_bytes(dma_file_size_bytes),
-    .memory_size_bytes(dma_memory_size_bytes)
 );
 
 wire flash_start;
@@ -352,38 +248,21 @@ wire dma_memory_response_ready;
 wire dma_memory_response_valid;
 wire dma_memory_error;
 
-// The DMA engine only writes memory; its word port shares the SDRAM through
-// the arbiter's DMA client instead of owning a private controller port.
-__BOOT_DMA_ENGINE__ u_boot_dma_engine (
-    .clk(clk),
-    .reset(reset),
-    .start(dma_start),
-    .flash_offset(dma_flash_offset),
-    .destination(dma_destination),
-    .file_size_bytes(dma_file_size_bytes),
-    .memory_size_bytes(dma_memory_size_bytes),
-    .flash_ready(flash_ready),
-    .flash_data_valid(flash_data_valid),
-    .flash_data(flash_data),
-    .flash_done(flash_done),
-    .flash_error(flash_error),
+// Fixed boot owner; every write waits for the real arbiter response.
+assign dma_memory_write=1'b1;
+__SINGLE_BOOT_LOADER__ u_boot_loader (
+    .clk(clk),.ready_to_start(cold_ready),
+    .flash_ready(flash_ready),.flash_data_valid(flash_data_valid),.flash_data(flash_data),
+    .flash_done(flash_done),.flash_error(flash_error),
     .memory_request_ready(dma_memory_request_ready),
-    .memory_response_valid(dma_memory_response_valid),
-    .memory_error(dma_memory_error),
-    .busy(dma_busy),
-    .done(dma_done),
-    .error(dma_error),
-    .error_code(dma_error_code),
-    .completed_words(dma_completed_words),
-    .flash_start(flash_start),
-    .flash_address(flash_address),
-    .flash_length(flash_length),
-    .flash_data_ready(flash_data_ready),
-    .memory_request_valid(dma_memory_request_valid),
-    .memory_write(dma_memory_write),
-    .memory_address(dma_memory_address),
-    .memory_write_data(dma_memory_write_data),
-    .memory_response_ready(dma_memory_response_ready)
+    .memory_response_valid(dma_memory_response_valid),.memory_error(dma_memory_error),
+    .display_started(display_started_ack),.display_error(display_startup_error),
+    .cache_ready(!dcache_valid_sweep),.load_done(boot_load_done),
+    .flash_start(flash_start),.flash_address(flash_address),.flash_length(flash_length),
+    .flash_data_ready(flash_data_ready),.memory_request_valid(dma_memory_request_valid),
+    .memory_address(dma_memory_address),.memory_write_data(dma_memory_write_data),
+    .memory_response_ready(dma_memory_response_ready),
+    .done(boot_done),.error(boot_error),.error_code(boot_error_code)
 );
 
 __FLASH_READER__ u_flash (
@@ -450,6 +329,7 @@ __DATA_CACHE__ u_data_cache (
     .memory_address(dcache_memory_address),
     .memory_write_data(dcache_memory_write_data),
     .memory_response_ready(dcache_memory_response_ready),
+    .maintenance_ready(dcache_maintenance_ready),
     .maintenance_busy(dcache_maintenance_busy),
     .maintenance_done(dcache_maintenance_done),
     .maintenance_error(dcache_maintenance_error),
@@ -468,14 +348,16 @@ wire [15:0] pc;
 wire [15:0] code_segment;
 wire [31:0] retired_words;
 
-__CPU_V3_CORE__ u_core (
+
+
+__CPU_V3_CORE__ #(.INITIAL_CODE_SEGMENT(16'd7)) u_core (
     .clk(clk),
     .reset(reset),
     // Maintenance blocks architectural CPU progress only. The D-cache,
     // arbiter, DMA, display, and SDRAM adapter keep using clk normally. The
     // core is also held while the RAM16 valid arrays sweep-clear, because the
     // D-cache cannot accept requests until every stale line is invalid.
-    .hold(sysctl_cpu_hold || dcache_valid_sweep),
+    .hold(!boot_done || sysctl_cpu_hold || dcache_valid_sweep),
     .instruction_request_ready(core_instruction_request_ready),
     .instruction_response_valid(core_instruction_response_valid),
     .instruction_data(core_instruction_data),
@@ -516,30 +398,8 @@ __CPU_V3_CORE__ u_core (
     .retired_words(retired_words)
 );
 
-wire diagnostic_active;
-wire [5:0] diagnostic_leds;
-wire [2:0] boot_phase;
-wire boot_error_sticky;
-wire software_led_write = device_query_write_enable && device_index == 0 && device_channel == 2;
-
-// This observer never controls boot. It only makes pre-software progress
-// visible, then permanently hands the LEDs to the first software LED write.
-__BOOT_PROGRESS_MONITOR__ u_boot_progress (
-    .clk(clk),
-    .reset(reset),
-    .sdram_ready(sdram_init_done),
-    .dma_busy(dma_busy),
-    .dma_error(dma_error),
-    .cpu_fault(faulted),
-    .code_segment(code_segment),
-    .software_led_write(software_led_write),
-    .diagnostic_active(diagnostic_active),
-    .diagnostic_leds(diagnostic_leds),
-    .phase(boot_phase),
-    .error_sticky(boot_error_sticky)
-);
-
-assign leds = diagnostic_active ? diagnostic_leds : software_leds;
+// Boot status is observable without firmware. Software owns LEDs after release.
+assign leds=boot_error ? 2'b11 : !boot_done ? 2'b01 : software_leds[1:0];
 
 wire memory_request_valid;
 wire memory_write;
@@ -605,7 +465,9 @@ wire display_memory_error;
 
 __GPU__ u_gpu (
     .clk(clk),
-    .reset(reset),
+    // GPU state uses synchronous initialization, unlike declaration-initialized CPU state.
+    // Reuse the monotonic cold gate; buttons/lock loss never reassert this reset.
+    .reset(!cold_ready),
     .device_index(device_query_index),
     .device_channel(device_query_channel),
     .device_read_enable(device_query_read_enable),
@@ -648,6 +510,35 @@ __GPU__ u_gpu (
 
 wire sdram_lookahead_window;
 
+// Register descriptors at the system boundary. Payload and responses stay
+// on their original ordered paths; no payload buffer or RAM is introduced.
+wire [2:0] gpu_slot_valid,gpu_slot_write,gpu_slot_ready;
+wire [21:0] gpu_slot_address[0:2];wire [1:0] gpu_slot_count[0:2];
+CpuV3GpuMemoryRequestSlot gpu_ro_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_ro_memory_request_valid),.in_ready(gpu_ro_memory_request_ready),
+    .in_write(gpu_ro_memory_write),.in_address(gpu_ro_memory_address),
+    .in_count(gpu_ro_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[0]),.out_ready(gpu_slot_ready[0]),
+    .out_write(gpu_slot_write[0]),.out_address(gpu_slot_address[0]),.out_count(gpu_slot_count[0])
+);
+CpuV3GpuMemoryRequestSlot gpu_fb_r_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_fb_r_memory_request_valid),.in_ready(gpu_fb_r_memory_request_ready),
+    .in_write(gpu_fb_r_memory_write),.in_address(gpu_fb_r_memory_address),
+    .in_count(gpu_fb_r_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[1]),.out_ready(gpu_slot_ready[1]),
+    .out_write(gpu_slot_write[1]),.out_address(gpu_slot_address[1]),.out_count(gpu_slot_count[1])
+);
+CpuV3GpuMemoryRequestSlot gpu_fb_w_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_fb_w_memory_request_valid),.in_ready(gpu_fb_w_memory_request_ready),
+    .in_write(gpu_fb_w_memory_write),.in_address(gpu_fb_w_memory_address),
+    .in_count(gpu_fb_w_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[2]),.out_ready(gpu_slot_ready[2]),
+    .out_write(gpu_slot_write[2]),.out_address(gpu_slot_address[2]),.out_count(gpu_slot_count[2])
+);
+
 __ARBITER__ u_memory_arbiter (
     .lookahead_enable(sdram_lookahead_window),
     .clk(clk),
@@ -669,20 +560,20 @@ __ARBITER__ u_memory_arbiter (
     .display_request_valid(display_memory_request_valid),
     .display_address(display_memory_address),
     .display_response_ready(1'b1),
-    .gpu_ro_request_valid(gpu_ro_memory_request_valid),
-    .gpu_ro_write(gpu_ro_memory_write),
-    .gpu_ro_address(gpu_ro_memory_address),
-    .gpu_ro_line_count_minus_1(gpu_ro_memory_line_count_minus_1),
+    .gpu_ro_request_valid(gpu_slot_valid[0]),
+    .gpu_ro_write(gpu_slot_write[0]),
+    .gpu_ro_address(gpu_slot_address[0]),
+    .gpu_ro_line_count_minus_1(gpu_slot_count[0]),
     .gpu_ro_write_data(gpu_ro_memory_write_data),
-    .gpu_fb_r_request_valid(gpu_fb_r_memory_request_valid),
-    .gpu_fb_r_write(gpu_fb_r_memory_write),
-    .gpu_fb_r_address(gpu_fb_r_memory_address),
-    .gpu_fb_r_line_count_minus_1(gpu_fb_r_memory_line_count_minus_1),
+    .gpu_fb_r_request_valid(gpu_slot_valid[1]),
+    .gpu_fb_r_write(gpu_slot_write[1]),
+    .gpu_fb_r_address(gpu_slot_address[1]),
+    .gpu_fb_r_line_count_minus_1(gpu_slot_count[1]),
     .gpu_fb_r_write_data(gpu_fb_r_memory_write_data),
-    .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid),
-    .gpu_fb_w_write(gpu_fb_w_memory_write),
-    .gpu_fb_w_address(gpu_fb_w_memory_address),
-    .gpu_fb_w_line_count_minus_1(gpu_fb_w_memory_line_count_minus_1),
+    .gpu_fb_w_request_valid(gpu_slot_valid[2]),
+    .gpu_fb_w_write(gpu_slot_write[2]),
+    .gpu_fb_w_address(gpu_slot_address[2]),
+    .gpu_fb_w_line_count_minus_1(gpu_slot_count[2]),
     .gpu_fb_w_write_data(gpu_fb_w_memory_write_data),
     .memory_request_ready(memory_request_ready),
     .memory_write_data_ready(memory_write_data_ready),
@@ -708,19 +599,19 @@ __ARBITER__ u_memory_arbiter (
     .display_read_data(display_memory_read_data),
     .display_response_last(display_memory_last),
     .display_error(display_memory_error),
-    .gpu_ro_request_ready(gpu_ro_memory_request_ready),
+    .gpu_ro_request_ready(gpu_slot_ready[0]),
     .gpu_ro_write_data_ready(gpu_ro_memory_write_data_ready),
     .gpu_ro_response_valid(gpu_ro_memory_response_valid),
     .gpu_ro_read_data(gpu_ro_memory_read_data),
     .gpu_ro_response_last(gpu_ro_memory_response_last),
     .gpu_ro_error(gpu_ro_memory_error),
-    .gpu_fb_r_request_ready(gpu_fb_r_memory_request_ready),
+    .gpu_fb_r_request_ready(gpu_slot_ready[1]),
     .gpu_fb_r_write_data_ready(gpu_fb_r_memory_write_data_ready),
     .gpu_fb_r_response_valid(gpu_fb_r_memory_response_valid),
     .gpu_fb_r_read_data(gpu_fb_r_memory_read_data),
     .gpu_fb_r_response_last(gpu_fb_r_memory_response_last),
     .gpu_fb_r_error(gpu_fb_r_memory_error),
-    .gpu_fb_w_request_ready(gpu_fb_w_memory_request_ready),
+    .gpu_fb_w_request_ready(gpu_slot_ready[2]),
     .gpu_fb_w_write_data_ready(gpu_fb_w_memory_write_data_ready),
     .gpu_fb_w_response_valid(gpu_fb_w_memory_response_valid),
     .gpu_fb_w_read_data(gpu_fb_w_memory_read_data),
@@ -735,6 +626,12 @@ __ARBITER__ u_memory_arbiter (
     .memory_response_ready(memory_response_ready)
 );
 
+// Class is sampled with the arbiter's accepted descriptor; held payload and
+// response ownership remain with the active owner until its true terminal.
+wire [1:0] memory_chain_class = gpu_slot_valid[0] && gpu_slot_ready[0] ? 2'd1 :
+    gpu_slot_valid[2] && gpu_slot_ready[2] ? 2'd2 :
+    gpu_slot_valid[1] && gpu_slot_ready[1] ? 2'd3 :
+    dcache_memory_request_valid && dcache_memory_request_ready && dcache_memory_write ? 2'd3 : 2'd0;
 __SHARED_SDRAM_PORT__ #(.EARLY_GRANT(1)) u_shared_sdram_port (
     .clk(clk),
     .reset(reset),
@@ -743,6 +640,7 @@ __SHARED_SDRAM_PORT__ #(.EARLY_GRANT(1)) u_shared_sdram_port (
     .cpu_line(memory_line),
     .cpu_address(memory_address),
     .cpu_line_count_minus_1(memory_line_count_minus_1),
+    .cpu_chain_class(memory_chain_class),
     .cpu_write_data(memory_write_data),
     .cpu_response_ready(memory_response_ready),
     .controller_read_data(sdram_read_data),
@@ -750,7 +648,8 @@ __SHARED_SDRAM_PORT__ #(.EARLY_GRANT(1)) u_shared_sdram_port (
     .controller_init_done(sdram_init_done),
     .controller_request_ready(sdram_request_ready),
     .controller_stream_active(sdram_stream_active),
-    .controller_done(sdram_done),
+    .controller_write_done(sdram_write_done),
+    .controller_request_continuation(sdram_request_continuation),
     .controller_write_data_ready(sdram_write_data_ready),
     .cpu_request_ready(memory_request_ready),
     .cpu_lookahead_window(sdram_lookahead_window),
@@ -776,7 +675,10 @@ __FRAMEBUFFER_HDMI__ u_display (
     .reset(reset),
     .pixel_clock(pixel_clock),
     .serial_clock(serial_clock),
-    .video_locked(video_locked),
+    .video_locked(video_cold_ready_sync[2]),
+    .boot_enable(boot_load_done),.boot_failed(boot_error),
+    .started_ack(display_started_ack),.startup_error(display_startup_error),
+    .frame_event(display_frame_event),
     .memory_request_ready(display_memory_request_ready),
     .memory_data_valid(display_memory_data_valid),
     .memory_read_data(display_memory_read_data),
@@ -798,4 +700,22 @@ __FRAMEBUFFER_HDMI__ u_display (
     .tmds_data_n(tmds_data_n)
 );
 
+
+
+endmodule
+
+// One irrevocable descriptor, one registered address boundary. The GPU master
+// owns its payload until the real terminal, independently of this slot.
+module CpuV3GpuMemoryRequestSlot(
+ input clk,reset,in_valid,in_write,input[21:0]in_address,input[1:0]in_count,
+ output in_ready,output reg out_valid=0,output reg out_write=0,
+ output reg[21:0]out_address=0,output reg[1:0]out_count=0,input out_ready
+);
+ assign in_ready=!out_valid&&!reset;
+ always @(posedge clk)begin
+  if(reset)out_valid<=0;
+  else if(in_valid&&in_ready)begin
+   out_valid<=1;out_write<=in_write;out_address<=in_address;out_count<=in_count;
+  end else if(out_valid&&out_ready)out_valid<=0;
+ end
 endmodule

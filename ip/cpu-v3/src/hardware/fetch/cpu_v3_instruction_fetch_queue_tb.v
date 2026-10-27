@@ -31,26 +31,42 @@ function [15:0] word_pattern;
     word_pattern = 16'h6000 ^ address[15:0] ^ {address[23:16], address[31:24]};
 endfunction
 
+reg [15:0] source_words [0:3];
+reg [1:0] source_head=0, source_tail=0;
+reg [2:0] source_count=0;
+wire source_space = !memory_response_valid || memory_response_ready;
+wire source_push = memory_request_valid && memory_request_ready;
+wire source_pop = source_count != 0 && source_space;
+wire source_buffer_push = source_push && !(source_count == 0 && source_space);
 always @(posedge clk) begin
     cycles <= cycles + 1;
-    if (cycles > 500)
-        $fatal(1, "fetch queue test exceeded cycle limit");
-    if (!manual_memory)
-        memory_response_valid <= memory_request_valid && memory_request_ready;
+    if (cycles > 1000) $fatal(1, "fetch test exceeded cycle limit");
+    if (!manual_memory) begin
+        if (reset) begin
+            source_head<=0; source_tail<=0; source_count<=0; memory_response_valid<=0;
+        end else begin
+            if (source_space) begin
+                memory_response_valid <= source_count != 0 || source_push;
+                if (source_count != 0) memory_read_data <= source_words[source_head];
+                else if (source_push) memory_read_data <= word_pattern(memory_address);
+            end
+            if (source_buffer_push) begin source_words[source_tail]<=word_pattern(memory_address); source_tail<=source_tail+1'b1; end
+            if (source_pop) source_head<=source_head+1'b1;
+            case ({source_buffer_push,source_pop})
+                2'b10:source_count<=source_count+1'b1;
+                2'b01:source_count<=source_count-1'b1;
+                default:begin end
+            endcase
+        end
+    end
     if (memory_request_valid && memory_request_ready) begin
-        if (!manual_memory) memory_read_data <= word_pattern(memory_address);
-        accepts <= accepts + 1;
-        if (previous_accept_cycle >= 0 && cycles == previous_accept_cycle + 1)
-            consecutive_accepts <= consecutive_accepts + 1;
-        previous_accept_cycle <= cycles;
+        accepts<=accepts+1;
+        if (previous_accept_cycle>=0 && cycles==previous_accept_cycle+1) consecutive_accepts<=consecutive_accepts+1;
+        previous_accept_cycle<=cycles;
     end
 end
-
 always @(negedge clk) begin
-    if (!reset && (dut.queue_count > 4 || dut.metadata_count > 4 ||
-                   dut.queue_count + dut.metadata_count > 4))
-        $fatal(1, "fetch queue reservation overflow: queued=%0d outstanding=%0d",
-               dut.queue_count, dut.metadata_count);
+    if (!reset && (dut.queue_count > 2 || dut.metadata_count > 2 || dut.queue_count + dut.metadata_count > 4)) $fatal(1,"frontend ownership overflow");
 end
 
 task consume;
@@ -127,7 +143,7 @@ initial begin
     core_address <= 32'h0004_4000;
     core_request_valid <= 1;
     core_response_ready <= 0;
-    while (dut.queue_count != 4) @(negedge clk);
+    repeat (12) @(negedge clk);
     repeat (3) begin
         if (memory_request_valid)
             $fatal(1, "fetch queue issued a lookup with all reservations full");

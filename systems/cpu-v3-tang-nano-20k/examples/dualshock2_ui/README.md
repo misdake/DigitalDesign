@@ -1,0 +1,137 @@
+# DualShock2 GPU UI diagnostic
+
+This standalone RCC example uses the actual Device5 driver and GPU character
+Pass. It leaves the UART-only [minimal test](/systems/cpu-v3-tang-nano-20k/examples/dualshock2/README.md)
+and default boot selection unchanged. No 3D scene or game is included.
+
+The400x240 screen (800x480 physical output) shows:
+
+- Connection state, reply ID, and observed input sample count. ID and sample
+  count are hexadecimal; configuration replies never count as input samples.
+- Held buttons and accumulated press/release masks, all hexadecimal. Events
+  since the preceding UI recording are consumed only after that recording.
+- LX/LY and RX/RY in decimal000..255. Center is128. Positive X is right and
+  positive Y is down. Disconnection clears buttons and uses neutral axes.
+- Two64x64 stick panels with a circular reference, crosshair and dead-zone fill.
+  Yellow2x2 dots show calibrated input before the radial dead zone and may lie
+  outside the circle when the controller has square-shaped travel. Green dots
+  show square-ray mapped motion after dead-zone rescaling; a green dot covers
+  yellow when they coincide. The mapping preserves direction.
+  Points use a28pixel unit radius and symmetric two-pixel quantization, leaving
+  room for the dot inside the30pixel reference ring.
+- Signed direction components and strength (`P`) displayed with256 meaning1.0.
+  The helper returns native `fix32`; scaling and integer rounding happen only
+  when formatting these labels or calculating final dot coordinates. These are
+  independent of the unmodified raw decimal values above. Direction is zero
+  inside the dead zone; outside it is approximately unit length.
+- All16 button labels with gray/green indicators. Mapping, from bit0, is
+  SEL,L3,R3,START,UP,RIGHT,DOWN,LEFT,L2,R2,L1,R1,TRI,CIR,CROSS,SQR.
+
+When disconnected, row10 shows a last observed failed wire header instead of
+the calibration hint: `FF:xx ID:xx MK:xx CT:xxxx ST:x V:x`. CT is the live monitor
+sample described in [Device5](/systems/cpu-v3-tang-nano-20k/docs/dualshock2.md).
+ST means0=no stable idle observation,1=bad prefix,2=unsupported ID,3=bad marker,
+4=F3/config response,5=otherwise valid-looking header without an input snapshot.
+V is the latest hardware valid/read-changed status, allowing a valid hardware
+snapshot to be distinguished from software read retries. This row never changes
+LINK, normal ID, sample count or neutral axes. Captures
+are best effort, with invalid/idle/same-slot checks before and after the raw
+reads; they are not complete input packets. All00/allFF and shifted/incorrect
+IDs therefore remain visible even when the normal driver refuses the packet.
+It requires gateware with diagnostic channels9..12; older snapshot gateware
+returns status aliases there and cannot provide this diagnosis.
+
+The reusable [stick helper](../../docs/input-sticks.md) supplies asymmetric
+min/center/max calibration, radial inner/outer thresholds, direction/strength and
+an optional four-way activation gate. The diagnostic prepares each configuration
+at reset and accepted calibration/dead-zone changes; `dui_left`/`dui_right` reuse
+those snapshots. Ordinary button-free service calls skip settings work. Call
+`dui_controls_reset()` before recording the first diagnostic panel, as `dui_run`
+does. This diagnostic adds an explicit policy:
+
+- D-pad UP/DOWN pressed edges adjust the shared inner dead zone by4/256, clamped
+  to0..60. The `DZ` value and circular shaded center change together. Holding a
+  button does not repeat; simultaneous UP+DOWN does nothing.
+- Release both sticks, then press SELECT to set both current centers. All four
+  raw axes must be96..160 or the entire request is ignored. There is no automatic
+  startup calibration.
+- START resets both centers to128, endpoints to0/255 and the dead zone to24/256.
+  It takes priority over other controls. Settings live only in RAM.
+
+Disconnect neutralizes input and preserves settings. Outer radius stays256 in
+this UI. No smoothing or direction snapping hides the controller's travel shape.
+
+## Build and runtime
+
+From the repository root:
+
+```powershell
+& systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/build.ps1
+```
+
+The script selects `CPU_V3_BOOT_EXAMPLE=dualshock2_ui` for its child builds,
+restores the prior environment, materializes the authoritative Cargo OUT_DIR
+assets below `target/dualshock2-ui-boot`, independently repacks CB06 and compares
+it byte for byte by SHA256. It also exports hardware for source comparison;
+it does not synthesize, place/route, access the board or program Flash.
+
+`tools/assets.py` generates an original geometric5x7 font resampled to5x10,
+centered in8x16 cells with three transparent rows above and below. Consecutive
+text rows have a six-pixel vertical gap without changing the grid or panel layout.
+It also generates button icons, panel tiles and dot phases in one64KiB RGBA5551 atlas at
+0x4b0000, including native odd-row pixel ordering. Generated compact label data
+is part of `boot_resources`; no duplicate executable/Flash array is maintained.
+The boot pack contains only code, actual static initialization and this atlas.
+
+The CPU initializes a reusable CB, clears the non-Front plane, writes labels,
+numbers, panel tiles and indicators directly into the final UI object, then
+records two overlay objects, each drawing one cell for each stick. In total,
+three objects supply five UI draw commands. There is no full-screen CPU grid snapshot.
+After the true GPU completion, it presents through the existing A/B ownership
+API and waits for the actual Display handoff before reusing storage. Palette
+values are raw display RGB565, selected by `gpu_init()`.
+
+`dui_service` reads the latest complete snapshot without waiting for serial bits.
+It runs before each recording and during GPU/present polling, accumulating
+observed button events. Hardware polls every9.71ms even when the CPU is busy.
+It does not own or clear the shared microsecond timer. GPU/Display waits use the millisecond clock with a2s deadline.
+Driver faults halt with0xd500|stage and light both LEDs. LED0 means running;
+LED1 means connected digital or analog input.
+
+The calibrated yellow point retains square travel. The green point maps each
+ray's fractional square travel into a circle before dead-zone rescaling; a
+partially pushed diagonal no longer reaches full strength prematurely.
+
+This application requires the **autonomous latest-snapshot** DS2 full-system bitstream.
+Earlier packet/byte DS2 images are incompatible and cannot be reused. Left
+CLK/CMD/DAT/ATT remain17/20/19/18 with only LED0/1 outputs. The old six-LED profile
+is unsuitable. Pin orientation,3.3V/GND and physical checks are in the minimal
+README. Building is offline; full source/configuration, complete routed timing
+and physical image identity must be qualified before authorized programming.
+
+## Bounded verification and preview
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label ds2-ui-functional -CargoArgs @(
+  '-p','cpu-v3-tang-nano-20k','--test','stick','--test','dualshock2_ui','--','--nocapture')
+python systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/tools/preview.py `
+  --fixture target/ds2-ui-validation/layout/edges.json `
+  --atlas target/ds2-ui-validation/layout/atlas.bin `
+  --output target/ds2-ui-validation/circular-preview.png
+```
+
+The layout test executes compiled production panel code, verifies actual command
+and object memory for connection/disconnection, axis endpoints, all button bits,
+numeric masks and all four overlay ranges. Control tests check explicit center
+calibration, rejection, dead-zone bounds and button edges. Separate bounded tests
+execute the shared stick RCC against an independent floating-point reference for
+2304 samples, plus invalid/disconnected input and digital activation hysteresis.
+The one-frame entry executes the
+actual application with GPU/Display/Device5 control peers and explicitly advanced
+host time, bounded to4million CPU steps. It checks one submission/presentation
+and DS2 service during both waits. The peers do not render pixels or exchange
+serial wire bits; independent existing Device5 RTL tests cover that protocol.
+The preview decodes actual compiled UI records and native atlas bytes; it is
+not a board photograph, RTL rendering test or per-pixel acceptance comparison.
+
+Real controller/cable behavior, display output and cold boot remain board tests.

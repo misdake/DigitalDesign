@@ -1,35 +1,35 @@
 @startuml
-title CPU V3 revision 0.8 hardware structure
+title CPU V3 revision 0.9 hardware structure
 
 skinparam componentStyle rectangle
 skinparam shadowing false
 skinparam defaultTextAlignment center
 
 package "Fitted CPU V3 system (optional around the reusable core)" {
-  component "Instruction fetch queue\n4 fetched/outstanding words\nphysical address + current metadata\n4-entry x 2-word resolved-target BTC" as FetchQueue
+  component "Instruction fetch queue\n2 payload + 2 request slots\nexpected cursor + current metadata\n4-entry x 2-word resolved-target BTC\nshared queue/BTC 16-bit payload RAM\none response writer + spare references\nexact LRU relations" as FetchQueue
   component "Instruction cache\n4 KiB, 2 ways x 64 sets x 16 words\n2 parity-split true-dual-port BSRAMs\n4 x 64-bit direct refill beats" as ICache
   component "Data cache\n4 KiB, 2 ways x 64 sets x 16 words\n2 parity-split true-dual-port BSRAMs\nwrite-back + direct 64-bit line I/O" as DCache
   component "Memory arbiter\none line or word owner at a time\nforwards one burst command per line" as Arbiter
-  component "Related-clock SDRAM gearbox\n4 x 64-bit at 54 MHz\n8 x 32-bit at 108 MHz" as SDRAM
+  component "Related-clock SDRAM gearbox\n4 x 64-bit at 54 MHz\n8 x 32-bit at 108 MHz\n108-MHz pair Q to sole 54-MHz capture" as SDRAM
   component "Devices 0..7\n16 channels each" as Devices
   component "DMA / display\noptional system masters" as Masters
 }
 
 rectangle "CpuV3Core: precise, in-order, limited two-stage frontend" as Core {
   component "Fetch / execute FSM\nExecute may accept the next queued word\nprecise single retirement" as FSM
-  storage "Instruction state\nPC 16, CSEG 16, DSEG 16\nPFX12 prefix\npending comparison" as ControlState
+  storage "Instruction state\nPC 16, CSEG 16, four DSEG pages x 8\nPFX12 prefix\npending comparison" as ControlState
   storage "GPR file\n16 x 16-bit\ncombinational read\nsynchronous write" as GPR
+  storage "GPR publication slot\nvalid + address4 + data16\nRAM write + both source forwards" as GprCommit
   component "Integer lane\n16-bit ALU, shifts, compare\nCLZ / popcount" as IntAlu
-  component "Integer multiplier\nregistered signed 18 x 18 DSP\n2-stage primitive" as IntDsp
 
   package "Two-word Q16.16 FPU v2 (opcodes C/D/E)" {
-    component "Two-word front-end\nword0 drives RF read addresses\nword1 Fd / subop / len / mode" as Fe
+    component "Two-word front-end\nword0 starts synchronous operand reads\nword1 installs source/destination cursors" as Fe
     storage "FPR file\n2 x 512 x 32 SDPB BSRAM (2R1W)\nF0..F63 signed Q16.16\nhidden RCP/RSQRT/SINCOS tables" as FPR
-    component "Scalar / vector lane ALU\n32-bit Q16.16 wrap\nADD/SUB/MIN/MAX/ABS/NEG\nFLOOR/CEIL/ROUND/TRUNC/MOV" as LaneAlu
-    component "Shared multiply pipe\ninferred 36 x 36, 3 stages, II=1\n9-bit destination tag" as FpuDsp
+    component "Scalar / vector lane ALU\n32-bit Q16.16 wrap\nADD/SUB/MIN/MAX/ABS/NEG\nMOV; scalar FLOOR/CEIL/ROUND/TRUNC" as LaneAlu
+    component "Shared RF port and lane owner\nALU/product read cursors and lane calendar\ncommon destination context\nexclusive final write-event bus" as Ports
+    component "Shared CPU/FPU multiply pipe\nsigned 36 x 36, 1 product stage, II=1\none valid; blocking instruction owner\nshared destination / last-item return slot" as FpuDsp
     storage "ACC\nsigned 64-bit Q32.32\nfull-product accumulate" as Acc
-    component "Dot path\nDOT / DOTADD / DOTSTORE\nstride 1/3/4" as Dot
-    component "Special path\nblocking RCP / RSQRT / SINCOS\nlocal 18 x 18 interpolator" as Special
+    component "Special path\nblocking RCP / RSQRT / SINCOS\nfamily retained at existing launch\ndirect normalize / phase-to-LUT reads\nshared interpolation + final sign\n10-bit second-result residue / flags" as Special
   }
 }
 
@@ -38,7 +38,7 @@ FetchQueue --> ICache : sequential physical lookup
 FetchQueue --> FSM : queued instruction
 FSM --> FetchQueue : 32-bit {CSEG, PC}
 DCache --> FSM : data response
-FSM --> DCache : 32-bit {DSEG, offset}\n16-bit narrow requests
+FSM --> DCache : translated physical address\n16-bit narrow requests
 FSM <--> Devices : dedicated device port
 ICache --> Arbiter
 DCache --> Arbiter
@@ -48,39 +48,50 @@ Masters ..> ICache : invalidate
 Masters ..> DCache : invalidate
 
 FSM <--> ControlState
-FSM <--> GPR
+FSM --> GPR : read addresses
+GPR --> FSM : operand reads
+FSM --> GprCommit : result class / publication
+GprCommit --> FSM : pending operand forwarding
 GPR --> IntAlu
-IntAlu --> GPR
-GPR --> IntDsp
-IntDsp --> GPR
+IntAlu --> GprCommit
+GprCommit --> GPR : synchronous old-slot write
+GprCommit --> IntAlu : two-source pending forwarding
+GPR --> FpuDsp : unsigned integer operands\nexclusive integer issue
+FpuDsp --> GprCommit : integer result window
 FSM --> Fe : two-word pair (0xC/0xD/0xE)
-Fe --> FSM : two-word precise retire
-Fe --> FPR : early word0 operand addresses
-GPR <--> FSM : FLD / FST address (DSEG:GPR[X])
-FSM <--> FPR : ext channel (FLD / FST beats)
+Fe --> FSM : word-pair complete
+Fe --> Ports : accepted descriptor
+GPR <--> FSM : FLD / FST base GPR[X]
+FSM <--> Ports : idle ext channel (FLD / FST beats)
+Ports --> FPR : two synchronous read addresses\none broadcast write
+FPR --> Ports : external read return
 FPR --> LaneAlu : one lane from each read port
-LaneAlu --> FPR
-FPR <--> FpuDsp : multiply / VMULS
+LaneAlu --> Ports : scalar/vector final write at issue edge
+FPR --> FpuDsp : ordinary product operands
+Ports --> FpuDsp : product issue
+FpuDsp --> Ports : direct MUL write / return slot
 FpuDsp --> Acc
-Acc <--> Dot : DOT / DOTADD / DOTSTORE
-Dot --> FPR : DOTSTORE
-Special <--> FPR : hidden LUT reads
-Special --> FpuDsp : SINCOS range product
-Special --> FPR : RCP / RSQRT / SINCOS writes
+Acc --> Ports : final DOTSTORE sum window at return edge
+Special --> Ports : LUT addresses / direct write event
+FPR --> Special : packed LUT read return
+Special --> FpuDsp : range / interpolation products
+FpuDsp --> Special : fixed-latency return
 
 note right of Fe
 Issue policy:
 * no scoreboard, forwarding, or dependency comparison
-* fixed countdowns R_WAIT / W_WAIT / X_WAIT gate the next FPU instruction
+* busy and final RF write close each instruction before the next one issues
 * FPU instructions are fetch barriers and never consume PFX12
-* vector lanes run one per cycle; the shared pipe is latency 3, II = 1
-* RCP/RSQRT are blocking T0..T3; SINCOS T0..T7 dual / T0..T6 single
+* scalar ALU writes at T0; vector ALU lane k writes at Tk
+* vector lanes retain II=1; shared multiplication has one product stage
+* RCP/RSQRT are blocking T0..T2; SINCOS T0..T4 dual / T0..T3 single
+* abort cancels pending writes; RF reads retain read-first semantics
+* core hold leaves FPU running; core remembers completion until release
 end note
 
 note bottom of Core
 Core target-leaf resources:
-* integer multiplier: 1 MULT18X18 lane
-* FPU multiply pipe: 1 inferred 36 x 36 (four 18 x 18 lanes)
+* integer/FPU multiplication shares one MULT36X36 macro
 * FPR leaf claim: 2 SDPB BSRAM blocks
 The system composes these claims with cache, boot, display, and board resources.
 end note

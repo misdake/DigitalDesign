@@ -5,8 +5,8 @@
 
 use crate::CompareOp;
 use crate::{
-    BinOp, BlockId, Cmp, CmpRhs, FpuBinOp, FpuSpecialOp, FpuUnOp, Instr, IrFunc, ShiftOp, UnOp,
-    VReg,
+    BinOp, BlockId, Cmp, CmpRhs, FpuBinOp, FpuSpecialOp, FpuUnOp, FpuVecUnOp, Instr, IrFunc,
+    ShiftOp, UnOp, VReg,
 };
 use crate::{BoolExpr, FuncBuilder, RccConfig, VarId};
 use crate::{DebugVar, VarLoc};
@@ -29,6 +29,9 @@ pub struct Program {
 /// pc->line table to complete the picture)
 #[derive(Default)]
 pub struct FrontendDebug {
+    /// Exclusive word address of allocated statics, before function linking.
+    /// Includes imported modules and the standard library; not the arena limit.
+    pub static_data_end: usize,
     pub files: Vec<String>,
     pub funcs: Vec<FnDebug>,
     pub globals: Vec<DebugVar>,
@@ -286,7 +289,7 @@ fn parse_files(
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
-        next_addr: data_base,
+        next_addr: usize::from(data_base),
         limit: static_data_limit,
         limit_name: static_data_limit_name,
         ..Globals::default()
@@ -424,6 +427,7 @@ fn parse_files(
     let mut out = vec![];
     let mut debug = FrontendDebug {
         files: file_names.to_vec(),
+        static_data_end: globals.next_addr,
         ..FrontendDebug::default()
     };
     for (name, (fi, f)) in names.into_iter().zip(fns) {
@@ -580,7 +584,7 @@ struct Globals {
     aggregates: HashMap<String, (u16, Ty)>,
     /// (addr, value) words for __data_init
     data_words: Vec<(u16, u16)>,
-    next_addr: u16,
+    next_addr: usize,
     limit: usize,
     limit_name: &'static str,
     /// resolved struct layouts, by name
@@ -634,14 +638,15 @@ struct EnumDef {
 /// resolved enums by name
 type EnumTable = std::collections::BTreeMap<String, EnumDef>;
 
-/// storage size of a value in 16-bit words (spec §1: every scalar is one word)
+/// Storage size in 16-bit words; a native Q16.16 scalar occupies two words.
 fn word_size(
     ty: &Ty,
     structs: &StructTable,
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
     match ty {
-        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::Fix32 | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
+        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
+        Ty::Fix32 => Ok(2),
         Ty::FnPtr { .. } => Ok(1),
         Ty::Tuple(elems) => u16::try_from(elems.len())
             .map_err(|_| err(at, "tuple is larger than the 16-bit address space")),
@@ -801,10 +806,10 @@ impl LayoutBuilder<'_> {
                     let Some(ident) = &field.ident else { continue };
                     let fname = ident.to_string();
                     let fty = ty_of_maybe_array(&field.ty, self.consts, self.names)?;
-                    if matches!(fty, Ty::Fix32 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4) {
+                    if matches!(fty, Ty::Vec2 | Ty::Vec3 | Ty::Vec4) {
                         return Err(err(
                             &field.ty,
-                            "fix32/vecN struct fields are not supported yet (spec §12)",
+                            "vecN struct fields are not supported yet (spec §12)",
                         ));
                     }
                     // Owned buffers also depend on their element's layout;
@@ -1142,6 +1147,38 @@ fn const_words(
             }
             Ok(())
         }
+        Ty::Fix32 => {
+            let Expr::Call(call) = expr else {
+                return Err(err(
+                    expr,
+                    "a static fix32 needs zero(), from_int() or from_words()",
+                ));
+            };
+            let Expr::Path(path) = call.func.as_ref() else {
+                return Err(err(expr, "a static fix32 needs a constant constructor"));
+            };
+            let segments = &path.path.segments;
+            if segments.len() != 2 || segments[0].ident != "fix32" {
+                return Err(err(expr, "a static fix32 needs a constant constructor"));
+            }
+            let words = match (segments[1].ident.to_string().as_str(), call.args.len()) {
+                ("zero", 0) => (0, 0),
+                ("from_int", 1) => (0, const_eval(&call.args[0], consts)?),
+                ("from_words", 2) => (
+                    const_eval(&call.args[0], consts)?,
+                    const_eval(&call.args[1], consts)?,
+                ),
+                _ => {
+                    return Err(err(
+                        expr,
+                        "a static fix32 needs zero(), from_int() or from_words()",
+                    ))
+                }
+            };
+            out.push((base, words.0));
+            out.push((base + 1, words.1));
+            Ok(())
+        }
         scalar => {
             if !matches!(scalar, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
                 return Err(err(
@@ -1160,7 +1197,7 @@ fn reserve_static(
     words: usize,
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
-    let start = g.next_addr as usize;
+    let start = g.next_addr;
     let end = start
         .checked_add(words)
         .ok_or_else(|| err(at, "static data address overflow"))?;
@@ -1173,7 +1210,7 @@ fn reserve_static(
             ),
         ));
     }
-    g.next_addr = end as u16;
+    g.next_addr = end;
     Ok(start as u16)
 }
 
@@ -1801,7 +1838,7 @@ fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Resul
             _ => {
                 let (v, from) = expr(l, &value.expr)?.reg(l, &value.expr, "struct field")?;
                 let (v, _) = coerce(l, v, &from, &field_ty, &value.expr)?;
-                l.b.store_mem(base, field_offset, v);
+                store_field(l, base, field_offset, v, &field_ty);
             }
         }
     }
@@ -2731,7 +2768,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 }
                 let (v, from) = expr(l, &a.right)?.reg(l, &a.right, "field assignment")?;
                 let (v, _) = coerce(l, v, &from, &ty, &a.right)?;
-                l.b.store_mem(base, offset, v);
+                store_field(l, base, offset, v, &ty);
                 return Ok(());
             }
             if let Expr::Index(index) = a.left.as_ref() {
@@ -3658,7 +3695,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     if ty == Ty::Fix32 {
                         return Ok(Val::V(l.b.fpu_un(FpuUnOp::Neg, v), Ty::Fix32));
                     }
-                    return Ok(Val::V(l.b.fpu_vec_un(FpuUnOp::Neg, v, ty.fpu_lanes()), ty));
+                    return Ok(Val::V(l.b.fpu_vec_un(FpuVecUnOp::Neg, v, ty.fpu_lanes()), ty));
                 }
                 if ty == Ty::U16 {
                     return Err(err(&u.op, "unary `-` is only allowed on i16"));
@@ -3949,7 +3986,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         Expr::MethodCall(m) => method_call(l, m),
         Expr::Field(f) => {
             let (base, offset, ty, _) = struct_field_place(l, f)?;
-            Ok(Val::V(l.b.load_mem(base, offset), ty))
+            Ok(Val::V(load_field(l, base, offset, &ty), ty))
         }
         Expr::Index(index) => {
             let (base, off, elem, _) = array_index_addr(l, index)?;
@@ -4048,6 +4085,24 @@ fn place_addr(l: &mut FnLower, base: VReg, offset: i16) -> VReg {
     } else {
         let off = l.b.load_imm(offset as u16);
         l.b.bin(BinOp::Add, base, off)
+    }
+}
+
+// Scalar FPU fields use the existing lossless two-word FLD/FST operations.
+// Their addresses need only word alignment, just like ordinary struct fields.
+fn load_field(l: &mut FnLower, base: VReg, offset: i16, ty: &Ty) -> VReg {
+    if *ty == Ty::Fix32 {
+        l.b.fpu_load(base, offset)
+    } else {
+        l.b.load_mem(base, offset)
+    }
+}
+
+fn store_field(l: &mut FnLower, base: VReg, offset: i16, value: VReg, ty: &Ty) {
+    if *ty == Ty::Fix32 {
+        l.b.fpu_store(base, offset, value);
+    } else {
+        l.b.store_mem(base, offset, value);
     }
 }
 
@@ -4720,6 +4775,35 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             l.b.end_if(join);
             return Ok(Val::Unit);
         }
+        "read_dseg_page" => {
+            if call.args.len() != 1 {
+                return Err(err(call, "read_dseg_page(index) takes 1 argument"));
+            }
+            let index = constant_below(&call.args[0], "DSEG page index", 4, l.consts)?;
+            return Ok(Val::V(
+                l.b.mfsr(crate::SpecialReg::DsegPage(index)),
+                Ty::U16,
+            ));
+        }
+        "write_dseg_page" => {
+            if call.args.len() != 2 {
+                return Err(err(call, "write_dseg_page(index, page) takes 2 arguments"));
+            }
+            let index = constant_below(&call.args[0], "DSEG page index", 4, l.consts)?;
+            if l.unsafe_depth == 0 {
+                return Err(err(call, "write_dseg_page requires unsafe"));
+            }
+            l.unsafe_ops += 1;
+            if let Ok(value) = const_eval(&call.args[1], l.consts) {
+                if value > 255 {
+                    return Err(err(&call.args[1], "DSEG physical page must fit eight bits"));
+                }
+            }
+            let (value, from) = expr(l, &call.args[1])?.reg(l, &call.args[1], "DSEG page")?;
+            let (value, _) = coerce(l, value, &from, &Ty::U16, &call.args[1])?;
+            l.b.mtsr_dseg_page(index, value);
+            return Ok(Val::Unit);
+        }
         "dev_recv" => {
             if call.args.len() != 2 {
                 return Err(err(call, "dev_recv(dev, ch) takes 2 arguments"));
@@ -5206,6 +5290,11 @@ fn fpu_associated_call(
             let (lo, _) = coerce(l, lo, &lo_ty, &Ty::U16, &call.args[0])?;
             let (hi, hi_ty) = args[1].clone().reg(l, &call.args[1], "fix32::from_words")?;
             let (hi, _) = coerce(l, hi, &hi_ty, &Ty::U16, &call.args[1])?;
+            // A zero low half is exactly a signed integer-to-Q16.16 move.
+            // Avoid ILO2F + IHI2F for the common integral raw constructor.
+            if const_eval(&call.args[0], l.consts).is_ok_and(|v| v == 0) {
+                return Ok(Val::V(l.b.fpu_from_int(hi), Ty::Fix32));
+            }
             let low = l.b.fpu_from_lo(lo);
             Ok(Val::V(l.b.fpu_from_hi(low, hi), Ty::Fix32))
         }
@@ -5284,19 +5373,22 @@ fn fpu_method(
             return Ok(Val::V(l.b.fpu_vec_lane(base, lane), Ty::Fix32));
         }
         match method.as_str() {
-            "abs" | "floor" | "ceil" | "round" | "trunc" => {
+            "abs" => {
                 if !m.args.is_empty() {
-                    return Err(err(&m.method, format!("{method}() takes no arguments")));
+                    return Err(err(&m.method, "abs() takes no arguments"));
                 }
-                let op = match method.as_str() {
-                    "abs" => FpuUnOp::Abs,
-                    "floor" => FpuUnOp::Floor,
-                    "ceil" => FpuUnOp::Ceil,
-                    "round" => FpuUnOp::Round,
-                    _ => FpuUnOp::Trunc,
-                };
-                Ok(Val::V(l.b.fpu_vec_un(op, base, lanes), base_ty.clone()))
+                Ok(Val::V(
+                    l.b.fpu_vec_un(FpuVecUnOp::Abs, base, lanes),
+                    base_ty.clone(),
+                ))
             }
+            "floor" | "ceil" | "round" | "trunc" => Err(err(
+                &m.method,
+                format!(
+                    "`{}::{method}` is not supported; apply `{method}()` to individual fix32 lanes",
+                    base_ty.display()
+                ),
+            )),
             "sat01" | "sign" => Err(err(
                 &m.method,
                 format!(
@@ -5892,6 +5984,37 @@ fn check_fn_sig(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn static_extent_includes_modules_libraries_and_aggregate_padding() {
+        let options = crate::RccOptions {
+            data_base: 32,
+            ..Default::default()
+        };
+        let source = "mod extra; static A: u16 = 7; #[repr(align(8))] struct S { x: u16 } static B: S = S { x: 0 }; fn main() { halt(0); }";
+        let program = super::compile_program_named("extent.rs", source, &options, &mut |name| {
+            assert_eq!(name, "extra");
+            Ok("static C: Buf<u16, 3> = Buf::new([0; 3]);".into())
+        })
+        .unwrap();
+        // A + C + nine standard-library words + four-word padded S.
+        assert_eq!(program.debug.static_data_end, 32 + 1 + 3 + 9 + 4);
+        assert_eq!(
+            super::parse_source_with("fn main() { halt(0); }", 32)
+                .unwrap()
+                .debug
+                .static_data_end,
+            32
+        );
+        // The exclusive end may be 65536; it must not wrap to zero.
+        let full = super::parse_source_with("static A: u16 = 0; fn main() { halt(0); }", u16::MAX)
+            .unwrap();
+        assert_eq!(full.debug.static_data_end, 65536);
+        assert!(super::parse_source_with(
+            "static A: Buf<u16, 2> = Buf::new([0; 2]); fn main() { halt(0); }",
+            u16::MAX
+        )
+        .is_err());
+    }
     use super::parse_source_with;
 
     #[test]
@@ -5913,6 +6036,35 @@ mod tests {
                 parse_source_with(src, 0).is_err(),
                 "`fix16` must not parse: `{src}`"
             );
+        }
+    }
+
+    #[test]
+    fn vector_rounding_is_rejected_but_scalar_rounding_and_vector_abs_remain() {
+        for method in ["floor", "ceil", "round", "trunc"] {
+            let scalar = format!(
+                "fn main() {{ let v = fix32::from_words(0x8000, 0xfffe); halt(v.{method}().to_int() as u16); }}"
+            );
+            parse_source_with(&scalar, 0).expect("scalar rounding must remain supported");
+            for ty in ["vec2", "vec3", "vec4"] {
+                let source = format!(
+                    "fn main() {{ let v = {ty}::zero(); let r = v.{method}(); halt(r.x().lo_bits()); }}"
+                );
+                let error = match parse_source_with(&source, 0) {
+                    Ok(_) => panic!("unsupported vector rounding compiled: {source}"),
+                    Err(error) => error.to_string(),
+                };
+                assert!(
+                    error.contains("individual fix32 lanes"),
+                    "{source}: {error}"
+                );
+            }
+        }
+        for ty in ["vec2", "vec3", "vec4"] {
+            let source = format!(
+                "fn main() {{ let v = {ty}::zero(); let r = (-v).abs(); halt(r.x().lo_bits()); }}"
+            );
+            parse_source_with(&source, 0).expect("vector negation and abs must remain supported");
         }
     }
 

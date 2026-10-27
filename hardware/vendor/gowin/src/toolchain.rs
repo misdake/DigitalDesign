@@ -2228,12 +2228,14 @@ fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
     let plain = resource_mode_usage(report, "DSP", "MULT18X18")?;
     let wide = resource_mode_usage(report, "DSP", "MULT36X36")?;
     let multiply_add = resource_mode_usage(report, "DSP", "MULTADDALU18X18")?;
+    let wide_multiply_alu = resource_mode_usage(report, "DSP", "MULTALU36X18")?;
     let pre_add = resource_mode_usage(report, "DSP", "PADD18")?;
     let alu = resource_mode_usage(report, "DSP", "ALU54D")?;
     let known_primitives = small
         .checked_add(plain)?
         .checked_add(wide)?
         .checked_add(multiply_add)?
+        .checked_add(wide_multiply_alu)?
         .checked_add(pre_add)?
         .checked_add(alu)?;
     let all_primitives = resource_mode_total(report, "DSP")?;
@@ -2241,10 +2243,11 @@ fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
         return None;
     }
     // Two MULT9X9 fit one 18x18 lane; round partial occupancy up.
-    // A MULT36X36 occupies four 18x18 multiplier lanes.
+    // A MULT36X36 occupies four lanes; MULTALU36X18 uses two.
     plain
         .checked_add(small.checked_add(1)? / 2)?
         .checked_add(multiply_add.checked_mul(2)?)?
+        .checked_add(wide_multiply_alu.checked_mul(2)?)?
         .checked_add(wide.checked_mul(4)?)
 }
 
@@ -2880,6 +2883,12 @@ mod tests {
         assert_eq!(
             dsp_multiplier_lane_usage(&report.replace("MULT9X9", "UNKNOWN_DSP")),
             None
+        );
+        let full_system = "DSP | 22/24\n --MULT9X9 | 24\n --MULT18X18 | 10\n --MULT36X36 | 1\n --MULTALU36X18 | 4\n --MULTADDALU18X18 | 4\n --ALU54D | 1\n";
+        assert_eq!(dsp_multiplier_lane_usage(full_system), Some(42));
+        assert_eq!(
+            dsp_multiplier_lane_usage("DSP | 1/24\n --MULTALU36X18 | 1\n"),
+            Some(2)
         );
         let memories =
             "BSRAM | 44%\n --SP | 2\n --SDPB | 1\n --pROM | 8\n --pROMX9 | 9\n DSP | 38%\n";

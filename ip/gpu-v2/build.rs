@@ -48,6 +48,45 @@ fn emit_table(out: &mut String, name: &str, ty: &str, values: &[u64]) {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    let mut h9 = String::new();
+    let exponents = [
+        4_i32, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64,
+    ];
+    let steps: Vec<u64> = exponents
+        .iter()
+        .map(|&e| {
+            let mut step = 0;
+            while (1 << step) * e < 6144 {
+                step += 1;
+            }
+            step as u64
+        })
+        .collect();
+    let mut power = vec![0; 1024];
+    for code in 0..17 {
+        let base = |i: usize| {
+            (256.0
+                * (1.0 - (i * (1 << steps[code])) as f64 / 32768.0)
+                    .max(0.0)
+                    .powi(exponents[code]))
+            .round_ties_even() as u64
+        };
+        for i in 0..32 {
+            let b = base(i);
+            let delta = b - base(i + 1);
+            assert!(delta <= 71 && delta <= b);
+            power[code * 32 + i] = b | (delta << 9);
+        }
+    }
+    emit_table(&mut h9, "H9", "H9Entry", &power);
+
+    let shifts = steps.iter().map(|step| step - 6).collect::<Vec<_>>();
+    writeln!(h9, "pub const H9_SHIFTS_RAW: [u64;17] = {shifts:?};").unwrap();
+    fs::write(
+        PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("lighting_h9.rs"),
+        h9,
+    )
+    .unwrap();
     let mut texture = String::new();
     for row in rows("spec/texture-formats.csv") {
         assert_eq!(row.len(), 6);

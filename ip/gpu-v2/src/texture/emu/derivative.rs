@@ -6,11 +6,13 @@ use audited::{
     Format, FrameReport, MemoryKind, Operation,
 };
 
+#[cfg(test)]
+mod fusion_tests;
 pub mod rtl;
 
-pub const NUMERIC_BITS: usize = 858;
-pub const CONTROL_BITS: usize = 50;
-pub const SPAN: u8 = 17;
+pub const NUMERIC_BITS: usize = 219;
+pub const CONTROL_BITS: usize = 12;
+pub const SPAN: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
@@ -155,7 +157,7 @@ pub struct Field {
     pub last_read: u8,
     pub lows: Vec<usize>,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Bit {
     Constant(bool),
     Root(usize, u32),
@@ -165,7 +167,7 @@ struct Value {
     format: Format,
     view: Vec<Bit>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Op {
     Add,
     Sub,
@@ -196,10 +198,14 @@ struct RootInput {
 /// quad, per-job value array or finished stage output is retained here.
 #[derive(Clone, Debug)]
 pub struct Calendar {
+    /// Same-edge scalar wires inside an audited fabric cut: value -> event/age.
+    /// They never allocate a hidden intermediate register or numerical oracle.
+    combinational: std::collections::BTreeMap<usize, (usize, u8)>,
     bits: usize,
     span: u8,
     period: u32,
     ii: u32,
+    initial_phase: u32,
     values: Vec<Value>,
     instructions: Vec<Instruction>,
     inputs: Vec<RootInput>,
@@ -241,6 +247,56 @@ impl Calendar {
         {
             return Err("D/LOD structural placement".into());
         }
+        let mut members = std::collections::BTreeSet::new();
+        for c in cones {
+            c.audit_structure(frame)
+                .map_err(|e| format!("calendar cone: {e:?}"))?;
+            if c.latency != 1
+                || times[c.result_event].ready != times[c.result_event].issue + 1
+                || c.absorbed_events.iter().any(|&id| {
+                    times[id].issue != times[c.result_event].ready
+                        || times[id].ready != times[c.result_event].ready
+                })
+                || c.absorbed_events
+                    .iter()
+                    .copied()
+                    .chain([c.result_event])
+                    .any(|id| !members.insert(id))
+            {
+                return Err("calendar cone timing or overlap".into());
+            }
+        }
+        // Same-edge wires are local to one cone. Validate every external
+        // dependency before allowing scratch reads: field coverage alone
+        // cannot prove that another boundary's value is already registered.
+        let absorbed: std::collections::BTreeSet<_> = cones
+            .iter()
+            .flat_map(|c| c.absorbed_events.iter().copied())
+            .collect();
+        for e in &frame.events {
+            let t = times[e.id];
+            if t.issue > t.ready || t.ready > u64::from(span) {
+                return Err("calendar timing range".into());
+            }
+            if absorbed.contains(&e.id) {
+                continue;
+            }
+            let cone = cones.iter().find(|c| c.result_event == e.id);
+            let operands = cone.map_or(e.inputs.as_slice(), |c| c.operands.as_slice());
+            let mut predecessors: Vec<_> =
+                operands.iter().map(|&v| frame.values[v].producer).collect();
+            predecessors.extend(e.control);
+            if let Some(c) = cone {
+                predecessors.extend(
+                    c.absorbed_events
+                        .iter()
+                        .filter_map(|&id| frame.events[id].control),
+                );
+            }
+            if predecessors.iter().any(|&id| times[id].ready > t.issue) {
+                return Err("calendar external operand before registered return".into());
+            }
+        }
         let mut values: Vec<Value> = frame
             .values
             .iter()
@@ -251,6 +307,21 @@ impl Calendar {
             .collect();
         let mut inputs = vec![];
         let mut instructions = vec![];
+        let equality: std::collections::BTreeSet<_> = cones
+            .iter()
+            .filter(|c| equality_recipe(frame, c))
+            .map(|c| c.result_event)
+            .collect();
+        let fused: std::collections::BTreeMap<_, _> = cones
+            .iter()
+            .filter(|c| !equality.contains(&c.result_event) && !c.absorbed_events.is_empty())
+            .flat_map(|c| {
+                std::iter::once(c.result_event)
+                    .chain(c.absorbed_events.iter().copied())
+                    .map(move |id| (id, c.result_event))
+            })
+            .collect();
+        let mut combinational = std::collections::BTreeMap::new();
         // `storage::fields` maps every read of one input `(memory,row)` to the
         // first value that touched it, so several numerical read events can
         // share a single physical bank entry. Canonicalize to the same origin
@@ -327,7 +398,10 @@ impl Calendar {
                     .collect();
                 continue;
             }
-            if cones.iter().any(|c| c.absorbed_events.contains(&e.id)) {
+            if cones
+                .iter()
+                .any(|c| equality.contains(&c.result_event) && c.absorbed_events.contains(&e.id))
+            {
                 continue;
             }
             if let Operation::Read { memory, row } = e.operation {
@@ -345,14 +419,16 @@ impl Calendar {
                 }
             }
             values[v].view = (0..format.bits).map(|b| Bit::Root(v, b)).collect();
-            if e.control.is_some() || times[e.id].ready != times[e.id].issue + 1 {
+            let boundary = fused.get(&e.id).copied().unwrap_or(e.id);
+            let age = u8::try_from(times[boundary].issue).map_err(|_| "D/LOD age range")?;
+            if e.control.is_some() || times[boundary].ready != times[boundary].issue + 1 {
                 return Err("D/LOD requires unit registered operation".into());
             }
             // Charged singleton cones express dependency cuts, not equality
             // lowering. Their set-sorted operands must not reorder subtraction.
             let cone = cones
                 .iter()
-                .find(|c| c.result_event == e.id && !c.absorbed_events.is_empty());
+                .find(|c| c.result_event == e.id && equality.contains(&e.id));
             let op = if cone.is_some() {
                 Op::Equal
             } else {
@@ -383,11 +459,14 @@ impl Calendar {
             };
             instructions.push(Instruction {
                 event: e.id,
-                age: u8::try_from(times[e.id].issue).map_err(|_| "D/LOD age range")?,
+                age,
                 output: v,
                 operands: cone.map_or_else(|| e.inputs.clone(), |c| c.operands.clone()),
                 op,
             });
+            if fused.contains_key(&e.id) {
+                combinational.insert(v, (e.id, age));
+            }
         }
         let outputs = outputs
             .iter()
@@ -401,19 +480,25 @@ impl Calendar {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let calendar = Self {
+            combinational,
             bits,
             span,
             period,
             ii,
+            initial_phase: 0,
             values,
             instructions,
             inputs,
             outputs,
             fields,
-            roms: if span == super::lod::SPAN {
+            roms: if frame.name == "texture_lod_context" {
                 [
                     constant_codes(&crate::texture::format::LOG)?,
-                    constant_codes(&crate::texture::format::PREFIX)?,
+                    if frame.memories.iter().any(|m| m.name == "mip_prefix") {
+                        constant_codes(&crate::texture::format::PREFIX)?
+                    } else {
+                        vec![]
+                    },
                 ]
             } else {
                 [vec![], vec![]]
@@ -434,6 +519,13 @@ impl Calendar {
     fn audit_view(&self, v: usize, age: u8) -> Result<(), String> {
         for bit in &self.values[v].view {
             if let Bit::Root(root, bit) = *bit {
+                if self
+                    .combinational
+                    .get(&root)
+                    .is_some_and(|(_, a)| *a == age)
+                {
+                    continue;
+                }
                 if !self.fields.iter().any(|f| {
                     f.value == root
                         && bit >= f.source_low
@@ -463,6 +555,15 @@ impl Calendar {
     }
     pub fn period(&self) -> u32 {
         self.period
+    }
+    /// Choose a fixed reset phase for composition. Every live iteration still
+    /// uses the same calendar and advances only on CE; no in-flight rephasing.
+    pub fn with_issue_offset(mut self, offset: u32) -> Result<Self, String> {
+        if offset >= self.ii {
+            return Err("calendar issue offset".into());
+        }
+        self.initial_phase = (self.period - offset) % self.period;
+        Ok(self)
     }
 }
 
@@ -504,8 +605,8 @@ impl Registers {
     pub(crate) fn new(calendar: Calendar) -> Self {
         Self {
             bank: vec![0; calendar.bits.div_ceil(64)],
+            phase: 1 << calendar.initial_phase,
             calendar,
-            phase: 1,
             valid: 0,
         }
     }
@@ -527,6 +628,63 @@ impl Registers {
             .map(|(n, v)| Ok((n.clone(), self.read(*v, age, iteration, &[])?)))
             .collect::<Result<Vec<_>, String>>()
             .map(Some)
+    }
+    /// Read a held input-derived output from its actual physical slices. A
+    /// closed caller owns the lease until its last use and must prevent a new
+    /// acceptance. No valid-token extension, phase change or shadow is added.
+    fn retained_input_output(&self, name: &str, width: usize) -> Result<i128, String> {
+        let c = &self.calendar;
+        if c.period != c.ii {
+            return Err("retained output requires one physical input bank".into());
+        }
+        let value = c
+            .outputs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| *v)
+            .ok_or("retained output missing Calendar port")?;
+        if c.values[value].view.len() != width {
+            return Err("retained output width".into());
+        }
+        for bit in &c.values[value].view {
+            let Bit::Root(root, source_bit) = *bit else {
+                return Err("retained output must directly borrow an input slice".into());
+            };
+            let field = c
+                .fields
+                .iter()
+                .find(|f| {
+                    f.value == root
+                        && source_bit >= f.source_low
+                        && source_bit < f.source_low + f.width
+                        && f.birth == 0
+                        && f.last_read >= c.span
+                        && f.lows.len() == 1
+                })
+                .ok_or("retained output has no stable input field")?;
+            if !c.inputs.iter().any(|i| i.value == root) {
+                return Err("retained output is not an acceptance-only input".into());
+            }
+            if c.instructions.iter().any(|i| i.output == root) {
+                return Err("retained input root can be overwritten by an instruction".into());
+            }
+            let physical = field.lows[0] + (source_bit - field.source_low) as usize;
+            if c.fields.iter().any(|f| {
+                f.lows.iter().any(|&low| {
+                    physical >= low
+                        && physical < low + f.width as usize
+                        && (f.birth != 0
+                            || f.value != root
+                            || f.source_low + (physical - low) as u32 != source_bit)
+                })
+            }) {
+                return Err("retained output slice can be overwritten by another field".into());
+            }
+        }
+        // The audit above proves phase rotation cannot select a different row
+        // and all writes to these slices are acceptance-only. Read actual bits
+        // using the certified output view even after its valid token expires.
+        self.read(value, c.span, 0, &[])
     }
     fn iteration(&self, age: u8) -> usize {
         let period = self.calendar.period;
@@ -616,16 +774,23 @@ impl Registers {
         }
         let active = self.valid | u32::from(edge.accepted);
         let mut rom_reads = [0; 2];
+        let mut intermediate = Vec::<(usize, u8, i128)>::new();
         for i in &self.calendar.instructions {
             if active & (1 << i.age) == 0 {
                 continue;
             }
             let iteration = self.iteration(i.age);
-            let wires = if i.age == 0 { external.as_slice() } else { &[] };
+            let mut wires = if i.age == 0 { external.clone() } else { vec![] };
+            wires.extend(
+                intermediate
+                    .iter()
+                    .filter(|(_, age, _)| *age == i.age)
+                    .map(|(v, _, raw)| (*v, *raw)),
+            );
             let operands = i
                 .operands
                 .iter()
-                .map(|v| self.read(*v, i.age, iteration, wires))
+                .map(|v| self.read(*v, i.age, iteration, &wires))
                 .collect::<Result<Vec<_>, _>>()?;
             let mut rom = None;
             let raw = match i.op {
@@ -668,6 +833,9 @@ impl Registers {
                 }
             };
             range(self.calendar.values[i.output].format, raw)?;
+            if self.calendar.combinational.contains_key(&i.output) {
+                intermediate.push((i.output, i.age, raw));
+            }
             self.writes(i.output, raw, i.age + 1, iteration, false, &mut edge.writes);
             edge.calculations.push(Calculation {
                 event: i.event,
@@ -733,6 +901,46 @@ impl Registers {
         &self.bank
     }
 }
+// Constructor classification is structural: sampled nonliteral values may be
+// deliberately poisoned. The numerical frame auditor is not an executor input.
+fn equality_recipe(f: &FrameReport, c: &LogicCone) -> bool {
+    if c.absorbed_events.len() != 3 || !c.exported_events.is_empty() {
+        return false;
+    }
+    let Some(root) = f.events.get(c.result_event) else {
+        return false;
+    };
+    if root.operation != Operation::Less || root.inputs.len() != 2 {
+        return false;
+    }
+    let threshold = &f.values[root.inputs[1]];
+    if f.events[threshold.producer].operation != Operation::Literal || threshold.raw != 1 {
+        return false;
+    }
+    let sum = &f.events[f.values[root.inputs[0]].producer];
+    if sum.operation != Operation::Add || sum.inputs.len() != 2 {
+        return false;
+    }
+    let a = &f.events[f.values[sum.inputs[0]].producer];
+    let b = &f.events[f.values[sum.inputs[1]].producer];
+    let same = |x: usize, y: usize| {
+        x == y
+            || (f.events[f.values[x].producer].operation == Operation::Literal
+                && f.events[f.values[y].producer].operation == Operation::Literal
+                && f.values[x].raw == f.values[y].raw
+                && f.values[x].format == f.values[y].format)
+    };
+    a.operation == Operation::Less
+        && b.operation == Operation::Less
+        && a.inputs.len() == 2
+        && b.inputs.len() == 2
+        && same(a.inputs[0], b.inputs[1])
+        && same(a.inputs[1], b.inputs[0])
+        && [a.id, b.id, sum.id]
+            .iter()
+            .all(|id| c.absorbed_events.contains(id))
+}
+
 fn range(f: Format, raw: i128) -> Result<(), String> {
     let valid = if f.signed {
         raw >= -(1_i128 << (f.bits - 1)) && raw < 1_i128 << (f.bits - 1)
@@ -784,7 +992,10 @@ pub struct DerivativeEmu {
 impl DerivativeEmu {
     pub fn new(calendar: Calendar) -> Result<Self, String> {
         if calendar.bits != NUMERIC_BITS || calendar.span != SPAN {
-            return Err("D allocation mismatch".into());
+            return Err(format!(
+                "D allocation mismatch: bits={} span={}",
+                calendar.bits, calendar.span
+            ));
         }
         Ok(Self {
             registers: Registers::new(calendar),
@@ -810,6 +1021,76 @@ impl DerivativeEmu {
             })
             .transpose()
     }
+    /// Runtime's D-to-LOD lease reads actual terminal bank slices even after
+    /// the output token expires. The caller must finish reads before the next
+    /// enabled D acceptance; no sampled payload or extended valid is retained.
+    pub(crate) fn runtime_lod(&self) -> Result<super::lod::Input, String> {
+        let c = &self.registers.calendar;
+        if c.period != 8
+            || c.ii != 8
+            || c.span != 3
+            || c.fields.iter().any(|f| f.lows.len() != 1)
+            || c.instructions.iter().any(|i| i.age >= c.span)
+        {
+            return Err("Runtime D loan requires one II8 terminal bank".into());
+        }
+        let read = |name: &str| {
+            let v = c
+                .outputs
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| *v)
+                .ok_or("Runtime D loan output")?;
+            self.registers.read(v, c.span, 0, &[])
+        };
+        Ok(super::lod::Input {
+            slope: read("slope")? as u64,
+            bias: read("bias")? as i16,
+            header: Header {
+                quad: read("quad")? as u8,
+                mask: read("mask")? as u8,
+                slot: read("slot")? as u8,
+                max_n: read("max_n")? as u8,
+                has_mip: read("has_mip")? != 0,
+                filter: read("filter")? as u8,
+            },
+        })
+    }
+    #[cfg(test)]
+    pub(crate) fn corrupt_runtime_lod_quad(&mut self) {
+        let c = &self.registers.calendar;
+        let value = c.outputs.iter().find(|(n, _)| n == "quad").unwrap().1;
+        let Bit::Root(root, bit) = c.values[value].view[0] else {
+            panic!("quad root")
+        };
+        let f = c
+            .fields
+            .iter()
+            .find(|f| {
+                f.value == root
+                    && f.source_low <= bit
+                    && bit < f.source_low + f.width
+                    && f.birth <= c.span
+                    && c.span <= f.last_read
+            })
+            .unwrap();
+        let at = f.lows[0] + (bit - f.source_low) as usize;
+        self.registers.bank[at / 64] ^= 1u64 << (at % 64);
+    }
+    /// Closed Serial's Coordinate lease only. UV remains in D's original bank
+    /// until a later D admission; the caller retires all Coordinate reads first.
+    /// Returns combinational operands, not another retained eight-value row.
+    pub(crate) fn serial_uv(&self, lane: u8) -> Result<[u32; 2], String> {
+        if lane >= 4 {
+            return Err("Serial borrowed UV lane".into());
+        }
+        let read = |axis| {
+            self.registers
+                .retained_input_output(&format!("uv{}", usize::from(lane) * 2 + axis), 16)
+                .map(|v| v as u32)
+        };
+        Ok([read(0)?, read(1)?])
+    }
     pub fn tick(&mut self, ce: bool, input: Option<Input>) -> Result<Edge, String> {
         if ce
             && input.is_some_and(|i| {
@@ -829,5 +1110,101 @@ impl DerivativeEmu {
     }
     pub fn bank(&self) -> &[u64] {
         self.registers.bank()
+    }
+}
+
+#[cfg(test)]
+mod retained_uv_tests {
+    use super::*;
+    #[test]
+    fn serial_borrow_reads_actual_bank_after_valid_expires_and_before_next_admission() {
+        let (calendar, _, _) =
+            crate::texture::sim::staged::bound::serial::structural_calendars().unwrap();
+        let mut d = DerivativeEmu::new(calendar.clone()).unwrap();
+        let mut input = Input {
+            uv: [-131072, -1, 0, 1, 65535, 65536, 131070, 131071],
+            bias: 0,
+            force_coarsest: false,
+            header: Header {
+                quad: 15,
+                mask: 15,
+                slot: 0,
+                max_n: 10,
+                has_mip: true,
+                filter: 2,
+            },
+        };
+        for reuse in 0..3 {
+            for _ in 0..8 {
+                if d.phase() == 0 {
+                    break;
+                }
+                d.tick(true, None).unwrap();
+            }
+            assert!(d.tick(true, Some(input)).unwrap().accepted);
+            let expected = input.uv.map(|v| v as u32 & 65535);
+            let mut saw_output = false;
+            let mut saw_expired = false;
+            for wall in 0..80 {
+                for lane in 0..4 {
+                    assert_eq!(
+                        d.serial_uv(lane).unwrap(),
+                        [
+                            expected[usize::from(lane) * 2],
+                            expected[usize::from(lane) * 2 + 1]
+                        ]
+                    );
+                }
+                saw_output |= d.output().unwrap().is_some();
+                saw_expired |= saw_output && d.output().unwrap().is_none();
+                let before = d.bank().to_vec();
+                let ce = wall % 5 != 1;
+                d.tick(ce, None).unwrap();
+                if !ce {
+                    assert_eq!(d.bank(), before);
+                }
+            }
+            assert!(
+                saw_output && saw_expired,
+                "lease spans D validity and phase rotation"
+            );
+            input.uv = input.uv.map(|v| (v + 101 + reuse).clamp(-131072, 131071));
+        }
+        // Perturb the certified UV root itself. A shadow or answer replay
+        // would miss this change; the borrowed physical port must observe it.
+        let old = d.serial_uv(0).unwrap();
+        let c = &d.registers.calendar;
+        let value = c.outputs.iter().find(|(n, _)| n == "uv0").unwrap().1;
+        let Bit::Root(root, source_bit) = c.values[value].view[0] else {
+            panic!("UV must be a root input");
+        };
+        let f = c
+            .fields
+            .iter()
+            .find(|f| {
+                f.value == root && source_bit >= f.source_low && source_bit < f.source_low + f.width
+            })
+            .unwrap();
+        let bit = f.lows[0] + (source_bit - f.source_low) as usize;
+        d.registers.bank[bit / 64] ^= 1 << (bit % 64);
+        assert_eq!(d.serial_uv(0).unwrap(), [old[0] ^ 1, old[1]]);
+        assert!(d.serial_uv(4).is_err());
+        // Reject rotating banks and a future overlapping arithmetic allocation.
+        let mut rotating = calendar.clone();
+        rotating.ii = 4;
+        assert!(DerivativeEmu::new(rotating).unwrap().serial_uv(0).is_err());
+        let mut overwritten = calendar.clone();
+        overwritten.instructions[0].output = root;
+        assert!(DerivativeEmu::new(overwritten)
+            .unwrap()
+            .serial_uv(0)
+            .is_err());
+        let mut overlapping = calendar;
+        let other = overlapping.fields.iter_mut().find(|f| f.birth > 0).unwrap();
+        other.lows[0] = bit;
+        assert!(DerivativeEmu::new(overlapping)
+            .unwrap()
+            .serial_uv(0)
+            .is_err());
     }
 }

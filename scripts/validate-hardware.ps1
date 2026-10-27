@@ -1,6 +1,7 @@
 param(
     [ValidateSet("quick", "iverilog", "audit", "pnr", "all")]
-    [string]$Mode = "quick"
+    [string]$Mode = "quick",
+    [switch]$ExtendedSimulations
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,7 +52,7 @@ function Invoke-Cargo {
 
 function Invoke-BootArtifactValidation {
     $bootDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
-    $manifest = Join-Path $bootDirectory "boot.cpu-v3-manifest"
+    $application = Join-Path $bootDirectory "application.v3bin"
     $generatedPackage = Join-Path $bootDirectory "cpu-v3-boot.bin"
     $repackedPackage = Join-Path $bootDirectory "cpu-v3-boot.repacked.bin"
     $repackedMap = Join-Path $bootDirectory "cpu-v3-boot.repacked.map"
@@ -59,9 +60,10 @@ function Invoke-BootArtifactValidation {
     Invoke-Cargo "materialize generated CPU V3 boot assets" "run" @(
         "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets", "--", $bootDirectory
     )
-    Invoke-Cargo "repack CPU V3 boot manifest" "run" @(
+    Invoke-Cargo "pack CPU V3 single application" "run" @(
         "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
-        $manifest, "-o", $repackedPackage, "--map", $repackedMap
+        $application, "-o", $repackedPackage, "--map", $repackedMap
+        "--project", (Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/boot-applications.conf")
     )
 
     Write-Host ""
@@ -109,15 +111,25 @@ function Invoke-IverilogValidation {
     Invoke-Cargo "Gowin example Icarus" "test" @(
         "-p", "digital-design-hardware-gowin", "--examples", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "CPU V3 RTL Icarus" "test" @(
-        "-p", "cpu-v3", "--", "--ignored", "--nocapture"
-    )
+    $savedSharedWideEvidence = $env:SHARED_WIDE_EVIDENCE
+    try {
+        if ([string]::IsNullOrEmpty($savedSharedWideEvidence)) {
+            $env:SHARED_WIDE_EVIDENCE = Join-Path $evidenceDirectory "shared-wide"
+        }
+        Invoke-Cargo "CPU V3 RTL Icarus" "test" @(
+            "-p", "cpu-v3", "--", "--ignored", "--nocapture"
+        )
+    } finally {
+        $env:SHARED_WIDE_EVIDENCE = $savedSharedWideEvidence
+    }
     Invoke-Cargo "CPU V3 system RTL Icarus" "test" @(
         "-p", "cpu-v3-tang-nano-20k", "--lib", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "CPU V3 system example Icarus" "test" @(
+    $systemExampleArgs = @(
         "-p", "cpu-v3-tang-nano-20k", "--examples", "--", "--ignored", "--nocapture"
     )
+    if (-not $ExtendedSimulations) { $systemExampleArgs += @("--skip", "extended_") }
+    Invoke-Cargo "CPU V3 system example Icarus" "test" $systemExampleArgs
 }
 
 function Invoke-GowinBuild {
@@ -168,6 +180,7 @@ try {
     $evidence = [ordered]@{
         schema = 1
         mode = $Mode
+        extended_simulations = [bool]$ExtendedSimulations
         commit = $commit
         worktree_dirty = $dirty
         started_utc = $startedAt.ToString("o")

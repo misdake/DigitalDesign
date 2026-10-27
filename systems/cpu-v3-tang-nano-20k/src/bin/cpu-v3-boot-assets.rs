@@ -3,11 +3,16 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-// The build script derives this list from the two application slots. Replacing
-// either configured source therefore cannot leave this exporter stale.
+// The sole byte authority is Cargo OUT_DIR, generated from the configured application.
 include!(concat!(env!("OUT_DIR"), "/boot_asset_bindings.rs"));
 
 const LEGACY_ASSETS: &[&str] = &[
+    "stage0.v3bin",
+    "application-s1.v3bin",
+    "application-s2.v3bin",
+    "boot.cpu-v3-manifest",
+    "boot-project.map",
+    "boot-selection.generated.rs",
     "stage1.v3bin",
     "boot-demo.v3bin",
     "display-demo.v3bin",
@@ -70,6 +75,10 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if std::fs::read(path).ok().as_deref() == Some(bytes) {
         return Ok(());
     }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
     std::fs::write(path, bytes).map_err(|error| format!("cannot write {}: {error}", path.display()))
 }
 
@@ -96,18 +105,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_assets_include_both_applications_and_repacking_metadata() {
-        let package = ASSETS
+    fn generated_assets_have_only_one_application_and_fixed_package() {
+        assert!(ASSETS.len() == 5 || ASSETS.len() == 10);
+        assert!(ASSETS
             .iter()
-            .find(|(name, _)| *name == "cpu-v3-boot.bin")
-            .unwrap()
-            .1;
-        assert!(!package.is_empty());
-        assert!(asset_manifest().contains("asset=stage0.v3bin"));
-        assert!(asset_manifest().contains("asset=application-s1.v3bin"));
-        assert!(asset_manifest().contains("asset=application-s2.v3bin"));
-        assert!(asset_manifest().contains("asset=boot.cpu-v3-manifest"));
-        assert!(asset_manifest().contains("asset=boot-project.map"));
-        assert!(asset_manifest().contains("asset=cpu-v3-boot.map"));
+            .skip(5)
+            .all(|(name, _)| name.starts_with("gpu-demo-assets/") || *name == "demo-repack.conf"));
+        assert!(asset_manifest().contains("asset=application.v3bin"));
+        assert!(asset_manifest().contains("asset=application.static-words"));
+        assert!(asset_manifest().contains("asset=cpu-v3-boot.bin"));
+        assert!(!ASSETS.iter().any(|(name, _)| name.contains("stage0")
+            || name.contains("s1")
+            || name.contains("s2")
+            || name.contains("manifest")));
     }
 }

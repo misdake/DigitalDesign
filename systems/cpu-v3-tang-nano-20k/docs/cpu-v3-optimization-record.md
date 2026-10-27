@@ -4,6 +4,10 @@ Status: append-only detail record; normally read only when investigating an old 
 Repository: `../../../`
 Updated: 2026-10-09
 
+The CPU V3 benchmark suite and runners referenced below were retired on
+2026-10-24. These entries preserve historical evidence; their benchmark commands
+are no longer active validation entry points.
+
 The concise milestone index lives in [`cpu-v3-optimization.md`](cpu-v3-optimization.md). This file
 preserves the former long-form roadmap, measurements, rejected alternatives, and validation notes.
 New milestones add one sentence to the concise index and append their detailed evidence here; old
@@ -923,7 +927,7 @@ Implemented on `701c7f3+dirty`, without a new Stage number. The architecture and
 handshake contract live in the CPU IP
 [hardware-architecture.md](../../../ip/cpu-v3/docs/hardware-architecture.md);
 configuration and diagnostic semantics live in the
-[benchmark contract](../benchmarks/README.md#btc-comparison-diagnostics).
+former benchmark contract (retired with the CPU V3 benchmark suite).
 This adds no branch prediction, ISA changes, compiler changes or frozen workload revision.
 
 All three configurations ran the same 22 programs with the same compiler/options
@@ -1535,3 +1539,498 @@ two full-system co-simulations. Runtime CPU/FPU source matches `6849df7`; the
 new changes strengthen test coverage and clarify the existing timing contract.
 Resource and performance evidence remains attached to the original committed
 implementation and its ledger rows above.
+
+## 2026-10-09 — Shared integer shifter and scalar memory storage
+
+The original independent cloud experiment starts at published `code-v0.3-dev` commit
+`8717eb71c564821c4a0ebd91899a8d30e43a87fd`; no GPU source, ISA, clock,
+cache policy, arbitration order or SDRAM pin/refresh policy changes. The matched
+local integrated resource and timing measurements have one current home in
+[architecture](architecture.md#current-fitted-result-and-validation-boundary).
+
+### Contracts and implementation
+
+The in-order integer core consumes one shift result per Execute cycle. Six
+separate register/immediate and left/logical-right/arithmetic-right expressions
+are therefore unnecessary. A count mux and reversible 16-bit wiring share one
+17-bit signed right-shift barrel. The extra bit controls sign versus zero fill;
+the `>>>` assignment is independently signed, preserving the Verilog signedness
+rule. The instruction decoder still rejects the same reserved forms. No register,
+state, handshake or execution cycle is added.
+
+A native scalar read returns one 32-bit word, of which the adapter exposes only
+one selected 16-bit halfword. Previously the adapter held that word in a second
+payload register before copying the halfword to its response register. It now
+captures the selected halfword directly in the response register and waits for
+both read-data and native completion before asserting valid. Either event may
+arrive first or both may arrive together. A backpressured response still holds
+until acceptance. Scalar writes now hold their single halfword unshifted, with
+lane placement performed from the saved address bit. Line streams, source-held
+write beats, early grants and the opt-in grouped mode retain their schedules.
+The Rust adapter oracle reflects the earlier unqualified payload update; this
+has no successful-response or producer/consumer semantic change.
+
+The actual fitted system enables `EARLY_GRANT=1` and `PREPARE_NEXT=1`, despite
+older prose describing serial production. These settings are retained. The
+arbiter's irrevocable reserved owner is necessary for that existing successor
+slot. The bridge's two write pairs absorb the related-clock transport phase and
+supply continuous 32-bit SDRAM words without retaining a whole line. Removing
+these mechanisms was not justified by the real contracts and was not attempted.
+
+### Verification
+
+- Exhaustive baseline-versus-candidate combinational RTL comparison: all
+  16,777,216 combinations of 16-bit operand, sixteen decoder values and sixteen
+  count pairs agree, including all reserved forms and deliberately different
+  register/immediate count sources.
+- The core RTL testbench adds 768 actual instruction cases: all six forms,
+  all sixteen counts and eight sign/boundary/alternating operands; the following
+  MOV/HALT checks forwarding and seven-word retirement.
+- All 31 CPU V3 explicit RTL/co-simulation tests pass, and both system
+  co-simulation tests pass after the final adapter change.
+- The adapter test adds both scalar-read lanes, completion before/with/after
+  data, and held-response checks. These tests pass on the original adapter and
+  the candidate, including an early-grant-enabled candidate instance. Native
+  bridge bank-striping, masking, reset and SDRAM pin-model simulation pass.
+- All 52 regular Gowin vendor unit tests pass (six optional tests ignored).
+- All 22 frozen release-mode emulator benchmark records are identical across
+  baseline and candidate, including cycles, retirement, latency, traffic and
+  refresh fields. This is emulator evidence; it is not a board benchmark or
+  an RTL run of all 22 workloads.
+- The complete release workspace regression passes: 1,372 tests pass, zero
+  fail and 101 intentionally optional tests are ignored; required focused
+  CPU/system/vendor RTL tests listed above are run explicitly. Strict workspace
+  Clippy/all targets and the affected-crate check pass.
+  The changed Rust file passes rustfmt. Workspace rustfmt retains an unrelated
+  GPU module-order diff. Portable equivalents of layering/source-hygiene pass;
+  documentation checks retain the same eighteen missing GPU/web/artifact links
+  as the clean baseline. No new constraint-check failure is introduced.
+
+### Original cloud fitting evidence
+
+The original matched Gowin 1.9.11.03 Education fits are retained as a tool-specific
+comparison; the local integration uses the fit in architecture above.
+
+| Cloud fit | Baseline | Shared shifter only | Shared shifter and scalar storage |
+| --- | ---: | ---: | ---: |
+| Logic | 8,668 | 8,423 | 8,385 |
+| Total registers / Logic FF | 3,450 / 3,366 | 3,450 / 3,366 | 3,401 / 3,316 |
+| CPU fitted Fmax | 57.336 MHz | 55.715 MHz | 57.975 MHz |
+| Controller fitted Fmax | 117.426 MHz | 127.190 MHz | 127.656 MHz |
+| Worst setup slack / setup / hold endpoints | -2.495 ns / 53 / 0 | -2.511 ns / 53 / 0 | -2.483 ns / 53 / 0 |
+
+Three whole-system fits compare baseline, shared shifter alone, and both changes
+under Gowin 1.9.11.03 Education with identical target/constraints/options. All
+successful internal-clock paths meet the unchanged runtime clock constraints,
+while the same inherited SDRAM output setup failure family remains. Placement
+changes internal Fmax even in untouched blocks; the measured margins are not
+proof of a local critical-path fix.
+
+The direct Linux `gw_sh` flow produced bitstreams without the repository
+build-manifest writer. Its independent evidence file records SHA-256 hashes of
+generated inputs and bitstreams; the integration below supplies the normal
+repository build and artifact audit. The cloud experiment is offline evidence.
+
+SDRAM output timing under the newer Linux release remains a separate tool and
+CL2-interface investigation. Further area rounds should use a matched baseline
+and preserve the actual simultaneous ownership and producer/sink contracts.
+
+### Local integration verification
+
+The archive patch applies directly to clean `8717eb7`; all 60 packaged evidence
+files match their size/SHA-256 manifest. The production patch is retained, with
+the current resource section updated to the local tool measurements.
+
+Local release-mode verification passes: 288 CPU/vendor unit tests, all 31 CPU
+RTL/co-simulation tests, both full-system co-simulations, adapter and native-bridge
+RTL, and an explicit early-grant adapter instance. Regenerating the exhaustive
+shifter harness from the actual baseline and patched core passes all 16,777,216
+combinations. The core's 768 real-instruction cases remain in its RTL testbench.
+Affected-crate/all-target strict Clippy, changed-file rustfmt, layering, source
+hygiene, documentation and whitespace checks pass on Windows.
+
+The local before/after project generation compares all 41 generated files; only
+the core and scalar adapter change. CST, SDC, build options, boot assets, arbiter,
+bridge, controller and GPU shell are byte-identical. Both fits use Gowin
+1.9.8.11 Education with the same device, constraints and placement/routing options,
+and pass setup/hold analysis and repository `--check-existing` auditing. The
+different area savings in the cloud and local flows are recorded separately.
+
+After committing, the standard resource and frozen-suite scripts regenerate
+the committed system and record the exact source identity in the project's
+resources.csv and performance.csv, retaining their selected raw evidence.
+
+
+## 2026-10-11: D-cache final response slot
+
+The requested refill halfword now writes the final CPU response register directly.
+The separate refill-response payload is removed; response validity still waits for
+the complete error-free line. A late error clears the captured value, write-allocate
+stores publish zero, LCOPY publishes no CPU response, and a held response remains
+stable until consumed. Emulator and RTL retain the original enabled-edge calendar.
+The bounded response-slot test covers every requested halfword, dirty eviction,
+refill faults, held responses and LCOPY. Actual-main CPU and system co-simulation
+qualify the integrated change. Current matched fit and timing boundaries live in
+[architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
+
+
+## 2026-10-11: Unified FPU product issuer and address cursors
+
+One ProductPath now owns MUL, VMUL, VMULS, DOT, DOTADD and DOTSTORE issue/return
+control. Existing six-bit base fields advance as RF address cursors only on an
+enabled reading edge; this removes lane-times-stride address computation without
+adding a cursor bank. T0 reads live bases, VMULS holds B, and six-bit wrap and
+read-first alias behavior are unchanged. The shared arithmetic pipe, 64-bit DOT
+accumulator and final 32-bit DOTSTORE slot retain their original precision and
+calendar. Abort preserves completed MUL writes and the accumulated DOT prefix.
+Independent old/new issuer replay and full FPU replay cover CE, aliasing, strides,
+wrap and abort ages; actual-main CPU and system co-simulation qualify integration.
+The original standalone issuers remain reference tests outside the selected
+hardware graph. Resource metadata was calibrated to the fitted ProductPath, which
+uses no DSP; arithmetic DSPs remain elsewhere. The removed MULTADD primitive is a
+netlist fact; identifying its old lane-times-stride purpose is source-backed
+inference. Current fit and evidence boundaries are linked
+from [architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
+
+
+The shared scalar-ALU alternatives, including the single packed-add encoding,
+were rejected after matched whole-system fits increased Logic without reducing
+the mapped ALU count. The independent direct SDRAM event-capture candidate was
+also rejected: removing payload staging increased Logic and introduced related
+falling-controller-to-CPU setup failures. Neither experiment is in this change.
+
+## 2026-10-11: Shared CPU wide multiplier
+
+The existing two-stage signed-36 pipe now accepts CPU unsigned-16 integer
+products and special-function LUT delta/residue products as well as ordinary
+FPU products and SINCOS range reduction. The in-order core serializes these
+owners; a fixed-priority input mux and reserved return-tag bits replace the two
+independent narrow multipliers without a concurrent-client queue. The last
+integer product remains available across held wait/commit states. Special LUT
+bases travel beside the shared product, which feeds the original correction,
+scale and sign logic directly into RF writeback.
+
+Integer Execute-to-Commit, scalar/vector MUL and DOT schedules remain unchanged.
+RCP/RSQRT write at T4; single SIN/COS at T7; dual SINCOS at T7/T8. Each special
+instruction adds one enabled beat. Endpoint substitution, signed shifts,
+normalization, saturation, fixed-point widths and architectural results retain
+their original contract. Abort suppresses writes and clears pending product and
+metadata ownership; an already committed first dual output is not rolled back.
+
+The sealed implementation passes CPU unit tests, mandatory core/leaf and system
+co-simulations, bounded mixed-owner/tag-product replay, integer wait/commit hold
+and extended-age special abort/restart checks. Actual main raw sources match
+that implementation and its freshly generated full-system export matches the
+qualified executable bodies. The documentation successor changes no arithmetic.
+Scoped formatting, layering, hygiene and documentation checks pass.
+
+The matched pre-commit CPU/system candidate fits pass internal CPU timing in two
+54-MHz placements; existing external SDRAM setup violations remain outside this
+claim. No new board, generic performance or connected GPU result is implied.
+The user explicitly waived post-commit resource and benchmark recording for this
+batch. Earlier measured tables remain historical checkpoints; no new ledger
+numbers are manufactured from the reused candidate evidence.
+
+## 2026-10-17: CPU and cache area reduction
+
+The I-cache producer, metadata layout, lookup consumer, invalidation sweep and
+refill publication path are changed together. Its existing tag DPB now owns tag,
+valid and replacement state; the separate selected RAM16 valid/victim owner and
+private tag-only leaf are removed. Both ways still read alongside data in the
+existing lookup stage. Normal-mode sweep writes hold old Q, so one local bit
+records when the pending lookup's set was actually cleared, including restarted
+sweeps and long response backpressure. Sparse preloaded validity is encoded into
+the physical DPB words and verified before writes against the official vendor model.
+
+The requested refill halfword now lands directly in the final I-cache response
+slot. Publication still waits for the complete error-free line; a later fault
+replaces any captured word with zero. All sixteen words, every error prefix,
+refill gaps and held responses are checked through the public read-only boundary.
+
+The fetch producer/consumer cursors share successors using accepted-address
+equivalence; BTC replay remains separate from ordinary queue consumption. The
+FPU scalar/vector lane selects arithmetic operands before one common wrapping
+add/subtract path and shares integer-half rounding. These changes retain the
+original independent cursor and numeric models, cache geometry, 16-bit CPU port,
+retirement behavior and scalar/vector ALU execution calendar.
+
+Matched complete-wrapper measurements select the combination. A 32-bit FST
+capture-RAM candidate changes capture storage and the complete halfword drain,
+but its lower FF count increases whole-system Logic; it is not adopted. That
+result applies to that 32-bit organization. Two further complete candidates
+change the synchronous FPR read/capture calendar, native RAM width and consumer
+address order together: capture `2*len` halfwords into four RAM16 cells, then
+drain in that same order. One selects the current FPR while held; the other
+captures the high half of old Q alongside the low-half write, holding that high
+half across a paused consumer. Both remove the four wide FF registers and the
+centralized register/half selection network. Complete capture precedes retirement,
+so later FPR overwrites and memory backpressure cannot alter the payload. Each
+adds one FST capture edge per source register.
+
+The initially smaller halfword fit omitted its hold cost and is explicitly
+unqualified. Both complete pause-correct wrappers were compared against the
+selected non-FST combination: neither reduces its whole-system Logic. Favorable
+FF/CLS or clock results remain separate tradeoffs and do not override this
+batch's Logic objective. Neither remains in active source. The appended-bit
+carry spelling is also absent because it does not reduce the mapped ALU count.
+
+The retained calendar-preserving batch passes isolated CPU/system co-simulation
+and matches every exported per-program metric in the archived 22-program base.
+FST candidates have separate bounded qualification, including holds on every
+capture half and a blocked drain while all source FPRs are overwritten. Their
+frozen-suite results and capture-cycle cost remain in the source-bound report;
+they are not attributed to the selected implementation. Full workspace tests and
+affected-crate strict lint pass. Whole-workspace strict lint still reports
+pre-existing issues in untouched GPU tests. Current fitted values, external SDRAM
+acceptance scope and the exact evidence entry are in
+[architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
+The matched comparison is pre-commit evidence; committed builds and workload runs
+are recorded separately by the project commit workflow. No new board result is claimed.
+
+## 2026-10-17: Shared FPU port calendar and commit
+
+The producer descriptor, synchronous RF address launch, ALU/product lane issue,
+destination lifetime and final RF consumer are replaced together. The accepted
+word0 retains parked Fa/Fb addresses; one pair of cursors and one lane calendar
+advance vector ALU and ordinary product reads. One destination context also serves
+special functions, whose local destination fields are constant in the production
+instance. Their relative second-result offset preserves dual SINCOS write order.
+
+ALU results and the final DOTSTORE value share one next-edge commit slot. Ordinary
+MUL and special-function returns keep their direct RF writes. One mutually
+exclusive write-event bus replaces the nested final source selection; the existing
+scalar/vector and product issuer leaves leave the production dependency graph.
+ACC64, two-stage multiplication, aliasing, abort, scalar T0/T1, vector II=1 and
+all special-function schedules are preserved. Existing standalone leaves remain
+independent reference tests rather than parallel production implementations.
+
+An expanded value-model replay exposed scalar/vector RF commits using newly
+updated registers instead of pre-edge registers. The same failure is reproduced
+against frozen baseline RTL before correcting the model's sampling/commit edge;
+the arithmetic oracle and hardware execution calendar are unchanged. The replay
+checks all ordinary/special operation families, RF/ACC contents, clock holds and
+each abort age. A separate frozen-RTL differential checks public pins, read
+addresses, multiplier issues and actual writes over mixed instruction streams.
+
+The matched full-system fit and frozen-suite comparison, source identities and
+qualification boundary are linked from the current
+[architecture section](architecture.md#current-fitted-result-and-validation-boundary).
+The matched comparison is pre-commit evidence; committed builds and workload runs
+are recorded separately by the project commit workflow. No new board result is claimed.
+
+## 2026-10-18: BTC spare-pair payload storage
+
+The BTC fill producer, physical payload layout, installation ownership, replay
+addressing and replacement-state representation are changed together. A pending
+pair writes its two accepted words directly into an unreferenced spare pair in
+16-bit distributed RAM. The error-free second acceptance atomically exchanges
+the victim's pair pointer with the spare. Complete entries survive cancellation,
+errors and redirects during partial fills. Flush clears validity without breaking
+the ownership permutation; reset restores unique initial ownership.
+
+Replay addresses the selected pair/halfword directly. The former first-word
+staging register, payload FF banks and two-word final selector are removed.
+Exact LRU uses pairwise relative-order bits instead of arithmetic ranks, with
+the same invalid-first priority, installation and first-replay-word touch events.
+The existing rank-based cycle model remains an independent reference. BTC
+capacity, full physical tags, ordinary queue reservations, stale-response drain,
+PC wrap, warm replay/continuation timing and all external ports are unchanged.
+
+A complete packed-32-bit RAM candidate reduces FF but grows total Logic. A
+later direct ordinary-producer candidate reduces local logic but also grows
+the full-system footprint; neither is retained. The selected complete spare-pair
+chain is judged by the whole CPU-system fit, not the FF reduction or subtree
+LUT count. Its matched results and source identity are linked from the current
+[architecture section](architecture.md#current-fitted-result-and-validation-boundary).
+Expanded protocol replay checks repeated slot replacement, distinct halfwords,
+both replay holds, PC wrap and cancelled first-word fills against the independent
+model and frozen original RTL. No runtime clock increase or board result is claimed.
+
+## 2026-10-18: Shared fetch queue and BTC payload
+
+The memory-response producer, queue references, BTC publication and final read
+are replaced together. One 16-bit distributed RAM stores low BTC pairs plus a
+spare and four ordinary queue slots at its high addresses. An ordered two-word
+response countdown places target words directly into the spare pair. Every
+payload is written once from the accepted memory response; the separate ordinary
+queue FF bank and CPU-to-BTC copy writes are removed.
+
+A queue slot retains one bit identifying a spare reference. The matched core
+address and stable target tag select its halfword. Both target references expire
+before the second CPU acceptance exchanges the spare/victim pointers. Complete
+entries survive partial, faulted and cancelled fills, including responses
+buffered before either core acceptance. Installation and a continuation enqueue
+can share an edge. The final queue/BTC choice selects a RAM address instead of
+multiplexing separate 16-bit payload banks; direct response bypass is retained.
+
+Queue capacity, BTC capacity, full address checks, PC wrap, exact LRU, stale
+metadata ownership, reset/flush and all external transaction schedules remain
+unchanged. The independent cycle model keeps its separate queue data and rank
+representation. Expanded protocol cases and frozen original RTL replay check
+fully buffered target pairs, install plus enqueue, both faulted halves, abort
+before the first acceptance, replay holds and continued ordinary traffic. The
+zero/four/eight-entry configurations retain their public build contract.
+
+Whole-system resource/timing results and validation boundaries are linked from
+the current [architecture section](architecture.md#current-fitted-result-and-validation-boundary).
+The runtime clock is unchanged and no new board result is claimed.
+
+## 2026-10-18: Two-slot fetch and single adapter read capture
+
+The selected chain changes I-cache response holding, request provenance,
+frontend payload allocation, response bypass, BTC installation/replay and the
+board instruction-source router together. Two payload slots and two request
+slots have separate capacity checks; the existing I-cache owns blocked upstream
+data. The aggregate reservation adder/comparison, independent downstream cursor
+and head equality check are removed. FIFO order and live current bits preserve
+full stream ownership across PC wrap, faults, flush and arbitrarily many redirects.
+
+The high two addresses of the shared queue/BTC RAM hold ordinary words; target
+responses write the spare pair directly. One memory-response writer serves both.
+Same-edge pop/replacement consumes old asynchronous Q, and the second CPU
+acceptance can publish a BTC pair while a continuation enqueues. Complete entries,
+atomic spare/victim ownership and exact LRU retain their original semantics.
+The independent model keeps separate payload arrays and rank-based replacement.
+Official RAM16SDP4 and inferred replays share the same address/value fixture and
+require collision plus install/enqueue coverage for the supported BTC settings.
+All test memory producers now retain a blocked response through acceptance.
+
+Independent full-chain review also finds and fixes an upstream ownership bug:
+I-cache successor acceptance cleared an unconsumed response's error. The old
+aggregate credits masked that backpressure combination; independent payload and
+request capacities expose it. Remove the clear from both RTL and model so only
+response publication updates data/error. Direct value assertions reproduce old
+failures despite model/RTL agreement; a real Fetch/I-cache fixture queues two
+good boundary words, injects a next-line error, accepts its successor and requires
+the original fault plus correct retry. Portable/vendor DPB and all BTC settings
+pass. The four-credit control and the selected composition are re-fitted after
+the same repair, with the original starting system still the primary area baseline.
+
+The SDRAM bridge's 108-MHz pair Q and pre-edge read-toggle event feed the adapter's
+existing final 54-MHz capture. The intermediate bridge payload and valid registers
+are deleted together; the adapter retains scalar lane selection, held LAST and
+independent done ownership. Write-pair slots and native write timing are unchanged.
+A permanent bounded distinct-pair regression checks both clock phases, consecutive
+lines, scalar lanes, terminal backpressure, done order, timeout and reset.
+The native128 benchmark service calendar is calibrated to that actual port timing;
+the frozen legacy profile stays separate and unchanged.
+
+D-cache shared store-port addressing/formatting passes the complete chain but
+grows the selected composition, so it is not retained. Display interleaved layout,
+direct ROM16 address/schedule fields and their combination all grow whole-system
+Logic after complete producer/consumer replacement. FPU shared-ALU inlining only
+moves hierarchy ownership and grows its synthesized tree; no FPU change is adopted.
+A one-slot frontend saves slightly more Logic but loses more short-workload cycles;
+the selected two-slot chain preserves the better performance tradeoff.
+
+Matched complete-system resources, internal timing, both 22-program completion
+comparisons and actual-main qualification are linked from the current
+[architecture section](architecture.md#current-fitted-result-and-validation-boundary).
+Boot simplification remains a proposal; current Boot images/layout and runtime
+clock are unchanged. The independent GPU files and WIP are outside this batch.
+No new commit, board programming or complete-GPU fit is claimed.
+
+
+## 2026-10-18 Display aligned address ownership
+
+Pending, active and tile-row framebuffer bases are stored in one 32-byte
+transaction unit. Shadow writes keep the aligned address plus independent
+upper-range and low-alignment predicates; writing the other half cannot erase
+an invalid predicate. Accepted addresses restore their zero low bits at public
+readback/request boundaries. One two-row group cursor also supplies the
+local tile row, eliminating independently maintained copies of progress.
+The actual width-derived tile-row stride and concatenated offset feed the
+memory request. Response writes, both BSRAM banks, table addresses, publication,
+release and scanout consumers retain their original layout and lifetime.
+
+The aligned/grouped-only implementation loses the complete-system Logic
+comparison despite its local saving. The compressed-shadow composition is
+retained after the matched complete-system comparison and complete qualification;
+resources and evidence live in the current [architecture section](architecture.md#current-fitted-result-and-validation-boundary)
+and the linked batch report. Full-frame tests now exercise the maximum legal
+base, both invalid half-write orders, the first aligned address above the limit,
+held pending values, format snapshots, swaps, both scales, errors and underflow.
+The expected exclusive upper memory bound uses 23 bits. Core/system co-simulation,
+actual Flash RTL, system tests and affected strict lint pass. No GPU implementation,
+boot/layout change or new board result belongs to this batch.
+
+
+## 2026-10-18 Display fixed calendar and TMDS precode
+
+Row-group readiness is already fixed for the whole output row. The replacement
+calendar therefore pays the source and R/G/B RAM edges before their fixed
+consumer edges, emits the first pixel directly and retains one pair for the
+remaining repeats. Both scales use the same consumer-owned schedule, with an
+initiation interval of four or six. FIFO storage, pointers, occupancy, in-flight
+reservations, independent repeat state and production factory/resource claims
+are removed together. The standalone legacy FIFO leaf is outside production.
+
+Spare words and bits in the two existing line-buffer BSRAMs hold complete
+linear/encoded color-to-q_m tables. Five-bit encoded R/B have their own 32-word
+table; six-bit encoded G shares words with linear conversion. Every downstream
+capture, pair, pixel packet and TMDS input uses the nine-bit format. Black and
+border colors are encoded constants. Running disparity is still evaluated on
+every output pixel. No symbol is incorrectly reused across repeated pixels.
+
+The complete 13-bit q_m+popcount alternative makes each color formatter smaller
+but increases packet state and selection cost; its complete-system Logic grows
+and it is rejected. The nine-bit composition is retained. The fixed calendar
+alone and original producer combination are separately measured so local savings
+are not mistaken for complete-system savings. Matched default/actual-3x fits,
+raw reports, source identities, qualification and performance are linked from
+[the current architecture](architecture.md#current-fitted-result-and-validation-boundary).
+
+Full-frame tests retain independent coordinate RGB/sync/format checks and add
+the original encoder as a test-only symbol/disparity oracle. Exhaustive host
+table checks cover every RGB565 value in both formats. The two physical banks,
+table protection and old-Q calendar also pass official SDPB mini scanout.
+Maximum-base/error/underflow tests, mandatory CPU/system co-simulation and actual
+Flash boot RTL remain part of the final qualification. No GPU change or new
+physical-board result belongs to this batch.
+
+
+The 3x mode described in historical measurements above was removed on
+2026-10-18 at the user's request. Production retains only fixed 800x480 2x;
+no 3x feature, selector, fallback comment or dedicated 3x regression remains.
+
+
+## 2026-10-18 Single Boot, cold state and fixed 2x
+
+The sole configured RCC display application is unchanged. OUT_DIR generation,
+the v5 packer, host installer, board tooling, simulator entry and actual SPI
+loader use one fixed header and one payload destination. Header validation,
+static clearing, code writes and final completion all precede CPU release.
+There is no software Boot program, Boot BSRAM, instruction-source router,
+reset-time selection, section interpreter or programmable DMA MMIO. The former
+Boot device indices are unassigned; the loader reuses the existing narrow
+arbiter client. The board validator accepts only the sole application's test
+identity, and resource decomposition counts the new hardware loader.
+
+Production reset inputs are constants; declared FPGA state and initialized
+metadata supply cold ownership. Generic reusable IP reset interfaces remain.
+Minimal monotonic PLL/SDRAM-ready gates control startup. Established lock loss
+or a fail-stop requires reconfiguration. A cold-start audit found BTC pair
+pointers had only reset initialization; their declared initial bijection is
+now explicit. Bounded no-reset installs/replays pass at BTC0/4/8, and removing
+that initialization produces an independent unknown-payload failure.
+
+The application still sets SP and nonzero statics. The loader now supplies the
+missing zero-static contract with actual successful writes before any fetch.
+Different-size application builds preserve all production HDL/CST/SDC bytes;
+changing the application requires updating Flash and a cold configuration,
+using the same FPGA image. Complete real-SPI fixtures verify nonzero SDRAM,
+zero/nonzero static values, real FPU work, exact first fetch and last-write
+failure. Generic CPU/benchmark CSEG remains zero; only the board starts in 7.
+
+At the user's direction the 3x feature, mode constant, switch/fallback comments,
+dedicated test and pixel-calendar branches are removed. Host rendering, factory
+parameters, board pixel PLL and RTL now share fixed 800x480 2x timing. Physical
+ports, old-Q color reads, final symbol disparity, both formats and publication
+ownership remain independently checked. Earlier 3x measurements are historical.
+
+The complete replacement reduces whole CPU-system area. Matched resources,
+timing, unchanged frozen execution metrics, modeled startup cost and evidence
+are in [the current architecture](architecture.md#current-fitted-result-and-validation-boundary)
+and its batch report. This is an offline result; no new GPU or board result is
+claimed. An unimplemented SINCOS duplicate-phase opportunity remains a proposal
+and contributes no claimed saving.

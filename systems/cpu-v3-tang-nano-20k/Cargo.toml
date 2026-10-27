@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+gpu-v2 = { path = "../../ip/gpu-v2" }
 cpu-v3 = { path = "../../ip/cpu-v3" }
 rcc = { path = "../../compiler/rcc" }
 digital-design-ip-common = { path = "../../ip/common" }
@@ -16,10 +17,11 @@ minifb = { version = "0.24", optional = true }
 
 [features]
 display-window = ["dep:minifb"]
-# With neither flag, retain the board's 800x480 2x default.
-display-2x = []
-display-3x = []
 
 [build-dependencies]
+serde_json = "1"
 cpu-v3 = { path = "../../ip/cpu-v3" }
 rcc = { path = "../../compiler/rcc" }
+
+[dev-dependencies]
+serde_json = "1"

@@ -64,7 +64,7 @@ impl<M: MemoryPort> SamplerEmu<M> {
         Ok(Self {
             preparation: PreparationEmu::with_config(max_wall, config)?,
             cache: CacheEmu::new(slots, memory, max_wall)?,
-            color: ColorEmu::new(max_wall)?,
+            color: ColorEmu::new_serial_trusted(max_wall)?,
             active: None,
             fault: false,
         })

@@ -3,7 +3,6 @@ use digital_design_hardware::{
     resources::components::SsramBits, HardwareIdentity, Module, ModuleIo, TargetResourceRequest,
     VerilogDependency, VerilogIdentity,
 };
-use digital_design_hardware_gowin::DspMulS18;
 use std::cmp::Ordering;
 
 use crate::SignalEvent;
@@ -185,6 +184,54 @@ impl HardwareIdentity for CpuV3Core {
     }
 }
 
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3StoreBufferInput {
+    pub write_enable: Wire,
+    pub write_address: Wires<2>,
+    pub write_data: Wires<32>,
+    pub read_address: Wires<2>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3StoreBufferOutput {
+    pub read_data: Wires<32>,
+}
+
+/// Single-write, asynchronous-read FSTV snapshot. The core model owns the
+/// equivalent four architectural values; this leaf provides physical pricing.
+pub struct CpuV3StoreBuffer;
+impl HardwareIdentity for CpuV3StoreBuffer {
+    const TARGET_RESOURCE_LEAF: bool = true;
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3StoreBuffer").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+impl Module for CpuV3StoreBuffer {
+    type Input = CpuV3StoreBufferInput;
+    type Output = CpuV3StoreBufferOutput;
+    type EmuState = ();
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(SsramBits::new(8 * 64))]
+    }
+    fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
+        panic!("The core emulator owns the FSTV snapshot")
+    }
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_store_buffer.v").to_owned())
+    }
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_store_buffer_tb.v").to_owned())
+    }
+}
+
+#[test]
+#[ignore = "bounded distributed FSTV snapshot read/write and disabled-write check"]
+fn fst_store_buffer_runs_in_iverilog() {
+    digital_design_hardware::verify_verilog_with_iverilog::<CpuV3StoreBuffer>().unwrap();
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Phase {
     FetchRequest,
@@ -277,10 +324,8 @@ pub struct CpuV3CoreState {
     fpu2_word_valid: bool,
     fpu2_word: u16,
     fpu2_abort: bool,
-    fpu2_word0: u16,
     fpu2_subop: u8,
     fpu2_fd: u8,
-    fpu2_fa: u8,
     fpu2_is_memory: bool,
     fpu2_write_back: bool,
     fpu2_aux_data: u32,
@@ -293,7 +338,6 @@ pub struct CpuV3CoreState {
     fpu2_address: u32,
     fpu2_low: u16,
     fpu2_seen_complete: bool,
-    fpu2_fault_pc: u16,
     /// FST early-release store buffer (FPU design section 18): up to four
     /// captured 32-bit F registers, the address and fault pc of the pending
     /// store, and the remaining 16-bit word count/index draining through the
@@ -343,10 +387,8 @@ impl Default for CpuV3CoreState {
             fpu2_word_valid: false,
             fpu2_word: 0,
             fpu2_abort: false,
-            fpu2_word0: 0,
             fpu2_subop: 0,
             fpu2_fd: 0,
-            fpu2_fa: 0,
             fpu2_is_memory: false,
             fpu2_write_back: false,
             fpu2_aux_data: 0,
@@ -355,7 +397,6 @@ impl Default for CpuV3CoreState {
             fpu2_address: 0,
             fpu2_low: 0,
             fpu2_seen_complete: false,
-            fpu2_fault_pc: 0,
             fpu2_buf: [0; 4],
             fpu2_pending: 0,
             fpu2_pending_index: 0,
@@ -403,6 +444,7 @@ impl CpuV3CoreState {
     /// the core during the FPU memory states).
     fn fpu_input(
         &self,
+        core_enabled: bool,
         data_response_valid: bool,
         data_error: bool,
         data_read_data: u16,
@@ -425,7 +467,7 @@ impl CpuV3CoreState {
         // During capture the synchronous RF read is pipelined: present the next
         // register (beat + 1) while the current one is captured.
         let ext_read_index = if self.phase == Phase::Fpu2Capture {
-            u64::from(self.fpu2_beat) + 1
+            u64::from(self.fpu2_beat) + u64::from(core_enabled)
         } else {
             u64::from(self.fpu2_beat >> 1)
         };
@@ -433,13 +475,13 @@ impl CpuV3CoreState {
             let index = if aux_bridge_reads_fd(self.fpu2_subop) {
                 self.fpu2_fd
             } else {
-                self.fpu2_fa
+                encoding::aux_fa(self.instruction)
             };
             u64::from(index)
         } else {
-            u64::from(self.fpu2_fa) + ext_read_index
+            u64::from(encoding::aux_fa(self.instruction)) + ext_read_index
         };
-        let gpr_x = u32::from(self.registers[usize::from(encoding::aux_x(self.fpu2_word0))]);
+        let gpr_x = u32::from(self.registers[usize::from(encoding::aux_x(self.instruction))]);
         let memory_write = (u32::from(data_read_data) << 16) | u32::from(self.fpu2_low);
         let ext_write_data = if aux_apply {
             match self.fpu2_subop {
@@ -460,6 +502,16 @@ impl CpuV3CoreState {
             ext_write_address: u64::from(self.fpu2_fd) + (u64::from(self.fpu2_beat) >> 1),
             ext_write_data: u64::from(ext_write_data),
             ext_read_address,
+            integer_in_valid: core_enabled
+                && self.phase == Phase::Execute
+                && self.instruction >> 12 == 2
+                && matches!(field(self.instruction, 8), 8..=10 | 12),
+            integer_in_a: u64::from(self.registers[usize::from(field(self.instruction, 4))]),
+            integer_in_b: u64::from(if field(self.instruction, 8) == 12 {
+                immediate4(self.instruction, self.prefix, false)
+            } else {
+                self.registers[usize::from(field(self.instruction, 0))]
+            }),
         }
     }
 
@@ -470,11 +522,17 @@ impl CpuV3CoreState {
     /// sees them for exactly one cycle.
     fn tick_fpu2(
         &mut self,
+        core_enabled: bool,
         data_response_valid: bool,
         data_error: bool,
         data_read_data: u16,
     ) -> CpuV3FpuOutputValue {
-        let fpu_input = self.fpu_input(data_response_valid, data_error, data_read_data);
+        let fpu_input = self.fpu_input(
+            core_enabled,
+            data_response_valid,
+            data_error,
+            data_read_data,
+        );
         let fpu_out = self.fpu.comb(&fpu_input);
         self.fpu.tick(&fpu_input);
         self.fpu2_word_valid = false;
@@ -518,6 +576,7 @@ impl CpuV3CoreState {
         device_read_data: u16,
         line_copy_ready: bool,
         cache_command_error: bool,
+        cache_command_wait: bool,
     ) {
         let instruction = self.instruction;
         let opcode = encoding::opcode(instruction);
@@ -620,6 +679,9 @@ impl CpuV3CoreState {
                 cache_command_error,
             ),
             7 => {
+                if cache_command_wait {
+                    return;
+                }
                 if dst & 8 == 0 {
                     self.write_gpr(rhs, device_read_data);
                 }
@@ -716,8 +778,6 @@ impl CpuV3CoreState {
             encoding::OPCODE_VECTOR..=encoding::OPCODE_AUX => {
                 self.fpu2_word = instruction;
                 self.fpu2_word_valid = true;
-                self.fpu2_word0 = instruction;
-                self.fpu2_fault_pc = self.instruction_pc;
                 self.fpu2_seen_complete = false;
                 self.fpu2_is_memory = false;
                 self.fpu2_write_back = false;
@@ -895,12 +955,12 @@ impl CpuV3CoreState {
                 }
                 self.data_segments[usize::from(dst - 2)] = value;
             }
-            14 if matches!(dst, 6 | 7) => {
+            14 if dst == 6 => {
                 if self.async_store.valid || self.fpu2_pending != 0 || !line_copy_ready {
                     return;
                 }
             }
-            14 if dst == 8 => {
+            14 if dst == 8 && src == 0 => {
                 if !line_copy_ready {
                     return;
                 }
@@ -973,6 +1033,7 @@ impl Module for CpuV3Core {
         let execute_pipelineable = state.execute_pipelineable();
         // FPU v2: the unit's combinational read data feeds FST write beats.
         let fpu_input = state.fpu_input(
+            !input.hold,
             input.data_response_valid,
             input.data_error,
             input.data_read_data as u16,
@@ -1073,7 +1134,11 @@ impl Module for CpuV3Core {
                 device_index: u64::from(device_field & 7),
                 device_channel: u64::from(field(state.instruction, 4)),
                 device_read_enable: !input.hold && device_instruction && device_field & 8 == 0,
-                device_write_enable: !input.hold && device_instruction && device_field & 8 != 0,
+                device_write_enable: !input.hold
+                    && device_instruction
+                    && device_field & 8 != 0
+                    && !(full_cache_command(state.instruction)
+                        && (store.valid || state.fpu2_pending != 0)),
                 device_write_data: u64::from(read_gpr(device_register)),
                 halted: state.phase == Phase::Halted
                     && !store.valid
@@ -1106,6 +1171,17 @@ impl Module for CpuV3Core {
             return;
         }
         if input.hold {
+            // The unit keeps clocking while the core is paused. Consume the
+            // submitted pulse once and retain completion until retirement.
+            let out = state.tick_fpu2(
+                false,
+                input.data_response_valid,
+                input.data_error,
+                input.data_read_data as u16,
+            );
+            if out.instr_complete && matches!(state.phase, Phase::Fpu2Exec | Phase::Fpu2AuxRead) {
+                state.fpu2_seen_complete = true;
+            }
             return;
         }
         // Land the previous cycle's staged GPR write. The RTL registers the
@@ -1170,6 +1246,7 @@ impl Module for CpuV3Core {
         // combinational outputs seen by the phase logic below are pre-edge,
         // mirroring the RTL's nonblocking semantics.
         let fpu_out = state.tick_fpu2(
+            true,
             input.data_response_valid,
             input.data_error,
             input.data_read_data as u16,
@@ -1200,10 +1277,15 @@ impl Module for CpuV3Core {
                 }
             }
             Phase::Execute => {
+                // The waiting instruction still expires an unused prefix/test
+                // just like other Execute waiters. Drain gating uses old owners.
+                let cache_wait = full_cache_command(state.instruction)
+                    && (async_store_was_valid || fpu2_pending_was != 0);
                 state.execute(
                     input.device_read_data as u16,
                     input.data_line_copy_ready,
                     input.data_cache_command_error,
+                    cache_wait,
                 );
                 if execute_pipelineable
                     && input.instruction_request_ready
@@ -1271,16 +1353,15 @@ impl Module for CpuV3Core {
                         state.pc = state.pc.wrapping_add(1);
                         state.fpu2_subop = encoding::scalar_subop(word1);
                         state.fpu2_fd = encoding::word1_fd(word1);
-                        state.fpu2_fa = encoding::aux_fa(state.fpu2_word0);
                         // AUX kind 00, subops FLD (0x00) / FST (0x01).
                         state.fpu2_is_memory = encoding::opcode(state.instruction)
                             == encoding::OPCODE_AUX
-                            && encoding::aux_kind(state.fpu2_word0) == 0
+                            && encoding::aux_kind(state.instruction) == 0
                             && matches!(state.fpu2_subop, encoding::FLD | encoding::FST);
                         state.fpu2_write_back = state.fpu2_subop == encoding::FST;
                         let is_aux_bridge = encoding::opcode(state.instruction)
                             == encoding::OPCODE_AUX
-                            && encoding::aux_kind(state.fpu2_word0) == 0
+                            && encoding::aux_kind(state.instruction) == 0
                             && aux_bridge_subop(state.fpu2_subop);
                         // mode[1:0]: 00 scalar, 01 vec2, 10 vec3, 11 vec4, so
                         // len = mode[1:0] + 1. Reserved mode[3:2] != 00 is
@@ -1289,7 +1370,7 @@ impl Module for CpuV3Core {
                         state.fpu2_len = if mode & 0xC != 0 { 1 } else { (mode & 0x3) + 1 };
                         state.fpu2_address = physical_data_address(
                             state.data_segments,
-                            state.registers[usize::from(encoding::aux_x(state.fpu2_word0))],
+                            state.registers[usize::from(encoding::aux_x(state.instruction))],
                         );
                         state.fpu2_beat = 0;
                         state.phase = if is_aux_bridge {
@@ -1320,7 +1401,7 @@ impl Module for CpuV3Core {
                     // flags were registered by the scalar path when the ALU
                     // ran, so they are valid at this retire edge; the following
                     // conditional branch/conditional move consumes them.
-                    if encoding::opcode(state.fpu2_word0) == encoding::OPCODE_SCALAR
+                    if encoding::opcode(state.instruction) == encoding::OPCODE_SCALAR
                         && state.fpu2_subop == encoding::CMP
                     {
                         state.pending_test = Some(if fpu_out.flag_lt {
@@ -1354,7 +1435,7 @@ impl Module for CpuV3Core {
                 // F writes were driven combinationally through the ext write
                 // port this cycle; the GPR-writing bridges stage their result
                 // through the normal synchronous GPR write.
-                let x = encoding::aux_x(state.fpu2_word0);
+                let x = encoding::aux_x(state.instruction);
                 match state.fpu2_subop {
                     AUX_FLO2I => state.write_gpr(x, (state.fpu2_aux_data & 0xffff) as u16),
                     AUX_FHI2I => state.write_gpr(x, (state.fpu2_aux_data >> 16) as u16),
@@ -1374,7 +1455,7 @@ impl Module for CpuV3Core {
                 }
                 if state.fpu2_beat == state.fpu2_len - 1 {
                     state.fpu2_store_address = state.fpu2_address;
-                    state.fpu2_store_fault_pc = state.fpu2_fault_pc;
+                    state.fpu2_store_fault_pc = state.instruction_pc;
                     state.fpu2_pending = state.fpu2_len * 2;
                     state.fpu2_pending_index = 0;
                     state.retire(2);
@@ -1388,7 +1469,7 @@ impl Module for CpuV3Core {
             Phase::Fpu2MemResponse if input.data_response_valid => {
                 if input.data_error {
                     state.fpu2_abort = true;
-                    let fault_pc = state.fpu2_fault_pc;
+                    let fault_pc = state.instruction_pc;
                     state.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
                 } else if state.fpu2_beat & 1 == 0 {
                     // Low half of an F register: FLD keeps it for the write on
@@ -1410,7 +1491,7 @@ impl Module for CpuV3Core {
             Phase::MultiplyCommit => {
                 state.write_gpr(
                     state.multiply_destination,
-                    (state.multiply_product >> state.multiply_shift) as u16,
+                    (fpu_out.integer_out_product >> state.multiply_shift) as u16,
                 );
                 state.retire(state.multiply_retire_words);
             }
@@ -1453,20 +1534,20 @@ impl Module for CpuV3Core {
         Some(
             include_str!("cpu_v3_core.v")
                 .replace(
-                    "__DSP_MULTIPLIER__",
-                    &DspMulS18::verilog_identity().module_name(),
-                )
-                .replace(
                     "__GPR_RAM__",
                     &CpuV3GprRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__STORE_BUFFER__",
+                    &CpuV3StoreBuffer::verilog_identity().module_name(),
                 ),
         )
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<DspMulS18>("u_multiplier"),
             VerilogDependency::new::<CpuV3GprRam>("u_gpr_ram"),
+            VerilogDependency::new::<CpuV3StoreBuffer>("u_store_buffer"),
             VerilogDependency::new::<CpuV3Fpu>("u_fpu"),
         ]
     }
@@ -1516,4 +1597,9 @@ fn is_prefix_consumer(instruction: u16) -> bool {
         11 => matches!(function, 0..=7),
         _ => false,
     }
+}
+
+// Device-0 clean/invalidate commands are ordered after the core's old stores.
+fn full_cache_command(instruction: u16) -> bool {
+    instruction & 0xff00 == 0x7800 && matches!(field(instruction, 4), 1 | 4)
 }

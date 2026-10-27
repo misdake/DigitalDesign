@@ -15,6 +15,8 @@ pub enum BlockKind {
     InverseTail,
     SquareSum,
     PowerHead,
+    H9Head,
+    H9Tail,
     SquareSumHead,
 }
 impl BlockKind {
@@ -28,6 +30,8 @@ impl BlockKind {
             Self::InverseTail => 0x20062abd6a6b9db3,
             Self::SquareSum => 0xd04217cca9e24ce5,
             Self::PowerHead => 0x59683cd2ebb7e36f,
+            Self::H9Head => 13269280326385205136,
+            Self::H9Tail => 12477923615081637751,
             Self::SquareSumHead => 0xab7ffb5a088facbe,
         }
     }
@@ -41,6 +45,8 @@ impl BlockKind {
             Self::InverseTail => "inverse-tail",
             Self::SquareSum => "square-sum",
             Self::PowerHead => "power-head",
+            Self::H9Head => "h9-head",
+            Self::H9Tail => "h9-tail",
             Self::SquareSumHead => "square-sum-head",
         }
     }
@@ -53,6 +59,7 @@ impl BlockKind {
             Self::InverseHead => "lighting-function-fusion-20261005/inverse_address_bounded; lighting-oc-fusion-20261005/rsqrt-memory",
             Self::InverseTail => "lighting-function-fusion-20261005/inverse_tail_bounded; lighting-oc-fusion-20261005/shared-mux",
             Self::SquareSum => "lighting-function-fusion-20261005/inverse_sum_address_bounded",
+            Self::H9Head | Self::H9Tail => "postquad-bold-light-calendar-20261010/short34: whole-chain two-layout 54MHz export proof; regenerated source still requires matched qualification",
             Self::PowerHead => "lighting-retime-20261005/power-control/power_frontend_whole (endpoint clamp excluded)",
             Self::SquareSumHead => "multiplier-retiming/sum-address60 (whole Lighting candidate)",
         }
@@ -189,6 +196,142 @@ pub fn power_head(
     Ok(PowerHead { address, tail, neg })
 }
 
+pub struct H9Head {
+    pub address: Fixed<10, 0, false>,
+    pub fraction: Fixed<6, 0, false>,
+    pub far: Fixed<1, 0, false>,
+}
+/// Distance from the already clamped Q15 cosine endpoint, in a context grid.
+/// The fraction and dark-tail gate have the same registered ready edge.
+pub fn h9_head(
+    f: &Frame<'_>,
+    x: crate::lighting::format::Specular,
+    code: Fixed<5, 0, false>,
+    step: Fixed<3, 0, false>,
+) -> Result<H9Head, Fault> {
+    let raw = f.binary_scale::<16, 0, false>(x)?;
+    let distance = f.sub_same(Fixed::<16, 0, false>::constant::<32768>(), raw)?;
+
+    let negative = f.sub_same(Fixed::<18, 0, true>::constant::<0>(), f.resize_exact(step)?)?;
+    let aligned = f.shift(distance, negative)?;
+    let index = f.slice::<9, 0, false, 6>(aligned)?;
+    let far = f.less(Fixed::<9, 0, false>::constant::<31>(), index)?;
+    let page = f.shift_left_const::<5, 10, 0, false>(f.resize_exact(code)?)?;
+    let address = f.add_same(page, f.resize_exact(f.slice::<5, 0, false, 0>(index)?)?)?;
+    let fraction = f.slice::<6, 0, false, 0>(aligned)?;
+    Ok(H9Head {
+        address,
+        fraction,
+        far,
+    })
+}
+fn h9_partial<const SHIFT: u32>(
+    f: &Frame<'_>,
+    delta: Fixed<7, 0, false>,
+    fraction: Fixed<6, 0, false>,
+) -> Result<Fixed<13, 0, false>, Fault> {
+    let bit = f.slice::<1, 0, false, SHIFT>(fraction)?;
+    let term = f.shift_left_const::<SHIFT, 13, 0, false>(f.resize_exact(delta)?)?;
+    f.select(bit, term, Fixed::constant::<0>())
+}
+/// Explicit bounded fabric product inside a registered rounded-subtract cone.
+/// All six partial products remain counted; no hidden numerical operation or
+/// uncharged DSP is inserted into a pure-logic timing certificate.
+pub fn h9_tail(
+    f: &Frame<'_>,
+    entry: Fixed<16, 0, false>,
+    fraction: Fixed<6, 0, false>,
+    far: Fixed<1, 0, false>,
+    positive: Fixed<1, 0, false>,
+) -> Result<Intensity, Fault> {
+    let base = f.slice::<9, 0, false, 0>(entry)?;
+    let delta = f.slice::<7, 0, false, 9>(entry)?;
+    let low = f.add_same(
+        h9_partial::<0>(f, delta, fraction)?,
+        h9_partial::<1>(f, delta, fraction)?,
+    )?;
+    let middle = f.add_same(
+        h9_partial::<2>(f, delta, fraction)?,
+        h9_partial::<3>(f, delta, fraction)?,
+    )?;
+    let high = f.add_same(
+        h9_partial::<4>(f, delta, fraction)?,
+        h9_partial::<5>(f, delta, fraction)?,
+    )?;
+    let sum = f.add_same(f.add_same(low, middle)?, high)?;
+    let rounded = f.add_same(sum, Fixed::constant::<32>())?;
+    let correction = f.slice::<7, 0, false, 6>(rounded)?;
+    let value = f.sub_same(base, f.resize_exact(correction)?)?;
+    let value = f.select(far, Fixed::constant::<0>(), value)?;
+    let value = f.select(positive, value, Fixed::constant::<0>())?;
+    f.binary_scale(value)
+}
+
+/// Narrow physical certificate for the only supported H9 mixed-lane interface.
+/// Matching the full typed cone already proves the six partial products; this
+/// also freezes the external role order used by the DSP emitter.
+pub(crate) fn audit_h9_tail_interface(
+    frame: &FrameReport,
+    root: usize,
+    inputs: &[usize],
+) -> Result<(), String> {
+    audit_h9_tail_roles(
+        &frame.events,
+        root,
+        inputs,
+        |v| frame.values[v].format,
+        |v| frame.values[v].producer,
+    )
+}
+pub(crate) fn audit_h9_tail_roles(
+    events: &[audited::Event],
+    root: usize,
+    inputs: &[usize],
+    format: impl Fn(usize) -> audited::Format,
+    producer: impl Fn(usize) -> usize,
+) -> Result<(), String> {
+    let error = || "H9-tail external role/order certificate".to_owned();
+    if inputs.len() != 13 {
+        return Err(error());
+    }
+    for (value, bits) in inputs[..4].iter().zip([1, 1, 6, 16]) {
+        let f = format(*value);
+        if f.bits != bits || f.signed || f.fraction != 0 {
+            return Err(error());
+        }
+    }
+    let scale = &events[root];
+    if scale.operation != Operation::BinaryScale || scale.inputs.len() != 1 {
+        return Err(error());
+    }
+    let positive = &events[producer(scale.inputs[0])];
+    if positive.operation != Operation::Select || positive.inputs[0] != inputs[0] {
+        return Err(error());
+    }
+    let far = &events[producer(positive.inputs[1])];
+    if far.operation != Operation::Select || far.inputs[0] != inputs[1] {
+        return Err(error());
+    }
+    let sub = &events[producer(far.inputs[2])];
+    if sub.operation != Operation::Sub {
+        return Err(error());
+    }
+    let base = &events[producer(sub.inputs[0])];
+    if base.operation != Operation::Slice(0) || base.inputs != [inputs[3]] {
+        return Err(error());
+    }
+    for bit in 0..6 {
+        if !events.iter().any(|e| {
+            e.operation == Operation::Slice(bit)
+                && e.inputs == [inputs[2]]
+                && e.output.is_some_and(|v| format(v).bits == 1)
+        }) {
+            return Err(error());
+        }
+    }
+    Ok(())
+}
+
 fn clamp<const B: u32, const F: u32, const S: bool>(
     f: &Frame<'_>,
     x: Fixed<B, F, S>,
@@ -316,6 +459,8 @@ fn patterns() -> &'static [Pattern] {
             BlockKind::InverseTail,
             BlockKind::SquareSum,
             BlockKind::PowerHead,
+            BlockKind::H9Head,
+            BlockKind::H9Tail,
         ]
         .into_iter()
         .map(|kind| {
@@ -330,6 +475,12 @@ fn patterns() -> &'static [Pattern] {
             let restore = m.input::<18, 0, true>("restore", &[0]).unwrap();
             let ctx = m.input::<43,0,false>("context", &[1 << 19]).unwrap();
             let sx = m.input::<16,15,false>("specular", &[0]).unwrap();
+            let h9step=m.input::<3,0,false>("h9step",&[5]).unwrap();
+            let h9code=m.input::<5,0,false>("h9code",&[0]).unwrap();
+            let h9entry=m.input::<16,0,false>("h9entry",&[256]).unwrap();
+            let h9frac=m.input::<6,0,false>("h9frac",&[0]).unwrap();
+            let h9far=m.input::<1,0,false>("h9far",&[0]).unwrap();
+            let h9pos=m.input::<1,0,false>("h9pos",&[1]).unwrap();
             let f = m.compute("typed pipeline pattern", 128).unwrap();
             match kind {
                 BlockKind::SquareSumHead => {
@@ -370,6 +521,14 @@ fn patterns() -> &'static [Pattern] {
                     f.publish("fraction", h.fraction).unwrap();
                     f.publish("restore", h.restore).unwrap();
                 }
+                BlockKind::H9Head => {
+                    let h=h9_head(&f,f.read(sx.at::<0>()).unwrap(),f.read(h9code.at::<0>()).unwrap(),f.read(h9step.at::<0>()).unwrap()).unwrap();
+                    f.publish("result",h.address).unwrap();f.publish("fraction",h.fraction).unwrap();f.publish("far",h.far).unwrap();
+                }
+                BlockKind::H9Tail => {
+                    let h=h9_tail(&f,f.read(h9entry.at::<0>()).unwrap(),f.read(h9frac.at::<0>()).unwrap(),f.read(h9far.at::<0>()).unwrap(),f.read(h9pos.at::<0>()).unwrap()).unwrap();
+                    f.publish("result",h).unwrap();
+                }
                 BlockKind::PowerHead => {
                     let h=power_head(&f,f.read(sx.at::<0>()).unwrap(),f.read(ctx.at::<0>()).unwrap()).unwrap();
                     f.publish("result",h.address).unwrap();f.publish("tail",h.tail).unwrap();f.publish("negative shift",h.neg).unwrap();
@@ -391,7 +550,7 @@ fn patterns() -> &'static [Pattern] {
             frame.audit().unwrap();
             let result = frame.outputs[0].value;
             assert_eq!(fingerprint(&frame,result),kind.topology_signature(),
-                "typed block topology changed: revalidate isolated timing before updating the signature");
+                "typed block topology changed {kind:?}: revalidate isolated timing before updating the signature");
             let exports = frame.outputs.iter().skip(1).map(|o| o.value).collect();
             Pattern {
                 kind,
@@ -474,6 +633,8 @@ pub(crate) fn bind(
                         | BlockKind::InverseTail
                         | BlockKind::SquareSum
                         | BlockKind::PowerHead
+                        | BlockKind::H9Head
+                        | BlockKind::H9Tail
                 )
             {
                 continue;
@@ -515,6 +676,29 @@ pub(crate) fn bind(
             if !complete {
                 continue;
             }
+            // Exported wiring views keep their source bits alive. Include only
+            // their alias chain, so unrelated arithmetic intermediates still
+            // invalidate the cone if a diagnostic exposes them.
+            let mut exported: BTreeSet<_> = exports.into_iter().collect();
+            let mut pending: Vec<_> = exported.iter().copied().collect();
+            while let Some(id) = pending.pop() {
+                let member = &frame.events[id];
+                if member.inputs.len() == 1
+                    && matches!(
+                        member.operation,
+                        Operation::Resize
+                            | Operation::BinaryScale
+                            | Operation::Slice(_)
+                            | Operation::ShiftLeft(_)
+                            | Operation::RescaleFloor(_)
+                    )
+                {
+                    let source = frame.values[member.inputs[0]].producer;
+                    if source != event.id && members.contains(&source) && exported.insert(source) {
+                        pending.push(source);
+                    }
+                }
+            }
             if members.iter().any(|id| used.contains(id)) {
                 continue;
             }
@@ -541,7 +725,7 @@ pub(crate) fn bind(
                     .copied()
                     .filter(|&id| id != event.id)
                     .collect(),
-                exported_events: exports,
+                exported_events: exported.into_iter().collect(),
                 operands: operands.into_iter().collect(),
                 max_width,
                 latency: 1,
@@ -634,6 +818,52 @@ mod tests {
                 assert!(cone
                     .exported_events
                     .contains(&frame.values[frame.outputs[3].value].producer));
+                let fraction = frame.outputs[1].value;
+                let fraction_event = &frame.events[frame.values[fraction].producer];
+                let source = frame.values[fraction_event.inputs[0]].producer;
+                assert!(cone.exported_events.contains(&source));
+                let mut hidden = cone.clone();
+                hidden.exported_events.retain(|&id| id != source);
+                assert!(hidden.audit(&frame).is_err());
+
+                let mut times: Vec<_> = frame
+                    .events
+                    .iter()
+                    .map(|e| {
+                        let age =
+                            if matches!(e.operation, Operation::Literal | Operation::Read { .. }) {
+                                0
+                            } else {
+                                2
+                            };
+                        audited::physical::Timing {
+                            issue: age,
+                            ready: age,
+                        }
+                    })
+                    .collect();
+                times[cone.result_event] = audited::physical::Timing { issue: 0, ready: 1 };
+                for &id in &cone.absorbed_events {
+                    times[id] = audited::physical::Timing { issue: 1, ready: 1 };
+                }
+                let life = audited::lifecycle::analyze_composed_policy(
+                    &frame,
+                    &times,
+                    &[],
+                    std::slice::from_ref(cone),
+                    &audited::lifecycle::LifetimePolicy {
+                        commit_cycle: 2,
+                        period: None,
+                        max_cycle: 4,
+                        invariant_inputs: vec![],
+                        retained_outputs: None,
+                    },
+                )
+                .unwrap();
+                let origin = frame.events[source].output.unwrap();
+                let interval = life.intervals.iter().find(|i| i.value == origin).unwrap();
+                assert_eq!((interval.start, interval.end), (1, 3));
+                assert!(!life.intervals.iter().any(|i| i.value == fraction));
             }
         }
     }

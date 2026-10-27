@@ -22,6 +22,8 @@ const BUFFER: &str = include_str!(
 );
 const FIFO: &str =
     include_str!("../../../systems/cpu-v3-tang-nano-20k/src/hardware/display/display_pair_fifo.v");
+#[path = "../../../systems/cpu-v3-tang-nano-20k/src/hardware/display/precode_table.rs"]
+mod display_precode;
 
 // Read literal fields from the authoritative production configuration. Fail
 // closed if its representation changes, rather than silently retaining a copy.
@@ -126,6 +128,10 @@ fn run_case(name: &str, early: bool, group: bool, phase: u32, starve: bool) {
         "display.v".into(),
         DISPLAY
             .replace("__DISPLAY_CONFIG__", &params)
+            .replace(
+                "__TMDS_PRECODE_BITS__",
+                &display_precode::TMDS_PRECODE_BITS.to_string(),
+            )
             .replace("__LINE_BUFFER__", "DisplayLineBuffer")
             .replace("__PAIR_FIFO__", "DisplayPairFifo"),
     );
@@ -140,21 +146,11 @@ fn run_case(name: &str, early: bool, group: bool, phase: u32, starve: bool) {
         .split(',')
         .filter_map(|v| {
             let v = v.trim();
-            (!v.is_empty()).then(|| v.parse::<u32>().unwrap())
+            (!v.is_empty()).then(|| v.parse::<u8>().unwrap())
         })
         .collect::<Vec<_>>();
     assert_eq!(values.len(), 64);
-    let init = values
-        .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            format!(
-                "memory_a[{}]=32'd{v}; memory_b[{}]=32'd{v};\n",
-                448 + i,
-                448 + i
-            )
-        })
-        .collect::<String>();
+    let init = display_precode::initialization(&values.try_into().unwrap());
     sources.insert("buffer.v".into(), BUFFER.replace("__SRGB_INIT__", &init));
     sources.insert("fifo.v".into(), FIFO.into());
     let mut i = emu::idle_inputs();

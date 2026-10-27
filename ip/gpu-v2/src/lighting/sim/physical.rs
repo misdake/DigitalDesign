@@ -122,7 +122,7 @@ impl PeriodicSchedule {
         let mut issues = Vec::new();
         for r in &self.slots {
             let mode = match r.kind {
-                Some(LaneKind::SmallMultiply) => DspMode::Multiply9,
+                Some(LaneKind::SmallMultiply | LaneKind::H9Tail) => DspMode::Multiply9,
                 Some(LaneKind::LargeMultiply) => DspMode::Multiply18,
                 Some(LaneKind::PairMultiplyAdd) => DspMode::PairMultiplyAdd,
                 _ => continue,
@@ -132,10 +132,22 @@ impl PeriodicSchedule {
                 .iter()
                 .enumerate()
                 .filter(|(_, d)| d.mode == mode)
-                .nth(r.lane.ok_or("DSP lane missing")?)
+                .nth(
+                    r.lane.ok_or("DSP lane missing")?
+                        + if r.kind == Some(LaneKind::H9Tail) {
+                            h.small_multiply
+                        } else {
+                            0
+                        },
+                )
                 .map(|(id, _)| id)
                 .ok_or("DSP lane not placed")?;
-            let work = if mode == DspMode::PairMultiplyAdd {
+            let work = if r.kind == Some(LaneKind::H9Tail) {
+                DspWork::Multiply {
+                    a_bits: 7,
+                    b_bits: 6,
+                }
+            } else if mode == DspMode::PairMultiplyAdd {
                 let g = plan
                     .binding
                     .groups
@@ -201,12 +213,13 @@ impl PeriodicSchedule {
                 });
             }
         }
-        for (memory, m) in frame
-            .memories
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.kind != MemoryKind::Input)
-        {
+        for (memory, m) in frame.memories.iter().enumerate().filter(|(id, m)| {
+            m.kind != MemoryKind::Input
+                && (!h.kernel.smooth_h9
+                    || frame.events.iter().any(
+                        |e| matches!(e.operation, Operation::Read {memory,..} if memory == *id),
+                    ))
+        }) {
             let copies = match m.name.as_str() {
                 "SQ" | "RSQRT" | "RSQRT_Q13" | "SQRT" => normalization_banks
                     .iter()
@@ -226,6 +239,32 @@ impl PeriodicSchedule {
                         }],
                     })
                     .collect(),
+                "POWER_H9" => {
+                    let bank = layout.banks.len();
+                    layout.banks.push(MemoryBank {
+                        name: "power-h9".into(),
+                        kind: RamKind::Bsram,
+                        width: 18,
+                        depth: 1024,
+                        ports: vec![MemoryPort {
+                            read: true,
+                            write: false,
+                            read_latency: h.rom_latency,
+                            write_latency: 1,
+                            initiation_interval: 1,
+                        }],
+                        collision: ReadDuringWrite::Forbidden,
+                    });
+                    vec![MemoryCopy {
+                        slices: vec![MemorySlice {
+                            bank,
+                            base_row: 0,
+                            bit_offset: 0,
+                            source_low: 0,
+                            width: 16,
+                        }],
+                    }]
+                }
                 "POWER" | "POWER_MIDPOINT_Q15" => {
                     let mut slices = Vec::new();
                     for (part, (low, width)) in [(0, 16), (16, 12)].into_iter().enumerate() {

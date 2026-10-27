@@ -1,6 +1,9 @@
 `timescale 1ns/1ps
 module tb;
 reg clk=0,pixel_clock=0,serial_clock=0,reset=1,video_locked=1;
+wire boot_enable=1;
+reg boot_failed=0;
+wire started_ack,startup_error,frame_event;
 always #9.259 clk=~clk; always #15.015 pixel_clock=~pixel_clock; always #1 serial_clock=~serial_clock;
 reg memory_request_ready=1,memory_data_valid=0,memory_last=0,memory_error=0;
 reg [63:0] memory_read_data=64'h1122334455667788;
@@ -25,14 +28,21 @@ always @(posedge clk) if(auto_response) begin
 end
 task reset_dut;
  begin
-  auto_response=0;
+  auto_response=0;boot_failed=0;
   @(negedge clk); reset=1; memory_request_ready=0;
   memory_data_valid=0; memory_last=0; memory_error=0; beat=0; requests=0;
   repeat(12) @(negedge clk);
   reset=0; memory_request_ready=1;
+  // Establish a real Front through the public interface. Black startup itself
+  // needs no SDRAM; failures below concern the first real line-group fill.
+  @(negedge clk);device_write_enable=1;device_channel=1;device_write_data=0;
+  @(negedge clk);device_channel=2;device_write_data=16'h0020;
+  @(negedge clk);device_channel=3;device_write_data=1;
+  @(negedge clk);device_write_enable=0;device_write_data=0;
+  wait(dut.front_valid);
  end
 endtask
-initial begin repeat(3*1056*525) @(posedge pixel_clock); $fatal(1,"fault watchdog scenario=%0d requests=%0d beat=%0d published=%b active=%b error=%b",scenario,requests,beat,dut.published,dut.burst_active,dut.memory_error_sticky); end
+initial begin repeat(32*1056*525) @(posedge pixel_clock); $fatal(1,"fault watchdog scenario=%0d requests=%0d beat=%0d published=%b active=%b error=%b",scenario,requests,beat,dut.published,dut.burst_active,dut.memory_error_sticky); end
 initial begin
  // Error at each beat and malformed LAST at each early position/final beat.
  for(scenario=0;scenario<8;scenario=scenario+1) begin
@@ -57,6 +67,20 @@ initial begin
  @(negedge clk); memory_error=0;
  repeat(10) @(negedge clk);
  if(!device_read_data[4] || memory_request_valid || dut.published!=0) $fatal(1,"out-of-band error lost");
+ // One published group cannot start scanout, even across a whole frame.
+ reset_dut;auto_response=1;
+ wait(dut.published==2'b01);
+ @(negedge clk);auto_response=0;memory_request_ready=0;memory_data_valid=0;memory_last=0;
+ repeat(1056*525+10)@(posedge pixel_clock);
+ if(!started_ack || dut.scan_valid || dut.released!=0 || underflow)
+  $fatal(1,"one real group prematurely replaced black output");
+ // Failure in group 1 cannot turn the complete group 0 into a startup ack.
+ @(negedge clk);memory_request_ready=1;
+ wait(dut.burst_active);
+ @(negedge clk);memory_error=1;
+ @(negedge clk);memory_error=0;
+ repeat(20)@(posedge pixel_clock);
+ if(dut.scan_valid || !startup_error || memory_request_valid)$fatal(1,"second-group failure published real content");
  // Fill exactly four rows, then hold SDRAM indefinitely. The consumer must
  // show black and set sticky underflow after exhausting those rows. No read
  // may release an unpublished group; black is observed across the failed row.
@@ -70,6 +94,14 @@ initial begin
  reset_dut;
  repeat(20) @(posedge pixel_clock);
  if(underflow || device_read_data[4:3]!=0) $fatal(1,"reset did not clear sticky faults");
+ // A boot failure after pixel ack blanks without revoking the sticky fact.
+ reset_dut;auto_response=1;
+ wait(started_ack);
+ @(negedge clk);boot_failed=1;
+ wait(dut.visible_pipe3);
+ repeat(20)@(posedge pixel_clock);
+ if(!started_ack || memory_request_valid || dut.framebuffer_pipe3 || dut.rgb_pipe!=0)
+  $fatal(1,"startup failure did not blank or revoked acknowledgement");
  $display("DIGITAL_DESIGN_PASS"); $finish;
 end
 endmodule

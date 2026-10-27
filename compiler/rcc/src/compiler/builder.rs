@@ -437,7 +437,7 @@ impl FuncBuilder {
         dst
     }
     /// `dst[i] = op(src[i])`
-    pub fn fpu_vec_un(&mut self, op: FpuUnOp, src: VReg, lanes: u8) -> VReg {
+    pub fn fpu_vec_un(&mut self, op: FpuVecUnOp, src: VReg, lanes: u8) -> VReg {
         let dst = self.fresh_fpu_vec(lanes);
         self.push(Instr::FpuVecUn { dst, op, src });
         dst
@@ -556,7 +556,14 @@ impl FuncBuilder {
 
     /// CpuV3-only: write the DSEG special register from `src`
     pub fn mtsr_dseg(&mut self, src: VReg) {
-        self.push(Instr::MtsrDseg { src });
+        self.push(Instr::MtsrDseg { src, index: None });
+    }
+
+    pub fn mtsr_dseg_page(&mut self, index: u8, src: VReg) {
+        self.push(Instr::MtsrDseg {
+            src,
+            index: Some(index),
+        });
     }
 
     /// CpuV3-only: atomically switch CSEG to `cseg` and jump to `target`;

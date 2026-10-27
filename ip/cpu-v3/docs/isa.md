@@ -313,10 +313,9 @@ ranges must be exactly base-equal or fully disjoint; partial overlap is a
 software contract violation and is not checked by hardware.
 
 `0xC` VECTOR subops: `00` VADD, `01` VSUB, `02` VMUL (`q16(A*B)`), `03` VMULS
-(`q16(A*B0)`), `04` VMIN, `05` VMAX, `06` VABS, `07` VNEG, `08` VFLOOR, `09`
-VCEIL, `0A` VROUND, `0B` VTRUNC, `0C` VMOV, `0D` DOT, `0E` DOTADD, `0F`
-DOTSTORE. `10..1F` are reserved. `mode[1:0]` is the second-source stride for the
-DOT family (`00` +1, `01` +3, `10` +4; `11` reserved) and is reserved for the
+(`q16(A*B0)`), `04` VMIN, `05` VMAX, `06` VABS, `07` VNEG, `08..0B` reserved,
+`0C` VMOV, `0D` DOT, `0E` DOTADD, `0F` DOTSTORE. Rounding is scalar-only.
+`10..1F` are reserved. `mode[1:0]` is the second-source stride for the DOT family (`00` +1, `01` +3, `10` +4; `11` reserved) and is reserved for the
 other vector subops. `DOT` sets `ACC = sum(A[i]*B[i])`, `DOTADD` accumulates,
 and `DOTSTORE` narrows the completed sum to `Fd` and clears ACC.
 

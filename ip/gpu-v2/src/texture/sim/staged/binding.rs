@@ -133,9 +133,9 @@ impl Evidence {
     }
 }
 
-/// Actual LOD sharing counterexample: h=19-clz(s), shift=19-h. A cone ending
-/// at shift cannot absorb h because exponent=h-18 also consumes it. A proposed
-/// two-output region must explicitly retain BOTH results and their lifetimes.
+/// Actual LOD sharing counterexample: h=19-clz(s), normalization uses clz(s)
+/// directly. Absorbing CLZ into h without exporting it would lose the shifter
+/// operand. A two-output region must preserve both results and their lifetimes.
 pub fn lod_shared_h_cone(frame: &FrameReport) -> Result<LogicCone, Fault> {
     let literal19 = |v: usize| {
         frame.events[frame.values[v].producer].operation == Operation::Literal
@@ -147,11 +147,7 @@ pub fn lod_shared_h_cone(frame: &FrameReport) -> Result<LogicCone, Fault> {
             continue;
         }
         let h = &frame.events[frame.values[root.inputs[1]].producer];
-        if h.operation != Operation::Sub
-            || h.inputs.len() != 2
-            || !literal19(h.inputs[0])
-            || frame.events[frame.values[h.inputs[1]].producer].operation != Operation::LeadingZeros
-        {
+        if h.operation != Operation::LeadingZeros {
             continue;
         }
         let members = [root.id, h.id];

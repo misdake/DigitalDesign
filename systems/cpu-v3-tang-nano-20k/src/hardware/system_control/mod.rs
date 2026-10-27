@@ -12,8 +12,16 @@
 //!   transmitter; (read): bit 0 is the transmitter busy flag.
 //! - channel 4 (write): start blocking D-cache clean;
 //! - channel 5 (read): return the final maintenance status.
+//!
+//! The CPU orders channel-1/channel-4 writes after its old stores/FST tails.
+//! This device then retains the cache command until maintenance_ready accepts
+//! it, and holds CPU progress until that accepted command's done/error.
 //! - channel 6 (write): stage a generic watch target as `{channel[3:0], device[2:0]}`;
 //! - channel 7 (write): arm a CPU-local sleep while the target equals the written value.
+//! - channel 10 (read): free-running milliseconds modulo 65536. CPU hold,
+//!   cache maintenance, and watch sleep never gate this wall clock.
+//! - channel 11 (read): microsecond interval, saturating at 65535; a write
+//!   with bit 0 set clears its count and prescaler. Reads have no side effects.
 //!
 //! Writes while the UART is busy are dropped; software must poll the busy
 //! flag before enqueueing the next byte. All accesses with a device index
@@ -28,6 +36,8 @@ pub use crate::boot::D_CLEAN_ALL as SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL;
 pub use crate::boot::D_INVALIDATE_ALL as SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL;
 pub use crate::boot::ICACHE_INVALIDATE_ALL_DELAYED as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED;
 pub use crate::boot::SYSCTL_LED as SYSTEM_CONTROL_CHANNEL_LEDS;
+pub use crate::boot::SYSCTL_MICROSECONDS as SYSTEM_CONTROL_CHANNEL_MICROSECONDS;
+pub use crate::boot::SYSCTL_MILLISECONDS as SYSTEM_CONTROL_CHANNEL_MILLISECONDS;
 pub use crate::boot::SYSCTL_UART as SYSTEM_CONTROL_CHANNEL_UART;
 pub use crate::boot::SYSCTL_WATCH_EXPECTED as SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED;
 pub use crate::boot::SYSCTL_WATCH_TARGET as SYSTEM_CONTROL_CHANNEL_WATCH_TARGET;
@@ -42,7 +52,8 @@ pub struct SystemControlDeviceInput {
     pub device_read_enable: Wire,
     pub device_write_enable: Wire,
     pub device_write_data: Wires<16>,
-    pub dcache_maintenance_busy: Wire,
+    /// Acceptance of the current retained request, not maintenance-busy.
+    pub dcache_maintenance_ready: Wire,
     pub dcache_maintenance_done: Wire,
     pub dcache_maintenance_error: Wire,
     /// Readback from the device/channel selected by the watch probe outputs.
@@ -73,14 +84,14 @@ pub struct SystemControlDeviceOutput {
 /// design at 115200 baud, 469 for 54 MHz). One frame is ten bits (start,
 /// eight data bits LSB first, stop) and therefore occupies exactly
 /// `10 * CLOCKS_PER_BIT` clocks after the accepting write clock.
+/// `CLOCKS_PER_MS` is independently set from the physical main clock: 54000
+/// for 54 MHz, 27000 for 27 MHz. UART baud-rate rounding cannot determine it.
 #[derive(Hardware)]
 #[hardware(namespace = "components/system_control")]
-pub struct SystemControlDevice<const CLOCKS_PER_BIT: u16>;
+pub struct SystemControlDevice<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16 = 54000>;
 
 pub struct SystemControlDeviceState {
     icache_invalidate: bool,
-    dcache_invalidate: bool,
-    dcache_clean: bool,
     maintenance_hold: bool,
     watch_active: bool,
     watch_device_index: u8,
@@ -93,14 +104,16 @@ pub struct SystemControlDeviceState {
     uart_frame: u16,
     uart_bit: u8,
     uart_divider: u16,
+    millisecond_divider: u16,
+    milliseconds: u16,
+    microsecond_divider: u16,
+    microseconds: u16,
 }
 
 impl Default for SystemControlDeviceState {
     fn default() -> Self {
         Self {
             icache_invalidate: false,
-            dcache_invalidate: false,
-            dcache_clean: false,
             maintenance_hold: false,
             watch_active: false,
             watch_device_index: 0,
@@ -113,15 +126,20 @@ impl Default for SystemControlDeviceState {
             uart_frame: 0x3ff,
             uart_bit: 0,
             uart_divider: 0,
+            millisecond_divider: 0,
+            milliseconds: 0,
+            microsecond_divider: 0,
+            microseconds: 0,
         }
     }
 }
 
-fn validate<const CLOCKS_PER_BIT: u16>() {
+fn validate<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16>() {
     assert!(
         CLOCKS_PER_BIT > 0,
         "UART bit period must contain at least one main-clock cycle"
     );
+    assert!(CLOCKS_PER_MS > 0, "millisecond period must be positive");
 }
 
 #[derive(Template)]
@@ -129,6 +147,10 @@ fn validate<const CLOCKS_PER_BIT: u16>() {
 struct SystemControlTemplate<'a> {
     module_name: &'a str,
     clocks_per_bit_minus_one: u16,
+    uart_divider_msb: u32,
+    clocks_per_ms_minus_one: u16,
+    clocks_per_us_minus_one: u16,
+    microsecond_divider_msb: u32,
 }
 
 #[derive(Template)]
@@ -139,7 +161,9 @@ struct SystemControlTestbenchTemplate<'a> {
     clocks_per_bit_minus_one: u16,
 }
 
-impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
+impl<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16> Module
+    for SystemControlDevice<CLOCKS_PER_BIT, CLOCKS_PER_MS>
+{
     type Input = SystemControlDeviceInput;
     type Output = SystemControlDeviceOutput;
     type EmuState = SystemControlDeviceState;
@@ -147,7 +171,7 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        validate::<CLOCKS_PER_BIT>();
+        validate::<CLOCKS_PER_BIT, CLOCKS_PER_MS>();
         SystemControlDeviceState::default()
     }
 
@@ -164,6 +188,8 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
             match input.device_channel as u8 {
                 SYSTEM_CONTROL_CHANNEL_UART => u16::from(state.uart_busy),
                 SYSTEM_CONTROL_CHANNEL_CACHE_MAINTENANCE_STATUS => state.cache_maintenance_status,
+                SYSTEM_CONTROL_CHANNEL_MILLISECONDS => state.milliseconds,
+                SYSTEM_CONTROL_CHANNEL_MICROSECONDS => state.microseconds,
                 _ => 0,
             }
         } else {
@@ -174,8 +200,8 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
             &SystemControlDeviceOutputValue {
                 device_read_data: u64::from(read_data),
                 icache_invalidate: state.icache_invalidate,
-                dcache_invalidate: state.dcache_invalidate,
-                dcache_clean: state.dcache_clean,
+                dcache_invalidate: state.pending_dcache_maintenance == 1,
+                dcache_clean: state.pending_dcache_maintenance == 2,
                 cpu_hold: state.maintenance_hold || state.watch_active,
                 watch_device_index: u64::from(state.watch_device_index),
                 watch_device_channel: u64::from(state.watch_device_channel),
@@ -198,13 +224,25 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
             return;
         }
         state.icache_invalidate = false;
-        state.dcache_invalidate = false;
-        state.dcache_clean = false;
+        let microsecond_period = (CLOCKS_PER_MS / 1000).max(1);
+        if state.microsecond_divider == microsecond_period - 1 {
+            state.microsecond_divider = 0;
+            state.microseconds = state.microseconds.saturating_add(1);
+        } else {
+            state.microsecond_divider += 1;
+        }
+        // Physical wall time advances even while the CPU is held or no device
+        // read is active. This rate is independent of the UART divider.
+        if state.millisecond_divider == CLOCKS_PER_MS - 1 {
+            state.millisecond_divider = 0;
+            state.milliseconds = state.milliseconds.wrapping_add(1);
+        } else {
+            state.millisecond_divider += 1;
+        }
 
         let maintenance_was_pending = state.pending_dcache_maintenance != 0;
-        if state.maintenance_hold && maintenance_was_pending && !input.dcache_maintenance_busy {
-            state.dcache_invalidate = state.pending_dcache_maintenance == 1;
-            state.dcache_clean = state.pending_dcache_maintenance == 2;
+        let held_before_edge = state.maintenance_hold || state.watch_active;
+        if maintenance_was_pending && input.dcache_maintenance_ready {
             state.pending_dcache_maintenance = 0;
         }
 
@@ -244,27 +282,19 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         let value = input.device_write_data as u16;
         match input.device_channel as u8 {
             SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED => state.icache_invalidate = true,
-            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL
-                if !state.maintenance_hold && !state.watch_active =>
-            {
+            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL if !held_before_edge => {
                 state.maintenance_hold = true;
-                if input.dcache_maintenance_busy {
-                    state.pending_dcache_maintenance = 1;
-                } else {
-                    state.dcache_invalidate = true;
-                }
+                state.pending_dcache_maintenance = 1;
             }
-            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL
-                if !state.maintenance_hold && !state.watch_active =>
-            {
+            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL if !held_before_edge => {
                 state.maintenance_hold = true;
-                if input.dcache_maintenance_busy {
-                    state.pending_dcache_maintenance = 2;
-                } else {
-                    state.dcache_clean = true;
-                }
+                state.pending_dcache_maintenance = 2;
             }
             SYSTEM_CONTROL_CHANNEL_LEDS => state.leds = (value & 0x3f) as u8,
+            SYSTEM_CONTROL_CHANNEL_MICROSECONDS if value & 1 != 0 => {
+                state.microseconds = 0;
+                state.microsecond_divider = 0;
+            }
             // A write while busy is dropped; software polls the busy flag.
             SYSTEM_CONTROL_CHANNEL_UART if !was_busy => {
                 state.uart_frame = 0x200 | (u16::from(value as u8) << 1);
@@ -276,9 +306,7 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
                 state.watch_device_index = (value & 7) as u8;
                 state.watch_device_channel = ((value >> 3) & 15) as u8;
             }
-            SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED
-                if !state.maintenance_hold && !state.watch_active =>
-            {
+            SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED if !held_before_edge => {
                 state.watch_expected = value;
                 state.watch_active = true;
             }
@@ -287,12 +315,19 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
     }
 
     fn generated_verilog_source() -> Option<String> {
-        validate::<CLOCKS_PER_BIT>();
+        validate::<CLOCKS_PER_BIT, CLOCKS_PER_MS>();
         let module_name = Self::verilog_identity().module_name();
         Some(
             SystemControlTemplate {
                 module_name: &module_name,
                 clocks_per_bit_minus_one: CLOCKS_PER_BIT - 1,
+                uart_divider_msb: (u16::BITS - (CLOCKS_PER_BIT - 1).leading_zeros()).max(1) - 1,
+                clocks_per_ms_minus_one: CLOCKS_PER_MS - 1,
+                clocks_per_us_minus_one: (CLOCKS_PER_MS / 1000).max(1) - 1,
+                microsecond_divider_msb: (u16::BITS
+                    - ((CLOCKS_PER_MS / 1000).max(1) - 1).leading_zeros())
+                .max(1)
+                    - 1,
             }
             .render()
             .expect("system control Verilog template must render"),
@@ -300,7 +335,7 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
     }
 
     fn verilog_testbench() -> Option<String> {
-        validate::<CLOCKS_PER_BIT>();
+        validate::<CLOCKS_PER_BIT, CLOCKS_PER_MS>();
         let module_name = Self::verilog_identity().module_name();
         Some(
             SystemControlTestbenchTemplate {
@@ -318,7 +353,6 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
 mod tests {
     use super::*;
     use crate::{ModuleTest, TestStep, VerilogProject};
-    use std::path::Path;
 
     /// Small representative bit period; 234/469 are covered by the same
     /// divider logic and by export assertions.
@@ -331,7 +365,7 @@ mod tests {
         device_read_enable: false,
         device_write_enable: false,
         device_write_data: 0,
-        dcache_maintenance_busy: false,
+        dcache_maintenance_ready: true,
         dcache_maintenance_done: false,
         dcache_maintenance_error: false,
         watch_read_data: 0,
@@ -427,7 +461,7 @@ mod tests {
             // Channel 0 pulses icache_invalidate for exactly one clock.
             TestStep::new(write(0, 0xffff), output(0, true, false, 0, true)),
             TestStep::new(IDLE, output(0, false, false, 0, true)),
-            // Channel 1 pulses dcache_invalidate for exactly one clock.
+            // Ready accepts a retained D-cache request on the following edge.
             TestStep::new(write(1, 0), maintenance_output(0, true, false, true, 0)),
             TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
             TestStep::new(
@@ -442,24 +476,24 @@ mod tests {
             // completion when the deferred command is finally emitted.
             TestStep::new(
                 SystemControlDeviceInputValue {
-                    dcache_maintenance_busy: true,
+                    dcache_maintenance_ready: false,
                     ..write(1, 0)
                 },
-                maintenance_output(0, false, false, true, 0),
+                maintenance_output(0, true, false, true, 0),
             ),
             TestStep::new(
                 SystemControlDeviceInputValue {
-                    dcache_maintenance_busy: true,
+                    dcache_maintenance_ready: false,
                     ..IDLE
                 },
-                maintenance_output(0, false, false, true, 0),
+                maintenance_output(0, true, false, true, 0),
             ),
             TestStep::new(
                 SystemControlDeviceInputValue {
                     dcache_maintenance_done: true,
                     ..IDLE
                 },
-                maintenance_output(0, true, false, true, 0),
+                maintenance_output(0, false, false, true, 0),
             ),
             TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
             TestStep::new(
@@ -628,24 +662,230 @@ mod tests {
     }
 
     #[test]
+    fn pending_request_reset_and_completion_edge_ownership() {
+        ModuleTest::<TestDevice>::new(vec![
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_ready: false,
+                    ..write(1, 0)
+                },
+                maintenance_output(0, true, false, true, 0),
+            ),
+            // Another write and stale completion cannot replace an unaccepted request.
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_ready: false,
+                    dcache_maintenance_done: true,
+                    ..write(4, 0)
+                },
+                maintenance_output(0, true, false, true, 0),
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(write(4, 0), maintenance_output(0, false, true, true, 0)),
+            TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
+            // Hold was high before this edge: release, but do not accept a new write.
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_done: true,
+                    ..write(1, 0)
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(IDLE, output(0, false, false, 0, true)),
+        ])
+        .run_emu();
+    }
+
+    #[test]
     fn each_bit_period_exports_one_fabric_module() {
         let project = VerilogProject::generate::<TestDevice>().unwrap();
         assert!(project.resource_claims.is_empty());
-        assert!(project.files.contains_key(Path::new(
-            "components/system_control/system_control_device/clocks_per_bit4.v"
-        )));
         let source = project
             .files
-            .get(Path::new(
-                "components/system_control/system_control_device/clocks_per_bit4.v",
-            ))
+            .values()
+            .find(|source| source.contains("reg [15:0] millisecond_divider"))
             .unwrap();
         assert!(source.contains("uart_divider == 16'd3"));
+        assert!(source.contains("millisecond_divider == 16'd53999"));
+    }
+
+    #[test]
+    fn milliseconds_exact_divider_read_only_and_default_channels() {
+        let mut steps = vec![
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(read(10), output(0, false, false, 0, true)).after_cycles(53999),
+            TestStep::new(read(10), output(1, false, false, 0, true)),
+            TestStep::new(write(10, 65535), output(0, false, false, 0, true)),
+            TestStep::new(read(10), output(1, false, false, 0, true)),
+        ];
+        for ch in [0, 1, 2, 4, 6, 7, 8, 9, 12, 13, 14, 15] {
+            steps.push(TestStep::new(read(ch), output(0, false, false, 0, true)));
+        }
+        steps.push(TestStep::new(
+            read_index(1, 10),
+            output(0, false, false, 0, true),
+        ));
+        ModuleTest::<SystemControlDevice<4, 54000>>::new(steps).run_emu();
+    }
+
+    #[test]
+    fn milliseconds_continue_through_maintenance_watch_and_wrap() {
+        ModuleTest::<SystemControlDevice<4, 2>>::new(vec![
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(write(4, 0), maintenance_output(0, false, true, true, 0)),
+            TestStep::new(read(10), maintenance_output(20, false, false, true, 0)).after_cycles(39),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_done: true,
+                    ..read(10)
+                },
+                output(20, false, false, 0, true),
+            ),
+            TestStep::new(
+                write(7, 0),
+                SystemControlDeviceOutputValue {
+                    cpu_hold: true,
+                    watch_read_enable: true,
+                    ..output(0, false, false, 0, true)
+                },
+            ),
+            TestStep::new(
+                read(10),
+                SystemControlDeviceOutputValue {
+                    cpu_hold: true,
+                    watch_read_enable: true,
+                    ..output(41, false, false, 0, true)
+                },
+            )
+            .after_cycles(40),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    watch_read_data: 1,
+                    ..read(10)
+                },
+                output(41, false, false, 0, true),
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(read(10), output(65535, false, false, 0, true)).after_cycles(131071),
+            TestStep::new(read(10), output(0, false, false, 0, true)),
+            TestStep::new(read(10), output(1, false, false, 0, true)).after_cycles(2),
+        ])
+        .run_emu();
+    }
+
+    #[test]
+    fn microseconds_emulator_saturates_and_clear_wins_over_tick() {
+        ModuleTest::<SystemControlDevice<4, 1000>>::new(vec![
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    reset: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(read(11), output(1, false, false, 0, true)),
+            TestStep::new(read(11), output(65535, false, false, 0, true)).after_cycles(65540),
+            TestStep::new(write(11, 2), output(0, false, false, 0, true)),
+            TestStep::new(read(11), output(65535, false, false, 0, true)),
+            TestStep::new(write(11, 1), output(0, false, false, 0, true)),
+            TestStep::new(read(11), output(1, false, false, 0, true)),
+        ])
+        .run_emu();
     }
 
     #[test]
     #[ignore = "explicit external simulator validation of the system control device"]
     fn verify_verilog_with_iverilog() {
         crate::verify_verilog_with_iverilog::<TestDevice>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "bounded 8N1 waveform oracle over all bytes and u16 period boundaries"]
+    fn uart_waveform_and_terminal_writes() {
+        fn check<const PERIOD: u16>() {
+            use std::{path::PathBuf, process::Command};
+            let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/system-control-uart-contract")
+                .join(PERIOD.to_string());
+            std::fs::create_dir_all(&directory).unwrap();
+            let source = directory.join("device.v");
+            let bench = directory.join("tb.v");
+            let executable = directory.join("tb.vvp");
+            std::fs::write(
+                &source,
+                SystemControlDevice::<PERIOD>::generated_verilog_source().unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                &bench,
+                include_str!("uart_contract_tb.v")
+                    .replace("__CLOCKS_PER_BIT__", &PERIOD.to_string())
+                    .replace(
+                        "__MODULE__",
+                        &SystemControlDevice::<PERIOD>::verilog_identity().module_name(),
+                    ),
+            )
+            .unwrap();
+            let compile =
+                Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()))
+                    .args(["-g2012", "-s", "tb", "-o"])
+                    .arg(&executable)
+                    .args([source, bench])
+                    .output()
+                    .unwrap();
+            assert!(
+                compile.status.success(),
+                "{}",
+                String::from_utf8_lossy(&compile.stderr)
+            );
+            let run = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+                .arg(executable)
+                .output()
+                .unwrap();
+            std::fs::write(directory.join("result.log"), &run.stdout).unwrap();
+            assert!(
+                run.status.success()
+                    && String::from_utf8_lossy(&run.stdout).contains("UART_CONTRACT_PASS"),
+                "period {PERIOD}: {} {}",
+                String::from_utf8_lossy(&run.stdout),
+                String::from_utf8_lossy(&run.stderr)
+            );
+        }
+        check::<1>();
+        check::<2>();
+        check::<3>();
+        check::<469>();
+        check::<65535>();
     }
 }

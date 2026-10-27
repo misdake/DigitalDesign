@@ -5,8 +5,8 @@ module DisplayLineBuffer(
     output reg [31:0] read_data_a = 0, read_data_b = 0
 );
 // Four lines occupy qword addresses 0..399. Each 512x32 bank has an
-// independent pixel-clock read port. Addresses 448..511 hold identical
-// 64x8 sRGB tables (one byte per word; the spare bytes stay unused).
+// independent pixel-clock read port. 416..447 hold encoded R/B precodes;
+// 448..511 pack linear and encoded-G precodes. 400..415 remain unused.
 (* syn_ramstyle = "block_ram" *) reg [31:0] memory_a [0:511];
 (* syn_ramstyle = "block_ram" *) reg [31:0] memory_b [0:511];
 initial begin

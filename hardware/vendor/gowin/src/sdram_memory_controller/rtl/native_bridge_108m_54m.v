@@ -4,6 +4,13 @@
 module TangNano20KSdramNativeBridge108M54M #(
     // BANK_BIT=5 stripes 128-byte sectors over four banks; 19 keeps contiguous banks.
     parameter PREPARE_NEXT = 0,
+    parameter REGISTER_READ_RETURN = 0,
+    parameter CAS = 2,
+    parameter RCD_CYCLES = 2,
+    parameter RP_CYCLES = 2,
+    parameter CAPTURE_LATENCY = 2,
+    parameter DQ_INPUT_DELAY_TAPS = 0,
+    parameter COLD_START_ONLY = 0,
     parameter CHAIN_GROUP_FOUR = 0,
     parameter BANK_BIT = 5
 ) (
@@ -23,8 +30,8 @@ module TangNano20KSdramNativeBridge108M54M #(
     output wire request_ready,
     output wire stream_active,
     output wire write_data_ready,
-    output reg [63:0] read_data = 0,
-    output reg read_valid = 0,
+    output wire [63:0] read_data,
+    output wire read_valid,
     output reg done = 0,
     output wire initialized,
     output wire O_sdram_clk,
@@ -49,6 +56,10 @@ module TangNano20KSdramNativeBridge108M54M #(
     reg [63:0] pair_next_54 = 0;
     reg [1:0] queued_54 = 0;
     reg done_seen_54 = 0;
+    // Production cold-only transport uses FPGA declaration initial values.
+    // The external cold pulse still resets the native SDRAM controller while
+    // its PLL is acquiring lock; it does not fan out through transport FFs.
+    wire transport_reset = COLD_START_ONLY ? 1'b0 : reset;
     reg read_seen_54 = 0;
     reg init_54 = 0;
     reg stream_active_54 = 0;
@@ -114,15 +125,38 @@ module TangNano20KSdramNativeBridge108M54M #(
     wire push_pair_54 = write_data_valid && write_data_ready;
 
     assign initialized = init_54;
+    // Capture the complete stable old pair Q together with its event. The
+    // optional register adds one logic cycle without reducing pair throughput.
+    // SharedSdramPort still owns terminal/LAST and backpressure retention.
+    // Legacy diagnostic profiles keep the original edge-valid return.
+    generate if (REGISTER_READ_RETURN) begin : registered_read_return
+        // Invalid payload is unowned; valid alone qualifies consumption.
+        reg [63:0] payload_54 = 0;
+        reg valid_54 = 0;
+        always @(posedge logic_clk) begin
+            if (transport_reset) begin
+                payload_54 <= 0;
+                valid_54 <= 0;
+            end else begin
+                valid_54 <= read_toggle_108 != read_seen_54;
+                payload_54 <= read_pair_108;
+            end
+        end
+        assign read_data = payload_54;
+        assign read_valid = !transport_reset && valid_54;
+    end else begin : edge_read_return
+        assign read_data = read_pair_108;
+        assign read_valid = !transport_reset && read_toggle_108 != read_seen_54;
+    end endgenerate
     assign stream_active = stream_active_54;
-    assign request_ready = init_54 && !occupied_54 && !reset;
+    assign request_ready = init_54 && !occupied_54 && !transport_reset;
     // Keep the 108 MHz word index out of the GPU/arbiter ready path. Two
     // 64-bit entries allow the source to get ahead of WRITE_LAUNCH while the
     // head pair is consumed low/high without a bubble.
     assign write_data_ready = pair_needed_54 && queued_54 < 2;
 
     always @(posedge logic_clk) begin
-        if (reset) begin
+        if (transport_reset) begin
             occupied_54 <= 0;
             request_toggle_54 <= 0;
             pairs_fed_54 <= 0;
@@ -133,14 +167,12 @@ module TangNano20KSdramNativeBridge108M54M #(
             stream_active_54 <= 0;
             cpu_edge_toggle_54 <= 0;
             done <= 0;
-            read_valid <= 0;
         end else begin
             cpu_edge_toggle_54 <= !cpu_edge_toggle_54;
             init_54 <= core_initialized;
             stream_active_54 <= occupied_54 &&
                 (core_phase[4:0] == 5'd15 || core_phase[4:0] == 5'd18);
             done <= 0;
-            read_valid <= 0;
             if (request_valid && request_ready) begin
                 occupied_54 <= 1;
                 request_toggle_54 <= !request_toggle_54;
@@ -172,8 +204,6 @@ module TangNano20KSdramNativeBridge108M54M #(
             end
             if (read_toggle_108 != read_seen_54) begin
                 read_seen_54 <= read_toggle_108;
-                read_data <= read_pair_108;
-                read_valid <= 1;
             end
             if (done_toggle_108 != done_seen_54) begin
                 done_seen_54 <= done_toggle_108;
@@ -188,7 +218,7 @@ module TangNano20KSdramNativeBridge108M54M #(
     // rising-edge stages preserve the CPU-falling launch phase while moving
     // the controller's WRITE_LAUNCH command path off the half-cycle boundary.
     always @(negedge controller_clk) begin
-        if (reset) begin
+        if (transport_reset) begin
             cpu_edge_seen_108 <= 0;
             slot_detect_108 <= 0;
             done_toggle_108 <= 0;
@@ -202,7 +232,7 @@ module TangNano20KSdramNativeBridge108M54M #(
     end
 
     always @(posedge controller_clk) begin
-        if (reset) begin
+        if (transport_reset) begin
             request_seen_108 <= 0;
             next_valid_108 <= 0;
             slot_pipe_108 <= 0;
@@ -268,7 +298,10 @@ module TangNano20KSdramNativeBridge108M54M #(
         end
     end
 
-    SdramController #(.BANK_BIT(BANK_BIT), .PREPARE_NEXT(PREPARE_NEXT),
+    SdramController #(.CAS(CAS), .RCD_CYCLES(RCD_CYCLES), .RP_CYCLES(RP_CYCLES),
+        .CAPTURE_LATENCY(CAPTURE_LATENCY),
+        .DQ_INPUT_DELAY_TAPS(DQ_INPUT_DELAY_TAPS),
+        .BANK_BIT(BANK_BIT), .PREPARE_NEXT(PREPARE_NEXT),
         .CHAIN(CHAIN_GROUP_FOUR), .READ_CHAIN(CHAIN_GROUP_FOUR)) u_controller (
         .clk(controller_clk), .sdram_clk(sdram_clk), .reset(reset),
         .request(core_request), .writing(core_writing), .address(core_address),
@@ -277,7 +310,7 @@ module TangNano20KSdramNativeBridge108M54M #(
                     (PREPARE_NEXT && !CHAIN_GROUP_FOUR && next_valid_108)),
         .next_address(group_active ? group_next_address : next_address_108),
         .chain_accept(core_chain_accept), .read_chain_accept(core_read_chain_accept),
-        .read_boundary(group_active && core_read_valid && read_word_108 == 31), .read_chain_pending(),
+        .next_generation(1'b0), .read_boundary(group_active && core_read_valid && read_word_108 == 31), .read_chain_pending(),
         .ready(core_ready), .done(core_done),
         .write_data(core_write_data), .write_mask(CHAIN_GROUP_FOUR ? mask_108 : mask_54),
         .write_index(core_write_index), .read_data(core_read_data),

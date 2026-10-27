@@ -66,8 +66,6 @@ struct State {
     read_low: u32,
     pair: u64,
     half: bool,
-    read_data: u64,
-    read_valid: bool,
     done: bool,
 }
 impl State {
@@ -85,8 +83,8 @@ impl State {
                 && self.writing
                 && self.fed < self.words.div_ceil(2)
                 && self.queued < 2,
-            read_data: self.read_data,
-            read_valid: self.read_valid,
+            read_data: self.pair,
+            read_valid: !reset && self.read_toggle != self.read_seen,
             done: self.done,
             initialized: self.init,
         }
@@ -149,14 +147,12 @@ impl State {
             self.stream_active = false;
             self.cpu_toggle = false;
             self.done = false;
-            self.read_valid = false;
             return;
         }
         self.cpu_toggle = !o.cpu_toggle;
         self.init = c.initialized;
         self.stream_active = o.occupied && matches!(c.state, 15 | 18);
         self.done = false;
-        self.read_valid = false;
         if i.valid && output.ready {
             self.occupied = true;
             self.request_toggle = !o.request_toggle;
@@ -202,8 +198,6 @@ impl State {
         }
         if o.read_toggle != o.read_seen {
             self.read_seen = o.read_toggle;
-            self.read_data = o.pair;
-            self.read_valid = true;
         }
         if o.done_toggle != o.done_seen {
             self.done_seen = o.done_toggle;

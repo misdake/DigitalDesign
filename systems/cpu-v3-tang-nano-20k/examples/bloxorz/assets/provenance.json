@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "source": "User-provided BloxorzClone",
+  "files": {
+    "src/core/constants.js": "ddb38278f7e127bdccf6dab972f22edcf5a36bb01c0df9a10fe6b4e270f4696f",
+    "src/core/state.js": "5fa199cce3814b8d7e4dbbc41b63372b2425df7154e6e4adf0fc08ac5c7511c1",
+    "src/core/game.js": "f5ec8fbc064b3107472425b84ef5ea257672e0d1cdfdf58f6239781b3ebb69a8",
+    "src/core/levels.js": "ba6c54aec276154591e20335db5d87d3008407b850bdc3ee69c45acecba7c5d4",
+    "src/render/camera.js": "b45da3f265f5a43d3ba0472ceababc8f994c4a11f50caa563c870f9f56e55656",
+    "src/render/ground-shadow.js": "702a85436dcf438ecadfbf2fc39ff250508793f58f51ccdb6f68cb454b2e49ba",
+    "textures/atlas-low.png": "eccad172b5b95c4ccd7e7078fb887ec01db8b81c4586f6aba5a07ebf6d756003"
+  },
+  "levels": 33,
+  "fixtures": 2,
+  "transitions": 7705,
+  "unverified": [
+    "b23"
+  ]
+}

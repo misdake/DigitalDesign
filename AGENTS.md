@@ -4,28 +4,37 @@ Workspace map, dependency direction, prerequisites, and build/validate commands:
 `ARCHITECTURE.md` (read `ARCHITECTURE.md` before moving code across crates).
 
 **Read `.agent/README.md` first.** `.agent/` is a local, untracked working area (backed up outside
-git): the conventions, the commit checklist, the todo list, the project journal, design drafts, and
-the retired-document store. If it is missing, the tracked documents (`README.md`, `ARCHITECTURE.md`,
-`ip/*/docs`, `systems/*/docs`) are authoritative. `<project>` below means the row with
-`status: active` in `.agent/README.md`'s project table.
+git): conventions, the commit checklist, project goals, open tasks, specifications, and daily/weekly
+logs. If it is missing, the tracked documents (`README.md`, `ARCHITECTURE.md`, `ip/*/docs`,
+`systems/*/docs`) are authoritative. `<project>` below means the current project directory reached
+through `.agent/projects/README.md`.
 
 ## Working loop
 
 1. **Intake.** Read `.agent/README.md`, the open items in `projects/<project>/todo.md`, and the
    current `projects/<project>/project.md`.
-2. **Work.** Honour the hard constraints, and run the mandatory co-simulations for every path you
-   touch.
-3. **New documents.** When the user says a document is new, file it as `.agent/README.md` describes:
-   tracked → the matching `docs/` tree plus that directory's `README.md` table; local → under
-   `.agent/` with `id`/`status`/`last-verified` front matter plus one index row. One fact lives in one
-   document; fitted numbers are linked, never copied.
-4. **Committing.** Read `.agent/commit-checklist.md` before and after a commit; it is the only place
-   that spells out the two ledger rows (`scripts/log-post-commit-pnr.ps1`,
-   `scripts/log-post-commit-benchmark.ps1`) and the diary.
+2. **Design first.** Develop the top-level, module and software designs in
+   `.agent/projects/<project>/design/<topic>/`, outside Git. Include the target specification,
+   changes from implemented behavior, implementation approach and acceptance conditions. Maintain
+   the project's todo throughout. Design documents contain pending work, not development logs.
+3. **Implement incrementally.** Once the project design is ready, read `.agent/conventions.md`
+   for the development, integration and delivery workflow. After each part is implemented and
+   verified, merge its actual specification and implementation description into the owning tracked
+   `docs/`, remove that completed part from local design, and update todo. The user backs up the
+   design process. Honour the hard constraints and run the mandatory validation for each
+   implementation path touched.
+4. **Document ownership.** `docs/` describes implemented interfaces, formats, behavior, storage,
+   scheduling and brief tradeoffs. Pending specifications stay in local design. Maintain each
+   document list only in its own directory's README; local documents have
+   `id`/`status`/`last-verified` front matter. Do not maintain a global document list or parallel
+   copies of an implemented specification in design and docs.
+5. **Committing.** Read `.agent/commit-checklist.md` before and after a commit. Keep daily and weekly
+   logs current. Historical performance and resource records remain in the user's backup; do not
+   recreate them, append ledger rows, or run legacy logging scripts. Required implementation
+   validation still applies.
 
-Read on demand, never by default: `.agent/conventions.md`, `.agent/commit-checklist.md`,
-`.agent/logs.md`. When a document's home, or whether a change counts as a finished unit, is
-unclear, ask instead of deciding silently.
+Read `.agent/commit-checklist.md` and `.agent/logs.md` on demand. When a document's home, or whether
+a change counts as a finished unit, is unclear, ask instead of deciding silently.
 
 ## Hard constraints
 
@@ -71,6 +80,6 @@ Beyond the baseline `cargo test` / `cargo clippy` / layer / hygiene / docs check
 - Every simulator test must supply a maximum cycle/step count.
 - Project files, comments, and documentation are English; local notes under `.agent/` may be Chinese.
 - Rust changes stay `cargo fmt` clean (see `.agent/conventions.md` for the known pre-existing debt).
-- `.agent/` is untracked and outside git: deleting a local document is permanent, so retire it into
-  `.agent/history/` instead of removing it.
+- `.agent/` is untracked: local cleanup requires user authorization. Preserve and continue daily
+  and weekly logs; keep specifications separate from development history.
 - Do not commit unless the user explicitly asks for a commit.

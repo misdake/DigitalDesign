@@ -1,3 +1,4 @@
+pub use crate::gpu_layout::*;
 use digital_design_ip_common::{
     DeviceAllocation, MemoryRegion, MemoryRegionKind, PhysicalWordAddress, SystemDeviceLayout,
     SystemMemoryLayout,
@@ -18,8 +19,8 @@ pub const FRAMEBUFFER_TILE_ROW_STRIDE_WORDS: u32 =
 pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT;
 /// Per-framebuffer slot, including the padding that 16x16 tiles leave after
 /// the last tile row.
-pub const FRAMEBUFFER_SLOT_WORDS: u32 = 0x0001_8000;
-pub const FRAMEBUFFER_A_BASE_WORD: u32 = 0x0020_0000;
+pub const FRAMEBUFFER_SLOT_WORDS: u32 = GPU_PLANE_SECTORS as u32 * 64;
+pub const FRAMEBUFFER_A_BASE_WORD: u32 = GPU_COLOR_A_SECTOR as u32 * 64;
 pub const FRAMEBUFFER_B_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD + FRAMEBUFFER_SLOT_WORDS;
 pub const FRAMEBUFFER_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD;
 pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_B_BASE_WORD + FRAMEBUFFER_SLOT_WORDS;
@@ -57,15 +58,9 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
     const PHYSICAL_ADDRESS_BITS: u8 = 22;
     const REGIONS: &'static [MemoryRegion] = &[
         MemoryRegion {
-            name: "boot",
-            base: PhysicalWordAddress::new(0),
-            words: 0x100,
-            kind: MemoryRegionKind::Boot,
-        },
-        MemoryRegion {
             name: "main-before-framebuffer",
-            base: PhysicalWordAddress::new(0x100),
-            words: FRAMEBUFFER_BASE_WORD - 0x100,
+            base: PhysicalWordAddress::new(0),
+            words: FRAMEBUFFER_BASE_WORD,
             kind: MemoryRegionKind::Main,
         },
         MemoryRegion {
@@ -75,10 +70,10 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
             kind: MemoryRegionKind::Shared,
         },
         MemoryRegion {
-            name: "main-high-after-framebuffer",
+            name: "gpu-depth-arenas-assets",
             base: PhysicalWordAddress::new(FRAMEBUFFER_END_WORD),
             words: (1 << 22) - FRAMEBUFFER_END_WORD,
-            kind: MemoryRegionKind::Main,
+            kind: MemoryRegionKind::Shared,
         },
     ];
 }
@@ -102,29 +97,6 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
             ],
         },
         DeviceAllocation {
-            name: "boot-select",
-            device: crate::boot::BOOT_SELECT_DEVICE,
-            channels: &[crate::boot::BOOT_SELECT_VALUE],
-        },
-        DeviceAllocation {
-            name: "boot-dma",
-            device: crate::boot::BOOT_DMA_DEVICE,
-            channels: &[
-                crate::boot::DMA_COMMAND,
-                crate::boot::DMA_STATUS,
-                crate::boot::DMA_FLASH_OFFSET_LOW,
-                crate::boot::DMA_FLASH_OFFSET_HIGH,
-                crate::boot::DMA_DESTINATION_LOW,
-                crate::boot::DMA_DESTINATION_HIGH,
-                crate::boot::DMA_FILE_SIZE_LOW,
-                crate::boot::DMA_FILE_SIZE_HIGH,
-                crate::boot::DMA_MEMORY_SIZE_LOW,
-                crate::boot::DMA_MEMORY_SIZE_HIGH,
-                crate::boot::DMA_ERROR,
-                crate::boot::DMA_COMPLETED_WORDS_LOW,
-            ],
-        },
-        DeviceAllocation {
             name: "display",
             device: crate::DISPLAY_DEVICE,
             channels: &[
@@ -136,19 +108,18 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
             ],
         },
         DeviceAllocation {
-            // Read and write channels share one 4-bit channel space, so each
-            // GPU channel number appears once even though channels 0..3 are
-            // read/write pairs.
             name: "gpu",
             device: crate::GPU_DEVICE,
             channels: &[
-                crate::GPU_CMD_BASE_LOW,
-                crate::GPU_CMD_BASE_HIGH,
-                crate::GPU_CMD_WORDS_LOW,
-                crate::GPU_CMD_WORDS_HIGH,
-                crate::GPU_SUBMIT,
-                crate::GPU_CONTROL,
+                crate::GPU_COMMAND_COUNT,
+                crate::GPU_COMMAND_START,
+                crate::GPU_STATUS,
             ],
+        },
+        DeviceAllocation {
+            name: "dualshock2",
+            device: 5,
+            channels: &[0, 1, 2, 3, 4, 5, 6, 7, 8],
         },
     ];
 }
@@ -229,6 +200,21 @@ mod tests {
         validate_device_layout::<TangNano20kDeviceLayout>().unwrap();
         assert!(SdramWordAddress::try_from(PhysicalWordAddress::new((1 << 22) - 1)).is_ok());
         assert!(SdramWordAddress::try_from(PhysicalWordAddress::new(1 << 22)).is_err());
+    }
+
+    #[test]
+    fn fixed_gpu_domain_is_excluded_from_general_memory() {
+        let first = u32::from(GPU_DOMAIN_FIRST_SECTOR) * 64;
+        for region in TangNano20kMemoryLayout::REGIONS {
+            if region.kind == MemoryRegionKind::Main {
+                assert!(region.base.get() + region.words <= first);
+            }
+        }
+        assert_eq!(u32::from(GPU_COMMAND_FIRST_SECTOR) * 128, 0x490000);
+        assert_eq!(u32::from(GPU_COMMAND_CAPACITY_SECTORS) * 128, 65536);
+        assert_eq!(u32::from(GPU_OBJECT_FIRST_SECTOR) * 128, 0x4a0000);
+        assert_eq!(u32::from(GPU_OBJECT_CAPACITY_SECTORS) * 128, 65536);
+        assert_eq!(u32::from(GPU_ASSET_FIRST_SECTOR) * 128, 0x4b0000);
     }
 
     #[test]

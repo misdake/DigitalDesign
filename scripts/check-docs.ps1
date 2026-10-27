@@ -4,9 +4,10 @@
 #                    printed in another document's current-state section; the milestone ledger
 #                    table and the generated reports are the other allowed homes;
 #   3. local index - documents under .agent/ that are referenced by id carry
-#                    id/status/last-verified, ids are unique, and .agent/README.md's table
-#                    agrees with the files it points at;
-#   4. links       - markdown links resolve, and every path in that index exists.
+#                    id/status/last-verified, ids are unique, and each document is linked
+#                    from the README in its own directory;
+#   4. links       - markdown links in active documents resolve. Preserved daily/weekly
+#                    logs are historical snapshots, not current navigation.
 #
 # "## Current implementation progress" is the milestone ledger, which the documentation rules
 # keep separate from a current-state section, so headings naming progress or milestones are
@@ -26,13 +27,20 @@ $currentSectionBudget = 40
 $currentHeading = [regex]::new('^##\s+.*\bCurrent\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 $ledgerHeading = [regex]::new('\b(progress|milestone)\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 $fittedNumber = [regex]::new('\b\d{1,3}(?:,\d{3})+\b|\b\d+\.\d+\s*MHz\b')
-$indexRow = [regex]::new('^\|\s*([a-z0-9-]+)\s*\|\s*`([^`]+)`\s*\|.*\|\s*(\w+)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|')
 $validStatus = @("active", "planned", "frozen", "retired")
 
 $errors = [System.Collections.Generic.List[string]]::new()
 
 function Get-DocumentLines([string]$Path) {
     return [System.IO.File]::ReadAllLines($Path)
+}
+
+function Resolve-DocumentationLink([string]$DocumentPath, [string]$Target) {
+    $targetPath = [Uri]::UnescapeDataString(($Target -split '#', 2)[0].Trim())
+    if ($targetPath.StartsWith('/')) {
+        return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $targetPath.TrimStart('/')))
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $DocumentPath) $targetPath))
 }
 
 # --- 1 and 2: current-state sections -----------------------------------------
@@ -72,7 +80,7 @@ foreach ($relativePath in $trackedDocs) {
             if ($target -match '^(https?:|mailto:|#)') { continue }
             $target = ($target -split '#')[0].Trim()
             if (-not $target) { continue }
-            if (-not (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $path) $target))) {
+            if (-not (Test-Path -LiteralPath (Resolve-DocumentationLink $path $target))) {
                 $errors.Add("markdown link does not resolve: $relativePath -> $target")
             }
         }
@@ -90,25 +98,12 @@ function Get-RelativeAgentPath([string]$Path) {
     return $Path.Substring($agentRoot.Length).TrimStart('\', '/') -replace '\\', '/'
 }
 
-function Test-IsArchivedBuildArtifact([string]$RelativePath) {
-    # Worktree target/ snapshots retain their original generated reports and
-    # SHA256 manifest. They are evidence artifacts, not authored local specs.
-    # Keep checks enabled for the surrounding records and for unmanifested trees.
-    $archive = [regex]::Match($RelativePath, '^(projects/[^/]+/records/worktrees/[^/]+)/target/')
-    return $archive.Success -and (Test-Path -LiteralPath (Join-Path $agentRoot ($archive.Groups[1].Value + '/manifest.json')) -PathType Leaf)
-}
-
 function Test-IsLocalDocument([string]$RelativePath) {
     # Installed third-party dependencies are not authored project documents.
     if ($RelativePath -match '(^|/)(node_modules|vendor)/') { return $false }
-    if (Test-IsArchivedBuildArtifact $RelativePath) { return $false }
     $name = Split-Path -Leaf $RelativePath
     if ($name -eq "README.md" -or $name -eq "todo.md") { return $false }
-    # OpenCode prompts are per-run execution artifacts paired with JSONL/stderr,
-    # not durable project documents. Conventions intentionally keep them at
-    # `.agent/opencode-*-prompt.md`, so they do not need an id or index row.
-    if ($RelativePath -match '^opencode-.*-prompt\.md$') { return $false }
-    if ($RelativePath -match '(^|/)(daily|weekly|history)/') { return $false }
+    if ($RelativePath -match '(^|/)(daily|weekly)/') { return $false }
     return $RelativePath.EndsWith(".md")
 }
 
@@ -122,6 +117,23 @@ function Get-FrontMatter([string]$Path) {
         if ($match.Success) { $fields[$match.Groups[1].Value] = $match.Groups[2].Value }
     }
     return $fields
+}
+
+function Test-DirectoryRegistration([string]$DocumentPath) {
+    $directory = Split-Path -Parent $DocumentPath
+    $indexPath = Join-Path $directory "README.md"
+    if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { return $false }
+    foreach ($line in (Get-DocumentLines $indexPath)) {
+        foreach ($match in [regex]::Matches($line, '\]\(([^)]+)\)')) {
+            $target = $match.Groups[1].Value.Trim()
+            if ($target -match '^(https?:|mailto:|#)') { continue }
+            $target = [Uri]::UnescapeDataString(($target -split '#')[0].Trim())
+            if (-not $target) { continue }
+            $full = Resolve-DocumentationLink $indexPath $target
+            if ($full -eq [System.IO.Path]::GetFullPath($DocumentPath)) { return $true }
+        }
+    }
+    return $false
 }
 
 if (Test-Path -LiteralPath $agentRoot -PathType Container) {
@@ -151,57 +163,22 @@ if (Test-Path -LiteralPath $agentRoot -PathType Container) {
         }
     }
 
-    $indexPath = Join-Path $agentRoot "README.md"
-    $indexedPaths = @{}
-    foreach ($line in (Get-DocumentLines $indexPath)) {
-        $match = $indexRow.Match($line)
-        if (-not $match.Success) { continue }
-        $id = $match.Groups[1].Value
-        $path = $match.Groups[2].Value
-        $status = $match.Groups[3].Value
-        $verified = $match.Groups[4].Value
-        $indexedPaths[$path] = $true
-        $full = Join-Path $agentRoot $path
-        if (-not (Test-Path -LiteralPath $full)) {
-            $errors.Add("index row '$id' points at a missing path: .agent/$path")
-            continue
-        }
-        if (-not (Test-Path -LiteralPath $full -PathType Leaf) -or -not $path.EndsWith(".md")) { continue }
-        # Path-convention documents (todo.md, READMEs, daily/, weekly/) carry no front matter,
-        # so only a document that is referenced by id has to agree with its row.
-        if (-not (Test-IsLocalDocument $path)) { continue }
-        $front = Get-FrontMatter $full
-        if ($null -eq $front) {
-            $errors.Add("index row '$id' points at a file without front matter: .agent/$path")
-            continue
-        }
-        if ($front["id"] -ne $id) { $errors.Add("index id '$id' does not match front matter id '$($front['id'])': .agent/$path") }
-        if ($front["status"] -ne $status) { $errors.Add("index status '$status' does not match front matter status '$($front['status'])': .agent/$path") }
-        if ($front["last-verified"] -ne $verified) { $errors.Add("index last-verified '$verified' does not match front matter '$($front['last-verified'])': .agent/$path") }
-    }
-
     foreach ($relative in ($localDocuments.Keys | Sort-Object)) {
-        if ($indexedPaths.ContainsKey($relative)) { continue }
-        # A row may also cover a whole project directory instead of listing each document.
-        $covered = $false
-        foreach ($key in $indexedPaths.Keys) {
-            if ($key.EndsWith("/") -and $relative.StartsWith($key)) { $covered = $true; break }
-        }
-        if (-not $covered) {
-            $errors.Add("local document is not in .agent/README.md's table: .agent/$relative")
+        if (-not (Test-DirectoryRegistration (Join-Path $agentRoot $relative))) {
+            $errors.Add("local document is not linked from its own directory's README.md: .agent/$relative")
         }
     }
 
     foreach ($file in (Get-ChildItem $agentRoot -Recurse -File -Filter "*.md")) {
         $relative = Get-RelativeAgentPath $file.FullName
-        if (Test-IsArchivedBuildArtifact $relative) { continue }
+        if ($relative -match '(^|/)(node_modules|vendor|daily|weekly)/') { continue }
         foreach ($line in (Get-DocumentLines $file.FullName)) {
             foreach ($match in [regex]::Matches($line, '\]\(([^)]+)\)')) {
                 $target = $match.Groups[1].Value.Trim()
                 if ($target -match '^(https?:|mailto:|#)') { continue }
                 $target = ($target -split '#')[0].Trim()
                 if (-not $target) { continue }
-                if (-not (Test-Path -LiteralPath (Join-Path $file.DirectoryName $target))) {
+                if (-not (Test-Path -LiteralPath (Resolve-DocumentationLink $file.FullName $target))) {
                     $errors.Add("markdown link does not resolve: .agent/$relative -> $target")
                 }
             }

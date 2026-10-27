@@ -6,30 +6,21 @@ use std::{collections::BTreeMap, io::Write};
 
 const BOUND: u64 = 20_000;
 #[test]
-fn dedicated_actual_d_lod_selector_bill_matches_static_certificate_and_old_basis() {
-    use super::super::{control, inventory, runtime_inventory};
-    let b = super::super::Binding::build().unwrap();
-    assert_eq!(
-        (
-            b.derivative.packed.read_selector_tree_bits,
-            b.lod.packed.read_selector_tree_bits
-        ),
-        (1140, 229)
-    );
-    assert_eq!(
-        (
-            b.derivative.packed.write_selector_tree_bits,
-            b.lod.packed.write_selector_tree_bits
-        ),
-        (469, 316)
-    );
-    assert_eq!(
-        (
-            b.derivative.packed.control_boolean_gates,
-            b.lod.packed.control_boolean_gates
-        ),
-        (2574, 1792)
-    );
+fn actual_short_kernel_selector_bill_matches_single_cohort_registers() {
+    use super::super::{control, runtime_inventory, Binding};
+    let b = Binding::build().unwrap();
+    // Generic reference certificates survive at one cohort. The selected
+    // shared-axis coordinate numeric row is checked separately below; these
+    // ceilings do not claim a physical price for its operand/phase mux.
+    for (stage, write, boolean) in [
+        (&b.derivative, 17, 44),
+        (&b.lod, 92, 118),
+        (&b.coordinate, 48, 71),
+    ] {
+        assert_eq!(stage.packed.read_selector_tree_bits, 0);
+        assert_eq!(stage.packed.write_selector_tree_bits, write);
+        assert_eq!(stage.packed.control_boolean_gates, boolean);
+    }
     for storage in [control::Storage::Dedicated, control::Storage::Packed] {
         let p = control::Hardware {
             storage,
@@ -41,69 +32,23 @@ fn dedicated_actual_d_lod_selector_bill_matches_static_certificate_and_old_basis
             packet_storage: timed::PacketStorage::Pool64,
             ..Default::default()
         };
-        let old = inventory::describe(&b, p, &c).unwrap();
         let actual = runtime_inventory::describe(&b, p, &c).unwrap();
-        let removed_read: u64 = [&b.coefficient, &b.plane, &b.packet]
-            .into_iter()
-            .map(|stage| {
-                if storage == control::Storage::Dedicated {
-                    stage
-                        .ff_banks
-                        .iter()
-                        .map(|f| u64::from(f.width) * f.slots.saturating_sub(1))
-                        .sum()
-                } else {
-                    stage.packed.read_selector_tree_bits
-                }
-            })
-            .sum();
-        let old_runtime_read = old.rotating_read_mux_bits - removed_read;
-        if storage == control::Storage::Dedicated {
-            // The Work two-head selector adds payload92 + cursor2 mux nodes.
-            assert_eq!(actual.rotating_read_mux_bits, old_runtime_read + 769 + 94);
+        assert_eq!(actual.rotating_read_mux_bits, 78); // Work payload76 + cursor2.
+        assert_eq!(actual.rotating_write_mux_bits, 157);
+        assert_eq!(actual.storage_control_boolean_gates, 233);
+        for (name, bits) in [
+            ("derivative FF", 219),
+            ("LOD FF", 83),
+            ("coordinate FF", 68),
+        ] {
             assert_eq!(
-                actual.rotating_write_mux_bits,
-                old.rotating_write_mux_bits + 785
-            );
-            assert_eq!(
-                actual.storage_control_boolean_gates,
-                old.storage_control_boolean_gates + 4366
-            );
-            let ceilings = [1251, 727];
-            let actual_used = [908, 325];
-            for ((name, ceiling), used) in ["derivative FF", "LOD FF"]
-                .into_iter()
-                .zip(ceilings)
-                .zip(actual_used)
-            {
-                assert_eq!(
-                    actual.rows.iter().find(|r| r.name == name).unwrap().ff_bits,
-                    ceiling
-                );
-                assert!(used <= ceiling);
-            }
-        } else {
-            assert_eq!(actual.rotating_read_mux_bits, old_runtime_read + 94);
-            assert_eq!(
-                actual.rotating_write_mux_bits,
-                old.rotating_write_mux_bits
-                    - [&b.coefficient, &b.plane, &b.packet]
-                        .into_iter()
-                        .map(|s| s.packed.write_selector_tree_bits)
-                        .sum::<u64>()
-            );
-            assert_eq!(
-                actual.storage_control_boolean_gates,
-                old.storage_control_boolean_gates
-                    - [&b.coefficient, &b.plane, &b.packet]
-                        .into_iter()
-                        .map(|s| s.packed.control_boolean_gates)
-                        .sum::<u64>()
+                actual.rows.iter().find(|r| r.name == name).unwrap().ff_bits,
+                bits
             );
         }
-        println!("DLOD STEERING {storage:?} oldRuntimeRead={old_runtime_read} actualRead={} actualWrite={} actualBoolean={} FF={}",actual.rotating_read_mux_bits,actual.rotating_write_mux_bits,actual.storage_control_boolean_gates,actual.ff_bits);
     }
 }
+
 #[test]
 fn actual_d_lod_partial_helper_and_scalar_coordinate_cuts() {
     let (slots, bytes) = q::fixture();
@@ -272,11 +217,11 @@ fn connected_actual_numerical_banks_pool_writes_and_ce_cuts() {
     let mut l_captures = 0;
     let mut accepted = 0;
     let mut got = vec![];
-    let mut history_m: [Option<member::Input>; 7] = [None; 7];
-    let mut history_p: [Option<(member::Input, usize)>; 9] = [None; 9];
+    let mut history_m: [Option<member::Input>; 2] = [None; 2];
+    let mut history_p: [Option<(member::Input, usize)>; 2] = [None; 2];
     let mut owner = BTreeMap::new();
-    let mut hits_m = [0; 7];
-    let mut hits_p = [0; 9];
+    let mut hits_m = [0; 2];
+    let mut hits_p = [0; 2];
     let mut frozen = 0;
     let mut refused = 0;
     let mut written = 0;
@@ -355,8 +300,8 @@ fn connected_actual_numerical_banks_pool_writes_and_ce_cuts() {
             d_captures += usize::from(trace.d_capture.is_some());
             l_captures += usize::from(trace.l_capture.is_some());
             if trace.work.write.is_some() {
-                let v = history_m[6].take().expect("old membership output owner");
-                owner.insert(reference::golden_member(v), v);
+                let v = history_m[1].take().expect("old membership output owner");
+                owner.insert(reference::compact_member(v), v);
             }
             let captured = trace.work.capture.map(|(m, t)| {
                 let v = *owner
@@ -368,7 +313,7 @@ fn connected_actual_numerical_banks_pool_writes_and_ce_cuts() {
                 (v, usize::from(t))
             });
             if let Some(payload) = trace.packet {
-                let (v, tap) = history_p[8].take().expect("old packet output owner");
+                let (v, tap) = history_p[1].take().expect("old packet output owner");
                 assert_eq!(payload as u128, reference::golden_packet(v, tap));
                 let writes: Vec<_> = step
                     .cache
@@ -385,27 +330,45 @@ fn connected_actual_numerical_banks_pool_writes_and_ce_cuts() {
                 assert_eq!(writes, vec![payload]);
                 written += 1;
             }
-            for i in (1..7).rev() {
+            for i in (1..2).rev() {
                 history_m[i] = history_m[i - 1];
             }
             history_m[0] = trace.member_input;
-            for i in (1..9).rev() {
+            for i in (1..2).rev() {
                 history_p[i] = history_p[i - 1];
             }
             history_p[0] = captured;
             for (i, v) in history_m.iter().enumerate() {
                 assert_eq!(
-                    trace.member_banks[i],
-                    v.map(|v| reference::golden_member_banks(v)[i])
+                    trace.member_banks[if i == 0 { 0 } else { 4 }],
+                    v.map(|v| if i == 0 {
+                        // Independent coordinate tuple golden for Common72.
+                        reference::compact_common(v)
+                    } else {
+                        reference::compact_member(v)
+                    })
                 );
                 hits_m[i] += usize::from(v.is_some());
             }
+            for i in [1, 2, 3, 5, 6] {
+                assert!(
+                    trace.member_banks[i].is_none(),
+                    "removed membership bank{i}"
+                );
+            }
             for (i, v) in history_p.iter().enumerate() {
                 assert_eq!(
-                    trace.packet_banks[i],
-                    v.map(|(v, t)| reference::golden_packet_banks(v, t)[i])
+                    trace.packet_banks[if i == 0 { 0 } else { 2 }],
+                    v.map(|(v, t)| if i == 0 {
+                        reference::compact_packet_capture(v, t)
+                    } else {
+                        reference::golden_packet(v, t)
+                    })
                 );
                 hits_p[i] += usize::from(v.is_some());
+            }
+            for i in [1, 3, 4, 5, 6, 7, 8] {
+                assert!(trace.packet_banks[i].is_none(), "removed packet bank{i}");
             }
             if before.1[0].is_some() && !r.preparation.packet_ready {
                 assert!(trace.work.capture.is_none());
@@ -501,18 +464,23 @@ fn connected_actual_coordinate_cuts_match_live_frames_and_freeze_under_ce() {
             if trace.coordinate.is_some() {
                 active.remove(0);
             }
-            for calc in &trace.c_edge.as_ref().unwrap().calculations {
-                // Every live registered cut must equal a currently-owned lane's
-                // independently prepared coordinate value at the same index.
-                assert!(
-                    active.iter().any(|(q, o)| {
-                        originals[*q].lanes[*o].coordinate.frame.values[calc.value].raw == calc.raw
-                    }),
-                    "coordinate cut age{} value{} raw{} has no live owner",
-                    calc.age,
-                    calc.value,
-                    calc.raw
-                );
+            if let Some((axis, result)) = trace.c_edge.as_ref().unwrap().axis {
+                let (quad, ordinal) = *active.first().expect("coordinate cut owner");
+                let frame = &originals[quad].lanes[ordinal].coordinate.frame;
+                for plane in 0..2 {
+                    let raw =
+                        |name: &str| frame.outputs.iter().find(|v| v.name == name).unwrap().raw;
+                    assert_eq!(
+                        i128::from(result.fractions[plane]),
+                        raw(&format!("f{plane}.{axis}"))
+                    );
+                    for tap in 0..2 {
+                        assert_eq!(
+                            i128::from(result.coordinates[plane][tap]),
+                            raw(&format!("t{plane}.{axis}.{tap}"))
+                        );
+                    }
+                }
                 c_calcs += 1;
             }
         }
@@ -611,22 +579,30 @@ fn all_supported_configuration_receipts_keep_numeric_owners_and_capacities() {
                         let actual = runtime_inventory::describe(&binding, p, &c).unwrap();
                         assert_eq!(
                             (actual.sdp4_cells, actual.ram16x1_cells, actual.bsram),
-                            (old.sdp4_cells, old.ram16x1_cells, old.bsram)
+                            (
+                                old.sdp4_cells + 19 + 8 + 16 - 4 * (work as u64).div_ceil(16),
+                                old.ram16x1_cells + 76 + 32 + 64 - 16 * (work as u64).div_ceil(16),
+                                old.bsram + 2
+                            )
                         );
                         let row =
                             |name| actual.rows.iter().find(|r| r.name == name).unwrap().ff_bits;
-                        assert_eq!(row("actual membership valid/fault"), 8);
-                        assert_eq!(row("actual packet valid/fault"), 10);
-                        for name in ["membership FF", "packet FF", "prep phase/queue control"] {
-                            assert_eq!(
-                                row(name),
-                                old.rows.iter().find(|r| r.name == name).unwrap().ff_bits
-                            );
-                        }
-                        if storage == control::Storage::Packed {
-                            assert_eq!(row("actual membership retained control allowance"), 7);
-                            assert_eq!(row("actual packet retained control allowance"), 6);
-                        }
+                        assert_eq!(row("actual membership valid/fault"), 3);
+                        assert_eq!(row("actual packet valid/fault"), 3);
+                        assert_eq!(row("membership FF"), 148);
+                        assert_eq!(row("packet FF"), 149);
+                        assert_eq!(
+                            row("prep phase/queue control"),
+                            old.rows
+                                .iter()
+                                .find(|r| r.name == "prep phase/queue control")
+                                .unwrap()
+                                .ff_bits
+                        );
+                        assert!(!actual
+                            .rows
+                            .iter()
+                            .any(|r| r.name.contains("retained control allowance")));
                         count += 1;
                     }
                 }
@@ -634,5 +610,5 @@ fn all_supported_configuration_receipts_keep_numeric_owners_and_capacities() {
         }
     }
     assert_eq!(count, 15_872);
-    println!("NUMERICAL receipts: all {count} W2..32/C1..16/context1..8/storage/release configurations accepted; generic/data ceilings retained");
+    println!("NUMERICAL receipts: all {count} W2..32/C1..16/context1..8/storage/release configurations accepted; actual short numerical owners checked");
 }

@@ -135,7 +135,7 @@ fn work_ssram_prefetch_matches_independent_rtl_every_edge() {
             writeln!(tb,"if(dut.count !== {} || dut.head_count !== {} || dut.fetch_ptr !== {} || dut.reclaim_ptr !== {} || dut.write_ptr !== {} || dut.head_valid !== 2'd{} || dut.consume_head !== 1'd{} || dut.fill_head !== 1'd{}) $fatal(1,\"state {wall}\");",new.materialized,new.loaded,new.fetch,new.read,new.write,new.head_valid,new.consume_head,new.fill_head).unwrap();
             for h in 0..HEADS {
                 if new.head_valid >> h & 1 != 0 {
-                    writeln!(tb,"if(dut.heads[{h}] !== 92'h{:x} || dut.cursors[{h}] !== 2'd{}) $fatal(1,\"bank {h} edge {wall}\");",new.heads[h].0,new.cursors[h]).unwrap();
+                    writeln!(tb,"if(dut.head{h} !== 92'h{:x} || dut.cursors[{h}] !== 2'd{}) $fatal(1,\"bank {h} edge {wall}\");",new.heads[h].0,new.cursors[h]).unwrap();
                 }
             }
             writeln!(tb, "#4;clk=0;").unwrap();

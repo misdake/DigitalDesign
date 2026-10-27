@@ -12,6 +12,9 @@ use gpu_v2::{
 };
 use std::collections::{BTreeMap, VecDeque};
 
+#[path = "support/pixel_bank_replay.rs"]
+mod pixel_bank_replay;
+
 fn context(unlit: bool, untextured: bool, epoch: u16) -> CommonContext {
     CommonContext {
         lighting: LightingContext {
@@ -136,8 +139,21 @@ fn controlled_layout(
     let mut p = Pipeline::new(40_000).unwrap();
     let a = context(false, false, 11);
     let b = context(bypass.0, bypass.1, 23);
-    let ia = p.open_draw(a).unwrap().unwrap();
-    let ib = p.open_draw(b).unwrap().unwrap();
+    let uses_b = |i: usize| match layout {
+        0 => i >= 48,
+        1 => (i / foundation::GLOBAL_SLOTS) % 3 == 1,
+        _ => (i / foundation::GLOBAL_SLOTS).is_multiple_of(3),
+    };
+    let draw_size = if layout == 0 {
+        48
+    } else {
+        foundation::GLOBAL_SLOTS
+    };
+    let ia = p.open_draw(if uses_b(0) { b } else { a }).unwrap().unwrap();
+    let ib = p
+        .open_draw(if uses_b(draw_size) { b } else { a })
+        .unwrap()
+        .unwrap();
     assert!(
         p.open_draw(a).unwrap().is_none(),
         "third draw ignored live banks"
@@ -147,14 +163,9 @@ fn controlled_layout(
     } else {
         6 * foundation::GLOBAL_SLOTS
     };
-    let inputs: Vec<_> = (0..count)
+    let mut inputs: Vec<_> = (0..count)
         .map(|i| {
-            let use_b = match layout {
-                0 => i >= 48,
-                1 => (i / foundation::GLOBAL_SLOTS) % 3 == 1,
-                _ => (i / foundation::GLOBAL_SLOTS).is_multiple_of(3),
-            };
-            let id = if use_b { ib } else { ia };
+            let id = if i < draw_size { ia } else { ib };
             input(
                 foundation::Begin {
                     context: id,
@@ -169,7 +180,7 @@ fn controlled_layout(
             )
         })
         .collect();
-    let beats: Vec<_> = inputs
+    let mut beats: Vec<_> = inputs
         .iter()
         .map(|&i| foundation::source_beats(i).unwrap())
         .collect();
@@ -179,8 +190,13 @@ fn controlled_layout(
     let mut lights = VecDeque::new();
     let mut samples = VecDeque::new();
     let mut received = Vec::new();
-    let mut closed = [false; 2];
+    let mut draw_ids = vec![Some(ia), Some(ib)];
+    draw_ids.resize(count / draw_size, None);
+    let mut closed = vec![false; draw_ids.len()];
     let mut releases = Vec::new();
+    let mut previous_reads = Vec::new();
+    let mut paused_returns = 0;
+    let mut bank_replay = pixel_bank_replay::Recorder::new();
     let mut log = ResultLog {
         publish: Vec::new(),
         finals: Vec::new(),
@@ -188,12 +204,25 @@ fn controlled_layout(
         backpressure: 0,
     };
     for wall in 0..40_000 {
+        if let Some(draw_index) = (source < count).then_some(source / draw_size) {
+            if draw_ids[draw_index].is_none() {
+                if let Some(id) = p.open_draw(if uses_b(source) { b } else { a }).unwrap() {
+                    draw_ids[draw_index] = Some(id);
+                    for i in draw_index * draw_size..(draw_index + 1) * draw_size {
+                        inputs[i].context = id;
+                        beats[i] = foundation::source_beats(inputs[i]).unwrap();
+                    }
+                }
+            }
+        }
         let ce = !stall || wall % 17 != 3 && wall % 17 != 4;
         let light_ready = !stall || wall % 13 != 6;
         let sample_ready = !stall || wall % 19 != 7;
         let rop_ready = !stall || wall % 11 < 7;
-        let offer =
-            (source < inputs.len() && wall >= 16 + source * period).then(|| beats[source][row]);
+        let offer = (source < inputs.len()
+            && draw_ids[source / draw_size].is_some()
+            && wall >= 16 + source * period)
+            .then(|| beats[source][row]);
         let lw = lights
             .front()
             .copied()
@@ -217,6 +246,49 @@ fn controlled_layout(
                 rop_ready,
             })
             .unwrap_or_else(|e| panic!("wall {wall} source {source} row {row}: {e}"));
+        let output_data = step
+            .accesses
+            .iter()
+            .find(|a| a.store == Store::Output && a.write)
+            .map(|access| {
+                let ticket = p.ticket((access.address / 8) as u8).unwrap();
+                let index: usize = owner[&ticket.serial];
+                let c = if uses_b(index) { b } else { a };
+                golden(&inputs[index], c, index, access.address % 8 / 2)[access.address & 1]
+            });
+        bank_replay.edge(
+            &step,
+            offer,
+            lw,
+            sw,
+            pixel_bank_replay::OutputEdge {
+                ce,
+                ready: rop_ready,
+                data: output_data,
+                expected: step.signals.rop.map(|r| (r.data, r.row)),
+            },
+        );
+        for returned in &step.returns {
+            assert_eq!(returned.captured, returned.issued + 1);
+            assert!(
+                previous_reads.contains(&(returned.store, returned.address)),
+                "return without previous-wall-edge read"
+            );
+            paused_returns += usize::from(!ce);
+        }
+        assert_eq!(step.returns.len(), previous_reads.len());
+        previous_reads = step
+            .accesses
+            .iter()
+            .filter(|a| {
+                !a.write
+                    && matches!(
+                        a.store,
+                        Store::Basic | Store::Light | Store::Sample | Store::Origin
+                    )
+            })
+            .map(|a| (a.store, a.address))
+            .collect();
         if lw.is_some() {
             lights.pop_front();
         }
@@ -276,7 +348,7 @@ fn controlled_layout(
             if let Some(r) = step.signals.rop {
                 let index = owner[&r.ticket.serial];
                 let q = &inputs[index];
-                let context = if q.context == ia { a } else { b };
+                let context = if uses_b(index) { b } else { a };
                 assert_eq!(r.header, q.header);
                 assert_eq!(r.context, context.rop);
                 assert_eq!(
@@ -290,6 +362,7 @@ fn controlled_layout(
             }
         }
         for store in [
+            Store::Origin,
             Store::Basic,
             Store::Light,
             Store::Sample,
@@ -321,17 +394,22 @@ fn controlled_layout(
                 );
             }
         }
-        if source >= (if layout == 0 { 48 } else { count }) && !closed[0] {
-            p.close_draw(ia).unwrap();
-            closed[0] = true;
-        }
-        if source == count && !closed[1] {
-            p.close_draw(ib).unwrap();
-            closed[1] = true;
+        for draw_index in 0..draw_ids.len() {
+            if source >= (draw_index + 1) * draw_size && !closed[draw_index] {
+                p.close_draw(draw_ids[draw_index].unwrap()).unwrap();
+                closed[draw_index] = true;
+            }
         }
         releases.extend(step.released_draws);
         if p.idle() && source == count {
             assert!(lights.is_empty() && samples.is_empty());
+            assert!(previous_reads.is_empty());
+            if stall {
+                assert!(
+                    paused_returns > 0,
+                    "CE-off return capture was not exercised"
+                );
+            }
             let expected: Vec<_> = inputs
                 .iter()
                 .enumerate()
@@ -339,7 +417,10 @@ fn controlled_layout(
                 .flat_map(|(i, _)| (0..8u8).map(move |r| (i, r)))
                 .collect();
             assert_eq!(received, expected);
-            assert_eq!(releases, vec![ia, ib]);
+            assert_eq!(
+                releases,
+                draw_ids.iter().map(|id| id.unwrap()).collect::<Vec<_>>()
+            );
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/pixel-foundation-20261007");
             std::fs::create_dir_all(&dir).unwrap();
@@ -365,10 +446,30 @@ fn controlled_layout(
                 p.open_draw(a).unwrap().is_some(),
                 "retired bank not reusable"
             );
+            bank_replay.finish(&format!(
+                "controlled-{stall}-{sparse}-{period}-{}-{}-{layout}",
+                bypass.0, bypass.1
+            ));
             return log;
         }
     }
     panic!("controlled pipeline watchdog");
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME for actual-controller native bank replay"]
+fn actual_controller_native_banks_match_paced_stalled_and_bypass_accesses() {
+    for (stall, sparse, bypass, layout) in [
+        (false, false, (false, false), 0),
+        (true, true, (false, true), 1),
+        (true, false, (true, false), 2),
+    ] {
+        controlled_layout(stall, sparse, 8, bypass, layout);
+        pixel_bank_replay::replay(&format!(
+            "controlled-{stall}-{sparse}-8-{}-{}-{layout}",
+            bypass.0, bypass.1
+        ));
+    }
 }
 
 #[test]
@@ -402,6 +503,48 @@ fn faster_source_bursts_sparse_masks_bypass_and_independent_stalls() {
     controlled(false, false, false, 4);
     let log = controlled(true, true, true, 4);
     assert!(log.backpressure > 0);
+}
+
+#[test]
+fn draw_producer_and_close_follow_command_order() {
+    let mut p = Pipeline::new(200).unwrap();
+    let c = context(true, true, 3);
+    let current = p.open_draw(c).unwrap().unwrap();
+    let next = p.open_draw(c).unwrap().unwrap();
+    for _ in 0..foundation::GLOBAL_SLOTS {
+        p.tick(foundation::Tick {
+            ce: true,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    let begin = |context| foundation::Begin {
+        context,
+        header: Header {
+            x: 0,
+            y: 0,
+            mask: 0,
+        },
+        force_coarsest: false,
+    };
+    assert!(!p.signals(Some(begin(next)), true).unwrap().input_ready);
+    assert!(
+        p.close_draw(next).is_err(),
+        "next cannot close before current"
+    );
+    assert!(p.signals(Some(begin(current)), true).unwrap().input_ready);
+    p.close_draw(current).unwrap();
+    assert!(p.signals(Some(begin(next)), true).unwrap().input_ready);
+    assert!(!p.signals(Some(begin(current)), true).unwrap().input_ready);
+    p.close_draw(next).unwrap();
+    let s = p
+        .tick(foundation::Tick {
+            ce: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(s.released_draws, vec![current, next]);
+    assert!(p.idle());
 }
 
 #[test]

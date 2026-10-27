@@ -2,7 +2,7 @@
 
 Status: concise milestone index
 Repository: `../../../`
-Updated: 2026-10-02
+Updated: 2026-10-18
 
 Add exactly one short sentence here for each completed optimization; append implementation detail,
 measurements, rejected alternatives, and validation evidence to
@@ -11,6 +11,24 @@ numbers belong in [`architecture.md`](architecture.md); exact resource and bench
 generated outside this document.
 
 ## Completed milestones
+
+- 2026-10-18 — One fixed-header hardware loader, initialized cold state and fixed 2x scanout replace Boot ROM/selection/overlay/DMA and runtime reset distribution; see the [record](cpu-v3-optimization-record.md#2026-10-18-single-boot-cold-state-and-fixed-2x).
+
+- 2026-10-18 — Display uses one fixed source/R/G/B/pixel calendar without a pair FIFO; existing BSRAM tables supply nine-bit TMDS precodes through final per-pixel disparity formatting. See the [record](cpu-v3-optimization-record.md#2026-10-18-display-fixed-calendar-and-tmds-precode).
+
+- 2026-10-18 — Display address ownership uses aligned transaction units, separate invalid-half predicates and one row-group cursor through MMIO, SDRAM requests and publication; see the [record](cpu-v3-optimization-record.md#2026-10-18-display-aligned-address-ownership).
+
+- 2026-10-18 — Two frontend payload slots reuse I-cache holding capacity, and the native pair-Q feeds the sole adapter response capture; whole-chain comparisons retain the fetch/interconnect combination and reject the D-cache, Display and FPU alternatives. See the [record](cpu-v3-optimization-record.md#2026-10-18-two-slot-fetch-and-single-adapter-read-capture).
+
+- 2026-10-18 — The ordinary fetch queue and BTC share one payload RAM written only by accepted memory responses; queue references expire at atomic BTC publication and final reads select an address. Capacity and the fetch calendar are unchanged. See the [record](cpu-v3-optimization-record.md#2026-10-18-shared-fetch-queue-and-btc-payload).
+
+- 2026-10-18 — BTC payload fills write a spare RAM pair directly and install it by atomic pointer exchange; replay reads the final halfword and exact LRU uses relative-order bits. Capacity and the fetch calendar are unchanged. See the [record](cpu-v3-optimization-record.md#2026-10-18-btc-spare-pair-payload-storage).
+
+- 2026-10-17 — FPU ALU/product read scheduling, destination context and ALU/DOTSTORE commit storage are unified without changing write beats; the strict mixed-owner replay also corrects old-state RF commit timing in the value model. See the [record](cpu-v3-optimization-record.md#2026-10-17-shared-fpu-port-calendar-and-commit).
+
+- 2026-10-17 — I-cache metadata/response ownership and shared fetch/FPU arithmetic reduce CPU-system Logic without changing the execution calendar; complete FST alternatives are separately priced and retained as experiments. See the [record](cpu-v3-optimization-record.md#2026-10-17-cpu-and-cache-area-reduction).
+
+- 2026-10-11 — Integer multiply and FPU LUT interpolation share the existing CPU wide multiplier, preserving integer/MUL/DOT timing and numeric results while adding one special-function beat; see the [record](cpu-v3-optimization-record.md#2026-10-11-shared-cpu-wide-multiplier).
 
 - 2026-08-29 — Stage 0 removed per-line coherence machinery and froze global cache-maintenance and boot-handoff semantics.
 - 2026-08-29 — Stage 1 added private 256-bit cache refill buffers with complete-line commit.
@@ -57,13 +75,19 @@ generated outside this document.
 - 2026-09-27 — CPU B-source predecode and two-stage pixel AABB improved fitted timing with unchanged ISA and pixel results; offline and loaded-UART validation passed, with cold boot pending.
 - 2026-09-27 — Compact raster ownership, shared edge stepping, stable BSRAM inference and shared cache/control RAM16 ports reduced Logic; tile wins at both quad rates, and the two-pixel default passed complete Flash Verify and loaded UART, with cold boot pending.
 
-- 2026-09-27 — Four-row display buffering in two BSRAMs removed response staging and added linear RGB565-to-sRGB conversion; the completed-pair RAM16 FIFO is retained after whole-system comparisons, with mutually exclusive 2x/3x build features.
+- 2026-09-27 — Four-row display buffering in two BSRAMs removed response staging and added linear RGB565-to-sRGB conversion; the completed-pair RAM16 FIFO is retained after whole-system comparisons, with the then-supported 2x/3x build features (3x retired on 2026-10-18).
 
 - 2026-09-28 — Stream-owned fetch offsets, owner-qualified response broadcast and synchronous I/D-cache tag DPBs reduce whole-system Logic while preserving cache cycles and GPU behavior; matched RAM16, staging and arbitration alternatives remain in the local resource audit.
 
 - 2026-09-28 — Unified FPU lanes, common integer operands/results, synchronous D-cache metadata, ordered fetch cursors and six-client round robin reduce Logic while retaining two-way caches, dense clean throughput and frozen-suite execution cycles; full offline validation passed.
 - 2026-09-28 — The native SDRAM controller and two-pair 54/108-MHz bridge integrate bank-striped, naturally aligned line bursts with scalar masking; full-system simulation and routed timing pass.
 - 2026-10-07 — The shared FPU multiplier uses two registered stages, shortening MUL/VMUL/VMULS and the dot family by one beat while retaining SINCOS timing with an 18-bit phase register; the [record](cpu-v3-optimization-record.md#2026-10-07--two-stage-fpu-multiplier) preserves the frozen-suite comparison and offline validation boundary.
+
+- 2026-10-09 — One shared integer shift barrel and direct scalar-response storage reduce whole-system Logic with unchanged instruction/transaction schedules; local audited fitting, functional regressions and the original cloud comparison are in the [record](cpu-v3-optimization-record.md#2026-10-09--shared-integer-shifter-and-scalar-memory-storage).
+
+- 2026-10-11 — D-cache refill captures the requested halfword in its final CPU response slot, preserving complete-line publication, fault clearing and LCOPY ownership; the [record](cpu-v3-optimization-record.md#2026-10-11-d-cache-final-response-slot) links the matched qualification boundary.
+
+- 2026-10-11 — One ProductPath issuer and existing-register address cursors replace separate MUL/DOT controllers and repeated lane-stride address generation, retaining ACC64, aliasing and abort calendars; the [record](cpu-v3-optimization-record.md#2026-10-11-unified-fpu-product-issuer-and-address-cursors) defines the qualified scope.
 
 ## Next work
 

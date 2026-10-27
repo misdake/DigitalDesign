@@ -19,14 +19,17 @@ wire [31:0] memory_address;
 wire memory_response_ready;
 reg memory_response_valid = 0;
 reg [15:0] memory_read_data = 0;
+wire memory_request_ready = !memory_response_valid || memory_response_ready;
 
 wire [15:0] instruction_word = memory_address[15:0] < 8 ?
     16'ha001 : 16'h6c00;
 
 always @(posedge clk) begin
-    memory_response_valid <= memory_request_valid;
-    if (memory_request_valid)
-        memory_read_data <= instruction_word;
+    if (reset) memory_response_valid <= 0;
+    else if (memory_request_ready) begin
+        memory_response_valid <= memory_request_valid;
+        if (memory_request_valid) memory_read_data <= instruction_word;
+    end
 end
 
 __FETCH_QUEUE__ u_fetch (
@@ -36,7 +39,7 @@ __FETCH_QUEUE__ u_fetch (
     .core_request_valid(core_request_valid),
     .core_address(core_address),
     .core_response_ready(core_response_ready),
-    .memory_request_ready(1'b1),
+    .memory_request_ready(memory_request_ready),
     .memory_response_valid(memory_response_valid),
     .memory_read_data(memory_read_data),
     .memory_error(1'b0),

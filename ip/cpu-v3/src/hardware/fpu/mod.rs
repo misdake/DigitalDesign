@@ -701,10 +701,7 @@ pub struct CpuV3FpuSpecialPathOutput {
     pub mul_in_tag: Wires<9>,
 }
 
-/// FPU v2 special-function execution-path controller (opcode 0xD subops 0x0C
-/// RCP, 0x0D RSQRT and 0x0E SINCOS). Blocking: while active it owns both
-/// register-file read ports. Emu lives in the unit top; the leaf is verified
-/// through its Verilog testbench and the system co-simulation.
+/// Shared-wide special-function path: one added beat; direct tagged return writes.
 pub struct CpuV3FpuSpecialPath;
 
 impl HardwareIdentity for CpuV3FpuSpecialPath {
@@ -715,8 +712,6 @@ impl HardwareIdentity for CpuV3FpuSpecialPath {
     }
 }
 
-/// Pipeline registers of the blocking special path. Instruction context is
-/// written once and remains stable while only the valid token/data advance.
 #[derive(Default, Clone)]
 pub struct CpuV3FpuSpecialPathState {
     p0_valid: bool,
@@ -729,34 +724,19 @@ pub struct CpuV3FpuSpecialPathState {
     s1_shift: u8,
     s1_left: bool,
     s1_zero: bool,
-    s2_valid: bool,
-    s2_interpolated: u32,
-    // SINCOS context (Stage 7c): the range product comes from the shared
-    // 36x36 pipe; this context only registers the returned quadrant/fraction,
-    // the mode controls and the interpolation result.
+    interp_wait: bool,
+    meta_s1_valid: bool,
+    meta_s1_base: u32,
+    meta_s2_base: u32,
     sc_valid: bool,
     sc_stage: u8,
     sc_fd: u8,
     sc_mode: u8,
-    sc_q: u8,
-    sc_f: u16,
-    sc_result: u32,
-    /// Re-alignment register for the shared pipe's return. The pipe presents
-    /// its product one beat earlier than the SINCOS microsequence consumes it
-    /// (the range product is needed at T3), so the special path delays it by
-    /// one cycle and its schedule stays exactly as it was. Only phase[17:0] is
-    /// consumed, so the register holds `product[49:32]`.
     sc_phase_reg: u32,
 }
 
-/// The positive SINCOS range-reduction constant `round((2/pi) * 2^32)`.
-/// `C0*2^16 + C1 == K`, so `(a * K) >>> 32` is the same integer as the frozen
-/// two-term reducer `h0 + ((((p0 + h1) << 16) + p1) >> 32)` for every i32 `a`.
 const SINCOS_K: i64 = 2_734_261_102;
 
-/// All combinational results of one cycle, sampled from the pre-edge state.
-/// `comb` turns the output subset into wires; `tick` uses the capture subset to
-/// update the pipeline registers. Both must see the same pre-edge snapshot.
 struct CpuV3FpuSpecialPathComputed {
     load_now: bool,
     is_rcp: bool,
@@ -780,17 +760,13 @@ struct CpuV3FpuSpecialPathComputed {
     s1_shift: u8,
     s1_left: bool,
     s1_zero: bool,
-    capture_interpolated: u32,
+    interp_issue: bool,
+    capture_base: u32,
     fd: u8,
     sc_mode: u8,
-    sc_q_next: u8,
-    sc_f_next: u16,
-    sc_result_next: u32,
 }
 
 impl CpuV3FpuSpecialPathState {
-    /// Mirrors every combinational assignment of CpuV3FpuSpecialPath from the
-    /// pre-edge state and the live inputs.
     fn compute(&self, input: &CpuV3FpuSpecialPathInputValue) -> CpuV3FpuSpecialPathComputed {
         let instr_opcode = input.instr_opcode as u8;
         let word1 = input.word1_raw as u16;
@@ -803,23 +779,19 @@ impl CpuV3FpuSpecialPathState {
         let is_sincos = is_scalar && subop == encoding::SINCOS;
         let load_now = input.instr_complete && (is_rcp || is_rsqrt || is_sincos) && !input.abort;
 
-        // T0 operand capture; normalization runs from the registered operand.
         let x0 = input.rf_read_a_data as u32;
         let x0_negative = x0 & 0x8000_0000 != 0;
         let x0_magnitude = if x0_negative { x0.wrapping_neg() } else { x0 };
         let p0_zero = self.p0_magnitude == 0;
         let clz = self.p0_magnitude.leading_zeros();
 
-        // Shared normalized index/residue for both tables.
         let normalized = self.p0_magnitude.wrapping_shl(clz);
         let norm_index = ((normalized >> 24) & 0x7F) as u8;
         let norm_residue = ((normalized >> 15) & 0x1FF) as u16;
 
-        // RCP scale: 2^(clz-15).
         let rcp_shift = clz.abs_diff(15) as u8;
         let rcp_left = clz >= 15;
 
-        // RSQRT parity is parity(31-clz). Its scale is floor((15-clz)/2).
         let rsqrt_odd = clz & 1 == 0;
         let rsqrt_left = clz > 15;
         let rsqrt_distance = clz.abs_diff(15);
@@ -829,33 +801,30 @@ impl CpuV3FpuSpecialPathState {
             rsqrt_distance / 2
         };
 
-        // Aligned bases make the address a concatenation, not an addition.
         let table_address = if self.p0_rcp || !rsqrt_odd {
             128u16 | u16::from(norm_index)
         } else {
             256u16 | u16::from(norm_index)
         };
 
-        // SINCOS reduced-argument reflection uses the registered quadrant and
-        // fraction the shared multiply pipe returned.
-        let sc_u_sin = if self.sc_q & 1 == 1 {
-            0x1_0000 - i64::from(self.sc_f)
+        let sc_q = ((self.sc_phase_reg >> 16) & 3) as u8;
+        let sc_f = self.sc_phase_reg as u16;
+        let sc_u_sin = if sc_q & 1 == 1 {
+            0x1_0000 - i64::from(sc_f)
         } else {
-            i64::from(self.sc_f)
+            i64::from(sc_f)
         };
-        let sc_u_cos = if self.sc_q & 1 == 1 {
-            i64::from(self.sc_f)
+        let sc_u_cos = if sc_q & 1 == 1 {
+            i64::from(sc_f)
         } else {
-            0x1_0000 - i64::from(self.sc_f)
+            0x1_0000 - i64::from(sc_f)
         };
         let sc_single = matches!(self.sc_mode, 1 | 2);
         let sc_first_is_cos = self.sc_mode == 2;
-        let sc_interp_is_cos = sc_first_is_cos || (!sc_single && self.sc_stage == 6);
+        let sc_interp_is_cos = sc_first_is_cos || (!sc_single && self.sc_stage == 5);
         let sc_interp_u = if sc_interp_is_cos { sc_u_cos } else { sc_u_sin };
         let sc_residue = sc_interp_u & 0xFF;
 
-        // One packed read supplies both the 17-bit current and signed 10-bit
-        // delta. The product fits signed 19 bits, but i32 keeps the emu clear.
         let packed_interval = if self.p0_rcp {
             input.rf_read_a_data as u32
         } else {
@@ -865,8 +834,6 @@ impl CpuV3FpuSpecialPathState {
         let delta_bits = ((packed_interval >> 17) & 0x03FF) as i32;
         let interval_delta = (delta_bits << 22) >> 22;
 
-        // SINCOS packed interval (always mirror A). The local 18x18 multiplier
-        // only interpolates now; the range product comes from the shared pipe.
         let sc_delta_bits = ((input.rf_read_a_data as u32 >> 17) & 0x03FF) as i32;
         let sc_delta = ((sc_delta_bits << 22) >> 22) as i64;
         let mul_x = if self.sc_valid {
@@ -879,28 +846,33 @@ impl CpuV3FpuSpecialPathState {
         } else {
             i64::from(self.s1_residue)
         };
-        let mul_product = mul_x.wrapping_mul(mul_y);
-        let interpolated = (interval_current as i32 + (mul_product >> 9) as i32) as u32;
+        let mul_product = input.mul_out_product as i64;
+        let interpolated = (self.meta_s2_base as i32 + (mul_product >> 9) as i32) as u32;
 
-        // SINCOS range product: issued at T0 and presented by the re-alignment
-        // register at T3. phase = (signed(Fa) * K) >>> 32; only phase[17:0] is
-        // consumed, and the register holds exactly those bits, so no shift is
-        // needed here.
-        let sc_phase18 = u64::from(self.sc_phase_reg);
-        let sc_q_comb = ((sc_phase18 >> 16) & 0x3) as u8;
-        let sc_f_comb = (sc_phase18 & 0xFFFF) as u16;
+        let interp_issue = self.s1_valid
+            || (self.sc_valid && (self.sc_stage == 4 || (!sc_single && self.sc_stage == 5)));
+        let range_issue = load_now && is_sincos;
+        let issue_sign = if sc_interp_is_cos {
+            ((sc_q >> 1) & 1) ^ (sc_q & 1)
+        } else {
+            (sc_q >> 1) & 1
+        };
+        let mul_in_valid = (range_issue || interp_issue) && !input.abort;
+        let mul_in_a = if range_issue {
+            i64::from(x0 as i32)
+        } else {
+            mul_x
+        };
+        let mul_in_b = if range_issue { SINCOS_K } else { mul_y };
+        let mul_in_tag = if range_issue {
+            0x81
+        } else if self.sc_valid {
+            0xc0 | (((sc_interp_u >> 15) as u16) & 2) | u16::from(issue_sign)
+        } else {
+            0x80
+        };
 
-        // Shared-pipe drive: one signed-Fa-by-K product at T0. The signed-32
-        // operand sign-extends to the pipe's 36-bit bus; K is the positive
-        // constant (the pipe's i64 model is exact).
-        let mul_in_valid = load_now && is_sincos;
-        let mul_in_a = i64::from(x0 as i32);
-        let mul_in_b = SINCOS_K;
-        let mul_in_tag = 0u16;
-
-        // T4 drives the selected first address; dual-output mode drives the
-        // cosine address at T5 while interpolating sine.
-        let sc_addr_u = if self.sc_stage == 5 || sc_first_is_cos {
+        let sc_addr_u = if self.sc_stage == 4 || sc_first_is_cos {
             sc_u_cos
         } else {
             sc_u_sin
@@ -909,7 +881,7 @@ impl CpuV3FpuSpecialPathState {
 
         let read_a_address = if self.p0_valid && self.p0_rcp {
             table_address
-        } else if self.sc_valid && (self.sc_stage == 4 || (!sc_single && self.sc_stage == 5)) {
+        } else if self.sc_valid && (self.sc_stage == 3 || (!sc_single && self.sc_stage == 4)) {
             sc_lut_address
         } else {
             0
@@ -920,36 +892,30 @@ impl CpuV3FpuSpecialPathState {
             0
         };
 
-        // SINCOS interpolation (T5 first result, T6 second) and result sign.
         let sc_current = (input.rf_read_a_data as u32) & 0x1_FFFF;
-        let sc_interp_sum = i64::from(sc_current) + (mul_product >> 8);
-        let sc_interp_mag = if sc_interp_u & 0x1_0000 != 0 {
+        let sc_interp_sum = i64::from(self.meta_s2_base) + (mul_product >> 8);
+        let sc_interp_mag = if input.mul_out_tag & 2 != 0 {
             0x1_0000
         } else {
             (sc_interp_sum & 0x1_FFFF) as u32
         };
-        let sc_result_sign = if sc_interp_is_cos {
-            ((self.sc_q >> 1) & 1) ^ (self.sc_q & 1)
-        } else {
-            (self.sc_q >> 1) & 1
-        };
+        let sc_result_sign = input.mul_out_tag as u8 & 1;
         let sc_result: u32 = if sc_result_sign == 1 {
             (-(sc_interp_mag as i32)) as u32
         } else {
             sc_interp_mag
         };
 
-        // T3 scaling and sign. Only RCP's left path can overflow signed 32;
-        // RSQRT's maximum left shift is eight.
+        let returned_interpolated = interpolated & 0x1_ffff;
         let scaled = if self.s1_left {
-            let wide = u64::from(self.s2_interpolated) << self.s1_shift;
+            let wide = u64::from(returned_interpolated) << self.s1_shift;
             if self.p0_rcp && wide > 0x7FFF_FFFF {
                 0x7FFF_FFFF
             } else {
                 wide as u32
             }
         } else {
-            self.s2_interpolated >> self.s1_shift
+            returned_interpolated >> self.s1_shift
         };
         let rcp_value = if self.p0_negative {
             scaled.wrapping_neg()
@@ -968,32 +934,18 @@ impl CpuV3FpuSpecialPathState {
         let out_rsqrt = if self.s1_zero { 0 } else { scaled };
         let rcp_result = if self.p0_rcp { out_rcp } else { out_rsqrt };
 
-        // The interpolation is registered before the RF port: T6 writes the
-        // first result and T7 writes the second. The 6-bit index wraps like the
-        // RTL concatenation.
         let sc_write = self.sc_valid
-            && (self.sc_stage == 6 || (!sc_single && self.sc_stage == 7))
+            && input.mul_out_valid
+            && input.mul_out_tag & 0xc0 == 0xc0
             && !input.abort;
-        let write_enable = (self.s2_valid || sc_write) && !input.abort;
+        let rcp_return = input.mul_out_valid && input.mul_out_tag == 0x80;
+        let write_enable = (rcp_return || sc_write) && !input.abort;
         let write_address = if sc_write {
             u16::from(self.sc_fd.wrapping_add(u8::from(self.sc_stage == 7)) & 0x3F)
         } else {
             u16::from(self.p0_fd)
         };
-        let write_data = if sc_write { self.sc_result } else { rcp_result };
-
-        // SINCOS capture values. q/f come from the pipe product returned at
-        // T3; the interpolation result registers at T5/T6.
-        let sc_q_next = if self.sc_stage == 3 {
-            sc_q_comb
-        } else {
-            self.sc_q
-        };
-        let sc_f_next = if self.sc_stage == 3 {
-            sc_f_comb
-        } else {
-            self.sc_f
-        };
+        let write_data = if sc_write { sc_result } else { rcp_result };
 
         CpuV3FpuSpecialPathComputed {
             load_now,
@@ -1006,7 +958,7 @@ impl CpuV3FpuSpecialPathState {
             write_enable,
             write_address,
             write_data,
-            busy: (load_now || self.p0_valid || self.s1_valid || self.s2_valid || self.sc_valid)
+            busy: (load_now || self.p0_valid || self.s1_valid || self.interp_wait || self.sc_valid)
                 && !input.abort,
             r_wait: 0,
             w_wait: if load_now {
@@ -1017,7 +969,7 @@ impl CpuV3FpuSpecialPathState {
                         8
                     }
                 } else {
-                    4
+                    5
                 }
             } else {
                 0
@@ -1030,7 +982,7 @@ impl CpuV3FpuSpecialPathState {
                         8
                     }
                 } else {
-                    4
+                    5
                 }
             } else {
                 0
@@ -1051,12 +1003,14 @@ impl CpuV3FpuSpecialPathState {
             } else {
                 self.p0_negative || p0_zero
             },
-            capture_interpolated: interpolated,
+            interp_issue,
+            capture_base: if self.sc_valid {
+                sc_current
+            } else {
+                interval_current
+            },
             fd,
             sc_mode: mode,
-            sc_q_next,
-            sc_f_next,
-            sc_result_next: sc_result,
         }
     }
 
@@ -1079,20 +1033,24 @@ impl CpuV3FpuSpecialPathState {
         }
     }
 
-    /// Mirrors the single always block of CpuV3FpuSpecialPath. Reads only the
-    /// pre-edge snapshot in `c` plus the pre-edge register fields it mutates.
     fn tick(&mut self, input: &CpuV3FpuSpecialPathInputValue) {
         let c = self.compute(input);
-        // Re-align the shared pipe's return with the T3 capture the SINCOS
-        // schedule expects, keeping only the phase bits the lookup consumes
-        // (this mirrors the RTL's sc_phase_reg).
-        if input.mul_out_valid {
+        let old_meta_valid = self.meta_s1_valid;
+        let old_meta_base = self.meta_s1_base;
+        self.meta_s1_valid = c.interp_issue && !input.abort;
+        if c.interp_issue {
+            self.meta_s1_base = c.capture_base;
+        }
+        if old_meta_valid {
+            self.meta_s2_base = old_meta_base;
+        }
+        if input.mul_out_valid && input.mul_out_tag == 0x81 {
             self.sc_phase_reg = ((input.mul_out_product as i64) >> 32) as u32 & 0x3_FFFF;
         }
         if input.abort {
             self.p0_valid = false;
             self.s1_valid = false;
-            self.s2_valid = false;
+            self.interp_wait = false;
             self.sc_valid = false;
             self.sc_stage = 0;
         } else if c.load_now {
@@ -1103,7 +1061,7 @@ impl CpuV3FpuSpecialPathState {
                 self.sc_mode = c.sc_mode;
                 self.p0_valid = false;
                 self.s1_valid = false;
-                self.s2_valid = false;
+                self.interp_wait = false;
             } else {
                 self.sc_valid = false;
                 self.p0_valid = true;
@@ -1112,27 +1070,15 @@ impl CpuV3FpuSpecialPathState {
                 self.p0_magnitude = c.p0_magnitude;
                 self.p0_fd = c.fd;
                 self.s1_valid = false;
-                self.s2_valid = false;
+                self.interp_wait = false;
             }
         } else if self.sc_valid {
-            // Keep the pre-edge stage explicit: the RTL nonblocking assignments
-            // below this case all test the old value, even when the case clears
-            // sc_stage on the same edge.
             let sc_stage = self.sc_stage;
             let sc_single = matches!(self.sc_mode, 1 | 2);
             match sc_stage {
-                3 => {
-                    self.sc_q = c.sc_q_next;
-                    self.sc_f = c.sc_f_next;
-                }
-                5 => self.sc_result = c.sc_result_next,
-                6 => {
-                    if sc_single {
-                        self.sc_valid = false;
-                        self.sc_stage = 0;
-                    } else {
-                        self.sc_result = c.sc_result_next;
-                    }
+                6 if sc_single => {
+                    self.sc_valid = false;
+                    self.sc_stage = 0;
                 }
                 7 => {
                     self.sc_valid = false;
@@ -1150,13 +1096,12 @@ impl CpuV3FpuSpecialPathState {
             self.s1_shift = c.s1_shift;
             self.s1_left = c.s1_left;
             self.s1_zero = c.s1_zero;
-            self.s2_valid = false;
+            self.interp_wait = false;
         } else if self.s1_valid {
-            self.s2_valid = true;
-            self.s2_interpolated = c.capture_interpolated;
+            self.interp_wait = true;
             self.s1_valid = false;
-        } else {
-            self.s2_valid = false;
+        } else if input.mul_out_valid && input.mul_out_tag == 0x80 {
+            self.interp_wait = false;
         }
     }
 }
@@ -1197,19 +1142,13 @@ impl Module for CpuV3FpuSpecialPath {
     }
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        // The one inferred 18x18 signed multiplier is time-shared by the
-        // RCP/RSQRT/SINCOS interpolation products. SINCOS range reduction now
-        // reuses the shared 36x36 pipe, so no further lane is claimed here.
-        vec![TargetResourceRequest::new(
-            digital_design_hardware::resources::components::DspMultipliers::new(1),
-        )]
+        Vec::new()
     }
 
     fn verilog_testbench() -> Option<String> {
         Some(include_str!("cpu_v3_fpu_special_path_tb.v").to_string())
     }
 }
-
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuVectorPathInput {
     pub alu_result: Wires<32>,
@@ -1416,10 +1355,11 @@ pub struct CpuV3FpuMulPipeOutput {
     pub out_valid: Wire,
     pub out_product: Wires<64>,
     pub out_tag: Wires<9>,
+    pub ordinary_pending: Wire,
 }
 
 /// Shared FPU v2 36x36 multiply pipeline (one MULT36X36 = four 18x18 DSP
-/// lanes): three register stages, tag-carrying FIFO. The multiply and dot
+/// lanes): two register stages, tag-carrying FIFO. The multiply and dot
 /// paths share it because the core serializes instructions. Emu lives in the
 /// unit top; this leaf is verified through its Verilog testbench.
 pub struct CpuV3FpuMulPipe;
@@ -1525,6 +1465,40 @@ impl Module for CpuV3FpuDotPath {
     }
 }
 
+/// One physical product issuer, shared by ordinary multiply and dot modes.
+/// Its actual register execution model lives in CpuV3FpuState.
+pub struct CpuV3FpuProductPath;
+impl HardwareIdentity for CpuV3FpuProductPath {
+    const TARGET_RESOURCE_LEAF: bool = true;
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuProductPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+impl Module for CpuV3FpuProductPath {
+    type Input = CpuV3FpuDotPathInput;
+    type Output = CpuV3FpuDotPathOutput;
+    type EmuState = ();
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        Vec::new()
+    }
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_product_path.v").to_string())
+    }
+    fn verilog_testbench() -> Option<String> {
+        Some(
+            [
+                include_str!("cpu_v3_fpu_product_path_tb.v"),
+                include_str!("cpu_v3_fpu_multiply_path.v"),
+                include_str!("cpu_v3_fpu_dot_path.v"),
+                include_str!("cpu_v3_fpu_mul_pipe.v"),
+            ]
+            .join("\n"),
+        )
+    }
+}
+
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuInput {
     pub abort: Wire,
@@ -1535,6 +1509,9 @@ pub struct CpuV3FpuInput {
     pub ext_write_address: Wires<9>,
     pub ext_write_data: Wires<32>,
     pub ext_read_address: Wires<9>,
+    pub integer_in_valid: Wire,
+    pub integer_in_a: Wires<16>,
+    pub integer_in_b: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
@@ -1545,12 +1522,13 @@ pub struct CpuV3FpuOutput {
     pub flag_gt: Wire,
     pub instr_complete: Wire,
     pub ext_read_data: Wires<32>,
+    pub integer_out_valid: Wire,
+    pub integer_out_product: Wires<32>,
 }
 
-/// FPU v2 unit top level: two-word front-end + mirrored-BSRAM register
-/// file + scalar execution path, plus the external memory channel the core
-/// uses for FLD/FST until the internal store buffer arrives (Stage 6).
-/// Integration contract: fpu-design-v2 section 26.
+/// FPU v2: two-word frontend, mirrored RF, direct ALU writes and one shared
+/// product stage. Ordinary lanes share one return slot; special functions
+/// use a fixed consumer calendar. The core owns external FLD/FST accesses.
 pub struct CpuV3Fpu;
 
 impl HardwareIdentity for CpuV3Fpu {
@@ -1561,198 +1539,9 @@ impl HardwareIdentity for CpuV3Fpu {
     }
 }
 
-/// Compositional emu state: the three leaf states plus the one-beat
-/// operand-address hold register.
-#[derive(Clone)]
-pub struct CpuV3FpuState {
-    frontend: CpuV3FpuFrontendState,
-    rf: CpuV3FpuRegisterRamState,
-    scalar_path: CpuV3FpuScalarPathState,
-    special_path: CpuV3FpuSpecialPathState,
-    held_read_a_address: u16,
-    held_read_b_address: u16,
-    vp_run: bool,
-    vp_lane: u8,
-    vp_last_lane: u8,
-    vp_base_a: u8,
-    vp_base_b: u8,
-    vp_fd: u8,
-    vp_wr_enable: bool,
-    vp_wr_address: u16,
-    vp_wr_data: u32,
-    mp_run: bool,
-    mp_lane: u8,
-    mp_last_lane: u8,
-    mp_base_a: u8,
-    mp_base_b: u8,
-    mp_is_vmuls: bool,
-    mp_waddr: u16,
-    mp_outstanding: u8,
-    dp_run: bool,
-    dp_lane: u8,
-    dp_last_lane: u8,
-    dp_base_a: u8,
-    dp_base_b: u8,
-    dp_stride: u8,
-    dp_store_mode: bool,
-    dp_acc_lane: u8,
-    dp_store: bool,
-    dp_store_addr: u16,
-    dp_store_data: u32,
-    dp_outstanding: u8,
-    dp_acc: i64,
-    // Shared multiply pipe (CpuV3FpuMulPipe): the only multiplier in the
-    // unit. The tag carries the multiply path's write address; the dot path
-    // tags lanes for observability.
-    pipe_s1_valid: bool,
-    pipe_s1_a: i64,
-    pipe_s1_b: i64,
-    pipe_s1_tag: u16,
-    // Stage 2 is the last stage: it holds the product and the ports present it
-    // combinationally, so the returned product appears one beat after the
-    // operands are captured.
-    pipe_s2_valid: bool,
-    pipe_s2_prod: i64,
-    pipe_s2_tag: u16,
-}
-
-impl Default for CpuV3FpuState {
-    fn default() -> Self {
-        CpuV3FpuState {
-            frontend: CpuV3FpuFrontendState::default(),
-            rf: CpuV3FpuRegisterRamState::default(),
-            scalar_path: CpuV3FpuScalarPathState::default(),
-            special_path: CpuV3FpuSpecialPathState::default(),
-            held_read_a_address: 0,
-            held_read_b_address: 0,
-            vp_run: false,
-            vp_lane: 0,
-            vp_last_lane: 0,
-            vp_base_a: 0,
-            vp_base_b: 0,
-            vp_fd: 0,
-            vp_wr_enable: false,
-            vp_wr_address: 0,
-            vp_wr_data: 0,
-            mp_run: false,
-            mp_lane: 0,
-            mp_last_lane: 0,
-            mp_base_a: 0,
-            mp_base_b: 0,
-            mp_is_vmuls: false,
-            mp_waddr: 0,
-            mp_outstanding: 0,
-            dp_run: false,
-            dp_lane: 0,
-            dp_last_lane: 0,
-            dp_base_a: 0,
-            dp_base_b: 0,
-            dp_stride: 1,
-            dp_store_mode: false,
-            dp_acc_lane: 0,
-            dp_store: false,
-            dp_store_addr: 0,
-            dp_store_data: 0,
-            dp_outstanding: 0,
-            dp_acc: 0,
-            pipe_s1_valid: false,
-            pipe_s1_a: 0,
-            pipe_s1_b: 0,
-            pipe_s1_tag: 0,
-            pipe_s2_valid: false,
-            pipe_s2_prod: 0,
-            pipe_s2_tag: 0,
-        }
-    }
-}
-
-impl CpuV3FpuState {
-    /// Read-only view of the architectural F registers (`F0..F63`), for the
-    /// system harness to compare against the naive simulator. Mirror A holds the
-    /// architectural registers in its first 64 words.
-    pub fn architectural_f_registers(&self) -> [i32; 64] {
-        std::array::from_fn(|index| self.rf.mirror_a[index] as i32)
-    }
-
-    /// The shared 64-bit dot accumulator.
-    pub fn accumulator(&self) -> i64 {
-        self.dp_acc
-    }
-
-    /// Combinational outputs of the unit top (registered leaf outputs and the
-    /// busy/complete status); register updates live in `tick`.
-    pub(crate) fn comb(&self, input: &CpuV3FpuInputValue) -> CpuV3FpuOutputValue {
-        let sp = &self.scalar_path;
-        let sp_load_now = self.frontend.instr_complete
-            && self.frontend.instr_opcode == encoding::OPCODE_SCALAR
-            && !matches!(
-                encoding::scalar_subop(self.frontend.word1_raw),
-                encoding::MUL | encoding::RCP | encoding::RSQRT | encoding::SINCOS
-            )
-            && !input.abort;
-        let sp_w_wait = if sp_load_now { 2 } else { sp.w_count };
-        let vp_load_now = self.frontend.instr_complete
-            && self.frontend.instr_opcode == encoding::OPCODE_VECTOR
-            && !input.abort
-            && matches!(
-                encoding::vector_subop(self.frontend.word1_raw),
-                encoding::VADD
-                    | encoding::VSUB
-                    | encoding::VMIN
-                    | encoding::VMAX
-                    | encoding::VABS
-                    | encoding::VNEG
-                    | encoding::VMOV
-            );
-        let vp_busy = (vp_load_now || self.vp_run || self.vp_wr_enable) && !input.abort;
-        let mp_load_now = self.frontend.instr_complete
-            && !input.abort
-            && ((self.frontend.instr_opcode == encoding::OPCODE_VECTOR
-                && matches!(
-                    encoding::vector_subop(self.frontend.word1_raw),
-                    encoding::VMUL | encoding::VMULS
-                ))
-                || (self.frontend.instr_opcode == encoding::OPCODE_SCALAR
-                    && encoding::scalar_subop(self.frontend.word1_raw) == encoding::MUL));
-        // `busy` is path ownership, not "the shared pipe returned": the RTL
-        // unit top selects the multiply/dot operand mux on `mp_busy`, and the
-        // shared `pipe_s2_valid` must not leak into it. `*_outstanding` already
-        // covers every return beat.
-        let mp_busy = (mp_load_now || self.mp_run || self.mp_outstanding != 0) && !input.abort;
-        let dp_load_now = self.frontend.instr_complete
-            && !input.abort
-            && self.frontend.instr_opcode == encoding::OPCODE_VECTOR
-            && matches!(
-                encoding::vector_subop(self.frontend.word1_raw),
-                encoding::DOT | encoding::DOTADD | encoding::DOTSTORE
-            );
-        let dp_busy = (dp_load_now || self.dp_run || self.dp_outstanding != 0 || self.dp_store)
-            && !input.abort;
-        // Special path (RCP/RSQRT/SINCOS): blocking, so its busy window is
-        // exactly the T0..T3 or T0..T7 pipeline its own state tracks.
-        let sf_load_now = self.frontend.instr_complete
-            && self.frontend.instr_opcode == encoding::OPCODE_SCALAR
-            && matches!(
-                encoding::scalar_subop(self.frontend.word1_raw),
-                encoding::RCP | encoding::RSQRT | encoding::SINCOS
-            )
-            && !input.abort;
-        let sf_busy = (sf_load_now
-            || self.special_path.p0_valid
-            || self.special_path.s1_valid
-            || self.special_path.s2_valid
-            || self.special_path.sc_valid)
-            && !input.abort;
-        CpuV3FpuOutputValue {
-            busy: sp_w_wait != 0 || vp_busy || mp_busy || dp_busy || sf_busy,
-            flag_lt: self.scalar_path.flag_lt,
-            flag_eq: self.scalar_path.flag_eq,
-            flag_gt: self.scalar_path.flag_gt,
-            instr_complete: self.frontend.instr_complete,
-            ext_read_data: u64::from(self.rf.read_b_data),
-        }
-    }
-}
+mod execution;
+mod execution_tb;
+pub use execution::CpuV3FpuState;
 
 impl Module for CpuV3Fpu {
     type Input = CpuV3FpuInput;
@@ -1792,13 +1581,10 @@ impl Module for CpuV3Fpu {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<CpuV3FpuFrontend>("frontend"),
-            VerilogDependency::new::<CpuV3FpuRegisterRam>("rf"),
+            VerilogDependency::new::<execution::CpuV3FpuExecRf>("rf"),
             VerilogDependency::new::<CpuV3FpuScalarAlu>("shared_alu"),
-            VerilogDependency::new::<CpuV3FpuAluPath>("alu_path"),
-            VerilogDependency::new::<CpuV3FpuSpecialPath>("special_path"),
-            VerilogDependency::new::<CpuV3FpuMultiplyPath>("multiply_path"),
-            VerilogDependency::new::<CpuV3FpuDotPath>("dot_path"),
-            VerilogDependency::new::<CpuV3FpuMulPipe>("mul_pipe"),
+            VerilogDependency::new::<execution::CpuV3FpuExecSpecial>("special_path"),
+            VerilogDependency::new::<execution::CpuV3FpuExecMul>("mul_pipe"),
         ]
     }
 
@@ -1807,539 +1593,271 @@ impl Module for CpuV3Fpu {
     }
 }
 
-impl CpuV3FpuState {
-    /// Register updates for one cycle. The core emu also drives the unit
-    /// through `comb`/`tick` directly (value-level, no wires).
-    pub(crate) fn tick(&mut self, input: &CpuV3FpuInputValue) {
-        let state = self;
-        let word = input.word as u16;
-        // Snapshot the pre-edge instr_complete: the scalar path below must
-        // observe the value the RTL presents during this cycle, not the value
-        // the front-end register update is about to write (nonblocking
-        // semantics; the leaf-level Verilog testbenches cannot catch this).
-        let instr_complete_prev = state.frontend.instr_complete;
-
-        // Pre-edge special-path snapshot. The leaf's combinational logic and
-        // its always block both read these values, exactly as the RTL reads its
-        // inputs and register outputs during one cycle. `sp_comb` gives the
-        // RF port muxes the same addresses and write the RTL presents.
-        let sp_input = CpuV3FpuSpecialPathInputValue {
-            abort: input.abort,
-            instr_complete: instr_complete_prev,
-            instr_opcode: u64::from(state.frontend.instr_opcode),
-            word1_raw: u64::from(state.frontend.word1_raw),
-            rf_read_a_data: u64::from(state.rf.read_a_data),
-            rf_read_b_data: u64::from(state.rf.read_b_data),
-            // The shared pipe returns the range product at T2; the special
-            // path registers its phase bits for T3. Abort voids the return.
-            mul_out_valid: state.pipe_s2_valid && !input.abort,
-            mul_out_product: state.pipe_s2_prod as u64,
-            mul_out_tag: u64::from(state.pipe_s2_tag),
-        };
-        let sp_comb = state.special_path.comb(&sp_input);
-
-        // Front-end register updates (identical to the leaf clock_emu).
-        let accept_word0 = input.word_valid && !state.frontend.waiting_word1;
-        let accept_word1 = input.word_valid && state.frontend.waiting_word1 && !input.abort;
-        let discard_word0 = input.abort && state.frontend.waiting_word1;
-        state.frontend.instr_complete = accept_word1;
-        if accept_word0 {
-            state.frontend.word0_raw = word;
-            state.frontend.instr_opcode = encoding::opcode(word);
-            state.frontend.waiting_word1 = true;
-            // The wrapper captures the read addresses on the word0 beat; AUX
-            // word0 carries Fa at bits [7:2], the other opcodes at [11:6].
-            state.held_read_a_address =
-                u16::from(if encoding::opcode(word) == encoding::OPCODE_AUX {
-                    encoding::aux_fa(word)
-                } else {
-                    encoding::word0_fa(word)
-                });
-            state.held_read_b_address = u16::from(encoding::word0_fb(word));
-        } else if accept_word1 || discard_word0 {
-            state.frontend.waiting_word1 = false;
-        }
-        if accept_word1 {
-            state.frontend.word1_raw = word;
-        }
-
-        // Scalar path register updates (identical to the leaf clock_emu).
-        let sp = &mut state.scalar_path;
-        if input.abort {
-            sp.write_enable = false;
-            sp.w_count = 0;
-            sp.x_count = 0;
-        } else {
-            let word1 = state.frontend.word1_raw;
-            let subop = encoding::scalar_subop(word1);
-            let fd = encoding::word1_fd(word1);
-            let is_cmp = subop == encoding::CMP;
-            // MUL is owned by the multiply path; RCP/RSQRT/SINCOS by the
-            // special path.
-            let load_now = instr_complete_prev
-                && state.frontend.instr_opcode == encoding::OPCODE_SCALAR
-                && !matches!(
-                    subop,
-                    encoding::MUL | encoding::RCP | encoding::RSQRT | encoding::SINCOS
-                );
-            // read-first: the RF read registers still hold T0 operands here.
-            sp.write_enable = load_now && !is_cmp;
-            if load_now {
-                let (result, lt, eq, gt) =
-                    CpuV3FpuScalarPathState::alu(state.rf.read_a_data, state.rf.read_b_data, subop);
-                sp.write_address = u16::from(fd);
-                sp.write_data = result;
-                if is_cmp {
-                    sp.flag_lt = lt;
-                    sp.flag_eq = eq;
-                    sp.flag_gt = gt;
-                }
-                sp.w_count = 1;
-                sp.x_count = 1;
-            } else {
-                sp.w_count = sp.w_count.saturating_sub(1);
-                sp.x_count = sp.x_count.saturating_sub(1);
-            }
-        }
-
-        // Read addresses for this cycle's RF read: computed from pre-edge
-        // vector state (RTL nonblocking semantics), so they are resolved
-        // before the vector register updates below.
-        let word1_fields = state.frontend.word1_raw;
-        let vp_load_now = instr_complete_prev
-            && state.frontend.instr_opcode == encoding::OPCODE_VECTOR
-            && matches!(
-                encoding::vector_subop(word1_fields),
-                encoding::VADD
-                    | encoding::VSUB
-                    | encoding::VMIN
-                    | encoding::VMAX
-                    | encoding::VABS
-                    | encoding::VNEG
-                    | encoding::VMOV
-            );
-        let dp_load_now = instr_complete_prev
-            && state.frontend.instr_opcode == encoding::OPCODE_VECTOR
-            && matches!(
-                encoding::vector_subop(word1_fields),
-                encoding::DOT | encoding::DOTADD | encoding::DOTSTORE
-            );
-        let dp_active = dp_load_now || state.dp_run;
-        let mp_load_now = instr_complete_prev
-            && ((state.frontend.instr_opcode == encoding::OPCODE_VECTOR
-                && matches!(
-                    encoding::vector_subop(word1_fields),
-                    encoding::VMUL | encoding::VMULS
-                ))
-                || (state.frontend.instr_opcode == encoding::OPCODE_SCALAR
-                    && encoding::scalar_subop(word1_fields) == encoding::MUL));
-        let mp_active = mp_load_now || state.mp_run;
-        let vp_active = vp_load_now || state.vp_run;
-        let read_a_address = if sp_comb.busy {
-            sp_comb.rf_read_a_address as usize
-        } else if dp_load_now {
-            usize::from(encoding::word0_fa(state.frontend.word0_raw))
-        } else if dp_active && state.dp_lane <= state.dp_last_lane {
-            usize::from(state.dp_base_a) + usize::from(state.dp_lane)
-        } else if dp_active {
-            0
-        } else if mp_load_now {
-            usize::from(encoding::word0_fa(state.frontend.word0_raw))
-        } else if mp_active && state.mp_lane <= state.mp_last_lane {
-            usize::from(state.mp_base_a) + usize::from(state.mp_lane)
-        } else if mp_active {
-            0
-        } else if vp_load_now {
-            usize::from(encoding::word0_fa(state.frontend.word0_raw))
-        } else if vp_active && state.vp_lane <= state.vp_last_lane {
-            usize::from(state.vp_base_a) + usize::from(state.vp_lane)
-        } else if vp_active {
-            0
-        } else {
-            state.held_read_a_address as usize
-        };
-        let read_b_address = if sp_comb.busy {
-            sp_comb.rf_read_b_address as usize
-        } else if dp_load_now {
-            usize::from(encoding::word0_fb(state.frontend.word0_raw))
-        } else if dp_active && state.dp_lane <= state.dp_last_lane {
-            usize::from(state.dp_base_b) + usize::from(state.dp_lane) * usize::from(state.dp_stride)
-        } else if dp_active {
-            0
-        } else if mp_load_now {
-            usize::from(encoding::word0_fb(state.frontend.word0_raw))
-        } else if mp_active && state.mp_lane <= state.mp_last_lane {
-            usize::from(state.mp_base_b)
-                + if state.mp_is_vmuls {
-                    0
-                } else {
-                    usize::from(state.mp_lane)
-                }
-        } else if mp_active {
-            0
-        } else if vp_load_now {
-            usize::from(encoding::word0_fb(state.frontend.word0_raw))
-        } else if vp_active && state.vp_lane <= state.vp_last_lane {
-            usize::from(state.vp_base_b) + usize::from(state.vp_lane)
-        } else if vp_active {
-            0
-        } else if input.ext_access {
-            input.ext_read_address as usize
-        } else {
-            state.held_read_b_address as usize
-        };
-
-        // Shared pre-edge snapshots for the four per-path tick helpers. Every
-        // value is sampled before any path register update, mirroring the
-        // RTL's nonblocking assignment semantics; the helpers must not
-        // re-sample state they mutate.
-        let ctx = TickContext {
-            abort: input.abort,
-            instr_opcode: state.frontend.instr_opcode,
-            word0_raw: state.frontend.word0_raw,
-            word1_fields,
-            len_field: encoding::word1_len(word1_fields),
-            vector_subop: encoding::vector_subop(word1_fields),
-            vp_load_now,
-            mp_load_now,
-            dp_load_now,
-            mp_data_valid: state.mp_run
-                && state.mp_lane >= 1
-                && (state.mp_lane - 1) <= state.mp_last_lane,
-            dp_data_valid: state.dp_run
-                && state.dp_lane >= 1
-                && (state.dp_lane - 1) <= state.dp_last_lane,
-            pipe_out_valid: state.pipe_s2_valid && !input.abort,
-            pipe_out_product: state.pipe_s2_prod,
-            pipe_out_tag: state.pipe_s2_tag,
-            // Pre-edge counts: the RTL guards the accumulate and the RF write
-            // with the count from before this edge's return is removed, so a
-            // returning final entry still counts as owned by the path.
-            mp_outstanding_prev: state.mp_outstanding,
-            dp_outstanding_prev: state.dp_outstanding,
-            // Pre-edge lane bookkeeping for the pipe tags: the RTL presents
-            // waddr_r / lane_r combinationally and only increments them at the
-            // edge, so the tag must be sampled before the updates below.
-            mp_waddr_prev: state.mp_waddr,
-            dp_lane_prev: state.dp_lane,
-            dp_store_prev: state.dp_store,
-            rf_read_a: state.rf.read_a_data,
-            rf_read_b: state.rf.read_b_data,
-            // Special-path shared-pipe drive (SINCOS range product at its T0).
-            sf_mul_in_valid: sp_comb.mul_in_valid,
-            sf_mul_in_a: sp_comb.mul_in_a as i64,
-            sf_mul_in_b: sp_comb.mul_in_b as i64,
-            sf_mul_in_tag: sp_comb.mul_in_tag as u16,
-        };
-
-        // Vector path register updates (mirrors CpuV3FpuVectorPath).
-        state.tick_vector_path(&ctx);
-
-        // Multiply path register updates (mirrors CpuV3FpuMultiplyPath):
-        // the lane sequencer hands operand pairs to the shared pipe with the
-        // destination tag; the pipe returns them three cycles later.
-        state.tick_multiply_path(&ctx);
-
-        // Dot path register updates (mirrors CpuV3FpuDotPath). ACC
-        // accumulates the pipe product returning this cycle (pre-edge stage
-        // three); the DOTSTORE final-lane capture and the writeback clear
-        // read the pre-edge store flag.
-        state.tick_dot_path(&ctx);
-
-        // Shared multiply pipe transfer (mirrors CpuV3FpuMulPipe): reverse
-        // order so every stage reads its predecessor's pre-edge value.
-        state.tick_mul_pipe(&ctx);
-
-        // Special-function path register updates (mirrors CpuV3FpuSpecialPath):
-        // the pre-edge snapshot was taken at the top of this function.
-        state.tick_special_path(&sp_input);
-
-        // Register-file updates last: reads sample the pre-write contents.
-        let rf = &mut state.rf;
-        rf.read_a_data = rf.mirror_a[read_a_address];
-        rf.read_b_data = rf.mirror_b[read_b_address];
-        let sp = &state.scalar_path;
-        let (we, wa, wd) = if input.ext_access {
-            (
-                input.ext_write_enable,
-                input.ext_write_address as usize,
-                input.ext_write_data as u32,
-            )
-        } else if state.vp_wr_enable && !input.abort {
-            (true, state.vp_wr_address as usize, state.vp_wr_data)
-        } else if ctx.pipe_out_valid && ctx.mp_outstanding_prev != 0 && !input.abort {
-            (
-                true,
-                ctx.pipe_out_tag as usize,
-                ((ctx.pipe_out_product >> 16) & 0xFFFF_FFFF) as u32,
-            )
-        } else if ctx.dp_store_prev && !input.abort {
-            (true, state.dp_store_addr as usize, state.dp_store_data)
-        } else if sp_comb.rf_write_enable {
-            (
-                true,
-                sp_comb.rf_write_address as usize,
-                sp_comb.rf_write_data as u32,
-            )
-        } else {
-            (
-                sp.write_enable && !input.abort,
-                sp.write_address as usize,
-                sp.write_data,
-            )
-        };
-        if we {
-            rf.mirror_a[wa] = wd;
-            rf.mirror_b[wa] = wd;
-        }
-    }
-}
-
-/// Pre-edge snapshots shared by the four per-path tick helpers. `tick` samples
-/// every value before the first path update, mirroring the RTL's nonblocking
-/// assignment semantics; each helper then owns exactly one execution path's
-/// register block and must not re-sample state it mutates.
-struct TickContext {
-    abort: bool,
-    instr_opcode: u8,
-    word0_raw: u16,
-    word1_fields: u16,
-    len_field: u8,
-    vector_subop: u8,
-    vp_load_now: bool,
-    mp_load_now: bool,
-    dp_load_now: bool,
-    mp_data_valid: bool,
-    dp_data_valid: bool,
-    pipe_out_valid: bool,
-    pipe_out_product: i64,
-    pipe_out_tag: u16,
-    mp_outstanding_prev: u8,
-    dp_outstanding_prev: u8,
-    mp_waddr_prev: u16,
-    dp_lane_prev: u8,
-    dp_store_prev: bool,
-    rf_read_a: u32,
-    rf_read_b: u32,
-    // Special-path shared-pipe drive (SINCOS range product): sf wins the input
-    // multiplexer because the core never overlaps the owners.
-    sf_mul_in_valid: bool,
-    sf_mul_in_a: i64,
-    sf_mul_in_b: i64,
-    sf_mul_in_tag: u16,
-}
-
-impl CpuV3FpuState {
-    /// Vector-path register updates: one RTL always block of
-    /// CpuV3FpuVectorPath. Reads only the pre-edge operands in `ctx`.
-    fn tick_vector_path(&mut self, ctx: &TickContext) {
-        let last_lane = encoding::decoded_last_lane(ctx.len_field);
-        // subop -> scalar ALU op; the seven supported subops select the exact
-        // leaf entries, unlisted subops select the leaf's defined zero.
-        let alu_op = match ctx.vector_subop {
-            encoding::VADD => 0x0,
-            encoding::VSUB => 0x1,
-            encoding::VMIN => 0x3,
-            encoding::VMAX => 0x4,
-            encoding::VABS => 0x5,
-            encoding::VNEG => 0x6,
-            encoding::VMOV => 0xF,
-            _ => 0x2,
-        };
-        if ctx.abort {
-            self.vp_run = false;
-            self.vp_wr_enable = false;
-        } else if ctx.vp_load_now {
-            self.vp_run = true;
-            self.vp_lane = 1;
-            self.vp_last_lane = last_lane;
-            self.vp_base_a = encoding::word0_fa(ctx.word0_raw);
-            self.vp_base_b = encoding::word0_fb(ctx.word0_raw);
-            self.vp_fd = encoding::word1_fd(ctx.word1_fields);
-            self.vp_wr_enable = false;
-        } else if self.vp_run {
-            let data_valid = self.vp_lane >= 1 && (self.vp_lane - 1) <= self.vp_last_lane;
-            self.vp_wr_enable = data_valid;
-            if data_valid {
-                let data_lane = self.vp_lane - 1;
-                let (result, _, _, _) =
-                    CpuV3FpuScalarPathState::alu(ctx.rf_read_a, ctx.rf_read_b, alu_op);
-                self.vp_wr_address = self.vp_fd as u16 + u16::from(data_lane);
-                self.vp_wr_data = result;
-            }
-            if self.vp_lane > self.vp_last_lane + 1 {
-                self.vp_run = false;
-            } else {
-                self.vp_lane += 1;
-            }
-        } else {
-            self.vp_wr_enable = false;
-        }
-    }
-
-    /// Multiply-path register updates: one RTL always block of
-    /// CpuV3FpuMultiplyPath. The lane sequencer hands operand pairs to the
-    /// shared pipe with the destination tag; the pipe returns them three
-    /// cycles later. Reads only the pre-edge operands in `ctx`.
-    fn tick_multiply_path(&mut self, ctx: &TickContext) {
-        if ctx.abort {
-            self.mp_run = false;
-            self.mp_outstanding = 0;
-        } else if ctx.mp_load_now {
-            self.mp_run = true;
-            self.mp_lane = 1;
-            self.mp_last_lane = if ctx.instr_opcode == encoding::OPCODE_SCALAR {
-                0
-            } else {
-                encoding::decoded_last_lane(ctx.len_field)
-            };
-            self.mp_base_a = encoding::word0_fa(ctx.word0_raw);
-            self.mp_base_b = encoding::word0_fb(ctx.word0_raw);
-            self.mp_is_vmuls =
-                ctx.instr_opcode == encoding::OPCODE_VECTOR && ctx.vector_subop == encoding::VMULS;
-            self.mp_waddr = u16::from(encoding::word1_fd(ctx.word1_fields));
-            self.mp_outstanding = 0;
-        } else {
-            if self.mp_run {
-                if self.mp_lane > self.mp_last_lane + 1 {
-                    self.mp_run = false;
-                } else {
-                    self.mp_lane += 1;
-                }
-                self.mp_waddr = self.mp_waddr.wrapping_add(1);
-            }
-            // Only this path's own returns decrement (the pipe is shared).
-            self.mp_outstanding = self
-                .mp_outstanding
-                .wrapping_add(u8::from(ctx.mp_data_valid))
-                .wrapping_sub(u8::from(ctx.pipe_out_valid && self.mp_outstanding != 0));
-        }
-    }
-
-    /// Dot-path register updates: one RTL always block of CpuV3FpuDotPath.
-    /// ACC accumulates the pipe product returning this cycle (pre-edge stage
-    /// three); the DOTSTORE final-lane capture and the writeback clear read the
-    /// pre-edge store flag. Reads only the pre-edge operands in `ctx`.
-    fn tick_dot_path(&mut self, ctx: &TickContext) {
-        if ctx.abort {
-            self.dp_run = false;
-            self.dp_outstanding = 0;
-            self.dp_store_mode = false;
-            self.dp_store = false;
-        } else if ctx.dp_load_now {
-            self.dp_run = true;
-            self.dp_lane = 1;
-            self.dp_last_lane = encoding::decoded_last_lane(ctx.len_field);
-            self.dp_base_a = encoding::word0_fa(ctx.word0_raw);
-            self.dp_base_b = encoding::word0_fb(ctx.word0_raw);
-            self.dp_stride = match encoding::word1_mode(ctx.word1_fields) & 0x3 {
-                1 => 3,
-                2 => 4,
-                _ => 1,
-            };
-            self.dp_store_mode = ctx.vector_subop == encoding::DOTSTORE;
-            self.dp_acc_lane = 0;
-            self.dp_store = false;
-            self.dp_store_addr = u16::from(encoding::word1_fd(ctx.word1_fields));
-            self.dp_outstanding = 0;
-            // DOT and DOTSTORE start a fresh sum; DOTADD continues the ACC.
-            if matches!(ctx.vector_subop, encoding::DOT | encoding::DOTSTORE) {
-                self.dp_acc = 0;
-            }
-        } else {
-            if self.dp_run {
-                if self.dp_lane > self.dp_last_lane + 1 {
-                    self.dp_run = false;
-                } else {
-                    self.dp_lane += 1;
-                }
-            }
-            self.dp_outstanding = self
-                .dp_outstanding
-                .wrapping_add(u8::from(ctx.dp_data_valid))
-                .wrapping_sub(u8::from(ctx.pipe_out_valid && self.dp_outstanding != 0));
-            // Accumulate the returning product. Only entries this instruction
-            // issued count (the pipe is shared with the multiply path).
-            if ctx.pipe_out_valid && ctx.dp_outstanding_prev != 0 {
-                let sum = self.dp_acc.wrapping_add(ctx.pipe_out_product);
-                self.dp_acc = sum;
-                if self.dp_store_mode && self.dp_acc_lane == self.dp_last_lane {
-                    self.dp_store_data = ((sum >> 16) & 0xFFFF_FFFF) as u32;
-                    self.dp_store = true;
-                    self.dp_store_mode = false;
-                }
-                self.dp_acc_lane += 1;
-            }
-            if ctx.dp_store_prev {
-                self.dp_store = false;
-                self.dp_acc = 0;
-            }
-        }
-    }
-
-    /// Shared multiply pipe transfer: one RTL always block of
-    /// CpuV3FpuMulPipe. The stages move in reverse order so every stage reads
-    /// its predecessor's pre-edge value; the operand mux gives the special
-    /// path's SINCOS issue the tie, then multiply, then dot (the core never
-    /// overlaps the owners). Reads only the pre-edge operands in `ctx`.
-    fn tick_mul_pipe(&mut self, ctx: &TickContext) {
-        let pipe_s1v = self.pipe_s1_valid;
-        let pipe_s1a = self.pipe_s1_a;
-        let pipe_s1b = self.pipe_s1_b;
-        let pipe_s1tag = self.pipe_s1_tag;
-        if ctx.abort {
-            self.pipe_s1_valid = false;
-            self.pipe_s2_valid = false;
-        } else {
-            self.pipe_s2_valid = pipe_s1v;
-            if pipe_s1v {
-                self.pipe_s2_prod = pipe_s1a * pipe_s1b;
-                self.pipe_s2_tag = pipe_s1tag;
-            }
-            // The operand mux: the special path's SINCOS issue wins the tie,
-            // then multiply, then dot (never more than one active).
-            let in_valid = if ctx.sf_mul_in_valid {
-                true
-            } else if self.mp_run || ctx.mp_load_now {
-                ctx.mp_data_valid
-            } else {
-                ctx.dp_data_valid
-            };
-            self.pipe_s1_valid = in_valid;
-            if in_valid {
-                if ctx.sf_mul_in_valid {
-                    self.pipe_s1_a = ctx.sf_mul_in_a;
-                    self.pipe_s1_b = ctx.sf_mul_in_b;
-                    self.pipe_s1_tag = ctx.sf_mul_in_tag;
-                } else if self.mp_run || ctx.mp_load_now {
-                    self.pipe_s1_a = ctx.rf_read_a as i32 as i64;
-                    self.pipe_s1_b = ctx.rf_read_b as i32 as i64;
-                    self.pipe_s1_tag = ctx.mp_waddr_prev;
-                } else {
-                    self.pipe_s1_a = ctx.rf_read_a as i32 as i64;
-                    self.pipe_s1_b = ctx.rf_read_b as i32 as i64;
-                    self.pipe_s1_tag = ctx.dp_lane_prev as u16 - 1;
-                }
-            }
-        }
-    }
-
-    /// Special-path register updates: the single always block of
-    /// CpuV3FpuSpecialPath. The snapshot in `input` is sampled before any path
-    /// update, so the leaf sees the pre-edge state the RTL sees.
-    fn tick_special_path(&mut self, input: &CpuV3FpuSpecialPathInputValue) {
-        self.special_path.tick(input);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "shared FPU port/writeback replay with aliasing, CE and each abort age"]
+    fn verify_port_owner_emu_matches_rtl() {
+        use std::fmt::Write;
+        fn idle() -> CpuV3FpuInputValue {
+            CpuV3FpuInputValue {
+                abort: false,
+                word_valid: false,
+                word: 0,
+                ext_access: false,
+                ext_write_enable: false,
+                ext_write_address: 0,
+                ext_write_data: 0,
+                ext_read_address: 0,
+                integer_in_valid: false,
+                integer_in_a: 0,
+                integer_in_b: 0,
+            }
+        }
+        fn record(
+            state: &mut CpuV3FpuState,
+            tb: &mut String,
+            count: &mut usize,
+            input: CpuV3FpuInputValue,
+            enabled: bool,
+        ) {
+            assert!(*count < 20000, "product emu replay cycle limit");
+            for value in CpuV3FpuInput::verilog_values(&input) {
+                writeln!(tb, "{}={}'h{:x};", value.name, value.width, value.value).unwrap();
+            }
+            tb.push_str("#1;\n");
+            for value in CpuV3FpuOutput::verilog_values(&state.comb(&input)) {
+                if value.name != "ext_read_data" || input.ext_access {
+                    writeln!(
+                        tb,
+                        "if({} !== {}'h{:x}) $fatal(1,\"emu output {} cycle={}\");",
+                        value.name, value.width, value.value, value.name, *count
+                    )
+                    .unwrap();
+                }
+            }
+            if enabled {
+                tb.push_str("#3;clk=1;#1;\n");
+                state.tick(&input);
+            } else {
+                tb.push_str("#4;\n");
+            }
+            writeln!(
+                tb,
+                "if(dut.acc_r !== 64'h{:x}) $fatal(1,\"emu ACC cycle={}\");",
+                state.accumulator() as u64,
+                *count
+            )
+            .unwrap();
+            for index in 0..68 {
+                writeln!(tb,"if(dut.rf.mirror_0[{index}] !== 32'h{:x}) $fatal(1,\"emu RF{index} cycle={}\");",
+                    state.rf.mirror_a[index],*count).unwrap();
+            }
+            tb.push_str("#4;clk=0;\n");
+            *count += 1;
+        }
+        let mut state = CpuV3FpuState::default();
+        let mut tb = String::from("module tb;reg clk=0;\n");
+        for value in CpuV3FpuInput::verilog_values(&idle()) {
+            writeln!(tb, "reg [{}:0] {}=0;", value.width - 1, value.name).unwrap();
+        }
+        for value in CpuV3FpuOutput::verilog_values(&state.comb(&idle())) {
+            writeln!(tb, "wire [{}:0] {};", value.width - 1, value.name).unwrap();
+        }
+        tb.push_str("CpuV3Fpu dut(.*);initial begin\n");
+        let mut count = 0;
+        for index in 0..68 {
+            let mut value = idle();
+            value.ext_access = true;
+            value.ext_write_enable = true;
+            value.ext_write_address = index;
+            value.ext_write_data = match index % 4 {
+                0 => 0x80000000,
+                1 => 0x7fffffff,
+                2 => 0xffff8000,
+                _ => 0x13579bdf ^ (index * 0x271311),
+            };
+            record(&mut state, &mut tb, &mut count, value, true);
+        }
+        for mode in 0..30 {
+            for abort_age in -1..12 {
+                let len = ((abort_age + 1) % 4) as u16;
+                let (opcode, fa, fb, word1) = if mode < 6 {
+                    let subop = match mode {
+                        0 | 5 => 2,
+                        1 => 3,
+                        2 => 13,
+                        3 => 14,
+                        _ => 15,
+                    };
+                    let word1 = if mode == 5 {
+                        61 << 10 | 2 << 4
+                    } else {
+                        61 << 10 | len << 8 | subop << 3 | len
+                    };
+                    (if mode == 5 { 0xd } else { 0xc }, 62, 63, word1)
+                } else if mode < 18 {
+                    let subop = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15][mode - 6];
+                    (0xd, 62, 63, 61 << 10 | subop << 4)
+                } else if mode < 25 {
+                    let subop = [0, 1, 4, 5, 6, 7, 12][mode - 18];
+                    (0xc, 59, 60, 60 << 10 | (len % 3) << 8 | subop << 3)
+                } else {
+                    let (subop, special_mode) = match mode {
+                        25 => (12, 0),
+                        26 => (13, 0),
+                        _ => (14, (mode - 27) as u16),
+                    };
+                    (0xd, 62, 63, 61 << 10 | subop << 4 | special_mode)
+                };
+                // Exercise normalization, zero, signed endpoints and fractional
+                // inputs while retaining the independent cycle/numeric model.
+                let values = [0, 1, 0xffff, 0x10000, 0x7fffffff, 0x80000000, 0xffff8000];
+                let mut seed = idle();
+                seed.ext_access = true;
+                seed.ext_write_enable = true;
+                seed.ext_write_address = 62;
+                seed.ext_write_data = values[(mode + (abort_age + 1) as usize) % values.len()];
+                record(&mut state, &mut tb, &mut count, seed, true);
+                let mut input = idle();
+                input.word_valid = true;
+                input.word = opcode << 12 | fa << 6 | fb;
+                record(&mut state, &mut tb, &mut count, input, true);
+                let mut input = idle();
+                input.word_valid = true;
+                input.word = word1 as u64;
+                record(&mut state, &mut tb, &mut count, input, true);
+                for age in 0..15 {
+                    let mut input = idle();
+                    input.abort = age == abort_age;
+                    if age % 3 == 1 {
+                        record(&mut state, &mut tb, &mut count, input.clone(), false);
+                    }
+                    record(&mut state, &mut tb, &mut count, input, true);
+                }
+                assert!(!state.comb(&idle()).busy);
+            }
+        }
+        writeln!(tb,"$display(\"DIGITAL_DESIGN_PASS shared FPU ports emu cycles={count}\");$finish;end initial begin #{};$fatal(1,\"emu replay timeout\");end endmodule",count*10+100).unwrap();
+        let project = digital_design_hardware::VerilogProject::generate::<CpuV3Fpu>().unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("cpu-product-emu-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("modules.v"),
+            project.files.into_values().collect::<Vec<_>>().join("\n"),
+        )
+        .unwrap();
+        std::fs::write(directory.join("tb.v"), tb).unwrap();
+        let result = std::process::Command::new(
+            std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()),
+        )
+        .current_dir(&directory)
+        .args([
+            "-g2012",
+            "-D__ICARUS__",
+            "-s",
+            "tb",
+            "-o",
+            "sim.vvp",
+            "modules.v",
+            "tb.v",
+        ])
+        .output()
+        .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let result =
+            std::process::Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+                .current_dir(&directory)
+                .arg("sim.vvp")
+                .output()
+                .unwrap();
+        assert!(
+            result.status.success()
+                && String::from_utf8_lossy(&result.stdout).contains("DIGITAL_DESIGN_PASS"),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&result.stdout));
+    }
+
+    #[test]
+    #[ignore = "bounded old/new physical ProductPath calendars, aliasing, abort and CE"]
+    fn verify_product_path_matches_separate_issuers() {
+        let project = digital_design_hardware::VerilogProject::generate::<CpuV3Fpu>().unwrap();
+        let mut sources: Vec<_> = project.files.into_values().collect();
+        sources.push(CpuV3FpuProductPath::verilog_source().unwrap());
+        sources.push(CpuV3FpuMulPipe::verilog_source().unwrap());
+        sources.push(CpuV3FpuMultiplyPath::verilog_source().unwrap());
+        sources.push(CpuV3FpuDotPath::verilog_source().unwrap());
+        let directory =
+            std::env::temp_dir().join(format!("cpu-productpath-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("modules.v"), sources.join("\n")).unwrap();
+        std::fs::write(
+            directory.join("tb.v"),
+            include_str!("cpu_v3_fpu_product_path_tb.v"),
+        )
+        .unwrap();
+        let result = std::process::Command::new(
+            std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()),
+        )
+        .current_dir(&directory)
+        .args([
+            "-g2012",
+            "-D__ICARUS__",
+            "-s",
+            "tb",
+            "-o",
+            "sim.vvp",
+            "modules.v",
+            "tb.v",
+        ])
+        .output()
+        .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let result =
+            std::process::Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
+                .current_dir(&directory)
+                .arg("sim.vvp")
+                .output()
+                .unwrap();
+        assert!(
+            result.status.success()
+                && String::from_utf8_lossy(&result.stdout).contains("DIGITAL_DESIGN_PASS"),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&result.stdout));
+    }
+
+    #[test]
     #[ignore = "explicit external simulation of the unified FPU ALU lane/commit engine"]
     fn verify_fpu_unified_alu_path_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuAluPath>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "bounded selected RF, one-product DSP and special-function calendars"]
+    fn verify_selected_compute_leaves() {
+        digital_design_hardware::verify_verilog_with_iverilog::<execution::CpuV3FpuExecRf>()
+            .unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<execution::CpuV3FpuExecMul>()
+            .unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<execution::CpuV3FpuExecSpecial>()
+            .unwrap();
     }
 
     /// The architecture `encoding` module is the public source of truth for
@@ -2413,7 +1931,6 @@ mod tests {
         fn step(&mut self, abort: bool, in_valid: bool, in_a: i64, in_b: i64, in_tag: u16) {
             if abort {
                 self.s1_valid = false;
-                self.s2_valid = false;
                 return;
             }
             self.s2_valid = self.s1_valid;
@@ -2436,8 +1953,8 @@ mod tests {
 
     /// Drives the private special-path cycle model through one SINCOS the same
     /// way the parent does (operand on the pre-T0 RF read, packed interval on
-    /// the one-cycle RF read) with the shared pipe returning at T2 and the
-    /// special path capturing its registered phase at T3. Check writes against
+    /// the one-cycle RF read) with the shared range return captured at T2 and
+    /// the first synchronous LUT read at T3. Check writes against
     /// the fixed T6/T7 schedule and the frozen
     /// `lut::sincos_q16` reference (itself the two-term C0/C1 reducer). This is
     /// the leaf-level model/RTL agreement guard: the Verilog leaf testbench
@@ -2513,7 +2030,15 @@ mod tests {
                 busy_count, cycles,
                 "sincos busy length mismatch at a={a}, mode={mode}"
             );
-            assert_eq!(product_cycles, vec![2], "shared pipe must return at T2");
+            assert_eq!(
+                product_cycles,
+                if matches!(mode, 1 | 2) {
+                    vec![2, 6]
+                } else {
+                    vec![2, 6, 7]
+                },
+                "range/interpolation shared returns"
+            );
             let expected_write_cycles = if matches!(mode, 1 | 2) {
                 vec![6]
             } else {
@@ -2554,16 +2079,16 @@ mod tests {
         assert!(checked > 1000, "expected a dense sweep, checked={checked}");
     }
 
-    /// Abort from issue through the first write must gate the cancelled
-    /// writes. An immediate restart with a different operand must use its own
-    /// phase, including abort on the T2 return or T3 phase-capture beat.
+    /// Abort through either final write edge gates the remaining results but
+    /// preserves an earlier published result. Immediate restart must use its
+    /// own phase, including abort on T2 capture or T3 synchronous lookup.
     #[test]
-    fn sincos_cycle_model_abort_cancels_without_writes() {
+    fn sincos_cycle_model_abort_cancels_remaining_writes() {
         let packed = lut::packed_sincos_lut();
         let fd = 8u16;
         let a = 0x0001_0000i32;
         let word1 = (fd << 10) | (u16::from(encoding::SINCOS) << 4);
-        for abort_cycle in 0..=6 {
+        for abort_cycle in 0..=7 {
             let mut state = CpuV3FpuSpecialPathState::default();
             let mut pipe = PipeStub::default();
             let mut read_a = a as u32;
@@ -2588,10 +2113,15 @@ mod tests {
                 } else {
                     assert!(!out.busy, "abort must clear busy at cycle {cycle}");
                 }
-                assert!(
-                    !out.rf_write_enable,
-                    "abort must not present a write at cycle {cycle}"
+                let published_before_abort = cycle == 6 && cycle < abort_cycle;
+                assert_eq!(
+                    out.rf_write_enable, published_before_abort,
+                    "abort must preserve only earlier writes at cycle {cycle}"
                 );
+                if published_before_abort {
+                    assert_eq!(out.rf_write_address, u64::from(fd));
+                    assert_eq!(out.rf_write_data, u64::from(lut::sincos_q16(a).0 as u32));
+                }
                 pipe.step(
                     abort,
                     out.mul_in_valid,

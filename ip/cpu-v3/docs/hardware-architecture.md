@@ -6,6 +6,12 @@ microarchitecture, not an intended future pipeline. The maintainable PlantUML so
 
 ## Execution model
 
+The generic core and benchmark model start at CSEG0:PC0 with data pages
+0/1/2/3. `INITIAL_CODE_SEGMENT` permits an explicit board specialization;
+the fixed cold-boot system selects CSEG7 while retaining the generic default.
+`CpuV3Sim::with_initial_code_segment` constructs the corresponding cold model.
+Independent IP reset remains available even when a board ties it inactive.
+
 `CpuV3Core` is precise and in order, with a conservative two-stage frontend rather
 than a general pipeline. A single-cycle instruction with sequential control flow
 may accept the next queued word in its Execute cycle and remain in Execute, so an
@@ -18,25 +24,37 @@ updates neither retirement nor a partially computed FPU destination; the
 documented four-beat store exception still keeps memory writes acknowledged
 before a later beat faults.
 
-The fitted system places a four-entry instruction fetch queue in front of the
-core. It reserves fetched and outstanding words and uses per-slot current bits:
-a redirect or flush marks all older requests stale, and their ordered responses
-are drained without delivery. New requests win when a slot is drained and reused
-in the same cycle. This remains correct across arbitrarily many redirects before
-an old response returns. Sequential word addresses wrap PC without carrying into
-CSEG. A queued word or matching memory-response bypass can be accepted directly
-in FetchRequest or in the Stage 12 pipelineable Execute subset; backpressured
-responses are queued.
+The fitted system has two ordinary payload slots and two request-provenance
+slots. The I-cache already holds a response and a lookup while backpressured;
+those slots and the frontend queue have separate capacity checks. A full queue
+can consume its old head and accept its replacement on the same edge. Request
+slots likewise drain and refill together. This replaces the aggregate
+fetched-plus-outstanding reservation adder/comparison without adding upstream
+storage. A system may connect this frontend directly to its sole I-cache;
+any additional instruction-source routing belongs to the system.
 
-Live queue and request-metadata slots do not store individual addresses. Ordered
-delivery uses one 16-bit downstream head offset, advanced only when the core
-consumes an ordinary queued or bypassed word. Restart initializes it to the target
-(plus two on a BTC hit). Full stream addresses still participate in restart
-detection. Every restart clears queue occupancy and marks old requests stale
-before a late response can enter the new stream. BTC replay does not advance the
-downstream head; BTC tags retain full physical targets across ordinary redirects.
+A redirect or flush clears live request bits before late ordered responses can
+enter the new stream; a new request wins if that edge reuses a drained slot.
+This remains correct across arbitrarily many redirects. Sequential word addresses
+wrap PC without carrying into CSEG. Queued words and direct response bypass can
+feed FetchRequest or the Stage 12 pipelineable Execute subset at one word per
+cycle. Backpressure propagates to the existing I-cache holding slots.
 
-The queue also contains a fully associative resolved-target BTC, defaulting to
+The I-cache owns a held response independently from its successor lookup.
+Accepting a successor must not clear the old error flag. Data/error publish
+together and remain stable until consumption; the Rust model uses the same
+ownership rule. Independent portable/vendor-DPB fixtures assert fault delivery
+after a full frontend queue, including a cold-line continuation error following
+two successful target words. The old four-total-credit reservation masked this
+held-error case in the composed frontend; the shorter queue needs this repair.
+
+Live queue and request slots store no addresses. Full expected-core-address
+matching, FIFO order and current ownership establish the next ordinary word.
+The independent downstream head offset and its equality comparator are removed;
+BTC replay leaves the ordinary queue in order. Full physical BTC target tags
+remain necessary because complete entries survive redirects.
+
+The queue also contains a fully associative resolved-target BTC with exactly
 four entries of two 16-bit instruction words (not necessarily two instructions).
 It compares the full physical target using a 22-bit tag plus a zero check on the
 upper address bits. A restart hit supplies the first word combinationally and
@@ -56,27 +74,104 @@ BTC and replay/fill state. Ordinary redirects retain complete entries. The BTC
 neither predicts a target nor adds memory traffic to complete a partial entry;
 software-controlled instruction coherency applies exactly as to the I-cache.
 
-`CPU_V3_BTC_ENTRIES=0|4|8` is a build-time environment setting, default 4.
-The CPU crate build script generates one constant used by both the Rust model
-and generated Verilog. Zero disables BTC storage/lookup for comparison while
-retaining the per-slot stale-response fix. There are no new hardware ports or
-ISA controls. The tables below count Execute through retirement; fetch waits
+The ordinary queue and BTC share one asynchronous-read, synchronous-write
+16-bit distributed RAM. Resource reservation follows the physical array depth:
+16 words (256 bits), including unused physical slots. BTC tags own low physical
+pairs through small pointers;
+one extra pair holds incomplete fills. The high four words hold the two logical
+ordinary slots using modulo-four head/tail pointers. Their low bits index the
+two metadata slots; a full FIFO's physical head and tail are two rows apart.
+Head and tail are two-bit registers within the same RAM allocation.
+The first two live responses after a target miss write the spare pair,
+while later responses write their ordinary tail slot. This is the sole payload
+writer: CPU acceptance never copies an instruction word into BTC. Ordinary
+bypass does not write RAM unless the response also fills a target pair.
+
+A queued word stores one bit selecting its ordinary slot or the current spare.
+For a spare reference, the matched core address and stable fill tag identify the
+halfword, including PC wrap. Both target references expire by the second core
+acceptance, which atomically exchanges the spare/victim pointers and publishes
+the complete pair. A later continuation can enqueue on that same edge. Errors
+and cancelled fills never replace complete entries. Queue and BTC replay select
+an address before the shared RAM read; the ordinary FF bank and wide final
+queue/BTC data selector are absent. Memory-response bypass remains direct.
+Full pop/push writes a different physical row from the head being consumed;
+no valid RAM consumer depends on the old output during a same-address write
+edge. Redirects and flushes reset both pointers, while stale responses retain
+their existing drain behavior. The official RAM16SDP4 regression checks
+full-FIFO pop/push, rejects an effective same-address overwrite, and covers
+simultaneous BTC installation/continuation enqueue for the fixed four entries;
+inferred and official runs share one
+independent address/value fixture.
+FPGA configuration initial values and independent reset restore unique pair
+ownership; flush retains the pair permutation while
+clearing validity and live queue references. Exact LRU keeps relative-order bits
+and its original events. The independent cycle model retains rank-based BTC
+state and separate queue payloads as its reference representation.
+
+BTC capacity is fixed at four entries in the cycle model and RTL; it has no
+environment-variable configuration, hardware port or ISA control.
+The tables below count Execute through retirement; fetch waits
 are additional when neither the queue, BTC nor bypass can supply the word.
 
 ## Core storage and execution resources
 
 | Block | Current implementation | Per-cycle capability |
 |---|---|---|
-| GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One registered write per cycle; a forwarding mux exposes the pending write to a matching next instruction |
+| GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One 21-bit valid/address/data publication slot feeds the synchronous RAM write and both independent source-forwarding selects |
 | Control state | 16-bit PC, CSEG, four 8-bit DSEG page mappings, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | One common operand pair for register/immediate add/sub/logic/compare; the add/subtract lane also forms effective addresses and relative targets; separate shift, CLZ and popcount paths | One non-multiply integer result; sequential PC increment remains independent for overlapped instruction acceptance |
-| Integer multiplier | One registered signed 18 x 18 `MULT18X18` lane | Accepts an input each cycle, but the blocking core uses one operation at a time |
+| Integer multiplier | Unsigned 16-bit operands zero-extended into the shared signed 36 x 36 CPU/FPU pipe, with integer-owner tag `0x100` | The blocking core retains `Execute -> MultiplyWait -> MultiplyCommit`; the returned low 32 bits supply the selected 16-bit product window |
 | FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
-| FPR file | Two mirrored 512 x 32 SDPB BSRAMs giving 2R1W; architectural `F0..F63` are addresses `0..63`, the hidden LUT region is `64..511` (mirror A: RCP and SINCOS; mirror B: RSQRT even/odd) | Two registered-address synchronous reads and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
-| FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), one scalar/vector lane controller, and one shared result/address commit register | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
-| FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit destination tag | The multiply, dot and SINCOS range-reduction owners time-share it; the core serializes FPU instructions |
+| FPR file | Two 512 x 32 SDPB banks giving 2R1W, with broadcast writes and distinct initialized hidden tables; architectural `F0..F63` are addresses `0..63`, hidden tables occupy `64..511` (A: RCP and SINCOS; B: RSQRT even/odd) | One synchronous read per bank and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
+| FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), using the common FPU lane issuer and commit slot | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
+| CPU/FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), two stages, II = 1, with a 9-bit owner/destination tag | Integer multiply, FPU multiply/dot, SINCOS range reduction and all LUT interpolation products time-share it; the core serializes owners |
+| FPU operand-port issuer and commit | ALU and product instructions share one lane calendar, two six-bit read cursors and destination context. One next-edge result/address slot serves ALU and final `DOTSTORE`; both physical DSP valid/tag slots retain direct-return ownership, and the returned DOT lane identifies completion | One synchronous RF operand pair per enabled beat; ALU and product vector II = 1, direct MUL/special returns and all existing write beats are retained |
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
-| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables, one local inferred 18 x 18 interpolation lane, one product re-alignment register, and the shared pipe for SINCOS range reduction | RCP/RSQRT `T0..T3`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
+| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables; range reduction and delta/residue interpolation use the shared CPU/FPU pipe, with two LUT-base metadata stages and direct result writeback | RCP/RSQRT `T0..T4`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
+
+The GPR result class is selected once across integer operations, immediate forms,
+loads/device returns, multiply/AUX completion, link and segment reads. At E0 an
+instruction publishes the single 21-bit valid/address/data slot. After E0 either
+or both operands of the next instruction can forward from that same slot. At E1
+RAM consumes the old slot while the next result may publish, preserving Execute
+II=1. Hold retains the entire valid slot; RAM may repeat its idempotent write.
+Address/data need not retain an invalid payload after a non-held edge. CMP,
+false conditional moves and failed loads publish no GPR write. A global async
+store fault suppresses a new publication; a next-instruction fetch error does not
+erase the current successful instruction's result. The registered read-B and AUX
+read-A selections remain ahead of the asynchronous operand path.
+
+Within the FPU ALU, ADD/SUB, MIN/MAX, CMP and NEG/ABS share one wrapping
+32-bit add/subtract path. Signed comparison checks differing operand signs
+before using the subtraction sign; CMP equality reduces that same difference
+to zero. MIN/MAX select their shared operand result using signed ordering and
+the operation direction, without putting equality detection on the wide data
+path. Equal operands have identical bits. Comparison flags remain specified
+only for CMP. CEIL, half-up ROUND and TRUNC only need the
+integer half, so they share one 16-bit increment followed by sixteen zero bits.
+No execution or vector-lane stage is added, and the defined wrap boundaries remain.
+
+The accepted `word0` already retains the parked architectural RF addresses. The
+common port issuer advances its cursors only for the scheduled vector/product
+reads; special-function LUT accesses and idle external accesses select those same
+physical ports. A single destination context serves ordinary and special work;
+the special leaf receives operation fields and returns only a relative destination.
+ALU results and final DOTSTORE values share their mutually exclusive next-edge
+commit storage. Ordinary products and special-function results still write the RF
+directly on their scheduled return beat. Write events form one mutually exclusive
+final bus, with no new queue or arbitration state. Standalone ALU/ProductPath
+leaves remain test references and are absent from the production dependency graph.
+The independent value model commits the old scalar/vector write registers after
+sampling RF reads; new results become eligible on the following edge. Its strict
+mixed-owner replay checks RF/ACC after each enabled edge and during clock holds.
+
+All six integer shift forms share one 17-bit signed right-shift barrel.
+Register/immediate decode selects the four-bit count before the barrel. Left shift
+reverses the 16-bit operand and result using wiring and muxes; logical right shift
+uses zero fill, and arithmetic right shift replicates the original sign. The
+signed shift is computed in its own assignment before result selection. This
+changes neither the single-cycle Execute schedule nor forwarding/retirement.
 
 Integer unsigned comparison uses the shared subtractor's carry; signed comparison
 first checks differing operand signs, then uses the difference sign for equal-sign
@@ -84,7 +179,7 @@ operands. Negation selects zero as the left operand. Prefix and immediate signed
 are selected before execution, preserving the defined wrapping 16-bit results.
 
 The integer `ASR`/`ASRI` instructions shift `signed(rd)` arithmetically. The RTL computes the
-shift result in a statement-based `case` and the FSM selects it; it never places `>>>` inside a
+signed barrel result separately, then a statement-based `case` validates the form; it never places `>>>` inside a
 conditional expression, because Verilog makes `?:` unsigned when any branch is unsigned and would
 silently turn the arithmetic shift into a logical one. `FTOI16` and every other signed FPU result
 depend on the same rule for any arithmetic shift in their datapath.
@@ -113,24 +208,43 @@ The read-only I-cache can start its next lookup while a resident read resolves,
 allowing one ordered hit per cycle without backpressure. The write-back D-cache
 serializes acceptance, lookup and response consumption. Stores allocate on a
 miss; replacing a dirty victim first writes its complete line.
-Each cache uses a third DPB for tags. The I-cache keeps valid/victim bits in twelve
-RAM16 cells. The D-cache packs tag, valid and dirty into each way's 16-bit metadata
-word, with the set's victim bit in way zero. Lookup reads both metadata words
-synchronously alongside data; stores, refill and maintenance share their update
-ports. There is no D-cache dirty bitmap or separate valid/victim RAM.
+Each cache uses a third DPB for complete metadata. Both pack tag and valid into
+each way's 16-bit word, with the set's victim bit in way zero; D-cache also stores
+dirty in that word. Lookup reads both metadata words synchronously alongside
+data; stores, refill and maintenance share their update ports. Neither selected
+cache has a separate valid/victim RAM or dirty bitmap. During an I-cache sweep,
+normal-mode writes hold the pending lookup's old metadata Q. One bit records
+when that lookup's set has been cleared, so a backpressured lookup cannot reuse
+the old validity after the sweep, including when another invalidate restarts it.
 A global invalidate, reset, or memory-error scrub clears one set of both ways per
 cycle, and the system holds the CPU for the D-cache sweep.
 A read or write-allocate miss issues one aligned line request; the system arbiter
 streams four ordered 64-bit beats at 54 MHz. Each beat writes four words directly
 through the four BSRAM ports, and tag/valid state commits only on the fourth
-error-free beat. The victim is invalid throughout refill, so an error or invalidate
+error-free beat. Both caches capture a read miss's requested halfword directly into
+its final response register when that beat arrives, without another refill-only
+16-bit payload slot. Response-valid remains low until the complete error-free
+line is committed. A later refill error clears this payload and publishes an
+error; write-allocate stores still complete with zero response data, and LCOPY
+never publishes a CPU data response. Once valid, the response remains held until
+consumed. The victim is invalid throughout refill, so an error or invalidate
 cannot expose a partial line. Dirty eviction primes the synchronous DPB outputs,
 then streams four ordered 64-bit beats without a private line buffer. The board
 gearbox pairs/splits those logical beats against the 32-bit SDRAM controller at
-the related 108 MHz clock. The boot DMA keeps
+the related 108 MHz clock. The cold-boot loader keeps
 single-word transactions. Full D-cache clean and clean-plus-invalidate read one
-metadata set per cycle. A single pending line index lets that scan overlap an
-in-flight write-back. Dirty clears only after successful write completion. A
+metadata set per cycle. The scan holds one candidate's identity and metadata,
+while separate feed and retirement contexts permit at most two accepted line
+writes. A successor descriptor can be offered during the predecessor's data or
+terminal wait. The predecessor's fourth accepted beat launches the successor's
+beat-zero DPB read; no line payload FIFO or additional BSRAM is required. Dirty
+clears only for the matching successful ordered terminal. A metadata write
+holds DPB DO, so the scan invalidates and replays its pending read on that edge.
+Way zero precedes way one within a set, preventing rediscovery of a line whose
+terminal has not arrived. Full invalidate waits for all writes before its
+64-set validity sweep. A full-maintenance memory error stops request admission
+and holds the cache unavailable until whole-system reset; it cannot cancel an
+already accepted successor. Single-line commands keep their existing contract. A
 conservative one-bit hint skips scans after a completed full clean; single-line
 clean never clears that hint. The CPU is held during full maintenance; there is
 no per-line snoop interface. The system-control I-cache invalidation pulse is
@@ -142,6 +256,29 @@ the physical word address from that 8-bit page and offset bits 13:0. The legacy
 bulk DSEG write still establishes four consecutive pages atomically; individual
 page writes support a fixed three-page application arena plus a remappable
 fourth window without widening program pointers.
+
+Device-0 channel-1/channel-4 `DEVSEND` is a full-maintenance ordering
+boundary. Execute retains the instruction while older asynchronous stores,
+early-release FST halfwords remain. Ordinary FPU arithmetic and AUX register
+writes have already completed before their instructions retire; they need no
+second busy check at this boundary. The remaining FST count and asynchronous
+store slot together cover the sole early-release FPU path. New instruction acceptance is
+blocked, while old request issue, response/error consumption and FST refill
+continue under the existing clock. Only after that core-owned work drains does
+the device write retire and SystemControl assert CPU hold. Other device writes
+retain their existing schedule. An older store fault wins before this write.
+
+D-cache `maintenance_ready` means Idle with no held CPU response, active
+maintenance or metadata sweep. A clean/invalidate request is retained until
+`valid && maintenance_ready`; ordinary accesses cannot be accepted on that
+edge. SystemControl then waits for the accepted command's `done/error`, ignoring
+an earlier owner's completion on the acceptance edge. An empty clean may
+complete without a visible busy interval. Reset cancels pending control and
+restarts the cache metadata sweep. Neither the arbiter nor memory clock is held.
+
+The extended cache-control selector 7 is reserved. `DWAIT` requires selector 8
+and a zero low nibble; reserved variants fault as invalid instructions without
+retirement. Canonical `DCLEANL` and `DWAIT` keep their existing scheduling.
 
 `LCOPY` reuses the same lookup/refill and four-beat write-back path. The core
 waits for older buffered stores and command acceptance, then retires the
@@ -190,34 +327,157 @@ have drained. The two-word front-end is a fetch barrier:
 word0 is accepted in `Execute`, word1 through the normal instruction port, and
 the pair retires as two words.
 
-- Scalar and vector ALU instructions share one lane controller and one result
-  commit register. The scalar entry uses operands read by the two-word frontend,
-  captures at `T0`, and writes at `T1`; `CMP` updates only the persistent flags.
-  Vector operations and `MOV` retain one lane per cycle, with the read window
-  `T0..T(last_lane)` and writes trailing by two beats. Destination aliasing and
-  abort cancellation retain the same read-first register-file schedule.
-- The shared 36 x 36 pipe has two registered stages and II = 1. For
-  `VMUL`/`VMULS`/scalar `MUL`, lane k's RF address is presented at `T(k)`,
-  its operands issue at `T(k+1)`, and its product writes back during `T(k+3)`.
-  This removes one beat from the previous three-stage pipe. Its
-  return-valid signal is not path ownership: the multiply and dot sequencers
-  retain ownership through their own outstanding counters until every issued
-  product has returned, which keeps the shared operand mux on the issuer.
-- `DOT`/`DOTADD`/`DOTSTORE` accumulate the complete signed product of every
-  lane into the 64-bit Q32.32 ACC with no per-lane narrowing; `DOTSTORE`
-  narrows once and clears ACC.
-- RCP/RSQRT are blocking `T0..T3`; SINCOS is `T0..T7` for the dual
-  `sin`/`cos` output and `T0..T6` for a single output. The special path
-  monopolizes both RF read ports while active and reuses the shared pipe for
-  its one SINCOS range-reduction product. The shared pipe returns at `T2`;
-  the local 18-bit phase register supplies the `T3` capture. A single output
-  writes at `T6`, and dual output writes at `T6` and `T7`. Abort gates writes
-  on the abort edge; a new instruction may start on the following edge with
-  its own operand and destination.
-- `FLD`/`FST` and their vector forms reuse the core data port with its existing
-  variable-latency handshake; loads stay blocking until the destination
-  registers are written, while stores drain through the core's early-release
-  store buffer after the source values are captured.
+Scheduling is hardwired: lane/phase counters, valid/tag registers and fixed
+result ownership select the ports. There is no scheduling ROM. The hidden
+BSRAM ROM regions hold numerical RCP/RSQRT/SINCOS tables. `instr_complete`
+means that the frontend has assembled the two-word pair; it does not mean
+that its arithmetic or RF writes have finished.
+
+The selected unit uses one compute calendar from the frontend to the final RF
+consumer. The standalone scalar/vector/product paths remain independent legacy
+references; they are not instantiated by the selected unit.
+
+```mermaid
+flowchart LR
+    Q["Synchronous RF Q"] --> ALU["32-bit ALU"]
+    ALU --> W["Single synchronous RF write port"]
+    Q --> M["36 x 36 multiply"]
+    M --> P["One held product register"]
+    P -->|"MUL: bits 47:16"| W
+    P --> A["64-bit ACC adder"]
+    A --> R["64-bit ACC register"]
+    R --> A
+    A -->|"Final DOTSTORE: bits 47:16"| W
+    Q --> N["RCP normalization / LUT read address"]
+    N --> L["Existing RF LUT banks"]
+    L -->|"delta, residue"| M
+```
+
+`T0` is the edge consuming the frontend's registered complete-pair pulse.
+Execution windows include both endpoints and exclude frontend transfer, CPU
+retirement and memory stalls. `n` is 2, 3 or 4.
+
+| Instruction class | Execution window | Final effect |
+|---|---:|---|
+| Scalar ADD/SUB/MIN/MAX/ABS/NEG/FLOOR/CEIL/ROUND/TRUNC/MOV | 1 edge | RF write at T0 |
+| Scalar CMP | 1 edge | Flags captured at T0; no RF write |
+| Scalar MUL | 2 edges | RF write at T1 |
+| Vector ADD/SUB/MIN/MAX/ABS/NEG/MOV | n edges | RF writes at T0 through T(n-1) |
+| VMUL/VMULS | n + 1 edges | RF writes at T1 through Tn |
+| DOT/DOTADD | n + 1 edges | ACC updates at T1 through Tn |
+| DOTSTORE | n + 1 edges | Final RF write and ACC clear at Tn |
+| RCP/RSQRT | 3 edges | RF write at T2 |
+| SINCOS single result | 4 edges | RF write at T3 |
+| SINCOS dual result | 5 edges | RF writes at T3 and T4 |
+
+Vector subops 08 through 0B are reserved. FLOOR/CEIL/ROUND/TRUNC are
+scalar-only; vector callers apply the scalar operations to individual lanes.
+AUX bridges and FLD/FST belong to the core rather than this arithmetic calendar.
+
+- The special-function launch edge retains two family bits (reciprocal and
+  sine/cosine). Normalize and range issue use the incoming descriptor; later
+  interpolation, scale/sign/saturation and retirement use the retained family.
+  These bits share the existing phase lifetime and add no execution edge.
+- Word1 acceptance installs the source cursors, destination and last-lane index
+  before T0. Every ordinary issue, including lane zero, consumes the current RF
+  Q and requests the next operands. There is no separate first-lane data or
+  destination mux. A advances by one; B advances by zero for VMULS or by the
+  one/three/four DOT stride. Addresses retain six-bit architectural wrap.
+- An ALU operation writes its final RF location on the issue edge; no redundant
+  result/commit register sits between the ALU and RF. The multiplier has one
+  product register and II=1. Ordinary products share one return-valid,
+  destination and last-item slot. They do not carry per-product owner/address
+  tags or a second outstanding/completion counter. Physical multiply
+  destinations retain addresses through 66; ALU destinations wrap at F63 as
+  before. Instructions remain serialized, while lanes sustain II=1.
+- Legal destination/source ranges are exactly base-equal or disjoint, as the
+  ISA requires. Partial overlap is outside that contract. VMULS holds RF B's
+  existing Q through the final issue using its read CE; writes remain live.
+  This protects B0 even when Fd equals Fb, without an extra 32-bit broadcast
+  copy. Other same-base operations retain synchronous read-first behavior.
+- DOT accumulates complete signed products modulo 2^64, with one final
+  Q32.32-to-Q16.16 extraction for DOTSTORE. The last product feeds the ACC
+  adder and final RF write on the same edge; ACC clears on that edge. There
+  is no intermediate DOTSTORE snapshot. Abort suppresses uncommitted writes
+  and ownership; already written RF lanes and the accumulated prefix survive.
+- One special-function phase counter owns both RF lookup ports and the shared
+  multiplier. RCP/RSQRT normalize the ready source and issue the packed-table
+  read at T0, interpolate at T1 and write at T2. Their retained context is
+  residue, scale, sign and zero/invalid status, rather than a 32-bit magnitude
+  copied into a separate preparation stage.
+- SINCOS issues range reduction at T0. The held DSP product supplies phase
+  directly for the first LUT read at T1 and first interpolation/second lookup
+  at T2. Dual output retains only the second interpolation's eight-bit residue,
+  endpoint and sign (ten bits). First RF write/second interpolation occur at
+  T3; the second RF write occurs at T4. No separate 18-bit phase register is
+  needed. A single 17-bit interval-base slot plus two flags accompanies each
+  interpolation; the return consumes the old slot while the next issue
+  replaces it. Modes 00/01/10 are dual/sin/cos; mode 11 remains reserved.
+- Integer, special and ordinary issue are mutually exclusive under core
+  serialization, with that priority at the physical input mux. A single
+  delayed integer-owner bit identifies integer returns. The product register
+  holds its last value across core hold until MultiplyCommit. The selected
+  top ties the generic multiplier tag port to zero, so its tag registers and
+  ordinary-pending logic are removed by synthesis.
+- Core hold stops new core progress while the FPU continues clocking. Submitted
+  word/abort signals clear as one-edge pulses independently of hold; frontend
+  completion is retained until the core can retire. A held core therefore
+  neither resubmits a word nor loses a completed pair. The cycle model clocks
+  the same independent unit during hold.
+- FLD/FST use the existing variable-latency core data port. Loads remain
+  blocking; stores drain after their early-release source snapshot is captured.
+
+The early-release FST/FSTV snapshot uses a single-write, asynchronous-read
+16x32 distributed RAM, with four live rows and eight physical RAM16 cells.
+Each enabled capture edge writes one complete F register and requests the next
+source. A core hold retains the current source address, since the synchronous
+RF read continues clocking while capture is suppressed. The final capture
+publishes the pending halfword count; the following edge may refill the
+existing async store slot from row zero. Row selection uses the pending
+halfword index and bit0 selects the low/high half. The capture and drain
+schedule is unchanged.
+Hold suppresses capture and drain, and the global store-fault priority is
+preserved. RAM contents are not reset: reset clears pending ownership, and a
+new snapshot is fully captured before any of its words can be consumed.
+
+The blocking two-word FPU instruction retains the core instruction and its PC
+until retirement. Word0, Fa and synchronous fault attribution use that owner
+directly rather than private copies. The independent GPR address register is
+retained for the read-address timing boundary. An early-release FST still
+copies its address and fault PC into the drain context before the core may
+accept another instruction. Memory progress uses a three-bit halfword index
+and a two-bit last-lane field; the pending count retains four bits to represent
+all eight halfwords. After its last halfword the drain index may wrap, but no
+consumer owns that index until a new complete snapshot is published.
+
+The shared DSP input forms extension bits after source selection. Ordinary and
+range work consume RF A as signed32; interpolation substitutes signed10 delta.
+The other operand is ordinary signed32, interpolation unsigned9 residue, or the
+positive 36-bit range constant. Integer operands remain zero-extended unsigned16.
+
+Reciprocal normalization finds CLZ and normalized [30:15] in the same staged
+16/8/4/2/1 network. After the 8/4/2 steps, [31:8], [31:12] and [31:14] retain
+every source bit reachable by the remaining shifts. Zero yields CLZ32 and a zero
+window. The seven-bit index and nine-bit residue feed the T0 lookup/capture;
+bank A holds reciprocal/SINCOS and bank B the distinct RSQRT tables.
+
+One modulo-2^17 interpolation adder serves both return types. RCP correction is
+independently arithmetic-shifted by 9, truncated to signed10, then extended;
+SINCOS correction is independently arithmetic-shifted by 8 and consumes low17.
+One base metadata slot is consumed and replaced on adjacent interpolation edges
+of the single-product DSP. Endpoint-adjusted SINCOS magnitude/sign or scaled/saturated
+reciprocal magnitude/sign select before one 32-bit conditional negation. Right
+shift precedes negation. Zero and invalid-RSQRT overrides retain priority;
+the live SINCOS return ignores stale reciprocal context.
+
+  Reciprocal scaling places the 17-bit interpolated magnitude above sixteen
+  zero bits in one 33-bit window. Its registered right-shift position is
+  `31 - CLZ` for RCP and `23 - (CLZ >> 1)` for RSQRT; no direction bit or
+  bidirectional data selection is retained. RCP's zero-input CLZ of 32 uses
+  the existing constant-result override, so its shifted payload is unused.
+  Bits 32 and 31 remain available for reciprocal saturation before truncation,
+  sign application and the existing RF write edge.
+
 
 The hidden BSRAM tables are generated from one Rust reference model in the
 architecture crate (`fpu_lut`), which also backs the architectural emulator and
@@ -233,10 +493,11 @@ caches, 54/108-MHz SDRAM gearbox, and display path. The fitted numbers live in
 which owns them and is where they are updated; they are deliberately not repeated
 here.
 
-What that fit says about the CPU itself: after registering the AUX/FLD/FST GPR
-address selection, the former state-to-GPR-write critical cone is absent from
-the top 25. The tightest CPU-clock path now runs from the instruction fetch
-queue head into core state; the hidden special-function lookup is not critical.
+The CPU and controller same-clock setup/hold checks pass at their configured
+clocks in the matched current-tool fit. The complete timing report retains the
+baseline's external SDRAM-output setup violations; this is not a claim that all
+board timing constraints pass. The system document separates these checks from
+physical-board validation and from the independently fitted GPU post-quad chain.
 
 The following timing sections are retained as implementation history for the FPU
 lane pipeline. They are not the current full-system Stage 12 result.

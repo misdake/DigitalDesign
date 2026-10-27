@@ -1,8 +1,12 @@
 //! Actual scalar membership registers, independent of closed counted frames.
-//! E0..E6 retain648 data bits; old E6 writes Work on E7. No output FIFO.
+//! Reference E0..E6 retain648 data bits; old E6 writes Work on E7.
+//! Runtime's compact E0 Common86 / E1 Member92 retain178 data bits and write
+//! Work on E2. Neither form adds an output FIFO.
 use super::transport::{Member, MemberFields};
 
+#[cfg(test)]
 pub(super) const DATA_BITS: usize = 92 + 90 + 92 + 98 + 3 * 92;
+#[cfg(test)]
 pub(super) const CONTROL_BITS: usize = 7 + 1;
 #[cfg(test)]
 pub(super) const BANK_BITS: [usize; 7] = [92, 90, 92, 98, 92, 92, 92];
@@ -19,7 +23,7 @@ pub(super) struct Input {
     pub last_fine: bool,
 }
 impl Input {
-    fn validate(self) -> Result<Self, String> {
+    pub(super) fn validate(self) -> Result<Self, String> {
         if self.weights.iter().any(|&w| w > 511)
             || self.coordinates.iter().any(|&v| v > 1023)
             || self.slot > 15
@@ -46,6 +50,44 @@ struct Common {
     fine: bool,
     final_plane: bool,
 }
+impl Common {
+    fn capture(v: Input) -> Self {
+        Self {
+            weights: v.weights,
+            tiles: v.coordinates.map(|c| (c >> 3) as u8),
+            local: [(v.coordinates[0] & 7) as u8, (v.coordinates[2] & 7) as u8],
+            slot: v.slot,
+            level: v.level,
+            key: v.key,
+            fine: v.fine,
+            final_plane: !v.fine || v.last_fine,
+        }
+    }
+    fn member(self) -> Result<Member, String> {
+        let nz = self.weights.map(|w| w != 0);
+        let [x, y] = [
+            self.tiles[0] == self.tiles[1],
+            self.tiles[2] == self.tiles[3],
+        ];
+        Member::from_fields(MemberFields {
+            weights: self.weights,
+            emit: [
+                nz[0],
+                nz[1] && !(nz[0] && x),
+                nz[2] && !((nz[0] && y) || (nz[1] && x && y)),
+                nz[3] && !((nz[0] && x && y) || (nz[1] && y) || (nz[2] && x)),
+            ],
+            tiles: self.tiles,
+            local: self.local,
+            same: [x, y],
+            slot: self.slot,
+            level: self.level,
+            key: self.key,
+            fine: self.fine,
+            final_plane: self.final_plane,
+        })
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Slice {
     common: Common,
@@ -66,6 +108,9 @@ struct Pairs {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Pipeline {
     short_alignment: bool,
+    // Short path: E0 Common86 (only wiring at admission), E1 Member92.
+    // No slice/nonzero/equality/pair payload copies survive in this path.
+    compact: Option<Common>,
     input: Option<Input>,
     slice: Option<Slice>,
     equal: Option<Equal>,
@@ -84,6 +129,7 @@ impl Pipeline {
     }
     pub(super) fn inflight(&self) -> usize {
         [
+            self.compact.is_some(),
             self.input.is_some(),
             self.slice.is_some(),
             self.equal.is_some(),
@@ -98,7 +144,11 @@ impl Pipeline {
     }
     #[cfg(test)]
     pub(super) fn output(&self) -> Option<Member> {
-        self.output
+        if self.short_alignment {
+            self.emit
+        } else {
+            self.output
+        }
     }
     pub(super) fn tick(
         &mut self,
@@ -119,6 +169,13 @@ impl Pipeline {
     }
     fn advance(&mut self, input: Option<Input>) -> Result<Option<Member>, String> {
         let input = input.map(Input::validate).transpose()?;
+        if self.short_alignment {
+            let old_output = self.emit;
+            let emit = self.compact.map(Common::member).transpose()?;
+            self.compact = input.map(Common::capture);
+            self.emit = emit;
+            return Ok(old_output);
+        }
         let old_output = if self.short_alignment {
             self.emit
         } else {
@@ -230,6 +287,17 @@ impl Pipeline {
         }
         fn equal(e: Equal) -> u128 {
             slice(e.slice) | u128::from(e.same[0]) << 90 | u128::from(e.same[1]) << 91
+        }
+        if self.short_alignment {
+            return [
+                self.compact.map(common),
+                None,
+                None,
+                None,
+                self.emit.map(Member::bits),
+                None,
+                None,
+            ];
         }
         [
             self.input.map(|v| {

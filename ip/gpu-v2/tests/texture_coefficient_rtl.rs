@@ -18,8 +18,8 @@
 
 use gpu_v2::texture::{
     emu::coefficient::{
-        CoefficientEmu, Field, Input, Metadata, Output, Tick, ALLOCATION, COHORT_CAPACITY,
-        NUMERIC_BITS, READY_CAPACITY,
+        fixed_stage::FixedCoefficientEmu, CoefficientEmu, Field, Input, Metadata, Output, Tick,
+        ALLOCATION, COHORT_CAPACITY, NUMERIC_BITS, READY_CAPACITY,
     },
     rtl::coefficient,
 };
@@ -27,7 +27,7 @@ use std::fs::File;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-const OUT_DIR: &str = "../../target/opencode/coefficient-rtl-20261006";
+const OUT_DIR: &str = "../../target/sampling-coefficient-stages-20261009/coefficient-leaf";
 
 /// One canonical legal input.
 fn legal(index: usize, parent: u16, fractions: [[u8; 2]; 2], nearest: bool) -> Input {
@@ -172,7 +172,7 @@ fn stream() -> Vec<Input> {
     for index in 0..96_usize {
         let parent = parents[index % parents.len()];
         let nearest = parent == 511 && index % 3 == 0;
-        let pick = |k: usize| fractions[(index * 7 + k * 5) % fractions.len()];
+        let pick = |k: usize| fractions[(index * 3 + k * 5) % fractions.len()];
         let mut v = legal(
             index,
             parent,
@@ -195,14 +195,18 @@ struct Stim {
     accepted: bool,
     output: Option<Output>,
     work_reserved: u8,
+    fixed_snapshot: gpu_v2::texture::emu::coefficient::Snapshot,
 }
 
 /// Drive the emulator with CE pauses, output backpressure and a work pattern
 /// that includes starvation (0/1 free) and full (16) availability, and collect
 /// the expected pre-edge handshake per edge. Returns `(edges, commits)`.
 fn replay() -> (Vec<Stim>, Vec<Output>) {
-    let input = stream();
+    replay_inputs(stream())
+}
+fn replay_inputs(input: Vec<Input>) -> (Vec<Stim>, Vec<Output>) {
     let mut emu = CoefficientEmu::new(2_000_000).unwrap();
+    let mut fixed = FixedCoefficientEmu::new(2_000_000).unwrap();
     let mut cursor = 0;
     let mut edges = Vec::new();
     let mut commits = Vec::new();
@@ -227,6 +231,32 @@ fn replay() -> (Vec<Stim>, Vec<Output>) {
                 work_available,
             })
             .unwrap();
+        let selected = fixed
+            .tick(Tick {
+                ce,
+                input: offer,
+                output_ready: ready,
+                work_available,
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                selected.input_ready,
+                selected.accepted,
+                selected.output,
+                selected.consumed,
+                selected.work_reserved
+            ),
+            (
+                step.input_ready,
+                step.accepted,
+                step.output,
+                step.consumed,
+                step.work_reserved
+            )
+        );
+        assert_eq!(selected.ready_access.write, step.ready_access.write);
+        assert_eq!(selected.ready_access.publish, step.ready_access.publish);
         if step.accepted {
             cursor += 1;
         }
@@ -252,6 +282,7 @@ fn replay() -> (Vec<Stim>, Vec<Output>) {
             accepted: step.accepted,
             output: step.output,
             work_reserved: step.work_reserved,
+            fixed_snapshot: selected.snapshot,
         });
         if cursor == input.len() && emu.idle() {
             break;
@@ -259,7 +290,10 @@ fn replay() -> (Vec<Stim>, Vec<Output>) {
     }
     assert_eq!(cursor, input.len(), "replay did not offer every input");
     assert!(emu.idle(), "replay did not drain");
-    assert_eq!(peak_cohorts, 6, "stimulus did not fill the cohort pipeline");
+    assert_eq!(
+        peak_cohorts, COHORT_CAPACITY as u8,
+        "stimulus did not fill the cohort pipeline"
+    );
     assert_eq!(peak_ready, 2, "stimulus did not fill both ready rows");
     assert_eq!(
         commits,
@@ -281,6 +315,13 @@ fn testbench(edges: &[Stim]) -> String {
     tb.push_str("wire in_ready,in_accept,out_valid,fault;\n");
     tb.push_str("wire [71:0] out_weights; wire [98:0] out_meta; wire [1:0] work_reserved;\n");
     tb.push_str("gpu_v2_texture_coefficient dut(.clk(clk),.reset(reset),.ce(ce),.in_valid(in_valid),.in_payload(in_payload),.work_available(work_available),.in_ready(in_ready),.in_accept(in_accept),.out_ready(out_ready),.out_valid(out_valid),.out_weights(out_weights),.out_meta(out_meta),.work_reserved(work_reserved),.fault(fault));\n");
+    // The operand simplification relies on these reachable-state invariants.
+    // Check the real DUT under pauses/full queues, not only the Rust model.
+    tb.push_str("reg [177:0] arithmetic_before; integer full_frozen=0,ce_frozen=0; reg frozen;\n");
+    tb.push_str("always @(posedge clk) if(!reset) begin\n");
+    tb.push_str("if ((dut.v1 && !dut.ph) || (dut.v2 && dut.ph) || (dut.v3 && !dut.ph) || (dut.v4 && dut.ph)) $fatal(1,\"valid/local-phase invariant\");\n");
+    tb.push_str("frozen=!dut.advance; arithmetic_before={dut.ph,dut.valid,dut.input_stage,dut.horizontal_delay,dut.row_totals,dut.fine_corners,dut.product[0],dut.product[1],dut.product[2]};\n");
+    tb.push_str("if(frozen) begin if(ce && dut.queued==2) full_frozen=full_frozen+1; if(!ce) ce_frozen=ce_frozen+1; #1; if({dut.ph,dut.valid,dut.input_stage,dut.horizontal_delay,dut.row_totals,dut.fine_corners,dut.product[0],dut.product[1],dut.product[2]} !== arithmetic_before) $fatal(1,\"old-full/CE arithmetic freeze\"); end\nend\n");
     tb.push_str("initial begin #2000000; $fatal(1,\"simulation watchdog\"); end\n");
     tb.push_str("initial begin\n");
     tb.push_str("clk=0;reset=1;ce=0;in_valid=0;out_ready=0;work_available=0;#1;clk=1;#1;clk=0;#1;reset=0;\n");
@@ -331,9 +372,18 @@ fn testbench(edges: &[Stim]) -> String {
             ));
         }
         tb.push_str("clk=1;#1;clk=0;#1;\n");
+        let fixed = stim.fixed_snapshot;
+        let stages =
+            u128::from(fixed.numeric_words[0]) | (u128::from(fixed.numeric_words[1]) << 64);
+        tb.push_str(&format!("if ({{dut.fine_corners,dut.row_totals,dut.horizontal_delay,dut.input_stage}} !== 121'h{stages:031x} || dut.ph !== 1'd{} || dut.valid !== 5'd{}) $fatal(1,\"selected stages edge {edge}\");\n",fixed.phase.trailing_zeros(),fixed.valid));
+        // Native output registers are not reset. Two enabled updates initialize
+        // all lanes; compare real retained DSP products thereafter, including CE holds.
+        if fixed.enabled >= 2 {
+            tb.push_str(&format!("if(dut.product[0]!==17'd{} || dut.product[1]!==17'd{} || dut.product[2]!==17'd{}) $fatal(1,\"selected DSP edge {edge}\");\n",fixed.product_registers[0][0],fixed.product_registers[1][0],fixed.product_registers[2][0]));
+        }
     }
     tb.push_str(&format!(
-        "$display(\"PASS edges={}\");$finish;end endmodule\n",
+        "if(full_frozen==0 || ce_frozen==0) $fatal(1,\"freeze coverage\"); $display(\"PASS edges={} full_frozen=%0d ce_frozen=%0d\",full_frozen,ce_frozen);$finish;end endmodule\n",
         edges.len()
     ));
     tb
@@ -376,7 +426,33 @@ fn out_dir() -> std::path::PathBuf {
 }
 
 fn compile_and_run(dir: &std::path::Path, stem: &str, module: &str, bench: &str) {
+    compile_variant(dir, stem, module, bench);
+    if !module.contains("`define GPU_V2_GOWIN_DSP") {
+        compile_variant(
+            dir,
+            &format!("{stem}-native"),
+            &format!("`define GPU_V2_GOWIN_DSP\n{module}"),
+            bench,
+        );
+    }
+    compile_variant(
+        dir,
+        &format!("{stem}-ff"),
+        &format!(
+            "`define GPU_V2_GOWIN_DSP\n`define GPU_V2_COEFFICIENT_READY_FF\n{}",
+            coefficient::verilog()
+        ),
+        bench,
+    );
+}
+fn compile_variant(dir: &std::path::Path, stem: &str, module: &str, bench: &str) {
     std::fs::write(dir.join(format!("{stem}.v")), module).unwrap();
+    let gowin = module.contains("`define GPU_V2_GOWIN_DSP");
+    let bench = if gowin {
+        bench.replace("module tb;", "module tb; GSR GSR(.GSRI(1'b1));")
+    } else {
+        bench.to_string()
+    };
     std::fs::write(dir.join(format!("{stem}_tb.v")), bench).unwrap();
     let compiler = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
     let runtime = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
@@ -390,6 +466,11 @@ fn compile_and_run(dir: &std::path::Path, stem: &str, module: &str, bench: &str)
         &format!("{stem}.v"),
         &format!("{stem}_tb.v"),
     ]);
+    if gowin {
+        let home = std::env::var_os("GOWIN_HOME")
+            .expect("GOWIN_HOME is required for vendor primitive replay");
+        compile.arg(std::path::PathBuf::from(home).join("IDE/simlib/gw2a/prim_sim.v"));
+    }
     bounded(
         compile,
         dir,
@@ -412,35 +493,32 @@ fn compile_and_run(dir: &std::path::Path, stem: &str, module: &str, bench: &str)
 fn rtl_declares_the_emulated_calendar_and_inventory() {
     let source = coefficient::verilog();
     assert!(source.contains("module gpu_v2_texture_coefficient("));
-    assert_eq!(coefficient::latency(), 12);
+    assert_eq!(coefficient::latency(), 6);
     assert_eq!(coefficient::initiation_interval(), 2);
-    for pattern in [
-        "wire advance = ce && !fault && (queued < 2'd2);",
-        "assign in_ready = advance && (cohorts < 3'd6) && phase_even",
-        "wire [16:0] pm0 = {8'b0, rd_FP1} * {9'b0, rd_FV1};",
-        "prod0[0] <= new0; prod0[1] <= prod0[0]; prod0[2] <= prod0[1];",
-        "wire [2:0] idx10 = m6(crow, {3'b0, valid[10]});",
-    ] {
-        assert!(
-            source.contains(pattern),
-            "missing fixed-calendar RTL: {pattern}"
-        );
-    }
-    // The leaf declares the real capacities and generic product registers.
+    assert!(source.contains("wire [3:0] meta_ra=do_consume ? mrd+1'b1 : mrd;"));
+    assert_eq!(
+        source.matches("gpu_v2_texture_coefficient_mul9 m").count(),
+        3
+    );
     assert_eq!(ALLOCATION.multiply_sites, 3);
-    assert_eq!(ALLOCATION.multiply_latency, 3);
+    assert_eq!(ALLOCATION.multiply_latency, 1);
     assert_eq!(ALLOCATION.initiation_interval, 2);
-    assert_eq!(COHORT_CAPACITY, 6);
+    assert_eq!(COHORT_CAPACITY, 3);
     assert_eq!(READY_CAPACITY, 2);
-    assert_eq!(NUMERIC_BITS, 315);
+    assert_eq!(NUMERIC_BITS, 122);
     let allocation = coefficient::Allocation::default();
-    assert_eq!(allocation.multiply_sites, 3);
-    assert_eq!(allocation.products_per_site, 3);
-    assert_eq!(allocation.multiply_latency, 3);
-    assert_eq!(allocation.initiation_interval, 2);
-    assert_eq!(allocation.numeric_ff_bits, 315);
-    assert_eq!(allocation.metadata_ff_bits, 6 * 99);
-    assert_eq!(allocation.ready_ff_bits, 2 * 171);
+    assert_eq!(allocation.products_per_site, 1);
+    assert_eq!(allocation.multiply_latency, 1);
+    assert_eq!(allocation.numeric_ff_bits, 121);
+    assert_eq!(allocation.phase_valid_bits, 6);
+    assert_eq!(allocation.metadata_ff_bits, 0);
+    assert_eq!(allocation.metadata_bsram, 3);
+    assert_eq!(allocation.metadata_hard_bits, 108);
+    assert_eq!(allocation.ready_ff_bits, 144);
+    assert_eq!(allocation.ready_sdp4_cells, 0);
+    assert_eq!(allocation.ready_ram16_bits, 0);
+    assert_eq!(ALLOCATION.ram_ports, 2);
+    assert_eq!(ALLOCATION.soft_bits, 289);
 }
 
 #[test]
@@ -539,7 +617,7 @@ fn raw_testbench(edges: &[RawStim], fault_from: usize) -> String {
                 .as_ref()
                 .map_or_else(|| "162'h0".to_string(), input_literal)
         ));
-        tb.push_str("#1;\n");
+        tb.push_str("#1;\nif((fault || (in_accept && (dut.bad_input || work_available>16))) && dut.ready_we!==0) $fatal(1,\"fault SRAM write\");\n");
         if edge >= fault_from {
             tb.push_str(&format!(
                 "if (fault !== 1'b1) $fatal(1,\"fault not latched by edge {edge}\");\n"
@@ -605,7 +683,7 @@ fn reset_testbench(input: &Input, expected: &Output) -> String {
 }
 
 #[test]
-#[ignore = "requires Icarus (IVERILOG_EXE/VVP_EXE)"]
+#[ignore = "requires Icarus and GOWIN_HOME primitives"]
 fn iverilog_matches_emu_every_edge() {
     let (edges, commits) = replay();
     assert!(edges.len() > 200 && commits.len() == 96);
@@ -619,7 +697,7 @@ fn iverilog_matches_emu_every_edge() {
 }
 
 #[test]
-#[ignore = "requires Icarus (IVERILOG_EXE/VVP_EXE)"]
+#[ignore = "requires Icarus and GOWIN_HOME primitives"]
 fn iverilog_latches_invalid_input_and_work_credit_faults() {
     let dir = out_dir();
     let good = legal(0, 255, [[128; 2]; 2], false);
@@ -640,6 +718,26 @@ fn iverilog_latches_invalid_input_and_work_credit_faults() {
             }],
             1,
         ),
+    );
+
+    // An accepted invalid input on age4 must suppress the older SRAM write.
+    let mid: Vec<_> = (0..6)
+        .map(|i| RawStim {
+            ce: true,
+            ready: false,
+            input: match i {
+                0 => Some(good),
+                4 => Some(bad_sum),
+                _ => None,
+            },
+            work_available: 16,
+        })
+        .collect();
+    compile_and_run(
+        &dir,
+        "texture_coefficient_rtl_mid_write_fault",
+        coefficient::verilog(),
+        &raw_testbench(&mid, 5),
     );
 
     // An out-of-range coordinate.
@@ -720,7 +818,7 @@ fn iverilog_latches_invalid_input_and_work_credit_faults() {
 }
 
 #[test]
-#[ignore = "requires Icarus (IVERILOG_EXE/VVP_EXE)"]
+#[ignore = "requires Icarus and GOWIN_HOME primitives"]
 fn iverilog_reset_clears_state_and_recovers() {
     let input = legal(3, 511, [[255, 1], [128, 254]], true);
     let expected = golden(input);
@@ -741,8 +839,55 @@ fn coefficient_rtl_is_independent_of_counted_helpers() {
         assert!(!source.contains(forbidden), "RTL references {forbidden}");
     }
     // The emulator's public allocation is unchanged by this leaf.
-    assert_eq!(ALLOCATION.numeric_ff_bits, 315);
-    assert_eq!(ALLOCATION.metadata_bits, 99 * COHORT_CAPACITY);
-    assert_eq!(ALLOCATION.ready_bits, 171 * READY_CAPACITY);
+    assert_eq!(ALLOCATION.numeric_ff_bits, NUMERIC_BITS);
+    assert_eq!(ALLOCATION.metadata_bits, 0);
+    assert_eq!(ALLOCATION.ready_bits, 144);
+    assert_eq!(ALLOCATION.ready_sdp4_cells, 0);
+    assert_eq!(ALLOCATION.ready_ram16_bits, 0);
     let _ = Field::Nearest;
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn gowin_iverilog_matches_emu_every_edge() {
+    let (edges, commits) = replay();
+    assert_eq!(commits.len(), stream().len());
+    let dir = out_dir();
+    compile_and_run(
+        &dir,
+        "coefficient_gowin",
+        &format!("`define GPU_V2_GOWIN_DSP\n{}", coefficient::verilog()),
+        &testbench(&edges),
+    );
+}
+
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME vendor primitive library"]
+fn selected_operand_mux_boundary_lanes_match_both_backends() {
+    let mut inputs = Vec::new();
+    let fractions = [0, 1, 127, 128, 254, 255];
+    for parent in [0, 1, 255, 256, 510, 511] {
+        for u in fractions {
+            for v in fractions {
+                inputs.push(legal(
+                    inputs.len(),
+                    parent,
+                    [[u, v], [255 - v, 255 - u]],
+                    false,
+                ));
+            }
+        }
+    }
+    for u in fractions {
+        inputs.push(legal(inputs.len(), 511, [[u, 255 - u], [255 - u, u]], true));
+    }
+    assert_eq!(inputs.len(), 222);
+    let (edges, commits) = replay_inputs(inputs);
+    assert_eq!(commits.len(), 222);
+    compile_and_run(
+        &out_dir(),
+        "coefficient_operand_boundaries",
+        coefficient::verilog(),
+        &testbench(&edges),
+    );
 }

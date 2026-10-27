@@ -1,7 +1,8 @@
 `timescale 1ns / 1ps
-// CL2 timing oracle using the published 18 ns RP/RCD reference.
+// CL2/CL3 timing oracle; default CL2 keeps the published 18 ns RP/RCD reference.
 // Behavioral pin model, not an exact model of the embedded memory die.
 module LabPinModel #(
+    parameter CAS_LATENCY = 2,
     parameter TAC = 6.0,
     parameter TOH = 2.0,
     parameter THZ = 0,
@@ -70,8 +71,8 @@ module LabPinModel #(
     end
     always @(posedge sclk) begin
         cycle = cycle + 1;
-        if (mode_loaded && $realtime - last_edge < 9.999)
-            $fatal(1, "CL2 device tCK2 minimum 10ns violated");
+        if (mode_loaded && $realtime - last_edge < (CAS_LATENCY == 2 ? 9.999 : 6.999))
+            $fatal(1, "device CAS-dependent tCK minimum violated");
         last_edge = $realtime;
         // Controller reset starts a fresh initialization/refresh coverage epoch.
         // The memory array and bank state remain independent until real PRE commands.
@@ -135,7 +136,7 @@ module LabPinModel #(
                     refreshes = refreshes + 1;
                 end
                 0: begin
-                    if (a != 11'h027) $fatal(1, "Unexpected mode %h", a);
+                    if (a != CAS_LATENCY*16+7) $fatal(1, "Unexpected mode %h", a);
                     last_mode   = cycle;
                     mode_loaded = 1;
                 end
@@ -169,10 +170,10 @@ module LabPinModel #(
                 push_addr = {burst_bank, rows[burst_bank], col};
                 col = col + 1'b1;
             end
-            // CL2 launches each word after one intervening rising edge plus tAC.
+            // CL2/CL3 launch after one/two intervening rising edges plus tAC.
             // Device tAC is independent of the controller's capture phase.
-            if (queue_valid[0]) begin
-                location = queue_addr[0];
+            if (queue_valid[CAS_LATENCY-2]) begin
+                location = queue_addr[CAS_LATENCY-2];
                 next_dq  = (marked[location] === 1'b1) ? mem[location] : 32'hbad0bad0;
                 // Old data is guaranteed only through tOH, not until max tAC.
                 // Poison the unspecified transition window to expose false timing passes.

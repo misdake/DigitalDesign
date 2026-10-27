@@ -125,7 +125,13 @@ pub enum Strategy {
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LaneKind {
-    LogicCone { shape: String, width: u32 },
+    LogicCone {
+        shape: String,
+        width: u32,
+    },
+    /// Certified h9 partial product reduction mapped to one combinational 9x9
+    /// plus fabric round/sub/gate, captured together after one enabled edge.
+    H9Tail,
     SmallMultiply,
     LargeMultiply,
     PairMultiplyAdd,
@@ -213,7 +219,7 @@ pub(super) fn kind(report: &FrameReport, event: usize) -> Result<Option<LaneKind
             } else {
                 Some(match report.memories[m].name.as_str() {
                     "SQ" | "RSQRT" | "RSQRT_Q13" | "SQRT" => LaneKind::NormalizeRead,
-                    "POWER" | "POWER_MIDPOINT_Q15" => LaneKind::PowerRead,
+                    "POWER" | "POWER_MIDPOINT_Q15" | "POWER_H9" => LaneKind::PowerRead,
                     "POWER_CONTEXT" => LaneKind::ContextRead,
                     _ => return Err("unknown lighting store".into()),
                 })
@@ -235,7 +241,7 @@ impl Hardware {
             &[
                 (
                     DspMode::Multiply9,
-                    self.small_multiply,
+                    self.small_multiply + usize::from(self.kernel.h9_tail_dsp),
                     self.multiply_latency,
                     1,
                 ),
@@ -357,6 +363,7 @@ impl Hardware {
                     self.cone_latency
                 },
             ),
+            LaneKind::H9Tail => (1, 1),
             LaneKind::SmallMultiply => (self.small_multiply, self.multiply_latency),
             LaneKind::LargeMultiply => (self.large_multiply, self.multiply_latency),
             LaneKind::PairMultiplyAdd => (self.paired_macros, self.paired_latency),

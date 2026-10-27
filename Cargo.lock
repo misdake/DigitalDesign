@@ -182,8 +182,10 @@ dependencies = [
  "digital-design-hardware-common",
  "digital-design-hardware-gowin",
  "digital-design-ip-common",
+ "gpu-v2",
  "minifb",
  "rcc",
+ "serde_json",
 ]
 
 [[package]]

@@ -25,11 +25,11 @@
 // reference comparison.
 
 module tb;
-    localparam integer STIM       = __STIM__;
-    localparam integer BYTES      = __BYTES__;
-    localparam integer MAXC       = __MAXC__;
-    localparam integer FAIL_READ  = __FAIL_READ__;
-    localparam integer FAIL_WRITE = __FAIL_WRITE__;
+    // Compile once per geometry, then run each original case with independent input files.
+    localparam integer STIM_CAP = 512, BYTES_CAP = __BYTES_CAP__, COMMIT_CAP = 64;
+    integer STIM=0, BYTES=0, MAXC=0, FAIL_READ=0, FAIL_WRITE=0;
+    integer cfg_color=0, cfg_depth=0, cfg_width=0, cfg_height=0;
+    integer cfg_ce=0, cfg_stall=0, cfg_accept_read=0, cfg_watch=0;
 
     reg clk = 0;
     always #5 clk = ~clk;
@@ -38,9 +38,9 @@ module tb;
     integer cyc = 0;
     always @(posedge clk) cyc <= cyc + 1;
 
-    reg [63:0] stim [0:STIM-1];
-    reg [7:0]  mem  [0:BYTES-1];
-    reg [31:0] commits [0:MAXC-1];
+    reg [63:0] stim [0:STIM_CAP-1];
+    reg [7:0]  mem  [0:BYTES_CAP-1];
+    reg [31:0] commits [0:COMMIT_CAP-1];
 
     integer si;
     integer ci;
@@ -86,14 +86,14 @@ module tb;
     wire        mem_complete_ok;
 
     framebuffer_cache #(
-        .COLOR_BASE(__COLOR__),
+        .COLOR_BASE(0),
         .DEPTH_BASE(__DEPTH__),
         .WIDTH(__WIDTH__),
         .HEIGHT(__HEIGHT__)
     ) dut (
         .clk(clk),
         .reset(reset),
-        .ce(__CE__ == 0 ? 1'b1 : (cyc % __CE__ != 0)),
+        .ce(cfg_ce == 0 ? 1'b1 : (cyc % cfg_ce != 0)),
         .row_valid(row_valid),
         .row_x(row_x),
         .row_y(row_y),
@@ -149,7 +149,7 @@ module tb;
     assign mem_req_ready = (mstate == MIDLE) && (stallreq == 2'd0);
     assign mem_write_ready = (mstate == MWRITE && stallbeat == 3'd0)
         || (mstate == MIDLE && mem_req_valid && mem_req_write && stallreq == 2'd0);
-    wire admission_read = __READ_ON_ACCEPT__ && mstate == MIDLE
+    wire admission_read = cfg_accept_read && mstate == MIDLE
         && mem_req_valid && mem_req_ready && !mem_req_write;
     assign mem_read_valid = (mstate == MREAD) || admission_read;
     // Read terminal success coincides with the last read beat; the write ACK is
@@ -197,7 +197,7 @@ module tb;
                 pend_addr <= mem_req_addr;
                 pend_write <= mem_req_write;
             end
-            if (__STALL__ && mstate == MIDLE && !mem_req_valid) stallreq <= 2'd2;
+            if (cfg_stall && mstate == MIDLE && !mem_req_valid) stallreq <= 2'd2;
             else if (stallreq != 2'd0) stallreq <= stallreq - 2'd1;
 
             if (mstate == MWRITE) begin
@@ -217,7 +217,7 @@ module tb;
                 end else begin
                     held_valid <= 1'b0;
                 end
-                if (__STALL__ && stallbeat == 3'd0) stallbeat <= 3'd2;
+                if (cfg_stall && stallbeat == 3'd0) stallbeat <= 3'd2;
                 else if (stallbeat != 3'd0) stallbeat <= stallbeat - 3'd1;
             end
 
@@ -309,8 +309,8 @@ module tb;
             end
             if (idle || done) begin
                 done <= 1'b1;
-                $writememh("cache_out.hex", mem);
-                $writememh("commits.hex", commits);
+                $writememh("cache_out.hex", mem, 0, BYTES-1);
+                $writememh("commits.hex", commits, 0, MAXC-1);
                 $display("PASS cache fault=1 commits=%0d", ci);
                 $finish;
             end
@@ -324,8 +324,8 @@ module tb;
             if (flush_complete) begin
                 done <= 1'b1;
                 flush_request <= 1'b0;
-                $writememh("cache_out.hex", mem);
-                $writememh("commits.hex", commits);
+                $writememh("cache_out.hex", mem, 0, BYTES-1);
+                $writememh("commits.hex", commits, 0, MAXC-1);
                 $display("PASS cache fault=%b commits=%0d", fault, ci);
                 $finish;
             end
@@ -333,8 +333,23 @@ module tb;
     end
 
     initial begin
-        $readmemh("rows.hex", stim);
-        $readmemh("mem.hex", mem);
+        if (!$value$plusargs("STIM=%d", STIM)) $fatal(1, "missing STIM");
+        if (!$value$plusargs("BYTES=%d", BYTES)) $fatal(1, "missing BYTES");
+        if (!$value$plusargs("MAXC=%d", MAXC)) $fatal(1, "missing MAXC");
+        if (!$value$plusargs("FAIL_READ=%d", FAIL_READ)) $fatal(1, "missing FAIL_READ");
+        if (!$value$plusargs("FAIL_WRITE=%d", FAIL_WRITE)) $fatal(1, "missing FAIL_WRITE");
+        if (!$value$plusargs("COLOR=%d", cfg_color)) $fatal(1, "missing COLOR");
+        if (!$value$plusargs("DEPTH=%d", cfg_depth)) $fatal(1, "missing DEPTH");
+        if (!$value$plusargs("WIDTH=%d", cfg_width)) $fatal(1, "missing WIDTH");
+        if (!$value$plusargs("HEIGHT=%d", cfg_height)) $fatal(1, "missing HEIGHT");
+        if (!$value$plusargs("CE=%d", cfg_ce)) $fatal(1, "missing CE");
+        if (!$value$plusargs("STALL=%d", cfg_stall)) $fatal(1, "missing STALL");
+        if (!$value$plusargs("READ_ON_ACCEPT=%d", cfg_accept_read)) $fatal(1, "missing READ_ON_ACCEPT");
+        if (!$value$plusargs("WATCH=%d", cfg_watch)) $fatal(1, "missing WATCH");
+        if (cfg_color!=0 || cfg_depth!=__DEPTH__ || cfg_width!=__WIDTH__ || cfg_height!=__HEIGHT__) $fatal(1, "geometry differs from compiled DUT");
+        if (STIM<1 || STIM>STIM_CAP || BYTES<1 || BYTES>BYTES_CAP || MAXC<1 || MAXC>COMMIT_CAP || cfg_watch<1) $fatal(1, "case exceeds bounded replay capacity");
+        $readmemh("rows.hex", stim, 0, STIM-1);
+        $readmemh("mem.hex", mem, 0, BYTES-1);
         for (ci = 0; ci < MAXC; ci = ci + 1) commits[ci] = 32'd0;
         cur = stim[0];
         repeat (4) @(posedge clk);
@@ -343,9 +358,10 @@ module tb;
 
     // Finite watchdog: no unbounded simulation.
     initial begin
-        repeat (__WATCH__) @(posedge clk);
-        $writememh("cache_out.hex", mem);
-        $writememh("commits.hex", commits);
+        #1; // Configuration plusargs are installed at time zero.
+        repeat (cfg_watch) @(posedge clk);
+        $writememh("cache_out.hex", mem, 0, BYTES-1);
+        $writememh("commits.hex", commits, 0, MAXC-1);
         $display("FAIL watchdog fault=%b flush=%b", fault, flush_complete);
         $finish;
     end

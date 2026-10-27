@@ -192,6 +192,21 @@ initial begin
     check_alu(32'hFFFFFFFF, 32'h00000000, 4'hB);
     check_alu(32'hFFFFFFFF, 32'hFFFFFFFE, 4'hB);
 
+    // Equality must see every subtraction bit, including carries across the
+    // fractional/integer boundary and the signed wrap boundary. Check CMP and
+    // its MIN/MAX consumers against the independent signed reference above.
+    for (i = 0; i < 32; i = i + 1) begin
+        ra = 32'h00000001 << i;
+        check_alu(ra, ra, 4'hB);
+        check_alu(ra, ra ^ 32'h80000000, 4'hB);
+        check_alu(ra - 1, ra, 4'hB);
+        check_alu(ra, ra - 1, 4'hB);
+        check_alu(ra, ra, 4'h3);
+        check_alu(ra, ra, 4'h4);
+        check_alu(ra, ra - 1, 4'h3);
+        check_alu(ra - 1, ra, 4'h4);
+    end
+
     // Directed MOV.
     check_alu(32'h80000000, 32'h00000000, 4'hF);
     check_alu(32'hDEADBEEF, 32'h00000000, 4'hF);

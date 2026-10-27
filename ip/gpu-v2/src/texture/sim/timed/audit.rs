@@ -83,7 +83,10 @@ pub fn audit(report: &Report) -> Result<(), Error> {
             submission: 0,
         };
         let got = if report.hardware.preparation == PreparationMode::BoundStages {
-            if report.hardware.packet_storage == PacketStorage::Pool64 {
+            if matches!(
+                report.hardware.packet_storage,
+                PacketStorage::Pool64 | PacketStorage::Pool64Group48
+            ) {
                 replay.step_pooled(
                     &mut memory,
                     offered,

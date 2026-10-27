@@ -7,6 +7,7 @@ pub mod framebuffer;
 pub mod frontend;
 pub mod geometry;
 pub mod lighting;
+pub mod material_color;
 pub mod memory;
 pub mod scratchpad;
 pub mod system;

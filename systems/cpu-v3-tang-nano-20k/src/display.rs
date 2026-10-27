@@ -5,9 +5,7 @@ use crate::{
     FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH,
 };
 
-/// One fitted HDMI output mode. The scanout RTL, the host renderer, and the
-/// board video PLL all derive from a single [`DisplayConfig`]; exactly one
-/// mode is compiled in at a time.
+/// Fixed HDMI timing shared by the scanout RTL, host renderer and board PLL.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DisplayConfig {
     /// Short mode name used in diagnostics and preview windows.
@@ -38,25 +36,6 @@ pub struct DisplayConfig {
     pub pixel_clock_hz: u64,
 }
 
-pub const VGA_720P_3X: DisplayConfig = DisplayConfig {
-    name: "1280x720p60 3x",
-    hdmi_width: 1280,
-    hdmi_height: 720,
-    scale: 3,
-    side_border: 40,
-    memory_cycles_per_source_line: memory_cycles_per_source_line(1650, 3, 74_250_000),
-    h_total: 1650,
-    h_sync_end: 40,
-    h_active_start: 260,
-    h_active_end: 1540,
-    v_total: 750,
-    v_sync_end: 5,
-    v_active_start: 25,
-    v_active_end: 745,
-    vertical_repeat_last: 2,
-    pixel_clock_hz: 74_250_000,
-};
-
 pub const VGA_800X480_2X: DisplayConfig = DisplayConfig {
     name: "800x480@60 2x",
     hdmi_width: 800,
@@ -76,18 +55,8 @@ pub const VGA_800X480_2X: DisplayConfig = DisplayConfig {
     pixel_clock_hz: 33_300_000,
 };
 
-pub const DISPLAY_MODES: [DisplayConfig; 2] = [VGA_720P_3X, VGA_800X480_2X];
-
-/// The compiled-in display mode. `display-2x` (also the default) and
-/// `display-3x` select the scanout schedule, host renderer and board PLL
-/// together; both features cannot be enabled in the same build.
-#[cfg(all(feature = "display-2x", feature = "display-3x"))]
-compile_error!("display-2x and display-3x are mutually exclusive");
-
-#[cfg(not(feature = "display-3x"))]
+/// The fixed 800x480, 2x scanout used by RTL, host rendering and the board PLL.
 pub const ACTIVE_DISPLAY_CONFIG: DisplayConfig = VGA_800X480_2X;
-#[cfg(feature = "display-3x")]
-pub const ACTIVE_DISPLAY_CONFIG: DisplayConfig = VGA_720P_3X;
 
 pub const HDMI_WIDTH: usize = ACTIVE_DISPLAY_CONFIG.hdmi_width;
 pub const HDMI_HEIGHT: usize = ACTIVE_DISPLAY_CONFIG.hdmi_height;
@@ -319,8 +288,9 @@ mod tests {
     }
 
     #[test]
-    fn every_mode_geometry_is_centered_and_timing_consistent() {
-        for config in DISPLAY_MODES {
+    fn fixed_geometry_and_timing_are_consistent() {
+        {
+            let config = ACTIVE_DISPLAY_CONFIG;
             let framebuffer_width = FRAMEBUFFER_WIDTH as usize;
             let framebuffer_height = FRAMEBUFFER_HEIGHT as usize;
             assert_eq!(
@@ -359,11 +329,9 @@ mod tests {
                 config.name
             );
         }
-        assert_eq!(VGA_720P_3X.pixel_clock_hz, 74_250_000);
         assert_eq!(VGA_800X480_2X.pixel_clock_hz, 33_300_000);
         assert_eq!(VGA_800X480_2X.h_total, 1056);
         assert_eq!(VGA_800X480_2X.v_total, 525);
-        assert_eq!(VGA_720P_3X.memory_cycles_per_source_line, 3600);
         assert_eq!(VGA_800X480_2X.memory_cycles_per_source_line, 3424);
     }
 
@@ -377,13 +345,7 @@ mod tests {
         let frame = render_frame_at_config(&config, &machine, FRAMEBUFFER_A_BASE_WORD);
         assert_eq!(frame.len(), config.hdmi_width * config.hdmi_height);
 
-        // Black side borders on both horizontal edges of every scaled row.
-        for y in 0..config.hdmi_height {
-            for x in 0..config.side_border {
-                assert_eq!(frame[y * config.hdmi_width + x], 0);
-                assert_eq!(frame[y * config.hdmi_width + config.hdmi_width - 1 - x], 0);
-            }
-        }
+        assert_eq!(config.side_border, 0);
         // Red and green framebuffer pixels land at the scaled column offsets.
         let red = frame[config.hdmi_width + config.side_border];
         let green = frame[config.hdmi_width + config.side_border + config.scale];

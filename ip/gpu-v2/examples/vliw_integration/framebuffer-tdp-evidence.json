@@ -1,0 +1,336 @@
+{
+  "status": "adopted",
+  "base_commit": "98e332cfadc6dbe22ba8f262e657a215b2d8a95c",
+  "scope": {
+    "physical_fit": "GPU three transaction ports, excluding MC/CPU/display; includes the matched registered probe",
+    "scene_timing": "portable GPU plus actual main-repository MC, arbiter, bridge and SDRAM pin model; first descriptor through final flush; ROM setup and preclear excluded",
+    "native": "cache/ROP and pool component qualification only; not a complete native GPU replay",
+    "board_test": false
+  },
+  "source_hash_format": "SHA256 after CRLF to LF normalization; immutable frontend raw hashes are also recorded separately",
+  "selected_source": {
+    "ip/gpu-v2/src/bin/gpu-v2-vliw-export.rs": "bb1e3064bde5f59fe895d0bff6a658f5a45977ec2d65ab77e036200e7c2a6ba6",
+    "ip/gpu-v2/src/framebuffer/ports.rs": "18a336178863b83a1d4cffebf5c8e53480741066b035af6d0d4dbd7c6140d2cf",
+    "ip/gpu-v2/src/frontend/vliw.rs": "c2f560c6a6e3bd236588fd64aa765fbef914321bfbeca96f38250bdf2c2e4c86",
+    "ip/gpu-v2/src/frontend/vliw/compute.v": "4466f3c704d8f8de893bd424d5256ceaa056e2b39461d49c2c134780e3103a00",
+    "ip/gpu-v2/src/frontend/vliw/frontend.v": "4c05858db1579f7d1b6b2fb16798d81a4e17e99be0a4860c5142063084e9d9c7",
+    "ip/gpu-v2/src/frontend/vliw/input_storage.v": "8340b2212e21a8fde90af48f9eea9134829693d874704d7173a9364e22f4e5f2",
+    "ip/gpu-v2/src/frontend/vliw/input_t_work.v": "fd5cddc482649bd2ea6779f6d6628c6d9e6daac057a7b885eafcf3deb673840c",
+    "ip/gpu-v2/src/frontend/vliw/interpolator_stream.v": "607101d702e19222adcff70662057e863dab4b594bae12f3ac37298abd6b1fad",
+    "ip/gpu-v2/src/frontend/vliw/lod.v": "1aef91629b01c6e39113ca251fef18fa527ae9c3361af2b234dc660283ea20e7",
+    "ip/gpu-v2/src/frontend/vliw/meshlet.v": "41d5ffe299071f9f852be85821e5a636d8c61c8d018195ad8fc49ca1ef7133a6",
+    "ip/gpu-v2/src/frontend/vliw/pipeline_stream.v": "6f14db1132d25f8c27e00b04b0bf66b491b638aad077a7215b5ed8aa3c207603",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "7ac5d61cc06a3e13b33a0cff75e818b4c093586a1c4c1c37b4c0f7f707184c8a",
+    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "6a0bd978eb38478bc8996fdac8ba26e177c64587a24c3a028f580fba08bdeab4",
+    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "9df699eaf2e7f60f23a1e976cb436d09877d99a2fdd6c7357a348d43c6f162bd",
+    "ip/gpu-v2/src/frontend/vliw/primitives/dsp.v": "322fe8718aff4f3323c9d8764b713c91e4b7f33b1769d797660bf39dc4770970",
+    "ip/gpu-v2/src/frontend/vliw/primitives/ram.v": "c7e04efedccc44833b927ed9858131b0949683660a0e8ced0b3b94137e8237eb",
+    "ip/gpu-v2/src/frontend/vliw/primitives/window.v": "a9e7de48c1ea6599f71dfcad1a4c03b1021116e9fcf55031d931231953a1c873",
+    "ip/gpu-v2/src/frontend/vliw/raster.v": "1c0eb58a23e8981f4a9b683803dbd7583edeadb48fd041c2027aaf12a61985ad",
+    "ip/gpu-v2/src/frontend/vliw/raster_program.v": "02139d03b924e12baaacfa5ca102458f5505b46aff4a39ce8782416c7204ea52",
+    "ip/gpu-v2/src/frontend/vliw/raster_storage.v": "428ef1e71bc04b2d89317294af3aaa90295513f54c073fd2534a1ee754bd1bc1",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_fields.vh": "c31ba52dfb929d373650a24e8b062e939a85a6bb1cb77e9f4f8fd9428bb79432",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_rom.v": "9b1813f10d181477756aa0b851a3671860221b4c36f7173f8b1ccfc06055cc43",
+    "ip/gpu-v2/src/frontend/vliw/vertex/mac.v": "4fb22768c24f05996d006f4145964afe901cc47cc23c03ae38e2b4105b9b8753",
+    "ip/gpu-v2/src/frontend/vliw/vertex/rf.v": "e8b038cba9dc2c1319535bd6d759eac81793e44305e65f7c33cbc410a39e154a",
+    "ip/gpu-v2/src/frontend/vliw/vertex/storage.v": "a078892f2a6f9f6abfd7fb0a97ccdc8f4d8456889cf8ca0e6cc64441bd82d36d",
+    "ip/gpu-v2/src/frontend/vliw_dma.rs": "9aa3ebf34105a617e4c29b083b5811e3ce17cab2ee601c0f068e66c0435b32dc",
+    "ip/gpu-v2/src/frontend/vliw_dma.v": "c7e1e57908f5b8356f640ebec2d67c5a325e340df26008bfe01e15e1d7502a79",
+    "ip/gpu-v2/src/lighting/ports.rs": "3ec6c311d8e1ab05ba084f513e2f42451d5c9a0684ff2284efd2306b7deea402",
+    "ip/gpu-v2/src/system/pixel/direct_lod.rs": "2ef916fcb8fe3f707201b44b82e0e47728c3bf402b1a8eb73813f9c1715e507c",
+    "ip/gpu-v2/src/system/pixel/framebuffer_closed_bank.rs": "91f28aca3d93abf43e725038bfa6d2993345a600f98ab6d7c44eb2ed39afc080",
+    "ip/gpu-v2/src/system/pixel/framebuffer_commit.rs": "cb568da5410abf6ec6c95a2d54a168abc1c8e94cee7bb4426205efc416fe9570",
+    "ip/gpu-v2/src/system/pixel/framebuffer_native.rs": "bcfb0f99a1946bfd0746df6fa85b47a4d4323e59a1084a616bd1541d0cb851ce",
+    "ip/gpu-v2/src/system/pixel/framebuffer_overlap.rs": "e5369f3c0727f7d78f590d15572b13511be7755fc6fbd37bf57c6999a6af22ee",
+    "ip/gpu-v2/src/system/pixel/framebuffer_prefix.rs": "1ba71739158018f2379e0472bc0b2fb50583adba438b1c5ad9e2906248e9007a",
+    "ip/gpu-v2/src/system/pixel/framebuffer_prefix_control.v": "5ca0505c64d8a2c6e70fd948a0a7756bc1a7197b1d0c7a22866ee7dca7f77dbe",
+    "ip/gpu-v2/src/system/pixel/framebuffer_quantization.rs": "059c3a064f91db41da50b5af203e7c226e27700e852a7ab1a1c2a23d4a1e63ac",
+    "ip/gpu-v2/src/system/pixel/framebuffer_sink.rs": "ff8724e5df921911350203905086336601a6732ba2c132b2dadaea2d59f935dd",
+    "ip/gpu-v2/src/system/pixel/framebuffer_sink.v": "ae20c030062cf3e2dbe7ca885d98f590e7fa831c27a3a2dde2388c73dbd4e974",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp.rs": "2456fe902a168ca60e076e9c9dbdcf69afe8d672c6129e858c8b6ab34b39e810",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp.v": "3d2c0d40cc47e9ca1274dcd30fafb599948dbf2fd5a90d8f6af9d612fed9656c",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_bank.v": "28d63c3f5c2a577d80113a0571f32518e3d59cda63f3898728d75541327a94d7",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_cache.v": "3a7f562868585790dd2cc994ccd8258a81f92615188fab1f8f8ac302667b5f08",
+    "ip/gpu-v2/src/system/pixel/framebuffer_tdp_leaf.v": "5fe9cc46f0e187aee1a777b0c2b4e8813846520ea8f25e8d780440b4ee9308a9",
+    "ip/gpu-v2/src/system/pixel/lighting_consumer.rs": "e64e69302ad495fb84b943b5016c157eef5518cbaecf3d71c9584fc46286c7c6",
+    "ip/gpu-v2/src/system/pixel/lighting_consumer.v": "9d6e22306647f21e34bcc9fbef6ab2a64a99f9f428aa15a9c16cb9a5c5f5a4af",
+    "ip/gpu-v2/src/system/pixel/postquad.rs": "7dd7434c74f705e9d5241ff472d0e0859707ee1fd5ddd96e36488e27639d4e3c",
+    "ip/gpu-v2/src/system/pixel/postquad_cadence.rs": "b78b1f363c02775f5ecc67567d4677189b570b001bbfaa74c958ea4add793e39",
+    "ip/gpu-v2/src/system/pixel/postquad_closed_basic.rs": "ea2256f690a4071b5c8a2b4e2db12038876fe6ff080ef99a190bd7c9cefdb013",
+    "ip/gpu-v2/src/system/pixel/postquad_color_contract.rs": "8e8b9d89d375b4baf1e20c72309942deb21b9c390555718c3e5d355bd2f0de4d",
+    "ip/gpu-v2/src/system/pixel/postquad_color_precision.rs": "3f215847931cb80ac5065878f9cf1c1cb64196bfa2ff2cac1f9ba63de88533f8",
+    "ip/gpu-v2/src/system/pixel/postquad_descriptor.rs": "a774dacd6c6a26e0c8d321e8aed8925656e443867f188e8b666650b93cc47d3c",
+    "ip/gpu-v2/src/system/pixel/postquad_filter_precision.rs": "621b6f40dcc89a3b73fcbfce82f0ad97be00a294ebad0b1498fe3a361d42ce69",
+    "ip/gpu-v2/src/system/pixel/postquad_framebuffer_address.rs": "24d574898e7a84e6c29780c4f7d82b24da9815b4e60291c2b02198e2a39a54df",
+    "ip/gpu-v2/src/system/pixel/postquad_framebuffer_contract.rs": "cccd1f7ced2423202cfbdb2603a417094161412b0a788b8c5b16ae6accb4fdea",
+    "ip/gpu-v2/src/system/pixel/postquad_framebuffer_data.rs": "32b154336a3aedf420901d4119e5395c7522b8d1e120a414d4c63d5885eb6d31",
+    "ip/gpu-v2/src/system/pixel/postquad_group48.rs": "287fae718cfe3b76015022829ec4786c6c888ceeb01e7cc2b3caa4a5a56665a8",
+    "ip/gpu-v2/src/system/pixel/postquad_h9_control.rs": "66cd42cad51eee21447922f8580d3a8bff5230c31bfcb34419c108de5aab516d",
+    "ip/gpu-v2/src/system/pixel/postquad_ii4.rs": "276a0898733eea0f93a4681439f53b5575e7e96c4a196593a98add54ffc63b0b",
+    "ip/gpu-v2/src/system/pixel/postquad_ii4_color.v": "70440c420f8e5fcca4bc00d94cd4fdfdff125ec506d226e250ab2c40eda258d3",
+    "ip/gpu-v2/src/system/pixel/postquad_maintenance_planes.rs": "d5a1f20c0f7a6c20405da45f58059877d0cc3014afd20a20ac5375808288c71e",
+    "ip/gpu-v2/src/system/pixel/postquad_proposal.rs": "d2e0179a4699ca21e8b6b558e338a293eda59a5f4c875145f4808c451de8f258",
+    "ip/gpu-v2/src/system/pixel/postquad_quad_authority.rs": "70735fdd58f03ae10118e1d20282f900e60597afa758acf3d5351ad62a42c74d",
+    "ip/gpu-v2/src/system/pixel/postquad_rop_precision.rs": "17d899e119c33f9abe4e9747d9d8d50b8d76d559628667d0894d29e4989dcdbb",
+    "ip/gpu-v2/src/system/pixel/postquad_stream_context.rs": "c1066d64f6d2524f6c89084c633f7d049402b2e0a2a308a5c13367f495eec2de",
+    "ip/gpu-v2/src/system/pixel/postquad_stream_onehot.rs": "8dfb40df5862dd1cf9864ca7a5d5e467e05dc37dffb4c0ddf7492050610648f3",
+    "ip/gpu-v2/src/system/pixel/postquad_texture_bank_carry.rs": "cca4f8e797877eee07fb94393c39376908fa83b4e15b52d14f1b9ac2ad7069d5",
+    "ip/gpu-v2/src/system/pixel/postquad_unique_group34.rs": "b705e95a5a7bc464fbf25ff2805b0bb3d8eaf2b84c152cff245318971e8d09a3",
+    "ip/gpu-v2/src/system/pixel/postquad_unique_weights.rs": "04990f9fe512f66ebeb1a33c3f1b6a3623718e6b1d957445cb5ff28b1b7dc2a1",
+    "ip/gpu-v2/src/system/pixel/postquad_unique_weights_packet.v": "64a7142363bd0f5d4e9dba270ad31cad52122fb5658c05e22eac1114b61e0704",
+    "ip/gpu-v2/src/system/pixel/postquad_weight_order.rs": "2a31a344c0830107f496930ae98275cbefc4757e691eb30a7b091df82b45d244",
+    "ip/gpu-v2/src/system/pixel/vliw_backend.rs": "b35e2ac8f8cb3197021160a52a2d15225b92eb98d3cc4dceae06d0ffa091a460",
+    "ip/gpu-v2/src/system/pixel/vliw_backend.v": "c7e1f43f5925ad0dd75af867e075c81228766fe08b235a8c4731b140d62d11a2",
+    "ip/gpu-v2/src/system/pixel/vliw_backend_final.v": "4de1cb72adb1cea467768296dbc60752eb3ea3a04c9e0c86bf6bc278125b6a88",
+    "ip/gpu-v2/src/system/pixel/vliw_quad_pool.rs": "e486a8073e25130218bc3fa4c34e508fe88efc918def4835d690d146ec0cbfbc",
+    "ip/gpu-v2/src/system/pixel/vliw_quad_pool.v": "3e2e6e73cc4b993031e773180a8a17214854cc67df3743e4d76342893709fc82",
+    "ip/gpu-v2/src/system/vliw.rs": "ceedd79d6abe3e07a164bbc17824b3a09d6bcf6ed496770fea351ca6890de8e8",
+    "ip/gpu-v2/src/system/vliw.v": "4ec70449d1fff17d84d9d2c4c5809265d16759a8d4642df4a95b57e74ecbe1c4",
+    "ip/gpu-v2/src/system/vliw_memory.rs": "bf4cd807e3be2c67e6c7b64f1b7cf729941e7d0300e8fde1fa6b3c2ff68f4c9e",
+    "ip/gpu-v2/src/system/vliw_memory.v": "92abf8c451f2e17c73d3d8d472c73add8b0c0543325099f57b39d47539bf5a0a",
+    "ip/gpu-v2/src/system/vliw_sdram.rs": "256fc5ba16d47508ffd52368ee60003b77d4dbd47916407a49ff9dcb7e9224cf",
+    "ip/gpu-v2/src/system/vliw_sdram.v": "181ba016123d0212c391efb00e0557b15e20f97f7bcc61547b306fb9bad125bb",
+    "ip/gpu-v2/src/texture/ports.rs": "85aa8cf970d6ec3e9dced12fcd91ddc4fd545af16d7eaa754a64634539f1c5fc",
+    "ip/gpu-v2/src/texture/rtl/compact_leaves.rs": "5fbcbb70ab9e16e82a674f4539cfc7daa702441a85429f4fbef97fa688e6b056",
+    "ip/gpu-v2/src/texture/rtl/compact_membership.v": "bb19359e1cec2391086f1d4616b5dbf5626f2d7ff537604b199536e0e9a5c256",
+    "ip/gpu-v2/src/texture/rtl/direct_lod.rs": "1294463d3765616da2c80b9dfbf239a3fcacd2fcf450d13139a9492ca2bd2025",
+    "ip/gpu-v2/src/texture/rtl/direct_lod.v": "e3d83d976a88921c8673ab4cd7c369ebc6c75ac129aef4b25a083923f8c10220",
+    "ip/gpu-v2/src/texture/rtl/runtime_color.rs": "213314643f040586e92c88c6a4f4b16d1bbff47ec895458d0e089c8ebc4adefd",
+    "ip/gpu-v2/src/texture/rtl/runtime_color.v": "3eac4a3629fb2df07a574ca5f63e3333205ee666c6e50661d8d0efdcd822de35",
+    "ip/gpu-v2/src/texture/rtl/runtime_rows.rs": "2ec691c8e73fe3874d6a1fb3c09f8a4ca61f3b6f8065983f71a29862e07e7af3",
+    "ip/gpu-v2/src/texture/rtl/runtime_rows.v": "6c509e78d0319a406e409700d7d35165251a88e4997dadd657f4dcd654c8c1b1",
+    "ip/gpu-v2/src/texture/sim/staged/bound/runtime_rtl.rs": "2ba8e3edfba2f8ca2028798b8a67b951feb09deca40060c9fa67ff64f49ae273",
+    "ip/gpu-v2/src/texture/sim/staged/bound/runtime_rtl/membership_leaf.v": "0d416d8120c6ae1a5f5f93147491442f22a0e8540bcd7a123df0f7793331eabe"
+  },
+  "frontend_sha256_raw": {
+    "ip/gpu-v2/src/frontend/vliw.rs": "c2f560c6a6e3bd236588fd64aa765fbef914321bfbeca96f38250bdf2c2e4c86",
+    "ip/gpu-v2/src/frontend/vliw/compute.v": "5074080bbb5fa22573c9e455fdd90e19bfbecd2053f1f8ccf7554d278089c376",
+    "ip/gpu-v2/src/frontend/vliw/frontend.v": "e8e14161d7d582648eb2521c6fc779b59dea8049606e7ab0eff30798aca14662",
+    "ip/gpu-v2/src/frontend/vliw/input_storage.v": "8340b2212e21a8fde90af48f9eea9134829693d874704d7173a9364e22f4e5f2",
+    "ip/gpu-v2/src/frontend/vliw/input_t_work.v": "fd5cddc482649bd2ea6779f6d6628c6d9e6daac057a7b885eafcf3deb673840c",
+    "ip/gpu-v2/src/frontend/vliw/interpolator_stream.v": "301515983d5d7123aad7e08262b311b72540336665924aa50b0dbd6912102ba6",
+    "ip/gpu-v2/src/frontend/vliw/lod.v": "a6caed33cd7c87f656f089dd2bf8cb04e6c0cdb35f83fe034813733afe80adf7",
+    "ip/gpu-v2/src/frontend/vliw/meshlet.v": "cc46bc679204c5e16219269282fb98a9aa5ee8e2de6fc26457efc4089fee63b4",
+    "ip/gpu-v2/src/frontend/vliw/pipeline_stream.v": "836e821515ff1db7e0a4585b42c9e84e029c77c3bcd0b4e0927794b08040715c",
+    "ip/gpu-v2/src/frontend/vliw/prepare.v": "a13d9e8ea895196bbb1860c68fe095f07b9d432a4a94d681d6fcad5da5a517f3",
+    "ip/gpu-v2/src/frontend/vliw/prepare_core.v": "6a0bd978eb38478bc8996fdac8ba26e177c64587a24c3a028f580fba08bdeab4",
+    "ip/gpu-v2/src/frontend/vliw/prepare_program.v": "890daed9dfaa78072e264d19121a413f8e8d46b1b2738c0811f42971b63f9ec8",
+    "ip/gpu-v2/src/frontend/vliw/primitives/dsp.v": "8169658113e9450fa3292c1cab8d467b5711cbfeed893d1e0b68a42a878f4969",
+    "ip/gpu-v2/src/frontend/vliw/primitives/ram.v": "c7e04efedccc44833b927ed9858131b0949683660a0e8ced0b3b94137e8237eb",
+    "ip/gpu-v2/src/frontend/vliw/primitives/window.v": "a9e7de48c1ea6599f71dfcad1a4c03b1021116e9fcf55031d931231953a1c873",
+    "ip/gpu-v2/src/frontend/vliw/raster.v": "f78f2ca7491f0714dec323287b2f2c0b8ca16db384a3d6cb22633ef482eeca1a",
+    "ip/gpu-v2/src/frontend/vliw/raster_program.v": "394024f82dfa87dadc1c74dea6521cb44af1c8017fb291c8c0b0ce804c40946d",
+    "ip/gpu-v2/src/frontend/vliw/raster_storage.v": "8db784a79ef9d983bf54856b7e7889596d0c8f51541e62ab680af0cbf1036110",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_fields.vh": "6aa32e93f11b36e79a45103657755fede8c980db93f98a9ff594726968a8f1d2",
+    "ip/gpu-v2/src/frontend/vliw/vertex/control_rom.v": "50ea390dfbee32dcb12c18cc8db67ae17fbbbbda093ae9bbabdf92e61b9f8cbf",
+    "ip/gpu-v2/src/frontend/vliw/vertex/mac.v": "30efa61831c030194589a4275804e9511abf1ebb4fb7bdb08a8182d1954796b2",
+    "ip/gpu-v2/src/frontend/vliw/vertex/rf.v": "f27be4e65cfbf4839f734391aae0fa7ad51d6b66de821765787bec21a54c6cd1",
+    "ip/gpu-v2/src/frontend/vliw/vertex/storage.v": "b89f75df55d0ccc32a7fcbef204eb05e2d43a6040be296153fa06c5e4cace2d9"
+  },
+  "exports_sha256_raw": {
+    "portable": "15d3667cec222e5e23205a8603a7fe032fcecdc7d21be3a15a2fd63f5cd8a9d2",
+    "native": "4aca6419f4ce197a926e34eeb0b5f2c0ce4dcb47e242413ea58a0586c6262a9a"
+  },
+  "fit_source_sha256": "9b21f789ff6d7fd7aa12810861871d8ed756a92396b1585a8f6074f84c40db72",
+  "fit_wrapper_sha256": "0ab55c7bed1244ced43065aef2d260bd6899fd88d7e224fa0d428cbf4d439ed9",
+  "fixture": {
+    "max_n": 6,
+    "texture_base": 4096,
+    "color_base": 1048576,
+    "depth_base": 1310720,
+    "width": 400,
+    "height": 240
+  },
+  "fit_configuration": {
+    "device": "GW2AR-LV18QN88C8/I7",
+    "gowin": "1.9.11.03 Education",
+    "clock_MHz": 54,
+    "placement": 0,
+    "matched_probe": true
+  },
+  "fit": {
+    "baseline": {
+      "metrics": {
+        "logic": 12057,
+        "logic_ff": 5338.0,
+        "register": 5345,
+        "cls": 8333,
+        "bsram": 33.0,
+        "ssram": 217,
+        "fmax": 54.309,
+        "setup_violations": 0.0,
+        "hold_violations": 0.0,
+        "primitives": {
+          "MULT9X9": 24,
+          "MULT18X18": 10,
+          "MULTALU36X18": 3,
+          "MULTADDALU18X18": 3,
+          "ALU54D": 1
+        }
+      },
+      "dsp_macros": 18.0,
+      "DSP18_slots": 36,
+      "probe_inputs": 549,
+      "probe_outputs": 270,
+      "probe_FF": 555,
+      "report_sha256": "20d4536f6996caa3d5b5b5dfea65c4de65432fd6faf538b75879fcb97d3f7b33",
+      "timing_sha256": "dce93dac82088faa137a85726254be451b69af040ac7596cd011f3e3d7b7e0b5",
+      "receipt_sha256": "5efb5eebb9de0d33ecb5defd01d79a18ac03cb8bdfb4ab876fc5b0880dca9b5f"
+    },
+    "selected": {
+      "metrics": {
+        "logic": 12106,
+        "logic_ff": 5223.0,
+        "register": 5230,
+        "cls": 8267,
+        "bsram": 33.0,
+        "ssram": 212,
+        "fmax": 54.696,
+        "setup_violations": 0.0,
+        "hold_violations": 0.0,
+        "primitives": {
+          "MULT9X9": 24,
+          "MULT18X18": 10,
+          "MULTALU36X18": 3,
+          "MULTADDALU18X18": 3,
+          "ALU54D": 1
+        }
+      },
+      "dsp_macros": 18.0,
+      "DSP18_slots": 36,
+      "probe_inputs": 549,
+      "probe_outputs": 270,
+      "probe_FF": 555,
+      "report_sha256": "e7a45d6bd6267bb0b8e1ee88a83f59264c18eeba75a049b72915217ce0d192f5",
+      "timing_sha256": "0766c51a17455b9a060b0fb703da7647a778a168eb83a200fda581d247b7e808",
+      "receipt_sha256": "82b551c6f752808fff73a0d46ffa81711988236453e1776ef12045e8f1c875e5"
+    }
+  },
+  "scenes": [
+    {
+      "tag": "baseline-box-v1",
+      "cycles": 148372,
+      "Q": 6292,
+      "pixels": 24400,
+      "empty": 1,
+      "depth_reject": 0,
+      "read_requests": 1144,
+      "write_requests": 1144,
+      "AB_access": 0,
+      "demand_miss_entry_wait": 29600,
+      "memory_sha256": "02cce6e0a4741e7274a7aeb622e42b9b485c3b358e2a2a040fb9b2ffcf4efc63",
+      "receipt_sha256": "0d8e18a1e4d92fbf3052e4872428006df0820bbd0241c03b5ccf948a364fc22b"
+    },
+    {
+      "tag": "baseline-bunny-front-v1",
+      "cycles": 326276,
+      "Q": 3559,
+      "pixels": 7107,
+      "empty": 532,
+      "depth_reject": 354,
+      "read_requests": 936,
+      "write_requests": 816,
+      "AB_access": 0,
+      "demand_miss_entry_wait": 22635,
+      "memory_sha256": "7f3d0b18f968c4addfbc975b16360f7d358d5fbf0fdf0663cd30431592885e92",
+      "receipt_sha256": "392d7d4348b627c065d17bee3fa8a584cd4c71075390b8e5b44dbe806c4353b0"
+    },
+    {
+      "tag": "candidate-fixed-final-box-v2",
+      "cycles": 136552,
+      "Q": 6292,
+      "pixels": 24400,
+      "empty": 1,
+      "depth_reject": 0,
+      "read_requests": 1144,
+      "write_requests": 1144,
+      "AB_access": 5164,
+      "demand_miss_entry_wait": 23032,
+      "memory_sha256": "02cce6e0a4741e7274a7aeb622e42b9b485c3b358e2a2a040fb9b2ffcf4efc63",
+      "receipt_sha256": "9de1ab135e108e87f8a71b6331ee203cf29d08cd9b0ba9ff04fc186ca4bb2758"
+    },
+    {
+      "tag": "candidate-fixed-final-bunny-front-v2",
+      "cycles": 326194,
+      "Q": 3559,
+      "pixels": 7107,
+      "empty": 532,
+      "depth_reject": 354,
+      "read_requests": 936,
+      "write_requests": 816,
+      "AB_access": 538,
+      "demand_miss_entry_wait": 17854,
+      "memory_sha256": "7f3d0b18f968c4addfbc975b16360f7d358d5fbf0fdf0663cd30431592885e92",
+      "receipt_sha256": "d35fcf3d31fc540c2862f4315e0671e99f9b51f05db40da9a3900383133544c6"
+    }
+  ],
+  "local_qualification": [
+    {
+      "name": "fixed-static-dirty-race-v2",
+      "status": "pass",
+      "receipt_sha256": "c51a6e37e65dbf92b7828508113e4bba960b3c9e172df326c5f660f8e6c11520",
+      "models": [
+        {
+          "mode": "portable",
+          "dut_sha256": "516b0fc59074251bd720967481072dfbf5189879ca52b9db02956eedcc694ccc",
+          "trace_sha256": "42a222b9b4abe14cb087d9281181a9ee485e90e1d68869f6527867cad3017e01"
+        },
+        {
+          "mode": "native",
+          "dut_sha256": "2aff38e2e7140b992ec68f35f80ab854d6e4bcf2c5ad9939a6b0f9284f3b1f70",
+          "trace_sha256": "42a222b9b4abe14cb087d9281181a9ee485e90e1d68869f6527867cad3017e01"
+        }
+      ]
+    },
+    {
+      "name": "fixed-static-lifecycle-race-v2",
+      "status": "pass",
+      "receipt_sha256": "3fb69e5ebcae1eb8b93e3332c72cb61514bfe4df37888afb6449b4f80647b388",
+      "models": [
+        {
+          "mode": "portable",
+          "dut_sha256": "fd6b1de9a5ceb9930980127a7b693fff06a8b635c7bf281e593f8e810b0a3d36",
+          "trace_sha256": "3085d78cc146762050ac67552a27fa161fdfd2ba8b6bbd31ec2743bc9b19e3a3"
+        },
+        {
+          "mode": "native",
+          "dut_sha256": "55d227347d1ceb64f82511ae1443b32122c66b399155022aa7a6733e784bdebf",
+          "trace_sha256": "3085d78cc146762050ac67552a27fa161fdfd2ba8b6bbd31ec2743bc9b19e3a3"
+        }
+      ]
+    }
+  ],
+  "regression": {
+    "workspace_tests_passed": 1521,
+    "cpu_cosim_passed": 37,
+    "cpu_cosim_note": "one pre-existing experiment required SHARED_WIDE_EVIDENCE; passed after setting its output directory",
+    "system_cosim_passed": 2,
+    "clippy": "passed with existing warnings",
+    "vertex_and_precision_unchanged": true
+  },
+  "qualification_identity": {
+    "independent_audit_sha256": "b6a8fa9330018cf3d9ac5637786e4d5acc9cac21a1a0b504b5d4f264b7c55f68",
+    "final_audit_sha256": "b3a1b6c28f19f81a7e239f2a9eb1a053b605b48bf0d4a29c74e7d862fca4cc7b"
+  },
+  "notes": [
+    "Box is one face covering 24400 pixels, not fullscreen fillrate.",
+    "Bunny is the complete 948-triangle model with 17 meshlets, not the 69451-triangle source.",
+    "Both selected scene memory hashes equal their matched baselines.",
+    "Only final implementation and compact evidence are tracked; exports, waveforms, snapshots and historical experiments are not included."
+  ],
+  "adoption_whitespace_only_changes": [
+    {
+      "path": "ip/gpu-v2/src/system/pixel/framebuffer_tdp_leaf.v",
+      "qualified_sha256_lf": "74f33a6647d2d93fcae73f4e714d9f6d7a79a6f170297308c193bd524d27002c",
+      "committed_sha256_lf": "5fe9cc46f0e187aee1a777b0c2b4e8813846520ea8f25e8d780440b4ee9308a9",
+      "equivalence_sha256": "5fe9cc46f0e187aee1a777b0c2b4e8813846520ea8f25e8d780440b4ee9308a9"
+    },
+    {
+      "path": "ip/gpu-v2/tests/framebuffer_tdp_prefetch.py",
+      "qualified_sha256_lf": "6cfd97209e5365e4b4d11db30848b7f9a7e51cf51f23cd7eb47725ee43a1bc57",
+      "committed_sha256_lf": "9b727bb0f188f7fda487f69f931c6aed12b73ee01c9becc377a24d68666dab07",
+      "equivalence_sha256": "9b727bb0f188f7fda487f69f931c6aed12b73ee01c9becc377a24d68666dab07"
+    }
+  ],
+  "export_identity_note": "Export hashes identify the qualified source before two whitespace-only cleanups. Adoption verifies regenerated RTL against those exports after line-end/trailing-whitespace normalization; no token, schedule or arithmetic changed."
+}
