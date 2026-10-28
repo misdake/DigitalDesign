@@ -210,6 +210,7 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
         "gpu_ui_persistent",
         "gpu_scene",
         "gpu_capture",
+        "gpu_render_buffer",
     ];
     for name in helpers.iter().copied().chain([
         "device_abi",
@@ -228,7 +229,7 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
     }
     // Copy the production root, adding only this trusted host's query probe.
     let root = format!(
-        "{}\npub fn resolver_probe()->u16{{GPU_DEVICE}}",
+        "{}\npub fn resolver_probe()->u16{{GPU_DEVICE+GPU_RENDER_PROFILE}}",
         std::fs::read_to_string(production.join("gpu_pipeline.rs")).unwrap()
     );
     std::fs::write(f.shared.join("gpu_pipeline.rs"), root).unwrap();
@@ -246,6 +247,11 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
     };
     assert!(parse("mod gpu_pipeline;fn main(){halt(resolver_probe());}").is_ok());
     std::fs::write(f.local.join("device_abi.rs"), "pub const GPU_DEVICE:u16=7;").unwrap();
+    std::fs::write(
+        f.local.join("gpu_render_profile.rs"),
+        "pub const GPU_RENDER_PROFILE:u16=1;",
+    )
+    .unwrap();
     let p = cpu_v3::rcc_backend::try_compile(
         parse("mod gpu_pipeline;fn main(){halt(resolver_probe());}").unwrap(),
         &opts,
@@ -266,6 +272,8 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
         "let n=gpu_driver_owned_buffer();",
         "gpu_pipeline_init(0);",
         "let f=gpu_pipeline_cancel;",
+        "let p=GPU_RTT_BUFFERS.as_array();",
+        "gpu_rtt_write(1,1);",
     ] {
         assert!(
             parse(&format!("mod gpu_pipeline;fn main(){{{body}halt(0);}}")).is_err(),

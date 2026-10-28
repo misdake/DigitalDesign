@@ -30,8 +30,12 @@ fn gpu_capture_base(at: u16, sector: u16) {
     gpu_capture_pair(at, sector << 7, sector >> 9);
 }
 fn gpu_capture_range_add(tag: u16, flags: u16, sector: u16, low: u16, high: u16) -> bool {
-    if (tag == GPU_CAPTURE_TAG_MESH || tag == GPU_CAPTURE_TAG_TEXTURE || tag == GPU_CAPTURE_TAG_ATLAS)
-        && !gpu_capture_manifest_asset(tag, sector, low, high) {
+    if flags & GPU_CAPTURE_IMMUTABLE != 0
+        && (tag == GPU_CAPTURE_TAG_MESH
+            || tag == GPU_CAPTURE_TAG_TEXTURE
+            || tag == GPU_CAPTURE_TAG_ATLAS)
+        && !gpu_capture_manifest_asset(tag, sector, low, high)
+    {
         gpu_capture_fail(GPU_CAPTURE_IDENTITY_ERROR);
         return false;
     }
@@ -170,8 +174,16 @@ fn gpu_capture_begin(cb: Array<GpuBuffer>, slot: u16, frame: u16) -> bool {
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_WORDS] = GPU_CAPTURE_RANGE_WORDS;
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_VERSION] = GPU_CAPTURE_RANGE_VERSION;
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_LAYOUT_ABI] = GPU_CAPTURE_CONFIG_LAYOUT_ABI;
-    GPU_CAPTURE_HEADER[GPU_CAPTURE_H_COMMAND_ABI] = GPU_CAPTURE_NATIVE_COMMAND_ABI;
-    gpu_capture_pair(GPU_CAPTURE_H_PLANE_BYTES, GPU_FRAMEBUFFER_PHYSICAL_SECTORS << 7, GPU_FRAMEBUFFER_PHYSICAL_SECTORS >> 9);
+    GPU_CAPTURE_HEADER[GPU_CAPTURE_H_COMMAND_ABI] = if GPU_RENDER_PROFILE == 1 {
+        GPU_CAPTURE_RTT400_COMMAND_ABI
+    } else {
+        GPU_CAPTURE_NATIVE_COMMAND_ABI
+    };
+    gpu_capture_pair(
+        GPU_CAPTURE_H_PLANE_BYTES,
+        GPU_FRAMEBUFFER_PHYSICAL_SECTORS << 7,
+        GPU_FRAMEBUFFER_PHYSICAL_SECTORS >> 9,
+    );
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_MANIFEST_WORDS] = GPU_CAPTURE_MANIFEST_WORDS;
     let mut i: u16 = 0;
     while i < GPU_CAPTURE_MANIFEST_WORDS {
@@ -245,6 +257,55 @@ fn gpu_capture_begin(cb: Array<GpuBuffer>, slot: u16, frame: u16) -> bool {
         GPU_FRAMEBUFFER_PHYSICAL_SECTORS >> 9,
     ) {
         return false;
+    }
+    // Mutable borrowed sources are a separate dependency, never an immutable
+    // asset alias. Keep full declared allocation, including untouched padding.
+    let mut buffer_id: u16 = 1;
+    while buffer_id <= 4 {
+        if GPU_RTT_READERS[slot - 1] & (1 << (buffer_id - 1)) != 0 {
+            let source = gpu_rtt_buffer(buffer_id);
+            if source[0u16] == 0
+                || source[6u16] == 0
+                || source[7u16] != 0
+                || !gpu_capture_range_add(
+                    GPU_CAPTURE_TAG_TEXTURE,
+                    GPU_CAPTURE_READ | GPU_CAPTURE_PREIMAGE,
+                    source[2u16],
+                    source[4u16] << 7,
+                    source[4u16] >> 9,
+                )
+            {
+                return false;
+            }
+            let at = (GPU_CAPTURE_CONTROL[11u16] - 1) * GPU_CAPTURE_RANGE_WORDS
+                + GPU_CAPTURE_R_GENERATION;
+            GPU_CAPTURE_RANGES[at] = source[10u16];
+            GPU_CAPTURE_RANGES[at + 1] = source[11u16];
+        }
+        buffer_id += 1;
+    }
+    let writer = GPU_RTT_WRITERS[slot - 1];
+    if writer != 0 {
+        let target = gpu_rtt_buffer(writer);
+        // FULL_CLEAR applies only to the physical plane span above.
+        // Allocation tails retain their preimage and are not declared cleared.
+        let color_tail = target[4u16] - GPU_FRAMEBUFFER_PHYSICAL_SECTORS;
+        let depth_tail = target[5u16] - GPU_FRAMEBUFFER_PHYSICAL_SECTORS;
+        if !gpu_capture_range_add(
+            GPU_CAPTURE_TAG_COLOR,
+            GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE,
+            target[2u16] + GPU_FRAMEBUFFER_PHYSICAL_SECTORS,
+            color_tail << 7,
+            color_tail >> 9,
+        ) || !gpu_capture_range_add(
+            GPU_CAPTURE_TAG_DEPTH,
+            GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE,
+            target[3u16] + GPU_FRAMEBUFFER_PHYSICAL_SECTORS,
+            depth_tail << 7,
+            depth_tail >> 9,
+        ) {
+            return false;
+        }
     }
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_COUNT] = GPU_CAPTURE_CONTROL[11u16];
     return gpu_capture_health() == GPU_CAPTURE_OK;

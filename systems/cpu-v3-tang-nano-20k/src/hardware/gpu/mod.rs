@@ -143,6 +143,7 @@ fn source_for_profile(profile: Option<&str>) -> Result<String, String> {
         None | Some("production") => gpu_v2::system::vliw_command::verilog,
         Some("texture16x8-row") => gpu_v2::system::vliw_command::verilog_texture16x8,
         Some("texture16x8-column16") => gpu_v2::system::vliw_command::verilog_texture_column16,
+        Some("rtt400x240-column16") => gpu_v2::system::vliw_command::verilog_rtt400x240,
         Some(value) => return Err(format!("unsupported GPU hardware profile: {value}")),
     };
     let mut source = include_str!("gpu.v").to_owned();
@@ -183,6 +184,10 @@ mod tests {
         assert!(!column.contains("texture_fb400240"));
         assert!(column.contains("ui_active?column_ui_tile(ui_tile)"));
         assert!(column.contains("clear_sector==1599"));
+        let rtt = super::source_for_profile(Some("rtt400x240-column16")).unwrap();
+        assert!(rtt.contains("texture_fb400240"));
+        assert!(rtt.contains("clear_sector==1599"));
+        assert!(rtt.contains("ui_active?column_ui_tile(ui_tile)"));
         assert!(super::source_for_profile(Some("rtt400")).is_err());
         assert!(super::source_for_profile(Some("")).is_err());
     }

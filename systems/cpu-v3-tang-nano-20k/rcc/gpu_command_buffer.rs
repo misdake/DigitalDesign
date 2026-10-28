@@ -152,9 +152,16 @@ fn gpu_slot_objects(slot: u16) -> u16 {
 // The scheduler reserves the real Writable plane before calling this, and the
 // driver performs the final cache handoff after this write, before either SEND.
 fn gpu_slot_bind_target(mut cb: Array<GpuBuffer>, color: u16) -> bool {
+    if color != GPU_COLOR_A_SECTOR && color != GPU_COLOR_B_SECTOR {
+        return false;
+    }
+    gpu_slot_bind_planes(cb, color, GPU_DEPTH_SECTOR)
+}
+// The typed scheduler owns the borrowed allocation and its entire lifetime.
+fn gpu_slot_bind_planes(mut cb: Array<GpuBuffer>, color: u16, depth: u16) -> bool {
     if cb[0u16].state != GPU_CB_READY
         || !gpu_high_slot_valid(cb)
-        || (color != GPU_COLOR_A_SECTOR && color != GPU_COLOR_B_SECTOR)
+        || !gpu_buffer_target_safe(cb, color, depth)
         || gpu_memory_faulted()
     {
         return false;
@@ -164,7 +171,7 @@ fn gpu_slot_bind_target(mut cb: Array<GpuBuffer>, color: u16) -> bool {
         return false;
     }
     let mut storage = gpu_encoding_scratch(GPU_ENCODING.as_array());
-    if !gpu_encode_target(view_of(&mut storage), 0, color, GPU_DEPTH_SECTOR)
+    if !gpu_encode_target(view_of(&mut storage), 0, color, depth)
         || !gpu_window_record_pair(
             unsafe { storage.cpu.as_u16_array() },
             16,
@@ -177,7 +184,35 @@ fn gpu_slot_bind_target(mut cb: Array<GpuBuffer>, color: u16) -> bool {
         return false;
     }
     cb[0u16].color = color;
+    cb[0u16].depth = depth;
     true
+}
+fn gpu_buffer_target_safe(cb: Array<GpuBuffer>, color: u16, depth: u16) -> bool {
+    gpu_target_valid(color, depth)
+        && !gpu_extents_overlap(
+            cb[0u16].commands.sector,
+            cb[0u16].commands.sectors,
+            color,
+            GPU_PLANE_SECTORS,
+        )
+        && !gpu_extents_overlap(
+            cb[0u16].commands.sector,
+            cb[0u16].commands.sectors,
+            depth,
+            GPU_PLANE_SECTORS,
+        )
+        && !gpu_extents_overlap(
+            cb[0u16].objects.sector,
+            cb[0u16].objects.sectors,
+            color,
+            GPU_PLANE_SECTORS,
+        )
+        && !gpu_extents_overlap(
+            cb[0u16].objects.sector,
+            cb[0u16].objects.sectors,
+            depth,
+            GPU_PLANE_SECTORS,
+        )
 }
 pub fn gpu_slot_upload(
     cb: Array<GpuBuffer>,
@@ -300,8 +335,7 @@ pub fn gpu_buffer_valid(cb: Array<GpuBuffer>) -> bool {
             && cb[0u16].command_words & 1 == 0
             && cb[0u16].object_words >= 16
             && cb[0u16].object_words <= 32768
-            && (cb[0u16].color == GPU_COLOR_A_SECTOR || cb[0u16].color == GPU_COLOR_B_SECTOR)
-            && cb[0u16].depth == GPU_DEPTH_SECTOR;
+            && gpu_buffer_target_safe(cb, cb[0u16].color, cb[0u16].depth);
     }
     let mut c: GpuStorage = cb[0u16].commands;
     let mut o: GpuStorage = cb[0u16].objects;

@@ -67,10 +67,7 @@ impl Module for FramebufferHdmi {
 
     fn verilog_source() -> Option<String> {
         verilog_source_for(&ACTIVE_DISPLAY_CONFIG).map(|source| {
-            if matches!(
-                option_env!("CPU_V3_GPU_PROFILE"),
-                Some("texture16x8-column16")
-            ) {
+            if column16_profile(option_env!("CPU_V3_GPU_PROFILE")) {
                 column16_source(source)
             } else {
                 source
@@ -84,10 +81,7 @@ impl Module for FramebufferHdmi {
 
     fn verilog_testbench() -> Option<String> {
         verilog_testbench_for(&ACTIVE_DISPLAY_CONFIG).map(|source| {
-            if matches!(
-                option_env!("CPU_V3_GPU_PROFILE"),
-                Some("texture16x8-column16")
-            ) {
+            if column16_profile(option_env!("CPU_V3_GPU_PROFILE")) {
                 column16_testbench(source)
             } else {
                 source
@@ -98,6 +92,13 @@ impl Module for FramebufferHdmi {
 
 // Only macro ordering changes.32-byte row requests and line-buffer ownership
 // remain unchanged; one tile column now advances4096 halfwords, not256.
+fn column16_profile(profile: Option<&str>) -> bool {
+    matches!(
+        profile,
+        Some("texture16x8-column16" | "rtt400x240-column16")
+    )
+}
+
 fn column16_source(mut source: String) -> String {
     for (old, new) in [
         ("TILE_ROW_STRIDE=FB_WIDTH*16", "TILE_ROW_STRIDE=13'd256"),
@@ -155,6 +156,18 @@ fn verilog_testbench_for(config: &DisplayConfig) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rtt_and_layout_only_profiles_select_the_same_column_display() {
+        assert!(super::column16_profile(Some("texture16x8-column16")));
+        assert!(super::column16_profile(Some("rtt400x240-column16")));
+        assert!(!super::column16_profile(None));
+        assert!(!super::column16_profile(Some("production")));
+        let source = super::column16_source(
+            super::verilog_source_for(&super::ACTIVE_DISPLAY_CONFIG).unwrap(),
+        );
+        assert!(source.contains("TILE_ROW_STRIDE=13'd256"));
+        assert!(source.contains("{5'b0,burst_index,4'b0,local_y[3:1],fill_second}"));
+    }
     use super::*;
     use digital_design_hardware::{ResourceKind, VerilogProject};
 

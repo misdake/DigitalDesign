@@ -20,6 +20,7 @@ static GPU_ENTRIES: Buf<u16, 64> = Buf::new([0; 64]);
 static GPU_CODE: Buf<u16, 128> = Buf::new([0; 128]);
 static GPU_GLOBAL_VALUE: Buf<u16, 32> = Buf::new([0; 32]);
 static GPU_RENDER_VALUE: Buf<u16, 16> = Buf::new([0; 16]);
+static GPU_RENDER_PREVIOUS_KIND: Buf<u16, 1> = Buf::new([0; 1]);
 
 fn gpu_builder_write(
     cb: Array<GpuBuffer>,
@@ -134,7 +135,7 @@ fn gpu_builder_begin_record(
         || cb[0u16].object_words > 32752
         || !gpu_target_valid(color, depth)
         || gpu_memory_faulted()
-        || !gpu_builder_room(cb, 14, 6)
+        || !gpu_builder_room(cb, if GPU_RENDER_PROFILE == 1 { 16 } else { 14 }, 6)
     {
         return false;
     }
@@ -188,7 +189,15 @@ fn gpu_builder_begin_record(
     if !gpu_builder_commands(cb)
         || !gpu_builder_emit(cb, 3, 0x4000)
         || !gpu_builder_emit(cb, 0, 0x7000)
-        || !gpu_builder_dma(cb, object, 276, 32)
+    {
+        return false;
+    }
+    // Experimental RTT submissions begin with a cold texture view, after the
+    // drained FLUSH and before SET_TARGET. This never changes default command.
+    if GPU_RENDER_PROFILE == 1 && !gpu_builder_emit(cb, 0, 0x9000) {
+        return false;
+    }
+    if !gpu_builder_dma(cb, object, 276, 32)
         || !gpu_builder_emit(cb, 1, 0x4000)
         || !gpu_builder_emit(cb, 69, 0xa000)
         || !gpu_builder_emit(cb, cv, 0x8000)
@@ -319,14 +328,30 @@ fn gpu_builder_render_record(
     value.texture_sectors = texture[0u16].sectors;
     value.size_log2 = texture[0u16].size_log2;
     value.full_mip = texture[0u16].full_mip;
+    gpu_builder_render_value(cb, view_of(&mut value), false)
+}
+fn gpu_builder_render_value(
+    cb: Array<GpuBuffer>,
+    r: Array<GpuRender>,
+    framebuffer_view: bool,
+) -> bool {
+    let mut value: GpuRender = r[0u16];
+    if framebuffer_view {
+        if !gpu_render_view_valid(view_of(&mut value)) {
+            return false;
+        }
+    } else {
+        if !gpu_render_valid(view_of(&mut value)) {
+            return false;
+        }
+    }
+    let kind: u16 = if framebuffer_view { 1 } else { 0 };
     if cb[0u16].high_slot != 0 {
-        if !gpu_builder_open(cb)
-            || !gpu_high_slot_valid(cb)
-            || !gpu_render_valid(view_of(&mut value))
-        {
+        if !gpu_builder_open(cb) || !gpu_high_slot_valid(cb) {
             return false;
         }
         if GPU_BUILD[4u16] != 0
+            && GPU_RENDER_PREVIOUS_KIND[0u16] == kind
             && value.texture_sector == GPU_RENDER_PREVIOUS.texture_sector
             && value.size_log2 == GPU_RENDER_PREVIOUS.size_log2
             && value.full_mip == GPU_RENDER_PREVIOUS.full_mip
@@ -347,7 +372,12 @@ fn gpu_builder_render_record(
         }
         let mut output = gpu_builder_object(cb, word);
         if gpu_memory_faulted()
-            || !gpu_encode_render(view_of(&mut output), word & 63, view_of(&mut value))
+            || !gpu_encode_render_kind(
+                view_of(&mut output),
+                word & 63,
+                view_of(&mut value),
+                framebuffer_view,
+            )
         {
             return false;
         }
@@ -355,10 +385,11 @@ fn gpu_builder_render_record(
             return false;
         }
         GPU_RENDER_PREVIOUS = value;
+        GPU_RENDER_PREVIOUS_KIND[0u16] = kind;
         return true;
     }
     let mut s: GpuStorage = gpu_encoding_scratch(GPU_ENCODING.as_array());
-    if !gpu_encode_render(view_of(&mut s), 0, view_of(&mut value)) {
+    if !gpu_encode_render_kind(view_of(&mut s), 0, view_of(&mut value), framebuffer_view) {
         return false;
     }
     gpu_builder_state(cb, unsafe { s.cpu.as_u16_array() }, 16, 4, 272, 0x6000)
@@ -931,6 +962,11 @@ fn gpu_builder_render(
 ) -> bool {
     let saved = read_dseg_page(3);
     let result = gpu_builder_render_record(cb, texture, r);
+    gpu_builder_restore(saved, result)
+}
+fn gpu_builder_render_view(cb: Array<GpuBuffer>, r: Array<GpuRender>) -> bool {
+    let saved = read_dseg_page(3);
+    let result = gpu_builder_render_value(cb, r, true);
     gpu_builder_restore(saved, result)
 }
 

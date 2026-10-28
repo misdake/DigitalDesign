@@ -4,6 +4,8 @@ use crate::{framebuffer::ports::MaterializedSurface, texture::ports::Slot};
 mod current_state;
 #[path = "current_texture.rs"]
 mod current_texture;
+#[path = "rtt400x240.rs"]
+mod rtt400x240;
 #[path = "simulation_checks.rs"]
 mod simulation_checks;
 #[path = "texture_column16.rs"]
@@ -32,6 +34,21 @@ pub fn verilog_texture_column16(
     backend: super::pixel::quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
     texture_column16::lower(verilog_texture16x8(surface, backend)?)
+}
+
+/// Fixed400x240 framebuffer views over the current macro-column storage.
+pub fn verilog_rtt400x240(
+    surface: MaterializedSurface,
+    backend: super::pixel::quad_ingress::rtl::Backend,
+) -> Result<String, String> {
+    rtt400x240::lower(verilog_texture_column16(surface, backend)?)
+}
+
+pub fn framebuffer_texture_word(base_sector: u16, filter: u8) -> Result<u32, &'static str> {
+    if base_sector & 511 != 0 || base_sector > 63488 || filter > 1 {
+        return Err("framebuffer texture view alignment/range/filter");
+    }
+    Ok(u32::from(base_sector) | (9 << 16) | (u32::from(filter) << 21) | (1 << 23))
 }
 
 fn verilog_profile(

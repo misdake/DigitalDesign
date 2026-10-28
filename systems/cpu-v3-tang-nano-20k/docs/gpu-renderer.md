@@ -55,6 +55,11 @@ pipeline stages. Input reuse follows GPU completion; color reuse follows Display
 retirement. This distinction allows recording during Display Pending without
 allowing either protected color to be overwritten.
 
+Default Frames use the Display flow above. The
+[borrowed-target API](/systems/cpu-v3-tang-nano-20k/docs/gpu-render-targets.md)
+adds offscreen completion and an explicit experimental400x240 TextureView;
+offscreen completion publishes buffer content without presenting it.
+
 ## Compile and ownership boundary
 
 ### Explicit member calls
@@ -141,7 +146,8 @@ async, arbitrary impls and allocator behavior are not added by this API.
 A format2 boot project may contain the standalone line `renderer`. The build
 then uses `compile_renderer_program`, always approving the actual shared
 `rcc/gpu_pipeline.rs` canonical path. Omitting the root is an error. The root
-names thirteen direct helpers, including private `gpu_scene` and `gpu_capture`; application imports
+names its direct helpers, including private `gpu_scene`, `gpu_capture` and
+`gpu_render_buffer`; application imports
 cannot expose their raw state/functions or construct/disarm resource identities.
 The source loader reports the selected file's actual canonical origin. Local
 root/helper overrides fail approval; they never inherit a shared identity.

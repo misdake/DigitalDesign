@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() < 3 {
         return Err(
-            "OUTPUT direct-lod|backend|full|sdram|command|command16x8|command-column16|frontend [portable]".into(),
+            "OUTPUT direct-lod|backend|full|sdram|command|command16x8|command-column16|rtt400x240|frontend [portable]".into(),
         );
     }
     let portable = args.iter().skip(3).any(|s| s == "portable");
@@ -42,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             gpu_v2::system::vliw_command::verilog_texture_column16(surface, backend)?
         }
         "command16x8" => gpu_v2::system::vliw_command::verilog_texture16x8(surface, backend)?,
+        "rtt400x240" => gpu_v2::system::vliw_command::verilog_rtt400x240(surface, backend)?,
         "frontend" => gpu_v2::frontend::vliw::verilog(portable),
         _ => return Err("unknown VLIW profile".into()),
     };

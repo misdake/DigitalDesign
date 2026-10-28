@@ -92,3 +92,14 @@ native/portable bank data, stalls, the48-credit FIFO, actual Group/cache
 lookahead, child failures and abort drain. Each subprocess is bounded to60
 seconds and each bench has a finite cycle watchdog. The default command export
 remains byte-identical to the accepted sampling baseline.
+
+The opt-in fixed-column RTT harnesses consume a `rtt400x240` export.
+`test_rtt400.py` checks independent coordinate/packet references and native
+sampler pixels under stalls; `--exhaustive-axis` checks every 16-bit axis input.
+`test_rtt400_command.py` checks producer/consumer commands, modulation, supported
+Q6 blending, invalidate visibility and malformed descriptors.
+`test_rtt400_replay.py --backend native|portable` consumes the actual RCC demo
+fixtures: axis-x/axis-y modes check all 96000 nearest pixels, and chain mode
+checks real raster UVs and source/consumer results. Each subprocess has a wall
+limit and each RTL bench a finite cycle watchdog. Portable frame replay,
+native submodule checks and physical board qualification have distinct coverage.

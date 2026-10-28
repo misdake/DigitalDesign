@@ -28,6 +28,8 @@ mod capture;
 mod changes;
 #[path = "gpu_persistent_ui.rs"]
 mod persistent;
+#[path = "gpu_render_buffer.rs"]
+mod render_buffer;
 #[path = "gpu_renderer_time.rs"]
 mod renderer_time;
 #[path = "gpu_resource_usage.rs"]
@@ -37,6 +39,7 @@ mod scene;
 
 #[derive(Default)]
 struct State {
+    column: bool,
     input_status: u16,
     input_bytes: [u16; 8],
     now_ms: u16,
@@ -66,6 +69,8 @@ struct State {
     capture_dynamic: bool,
     object_snapshots: Vec<Vec<u16>>,
     valid_command_lengths: Vec<usize>,
+    targets: Option<Vec<(u32, u32)>>,
+    offscreen_starts_pending: usize,
 }
 struct Peer {
     kind: u8,
@@ -120,16 +125,31 @@ impl cpu_v3::Device for Peer {
             }
             (4, 0) => {
                 assert_eq!(s.gpu, 0);
-                assert!(!s.pending);
+                let offscreen = s.targets.as_ref().is_some_and(|targets| {
+                    ![0x400000, if s.column { 0x440000 } else { 0x430000 }]
+                        .contains(&targets[s.starts.len()].0)
+                });
+                assert!(!s.pending || offscreen);
                 s.count = value;
                 s.counts += 1;
             }
             (4, 1) => {
                 assert_eq!(s.gpu, 0);
-                assert!(!s.pending);
+                let expected_target = s.targets.as_ref().map(|targets| targets[s.starts.len()]);
+                let offscreen = expected_target.is_some_and(|t| {
+                    ![0x400000, if s.column { 0x440000 } else { 0x430000 }].contains(&t.0)
+                });
+                assert!(!s.pending || offscreen);
+                if s.pending && offscreen {
+                    s.offscreen_starts_pending += 1;
+                }
                 let number = s.starts.len();
-                let objects = if value == 0x9200 {
-                    0x4a0000
+                let objects = if value == if s.column { 0x9800 } else { 0x9200 } {
+                    if s.column {
+                        0x4d0000
+                    } else {
+                        0x4a0000
+                    }
                 } else {
                     assert_eq!(value, 0xfc00);
                     0x7f0000
@@ -144,19 +164,21 @@ impl cpu_v3::Device for Peer {
                 for w in &target {
                     bytes.extend(w.to_le_bytes());
                 }
-                let color = if number.is_multiple_of(2) {
+                let color = if let Some(target) = expected_target {
+                    target.0
+                } else if number.is_multiple_of(2) {
                     0x430000
                 } else {
                     0x400000
                 };
-                assert_ne!(color / 2, s.active as usize);
+                assert_ne!(color / 2, s.active);
                 assert_eq!(
                     bytes,
                     target_params(MaterializedSurface {
                         width: 400,
                         height: 240,
-                        color_base_bytes: color as u32,
-                        depth_base_bytes: 0x460000
+                        color_base_bytes: color,
+                        depth_base_bytes: expected_target.map_or(0x460000, |t| t.1)
                     })
                     .unwrap()
                 );

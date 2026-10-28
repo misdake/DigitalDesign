@@ -30,9 +30,9 @@ rule are retained.
 |---|---|
 | Command/object arena | Actual successful GPU terminal; reset lengths on its next recording |
 | Open recorder | Explicit cancel resets its lengths and relocation; no submit or Display operation |
-| Sealed successor | Held until actual Writable target is available and its submission succeeds |
+| Sealed successor | Held until its Display or borrowed target is available and submission succeeds |
 | Persistent UI page | Recording owns updates; Recorded/InFlight contents stay immutable; successful GPU terminal releases its reference |
-| Color/Depth | Existing Display Front/Pending/Rendering/Ready rules and single GPU execution |
+| Color/Depth | Display ownership for default Frames; writer/read pins for borrowed targets; single GPU execution |
 
 ## Recording, target binding and progress
 
@@ -54,8 +54,15 @@ flowchart LR
   C --> S[Serialized count and start SENDs]
 ```
 
+The diagrams show default Display Frames. For
+[borrowed targets](/systems/cpu-v3-tang-nano-20k/docs/gpu-render-targets.md),
+advance patches both registered plane bases, skips Display reservation, and
+successful GPU terminal publishes content/releases pins without presenting.
+Capture waits for stable Front; ordinary offscreen execution can overlap Pending.
+
 Advance first observes the current work; it submits only when no GPU is running
-and a successor exists. It reserves the confirmed Writable color, replaces the
+and a successor exists. For a Display Frame it reserves the confirmed Writable
+color; an offscreen Frame already owns its registered planes. It replaces the
 private Target using the native encoder and restores DSEG3, then calls the
 existing driver's final cache barrier before either SEND. Relocation uses the
 existing private CPU-input mapping scope without extra entry/exit maintenance;
@@ -102,7 +109,7 @@ that Prepared boundary. The consumer never advances this scheduler; its successf
 dump still waits for explicit resume. Ordinary applications use the no-op gate.
 
 Poll never submits a successor. A successful GPU terminal marks that input
-Completed and automatically requests present; its color may still be Pending.
+Completed and, for a Display Frame, automatically requests present; its color may still be Pending.
 Display frame count, GPU idle and NEXT_SWAP are not substitutes for stable
 active/format and old-read retirement. Recording can proceed during that
 Pending interval, but advance cannot write either occupied color.

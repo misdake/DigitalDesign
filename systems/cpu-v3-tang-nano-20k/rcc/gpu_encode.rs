@@ -4,6 +4,8 @@ mod gpu_layout;
 use gpu_layout::*;
 mod gpu_memory;
 use gpu_memory::*;
+mod gpu_render_profile;
+use gpu_render_profile::*;
 
 pub struct GpuGlobal {
     pub far_low: u16,
@@ -146,19 +148,7 @@ pub fn gpu_encode_global(s: Array<GpuStorage>, word: u16, g: Array<GpuGlobal>) -
 }
 
 fn gpu_render_valid(r: Array<GpuRender>) -> bool {
-    if r[0u16].size_log2 > 10
-        || r[0u16].texture_sector & (GPU_TEXTURE_ALIGNMENT_SECTORS - 1) != 0
-        || r[0u16].full_mip > 1
-        || r[0u16].filter > 2
-        || r[0u16].specular_high > 255
-        || r[0u16].depth_func > 7
-        || r[0u16].depth_write > 1
-        || r[0u16].blend > 1
-        || r[0u16].unlit > 1
-        || r[0u16].lod_bias < -128
-        || r[0u16].lod_bias > 127
-        || !gpu_extent_valid(r[0u16].texture_sector, r[0u16].texture_sectors)
-    {
+    if !gpu_render_fields_valid(r) {
         return false;
     }
     let mut sectors: u16 = 0;
@@ -176,21 +166,65 @@ fn gpu_render_valid(r: Array<GpuRender>) -> bool {
         }
         level += 1;
     }
-    if sectors > r[0u16].texture_sectors {
+    sectors <= r[0u16].texture_sectors
+}
+fn gpu_render_fields_valid(r: Array<GpuRender>) -> bool {
+    if r[0u16].size_log2 > 10
+        || r[0u16].texture_sector & (GPU_TEXTURE_ALIGNMENT_SECTORS - 1) != 0
+        || r[0u16].full_mip > 1
+        || r[0u16].filter > 2
+        || r[0u16].specular_high > 255
+        || r[0u16].depth_func > 7
+        || r[0u16].depth_write > 1
+        || r[0u16].blend > 1
+        || r[0u16].unlit > 1
+        || r[0u16].lod_bias < -128
+        || r[0u16].lod_bias > 127
+        || !gpu_extent_valid(r[0u16].texture_sector, r[0u16].texture_sectors)
+    {
         return false;
     }
     true
 }
+fn gpu_render_view_valid(r: Array<GpuRender>) -> bool {
+    GPU_RENDER_PROFILE == 1
+        && gpu_render_fields_valid(r)
+        && r[0u16].texture_sector & 511 == 0
+        && r[0u16].texture_sector <= 63488
+        && r[0u16].texture_sectors >= GPU_PLANE_SECTORS
+        && r[0u16].size_log2 == 9
+        && r[0u16].full_mip == 0
+        && r[0u16].filter <= 1
+        && r[0u16].lod_bias == 0
+}
 pub fn gpu_encode_render(s: Array<GpuStorage>, word: u16, r: Array<GpuRender>) -> bool {
-    if !gpu_storage_room(s, word, 16, 16) || !gpu_render_valid(r) {
+    gpu_encode_render_kind(s, word, r, false)
+}
+fn gpu_encode_render_kind(
+    s: Array<GpuStorage>,
+    word: u16,
+    r: Array<GpuRender>,
+    framebuffer_view: bool,
+) -> bool {
+    if !gpu_storage_room(s, word, 16, 16) {
         return false;
     }
+    if framebuffer_view {
+        if !gpu_render_view_valid(r) {
+            return false;
+        }
+    } else {
+        if !gpu_render_valid(r) {
+            return false;
+        }
+    }
     let p = s[0u16].cpu.add(word as i16);
+    let view_bit: u16 = if framebuffer_view { 128 } else { 0 };
     unsafe {
         p.write(0, r[0u16].texture_sector);
         p.write(
             1,
-            r[0u16].size_log2 | (r[0u16].full_mip << 4) | (r[0u16].filter << 5),
+            r[0u16].size_log2 | (r[0u16].full_mip << 4) | (r[0u16].filter << 5) | view_bit,
         );
         p.write(2, r[0u16].specular_low);
         p.write(3, r[0u16].specular_high);

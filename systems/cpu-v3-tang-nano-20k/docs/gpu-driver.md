@@ -3,8 +3,9 @@
 The application interface is `rcc/gpu.rs`. It manages one command buffer and a
 single Clear/Store Pass with ordered Mesh/Instance and UI draws and fixed A/B/Depth
 allocations. This legacy frontend still uses slot0; the separately tested
-[internal two-input scheduler](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md) is not yet an application
-resource API. Initialization reads actual Display active/pending/format; it can
+[internal two-input scheduler](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md)
+backs the [resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md).
+Initialization reads actual Display active/pending/format; it can
 adopt either A or B as Front and chooses the other plane for rendering. The
 driver presents through one serialized entry point. Runtime recovery is separate. The default CPU
 Display diagnostic remains selected in the boot config.

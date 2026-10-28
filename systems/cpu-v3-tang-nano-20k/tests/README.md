@@ -155,3 +155,10 @@ without changing the scene body. `GPU_CAPTURE_FULL_SCENE_DIR` selects its output
 path. Set these and `CARGO_TARGET_DIR` outside the source tree when preserving
 evidence. Full-scene bytes remain CPU producer inputs, with no GPU pixel or board
 qualification implied.
+
+`host gpu_render_buffer::` compiles the actual RTT member API and checks external
+capacity/alias validation, read/write pins, cancellation after sealing, terminal
+epochs, capture dependency closure and Rust ownership negatives. Its two public
+demo callers export native command/object/asset fixtures under `target/rtt/demos`
+for the independent GPU replay harness. All CPU runs have explicit step limits;
+completion peers qualify software state and bytes, not GPU rendering or HDMI.

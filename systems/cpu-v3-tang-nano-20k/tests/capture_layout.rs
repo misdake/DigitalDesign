@@ -454,7 +454,17 @@ fn strict_profile_manifest_selection() {
         v["layout"][field] = json!(0);
         assert!(parse(&v).is_err(), "{field}");
     }
-    for command in [json!(2), json!(null), json!("1")] {
+    let mut rtt = valid.clone();
+    rtt["command_abi"] = json!(2);
+    let selected = parse(&rtt).unwrap();
+    assert_eq!(
+        selected.profile(),
+        resolver::RendererLayoutProfile::Column16
+    );
+    assert_eq!(selected.command_abi(), 2);
+    rtt["layout"] = resolver::RendererLayoutProfile::Row.description();
+    assert!(parse(&rtt).is_err());
+    for command in [json!(0), json!(3), json!(null), json!("1")] {
         let mut v = valid.clone();
         v["command_abi"] = command;
         assert!(parse(&v).is_err());

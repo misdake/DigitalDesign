@@ -11,7 +11,8 @@
     gpu_ui,
     gpu_ui_persistent,
     gpu_scene,
-    gpu_capture
+    gpu_capture,
+    gpu_render_buffer
 )]
 //! Resource facade over the single native two-input scheduler.
 //! One recorder, one sealed successor, one GPU execution; no execution queue.
@@ -45,6 +46,10 @@ mod gpu_scene;
 use gpu_scene::*;
 mod gpu_capture;
 use gpu_capture::*;
+mod gpu_render_buffer;
+use gpu_render_buffer::*;
+mod gpu_render_profile;
+use gpu_render_profile::*;
 mod gpu_capture_abi;
 use gpu_capture_abi::*;
 mod gpu_capture_config;
@@ -182,10 +187,15 @@ fn gpu_pipeline_poll() -> u16 {
             observed_us = dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_MICROSECONDS);
             observed_ms = dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_MILLISECONDS);
         }
-        if !gpu_display_render_done(owned[0u16].color)
-            || gpu_display_present(owned[0u16].color) != GPU_PENDING
-        {
-            return gpu_pipeline_fail(6);
+        if GPU_RTT_WRITERS[slot - 1] == 0 {
+            if !gpu_display_render_done(owned[0u16].color)
+                || gpu_display_present(owned[0u16].color) != GPU_PENDING
+            {
+                return gpu_pipeline_fail(6);
+            }
+        }
+        if !gpu_rtt_retire(slot, true) {
+            return gpu_pipeline_fail(18);
         }
         if !gpu_persistent_ui_retire(slot) {
             return gpu_pipeline_fail(15);
@@ -288,6 +298,10 @@ fn gpu_pipeline_cancel() -> bool {
         gpu_pipeline_fail(14);
         return false;
     }
+    if !gpu_rtt_retire(slot, false) {
+        gpu_pipeline_fail(18);
+        return false;
+    }
     cb[0u16].command_words = 0;
     cb[0u16].object_words = 0;
     cb[0u16].state = GPU_CB_BUILDING;
@@ -317,16 +331,35 @@ fn gpu_pipeline_advance() -> u16 {
     if !gpu_persistent_ui_ready(p[2u16]) {
         return gpu_pipeline_fail(14);
     }
-    let target = gpu_display_reserve();
-    if target == 0 {
-        if GPU_DISPLAY.as_array()[0u16] == 3 {
-            return gpu_pipeline_fail(10);
-        }
-        return GPU_PENDING;
-    }
     let slot = p[2u16];
+    let writer = GPU_RTT_WRITERS[slot - 1];
+    let mut target: u16 = 0;
+    let mut depth = GPU_DEPTH_SECTOR;
+    if writer == 0 {
+        target = gpu_display_reserve();
+        if target == 0 {
+            if GPU_DISPLAY.as_array()[0u16] == 3 {
+                return gpu_pipeline_fail(10);
+            }
+            return GPU_PENDING;
+        }
+    } else {
+        // A capture lease freezes old Front; wait for any pending switch first.
+        if GPU_CAPTURE_CONFIG_ENABLED != 0 && GPU_DISPLAY[2u16] != 0 {
+            return GPU_PENDING;
+        }
+        let b = gpu_rtt_buffer(writer);
+        if b[0u16] == 0 || b[7u16] != slot {
+            return gpu_pipeline_fail(18);
+        }
+        target = b[2u16];
+        depth = b[3u16];
+    }
     let cb = gpu_pipeline_buffer(slot);
-    if !gpu_slot_bind_target(cb, target) || !gpu_display_render_start(target) {
+    if !gpu_slot_bind_planes(cb, target, depth) {
+        return gpu_pipeline_fail(11);
+    }
+    if writer == 0 && !gpu_display_render_start(target) {
         return gpu_pipeline_fail(11);
     }
     // This final driver fence drains old scalar/FST stores and every relocation.
@@ -767,6 +800,122 @@ pub struct Mesh {
 pub struct Material {
     word: u16,
 }
+
+// The caller retains the physical allocation; capacities and bases are bytes.
+pub struct RenderBufferMemory {
+    pub color_base_low: u16,
+    pub color_base_high: u16,
+    pub color_capacity_low: u16,
+    pub color_capacity_high: u16,
+    pub depth_base_low: u16,
+    pub depth_base_high: u16,
+    pub depth_capacity_low: u16,
+    pub depth_capacity_high: u16,
+}
+#[rcc_resource(cleanup=render_buffer_cleanup)]
+pub struct RenderBuffer {
+    word: u16,
+}
+#[rcc_resource(cleanup=texture_view_cleanup,parent=RenderBuffer)]
+pub struct TextureView {
+    word: u16,
+}
+pub fn render_buffer_texture(buffer: &mut RenderBuffer, linear: bool) -> TextureView {
+    if GPU_RENDER_PROFILE != 1 || !gpu_rtt_view_begin(buffer.word) {
+        renderer_fault(63);
+    }
+    gpu_rtt_buffer(buffer.word)[13u16] = if linear { 1 } else { 0 };
+    TextureView { word: buffer.word }
+}
+pub fn texture_view_close(view: TextureView) {
+    gpu_rtt_view_end(view.word);
+    resource_disarm(view);
+}
+fn texture_view_cleanup(view: TextureView) {
+    gpu_rtt_view_end(view.word);
+}
+pub fn pass_draw_texture(
+    p: &mut Pass,
+    mesh: &mut Mesh,
+    model: &mut Model,
+    material: &mut Material,
+    view: &mut TextureView,
+) {
+    if GPU_RENDERER[0u16] != 3
+        || GPU_RENDERER[2u16] != 1
+        || GPU_RENDER_PROFILE != 1
+        || !scene_model_prepare(model.word, scene_mesh_bounds(mesh.word))
+        || !gpu_rtt_read(view.word, p.word)
+    {
+        renderer_fault(64);
+    }
+    let cb = gpu_pipeline_buffer(p.word);
+    let buffer = gpu_rtt_buffer(view.word);
+    let mut global = scene_global(material.word);
+    let mut render = scene_render(material.word);
+    render.texture_sector = buffer[2u16];
+    render.texture_sectors = buffer[4u16];
+    render.size_log2 = 9;
+    render.full_mip = 0;
+    render.filter = buffer[13u16];
+    render.lod_bias = 0;
+    let mut root = scene_mesh_value(mesh.word);
+    let color = scene_material(material.word);
+    if !gpu_builder_global(cb, view_of(&mut global))
+        || !gpu_builder_render_view(cb, view_of(&mut render))
+        || !gpu_builder_draw_known(
+            cb,
+            view_of(&mut root),
+            scene_matrix(model.word),
+            color[13u16],
+            color[14u16],
+        )
+    {
+        renderer_fault(65);
+    }
+}
+pub fn renderer_render_buffer(r: &mut Renderer, memory: Array<RenderBufferMemory>) -> RenderBuffer {
+    if GPU_RENDERER[0u16] != 1 {
+        renderer_fault(60);
+    }
+    let id = gpu_rtt_register(memory);
+    if id == 0 {
+        renderer_fault(60);
+    }
+    RenderBuffer { word: id }
+}
+pub fn renderer_frame_to(r: &mut Renderer, buffer: &mut RenderBuffer, color: u16) -> Frame {
+    let f = renderer_frame(r, color);
+    if !gpu_rtt_write(buffer.word, f.word) {
+        renderer_fault(61);
+    }
+    f
+}
+pub fn render_buffer_wait(r: &mut Renderer, buffer: &mut RenderBuffer, limit: u16) -> bool {
+    if GPU_RENDERER[0u16] != 1 || !gpu_rtt_live(buffer.word) {
+        renderer_fault(62);
+    }
+    let mut left = limit;
+    while gpu_rtt_busy(buffer.word) {
+        if left == 0 {
+            return false;
+        }
+        gamepad_capture();
+        if gpu_pipeline_advance() == GPU_FAULT {
+            renderer_fault(62);
+        }
+        left -= 1;
+    }
+    gpu_rtt_buffer(buffer.word)[6u16] != 0
+}
+pub fn render_buffer_close(buffer: RenderBuffer) -> bool {
+    let closed = gpu_rtt_close(buffer.word);
+    resource_disarm(buffer);
+    closed
+}
+fn render_buffer_cleanup(buffer: RenderBuffer) {
+    gpu_rtt_close(buffer.word);
+}
 fn mesh_cleanup(m: Mesh) {
     scene_mesh_release(m.word);
 }
@@ -1111,6 +1260,12 @@ fn renderer_member_wait(flags: u16) -> u16 {
 }
 
 impl Renderer {
+    pub fn render_buffer(&mut self, memory: Array<RenderBufferMemory>) -> RenderBuffer {
+        renderer_render_buffer(self, memory)
+    }
+    pub fn frame_to(&mut self, buffer: &mut RenderBuffer, color: u16) -> Frame {
+        renderer_frame_to(self, buffer, color)
+    }
     pub fn frame(&mut self, color: u16) -> Frame {
         renderer_frame(self, color)
     }
@@ -1139,10 +1294,33 @@ impl Frame {
     }
 }
 impl Pass {
+    pub fn draw_texture(
+        &mut self,
+        mesh: &mut Mesh,
+        model: &mut Model,
+        material: &mut Material,
+        view: &mut TextureView,
+    ) {
+        pass_draw_texture(self, mesh, model, material, view);
+    }
     pub fn draw(&mut self, mesh: &mut Mesh, model: &mut Model, material: &mut Material) {
         pass_draw(self, mesh, model, material);
     }
     pub fn finish(self) {
         pass_complete(self);
+    }
+}
+
+impl RenderBuffer {
+    pub fn texture(&mut self, linear: bool) -> TextureView {
+        render_buffer_texture(self, linear)
+    }
+    pub fn close(self) -> bool {
+        render_buffer_close(self)
+    }
+}
+impl TextureView {
+    pub fn close(self) {
+        texture_view_close(self);
     }
 }

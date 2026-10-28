@@ -8,6 +8,11 @@ use rcc_modules::capture_profile::row as gpu_layout;
 use std::path::{Path, PathBuf};
 #[path = "build_support/rcc_modules.rs"]
 mod rcc_modules;
+enum ApplicationProfile {
+    Default,
+    Column16,
+    Rtt400x240,
+}
 fn compile(
     path: &Path,
     options: &CompilerOptions,
@@ -15,8 +20,9 @@ fn compile(
     shared: &Path,
     renderer: bool,
     capture_enabled: bool,
-    column16: bool,
+    profile: ApplicationProfile,
 ) -> (Vec<u16>, usize) {
+    let rtt = matches!(profile, ApplicationProfile::Rtt400x240);
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
@@ -56,8 +62,9 @@ fn compile(
                     &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("capture-rcc"),
                     dependency,
                 )
-            } else if source_dir.ends_with("gpu_renderer/rcc")
-                && path.file_name().is_some_and(|name| name == "members.rs")
+            } else if rtt
+                || (source_dir.ends_with("gpu_renderer/rcc")
+                    && path.file_name().is_some_and(|name| name == "members.rs"))
             {
                 rcc_modules::compile_renderer_program_checked(
                     &path.display().to_string(),
@@ -66,9 +73,13 @@ fn compile(
                     source_dir,
                     shared,
                     constants,
-                    &rcc_modules::RendererCaptureConfiguration::without_capture(
-                        rcc_modules::RendererLayoutProfile::Column16,
-                    ),
+                    &if rtt {
+                        rcc_modules::RendererCaptureConfiguration::rtt400x240()
+                    } else {
+                        rcc_modules::RendererCaptureConfiguration::without_capture(
+                            rcc_modules::RendererLayoutProfile::Column16,
+                        )
+                    },
                     &rcc::frontend::rustc_check::RustcCheck::new(
                         PathBuf::from(std::env::var_os("OUT_DIR").unwrap())
                             .join("member-ownership"),
@@ -98,7 +109,7 @@ fn compile(
                 shared,
                 constants,
                 name,
-                if column16 {
+                if matches!(profile, ApplicationProfile::Column16) {
                     rcc_modules::NativeLayoutProfile::Column16
                 } else {
                     rcc_modules::NativeLayoutProfile::Default
@@ -134,6 +145,7 @@ fn main() {
     let mut generated = String::new();
     let mut capture_enabled = false;
     let mut column16 = false;
+    let mut rtt_enabled = false;
     let mut extra_assets: Vec<String> = Vec::new();
     if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
         if example == "gpu_bench" {
@@ -236,11 +248,25 @@ fn main() {
             || example == "gpu_renderer_members"
             || example == "gpu_renderer_bloxorz"
             || example == "gpu_profiler_board"
+            || example == "gpu_renderer_rtt"
+            || example == "gpu_renderer_rtt_bilinear"
         {
             let game = example == "gpu_renderer_bloxorz";
             let profiler = example == "gpu_profiler_board";
+            let rtt = example == "gpu_renderer_rtt" || example == "gpu_renderer_rtt_bilinear";
+            if rtt {
+                rtt_enabled = true;
+                for path in [
+                    "tools/gpu_texture_layout.py",
+                    "examples/gpu_renderer/tools/assets.py",
+                ] {
+                    println!("cargo:rerun-if-changed={}", root.join(path).display());
+                }
+            }
             capture_enabled = profiler;
-            let example_dir = root.join(if game {
+            let example_dir = root.join(if rtt {
+                "examples/gpu_renderer_rtt"
+            } else if game {
                 "examples/gpu_renderer_bloxorz"
             } else if profiler {
                 "examples/gpu_profiler_board"
@@ -282,7 +308,17 @@ fn main() {
             let manifest: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
                     .unwrap();
-            project.application = PathBuf::from(if game {
+            if rtt {
+                assert_eq!(manifest["profile"], "rtt400x240-column16");
+                assert_eq!(manifest["surface"], "column-major-16x16-pad16");
+            }
+            project.application = PathBuf::from(if rtt {
+                if example == "gpu_renderer_rtt_bilinear" {
+                    "examples/gpu_renderer_rtt/rcc/bilinear.rs"
+                } else {
+                    "examples/gpu_renderer_rtt/rcc/main.rs"
+                }
+            } else if game {
                 "examples/gpu_renderer_bloxorz/rcc/main.rs"
             } else if profiler {
                 "examples/gpu_profiler_board/rcc/main.rs"
@@ -425,7 +461,13 @@ fn main() {
         &root.join("rcc"),
         project.renderer,
         capture_enabled,
-        column16,
+        if rtt_enabled {
+            ApplicationProfile::Rtt400x240
+        } else if column16 {
+            ApplicationProfile::Column16
+        } else {
+            ApplicationProfile::Default
+        },
     );
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     let image = boot::pack_application_resources(&code, static_words, &resources)

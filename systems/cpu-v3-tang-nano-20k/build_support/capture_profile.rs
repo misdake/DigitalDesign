@@ -79,6 +79,7 @@ struct Resource {
 pub struct RendererCaptureConfiguration {
     pub(super) capture: Option<CaptureConfiguration>,
     pub(super) profile: RendererLayoutProfile,
+    pub(super) framebuffer_view: bool,
     resources: Vec<Resource>,
 }
 impl RendererCaptureConfiguration {
@@ -86,7 +87,21 @@ impl RendererCaptureConfiguration {
         Self {
             capture: None,
             profile,
+            framebuffer_view: false,
             resources: vec![],
+        }
+    }
+    pub fn rtt400x240() -> Self {
+        Self {
+            framebuffer_view: true,
+            ..Self::without_capture(RendererLayoutProfile::Column16)
+        }
+    }
+    pub fn command_abi(&self) -> u16 {
+        if self.framebuffer_view {
+            abi::GPU_CAPTURE_RTT400_COMMAND_ABI
+        } else {
+            abi::GPU_CAPTURE_NATIVE_COMMAND_ABI
         }
     }
     pub fn profile(&self) -> RendererLayoutProfile {
@@ -113,12 +128,8 @@ impl RendererCaptureConfiguration {
                 if m["schema"] != "digitaldesign.gpu-capture-build" {
                     return Err("unsupported capture build schema".into());
                 }
-                if m["command_abi"].as_u64() != Some(u64::from(abi::GPU_CAPTURE_NATIVE_COMMAND_ABI))
-                {
-                    return Err(
-                        "capture requires native command ABI1; RTT command ABI2 is unsupported"
-                            .into(),
-                    );
+                if !matches!(m["command_abi"].as_u64(), Some(1 | 2)) {
+                    return Err("unsupported capture command ABI".into());
                 }
                 [RendererLayoutProfile::Row, RendererLayoutProfile::Column16]
                     .into_iter()
@@ -127,6 +138,10 @@ impl RendererCaptureConfiguration {
             }
             _ => return Err("unsupported capture manifest version/layout".into()),
         };
+        let framebuffer_view = m["command_abi"].as_u64() == Some(2);
+        if framebuffer_view && profile != RendererLayoutProfile::Column16 {
+            return Err("RTT command ABI2 requires column16 storage".into());
+        }
         if m["options"]
             .get("capture_allocation_guards")
             .is_some_and(|v| v != false)
@@ -207,6 +222,7 @@ impl RendererCaptureConfiguration {
         Ok(Self {
             capture: Some(capture),
             profile,
+            framebuffer_view,
             resources,
         })
     }

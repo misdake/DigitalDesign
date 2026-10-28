@@ -285,6 +285,12 @@ fn compile_renderer_capture(
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
     let mut loader = |name: &str| {
+        if name == "gpu_render_profile" {
+            return Ok(rcc::frontend::ModuleSource {
+                source: render_profile_source(configuration.framebuffer_view),
+                origin: None,
+            });
+        }
         if name == "gpu_capture_config" {
             return Ok(rcc::frontend::ModuleSource {
                 source: capture_config_source(capture.map(|c| &c.manifest_id), configuration),
@@ -348,6 +354,13 @@ fn compile_renderer_capture(
     }
 }
 
+fn render_profile_source(framebuffer_view: bool) -> String {
+    format!(
+        "pub const GPU_RENDER_PROFILE:u16={};\n",
+        u16::from(framebuffer_view)
+    )
+}
+
 fn capture_config_source(
     manifest: Option<&[u16; 16]>,
     configuration: &RendererCaptureConfiguration,
@@ -388,6 +401,9 @@ fn resolve_module_with_sources(
     ordinary_dirs: &[PathBuf],
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<(String, Option<PathBuf>), String> {
+    if name == "gpu_render_profile" {
+        return Ok((render_profile_source(false), None));
+    }
     if name == "gpu_capture_config" {
         return Ok((
             capture_config_source(

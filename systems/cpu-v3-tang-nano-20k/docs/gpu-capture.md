@@ -21,9 +21,10 @@ reported together; the legacy entry retains its compiler-error return type.
 | v1 or absent version | No `layout`; optional `command_abi` must be 1 | 1 / 1 | 192000 |
 | v2 row | Exact row layout description; `command_abi: 1` | 1 / 1 | 192000 |
 | v2 column | Exact column-pad16 description and allocation map; `command_abi: 1` | 2 / 1 | 204800 |
+| v2 RTT | Same column description/map; `command_abi: 2` | 2 / 2 | 204800 |
 
-Unknown or mixed descriptions, invalid versions and the paused RTT tuple 2 / 2
-are rejected. The selected description includes dimensions, physical and
+Unknown or mixed descriptions and invalid versions are rejected. RTT command
+ABI 2 requires column layout ABI 2; row layout with RTT commands is rejected. The selected description includes dimensions, physical and
 allocation spans, macro order/pitch, texture layout and (for column) the complete
 memory allocation map. Selection never follows an application filename.
 
@@ -35,6 +36,9 @@ those source files. RCC receives real canonical paths in that generated root;
 its root/helper filename and resource-domain checks remain enabled. This avoids
 loading both layouts into one resource domain or claiming a false source origin.
 The generated root is separate from ordinary application module search paths.
+The host also pins the unprivileged generated `gpu_render_profile`: the
+`rtt400x240()` configuration enables framebuffer views; ordinary profiles leave
+them disabled. Application modules cannot override this selection.
 
 The selected gate is an ordinary module at its real canonical path, without
 authority over private driver state. Normal builds pin the shared no-op gate,
@@ -128,6 +132,23 @@ Frozen sources and physical tags permit read-only scopes without per-fill full
 maintenance; resume republishes before SEND. Architectural memory failure stays
 fail-stop. Repeat dumps keep identity. Launch ends the lease and its read cache;
 fatal paths retain input/UI and output ownership while HDMI continues.
+
+## Mutable render-buffer dependencies
+
+RTT uses the same Prepared lease and range table. A sampled RenderBuffer source
+is a mutable READ/PREIMAGE range covering its complete registered capacity,
+identified by the completed source epoch. It is not an IMMUTABLE catalog texture;
+only immutable mesh, texture and atlas ranges are checked against catalog roots.
+A released CPU TextureView leaves the submission read pin alive through the
+actual successful GPU terminal, so capture cannot outlive its source contents.
+
+Color/depth targets mark the 1600-sector physical span as FULL_CLEAR. The rest
+of each registered allocation is a separate PREIMAGE tail, without FULL_CLEAR.
+Thus a consumer snapshot includes its dynamic source, target preimages and
+unchanged tails. The 64-word header and eight-word range format are unchanged;
+command ABI 2 identifies the view extension independently of column layout ABI 2.
+See [render targets](/systems/cpu-v3-tang-nano-20k/docs/gpu-render-targets.md) for
+the ownership, generation and publication boundaries.
 
 ## Identity, time and validation
 
