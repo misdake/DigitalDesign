@@ -112,6 +112,8 @@ def main():
     p.add_argument('--case',choices=['sparse','empty','dense','numeric'],default='sparse');p.add_argument('--modes',nargs='+',type=int,choices=[0,1,2,3],default=[0,1]);p.add_argument('--repeat',type=int,choices=[1,2],default=1)
     p.add_argument('--ranges',nargs='+',help='Consecutive independent UI calls, each first:end (exclusive end)')
     p.add_argument('--rcc-records',type=Path,help='Exact compiled-CPU records from GPU_RCC_UI_RANGE_FIXTURE')
+    p.add_argument('--column-major',action='store_true')
+    p.add_argument('--board-timing',action='store_true',help='Actual board54/108 CL3/CAP3/RCD3/RP3/registered-return/DQ32 model; no board proof')
     a=p.parse_args()
     ranges=[tuple(map(int,r.split(':'))) for r in a.ranges] if a.ranges else None
     if ranges is not None and (a.repeat!=1 or any(len(r)!=2 or not 0<=r[0]<r[1]<=750 for r in ranges)):
@@ -129,6 +131,20 @@ def main():
     else:length,chars,tiles,ui_reads=assets(out,a.case,a.repeat,ranges)
     calls=len(record['calls']) if record else len(ranges) if ranges else a.repeat
     local_dmas=sum(c>>28==1 for c in record['commands']) if record else 2
+    if a.column_major:
+        assert record is None, 'Column RCC record allocation requires its matching CPU build'
+        seed={int(x,16):int(v,16) for x,v in (line.split() for line in (out/'seed.txt').read_text().splitlines())}
+        mapped={}
+        for address,value in seed.items():
+            for plane in (0x100000,0x140000):
+                if plane<=address<plane+192000:
+                    off=address-plane;tile=off//512;address=plane+((tile%25)*16+tile//25)*512+off%512;break
+            assert address not in mapped;mapped[address]=value
+        for plane in (0x100000,0x140000):
+            for off in range(0,262144,4):
+                tile=off//512
+                if tile>=400 or tile%16==15:mapped[plane+off]=0x5aa5c33c
+        (out/'seed.txt').write_text(''.join(f'{x:x} {v:08x}\n' for x,v in sorted(mapped.items())))
     color_base=record['color_base'] if record else 0x100000
     s=importlib.util.spec_from_file_location('continuation',Path(__file__).with_name('command_continuation.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
     tb=m.TB[:m.TB.index('integer cycle=0')].replace('@PORTS@','\n'.join(decl)).replace('gpu_v2_vliw_command dut(.*);',TASKS+'\ngpu_v2_vliw_command dut(.*);')
@@ -196,10 +212,42 @@ endmodule
     if record:
         for old,key in [('40000','command_base'),('100000','color_base'),('140000','depth_base')]:
             tb=tb.replace("32'h"+old,"32'h"+format(record[key],'x'))
+    if a.column_major:
+        declarations=r"""
+integer pad_off,pad_tile;
+function integer column_offset;input integer canonical;integer tile;begin
+ tile=canonical/512;column_offset=((tile%25)*16+tile/25)*512+canonical%512;
+end endfunction
+"""
+        tb=tb.replace('module tb;','module tb;'+declarations,1)
+        tb=tb.replace("32'h100000+j*4","32'h100000+column_offset(j*4)").replace("32'h140000+j*4","32'h140000+column_offset(j*4)")
+        tb=tb.replace('@COLOR_HALF@+96000','@COLOR_HALF@+102144').replace('+96000))$fatal','+102144))$fatal')
+        marker='\n if(wr!='
+        padding=r"""
+ for(pad_off=0;pad_off<262144;pad_off=pad_off+4)begin
+  pad_tile=pad_off/512;
+  if(pad_tile>=400||pad_tile%16==15)begin
+   if(pin.mem[native_word(32'h100000+pad_off)]!==32'h5aa5c33c||pin.mem[native_word(32'h140000+pad_off)]!==32'h5aa5c33c)$fatal(1,"UI padding/slack changed");
+  end
+ end
+"""
+        assert tb.count(marker)==1;tb=tb.replace(marker,padding+marker)
+    if a.board_timing:
+        old_clock="reg controller_clk=0,phy_clk=0;\nalways #5.051 controller_clk=~controller_clk;\nalways @(posedge controller_clk)clk=~clk;\ninitial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end"
+        new_clock="reg source_clk=0,phy_clk=0;wire controller_clk;assign #(2.271) controller_clk=source_clk;\nalways #4.629629 source_clk=~source_clk;\nalways @(posedge controller_clk)clk=~clk;\ninitial begin #12.430556;forever begin phy_clk=~phy_clk;#4.629629;end end"
+        assert tb.count(old_clock)==1;tb=tb.replace(old_clock,new_clock)
+        old_pin="LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4))"
+        new_pin="LabPinModel #(.CAS_LATENCY(3),.PERIOD_NS(9.259259),.RETURN_MIN(1),.RETURN_MAX(4))"
+        assert tb.count(old_pin)==1;tb=tb.replace(old_pin,new_pin)
     (out/'tb.v').write_text(tb)
     files=[]
     for name in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v','ports.vh']:
         shutil.copyfile(a.peer/name,out/name)
+        if a.board_timing and name=='combination.v':
+            combination=(out/name).read_text()
+            old="TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(1'b1), .CHAIN_GROUP_FOUR(1'b0))"
+            new="TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(1'b1), .CHAIN_GROUP_FOUR(1'b0), .COLD_START_ONLY(1), .CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .DQ_INPUT_DELAY_TAPS(32), .REGISTER_READ_RETURN(1))"
+            assert combination.count(old)==1;(out/name).write_text(combination.replace(old,new))
         if name.endswith('.v'):files.append(out/name)
     commands=[('compile',[os.environ['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-I',out,'-s','tb','-o',out/'sim.vvp',out/'dut.v',*files,out/'tb.v',Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'])]
     commands += [(f'run-{mode}',[os.environ['VVP_EXE'],out/'sim.vvp',f'+MODE={mode}']) for mode in a.modes]
@@ -210,11 +258,11 @@ endmodule
         text=(out/f'{name}.log').read_text(errors='replace')
         if r.returncode:raise RuntimeError(text[-2000:])
         passes += [l for l in text.splitlines() if l.startswith('PASS ')]
-    receipt=dict(export_sha256=hashlib.sha256(data).hexdigest(),case=a.case,repeat=a.repeat,ranges=ranges,passes=passes,
+    receipt=dict(column_major=a.column_major,board_timing=a.board_timing,export_sha256=hashlib.sha256(data).hexdigest(),case=a.case,repeat=a.repeat,ranges=ranges,passes=passes,
         rcc_records_sha256=hashlib.sha256(a.rcc_records.read_bytes()).hexdigest() if a.rcc_records else None,
         single_binding=bool(record and record.get('single_binding')),expected_ranges=calls,expected_local_dmas=local_dmas,
         peer_sha256={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in files},
-        scope='Actual native GPU + shared MC/pin model; standalone CL2, approximately49.5/99MHz; no CPU/Display or board qualification')
+        scope=('Actual native GPU + shared MC/pin model;54/108MHz CL3 CAP3 RCD3 RP3 DQ32 registered return with board_application_tb clock phases; no CPU/Display or physical board qualification' if a.board_timing else 'Actual native GPU + shared MC/pin model; standalone CL2, approximately49.5/99MHz; no CPU/Display or board qualification'))
     (out/'receipt.json').write_text(json.dumps(receipt,indent=2))
     print('\n'.join(passes));print('receipt:',out/'receipt.json')
 if __name__=='__main__':main()

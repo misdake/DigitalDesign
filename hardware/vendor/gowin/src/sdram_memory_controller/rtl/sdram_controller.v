@@ -120,6 +120,10 @@ module SdramController #(
         assign IO_sdram_dq[dq_pin] = !dq_oe_n_pins[dq_pin] ? dq_out[dq_pin] : 1'bz;
     end endgenerate
 
+    // Unowned output payload may change; command/OE still own every write beat.
+    // Free-running capture removes the wide state/count-dependent output CE.
+    always @(posedge clk) dq_out <= write_data;
+
     wire [31:0] dq_sample;
     generate if (DQ_INPUT_DELAY_TAPS == 0) begin : dq_input_bypass
         assign dq_sample = IO_sdram_dq;
@@ -433,7 +437,7 @@ module SdramController #(
                 O_sdram_addr <= {3'b0, saved_address[7:0]};
                 dqm_state <= saved_mask;
                 dq_drive <= 1;
-                dq_out <= write_data;
+
                 write_index <= 1;
                 write_prepare_window <= saved_words > 1;
                 state <= ST_WRITE_STREAM;
@@ -472,7 +476,7 @@ module SdramController #(
                     end
                 end
                 if (write_index < saved_words) begin
-                    dq_out <= write_data;
+
                     write_index <= write_index + 1'b1;
                     if (chain_accept) begin
                         saved_address <= mapped_next_address;

@@ -1,5 +1,7 @@
 //! One ordered Pass. High-memory inputs are encoded at their final addresses.
 use crate::dsl_rt::*;
+mod gpu_layout;
+use gpu_layout::*;
 mod gpu_assets;
 use gpu_assets::*;
 mod gpu_ui;
@@ -160,10 +162,10 @@ fn gpu_builder_begin_record(
         let mut o: GpuStorage = cb[0u16].objects;
         let mut c: GpuStorage = cb[0u16].commands;
         if !gpu_storage_room(view_of(&mut o), object, 16, 16)
-            || gpu_extents_overlap(c.sector, c.sectors, color, 1536)
-            || gpu_extents_overlap(c.sector, c.sectors, depth, 1536)
-            || gpu_extents_overlap(o.sector, o.sectors, color, 1536)
-            || gpu_extents_overlap(o.sector, o.sectors, depth, 1536)
+            || gpu_extents_overlap(c.sector, c.sectors, color, GPU_PLANE_SECTORS)
+            || gpu_extents_overlap(c.sector, c.sectors, depth, GPU_PLANE_SECTORS)
+            || gpu_extents_overlap(o.sector, o.sectors, color, GPU_PLANE_SECTORS)
+            || gpu_extents_overlap(o.sector, o.sectors, depth, GPU_PLANE_SECTORS)
         {
             return false;
         }
@@ -596,8 +598,8 @@ fn gpu_builder_ui_record(
         count,
         cb[0u16].objects.sector,
         cb[0u16].objects.sectors,
-    ) || gpu_extents_overlap(base, count, cb[0u16].color, 1536)
-        || gpu_extents_overlap(base, count, cb[0u16].depth, 1536)
+    ) || gpu_extents_overlap(base, count, cb[0u16].color, GPU_PLANE_SECTORS)
+        || gpu_extents_overlap(base, count, cb[0u16].depth, GPU_PLANE_SECTORS)
     {
         return false;
     }

@@ -420,12 +420,44 @@ the declared returned words. Write completion events cross at the related-clock
 calendar and emit one pulse per transaction; endpoint read framing follows the
 returned pairs. Scalar write completion also
 releases its unused upper pair half. No BSRAM, DSP or payload FIFO is added.
+
+The streaming bridge stages the selected 32-bit write word and its pair-pop
+decision on the controller falling edge. The following controller/logic rising
+edge consumes the retained word/index decision before the write-pair head is
+replaced. With `REGISTER_READ_RETURN=1`, a 64-bit falling-edge register retains
+the completed read pair alongside the visible event; the following logic rising
+edge captures both before a coincident native producer update can replace them.
+This removes a dependence on same-edge producer clock-to-Q ordering. The bridge
+adds 97 flip-flops in that profile: 32 write bits, 64 read bits and one pop bit.
+The unregistered-read profile omits the 64-bit stage. All new paths retain the
+related-clock half-cycle setup/hold checks. Transaction latency, response LAST,
+acknowledgements, pair credits and the native command calendar stay unchanged.
+
+The controller samples its DQ payload every rising edge, including unowned
+cycles, removing the wide state/index-dependent data enable. Command, DQM and
+the per-pin output enables still determine which write beats reach SDRAM.
+This timing tradeoff adds no command or client wait cycle, BSRAM or DSP; the
+extra bridge registers still consume area and routing, so a complete fitted
+design must pass its original setup/hold and board gates.
+
+| Transfer | Before the controller falling edge | Falling edge | Following rising edge |
+| --- | --- | --- | --- |
+| Write | Current pair and native word index select the owned 32-bit word | Retain selected word and pre-pop decision | Controller captures DQ; coincident logic pop may replace the pair head |
+| Registered read | Native producer has completed the 64-bit pair and toggled its event | Retain the pair and expose the matching event | Logic captures stable payload/valid before a native producer replacement |
+
 In the legacy edge-return profile, the endpoint data register samples independently of the native return-valid
 event, except while holding a backpressured response. Invalid-cycle data is not
 owned. This leaves the half-cycle return-valid signal on framing/control only,
 instead of enabling all64 payload registers; no response pipeline stage is added.
 Standalone pin tests and registered-boundary timing do not imply a complete
 system fit or physical board qualification.
+
+`tests/streaming_board.rs` exercises held CPU scalar/LAST responses, varied
+32-burst GPU read/write continuation and Display contention. Its explicit
+skew regression injects a 0.201 ns producer clock-to-Q and relative logic-clock
+offsets of 0 and +/-0.35 ns; these are functional counterexamples and hardening
+checks, not measured physical skew or proof of a unique board root cause.
+Set `STREAM_SDRAM_EVIDENCE` to an external directory when retaining pin traces.
 
 ## Optional four-sector physical groups
 

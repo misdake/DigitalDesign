@@ -124,25 +124,38 @@ impl Module for CpuV3Gpu {
     }
 
     fn verilog_source() -> Option<String> {
-        let mut source = include_str!("gpu.v").to_owned();
-        source.push_str(
-            &gpu_v2::system::vliw_command::verilog(
-                gpu_v2::framebuffer::ports::MaterializedSurface {
-                    color_base_bytes: 0x100000,
-                    depth_base_bytes: 0x140000,
-                    width: 400,
-                    height: 240,
-                },
-                gpu_v2::system::pixel::quad_ingress::rtl::Backend::Native,
-            )
-            .expect("Production GPU export"),
-        );
-        Some(source)
+        Some(
+            source_for_profile(option_env!("CPU_V3_GPU_PROFILE"))
+                .expect("CPU_V3_GPU_PROFILE must name a supported explicit hardware profile"),
+        )
     }
 
     fn verilog_testbench() -> Option<String> {
         Some(include_str!("gpu_tb.v").to_owned())
     }
+}
+
+// Compile-time selection is tracked by Cargo through option_env!, so changing
+// the explicit experiment profile rebuilds this leaf. The ordinary board export
+// remains byte-identical when the variable is absent or names production.
+fn source_for_profile(profile: Option<&str>) -> Result<String, String> {
+    let export = match profile {
+        None | Some("production") => gpu_v2::system::vliw_command::verilog,
+        Some("texture16x8-row") => gpu_v2::system::vliw_command::verilog_texture16x8,
+        Some("texture16x8-column16") => gpu_v2::system::vliw_command::verilog_texture_column16,
+        Some(value) => return Err(format!("unsupported GPU hardware profile: {value}")),
+    };
+    let mut source = include_str!("gpu.v").to_owned();
+    source.push_str(&export(
+        gpu_v2::framebuffer::ports::MaterializedSurface {
+            color_base_bytes: 0x100000,
+            depth_base_bytes: 0x140000,
+            width: 400,
+            height: 240,
+        },
+        gpu_v2::system::pixel::quad_ingress::rtl::Backend::Native,
+    )?);
+    Ok(source)
 }
 
 fn sample_wires<const W: usize>(wires: &Wires<W>, circuit: &CircuitWires) -> u64 {
@@ -158,6 +171,21 @@ fn sample_wires<const W: usize>(wires: &Wires<W>, circuit: &CircuitWires) -> u64
 #[cfg(test)]
 mod tests {
     use digital_design_hardware::Module;
+    #[test]
+    fn explicit_board_profile_keeps_default_and_rejects_unknown_formats() {
+        let baseline = super::source_for_profile(None).unwrap();
+        assert_eq!(
+            baseline,
+            super::source_for_profile(Some("production")).unwrap()
+        );
+        assert!(!baseline.contains("texture_fb400240"));
+        let column = super::source_for_profile(Some("texture16x8-column16")).unwrap();
+        assert!(!column.contains("texture_fb400240"));
+        assert!(column.contains("ui_active?column_ui_tile(ui_tile)"));
+        assert!(column.contains("clear_sector==1599"));
+        assert!(super::source_for_profile(Some("rtt400")).is_err());
+        assert!(super::source_for_profile(Some("")).is_err());
+    }
     #[test]
     fn production_device_uses_the_command_closure() {
         digital_design_hardware::VerilogProject::generate::<super::CpuV3Gpu>().unwrap();

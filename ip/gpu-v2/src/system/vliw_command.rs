@@ -6,12 +6,38 @@ mod current_state;
 mod current_texture;
 #[path = "simulation_checks.rs"]
 mod simulation_checks;
+#[path = "texture_column16.rs"]
+mod texture_column16;
+#[path = "texture_layout16x8.rs"]
+mod texture_layout16x8;
 #[path = "ui_grid.rs"]
 mod ui_grid;
 pub const MODULE: &str = "gpu_v2_vliw_command";
 pub fn verilog(
     surface: MaterializedSurface,
     backend: super::pixel::quad_ingress::rtl::Backend,
+) -> Result<String, String> {
+    verilog_profile(surface, backend, false)
+}
+/// Opt-in8KiB texture-layout experiment; default production export is unchanged.
+pub fn verilog_texture16x8(
+    surface: MaterializedSurface,
+    backend: super::pixel::quad_ingress::rtl::Backend,
+) -> Result<String, String> {
+    verilog_profile(surface, backend, true)
+}
+/// Pure macro-column storage; no framebuffer texture view.
+pub fn verilog_texture_column16(
+    surface: MaterializedSurface,
+    backend: super::pixel::quad_ingress::rtl::Backend,
+) -> Result<String, String> {
+    texture_column16::lower(verilog_texture16x8(surface, backend)?)
+}
+
+fn verilog_profile(
+    surface: MaterializedSurface,
+    backend: super::pixel::quad_ingress::rtl::Backend,
+    half_tile_texture: bool,
 ) -> Result<String, String> {
     let mut source = "`define GPU_V2_COMMAND_PORTS\n".to_owned();
     source.push_str(include_str!("vliw_command.v"));
@@ -27,9 +53,13 @@ pub fn verilog(
         surface,
         backend,
     )?;
-    source.push_str(&ui_grid::lower(current_state::lower(
-        current_texture::lower(numerical)?,
-    )?)?);
+    let numerical = current_state::lower(current_texture::lower(numerical)?)?;
+    let numerical = if half_tile_texture {
+        texture_layout16x8::lower(numerical)?
+    } else {
+        numerical
+    };
+    source.push_str(&ui_grid::lower(numerical)?);
     source.push_str(include_str!("command_processor.v"));
     source.push_str(include_str!("command_dma.v"));
     source.push_str(include_str!("ui_grid.v"));
@@ -38,7 +68,12 @@ pub fn verilog(
         .next()
         .ok_or("memory router")?;
     source.push_str(router);
-    simulation_checks::lower(source)
+    let source = simulation_checks::lower(source)?;
+    if half_tile_texture {
+        texture_layout16x8::protect_return_errors(source)
+    } else {
+        Ok(source)
+    }
 }
 
 /// Current square RGB565 texture. Address and field ranges are driver contracts;

@@ -318,10 +318,10 @@ pub fn gpu_buffer_valid(cb: Array<GpuBuffer>) -> bool {
     }
     // Entire allocations, including padding, are disjoint from both planes.
     if gpu_extents_overlap(c.sector, c.sectors, o.sector, o.sectors)
-        || gpu_extents_overlap(c.sector, c.sectors, cb[0u16].color, 1536)
-        || gpu_extents_overlap(c.sector, c.sectors, cb[0u16].depth, 1536)
-        || gpu_extents_overlap(o.sector, o.sectors, cb[0u16].color, 1536)
-        || gpu_extents_overlap(o.sector, o.sectors, cb[0u16].depth, 1536)
+        || gpu_extents_overlap(c.sector, c.sectors, cb[0u16].color, GPU_PLANE_SECTORS)
+        || gpu_extents_overlap(c.sector, c.sectors, cb[0u16].depth, GPU_PLANE_SECTORS)
+        || gpu_extents_overlap(o.sector, o.sectors, cb[0u16].color, GPU_PLANE_SECTORS)
+        || gpu_extents_overlap(o.sector, o.sectors, cb[0u16].depth, GPU_PLANE_SECTORS)
     {
         return false;
     }
