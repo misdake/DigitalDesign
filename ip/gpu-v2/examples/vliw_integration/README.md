@@ -18,6 +18,9 @@ not replace those implemented contracts or define a CPU submission ABI.
 | replay_export.py | Matched box/full-bunny audit of an explicitly supplied export with a prebuilt current MC peer |
 | profile_prepare.py | Observer-only replay separating R-only/I-only/shared publication waits and an exclusive R lifetime partition; other activity counters overlap |
 | profile_triangle_queue.py | Observer-only per-meshlet T queue peak/full waits, last T completion and remaining frontend tail |
+| texture_layout_replay.py | Opt-in texture-layout study: full24-meshlet recorded demo, observer-only cache units and exact audit |
+| compare_texture_layout.py | Require matched complete-frame identities and compare parent misses,128B traffic and cycles |
+| fit_texture_layout.py | Matched registered cache-leaf fit; excludes packet producer and whole GPU |
 | replay_command.py | Explicit 32-bit DRAM command stream, native state and prefixed meshlet records; shared input RAM, real memory peer and independent pixel audit; replay_export options plus optional --stress |
 | tests/direct_global.py | Bounded paired native GPU runs across drained light/ray/mode/code/far replacements; compare exact shade results and framebuffer bytes under CE pauses and memory backpressure |
 | tests/vliw_command.py | Bounded full GPU/CP test: three culled meshlets, pingpong DMA, 128-byte command-page wrap, native state, CE0, size-aligned local copies, error and abort; portable/native existing input RAM |

@@ -66,7 +66,16 @@ impl Module for FramebufferHdmi {
     }
 
     fn verilog_source() -> Option<String> {
-        verilog_source_for(&ACTIVE_DISPLAY_CONFIG)
+        verilog_source_for(&ACTIVE_DISPLAY_CONFIG).map(|source| {
+            if matches!(
+                option_env!("CPU_V3_GPU_PROFILE"),
+                Some("texture16x8-column16")
+            ) {
+                column16_source(source)
+            } else {
+                source
+            }
+        })
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
@@ -74,8 +83,50 @@ impl Module for FramebufferHdmi {
     }
 
     fn verilog_testbench() -> Option<String> {
-        verilog_testbench_for(&ACTIVE_DISPLAY_CONFIG)
+        verilog_testbench_for(&ACTIVE_DISPLAY_CONFIG).map(|source| {
+            if matches!(
+                option_env!("CPU_V3_GPU_PROFILE"),
+                Some("texture16x8-column16")
+            ) {
+                column16_testbench(source)
+            } else {
+                source
+            }
+        })
     }
+}
+
+// Only macro ordering changes.32-byte row requests and line-buffer ownership
+// remain unchanged; one tile column now advances4096 halfwords, not256.
+fn column16_source(mut source: String) -> String {
+    for (old, new) in [
+        ("TILE_ROW_STRIDE=FB_WIDTH*16", "TILE_ROW_STRIDE=13'd256"),
+        (
+            "{9'b0,burst_index,local_y[3:1],fill_second}",
+            "{5'b0,burst_index,4'b0,local_y[3:1],fill_second}",
+        ),
+        ("32'h003e8900", "32'h003e7000"),
+    ] {
+        assert_eq!(
+            source.matches(old).count(),
+            1,
+            "column Display anchor {old}"
+        );
+        source = source.replacen(old, new, 1);
+    }
+    source
+}
+fn column16_testbench(source: String) -> String {
+    source
+        .replace(
+            "(source_row/16)*6400+(source_row%16)*16+source_tile_x*256",
+            "(source_row/16)*256+(source_row%16)*16+source_tile_x*4096",
+        )
+        .replace("23'd96000", "23'd102144")
+        .replace("3e8900", "3e7000")
+        .replace("16'h8900", "16'h7000")
+        .replace("16'h8901", "16'h7001")
+        .replace("16'h8910", "16'h7010")
 }
 
 fn verilog_source_for(config: &DisplayConfig) -> Option<String> {

@@ -14,6 +14,30 @@ pub fn load_module(
     resolve_module(local_dir, shared_dir, constants, name, dependency).map(|(source, _)| source)
 }
 
+/// Explicit native diagnostic selection; never inferred from application paths.
+/// Formal renderer/capture compilation retains its own approved-source contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeLayoutProfile {
+    Default,
+    Column16,
+}
+pub fn load_native_module(
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    name: &str,
+    profile: NativeLayoutProfile,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<String, String> {
+    if profile == NativeLayoutProfile::Column16 && name == "gpu_layout" {
+        let path = shared_dir.join("gpu_layout_column16.rs");
+        dependency(&path);
+        return std::fs::read_to_string(&path)
+            .map_err(|e| format!("column layout {}: {e}", path.display()));
+    }
+    load_module(local_dir, shared_dir, constants, name, dependency)
+}
+
 /// Preserve the identity of the actual file selected by local-first lookup.
 /// A local override never receives the shared module's approved identity.
 pub fn load_module_source(

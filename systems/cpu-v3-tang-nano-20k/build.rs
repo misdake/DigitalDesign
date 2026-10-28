@@ -16,6 +16,7 @@ fn compile(
     shared: &Path,
     renderer: bool,
     capture_enabled: bool,
+    column16: bool,
 ) -> (Vec<u16>, usize) {
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
@@ -56,9 +57,20 @@ fn compile(
         )
     } else {
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-            rcc_modules::load_module(source_dir, shared, constants, name, &mut |module| {
-                println!("cargo:rerun-if-changed={}", module.display());
-            })
+            rcc_modules::load_native_module(
+                source_dir,
+                shared,
+                constants,
+                name,
+                if column16 {
+                    rcc_modules::NativeLayoutProfile::Column16
+                } else {
+                    rcc_modules::NativeLayoutProfile::Default
+                },
+                &mut |module| {
+                    println!("cargo:rerun-if-changed={}", module.display());
+                },
+            )
         })
     }
     .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
@@ -84,6 +96,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GPU_PROFILER_MANIFEST");
     let mut generated = String::new();
     let mut capture_enabled = false;
+    let mut column16 = false;
     let mut extra_assets: Vec<String> = Vec::new();
     if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
         if example == "dualshock2" {
@@ -217,7 +230,11 @@ fn main() {
                 "renderer-repack.conf".to_owned(),
             ]);
         } else {
-            assert_eq!(example, "gpu_demo", "unsupported CPU_V3_BOOT_EXAMPLE");
+            assert!(
+                example == "gpu_demo" || example == "gpu_demo_column16",
+                "unsupported CPU_V3_BOOT_EXAMPLE"
+            );
+            column16 = example == "gpu_demo_column16";
             let example_dir = root.join("examples/gpu_demo");
             for input in [
                 example_dir.join("tools/assets.py"),
@@ -233,6 +250,7 @@ fn main() {
             let status = std::process::Command::new("python")
                 .env("PYTHONDONTWRITEBYTECODE", "1")
                 .arg(example_dir.join("tools/assets.py"))
+                .args(["--profile", if column16 { "column16" } else { "default" }])
                 .arg("--output")
                 .arg(&assets)
                 .status()
@@ -275,6 +293,12 @@ fn main() {
                 "gpu-demo-assets/assets.json".to_owned(),
                 "demo-repack.conf".to_owned(),
             ]);
+            if column16 {
+                let layout = root.join("rcc/gpu_layout_column16.rs");
+                println!("cargo:rerun-if-changed={}", layout.display());
+                std::fs::copy(layout, output.join("gpu-column-layout.rs")).unwrap();
+                extra_assets.push("gpu-column-layout.rs".to_owned());
+            }
         }
     }
     let source = &project.application;
@@ -296,6 +320,7 @@ fn main() {
         &root.join("rcc"),
         project.renderer,
         capture_enabled,
+        column16,
     );
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     let image = boot::pack_application_resources(&code, static_words, &resources)
