@@ -24,7 +24,7 @@ def identity(output, assets, version):
             shutil.copy2(source,generated/p.name)
     inputs={str(p.relative_to(SYSTEM)).replace('\\','/'):p for p in (SYSTEM/'rcc').glob('*.rs')}
     for p in (SYSTEM/'build_support').glob('*.rs'):inputs[str(p.relative_to(SYSTEM)).replace('\\','/')]=p
-    for p in [SYSTEM/"build.rs",SYSTEM/"Cargo.toml",Path(__file__),SYSTEM/'tools/capture_layout.py',SYSTEM/'tools/gpu_layout.py',SYSTEM/'examples/gpu_renderer/tools/assets.py',SYSTEM/'tests/capture_layout.rs']:
+    for p in [SYSTEM/"build.rs",SYSTEM/"Cargo.toml",Path(__file__),SYSTEM/'tools/capture_layout.py',SYSTEM/'tools/gpu_layout.py',SYSTEM/'examples/gpu_renderer/tools/assets.py',*sorted((SYSTEM/'tests').glob('capture_*.rs'))]:
         inputs[str(p.relative_to(SYSTEM)).replace('\\','/')]=p
     for p in assets.iterdir():
         if p.is_file():inputs['assets/'+p.name]=p

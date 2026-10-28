@@ -119,3 +119,11 @@ manifest/source identities and real CPU header/range/public-read fixtures under
 end-bound rejection and lease expiry, and preserves legacy row bytes. Complete
 payloads are host copies during the frozen gate. It provides no UART, GPU pixel
 or board qualification; see [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).
+
+The separate bounded `capture_draw` target records one native triangle across
+three real RCC/CPU Prepared gates for each row/column profile. It checks actual
+DRAW bindings, positive Z, material/transform changes and A/B/A command-slot
+reuse with distinct tokens. Set `GPU_CAPTURE_DRAW_DIR` to archive its manifest,
+program, origins and each gate's complete frozen inputs/preimages outside the
+build cache. GPU/Display peers only retire control work; independent GPU cold
+replay and pixel/depth verification remain consumer responsibilities.

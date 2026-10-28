@@ -162,3 +162,29 @@ complete payload files are host copies while the gate holds ownership. Controlle
 GPU/Display peers establish identity, bounds and lease behavior, not UART delivery,
 triangle rasterization or board capture. Firmware hashes remain external to the
 manifest ID. No serial column demo capture is enabled by this test or selection.
+
+The separate `capture_draw` target executes three submissions in each explicit
+row `(1,1)` and column `(2,1)` layout/command profile. It uses the catalog's single
+triangle and white texture, unlit RGB material, LESS and depth writes without
+blending. Camera focal length 160 and world Z -4 produce positive native Z +4;
+the three model X positions are 0, +0.5 and -0.5. Actual recorded matrices,
+bindings and material words are checked before any independent GPU replay.
+
+The natural double-slot command addresses follow A/B/A. Each gate has its own
+token, publication epoch, header, ranges and complete immutable inputs and
+color/depth/old-Front physical preimages. First and third referenced object
+bytes differ even though their command address is reused. `GPU_CAPTURE_DRAW_DIR`
+selects the output root (otherwise a process-specific temporary directory).
+Each profile contains `build.json`, actual compiled program/listing, source
+origins and `sequence.json`; `frame-0` through `frame-2` contain frozen payloads
+and `producer.json`. The identity manifest also binds all capture fixture test
+sources. Column padding is captured, while its allocation tail remains outside
+the declared writable span.
+
+GPU/Display control peers only retire protocol work; they never render or scan
+out. Thus the three preimages are independent replay inputs, not asserted
+consecutive GPU pixel outputs. Public bridges sample each range's first/last
+words and the host copies the full frozen range. Positive-Z/interior checks and
+ideal projected coordinates are producer checks, not a raster/depth oracle.
+The GPU consumer must independently replay each actual input, including the
+reused address, and verify coverage, color, depth and allowed writes.

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 #[path = "../rcc/gpu_capture_abi.rs"]
 #[allow(dead_code)]
-mod abi;
+pub(crate) mod abi;
 #[path = "../rcc/gpu_layout_column16.rs"]
 #[allow(dead_code)]
 mod column;
