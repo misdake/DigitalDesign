@@ -15,6 +15,7 @@ from replay import execute, prepare
 from replay import physical
 from capture import run as capture_run
 from layout_replay import stage_column
+from draw_oracle import evaluate as draw_reference
 
 
 def read_producer(folder, receipt_path, commit):
@@ -147,13 +148,25 @@ def main():
     p.add_argument('--frozen-column', type=Path)
     p.add_argument('--column-contract', type=Path)
     p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--oracle', choices=('ui', 'draw'), default='ui',
+                   help='DRAW uses an independent rational reference; unsupported paths reject')
+    p.add_argument('--depth-tolerance', type=int, choices=range(3), default=2)
+    p.add_argument('--color-tolerance', type=int, choices=range(2), default=0,
+                   help='Per RGB565 channel code, only for stable drawn pixels')
     p.add_argument('--expect-fault', choices=('missing-read', 'forbidden-write'),
                    help='Poison one testbench mask only; never modifies producer input bytes')
     args = p.parse_args(); args.out.mkdir(parents=True, exist_ok=False)
     capture, wire, context = read_producer(args.fixture, args.producer_receipt, args.producer_commit)
     layout = header_layout(capture.header)
     capture.save(args.out/'snapshot'); (args.out/'host-wire.bin').write_bytes(wire)
-    expected, clear, caller = ui_oracle(capture)
+    reference = None
+    if args.oracle == 'draw':
+        reference = draw_reference(capture)
+        expected, clear, caller = reference.planes, reference.clear, reference.description()
+        if sum(reference.stable[i] for i in reference.caller['drawn_pixels']) < 256:
+            raise ValueError('DRAW fixture needs at least 256 stable covered pixels')
+    else:
+        expected, clear, caller = ui_oracle(capture)
     rtl = args.row_rtl
     if layout.abi == 2:
         if args.frozen_column is None or args.column_contract is None:
@@ -179,20 +192,33 @@ def main():
             return
         raise AssertionError('Invalid read/write mask was unexpectedly accepted')
     result = execute(capture, manifest)
+    actual = {}
     for role in ('color', 'depth'):
         raw = (args.out/'replay/capture'/(role+'.bin')).read_bytes()
-        if layout.words(raw) != expected[role]:
+        actual[role] = layout.words(raw)
+        if reference is None and actual[role] != expected[role]:
             raise AssertionError(role+' logical pixel oracle mismatch')
         for offset in range(0, layout.plane_bytes, 2):
             if layout.coordinates(offset) is None and struct.unpack_from('<H', raw, offset)[0] != clear[role]:
                 raise AssertionError(role+' physical padding was not cleared')
+    comparison = None
+    if reference is not None:
+        comparison = reference.compare(actual, depth_tolerance=args.depth_tolerance,
+                                       color_tolerance=args.color_tolerance)
+        (args.out/'oracle-comparison.json').write_text(json.dumps(comparison, indent=2)+'\n')
+        if not comparison['pass']:
+            raise AssertionError('Independent DRAW color/depth reference mismatch; see oracle-comparison.json')
     report = dict(scope='Committed CPU fixture bytes replayed offline; no combined CPU/GPU source build, UART, board/PVT or frame-performance qualification',
-                  producer=context, caller=caller, replay=result, logical_color_pixels_checked=96000,
-                  logical_depth_pixels_checked=96000, compared_guard_bytes=0,
-                  padding_words_per_plane=(layout.plane_bytes-192000)//2)
+                  producer=context, caller=caller, replay=result,
+                  logical_color_pixels_checked=comparison['stable_pixels'] if comparison else 96000,
+                  logical_depth_pixels_checked=comparison['stable_pixels'] if comparison else 96000,
+                  compared_guard_bytes=0,
+                  padding_words_per_plane=(layout.plane_bytes-192000)//2,
+                  oracle=args.oracle, oracle_comparison=comparison)
     (args.out/'result.json').write_text(json.dumps(report, indent=2)+'\n')
     print(json.dumps(dict(pass_=True, layout=layout.abi, commands=len(caller['commands']),
-                         draw_commands=0, ui_glyphs=caller['ui_glyphs'], opaque_ui_pixels=caller['opaque_ui_pixels'])))
+                         draw_commands=caller['draw_commands'], oracle=args.oracle,
+                         ui_glyphs=caller.get('ui_glyphs', 0), opaque_ui_pixels=caller.get('opaque_ui_pixels', 0))))
 
 
 if __name__ == '__main__':

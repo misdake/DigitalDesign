@@ -145,12 +145,42 @@ fixtures and the original frozen49.5/99 CL2 scene result do not establish new
 `--out`. Column also requires explicit `--frozen-column`/`--column-contract`.
 It checks archived file and build hashes, the real header/ranges, catalog byte
 closure and actual column origin. The generated wire is labeled host-encoded,
-not UART. Its independent oracle handles the supplied CLEAR plus fixed-grid UI
+not UART. Its default independent oracle handles the supplied CLEAR plus fixed-grid UI
 caller, including odd-row glyph packing, untouched depth and physical padding;
-DRAW is rejected rather than assigned an invented result. `--expect-fault
+this default rejects DRAW. `--expect-fault
 missing-read|forbidden-write` poisons a simulation mask without changing producer
 bytes. Limits remain180000 cycles/180seconds. No verified programming receipt or
 combined CPU/GPU source build is implied by this offline handoff check.
+
+With `--oracle draw`, the same producer/input identity checks precede an independent
+color/depth reference. It decodes the actual native commands, matrix, packed
+meshlet and uniform color. Exact integer cross products and rational perspective
+weights replace the hardware coefficient reduction/reciprocal algorithm. Depth
+is camera Z in Q8.8, not far-normalized depth. ROP color uses nearest RGB565.
+This deliberately restricted small-fixture path accepts at most eight triangles,
+positive-Z vertices, opaque unlit shading, no blending, LESS/ALWAYS depth test
+with writes, RGB attributes or a no-mip constant texture. Filtered UV is restricted
+to white1x1 at zero UV. UI, lighting, clipping and unsupported sampling reject.
+Both plane CLEARs must precede DRAW; overlapping depths and far-plane distances
+within two D16 codes reject as ambiguous. At least256 stable covered pixels are
+required, so an empty output cannot pass the DRAW handoff check.
+
+One-pixel L-infinity bands about ideal triangle edges are excluded and counted
+explicitly. All other background pixels compare exactly. Stable drawn pixels
+use a declared default depth budget of two Q8.8 codes and exact RGB565; options
+can tighten depth to zero or allow one RGB565 channel code for varying RGB.
+Reports retain mismatch coordinates and maximum errors. These budgets describe
+an independent mathematical comparison, not bit-exact RTL equivalence.
+
+`tests/producer_sequence.py` takes three `--fixture` arguments and the same
+producer/export options. It requires natural CB address A/B/A reuse, distinct
+tokens/submissions and at least256 changed stable output pixels on the reused
+address. It independently cold-replays each exact frozen occurrence. It does
+not infer warm queue behavior or CPU/Display concurrency from isolated resets.
+`tests/draw_replay.py` provides a bounded synthetic DRAW check of this plumbing,
+with explicit `--layout row|column`, export options and fresh `--out` directory.
+Synthetic input success never establishes real CPU producer or physical-button
+qualification. Put outputs under the approved external experiment directory.
 
 The next frozen lease can expose the previous submission's actual output in its
 confirmed old Front and depth preimage. `compare.py` checks adjacency, addresses,
