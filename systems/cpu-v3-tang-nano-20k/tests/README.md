@@ -14,6 +14,10 @@ The reusable [GPU profiler](/systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/REA
 has bounded format, viewer and production-GPU observer checks in its own tool
 directory. It does not require a full-frame run or change synthesized logic.
 
+The [GPU board throughput suite](/systems/cpu-v3-tang-nano-20k/examples/gpu_bench/README.md)
+has small asset/protocol checks and an opt-in board run. Its hardware timing comes
+from UART intervals, not the functional simulator or its optional memory peer.
+
 The `host` integration target groups boot packaging, module resolution, driver,
 UI, display-control, timer, input, camera and fetch/checkpoint tests. Filter by
 module when checking one area:

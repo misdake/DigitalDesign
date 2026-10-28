@@ -136,7 +136,67 @@ fn main() {
     let mut column16 = false;
     let mut extra_assets: Vec<String> = Vec::new();
     if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
-        if example == "dualshock2" {
+        if example == "gpu_bench" {
+            println!("cargo:rerun-if-env-changed=GPU_BENCH_SCENE");
+            println!(
+                "cargo:rerun-if-changed={}",
+                root.join("tools/gpu_layout.py").display()
+            );
+            if std::env::var("GPU_BENCH_SCENE").as_deref() == Ok("full") {
+                for path in [
+                    "examples/gpu_demo/tools/assets.py",
+                    "examples/gpu_demo/assets/scene.json",
+                    "../../ip/gpu-v2/examples/vliw_integration/material_scene.py",
+                    "../../ip/gpu-v2/examples/vliw_integration/assets/room-tiles.png",
+                ] {
+                    println!("cargo:rerun-if-changed={}", root.join(path).display());
+                }
+            }
+            let producer = root.join("examples/gpu_bench/tools/assets.py");
+            println!("cargo:rerun-if-changed={}", producer.display());
+            let assets = output.join("gpu-bench-assets");
+            let status = std::process::Command::new("python")
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .arg(producer)
+                .arg("--output")
+                .arg(&assets)
+                .status()
+                .expect("GPU benchmark native asset producer");
+            assert!(status.success(), "GPU benchmark asset validation failed");
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
+                    .unwrap();
+            project.application = PathBuf::from("examples/gpu_bench/rcc/main.rs");
+            project.copies = manifest["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    (
+                        "GPU_BENCH".to_owned(),
+                        r["address"].as_u64().unwrap() as usize,
+                        assets.join(r["file"].as_str().unwrap()),
+                    )
+                })
+                .collect();
+            project.zeros.clear();
+            generated = std::fs::read_to_string(assets.join("bench_assets.rs")).unwrap();
+            std::fs::write(
+                output.join("bench-repack.conf"),
+                format!(
+                    "format 2\napplication {}\ncopy GPU_BENCH {:#x} gpu-bench-assets/bench.bin\n",
+                    project.application.display(),
+                    manifest["resources"][0]["address"].as_u64().unwrap()
+                ),
+            )
+            .unwrap();
+            extra_assets.extend([
+                "gpu-bench-assets/bench.bin".to_owned(),
+                "gpu-bench-assets/assets.json".to_owned(),
+                "gpu-bench-assets/bench_assets.rs".to_owned(),
+                "bench-repack.conf".to_owned(),
+            ]);
+        } else if example == "dualshock2" {
             project.application = PathBuf::from("examples/dualshock2/rcc/main.rs");
             project.copies.clear();
             project.zeros.clear();
