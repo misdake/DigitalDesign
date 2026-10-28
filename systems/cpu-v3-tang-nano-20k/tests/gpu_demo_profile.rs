@@ -253,13 +253,13 @@ fn classic_frame_timing_profile() {
     std::fs::write(out.join("assets.hex"), seed).unwrap();
     if native_profile {
         std::fs::write(out.join("tb.v"), tb).unwrap();
-        for (name, early, groups) in [("legacy", false, false), ("stream", true, false)] {
-            let dir = out.join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            for (path, source) in digital_design_hardware_gowin::sdram_memory_controller::combination::rtl_sources_with_options(40, early, groups).unwrap() {
-                let source = if name == "legacy" { source.replace(".EARLY_GRANT(1'b0)", ".EARLY_GRANT(1'b1)") } else { source };
-                std::fs::write(dir.join(path.file_name().unwrap()), source).unwrap();
-            }
+        let dir = out.join("stream");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (path, source) in
+            digital_design_hardware_gowin::sdram_memory_controller::combination::rtl_sources(40)
+                .unwrap()
+        {
+            std::fs::write(dir.join(path.file_name().unwrap()), source).unwrap();
         }
         println!("NATIVE_FRAME_INPUT_READY {}", out.display());
         return;

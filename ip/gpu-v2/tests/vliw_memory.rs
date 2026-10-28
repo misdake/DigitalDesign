@@ -68,8 +68,7 @@ fn expected(d: Descriptor) -> BTreeMap<u16, u64> {
 
 fn physical() -> Vec<Edge> {
     use digital_design_hardware_gowin::sdram_memory_controller::{
-        emu::{idle_inputs, Combination},
-        ports::OracleImage,
+        combination::idle_inputs, ports::OracleImage, sim::fabric::Fabric,
     };
     let mut bytes = vec![0; 65536];
     for (n, x) in bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
@@ -79,7 +78,7 @@ fn physical() -> Vec<Edge> {
     let image =
         unsafe { OracleImage::from_host(0, bytes, "VLIW three-master external SDRAM fixture") }
             .unwrap();
-    let mut mc = Combination::with_early_grant(image, 32, true).unwrap();
+    let mut mc = Fabric::new(image, 32).unwrap();
     let mut b = Boundary::default();
     let mut v = Vec::new();
     let (mut job, mut ga, mut ti, mut ta, mut fi, mut fa, mut wb, mut rb) =
@@ -268,7 +267,7 @@ fn physical() -> Vec<Edge> {
                 for n in 0..16 {
                     let a = 0x4000 + q * 128 + n * 8;
                     assert_eq!(
-                        &mc.bridge.pins.bytes()[a..a + 8],
+                        &mc.image.bytes()[a..a + 8],
                         &write_pattern(q, n as u8).to_le_bytes()
                     );
                 }

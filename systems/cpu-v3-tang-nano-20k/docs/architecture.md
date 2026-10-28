@@ -169,7 +169,7 @@ D-cache, and display paths transfer fixed 4x64-bit lines; fixed boot loader reta
 The three GPU ports use `line_count_minus_one` to request 32, 64 or 128 bytes; encoding 2 is
 reserved and the adapter rejects it. Each burst is naturally aligned. Reads return 4, 8 or 16
 unstallable 64-bit beats. All line writes advance their cache source only when the bridge accepts
-each beat. `SharedSdramPort` translates this contract to one native descriptor: one 32-bit word
+each beat. `StreamingSdramPort` translates this contract to one native descriptor: one 32-bit word
 for a masked 16-bit access, or 8, 16 or 32 words for a line burst. It does not issue ACT, PRE or
 refresh. The native controller handles those operations, tracks open rows in all four banks, and
 performs a 128-byte bank permutation (`BANK_BIT=5`) internally. Halfword-to-native address
@@ -178,12 +178,13 @@ conversion drops only the halfword lane bit, so the permutation is applied exact
 The bridge preloads two 64-bit write pairs, then replaces the consumed head as the controller
 samples its high half. A write begins on the CPU falling edge; the following rising edge both
 consumes the old high half and may accept the next pair. Reads group two native return words into
-one ordered 64-bit pair at 108 MHz. Its stable Q and pre-edge related-clock toggle event
-feed the adapter's existing final 54-MHz capture directly; the duplicate bridge payload/valid
-register stage is removed. Scalar lane selection, LAST holding and done ownership remain
-in the adapter. Same-edge production changes Q only after the adapter consumes the old
-pair. Transaction completion releases the bridge's ownership token; FPGA
-configuration initializes its cold-only production transport state.
+one ordered 64-bit pair at 108 MHz. The fixed registered-return stage samples
+payload unconditionally at 54 MHz and captures the valid event separately.
+`StreamingSdramPort` then owns scalar lane selection, held data/LAST and ordered
+retirement. Invalid-cycle payload has no owner. Registered return adds one logic
+edge without reducing the pair-per-cycle throughput. Transaction completion
+releases the bridge's ownership token; FPGA configuration initializes its
+cold-only production transport state.
 Command and tile-list fetches remain one line, while framebuffer cache refill and clean use four
 line transactions. Near the end of an active line transfer, the arbiter may grant one successor
 before the current response completes. That grant fixes the next owner and descriptor; the current

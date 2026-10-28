@@ -51,7 +51,7 @@ impl Module for StreamingSdramPort {
     const USES_MAIN_CLOCK: bool = true;
     const EMU_AVAILABLE: bool = false;
     fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
-        panic!("Streaming SDRAM endpoint is RTL-only; legacy transport emulation is separate")
+        panic!("Streaming SDRAM module is RTL-only; use sim::endpoint for functional reference")
     }
     fn verilog_source() -> Option<String> {
         Some(super::RtlSources::STREAM_SHARED_PORT.replace(

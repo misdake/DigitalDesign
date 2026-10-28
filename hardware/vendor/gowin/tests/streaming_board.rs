@@ -1,11 +1,11 @@
-//! CL3 real-pin compatibility and physical continuation, separate from the legacy oracle.
+//! CL3 real-pin compatibility and physical continuation, bound to the fixed stream profile.
 use digital_design_hardware_gowin::sdram_memory_controller::combination;
 use std::{fs, path::PathBuf, process::Command};
 
 #[test]
 #[ignore = "bounded CL3 pin replay: held CPU scalar/LAST plus mixed-length GPU continuation"]
 fn cl3_streaming_transport_with_cpu_holds() {
-    run_replay("cpu-holds", &["--cl3", "--display", "--bursts", "8"]);
+    run_replay("cpu-holds", &["--display", "--bursts", "8"]);
 }
 
 #[test]
@@ -15,7 +15,6 @@ fn cl3_related_clock_payload_skew_stress() {
         let result = run_replay(
             &format!("payload-skew-{skew}"),
             &[
-                "--cl3",
                 "--display",
                 "--bursts",
                 "32",
@@ -31,7 +30,7 @@ fn cl3_related_clock_payload_skew_stress() {
         // must still pass the independent pin scoreboard in every case.
         if skew == "0" {
             assert!(
-                result.contains("cycles=1234"),
+                result.contains("NATIVE_CALENDAR cycles=1234"),
                 "changed nominal native calendar: {result}"
             );
             assert!(result.contains("work=560 commit_span=532"));
@@ -48,7 +47,7 @@ fn run_replay(name: &str, args: &[&str]) -> String {
         .join(name);
     let peer = out.join("peer");
     fs::create_dir_all(&peer).unwrap();
-    for (path, text) in combination::rtl_sources_with_options(40, true, false).unwrap() {
+    for (path, text) in combination::rtl_sources(40).unwrap() {
         fs::write(peer.join(path.file_name().unwrap()), text).unwrap();
     }
     let run = out.join(format!("run-{}", std::process::id()));

@@ -1,6 +1,6 @@
 // Ordered two-descriptor endpoint. Return tags and write supply are independent
 // of physical retirement; only a qualified same-owner/direction stream overlaps.
-module SharedSdramPort #(parameter EARLY_GRANT=1,CHAIN_GROUP_FOUR=0)(
+module SharedSdramPort(
  input clk,reset,input cpu_request_valid,cpu_write,cpu_line,input[21:0]cpu_address,
  input[1:0]cpu_line_count_minus_1,cpu_chain_class,input[63:0]cpu_write_data,input cpu_response_ready,
  input[63:0]controller_read_data,input controller_read_valid,controller_init_done,controller_request_ready,
@@ -33,7 +33,7 @@ module SharedSdramPort #(parameter EARLY_GRANT=1,CHAIN_GROUP_FOUR=0)(
  // Descriptor credit, not delayed return data, bounds successor admission.
  // CL3 plus registered read return must leave time for the native next-row
  // lookup/PRE/ACT before the old column stream reaches its chain boundary.
- assign cpu_lookahead_window=EARLY_GRANT&&used==1&&ql[head[0]]&&
+ assign cpu_lookahead_window=used==1&&ql[head[0]]&&
   forwarded!=0&&controller_stream_active;
  wire next_feed=forwarded==2&&same_next&&qw[head[0]]&&supplied[head[0]];
  wire tx_slot=next_feed?!head[0]:head[0];

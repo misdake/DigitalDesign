@@ -9,8 +9,8 @@ wire request_continuation;
 // Direction matching in the endpoint prevents those owners from being chained.
 wire[1:0] cpu_chain_class=(gpu_ro_request_valid&&gpu_ro_request_ready)?2'd1:(gpu_fb_w_request_valid&&gpu_fb_w_request_ready)?2'd2:(gpu_fb_r_request_valid&&gpu_fb_r_request_ready)?2'd3:(data_request_valid&&data_request_ready&&data_write&&data_line)?2'd3:2'd0;
 wire [20:0] next_address;
-assign lookahead_enable = __EARLY_GRANT__ && lookahead_window;
-__SHARED_PORT__ #(.EARLY_GRANT(__EARLY_GRANT__), .CHAIN_GROUP_FOUR(__CHAIN_GROUP_FOUR__)) adapter (
+assign lookahead_enable = lookahead_window;
+__SHARED_PORT__ adapter (
  .clk(logic_clk), .reset(reset),
  .cpu_request_valid(memory_request_valid), .cpu_write(memory_write),
  .cpu_line(memory_line), .cpu_address(memory_address),
@@ -27,7 +27,7 @@ __SHARED_PORT__ #(.EARLY_GRANT(__EARLY_GRANT__), .CHAIN_GROUP_FOUR(__CHAIN_GROUP
  .controller_address(address), .controller_write_mask(mask),
  .controller_write_data(write_data), .controller_write_data_valid(write_valid), .controller_words(words)
 );
-TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(__EARLY_GRANT__), .CHAIN_GROUP_FOUR(__CHAIN_GROUP_FOUR__)) bridge (
+TangNano20KSdramNativeBridge108M54M bridge (
  .logic_clk(logic_clk), .controller_clk(controller_clk), .sdram_clk(sdram_clk), .reset(reset),
  .next_valid(next_valid), .next_address(next_address), .stream_active(stream_active),
  .request_valid(request_valid), .request_continuation(request_continuation), .writing(writing), .address(address), .words(words),

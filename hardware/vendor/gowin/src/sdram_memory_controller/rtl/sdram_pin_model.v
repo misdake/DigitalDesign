@@ -1,16 +1,16 @@
 `timescale 1ns / 1ps
-// CL2/CL3 timing oracle; default CL2 keeps the published 18 ns RP/RCD reference.
+// Current CL3/108 MHz pin oracle; minimum RCD/RP is three native cycles.
 // Behavioral pin model, not an exact model of the embedded memory die.
 module LabPinModel #(
-    parameter CAS_LATENCY = 2,
-    parameter TAC = 6.0,
-    parameter TOH = 2.0,
-    parameter THZ = 0,
+    parameter CAS_LATENCY = 3,
+    parameter TAC = 5.4,
+    parameter TOH = 2.5,
+    parameter THZ = 5.4,
     parameter RETURN_MIN = 0,
     parameter RETURN_MAX = 0,
     parameter real PERIOD_NS = 1000.0 / 108.0,
-    parameter RCD_MIN = $rtoi($ceil(18.0 / PERIOD_NS)),
-    parameter RP_MIN = $rtoi($ceil(18.0 / PERIOD_NS)),
+    parameter RCD_MIN = 3,
+    parameter RP_MIN = 3,
     parameter RFC_MIN = $rtoi($ceil(63.0 / PERIOD_NS))
 ) (
     input                 sclk,

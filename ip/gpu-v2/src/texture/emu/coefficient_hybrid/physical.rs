@@ -1,7 +1,7 @@
 //! Test-only import adaptation of tests/support/sdram/physical_texture.rs.
-//! Actual serial cycle MC with separately dispatched background client traffic.
+//! Independent functional stream reference with abstract edge timing and background traffic.
 use crate::texture::ports::{RefillEvent, RefillPort};
-use digital_design_hardware_gowin::sdram_memory_controller::{emu::service, ports::*};
+use digital_design_hardware_gowin::sdram_memory_controller::{ports::*, sim::service};
 pub struct Physical {
     pub service: service::Memory,
     pub cycles: u64,
@@ -27,7 +27,7 @@ impl Physical {
         .unwrap();
         let mut init_cycles = 0;
         if initialized {
-            while !service.combination.bridge.output(false).initialized {
+            while !service.fabric.initialized() {
                 assert!(init_cycles < 20_000, "MC initialization watchdog");
                 assert!(service.step().unwrap().is_empty());
                 init_cycles += 1;

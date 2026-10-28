@@ -9,6 +9,9 @@ import argparse,hashlib,importlib.util,json,os,re,shutil,struct,subprocess,sys
 from PIL import Image,ImageDraw,ImageFont
 from fontTools.ttLib import TTFont
 ROOT=Path(__file__).resolve().parents[3]
+import sys
+sys.path.insert(0,str(ROOT/'hardware/vendor/gowin/tests'))
+from stream_contract import load_contract, stage_peer
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(ROOT/'ip/gpu-v2/examples/vliw_integration'))
 from replay_command import CommandBuffer,target_params
@@ -205,7 +208,7 @@ initial begin
 end
 endmodule
 '''.replace('@BYTES@',str(sizes[0]));assert sizes[0]==sizes[1]
-    (out/'tb.v').write_text(tb);files=[]
+    (out/'tb.v').write_text(tb);load_contract(a.peer);files=[]
     for name in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v','ports.vh']:
         shutil.copyfile(a.peer/name,out/name)
         if name.endswith('.v'):files.append(out/name)

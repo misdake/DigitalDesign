@@ -2,6 +2,8 @@
 from pathlib import Path
 import argparse,hashlib,importlib.util,json,os,re,shutil,struct,subprocess,sys
 ROOT=Path(__file__).resolve().parents[3]
+sys.path.insert(0,str(ROOT/'hardware/vendor/gowin/tests'))
+from stream_contract import load_contract, stage_peer
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(ROOT/'ip/gpu-v2/examples/vliw_integration'))
 from replay_command import CommandBuffer,target_params
@@ -113,7 +115,6 @@ def main():
     p.add_argument('--ranges',nargs='+',help='Consecutive independent UI calls, each first:end (exclusive end)')
     p.add_argument('--rcc-records',type=Path,help='Exact compiled-CPU records from GPU_RCC_UI_RANGE_FIXTURE')
     p.add_argument('--column-major',action='store_true')
-    p.add_argument('--board-timing',action='store_true',help='Actual board54/108 CL3/CAP3/RCD3/RP3/registered-return/DQ32 model; no board proof')
     a=p.parse_args()
     ranges=[tuple(map(int,r.split(':'))) for r in a.ranges] if a.ranges else None
     if ranges is not None and (a.repeat!=1 or any(len(r)!=2 or not 0<=r[0]<r[1]<=750 for r in ranges)):
@@ -232,23 +233,9 @@ end endfunction
  end
 """
         assert tb.count(marker)==1;tb=tb.replace(marker,padding+marker)
-    if a.board_timing:
-        old_clock="reg controller_clk=0,phy_clk=0;\nalways #5.051 controller_clk=~controller_clk;\nalways @(posedge controller_clk)clk=~clk;\ninitial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end"
-        new_clock="reg source_clk=0,phy_clk=0;wire controller_clk;assign #(2.271) controller_clk=source_clk;\nalways #4.629629 source_clk=~source_clk;\nalways @(posedge controller_clk)clk=~clk;\ninitial begin #12.430556;forever begin phy_clk=~phy_clk;#4.629629;end end"
-        assert tb.count(old_clock)==1;tb=tb.replace(old_clock,new_clock)
-        old_pin="LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4))"
-        new_pin="LabPinModel #(.CAS_LATENCY(3),.PERIOD_NS(9.259259),.RETURN_MIN(1),.RETURN_MAX(4))"
-        assert tb.count(old_pin)==1;tb=tb.replace(old_pin,new_pin)
     (out/'tb.v').write_text(tb)
-    files=[]
-    for name in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v','ports.vh']:
-        shutil.copyfile(a.peer/name,out/name)
-        if a.board_timing and name=='combination.v':
-            combination=(out/name).read_text()
-            old="TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(1'b1), .CHAIN_GROUP_FOUR(1'b0))"
-            new="TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(1'b1), .CHAIN_GROUP_FOUR(1'b0), .COLD_START_ONLY(1), .CAS(3), .RCD_CYCLES(3), .RP_CYCLES(3), .CAPTURE_LATENCY(3), .DQ_INPUT_DELAY_TAPS(32), .REGISTER_READ_RETURN(1))"
-            assert combination.count(old)==1;(out/name).write_text(combination.replace(old,new))
-        if name.endswith('.v'):files.append(out/name)
+    contract=load_contract(a.peer)
+    files=stage_peer(a.peer,out)
     commands=[('compile',[os.environ['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-I',out,'-s','tb','-o',out/'sim.vvp',out/'dut.v',*files,out/'tb.v',Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'])]
     commands += [(f'run-{mode}',[os.environ['VVP_EXE'],out/'sim.vvp',f'+MODE={mode}']) for mode in a.modes]
     passes=[]
@@ -258,11 +245,11 @@ end endfunction
         text=(out/f'{name}.log').read_text(errors='replace')
         if r.returncode:raise RuntimeError(text[-2000:])
         passes += [l for l in text.splitlines() if l.startswith('PASS ')]
-    receipt=dict(column_major=a.column_major,board_timing=a.board_timing,export_sha256=hashlib.sha256(data).hexdigest(),case=a.case,repeat=a.repeat,ranges=ranges,passes=passes,
+    receipt=dict(column_major=a.column_major,profile=contract["profile"],export_sha256=hashlib.sha256(data).hexdigest(),case=a.case,repeat=a.repeat,ranges=ranges,passes=passes,
         rcc_records_sha256=hashlib.sha256(a.rcc_records.read_bytes()).hexdigest() if a.rcc_records else None,
         single_binding=bool(record and record.get('single_binding')),expected_ranges=calls,expected_local_dmas=local_dmas,
         peer_sha256={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in files},
-        scope=('Actual native GPU + shared MC/pin model;54/108MHz CL3 CAP3 RCD3 RP3 DQ32 registered return with board_application_tb clock phases; no CPU/Display or physical board qualification' if a.board_timing else 'Actual native GPU + shared MC/pin model; standalone CL2, approximately49.5/99MHz; no CPU/Display or board qualification'))
+        scope='Actual native GPU + shared MC/pin model;54/108MHz CL3 CAP3 RCD3 RP3 DQ32 registered return; no CPU/Display or physical board qualification')
     (out/'receipt.json').write_text(json.dumps(receipt,indent=2))
     print('\n'.join(passes));print('receipt:',out/'receipt.json')
 if __name__=='__main__':main()

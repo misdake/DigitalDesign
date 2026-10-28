@@ -449,8 +449,7 @@ fn descriptor_limits_reject_before_physical_request() {
 
 fn physical() -> Stats {
     use digital_design_hardware_gowin::sdram_memory_controller::{
-        emu::{idle_inputs, Combination},
-        ports::OracleImage,
+        combination::idle_inputs, ports::OracleImage, sim::fabric::Fabric,
     };
     let mut bytes = vec![0u8; 8192];
     for (n, data) in bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
@@ -459,7 +458,7 @@ fn physical() -> Stats {
     // Safety: this is the named external SDRAM fixture, not a computed intermediate.
     let image =
         unsafe { OracleImage::from_host(0, bytes, "VLIW loader external byte fixture") }.unwrap();
-    let mut memory = Combination::new(image, 32).unwrap();
+    let mut memory = Fabric::new(image, 32).unwrap();
     let mut loader = Loader::default();
     let mut s = Stats::default();
     for (job, len) in [8, 40, 72, 128, 136, 1024].into_iter().enumerate() {
@@ -513,7 +512,7 @@ fn physical() -> Stats {
 }
 
 #[test]
-fn loader_uses_real_shared_arbiter_bridge_and_sdram_pins() {
+fn loader_uses_independent_functional_stream_reference() {
     let s = physical();
     println!(
         "physical jobs={} edges={} requests={:?} writes={}",

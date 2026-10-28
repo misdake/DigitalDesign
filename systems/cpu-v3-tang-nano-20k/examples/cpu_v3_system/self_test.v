@@ -632,7 +632,7 @@ wire [1:0] memory_chain_class = gpu_slot_valid[0] && gpu_slot_ready[0] ? 2'd1 :
     gpu_slot_valid[2] && gpu_slot_ready[2] ? 2'd2 :
     gpu_slot_valid[1] && gpu_slot_ready[1] ? 2'd3 :
     dcache_memory_request_valid && dcache_memory_request_ready && dcache_memory_write ? 2'd3 : 2'd0;
-__SHARED_SDRAM_PORT__ #(.EARLY_GRANT(1)) u_shared_sdram_port (
+__SHARED_SDRAM_PORT__ u_shared_sdram_port (
     .clk(clk),
     .reset(reset),
     .cpu_request_valid(memory_request_valid),

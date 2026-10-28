@@ -2,7 +2,7 @@ use super::shared_support_sdram_mod as sdram;
 use super::shared_support_texture as support;
 use digital_design_hardware_gowin::sdram_memory_controller::{
     ports::{Event, OracleImage, Service},
-    sim::{average, oracle, traffic::*},
+    sim::oracle,
 };
 use gpu_v2::texture::{ports::*, sim::oracle as sampler};
 use support::*;
@@ -85,7 +85,7 @@ fn verify<S: Service>(service: S, bytes: &[u8], expected: &[[u8; 3]]) -> u64 {
 }
 
 #[test]
-fn real_sdram_payloads_match_direct_image_in_average_and_loaded_modes() {
+fn payloads_match_direct_image_with_independent_synthetic_delays() {
     let s = slot(5, true);
     let bytes = asset(s, pattern);
     let mut direct = Image {
@@ -98,28 +98,15 @@ fn real_sdram_payloads_match_direct_image_in_average_and_loaded_modes() {
     q.lod_bias = 0.5;
     let out = sampler::sample(&q, &mut cache, &mut direct, Config::default()).unwrap();
     let expected = out.pixels.iter().map(|p| p.rgb).collect::<Vec<_>>();
-    let stable = average::Memory::new(
-        service_image(&bytes),
-        average::Profile::gpu_default().unwrap(),
-        Default::default(),
-    )
-    .unwrap();
+    let stable = oracle::Memory::new(service_image(&bytes), Default::default()).unwrap();
     verify(stable, &bytes, &expected);
-    for chain in [
-        ChainPolicy::ExistingUnchained,
-        ChainPolicy::ChainedCandidate,
-    ] {
-        for load in [
-            Load::solo(),
-            Load::display(1),
-            Load::cpu(),
-            Load::display_and_cpu(50),
-        ] {
+    for read_latency in [1, 7] {
+        for beat_interval in [1, 3] {
             let model = oracle::Memory::new(
                 service_image(&bytes),
                 oracle::Config {
-                    load,
-                    chain,
+                    read_latency,
+                    beat_interval,
                     ..Default::default()
                 },
             )
@@ -199,11 +186,8 @@ fn counted_uses_real_sdram_beats_and_warmed_prefetch_without_another_interface()
         let service = oracle::Memory::new(
             service_image(&bytes),
             oracle::Config {
-                load: if loaded {
-                    Load::display_and_cpu(50)
-                } else {
-                    Load::solo()
-                },
+                read_latency: if loaded { 19 } else { 3 },
+                beat_interval: if loaded { 3 } else { 1 },
                 ..Default::default()
             },
         )

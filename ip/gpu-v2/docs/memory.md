@@ -115,12 +115,12 @@ Implementation anchors: [router and adapters](/ip/gpu-v2/src/system/vliw_memory.
 ## Independent native continuation
 
 The validation combination exported by
-`combination::rtl_sources_with_options(init, true, false)` uses the vendor's
+`combination::rtl_sources(init)` uses the vendor's
 streaming endpoint and related-clock bridge. Same-owner, nonblocking GPU RO
 reads, framebuffer refill reads and framebuffer writes can continue native commands when bank/row,
 refresh age, direction and write supply allow it. Each32/64/128-byte transaction
 still has an independent LAST/response. Other owners and CPU response stalls
-fall back to ordinary ordered completion. This is not the opt-in512-byte group.
+fall back to ordinary ordered completion. A 512-byte facade job is segmented into independent hardware transactions.
 
 The ordinary framebuffer cache uses three narrow cursors in a single locked
 16x8-pixel maintenance context: request segment, payload qword and retired
@@ -164,12 +164,11 @@ the ACT/RCD update. Request ownership and real terminal responses are unchanged.
 
 CLEAR supplies its constant directly. Consecutive CP DMA requests and meshlet
 segments use the same path, without a separate filler or payload storage.
-The complete CPU board uses the distinct streaming endpoint/bridge and three
+The complete CPU board uses the same streaming endpoint/bridge and three
 system-owned descriptor registers before arbitration; see
 [system admission](/systems/cpu-v3-tang-nano-20k/docs/architecture.md#streaming-memory-admission).
 UI uses four-sector color maintenance and grouped atlas reads as described in
-[UI](/ip/gpu-v2/docs/ui.md#storage-and-pipeline). The vendor's legacy
-`RtlSources::GEARBOX`/`SharedSdramPort` closure remains separate. Standalone pin
+[UI](/ip/gpu-v2/docs/ui.md#storage-and-pipeline). The fitted vendor factory exposes only this stream closure. Standalone pin
 simulation and isolated timing do not qualify a changed complete board image.
 
 The bounded `tests/framebuffer_continuation.py` fixture exercises the actual

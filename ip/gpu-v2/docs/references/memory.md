@@ -35,16 +35,17 @@ client.
 ## Explicit service options
 
 `ports::Service` accepts byte-addressed32/64/128/512-byte jobs and emits
-Started/ReadBeat/Complete events. Host queue acceptance precedes and differs
-from physical arbiter grant. `emu::service::Memory` executes the cycle
-combination. Serial default and explicit early-grant/chained-group options
-must match RTL options. Early grant reserves one successor. A 512-byte group
-requires explicit aligned group admission. Texture remains128 bytes regardless
-of framebuffer group configuration.
+Started/ReadBeat/Complete events. Host queue acceptance differs from physical
+arbiter grant. `sim::service::Memory` executes the current arbiter and logical
+stream endpoint reference over abstract memory; its counts are not native-clock
+or physical performance evidence. A 512-byte job becomes independent naturally
+aligned hardware transactions. Texture refills remain128 bytes.
 
-`sim::average::Memory` is an aggregate service model. Its configured profile
-must match the same traffic/options; means do not define fixed latencies or
-replace beat/terminal ownership.
+`sim::oracle::Memory` is an independent byte-data reference with explicit
+synthetic read/write delays and beat intervals. It contains no SDRAM command,
+bank, refresh, legacy calendar or calibrated average. Real transport timing and
+seven-client contention belong to the fresh exported stream RTL/pin fixtures.
+Both services require finite cycle/request bounds.
 
 Implementation anchors: [GPU port](/ip/gpu-v2/src/memory/ports.rs),
 [texture facade](/ip/gpu-v2/src/texture/ports.rs),

@@ -1,5 +1,5 @@
 module TangNano20KSdramPll108M54M #(
-    parameter PHASE_SEL = "1101"
+    parameter PHASE_SEL = "0111"
 ) (
     input wire clkin,
     output wire controller_clk,
@@ -10,8 +10,7 @@ module TangNano20KSdramPll108M54M #(
 wire clkoutd3_unused;
 
 // 27 MHz * 4 = 108 MHz. CLKOUTD is the exact divide-by-two CPU clock;
-// PHASE_SEL selects CLKOUTP in 22.5-degree steps. Legacy CL2 diagnostics use
-// 13 (292.5 degrees); the full-system CL3 binding selects 7 (157.5 degrees).
+// The current stream binding uses CLKOUTP step 7 (157.5 degrees).
 rPLL rpll_inst (
     .CLKOUT(controller_clk), .LOCK(locked), .CLKOUTP(sdram_clk),
     .CLKOUTD(logic_clk), .CLKOUTD3(clkoutd3_unused),

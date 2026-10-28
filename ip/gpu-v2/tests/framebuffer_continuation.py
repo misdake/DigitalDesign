@@ -7,6 +7,9 @@ from pathlib import Path
 import argparse, hashlib, json, os, re, subprocess
 
 ROOT = Path(__file__).resolve().parents[3]
+import sys
+sys.path.insert(0,str(ROOT/'hardware/vendor/gowin/tests'))
+from stream_contract import load_contract, stage_peer
 PIXEL = ROOT/'ip/gpu-v2/src/system/pixel'
 VENDOR = ROOT/'hardware/vendor/gowin/src/sdram_memory_controller/rtl'
 
@@ -30,22 +33,9 @@ def main():
     p.add_argument('--refresh-boundary',action='store_true')
     p.add_argument('--release',action='store_true',help='Use the actual production modules extracted from --gpu')
     a=p.parse_args();out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
-    peer=a.peer.resolve();sources=[]
+    peer=a.peer.resolve();load_contract(peer);sources=[]
     for n in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v','ports.vh']:
         d=out/n;d.write_bytes((peer/n).read_bytes());sources.append(d)
-    if not a.baseline:
-        for name,src in [('bridge.v','stream_bridge.v'),('shared_port.v','stream_sdram.v'),('controller.v','sdram_controller.v')]:
-            text=(VENDOR/src).read_text()
-            if name=='bridge.v': text=text.replace('.BANK_BIT(BANK_BIT)', '.BANK_BIT(BANK_BIT), .INIT_CYCLES(21600)')
-            if name=='shared_port.v':text=text.replace('module SharedSdramPort','module cpu_v3_shared_sdram_port') if 'module cpu_v3_shared_sdram_port' in (out/name).read_text() else text
-            (out/name).write_text(text)
-        # Preserve the generated arbiter and replace the complete current
-        # endpoint/bridge wiring. This catches stale interface connections.
-        s=(out/'combination.v').read_text()
-        start=s.index('wire request_valid, writing, write_valid')
-        connection=(VENDOR/'stream_connections.vh').read_text()
-        connection=connection.replace('__EARLY_GRANT__',"1'b1").replace('__CHAIN_GROUP_FOUR__',"1'b0").replace('__SHARED_PORT__','SharedSdramPort')
-        (out/'combination.v').write_text(s[:start]+connection+'\nendmodule\n')
     gpu=a.gpu.read_text()
     def module(name):
         i=re.search(r'\bmodule\s+'+name+r'(?=\s*[(#])',gpu).start()
@@ -83,9 +73,9 @@ TB=r'''`timescale 1ns/1ps
 module tb;
 reg clk=0,controller_clk=0,phy_clk=0,reset=1;
 wire logic_clk=clk,sdram_clk=phy_clk;
-always #5.051 controller_clk=~controller_clk;
+always #4.629629 controller_clk=~controller_clk;
 always @(posedge controller_clk)clk=~clk;
-initial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end
+initial begin #12.430556;forever begin phy_clk=~phy_clk;#4.629629;end end
 GSR GSR(.GSRI(1'b1));
 wire O_sdram_clk,O_sdram_cke,O_sdram_cs_n,O_sdram_cas_n,O_sdram_ras_n,O_sdram_wen_n;
 wire[3:0]O_sdram_dqm;wire[10:0]O_sdram_addr;wire[1:0]O_sdram_ba;wire[31:0]IO_sdram_dq;
@@ -99,7 +89,7 @@ wire[63:0]fb_w_data;wire fb_w_data_ready,fb_w_response_valid,fb_w_response_last,
 GowinSdramCombination mc(.*);
 // Only the initialization wait is shortened; every transport source stays exact.
 defparam mc.bridge.u_controller.INIT_CYCLES=40;
-LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
+LabPinModel #(.PERIOD_NS(9.259259),.CAS_LATENCY(3),.RCD_MIN(3),.RP_MIN(3),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
  .sclk(O_sdram_clk),.reset(reset),.cke(O_sdram_cke),.cs(O_sdram_cs_n),.ras(O_sdram_ras_n),
  .cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),.a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes());
 reg ce=1,shade_phase=0;

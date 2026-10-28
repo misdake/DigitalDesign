@@ -1,5 +1,6 @@
 """Bounded replay source-identity checks; no scene or GPU simulation required."""
 from pathlib import Path
+import json
 import os
 import shutil
 import sys
@@ -8,6 +9,7 @@ import unittest
 from unittest.mock import Mock
 
 import replay_export as replay
+from stream_contract import fnv1a64, load_contract
 
 
 class ReplayExportTests(unittest.TestCase):
@@ -24,6 +26,16 @@ class ReplayExportTests(unittest.TestCase):
         shutil.copyfile(self.source, self.out/'dut.v')
         self.expected = replay.sha(self.source)
 
+    def contract(self, files=('peer.v',)):
+        document = dict(schema=1, profile='stream-54-108-cl3-v1', logic_hz=54_000_000,
+                        controller_hz=108_000_000, cas=3, rcd=3, rp=3, capture_latency=3,
+                        registered_read_return=1, dq_input_delay_taps=32, phase_degrees=157.5,
+                        init_cycles=40, files={})
+        for name in files:
+            data = (self.peer/name).read_bytes()
+            document['files'][name] = dict(bytes=len(data), fnv1a64=fnv1a64(data))
+        (self.peer/'stream-contract.json').write_text(json.dumps(document))
+
     def run_simulation(self, execute):
         return replay.run_checked_simulation(
             execute, ['compiler'], 'simulator', self.out, self.source, self.expected, 10)
@@ -35,6 +47,7 @@ class ReplayExportTests(unittest.TestCase):
         (self.peer/'peer.v').write_text('module peer; endmodule\n')
         (self.peer/'unused.txt').write_text('not a compiler input\n')
         (self.peer/'directory.v').mkdir()
+        self.contract(('peer.v', 'ports.vh'))
         bench = self.out/'tb.v'
         bench.write_text('generated bench\n')
         sources = replay.copy_peer_sources(self.peer, self.out)
@@ -42,7 +55,39 @@ class ReplayExportTests(unittest.TestCase):
         self.assertEqual(replay.sha(self.out/'dut.v'), self.expected)
         self.assertEqual(bench.read_text(), 'generated bench\n')
         self.assertEqual(sorted(p.name for p in self.out.iterdir()),
-                         ['dut.v', 'peer.v', 'ports.vh', 'tb.v'])
+                         ['dut.v', 'peer.v', 'ports.vh', 'stream-contract.json', 'tb.v'])
+
+    def test_old_peer_without_current_contract_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'Missing current stream contract'):
+            replay.copy_peer_sources(self.peer, self.out)
+
+    def test_mixed_peer_sources_are_rejected(self):
+        (self.peer/'peer.v').write_text('module peer; endmodule\n')
+        self.contract()
+        (self.peer/'peer.v').write_text('module old_peer; endmodule\n')
+        with self.assertRaisesRegex(ValueError, 'Stale or mixed'):
+            load_contract(self.peer)
+
+    def test_ports_include_must_be_bound_and_cannot_be_mixed(self):
+        (self.peer/'peer.v').write_text('module peer; endmodule\n')
+        (self.peer/'ports.vh').write_text('wire correct_port;\n')
+        self.contract()
+        with self.assertRaisesRegex(ValueError, 'ports.vh is not bound'):
+            replay.copy_peer_sources(self.peer, self.out)
+        self.contract(('peer.v', 'ports.vh'))
+        (self.peer/'ports.vh').write_text('wire stale_port;\n')
+        with self.assertRaisesRegex(ValueError, 'Stale or mixed'):
+            replay.copy_peer_sources(self.peer, self.out)
+
+    def test_retired_physical_timing_is_rejected(self):
+        self.contract(files=())
+        path = self.peer/'stream-contract.json'
+        document = json.loads(path.read_text())
+        document['controller_hz'] = 99_000_000
+        document['cas'] = 2
+        path.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, 'contract mismatch'):
+            load_contract(self.peer)
 
     def test_wrong_staged_dut_stops_before_compilation(self):
         (self.out/'dut.v').write_text('old GPU\n')
@@ -90,6 +135,8 @@ class ReplayExportTests(unittest.TestCase):
             self.skipTest('Icarus Verilog is not configured')
         (self.peer/'dut.v').write_text('old GPU: must never compile\n')
         (self.peer/'tb.v').write_text('old bench: must never compile\n')
+        (self.peer/'ports.vh').write_text('// Bound test-specific ports\n')
+        self.contract(('ports.vh',))
         sources = replay.copy_peer_sources(self.peer, self.out)
         (self.out/'tb.v').write_text('''
 module tb;

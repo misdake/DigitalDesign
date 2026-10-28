@@ -2,7 +2,7 @@
 use digital_design_hardware_gowin::{
     sdram_memory_controller::{
         arbiter::{CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput},
-        combination, emu,
+        combination,
     },
     ModuleIo,
 };
@@ -13,17 +13,8 @@ fn export_real_shared_sdram_peer() {
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/gpu-vliw-integration-20261018/stage3/mc-peer");
     fs::create_dir_all(&out).unwrap();
-    for (path, text) in combination::rtl_sources_with_options(21600, true, false).unwrap() {
-        fs::write(out.join(path.file_name().unwrap()), text).unwrap();
-    }
-    let i = emu::idle_inputs();
-    let image =
-        digital_design_hardware_gowin::sdram_memory_controller::ports::OracleImage::filled::<0>(
-            0, 128,
-        )
-        .unwrap();
-    let peer = emu::Combination::new(image, 32).unwrap();
-    let o = peer.output(&i);
+    let i = combination::idle_inputs();
+    let o = combination::idle_outputs();
     let mut declarations = String::new();
     for (values, input) in [
         (CpuV3MemoryArbiterInput::verilog_values(&i), true),
@@ -86,6 +77,10 @@ fn export_real_shared_sdram_peer() {
         }
     }
     declarations.push_str("assign fb_w_data_ready=gpu_fb_w_write_data_ready;\n");
-    fs::write(out.join("ports.vh"), declarations).unwrap();
+    let files =
+        combination::rtl_sources_with_includes(21600, [("ports.vh".into(), declarations)]).unwrap();
+    for (path, text) in files {
+        fs::write(out.join(path), text).unwrap();
+    }
     println!("Exported actual shared SDRAM RTL peer to {}", out.display());
 }

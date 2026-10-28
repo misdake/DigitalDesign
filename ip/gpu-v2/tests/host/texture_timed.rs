@@ -2,7 +2,7 @@ use super::shared_support_sdram_cycle as cycle;
 use super::shared_support_texture as support;
 use digital_design_hardware_gowin::sdram_memory_controller::{
     ports::{OracleImage, Service},
-    sim::{average, oracle as memory, traffic::*},
+    sim::oracle as memory,
 };
 use gpu_v2::texture::{
     ports::*,
@@ -16,15 +16,8 @@ fn image(bytes: &[u8]) -> OracleImage {
         OracleImage::from_host(u64::from(BASE), bytes.to_vec(), "timed RAW565 asset").unwrap()
     }
 }
-fn source(bytes: &[u8]) -> cycle::Adapter<average::Memory> {
-    cycle::Adapter::new(
-        average::Memory::new(
-            image(bytes),
-            average::Profile::gpu_default().unwrap(),
-            Default::default(),
-        )
-        .unwrap(),
-    )
+fn source(bytes: &[u8]) -> cycle::Adapter<memory::Memory> {
+    cycle::Adapter::new(memory::Memory::new(image(bytes), Default::default()).unwrap())
 }
 fn expected(inputs: &[QuadInput], slot: Slot, bytes: &[u8]) -> Vec<PixelResult> {
     let mut cache = oracle::Cache::new(vec![slot]).unwrap();
@@ -98,26 +91,18 @@ fn reserved_and_prepared_cycle_execution_match_oracle() {
     }
 }
 #[test]
-fn loaded_service_backpressure_and_ce_keep_inflight_beats_and_results() {
+fn synthetic_delays_backpressure_and_ce_keep_inflight_beats_and_results() {
     let slot = slot(9, true);
     let bytes = asset(slot, pattern);
     let inputs = workload(9, 32);
     let golden = expected(&inputs, slot, &bytes);
-    for chain in [
-        ChainPolicy::ExistingUnchained,
-        ChainPolicy::ChainedCandidate,
-    ] {
-        for load in [
-            Load::solo(),
-            Load::display(1),
-            Load::cpu(),
-            Load::display_and_cpu(50),
-        ] {
+    for read_latency in [1, 7] {
+        for beat_interval in [1, 3] {
             let model = memory::Memory::new(
                 image(&bytes),
                 memory::Config {
-                    load,
-                    chain,
+                    read_latency,
+                    beat_interval,
                     ..Default::default()
                 },
             )

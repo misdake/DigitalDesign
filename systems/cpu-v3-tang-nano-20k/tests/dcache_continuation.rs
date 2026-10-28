@@ -11,7 +11,7 @@ fn clean_and_invalidate_continue_through_native_memory() {
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("../../target/maintainer/dcache-stream-20261024"));
     fs::create_dir_all(&out).unwrap();
-    for (path, text) in combination::rtl_sources_with_options(40, true, false).unwrap() {
+    for (path, text) in combination::rtl_sources(40).unwrap() {
         fs::write(out.join(path.file_name().unwrap()), text).unwrap();
     }
     for (n, text) in VerilogProject::generate::<CpuV3DataCache>()

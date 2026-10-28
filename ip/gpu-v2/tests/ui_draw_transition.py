@@ -14,6 +14,9 @@ import sys
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[3]
+import sys
+sys.path.insert(0,str(ROOT/'hardware/vendor/gowin/tests'))
+from stream_contract import load_contract, stage_peer
 sys.path.insert(0, str(ROOT / 'ip/gpu-v2/examples/vliw_integration'))
 from replay_command import CommandBuffer, target_params
 from device_bus import TASKS
@@ -320,6 +323,7 @@ def main():
     tb = tb.replace('@PORTS@', '\n'.join(declarations)).replace('gpu_v2_vliw_command dut(.*);', TASKS+'\ngpu_v2_vliw_command dut(.*);')
     tb += TB.replace('@BYTES@', str(meta['command_bytes'])).replace('@PROTECTED@', str(meta['protected']))
     (out / 'tb.v').write_text(tb)
+    load_contract(args.peer)
     files, peers = [], {}
     for name in ['bridge.v', 'combination.v', 'controller.v', 'cpu_v3_memory_arbiter.v', 'pins.v', 'shared_port.v', 'ports.vh']:
         source = args.peer / name

@@ -1,13 +1,12 @@
-//! Bounded host facade over actual cycle handshakes, not an event schedule.
-use super::{idle_inputs, Combination};
+//! Bounded functional service over current arbiter/stream endpoint ownership.
+//! Model edges are abstract; this is not native-clock/pad timing or a performance oracle.
+use super::fabric::Fabric;
+use crate::sdram_memory_controller::combination::idle_inputs;
 use crate::sdram_memory_controller::{arbiter::*, ports::*};
 use std::collections::VecDeque;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub init_cycles: u32,
-    pub early_grant: bool,
-    /// Hold ownership for one aligned GPU 512-byte group. Defaults off.
-    pub chained_groups: bool,
     pub max_cycles: u64,
     pub max_requests: usize,
     pub max_queued: usize,
@@ -16,8 +15,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             init_cycles: 21600,
-            early_grant: false,
-            chained_groups: false,
             max_cycles: 1_000_000,
             max_requests: 4096,
             max_queued: 256,
@@ -25,7 +22,6 @@ impl Default for Config {
     }
 }
 struct Job {
-    grouped: bool,
     id: u64,
     client: Client,
     request: Request,
@@ -39,7 +35,7 @@ struct Job {
     scalar: u64,
 }
 pub struct Memory {
-    pub combination: Combination,
+    pub fabric: Fabric,
     config: Config,
     queues: [VecDeque<Job>; 7],
     next_id: u64,
@@ -48,15 +44,10 @@ pub struct Memory {
 impl Memory {
     pub fn new(image: OracleImage, config: Config) -> Result<Self, String> {
         if config.max_cycles == 0 || config.max_requests == 0 || config.max_queued == 0 {
-            return Err("cycle service bounds".into());
+            return Err("functional service bounds".into());
         }
         Ok(Self {
-            combination: Combination::with_options(
-                image,
-                config.init_cycles,
-                config.early_grant,
-                config.chained_groups,
-            )?,
+            fabric: Fabric::new(image, config.init_cycles)?,
             config,
             queues: std::array::from_fn(|_| VecDeque::new()),
             next_id: 0,
@@ -64,7 +55,7 @@ impl Memory {
         })
     }
     pub fn bytes(&self) -> &[u8] {
-        self.combination.bridge.pins.bytes()
+        self.fabric.image.bytes()
     }
     /// Abort all queued/active host IDs and protocol state. The physical image
     /// survives. Already clocked writes survive, unclocked bytes do not commit.
@@ -73,12 +64,10 @@ impl Memory {
         self.pending = 0;
         let mut input = idle_inputs();
         input.reset = true;
-        self.combination.tick(&input)
+        self.fabric.tick(&input)
     }
     fn sector(job: &Job) -> usize {
-        if job.grouped {
-            512
-        } else if job.client == Client::Dma {
+        if job.client == Client::Dma {
             2
         } else if matches!(
             job.client,
@@ -89,13 +78,12 @@ impl Memory {
             job.request.burst().unwrap().bytes.min(128)
         }
     }
-    fn drive(job: &Job, early_grant: bool, input: &mut CpuV3MemoryArbiterInputValue) {
+    fn drive(job: &Job, input: &mut CpuV3MemoryArbiterInputValue) {
         let burst = job.request.burst().unwrap();
         let bytes = Self::sector(job);
         // Descriptor lookahead never advances the active write payload/read
         // index. Only completion promotes the accepted successor segment.
-        let successor =
-            early_grant && job.accepted && !job.next_accepted && job.offset + bytes < burst.bytes;
+        let successor = job.accepted && !job.next_accepted && job.offset + bytes < burst.bytes;
         let descriptor_offset = job.offset + if successor { bytes } else { 0 };
         let address = (burst.address + descriptor_offset as u64) / 2;
         let writing = burst.access == Access::Write;
@@ -103,17 +91,15 @@ impl Memory {
             if bytes == 2 {
                 data[job.offset / 8].bits() >> (job.offset % 8 * 8) & 65535
             } else {
-                data.get(job.offset / 8 + job.fed).map_or(0, |v| v.bits())
+                // Payload supply may already belong to the successor while the
+                // old terminal is still returning. It has its own lifetime.
+                data.get(job.fed).map_or(0, |v| v.bits())
             }
         } else {
             0
         };
         let valid = !job.accepted || successor;
-        let length = if job.grouped {
-            2
-        } else {
-            (bytes as u64 / 32).saturating_sub(1)
-        };
+        let length = (bytes as u64 / 32).saturating_sub(1);
         match job.client {
             Client::Display => {
                 input.display_request_valid = valid;
@@ -163,30 +149,25 @@ impl Memory {
 impl Service for Memory {
     fn submit(&mut self, client: Client, request: Request) -> Result<u64, String> {
         let b = request.burst()?;
-        let grouped = self.config.chained_groups && b.bytes == 512 && client.index() >= 4;
-        if grouped && b.address & 511 != 0 {
-            return Err("chained group requires 512-byte alignment".into());
-        }
-        if !self.combination.bridge.pins.contains(b.address, b.bytes) {
-            return Err("cycle request outside image".into());
+        if self.fabric.image.offset(b).is_err() {
+            return Err("functional request outside image".into());
         }
         if let Request::Write { enables, .. } = &request {
             if matches!(client, Client::Display | Client::Instruction) {
                 return Err("read-only hardware client".into());
             }
             if enables.iter().any(|&v| v != 255) {
-                return Err("cycle facade requires full burst enables; use scalar low-level ports for halfword masks".into());
+                return Err("functional facade requires full burst enables; use scalar low-level ports for halfword masks".into());
             }
         }
         if self.pending >= self.config.max_queued || self.next_id >= self.config.max_requests as u64
         {
-            return Err("cycle service queue/request bound".into());
+            return Err("functional service queue/request bound".into());
         }
         let id = self.next_id;
         self.next_id += 1;
         self.pending += 1;
         self.queues[client.index()].push_back(Job {
-            grouped,
             id,
             client,
             request,
@@ -203,7 +184,7 @@ impl Service for Memory {
     }
     fn step(&mut self) -> Result<Vec<Event>, String> {
         if self.cycle() >= self.config.max_cycles {
-            return Err("cycle service watchdog".into());
+            return Err("functional service watchdog".into());
         }
         let mut input = idle_inputs();
         input.display_response_ready = true;
@@ -212,10 +193,10 @@ impl Service for Memory {
         input.dma_response_ready = true;
         for queue in &self.queues {
             if let Some(job) = queue.front() {
-                Self::drive(job, self.config.early_grant, &mut input);
+                Self::drive(job, &mut input);
             }
         }
-        let o = self.combination.output(&input);
+        let o = self.fabric.output(&input);
         let cycle = self.cycle();
         let mut events = Vec::new();
         for (index, queue) in self.queues.iter_mut().enumerate() {
@@ -300,7 +281,7 @@ impl Service for Memory {
             }
             if valid {
                 if error {
-                    return Err(format!("cycle hardware error for client {index}"));
+                    return Err(format!("functional transport error for client {index}"));
                 }
                 let burst = job.request.burst()?;
                 let bytes = Self::sector(job);
@@ -333,7 +314,6 @@ impl Service for Memory {
                     job.offset += bytes;
                     job.accepted = job.next_accepted;
                     job.next_accepted = false;
-                    job.fed = 0;
                     job.read = 0;
                     if job.offset == burst.bytes {
                         events.push(Event::Complete { id: job.id, cycle });
@@ -343,11 +323,11 @@ impl Service for Memory {
                 }
             }
         }
-        self.combination.tick(&input)?;
+        self.fabric.tick(&input)?;
         Ok(events)
     }
     fn cycle(&self) -> u64 {
-        self.combination.cycle
+        self.fabric.cycle
     }
     fn idle(&self) -> bool {
         self.pending == 0

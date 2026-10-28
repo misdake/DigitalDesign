@@ -141,7 +141,7 @@ flowchart LR
   F[Flash: command and inline data] --> R[SPI byte reader]
   R --> W[One-word COPY/ZERO writer]
   W --> A[Existing DMA arbiter client]
-  A --> M[SharedSdramPort / gear / MC]
+  A --> M[StreamingSdramPort / gear / MC]
   M -->|write response| W
   W --> E[END read completed / load_done]
   E --> D[Display prime / frame-start acknowledgement]

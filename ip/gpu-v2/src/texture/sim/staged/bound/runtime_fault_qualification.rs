@@ -2,7 +2,7 @@
 use super::{qualification as q, *};
 use crate::texture::ports::{Filter, RefillEvent, RefillPort};
 use digital_design_hardware_gowin::sdram_memory_controller::{
-    emu::idle_inputs,
+    combination::idle_inputs,
     ports::{Client, Event, Request, Service},
 };
 use std::{fmt::Write, path::PathBuf};
@@ -68,7 +68,7 @@ impl RefillPort for PhysicalOwner {
             let ready = self
                 .physical
                 .service
-                .combination
+                .fabric
                 .output(&wires)
                 .gpu_ro_request_ready;
             if !ready {

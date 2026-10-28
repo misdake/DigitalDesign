@@ -259,9 +259,9 @@ def bench(S,V,metas,max_cycles):
     declarations = declarations.replace(',dma_we=0','').replace('reg[9:0]dma_addr=0;reg[63:0]dma_data=0;wire dma_ready;','')
     declarations = declarations[:declarations.index('wire mem_req_valid')]
     declarations += '''reg controller_clk=0,phy_clk=0;
-always #5.051 controller_clk=~controller_clk;
+always #4.629629 controller_clk=~controller_clk;
 always @(posedge controller_clk)clk=~clk;
-initial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end
+initial begin #12.430556;forever begin phy_clk=~phy_clk;#4.629629;end end
 '''
     declarations += S.PORTS + S.MC[:S.MC.index('reg descriptor_valid')]
     common = base[base.index('localparam STRESS='):base.index('function integer mi;')].replace(',requests=0,paid_ce0=0','')
@@ -345,7 +345,7 @@ def main():
     execute([exporter,out/'dut.v','sdram','portable'],ROOT,out/'export.log',env=env)
     origins=S.wiring_origins(out/'dut.v')
     execute([Path.home()/'.cargo/bin/cargo.exe','test','--release','-p','gpu-v2','--test','host','vliw_sdram::export_real_shared_sdram_peer','--','--nocapture'],ROOT,out/'mc-export.log',env=env)
-    for p in (ROOT/'target/gpu-vliw-integration-20261018/stage3/mc-peer').iterdir():shutil.copy2(p,out/p.name)
+    S.stage_peer(ROOT/'target/gpu-vliw-integration-20261018/stage3/mc-peer',out)
     (out/'tb.v').write_text(bench(S,V,metas,a.max_cycles))
     execute([env['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-I',out,'-s','tb','-o',out/'sim.vvp',*sorted(out.glob('*.v'))],out,out/'compile.log',env=env)
     print(json.dumps(dict(status='prepared',info=info),ensure_ascii=False),flush=True)

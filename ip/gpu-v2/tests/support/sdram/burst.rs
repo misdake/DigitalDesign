@@ -1,7 +1,6 @@
-//! Exact low-level combination projection, with no host Service queue/latency shim.
+//! Functional stream-reference projection, without a native-clock/pad timing claim.
 use digital_design_hardware_gowin::sdram_memory_controller::{
-    emu::{idle_inputs, Combination},
-    ports::OracleImage,
+    combination::idle_inputs, ports::OracleImage, sim::fabric::Fabric,
 };
 use gpu_v2::memory::ports::{MemoryPort, Request, Response, BURST_BEATS, BURST_BYTES};
 
@@ -12,7 +11,7 @@ struct Active {
 }
 
 pub struct Adapter {
-    pub combination: Combination,
+    pub combination: Fabric,
     active: Option<Active>,
     held_request: Option<Request>,
     held_write: Option<u64>,
@@ -24,7 +23,7 @@ impl Adapter {
             return Err("GPU burst adapter cycle bound".into());
         }
         Ok(Self {
-            combination: Combination::new(image, 32)?,
+            combination: Fabric::new(image, 32)?,
             active: None,
             held_request: None,
             held_write: None,
@@ -51,12 +50,7 @@ impl MemoryPort for Adapter {
         }
         if let Some(r) = request {
             r.validate()?;
-            if !self
-                .combination
-                .bridge
-                .pins
-                .contains(r.address_bytes, BURST_BYTES)
-            {
+            if !self.combination.contains(r.address_bytes, BURST_BYTES) {
                 return Err("GPU burst outside SDRAM image".into());
             }
         }

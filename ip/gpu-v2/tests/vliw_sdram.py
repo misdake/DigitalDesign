@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[3]
 HERE = ROOT / 'ip/gpu-v2/examples/vliw_integration'
 OUT = ROOT / 'target/gpu-vliw-integration-20261018/stage3'
 SHA = lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
+sys.path.insert(0, str(ROOT/'hardware/vendor/gowin/tests'))
+from stream_contract import load_contract, stage_peer
 
 
 def load(name, path):
@@ -82,7 +84,7 @@ wire[3:0]O_sdram_dqm;wire[10:0]O_sdram_addr;wire[1:0]O_sdram_ba;wire[31:0]IO_sdr
 `include "ports.vh"
 GowinSdramCombination mc(.*);
 integer refreshes;
-LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
+LabPinModel #(.PERIOD_NS(9.259259),.CAS_LATENCY(3),.RCD_MIN(3),.RP_MIN(3),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
  .sclk(O_sdram_clk),.reset(reset),.cke(O_sdram_cke),.cs(O_sdram_cs_n),
  .ras(O_sdram_ras_n),.cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),
  .a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes(refreshes));
@@ -260,9 +262,9 @@ def bench(V, metas, stress, max_cycles, require_dirty_flush_wait=True):
     declarations = declarations.replace('reg[9:0]dma_addr=0;reg[63:0]dma_data=0;wire dma_ready;', '')
     declarations = declarations[:declarations.index('wire mem_req_valid')]
     declarations += '''reg controller_clk=0,phy_clk=0;
-always #5.051 controller_clk=~controller_clk;
+always #4.629629 controller_clk=~controller_clk;
 always @(posedge controller_clk)clk=~clk;
-initial begin #13.259;forever begin phy_clk=~phy_clk;#5.051;end end
+initial begin #12.430556;forever begin phy_clk=~phy_clk;#4.629629;end end
 '''
     declarations += PORTS + '\n' + MC + '\ngpu_v2_vliw_sdram dut(.*);\n'
     common = base[base.index('localparam STRESS='):base.index('function integer mi;')]
@@ -359,7 +361,7 @@ def main():
             for i in range(2): shutil.copytree(out / f'task{i}', run / f'task{i}')
             for name in ['seed.txt', 'expected-dma.hex', 'expected-valid.hex', 'jobs.hex']: shutil.copy2(out / name, run / name)
         (run / 'input-contract.json').write_text(json.dumps(dict(instances=profile_instances), indent=2))
-        for p in (OUT / 'mc-peer').iterdir(): shutil.copy2(p, run / p.name)
+        stage_peer(OUT/'mc-peer',run)
         execute([exporter, run / 'dut.v', 'sdram'] + (['portable'] if mode == 'portable' else []), ROOT, run / 'export.log', env=env)
         if origins is None:
             origins = wiring_origins(run / 'dut.v'); snapshot_origins(out, origins)
@@ -372,6 +374,7 @@ def main():
         (run / 'tb.v').write_text(bench(V, profile_metas, a.stress, a.max_cycles, require_dirty_flush_wait))
         cmd = [env['IVERILOG_EXE'], '-g2012', '-D__ICARUS__', '-I', run, '-s', 'tb', '-o', run / 'sim.vvp']
         if mode == 'native': cmd += [Path(env['GOWIN_HOME']) / 'IDE/simlib/gw2a/prim_sim.v']
+        else: cmd += ['-DSTREAM_STATIC_INPUT_DELAY']
         cmd += sorted(run.glob('*.v'))
         execute(cmd, run, run / 'compile.log', 180, env=env)
         log = execute([env['VVP_EXE'], run / 'sim.vvp'], run, run / 'run.log', 600, env=env)

@@ -78,11 +78,9 @@ fn four_real_serial_bursts_hold_ownership_until_write_ack() {
         assert!(complete && accepted && port.idle());
         assert_eq!(got, (0..16).map(|b| pattern(sector, b)).collect::<Vec<_>>());
     }
-    let bytes = port.combination.bridge.pins.bytes();
+    let bytes = port.combination.image.bytes();
     assert!(bytes[..4096].iter().all(|&b| b == 0xa5));
     assert!(bytes[4096 + 512..].iter().all(|&b| b == 0xa5));
-    assert_eq!(port.combination.bridge.write_chains, 0);
-    assert_eq!(port.combination.bridge.read_chains, 0);
 }
 
 #[test]

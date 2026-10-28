@@ -2,34 +2,35 @@
 from pathlib import Path
 import re,os,subprocess,json,hashlib,sys
 sys.dont_write_bytecode=True
-from cl3_pins import with_cl3_pins, cl3_bridge_parameters
+from cl3_pins import with_board_pins
+from stream_contract import load_contract, stage_peer
 import argparse
 ap=argparse.ArgumentParser(__doc__);ap.add_argument('--peer',type=Path,required=True);ap.add_argument('--output',type=Path,required=True);ap.add_argument('--bursts',type=int,default=8)
 ap.add_argument('--late-bank',action='store_true',help='Vary read arrival, bank and row to cover preparation at the READ tail')
 ap.add_argument('--display',action='store_true',help='Insert one strict-priority Display burst during GPU writes')
-ap.add_argument('--cl3',action='store_true',help='Use board CL3/108 MHz and registered logic-clock read return')
-ap.add_argument('--logic-skew-ns',type=float,default=0,help='Inject related logic-clock skew relative to controller (CL3 only)')
-ap.add_argument('--pair-cq-ns',type=float,default=0,help='Inject read-pair/write-head clock-to-Q delay in the simulation fixture')
+ap.add_argument('--logic-skew-ns',type=float,default=0,help='Inject related logic-clock skew relative to controller')
+ap.add_argument('--pair-cq-ns',type=float,default=0,help='Inject producer clock-to-Q delay in the simulation fixture')
 args=ap.parse_args()
-assert 2 <= args.bursts <= (64 if args.late_bank else 32)
 assert -0.35 <= args.logic_skew_ns <= 0.35
 assert 0 <= args.pair_cq_ns <= 0.201
-assert args.cl3 or (args.logic_skew_ns == 0 and args.pair_cq_ns == 0)
-peer=args.peer.resolve();out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
+assert 2 <= args.bursts <= (64 if args.late_bank else 32)
+peer=args.peer.resolve();contract=load_contract(peer);out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
 ports=[]
 for d,w,n in re.findall(r'\b(input|output|inout)\s+(?:wire\s+)?(\[[^]]+\]\s*)?(\w+)',(peer/'combination.v').read_text().split(');',1)[0]):
  ports.append(('reg ' if d=='input' else 'wire ')+w+n+('=0;' if d=='input' else ';'))
 tb=r"""`timescale 1ns/1ps
 module tb;
+reg seven_active=0;
+integer pin_refreshes;
 localparam BURSTS=@BURSTS@,LATE_BANK=@LATE_BANK@;
 @PORTS@
-always #5.051 controller_clk=~controller_clk;
+always #4.629629 controller_clk=~controller_clk;
 always @(posedge controller_clk)logic_clk=~logic_clk;
-initial begin #13.259;forever begin sdram_clk=~sdram_clk;#5.051;end end
+initial begin #12.430556;forever begin sdram_clk=~sdram_clk;#4.629629;end end
 GowinSdramCombination dut(.*);
-LabPinModel #(.PERIOD_NS(10.102),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
+LabPinModel #(.PERIOD_NS(9.259259),.CAS_LATENCY(3),.RCD_MIN(3),.RP_MIN(3),.RETURN_MIN(1),.RETURN_MAX(4)) pin(
  .sclk(O_sdram_clk),.reset(reset),.cke(O_sdram_cke),.cs(O_sdram_cs_n),.ras(O_sdram_ras_n),
- .cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),.a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes());
+ .cas(O_sdram_cas_n),.we(O_sdram_wen_n),.dqm(O_sdram_dqm),.a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes(pin_refreshes));
 integer cycle=0,i,n,hold_count,received,addr,gpu_words=0,gpu_requests=0;reg gpu_pending=0,write_test=0,read_test=0;integer read_offer_cycle=0,read_requests=0,read_terms=0,read_words=0,read_start=0,read_first=0,read_last=0;integer write_requests=0,write_words=0,write_terms=0,write_start=0,first_commit=0,last_commit=0;reg[63:0]kept;
 function[20:0]nw;input integer bytes;integer w;
 begin w=bytes/4;nw=((w>>5)&3)*524288+(w&31)+((w>>7)<<5);end endfunction
@@ -153,36 +154,37 @@ end
 initial begin
  for(i=0;""",1)
  tb=tb.replace(' $display("PASS CPU compatibility', ' if(display_grants!=1||display_words!=4)$fatal(1,"Display coverage");\n $display("DISPLAY_CONTENTION grants=%0d words=%0d",display_grants,display_words);\n $display("PASS CPU compatibility',1)
-if args.cl3:
- tb=with_cl3_pins(tb,'dut.bridge.u_controller')
- tb=tb.replace('integer cycle=0,', 'integer write_chains=0,read_chains=0;\nalways @(posedge controller_clk)if(!reset)begin if(dut.bridge.chain_accept)write_chains=write_chains+1;if(dut.bridge.read_chain_accept)read_chains=read_chains+1;end\ninteger cycle=0,',1)
- tb=tb.replace(' $display("PASS CPU compatibility', ' if(write_chains==0||read_chains==0)$fatal(1,"missing physical continuation write=%0d read=%0d",write_chains,read_chains);\n $display("PHYSICAL_CHAIN write=%0d read=%0d",write_chains,read_chains);\n $display("PASS CPU compatibility',1)
- if args.logic_skew_ns != 0:
-  # Use the common PLL source so negative relative skew never needs a negative delay.
-  tb=tb.replace('always @(posedge controller_clk)logic_clk=~logic_clk;',
-                f'always @(posedge source_clk)logic_clk<=#{2.271 + args.logic_skew_ns:.3f} ~logic_clk;')
+# Every ordinary monitor is disabled only during the independent seven-owner phase.
+tb=tb.replace('always @(posedge logic_clk)if(!reset)begin', 'always @(posedge logic_clk)if(!reset&&!seven_active)begin')
+calendar=Path(__file__).with_name('seven_client_calendar.vh').read_text()
+tb=tb.replace('initial begin\n for(i=0;',calendar+'\ninitial begin\n for(i=0;',1)
+tb=tb.replace(' $display("PASS CPU compatibility', ' $display("NATIVE_CALENDAR cycles=%0d",cycle);\n seven_clients;\n repeat(1200)@(posedge controller_clk);\n if(pin_refreshes<3)$fatal(1,"periodic refresh coverage");\n $display("REFRESH_PASS count=%0d",pin_refreshes);\n @(negedge logic_clk);reset=1;repeat(4)@(negedge logic_clk);reset=0;\n scalar(0,16\'h1000,16\'habc1);\n $display("COORDINATED_REINIT_PASS");\n $display("PASS CPU compatibility',1)
+tb=with_board_pins(tb,'dut.bridge.u_controller')
+tb=tb.replace('integer cycle=0,', 'integer write_chains=0,read_chains=0;\nalways @(posedge controller_clk)if(!reset)begin if(dut.bridge.chain_accept)write_chains=write_chains+1;if(dut.bridge.read_chain_accept)read_chains=read_chains+1;end\ninteger cycle=0,',1)
+tb=tb.replace(' $display("PASS CPU compatibility', ' if(write_chains==0||read_chains==0)$fatal(1,"missing physical continuation write=%0d read=%0d",write_chains,read_chains);\n $display("PHYSICAL_CHAIN write=%0d read=%0d",write_chains,read_chains);\n $display("PASS CPU compatibility',1)
+if args.logic_skew_ns != 0:
+ # Use the common PLL source so negative relative skew needs no negative delay.
+ original='always @(posedge controller_clk)logic_clk=~logic_clk;'
+ assert tb.count(original)==1
+ tb=tb.replace(original,f'always @(posedge source_clk)logic_clk<=#{2.271 + args.logic_skew_ns:.3f} ~logic_clk;')
 (out/'tb.v').write_text(tb)
-files=[]
-for name in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v']:
- p=out/name;source=(peer/name).read_text()
- if args.cl3 and name=='combination.v':
-  source=cl3_bridge_parameters(source)
- if name=='bridge.v' and args.pair_cq_ns:
-  # Delay only simulation-visible producer Q, leaving every receiving register
-  # and valid event intact. This is an injected witness, not measured board skew.
-  for signal in ('pair_head','read_pair'):
-   declaration=f'reg[63:0]{signal}=0'
-   assert source.count(declaration)==1
-   source=source.replace(declaration,f'reg[63:0]{signal}_q=0',1)
-   source=re.sub(rf'\b{signal}\s*<=',f'{signal}_q<=',source)
-   declaration_start=source.index(f'reg[63:0]{signal}_q=0')
-   declaration_end=source.index(';',declaration_start)+1
-   source=source[:declaration_end]+f'wire[63:0]{signal};assign #({args.pair_cq_ns:.3f}) {signal}={signal}_q;'+source[declaration_end:]
-  source='`timescale 1ns/1ps\n'+source
- p.write_text(source);files.append(p)
-for name,cmd in [('compile',[os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',out/'sim.vvp',*files,out/'tb.v']),('run',[os.environ['VVP_EXE'],out/'sim.vvp'])]:
+files=stage_peer(peer,out,ports=False)
+if args.pair_cq_ns:
+ # Validate the original peer before injecting delay only into its staged fixture.
+ p=out/'bridge.v';source=p.read_text()
+ for signal in ['pair_head','read_pair']:
+  declaration=f'reg[63:0]{signal}=0'
+  assert source.count(declaration)==1, f'missing producer register {signal}'
+  source=source.replace(declaration,f'reg[63:0]{signal}_q=0',1)
+  source=re.sub(rf'\b{signal}\s*<=',f'{signal}_q<=',source)
+  declaration_start=source.index(f'reg[63:0]{signal}_q=0')
+  declaration_end=source.index(';',declaration_start)+1
+  source=source[:declaration_end]+f'wire[63:0]{signal};assign #({args.pair_cq_ns:.3f}) {signal}={signal}_q;'+source[declaration_end:]
+ p.write_text('`timescale 1ns/1ps\n'+source)
+
+for name,cmd in [('compile',[os.environ['IVERILOG_EXE'],'-g2012','-DSTREAM_STATIC_INPUT_DELAY','-s','tb','-o',out/'sim.vvp',*files,out/'tb.v']),('run',[os.environ['VVP_EXE'],out/'sim.vvp'])]:
  r=subprocess.run(list(map(str,cmd)),cwd=out,capture_output=True,timeout=90)
  (out/(name+'.log')).write_bytes(r.stdout+r.stderr)
  if r.returncode:raise RuntimeError((r.stdout+r.stderr).decode()[-1800:])
-result=dict(status='pass',cl3=args.cl3,logic_skew_ns=args.logic_skew_ns,pair_cq_ns=args.pair_cq_ns,display_contention=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('DISPLAY_CONTENTION')],physical_chain=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('PHYSICAL_CHAIN')],case=next(s for s in (out/'run.log').read_text().splitlines() if s.startswith('PASS')),burst_timing=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('BURST_TIMING')], source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in files},test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+result=dict(status='pass',profile=contract["profile"],logic_skew_ns=args.logic_skew_ns,pair_cq_ns=args.pair_cq_ns,native_calendar=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('NATIVE_CALENDAR')],display_contention=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('DISPLAY_CONTENTION')],physical_chain=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('PHYSICAL_CHAIN')],seven_clients=[s for s in (out/'run.log').read_text().splitlines() if s.startswith(('SEVEN_CLIENTS_PASS','REFRESH_PASS','COORDINATED_REINIT_PASS'))],case=next(s for s in (out/'run.log').read_text().splitlines() if s.startswith('PASS')),burst_timing=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('BURST_TIMING')], source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in files},test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
 (out/'receipt.json').write_text(json.dumps(result,indent=2));print(json.dumps({k:v for k,v in result.items() if k != 'source_sha256'}))

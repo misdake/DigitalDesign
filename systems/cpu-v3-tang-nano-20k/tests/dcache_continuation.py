@@ -4,16 +4,18 @@ import sys,os,re,json,subprocess,hashlib
 sys.dont_write_bytecode=True
 root=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(root/'hardware/vendor/gowin/tests'))
-from cl3_pins import with_cl3_pins,cl3_bridge_parameters
+from cl3_pins import with_board_pins
+from stream_contract import load_contract, stage_peer
 out=Path(sys.argv[1]).resolve()
 baseline_ref=sys.argv[sys.argv.index('--baseline-ref')+1] if '--baseline-ref' in sys.argv else None
+load_contract(out)
 source=(out/'combination.v').read_text();ports=[]
 data={'data_request_valid','data_write','data_line','data_address','data_write_data','data_response_ready'}
 for d,w,n in re.findall(r'\b(input|output|inout)\s+(?:wire\s+)?(\[[^]]+\]\s*)?(\w+)',source.split(');',1)[0]):
  ports.append(('reg ' if d=='input' and n not in data else 'wire ')+w+n+('=0;' if d=='input' and n not in data else ';'))
 s=(Path(__file__).with_name('dcache_continuation_tb.v')).read_text().replace('@PORTS@','\n'.join(ports))
-s=with_cl3_pins(s,'dut.bridge.u_controller')
-(out/'combination.v').write_text(cl3_bridge_parameters(source))
+s=with_board_pins(s,'dut.bridge.u_controller')
+(out/'combination.v').write_text(source)
 (out/'tb.v').write_text(s)
 files=[out/n for n in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v','tb.v']]+list(out.glob('cache_*.v'))
 p=subprocess.run([os.environ['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-s','tb','-o',str(out/'test.vvp'),str(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'),*map(str,files)],capture_output=True,timeout=90)

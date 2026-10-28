@@ -595,7 +595,7 @@ fn run_frame(pauses: bool, name: &str) {
             && writer.idle()
             && reader.drained();
         finish_sent |= finish;
-        let clocks = shared.clocks();
+        let clocks = shared.model_edges();
         let tick = dut
             .step(
                 BranchTick {
@@ -608,7 +608,7 @@ fn run_frame(pauses: bool, name: &str) {
                 &mut fb,
             )
             .unwrap();
-        assert_eq!(shared.clocks(), (clocks.0 + 1, clocks.1 + 2));
+        assert_eq!(shared.model_edges(), clocks + 1);
         if tick.live.model.quad_accepted {
             compare_offer(offer.as_ref().unwrap(), &expected_quads[accepted].1);
             assert!(allocated

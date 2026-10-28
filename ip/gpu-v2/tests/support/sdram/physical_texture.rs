@@ -1,5 +1,5 @@
-//! Actual serial cycle MC with separately dispatched background client traffic.
-use digital_design_hardware_gowin::sdram_memory_controller::{emu::service, ports::*};
+//! Independent functional stream reference with abstract edge timing and background traffic.
+use digital_design_hardware_gowin::sdram_memory_controller::{ports::*, sim::service};
 use gpu_v2::texture::ports::{RefillEvent, RefillPort};
 pub struct Physical {
     pub service: service::Memory,
@@ -19,7 +19,7 @@ impl Physical {
         let mut service = service::Memory::new(image, Default::default()).unwrap();
         let mut init_cycles = 0;
         if initialized {
-            while !service.combination.bridge.output(false).initialized {
+            while !service.fabric.initialized() {
                 assert!(init_cycles < 100000, "MC initialization watchdog");
                 assert!(service.step().unwrap().is_empty());
                 init_cycles += 1;
