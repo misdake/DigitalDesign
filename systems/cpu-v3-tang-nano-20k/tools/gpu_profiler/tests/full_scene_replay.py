@@ -16,8 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from layout import header_layout
 from replay import prepare, execute, preview
 from scene_oracle import render
-from producer_handoff import read_producer
-from layout_replay import stage_column
+from producer_handoff import read_producer,select_replay_export
 
 
 def validate_scene(reference):
@@ -80,7 +79,7 @@ def main():
     p.add_argument('--fixture', type=Path, required=True)
     p.add_argument('--producer-receipt', type=Path, required=True)
     p.add_argument('--producer-commit', required=True)
-    p.add_argument('--row-rtl', type=Path, required=True)
+    p.add_argument('--rtl','--row-rtl',dest='rtl',type=Path,required=True)
     p.add_argument('--frozen-column', type=Path)
     p.add_argument('--column-contract', type=Path)
     p.add_argument('--out', type=Path, required=True)
@@ -98,11 +97,7 @@ def main():
     for y in range(240):
         for x in range(400): struct.pack_into('<H',raw,layout.offset(x,y),int(reference.color[y,x]))
     preview(raw,args.out/'independent-reference.png',capture.header['target_format']==1,layout)
-    rtl = args.row_rtl
-    if layout.abi == 2:
-        if args.frozen_column is None or args.column_contract is None:
-            raise ValueError('Column run requires explicit frozen GPU and contract')
-        rtl = args.out/'rtl'; stage_column(args.row_rtl,args.frozen_column,args.column_contract,rtl)
+    rtl=select_replay_export(layout,args.rtl,args.out/'rtl',args.frozen_column,args.column_contract)
     manifest = prepare(capture,rtl,args.out/'replay',args.max_cycles,args.timeout,context)
     result = execute(capture,manifest)
     checks=check_outputs(capture,reference,args.out);comparison=checks['comparison']

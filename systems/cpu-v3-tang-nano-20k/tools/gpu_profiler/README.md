@@ -112,8 +112,9 @@ descriptor. Entries retain `file,address,bytes,sha256` and add `kind` (`mesh`,
 `texture`, `atlas`, `other`); textures also declare `layout`. Preparation checks
 hashes/bounds and copies bytes; it never converts row textures. Firmware rebuilds
 restore that same build-bound catalog through the existing boot-assets route.
-The formal CPU producer/profile selector remains row-only at this integration
-base: consumer fixture support is not a real column producer or button qualification.
+The formal CPU producer supports both row and column profiles. The selected
+catalog, capture header, replay export and qualified hardware must agree;
+offline producer support alone does not qualify physical buttons or board timing.
 
 The MC export preserves a `peer/stream-contract.json` and its original source
 names. Replay validates the fixed stream profile and every peer source against
@@ -141,8 +142,11 @@ fixtures and the original frozen49.5/99 CL2 scene result do not establish new
 54/108 board or producer qualification.
 
 `tests/producer_handoff.py` consumes an archived committed producer fixture with
-`--fixture`, `--producer-receipt`, `--producer-commit`, `--row-rtl` and fresh
-`--out`. Column also requires explicit `--frozen-column`/`--column-contract`.
+`--fixture`, `--producer-receipt`, `--producer-commit`, `--rtl` and fresh
+`--out`. Current row and column inputs use the matching canonical export directly.
+The old `--row-rtl` spelling remains an alias. Only legacy column staging from a
+row export requires explicit `--frozen-column`/`--column-contract`; incomplete or
+ambiguous replacement requests are rejected.
 It checks archived file and build hashes, the real header/ranges, catalog byte
 closure and actual column origin. The generated wire is labeled host-encoded,
 not UART. Its default independent oracle handles the supplied CLEAR plus fixed-grid UI

@@ -102,6 +102,19 @@ fn profiler_tx_word(word: u16) {
     profiler_tx(word);
     profiler_tx(word >> 8);
 }
+fn profiler_notice(code: u16) {
+    if GPU_PROFILER_AUTOMATIC_TEST != 0 {
+        return;
+    }
+    // Console telemetry only, outside GPS1 BEGIN..END. It never changes the
+    // prepared lease, Display, command bytes or transport record ABI.
+    let mut text: Buf<u16, 11> = Buf::new([10, 71, 80, 85, 80, 82, 79, 70, 58, code, 10]);
+    let mut i: u16 = 0;
+    while i < 11 {
+        profiler_tx(text[i]);
+        i += 1;
+    }
+}
 fn profiler_frame_word(word: u16) {
     profiler_crc_word(0, word);
     profiler_tx_word(word);
@@ -300,6 +313,13 @@ pub fn profiler_gate(descriptor: Array<u16>) -> u16 {
     if PROFILER_FLAGS.as_array()[0u16] != 0 || gpu_capture_error() != GPU_CAPTURE_OK {
         return GPU_CAPTURE_FATAL;
     }
+    if GPU_PROFILER_AUTOMATIC_TEST == 0 && PROFILER_BUTTONS.as_array()[0u16] == 0 {
+        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 0);
+        profiler_notice(82); // R: first prepared gate is ready for user input.
+        if PROFILER_FLAGS.as_array()[0u16] != 0 {
+            return GPU_CAPTURE_FATAL;
+        }
+    }
     let automatic = GPU_PROFILER_AUTOMATIC_TEST != 0 && PROFILER_FLAGS.as_array()[1u16] < 3;
     if automatic {
         PROFILER_FLAGS.as_array()[1u16] += 1;
@@ -310,6 +330,7 @@ pub fn profiler_gate(descriptor: Array<u16>) -> u16 {
         return GPU_CAPTURE_CONTINUE;
     }
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 2);
+    profiler_notice(80); // P: producer paused before submission.
     if automatic {
         // Explicit diagnostic stimulus, not a physical-button qualification.
         // First two dumps share one lease; the next lease exposes its result
@@ -348,10 +369,15 @@ pub fn profiler_gate(descriptor: Array<u16>) -> u16 {
         }
         if edges & 2 != 0 {
             dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 0);
+            profiler_notice(82); // R: resume the same prepared CB once.
+            if PROFILER_FLAGS.as_array()[0u16] != 0 {
+                return GPU_CAPTURE_FATAL;
+            }
             return GPU_CAPTURE_RESUMED;
         }
         if edges & 1 != 0 {
             dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 4);
+            profiler_notice(68); // D: dump starts; no GPU submission.
             if !profiler_dump(descriptor) {
                 PROFILER_FLAGS.as_array()[0u16] = 1;
                 return GPU_CAPTURE_FATAL;
@@ -360,6 +386,7 @@ pub fn profiler_gate(descriptor: Array<u16>) -> u16 {
             // simultaneous resume button must not start the frozen submission.
             profiler_buttons_reset();
             dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 2);
+            profiler_notice(80); // P: complete transfer, still paused.
         }
     }
     GPU_CAPTURE_FATAL

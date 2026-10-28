@@ -35,6 +35,21 @@ while the board remains healthy and paused.
 LED values2 and4 identify paused and dumping;0 marks resume. They are diagnostic
 software writes, not proof of CPU/GPU progress.
 
+Manual mode additionally emits short console notices outside GPS1 records:
+`GPUPROF:R` at the first ready gate or explicit resume, `GPUPROF:P` after pausing
+and after a completed dump, and `GPUPROF:D` before dumping. These notices leave
+the frozen framebuffer and prepared command input untouched. The decoder ignores
+this console text; automatic stimulus keeps its existing binary stream. Screen
+contents do not change merely to acknowledge a button. Wait for readiness,
+release any held button, then press Button2 to pause; only after P press Button1
+to dump. A completed dump returns to P, not R.
+
+The full scene has a fixed camera, so running and paused images can look alike.
+`OBS xx.x` in the upper-left corner is the previous successful submit-to-observed-
+completion interval in milliseconds, including publication and CPU observation
+delay; it is not FPS or a pause/dump indicator. No acknowledgement is drawn into
+the frozen framebuffer. Use the UART notices to distinguish those states.
+
 ## Preparation and identity
 
 Run from this worktree. Export the current complete system and production

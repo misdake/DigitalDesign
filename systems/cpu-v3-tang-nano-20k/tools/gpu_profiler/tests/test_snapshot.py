@@ -97,6 +97,15 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(complete[0].manifest()["input_sha256"],
                          complete[1].manifest()["input_sha256"])
 
+    def test_manual_gate_notices_do_not_modify_snapshot_abi(self):
+        console=b'\nGPUPROF:R\n\nGPUPROF:P\n\nGPUPROF:D\n'
+        done,report=self.decode(console+self.raw+b'\nGPUPROF:P\n')
+        clean,_=self.decode(self.raw)
+        self.assertEqual(report['failures'],[])
+        self.assertEqual(len(done),1)
+        self.assertEqual(done[0].manifest()['input_sha256'],clean[0].manifest()['input_sha256'])
+        self.assertEqual(report['ignored_bytes'],len(console)+len(b'\nGPUPROF:P\n'))
+
     def test_corrupt_truncated_and_missing_end_never_complete(self):
         corrupt = bytearray(self.raw)
         corrupt[40] ^= 16

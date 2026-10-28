@@ -11,11 +11,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import identity
 import snapshot as s
 from layout import header_layout
-from replay import execute, prepare
+from replay import execute, prepare, export_layout
 from replay import physical
 from capture import run as capture_run
 from layout_replay import stage_column
 from draw_oracle import evaluate as draw_reference
+
+
+def select_replay_export(layout,rtl,output,frozen=None,contract=None):
+    """Prefer a fresh matching canonical export; legacy replacement is explicit."""
+    sources=json.loads((rtl/'rtl.json').read_text())
+    actual=export_layout(rtl,'\n'.join((rtl/name).read_text() for name in sources))
+    if frozen is None and contract is None:
+        if actual != layout:
+            raise ValueError('Replay export does not match input layout; select current matching --rtl')
+        return rtl
+    if layout.abi!=2 or actual.abi!=1 or frozen is None or contract is None:
+        raise ValueError('Legacy frozen replacement needs row peer, column input and both explicit identities')
+    stage_column(rtl,frozen,contract,output)
+    return output
 
 
 def draw_archive(folder, receipt_path, receipt, commit):
@@ -212,7 +226,8 @@ def main():
     p.add_argument('--fixture', type=Path, required=True)
     p.add_argument('--producer-receipt', type=Path, required=True)
     p.add_argument('--producer-commit', required=True)
-    p.add_argument('--row-rtl', type=Path, required=True)
+    p.add_argument('--rtl','--row-rtl',dest='rtl',type=Path,required=True,
+                   help='Current matching row/column export; old --row-rtl alias remains accepted')
     p.add_argument('--frozen-column', type=Path)
     p.add_argument('--column-contract', type=Path)
     p.add_argument('--out', type=Path, required=True)
@@ -237,11 +252,7 @@ def main():
             raise ValueError('DRAW fixture needs at least 256 stable covered pixels')
     else:
         expected, clear, caller = ui_oracle(capture)
-    rtl = args.row_rtl
-    if layout.abi == 2:
-        if args.frozen_column is None or args.column_contract is None:
-            raise ValueError('Column replay needs explicit frozen GPU and layout contract')
-        rtl = args.out/'rtl'; stage_column(args.row_rtl, args.frozen_column, args.column_contract, rtl)
+    rtl=select_replay_export(layout,args.rtl,args.out/'rtl',args.frozen_column,args.column_contract)
     manifest = prepare(capture, rtl, args.out/'replay', 180000, 180, context)
     if args.expect_fault:
         missing = args.expect_fault == 'missing-read'

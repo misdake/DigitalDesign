@@ -60,7 +60,7 @@ def main():
     parser.add_argument('--fixture', type=Path, action='append', required=True)
     parser.add_argument('--producer-receipt', type=Path, required=True)
     parser.add_argument('--producer-commit', required=True)
-    parser.add_argument('--row-rtl', type=Path, required=True)
+    parser.add_argument('--rtl','--row-rtl',dest='rtl',type=Path,required=True)
     parser.add_argument('--frozen-column', type=Path)
     parser.add_argument('--column-contract', type=Path)
     parser.add_argument('--include-edges', action='store_true')
@@ -73,7 +73,7 @@ def main():
     for index, path in enumerate(args.fixture):
         command = [sys.executable, '-B', str(Path(__file__).with_name('producer_handoff.py')),
                    '--fixture', str(path), '--producer-receipt', str(args.producer_receipt),
-                   '--producer-commit', args.producer_commit, '--row-rtl', str(args.row_rtl),
+                   '--producer-commit', args.producer_commit, '--rtl', str(args.rtl),
                    '--oracle', 'draw', '--out', str(args.out/str(index))]
         for option, value in [('--frozen-column', args.frozen_column), ('--column-contract', args.column_contract)]:
             if value is not None:
