@@ -230,9 +230,10 @@ fn gpu_persistent_ui_retire(slot: u16) -> bool {
     GPU_PUI_PAGES[at] = 0;
     true
 }
-fn gpu_persistent_ui_cancel(slot: u16) -> bool {
+fn gpu_persistent_ui_cancel(slot: u16, sealed: bool) -> bool {
     let at = (slot - 1) * 4;
-    if GPU_PUI_PAGES[at] > 1 {
+    let last: u16 = if sealed { 2 } else { 1 };
+    if GPU_PUI_PAGES[at] > last {
         return false;
     }
     GPU_PUI_PAGES[at] = 0;

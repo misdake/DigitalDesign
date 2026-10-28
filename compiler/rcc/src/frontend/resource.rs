@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use syn::{parse_quote, spanned::Spanned, visit::Visit, visit_mut::VisitMut};
 use syn::{Expr, FnArg, Item, Pat, ReturnType, Stmt, Type};
+pub(super) mod drop_syntax;
 mod library;
 #[cfg(test)]
 mod library_tests;
@@ -602,7 +603,7 @@ impl<'a> Checker<'a> {
             .rev()
             .filter(|b| b.live && b.cleanup)
             .map(|b| {
-                let function = syn::Ident::new(
+                let function = drop_syntax::resource_ident(
                     &self.model.resources[&b.value.ty].cleanup,
                     proc_macro2::Span::call_site(),
                 );
@@ -1085,6 +1086,21 @@ impl<'a> Checker<'a> {
         let Some(n) = name(&call.func) else {
             return self.native_call(call);
         };
+        if n == "drop" && !self.model.functions.contains_key(&n) {
+            if call.args.len() != 1 {
+                return Err(error(call, "drop needs one owned resource"));
+            }
+            let Some(local) = name(&call.args[0]) else {
+                return Err(error(call, "drop needs a bound resource owner"));
+            };
+            let value = self.take(&local, call)?;
+            let cleanup = drop_syntax::resource_ident(
+                &self.model.resources[&value.ty].cleanup,
+                call.paren_token.span,
+            );
+            *call.func = parse_quote!(#cleanup);
+            return Ok(Kind::Unit);
+        }
         if n == "resource_disarm" {
             if call.args.len() != 1 {
                 return Err(error(call, "resource_disarm needs one owned resource"));
@@ -1144,27 +1160,44 @@ impl<'a> Checker<'a> {
                     owned.push(v);
                 }
                 Arg::Borrow(expected) => {
-                    let Expr::Reference(r) = expr else {
-                        return Err(error(expr, "resource borrowing requires direct &mut owner"));
-                    };
-                    if r.mutability.is_none() {
-                        return Err(error(r, "resource borrowing requires &mut"));
-                    }
-                    let Some(local) = name(&r.expr) else {
-                        return Err(error(r, "resource borrowing needs a local owner"));
+                    let (local, erased, implicit) = match expr {
+                        Expr::Reference(r) => {
+                            if r.mutability.is_none() {
+                                return Err(error(r, "resource borrowing requires &mut"));
+                            }
+                            let Some(local) = name(&r.expr) else {
+                                return Err(error(r, "resource borrowing needs a local owner"));
+                            };
+                            (local, *r.expr.clone(), false)
+                        }
+                        _ => {
+                            let Some(local) = name(expr) else {
+                                return Err(error(
+                                    expr,
+                                    "resource borrowing requires direct &mut owner",
+                                ));
+                            };
+                            (local, expr.clone(), true)
+                        }
                     };
                     let b = self
-                        .lookup(&local, r)?
-                        .ok_or_else(|| error(r, "expected resource owner"))?;
+                        .lookup(&local, expr)?
+                        .ok_or_else(|| error(expr, "expected resource owner"))?;
+                    if implicit && b.owned {
+                        return Err(error(expr,"owned resources require explicit &mut; only borrowed parameters reborrow implicitly"));
+                    }
                     if !b.mutable {
-                        return Err(error(r, "mutable resource borrow needs a mutable owner"));
+                        return Err(error(expr, "mutable resource borrow needs a mutable owner"));
                     }
                     if &b.value.ty != expected || !used.insert(b.value.id) {
-                        return Err(error(r, "resource type mismatch or aliased call arguments"));
+                        return Err(error(
+                            expr,
+                            "resource type mismatch or aliased call arguments",
+                        ));
                     }
                     self.pending_borrows.push(b.value.clone());
                     borrowed.push(b.value.clone());
-                    *expr = *r.expr.clone();
+                    *expr = erased;
                 }
             }
         }

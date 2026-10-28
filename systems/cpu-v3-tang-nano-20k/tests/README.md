@@ -1,5 +1,15 @@
 # System regression tests
 
+`graphics_member` checks actual approved graphics-library bodies with rustc,
+lowers their ownership/Drop chain through RCC and executes CPU V3. It covers
+repeated mutable Pass draws, consuming finish, explicit submit, separate GPU and
+Display waits, unauthorized successor retention, cancellation and live-reference
+retention on timeout/fault. Function-entry journals count actual target cleanup
+and release calls; captured CBs contain actual recorded draws. Negative callers
+must fail rustc alias/move/parent-escape checks. Its real member demo runs three
+frames. All cases have explicit instruction bounds and controlled retirement
+peers; no host-only graphics runtime, pixel oracle or hardware timing is implied.
+
 The reusable [GPU profiler](/systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/README.md)
 has bounded format, viewer and production-GPU observer checks in its own tool
 directory. It does not require a full-frame run or change synthesized logic.

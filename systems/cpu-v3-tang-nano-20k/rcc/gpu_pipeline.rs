@@ -178,7 +178,7 @@ fn gpu_pipeline_poll() -> u16 {
     if slot != 0 && result == GPU_COMPLETED {
         let mut observed_us: u16 = 0;
         let mut observed_ms: u16 = 0;
-        if GPU_RENDERER[0u16] == 1 {
+        if GPU_RENDERER[0u16] == 1 || GPU_RENDERER[0u16] == 6 {
             observed_us = dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_MICROSECONDS);
             observed_ms = dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_MILLISECONDS);
         }
@@ -267,24 +267,39 @@ fn gpu_pipeline_seal() -> bool {
 }
 fn gpu_pipeline_cancel() -> bool {
     let mut p = GPU_PIPE.as_array();
-    if p[0u16] != 1 || p[1u16] == 0 || gpu_memory_faulted() {
+    if p[0u16] != 1 || gpu_memory_faulted() {
         return false;
     }
-    let mut cb = gpu_pipeline_buffer(p[1u16]);
-    if cb[0u16].state != GPU_CB_BUILDING {
+    let sealed = GPU_RENDERER[0u16] == 6;
+    let slot = if sealed { p[2u16] } else { p[1u16] };
+    if slot == 0 {
         return false;
     }
-    if !gpu_persistent_ui_cancel(p[1u16]) {
+    let expected = if sealed {
+        GPU_CB_READY
+    } else {
+        GPU_CB_BUILDING
+    };
+    let mut cb = gpu_pipeline_buffer(slot);
+    if cb[0u16].state != expected {
+        return false;
+    }
+    if !gpu_persistent_ui_cancel(slot, sealed) {
         gpu_pipeline_fail(14);
         return false;
     }
     cb[0u16].command_words = 0;
     cb[0u16].object_words = 0;
-    GPU_SLOT_TARGETS.as_array()[p[1u16] - 1] = 0;
+    cb[0u16].state = GPU_CB_BUILDING;
+    GPU_SLOT_TARGETS.as_array()[slot - 1] = 0;
     GPU_BUILD.as_array()[0u16] = 0;
     GPU_BUILD.as_array()[1u16] = 0;
     GPU_BUILD.as_array()[2u16] = 0;
-    p[1u16] = 0;
+    if sealed {
+        p[2u16] = 0;
+    } else {
+        p[1u16] = 0;
+    }
     true
 }
 fn gpu_pipeline_advance() -> u16 {
@@ -404,8 +419,18 @@ pub struct Frame {
 pub struct Pass {
     word: u16,
 }
-// 0 new,1 Renderer,2 Frame,3 Pass,4 closed,5 frozen; pass 0 new/2 ended/3 cancelled.
+// 0 new,1 Renderer,2 Frame,3 Pass,4 closed,5 frozen,6 sealed/unsubmitted.
+// Pass status: 0 new/2 ended/3 cancelled. Phase6 still permits retiring old work.
 static GPU_RENDERER: Buf<u16, 3> = Buf::new([0; 3]);
+pub const WAIT_GPU: u16 = 1;
+pub const WAIT_DISPLAY: u16 = 2;
+pub const WAIT_ALL: u16 = 3;
+// Public status values preserve the native driver's existing status contract.
+pub const RENDERER_PENDING: u16 = 1;
+pub const RENDERER_COMPLETED: u16 = 2;
+pub const RENDERER_FAULT: u16 = 3;
+pub const RENDERER_TIMEOUT: u16 = 4;
+pub const RENDERER_REJECTED: u16 = 5;
 // Two fixed timestamp records: sequence, record us/epoch/ms, sealed ms,
 // prepared us/valid, submit us/epoch/ms, submitted, reserved.
 static GPU_RENDERER_TIMES: Buf<u16, 24> = Buf::new([0; 24]);
@@ -665,7 +690,7 @@ fn renderer_capture_resumed(slot: u16) {
     renderer_submitting(slot);
 }
 fn renderer_observed(slot: u16, observed_us: u16, observed_ms: u16) {
-    if GPU_RENDERER[0u16] != 1 {
+    if GPU_RENDERER[0u16] != 1 && GPU_RENDERER[0u16] != 6 {
         return;
     }
     let mut t = renderer_time(slot);
@@ -988,10 +1013,10 @@ fn frame_cleanup(f: Frame) {
         renderer_time(f.word)[10u16] = 0;
     }
 }
-pub fn frame_complete(f: Frame) {
+fn renderer_seal_frame(f: Frame) -> bool {
     if GPU_RENDERER[1u16] != 2 {
         frame_cleanup(f);
-        return;
+        return false;
     }
     if !gpu_pipeline_seal() {
         gpu_pipeline_fail(30);
@@ -1003,12 +1028,20 @@ pub fn frame_complete(f: Frame) {
     // Scheduler owns the sealed page now, even if it must wait for Display.
     GPU_RENDERER[0u16] = 1;
     resource_disarm(f);
-    if gpu_pipeline_advance() == GPU_FAULT {
+    true
+}
+pub fn frame_complete(f: Frame) {
+    if renderer_seal_frame(f) && gpu_pipeline_advance() == GPU_FAULT {
         renderer_fault(31);
     }
 }
 fn renderer_cleanup(r: Renderer) {
     // No poll/advance or wait: asynchronous work remains frozen in place.
+    if GPU_RENDERER[0u16] == 6 && !gpu_pipeline_cancel() {
+        GPU_RENDERER[0u16] = 5;
+        gpu_pipeline_fail(32);
+        return;
+    }
     if GPU_PIPE[2u16] != 0 || GPU_PIPE[3u16] != 0 || GPU_DISPLAY[2u16] != 0 {
         GPU_RENDERER[0u16] = 5;
         gpu_pipeline_fail(32);
@@ -1017,6 +1050,15 @@ fn renderer_cleanup(r: Renderer) {
     }
 }
 pub fn renderer_close(r: Renderer) {
+    if GPU_RENDERER[0u16] == 6 {
+        if !gpu_pipeline_cancel() {
+            GPU_RENDERER[0u16] = 5;
+            gpu_pipeline_fail(33);
+            resource_disarm(r);
+            halt(0xe021);
+        }
+        GPU_RENDERER[0u16] = 1;
+    }
     let mut left: u16 = 60000;
     loop {
         gamepad_capture();
@@ -1034,4 +1076,73 @@ pub fn renderer_close(r: Renderer) {
     }
     GPU_RENDERER[0u16] = 4;
     resource_disarm(r);
+}
+
+// Only explicit submit authorizes a member-sealed page to enter the scheduler.
+// Polling old work must not promote an unsubmitted page through advance().
+fn renderer_member_wait(flags: u16) -> u16 {
+    if flags == 0 {
+        return GPU_COMPLETED;
+    }
+    if flags & 65532 != 0 || (GPU_RENDERER[0u16] != 1 && GPU_RENDERER[0u16] != 6) {
+        return GPU_REJECTED;
+    }
+    let mut left: u16 = 60000;
+    while left != 0 {
+        gamepad_capture();
+        let status = if GPU_RENDERER[0u16] == 6 {
+            gpu_pipeline_poll()
+        } else {
+            gpu_pipeline_advance()
+        };
+        if status == GPU_FAULT || status == GPU_NOT_INITIALIZED {
+            return status;
+        }
+        let queued = GPU_PIPE[2u16] != 0 && GPU_RENDERER[0u16] != 6;
+        let gpu_done =
+            !queued && GPU_PIPE[3u16] == 0 && GPU_DRIVER[0u16] != 4 && GPU_DRIVER[0u16] != 5;
+        let display_done = gpu_done && GPU_DISPLAY[2u16] == 0;
+        if ((flags & WAIT_GPU) == 0 || gpu_done) && ((flags & WAIT_DISPLAY) == 0 || display_done) {
+            return GPU_COMPLETED;
+        }
+        left -= 1;
+    }
+    GPU_TIMEOUT
+}
+
+impl Renderer {
+    pub fn frame(&mut self, color: u16) -> Frame {
+        renderer_frame(self, color)
+    }
+    pub fn submit(&mut self) -> u16 {
+        if GPU_RENDERER[0u16] != 6 {
+            return GPU_REJECTED;
+        }
+        GPU_RENDERER[0u16] = 1;
+        gpu_pipeline_advance()
+    }
+    pub fn wait(&mut self, flags: u16) -> u16 {
+        renderer_member_wait(flags)
+    }
+    pub fn close(self) {
+        renderer_close(self);
+    }
+}
+impl Frame {
+    pub fn pass(&mut self, camera: &mut Camera) -> Pass {
+        frame_pass(self, camera)
+    }
+    pub fn finish(self) {
+        if renderer_seal_frame(self) {
+            GPU_RENDERER[0u16] = 6;
+        }
+    }
+}
+impl Pass {
+    pub fn draw(&mut self, mesh: &mut Mesh, model: &mut Model, material: &mut Material) {
+        pass_draw(self, mesh, model, material);
+    }
+    pub fn finish(self) {
+        pass_complete(self);
+    }
 }

@@ -16,6 +16,7 @@ use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp
 
 mod diagnostics;
 mod resource;
+pub mod rustc_check;
 pub use diagnostics::CompileError;
 
 #[cfg(doc)]
@@ -66,7 +67,7 @@ pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, CompileEr
         "target memory",
         &["<source>".to_string()],
         false,
-        None,
+        ParseChecks::default(),
     )
     .map_err(|(_, error)| CompileError::from_syn(source_name, src, error))?;
     Ok(Program { funcs, debug })
@@ -133,6 +134,44 @@ pub fn compile_program_named_with_libraries(
     approved_roots: &[PathBuf],
     loader: &mut dyn FnMut(&str) -> Result<ModuleSource, String>,
 ) -> Result<Program, CompileError> {
+    compile_with_check(main_name, src, opts, approved_roots, loader, None)
+}
+
+/// Validate ownership with rustc before the same target frontend erases resources.
+pub fn compile_program_named_checked(
+    main_name: &str,
+    src: &str,
+    opts: &impl RccConfig,
+    check: &rustc_check::RustcCheck,
+    loader: &mut dyn FnMut(&str) -> Result<String, String>,
+) -> Result<Program, CompileError> {
+    compile_program_named_with_libraries_checked(main_name, src, opts, &[], check, &mut |name| {
+        loader(name).map(|source| ModuleSource {
+            source,
+            origin: None,
+        })
+    })
+}
+
+pub fn compile_program_named_with_libraries_checked(
+    main_name: &str,
+    src: &str,
+    opts: &impl RccConfig,
+    approved_roots: &[PathBuf],
+    check: &rustc_check::RustcCheck,
+    loader: &mut dyn FnMut(&str) -> Result<ModuleSource, String>,
+) -> Result<Program, CompileError> {
+    compile_with_check(main_name, src, opts, approved_roots, loader, Some(check))
+}
+
+fn compile_with_check(
+    main_name: &str,
+    src: &str,
+    opts: &impl RccConfig,
+    approved_roots: &[PathBuf],
+    loader: &mut dyn FnMut(&str) -> Result<ModuleSource, String>,
+    check: Option<&rustc_check::RustcCheck>,
+) -> Result<Program, CompileError> {
     // gather sources: main file + user modules (recursive) + std
     let mut srcs: Vec<(String, String)> = vec![(main_name.to_string(), src.to_string())];
     let mut origins = vec![None];
@@ -193,10 +232,13 @@ pub fn compile_program_named_with_libraries(
         opts.static_data_limit_name(),
         &names,
         opts.optimizations().is_disabled(),
-        Some(resource::Sources {
-            origins: &origins,
-            approved_roots,
-        }),
+        ParseChecks {
+            resources: Some(resource::Sources {
+                origins: &origins,
+                approved_roots,
+            }),
+            rustc: check,
+        },
     )
     .map_err(|(file, error)| {
         let (name, text) = &srcs[file.min(srcs.len() - 1)];
@@ -315,6 +357,12 @@ fn prepend_init_block(main: &mut IrFunc, insts: Vec<Instr>, detail: String) {
     main.entry = new_entry;
 }
 
+#[derive(Default)]
+struct ParseChecks<'a> {
+    resources: Option<resource::Sources<'a>>,
+    rustc: Option<&'a rustc_check::RustcCheck>,
+}
+
 fn parse_files(
     mut files: Vec<syn::File>,
     data_base: u16,
@@ -322,9 +370,14 @@ fn parse_files(
     static_data_limit_name: &'static str,
     file_names: &[String],
     materialize_debug_locals: bool,
-    resource_sources: Option<resource::Sources<'_>>,
+    checks: ParseChecks<'_>,
 ) -> Result<(Vec<IrFunc>, FrontendDebug), (usize, syn::Error)> {
-    resource::lower(&mut files, file_names, resource_sources)?;
+    if let Some(check) = checks.rustc {
+        resource::drop_syntax::validate_attributes(&files)?;
+        rustc_check::validate(&files, file_names, check)?;
+    }
+    resource::drop_syntax::lower(&mut files, checks.rustc.is_some())?;
+    resource::lower(&mut files, file_names, checks.resources)?;
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {

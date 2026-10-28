@@ -57,6 +57,87 @@ allowing either protected color to be overwritten.
 
 ## Compile and ownership boundary
 
+### Explicit member calls
+
+The same resources also expose the following restricted inherent methods.
+All identity fields remain private one-word handles; callers do not receive
+physical command addresses or an additional execution queue.
+
+| Method | Ownership and effect |
+| --- | --- |
+| `Renderer.frame(&mut self, color: u16) -> Frame` | Borrow Renderer; begin a recording with an RGB565 clear color |
+| `Frame.pass(&mut self, camera: &mut Camera) -> Pass` | Borrow Frame and snapshot Camera through the existing prepare path |
+| `Pass.draw(&mut self, mesh: &mut Mesh, model: &mut Model, material: &mut Material)` | Reborrow metadata and record an independent native snapshot; repeated calls retain draw order |
+| `Pass.finish(self)` | Consume Pass and mark it complete; no seal or SEND |
+| `Frame.finish(self)` | Consume Frame and seal a completed recording; no cache publication or SEND; an unfinished/abandoned Pass cancels instead |
+| `Renderer.submit(&mut self) -> u16` | Authorize exactly one sealed page and advance the existing scheduler; reject when there is no unsubmitted page |
+| `Renderer.wait(&mut self, flags: u16) -> u16` | Bounded retirement of previously submitted work, as described below |
+| `Renderer.close(self)` | Cancel any unsubmitted page, then explicitly drain previously submitted GPU/Display work |
+
+```rust
+let mut frame = renderer.frame(0x1111);
+let mut pass = frame.pass(&mut camera);
+pass.draw(&mut mesh, &mut model, &mut material);
+pass.draw(&mut mesh, &mut model, &mut material);
+pass.finish();
+frame.finish();
+if renderer.submit() != RENDERER_PENDING { halt(0xbad); }
+if renderer.wait(WAIT_ALL) != RENDERER_COMPLETED { halt(0xbad); }
+```
+
+The [member demo](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/rcc/members.rs)
+contains the complete caller, factories, two transform snapshots and explicit
+close. Its `renderer_member_three_frames` entry uses the same frame body with a
+bounded stop; `main` repeats continuously. Build it with
+`examples/gpu_renderer/build.ps1 -Members`. This selects
+`CPU_V3_BOOT_EXAMPLE=gpu_renderer_members`, checks the actual approved library
+bodies with rustc, and materializes the normal generated boot assets. This member
+demo uses explicit column16 assets/layout matching the current fitted system;
+the offline caller test also executes the row profile. The checked host entry
+takes the existing `RendererCaptureConfiguration` selection and materializes
+the selected trusted RCC root before using the shared loader.
+The legacy free functions retain their original behavior: `frame_complete` seals and
+advances, while member `Frame.finish` seals without scheduling.
+
+`WAIT_GPU=1` waits for the submitted input/UI references to retire after the
+driver's successful GPU terminal. `WAIT_DISPLAY=2` waits for the corresponding
+present and old external Display reads to retire; it includes any outstanding
+submitted GPU work needed to produce that present. `WAIT_ALL=3` requires both.
+Flags zero return `RENDERER_COMPLETED` immediately without polling; unknown bits
+return `RENDERER_REJECTED`. Flags are not the lower driver's polling limit:
+its existing `gpu_driver_wait(cb, 0)` still reports Timeout. The member wrapper
+uses the existing pipeline/driver/Display polls with a fixed 60000-poll budget;
+this is a software poll budget, not milliseconds or a hardware sleep opcode.
+
+Public status constants preserve the native values: Pending1, Completed2,
+Fault3, Timeout4 and Rejected5, with the `RENDERER_` prefix. Pending from submit
+can mean that an authorized successor still awaits GPU/Display availability;
+its later start is part of that submission. Duplicate submit is rejected.
+Wait never authorizes a sealed page. It may retire old submitted work while a
+new page remains sealed, and cannot issue that page's COUNT/START. Busy-zero
+alone is insufficient: sticky faults, in-flight owner and actual Display
+retirement remain checked by the existing poll chain. Timeout does not return
+protected references or perform recovery; a hardware fault retains its frozen
+ownership policy.
+
+The existing Renderer phase distinguishes sealed/unsubmitted from authorized
+work; no additional pending register or mirrored queue is allocated. Dropping
+or closing Renderer cancels an unsubmitted page and its recorded UI reference
+without submitting or waiting for that page. Cancellation accepts only CPU-owned
+Building/Ready state, never an in-flight/prepared page. If older submitted work
+is still live, Drop retains/freezes those references; only explicit close/wait
+can drain them. Desired UI content survives cancellation. Consumed Pass/Frame
+values do not execute cleanup again. Reverse-order early-return cleanup still
+cancels an abandoned recording, with no implicit submission or destructor wait.
+
+`compile_renderer_program_checked` uses the same canonical source loader,
+capture configuration and target ownership lowering as the ordinary renderer
+entry, with an explicit `RustcCheck` gate. It preserves library origin approval
+and private-domain checks. The
+[RCC subset](/compiler/rcc/src/frontend/spec.md#151-restricted-inherent-resource-methods)
+defines receiver/reborrow, lifetime and Drop lowering. General Rust references,
+async, arbitrary impls and allocator behavior are not added by this API.
+
 A format2 boot project may contain the standalone line `renderer`. The build
 then uses `compile_renderer_program`, always approving the actual shared
 `rcc/gpu_pipeline.rs` canonical path. Omitting the root is an error. The root

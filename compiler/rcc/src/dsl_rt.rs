@@ -552,7 +552,7 @@ impl fix32 {
     pub fn from_int(value: i16) -> fix32 {
         fix32(i32::from(value) << FIX32_FRACTION_BITS)
     }
-    pub fn zero() -> fix32 {
+    pub const fn zero() -> fix32 {
         fix32(0)
     }
     /// Builds a Q16.16 value from its two raw halves, low half first. This is

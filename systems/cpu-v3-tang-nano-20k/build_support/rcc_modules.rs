@@ -128,6 +128,41 @@ pub fn compile_renderer_program_with_sources(
     )
 }
 
+/// Check actual approved library bodies with rustc before target ownership erasure.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_renderer_program_checked(
+    main_name: &str,
+    source: &str,
+    options: &impl rcc::RccConfig,
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    configuration: &RendererCaptureConfiguration,
+    check: &rcc::frontend::rustc_check::RustcCheck,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::Program, String> {
+    let actual_shared = materialize_renderer_sources(
+        shared_dir,
+        &check.directory.join("renderer-rcc"),
+        configuration.profile,
+        dependency,
+    )?;
+    compile_renderer_capture(
+        main_name,
+        source,
+        options,
+        local_dir,
+        &actual_shared,
+        constants,
+        &[],
+        configuration.capture.as_ref(),
+        configuration,
+        Some(check),
+        dependency,
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Only an explicit diagnostic host may replace the ordinary no-op consumer.
 /// It gains no resource-library membership or authority over private helpers.
 pub struct CaptureConfiguration {
@@ -195,6 +230,7 @@ pub fn compile_renderer_program_with_capture(
         ordinary_dirs,
         capture,
         &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Row),
+        None,
         dependency,
     )
 }
@@ -229,6 +265,7 @@ pub fn compile_renderer_program_with_capture_profile(
         ordinary_dirs,
         configuration.capture.as_ref(),
         configuration,
+        None,
         dependency,
     )
     .map_err(|e| e.to_string())
@@ -244,58 +281,71 @@ fn compile_renderer_capture(
     ordinary_dirs: &[PathBuf],
     capture: Option<&CaptureConfiguration>,
     configuration: &RendererCaptureConfiguration,
+    check: Option<&rcc::frontend::rustc_check::RustcCheck>,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    rcc::frontend::compile_program_named_with_libraries(
-        main_name,
-        source,
-        options,
-        &[shared_dir.join("gpu_pipeline.rs")],
-        &mut |name| {
-            if name == "gpu_capture_config" {
+    let mut loader = |name: &str| {
+        if name == "gpu_capture_config" {
+            return Ok(rcc::frontend::ModuleSource {
+                source: capture_config_source(capture.map(|c| &c.manifest_id), configuration),
+                origin: None,
+            });
+        }
+        if name == "gpu_layout" {
+            let path = shared_dir.join("gpu_layout.rs");
+            dependency(&path);
+            let origin = std::fs::canonicalize(&path)
+                .map_err(|e| format!("layout origin {}: {e}", path.display()))?;
+            let source = std::fs::read_to_string(&origin)
+                .map_err(|e| format!("layout source {}: {e}", origin.display()))?;
+            return Ok(rcc::frontend::ModuleSource {
+                source,
+                origin: Some(origin),
+            });
+        }
+        if name == "profiler_gate" {
+            if let Some(capture) = capture {
+                dependency(&capture.gate_path);
+                let origin = std::fs::canonicalize(&capture.gate_path).map_err(|e| {
+                    format!(
+                        "resolve explicit profiler gate {}: {e}",
+                        capture.gate_path.display()
+                    )
+                })?;
                 return Ok(rcc::frontend::ModuleSource {
-                    source: capture_config_source(capture.map(|c| &c.manifest_id), configuration),
-                    origin: None,
-                });
-            }
-            if name == "gpu_layout" {
-                let path = shared_dir.join("gpu_layout.rs");
-                dependency(&path);
-                let origin = std::fs::canonicalize(&path)
-                    .map_err(|e| format!("layout origin {}: {e}", path.display()))?;
-                let source = std::fs::read_to_string(&origin)
-                    .map_err(|e| format!("layout source {}: {e}", origin.display()))?;
-                return Ok(rcc::frontend::ModuleSource {
-                    source,
+                    source: std::fs::read_to_string(&origin).map_err(|e| {
+                        format!("read explicit profiler gate {}: {e}", origin.display())
+                    })?,
                     origin: Some(origin),
                 });
             }
-            if name == "profiler_gate" {
-                if let Some(capture) = capture {
-                    dependency(&capture.gate_path);
-                    let origin = std::fs::canonicalize(&capture.gate_path).map_err(|e| {
-                        format!(
-                            "resolve explicit profiler gate {}: {e}",
-                            capture.gate_path.display()
-                        )
-                    })?;
-                    return Ok(rcc::frontend::ModuleSource {
-                        source: std::fs::read_to_string(&origin).map_err(|e| {
-                            format!("read explicit profiler gate {}: {e}", origin.display())
-                        })?,
-                        origin: Some(origin),
-                    });
-                }
-            }
-            // This public constants module is shared with non-GPU clients;
-            // it is not a private GPU domain member. Its hardware ABI still
-            // comes from the system, never an application's local override.
-            let pinned = matches!(name, "device_abi" | "gpu_capture_abi" | "profiler_gate");
-            let local = if pinned { shared_dir } else { local_dir };
-            let dirs = if pinned { &[][..] } else { ordinary_dirs };
-            load_module_source_with_sources(local, shared_dir, constants, name, dirs, dependency)
-        },
-    )
+        }
+        // This public constants module is shared with non-GPU clients;
+        // it is not a private GPU domain member. Its hardware ABI still
+        // comes from the system, never an application's local override.
+        let pinned = matches!(name, "device_abi" | "gpu_capture_abi" | "profiler_gate");
+        let local = if pinned { shared_dir } else { local_dir };
+        let dirs = if pinned { &[][..] } else { ordinary_dirs };
+        load_module_source_with_sources(local, shared_dir, constants, name, dirs, dependency)
+    };
+    let approved = [shared_dir.join("gpu_pipeline.rs")];
+    match check {
+        Some(check) => rcc::frontend::compile_program_named_with_libraries_checked(
+            main_name,
+            source,
+            options,
+            &approved,
+            check,
+            &mut loader,
+        ),
+        None => rcc::frontend::compile_program_named_with_libraries(
+            main_name,
+            source,
+            options,
+            &approved,
+            &mut loader,
+        ),
+    }
 }
 
 fn capture_config_source(

@@ -234,7 +234,7 @@ they are not part of this surface.
   produced when both operands are `i16`; mixed integer arithmetic is an error, because 
   implicit conversions hide too many bugs on a 16-bit machine.
 - **Unsupported means error**: these Rust features are rejected with a span — generics,
-  traits, general impls/methods (resource method sugar is described in §15.1), closures, macros, general references `&`, slices and native `[T; N]` arrays
+  traits and general impls/methods (resource methods and checked Drop are described in §15.1–15.2), closures, macros, general references `&`, slices and native `[T; N]` arrays
   (§10), strings, floats, other integer types, unsafe operations other than the narrow `Ptr`
   boundary in §2, `extern`, lifetimes, items declared
   inside a function body, attributes (except the resource marker in §15, the ignored `#[allow(...)]` and the `#[doc]` /
@@ -738,7 +738,9 @@ restores the main frame's stack pointer before any user or runtime code executes
 ## 15. Lexical affine resources
 
 This opt-in target-language subset provides deterministic lexical cleanup without
-`Drop`, traits, closures, general references or a full Rust borrow checker:
+general traits, closures, references or a full Rust borrow checker. The legacy
+entry uses explicit cleanup functions; the rustc-checked entry additionally
+accepts the restricted `Drop` spelling in §15.2:
 
 ```rust
 #[rcc_resource(cleanup = renderer_cleanup)]
@@ -759,7 +761,8 @@ pub struct Pass { word: u16 }
 ```
 
 A resource declaration has one private `u16` field, no generics/derive and one
-`rcc_resource` attribute (`doc`/`allow` are also accepted). The field is its scalar
+`rcc_resource` attribute (`doc`/`allow` are also accepted). The attribute names
+`cleanup`, or binds a same-file checked `Drop` as described in §15.2. The field is its scalar
 ABI representation, not an address to an ordinary struct. Only its definition
 file may construct the resource or read that field. The resource identity cannot
 be reassigned. `pub` permits other loaded files to name the resource.
@@ -856,7 +859,12 @@ The receiver at a call must be a simple unqualified local owner or resource
 parameter. `&mut self` calls insert a direct mutable borrow; `self` calls move
 the owner. Receiver arguments are checked before the remaining arguments under
 the same pending-call locks as free functions. A borrowed receiver may be
-reborrowed but cannot be consumed. Methods may return resources, including a
+reborrowed but cannot be consumed. A borrowed parameter or receiver may be
+passed directly to another `&mut Resource` parameter: this is an implicit
+reborrow, retaining the same pending-call alias/parent locks. An owned local
+still needs explicit `&mut owner`. The target ABI passes the same one-word
+identity; it neither copies an owner nor drops a borrowed parameter.
+Methods may return resources, including a
 child tied to the actual borrowed receiver's identity; bind returned resources
 before using them. By-value receivers retain ordinary exactly-once cleanup
 unless moved/disarmed. `mut self` permits reborrowing, not identity reassignment.
@@ -879,6 +887,91 @@ native `Ptr`, buffer, array and FPU methods retain their existing lowering.
 The ordinary function restrictions (including the six-parameter limit with the
 receiver counted) still apply. This is restricted resource syntax, not general
 Rust method resolution.
+
+### 15.2 Rustc ownership gate and restricted Drop
+
+The explicit `frontend::compile_program_named_checked(name, source, options,
+check, loader)` entry calls rustc before resource/method erasure. The equivalent
+`compile_program_named_with_libraries_checked` entry also takes the normal
+approved roots and source-aware loader; approvals and private-domain checks
+remain mandatory. The old entries retain their lexical checks and do not
+silently enable an external compiler.
+
+`frontend::rustc_check::RustcCheck::new(directory)` selects `RUSTC` or `rustc`;
+its public `executable` field permits an explicit tool path. Use the project's
+nightly toolchain and a separate persistent audit directory per compilation.
+The generated `ownership.rs`, source/file mapping, verbose rustc version and
+JSON diagnostics are retained there. Only metadata is emitted; no host resource
+program executes. Missing rustc, tool errors and type/borrow errors reject
+compilation. Primary rustc spans map back to the original RCC source and retain
+the rustc error code.
+
+The check projection preserves actual function bodies, calls, methods and control
+flow. It removes RCC-only markers and module/use declarations to match RCC's
+existing flat name resolution, includes the real `dsl_rt` type signatures
+(using standard `LazyLock` for its host-only `Lazy`), and supplies type signatures
+for target-only intrinsics. Every resource remains a non-Copy Rust type with a
+Drop boundary. Each child gets a check-only lifetime/`PhantomData<&mut ()>`;
+a factory's result is tied to its sole matching borrowed parent or receiver.
+These fields and lifetimes never enter the target ABI. Rustc checks mutable
+aliasing, moves, parent borrows held through child destruction and local-parent
+escape. This is checking of the projection, not a general Rust memory-safety
+claim for unsafe `Ptr`/`Array`, DSEG windows, device protocols or trusted factories.
+Native source still has to satisfy RCC's existing restricted signatures,
+visibility, control-flow and ownership rules. In particular, passing rustc does
+not enable stored references, explicit lifetimes, generics, runtime drop flags
+or arbitrary Rust syntax. The projection additionally represents target-native
+operations used by the actual graphics library: ordinary copyable aggregates
+derive Copy/Clone, target static storage is mutable, and only expressions that
+access that storage receive an unsafe block. Functions are not blanket unsafe.
+Native Array/Buf views retain target mutability, integer-to-Ptr casts use the
+real Ptr representation, and device/channel operands narrow to the host
+intrinsic's u8 signature. Original source still undergoes the target's index,
+type, domain, ownership and cleanup checks. Resource types, and aggregates
+containing them, never acquire Copy through this projection. Raw pointer calls
+outside a source unsafe block still fail rustc. No projected body executes as
+the graphics runtime; actual target execution uses the original checked source.
+
+A checked resource may use standard destructor spelling:
+
+```rust
+#[rcc_resource]
+pub struct Owner { word: u16 }
+impl Drop for Owner {
+    fn drop(&mut self) { release_word(self.word); }
+}
+```
+
+The declaration still has exactly one private `u16` field. A child uses
+`#[rcc_resource(parent = Owner)]` with a matching Drop. The impl must be in the
+definition file, nongeneric, and contain only `fn drop(&mut self)`. Only `doc`
+and `allow` attributes are accepted on the impl and method. Other attributes,
+including `cfg` and `cfg_attr`, are rejected before rustc checking, even when
+their condition is constant or inactive. RCC does not perform conditional
+compilation: a destructor excluded from the checked source must not become an
+unconditional target cleanup. The body still
+cannot reassign the resource identity. Ordinary struct destructors and other trait impls are not supported. Combining Drop with
+`cleanup = ...`, multiple Drop impls, or using Drop through an unchecked entry
+is rejected. The internal `__rcc_drop_` namespace is reserved, including uses in
+attributes.
+
+RCC lowers the original Drop body to a private borrowed helper, called by a
+private owned cleanup bridge. That bridge's parameter is exempt from automatic
+cleanup, just like a legacy cleanup parameter, preventing recursive destruction.
+All existing lexical cleanup insertion then applies: reverse binding order;
+return values evaluated first; cleanup on normal exit, return, break and
+continue; no cleanup for borrowed parameters or already moved/disarmed owners.
+Unqualified `drop(owner)` consumes a bound resource and invokes its cleanup once
+(unless a source function named `drop` shadows that name). Explicit completion
+may still use definition-local `resource_disarm` after ownership transfer.
+Fail-stop `halt` does not unwind. Branch/loop ownership must still agree; this
+implementation does not lower general rustc MIR drop flags or unwind paths.
+
+CPU V3 tests compile the actual checked method/resource source and execute its
+lowered instructions with a step bound. They cover nested Drop ordering,
+return evaluation, loop exits, consumption, halt and legacy instruction identity;
+negative inputs require real rustc E0499/E0505/E0382/E0515 diagnostics. These are
+compiler/CPU functional checks, not new hardware timing or device qualification.
 
 ## 16. Host-authorized resource libraries
 

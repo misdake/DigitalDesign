@@ -56,6 +56,25 @@ fn compile(
                     &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("capture-rcc"),
                     dependency,
                 )
+            } else if source_dir.ends_with("gpu_renderer/rcc")
+                && path.file_name().is_some_and(|name| name == "members.rs")
+            {
+                rcc_modules::compile_renderer_program_checked(
+                    &path.display().to_string(),
+                    &source,
+                    options,
+                    source_dir,
+                    shared,
+                    constants,
+                    &rcc_modules::RendererCaptureConfiguration::without_capture(
+                        rcc_modules::RendererLayoutProfile::Column16,
+                    ),
+                    &rcc::frontend::rustc_check::RustcCheck::new(
+                        PathBuf::from(std::env::var_os("OUT_DIR").unwrap())
+                            .join("member-ownership"),
+                    ),
+                    dependency,
+                )
             } else {
                 rcc_modules::compile_renderer_program_with_capture(
                     &path.display().to_string(),
@@ -154,6 +173,7 @@ fn main() {
             ]);
         } else if example == "gpu_renderer"
             || example == "gpu_renderer_changes"
+            || example == "gpu_renderer_members"
             || example == "gpu_renderer_bloxorz"
             || example == "gpu_profiler_board"
         {
@@ -189,6 +209,11 @@ fn main() {
             let status = std::process::Command::new("python")
                 .env("PYTHONDONTWRITEBYTECODE", "1")
                 .arg(example_dir.join("tools/assets.py"))
+                .args(if example == "gpu_renderer_members" {
+                    vec!["--profile", "column16"]
+                } else {
+                    vec![]
+                })
                 .arg("--output")
                 .arg(&assets)
                 .status()
@@ -203,6 +228,8 @@ fn main() {
                 "examples/gpu_profiler_board/rcc/main.rs"
             } else if example == "gpu_renderer_changes" {
                 "examples/gpu_renderer/rcc/changes.rs"
+            } else if example == "gpu_renderer_members" {
+                "examples/gpu_renderer/rcc/members.rs"
             } else {
                 "examples/gpu_renderer/rcc/main.rs"
             });

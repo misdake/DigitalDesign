@@ -1,14 +1,15 @@
-param([string]$OutputDirectory = '', [switch]$Changes)
+param([string]$OutputDirectory = '', [switch]$Changes, [switch]$Members)
+if ($Changes -and $Members) { throw 'Choose either Changes or Members' }
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = if ($Changes) { 'target/gpu-renderer-changes-boot' } else { 'target/gpu-renderer-boot' }
+    $OutputDirectory = if ($Members) { 'target/gpu-renderer-members-boot' } elseif ($Changes) { 'target/gpu-renderer-changes-boot' } else { 'target/gpu-renderer-boot' }
 }
-$buildLabel = if ($Changes) { 'gpu-renderer-changes' } else { 'gpu-renderer' }
+$buildLabel = if ($Members) { 'gpu-renderer-members' } elseif ($Changes) { 'gpu-renderer-changes' } else { 'gpu-renderer' }
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
 $savedExample = $env:CPU_V3_BOOT_EXAMPLE
 Push-Location $repoRoot
 try {
-    $env:CPU_V3_BOOT_EXAMPLE = if ($Changes) { 'gpu_renderer_changes' } else { 'gpu_renderer' }
+    $env:CPU_V3_BOOT_EXAMPLE = if ($Members) { 'gpu_renderer_members' } elseif ($Changes) { 'gpu_renderer_changes' } else { 'gpu_renderer' }
     & scripts/run-cargo.ps1 -Subcommand run -Label "$buildLabel-boot" -CargoArgs @(
         '-p', 'cpu-v3-tang-nano-20k', '--bin', 'cpu-v3-boot-assets', '--', $OutputDirectory
     )

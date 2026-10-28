@@ -33,6 +33,22 @@ completion. It is not pure GPU execution time. Startup/invalid measurements show
 `OBS --.-`; valid sub-10-ms values omit the leading zero. See the
 [resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md).
 
+## Explicit members
+
+The explicit member caller is `rcc/members.rs`. Build it with
+`build.ps1 -Members` (mutually exclusive with `-Changes`). It records two draws
+through one mutable Pass, consumes Pass/Frame with `finish`, then explicitly
+submits and waits for both GPU and Display retirement. The build checks the
+actual library bodies with rustc before RCC lowering; the existing generated
+boot/independent CB06 comparison is retained. The `graphics_member` integration
+target executes its actual three-frame entry in row and column layouts with
+bounded CPU steps. The board selector uses explicit column16 assets/layout.
+Continuous mode emits an `M` byte after each 64 fully retired frames, and an `E`
+on a submit/wait failure when UART is writable; these are demo heartbeats, not a
+capture protocol or a GPU performance measurement. Controlled
+retirement peers do not qualify rendered pixels or board timing; see the
+[member API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md#explicit-member-calls).
+
 ## Changing frames
 
 ```powershell

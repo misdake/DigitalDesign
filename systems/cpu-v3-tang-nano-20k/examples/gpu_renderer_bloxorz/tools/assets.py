@@ -17,11 +17,17 @@ def module(name, path):
 B = module("blox_batch", SYSTEM / "examples/bloxorz/tools/batch-scene.py")
 R = module("minimal_renderer", SYSTEM / "examples/gpu_renderer/tools/assets.py")
 G = module("native_assets", SYSTEM / "examples/gpu_demo/tools/assets.py")
-BASE = R.MESH
 
 def pack(output):
-    R.TEXTURE = 0x4bf000
     R.pack(output)
+    manifest=json.loads((output/'assets.json').read_text())
+    BASE=next(r['address'] for r in manifest['resources'] if r['kind']=='mesh')
+    texture=BASE+0xf000
+    for resource in manifest['resources']:
+        if resource['kind']=='texture':
+            resource['address']=texture
+            R.validate_asset_range(texture,resource['bytes'])
+            assert texture+resource['bytes']<=next(r['address'] for r in manifest['resources'] if r['kind']=='atlas')
     levels = B.levels()
     chosen = [levels[n] for n in ["fixture-switch", "fixture-split"]]
     groups = []
@@ -66,11 +72,11 @@ def pack(output):
                 packed=struct.unpack_from('<Q',record,128+(offset+i//3)*8)[0]>>(18*(i%3))
                 assert [(packed>>(6*k))&63 for k in range(3)]==tri
             memory.extend(record);meshes.append(mesh);entry+=1
-    assert BASE+len(memory)<R.TEXTURE
+    assert BASE+len(memory)<texture
     R.validate_asset_range(BASE,len(memory))
     (output/'mesh.bin').write_bytes(memory)
     constants=(output/'renderer_assets.rs').read_text()
-    for key,value in dict(GPU_RENDERER_MESH_COUNT=count,GPU_RENDERER_MESH_SECTORS=len(memory)//128).items():
+    for key,value in dict(GPU_RENDERER_MESH_COUNT=count,GPU_RENDERER_MESH_SECTORS=len(memory)//128,GPU_RENDERER_TEXTURE=texture//128).items():
         constants=re.sub(rf'(pub const {key}:u16=)\d+;',rf'\g<1>{value};',constants)
     # Conservative shared package bounds, including all floors and unit block.
     for axis,lo,hi in [('X',-8*65536,8*65536),('Y',-65536,65536),('Z',-3*65536,3*65536)]:
@@ -93,7 +99,6 @@ def pack(output):
         constants+=''.join(f'out[{i}u16]={v};\n' for i,v in enumerate(words))+'}\n'
     constants+='}\n'
     (output/'renderer_assets.rs').write_text(constants)
-    manifest=json.loads((output/'assets.json').read_text())
     for r in manifest['resources']:
         data=(output/r['file']).read_bytes();r.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
     manifest.update(catalog=catalog,meshes=meshes,levels=chosen,
