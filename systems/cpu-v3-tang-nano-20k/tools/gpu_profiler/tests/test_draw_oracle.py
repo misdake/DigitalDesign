@@ -121,6 +121,18 @@ class DrawOracleTests(unittest.TestCase):
         self.assertEqual(result.planes['depth'][110*400+199], 1191)
         self.assertEqual(result.planes['color'][110*400+199], o.rgb565((87, 85, 83)))
 
+    def test_full_image_option_checks_the_previously_excluded_band(self):
+        result = o.evaluate(SyntheticCapture())
+        actual = {k: list(v) for k, v in result.planes.items()}
+        edge = next(i for i in result.caller['drawn_pixels'] if not result.stable[i])
+        actual['color'][edge] = 0
+        self.assertTrue(result.compare(actual)['pass'])
+        full = result.compare(actual, include_edges=True)
+        self.assertFalse(full['pass'])
+        self.assertEqual(full['compared_pixels'], 96000)
+        self.assertEqual(full['excluded_edge_pixels'], 0)
+        self.assertEqual(full['mismatches']['color']['count'], 1)
+
     def test_backface_cull_and_two_sided_winding(self):
         fixture = SyntheticCapture()
         expected = o.evaluate(fixture)

@@ -31,9 +31,14 @@ def verify_reuse(captures):
         raise ValueError('One A/B/A producer sequence must use one storage layout')
     references = [evaluate(c) for c in captures]
     first, last = references[0], references[2]
-    changed = sum(first.stable[i] and last.stable[i] and
-                  (first.planes['color'][i] != last.planes['color'][i] or
-                   first.planes['depth'][i] != last.planes['depth'][i]) for i in range(96000))
+    def different(i):
+        return first.stable[i] and last.stable[i] and (
+            first.planes['color'][i] != last.planes['color'][i] or
+            first.planes['depth'][i] != last.planes['depth'][i])
+    changed = sum(different(i) for i in range(96000))
+    changed_draw = sum(different(i) for i in first.caller['drawn_pixels'] | last.caller['drawn_pixels'])
+    if changed_draw < 256:
+        raise ValueError('Reused address must change at least 256 stable DRAW pixels, beyond CLEAR-only differences')
     if changed < 256:
         raise ValueError('Reused address must have at least 256 observably changed stable output pixels')
     entries = []
@@ -46,6 +51,7 @@ def verify_reuse(captures):
                                 v.to_bytes(2, 'little') for v in reference.planes['color'])).hexdigest(),
                             draw_commands=reference.caller['draw_commands']))
     return dict(occurrences=entries, reused_address_changed_stable_pixels=changed,
+                reused_address_changed_stable_draw_pixels=changed_draw,
                 scope='Distinct frozen occurrences and independent cold replays, not warm queue/CPU concurrency proof')
 
 
@@ -57,6 +63,7 @@ def main():
     parser.add_argument('--row-rtl', type=Path, required=True)
     parser.add_argument('--frozen-column', type=Path)
     parser.add_argument('--column-contract', type=Path)
+    parser.add_argument('--include-edges', action='store_true')
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     # Validate the entire real producer/input closure before launching a replay.
@@ -71,6 +78,8 @@ def main():
         for option, value in [('--frozen-column', args.frozen_column), ('--column-contract', args.column_contract)]:
             if value is not None:
                 command.extend([option, str(value)])
+        if args.include_edges:
+            command.append('--include-edges')
         with (args.out/f'{index}.log').open('w') as log:
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=240, check=True)
         result['occurrences'][index]['result'] = json.loads((args.out/str(index)/'result.json').read_text())

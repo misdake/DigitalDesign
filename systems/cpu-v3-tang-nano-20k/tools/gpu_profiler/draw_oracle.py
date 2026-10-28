@@ -49,11 +49,13 @@ class Result:
     clear: dict
     caller: dict
 
-    def compare(self, actual, *, depth_tolerance=2, color_tolerance=0):
-        """Compare stable drawn pixels with declared budgets; background is exact."""
+    def compare(self, actual, *, depth_tolerance=2, color_tolerance=0, include_edges=False):
+        """Compare selected pixels with declared DRAW budgets; background is exact."""
         if not 0 <= depth_tolerance <= 2 or not 0 <= color_tolerance <= 1:
             raise ValueError('Oracle budgets exceed the supported small-fixture bounds')
+        mask = [True]*96000 if include_edges else self.stable
         report = dict(stable_pixels=sum(self.stable), edge_pixels=96000-sum(self.stable),
+                      compared_pixels=sum(mask), excluded_edge_pixels=96000-sum(mask),
                       stable_drawn_pixels=sum(self.stable[i] for i in self.caller['drawn_pixels']),
                       stable_background_pixels=sum(self.stable[i] and i not in self.caller['drawn_pixels']
                                                    for i in range(96000)),
@@ -64,7 +66,7 @@ class Result:
                 raise ValueError('Expected exactly 96000 logical pixels per plane')
             failures = []; maximum = 0; count = 0
             for i, (want, got) in enumerate(zip(self.planes[role], actual[role])):
-                if not self.stable[i]:
+                if not mask[i]:
                     continue
                 drawn = i in self.caller['drawn_pixels']
                 if role == 'depth':
@@ -83,6 +85,14 @@ class Result:
             report['mismatches'][role] = dict(count=count, examples=failures)
             report['maximum_error'][role] = maximum
         report['pass'] = all(v['count'] == 0 for v in report['mismatches'].values())
+        if include_edges and self.clear.get('depth') == 65535:
+            # All supported live depths are below far<200, hence below 0xffff.
+            # For this declared preimage the final depth plane exposes coverage.
+            got = {i for i, z in enumerate(actual['depth']) if z != 65535}
+            want = self.caller['drawn_pixels']
+            report['coverage'] = dict(expected_pixels=len(want), actual_pixels=len(got),
+                                      false_positive=len(got-want), false_negative=len(want-got))
+            report['pass'] = report['pass'] and not (got ^ want)
         return report
 
     def description(self):

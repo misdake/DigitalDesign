@@ -152,6 +152,14 @@ missing-read|forbidden-write` poisons a simulation mask without changing produce
 bytes. Limits remain180000 cycles/180seconds. No verified programming receipt or
 combined CPU/GPU source build is implied by this offline handoff check.
 
+Both the earlier single-fixture receipt and the CPU-owned
+`digitaldesign.cpu-capture-draw-delivery` v1 archive are accepted. The latter
+retains one build/program per profile and `frame-0..2` occurrences; it is not
+repacked into a fabricated legacy receipt. The consumer verifies every sealed
+evidence file, program/build commit and digest, per-occurrence command/object
+views, token/publication/slot/address, resource bytes and actual layout origin.
+The producer's `observed` projection/sanity fields are not oracle inputs.
+
 With `--oracle draw`, the same producer/input identity checks precede an independent
 color/depth reference. It decodes the actual native commands, matrix, packed
 meshlet and uniform color. Exact integer cross products and rational perspective
@@ -171,11 +179,19 @@ use a declared default depth budget of two Q8.8 codes and exact RGB565; options
 can tighten depth to zero or allow one RGB565 channel code for varying RGB.
 Reports retain mismatch coordinates and maximum errors. These budgets describe
 an independent mathematical comparison, not bit-exact RTL equivalence.
+`--include-edges` compares all96000 logical pixels with no edge exclusion.
+Reports distinguish the original ideal edge band from the number actually
+excluded and compared. With an explicit depth CLEAR of0xffff, full-image mode
+also checks exact coverage: every supported live depth is below far<200 and
+therefore below0xffff. Background remains exact; the declared depth budget
+only applies to mathematically covered pixels. The sequence runner accepts the
+same option. A stable-region pass never silently becomes a full-image pass.
 
 `tests/producer_sequence.py` takes three `--fixture` arguments and the same
 producer/export options. It requires natural CB address A/B/A reuse, distinct
-tokens/submissions and at least256 changed stable output pixels on the reused
-address. It independently cold-replays each exact frozen occurrence. It does
+tokens/submissions and at least256 changed stable DRAW pixels on the reused
+address, beyond differences attributable only to CLEAR. It independently
+cold-replays each exact frozen occurrence. It does
 not infer warm queue behavior or CPU/Display concurrency from isolated resets.
 `tests/draw_replay.py` provides a bounded synthetic DRAW check of this plumbing,
 with explicit `--layout row|column`, export options and fresh `--out` directory.

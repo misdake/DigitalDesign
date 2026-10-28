@@ -18,26 +18,71 @@ from layout_replay import stage_column
 from draw_oracle import evaluate as draw_reference
 
 
+def draw_archive(folder, receipt_path, receipt, commit):
+    """Read the CPU-owned sequence archive without rewriting its layout/receipt."""
+    if receipt.get('version') != 1 or receipt.get('source_commit') != commit:
+        raise ValueError('DRAW producer receipt does not identify the requested commit')
+    root = receipt_path.parent.resolve(); folder = folder.resolve()
+    try:
+        parts = folder.relative_to(root).parts
+    except ValueError as error:
+        raise ValueError('DRAW fixture is outside the sealed archive') from error
+    if len(parts) != 2 or parts[1] not in ('frame-0', 'frame-1', 'frame-2'):
+        raise ValueError('Expected a sealed profile/frame-N producer occurrence')
+    seen = set()
+    for item in receipt['evidence_files']:
+        name = item['path']; path = (root/name).resolve()
+        if Path(name).is_absolute() or '..' in Path(name).parts or not path.is_relative_to(root) or name in seen:
+            raise ValueError('Unsafe or duplicate DRAW evidence path')
+        seen.add(name)
+        if path.stat().st_size != item['bytes'] or identity.digest(path) != item['sha256']:
+            raise ValueError('DRAW producer artifact changed: '+name)
+    profile = next(v for v in receipt['profiles'] if v['profile'] == parts[0])
+    frame = next(v for v in profile['frames'] if v['frame_index'] == int(parts[1][-1]))
+    required = [f'{parts[0]}/build.json', f'{parts[0]}/producer.v3bin',
+                *(f'{parts[0]}/{parts[1]}/{name}' for name in ('header.bin', 'ranges.bin', 'producer.json', 'commands.bin', 'objects.bin'))]
+    if not set(required) <= seen:
+        raise ValueError('DRAW receipt does not seal the required producer inputs')
+    if identity.digest(root/parts[0]/'producer.v3bin') != profile['program_sha256']:
+        raise ValueError('DRAW program digest mismatch')
+    for name, key in [('header.bin', 'header_sha256'), ('ranges.bin', 'ranges_sha256'),
+                      ('commands.bin', 'commands_sha256'), ('objects.bin', 'objects_sha256')]:
+        if identity.digest(folder/name) != frame[key]:
+            raise ValueError('DRAW occurrence digest mismatch: '+name)
+    return root/parts[0], dict(manifest_id=profile['manifest_id'], layout_command=profile['layout_command'], frame=frame,
+                               sealed_paths=seen, archive_root=root)
+
+
 def read_producer(folder, receipt_path, commit):
     receipt = json.loads(receipt_path.read_text())
-    if receipt['commit'] != commit or not receipt['source_tree_clean']:
-        raise ValueError('Producer receipt does not identify the committed frozen source')
-    entry = next(v for v in receipt['fixtures'] if v['name'] == folder.name)
-    for item in entry['files']:
-        name = item['file']
-        if Path(name).name != name:
-            raise ValueError('Unsafe producer receipt filename')
-        path = folder / name
-        if path.stat().st_size != item['bytes'] or identity.digest(path) != item['sha256']:
-            raise ValueError('Producer artifact changed: ' + name)
-    build = identity.load_build(folder / 'build.json')
+    sequence = receipt.get('schema') == 'digitaldesign.cpu-capture-draw-delivery'
+    build_root = folder
+    if sequence:
+        build_root, entry = draw_archive(folder, receipt_path, receipt, commit)
+    else:
+        if receipt['commit'] != commit or not receipt['source_tree_clean']:
+            raise ValueError('Producer receipt does not identify the committed frozen source')
+        entry = next(v for v in receipt['fixtures'] if v['name'] == folder.name)
+        for item in entry['files']:
+            name = item['file']
+            if Path(name).name != name:
+                raise ValueError('Unsafe producer receipt filename')
+            path = folder / name
+            if path.stat().st_size != item['bytes'] or identity.digest(path) != item['sha256']:
+                raise ValueError('Producer artifact changed: ' + name)
+    build = identity.load_build(build_root / 'build.json')
+    if sequence and build['source_commit'] != commit:
+        raise ValueError('DRAW build does not identify the committed producer source')
     abi_entry = next(v for v in build['files'] if v['name'] == 'rcc/gpu_capture_abi.rs')
-    abi = s.Abi(folder / abi_entry['path'])
+    abi = s.Abi(build_root / abi_entry['path'])
     header = s.bytes_to_words((folder / 'header.bin').read_bytes())
     words = s.bytes_to_words((folder / 'ranges.bin').read_bytes())
     if len(words) % 8:
         raise ValueError('Truncated producer range table')
     rows = [words[i:i+8] for i in range(0, len(words), 8)]
+    if sequence and any(str((folder/f'range-{i}.bin').resolve().relative_to(entry['archive_root'])).replace('\\', '/')
+                        not in entry['sealed_paths'] for i in range(len(rows))):
+        raise ValueError('DRAW receipt does not seal every frozen range payload')
     blobs = [(folder / f'range-{i}.bin').read_bytes() for i in range(len(rows))]
     wire = s.encode_reference(header, rows, blobs, abi)
     captures, decoded = s.decode_stream(wire, abi)
@@ -48,6 +93,16 @@ def read_producer(folder, receipt_path, commit):
     layout = header_layout(h)
     if layout != identity.build_layout(build) or h['manifest_id'] != build['manifest_id'] or h['manifest_id'] != entry['manifest_id']:
         raise ValueError('Producer header/build/layout identity mismatch')
+    if sequence:
+        frame = entry['frame']
+        if entry['layout_command'] != [layout.abi, 1]:
+            raise ValueError('DRAW receipt layout/command profile disagrees with frozen inputs')
+        if any(h[name] != frame[key] for name, key in [('token','token'), ('publication','publication'),
+                                                      ('slot','slot'), ('cb_base','cb_address'),
+                                                      ('cb_bytes','command_bytes'), ('object_bytes','object_bytes')]):
+            raise ValueError('DRAW occurrence header disagrees with the receipt')
+        if capture.read(h['cb_base'], h['cb_bytes']) != (folder/'commands.bin').read_bytes() or capture.read(h['object_base'], h['object_bytes']) != (folder/'objects.bin').read_bytes():
+            raise ValueError('DRAW frozen command/object views disagree')
     for role in ('color', 'depth', 'front'):
         if h[role+'_base']:
             capture.read(h[role+'_base'], layout.plane_bytes)
@@ -61,11 +116,13 @@ def read_producer(folder, receipt_path, commit):
     producer = json.loads((folder/'producer.json').read_text())
     source_name = 'rcc/gpu_layout.rs' if layout.abi == 1 else 'rcc/gpu_layout_column16.rs'
     actual_layout = next(v for v in build['files'] if v['name'] == source_name)
-    if not any(path.replace('\\', '/').endswith('/'+source_name) for path in producer['dependencies']):
+    dependencies = producer['origins'] if sequence else producer['dependencies']
+    if not any(path.replace('\\', '/').endswith('/'+source_name) for path in dependencies):
         raise ValueError('Producer did not compile the declared actual layout dependency')
     origin = source_name
     if layout.abi == 2:
-        origins = json.loads((folder / 'source-origins.json').read_text())
+        origins_path = build_root/'profile-rcc/source-origins.json' if sequence else folder/'source-origins.json'
+        origins = json.loads(origins_path.read_text())
         origin = origins['gpu_layout.rs']
         if not origin.replace('\\', '/').endswith('/rcc/gpu_layout_column16.rs'):
             raise ValueError('Column producer compiled a different actual layout origin')
@@ -73,7 +130,7 @@ def read_producer(folder, receipt_path, commit):
         if alias['sha256'] != actual_layout['sha256']:
             raise ValueError('Generated layout alias differs from the selected canonical column source')
     return capture, wire, dict(producer_commit=commit, producer_receipt_sha256=identity.digest(receipt_path),
-        build_sha256=identity.digest(folder/'build.json'), manifest_id=h['manifest_id'],
+        build_sha256=identity.digest(build_root/'build.json'), manifest_id=h['manifest_id'],
         abi_sha256=abi.sha256, layout=layout.description(), command_abi=1, gpu_layout_origin=origin,
         selected_layout_source_sha256=actual_layout['sha256'],
         fixture_only=True, captured_plane_bytes=layout.plane_bytes,
@@ -152,7 +209,9 @@ def main():
                    help='DRAW uses an independent rational reference; unsupported paths reject')
     p.add_argument('--depth-tolerance', type=int, choices=range(3), default=2)
     p.add_argument('--color-tolerance', type=int, choices=range(2), default=0,
-                   help='Per RGB565 channel code, only for stable drawn pixels')
+                   help='Per RGB565 channel code, only for compared drawn pixels')
+    p.add_argument('--include-edges', action='store_true',
+                   help='Compare all logical pixels, including the mathematical one-pixel band')
     p.add_argument('--expect-fault', choices=('missing-read', 'forbidden-write'),
                    help='Poison one testbench mask only; never modifies producer input bytes')
     args = p.parse_args(); args.out.mkdir(parents=True, exist_ok=False)
@@ -204,14 +263,14 @@ def main():
     comparison = None
     if reference is not None:
         comparison = reference.compare(actual, depth_tolerance=args.depth_tolerance,
-                                       color_tolerance=args.color_tolerance)
+                                       color_tolerance=args.color_tolerance, include_edges=args.include_edges)
         (args.out/'oracle-comparison.json').write_text(json.dumps(comparison, indent=2)+'\n')
         if not comparison['pass']:
             raise AssertionError('Independent DRAW color/depth reference mismatch; see oracle-comparison.json')
     report = dict(scope='Committed CPU fixture bytes replayed offline; no combined CPU/GPU source build, UART, board/PVT or frame-performance qualification',
                   producer=context, caller=caller, replay=result,
-                  logical_color_pixels_checked=comparison['stable_pixels'] if comparison else 96000,
-                  logical_depth_pixels_checked=comparison['stable_pixels'] if comparison else 96000,
+                  logical_color_pixels_checked=comparison['compared_pixels'] if comparison else 96000,
+                  logical_depth_pixels_checked=comparison['compared_pixels'] if comparison else 96000,
                   compared_guard_bytes=0,
                   padding_words_per_plane=(layout.plane_bytes-192000)//2,
                   oracle=args.oracle, oracle_comparison=comparison)

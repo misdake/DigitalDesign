@@ -5,12 +5,6 @@ Implemented interfaces belong in [README.md](README.md), the
 [driver bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).
 Detailed pending architecture remains in the local project design area.
 
-- [ ] Consume CPU-owned real DRAW A/B/A producer fixtures for both layouts via
-  the independent color/depth handoff reference. Existing committed producer
-  fixtures cover CLEAR+UI only; synthetic DRAW tests are separate evidence.
-  Align the accepted canonical dependency chain before joint integration;
-  current consumer retirement ancestry is not mainline retirement acceptance.
-
 - [ ] Integrate the CPU-owned explicit column producer/profile selector, then
   bind its actual firmware, generated catalog and qualified layout bitstream.
   Current ABI2 support is consumer/fixture qualification; the formal producer at
