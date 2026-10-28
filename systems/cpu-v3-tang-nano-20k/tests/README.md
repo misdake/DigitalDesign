@@ -111,3 +111,29 @@ with bounded CPU steps and a separate floating basis/light reference. Its frame
 control peers verify that render timing excludes present/vblank, retains linear
 RGB565, and rejects failed/saturated measurements. Pixel and serial timing stay
 in the dedicated native GPU/DS2 RTL tests.
+
+The bounded `capture_layout` target executes the actual formal renderer producer
+with legacy row, explicit row and pure column capture profiles. It emits portable
+manifest/source identities and real CPU header/range/public-read fixtures under
+`target/capture-layout`, checks exact physical spans, resource mismatches,
+end-bound rejection and lease expiry, and preserves legacy row bytes. Complete
+payloads are host copies during the frozen gate. It provides no UART, GPU pixel
+or board qualification; see [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).
+
+The separate bounded `capture_draw` target records one native triangle across
+three real RCC/CPU Prepared gates for each row/column profile. It checks actual
+DRAW bindings, positive Z, material/transform changes and A/B/A command-slot
+reuse with distinct tokens. Set `GPU_CAPTURE_DRAW_DIR` to archive its manifest,
+program, origins and each gate's complete frozen inputs/preimages outside the
+build cache. GPU/Display peers only retire control work; independent GPU cold
+replay and pixel/depth verification remain consumer responsibilities.
+
+The same target's `real_full_scene` case executes the pinned formal profiler
+frame body, with complete box/RGB/rabbit assets and OBS UI, across three real
+gates per row/column profile. The middle gate resumes after a modeled long pause;
+production input/time baselines and statistics invalidation/recovery are checked
+without changing the scene body. `GPU_CAPTURE_FULL_SCENE_DIR` selects its output;
+`GPU_CAPTURE_LAYOUT_DIR` overrides the older layout target's default archive
+path. Set these and `CARGO_TARGET_DIR` outside the source tree when preserving
+evidence. Full-scene bytes remain CPU producer inputs, with no GPU pixel or board
+qualification implied.

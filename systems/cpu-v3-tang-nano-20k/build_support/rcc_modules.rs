@@ -4,6 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "capture_profile.rs"]
+pub(crate) mod capture_profile;
+pub use capture_profile::{
+    materialize_renderer_sources, RendererCaptureConfiguration, RendererLayoutProfile,
+};
+
 pub fn load_module(
     local_dir: &Path,
     shared_dir: &Path,
@@ -30,7 +36,7 @@ pub fn load_native_module(
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<String, String> {
     if profile == NativeLayoutProfile::Column16 && name == "gpu_layout" {
-        let path = shared_dir.join("gpu_layout_column16.rs");
+        let path = RendererLayoutProfile::Column16.layout_path(shared_dir);
         dependency(&path);
         return std::fs::read_to_string(&path)
             .map_err(|e| format!("column layout {}: {e}", path.display()));
@@ -134,6 +140,19 @@ impl CaptureConfiguration {
             .map_err(|e| format!("read profiler manifest {}: {e}", manifest_path.display()))?;
         let manifest: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|e| format!("parse profiler manifest: {e}"))?;
+        if manifest.get("layout").is_some()
+            || manifest
+                .get("version")
+                .is_some_and(|v| v.as_u64() != Some(1))
+            || manifest
+                .get("command_abi")
+                .is_some_and(|v| v.as_u64() != Some(1))
+        {
+            return Err("legacy capture constructor accepts row ABI1 only; use RendererCaptureConfiguration for explicit profiles".into());
+        }
+        Self::parse_id(gate_path, &manifest)
+    }
+    fn parse_id(gate_path: PathBuf, manifest: &serde_json::Value) -> Result<Self, String> {
         let id = manifest["manifest_id"]
             .as_str()
             .ok_or("profiler manifest_id must be SHA256 hex")?;
@@ -166,6 +185,67 @@ pub fn compile_renderer_program_with_capture(
     capture: Option<&CaptureConfiguration>,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
+    compile_renderer_capture(
+        main_name,
+        source,
+        options,
+        local_dir,
+        shared_dir,
+        constants,
+        ordinary_dirs,
+        capture,
+        &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Row),
+        dependency,
+    )
+}
+
+/// Explicit versioned producer; profile and capture identity are one host selection.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_renderer_program_with_capture_profile(
+    main_name: &str,
+    source: &str,
+    options: &impl rcc::RccConfig,
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    ordinary_dirs: &[PathBuf],
+    configuration: &RendererCaptureConfiguration,
+    generated_sources: &Path,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::Program, String> {
+    let actual_shared = materialize_renderer_sources(
+        shared_dir,
+        generated_sources,
+        configuration.profile,
+        dependency,
+    )?;
+    compile_renderer_capture(
+        main_name,
+        source,
+        options,
+        local_dir,
+        &actual_shared,
+        constants,
+        ordinary_dirs,
+        configuration.capture.as_ref(),
+        configuration,
+        dependency,
+    )
+    .map_err(|e| e.to_string())
+}
+#[allow(clippy::too_many_arguments)]
+fn compile_renderer_capture(
+    main_name: &str,
+    source: &str,
+    options: &impl rcc::RccConfig,
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    ordinary_dirs: &[PathBuf],
+    capture: Option<&CaptureConfiguration>,
+    configuration: &RendererCaptureConfiguration,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
     rcc::frontend::compile_program_named_with_libraries(
         main_name,
         source,
@@ -174,8 +254,20 @@ pub fn compile_renderer_program_with_capture(
         &mut |name| {
             if name == "gpu_capture_config" {
                 return Ok(rcc::frontend::ModuleSource {
-                    source: capture_config_source(capture.map(|c| &c.manifest_id)),
+                    source: capture_config_source(capture.map(|c| &c.manifest_id), configuration),
                     origin: None,
+                });
+            }
+            if name == "gpu_layout" {
+                let path = shared_dir.join("gpu_layout.rs");
+                dependency(&path);
+                let origin = std::fs::canonicalize(&path)
+                    .map_err(|e| format!("layout origin {}: {e}", path.display()))?;
+                let source = std::fs::read_to_string(&origin)
+                    .map_err(|e| format!("layout source {}: {e}", origin.display()))?;
+                return Ok(rcc::frontend::ModuleSource {
+                    source,
+                    origin: Some(origin),
                 });
             }
             if name == "profiler_gate" {
@@ -206,7 +298,10 @@ pub fn compile_renderer_program_with_capture(
     )
 }
 
-fn capture_config_source(manifest: Option<&[u16; 16]>) -> String {
+fn capture_config_source(
+    manifest: Option<&[u16; 16]>,
+    configuration: &RendererCaptureConfiguration,
+) -> String {
     let mut source = format!(
         "pub const GPU_CAPTURE_CONFIG_ENABLED:u16={};\npub fn gpu_capture_manifest_word(index:u16)->u16{{\n",
         u16::from(manifest.is_some())
@@ -217,6 +312,11 @@ fn capture_config_source(manifest: Option<&[u16; 16]>) -> String {
         }
     }
     source.push_str("0\n}\n");
+    source.push_str(&format!(
+        "pub const GPU_CAPTURE_CONFIG_LAYOUT_ABI:u16={};\n",
+        configuration.profile.layout_abi()
+    ));
+    source.push_str(&configuration.asset_check_source());
     source
 }
 
@@ -239,7 +339,13 @@ fn resolve_module_with_sources(
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<(String, Option<PathBuf>), String> {
     if name == "gpu_capture_config" {
-        return Ok((capture_config_source(None), None));
+        return Ok((
+            capture_config_source(
+                None,
+                &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Row),
+            ),
+            None,
+        ));
     }
     if name == "boot_resources" {
         return Ok((constants.to_owned(), None));

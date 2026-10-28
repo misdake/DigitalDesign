@@ -1,5 +1,7 @@
 //! Private published-input lease. The consumer receives only bounded read bridges.
 use crate::dsl_rt::*;
+mod gpu_layout;
+use gpu_layout::*;
 mod gpu_capture_abi;
 use gpu_capture_abi::*;
 mod gpu_capture_config;
@@ -28,6 +30,11 @@ fn gpu_capture_base(at: u16, sector: u16) {
     gpu_capture_pair(at, sector << 7, sector >> 9);
 }
 fn gpu_capture_range_add(tag: u16, flags: u16, sector: u16, low: u16, high: u16) -> bool {
+    if (tag == GPU_CAPTURE_TAG_MESH || tag == GPU_CAPTURE_TAG_TEXTURE || tag == GPU_CAPTURE_TAG_ATLAS)
+        && !gpu_capture_manifest_asset(tag, sector, low, high) {
+        gpu_capture_fail(GPU_CAPTURE_IDENTITY_ERROR);
+        return false;
+    }
     let count = GPU_CAPTURE_CONTROL[11u16];
     let base = sector << 7;
     let end = base + low;
@@ -162,9 +169,9 @@ fn gpu_capture_begin(cb: Array<GpuBuffer>, slot: u16, frame: u16) -> bool {
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_TARGET_FORMAT] = GPU_DISPLAY[7u16];
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_WORDS] = GPU_CAPTURE_RANGE_WORDS;
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_VERSION] = GPU_CAPTURE_RANGE_VERSION;
-    GPU_CAPTURE_HEADER[GPU_CAPTURE_H_LAYOUT_ABI] = GPU_CAPTURE_LAYOUT_ABI;
+    GPU_CAPTURE_HEADER[GPU_CAPTURE_H_LAYOUT_ABI] = GPU_CAPTURE_CONFIG_LAYOUT_ABI;
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_COMMAND_ABI] = GPU_CAPTURE_NATIVE_COMMAND_ABI;
-    gpu_capture_pair(GPU_CAPTURE_H_PLANE_BYTES, 60928, 2);
+    gpu_capture_pair(GPU_CAPTURE_H_PLANE_BYTES, GPU_FRAMEBUFFER_PHYSICAL_SECTORS << 7, GPU_FRAMEBUFFER_PHYSICAL_SECTORS >> 9);
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_MANIFEST_WORDS] = GPU_CAPTURE_MANIFEST_WORDS;
     let mut i: u16 = 0;
     while i < GPU_CAPTURE_MANIFEST_WORDS {
@@ -222,20 +229,20 @@ fn gpu_capture_begin(cb: Array<GpuBuffer>, slot: u16, frame: u16) -> bool {
         GPU_CAPTURE_TAG_COLOR,
         GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE | GPU_CAPTURE_FULL_CLEAR,
         cb[0u16].color,
-        60928,
-        2,
+        GPU_FRAMEBUFFER_PHYSICAL_SECTORS << 7,
+        GPU_FRAMEBUFFER_PHYSICAL_SECTORS >> 9,
     ) || !gpu_capture_range_add(
         GPU_CAPTURE_TAG_DEPTH,
         GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE | GPU_CAPTURE_FULL_CLEAR,
         cb[0u16].depth,
-        60928,
-        2,
+        GPU_FRAMEBUFFER_PHYSICAL_SECTORS << 7,
+        GPU_FRAMEBUFFER_PHYSICAL_SECTORS >> 9,
     ) || !gpu_capture_range_add(
         GPU_CAPTURE_TAG_FRONT,
         GPU_CAPTURE_READ | GPU_CAPTURE_PREIMAGE,
         gpu_display_sector(GPU_DISPLAY[1u16]),
-        60928,
-        2,
+        GPU_FRAMEBUFFER_PHYSICAL_SECTORS << 7,
+        GPU_FRAMEBUFFER_PHYSICAL_SECTORS >> 9,
     ) {
         return false;
     }

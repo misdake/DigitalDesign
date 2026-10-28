@@ -7,12 +7,50 @@ scheduler or recovery protocol. Normal applications use the shared no-op gate.
 
 ## Explicit consumer selection
 
-`compile_renderer_program_with_capture` takes
-`CaptureConfiguration { gate_path, manifest_id }`. Root/private helpers keep their
-actual shared canonical origins. The selected gate is an ordinary module at its
-real canonical path, without authority over private driver state. Normal builds
-pin the shared no-op gate, Device ABI and capture ABI. Local replacements cannot
-override them or the generated, unprivileged `gpu_capture_config`.
+The legacy `compile_renderer_program_with_capture` and public
+`CaptureConfiguration { gate_path, manifest_id }` remain fixed to row layout.
+`RendererCaptureConfiguration::from_manifest(gate_path, manifest_path)` binds
+one immutable profile, capture ID and immutable resource catalog. Pass it to
+`compile_renderer_program_with_capture_profile`, with an explicit host-owned
+`generated_sources` directory and the existing dependency callback. This entry
+returns `Result<Program, String>` so materialization and compiler failures are
+reported together; the legacy entry retains its compiler-error return type.
+
+| Manifest | Required selection | Header layout/command ABI | Physical plane bytes |
+| --- | --- | --- | --- |
+| v1 or absent version | No `layout`; optional `command_abi` must be 1 | 1 / 1 | 192000 |
+| v2 row | Exact row layout description; `command_abi: 1` | 1 / 1 | 192000 |
+| v2 column | Exact column-pad16 description and allocation map; `command_abi: 1` | 2 / 1 | 204800 |
+
+Unknown or mixed descriptions, invalid versions and the paused RTT tuple 2 / 2
+are rejected. The selected description includes dimensions, physical and
+allocation spans, macro order/pitch, texture layout and (for column) the complete
+memory allocation map. Selection never follows an application filename.
+
+The row profile uses the actual shared source directory. Column materializes an
+explicit derived source root: every shared RCC source keeps its exact bytes,
+except `gpu_layout.rs`, which receives the exact authoritative
+`gpu_layout_column16.rs` bytes. `source-origins.json` records the mapping back to
+those source files. RCC receives real canonical paths in that generated root;
+its root/helper filename and resource-domain checks remain enabled. This avoids
+loading both layouts into one resource domain or claiming a false source origin.
+The generated root is separate from ordinary application module search paths.
+
+The selected gate is an ordinary module at its real canonical path, without
+authority over private driver state. Normal builds pin the shared no-op gate,
+Device ABI, layout and capture ABI. Local replacements cannot override them or
+the generated, unprivileged `gpu_capture_config`. A disabled profile selection
+alone never enables capture.
+
+A v2 catalog supplies typed `mesh`, `texture` and `atlas` roots with physical
+byte addresses/lengths inside the selected asset pool. Resources are nonempty,
+128-byte aligned and nonoverlapping. Texture layout must match the profile;
+column textures need 256-byte base alignment and at least 512 bytes. Atlas keeps
+its aligned 64-KiB ABI. Optional `other` entries identify additional catalog
+storage without authorizing a known root. Before the gate runs, actual exported
+Mesh/Texture/Atlas ranges must exactly match their typed catalog roots; a
+mismatch becomes sticky `GPU_CAPTURE_IDENTITY_ERROR` and prevents SEND. Catalog
+hash validation and dependency closure remain the external consumer's job.
 
 `CPU_V3_BOOT_EXAMPLE=gpu_profiler_board` registers the diagnostic integration
 entry. Its separate profiler-owned example supplies `rcc/main.rs`,
@@ -67,9 +105,15 @@ it is ordinary CPU data, with no heap or new FPGA storage primitive.
 
 The producer includes CB padding, used objects, actual UI page, complete known
 Mesh/Texture/Atlas allocations, both target preimages and old Front. FULL_CLEAR
-does not omit preimages. A replay consumer must verify actual commands, bindings
-and dependency closure rather than trusting declarations. Native CB bytes have
-no snapshot header. The table supplies no external-buffer or RTT API.
+does not omit preimages. Column color, depth and old Front each cover all
+204800 physical bytes, including 12800 bytes of macro padding; their header and
+range length pair is 8192 / 3. Their 262144-byte allocations have a further
+57344-byte tail, which is neither exported nor marked WRITE/FULL_CLEAR. The
+current minimal hook rejects `options.capture_allocation_guards: true`; consumers
+requiring that tail must not treat this producer as guard-capable. A replay
+consumer must verify actual commands, bindings and dependency closure rather
+than trusting declarations. Native CB bytes have no snapshot header. The table
+supplies no external-buffer or RTT API.
 
 | Public diagnostic bridge | Contract |
 | --- | --- |
@@ -108,3 +152,75 @@ origin/manifest tests separate explicit consumers from local overrides.
 These peers do not qualify UART, rasterization, actual cache contention, scanout
 or board capture. Consumer and matched hardware qualification are separate.
 DRAM alone cannot reconstruct arbitrary warm-cache or internal pipeline state.
+
+The `capture_layout` integration target compiles and executes the real RCC/CPU
+producer for legacy row, explicit row and column. Its portable `build.json`
+binds copied source inputs, catalog and the selected effective RCC root. It emits
+actual `header.bin`, `ranges.bin`, `producer.v3bin` and frozen range payloads under
+`target/capture-layout`. First/last payload words pass through public read bridges;
+complete payload files are host copies while the gate holds ownership. Controlled
+GPU/Display peers establish identity, bounds and lease behavior, not UART delivery,
+triangle rasterization or board capture. Firmware hashes remain external to the
+manifest ID. No serial column demo capture is enabled by this test or selection.
+
+The separate `capture_draw` target executes three submissions in each explicit
+row `(1,1)` and column `(2,1)` layout/command profile. It uses the catalog's single
+triangle and white texture, unlit RGB material, LESS and depth writes without
+blending. Camera focal length 160 and world Z -4 produce positive native Z +4;
+the three model X positions are 0, +0.5 and -0.5. Actual recorded matrices,
+bindings and material words are checked before any independent GPU replay.
+
+The natural double-slot command addresses follow A/B/A. Each gate has its own
+token, publication epoch, header, ranges and complete immutable inputs and
+color/depth/old-Front physical preimages. First and third referenced object
+bytes differ even though their command address is reused. `GPU_CAPTURE_DRAW_DIR`
+selects the output root (otherwise a process-specific temporary directory).
+Each profile contains `build.json`, actual compiled program/listing, source
+origins and `sequence.json`; `frame-0` through `frame-2` contain frozen payloads
+and `producer.json`. The identity manifest also binds all capture fixture test
+sources. Column padding is captured, while its allocation tail remains outside
+the declared writable span.
+
+GPU/Display control peers only retire protocol work; they never render or scan
+out. Thus the three preimages are independent replay inputs, not asserted
+consecutive GPU pixel outputs. Public bridges sample each range's first/last
+words and the host copies the full frozen range. Positive-Z/interior checks and
+ideal projected coordinates are producer checks, not a raster/depth oracle.
+The GPU consumer must independently replay each actual input, including the
+reused address, and verify coverage, color, depth and allowed writes.
+
+The same `capture_draw` test target has a separate complete-scene case,
+`real_full_scene_three_gates_resume_and_restore_stats`. It executes the exact
+formal profiler `full_scene.rs` snapshot pinned by
+`tests/fixtures/capture_full_scene/origin.json`; only the external entry wrapper
+selects three frames and a final drain. Each actual frame records all six box
+meshlets, one RGB meshlet, all 17 rabbit meshlets (948 faces), and OBS UI: 24 DRAWs
+and 1141 triangles. The fixed camera, model and light come from that example;
+camera preparation, frame input snapshots and observed-time UI use production
+calls. This fixture does not model camera motion from controller input.
+
+`tools/capture_full_assets.py` composes the existing classic scene packer and
+renderer font packer for either profile. It preserves native mesh and texture
+bytes, adds the OBS atlas glyphs, and supplies typed catalog roots and renderer
+metadata. Repository-relative source hashes bind the complete scene, texture,
+font and fixture origins into the portable identity manifest. No parallel native
+asset encoder, command construction or capture ABI is introduced.
+
+Set `GPU_CAPTURE_FULL_SCENE_DIR` for the full-scene output root. Each profile
+retains the same three gate directories and payload contract, with an additional
+`ui.bin` convenience copy and actual renderer input/timing/statistics words in
+`producer.json`. `sequence.json` includes the final drained statistics. The
+second gate advances modeled wall time by 40000 ms and returns Resumed; the
+others Continue. Its paused submission has invalid observed intervals, the next
+tick excludes the pause, and the final submission restores valid statistics.
+Neutral analog packets travel through the real input path. The synthetic timer
+advances one modeled 54-MHz cycle per CPU instruction; its numeric intervals
+are control-test stimuli and supply no hardware performance measurement.
+
+The recorder can seal a successor before observing the previous completion.
+Consequently, the third frame's OBS bytes show the first frame's valid duration,
+while its gate already observes the second frame's paused, invalid statistics.
+The first and third UI payloads actually differ at the reused A slot. Neither
+the test nor its metadata rewrites sealed UI to match later statistics. Full
+color/depth/old-Front preimages remain independent controlled-peer inputs;
+only independent GPU/MC replay can establish their rendered results.

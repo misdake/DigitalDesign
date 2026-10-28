@@ -46,6 +46,9 @@ pub const GPU_CAPTURE_PUBLISHED: u16 = 1;
 pub const GPU_CAPTURE_BINDINGS_SELF_CONTAINED: u16 = 1;
 pub const GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 1;
 pub const GPU_CAPTURE_LAYOUT_ABI: u16 = 1;
+// Storage selection is independent of the native command version.
+pub const GPU_CAPTURE_LAYOUT_ROW_ABI: u16 = 1;
+pub const GPU_CAPTURE_LAYOUT_COLUMN_ABI: u16 = 2;
 pub const GPU_CAPTURE_RANGE_VERSION: u16 = 1;
 
 pub const GPU_CAPTURE_R_FLAGS: u16 = 0;

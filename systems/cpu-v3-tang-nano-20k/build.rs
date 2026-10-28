@@ -2,10 +2,9 @@
 pub use cpu_v3::*;
 #[path = "src/boot/mod.rs"]
 mod boot;
-#[path = "rcc/gpu_layout.rs"]
-mod gpu_layout;
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
+use rcc_modules::capture_profile::row as gpu_layout;
 use std::path::{Path, PathBuf};
 #[path = "build_support/rcc_modules.rs"]
 mod rcc_modules;
@@ -28,7 +27,7 @@ fn compile(
         );
         println!("cargo:rerun-if-changed={}", manifest_path.display());
         Some(
-            rcc_modules::CaptureConfiguration::from_manifest(
+            rcc_modules::RendererCaptureConfiguration::from_manifest(
                 source_dir.join("profiler_gate.rs"),
                 &manifest_path,
             )
@@ -38,23 +37,41 @@ fn compile(
         None
     };
     let program = if renderer {
-        rcc_modules::compile_renderer_program_with_capture(
-            &path.display().to_string(),
-            &source,
-            options,
-            source_dir,
-            shared,
-            constants,
-            &if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
+        let compile_renderer = |dependency: &mut dyn FnMut(&Path)| {
+            let dirs = if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
                 vec![shared.parent().unwrap().join("examples/bloxorz/rcc")]
             } else {
                 vec![]
-            },
-            capture.as_ref(),
-            &mut |module| {
-                println!("cargo:rerun-if-changed={}", module.display());
-            },
-        )
+            };
+            if let Some(configuration) = capture.as_ref() {
+                rcc_modules::compile_renderer_program_with_capture_profile(
+                    &path.display().to_string(),
+                    &source,
+                    options,
+                    source_dir,
+                    shared,
+                    constants,
+                    &dirs,
+                    configuration,
+                    &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("capture-rcc"),
+                    dependency,
+                )
+            } else {
+                rcc_modules::compile_renderer_program_with_capture(
+                    &path.display().to_string(),
+                    &source,
+                    options,
+                    source_dir,
+                    shared,
+                    constants,
+                    &dirs,
+                    None,
+                    dependency,
+                )
+                .map_err(|e| e.to_string())
+            }
+        };
+        compile_renderer(&mut |module| println!("cargo:rerun-if-changed={}", module.display()))
     } else {
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
             rcc_modules::load_native_module(
@@ -72,6 +89,7 @@ fn compile(
                 },
             )
         })
+        .map_err(|e| e.to_string())
     }
     .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
     let static_words = program.debug.static_data_end;
