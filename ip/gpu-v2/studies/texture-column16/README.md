@@ -218,65 +218,24 @@ logical-body equivalence is in `production-ui-source-equivalence-v2.json`.
 This is functional simulation, not device or final timing qualification.
 
 
-## Current qualified pure candidate
+## Current pure layout profile
 
-The final emitted GPU SHA256 is
+The emitted GPU SHA256 is
 `b235b488b839d3fcfe94656ccd7da522bd9d3ec862c58fa7b5967e3bb18b7e77`.
-Only the optional UI `mt_target` reuse was removed. `ui-lifetime-only-delta.json`
-proves the complete emitted RTL differs in exactly those two UI changes.
-`full-column-no-ui-capture-v1` was independently executed and audited again;
-its complete counts/cycles, canonical images and padding equal the earlier
-column result above. It does not reuse the earlier candidate's trace.
+The profile retains the ordinary UI tile ownership and target lifetime; it
+changes external addressing without adding UI writes to the shared target.
+It exposes no RTT view descriptor or framebuffer-texture coordinate path.
 
-Both normal complete-board builds use production place1/route2,54/108MHz CL3,
-SPI half-period2 and the default CPU Display diagnostic boot configuration.
-Within each row/column pair, all32 actual generated RTL/boot/constraint files
-and physical bit payloads are identical; raw FS hashes differ only because of
-the creation-time comment. `normal-board-repeat-qualification-v2.json` records
-the raw hashes and the timing/source comparisons.
+Activate `texture16x8-column16` only with matching column POT assets and the
+explicit serial scene firmware described in
+[GPU column scene](/systems/cpu-v3-tang-nano-20k/docs/gpu-column-scene.md).
+The default production export remains separate. UI grids and glyph-atlas bytes
+retain their existing ABI; ordinary texture transposition does not apply to UI
+atlas assets.
 
-| Routed complete-board result | Row (both runs) | Column (both runs) |
-| --- | ---: | ---: |
-| Logic |19550|19759|
-| Registers |7351|7351|
-| CLS |10144|10203|
-| BSRAM |46|46|
-| DSP |22|22|
-| CPU-domain Fmax MHz |56.176|54.713|
-| Controller Fmax MHz |117.827|112.159|
-| Pixel-domain Fmax MHz |104.596|100.757|
-| Setup/hold violations |0/0|0/0|
-
-Column does not save routed Logic in this implementation: it uses209 more.
-The54MHz CPU path is FPU opcode register through shared ALU to RF RAM DI14:
-20 logic levels,0.241ns slack,7.781ns cell delay,10.230ns route delay and0.232ns
-clock-to-Q. The global tightest0.079ns setup path is the unchanged SDRAM output.
-A supplementary CPU report is tied to the normal artifact by exact physical
-payload/Fmax/source equivalence in `cpu-critical-path-proof-v2.json`; only
-reporting directives were added, with no clock/exception/PVT relaxation.
-No independent seed sweep or extra physical PVT qualification is claimed.
-
-The first UI-register-reuse variant did not produce a final STA report: its
-first routing run was budget-cancelled after45.44 minutes and the same-source
-replica was cancelled as superseded after28.86 minutes. Those are cancelled
-routing attempts, not54MHz STA failures or passes. Their logs, source snapshots
-and cancellation receipts are retained. Removing that optional structure made
-the two normal fits complete; the internal tool cause is not proven. Earlier
-RTT-enabled53.632MHz timing failure remains separately preserved and paused.
-
-The pure increment against `b0f2889d` is content-only for the designated single
-integrator. A build-only source archive, without either RTT source module/API,
-compiled successfully and emitted the identical GPU and all32 normal board
-files (`clean-projection-export-proof.json`). No branch/index/ref was modified.
-Default production remains the legacy export; activate the explicit column
-profile only with matching build-time POT assets and firmware. UI grids and
-glyph-atlas bytes retain their existing ABI; do not transpose UI glyph assets
-as if they were ordinary POT textures.
-
-No physical board programming/UART/capture occurred. A final clean matching
-non-RTT column firmware/assets receipt is still required. The qualified fit
-currently uses a CPU Display diagnostic: re-export with the intended firmware
-configuration and compare actual RTL/boot identity; if it differs, fit/audit
-the matched candidate before programming. This experiment does not complete
-physical concurrent CPU/GPU/Display or image-capture qualification. The profiler
-fallback firmware/bitstream hashes were read-only verified and remain intact.
+Whole-system qualification binds the actual generated RTL, boot stage, clock
+constraints, firmware and bitstream identities. Re-export the intended firmware
+configuration and audit the matching implementation before programming.
+Standalone cache or full-GPU replay results do not certify CPU/Display
+concurrency, physical scanout, cold power-on or PVT behavior. Prior experiment
+resource and timing observations do not transfer to a changed system build.

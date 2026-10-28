@@ -4,9 +4,9 @@ This opt-in experiment starts from accepted sampling commit
 `8b242ec83a228b31f384ba703941271ef1d98313`. It uses external16x16 RGB565 tiles
 and resident16x8 cache lines, matching the existing framebuffer's storage and
 half-tile boundaries. The default `command` export and board factories retain
-their accepted format. The layout-only profile exposes no framebuffer view;
-the separate opt-in `rtt400x240` profile is documented in
-[framebuffer texture views](/ip/gpu-v2/docs/framebuffer-texture-view.md).
+their accepted format. The layout-only profile exposes no framebuffer view.
+The [pure column profile](/ip/gpu-v2/studies/texture-column16/README.md) changes
+external macro order; RTT work remains separate from this layout feature.
 
 ## Storage and cache contract
 
