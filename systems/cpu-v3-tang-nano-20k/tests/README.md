@@ -1,5 +1,9 @@
 # System regression tests
 
+The reusable [GPU profiler](/systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/README.md)
+has bounded format, viewer and production-GPU observer checks in its own tool
+directory. It does not require a full-frame run or change synthesized logic.
+
 The `host` integration target groups boot packaging, module resolution, driver,
 UI, display-control, timer, input, camera and fetch/checkpoint tests. Filter by
 module when checking one area:
