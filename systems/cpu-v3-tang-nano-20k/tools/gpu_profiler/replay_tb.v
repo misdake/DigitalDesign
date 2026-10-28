@@ -57,11 +57,11 @@ function integer physical;
  end
 endfunction
 integer guard_word,guard_index;
-always @(posedge controller_clk)if(!reset&&mc.bridge.take&&!mc.bridge.offer_write)begin
+always @(posedge controller_clk)if(!reset&&(mc.bridge.take||mc.bridge.read_chain_accept)&&!mc.bridge.offer_write)begin
  for(guard_word=0;guard_word<mc.bridge.offer_words;guard_word=guard_word+1)begin
   guard_index=physical(mc.bridge.offer_address+guard_word);
   if(valid_bytes[guard_index]!==4'b1111)
-   $fatal(1,"Uncaptured/uninitialized read: logical byte=%h mask=%h",(mc.bridge.offer_address+guard_word)*4,valid_bytes[guard_index]);
+   $fatal(1,"Uncaptured/uninitialized read: logical byte=%h mask=%h take=%b read_chain=%b",(mc.bridge.offer_address+guard_word)*4,valid_bytes[guard_index],mc.bridge.take,mc.bridge.read_chain_accept);
  end
 end
 integer write_location;

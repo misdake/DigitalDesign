@@ -64,8 +64,15 @@ Version1 captures preimages even when the CB declares full CLEAR.
 The header ID is a declaration, not a hardware self-attestation. A separate
 verified programming receipt binds actual firmware and bitstream bytes. Missing
 files, changed identities, unsafe filenames, inconsistent aliases or incompatible
-ABIs refuse replay. Physical initialized-read guards additionally reject any
-native MC read not covered by captured bytes or an earlier replay write.
+ABIs refuse replay. The physical initialized-read guard checks every accepted
+read offer, through both ordinary `take` and `read_chain_accept`, against captured
+bytes or an earlier replay write. Both paths use the same address/byte-mask check.
+The bounded native-MC regression exercises two128-byte GPU RO bursts, verifies
+actual READ continuation and both payloads, and rejects an uncaptured successor:
+
+```powershell
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/tests/read_chain_guard.py --peer path/to/fresh-export/peer --out path/to/new-test-output
+```
 
 Storage layout is independent of the unchanged GPS1 wire v1, 64-word header,
 range v1 and native command ABI1. Header indices remain driver-owned.
