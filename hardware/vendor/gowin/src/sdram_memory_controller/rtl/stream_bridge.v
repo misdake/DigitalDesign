@@ -45,8 +45,13 @@ module TangNano20KSdramNativeBridge108M54M #(
  wire push=write_data_valid&&write_data_ready;
  wire core_ready,core_done,core_initialized,core_read_valid,chain_accept,read_chain_accept;
  wire[31:0]core_read_data;wire[5:0]core_write_index;wire[7:0]core_phase;
- wire pop=core_phase[4:0]==15&&core_write_index[0]&&pair_count!=0;
- wire[31:0]core_write_data=core_write_index[0]?pair_head[63:32]:pair_head[31:0];
+ reg pop=0;
+ // Preserve the pre-consumption index for a coincident logic-clock pop.
+ always @(negedge controller_clk)pop<=core_phase[4:0]==15&&core_write_index[0]&&pair_count!=0;
+ wire[31:0]selected_write_data=core_write_index[0]?pair_head[63:32]:pair_head[31:0];
+ reg[31:0]core_write_data=0;
+ // Pair data is stable before this edge; the next positive edge consumes it.
+ always @(negedge controller_clk)core_write_data<=selected_write_data;
  wire take=offer_valid&&core_ready&&(!offer_write||pair_count>=(offer_words==1?1:2));
  // The adapter alone proves same-owner, same-direction line overlap.
  // Descriptor ownership and write supply are different proofs. A READ chain
@@ -60,9 +65,12 @@ module TangNano20KSdramNativeBridge108M54M #(
  generate if(REGISTER_READ_RETURN)begin:registered_read_return
   // Invalid payload is unowned; keep the event out of the wide data enable.
   reg[63:0]payload=0;reg valid=0;
+  reg[63:0]stable_read_pair=0;
+  // Retain the completed pair across the following rising-edge producer update.
+  always @(negedge controller_clk)stable_read_pair<=read_pair;
   always @(posedge logic_clk)begin
    if(transport_reset)begin payload<=0;valid<=0;end
-   else begin valid<=raw_read_valid;payload<=read_pair;end
+   else begin valid<=raw_read_valid;payload<=stable_read_pair;end
   end
   assign read_data=payload;assign read_valid=valid&&!transport_reset;
  end else begin:edge_read_return

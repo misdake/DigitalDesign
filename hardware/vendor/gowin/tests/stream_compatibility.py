@@ -8,8 +8,13 @@ ap=argparse.ArgumentParser(__doc__);ap.add_argument('--peer',type=Path,required=
 ap.add_argument('--late-bank',action='store_true',help='Vary read arrival, bank and row to cover preparation at the READ tail')
 ap.add_argument('--display',action='store_true',help='Insert one strict-priority Display burst during GPU writes')
 ap.add_argument('--cl3',action='store_true',help='Use board CL3/108 MHz and registered logic-clock read return')
+ap.add_argument('--logic-skew-ns',type=float,default=0,help='Inject related logic-clock skew relative to controller (CL3 only)')
+ap.add_argument('--pair-cq-ns',type=float,default=0,help='Inject read-pair/write-head clock-to-Q delay in the simulation fixture')
 args=ap.parse_args()
 assert 2 <= args.bursts <= (64 if args.late_bank else 32)
+assert -0.35 <= args.logic_skew_ns <= 0.35
+assert 0 <= args.pair_cq_ns <= 0.201
+assert args.cl3 or (args.logic_skew_ns == 0 and args.pair_cq_ns == 0)
 peer=args.peer.resolve();out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
 ports=[]
 for d,w,n in re.findall(r'\b(input|output|inout)\s+(?:wire\s+)?(\[[^]]+\]\s*)?(\w+)',(peer/'combination.v').read_text().split(');',1)[0]):
@@ -152,16 +157,32 @@ if args.cl3:
  tb=with_cl3_pins(tb,'dut.bridge.u_controller')
  tb=tb.replace('integer cycle=0,', 'integer write_chains=0,read_chains=0;\nalways @(posedge controller_clk)if(!reset)begin if(dut.bridge.chain_accept)write_chains=write_chains+1;if(dut.bridge.read_chain_accept)read_chains=read_chains+1;end\ninteger cycle=0,',1)
  tb=tb.replace(' $display("PASS CPU compatibility', ' if(write_chains==0||read_chains==0)$fatal(1,"missing physical continuation write=%0d read=%0d",write_chains,read_chains);\n $display("PHYSICAL_CHAIN write=%0d read=%0d",write_chains,read_chains);\n $display("PASS CPU compatibility',1)
+ if args.logic_skew_ns != 0:
+  # Use the common PLL source so negative relative skew never needs a negative delay.
+  tb=tb.replace('always @(posedge controller_clk)logic_clk=~logic_clk;',
+                f'always @(posedge source_clk)logic_clk<=#{2.271 + args.logic_skew_ns:.3f} ~logic_clk;')
 (out/'tb.v').write_text(tb)
 files=[]
 for name in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v']:
  p=out/name;source=(peer/name).read_text()
  if args.cl3 and name=='combination.v':
   source=cl3_bridge_parameters(source)
+ if name=='bridge.v' and args.pair_cq_ns:
+  # Delay only simulation-visible producer Q, leaving every receiving register
+  # and valid event intact. This is an injected witness, not measured board skew.
+  for signal in ('pair_head','read_pair'):
+   declaration=f'reg[63:0]{signal}=0'
+   assert source.count(declaration)==1
+   source=source.replace(declaration,f'reg[63:0]{signal}_q=0',1)
+   source=re.sub(rf'\b{signal}\s*<=',f'{signal}_q<=',source)
+   declaration_start=source.index(f'reg[63:0]{signal}_q=0')
+   declaration_end=source.index(';',declaration_start)+1
+   source=source[:declaration_end]+f'wire[63:0]{signal};assign #({args.pair_cq_ns:.3f}) {signal}={signal}_q;'+source[declaration_end:]
+  source='`timescale 1ns/1ps\n'+source
  p.write_text(source);files.append(p)
 for name,cmd in [('compile',[os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',out/'sim.vvp',*files,out/'tb.v']),('run',[os.environ['VVP_EXE'],out/'sim.vvp'])]:
  r=subprocess.run(list(map(str,cmd)),cwd=out,capture_output=True,timeout=90)
  (out/(name+'.log')).write_bytes(r.stdout+r.stderr)
  if r.returncode:raise RuntimeError((r.stdout+r.stderr).decode()[-1800:])
-result=dict(status='pass',cl3=args.cl3,display_contention=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('DISPLAY_CONTENTION')],physical_chain=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('PHYSICAL_CHAIN')],case=next(s for s in (out/'run.log').read_text().splitlines() if s.startswith('PASS')),burst_timing=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('BURST_TIMING')], source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in files},test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+result=dict(status='pass',cl3=args.cl3,logic_skew_ns=args.logic_skew_ns,pair_cq_ns=args.pair_cq_ns,display_contention=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('DISPLAY_CONTENTION')],physical_chain=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('PHYSICAL_CHAIN')],case=next(s for s in (out/'run.log').read_text().splitlines() if s.startswith('PASS')),burst_timing=[s for s in (out/'run.log').read_text().splitlines() if s.startswith('BURST_TIMING')], source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in files},test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
 (out/'receipt.json').write_text(json.dumps(result,indent=2));print(json.dumps({k:v for k,v in result.items() if k != 'source_sha256'}))
