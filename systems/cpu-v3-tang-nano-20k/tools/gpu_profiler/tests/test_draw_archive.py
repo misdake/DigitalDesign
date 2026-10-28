@@ -31,6 +31,26 @@ def envelope(root):
 
 
 class DrawArchiveTests(unittest.TestCase):
+    def test_full_scene_envelope_retains_real_nested_profile_and_ui(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); frame,receipt=envelope(root/'full-scene')
+            receipt['schema']='digitaldesign.cpu-capture-full-scene-delivery'
+            for entry in receipt['evidence_files']:entry['path']='full-scene/'+entry['path']
+            (frame/'ui.bin').write_bytes(b'OBS --.- synthetic unit bytes')
+            digest=hashlib.sha256((frame/'ui.bin').read_bytes()).hexdigest()
+            receipt['evidence_files'].append(dict(path='full-scene/default/frame-0/ui.bin',
+                                                  bytes=(frame/'ui.bin').stat().st_size,sha256=digest))
+            p=receipt['profiles'][0];p['producer_sha256']=p.pop('program_sha256')
+            p['frames'][0]['ui_sha256']=digest
+            # Full archives seal header/ranges via evidence_files, not duplicate
+            # per-frame digest fields. Do not fabricate a legacy envelope.
+            del p['frames'][0]['header_sha256'];del p['frames'][0]['ranges_sha256']
+            profile,_=draw_archive(frame,root/'receipt.json',receipt,'unit-test-not-a-commit')
+            self.assertEqual(profile,root/'full-scene/default')
+            (frame/'ui.bin').write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError,'artifact changed'):
+                draw_archive(frame,root/'receipt.json',receipt,'unit-test-not-a-commit')
+
     def test_sealed_envelope_and_changed_payload(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); frame, receipt = envelope(root)

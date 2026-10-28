@@ -27,8 +27,11 @@ def draw_archive(folder, receipt_path, receipt, commit):
         parts = folder.relative_to(root).parts
     except ValueError as error:
         raise ValueError('DRAW fixture is outside the sealed archive') from error
-    if len(parts) != 2 or parts[1] not in ('frame-0', 'frame-1', 'frame-2'):
+    full = receipt.get('schema') == 'digitaldesign.cpu-capture-full-scene-delivery'
+    if ((full and (len(parts) != 3 or parts[0] != 'full-scene')) or
+            (not full and len(parts) != 2) or parts[-1] not in ('frame-0','frame-1','frame-2')):
         raise ValueError('Expected a sealed profile/frame-N producer occurrence')
+    profile_relative = '/'.join(parts[:-1]); frame_relative = '/'.join(parts)
     seen = set()
     for item in receipt['evidence_files']:
         name = item['path']; path = (root/name).resolve()
@@ -37,25 +40,31 @@ def draw_archive(folder, receipt_path, receipt, commit):
         seen.add(name)
         if path.stat().st_size != item['bytes'] or identity.digest(path) != item['sha256']:
             raise ValueError('DRAW producer artifact changed: '+name)
-    profile = next(v for v in receipt['profiles'] if v['profile'] == parts[0])
-    frame = next(v for v in profile['frames'] if v['frame_index'] == int(parts[1][-1]))
-    required = [f'{parts[0]}/build.json', f'{parts[0]}/producer.v3bin',
-                *(f'{parts[0]}/{parts[1]}/{name}' for name in ('header.bin', 'ranges.bin', 'producer.json', 'commands.bin', 'objects.bin'))]
+    profile = next(v for v in receipt['profiles'] if v['profile'] == parts[-2])
+    frame = next(v for v in profile['frames'] if v['frame_index'] == int(parts[-1][-1]))
+    required = [f'{profile_relative}/build.json', f'{profile_relative}/producer.v3bin',
+                *(f'{frame_relative}/{name}' for name in ('header.bin','ranges.bin','producer.json','commands.bin','objects.bin'))]
+    if full: required.append(f'{frame_relative}/ui.bin')
     if not set(required) <= seen:
         raise ValueError('DRAW receipt does not seal the required producer inputs')
-    if identity.digest(root/parts[0]/'producer.v3bin') != profile['program_sha256']:
+    if identity.digest(root/profile_relative/'producer.v3bin') != profile['producer_sha256' if full else 'program_sha256']:
         raise ValueError('DRAW program digest mismatch')
     for name, key in [('header.bin', 'header_sha256'), ('ranges.bin', 'ranges_sha256'),
                       ('commands.bin', 'commands_sha256'), ('objects.bin', 'objects_sha256')]:
-        if identity.digest(folder/name) != frame[key]:
+        if (not full or key in ('commands_sha256','objects_sha256')) and key not in frame:
+            raise ValueError('Missing DRAW occurrence digest: '+name)
+        if key in frame and identity.digest(folder/name) != frame[key]:
             raise ValueError('DRAW occurrence digest mismatch: '+name)
-    return root/parts[0], dict(manifest_id=profile['manifest_id'], layout_command=profile['layout_command'], frame=frame,
+    if full and identity.digest(folder/'ui.bin') != frame['ui_sha256']:
+        raise ValueError('Full-scene UI occurrence digest mismatch')
+    return root/profile_relative, dict(manifest_id=profile['manifest_id'], layout_command=profile['layout_command'], frame=frame,
                                sealed_paths=seen, archive_root=root)
 
 
 def read_producer(folder, receipt_path, commit):
     receipt = json.loads(receipt_path.read_text())
-    sequence = receipt.get('schema') == 'digitaldesign.cpu-capture-draw-delivery'
+    sequence = receipt.get('schema') in ('digitaldesign.cpu-capture-draw-delivery',
+                                       'digitaldesign.cpu-capture-full-scene-delivery')
     build_root = folder
     if sequence:
         build_root, entry = draw_archive(folder, receipt_path, receipt, commit)
@@ -99,10 +108,12 @@ def read_producer(folder, receipt_path, commit):
             raise ValueError('DRAW receipt layout/command profile disagrees with frozen inputs')
         if any(h[name] != frame[key] for name, key in [('token','token'), ('publication','publication'),
                                                       ('slot','slot'), ('cb_base','cb_address'),
-                                                      ('cb_bytes','command_bytes'), ('object_bytes','object_bytes')]):
+                                                      ('cb_bytes','command_bytes'), ('object_bytes','object_bytes')] if key in frame):
             raise ValueError('DRAW occurrence header disagrees with the receipt')
         if capture.read(h['cb_base'], h['cb_bytes']) != (folder/'commands.bin').read_bytes() or capture.read(h['object_base'], h['object_bytes']) != (folder/'objects.bin').read_bytes():
             raise ValueError('DRAW frozen command/object views disagree')
+        if receipt.get('schema') == 'digitaldesign.cpu-capture-full-scene-delivery' and capture.read(h['ui_base'],h['ui_bytes']) != (folder/'ui.bin').read_bytes():
+            raise ValueError('Full-scene frozen UI views disagree')
     for role in ('color', 'depth', 'front'):
         if h[role+'_base']:
             capture.read(h[role+'_base'], layout.plane_bytes)

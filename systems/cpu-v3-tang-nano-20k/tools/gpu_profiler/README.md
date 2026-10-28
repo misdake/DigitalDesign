@@ -198,6 +198,51 @@ with explicit `--layout row|column`, export options and fresh `--out` directory.
 Synthetic input success never establishes real CPU producer or physical-button
 qualification. Put outputs under the approved external experiment directory.
 
+### Complete frozen scene
+
+`tests/full_scene_replay.py` consumes the CPU-owned
+`digitaldesign.cpu-capture-full-scene-delivery` v1 envelope, whose profiles live
+under `full-scene/default|column16/frame-0..2`. The consumer verifies its sealed
+program/build, commands, objects, UI and all range bytes without rewriting the
+producer archive or using its `observed` sanity/projection fields as answers.
+The same explicit export options as the single-DRAW runner apply. Cycle and
+wall limits default to2000000 and1800seconds; both are explicit manifest fields
+and may be overridden within replay's existing bounds.
+
+The independent NumPy reference decodes every native DMA/state/DRAW/UI command
+in order. It performs the documented Vertex output-window/normal quantization,
+then direct float64 ray/triangle intersections and perspective attributes. It
+does not read RTL, control ROM, T's reduced coefficients, R's traversal answers,
+I's reciprocal table or CPU-provided projections. Textures come only from
+captured RGB565 bytes: row8x8 or column16x16 macros and their actual mip padding.
+Sampling uses the documented integer tap/Color quantizers; Lighting uses ideal
+normalization and Blinn-Phong with each current global context. Final, ROP
+packing and UI's binary-alpha glyph writes are independently evaluated.
+
+This runner requires24 DRAWs:192 box triangles in six textured/unlit meshlets,
+one RGB triangle,948 rabbit triangles in17 lit meshlets, and nonempty frame-time
+UI. It independently checks the actual GPU trace for24 DRAW/start and VT/end
+events, all command executions, UI, substantial T/quad work and completed drain.
+Thus a parsed manifest, single DRAW or empty run cannot satisfy this contract.
+
+Reports separately count full-image coverage, exact UI and nonboundary color
+and depth. One-pixel ideal edge bands and two-code depth ties are marked using
+the independent geometry, never DUT primitive ownership. Coverage/depth/color
+deviations in excluded regions are still counted and sampled. Stable depth's
+budget is two Q8.8 codes; unlit RGB permits one RGB565 channel code (whose bit
+expansion can differ by nine RGB8 units). Texture and ideal-light comparison
+budgets are24 and16 RGB8 units maximum, with mean at most two; these are
+approximation checks, not bit-exact Lighting or arbitrary-scene guarantees.
+Background and UI color remain exact. Minimum checked texture/RGB/lit pixel
+counts reject vacuous comparisons. The original/actual/reference images and
+counts remain available even when a budget fails.
+
+NumPy is required only for this complete-scene path and its separate opt-in
+`tests/scene_oracle_checks.py`; the basic profiler format/viewer checks remain
+stdlib-only. Native GPU/MC runs still require Icarus and the existing Gowin
+primitive library. Frozen CPU producer input, cold GPU execution, warm queue
+concurrency, physical buttons and board qualification remain separate evidence.
+
 The next frozen lease can expose the previous submission's actual output in its
 confirmed old Front and depth preimage. `compare.py` checks adjacency, addresses,
 formats, input identity and both complete output planes. An equal memory image
