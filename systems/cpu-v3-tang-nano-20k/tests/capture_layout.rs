@@ -126,7 +126,10 @@ fn global(cpu: &mut CpuV3Sim, p: &rcc_backend::CpuV3Program, name: &str, n: usiz
 fn run(label: &str, profile: &str, legacy: bool, finish: &str, wrong_root: bool) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo = root.join("../..");
-    let out = repo.join("target/capture-layout").join(label);
+    let out = std::env::var_os("GPU_CAPTURE_LAYOUT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo.join("target/capture-layout"))
+        .join(label);
     let assets = out.join("assets");
     std::fs::create_dir_all(&out).unwrap();
     call(

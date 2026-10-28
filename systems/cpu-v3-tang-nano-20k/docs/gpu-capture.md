@@ -188,3 +188,39 @@ words and the host copies the full frozen range. Positive-Z/interior checks and
 ideal projected coordinates are producer checks, not a raster/depth oracle.
 The GPU consumer must independently replay each actual input, including the
 reused address, and verify coverage, color, depth and allowed writes.
+
+The same `capture_draw` test target has a separate complete-scene case,
+`real_full_scene_three_gates_resume_and_restore_stats`. It executes the exact
+formal profiler `full_scene.rs` snapshot pinned by
+`tests/fixtures/capture_full_scene/origin.json`; only the external entry wrapper
+selects three frames and a final drain. Each actual frame records all six box
+meshlets, one RGB meshlet, all 17 rabbit meshlets (948 faces), and OBS UI: 24 DRAWs
+and 1141 triangles. The fixed camera, model and light come from that example;
+camera preparation, frame input snapshots and observed-time UI use production
+calls. This fixture does not model camera motion from controller input.
+
+`tools/capture_full_assets.py` composes the existing classic scene packer and
+renderer font packer for either profile. It preserves native mesh and texture
+bytes, adds the OBS atlas glyphs, and supplies typed catalog roots and renderer
+metadata. Repository-relative source hashes bind the complete scene, texture,
+font and fixture origins into the portable identity manifest. No parallel native
+asset encoder, command construction or capture ABI is introduced.
+
+Set `GPU_CAPTURE_FULL_SCENE_DIR` for the full-scene output root. Each profile
+retains the same three gate directories and payload contract, with an additional
+`ui.bin` convenience copy and actual renderer input/timing/statistics words in
+`producer.json`. `sequence.json` includes the final drained statistics. The
+second gate advances modeled wall time by 40000 ms and returns Resumed; the
+others Continue. Its paused submission has invalid observed intervals, the next
+tick excludes the pause, and the final submission restores valid statistics.
+Neutral analog packets travel through the real input path. The synthetic timer
+advances one modeled 54-MHz cycle per CPU instruction; its numeric intervals
+are control-test stimuli and supply no hardware performance measurement.
+
+The recorder can seal a successor before observing the previous completion.
+Consequently, the third frame's OBS bytes show the first frame's valid duration,
+while its gate already observes the second frame's paused, invalid statistics.
+The first and third UI payloads actually differ at the reused A slot. Neither
+the test nor its metadata rewrites sealed UI to match later statistics. Full
+color/depth/old-Front preimages remain independent controlled-peer inputs;
+only independent GPU/MC replay can establish their rendered results.

@@ -48,6 +48,11 @@ struct State {
     counts: usize,
     starts: usize,
     swaps: usize,
+    full_scene: bool,
+    cycles: u64,
+    us_origin: u64,
+    input_reads: usize,
+    timer_clears: usize,
 }
 struct Peer {
     kind: u8,
@@ -57,6 +62,13 @@ impl Device for Peer {
     fn read(&mut self, _: &mut [u16], c: u8) -> u16 {
         let mut s = self.state.borrow_mut();
         match (self.kind, c) {
+            (0, 10) if s.full_scene => (s.cycles / 54_000) as u16,
+            (0, 11) if s.full_scene => ((s.cycles - s.us_origin) / 54).min(65535) as u16,
+            (5, 8) if s.full_scene => 1,
+            (5, 2) if s.full_scene => 0x73,
+            (5, 3) if s.full_scene => 0x5a,
+            (5, 4 | 5) if s.full_scene => 255,
+            (5, 0 | 1 | 6 | 7) if s.full_scene => 128,
             (3, 1) => s.active as u16,
             (3, 2) => (s.active >> 16) as u16,
             (3, 4) => s.format,
@@ -81,6 +93,11 @@ impl Device for Peer {
     fn write(&mut self, _: &mut [u16], c: u8, v: u16) {
         let mut s = self.state.borrow_mut();
         match (self.kind, c) {
+            (0, 11) if s.full_scene => {
+                s.us_origin = s.cycles;
+                s.timer_clears += 1;
+            }
+            (5, 8) if s.full_scene => s.input_reads += 1,
             (4, 0) => {
                 assert_eq!(s.gpu, 0);
                 s.counts += 1;
@@ -249,29 +266,142 @@ fn inspect_draw(
         "scene":{"vertices":[[-1,-1,0],[1,-1,0],[0,1,0]],"model_x":([0.0,0.5,-0.5][frame]),"model_z":-4,"focal":160,"far":32,"rgba_word":rgba[frame],"flat_rgb565":([0xf800,0x07e0,0x001f][frame]),"clear_rgb565":0x0841+frame},
         "boundary":"CPU recording and conservative positive-Z/interior checks only. GPU owner must independently derive raster coverage/depth from actual input; these screen values are not a GPU oracle."})
 }
-fn run(profile: &str) -> PathBuf {
+fn inspect_full_scene(
+    commands: &[u8],
+    objects: &[u8],
+    object_base: u32,
+    ui: &[u8],
+    ui_base: u32,
+    catalog: &Value,
+    mesh: &[u8],
+) -> Value {
+    let commands: Vec<_> = commands
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b))
+        .collect();
+    let mut scratch = vec![0u16; 1536];
+    let mut pages = [0u32; 2];
+    let mut renders = vec![];
+    let mut globals = vec![];
+    let mut draws = vec![];
+    let mut render = vec![];
+    let mut ui_commands = vec![];
+    let mesh_base = catalog["mesh"]["first_sector"].as_u64().unwrap() as u32 * 128;
+    for command in &commands {
+        match command >> 28 {
+            1 => {
+                let source = ((command >> 10) & 0x3ffff) * 32;
+                let dst = (((command >> 3) & 127) * 16) as usize;
+                let count = (32usize << ((command >> 1) & 3)) / 2;
+                let (base, data) = if source >= object_base
+                    && u64::from(source) + count as u64 * 2
+                        <= u64::from(object_base) + objects.len() as u64
+                {
+                    (object_base, objects)
+                } else {
+                    (ui_base, ui)
+                };
+                assert!(source >= base);
+                let at = (source - base) as usize;
+                let source_words = words(&data[at..at + count * 2]);
+                scratch[dst..dst + count].copy_from_slice(&source_words);
+            }
+            2 => {
+                pages[(command & 1) as usize] = ((command >> 12) & 65535) * 128;
+            }
+            3 => {
+                let index = draws.len();
+                let expected = &catalog["mesh"]["entries"][index];
+                let address = pages[(command & 1) as usize];
+                assert_eq!(u64::from(address), expected["address"].as_u64().unwrap());
+                let at = (address - mesh_base) as usize;
+                let info = u32::from_le_bytes(mesh[at..at + 4].try_into().unwrap());
+                assert_eq!(
+                    render[4] & 63,
+                    if index < 7 { 41 } else { 9 },
+                    "LESS/depth-write, white unlit room/RGB then lit full rabbit"
+                );
+                draws.push(json!({"index":index,"name":expected["name"],"meshlet_address":address,"vertices":info&127,"triangles":(info>>8)&127,"render_words":render,"instance_words":scratch[1280..1344]}));
+            }
+            5 => {
+                let at = ((command & 127) * 16) as usize;
+                globals.push(scratch[at..at + 32].to_vec());
+            }
+            6 => {
+                let at = ((command & 127) * 16) as usize;
+                render = scratch[at..at + 16].to_vec();
+                renders.push(render.clone());
+            }
+            11 => ui_commands.push(*command),
+            15 => break,
+            _ => {}
+        }
+    }
+    assert_eq!(draws.len(), 24);
+    let triangles: u64 = draws.iter().map(|d| d["triangles"].as_u64().unwrap()).sum();
+    assert_eq!(triangles, 1141);
+    assert_eq!(
+        draws[7..]
+            .iter()
+            .map(|d| d["triangles"].as_u64().unwrap())
+            .sum::<u64>(),
+        948
+    );
+    assert_eq!(commands.last().unwrap() >> 28, 15);
+    assert_eq!(commands.iter().filter(|c| *c >> 28 == 8).count(), 2);
+    assert_eq!(ui_commands.len(), 1);
+    let glyphs = ui[..8].to_vec();
+    assert_eq!(&glyphs[..4], b"OBS ");
+    json!({"draws":draws,"triangle_count":triangles,"command_count":commands.len(),"render_bindings":renders,"global_bindings":globals,"ui_commands":ui_commands,"ui_glyphs":glyphs,"ui_cells_prefix":&ui[..16],"boundary":"Actual recorded DRAW topology, bindings and UI only; no raster/depth oracle or GPU execution."})
+}
+fn run(profile: &str, full_scene: bool) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo = root.join("../..");
-    let base = std::env::var_os("GPU_CAPTURE_DRAW_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("gpu-capture-draw-{}", std::process::id()))
-        });
+    let base = std::env::var_os(if full_scene {
+        "GPU_CAPTURE_FULL_SCENE_DIR"
+    } else {
+        "GPU_CAPTURE_DRAW_DIR"
+    })
+    .map(PathBuf::from)
+    .unwrap_or_else(|| {
+        std::env::temp_dir().join(format!(
+            "gpu-capture-{}-{}",
+            if full_scene { "full-scene" } else { "draw" },
+            std::process::id()
+        ))
+    });
     let out = base.join(profile);
     let assets = out.join("assets");
     std::fs::create_dir_all(&out).unwrap();
     call(
         &repo,
         &[
-            "systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/tools/assets.py",
+            if full_scene {
+                "systems/cpu-v3-tang-nano-20k/tools/capture_full_assets.py"
+            } else {
+                "systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/tools/assets.py"
+            },
             "--profile",
             profile,
             "--output",
             assets.to_str().unwrap(),
         ],
     );
-    std::fs::write(out.join("main.rs"), APP).unwrap();
-    std::fs::write(out.join("profiler_gate.rs"), GATE).unwrap();
+    let app = if full_scene {
+        include_str!("fixtures/capture_full_scene/full_scene.rs").to_owned()
+            + "\nfn main(){profiler_run_full(3);if gpu_capture_error()!=1{halt(0xbad);}halt(0x600d);}\n"
+    } else {
+        APP.to_owned()
+    };
+    let gate = if full_scene {
+        include_str!("fixtures/capture_full_scene/profiler_gate.rs")
+    } else {
+        GATE
+    };
+    std::fs::write(out.join("main.rs"), &app).unwrap();
+    std::fs::write(out.join("profiler_gate.rs"), gate).unwrap();
     call(
         &repo,
         &[
@@ -312,7 +442,7 @@ fn run(profile: &str) -> PathBuf {
     let mut origins = vec![];
     let parsed = resolver::compile_renderer_program_with_capture_profile(
         "three DRAW captures",
-        APP,
+        &app,
         &options,
         &out,
         &root.join("rcc"),
@@ -346,6 +476,7 @@ fn run(profile: &str) -> PathBuf {
     }
     let state = Rc::new(RefCell::new(State {
         active: 0x200000,
+        full_scene,
         ..Default::default()
     }));
     for kind in [0, 3, 4, 5, 7] {
@@ -374,6 +505,7 @@ fn run(profile: &str) -> PathBuf {
     let mut steps = 0;
     for step in 0..5_000_000 {
         steps = step + 1;
+        state.borrow_mut().cycles += 1;
         match cpu.step().unwrap() {
             StepOutcome::Signaled(e) => match e.signal_type {
                 2 => headers.push(e.value),
@@ -449,14 +581,42 @@ fn run(profile: &str) -> PathBuf {
                     let object_len = pair(&headers, abi::GPU_CAPTURE_H_OBJECT_BYTES);
                     let command_bytes = bytes(&mut cpu, cb_base, cb_len);
                     let object_bytes = bytes(&mut cpu, object_base, object_len);
-                    let observed =
-                        inspect_draw(&command_bytes, &object_bytes, object_base, frame, texture);
+                    let ui_base = pair(&headers, abi::GPU_CAPTURE_H_UI_BASE);
+                    let ui_bytes = bytes(
+                        &mut cpu,
+                        ui_base,
+                        pair(&headers, abi::GPU_CAPTURE_H_UI_BYTES),
+                    );
+                    let observed = if full_scene {
+                        let mesh_file = catalog["resources"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|r| r["kind"] == "mesh")
+                            .unwrap()["file"]
+                            .as_str()
+                            .unwrap();
+                        inspect_full_scene(
+                            &command_bytes,
+                            &object_bytes,
+                            object_base,
+                            &ui_bytes,
+                            ui_base,
+                            &catalog,
+                            &std::fs::read(assets.join(mesh_file)).unwrap(),
+                        )
+                    } else {
+                        inspect_draw(&command_bytes, &object_bytes, object_base, frame, texture)
+                    };
                     assert_eq!(
                         observed["command_count"].as_u64().unwrap(),
                         u64::from(headers[abi::GPU_CAPTURE_H_COUNT as usize]) + 1
                     );
                     std::fs::write(dir.join("commands.bin"), command_bytes).unwrap();
                     std::fs::write(dir.join("objects.bin"), object_bytes).unwrap();
+                    if full_scene {
+                        std::fs::write(dir.join("ui.bin"), &ui_bytes).unwrap();
+                    }
                     std::fs::write(
                         dir.join("header.bin"),
                         headers
@@ -473,8 +633,43 @@ fn run(profile: &str) -> PathBuf {
                             .collect::<Vec<_>>(),
                     )
                     .unwrap();
+                    let stats = if full_scene {
+                        global(&mut cpu, &program, "GPU_RENDERER_LAST", 9)
+                    } else {
+                        vec![]
+                    };
+                    let timing = if full_scene {
+                        global(&mut cpu, &program, "GPU_RENDERER_TIMES", 24)
+                    } else {
+                        vec![]
+                    };
+                    let input = if full_scene {
+                        global(&mut cpu, &program, "GPU_RENDERER_INPUT", 13)
+                    } else {
+                        vec![]
+                    };
+                    let tick = if full_scene {
+                        global(&mut cpu, &program, "GPU_RENDERER_TICK", 2)
+                    } else {
+                        vec![]
+                    };
+                    if full_scene {
+                        assert_eq!(input[0], 1, "actual coherent neutral analog packet");
+                        if frame == 1 {
+                            assert_eq!(stats[4], 1);
+                            assert_eq!(stats[8], 0);
+                        }
+                        if frame == 2 {
+                            assert_eq!(&stats[4..9], &[0, 0, 0, 0, 1]);
+                            assert!(
+                                tick[1] < 1000,
+                                "resumed baseline excludes the 40000ms pause"
+                            );
+                        }
+                    }
                     let info = json!({"status":"pass","frame_index":frame,"header_words":headers,"range_words":ranges,"ranges":range_meta,"cb_address":cb_base,
                         "token":pair(&headers,abi::GPU_CAPTURE_H_TOKEN),"publication":u32::from(headers[11])|(u32::from(headers[abi::GPU_CAPTURE_H_PUBLICATION_HIGH as usize])<<16),"slot":headers[abi::GPU_CAPTURE_H_SLOT as usize],"observed":observed,
+                        "renderer_previous_stats_words":stats,"renderer_timing_words":timing,"renderer_input_words":input,"renderer_tick_words":tick,"gate_result":if full_scene && frame==1 {1}else{0},
                         "origins":origins,"build_manifest":"../build.json","catalog":"../assets/assets.json","boundary":"Actual RCC/CPU Prepared gate. Public read bridges sample first/last words; host copies full frozen ranges. GPU/Display peers only, no rasterization/scanout/UART or board proof."});
                     std::fs::write(
                         dir.join("producer.json"),
@@ -486,6 +681,10 @@ fn run(profile: &str) -> PathBuf {
                     ranges.clear();
                     first.clear();
                     last.clear();
+                    if full_scene && frame == 1 {
+                        // Advance wall time while the CPU is inside the real gate; no instruction runs.
+                        state.borrow_mut().cycles += 40_000 * 54_000;
+                    }
                 }
                 _ => {}
             },
@@ -528,10 +727,25 @@ fn run(profile: &str) -> PathBuf {
             .len(),
         3
     );
-    assert_ne!(
-        std::fs::read(out.join("frame-0/objects.bin")).unwrap(),
-        std::fs::read(out.join("frame-2/objects.bin")).unwrap()
-    );
+    let final_stats = if full_scene {
+        global(&mut cpu, &program, "GPU_RENDERER_LAST", 9)
+    } else {
+        vec![]
+    };
+    if full_scene {
+        assert_ne!(
+            frames[0]["observed"]["ui_glyphs"],
+            frames[2]["observed"]["ui_glyphs"]
+        );
+        assert!(state.borrow().input_reads > 0 && state.borrow().timer_clears >= 5);
+        assert_eq!(final_stats[4], 1);
+        assert_eq!(final_stats[8], 0);
+    } else {
+        assert_ne!(
+            std::fs::read(out.join("frame-0/objects.bin")).unwrap(),
+            std::fs::read(out.join("frame-2/objects.bin")).unwrap()
+        );
+    }
     for r in catalog["resources"].as_array().unwrap() {
         assert_eq!(
             bytes(
@@ -542,11 +756,16 @@ fn run(profile: &str) -> PathBuf {
             std::fs::read(assets.join(r["file"].as_str().unwrap())).unwrap()
         );
     }
-    std::fs::write(out.join("sequence.json"),serde_json::to_vec_pretty(&json!({"status":"pass","profile":profile,"frames":frames,"cpu_steps":steps,"bound":5000000,"signal":signal,"counts":3,"starts":3,"presents":3,"cb_sequence":"A/B/A","boundary":"Independent frozen inputs; peers never render. GPU owner must cold replay and independently verify each DRAW, including address reuse."})).unwrap()).unwrap();
+    std::fs::write(out.join("sequence.json"),serde_json::to_vec_pretty(&json!({"status":"pass","profile":profile,"full_scene":full_scene,"frames":frames,"cpu_steps":steps,"bound":5000000,"signal":signal,"counts":3,"starts":3,"presents":3,"cb_sequence":"A/B/A","pause_ms":if full_scene{40000}else{0},"final_renderer_stats_words":final_stats,"input_peer":"coherent neutral analog packet in full scene; no physical serial qualification","clock_peer":"one modeled 54MHz cycle per CPU instruction, not CPU performance evidence","timer_clears":state.borrow().timer_clears,"boundary":"Independent frozen inputs; peers never render. GPU owner must cold replay and independently verify each DRAW, including address reuse."})).unwrap()).unwrap();
     out
 }
 #[test]
 fn real_draw_three_gates_reuse_slots_with_distinct_inputs() {
-    run("default");
-    run("column16");
+    run("default", false);
+    run("column16", false);
+}
+#[test]
+fn real_full_scene_three_gates_resume_and_restore_stats() {
+    run("default", true);
+    run("column16", true);
 }

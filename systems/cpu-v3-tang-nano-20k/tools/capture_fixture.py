@@ -28,6 +28,12 @@ def identity(output, assets, version):
         inputs[str(p.relative_to(SYSTEM)).replace('\\','/')]=p
     for p in assets.iterdir():
         if p.is_file():inputs['assets/'+p.name]=p
+    if catalog.get('source_root')=='repository':
+        for name,expected in catalog['sources'].items():
+            source=(ROOT/name).resolve()
+            if not source.is_relative_to(ROOT) or sha(source)!=expected:
+                raise ValueError('Catalog source identity mismatch: '+name)
+            inputs['repository/'+source.relative_to(ROOT).as_posix()]=source
     if column:
         inputs.update({'producer-rcc/'+p.name:p for p in (output/'profile-rcc').glob('*.rs')})
     inputs['gate.rs']=output/'profiler_gate.rs';inputs['main.rs']=output/'main.rs'
@@ -40,6 +46,9 @@ def identity(output, assets, version):
         options=dict(fixture_only=True,capture_allocation_guards=False),toolchain=dict(compiler='repository RCC CPU V3',execution='CpuV3Sim controlled GPU/Display peer'),
         source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip())
     if version==2:value.update(layout=catalog['capture_layout'],command_abi=1)
+    if catalog.get('capture_scene')=='canonical-full-scene':
+        value['options'].update(full_scene=True,scene=catalog['scene'],cpu_capture_gates=3,
+                               stimulus='fixed formal camera; neutral analog peer; middle gate resume')
     body={**value,'files':[{k:v for k,v in f.items() if k!='path'} for f in files]}
     value['manifest_id']=hashlib.sha256(json.dumps(body,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('ascii')).hexdigest()
     (output/'build.json').write_text(json.dumps(value,indent=2)+'\n')

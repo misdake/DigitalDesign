@@ -1,0 +1,6 @@
+{
+  "source_commit": "db0bcb04d3b17249e3607882c5b78449c525b01a",
+  "source_path": "systems/cpu-v3-tang-nano-20k/examples/gpu_profiler_board/rcc/full_scene.rs",
+  "sha256": "1552728490e1c91f14b4e852dde7696ebbd54e1d90054301294f4b4b5a9ea6c6",
+  "policy": "Exact formal profiler scene source snapshot. Only the external main wrapper selects the bounded frame count."
+}

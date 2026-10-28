@@ -127,3 +127,13 @@ reuse with distinct tokens. Set `GPU_CAPTURE_DRAW_DIR` to archive its manifest,
 program, origins and each gate's complete frozen inputs/preimages outside the
 build cache. GPU/Display peers only retire control work; independent GPU cold
 replay and pixel/depth verification remain consumer responsibilities.
+
+The same target's `real_full_scene` case executes the pinned formal profiler
+frame body, with complete box/RGB/rabbit assets and OBS UI, across three real
+gates per row/column profile. The middle gate resumes after a modeled long pause;
+production input/time baselines and statistics invalidation/recovery are checked
+without changing the scene body. `GPU_CAPTURE_FULL_SCENE_DIR` selects its output;
+`GPU_CAPTURE_LAYOUT_DIR` overrides the older layout target's default archive
+path. Set these and `CARGO_TARGET_DIR` outside the source tree when preserving
+evidence. Full-scene bytes remain CPU producer inputs, with no GPU pixel or board
+qualification implied.
