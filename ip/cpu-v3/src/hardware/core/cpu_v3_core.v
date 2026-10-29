@@ -557,16 +557,18 @@ assign data_write_data = async_store_valid ? async_store_data :
 assign data_response_ready = !hold && ((async_store_valid && async_store_issued) ||
                              state == ST_DATA_RESPONSE ||
                              state == ST_FPU2_MEM_RESPONSE);
-wire line_copy_instruction = state == ST_EXECUTE && opcode == 4'h6 && field_d == 4'h7;
-wire line_copy_operands_valid = !(|gpr_read_b_data[15:8]) &&
-    !(|gpr_read_a_data[3:0]);
+wire line_copy_instruction = state == ST_EXECUTE && (opcode & 4'hb) == 4'h2 && field_d == 4'h7;
+wire resident_copy_instruction = line_copy_instruction && !instruction[14];
+wire line_copy_operands_valid = !(|gpr_read_a_data[3:0]) &&
+    (instruction[14] ? !(|gpr_read_b_data[15:8]) : !(|gpr_read_b_data[3:0]));
 assign data_line_copy_valid = !hold && line_copy_instruction &&
     line_copy_operands_valid && !async_store_valid && fpu2_pending == 0;
 assign data_line_copy_source = data_physical_address(gpr_read_a_data);
 assign data_line_copy_destination_page = gpr_read_b_data[7:0];
 wire data_line_clean_instruction = state == ST_EXECUTE && opcode == 4'h6 &&
     field_d == 4'he && field_a == 4'h6;
-assign data_line_clean_valid = !hold && data_line_clean_instruction &&
+assign data_line_clean_valid = !hold && (data_line_clean_instruction ||
+    (resident_copy_instruction && line_copy_operands_valid)) &&
     !async_store_valid && fpu2_pending == 0;
 assign data_line_clean_address = data_physical_address(gpr_read_b_data);
 assign device_index = field_d[2:0];
@@ -879,6 +881,17 @@ always @(posedge clk) begin
                                 4'h4, 4'h5, 4'h6: begin
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
+                                end
+                                4'h7: begin
+                                    if (!line_copy_operands_valid) begin
+                                        fault_code <= FAULT_DATA_MEMORY;
+                                        fault_pc <= current_fault_pc;
+                                        state <= ST_FAULT;
+                                    end else if (!async_store_valid && fpu2_pending == 0 &&
+                                                 data_line_copy_ready) begin
+                                        retired_words <= retired_words + success_retire_words;
+                                        state <= ST_FETCH_REQUEST;
+                                    end
                                 end
                                 // MUL0/MUL8/MUL16 and MULI share the single
                                 // shared wide pipe and the unchanged wait/commit window.

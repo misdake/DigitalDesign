@@ -815,6 +815,12 @@ pub fn line_copy(offset: Register, destination_page: Register) -> Word {
     extended(7, offset, destination_page)
 }
 
+/// Copies a 32-byte aligned logical source line into a dirty destination line.
+/// Both pointers are mapped through DSEG; neither register is written.
+pub fn cache_line_copy(source: Register, destination: Register) -> Word {
+    shift_mul(7, source, register(destination))
+}
+
 /// Replaces `dst` with the signed comparison `dst < src` as 0 or 1.
 pub fn set_less_than_signed(dst: Register, src: Register) -> Word {
     extended(8, dst, src)

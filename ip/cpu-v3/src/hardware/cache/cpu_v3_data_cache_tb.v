@@ -21,7 +21,7 @@ always #5 clk=~clk;
 
 reg [15:0] memory [0:262143];
 integer i, j, cycles=0, line_reads=0, line_writes=0;
-integer copy_start_cycle=0;
+integer copy_start_cycle=0, copy_read_start=0, copy_write_start=0;
 // This legacy peer deliberately has one descriptor of capacity. The separate
 // continuation bench exercises the two-descriptor native path.
 
@@ -32,8 +32,9 @@ integer request_stall_cycles=0;
 reg [3:0] read_remaining=0, write_remaining=0;
 reg [21:0] transfer_base=0;
 reg write_response_pending=0;
-reg inject_write_error=0, write_error_pending=0;
-integer error_after_beats=0, failed_accepted_beats=0;
+reg inject_write_error=0, write_error_pending=0, inject_read_error=0;
+integer error_after_beats=0, failed_accepted_beats=0, read_error_after_beats=0;
+reg [15:0] copy_tail_expected;
 always @(negedge clk) memory_request_ready = cycles % 7 >= 3 &&
     read_remaining==0 && write_remaining==0 && !write_response_pending &&
     !write_error_pending && !memory_response_valid;
@@ -66,7 +67,8 @@ always @(posedge clk) begin
                          memory[transfer_base+4*read_index+2],
                          memory[transfer_base+4*read_index+1],
                          memory[transfer_base+4*read_index]};
-    read_remaining <= read_remaining-1;
+    if(inject_read_error && read_index==read_error_after_beats) begin memory_error<=1; read_remaining<=0; end
+    else read_remaining <= read_remaining-1;
   end else if(write_error_pending) begin
     memory_response_valid <= 1;
     memory_error <= 1;
@@ -169,6 +171,22 @@ task clean_line;
     while(!maintenance_done) @(posedge clk);
     #1;
     if(maintenance_error) $fatal(1,"clean-line command failed");
+  end
+endtask
+
+task resident_copy;
+  input [21:0] source, destination;
+  input expect_error;
+  begin
+    while(!line_copy_ready) @(negedge clk);
+    copy_start_cycle=cycles; copy_read_start=line_reads; copy_write_start=line_writes;
+    @(negedge clk);
+    line_copy_source=source; line_clean_address=destination;
+    line_copy_start=1; line_clean_start=1;
+    @(posedge clk); @(negedge clk); line_copy_start=0; line_clean_start=0;
+    while(!maintenance_done) @(negedge clk);
+    if(maintenance_error !== expect_error) $fatal(1,"resident copy error mismatch src=%h dst=%h",source,destination);
+    $display("RESIDENT_COPY src=%h dst=%h cycles=%0d reads=%0d writes=%0d",source,destination,cycles-copy_start_cycle,line_reads-copy_read_start,line_writes-copy_write_start);
   end
 endtask
 
@@ -361,6 +379,89 @@ initial begin
   end
   if(failed_writes!=5 || failed_accepted_beats!=6)
     $fatal(1,"partial/final error coverage missing");
+
+  // Both command bits select source read / dirty target installation.
+  // Dirty source and old target bytes survive a possible refill failure.
+  access(1,32'h120,16'habcd,0);
+  access(1,32'h520,16'hdead,0);
+  i=line_reads; j=line_writes;
+  resident_copy(22'h120,22'h520,0);
+  if(line_reads!=i+1 || line_writes!=j+2) $fatal(1,"dirty source/target saves or source read missing");
+  for(i=0;i<16;i=i+1) begin
+    access(0,32'h120+i,0,i==0?16'habcd:memory[22'h120+i]);
+    access(0,32'h520+i,0,i==0?16'habcd:memory[22'h120+i]);
+  end
+  i=line_reads; j=line_writes;
+  resident_copy(22'h120,22'h920,0);
+  if(line_reads!=i+1 || line_writes!=j)
+    $fatal(1,"clean source replacement did not use direct source read");
+  access(0,32'h120,0,16'habcd);
+  access(0,32'h920,0,16'habcd);
+  if(memory[22'h520]!==16'habcd) $fatal(1,"source reload lost dirty destination victim");
+  access(1,32'h120,16'hbacc,0);
+  i=line_reads; j=line_writes;
+  resident_copy(22'h120,22'h240,0);
+  if(line_reads!=i+1 || line_writes!=j+1) $fatal(1,"different-set dirty source save or source read missing");
+  for(i=0;i<16;i=i+1) access(0,32'h240+i,0,i==0?16'hbacc:memory[22'h120+i]);
+  i=line_reads; j=line_writes;
+  resident_copy(22'h2c0,22'h43f0,0);
+  if(line_reads!=i+1 || line_writes!=j) $fatal(1,"cold source traffic incorrect");
+  for(i=0;i<16;i=i+1) access(0,32'h43f0+i,0,memory[22'h2c0+i]);
+  i=line_reads; j=line_writes;
+  resident_copy(22'h7e0,22'h7e0,0);
+  resident_copy(22'h120,22'h120,0);
+  if(line_reads!=i || line_writes!=j) $fatal(1,"same-address copy allocated or wrote a line");
+  resident_copy(22'h121,22'h240,1);
+  resident_copy(22'h120,22'h241,1);
+  // An unsuccessful dirty destination eviction must retain both resident
+  // source and victim, without starting a global validity sweep.
+  @(negedge clk); inject_write_error=1; error_after_beats=0;
+  resident_copy(22'h120,22'hd20,1);
+  @(negedge clk); inject_write_error=0;
+  i=line_reads;
+  access(0,32'h120,0,16'hbacc); access(0,32'h920,0,16'habcd);
+  if(line_reads!=i) $fatal(1,"copy fault discarded retained dirty rows");
+  maintain(0);
+  if(memory[22'h120]!==16'hbacc || memory[22'h920]!==16'habcd || memory[22'h240]!==16'hbacc)
+    $fatal(1,"resident-copy dirty hint or preserved rows lost");
+
+  access(1,32'h920,16'hface,0);
+  @(negedge clk); inject_read_error=1;
+  resident_copy(22'h300,22'h920,1);
+  @(negedge clk); inject_read_error=0;
+  i=line_reads;
+  access(0,32'h920,0,16'hface);
+  if(line_reads!=i+1) $fatal(1,"failed refill did not discard only the saved target row");
+  maintain(0);
+  if(memory[22'h920]!==16'hface) $fatal(1,"failed source read lost dirty target contents");
+
+  // A failed read after two accepted beats has already overwritten half
+  // the physical row. The old dirty target must still be recoverable in full.
+  access(1,32'h920,16'hf123,0);
+  @(negedge clk); inject_read_error=1; read_error_after_beats=2;
+  resident_copy(22'h300,22'h920,1);
+  @(negedge clk); inject_read_error=0; read_error_after_beats=0;
+  for(i=0;i<16;i=i+1) access(0,32'h920+i,0,i==0?16'hf123:memory[22'h120+i]);
+
+  // The source high tag and set both differ from the destination.
+  access(1,32'h8410,16'hcbad,0);
+  i=line_reads; j=line_writes;
+  resident_copy(22'h8410,22'h350,0);
+  if(line_reads!=i+1 || line_writes!=j+1) $fatal(1,"high source tag transaction count wrong");
+  for(i=0;i<16;i=i+1) access(0,32'h350+i,0,i==0?16'hcbad:memory[22'h8410+i]);
+
+  // A source write failure must leave its latest bytes dirty and resident.
+  access(1,32'h120,16'hbeef,0);
+  copy_tail_expected=memory[22'h12c]^16'hffff;
+  access(1,32'h12c,copy_tail_expected,0);
+  @(negedge clk); inject_write_error=1; error_after_beats=2;
+  resident_copy(22'h120,22'h340,1);
+  @(negedge clk); inject_write_error=0;
+  i=line_reads; access(0,32'h120,0,16'hbeef);
+  access(0,32'h12c,0,copy_tail_expected);
+  if(line_reads!=i) $fatal(1,"source write fault discarded latest dirty source");
+  maintain(0);
+  if(memory[22'h120]!==16'hbeef || memory[22'h12c]!==copy_tail_expected) $fatal(1,"source write fault lost latest bytes");
 
   if (request_stall_cycles == 0) $fatal(1,"request-stall path was not exercised");
   if (stalled_beats != 15 || accepted_beats != (line_writes - failed_writes) * 4 + failed_accepted_beats)

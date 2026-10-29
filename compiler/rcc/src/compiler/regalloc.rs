@@ -409,6 +409,7 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::StoreStatic { .. }
         | Instr::DevSend { .. }
         | Instr::DcacheInvalidateAll
+        | Instr::DcacheResidentCopy { .. }
         | Instr::DcacheLineCopy { .. }
         | Instr::DcacheCleanLine { .. }
         | Instr::DcacheWait
@@ -1751,6 +1752,7 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::StoreStatic { .. }
         | Instr::DevSend { .. }
         | Instr::DcacheInvalidateAll
+        | Instr::DcacheResidentCopy { .. }
         | Instr::DcacheLineCopy { .. }
         | Instr::DcacheCleanLine { .. }
         | Instr::DcacheWait

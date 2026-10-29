@@ -144,9 +144,9 @@ the word an invalid encoding.
 
 ### Shift and multiply (opcode 2)
 
-All operations in this family are destructive two-operand forms: `rd` is both
-the left input and the destination. Functions 3, 7, B, and D..F are reserved
-and invalid.
+The arithmetic operations are destructive two-operand forms: `rd` is both
+the left input and destination. Function 7 instead reads two pointers without
+writing a register. Functions 3, B, and D..F remain reserved and invalid.
 
 | fn | Mnemonic | Semantics |
 | --- | --- | --- |
@@ -156,6 +156,7 @@ and invalid.
 | 4 | `SHLI rd, imm4` | `rd = rd << imm4` |
 | 5 | `SHRI rd, imm4` | `rd = rd >> imm4` (logical) |
 | 6 | `ASRI rd, imm4` | `rd = signed(rd) >> imm4` (arithmetic) |
+| 7 | `DCOPYL rsource, rdestination` | asynchronously copy one aligned 32-byte line into a dirty resident destination; both logical pointers use DSEG |
 | 8/9/A | `MUL0` / `MUL8` / `MUL16 rd, rs` | unsigned `product = rd * rs` (32-bit); `rd = (product >> S) & 0xffff` for `S` in {0, 8, 16} |
 | C | `MULI rd, imm` | unsigned `rd = (rd * imm) & 0xffff`; unprefixed `u4`, full `u16` with `PFX12` |
 
@@ -163,6 +164,30 @@ Immediate shifts never consume `PFX12`; `MULI` is the family's only prefix
 consumer. There is no signed integer multiply, rounding, saturation, or
 dual-register product writeback; general numeric computation belongs to the
 FPU.
+
+`DCOPYL` is encoded as `2 7 source destination`. Both pointers must be
+16-word aligned; a violation is a non-retiring data-memory fault. The core
+waits for older buffered stores/FPU stores and command acceptance, then retires.
+No GPR is written. Both mapped physical addresses are captured at acceptance;
+later DSEG updates do not retarget the operation. `DWAIT` supplies the explicit
+completion/error boundary, and later D-cache accesses wait normally.
+
+The source supplies the latest CPU contents, including dirty stores. The
+cache may normally write back or replace its source row. A dirty source is
+saved to its original address before the read. An old dirty destination hit
+or victim is also acknowledged before the refill can overwrite its row, so a
+later partial read failure cannot lose those old bytes. The read request uses
+the source physical address; the refill banks and final tag use the destination.
+The completed destination is valid and dirty. There is no destination read-
+allocate and no interpretation or conversion of the sixteen words.
+
+A physical same-address operation is a no-op even when cold: it does not
+allocate or force dirty. A source/victim write failure retains its dirty cache
+row. A read failure leaves its uncommitted target row invalid; saved old target
+bytes remain in DRAM. Unrelated dirty rows are never scrubbed by this command.
+Ordinary CPU loads wait for completion; DMA/Display consumers require DWAIT
+and the usual destination clean before reading its new bytes. `LCOPY` retains
+its distinct redirected-DRAM-write semantics.
 
 ### Extended and system (opcode 6)
 

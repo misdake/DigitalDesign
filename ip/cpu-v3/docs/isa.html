@@ -199,7 +199,7 @@
   <tr><td class="mono">4</td><td class="mn">SHLI rd, u4</td><td class="sem">rd = rd &lt;&lt; u4</td><td rowspan="3">Destructive immediate shifts; never consume a prefix.</td></tr>
   <tr><td class="mono">5</td><td class="mn">SHRI rd, u4</td><td class="sem">rd = rd &gt;&gt; u4 (logical)</td></tr>
   <tr><td class="mono">6</td><td class="mn">ASRI rd, u4</td><td class="sem">rd = signed(rd) &gt;&gt; u4</td></tr>
-  <tr><td class="mono reserved">7</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><td class="mono">7</td><td class="mono">DCOPYL rsource, rdestination</td><td>Asynchronous aligned 32-byte DSEG-mapped copy into a dirty cache line; neither register is written. DWAIT completes it.</td><td>2 7 source destination</td></tr>
   <tr><td class="mono">8</td><td class="mn">MUL0 rd, rs</td><td class="sem">rd = (rd × rs)[15:0]</td><td rowspan="3">Unsigned 32-bit product; keep the window after shifting right by 0, 8, or 16.</td></tr>
   <tr><td class="mono">9</td><td class="mn">MUL8 rd, rs</td><td class="sem">rd = (rd × rs)[23:8]</td></tr>
   <tr><td class="mono">A</td><td class="mn">MUL16 rd, rs</td><td class="sem">rd = (rd × rs)[31:16]</td></tr>
@@ -207,7 +207,7 @@
   <tr><td class="mono">C</td><td class="mn">MULI rd, imm</td><td class="sem">rd = (rd × imm)[15:0]</td><td>Unsigned bit pattern: unprefixed u4, full u16 with <code>PFX12</code>. The family's only prefix consumer.</td></tr>
   <tr><td class="mono reserved">D..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
 </table>
-<p class="caption">All operations in this family are destructive two-operand forms. There is no signed integer multiply, rounding, saturation, or dual-register product writeback; general numeric computation belongs to the FPU.</p>
+<p class="caption">Arithmetic operations in this family are destructive two-operand forms; DCOPYL instead reads both pointer registers without writing either. There is no signed integer multiply, rounding, saturation, or dual-register product writeback; general numeric computation belongs to the FPU.</p>
 
 <h3>4.3 Extended and system — opcode 6</h3>
 <table>

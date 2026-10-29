@@ -687,6 +687,13 @@ fn lower_instruction(
             register(*source),
             register(*destination_page),
         )),
+        Instr::DcacheResidentCopy {
+            source,
+            destination,
+        } => lines.word(cpu_v3::cache_line_copy(
+            register(*source),
+            register(*destination),
+        )),
         Instr::DcacheCleanLine { address } => {
             lines.word(cpu_v3::clean_data_line(register(*address)))
         }
@@ -4028,6 +4035,34 @@ mod tests {
         assert!(program.words[..program.words.len() - 3]
             .iter()
             .any(|word| word & 0xfff0 == 0x7810));
+    }
+
+    #[test]
+    fn resident_copy_intrinsic_is_retained_and_maps_two_pointers() {
+        let program = compile(
+            r#"fn main() {
+            unsafe { dcache_resident_copy(Ptr::from_addr(0x120), Ptr::from_addr(0x4420)); };
+            dcache_wait(); halt(0);
+        }"#,
+            CompilerOptions::default(),
+        );
+        assert!(program.words.iter().any(|word| word & 0xff00 == 0x2700));
+        let mut machine = cpu_v3::CpuV3Sim::default();
+        machine
+            .load_program(program.code_base, &program.words)
+            .unwrap();
+        let words: [u16; 16] = std::array::from_fn(|i| 0xbe00 + i as u16);
+        machine.load_program(0x120, &words).unwrap();
+        assert!(matches!(
+            machine.run(1000).unwrap(),
+            cpu_v3::RunOutcome::Halted { signal: 0, .. }
+        ));
+        for (i, word) in words.into_iter().enumerate() {
+            assert_eq!(
+                machine.physical_memory(cpu_v3::PhysicalWordAddress::new(0x4420 + i as u32)),
+                word
+            );
+        }
     }
 
     #[test]

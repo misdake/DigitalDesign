@@ -293,10 +293,10 @@ fn trace_tb(trace: &[(CpuV3DataCacheInputValue, CpuV3DataCacheOutputValue)]) -> 
             let check = match value.name {
                 "cpu_read_data" => output.cpu_response_valid,
                 "memory_address" | "memory_write" | "memory_line" => output.memory_request_valid,
-                "memory_write_data" => {
-                    input.memory_write_data_ready
-                        || output.memory_request_valid && output.memory_write
-                }
+                // A descriptor transfers only its address. In particular,
+                // lookahead may expose the next address while native Q still
+                // holds an older beat. Payload matters on data acceptance.
+                "memory_write_data" => input.memory_write_data_ready,
                 _ => true,
             };
             if check {
@@ -444,6 +444,12 @@ fn run_rtl_golden(tb: &str, vendor: bool) {
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
     );
+    for line in String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .filter(|line| line.starts_with("RESIDENT_COPY"))
+    {
+        println!("{line}");
+    }
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -563,5 +569,63 @@ fn verify_data_cache_response_slot_goldens() {
     for vendor in [false, true] {
         run_rtl_golden(&replay, vendor);
         run_rtl_golden(include_str!("cpu_v3_data_cache_response_slot_tb.v"), vendor);
+    }
+}
+
+#[test]
+#[ignore = "requires Icarus and Gowin native RAM models"]
+fn verify_resident_copy_native_ram() {
+    run_rtl_golden(include_str!("cpu_v3_data_cache_tb.v"), true);
+}
+
+#[test]
+#[ignore = "bounded resident-copy cycle replay under portable and native RAM models"]
+fn resident_copy_cycle_model_matches_rtl() {
+    let mut h = Harness::new(true);
+    h.access(true, 0x120, 0xabcd);
+    h.access(true, 0x520, 0xdead);
+    let mut source_value = 0xabcd;
+    for (src, dst) in [
+        (0x120, 0x520),
+        (0x120, 0x920),
+        (0x120, 0x240),
+        (0x2c0, 0x43f0),
+        (0x120, 0x120),
+    ] {
+        if dst == 0x240 {
+            source_value = 0xbacc;
+            h.access(true, 0x120, source_value);
+        }
+        let mut input = idle();
+        input.line_copy_start = true;
+        input.line_clean_start = true;
+        input.line_copy_source = src;
+        input.line_clean_address = dst;
+        let out = h.step(input);
+        assert!(out.line_copy_ready);
+        let mut done = out.maintenance_done;
+        for _ in 0..500 {
+            if done {
+                break;
+            }
+            let out = h.step(idle());
+            assert!(!out.maintenance_error);
+            done = out.maintenance_done;
+        }
+        assert!(done, "resident-copy model timeout");
+        h.step(idle());
+        let expected = if src == 0x2c0 {
+            h.memory[src as usize]
+        } else {
+            source_value
+        };
+        assert_eq!(h.access(false, dst as u32, 0), expected);
+    }
+    h.clean();
+    assert_eq!(h.memory[0x120], source_value);
+    assert_eq!(h.memory[0x920], 0xabcd);
+    let tb = trace_tb(&h.trace);
+    for vendor in [false, true] {
+        run_rtl_golden(&tb, vendor);
     }
 }

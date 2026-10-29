@@ -290,6 +290,44 @@ line is already resident, its valid and dirty bits are cleared directly before
 the complete-line overwrite; stale destination data is neither written back nor
 refilled as part of the copy.
 
+`DCOPYL` uses the same command slot. The existing sideband command bits
+`{line_copy_start,line_clean_start}` encode `00` ordinary access, `01` clean,
+`10` legacy DRAM copy and `11` source-read/target-install. No new address bus
+or queue is added. The existing clean-address input carries the second mapped
+pointer in mode `11`; the legacy page input remains specific to `LCOPY`.
+
+At acceptance, the pending address names the destination, exactly as for an
+ordinary refill. The source page and aligned offset occupy the otherwise idle
+legacy page/pending store-data registers. Only source metadata lookup and the
+memory read-address output select that saved source; refill bank addresses,
+write data and final tag continue using the ordinary target layout. No pointer
+is moved between registers after acceptance.
+
+| Phase | Address and retirement |
+| --- | --- |
+| Accept/prime | Snapshot both mapped pointers; use an existing fixed prime phase before metadata lookup |
+| Source lookup | A dirty hit uses normal writeback to its own source address; miss/clean hit needs no source allocation |
+| Target lookup | Select the target hit or normal victim; acknowledge its old dirty data before overwriting the row |
+| Read request | Source physical address goes to the existing memory request port; target row is invalidated before receiving data |
+| Four read beats | Existing 64-bit refill writes the selected destination row; there is no RAM-to-RAM copy or extra payload mux |
+| Final successful beat | Install destination tag/valid/dirty and complete the command |
+
+The dirty-source save shares clean-line writeback. The old target is saved even
+when a full overwrite is intended: without another buffer a later read error
+could otherwise destroy its dirty bytes. Source clean/victim replacement is
+ordinary cache behavior; source data is never lost. A same-address command
+completes without allocation, bus traffic or dirty-state changes. Errors retain
+unacknowledged dirty rows; a failed read exposes no partial target line and
+does not scrub unrelated dirty rows. DWAIT reports the sticky command error.
+
+This implementation adds no payload register, RAM or DSP and retains the
+controller state range 0..15. All line commands latch the address before one
+fixed metadata-prime edge; ordinary CPU lookup retains its acceptance bypass.
+A cold source normally needs one read; a dirty source plus dirty target needs
+two writes and one read. These are transaction counts, not a fixed latency:
+memory backpressure determines completion. Accepted work runs independently of
+core hold. Caller-owned source/destination memory remains stable until completion.
+
 `DCLEANL` shares this asynchronous command slot. It writes one dirty hit and
 otherwise completes locally. The core can continue
 with instructions that do not touch D-cache, while any later D-cache access

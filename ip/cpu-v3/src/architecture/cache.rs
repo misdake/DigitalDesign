@@ -57,6 +57,7 @@ pub enum MainMemoryResponse {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CacheError {
     Busy,
+    UnalignedLine,
     UnexpectedMemoryResponse,
 }
 
@@ -244,6 +245,20 @@ enum Pending {
     CopyWriteback,
     /// One dirty resident line is being written back for a clean-line hint.
     CleanLine { way: usize, set: usize },
+    ResidentCopySourceWriteback {
+        source: PhysicalWordAddress,
+        destination: PhysicalWordAddress,
+        way: usize,
+    },
+    ResidentCopyTargetWriteback {
+        source: PhysicalWordAddress,
+        destination: PhysicalWordAddress,
+        way: usize,
+    },
+    ResidentCopyInstall {
+        destination: PhysicalWordAddress,
+        way: usize,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -386,6 +401,85 @@ impl DataCache {
                 },
             ))
         }
+    }
+
+    /// Copy source contents through the normal memory/refill path into a dirty
+    /// destination. Dirty sources and targets are saved before the read starts.
+    pub fn copy_resident_line(
+        &mut self,
+        source: PhysicalWordAddress,
+        destination: PhysicalWordAddress,
+    ) -> Result<CacheAction, CacheError> {
+        if self.pending.is_some() || self.maintenance.is_some() {
+            return Err(CacheError::Busy);
+        }
+        if (source.get() | destination.get()) & 15 != 0 {
+            return Err(CacheError::UnalignedLine);
+        }
+        if source == destination {
+            return Ok(CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete));
+        }
+        if let Some(way) = self.store.hit_way(source) {
+            let set = decode(source).set;
+            if self.dirty[way][set] {
+                self.pending = Some(Pending::ResidentCopySourceWriteback {
+                    source,
+                    destination,
+                    way,
+                });
+                return Ok(CacheAction::MainMemoryRequest(
+                    MainMemoryRequest::WriteLine {
+                        line_address: source,
+                        words: self.store.line_words(way, set),
+                    },
+                ));
+            }
+        }
+        Ok(self.resident_copy_target(source, destination))
+    }
+
+    /// A fault does not discard a dirty row. Target refill starts only after
+    /// its old dirty data is acknowledged and its valid bit has been cleared.
+    pub(crate) fn abort_resident_copy(&mut self) {
+        self.pending = None;
+    }
+
+    fn resident_copy_target(
+        &mut self,
+        source: PhysicalWordAddress,
+        destination: PhysicalWordAddress,
+    ) -> CacheAction {
+        let set = decode(destination).set;
+        let way = self
+            .store
+            .hit_way(destination)
+            .unwrap_or_else(|| self.store.victim_way(set));
+        if self.dirty[way][set] {
+            self.pending = Some(Pending::ResidentCopyTargetWriteback {
+                source,
+                destination,
+                way,
+            });
+            CacheAction::MainMemoryRequest(MainMemoryRequest::WriteLine {
+                line_address: self.line_address(way, set),
+                words: self.store.line_words(way, set),
+            })
+        } else {
+            self.resident_copy_read(source, destination, way)
+        }
+    }
+
+    fn resident_copy_read(
+        &mut self,
+        source: PhysicalWordAddress,
+        destination: PhysicalWordAddress,
+        way: usize,
+    ) -> CacheAction {
+        self.store.valid[way][decode(destination).set] = false;
+        self.pending = Some(Pending::ResidentCopyInstall { destination, way });
+        CacheAction::MainMemoryRequest(MainMemoryRequest::ReadLine {
+            line_address: source,
+        })
     }
 
     pub fn request(&mut self, request: CpuMemoryRequest) -> Result<CacheAction, CacheError> {
@@ -561,6 +655,36 @@ impl DataCache {
                 self.dirty[way][set] = false;
                 Ok(CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete))
             }
+            (
+                Pending::ResidentCopySourceWriteback {
+                    source,
+                    destination,
+                    way,
+                },
+                MainMemoryResponse::WriteComplete,
+            ) => {
+                self.dirty[way][decode(source).set] = false;
+                Ok(self.resident_copy_target(source, destination))
+            }
+            (
+                Pending::ResidentCopyTargetWriteback {
+                    source,
+                    destination,
+                    way,
+                },
+                MainMemoryResponse::WriteComplete,
+            ) => {
+                self.dirty[way][decode(destination).set] = false;
+                Ok(self.resident_copy_read(source, destination, way))
+            }
+            (
+                Pending::ResidentCopyInstall { destination, way },
+                MainMemoryResponse::ReadLine { words },
+            ) => {
+                self.store.install(way, destination, words);
+                self.dirty[way][decode(destination).set] = true;
+                Ok(CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete))
+            }
             _ => Err(CacheError::UnexpectedMemoryResponse),
         }
     }
@@ -663,6 +787,172 @@ pub enum CacheAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn resident_line(cache: &mut DataCache, address: u32, base: u16, dirty: bool) {
+        assert_eq!(
+            cache.request(CpuMemoryRequest::Read {
+                address: PhysicalWordAddress::new(address)
+            }),
+            Ok(CacheAction::MainMemoryRequest(
+                MainMemoryRequest::ReadLine {
+                    line_address: PhysicalWordAddress::new(address),
+                }
+            ))
+        );
+        cache
+            .complete(MainMemoryResponse::ReadLine { words: line(base) })
+            .unwrap();
+        if dirty {
+            assert_eq!(
+                cache.request(CpuMemoryRequest::Write {
+                    address: PhysicalWordAddress::new(address + 5),
+                    value: base ^ 0xffff
+                }),
+                Ok(CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete))
+            );
+        }
+    }
+
+    fn finish_resident_copy(
+        cache: &mut DataCache,
+        source: u32,
+        destination: u32,
+        memory: &mut std::collections::BTreeMap<u32, [Word; CACHE_LINE_WORDS]>,
+    ) -> Vec<MainMemoryRequest> {
+        let mut action = cache
+            .copy_resident_line(
+                PhysicalWordAddress::new(source),
+                PhysicalWordAddress::new(destination),
+            )
+            .unwrap();
+        let mut requests = Vec::new();
+        for _ in 0..8 {
+            match action {
+                CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete) => return requests,
+                CacheAction::MainMemoryRequest(request) => {
+                    requests.push(request);
+                    let response = match request {
+                        MainMemoryRequest::WriteLine {
+                            line_address,
+                            words,
+                        } => {
+                            memory.insert(line_address.get(), words);
+                            MainMemoryResponse::WriteComplete
+                        }
+                        MainMemoryRequest::WriteWord { .. } => {
+                            panic!("resident copy emitted a word transfer")
+                        }
+                        MainMemoryRequest::ReadLine { line_address } => {
+                            MainMemoryResponse::ReadLine {
+                                words: memory[&line_address.get()],
+                            }
+                        }
+                    };
+                    action = cache.complete(response).unwrap();
+                }
+                _ => panic!("resident copy must not produce a CPU read response"),
+            }
+        }
+        panic!("resident copy exceeded bounded transaction count")
+    }
+
+    #[test]
+    fn resident_copy_uses_dirty_source_and_preserves_old_dirty_target_before_read() {
+        let mut cache = DataCache::default();
+        resident_line(&mut cache, 0x1000, 100, true);
+        resident_line(&mut cache, 0x1400, 200, true);
+        let mut memory =
+            std::collections::BTreeMap::from([(0x1000, line(100)), (0x1400, line(200))]);
+        let requests = finish_resident_copy(&mut cache, 0x1000, 0x1400, &mut memory);
+        assert_eq!(requests.len(), 3);
+        assert!(
+            matches!(requests[0],MainMemoryRequest::WriteLine {line_address,..} if line_address.get()==0x1000)
+        );
+        assert!(
+            matches!(requests[1],MainMemoryRequest::WriteLine {line_address,..} if line_address.get()==0x1400)
+        );
+        assert!(
+            matches!(requests[2],MainMemoryRequest::ReadLine {line_address} if line_address.get()==0x1000)
+        );
+        let src = cache.store.hit_way(0x1000.into()).unwrap();
+        let dst = cache.store.hit_way(0x1400.into()).unwrap();
+        assert!(!cache.dirty[src][0] && cache.dirty[dst][0]);
+        assert_eq!(cache.store.line_words(dst, 0), memory[&0x1000]);
+        assert_eq!(memory[&0x1000][5], 100 ^ 0xffff);
+        assert_eq!(memory[&0x1400][5], 200 ^ 0xffff);
+    }
+
+    #[test]
+    fn resident_copy_can_replace_clean_source_without_losing_its_contents() {
+        let mut cache = DataCache::default();
+        resident_line(&mut cache, 0x1000, 100, true);
+        resident_line(&mut cache, 0x1400, 200, true);
+        let mut memory =
+            std::collections::BTreeMap::from([(0x1000, line(100)), (0x1400, line(200))]);
+        let requests = finish_resident_copy(&mut cache, 0x1000, 0x1800, &mut memory);
+        assert_eq!(requests.len(), 2);
+        assert!(
+            matches!(requests[0],MainMemoryRequest::WriteLine {line_address,..} if line_address.get()==0x1000)
+        );
+        assert!(cache.store.hit_way(0x1000.into()).is_none());
+        let dst = cache.store.hit_way(0x1800.into()).unwrap();
+        assert!(cache.dirty[dst][0]);
+        assert_eq!(cache.store.line_words(dst, 0), memory[&0x1000]);
+        assert_eq!(memory[&0x1000][5], 100 ^ 0xffff);
+        let other = cache.store.hit_way(0x1400.into()).unwrap();
+        assert!(cache.dirty[other][0]);
+    }
+
+    #[test]
+    fn resident_copy_cold_source_does_not_evict_dirty_rows_in_source_set() {
+        let mut cache = DataCache::default();
+        for (a, b) in [(0x2400, 100), (0x2800, 200), (0x2410, 300), (0x2810, 400)] {
+            resident_line(&mut cache, a, b, true);
+        }
+        let mut memory =
+            std::collections::BTreeMap::from([(0x2000, line(777)), (0x2410, line(300))]);
+        let requests = finish_resident_copy(&mut cache, 0x2000, 0x2010, &mut memory);
+        assert_eq!(requests.len(), 2);
+        assert!(
+            matches!(requests[0],MainMemoryRequest::WriteLine {line_address,..} if line_address.get()==0x2410)
+        );
+        assert!(
+            matches!(requests[1],MainMemoryRequest::ReadLine {line_address} if line_address.get()==0x2000)
+        );
+        assert!(cache.store.hit_way(0x2000.into()).is_none());
+        for addr in [0x2400u16, 0x2800, 0x2810] {
+            let way = cache.store.hit_way(addr.into()).unwrap();
+            assert!(cache.dirty[way][decode(addr.into()).set]);
+        }
+        let dst = cache.store.hit_way(0x2010.into()).unwrap();
+        assert!(cache.dirty[dst][1]);
+        assert_eq!(cache.store.line_words(dst, 1), line(777));
+    }
+
+    #[test]
+    fn resident_copy_same_address_is_noop_and_alignment_is_explicit() {
+        let mut cache = DataCache::default();
+        assert_eq!(
+            cache.copy_resident_line(0x1000.into(), 0x1000.into()),
+            Ok(CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete))
+        );
+        assert!(cache.store.hit_way(0x1000.into()).is_none());
+        for (src, dst) in [(0x1001, 0x2000), (0x1000, 0x2001), (0x1001, 0x1001)] {
+            assert_eq!(
+                cache.copy_resident_line(src.into(), dst.into()),
+                Err(CacheError::UnalignedLine)
+            );
+        }
+        resident_line(&mut cache, 0x1000, 100, true);
+        let way = cache.store.hit_way(0x1000.into()).unwrap();
+        let words = cache.store.line_words(way, 0);
+        assert_eq!(
+            cache.copy_resident_line(0x1000.into(), 0x1000.into()),
+            Ok(CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete))
+        );
+        assert!(cache.dirty[way][0]);
+        assert_eq!(cache.store.line_words(way, 0), words);
+    }
 
     fn line(base: u16) -> [Word; CACHE_LINE_WORDS] {
         std::array::from_fn(|index| base.wrapping_add(index as u16))

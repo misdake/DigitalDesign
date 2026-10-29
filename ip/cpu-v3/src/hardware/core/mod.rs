@@ -653,6 +653,13 @@ impl CpuV3CoreState {
                         self.write_gpr(lhs, result);
                         self.retire(retire_words);
                     }
+                    7 => self.execute_extended(
+                        instruction,
+                        retire_words,
+                        fault_pc,
+                        line_copy_ready,
+                        cache_command_error,
+                    ),
                     // MUL0/MUL8/MUL16 and MULI share the single integer DSP.
                     8..=10 | 12 => {
                         let shift = match function {
@@ -882,7 +889,14 @@ impl CpuV3CoreState {
             7 => {
                 let offset = self.registers[usize::from(dst)];
                 let destination_page = self.registers[usize::from(src)];
-                if destination_page & !0xff != 0 || offset & 0x0f != 0 {
+                let resident = instruction & 0x4000 == 0;
+                if offset & 0x0f != 0
+                    || if resident {
+                        destination_page & 15 != 0
+                    } else {
+                        destination_page & !0xff != 0
+                    }
+                {
                     self.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
                     return;
                 }
@@ -1044,7 +1058,7 @@ impl Module for CpuV3Core {
         let device_field = field(state.instruction, 8);
         let device_register = field(state.instruction, 0);
         let line_copy_instruction = state.phase == Phase::Execute
-            && state.instruction >> 12 == 0x6
+            && (state.instruction >> 12) & 0xb == 2
             && field(state.instruction, 8) == 0x7;
         let cache_control_instruction = state.phase == Phase::Execute
             && state.instruction >> 12 == 0x6
@@ -1063,8 +1077,12 @@ impl Module for CpuV3Core {
         let line_copy_offset = read_gpr(field(state.instruction, 4));
         let line_copy_destination = read_gpr(field(state.instruction, 0));
         let cache_control_address = read_gpr(field(state.instruction, 0));
-        let line_copy_operands_valid =
-            line_copy_destination & !0xff == 0 && line_copy_offset & 0x0f == 0;
+        let line_copy_operands_valid = line_copy_offset & 15 == 0
+            && if state.instruction & 0x4000 == 0 {
+                line_copy_destination & 15 == 0
+            } else {
+                line_copy_destination & !0xff == 0
+            };
         output.drive(
             circuit,
             &CpuV3CoreOutputValue {
@@ -1123,8 +1141,10 @@ impl Module for CpuV3Core {
                 )),
                 data_line_copy_destination_page: u64::from(line_copy_destination & 0xff),
                 data_line_clean_valid: !input.hold
-                    && cache_control_instruction
-                    && cache_control_selector == 6
+                    && ((cache_control_instruction && cache_control_selector == 6)
+                        || (line_copy_instruction
+                            && state.instruction & 0x4000 == 0
+                            && line_copy_operands_valid))
                     && !store.valid
                     && state.fpu2_pending == 0,
                 data_line_clean_address: u64::from(physical_data_address(

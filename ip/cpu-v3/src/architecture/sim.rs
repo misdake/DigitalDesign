@@ -450,6 +450,22 @@ impl CpuV3Sim {
         let dst = usize::from(field(instruction, 4));
         let operand = field(instruction, 0);
         let old = self.registers[dst];
+        if function == 7 {
+            let source = self.data_address(old);
+            let destination = self.data_address(self.registers[usize::from(operand)]);
+            for address in [source, destination] {
+                if address.get() & 15 != 0 {
+                    return Err(FaultKind::UnalignedAddress { address });
+                }
+                if address.get() as usize + 16 > self.memory.len() {
+                    return Err(FaultKind::PhysicalAddressOutOfRange { address });
+                }
+            }
+            let first = source.get() as usize;
+            self.memory
+                .copy_within(first..first + 16, destination.get() as usize);
+            return Ok(StepOutcome::Running);
+        }
         // Every operation in the family reads `rd` before writing it, so the
         // destructive `rd == rs` case needs no special handling.
         let result = match function {
@@ -1122,6 +1138,38 @@ mod tests {
             assert_eq!(
                 machine.physical_memory(PhysicalWordAddress::new(0x8000 + 0x20 + index as u32,)),
                 expected
+            );
+        }
+    }
+
+    #[test]
+    fn resident_copy_maps_both_pointers_without_modifying_registers() {
+        let mut program = Vec::new();
+        program.extend(load_immediate16(2, 0x120));
+        program.extend(load_immediate16(3, 0x4420));
+        program.extend([
+            crate::cache_line_copy(2, 3),
+            crate::wait_data_cache(),
+            halt(),
+        ]);
+        let words: Vec<u16> = (0..16).map(|i| 0xab00 + i).collect();
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.load_segment(0, 0x120, &words).unwrap();
+        assert!(matches!(
+            machine.run(32).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
+        assert_eq!(machine.register(2), Some(0x120));
+        assert_eq!(machine.register(3), Some(0x4420));
+        for (i, word) in words.into_iter().enumerate() {
+            assert_eq!(
+                machine.physical_memory(PhysicalWordAddress::new(0x4420 + i as u32)),
+                word
+            );
+            assert_eq!(
+                machine.physical_memory(PhysicalWordAddress::new(0x120 + i as u32)),
+                word
             );
         }
     }

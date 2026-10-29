@@ -539,6 +539,13 @@ impl FuncBuilder {
         self.push(Instr::DcacheInvalidateAll);
     }
 
+    pub fn dcache_resident_copy(&mut self, source: VReg, destination: VReg) {
+        self.push(Instr::DcacheResidentCopy {
+            source,
+            destination,
+        });
+    }
+
     pub fn dcache_line_copy(&mut self, source: VReg, destination_page: VReg) {
         self.push(Instr::DcacheLineCopy {
             source,

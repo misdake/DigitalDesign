@@ -344,6 +344,20 @@ pub unsafe fn dcache_line_copy(source: Ptr, destination_page: u16) {
     unimplemented!("cache-line copy is not available on the host")
 }
 
+/// Copy a 32-byte aligned line to another DSEG-mapped pointer (CpuV3-only).
+/// Latest source words are preserved, with ordinary writeback/replacement allowed.
+/// The destination becomes dirty in cache; external readers need a later clean.
+/// Use `dcache_wait()` before relying on completion; both mappings are captured at issue.
+///
+/// # Safety
+///
+/// Both pointers must be 16-word aligned and valid for the complete line;
+/// the caller must own the destination until completion.
+pub unsafe fn dcache_resident_copy(source: Ptr, destination: Ptr) {
+    let _ = (source, destination);
+    unimplemented!("resident cache-line copy is not available on the host")
+}
+
 /// Start an asynchronous write-back of the resident line containing `address`
 /// (CpuV3-only). A miss or clean hit completes without memory traffic.
 ///
