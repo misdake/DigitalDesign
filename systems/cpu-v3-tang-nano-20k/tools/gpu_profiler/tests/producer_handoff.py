@@ -156,7 +156,7 @@ def read_producer(folder, receipt_path, commit):
             raise ValueError('Generated layout alias differs from the selected canonical column source')
     return capture, wire, dict(producer_commit=commit, producer_receipt_sha256=identity.digest(receipt_path),
         build_sha256=identity.digest(build_root/'build.json'), manifest_id=h['manifest_id'],
-        abi_sha256=abi.sha256, layout=layout.description(), command_abi=1, gpu_layout_origin=origin,
+        abi_sha256=abi.sha256, layout=layout.description(), command_abi=h.get('command_abi', 1), gpu_layout_origin=origin,
         selected_layout_source_sha256=actual_layout['sha256'],
         fixture_only=True, captured_plane_bytes=layout.plane_bytes,
         wire_source='Host encoding of exact CPU-produced header/ranges/payload; not actual UART',

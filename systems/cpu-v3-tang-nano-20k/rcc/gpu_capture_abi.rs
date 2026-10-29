@@ -44,8 +44,10 @@ pub const GPU_CAPTURE_H_MANIFEST: u16 = 48;
 
 pub const GPU_CAPTURE_PUBLISHED: u16 = 1;
 pub const GPU_CAPTURE_BINDINGS_SELF_CONTAINED: u16 = 1;
-pub const GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 1;
-pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = 2;
+pub const GPU_CAPTURE_LEGACY_NATIVE_COMMAND_ABI: u16 = 1;
+pub const GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 3;
+pub const GPU_CAPTURE_LEGACY_RTT400_COMMAND_ABI: u16 = 2;
+pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = 4;
 pub const GPU_CAPTURE_LAYOUT_ABI: u16 = 1;
 // Storage selection is independent of the native command version.
 pub const GPU_CAPTURE_LAYOUT_ROW_ABI: u16 = 1;
@@ -72,6 +74,8 @@ pub const GPU_CAPTURE_TAG_ATLAS: u16 = 6;
 pub const GPU_CAPTURE_TAG_COLOR: u16 = 7;
 pub const GPU_CAPTURE_TAG_DEPTH: u16 = 8;
 pub const GPU_CAPTURE_TAG_FRONT: u16 = 9;
+// Explicit raw-copy source/destination extents; WRITE/PREIMAGE remain independent.
+pub const GPU_CAPTURE_TAG_BUFFER: u16 = 10;
 
 pub const GPU_CAPTURE_CONTINUE: u16 = 0;
 pub const GPU_CAPTURE_RESUMED: u16 = 1;

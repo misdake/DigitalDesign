@@ -421,7 +421,7 @@ fn real_headers_keep_legacy_row_and_bind_column_physical_ranges() {
             h[42].as_u64(),
             h[43].as_u64()
         ),
-        (Some(2), Some(1), Some(8192), Some(3))
+        (Some(2), Some(3), Some(8192), Some(3))
     );
     for r in d["range_words"].as_array().unwrap().as_chunks::<8>().0 {
         if [7, 8, 9].contains(&r[1].as_u64().unwrap()) {
@@ -455,16 +455,16 @@ fn strict_profile_manifest_selection() {
         assert!(parse(&v).is_err(), "{field}");
     }
     let mut rtt = valid.clone();
-    rtt["command_abi"] = json!(2);
+    rtt["command_abi"] = json!(4);
     let selected = parse(&rtt).unwrap();
     assert_eq!(
         selected.profile(),
         resolver::RendererLayoutProfile::Column16
     );
-    assert_eq!(selected.command_abi(), 2);
+    assert_eq!(selected.command_abi(), 4);
     rtt["layout"] = resolver::RendererLayoutProfile::Row.description();
     assert!(parse(&rtt).is_err());
-    for command in [json!(0), json!(3), json!(null), json!("1")] {
+    for command in [json!(0), json!(1), json!(2), json!(null), json!("3")] {
         let mut v = valid.clone();
         v["command_abi"] = command;
         assert!(parse(&v).is_err());

@@ -10,7 +10,7 @@ from layout import ROW, declared_layout, header_layout, COLUMN_MAP
 def build_layout(value):
     try:
         command=value.get('command_abi',1 if value['version']==1 else None)
-        if type(command) is not int or command != 1:
+        if type(command) is not int or command not in (1, 3):
             raise ValueError('Unsupported layout/command ABI combination')
         if value['version'] == 1:
             if 'layout' in value:
@@ -91,6 +91,8 @@ def create_build(spec_path, out):
                  mc_profile="stream-cl3-register-return", files=files,
                  resources=spec["resources"], options=spec["options"],
                  toolchain=spec["toolchain"], source_commit=spec["source_commit"])
+    if 'command_abi' in spec:
+        value['command_abi'] = spec['command_abi']
     if 'layout' in spec:
         value['version'] = 2
         value['command_abi'] = spec.get('command_abi',1)
@@ -125,6 +127,8 @@ def preflight(capture, build_path, receipt_path):
         raise SnapshotError("Frozen header does not identify this build/catalog")
     receipt = verify_receipt(receipt_path, build)
     header = capture.header
+    if header.get('command_abi', 1) != build.get('command_abi', 1):
+        raise SnapshotError('Frozen descriptor and build use different command ABIs')
     layout = header_layout(header)
     if layout != build_layout(build):
         raise SnapshotError('Frozen descriptor and source/firmware build use different layouts')

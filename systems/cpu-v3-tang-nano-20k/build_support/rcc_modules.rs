@@ -209,9 +209,12 @@ impl CaptureConfiguration {
                 .is_some_and(|v| v.as_u64() != Some(1))
             || manifest
                 .get("command_abi")
-                .is_some_and(|v| v.as_u64() != Some(1))
+                .and_then(serde_json::Value::as_u64)
+                != Some(u64::from(
+                    capture_profile::abi::GPU_CAPTURE_NATIVE_COMMAND_ABI,
+                ))
         {
-            return Err("legacy capture constructor accepts row ABI1 only; use RendererCaptureConfiguration for explicit profiles".into());
+            return Err("legacy capture constructor requires row storage and current command ABI3; use RendererCaptureConfiguration for explicit profiles".into());
         }
         Self::parse_id(gate_path, &manifest)
     }

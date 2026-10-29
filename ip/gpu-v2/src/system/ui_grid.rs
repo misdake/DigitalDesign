@@ -1,8 +1,8 @@
-//! Fixed-grid UI specialization of the command composition only.
+//! Serial UI/raw-copy specialization of the command composition only.
 //! Generic component interfaces and their independent oracles stay unchanged.
 
-const PORTS: &str = "input ui_active,ui_cmd_valid,ui_cmd_write,ui_lower_ready,input[8:0]ui_tile,output ui_cmd_ready,ui_cmd_done,input ui_pixel_valid,ui_pixel_half,input[4:0]ui_pixel_word,input[63:0]ui_pixels,";
-const PINS: &str = ".ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_lower_ready(ui_lower_ready),.ui_tile(ui_tile),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),.ui_pixel_valid(ui_pixel_valid),.ui_pixel_half(ui_pixel_half),.ui_pixel_word(ui_pixel_word),.ui_pixels(ui_pixels),";
+const PORTS: &str = "input ui_active,ui_cmd_valid,ui_cmd_write,ui_lower_ready,input[8:0]ui_tile,input copy_active,input[13:0]copy_address,output ui_cmd_ready,ui_cmd_done,input ui_pixel_valid,ui_pixel_half,input[4:0]ui_pixel_word,input[63:0]ui_pixels,";
+const PINS: &str = ".ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_lower_ready(ui_lower_ready),.ui_tile(ui_tile),.copy_active(copy_active),.copy_address(copy_address),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),.ui_pixel_valid(ui_pixel_valid),.ui_pixel_half(ui_pixel_half),.ui_pixel_word(ui_pixel_word),.ui_pixels(ui_pixels),";
 
 fn once(s: &mut String, old: &str, new: &str) -> Result<(), String> {
     if s.matches(old).count() != 1 {
@@ -65,6 +65,11 @@ pub fn lower(mut source: String) -> Result<String, String> {
                 &mut s,
                 "mt_linear_tile[6:0],mt_tile[5],mt_issue[0]",
                 "mt_linear_tile[6:0],mt_half,mt_issue[0]",
+            )?;
+            once(
+                &mut s,
+                "assign mem_req_addr={9'd0,target_page,mt_linear_tile[6:0],mt_half,mt_issue[0],7'd0};",
+                "// Serial memcpy bypasses target geometry, bank conversion and plane bases.\n assign mem_req_addr=copy_active?{9'd0,copy_address,mt_issue[1:0],7'd0}:{9'd0,target_page,mt_linear_tile[6:0],mt_half,mt_issue[0],7'd0};",
             )?;
             once(
                 &mut s,

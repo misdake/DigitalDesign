@@ -80,14 +80,15 @@ end
 task tick;begin @(negedge clk);#1;end endtask
 task send;input[3:0]ch;input[15:0]value;begin channel=ch;control=value;wen=1;tick;wen=0;end endtask
 task dump_plane;input integer base,length;input[1023:0]name;
- integer fd,offset,index;reg[31:0]word;
+ integer fd,offset,index;reg[31:0]word;reg[3:0]mask;
  begin
   fd=$fopen(name,"wb");if(!fd)$fatal(1,"Plane output open");
-  for(offset=0;offset<length;offset=offset+4)begin
+  for(offset=0;offset<length;offset=offset+2)begin
    index=physical((base+offset)/4);
-   if(valid_bytes[index]!==4'b1111)$fatal(1,"Output contains uninitialized bytes");
-   word=pins.mem[index];
-   $fwrite(fd,"%c%c%c%c",word[7:0],word[15:8],word[23:16],word[31:24]);
+   mask=((base+offset)&2)?4'b1100:4'b0011;
+   if((valid_bytes[index]&mask)!==mask)$fatal(1,"Output contains uninitialized bytes");
+   word=pins.mem[index]>>(((base+offset)&2)*8);
+   $fwrite(fd,"%c%c",word[7:0],word[15:8]);
   end
   $fclose(fd);
  end
@@ -107,6 +108,7 @@ initial begin
  dump_plane(@DEPTH_BASE@,@PLANE_BYTES@,"depth.bin");
  dump_plane(@COLOR_BASE@,@ALLOCATION_BYTES@,"color-allocation.bin");
  dump_plane(@DEPTH_BASE@,@ALLOCATION_BYTES@,"depth-allocation.bin");
+@BUFFER_DUMPS@
  $display("REPLAY_COMPLETE cycles=%0d initialized_reads=checked",cycle-start_cycle);
  $finish;
 end

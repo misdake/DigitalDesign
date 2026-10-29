@@ -66,6 +66,7 @@ ABI separately and must not insert their metadata into executable command bytes.
 | 9 | TEX_INVALIDATE | Zero; explicit WAIT(all) required |
 | 10 | SET_TARGET | 6:0 source local byte address/32; 27:7 zero |
 | 11 | UI_GRID | 6:0 descriptor slot; bit27=0: full grid and26:7 zero; bit27=1: first cell16:7, inclusive last26:17; serial range, described in [UI](/ip/gpu-v2/docs/ui.md) |
+| 12 | MEMCPY | 6:0 descriptor slot66..79; 27:7 zero; serial512-byte-aligned raw copy, described in [memcpy](/ip/gpu-v2/docs/memcpy.md) |
 | 15 | END | Zero; must be the last valid instruction |
 
 DMA_LOCAL size codes0/1/2 mean32/64/128 B. Code3 is invalid. Local destinations

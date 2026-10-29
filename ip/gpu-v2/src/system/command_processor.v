@@ -23,12 +23,14 @@ module gpu_command_processor(
  output reg[8:0]ambient,directional,output flush_request,input flush_complete,
  output clear_active,clear_request,output[31:0]clear_address,output[15:0]clear_value,
  input clear_ready,clear_complete,clear_ok,
- output ui_start,input ui_done,output[9:0]ui_first,ui_last
+ output ui_start,input ui_done,output[9:0]ui_first,ui_last,
+ output copy_active,copy_request,copy_write,output reg[13:0]copy_address,input copy_ready,copy_complete
 );
- localparam NOP=0,DMA_LOCAL=1,DMA_MESHLET=2,DRAW=3,WAIT=4,SET_GLOBAL=5,SET_RENDER=6,FLUSH=7,CLEAR=8,TEX_INVALIDATE=9,SET_TARGET=10,UI_GRID=11,END=15;
+ localparam NOP=0,DMA_LOCAL=1,DMA_MESHLET=2,DRAW=3,WAIT=4,SET_GLOBAL=5,SET_RENDER=6,FLUSH=7,CLEAR=8,TEX_INVALIDATE=9,SET_TARGET=10,UI_GRID=11,MEMCPY=12,END=15;
  localparam IDLE=0,FETCH=1,EXEC=2,DRAW_WAIT=3,APPLY_R=4,APPLY_W=5,
   WAITING=7,FLUSHING=8,ENDING=9,FAILED=10,LATCH=11,CLEAR_REQUEST=12,CLEAR_WAIT=13,CLEAR_DONE=14,
-  COLOR_R=15,COLOR_W=16,DRAW_START=17,UI_WAIT=18;
+  COLOR_R=15,COLOR_W=16,DRAW_START=17,UI_WAIT=18,
+  COPY_ADDRESS=19,COPY_REQUEST=20,COPY_WAIT=21,COPY_DONE=22;
  reg[4:0]state;
  reg failed,all_fence,global_valid,render_valid,stored,target_valid;
  reg[5:0]pc;reg[15:0]fetch_line;reg[9:0]fetch_left;
@@ -89,12 +91,22 @@ module gpu_command_processor(
  // The instruction remains resident throughout UI_WAIT; no extra range FFs.
  assign ui_first=command[27]?command[16:7]:10'd0;
  assign ui_last=command[27]?command[26:17]:10'd749;
+ // Q retains the descriptor; reserved instruction bits hold the sole cursor.
+ assign copy_active=state==COPY_ADDRESS||state==COPY_REQUEST||state==COPY_WAIT;
+ assign copy_request=!stop&&state==COPY_REQUEST;
+ assign copy_write=object_index[1];
+ wire[10:0]copy_block=clear_sector;
+ wire[13:0]copy_base=copy_write?cp_q[27:14]:cp_q[13:0];
+ wire[14:0]copy_source_end={1'b0,cp_q[13:0]}+{4'd0,cp_q[38:28]}+15'd1;
+ wire[14:0]copy_destination_end={1'b0,cp_q[27:14]}+{4'd0,cp_q[38:28]}+15'd1;
  wire waits_done=(!wait_mask[0]||!work_busy)&&(!wait_mask[1]||render_idle);
  reg object_bad;
  always @*begin
   object_bad=0;
   if(opcode==SET_TARGET)object_bad=cp_q[63:28]!=0||(|cp_q[6:0])||(|cp_q[20:14])||cp_q[13:0]>16009||cp_q[27:14]>16009||
    !(({1'b0,cp_q[13:0]}+15'd375<={1'b0,cp_q[27:14]})||({1'b0,cp_q[27:14]}+15'd375<={1'b0,cp_q[13:0]}));
+  else if(opcode==MEMCPY)object_bad=cp_q[63:39]!=0||copy_source_end>16384||copy_destination_end>16384||
+   !((copy_source_end<={1'b0,cp_q[27:14]})||(copy_destination_end<={1'b0,cp_q[13:0]}));
   else if(apply_render)case(object_index)
    0:object_bad=cp_q[63:56]!=0; // Texture fields are trusted driver data.
    1:object_bad=cp_q[31:6]!=0||cp_q[63:40]!=0;
@@ -107,7 +119,7 @@ module gpu_command_processor(
   endcase
  end
  task fail;begin
-  failed<=1;if(!clear_active)state<=FAILED;fetch_left<=0;
+  failed<=1;if(!clear_active&&!copy_active)state<=FAILED;fetch_left<=0;
  end endtask
  task advance;begin
   if(pc[4:0]==31)cache_pages[pc[5]]<=0;
@@ -164,7 +176,7 @@ module gpu_command_processor(
      DRAW:if(draw_inputs)state<=COLOR_R;
      WAIT:state<=WAITING;
      SET_GLOBAL,SET_RENDER,SET_TARGET:begin object_index<=0;state<=APPLY_R;end
-     UI_GRID:if(dma_idle)begin object_index<=0;state<=APPLY_R;end
+     UI_GRID,MEMCPY:if(dma_idle)begin object_index<=0;state<=APPLY_R;end
      CLEAR:begin clear_flight<=0;clear_offer<=0;state<=CLEAR_REQUEST;end
      FLUSH:state<=FLUSHING;
      TEX_INVALIDATE:advance();
@@ -177,7 +189,8 @@ module gpu_command_processor(
     DRAW_WAIT:if(meshlet_done)advance();
     WAITING:if(waits_done)begin if(wait_mask[1])all_fence<=1;advance();end
     APPLY_R:if(cp_ready)state<=APPLY_W;
-    APPLY_W:if(opcode==UI_GRID)begin page_valid<=0;state<=UI_WAIT;end
+    APPLY_W:if(opcode==MEMCPY)state<=COPY_ADDRESS;
+    else if(opcode==UI_GRID)begin page_valid<=0;state<=UI_WAIT;end
     else if(opcode==SET_TARGET)begin
      color_base<={cp_q[13:7],7'd0};depth_base<={cp_q[27:21],7'd0};target_valid<=1;stored<=0;advance();
     end else begin
@@ -199,6 +212,7 @@ module gpu_command_processor(
     end
     FLUSHING:if(flush_complete)begin stored<=1;advance();end
     CLEAR_DONE:advance();
+    COPY_DONE:advance();
     UI_WAIT:if(ui_done)advance();
     default:begin end
    endcase
@@ -216,6 +230,22 @@ module gpu_command_processor(
    endcase
    if(clear_active&&stop&&!clear_offer)state<=CLEAR_WAIT;
    if(state==CLEAR_WAIT&&!clear_offer&&(clear_flight==0||(clear_flight==1&&clear_complete)))state<=stop?FAILED:CLEAR_DONE;
+   // Local maintenance requests are accepted atomically. Once accepted, keep
+   // mode/address resident until all physical responses drain, including CE0.
+   if(state==COPY_ADDRESS)begin
+    if(stop)state<=FAILED;
+    else begin copy_address<=copy_base+{3'd0,copy_block};state<=COPY_REQUEST;end
+   end
+   if(state==COPY_REQUEST&&copy_ready)state<=stop?FAILED:COPY_WAIT;
+   if(state==COPY_WAIT&&copy_complete)begin
+    if(object_index==0)object_index<=1; // First of two read-half terminals.
+    else if(stop)state<=FAILED;
+    else if(!object_index[1])begin object_index<=2;state<=COPY_ADDRESS;end
+    else if(copy_block==cp_q[38:28])state<=COPY_DONE;
+    else begin
+     command[27:17]<=clear_sector+1'b1;object_index<=0;state<=COPY_ADDRESS;
+    end
+   end
    if(busy&&abort)fail();
   end
  end
@@ -235,6 +265,7 @@ module gpu_command_processor(
    SET_TARGET:if(!object_legal||!all_fence||!stored||!render_idle||work_busy)$fatal(1,"CP target drain contract");
    UI_GRID:if(command[6:4]!=3'b100||command[3:0]<2||ui_first>ui_last||ui_last>=750||
     (!command[27]&&command[26:7]!=0)||!all_fence||!stored||!render_idle||work_busy||!target_valid)$fatal(1,"CP UI drain contract");
+   MEMCPY:if(!object_legal||!all_fence||!stored||!render_idle||work_busy)$fatal(1,"CP MEMCPY drain contract");
    FLUSH,TEX_INVALIDATE:if(command[27:0]!=0||!all_fence||!render_idle||work_busy)$fatal(1,"CP drain contract");
    END:if(command[27:0]!=0||diagnostic_pc+17'd4!=limit||!stored||!all_fence||work_busy)$fatal(1,"CP END contract");
    default:$fatal(1,"CP opcode contract");
@@ -245,6 +276,11 @@ module gpu_command_processor(
   if(clear_active&&clear_complete&&!clear_ok)$fatal(1,"CP CLEAR memory response");
   if(busy&&!abort&&!failed&&(render_fault||dma_fault))$fatal(1,"CP downstream contract");
   if(ce&&start&&meshlet_ready&&work_busy&&(!mesh_loading||mesh_slot==draw_slot))$fatal(1,"DRAW overlaps DMA writer");
+ end
+ reg[63:0]copy_descriptor;
+ always @(posedge clk)begin
+  if(ce&&!stop&&state==APPLY_W&&opcode==MEMCPY)copy_descriptor<=cp_q;
+  if(!reset&&copy_active&&cp_q!==copy_descriptor)$fatal(1,"CP MEMCPY descriptor Q changed");
  end
 `endif
 endmodule

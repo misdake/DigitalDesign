@@ -198,6 +198,8 @@ class SceneResult:
 
 def render(capture):
     h = capture.header; layout = header_layout(h)
+    from raw_copy import MemoryImage, descriptor as copy_descriptor
+    memory = MemoryImage(capture) if h.get('command_abi', 1) == 3 else capture
     scratch = bytearray(4096); pages = {}; context = None; material = None; target = False
     color = np.array(layout.words(capture.read(h['color_base'],layout.plane_bytes)),dtype=np.int64).reshape(240,400)
     depth = np.array(layout.words(capture.read(h['depth_base'],layout.plane_bytes)),dtype=np.int64).reshape(240,400)
@@ -214,17 +216,18 @@ def render(capture):
         opcode = word >> 28; stats['commands'] += 1
         if opcode==15 and pc != len(words)-1: raise ValueError('Early END in scene command stream')
         if opcode in (0,4,7,9,15):
+            if opcode == 9: cache.clear()
             continue
         if opcode == 1:
             code = (word >> 1) & 3
             if code == 3: raise ValueError('Invalid DMA size')
             at = ((word >> 3) & 127)*32; count = 32 << code
             if at+count>4096: raise ValueError('DMA outside local storage')
-            scratch[at:at+count] = capture.read(((word >> 10) & 0x3ffff)*32,count)
+            scratch[at:at+count] = memory.read(((word >> 10) & 0x3ffff)*32,count)
         elif opcode == 2:
             address = ((word >> 12) & 65535)*128
             page_addresses[word & 1] = address
-            pages[word & 1] = (capture.read(address,32),capture.read(address+128,(((word >> 1) & 7)+1)*128))
+            pages[word & 1] = (memory.read(address,32),memory.read(address+128,(((word >> 1) & 7)+1)*128))
         elif opcode in (5,6,10):
             at = (word & 127)*32
             if opcode == 5: context = struct.unpack_from('<16I',scratch,at)
@@ -244,6 +247,29 @@ def render(capture):
                 depth.fill(65535); owner.fill(-1)
             else: color.fill(word & 65535)
             stats['clears']['depth' if word & 65536 else 'color']=word & 65535
+        elif opcode == 12:
+            job = copy_descriptor(word, scratch, h.get('command_abi', 1))
+            src, dst, count = job
+            affected = [(role, base, array) for role, base, array in
+                        [('color',h['color_base'],color),('depth',h['depth_base'],depth)]
+                        if src < base+layout.plane_bytes and base < src+count or
+                           dst < base+layout.plane_bytes and base < dst+count]
+            if affected and stats['draws']:
+                raise ValueError('Mathematical scene oracle cannot propagate approximate DRAW pixels through raw MEMCPY; use exact cold replay/retirement comparison')
+            for _, base, array in affected:
+                raw = bytearray(memory.read(base, layout.plane_bytes))
+                for y in range(240):
+                    for x in range(400):
+                        struct.pack_into('<H',raw,layout.offset(x,y),int(array[y,x]))
+                memory.data[base:base+layout.plane_bytes] = raw
+            memory.copy(job)
+            stats.setdefault('raw_copies', []).append(dict(source=src,destination=dst,bytes=count))
+            for role, base, array in affected:
+                array[:] = np.array(layout.words(memory.read(base,layout.plane_bytes))).reshape(240,400)
+                if role == 'color':
+                    for at in range(max(base,dst),min(base+layout.plane_bytes,dst+count),2):
+                        xy = layout.coordinates(at-base)
+                        if xy is not None: ui[xy[1],xy[0]] = True
         elif opcode == 11:
             stats['ui_commands'] += 1
             descriptor, = struct.unpack_from('<Q',scratch,(word & 127)*32)
@@ -251,9 +277,9 @@ def render(capture):
             first,last = (((word >> 7)&1023),((word >> 17)&1023)) if word & (1 << 27) else (0,749)
             if not 0<=first<=last<750: raise ValueError('UI range outside the fixed grid')
             for cell in range(first,last+1):
-                char = capture.read(grid+cell,1)[0]
+                char = memory.read(grid+cell,1)[0]
                 if char==255: continue
-                stats['glyphs'] += 1; glyph = capture.read(atlas+char*256,256)
+                stats['glyphs'] += 1; glyph = memory.read(atlas+char*256,256)
                 for gy in range(16):
                     for gx in range(8):
                         tx = gx ^ (2 if gy & 1 else 0)
@@ -293,7 +319,7 @@ def render(capture):
                 normals.append([max(-2048,min(2047,nearest_even_div64(v))) for v in q])
                 attributes.append([(a >> (8*k))&255 for k in range(3)] if rgb else [(a & 65535)/65536,(a >> 16)/65536,0])
             positions,normals,attributes = map(np.array,(positions,normals,attributes))
-            if not rgb and material[0] not in cache: cache[material[0]] = texture_levels(capture,material[0])
+            if not rgb and material[0] not in cache: cache[material[0]] = texture_levels(memory,material[0])
             for t in range(tc):
                 pid=stats['triangles']; stats['triangles'] += 1
                 if stats['triangles']>1141: raise ValueError('Complete-scene oracle is bounded to 1141 triangles')

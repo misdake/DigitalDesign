@@ -3,6 +3,7 @@ from pathlib import Path
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 
@@ -41,11 +42,12 @@ def identity(output, assets, version):
     for name,path in sorted(inputs.items()):
         dest=output/'identity'/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,dest)
         files.append(dict(name=name,path=dest.relative_to(output).as_posix(),bytes=dest.stat().st_size,sha256=sha(dest)))
-    value=dict(schema='digitaldesign.gpu-capture-build',version=version,clock_hz=54000000,mc_clock_hz=108000000,
+    command_abi=int(re.search(r'^pub const GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = ([0-9]+);', (SYSTEM/'rcc/gpu_capture_abi.rs').read_text(), re.M).group(1))
+    value=dict(schema='digitaldesign.gpu-capture-build',version=version,command_abi=command_abi,clock_hz=54000000,mc_clock_hz=108000000,
         mc_profile='stream-cl3-register-return',files=files,resources=catalog['resources'],
         options=dict(fixture_only=True,capture_allocation_guards=False),toolchain=dict(compiler='repository RCC CPU V3',execution='CpuV3Sim controlled GPU/Display peer'),
         source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip())
-    if version==2:value.update(layout=catalog['capture_layout'],command_abi=1)
+    if version==2:value.update(layout=catalog['capture_layout'])
     if catalog.get('capture_scene')=='canonical-full-scene':
         value['options'].update(full_scene=True,scene=catalog['scene'],cpu_capture_gates=3,
                                stimulus='fixed formal camera; neutral analog peer; middle gate resume')

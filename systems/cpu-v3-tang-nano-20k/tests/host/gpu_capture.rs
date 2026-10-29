@@ -224,7 +224,7 @@ fn diagnostic_origin_and_manifest_are_explicit_and_do_not_override_normal_apps()
     let manifest = local.join("manifest.json");
     std::fs::write(
         &manifest,
-        serde_json::json!({"manifest_id":"1234".repeat(16)}).to_string(),
+        serde_json::json!({"manifest_id":"1234".repeat(16),"command_abi":3}).to_string(),
     )
     .unwrap();
     let gate_path = local.join("profiler_gate.rs");
@@ -251,7 +251,11 @@ fn diagnostic_origin_and_manifest_are_explicit_and_do_not_override_normal_apps()
     )
     .is_err());
     for id in ["1234".repeat(15), "gg".repeat(32), "é".repeat(32)] {
-        std::fs::write(&manifest, serde_json::json!({"manifest_id":id}).to_string()).unwrap();
+        std::fs::write(
+            &manifest,
+            serde_json::json!({"manifest_id":id,"command_abi":3}).to_string(),
+        )
+        .unwrap();
         assert!(
             resolver::CaptureConfiguration::from_manifest(gate_path.clone(), &manifest).is_err()
         );

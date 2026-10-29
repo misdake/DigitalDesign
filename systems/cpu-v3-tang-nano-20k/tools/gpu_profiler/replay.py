@@ -96,8 +96,22 @@ def validate_rtl_layout(layout, combined):
         raise SnapshotError('Column framebuffer cannot use row-packed ordinary textures')
 
 
+def validate_command_abi(capture):
+    """A newer RTL export must not extend the frozen stream's declared ABI."""
+    abi = capture.header.get('command_abi', 1)
+    if abi not in (1, 3):
+        raise SnapshotError(f'Unsupported replay command ABI{abi}')
+    last = 12 if abi == 3 else 11
+    words = capture.read(capture.header['cb_base'], capture.header['cb_bytes'])
+    for pc, (word,) in enumerate(struct.iter_unpack('<I', words)):
+        opcode = word >> 28
+        if opcode > last and opcode != 15:
+            raise SnapshotError(f'Command ABI{abi} does not support opcode{opcode} at byte PC0x{pc*4:x}')
+
+
 def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
     """Prepare one isolated run; a test fixture may explicitly omit board identity."""
+    validate_command_abi(capture)
     rtl, output = Path(rtl).resolve(), Path(output).resolve()
     if not 0 < max_cycles <= 20_000_000 or not 1 <= timeout <= 3600:
         raise SnapshotError("Replay needs explicit cycle and wall-clock bounds")
@@ -129,6 +143,10 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
                         ("COLOR_BASE", header["color_base"]), ("DEPTH_BASE", header["depth_base"]),
                         ('PLANE_BYTES', layout.plane_bytes), ('ALLOCATION_BYTES', span)]:
         template = template.replace("@" + name + "@", str(value))
+    buffers = [dict(index=r.index, address=r.address, bytes=r.length, file=f'buffer-{r.index}.bin')
+               for r in capture.ranges if r.tag == capture.abi.constants.get('GPU_CAPTURE_TAG_BUFFER', -1) and r.flags & capture.abi['WRITE']]
+    template = template.replace('@BUFFER_DUMPS@', '\n'.join(
+        f' dump_plane({r["address"]},{r["bytes"]},"{r["file"]}");' for r in buffers))
     bench = output / "replay-input-tb.v"
     bench.write_text(template, encoding="utf-8")
     manifest = dict(version=1, title="Frozen pre-submit cold GPU+MC replay", clock_hz=54_000_000,
@@ -138,7 +156,8 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
                     inputs={name: str(output / name) for name in ["memory.hex", "valid.hex", "marked.hex", 'writable.hex']},
                     input_sha256=capture.manifest()["input_sha256"], preflight=preflight_result,
                     layout=layout.description(),
-                    command_abi=1,
+                    command_abi=capture.header.get('command_abi', 1),
+                    raw_buffers=buffers,
                     captured_plane_bytes=span,
                     functional_pin_model=dict(cas=3, tac_ns=6, toh_ns=2, fixed_return_delay_ns=4,
                                               sdram_phase_degrees=157.5,
@@ -151,7 +170,12 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
 
 
 def execute(capture, manifest_path):
-    output = Path(manifest_path).parent
+    validate_command_abi(capture)
+    manifest_path = Path(manifest_path)
+    declared = json.loads(manifest_path.read_text())
+    if declared.get('command_abi', 1) != capture.header.get('command_abi', 1):
+        raise SnapshotError('Prepared replay/header command ABI mismatch')
+    output = manifest_path.parent
     capture_run(manifest_path, output / "capture")
     profile = build_capture(output / "capture")
     write_report(profile, output / "profile")
@@ -161,7 +185,6 @@ def execute(capture, manifest_path):
         raise SnapshotError("Replay did not reach its complete output/initialized-read boundary")
     color, depth = [output / "capture" / (name + ".bin") for name in ["color", "depth"]]
     layout = header_layout(capture.header)
-    declared=json.loads(Path(manifest_path).read_text())
     span=declared['captured_plane_bytes']
     if any(p.stat().st_size != capture.header["plane_bytes"] for p in [color, depth]):
         raise SnapshotError("Replay has incomplete output planes")
@@ -170,9 +193,15 @@ def execute(capture, manifest_path):
                   cold_submission_cycles=int(match.group(1)), color_sha256=digest(color),
                   depth_sha256=digest(depth), profile=str(output / "profile/profiler.html"),
                   layout=layout.description(),
-                  command_abi=1,
+                  command_abi=capture.header.get('command_abi', 1),
                   captured_plane_bytes=span,
                   scope="No CPU/Display contention or warm cache; not board timing/PVT qualification")
+    result['raw_buffers'] = []
+    for region in declared.get('raw_buffers', []):
+        path = output/'capture'/region['file']
+        if path.stat().st_size != region['bytes']:
+            raise SnapshotError('Replay has an incomplete raw-copy destination')
+        result['raw_buffers'].append(dict(**region, sha256=digest(path)))
     for role in ('color', 'depth'):
         path = output / 'capture' / (role + '-allocation.bin')
         allocation = path.read_bytes()

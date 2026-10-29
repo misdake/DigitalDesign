@@ -120,7 +120,7 @@ class LayoutTests(unittest.TestCase):
             value=json.loads(build.read_text()); value['command_abi']=2
             value['manifest_id']=identity.declared_id(value); build.write_text(json.dumps(value))
             with self.assertRaises(s.SnapshotError): identity.load_build(build)
-            source=self.abi.source.read_text().replace('GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 1;',
+            source=self.abi.source.read_text().replace('GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 3;',
                                                      'GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 2;')
             path=Path(temp)/'old-rtt-abi.rs'; path.write_text(source)
             with self.assertRaises(s.SnapshotError): s.Abi(path)

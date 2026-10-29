@@ -260,6 +260,50 @@ pub fn gpu_encode_target(s: Array<GpuStorage>, word: u16, color: u16, depth: u16
     true
 }
 
+/// Sector units are 128 bytes. Cache ownership/fences belong to the caller.
+pub fn gpu_memcpy_valid(source: u16, destination: u16, sectors: u16) -> bool {
+    source & 3 == 0
+        && destination & 3 == 0
+        && sectors >= 4
+        && sectors <= 8192
+        && sectors & 3 == 0
+        && gpu_extent_valid(source, sectors)
+        && gpu_extent_valid(destination, sectors)
+        && !gpu_extents_overlap(source, sectors, destination, sectors)
+}
+
+pub fn gpu_encode_memcpy(
+    s: Array<GpuStorage>,
+    word: u16,
+    source: u16,
+    destination: u16,
+    sectors: u16,
+) -> bool {
+    if !gpu_storage_room(s, word, 16, 16) || !gpu_memcpy_valid(source, destination, sectors) {
+        return false;
+    }
+    let p = s[0u16].cpu.add(word as i16);
+    let src = source >> 2;
+    let dst = destination >> 2;
+    let count = (sectors >> 2) - 1;
+    gpu_zero(p, 16);
+    unsafe {
+        p.write(0, src | (dst << 14));
+        p.write(1, (dst >> 2) | (count << 12));
+        p.write(2, count >> 4);
+    }
+    true
+}
+
+/// Write one command naming a 32-byte local staging slot (66 through 79).
+pub fn gpu_encode_memcpy_command(s: Array<GpuStorage>, word: u16, local_slot: u16) -> bool {
+    if !gpu_storage_room(s, word, 2, 2) || local_slot < 66 || local_slot >= 80 {
+        return false;
+    }
+    gpu_store32(s[0u16].cpu.add(word as i16), local_slot, 0xc000);
+    true
+}
+
 pub fn gpu_encode_instance(
     s: Array<GpuStorage>,
     word: u16,

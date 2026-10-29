@@ -67,7 +67,7 @@ static RTT_GATE_CALLS:u16=0;
 static RTT_GATE_CHECKS:u16=0;
 fn require(ok:bool){if !ok{halt(0xcb00+RTT_GATE_CHECKS);}unsafe{addr_of(&RTT_GATE_CHECKS).write(0,RTT_GATE_CHECKS+1);}}
 pub fn profiler_gate(d:Array<u16>)->u16{
-require(d[GPU_CAPTURE_H_LAYOUT_ABI]==2 && d[GPU_CAPTURE_H_COMMAND_ABI]==2);
+require(d[GPU_CAPTURE_H_LAYOUT_ABI]==2 && d[GPU_CAPTURE_H_COMMAND_ABI]==GPU_CAPTURE_RTT400_COMMAND_ABI);
 let consumer=(RTT_GATE_CALLS&1)!=0;let mut sources:u16=0;let mut tails:u16=0;let mut i:u16=0;
 while i<d[GPU_CAPTURE_H_RANGE_COUNT]{
  let tag=gpu_capture_range_word(i,GPU_CAPTURE_R_TAG);
@@ -110,7 +110,7 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
     std::fs::write(
         &capture_manifest,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema":"digitaldesign.gpu-capture-build", "version":2, "command_abi":2,
+            "schema":"digitaldesign.gpu-capture-build", "version":2, "command_abi":4,
             "manifest_id":"5254".repeat(16),
             "layout":resolver::RendererLayoutProfile::Column16.description(),
             "resources":manifest["resources"], "options":{}

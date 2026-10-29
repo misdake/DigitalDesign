@@ -24,7 +24,7 @@ def align(value, size=128):
 
 class CommandBuffer:
     OPS = dict(NOP=0, DMA=1, DMA_MESHLET=2, DRAW_MESHLET=3, WAIT=4,
-               SET_GLOBAL=5, SET_RENDER=6, FLUSH=7, CLEAR=8, TEX_INVALIDATE=9, SET_TARGET=10, UI_GRID=11, END=15)
+               SET_GLOBAL=5, SET_RENDER=6, FLUSH=7, CLEAR=8, TEX_INVALIDATE=9, SET_TARGET=10, UI_GRID=11, MEMCPY=12, END=15)
 
     def __init__(self):
         self.records = []
@@ -45,7 +45,7 @@ class CommandBuffer:
         elif name == 'UI_GRID' and b:
             assert slot % 4 == 0 and 0 <= a < b <= 750
             word = (op<<28) | (1<<27) | ((b-1)<<17) | (a<<7) | (slot//4)
-        elif name in ('SET_GLOBAL','SET_RENDER','SET_TARGET','UI_GRID'):
+        elif name in ('SET_GLOBAL','SET_RENDER','SET_TARGET','UI_GRID','MEMCPY'):
             assert slot % 4 == 0
             word = (op<<28) | (slot//4)
         else:
@@ -65,6 +65,15 @@ def target_params(color, depth):
     assert 0 <= color <= 0x800000-192000 and 0 <= depth <= 0x800000-192000
     assert color+192000 <= depth or depth+192000 <= color
     return struct.pack('<Q', (color//512) | ((depth//512)<<14)) + bytes(24)
+
+
+def memcpy_params(source, destination, size):
+    """Raw copy descriptor; ownership/cache handoff remains explicit."""
+    assert 0 < size <= 0x100000 and size % 512 == 0
+    assert source % 512 == destination % 512 == 0
+    assert 0 <= source <= 0x800000-size and 0 <= destination <= 0x800000-size
+    assert source+size <= destination or destination+size <= source
+    return struct.pack('<Q', source//512 | ((destination//512)<<14) | ((size//512-1)<<28)) + bytes(24)
 
 
 def texture_word(base, size_log2, full_mip, filter_code):

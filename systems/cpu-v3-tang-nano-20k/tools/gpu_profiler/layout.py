@@ -75,7 +75,7 @@ def declared_layout(description):
 def header_layout(header):
     # Older in-memory v1 metadata did not retain this derived field.
     layout = get_layout(header.get('layout_abi', 1))
-    if header.get('command_abi',1) != 1:
+    if header.get('command_abi',1) not in (1, 3):
         raise ValueError('Unsupported storage/command combination; paused RTT ABI2 is not pure column')
     if header['plane_bytes'] != layout.plane_bytes:
         raise ValueError('Header plane span does not match its layout ABI')

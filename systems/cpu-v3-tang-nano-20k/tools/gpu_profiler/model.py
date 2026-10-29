@@ -13,7 +13,7 @@ MAX_INTEGER = (1 << 53) - 1
 
 OP = ["NOP", "DMA_LOCAL", "DMA_MESHLET", "DRAW", "WAIT", "SET_GLOBAL",
       "SET_RENDER", "FLUSH", "CLEAR", "TEX_INVALIDATE", "SET_TARGET", "UI_GRID",
-      "RESERVED12", "RESERVED13", "RESERVED14", "END"]
+      "MEMCPY", "RESERVED13", "RESERVED14", "END"]
 VT_KIND = {1: "V", 2: "T", 3: "T queue wait", 4: "Control / RAM / index", 5: "CE pause"}
 METRICS = [
     ("dma", "Command DMA occupied", "binary", 1),

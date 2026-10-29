@@ -1,7 +1,7 @@
 ---
 id: system-gpu-profiler
 status: active
-last-verified: 2026-10-27
+last-verified: 2026-10-29
 ---
 
 # GPU profiling sessions
@@ -48,8 +48,25 @@ and ABI2 (column macrotiles with padded height16,204800-byte planes), both at
 400x240. Build declaration v1 retains implicit row storage; v2 binds the exact
 layout/profile, memory map and typed asset catalog. Wire/header/range versions
 do not change. The reader preserves old row descriptors and input identities.
-Supported combinations are `(layout,command)=(1,1)` and `(2,1)`; v2 build identity
-includes top-level `command_abi:1`. The paused RTT `(2,2)` combination is refused.
+Readers support native command ABI1 and ABI3 with either storage layout. ABI3 adds
+opcode12 MEMCPY; new native firmware/build catalogs explicitly declare3. Existing
+ABI1 snapshots retain their original representation and identities. Build identity
+and frozen header command versions must agree. New RTT firmware declares4;
+paused RTT command versions2 and4 remain explicitly unsupported by this consumer.
+This change does not qualify the historical paused-RTT replay gap.
+
+Both replay preparation and execution reject commands outside the snapshot's
+declared ABI before running RTL; a newer export cannot enable MEMCPY in ABI1.
+
+Raw buffers use range tag10 with the existing READ/WRITE/PREIMAGE flags. A capture
+must include the complete source inputs and declared mutable destinations; capture
+publication remains the driver's responsibility. The low-level MEMCPY encoders do
+not automatically add those ranges. Cold replay dumps writable raw buffers as well
+as color/depth, preserves write-to-later-read lineage, and checks native memory
+permissions. The mathematical scene oracle supports raw/cleared/UI pixel copies;
+it explicitly rejects copies involving framebuffer planes after approximate DRAW
+evaluation. Exact cold replay and retirement comparison remain available instead
+of silently omitting those pixels.
 
 ABI2 has96000 logical pixels and6400 additional physical padding words. Its
 262144-byte reserved allocation is distinct from the204800-byte physical plane;

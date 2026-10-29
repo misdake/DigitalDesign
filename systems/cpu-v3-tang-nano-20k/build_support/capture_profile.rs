@@ -119,8 +119,12 @@ impl RendererCaptureConfiguration {
         };
         let profile = match version {
             1 if m.get("layout").is_none() => {
-                if m.get("command_abi").is_some_and(|v| v.as_u64() != Some(1)) {
-                    return Err("legacy row requires command ABI1".into());
+                if m.get("command_abi").and_then(Value::as_u64)
+                    != Some(u64::from(abi::GPU_CAPTURE_NATIVE_COMMAND_ABI))
+                {
+                    return Err(
+                        "new row firmware requires an explicit current command ABI3 catalog".into(),
+                    );
                 }
                 RendererLayoutProfile::Row
             }
@@ -128,7 +132,7 @@ impl RendererCaptureConfiguration {
                 if m["schema"] != "digitaldesign.gpu-capture-build" {
                     return Err("unsupported capture build schema".into());
                 }
-                if !matches!(m["command_abi"].as_u64(), Some(1 | 2)) {
+                if !matches!(m["command_abi"].as_u64(), Some(3 | 4)) {
                     return Err("unsupported capture command ABI".into());
                 }
                 [RendererLayoutProfile::Row, RendererLayoutProfile::Column16]
@@ -138,9 +142,9 @@ impl RendererCaptureConfiguration {
             }
             _ => return Err("unsupported capture manifest version/layout".into()),
         };
-        let framebuffer_view = m["command_abi"].as_u64() == Some(2);
+        let framebuffer_view = m["command_abi"].as_u64() == Some(4);
         if framebuffer_view && profile != RendererLayoutProfile::Column16 {
-            return Err("RTT command ABI2 requires column16 storage".into());
+            return Err("RTT command ABI4 requires column16 storage".into());
         }
         if m["options"]
             .get("capture_allocation_guards")

@@ -191,6 +191,10 @@ impl Command {
     pub fn ui_grid(qword: u16) -> Result<Self, &'static str> {
         Self::set(11, qword, 32)
     }
+    /// Blocking raw copy, after explicit WAIT(all) and FLUSH.
+    pub fn memcpy(qword: u16) -> Result<Self, &'static str> {
+        Self::set(12, qword, 32)
+    }
     /// Draw only row-major cells in [first, end), with no retained UI binding.
     pub fn ui_grid_range(qword: u16, first: u16, end: u16) -> Result<Self, &'static str> {
         if first >= end || end > 750 {
@@ -205,6 +209,26 @@ impl Command {
     pub const fn encode(self) -> [u8; 4] {
         self.0.to_le_bytes()
     }
+}
+/// Raw, nonoverlapping DRAM copy. The caller transfers CPU/cache ownership.
+pub fn memcpy_params(source: u32, destination: u32, bytes: u32) -> Result<[u8; 32], &'static str> {
+    if bytes == 0
+        || bytes > 0x100000
+        || !bytes.is_multiple_of(512)
+        || !source.is_multiple_of(512)
+        || !destination.is_multiple_of(512)
+        || source > 0x800000 - bytes
+        || destination > 0x800000 - bytes
+        || (source < destination + bytes && destination < source + bytes)
+    {
+        return Err("memcpy extent/alignment/overlap");
+    }
+    let descriptor = u64::from(source / 512)
+        | (u64::from(destination / 512) << 14)
+        | (u64::from(bytes / 512 - 1) << 28);
+    let mut data = [0; 32];
+    data[..8].copy_from_slice(&descriptor.to_le_bytes());
+    Ok(data)
 }
 /// UI object: padded 750-byte cell table and a 64-KiB RGBA5551 atlas.
 pub fn ui_params(grid: u32, atlas: u32) -> Result<[u8; 32], &'static str> {
@@ -384,6 +408,35 @@ mod tests {
     fn plane_clear_encoding() {
         assert_eq!(Command::clear(false, 0x5a3c).0, 0x80005a3c);
         assert_eq!(Command::clear(true, 0xffff).0, 0x8001ffff);
+    }
+    #[test]
+    fn memcpy_contract_and_descriptor() {
+        assert_eq!(Command::memcpy(272).unwrap().0, 0xc0000044);
+        assert!(Command::memcpy(271).is_err());
+        assert!(Command::memcpy(320).is_err());
+        for (src, dst, bytes) in [(0, 0x7ffe00, 512), (0x200000, 0x400000, 0x100000)] {
+            let data = memcpy_params(src, dst, bytes).unwrap();
+            let descriptor = u64::from_le_bytes(data[..8].try_into().unwrap());
+            assert_eq!((descriptor & 0x3fff) * 512, u64::from(src));
+            assert_eq!(((descriptor >> 14) & 0x3fff) * 512, u64::from(dst));
+            assert_eq!(((descriptor >> 28) & 0x7ff) + 1, u64::from(bytes / 512));
+            assert!(data[8..].iter().all(|&b| b == 0));
+        }
+        for (src, dst, bytes) in [
+            (0, 512, 0),
+            (0, 512, 511),
+            (0, 0x200000, 0x100200),
+            (1, 512, 512),
+            (0, 513, 512),
+            (0, 0, 512),
+            (0, 512, 1024),
+            (0x7ffe00, 0, 1024),
+            (0, 0x7ffe00, 1024),
+            (u32::MAX, 0, 512),
+            (0, u32::MAX, 512),
+        ] {
+            assert!(memcpy_params(src, dst, bytes).is_err());
+        }
     }
     #[test]
     fn runtime_target_uses_the_physical_window() {

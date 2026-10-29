@@ -74,11 +74,27 @@ actual READ continuation and both payloads, and rejects an uncaptured successor:
 python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/tests/read_chain_guard.py --peer path/to/fresh-export/peer --out path/to/new-test-output
 ```
 
-Storage layout is independent of the unchanged GPS1 wire v1, 64-word header,
-range v1 and native command ABI1. Header indices remain driver-owned.
-Only `(layout,command)=(1,1)` and `(2,1)` are supported. Build v2 requires a
-top-level `command_abi:1`; paused RTT `(2,2)` is rejected, even when an old ABI
-constants file declares command2.
+Storage layout is independent of the unchanged GPS1 wire v1,64-word header and
+range v1. Header indices remain driver-owned. Readers accept native command
+ABI1 and ABI3 with layout1 or2; ABI3 adds raw MEMCPY. New firmware/build catalogs
+explicitly declare command3 (native) or4 (RTT), while old ABI1 snapshots remain
+readable. Paused RTT command2 and4 are rejected, including with old constants.
+Build/header command versions must match. Raw source/destination captures use
+tag10 and existing READ/WRITE/PREIMAGE flags; writable buffers receive separate
+replay dumps. Encoders do not automatically publish those ranges.
+
+The small new-command regression uses synthetic frozen inputs and current GPU/MC
+exports, not a CPU producer, physical board or paused-RTT qualification:
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/tests/memcpy_replay.py `
+  --rtl <current-row-export-and-audited-peer> --out <new-target-directory>
+```
+
+It checks three chained copies, command-page crossing, an8 MiB tail destination,
+unchanged depth, exact color and raw buffer bytes. The mathematical scene oracle
+refuses framebuffer copies after approximate DRAW evaluation; exact cold replay
+and retirement comparison are the supported verification path for those streams.
 
 | Storage | Header layout ABI | Logical pixels | Physical plane | Allocation policy |
 | --- | ---: | ---: | ---: | --- |

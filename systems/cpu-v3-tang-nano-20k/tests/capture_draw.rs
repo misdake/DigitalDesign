@@ -531,7 +531,10 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
                         headers[abi::GPU_CAPTURE_H_LAYOUT_ABI as usize],
                         if profile == "column16" { 2 } else { 1 }
                     );
-                    assert_eq!(headers[abi::GPU_CAPTURE_H_COMMAND_ABI as usize], 1);
+                    assert_eq!(
+                        headers[abi::GPU_CAPTURE_H_COMMAND_ABI as usize],
+                        abi::GPU_CAPTURE_NATIVE_COMMAND_ABI
+                    );
                     assert_eq!(
                         ranges.len(),
                         usize::from(headers[abi::GPU_CAPTURE_H_RANGE_COUNT as usize]) * 8

@@ -68,7 +68,7 @@ class Abi:
                               r"^pub const (GPU_CAPTURE_\w+): u16 = (0x[0-9a-fA-F_]+|[0-9_]+);$",
                               raw.decode("utf-8-sig").replace("\r\n", "\n"), re.M)}
         if (self["VERSION"] != 1 or self["WORDS"] != 64 or self["RANGE_WORDS"] != 8 or
-                self['NATIVE_COMMAND_ABI'] != 1):
+                self['NATIVE_COMMAND_ABI'] not in (1, 3)):
             raise SnapshotError("Unsupported driver capture ABI")
 
     def __getitem__(self, name):
@@ -99,7 +99,7 @@ class Abi:
             layout = get_layout(self.word(words, "H_LAYOUT_ABI"))
         except ValueError as error:
             raise SnapshotError(str(error)) from error
-        if (self.word(words, "H_COMMAND_ABI") != self["NATIVE_COMMAND_ABI"] or
+        if (self.word(words, "H_COMMAND_ABI") not in (1, self["NATIVE_COMMAND_ABI"]) or
                 self.word(words, "H_RANGE_VERSION") != self["RANGE_VERSION"] or
                 self.word(words, "H_RANGE_WORDS") != self["RANGE_WORDS"]):
             raise SnapshotError("Incompatible layout/command/range ABI")
@@ -126,7 +126,9 @@ class Abi:
         # Preserve the v1 manifest representation and input hash byte for byte.
         if layout.abi != 1:
             result['layout_abi'] = layout.abi
-            result['command_abi'] = 1
+            result['command_abi'] = self.word(words, 'H_COMMAND_ABI')
+        if self.word(words, 'H_COMMAND_ABI') != 1:
+            result['command_abi'] = self.word(words, 'H_COMMAND_ABI')
         at = self["H_MANIFEST"]
         result["manifest_id"] = words_to_bytes(words[at:at + self["MANIFEST_WORDS"]]).hex()
         valid, padded, base = result["cb_bytes"], result["cb_padded_bytes"], result["cb_base"]

@@ -79,6 +79,39 @@ fn run(source: &str, assets: bool) -> (CpuV3Sim, usize) {
     (cpu, n)
 }
 #[test]
+fn compiled_memcpy_encoder_preserves_bounds_and_bit_fields() {
+    run(
+        r#"
+mod gpu_encode;
+mod gpu_memory;
+static STEP:u16=0;
+fn check(ok:bool){if !ok{halt(0xb00+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
+fn main(){
+ let mut s:GpuStorage=GpuStorage{cpu:Ptr::from_addr(0x4000),sector:256,sectors:2};
+ check(gpu_memcpy_valid(0,65532,4));
+ check(gpu_memcpy_valid(0,4,4));
+ check(!gpu_memcpy_valid(0,0,4));
+ check(!gpu_memcpy_valid(65532,0,8));
+ check(!gpu_memcpy_valid(0,4,8));
+ check(!gpu_memcpy_valid(1,8,4));
+ check(!gpu_memcpy_valid(0,4,3));
+ check(!gpu_memcpy_valid(0,16384,8196));
+ check(gpu_encode_memcpy(view_of(&mut s),0,0x4000,0x8000,8192));
+ unsafe{check(s.cpu.read(0)==0x1000);check(s.cpu.add(1).read(0)==0xf800);check(s.cpu.add(2).read(0)==127);
+ check(s.cpu.add(3).read(0)==0);check(s.cpu.add(15).read(0)==0);}
+ check(gpu_encode_memcpy_command(view_of(&mut s),16,68));
+ unsafe{check(s.cpu.add(16).read(0)==68);check(s.cpu.add(17).read(0)==0xc000);}
+ check(!gpu_encode_memcpy_command(view_of(&mut s),16,80));
+ check(!gpu_encode_memcpy_command(view_of(&mut s),17,68));
+ check(!gpu_encode_memcpy(view_of(&mut s),1,0,4,4));
+ unsafe{check(s.cpu.read(0)==0x1000);}
+ halt(0x600d);
+}
+"#,
+        false,
+    );
+}
+#[test]
 fn compiled_builder_reserves_end_at_full_command_allocation() {
     let setup = fixture::program();
     let prefix = setup.split(" let mut iteration:u16=0;").next().unwrap();
