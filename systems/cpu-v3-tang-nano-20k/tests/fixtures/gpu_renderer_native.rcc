@@ -1,0 +1,72 @@
+//! Real endpoint qualification caller. Device7 writes are passive trace markers.
+use crate::dsl_rt::*;
+mod gpu_pipeline;
+use gpu_pipeline::*;
+struct OldValue {
+    a: fix32,
+    b: fix32,
+    c: fix32,
+    d: fix32,
+}
+static OLD: OldValue = OldValue {
+    a: fix32::zero(),
+    b: fix32::zero(),
+    c: fix32::zero(),
+    d: fix32::zero(),
+};
+static DIRTY: Buf<u16, 4> = Buf::new([0; 4]);
+fn main() {
+    let mut renderer = renderer_open();
+    let z = fix32::zero();
+    let one = fix32::from_int(1);
+    let mut camera = renderer_camera(
+        &mut renderer,
+        vec3::zero(),
+        vec3::zero(),
+        fix32::from_int(200),
+        fix32::from_int(100),
+    );
+    let mut mesh = renderer_mesh(&mut renderer);
+    let mut model = renderer_model(
+        &mut renderer,
+        vec3::new(z, z, fix32::from_int(-3)),
+        vec3::zero(),
+        vec3::new(one, one, one),
+    );
+    let mut material = renderer_material(&mut renderer, 255, 0, 0, false);
+    let mut text = renderer_text(&mut renderer, 0, 0, 2);
+    let mut tick: u16 = 0;
+    while tick < 4 {
+        let mut frame = renderer_frame(&mut renderer, 0x1111 + tick);
+        dev_send(7, 8, tick);
+        let input = frame_input(&mut frame);
+        let elapsed = frame_elapsed_ms(&mut frame);
+        frame_number(&mut frame, &mut text, tick);
+        {
+            let mut pass = frame_pass(&mut frame, &mut camera);
+            pass_draw(&mut pass, &mut mesh, &mut model, &mut material);
+            pass_complete(pass);
+        }
+        {
+            let mut ui = frame_ui_pass(&mut frame);
+            pass_text(&mut ui, &mut text);
+            pass_complete(ui);
+        }
+        if tick == 0 {
+            tick += 1;
+            continue;
+        }
+        DIRTY[0u16] = 0x5100 + tick;
+        DIRTY[1u16] = 0x5200 + tick;
+        OLD.a = fix32::from_int(tick as i16);
+        OLD.b = fix32::from_int((tick + 1) as i16);
+        OLD.c = fix32::from_int((tick + 2) as i16);
+        OLD.d = fix32::from_int((tick + 3) as i16);
+        dev_send(7, 9, tick);
+        frame_complete(frame);
+        dev_send(7, 10, tick);
+        tick += 1;
+    }
+    renderer_close(renderer);
+    halt(0x600d);
+}

@@ -563,9 +563,9 @@ pub(super) fn run_core(
             assert!(address < memory.len());
             if value.data_write {
                 for (slot, byte, bytes) in [
-                    (0, 0x490000, 32768),
+                    (0, 0x490000, 65536),
                     (0, 0x4a0000, 65536),
-                    (1, 0x7e0000, 32768),
+                    (1, 0x7e0000, 65536),
                     (1, 0x7f0000, 65536),
                 ] {
                     if (byte / 2..(byte + bytes) / 2).contains(&address)

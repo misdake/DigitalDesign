@@ -162,3 +162,77 @@ epochs, capture dependency closure and Rust ownership negatives. Its two public
 demo callers export native command/object/asset fixtures under `target/rtt/demos`
 for the independent GPU replay harness. All CPU runs have explicit step limits;
 completion peers qualify software state and bytes, not GPU rendering or HDMI.
+
+## Native resource concurrency fixture
+
+The ignored `gpu_renderer_native` target compiles the approved production resource
+root and a small caller with the actual asset producer. It exports the production
+CPU/FPU, D-cache, system control, GPU, Display, arbiter and three descriptor slots.
+Instruction fetch uses a separate ROM; an ordered, stalled 64-bit memory service
+terminates the arbiter's external port. The default pre-submit consumer is the
+ordinary no-op gate. There is no alternate scheduler or status-completion peer.
+The arbiter's instruction/DMA clients and memory lookahead are inactive; native
+MC/bridge continuation is outside this fixture.
+
+The successful run cancels one complete recording, then submits A/B/A and
+explicitly drains. Accepted CPU scalar/FPU stores journal ownership separately
+from write-back DRAM. Both complete 64-KiB command and object arenas are protected;
+only the recorded 16-word Target relocation has the normal pre-publication
+exception. The fixture checks END/fetch padding, UI cells/descriptor/padding,
+publication of old scalar/FST stores, and unchanged in-flight input snapshots.
+GPU idle must follow actual RO/FB-read/FB-write terminals and empty request slots.
+UI release is observed while Display remains Pending; color writes cannot target
+Front or a surface with an old outstanding Display read. Swaps require old-read
+retirement. GPU output and visible Display RGB are checked at independent samples.
+The projection oracle uses floating source-world triangle coordinates, not driver
+matrices, GPU output or the old cmodel; it does not qualify full-frame equality.
+
+`GPU_RENDERER_NATIVE_CASE` selects one bounded scenario:
+
+| Value | Additional boundary |
+| --- | --- |
+| `success` (default) | Three submissions, real recording/execution overlap, CE pauses, backpressure and independent input/color retirement |
+| `cross-window` | Two submissions; source Camera/Model/Material mutations preserve the first recorded draw and affect the second; CPU writes and GPU reads cross the second object window, then restore DSEG0..3 |
+| `capacity` | Full object arena rejects the successor while the first GPU input remains live |
+| `gpu-error` | A real second-CB read error on a valid LAST freezes its in-flight reference, with no later submit/present |
+| `display-error` | A real old-Front read error freezes the recorded successor before a later submit |
+| `publication-error` | A real CPU writeback error leaves Recorded ownership and zero SEND/present; full-maintenance `ST_FAULT` rejects new cache work for 1,024 observed cycles |
+
+Cross-window/capacity cases substitute one accepted D-cache cursor store to
+represent an unused allocated prefix. They still execute the normal checked
+builder, CPU mappings and actual GPU reads; this is diagnostic stimulus, not a
+public application API or evidence that a normal game fills that prefix.
+Publication failure is a hardware fail-stop until whole-system reset. It does
+not require a software return through potentially dirty stack data or a readable
+software fault record.
+
+The production GPU treats transport status as a passive sticky observation, not
+an abort/recovery command. Its normal simulation monitors terminate on peer
+errors. Only `gpu-error` admits its one deliberate RO error at that one monitor;
+all other conditions still call the original fatal assertion. The original
+export, narrowly adjusted compilation source and override manifest are retained.
+No datapath statement changes and no global `SYNTHESIS` switch is used. The error
+retains the valid payload and burst LAST, checks the real sticky Device4 status,
+and need not clear GPU busy or manufacture a successful terminal.
+
+Run each case in a separate process with a fresh evidence directory:
+
+```powershell
+$env:CPU_V3_GPU_PROFILE = 'production'
+$env:GPU_RENDERER_NATIVE_CASE = 'success'
+$env:GPU_RENDERER_NATIVE_EVIDENCE = (Join-Path $PWD 'target/renderer-native-success')
+& scripts/run-cargo.ps1 -Subcommand test -Label 'renderer native success' -CargoArgs @('-p','cpu-v3-tang-nano-20k','--test','gpu_renderer_native','--','--ignored','--nocapture')
+```
+
+Python, Icarus (`IVERILOG_EXE`/`VVP_EXE`) and Gowin primitive models (`GOWIN_HOME`)
+are required. The HDL watchdog is four million CPU clocks; asset production,
+Verilog compilation and VVP have 60/120/1,800-second wall bounds. Evidence includes
+the actual compiled RCC/listing, assets, generated sources and testbench, independent
+pixel expectations and raw tool logs. The pixel clock accelerates cold blank startup
+and uses a 2x protocol-stress scanout profile (about 1.92x in the cross-window
+case, to avoid waiting an extra blank frame); GPU CE is a test-only override.
+These checks exclude fetch-queue/I-cache integration, physical MC/bridge timing,
+SDRAM pins, HDMI serialization, fitted timing, board behavior, RTT and checked
+member-call borrow rules. The retained flat caller does not qualify profiler pause
+behavior. Long native runs remain explicit; ordinary host tests do not launch
+them, and host peers do not substitute for them.
