@@ -41,10 +41,15 @@ cells1,2,3 using the descriptor at local qword276.
 The grid allocation and alignment remain unchanged. Only the selected bytes
 need meaningful IDs for a range call: DMA reads the intersecting128-byte grid
 sectors into their original scratchpad positions, and the checker starts at the
-containing eight-ID window. At most three initial pairs are skipped using its
-existing fixed16-bit progression. Edge masks force out-of-range IDs to FF,
+first selected pair. It reads that pair's qword and selects one of its four
+fixed16-bit slices into a single pair register. Later pairs may reread the same
+qword; there is no64-bit shifting window or window-remaining counter. The pair
+register also holds the grid DMA base before scanning starts. Edge masks force out-of-range IDs to FF,
 including either half of a shared tile; they cause no atlas read or pixel write.
 No variable shift, packed-grid relocation or per-row address conversion is used.
+Compared with retaining eight IDs at once, a complete empty-grid scan pays562
+additional enabled edges for281 extra synchronous reads. Atlas traffic and
+framebuffer writes retain their schedules; their stalls can hide these reads.
 
 The driver explicitly WAITs for all rendering and data DMA, then FLUSHes the
 framebuffer cache before UI_GRID. The command is serial and completes only

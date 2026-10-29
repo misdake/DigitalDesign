@@ -81,7 +81,7 @@ always @(posedge clk)begin
     2:if(pa!=22'h3000||pn!=16)$fatal(1,"cache did not take burst boundary");
    endcase
   end else if(ro_response_valid)begin
-   if(mode==0&&job==1&&pi==1&&!cache_injected)begin cache_injected=1;end
+   if(((mode==0&&job==1)||(mode==6&&requests==3))&&pi==1&&!cache_injected)begin cache_injected=1;end
    if(mode==2&&pi==pn-1)missing_hold=4;
    if(ro_response_last||ro_response_error)begin active=0;terminals=terminals+1;end
    else pi=pi+1;
@@ -126,7 +126,19 @@ initial begin
  k=$value$plusargs("MODE=%d",mode);
  for(k=0;k<512;k=k+1)begin allowed[k]=0;seen[k]=0;expected[k]=0;end
  tick;tick;reset=0;tick;
- if(mode==0)begin
+ if(mode==6)begin
+  // The maximum mesh spans eight payload bursts. Queue a second job before
+  // retirement and insert command-cache traffic between mesh payload bursts.
+  expect_copy(260,'h2000,4);expect_copy(128,'h2040,128);
+  expect_copy(320,'h1000,16);expect_copy(464,'h3000,16);
+  launch('h2000,0,1,7,2);launch('h1000,80,0,0,2);
+  if(work_events!=0)$fatal(1,"second job was not accepted before mesh retirement");
+  drain;
+  if(requests!=11||terminals!=11||work_events!=2||mesh_events!=1||uniform_events!=1||cache_events!=1||
+     writes!=expected_writes||ce0writes==0||fault||router_fault)
+   $fatal(1,"maximum mesh/interleaved job conservation");
+  for(k=0;k<512;k=k+1)if(allowed[k]&&!seen[k])$fatal(1,"missing interleaved target RAM write %0d",k);
+ end else if(mode==0)begin
   job=1;expect_copy(264,'h1000,16);expect_copy(464,'h3000,16);launch('h1000,66,0,0,2);drain;
   if(cache_events!=1||work_events!=1||requests!=2)$fatal(1,"cache insertion conservation");
   job=2;expect_copy(280,'h1020,8);launch('h1020,70,0,0,1);drain;
@@ -166,7 +178,7 @@ def main():
     run('compile', [os.environ['IVERILOG_EXE'], '-g2012', '-s', 'tb', '-o', out / 'sim.vvp',
                     *[out / source.name for source in SOURCES], out / 'tb.v'])
     cases = []
-    for mode in range(6):
+    for mode in range(7):
         run(f'run-{mode}', [os.environ['VVP_EXE'], out / 'sim.vvp', f'+MODE={mode}'])
         cases += [line for line in (out / f'run-{mode}.log').read_text().splitlines() if line.startswith('PASS ')]
     assert all(hashlib.sha256(source.read_bytes()).hexdigest() == identities[source.name] for source in SOURCES), 'live source changed'

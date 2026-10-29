@@ -64,6 +64,7 @@ reg[41:0]stim[0:@LAST@];reg[35:0]gold[0:@LAST@];
 reg mode=0,nearest=0;reg[3:0]n=9;reg[17:0]u=0,v=0;
 wire ready,ov,fault;wire[7:0]fx,fy;wire[9:0]x,y;
 integer cycle=0,sent=0,got=0;
+integer enabled_edges=0;integer due[0:@LAST@];
 @CLAMP@
 gpu_v2_texture_serial_coord dut(.clk(clk),.reset(reset),.ce(ce),.in_valid(valid),.in_ready(ready),.fault(fault),.out_valid(ov),
  .texture_fb400240(mode),.in_nearest(nearest),.in_size_log2(n),
@@ -77,8 +78,10 @@ always@(posedge clk)begin
  cycle=cycle+1;if(cycle>@MAX@)$fatal(1,"coord watchdog");
  if(!reset)begin
   if(fault)$fatal(1,"coord fault");
-  if(ce&&valid&&ready)sent<=sent+1;
+  if(ce)enabled_edges<=enabled_edges+1;
+  if(ce&&valid&&ready)begin due[sent]=enabled_edges+2;sent<=sent+1;end
   if(ce&&ov)begin
+   if(enabled_edges!=due[got])$fatal(1,"coord latency%0d got%0d due%0d",got,enabled_edges,due[got]);
    if({y,x,fy,fx}!==gold[got])$fatal(1,"coord%0d got%h gold%h",got,{y,x,fy,fx},gold[got]);
    got<=got+1;
   end

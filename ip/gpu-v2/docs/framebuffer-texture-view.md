@@ -76,7 +76,8 @@ pins; the GPU does not become an allocator or hazard scheduler.
 
 The test_rtt400.py harness independently checks coordinates, packet addresses,
 sampler arithmetic, signed UV, all logical texels and cache/macro/edge cases;
-exhaustive-axis additionally covers every16-bit UV value. The
+exhaustive-axis additionally covers every16-bit UV value. The coordinate
+scoreboard checks the two-enabled-edge latency across CE pauses. The
 test_rtt400_replay.py harness replays actual RCC submissions: X/Y source codes
 identify every fullscreen source coordinate, while chain mode retains real GPU
 writes and checks sampled RGB at raster UV against an independent integer

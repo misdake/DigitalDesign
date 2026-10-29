@@ -14,7 +14,7 @@ module gpu_ui_grid(
  reg[2:0]init_sector;
  reg initialized,scan_done;
  reg[8:0]scan;
- reg[63:0]window;reg[2:0]pairs;
+ reg[15:0]window;reg pair_valid;
  reg[1:0]valid,loaded;reg put,get,loader;
  reg[8:0]task_tile[0:1];reg[15:0]ids[0:1];
  reg[2:0]load_part;
@@ -24,16 +24,14 @@ module gpu_ui_grid(
  reg overlay,overlay_half;reg[5:0]pixel;
  reg q_valid,q_pixel;reg q_half;reg[4:0]q_word;
  wire can_scan=initialized&&!scan_done;
- wire first_window=scan[8:2]==first_cell[9:3];
- wire before_first=first_window&&scan[1:0]<first_cell[2:1];
- wire first_pair=first_window&&scan[1:0]==first_cell[2:1];
+ wire first_pair=scan==first_cell[9:1];
  wire last_pair=scan==last_cell[9:1];
  wire[15:0]selected_ids={
-  (before_first||(last_pair&&!last_cell[0]))?8'hff:window[15:8],
-  (before_first||(first_pair&&first_cell[0]))?8'hff:window[7:0]};
- wire push=ce&&active&&!stop&&can_scan&&pairs!=0&&!valid[put]&&selected_ids!=16'hffff;
- wire scan_step=ce&&active&&!stop&&can_scan&&pairs!=0&&!valid[put];
- wire scan_read=can_scan&&pairs==0&&!q_valid&&!overlay;
+  (last_pair&&!last_cell[0])?8'hff:window[15:8],
+  (first_pair&&first_cell[0])?8'hff:window[7:0]};
+ wire push=ce&&active&&!stop&&can_scan&&pair_valid&&!valid[put]&&selected_ids!=16'hffff;
+ wire scan_step=ce&&active&&!stop&&can_scan&&pair_valid&&!valid[put];
+ wire scan_read=can_scan&&!pair_valid&&!q_valid&&!overlay;
  wire side=pixel[1];
  wire covered=side?(ids[get][15:8]!=8'hff):(ids[get][7:0]!=8'hff);
  wire pixel_read=overlay&&pixel<32&&covered;
@@ -60,7 +58,7 @@ module gpu_ui_grid(
  always @(posedge clk)begin
   if(reset)begin
    active<=0;done<=0;atlas<=0;init_sector<=0;initialized<=0;scan_done<=0;
-   scan<=0;window<=0;pairs<=0;valid<=0;loaded<=0;put<=0;get<=0;loader<=0;
+   scan<=0;window<=0;pair_valid<=0;valid<=0;loaded<=0;put<=0;get<=0;loader<=0;
    load_part<=0;state<=WAIT_TASK;overlay<=0;overlay_half<=0;pixel<=0;
    q_valid<=0;q_pixel<=0;q_half<=0;q_word<=0;
    task_tile[0]<=0;task_tile[1]<=0;ids[0]<=0;ids[1]<=0;
@@ -68,9 +66,17 @@ module gpu_ui_grid(
    if(ce)begin
     q_valid<=read_take;q_pixel<=pixel_read;
     if(read_take)begin q_half<=overlay_half;q_word<=pixel[4:0];end
-    if(q_valid&&!q_pixel)begin window<=cp_q;pairs<=4;end
+    if(q_valid&&!q_pixel)begin
+     case(scan[1:0])
+      0:window<=cp_q[15:0];
+      1:window<=cp_q[31:16];
+      2:window<=cp_q[47:32];
+      3:window<=cp_q[63:48];
+     endcase
+     pair_valid<=1;
+    end
     if(scan_step)begin
-     scan<=scan+1'b1;window<={16'd0,window[63:16]};pairs<=pairs-1'b1;
+     scan<=scan+1'b1;pair_valid<=0;
      if(last_pair)scan_done<=1;
      if(push)begin valid[put]<=1;loaded[put]<=0;task_tile[put]<=scan;ids[put]<=selected_ids;put<=!put;end
     end
@@ -107,7 +113,7 @@ module gpu_ui_grid(
    if(active&&stop&&dma_idle&&cmd_ready)begin active<=0;done<=1;overlay<=0;q_valid<=0;end
    if(start)begin
     active<=1;done<=0;window[15:0]<=grid_base;atlas<=atlas_base;init_sector<=first_cell[9:7];initialized<=0;
-    scan<={first_cell[9:3],2'd0};scan_done<=0;pairs<=0;valid<=0;loaded<=0;put<=0;get<=0;loader<=0;
+    scan<=first_cell[9:1];scan_done<=0;pair_valid<=0;valid<=0;loaded<=0;put<=0;get<=0;loader<=0;
     load_part<=0;state<=WAIT_TASK;overlay<=0;q_valid<=0;
    end
   end

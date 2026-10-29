@@ -28,6 +28,12 @@ input files through that executable. Geometry, buffer limits and the finite
 watchdog are checked before each replay; no compiled artifact survives as a
 trusted cache across runs.
 
+`command_dma_stream.py` checks scratchpad writes, completion events, CE pauses,
+request holding, malformed responses and stop/drain behavior. Its maximum-size
+mesh case queues a second job before retirement and inserts command-cache DMA
+between payload bursts. All128 payload qwords and both independent destinations
+are checked; each replay has a5,000-clock watchdog and a20-second process limit.
+
 The ignored `texture_registered_return` Rust target exports the current command
 cache and connects its native DO directly to the production two-edge Color
 consumer. Eight bounded cases check native/portable RAM, one/two mip groups,
