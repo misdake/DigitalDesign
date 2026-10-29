@@ -24,6 +24,19 @@ does not change the ISA encoding.
 
 ## Co-simulation replay files
 
+The production FPU owner replay retains every input beat, CE pause and abort
+age. Every beat checks the public outputs, accumulator and all 68 observed RF
+words; a local Verilog loop compares a packed expected snapshot instead of
+generating one assertion statement per word per beat. The selected execution
+RF, multiply and special-function leaves and the end-to-end core regressions
+remain separate checks. The standalone ProductPath implementation remains a
+reference, without a migration comparison against the older separate issuers.
+
+SINCOS numerical accuracy is checked once by `sincos_full_range_accuracy`: its
+dense sweep covers every raw input in ±45 radians, including the ±2π rotation
+domain and quadrant neighbours, with the same four-LSB bound. Signed/exponent
+edges, the full-i32 stride and fixed-seed random inputs extend that check.
+
 Core emulator/RTL co-simulations retain each generated project, `tb.v` and
 `sim.vvp` in the worktree's `target/core-cosim-<pid>-<counter>/`, including after
 successful runs and failures in the caller's trace comparison. No keep switch

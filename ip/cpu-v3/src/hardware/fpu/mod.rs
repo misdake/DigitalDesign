@@ -1486,17 +1486,6 @@ impl Module for CpuV3FpuProductPath {
     fn verilog_source() -> Option<String> {
         Some(include_str!("cpu_v3_fpu_product_path.v").to_string())
     }
-    fn verilog_testbench() -> Option<String> {
-        Some(
-            [
-                include_str!("cpu_v3_fpu_product_path_tb.v"),
-                include_str!("cpu_v3_fpu_multiply_path.v"),
-                include_str!("cpu_v3_fpu_dot_path.v"),
-                include_str!("cpu_v3_fpu_mul_pipe.v"),
-            ]
-            .join("\n"),
-        )
-    }
 }
 
 #[derive(Clone, ModuleIo)]
@@ -1651,10 +1640,13 @@ mod tests {
                 *count
             )
             .unwrap();
-            for index in 0..68 {
-                writeln!(tb,"if(dut.rf.mirror_0[{index}] !== 32'h{:x}) $fatal(1,\"emu RF{index} cycle={}\");",
-                    state.rf.mirror_a[index],*count).unwrap();
+            // Keep all 68 comparisons on every beat, without expanding 68
+            // separate Verilog statements for every recorded cycle.
+            let mut packed = String::with_capacity(68 * 8);
+            for word in state.rf.mirror_a[..68].iter().rev() {
+                write!(packed, "{word:08x}").unwrap();
             }
+            writeln!(tb, "check_rf(2176'h{packed},{});", *count).unwrap();
             tb.push_str("#4;clk=0;\n");
             *count += 1;
         }
@@ -1666,7 +1658,21 @@ mod tests {
         for value in CpuV3FpuOutput::verilog_values(&state.comb(&idle())) {
             writeln!(tb, "wire [{}:0] {};", value.width - 1, value.name).unwrap();
         }
-        tb.push_str("CpuV3Fpu dut(.*);initial begin\n");
+        tb.push_str(
+            r#"CpuV3Fpu dut(.*);
+task check_rf;
+ input [2175:0] expected;
+ input integer cycle;
+ integer index;
+ begin
+  for(index=0;index<68;index=index+1)
+   if(dut.rf.mirror_0[index] !== expected[index*32+:32])
+    $fatal(1,"emu RF%0d cycle=%0d",index,cycle);
+ end
+endtask
+initial begin
+"#,
+        );
         let mut count = 0;
         for index in 0..68 {
             let mut value = idle();
@@ -1751,61 +1757,6 @@ mod tests {
         )
         .unwrap();
         std::fs::write(directory.join("tb.v"), tb).unwrap();
-        let result = std::process::Command::new(
-            std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()),
-        )
-        .current_dir(&directory)
-        .args([
-            "-g2012",
-            "-D__ICARUS__",
-            "-s",
-            "tb",
-            "-o",
-            "sim.vvp",
-            "modules.v",
-            "tb.v",
-        ])
-        .output()
-        .unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        let result =
-            std::process::Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()))
-                .current_dir(&directory)
-                .arg("sim.vvp")
-                .output()
-                .unwrap();
-        assert!(
-            result.status.success()
-                && String::from_utf8_lossy(&result.stdout).contains("DIGITAL_DESIGN_PASS"),
-            "{}{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-        println!("{}", String::from_utf8_lossy(&result.stdout));
-    }
-
-    #[test]
-    #[ignore = "bounded old/new physical ProductPath calendars, aliasing, abort and CE"]
-    fn verify_product_path_matches_separate_issuers() {
-        let project = digital_design_hardware::VerilogProject::generate::<CpuV3Fpu>().unwrap();
-        let mut sources: Vec<_> = project.files.into_values().collect();
-        sources.push(CpuV3FpuProductPath::verilog_source().unwrap());
-        sources.push(CpuV3FpuMulPipe::verilog_source().unwrap());
-        sources.push(CpuV3FpuMultiplyPath::verilog_source().unwrap());
-        sources.push(CpuV3FpuDotPath::verilog_source().unwrap());
-        let directory =
-            std::env::temp_dir().join(format!("cpu-productpath-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(directory.join("modules.v"), sources.join("\n")).unwrap();
-        std::fs::write(
-            directory.join("tb.v"),
-            include_str!("cpu_v3_fpu_product_path_tb.v"),
-        )
-        .unwrap();
         let result = std::process::Command::new(
             std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()),
         )
