@@ -275,7 +275,18 @@ fn prepared_views_follow_changes_and_normal_excludes_scale_and_projection() {
         ..base
     };
     let cases = [
-        base, base, translated, scaled, projection, rotated, turned, behind,
+        base,
+        base,
+        translated,
+        scaled,
+        projection,
+        rotated,
+        turned,
+        behind,
+        Case {
+            scale: [1. / 256., 0.05, 0.06],
+            ..base
+        },
     ];
     let mut body = format!(
         r#"{{let mut r=renderer_open();
@@ -283,6 +294,9 @@ let mut c=renderer_camera(&mut r,{},{},{},fix32::from_int(199));
 let mut m=renderer_model(&mut r,{},{},{});
 let mut bounds:Buf<u16,12>=Buf::new([0,65535,0,65535,0,0,0,1,0,1,0,0]);
 check(!scene_bounded(vec3::new(fix32::from_words(0,32768),fix32::zero(),fix32::zero()),fix32::from_int(100)));
+check(!scene_model_pose(m.word,vec3::zero(),vec3::zero(),vec3::new(fix32::zero(),fix32::from_int(1),fix32::from_int(1))));
+check(!scene_model_pose(m.word,vec3::zero(),vec3::zero(),vec3::new(fix32::from_words(128,0),fix32::from_int(1),fix32::from_int(1))));
+check(!scene_model_pose(m.word,vec3::zero(),vec3::zero(),vec3::new(fix32::from_words(1,2),fix32::from_int(1),fix32::from_int(1))));
 "#,
         vector(base.eye),
         vector(base.camera),

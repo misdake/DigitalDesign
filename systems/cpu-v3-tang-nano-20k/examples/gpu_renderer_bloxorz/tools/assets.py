@@ -1,4 +1,4 @@
-"""Round3 immutable batches, using the existing Bloxorz geometry without rendering."""
+"""Bloxorz column-layout scene and fullscreen RTT mesh, using the existing Bloxorz geometry without rendering."""
 import argparse
 import hashlib
 import importlib.util
@@ -19,20 +19,20 @@ R = module("minimal_renderer", SYSTEM / "examples/gpu_renderer/tools/assets.py")
 G = module("native_assets", SYSTEM / "examples/gpu_demo/tools/assets.py")
 
 def pack(output):
-    R.pack(output)
+    R.pack(output, "column16")
     manifest=json.loads((output/'assets.json').read_text())
     BASE=next(r['address'] for r in manifest['resources'] if r['kind']=='mesh')
     texture=BASE+0xf000
     for resource in manifest['resources']:
         if resource['kind']=='texture':
             resource['address']=texture
-            R.validate_asset_range(texture,resource['bytes'])
+            R.validate_asset_range(texture,resource['bytes'],'column16')
             assert texture+resource['bytes']<=next(r['address'] for r in manifest['resources'] if r['kind']=='atlas')
     levels = B.levels()
     chosen = [levels[n] for n in ["fixture-switch", "fixture-split"]]
     groups = []
     for level in chosen:
-        cells = [(i % level['width'], i // level['width']) for i,c in enumerate(level['cells']) if c[0] not in (0,5,6)]
+        cells = [(i % level['width'], i // level['width']) for i,c in enumerate(level['cells']) if c[0] not in (0,5,6) and (i % level['width'], i // level['width']) != tuple(level['start'][:2])]
         buckets = {}
         for x,z in cells: buckets.setdefault((x//3,z//3),[]).append((x,z))
         groups.append([B.meshlet(level, bucket[i:i+5], "floor") for bucket in buckets.values() for i in range(0,len(bucket),5)])
@@ -40,9 +40,16 @@ def pack(output):
     assert len(bridge_cells) == 1
     groups.append([B.meshlet(chosen[0], bridge_cells, "bridge")])
     groups.append([B.S.box("block", [.49]*3, [(1,1),(0,1),(2,1),(1,-1),(0,-1),(2,-1)], 7)])
+    # Ordinary UV quad; same native format as the fixed RTT demo.
+    screen = dict(name="screen", group="screen", vertices=[], triangles=[[0,1,2],[0,2,3]],
+                  config=[-65536,-65536,0,8], color_mode=0, cull_negative=False)
+    for (x,y),uv in zip([(0,0),(512,0),(512,512),(0,512)],
+                        [0xffffffff,0xffff0000,0,0x0000ffff]):
+        screen['vertices'].append([x|(y<<10),511<<20,uv])
+    groups.append([screen])
     count = sum(map(len,groups))
     memory = bytearray((count*4+127)//128*128)
-    names = ['FLOOR0','FLOOR1','BRIDGE','BLOCK']
+    names = ['FLOOR0','FLOOR1','BRIDGE','BLOCK','SCREEN']
     catalog = []
     meshes = []
     entry = 0
@@ -73,7 +80,7 @@ def pack(output):
                 assert [(packed>>(6*k))&63 for k in range(3)]==tri
             memory.extend(record);meshes.append(mesh);entry+=1
     assert BASE+len(memory)<texture
-    R.validate_asset_range(BASE,len(memory))
+    R.validate_asset_range(BASE,len(memory),'column16')
     (output/'mesh.bin').write_bytes(memory)
     constants=(output/'renderer_assets.rs').read_text()
     for key,value in dict(GPU_RENDERER_MESH_COUNT=count,GPU_RENDERER_MESH_SECTORS=len(memory)//128,GPU_RENDERER_TEXTURE=texture//128).items():
@@ -101,7 +108,9 @@ def pack(output):
     (output/'renderer_assets.rs').write_text(constants)
     for r in manifest['resources']:
         data=(output/r['file']).read_bytes();r.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
-    manifest.update(catalog=catalog,meshes=meshes,levels=chosen,
+        assert r['address']+len(data)<=0x600000 or r['address']>=0x680000
+    manifest.update(profile='rtt400x240-column16',surface='column-major-16x16-pad16',
+        borrowed=dict(color=0x600000,depth=0x640000,plane_capacity=262144),catalog=catalog,meshes=meshes,levels=chosen,
         triangles=sum(len(m["triangles"]) for m in meshes),vertices=sum(len(m["vertices"]) for m in meshes),
         bounds=[[-8,-1,-3],[8,1,3]])
     for path in [Path(__file__).resolve(),SYSTEM/'examples/bloxorz/tools/batch-scene.py',SYSTEM/'examples/bloxorz/tools/static-scene.py',SYSTEM/'examples/bloxorz/assets/reference.txt',SYSTEM/'examples/bloxorz/rcc/bloxorz_core.rs',SYSTEM/'examples/bloxorz/geometry.rs',SYSTEM/'examples/gpu_demo/tools/assets.py']:
@@ -109,5 +118,5 @@ def pack(output):
     (output/'assets.json').write_text(json.dumps(manifest,indent=2)+'\n')
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True)
+    parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True);parser.add_argument('--profile',choices=['column16'],default='column16')
     pack(parser.parse_args().output)

@@ -90,7 +90,7 @@ always@(posedge clk)begin
     if(image[checked_base+j][k*16+:16]!==pixel_expected)$fatal(1,"RTT color flush%0d xy=%0d,%0d got%h expected%h",flushes,pixel_x,pixel_y,image[checked_base+j][k*16+:16],pixel_expected);
    end
    if(pixels<0)pixels=changed;
-   if(changed<=0||changed!=pixels||changed!=@PIXELS@)$fatal(1,"RTT coverage conservation");
+   if(pixels!=@PIXELS@||changed!=(expected==0?0:pixels))$fatal(1,"RTT coverage conservation");
   end
  end
 end

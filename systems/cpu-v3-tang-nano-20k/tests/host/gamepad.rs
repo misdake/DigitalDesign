@@ -159,6 +159,30 @@ fn run(source: &str, maximum_steps: usize) {
 }
 
 #[test]
+fn discarding_edges_preserves_held_buttons_and_lazy_motion_without_device_reads() {
+    run(
+        r#"mod gamepad;
+fn check(ok:bool,code:u16){if !ok{halt(code);}}
+fn count()->u16{dev_recv(7,2)}
+fn main(){gamepad_init();check(gamepad_capture(),0xb401);let before=count();
+dev_send(7,0,8);check(gamepad_capture(),0xb402);
+dev_send(7,0,0);check(gamepad_capture(),0xb403);
+dev_send(7,0,4096);check(gamepad_capture(),0xb404);
+let reads=dev_recv(7,1);gamepad_discard_edges();
+check(count()==before&&dev_recv(7,1)==reads,0xb405);
+let held=gamepad_take_frame();
+check(held.buttons==4096&&held.pressed==0&&held.released==0&&held.left_x>fix32::zero()&&count()==before+2,0xb406);
+check(!gamepad_capture(),0xb407);let same=gamepad_take_frame();
+check(same.buttons==4096&&same.pressed==0&&same.released==0&&same.left_x==held.left_x,0xb408);
+dev_send(7,0,0);check(gamepad_capture(),0xb409);
+dev_send(7,0,4096);check(gamepad_capture(),0xb40a);let fresh=gamepad_take_frame();
+check(fresh.pressed==4096&&fresh.released==4096&&fresh.buttons==4096&&count()==before+2,0xb40b);
+halt(0x600d);}"#,
+        300_000,
+    );
+}
+
+#[test]
 fn repeated_capture_only_converts_the_last_consumed_raw_and_invalidates_lazily() {
     run(
         r#"mod gamepad;

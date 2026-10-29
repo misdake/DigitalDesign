@@ -552,15 +552,15 @@ fn scene_view_begin(slot: u16) -> bool {
     true
 }
 fn scene_model_pose(slot: u16, position: vec3, angles: vec3, scale: vec3) -> bool {
-    let half = fix32::from_words(32768, 0);
+    let minimum = fix32::from_words(256, 0);
     let two = fix32::from_int(2);
     if !scene_bounded(position, fix32::from_int(100))
         || !scene_bounded(angles, fix32::from_int(4))
-        || scale.x() < half
+        || scale.x() < minimum
         || scale.x() > two
-        || scale.y() < half
+        || scale.y() < minimum
         || scale.y() > two
-        || scale.z() < half
+        || scale.z() < minimum
         || scale.z() > two
     {
         return false;

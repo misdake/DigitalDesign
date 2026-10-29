@@ -153,6 +153,12 @@ pub fn gamepad_capture() -> bool {
     updated
 }
 
+// Drop captured edges at an input-locked boundary without resolving sticks or
+// changing held/previous buttons. A later release/repress produces a new edge.
+pub fn gamepad_discard_edges() {
+    ds2_consume_edges(GAMEPAD_STATE.as_array());
+}
+
 // Consume once per game tick. Held buttons/motion survive no-new-sample ticks;
 // the game still integrates motion using its elapsed time on every tick.
 pub fn gamepad_take_frame() -> GamepadFrame {

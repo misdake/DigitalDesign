@@ -1,49 +1,66 @@
-# Bloxorz-shaped resource caller
+# Bloxorz RTT presentation
 
-This is a bounded API usage fixture and a continuous calling example, not the
-complete Bloxorz game or a migration of its legacy renderer. It imports the
-existing pure `bloxorz_core.rs` through an explicit ordinary source directory.
-The asset producer reads the existing switch/split fixtures and canonical floor/
-box geometry; it never runs the old prepare/raster cmodel. The independent host
-oracle uses the original `geometry::roll` in world Y-up coordinates. Current
-Camera/Model normal preparation remains rotation-only.
+This continuous CPU V3 application uses the existing two integer-rule fixtures,
+ordinary GPU meshes and the resource renderer. Restart, fall restart and level
+completion capture their current scene and fade through black into a fresh
+snapshot of the destination. Entry and goal animations run separately from the
+fade. Moves and connection status remain in the captured HUD.
 
-The application holds one fixed Camera, two Models, four immutable Mesh batches,
-one Material and two persistent numeric fields. Logical package ranges select
-floor0, floor1, bridge and block; native directory addresses remain in the facade.
-Floor batches share a Model at half scale. The centered unit block uses semantic
-orientation, pivot and elapsed-time rolling poses. The fractional clock uses
-655/65536 per millisecond (below one tick of Q16 error per millisecond), and a roll
-commits the original integer rule after 100ms. Input is sampled once per Frame;
-held packets do not create new button edges. RIGHT/LEFT/DOWN/UP roll, START resets,
-and TRIANGLE switches between the two fixture levels and resets. Split-block
-rendering and complete gameplay are outside this fixture.
-
-Separate completed 3D Passes draw floor, visible bridge and block. A small finish
-function owns the Frame: disconnect returns early after the completed 3D Passes,
-so cleanup cancels the entire Frame without GPU submission. Connected Frames add
-moves/connection UI and complete normally. Game code owns no command buffers,
-color planes, dirty/generation flags or cache publication tickets.
+RIGHT/LEFT/DOWN/UP start a roll; START restarts and TRIANGLE changes fixture.
+All keys are ignored during a fade. Ordinary animation locks movement; restart
+can interrupt it. Disconnected input is ignored while presentation continues. Successful
+completion advances to the next fixture after the goal animation.
 
 ```powershell
 & systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/build.ps1
-& scripts/run-cargo.ps1 -Subcommand test -Label 'renderer-bloxorz-usage' -CargoArgs @('-p','cpu-v3-tang-nano-20k','--test','host','gpu_pipeline::bloxorz::')
+& scripts/run-cargo.ps1 -Subcommand test -Label bloxorz-rtt -CargoArgs @('-p','cpu-v3-tang-nano-20k','--test','host','gpu_pipeline::bloxorz::')
 ```
 
-The build selects `CPU_V3_BOOT_EXAMPLE=gpu_renderer_bloxorz`, exports the generated
-OUT_DIR boot/application/resources into `target/gpu-renderer-bloxorz-boot`, and
-checks byte identity with an independent CB06 repack. Its labels/output are
-separate from the minimal and changing-frame examples. It does not synthesize,
-program Flash or operate a board.
+The explicit `gpu_renderer_bloxorz` selector pins column layout and RTT command
+ABI2, checks actual RCC library bodies with rustc, and compares generated boot
+bytes against independent CB06 packaging. Products stay under this worktree's
+`target/`. This does not change the default boot application or program a board;
+matching `rtt400x240-column16` GPU and Display hardware is required.
 
-The bounded entry runs 22 ticks/20 submissions. Controlled host events supply
-25ms ticks, unchanged/held input, two disconnects/reconnects, two rolls, reset and
-level changes. Tests check actual compiled state against the original rule trace,
-per-draw native matrices against independent float geometry, mesh order, UI and
-A/B reuse. The production CPU/FPU fixed-port fixture checks every store to held
-command/object/UI inputs, permitting only the Recorded Target relocation after
-old GPU/Display retirement and before publication. Matched changed/steady frames
-have identical floor+bridge+block draw work. Costs separate acquisition/input,
-rules, pose, UI edit, geometry, UI recording and seal/advance/cancel windows;
-SIGNAL marker overhead is included. These peers provide no cache/SDRAM, real GPU,
-scanout, concurrent-system or board qualification.
+See the [presentation documents](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/README.md) for phase ordering, snapshot ownership, RGB arithmetic and verification.
+
+This remains a two-fixture application. The split fixture keeps its existing
+whole-block display limitation. Full original levels, undo, split rendering,
+shadows and the reference's detailed tipping physics are outside this entry.
+
+For unattended capture-card diagnosis, build with `-AutomaticCapture`. Add
+`-CaptureBrightness 255` for the full-brightness comparison; the default is128. This
+explicit selector runs entry, holds PLAY for2s of clamped application time,
+makes one real +X move, holds the result for2s, then restarts and halts only
+after the selected RTT brightness consumer has completed WAIT_ALL. Display keeps scanning
+the last framebuffer. It ignores physical input and does not invoke the PC
+profiler. UART progress is ASCII: stage plus four hexadecimal digits and LF;
+A=loop number, B=source begin, C=source retired, D=consumer submit,
+E=consumer wait, F=presented mode, H=selected-brightness halt. This diagnostic does not
+change the ordinary application selector.
+
+The initial fixture contains a switch at(2,1), a bridge at(5,1) and its goal
+at(6,1). The first +X move presses that switch, so the bridge appears next to
+the goal. These are test fixtures, not the Web game's first two levels.
+
+Application Flash writes do not install the matching FPGA configuration. Load
+an audited `rtt400x240-column16` SRAM image after writing the application; cold
+power-on additionally needs that configuration in Flash. A previous stored
+FPGA profile cannot qualify this RTT application. The capture diagnostic draws
+`1000 + tint` over the consumer (1128 or1255 at the stop) and reports active Display
+address/format/pending and GPU status after its selected-brightness halt marker.
+
+`1128`, the halt marker and idle/completion status indicate software/protocol
+progress only. They do not validate source pixels, texture addressing, color
+results or HDMI output; corrupted frames can carry the same overlay. Bind UART
+and pictures to the same programming interval before interpreting them together.
+
+To compose a persistent pair, pass `-HardwareArtifactDirectory target/.../board`
+to this recipe (optionally with `-AutomaticCapture`). It audits the existing
+RTT fit against current sources, checks that the raw configuration binary is
+byte-for-byte the audited FS bitstream, and uses the standard packer to produce
+`complete-flash.bin`: FPGA configuration at0 and the same independently checked
+CB06 application/resources at0x100000. `profile.json` binds all three hashes.
+The recipe remains offline. Application-only output is suitable for later
+updates only when the stored FPGA configuration already supports this profile;
+an application write can return the board to its stored FPGA configuration.

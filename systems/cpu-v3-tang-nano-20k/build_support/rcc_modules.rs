@@ -141,6 +141,34 @@ pub fn compile_renderer_program_checked(
     check: &rcc::frontend::rustc_check::RustcCheck,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, String> {
+    compile_renderer_program_checked_with_sources(
+        main_name,
+        source,
+        options,
+        local_dir,
+        shared_dir,
+        constants,
+        &[],
+        configuration,
+        check,
+        dependency,
+    )
+}
+
+/// Checked resource callers may import approved ordinary application modules.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_renderer_program_checked_with_sources(
+    main_name: &str,
+    source: &str,
+    options: &impl rcc::RccConfig,
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    ordinary_dirs: &[PathBuf],
+    configuration: &RendererCaptureConfiguration,
+    check: &rcc::frontend::rustc_check::RustcCheck,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::Program, String> {
     let actual_shared = materialize_renderer_sources(
         shared_dir,
         &check.directory.join("renderer-rcc"),
@@ -154,7 +182,7 @@ pub fn compile_renderer_program_checked(
         local_dir,
         &actual_shared,
         constants,
-        &[],
+        ordinary_dirs,
         configuration.capture.as_ref(),
         configuration,
         Some(check),

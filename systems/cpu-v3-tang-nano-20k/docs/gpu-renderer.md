@@ -209,7 +209,7 @@ whole immutable directory.
 | `renderer_camera` / `camera_pose` | Source-world eye and Euler radians; zero camera looks -Z; native basis below |
 | `camera_projection` | Focal 144..256, far strictly between0 and200 |
 | `camera_light` | Nonzero world-space light, normalized and quantized once per relevant change |
-| `renderer_model` / `model_pose` | Translation, Euler radians, scale per component0.5..2 |
+| `renderer_model` / `model_pose` | Translation, Euler radians, scale per component1/256..2 |
 | `renderer_material` | RGB0..255 and lit/unlit |
 | `material_color` | RGBA0..255; alpha selects native blending/depth-write behavior |
 | `material_lighting` | Ambient/directional0..256, shininess0..16 |
@@ -354,29 +354,15 @@ even for one changed word. Once both pages converge, subsequent unchanged frames
 issue zero UI stores and preserve prepared scene data. The explicit publication
 fence, ordering and fault checks remain in this cost.
 
-## Game-shaped caller and cancellation
+## Bloxorz application
 
-The Bloxorz fixture holds a fixed Camera and changes the block Model from integer
-rules and a rolling pivot. Static floor and conditional bridge batches reuse a
-half-scale Model; level/reset selects another immutable floor batch. Input/time
-comes from one stable Frame observation. A no-new-packet tick retains held input
-without synthesizing a new edge; reconnect starts from the accepted input library
-contract. Moves and connection fields are the only UI.
-
-Its finish helper takes ownership of a Frame after completed 3D Passes. Returning
-on disconnect invokes Frame cleanup and cancels every recorded Pass. Only an
-explicit successful completion publishes; later Frames can reuse the canceled
-input slot. Two cancellations interleaved with continuous A/B submissions are
-checked using actual generated native commands and immutable earlier snapshots.
-This is a usage fixture, not full gameplay or legacy-demo migration.
-
-The shared fixed-port CPU cost runner also guards every scalar/FPU store to
-Recorded/InFlight command/object inputs. The sole permitted Recorded write is
-the builder-generated 16-word Target relocation, with no old GPU or Display
-pending, before the final publication fence. UI pages never have this exception.
-The game fixture separates acquisition/input, rule update, pose setter, UI edits,
-geometry preparation/recording, UI recording and seal/advance/cancel windows.
-Changed and steady frames are compared only at identical floor/bridge/block
-workload. Reports include cache comparison, temporary/spill and object-copy CPU
-work and model SIGNAL overhead. Host event time is independent of status reads.
-All previous peer and real-concurrency limitations apply.
+The [Bloxorz caller](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/README.md)
+uses the existing integer rule core, immutable floor/bridge/block meshes and
+moves/connection HUD. Its presentation phases capture fresh fixed400x240 targets
+and replay them with opaque RGB multiplication; input locking and animation time
+remain application state. Presentation continues with disconnected input;
+unpublished capture preparation is canceled through the existing scheduler. Storage, phase ordering and verification
+boundaries are specified in its
+[owning document](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/transitions.md).
+The shared fixed-port CPU cost runner continues to guard the changing-frame
+caller's actual scalar/FPU stores and permitted Target relocation independently.

@@ -120,6 +120,7 @@ does not need raw channel numbers, raw array indices or polling loops.
 | `gamepad_init()` | Reset software input/edge state and install default calibration for both sticks; no hardware transaction or wait |
 | `gamepad_capture()` | Make one bounded coherent raw snapshot attempt and accumulate observed edges; true means a complete new snapshot was published; no numerical conversion |
 | `gamepad_take_frame()` | Resolve pending stick results, copy a `GamepadFrame` and clear accumulated edges; no Device5 read |
+| `gamepad_discard_edges()` | Clear only captured pressed/released masks at an input-locked boundary; preserve held/previous buttons and pending stick results; no Device5 read or numerical conversion |
 | `gamepad_configure(which, config)` | Set left=0 or right=1 calibration; validate first, rebuild Prepared and invalidate that result; rejected changes preserve the previous configuration/result |
 | `gamepad_direction(which)` | Resolve that stick if pending, then return its cached `vec2` direction |
 | `gamepad_strength(which)` | Resolve that stick if pending, then return cached Q16.16 strength |

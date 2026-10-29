@@ -133,6 +133,14 @@ def sampled_rgb(plane, raw_u, raw_v, linear):
     return sum(min(255, c) << (8*i) for i, c in enumerate(rgb))
 
 
+def modulated_word(word, tint):
+    r, g, b = word >> 11, (word >> 5) & 63, word & 31
+    expanded = [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)]
+    channels = [(value * shade + 127) // 255 for value, shade in zip(expanded, tint)]
+    return sum(((value * maximum + 127) // 255) << shift
+               for value, maximum, shift in zip(channels, [31, 63, 31], [11, 5, 0]))
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--export", type=Path, required=True)
@@ -140,7 +148,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("axis-x", "axis-y", "chain"), required=True)
     parser.add_argument("--backend", choices=("native", "portable"), required=True)
+    parser.add_argument("--tint", type=int, nargs=3, default=[255, 255, 255])
     args = parser.parse_args()
+    assert all(0 <= shade <= 255 for shade in args.tint)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     source = args.export.resolve()
@@ -152,6 +162,12 @@ def main():
     parts = [(r["address"], (inputs.parent / r["file"]).read_bytes()) for r in catalog["resources"]]
     (out / "initial.hex").write_text(memory_text(parts))
     selected = [1] if args.mode.startswith("axis-") else list(range(len(recording["submissions"])))
+    consumer = recording["submissions"][1]
+    command_bytes = (inputs.parent / consumer["command_file"]).read_bytes()
+    commands = [value[0] for value in struct.iter_unpack("<I", command_bytes)]
+    color_clears = [value & 65535 for value in commands if value >> 28 == 8 and not value & 65536]
+    assert len(color_clears) == 1
+    color_clear = color_clears[0]
     jobs = []
     for number in selected:
         job = recording["submissions"][number]
@@ -199,14 +215,14 @@ end'''
         for y in range(240):
             for x in range(400):
                 actual = plane[pixel_word(x, y)]
-                expected = x if args.mode == "axis-x" else y
+                expected = modulated_word(x if args.mode == "axis-x" else y, args.tint)
                 if actual != expected and len(errors) < 12:
                     errors.append(dict(x=x, y=y, actual=actual, expected=expected))
                 verified += int(actual == expected)
         assert verified == 96000, dict(verified=verified, first_errors=errors)
         for y in range(240, 256):
             for x in range(400):
-                assert plane[pixel_word(x, y)] == 0, ("macro padding", x, y)
+                assert plane[pixel_word(x, y)] == color_clear, ("macro padding", x, y)
         assert all(v == 0xa55a for v in plane[102400:]), "allocation tail was written"
     samples = 0
     if args.mode == "chain":
@@ -229,9 +245,9 @@ end'''
             depth = read_plane(out / f"job{n}-depth.hex")
             assert all(v == 0xa55a for v in depth[102400:]), ("depth allocation tail", n)
         if len(selected) == 2 and samples == 96000:
-            assert all(planes[1][pixel_word(x,y)] == planes[0][pixel_word(x,y)] for y in range(240) for x in range(400)), "nearest producer/consumer identity"
+            assert all(planes[1][pixel_word(x,y)] == modulated_word(planes[0][pixel_word(x,y)], args.tint) for y in range(240) for x in range(400)), "nearest producer/consumer identity"
             verified = 96000
-    receipt = dict(status="pass", mode=args.mode, backend=args.backend, checked_pixels=verified, independently_checked_samples=samples, export_sha256=hashlib.sha256(source.read_bytes()).hexdigest(), inputs_sha256=hashlib.sha256(inputs.read_bytes()).hexdigest(),
+    receipt = dict(status="pass", mode=args.mode, backend=args.backend, tint=args.tint, color_clear_rgb565=color_clear, checked_pixels=verified, independently_checked_samples=samples, export_sha256=hashlib.sha256(source.read_bytes()).hexdigest(), inputs_sha256=hashlib.sha256(inputs.read_bytes()).hexdigest(),
                    boundary="Actual RCC-generated commands through the ordinary GPU pipeline with the explicitly selected backend and bounded stalled memory peers. Axis modes independently isolate addressing using pre-reset source patterns. Chain mode retains real producer writes and checks sampling at actual raster UV against an independent integer oracle. No physical MC/STA/board claim.")
     (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps(receipt, indent=2))

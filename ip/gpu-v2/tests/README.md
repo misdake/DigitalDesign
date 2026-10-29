@@ -103,3 +103,8 @@ fixtures: axis-x/axis-y modes check all 96000 nearest pixels, and chain mode
 checks real raster UVs and source/consumer results. Each subprocess has a wall
 limit and each RTL bench a finite cycle watchdog. Portable frame replay,
 native submodule checks and physical board qualification have distinct coverage.
+
+`test_rtt400_replay.py --tint R G B` checks the specified opaque uniform
+multiplication in axis modes and nearest producer/consumer comparisons. Defaults
+remain255. `test_rtt400_command.py` also accepts black modulation: framebuffer
+coverage checks compare against zero without treating black pixels as missing.

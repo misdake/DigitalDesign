@@ -12,6 +12,8 @@ enum ApplicationProfile {
     Default,
     Column16,
     Rtt400x240,
+    BloxorzCapture,
+    BloxorzCaptureFull,
 }
 fn compile(
     path: &Path,
@@ -22,7 +24,17 @@ fn compile(
     capture_enabled: bool,
     profile: ApplicationProfile,
 ) -> (Vec<u16>, usize) {
-    let rtt = matches!(profile, ApplicationProfile::Rtt400x240);
+    let rtt = matches!(
+        profile,
+        ApplicationProfile::Rtt400x240
+            | ApplicationProfile::BloxorzCapture
+            | ApplicationProfile::BloxorzCaptureFull
+    );
+    let entry = match profile {
+        ApplicationProfile::BloxorzCapture => "renderer_game_capture",
+        ApplicationProfile::BloxorzCaptureFull => "renderer_game_capture_full",
+        _ => "main",
+    };
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
@@ -66,13 +78,14 @@ fn compile(
                 || (source_dir.ends_with("gpu_renderer/rcc")
                     && path.file_name().is_some_and(|name| name == "members.rs"))
             {
-                rcc_modules::compile_renderer_program_checked(
+                rcc_modules::compile_renderer_program_checked_with_sources(
                     &path.display().to_string(),
                     &source,
                     options,
                     source_dir,
                     shared,
                     constants,
+                    &dirs,
                     &if rtt {
                         rcc_modules::RendererCaptureConfiguration::rtt400x240()
                     } else {
@@ -123,7 +136,7 @@ fn compile(
     }
     .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
     let static_words = program.debug.static_data_end;
-    let words = rcc_backend::try_compile(program, options, "main")
+    let words = rcc_backend::try_compile(program, options, entry)
         .unwrap()
         .words;
     (words, static_words)
@@ -146,6 +159,8 @@ fn main() {
     let mut capture_enabled = false;
     let mut column16 = false;
     let mut rtt_enabled = false;
+    let mut automatic_capture = false;
+    let mut capture_full = false;
     let mut extra_assets: Vec<String> = Vec::new();
     if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
         if example == "gpu_bench" {
@@ -247,13 +262,18 @@ fn main() {
             || example == "gpu_renderer_changes"
             || example == "gpu_renderer_members"
             || example == "gpu_renderer_bloxorz"
+            || example == "gpu_renderer_bloxorz_capture"
+            || example == "gpu_renderer_bloxorz_capture_full"
             || example == "gpu_profiler_board"
             || example == "gpu_renderer_rtt"
             || example == "gpu_renderer_rtt_bilinear"
         {
-            let game = example == "gpu_renderer_bloxorz";
+            capture_full = example == "gpu_renderer_bloxorz_capture_full";
+            automatic_capture = capture_full || example == "gpu_renderer_bloxorz_capture";
+            let game = automatic_capture || example == "gpu_renderer_bloxorz";
             let profiler = example == "gpu_profiler_board";
-            let rtt = example == "gpu_renderer_rtt" || example == "gpu_renderer_rtt_bilinear";
+            let rtt =
+                game || example == "gpu_renderer_rtt" || example == "gpu_renderer_rtt_bilinear";
             if rtt {
                 rtt_enabled = true;
                 for path in [
@@ -264,7 +284,7 @@ fn main() {
                 }
             }
             capture_enabled = profiler;
-            let example_dir = root.join(if rtt {
+            let example_dir = root.join(if rtt && !game {
                 "examples/gpu_renderer_rtt"
             } else if game {
                 "examples/gpu_renderer_bloxorz"
@@ -295,7 +315,7 @@ fn main() {
             let status = std::process::Command::new("python")
                 .env("PYTHONDONTWRITEBYTECODE", "1")
                 .arg(example_dir.join("tools/assets.py"))
-                .args(if example == "gpu_renderer_members" {
+                .args(if game || example == "gpu_renderer_members" {
                     vec!["--profile", "column16"]
                 } else {
                     vec![]
@@ -312,7 +332,7 @@ fn main() {
                 assert_eq!(manifest["profile"], "rtt400x240-column16");
                 assert_eq!(manifest["surface"], "column-major-16x16-pad16");
             }
-            project.application = PathBuf::from(if rtt {
+            project.application = PathBuf::from(if rtt && !game {
                 if example == "gpu_renderer_rtt_bilinear" {
                     "examples/gpu_renderer_rtt/rcc/bilinear.rs"
                 } else {
@@ -461,7 +481,11 @@ fn main() {
         &root.join("rcc"),
         project.renderer,
         capture_enabled,
-        if rtt_enabled {
+        if capture_full {
+            ApplicationProfile::BloxorzCaptureFull
+        } else if automatic_capture {
+            ApplicationProfile::BloxorzCapture
+        } else if rtt_enabled {
             ApplicationProfile::Rtt400x240
         } else if column16 {
             ApplicationProfile::Column16
