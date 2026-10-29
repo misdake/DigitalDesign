@@ -6,6 +6,7 @@ use digital_design_circuit::{build_circuit, Circuit};
 use digital_design_hardware::{HardwareIdentity, Module, ModuleIo, VerilogProject};
 use rcc::frontend::compile_program;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct CoreRun {
     halt_signal: u16,
@@ -785,23 +786,29 @@ fn collect_verilog_files(directory: &std::path::Path, into: &mut Vec<std::path::
     }
 }
 
+fn create_core_cosim_directory(next: &AtomicUsize) -> std::io::Result<std::path::PathBuf> {
+    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    std::fs::create_dir_all(&target)?;
+    loop {
+        let directory = target.join(format!(
+            "core-cosim-{}-{}",
+            std::process::id(),
+            next.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&directory) {
+            Ok(()) => return Ok(directory),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn run_core_rtl_trace(tb: &str) -> Vec<CoreCosimOut> {
-    // Keep the generated project under the workspace `target/` tree (never the
-    // OS temp directory) so the co-sim artifacts stay inside the repository.
-    // The directory is unique per invocation: `cargo test` runs tests in
-    // parallel threads of one process, and a pid-only name let concurrent
-    // co-sims overwrite each other's generated project.
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Retain the generated project until task cleanup, including failures in
+    // the caller's later emulator comparison. Atomically reserve a fresh name
+    // so concurrent tests and a reused process ID cannot overwrite a replay.
     static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..");
-    let directory = repo_root.join("target").join(format!(
-        "core-cosim-{}-{}",
-        std::process::id(),
-        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = create_core_cosim_directory(&NEXT_DIR).unwrap();
     // Write the core with every dependency (DSP multiplier, GPR RAM)
     // via the same flattening used by `verify_verilog_with_iverilog`, then
     // add our replay testbench.
@@ -874,10 +881,80 @@ fn run_core_rtl_trace(tb: &str) -> Vec<CoreCosimOut> {
             break;
         }
     }
-    if std::env::var_os("FPU2_KEEP_COSIM_DIR").is_none() {
-        std::fs::remove_dir_all(&directory).ok();
-    }
     trace
+}
+
+#[test]
+fn core_cosim_directory_collision_preserves_existing_replay() {
+    let next = AtomicUsize::new(0);
+    let old = create_core_cosim_directory(&next).unwrap();
+    let sentinel = old.join("sentinel.txt");
+    std::fs::write(&sentinel, b"previous replay must survive").unwrap();
+
+    // Simulate a later process reusing the same PID and directory sequence.
+    // This tests directory allocation only; it does not run an RTL simulator.
+    let reused = AtomicUsize::new(next.load(Ordering::Relaxed) - 1);
+    let new = create_core_cosim_directory(&reused).unwrap();
+    assert_ne!(new, old);
+    assert_eq!(
+        std::fs::read(sentinel).unwrap(),
+        b"previous replay must survive"
+    );
+    assert_eq!(std::fs::read_dir(old).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(new).unwrap().count(), 0);
+}
+
+#[test]
+#[ignore = "bounded RTL replay retention after success and a deliberate comparison failure"]
+fn core_cosim_retains_replay_after_comparison() {
+    let program = [cpu_v3::halt()];
+    let emu = run_core_emu_trace(&program, 200);
+    let tb = format!(
+        "// Replay retention regression\n{}",
+        build_core_cosim_tb(&program, &CpuV3Core::verilog_identity().module_name(), 200)
+    );
+    let rtl = run_core_rtl_trace(&tb);
+    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let prefix = format!("core-cosim-{}-", std::process::id());
+    let directory = std::fs::read_dir(target)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&prefix)
+                && std::fs::read_to_string(path.join("tb.v")).is_ok_and(|saved| saved == tb)
+        })
+        .expect("the helper must retain its replay before returning the trace");
+    assert_eq!(rtl.len(), emu.len());
+    for (expected, actual) in emu.iter().zip(&rtl) {
+        assert!(actual.equal_core(expected), "{actual:?} vs {expected:?}");
+    }
+    assert!(rtl.last().unwrap().halted);
+
+    // This is an intentional comparator failure, not a failed RTL simulation.
+    let mut wrong = *emu.last().unwrap();
+    wrong.halt_signal ^= 1;
+    let failure = std::panic::catch_unwind(|| {
+        assert!(
+            rtl.last().unwrap().equal_core(&wrong),
+            "deliberately mismatched halt signal"
+        );
+    });
+    assert!(failure.is_err());
+    assert_eq!(std::fs::read_to_string(directory.join("tb.v")).unwrap(), tb);
+    assert!(directory.join("sim.vvp").is_file());
+    let mut sources = Vec::new();
+    collect_verilog_files(&directory, &mut sources);
+    assert!(
+        !sources.is_empty(),
+        "retain the generated core dependencies"
+    );
+    eprintln!(
+        "Retained replay after both comparisons: {}",
+        directory.display()
+    );
 }
 
 #[test]
