@@ -23,19 +23,12 @@ def identity(output, assets, version, rtl=None, native_tail=False, native_reserv
     column=True
     source_root=SYSTEM/'rcc'
     if native_tail:
-        source_root=output/'fixture-rcc';source_root.mkdir(parents=True,exist_ok=True)
-        extension=(SYSTEM/'tests/fixtures/capture_native_tail.rcc').read_text()
-        if native_reserved:
-            marker='p.write(4, 0x6a6a);'
-            if extension.count(marker)!=1:raise ValueError('Native negative fixture marker moved')
-            extension=extension.replace(marker,'p.write(2, 0x80); '+marker)
-        for p in (SYSTEM/'rcc').glob('*.rs'):
-            text=p.read_text()
-            if p.name=='gpu_capture.rs':
-                marker='    GPU_CAPTURE_CONTROL[2u16] += 1;'
-                if text.count(marker)!=1:raise ValueError('Native fixture capture boundary moved')
-                text=text.replace(marker,'    if !profiling_native_tail(cb) { gpu_capture_fail(GPU_CAPTURE_DEPENDENCY); return false; }\n'+marker)+ '\n'+extension
-            (source_root/p.name).write_text(text,newline='\n')
+        import importlib.util
+        source_root=output/'fixture-rcc'
+        helper=SYSTEM/'examples/gpu_profiler_board/tools/native_sources.py'
+        spec=importlib.util.spec_from_file_location('capture_native_sources',helper)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        module.materialize(SYSTEM/'rcc',source_root,native_reserved)
     if column:
         generated=output/'profile-rcc';generated.mkdir(parents=True,exist_ok=True)
         for p in source_root.glob('*.rs'):
@@ -55,6 +48,9 @@ def identity(output, assets, version, rtl=None, native_tail=False, native_reserv
             inputs['repository/'+source.relative_to(ROOT).as_posix()]=source
     if column:
         inputs.update({'producer-rcc/'+p.name:p for p in (output/'profile-rcc').glob('*.rs')})
+    if native_tail:
+        for name in ['examples/gpu_profiler_board/tools/native_sources.py','tests/fixtures/capture_native_tail.rcc']:
+            inputs[name]=SYSTEM/name
     inputs['gate.rs']=output/'profiler_gate.rs';inputs['main.rs']=output/'main.rs'
     if rtl is not None:
         rtl = Path(rtl).resolve()

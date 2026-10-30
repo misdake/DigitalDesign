@@ -11,7 +11,6 @@ sys.dont_write_bytecode = True
 SYSTEM = Path(__file__).resolve().parents[1]
 ROOT = SYSTEM.parents[1]
 sys.path.insert(0, str(SYSTEM / 'tools'))
-from capture_layout import description
 
 
 def module(name, path):
@@ -37,11 +36,7 @@ def pack(output):
     catalog = json.loads((output / 'assets.json').read_text())
     catalog['atlas']['glyphs'] = font_manifest['glyphs']
     for resource in catalog['resources']:
-        resource['kind'] = {'room.bin': 'mesh', 'texture.bin': 'texture', 'atlas.bin': 'atlas'}[resource['file']]
-        if resource['kind'] == 'texture':
-            resource['layout'] = description()['texture_layout']
         resource['sha256'] = hashlib.sha256((output / resource['file']).read_bytes()).hexdigest()
-    catalog['capture_layout'] = description()
     # Normalize both canonical packers' source names to repository-relative paths.
     sources = dict(catalog['sources'])
     sources.update({(SYSTEM / name).relative_to(ROOT).as_posix(): sha

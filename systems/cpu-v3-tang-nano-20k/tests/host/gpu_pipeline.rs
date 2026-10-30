@@ -28,6 +28,8 @@ mod capture;
 mod changes;
 #[path = "gpu_persistent_ui.rs"]
 mod persistent;
+#[path = "gpu_profiler_short.rs"]
+mod profiler_short;
 #[path = "gpu_render_buffer.rs"]
 mod render_buffer;
 #[path = "gpu_renderer_time.rs"]

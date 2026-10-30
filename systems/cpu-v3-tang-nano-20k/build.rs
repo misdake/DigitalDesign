@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 mod rcc_modules;
 enum ApplicationProfile {
     Default,
+    ProfilerMemcpy,
     Column16,
     Rtt400x240,
     BloxorzCapture,
@@ -73,10 +74,50 @@ fn compile(
     } else {
         None
     };
+    let native_root;
+    let shared = if matches!(profile, ApplicationProfile::ProfilerMemcpy) {
+        assert!(
+            capture_enabled,
+            "MEMCPY specialization requires the explicit diagnostic"
+        );
+        let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+        let helper = root.join("examples/gpu_profiler_board/tools/native_sources.py");
+        println!("cargo:rerun-if-changed={}", helper.display());
+        println!(
+            "cargo:rerun-if-changed={}",
+            root.join("tests/fixtures/capture_native_tail.rcc")
+                .display()
+        );
+        for file in std::fs::read_dir(shared).unwrap().flatten() {
+            if file.path().extension().is_some_and(|s| s == "rs") {
+                println!("cargo:rerun-if-changed={}", file.path().display());
+            }
+        }
+        native_root =
+            PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("profiler-memcpy-rcc");
+        let status = std::process::Command::new("python")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .arg(helper)
+            .arg("--shared")
+            .arg(shared)
+            .arg("--output")
+            .arg(&native_root)
+            .status()
+            .expect("native diagnostic source producer");
+        assert!(status.success(), "native diagnostic specialization failed");
+        native_root.as_path()
+    } else {
+        shared
+    };
     let program = if renderer {
         let compile_renderer = |dependency: &mut dyn FnMut(&Path)| {
             let dirs = if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
                 vec![shared.parent().unwrap().join("examples/bloxorz/rcc")]
+            } else if source_dir.ends_with("gpu_profiler_board/rcc") && rtt {
+                vec![shared
+                    .parent()
+                    .unwrap()
+                    .join("examples/gpu_renderer_rtt/rcc")]
             } else {
                 vec![]
             };
@@ -165,6 +206,7 @@ fn main() {
     let mut capture_enabled = false;
     let mut column16 = false;
     let mut rtt_enabled = false;
+    let mut native_memcpy = false;
     let mut automatic_capture = false;
     let mut capture_full = false;
     let mut extra_assets: Vec<String> = Vec::new();
@@ -278,7 +320,7 @@ fn main() {
             automatic_capture = capture_full || example == "gpu_renderer_bloxorz_capture";
             let game = automatic_capture || example == "gpu_renderer_bloxorz";
             let profiler = example == "gpu_profiler_board";
-            let rtt =
+            let mut rtt =
                 game || example == "gpu_renderer_rtt" || example == "gpu_renderer_rtt_bilinear";
             if rtt {
                 rtt_enabled = true;
@@ -290,12 +332,12 @@ fn main() {
                 }
             }
             capture_enabled = profiler;
-            let example_dir = root.join(if rtt && !game {
+            let example_dir = root.join(if profiler {
+                "examples/gpu_profiler_board"
+            } else if rtt && !game {
                 "examples/gpu_renderer_rtt"
             } else if game {
                 "examples/gpu_renderer_bloxorz"
-            } else if profiler {
-                "examples/gpu_profiler_board"
             } else {
                 "examples/gpu_renderer"
             });
@@ -329,11 +371,30 @@ fn main() {
             let manifest: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
                     .unwrap();
+            if profiler {
+                match manifest["profiler_short_case"].as_str().unwrap_or("none") {
+                    "none" => {}
+                    "rtt" => {
+                        rtt = true;
+                        rtt_enabled = true;
+                    }
+                    "memcpy" => {
+                        native_memcpy = true;
+                    }
+                    _ => panic!("unsupported profiler short case"),
+                }
+            }
             if rtt {
                 assert_eq!(manifest["profile"], "production");
                 assert_eq!(manifest["surface"], "column-major-16x16-pad16");
             }
-            project.application = PathBuf::from(if rtt && !game {
+            project.application = PathBuf::from(if profiler {
+                if rtt {
+                    "examples/gpu_profiler_board/rcc/rtt.rs"
+                } else {
+                    "examples/gpu_profiler_board/rcc/main.rs"
+                }
+            } else if rtt && !game {
                 if example == "gpu_renderer_rtt_bilinear" {
                     "examples/gpu_renderer_rtt/rcc/bilinear.rs"
                 } else {
@@ -341,8 +402,6 @@ fn main() {
                 }
             } else if game {
                 "examples/gpu_renderer_bloxorz/rcc/main.rs"
-            } else if profiler {
-                "examples/gpu_profiler_board/rcc/main.rs"
             } else if example == "gpu_renderer_changes" {
                 "examples/gpu_renderer/rcc/changes.rs"
             } else if example == "gpu_renderer_members" {
@@ -488,7 +547,9 @@ fn main() {
         &root.join("rcc"),
         project.renderer,
         capture_enabled,
-        if capture_full {
+        if native_memcpy {
+            ApplicationProfile::ProfilerMemcpy
+        } else if capture_full {
             ApplicationProfile::BloxorzCaptureFull
         } else if automatic_capture {
             ApplicationProfile::BloxorzCapture
@@ -500,6 +561,19 @@ fn main() {
             ApplicationProfile::Default
         },
     );
+    if native_memcpy {
+        for (source, destination) in [
+            ("specialization.json", "profiler-source-specialization.json"),
+            ("gpu_capture.rs", "profiler-specialized-gpu-capture.rs"),
+        ] {
+            std::fs::copy(
+                output.join("profiler-memcpy-rcc").join(source),
+                output.join(destination),
+            )
+            .unwrap();
+            extra_assets.push(destination.to_owned());
+        }
+    }
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     let image = boot::pack_application_resources(&code, static_words, &resources)
         .expect("single application image");

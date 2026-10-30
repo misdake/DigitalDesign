@@ -16,7 +16,7 @@ from replay import export_layout, validate_rtl_layout
 
 
 def prepare(output, hardware, system_export, replay_export, automatic, primitive, full_scene=False,
-            column_catalog=None):
+            column_catalog=None, short_case="none"):
     output, hardware = output.resolve(), hardware.resolve()
     output.mkdir(parents=True, exist_ok=False)
     compared = []
@@ -34,16 +34,16 @@ def prepare(output, hardware, system_export, replay_export, automatic, primitive
     layout=export_layout(replay_export, '\n'.join((replay_export/name).read_text() for name in rtl_sources))
     validate_rtl_layout(layout, '\n'.join(p.read_text() for p in (system_export/'src').rglob('*.v')))
     pack(output / "assets", automatic_test=automatic, full_scene=full_scene,
-         layout=layout, column_catalog=column_catalog)
+         layout=layout, column_catalog=column_catalog, short_case=short_case)
     asset_manifest = json.loads((output / "assets/assets.json").read_text())
     names = subprocess.check_output(["git", "ls-files", "compiler/rcc", "ip/cpu-v3", "ip/gpu-v2",
         "hardware/core", "hardware/common", "hardware/vendor/gowin", "circuit",
         "systems/cpu-v3-tang-nano-20k", "Cargo.toml", "Cargo.lock"], cwd=ROOT, text=True).splitlines()
     paths = {ROOT / name for name in names if Path(name).suffix in
-             {".rs", ".v", ".vh", ".py", ".ps1", ".toml", ".conf", ".lock", ".txt"}}
+             {".rs", ".v", ".vh", ".py", ".ps1", ".toml", ".conf", ".lock", ".txt", ".rcc"}}
     # New implementation files may still be untracked during qualification.
     for folder in [SYSTEM / "tools/gpu_profiler", SYSTEM / "examples/gpu_profiler_board"]:
-        paths.update(p for p in folder.rglob("*") if p.is_file() and p.suffix in {".py", ".rs", ".v", ".vh"})
+        paths.update(p for p in folder.rglob("*") if p.is_file() and p.suffix in {".py", ".rs", ".rcc", ".v", ".vh"})
     files = [dict(name=p.relative_to(ROOT).as_posix(), path=str(p)) for p in sorted(paths)]
     files.append(dict(name="vendor-primitive/prim_sim.v", path=str(primitive.resolve())))
     for prefix, folder in [("board-export", system_export / "src"), ("replay-export", replay_export),
@@ -52,12 +52,11 @@ def prepare(output, hardware, system_export, replay_export, automatic, primitive
                      for p in sorted(folder.rglob("*")) if p.is_file())
     resources = [dict(name=r["file"], address=r["address"], bytes=r["bytes"],
                       sha256=r["sha256"], immutable=True) for r in asset_manifest["resources"]]
-    if True:
-        for entry, resource in zip(resources, asset_manifest['resources']):
-            entry['kind']=resource['kind']
-            if resource['kind']=='texture': entry['layout']=resource['layout']
-    spec = dict(files=files, resources=resources, options=dict(automatic_test=automatic, full_scene=full_scene,
-                scene=("canonical box+RGB+948-face rabbit" if full_scene else "canonical minimal renderer"),
+    for entry, resource in zip(resources, asset_manifest['resources']):
+        entry['kind']=resource['kind']
+        if resource['kind']=='texture': entry['layout']=resource['layout']
+    spec = dict(files=files, resources=resources, options=dict(automatic_test=automatic, full_scene=full_scene, short_case=short_case,
+                scene=("canonical box+RGB+948-face rabbit" if full_scene else {"rtt":"repeated RTT producer and texture consumer", "memcpy":"minimal renderer plus native three-copy diagnostic", "none":"canonical minimal renderer"}[short_case]),
                 input_precision="unchanged"),
                 toolchain=dict(rustc=subprocess.check_output(["rustc", "--version"], text=True).strip(),
                                python=sys.version.split()[0], firmware_route="OUT_DIR + cpu-v3-boot-assets"),
@@ -87,6 +86,7 @@ if __name__ == "__main__":
     parser.add_argument("--full-scene", action="store_true")
     parser.add_argument('--column-catalog', type=Path,
                         help='CPU-produced, explicitly versioned column assets; never repack row assets here')
+    parser.add_argument("--short-case", choices=("none", "rtt", "memcpy"), default="none")
     args = parser.parse_args()
     prepare(args.out, args.hardware, args.system_export.resolve(), args.replay_export.resolve(),
-            args.automatic_test, args.primitive, args.full_scene, args.column_catalog)
+            args.automatic_test, args.primitive, args.full_scene, args.column_catalog, args.short_case)

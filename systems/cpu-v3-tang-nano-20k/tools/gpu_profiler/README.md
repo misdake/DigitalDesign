@@ -396,3 +396,10 @@ detailed metric.
 
 The versioned contract is in the
 [system profiler specification](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md).
+
+The GPU Activity & Memory Throughput pane includes full-capture GPU read/write
+wire-byte totals, average read/write/combined throughput and a 256-cycle combined
+peak. It counts accepted payload beats once at the GPU masters, excludes CPU and
+Display, and remains unchanged when selecting a command. It does not measure
+physical SDRAM utilization. Empty DRAWs with zero own quads have no screenshot;
+nonempty DRAW images retain their own final-quad/cache-commit boundary.

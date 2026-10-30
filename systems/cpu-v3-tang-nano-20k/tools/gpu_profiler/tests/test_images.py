@@ -66,6 +66,41 @@ class ImageHistoryTests(unittest.TestCase):
         with self.assertRaisesRegex(SnapshotError, 'provenance'):
             h.bus(1, 0, 123)
 
+    def test_empty_draw_between_live_draws_has_no_premature_image(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import tempfile
+        import images
+        profile=dict(origin=0,end=12,partial=False,
+            commands=[dict(id=10,opcode=3,meshlet=1,submission=1,pc=0,execute=1,complete_cycle=8),
+                      dict(id=11,opcode=3,meshlet=2,submission=1,pc=4,execute=2,complete_cycle=4),
+                      dict(id=12,opcode=3,meshlet=3,submission=1,pc=8,execute=5,complete_cycle=10)],
+            meshlets=[dict(id=1,command=10,quads=1),dict(id=2,command=11,quads=0),
+                      dict(id=3,command=12,quads=1)],
+            submissions=[dict(id=1,start=0,end=12)],memory=dict(available=True,transactions=[]))
+        capture=SimpleNamespace(header=dict(color_base=0,depth_base=262144,target_format=1),
+            ranges=[SimpleNamespace(address=0,length=COLUMN.plane_bytes,index=0)],
+            data={0:bytes(COLUMN.plane_bytes)})
+        with tempfile.TemporaryDirectory() as tmp, patch.object(images,'MEMORY_BYTES',524288), \
+             patch.object(images,'header_layout',return_value=COLUMN):
+            root=Path(tmp); events=root/'events.log'
+            events.write_text('IMAGE_TARGET 0 1 0 262144 1\n'
+                'IMAGE_CACHE_STATE 1 0 1 0 1 0 262144\n'
+                'IMAGE_CACHE_WRITE 3 0 0 0 63488 1\n'
+                'IMAGE_CACHE_WRITE 7 0 0 0 31 3\n')
+            result=images.build(capture,profile,events,root/'images')
+            self.assertEqual(set(result['commands']),{'10','12'})
+            self.assertFalse((root/'images/command-000011.png').exists())
+            self.assertEqual(result['commands']['10']['cycle'],8)
+            red=bytearray(COLUMN.plane_bytes);struct.pack_into('<H',red,0,0xf800)
+            blue=bytearray(COLUMN.plane_bytes);struct.pack_into('<H',blue,0,0x001f)
+            import hashlib
+            self.assertEqual(result['commands']['10']['plane_sha256'],hashlib.sha256(red).hexdigest())
+            self.assertEqual(result['commands']['12']['plane_sha256'],hashlib.sha256(blue).hexdigest())
+            images.validate(result,profile)
+            del result['commands']['12']
+            with self.assertRaisesRegex(ValueError,'Incomplete'):images.validate(result,profile)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -12,6 +12,7 @@ EXAMPLE = Path(__file__).resolve().parents[1]
 ROOT = EXAMPLE.parents[3]
 sys.path.insert(0, str(ROOT / "systems/cpu-v3-tang-nano-20k/tools"))
 from gpu_layout import validate_asset_range, sectors
+from capture_layout import description as capture_description
 SCENE = ROOT / "ip/gpu-v2/examples/vliw_integration"
 sys.path.insert(0, str(SCENE))
 import material_scene
@@ -106,9 +107,9 @@ def pack(output):
     assert len(meshes)==24 and len(scene["cameras"])==256
     assert sum(len(m["triangles"]) for m in meshes)==1141
     assert mesh_base + len(data) <= texture_base
-    resources = [("atlas.bin", atlas_base, atlas), ("room.bin", mesh_base, bytes(data)),
-                 ("texture.bin", texture_base, texture())]
-    for name, address, payload in resources:
+    resources = [("atlas.bin", atlas_base, atlas, "atlas"), ("room.bin", mesh_base, bytes(data), "mesh"),
+                 ("texture.bin", texture_base, texture(), "texture")]
+    for name, address, payload, kind in resources:
         assert address % 128 == 0 and len(payload) % 128 == 0
         validate_asset_range(address, len(payload))
         (output/name).write_bytes(payload)
@@ -116,12 +117,17 @@ def pack(output):
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_layout.py",
                ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_layout.rs",
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_texture_layout.py",
+               ROOT/"systems/cpu-v3-tang-nano-20k/tools/capture_layout.py",
+               ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_capture_abi.rs",
                SCENE/"material_scene.py", SCENE/"solid_scene.py", SCENE/"assets/room-tiles.png"]
     manifest = dict(hardware_profile="production",
         layout_identity="rgb565-macro16x16-column-major-pad16-cache16x8-8KiB",
         framebuffer=dict(physical_bytes=204800,reserved_bytes=262144,clear_sectors=1600),
         scene=scene["scene"], triangles=1141, provenance=scene["provenance"],
-        resources=[dict(file=n,address=a,bytes=len(p),sha256=sha(output/n)) for n,a,p in resources],
+        resources=[dict(file=n,address=a,bytes=len(p),sha256=sha(output/n),kind=k,
+                        **({'layout':capture_description()['texture_layout']} if k=='texture' else {}))
+                   for n,a,p,k in resources],
+        capture_layout=capture_description(),
         mesh=dict(directory_sector=mesh_base//128, directory_word=0, count=24,
                   first_sector=mesh_base//128,sectors=len(data)//128,entries=entries),
         texture=dict(sector=texture_base//128,sectors=texture_sectors,size_log2=6,full_mip=1),

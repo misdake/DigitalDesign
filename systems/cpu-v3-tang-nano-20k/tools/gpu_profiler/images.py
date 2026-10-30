@@ -102,6 +102,13 @@ class History:
         return bytes(result), overrides
 
 
+def empty_draw_ids(profile):
+    """Only absence of own published quads proves a DRAW has no output image."""
+    meshes = {m['id']: m for m in profile['meshlets']}
+    return {c['id'] for c in profile['commands'] if c['opcode'] == 3
+            and meshes.get(c.get('meshlet'), {}).get('quads') == 0}
+
+
 def build(capture, profile, event_path, output):
     """Project each command at its real completion, with younger owners excluded."""
     if profile['partial'] or not profile.get('memory', {}).get('available'):
@@ -169,10 +176,12 @@ def build(capture, profile, event_path, output):
     if index != len(writes) or beat:
         raise SnapshotError('Incomplete write payload in image journal')
     commands = {c['id']: c for c in profile['commands']}
+    empty = empty_draw_ids(profile)
     for c in profile['commands']:
         if c.get('complete_cycle') is None:
             raise SnapshotError('Image requires proven command completion')
-        timeline.append((c['complete_cycle'], 4, 'snapshot', c['id']))
+        if c['id'] not in empty:
+            timeline.append((c['complete_cycle'], 4, 'snapshot', c['id']))
     timeline.append((profile['end'], 5, 'final', 0))
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
@@ -227,7 +236,9 @@ def validate(images, profile):
     if not images['available']:
         return
     commands = {str(c['id']): c for c in profile['commands']}
-    if images.get('complete') is not True or profile['partial'] or set(images['commands']) != set(commands):
+    required = set(commands) - {str(i) for i in empty_draw_ids(profile)}
+    if (images.get('complete') is not True or profile['partial']
+            or not required <= set(images['commands']) <= set(commands)):
         raise ValueError('Incomplete command image set')
     def one(image, command):
         cycle = image['cycle']

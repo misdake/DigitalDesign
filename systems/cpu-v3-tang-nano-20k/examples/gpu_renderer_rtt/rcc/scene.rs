@@ -58,7 +58,7 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
         );
     }
     let mut update = first;
-    while update < end {
+    while end == 0 || update < end {
         let clear: u16 = if update == 0 { 0xf800 } else { 0x07e0 };
         {
             let mut frame = renderer.frame_to(&mut buffer, clear);
@@ -97,6 +97,10 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
 pub fn renderer_rtt_two_updates() {
     rtt_run(0, 2, false);
     halt(0x600d);
+}
+
+pub fn renderer_rtt_profiler() {
+    rtt_run(0, 0, false);
 }
 pub fn renderer_rtt_nearest() {
     rtt_run(0, 1, false);

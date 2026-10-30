@@ -237,10 +237,15 @@ or generic meshlet names. Unsupported format versions are rejected.
 
 ## Derived display
 
-The cold replay exports `images/final.png`, one `command-<id>.png` for every
-command, and `images/index.json`. Each entry binds the command occurrence,
+The cold replay exports `images/final.png`, one `command-<id>.png` for each command except DRAWs with zero own published quads, and `images/index.json`. Each entry binds the command occurrence,
 `complete_cycle`, byte target bases, target epoch, color interpretation and plane/
 PNG digests. The report embeds these PNGs, so the offline page remains portable.
+A DRAW with zero own published quads has no completion screenshot. Its early
+front-end completion can precede older in-flight pixel work, so the viewer hides
+its preview even when reading an older report that contains such an image. No
+hardware wait or drain is inserted. Nonempty DRAW images retain their own final
+quad/cache-commit completion and historical owner filtering; they cannot include
+younger writes or be replaced by a later empty DRAW's partial picture.
 It starts with the final output thumbnail; hover enlarges it and selecting a
 command switches the same preview to that command's completion image. Right-click
 inside instruction flow clears selection, highlights and time selection and
@@ -290,9 +295,14 @@ no downstream transfer is counted again.
 Sources follow the actual RO arbiter owner and DMA job kind, or the direct CLEAR
 mux. Shared framebuffer-cache traffic retains its component identity; it is not
 guessed to belong to whichever DRAW/UI/COPY command currently executes. Unknown
-sources remain unknown. The inspector shows full-capture statistics or actual
-traffic during the selected command's half-open interval, including overlapping
-work. Request backpressure, outstanding-without-data and write-terminal waits
+sources remain unknown. The GPU Activity & Memory Throughput pane shows full-capture
+GPU read/write wire-byte totals, average read/write and combined rates, and the
+256-cycle peak combined rate. Command selection and filters do not change these
+totals. Each accepted read or write payload beat contributes eight bytes once;
+requests and terminal acknowledgements contribute no bytes. CPU/Display traffic
+is excluded. Masked/error beats still occupy wire bytes; these are not useful-byte
+or physical SDRAM throughput claims. Per-command interval accounting remains in
+the report data, without a second Memory inspector. Request backpressure, outstanding-without-data and write-terminal waits
 are link-cycle counts and can overlap. Older captures without memory events
 display unavailable statistics.
 

@@ -86,13 +86,14 @@ emit('load','pointermove',{clientX:264+.4*524,clientY:9*47+10});
 assert.ok(element('tooltip').textContent.includes('Rendered bin'));assert.ok(element('tooltip').textContent.includes('2 accepted events'));
 context.window.gpuProfiler.focus(0); // Narrow enough for an exact-state binary rendering.
 evalValue('fitRange(300000,300064)');assert.equal(evalValue('binStats(D.metric_defs[0],300001).exact'),true);
-// The same inspector switches between session and selected-command traffic.
-const traffic={start:0,end:256,average_wire_bytes_per_second:17000000,average_read_bytes_per_second:1000000,average_write_bytes_per_second:16000000,peak_wire_bytes_per_second:32000000,peak_window_cycles:256,issued_transactions:1,completed_transactions:1,data_beats:4,wire_bytes:32,effective_bytes:32,request_backpressure_link_cycles:2,outstanding_without_data_link_cycles:3,write_terminal_wait_link_cycles:1,utilization:.1,links:[],sources:[]};
+// Memory totals remain session-wide when a command is selected.
+const traffic={read_wire_bytes:8,write_wire_bytes:24,start:0,end:256,average_wire_bytes_per_second:17000000,average_read_bytes_per_second:1000000,average_write_bytes_per_second:16000000,peak_wire_bytes_per_second:32000000,peak_window_cycles:256,issued_transactions:1,completed_transactions:1,data_beats:4,wire_bytes:32,effective_bytes:32,request_backpressure_link_cycles:2,outstanding_without_data_link_cycles:3,write_terminal_wait_link_cycles:1,utilization:.1,links:[],sources:[]};
 evalValue('D.memory='+JSON.stringify({available:true,complete:true,clock_hz:54000000,summary:traffic,commands:{0:{...traffic,average_wire_bytes_per_second:33000000}}}));
 context.window.gpuProfiler.focus(0);
-assert.ok(element('memory').innerHTML.includes('command interval'));assert.ok(element('memory').innerHTML.includes('33.00 MB/s'));
-evalValue('selectRow(null)');assert.ok(element('memory').innerHTML.includes('full capture'));assert.ok(element('memory').innerHTML.includes('17.00 MB/s'));
-assert.ok(!element('memory').innerHTML.includes('NaN'));
+assert.ok(element('gpu-memory-summary').innerHTML.includes('17.00 MB/s'));
+assert.ok(!element('gpu-memory-summary').innerHTML.includes('33.00 MB/s'));
+evalValue('selectRow(null)');assert.ok(element('gpu-memory-summary').innerHTML.includes('Full capture'));assert.ok(element('gpu-memory-summary').innerHTML.includes('17.00 MB/s'));
+assert.ok(!element('gpu-memory-summary').innerHTML.includes('NaN'));
 // Inline image selection uses sentinels in this DOM-only adapter (no image decoding).
 const finalFrame={cycle:1000000,target_base_bytes:4456448,target_epoch:1,format:1,src:'data:image/png;base64,FINAL'};
 evalValue('D.images='+JSON.stringify({available:true,final:finalFrame,commands:{0:{...finalFrame,cycle:400000,src:'data:image/png;base64,COMMAND'}}}));
@@ -114,3 +115,15 @@ if(process.argv[2]){
  assert.equal(run("rows[0].spans.some(s=>s.start<submissions.get(1).end&&s.end>submissions.get(1).start)"),true);
  console.log('Session viewer passed: A/B/A repeated-PC selection, CB-specific alive, CPU overlap and variable clock.');
 }
+
+// GPU memory is a full-capture overview; selection must not turn it into command accounting.
+assert.ok(html.includes('GPU Activity &amp; Memory Throughput'));
+assert.ok(!html.includes('id="memory"'));
+evalValue(`D.memory={available:true,complete:true,clock_hz:54000000,summary:{start:0,end:1000000,read_wire_bytes:128,write_wire_bytes:64,average_read_bytes_per_second:6912,average_write_bytes_per_second:3456,average_wire_bytes_per_second:10368,peak_window_cycles:256,peak_wire_bytes_per_second:null}};memoryOverview();`);
+const overviewTraffic=element('gpu-memory-summary').innerHTML;
+assert.ok(overviewTraffic.includes('128 B')&&overviewTraffic.includes('64 B')&&overviewTraffic.includes('Excludes CPU and Display'));
+evalValue('selected=D.commands.find(c=>c.opcode===3).id;detail();');
+assert.equal(element('gpu-memory-summary').innerHTML,overviewTraffic);
+// Even a legacy image entry must not expose an empty DRAW's early completion as a picture.
+evalValue(`D.images={available:true,commands:{[selected]:{src:'unsafe-early-image'}},final:{src:'final'}};frameDetail(cmd.get(selected));`);
+assert.equal(element('frame-preview').hidden,true);

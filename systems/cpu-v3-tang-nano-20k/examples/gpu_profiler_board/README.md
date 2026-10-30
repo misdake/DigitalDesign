@@ -81,6 +81,55 @@ Programming is an explicit operation through the audited hardware CLI. Save a
 files built. Firmware identity is external to the manifest ID, avoiding a self-hash
 cycle.
 
+## Representative short programs
+
+Use `--short-case rtt` or `--short-case memcpy` instead of `--full-scene` during
+preparation; the same `CPU_V3_BOOT_EXAMPLE=gpu_profiler_board` and manifest-bound
+boot-assets route select the application. Modes are mutually exclusive; short
+cases use their canonical assets, without `--column-catalog`. The manifest and
+asset catalog both bind the case, and capture ABI2 / command ABI4 remain unchanged.
+
+- **RTT:** repeat the existing checked two-stage caller. A producer clears/draws
+  the borrowed color/depth allocations at `0x600000` / `0x640000`, then waits for
+  actual GPU completion. The consumer samples the borrowed texture into Display's
+  back buffer. Only consumer submissions enter the profiler runtime; producer
+  submissions continue normally. A consumer pause freezes the complete 256-KiB
+  source allocation and its generation; resume submits that same consumer once.
+  The submission pin survives closing the CPU texture view. GPU/Display waits
+  finish before the next producer can rewrite the source. The original finite
+  nearest/bilinear callers retain their limits.
+- **MEMCPY:** repeat the minimal renderer plus the existing native-encoder
+  diagnostic tail. It copies 1024 B `0x700000 -> 0x710000`, then
+  `0x710000 -> 0x720000`, and 1024 B `0x700e00 -> 0x720e00` across a 4-KiB
+  boundary. The CPU initializes only the source; the GPU performs the copies.
+  Explicit FLUSH / descriptor DMA / WAIT precede three native COPY commands.
+  Destination preimages and dependent reads are captured by the existing bridge.
+  This is a diagnostic producer specialization, not a new public renderer API.
+
+The MEMCPY host generator uses the already tested
+`tests/fixtures/capture_native_tail.rcc`, modifying only a private generated
+`gpu_capture.rs` before capture header/range construction and before the live
+publication lease. It cannot alter frozen gate inputs. Normal renderer sources,
+encoders, scheduler, cache handoff and retirement remain canonical. Boot exports
+include `profiler-source-specialization.json` (original/generated module and
+extension hashes) and `profiler-specialized-gpu-capture.rs` for inspection.
+
+Manual pause/dump/resume is identical in all modes. With `--automatic-test`, gate
+numbers count RTT consumers only. The duplicate second-gate lease and later
+third-gate Front/depth support the existing adjacent-output comparison; MEMCPY
+also requires checking copied destination ranges, not just framebuffer PNGs.
+The next capture observes GPU results only after normal retirement. An offline
+CPU control peer proves recording, source closure and gating; it performs no
+raster or native COPY writes. Actual UART, pixels, copied bytes and physical
+buttons remain board acceptance work for the device owner. Cold replay does not
+qualify warm CPU/Display contention.
+
+A retained configuration can be reused only after all 32 fresh source/constraint
+fingerprints match its preserved qualification. If original `.fs` bytes are
+unavailable, record that fact and the retained qualification separately; do not
+invent bitstream bytes or mark a new FPGA write/verification. A software-only
+boot artifact is not a programming receipt.
+
 ## Automatic diagnostic stimulus
 
 Add `--automatic-test` during preparation to bind a software test mode into

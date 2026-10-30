@@ -277,3 +277,12 @@ execution, not physical button, serial timing or board evidence. The ordinary
 system frontend has a five-million-step bound; UART mode has explicit two-billion
 step and180-second wall bounds. The shared decoder checks both UART attempts
 against the system snapshot before the common cold backend is used.
+
+The `host gpu_pipeline::profiler_short` case runs the actual repeated RTT board
+application and its consumer-only gate through three consumer boundaries, with
+five submitted stages and two Display retirements. It checks mutable source
+closure and proves the control peer leaves RTT pixels untouched. Canonical short
+asset/mode binding and deterministic native MEMCPY specialization are checked by
+the profiler Python suite. `capture_draw`'s explicit `GPU_PROFILER_NATIVE_COPY=1`
+and `GPU_PROFILER_UART=1` modes reuse the same source generator for bounded actual
+UART runtime and system-front-end fixtures; cold GPU+MC replay remains separate.
