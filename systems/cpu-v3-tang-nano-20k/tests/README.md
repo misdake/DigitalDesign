@@ -91,6 +91,11 @@ unattended capture callers check both128 and255 retirement stops without input. 
 original host geometry cases remain. These peers prove CPU state and bytes;
 GPU pixel replays and physical board qualification are separate.
 
+The opt-in [RAM collision consumption checks](/systems/cpu-v3-tang-nano-20k/tests/ram_collision/README.md)
+export current CPU/FPU, D-cache and Display modules and poison only native RAM
+collision read returns. Bounded independent oracles and live-Q negative controls
+check effective consumption; they do not qualify board timing or explain flicker.
+
 Core/cache/arbiter emulator-vs-RTL comparison remains the independent
 `system_cosim` target. Its functional machine and checkpoint support lives in
 `system_emu`; it is not a benchmark harness. The former benchmark directory,

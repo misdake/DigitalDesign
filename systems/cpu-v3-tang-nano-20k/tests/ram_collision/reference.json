@@ -1,0 +1,42 @@
+{
+  "reference_commit": "ba4803cfcb81bf078aea6e31b96d202af28f7bea",
+  "fitted_netlist_sha256": "b09d11ac3c23fea583a71e69edc2bac7f76f0c0733de2c88df031c216f3c113c",
+  "vendor_library_sha256": "797e52271b149b650f4ed6ae0ef2794a853c6ef19973f957abc4f576fa48b7a1",
+  "sdpb": {
+    "READ_MODE": "1'b0",
+    "BIT_WIDTH_0": "32",
+    "BIT_WIDTH_1": "32",
+    "RESET_MODE": "\"SYNC\"",
+    "BLK_SEL_0": "3'b000",
+    "BLK_SEL_1": "3'b000"
+  },
+  "dpb": {
+    "READ_MODE0": "1'b0",
+    "READ_MODE1": "1'b0",
+    "WRITE_MODE0": "2'b00",
+    "WRITE_MODE1": "2'b00",
+    "BIT_WIDTH_0": "16",
+    "BIT_WIDTH_1": "16",
+    "RESET_MODE": "\"SYNC\"",
+    "BLK_SEL_0": "3'b0",
+    "BLK_SEL_1": "3'b0"
+  },
+  "initializations": {
+    "fpu.mirror_0": {
+      "reference_instance": "u_logic/u_core/u_fpu/rf/mirror_0_mirror_0_0_0_s",
+      "sha256_le32": "69805db2310fd65b3d68d6e07c44daa32ad98ea1ddab5a90edd839d66249af5d"
+    },
+    "fpu.mirror_1": {
+      "reference_instance": "u_logic/u_core/u_fpu/rf/mirror_1_mirror_1_0_0_s",
+      "sha256_le32": "8cc4c8fa3a85c566f3e73920af4ba8cb292d1a09dd9809b4d337f205dcae8762"
+    },
+    "display.memory_a": {
+      "reference_instance": "u_logic/u_display/u_line_buffer/memory_a_memory_a_0_0_s",
+      "sha256_le32": "b35a7a124fc448adcdd8086fa180844d9f1ae7ff61471ceb1e3079a34b42774e"
+    },
+    "display.memory_b": {
+      "reference_instance": "u_logic/u_display/u_line_buffer/memory_b_memory_b_0_0_s",
+      "sha256_le32": "b35a7a124fc448adcdd8086fa180844d9f1ae7ff61471ceb1e3079a34b42774e"
+    }
+  }
+}
