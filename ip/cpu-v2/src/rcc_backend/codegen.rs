@@ -762,7 +762,6 @@ fn emit_inst(
         Instr::MtsrDseg { .. }
         | Instr::Jseg { .. }
         | Instr::DcacheInvalidateAll
-        | Instr::DcacheResidentCopy { .. }
         | Instr::DcacheLineCopy { .. }
         | Instr::DcacheCleanLine { .. }
         | Instr::DcacheWait => {

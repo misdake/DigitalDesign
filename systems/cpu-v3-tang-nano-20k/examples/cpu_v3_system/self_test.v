@@ -122,7 +122,6 @@ wire [15:0] core_data_read_data;
 wire core_data_error;
 wire core_data_line_copy_valid;
 wire [21:0] core_data_line_copy_source;
-wire [7:0] core_data_line_copy_destination_page;
 wire core_data_line_clean_valid;
 wire [21:0] core_data_line_clean_address;
 wire dcache_line_copy_ready;
@@ -465,7 +464,7 @@ __CPU_V3_CORE__ #(.INITIAL_CODE_SEGMENT(16'd7)) u_core (
     .data_response_ready(core_data_response_ready),
     .data_line_copy_valid(core_data_line_copy_valid),
     .data_line_copy_source(core_data_line_copy_source),
-    .data_line_copy_destination_page(core_data_line_copy_destination_page),
+
     .data_line_clean_valid(core_data_line_clean_valid),
     .data_line_clean_address(core_data_line_clean_address),
     .device_index(device_index),
@@ -490,7 +489,7 @@ __DATA_CACHE__ u_data_cache (
     .invalidate_all(sysctl_dcache_invalidate),
     .line_copy_start(core_data_line_copy_valid),
     .line_copy_source(core_data_line_copy_source),
-    .line_copy_destination_page(core_data_line_copy_destination_page),
+
     .line_clean_start(core_data_line_clean_valid),
     .line_clean_address(core_data_line_clean_address),
     .line_copy_ready(dcache_line_copy_ready),

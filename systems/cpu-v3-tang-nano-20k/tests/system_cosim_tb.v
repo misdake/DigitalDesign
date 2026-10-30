@@ -48,7 +48,6 @@ wire [15:0] core_data_write_data;
 wire core_data_response_ready;
 wire core_data_line_copy_valid;
 wire [21:0] core_data_line_copy_source;
-wire [7:0] core_data_line_copy_destination_page;
 wire core_data_line_clean_valid;
 wire [21:0] core_data_line_clean_address;
 wire dc_line_copy_ready;
@@ -134,7 +133,7 @@ __CORE__ u_core (
     .data_response_ready(core_data_response_ready),
     .data_line_copy_valid(core_data_line_copy_valid),
     .data_line_copy_source(core_data_line_copy_source),
-    .data_line_copy_destination_page(core_data_line_copy_destination_page),
+
     .data_line_clean_valid(core_data_line_clean_valid),
     .data_line_clean_address(core_data_line_clean_address),
     .device_index(core_device_index),
@@ -205,7 +204,7 @@ __DCACHE__ u_dcache (
     .invalidate_all(1'b0),
     .line_copy_start(core_data_line_copy_valid),
     .line_copy_source(core_data_line_copy_source),
-    .line_copy_destination_page(core_data_line_copy_destination_page),
+
     .line_clean_start(core_data_line_clean_valid),
     .line_clean_address(core_data_line_clean_address),
     .line_copy_ready(dc_line_copy_ready),

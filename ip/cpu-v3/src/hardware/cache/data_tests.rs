@@ -31,7 +31,6 @@ fn idle() -> CpuV3DataCacheInputValue {
         invalidate_all: false,
         line_copy_start: false,
         line_copy_source: 0,
-        line_copy_destination_page: 0,
         line_clean_start: false,
         line_clean_address: 0,
         cpu_request_valid: false,
@@ -574,13 +573,13 @@ fn verify_data_cache_response_slot_goldens() {
 
 #[test]
 #[ignore = "requires Icarus and Gowin native RAM models"]
-fn verify_resident_copy_native_ram() {
+fn verify_dual_address_copy_native_ram() {
     run_rtl_golden(include_str!("cpu_v3_data_cache_tb.v"), true);
 }
 
 #[test]
-#[ignore = "bounded resident-copy cycle replay under portable and native RAM models"]
-fn resident_copy_cycle_model_matches_rtl() {
+#[ignore = "bounded dual-address copy cycle replay under portable and native RAM models"]
+fn dual_address_copy_cycle_model_matches_rtl() {
     let mut h = Harness::new(true);
     h.access(true, 0x120, 0xabcd);
     h.access(true, 0x520, 0xdead);
@@ -598,7 +597,6 @@ fn resident_copy_cycle_model_matches_rtl() {
         }
         let mut input = idle();
         input.line_copy_start = true;
-        input.line_clean_start = true;
         input.line_copy_source = src;
         input.line_clean_address = dst;
         let out = h.step(input);
@@ -612,7 +610,7 @@ fn resident_copy_cycle_model_matches_rtl() {
             assert!(!out.maintenance_error);
             done = out.maintenance_done;
         }
-        assert!(done, "resident-copy model timeout");
+        assert!(done, "dual-address copy model timeout");
         h.step(idle());
         let expected = if src == 0x2c0 {
             h.memory[src as usize]

@@ -15,7 +15,6 @@ wire [31:0] daddr;
 wire [15:0] dwdata,drdata;
 wire copy_start,copy_ready,clean_start;
 wire [21:0] copy_source,clean_address;
-wire [7:0] copy_page;
 wire [2:0] device_index;
 wire [3:0] device_channel;
 wire device_read_enable,device_write_enable;
@@ -39,7 +38,7 @@ __CORE__ core(
  .data_request_ready(dready),.data_response_valid(dresp),.data_read_data(drdata),.data_error(derr),
  .data_line_copy_ready(copy_ready),.data_cache_command_error(maint_error),
  .data_request_valid(dreq),.data_write(dwrite),.data_address(daddr),.data_write_data(dwdata),.data_response_ready(drespready),
- .data_line_copy_valid(copy_start),.data_line_copy_source(copy_source),.data_line_copy_destination_page(copy_page),
+ .data_line_copy_valid(copy_start),.data_line_copy_source(copy_source),
  .data_line_clean_valid(clean_start),.data_line_clean_address(clean_address),
  .device_index(device_index),.device_channel(device_channel),.device_read_enable(device_read_enable),
  .device_write_enable(device_write_enable),.device_write_data(device_write_data),.device_read_data(device_read_data),
@@ -55,7 +54,7 @@ __SYSCTL__ sysctl(
 
 __CACHE__ cache(
  .clk(clk),.reset(reset),.clean_all(dc_clean),.invalidate_all(dc_invalidate),
- .line_copy_start(copy_start),.line_copy_source(copy_source),.line_copy_destination_page(copy_page),
+ .line_copy_start(copy_start),.line_copy_source(copy_source),
  .line_clean_start(clean_start),.line_clean_address(clean_address),.line_copy_ready(copy_ready),
  .cpu_request_valid(dreq),.cpu_write(dwrite),.cpu_address(daddr),.cpu_write_data(dwdata),.cpu_response_ready(drespready),
  .cpu_request_ready(dready),.cpu_response_valid(dresp),.cpu_read_data(drdata),.cpu_error(derr),
@@ -160,13 +159,18 @@ initial begin
  for(index=0;index<65536;index=index+1) memory[index]=16'h55aa;
  __PROGRAM__
  repeat(3) @(posedge clk);@(negedge clk);reset=0;
- wait(halted || fault);#1;
+ // A full-maintenance bus error locks admission until reset. Its status
+ // reaches software, but architectural HALT cannot drain a locked cache.
+ wait(halted || fault || (CASE==4 && core.state==core.ST_HALTED));#1;
  if(CASE==5 || CASE==7) begin
    if(!fault || fault_code!=4 || commands!=0 || accepted!=0 || completed!=0)
      $fatal(1,"older fault must stop handoff, fault=%b code=%0d commands=%0d",fault,fault_code,commands);
  end else begin
    if(fault || held || halt_signal!==EXPECTED_RESULT)
      $fatal(1,"completion status/resume failed: fault=%b hold=%b status=%h",fault,held,halt_signal);
+   if(CASE==4 && (!maint_error || !maint_busy || cache.state!=cache.ST_FAULT ||
+                  dready || copy_ready || maint_ready || halted))
+     $fatal(1,"full maintenance error must retain fail-stop ownership until reset");
    if(commands!=(CASE==3?3:1) || accepted!=commands || completed!=commands)
      $fatal(1,"command/accept/done counts %0d/%0d/%0d",commands,accepted,completed);
    if(CASE<8 && barrier_cycles==0) $fatal(1,"missing overlapping drain coverage");

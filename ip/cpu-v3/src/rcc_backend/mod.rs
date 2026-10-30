@@ -688,18 +688,8 @@ fn lower_instruction(
         )),
         Instr::DcacheLineCopy {
             source,
-            destination_page,
-        } => lines.word(cpu_v3::line_copy(
-            register(*source),
-            register(*destination_page),
-        )),
-        Instr::DcacheResidentCopy {
-            source,
             destination,
-        } => lines.word(cpu_v3::cache_line_copy(
-            register(*source),
-            register(*destination),
-        )),
+        } => lines.word(cpu_v3::line_copy(register(*source), register(*destination))),
         Instr::DcacheCleanLine { address } => {
             lines.word(cpu_v3::clean_data_line(register(*address)))
         }
@@ -4045,15 +4035,15 @@ mod tests {
     }
 
     #[test]
-    fn resident_copy_intrinsic_is_retained_and_maps_two_pointers() {
+    fn line_copy_intrinsic_is_retained_and_maps_two_pointers() {
         let program = compile(
             r#"fn main() {
-            unsafe { dcache_resident_copy(Ptr::from_addr(0x120), Ptr::from_addr(0x4420)); };
+            unsafe { dcache_line_copy(Ptr::from_addr(0x120), Ptr::from_addr(0x4420)); };
             dcache_wait(); halt(0);
         }"#,
             CompilerOptions::default(),
         );
-        assert!(program.words.iter().any(|word| word & 0xff00 == 0x2700));
+        assert!(program.words.iter().any(|word| word & 0xff00 == 0x6700));
         let mut machine = cpu_v3::CpuV3Sim::default();
         machine
             .load_program(program.code_base, &program.words)
@@ -4073,12 +4063,24 @@ mod tests {
     }
 
     #[test]
-    fn cache_line_intrinsics_lower_to_revision_0_9_commands() {
+    fn removed_resident_copy_intrinsic_is_rejected() {
+        let error = parse_source_with(
+            "fn main(){unsafe{dcache_resident_copy(Ptr::from_addr(0x120),Ptr::from_addr(0x240));}halt(0);}",
+            CompilerOptions::default().data_base,
+        ).err().expect("removed intrinsic must not have a compatibility alias");
+        assert!(
+            error.to_string().contains("dcache_resident_copy"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn cache_line_intrinsics_lower_to_dual_address_commands() {
         let source = r#"
             fn main() {
                 let line = Ptr::from_addr(0x0100);
                 unsafe {
-                    dcache_line_copy(line, 1);
+                    dcache_line_copy(line, Ptr::from_addr(0x4100));
                     dcache_clean_line(line);
                 };
                 dcache_wait();

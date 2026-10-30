@@ -360,12 +360,13 @@ mod tests {
                 if dcache_invalidate_all()!=0 { fail(1); }
             }
             fn main() {
+                unsafe { write_dseg_page(3,128); }
                 let mut line: u16=0;
                 while line<256 {
                     let p=Ptr::from_addr(0x4000+(line<<4));
                     let mut i: u16=0;
                     while i<16 { unsafe { p.write(i as i16,0x1234); } i+=1; }
-                    unsafe { dcache_line_copy(p,128); } dcache_wait(); line+=1;
+                    unsafe { dcache_line_copy(p,Ptr::from_addr(0xc000+(line<<4))); } dcache_wait(); line+=1;
                 }
                 invalidate();
                 halt(0x5a35);

@@ -1,4 +1,4 @@
-//! Disassembler for CpuV3 revision 0.9: word -> typed instruction + mnemonic text.
+//! Disassembler for CpuV3 revision 0.10: word -> typed instruction + mnemonic text.
 //!
 //! `decode` maps one physical word to an `Instruction`; `disassemble_words` walks
 //! a stream and merges a `PFX12` prefix with its consumer into one wide
@@ -149,13 +149,9 @@ pub enum Instruction {
         dst: u8,
         src: u8,
     },
-    CacheLineCopy {
+    LineCopy {
         source: u8,
         destination: u8,
-    },
-    LineCopy {
-        offset: u8,
-        destination_page: u8,
     },
     SetLessThanSigned {
         dst: u8,
@@ -253,10 +249,6 @@ pub fn decode(word: Word) -> Instruction {
                     dst: reg(n1.into()),
                     amount: n0,
                 },
-                7 => Instruction::CacheLineCopy {
-                    source: reg(n1.into()),
-                    destination: reg(n0.into()),
-                },
                 8..=0xa => Instruction::Multiply {
                     window: match n2 {
                         8 => MultiplyWindow::Low,
@@ -304,8 +296,8 @@ pub fn decode(word: Word) -> Instruction {
                 src: reg(n0.into()),
             },
             7 => Instruction::LineCopy {
-                offset: reg(n1.into()),
-                destination_page: reg(n0.into()),
+                source: reg(n1.into()),
+                destination: reg(n0.into()),
             },
             8 => Instruction::SetLessThanSigned {
                 dst: reg(n1.into()),
@@ -748,14 +740,10 @@ impl Instruction {
             Instruction::LeadingZeros { dst, src } => format!("clz r{dst}, r{src}"),
             Instruction::PopulationCount { dst, src } => format!("popcnt r{dst}, r{src}"),
             Instruction::SetEqual { dst, src } => format!("seq r{dst}, r{src}"),
-            Instruction::CacheLineCopy {
+            Instruction::LineCopy {
                 source,
                 destination,
-            } => format!("dcopyl r{source}, r{destination}"),
-            Instruction::LineCopy {
-                offset,
-                destination_page,
-            } => format!("lcopy r{offset}, r{destination_page}"),
+            } => format!("lcopy r{source}, r{destination}"),
             Instruction::SetLessThanSigned { dst, src } => format!("slt r{dst}, r{src}"),
             Instruction::SetLessThanUnsigned { dst, src } => format!("sltu r{dst}, r{src}"),
             Instruction::CompareSigned { lhs, rhs } => format!("cmps r{lhs}, r{rhs}"),
@@ -1210,16 +1198,16 @@ mod tests {
         assert_eq!(decode(0xd000), Instruction::FpuWord0 { word: 0xd000 });
         assert_eq!(decode(0xe100), Instruction::FpuWord0 { word: 0xe100 });
         assert_eq!(decode(0xefff), Instruction::FpuWord0 { word: 0xefff });
-        // Shift/multiply reserved functions 3, B, D..F.
-        for function in [0x3u16, 0xb, 0xd, 0xe, 0xf] {
+        // Shift/multiply reserved functions 3, 7, B, D..F.
+        for function in [0x3u16, 0x7, 0xb, 0xd, 0xe, 0xf] {
             let word = 0x2000 | (function << 8);
             assert_eq!(decode(word), Instruction::Invalid { word });
         }
         assert_eq!(
             decode(0x6712),
             Instruction::LineCopy {
-                offset: 1,
-                destination_page: 2,
+                source: 1,
+                destination: 2,
             }
         );
         // Non-canonical special-register selectors are invalid.

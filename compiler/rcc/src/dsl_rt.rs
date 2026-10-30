@@ -329,33 +329,18 @@ pub fn dcache_clean_all() -> u16 {
     unimplemented!("cache maintenance is not available on the host")
 }
 
-/// Start an asynchronous copy of the 32-byte cache line containing `source`
-/// to `destination_page` at the same in-page offset (CpuV3-only).
-///
-/// `source` must be 16-word aligned and `destination_page` must fit in eight
-/// bits. The caller must use `dcache_wait()` before relying on completion.
-///
-/// # Safety
-///
-/// `source` must identify a readable cache line in the current DSEG mapping,
-/// and the caller must own the destination physical line until completion.
-pub unsafe fn dcache_line_copy(source: Ptr, destination_page: u16) {
-    let _ = (source, destination_page);
-    unimplemented!("cache-line copy is not available on the host")
-}
-
-/// Copy a 32-byte aligned line to another DSEG-mapped pointer (CpuV3-only).
-/// Latest source words are preserved, with ordinary writeback/replacement allowed.
-/// The destination becomes dirty in cache; external readers need a later clean.
-/// Use `dcache_wait()` before relying on completion; both mappings are captured at issue.
+/// Copy one aligned source cache line to destination DRAM (CpuV3-only).
+/// Both ordinary word pointers are translated through their own DSEG entry.
+/// Both mappings are captured at issue; use `dcache_wait()` for completion.
+/// The source stays cached/dirty; an old destination alias is discarded.
+/// Physical same-line copies still write DRAM and retain the source alias.
 ///
 /// # Safety
-///
-/// Both pointers must be 16-word aligned and valid for the complete line;
-/// the caller must own the destination until completion.
-pub unsafe fn dcache_resident_copy(source: Ptr, destination: Ptr) {
+/// Both pointers must be 16-word aligned and valid for the complete line.
+/// The caller owns the destination and its external visibility until completion.
+pub unsafe fn dcache_line_copy(source: Ptr, destination: Ptr) {
     let _ = (source, destination);
-    unimplemented!("resident cache-line copy is not available on the host")
+    unimplemented!("cache-line copy is not available on the host")
 }
 
 /// Start an asynchronous write-back of the resident line containing `address`

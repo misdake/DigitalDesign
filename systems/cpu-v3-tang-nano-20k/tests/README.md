@@ -286,3 +286,23 @@ asset/mode binding and deterministic native MEMCPY specialization are checked by
 the profiler Python suite. `capture_draw`'s explicit `GPU_PROFILER_NATIVE_COPY=1`
 and `GPU_PROFILER_UART=1` modes reuse the same source generator for bounded actual
 UART runtime and system-front-end fixtures; cold GPU+MC replay remains separate.
+
+## Dual-address LCOPY and maintenance
+
+`system_cosim` covers independent source/destination DSEG translation, remapping
+both DSEGs while an accepted copy is active, same-physical-line logical aliases,
+ALU overlap, and HALT/DWAIT completion through the full fetch/cache/arbiter path.
+The `cpu-v3` cache tests replay the cycle model against portable and native DPB
+implementations. Their direct goldens include equal-tag/different-set target
+invalidation (`0x120 -> 0x240`), dirty target discard, source dirty retention,
+cold-source victim/refill, the complete last physical-row address and payload,
+alignment failures, stalls and terminal errors.
+The reserved opcode2/function7 and removed RCC intrinsic are rejected.
+
+`cache_maintenance_protocol` checks fourteen bounded CPU/cache/SystemControl
+scenarios. Its injected full-clean write error is fail-stop: software receives
+error status, while cache ownership/admission remains locked until reset. The
+fixture observes the CPU's halted state and verifies that architectural HALT
+and command ready remain suppressed; it does not wait for a successful drain
+from a deliberately faulted cache. Existing reset/error ownership and DWAIT
+checks retain their behavior.

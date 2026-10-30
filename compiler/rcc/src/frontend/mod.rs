@@ -5164,10 +5164,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     }
     let name = &segs[0];
 
-    if matches!(
-        name.as_str(),
-        "dcache_line_copy" | "dcache_resident_copy" | "dcache_clean_line"
-    ) {
+    if matches!(name.as_str(), "dcache_line_copy" | "dcache_clean_line") {
         if l.unsafe_depth == 0 {
             return Err(err(call, format!("{name} requires an unsafe block")));
         }
@@ -5356,28 +5353,14 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         if args.len() != 2 {
             return Err(err(
                 call,
-                "dcache_line_copy(source, destination_page) takes 2 arguments",
-            ));
-        }
-        let (source, from) = &args[0];
-        let (source, _) = coerce(l, *source, from, &Ty::Ptr, &call.args[0])?;
-        let (destination_page, from) = &args[1];
-        let (destination_page, _) = coerce(l, *destination_page, from, &Ty::U16, &call.args[1])?;
-        l.b.dcache_line_copy(source, destination_page);
-        return Ok(Val::Unit);
-    }
-    if name.as_str() == "dcache_resident_copy" {
-        if args.len() != 2 {
-            return Err(err(
-                call,
-                "dcache_resident_copy(source, destination) takes 2 arguments",
+                "dcache_line_copy(source, destination) takes 2 arguments",
             ));
         }
         let (source, from) = &args[0];
         let (source, _) = coerce(l, *source, from, &Ty::Ptr, &call.args[0])?;
         let (destination, from) = &args[1];
         let (destination, _) = coerce(l, *destination, from, &Ty::Ptr, &call.args[1])?;
-        l.b.dcache_resident_copy(source, destination);
+        l.b.dcache_line_copy(source, destination);
         return Ok(Val::Unit);
     }
     if name.as_str() == "dcache_clean_line" {
@@ -7001,7 +6984,7 @@ mod tests {
         );
 
         assert!(parse_source_with(
-            "fn main() { let p = Ptr::from_addr(0x100); unsafe { dcache_line_copy(p, 8); dcache_clean_line(p); }; dcache_wait(); halt(0); }",
+            "fn main() { let p = Ptr::from_addr(0x100); unsafe { dcache_line_copy(p, Ptr::from_addr(0x8000)); dcache_clean_line(p); }; dcache_wait(); halt(0); }",
             0,
         )
         .is_ok());

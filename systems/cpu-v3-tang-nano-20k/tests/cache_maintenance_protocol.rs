@@ -36,7 +36,7 @@ fn maintenance_drains_old_work_and_owns_completion() {
         let fst = matches!(case, 2 | 7);
         let mut p = cpu_v3::load_immediate16(1, 0x4000).to_vec();
         if case == 8 {
-            p.extend(cpu_v3::load_immediate16(3, 2));
+            p.extend(cpu_v3::load_immediate16(3, 0x8000));
         }
         if fst {
             for lane in 0..4 {

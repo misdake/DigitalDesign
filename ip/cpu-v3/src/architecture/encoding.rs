@@ -1,4 +1,4 @@
-//! Encoding helpers for CpuV3 revision 0.9.
+//! Encoding helpers for CpuV3 revision 0.10.
 
 pub type Word = u16;
 pub type Register = u8;
@@ -808,17 +808,10 @@ pub fn set_equal(dst: Register, src: Register) -> Word {
     extended(6, dst, src)
 }
 
-/// Starts an asynchronous 32-byte cache-line copy. The source is
-/// the mapped page containing `r[offset]`; the destination keeps the same
-/// in-page offset and takes its eight-bit physical page from `r[destination_page]`.
-pub fn line_copy(offset: Register, destination_page: Register) -> Word {
-    extended(7, offset, destination_page)
-}
-
-/// Copies a 32-byte aligned logical source line into a dirty destination line.
-/// Both pointers are mapped through DSEG; neither register is written.
-pub fn cache_line_copy(source: Register, destination: Register) -> Word {
-    shift_mul(7, source, register(destination))
+/// Starts an asynchronous 32-byte copy from the source cache line to DRAM.
+/// Both registers contain aligned ordinary DSEG-mapped word pointers.
+pub fn line_copy(source: Register, destination: Register) -> Word {
+    extended(7, source, destination)
 }
 
 /// Replaces `dst` with the signed comparison `dst < src` as 0 or 1.

@@ -3,10 +3,9 @@ module CpuV3DataCache (
     input wire reset,
     input wire clean_all,
     input wire invalidate_all,
-    // {copy, clean}: 00 ordinary, 01 clean, 10 DRAM copy, 11 source-read/target-install.
+    // Copy and clean are independent commands; copy destination uses clean_address.
     input wire line_copy_start,
     input wire [21:0] line_copy_source,
-    input wire [7:0] line_copy_destination_page,
     input wire line_clean_start,
     input wire [21:0] line_clean_address,
     output wire line_copy_ready,
@@ -44,7 +43,7 @@ localparam [4:0] ST_IDLE=0, ST_LOOKUP=1, ST_LINE_REQUEST=2,
     ST_LINE_RECEIVE=3, ST_COPY_RESPONSE=4, ST_WB_PRIME=5,
     ST_WB_CAPTURE=6, ST_WB_REQUEST=7, ST_WB_STREAM=8,
     ST_WB_RESPONSE=9, ST_SCAN=10, ST_COPY_PREPARE=11,
-    ST_COPY_INVALIDATE=12, ST_SCAN_PRIME=13, ST_META_REFRESH=14, ST_FAULT=15;
+    ST_SCAN_PRIME=13, ST_META_REFRESH=14, ST_FAULT=15;
 
 reg [4:0] state = ST_IDLE;
 reg pending_write = 0;
@@ -70,7 +69,7 @@ reg sweep_active = 0;
 reg [5:0] sweep_set = 0;
 reg sweep_finishes_maintenance = 0;
 // A line copy is a normal source lookup/refill followed by the existing
-// write-back path with only the physical segment redirected. The destination
+// write-back path with the complete physical destination redirected. The destination
 // is not allocated on a cold destination. A resident destination is directly
 // invalidated before the redirected write; its dirty contents are discarded
 // because the complete line is about to be replaced.
@@ -78,9 +77,7 @@ reg line_copy_active = 0;
 reg wb_for_line_copy = 0;
 reg line_clean_active = 0;
 reg wb_for_line_clean = 0;
-reg [7:0] line_copy_destination_page_latched = 0;
-reg line_copy_destination_hit_latched = 0;
-reg line_copy_destination_way_latched = 0;
+reg [7:0] line_copy_destination_high = 0;
 
 // Serialized metadata scan; no complete dirty bitmap exists.
 reg [5:0] scan_set=0;
@@ -110,35 +107,34 @@ wire promote_found=full_wb && found_valid && !retire_valid && !memory_error &&
     ((state==ST_WB_STREAM && memory_write_data_ready && wb_beat==3) || state==ST_WB_RESPONSE);
 wire bg_hit=(meta0[12]&&meta0[13]) || (meta1[12]&&meta1[13]);
 wire bg_way=!(meta0[12]&&meta0[13]);
-wire resident_copy = line_copy_active && line_clean_active;
-wire resident_destination = resident_copy && wb_for_line_copy;
-wire legacy_copy_writeback = line_copy_active && !line_clean_active && wb_for_line_copy;
+wire copy_writeback = line_copy_active && wb_for_line_copy;
 wire [5:0] pending_set = pending_address[9:4];
 wire [11:0] pending_tag = pending_address[21:10];
-wire resident_source_lookup = resident_copy && !resident_destination;
-wire [5:0] lookup_set = resident_source_lookup ? pending_write_data[9:4] : pending_set;
-wire [11:0] lookup_tag = resident_source_lookup ?
-    {line_copy_destination_page_latched,pending_write_data[13:10]} : pending_tag;
-wire [21:0] refill_request_address = resident_copy ?
-    {line_copy_destination_page_latched,pending_write_data[13:4],4'b0} :
-    {pending_address[21:4],4'b0};
+// Store data is idle during copy: reuse ten bits plus the existing high page
+// latch for the destination row, held until the terminal response.
+wire [21:0] copy_destination_address =
+    {line_copy_destination_high,pending_write_data[9:0],4'b0};
+wire [5:0] copy_destination_set = pending_write_data[5:0];
+wire [21:0] refill_request_address = {pending_address[21:4],4'b0};
 wire [3:0] pending_word = pending_address[3:0];
 wire pending_address_valid = pending_address[31:22] == 0;
 // Synchronous metadata launches alongside data on CPU acceptance. Maintenance
 // sources share that stage; write-back assembles its address in CAPTURE after
 // PRIME has read the selected tag, without adding a transaction cycle.
-wire [5:0] tag_read_set = (bg_active && bg_state) ? bg_read_set : (state == ST_SCAN_PRIME) ? (wb_for_maintenance ? scan_set : lookup_set) :
+wire [5:0] tag_read_set =
+    (line_copy_active && state==ST_SCAN_PRIME) ? copy_destination_set :
+    (bg_active && bg_state) ? bg_read_set : (state == ST_SCAN_PRIME) ? (wb_for_maintenance ? scan_set : pending_set) :
     (state == ST_SCAN) ? (scan_set==63 ? scan_set : scan_set+6'd1) :
     (state == ST_WB_PRIME || state == ST_WB_CAPTURE || state == ST_WB_REQUEST ||
      state == ST_WB_STREAM || state == ST_WB_RESPONSE || state == ST_COPY_RESPONSE) ? wb_set :
-    (state == ST_IDLE && cpu_request_valid && cpu_request_ready) ? cpu_address[9:4] : lookup_set;
+    (state == ST_IDLE && cpu_request_valid && cpu_request_ready) ? cpu_address[9:4] : pending_set;
 wire [11:0] way_0_tag;
 wire [11:0] way_1_tag;
 wire way_0_valid_read;
 wire way_1_valid_read;
 wire victim_read;
-wire way_0_hit = !sweep_active && way_0_valid_read && way_0_tag == lookup_tag;
-wire way_1_hit = !sweep_active && way_1_valid_read && way_1_tag == lookup_tag;
+wire way_0_hit = !sweep_active && way_0_valid_read && way_0_tag == pending_tag;
+wire way_1_hit = !sweep_active && way_1_valid_read && way_1_tag == pending_tag;
 wire pending_hit = way_0_hit || way_1_hit;
 wire hit_way = !way_0_hit && way_1_hit;
 wire selected_victim = !way_0_valid_read ? 1'b0 :
@@ -207,22 +203,26 @@ __CACHE_DATA_BANKS__ u_data_banks (
 wire pending_hit_dirty = hit_way ? meta1[13] : meta0[13];
 wire selected_victim_dirty = selected_victim ? meta1[13] : meta0[13];
 wire [11:0] prepared_line_copy_destination_tag =
-    {line_copy_destination_page_latched, pending_address[13:10]};
+    copy_destination_address[21:10];
 wire prepared_line_copy_destination_way_0_hit =
-    prepared_line_copy_destination_tag != pending_tag && way_0_valid_read &&
+    copy_destination_address[21:4] != pending_address[21:4] && way_0_valid_read &&
     way_0_tag == prepared_line_copy_destination_tag;
 wire prepared_line_copy_destination_way_1_hit =
-    prepared_line_copy_destination_tag != pending_tag && way_1_valid_read &&
+    copy_destination_address[21:4] != pending_address[21:4] && way_1_valid_read &&
     way_1_tag == prepared_line_copy_destination_tag;
-wire dest_invalidate=state==ST_COPY_INVALIDATE && line_copy_destination_hit_latched;
+// The synchronous target metadata is ready in PREPARE. Invalidate directly
+// at this edge; REFRESH restores the source read after write-through q.
+wire dest_invalidate=state==ST_COPY_PREPARE &&
+    (prepared_line_copy_destination_way_0_hit || prepared_line_copy_destination_way_1_hit);
+wire dest_way=!prepared_line_copy_destination_way_0_hit && prepared_line_copy_destination_way_1_hit;
 wire wb_clear=(maintenance_terminal || (!full_wb && state==ST_WB_RESPONSE && memory_response_valid)) && !memory_error;
 wire [6:0] clear_index=full_wb && retire_valid?retire_index:{wb_way,wb_set};
 wire [15:0] clear_metadata=full_wb && retire_valid?retire_metadata:wb_metadata;
 wire refill_prime=state==ST_LINE_REQUEST;
 wire meta_update=hit_store || refill_prime || refill_commit || dest_invalidate;
-wire update_way=hit_store?hit_way:dest_invalidate?line_copy_destination_way_latched:pending_way;
+wire update_way=hit_store?hit_way:dest_invalidate?dest_way:pending_way;
 wire [15:0] old_word=update_way?meta1:meta0;
-wire [15:0] install_word={1'b0,!pending_way,(pending_write || resident_copy),1'b1,pending_tag};
+wire [15:0] install_word={1'b0,!pending_way,pending_write,1'b1,pending_tag};
 wire [15:0] update_word=refill_commit?install_word:
     hit_store?(old_word | 16'h2000):(old_word & 16'hcfff);
 // A way-one install also updates the victim bit in the current way-zero word.
@@ -230,8 +230,8 @@ wire [15:0] update_word=refill_commit?install_word:
 wire meta_write0=sweep_active || (wb_clear&&!clear_index[6]) ||
     (meta_update&&!update_way) || (refill_commit&&pending_way);
 wire meta_write1=sweep_active || (wb_clear&&clear_index[6]) || (meta_update&&update_way);
-wire [5:0] meta_set0=sweep_active?sweep_set:wb_clear?clear_index[5:0]:pending_set;
-wire [5:0] meta_set1=sweep_active?sweep_set:wb_clear?clear_index[5:0]:pending_set;
+wire [5:0] meta_set0=sweep_active?sweep_set:wb_clear?clear_index[5:0]:dest_invalidate?copy_destination_set:pending_set;
+wire [5:0] meta_set1=sweep_active?sweep_set:wb_clear?clear_index[5:0]:dest_invalidate?copy_destination_set:pending_set;
 wire [15:0] wb_cleared=wb_for_maintenance || wb_for_line_clean ?
     (clear_metadata & 16'hdfff):(clear_metadata & 16'hcfff);
 wire [15:0] meta_word0=sweep_active?16'b0:wb_clear?wb_cleared:
@@ -273,11 +273,10 @@ wire full_clean_finished=(state==ST_SCAN && scan_set==63 && !bg_hit) ||
     (state==ST_WB_RESPONSE && wb_for_maintenance && !retire_valid && memory_response_valid &&
      !memory_error && !found_valid && bg_done);
 wire fault_scrub=(state==ST_LINE_RECEIVE || state==ST_WB_RESPONSE ||
-    state==ST_COPY_RESPONSE) && memory_response_valid && memory_error && !resident_copy;
+    state==ST_COPY_RESPONSE) && memory_response_valid && memory_error;
 always @(posedge clk) begin
     if(reset) may_have_dirty<=0;
-    else if((cpu_request_valid && cpu_request_ready && cpu_write) ||
-        (refill_commit && resident_copy)) may_have_dirty<=1;
+    else if((cpu_request_valid && cpu_request_ready && cpu_write)) may_have_dirty<=1;
     else if(full_clean_finished || fault_scrub) may_have_dirty<=0;
 end
 
@@ -292,9 +291,7 @@ always @(posedge clk) begin
         wb_for_line_copy <= 0;
         line_clean_active <= 0;
         wb_for_line_clean <= 0;
-        line_copy_destination_page_latched <= 0;
-        line_copy_destination_hit_latched <= 0;
-        line_copy_destination_way_latched <= 0;
+        line_copy_destination_high <= 0;
         maintenance_error <= 0;
         scan_set <= 0; bg_active<=0; bg_valid<=0; bg_done<=0; found_valid<=0;
         retire_valid<=0; found_granted<=0;
@@ -361,27 +358,20 @@ always @(posedge clk) begin
                     end else state <= ST_SCAN_PRIME;
                 end else if ((line_copy_start || line_clean_start) && line_copy_ready) begin
                     maintenance_error <= 0;
-                    if (line_copy_start && ((|line_copy_source[3:0]) ||
-                        (line_clean_start && (|line_clean_address[3:0])))) begin
+                    if (line_copy_start && ((|line_copy_source[3:0]) || (|line_clean_address[3:0]))) begin
                         maintenance_done <= 1;
                         maintenance_error <= 1;
-                    end else if (line_copy_start && line_clean_start &&
-                        line_copy_source[21:4] == line_clean_address[21:4]) begin
-                        maintenance_done <= 1;
                     end else begin
                         maintenance_active <= 1;
                         line_copy_active <= line_copy_start;
-                        line_clean_active <= line_clean_start;
+                        line_clean_active <= !line_copy_start && line_clean_start;
                         wb_for_line_copy <= 0;
                         wb_for_maintenance <= 0;
                         wb_for_line_clean <= 0;
                         pending_write <= 0;
-                        // Ordinary refill/tag/data layout always names target.
-                        // The second existing address source already serves CLEAN.
-                        pending_address <= {10'b0, line_clean_start ? line_clean_address : line_copy_source};
-                        line_copy_destination_page_latched <= line_clean_start ?
-                            line_copy_source[21:14] : line_copy_destination_page;
-                        pending_write_data <= {2'b0,line_copy_source[13:4],4'b0};
+                        pending_address <= {10'b0, line_copy_start ? line_copy_source : line_clean_address};
+                        line_copy_destination_high <= line_clean_address[21:14];
+                        pending_write_data <= {6'b0,line_clean_address[13:4]};
                         state <= ST_SCAN_PRIME;
                     end
                 end else if (cpu_request_valid && cpu_request_ready) begin
@@ -403,35 +393,8 @@ always @(posedge clk) begin
                     response_error <= 1;
                     response_valid <= 1;
                     state <= ST_IDLE;
-                end else if (resident_copy && !resident_destination) begin
-                    if (pending_hit && pending_hit_dirty) begin
-                        // Memory must contain the newest source before the
-                        // existing refill port reads it into the target row.
-                        wb_way <= hit_way;
-                        wb_set <= lookup_set;
-                        wb_for_line_clean <= 1;
-                        wb_beat <= 0;
-                        state <= ST_WB_PRIME;
-                    end else begin
-                        wb_for_line_copy <= 1;
-                        state <= ST_META_REFRESH;
-                    end
                 end else if (pending_hit) begin
-                    if (resident_copy) begin
-                        pending_way <= hit_way;
-                        if (pending_hit_dirty) begin
-                            // Preserve old target bytes before a refill can
-                            // fail after overwriting an accepted prefix.
-                            wb_way <= hit_way;
-                            wb_set <= pending_set;
-                            wb_for_line_clean <= 1;
-                            wb_beat <= 0;
-                            state <= ST_WB_PRIME;
-                        end else begin
-                            refill_beat <= 0;
-                            state <= ST_LINE_REQUEST;
-                        end
-                    end else if (line_copy_active) begin
+                    if (line_copy_active) begin
                         wb_way <= hit_way;
                         wb_set <= pending_set;
                         wb_for_line_copy <= 1;
@@ -467,7 +430,7 @@ always @(posedge clk) begin
                         wb_way <= selected_victim;
                         wb_set <= pending_set;
                         wb_for_maintenance <= 0;
-                        wb_for_line_copy <= resident_destination;
+                        wb_for_line_copy <= 0;
                         wb_beat <= 0;
                         state <= ST_WB_PRIME;
                     end else begin
@@ -476,23 +439,7 @@ always @(posedge clk) begin
                     end
                 end
             end
-            ST_COPY_PREPARE: begin
-                line_copy_destination_hit_latched <=
-                    prepared_line_copy_destination_way_0_hit ||
-                    prepared_line_copy_destination_way_1_hit;
-                line_copy_destination_way_latched <=
-                    !prepared_line_copy_destination_way_0_hit &&
-                    prepared_line_copy_destination_way_1_hit;
-                // Register the destination way onto the existing valid-array
-                // write port. ST_LOOKUP replaces it with the source victim on
-                // a miss, so no extra write-way mux is needed.
-                pending_way <= !prepared_line_copy_destination_way_0_hit &&
-                    prepared_line_copy_destination_way_1_hit;
-                state <= ST_COPY_INVALIDATE;
-            end
-            ST_COPY_INVALIDATE: begin
-                state <= ST_META_REFRESH;
-            end
+            ST_COPY_PREPARE: state <= ST_META_REFRESH;
             ST_META_REFRESH: state <= ST_LOOKUP;
             ST_SCAN_PRIME: begin
                 if (line_copy_active && !line_clean_active) state <= ST_COPY_PREPARE;
@@ -518,9 +465,8 @@ always @(posedge clk) begin
                         bg_pipe_set<=wb_set+1'b1;
                     end
                 end
-                wb_address <= legacy_copy_writeback ?
-                    {line_copy_destination_page_latched,
-                     pending_address[13:4], 4'b0} :
+                wb_address <= copy_writeback ?
+                    copy_destination_address :
                     {(wb_way ? way_1_tag : way_0_tag), wb_set, 4'b0};
                 state <= ST_WB_REQUEST;
             end
@@ -532,20 +478,18 @@ always @(posedge clk) begin
             ST_WB_STREAM: if (memory_response_valid && memory_error) begin
                 // An error may terminate the burst before all source beats.
                 // Keep response-ready low until the existing error handler.
-                state <= legacy_copy_writeback ?
+                state <= copy_writeback ?
                     ST_COPY_RESPONSE : ST_WB_RESPONSE;
             end else if (memory_write_data_ready) begin
                 if (wb_beat == 3)
-                    state <= legacy_copy_writeback ?
+                    state <= copy_writeback ?
                         ST_COPY_RESPONSE : ST_WB_RESPONSE;
                 else wb_beat <= wb_beat + 1'b1;
             end
             ST_COPY_RESPONSE: if (memory_response_valid) begin
                 if (memory_error) begin
-                    if (!resident_copy) begin
-                        sweep_active <= 1;
-                        sweep_set <= 0;
-                    end
+                    sweep_active <= 1;
+                    sweep_set <= 0;
                     maintenance_error <= 1;
                     maintenance_active <= 0;
                     line_copy_active <= 0;
@@ -566,10 +510,8 @@ always @(posedge clk) begin
                 if (memory_error) begin
                     // Scrub every line with a sweep; the error itself is
                     // reported immediately.
-                    if (!resident_copy) begin
-                        sweep_active <= 1;
-                        sweep_set <= 0;
-                    end
+                    sweep_active <= 1;
+                    sweep_set <= 0;
                     if (maintenance_active) begin
                         maintenance_active <= 0;
                         line_copy_active <= 0;
@@ -602,16 +544,10 @@ always @(posedge clk) begin
                         end
                     end else if (wb_for_line_clean) begin
                         wb_for_line_clean <= 0;
-                        if (resident_copy) begin
-                            wb_for_line_copy <= 1;
-                            refill_beat <= 0;
-                            state <= resident_destination ? ST_LINE_REQUEST : ST_META_REFRESH;
-                        end else begin
                             maintenance_active <= 0;
                             line_clean_active <= 0;
                             maintenance_done <= 1;
                             state <= ST_IDLE;
-                        end
                     end else begin
                         refill_beat <= 0;
                         state <= ST_LINE_REQUEST;
@@ -643,10 +579,8 @@ always @(posedge clk) begin
             end
             ST_LINE_RECEIVE: if (memory_response_valid) begin
                 if (memory_error) begin
-                    if (!resident_copy) begin
-                        sweep_active <= 1;
-                        sweep_set <= 0;
-                    end
+                    sweep_active <= 1;
+                    sweep_set <= 0;
                     if (line_copy_active) begin
                         maintenance_active <= 0;
                         line_copy_active <= 0;
@@ -679,14 +613,7 @@ always @(posedge clk) begin
                             default: response_data <= memory_read_data[63:48];
                         endcase
                     if (refill_beat == 3) begin
-                        if (resident_copy) begin
-                            maintenance_active <= 0;
-                            line_copy_active <= 0;
-                            line_clean_active <= 0;
-                            wb_for_line_copy <= 0;
-                            maintenance_done <= 1;
-                            state <= ST_IDLE;
-                        end else if (line_copy_active) begin
+                        if (line_copy_active) begin
                             wb_way <= pending_way;
                             wb_set <= pending_set;
                             wb_for_line_copy <= 1;

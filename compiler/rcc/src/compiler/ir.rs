@@ -286,15 +286,11 @@ pub enum Instr {
     /// CpuV3-only: blocking clean-plus-invalidate of the complete write-back
     /// data cache. This is a compiler memory and control barrier.
     DcacheInvalidateAll,
-    /// CpuV3-only asynchronous copy of one aligned D-cache line to a physical
-    /// destination page. This is an observable memory operation.
-    DcacheResidentCopy {
-        source: VReg,
-        destination: VReg,
-    },
+    /// CpuV3-only asynchronous copy from a mapped word pointer to another
+    /// mapped word pointer in DRAM. This is an observable memory operation.
     DcacheLineCopy {
         source: VReg,
-        destination_page: VReg,
+        destination: VReg,
     },
     /// CpuV3-only asynchronous clean of one resident D-cache line.
     DcacheCleanLine {
@@ -517,13 +513,6 @@ impl Instr {
             }
             Instr::DcacheLineCopy {
                 source,
-                destination_page,
-            } => {
-                f(*source);
-                f(*destination_page);
-            }
-            Instr::DcacheResidentCopy {
-                source,
                 destination,
             } => {
                 f(*source);
@@ -631,13 +620,6 @@ impl Instr {
                 args.iter_mut().for_each(f);
             }
             Instr::DcacheLineCopy {
-                source,
-                destination_page,
-            } => {
-                f(source);
-                f(destination_page);
-            }
-            Instr::DcacheResidentCopy {
                 source,
                 destination,
             } => {
@@ -1063,12 +1045,8 @@ impl fmt::Display for Instr {
             Instr::DcacheInvalidateAll => write!(f, "dcache_invalidate_all"),
             Instr::DcacheLineCopy {
                 source,
-                destination_page,
-            } => write!(f, "dcache_line_copy v{source}, v{destination_page}"),
-            Instr::DcacheResidentCopy {
-                source,
                 destination,
-            } => write!(f, "dcache_resident_copy v{source}, v{destination}"),
+            } => write!(f, "dcache_line_copy v{source}, v{destination}"),
             Instr::DcacheCleanLine { address } => write!(f, "dcache_clean_line v{address}"),
             Instr::DcacheWait => write!(f, "dcache_wait"),
             Instr::MtsrDseg { src, index } => match index {

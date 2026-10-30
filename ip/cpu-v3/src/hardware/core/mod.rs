@@ -68,7 +68,6 @@ pub struct CpuV3CoreOutput {
     pub data_response_ready: Wire,
     pub data_line_copy_valid: Wire,
     pub data_line_copy_source: Wires<22>,
-    pub data_line_copy_destination_page: Wires<8>,
     pub data_line_clean_valid: Wire,
     pub data_line_clean_address: Wires<22>,
     pub device_index: Wires<3>,
@@ -889,14 +888,11 @@ impl CpuV3CoreState {
             7 => {
                 let offset = self.registers[usize::from(dst)];
                 let destination_page = self.registers[usize::from(src)];
-                let resident = instruction & 0x4000 == 0;
-                if offset & 0x0f != 0
-                    || if resident {
-                        destination_page & 15 != 0
-                    } else {
-                        destination_page & !0xff != 0
-                    }
-                {
+                if instruction >> 12 != 6 {
+                    self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
+                    return;
+                }
+                if (offset | destination_page) & 15 != 0 {
                     self.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
                     return;
                 }
@@ -1058,7 +1054,7 @@ impl Module for CpuV3Core {
         let device_field = field(state.instruction, 8);
         let device_register = field(state.instruction, 0);
         let line_copy_instruction = state.phase == Phase::Execute
-            && (state.instruction >> 12) & 0xb == 2
+            && state.instruction >> 12 == 6
             && field(state.instruction, 8) == 0x7;
         let cache_control_instruction = state.phase == Phase::Execute
             && state.instruction >> 12 == 0x6
@@ -1077,12 +1073,7 @@ impl Module for CpuV3Core {
         let line_copy_offset = read_gpr(field(state.instruction, 4));
         let line_copy_destination = read_gpr(field(state.instruction, 0));
         let cache_control_address = read_gpr(field(state.instruction, 0));
-        let line_copy_operands_valid = line_copy_offset & 15 == 0
-            && if state.instruction & 0x4000 == 0 {
-                line_copy_destination & 15 == 0
-            } else {
-                line_copy_destination & !0xff == 0
-            };
+        let line_copy_operands_valid = (line_copy_offset | line_copy_destination) & 15 == 0;
         output.drive(
             circuit,
             &CpuV3CoreOutputValue {
@@ -1139,12 +1130,9 @@ impl Module for CpuV3Core {
                     state.data_segments,
                     line_copy_offset,
                 )),
-                data_line_copy_destination_page: u64::from(line_copy_destination & 0xff),
                 data_line_clean_valid: !input.hold
-                    && ((cache_control_instruction && cache_control_selector == 6)
-                        || (line_copy_instruction
-                            && state.instruction & 0x4000 == 0
-                            && line_copy_operands_valid))
+                    && cache_control_instruction
+                    && cache_control_selector == 6
                     && !store.valid
                     && state.fpu2_pending == 0,
                 data_line_clean_address: u64::from(physical_data_address(

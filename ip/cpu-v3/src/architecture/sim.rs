@@ -450,22 +450,6 @@ impl CpuV3Sim {
         let dst = usize::from(field(instruction, 4));
         let operand = field(instruction, 0);
         let old = self.registers[dst];
-        if function == 7 {
-            let source = self.data_address(old);
-            let destination = self.data_address(self.registers[usize::from(operand)]);
-            for address in [source, destination] {
-                if address.get() & 15 != 0 {
-                    return Err(FaultKind::UnalignedAddress { address });
-                }
-                if address.get() as usize + 16 > self.memory.len() {
-                    return Err(FaultKind::PhysicalAddressOutOfRange { address });
-                }
-            }
-            let first = source.get() as usize;
-            self.memory
-                .copy_within(first..first + 16, destination.get() as usize);
-            return Ok(StepOutcome::Running);
-        }
         // Every operation in the family reads `rd` before writing it, so the
         // destructive `rd == rs` case needs no special handling.
         let result = match function {
@@ -893,17 +877,17 @@ impl CpuV3Sim {
             }
             7 => {
                 let offset = self.registers[usize::from(dst)];
-                let destination_page = self.registers[usize::from(src)];
+                let destination_pointer = self.registers[usize::from(src)];
                 let source = self.data_address(offset);
                 if offset & 0x0f != 0 {
                     return Err(FaultKind::UnalignedAddress { address: source });
                 }
-                if destination_page & !0xff != 0 {
-                    return Err(FaultKind::PhysicalAddressOutOfRange { address: source });
+                let destination = self.data_address(destination_pointer);
+                if destination_pointer & 15 != 0 {
+                    return Err(FaultKind::UnalignedAddress {
+                        address: destination,
+                    });
                 }
-                let destination = PhysicalWordAddress::new(
-                    (u32::from(destination_page) << 14) | u32::from(offset & 0x3fff),
-                );
                 let source_start = source.get() as usize;
                 let destination_start = destination.get() as usize;
                 let source_end = source_start
@@ -1120,7 +1104,9 @@ mod tests {
         program.extend(load_immediate16(1, 1));
         program.push(write_data_segment(1));
         program.extend(load_immediate16(2, 0x20));
-        program.extend(load_immediate16(3, 2));
+        program.extend(load_immediate16(4, 2));
+        program.push(crate::write_data_segment_page(1, 4));
+        program.extend(load_immediate16(3, 0x4020));
         program.extend([line_copy(2, 3), halt()]);
 
         let source: Vec<u16> = (0..16).map(|index| 0x9000 + index).collect();
@@ -1130,7 +1116,7 @@ mod tests {
         assert_eq!(
             machine.run(64).unwrap(),
             RunOutcome::Halted {
-                steps: 9,
+                steps: 12,
                 signal: 0
             }
         );
@@ -1143,15 +1129,11 @@ mod tests {
     }
 
     #[test]
-    fn resident_copy_maps_both_pointers_without_modifying_registers() {
+    fn line_copy_maps_both_pointers_without_modifying_registers() {
         let mut program = Vec::new();
         program.extend(load_immediate16(2, 0x120));
         program.extend(load_immediate16(3, 0x4420));
-        program.extend([
-            crate::cache_line_copy(2, 3),
-            crate::wait_data_cache(),
-            halt(),
-        ]);
+        program.extend([crate::line_copy(2, 3), crate::wait_data_cache(), halt()]);
         let words: Vec<u16> = (0..16).map(|i| 0xab00 + i).collect();
         let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
@@ -2139,7 +2121,7 @@ mod tests {
     fn reserved_encodings_fault() {
         // Majors C/D/E are now FPU v2 first words, so only the non-canonical
         // JREG/JALR link fields remain invalid single words.
-        for word in [0xbe10, 0xbf00] {
+        for word in [0xbe10, 0xbf00, 0x2700, 0x2712, 0x27ff] {
             let mut machine = CpuV3Sim::default();
             machine.load_program(0, &[word]).unwrap();
             assert_eq!(

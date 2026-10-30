@@ -205,7 +205,7 @@ fn emulator_line_copy_waits_for_prior_stores_and_cache_acceptance() {
     state.phase = Phase::Execute;
     state.retired_words = 0;
     state.registers[1] = 0x0120;
-    state.registers[2] = 5;
+    state.registers[2] = 0x8120;
     state.instruction = cpu_v3::line_copy(1, 2);
 
     state.execute(0, false, false, false);
@@ -224,7 +224,7 @@ fn emulator_line_copy_waits_for_prior_stores_and_cache_acceptance() {
 }
 
 #[test]
-fn emulator_resident_copy_drains_and_preserves_registers() {
+fn emulator_dual_address_copy_drains_and_preserves_registers() {
     let mut state = CpuV3CoreState::default();
     state.phase = Phase::Execute;
     state.registers[4] = 3;
@@ -234,7 +234,7 @@ fn emulator_resident_copy_drains_and_preserves_registers() {
     state.retired_words = 0;
     state.registers[1] = 0x0120;
     state.registers[2] = 0x4420;
-    state.instruction = cpu_v3::cache_line_copy(1, 2);
+    state.instruction = cpu_v3::line_copy(1, 2);
 
     state.execute(0, false, false, false);
     assert_eq!(state.phase, Phase::Execute);
@@ -729,7 +729,6 @@ fn build_core_cosim_tb(program: &[u16], module_name: &str, max_cycles: usize) ->
              wire data_response_ready;\n\
              wire data_line_copy_valid;\n\
              wire [21:0] data_line_copy_source;\n\
-             wire [7:0] data_line_copy_destination_page;\n\
              wire data_line_clean_valid;\n\
              wire [21:0] data_line_clean_address;\n\
              wire [2:0] device_index;\n\
@@ -1631,6 +1630,7 @@ fn core_emu_matches_rtl_reserved_cache_encodings() {
     for word in (0..16)
         .map(|n| 0x6e70 | n)
         .chain((1..16).map(|n| 0x6e80 | n))
+        .chain([0x2700, 0x2712, 0x27ff])
     {
         assert_eq!(cpu_v3::decode(word), cpu_v3::Instruction::Invalid { word });
         let program = [word, cpu_v3::halt()];
@@ -1878,29 +1878,35 @@ fn core_fpu_word_and_completion_survive_hold() {
 }
 
 #[test]
-#[ignore = "bounded DCOPYL core sideband, mapping and fault co-simulation"]
-fn core_emu_matches_rtl_resident_copy_commands() {
-    for (source, destination) in [(0x4020, 0x8020), (0x4021, 0x8020), (0x4020, 0x8021)] {
+#[ignore = "bounded dual-address LCOPY core sideband, mapping and fault co-simulation"]
+fn core_emu_matches_rtl_dual_address_copy_commands() {
+    for (source, destination, destination_page) in [
+        (0x4020, 0x8020, 0x34),
+        (0x4021, 0x8020, 0x34),
+        (0x4020, 0x8021, 0x34),
+        (0x4020, 0x8020, 0x12),
+    ] {
         let mut p = cpu_v3::load_immediate16(4, 0x12).to_vec();
         p.push(cpu_v3::write_data_segment_page(1, 4));
-        p.extend(cpu_v3::load_immediate16(4, 0x34));
+        p.extend(cpu_v3::load_immediate16(4, destination_page));
         p.push(cpu_v3::write_data_segment_page(2, 4));
         p.extend(cpu_v3::load_immediate16(1, source));
         p.extend(cpu_v3::load_immediate16(2, destination));
         p.extend([
-            cpu_v3::cache_line_copy(1, 2),
+            cpu_v3::line_copy(1, 2),
             cpu_v3::alu(AluOp::Xor, 3, 1, 2),
             cpu_v3::signal(3, 0),
         ]);
         let emu = run_core_emu_trace(&p, 400);
         let mut tb = build_core_cosim_tb(&p, &CpuV3Core::verilog_identity().module_name(), 400);
         let expected = usize::from((source | destination) & 15 == 0);
+        let destination_physical = (u32::from(destination_page) << 14) | 0x20;
         let check = format!(
             r#"integer copy_count=0;
             always @(posedge clk) if(!reset) begin
                 if(data_line_copy_valid) begin
-                    if(!data_line_clean_valid || data_line_copy_source!==22'h48020 || data_line_clean_address!==22'hd0020)
-                        $fatal(1,"resident copy mapped sideband mismatch");
+                    if(data_line_clean_valid || data_line_copy_source!==22'h48020 || data_line_clean_address!==22'h{destination_physical:x})
+                        $fatal(1,"dual-address copy mapped sideband mismatch");
                     copy_count=copy_count+1;
                 end
                 if((halted || fault) && copy_count!={expected}) $fatal(1,"copy command count mismatch");

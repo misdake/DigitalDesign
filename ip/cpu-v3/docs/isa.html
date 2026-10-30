@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CPU V3 ISA v0.8 — Encoding, ABI, and Addressing</title>
+<title>CPU V3 ISA v0.10 — Encoding, ABI, and Addressing</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -82,7 +82,7 @@
 <body><main>
 
 <section class="hero">
-  <h1>CPU V3 ISA v0.8</h1>
+  <h1>CPU V3 ISA v0.10</h1>
   <p class="subtitle">Instruction encoding, architectural behavior, segmented addressing, faults, and compiler ABI.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
@@ -90,7 +90,7 @@
     <span class="badge">16-bit word offsets</span>
     <span class="badge">Segmented physical word addresses</span>
     <span class="badge">Transient pending test, no persistent flags</span>
-    <span class="badge">Revision 0.9</span>
+    <span class="badge">Revision 0.10</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
@@ -199,7 +199,6 @@
   <tr><td class="mono">4</td><td class="mn">SHLI rd, u4</td><td class="sem">rd = rd &lt;&lt; u4</td><td rowspan="3">Destructive immediate shifts; never consume a prefix.</td></tr>
   <tr><td class="mono">5</td><td class="mn">SHRI rd, u4</td><td class="sem">rd = rd &gt;&gt; u4 (logical)</td></tr>
   <tr><td class="mono">6</td><td class="mn">ASRI rd, u4</td><td class="sem">rd = signed(rd) &gt;&gt; u4</td></tr>
-  <tr><td class="mono">7</td><td class="mono">DCOPYL rsource, rdestination</td><td>Asynchronous aligned 32-byte DSEG-mapped copy into a dirty cache line; neither register is written. DWAIT completes it.</td><td>2 7 source destination</td></tr>
   <tr><td class="mono">8</td><td class="mn">MUL0 rd, rs</td><td class="sem">rd = (rd × rs)[15:0]</td><td rowspan="3">Unsigned 32-bit product; keep the window after shifting right by 0, 8, or 16.</td></tr>
   <tr><td class="mono">9</td><td class="mn">MUL8 rd, rs</td><td class="sem">rd = (rd × rs)[23:8]</td></tr>
   <tr><td class="mono">A</td><td class="mn">MUL16 rd, rs</td><td class="sem">rd = (rd × rs)[31:16]</td></tr>
@@ -207,7 +206,7 @@
   <tr><td class="mono">C</td><td class="mn">MULI rd, imm</td><td class="sem">rd = (rd × imm)[15:0]</td><td>Unsigned bit pattern: unprefixed u4, full u16 with <code>PFX12</code>. The family's only prefix consumer.</td></tr>
   <tr><td class="mono reserved">D..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
 </table>
-<p class="caption">Arithmetic operations in this family are destructive two-operand forms; DCOPYL instead reads both pointer registers without writing either. There is no signed integer multiply, rounding, saturation, or dual-register product writeback; general numeric computation belongs to the FPU.</p>
+<p class="caption">Arithmetic operations in this family are destructive two-operand forms; function 7 is reserved/invalid. There is no signed integer multiply, rounding, saturation, or dual-register product writeback; general numeric computation belongs to the FPU.</p>
 
 <h3>4.3 Extended and system — opcode 6</h3>
 <table>
@@ -219,7 +218,7 @@
   <tr><td class="mono">4</td><td class="mn">CLZ rd, rs</td><td class="mono">6 4 rd rs</td><td class="sem">rd = count_leading_zeros(rs)</td></tr>
   <tr><td class="mono">5</td><td class="mn">POPCNT rd, rs</td><td class="mono">6 5 rd rs</td><td class="sem">rd = population_count(rs)</td></tr>
   <tr><td class="mono">6</td><td class="mn">SEQ rd, rs</td><td class="mono">6 6 rd rs</td><td class="sem">rd = (rd == rs) ? 1 : 0</td></tr>
-  <tr><td class="mono">7</td><td class="mn">LCOPY roffset, rpage</td><td class="mono">6 7 roffset rpage</td><td class="sem">Asynchronously copy the aligned 16-word source line to physical page r[page] at the same low 14-bit offset. A resident destination alias is discarded before the complete-line overwrite.</td></tr>
+  <tr><td class="mono">7</td><td class="mn">LCOPY rsource, rdestination</td><td class="mono">6 7 rsource rdestination</td><td class="sem">Asynchronously write the latest aligned source cache line to destination DRAM. Both ordinary word pointers use their own DSEG mapping; the target set alias is discarded, dirty source is preserved, and a physical same-row operation still writes.</td></tr>
   <tr><td class="mono">8</td><td class="mn">SLT rd, rs</td><td class="mono">6 8 rd rs</td><td class="sem">rd = signed(rd) &lt; signed(rs) as 0/1</td></tr>
   <tr><td class="mono">9</td><td class="mn">SLTU rd, rs</td><td class="mono">6 9 rd rs</td><td class="sem">rd = unsigned(rd) &lt; unsigned(rs) as 0/1</td></tr>
   <tr><td class="mono">A</td><td class="mn">CMPS ra, rb</td><td class="mono">6 A ra rb</td><td class="sem">pending = signed ordering of ra vs rb; writes no register</td></tr>
@@ -229,7 +228,7 @@
   <tr><td class="mono">E</td><td class="mn">MTSR / D-cache control</td><td class="mono">6 E selector rs</td><td class="sem">Selectors 1..5 write bulk/individual data mappings; 6 and 8 issue clean-line and wait; 7 is reserved.</td></tr>
   <tr><td class="mono">F</td><td class="mn">JSEG seg, target</td><td class="mono">6 F seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
 </table>
-<p class="caption">No instruction in this family consumes a <code>PFX12</code> prefix. <code>LCOPY</code> requires a 16-word-aligned offset and fitted source/destination segments. <code>S*</code> names write a Boolean register result; <code>CMP*</code> names write the transient pending test.</p>
+<p class="caption">No instruction in this family consumes a <code>PFX12</code> prefix. <code>LCOPY</code> requires both word pointers to be 16-word aligned and both physical lines to fit memory; mappings latch at acceptance. <code>S*</code> names write a Boolean register result; <code>CMP*</code> names write the transient pending test.</p>
 <table>
   <tr><th>Function-E selector</th><th>Operation</th><th>Semantics</th></tr>
   <tr><td class="mono">1</td><td class="mn">MTSR DSEG, rs</td><td>Set DSEG0..3 to <code>r[rs]*4 + {0,1,2,3}</code>; r[rs] must be below 64.</td></tr>
@@ -444,7 +443,7 @@ approximation make the ordinary-distance boundary approximate.</p>
   <tr><td>Reserved or malformed encoding (reserved FPU subop/length/mode, non-canonical fields, a truncated FPU pair)</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
   <tr><td>Conditional branch (B functions 0..5) or conditional move (B functions 8..D) with no pending test result</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address when prefixed</td><td>faulting operation does not retire</td></tr>
   <tr><td>Fetch or data address outside fitted physical memory (including FLD/FST/FLDV/FSTV)</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
-  <tr><td>Unaligned <code>LCOPY</code> source</td><td>data-memory fault</td><td>faulting instruction offset</td><td>does not retire</td></tr>
+  <tr><td>Unaligned <code>LCOPY</code> operand</td><td>data-memory fault</td><td>faulting instruction offset</td><td>does not retire</td></tr>
   <tr><td>Valid prefixed consumer</td><td>executes one wide operation</td><td>—</td><td>retires two words together</td></tr>
   <tr><td>Pending prefix followed by non-consumer</td><td>prefix expires; next instruction executes normally</td><td>—</td><td>prefix and instruction retire separately</td></tr>
   <tr><td>SIGNAL type 0 after already halted</td><td>returns the latched halt signal</td><td>—</td><td>no additional execution</td></tr>
@@ -455,7 +454,8 @@ approximation make the ordinary-distance boundary approximate.</p>
 <h2 id="revision">9. Revision history</h2>
 <table>
   <tr><th>Revision</th><th>Change</th></tr>
-  <tr><td class="mono">0.9</td><td><b>Current.</b> Adds asynchronous 32-byte <code>LCOPY</code>, four independently mapped 32-KiB data pages with legacy bulk DSEG setup, and <code>DCLEANL</code>/<code>DWAIT</code>; function-E selector 7 remains reserved.</td></tr>
+  <tr><td class="mono">0.10</td><td><b>Current.</b> LCOPY uses two mapped word pointers, supports independent offsets/sets and always writes DRAM, including same-row aliases. Old page-operand binaries require recompilation (128 now means pointer0x0080). Opcode2/function7 is invalid; DCOPYL has no compatibility alias.</td></tr>
+  <tr><td class="mono">0.9</td><td>Adds asynchronous 32-byte <code>LCOPY</code>, four independently mapped 32-KiB data pages with legacy bulk DSEG setup, and <code>DCLEANL</code>/<code>DWAIT</code>; function-E selector 7 remains reserved.</td></tr>
   <tr><td class="mono">0.8</td><td>Breaking integer rearrangement with no binary compatibility. Majors 0/1/3/4/5 keep <code>ADD</code>/<code>SUB</code>/<code>AND</code>/<code>OR</code>/<code>XOR</code>; the old three-register <code>MUL</code> (major 2) and register-count <code>SHL</code>/<code>ASR</code> (majors 6/7) move into the destructive shift/multiply family at major 2, joined by <code>SHR</code>, the immediate shifts <code>SHLI</code>/<code>SHRI</code>/<code>ASRI</code> and <code>MULI</code> (both moved from major A), and the unsigned product windows <code>MUL8</code>/<code>MUL16</code>. Major 6 becomes the extended/system family (unary, bit queries, <code>SEQ</code>, destructive <code>SLT</code>/<code>SLTU</code>, pending-test <code>CMPS</code>/<code>CMPU</code>, <code>SIGNAL</code>, special registers, <code>JSEG</code>); <code>NOP</code> is now <code>6000</code>. <code>SIGNAL rs, type4</code> replaces <code>HALT</code> (<code>SIGNAL r0, 0</code> = <code>6C00</code>). Device access moves from major C to major 7 with an unchanged field layout. Major A keeps arithmetic/logic, constant construction at functions 2/3, and comparisons, with <code>CMPEQI</code> renamed <code>SEQI</code>; functions 7/B are <code>LDC</code>/<code>ADDC</code>, indexing a shared symmetric 16-entry constant table (<code>MAG = [8, 16, 24, 32, 64, 128, 256, 512]</code>; indices 0..7 hold <code>MAG[k]</code>, indices 8..15 hold <code>-MAG[k - 8]</code>) that starts just past the <code>0..=15</code> range <code>ADDI</code>/<code>LDI</code>/<code>LDUI</code> already cover, and they never consume <code>PFX12</code>. Amendment (still revision 0.8): <code>ADDI</code>/<code>SUBI</code> read the unprefixed immediate as an unsigned u4 (<code>0..=15</code>) instead of a signed i4 — negative adjustments are <code>SUBI</code>'s job, so the signed range wasted half the encodings; the <code>PFX12</code>-widened forms still add/subtract the full 16-bit immediate pattern. Major B becomes the symmetric control family: six conditional branches (0..5), <code>JREL</code> (6), <code>JALREL</code> (7), six conditional moves (8..D), <code>JREG</code> (<code>B E 0 target</code>), and <code>JALR</code> (<code>B F E target</code>), with <code>JALREL</code>/<code>JALR</code> linking to the fixed <code>r14</code>. <code>IMMHI12</code> is renamed <code>PFX12</code> and carries a neutral 12-bit payload with the closed consumer set above. The FPU was subsequently replaced wholesale by the two-word Q16.16 FPU v2: majors C/D/E now start a 32-bit pair and the old single-word Q8.8 <code>Dxxx</code> encoding is invalid.</td></tr>
   <tr><td class="mono">0.7</td><td>Historical: introduced the blocking fix16 FPU in the <code>D fn a b</code> family; retired and replaced by the two-word Q16.16 FPU v2.</td></tr>
   <tr><td class="mono">0.6</td><td>Removes address-mapped device access; <code>LOAD</code>/<code>STORE</code> always reach memory.</td></tr>

@@ -939,7 +939,6 @@ pub struct CpuV3DataCacheInput {
     pub invalidate_all: Wire,
     pub line_copy_start: Wire,
     pub line_copy_source: Wires<22>,
-    pub line_copy_destination_page: Wires<8>,
     pub line_clean_start: Wire,
     pub line_clean_address: Wires<22>,
     pub cpu_request_valid: Wire,
@@ -1105,12 +1104,9 @@ enum DataMemoryPhase {
     WriteResponse,
     LineCommandPrime,
     CopyPrepare,
-    CopyInvalidate,
     CopyRefresh,
     CopyLookup,
     CleanLookup,
-    ResidentDestinationPrime,
-    ResidentDestinationLookup,
     ScanPrime,
     Scan,
     Fault,
@@ -1134,10 +1130,7 @@ pub struct CpuV3DataCacheState {
     response_error: bool,
     maintenance_active: bool,
     line_copy_active: bool,
-    resident_target_phase: bool,
-    resident_target_action: Option<crate::CacheAction>,
     line_copy_source: crate::PhysicalWordAddress,
-    line_copy_destination_page: u8,
     line_clean_active: bool,
     line_clean_address: crate::PhysicalWordAddress,
     maintenance_done: bool,
@@ -1183,10 +1176,7 @@ impl Default for CpuV3DataCacheState {
             response_error: false,
             maintenance_active: false,
             line_copy_active: false,
-            resident_target_phase: false,
-            resident_target_action: None,
             line_copy_source: crate::PhysicalWordAddress::new(0),
-            line_copy_destination_page: 0,
             line_clean_active: false,
             line_clean_address: crate::PhysicalWordAddress::new(0),
             maintenance_done: false,
@@ -1276,16 +1266,6 @@ impl CpuV3DataCacheState {
     fn apply_action(&mut self, action: crate::CacheAction) {
         match action {
             crate::CacheAction::CpuResponse(response) => {
-                if self.line_copy_active && self.line_clean_active {
-                    self.request = None;
-                    self.line_copy_active = false;
-                    self.line_clean_active = false;
-                    self.maintenance_active = false;
-                    self.maintenance_done = true;
-                    self.may_have_dirty = true;
-                    self.phase = DataMemoryPhase::Idle;
-                    return;
-                }
                 if self.line_clean_active {
                     self.line_clean_active = false;
                     self.maintenance_active = false;
@@ -1424,23 +1404,16 @@ impl CpuV3DataCacheState {
         // architecturally visible: the controller may have accepted an
         // unknown prefix of a burst. The crate model clears instantly; the
         // RTL scrubs its metadata records, which blocks new requests.
-        let resident_copy = self.line_copy_active && self.line_clean_active;
-        if resident_copy {
-            self.cache.abort_resident_copy();
-        } else {
-            self.cache = crate::DataCache::default();
-        }
+        self.cache = crate::DataCache::default();
         self.pending_cpu_request = None;
         self.pending_read_word = None;
         self.request = None;
         self.phase = DataMemoryPhase::Idle;
         self.full_maintenance = false;
-        if !resident_copy {
-            self.may_have_dirty = false;
-        }
+        self.may_have_dirty = false;
         self.scan_active = false;
         self.found_index = None;
-        self.sweep_active = !resident_copy;
+        self.sweep_active = true;
         self.sweep_set = 0;
         if self.maintenance_active {
             self.maintenance_active = false;
@@ -1455,24 +1428,13 @@ impl CpuV3DataCacheState {
         }
     }
 
-    fn defer_resident_target(&mut self, action: crate::CacheAction) {
-        self.resident_target_phase = true;
-        self.resident_target_action = Some(action);
-        self.request = None;
-        self.phase = DataMemoryPhase::ResidentDestinationPrime;
-    }
-
     fn complete_write(&mut self) {
         if self.line_copy_active {
             let action = self
                 .cache
                 .complete(crate::MainMemoryResponse::WriteComplete)
                 .expect("line-copy completion must match a line transaction");
-            if self.line_clean_active && !self.resident_target_phase {
-                self.defer_resident_target(action);
-            } else if matches!(action, crate::CacheAction::CpuResponse(_))
-                && !self.line_clean_active
-            {
+            if matches!(action, crate::CacheAction::CpuResponse(_)) {
                 self.request = None;
                 self.phase = DataMemoryPhase::Idle;
                 self.line_copy_active = false;
@@ -1711,24 +1673,17 @@ impl Module for CpuV3DataCache {
 
         if command_ready && input.line_copy_start {
             state.maintenance_error = false;
-            if input.line_copy_source & 15 != 0
-                || (input.line_clean_start && input.line_clean_address & 15 != 0)
-            {
+            if input.line_copy_source & 15 != 0 || input.line_clean_address & 15 != 0 {
                 state.maintenance_done = true;
                 state.maintenance_error = true;
-            } else if input.line_clean_start && input.line_copy_source == input.line_clean_address {
-                state.maintenance_done = true;
             } else {
                 state.maintenance_active = true;
                 state.line_copy_active = true;
-                state.resident_target_phase = false;
-                state.resident_target_action = None;
-                state.line_clean_active = input.line_clean_start;
+                state.line_clean_active = false;
                 state.line_clean_address =
                     crate::PhysicalWordAddress::new(input.line_clean_address as u32);
                 state.line_copy_source =
                     crate::PhysicalWordAddress::new(input.line_copy_source as u32);
-                state.line_copy_destination_page = input.line_copy_destination_page as u8;
                 state.phase = DataMemoryPhase::LineCommandPrime;
             }
             return;
@@ -1870,47 +1825,21 @@ impl Module for CpuV3DataCache {
             DataMemoryPhase::LineCommandPrime => {
                 state.phase = if !state.line_copy_active {
                     DataMemoryPhase::CleanLookup
-                } else if state.line_clean_active {
-                    DataMemoryPhase::CopyLookup
                 } else {
                     DataMemoryPhase::CopyPrepare
                 };
             }
             DataMemoryPhase::CopyPrepare => {
-                state.phase = DataMemoryPhase::CopyInvalidate;
-            }
-            DataMemoryPhase::CopyInvalidate => {
                 state.phase = DataMemoryPhase::CopyRefresh;
             }
             DataMemoryPhase::CopyRefresh => {
                 state.phase = DataMemoryPhase::CopyLookup;
             }
             DataMemoryPhase::CopyLookup => {
-                let action = if state.line_clean_active {
-                    state
-                        .cache
-                        .copy_resident_line(state.line_copy_source, state.line_clean_address)
-                } else {
-                    state
-                        .cache
-                        .copy_line(state.line_copy_source, state.line_copy_destination_page)
-                }
-                .expect("prepared data cache must accept line copy");
-                let source_write = matches!(action,crate::CacheAction::MainMemoryRequest(crate::MainMemoryRequest::WriteLine {line_address,..}) if line_address==state.line_copy_source);
-                if state.line_clean_active && !source_write {
-                    state.defer_resident_target(action);
-                } else {
-                    state.apply_action(action);
-                }
-            }
-            DataMemoryPhase::ResidentDestinationPrime => {
-                state.phase = DataMemoryPhase::ResidentDestinationLookup
-            }
-            DataMemoryPhase::ResidentDestinationLookup => {
                 let action = state
-                    .resident_target_action
-                    .take()
-                    .expect("destination lookup must own one cache action");
+                    .cache
+                    .copy_line(state.line_copy_source, state.line_clean_address)
+                    .expect("prepared data cache must accept line copy");
                 state.apply_action(action);
             }
             DataMemoryPhase::CleanLookup => {

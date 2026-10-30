@@ -2,7 +2,6 @@ module tb #(parameter SERVICE_DELAY=0);
 reg clk=0, reset=1, clean_all=0, invalidate_all=0;
 reg line_copy_start=0;
 reg [21:0] line_copy_source=0;
-reg [7:0] line_copy_destination_page=0;
 reg line_clean_start=0;
 reg [21:0] line_clean_address=0;
 wire line_copy_ready;
@@ -136,23 +135,6 @@ task maintain;
     while(!maintenance_done) @(posedge clk);
     #1;
     if(maintenance_error) $fatal(1,"maintenance failed");
-  end
-endtask
-
-task copy_line;
-  input [21:0] source; input [7:0] destination_page;
-  begin
-    copy_start_cycle=cycles;
-    @(negedge clk);
-    line_copy_source=source;
-    line_copy_destination_page=destination_page;
-    line_copy_start=1;
-    @(posedge clk); @(negedge clk); line_copy_start=0;
-    while(!maintenance_done) @(posedge clk);
-    #1;
-    if(maintenance_error) $fatal(1,"line copy failed");
-    $display("LINE_COPY source=%h destination_page=%h cycles=%0d",
-      source,destination_page,cycles-copy_start_cycle);
   end
 endtask
 

@@ -64,6 +64,9 @@ fn color(column: u16, target: u16) -> u16 {
 }
 
 fn fill_tile(page: u16, offset: u16, value: u16) {
+    unsafe {
+        write_dseg_page(3, page);
+    }
     let mut row: u16 = 0;
     while row < 16 {
         let source = Ptr::from_addr(0x4000 + offset + (row << 4));
@@ -75,10 +78,13 @@ fn fill_tile(page: u16, offset: u16, value: u16) {
             x += 1;
         }
         unsafe {
-            dcache_line_copy(source, page);
+            dcache_line_copy(source, Ptr::from_addr(0xc000 + offset + (row << 4)));
         }
         dcache_wait();
         row += 1;
+    }
+    unsafe {
+        write_dseg_page(3, 3);
     }
 }
 

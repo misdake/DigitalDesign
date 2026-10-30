@@ -23,7 +23,6 @@ wire [15:0] data_write_data;
 wire data_response_ready;
 wire data_line_copy_valid;
 wire [21:0] data_line_copy_source;
-wire [7:0] data_line_copy_destination_page;
 wire data_line_clean_valid;
 wire [21:0] data_line_clean_address;
 wire [2:0] device_index;

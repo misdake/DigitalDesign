@@ -77,7 +77,7 @@ __CPU_CORE__ u_core (
     .data_response_ready(),
     .data_line_copy_valid(),
     .data_line_copy_source(),
-    .data_line_copy_destination_page(),
+
     .data_line_clean_valid(),
     .data_line_clean_address(),
     .device_index(),

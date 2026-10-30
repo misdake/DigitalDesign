@@ -254,7 +254,7 @@ fn run_cpu_wall_clock(microseconds: bool) {
     p.extend(cpu_v3::load_immediate16(1, 0x4000));
     p.extend(cpu_v3::load_immediate16(0, 0x1234));
     p.push(cpu_v3::store(0, 1, 0));
-    p.extend(cpu_v3::load_immediate16(3, 2));
+    p.extend(cpu_v3::load_immediate16(3, 0x8000));
     p.push(cpu_v3::line_copy(1, 3));
     p.push(cpu_v3::wait_data_cache());
     p.push(cpu_v3::device_receive(2, 0, channel));

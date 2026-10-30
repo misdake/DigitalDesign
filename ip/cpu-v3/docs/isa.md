@@ -156,7 +156,6 @@ writing a register. Functions 3, B, and D..F remain reserved and invalid.
 | 4 | `SHLI rd, imm4` | `rd = rd << imm4` |
 | 5 | `SHRI rd, imm4` | `rd = rd >> imm4` (logical) |
 | 6 | `ASRI rd, imm4` | `rd = signed(rd) >> imm4` (arithmetic) |
-| 7 | `DCOPYL rsource, rdestination` | asynchronously copy one aligned 32-byte line into a dirty resident destination; both logical pointers use DSEG |
 | 8/9/A | `MUL0` / `MUL8` / `MUL16 rd, rs` | unsigned `product = rd * rs` (32-bit); `rd = (product >> S) & 0xffff` for `S` in {0, 8, 16} |
 | C | `MULI rd, imm` | unsigned `rd = (rd * imm) & 0xffff`; unprefixed `u4`, full `u16` with `PFX12` |
 
@@ -165,29 +164,7 @@ consumer. There is no signed integer multiply, rounding, saturation, or
 dual-register product writeback; general numeric computation belongs to the
 FPU.
 
-`DCOPYL` is encoded as `2 7 source destination`. Both pointers must be
-16-word aligned; a violation is a non-retiring data-memory fault. The core
-waits for older buffered stores/FPU stores and command acceptance, then retires.
-No GPR is written. Both mapped physical addresses are captured at acceptance;
-later DSEG updates do not retarget the operation. `DWAIT` supplies the explicit
-completion/error boundary, and later D-cache accesses wait normally.
-
-The source supplies the latest CPU contents, including dirty stores. The
-cache may normally write back or replace its source row. A dirty source is
-saved to its original address before the read. An old dirty destination hit
-or victim is also acknowledged before the refill can overwrite its row, so a
-later partial read failure cannot lose those old bytes. The read request uses
-the source physical address; the refill banks and final tag use the destination.
-The completed destination is valid and dirty. There is no destination read-
-allocate and no interpretation or conversion of the sixteen words.
-
-A physical same-address operation is a no-op even when cold: it does not
-allocate or force dirty. A source/victim write failure retains its dirty cache
-row. A read failure leaves its uncommitted target row invalid; saved old target
-bytes remain in DRAM. Unrelated dirty rows are never scrubbed by this command.
-Ordinary CPU loads wait for completion; DMA/Display consumers require DWAIT
-and the usual destination clean before reading its new bytes. `LCOPY` retains
-its distinct redirected-DRAM-write semantics.
+Function 7 in opcode 2 is reserved and faults; no compatibility alias is provided.
 
 ### Extended and system (opcode 6)
 
@@ -202,7 +179,7 @@ No instruction in this family consumes `PFX12`.
 | 4 | `CLZ rd, rs` | count leading zeros |
 | 5 | `POPCNT rd, rs` | population count |
 | 6 | `SEQ rd, rs` | `rd = (rd == rs) ? 1 : 0` |
-| 7 | `LCOPY roffset, rpage` | asynchronously copy the aligned 16-word line selected by `r[offset]` to physical page `r[page]` at the same low 14-bit offset |
+| 7 | `LCOPY rsource, rdestination` | asynchronously copy the newest aligned source cache line to destination DRAM; both operands are DSEG-mapped word pointers |
 | 8/9 | `SLT` / `SLTU rd, rs` | `rd = rd < rs` as 0 or 1, signed / unsigned |
 | A/B | `CMPS` / `CMPU ra, rb` | pending = ordering of `ra` vs `rb`, signed / unsigned; writes no register |
 | C | `SIGNAL rs, type4` | type 0 halts and latches `rs`; types 1..15 are simulator-side events that retire as a NOP in hardware |
@@ -220,17 +197,27 @@ The function-E selector map is:
 | 7 | reserved | invalid instruction |
 | 8 | `6 E 8 0` | `DWAIT`: wait for the D-cache command engine and raise a data-memory fault if its sticky command result is an error |
 
-`LCOPY` requires `r[offset][3:0] = 0`; an unaligned source raises a data-memory
-fault. Both physical addresses must fit the implemented memory. It waits for
-older scalar/FPU stores and for D-cache command acceptance, then retires while
-the source lookup/refill and redirected line write continue. Instructions that
-do not use D-cache may execute during the copy. A later load, store, FLD/FST, or
-another D-cache command waits for acceptance. A cold destination is not
-allocated. Any resident destination alias, including a dirty one, is discarded
-before the complete-line overwrite and therefore cannot later write back stale
-data. The source remains resident and keeps its dirty state. `DCLEANL` uses the
-same issue rule: after acceptance, non-D-cache instructions
-continue; an actual D-cache access or `DWAIT` supplies the completion boundary.
+`LCOPY` is encoded `6 7 source destination`. Both registers hold ordinary
+16-bit word pointers and must have their low four bits zero (32-byte alignment).
+Each pointer independently selects DSEG0..3 with its high two bits. Both mapped
+22-bit physical addresses are latched on command acceptance; later DSEG writes
+do not retarget the copy. Neither register is written. An unaligned operand
+raises a non-retiring data-memory fault; both complete lines must fit memory.
+
+The command waits for older scalar/FPU stores and D-cache acceptance, then
+retires while independent instructions continue. A later D-cache access or
+`DWAIT` waits for completion. A hit supplies the latest source data, including
+dirty bytes; a miss uses ordinary source-set victim writeback and refill. The
+source stays resident and retains its dirty bit. The complete source line is
+written to destination DRAM in four 64-bit beats, without allocating a target.
+A cached destination alias in its own set is invalidated even when dirty; its
+obsolete bytes are not written back. Comparing complete physical rows avoids
+confusing different sets that have equal tags. If both pointers map to the
+same physical row, invalidation is skipped but DRAM is still really written.
+Read/write failures keep the existing valid-sweep and sticky `DWAIT` error policy.
+
+`DCLEANL` shares the issue rule and writes one dirty resident hit; a miss/clean
+hit completes locally. Command admission and terminal completion are distinct.
 
 ### Device access (opcode 7)
 
@@ -429,7 +416,7 @@ is the prefix address and neither word retires.
 | Reserved or malformed encoding (reserved subop/length/mode, non-canonical fields, a truncated FPU pair) | `InvalidInstruction` (code 1); the instruction does not retire |
 | Conditional branch or conditional move without a pending test | `InvalidInstruction`; does not retire |
 | Address outside fitted physical memory (including FLD/FST/FLDV/FSTV) | physical-address fault at the faulting offset; does not retire |
-| Unaligned `LCOPY` source | data-memory fault at the instruction offset; does not retire |
+| Unaligned `LCOPY` operand | data-memory fault at the instruction offset; does not retire |
 | `SIGNAL` type 0 after halt | re-reports the latched halt signal |
 
 ## Revision 0.3
@@ -612,3 +599,13 @@ segment with four 16-Kword page mappings while retaining atomic legacy `DSEG`
 setup, and assigns function-E selectors 6 and 8 to `DCLEANL` and `DWAIT`;
 selector 7 is reserved. These D-cache commands use the asynchronous contract
 documented above.
+
+## Revision 0.10
+
+LCOPY keeps encoding `6 7 source destination`, but both operands are now ordinary
+DSEG-mapped word pointers. It accepts different offsets/sets and writes DRAM even
+for physical aliases of the same row. Earlier binaries using an eight-bit page
+operand must be recompiled: an old page value128 would now mean pointer0x0080.
+Opcode2/function7 (formerly DCOPYL) is reserved/invalid; its resident-destination
+operation and compiler intrinsic are removed, without an alias. GPU native ABI
+is unchanged.

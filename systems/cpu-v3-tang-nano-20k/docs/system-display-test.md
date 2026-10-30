@@ -13,8 +13,9 @@ static arena `0x0000..0x1fff` and below the stack starting at `0xc000`.
 The loader clears only the compiler-allocated static prefix; the diagnostic
 initializes each scratch line before use.
 Normal legacy DSEG is zero. A scratch line at `0x4000 + offset` is filled with
-16 RGB565 words and copied by `LCOPY` to the same low 14-bit offset in the
-selected physical page. `DWAIT` completes each copy before scratch reuse.
+16 RGB565 words. The diagnostic maps DSEG3 to the selected physical page,
+uses `0xc000 + offset` as the destination Ptr for `LCOPY`, and restores DSEG3
+after the tile. `DWAIT` completes each copy before scratch reuse.
 LCOPY preserves source dirty state; blocking clean-plus-invalidate subsequently
 completes scratch writeback and removes CPU read aliases.
 

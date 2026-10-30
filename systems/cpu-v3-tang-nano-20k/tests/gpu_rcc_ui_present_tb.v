@@ -24,14 +24,14 @@ __CORE__ cpu(.clk(clk),.reset(reset),.hold(hold||sweep||pause||!display_started)
  .instruction_request_valid(ireq),.instruction_address(ia),.instruction_response_ready(iready),
  .data_request_ready(dr),.data_response_valid(rv),.data_read_data(rd),.data_error(de),
  .data_line_copy_ready(lc_ready),.data_cache_command_error(error),.data_request_valid(dq),.data_write(dw),.data_address(da),.data_write_data(wd),.data_response_ready(rr),
- .data_line_copy_valid(lc),.data_line_copy_source(ls),.data_line_copy_destination_page(lp),.data_line_clean_valid(cl),.data_line_clean_address(ca),
+ .data_line_copy_valid(lc),.data_line_copy_source(ls),.data_line_clean_valid(cl),.data_line_clean_address(ca),
  .device_index(di),.device_channel(ch),.device_read_enable(ren),.device_write_enable(wen),.device_write_data(wdata),.device_read_data(rdata),
  .halted(halted),.halt_signal(signal),.fault(fault),.fault_code(fault_code),.pc(pc));
 assign rdata=di==0?sdata:di==4?gdata:di==3?display_data:16'd0;
 __SYSCTL__ sysctl(.clk(clk),.reset(reset),.device_index(di),.device_channel(ch),.device_read_enable(ren),.device_write_enable(wen),.device_write_data(wdata),.device_read_data(sdata),
  .dcache_maintenance_ready(ready),.dcache_maintenance_done(done),.dcache_maintenance_error(error),.watch_read_data(16'd0),
  .cpu_hold(hold),.dcache_clean(clean),.dcache_invalidate(invalidate));
-__CACHE__ cache(.clk(clk),.reset(reset),.clean_all(clean),.invalidate_all(invalidate),.line_copy_start(lc),.line_copy_source(ls),.line_copy_destination_page(lp),.line_clean_start(cl),.line_clean_address(ca),.line_copy_ready(lc_ready),
+__CACHE__ cache(.clk(clk),.reset(reset),.clean_all(clean),.invalidate_all(invalidate),.line_copy_start(lc),.line_copy_source(ls),.line_clean_start(cl),.line_clean_address(ca),.line_copy_ready(lc_ready),
  .cpu_request_valid(dq),.cpu_write(dw),.cpu_address(da),.cpu_write_data(wd),.cpu_response_ready(rr),.cpu_request_ready(dr),.cpu_response_valid(rv),.cpu_read_data(rd),.cpu_error(de),
  .memory_request_ready(mready),.memory_write_data_ready(mwready),.memory_response_valid(mrv),.memory_read_data(mrd),.memory_error(me),.memory_request_valid(mq),.memory_write(mw),.memory_line(ml),.memory_address(ma),.memory_write_data(mwd),.memory_response_ready(mrr),
  .maintenance_ready(ready),.maintenance_busy(busy),.maintenance_done(done),.maintenance_error(error),.valid_sweep(sweep));

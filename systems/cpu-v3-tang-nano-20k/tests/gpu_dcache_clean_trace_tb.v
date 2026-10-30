@@ -9,7 +9,7 @@ wire[15:0]read_data;wire[21:0]ma;wire[63:0]mwd;
 integer state=0,beat=0,delay_left=0,terminal_delay=0,lines=128,stride=1;
 wire mr=state==0,mwr=state==2,mv=state==1||state==4;
 __CACHE__ cache(.clk(clk),.reset(reset),.clean_all(clean),.invalidate_all(1'b0),
- .line_copy_start(1'b0),.line_copy_source(22'd0),.line_copy_destination_page(8'd0),
+ .line_copy_start(1'b0),.line_copy_source(22'd0),
  .line_clean_start(1'b0),.line_clean_address(22'd0),
  .cpu_request_valid(q),.cpu_write(1'b1),.cpu_address(address),.cpu_write_data(data),.cpu_response_ready(1'b1),
  .cpu_request_ready(ready),.cpu_response_valid(valid),.cpu_read_data(read_data),.cpu_error(error),

@@ -2,7 +2,6 @@ module tb;
 reg clk=0, reset=1, clean_all=0, invalidate_all=0;
 reg line_copy_start=0, line_clean_start=0;
 reg [21:0] line_copy_source=0, line_clean_address=0;
-reg [7:0] line_copy_destination_page=0;
 reg cpu_request_valid=0, cpu_write=0, cpu_response_ready=0;
 reg [31:0] cpu_address=0;
 reg [15:0] cpu_write_data=0;

@@ -106,7 +106,7 @@ fn program_async_store_overlap() -> Vec<u16> {
 fn program_async_line_copy() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x0100));
-    p.extend(load_immediate16(2, 1));
+    p.extend(load_immediate16(2, 0x4100));
     p.extend(load_immediate16(0, 0x55));
     p.push(store(0, 1, 0));
     p.push(line_copy(1, 2));
@@ -123,10 +123,40 @@ fn program_async_line_copy() -> Vec<u16> {
 fn program_line_copy_halt_drain() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x0120));
-    p.extend(load_immediate16(2, 1));
+    p.extend(load_immediate16(2, 0x4120));
     p.extend(load_immediate16(0, 0x66));
     p.push(store(0, 1, 0));
     p.push(line_copy(1, 2));
+    p.push(halt());
+    p
+}
+
+/// Both DSEG maps change while the first copy is active. The destination must
+/// remain the physical row captured at issue. A second copy uses two logical
+/// quarters mapping the same physical source row and still writes DRAM.
+fn program_line_copy_latched_maps_and_alias() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4120));
+    p.extend(load_immediate16(2, 0x8240));
+    p.extend(load_immediate16(6, 5));
+    p.push(write_data_segment_page(1, 6));
+    p.extend(load_immediate16(6, 6));
+    p.push(write_data_segment_page(2, 6));
+    p.extend(load_immediate16(4, 7));
+    p.extend(load_immediate16(5, 8));
+    p.extend(load_immediate16(0, 0x78));
+    p.push(store(0, 1, 0));
+    p.push(line_copy(1, 2));
+    p.push(write_data_segment_page(1, 4));
+    p.push(write_data_segment_page(2, 5));
+    p.push(wait_data_cache());
+    p.extend(load_immediate16(6, 5));
+    p.push(write_data_segment_page(1, 6));
+    p.push(write_data_segment_page(2, 6));
+    p.extend(load_immediate16(2, 0x8120));
+    p.push(line_copy(1, 2));
+    p.push(wait_data_cache());
+    p.push(load(0, 1, 0));
     p.push(halt());
     p
 }
@@ -654,6 +684,14 @@ fn programs() -> Vec<CosimProgram> {
             expected_halt: Some(0x66),
         },
         CosimProgram {
+            name: "line_copy_latched_maps_and_alias",
+            words: program_line_copy_latched_maps_and_alias(),
+            max_cycles: 20_000,
+            check_base: 0x18240,
+            check_len: 16,
+            expected_halt: Some(0x78),
+        },
+        CosimProgram {
             name: "async_cache_hint",
             words: program_async_cache_hint(),
             max_cycles: 20_000,
@@ -968,6 +1006,16 @@ fn compare_program(program: &CosimProgram, sources: &[String]) -> Result<(), Str
             .any(|cycle| cycle.dcache_maintenance_busy && cycle.retired_words >= 8)
     {
         return Err("no ALU instruction retired while LCOPY kept D-cache busy".to_string());
+    }
+    if program.name == "line_copy_latched_maps_and_alias"
+        && !emu
+            .cycles
+            .iter()
+            .any(|cycle| cycle.dcache_maintenance_busy && cycle.retired_words == 20)
+    {
+        return Err(
+            "both DSEG rewrites must retire while the accepted copy is still active".to_owned(),
+        );
     }
     if program.name == "line_copy_halt_drain"
         && !emu.cycles.iter().any(|cycle| {

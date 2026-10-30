@@ -18,7 +18,7 @@ integer gpu_contention=0,gpu_pending=0,gpu_terms=0;
 integer cycle=0,phase=0,requests=0,terms=0,early=0,chains=0,reads=0,display_terms=0,mode=0,lines=128,stride=1,shuffle=0,start=0,i,j,index,w,unused,pending_display=0,baseline=0,elapsed=0;
 wire cache_error=data_error || (inject && phase==1 && terms==1 && data_response_valid);
 CpuV3DataCache cache(.clk(clk),.reset(reset),.clean_all(clean),.invalidate_all(inval),
- .line_copy_start(1'b0),.line_copy_source(22'd0),.line_copy_destination_page(8'd0),.line_clean_start(1'b0),.line_clean_address(22'd0),
+ .line_copy_start(1'b0),.line_copy_source(22'd0),.line_clean_start(1'b0),.line_clean_address(22'd0),
  .cpu_request_valid(q),.cpu_write(wr),.cpu_address(addr),.cpu_write_data(value),.cpu_response_ready(1'b1),
  .cpu_request_ready(ready),.cpu_response_valid(valid),.cpu_read_data(read_data),.cpu_error(error),
  .memory_request_valid(data_request_valid),.memory_write(data_write),.memory_line(data_line),.memory_address(data_address),.memory_write_data(data_write_data),

@@ -194,7 +194,7 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `dev_send(dev: u8, ch: u8, v: u16)` | write a device register; device and channel are compile-time constant IDs |
 | `dcache_clean_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; write every dirty D-cache line and return final maintenance status |
 | `dcache_invalidate_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; clean and invalidate the complete D-cache, then return final maintenance status |
-| `unsafe dcache_line_copy(source: Ptr, destination_page: u16)` | CPU V3-only: start an asynchronous copy of one aligned 32-byte line to the same offset in an 8-bit physical page |
+| `unsafe dcache_line_copy(source: Ptr, destination: Ptr)` | CPU V3-only: write one aligned source cache line to destination DRAM; both word pointers independently use DSEG and are captured at issue. Dirty source is retained; target aliases are discarded; same-row aliases still write |
 | `unsafe dcache_clean_line(address: Ptr)` | CPU V3-only: asynchronously write back one dirty resident line; miss/clean hit is a no-op |
 | `dcache_wait()` | CPU V3-only: wait for the asynchronous D-cache command and surface its remembered error |
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
