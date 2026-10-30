@@ -340,6 +340,7 @@ mod tests {
 
     fn session() -> V3DebugSession {
         V3DebugSession::from_program(CpuV3Program {
+            gpu_debug: false,
             code_base: 0,
             words: vec![cpu_v3::halt()],
             listing: String::new(),

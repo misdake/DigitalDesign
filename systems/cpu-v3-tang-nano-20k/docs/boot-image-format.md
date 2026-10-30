@@ -200,3 +200,15 @@ Protocol simulation uses a 6.5-ns Flash output-delay reference without board
 or FPGA I/O delay. It is not physical timing qualification for an unidentified
 part. The reader cannot exceed nominal 27-MHz SCK using this 54-MHz single-edge
 structure. Quad/QE, a faster clock domain and new buffering are absent.
+
+## RCC check-profile identity
+
+The application build accepts `RCC_GPU_DEBUG=0|1`, defaulting to 0. It passes the
+explicit boolean through the normal RCC loader and ownership-checking entry
+points. This is independent of optimization and host test/debug configuration;
+invalid values fail rather than silently selecting a profile.
+
+The generated `cpu-v3-boot.map` records `rcc_gpu_debug=true|false` alongside the
+application identity. `cpu-v3-boot-assets` materializes this exact map from Cargo
+OUT_DIR, and its asset manifest hashes it with the other generated assets. The
+flag does not alter CB06 encoding, the boot-stage ISA or the GPU native ABI.

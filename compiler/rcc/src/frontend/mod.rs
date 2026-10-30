@@ -14,9 +14,21 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
 
+mod byte_slices;
+mod cfg;
 mod diagnostics;
+mod ownership_containers;
 mod resource;
 pub mod rustc_check;
+mod value_methods;
+fn typed_pattern(pattern: Pat, ty: Type) -> Pat {
+    Pat::Type(syn::PatType {
+        attrs: Vec::new(),
+        pat: Box::new(pattern),
+        colon_token: Default::default(),
+        ty: Box::new(ty),
+    })
+}
 pub use diagnostics::CompileError;
 
 #[cfg(doc)]
@@ -32,6 +44,8 @@ pub struct Program {
 /// pc->line table to complete the picture)
 #[derive(Default)]
 pub struct FrontendDebug {
+    /// Check profile of the actual selected source.
+    pub gpu_debug: bool,
     /// Exclusive word address of allocated statics, before function linking.
     /// Includes imported modules and the standard library; not the arena limit.
     pub static_data_end: usize,
@@ -57,17 +71,30 @@ pub fn parse_source(src: &str) -> Result<Program, CompileError> {
 
 /// like `parse_source`, with the static data section starting at `data_base`
 pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, CompileError> {
+    parse_source_with_config(
+        src,
+        &crate::RccOptions {
+            data_base,
+            ..crate::RccOptions::default()
+        },
+    )
+}
+/// Low-level parser with an explicit target check profile; no module loading or auto-init.
+pub fn parse_source_with_config(src: &str, opts: &impl RccConfig) -> Result<Program, CompileError> {
     let source_name = "<source>";
     let file =
         syn::parse_file(src).map_err(|error| CompileError::from_syn(source_name, src, error))?;
     let (funcs, debug) = parse_files(
         vec![file],
-        data_base,
-        1 << 16,
-        "target memory",
+        opts.data_base(),
+        opts.static_data_limit(),
+        opts.static_data_limit_name(),
         &["<source>".to_string()],
         false,
-        ParseChecks::default(),
+        ParseChecks {
+            gpu_debug: opts.gpu_debug(),
+            ..ParseChecks::default()
+        },
     )
     .map_err(|(_, error)| CompileError::from_syn(source_name, src, error))?;
     Ok(Program { funcs, debug })
@@ -184,6 +211,8 @@ fn compile_with_check(
             .map_err(|error| CompileError::from_syn(&file_name, &text, error))?;
         for item in &file.items {
             if let Item::Mod(m) = item {
+                cfg::module_attributes(&m.attrs)
+                    .map_err(|error| CompileError::from_syn(&file_name, &text, error))?;
                 if m.content.is_some() {
                     return Err(CompileError::from_syn(
                         &file_name,
@@ -238,6 +267,7 @@ fn compile_with_check(
                 approved_roots,
             }),
             rustc: check,
+            gpu_debug: opts.gpu_debug(),
         },
     )
     .map_err(|(file, error)| {
@@ -359,6 +389,7 @@ fn prepend_init_block(main: &mut IrFunc, insts: Vec<Instr>, detail: String) {
 
 #[derive(Default)]
 struct ParseChecks<'a> {
+    gpu_debug: bool,
     resources: Option<resource::Sources<'a>>,
     rustc: Option<&'a rustc_check::RustcCheck>,
 }
@@ -372,15 +403,45 @@ fn parse_files(
     materialize_debug_locals: bool,
     checks: ParseChecks<'_>,
 ) -> Result<(Vec<IrFunc>, FrontendDebug), (usize, syn::Error)> {
-    if let Some(check) = checks.rustc {
+    if checks.rustc.is_some() {
         resource::drop_syntax::validate_attributes(&files)?;
+    }
+    cfg::prepare(&mut files, checks.gpu_debug)?;
+    if checks.rustc.is_none() {
+        struct LegacyLiteral(Option<syn::Error>);
+        impl<'ast> syn::visit::Visit<'ast> for LegacyLiteral {
+            fn visit_lit(&mut self, literal: &'ast Lit) {
+                if matches!(literal,Lit::Int(value) if value.suffix()=="u8") && self.0.is_none() {
+                    self.0 = Some(err(literal, "unsupported literal suffix `u8`"));
+                }
+            }
+        }
+        for (fi, file) in files.iter().enumerate() {
+            let mut guard = LegacyLiteral(None);
+            syn::visit::Visit::visit_file(&mut guard, file);
+            if let Some(error) = guard.0 {
+                return Err((fi, error));
+            }
+        }
+    }
+    if let Some(check) = checks.rustc {
         rustc_check::validate(&files, file_names, check)?;
     }
     resource::drop_syntax::lower(&mut files, checks.rustc.is_some())?;
-    resource::lower(&mut files, file_names, checks.resources)?;
+    let value_methods = value_methods::prepare(&mut files, checks.rustc.is_some())?;
+    let carriers = ownership_containers::prepare(&mut files, checks.rustc.is_some())?;
+    resource::lower(
+        &mut files,
+        file_names,
+        checks.resources,
+        checks.rustc.is_some(),
+        &carriers,
+    )?;
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
+        checked: checks.rustc.is_some(),
+        value_methods,
         next_addr: usize::from(data_base),
         limit: static_data_limit,
         limit_name: static_data_limit_name,
@@ -419,10 +480,16 @@ fn parse_files(
         .keys()
         .map(|name| (name.clone(), NominalKind::Struct))
         .collect();
+    if checks.rustc.is_some() {
+        type_names.insert("u8".into(), NominalKind::Byte);
+    }
     for (name, (fi, item)) in &raw_enums {
-        let def = enum_def(item).map_err(|error| (*fi, error))?;
+        let def = enum_def(item, checks.rustc.is_some()).map_err(|error| (*fi, error))?;
         type_names.insert(name.clone(), NominalKind::Enum);
         globals.enums.insert(name.clone(), def);
+    }
+    if checks.rustc.is_some() {
+        byte_slices::literals(&files, &mut globals)?;
     }
     let mut deferred_statics: Vec<(usize, &syn::ItemStatic)> = vec![];
     for (fi, file) in files.iter().enumerate() {
@@ -442,11 +509,20 @@ fn parse_files(
                     }
                     Item::Use(_) => { /* ignored: for the IDE only */ }
                     Item::Const(c) => {
-                        let ty = ty_of(&c.ty, &TypeNames::new())?;
-                        if !matches!(ty, Ty::U16 | Ty::I16) {
+                        if checks.rustc.is_some()
+                            && byte_slices::constant(c, &consts, &mut globals)?
+                        {
+                            continue;
+                        }
+                        let ty = ty_of(&c.ty, &type_names)?;
+                        if !matches!(ty, Ty::U8 | Ty::U16 | Ty::I16) {
                             return Err(err(&c.ty, "const must be u16 or i16"));
                         }
-                        let v = const_eval(&c.expr, &consts)?;
+                        let v = if ty == Ty::U8 {
+                            const_eval_byte(&c.expr, &consts)?
+                        } else {
+                            const_eval(&c.expr, &consts)?
+                        };
                         let name = c.ident.to_string();
                         if consts.insert(name.clone(), (v, ty)).is_some() {
                             return Err(err(&c.ident, format!("const `{name}` defined twice")));
@@ -507,7 +583,8 @@ fn parse_files(
     let mut names = vec![];
     for (fi, f) in &fns {
         let name = f.sig.ident.to_string();
-        let sig = signature(f, &consts, &globals.type_names).map_err(|error| (*fi, error))?;
+        let sig = signature(f, &consts, &globals.type_names, checks.rustc.is_some())
+            .map_err(|error| (*fi, error))?;
         if sigs.insert(name.clone(), sig).is_some() {
             return Err((
                 *fi,
@@ -518,6 +595,7 @@ fn parse_files(
     }
     let mut out = vec![];
     let mut debug = FrontendDebug {
+        gpu_debug: checks.gpu_debug,
         files: file_names.to_vec(),
         static_data_end: globals.next_addr,
         ..FrontendDebug::default()
@@ -669,6 +747,10 @@ fn lit_int_value(i: &syn::LitInt) -> Result<u64, syn::Error> {
 
 #[derive(Default)]
 struct Globals {
+    checked: bool,
+    byte_literals: HashMap<Vec<u8>, u16>,
+    byte_constants: HashMap<String, Vec<u8>>,
+    value_methods: value_methods::Methods,
     scalars: HashMap<String, (u16, Ty)>,
     arrays: HashMap<String, (u16, Ty, usize)>,
     /// aggregate statics (structs, tuples, buffers of structs): the symbol is its
@@ -690,6 +772,7 @@ struct Globals {
 /// a nominal type a `ty_of` path may name
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum NominalKind {
+    Byte,
     Struct,
     Enum,
 }
@@ -737,8 +820,8 @@ fn word_size(
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
     match ty {
-        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
-        Ty::Fix32 => Ok(2),
+        Ty::U8 | Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
+        Ty::Fix32 | Ty::ByteSlice => Ok(2),
         Ty::FnPtr { .. } => Ok(1),
         Ty::Tuple(elems) => u16::try_from(elems.len())
             .map_err(|_| err(at, "tuple is larger than the 16-bit address space")),
@@ -761,7 +844,10 @@ fn word_size(
 /// a value that lives in memory as a word range: a struct, a tuple or a buffer
 fn is_aggregate(ty: &Ty) -> bool {
     // an enum is a plain word, not an address (spec §9d)
-    matches!(ty, Ty::Struct(_) | Ty::Tuple(_) | Ty::Array(..))
+    matches!(
+        ty,
+        Ty::Struct(_) | Ty::Tuple(_) | Ty::Array(..) | Ty::ByteSlice
+    )
 }
 
 /// the word size of an aggregate
@@ -808,6 +894,22 @@ fn struct_align(s: &syn::ItemStruct) -> Result<u16, syn::Error> {
     for attr in &s.attrs {
         if attr.path.is_ident("allow") || attr.path.is_ident("doc") {
             continue;
+        }
+        if attr.path.is_ident("derive") {
+            let syn::Meta::List(list) = attr.parse_meta()? else {
+                return Err(err(
+                    attr,
+                    "ordinary value derives support Copy and Clone only",
+                ));
+            };
+            if list.nested.iter().all(|item| matches!(item,
+                syn::NestedMeta::Meta(syn::Meta::Path(path)) if path.is_ident("Copy") || path.is_ident("Clone"))) {
+                continue;
+            }
+            return Err(err(
+                attr,
+                "ordinary value derives support Copy and Clone only",
+            ));
         }
         if !attr.path.is_ident("repr") {
             return Err(err(
@@ -898,6 +1000,9 @@ impl LayoutBuilder<'_> {
                     let Some(ident) = &field.ident else { continue };
                     let fname = ident.to_string();
                     let fty = ty_of_maybe_array(&field.ty, self.consts, self.names)?;
+                    if fty == Ty::ByteSlice {
+                        return Err(err(&field.ty, "byte slices are supported as constants, locals and parameters, not struct fields"));
+                    }
                     if matches!(fty, Ty::Vec2 | Ty::Vec3 | Ty::Vec4) {
                         return Err(err(
                             &field.ty,
@@ -952,14 +1057,54 @@ impl LayoutBuilder<'_> {
 
 /// evaluate a constant expression (literals, other consts, wrapping arithmetic)
 fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn::Error> {
+    const_eval_context(e, consts, false)
+}
+fn const_eval_byte(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn::Error> {
+    const_eval_context(e, consts, true)
+}
+fn const_eval_context(
+    e: &Expr,
+    consts: &HashMap<String, (u16, Ty)>,
+    byte_context: bool,
+) -> Result<u16, syn::Error> {
+    fn is_byte(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> bool {
+        match e {
+            Expr::Paren(p) => is_byte(&p.expr, consts),
+            Expr::Lit(lit) => {
+                matches!(&lit.lit, Lit::Byte(_))
+                    || matches!(&lit.lit, Lit::Int(i) if i.suffix() == "u8")
+            }
+            Expr::Path(_) => path_ident(e)
+                .ok()
+                .and_then(|name| consts.get(&name))
+                .is_some_and(|(_, ty)| *ty == Ty::U8),
+            Expr::Cast(c) => matches!(c.ty.as_ref(), Type::Path(p) if p.path.is_ident("u8")),
+            Expr::Unary(u) => is_byte(&u.expr, consts),
+            Expr::Binary(b) if matches!(b.op, SBinOp::Shl(_) | SBinOp::Shr(_)) => {
+                is_byte(&b.left, consts)
+            }
+            Expr::Binary(b) => is_byte(&b.left, consts) || is_byte(&b.right, consts),
+            _ => false,
+        }
+    }
+    let byte_context = byte_context || is_byte(e, consts);
+    let value = const_eval_inner(e, consts, byte_context)?;
+    Ok(if byte_context { value & 255 } else { value })
+}
+fn const_eval_inner(
+    e: &Expr,
+    consts: &HashMap<String, (u16, Ty)>,
+    byte_context: bool,
+) -> Result<u16, syn::Error> {
     match e {
-        Expr::Paren(p) => const_eval(&p.expr, consts),
+        Expr::Paren(p) => const_eval_context(&p.expr, consts, byte_context),
         // a braced const argument (`Buf<u16, {N + 1}>`) arrives as a block
         Expr::Block(b) => match b.block.stmts.as_slice() {
-            [Stmt::Expr(inner)] => const_eval(inner, consts),
+            [Stmt::Expr(inner)] => const_eval_context(inner, consts, byte_context),
             _ => Err(err(e, "not a constant expression")),
         },
         Expr::Lit(lit) => match &lit.lit {
+            Lit::Byte(byte) => Ok(u16::from(byte.value())),
             Lit::Int(i) => {
                 let v = lit_int_value(i)?;
                 if v > u16::MAX as u64 {
@@ -977,11 +1122,18 @@ fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn:
                 .ok_or_else(|| err(e, format!("unknown const `{name}`")))
         }
         Expr::Unary(u) => match u.op {
-            SUnOp::Neg(_) => Ok(const_eval(&u.expr, consts)?.wrapping_neg()),
+            SUnOp::Neg(_) => Ok(const_eval_context(&u.expr, consts, byte_context)?.wrapping_neg()),
+            SUnOp::Not(_) => Ok(!const_eval_context(&u.expr, consts, byte_context)?),
             _ => Err(err(&u.op, "not a constant expression")),
         },
+        Expr::Cast(c) if matches!(c.ty.as_ref(), Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("u16") || p.path.is_ident("i16")) => {
+            const_eval(&c.expr, consts)
+        }
         Expr::Binary(b) => {
-            let (a, c) = (const_eval(&b.left, consts)?, const_eval(&b.right, consts)?);
+            let (a, c) = (
+                const_eval_context(&b.left, consts, byte_context)?,
+                const_eval_context(&b.right, consts, byte_context)?,
+            );
             match b.op {
                 SBinOp::Add(_) => Ok(a.wrapping_add(c)),
                 SBinOp::Sub(_) => Ok(a.wrapping_sub(c)),
@@ -1019,15 +1171,30 @@ fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn:
 /// is therefore laid out after the struct pass (spec §9.4). Scalar buffers stay on
 /// the original path so their addresses do not move.
 /// `enum E { A, B }`: fieldless variants only, no generics and no explicit
-/// discriminants; `#[derive(PartialEq)]`, `#[allow]` and `#[doc]` are accepted and
+/// discriminants; repr(u16), Copy/Clone/PartialEq/Eq, allow and doc are accepted and
 /// anything else is an error (spec §9d)
-fn enum_def(item: &syn::ItemEnum) -> Result<EnumDef, syn::Error> {
+fn enum_def(item: &syn::ItemEnum, checked: bool) -> Result<EnumDef, syn::Error> {
     if !item.generics.params.is_empty() {
         return Err(err(&item.generics, "generics are not supported"));
     }
     let mut partial_eq = false;
+    let mut repr_u16 = false;
     for attr in &item.attrs {
         if attr.path.is_ident("allow") || attr.path.is_ident("doc") {
+            continue;
+        }
+        if attr.path.is_ident("repr") {
+            let syn::Meta::List(list) = attr.parse_meta()? else {
+                return Err(err(attr, "enum representation must be #[repr(u16)]"));
+            };
+            if repr_u16
+                || list.nested.len() != 1
+                || !matches!(list.nested.first(),
+                Some(syn::NestedMeta::Meta(syn::Meta::Path(path))) if path.is_ident("u16"))
+            {
+                return Err(err(attr, "enum representation must be #[repr(u16)]"));
+            }
+            repr_u16 = true;
             continue;
         }
         if attr.path.is_ident("derive") {
@@ -1039,10 +1206,14 @@ fn enum_def(item: &syn::ItemEnum) -> Result<EnumDef, syn::Error> {
                     syn::NestedMeta::Meta(syn::Meta::Path(path)) if path.is_ident("PartialEq") => {
                         partial_eq = true;
                     }
+                    syn::NestedMeta::Meta(syn::Meta::Path(path))
+                        if path.is_ident("Copy")
+                            || path.is_ident("Clone")
+                            || path.is_ident("Eq") => {}
                     other => {
                         return Err(err(
                             other,
-                            "only #[derive(PartialEq)] is supported on an enum",
+                            "enum derives support Copy, Clone, PartialEq and Eq only",
                         ))
                     }
                 }
@@ -1051,7 +1222,7 @@ fn enum_def(item: &syn::ItemEnum) -> Result<EnumDef, syn::Error> {
         }
         return Err(err(
             attr,
-            "attributes are not supported on an enum (except #[derive(PartialEq)])",
+            "enum attributes support repr(u16), Copy/Clone/PartialEq/Eq, doc and allow only",
         ));
     }
     let mut variants: Vec<(String, u16)> = vec![];
@@ -1076,6 +1247,11 @@ fn enum_def(item: &syn::ItemEnum) -> Result<EnumDef, syn::Error> {
     }
     if variants.is_empty() {
         return Err(err(item, "an enum needs at least one variant"));
+    }
+    // Checked application/library sources define an explicit wire-sized enum.
+    // Keep the existing unchecked frontend ABI for legacy callers unchanged.
+    if checked && !repr_u16 {
+        return Err(err(item, "checked enum declarations require #[repr(u16)]"));
     }
     Ok(EnumDef {
         variants,
@@ -1272,7 +1448,7 @@ fn const_words(
             Ok(())
         }
         scalar => {
-            if !matches!(scalar, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
+            if !matches!(scalar, Ty::U8 | Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
                 return Err(err(
                     expr,
                     format!("{} cannot be a static value", scalar.display()),
@@ -1376,7 +1552,7 @@ fn add_static(
         )),
         t => {
             let ty = ty_of(t, &TypeNames::new())?;
-            if !matches!(ty, Ty::U16 | Ty::I16) {
+            if !matches!(ty, Ty::U8 | Ty::U16 | Ty::I16) {
                 return Err(err(
                     t,
                     "static must be u16/i16 or a Buf of them (struct statics are not supported yet)",
@@ -1399,6 +1575,7 @@ fn add_static(
 
 #[derive(Clone, PartialEq, Debug)]
 enum Ty {
+    U8,
     U16,
     I16,
     /// unsuffixed integer literal; adopts the type it unifies with
@@ -1406,6 +1583,8 @@ enum Ty {
     Ptr,
     /// Typed, one-word unchecked array view (same target representation as Ptr).
     ArrayRef(Box<Ty>),
+    /// Immutable packed bytes: word address plus explicit byte length.
+    ByteSlice,
     Bool,
     FnPtr {
         params: Vec<Ty>,
@@ -1432,7 +1611,7 @@ enum Ty {
 }
 impl Ty {
     fn is_int(&self) -> bool {
-        matches!(self, Ty::U16 | Ty::I16 | Ty::UntypedInt)
+        matches!(self, Ty::U8 | Ty::U16 | Ty::I16 | Ty::UntypedInt)
     }
     fn is_fpu(&self) -> bool {
         matches!(self, Ty::Fix32 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4)
@@ -1453,6 +1632,8 @@ impl Ty {
     }
     fn display(&self) -> String {
         match self {
+            Ty::ByteSlice => "&[u8]".into(),
+            Ty::U8 => "u8".into(),
             Ty::U16 => "u16".into(),
             Ty::I16 => "i16".into(),
             Ty::UntypedInt => "integer literal".into(),
@@ -1564,6 +1745,7 @@ fn ty_of(ty: &Type, structs: &TypeNames) -> Result<Ty, syn::Error> {
                      spell the literal (`Buf<u16, 6>`) when the source must build on the host too",
                 )),
                 _ => match structs.get(&name) {
+                    Some(NominalKind::Byte) => Ok(Ty::U8),
                     Some(NominalKind::Struct) => Ok(Ty::Struct(name)),
                     Some(NominalKind::Enum) => Ok(Ty::Enum(name)),
                     None => Err(err(
@@ -1604,7 +1786,7 @@ fn ty_of(ty: &Type, structs: &TypeNames) -> Result<Ty, syn::Error> {
             let mut elems = vec![];
             for e in &t.elems {
                 let elem = ty_of(e, structs)?;
-                if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
+                if !matches!(elem, Ty::U8 | Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
                     return Err(err(e, "tuple elements must be u16, i16, Ptr or bool"));
                 }
                 elems.push(elem);
@@ -1617,6 +1799,11 @@ fn ty_of(ty: &Type, structs: &TypeNames) -> Result<Ty, syn::Error> {
             ty,
             "native arrays are not part of the subset; write Buf<T, N> (spec §10)",
         )),
+        Type::Reference(_)
+            if structs.get("u8") == Some(&NominalKind::Byte) && byte_slices::slice(ty) =>
+        {
+            Ok(Ty::ByteSlice)
+        }
         Type::Reference(_) => Err(err(
             ty,
             "reference types `&T` are not supported (pass Array<T> or Ptr)",
@@ -1952,6 +2139,10 @@ fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Resul
 
 /// the type a direct call returns when that type is an aggregate (sret, spec §14)
 fn sret_call_return(l: &FnLower, e: &Expr) -> Option<Ty> {
+    if let Expr::MethodCall(method) = e {
+        let call = value_methods::call(l, method)?;
+        return sret_call_return(l, &Expr::Call(call));
+    }
     let Expr::Call(call) = e else {
         return None;
     };
@@ -1967,6 +2158,11 @@ fn sret_call_return(l: &FnLower, e: &Expr) -> Option<Ty> {
 /// hidden first parameter the caller supplies (spec §14). `Ok(false)` means `e`
 /// is not such a call, so the caller falls back to its usual path.
 fn sret_call_into(l: &mut FnLower, e: &Expr, dst: VReg, expected: &Ty) -> Result<bool, syn::Error> {
+    if let Expr::MethodCall(method) = e {
+        if let Some(call) = value_methods::call(l, method) {
+            return sret_call_into(l, &Expr::Call(call), dst, expected);
+        }
+    }
     let Expr::Call(call) = e else {
         return Ok(false);
     };
@@ -2001,6 +2197,7 @@ fn sret_call_into(l: &mut FnLower, e: &Expr, dst: VReg, expected: &Ty) -> Result
 /// another value, or an aggregate-returning call (spec §14)
 fn init_aggregate_at(l: &mut FnLower, dst: VReg, ty: &Ty, e: &Expr) -> Result<(), syn::Error> {
     match ty {
+        Ty::ByteSlice => byte_slices::initialize(l, dst, e),
         Ty::Struct(name) => {
             let name = name.clone();
             init_struct_at(l, dst, &name, e)
@@ -2087,7 +2284,7 @@ fn let_tuple(
             for e in &t.elems {
                 let (v, ty) = expr(l, e)?.reg(l, e, "tuple element")?;
                 let ty = if ty == Ty::UntypedInt { Ty::U16 } else { ty };
-                if !matches!(ty, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
+                if !matches!(ty, Ty::U8 | Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
                     return Err(err(e, "tuple elements must be u16, i16, Ptr or bool"));
                 }
                 values.push((v, ty));
@@ -2186,6 +2383,7 @@ fn signature(
     f: &ItemFn,
     consts: &HashMap<String, (u16, Ty)>,
     structs: &TypeNames,
+    checked: bool,
 ) -> Result<Sig, syn::Error> {
     if !f.sig.generics.params.is_empty() {
         return Err(err(&f.sig.generics, "generics are not supported"));
@@ -2214,7 +2412,7 @@ fn signature(
         // a returned Buf is spelled like any other owned array type
         syn::ReturnType::Type(_, t) => ty_of_maybe_array(t, consts, structs)?,
     };
-    if params.iter().any(is_aggregate) {
+    if !checked && params.iter().any(is_aggregate) {
         return Err(err(
             &f.sig,
             "a struct, tuple or Buf cannot be a parameter; pass a view (`Array<Point>`) and index \
@@ -2339,7 +2537,12 @@ impl FnLower<'_> {
             VarKind::Local { slot } => self.b.load_local(*slot),
         }
     }
-    fn write_var(&mut self, kind: &VarKind, v: VReg) {
+    fn write_var(&mut self, kind: &VarKind, ty: &Ty, v: VReg) {
+        let v = if *ty == Ty::U8 {
+            self.b.bin_op(BinOp::And, v, crate::IntOperand::Imm(255))
+        } else {
+            v
+        };
         match kind {
             VarKind::Ssa { var } => self.b.set(*var, v),
             VarKind::Local { slot } => self.b.store_local(*slot, v),
@@ -2544,7 +2747,13 @@ fn lower_fn(
         let (ident, mutable) = match pt.pat.as_ref() {
             Pat::Ident(p) => {
                 let mutable = p.mutability.is_some();
-                if mutable && !matches!(ty, Ty::ArrayRef(_)) {
+                if mutable
+                    && !globals.checked
+                    && !matches!(
+                        ty,
+                        Ty::ArrayRef(_) | Ty::Struct(_) | Ty::Tuple(_) | Ty::ByteSlice
+                    )
+                {
                     return Err(err(
                         &p.ident,
                         "only Array<T> parameters may be declared mut",
@@ -2562,26 +2771,32 @@ fn lower_fn(
             l.b.set_var_lanes(*var, ty.fpu_lanes());
         }
         // an address-taken param is copied into a frame slot at entry
-        let kind = match l.residents.remove(&ident) {
-            Some(ResidentKind::Scalar) => {
-                if ty.is_fpu() {
+        let resident = l.residents.remove(&ident);
+        let kind = if is_aggregate(ty) {
+            // The caller already owns this argument's isolated snapshot.
+            VarKind::Ssa { var: *var }
+        } else {
+            match resident {
+                Some(ResidentKind::Scalar) => {
+                    if ty.is_fpu() {
+                        return Err(err(
+                            &pt.pat,
+                            "FPU values live in F registers and cannot be address-taken",
+                        ));
+                    }
+                    let slot = l.b.alloc_local_slots(1);
+                    let pv = l.b.get(*var);
+                    l.b.store_local(slot, pv);
+                    VarKind::Local { slot }
+                }
+                Some(ResidentKind::Array) => {
                     return Err(err(
                         &pt.pat,
-                        "FPU values live in F registers and cannot be address-taken",
-                    ));
+                        "owned arrays cannot be parameters; pass Array<T> or Ptr",
+                    ))
                 }
-                let slot = l.b.alloc_local_slots(1);
-                let pv = l.b.get(*var);
-                l.b.store_local(slot, pv);
-                VarKind::Local { slot }
+                None => VarKind::Ssa { var: *var },
             }
-            Some(ResidentKind::Array) => {
-                return Err(err(
-                    &pt.pat,
-                    "owned arrays cannot be parameters; pass Array<T> or Ptr",
-                ))
-            }
-            None => VarKind::Ssa { var: *var },
         };
         l.declare(
             ident,
@@ -2720,7 +2935,12 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
 
             // an aggregate binding: `let mut p: Point = Point { .. };`,
             // `let t = divmod_pair(a, b);` (the type then comes from the callee)
-            let aggregate = match (&annotated, sret_call_return(l, &init.1)) {
+            let aggregate = match (
+                &annotated,
+                sret_call_return(l, &init.1)
+                    .or_else(|| peek_type(l, &init.1).filter(|ty| *ty == Ty::ByteSlice))
+                    .filter(is_aggregate),
+            ) {
                 (Some(ty), _) if is_aggregate(ty) => Some(ty.clone()),
                 (None, Some(ret)) => Some(ret),
                 _ => None,
@@ -2894,12 +3114,12 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             if let (Val::FnItem(fname), Ty::FnPtr { .. }) = (&val, &ty) {
                 check_fn_sig(l, fname, &ty, &a.right)?;
                 let v = l.b.load_func_addr(fname);
-                l.write_var(&kind, v);
+                l.write_var(&kind, &ty, v);
                 return Ok(());
             }
             let (v, _) = val.reg(l, &a.right, "assignment")?;
             let (v, _) = coerce(l, v, &ty, &ty, &a.right)?;
-            l.write_var(&kind, v);
+            l.write_var(&kind, &ty, v);
             Ok(())
         }
         Expr::AssignOp(a) => {
@@ -2916,7 +3136,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 }
                 let cur = l.b.load_mem(base, offset);
                 let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
-                let (rhs, _) = coerce(l, rhs, &rhs_ty, &ty, &a.right)?;
+                let rhs = compound_rhs(l, rhs, &rhs_ty, &ty, &a.op, &a.right)?;
                 let value = match a.op {
                     SBinOp::AddEq(_) => l.b.bin(BinOp::Add, cur, rhs),
                     SBinOp::SubEq(_) => l.b.bin(BinOp::Sub, cur, rhs),
@@ -2940,12 +3160,12 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs))
                     }
                     SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
-                        let amount = shift_operand(l, &a.right)?;
+                        let amount = shift_from_value(l, &a.right, &ty, rhs);
                         l.b.shift_op(shift_op(&a.op, &ty), cur, amount)
                     }
                     _ => return Err(err(&a.op, "unsupported compound assignment operator")),
                 };
-                l.b.store_mem(base, offset, value);
+                store_field(l, base, offset, value, &ty);
                 return Ok(());
             }
             if let Expr::Index(index) = a.left.as_ref() {
@@ -2959,7 +3179,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 }
                 let cur = l.b.load_mem(base, off);
                 let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
-                let (rhs, _) = coerce(l, rhs, &rhs_ty, &elem, &a.right)?;
+                let rhs = compound_rhs(l, rhs, &rhs_ty, &elem, &a.op, &a.right)?;
                 let value = match a.op {
                     SBinOp::AddEq(_) => l.b.bin(BinOp::Add, cur, rhs),
                     SBinOp::SubEq(_) => l.b.bin(BinOp::Sub, cur, rhs),
@@ -2983,12 +3203,12 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs))
                     }
                     SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
-                        let amount = shift_operand(l, &a.right)?;
+                        let amount = shift_from_value(l, &a.right, &elem, rhs);
                         l.b.shift_op(shift_op(&a.op, &elem), cur, amount)
                     }
                     _ => return Err(err(&a.op, "unsupported compound assignment operator")),
                 };
-                l.b.store_mem(base, off, value);
+                store_field(l, base, off, value, &elem);
                 return Ok(());
             }
             let name = path_ident(&a.left)?;
@@ -3013,7 +3233,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
                 let (rhs, _) = coerce(l, rhs, &rhs_ty, &Ty::Fix32, &a.right)?;
                 let v = l.b.fpu_bin(op, cur, rhs);
-                l.write_var(&kind, v);
+                l.write_var(&kind, &ty, v);
                 return Ok(());
             }
             if ty.is_fpu() {
@@ -3042,7 +3262,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         ))
                     }
                 };
-                l.write_var(&kind, v);
+                l.write_var(&kind, &ty, v);
                 return Ok(());
             }
             if !ty.is_int() {
@@ -3067,26 +3287,29 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         matches!(a.op, SBinOp::RemEq(_)),
                     )?;
                     let (v, _) = result.reg(l, &a.right, "compound assignment")?;
-                    l.write_var(&kind, v);
+                    l.write_var(&kind, &ty, v);
                     return Ok(());
                 }
                 SBinOp::MulEq(_) => {
                     let v =
                         l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs));
-                    l.write_var(&kind, v);
+                    l.write_var(&kind, &ty, v);
                     return Ok(());
                 }
                 SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
-                    let amount = shift_operand(l, &a.right)?;
+                    if !rhs_ty.is_int() {
+                        return Err(err(&a.right, "shift amounts require an integer"));
+                    }
+                    let amount = shift_from_value(l, &a.right, &ty, rhs);
                     let sop = shift_op(&a.op, &ty);
                     let v = l.b.shift_op(sop, cur, amount);
-                    l.write_var(&kind, v);
+                    l.write_var(&kind, &ty, v);
                     return Ok(());
                 }
                 _ => return Err(err(&a.op, "unsupported compound assignment operator")),
             };
             let v = l.b.bin(op, cur, rhs);
-            l.write_var(&kind, v);
+            l.write_var(&kind, &ty, v);
             Ok(())
         }
         Expr::Return(r) => {
@@ -3190,7 +3413,7 @@ fn jump_label(label: &Option<syn::Lifetime>) -> Option<&'static str> {
 /// variant or have a `_` arm, and an integer match needs `_`.
 fn lower_match(l: &mut FnLower, m: &syn::ExprMatch) -> Result<(), syn::Error> {
     let (scrut, scrut_ty) = expr(l, &m.expr)?.reg(l, &m.expr, "match scrutinee")?;
-    if !matches!(scrut_ty, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Enum(_)) {
+    if !matches!(scrut_ty, Ty::U8 | Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Enum(_)) {
         return Err(err(
             &m.expr,
             format!(
@@ -3515,8 +3738,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             cond_lazy(l, &w.cond, body_b, exit)?;
             l.b.begin_loop_body(header, body_b, exit, loop_label(&w.label));
             block(l, &w.body)?;
-            l.b.end_while(header, exit);
-            l.dead = false;
+            l.dead = !l.b.end_while(header, exit);
             Ok(())
         }
         Expr::Loop(lp) => {
@@ -3524,8 +3746,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             l.b.jmp(body_b);
             l.b.begin_loop_body(header, body_b, exit, loop_label(&lp.label));
             block(l, &lp.body)?;
-            l.b.end_while(header, exit);
-            l.dead = false;
+            l.dead = !l.b.end_while(header, exit);
             Ok(())
         }
         Expr::ForLoop(fl) => {
@@ -3633,10 +3854,10 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 let i = l.b.bin(BinOp::Add, i, one);
                 l.b.set(ivar, i);
             }
-            l.b.end_while(header, exit);
+            let reachable = l.b.end_while(header, exit);
             l.scopes.pop();
             l.scope_ends.pop();
-            l.dead = false;
+            l.dead = !reachable;
             Ok(())
         }
         _ => unreachable!(),
@@ -3688,6 +3909,16 @@ fn unsafe_block_value(l: &mut FnLower, u: &syn::ExprUnsafe) -> Result<Val, syn::
 }
 
 fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
+    let value = expr_inner(l, e)?;
+    Ok(match value {
+        Val::V(value, Ty::U8) => Val::V(
+            l.b.bin_op(BinOp::And, value, crate::IntOperand::Imm(255)),
+            Ty::U8,
+        ),
+        value => value,
+    })
+}
+fn expr_inner(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
     match e {
         Expr::Paren(p) => expr(l, &p.expr),
         Expr::Lit(lit) => match &lit.lit {
@@ -3696,6 +3927,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                 let suffix = i.suffix();
                 let ty = match suffix {
                     "" => Ty::UntypedInt,
+                    "u8" => Ty::U8,
                     "u16" => Ty::U16,
                     "i16" => Ty::I16,
                     _ => {
@@ -3708,8 +3940,13 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                 if v > u16::MAX as u64 {
                     return Err(err(&lit.lit, "literal out of 16-bit range"));
                 }
+                if ty == Ty::U8 && v > 255 {
+                    return Err(err(&lit.lit, "literal out of 8-bit range"));
+                }
                 Ok(Val::V(l.b.load_imm(v as u16), ty))
             }
+            Lit::ByteStr(literal) => byte_slices::literal(l, literal),
+            Lit::Byte(byte) => Ok(Val::V(l.b.load_imm(u16::from(byte.value())), Ty::U8)),
             Lit::Bool(b) => Ok(Val::Bool(if b.value {
                 true_cond(l)
             } else {
@@ -3766,6 +4003,10 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         ),
                     ));
                 }
+                if ty == Ty::ByteSlice {
+                    let (base, offset, _, _) = place_addr_of(l, e)?;
+                    return Ok(Val::V(place_addr(l, base, offset), ty));
+                }
                 let v = l.read_var(&kind);
                 return Ok(Val::V(v, ty));
             }
@@ -3802,7 +4043,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     }
                     return Ok(Val::V(l.b.fpu_vec_un(FpuVecUnOp::Neg, v, ty.fpu_lanes()), ty));
                 }
-                if ty == Ty::U16 {
+                if matches!(ty, Ty::U8 | Ty::U16) {
                     return Err(err(&u.op, "unary `-` is only allowed on i16"));
                 }
                 Ok(Val::V(l.b.un(UnOp::Neg, v), Ty::I16))
@@ -3925,6 +4166,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         return Err(err(&b.left, "shifts only work on integers"));
                     }
                     let amount = shift_operand(l, &b.right)?;
+                    let amount = narrow_shift_amount(l, amount, &lt);
                     Ok(Val::V(l.b.shift_op(shift_op(&b.op, &lt), lhs, amount), lt))
                 }
                 Mul(_) => {
@@ -4093,6 +4335,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             let (base, offset, ty, _) = struct_field_place(l, f)?;
             Ok(Val::V(load_field(l, base, offset, &ty), ty))
         }
+        Expr::Index(index) if byte_slices::is_value(l, &index.expr) => byte_slices::index(l, index),
         Expr::Index(index) => {
             let (base, off, elem, _) = array_index_addr(l, index)?;
             if matches!(elem, Ty::Struct(_)) {
@@ -4118,6 +4361,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         )),
         Expr::Closure(_) => Err(err(e, "closures are not supported")),
         Expr::Macro(_) => Err(err(e, "macros are not supported")),
+        Expr::Reference(reference) if byte_slices::is_value(l, &reference.expr) => byte_slices::reference(l, reference),
         Expr::Reference(_) => Err(err(
             e,
             "references `&` are not supported (take addresses with addr_of(&x))",
@@ -4138,6 +4382,7 @@ fn place_addr_of(l: &mut FnLower, e: &Expr) -> Result<(VReg, i16, Ty, bool), syn
                 let (kind, ty, mutable) = (info.kind.clone(), info.ty.clone(), info.mutable);
                 return match kind {
                     VarKind::Local { slot } => Ok((l.b.addr_of_local(slot), 0, ty, mutable)),
+                    VarKind::Ssa { var } if is_aggregate(&ty) => Ok((l.b.get(var), 0, ty, mutable)),
                     VarKind::Ssa { .. } => Err(err(
                         e,
                         format!(
@@ -4204,6 +4449,11 @@ fn load_field(l: &mut FnLower, base: VReg, offset: i16, ty: &Ty) -> VReg {
 }
 
 fn store_field(l: &mut FnLower, base: VReg, offset: i16, value: VReg, ty: &Ty) {
+    let value = if *ty == Ty::U8 {
+        l.b.bin_op(BinOp::And, value, crate::IntOperand::Imm(255))
+    } else {
+        value
+    };
     if *ty == Ty::Fix32 {
         l.b.fpu_store(base, offset, value);
     } else {
@@ -4287,7 +4537,16 @@ fn struct_field_place(
 /// storage) needs the type before any instructions are emitted
 fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
     match e {
+        Expr::Lit(literal) if matches!(literal.lit, Lit::ByteStr(_)) => Some(Ty::ByteSlice),
+        Expr::Reference(reference) if byte_slices::is_value(l, &reference.expr) => {
+            Some(Ty::ByteSlice)
+        }
         Expr::Paren(p) => peek_type(l, &p.expr),
+        Expr::MethodCall(method) => {
+            let call = value_methods::call(l, method)?;
+            let name = path_ident(&call.func).ok()?;
+            Some(l.sigs.get(&name)?.ret.clone())
+        }
         Expr::Path(_) => {
             let Expr::Path(p) = e else { unreachable!() };
             if p.path.segments.len() == 2 {
@@ -4326,6 +4585,7 @@ fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
                 .map(|field| field.ty.clone())
         }
         Expr::Index(i) => match peek_type(l, &i.expr)? {
+            Ty::ByteSlice => Some(Ty::U8),
             Ty::Array(elem, _) | Ty::ArrayRef(elem) => Some(*elem),
             _ => None,
         },
@@ -4757,25 +5017,59 @@ fn false_cond(l: &mut FnLower) -> BoolExpr {
 /// lower a call's arguments to (register, type) pairs, materializing function
 /// items passed as fn pointers
 fn call_arg_values(l: &mut FnLower, call: &syn::ExprCall) -> Result<Vec<(VReg, Ty)>, syn::Error> {
+    let parameters = match call.func.as_ref() {
+        Expr::Path(path) => path.path.get_ident().and_then(|name| {
+            let name = name.to_string();
+            l.sigs.get(&name).map(|sig| sig.params.clone()).or_else(|| {
+                let info = l.lookup(&name)?;
+                let Ty::FnPtr { params, .. } = &info.ty else {
+                    return None;
+                };
+                Some(params.clone())
+            })
+        }),
+        _ => None,
+    };
     call.args
         .iter()
-        .map(|a| match expr(l, a)? {
-            Val::FnItem(fname) => {
-                let sig = l
-                    .sigs
-                    .get(fname)
-                    .cloned()
-                    .ok_or_else(|| err(a, format!("undefined function `{fname}`")))?;
-                let v = l.b.load_func_addr(fname);
-                Ok((
-                    v,
-                    Ty::FnPtr {
-                        params: sig.params,
-                        ret: Box::new(sig.ret),
-                    },
-                ))
+        .enumerate()
+        .map(|(index, a)| {
+            if let Some(ty) = parameters
+                .as_ref()
+                .and_then(|params| params.get(index))
+                .filter(|ty| is_aggregate(ty))
+            {
+                // Snapshot each value before evaluating the following argument.
+                // Copying at callee entry would expose later argument side effects.
+                let size = aggregate_size(ty, &l.globals.structs, a)?;
+                let slot = l.b.try_alloc_local_slots(size).ok_or_else(|| {
+                    err(
+                        a,
+                        "aggregate argument storage exceeds the 255-word local frame limit",
+                    )
+                })?;
+                let destination = l.b.addr_of_local(slot);
+                init_aggregate_at(l, destination, ty, a)?;
+                return Ok((destination, ty.clone()));
             }
-            val => val.reg(l, a, "argument"),
+            match expr(l, a)? {
+                Val::FnItem(fname) => {
+                    let sig = l
+                        .sigs
+                        .get(fname)
+                        .cloned()
+                        .ok_or_else(|| err(a, format!("undefined function `{fname}`")))?;
+                    let v = l.b.load_func_addr(fname);
+                    Ok((
+                        v,
+                        Ty::FnPtr {
+                            params: sig.params,
+                            ret: Box::new(sig.ret),
+                        },
+                    ))
+                }
+                val => val.reg(l, a, "argument"),
+            }
         })
         .collect::<Result<_, _>>()
 }
@@ -4834,7 +5128,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         }
         // the address of one value as a typed view: `view_of(&mut p)` for a struct or
         // scalar place (a Buf uses `.as_array()`)
-        "view_of" => {
+        "view_of" | "__rcc_value_view" => {
             if call.args.len() != 1 {
                 return Err(err(call, "view_of(&mut x) takes 1 argument"));
             }
@@ -4844,14 +5138,14 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
                     "view_of expects a mutable reference: view_of(&mut x)",
                 ));
             };
-            if r.mutability.is_none() {
+            if r.mutability.is_none() && name == "view_of" {
                 return Err(err(
                     &call.args[0],
                     "view_of expects a mutable reference: view_of(&mut x)",
                 ));
             }
             let (base, offset, ty, mutable) = place_addr_of(l, &r.expr)?;
-            if !mutable {
+            if !mutable && r.mutability.is_some() {
                 return Err(err(
                     &r.expr,
                     "view_of needs a mutable place (declare it with `let mut`)",
@@ -5640,6 +5934,12 @@ fn array_method(
 }
 
 fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Error> {
+    if byte_slices::is_value(l, &m.receiver) {
+        return byte_slices::length(l, m);
+    }
+    if let Some(call) = value_methods::call(l, m) {
+        return call_expr(l, &call);
+    }
     // Buf methods on local buffers / global buffers
     if let Ok(name) = path_ident(&m.receiver) {
         if let Some(info) = l.lookup(&name) {
@@ -5827,6 +6127,7 @@ fn path_ident(e: &Expr) -> Result<String, syn::Error> {
 
 fn unify_int(a: Ty, b: Ty) -> Option<Ty> {
     match (a, b) {
+        (Ty::U8, Ty::U8) => Some(Ty::U8),
         (Ty::U16, Ty::U16) => Some(Ty::U16),
         (Ty::I16, Ty::I16) => Some(Ty::I16),
         (Ty::UntypedInt, t) | (t, Ty::UntypedInt) if t.is_int() => Some(t),
@@ -5863,12 +6164,18 @@ fn coerce(
 fn cast(e: &Expr, v: VReg, from: Ty, to: Ty) -> Result<(VReg, Ty), syn::Error> {
     let ok = matches!(
         (&from, &to),
-        (Ty::U16, Ty::I16)
+        (Ty::U8, Ty::U16)
+            | (Ty::U8, Ty::I16)
+            | (Ty::U16, Ty::U8)
+            | (Ty::I16, Ty::U8)
+            | (Ty::Bool, Ty::U8)
+            | (Ty::U16, Ty::I16)
             | (Ty::I16, Ty::U16)
             | (Ty::U16, Ty::Ptr)
             | (Ty::Ptr, Ty::U16)
             | (Ty::Bool, Ty::U16)
             | (Ty::Bool, Ty::I16)
+            | (Ty::Enum(_), Ty::U8)
             | (Ty::Enum(_), Ty::U16)
             | (Ty::Enum(_), Ty::I16)
     ) || from == to
@@ -5889,6 +6196,7 @@ fn literal_int(e: &Expr) -> Option<(u16, Ty)> {
     fn plain(i: &syn::LitInt) -> Option<(u16, Ty)> {
         let ty = match i.suffix() {
             "" => Ty::UntypedInt,
+            "u8" => Ty::U8,
             "u16" => Ty::U16,
             "i16" => Ty::I16,
             _ => return None,
@@ -5934,9 +6242,41 @@ fn immediate_operand(l: &FnLower, e: &Expr) -> Option<(u16, Ty)> {
     None
 }
 
-/// shift amount: a constant selects the immediate encoding, any other integer
-/// expression selects the register-count encoding (the hardware masks the
-/// amount to the low four bits)
+/// Narrow byte counts explicitly; word shifts retain the native low-four-bit rule.
+fn narrow_shift_amount(l: &mut FnLower, amount: crate::IntOperand, ty: &Ty) -> crate::IntOperand {
+    if *ty != Ty::U8 {
+        return amount;
+    }
+    match amount {
+        crate::IntOperand::Imm(value) => crate::IntOperand::Imm(value & 7),
+        crate::IntOperand::Reg(value) => {
+            crate::IntOperand::Reg(l.b.bin_op(BinOp::And, value, crate::IntOperand::Imm(7)))
+        }
+    }
+}
+fn shift_from_value(l: &mut FnLower, e: &Expr, ty: &Ty, value: VReg) -> crate::IntOperand {
+    let amount = immediate_operand(l, e).map_or(crate::IntOperand::Reg(value), |(value, _)| {
+        crate::IntOperand::Imm(value)
+    });
+    narrow_shift_amount(l, amount, ty)
+}
+fn compound_rhs(
+    l: &mut FnLower,
+    value: VReg,
+    from: &Ty,
+    to: &Ty,
+    op: &SBinOp,
+    e: &Expr,
+) -> Result<VReg, syn::Error> {
+    if matches!(op, SBinOp::ShlEq(_) | SBinOp::ShrEq(_)) {
+        if !from.is_int() {
+            return Err(err(e, "shift amounts require an integer"));
+        }
+        Ok(value)
+    } else {
+        coerce(l, value, from, to, e).map(|(value, _)| value)
+    }
+}
 fn shift_operand(l: &mut FnLower, e: &Expr) -> Result<crate::IntOperand, syn::Error> {
     if let Some((value, _)) = immediate_operand(l, e) {
         if value > 15 {
@@ -6592,5 +6932,16 @@ mod tests {
             0,
         )
         .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod legacy_graphics_boundary_tests {
+    #[test]
+    fn unchecked_entry_keeps_byte_suffix_rejection() {
+        let error = super::parse_source("fn f(){let value=1u8;}")
+            .err()
+            .expect("unchecked byte suffix must reject");
+        assert!(error.to_string().contains("unsupported literal suffix"));
     }
 }

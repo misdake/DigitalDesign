@@ -13,6 +13,10 @@ pub type FuncName = &'static str;
 
 /// Target-independent rcc frontend and runtime configuration.
 pub trait RccConfig {
+    /// Explicit target check profile, independent of optimization and host cfg.
+    fn gpu_debug(&self) -> bool {
+        false
+    }
     fn optimizations(&self) -> &Opts;
     fn data_base(&self) -> u16;
     fn heap_begin(&self) -> u16;
@@ -28,6 +32,7 @@ pub trait RccConfig {
 
 #[derive(Clone, Debug)]
 pub struct RccOptions {
+    pub gpu_debug: bool,
     pub opt: Opts,
     pub data_base: u16,
     pub heap_begin: u16,
@@ -38,6 +43,7 @@ pub struct RccOptions {
 impl Default for RccOptions {
     fn default() -> Self {
         Self {
+            gpu_debug: false,
             opt: Opts::default(),
             data_base: 0,
             heap_begin: 0x1000,
@@ -48,6 +54,9 @@ impl Default for RccOptions {
 }
 
 impl RccConfig for RccOptions {
+    fn gpu_debug(&self) -> bool {
+        self.gpu_debug
+    }
     fn optimizations(&self) -> &Opts {
         &self.opt
     }

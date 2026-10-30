@@ -453,6 +453,13 @@ fn main() {
     let resources = project.resources(&root).expect("boot resources");
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);
     options.stack_init = boot::SINGLE_BOOT_STACK;
+    println!("cargo:rerun-if-env-changed=RCC_GPU_DEBUG");
+    options.gpu_debug = match std::env::var("RCC_GPU_DEBUG") {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) if value == "0" => false,
+        Ok(value) if value == "1" => true,
+        _ => panic!("RCC_GPU_DEBUG must be 0 or 1"),
+    };
     let (words, static_words) = compile(
         &root.join(source),
         &options,
@@ -483,8 +490,9 @@ fn main() {
     .unwrap();
     std::fs::write(output.join("cpu-v3-boot.bin"), &image).unwrap();
     let map = format!(
-        "application={}\n{}",
+        "application={}\nrcc_gpu_debug={}\n{}",
         source.display(),
+        options.gpu_debug,
         boot::boot_image_map(&code, &image)
     );
     std::fs::write(output.join("cpu-v3-boot.map"), map).unwrap();

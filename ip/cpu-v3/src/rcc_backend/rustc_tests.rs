@@ -18,9 +18,12 @@ impl Drop for Frame{fn drop(&mut self){event(20+self.word);}}
 impl Drop for Pass{fn drop(&mut self){event(30+self.word);}}
 pub fn open(word:u16)->Renderer{Renderer{word:word}}
 pub fn pair(a:&mut Renderer,b:&mut Renderer)->u16{a.word+b.word}
+pub fn shared_pair(a:&Renderer,b:&Renderer)->u16{a.word+b.word}
+pub fn shared_forward(a:&mut Renderer)->u16{shared_pair(a,a)}
 pub fn event_count()->u16{COUNT}
 pub fn event_at(i:u16)->u16{EVENTS.as_array()[i]}
 impl Renderer{
+ pub fn identity(&self)->u16{self.word}
  pub fn frame(&mut self)->Frame{Frame{word:self.word}}
  pub fn finish(self){event(70+self.word);resource_disarm(self);}
 }
@@ -42,19 +45,22 @@ fn options(label: &str) -> RustcCheck {
     RustcCheck::new(root.join(label))
 }
 fn parse(label: &str, source: &str) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    compile_program_named_checked(
-        "checked-main.rs",
-        source,
-        &CompilerOptions::default(),
-        &options(label),
-        &mut |n| {
-            if n == "owner" {
-                Ok(LIBRARY.into())
-            } else {
-                Err(format!("unknown module {n}"))
-            }
-        },
-    )
+    parse_with_options(label, source, &CompilerOptions::default())
+}
+fn parse_with_options(
+    label: &str,
+    source: &str,
+    opts: &CompilerOptions,
+) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
+    compile_program_named_checked("checked-main.rs", source, opts, &options(label), &mut |n| {
+        if n == "owner" {
+            Ok(LIBRARY.into())
+        } else if n == "graphics" {
+            Ok(GRAPHICS_LIBRARY.into())
+        } else {
+            Err(format!("unknown module {n}"))
+        }
+    })
 }
 fn execute(label: &str, source: &str) {
     let code = try_compile(
@@ -65,12 +71,10 @@ fn execute(label: &str, source: &str) {
     .unwrap();
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&code.words);
+    let outcome = cpu.run(100_000).unwrap();
     assert!(
-        matches!(
-            cpu.run(100_000).unwrap(),
-            RunOutcome::Halted { signal: 0x600d, .. }
-        ),
-        "{label}"
+        matches!(outcome, RunOutcome::Halted { signal: 0x600d, .. }),
+        "{label}: {outcome:?}"
     );
 }
 #[test]
@@ -383,4 +387,823 @@ static COUNT:u16=0;
 fn r#match(r:R){unsafe{addr_of(&COUNT).write(0,COUNT+r.word);}}
 fn main(){{let a=R{word:4};}let b=R{word:5};drop(b);if COUNT!=9{halt(0xbad);}halt(0x600d);}"#,
     );
+}
+
+#[test]
+fn rustc_graphics_shared_resource_calls_reborrow_without_cleanup_or_copy() {
+    execute(
+        "graphics-shared",
+        r#"mod owner;
+fn main(){let mut r=open(3);
+ if shared_pair(&r,&r)!=6||shared_forward(&mut r)!=6||r.identity()!=3{halt(0xbad);}
+ if event_count()!=0{halt(0xbad);}drop(r);
+ if event_count()!=1||event_at(0)!=13{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_enum_repr_and_copy_markers_execute_on_cpu_v3() {
+    execute(
+        "graphics-enum",
+        r#"mod owner;
+#[repr(u16)] #[derive(Copy,Clone,PartialEq,Eq)]
+enum Shininess{S0,S1,S2,S3,S4,S5,S6,S7,S8,S9,S10,S11,S12,S13,S14,S15,S16}
+fn main(){let a=Shininess::S16;let b=a;
+ if a!=b||b as u16!=16||Shininess::S0 as u16!=0{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_checked_enum_requires_u16_repr() {
+    for (label, attribute) in [("missing", ""), ("wrong", "#[repr(u8)]")] {
+        let source=format!("{attribute} #[derive(Copy,Clone,PartialEq,Eq)] enum E{{A,B}} fn main(){{halt(E::B as u16);}}");
+        let error = parse(&format!("graphics-repr-{label}"), &source)
+            .err()
+            .expect("invalid enum representation must be rejected")
+            .to_string();
+        assert!(error.contains("repr(u16)"), "{error}");
+    }
+}
+
+#[test]
+fn rustc_graphics_local_shared_aliases_and_selection_execute() {
+    execute(
+        "graphics-local-shared",
+        r#"mod owner;
+fn selected(flag:bool,a:&Renderer,b:&Renderer)->u16{
+ let value=if flag{a}else{b};value.identity()
+}
+fn main(){let a=open(3);let b=open(5);let first:&Renderer=&a;let forwarded=first;
+ if shared_pair(first,forwarded)!=6||selected(true,&a,&b)!=3||selected(false,&a,&b)!=5{halt(0xbad);}
+ drop(a);drop(b);if event_count()!=2||event_at(0)!=13||event_at(1)!=15{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_shared_borrows_reject_conflicts_and_owner_extraction() {
+    for (label, body, code) in [
+        ("shared-mut", "fn conflict(a:&Renderer,b:&mut Renderer){} fn main(){let mut r=open(1);conflict(&r,&mut r);}", "E0502"),
+        ("shared-move", "fn main(){let r=open(1);let shared=&r;r.finish();let value=shared.identity();}", "E0505"),
+        ("shared-extract", "fn bad(r:&Renderer){r.finish();} fn main(){}", "E0507"),
+        ("shared-write", "fn bad(r:&Renderer){let f=r.frame();} fn main(){}", "E0596"),
+    ] {
+        let error=parse(&format!("graphics-{label}"), &format!("mod owner;{body}"))
+            .err().expect("invalid shared resource borrowing must be rejected").to_string();
+        assert!(error.contains(&format!("rustc {code}")), "{label}: {error}");
+    }
+}
+
+#[test]
+fn rustc_graphics_aggregate_parameters_snapshot_before_later_argument_effects() {
+    execute(
+        "graphics-value-parameters",
+        r#"mod owner;
+struct Pair{x:u16,y:u16}
+static DATA:Pair=Pair{x:7,y:11};
+fn overwrite()->u16{unsafe{addr_of(&DATA).write(0,77);}0}
+fn observed(value:Pair,ignored:u16)->u16{value.x+value.y}
+fn changed(mut value:Pair)->u16{value.x=99;value.x+value.y}
+fn main(){let original:Pair=Pair{x:3,y:5};
+ if changed(original)!=104||original.x!=3||original.y!=5{halt(0xbad);}
+ if observed(DATA,overwrite())!=18||DATA.x!=77{halt(0xbad);}
+ if changed(Pair{x:1,y:2})!=101{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_value_constructors_methods_and_mutable_receivers_execute() {
+    execute(
+        "graphics-value-methods",
+        r#"mod owner;
+#[derive(Copy,Clone)]
+struct Pair{x:u16,y:u16}
+impl Pair{
+ fn new(x:u16,y:u16)->Self{Self{x:x,y:y}}
+ fn sum(&self)->u16{self.x+self.y}
+ fn update(&mut self,x:u16){self.x=x;}
+ fn changed(mut self,x:u16)->Self{self.x=x;self}
+}
+
+
+fn main(){let mut original=Pair::new(3,5);
+ if original.sum()!=8{halt(0xbad);}original.update(7);
+ let changed=original.changed(11);
+ if original.sum()!=12||changed.sum()!=16{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_value_methods_preserve_mutability_and_private_entries() {
+    for (label, body, expected) in [
+        ("immutable", "struct P{x:u16} impl P{fn update(&mut self){self.x=1;}} fn main(){let p=P{x:0};p.update();}", "rustc E0596"),
+        ("borrowed", "struct P{x:u16} impl P{fn update(&mut self){self.x=1;}} fn main(){let mut p=P{x:0};let r=&p;p.update();let x=r.x;}", "rustc E0502"),
+        ("generic", "struct P{x:u16} impl P{fn id<T>(&self,v:T)->T{v}} fn main(){}", "generic/default value methods"),
+        ("entry", "fn __rcc_value_view()->u16{0} fn main(){halt(__rcc_value_view());}", "reserved value method name"),
+    ] {
+        let error=parse(&format!("graphics-method-{label}"), body).err()
+            .expect("invalid value method source must be rejected").to_string();
+        assert!(error.contains(expected), "{label}: {error}");
+    }
+}
+
+#[test]
+fn rustc_graphics_u8_arithmetic_casts_fields_and_byte_constants_execute() {
+    execute(
+        "graphics-u8",
+        r#"mod owner;
+const GLYPH:u8=b'A';
+#[derive(Copy,Clone)] struct Color{r:u8,g:u8}
+fn add(a:u8,b:u8)->u8{let mut result=a;result+=b;result}
+fn multiply(a:u8,b:u8)->u8{a*b}
+fn narrow(a:u16)->u8{a as u8}
+fn shift(a:u8)->u8{a<<1u16}
+fn main(){let mut color:Color=Color{r:GLYPH,g:255u8};color.g=add(color.g,3u8);
+ if color.r as u16!=65||color.g as u16!=2||add(250u8,10u8)!=4u8{halt(0xbad);}
+ if multiply(20u8,20u8)!=144u8||narrow(511u16)!=255u8||shift(128u8)!=0u8{halt(0xbad);}
+ if !narrow(511u16)!=0u8||(128u8>>7u16)!=1u8{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_packed_byte_slices_preserve_byte_lengths_and_odd_tail() {
+    execute(
+        "graphics-byte-slices",
+        r#"mod owner;
+const ODD:&[u8]=b"ABCDE";
+const EVEN:[u8;4]=[1u8,128u8,3u8,255u8];
+const REPEAT:[u8;3]=[9u8;3];
+fn sum(data:&[u8])->u16{let mut total:u16=0;let mut i:u16=0;
+ while i<data.len() as u16{total+=data[i as usize] as u16;i+=1;}total}
+fn forward(data:&[u8])->u16{sum(data)}
+fn main(){let empty=b"";let local=b"\x01\x80\xff";
+ if sum(ODD)!=335{halt(0xba01);}if sum(&EVEN)!=387{halt(0xba02);}if forward(&REPEAT)!=27{halt(0xba03);}
+ if sum(local)!=384{halt(0xba04);}if sum(b"ab")!=195{halt(0xba05);}if empty.len() as u16!=0{halt(0xba06);}
+ if ODD[4] as u16!=69{halt(0xba07);}if EVEN[3] as u16!=255{halt(0xba08);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_byte_constant_evaluation_preserves_narrow_intermediates() {
+    execute(
+        "graphics-byte-constant-width",
+        r#"mod owner;
+const SHIFT:u8=128<<1;
+const CAST:u16=(!128u8) as u16;
+const WIDE:u16=0x1234u16>>1u8;
+const DATA:[u8;3]=[(128<<1)/2,(!128u8),255u16 as u8];
+fn main(){if SHIFT as u16!=0||CAST!=127||WIDE!=0x091a{halt(0xbad);}
+ if DATA[0] as u16!=0||DATA[1] as u16!=127||DATA[2] as u16!=255{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_byte_slices_reject_mutable_storage_and_general_references() {
+    for (label, source) in [
+        ("mutable", "fn bad(data:&mut [u8]){data[0]=1;} fn main(){}"),
+        (
+            "subslice",
+            "fn bad(data:&[u8])->u16{let tail=&data[1..];tail.len() as u16} fn main(){}",
+        ),
+        (
+            "element-ref",
+            "fn bad(data:&[u8])->u8{let reference=&data[0];*reference} fn main(){}",
+        ),
+        ("mixed", "fn bad(value:u8)->u16{value} fn main(){}"),
+    ] {
+        assert!(
+            parse(&format!("graphics-bytes-{label}"), source).is_err(),
+            "{label} accepted"
+        );
+    }
+}
+
+#[test]
+fn rustc_graphics_u8_ui_updates_use_word_read_modify_write() {
+    execute(
+        "graphics-byte-word-rmw",
+        r#"mod owner;
+static WORDS:Buf<u16,2>=Buf::new([0x1234,0x5678]);
+fn write_byte(destination:Ptr,index:u16,glyph:u8){let word_index=index>>1;
+ let shift=(index&1)<<3;let old=unsafe{destination.read(word_index as i16)};
+ let mask=0xffu16<<shift;let next=(old&!mask)|((glyph as u16)<<shift);
+ unsafe{destination.write(word_index as i16,next);}}
+fn main(){write_byte(WORDS.as_ptr(),1,0xccu8);write_byte(WORDS.as_ptr(),2,0xaau8);
+ if WORDS.as_array()[0u16]!=0xcc34||WORDS.as_array()[1u16]!=0x56aa{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_owner_reassignment_and_loop_joins_drop_exactly_once() {
+    execute(
+        "graphics-owner-reinitialization",
+        r#"mod owner;
+fn identity(value:Renderer)->Renderer{value}
+fn repeat(mut value:Renderer)->Renderer{let mut i:u16=0;
+ while i<3{if (i&1)==0{value=identity(value);}else{value=identity(value);}i+=1;}
+ value}
+fn main(){let mut value=open(1);value=repeat(value);
+ if event_count()!=0{halt(0xbad);}value=open(2);
+ if event_count()!=1||event_at(0)!=11{halt(0xbad);}
+ let mut i:u16=0;loop{value=identity(value);i+=1;if i<2{continue;}break;}
+ value.finish();value=open(3);drop(value);
+ if event_count()!=3||event_at(1)!=72||event_at(2)!=13{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+const GRAPHICS_LIBRARY: &str = r#"
+#[derive(Copy,Clone)] pub struct CommandMemory{pub base:u16,pub words:u16}
+#[rcc_resource] pub struct CommandBuffer{word:u16}
+#[rcc_resource(parent=CommandBuffer)] pub struct RecordingPass{word:u16}
+#[rcc_resource] pub struct Gpu{word:u16}
+static ACTIVE_WORD:u16=0;static ACTIVE_VALID:u16=0;
+static FIRST_FAULT:u16=0;static FAULT_WORD:u16=0;static FAULT_VALID:u16=0;
+static EVENTS:Buf<u16,64>=Buf::new([0;64]);static COUNT:u16=0;
+fn event(code:u16){EVENTS.as_array()[COUNT]=code;unsafe{addr_of(&COUNT).write(0,COUNT+1);}}
+impl Drop for CommandBuffer{fn drop(&mut self){event(100+self.word);}}
+impl Drop for RecordingPass{fn drop(&mut self){event(200+self.word);}}
+impl Drop for Gpu{fn drop(&mut self){if ACTIVE_VALID!=0{gpu_panic(0x1002);}event(300+self.word);}}
+pub fn gpu_open()->Gpu{Gpu{word:0}}
+fn uart_emit(byte:u8){while (dev_recv(0,3)&1)!=0{}dev_send(0,3,byte as u16);}
+fn uart_hex4(word:u16){let mut count:u16=4;while count!=0{count-=1;let nibble=(word>>(count<<2))&15;
+ if nibble<10{uart_emit((48+nibble) as u8);}else{uart_emit((55+nibble) as u8);}}}
+fn remember_fault(code:u16){if FIRST_FAULT==0{unsafe{addr_of(&FIRST_FAULT).write(0,code);
+ addr_of(&FAULT_WORD).write(0,ACTIVE_WORD);addr_of(&FAULT_VALID).write(0,ACTIVE_VALID);}}}
+fn gpu_panic(code:u16)->!{remember_fault(code);uart_emit(b'F');uart_hex4(FIRST_FAULT);
+ uart_emit(b'@');uart_hex4(FAULT_WORD);uart_emit(b'/');uart_emit((48+FAULT_VALID) as u8);
+ uart_emit(b'#');uart_hex4(COUNT);uart_emit(10u8);
+ while (dev_recv(0,3)&1)!=0{}halt(FIRST_FAULT);}
+pub fn fixture_remember_first_fault(code:u16){remember_fault(code);}
+impl CommandBuffer{
+ pub fn identity(&self)->u16{self.word}
+ pub fn pass(&mut self)->RecordingPass{RecordingPass{word:self.word}}
+ pub fn reset(&mut self){}
+}
+impl Gpu{
+ pub fn submit(&mut self,cb:CommandBuffer){if ACTIVE_VALID!=0{gpu_panic(0x1001);}
+  unsafe{addr_of(&ACTIVE_WORD).write(0,cb.word);addr_of(&ACTIVE_VALID).write(0,1);}
+  dev_send(4,0,cb.word);resource_disarm(cb);
+ }
+ pub fn try_wait(&mut self)->Option<CommandBuffer>{let status=dev_recv(4,0);
+  if (status&0x8000)!=0{gpu_panic(0x2000|(status&255));}
+  if ACTIVE_VALID==0||(status&1)!=0{return None;}
+  let word=ACTIVE_WORD;unsafe{addr_of(&ACTIVE_VALID).write(0,0);}
+  let cb=CommandBuffer{word:word};Some(cb)
+ }
+ pub fn wait(&mut self)->CommandBuffer{loop{let done=self.try_wait();if let Some(cb)=done{return cb;}}}
+}
+
+pub fn cb_open(word:u16)->CommandBuffer{CommandBuffer{word:word}}
+pub fn command_memory(base:u16,words:u16)->CommandMemory{CommandMemory{base:base,words:words}}
+pub fn graphics_count()->u16{COUNT}
+pub fn graphics_event(index:u16)->u16{EVENTS.as_array()[index]}
+"#;
+
+#[test]
+fn rustc_graphics_tagged_options_preserve_zero_owner_and_conditional_drop() {
+    execute(
+        "graphics-tagged-options",
+        r#"mod graphics;
+fn optional(flag:bool)->Option<CommandBuffer>{if !flag{return None;}let cb=cb_open(0);Some(cb)}
+fn main(){ {let held=optional(true);} {let empty=optional(false);}
+ if graphics_count()!=1||graphics_event(0)!=100{halt(0xbad);}
+ let done=optional(true);if let Some(cb)=done{drop(cb);}else{halt(0xbad);}
+ let empty=optional(false);match empty{Some(cb)=>{drop(cb);halt(0xbad);},None=>{}}
+ if graphics_count()!=2||graphics_event(1)!=100{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_copy_options_keep_plain_memory_values_isolated() {
+    execute(
+        "graphics-copy-options",
+        r#"mod graphics;
+fn missing()->Option<CommandMemory>{None}
+fn main(){let memory=command_memory(7,9);let optional:Option<CommandMemory>=Some(memory);let copied=optional;
+ if let Some(value)=copied{if value.base!=7||value.words!=9{halt(0xbad);}}else{halt(0xbad);}
+ if let Some(value)=optional{if value.base!=7{halt(0xbad);}}else{halt(0xbad);}
+ let empty=missing();if let Some(value)=empty{halt(0xbad);}
+ if memory.words!=9||graphics_count()!=0{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_affine_pairs_transfer_swap_and_drop_in_order() {
+    execute(
+        "graphics-affine-pair",
+        r#"mod graphics;
+fn create()->(CommandBuffer,CommandBuffer){let a=cb_open(1);let b=cb_open(2);(a,b)}
+fn swapped(a:CommandBuffer,b:CommandBuffer)->(CommandBuffer,CommandBuffer){(b,a)}
+fn main(){let(mut a,mut b)=create();let mut i:u16=0;
+ while i<3{(a,b)=swapped(a,b);i+=1;}
+ if graphics_count()!=0{halt(0xbad);}drop(a);drop(b);
+ if graphics_count()!=2||graphics_event(0)!=102||graphics_event(1)!=101{halt(0xbad);}
+ {let pair=create();}
+ if graphics_count()!=4||graphics_event(2)!=101||graphics_event(3)!=102{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_option_owner_reinitialization_preserves_each_lifetime() {
+    execute(
+        "graphics-option-reinitialization",
+        r#"mod graphics;
+fn same(value:CommandBuffer)->CommandBuffer{value}
+fn main(){let first=cb_open(0);let mut pending:Option<CommandBuffer>=Some(first);
+ let mut i:u16=0;while i<3{if let Some(cb)=pending{let cb2=same(cb);pending=Some(cb2);}else{halt(0xbad);}i+=1;}
+ if graphics_count()!=0{halt(0xbad);}pending=None;
+ if graphics_count()!=1||graphics_event(0)!=100{halt(0xbad);}drop(pending);halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_graphics_optional_and_pair_owners_reject_copies_and_private_bridges() {
+    for(label,source,expected)in [
+        ("option-copy","mod graphics;fn main(){let cb=cb_open(0);let value=Some(cb);let copied=value;drop(value);}","rustc E0382"),
+        ("pair-copy","mod graphics;fn pair()->(CommandBuffer,CommandBuffer){let a=cb_open(1);let b=cb_open(2);(a,b)}fn main(){let value=pair();let copied=value;drop(value);}","rustc E0382"),
+        ("private","fn __rcc_container_option_cb_take()->u16{0}fn main(){halt(0);}","reserved ownership container name"),
+        ("other-option","fn value()->Option<u16>{Some(1)}fn main(){halt(0);}","only Option<CommandMemory> and Option<CommandBuffer>"),
+    ]{
+        let error=parse(&format!("graphics-negative-{label}"),source).err().expect("invalid ownership source must be rejected").to_string();
+        assert!(error.contains(expected),"{label}: {error}");
+    }
+}
+
+#[derive(Default)]
+struct HandoffGpu {
+    submitted: Vec<u16>,
+    busy_reads: usize,
+    fault: bool,
+}
+impl crate::Device for HandoffGpu {
+    fn read(&mut self, _memory: &mut [u16], channel: u8) -> u16 {
+        assert_eq!(channel, 0);
+        let busy = self.busy_reads != 0;
+        if self.fault {
+            return 0x8000 | u16::from(busy);
+        }
+        if busy {
+            self.busy_reads -= 1;
+        }
+        u16::from(busy)
+    }
+    fn write(&mut self, _memory: &mut [u16], channel: u8, value: u16) {
+        assert_eq!(channel, 0);
+        assert_eq!(self.busy_reads, 0);
+        self.submitted.push(value);
+        self.busy_reads = 3;
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+#[derive(Default)]
+struct HandoffUart {
+    bytes: Vec<u8>,
+    bits_left: usize,
+    completed: usize,
+    polls: usize,
+}
+impl crate::Device for HandoffUart {
+    fn read(&mut self, _memory: &mut [u16], channel: u8) -> u16 {
+        assert_eq!(channel, 3);
+        self.polls += 1;
+        let busy = self.bits_left != 0;
+        if busy {
+            self.bits_left -= 1;
+            if self.bits_left == 0 {
+                self.completed += 1;
+            }
+        }
+        u16::from(busy)
+    }
+    fn write(&mut self, _memory: &mut [u16], channel: u8, value: u16) {
+        assert_eq!(channel, 3);
+        assert_eq!(self.bits_left, 0, "UART overwritten before stop bit");
+        self.bytes.push(value as u8);
+        self.bits_left = 10;
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+fn handoff_execution(label: &str, source: &str, fault: bool) -> (CpuV3Sim, u16) {
+    let code = try_compile(
+        parse(label, source).unwrap_or_else(|e| panic!("{label}: {e}")),
+        &CompilerOptions::default(),
+        "main",
+    )
+    .unwrap();
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&code.words);
+    cpu.attach_device(
+        4,
+        Box::new(HandoffGpu {
+            fault,
+            ..Default::default()
+        }),
+    );
+    cpu.attach_device(0, Box::<HandoffUart>::default());
+    let outcome = cpu.run(100_000).unwrap();
+    let RunOutcome::Halted { signal, .. } = outcome else {
+        panic!("{label}: {outcome:?}")
+    };
+    (cpu, signal)
+}
+#[test]
+fn rustc_graphics_single_active_driver_returns_the_same_cb_and_overlaps_recording() {
+    let (cpu, signal) = handoff_execution(
+        "graphics-handoff",
+        r#"mod graphics;
+fn main(){let mut gpu=gpu_open();let mut a=cb_open(0);let mut b=cb_open(1);
+ gpu.submit(a);{let pass=b.pass();}
+ let pending=gpu.try_wait();if let Some(cb)=pending{drop(cb);halt(0xbad);}
+ a=gpu.wait();if a.identity()!=0{halt(0xbad);}(a,b)=(b,a);
+ gpu.submit(a);{let pass=b.pass();}a=gpu.wait();if a.identity()!=1{halt(0xbad);}
+ drop(b);drop(a);drop(gpu);
+ if graphics_count()!=5||graphics_event(0)!=201||graphics_event(1)!=200||graphics_event(2)!=100||graphics_event(3)!=101||graphics_event(4)!=300{halt(0xbad);}halt(0x600d);}"#,
+        false,
+    );
+    assert_eq!(signal, 0x600d);
+    assert_eq!(cpu.device::<HandoffGpu>(4).unwrap().submitted, [0, 1]);
+    assert!(cpu.device::<HandoffUart>(0).unwrap().bytes.is_empty());
+}
+#[test]
+fn rustc_graphics_busy_submit_and_device_fault_stop_without_reclaiming_active_data() {
+    for (label, source, fault, signal, bytes) in [
+        (
+            "busy-submit",
+            r#"mod graphics;fn main(){let mut gpu=gpu_open();let a=cb_open(0);let b=cb_open(1);gpu.submit(a);gpu.submit(b);halt(0xbad);}"#,
+            false,
+            0x1001,
+            b"F1001@0000/1#0000\n".as_slice(),
+        ),
+        (
+            "device-fault",
+            r#"mod graphics;fn main(){let mut gpu=gpu_open();let a=cb_open(0);gpu.submit(a);let done=gpu.try_wait();halt(0xbad);}"#,
+            true,
+            0x2001,
+            b"F2001@0000/1#0000\n".as_slice(),
+        ),
+        (
+            "first-fault",
+            r#"mod graphics;fn main(){let mut gpu=gpu_open();let a=cb_open(0);gpu.submit(a);fixture_remember_first_fault(0x3210);let done=gpu.wait();halt(0xbad);}"#,
+            true,
+            0x3210,
+            b"F3210@0000/1#0000\n".as_slice(),
+        ),
+    ] {
+        let (cpu, actual) = handoff_execution(&format!("graphics-fault-{label}"), source, fault);
+        assert_eq!(actual, signal, "{label}");
+        let uart = cpu.device::<HandoffUart>(0).unwrap();
+        assert_eq!(uart.bytes, bytes, "{label}");
+        assert_eq!(uart.bits_left, 0);
+        assert_eq!(uart.completed, bytes.len());
+        assert!(uart.polls >= bytes.len() * 10);
+        let gpu = cpu.device::<HandoffGpu>(4).unwrap();
+        assert_eq!(gpu.submitted, [0]);
+        assert_ne!(
+            gpu.busy_reads, 0,
+            "must stop without waiting for GPU completion"
+        );
+    }
+}
+#[test]
+fn rustc_graphics_active_pass_blocks_submit_and_reset() {
+    for (label, source) in [
+        (
+            "submit",
+            r#"mod graphics;fn main(){let mut gpu=gpu_open();let mut cb=cb_open(0);let pass=cb.pass();gpu.submit(cb);drop(pass);}"#,
+        ),
+        (
+            "reset",
+            r#"mod graphics;fn main(){let mut cb=cb_open(0);let pass=cb.pass();cb.reset();drop(pass);}"#,
+        ),
+    ] {
+        let error = parse(&format!("graphics-pass-{label}"), source)
+            .err()
+            .expect("active Pass must lock CB")
+            .to_string();
+        assert!(
+            error.contains("rustc E0505") || error.contains("rustc E0499"),
+            "{label}: {error}"
+        );
+    }
+}
+
+#[test]
+fn rustc_graphics_bounded_for_ranges_preserve_reinitialized_owners() {
+    execute(
+        "graphics-owner-for",
+        r#"mod graphics;
+fn same(cb:CommandBuffer)->CommandBuffer{cb}
+fn main(){let mut cb=cb_open(7);for index in 0u16..3u16{cb=same(cb);}
+ for index in 1u16..=2u16{cb=same(cb);}if graphics_count()!=0{halt(0xbad);}
+ drop(cb);if graphics_count()!=1||graphics_event(0)!=107{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+pub(crate) fn graphics_prerequisites_program(gpu_debug: bool) -> Vec<u16> {
+    let source = r#"mod graphics;
+#[repr(u16)]#[derive(Copy,Clone,PartialEq,Eq)]enum Mode{A,B}
+const BYTES:&[u8]=b"\x01\x80\xffxZ";
+fn changed(mut value:CommandMemory)->u16{value.base=99;value.base+value.words}
+fn shifted(value:u8,count:u16)->u8{value<<count}
+fn sum(data:&[u8])->u16{let mut i:u16=0;let mut total:u16=0;while i<data.len() as u16{total+=data[i as usize] as u16;i+=1;}total}
+fn main(){let memory=command_memory(7,9);if changed(memory)!=108||memory.base!=7||sum(BYTES)!=594||shifted(3u8,8u16)!=3u8{halt(0xbad);}
+ #[cfg(gpu_debug)]{if BYTES[1u16 as usize]!=128u8{halt(0xbad);}}
+ let mode=Mode::B;let copied=mode;if copied!=mode||copied as u16!=1{halt(0xbad);}
+ let mut a=cb_open(0);let mut b=cb_open(1);for index in 0u16..2u16{(a,b)=(b,a);}
+ let pending:Option<CommandBuffer>=Some(a);if let Some(done)=pending{a=done;}else{halt(0xbad);}
+ if a.identity()!=0||b.identity()!=1{halt(0xbad);}drop(a);drop(b);
+ if graphics_count()!=2||graphics_event(0)!=100||graphics_event(1)!=101{halt(0xbad);}halt(0x600d);}"#;
+    let options = CompilerOptions {
+        gpu_debug,
+        ..CompilerOptions::default()
+    };
+    try_compile(
+        parse_with_options(
+            &format!("graphics-core-cosim-{gpu_debug}"),
+            source,
+            &options,
+        )
+        .unwrap_or_else(|e| panic!("{e}")),
+        &options,
+        "main",
+    )
+    .unwrap()
+    .words
+}
+
+#[test]
+fn rustc_graphics_u8_shifts_wrap_at_eight_bits_and_evaluate_rhs_once() {
+    execute(
+        "graphics-byte-shifts",
+        r#"mod owner;
+static CALLS:u16=0;
+struct C{a:u8,b:u8}
+fn amount()->u16{unsafe{addr_of(&CALLS).write(0,CALLS+1);}8}
+fn shifted(value:u8,count:u16)->u8{value<<count}
+fn main(){let mut value:u8=3;value<<=amount();
+ let mut color:C=C{a:7,b:2};color.b+=255u8;color.b<<=amount();
+ if value!=3u8||CALLS!=2||shifted(5u8,8u16)!=5u8||color.b!=1u8{halt(0xbad);}
+ if unsafe{addr_of(&color).read(1)}!=1u16{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+fn cfg_program(
+    label: &str,
+    source: &str,
+    options: &CompilerOptions,
+) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
+    parse_with_options(label, source, options)
+}
+
+#[test]
+fn rustc_gpu_debug_prunes_calls_arguments_helpers_and_static_storage() {
+    let source = r#"mod owner;
+static EFFECT:u16=0;
+#[cfg(gpu_debug)]static DEBUG_TABLE:Buf<u16,9>=Buf::new([17;9]);
+fn argument()->u16{unsafe{addr_of(&EFFECT).write(0,EFFECT+1);}7}
+#[cfg(gpu_debug)]fn probe(value:u16){DEBUG_TABLE.as_array()[0u16]=value;}
+#[cfg(gpu_debug)]fn active()->u16{1}
+#[cfg(not(gpu_debug))]fn active()->u16{0}
+fn main(){
+ #[cfg(gpu_debug)]{probe(argument());}
+ if EFFECT!=active(){halt(0xbad);}
+ #[cfg(gpu_debug)]{if DEBUG_TABLE.as_array()[0u16]!=7{halt(0xbad);}}
+ halt(0x600d);}"#;
+    let mut sizes = Vec::new();
+    for disabled in [false, true] {
+        for enabled in [false, true] {
+            let mut options = CompilerOptions {
+                gpu_debug: enabled,
+                ..CompilerOptions::default()
+            };
+            if disabled {
+                options.opt = rcc::Opts::disabled();
+            }
+            let program = cfg_program(
+                &format!("cfg-layout-{disabled}-{enabled}"),
+                source,
+                &options,
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(program.debug.gpu_debug, enabled);
+            assert_eq!(program.funcs.iter().any(|f| f.name == "probe"), enabled);
+            sizes.push(program.debug.static_data_end);
+            let code = try_compile(program, &options, "main").unwrap();
+            assert_eq!(code.gpu_debug, enabled);
+            assert_eq!(
+                code.debug.functions.iter().any(|f| f.name == "argument"),
+                enabled
+            );
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&code.words);
+            assert!(matches!(
+                cpu.run(100_000).unwrap(),
+                RunOutcome::Halted { signal: 0x600d, .. }
+            ));
+        }
+    }
+    assert_eq!(sizes[1] - sizes[0], 9);
+    assert_eq!(sizes[3] - sizes[2], 9);
+}
+#[test]
+fn rustc_gpu_debug_selected_source_preserves_owner_cleanup() {
+    let source = r#"mod owner;fn main(){let owner=open(0);
+ #[cfg(gpu_debug)]{let moved=owner;drop(moved);}
+ #[cfg(not(gpu_debug))]{drop(owner);}
+ if event_count()!=1||event_at(0)!=10{halt(0xbad);}halt(0x600d);}"#;
+    for enabled in [false, true] {
+        let options = CompilerOptions {
+            gpu_debug: enabled,
+            ..CompilerOptions::default()
+        };
+        let program = cfg_program(&format!("cfg-owners-{enabled}"), source, &options)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let code = try_compile(program, &options, "main").unwrap();
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&code.words);
+        assert!(matches!(
+            cpu.run(100_000).unwrap(),
+            RunOutcome::Halted { signal: 0x600d, .. }
+        ));
+    }
+    let bad = r#"mod owner;fn main(){let owner=open(0);#[cfg(gpu_debug)]{let moved=owner;drop(moved);}drop(owner);}"#;
+    let enabled = CompilerOptions {
+        gpu_debug: true,
+        ..CompilerOptions::default()
+    };
+    assert!(cfg_program("cfg-double-move", bad, &enabled)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("E0382"));
+    assert!(cfg_program("cfg-no-double-move", bad, &CompilerOptions::default()).is_ok());
+}
+#[test]
+fn rustc_gpu_debug_rejects_inactive_syntax_and_contract_bypasses() {
+    let cases=[
+  ("#[cfg(gpu_debug)]fn hidden(){#[cfg(unknown)]{}}fn main(){}","only gpu_debug"),
+  ("#[cfg(gpu_debug)]fn hidden(){#[cfg_attr(gpu_debug,allow(dead_code))]{}}fn main(){}","cfg_attr"),
+  ("#[cfg(gpu_debug)]#[rcc_resource]struct R{word:u16}fn main(){}","cfg is not allowed"),
+  ("#[rcc_resource]struct R{word:u16}#[cfg(gpu_debug)]impl Drop for R{fn drop(&mut self){}}fn main(){}","unsupported resource Drop attribute"),
+  ("#[cfg(gpu_debug)]fn hidden(){__rcc_container_forge();}fn main(){}","reserved"),
+  ("#[cfg(gpu_debug)]fn hidden(){resource_disarm(0);}fn main(){}","resource_disarm"),
+  ("#[cfg(gpu_debug)]mod missing;fn main(){}","cfg is not allowed"),
+  ("fn main(){#[cfg(all(gpu_debug))]{} }","only gpu_debug"),
+ ("#![cfg(gpu_debug)] fn main(){}","cfg is not allowed"),
+ ("#[rcc_resource]struct R{word:u16}impl Drop for R{fn drop(&mut self){#[cfg(gpu_debug)]{}}}fn main(){}","cfg is not allowed"),
+ ("#[rcc_resource(cleanup=clean)]struct R{word:u16}#[cfg(gpu_debug)]fn clean(r:R){}fn main(){}","cfg is not allowed"),
+ ("#[cfg(gpu_debug)]#[rcc_resource_library(helper)]fn hidden(){}fn main(){}","contracts cannot be conditional"),
+
+ ("#[cfg(test)]fn hidden(){}fn main(){}","only gpu_debug"),
+ ("#[cfg(gpu_debug)]fn r#__rcc_value_fake(){}fn main(){}","reserved"),
+ ("#[cfg(gpu_debug)]#[allow(__rcc_method_fake)]fn hidden(){}fn main(){}","reserved"),
+ ];
+    for (i, (source, expected)) in cases.iter().enumerate() {
+        for enabled in [false, true] {
+            let options = CompilerOptions {
+                gpu_debug: enabled,
+                ..CompilerOptions::default()
+            };
+            let error = cfg_program(&format!("cfg-invalid-{i}-{enabled}"), source, &options)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains(expected), "{i}/{enabled}: {error}");
+        }
+    }
+}
+
+#[test]
+fn rustc_gpu_debug_loader_and_private_domains_keep_the_same_profile() {
+    for enabled in [false, true] {
+        let options = CompilerOptions {
+            gpu_debug: enabled,
+            ..CompilerOptions::default()
+        };
+        let source = format!(
+            "mod piece;fn main(){{if piece_value()!={}{{halt(0xbad);}}halt(0x600d);}}",
+            u16::from(enabled)
+        );
+        let program=compile_program_named_checked("cfg-loader.rs",&source,&options,&self::options(&format!("cfg-loader-{enabled}")),&mut |name|{
+            assert_eq!(name,"piece");Ok("#[cfg(gpu_debug)]pub fn piece_value()->u16{1} #[cfg(not(gpu_debug))]pub fn piece_value()->u16{0}".into())
+        }).unwrap_or_else(|e|panic!("{e}"));
+        let code = try_compile(program, &options, "main").unwrap();
+        assert_eq!(code.gpu_debug, enabled);
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&code.words);
+        assert!(matches!(
+            cpu.run(100_000).unwrap(),
+            RunOutcome::Halted { signal: 0x600d, .. }
+        ));
+        for (index, bad) in [
+            "mod owner;fn main(){let forged=Renderer{word:0};drop(forged);}",
+            "mod owner;fn main(){event(7);}",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let error = cfg_program(&format!("cfg-private-{enabled}-{index}"), bad, &options)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(
+                error.contains("private") || error.contains("E0425"),
+                "{error}"
+            );
+        }
+    }
+}
+
+const REVIEW_OWNER: &str = r#"
+#[rcc_resource]struct CommandBuffer{word:u16}
+static EVENTS:Buf<u16,16>=Buf::new([0;16]);static COUNT:u16=0;
+fn event(word:u16){EVENTS.as_array()[COUNT]=word;unsafe{addr_of(&COUNT).write(0,COUNT+1);}}
+fn open_cb(word:u16)->CommandBuffer{CommandBuffer{word:word}}
+fn count()->u16{COUNT}fn at(index:u16)->u16{EVENTS.as_array()[index]}
+impl Drop for CommandBuffer{fn drop(&mut self){event(self.word);}}
+impl CommandBuffer{fn finish(self){event(256+self.word);resource_disarm(self);}}
+"#;
+#[test]
+fn rustc_review_implicit_container_cleanup_ignores_shadowed_drop() {
+    let body = r#"
+fn main(){
+ {let direct=open_cb(9);}
+ {let cb=open_cb(7);let held:Option<CommandBuffer>=Some(cb);}
+ {let a=open_cb(3);let b=open_cb(4);let held:(CommandBuffer,CommandBuffer)=(a,b);}
+ {let a=open_cb(5);let b=open_cb(6);let (_,kept)=(a,b);}
+ let empty:Option<CommandBuffer>=None;
+ if let Some(unexpected)=empty{let saved=unexpected;}
+ let empty_again:Option<CommandBuffer>=None;
+ match empty_again{Some(unexpected)=>{let saved=unexpected;},_=>{}}
+ let cb=open_cb(8);let full:Option<CommandBuffer>=Some(cb);
+ if let Some(done)=full{let transferred=done;}else{halt(0xbad);}
+ if count()!=7||at(0)!=9||at(1)!=7||at(2)!=3||at(3)!=4||at(4)!=5||at(5)!=6||at(6)!=8{halt(0xbad);}
+ EXPLICIT
+ halt(0x600d);
+}"#;
+    for (label,definition,explicit) in [
+        ("ordinary","","let explicit_cb=open_cb(10);drop(explicit_cb);if count()!=8||at(7)!=10{halt(0xbad);}"),
+        ("word","static EXPLICIT_WORD:u16=0;fn drop(word:u16){unsafe{addr_of(&EXPLICIT_WORD).write(0,word);}}","drop(11u16);if EXPLICIT_WORD!=11||count()!=7{halt(0xbad);}"),
+        ("owner","fn drop(cb:CommandBuffer){cb.finish();}","let explicit_cb=open_cb(10);drop(explicit_cb);if count()!=8||at(7)!=266{halt(0xbad);}"),
+    ]{
+        let source=format!("{REVIEW_OWNER}\n{definition}\n{}",body.replace("EXPLICIT",explicit));
+        execute(&format!("review-drop-{label}"),&source);
+    }
+}
+#[test]
+fn rustc_review_option_constructors_do_not_capture_ordinary_names() {
+    let source = format!(
+        r#"{REVIEW_OWNER}
+#[repr(u16)]#[derive(Copy,Clone,PartialEq,Eq)]enum Choice{{None,Some,Other}}
+const None:u16=11;
+fn Some(word:u16)->u16{{word+2}}
+fn empty()->Option<CommandBuffer>{{Option::None}}
+fn main(){{
+ let value:Choice=Choice::None;if value==Choice::Other||value as u16!=0{{halt(0xbad);}}
+ if Choice::Some as u16!=1||Some(4u16)!=6||None!=11{{halt(0xbad);}}
+ let pending=empty();if let Option::Some(unexpected)=pending{{let saved=unexpected;}}
+ let cb=open_cb(0);let ready:Option<CommandBuffer>=Option::Some(cb);
+ if let Option::Some(done)=ready{{let saved=done;}}else{{halt(0xbad);}}
+ if count()!=1||at(0)!=0{{halt(0xbad);}}halt(0x600d);
+}}"#
+    );
+    execute("review-option-names", &source);
+    execute(
+        "review-qualified-enum-none",
+        r#"#[repr(u16)]#[derive(Copy,Clone,PartialEq,Eq)]enum Choice{None,Other}
+fn main(){let value:Choice=Choice::None;if value==Choice::Other{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+#[test]
+fn rustc_review_raw_cfg_is_rejected_before_host_selection() {
+    let cases=[
+        "static COUNT:u16=0;fn check(){unsafe{addr_of(&COUNT).write(0,1);}}fn main(){#[r#cfg(gpu_debug)]{check();}halt(COUNT);}",
+        "#[r#cfg(gpu_debug)]fn check(){}fn main(){}",
+        "#[r#cfg(gpu_debug)]static TABLE:u16=1;fn main(){}",
+        "fn main(){#[r#cfg(gpu_debug)]let value:u16=1;}",
+        "fn main(){#[r#cfg_attr(gpu_debug,allow(dead_code))]{}}",
+        "#[r#cfg_attr(gpu_debug,allow(dead_code))]fn check(){}fn main(){}",
+        "#[cfg(gpu_debug)]fn hidden(){#[r#cfg(gpu_debug)]{}}fn main(){}",
+        "#![r#cfg(gpu_debug)]fn main(){}",
+        "#[r#cfg(gpu_debug)]mod missing;fn main(){}",
+    ];
+    for (index, source) in cases.iter().enumerate() {
+        for enabled in [false, true] {
+            let options = CompilerOptions {
+                gpu_debug: enabled,
+                ..CompilerOptions::default()
+            };
+            let error = cfg_program(
+                &format!("review-raw-cfg-{index}-{enabled}"),
+                source,
+                &options,
+            )
+            .err()
+            .expect("raw cfg must reject");
+            assert!(error.to_string().contains("raw cfg/cfg_attr"), "{error}");
+        }
+    }
 }

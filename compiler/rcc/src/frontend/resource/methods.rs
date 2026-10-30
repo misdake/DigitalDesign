@@ -14,6 +14,7 @@ fn reserved(ident: &syn::Ident) -> bool {
 pub(super) struct Method {
     function: syn::Ident,
     borrow: bool,
+    mutable: bool,
 }
 
 pub(super) fn prepare(
@@ -118,12 +119,14 @@ pub(super) fn prepare(
                         .reference
                         .as_ref()
                         .is_some_and(|(_, lifetime)| lifetime.is_some())
-                        || (receiver.reference.is_some() && receiver.mutability.is_none())
+                        || (receiver.reference.is_some()
+                            && receiver.mutability.is_none()
+                            && !model.checked)
                         || !receiver.attrs.is_empty()
                     {
                         return Err(error(
                             receiver,
-                            "resource receivers support only self, mut self or &mut self",
+                            "resource receivers support only self, mut self, &self or &mut self",
                         ));
                     }
                     let key = (ty.to_string(), method.sig.ident.to_string());
@@ -139,10 +142,13 @@ pub(super) fn prepare(
                     let local =
                         syn::Ident::new(&format!("{PREFIX}self_{index}"), receiver.self_token.span);
                     let borrow = receiver.reference.is_some();
+                    let mutable = receiver.mutability.is_some();
                     let mut sig = method.sig.clone();
                     sig.ident = function.clone();
-                    sig.inputs[0] = if borrow {
+                    sig.inputs[0] = if borrow && mutable {
                         parse_quote!(#local: &mut #ty)
+                    } else if borrow {
+                        parse_quote!(#local: &#ty)
                     } else if receiver.mutability.is_some() {
                         parse_quote!(mut #local: #ty)
                     } else {
@@ -184,7 +190,14 @@ pub(super) fn prepare(
                         sig,
                         block: Box::new(body),
                     }));
-                    model.methods.insert(key, Method { function, borrow });
+                    model.methods.insert(
+                        key,
+                        Method {
+                            function,
+                            borrow,
+                            mutable,
+                        },
+                    );
                 }
                 Ok(())
             })();
@@ -255,8 +268,10 @@ impl Checker<'_> {
             ));
         }
         let receiver = &call.receiver;
-        let first = if method.borrow {
+        let first = if method.borrow && method.mutable {
             parse_quote!(&mut #receiver)
+        } else if method.borrow {
+            parse_quote!(&#receiver)
         } else {
             *receiver.clone()
         };
@@ -285,7 +300,7 @@ mod tests {
         for (code, message) in [
             (
                 "impl Pass{fn draw(&self){}}",
-                "only self, mut self or &mut self",
+                "only self, mut self, &self or &mut self",
             ),
             ("impl Pass{fn draw<'a>(&'a mut self){}}", "generic/default"),
             (

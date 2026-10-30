@@ -120,6 +120,15 @@ mod tests {
         assert!(asset_manifest().contains("asset=application.v3bin"));
         assert!(asset_manifest().contains("asset=application.static-words"));
         assert!(asset_manifest().contains("asset=cpu-v3-boot.bin"));
+        let (_, map) = ASSETS
+            .iter()
+            .find(|(name, _)| *name == "cpu-v3-boot.map")
+            .unwrap();
+        let map = std::str::from_utf8(map).unwrap();
+        assert!(map
+            .lines()
+            .any(|line| matches!(line, "rcc_gpu_debug=false" | "rcc_gpu_debug=true")));
+
         assert!(!ASSETS.iter().any(|(name, _)| name.contains("stage0")
             || name.contains("s1")
             || name.contains("s2")

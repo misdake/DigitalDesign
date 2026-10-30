@@ -953,8 +953,8 @@ impl FuncBuilder {
         self.current = Some(body_b);
         self.seal(body_b);
     }
-    /// finish a while loop (back edge, seal header/exit); current = exit
-    pub fn end_while(&mut self, header: BlockId, exit: BlockId) {
+    /// Finish the backedge and return whether any path reaches the loop exit.
+    pub fn end_while(&mut self, header: BlockId, exit: BlockId) -> bool {
         if let Some(end) = self.current {
             self.func.blocks[header].preds.push(end);
             self.terminate(Terminator::Jmp { target: header });
@@ -962,7 +962,9 @@ impl FuncBuilder {
         self.loops.pop();
         self.seal(header);
         self.seal(exit);
-        self.current = Some(exit);
+        let reachable = !self.func.blocks[exit].preds.is_empty();
+        self.current = reachable.then_some(exit);
+        reachable
     }
 
     // ----- structured control flow convenience wrappers -----

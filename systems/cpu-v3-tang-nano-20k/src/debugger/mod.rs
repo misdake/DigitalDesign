@@ -1145,6 +1145,7 @@ mod tests {
 
     fn session(words: Vec<Word>) -> V3DebugSession {
         V3DebugSession::from_program(CpuV3Program {
+            gpu_debug: false,
             code_base: 0,
             words,
             listing: String::new(),
@@ -1214,6 +1215,7 @@ mod tests {
     fn struct_layouts_are_published_and_expanded() {
         // a hand-built .dbg: one struct static `p` at data address 0x0040
         let program = CpuV3Program {
+            gpu_debug: false,
             code_base: 0,
             words: vec![halt()],
             listing: String::new(),

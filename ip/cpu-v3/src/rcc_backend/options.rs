@@ -3,6 +3,7 @@ use rcc::{Opts, RccConfig};
 /// CpuV3 target and ABI options.
 #[derive(Clone, Debug)]
 pub struct CompilerOptions {
+    pub gpu_debug: bool,
     pub opt: Opts,
     pub stack_init: u16,
     pub data_base: u16,
@@ -18,6 +19,7 @@ pub struct CompilerOptions {
 impl Default for CompilerOptions {
     fn default() -> Self {
         Self {
+            gpu_debug: false,
             opt: Opts::default(),
             stack_init: crate::DEFAULT_STACK_TOP,
             data_base: crate::DEFAULT_DATA_BASE,
@@ -50,6 +52,9 @@ impl CompilerOptions {
 }
 
 impl RccConfig for CompilerOptions {
+    fn gpu_debug(&self) -> bool {
+        self.gpu_debug
+    }
     fn optimizations(&self) -> &Opts {
         &self.opt
     }

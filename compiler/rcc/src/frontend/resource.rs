@@ -16,6 +16,7 @@ pub(super) struct Sources<'a> {
 
 #[derive(Clone)]
 struct Resource {
+    native: bool,
     file: usize,
     public: bool,
     field: String,
@@ -26,7 +27,7 @@ struct Resource {
 enum Arg {
     Native,
     Own(String),
-    Borrow(String),
+    Borrow(String, bool),
 }
 #[derive(Clone)]
 struct Function {
@@ -38,6 +39,7 @@ struct Function {
     diverges: bool,
 }
 struct Model {
+    checked: bool,
     resources: HashMap<String, Resource>,
     functions: HashMap<String, Function>,
     values: HashMap<String, (usize, bool)>,
@@ -45,6 +47,14 @@ struct Model {
     methods: HashMap<(String, String), methods::Method>,
 }
 impl Model {
+    fn erased_type(&self, name: &str) -> Type {
+        if self.resources[name].native {
+            let ident = drop_syntax::resource_ident(name, proc_macro2::Span::call_site());
+            parse_quote!(#ident)
+        } else {
+            parse_quote!(u16)
+        }
+    }
     fn can_access(&self, caller: usize, target: usize, public: bool) -> bool {
         match self.domains.get(&target) {
             None => true,
@@ -170,13 +180,13 @@ fn classify(ty: &Type, model: &Model) -> Result<Arg, syn::Error> {
     }
     if let Type::Reference(r) = ty {
         if let Some(n) = type_name(&r.elem).filter(|n| model.resources.contains_key(n)) {
-            if r.mutability.is_none() || r.lifetime.is_some() {
+            if r.lifetime.is_some() || (r.mutability.is_none() && !model.checked) {
                 return Err(error(
                     ty,
-                    "resource references must be direct &mut parameters",
+                    "shared resource references require checked compilation; references must be direct parameters",
                 ));
             }
-            return Ok(Arg::Borrow(n));
+            return Ok(Arg::Borrow(n, r.mutability.is_some()));
         }
     }
     if contains(ty, &model.resources) {
@@ -192,8 +202,11 @@ pub(super) fn lower(
     files: &mut [syn::File],
     file_names: &[String],
     sources: Option<Sources<'_>>,
+    checked: bool,
+    carriers: &[super::ownership_containers::Carrier],
 ) -> Result<(), (usize, syn::Error)> {
     let mut model = Model {
+        checked,
         resources: HashMap::new(),
         functions: HashMap::new(),
         values: HashMap::new(),
@@ -278,6 +291,7 @@ pub(super) fn lower(
                 .unwrap()
                 .to_string();
             let resource = Resource {
+                native: false,
                 file: fi,
                 public: matches!(s.vis, syn::Visibility::Public(_)),
                 field,
@@ -292,6 +306,19 @@ pub(super) fn lower(
                 return Err((fi, error(s, "duplicate resource type")));
             }
         }
+    }
+    for carrier in carriers {
+        model.resources.insert(
+            carrier.name.clone(),
+            Resource {
+                native: true,
+                file: carrier.file,
+                public: true,
+                field: String::new(),
+                cleanup: carrier.cleanup.clone(),
+                parent: None,
+            },
+        );
     }
     model.domains = library::domains(files, file_names, sources, &model.resources)?;
     if model.resources.is_empty() {
@@ -364,7 +391,7 @@ pub(super) fn lower(
                         ReturnType::Default => None,
                         ReturnType::Type(_, ty) => match classify(ty, &model)? {
                             Arg::Own(n) => Some(n),
-                            Arg::Borrow(_) => return Err(error(ty, "resource references cannot escape a call")),
+                            Arg::Borrow(..) => return Err(error(ty, "resource references cannot escape a call")),
                             Arg::Native => None,
                         },
                     };
@@ -442,7 +469,7 @@ pub(super) fn lower(
                 Checker::function(&model, fi, f).map_err(|e| (fi, e))?;
             }
         }
-        file.items.retain(|item| !matches!(item, Item::Struct(s) if model.resources.contains_key(&s.ident.to_string())));
+        file.items.retain(|item| !matches!(item, Item::Struct(s) if model.resources.get(&s.ident.to_string()).is_some_and(|r| !r.native)));
     }
     Ok(())
 }
@@ -462,11 +489,55 @@ struct Binding {
     cleanup: bool,
     mutable: bool,
 }
+// Runtime values flow through the native SSA variables. At checked control-flow
+// joins, compare ownership/parent shape rather than incidental allocation IDs.
+fn join_bindings(expected: &[Binding], actual: &mut [Binding], checked: bool) -> bool {
+    if !checked {
+        return expected == actual;
+    }
+    if expected.len() != actual.len()
+        || expected.iter().zip(actual.iter()).any(|(e, a)| {
+            e.name != a.name
+                || e.live != a.live
+                || e.owned != a.owned
+                || e.cleanup != a.cleanup
+                || e.mutable != a.mutable
+                || e.value.ty != a.value.ty
+        })
+    {
+        return false;
+    }
+    let mut ids = HashMap::new();
+    for (e, a) in expected.iter().zip(actual.iter()).filter(|(_, a)| a.owned) {
+        ids.insert(a.value.id, e.value.id);
+    }
+    for (e, a) in expected.iter().zip(actual.iter()) {
+        ids.entry(a.value.id).or_insert(e.value.id);
+    }
+    if expected
+        .iter()
+        .zip(actual.iter())
+        .any(|(e, a)| a.value.parent.map(|id| *ids.get(&id).unwrap_or(&id)) != e.value.parent)
+    {
+        return false;
+    }
+    for (e, a) in expected.iter().zip(actual.iter_mut()) {
+        a.value = e.value.clone();
+    }
+    true
+}
 #[derive(Clone)]
 enum Kind {
     Scalar,
     Unit,
     Resource(Value),
+    Borrowed(Value, bool),
+}
+#[derive(Clone)]
+struct LoopScope {
+    start: usize,
+    entry: Vec<Binding>,
+    can_break: bool,
 }
 struct Checker<'a> {
     model: &'a Model,
@@ -474,11 +545,11 @@ struct Checker<'a> {
     bindings: Vec<Binding>,
     next: usize,
     reachable: bool,
-    loops: Vec<(usize, Vec<Binding>)>,
+    loops: Vec<LoopScope>,
     result: Option<String>,
     native_names: Vec<String>,
     pending_owned: Vec<Value>,
-    pending_borrows: Vec<Value>,
+    pending_borrows: Vec<(Value, bool)>,
 }
 impl<'a> Checker<'a> {
     fn function(model: &'a Model, file: usize, f: &mut syn::ItemFn) -> Result<(), syn::Error> {
@@ -504,7 +575,7 @@ impl<'a> Checker<'a> {
                     this.native_names.push(p.ident.to_string());
                 }
             }
-            if let Arg::Own(n) | Arg::Borrow(n) = mode {
+            if let Arg::Own(n) | Arg::Borrow(n, _) = mode {
                 let Pat::Ident(p) = param.pat.as_mut() else {
                     return Err(error(param, "resource parameters need a simple name"));
                 };
@@ -520,13 +591,19 @@ impl<'a> Checker<'a> {
                     owned: matches!(mode, Arg::Own(_)),
                     cleanup: matches!(mode, Arg::Own(_))
                         && f.sig.ident != model.resources[n].cleanup,
-                    mutable: p.mutability.is_some() || matches!(mode, Arg::Borrow(_)),
+                    mutable: match mode {
+                        Arg::Own(_) => p.mutability.is_some(),
+                        Arg::Borrow(_, mutable) => *mutable,
+                        Arg::Native => false,
+                    },
                 });
                 // Reborrowing a mutable resource binding does not mutate the
                 // erased scalar identity. Keep owned/borrowed mutability in
                 // the ownership model, not in the native u16 parameter ABI.
-                p.mutability = None;
-                *param.ty = parse_quote!(u16);
+                if !model.checked || !matches!(mode, Arg::Own(_)) {
+                    p.mutability = None;
+                }
+                *param.ty = model.erased_type(n);
             }
         }
         if signature.result.is_some() && matches!(f.block.stmts.last(), Some(Stmt::Expr(_))) {
@@ -536,8 +613,9 @@ impl<'a> Checker<'a> {
             f.block.stmts.push(parse_quote!(return #value;));
         }
         this.block_at(&mut f.block, 0)?;
-        if signature.result.is_some() {
-            f.sig.output = parse_quote!(-> u16);
+        if let Some(result) = &signature.result {
+            let ty = model.erased_type(result);
+            f.sig.output = parse_quote!(-> #ty);
         }
         Ok(())
     }
@@ -560,7 +638,11 @@ impl<'a> Checker<'a> {
         if !b.live {
             return Err(error(node, "resource was moved or consumed"));
         }
-        if self.pending_borrows.iter().any(|v| v.id == b.value.id) {
+        if self
+            .pending_borrows
+            .iter()
+            .any(|(v, exclusive)| *exclusive && v.id == b.value.id)
+        {
             return Err(error(
                 node,
                 "resource is locked by aliased call arguments (pending call)",
@@ -588,6 +670,16 @@ impl<'a> Checker<'a> {
             .ok_or_else(|| error(node, "expected a resource owner"))?;
         if !b.owned {
             return Err(error(node, "cannot move a borrowed resource"));
+        }
+        if self
+            .pending_borrows
+            .iter()
+            .any(|(value, _)| value.id == b.value.id)
+        {
+            return Err(error(
+                node,
+                "cannot move a resource borrowed by a pending call",
+            ));
         }
         self.bindings
             .iter_mut()
@@ -646,19 +738,64 @@ impl<'a> Checker<'a> {
                     } else {
                         None
                     };
-                    if matches!(declared, Some(Arg::Borrow(_))) {
+                    if matches!(declared, Some(Arg::Borrow(..))) && !self.model.checked {
                         return Err(error(local, "resource references cannot be stored"));
                     }
                     let Some((_, expr)) = &mut local.init else {
                         continue;
                     };
                     let value = self.expr(expr)?;
-                    if let Kind::Resource(v) = value {
+                    if let Kind::Borrowed(value, mutable) = value {
+                        if !self.model.checked
+                            || matches!(declared, Some(Arg::Native | Arg::Own(_)))
+                        {
+                            return Err(error(
+                                expr,
+                                "a resource reference needs a checked borrowed binding",
+                            ));
+                        }
+                        if let Some(Arg::Borrow(expected, required_mutable)) = &declared {
+                            if &value.ty != expected || (*required_mutable && !mutable) {
+                                return Err(error(expr, "resource reference type mismatch"));
+                            }
+                        }
+                        let mutable = match &declared {
+                            Some(Arg::Borrow(_, required)) => *required,
+                            _ => mutable,
+                        };
+                        let pat = if let Pat::Type(p) = &mut local.pat {
+                            *p.ty = parse_quote!(u16);
+                            p.pat.as_mut()
+                        } else {
+                            &mut local.pat
+                        };
+                        let Pat::Ident(p) = pat else {
+                            return Err(error(pat, "resource references need a simple local name"));
+                        };
+                        if p.by_ref.is_some() || p.subpat.is_some() {
+                            return Err(error(p, "resource references need a simple local name"));
+                        }
+                        p.mutability = None;
+                        self.bindings.push(Binding {
+                            name: p.ident.to_string(),
+                            value,
+                            live: true,
+                            owned: false,
+                            cleanup: false,
+                            mutable,
+                        });
+                    } else if let Kind::Resource(v) = value {
                         if matches!(declared, Some(Arg::Native)) {
                             return Err(error(expr, "resource cannot initialize an ordinary type"));
                         }
+                        let ty = self.model.erased_type(&v.ty);
+                        if self.model.resources[&v.ty].native && !matches!(local.pat, Pat::Type(_))
+                        {
+                            let pattern = local.pat.clone();
+                            local.pat = super::typed_pattern(pattern, ty.clone());
+                        }
                         let pat = if let Pat::Type(p) = &mut local.pat {
-                            *p.ty = parse_quote!(u16);
+                            *p.ty = ty;
                             p.pat.as_mut()
                         } else {
                             &mut local.pat
@@ -756,6 +893,10 @@ impl<'a> Checker<'a> {
             Expr::Path(p) => {
                 let n = p.path.segments.last().unwrap().ident.to_string();
                 if self.bindings.iter().any(|b| b.name == n) {
+                    let binding = self.lookup(&n, p)?.unwrap();
+                    if self.model.checked && !binding.owned {
+                        return Ok(Kind::Borrowed(binding.value, binding.mutable));
+                    }
                     return Ok(Kind::Resource(self.take(&n, p)?));
                 }
                 if !self.native_names.contains(&n) {
@@ -778,6 +919,15 @@ impl<'a> Checker<'a> {
             {
                 let ty = s.path.segments.last().unwrap().ident.to_string();
                 let r = &self.model.resources[&ty];
+                if r.native {
+                    if r.file != self.file || s.rest.is_some() {
+                        return Err(error(s, "private ownership carrier construction"));
+                    }
+                    for field in &mut s.fields {
+                        self.scalar(&mut field.expr)?;
+                    }
+                    return Ok(Kind::Resource(self.value(ty, None)));
+                }
                 if r.file != self.file
                     || s.rest.is_some()
                     || s.fields.len() != 1
@@ -830,6 +980,9 @@ impl<'a> Checker<'a> {
                 if let Some(n) = name(&f.base) {
                     if let Some(b) = self.lookup(&n, f)? {
                         let r = &self.model.resources[&b.value.ty];
+                        if r.native && r.file == self.file {
+                            return Ok(Kind::Scalar);
+                        }
                         if r.file != self.file
                             || f.member
                                 != syn::Member::Named(syn::Ident::new(
@@ -847,6 +1000,18 @@ impl<'a> Checker<'a> {
             }
             Expr::Reference(r) => {
                 if place_root(&r.expr).is_some_and(|n| self.bindings.iter().any(|b| b.name == n)) {
+                    if self.model.checked {
+                        let local = name(&r.expr).ok_or_else(|| {
+                            error(r, "resource reborrows need a simple bound local")
+                        })?;
+                        let binding = self.lookup(&local, r)?.unwrap();
+                        let mutable = r.mutability.is_some();
+                        if mutable && !binding.mutable {
+                            return Err(error(r, "mutable resource borrow needs a mutable owner"));
+                        }
+                        *expr = *r.expr.clone();
+                        return Ok(Kind::Borrowed(binding.value, mutable));
+                    }
                     return Err(error(
                         r,
                         "resource borrowing is limited to direct &mut call arguments",
@@ -859,6 +1024,47 @@ impl<'a> Checker<'a> {
             }
             Expr::Assign(a) => {
                 if place_root(&a.left).is_some_and(|n| self.bindings.iter().any(|b| b.name == n)) {
+                    if self.model.checked {
+                        let local = name(&a.left)
+                            .ok_or_else(|| error(a, "resource fields cannot be reassigned"))?;
+                        let index = self.bindings.iter().rposition(|b| b.name == local).unwrap();
+                        let original = self.bindings[index].clone();
+                        if !original.owned || !original.mutable {
+                            return Err(error(a, "resource reassignment needs a mutable owner"));
+                        }
+                        let Kind::Resource(value) = self.expr(&mut a.right)? else {
+                            if !self.reachable {
+                                return Ok(Kind::Unit);
+                            }
+                            return Err(error(a, "resource reassignment needs an owned result"));
+                        };
+                        if value.ty != original.value.ty {
+                            return Err(error(a, "resource reassignment type mismatch"));
+                        }
+                        let old = &self.bindings[index];
+                        let cleanup = if old.live && old.cleanup {
+                            let function = drop_syntax::resource_ident(
+                                &self.model.resources[&old.value.ty].cleanup,
+                                proc_macro2::Span::call_site(),
+                            );
+                            let local = syn::Ident::new(&local, proc_macro2::Span::call_site());
+                            Some(parse_quote!(#function(#local);))
+                        } else {
+                            None::<Stmt>
+                        };
+                        self.bindings[index].value = value;
+                        self.bindings[index].live = true;
+                        let temp = syn::Ident::new(
+                            &format!("__rcc_resource_update_{}", self.next),
+                            proc_macro2::Span::call_site(),
+                        );
+                        self.next += 1;
+                        let left = &a.left;
+                        let right = &a.right;
+                        let ty = self.model.erased_type(&original.value.ty);
+                        *expr = parse_quote!({ let #temp:#ty = #right; #cleanup #left=#temp; });
+                        return Ok(Kind::Unit);
+                    }
                     return Err(error(
                         a,
                         "resource reassignment is not supported; bind a new owner",
@@ -924,7 +1130,13 @@ impl<'a> Checker<'a> {
                         proc_macro2::Span::call_site(),
                     );
                     self.next += 1;
-                    *expr = parse_quote!({ let #temp = #value; #(#cleanup)* return #temp; });
+                    if let Some(result) = &self.result {
+                        let ty = self.model.erased_type(result);
+                        *expr =
+                            parse_quote!({ let #temp:#ty = #value; #(#cleanup)* return #temp; });
+                    } else {
+                        *expr = parse_quote!({ let #temp = #value; #(#cleanup)* return #temp; });
+                    }
                 } else {
                     *expr = parse_quote!({ #(#cleanup)* return; });
                 }
@@ -949,13 +1161,32 @@ impl<'a> Checker<'a> {
                 {
                     return Err(error(i, "resource-valued conditionals are not supported"));
                 }
-                if left_live && right_live && left != self.bindings {
+                if left_live
+                    && right_live
+                    && !join_bindings(&left, &mut self.bindings, self.model.checked)
+                {
                     return Err(error(i, "resource ownership differs at branch merge"));
                 }
                 if left_live && !right_live {
                     self.bindings = left;
                 }
                 self.reachable = left_live || right_live;
+                if let (Kind::Borrowed(left, lm), Kind::Borrowed(right, rm)) =
+                    (&left_kind, &right_kind)
+                {
+                    if left.ty != right.ty {
+                        return Err(error(
+                            i,
+                            "conditional resource references need matching types",
+                        ));
+                    }
+                    let value = if left.id == right.id {
+                        left.clone()
+                    } else {
+                        self.value(left.ty.clone(), None)
+                    };
+                    return Ok(Kind::Borrowed(value, *lm && *rm));
+                }
                 Ok(
                     if matches!(left_kind, Kind::Scalar) && matches!(right_kind, Kind::Scalar) {
                         Kind::Scalar
@@ -970,11 +1201,47 @@ impl<'a> Checker<'a> {
                 if self.bindings != entry {
                     return Err(error(w, "loop condition cannot change resource ownership"));
                 }
-                self.loop_body(&mut w.body)?;
+                self.loop_body(&mut w.body, false)?;
                 Ok(Kind::Unit)
             }
             Expr::Loop(l) => {
-                self.loop_body(&mut l.body)?;
+                self.loop_body(&mut l.body, true)?;
+                Ok(Kind::Unit)
+            }
+            Expr::ForLoop(loop_) if self.model.checked => {
+                if loop_.label.is_some() {
+                    return Err(error(loop_, "resource loops do not support labels"));
+                }
+                let Pat::Ident(variable) = &loop_.pat else {
+                    return Err(error(loop_, "resource for loops need a simple index name"));
+                };
+                if variable.mutability.is_some()
+                    || variable.by_ref.is_some()
+                    || variable.subpat.is_some()
+                    || self
+                        .bindings
+                        .iter()
+                        .any(|binding| variable.ident == binding.name)
+                {
+                    return Err(error(
+                        variable,
+                        "resource for loops need a nonshadowing index name",
+                    ));
+                }
+                let Expr::Range(range) = loop_.expr.as_mut() else {
+                    return Err(error(
+                        loop_,
+                        "resource for loops require a bounded integer range",
+                    ));
+                };
+                let (Some(from), Some(to)) = (&mut range.from, &mut range.to) else {
+                    return Err(error(range, "resource for loops require both bounds"));
+                };
+                self.scalar(from)?;
+                self.scalar(to)?;
+                self.native_names.push(variable.ident.to_string());
+                self.loop_body(&mut loop_.body, false)?;
+                self.native_names.pop();
                 Ok(Kind::Unit)
             }
             Expr::Match(_) | Expr::ForLoop(_) if !self.bindings.is_empty() => Err(error(
@@ -1008,16 +1275,19 @@ impl<'a> Checker<'a> {
                         "resource loops do not support labels or break values",
                     ));
                 }
-                let Some((start, entry)) = self.loops.last() else {
+                let Some(LoopScope { start, entry, .. }) = self.loops.last().cloned() else {
                     return Err(error(expr, "loop exit outside loop"));
                 };
-                if &self.bindings[..*start] != entry.as_slice() {
+                if !join_bindings(&entry, &mut self.bindings[..start], self.model.checked) {
                     return Err(error(
                         expr,
                         "resource ownership differs at loop exit/backedge",
                     ));
                 }
-                let cleanup = self.cleanup(*start);
+                let cleanup = self.cleanup(start);
+                if matches!(expr, Expr::Break(_)) {
+                    self.loops.last_mut().unwrap().can_break = true;
+                }
                 let exit = expr.clone();
                 *expr = parse_quote!({ #(#cleanup)* #exit; });
                 self.reachable = false;
@@ -1026,20 +1296,24 @@ impl<'a> Checker<'a> {
             _ => self.native(expr),
         }
     }
-    fn loop_body(&mut self, block: &mut syn::Block) -> Result<(), syn::Error> {
+    fn loop_body(&mut self, block: &mut syn::Block, unconditional: bool) -> Result<(), syn::Error> {
         let entry = self.bindings.clone();
-        self.loops.push((self.bindings.len(), entry.clone()));
+        self.loops.push(LoopScope {
+            start: self.bindings.len(),
+            entry: entry.clone(),
+            can_break: false,
+        });
         self.block(block)?;
-        if self.reachable && self.bindings != entry {
+        if self.reachable && !join_bindings(&entry, &mut self.bindings, self.model.checked) {
             return Err(error(block, "resource ownership differs at loop backedge"));
         }
-        self.loops.pop();
+        let can_break = self.loops.pop().unwrap().can_break;
         self.bindings = entry;
-        self.reachable = true;
+        self.reachable = !unconditional || can_break;
         Ok(())
     }
     fn scalar(&mut self, expr: &mut Expr) -> Result<(), syn::Error> {
-        if matches!(self.expr(expr)?, Kind::Resource(_)) {
+        if matches!(self.expr(expr)?, Kind::Resource(_) | Kind::Borrowed(..)) {
             return Err(error(
                 expr,
                 "resource cannot be copied, converted or used as an ordinary value",
@@ -1086,7 +1360,9 @@ impl<'a> Checker<'a> {
         let Some(n) = name(&call.func) else {
             return self.native_call(call);
         };
-        if n == "drop" && !self.model.functions.contains_key(&n) {
+        if n == super::ownership_containers::DROP
+            || (n == "drop" && !self.model.functions.contains_key(&n))
+        {
             if call.args.len() != 1 {
                 return Err(error(call, "drop needs one owned resource"));
             }
@@ -1159,11 +1435,11 @@ impl<'a> Checker<'a> {
                     self.pending_owned.push(v.clone());
                     owned.push(v);
                 }
-                Arg::Borrow(expected) => {
+                Arg::Borrow(expected, mutable) => {
                     let (local, erased, implicit) = match expr {
                         Expr::Reference(r) => {
-                            if r.mutability.is_none() {
-                                return Err(error(r, "resource borrowing requires &mut"));
+                            if *mutable && r.mutability.is_none() {
+                                return Err(error(r, "mutable resource borrowing requires &mut"));
                             }
                             let Some(local) = name(&r.expr) else {
                                 return Err(error(r, "resource borrowing needs a local owner"));
@@ -1186,16 +1462,23 @@ impl<'a> Checker<'a> {
                     if implicit && b.owned {
                         return Err(error(expr,"owned resources require explicit &mut; only borrowed parameters reborrow implicitly"));
                     }
-                    if !b.mutable {
+                    if *mutable && !b.mutable {
                         return Err(error(expr, "mutable resource borrow needs a mutable owner"));
                     }
-                    if &b.value.ty != expected || !used.insert(b.value.id) {
+                    if &b.value.ty != expected
+                        || used.contains(&b.value.id)
+                        || (*mutable
+                            && self.pending_borrows.iter().any(|(v, _)| v.id == b.value.id))
+                    {
                         return Err(error(
                             expr,
                             "resource type mismatch or aliased call arguments",
                         ));
                     }
-                    self.pending_borrows.push(b.value.clone());
+                    if *mutable {
+                        used.insert(b.value.id);
+                    }
+                    self.pending_borrows.push((b.value.clone(), *mutable));
                     borrowed.push(b.value.clone());
                     *expr = erased;
                 }

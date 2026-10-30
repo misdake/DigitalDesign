@@ -34,7 +34,7 @@ impl Native {
             }
         }
         let mut copies: HashSet<String> = [
-            "u16", "i16", "bool", "Ptr", "Array", "fix32", "vec2", "vec3", "vec4",
+            "u8", "u16", "i16", "bool", "Ptr", "Array", "fix32", "vec2", "vec3", "vec4",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -114,7 +114,20 @@ impl VisitMut for Native {
         match item {
             Item::Struct(s) if self.copies.contains(&s.ident.to_string()) => {
                 // Ordinary target aggregates are copied by value; lexical resources never are.
-                s.attrs.push(parse_quote!(#[derive(Copy,Clone)]));
+                let derives = |wanted: &str| {
+                    s.attrs.iter().any(|attr| {
+                    attr.path.is_ident("derive") && matches!(attr.parse_meta(), Ok(syn::Meta::List(list))
+                        if list.nested.iter().any(|entry| matches!(entry, syn::NestedMeta::Meta(syn::Meta::Path(path)) if path.is_ident(wanted))))
+                })
+                };
+                let copy = derives("Copy");
+                let clone = derives("Clone");
+                if !copy {
+                    s.attrs.push(parse_quote!(#[derive(Copy)]));
+                }
+                if !clone {
+                    s.attrs.push(parse_quote!(#[derive(Clone)]));
+                }
             }
             Item::Static(s) => {
                 s.mutability = Some(Default::default());

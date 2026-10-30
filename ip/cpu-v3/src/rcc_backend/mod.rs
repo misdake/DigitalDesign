@@ -9,7 +9,7 @@ mod options;
 #[cfg(test)]
 pub(crate) mod resource_tests;
 #[cfg(test)]
-mod rustc_tests;
+pub(crate) mod rustc_tests;
 
 pub use options::CompilerOptions;
 
@@ -67,6 +67,8 @@ const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvent
 
 #[derive(Clone, Debug)]
 pub struct CpuV3Program {
+    /// Profile of the source selected by the frontend, for software identity.
+    pub gpu_debug: bool,
     pub code_base: Word,
     pub words: Vec<Word>,
     pub listing: String,
@@ -1927,6 +1929,7 @@ fn link(
     validate_program(&words, options.code_base)?;
     debug_lines.sort();
     Ok(CpuV3Program {
+        gpu_debug: frontend_debug.gpu_debug,
         code_base: options.code_base,
         words,
         listing,

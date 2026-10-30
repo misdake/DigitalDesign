@@ -16,6 +16,7 @@ Only these types exist; no other primitive types are supported:
 
 | type | meaning | notes |
 |---|---|---|
+| `u8` | unsigned byte in a word register | checked source; arithmetic/casts retain eight bits, ordinary fields occupy one word |
 | `u16` | unsigned 16-bit word | default integer type; literals `123`, `0x1f`, `123u16` |
 | `i16` | signed 16-bit word | literals `123i16`, `-5i16`; comparisons/shifts are signed |
 | `Ptr` | **data pointer** (into data memory) | the `dsl_rt::Ptr` newtype over a u16 address; no plain arithmetic, only its methods and `as` casts |
@@ -238,7 +239,8 @@ they are not part of this surface.
   (§10), strings, floats, other integer types, unsafe operations other than the narrow `Ptr`
   boundary in §2, `extern`, lifetimes, items declared
   inside a function body, attributes (except the resource marker in §15, the ignored `#[allow(...)]` and the `#[doc]` /
-  `#[repr(...)]` / `#[derive(PartialEq)]` that §9b/§9d accept), and `use` (parsed but ignored; it
+  `#[repr(...)]` / `#[derive(PartialEq)]` that §9b/§9d accept, plus the restricted
+  conditional compilation in section 19), and `use` (parsed but ignored; it
   exists for the IDE). Patterns are limited to a plain identifier or a tuple in `let` (§9c) and to
   a constant or `_` in `match` (§9d): struct patterns, bindings, guards, ranges and `|` are errors.
 - **Integer `*` is supported** (hardware MUL on CpuV3, `mul_16x16` library call on CpuV2), and so
@@ -409,7 +411,7 @@ halt(t.0 + q + r);                  // fields are positional: `.0`, `.1`, ...
 - A tuple value is memory-resident like a struct: it is its word address, a bare tuple is not a
   value (`let t = (1u16, 2u16);` is fine — the literal is stored into `t`'s slot — but passing a
   tuple *name* around needs one of the forms above).
-- Tuple *parameters* are not supported (a tuple is not a view); pass the elements, or use a struct
+- Legacy unchecked tuple *parameters* are not supported (checked value parameters are described in §17); pass the elements, or use a struct
   with an `Array<T>` view when a callee must see many of them.
 - `_` may ignore an element: `let (lo, _, _) = stats(a, b);`.
 
@@ -424,8 +426,10 @@ A fieldless enum is one word holding the variant's discriminant (`Idle` = 0, `Ru
 declaration order). `Trace::Run` is a compile-time constant, so it works anywhere a `u16` works:
 a binding, an argument, a return value, a struct field, a `Buf<Trace, N>` element, and `e as u16`.
 
-- Variants must be fieldless, unique and without explicit discriminants; `#[derive(PartialEq)]`,
-  `#[allow]` and `#[doc]` are the only accepted attributes.
+- Variants must be fieldless, unique and without explicit discriminants. Checked source
+  requires `#[repr(u16)]`; another representation is rejected. The unchecked legacy entry
+  also retains its previous implicit word representation. `Copy`, `Clone`, `PartialEq`
+  and `Eq` derive markers, `#[allow]` and `#[doc]` are accepted.
 - `==` and `!=` compare two values of the *same* enum, and — like real Rust — only when the enum
   derives `PartialEq`; ordering (`<`, `>=`, …) is not defined. An integer never compares with an
   enum, and arithmetic on enums is a type error.
@@ -566,7 +570,7 @@ Scalar arguments (including `Array<T>` views and fn pointers) travel in the six 
 the F registers. Aggregates — structs (§9b), tuples (§9c) and `Buf<T, N>` (§10) — are **not**
 passed by value:
 
-- **Parameters**: an aggregate cannot be a parameter. Pass `Array<T>` (a view of the aggregate, or
+- **Parameters**: the legacy unchecked entry rejects aggregate parameters. Checked value parameters use isolated snapshots (§17). Otherwise pass `Array<T>` (a view of the aggregate, or
   of an array of them) or the fields.
 - **Returns (sret)**: the caller supplies a *hidden destination pointer* as the first argument and
   the callee writes the result there, returning nothing in registers:
@@ -784,6 +788,13 @@ later argument cannot consume an earlier borrowed owner.
 Mutable owned resource parameters and `mut name: &mut Resource` parameters may be reborrowed with `&mut name`;
 their binding mutability is checked before erasing the reference to the existing
 scalar identity ABI. This does not enable ordinary stored references.
+The checked entry additionally supports `&Resource`, `&self`, local resource-reference
+aliases and matching-type conditional reference selection. Repeated shared arguments
+are legal, including shared reborrows of a mutable parameter. Rustc checks their original
+types and lifetimes before ABI erasure; local references carry the same word identity
+and no cleanup. A shared reference cannot be upgraded to mutable or moved into an owner.
+These resource-reference locals do not enable arbitrary references, reference returns
+or references embedded in other target data structures.
 An already evaluated owned argument retains its child/parent lock until all
 arguments have been evaluated and ownership is handed to the callee. Nested
 argument calls cannot borrow or destroy that parent. Return/break/continue
@@ -798,7 +809,8 @@ return a child tied to a borrowed parameter; returning a child of a local owned
 parent is rejected. A consumed child parameter has no proved borrowed-parent
 origin in the callee and cannot be returned/reparented by merely adding another
 parent argument. General resource-valued block/conditional expressions,
-resource reassignment and shadowing are outside this subset.
+Legacy unchecked resource reassignment and shadowing are outside this subset.
+Checked move assignment and structured joins are described in section 18.
 
 Live owners are cleaned in reverse binding order on normal block/function exit,
 `return`, `break` and `continue`. A return value is evaluated before cleanup.
@@ -818,7 +830,8 @@ checking and cleanup insertion precede existing u16/ordinary-call lowering.
 Branch merges and loop backedges/exits require consistent outer ownership;
 inconsistent states are rejected rather than represented by runtime drop flags.
 Resource control flow supports `if`, unlabeled `while`/`loop` and their exits.
-`match`/`for` while resource bindings are in scope, labeled exits, break values
+In the legacy unchecked subset, `match`/`for` while resource bindings are in scope
+are rejected. Labeled exits, break values
 and short-circuit expressions that change ownership are rejected. A fail-stop
 halt is not stack unwinding and need not execute cleanup.
 
@@ -843,7 +856,7 @@ the owning driver rather than to the language's resource representation.
 ### 15.1 Restricted inherent resource methods
 
 A lexical resource may have nongeneric inherent `impl` blocks in its exact
-definition file. Methods accept `self`, `mut self` or `&mut self`:
+definition file. Methods accept `self`, `mut self`, `&mut self` and, in checked source, `&self`:
 
 ```rust
 impl Pass {
@@ -856,7 +869,7 @@ impl Pass {
 ```
 
 The receiver at a call must be a simple unqualified local owner or resource
-parameter. `&mut self` calls insert a direct mutable borrow; `self` calls move
+parameter. Borrowed receiver calls insert the matching shared/mutable borrow; `self` calls move
 the owner. Receiver arguments are checked before the remaining arguments under
 the same pending-call locks as free functions. A borrowed receiver may be
 reborrowed but cannot be consumed. A borrowed parameter or receiver may be
@@ -919,7 +932,7 @@ escape. This is checking of the projection, not a general Rust memory-safety
 claim for unsafe `Ptr`/`Array`, DSEG windows, device protocols or trusted factories.
 Native source still has to satisfy RCC's existing restricted signatures,
 visibility, control-flow and ownership rules. In particular, passing rustc does
-not enable stored references, explicit lifetimes, generics, runtime drop flags
+not enable general stored references, explicit lifetimes, generics, runtime drop flags
 or arbitrary Rust syntax. The projection additionally represents target-native
 operations used by the actual graphics library: ordinary copyable aggregates
 derive Copy/Clone, target static storage is mutable, and only expressions that
@@ -1036,3 +1049,131 @@ between different declaration kinds and either loading order. An application
 constant cannot replace a private static's access decision while address lowering
 still selects that static. Ordinary lexical local/parameter shadowing remains
 supported; it does not replace a module-level declaration.
+
+
+## 17. Checked values and packed byte data
+
+The checked entry accepts nongeneric inherent constructors and ordinary-struct
+methods. `Self` names the defining struct. Value receivers and ordinary struct/tuple
+parameters use caller-owned snapshots evaluated in argument order, before later
+arguments can modify their sources. Borrowed receivers use the original place
+through an internal view; shared and mutable receiver legality is checked by rustc
+before lowering. Aggregate returns retain the existing hidden destination ABI.
+The unchecked legacy signature restrictions remain. Ordinary value structs may
+carry `Copy`/`Clone` markers; lexical owning resources remain noncopyable.
+Generated value entry names are reserved in every source entry path.
+
+`u8` arithmetic, bitwise operations, writes and casts retain the low eight bits;
+registers and ordinary fields still occupy sixteen-bit words. Packed bytes are a
+separate immutable format, not the layout of an ordinary struct with u8 fields.
+Constant evaluation also retains narrow intermediate values, including shifts
+before widening casts. Byte shift counts use their low three bits, compared
+with four bits for a word; compound shift operands are evaluated once. There is
+no new byte-store instruction.
+
+A restricted `&[u8]` value is a two-word descriptor: payload word address, then byte
+length. Literals and whole const byte arrays are packed low byte first, with a
+zero high byte for an odd final word. That padding is excluded from the length.
+Equal immutable literal data share one static payload/descriptor. Descriptors
+pass by value through the aggregate ABI; payload bytes are not copied at calls.
+They can be held in local bindings and forwarded as whole values. Slice fields
+inside structs, mutable slices, individual byte references and arbitrary
+subslice construction are rejected.
+
+Use `text.len() as u16` for a byte count. Read indexing accepts literals or an
+unsigned word index; `text[index as usize]` is the host-compatible spelling, and
+`usize` is accepted only as that index cast, not as a general target type. Word
+addressing uses `index >> 1`, then extracts the low/high byte. As with existing
+unchecked Array accesses, the caller must keep dynamic indices within length;
+there is no new runtime bounds or UTF-8 machinery. UI byte writes explicitly
+read-modify-write a u16 word, preserving its other byte.
+
+## 18. Checked ownership containers and structured handoff
+
+The checked frontend supports exactly `Option<CommandMemory>` and
+`Option<CommandBuffer>`. The former is a normal copyable value; the latter is
+an affine owner. Both use an explicit presence word followed by their payload,
+so `Some(0)` is distinct from `None`. None does not construct a command-buffer
+owner. A held Some cleans its buffer once; taking it transfers that owner and
+removes the container's cleanup obligation. `Some`/`None` returns, simple
+identifier `if let Some(value)` patterns and two-arm Some/None matches use the
+same internal carrier layout. Bind owning call arguments to locals first, as
+with other resource calls. General payload enums and reference patterns are
+not supported. A context-free None can require an explicit type annotation.
+Constructor recognition is limited to unshadowed `Some`/`None` and
+`Option::Some`/`Option::None`; unrelated qualified variants and ordinary
+functions or constants with these names keep their normal meaning.
+
+An affine pair of command buffers supports whole construction, return,
+destructuring and exchange. A held pair cleans both buffers in field order;
+whole destructuring transfers both without cleanup. Partial owner-field moves
+are rejected. Compiler-generated carrier, constructor and bridge names are
+reserved in every source entry path. They remain private to resource lowering;
+applications cannot use them to forge or copy an owner. Generated container
+cleanup binds the resource cleanup hook directly, independently of a source
+function named `drop`. Explicit source calls keep normal name lookup.
+
+Checked move assignment evaluates the new value before replacing its binding.
+If that evaluation moved the old owner, no old cleanup remains; otherwise the
+old live value is cleaned exactly once before replacement. Structured branch
+and loop joins compare each binding's live/type/parent shape, allowing a new
+identity in an initialized binding while retaining parent-borrow locks. Bounded
+range loops and whole pair exchange are supported. Divergent loops do not need
+a fictitious return value. This does not add general per-variable runtime Drop
+flags, conditional live-owner joins, labeled exits or arbitrary partial moves.
+Rustc checks the original ownership source before the internal representation
+is generated; the affine pass then checks the selected target flow.
+
+CPU V3 compiler fixtures exercise a single active submission, explicit handoff,
+zero-valued identities, `wait`/`try_wait`, scoped Pass borrows and double-buffer
+exchange. Their device executor is a bounded test model, not a new production
+GPU ABI or driver. Fault fixtures preserve active ownership, latch the first
+snapshot, send a readable report through the system-control UART channel and
+wait for completion of its final byte before halting. Device faults do not
+become None, and reporting never waits for GPU completion or unwinds owners.
+The protocol model and the real UART component's stop-bit test have separate
+qualification boundaries; these tests do not claim physical GPU execution.
+
+## 19. Explicit GPU check profile
+
+`RccConfig::gpu_debug()` defaults to false. `RccOptions` and CPU V3
+`CompilerOptions` expose that boolean explicitly; it is independent of
+optimization, debug symbols and the host's `cfg(test)`. All program loaders,
+including checked and approved-library entry points, pass the same option to
+the common frontend. `parse_source`/`parse_source_with` use false;
+`parse_source_with_config` selects it explicitly without loading modules or
+adding program auto-init. Frontend debug metadata and `CpuV3Program.gpu_debug`
+record the profile of the source actually selected by the frontend.
+
+Only `#[cfg(gpu_debug)]` and `#[cfg(not(gpu_debug))]` are accepted. They select
+ordinary function, const, static, value struct and enum items, or a standalone
+statement block. Supported conditions on one declaration are conjunctive.
+Conditions on files, modules, fields, variants, parameters, impl declarations,
+methods or general expressions are rejected. Macros, `cfg_attr`, Cargo features,
+`cfg(test)` and compound predicates are not part of this vocabulary. Raw
+`r#cfg` and `r#cfg_attr` spellings are rejected before profile selection,
+including inside inactive source.
+
+The frontend validates the complete original AST, including inactive subtrees,
+before deleting inactive items/statements. Unknown or unsupported conditions
+are errors rather than implicit false. Conditional resource declarations,
+resource markers, library membership and Drop/explicit-cleanup bodies are
+forbidden. Module loading and approved origins therefore do not change with
+the profile. Compiler bridge namespaces, including attribute tokens and raw
+identifiers, are reserved before pruning; `resource_disarm` cannot be hidden
+in conditional source. Ordinary selected ownership still follows rustc and
+affine checks; an invalid active move is not repaired by the profile.
+
+Pruning preserves source spans and runs before rustc projection, resource
+lowering, literal interning and static layout. Rustc and target lowering consume
+the same effective AST with cfg attributes removed. An excluded check does not
+evaluate its predicates or arguments, allocate its dedicated statics, generate
+its marked helpers or retain their initializers. Unmarked unreachable helpers
+remain subject to the normal linker and static-allocation rules; mark dedicated
+debug-only items as well as their call blocks.
+
+For generated system boot applications, `RCC_GPU_DEBUG=0|1` selects the boolean
+(default 0); other values fail the build. Cargo tracks this environment input,
+and `cpu-v3-boot.map` records `rcc_gpu_debug=true|false`. This adds no runtime
+flag, target instructions or GPU command ABI field. It does not classify or
+rewrite checks in the production graphics driver.
