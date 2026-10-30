@@ -2,21 +2,24 @@
 
 ## Surface layout
 
-The GPU materializes disjoint RGB565 color and unsigned D16 depth planes in
-external memory. Each plane is tile-linear, with 16 × 16 pixels and 512 bytes
-per tile. Generic surface dimensions are width 16..512 and height 16..256, both
-multiples of 16; the selected GPU factory fixes 400 × 240. The command profile
-installs both plane bases at runtime with SET_TARGET; other factories retain
-their elaboration-time surface parameters. Command-profile plane bases are64-KiB
-aligned; generic surface bases are512-byte aligned. Their full allocations must
-be disjoint and fit actual memory.
+The production command GPU materializes disjoint400x240 RGB565 color and
+unsigned D16 depth planes. A macro contains16x16 pixels /512 bytes. Macros are
+column ordered with a16-macro vertical pitch:25 columns,15 visible macros and
+one padding macro per column. Each physical plane contains204800 bytes,
+including12800 padding bytes; its reservation is262144 bytes. SET_TARGET installs
+64-KiB-aligned plane bases at runtime. Reservations must remain disjoint and fit
+actual memory.
 
 ```text
-tile = (y>>4)*(width/16) + (x>>4)
-byte_offset = tile*512 + (y&15)*32 + (x&15)*2
+macro = (x>>4)*16 + (y>>4)
+byte_offset = macro*512 + (y&15)*32 + (x&15)*2
 color_address = color_base + byte_offset
 depth_address = depth_base + byte_offset
 ```
+
+The independent parameterized framebuffer components retain their own local
+surface contract; see the [reference index](/ip/gpu-v2/docs/references/README.md).
+They do not provide another production storage format.
 
 Each plane tile transfers as four ordered 128-byte sectors. The
 [memory wrapper](/ip/gpu-v2/docs/memory.md) converts these byte addresses to halfwords. It does
@@ -56,8 +59,8 @@ oracle's ideal alpha/255 is a separate numerical profile.
 
 Eight resident 16 × 8 half-tiles hold color/depth in four 1024 × 16
 true-dual-port DPB banks. Each line contains 256 bytes per plane, 512 bytes
-total. Its key is `{y[7:3],x[8:4]}`. The external 16 × 16 layout is unchanged:
-the key's low Y bit selects byte256 within the external plane tile.
+total. Its key is `{y[7:3],x[8:4]}`. The key's low Y bit selects byte256
+within a physical macro; column order does not change this local half split.
 
 The physical bank address is `{plane,0,line3,y[2:1],lane_y,x[3:2]}`. Bit8 is
 fixed zero; four banks remain necessary for the independent lane accesses.

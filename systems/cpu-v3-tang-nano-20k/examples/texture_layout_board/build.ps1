@@ -1,14 +1,13 @@
+[CmdletBinding()]
 param(
     [ValidateSet('Export', 'Build', 'Audit')]
     [string]$Mode = 'Build',
     [string]$OutputDirectory = 'target/texture-column16-pure/board',
-    [string]$BootExample = '',
-    [ValidateSet('texture16x8-row','texture16x8-column16')]
-    [string]$Profile = 'texture16x8-column16',
-    [ValidateSet('production')]
-    [string]$Implementation = 'production'
+    [string]$BootExample = ''
 )
 $ErrorActionPreference = 'Stop'
+$Profile = 'production'
+$Implementation = 'production'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
 $outputPath = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
     [IO.Path]::GetFullPath($OutputDirectory)

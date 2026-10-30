@@ -8,10 +8,10 @@ use gpu_v2::{
 };
 use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
 pub(super) const RENDERER_METADATA: &str = "
-pub const GPU_RENDERER_ATLAS_BYTE_ADDRESS_LOW:u16=0;pub const GPU_RENDERER_ATLAS_BYTE_ADDRESS_HIGH:u16=0x4c;
-pub const GPU_RENDERER_MESH_DIRECTORY:u16=0x9600;pub const GPU_RENDERER_MESH_DIRECTORY_WORD:u16=0;
-pub const GPU_RENDERER_MESH_COUNT:u16=1;pub const GPU_RENDERER_MESH_FIRST:u16=0x9600;pub const GPU_RENDERER_MESH_SECTORS:u16=32;
-pub const GPU_RENDERER_TEXTURE:u16=0x9620;pub const GPU_RENDERER_TEXTURE_SECTORS:u16=1;
+pub const GPU_RENDERER_ATLAS_BYTE_ADDRESS_LOW:u16=0;pub const GPU_RENDERER_ATLAS_BYTE_ADDRESS_HIGH:u16=0x4f;
+pub const GPU_RENDERER_MESH_DIRECTORY:u16=0x9c00;pub const GPU_RENDERER_MESH_DIRECTORY_WORD:u16=0;
+pub const GPU_RENDERER_MESH_COUNT:u16=1;pub const GPU_RENDERER_MESH_FIRST:u16=0x9c00;pub const GPU_RENDERER_MESH_SECTORS:u16=32;
+pub const GPU_RENDERER_TEXTURE:u16=0x9c20;pub const GPU_RENDERER_TEXTURE_SECTORS:u16=4;
 pub const GPU_RENDERER_TEXTURE_LOG2:u16=0;pub const GPU_RENDERER_TEXTURE_MIP:u16=0;
 pub const GPU_RENDERER_MIN_X_LOW:u16=0;pub const GPU_RENDERER_MIN_X_HIGH:u16=65535;
 pub const GPU_RENDERER_MIN_Y_LOW:u16=0;pub const GPU_RENDERER_MIN_Y_HIGH:u16=65535;
@@ -39,7 +39,6 @@ mod scene;
 
 #[derive(Default)]
 struct State {
-    column: bool,
     input_status: u16,
     input_bytes: [u16; 8],
     now_ms: u16,
@@ -126,8 +125,7 @@ impl cpu_v3::Device for Peer {
             (4, 0) => {
                 assert_eq!(s.gpu, 0);
                 let offscreen = s.targets.as_ref().is_some_and(|targets| {
-                    ![0x400000, if s.column { 0x440000 } else { 0x430000 }]
-                        .contains(&targets[s.starts.len()].0)
+                    ![0x400000, 0x440000].contains(&targets[s.starts.len()].0)
                 });
                 assert!(!s.pending || offscreen);
                 s.count = value;
@@ -136,20 +134,15 @@ impl cpu_v3::Device for Peer {
             (4, 1) => {
                 assert_eq!(s.gpu, 0);
                 let expected_target = s.targets.as_ref().map(|targets| targets[s.starts.len()]);
-                let offscreen = expected_target.is_some_and(|t| {
-                    ![0x400000, if s.column { 0x440000 } else { 0x430000 }].contains(&t.0)
-                });
+                let offscreen =
+                    expected_target.is_some_and(|t| ![0x400000, 0x440000].contains(&t.0));
                 assert!(!s.pending || offscreen);
                 if s.pending && offscreen {
                     s.offscreen_starts_pending += 1;
                 }
                 let number = s.starts.len();
-                let objects = if value == if s.column { 0x9800 } else { 0x9200 } {
-                    if s.column {
-                        0x4d0000
-                    } else {
-                        0x4a0000
-                    }
+                let objects = if value == 0x9800 {
+                    0x4d0000
                 } else {
                     assert_eq!(value, 0xfc00);
                     0x7f0000
@@ -167,7 +160,7 @@ impl cpu_v3::Device for Peer {
                 let color = if let Some(target) = expected_target {
                     target.0
                 } else if number.is_multiple_of(2) {
-                    0x430000
+                    0x440000
                 } else {
                     0x400000
                 };
@@ -178,7 +171,7 @@ impl cpu_v3::Device for Peer {
                         width: 400,
                         height: 240,
                         color_base_bytes: color,
-                        depth_base_bytes: expected_target.map_or(0x460000, |t| t.1)
+                        depth_base_bytes: expected_target.map_or(0x480000, |t| t.1)
                     })
                     .unwrap()
                 );
@@ -203,6 +196,7 @@ impl cpu_v3::Device for Peer {
                     let mut expected = vec![
                         Command::wait(true, true),
                         Command::FLUSH,
+                        Command::TEX_INVALIDATE,
                         Command::dma_local((objects + offset * 2) as u32, 276, 32).unwrap(),
                         Command::wait(true, false),
                         Command::set_target(276).unwrap(),
@@ -275,11 +269,11 @@ impl cpu_v3::Device for Peer {
                 10 => {
                     assert_eq!(s.gpu, 1);
                     assert_eq!(s.starts.len(), 1);
-                    assert_eq!(image(memory, 0x490000, 64), s.starts[0].1);
+                    assert_eq!(image(memory, 0x4c0000, 64), s.starts[0].1);
                     let target = if s.persistent_ranges.is_some() {
-                        0x4a0000
+                        0x4d0000
                     } else {
-                        0x4a0040
+                        0x4d0040
                     };
                     assert_eq!(image(memory, target, 16), s.starts[0].2);
                     s.overlap += 1;
@@ -323,10 +317,11 @@ fn scene_commands_and_objects(memory: &[u16], objects: usize) -> Vec<Command> {
     );
     let mut render = vec![0u32; 8];
     render[0] = TextureDescriptor {
-        base_sector: 0x9620,
+        base_sector: 0x9c20,
         size_log2: 0,
         full_mip: false,
         filter: 2,
+        framebuffer_view: false,
     }
     .word();
     render[1] = 0xa0a0a0;
@@ -366,7 +361,7 @@ fn scene_commands_and_objects(memory: &[u16], objects: usize) -> Vec<Command> {
         Command::set_render(272).unwrap(),
         Command::dma_local((objects + 256) as u32, 320, 128).unwrap(),
         Command::wait(true, false),
-        Command::dma_meshlet(0x4b0080, 0, 128).unwrap(),
+        Command::dma_meshlet(0x4e0080, 0, 128).unwrap(),
         Command::wait(true, false),
         Command::draw_meshlet(0).unwrap(),
     ]
@@ -516,7 +511,7 @@ fn compiled_two_slots_late_bind_and_distinct_display_retirement() {
     let s = state.borrow();
     assert_eq!(
         s.starts.iter().map(|s| s.0).collect::<Vec<_>>(),
-        [0x9200, 0xfc00, 0x9200]
+        [0x9800, 0xfc00, 0x9800]
     );
     assert_eq!(s.swaps, 3);
     assert_eq!(s.overlap, 1);
@@ -532,7 +527,7 @@ fn compiled_second_slot_ui_snapshot_crosses_window_without_touching_running_inpu
  check(gpu_pipeline_advance()==GPU_PENDING);
  let mut second=gpu_pipeline_buffer(2);second[0u16].object_words=16180;
  check(gpu_pipeline_begin(0,0)==2);
- let mut atlas:GpuUiAtlas=GpuUiAtlas{{sector:0x9800,sectors:512}};
+ let mut atlas:GpuUiAtlas=GpuUiAtlas{{sector:0x9e00,sectors:512}};
  check(gpu_builder_ui(second,view_of(&mut atlas),CELLS.as_array(),0,750,false));
  check(second[0u16].object_words==16656);
  dev_send(7,0,10);check(gpu_pipeline_cancel());
@@ -555,6 +550,6 @@ fn compiled_second_slot_ui_snapshot_crosses_window_without_touching_running_inpu
         .collect();
     assert_eq!(
         actual,
-        gpu_v2::system::vliw_command::ui_params(at as u32, 0x4c0000).unwrap()
+        gpu_v2::system::vliw_command::ui_params(at as u32, 0x4f0000).unwrap()
     );
 }

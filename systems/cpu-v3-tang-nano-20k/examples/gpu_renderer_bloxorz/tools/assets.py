@@ -19,14 +19,14 @@ R = module("minimal_renderer", SYSTEM / "examples/gpu_renderer/tools/assets.py")
 G = module("native_assets", SYSTEM / "examples/gpu_demo/tools/assets.py")
 
 def pack(output):
-    R.pack(output, "column16")
+    R.pack(output)
     manifest=json.loads((output/'assets.json').read_text())
     BASE=next(r['address'] for r in manifest['resources'] if r['kind']=='mesh')
     texture=BASE+0xf000
     for resource in manifest['resources']:
         if resource['kind']=='texture':
             resource['address']=texture
-            R.validate_asset_range(texture,resource['bytes'],'column16')
+            R.validate_asset_range(texture,resource['bytes'])
             assert texture+resource['bytes']<=next(r['address'] for r in manifest['resources'] if r['kind']=='atlas')
     levels = B.levels()
     chosen = [levels[n] for n in ["fixture-switch", "fixture-split"]]
@@ -80,7 +80,7 @@ def pack(output):
                 assert [(packed>>(6*k))&63 for k in range(3)]==tri
             memory.extend(record);meshes.append(mesh);entry+=1
     assert BASE+len(memory)<texture
-    R.validate_asset_range(BASE,len(memory),'column16')
+    R.validate_asset_range(BASE,len(memory))
     (output/'mesh.bin').write_bytes(memory)
     constants=(output/'renderer_assets.rs').read_text()
     for key,value in dict(GPU_RENDERER_MESH_COUNT=count,GPU_RENDERER_MESH_SECTORS=len(memory)//128,GPU_RENDERER_TEXTURE=texture//128).items():
@@ -109,7 +109,7 @@ def pack(output):
     for r in manifest['resources']:
         data=(output/r['file']).read_bytes();r.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
         assert r['address']+len(data)<=0x600000 or r['address']>=0x680000
-    manifest.update(profile='rtt400x240-column16',surface='column-major-16x16-pad16',
+    manifest.update(profile='production',surface='column-major-16x16-pad16',
         borrowed=dict(color=0x600000,depth=0x640000,plane_capacity=262144),catalog=catalog,meshes=meshes,levels=chosen,
         triangles=sum(len(m["triangles"]) for m in meshes),vertices=sum(len(m["vertices"]) for m in meshes),
         bounds=[[-8,-1,-3],[8,1,3]])

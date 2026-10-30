@@ -89,5 +89,29 @@ pub fn lower(mut source: String) -> Result<String, String> {
         }
         source.replace_range(begin..end, &s);
     }
+    let start = source
+        .find(" wire[8:0]mt_tile_y={5'd0,mt_tile[9:6]};")
+        .ok_or("Texture column16 FB row conversion")?;
+    let end = start
+        + source[start..]
+            .find(" wire mt_half=")
+            .ok_or("Texture column16 FB address end")?;
+    source.replace_range(
+        start..end,
+        r#" // Raw half-tile tag remains unchanged. UI keeps its logical row-order ABI.
+ function[8:0]column_ui_tile;
+  input[8:0]logical_tile;reg[8:0]remainder;reg[3:0]row;
+  begin
+   remainder=logical_tile;row=0;
+   if(remainder>=9'd200)begin remainder=remainder-9'd200;row[3]=1;end
+   if(remainder>=9'd100)begin remainder=remainder-9'd100;row[2]=1;end
+   if(remainder>=9'd50)begin remainder=remainder-9'd50;row[1]=1;end
+   if(remainder>=9'd25)begin remainder=remainder-9'd25;row[0]=1;end
+   column_ui_tile={remainder[4:0],row};
+  end
+ endfunction
+ wire[8:0]mt_linear_tile=ui_active?column_ui_tile(ui_tile):{mt_tile[4:0],mt_tile[9:6]};
+"#,
+    );
     Ok(source)
 }

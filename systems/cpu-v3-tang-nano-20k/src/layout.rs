@@ -6,15 +6,14 @@ use digital_design_ip_common::{
 
 pub const FRAMEBUFFER_WIDTH: u32 = 400;
 pub const FRAMEBUFFER_HEIGHT: u32 = 240;
-/// Framebuffer V1 is tile-linear: 16x16 RGB565 tiles packed tile-row-major.
+/// Column RGB565 macros: 25 columns with a 16-macro vertical pitch.
 pub const FRAMEBUFFER_TILE: u32 = 16;
 /// One 16x16 tile is 256 16-bit words.
 pub const FRAMEBUFFER_TILE_WORDS: u32 = FRAMEBUFFER_TILE * FRAMEBUFFER_TILE;
 pub const FRAMEBUFFER_TILE_COLUMNS: u32 = FRAMEBUFFER_WIDTH / FRAMEBUFFER_TILE;
 pub const FRAMEBUFFER_TILE_ROWS: u32 = FRAMEBUFFER_HEIGHT / FRAMEBUFFER_TILE;
-/// Words between the starts of two adjacent tile rows (25 tiles x 256 words).
-pub const FRAMEBUFFER_TILE_ROW_STRIDE_WORDS: u32 =
-    FRAMEBUFFER_TILE_COLUMNS * FRAMEBUFFER_TILE_WORDS;
+/// Words between vertically adjacent macro rows.
+pub const FRAMEBUFFER_TILE_ROW_STRIDE_WORDS: u32 = FRAMEBUFFER_TILE_WORDS;
 /// Live pixel payload of one framebuffer, in 16-bit words.
 pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT;
 /// Per-framebuffer slot, including the padding that 16x16 tiles leave after
@@ -31,19 +30,19 @@ pub const fn framebuffer_word_at(base: u32, x: u32, y: u32) -> u32 {
     let tile_y = y / FRAMEBUFFER_TILE;
     let local_x = x % FRAMEBUFFER_TILE;
     let local_y = y % FRAMEBUFFER_TILE;
-    let tile = tile_y * FRAMEBUFFER_TILE_COLUMNS + tile_x;
+    let tile = tile_x * 16 + tile_y;
     base + tile * FRAMEBUFFER_TILE_WORDS + local_y * FRAMEBUFFER_TILE + local_x
 }
 
 /// Physical word address of the 16-pixel segment `tile_x` of source row `y`,
 /// i.e. the first pixel of the 32-byte line the display fetches for that
-/// position. The display walks `tile_x` 0..24 with a +256 word step, then the
-/// next source row with +16 words, and the next tile row with +6400 words.
+/// position. The display walks `tile_x` 0..24 with a +4096 word step, then the
+/// next source row with +16 words, and the next macro row with +256 words.
 pub const fn framebuffer_segment_word(base: u32, y: u32, tile_x: u32) -> u32 {
     let tile_y = y / FRAMEBUFFER_TILE;
     let local_y = y % FRAMEBUFFER_TILE;
     base + tile_y * FRAMEBUFFER_TILE_ROW_STRIDE_WORDS
-        + tile_x * FRAMEBUFFER_TILE_WORDS
+        + tile_x * 16 * FRAMEBUFFER_TILE_WORDS
         + local_y * FRAMEBUFFER_TILE
 }
 
@@ -210,11 +209,11 @@ mod tests {
                 assert!(region.base.get() + region.words <= first);
             }
         }
-        assert_eq!(u32::from(GPU_COMMAND_FIRST_SECTOR) * 128, 0x490000);
+        assert_eq!(u32::from(GPU_COMMAND_FIRST_SECTOR) * 128, 0x4c0000);
         assert_eq!(u32::from(GPU_COMMAND_CAPACITY_SECTORS) * 128, 65536);
-        assert_eq!(u32::from(GPU_OBJECT_FIRST_SECTOR) * 128, 0x4a0000);
+        assert_eq!(u32::from(GPU_OBJECT_FIRST_SECTOR) * 128, 0x4d0000);
         assert_eq!(u32::from(GPU_OBJECT_CAPACITY_SECTORS) * 128, 65536);
-        assert_eq!(u32::from(GPU_ASSET_FIRST_SECTOR) * 128, 0x4b0000);
+        assert_eq!(u32::from(GPU_ASSET_FIRST_SECTOR) * 128, 0x4e0000);
         assert_eq!(u32::from(GPU_ASSET_END_SECTOR) * 128, 0x7df800);
         assert_eq!(GPU_UI_PAGE0_SECTOR, GPU_ASSET_END_SECTOR);
         assert_eq!(
@@ -238,33 +237,44 @@ mod tests {
         assert_eq!(framebuffer.base.get(), FRAMEBUFFER_BASE_WORD);
         assert_eq!(framebuffer.words, FRAMEBUFFER_SLOT_WORDS * 2);
         assert_eq!(framebuffer.kind, MemoryRegionKind::Shared);
-        assert_eq!(framebuffer_word(0, 203), 0x0021_2cb0);
-        assert_eq!(framebuffer_word(399, 203), 0x0021_44bf);
-        assert_eq!(framebuffer_word(0, 204), 0x0021_2cc0);
-        assert_eq!(framebuffer_word(399, 239), 0x0021_76ff);
-        assert_eq!(FRAMEBUFFER_B_BASE_WORD, 0x0021_8000);
-        assert_eq!(FRAMEBUFFER_END_WORD, 0x0023_0000);
+        assert_eq!(framebuffer_word(0, 203), 0x0020_0cb0);
+        assert_eq!(framebuffer_word(399, 203), 0x0021_8cbf);
+        assert_eq!(framebuffer_word(0, 204), 0x0020_0cc0);
+        assert_eq!(framebuffer_word(399, 239), 0x0021_8eff);
+        assert_eq!(FRAMEBUFFER_B_BASE_WORD, 0x0022_0000);
+        assert_eq!(FRAMEBUFFER_END_WORD, 0x0024_0000);
         assert_eq!(
             framebuffer_word_at(FRAMEBUFFER_B_BASE_WORD, 399, 239),
-            FRAMEBUFFER_B_BASE_WORD + 0x0001_76ff
+            FRAMEBUFFER_B_BASE_WORD + 0x0001_8eff
         );
     }
 
     #[test]
-    fn tile_linear_segments_cover_the_payload_exactly_once() {
-        let mut seen = vec![false; FRAMEBUFFER_WORDS as usize];
+    fn column_segments_cover_pixels_once_and_leave_macro_padding() {
+        let physical_words = u32::from(GPU_FRAMEBUFFER_PHYSICAL_SECTORS) * 64;
+        let mut seen = vec![false; physical_words as usize];
         for y in 0..FRAMEBUFFER_HEIGHT {
             for tile_x in 0..FRAMEBUFFER_TILE_COLUMNS {
                 let segment = framebuffer_segment_word(0, y, tile_x);
                 for offset in 0..16 {
                     let address = segment + offset;
-                    assert!(address < FRAMEBUFFER_WORDS, "segment left the payload");
+                    assert!(address < physical_words, "segment left the physical span");
                     assert!(!seen[address as usize], "word {address:#x} covered twice");
                     seen[address as usize] = true;
                 }
             }
         }
-        assert!(seen.into_iter().all(|covered| covered));
+        assert_eq!(
+            seen.iter().filter(|covered| **covered).count(),
+            FRAMEBUFFER_WORDS as usize
+        );
+        for (address, covered) in seen.into_iter().enumerate() {
+            assert_eq!(
+                covered,
+                (address / 256) % 16 < 15,
+                "padding at {address:#x}"
+            );
+        }
         // A single segment spans 16 consecutive pixels of one source row.
         for x in 0..16 {
             assert_eq!(

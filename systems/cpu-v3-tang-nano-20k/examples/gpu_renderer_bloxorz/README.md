@@ -20,7 +20,7 @@ The explicit `gpu_renderer_bloxorz` selector pins column layout and RTT command
 ABI2, checks actual RCC library bodies with rustc, and compares generated boot
 bytes against independent CB06 packaging. Products stay under this worktree's
 `target/`. This does not change the default boot application or program a board;
-matching `rtt400x240-column16` GPU and Display hardware is required.
+matching `production` GPU and Display hardware is required.
 
 See the [presentation documents](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/README.md) for phase ordering, snapshot ownership, RGB arithmetic and verification.
 
@@ -44,7 +44,7 @@ at(6,1). The first +X move presses that switch, so the bridge appears next to
 the goal. These are test fixtures, not the Web game's first two levels.
 
 Application Flash writes do not install the matching FPGA configuration. Load
-an audited `rtt400x240-column16` SRAM image after writing the application; cold
+an audited `production` SRAM image after writing the application; cold
 power-on additionally needs that configuration in Flash. A previous stored
 FPGA profile cannot qualify this RTT application. The capture diagnostic draws
 `1000 + tint` over the consumer (1128 or1255 at the stop) and reports active Display

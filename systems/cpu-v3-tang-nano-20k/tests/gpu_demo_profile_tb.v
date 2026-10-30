@@ -75,8 +75,8 @@ assign ar=ms==0&&cycle%7!=3&&!halted&&!fault;assign awr=ms==3&&cycle%5!=1;
 assign av=ms==2||ms==5;assign ard=mem[mb+mi];assign alast=ms==5||mi==mn-1;assign ae=1'b0;
 integer k;
 function protected_color;input[21:0]address;begin
- protected_color=(address>=display.active_base&&address<display.active_base+96000)||
- (display_outstanding&&address>=display_base&&address<display_base+96000);
+ protected_color=(address>=display.active_base&&address<display.active_base+102400)||
+ (display_outstanding&&address>=display_base&&address<display_base+102400);
 end endfunction
 always @(posedge clk)begin
  if(reset)begin ms<=0;mi<=0;end else begin
@@ -87,12 +87,12 @@ always @(posedge clk)begin
   if(display_request&&display_ready)begin
    if(display_outstanding)$fatal(1,"Two Display transactions");
    display_outstanding<=1;display_base<=display.active_base;display_reads<=display_reads+1;
-   if(display_address<display.active_base||display_address>=display.active_base+96000)$fatal(1,"Display bounds");
+   if(display_address<display.active_base||display_address>=display.active_base+102400)$fatal(1,"Display bounds");
   end
   if(display_valid&&display_last)begin display_outstanding<=0;display_terms<=display_terms+1;end
   if(fwq&&fwr)begin
    if(protected_color(fwa))$fatal(1,"GPU accepted write to Front or old outstanding read");
-   if(!((fwa>='h200000&&fwa<('h400000+192000)/2)||(fwa>='h218000&&fwa<('h430000+192000)/2)||(fwa>='h230000&&fwa<('h460000+192000)/2)))$fatal(1,"GPU output bounds");
+   if(!((fwa>='h200000&&fwa<('h400000+204800)/2)||(fwa>='h220000&&fwa<('h440000+204800)/2)||(fwa>='h240000&&fwa<('h480000+204800)/2)))$fatal(1,"GPU output bounds");
    writes<=writes+1;
   end
   if(gpu.ui_start)uis<=uis+1;
@@ -117,8 +117,8 @@ always @(posedge clk)begin
      if(protected_color(mb<<2))$fatal(1,"GPU committed protected old Front");terms<=terms+1;
     end
     if(write_owner==1)begin
-     if(mb>=('h490000/8)&&mb<('h4b0000/8))cpu_high_writes<=cpu_high_writes+1;
-     if((mb>='h400000/8&&mb<('h400000+192000)/8)||(mb>='h430000/8&&mb<('h430000+192000)/8))begin
+     if(mb>=('h4c0000/8)&&mb<('h4e0000/8))cpu_high_writes<=cpu_high_writes+1;
+     if((mb>='h400000/8&&mb<('h400000+204800)/8)||(mb>='h440000/8&&mb<('h440000+204800)/8))begin
       if(protected_color(mb<<2))$fatal(1,"CPU dirty alias wrote protected Front");cpu_color_writes<=cpu_color_writes+1;
      end
     end
@@ -127,7 +127,7 @@ always @(posedge clk)begin
   endcase
   if(wen&&di==3&&ch==3)begin if(display.next_pending)$fatal(1,"Pending overwritten");presents<=presents+1;end
   if(wen&&di==7&&ch==2)begin
-   if(display.next_pending||display.active_base!=(wdata==1?'h218000:'h200000)||display_outstanding&&display_base!=display.active_base)$fatal(1,"Software released old Front early");
+   if(display.next_pending||display.active_base!=(wdata==1?'h220000:'h200000)||display_outstanding&&display_base!=display.active_base)$fatal(1,"Software released old Front early");
    present_done<=present_done+1;
   end
  end

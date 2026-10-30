@@ -1,7 +1,7 @@
-//! System-owned fixed GPU domain, in 128-byte sectors; shared with host layout.
+//! System-owned column RGB565 layout, in 128-byte sectors; shared by every producer and consumer.
 pub const GPU_DOMAIN_FIRST_SECTOR: u16 = 0x8000;
 pub const GPU_COLOR_A_SECTOR: u16 = GPU_DOMAIN_FIRST_SECTOR;
-pub const GPU_PLANE_SECTORS: u16 = 1536;
+pub const GPU_PLANE_SECTORS: u16 = 2048;
 pub const GPU_COLOR_B_SECTOR: u16 = GPU_COLOR_A_SECTOR + GPU_PLANE_SECTORS;
 pub const GPU_DEPTH_SECTOR: u16 = GPU_COLOR_B_SECTOR + GPU_PLANE_SECTORS;
 pub const GPU_COMMAND_FIRST_SECTOR: u16 = GPU_DEPTH_SECTOR + GPU_PLANE_SECTORS;
@@ -20,8 +20,8 @@ pub const GPU_SLOT1_OBJECT_FIRST_SECTOR: u16 =
     GPU_SLOT1_COMMAND_FIRST_SECTOR + GPU_COMMAND_CAPACITY_SECTORS;
 pub const GPU_INPUT_SLOTS: u16 = 2;
 
-// Ordinary POT asset footprint and alignment for this explicit hardware profile.
-pub const GPU_TEXTURE_MACRO_LOG2: u16 = 3;
-pub const GPU_TEXTURE_MIN_LEVEL_SECTORS: u16 = 1;
-pub const GPU_TEXTURE_ALIGNMENT_SECTORS: u16 = 1;
-pub const GPU_FRAMEBUFFER_PHYSICAL_SECTORS: u16 = 1500;
+// Ordinary POT asset footprint and alignment for production column storage.
+pub const GPU_TEXTURE_MACRO_LOG2: u16 = 4;
+pub const GPU_TEXTURE_MIN_LEVEL_SECTORS: u16 = 4;
+pub const GPU_TEXTURE_ALIGNMENT_SECTORS: u16 = 2;
+pub const GPU_FRAMEBUFFER_PHYSICAL_SECTORS: u16 = 1600;

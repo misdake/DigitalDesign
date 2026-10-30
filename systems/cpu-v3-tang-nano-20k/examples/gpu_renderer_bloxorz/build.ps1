@@ -8,6 +8,10 @@ param(
 $buildLabel = if ($Label -eq '') { 'bloxorz-rtt-' + [guid]::NewGuid().ToString('N').Substring(0,8) } else { $Label }
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
+$packageAbiSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'systems/cpu-v3-tang-nano-20k/rcc/gpu_capture_abi.rs')
+$packageCommandAbiMatch = [regex]::Match($packageAbiSource, 'pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = ([0-9]+);')
+if (-not $packageCommandAbiMatch.Success) { throw 'Missing canonical RTT command ABI' }
+$packageCommandAbi = [int]$packageCommandAbiMatch.Groups[1].Value
 $outputPath = if ([IO.Path]::IsPathRooted($OutputDirectory)) { [IO.Path]::GetFullPath($OutputDirectory) }
 else { [IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDirectory)) }
 $targetRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'target')) + [IO.Path]::DirectorySeparatorChar
@@ -62,7 +66,7 @@ assert bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8)) == raw, 'Confi
         if ($LASTEXITCODE -ne 0) { throw 'FPGA configuration identity check failed' }
         $packArgs += @('--configuration-bin', $configurationPath, '--flash-image', (Join-Path $OutputDirectory 'complete-flash.bin'))
         $hardware = [ordered]@{
-            profile='rtt400x240-column16';
+            profile='production';
             bitstream_sha256=(Get-FileHash -LiteralPath $bitstreamPath -Algorithm SHA256).Hash;
             configuration_sha256=(Get-FileHash -LiteralPath $configurationPath -Algorithm SHA256).Hash
         }
@@ -75,7 +79,7 @@ assert bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8)) == raw, 'Confi
     if ($null -ne $hardware) {
         $hardware['complete_flash_sha256'] = (Get-FileHash -LiteralPath (Join-Path $OutputDirectory 'complete-flash.bin') -Algorithm SHA256).Hash
     }
-    [ordered]@{ profile='rtt400x240-column16'; command_abi=2; layout_abi=2;
+    [ordered]@{ profile='production'; command_abi=$packageCommandAbi; layout_abi=2;
         automatic_capture=[bool]$AutomaticCapture; capture_brightness=$(if ($AutomaticCapture) { $CaptureBrightness } else { $null }); boot_sha256=$generatedHash; hardware=$hardware;
         scope='Offline packaging only; optional hardware binding audits an existing fit and composes a complete Flash image. No programming or board qualification.'
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'profile.json') -Encoding utf8

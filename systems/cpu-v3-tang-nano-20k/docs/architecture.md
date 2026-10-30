@@ -51,6 +51,16 @@ The [eight-DPB C16/Z16 storage and quad owner](framebuffer-cache.md) describes t
 retired GPU implementation. The current leaf instead uses the production GPU framebuffer cache described in
 [GPU memory](/ip/gpu-v2/docs/memory.md).
 
+The production template groups twelve named CPU, cache, GPU, boot, device and
+Display instance declarations after its signal declarations and fixed glue.
+The three GPU descriptor-slot instances retain their existing positions.
+Declaration order is a synthesis and placement input; arbitration, ownership and
+completion follow their explicit handshakes independently of declaration order.
+Order experiments preserve complete instance bodies, parameters, initialization,
+all other statements, the source-file list, clocks, pins and timing constraints.
+The bounded experiment tool and its elaboration/connection gates are described
+in [system tools](/systems/cpu-v3-tang-nano-20k/tools/README.md).
+
 ## Streaming memory admission
 
 The complete board uses the typed streaming SDRAM endpoint and bridge, with
@@ -415,9 +425,12 @@ addresses.
 
 ## Display and diagnostics
 
-The application framebuffer is 400x240 RGB565 in SDRAM, arranged as 25x15 consecutive 16x16
-tiles. Slots A and B begin at word addresses `0x0020_0000` and `0x0021_8000`; each reserves
-`0x18000` words, including padding after the 96,000-word pixel payload. The display path issues
+The application framebuffer is400x240 RGB565 in column16x16 macros, with25
+columns and a16-macro vertical pitch. Slots A/B begin at word addresses
+`0x0020_0000`/`0x0022_0000`; each reserves`0x20000` words. The physical plane is
+102400 words, including6400 distributed padding words; only96000 are visible.
+A pixel's word offset is`4096*(x/16)+256*(y/16)+16*(y%16)+(x%16)`.
+The display path issues
 6,000 fixed 32-byte segment reads per source frame, fetching each tile's adjacent two source rows
 consecutively as two separate transactions. Every 64-bit response beat writes two dual-clock
 512x32 BSRAM banks directly, with no response capture buffer or eight-cycle drain. Four rows

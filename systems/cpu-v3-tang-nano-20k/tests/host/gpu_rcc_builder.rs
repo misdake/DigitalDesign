@@ -120,24 +120,24 @@ fn compiled_builder_reserves_end_at_full_command_allocation() {
  let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,65535);
  check(gpu_pass_set_global(pass,view_of(&mut g)));check(gpu_pass_set_render(pass,view_of(&mut texture),view_of(&mut r)));
  gpu_affine_identity(MATRIX.as_array());
- mesh.directory_sector=0x9700;mesh.directory_word=0;mesh.count=5455;mesh.sectors=512;
+ mesh.directory_sector=0x9d00;mesh.directory_word=0;mesh.count=5455;mesh.sectors=512;
  check(!gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),0,0));
  mesh.count=5454;check(gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),65535,65535));
- check(GPU_CB.command_words==32758);
+ check(GPU_CB.command_words==32760);
  mesh.count=1;check(!gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),0,0));
- check(GPU_CB.command_words==32758);
- check(gpu_pass_end(pass));check(gpu_cb_finish(cb));check(GPU_CB.command_words==32764);
+ check(GPU_CB.command_words==32760);
+ check(gpu_pass_end(pass));check(gpu_cb_finish(cb));check(GPU_CB.command_words==32766);
  check(read_dseg_page(3)==19);halt(0x600d);
 }}
 "#
     );
     let (cpu, maintenance) = run(&source, true);
-    let code = bytes(&cpu, 0x490000, 65536);
+    let code = bytes(&cpu, 0x4c0000, 65536);
     assert_eq!(
-        u32::from_le_bytes(code[65524..65528].try_into().unwrap()),
+        u32::from_le_bytes(code[65528..65532].try_into().unwrap()),
         0xf0000000
     );
-    assert!(code[65528..].iter().all(|v| *v == 0));
+    assert!(code[65532..].iter().all(|v| *v == 0));
     assert_eq!(
         code.as_chunks::<4>()
             .0
@@ -160,7 +160,7 @@ fn compiled_directory_crossing_and_capacity_failures_preserve_prefix() {
  let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,65535);
  check(gpu_pass_set_global(pass,view_of(&mut g)));check(gpu_pass_set_render(pass,view_of(&mut texture),view_of(&mut r)));
  gpu_affine_identity(MATRIX.as_array());
- mesh.directory_sector=0x96ff;mesh.directory_word=62;mesh.sectors=512;
+ mesh.directory_sector=0x9cff;mesh.directory_word=62;mesh.sectors=512;
  check(gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),65535,65535));
  let commands=GPU_CB.command_words;let objects=GPU_CB.object_words;
  let staged=GPU_BUILD.as_array()[2u16];
@@ -172,7 +172,7 @@ fn compiled_directory_crossing_and_capacity_failures_preserve_prefix() {
  check(!gpu_pass_draw_mesh(pass,view_of(&mut mesh),MATRIX.as_array(),0,0));
  check(GPU_CB.command_words==commands && GPU_CB.object_words==32740 && GPU_BUILD.as_array()[2u16]==staged);
  GPU_CB.object_words=objects;
- let mut bad:GpuMesh=GpuMesh{{directory_sector:0x9600,directory_word:4,count:4,first_sector:0x9600,sectors:512}};
+ let mut bad:GpuMesh=GpuMesh{{directory_sector:0x9c00,directory_word:4,count:4,first_sector:0x9c00,sectors:512}};
  check(!gpu_pass_draw_mesh(pass,view_of(&mut bad),MATRIX.as_array(),0,0));
  check(GPU_CB.command_words==commands && GPU_CB.object_words==objects && GPU_BUILD.as_array()[2u16]==staged);
  mesh.directory_sector=65535;mesh.directory_word=63;mesh.count=2;mesh.first_sector=65535;mesh.sectors=1;
@@ -183,7 +183,7 @@ fn compiled_directory_crossing_and_capacity_failures_preserve_prefix() {
 "#
     );
     let (cpu, _) = run(&source, true);
-    let code = bytes(&cpu, 0x490000, 256);
+    let code = bytes(&cpu, 0x4c0000, 256);
     assert_eq!(
         code.as_chunks::<4>()
             .0
@@ -204,7 +204,7 @@ fn draw_between_ui_calls_restores_the_cache_publication_fence() {
  check(gpu_pass_set_global(pass,view_of(&mut g)));
  check(gpu_pass_set_render(pass,view_of(&mut texture),view_of(&mut r)));
  gpu_affine_identity(MATRIX.as_array());
- let mut a:GpuUiAtlas=GpuUiAtlas{{sector:0x9800,sectors:512}};
+ let mut a:GpuUiAtlas=GpuUiAtlas{{sector:0x9e00,sectors:512}};
  let mut cursor=GPU_CB.command_words;
  let ui=gpu_pass_ui_begin_range(pass,view_of(&mut a),1,1,2);check(ui==1);
  check(gpu_pass_ui_end(ui));check(GPU_CB.command_words==cursor+10);
@@ -219,7 +219,7 @@ fn draw_between_ui_calls_restores_the_cache_publication_fence() {
 }}"#
     );
     let (cpu, _) = run(&source, true);
-    let code = bytes(&cpu, 0x490000, 256);
+    let code = bytes(&cpu, 0x4c0000, 256);
     let commands: Vec<u32> = code
         .as_chunks::<4>()
         .0
@@ -250,7 +250,7 @@ fn compiled_builder_records_ordered_draws_and_snapshots() {
     let (cpu, maintenance) = run(&fixture::program(), true);
     assert_eq!(cpu.data_segments(), [0, 1, 2, 19]);
     assert!(fixture::surface(1).iter().any(|v| *v != 1));
-    let code = bytes(&cpu, 0x490000, 512);
+    let code = bytes(&cpu, 0x4c0000, 512);
     assert_eq!(&code[..384], &fixture::expected_commands(16368));
     let commands: Vec<u32> = code
         .as_chunks::<4>()
@@ -263,7 +263,7 @@ fn compiled_builder_records_ordered_draws_and_snapshots() {
     assert_eq!(commands.iter().filter(|w| **w >> 28 == 3).count(), 9);
     assert_eq!(commands.iter().filter(|w| **w >> 28 == 5).count(), 2);
     assert_eq!(commands.iter().filter(|w| **w >> 28 == 6).count(), 3);
-    assert_eq!(commands.iter().filter(|w| **w >> 28 == 9).count(), 0);
+    assert_eq!(commands.iter().filter(|w| **w >> 28 == 9).count(), 1);
     let state_sources = |block: u32| -> Vec<u32> {
         commands
             .iter()
@@ -276,7 +276,7 @@ fn compiled_builder_records_ordered_draws_and_snapshots() {
     assert_eq!(bytes(&cpu, global_sources[1] + 22, 2), 2u16.to_le_bytes());
     for (source, flags) in state_sources(68).into_iter().zip([47u16, 15, 55]) {
         assert_eq!(bytes(&cpu, source + 8, 2), flags.to_le_bytes());
-        assert_eq!(bytes(&cpu, source, 2), 0x9620u16.to_le_bytes());
+        assert_eq!(bytes(&cpu, source, 2), 0x9c20u16.to_le_bytes());
     }
     let instances: Vec<u32> = commands
         .iter()

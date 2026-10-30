@@ -18,37 +18,6 @@ from test_snapshot import fixture
 from test_layout import oracle_plane
 
 
-def stage_column(row_export, frozen, contract, output):
-    declaration=json.loads(contract.read_text())
-    if (declaration['hardware_profile'] != COLUMN.profile or
-            declaration['gpu_export_sha256'] != digest(frozen) or
-            declaration['framebuffer']['physical_bytes'] != COLUMN.plane_bytes):
-        raise ValueError('Frozen GPU bytes do not match the explicitly supplied column contract')
-    output.mkdir(parents=True,exist_ok=False)
-    sources=json.loads((row_export/'rtl.json').read_text()); selected=[]; replaced=0
-    for name in sources:
-        source=row_export/name
-        if 'module gpu_v2_vliw_command' in source.read_text():
-            replaced+=1
-            destination=output/'gpu-column-frozen.v'; shutil.copyfile(frozen,destination)
-            selected.append(destination.name)
-        else:
-            destination=output/name; destination.parent.mkdir(parents=True,exist_ok=True)
-            shutil.copyfile(source,destination); selected.append(name)
-    if replaced != 1: raise ValueError('Expected one explicit GPU export replacement')
-    peer=json.loads((row_export/'peer/stream-contract.json').read_text())
-    for name in [*peer['files'],'stream-contract.json']:
-        destination=output/'peer'/name; destination.parent.mkdir(parents=True,exist_ok=True)
-        shutil.copyfile(row_export/'peer'/name,destination)
-    (output/'rtl.json').write_text(json.dumps(selected))
-    (output/'layout.json').write_text(json.dumps(dict(schema=1,layout_abi=2,gpu_profile=COLUMN.profile)))
-    (output/'fixture-source.json').write_text(json.dumps(dict(
-        scope='Explicit frozen column GPU plus current 54/108 CL3 stream peer; no firmware or board qualification',
-        frozen_gpu_sha256=digest(frozen), contract_sha256=digest(contract),
-        original_gpu=str(frozen.resolve()), current_peer_sha256=digest(row_export/'peer/stream-contract.json')),
-        indent=2)+'\n')
-
-
 def column_capture(abi, clear=False, guards=True):
     header,_,_=fixture(abi)
     header[abi['H_LAYOUT_ABI']]=2
@@ -87,16 +56,14 @@ def column_capture(abi, clear=False, guards=True):
 
 def main():
     p=argparse.ArgumentParser(__doc__)
-    p.add_argument('--row-rtl',type=Path,required=True)
-    p.add_argument('--frozen-column',type=Path,required=True)
-    p.add_argument('--column-contract',type=Path,required=True)
+    p.add_argument('--rtl',type=Path,required=True)
     p.add_argument('--out',type=Path,required=True)
     p.add_argument('--clear',action='store_true')
     p.add_argument('--missing-read',action='store_true')
     p.add_argument('--forbidden-write',action='store_true')
     p.add_argument('--physical-only',action='store_true',help='Omit the unreferenced allocation tails')
     args=p.parse_args(); args.out.mkdir(parents=True,exist_ok=False)
-    rtl=args.out/'rtl'; stage_column(args.row_rtl,args.frozen_column,args.column_contract,rtl)
+    rtl=args.rtl
     capture=column_capture(s.Abi(),args.clear or args.forbidden_write,not args.physical_only)
     capture.save(args.out/'snapshot')
     span=204800 if args.physical_only else 262144

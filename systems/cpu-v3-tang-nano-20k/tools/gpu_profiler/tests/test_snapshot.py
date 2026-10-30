@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import snapshot as s
+from layout import COMMAND_ABI
 
 
 def fixture(abi):
@@ -24,13 +25,13 @@ def fixture(abi):
 
     for name, value in dict(VERSION=1, WORDS=64, FLAGS=1, BINDINGS=1, FRAME=17,
                             SLOT=0, COUNT=3, RANGE_COUNT=2, RANGE_WORDS=8,
-                            RANGE_VERSION=1, LAYOUT_ABI=1, COMMAND_ABI=1,
+                            RANGE_VERSION=1, LAYOUT_ABI=2, COMMAND_ABI=COMMAND_ABI,
                             MANIFEST_WORDS=16, FRONT_FORMAT=1, TARGET_FORMAT=1).items():
         word(name, value)
-    for name, value in dict(TOKEN=0x130004, SUBMISSION=11, COMMAND_BASE=0x490000,
+    for name, value in dict(TOKEN=0x130004, SUBMISSION=11, COMMAND_BASE=0x4c0000,
                             COMMAND_BYTES=16, COMMAND_PADDED_BYTES=128,
-                            COLOR_BASE=0x430000, DEPTH_BASE=0x460000,
-                            FRONT_BASE=0x400000, PLANE_BYTES=192000).items():
+                            COLOR_BASE=0x440000, DEPTH_BASE=0x480000,
+                            FRONT_BASE=0x400000, PLANE_BYTES=204800).items():
         pair(name, value)
     at = abi["H_MANIFEST"]
     header[at:at + 16] = s.bytes_to_words(hashlib.sha256(b"synthetic-build-id").digest())
@@ -44,8 +45,8 @@ def fixture(abi):
             result[i:i + 2] = [value & 65535, value >> 16]
         return result
 
-    rows = [row(abi["READ"], abi["TAG_COMMANDS"], 0x490000, 128),
-            row(abi["READ"] | abi["IMMUTABLE"], abi["TAG_MESH"], 0x100000, 2048)]
+    rows = [row(abi["READ"], abi["TAG_COMMANDS"], 0x4c0000, 128),
+            row(abi["READ"] | abi["IMMUTABLE"], abi["TAG_MESH"], 0x4e0000, 2048)]
     commands = struct.pack("<IIII", 0, 0x40000003, 0x70000000, 0xf0000000) + bytes(112)
     data = s.words_to_bytes([0x1234] * 500 + list(range(524)))
     return header, rows, [commands, data]
@@ -84,7 +85,7 @@ class SnapshotTests(unittest.TestCase):
                     self.assertEqual(report["failures"], [])
                     self.assertEqual(len(done), 1)
                     self.assertEqual(done[0].elapsed_ms, 500)
-                    self.assertEqual(done[0].read(0x100000, 2048), self.blobs[1])
+                    self.assertEqual(done[0].read(0x4e0000, 2048), self.blobs[1])
                     self.assertEqual(done[0].header["count_minus_one"], 3)
 
     def test_retries_are_independent_and_identical(self):

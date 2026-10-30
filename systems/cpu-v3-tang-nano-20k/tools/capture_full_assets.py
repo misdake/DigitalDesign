@@ -21,16 +21,16 @@ def module(name, path):
     return result
 
 
-def pack(output, profile):
+def pack(output):
     fixture = SYSTEM / 'tests/fixtures/capture_full_scene'
     origin = json.loads((fixture / 'origin.json').read_text())
     if hashlib.sha256((fixture / 'full_scene.rs').read_bytes()).hexdigest() != origin['sha256']:
         raise ValueError('Formal full-scene source snapshot differs from its pinned origin')
     demo = module('capture_full_demo', SYSTEM / 'examples/gpu_demo/tools/assets.py')
-    demo.pack(output, profile)
+    demo.pack(output)
     minimal = module('capture_full_font', SYSTEM / 'examples/gpu_renderer/tools/assets.py')
     with tempfile.TemporaryDirectory(dir=output) as temp:
-        minimal.pack(Path(temp), profile)
+        minimal.pack(Path(temp))
         atlas = (Path(temp) / 'atlas.bin').read_bytes()
         font_manifest = json.loads((Path(temp) / 'assets.json').read_text())
     (output / 'atlas.bin').write_bytes(atlas)
@@ -39,9 +39,9 @@ def pack(output, profile):
     for resource in catalog['resources']:
         resource['kind'] = {'room.bin': 'mesh', 'texture.bin': 'texture', 'atlas.bin': 'atlas'}[resource['file']]
         if resource['kind'] == 'texture':
-            resource['layout'] = description(profile)['texture_layout']
+            resource['layout'] = description()['texture_layout']
         resource['sha256'] = hashlib.sha256((output / resource['file']).read_bytes()).hexdigest()
-    catalog['capture_layout'] = description(profile)
+    catalog['capture_layout'] = description()
     # Normalize both canonical packers' source names to repository-relative paths.
     sources = dict(catalog['sources'])
     sources.update({(SYSTEM / name).relative_to(ROOT).as_posix(): sha
@@ -77,6 +77,5 @@ def pack(output, profile):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--profile', choices=['default', 'column16'], required=True)
     args = parser.parse_args()
-    pack(args.output.resolve(), args.profile)
+    pack(args.output.resolve())

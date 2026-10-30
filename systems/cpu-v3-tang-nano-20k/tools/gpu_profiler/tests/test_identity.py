@@ -12,7 +12,7 @@ import identity as i
 import replay
 import snapshot as s
 from test_snapshot import fixture
-from layout import ROW, COLUMN
+from layout import COLUMN, COMMAND_ABI
 
 
 class IdentityTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class IdentityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.abi = s.Abi(os.environ.get("GPU_CAPTURE_ABI_SOURCE", s.DEFAULT_ABI))
 
-    def create(self, folder, planes=True, layout=ROW, guards=True):
+    def create(self, folder, planes=True, layout=COLUMN, guards=True):
         root = Path(folder)
         header, rows, blobs = fixture(self.abi)
         mesh_address = 0x100000
@@ -120,7 +120,7 @@ class IdentityTests(unittest.TestCase):
     def test_preview_keeps_native_pixel_dimensions(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "image.png"
-            replay.preview(b"\xff\xff" * 96000, path, linear=True)
+            replay.preview(b"\xff\xff" * (204800//2), path, linear=True)
             self.assertEqual(path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
             self.assertEqual(int.from_bytes(path.read_bytes()[16:20], "big"), 400)
             self.assertEqual(int.from_bytes(path.read_bytes()[20:24], "big"), 240)

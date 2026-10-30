@@ -13,6 +13,17 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  output evt_import,evt_prep,evt_traverse,evt_row,evt_align,evt_credit_wait,evt_leaf,evt_empty_quad,evt_node,
  output full_scan
 );
+ // Same pre-edge next-state, reset and CE as the production rc_compute.
+ (* syn_keep=1, syn_preserve=1 *) reg[1:0]raster_phase;
+ always @(posedge clk)begin
+  if(reset)raster_phase<=0;
+  else if(ce)raster_phase<=phase+1'b1;
+ end
+`ifndef SYNTHESIS
+ always @(negedge clk)if(!reset&&raster_phase!==phase)
+  $fatal(1,"Raster phase replica differs from producer");
+`endif
+
  localparam IDLE=0,IMPORT=1,EXEC=2,BOUND=3;
  localparam OFF=0,LOAD=1,CHECK=2,ALIGN=3,SCAN=4;
  reg[1:0]life;reg[2:0]scan_mode;
@@ -49,12 +60,12 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
   ((nx[8:4]|node_tile_mask)<bound_xlo)||((ny[8:4]|node_tile_mask)<{1'b0,bound_ylo});
  wire row_end=({1'b0,sx}+10'd2)>{1'b0,end_x};
  wire scan_end=row_end&&(({1'b0,sy}+10'd2)>{1'b0,end_y});
- wire check_finish=life==EXEC&&scan_mode==CHECK&&scan_inflight&&s_kind==S_CHECK&&phase==3;
+ wire check_finish=life==EXEC&&scan_mode==CHECK&&scan_inflight&&s_kind==S_CHECK&&raster_phase==3;
  wire check_accept=|check_mask;
  // Partial tiles are aligned 4x4: sy[1] marks their final quad row.
  // Stored successor predicates can retire a rejected tail without another
  // four-edge CHECK. No scan ALU result bypass enters this decision.
- wire reject_tail=phase==3&&!scan_full&&
+ wire reject_tail=raster_phase==3&&!scan_full&&
   ((scan_classify_pending&&!check_accept&&scan_end)||
    (check_finish&&(scan_end||(!check_accept&&!row_end&&sy[1]))));
  wire scanner_finishing=scan_mode==OFF||reject_tail;
@@ -152,13 +163,13 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
   w_ra,rf_wa,rf_wd,work_q);
 
  // 两槽tile邮箱只存六个h；walker写、scanner独立同步读，不复制工作池。
- wire preload_issue=start_tile&&!prefetch_handoff&&phase!=0;
+ wire preload_issue=start_tile&&!prefetch_handoff&&raster_phase!=0;
  wire load_issue=preload_issue||(life==EXEC&&scan_mode==LOAD&&s_edge<3);
  wire[1:0]load_edge=preload_issue?2'd0:s_edge;
  // Once the final quad is admitted, phi2/phi3 of lanes 0..2 have a free
  // mailbox read / scan-store write slot. The next mailbox remains owned until
  // the handoff; missing that admission window takes the ordinary LOAD path.
- wire prefetch_issue=life==EXEC&&scan_mode==SCAN&&scan_inflight&&phase==2&&lane<3&&prefetch_active;
+ wire prefetch_issue=life==EXEC&&scan_mode==SCAN&&scan_inflight&&raster_phase==2&&lane<3&&prefetch_active;
  wire mailbox_we=w_retire&&r_uop[30:27]==4&&level<=4;
  wire[29:0]mailbox_q;
  rp_raster_rf #(.AB(3)) tile_store(clk,reset,ce,load_issue||prefetch_issue,mailbox_we,
@@ -176,32 +187,32 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  // already known to fail; its writeback also classifies the successor.
  wire check_advance=check_finish&&!reject_tail;
  wire fetch_check=(checking||scan_classify_pending)&&
-  !(phase==3&&(scan_mode==ALIGN?align_accept:check_accept));
+  !(raster_phase==3&&(scan_mode==ALIGN?align_accept:check_accept));
  wire fetch_row_end=check_advance?!row_end:row_end;
  // Scanner固定计数日历，不读取ROM；ROW/SCAN只占本地8×30池。
  assign full_scan=scan_full;
- assign quad_valid=life==EXEC&&scan_mode==SCAN&&lane==0&&phase==0&&scan_qvalid&&run_enable&&!reset;
+ assign quad_valid=life==EXEC&&scan_mode==SCAN&&lane==0&&raster_phase==0&&scan_qvalid&&run_enable&&!reset;
  assign quad_take=quad_valid&&quad_ready;
- wire scan_start=life==EXEC&&scan_mode==SCAN&&phase==0&&scan_qvalid&&(lane!=0||quad_take);
+ wire scan_start=life==EXEC&&scan_mode==SCAN&&raster_phase==0&&scan_qvalid&&(lane!=0||quad_take);
  wire prefetch_start=scan_start&&lane==0&&scan_end&&!tile_empty;
- wire check_start=life==EXEC&&scan_mode==CHECK&&phase==0&&scan_qvalid;
+ wire check_start=life==EXEC&&scan_mode==CHECK&&raster_phase==0&&scan_qvalid;
  assign sample_valid=scan_start&&!reset;
  assign sample_lane=lane;
  assign quad_x=sx[8:1];assign quad_y=sy[7:1];
- wire scan_fetch0=life==EXEC&&(scan_mode==SCAN||scan_mode==ALIGN||scan_mode==CHECK)&&phase==3&&!reject_tail;
+ wire scan_fetch0=life==EXEC&&(scan_mode==SCAN||scan_mode==ALIGN||scan_mode==CHECK)&&raster_phase==3&&!reject_tail;
  wire scan_fetch1=scan_start||check_start;
- wire scan_fetch2=life==EXEC&&(scan_mode==SCAN||scan_mode==CHECK)&&scan_inflight&&phase==1;
+ wire scan_fetch2=life==EXEC&&(scan_mode==SCAN||scan_mode==CHECK)&&scan_inflight&&raster_phase==1;
  wire scan_read=scan_fetch0||scan_fetch1||scan_fetch2;
- // 地址由phase直接给出：phi0/1读edge1/2，phi2读ROW[lane]，phi3读edge0。
- wire[1:0]scan_read_edge=phase==2?lane:phase+2'd1;
+ // 地址由raster_phase直接给出：phi0/1读edge1/2，phi2读ROW[lane]，phi3读edge0。
+ wire[1:0]scan_read_edge=raster_phase==2?lane:raster_phase+2'd1;
  // 行末quad前三lane的phi2取ROW，phi3在原ALU空槽写回。
- wire row_issue=life==EXEC&&scan_full&&scan_mode==SCAN&&scan_inflight&&phase==2&&row_end&&!scan_end&&lane!=3;
+ wire row_issue=life==EXEC&&scan_full&&scan_mode==SCAN&&scan_inflight&&raster_phase==2&&row_end&&!scan_end&&lane!=3;
  wire scan_rf_re=scan_read||row_issue;
  wire[1:0]s_read_edge=scan_read_edge;
- wire[1:0]s_read_vec=scan_full?{1'b0,(phase!=2&&!(row_first&&lane==0))}:
+ wire[1:0]s_read_vec=scan_full?{1'b0,(raster_phase!=2&&!(row_first&&lane==0))}:
   check_advance?future_vec:current_vec;
  wire[5:0]s_step=fetch_check?(fetch_row_end?6'd58:6'd33):
-  (!scan_full&&row_end&&lane==3)?6'd59:phase==2?6'd49:(lane[0]?6'd57:6'd32);
+  (!scan_full&&row_end&&lane==3)?6'd59:raster_phase==2?6'd49:(lane[0]?6'd57:6'd32);
  wire[29:0]scan_work_q,scan_step_q;
  wire s_scan_retire=s_valid&&s_kind==S_SCAN&&(s_return_edge!=0||scan_start);
  wire s_check_retire=s_valid&&s_kind==S_CHECK&&(s_return_edge!=0||check_start);
@@ -252,7 +263,7 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
   packed_step_q,
   scan_rf_re,{s_read_edge,s_step},scan_step_q);
  assign sample_h=scan_work_q;
- wire scan_cover_valid=s_scan_retire&&s_return_edge==2&&scan_inflight&&phase==2;
+ wire scan_cover_valid=s_scan_retire&&s_return_edge==2&&scan_inflight&&raster_phase==2;
  assign prefetch_handoff=prefetch_active&&scan_cover_valid&&lane==3&&scan_end;
  assign sample_cover=scan_full||(cover_acc&&pass_h(scan_work_q,tau[2]));
  assign sample_anchor=sample_cover&&!anchor_seen;
@@ -348,9 +359,9 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
    end
    s_valid<=load_issue||scan_rf_re||prefetch_issue;
    if(load_issue||scan_rf_re||prefetch_issue)begin
-    s_kind<=load_issue?S_LOAD:prefetch_issue?S_PREFETCH:fetch_check?S_CHECK:phase==2?S_ROW:S_SCAN;
+    s_kind<=load_issue?S_LOAD:prefetch_issue?S_PREFETCH:fetch_check?S_CHECK:raster_phase==2?S_ROW:S_SCAN;
     s_return_edge<=load_issue?load_edge:prefetch_issue?lane:scan_read_edge;
-    s_sub<=!fetch_check&&phase!=2&&lane==3;
+    s_sub<=!fetch_check&&raster_phase!=2&&lane==3;
    end
    if(packet_take)begin
     life<=IMPORT;busy<=1;error<=0;
@@ -430,7 +441,7 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
     scan_qvalid<=0;scan_inflight<=1;cover_acc<=pass_h(scan_work_q,tau[0]);
     if(lane==0)begin cover_mask<=0;anchor_seen<=0;end
    end
-   if(scan_inflight&&phase==1)cover_acc<=cover_acc&&pass_h(scan_work_q,tau[1]);
+   if(scan_inflight&&raster_phase==1)cover_acc<=cover_acc&&pass_h(scan_work_q,tau[1]);
    if(scan_cover_valid)begin
     if(lane==0)row_first<=0;
     cover_mask[lane]<=sample_cover;if(sample_cover)anchor_seen<=1;
@@ -445,7 +456,7 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
     end
    end
    if(reject_tail&&!start_tile)scan_mode<=OFF;
-   if(phase==3)scan_inflight<=0;
+   if(raster_phase==3)scan_inflight<=0;
    if(life==EXEC&&walk_done&&tile_empty&&scanner_finishing&&!r_valid&&!s_valid)begin life<=IDLE;busy<=0;done<=1;end
    if(scan_read&&row_issue)error[2]<=1;
    if(tile_count>2)error[3]<=1;
@@ -491,7 +502,7 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
  end
  always @(posedge clk)if(ce&&!reset&&start&&life!=IDLE)$fatal(1,"T配置提交时R尚未空闲");
  always @(posedge clk)if(ce&&!reset&&geo_we&&life!=IMPORT)$fatal(1,"固定几何写入不在IMPORT阶段");
- always @(posedge clk)if(ce&&!reset&&s_load_retire&&s_return_edge==2&&phase==3)
+ always @(posedge clk)if(ce&&!reset&&s_load_retire&&s_return_edge==2&&raster_phase==3)
   $fatal(1,"third LOAD return reached the predicate branch edge");
  always @(posedge clk)if(ce&&!reset&&start_tile)begin
   if(head_meta[21:18]>9)$fatal(1,"tile层级非法");

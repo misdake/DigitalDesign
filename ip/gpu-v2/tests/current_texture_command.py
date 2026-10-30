@@ -36,8 +36,8 @@ reg[15:0]expected;
 function integer image_index;
  input integer halfword;
  begin
-  if(halfword>=22'h80000&&halfword<22'h98000)image_index=halfword/4-131072;
-  else if(halfword>=22'ha0000&&halfword<22'hb8000)image_index=32768+halfword/4-163840;
+  if(halfword>=22'h80000&&halfword<22'h99000)image_index=halfword/4-131072;
+  else if(halfword>=22'ha0000&&halfword<22'hb9000)image_index=32768+halfword/4-163840;
   else begin $fatal(1,"FB address");image_index=0;end
  end
 endfunction
@@ -56,14 +56,14 @@ always @(posedge clk)begin
  if(!reset)begin
   if(ro_request_valid&&ro_request_ready)begin
    active=1;ba=ro_address;bi=0;bn=ro_count==3?16:ro_count==1?8:4;
-   if((ro_address>=22'h1000&&ro_address<22'h1200)||(ro_address>=22'h1400&&ro_address<22'h1440))texture_reads=texture_reads+1;
+   if((ro_address>=22'h1000&&ro_address<22'h1500)||(ro_address>=22'h1800&&ro_address<22'h1900))texture_reads=texture_reads+1;
   end else if(ro_response_valid)begin if(ro_response_last)active=0;else bi=bi+1;end
   if(fb_r_request_valid&&fb_r_request_ready)begin ra=1;rb=image_index(fb_r_address);ri=0;end
   else if(fb_r_response_valid)begin if(ri==15)ra=0;else ri=ri+1;end
   if(fb_w_request_valid&&fb_w_request_ready)begin wa=1;wb=image_index(fb_w_address);wi=0;end
   else if(wa&&fb_w_data_ready)begin image[wb+wi]=fb_w_data;wi=wi+1;if(wi==16)wa=0;end
   if(dut.start_fire)begin
-   if(dut.texture_base!==(starts==1?16'h50:16'h40)||
+   if(dut.texture_base!==(starts==1?16'h60:16'h40)||
       dut.texture_n!==(starts==1?4'd3:4'd4)||dut.texture_mip!==(starts!=1)||dut.texture_filter!==starts[1:0])
     $fatal(1,"installed descriptor mismatch");
    if(dut.core.cfg_tex_w_log2!==dut.core.cfg_tex_h_log2||
@@ -122,10 +122,10 @@ def main():
     record, size = records[3]
     q = struct.unpack_from('<Q', memory, record+8)[0]
     struct.pack_into('<Q', memory, record+8, q & ~16)  # same tiny triangle, UV route
-    put(0x2000, struct.pack('<H', 0xf800)*512)
-    put(0x2800, struct.pack('<H', 0x07e0)*64)
+    put(0x2000, struct.pack('<H', 0xf800)*1280)
+    put(0x3000, struct.pack('<H', 0x07e0)*256)
     for address, base, n, mip, filter_code in [(0x4100,0x2000,4,True,0),
-                                              (0x4140,0x2800,3,False,1),
+                                              (0x4140,0x3000,3,False,1),
                                               (0x4180,0x2000,4,True,2)]:
         lod_bias = [0, 3, -2][filter_code] if args.vary_bias else 0
         put(address, struct.pack('<8I', texture_word(base,n,mip,filter_code),0,7|(1<<5),lod_bias & 255,0,0,0,0))
@@ -159,8 +159,8 @@ def main():
         declarations.append(('reg ' if p['direction']=='input' else 'wire ')+width+' '+p['name']+('=0;' if p['direction']=='input' else ';'))
     tb = TB.replace('@PORTS@','\n'.join(declarations)).replace('@BYTES@',str(len(normal))).replace('@BAD_BYTES@',str(len(bad)))
     # Filtered A crosses one additional periodic tile boundary. The retained
-    # nearest A tile must hit, while that newly demanded tile still pays a refill.
-    tb = tb.replace('@INVALIDATES@',str(1 if args.physical else 3)).replace('@TEXTURE_READS@',str(3 if args.physical else 4))
+    # nearest A line must hit. Every256-byte line retires two128-byte children.
+    tb = tb.replace('@INVALIDATES@',str(1 if args.physical else 3)).replace('@TEXTURE_READS@',str(6 if args.physical else 8))
     tb = tb.replace('@GSR@',"GSR GSR(.GSRI(1'b1));" if args.native else '')
     if args.vary_bias:
         tb = tb.replace('  if(dut.texture_invalidate)', """

@@ -18,10 +18,10 @@ not replace those implemented contracts or define a CPU submission ABI.
 | replay_export.py | Matched box/full-bunny audit of an explicitly supplied export with a prebuilt current MC peer |
 | profile_prepare.py | Observer-only replay separating R-only/I-only/shared publication waits and an exclusive R lifetime partition; other activity counters overlap |
 | profile_triangle_queue.py | Observer-only per-meshlet T queue peak/full waits, last T completion and remaining frontend tail |
-| texture_layout_replay.py | Opt-in texture-layout study: full24-meshlet recorded demo, observer-only cache units and exact audit |
+| texture_layout_replay.py | Generated hierarchy lookup for native RTT observers; no layout conversion |
 | compare_texture_layout.py | Require matched complete-frame identities and compare parent misses,128B traffic and cycles |
 | fit_texture_layout.py | Matched registered cache-leaf fit; excludes packet producer and whole GPU |
-| replay_command.py | Explicit 32-bit DRAM command stream, native state and prefixed meshlet records; shared input RAM, real memory peer and independent pixel audit; replay_export options plus optional --stress |
+| replay_command.py | Canonical native command and descriptor encoders shared by bounded RTL fixtures |
 | tests/direct_global.py | Bounded paired native GPU runs across drained light/ray/mode/code/far replacements; compare exact shade results and framebuffer bytes under CE pauses and memory backpressure |
 | tests/vliw_command.py | Bounded full GPU/CP test: three culled meshlets, pingpong DMA, 128-byte command-page wrap, native state, CE0, size-aligned local copies, error and abort; portable/native existing input RAM |
 | tests/vliw_triangle_queue.py | Bounded integer-reference T queue fill, wrap, full-queue reset, CE and output-stall checks in portable/native RAM modes |
@@ -248,3 +248,9 @@ The test verifies both ROM views, all live retained V/T words, zero reference
 coverage on every rejection, conservative range fallback, CE/backpressure and
 non-consuming attribute-epoch rejection. The selected same-source acceptance
 summary is [meshlet-cull-evidence.json](/ip/gpu-v2/examples/vliw_integration/meshlet-cull-evidence.json).
+
+Production texture storage and replay have one column layout. The old row/column
+comparison driver and recorded-demo native row adapter have been retired. Use the
+[GPU profiler](/systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/README.md) for full native
+capture/replay with layout and source identity checks. Independent generic numerical
+fixtures in this directory retain their own local input format.

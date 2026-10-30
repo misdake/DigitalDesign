@@ -15,7 +15,7 @@ from gpu_layout import sectors, validate_asset_range
 
 WIDTH, HEIGHT = 400, 240
 WARMUP, SAMPLES = 3, 31
-PREFIX = [0, 1, 2, 3, 4, 8, 24, 88, 344, 1368, 5464]
+PREFIX = [0, 4, 8, 12, 16, 20, 36, 100, 356, 1380, 5476]
 
 
 def u32(value):
@@ -90,7 +90,7 @@ def coverage(points, faces):
 
 
 def texture(exponent, mip, palette=False):
-    """RGB565 periodic 8x8 tiles; lower levels are actual box-filtered mips."""
+    """Column RGB565 macros; lower levels are actual box-filtered mips."""
     side = 1 << exponent
     pixels = []
     for y in range(side):
@@ -111,16 +111,9 @@ def texture(exponent, mip, palette=False):
         colors = [(248, 32, 32), (32, 248, 32), (32, 32, 248), (248, 248, 32),
                   (32, 248, 248), (248, 32, 248), (248, 248, 248), (248, 128, 32), (128, 128, 128)]
         levels = {n: [colors[n]] * (1 << (2*n)) for n in levels}
-    out = bytearray()
-    for n in range(0 if mip else exponent, exponent + 1):
-        width = 1 << n
-        for ty in range(max(1, width // 8)):
-            for tx in range(max(1, width // 8)):
-                for y in range(8):
-                    for x in range(8):
-                        r, g, b = levels[n][((ty*8+y) % width)*width+(tx*8+x) % width]
-                        out += struct.pack("<H", (r >> 3) << 11 | (g >> 2) << 5 | b >> 3)
-    return out
+    from gpu_texture_layout import pack_levels
+    return pack_levels({n: [(r >> 3) << 11 | (g >> 2) << 5 | b >> 3 for r, g, b in pixels]
+                        for n, pixels in levels.items()})
 
 
 def dma(address, qword, size):
@@ -134,7 +127,7 @@ class Arena:
         self.base, self.data = base, bytearray()
 
     def put(self, data):
-        self.data += bytes((-len(self.data)) % 128)
+        self.data += bytes((-len(self.data)) % 256)
         address = self.base + len(self.data)
         self.data += data
         return address

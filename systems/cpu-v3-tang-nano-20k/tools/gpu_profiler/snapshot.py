@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import struct
 import zlib
-from layout import get_layout, header_layout
+from layout import COMMAND_ABI, get_layout, header_layout
 
 
 MAGIC = b"GPS1"
@@ -68,7 +68,7 @@ class Abi:
                               r"^pub const (GPU_CAPTURE_\w+): u16 = (0x[0-9a-fA-F_]+|[0-9_]+);$",
                               raw.decode("utf-8-sig").replace("\r\n", "\n"), re.M)}
         if (self["VERSION"] != 1 or self["WORDS"] != 64 or self["RANGE_WORDS"] != 8 or
-                self['NATIVE_COMMAND_ABI'] not in (1, 3)):
+                self['RTT400_COMMAND_ABI'] != COMMAND_ABI):
             raise SnapshotError("Unsupported driver capture ABI")
 
     def __getitem__(self, name):
@@ -99,7 +99,7 @@ class Abi:
             layout = get_layout(self.word(words, "H_LAYOUT_ABI"))
         except ValueError as error:
             raise SnapshotError(str(error)) from error
-        if (self.word(words, "H_COMMAND_ABI") not in (1, self["NATIVE_COMMAND_ABI"]) or
+        if (self.word(words, "H_COMMAND_ABI") != self["RTT400_COMMAND_ABI"] or
                 self.word(words, "H_RANGE_VERSION") != self["RANGE_VERSION"] or
                 self.word(words, "H_RANGE_WORDS") != self["RANGE_WORDS"]):
             raise SnapshotError("Incompatible layout/command/range ABI")
@@ -123,12 +123,8 @@ class Abi:
                       display_status=self.word(words, "H_DISPLAY_STATUS"),
                       publication=(self.word(words, "H_PUBLICATION_LOW") |
                                    self.word(words, "H_PUBLICATION_HIGH") << 16))
-        # Preserve the v1 manifest representation and input hash byte for byte.
-        if layout.abi != 1:
-            result['layout_abi'] = layout.abi
-            result['command_abi'] = self.word(words, 'H_COMMAND_ABI')
-        if self.word(words, 'H_COMMAND_ABI') != 1:
-            result['command_abi'] = self.word(words, 'H_COMMAND_ABI')
+        result['layout_abi'] = layout.abi
+        result['command_abi'] = self.word(words, "H_COMMAND_ABI")
         at = self["H_MANIFEST"]
         result["manifest_id"] = words_to_bytes(words[at:at + self["MANIFEST_WORDS"]]).hex()
         valid, padded, base = result["cb_bytes"], result["cb_padded_bytes"], result["cb_base"]
@@ -346,7 +342,7 @@ class Attempt:
         return bytes(result)
 
     def validate_memory(self):
-        if self.header.get('layout_abi', 1) == 2:
+        if self.header.get('layout_abi') == 2:
             layout=header_layout(self.header)
             for item in self.ranges:
                 if item.tag in (self.abi['TAG_COLOR'],self.abi['TAG_DEPTH'],self.abi['TAG_FRONT']):

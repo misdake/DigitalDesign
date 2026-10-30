@@ -1,6 +1,10 @@
 param([string]$OutputDirectory = '', [string]$Label = '', [switch]$Bilinear)
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
+$packageAbiSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'systems/cpu-v3-tang-nano-20k/rcc/gpu_capture_abi.rs')
+$packageCommandAbiMatch = [regex]::Match($packageAbiSource, 'pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = ([0-9]+);')
+if (-not $packageCommandAbiMatch.Success) { throw 'Missing canonical RTT command ABI' }
+$packageCommandAbi = [int]$packageCommandAbiMatch.Groups[1].Value
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = if ($Bilinear) { 'target/rtt/boot-bilinear' } else { 'target/rtt/boot-nearest' } }
 if ([string]::IsNullOrWhiteSpace($Label)) { $Label = 'gpu-renderer-rtt-' + [guid]::NewGuid().ToString('N').Substring(0,8) }
 $savedExample = $env:CPU_V3_BOOT_EXAMPLE
@@ -20,7 +24,7 @@ try {
     $independentHash = (Get-FileHash -Algorithm SHA256 (Join-Path $OutputDirectory 'independent.bin')).Hash
     if ($generatedHash -ne $independentHash) { throw 'Generated and independent CB06 differ' }
     [ordered]@{
-        profile = 'rtt400x240-column16'; surface = 'column-major-16x16-pad16'
+        profile = 'production'; command_abi = $packageCommandAbi; layout_abi = 2; surface = 'column-major-16x16-pad16'
         demo = $(if ($Bilinear) { 'ordinary-bilinear' } else { 'fullscreen-nearest' })
         boot_sha256 = $generatedHash; hardware = $null
         status = 'software-only-pending-matched-rtl-and-board-integration'

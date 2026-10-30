@@ -18,8 +18,8 @@ def pack(output):
     spec = importlib.util.spec_from_file_location("renderer_rtt_base_assets", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.pack(output, "column16")
-    mesh_base = sectors("column16")["GPU_ASSET_FIRST_SECTOR"] * 128
+    module.pack(output)
+    mesh_base = sectors()["GPU_ASSET_FIRST_SECTOR"] * 128
     mesh = bytearray(640)
     struct.pack_into("<4H", mesh, 0, (mesh_base+128)//128, 1, (mesh_base+384)//128, 1)
     for record, points, attributes, rgb, triangles in [
@@ -46,11 +46,11 @@ def pack(output):
     manifest = json.loads((output / "assets.json").read_text())
     for resource in manifest["resources"]:
         data = (output / resource["file"]).read_bytes()
-        validate_asset_range(resource["address"], len(data), "column16")
+        validate_asset_range(resource["address"], len(data))
         first, last = resource["address"], resource["address"] + len(data)
         assert last <= 0x600000 or first >= 0x680000, "asset aliases borrowed RTT planes"
         resource.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
-    manifest.update(profile="rtt400x240-column16", surface="column-major-16x16-pad16",
+    manifest.update(profile="production", surface="column-major-16x16-pad16",
                     triangles=3, vertices=7,
                     borrowed=dict(color=0x600000, depth=0x640000, plane_capacity=262144))
     manifest["sources"].update({str(p.relative_to(SYSTEM)): hashlib.sha256(p.read_bytes()).hexdigest()

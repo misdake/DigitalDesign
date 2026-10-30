@@ -32,10 +32,10 @@ reg[15:0]expected;
 function integer image_index;
  input integer halfword;
  begin
-  if(halfword>=@AC@/2&&halfword<(@AC@+192000)/2)image_index=(halfword-@AC@/2)/4;
-  else if(halfword>=@AD@/2&&halfword<(@AD@+192000)/2)image_index=32768+(halfword-@AD@/2)/4;
-  else if(halfword>=@BC@/2&&halfword<(@BC@+192000)/2)image_index=65536+(halfword-@BC@/2)/4;
-  else if(halfword>=@BD@/2&&halfword<(@BD@+192000)/2)image_index=98304+(halfword-@BD@/2)/4;
+  if(halfword>=@AC@/2&&halfword<(@AC@+204800)/2)image_index=(halfword-@AC@/2)/4;
+  else if(halfword>=@AD@/2&&halfword<(@AD@+204800)/2)image_index=32768+(halfword-@AD@/2)/4;
+  else if(halfword>=@BC@/2&&halfword<(@BC@+204800)/2)image_index=65536+(halfword-@BC@/2)/4;
+  else if(halfword>=@BD@/2&&halfword<(@BD@+204800)/2)image_index=98304+(halfword-@BD@/2)/4;
   else begin $fatal(1,"old or invalid target address %h",halfword);image_index=0;end
  end
 endfunction

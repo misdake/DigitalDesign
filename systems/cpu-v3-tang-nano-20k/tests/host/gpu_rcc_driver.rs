@@ -60,7 +60,7 @@ impl cpu_v3::Device for ControlPeer {
         match (self.kind, channel) {
             (4, 0) => {
                 assert_eq!(s.status, 0);
-                assert_eq!(value, 9);
+                assert_eq!(value, 10);
                 s.counts += 1;
             }
             (4, 1) => {
@@ -141,7 +141,8 @@ fn main() {
     for c in [
         GpuCommand::wait(true, true),
         GpuCommand::FLUSH,
-        GpuCommand::dma_local(0x4a0000, 276, 32).unwrap(),
+        GpuCommand::TEX_INVALIDATE,
+        GpuCommand::dma_local(0x4d0000, 276, 32).unwrap(),
         GpuCommand::wait(true, false),
         GpuCommand::set_target(276).unwrap(),
         GpuCommand::clear(false, 0x1357),
@@ -152,14 +153,14 @@ fn main() {
     ] {
         cb.push(c);
     }
-    assert_eq!(bytes(&cpu, 0x490000 / 2, 128), cb.image().unwrap().storage);
+    assert_eq!(bytes(&cpu, 0x4c0000 / 2, 128), cb.image().unwrap().storage);
     assert_eq!(
-        bytes(&cpu, 0x4a0000 / 2, 32),
+        bytes(&cpu, 0x4d0000 / 2, 32),
         target_params(MaterializedSurface {
             width: 400,
             height: 240,
-            color_base_bytes: 0x430000,
-            depth_base_bytes: 0x460000
+            color_base_bytes: 0x440000,
+            depth_base_bytes: 0x480000
         })
         .unwrap()
     );
@@ -238,7 +239,7 @@ fn main(){
             kind: 0,
         }),
     );
-    let at = 0x4b0000 / 2 + 16380;
+    let at = 0x4e0000 / 2 + 16380;
     cpu.physical_memory_mut()[at - 1] = 0xabcd;
     cpu.physical_memory_mut()[at + 8] = 0xdcba;
     assert!(matches!(
@@ -426,7 +427,7 @@ fn main() {
  check(gpu_record_global(view_of(&mut c),view_of(&mut g)));
  g.far_high=200;
  check(!gpu_record_global(view_of(&mut c),view_of(&mut g))); check(c.object_words==32);
- let mut r: GpuRender = GpuRender { texture_sector: 40000, texture_sectors: 21848, size_log2: 10,
+ let mut r: GpuRender = GpuRender { texture_sector: 40000, texture_sectors: 21860, size_log2: 10,
  full_mip: 1, filter: 2, specular_low: 0x9876, specular_high: 0x54,
  depth_func: 7, depth_write: 1, blend: 1, unlit: 1, lod_bias: -128 };
  check(gpu_record_render(view_of(&mut c),view_of(&mut r)));
@@ -445,7 +446,7 @@ fn main() {
  check(!gpu_command_set(out.add(10),5,316));
  check(gpu_command_draw(out.add(12),1));
  check(gpu_command_fixed(out.add(14),8,0xcafe,1));
- check(gpu_build_clear(view_of(&mut c),34304,35840,0x1234,0xabcd));
+ check(gpu_build_clear(view_of(&mut c),34816,36864,0x1234,0xabcd));
  halt(0x600d);
 }
 "#;
@@ -478,6 +479,7 @@ fn main() {
             size_log2: 10,
             full_mip: true,
             filter: 2,
+            framebuffer_view: false,
         }
         .word(),
         0x549876,
@@ -591,7 +593,7 @@ fn main() {
  g.light_y=182;check(!gpu_record_global(view_of(&mut cb),view_of(&mut g)));check(cb.object_words==32);
  g.light_x=16383;g.light_y=0;g.far_high=20;check(gpu_record_global(view_of(&mut cb),view_of(&mut g)));
  g.light_x=16382;check(!gpu_record_global(view_of(&mut cb),view_of(&mut g)));check(cb.object_words==64);
- let mut r:GpuRender=GpuRender { texture_sector:GPU_ASSET_FIRST_SECTOR,texture_sectors:1,size_log2:0,full_mip:0,filter:0,
+ let mut r:GpuRender=GpuRender { texture_sector:GPU_ASSET_FIRST_SECTOR,texture_sectors:4,size_log2:0,full_mip:0,filter:0,
  specular_low:0x9876,specular_high:0x54,depth_func:1,depth_write:1,blend:0,unlit:1,lod_bias:127 };
  check(gpu_record_render(view_of(&mut cb),view_of(&mut r)));check(cb.object_words==80);
  let mut matrix:Buf<u16,42>=Buf::new([0;42]);let mut m=matrix.as_array();m[0u16]=0x1234;
@@ -617,17 +619,17 @@ fn main() {
         matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
         "{result:?}"
     );
-    assert_eq!(bytes(&cpu, 0x4a0000 / 2, 4), [0, 0, 10, 0]);
-    assert_eq!(bytes(&cpu, 0x4a0040 / 2, 4), [0, 0, 20, 0]);
-    assert_eq!(bytes(&cpu, (0x4a0000 + 256) / 2, 2), [0x34, 0x12]);
+    assert_eq!(bytes(&cpu, 0x4d0000 / 2, 4), [0, 0, 10, 0]);
+    assert_eq!(bytes(&cpu, 0x4d0040 / 2, 4), [0, 0, 20, 0]);
+    assert_eq!(bytes(&cpu, (0x4d0000 + 256) / 2, 2), [0x34, 0x12]);
     assert_eq!(
-        bytes(&cpu, (0x4a0000 + 256 + 84) / 2, 12),
+        bytes(&cpu, (0x4d0000 + 256 + 84) / 2, 12),
         [0, 0, 1, 0, 0xfe, 0xca, 0x76, 0x98, 0, 0, 0, 0]
     );
-    assert_eq!(bytes(&cpu, 0x49fff0 / 2, 16), [0x35; 16]);
-    assert_eq!(bytes(&cpu, 0x4a7ff8 / 2, 16), [0x35; 16]);
-    assert_eq!(bytes(&cpu, 0x4a7ff6 / 2, 2), [0; 2]);
-    assert_eq!(bytes(&cpu, 0x4a8008 / 2, 2), [0; 2]);
+    assert_eq!(bytes(&cpu, 0x4cfff0 / 2, 16), [0x35; 16]);
+    assert_eq!(bytes(&cpu, 0x4d7ff8 / 2, 16), [0x35; 16]);
+    assert_eq!(bytes(&cpu, 0x4d7ff6 / 2, 2), [0; 2]);
+    assert_eq!(bytes(&cpu, 0x4d8008 / 2, 2), [0; 2]);
 }
 
 #[test]
@@ -672,12 +674,12 @@ fn main(){
  check(gpu_builder_global(view_of(&mut cb),view_of(&mut g)));
  check(cb.object_words==global_words&&cb.command_words==global_commands);
  g.ambient=257;check(!gpu_builder_global(view_of(&mut cb),view_of(&mut g)));g.ambient=256;
- let mut t:GpuTexture=GpuTexture{sector:GPU_ASSET_FIRST_SECTOR+256,sectors:1,size_log2:0,full_mip:0};
+ let mut t:GpuTexture=GpuTexture{sector:GPU_ASSET_FIRST_SECTOR+256,sectors:4,size_log2:0,full_mip:0};
  let mut r:GpuRender=GpuRender{texture_sector:0,texture_sectors:0,size_log2:0,full_mip:0,filter:0,
  specular_low:0,specular_high:0,depth_func:1,depth_write:1,blend:0,unlit:1,lod_bias:0};
  check(gpu_builder_render(view_of(&mut cb),view_of(&mut t),view_of(&mut r)));
  let render_words=cb.object_words;let render_commands=cb.command_words;
- t.sectors=2;check(gpu_builder_render(view_of(&mut cb),view_of(&mut t),view_of(&mut r)));
+ t.sectors=8;check(gpu_builder_render(view_of(&mut cb),view_of(&mut t),view_of(&mut r)));
  check(cb.object_words==render_words&&cb.command_words==render_commands);
  let mut matrix:Buf<u16,42>=Buf::new([0x8001;42]);
  let mut mesh:GpuMesh=GpuMesh{directory_sector:GPU_ASSET_FIRST_SECTOR,directory_word:63,count:17,
@@ -703,18 +705,18 @@ fn main(){
     cpu.set_boot_window(&words);
     let state = Rc::new(RefCell::new(PeerState::default()));
     cpu.attach_device(0, Box::new(ControlPeer { state, kind: 0 }));
-    for (base, count) in [(0x9600usize, 33usize), (0x9680, 17)] {
+    for (base, count) in [(0x9c00usize, 33usize), (0x9c80, 17)] {
         for i in 0..count {
             let at = base * 64 + 63 + i * 2;
             cpu.physical_memory_mut()[at] = (base + 4 + i * 2) as u16;
-            cpu.physical_memory_mut()[at + 1] = u16::from(base == 0x9600 || i != 16);
+            cpu.physical_memory_mut()[at + 1] = u16::from(base == 0x9c00 || i != 16);
         }
     }
     assert!(matches!(
         cpu.run(3_000_000).unwrap(),
         RunOutcome::Halted { signal: 0x600d, .. }
     ));
-    let arena = bytes(&cpu, 0x490000 / 2, 2048);
+    let arena = bytes(&cpu, 0x4c0000 / 2, 2048);
     let draws = arena
         .as_chunks::<4>()
         .0
@@ -724,7 +726,7 @@ fn main(){
         .count();
     assert_eq!(draws, 17 + 32 + 33);
     // The rejected draw must not upload its Instance into the next allocation.
-    assert_eq!(bytes(&cpu, (0x4a0000 + 640) / 2, 128), [0; 128]);
+    assert_eq!(bytes(&cpu, (0x4d0000 + 640) / 2, 128), [0; 128]);
 }
 
 #[test]
@@ -747,20 +749,20 @@ fn main(){{
         let words = compile_direct(&source);
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&words);
-        cpu.physical_memory_mut()[0x490000 / 2..0x4a0000 / 2].fill(0xa55a);
+        cpu.physical_memory_mut()[0x4c0000 / 2..0x4d0000 / 2].fill(0xa55a);
         assert!(matches!(
             cpu.run(500_000).unwrap(),
             RunOutcome::Halted { signal: 0x600d, .. }
         ));
         assert_eq!(
-            bytes(&cpu, 0x490000 / 2 + cursor, 12),
+            bytes(&cpu, 0x4c0000 / 2 + cursor, 12),
             [3, 0, 0, 0x40, 0, 0, 0, 0x70, 0, 0, 0, 0xf0]
         );
         let padded = (cursor + 6 + 63) & !63;
         assert_eq!(
             bytes(
                 &cpu,
-                0x490000 / 2 + cursor + 6,
+                0x4c0000 / 2 + cursor + 6,
                 ((padded - cursor - 6) * 2) as usize
             ),
             vec![0; ((padded - cursor - 6) * 2) as usize]
@@ -773,7 +775,7 @@ fn batched_mesh_commands_preserve_prefetch_order_across_window() {
     let mut expected = Vec::new();
     for i in 0..17u32 {
         let slot = (i & 1) as u8;
-        expected.push(GpuCommand::dma_meshlet((0x9700 + i * 2) * 128, slot, 128).unwrap());
+        expected.push(GpuCommand::dma_meshlet((0x9d00 + i * 2) * 128, slot, 128).unwrap());
         if i != 0 {
             expected.push(GpuCommand::draw_meshlet(slot ^ 1).unwrap());
         }
@@ -790,7 +792,7 @@ fn main(){{
  let mut cb:GpuBuffer=gpu_buffer_empty();check(gpu_high_slot_init(view_of(&mut cb),0));
  check(gpu_builder_begin(view_of(&mut cb),GPU_COLOR_B_SECTOR,GPU_DEPTH_SECTOR,0,0));
  let mut entries:Buf<u16,34>=Buf::new([0;34]);let mut i:u16=0;
- while i<17 {{entries[i*2]=0x9700+i*2;entries[i*2+1]=1;i+=1;}}
+ while i<17 {{entries[i*2]=0x9d00+i*2;entries[i*2+1]=1;i+=1;}}
  GPU_BUILD[5u16]={cursor};cb.command_words={cursor};
  check(gpu_builder_commands(view_of(&mut cb)));
  check(gpu_builder_mesh_commands(view_of(&mut cb),entries.as_array(),0,16));
@@ -803,14 +805,14 @@ fn main(){{
         let words = compile_direct(&source);
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&words);
-        cpu.physical_memory_mut()[0x490000 / 2..0x4a0000 / 2].fill(0xa55a);
+        cpu.physical_memory_mut()[0x4c0000 / 2..0x4d0000 / 2].fill(0xa55a);
         assert!(matches!(
             cpu.run(500_000).unwrap(),
             RunOutcome::Halted { signal: 0x600d, .. }
         ));
-        assert_eq!(bytes(&cpu, 0x490000 / 2 + cursor, expected.len()), expected);
-        assert_eq!(bytes(&cpu, 0x490000 / 2 + cursor - 1, 2), [0x5a, 0xa5]);
-        assert_eq!(bytes(&cpu, 0x490000 / 2 + cursor + 102, 2), [0x5a, 0xa5]);
+        assert_eq!(bytes(&cpu, 0x4c0000 / 2 + cursor, expected.len()), expected);
+        assert_eq!(bytes(&cpu, 0x4c0000 / 2 + cursor - 1, 2), [0x5a, 0xa5]);
+        assert_eq!(bytes(&cpu, 0x4c0000 / 2 + cursor + 102, 2), [0x5a, 0xa5]);
     }
 }
 
@@ -823,12 +825,12 @@ fn check(ok:bool){{if !ok{{halt(0xbad);}}}}
 fn main(){{
  unsafe{{write_dseg_page(3,19);}}
  check(gpu_init()==GPU_IDLE);let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,65535);check(pass==1);
- let mut atlas:GpuUiAtlas=GpuUiAtlas{{sector:0x9800,sectors:512}};
+ let mut atlas:GpuUiAtlas=GpuUiAtlas{{sector:0x9e00,sectors:512}};
  let mut ids:Buf<u16,4>=Buf::new([49,50,51,256]);
  GPU_CB.object_words=16320;let commands=GPU_CB.command_words;
  check(gpu_pass_ui_begin(0,view_of(&mut atlas),{fill})==0);
  check(gpu_pass_ui_begin(pass,view_of(&mut atlas),256)==0);
- atlas.sector=0x9801;check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);atlas.sector=0x9800;
+ atlas.sector=0x9e01;check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);atlas.sector=0x9e00;
  GPU_CB.object_words=32368;check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);
  GPU_CB.object_words=16320;GPU_CB.command_words=32760;
  check(gpu_pass_ui_begin(pass,view_of(&mut atlas),{fill})==0);GPU_CB.command_words=commands;
@@ -854,7 +856,7 @@ fn main(){{
         let words = compile(&source);
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&words);
-        cpu.physical_memory_mut()[0x4a0000 / 2..0x4b0000 / 2].fill(0xa55a);
+        cpu.physical_memory_mut()[0x4d0000 / 2..0x4e0000 / 2].fill(0xa55a);
         let state = Rc::new(RefCell::new(PeerState::default()));
         for kind in [0, 3, 4] {
             cpu.attach_device(
@@ -870,7 +872,7 @@ fn main(){{
             matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
             "fill={fill} {result:?}"
         );
-        let at = 0x4a0000 / 2 + 16320;
+        let at = 0x4d0000 / 2 + 16320;
         let mut expected = vec![fill | (fill << 8); 375];
         for (cell, id) in [(127usize, 49u16), (128, 50), (129, 51), (749, 0)] {
             let old = expected[cell / 2];
@@ -881,7 +883,7 @@ fn main(){{
             };
         }
         expected.extend([0xffff; 9]);
-        expected.extend([0x94ff, 0x4c]);
+        expected.extend([0x9aff, 0x4f]);
         expected.extend([0; 14]);
         let expected: Vec<u8> = expected.iter().flat_map(|x| x.to_le_bytes()).collect();
         assert_eq!(bytes(&cpu, at, 800), expected);
@@ -897,7 +899,7 @@ fn inplace_ui_cancel_discards_unsealed_object_and_stale_operations() {
 fn check(ok:bool){if !ok{halt(0xbad);}}
 fn main(){
  check(gpu_init()==GPU_IDLE);let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,0);
- let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+ let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};
  let mut ids:Buf<u16,1>=Buf::new([65]);
  let ui=gpu_pass_ui_begin(pass,view_of(&mut atlas),255);check(ui!=0);
  check(gpu_cb_cancel(cb));check(!gpu_pass_ui_end(ui));check(!gpu_pass_ui_write(ui,0,ids.as_array(),1));
@@ -931,7 +933,7 @@ fn inplace_demo_numbers_preserve_unselected_cells_and_omit_hidden_ui() {
 fn check(ok:bool){if !ok{halt(0xbad);}}
 fn main(){
  check(gpu_init()==GPU_IDLE);let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,0,0);
- let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+ let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};
  let mut stats:Buf<u16,4>=Buf::new([0;4]);stats[3u16]=1;
  stats[1u16]=0;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
  stats[1u16]=900;check(demo_ui_record(pass,view_of(&mut atlas),stats.as_array()));
@@ -945,7 +947,7 @@ fn main(){
     );
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&words);
-    cpu.physical_memory_mut()[0x4a0000 / 2..0x4b0000 / 2].fill(0xa55a);
+    cpu.physical_memory_mut()[0x4d0000 / 2..0x4e0000 / 2].fill(0xa55a);
     let state = Rc::new(RefCell::new(PeerState::default()));
     for kind in [0, 3, 4] {
         cpu.attach_device(
@@ -964,7 +966,7 @@ fn main(){
     let texts = ["0.0", "0.9", "1.0", "65.5"];
     for (i, text) in texts.iter().enumerate() {
         let word = 64 + i as u32 * 448;
-        let at = 0x4a0000 / 2 + word;
+        let at = 0x4d0000 / 2 + word;
         // Only intersecting packed words are initialized. An odd-length run's
         // unused neighbor is FF; all other grid/padding bytes keep the sentinel.
         let mut expected: Vec<u8> = [0x5a, 0xa5].into_iter().cycle().take(800).collect();
@@ -972,12 +974,12 @@ fn main(){
         expected[52..packed_end].fill(255);
         expected[52..52 + text.len()].copy_from_slice(text.as_bytes());
         expected[768..]
-            .copy_from_slice(&gpu_v2::system::vliw_command::ui_params(at * 2, 0x4c0000).unwrap());
+            .copy_from_slice(&gpu_v2::system::vliw_command::ui_params(at * 2, 0x4f0000).unwrap());
         assert_eq!(bytes(&cpu, at, 800), expected, "text={text}");
         assert_eq!(bytes(&cpu, at - 1, 2), [0x5a, 0xa5]);
         assert_eq!(bytes(&cpu, at + 400, 2), [0x5a, 0xa5]);
     }
-    let code = bytes(&cpu, 0x490000 / 2, 128);
+    let code = bytes(&cpu, 0x4c0000 / 2, 128);
     let commands: Vec<u32> = code
         .as_chunks::<4>()
         .0
@@ -989,13 +991,13 @@ fn main(){
         .enumerate()
         .filter_map(|(i, c)| (*c >> 28 == 11).then_some(i))
         .collect();
-    assert_eq!(draws, [11, 14, 17, 20]);
+    assert_eq!(draws, [12, 15, 18, 21]);
     for (index, text) in draws.into_iter().zip(texts) {
         let expected = GpuCommand::ui_grid_range(276, 52, 52 + text.len() as u16).unwrap();
         assert_eq!(commands[index], u32::from_le_bytes(expected.encode()));
     }
-    assert_eq!(commands[23], 0xf0000000);
-    let hidden_slot = 0x4a0000 / 2 + 64 + 4 * 448;
+    assert_eq!(commands[24], 0xf0000000);
+    let hidden_slot = 0x4d0000 / 2 + 64 + 4 * 448;
     let untouched: Vec<u8> = [0x5a, 0xa5].into_iter().cycle().take(800).collect();
     assert_eq!(bytes(&cpu, hidden_slot, 800), untouched);
 }

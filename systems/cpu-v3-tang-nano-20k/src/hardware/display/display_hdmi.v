@@ -16,7 +16,7 @@ module FramebufferHdmi(
 );
 localparam [21:0] FB_BASE=22'h200000;
 localparam [2:0] DISPLAY_DEVICE=3'd3;
-localparam [31:0] LAST_VALID_FB_BASE=32'h003e8900;
+localparam [31:0] LAST_VALID_FB_BASE=32'h003e7000;
 // Fixed 800x480 2x timing shared with the host model, testbench and board PLL.
 __DISPLAY_CONFIG__
 localparam integer PRECODE_BITS=__TMDS_PRECODE_BITS__;
@@ -73,7 +73,7 @@ wire publish_group = black_group || (burst_active && memory_data_valid &&
 // longer non-preemptible owner interval.
 // Column, even-row pair and second-row bits are disjoint.
 wire [17:0] request_units=tile_row_base_units +
-    {9'b0,burst_index,local_y[3:1],fill_second};
+    {5'b0,burst_index,4'b0,local_y[3:1],fill_second};
 assign memory_address={request_units,4'b0};
 // Each shared address holds four RGB565 pixels across the two banks. One row
 // uses 100 addresses, one group 200; 416..511 hold packed color/TMDS tables.

@@ -102,7 +102,7 @@ NativeRender32 is eight u32 words:
 
 | Word | Encoding |
 | --- | --- |
-| 0 | Current texture: base byte address/128 bits15:0; size_log2 bits19:16; full-mip20; filter bits22:21 |
+| 0 | Current texture: base byte address/128 bits15:0; size_log2 bits19:16; full-mip20; filter bits22:21; fixed400x240 view bit23; bits31:24 zero |
 | 1 | RGB888 specular low24; high8 zero (alpha belongs only to mesh uniform color) |
 | 2 | depth_func bits2:0, depth_write3, blend4, unlit5; other bits zero |
 | 3 | Signed F4 lod_bias bits7:0; other bits zero |
@@ -111,12 +111,23 @@ NativeRender32 is eight u32 words:
 These are the current numerical pins, not floating-point source parameters.
 Their arithmetic and direction requirements remain in
 [fragment arithmetic](/ip/gpu-v2/docs/fragment-math.md). The host chooses a
-legal square POT RGB565 texture, exponent0..10, filter0/1/2, aligned base and
-accessible complete allocation below8 MiB. The command profile does not check
-texture descriptor ranges or asset contents. LOD uses the descriptor exponent
-for both axes, with maximum mip distance n for a full chain and0 otherwise.
-There is no independently installed LOD dimension, mip limit or Slot16 table.
-Word0 bits31:23 are ignored and written zero by the producer.
+legal column POT RGB565 texture, exponent0..10 and filter0/1/2, or the
+fixed400x240 view described in [framebuffer views](/ip/gpu-v2/docs/framebuffer-texture-view.md).
+Both use 256-byte base alignment and the same physical cache backend. POT uses
+normalized UV repeat and the selected mip level; fixed views use signed18 UV
+pre-clamp, true400/240 scaling, nearest/bilinear and base-only data. Exponent9
+on a fixed view is an encoding carrier, never a512-square footprint.
+NativeRender32 bit23 is part of state equality and the locked CP binding.
+
+Production POT mip levels use16x16 RGB565 column macros,512 bytes each.
+For level n, pitch is `max(n-4,0)` and
+`address = level_base + 512*(((x>>4)<<pitch)+(y>>4)) + 32*(y&15) + 2*(x&15)`.
+Every small level still occupies512 bytes, with periodic padding. Full chains
+are smallest first; level prefixes in128-byte sectors are
+`0,4,8,12,16,20,36,100,356,1380,5476`. A base-only level has prefix0.
+The resident line is16x8/256B and requires two successful128B child reads.
+`systems/cpu-v3-tang-nano-20k/tools/gpu_texture_layout.py` is the asset packer.
+
 
 ## Command meshlet record
 
@@ -164,7 +175,8 @@ state, not the RAM contents. Table contents survive ordinary reset.
 
 ## Texture assets
 
-The generic host-driven and standalone sampler profiles use up to16
+Independent generic numerical sampler fixtures, outside the production native
+command format above, use up to16
 factory-supplied slots containing validity, aligned byte base, full-mip
 flag and size exponent 0..10. Assets are square power-of-two RAW RGB565. There is
 no texture alpha. Each 8 × 8 tile occupies 128 bytes, with row-major little-endian

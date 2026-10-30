@@ -59,16 +59,20 @@ points; they are not a second submission interface.
 ## Fixed storage and units
 
 The sole configuration is `rcc/gpu_layout.rs`, also consumed by host layout and
-boot packing. Addresses below are physical **bytes**, with exclusive ends.
+boot packing. Color/depth slots each reserve256KiB around a204800-byte
+column physical plane; their57344-byte allocation tail is not CLEAR-owned.
+Every builder begins with WAIT(all), FLUSH and TEX_INVALIDATE before binding
+the target, preserving visibility for reused framebuffer views. Ordinary POT
+submissions use the same sequence. Addresses below are physical **bytes**, with exclusive ends.
 
 | Range | Owner |
 |---|---|
-| 0x400000..0x430000 | Fixed Color A, boot's initial Front |
-| 0x430000..0x460000 | Fixed Color B, alternating output/Front |
-| 0x460000..0x490000 | Fixed Depth |
-| 0x490000..0x4a0000 | Driver command allocation, 64 KiB |
-| 0x4a0000..0x4b0000 | Driver object allocation, 64 KiB |
-| 0x4b0000..0x7df800 | Fixed GPU asset allocations |
+| 0x400000..0x440000 | Fixed Color A, boot's initial Front |
+| 0x440000..0x480000 | Fixed Color B, alternating output/Front |
+| 0x480000..0x4c0000 | Fixed Depth |
+| 0x4c0000..0x4d0000 | Driver command allocation, 64 KiB |
+| 0x4d0000..0x4e0000 | Driver object allocation, 64 KiB |
+| 0x4e0000..0x7df800 | Fixed GPU asset allocations |
 | 0x7df800..0x7e0000 | Two reserved 1-KiB UI pages |
 | 0x7e0000..0x7f0000 | Second command allocation, 64 KiB |
 | 0x7f0000..0x800000 | Second object allocation, 64 KiB |

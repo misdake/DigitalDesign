@@ -14,22 +14,16 @@ from layout import header_layout
 from replay import execute, prepare, export_layout
 from replay import physical
 from capture import run as capture_run
-from layout_replay import stage_column
 from draw_oracle import evaluate as draw_reference
 
 
-def select_replay_export(layout,rtl,output,frozen=None,contract=None):
-    """Prefer a fresh matching canonical export; legacy replacement is explicit."""
-    sources=json.loads((rtl/'rtl.json').read_text())
-    actual=export_layout(rtl,'\n'.join((rtl/name).read_text() for name in sources))
-    if frozen is None and contract is None:
-        if actual != layout:
-            raise ValueError('Replay export does not match input layout; select current matching --rtl')
-        return rtl
-    if layout.abi!=2 or actual.abi!=1 or frozen is None or contract is None:
-        raise ValueError('Legacy frozen replacement needs row peer, column input and both explicit identities')
-    stage_column(rtl,frozen,contract,output)
-    return output
+def select_replay_export(layout, rtl):
+    """Use the matching canonical export directly; never replace GPU storage."""
+    sources = json.loads((rtl/'rtl.json').read_text())
+    actual = export_layout(rtl, '\n'.join((rtl/name).read_text() for name in sources))
+    if actual != layout:
+        raise ValueError('Replay export does not match input layout')
+    return rtl
 
 
 def draw_archive(folder, receipt_path, receipt, commit):
@@ -118,7 +112,7 @@ def read_producer(folder, receipt_path, commit):
         raise ValueError('Producer header/build/layout identity mismatch')
     if sequence:
         frame = entry['frame']
-        if entry['layout_command'] != [layout.abi, 1]:
+        if entry['layout_command'] != [layout.abi, h['command_abi']]:
             raise ValueError('DRAW receipt layout/command profile disagrees with frozen inputs')
         if any(h[name] != frame[key] for name, key in [('token','token'), ('publication','publication'),
                                                       ('slot','slot'), ('cb_base','cb_address'),
@@ -139,7 +133,7 @@ def read_producer(folder, receipt_path, commit):
         if hashlib.sha256(raw).hexdigest() != resource['sha256']:
             raise ValueError('Frozen resource differs from committed catalog')
     producer = json.loads((folder/'producer.json').read_text())
-    source_name = 'rcc/gpu_layout.rs' if layout.abi == 1 else 'rcc/gpu_layout_column16.rs'
+    source_name = 'rcc/gpu_layout.rs' if layout.abi == 1 else 'rcc/gpu_layout.rs'
     actual_layout = next(v for v in build['files'] if v['name'] == source_name)
     dependencies = producer['origins'] if sequence else producer['dependencies']
     if not any(path.replace('\\', '/').endswith('/'+source_name) for path in dependencies):
@@ -149,14 +143,14 @@ def read_producer(folder, receipt_path, commit):
         origins_path = build_root/'profile-rcc/source-origins.json' if sequence else folder/'source-origins.json'
         origins = json.loads(origins_path.read_text())
         origin = origins['gpu_layout.rs']
-        if not origin.replace('\\', '/').endswith('/rcc/gpu_layout_column16.rs'):
+        if not origin.replace('\\', '/').endswith('/rcc/gpu_layout.rs'):
             raise ValueError('Column producer compiled a different actual layout origin')
         alias = next(v for v in build['files'] if v['name'] == 'producer-rcc/gpu_layout.rs')
         if alias['sha256'] != actual_layout['sha256']:
             raise ValueError('Generated layout alias differs from the selected canonical column source')
     return capture, wire, dict(producer_commit=commit, producer_receipt_sha256=identity.digest(receipt_path),
         build_sha256=identity.digest(build_root/'build.json'), manifest_id=h['manifest_id'],
-        abi_sha256=abi.sha256, layout=layout.description(), command_abi=h.get('command_abi', 1), gpu_layout_origin=origin,
+        abi_sha256=abi.sha256, layout=layout.description(), command_abi=h['command_abi'], gpu_layout_origin=origin,
         selected_layout_source_sha256=actual_layout['sha256'],
         fixture_only=True, captured_plane_bytes=layout.plane_bytes,
         wire_source='Host encoding of exact CPU-produced header/ranges/payload; not actual UART',
@@ -226,10 +220,7 @@ def main():
     p.add_argument('--fixture', type=Path, required=True)
     p.add_argument('--producer-receipt', type=Path, required=True)
     p.add_argument('--producer-commit', required=True)
-    p.add_argument('--rtl','--row-rtl',dest='rtl',type=Path,required=True,
-                   help='Current matching row/column export; old --row-rtl alias remains accepted')
-    p.add_argument('--frozen-column', type=Path)
-    p.add_argument('--column-contract', type=Path)
+    p.add_argument('--rtl',type=Path,required=True,help='Current production column export')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--oracle', choices=('ui', 'draw'), default='ui',
                    help='DRAW uses an independent rational reference; unsupported paths reject')
@@ -252,7 +243,7 @@ def main():
             raise ValueError('DRAW fixture needs at least 256 stable covered pixels')
     else:
         expected, clear, caller = ui_oracle(capture)
-    rtl=select_replay_export(layout,args.rtl,args.out/'rtl',args.frozen_column,args.column_contract)
+    rtl=select_replay_export(layout,args.rtl)
     manifest = prepare(capture, rtl, args.out/'replay', 180000, 180, context)
     if args.expect_fault:
         missing = args.expect_fault == 'missing-read'

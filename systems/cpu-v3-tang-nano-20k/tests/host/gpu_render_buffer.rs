@@ -7,8 +7,8 @@ fn texture_views_keep_the_buffer_parent_and_are_consumed_once() {
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let prefix = r#"mod gpu_pipeline;fn main(){let mut r=renderer_open();
 let mut memory:RenderBufferMemory=RenderBufferMemory{
-color_base_low:0,color_base_high:0x60,color_capacity_low:0,color_capacity_high:3,
-depth_base_low:0,depth_base_high:0x63,depth_capacity_low:0,depth_capacity_high:3};
+color_base_low:0,color_base_high:0x60,color_capacity_low:0,color_capacity_high:4,
+depth_base_low:0,depth_base_high:0x64,depth_capacity_low:0,depth_capacity_high:4};
 let mut b=renderer_render_buffer(&mut r,view_of(&mut memory));
 let mut view=render_buffer_texture(&mut b,false);"#;
     let parse = |body: &str| {
@@ -22,7 +22,9 @@ let mut view=render_buffer_texture(&mut b,false);"#;
                 .join("../../target/rtt/ownership-app"),
             &root,
             RENDERER_METADATA,
-            &resolver::RendererCaptureConfiguration::rtt400x240(),
+            &resolver::RendererCaptureConfiguration::without_capture(
+                resolver::RendererLayoutProfile::Column16,
+            ),
             &rcc::frontend::rustc_check::RustcCheck::new(
                 root.parent().unwrap().join("../../target/rtt/ownership"),
             ),
@@ -150,7 +152,6 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
     let state = attach(&mut cpu, Some(vec![vec![]; 4]));
     {
         let mut s = state.borrow_mut();
-        s.column = true;
         s.automatic = true;
         s.capture_dynamic = true;
         s.targets = Some(vec![
@@ -281,7 +282,7 @@ fn save_rtt_inputs(out: &Path, s: &State, program: &rcc_backend::CpuV3Program) {
         }));
     }
     std::fs::write(out.join("rtl-inputs.json"),serde_json::to_vec_pretty(&serde_json::json!({
-        "schema":1,"profile":"rtt400x240-column16","surface":"column-major-16x16-pad16",
+        "schema":1,"profile":"production","surface":"column-major-16x16-pad16",
         "source":"actual compiled public application under controlled GPU/Display peers",
         "caller_program":"capture-caller.v3bin",
         "status":"input-fixture-only-not-rtl-qualified",
@@ -296,15 +297,15 @@ fn borrowed_planes_preserve_display_and_hold_through_cancel_and_real_terminal() 
     let body = r#"
 let mut r=renderer_open();
 let mut memory:RenderBufferMemory=RenderBufferMemory{
- color_base_low:0,color_base_high:0x60,color_capacity_low:0,color_capacity_high:3,
- depth_base_low:0,depth_base_high:0x63,depth_capacity_low:0,depth_capacity_high:3};
+ color_base_low:0,color_base_high:0x60,color_capacity_low:0,color_capacity_high:4,
+ depth_base_low:0,depth_base_high:0x64,depth_capacity_low:0,depth_capacity_high:4};
 let mut b=renderer_render_buffer(&mut r,view_of(&mut memory));let id=b.word;
 check(id==1 && !gpu_rtt_busy(id) && gpu_rtt_buffer(id)[6u16]==0);
 check(!render_buffer_wait(&mut r,&mut b,0));
 let mut bad:RenderBufferMemory=memory;bad.color_base_high=0x40;
 check(gpu_rtt_register(view_of(&mut bad))==0);
-bad=memory;bad.color_base_high=0x4b;check(gpu_rtt_register(view_of(&mut bad))==0);
-bad=memory;bad.color_base_high=0x4c;check(gpu_rtt_register(view_of(&mut bad))==0);
+bad=memory;bad.color_base_high=0x4e;check(gpu_rtt_register(view_of(&mut bad))==0);
+bad=memory;bad.color_base_high=0x4f;check(gpu_rtt_register(view_of(&mut bad))==0);
 bad=memory;bad.color_base_high=0x7e;check(gpu_rtt_register(view_of(&mut bad))==0);
 bad=memory;bad.color_capacity_low=65535;bad.color_capacity_high=2;
 check(gpu_rtt_register(view_of(&mut bad))==0);
@@ -352,9 +353,9 @@ check(dev_recv(7,0)==3 && dev_recv(7,1)==1);
         s.automatic = true;
         s.capture_dynamic = true;
         s.targets = Some(vec![
-            (0x600000, 0x630000),
-            (0x430000, 0x460000),
-            (0x600000, 0x630000),
+            (0x600000, 0x640000),
+            (0x440000, 0x480000),
+            (0x600000, 0x640000),
         ]);
     }
     let outcome = cpu.run(8_000_000).unwrap();
@@ -363,7 +364,7 @@ check(dev_recv(7,0)==3 && dev_recv(7,1)==1);
         "{outcome:?}"
     );
     let s = state.borrow();
-    assert_eq!((s.starts.len(), s.swaps, s.active), (3, 1, 0x430000 / 2));
+    assert_eq!((s.starts.len(), s.swaps, s.active), (3, 1, 0x440000 / 2));
     assert_eq!(s.offscreen_starts_pending, 1);
     assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
 }
@@ -410,7 +411,9 @@ fn actual_nearest_and_ordinary_bilinear_demo_inputs() {
             &example.join("rcc"),
             &root.join("rcc"),
             &constants,
-            &resolver::RendererCaptureConfiguration::rtt400x240(),
+            &resolver::RendererCaptureConfiguration::without_capture(
+                resolver::RendererLayoutProfile::Column16,
+            ),
             &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),
             &mut |_| {},
         )
@@ -429,7 +432,6 @@ fn actual_nearest_and_ordinary_bilinear_demo_inputs() {
         let state = attach(&mut cpu, Some(vec![vec![]; 2]));
         {
             let mut s = state.borrow_mut();
-            s.column = true;
             s.automatic = true;
             s.capture_dynamic = true;
             s.targets = Some(vec![(0x600000, 0x640000), (0x440000, 0x480000)]);
@@ -453,8 +455,8 @@ fn sealed_buffers_cancel_the_recorded_slot_without_submission() {
     let body = r#"
 let mut r=renderer_open();
 let mut memory:RenderBufferMemory=RenderBufferMemory{
- color_base_low:0,color_base_high:0x60,color_capacity_low:0,color_capacity_high:3,
- depth_base_low:0,depth_base_high:0x63,depth_capacity_low:0,depth_capacity_high:3};
+ color_base_low:0,color_base_high:0x60,color_capacity_low:0,color_capacity_high:4,
+ depth_base_low:0,depth_base_high:0x64,depth_capacity_low:0,depth_capacity_high:4};
 let mut b=r.render_buffer(view_of(&mut memory));let id=b.word;
 {
  let mut f=r.frame_to(&mut b,0x1111);

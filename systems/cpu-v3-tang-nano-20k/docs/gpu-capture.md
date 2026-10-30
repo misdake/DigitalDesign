@@ -7,38 +7,18 @@ scheduler or recovery protocol. Normal applications use the shared no-op gate.
 
 ## Explicit consumer selection
 
-The legacy `compile_renderer_program_with_capture` and public
-`CaptureConfiguration { gate_path, manifest_id }` remain fixed to row layout.
 `RendererCaptureConfiguration::from_manifest(gate_path, manifest_path)` binds
-one immutable profile, capture ID and immutable resource catalog. Pass it to
-`compile_renderer_program_with_capture_profile`, with an explicit host-owned
-`generated_sources` directory and the existing dependency callback. This entry
-returns `Result<Program, String>` so materialization and compiler failures are
-reported together; the legacy entry retains its compiler-error return type.
+an explicit v2 manifest, capture ID, exact column layout/map and typed resource
+catalog. Production uses the framebuffer-view command ABI named by
+`GPU_CAPTURE_RTT400_COMMAND_ABI` (currently4), with layout ABI2. Missing/v1/row
+layouts, old command ABI1 and mixed metadata are rejected. Wire/header/range
+versions remain1. The low-level `CaptureConfiguration::from_identity` entry
+only injects IDs for host tests; it is not production manifest validation.
 
-| Manifest | Required selection | Header layout/command ABI | Physical plane bytes |
-| --- | --- | --- | --- |
-| v1 or absent version | No `layout`; optional `command_abi` must be 1 | 1 / 1 | 192000 |
-| v2 row | Exact row layout description; `command_abi: 1` | 1 / 1 | 192000 |
-| v2 column | Exact column-pad16 description and allocation map; `command_abi: 1` | 2 / 1 | 204800 |
-| v2 RTT | Same column description/map; `command_abi: 2` | 2 / 2 | 204800 |
-
-Unknown or mixed descriptions and invalid versions are rejected. RTT command
-ABI 2 requires column layout ABI 2; row layout with RTT commands is rejected. The selected description includes dimensions, physical and
-allocation spans, macro order/pitch, texture layout and (for column) the complete
-memory allocation map. Selection never follows an application filename.
-
-The row profile uses the actual shared source directory. Column materializes an
-explicit derived source root: every shared RCC source keeps its exact bytes,
-except `gpu_layout.rs`, which receives the exact authoritative
-`gpu_layout_column16.rs` bytes. `source-origins.json` records the mapping back to
-those source files. RCC receives real canonical paths in that generated root;
-its root/helper filename and resource-domain checks remain enabled. This avoids
-loading both layouts into one resource domain or claiming a false source origin.
-The generated root is separate from ordinary application module search paths.
-The host also pins the unprivileged generated `gpu_render_profile`: the
-`rtt400x240()` configuration enables framebuffer views; ordinary profiles leave
-them disabled. Application modules cannot override this selection.
+`gpu_layout.rs` is the sole allocation source. The approved derived renderer
+root copies these canonical sources and records their real origins; there is
+no alternate layout-file substitution. POT and fixed framebuffer views are
+available in every production build. Hardware metadata uses`gpu_profile=production`.
 
 The selected gate is an ordinary module at its real canonical path, without
 authority over private driver state. Normal builds pin the shared no-op gate,
@@ -175,7 +155,7 @@ or board capture. Consumer and matched hardware qualification are separate.
 DRAM alone cannot reconstruct arbitrary warm-cache or internal pipeline state.
 
 The `capture_layout` integration target compiles and executes the real RCC/CPU
-producer for legacy row, explicit row and column. Its portable `build.json`
+producer for the sole column layout. Its portable `build.json`
 binds copied source inputs, catalog and the selected effective RCC root. It emits
 actual `header.bin`, `ranges.bin`, `producer.v3bin` and frozen range payloads under
 `target/capture-layout`. First/last payload words pass through public read bridges;
@@ -185,7 +165,7 @@ triangle rasterization or board capture. Firmware hashes remain external to the
 manifest ID. No serial column demo capture is enabled by this test or selection.
 
 The separate `capture_draw` target executes three submissions in each explicit
-row `(1,1)` and column `(2,1)` layout/command profile. It uses the catalog's single
+column layout and framebuffer-view command ABI. It uses the catalog's single
 triangle and white texture, unlit RGB material, LESS and depth writes without
 blending. Camera focal length 160 and world Z -4 produce positive native Z +4;
 the three model X positions are 0, +0.5 and -0.5. Actual recorded matrices,

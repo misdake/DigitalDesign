@@ -139,21 +139,22 @@ and external coherence. Immutable resources remain cached across descriptor,
 filter/bias and Lighting changes. A descriptor replacement still requires the
 explicit full-render wait; it does not invalidate cache contents.
 
-Packet production forms the final physical128-B sector before queue storage.
-Its first enabled edge preadds base/prefix while capturing member fields. The
-second forms the selected tile offset, adds it to that base, and publishes the
-final group and metadata. The initiation interval remains one.
-The ordered group is35 bits in the same36-bit BSRAM word: sector15:0,
-local-X18:16, local-Y21:19, owner29:22 (lane2, quad4, last1, first1),
-weight-bank parity30 and texture-tap mask34:31. Parity belongs to the mip level, not to
-the physical address; it selects the existing fine/coarse weight bank.
+Packet production forms the physical256B line before queue storage. Its
+first enabled edge preadds base/prefix and captures member fields. The second
+derives the pitch from the held level and current shape, shifts the macro column, adds the row and base, and
+publishes the final group. The initiation interval remains one.
+The ordered35-bit group occupies one36-bit BSRAM word: physical line14:0,
+local-X18:15, local-Y21:19, owner29:22 (lane2, quad4, last1, first1),
+weight-bank parity30 and texture-tap mask34:31. Parity belongs to the mip level,
+not the physical address; it selects the fine/coarse weight bank.
 
-The cache uses physical sector low4 for its16 sets and high12 as the tag.
-Lookahead exposes only sector16. Tag comparison and queue retirement contain
-no texture row shift or base/prefix addition. The tap mask is consumed directly;
-the old level/XY mask restoration and redundant Color level check are absent.
-The four-way tag storage retains its existing two native banks. Explicit
-invalidation is still needed when memory contents at a cached address change.
+The8KiB cache has32 physical256B lines,8 sets and4 ways. Low3 line bits select
+the set and high12 bits form the tag; lookahead carries15 address bits. Both128B
+children must succeed before the parent line becomes Ready. A failed or aborted
+child cannot publish partial data. Tag comparison, return and queue retirement
+perform no texture pitch or base arithmetic. Four data banks and the existing
+two native tag banks are retained. In-place external writes require explicit
+invalidation after producer writeback completion. SET_RENDER does not invalidate.
 
 FLUSH requires the explicit drain and completed data DMA, then writes back and
 invalidates framebuffer tags. END requires that completed flush, stops new
@@ -164,11 +165,13 @@ success. Dirty target residency alone does not require flushing between meshes.
 
 SET_TARGET reads one32-byte staging object. Qword0 bits13:0 are color base/512,
 bits27:14 depth base/512, and bits63:28 are zero; the other24 bytes are padding.
-Both full192,000-byte planes must be disjoint,64-KiB aligned and below8 MiB.
-The low7 bits of each base/512 field are therefore zero. Three64-KiB blocks hold
-one plane, with4,608 bytes of trailing allocation padding; these bytes are not
-part of the framebuffer and are not transferred by normal rendering.
-The fixed400x240 dimensions and tile layout are unchanged.
+Both complete204,800-byte physical column planes must be disjoint,64-KiB aligned
+and end at or below8 MiB. Each plane contains192,000 visible bytes and12,800 bytes
+of layout padding. The low7 bits of each base/512 field are zero. Four64-KiB
+blocks cover one plane, leaving57,344 bytes of trailing allocation padding
+outside its physical span. `target_params` checks this command-specific physical
+extent and plane disjointness; the generic `MaterializedSurface` retains its
+independent layout and address-domain semantics.
 
 The driver explicitly orders WAIT(data+render), FLUSH, then SET_TARGET. The
 command performs no implicit flush or clear. Coordinate cache tags require the
@@ -184,8 +187,8 @@ target-ID table or hardwired A/B allocation.
 
 CLEAR carries its repeated16-bit value and one plane bit in the32-bit
 instruction. `Command::clear(depth, value)` selects the installed target's
-color or depth base. It always writes192000 bytes (400x240 RGB565 or D16),
-exactly1500 consecutive128-byte sectors. It has no descriptor, arbitrary start
+color or depth base. It always writes204800 bytes, including the physical column
+layout padding: exactly1600 consecutive128-byte sectors. It has no descriptor, arbitrary start
 address or programmable length. SET_TARGET's64 KiB alignment remains unchanged.
 
 CLEAR requires an installed target, explicit render wait and completed data DMA.

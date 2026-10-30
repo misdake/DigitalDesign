@@ -1,6 +1,6 @@
 # Fixed 400x240 RTT board profile
 
-This offline recipe selects `CPU_V3_GPU_PROFILE=rtt400x240-column16` in the
+This offline recipe selects `CPU_V3_GPU_PROFILE=production` in the
 complete `cpu_v3_system` factory. GPU rendering, texture reads and HDMI fetches
 all use the same column-major 16x16 macrotiles with a 16-macrotile row stride.
 It includes CPU, caches, shared arbiter, native SDRAM controller, Display and

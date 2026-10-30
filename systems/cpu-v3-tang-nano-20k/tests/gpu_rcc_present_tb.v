@@ -5,7 +5,7 @@ module tb;
 localparam FAULT=0;
 reg clk=0,reset=1,pixel_clock=0;real pixel_half_period=0.05;always #5 clk=~clk;always #(pixel_half_period) pixel_clock=~pixel_clock;
 GSR GSR(.GSRI(1'b1));
-integer cycle=0;reg[15:0]rom[0:65535];reg[15:0]gold1[0:95999],gold2[0:95999];reg[63:0]asset_initial[0:527];reg[63:0]mem[0:1048575];
+integer cycle=0;reg[15:0]rom[0:65535];reg[15:0]gold1[0:95999],gold2[0:95999];reg[63:0]asset_initial[0:575];reg[63:0]mem[0:1048575];
 wire ireq,iready;wire[31:0]ia;
 wire dq,dw,dr,rv,rr,de;wire[31:0]da;wire[15:0]wd,rd;
 wire lc,lc_ready,cl;wire[21:0]ls,ca;wire[7:0]lp;
@@ -74,8 +74,8 @@ assign ar=ms==0&&cycle%7!=3&&!halted&&!fault;assign awr=ms==3&&cycle%5!=1;
 assign av=ms==2||ms==5;assign ard=mem[mb+mi];assign alast=ms==5||mi==mn-1;assign ae=1'b0;
 integer k;
 function protected_color;input[21:0]address;begin
- protected_color=(address>=display.active_base&&address<display.active_base+96000)||
- (display_outstanding&&address>=display_base&&address<display_base+96000);
+ protected_color=(address>=display.active_base&&address<display.active_base+102400)||
+ (display_outstanding&&address>=display_base&&address<display_base+102400);
 end endfunction
 always @(posedge clk)begin
  if(reset)begin ms<=0;mi<=0;end else begin
@@ -86,12 +86,12 @@ always @(posedge clk)begin
   if(display_request&&display_ready)begin
    if(display_outstanding)$fatal(1,"Two Display transactions");
    display_outstanding<=1;display_base<=display.active_base;display_reads<=display_reads+1;
-   if(display_address<display.active_base||display_address>=display.active_base+96000)$fatal(1,"Display bounds");
+   if(display_address<display.active_base||display_address>=display.active_base+102400)$fatal(1,"Display bounds");
   end
   if(display_valid&&display_last)begin display_outstanding<=0;display_terms<=display_terms+1;end
   if(fwq&&fwr)begin
    if(protected_color(fwa))$fatal(1,"GPU accepted write to Front or old outstanding read");
-   if(!((fwa>='h200000&&fwa<('h400000+192000)/2)||(fwa>='h218000&&fwa<('h430000+192000)/2)||(fwa>='h230000&&fwa<('h460000+192000)/2)))$fatal(1,"GPU output bounds");
+   if(!((fwa>='h200000&&fwa<('h400000+204800)/2)||(fwa>='h220000&&fwa<('h440000+204800)/2)||(fwa>='h240000&&fwa<('h480000+204800)/2)))$fatal(1,"GPU output bounds");
    writes<=writes+1;
   end
   if(frq&&frr)fb_reads<=fb_reads+1;
@@ -113,8 +113,8 @@ always @(posedge clk)begin
      if(protected_color(mb<<2))$fatal(1,"GPU committed protected old Front");terms<=terms+1;
     end
     if(write_owner==1)begin
-     if(mb>=('h490000/8)&&mb<('h4b0000/8))cpu_high_writes<=cpu_high_writes+1;
-     if((mb>='h400000/8&&mb<('h400000+192000)/8)||(mb>='h430000/8&&mb<('h430000+192000)/8))begin
+     if(mb>=('h4c0000/8)&&mb<('h4e0000/8))cpu_high_writes<=cpu_high_writes+1;
+     if((mb>='h400000/8&&mb<('h400000+204800)/8)||(mb>='h440000/8&&mb<('h440000+204800)/8))begin
       if(protected_color(mb<<2))$fatal(1,"CPU dirty alias wrote protected Front");cpu_color_writes<=cpu_color_writes+1;
      end
     end
@@ -123,7 +123,7 @@ always @(posedge clk)begin
   endcase
   if(wen&&di==3&&ch==3)begin if(display.next_pending)$fatal(1,"Pending overwritten");presents<=presents+1;end
   if(wen&&di==7&&ch==2)begin
-   if(display.next_pending||display.active_base!=(wdata==1?'h218000:'h200000)||display_outstanding&&display_base!=display.active_base)$fatal(1,"Software released old Front early");
+   if(display.next_pending||display.active_base!=(wdata==1?'h220000:'h200000)||display_outstanding&&display_base!=display.active_base)$fatal(1,"Software released old Front early");
    present_done<=present_done+1;
   end
  end
@@ -137,7 +137,7 @@ integer pixel_x=0,pixel_y=0,scan_version=0,samples_b=0,samples_a=0;reg visible_b
 always @(posedge pixel_clock)begin
  if(display.h_count==216)begin
   pixel_y=(display.v_count-32)/2;
-  if(display.v_count==32)scan_version=display.active_base=='h218000 ? 1 : (swaps>=2 ? 2 : 0);
+  if(display.v_count==32)scan_version=display.active_base=='h220000 ? 1 : (swaps>=2 ? 2 : 0);
  end
  if(display.framebuffer_pipe3&&display.visible_pipe3&&!visible_before)pixel_x=0;
  visible_before<=display.framebuffer_pipe3&&display.visible_pipe3;
@@ -152,24 +152,27 @@ always @(posedge pixel_clock)begin
 end
 
 integer starts=0,completions=0,maintenance=0,fst_address=__FST_ADDRESS__,fst_cycles=0,idx;
+integer command_extent=0;
+always @(posedge clk) if(!reset&&wen&&di==4&&ch==0)
+ command_extent<=((wdata+1)*4+127)&~127;
 task check_surface;input[15:0]frame;integer q,x,y,off,half,diff;reg[63:0]expected;reg[15:0]actual,want;begin
- for(q='h400000/8-16;q<'h4b0000/8+16;q=q+1)begin
+ for(q='h400000/8-16;q<'h4e0000/8+16;q=q+1)begin
    expected=64'h55aa55aa55aa55aa;
-   if(q>='h400000/8&&q<('h400000+192000)/8&&frame==2)expected=mem[q];
-   if(q>='h430000/8&&q<('h430000+192000)/8)expected=mem[q];
-   else if(q>='h460000/8&&q<('h460000+192000)/8)expected=mem[q];
-   // CPU owns only the first command sector and the 32-byte object in each slot.
-   else if((q>='h490000/8&&q<'h490080/8)||(q>='h4a0000/8&&q<'h4b0000/8))expected=mem[q];
-   if(q>='h4b0000/8)expected=asset_initial[q-'h4b0000/8];
+   if(q>='h400000/8&&q<('h400000+204800)/8&&frame==2)expected=mem[q];
+   if(q>='h440000/8&&q<('h440000+204800)/8)expected=mem[q];
+   else if(q>='h480000/8&&q<('h480000+204800)/8)expected=mem[q];
+   // CPU owns the published, padded CB prefix and the object arena.
+   else if((q>='h4c0000/8&&q<('h4c0000+command_extent)/8)||(q>='h4d0000/8&&q<'h4e0000/8))expected=mem[q];
+   if(q>='h4e0000/8)expected=asset_initial[q-'h4e0000/8];
    if(mem[q]!==expected)$fatal(1,"Framebuffer/padding/Front mismatch q=%h got=%h expected=%h",q,mem[q],expected);
  end
- for(q=0;q<528;q=q+1)if(mem['h4b0000/8+q]!==asset_initial[q])$fatal(1,"Immutable asset changed");
+ for(q=0;q<576;q=q+1)if(mem['h4e0000/8+q]!==asset_initial[q])$fatal(1,"Immutable asset changed");
  for(y=0;y<240;y=y+1)for(x=0;x<400;x=x+1)begin
-   off=((y/16)*25+x/16)*512+(y%16)*32+(x%16)*2;
+   off=((x/16)*16+y/16)*512+(y%16)*32+(x%16)*2;
    half=off%8*8;
-   actual=mem[((frame==1?'h430000:'h400000)+off)/8]>>half;want=frame==1?gold1[y*400+x]:gold2[y*400+x];
+   actual=mem[((frame==1?'h440000:'h400000)+off)/8]>>half;want=frame==1?gold1[y*400+x]:gold2[y*400+x];
    if(actual!==want)$fatal(1,"Color mismatch frame=%0d x=%0d y=%0d actual=%h expected=%h",frame,x,y,actual,want);
-   actual=mem[('h460000+off)/8]>>half;
+   actual=mem[('h480000+off)/8]>>half;
    if(want==frame)begin if(actual!==16'hffff)$fatal(1,"Depth touched outside coverage");end
    else begin diff=actual>256?actual-256:256-actual;if(diff>1)$fatal(1,"Depth mismatch x=%0d y=%0d value=%h",x,y,actual);end
  end
@@ -186,7 +189,7 @@ always @(posedge clk)begin
      maintenance<=maintenance+1;
    end
    if(wen&&di==4&&ch==1)begin
-     if(wdata!='h9200||FAULT||maintenance==0||cpu_high_writes==0)$fatal(1,"Unexpected GPU launch/visibility");
+     if(wdata!='h9800||FAULT||maintenance==0||cpu_high_writes==0)$fatal(1,"Unexpected GPU launch/visibility");
      starts<=starts+1;
      if(fst_address>=16'hc000)$fatal(1,"Invalid FST static location");
      for(idx=0;idx<8;idx=idx+1)
@@ -204,9 +207,9 @@ end
 initial begin
  for(idx=0;idx<65536;idx=idx+1)rom[idx]=16'h6c00;
  for(idx=0;idx<32768;idx=idx+1)mem[idx]=0;
- for(idx='h400000/8-16;idx<'h4b1080/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
+ for(idx='h400000/8-16;idx<'h4e1200/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
  $readmemh("__ASSETS__",mem);
- for(idx=0;idx<528;idx=idx+1)asset_initial[idx]=mem['h4b0000/8+idx];
+ for(idx=0;idx<576;idx=idx+1)asset_initial[idx]=mem['h4e0000/8+idx];
  $readmemh("__GOLD1__",gold1);$readmemh("__GOLD2__",gold2);
  $readmemh("__PROGRAM__",rom);
  repeat(3)@(posedge clk);@(negedge clk);reset=0;
@@ -216,7 +219,9 @@ initial begin
  // accepted response, rather than requiring an arbitrary halt edge to be idle.
  wait(ms==0&&!display_outstanding);repeat(3)@(posedge clk);#1;
  if(fault||signal!==16'h600d)$fatal(1,"RCC failure pc=%h code=%0d signal=%h",pc,fault_code,signal);
- if(starts!=2||completions!=2||writes<6000||terms!=writes||blocked==0||ce0==0||held_response<5||fst_cycles==0||draws!=4||slot0!=4||slot1!=0||fb_reads==0||swaps!=2||presents!=2||present_done!=2||samples_b<384000||samples_a<384000||display_reads<18000||display_terms!=display_reads||contention==0||cpu_color_writes!=2)
+ // Each32-byte read supplies16 logical pixels, scanned at2x2. Cold startup
+ // has no published Front; require traffic for every pixel actually compared.
+ if(starts!=2||completions!=2||writes<6400||terms!=writes||blocked==0||ce0==0||held_response<5||fst_cycles==0||draws!=4||slot0!=4||slot1!=0||fb_reads==0||swaps!=2||presents!=2||present_done!=2||samples_b<384000||samples_a<384000||display_reads<(samples_b+samples_a)/64||display_terms!=display_reads||contention==0||cpu_color_writes!=2)
    $fatal(1,"Coverage starts=%0d done=%0d writes=%0d terms=%0d blocked=%0d ce0=%0d FST=%0d response=%0d draws=%0d slot0=%0d slot1=%0d FBreads=%0d swaps=%0d presents=%0d observed=%0d scans_B=%0d scans_A=%0d display_reads=%0d display_terms=%0d contention=%0d alias_WB=%0d",starts,completions,writes,terms,blocked,ce0,fst_cycles,held_response,draws,slot0,slot1,fb_reads,swaps,presents,present_done,samples_b,samples_a,display_reads,display_terms,contention,cpu_color_writes);
  $display("RCC_PRESENT_PASS fault_case=%0d cycles=%0d starts=%0d completions=%0d writes=%0d true_terminals=%0d maintenance=%0d CPU_high_writebacks=%0d",FAULT,cycle,starts,completions,writes,terms,maintenance,cpu_high_writes);
  $display("D2_COVERAGE draws=%0d slot0=%0d slot1=%0d overlap=%0d FBreads=%0d",draws,slot0,slot1,dma_overlap,fb_reads);

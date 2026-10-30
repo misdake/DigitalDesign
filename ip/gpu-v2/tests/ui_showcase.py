@@ -21,7 +21,7 @@ from wrapper import wrapper
 
 def rgb565(p):return ((p>>11)<<11)|(((p>>6)&31)<<6)|(((p>>10)&1)<<5)|((p>>1)&31)
 def rgba5551(rgb):return ((rgb[0]>>3)<<11)|((rgb[1]>>3)<<6)|((rgb[2]>>3)<<1)|1
-def offset(x,y):return ((y//16)*25+x//16)*256+(y%16)*16+x%16
+def offset(x,y):return ((x//16)*16+y//16)*256+(y%16)*16+x%16
 
 def native_ascii(path):
     """Read the Windows Fixedsys raster strike directly, without FreeType mapping.
@@ -138,7 +138,7 @@ def assets(out,font_zip):
     put(0x60000,atlas)
     for frame,grid in enumerate(grids):
         color=0x100000+frame*0x80000;depth=color+0x40000
-        bg=[0]*96000;want=[0]*96000
+        bg=[0]*102400;want=[0]*102400
         for y in range(240):
             for x in range(400):
                 rgb=(12+frame*4,20,32+frame*4)
@@ -149,14 +149,14 @@ def assets(out,font_zip):
                 c=grid[(y//16)*50+x//8];p=glyphs[c][(y%16)*8+x%8] if c!=255 else 0
                 want[idx]=rgb565(p) if p&1 else old
         expected.append(want)
-        put(color,struct.pack('<96000H',*bg));put(depth,struct.pack('<96000H',*([0xa55a]*96000)))
+        put(color,struct.pack('<102400H',*bg));put(depth,struct.pack('<102400H',*([0xa55a]*102400)))
         grid_base=0x50000+frame*1024;desc=0x51000+frame*64
         put(grid_base,grid+bytes([255]*18));put(desc,target_params(color,depth));put(desc+32,struct.pack('<Q',(grid_base//128)|(6<<16))+bytes(24))
         cb=CommandBuffer();cb.emit('WAIT',a=3);cb.emit('FLUSH');cb.emit('DMA',272,desc,32);cb.emit('WAIT',a=1);cb.emit('SET_TARGET',272);cb.emit('FLUSH')
         cb.emit('DMA',276,desc+32,32);cb.emit('WAIT',a=1);cb.emit('UI_GRID',276);cb.emit('FLUSH');cb.emit('END')
         code=cb.encode();put(0x40000+frame*256,code+bytes((-len(code))%128));commands.append(len(code))
         counts.append(dict(chars=sum(c!=255 for c in grid),tiles=sum(grid[i:i+2]!=b'\xff\xff' for i in range(0,750,2))))
-        (out/f'expected{frame}.hex').write_text(''.join(f'{want[i]|want[i+1]<<16:08x}\n' for i in range(0,96000,2)))
+        (out/f'expected{frame}.hex').write_text(''.join(f'{want[i]|want[i+1]<<16:08x}\n' for i in range(0,102400,2)))
         (out/f'commands{frame}.txt').write_text(cb.text())
     (out/'seed.txt').write_text(''.join(f'{a:x} {v:08x}\n' for a,v in sorted(seed.items())))
     (out/'atlas-labels.json').write_text(json.dumps(labels,ensure_ascii=False,indent=2),encoding='utf8')
@@ -175,7 +175,7 @@ def main():
     tb=m.TB[:m.TB.index('integer cycle=0')].replace('@PORTS@','\n'.join(decl)).replace('gpu_v2_vliw_command dut(.*);',TASKS+'\ngpu_v2_vliw_command dut(.*);')
     tb+=r'''
 integer cycle=0,fd,rc,a,v,j,k,frame,begin_cycle,ui_cycles=0,wr=0,rd=0,ro=0;
-reg[31:0]want0[0:47999],want1[0:47999];
+reg[31:0]want0[0:51199],want1[0:51199];
 always @(negedge clk)if(!reset)ce=cycle%11!=4;
 always @(posedge clk)begin
  cycle=cycle+1;if(cycle>160000)$fatal(1,"two-frame UI watchdog");
@@ -194,14 +194,14 @@ initial begin
   submit_commands(32'h40000+frame*256,@BYTES@);
   while(busy)@(negedge clk);
   for(k=0;k<=frame;k=k+1)begin
-   for(j=0;j<48000;j=j+1)begin
+   for(j=0;j<51200;j=j+1)begin
     if(pin.mem[native_word(32'h100000+k*32'h80000+j*4)]!==(k==0?want0[j]:want1[j]))$fatal(1,"UI frame%0d retained%0d color word%0d",frame,k,j);
     if(pin.mem[native_word(32'h140000+k*32'h80000+j*4)]!==32'ha55aa55a)$fatal(1,"UI depth changed");
    end
   end
   if(device_read_data[1])$fatal(1,"UI transport error");
   fd=$fopen(frame==0?"actual0.hex":"actual1.hex","w");
-  for(j=0;j<48000;j=j+1)$fdisplay(fd,"%08x",pin.mem[native_word(32'h100000+frame*32'h80000+j*4)]);$fclose(fd);
+  for(j=0;j<51200;j=j+1)$fdisplay(fd,"%08x",pin.mem[native_word(32'h100000+frame*32'h80000+j*4)]);$fclose(fd);
   $display("PASS UI_FRAME frame=%0d total=%0d ui=%0d ro=%0d rd=%0d wr=%0d",frame,cycle-begin_cycle,ui_cycles,ro,rd,wr);
  end
  $finish;

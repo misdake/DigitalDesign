@@ -90,16 +90,15 @@ accepted clean result, restoring the first record before each mutation; they do
 not repeat identical arithmetic simulation. The input corpus, context switches,
 II assertions, numerical oracle and watchdog checks are retained.
 
-The opt-in framebuffer-aligned texture experiment is documented in
-[Texture16x8](/ip/gpu-v2/studies/texture16x8/README.md).
-`test_texture16x8.py --export <command16x8.v> --output <fresh-directory>` checks
+The production texture backend uses16x16 column macros and16x8 cache lines.
+`test_texture16x8.py --export <command.v> --output <fresh-directory>` checks
 independent mip/packet addresses, all128 local origins, asymmetric weights,
 native/portable bank data, stalls, the48-credit FIFO, actual Group/cache
 lookahead, child failures and abort drain. Each subprocess is bounded to60
-seconds and each bench has a finite cycle watchdog. The default command export
-remains byte-identical to the accepted sampling baseline.
+seconds and each bench has a finite cycle watchdog. The generic numerical
+sampler fixtures keep their own local format and are not native texture loaders.
 
-The opt-in fixed-column RTT harnesses consume a `rtt400x240` export.
+The fixed-column RTT harnesses consume the same production`command` export.
 `test_rtt400.py` checks independent coordinate/packet references and native
 sampler pixels under stalls; `--exhaustive-axis` checks every 16-bit axis input.
 `test_rtt400_command.py` checks producer/consumer commands, modulation, supported

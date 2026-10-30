@@ -383,8 +383,6 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
             } else {
                 "systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/tools/assets.py"
             },
-            "--profile",
-            profile,
             "--output",
             assets.to_str().unwrap(),
         ],
@@ -529,11 +527,11 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
                     assert_eq!(headers.len(), abi::GPU_CAPTURE_WORDS as usize);
                     assert_eq!(
                         headers[abi::GPU_CAPTURE_H_LAYOUT_ABI as usize],
-                        if profile == "column16" { 2 } else { 1 }
+                        abi::GPU_CAPTURE_LAYOUT_COLUMN_ABI
                     );
                     assert_eq!(
                         headers[abi::GPU_CAPTURE_H_COMMAND_ABI as usize],
-                        abi::GPU_CAPTURE_NATIVE_COMMAND_ABI
+                        abi::GPU_CAPTURE_RTT400_COMMAND_ABI
                     );
                     assert_eq!(
                         ranges.len(),
@@ -566,14 +564,7 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
                         ]
                         .contains(&r[1])
                         {
-                            assert_eq!(
-                                size,
-                                if profile == "column16" {
-                                    204800
-                                } else {
-                                    192000
-                                }
-                            );
+                            assert_eq!(size, 204800);
                         }
                         std::fs::write(dir.join(format!("range-{i}.bin")), payload).unwrap();
                         range_meta.push(json!({"file":format!("range-{i}.bin"),"index":i,"flags":r[0],"tag":r[1],"base":base,"bytes":size,"generation":pair(r,6)}));
@@ -764,11 +755,9 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
 }
 #[test]
 fn real_draw_three_gates_reuse_slots_with_distinct_inputs() {
-    run("default", false);
     run("column16", false);
 }
 #[test]
 fn real_full_scene_three_gates_resume_and_restore_stats() {
-    run("default", true);
     run("column16", true);
 }

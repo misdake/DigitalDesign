@@ -71,53 +71,19 @@ def native_record(mesh):
     return bytes(record)
 
 
-def texture(profile="default"):
-    if profile == "column16":
-        return column_texture()
-    levels = material_scene.texture_levels()
-    result = bytearray()
-    for exponent in range(7):
-        size = 1 << exponent
-        for ty in range(max(1, size // 8)):
-            for tx in range(max(1, size // 8)):
-                for y in range(8):
-                    for x in range(8):
-                        pixel = levels[exponent][((ty * 8 + y) % size) * size + (tx * 8 + x) % size]
-                        result += struct.pack("<H", pixel)
-    assert len(result) == 88 * 128
-    # Independent random-access decode of every texel and every periodic pad.
-    prefixes = [0, 1, 2, 3, 4, 8, 24]
-    for exponent, prefix in enumerate(prefixes):
-        size = 1 << exponent
-        side = max(1, size // 8)
-        for y in range(max(8, size)):
-            for x in range(max(8, size)):
-                at = 128 * (prefix + (y // 8) * side + x // 8) + 2 * ((y % 8) * 8 + x % 8)
-                assert struct.unpack_from("<H", result, at)[0] == levels[exponent][(y % size) * size + x % size]
-    return bytes(result)
+def texture():
+    from gpu_texture_layout import pack_levels
+    result = pack_levels(material_scene.texture_levels())
+    assert len(result) == 100 * 128
+    return result
 
 
-def column_texture():
-    levels = material_scene.texture_levels()
-    result = bytearray()
-    for exponent in range(7):
-        size = 1 << exponent
-        height = max(1, size // 16)
-        for tx in range(height):
-            for ty in range(height):
-                for y in range(16):
-                    for x in range(16):
-                        result += struct.pack("<H", levels[exponent][((ty*16+y)%size)*size+(tx*16+x)%size])
-    assert len(result) == 100*128
-    return bytes(result)
-
-
-def pack(output, profile="default"):
-    bounds = sectors(profile)
+def pack(output):
+    bounds = sectors()
     atlas_base = bounds["GPU_ASSET_FIRST_SECTOR"]*128
     mesh_base = atlas_base+65536
     texture_base = mesh_base+65536
-    texture_sectors = 100 if profile == "column16" else 88
+    texture_sectors = 100
     output.mkdir(parents=True, exist_ok=True)
     atlas, glyphs = font()
     scene = json.loads((EXAMPLE / "assets/scene.json").read_text())
@@ -141,19 +107,19 @@ def pack(output, profile="default"):
     assert sum(len(m["triangles"]) for m in meshes)==1141
     assert mesh_base + len(data) <= texture_base
     resources = [("atlas.bin", atlas_base, atlas), ("room.bin", mesh_base, bytes(data)),
-                 ("texture.bin", texture_base, texture(profile))]
+                 ("texture.bin", texture_base, texture())]
     for name, address, payload in resources:
         assert address % 128 == 0 and len(payload) % 128 == 0
-        validate_asset_range(address, len(payload), profile)
+        validate_asset_range(address, len(payload))
         (output/name).write_bytes(payload)
     sources = [Path(__file__), EXAMPLE/"assets/scene.json", EXAMPLE/"assets/font-8x16.txt",
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_layout.py",
                ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_layout.rs",
-               ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_layout_column16.rs",
+               ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_texture_layout.py",
                SCENE/"material_scene.py", SCENE/"solid_scene.py", SCENE/"assets/room-tiles.png"]
-    manifest = dict(hardware_profile="texture16x8-column16" if profile == "column16" else "default",
-        layout_identity="rgb565-macro16x16-column-major-pad16-cache16x8-8KiB" if profile == "column16" else "default",
-        framebuffer=dict(physical_bytes=204800,reserved_bytes=262144,clear_sectors=1600) if profile == "column16" else None,
+    manifest = dict(hardware_profile="production",
+        layout_identity="rgb565-macro16x16-column-major-pad16-cache16x8-8KiB",
+        framebuffer=dict(physical_bytes=204800,reserved_bytes=262144,clear_sectors=1600),
         scene=scene["scene"], triangles=1141, provenance=scene["provenance"],
         resources=[dict(file=n,address=a,bytes=len(p),sha256=sha(output/n)) for n,a,p in resources],
         mesh=dict(directory_sector=mesh_base//128, directory_word=0, count=24,
@@ -174,6 +140,5 @@ def pack(output, profile="default"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--profile", choices=["default", "column16"], default="default")
     args = parser.parse_args()
-    pack(args.output.resolve(), args.profile)
+    pack(args.output.resolve())

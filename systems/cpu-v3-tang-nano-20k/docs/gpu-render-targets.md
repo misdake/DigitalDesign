@@ -71,11 +71,11 @@ is disjoint; capture still requires stable Front before leasing inputs.
 
 ## Profile and capture
 
-RendererCaptureConfiguration::rtt400x240() pins Column16 storage and command ABI2
-through the existing checked loader. Local module/config replacements cannot
-select it. Native/default configuration remains command ABI1. Version2 capture
-manifests allow ABI2 only with the matching column layout and resource catalog.
-The hardware profile is explicitly CPU_V3_GPU_PROFILE=rtt400x240-column16.
+Every production build includes column storage and fixed400x240 views.
+The checked loader pins the canonical layout and command ABI4; local module or
+config replacements cannot select a different format. Version2 capture manifests
+must declare the matching column layout and resource catalog. The optional
+hardware environment setting is`CPU_V3_GPU_PROFILE=production`.
 
 The [GPU view contract](/ip/gpu-v2/docs/framebuffer-texture-view.md) defines bit23,
 exponent9, base-only nearest/bilinear and clamp. A view is not a512-square POT
@@ -83,12 +83,13 @@ allocation. D16 views, other sizes, programmable stride and feedback are absent.
 Ordinary textures reuse the column asset producer and minimum512-byte levels;
 there is no second repacker or CPU conversion of rendered pixels.
 
-RTT CBs start WAIT(all), FLUSH, TEX_INVALIDATE, then Target/CLEAR. This also
-discards ordinary POT residency at that boundary. Default streams are unchanged.
+All CBs start WAIT(all), FLUSH, TEX_INVALIDATE, then Target/CLEAR. This discards
+previous texture residency at the explicit submission boundary.
 Render-state caching includes view kind to preserve otherwise identical switches.
 
 Capture retains the64-word header and8-word ranges: column layout ABI2 is
-independent of command ABI1/2. Immutable roots are manifest-checked. Dynamic
+independent of command ABI4 (whose MEMCPY encoding preserves native ABI3).
+Immutable roots are manifest-checked. Dynamic
 sources come from pinned registrations, include full declared capacity and epoch,
 and use READ|PREIMAGE without IMMUTABLE. Target physical spans have FULL_CLEAR;
 untouched allocation tails have separate preimages without that flag.

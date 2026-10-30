@@ -16,7 +16,7 @@ from capture import run as capture_run
 from identity import digest, load_build, preflight
 from model import build_capture, write_report
 from snapshot import Abi, DEFAULT_ABI, SnapshotError, load_snapshot
-from layout import ROW, get_layout, header_layout
+from layout import COLUMN, COMMAND_ABI, get_layout, header_layout
 
 
 def physical(logical_word):
@@ -48,7 +48,7 @@ def seed_files(capture, output):
                 previous = address
 
 
-def preview(plane, output, linear, layout=ROW):
+def preview(plane, output, linear, layout=COLUMN):
     """Native tiled RGB565 -> lossless PNG preview. Raw plane remains authoritative."""
     if len(plane) != layout.plane_bytes:
         raise SnapshotError("Unexpected output plane length")
@@ -83,7 +83,7 @@ def export_layout(rtl, combined):
         if value != dict(schema=1, layout_abi=layout.abi, gpu_profile=layout.profile):
             raise SnapshotError('Unknown RTL layout declaration')
     else:
-        layout = ROW  # Old row exports remain readable, never infer column.
+        raise SnapshotError('Explicit RTL column layout declaration is required')
     validate_rtl_layout(layout, combined)
     return layout
 
@@ -98,10 +98,10 @@ def validate_rtl_layout(layout, combined):
 
 def validate_command_abi(capture):
     """A newer RTL export must not extend the frozen stream's declared ABI."""
-    abi = capture.header.get('command_abi', 1)
-    if abi not in (1, 3):
+    abi = capture.header.get('command_abi')
+    if abi not in (1, 2, 3, 4):
         raise SnapshotError(f'Unsupported replay command ABI{abi}')
-    last = 12 if abi == 3 else 11
+    last = 12 if abi in (3, 4) else 11
     words = capture.read(capture.header['cb_base'], capture.header['cb_bytes'])
     for pc, (word,) in enumerate(struct.iter_unpack('<I', words)):
         opcode = word >> 28
@@ -156,7 +156,7 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
                     inputs={name: str(output / name) for name in ["memory.hex", "valid.hex", "marked.hex", 'writable.hex']},
                     input_sha256=capture.manifest()["input_sha256"], preflight=preflight_result,
                     layout=layout.description(),
-                    command_abi=capture.header.get('command_abi', 1),
+                    command_abi=COMMAND_ABI,
                     raw_buffers=buffers,
                     captured_plane_bytes=span,
                     functional_pin_model=dict(cas=3, tac_ns=6, toh_ns=2, fixed_return_delay_ns=4,
@@ -173,7 +173,7 @@ def execute(capture, manifest_path):
     validate_command_abi(capture)
     manifest_path = Path(manifest_path)
     declared = json.loads(manifest_path.read_text())
-    if declared.get('command_abi', 1) != capture.header.get('command_abi', 1):
+    if declared.get('command_abi') != capture.header['command_abi']:
         raise SnapshotError('Prepared replay/header command ABI mismatch')
     output = manifest_path.parent
     capture_run(manifest_path, output / "capture")
@@ -193,7 +193,7 @@ def execute(capture, manifest_path):
                   cold_submission_cycles=int(match.group(1)), color_sha256=digest(color),
                   depth_sha256=digest(depth), profile=str(output / "profile/profiler.html"),
                   layout=layout.description(),
-                  command_abi=capture.header.get('command_abi', 1),
+                  command_abi=COMMAND_ABI,
                   captured_plane_bytes=span,
                   scope="No CPU/Display contention or warm cache; not board timing/PVT qualification")
     result['raw_buffers'] = []

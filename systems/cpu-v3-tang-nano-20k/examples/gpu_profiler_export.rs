@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = PathBuf::from(std::env::args().nth(1).ok_or("Expected output directory")?);
     std::fs::create_dir_all(&out)?;
     match option_env!("CPU_V3_GPU_PROFILE") {
-        None | Some("production") | Some("texture16x8-column16") => {}
+        None | Some("production") => {}
         Some(profile) => {
             return Err(format!("Unsupported profiler GPU storage profile: {profile}").into())
         }
@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && source.contains("clear_sector==1599")
             && source.contains("wire[11:0]macro_column=")
     });
-    if option_env!("CPU_V3_GPU_PROFILE") == Some("texture16x8-column16") && !column {
+    if !column {
         return Err(
             "Selected board leaf did not emit the column framebuffer/texture contract".into(),
         );
@@ -30,8 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         out.join("layout.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema": 1,
-            "layout_abi": if column { 2 } else { 1 },
-            "gpu_profile": if column { "texture16x8-column16" } else { "production" }
+            "layout_abi": 2,
+            "gpu_profile": "production"
         }))?,
     )?;
     let mut peer_names = BTreeSet::new();

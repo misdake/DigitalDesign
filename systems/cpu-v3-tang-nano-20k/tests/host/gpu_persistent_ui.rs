@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 const PAGE: usize = 0x7df800 / 2;
 const INIT: &str = r#"
 check(gpu_pipeline_init(0)==GPU_IDLE);
-let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+let mut atlas:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};
 check(gpu_persistent_ui_register(view_of(&mut atlas)));
 "#;
 #[derive(Debug)]
@@ -143,7 +143,7 @@ fn expected_page(cells: &[u16], page: usize) -> Vec<u16> {
         .collect();
     words.resize(384, 65535);
     words.extend(
-        gpu_v2::system::vliw_command::ui_params((PAGE * 2 + page * 1024) as u32, 0x4c0000)
+        gpu_v2::system::vliw_command::ui_params((PAGE * 2 + page * 1024) as u32, 0x4f0000)
             .unwrap()
             .as_chunks::<2>()
             .0
@@ -270,7 +270,7 @@ dev_send(7,0,2);check(gpu_pipeline_advance()==GPU_PENDING && dev_recv(7,0)=={fra
     let s = trace.state.borrow();
     assert_eq!(
         s.starts.iter().map(|s| s.0).collect::<Vec<_>>(),
-        [0x9200, 0xfc00, 0x9200, 0xfc00, 0x9200, 0xfc00, 0x9200]
+        [0x9800, 0xfc00, 0x9800, 0xfc00, 0x9800, 0xfc00, 0x9800]
     );
     assert_eq!(s.maintenance, 7);
     assert_eq!(s.swaps, 7);
@@ -284,7 +284,7 @@ fn validation_capacity_cancel_and_version_wrap_preserve_page_history() {
 // Registration is immutable and idempotent; none of these write high memory.
 check(gpu_persistent_ui_register(view_of(&mut atlas)));
 atlas.sector=0xfe00;check(!gpu_persistent_ui_register(view_of(&mut atlas)));
-atlas.sector=0x9a00;check(!gpu_persistent_ui_register(view_of(&mut atlas)));atlas.sector=0x9800;
+atlas.sector=0xa000;check(!gpu_persistent_ui_register(view_of(&mut atlas)));atlas.sector=0x9e00;
 check(!gpu_persistent_ui_set(750,1) && !gpu_persistent_ui_set(0,256));
 check(!gpu_persistent_ui_field(749,2,IDS.as_array(),2,true));
 check(!gpu_persistent_ui_field(0,1,IDS.as_array(),2,true));

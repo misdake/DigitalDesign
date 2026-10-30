@@ -34,7 +34,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new(label: &str) -> Self {
-        Self::profile(label, resolver::RendererLayoutProfile::Row)
+        Self::profile(label, resolver::RendererLayoutProfile::Column16)
     }
     fn profile(label: &str, profile: resolver::RendererLayoutProfile) -> Self {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -44,14 +44,6 @@ impl Fixture {
         let packed = std::process::Command::new("python")
             .arg("-B")
             .arg(root.join("examples/gpu_renderer/tools/assets.py"))
-            .args([
-                "--profile",
-                if profile == resolver::RendererLayoutProfile::Column16 {
-                    "column16"
-                } else {
-                    "default"
-                },
-            ])
             .arg("--output")
             .arg(&assets)
             .output()
@@ -534,7 +526,7 @@ fn real_library_borrows_moves_and_parent_escape_fail_in_rustc() {
 #[test]
 fn actual_minimal_member_demo_runs_three_frames() {
     for (label, profile) in [
-        ("demo", resolver::RendererLayoutProfile::Row),
+        ("demo", resolver::RendererLayoutProfile::Column16),
         ("demo-column", resolver::RendererLayoutProfile::Column16),
     ] {
         let f = Fixture::profile(label, profile);

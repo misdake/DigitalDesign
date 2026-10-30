@@ -156,7 +156,7 @@ def main():
     source = args.export.resolve()
     inputs = args.inputs.resolve()
     recording = json.loads(inputs.read_text())
-    assert recording["profile"] == "rtt400x240-column16"
+    assert recording["profile"] == "production"
     assert recording["surface"] == "column-major-16x16-pad16"
     catalog = json.loads((inputs.parent / recording["assets"]).read_text())
     parts = [(r["address"], (inputs.parent / r["file"]).read_bytes()) for r in catalog["resources"]]

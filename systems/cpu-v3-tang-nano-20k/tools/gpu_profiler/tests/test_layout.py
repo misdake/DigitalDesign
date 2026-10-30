@@ -10,7 +10,7 @@ import unittest
 import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from layout import ROW, COLUMN, declared_layout
+from layout import COLUMN, COMMAND_ABI, declared_layout, get_layout, header_layout
 import identity
 import replay
 import snapshot as s
@@ -52,7 +52,7 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(len(set(p for p in points if p is not None)), 96000)
             for x, y in [(0, 0), (15, 7), (16, 8), (31, 15), (32, 16), (399, 239)]:
                 self.assertEqual(COLUMN.coordinates(COLUMN.offset(x, y)), (x, y))
-            self.assertNotEqual(ROW.words(physical[:192000]), expected)
+            with self.assertRaises(ValueError): get_layout(1)
 
     def test_png_decodes_every_logical_pixel_without_padding(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -84,6 +84,17 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(restored.manifest()['input_sha256'], capture.manifest()['input_sha256'])
             self.assertEqual(restored.header['layout_abi'], 2)
 
+    def test_borrowed_planes_keep_column_span_and_allocation_ownership(self):
+        with tempfile.TemporaryDirectory() as temp:
+            capture, _, _ = self.create(temp, layout=COLUMN)
+            good = dict(capture.header, color_base=0x4e0000, depth_base=0x520000)
+            self.assertEqual(header_layout(good), COLUMN)
+            for patch in (dict(depth_base=0x510000), dict(color_base=0x4e0100),
+                          dict(depth_base=0x7a0000), dict(front_base=0x4e0000),
+                          dict(cb_base=0x520000)):
+                with self.subTest(patch=patch), self.assertRaises(ValueError):
+                    header_layout({**good, **patch})
+
     def test_unknown_span_version_and_build_layout_mismatches_fail(self):
         for field, value in [('LAYOUT_ABI', 3), ('LAYOUT_ABI', 1), ('PLANE_BYTES', 192000)]:
             with self.subTest(field=field), tempfile.TemporaryDirectory() as temp:
@@ -112,16 +123,16 @@ class LayoutTests(unittest.TestCase):
             with self.assertRaises(s.SnapshotError): replay.export_layout(folder,'row framebuffer')
             with self.assertRaises(s.SnapshotError): replay.export_layout(folder,body.replace('wire[11:0]macro_column=','row texture'))
 
-    def test_paused_rtt_command_abi_cannot_enter_as_pure_column(self):
+    def test_legacy_native_command_abi_cannot_enter_production_column(self):
         with tempfile.TemporaryDirectory() as temp:
             capture,build,_=self.create(temp,layout=COLUMN)
-            header=list(capture.descriptor); header[self.abi['H_COMMAND_ABI']]=2
+            header=list(capture.descriptor); header[self.abi['H_COMMAND_ABI']]=1
             with self.assertRaises(s.SnapshotError): self.abi.header(header)
-            value=json.loads(build.read_text()); value['command_abi']=2
+            value=json.loads(build.read_text()); value['command_abi']=1
             value['manifest_id']=identity.declared_id(value); build.write_text(json.dumps(value))
             with self.assertRaises(s.SnapshotError): identity.load_build(build)
-            source=self.abi.source.read_text().replace('GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 3;',
-                                                     'GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 2;')
+            source=self.abi.source.read_text().replace(f'GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = {COMMAND_ABI};',
+                                                     'GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = 99;')
             path=Path(temp)/'old-rtt-abi.rs'; path.write_text(source)
             with self.assertRaises(s.SnapshotError): s.Abi(path)
 
@@ -150,7 +161,7 @@ class LayoutTests(unittest.TestCase):
                     row = next(r for r in capture.ranges if r.tag == self.abi['TAG_COLOR'])
                     capture.data[row.index] = capture.data[row.index][:204800]
                 else:
-                    data=json.loads(build.read_text()); data['resources'][0].update(kind='texture',layout=ROW.texture_layout)
+                    data=json.loads(build.read_text()); data['resources'][0].update(kind='texture',layout='pot-row-macro8x8')
                     data['manifest_id']=identity.declared_id(data); build.write_text(json.dumps(data))
                 with self.assertRaises((ValueError, IndexError)): identity.preflight(capture, build, receipt)
 
@@ -164,7 +175,7 @@ class LayoutTests(unittest.TestCase):
             b=s.decode_stream(s.encode_reference(header,[r.words for r in a.ranges],
                               [bytes(a.data[r.index]) for r in a.ranges],self.abi),self.abi)[0][0]
             folder=Path(temp)/'replay'; (folder/'capture').mkdir(parents=True)
-            meta=dict(complete=True,input_sha256=a.manifest()['input_sha256'],layout=COLUMN.description(),captured_plane_bytes=262144)
+            meta=dict(command_abi=COMMAND_ABI,complete=True,input_sha256=a.manifest()['input_sha256'],layout=COLUMN.description(),captured_plane_bytes=262144)
             for role in ('color','depth'):
                 data=bytearray(262144)
                 if role=='color':

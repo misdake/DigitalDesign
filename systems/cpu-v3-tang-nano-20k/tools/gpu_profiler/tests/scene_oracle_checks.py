@@ -11,7 +11,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from draw_oracle import evaluate
 from scene_oracle import render,lighting,sample,expand,texture_levels
-from layout import ROW,COLUMN
+from layout import COLUMN
 from test_draw_oracle import SyntheticCapture
 from full_scene_replay import validate_scene,runtime_activity
 
@@ -50,10 +50,10 @@ class SceneReferenceChecks(unittest.TestCase):
         nearest=sample({1:tex},1 << 16,np.array([[.25,.25]]),np.array([0.]))
         self.assertEqual(nearest.tolist(),[[255,0,0]])
 
-    def test_row_column_texture_addressing_is_not_a_transpose(self):
+    def test_column_texture_addressing_is_not_a_transpose(self):
         expected=np.array([[(x*37+y*101)&65535 for x in range(32)] for y in range(32)])
-        for layout in (ROW,COLUMN):
-            capture=SyntheticCapture(layout);tile=8 if layout==ROW else 16
+        for layout in (COLUMN,):
+            capture=SyntheticCapture(layout);tile=16
             raw=bytearray()
             blocks=[(tx,ty) for ty in range(32//tile) for tx in range(32//tile)]
             if layout==COLUMN:blocks.sort()

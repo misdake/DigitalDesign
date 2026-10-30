@@ -388,7 +388,7 @@ mod tests {
         let data: Vec<u8> = (0..0x20_0000).map(|i| (i ^ (i >> 8)) as u8).collect();
         let resources = [
             BootResource::copy(0x100000, data.clone()),
-            BootResource::zero(0x4b0000, 34),
+            BootResource::zero(0x4e0000, 34),
         ];
         let image = pack_application_resources(&code, 17, &resources).unwrap();
         let mut memory = vec![0xa55a; BOOT_MEMORY_BYTES / 2];
@@ -405,11 +405,11 @@ mod tests {
         {
             assert_eq!(*word, u16::from_le_bytes(*pair));
         }
-        assert!(memory[0x200000..0x230000].iter().all(|w| *w == 0xa55a));
-        assert!(memory[0x230000..0x248000].iter().all(|w| *w == 0xa55a));
-        assert!(memory[0x248000..0x258000].iter().all(|w| *w == 0xa55a));
-        assert!(memory[0x258000..0x258011].iter().all(|w| *w == 0));
-        assert_eq!(memory[0x258011], 0xa55a);
+        assert!(memory[0x200000..0x240000].iter().all(|w| *w == 0xa55a));
+        assert!(memory[0x240000..0x260000].iter().all(|w| *w == 0xa55a));
+        assert!(memory[0x260000..0x270000].iter().all(|w| *w == 0xa55a));
+        assert!(memory[0x270000..0x270011].iter().all(|w| *w == 0));
+        assert_eq!(memory[0x270011], 0xa55a);
         assert_eq!(
             pack_single_application(&code, 17).unwrap().len(),
             4 + 3 * 8 + code.len()

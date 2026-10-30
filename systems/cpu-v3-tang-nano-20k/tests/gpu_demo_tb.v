@@ -75,8 +75,8 @@ assign ar=ms==0&&cycle%7!=3&&!halted&&!fault;assign awr=ms==3&&cycle%5!=1;
 assign av=ms==2||ms==5;assign ard=mem[mb+mi];assign alast=ms==5||mi==mn-1;assign ae=1'b0;
 integer k;
 function protected_color;input[21:0]address;begin
- protected_color=(address>=display.active_base&&address<display.active_base+96000)||
- (display_outstanding&&address>=display_base&&address<display_base+96000);
+ protected_color=(address>=display.active_base&&address<display.active_base+102400)||
+ (display_outstanding&&address>=display_base&&address<display_base+102400);
 end endfunction
 always @(posedge clk)begin
  if(reset)begin ms<=0;mi<=0;end else begin
@@ -87,12 +87,12 @@ always @(posedge clk)begin
   if(display_request&&display_ready)begin
    if(display_outstanding)$fatal(1,"Two Display transactions");
    display_outstanding<=1;display_base<=display.active_base;display_reads<=display_reads+1;
-   if(display_address<display.active_base||display_address>=display.active_base+96000)$fatal(1,"Display bounds");
+   if(display_address<display.active_base||display_address>=display.active_base+102400)$fatal(1,"Display bounds");
   end
   if(display_valid&&display_last)begin display_outstanding<=0;display_terms<=display_terms+1;end
   if(fwq&&fwr)begin
    if(protected_color(fwa))$fatal(1,"GPU accepted write to Front or old outstanding read");
-   if(!((fwa>='h200000&&fwa<('h400000+192000)/2)||(fwa>='h218000&&fwa<('h430000+192000)/2)||(fwa>='h230000&&fwa<('h460000+192000)/2)))$fatal(1,"GPU output bounds");
+   if(!((fwa>='h200000&&fwa<('h400000+204800)/2)||(fwa>='h220000&&fwa<('h440000+204800)/2)||(fwa>='h240000&&fwa<('h480000+204800)/2)))$fatal(1,"GPU output bounds");
    writes<=writes+1;
   end
   if(gpu.ui_start)uis<=uis+1;
@@ -117,8 +117,8 @@ always @(posedge clk)begin
      if(protected_color(mb<<2))$fatal(1,"GPU committed protected old Front");terms<=terms+1;
     end
     if(write_owner==1)begin
-     if(mb>=('h490000/8)&&mb<('h4b0000/8))cpu_high_writes<=cpu_high_writes+1;
-     if((mb>='h400000/8&&mb<('h400000+192000)/8)||(mb>='h430000/8&&mb<('h430000+192000)/8))begin
+     if(mb>=('h4c0000/8)&&mb<('h4e0000/8))cpu_high_writes<=cpu_high_writes+1;
+     if((mb>='h400000/8&&mb<('h400000+204800)/8)||(mb>='h440000/8&&mb<('h440000+204800)/8))begin
       if(protected_color(mb<<2))$fatal(1,"CPU dirty alias wrote protected Front");cpu_color_writes<=cpu_color_writes+1;
      end
     end
@@ -127,7 +127,7 @@ always @(posedge clk)begin
   endcase
   if(wen&&di==3&&ch==3)begin if(display.next_pending)$fatal(1,"Pending overwritten");presents<=presents+1;end
   if(wen&&di==7&&ch==2)begin
-   if(display.next_pending||display.active_base!=(wdata==1?'h218000:'h200000)||display_outstanding&&display_base!=display.active_base)$fatal(1,"Software released old Front early");
+   if(display.next_pending||display.active_base!=(wdata==1?'h220000:'h200000)||display_outstanding&&display_base!=display.active_base)$fatal(1,"Software released old Front early");
    present_done<=present_done+1;
   end
  end
@@ -141,7 +141,7 @@ integer pixel_x=0,pixel_y=0,scan_version=0,samples_b=0,samples_a=0;reg visible_b
 always @(posedge pixel_clock)begin
  if(display.h_count==216)begin
   pixel_y=(display.v_count-32)/2;
-  if(display.v_count==32)scan_version=display.active_base=='h218000 ? 1 : (swaps>=2 ? 2 : 0);
+  if(display.v_count==32)scan_version=display.active_base=='h220000 ? 1 : (swaps>=2 ? 2 : 0);
  end
  if(display.framebuffer_pipe3&&display.visible_pipe3&&!visible_before)pixel_x=0;
  visible_before<=display.framebuffer_pipe3&&display.visible_pipe3;
@@ -213,25 +213,25 @@ task overlay;input integer frame,elapsed;integer glyph_index,glyph,x,y,at,power;
  end
 end endtask
 task check_surface;input[15:0]frame;integer q,x,y,off,half,file;reg[63:0]expected;reg[15:0]actual,want;begin
- for(q='h400000/8-16;q<'h4d0000/8+16;q=q+1)begin
+ for(q='h400000/8-16;q<'h500000/8+16;q=q+1)begin
   expected=64'h55aa55aa55aa55aa;
-  if(q>='h400000/8&&q<('h400000+192000)/8&&frame==2)expected=mem[q];
-  if(q>='h430000/8&&q<('h430000+192000)/8)expected=mem[q];
-  else if(q>='h460000/8&&q<('h460000+192000)/8)expected=mem[q];
-  else if((q>='h490000/8&&q<('h490000+((command_bytes+127)&~127))/8)||(q>='h4a0000/8&&q<'h4b0000/8))expected=mem[q];
-  if(q>='h4b0000/8&&q<'h4d0000/8)expected=asset_initial[q-'h4b0000/8];
+  if(q>='h400000/8&&q<('h400000+204800)/8&&frame==2)expected=mem[q];
+  if(q>='h440000/8&&q<('h440000+204800)/8)expected=mem[q];
+  else if(q>='h480000/8&&q<('h480000+204800)/8)expected=mem[q];
+  else if((q>='h4c0000/8&&q<('h4c0000+((command_bytes+127)&~127))/8)||(q>='h4d0000/8&&q<'h4e0000/8))expected=mem[q];
+  if(q>='h4e0000/8&&q<'h500000/8)expected=asset_initial[q-'h4e0000/8];
   if(mem[q]!==expected)$fatal(1,"Ownership/padding/immutable mismatch %h",q);
  end
  for(q=command_bytes;q<((command_bytes+127)&~127);q=q+1)
-  if((mem[('h490000+q)/8]>>((q%8)*8)&255)!==0)$fatal(1,"Command padding changed");
+  if((mem[('h4c0000+q)/8]>>((q%8)*8)&255)!==0)$fatal(1,"Command padding changed");
  file=$fopen(frame==1?"__ACTUAL1__":"__ACTUAL2__","w");
  for(y=0;y<240;y=y+1)for(x=0;x<400;x=x+1)begin
-  off=((y/16)*25+x/16)*512+(y%16)*32+(x%16)*2;half=off%8*8;
-  actual=mem[((frame==1?'h430000:'h400000)+off)/8]>>half;
+  off=((x/16)*16+y/16)*512+(y%16)*32+(x%16)*2;half=off%8*8;
+  actual=mem[((frame==1?'h440000:'h400000)+off)/8]>>half;
   want=frame==1?gold1[y*400+x]:gold2[y*400+x];
   if(actual!==want)$fatal(1,"Demo color frame=%0d x=%0d y=%0d actual=%h want=%h",frame,x,y,actual,want);
   $fdisplay(file,"%04h",actual);
-  actual=mem[('h460000+off)/8]>>half;want=frame==1?depth1[y*400+x]:depth2[y*400+x];
+  actual=mem[('h480000+off)/8]>>half;want=frame==1?depth1[y*400+x]:depth2[y*400+x];
   if(actual!==want)$fatal(1,"Demo Depth frame=%0d x=%0d y=%0d actual=%h want=%h",frame,x,y,actual,want);
  end
  $fclose(file);
@@ -252,11 +252,11 @@ always @(posedge clk)begin
    if(wen&&di==4&&ch==0)command_bytes<=(wdata+1)*4;
    if(wen&&di==4&&ch==1)begin
      if(command_bytes==0||command_bytes>65536)$fatal(1,"Invalid submitted command count");
-     if(wdata!='h9200||FAULT||maintenance==0||cpu_high_writes==0)$fatal(1,"Unexpected GPU launch/visibility");
+     if(wdata!='h9800||FAULT||maintenance==0||cpu_high_writes==0)$fatal(1,"Unexpected GPU launch/visibility");
      starts<=starts+1;
 
      for(idx=0;idx<42;idx=idx+1)
-      if(mem[('h4a0100+idx*2)/8][((idx*2)%8)*8+:16] !== (starts==0?matrix1[idx]:matrix2[idx]))
+      if(mem[('h4d0100+idx*2)/8][((idx*2)%8)*8+:16] !== (starts==0?matrix1[idx]:matrix2[idx]))
        $fatal(1,"RCC camera snapshot mismatch frame=%0d word=%0d",starts+1,idx);
 
    end
@@ -282,13 +282,13 @@ end
 initial begin
  for(idx=0;idx<65536;idx=idx+1)rom[idx]=16'h6c00;
  for(idx=0;idx<32768;idx=idx+1)mem[idx]=0;
- for(idx='h400000/8-16;idx<'h4d0000/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
- for(idx='h4c0000/8-16;idx<'h4d0000/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
+ for(idx='h400000/8-16;idx<'h500000/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
+ for(idx='h4f0000/8-16;idx<'h500000/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
  $readmemh("__ASSETS__",mem);
- for(idx=0;idx<8192;idx=idx+1)atlas_initial[idx]=mem['h4b0000/8+idx];
+ for(idx=0;idx<8192;idx=idx+1)atlas_initial[idx]=mem['h4e0000/8+idx];
  $readmemh("__DEPTH1__",depth1);$readmemh("__DEPTH2__",depth2);
  $readmemh("__MATRIX1__",matrix1);$readmemh("__MATRIX2__",matrix2);
- for(idx=0;idx<16384;idx=idx+1)asset_initial[idx]=mem['h4b0000/8+idx];
+ for(idx=0;idx<16384;idx=idx+1)asset_initial[idx]=mem['h4e0000/8+idx];
  $readmemh("__GOLD1__",gold1);$readmemh("__GOLD2__",gold2);
  $readmemh("__PROGRAM__",rom);
  repeat(3)@(posedge clk);@(negedge clk);reset=0;

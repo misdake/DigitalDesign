@@ -84,7 +84,7 @@ fn capture_reads_both_slots_and_repeated_inputs_without_starting_or_presenting()
         let state = attach(&mut cpu, Some(vec![vec![(0, 8)]; 3]));
         state.borrow_mut().automatic = true;
         state.borrow_mut().expected_depth = Some(65535);
-        for base in [0x400000, 0x430000] {
+        for base in [0x400000, 0x440000] {
             cpu.physical_memory_mut()[base / 2 + 65536] = 0xbeef;
             cpu.physical_memory_mut()[base / 2 + 95999] = 0xdead;
         }
@@ -162,7 +162,7 @@ fn consumer_and_bridge_failures_retain_the_prepared_lease_and_send_nothing() {
     for (label, body) in [
         ("fatal", "2"),
         ("bounds", "gpu_capture_read_word(0,65535,65535);1"),
-        ("end-boundary", "gpu_capture_read_word(6,30464,1);1"),
+        ("end-boundary", "gpu_capture_read_word(6,36864,1);1"),
         ("cache", "dev_send(7,0,3);1"),
         ("gpu", "dev_send(7,0,4);1"),
         ("display", "dev_send(7,0,5);1"),
@@ -229,7 +229,7 @@ fn diagnostic_origin_and_manifest_are_explicit_and_do_not_override_normal_apps()
     .unwrap();
     let gate_path = local.join("profiler_gate.rs");
     let configuration =
-        resolver::CaptureConfiguration::from_manifest(gate_path.clone(), &manifest).unwrap();
+        resolver::CaptureConfiguration::from_identity(gate_path.clone(), &manifest).unwrap();
     assert_eq!(configuration.manifest_id, [0x3412; 16]);
     // The approved host selects this actual consumer, without granting access
     // to the driver's private state. Only the public lease bridges are callable.
@@ -257,9 +257,9 @@ fn diagnostic_origin_and_manifest_are_explicit_and_do_not_override_normal_apps()
         )
         .unwrap();
         assert!(
-            resolver::CaptureConfiguration::from_manifest(gate_path.clone(), &manifest).is_err()
+            resolver::CaptureConfiguration::from_identity(gate_path.clone(), &manifest).is_err()
         );
     }
     std::fs::write(&manifest, "{}").unwrap();
-    assert!(resolver::CaptureConfiguration::from_manifest(gate_path, &manifest).is_err());
+    assert!(resolver::CaptureConfiguration::from_identity(gate_path, &manifest).is_err());
 }

@@ -90,25 +90,6 @@ wire halted;
 wire faulted;
 wire [15:0] data_segment;
 
-__FETCH_QUEUE__ u_instruction_fetch_queue (
-    .clk(clk),
-    .reset(reset),
-    .flush(sysctl_icache_invalidate || halted || faulted),
-    .core_request_valid(core_instruction_request_valid),
-    .core_address(core_instruction_address),
-    .core_response_ready(core_instruction_response_ready),
-    .memory_request_ready(instruction_request_ready),
-    .memory_response_valid(instruction_response_valid),
-    .memory_read_data(instruction_data),
-    .memory_error(instruction_error),
-    .core_request_ready(core_instruction_request_ready),
-    .core_response_valid(core_instruction_response_valid),
-    .core_read_data(core_instruction_data),
-    .core_error(core_instruction_error),
-    .memory_request_valid(instruction_request_valid),
-    .memory_address(instruction_address),
-    .memory_response_ready(instruction_response_ready)
-);
 
 // There is no instruction overlay or source-selection FIFO.
 wire icache_cpu_request_ready;
@@ -125,25 +106,6 @@ wire [63:0] icache_memory_read_data;
 wire icache_memory_error;
 wire icache_memory_response_ready;
 
-__CACHE__ u_instruction_cache (
-    .clk(clk),
-    .reset(reset),
-    .invalidate_all(sysctl_icache_invalidate),
-    .cpu_request_valid(instruction_request_valid),
-    .cpu_address(instruction_address),
-    .cpu_response_ready(instruction_response_ready),
-    .memory_request_ready(icache_memory_request_ready),
-    .memory_response_valid(icache_memory_response_valid),
-    .memory_read_data(icache_memory_read_data),
-    .memory_error(icache_memory_error),
-    .cpu_request_ready(icache_cpu_request_ready),
-    .cpu_response_valid(icache_cpu_response_valid),
-    .cpu_read_data(icache_cpu_read_data),
-    .cpu_error(icache_cpu_error),
-    .memory_request_valid(icache_memory_request_valid),
-    .memory_address(icache_memory_address),
-    .memory_response_ready(icache_memory_response_ready)
-);
 
 assign instruction_response_valid=icache_cpu_response_valid;
 assign instruction_data=icache_cpu_read_data;
@@ -198,36 +160,8 @@ assign device_read_data =
     sysctl_read_data | display_read_data | button_read_data |
     gpu_read_data | ds2_read_data;
 
-__DS2__ u_ds2(.clk(clk),.reset(reset),.frame_event(display_frame_event),
- .device_index(device_query_index),.device_channel(device_query_channel),
- .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
- .device_write_data(device_write_data),.device_read_data(ds2_read_data),
- .dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att));
 
 // Device 0: cache invalidate pulses, LEDs, and the reporting UART.
-__SYSTEM_CONTROL__ u_sysctl (
-    .clk(clk),
-    .reset(reset),
-    .device_index(device_query_index),
-    .device_channel(device_query_channel),
-    .device_read_enable(device_query_read_enable),
-    .device_write_enable(device_query_write_enable),
-    .device_write_data(device_write_data),
-    .dcache_maintenance_ready(dcache_maintenance_ready),
-    .dcache_maintenance_done(dcache_maintenance_done),
-    .dcache_maintenance_error(dcache_maintenance_error),
-    .watch_read_data(device_read_data),
-    .device_read_data(sysctl_read_data),
-    .icache_invalidate(sysctl_icache_invalidate),
-    .dcache_invalidate(sysctl_dcache_invalidate),
-    .dcache_clean(sysctl_dcache_clean),
-    .cpu_hold(sysctl_cpu_hold),
-    .watch_device_index(watch_device_index),
-    .watch_device_channel(watch_device_channel),
-    .watch_read_enable(watch_read_enable),
-    .leds(software_leds),
-    .uart_tx(uart_tx)
-);
 
 wire flash_start;
 wire [23:0] flash_address;
@@ -250,37 +184,7 @@ wire dma_memory_error;
 
 // Fixed boot owner; every write waits for the real arbiter response.
 assign dma_memory_write=1'b1;
-__SINGLE_BOOT_LOADER__ u_boot_loader (
-    .clk(clk),.ready_to_start(cold_ready),
-    .flash_ready(flash_ready),.flash_data_valid(flash_data_valid),.flash_data(flash_data),
-    .flash_done(flash_done),.flash_error(flash_error),
-    .memory_request_ready(dma_memory_request_ready),
-    .memory_response_valid(dma_memory_response_valid),.memory_error(dma_memory_error),
-    .display_started(display_started_ack),.display_error(display_startup_error),
-    .cache_ready(!dcache_valid_sweep),.load_done(boot_load_done),
-    .flash_start(flash_start),.flash_address(flash_address),.flash_length(flash_length),
-    .flash_data_ready(flash_data_ready),.memory_request_valid(dma_memory_request_valid),
-    .memory_address(dma_memory_address),.memory_write_data(dma_memory_write_data),
-    .memory_response_ready(dma_memory_response_ready),
-    .done(boot_done),.error(boot_error),.error_code(boot_error_code)
-);
 
-__FLASH_READER__ u_flash (
-    .clk(clk),
-    .start(flash_start),
-    .address(flash_address),
-    .length(flash_length),
-    .data_ready(flash_data_ready),
-    .flash_miso(flash_miso),
-    .ready(flash_ready),
-    .data_valid(flash_data_valid),
-    .data(flash_data),
-    .done(flash_done),
-    .error(flash_error),
-    .flash_clk(flash_clk),
-    .flash_cs_n(flash_cs_n),
-    .flash_mosi(flash_mosi)
-);
 
 wire dcache_cpu_request_ready;
 wire dcache_cpu_response_valid;
@@ -298,43 +202,6 @@ wire [63:0] dcache_memory_read_data;
 wire dcache_memory_error;
 wire dcache_memory_response_ready;
 
-__DATA_CACHE__ u_data_cache (
-    .clk(clk),
-    .reset(reset),
-    .clean_all(sysctl_dcache_clean),
-    .invalidate_all(sysctl_dcache_invalidate),
-    .line_copy_start(core_data_line_copy_valid),
-    .line_copy_source(core_data_line_copy_source),
-    .line_copy_destination_page(core_data_line_copy_destination_page),
-    .line_clean_start(core_data_line_clean_valid),
-    .line_clean_address(core_data_line_clean_address),
-    .line_copy_ready(dcache_line_copy_ready),
-    .cpu_request_valid(core_data_request_valid),
-    .cpu_write(core_data_write),
-    .cpu_address(core_data_address),
-    .cpu_write_data(core_data_write_data),
-    .cpu_response_ready(core_data_response_ready),
-    .memory_request_ready(dcache_memory_request_ready),
-    .memory_write_data_ready(dcache_memory_write_data_ready),
-    .memory_response_valid(dcache_memory_response_valid),
-    .memory_read_data(dcache_memory_read_data),
-    .memory_error(dcache_memory_error),
-    .cpu_request_ready(dcache_cpu_request_ready),
-    .cpu_response_valid(dcache_cpu_response_valid),
-    .cpu_read_data(dcache_cpu_read_data),
-    .cpu_error(dcache_cpu_error),
-    .memory_request_valid(dcache_memory_request_valid),
-    .memory_write(dcache_memory_write),
-    .memory_line(dcache_memory_line),
-    .memory_address(dcache_memory_address),
-    .memory_write_data(dcache_memory_write_data),
-    .memory_response_ready(dcache_memory_response_ready),
-    .maintenance_ready(dcache_maintenance_ready),
-    .maintenance_busy(dcache_maintenance_busy),
-    .maintenance_done(dcache_maintenance_done),
-    .maintenance_error(dcache_maintenance_error),
-    .valid_sweep(dcache_valid_sweep)
-);
 
 assign core_data_request_ready = dcache_cpu_request_ready;
 assign core_data_response_valid = dcache_cpu_response_valid;
@@ -350,53 +217,6 @@ wire [31:0] retired_words;
 
 
 
-__CPU_V3_CORE__ #(.INITIAL_CODE_SEGMENT(16'd7)) u_core (
-    .clk(clk),
-    .reset(reset),
-    // Maintenance blocks architectural CPU progress only. The D-cache,
-    // arbiter, DMA, display, and SDRAM adapter keep using clk normally. The
-    // core is also held while the RAM16 valid arrays sweep-clear, because the
-    // D-cache cannot accept requests until every stale line is invalid.
-    .hold(!boot_done || sysctl_cpu_hold || dcache_valid_sweep),
-    .instruction_request_ready(core_instruction_request_ready),
-    .instruction_response_valid(core_instruction_response_valid),
-    .instruction_data(core_instruction_data),
-    .instruction_error(core_instruction_error),
-    .data_request_ready(core_data_request_ready),
-    .data_response_valid(core_data_response_valid),
-    .data_read_data(core_data_read_data),
-    .data_error(core_data_error),
-    .data_line_copy_ready(dcache_line_copy_ready),
-    .data_cache_command_error(dcache_maintenance_error),
-    .device_read_data(device_read_data),
-    .instruction_request_valid(core_instruction_request_valid),
-    .instruction_address(core_instruction_address),
-    .instruction_response_ready(core_instruction_response_ready),
-    .data_request_valid(core_data_request_valid),
-    .data_write(core_data_write),
-    .data_address(core_data_address),
-    .data_write_data(core_data_write_data),
-    .data_response_ready(core_data_response_ready),
-    .data_line_copy_valid(core_data_line_copy_valid),
-    .data_line_copy_source(core_data_line_copy_source),
-    .data_line_copy_destination_page(core_data_line_copy_destination_page),
-    .data_line_clean_valid(core_data_line_clean_valid),
-    .data_line_clean_address(core_data_line_clean_address),
-    .device_index(device_index),
-    .device_channel(device_channel),
-    .device_read_enable(device_read_enable),
-    .device_write_enable(device_write_enable),
-    .device_write_data(device_write_data),
-    .halted(halted),
-    .halt_signal(halt_signal),
-    .fault(faulted),
-    .fault_code(fault_code),
-    .fault_pc(fault_pc),
-    .pc(pc),
-    .code_segment(code_segment),
-    .data_segment(data_segment),
-    .retired_words(retired_words)
-);
 
 // Boot status is observable without firmware. Software owns LEDs after release.
 assign leds=boot_error ? 2'b11 : !boot_done ? 2'b01 : software_leds[1:0];
@@ -463,6 +283,243 @@ wire [63:0] display_memory_read_data;
 wire display_memory_last;
 wire display_memory_error;
 
+
+wire sdram_lookahead_window;
+
+// Register descriptors at the system boundary. Payload and responses stay
+// on their original ordered paths; no payload buffer or RAM is introduced.
+wire [2:0] gpu_slot_valid,gpu_slot_write,gpu_slot_ready;
+wire [21:0] gpu_slot_address[0:2];wire [1:0] gpu_slot_count[0:2];
+CpuV3GpuMemoryRequestSlot gpu_ro_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_ro_memory_request_valid),.in_ready(gpu_ro_memory_request_ready),
+    .in_write(gpu_ro_memory_write),.in_address(gpu_ro_memory_address),
+    .in_count(gpu_ro_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[0]),.out_ready(gpu_slot_ready[0]),
+    .out_write(gpu_slot_write[0]),.out_address(gpu_slot_address[0]),.out_count(gpu_slot_count[0])
+);
+CpuV3GpuMemoryRequestSlot gpu_fb_r_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_fb_r_memory_request_valid),.in_ready(gpu_fb_r_memory_request_ready),
+    .in_write(gpu_fb_r_memory_write),.in_address(gpu_fb_r_memory_address),
+    .in_count(gpu_fb_r_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[1]),.out_ready(gpu_slot_ready[1]),
+    .out_write(gpu_slot_write[1]),.out_address(gpu_slot_address[1]),.out_count(gpu_slot_count[1])
+);
+CpuV3GpuMemoryRequestSlot gpu_fb_w_request_slot (
+    .clk(clk),.reset(!cold_ready || !boot_done),
+    .in_valid(gpu_fb_w_memory_request_valid),.in_ready(gpu_fb_w_memory_request_ready),
+    .in_write(gpu_fb_w_memory_write),.in_address(gpu_fb_w_memory_address),
+    .in_count(gpu_fb_w_memory_line_count_minus_1),
+    .out_valid(gpu_slot_valid[2]),.out_ready(gpu_slot_ready[2]),
+    .out_write(gpu_slot_write[2]),.out_address(gpu_slot_address[2]),.out_count(gpu_slot_count[2])
+);
+
+
+// Class is sampled with the arbiter's accepted descriptor; held payload and
+// response ownership remain with the active owner until its true terminal.
+wire [1:0] memory_chain_class = gpu_slot_valid[0] && gpu_slot_ready[0] ? 2'd1 :
+    gpu_slot_valid[2] && gpu_slot_ready[2] ? 2'd2 :
+    gpu_slot_valid[1] && gpu_slot_ready[1] ? 2'd3 :
+    dcache_memory_request_valid && dcache_memory_request_ready && dcache_memory_write ? 2'd3 : 2'd0;
+
+// Device 3: framebuffer scanout and HDMI TMDS output.
+
+
+
+__FETCH_QUEUE__ u_instruction_fetch_queue (
+    .clk(clk),
+    .reset(reset),
+    .flush(sysctl_icache_invalidate || halted || faulted),
+    .core_request_valid(core_instruction_request_valid),
+    .core_address(core_instruction_address),
+    .core_response_ready(core_instruction_response_ready),
+    .memory_request_ready(instruction_request_ready),
+    .memory_response_valid(instruction_response_valid),
+    .memory_read_data(instruction_data),
+    .memory_error(instruction_error),
+    .core_request_ready(core_instruction_request_ready),
+    .core_response_valid(core_instruction_response_valid),
+    .core_read_data(core_instruction_data),
+    .core_error(core_instruction_error),
+    .memory_request_valid(instruction_request_valid),
+    .memory_address(instruction_address),
+    .memory_response_ready(instruction_response_ready)
+);
+__CACHE__ u_instruction_cache (
+    .clk(clk),
+    .reset(reset),
+    .invalidate_all(sysctl_icache_invalidate),
+    .cpu_request_valid(instruction_request_valid),
+    .cpu_address(instruction_address),
+    .cpu_response_ready(instruction_response_ready),
+    .memory_request_ready(icache_memory_request_ready),
+    .memory_response_valid(icache_memory_response_valid),
+    .memory_read_data(icache_memory_read_data),
+    .memory_error(icache_memory_error),
+    .cpu_request_ready(icache_cpu_request_ready),
+    .cpu_response_valid(icache_cpu_response_valid),
+    .cpu_read_data(icache_cpu_read_data),
+    .cpu_error(icache_cpu_error),
+    .memory_request_valid(icache_memory_request_valid),
+    .memory_address(icache_memory_address),
+    .memory_response_ready(icache_memory_response_ready)
+);
+__DS2__ u_ds2(.clk(clk),.reset(reset),.frame_event(display_frame_event),
+ .device_index(device_query_index),.device_channel(device_query_channel),
+ .device_read_enable(device_query_read_enable),.device_write_enable(device_query_write_enable),
+ .device_write_data(device_write_data),.device_read_data(ds2_read_data),
+ .dat(ds2_dat),.ds2_clk(ds2_clk),.cmd(ds2_cmd),.att(ds2_att));
+__SHARED_SDRAM_PORT__ u_shared_sdram_port (
+    .clk(clk),
+    .reset(reset),
+    .cpu_request_valid(memory_request_valid),
+    .cpu_write(memory_write),
+    .cpu_line(memory_line),
+    .cpu_address(memory_address),
+    .cpu_line_count_minus_1(memory_line_count_minus_1),
+    .cpu_chain_class(memory_chain_class),
+    .cpu_write_data(memory_write_data),
+    .cpu_response_ready(memory_response_ready),
+    .controller_read_data(sdram_read_data),
+    .controller_read_valid(sdram_read_valid),
+    .controller_init_done(sdram_init_done),
+    .controller_request_ready(sdram_request_ready),
+    .controller_stream_active(sdram_stream_active),
+    .controller_write_done(sdram_write_done),
+    .controller_request_continuation(sdram_request_continuation),
+    .controller_write_data_ready(sdram_write_data_ready),
+    .cpu_request_ready(memory_request_ready),
+    .cpu_lookahead_window(sdram_lookahead_window),
+    .cpu_write_data_ready(memory_write_data_ready),
+    .cpu_response_valid(memory_response_valid),
+    .cpu_read_data(memory_read_data),
+    .cpu_response_last(memory_response_last),
+    .cpu_error(memory_error),
+    .controller_request_valid(sdram_request_valid),
+    .controller_next_valid(sdram_next_valid),
+    .controller_next_address(sdram_next_address),
+    .controller_write(sdram_write),
+    .controller_address(sdram_address),
+    .controller_write_mask(sdram_write_mask),
+    .controller_write_data(sdram_write_data),
+    .controller_write_data_valid(sdram_write_data_valid),
+    .controller_words(sdram_words)
+);
+__SINGLE_BOOT_LOADER__ u_boot_loader (
+    .clk(clk),.ready_to_start(cold_ready),
+    .flash_ready(flash_ready),.flash_data_valid(flash_data_valid),.flash_data(flash_data),
+    .flash_done(flash_done),.flash_error(flash_error),
+    .memory_request_ready(dma_memory_request_ready),
+    .memory_response_valid(dma_memory_response_valid),.memory_error(dma_memory_error),
+    .display_started(display_started_ack),.display_error(display_startup_error),
+    .cache_ready(!dcache_valid_sweep),.load_done(boot_load_done),
+    .flash_start(flash_start),.flash_address(flash_address),.flash_length(flash_length),
+    .flash_data_ready(flash_data_ready),.memory_request_valid(dma_memory_request_valid),
+    .memory_address(dma_memory_address),.memory_write_data(dma_memory_write_data),
+    .memory_response_ready(dma_memory_response_ready),
+    .done(boot_done),.error(boot_error),.error_code(boot_error_code)
+);
+__FLASH_READER__ u_flash (
+    .clk(clk),
+    .start(flash_start),
+    .address(flash_address),
+    .length(flash_length),
+    .data_ready(flash_data_ready),
+    .flash_miso(flash_miso),
+    .ready(flash_ready),
+    .data_valid(flash_data_valid),
+    .data(flash_data),
+    .done(flash_done),
+    .error(flash_error),
+    .flash_clk(flash_clk),
+    .flash_cs_n(flash_cs_n),
+    .flash_mosi(flash_mosi)
+);
+__CPU_V3_CORE__ #(.INITIAL_CODE_SEGMENT(16'd7)) u_core (
+    .clk(clk),
+    .reset(reset),
+    // Maintenance blocks architectural CPU progress only. The D-cache,
+    // arbiter, DMA, display, and SDRAM adapter keep using clk normally. The
+    // core is also held while the RAM16 valid arrays sweep-clear, because the
+    // D-cache cannot accept requests until every stale line is invalid.
+    .hold(!boot_done || sysctl_cpu_hold || dcache_valid_sweep),
+    .instruction_request_ready(core_instruction_request_ready),
+    .instruction_response_valid(core_instruction_response_valid),
+    .instruction_data(core_instruction_data),
+    .instruction_error(core_instruction_error),
+    .data_request_ready(core_data_request_ready),
+    .data_response_valid(core_data_response_valid),
+    .data_read_data(core_data_read_data),
+    .data_error(core_data_error),
+    .data_line_copy_ready(dcache_line_copy_ready),
+    .data_cache_command_error(dcache_maintenance_error),
+    .device_read_data(device_read_data),
+    .instruction_request_valid(core_instruction_request_valid),
+    .instruction_address(core_instruction_address),
+    .instruction_response_ready(core_instruction_response_ready),
+    .data_request_valid(core_data_request_valid),
+    .data_write(core_data_write),
+    .data_address(core_data_address),
+    .data_write_data(core_data_write_data),
+    .data_response_ready(core_data_response_ready),
+    .data_line_copy_valid(core_data_line_copy_valid),
+    .data_line_copy_source(core_data_line_copy_source),
+    .data_line_copy_destination_page(core_data_line_copy_destination_page),
+    .data_line_clean_valid(core_data_line_clean_valid),
+    .data_line_clean_address(core_data_line_clean_address),
+    .device_index(device_index),
+    .device_channel(device_channel),
+    .device_read_enable(device_read_enable),
+    .device_write_enable(device_write_enable),
+    .device_write_data(device_write_data),
+    .halted(halted),
+    .halt_signal(halt_signal),
+    .fault(faulted),
+    .fault_code(fault_code),
+    .fault_pc(fault_pc),
+    .pc(pc),
+    .code_segment(code_segment),
+    .data_segment(data_segment),
+    .retired_words(retired_words)
+);
+__DATA_CACHE__ u_data_cache (
+    .clk(clk),
+    .reset(reset),
+    .clean_all(sysctl_dcache_clean),
+    .invalidate_all(sysctl_dcache_invalidate),
+    .line_copy_start(core_data_line_copy_valid),
+    .line_copy_source(core_data_line_copy_source),
+    .line_copy_destination_page(core_data_line_copy_destination_page),
+    .line_clean_start(core_data_line_clean_valid),
+    .line_clean_address(core_data_line_clean_address),
+    .line_copy_ready(dcache_line_copy_ready),
+    .cpu_request_valid(core_data_request_valid),
+    .cpu_write(core_data_write),
+    .cpu_address(core_data_address),
+    .cpu_write_data(core_data_write_data),
+    .cpu_response_ready(core_data_response_ready),
+    .memory_request_ready(dcache_memory_request_ready),
+    .memory_write_data_ready(dcache_memory_write_data_ready),
+    .memory_response_valid(dcache_memory_response_valid),
+    .memory_read_data(dcache_memory_read_data),
+    .memory_error(dcache_memory_error),
+    .cpu_request_ready(dcache_cpu_request_ready),
+    .cpu_response_valid(dcache_cpu_response_valid),
+    .cpu_read_data(dcache_cpu_read_data),
+    .cpu_error(dcache_cpu_error),
+    .memory_request_valid(dcache_memory_request_valid),
+    .memory_write(dcache_memory_write),
+    .memory_line(dcache_memory_line),
+    .memory_address(dcache_memory_address),
+    .memory_write_data(dcache_memory_write_data),
+    .memory_response_ready(dcache_memory_response_ready),
+    .maintenance_ready(dcache_maintenance_ready),
+    .maintenance_busy(dcache_maintenance_busy),
+    .maintenance_done(dcache_maintenance_done),
+    .maintenance_error(dcache_maintenance_error),
+    .valid_sweep(dcache_valid_sweep)
+);
 __GPU__ u_gpu (
     .clk(clk),
     // GPU state uses synchronous initialization, unlike declaration-initialized CPU state.
@@ -507,38 +564,6 @@ __GPU__ u_gpu (
     .gpu_fb_r_line_count_minus_1(gpu_fb_r_memory_line_count_minus_1),
     .gpu_fb_r_write_data(gpu_fb_r_memory_write_data)
 );
-
-wire sdram_lookahead_window;
-
-// Register descriptors at the system boundary. Payload and responses stay
-// on their original ordered paths; no payload buffer or RAM is introduced.
-wire [2:0] gpu_slot_valid,gpu_slot_write,gpu_slot_ready;
-wire [21:0] gpu_slot_address[0:2];wire [1:0] gpu_slot_count[0:2];
-CpuV3GpuMemoryRequestSlot gpu_ro_request_slot (
-    .clk(clk),.reset(!cold_ready || !boot_done),
-    .in_valid(gpu_ro_memory_request_valid),.in_ready(gpu_ro_memory_request_ready),
-    .in_write(gpu_ro_memory_write),.in_address(gpu_ro_memory_address),
-    .in_count(gpu_ro_memory_line_count_minus_1),
-    .out_valid(gpu_slot_valid[0]),.out_ready(gpu_slot_ready[0]),
-    .out_write(gpu_slot_write[0]),.out_address(gpu_slot_address[0]),.out_count(gpu_slot_count[0])
-);
-CpuV3GpuMemoryRequestSlot gpu_fb_r_request_slot (
-    .clk(clk),.reset(!cold_ready || !boot_done),
-    .in_valid(gpu_fb_r_memory_request_valid),.in_ready(gpu_fb_r_memory_request_ready),
-    .in_write(gpu_fb_r_memory_write),.in_address(gpu_fb_r_memory_address),
-    .in_count(gpu_fb_r_memory_line_count_minus_1),
-    .out_valid(gpu_slot_valid[1]),.out_ready(gpu_slot_ready[1]),
-    .out_write(gpu_slot_write[1]),.out_address(gpu_slot_address[1]),.out_count(gpu_slot_count[1])
-);
-CpuV3GpuMemoryRequestSlot gpu_fb_w_request_slot (
-    .clk(clk),.reset(!cold_ready || !boot_done),
-    .in_valid(gpu_fb_w_memory_request_valid),.in_ready(gpu_fb_w_memory_request_ready),
-    .in_write(gpu_fb_w_memory_write),.in_address(gpu_fb_w_memory_address),
-    .in_count(gpu_fb_w_memory_line_count_minus_1),
-    .out_valid(gpu_slot_valid[2]),.out_ready(gpu_slot_ready[2]),
-    .out_write(gpu_slot_write[2]),.out_address(gpu_slot_address[2]),.out_count(gpu_slot_count[2])
-);
-
 __ARBITER__ u_memory_arbiter (
     .lookahead_enable(sdram_lookahead_window),
     .clk(clk),
@@ -625,51 +650,29 @@ __ARBITER__ u_memory_arbiter (
     .memory_write_data(memory_write_data),
     .memory_response_ready(memory_response_ready)
 );
-
-// Class is sampled with the arbiter's accepted descriptor; held payload and
-// response ownership remain with the active owner until its true terminal.
-wire [1:0] memory_chain_class = gpu_slot_valid[0] && gpu_slot_ready[0] ? 2'd1 :
-    gpu_slot_valid[2] && gpu_slot_ready[2] ? 2'd2 :
-    gpu_slot_valid[1] && gpu_slot_ready[1] ? 2'd3 :
-    dcache_memory_request_valid && dcache_memory_request_ready && dcache_memory_write ? 2'd3 : 2'd0;
-__SHARED_SDRAM_PORT__ u_shared_sdram_port (
+__SYSTEM_CONTROL__ u_sysctl (
     .clk(clk),
     .reset(reset),
-    .cpu_request_valid(memory_request_valid),
-    .cpu_write(memory_write),
-    .cpu_line(memory_line),
-    .cpu_address(memory_address),
-    .cpu_line_count_minus_1(memory_line_count_minus_1),
-    .cpu_chain_class(memory_chain_class),
-    .cpu_write_data(memory_write_data),
-    .cpu_response_ready(memory_response_ready),
-    .controller_read_data(sdram_read_data),
-    .controller_read_valid(sdram_read_valid),
-    .controller_init_done(sdram_init_done),
-    .controller_request_ready(sdram_request_ready),
-    .controller_stream_active(sdram_stream_active),
-    .controller_write_done(sdram_write_done),
-    .controller_request_continuation(sdram_request_continuation),
-    .controller_write_data_ready(sdram_write_data_ready),
-    .cpu_request_ready(memory_request_ready),
-    .cpu_lookahead_window(sdram_lookahead_window),
-    .cpu_write_data_ready(memory_write_data_ready),
-    .cpu_response_valid(memory_response_valid),
-    .cpu_read_data(memory_read_data),
-    .cpu_response_last(memory_response_last),
-    .cpu_error(memory_error),
-    .controller_request_valid(sdram_request_valid),
-    .controller_next_valid(sdram_next_valid),
-    .controller_next_address(sdram_next_address),
-    .controller_write(sdram_write),
-    .controller_address(sdram_address),
-    .controller_write_mask(sdram_write_mask),
-    .controller_write_data(sdram_write_data),
-    .controller_write_data_valid(sdram_write_data_valid),
-    .controller_words(sdram_words)
+    .device_index(device_query_index),
+    .device_channel(device_query_channel),
+    .device_read_enable(device_query_read_enable),
+    .device_write_enable(device_query_write_enable),
+    .device_write_data(device_write_data),
+    .dcache_maintenance_ready(dcache_maintenance_ready),
+    .dcache_maintenance_done(dcache_maintenance_done),
+    .dcache_maintenance_error(dcache_maintenance_error),
+    .watch_read_data(device_read_data),
+    .device_read_data(sysctl_read_data),
+    .icache_invalidate(sysctl_icache_invalidate),
+    .dcache_invalidate(sysctl_dcache_invalidate),
+    .dcache_clean(sysctl_dcache_clean),
+    .cpu_hold(sysctl_cpu_hold),
+    .watch_device_index(watch_device_index),
+    .watch_device_channel(watch_device_channel),
+    .watch_read_enable(watch_read_enable),
+    .leds(software_leds),
+    .uart_tx(uart_tx)
 );
-
-// Device 3: framebuffer scanout and HDMI TMDS output.
 __FRAMEBUFFER_HDMI__ u_display (
     .clk(clk),
     .reset(reset),
@@ -699,9 +702,6 @@ __FRAMEBUFFER_HDMI__ u_display (
     .tmds_data_p(tmds_data_p),
     .tmds_data_n(tmds_data_n)
 );
-
-
-
 endmodule
 
 // One irrevocable descriptor, one registered address boundary. The GPU master

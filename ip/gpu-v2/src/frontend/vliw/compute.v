@@ -1,7 +1,8 @@
 // h/Z按phi0/1/2/3共用30位移位；Z提前两CE发射，窄结果静态保持到原输出沿。
 // 标量sample_h按phi0/1/2依次消费；cover/anchor仅phi2有效。
 module rc_compute(
- input clk,reset,ce,output reg[1:0]phase,
+ input clk,reset,ce,
+ (* syn_keep=1, syn_preserve=1 *) output reg[1:0]phase,
  input read_bank,write_bank,
  input coefficient_bwe,coefficient_cwe,input[3:0]coefficient_bwa,coefficient_cwa,
  input[35:0]coefficient_bwd,coefficient_cwd,

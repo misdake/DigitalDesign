@@ -249,7 +249,7 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
     std::fs::write(f.local.join("device_abi.rs"), "pub const GPU_DEVICE:u16=7;").unwrap();
     std::fs::write(
         f.local.join("gpu_render_profile.rs"),
-        "pub const GPU_RENDER_PROFILE:u16=1;",
+        "pub const GPU_RENDER_PROFILE:u16=0;",
     )
     .unwrap();
     let p = cpu_v3::rcc_backend::try_compile(
@@ -263,7 +263,7 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
     assert!(
         matches!(
             cpu.run(100_000).unwrap(),
-            cpu_v3::RunOutcome::Halted { signal: 4, .. }
+            cpu_v3::RunOutcome::Halted { signal: 5, .. }
         ),
         "local ABI override was used"
     );

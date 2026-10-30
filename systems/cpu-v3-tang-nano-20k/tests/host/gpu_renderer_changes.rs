@@ -247,7 +247,7 @@ fn check_draw(expected: &Draw, global: &[u16], render: &[u16], instance: &[u16])
     assert!((f64::from(global[5] as i16) + 100. / expected.camera.focal * 16384.).abs() < 3.);
     assert!((f64::from(global[6] as i16) + 60. / expected.camera.focal * 16384.).abs() < 3.);
     assert_eq!(global[7], 8192);
-    assert_eq!(r[0], 0x9620 | (2 << 21));
+    assert_eq!(r[0], 0x9c20 | (2 << 21));
     assert_eq!(r[1], expected.specular);
     assert_eq!(r[2], if expected.rgba[3] == 255 { 9 } else { 17 });
     assert!(r[3..].iter().all(|x| *x == 0));
@@ -276,7 +276,7 @@ fn check_native_frames(s: &State) {
     assert_eq!((s.starts.len(), s.swaps, s.maintenance), (11, 11, 11));
     for frame in 0..11 {
         let (base, words, _) = &s.starts[frame];
-        let object_base = if *base == 0x9200 { 0x4a0000 } else { 0x7f0000 };
+        let object_base = if *base == 0x9800 { 0x4d0000 } else { 0x7f0000 };
         let page = if frame % 2 == 0 { 0x7df800 } else { 0x7dfc00 };
         let objects = &s.object_snapshots[frame];
         let ui = &s.ui_snapshots[frame];
@@ -341,7 +341,7 @@ fn check_native_frames(s: &State) {
                     dma_pending = true;
                 }
                 2 => {
-                    assert_eq!(command, Command::dma_meshlet(0x4b0080, 0, 128).unwrap().0);
+                    assert_eq!(command, Command::dma_meshlet(0x4e0080, 0, 128).unwrap().0);
                     mesh_ready = true;
                     dma_pending = true;
                 }
@@ -378,7 +378,7 @@ fn check_native_frames(s: &State) {
                         .collect();
                     assert_eq!(
                         desc,
-                        gpu_v2::system::vliw_command::ui_params(page as u32, 0x4c0000).unwrap()
+                        gpu_v2::system::vliw_command::ui_params(page as u32, 0x4f0000).unwrap()
                     );
                     ranges.push((
                         ((command >> 7) & 1023) as u16,
@@ -386,7 +386,7 @@ fn check_native_frames(s: &State) {
                     ));
                     mesh_ready = false;
                 }
-                0 | 7 | 8 | 10 | 15 => {}
+                0 | 7 | 8 | 9 | 10 | 15 => {}
                 op => panic!("unexpected opcode{op}"),
             }
         }
@@ -563,8 +563,8 @@ pub(super) fn run_core(
             assert!(address < memory.len());
             if value.data_write {
                 for (slot, byte, bytes) in [
-                    (0, 0x490000, 65536),
-                    (0, 0x4a0000, 65536),
+                    (0, 0x4c0000, 65536),
+                    (0, 0x4d0000, 65536),
                     (1, 0x7e0000, 65536),
                     (1, 0x7f0000, 65536),
                 ] {
@@ -575,7 +575,7 @@ pub(super) fn run_core(
                         // after old GPU/Display retirement and before final publication.
                         let target = memory[targets + slot];
                         assert_eq!(memory[meta + slot * 4], 2);
-                        assert!(target != 0 && byte == if slot == 0 { 0x4a0000 } else { 0x7f0000 });
+                        assert!(target != 0 && byte == if slot == 0 { 0x4d0000 } else { 0x7f0000 });
                         let first = byte / 2 + usize::from(target) - 1;
                         assert!((first..first + 16).contains(&address));
                         assert_eq!(memory[pipe + 2], slot as u16 + 1);

@@ -66,13 +66,7 @@ impl Module for FramebufferHdmi {
     }
 
     fn verilog_source() -> Option<String> {
-        verilog_source_for(&ACTIVE_DISPLAY_CONFIG).map(|source| {
-            if column16_profile(option_env!("CPU_V3_GPU_PROFILE")) {
-                column16_source(source)
-            } else {
-                source
-            }
-        })
+        verilog_source_for(&ACTIVE_DISPLAY_CONFIG)
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
@@ -80,61 +74,20 @@ impl Module for FramebufferHdmi {
     }
 
     fn verilog_testbench() -> Option<String> {
-        verilog_testbench_for(&ACTIVE_DISPLAY_CONFIG).map(|source| {
-            if column16_profile(option_env!("CPU_V3_GPU_PROFILE")) {
-                column16_testbench(source)
-            } else {
-                source
-            }
-        })
+        verilog_testbench_for(&ACTIVE_DISPLAY_CONFIG)
     }
-}
-
-// Only macro ordering changes.32-byte row requests and line-buffer ownership
-// remain unchanged; one tile column now advances4096 halfwords, not256.
-fn column16_profile(profile: Option<&str>) -> bool {
-    matches!(
-        profile,
-        Some("texture16x8-column16" | "rtt400x240-column16")
-    )
-}
-
-fn column16_source(mut source: String) -> String {
-    for (old, new) in [
-        ("TILE_ROW_STRIDE=FB_WIDTH*16", "TILE_ROW_STRIDE=13'd256"),
-        (
-            "{9'b0,burst_index,local_y[3:1],fill_second}",
-            "{5'b0,burst_index,4'b0,local_y[3:1],fill_second}",
-        ),
-        ("32'h003e8900", "32'h003e7000"),
-    ] {
-        assert_eq!(
-            source.matches(old).count(),
-            1,
-            "column Display anchor {old}"
-        );
-        source = source.replacen(old, new, 1);
-    }
-    source
-}
-fn column16_testbench(source: String) -> String {
-    source
-        .replace(
-            "(source_row/16)*6400+(source_row%16)*16+source_tile_x*256",
-            "(source_row/16)*256+(source_row%16)*16+source_tile_x*4096",
-        )
-        .replace("23'd96000", "23'd102144")
-        .replace("3e8900", "3e7000")
-        .replace("16'h8900", "16'h7000")
-        .replace("16'h8901", "16'h7001")
-        .replace("16'h8910", "16'h7010")
 }
 
 fn verilog_source_for(config: &DisplayConfig) -> Option<String> {
     Some(
         include_str!("display_hdmi.v")
             .replace("__TMDS_PRECODE_BITS__", &TMDS_PRECODE_BITS.to_string())
-            .replace("__DISPLAY_CONFIG__", &config.verilog_localparams())
+            .replace(
+                "__DISPLAY_CONFIG__",
+                &config
+                    .verilog_localparams()
+                    .replace("TILE_ROW_STRIDE=FB_WIDTH*16", "TILE_ROW_STRIDE=13'd256"),
+            )
             .replace(
                 "__LINE_BUFFER__",
                 &DisplayLineBuffer::verilog_identity().module_name(),
@@ -145,7 +98,12 @@ fn verilog_source_for(config: &DisplayConfig) -> Option<String> {
 fn verilog_testbench_for(config: &DisplayConfig) -> Option<String> {
     Some(
         include_str!("display_hdmi_tb.v")
-            .replace("__DISPLAY_CONFIG__", &config.verilog_localparams())
+            .replace(
+                "__DISPLAY_CONFIG__",
+                &config
+                    .verilog_localparams()
+                    .replace("TILE_ROW_STRIDE=FB_WIDTH*16", "TILE_ROW_STRIDE=13'd256"),
+            )
             .replace(
                 "__PIXEL_HALF_PERIOD__",
                 &(500_000_000.0 / config.pixel_clock_hz as f64).to_string(),
@@ -157,14 +115,8 @@ fn verilog_testbench_for(config: &DisplayConfig) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn rtt_and_layout_only_profiles_select_the_same_column_display() {
-        assert!(super::column16_profile(Some("texture16x8-column16")));
-        assert!(super::column16_profile(Some("rtt400x240-column16")));
-        assert!(!super::column16_profile(None));
-        assert!(!super::column16_profile(Some("production")));
-        let source = super::column16_source(
-            super::verilog_source_for(&super::ACTIVE_DISPLAY_CONFIG).unwrap(),
-        );
+    fn production_display_uses_column_storage() {
+        let source = super::verilog_source_for(&super::ACTIVE_DISPLAY_CONFIG).unwrap();
         assert!(source.contains("TILE_ROW_STRIDE=13'd256"));
         assert!(source.contains("{5'b0,burst_index,4'b0,local_y[3:1],fill_second}"));
     }

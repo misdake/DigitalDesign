@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import snapshot as s
 from compare import compare
+from layout import COLUMN, COMMAND_ABI
 import test_identity as fixture_helpers
 
 
@@ -34,11 +35,13 @@ class CompareTests(unittest.TestCase):
         following = s.decode_stream(raw, self.abi)[0][0]
         replay = Path(folder) / "replay"
         (replay / "capture").mkdir(parents=True)
-        metadata = dict(complete=True, input_sha256=previous.manifest()["input_sha256"])
+        metadata = dict(complete=True, input_sha256=previous.manifest()["input_sha256"], layout=COLUMN.description(), command_abi=COMMAND_ABI)
         for role in ["color", "depth"]:
-            raw = bytes(192000)
+            raw = bytes(COLUMN.plane_bytes)
             (replay / "capture" / (role + ".bin")).write_bytes(raw)
             metadata[role + "_sha256"] = hashlib.sha256(raw).hexdigest()
+            (replay / "capture" / (role + "-allocation.bin")).write_bytes(raw)
+            metadata[role + "_allocation_sha256"] = hashlib.sha256(raw).hexdigest()
         (replay / "replay.json").write_text(json.dumps(metadata), encoding="utf-8")
         return previous, following, replay
 
@@ -68,6 +71,8 @@ class CompareTests(unittest.TestCase):
                 compare(a, b, replay, Path(temp) / "corrupt.json")
             metadata = json.loads((replay / "replay.json").read_text())
             metadata["color_sha256"] = hashlib.sha256(raw).hexdigest()
+            (replay / "capture/color-allocation.bin").write_bytes(raw)
+            metadata["color_allocation_sha256"] = hashlib.sha256(raw).hexdigest()
             (replay / "replay.json").write_text(json.dumps(metadata), encoding="utf-8")
             report = compare(a, b, replay, Path(temp) / "result.json")
             self.assertFalse(report["equal"])

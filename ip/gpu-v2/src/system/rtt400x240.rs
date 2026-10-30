@@ -1,4 +1,4 @@
-//! Opt-in fixed400x240 RGB565 framebuffer texture view over the16x8 cache.
+//! Production fixed400x240 coordinate specialization over the shared column cache.
 //! No runtime width/height, mip chain, repeat mode or CPU format conversion.
 
 fn once(s: &mut String, old: &str, new: &str) -> Result<(), String> {
@@ -128,8 +128,11 @@ pub fn lower(mut source: String) -> Result<String, String> {
                 once(s,".texture_base(texture_base),.texture_mip(texture_mip),",
                      ".texture_base(texture_base),.texture_mip(texture_mip),.texture_fb400240(texture_fb400240),")?;
             } else {
-                once(s,"wire[11:0]macro_column={6'd0,tx}<<((level<4)?4'd0:(level-4'd4));",
-                     "wire[11:0]macro_column={6'd0,tx}<<(texture_fb400240?4'd4:((level<4)?4'd0:(level-4'd4)));")?;
+                once(
+                    s,
+                    "wire[3:0]pitch_y_log2=(level<4)?4'd0:(level-4'd4);",
+                    "wire[3:0]pitch_y_log2=texture_fb400240?4'd4:((level<4)?4'd0:(level-4'd4));",
+                )?;
                 let end = s.rfind("endmodule").ok_or("RTT packet end")?;
                 s.insert_str(end,"`ifndef SYNTHESIS\n always@(posedge clk)if(!reset&&ce&&valid[0]&&texture_fb400240&&(tx>=25||ty>=30))$fatal(1,\"RTT400 Group bounds\");\n`endif\n");
             }
@@ -151,20 +154,35 @@ pub fn lower(mut source: String) -> Result<String, String> {
             "input in_nearest,input[3:0]in_size_log2,",
             "input texture_fb400240,input in_nearest,input[3:0]in_size_log2,",
         )?;
-        let arithmetic = r#" // 400/256=25/16 and240/256=15/16. The existing axis
- // calendar shares 5*u, then4*(5*u) +/-5*u, without changing truncation.
- wire[18:0]view_five={1'b0,axis_uv,2'b00}+{3'b000,axis_uv};
+        once(
+            s,
+            " wire signed[18:0]fine=$signed({1'b0,scaled_uv})-(in_nearest?19'sd0:19'sd128);",
+            "",
+        )?;
+        let arithmetic = r#" // U=25*q=q+8*q+16*q; V=15*q=16*q-q. Compress the
+ // three operands before one carry-propagating add; no DSP or stage is added.
  wire view_subtract=!phase[0];
- wire[20:0]view_delta={2'b00,view_five}^{21{view_subtract}};
- wire[20:0]view_product={view_five,2'b00}+view_delta+view_subtract;
+ wire[20:0]view_a={5'd0,axis_uv}^{21{view_subtract}};
+ wire[20:0]view_b={2'd0,axis_uv,3'd0}&{21{phase[0]}};
+ wire[20:0]view_c={1'b0,axis_uv,4'd0};
+ wire[20:0]view_sum=view_a^view_b^view_c;
+ wire[20:0]view_majority=(view_a&view_b)|(view_a&view_c)|(view_b&view_c);
+ wire[20:0]view_carry={view_majority[19:0],view_subtract};
+ wire[20:0]view_product=view_sum+view_carry;
  wire[16:0]view_scaled=view_product[20:4];
- wire view_negative=!in_nearest&&(view_scaled[16:7]==0);
- wire[16:0]view_fine=view_scaled-(in_nearest?17'd0:17'd128);
+ // Select the scale before the one signed half-texel subtractor. Both modes
+ // use the existing U/V phases and freeze all operands on a disabled CE.
+ wire[17:0]shared_scaled=texture_fb400240?{1'b0,view_scaled}:scaled_uv;
+ wire signed[18:0]fine=$signed({1'b0,shared_scaled})-(in_nearest?19'sd0:19'sd128);
+ wire view_negative=fine[18];
+ wire[16:0]view_fine=fine[16:0];
  wire[8:0]view_last=phase[0]?9'd399:9'd239;
  reg[17:0]view_result;
  always@*begin
   if(view_negative)view_result=18'd0;
-  else if(view_fine[16:8]>=view_last)view_result={1'b0,view_last,8'd0};
+  // A16-bit preclamped UV gives floor(400*q/65536)<=399 (V<=239).
+  // Negative fine is handled above; only equality can reach the last texel.
+  else if(view_fine[16:8]==view_last)view_result={1'b0,view_last,8'd0};
   else view_result={1'b0,view_fine};
  end
  wire[17:0]axis_result=texture_fb400240?view_result:{fine[17:8]&mask0,fine[7:0]};"#;

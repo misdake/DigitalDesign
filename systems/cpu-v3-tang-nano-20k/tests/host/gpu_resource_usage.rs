@@ -301,8 +301,8 @@ fn logical_mesh_batch_preserves_a_directory_sector_crossing() {
     cpu.set_boot_window(&program.words);
     let state = attach(&mut cpu, Some(vec![]));
     for i in 0..34 {
-        let at = 0x4b0000 / 2 + 2 * i;
-        cpu.physical_memory_mut()[at] = 0x9602;
+        let at = 0x4e0000 / 2 + 2 * i;
+        cpu.physical_memory_mut()[at] = 0x9c02;
         cpu.physical_memory_mut()[at + 1] = 1;
     }
     assert!(matches!(
@@ -312,11 +312,11 @@ fn logical_mesh_batch_preserves_a_directory_sector_crossing() {
     let a = super::changes::global(&program, "GPU_SCENE_MESHES");
     assert_eq!(
         &cpu.physical_memory_mut()[a..a + 6],
-        &[1, 0x9600, 62, 3, 0x9600, 32]
+        &[1, 0x9c00, 62, 3, 0x9c00, 32]
     );
     assert_eq!(
         &cpu.physical_memory_mut()[a + 24..a + 30],
-        &[1, 0x9601, 2, 1, 0x9600, 32]
+        &[1, 0x9c01, 2, 1, 0x9c00, 32]
     );
     assert!(state.borrow().starts.is_empty());
 }

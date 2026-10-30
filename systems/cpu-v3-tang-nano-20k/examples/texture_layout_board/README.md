@@ -1,20 +1,11 @@
-# Pure texture/framebuffer layout board qualification
+# Production column board build
 
-Run `build.ps1 -Mode Build -Profile texture16x8-column16 -Implementation production
--OutputDirectory target/texture-column16-pure/FRESH` (on one PowerShell line).
-The matched row profile is `texture16x8-row`; repeat production builds in separate fresh directories. Both use the same54/108MHz CL3 board constraints.
+`build.ps1 -Mode Build -OutputDirectory target/column-board/FRESH` exports and
+fits the single production column/POT + fixed400x240 RTT composition at54/108MHz
+CL3. `-BootExample` selects firmware, not a second hardware layout. Export/Build
+requires a fresh directory; Audit checks the existing generated artifacts,
+resource limits and setup/hold timing. Receipts bind source and artifact hashes.
 
-`production` retains existing place1/route2. Two attempted timing-driven exports
-failed before PNR because the library rejects duplicate existing process options;
-those logs remain as tooling failures, not timing measurements. No shared tool
-library was changed. The bounded comparison therefore repeats the same production
-configuration for both layouts, preserving every outcome. Default production hardware is unaffected. No RTT view
-is selected. Each Export/Build requires a new target directory; Audit checks
-existing generated artifacts and the normal resource/timing requirements.
-The receipt records profile, implementation, source HEAD/dirty and report hashes;
-the generated Gowin manifest identifies the actual RTL/constraints/boot source.
-
-The default boot is a CPU Display diagnostic used only for complete-board fit.
-It is not a qualified column scene firmware. Device programming requires matched
-layout firmware/static assets, functional audit, timing pass, and the parent's
-exclusive hardware handoff. This script never programs, opens UART, or captures.
+The default CPU Display diagnostic uses the same column allocation and addresses.
+A renderer/RTT image must bind matching boot assets. This script is offline and
+does not program the board, open UART or capture images.

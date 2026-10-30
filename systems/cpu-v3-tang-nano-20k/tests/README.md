@@ -1,5 +1,17 @@
 # System regression tests
 
+The ignored `raster_phase_replica::export_raster_phase_inputs` test materializes
+the portable/native frontend, final production GPU leaf and inner command RTL
+under `target/raster-phase-native/native/input` when
+`CPU_V3_GPU_PROFILE=production`. `raster_phase_replica.py --export <rtl.v>
+--output <fresh-directory>` checks their common clock/reset/CE/phase bindings
+without an external baseline snapshot. Its actual modules check 256
+post-edge phase values across all four active/paused phases, abort frontend
+freeze and reset/restart. A deliberately delayed-Q variant must fail. Each
+process is bounded to 45 seconds and the testbench to 256 edges plus a watchdog.
+Active rendering uses the existing bounded column command replay separately;
+phase equality alone is not a pixel or physical timing qualification.
+
 `graphics_member` checks actual approved graphics-library bodies with rustc,
 lowers their ownership/Drop chain through RCC and executes CPU V3. It covers
 repeated mutable Pass draws, consuming finish, explicit submit, separate GPU and
@@ -131,15 +143,15 @@ RGB565, and rejects failed/saturated measurements. Pixel and serial timing stay
 in the dedicated native GPU/DS2 RTL tests.
 
 The bounded `capture_layout` target executes the actual formal renderer producer
-with legacy row, explicit row and pure column capture profiles. It emits portable
+with the production column capture layout. It emits portable
 manifest/source identities and real CPU header/range/public-read fixtures under
 `target/capture-layout`, checks exact physical spans, resource mismatches,
-end-bound rejection and lease expiry, and preserves legacy row bytes. Complete
+end-bound rejection and lease expiry, and rejects legacy row metadata. Complete
 payloads are host copies during the frozen gate. It provides no UART, GPU pixel
 or board qualification; see [capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).
 
 The separate bounded `capture_draw` target records one native triangle across
-three real RCC/CPU Prepared gates for each row/column profile. It checks actual
+three real RCC/CPU Prepared gates for the column profile. It checks actual
 DRAW bindings, positive Z, material/transform changes and A/B/A command-slot
 reuse with distinct tokens. Set `GPU_CAPTURE_DRAW_DIR` to archive its manifest,
 program, origins and each gate's complete frozen inputs/preimages outside the
@@ -148,7 +160,7 @@ replay and pixel/depth verification remain consumer responsibilities.
 
 The same target's `real_full_scene` case executes the pinned formal profiler
 frame body, with complete box/RGB/rabbit assets and OBS UI, across three real
-gates per row/column profile. The middle gate resumes after a modeled long pause;
+gates for the column profile. The middle gate resumes after a modeled long pause;
 production input/time baselines and statistics invalidation/recovery are checked
 without changing the scene body. `GPU_CAPTURE_FULL_SCENE_DIR` selects its output;
 `GPU_CAPTURE_LAYOUT_DIR` overrides the older layout target's default archive

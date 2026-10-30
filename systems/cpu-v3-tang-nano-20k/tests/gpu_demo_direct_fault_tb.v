@@ -46,7 +46,7 @@ assign mready=ms==0&&cycle%5!=1;
 assign mwready=ms==3&&cycle%4!=1;
 assign mrv=(ms==2&&cycle%3!=1)||ms==5;
 assign mrd=mem[mb+mi];
-assign me=FAULT&&ms==5&&mb>=('h490000/8)&&!injected&&((FAULT==1&&busy)||(FAULT==2&&!busy));
+assign me=FAULT&&ms==5&&mb>=('h4c0000/8)&&!injected&&((FAULT==1&&busy)||(FAULT==2&&!busy));
 always @(posedge clk)begin
  if(reset)begin ms<=0;mi<=0;end else case(ms)
  0:if(mq&&mready)begin
@@ -61,7 +61,7 @@ always @(posedge clk)begin
    if(me)begin injected<=1;$display("CACHE_INJECT cycle=%0d maintenance=%0d address=%h",cycle,busy,mb);end
    else begin
      mem[mb]<=mwbuf[0];mem[mb+1]<=mwbuf[1];mem[mb+2]<=mwbuf[2];mem[mb+3]<=mwbuf[3];
-     if(mb>=('h490000/8)&&mb<('h4b0000/8))cpu_high_writes<=cpu_high_writes+1;
+     if(mb>=('h4c0000/8)&&mb<('h4e0000/8))cpu_high_writes<=cpu_high_writes+1;
    end
    ms<=0;
  end
@@ -91,8 +91,8 @@ always @(posedge clk)if(!reset)begin
  if(frq)$fatal(1,"Clear-only pass unexpectedly reads framebuffer");
  if(fwq&&fwr)begin
    if(fwc!=3||fwa[5:0]!=0)$fatal(1,"GPU write framing");
-   if(!((fwa>=('h430000/2)&&fwa<('h430000/2)+96000)||
-        (fwa>=('h460000/2)&&fwa<('h460000/2)+96000)))$fatal(1,"GPU wrote Front/padding/neighbour");
+   if(!((fwa>=('h440000/2)&&fwa<('h440000/2)+102400)||
+        (fwa>=('h480000/2)&&fwa<('h480000/2)+102400)))$fatal(1,"GPU wrote Front/padding/neighbour");
    wa<=1;wb<=fwa>>2;wi<=0;delay_w<=5;writes<=writes+1;
  end else if(wa)begin
    if(fwready)begin buf_w[wi]<=fwd;wi<=wi+1;end
@@ -106,12 +106,12 @@ end
 
 integer starts=0,completions=0,maintenance=0,fst_address=0,fst_cycles=0,idx;reg restarted_after_error=0;
 task check_surface;input[15:0]color,depth;integer q;reg[63:0]expected;begin
- for(q='h400000/8-16;q<'h4b0000/8+16;q=q+1)begin
+ for(q='h400000/8-16;q<'h4e0000/8+16;q=q+1)begin
    expected=64'h55aa55aa55aa55aa;
-   if(q>='h430000/8&&q<('h430000+192000)/8)expected={4{color}};
-   else if(q>='h460000/8&&q<('h460000+192000)/8)expected={4{depth}};
+   if(q>='h440000/8&&q<('h440000+204800)/8)expected={4{color}};
+   else if(q>='h480000/8&&q<('h480000+204800)/8)expected={4{depth}};
    // CPU owns only the first command sector and the 32-byte object in each slot.
-   else if((q>='h490000/8&&q<'h490080/8)||(q>='h4a0000/8&&q<'h4a0020/8))expected=mem[q];
+   else if((q>='h4c0000/8&&q<'h4c0080/8)||(q>='h4d0000/8&&q<'h4d0020/8))expected=mem[q];
    if(mem[q]!==expected)$fatal(1,"Framebuffer/padding/Front mismatch q=%h got=%h expected=%h",q,mem[q],expected);
  end
 end endtask
@@ -128,7 +128,7 @@ always @(posedge clk)begin
      maintenance<=maintenance+1;
    end
    if(wen&&di==4&&ch==1)begin
-     if(wdata!='h9200||FAULT||maintenance==0||cpu_high_writes==0)$fatal(1,"Unexpected GPU launch/visibility");
+     if(wdata!='h9800||FAULT||maintenance==0||cpu_high_writes==0)$fatal(1,"Unexpected GPU launch/visibility");
      starts<=starts+1;
      for(idx=0;idx<8;idx=idx+1)
        if(mem[(fst_address+idx)>>2][((fst_address+idx)%4)*16+:16]!==((idx%2)?idx/2+1:0))$fatal(1,"Old FST not visible before launch");
@@ -146,7 +146,7 @@ end
 initial begin
  for(idx=0;idx<65536;idx=idx+1)rom[idx]=16'h6c00;
  for(idx=0;idx<32768;idx=idx+1)mem[idx]=0;
- for(idx='h400000/8-16;idx<'h4b0000/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
+ for(idx='h400000/8-16;idx<'h4e0000/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
  $readmemh("__PROGRAM__",rom);
  repeat(3)@(posedge clk);@(negedge clk);reset=0;
  wait(halted||fault);#1;

@@ -144,7 +144,7 @@ renderer_close(r);halt(0x600d);}"#;
                 let source = (((command >> 10) & 0x3ffff) * 32) as usize;
                 let destination = (((command >> 3) & 127) * 16) as usize;
                 let size = ((32 << ((command >> 1) & 3)) / 2) as usize;
-                let at = (source - 0x4a0000) / 2;
+                let at = (source - 0x4d0000) / 2;
                 local[destination..destination + size].copy_from_slice(&objects[at..at + size]);
             }
             5 => {

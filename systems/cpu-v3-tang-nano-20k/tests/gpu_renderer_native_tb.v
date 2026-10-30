@@ -89,11 +89,11 @@ localparam SLOTA=__SLOTA__,SLOTB=__SLOTB__;
 localparam PAGES=__PAGES__,PIPE=__PIPE__,TARGETS=__TARGETS__,RENDERER=__RENDERER__,OLD=__OLD__,DIRTY=__DIRTY__;
 function[15:0]word_at;input integer word;begin word_at=mem[word>>2]>>((word%4)*16);end endfunction
 function protected_color;input[21:0]address;begin
- protected_color=(address>=display.active_base&&address<display.active_base+96000)||
- (display_outstanding&&address>=display_base&&address<display_base+96000);
+ protected_color=(address>=display.active_base&&address<display.active_base+102400)||
+ (display_outstanding&&address>=display_base&&address<display_base+102400);
 end endfunction
 function[15:0]pixel_at;input integer base,x,y;integer off;begin
- off=((y/16)*25+x/16)*512+(y%16)*32+(x%16)*2;
+ off=((x/16)*16+y/16)*512+(y%16)*32+(x%16)*2;
  pixel_at=word_at((base+off)/2);
 end endfunction
 always @(posedge clk)begin
@@ -123,11 +123,11 @@ always @(posedge clk)begin
   if(dq&&dr&&dw&&da>=22'h200000)begin
    // References live in CPU memory; observe accepted scalar/FST stores, not stale DRAM metadata.
    for(k=0;k<2;k=k+1)begin
-    if((da>=(k==0?'h490000:'h7e0000)/2&&da<((k==0?'h490000:'h7e0000)+65536)/2)||
-       (da>=(k==0?'h4a0000:'h7f0000)/2&&da<((k==0?'h4a0000:'h7f0000)+65536)/2))begin
+    if((da>=(k==0?'h4c0000:'h7e0000)/2&&da<((k==0?'h4c0000:'h7e0000)+65536)/2)||
+       (da>=(k==0?'h4d0000:'h7f0000)/2&&da<((k==0?'h4d0000:'h7f0000)+65536)/2))begin
      if(shadow[PAGES+4*k]>=2)begin
       if(shadow[PAGES+4*k]!=2||shadow[PIPE+2]!=k+1||gpu.core.busy||display.next_pending)$fatal(1,"held input store");
-      if(da<(k==0?'h4a0000:'h7f0000)/2+shadow[TARGETS+k]-1||da>=(k==0?'h4a0000:'h7f0000)/2+shadow[TARGETS+k]-1+16)$fatal(1,"non-Target Recorded store");
+      if(da<(k==0?'h4d0000:'h7f0000)/2+shadow[TARGETS+k]-1||da>=(k==0?'h4d0000:'h7f0000)/2+shadow[TARGETS+k]-1+16)$fatal(1,"non-Target Recorded store");
      end
     end
     if(da>='h7df800/2+k*512&&da<'h7df800/2+(k+1)*512&&shadow[PAGES+4*k]!=1)$fatal(1,"UI modified while referenced/free");
@@ -139,7 +139,7 @@ always @(posedge clk)begin
   if(display_valid&&(display_last||display_error))begin display_outstanding<=0;display_terminals<=display_terminals+1;end
   if(slot_valid[2]&&slot_ready[2])begin
    if(protected_color(slot_address[2]))$fatal(1,"GPU write to Front or old read");
-   if(!((slot_address[2]>='h200000&&slot_address[2]<'h200000+96000)||(slot_address[2]>='h218000&&slot_address[2]<'h218000+96000)||(slot_address[2]>='h230000&&slot_address[2]<'h230000+96000)))$fatal(1,"GPU output outside planes");
+   if(!((slot_address[2]>='h200000&&slot_address[2]<'h200000+102400)||(slot_address[2]>='h220000&&slot_address[2]<'h220000+102400)||(slot_address[2]>='h240000&&slot_address[2]<'h240000+102400)))$fatal(1,"GPU output outside planes");
   end
   if(wen&&di==7&&ch==8)begin prepare<=1;$display("NATIVE_RECORD tick=%0d cycle=%0d gpu=%0d pending=%0d",wdata,cycle,gpu.core.busy,display.next_pending);end
   if(wen&&di==7&&ch==9)prepare<=0;
@@ -149,12 +149,12 @@ always @(posedge clk)begin
   if(wen&&di==4&&ch==0)last_count<=wdata;
   if(wen&&di==4&&ch==1)begin
    if(gpu.core.busy||display.next_pending)$fatal(1,"submitted before GPU/Display retirement");
-   if(wdata!=(starts%2==0?'h9200:'hfc00))$fatal(1,"not A/B/A inputs");
+   if(wdata!=(starts%2==0?'h9800:'hfc00))$fatal(1,"not A/B/A inputs");
    for(idx=0;idx<4;idx=idx+1)begin
     if(word_at(OLD+idx*2)!==0||word_at(OLD+idx*2+1)!==starts+idx+1)$fatal(1,"old FST not published");
    end
    if(word_at(DIRTY)!==16'h5101+starts||word_at(DIRTY+1)!==16'h5201+starts)$fatal(1,"dirty scalar not published");
-   active_cb=wdata*64;active_obj=(starts%2==0?'h4a0000:'h7f0000)/2;active_page='h7df800/2+(starts%2)*512;
+   active_cb=wdata*64;active_obj=(starts%2==0?'h4d0000:'h7f0000)/2;active_page='h7df800/2+(starts%2)*512;
    ncmd=shadow[(starts%2==0?SLOTA:SLOTB)+7];nobj=shadow[(starts%2==0?SLOTA:SLOTB)+8];
    if(ncmd!=(last_count+1)*2||ncmd>32768||nobj>32768||ncmd<2)$fatal(1,"native count/capacity mismatch");
    if(word_at(active_cb+ncmd-2)!==0||word_at(active_cb+ncmd-1)!==16'hf000)$fatal(1,"END not last valid command");
@@ -172,11 +172,11 @@ always @(posedge clk)begin
    for(idx=0;idx<nobj;idx=idx+1)if(word_at(active_obj+idx)!==snap_obj[idx])$fatal(1,"inflight object mutated");
    for(idx=0;idx<400;idx=idx+1)if(word_at(active_page+idx)!==snap_ui[idx])$fatal(1,"inflight UI mutated");
    terminals<=terminals+1;
-   if(pixel_at(terminals%2==0?'h430000:'h400000,3,2)!==16'hffff)$fatal(1,"real UI missing");
-   if(pixel_at(terminals%2==0?'h430000:'h400000,2,2)!==(terminals==0?16'h1112:16'hffff))$fatal(1,"wrong UI glyph generation");
-   if(pixel_at('h460000,200,120)==16'hffff||pixel_at('h460000,399,239)!==16'hffff)$fatal(1,"real depth coverage missing");
-   if(pixel_at(terminals%2==0?'h430000:'h400000,200,120)!==16'hf800)$fatal(1,"real triangle missing");
-   if(pixel_at(terminals%2==0?'h430000:'h400000,399,239)!==16'h1112+terminals)$fatal(1,"real clear missing");
+   if(pixel_at(terminals%2==0?'h440000:'h400000,3,2)!==16'hffff)$fatal(1,"real UI missing");
+   if(pixel_at(terminals%2==0?'h440000:'h400000,2,2)!==(terminals==0?16'h1112:16'hffff))$fatal(1,"wrong UI glyph generation");
+   if(pixel_at('h480000,200,120)==16'hffff||pixel_at('h480000,399,239)!==16'hffff)$fatal(1,"real depth coverage missing");
+   if(pixel_at(terminals%2==0?'h440000:'h400000,200,120)!==16'hf800)$fatal(1,"real triangle missing");
+   if(pixel_at(terminals%2==0?'h440000:'h400000,399,239)!==16'h1112+terminals)$fatal(1,"real clear missing");
    $display("NATIVE_GPU_DONE seq=%0d cycle=%0d",terminals,cycle);
   end
   was_busy<=gpu.core.busy;

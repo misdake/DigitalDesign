@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import re
 
 ROOT=Path(__file__).resolve().parents[3]
 SYSTEM=ROOT/'systems/cpu-v3-tang-nano-20k'
@@ -17,11 +18,13 @@ def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def identity(output, assets, version):
     output=Path(output).resolve();assets=Path(assets).resolve()
     catalog=json.loads((assets/'assets.json').read_text())
-    column=version==2 and catalog["capture_layout"]["abi"]==2
+    if version != 2 or catalog["capture_layout"]["abi"] != 2:
+        raise ValueError('Only explicit column capture fixtures are supported')
+    column=True
     if column:
         generated=output/'profile-rcc';generated.mkdir(parents=True,exist_ok=True)
         for p in (SYSTEM/'rcc').glob('*.rs'):
-            source=SYSTEM/'rcc/gpu_layout_column16.rs' if p.name=='gpu_layout.rs' else p
+            source=SYSTEM/'rcc/gpu_layout.rs' if p.name=='gpu_layout.rs' else p
             shutil.copy2(source,generated/p.name)
     inputs={str(p.relative_to(SYSTEM)).replace('\\','/'):p for p in (SYSTEM/'rcc').glob('*.rs')}
     for p in (SYSTEM/'build_support').glob('*.rs'):inputs[str(p.relative_to(SYSTEM)).replace('\\','/')]=p
@@ -42,12 +45,12 @@ def identity(output, assets, version):
     for name,path in sorted(inputs.items()):
         dest=output/'identity'/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,dest)
         files.append(dict(name=name,path=dest.relative_to(output).as_posix(),bytes=dest.stat().st_size,sha256=sha(dest)))
-    command_abi=int(re.search(r'^pub const GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = ([0-9]+);', (SYSTEM/'rcc/gpu_capture_abi.rs').read_text(), re.M).group(1))
+    command_abi=int(re.search(r'^pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = ([0-9]+);', (SYSTEM/'rcc/gpu_capture_abi.rs').read_text(), re.M).group(1))
     value=dict(schema='digitaldesign.gpu-capture-build',version=version,command_abi=command_abi,clock_hz=54000000,mc_clock_hz=108000000,
         mc_profile='stream-cl3-register-return',files=files,resources=catalog['resources'],
         options=dict(fixture_only=True,capture_allocation_guards=False),toolchain=dict(compiler='repository RCC CPU V3',execution='CpuV3Sim controlled GPU/Display peer'),
         source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip())
-    if version==2:value.update(layout=catalog['capture_layout'])
+    value.update(layout=catalog['capture_layout'])
     if catalog.get('capture_scene')=='canonical-full-scene':
         value['options'].update(full_scene=True,scene=catalog['scene'],cpu_capture_gates=3,
                                stimulus='fixed formal camera; neutral analog peer; middle gate resume')
@@ -58,4 +61,4 @@ def identity(output, assets, version):
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(__doc__);p.add_argument('--output',required=True,type=Path);p.add_argument('--assets',required=True,type=Path);p.add_argument('--version',required=True,type=int,choices=[1,2]);a=p.parse_args();identity(a.output,a.assets,a.version)
+    p=argparse.ArgumentParser(__doc__);p.add_argument('--output',required=True,type=Path);p.add_argument('--assets',required=True,type=Path);p.add_argument('--version',required=True,type=int,choices=[2]);a=p.parse_args();identity(a.output,a.assets,a.version)

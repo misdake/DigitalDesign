@@ -58,13 +58,13 @@ always @(posedge clk)begin
   end
   if(@CLEAR@)begin
    if(fb_w_request_valid&&fb_w_request_ready)begin
-    if(fb_w_count!=3||fb_w_address!==((requests<1500?32'h100000:32'h140000)/2+(requests%1500)*64))
+    if(fb_w_count!=3||fb_w_address!==((requests<1600?32'h100000:32'h140000)/2+(requests%1600)*64))
      $fatal(1,"clear request address %0d %h",requests,fb_w_address);
     if(requests==0)first=cycle;
     requests=requests+1;inflight=inflight+1;if(inflight>peak)peak=inflight;
    end
    if(fb_w_data_ready)begin
-    if(fb_w_data!==(beats<24000?64'h5aa55aa55aa55aa5:64'ha55aa55aa55aa55a))$fatal(1,"clear data");
+    if(fb_w_data!==(beats<25600?64'h5aa55aa55aa55aa5:64'ha55aa55aa55aa55a))$fatal(1,"clear data");
     beats=beats+1;
    end
    if(fb_w_response_valid&&fb_w_response_last)begin terms=terms+1;inflight=inflight-1;last=cycle;end
@@ -87,13 +87,13 @@ initial begin
  if(device_read_data[1]||wi!=@NWORDS@||work_accepts!=@JOBS@||work_completes!=@JOBS@||mesh_done_count!=@MESH@||inflight!=0)
   $fatal(1,"result err%0d scratch%0d jobs%0d/%0d mesh%0d flight%0d",device_read_data[1],wi,work_accepts,work_completes,mesh_done_count,inflight);
  if(@CLEAR@)begin
-  if(requests!=3000||terms!=3000||beats!=48000)$fatal(1,"clear conservation");
-  for(j=0;j<48000;j=j+1)begin
+  if(requests!=3200||terms!=3200||beats!=51200)$fatal(1,"clear conservation");
+  for(j=0;j<51200;j=j+1)begin
    if(pin.mem[native_word(32'h100000+j*4)]!==32'h5aa55aa5)$fatal(1,"clear color word%0d",j);
    if(pin.mem[native_word(32'h140000+j*4)]!==32'ha55aa55a)$fatal(1,"clear depth word%0d",j);
   end
-  if(pin.mem[native_word(32'h0ffffc)]!==32'hcafebabe||pin.mem[native_word(32'h12ee00)]!==32'hcafebabe||
-     pin.mem[native_word(32'h13fffc)]!==32'hcafebabe||pin.mem[native_word(32'h16ee00)]!==32'hcafebabe)$fatal(1,"clear boundary guard");
+  if(pin.mem[native_word(32'h0ffffc)]!==32'hcafebabe||pin.mem[native_word(32'h132000)]!==32'hcafebabe||
+     pin.mem[native_word(32'h13fffc)]!==32'hcafebabe||pin.mem[native_word(32'h172000)]!==32'hcafebabe)$fatal(1,"clear boundary guard");
  end
  $display("PASS CONTINUATION clear=%0d mode=%0d total=%0d work=%0d scratch=%0d requests=%0d peak=%0d",@CLEAR@,mode,cycle,last-first+1,wi,requests,peak);
  $finish;
@@ -116,7 +116,7 @@ def assets(case, clear, dma_jobs=64, meshlet_blocks=8, nops=0):
         copy(272,0x50140,target_params(0x100000,0x140000))
         cb.emit('DMA',272,0x50140,32);cb.emit('WAIT',a=1);cb.emit('SET_TARGET',272)
         cb.emit('CLEAR',0,0x5aa5);cb.emit('CLEAR',1,0xa55a)
-        for a in [0xffffc,0x12ee00,0x13fffc,0x16ee00]:seed[a]=0xcafebabe
+        for a in [0xffffc,0x132000,0x13fffc,0x172000]:seed[a]=0xcafebabe
         jobs, meshes = 1,0
     else:
         # A valid metadata prefix; the payload is opaque until a later DRAW.
@@ -164,7 +164,7 @@ def main():
     if args.clear_stop_after:
         tb=tb.replace('always @(negedge clk)if(!reset)ce=', 'always @(negedge clk)if(!reset)begin if(requests>='+str(args.clear_stop_after)+')abort=1;end\nalways @(negedge clk)if(!reset)ce=')
         tb=tb.replace('while(busy)@(negedge clk);', 'while(!(dut.processor.state==10&&dut.dma_idle&&!dut.memory_busy))@(negedge clk);if(!busy||!fault)$fatal(1,"abort falsely completed");')
-        begin=tb.index('  if(requests!=3000')
+        begin=tb.index('  if(requests!=3200')
         end=tb.index('  if(pin.mem[native_word(32\'h0ffffc)]',begin)
         tb=tb[:begin]+"""  if(requests<@STOP@||requests>@STOP@+1||terms!=requests||beats!=requests*16)$fatal(1,"clear short drain conservation");
   for(j=0;j<requests*32;j=j+1)

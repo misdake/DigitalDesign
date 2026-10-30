@@ -1,9 +1,8 @@
 # Fixed400x240 framebuffer texture view
 
-`gpu-v2-vliw-export OUTPUT rtt400x240 [portable]` adds a base-only RGB565 view
-over macro-column16 storage and the resident16x8 cache. Ordinary command,
-command16x8 and layout-only command-column16 retain their own contracts. The
-system selects CPU_V3_GPU_PROFILE=rtt400x240-column16 explicitly.
+The production `gpu-v2-vliw-export OUTPUT command [portable]` supports both
+ordinary column POT textures and fixed400x240 framebuffer views. The system uses
+this same command composition with no layout or RTT hardware variant.
 
 ## Descriptor and storage
 
@@ -45,20 +44,30 @@ out-of-image neighbors have no weight or cache group. Bilinear's half-texel
 subtraction is not an extra nearest correction. The fullscreen demo uses actual
 packed UV and pixel centers without a nearest half-texel bias.
 
-The existing U/V calendar shares400/256=25/16 and240/256=15/16: compute5*q,
-then4*(5*q) plus/minus5*q and shift four bits. Truncation is exact. Negative
-bilinear coordinates are detected before unsigned subtraction wrap can escape;
-the upper clamp compares integer texels. No coordinate stage, RAM or source
-lifetime is added. LOD retains its calendar, clamped to level0 for this view.
+The existing U/V calendar computes U as`25*q=q+8*q+16*q` and V as
+`15*q=16*q-q`. A carry-save sum feeds one carry-propagating add, then an exact
+four-bit shift. POT and RTT share the signed half-texel subtraction. Negative
+bilinear coordinates clamp before wrap can escape. A16-bit clamped input cannot
+exceed integer texel399 (U) or239 (V), so equality alone detects the upper edge.
+No coordinate stage, DSP, RAM or source lifetime is added. LOD retains its
+calendar, clamped to level0 for this view.
 
 For base B and logical(x,y):
 
 ```text
-macro = (x >> 4)*16 + (y >> 4)
+pitch_y_log2 = view ? 4 : max(level_log2 - 4, 0)
+macro = ((x >> 4) << pitch_y_log2) + (y >> 4)
 line = B + 512*macro + 256*((y >> 3)&1)
 texel = line + 32*(y&7) + 2*(x&15)
 refill = line + 128*sector, sector=0,1
 ```
+
+SET_RENDER locks the shape bit with the current descriptor. The packet accepts
+the selected level on its first enabled edge; the second derives the small
+pitch from that held level and shape and forms the shared physical address.
+No second copy of derived pitch is stored. II1, two-edge latency and
+CE/backpressure behavior are unchanged. Shift arithmetic stays outside cache
+return, retirement and global CE control.
 
 The8KiB cache has32 lines,8 sets,4 ways and four1024x16 banks. Physical256-byte
 tags remain compatible with column POT assets. Both128-byte children must succeed

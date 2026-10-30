@@ -103,8 +103,8 @@ module gpu_command_processor(
  reg object_bad;
  always @*begin
   object_bad=0;
-  if(opcode==SET_TARGET)object_bad=cp_q[63:28]!=0||(|cp_q[6:0])||(|cp_q[20:14])||cp_q[13:0]>16009||cp_q[27:14]>16009||
-   !(({1'b0,cp_q[13:0]}+15'd375<={1'b0,cp_q[27:14]})||({1'b0,cp_q[27:14]}+15'd375<={1'b0,cp_q[13:0]}));
+  if(opcode==SET_TARGET)object_bad=cp_q[63:28]!=0||(|cp_q[6:0])||(|cp_q[20:14])||cp_q[13:0]>15984||cp_q[27:14]>15984||
+   !(({1'b0,cp_q[13:0]}+15'd400<={1'b0,cp_q[27:14]})||({1'b0,cp_q[27:14]}+15'd400<={1'b0,cp_q[13:0]}));
   else if(opcode==MEMCPY)object_bad=cp_q[63:39]!=0||copy_source_end>16384||copy_destination_end>16384||
    !((copy_source_end<={1'b0,cp_q[27:14]})||(copy_destination_end<={1'b0,cp_q[13:0]}));
   else if(apply_render)case(object_index)
@@ -221,7 +221,7 @@ module gpu_command_processor(
    if(state==CLEAR_REQUEST&&!clear_offer&&clear_flight<2&&!stop)clear_offer<=1;
    if(clear_offer&&clear_ready)begin
     clear_offer<=0;
-    if(clear_sector==1499||stop)state<=CLEAR_WAIT;
+    if(clear_sector==1599||stop)state<=CLEAR_WAIT;
     else command[27:17]<=clear_sector+1'b1;
    end
    case({clear_offer&&clear_ready,clear_active&&clear_complete})

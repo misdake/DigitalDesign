@@ -83,14 +83,14 @@ fn ui_snapshot_crosses_window_and_matches_host_descriptor_and_commands() {
     let (cpu, _) = run(r#"mod gpu;static C:Buf<u16,375>=Buf::new([0;375]);
  fn check(x:bool){if !x{halt(0xbad);}}fn main(){unsafe{write_dseg_page(3,19);}
  check(gpu_init()==GPU_IDLE);let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,1,65535);check(pass==1);
- let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};let mut i:u16=0;
+ let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};let mut i:u16=0;
  while i<375{C[i]=(i&255)|(((374-i)&255)<<8);i+=1;}
  GPU_CB.object_words=16320;
  check(gpu_pass_draw_ui_grid(pass,view_of(&mut a),C.as_array()));check(GPU_CB.object_words==16720);
  check(gpu_ui_fill(C.as_array(),255));check(read_dseg_page(3)==19);
  check(gpu_pass_end(pass));check(gpu_cb_finish(cb));halt(0x600d);}"#);
     let word = |address: u32| cpu.physical_memory(PhysicalWordAddress::new(address / 2));
-    let base = 0x4a0000 + 16320 * 2;
+    let base = 0x4d0000 + 16320 * 2;
     for i in 0..375 {
         assert_eq!(
             word(base + i * 2),
@@ -105,13 +105,14 @@ fn ui_snapshot_crosses_window_and_matches_host_descriptor_and_commands() {
         .collect();
     assert_eq!(
         object,
-        gpu_v2::system::vliw_command::ui_params(base, 0x4c0000).unwrap()
+        gpu_v2::system::vliw_command::ui_params(base, 0x4f0000).unwrap()
     );
     use gpu_v2::system::vliw_command::Command as C;
     let expected = [
         C::wait(true, true),
         C::FLUSH,
-        C::dma_local(0x4a0000, 276, 32).unwrap(),
+        C::TEX_INVALIDATE,
+        C::dma_local(0x4d0000, 276, 32).unwrap(),
         C::wait(true, false),
         C::set_target(276).unwrap(),
         C::clear(false, 1),
@@ -126,7 +127,7 @@ fn ui_snapshot_crosses_window_and_matches_host_descriptor_and_commands() {
         C::END,
     ];
     let bytes: Vec<u8> = (0..64)
-        .flat_map(|i| word(0x490000 + i * 2).to_le_bytes())
+        .flat_map(|i| word(0x4c0000 + i * 2).to_le_bytes())
         .collect();
     let mut gold: Vec<u8> = expected.iter().flat_map(|c| c.encode()).collect();
     gold.resize(128, 0);
@@ -136,10 +137,10 @@ fn ui_snapshot_crosses_window_and_matches_host_descriptor_and_commands() {
 fn rejected_ui_preserves_recording_and_exact_object_capacity_is_usable() {
     run(r#"mod gpu;static C:Buf<u16,375>=Buf::new([65535;375]);
  fn check(x:bool){if !x{halt(0xbad);}}fn main(){check(gpu_init()==GPU_IDLE);let c=gpu_cb_begin();
- let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+ let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};
  check(!gpu_pass_draw_ui_grid(c,view_of(&mut a),C.as_array()));let p=gpu_pass_begin(c,0,65535);check(p==1);
  let old=GPU_CB.command_words;let object=GPU_CB.object_words;let used=GPU_BUILD.as_array()[2u16];
- a.sector=0x9801;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
+ a.sector=0x9e01;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
  a.sector=0xfe00;a.sectors=513;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
  a.sectors=511;check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));a.sectors=512;
  check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));a.sector=0xf800;
@@ -157,7 +158,7 @@ fn rejected_ui_preserves_recording_and_exact_object_capacity_is_usable() {
 fn ui_cannot_record_after_finish_inflight_ready_or_pending() {
     let (_, maintenance) = run(r#"mod gpu;static C:Buf<u16,375>=Buf::new([65535;375]);
  fn check(x:bool){if !x{halt(0xbad);}}fn main(){check(gpu_init()==GPU_IDLE);let c=gpu_cb_begin();let p=gpu_pass_begin(c,0,65535);
- let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};check(gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
+ let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};check(gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));
  check(gpu_pass_end(p));check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));check(gpu_cb_finish(c));
  check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));check(gpu_submit_idle(c)==GPU_PENDING);
  check(!gpu_pass_draw_ui_grid(p,view_of(&mut a),C.as_array()));check(gpu_poll(c)==GPU_COMPLETED);
@@ -171,7 +172,7 @@ fn ranges_limit_initialization_and_snapshot_and_coalesce_only_ui_fences() {
     let (cpu, _) = run(r#"mod gpu;static C:Buf<u16,375>=Buf::new([0x0100;375]);
  fn check(x:bool){if !x{halt(0xbad);}}fn main(){unsafe{write_dseg_page(3,19);}
  check(gpu_init()==GPU_IDLE);let c=gpu_cb_begin();let p=gpu_pass_begin(c,1,65535);
- let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+ let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};
  let before=GPU_CB.command_words;let object=GPU_CB.object_words;
  check(gpu_pass_ui_begin_range(p,view_of(&mut a),255,4,4)==GPU_CB_NONE);
  check(!gpu_pass_set_ui_grid_range(p,view_of(&mut a),C.as_array(),1,751));
@@ -194,7 +195,7 @@ fn ranges_limit_initialization_and_snapshot_and_coalesce_only_ui_fences() {
  check(gpu_pass_end(p));check(gpu_cb_finish(c));check(read_dseg_page(3)==19);halt(0x600d);}"#);
     let word = |address: u32| cpu.physical_memory(PhysicalWordAddress::new(address / 2));
     // Full objects remain allocated/readable, but unselected words were not filled/copied.
-    let bases = [0x4a0080, 0x4a0400, 0x4a0780];
+    let bases = [0x4d0080, 0x4d0400, 0x4d0780];
     assert_eq!(word(bases[0]), 0x01ff);
     assert_eq!(word(bases[0] + 2), 0x0302);
     assert_eq!(word(bases[0] + 4), 0);
@@ -220,7 +221,7 @@ fn ranges_limit_initialization_and_snapshot_and_coalesce_only_ui_fences() {
         C::ui_grid_range(276, 749, 750).unwrap(),
     ];
     let actual: Vec<u8> = (0..expected.len() * 2)
-        .flat_map(|i| word(0x490000 + 28 + i as u32 * 2).to_le_bytes())
+        .flat_map(|i| word(0x4c0000 + 32 + i as u32 * 2).to_le_bytes())
         .collect();
     assert_eq!(
         actual,
@@ -233,11 +234,11 @@ fn ranges_limit_initialization_and_snapshot_and_coalesce_only_ui_fences() {
     if let Some(path) = std::env::var_os("GPU_RCC_UI_RANGE_FIXTURE") {
         let commands: Vec<u32> = (0..22)
             .filter(|i| *i != 5 && *i != 6)
-            .map(|i| u32::from(word(0x490000 + i * 4)) | (u32::from(word(0x490002 + i * 4)) << 16))
+            .map(|i| u32::from(word(0x4c0000 + i * 4)) | (u32::from(word(0x4c0002 + i * 4)) << 16))
             .collect();
         assert_eq!(*commands.last().unwrap(), 0xf0000000);
-        let objects: Vec<u16> = (0..1360).map(|i| word(0x4a0000 + i * 2)).collect();
-        let target = u32::from(word(0x4a0000)) | (u32::from(word(0x4a0002)) << 16);
+        let objects: Vec<u16> = (0..1360).map(|i| word(0x4d0000 + i * 2)).collect();
+        let target = u32::from(word(0x4d0000)) | (u32::from(word(0x4d0002)) << 16);
         let color = (target & 16383) << 9;
         let depth = ((target >> 14) & 16383) << 9;
         let fixture = format!(
@@ -261,7 +262,7 @@ fn one_ui_install_drives_a_batch_without_descriptor_reload() {
     let (cpu, _) = run(r#"mod gpu;static C:Buf<u16,375>=Buf::new([0x0100;375]);
  fn check(x:bool){if !x{halt(0xbad);}}fn main(){
  check(gpu_init()==GPU_IDLE);let cb=gpu_cb_begin();let pass=gpu_pass_begin(cb,1,65535);
- let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+ let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};
  check(!gpu_pass_draw_ui_range(pass,1,4));
  C[1u16]=0x0302;C[374u16]=0xfe01;
  let before=GPU_CB.command_words;check(gpu_pass_set_ui_grid(pass,view_of(&mut a),C.as_array()));
@@ -272,16 +273,16 @@ fn one_ui_install_drives_a_batch_without_descriptor_reload() {
  check(gpu_pass_draw_ui_range(pass,749,750));check(GPU_CB.command_words==before+14);
  check(gpu_pass_end(pass));check(gpu_cb_finish(cb));halt(0x600d);}"#);
     let word = |address: u32| cpu.physical_memory(PhysicalWordAddress::new(address / 2));
-    let commands: Vec<u32> = (0..17)
-        .map(|i| u32::from(word(0x490000 + i * 4)) | (u32::from(word(0x490002 + i * 4)) << 16))
+    let commands: Vec<u32> = (0..18)
+        .map(|i| u32::from(word(0x4c0000 + i * 4)) | (u32::from(word(0x4c0002 + i * 4)) << 16))
         .collect();
     use gpu_v2::system::vliw_command::Command as C;
     assert_eq!(
-        commands[9],
-        u32::from_le_bytes(C::dma_local(0x4a0380, 276, 32).unwrap().encode())
+        commands[10],
+        u32::from_le_bytes(C::dma_local(0x4d0380, 276, 32).unwrap().encode())
     );
-    assert_eq!(commands[10], 0x40000001);
-    for (command, (first, end)) in commands[11..14]
+    assert_eq!(commands[11], 0x40000001);
+    for (command, (first, end)) in commands[12..15]
         .iter()
         .zip([(1, 4), (127, 130), (749, 750)])
     {
@@ -291,22 +292,22 @@ fn one_ui_install_drives_a_batch_without_descriptor_reload() {
         );
     }
     assert_eq!(commands.iter().filter(|c| **c >> 28 == 1).count(), 2); // Target + UI only.
-    assert_eq!(commands[16], 0xf0000000);
-    assert_eq!(word(0x4a0082), 0x0302); // Caller edits cannot alter the installed snapshot.
+    assert_eq!(commands[17], 0xf0000000);
+    assert_eq!(word(0x4d0082), 0x0302); // Caller edits cannot alter the installed snapshot.
     if let Some(path) = std::env::var_os("GPU_RCC_UI_BATCH_FIXTURE") {
         let commands: Vec<_> = commands
             .into_iter()
             .enumerate()
-            .filter_map(|(i, c)| (i != 5 && i != 6).then_some(c))
+            .filter_map(|(i, c)| (i != 6 && i != 7).then_some(c))
             .collect();
-        let objects: Vec<_> = (0..464).map(|i| word(0x4a0000 + i * 2)).collect();
+        let objects: Vec<_> = (0..464).map(|i| word(0x4d0000 + i * 2)).collect();
         let target = u32::from(objects[0]) | (u32::from(objects[1]) << 16);
         let color = (target & 16383) << 9;
         let depth = ((target >> 14) & 16383) << 9;
-        let command_base = 0x490000;
-        let object_base = 0x4a0000;
-        let atlas_base = 0x4c0000;
-        let grid = 0x4a0080;
+        let command_base = 0x4c0000;
+        let object_base = 0x4d0000;
+        let atlas_base = 0x4f0000;
+        let grid = 0x4d0080;
         let fixture = format!(
             r#"{{"command_base":{command_base},"object_base":{object_base},
             "color_base":{color},"depth_base":{depth},"atlas_base":{atlas_base},
@@ -326,7 +327,7 @@ fn production_demo_encodes_only_visible_digits_and_skips_invalid_interval() {
     let (cpu, _) = run(r#"mod overlay_gpu;
  fn check(x:bool){if !x{halt(0xbad);}}fn main(){
  check(gpu_init()==GPU_IDLE);let c=gpu_cb_begin();let p=gpu_pass_begin(c,1,65535);
- let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9800,sectors:512};
+ let mut a:GpuUiAtlas=GpuUiAtlas{sector:0x9e00,sectors:512};
  let mut state:Buf<u16,4>=Buf::new([0,0,1,0]);let before=GPU_CB.command_words;
  check(demo_ui_record(p,view_of(&mut a),state.as_array()));check(GPU_CB.command_words==before);
  state[1u16]=17000;state[3u16]=1;check(demo_ui_record(p,view_of(&mut a),state.as_array()));
@@ -336,19 +337,19 @@ fn production_demo_encodes_only_visible_digits_and_skips_invalid_interval() {
  check(gpu_pass_end(p));check(gpu_cb_finish(c));halt(0x600d);}"#);
     let word = |address: u32| cpu.physical_memory(PhysicalWordAddress::new(address / 2));
     let command =
-        |i: u32| u32::from(word(0x490000 + i * 4)) | (u32::from(word(0x490002 + i * 4)) << 16);
+        |i: u32| u32::from(word(0x4c0000 + i * 4)) | (u32::from(word(0x4c0002 + i * 4)) << 16);
     use gpu_v2::system::vliw_command::Command as C;
     assert_eq!(
-        command(11),
+        command(12),
         u32::from_le_bytes(C::ui_grid_range(276, 52, 56).unwrap().encode())
     );
     assert_eq!(
-        command(14),
+        command(15),
         u32::from_le_bytes(C::ui_grid_range(276, 52, 55).unwrap().encode())
     );
-    assert_eq!(word(0x4a0080 + 52), 0x3731); // "17"
-    assert_eq!(word(0x4a0080 + 54), 0x302e); // ".0"
-    assert_eq!(word(0x4a0400 + 52), 0x2e30); // "0."
-    assert_eq!(word(0x4a0400 + 54), 0xff30); // "0", adjacent byte masked
-    assert_eq!(word(0x4a0080 + 50), 0); // no full-grid FF initialization
+    assert_eq!(word(0x4d0080 + 52), 0x3731); // "17"
+    assert_eq!(word(0x4d0080 + 54), 0x302e); // ".0"
+    assert_eq!(word(0x4d0400 + 52), 0x2e30); // "0."
+    assert_eq!(word(0x4d0400 + 54), 0xff30); // "0", adjacent byte masked
+    assert_eq!(word(0x4d0080 + 50), 0); // no full-grid FF initialization
 }

@@ -4,18 +4,13 @@ import json
 from pathlib import Path
 
 from snapshot import SnapshotError
-from layout import ROW, declared_layout, header_layout, COLUMN_MAP
+from layout import COMMAND_ABI, declared_layout, header_layout, COLUMN_MAP
 
 
 def build_layout(value):
     try:
-        command=value.get('command_abi',1 if value['version']==1 else None)
-        if type(command) is not int or command not in (1, 3):
-            raise ValueError('Unsupported layout/command ABI combination')
-        if value['version'] == 1:
-            if 'layout' in value:
-                raise ValueError('Legacy build v1 cannot carry a replacement layout')
-            return ROW
+        if value['version'] != 2 or value.get('command_abi') != COMMAND_ABI:
+            raise ValueError('Explicit production column/RTT build ABI required')
         return declared_layout(value['layout'])
     except (ValueError, KeyError) as error:
         raise SnapshotError('Unsupported build layout: ' + str(error)) from error
@@ -86,17 +81,13 @@ def create_build(spec_path, out):
         source = (spec_path.parent / entry["path"]).resolve()
         files.append(dict(name=entry["name"], path=str(source),
                           bytes=source.stat().st_size, sha256=digest(source)))
-    value = dict(schema="digitaldesign.gpu-capture-build", version=1,
+    value = dict(schema="digitaldesign.gpu-capture-build", version=2,
                  clock_hz=54_000_000, mc_clock_hz=108_000_000,
                  mc_profile="stream-cl3-register-return", files=files,
                  resources=spec["resources"], options=spec["options"],
                  toolchain=spec["toolchain"], source_commit=spec["source_commit"])
-    if 'command_abi' in spec:
-        value['command_abi'] = spec['command_abi']
-    if 'layout' in spec:
-        value['version'] = 2
-        value['command_abi'] = spec.get('command_abi',1)
-        value['layout'] = declared_layout(spec['layout']).description()
+    value['command_abi'] = spec.get('command_abi', COMMAND_ABI)
+    value['layout'] = declared_layout(spec['layout']).description()
     value["manifest_id"] = declared_id(value)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
@@ -127,7 +118,7 @@ def preflight(capture, build_path, receipt_path):
         raise SnapshotError("Frozen header does not identify this build/catalog")
     receipt = verify_receipt(receipt_path, build)
     header = capture.header
-    if header.get('command_abi', 1) != build.get('command_abi', 1):
+    if header.get('command_abi') != build.get('command_abi'):
         raise SnapshotError('Frozen descriptor and build use different command ABIs')
     layout = header_layout(header)
     if layout != build_layout(build):

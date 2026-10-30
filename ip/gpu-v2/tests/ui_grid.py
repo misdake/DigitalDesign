@@ -35,17 +35,22 @@ def assets(out,case,repeat=1,ranges=None):
                 for lane in range(4):data.append(glyph(c,group*4+(lane^ (2 if y&1 else 0)),y))
         put(0x60000+c*256,struct.pack('<128H',*data))
     want=[];background=[]
-    for i in range(96000):
-        tile,local=divmod(i,256);ty,tx=divmod(tile,25);y=ty*16+local//16;x=tx*16+local%16
+    for i in range(102400):
+        tile,local=divmod(i,256);tx,ty=divmod(tile,16);y=ty*16+local//16;x=tx*16+local%16
         bg=((x*13+y*37)^0x5aa5)&65535
         background.append(bg)
+        if y>=240:
+            want.append(bg)
+            continue
         cell=(y//16)*50+x//8
         char=cells[cell] if visible[cell] else 255
         p=glyph(char,x%8,y%16) if char!=255 else 0
         color=(((p>>11)&31)<<11)|(((p>>6)&31)<<6)|(((p>>10)&1)<<5)|((p>>1)&31) if p&1 else bg
         want.append(color)
-    put(0x100000,struct.pack('<96000H',*background))
-    put(0x140000,struct.pack('<96000H',*([0xa55a]*96000)))
+    put(0x100000,struct.pack('<102400H',*background))
+    put(0x140000,struct.pack('<102400H',*([0xa55a]*102400)))
+    for plane in (0x100000,0x140000):
+        put(plane+204800,struct.pack('<14336I',*([0x5aa5c33c]*14336)))
     put(0x51000,target_params(0x100000,0x140000))
     put(0x51020,struct.pack('<Q',0x50000//128|((0x60000//65536)<<16))+bytes(24))
     cb=CommandBuffer();cb.emit('WAIT',a=3);cb.emit('FLUSH');cb.emit('DMA',272,0x51000,32);cb.emit('WAIT',a=1);cb.emit('SET_TARGET',272);cb.emit('FLUSH')
@@ -76,8 +81,8 @@ def rcc_assets(out,path):
     seed={}
     for line in (out/'seed.txt').read_text().splitlines():
         address,value=(int(v,16) for v in line.split())
-        for old,new,size in [(0x100000,record['color_base'],192000),
-                             (0x140000,record['depth_base'],192000),
+        for old,new,size in [(0x100000,record['color_base'],262144),
+                             (0x140000,record['depth_base'],262144),
                              (0x60000,record['atlas_base'],65536)]:
             if old<=address<old+size:seed[new+address-old]=value
     objects=struct.pack(f'<{len(record["objects"])}H',*record['objects'])
@@ -101,7 +106,7 @@ def rcc_assets(out,path):
                     p=glyph(cells[cell],x,y)
                     if not p&1:continue
                     px,py=cx*8+x,cy*16+y
-                    index=((py//16)*25+px//16)*256+(py%16)*16+px%16
+                    index=((px//16)*16+py//16)*256+(py%16)*16+px%16
                     color=(((p>>11)&31)<<11)|(((p>>6)&31)<<6)|(((p>>10)&1)<<5)|((p>>1)&31)
                     lane=index%2;word=index//2
                     want[word]=(want[word]&~(65535<<(16*lane)))|(color<<(16*lane))
@@ -114,7 +119,6 @@ def main():
     p.add_argument('--case',choices=['sparse','empty','dense','numeric'],default='sparse');p.add_argument('--modes',nargs='+',type=int,choices=[0,1,2,3],default=[0,1]);p.add_argument('--repeat',type=int,choices=[1,2],default=1)
     p.add_argument('--ranges',nargs='+',help='Consecutive independent UI calls, each first:end (exclusive end)')
     p.add_argument('--rcc-records',type=Path,help='Exact compiled-CPU records from GPU_RCC_UI_RANGE_FIXTURE')
-    p.add_argument('--column-major',action='store_true')
     a=p.parse_args()
     ranges=[tuple(map(int,r.split(':'))) for r in a.ranges] if a.ranges else None
     if ranges is not None and (a.repeat!=1 or any(len(r)!=2 or not 0<=r[0]<r[1]<=750 for r in ranges)):
@@ -132,27 +136,13 @@ def main():
     else:length,chars,tiles,ui_reads=assets(out,a.case,a.repeat,ranges)
     calls=len(record['calls']) if record else len(ranges) if ranges else a.repeat
     local_dmas=sum(c>>28==1 for c in record['commands']) if record else 2
-    if a.column_major:
-        assert record is None, 'Column RCC record allocation requires its matching CPU build'
-        seed={int(x,16):int(v,16) for x,v in (line.split() for line in (out/'seed.txt').read_text().splitlines())}
-        mapped={}
-        for address,value in seed.items():
-            for plane in (0x100000,0x140000):
-                if plane<=address<plane+192000:
-                    off=address-plane;tile=off//512;address=plane+((tile%25)*16+tile//25)*512+off%512;break
-            assert address not in mapped;mapped[address]=value
-        for plane in (0x100000,0x140000):
-            for off in range(0,262144,4):
-                tile=off//512
-                if tile>=400 or tile%16==15:mapped[plane+off]=0x5aa5c33c
-        (out/'seed.txt').write_text(''.join(f'{x:x} {v:08x}\n' for x,v in sorted(mapped.items())))
     color_base=record['color_base'] if record else 0x100000
     s=importlib.util.spec_from_file_location('continuation',Path(__file__).with_name('command_continuation.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
     tb=m.TB[:m.TB.index('integer cycle=0')].replace('@PORTS@','\n'.join(decl)).replace('gpu_v2_vliw_command dut(.*);',TASKS+'\ngpu_v2_vliw_command dut(.*);')
     tb+=r'''
 integer cycle=0,mode=0,fd,rc,a,v,j,ui_cycles=0,wr=0,rd=0,ro=0,ui_ro=0,overlap=0;
 integer range_starts=0,local_dmas=0;
-reg[31:0]want[0:47999];
+reg[31:0]want[0:51199];
 integer pause_left=0;reg paused_once=0;
 always @(negedge clk)if(!reset)begin
  if(mode==3)begin
@@ -172,9 +162,9 @@ always @(posedge clk)begin
    $fatal(1,"Repeated DMA/WAIT/FLUSH inside unchanged UI batch");
   if(dut.ui_active)ui_cycles=ui_cycles+1;
   if(fb_r_request_valid&&fb_r_request_ready&&
-     (fb_r_address<@COLOR_HALF@||fb_r_address>=@COLOR_HALF@+96000))$fatal(1,"UI read outside color plane");
+     (fb_r_address<@COLOR_HALF@||fb_r_address>=@COLOR_HALF@+102400))$fatal(1,"UI read outside color plane");
   if(fb_w_request_valid&&fb_w_request_ready&&
-     (fb_w_address<@COLOR_HALF@||fb_w_address>=@COLOR_HALF@+96000))$fatal(1,"UI write outside color plane");
+     (fb_w_address<@COLOR_HALF@||fb_w_address>=@COLOR_HALF@+102400))$fatal(1,"UI write outside color plane");
   if(fb_w_request_valid&&fb_w_request_ready)wr=wr+1;
   if(fb_r_request_valid&&fb_r_request_ready)rd=rd+1;
   if(ro_request_valid&&ro_request_ready)ro=ro+1;
@@ -197,9 +187,12 @@ initial begin
  while(busy)@(negedge clk);
  if(mode==3&&!paused_once)$fatal(1,"UI write pause was not exercised");
  if(range_starts!=@CALLS@||local_dmas!=@LOCAL_DMAS@)$fatal(1,"UI batch starts%0d local DMA%0d",range_starts,local_dmas);
- for(j=0;j<48000;j=j+1)begin
+ for(j=0;j<51200;j=j+1)begin
   if(pin.mem[native_word(32'h100000+j*4)]!==want[j])$fatal(1,"UI color word%0d got%h want%h",j,pin.mem[native_word(32'h100000+j*4)],want[j]);
   if(pin.mem[native_word(32'h140000+j*4)]!==32'ha55aa55a)$fatal(1,"UI changed depth");
+ end
+ for(j=51200;j<65536;j=j+1)begin
+  if(pin.mem[native_word(32'h100000+j*4)]!==32'h5aa5c33c||pin.mem[native_word(32'h140000+j*4)]!==32'h5aa5c33c)$fatal(1,"UI allocation tail changed");
  end
  if(wr!=@SECTORS@||rd!=@SECTORS@||ui_ro!=@UI_READS@||device_read_data[1])$fatal(1,"UI conservation rd%0d wr%0d ui_ro%0d",rd,wr,ui_ro);
  $display("PASS UI mode=%0d cycles=%0d ui=%0d tiles=@TILES@ chars=@CHARS@ ro=%0d rd=%0d wr=%0d overlap=%0d ranges=%0d local_dmas=%0d",mode,cycle,ui_cycles,ro,rd,wr,overlap,range_starts,local_dmas);
@@ -213,26 +206,6 @@ endmodule
     if record:
         for old,key in [('40000','command_base'),('100000','color_base'),('140000','depth_base')]:
             tb=tb.replace("32'h"+old,"32'h"+format(record[key],'x'))
-    if a.column_major:
-        declarations=r"""
-integer pad_off,pad_tile;
-function integer column_offset;input integer canonical;integer tile;begin
- tile=canonical/512;column_offset=((tile%25)*16+tile/25)*512+canonical%512;
-end endfunction
-"""
-        tb=tb.replace('module tb;','module tb;'+declarations,1)
-        tb=tb.replace("32'h100000+j*4","32'h100000+column_offset(j*4)").replace("32'h140000+j*4","32'h140000+column_offset(j*4)")
-        tb=tb.replace('@COLOR_HALF@+96000','@COLOR_HALF@+102144').replace('+96000))$fatal','+102144))$fatal')
-        marker='\n if(wr!='
-        padding=r"""
- for(pad_off=0;pad_off<262144;pad_off=pad_off+4)begin
-  pad_tile=pad_off/512;
-  if(pad_tile>=400||pad_tile%16==15)begin
-   if(pin.mem[native_word(32'h100000+pad_off)]!==32'h5aa5c33c||pin.mem[native_word(32'h140000+pad_off)]!==32'h5aa5c33c)$fatal(1,"UI padding/slack changed");
-  end
- end
-"""
-        assert tb.count(marker)==1;tb=tb.replace(marker,padding+marker)
     (out/'tb.v').write_text(tb)
     contract=load_contract(a.peer)
     files=stage_peer(a.peer,out)
@@ -245,7 +218,7 @@ end endfunction
         text=(out/f'{name}.log').read_text(errors='replace')
         if r.returncode:raise RuntimeError(text[-2000:])
         passes += [l for l in text.splitlines() if l.startswith('PASS ')]
-    receipt=dict(column_major=a.column_major,profile=contract["profile"],export_sha256=hashlib.sha256(data).hexdigest(),case=a.case,repeat=a.repeat,ranges=ranges,passes=passes,
+    receipt=dict(column_major=True,profile=contract["profile"],export_sha256=hashlib.sha256(data).hexdigest(),case=a.case,repeat=a.repeat,ranges=ranges,passes=passes,
         rcc_records_sha256=hashlib.sha256(a.rcc_records.read_bytes()).hexdigest() if a.rcc_records else None,
         single_binding=bool(record and record.get('single_binding')),expected_ranges=calls,expected_local_dmas=local_dmas,
         peer_sha256={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in files},

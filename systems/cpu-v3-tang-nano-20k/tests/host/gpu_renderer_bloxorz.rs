@@ -89,7 +89,7 @@ fn application(
         .success());
     let catalog: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
-    assert_eq!(catalog["profile"], "rtt400x240-column16");
+    assert_eq!(catalog["profile"], "production");
     let mut resources = vec![];
     let mut config = String::from("format 2\nrenderer\napplication main.rs\n");
     for r in catalog["resources"].as_array().unwrap() {
@@ -128,7 +128,9 @@ fn application(
         &root.join("rcc"),
         &constants,
         &[root.join("examples/bloxorz/rcc")],
-        &resolver::RendererCaptureConfiguration::rtt400x240(),
+        &resolver::RendererCaptureConfiguration::without_capture(
+            resolver::RendererLayoutProfile::Column16,
+        ),
         &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),
         &mut |p| dependencies.push(p.to_owned()),
     )
@@ -602,7 +604,7 @@ fn actual_caller(trial: Trial) {
         .unwrap();
         submissions.push(serde_json::json!({"command_base_bytes":u32::from(*base)*128,"object_base_bytes":if *base==0x9800{0x4d0000}else{0x7f0000},"command_file":command_file,"object_file":object_file,"valid_instructions":commands.len(),"color_base_bytes":s.surfaces[index],"depth_base_bytes":if job==0{0x640000}else{0x480000}}));
     }
-    std::fs::write(out.join("grey-rtl-inputs.json"),serde_json::to_vec_pretty(&serde_json::json!({"profile":"rtt400x240-column16","surface":"column-major-16x16-pad16","assets":"assets.json","submissions":submissions,"source":"actual checked Bloxorz application; grey uniform128, opaque nearest"})).unwrap()).unwrap();
+    std::fs::write(out.join("grey-rtl-inputs.json"),serde_json::to_vec_pretty(&serde_json::json!({"profile":"production","surface":"column-major-16x16-pad16","assets":"assets.json","submissions":submissions,"source":"actual checked Bloxorz application; grey uniform128, opaque nearest"})).unwrap()).unwrap();
     std::fs::write(out.join("observed.json"),serde_json::to_vec_pretty(&serde_json::json!({"captures":s.captures,"views":s.views,"submissions":s.snapshots.len(),"presents":s.swaps,"boundary":"Actual checked RCC caller on CPU V3 with bounded GPU/Display peers; no rendering or board claim"})).unwrap()).unwrap();
 }
 

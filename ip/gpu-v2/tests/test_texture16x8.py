@@ -1,4 +1,4 @@
-"""Independent packet/address and native/portable cache tests for command16x8."""
+"""Independent packet/address and native/portable cache tests for the production column command backend."""
 from pathlib import Path
 import argparse
 import hashlib
@@ -19,7 +19,7 @@ def load(path):
     return module
 
 
-def vectors(column_major=False):
+def vectors():
     rng=random.Random(1608);rows=[]
     for n in range(11):
         side=1<<n
@@ -37,7 +37,7 @@ def vectors(column_major=False):
                     member|=((x%16)<<53)|((y%8)<<57)|(n<<64)|(quad<<68)|(lane<<72)|(first<<74)|(last<<75)
                     sx=n<=4 or x%16!=15;sy=n<=3 or y%8!=7
                     xx=(x+(tap&1))%side;yy=(y+(tap>>1))%side
-                    tile=((xx//16)*max(1,side//16)+yy//16) if column_major else ((yy//16)*max(1,side//16)+xx//16)
+                    tile=(xx//16)*max(1,side//16)+yy//16
                     half=((base+(prefix if mip else 0))//2+tile*2+(yy%16)//8)&32767
                     coverage=sum(int((tap&1 or sx) if i&1 else (not(tap&1) or sx))*
                                  int((tap>>1 or sy) if i&2 else (not(tap>>1) or sy))<<i for i in range(4))
@@ -59,18 +59,17 @@ def value(address):
 
 def main():
     ap=argparse.ArgumentParser(__doc__);ap.add_argument('--export',type=Path,required=True);ap.add_argument('--output',type=Path,required=True)
-    ap.add_argument('--column-major',action='store_true')
     args=ap.parse_args();source=args.export.resolve();out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
     here=Path(__file__).resolve().parent
     packet=load(here/'texture_packet.py');cache=load(here/'texture_registered_return.py')
-    rows=vectors(args.column_major);packetdir=out/'packet';packetdir.mkdir()
+    rows=vectors();packetdir=out/'packet';packetdir.mkdir()
     (packetdir/'stim.hex').write_text(''.join(f'{a:024x}\n' for a,b in rows))
     (packetdir/'expected.hex').write_text(''.join(f'{b:09x}\n' for a,b in rows))
-    text=packet.TB.replace('@LAST@',str(len(rows)-1)).replace('@COUNT@',str(len(rows))).replace('cycle>3000','cycle>10000')
+    text=packet.TB.replace('.texture_mip(mip),',".texture_mip(mip),.texture_fb400240(1'b0),").replace('@LAST@',str(len(rows)-1)).replace('@COUNT@',str(len(rows))).replace('cycle>3000','cycle>10000')
     (packetdir/'tb.v').write_text(text)
     execute([os.environ['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-s','tb','-o','sim.vvp',source,'tb.v'],packetdir,'compile')
     execute([os.environ['VVP_EXE'],'sim.vvp'],packetdir,'run')
-    if args.column_major:
+    if True:
         directory=out/'ui-address';directory.mkdir()
         function=re.search(r' function\[8:0\]column_ui_tile;.*?endfunction',source.read_text(),re.S)[0]
         tb='module tb;\n'+function+'\ninteger i;initial begin for(i=0;i<375;i=i+1)if(column_ui_tile(i)!==((i%25)*16+i/25))$fatal(1,"UI tile%0d",i);$display("PASS COLUMN_UI_MAPPING tiles=375");$finish;end endmodule\n'
@@ -180,7 +179,7 @@ end
         execute([os.environ['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-s','tb','-o','sim.vvp',source,'tb.v'],directory,'compile')
         execute([os.environ['VVP_EXE'],'sim.vvp'],directory,'run')
         abort_cases.append(dict(stage=stage,summary=[s for s in (directory/'run.log').read_text().splitlines() if s.startswith('PASS ')]))
-    receipt=dict(status='pass',column_major=args.column_major,packet_vectors=len(rows),cache_groups_per_mode=1536,cases=cases,
+    receipt=dict(status='pass',column_major=True,packet_vectors=len(rows),cache_groups_per_mode=1536,cases=cases,
                  fifo_cases=fifo_cases,failed_child_cases=failures,lookahead_cases=lookahead_cases,abort_cases=abort_cases,
                  export_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                  coverage='All levels0..10; full/base mip; X/Y/XY boundaries; all128 local origins; six conflicting lines; four banks; CE/commit/output/refill pauses and held Q')

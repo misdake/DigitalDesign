@@ -8,8 +8,6 @@ mod current_texture;
 mod rtt400x240;
 #[path = "simulation_checks.rs"]
 mod simulation_checks;
-#[path = "texture_column16.rs"]
-mod texture_column16;
 #[path = "texture_layout16x8.rs"]
 mod texture_layout16x8;
 #[path = "ui_grid.rs"]
@@ -19,42 +17,26 @@ pub fn verilog(
     surface: MaterializedSurface,
     backend: super::pixel::quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    verilog_profile(surface, backend, false)
-}
-/// Opt-in8KiB texture-layout experiment; default production export is unchanged.
-pub fn verilog_texture16x8(
-    surface: MaterializedSurface,
-    backend: super::pixel::quad_ingress::rtl::Backend,
-) -> Result<String, String> {
-    verilog_profile(surface, backend, true)
-}
-/// Pure macro-column storage; no framebuffer texture view.
-pub fn verilog_texture_column16(
-    surface: MaterializedSurface,
-    backend: super::pixel::quad_ingress::rtl::Backend,
-) -> Result<String, String> {
-    texture_column16::lower(verilog_texture16x8(surface, backend)?)
-}
-
-/// Fixed400x240 framebuffer views over the current macro-column storage.
-pub fn verilog_rtt400x240(
-    surface: MaterializedSurface,
-    backend: super::pixel::quad_ingress::rtl::Backend,
-) -> Result<String, String> {
-    rtt400x240::lower(verilog_texture_column16(surface, backend)?)
+    rtt400x240::lower(verilog_column(surface, backend)?)
 }
 
 pub fn framebuffer_texture_word(base_sector: u16, filter: u8) -> Result<u32, &'static str> {
     if base_sector & 511 != 0 || base_sector > 63488 || filter > 1 {
         return Err("framebuffer texture view alignment/range/filter");
     }
-    Ok(u32::from(base_sector) | (9 << 16) | (u32::from(filter) << 21) | (1 << 23))
+    Ok(TextureDescriptor {
+        base_sector,
+        size_log2: 9,
+        full_mip: false,
+        filter,
+        framebuffer_view: true,
+    }
+    .word())
 }
 
-fn verilog_profile(
+fn verilog_column(
     surface: MaterializedSurface,
     backend: super::pixel::quad_ingress::rtl::Backend,
-    half_tile_texture: bool,
 ) -> Result<String, String> {
     let mut source = "`define GPU_V2_COMMAND_PORTS\n".to_owned();
     source.push_str(include_str!("vliw_command.v"));
@@ -71,11 +53,7 @@ fn verilog_profile(
         backend,
     )?;
     let numerical = current_state::lower(current_texture::lower(numerical)?)?;
-    let numerical = if half_tile_texture {
-        texture_layout16x8::lower(numerical)?
-    } else {
-        numerical
-    };
+    let numerical = texture_layout16x8::lower(numerical)?;
     source.push_str(&ui_grid::lower(numerical)?);
     source.push_str(include_str!("command_processor.v"));
     source.push_str(include_str!("command_dma.v"));
@@ -86,14 +64,12 @@ fn verilog_profile(
         .ok_or("memory router")?;
     source.push_str(router);
     let source = simulation_checks::lower(source)?;
-    if half_tile_texture {
-        texture_layout16x8::protect_return_errors(source)
-    } else {
-        Ok(source)
-    }
+    texture_layout16x8::protect_return_errors(source)
 }
 
-/// Current square RGB565 texture. Address and field ranges are driver contracts;
+/// Column RGB565 texture, either POT or a fixed 400x240 framebuffer view.
+/// Shape participates in state equality and the locked NativeRender32 word.
+/// Address and field ranges are driver contracts;
 /// installation performs no descriptor validation or implicit invalidation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextureDescriptor {
@@ -101,6 +77,7 @@ pub struct TextureDescriptor {
     pub size_log2: u8,
     pub full_mip: bool,
     pub filter: u8,
+    pub framebuffer_view: bool,
 }
 impl TextureDescriptor {
     pub const fn word(self) -> u32 {
@@ -108,6 +85,7 @@ impl TextureDescriptor {
             | ((self.size_log2 as u32 & 15) << 16)
             | ((self.full_mip as u32) << 20)
             | ((self.filter as u32 & 3) << 21)
+            | ((self.framebuffer_view as u32) << 23)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -282,7 +260,6 @@ impl DeviceSubmission {
 }
 /// Runtime plane addresses. Cache maintenance is an explicit driver operation.
 pub fn target_params(surface: MaterializedSurface) -> Result<[u8; 32], String> {
-    surface.validate()?;
     if surface.width != 400 || surface.height != 240 {
         return Err("Command target requires400x240".into());
     }
@@ -291,10 +268,15 @@ pub fn target_params(surface: MaterializedSurface) -> Result<[u8; 32], String> {
     {
         return Err("Command target requires64KiB alignment".into());
     }
-    if u64::from(surface.color_base_bytes) + 192000 > 0x800000
-        || u64::from(surface.depth_base_bytes) + 192000 > 0x800000
-    {
+    // Production columns reserve 256 RGB565 words, including row padding.
+    const PLANE_BYTES: u64 = 400 * 512;
+    let color = u64::from(surface.color_base_bytes);
+    let depth = u64::from(surface.depth_base_bytes);
+    if color + PLANE_BYTES > 0x800000 || depth + PLANE_BYTES > 0x800000 {
         return Err("Command target exceeds8MiB".into());
+    }
+    if color < depth + PLANE_BYTES && depth < color + PLANE_BYTES {
+        return Err("Command target physical planes overlap".into());
     }
     let word =
         (surface.color_base_bytes as u64 >> 9) | ((surface.depth_base_bytes as u64 >> 9) << 14);
@@ -377,7 +359,8 @@ mod tests {
                 base_sector: 0x1234,
                 size_log2: 6,
                 full_mip: true,
-                filter: 2
+                filter: 2,
+                framebuffer_view: false,
             }
             .word(),
             0x00561234
@@ -440,16 +423,39 @@ mod tests {
     }
     #[test]
     fn runtime_target_uses_the_physical_window() {
-        let mut surface = MaterializedSurface {
-            color_base_bytes: 0x120000,
-            depth_base_bytes: 0x180000,
+        let surface = |color_base_bytes, depth_base_bytes| MaterializedSurface {
+            color_base_bytes,
+            depth_base_bytes,
             width: 400,
             height: 240,
         };
-        assert!(target_params(surface).is_ok());
-        surface.depth_base_bytes = 0x800000;
-        assert!(surface.validate().is_ok()); // The generic API has a wider address domain.
-        assert!(target_params(surface).is_err());
+        // Four aligned 64-KiB blocks are needed per physical column plane.
+        // 0x7c0000 is the highest aligned base with its full span below 8 MiB.
+        for (color, depth) in [
+            (0, 0x40000),
+            (0x40000, 0),
+            (0x100000, 0x140000),
+            (0x780000, 0x7c0000),
+            (0x7c0000, 0x780000),
+        ] {
+            let bytes = target_params(surface(color, depth)).unwrap();
+            assert_eq!(
+                u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                u64::from(color / 512) | (u64::from(depth / 512) << 14)
+            );
+            assert!(bytes[8..].iter().all(|&b| b == 0));
+        }
+        for (color, depth) in [
+            (0x100000, 0x130000), // Logical planes fit, physical planes overlap.
+            (0x130000, 0x100000),
+            (0x100000, 0x7d0000), // Tail CLEAR requests would wrap in RTL.
+            (0x7d0000, 0x100000),
+            (0x100000, 0x800000),
+        ] {
+            let value = surface(color, depth);
+            assert!(value.validate().is_ok()); // Independent generic surface semantics.
+            assert!(target_params(value).is_err(), "{color:#x}/{depth:#x}");
+        }
     }
     #[test]
     fn dependency_closed_no_extra_store() {
@@ -496,7 +502,7 @@ mod tests {
             .split("endmodule")
             .next()
             .unwrap();
-        assert!(cache.contains("head_tag={6'd0,head_sector[15:4]}"));
+        assert!(cache.contains("head_tag={6'd0,head_sector[14:3]}"));
         assert!(!cache.contains("hk_row"));
         assert!(!cache.contains("layer_off_f"));
         assert!(!cache.contains("wire msx="));

@@ -10,6 +10,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[4]
 OUT = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(ROOT / "systems/cpu-v3-tang-nano-20k/tools"))
+from gpu_layout import sectors
+ASSET = sectors()["GPU_ASSET_FIRST_SECTOR"] * 128
 spec = importlib.util.spec_from_file_location(
     "rcc_d2_native_oracle",
     ROOT / "ip/gpu-v2/examples/vliw_integration/reference/scene/oracle.py",
@@ -29,7 +32,7 @@ for line in (OUT / "assets.hex").read_text().splitlines():
 
 reports = []
 for index in range(5):
-    base = 0x4B0080 + index * 256
+    base = ASSET + 128 + index * 256
     raw = bytes(memory[base + i] for i in range(256))
     uniform = [0] * 32
     for i in (0, 5, 10, 12, 16, 20, 21):

@@ -83,14 +83,14 @@ def assets(out, layout):
         put(atlas+char*256, struct.pack('<128H', *words))
 
     def offset(x, y):
-        return ((y//16)*25+x//16)*256+(y % 16)*16+x % 16
+        return ((x//16)*16+y//16)*256+(y % 16)*16+x % 16
 
-    background = [0]*96000
+    background = [0]*102400
     for y in range(240):
         for x in range(400):
             background[offset(x, y)] = ((x*13+y*37) ^ 0x5aa5) & 65535
     before = list(background)
-    depth = [65535]*96000
+    depth = [65535]*102400
     for (x, y), value in depth_pixels.items():
         assert cells[(y//16)*50+x//8] == 255, 'UI must leave the retained 3D sample visible'
         before[offset(x, y)], depth[offset(x, y)] = 0xf800, value
@@ -111,8 +111,8 @@ def assets(out, layout):
     final = list(after)
     for x, y in depth_pixels:
         final[offset(x, y)] = 0x001f
-    put(0x100000, struct.pack('<96000H', *background))
-    put(0x140000, struct.pack('<96000H', *([65535]*96000)))
+    put(0x100000, struct.pack('<102400H', *background))
+    put(0x140000, struct.pack('<102400H', *([65535]*102400)))
     put(0x51000, target_params(0x100000, 0x140000))
     put(0x51020, struct.pack('<Q', grid//128 | ((atlas//65536) << 16))+bytes(24))
     cb = CommandBuffer()
@@ -143,15 +143,15 @@ def assets(out, layout):
     commands = cb.encode()
     put(0x40000, commands+bytes((-len(commands)) % 128))
     # Sentinels include unallocated neighbors, not only initialized resources.
-    for address in (0xffffc, 0x12ee00, 0x13fffc, 0x16ee00, grid-4, atlas-4):
+    for address in (0xffffc, 0x132000, 0x13fffc, 0x172000, grid-4, atlas-4):
         if address not in seed:
             seed[address] = 0xcafebabe
     protected = {a: v for a, v in seed.items()
-                 if not (0x100000 <= a < 0x12ee00 or 0x140000 <= a < 0x16ee00)}
+                 if not (0x100000 <= a < 0x132000 or 0x140000 <= a < 0x172000)}
     (out / 'seed.txt').write_text(''.join(f'{a:x} {v:08x}\n' for a, v in sorted(seed.items())))
     (out / 'protected.hex').write_text(''.join(f'{a:08x}{v:08x}\n' for a, v in sorted(protected.items())))
     for name, image in [('before', before), ('after', after), ('final', final), ('depth', depth)]:
-        (out / (name+'.hex')).write_text(''.join(f'{image[i] | image[i+1] << 16:08x}\n' for i in range(0, 96000, 2)))
+        (out / (name+'.hex')).write_text(''.join(f'{image[i] | image[i+1] << 16:08x}\n' for i in range(0, 102400, 2)))
     (out / 'commandbuffer.txt').write_text(cb.text())
     return dict(command_bytes=len(commands), protected=len(protected), grid=grid, atlas=atlas,
                 geometry_pixels=len(depth_pixels), opaque=opaque, transparent=transparent)
@@ -162,7 +162,7 @@ integer cycle=0,mode=0,fd,rc,a,v,j,draws=0,ui_started=0,ui_checked=0;
 integer requests=0,terminals=0,beats=0,ui_requests=0,ui_terminals=0,ui_beats=0;
 integer last_terminal=0,abort_cycle=0,physical_writes=0,protected_checks=0;
 integer dma_after_ui=0,ui_issued=0;
-reg[31:0]before_image[0:47999],after_image[0:47999],final_image[0:47999],depth_image[0:47999];
+reg[31:0]before_image[0:51199],after_image[0:51199],final_image[0:51199],depth_image[0:51199];
 reg[63:0]protected_words[0:@PROTECTED@-1];
 
 function unknown_write_bytes;
@@ -181,7 +181,7 @@ task physical_write;
  integer address;
  begin
   address=4*((location&31)|(((location>>19)&3)<<5)|(((location>>5)&16383)<<7));
-  if(!((address>=32'h100000&&address<32'h12ee00)||(address>=32'h140000&&address<32'h16ee00)))
+  if(!((address>=32'h100000&&address<32'h132000)||(address>=32'h140000&&address<32'h172000)))
    $fatal(1,"UI guard: physical write outside target %h",address);
   if(dut.ui_active&&address>=32'h140000)$fatal(1,"UI guard: physical depth write");
   if(unknown_write_bytes(value,mask))$fatal(1,"UI guard: unknown physical write");
@@ -194,7 +194,7 @@ task check_frame;
  integer w,l;
  reg[31:0]expected_word,actual;
  begin
-  for(w=0;w<48000;w=w+1)begin
+  for(w=0;w<51200;w=w+1)begin
    actual=pin.mem[native_word(32'h100000+w*4)];
    expected_word=phase_id==0?before_image[w]:phase_id==1?after_image[w]:final_image[w];
    if(phase_id==3)begin
@@ -241,8 +241,8 @@ always@(posedge clk)begin
   if(ce&&ui_checked&&dut.work_valid&&dut.work_ready&&dut.work_mesh)dma_after_ui=dma_after_ui+1;
   if(fb_w_request_valid&&fb_w_request_ready)begin
    if(fb_w_count!=3)$fatal(1,"Unexpected write length");
-   if(!((fb_w_address>=32'h80000&&fb_w_address+64<=32'h97700)||
-        (fb_w_address>=32'ha0000&&fb_w_address+64<=32'hb7700)))
+   if(!((fb_w_address>=32'h80000&&fb_w_address+64<=32'h99000)||
+        (fb_w_address>=32'ha0000&&fb_w_address+64<=32'hb9000)))
     $fatal(1,"UI guard: request outside target %h",fb_w_address);
    requests=requests+1;
    if(dut.ui_active)begin
@@ -353,7 +353,7 @@ def main():
     receipt = dict(status='pass', export_sha256=identity, assets=meta, passes=passes,
         peer_sha256=peers, test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         instrumented_pin_sha256=hashlib.sha256((out / 'pins.v').read_bytes()).hexdigest(),
-        scope='Native GPU+shared MC+pin model; bounded standalone CL2, not CPU/Display/CL3 board qualification')
+        scope='Native GPU+shared MC+pin model;54/108MHz CL3 registered return, no CPU/Display or board qualification')
     (out / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt))
 

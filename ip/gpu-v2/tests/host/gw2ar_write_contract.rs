@@ -47,9 +47,10 @@ fn command_and_component_exports_do_not_depend_on_masked_36_bit_writes() {
         valid: true,
     }]);
     full_36_bit_writes(&legacy);
+    assert!(source.contains("vic_line[4:2],vic_line[0],4'b0011"));
+    assert!(legacy.contains("vic_line[5:2],vic_line[0],4'b0011"));
     for cache in [&source, &legacy] {
         assert!(cache.contains(".BIT_WIDTH_0(18),.BIT_WIDTH_1(36)) bank("));
-        assert!(cache.contains("vic_line[5:2],vic_line[0],4'b0011"));
         assert!(!cache.contains("byte_mask"));
     }
 }

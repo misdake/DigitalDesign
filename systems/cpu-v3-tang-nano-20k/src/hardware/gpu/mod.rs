@@ -135,15 +135,10 @@ impl Module for CpuV3Gpu {
     }
 }
 
-// Compile-time selection is tracked by Cargo through option_env!, so changing
-// the explicit experiment profile rebuilds this leaf. The ordinary board export
-// remains byte-identical when the variable is absent or names production.
+// One production layout serves POT textures and fixed 400x240 framebuffer views.
 fn source_for_profile(profile: Option<&str>) -> Result<String, String> {
     let export = match profile {
         None | Some("production") => gpu_v2::system::vliw_command::verilog,
-        Some("texture16x8-row") => gpu_v2::system::vliw_command::verilog_texture16x8,
-        Some("texture16x8-column16") => gpu_v2::system::vliw_command::verilog_texture_column16,
-        Some("rtt400x240-column16") => gpu_v2::system::vliw_command::verilog_rtt400x240,
         Some(value) => return Err(format!("unsupported GPU hardware profile: {value}")),
     };
     let mut source = include_str!("gpu.v").to_owned();
@@ -179,15 +174,16 @@ mod tests {
             baseline,
             super::source_for_profile(Some("production")).unwrap()
         );
-        assert!(!baseline.contains("texture_fb400240"));
-        let column = super::source_for_profile(Some("texture16x8-column16")).unwrap();
-        assert!(!column.contains("texture_fb400240"));
-        assert!(column.contains("ui_active?column_ui_tile(ui_tile)"));
-        assert!(column.contains("clear_sector==1599"));
-        let rtt = super::source_for_profile(Some("rtt400x240-column16")).unwrap();
-        assert!(rtt.contains("texture_fb400240"));
-        assert!(rtt.contains("clear_sector==1599"));
-        assert!(rtt.contains("ui_active?column_ui_tile(ui_tile)"));
+        assert!(baseline.contains("texture_fb400240"));
+        assert!(baseline.contains("ui_active?column_ui_tile(ui_tile)"));
+        assert!(baseline.contains("clear_sector==1599"));
+        for old in [
+            "texture16x8-row",
+            "texture16x8-column16",
+            "rtt400x240-column16",
+        ] {
+            assert!(super::source_for_profile(Some(old)).is_err());
+        }
         assert!(super::source_for_profile(Some("rtt400")).is_err());
         assert!(super::source_for_profile(Some("")).is_err());
     }

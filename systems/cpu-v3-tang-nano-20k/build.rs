@@ -4,7 +4,7 @@ pub use cpu_v3::*;
 mod boot;
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
-use rcc_modules::capture_profile::row as gpu_layout;
+use rcc_modules::capture_profile::layout as gpu_layout;
 use std::path::{Path, PathBuf};
 #[path = "build_support/rcc_modules.rs"]
 mod rcc_modules;
@@ -86,13 +86,9 @@ fn compile(
                     shared,
                     constants,
                     &dirs,
-                    &if rtt {
-                        rcc_modules::RendererCaptureConfiguration::rtt400x240()
-                    } else {
-                        rcc_modules::RendererCaptureConfiguration::without_capture(
-                            rcc_modules::RendererLayoutProfile::Column16,
-                        )
-                    },
+                    &rcc_modules::RendererCaptureConfiguration::without_capture(
+                        rcc_modules::RendererLayoutProfile::Column16,
+                    ),
                     &rcc::frontend::rustc_check::RustcCheck::new(
                         PathBuf::from(std::env::var_os("OUT_DIR").unwrap())
                             .join("member-ownership"),
@@ -117,20 +113,9 @@ fn compile(
         compile_renderer(&mut |module| println!("cargo:rerun-if-changed={}", module.display()))
     } else {
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-            rcc_modules::load_native_module(
-                source_dir,
-                shared,
-                constants,
-                name,
-                if matches!(profile, ApplicationProfile::Column16) {
-                    rcc_modules::NativeLayoutProfile::Column16
-                } else {
-                    rcc_modules::NativeLayoutProfile::Default
-                },
-                &mut |module| {
-                    println!("cargo:rerun-if-changed={}", module.display());
-                },
-            )
+            rcc_modules::load_module(source_dir, shared, constants, name, &mut |module| {
+                println!("cargo:rerun-if-changed={}", module.display());
+            })
         })
         .map_err(|e| e.to_string())
     }
@@ -242,14 +227,14 @@ fn main() {
             project.application = PathBuf::from("examples/dualshock2_ui/rcc/main.rs");
             project.copies = vec![(
                 "DS2_UI_ATLAS".to_owned(),
-                0x4b0000,
+                usize::from(gpu_layout::GPU_ASSET_FIRST_SECTOR) * 128,
                 assets.join("atlas.bin"),
             )];
             project.zeros.clear();
             generated = std::fs::read_to_string(assets.join("ui_layout.rs")).unwrap();
             std::fs::write(
                 output.join("ds2-ui-repack.conf"),
-                "format 2\napplication examples/dualshock2_ui/rcc/main.rs\ncopy DS2_UI_ATLAS 0x4b0000 ds2-ui-assets/atlas.bin\n",
+                format!("format 2\napplication examples/dualshock2_ui/rcc/main.rs\ncopy DS2_UI_ATLAS {:#x} ds2-ui-assets/atlas.bin\n", usize::from(gpu_layout::GPU_ASSET_FIRST_SECTOR)*128),
             )
             .unwrap();
             extra_assets.extend([
@@ -315,11 +300,6 @@ fn main() {
             let status = std::process::Command::new("python")
                 .env("PYTHONDONTWRITEBYTECODE", "1")
                 .arg(example_dir.join("tools/assets.py"))
-                .args(if game || example == "gpu_renderer_members" {
-                    vec!["--profile", "column16"]
-                } else {
-                    vec![]
-                })
                 .arg("--output")
                 .arg(&assets)
                 .status()
@@ -329,7 +309,7 @@ fn main() {
                 serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
                     .unwrap();
             if rtt {
-                assert_eq!(manifest["profile"], "rtt400x240-column16");
+                assert_eq!(manifest["profile"], "production");
                 assert_eq!(manifest["surface"], "column-major-16x16-pad16");
             }
             project.application = PathBuf::from(if rtt && !game {
@@ -411,7 +391,6 @@ fn main() {
             let status = std::process::Command::new("python")
                 .env("PYTHONDONTWRITEBYTECODE", "1")
                 .arg(example_dir.join("tools/assets.py"))
-                .args(["--profile", if column16 { "column16" } else { "default" }])
                 .arg("--output")
                 .arg(&assets)
                 .status()
@@ -455,7 +434,7 @@ fn main() {
                 "demo-repack.conf".to_owned(),
             ]);
             if column16 {
-                let layout = root.join("rcc/gpu_layout_column16.rs");
+                let layout = root.join("rcc/gpu_layout.rs");
                 println!("cargo:rerun-if-changed={}", layout.display());
                 std::fs::copy(layout, output.join("gpu-column-layout.rs")).unwrap();
                 extra_assets.push("gpu-column-layout.rs".to_owned());

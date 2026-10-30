@@ -27,7 +27,7 @@ if ([string]::IsNullOrWhiteSpace($Label)) {
 }
 Push-Location $repoRoot
 try {
-    $env:CPU_V3_GPU_PROFILE = 'rtt400x240-column16'
+    $env:CPU_V3_GPU_PROFILE = 'production'
     $env:CPU_V3_SPI_HALF_PERIOD = '2'
     if ($BootExample -eq '') { Remove-Item Env:CPU_V3_BOOT_EXAMPLE -ErrorAction SilentlyContinue }
     else { $env:CPU_V3_BOOT_EXAMPLE = $BootExample }
@@ -48,7 +48,7 @@ try {
             if (Test-Path -LiteralPath $path) { $hashes[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
         }
         $receipt = [ordered]@{
-            status = $outcome; mode = $Mode; hardware_profile = 'rtt400x240-column16';
+            status = $outcome; mode = $Mode; hardware_profile = 'production';
             source_commit = (& git rev-parse HEAD); branch = (& git branch --show-current);
             dirty = [bool](& git status --porcelain); spi_half_period = 2;
             boot_example = $(if ($BootExample -eq '') { 'boot-applications.conf' } else { $BootExample });

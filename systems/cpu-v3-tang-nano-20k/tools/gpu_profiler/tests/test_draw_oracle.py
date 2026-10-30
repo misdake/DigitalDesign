@@ -8,12 +8,12 @@ import unittest
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import draw_oracle as o
-from layout import ROW, COLUMN
+from layout import COLUMN, COMMAND_ABI
 
 
 class SyntheticCapture:
-    def __init__(self, layout=ROW, tint=0xffffffff, rgb=False):
-        self.header = dict(layout_abi=layout.abi, command_abi=1, cb_base=0x4c0000,
+    def __init__(self, layout=COLUMN, tint=0xffffffff, rgb=False):
+        self.header = dict(layout_abi=layout.abi, command_abi=COMMAND_ABI, cb_base=0x4c0000,
                            color_base=0x440000, depth_base=0x480000, plane_bytes=layout.plane_bytes,
                            front_base=0x400000, slot=0, cb_padded_bytes=128,
                            object_base=0x4d0000, object_bytes=256, ui_base=0, ui_bytes=0)
@@ -87,11 +87,8 @@ class DrawOracleTests(unittest.TestCase):
         self.assertGreater(result.caller['drawn_pixel_count'], 3000)
         self.assertEqual(result.caller['draw_commands'], 1)
 
-    def test_row_column_logical_equivalence(self):
-        a = o.evaluate(SyntheticCapture(ROW, rgb=True))
-        b = o.evaluate(SyntheticCapture(COLUMN, rgb=True))
-        self.assertEqual(a.planes, b.planes)
-        self.assertEqual(a.stable, b.stable)
+    def test_column_rgb_interpolation(self):
+        a = o.evaluate(SyntheticCapture(COLUMN, rgb=True))
         # At (199,110), the screen barycentrics are 0.328125, 0.3203125,
         # 0.3515625. Equal Z makes them also perspective weights.
         self.assertEqual(a.planes['color'][110*400+199], o.rgb565((84, 82, 90)))
@@ -174,7 +171,11 @@ class DrawOracleTests(unittest.TestCase):
         for i, fixture in enumerate(fixtures):
             fixture.header.update(token=i+1, submission=i+11)
         middle = fixtures[1]
-        middle.header['cb_base'] = 0x7e0000
+        middle.header.update(cb_base=0x7e0000, object_base=0x7f0000, slot=1)
+        middle.put(0x7f0000, middle.memory.pop(0x4d0000))
+        # Relocate actual DMA source words with the owned slot1 object arena.
+        middle.commands = [w + (0x320000//32 << 10) if w >> 28 == 1 else w for w in middle.commands]
+        middle.memory[0x4c0000] = struct.pack('<'+str(len(middle.commands))+'I', *middle.commands)
         middle.put(0x7e0000, middle.memory.pop(0x4c0000))
         report = verify_reuse(fixtures)
         self.assertGreater(report['reused_address_changed_stable_pixels'], 3000)

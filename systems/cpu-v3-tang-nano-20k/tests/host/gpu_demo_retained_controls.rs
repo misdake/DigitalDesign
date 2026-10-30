@@ -55,7 +55,7 @@ fn main(){{{body} halt(0xbad);}}
     let ir =
         rcc::frontend::compile_program_named("Template controls", &source, &options, &mut |name| {
             if name == "boot_resources" {
-                return Ok("pub const DEMO_CAMERA_FIRST:u16=0x9600;".into());
+                return Ok("pub const DEMO_CAMERA_FIRST:u16=0x9c00;".into());
             }
             let local = root
                 .join("examples/gpu_demo/rcc")
@@ -71,8 +71,8 @@ fn main(){{{body} halt(0xbad);}}
     let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&program.words);
-    cpu.physical_memory_mut()[0x490000 / 2] = 0x12ab;
-    cpu.physical_memory_mut()[0x4a8000 / 2] = 0xab12;
+    cpu.physical_memory_mut()[0x4c0000 / 2] = 0x12ab;
+    cpu.physical_memory_mut()[0x4d8000 / 2] = 0xab12;
     let state = Rc::new(RefCell::new(State {
         cache_error,
         ..State::default()
@@ -91,11 +91,11 @@ fn main(){{{body} halt(0xbad);}}
         RunOutcome::Halted { signal: 0xe001, .. }
     ));
     assert_eq!(
-        cpu.physical_memory(PhysicalWordAddress::new(0x490000 / 2)),
+        cpu.physical_memory(PhysicalWordAddress::new(0x4c0000 / 2)),
         0x12ab
     );
     assert_eq!(
-        cpu.physical_memory(PhysicalWordAddress::new(0x4a8000 / 2)),
+        cpu.physical_memory(PhysicalWordAddress::new(0x4d8000 / 2)),
         0xab12
     );
     assert_eq!(state.borrow().starts, 0);

@@ -2,7 +2,9 @@
 //! Scratch words 0x4000..0x7fff are private to this application; no heap is used.
 use crate::dsl_rt::*;
 mod device_abi;
+mod gpu_layout;
 use device_abi::*;
+use gpu_layout::*;
 
 fn report(status: u16) {
     let mut index: u16 = 0;
@@ -81,22 +83,16 @@ fn fill_tile(page: u16, offset: u16, value: u16) {
 }
 
 fn fill_surface(first_page: u16, target: u16) {
-    let mut page = first_page;
-    let mut offset: u16 = 0;
-    let mut tile: u16 = 0;
     let mut column: u16 = 0;
-    while tile < 375 {
-        fill_tile(page, offset, color(column, target));
-        offset += 256;
-        if offset == 0x4000 {
-            page += 1;
-            offset = 0;
+    while column < 25 {
+        let page = first_page + (column >> 2);
+        let mut row: u16 = 0;
+        while row < 15 {
+            let offset = ((column & 3) << 12) + (row << 8);
+            fill_tile(page, offset, color(column, target));
+            row += 1;
         }
         column += 1;
-        if column == 25 {
-            column = 0;
-        }
-        tile += 1;
     }
 }
 
@@ -136,8 +132,12 @@ fn frame_wait(previous: u16) {
 }
 
 fn present(target: u16) {
-    let low: u16 = if target == 0 { 0 } else { 0x8000 };
-    let high: u16 = if target == 0 { 0x20 } else { 0x21 };
+    let low: u16 = 0;
+    let high: u16 = if target == 0 {
+        GPU_COLOR_A_SECTOR >> 10
+    } else {
+        GPU_COLOR_B_SECTOR >> 10
+    };
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, low);
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, high);
     dev_send(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT, DISPLAY_RGB565);
@@ -168,15 +168,15 @@ fn present(target: u16) {
 #[allow(clippy::eq_op)]
 fn main() {
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 2);
-    fill_surface(128, 0);
-    fill_surface(134, 1);
+    fill_surface(GPU_COLOR_A_SECTOR >> 8, 0);
+    fill_surface(GPU_COLOR_B_SECTOR >> 8, 1);
     invalidate();
     if physical_read(0x20, 0) != 0xf800
-        || physical_read(0x21, 0x8000) != 0x001f
-        || physical_read(0x20, 0x0500) != 0x07e0
-        || physical_read(0x21, 0x8500) != 0x07e0
-        || physical_read(0x21, 0x76ff) != 0xffff
-        || physical_read(0x22, 0xf6ff) != 0xffff
+        || physical_read(0x22, 0) != 0x001f
+        || physical_read(0x20, 0x5000) != 0x07e0
+        || physical_read(0x22, 0x5000) != 0x07e0
+        || physical_read(0x21, 0x8eff) != 0xffff
+        || physical_read(0x23, 0x8eff) != 0xffff
     {
         fail(2);
     }
@@ -189,18 +189,22 @@ fn main() {
     while 1 == 1 {
         // Row 7 is near the screen center. The moving white tile is changed
         // only in the back surface; the other surface remains the front.
-        let first_page: u16 = if target == 0 { 128 } else { 134 };
+        let first_page: u16 = if target == 0 {
+            GPU_COLOR_A_SECTOR >> 8
+        } else {
+            GPU_COLOR_B_SECTOR >> 8
+        };
         let previous: u16 = if target == 0 { previous_a } else { previous_b };
         if previous < 25 {
-            let old_word = (175 + previous) << 8;
+            let old_word = ((previous & 3) << 12) + (7 << 8);
             fill_tile(
-                first_page + (old_word >> 14),
+                first_page + (previous >> 2),
                 old_word & 0x3fff,
                 color(previous, target),
             );
         }
-        let word = (175 + column) << 8;
-        fill_tile(first_page + (word >> 14), word & 0x3fff, 0xffff);
+        let word = ((column & 3) << 12) + (7 << 8);
+        fill_tile(first_page + (column >> 2), word, 0xffff);
         invalidate();
         present(target);
         if target == 0 {

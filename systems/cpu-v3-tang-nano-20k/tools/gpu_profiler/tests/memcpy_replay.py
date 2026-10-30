@@ -1,4 +1,4 @@
-"""Cold, synthetic ABI3 MEMCPY replay, including mutable-buffer output dumps."""
+"""Cold, synthetic RTT4 MEMCPY replay, including mutable-buffer output dumps."""
 import argparse
 import json
 from pathlib import Path
@@ -19,9 +19,9 @@ def main():
     capture, original = make(s.Abi())
     path = prepare(capture,args.rtl,args.out,max_cycles=100000,timeout=180)
     result = execute(capture,path)
-    assert result['command_abi']==3
-    assert (args.out/'capture/color.bin').read_bytes()==original[:512]+b'\x34\x12'*(96000-256)
-    assert (args.out/'capture/depth.bin').read_bytes()==b'\xff\xff'*96000
+    assert result['command_abi']==s.Abi()['RTT400_COMMAND_ABI']
+    assert (args.out/'capture/color.bin').read_bytes()==original[:512]+b'\x34\x12'*(102400-256)
+    assert (args.out/'capture/depth.bin').read_bytes()==b'\xff\xff'*102400
     for item in result['raw_buffers']:
         want = b'\x69\x69'+original+b'\x96\x96' if item['address']==0x2ffffe else original[:512]
         assert (args.out/'capture'/item['file']).read_bytes()==want,item
@@ -29,7 +29,7 @@ def main():
     profile=json.loads((args.out/'profile/profile.json').read_text())
     copies=[c for c in profile['commands'] if c['opcode']==12]
     assert len(copies)==3 and all(c['end']>c['execute'] for c in copies)
-    print('PASS ABI3 cold production replay: 3 copies, page crossing, live write/read lineage, exact planes and raw buffers',result['cold_submission_cycles'])
+    print('PASS RTT4 cold production replay: 3 copies, page crossing, live write/read lineage, exact planes and raw buffers',result['cold_submission_cycles'])
 
 
 if __name__ == '__main__': main()

@@ -198,7 +198,7 @@ dev_send(7,0,GPU_CB.command_words);dev_send(7,1,GPU_CB.object_words);halt(0x600d
             ly = axes[3]
         );
         let (cpu, s) = run(&source, "main", &out);
-        let grid = 0x4a0080;
+        let grid = 0x4d0080;
         assert_eq!(
             text(&cpu, grid, 57, if connected == 0 { 12 } else { 9 }),
             if connected == 0 {
@@ -228,10 +228,10 @@ dev_send(7,0,GPU_CB.command_words);dev_send(7,1,GPU_CB.object_words);halt(0x600d
         let positions = [(6, axes[2], axes[3]), (32, axes[0], axes[1])];
         let ranges: Vec<u32> = (0..u32::from(s.borrow().counts[0]) / 2)
             .map(|i| {
-                u32::from(byte(&cpu, 0x490000 + i * 4))
-                    | (u32::from(byte(&cpu, 0x490001 + i * 4)) << 8)
-                    | (u32::from(byte(&cpu, 0x490002 + i * 4)) << 16)
-                    | (u32::from(byte(&cpu, 0x490003 + i * 4)) << 24)
+                u32::from(byte(&cpu, 0x4c0000 + i * 4))
+                    | (u32::from(byte(&cpu, 0x4c0001 + i * 4)) << 8)
+                    | (u32::from(byte(&cpu, 0x4c0002 + i * 4)) << 16)
+                    | (u32::from(byte(&cpu, 0x4c0003 + i * 4)) << 24)
             })
             .filter(|c| c >> 28 == 11)
             .collect();
@@ -241,7 +241,7 @@ dev_send(7,0,GPU_CB.command_words);dev_send(7,1,GPU_CB.object_words);halt(0x600d
             (0..750).map(|i| byte(&cpu, grid + i)).collect::<Vec<_>>()
         )];
         for processed in 0..2 {
-            let overlay = if processed == 0 { 0x4a0400 } else { 0x4a0780 };
+            let overlay = if processed == 0 { 0x4d0400 } else { 0x4d0780 };
             for (i, (x, rx, ry)) in positions.into_iter().enumerate() {
                 let axis = |raw: u32| {
                     if raw < 128 {
@@ -338,7 +338,7 @@ fn complete_one_frame_services_ds2_during_render_and_present_waits() {
     let s = s.borrow();
     assert_eq!((s.starts, s.swaps), (1, 1));
     assert!(!s.pending);
-    assert_eq!(s.active, 0x218000);
+    assert_eq!(s.active, 0x220000);
     assert!(
         s.during_gpu > 0 && s.during_present > 0,
         "polling stopped during waits"
@@ -393,7 +393,7 @@ dui_probe_wire();if dui_record(S.as_array(),0,0,0)==0{halt(2);}halt(0x600d);}"#;
             &out,
             Some([header[0], header[1], header[2], monitor]),
         );
-        let grid = 0x4a0080;
+        let grid = 0x4d0080;
         assert_eq!(text(&cpu, grid, 57, 12), "DISCONNECTED");
         assert_eq!(text(&cpu, grid, 76, 2), "00");
         for (at, byte) in [(511, header[0]), (517, header[1]), (523, header[2])] {
@@ -407,7 +407,7 @@ dui_probe_wire();if dui_record(S.as_array(),0,0,0)==0{halt(2);}halt(0x600d);}"#;
     // diagnosis from no wire reply; V must expose it without fabricating input.
     let source = source.replace("dui_probe_wire();", "dev_send(7,2,3);dui_probe_wire();");
     let (cpu, _) = run_wire(&source, "main", &out, Some([0, 0, 0, 0]));
-    assert_eq!(text(&cpu, 0x4a0080, 57, 12), "DISCONNECTED");
-    assert_eq!(text(&cpu, 0x4a0080, 537, 1), "0");
-    assert_eq!(text(&cpu, 0x4a0080, 541, 1), "3");
+    assert_eq!(text(&cpu, 0x4d0080, 57, 12), "DISCONNECTED");
+    assert_eq!(text(&cpu, 0x4d0080, 537, 1), "0");
+    assert_eq!(text(&cpu, 0x4d0080, 541, 1), "3");
 }

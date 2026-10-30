@@ -1,7 +1,7 @@
 ---
 id: gpu-v2-sampling-throughput
 status: implemented
-last-verified: 2026-10-27
+last-verified: 2026-10-29
 ---
 
 # Sampling throughput and latency
@@ -19,7 +19,7 @@ backpressure adds wall time.
 | Covered pixel | One actual lane selected by the final numerical coverage mask |
 | Quad | Up to four covered pixels; an empty quad issues no sample work |
 | Mip member | One active fine or coarse filtering footprint for that pixel |
-| Group | Nonzero taps sharing one8x8 tile in one mip; not a pixel or quad |
+| Group | Nonzero taps sharing one16x8 resident line in one mip; not a pixel or quad |
 | Admission II | Spacing between accepted inputs while ready remains asserted |
 | Completion II | Spacing between completed outputs under steady load |
 | First latency | Accepted first input to its completed output, including stated cold work |

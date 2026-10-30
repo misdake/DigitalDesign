@@ -332,9 +332,9 @@ fn timing_run(present_delay: u64, gpu_delay: u64, fail: bool) -> TimingState {
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&p.words);
     for (name, base) in [
-        ("room.bin", 0x4c0000u32),
-        ("atlas.bin", 0x4b0000),
-        ("texture.bin", 0x4d0000),
+        ("room.bin", 0x4f0000u32),
+        ("atlas.bin", 0x4e0000),
+        ("texture.bin", 0x500000),
     ] {
         let bytes = std::fs::read(assets.join(name)).unwrap();
         for (i, b) in bytes.chunks(2).enumerate() {

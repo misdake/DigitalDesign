@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from layout import ROW,COLUMN
+from layout import COLUMN
 from identity import create_build
 
 source=Path(__file__).resolve().parents[3]/'examples/gpu_profiler_board/tools/assets.py'
@@ -51,8 +51,8 @@ class AssetLayoutTests(unittest.TestCase):
         for mode in ('framebuffer','texture','hash'):
             with self.subTest(mode=mode),tempfile.TemporaryDirectory() as temp:
                 root=Path(temp); original=root/'producer'; manifest=self.catalog(original)
-                if mode=='framebuffer': manifest['capture_layout']=ROW.description()
-                elif mode=='texture': manifest['resources'][0]['layout']=ROW.texture_layout
+                if mode=='framebuffer': manifest['capture_layout']={**COLUMN.description(),'abi':1}
+                elif mode=='texture': manifest['resources'][0]['layout']='pot-row-macro8x8'
                 else: (original/'texture.bin').write_bytes(bytes(512))
                 (original/'assets.json').write_text(json.dumps(manifest))
                 with self.assertRaises(ValueError): consumer.copy_column_catalog(original,root/'out')

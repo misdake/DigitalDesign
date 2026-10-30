@@ -43,17 +43,13 @@ after publication and prior completion, before either COUNT or START. The
 consumer reads that lease; it does not own a second GPU scheduler. Arbitrary
 in-flight pipeline state is outside this interface.
 
-The PC storage decoder accepts layout ABI1 (row macrotiles,192000-byte planes)
-and ABI2 (column macrotiles with padded height16,204800-byte planes), both at
-400x240. Build declaration v1 retains implicit row storage; v2 binds the exact
-layout/profile, memory map and typed asset catalog. Wire/header/range versions
-do not change. The reader preserves old row descriptors and input identities.
-Readers support native command ABI1 and ABI3 with either storage layout. ABI3 adds
-opcode12 MEMCPY; new native firmware/build catalogs explicitly declare3. Existing
-ABI1 snapshots retain their original representation and identities. Build identity
-and frozen header command versions must agree. New RTT firmware declares4;
-paused RTT command versions2 and4 remain explicitly unsupported by this consumer.
-This change does not qualify the historical paused-RTT replay gap.
+The PC storage decoder accepts only explicit column layout ABI2 and the
+framebuffer-view command ABI from`GPU_CAPTURE_RTT400_COMMAND_ABI` (currently4).
+Build declaration v2 binds the exact production layout, memory map and typed
+asset catalog. Wire/header/range versions remain1. Old row, missing-layout and
+old command captures are rejected, with no repacking or reinterpretation.
+POT repeat/mip and fixed400x240 signed18 clamp/base-only sampling share physical
+column decoding while retaining their distinct coordinate/filtering semantics.
 
 Both replay preparation and execution reject commands outside the snapshot's
 declared ABI before running RTL; a newer export cannot enable MEMCPY in ABI1.

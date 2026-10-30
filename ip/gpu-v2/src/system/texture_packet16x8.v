@@ -23,8 +23,9 @@ module packet_leaf_unique #(parameter SHORT_ALIGNMENT=1)(
  wire[6:0]ymask=(level<=3)?7'd0:(7'd127>>(4'd10-level));
  wire[5:0]tx=(capture0[8:3]+{5'd0,(x&&!sx)})&xmask;
  wire[6:0]ty=(capture0[15:9]+{6'd0,(y&&!sy)})&ymask;
- wire[11:0]macro_row={6'd0,ty[6:1]}<<((level<4)?4'd0:(level-4'd4));
- wire[11:0]macro_tile=macro_row|{6'd0,tx};
+ wire[3:0]pitch_y_log2=(level<4)?4'd0:(level-4'd4);
+ wire[11:0]macro_column={6'd0,tx}<<pitch_y_log2;
+ wire[11:0]macro_tile=macro_column|{6'd0,ty[6:1]};
  wire[14:0]half_line=level_base+{2'd0,macro_tile,ty[0]};
  wire[3:0]masks={(x||sx)&&(y||sy),(!x||sx)&&(y||sy),(x||sx)&&(!y||sy),(!x||sx)&&(!y||sy)};
  wire higher=(!x&&!y)?(|capture0[2:0]):(x&&!y)?(|capture0[2:1]):(!x&&y)?capture0[2]:1'b0;
@@ -39,7 +40,9 @@ module packet_leaf_unique #(parameter SHORT_ALIGNMENT=1)(
    if(in_valid&&!active[in_tap])fault<=1;
    else begin
     valid<={valid[0],in_valid};
-    if(in_valid)begin capture0<={in_tap,in_member[75:37]};level_base<=texture_base[15:1]+prefix;end
+    if(in_valid)begin
+     capture0<={in_tap,in_member[75:37]};level_base<=texture_base[15:1]+prefix;
+    end
     if(valid[0])word0<=result;
    end
   end

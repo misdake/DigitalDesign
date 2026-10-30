@@ -12,12 +12,11 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from draw_oracle import evaluate
-from layout import ROW, COLUMN
+from layout import COLUMN
 from replay import prepare, execute
 import snapshot as s
 from test_snapshot import fixture
 from test_draw_oracle import SyntheticCapture
-from layout_replay import stage_column
 
 
 def synthetic_snapshot(layout):
@@ -59,20 +58,13 @@ def synthetic_snapshot(layout):
 
 def main():
     parser = argparse.ArgumentParser(__doc__)
-    parser.add_argument('--row-rtl', type=Path, required=True)
-    parser.add_argument('--frozen-column', type=Path)
-    parser.add_argument('--column-contract', type=Path)
-    parser.add_argument('--layout', choices=('row', 'column'), required=True)
+    parser.add_argument('--rtl', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args(); args.out.mkdir(parents=True, exist_ok=False)
-    layout = ROW if args.layout == 'row' else COLUMN
+    layout = COLUMN
     capture = synthetic_snapshot(layout); capture.save(args.out/'snapshot')
     reference = evaluate(capture)
-    rtl = args.row_rtl
-    if layout == COLUMN:
-        if args.frozen_column is None or args.column_contract is None:
-            raise ValueError('Column run requires explicit frozen GPU and contract')
-        rtl = args.out/'rtl'; stage_column(args.row_rtl, args.frozen_column, args.column_contract, rtl)
+    rtl = args.rtl
     manifest = prepare(capture, rtl, args.out/'replay', 180000, 180,
                        dict(fixture_only=True, actual_cpu_producer=False, programming_receipt_verified=False,
                             captured_plane_bytes=layout.plane_bytes))

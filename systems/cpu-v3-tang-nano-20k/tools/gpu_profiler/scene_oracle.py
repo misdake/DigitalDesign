@@ -41,15 +41,20 @@ def texture_levels(capture, descriptor):
     n = (descriptor >> 16) & 15
     if n > 10 or ((descriptor >> 21) & 3) > 2:
         raise ValueError('Unsupported texture descriptor')
-    column = header_layout(capture.header).abi == 2
-    tile = 16 if column else 8
+    header_layout(capture.header)
+    tile = 16
     base = (descriptor & 65535)*128; levels = {}; offset = 0
+    if descriptor & (1 << 23):
+        if n != 9 or descriptor & (1 << 20) or ((descriptor >> 21) & 3) > 1 or base % 65536 or base > 0x7c0000 or descriptor >> 24:
+            raise ValueError('Invalid fixed 400x240 framebuffer view')
+        words = np.frombuffer(capture.read(base, 204800), dtype='<u2')
+        plane = words.reshape(25, 16, 16, 16).transpose(1, 2, 0, 3).reshape(256, 400)[:240]
+        return {9: expand(plane)}
     for exponent in range(n+1) if descriptor & (1 << 20) else (n,):
         side = 1 << exponent; physical = max(tile, side); blocks = physical//tile
         words = np.frombuffer(capture.read(base+offset, physical*physical*2), dtype='<u2')
         blocks4 = words.reshape(blocks, blocks, tile, tile)
-        # Row profile orders (ty,tx); column profile orders (tx,ty).
-        axes = (1,2,0,3) if column else (0,2,1,3)
+        axes = (1,2,0,3)
         plane = blocks4.transpose(axes).reshape(physical, physical)[:side,:side]
         levels[exponent] = expand(plane)
         offset += physical*physical*2
@@ -59,6 +64,8 @@ def texture_levels(capture, descriptor):
 def sample(levels, descriptor, uv, lod):
     """Documented integer tap weights/Color, independent of cache grouping."""
     n = (descriptor >> 16) & 15; filtering = (descriptor >> 21) & 3
+    if descriptor & (1 << 23):
+        return sample_framebuffer(levels[9], filtering, uv)
     full = bool(descriptor & (1 << 20))
     lodq = np.floor(np.clip(lod, 0, n if full else 0)*8).astype(np.int64)
     fine = n-lodq//8
@@ -92,6 +99,30 @@ def sample(levels, descriptor, uv, lod):
                 taps.append((color*weight[:,None]+256) >> 9)
             result[active] += ((taps[0]+taps[1]) & 255)+((taps[2]+taps[3]) & 255)
     return result & 255
+
+
+def sample_framebuffer(texture, filtering, uv):
+    """Signed18 pre-clamp and exact fixed400/240 coordinates, independent of RTL."""
+    if filtering not in (0, 1) or texture.shape[:2] != (240, 400):
+        raise ValueError('Unsupported fixed framebuffer sampling contract')
+    q = np.floor(uv * 65536 + .5).astype(np.int64)
+    q = ((q + 131072) & 262143) - 131072
+    q = np.clip(q, 0, 65535)
+    coords = (q * np.array([400, 240])) >> 8
+    if filtering == 0:
+        xy = coords >> 8
+        return texture[xy[:, 1], xy[:, 0]]
+    coords = np.clip(coords - 128, 0, np.array([399, 239]) * 256)
+    xy, frac = coords >> 8, coords & 255
+    bottom = (511 * frac[:, 1]) >> 8
+    top = 511 - bottom
+    tr = (top * frac[:, 0]) >> 8
+    br = (bottom * frac[:, 0]) >> 8
+    taps = []
+    for (dx, dy), weight in zip([(0, 0), (1, 0), (0, 1), (1, 1)], [top-tr, tr, bottom-br, br]):
+        color = texture[np.minimum(xy[:, 1]+dy, 239), np.minimum(xy[:, 0]+dx, 399)]
+        taps.append((color * weight[:, None] + 256) >> 9)
+    return (((taps[0]+taps[1]) & 255) + ((taps[2]+taps[3]) & 255)) & 255
 
 
 def lighting(normal, x, y, global_words, unlit):
@@ -199,7 +230,9 @@ class SceneResult:
 def render(capture):
     h = capture.header; layout = header_layout(h)
     from raw_copy import MemoryImage, descriptor as copy_descriptor
-    memory = MemoryImage(capture) if h.get('command_abi', 1) == 3 else capture
+    commands = capture.read(h['cb_base'], h['cb_bytes'])
+    has_copy = any(word >> 28 == 12 for (word,) in struct.iter_unpack('<I', commands))
+    memory = MemoryImage(capture) if has_copy else capture
     scratch = bytearray(4096); pages = {}; context = None; material = None; target = False
     color = np.array(layout.words(capture.read(h['color_base'],layout.plane_bytes)),dtype=np.int64).reshape(240,400)
     depth = np.array(layout.words(capture.read(h['depth_base'],layout.plane_bytes)),dtype=np.int64).reshape(240,400)

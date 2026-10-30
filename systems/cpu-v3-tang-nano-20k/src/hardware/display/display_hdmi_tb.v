@@ -122,11 +122,11 @@ always @(posedge clk) begin
  if (!reset && memory_request_valid && memory_request_ready) begin
   source_row=(frame_requests/50)*2+(frame_requests%2);
   source_tile_x=(frame_requests%50)/2;
-  if(memory_address!==dut.active_base+(source_row/16)*6400+(source_row%16)*16+source_tile_x*256)
+  if(memory_address!==dut.active_base+(source_row/16)*256+(source_row%16)*16+source_tile_x*4096)
    $fatal(1,"tile-linear request %0d address %h is out of sequence",frame_requests,memory_address);
   frame_requests<=frame_requests+1;
-  if (memory_address==22'h3e8900) saw_second_base<=1;
-  if (memory_address<dut.active_base || {1'b0,memory_address}>={1'b0,dut.active_base}+23'd96000)
+  if (memory_address==22'h3e7000) saw_second_base<=1;
+  if (memory_address<dut.active_base || {1'b0,memory_address}>={1'b0,dut.active_base}+23'd102144)
    $fatal(1,"request %h outside active framebuffer %h",memory_address,dut.active_base);
  end
 end
@@ -144,7 +144,7 @@ initial begin
 
  // Repeated low/high writes overwrite the shadow address, but do not publish it.
  device_write(1,16'h0000);
- device_write(1,16'h8900);
+ device_write(1,16'h7000);
  device_write(2,16'h0020);
  device_write(2,16'h003e);
  expect_status(16'h0003,16'h0000);
@@ -163,7 +163,7 @@ initial begin
  old_frame=dut.frame_index;
  wait(dut.frame_index!=old_frame);
  // Restore the staged address used by the following pending-swap tests.
- device_write(1,16'h8900);device_write(2,16'h003e);
+ device_write(1,16'h7000);device_write(2,16'h003e);
 
  // NEXT_SWAP snapshots the complete shadow address. Later staging cannot mutate
  // this pending swap, even though writes remain accepted while it is pending.
@@ -173,30 +173,30 @@ initial begin
  if(!dut.pending_linear) $fatal(1,"staging mutated pending color format");
  expect_status(16'h0001,16'h0001);
  device_write(1,16'h0000);
- if(dut.pending_base!==22'h3e8900) $fatal(1,"staging mutated maximum pending base: %h",dut.pending_base);
+ if(dut.pending_base!==22'h3e7000) $fatal(1,"staging mutated maximum pending base: %h",dut.pending_base);
 
  // Alignment and upper/range failures belong to their staged halves.
  // A valid write to the other half must not erase the invalid predicate.
- device_write(1,16'h8901); device_write(2,16'h003e); device_write(3,16'h0001);
+ device_write(1,16'h7001); device_write(2,16'h003e); device_write(3,16'h0001);
  expect_status(16'h0005,16'h0005);
- if(dut.pending_base!==22'h3e8900) $fatal(1,"misaligned shadow replaced pending");
- device_write(2,16'h0040); device_write(1,16'h8900); device_write(3,16'h0001);
+ if(dut.pending_base!==22'h3e7000) $fatal(1,"misaligned shadow replaced pending");
+ device_write(2,16'h0040); device_write(1,16'h7000); device_write(3,16'h0001);
  expect_status(16'h0005,16'h0005);
- if(dut.pending_base!==22'h3e8900) $fatal(1,"invalid high half replaced pending");
+ if(dut.pending_base!==22'h3e7000) $fatal(1,"invalid high half replaced pending");
  device_write(4,16'h0001);
- device_write(1,16'h8900); device_write(2,16'h003e); device_write(3,16'h0001);
+ device_write(1,16'h7000); device_write(2,16'h003e); device_write(3,16'h0001);
  device_write(4,16'h0000);
  expect_status(16'h0005,16'h0001);
- device_write(1,16'h8910); device_write(2,16'h003e); device_write(3,16'h0001);
+ device_write(1,16'h7010); device_write(2,16'h003e); device_write(3,16'h0001);
  expect_status(16'h0005,16'h0005);
- if(dut.pending_base!==22'h3e8900) $fatal(1,"above-limit aligned shadow replaced pending");
+ if(dut.pending_base!==22'h3e7000) $fatal(1,"above-limit aligned shadow replaced pending");
  device_write(1,16'h0000);
 
  // An out-of-range complete pair is rejected and cannot replace the pending base.
  device_write(2,16'h0040);
  device_write(3,16'h0001);
  expect_status(16'h0005,16'h0005);
- wait(dut.active_base==22'h3e8900);
+ wait(dut.active_base==22'h3e7000);
  if(!dut.active_linear) $fatal(1,"linear format did not follow swap");
 
  // A later complete submission replaces pending normally. If it lands on the

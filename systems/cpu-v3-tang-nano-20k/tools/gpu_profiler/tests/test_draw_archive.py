@@ -12,7 +12,7 @@ from producer_handoff import draw_archive
 
 
 def envelope(root):
-    profile = root/'default'; frame = profile/'frame-0'; frame.mkdir(parents=True)
+    profile = root/'column16'; frame = profile/'frame-0'; frame.mkdir(parents=True)
     for name in ('header.bin', 'ranges.bin', 'commands.bin', 'objects.bin'):
         (frame/name).write_bytes(b'synthetic unit-test envelope')
     (frame/'producer.json').write_text('{"synthetic_test_only":true}')
@@ -22,8 +22,8 @@ def envelope(root):
     item = dict(frame_index=0, header_sha256=digest(frame/'header.bin'),
                 ranges_sha256=digest(frame/'ranges.bin'), commands_sha256=digest(frame/'commands.bin'),
                 objects_sha256=digest(frame/'objects.bin'))
-    receipt = dict(version=1, source_commit='unit-test-not-a-commit', profiles=[dict(profile='default',
-                   manifest_id='synthetic-not-build-id', layout_command=[1,1],
+    receipt = dict(version=1, source_commit='unit-test-not-a-commit', profiles=[dict(profile='column16',
+                   manifest_id='synthetic-not-build-id', layout_command=[2,4],
                    program_sha256=digest(profile/'producer.v3bin'), frames=[item])],
                    evidence_files=[dict(path=p.relative_to(root).as_posix(), bytes=p.stat().st_size,
                                         sha256=digest(p)) for p in root.rglob('*') if p.is_file()])
@@ -38,7 +38,7 @@ class DrawArchiveTests(unittest.TestCase):
             for entry in receipt['evidence_files']:entry['path']='full-scene/'+entry['path']
             (frame/'ui.bin').write_bytes(b'OBS --.- synthetic unit bytes')
             digest=hashlib.sha256((frame/'ui.bin').read_bytes()).hexdigest()
-            receipt['evidence_files'].append(dict(path='full-scene/default/frame-0/ui.bin',
+            receipt['evidence_files'].append(dict(path='full-scene/column16/frame-0/ui.bin',
                                                   bytes=(frame/'ui.bin').stat().st_size,sha256=digest))
             p=receipt['profiles'][0];p['producer_sha256']=p.pop('program_sha256')
             p['frames'][0]['ui_sha256']=digest
@@ -46,7 +46,7 @@ class DrawArchiveTests(unittest.TestCase):
             # per-frame digest fields. Do not fabricate a legacy envelope.
             del p['frames'][0]['header_sha256'];del p['frames'][0]['ranges_sha256']
             profile,_=draw_archive(frame,root/'receipt.json',receipt,'unit-test-not-a-commit')
-            self.assertEqual(profile,root/'full-scene/default')
+            self.assertEqual(profile,root/'full-scene/column16')
             (frame/'ui.bin').write_bytes(b'changed')
             with self.assertRaisesRegex(ValueError,'artifact changed'):
                 draw_archive(frame,root/'receipt.json',receipt,'unit-test-not-a-commit')
@@ -55,8 +55,8 @@ class DrawArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); frame, receipt = envelope(root)
             profile, entry = draw_archive(frame, root/'receipt.json', receipt, 'unit-test-not-a-commit')
-            self.assertEqual(profile, root/'default')
-            self.assertEqual(entry['layout_command'], [1,1])
+            self.assertEqual(profile, root/'column16')
+            self.assertEqual(entry['layout_command'], [2,4])
             (frame/'objects.bin').write_bytes(b'changed')
             with self.assertRaisesRegex(ValueError, 'artifact changed'):
                 draw_archive(frame, root/'receipt.json', receipt, 'unit-test-not-a-commit')

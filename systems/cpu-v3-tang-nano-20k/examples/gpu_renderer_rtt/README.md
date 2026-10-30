@@ -27,7 +27,7 @@ and UV meshlet. External reservations are color byte0x600000 and depth byte0x640
 capacity262144 bytes each. Assets avoid both complete spans. Physical ownership
 stays with the caller throughout asynchronous use.
 
-The optional hardware profile is rtt400x240-column16; see the
+The production hardware includes fixed400x240 views; see the
 [offline board recipe](/systems/cpu-v3-tang-nano-20k/examples/rtt400_board/README.md).
 Only use an audited matching bitstream/firmware/assets combination after explicit
 device assignment. Receipts distinguish CPU peers, native sampler/micro-scenes

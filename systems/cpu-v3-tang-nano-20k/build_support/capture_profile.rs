@@ -5,67 +5,46 @@ use std::path::{Path, PathBuf};
 #[path = "../rcc/gpu_capture_abi.rs"]
 #[allow(dead_code)]
 pub(crate) mod abi;
-#[path = "../rcc/gpu_layout_column16.rs"]
-#[allow(dead_code)]
-mod column;
 #[path = "../rcc/gpu_layout.rs"]
 #[allow(dead_code)]
-pub(crate) mod row;
+pub(crate) mod layout;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RendererLayoutProfile {
-    Row,
     Column16,
 }
 impl RendererLayoutProfile {
     pub fn layout_abi(self) -> u16 {
-        match self {
-            Self::Row => abi::GPU_CAPTURE_LAYOUT_ROW_ABI,
-            Self::Column16 => abi::GPU_CAPTURE_LAYOUT_COLUMN_ABI,
-        }
+        abi::GPU_CAPTURE_LAYOUT_COLUMN_ABI
     }
     pub fn plane_bytes(self) -> u32 {
-        u32::from(match self {
-            Self::Row => row::GPU_FRAMEBUFFER_PHYSICAL_SECTORS,
-            Self::Column16 => column::GPU_FRAMEBUFFER_PHYSICAL_SECTORS,
-        }) * 128
+        u32::from(layout::GPU_FRAMEBUFFER_PHYSICAL_SECTORS) * 128
     }
     pub fn allocation_bytes(self) -> u32 {
-        match self {
-            Self::Row => self.plane_bytes(),
-            Self::Column16 => u32::from(column::GPU_PLANE_SECTORS) * 128,
-        }
+        u32::from(layout::GPU_PLANE_SECTORS) * 128
     }
     pub fn layout_path(self, shared: &Path) -> PathBuf {
-        shared.join(match self {
-            Self::Row => "gpu_layout.rs",
-            Self::Column16 => "gpu_layout_column16.rs",
-        })
+        shared.join("gpu_layout.rs")
     }
     fn texture_layout(self) -> &'static str {
-        match self {
-            Self::Row => "pot-row-macro8x8",
-            Self::Column16 => "pot-column-macro16x16-min512-cache16x8",
-        }
+        "pot-column-macro16x16-min512-cache16x8"
     }
     pub fn description(self) -> Value {
-        let mut v = json!({"abi":self.layout_abi(),"name":match self {Self::Row=>"rgb565-macro16x16-row-pitch25",Self::Column16=>"rgb565-macro16x16-column-pad16"},
-            "gpu_profile":match self {Self::Row=>"production",Self::Column16=>"texture16x8-column16"},
-            "width":400,"height":240,"logical_pixels":96000,"physical_bytes":self.plane_bytes(),"allocation_bytes":self.allocation_bytes(),
-            "pixel_bytes":2,"macro_width":16,"macro_height":16,"macro_order":if self==Self::Row{"row"}else{"column"},
-            "macro_pitch":if self==Self::Row{25}else{16},"texture_layout":self.texture_layout()});
-        if self == Self::Column16 {
-            let b = |sector: u16| u32::from(sector) * 128;
-            let c = b(column::GPU_COMMAND_FIRST_SECTOR);
-            let o = b(column::GPU_OBJECT_FIRST_SECTOR);
-            let c1 = b(column::GPU_SLOT1_COMMAND_FIRST_SECTOR);
-            let o1 = b(column::GPU_SLOT1_OBJECT_FIRST_SECTOR);
-            v["memory_map"] = json!({"colorA":[b(column::GPU_COLOR_A_SECTOR),b(column::GPU_COLOR_B_SECTOR)],
-                "colorB":[b(column::GPU_COLOR_B_SECTOR),b(column::GPU_DEPTH_SECTOR)],"depth":[b(column::GPU_DEPTH_SECTOR),c],
-                "slot0CB":[c,o],"slot0obj":[o,b(column::GPU_ASSET_FIRST_SECTOR)],"assets":[b(column::GPU_ASSET_FIRST_SECTOR),b(column::GPU_ASSET_END_SECTOR)],
-                "UI0":[b(column::GPU_UI_PAGE0_SECTOR),b(column::GPU_UI_PAGE1_SECTOR)],"UI1":[b(column::GPU_UI_PAGE1_SECTOR),c1],
+        let mut v = json!({"abi":self.layout_abi(),"name":"rgb565-macro16x16-column-pad16",
+            "gpu_profile":"production","width":400,"height":240,"logical_pixels":96000,
+            "physical_bytes":self.plane_bytes(),"allocation_bytes":self.allocation_bytes(),
+            "pixel_bytes":2,"macro_width":16,"macro_height":16,"macro_order":"column",
+            "macro_pitch":16,"texture_layout":self.texture_layout()});
+        let b = |sector: u16| u32::from(sector) * 128;
+        let c = b(layout::GPU_COMMAND_FIRST_SECTOR);
+        let o = b(layout::GPU_OBJECT_FIRST_SECTOR);
+        let c1 = b(layout::GPU_SLOT1_COMMAND_FIRST_SECTOR);
+        let o1 = b(layout::GPU_SLOT1_OBJECT_FIRST_SECTOR);
+        v["memory_map"] = json!({"colorA":[b(layout::GPU_COLOR_A_SECTOR),b(layout::GPU_COLOR_B_SECTOR)],
+                "colorB":[b(layout::GPU_COLOR_B_SECTOR),b(layout::GPU_DEPTH_SECTOR)],"depth":[b(layout::GPU_DEPTH_SECTOR),c],
+                "slot0CB":[c,o],"slot0obj":[o,b(layout::GPU_ASSET_FIRST_SECTOR)],"assets":[b(layout::GPU_ASSET_FIRST_SECTOR),b(layout::GPU_ASSET_END_SECTOR)],
+                "UI0":[b(layout::GPU_UI_PAGE0_SECTOR),b(layout::GPU_UI_PAGE1_SECTOR)],"UI1":[b(layout::GPU_UI_PAGE1_SECTOR),c1],
                 "slot1CB":[c1,o1],"slot1obj":[o1,0x800000]});
-        }
         v
     }
 }
@@ -79,7 +58,6 @@ struct Resource {
 pub struct RendererCaptureConfiguration {
     pub(super) capture: Option<CaptureConfiguration>,
     pub(super) profile: RendererLayoutProfile,
-    pub(super) framebuffer_view: bool,
     resources: Vec<Resource>,
 }
 impl RendererCaptureConfiguration {
@@ -87,22 +65,11 @@ impl RendererCaptureConfiguration {
         Self {
             capture: None,
             profile,
-            framebuffer_view: false,
             resources: vec![],
         }
     }
-    pub fn rtt400x240() -> Self {
-        Self {
-            framebuffer_view: true,
-            ..Self::without_capture(RendererLayoutProfile::Column16)
-        }
-    }
     pub fn command_abi(&self) -> u16 {
-        if self.framebuffer_view {
-            abi::GPU_CAPTURE_RTT400_COMMAND_ABI
-        } else {
-            abi::GPU_CAPTURE_NATIVE_COMMAND_ABI
-        }
+        abi::GPU_CAPTURE_RTT400_COMMAND_ABI
     }
     pub fn profile(&self) -> RendererLayoutProfile {
         self.profile
@@ -113,38 +80,21 @@ impl RendererCaptureConfiguration {
                 .map_err(|e| format!("read capture manifest {}: {e}", path.display()))?,
         )
         .map_err(|e| e.to_string())?;
-        let version = match m.get("version") {
-            None => 1,
-            Some(v) => v.as_u64().ok_or("capture version must be an integer")?,
-        };
-        let profile = match version {
-            1 if m.get("layout").is_none() => {
-                if m.get("command_abi").and_then(Value::as_u64)
-                    != Some(u64::from(abi::GPU_CAPTURE_NATIVE_COMMAND_ABI))
-                {
-                    return Err(
-                        "new row firmware requires an explicit current command ABI3 catalog".into(),
-                    );
-                }
-                RendererLayoutProfile::Row
-            }
-            2 => {
-                if m["schema"] != "digitaldesign.gpu-capture-build" {
-                    return Err("unsupported capture build schema".into());
-                }
-                if !matches!(m["command_abi"].as_u64(), Some(3 | 4)) {
-                    return Err("unsupported capture command ABI".into());
-                }
-                [RendererLayoutProfile::Row, RendererLayoutProfile::Column16]
-                    .into_iter()
-                    .find(|p| m["layout"] == p.description())
-                    .ok_or("mixed or unsupported capture layout description")?
-            }
-            _ => return Err("unsupported capture manifest version/layout".into()),
-        };
-        let framebuffer_view = m["command_abi"].as_u64() == Some(4);
-        if framebuffer_view && profile != RendererLayoutProfile::Column16 {
-            return Err("RTT command ABI4 requires column16 storage".into());
+        let version = 2;
+        let profile = RendererLayoutProfile::Column16;
+        if m["version"].as_u64() != Some(version)
+            || m["schema"] != "digitaldesign.gpu-capture-build"
+        {
+            return Err("explicit v2 column capture manifest required".into());
+        }
+        if m["command_abi"].as_u64() != Some(u64::from(abi::GPU_CAPTURE_RTT400_COMMAND_ABI)) {
+            return Err(
+                "unsupported capture command ABI; production requires framebuffer-view support"
+                    .into(),
+            );
+        }
+        if m["layout"] != profile.description() {
+            return Err("mixed or unsupported capture layout description".into());
         }
         if m["options"]
             .get("capture_allocation_guards")
@@ -162,14 +112,7 @@ impl RendererCaptureConfiguration {
             let entries = m["resources"]
                 .as_array()
                 .ok_or("v2 capture requires resource catalog")?;
-            let (first, end) = match profile {
-                RendererLayoutProfile::Row => {
-                    (row::GPU_ASSET_FIRST_SECTOR, row::GPU_ASSET_END_SECTOR)
-                }
-                RendererLayoutProfile::Column16 => {
-                    (column::GPU_ASSET_FIRST_SECTOR, column::GPU_ASSET_END_SECTOR)
-                }
-            };
+            let (first, end) = (layout::GPU_ASSET_FIRST_SECTOR, layout::GPU_ASSET_END_SECTOR);
             for entry in entries {
                 let base = entry["address"].as_u64().ok_or("resource address")?;
                 let bytes = entry["bytes"].as_u64().ok_or("resource bytes")?;
@@ -226,7 +169,6 @@ impl RendererCaptureConfiguration {
         Ok(Self {
             capture: Some(capture),
             profile,
-            framebuffer_view,
             resources,
         })
     }
@@ -261,9 +203,6 @@ pub fn materialize_renderer_sources(
     profile: RendererLayoutProfile,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<PathBuf, String> {
-    if profile == RendererLayoutProfile::Row {
-        return Ok(shared.to_path_buf());
-    }
     let source = std::fs::canonicalize(shared).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(generated).map_err(|e| e.to_string())?;
     let generated = std::fs::canonicalize(generated).map_err(|e| e.to_string())?;

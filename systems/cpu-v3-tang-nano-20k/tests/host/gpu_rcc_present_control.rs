@@ -84,13 +84,13 @@ impl cpu_v3::Device for Peer {
                 6 => s.error = 16,
                 7 => s.error = 4,
                 8 => s.error = 2,
-                9 => s.active = 0x218000,
+                9 => s.active = 0x220000,
                 10 => s.format = 1,
                 11 => s.error = 0,
                 12 => s.pending = true,
                 13 => {
                     s.pending = false;
-                    s.active = 0x218000;
+                    s.active = 0x220000;
                 }
                 14 => s.unstable = false,
                 15 => s.cache = true,
@@ -166,7 +166,7 @@ fn compiled_cancel_discard_and_two_swaps_wait_for_real_active() {
 }
 #[test]
 fn compiled_initialization_adopts_actual_front_and_holds_unknown_owners() {
-    let s=run("check(gpu_init()==GPU_IDLE);let c=gpu_cb_begin();check(gpu_pass_clear(c,0,0));check(GPU_CB.color==GPU_COLOR_A_SECTOR);",State{active:0x218000,..initial()});
+    let s=run("check(gpu_init()==GPU_IDLE);let c=gpu_cb_begin();check(gpu_pass_clear(c,0,0));check(GPU_CB.color==GPU_COLOR_A_SECTOR);",State{active:0x220000,..initial()});
     assert_eq!(s.starts, 0);
     run(
         r#"check(gpu_init()==GPU_PENDING);check(gpu_cb_begin()==0);check(gpu_present_poll()==GPU_PENDING);

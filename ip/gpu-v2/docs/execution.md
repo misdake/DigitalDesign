@@ -585,6 +585,21 @@ rows and two epochs, including held synchronous Q.
 
 ## Fixed return calendar
 
+The native frontend localizes Raster's phase loads in `vliw/raster.v`;
+`vliw/compute.v` owns the preserved `rc_compute.phase` producer. Only Raster's
+internal consumers use a preserved two-bit `raster_phase` register. On the common
+rising edge, reset sets both to zero, otherwise common frontend CE makes both capture
+the pre-edge producer phase plus one modulo four, otherwise both hold. The
+replica captures the producer's next state, so it adds no pipeline edge. Raster,
+interpolator and compute retain the same clock/reset/CE connections; abort stops
+them through the existing frontend CE gate. Other phase consumers and the public
+Raster phase port retain their existing bindings. Preservation attributes request
+separate physical registers; their retention and routing require a fitted-netlist
+check rather than an inference from RTL names. `frontend/vliw.rs` includes both
+modules for portable/native frontend and production command exports; no later
+source injection supplies this behavior. A standalone Raster caller must supply
+the same reset/CE-qualified modulo-four phase as the interpolator producer.
+
 Here phi0..3 are the four enabled phases of the local interpolation calendar.
 Offset 0 is the enabled edge accepting the quad at phi0; offset n is n later
 enabled edges, with phase `n mod 4` sampled before each edge. A compute pause

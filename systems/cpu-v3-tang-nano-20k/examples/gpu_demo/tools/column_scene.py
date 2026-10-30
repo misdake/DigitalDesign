@@ -21,9 +21,9 @@ def audit(output, contract):
     output = Path(output).resolve()
     contract = Path(contract).resolve()
     expected = json.loads(contract.read_text())
-    assert expected['hardware_profile'] == 'texture16x8-column16'
+    assert expected['hardware_profile'] == 'production'
     assert expected['layout_identity'] == 'rgb565-macro16x16-column-major-pad16-cache16x8-8KiB'
-    bounds = sectors('column16')
+    bounds = sectors()
     names = ['colorA','colorB','depth','slot0CB','slot0obj','assets','UI0','UI1','slot1CB','slot1obj']
     starts = [0x400000,0x440000,0x480000,0x4c0000,0x4d0000,0x4e0000,0x7df800,0x7dfc00,0x7e0000,0x7f0000]
     ends = starts[1:] + [0x800000]
@@ -33,7 +33,7 @@ def audit(output, contract):
     assert [bounds[k]*128 for k in keys] == starts
     assert bounds['GPU_PLANE_SECTORS']*128 == 262144
     assert bounds['GPU_FRAMEBUFFER_PHYSICAL_SECTORS'] == 1600
-    assert (output/'gpu-column-layout.rs').read_bytes() == (SYSTEM/'rcc/gpu_layout_column16.rs').read_bytes()
+    assert (output/'gpu-column-layout.rs').read_bytes() == (SYSTEM/'rcc/gpu_layout.rs').read_bytes()
 
     # Independent scan traversal: advance vertically through padded macro rows,
     # then the next column. Compare every pixel against the contract expression.

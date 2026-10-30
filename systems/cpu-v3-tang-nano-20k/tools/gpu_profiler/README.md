@@ -74,70 +74,38 @@ actual READ continuation and both payloads, and rejects an uncaptured successor:
 python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/tests/read_chain_guard.py --peer path/to/fresh-export/peer --out path/to/new-test-output
 ```
 
-Storage layout is independent of the unchanged GPS1 wire v1,64-word header and
-range v1. Header indices remain driver-owned. Readers accept native command
-ABI1 and ABI3 with layout1 or2; ABI3 adds raw MEMCPY. New firmware/build catalogs
-explicitly declare command3 (native) or4 (RTT), while old ABI1 snapshots remain
-readable. Paused RTT command2 and4 are rejected, including with old constants.
-Build/header command versions must match. Raw source/destination captures use
-tag10 and existing READ/WRITE/PREIMAGE flags; writable buffers receive separate
-replay dumps. Encoders do not automatically publish those ranges.
+Production uses column layout ABI2 and RTT command ABI4, including the native
+ABI3 MEMCPY encoding. GPS1 wire/header/range versions remain1. Every new build
+v2 binds the exact `production` layout, memory map and typed resources. Old row,
+missing-layout and old command captures are rejected without repacking.
+Before either replay preparation or execution, the declared command ABI is
+checked against every opcode: ABI1/2 cannot enable MEMCPY; ABI3/4 include it;
+reserved13/14 remain unsupported. Production snapshots themselves declare4.
 
-The small new-command regression uses synthetic frozen inputs and current GPU/MC
-exports, not a CPU producer, physical board or paused-RTT qualification:
+Column addressing is `base+512*((x>>4)*16+(y>>4))+32*(y&15)+2*(x&15)`.
+A plane has 96000 logical pixels and 6400 distributed padding words, totaling
+204800 bytes. Its reserved allocation is 262144 bytes; CLEAR does not own the
+57344-byte tail. Physical preimages are mandatory; allocation-tail capture is
+explicit. Reports separate pixels, padding and captured guards. A FULL_CLEAR
+range extending into a guard is rejected. Native writes must stay within the
+captured writable byte masks, and every dynamic read must be initialized.
 
-```powershell
-python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/tests/memcpy_replay.py `
-  --rtl <current-row-export-and-audited-peer> --out <new-target-directory>
-```
+POT textures use 16x16 column macros, complete 512-byte mip tails and 16x8 cache
+lines. Fixed 400x240 views decode the same storage while retaining signed 18-bit
+pre-clamp, true dimensions, base-only and nearest/bilinear semantics. Matrix and
+UI logical row order and the atlas odd-row encoding are unchanged.
 
-It checks three chained copies, command-page crossing, an8 MiB tail destination,
-unchanged depth, exact color and raw buffer bytes. The mathematical scene oracle
-refuses framebuffer copies after approximate DRAW evaluation; exact cold replay
-and retirement comparison are the supported verification path for those streams.
+Every RTL export has `layout.json` with `schema:1,layout_abi:2,gpu_profile:production`.
+The exporter checks generated structure as well as metadata. Replay rejects
+missing, unknown or mixed declarations; source hashes bind the actual hardware.
+Fixed A/B/depth and explicitly borrowed, disjoint64-KiB-aligned RTT planes use
+the same column decoder. The old Front remains a fixed Display-owned plane.
 
-| Storage | Header layout ABI | Logical pixels | Physical plane | Allocation policy |
-| --- | ---: | ---: | ---: | --- |
-| Row16x16, macro pitch25 | 1 | 96000 | 192000 bytes | Legacy captured extent |
-| Column16x16, padded macro height16 | 2 | 96000 | 204800 bytes | 262144 bytes reserved; tail capture explicit |
-
-Column addressing is `base + 512*((x>>4)*16+(y>>4)) + 32*(y&15) + 2*(x&15)`.
-The 6400 padding words occupy the last macro row of every column; they are not a
-contiguous tail. The extra57344 allocation bytes are a separate guard outside the
-physical plane. Full CLEAR initializes204800 bytes, never that guard. Build v2
-binds an exact layout description, the column memory map and typed resources.
-Ordinary POT textures declare column macro packing with minimum512-byte mips and
-16x8 cache lines. UI grid/glyph encoding is unchanged. Row build v1, descriptor
-representation, input hashes and decoding remain compatible; use the archived
-`--abi` source if the authoritative constants changed since capture. Old evidence
-is never relabeled.
-
-Physical plane preimages are mandatory. Build option
-`capture_allocation_guards: true` additionally requires the full allocation tails;
-otherwise they are not fabricated or implicitly compared. Referenced bytes must
-still be captured. A FULL_CLEAR range extending into a guard is rejected. Native
-writes are checked against captured writable byte masks, alongside initialized
-read guards. Reports distinguish visible pixels, physical padding words and
-captured guard bytes; equality includes every compared region. Physical-only
-replay explicitly reports zero compared guard bytes.
-
-New RTL exports include `layout.json` (`schema:1`, `layout_abi`, `gpu_profile`).
-The exporter checks the actual generated framebuffer/texture structure, not just
-an environment label. Replay rejects unknown/mixed layouts, a row texture path
-with a column target, or an unbound layout declaration. Missing layout metadata
-is accepted only for archived row exports. This is a structural sanity gate;
-actual source hashes remain bound to build/firmware identity.
-
-The private diagnostic preparation command accepts `--column-catalog` for a
-CPU-produced directory containing `assets.json`, `renderer_assets.rs` and its
-referenced resources. `assets.json.capture_layout` must match the versioned
-descriptor. Entries retain `file,address,bytes,sha256` and add `kind` (`mesh`,
-`texture`, `atlas`, `other`); textures also declare `layout`. Preparation checks
-hashes/bounds and copies bytes; it never converts row textures. Firmware rebuilds
-restore that same build-bound catalog through the existing boot-assets route.
-The formal CPU producer supports both row and column profiles. The selected
-catalog, capture header, replay export and qualified hardware must agree;
-offline producer support alone does not qualify physical buttons or board timing.
+Preparation may consume an explicit hash-bound `--column-catalog` containing
+`assets.json`, `renderer_assets.rs` and resources. Catalogs declare physical
+ranges, kinds and texture packing. Normal minimal/full-scene packers now produce
+this sole layout directly. Firmware rebuilds restore their bound bytes through
+the boot-assets route. CPU producer support is not board timing qualification.
 
 The MC export preserves a `peer/stream-contract.json` and its original source
 names. Replay validates the fixed stream profile and every peer source against
@@ -154,22 +122,13 @@ are authoritative native output; `color.png` is a viewing aid.
 `replay.json.captured_plane_bytes` distinguishes physical-only and guarded capture.
 Guard writes fail rather than being hidden as off-screen data.
 
-Offline `tests/layout_replay.py` takes explicit `--row-rtl`, `--frozen-column`,
-`--column-contract` and fresh `--out` paths. It binds the frozen GPU SHA to its
-contract and stages it beside the current validated CL3 peer, without changing
-production sources. Default NOP preserves independently enumerated pixel patterns.
-`--clear` exercises target installation/full-plane CLEAR only; `--physical-only`
-omits unreferenced allocation tails. `--missing-read` and `--forbidden-write` are
-guarded negatives. Bounds are180000 cycles and180 seconds. These no-triangle
-fixtures and the original frozen49.5/99 CL2 scene result do not establish new
-54/108 board or producer qualification.
+Offline `tests/layout_replay.py --rtl CURRENT --out FRESH` consumes the canonical
+GPU+MC export directly. NOP,`--clear`,`--physical-only`,`--missing-read` and
+`--forbidden-write` keep explicit cycle/time limits and permission checks. There
+is no row peer replacement, frozen column substitution or layout conversion.
 
 `tests/producer_handoff.py` consumes an archived committed producer fixture with
-`--fixture`, `--producer-receipt`, `--producer-commit`, `--rtl` and fresh
-`--out`. Current row and column inputs use the matching canonical export directly.
-The old `--row-rtl` spelling remains an alias. Only legacy column staging from a
-row export requires explicit `--frozen-column`/`--column-contract`; incomplete or
-ambiguous replacement requests are rejected.
+`--fixture`, `--producer-receipt`, `--producer-commit`, `--rtl` and fresh `--out`.
 It checks archived file and build hashes, the real header/ranges, catalog byte
 closure and actual column origin. The generated wire is labeled host-encoded,
 not UART. Its default independent oracle handles the supplied CLEAR plus fixed-grid UI
@@ -221,15 +180,15 @@ address, beyond differences attributable only to CLEAR. It independently
 cold-replays each exact frozen occurrence. It does
 not infer warm queue behavior or CPU/Display concurrency from isolated resets.
 `tests/draw_replay.py` provides a bounded synthetic DRAW check of this plumbing,
-with explicit `--layout row|column`, export options and fresh `--out` directory.
+with explicit `--rtl` and fresh `--out` paths.
 Synthetic input success never establishes real CPU producer or physical-button
-qualification. Put outputs under the approved external experiment directory.
+qualification. Put outputs under this worktree's `target/`.
 
 ### Complete frozen scene
 
 `tests/full_scene_replay.py` consumes the CPU-owned
 `digitaldesign.cpu-capture-full-scene-delivery` v1 envelope, whose profiles live
-under `full-scene/default|column16/frame-0..2`. The consumer verifies its sealed
+under`full-scene/column16/frame-0..2`. The consumer verifies its sealed
 program/build, commands, objects, UI and all range bytes without rewriting the
 producer archive or using its `observed` sanity/projection fields as answers.
 The same explicit export options as the single-DRAW runner apply. Cycle and
@@ -241,7 +200,7 @@ in order. It performs the documented Vertex output-window/normal quantization,
 then direct float64 ray/triangle intersections and perspective attributes. It
 does not read RTL, control ROM, T's reduced coefficients, R's traversal answers,
 I's reciprocal table or CPU-provided projections. Textures come only from
-captured RGB565 bytes: row8x8 or column16x16 macros and their actual mip padding.
+captured RGB565 bytes: column16x16 macros and their actual mip padding.
 Sampling uses the documented integer tap/Color quantizers; Lighting uses ideal
 normalization and Blinn-Phong with each current global context. Final, ROP
 packing and UI's binary-alpha glyph writes are independently evaluated.

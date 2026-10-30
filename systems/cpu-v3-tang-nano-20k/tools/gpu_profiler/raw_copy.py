@@ -1,12 +1,12 @@
-"""Native ABI3 raw-copy contract and bounded, mutable reference memory."""
+"""Native ABI3/RTT4 raw-copy contract and bounded, mutable reference memory."""
 import struct
 
 MEMORY_BYTES = 8 * 1024 * 1024
 
 
 def descriptor(command, scratch, command_abi):
-    if command_abi != 3:
-        raise ValueError('MEMCPY requires native command ABI3')
+    if command_abi not in (3, 4):
+        raise ValueError('MEMCPY requires native command ABI3 or RTT4')
     slot = command & 127
     if command >> 28 != 12 or command & 0x0fffff80 or not 66 <= slot < 80:
         raise ValueError('Invalid MEMCPY command/staging slot')
@@ -28,6 +28,7 @@ class MemoryImage:
         self.valid = bytearray(MEMORY_BYTES)
         self.writable = bytearray(MEMORY_BYTES)
         self.abi = capture.abi
+        self.header = capture.header
         for region in capture.ranges:
             lo, hi = region.address, region.address+region.length
             blob = capture.data[region.index]

@@ -13,19 +13,21 @@ from memcpy_fixture import make
 
 
 class RawCopyTests(unittest.TestCase):
-    def test_abi1_memcpy_is_rejected_before_prepare_or_execute(self):
+    def test_old_abi_memcpy_is_rejected_before_prepare_or_execute(self):
         from replay import prepare, execute
-        capture, _ = make(s.Abi(), command_abi=1)
-        self.assertTrue(capture.complete)
-        with tempfile.TemporaryDirectory() as folder:
-            out = Path(folder)/'output'
-            with self.assertRaisesRegex(s.SnapshotError, r'ABI1.*opcode12'):
-                prepare(capture, Path(folder)/'unused-rtl', out, 100000, 60)
-            self.assertFalse(out.exists())
-            with patch('replay.capture_run') as run:
-                with self.assertRaisesRegex(s.SnapshotError, r'ABI1.*opcode12'):
-                    execute(capture, out/'unused-manifest.json')
-                run.assert_not_called()
+        for command_abi in (1, 2):
+            with self.subTest(command_abi=command_abi), tempfile.TemporaryDirectory() as folder:
+                capture, _ = make(s.Abi(), command_abi=command_abi)
+                self.assertTrue(capture.complete)
+                out = Path(folder)/'output'
+                message = rf'ABI{command_abi}.*opcode12'
+                with self.assertRaisesRegex(s.SnapshotError, message):
+                    prepare(capture, Path(folder)/'unused-rtl', out, 100000, 60)
+                self.assertFalse(out.exists())
+                with patch('replay.capture_run') as run:
+                    with self.assertRaisesRegex(s.SnapshotError, message):
+                        execute(capture, out/'unused-manifest.json')
+                    run.assert_not_called()
 
     def test_legacy_commands_and_prepared_abi_must_match(self):
         from replay import validate_command_abi, execute
@@ -49,20 +51,21 @@ class RawCopyTests(unittest.TestCase):
         capture, original = make(s.Abi())
         image = MemoryImage(capture)
         scratch = bytearray(4096)
-        scratch[272*8:272*8+128] = capture.read(0x51000,128)
+        scratch[272*8:272*8+128] = capture.read(0x4d0000,128)
         for slot in (68,69,70): image.copy(descriptor(0xc0000000|slot,scratch,3))
         self.assertEqual(image.read(0x300000,1536),original)
-        self.assertEqual(image.read(0x430000,512),original[:512])
+        self.assertEqual(image.read(0x440000,512),original[:512])
         self.assertEqual(image.read(0x7ffe00,512),original[:512])
-        self.assertEqual(image.read(0x430200,192000-512),b'\x34\x12'*(96000-256))
+        self.assertEqual(image.read(0x440200,204800-512),b'\x34\x12'*(102400-256))
         self.assertEqual(capture.read(0x300000,1536),bytes([0x3c])*1536)
-        with self.assertRaises(ValueError): image.copy((0x200000,0x51000,512))
+        with self.assertRaises(ValueError): image.copy((0x200000,0x4d0000,512))
         with self.assertRaises(ValueError): image.copy((0x100000,0x300000,512))
 
     def test_version_reserved_bits_overlap_and_extent_are_rejected(self):
         capture, _ = make(s.Abi()); scratch = bytearray(4096)
-        scratch[272*8:272*8+128] = capture.read(0x51000,128)
-        for abi in (1,2,4):
+        scratch[272*8:272*8+128] = capture.read(0x4d0000,128)
+        self.assertEqual(descriptor(0xc0000044,scratch,3), descriptor(0xc0000044,scratch,4))
+        for abi in (0,1,2,5):
             with self.assertRaises(ValueError): descriptor(0xc0000044,scratch,abi)
         for value in (1<<39,0,0x3fff|(1<<28)):
             struct.pack_into('<Q',scratch,68*32,value)
@@ -72,10 +75,10 @@ class RawCopyTests(unittest.TestCase):
 
     def test_scene_reference_observes_color_copy_and_chained_raw_output(self):
         from scene_oracle import render
-        from layout import ROW
+        from layout import COLUMN
         capture, original = make(s.Abi()); result = render(capture)
-        raw = bytearray(b'\x34\x12'*96000);raw[:512] = original[:512]
-        self.assertEqual(result.color.reshape(-1).tolist(),ROW.words(raw))
+        raw = bytearray(b'\x34\x12'*102400);raw[:512] = original[:512]
+        self.assertEqual(result.color.reshape(-1).tolist(),COLUMN.words(raw))
         self.assertEqual(len(result.stats['raw_copies']),3)
 
 

@@ -11,7 +11,7 @@ SYSTEM = ROOT / "systems/cpu-v3-tang-nano-20k"
 sys.path.insert(0, str(SYSTEM / "tools/gpu_profiler"))
 from identity import create_build, digest
 from assets import pack
-from layout import ROW
+from layout import COMMAND_ABI
 from replay import export_layout, validate_rtl_layout
 
 
@@ -52,7 +52,7 @@ def prepare(output, hardware, system_export, replay_export, automatic, primitive
                      for p in sorted(folder.rglob("*")) if p.is_file())
     resources = [dict(name=r["file"], address=r["address"], bytes=r["bytes"],
                       sha256=r["sha256"], immutable=True) for r in asset_manifest["resources"]]
-    if layout != ROW:
+    if True:
         for entry, resource in zip(resources, asset_manifest['resources']):
             entry['kind']=resource['kind']
             if resource['kind']=='texture': entry['layout']=resource['layout']
@@ -62,7 +62,8 @@ def prepare(output, hardware, system_export, replay_export, automatic, primitive
                 toolchain=dict(rustc=subprocess.check_output(["rustc", "--version"], text=True).strip(),
                                python=sys.version.split()[0], firmware_route="OUT_DIR + cpu-v3-boot-assets"),
                 source_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip())
-    if layout != ROW: spec['layout']=layout.description()
+    spec['layout']=layout.description()
+    spec['command_abi']=COMMAND_ABI
     spec_path = output / "build-spec.json"
     spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
     declaration = create_build(spec_path, output / "build.json")

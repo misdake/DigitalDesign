@@ -1,11 +1,11 @@
 //! Deterministic immutable native assets and an RCC-recorded drawing program.
 use std::collections::BTreeMap;
-pub const ASSET: u32 = 0x4b0000;
+pub const ASSET: u32 = 0x4e0000;
 pub const TEXTURE: u32 = ASSET + 0x1000;
 pub fn expected_commands(object_word: u32) -> Vec<u8> {
     use gpu_v2::system::vliw_command::{Command as C, CommandBuffer};
     let mut cb = CommandBuffer::new();
-    let mut cursor = 0x4a0000 + object_word * 2;
+    let mut cursor = 0x4d0000 + object_word * 2;
     let alloc = |cursor: &mut u32, n: u32| {
         *cursor = cursor.next_multiple_of(n);
         let a = *cursor;
@@ -16,6 +16,7 @@ pub fn expected_commands(object_word: u32) -> Vec<u8> {
     for c in [
         C::wait(true, true),
         C::FLUSH,
+        C::TEX_INVALIDATE,
         C::dma_local(target, 276, 32).unwrap(),
         C::wait(true, false),
         C::set_target(276).unwrap(),
@@ -89,10 +90,10 @@ fn check(ok:bool){if !ok{halt(0xb00+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1)
 fn main(){
  unsafe {write_dseg_page(3,19);}
  check(gpu_init()==GPU_IDLE);
- let mut mesh:GpuMesh=GpuMesh{directory_sector:0x9600,directory_word:0,count:3,first_sector:0x9600,sectors:32};
- let mut uv:GpuMesh=GpuMesh{directory_sector:0x9600,directory_word:6,count:2,first_sector:0x9600,sectors:32};
- let mut empty:GpuMesh=GpuMesh{directory_sector:0x9600,directory_word:0,count:0,first_sector:0x9600,sectors:32};
- let mut texture:GpuTexture=GpuTexture{sector:0x9620,sectors:1,size_log2:0,full_mip:0};
+ let mut mesh:GpuMesh=GpuMesh{directory_sector:0x9c00,directory_word:0,count:3,first_sector:0x9c00,sectors:32};
+ let mut uv:GpuMesh=GpuMesh{directory_sector:0x9c00,directory_word:6,count:2,first_sector:0x9c00,sectors:32};
+ let mut empty:GpuMesh=GpuMesh{directory_sector:0x9c00,directory_word:0,count:0,first_sector:0x9c00,sectors:32};
+ let mut texture:GpuTexture=GpuTexture{sector:0x9c20,sectors:4,size_log2:0,full_mip:0};
  let mut g:GpuGlobal=GpuGlobal{far_low:0,far_high:100,light_x:0,light_y:0,light_z:16384,ray_x:0,ray_y:0,ray_k:8192,ambient:256,directional:0,mode:0,shininess:0,epoch:0};
  let mut r:GpuRender=GpuRender{texture_sector:0,texture_sectors:0,size_log2:0,full_mip:0,filter:0,specular_low:0,specular_high:0,depth_func:7,depth_write:1,blend:0,unlit:1,lod_bias:0};
  let mut iteration:u16=0;
@@ -193,12 +194,10 @@ pub fn assets() -> BTreeMap<u32, u8> {
             memory.insert(ASSET + i as u32 * 4 + j as u32, b);
         }
     }
-    // One fixed immutable 1x1 RGB565 texture; complete 128-byte allocation.
-    for j in 0..128 {
-        memory.insert(TEXTURE + j, 0);
+    // Canonical 1x1 RGB565 texture repeats across its complete512-byte level.
+    for j in 0..512 {
+        memory.insert(TEXTURE + j, if j % 2 == 0 { 0xe0 } else { 0x07 });
     }
-    memory.insert(TEXTURE, 0xe0);
-    memory.insert(TEXTURE + 1, 0x07);
     memory
 }
 

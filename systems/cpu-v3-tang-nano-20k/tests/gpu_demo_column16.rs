@@ -187,7 +187,7 @@ fn actual_classic_serial_caller_uses_column_assets_and_targets() {
     let p = std::process::Command::new("python")
         .args(["-B"])
         .arg(root.join("examples/gpu_demo/tools/assets.py"))
-        .args(["--profile", "column16", "--output"])
+        .args(["--output"])
         .arg(&assets)
         .output()
         .unwrap();
@@ -203,12 +203,11 @@ fn actual_classic_serial_caller_uses_column_assets_and_targets() {
         source,
         &options,
         &mut |n| {
-            resolver::load_native_module(
+            resolver::load_module(
                 &root.join("examples/gpu_demo/rcc"),
                 &root.join("rcc"),
                 &constants,
                 n,
-                resolver::NativeLayoutProfile::Column16,
                 &mut |_| {},
             )
         },
@@ -307,16 +306,7 @@ fn main(){
         "column guard boundaries",
         source,
         &options,
-        &mut |n| {
-            resolver::load_native_module(
-                &root.join("rcc"),
-                &root.join("rcc"),
-                "",
-                n,
-                resolver::NativeLayoutProfile::Column16,
-                &mut |_| {},
-            )
-        },
+        &mut |n| resolver::load_module(&root.join("rcc"), &root.join("rcc"), "", n, &mut |_| {}),
     )
     .unwrap();
     let p = rcc_backend::try_compile(ir, &options, "main").unwrap();

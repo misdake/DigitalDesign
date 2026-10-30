@@ -20,30 +20,6 @@ pub fn load_module(
     resolve_module(local_dir, shared_dir, constants, name, dependency).map(|(source, _)| source)
 }
 
-/// Explicit native diagnostic selection; never inferred from application paths.
-/// Formal renderer/capture compilation retains its own approved-source contract.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeLayoutProfile {
-    Default,
-    Column16,
-}
-pub fn load_native_module(
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    name: &str,
-    profile: NativeLayoutProfile,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<String, String> {
-    if profile == NativeLayoutProfile::Column16 && name == "gpu_layout" {
-        let path = RendererLayoutProfile::Column16.layout_path(shared_dir);
-        dependency(&path);
-        return std::fs::read_to_string(&path)
-            .map_err(|e| format!("column layout {}: {e}", path.display()));
-    }
-    load_module(local_dir, shared_dir, constants, name, dependency)
-}
-
 /// Preserve the identity of the actual file selected by local-first lookup.
 /// A local override never receives the shared module's approved identity.
 pub fn load_module_source(
@@ -198,24 +174,11 @@ pub struct CaptureConfiguration {
     pub manifest_id: [u16; 16],
 }
 impl CaptureConfiguration {
-    pub fn from_manifest(gate_path: PathBuf, manifest_path: &Path) -> Result<Self, String> {
-        let bytes = std::fs::read(manifest_path)
-            .map_err(|e| format!("read profiler manifest {}: {e}", manifest_path.display()))?;
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|e| format!("parse profiler manifest: {e}"))?;
-        if manifest.get("layout").is_some()
-            || manifest
-                .get("version")
-                .is_some_and(|v| v.as_u64() != Some(1))
-            || manifest
-                .get("command_abi")
-                .and_then(serde_json::Value::as_u64)
-                != Some(u64::from(
-                    capture_profile::abi::GPU_CAPTURE_NATIVE_COMMAND_ABI,
-                ))
-        {
-            return Err("legacy capture constructor requires row storage and current command ABI3; use RendererCaptureConfiguration for explicit profiles".into());
-        }
+    /// Host-test identity injection only. Production captures use the complete
+    /// RendererCaptureConfiguration manifest, layout and resource validation.
+    pub fn from_identity(gate_path: PathBuf, path: &Path) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         Self::parse_id(gate_path, &manifest)
     }
     fn parse_id(gate_path: PathBuf, manifest: &serde_json::Value) -> Result<Self, String> {
@@ -260,7 +223,7 @@ pub fn compile_renderer_program_with_capture(
         constants,
         ordinary_dirs,
         capture,
-        &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Row),
+        &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Column16),
         None,
         dependency,
     )
@@ -318,7 +281,7 @@ fn compile_renderer_capture(
     let mut loader = |name: &str| {
         if name == "gpu_render_profile" {
             return Ok(rcc::frontend::ModuleSource {
-                source: render_profile_source(configuration.framebuffer_view),
+                source: render_profile_source(),
                 origin: None,
             });
         }
@@ -385,11 +348,8 @@ fn compile_renderer_capture(
     }
 }
 
-fn render_profile_source(framebuffer_view: bool) -> String {
-    format!(
-        "pub const GPU_RENDER_PROFILE:u16={};\n",
-        u16::from(framebuffer_view)
-    )
+fn render_profile_source() -> String {
+    include_str!("../rcc/gpu_render_profile.rs").to_owned()
 }
 
 fn capture_config_source(
@@ -433,13 +393,13 @@ fn resolve_module_with_sources(
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<(String, Option<PathBuf>), String> {
     if name == "gpu_render_profile" {
-        return Ok((render_profile_source(false), None));
+        return Ok((render_profile_source(), None));
     }
     if name == "gpu_capture_config" {
         return Ok((
             capture_config_source(
                 None,
-                &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Row),
+                &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Column16),
             ),
             None,
         ));

@@ -8,7 +8,7 @@ import sys
 
 sys.dont_write_bytecode = True
 from snapshot import Abi, DEFAULT_ABI, SnapshotError, load_snapshot
-from layout import ROW, declared_layout, header_layout
+from layout import COMMAND_ABI, declared_layout, header_layout
 
 
 def compare(previous, following, replay, output):
@@ -22,9 +22,9 @@ def compare(previous, following, replay, output):
         raise SnapshotError("Snapshots are not adjacent leases with the prior output retired into Front")
     replay, output = Path(replay), Path(output)
     metadata = json.loads((replay / "replay.json").read_text())
-    if metadata.get('command_abi',1) not in (1, 3):
-        raise SnapshotError('Replay command ABI does not describe a supported row/column combination')
-    if (declared_layout(metadata['layout']) if 'layout' in metadata else ROW) != layout:
+    if metadata.get('command_abi') != COMMAND_ABI:
+        raise SnapshotError('Replay command ABI does not describe a production column/RTT combination')
+    if declared_layout(metadata.get('layout')) != layout:
         raise SnapshotError('Replay metadata and frozen leases use different layouts')
     if metadata.get("complete") is not True or metadata["input_sha256"] != previous.manifest()["input_sha256"]:
         raise SnapshotError("Replay does not belong to the captured input")

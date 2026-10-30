@@ -1,4 +1,4 @@
-//! Experimental command-profile texture layout. Generic samplers stay unchanged.
+//! Production column texture cache. Generic numerical samplers stay unchanged.
 //! External16x16 RGB565 tiles, resident16x8 lines, 8sets x4ways, 8KiB data.
 
 fn once(text: &mut String, old: &str, new: &str) -> Result<(), String> {

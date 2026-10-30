@@ -136,8 +136,6 @@ fn run(label: &str, profile: &str, legacy: bool, finish: &str, wrong_root: bool)
         &repo,
         &[
             "systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/tools/assets.py",
-            "--profile",
-            profile,
             "--output",
             assets.to_str().unwrap(),
         ],
@@ -148,11 +146,7 @@ fn run(label: &str, profile: &str, legacy: bool, finish: &str, wrong_root: bool)
         GATE.replace("RETURN_BODY", finish),
     )
     .unwrap();
-    let version = if profile == "column16" || label == "row-v2" {
-        "2"
-    } else {
-        "1"
-    };
+    let version = "2";
     call(
         &repo,
         &[
@@ -199,36 +193,14 @@ fn run(label: &str, profile: &str, legacy: bool, finish: &str, wrong_root: bool)
         "invalid application layout override",
     )
     .unwrap();
-    let parsed = if legacy {
-        let c =
-            resolver::CaptureConfiguration::from_manifest(out.join("profiler_gate.rs"), &manifest)
-                .unwrap();
-        resolver::compile_renderer_program_with_capture(
-            "capture fixture",
-            APP,
-            &options,
-            &out,
-            &shared,
-            &constants,
-            &[],
-            Some(&c),
-            &mut |p| dependencies.push(p.to_path_buf()),
-        )
-        .map_err(|e| e.to_string())
-    } else {
+    assert!(!legacy, "row capture compatibility was removed");
+    let parsed = {
         let c = resolver::RendererCaptureConfiguration::from_manifest(
             out.join("profiler_gate.rs"),
             &manifest,
         )
         .unwrap();
-        assert_eq!(
-            c.profile(),
-            if profile == "column16" {
-                resolver::RendererLayoutProfile::Column16
-            } else {
-                resolver::RendererLayoutProfile::Row
-            }
-        );
+        assert_eq!(c.profile(), resolver::RendererLayoutProfile::Column16);
         resolver::compile_renderer_program_with_capture_profile(
             "capture fixture",
             APP,
@@ -247,7 +219,7 @@ fn run(label: &str, profile: &str, legacy: bool, finish: &str, wrong_root: bool)
         let generated = out.join("profile-rcc");
         assert_eq!(
             std::fs::read(generated.join("gpu_layout.rs")).unwrap(),
-            std::fs::read(shared.join("gpu_layout_column16.rs")).unwrap()
+            std::fs::read(shared.join("gpu_layout.rs")).unwrap()
         );
         let origins: Value =
             serde_json::from_slice(&std::fs::read(generated.join("source-origins.json")).unwrap())
@@ -255,7 +227,7 @@ fn run(label: &str, profile: &str, legacy: bool, finish: &str, wrong_root: bool)
         assert!(origins["gpu_layout.rs"]
             .as_str()
             .unwrap()
-            .ends_with("gpu_layout_column16.rs"));
+            .ends_with("gpu_layout.rs"));
         assert!(dependencies
             .iter()
             .any(|p| std::fs::canonicalize(p).unwrap()
@@ -399,18 +371,8 @@ fn run(label: &str, profile: &str, legacy: bool, finish: &str, wrong_root: bool)
     out
 }
 #[test]
-fn real_headers_keep_legacy_row_and_bind_column_physical_ranges() {
-    let a = run("row-legacy", "default", true, "2", false);
-    let b = run("row", "default", false, "2", false);
+fn real_headers_bind_column_physical_ranges() {
     let c = run("column", "column16", false, "2", false);
-    run("row-v2", "default", false, "2", false);
-    for name in ["header.bin", "ranges.bin"] {
-        assert_eq!(
-            std::fs::read(a.join(name)).unwrap(),
-            std::fs::read(b.join(name)).unwrap(),
-            "legacy row {name}"
-        );
-    }
     let d: Value =
         serde_json::from_slice(&std::fs::read(c.join("producer.json")).unwrap()).unwrap();
     let h = d["header_words"].as_array().unwrap();
@@ -421,7 +383,14 @@ fn real_headers_keep_legacy_row_and_bind_column_physical_ranges() {
             h[42].as_u64(),
             h[43].as_u64()
         ),
-        (Some(2), Some(3), Some(8192), Some(3))
+        (
+            Some(2),
+            Some(u64::from(
+                resolver::capture_profile::abi::GPU_CAPTURE_RTT400_COMMAND_ABI
+            )),
+            Some(8192),
+            Some(3)
+        )
     );
     for r in d["range_words"].as_array().unwrap().as_chunks::<8>().0 {
         if [7, 8, 9].contains(&r[1].as_u64().unwrap()) {
@@ -462,7 +431,7 @@ fn strict_profile_manifest_selection() {
         resolver::RendererLayoutProfile::Column16
     );
     assert_eq!(selected.command_abi(), 4);
-    rtt["layout"] = resolver::RendererLayoutProfile::Row.description();
+    rtt["layout"]["abi"] = json!(1);
     assert!(parse(&rtt).is_err());
     for command in [json!(0), json!(1), json!(2), json!(null), json!("3")] {
         let mut v = valid.clone();
@@ -508,9 +477,11 @@ fn strict_profile_manifest_selection() {
     v["resources"][texture]["address"] = v["resources"][0]["address"].clone();
     assert!(parse(&v).is_err());
     std::fs::write(&path, serde_json::to_vec(&valid).unwrap()).unwrap();
-    assert!(
-        resolver::CaptureConfiguration::from_manifest(out.join("profiler_gate.rs"), &path).is_err()
-    );
+    assert!(resolver::RendererCaptureConfiguration::from_manifest(
+        out.join("profiler_gate.rs"),
+        &path
+    )
+    .is_ok());
 }
 
 #[test]
