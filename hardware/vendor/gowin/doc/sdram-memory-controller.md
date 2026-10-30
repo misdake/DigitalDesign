@@ -300,6 +300,12 @@ writes, periodic refresh and coordinated reinitialization. It uses CL3 pin
 launches, registered read returns and a portable static IODELAY subset. The
 portable delay model is not routed SDF or device/PVT qualification.
 
+Read timing/unknown checks observe the controller's consumed `dq_sample` after
+IODELAY, while command and write-data checks remain at the pads. The bounded
+`cl3_input_monitor.py` positive/negative probes distinguish raw-pad transitions
+from actual capture-input faults. PLL/SDC agreement and uncertainty semantics
+are described in the [clock constraint guide](/hardware/vendor/gowin/doc/tang-nano-20k-clock-constraints.md).
+
 GPU fixtures use fresh peer manifests and the actual exported GPU datapath,
 with independent output/guard comparisons and real terminal counts. Core/system
 co-simulation additionally checks pipeline, cache and handshake behavior. Its

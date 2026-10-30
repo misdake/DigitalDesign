@@ -3,6 +3,29 @@ use digital_design_hardware_gowin::sdram_memory_controller::combination;
 use std::{fs, path::PathBuf, process::Command};
 
 #[test]
+#[ignore = "bounded positive/negative IODELAY read-input monitor probes"]
+fn cl3_read_monitor_observes_consumed_input() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out = std::env::var_os("STREAM_SDRAM_EVIDENCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("../../../target/streaming-board"))
+        .join(format!("input-monitor-{}", std::process::id()));
+    let output = Command::new("python")
+        .arg(root.join("tests/cl3_input_monitor.py"))
+        .arg("--output")
+        .arg(out)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+}
+
+#[test]
 #[ignore = "bounded CL3 pin replay: held CPU scalar/LAST plus mixed-length GPU continuation"]
 fn cl3_streaming_transport_with_cpu_holds() {
     run_replay("cpu-holds", &["--display", "--bursts", "8"]);

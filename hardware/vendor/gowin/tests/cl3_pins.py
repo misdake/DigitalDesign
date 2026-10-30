@@ -33,12 +33,14 @@ always @(posedge O_sdram_clk)begin
  end
  pin_edge=$realtime;
 end
-always @(IO_sdram_dq)begin
+// Check the register's consumed input after the configured static IODELAY.
+// Raw-pad transition/poison timing is not the delayed capture-input timing.
+always @({controller}.dq_sample)begin
  if({controller}.initialized&&!reset&&$realtime-read_edge<0.010)$fatal(1,"physical read input hold");
  read_change=$realtime;
 end
 always @(posedge controller_clk)if({controller}.capture_valid&&!reset)begin
- if($realtime-read_change<0.034||$isunknown(IO_sdram_dq))$fatal(1,"physical read input setup");
+ if($realtime-read_change<0.034||$isunknown({controller}.dq_sample))$fatal(1,"physical read input setup");
  read_edge=$realtime;
 end
 """
