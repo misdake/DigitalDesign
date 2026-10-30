@@ -60,15 +60,14 @@ pub(super) fn prepare(
     let values: HashSet<_> = files
         .iter()
         .flat_map(|file| &file.items)
-        .filter_map(|item| {
-            let Item::Struct(value) = item else {
-                return None;
-            };
-            (!value
+        .filter_map(|item| match item {
+            Item::Struct(value) => (!value
                 .attrs
                 .iter()
                 .any(|attr| attr.path.is_ident("rcc_resource")))
-            .then(|| value.ident.to_string())
+            .then(|| value.ident.to_string()),
+            Item::Enum(value) => Some(value.ident.to_string()),
+            _ => None,
         })
         .collect();
     for (fi, file) in files.iter_mut().enumerate() {
@@ -230,8 +229,9 @@ pub(super) fn prepare(
 }
 
 pub(super) fn call(l: &FnLower, expression: &syn::ExprMethodCall) -> Option<syn::ExprCall> {
-    let Ty::Struct(owner) = peek_type(l, &expression.receiver)? else {
-        return None;
+    let owner = match peek_type(l, &expression.receiver)? {
+        Ty::Struct(owner) | Ty::Enum(owner) => owner,
+        _ => return None,
     };
     let method = l
         .globals
@@ -264,4 +264,22 @@ pub(super) fn call(l: &FnLower, expression: &syn::ExprMethodCall) -> Option<syn:
         paren_token: expression.paren_token,
         args,
     })
+}
+
+pub(super) fn is_enum_temporary(l: &FnLower, expression: &Expr) -> bool {
+    if !matches!(peek_type(l, expression), Some(Ty::Enum(_))) {
+        return false;
+    }
+    match expression {
+        Expr::Paren(paren) => is_enum_temporary(l, &paren.expr),
+        Expr::Path(path) => {
+            let Some(name) = path.path.get_ident() else {
+                return true;
+            };
+            let name = name.to_string();
+            l.lookup(&name).is_none() && !l.globals.scalars.contains_key(&name)
+        }
+        Expr::Field(_) | Expr::Index(_) => false,
+        _ => true,
+    }
 }

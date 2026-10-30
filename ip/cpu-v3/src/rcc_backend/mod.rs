@@ -5,7 +5,11 @@
 //! the signed 8-bit relative encoding to one word, iterating until the layout
 //! is stable.
 
+#[cfg(test)]
+mod enum_method_tests;
 mod options;
+#[cfg(test)]
+mod privacy_tests;
 #[cfg(test)]
 pub(crate) mod resource_tests;
 #[cfg(test)]

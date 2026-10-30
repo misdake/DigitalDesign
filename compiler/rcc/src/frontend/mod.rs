@@ -425,7 +425,8 @@ fn parse_files(
         }
     }
     if let Some(check) = checks.rustc {
-        rustc_check::validate(&files, file_names, check)?;
+        let domains = resource::checked_domains(&files, file_names, checks.resources)?;
+        rustc_check::validate(&files, file_names, &domains, check)?;
     }
     resource::drop_syntax::lower(&mut files, checks.rustc.is_some())?;
     let value_methods = value_methods::prepare(&mut files, checks.rustc.is_some())?;
@@ -2581,6 +2582,14 @@ impl FnLower<'_> {
 enum ResidentKind {
     Scalar,
     Array,
+    // Only a scalar enum needs a new slot for a nominal method receiver.
+    // Other receiver types retain their existing allocation/ABI.
+    MethodReceiver,
+}
+
+fn scalar_resident(kind: Option<&ResidentKind>, ty: &Ty) -> bool {
+    matches!(kind, Some(ResidentKind::Scalar))
+        || (matches!(kind, Some(ResidentKind::MethodReceiver)) && matches!(ty, Ty::Enum(_)))
 }
 
 /// the root variable name of a place expression (`x`, `x.f`, `x[i].f` all give `x`)
@@ -2652,7 +2661,11 @@ fn scan_expr(
                 if p.path.is_ident("addr_of") || p.path.is_ident("view_of") {
                     if let Some(Expr::Reference(r)) = x.args.first() {
                         if let Some(name) = place_base_name(&r.expr) {
-                            out.entry(name).or_insert(ResidentKind::Scalar);
+                            if matches!(out.get(&name), Some(ResidentKind::MethodReceiver)) {
+                                out.insert(name, ResidentKind::Scalar);
+                            } else {
+                                out.entry(name).or_insert(ResidentKind::Scalar);
+                            }
                         }
                     }
                 }
@@ -2663,6 +2676,9 @@ fn scan_expr(
             Ok(())
         }
         Expr::MethodCall(x) => {
+            if let Some(name) = place_base_name(&x.receiver) {
+                out.entry(name).or_insert(ResidentKind::MethodReceiver);
+            }
             scan_expr(&x.receiver, consts, structs, out)?;
             for a in &x.args {
                 scan_expr(a, consts, structs, out)?;
@@ -2802,28 +2818,24 @@ fn lower_fn(
         let kind = if is_aggregate(ty) {
             // The caller already owns this argument's isolated snapshot.
             VarKind::Ssa { var: *var }
-        } else {
-            match resident {
-                Some(ResidentKind::Scalar) => {
-                    if ty.is_fpu() {
-                        return Err(err(
-                            &pt.pat,
-                            "FPU values live in F registers and cannot be address-taken",
-                        ));
-                    }
-                    let slot = l.b.alloc_local_slots(1);
-                    let pv = l.b.get(*var);
-                    l.b.store_local(slot, pv);
-                    VarKind::Local { slot }
-                }
-                Some(ResidentKind::Array) => {
-                    return Err(err(
-                        &pt.pat,
-                        "owned arrays cannot be parameters; pass Array<T> or Ptr",
-                    ))
-                }
-                None => VarKind::Ssa { var: *var },
+        } else if scalar_resident(resident.as_ref(), ty) {
+            if ty.is_fpu() {
+                return Err(err(
+                    &pt.pat,
+                    "FPU values live in F registers and cannot be address-taken",
+                ));
             }
+            let slot = l.b.alloc_local_slots(1);
+            let pv = l.b.get(*var);
+            l.b.store_local(slot, pv);
+            VarKind::Local { slot }
+        } else if matches!(resident, Some(ResidentKind::Array)) {
+            return Err(err(
+                &pt.pat,
+                "owned arrays cannot be parameters; pass Array<T> or Ptr",
+            ));
+        } else {
+            VarKind::Ssa { var: *var }
         };
         l.declare(
             ident,
@@ -3040,8 +3052,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
             // a scalar whose address is taken anywhere is memory-resident
             // (FPU values always stay in SSA: they live in F registers)
             let kind = if !ty.is_fpu()
-                && (l.materialize_debug_locals
-                    || matches!(l.residents.get(&ident), Some(ResidentKind::Scalar)))
+                && (l.materialize_debug_locals || scalar_resident(l.residents.get(&ident), &ty))
             {
                 let slot = l.b.alloc_local_slots(1);
                 l.b.store_local(slot, v);
@@ -4580,6 +4591,11 @@ fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
             Some(Ty::ByteSlice)
         }
         Expr::Paren(p) => peek_type(l, &p.expr),
+        Expr::Call(call) => {
+            let name = path_ident(&call.func).ok()?;
+            let ty = &l.sigs.get(&name)?.ret;
+            matches!(ty, Ty::Enum(_)).then(|| ty.clone())
+        }
         Expr::MethodCall(method) => {
             let call = value_methods::call(l, method)?;
             let name = path_ident(&call.func).ok()?;
@@ -5191,6 +5207,14 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
                     &call.args[0],
                     "view_of expects a mutable reference: view_of(&mut x)",
                 ));
+            }
+            if name == "__rcc_value_view" && value_methods::is_enum_temporary(l, &r.expr) {
+                // Borrow a checked one-word rvalue once, before later arguments.
+                // Public view_of and aggregate-temporary rules do not change.
+                let (value, ty) = expr(l, &r.expr)?.reg(l, &r.expr, "enum receiver")?;
+                let slot = l.b.alloc_local_slots(1);
+                l.b.store_local(slot, value);
+                return Ok(Val::V(l.b.addr_of_local(slot), Ty::ArrayRef(Box::new(ty))));
             }
             let (base, offset, ty, mutable) = place_addr_of(l, &r.expr)?;
             if !mutable && r.mutability.is_some() {

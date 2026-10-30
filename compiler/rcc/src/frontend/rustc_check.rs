@@ -3,7 +3,7 @@ use super::resource::drop_syntax::{markers, resource_ident, Marker};
 use proc_macro2::{Delimiter, Spacing, Span, TokenStream, TokenTree};
 use quote::{quote, ToTokens};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -184,7 +184,10 @@ impl Render {
         }
     }
 }
-fn projection(files: &[syn::File]) -> Result<Render, (usize, syn::Error)> {
+fn projection(
+    files: &[syn::File],
+    domains: &HashMap<usize, usize>,
+) -> Result<Render, (usize, syn::Error)> {
     let resources = markers(files)?;
     let drops: HashSet<_> = files
         .iter()
@@ -213,6 +216,7 @@ fn projection(files: &[syn::File]) -> Result<Render, (usize, syn::Error)> {
         receiver: None,
     };
     let mut native = native::Native::new(files, &resources.keys().cloned().collect());
+    let mut scopes: BTreeMap<Option<usize>, Vec<(usize, Item)>> = BTreeMap::new();
     for (fi, file) in files.iter().enumerate() {
         for item in &file.items {
             if matches!(item, Item::Use(_) | Item::Mod(_)) {
@@ -232,7 +236,10 @@ fn projection(files: &[syn::File]) -> Result<Render, (usize, syn::Error)> {
             }
             native.visit_item_mut(&mut item);
             projector.visit_item_mut(&mut item);
-            rendered.tokens(item.into_token_stream(), fi);
+            scopes
+                .entry(domains.get(&fi).copied())
+                .or_default()
+                .push((fi, item));
         }
     }
     for (name, r) in &resources {
@@ -243,7 +250,64 @@ fn projection(files: &[syn::File]) -> Result<Render, (usize, syn::Error)> {
             } else {
                 quote!(impl ::core::ops::Drop for #id{fn drop(&mut self){}})
             };
-            rendered.tokens(tokens, r.file);
+            scopes
+                .entry(domains.get(&r.file).copied())
+                .or_default()
+                .push((r.file, syn::parse2(tokens).unwrap()));
+        }
+    }
+    let separated = scopes.len() > 1;
+    for (index, items) in scopes.values_mut().enumerate() {
+        let scope = syn::Ident::new(&format!("__rcc_check_scope_{index}"), Span::call_site());
+        if separated {
+            rendered.token("mod", 0, Span::call_site(), false);
+            rendered.token(&scope.to_string(), 0, Span::call_site(), false);
+            rendered.token("{", 0, Span::call_site(), false);
+            rendered.tokens(
+                quote!(
+                    use super::*;
+                ),
+                0,
+            );
+        }
+        for (fi, item) in items {
+            if separated {
+                // Name resolution stays flat. Only ordinary value fields gain
+                // Rust module isolation; RCC still checks callable/resource
+                // visibility and exact resource definition-file permissions.
+                let visibility = match item {
+                    Item::Struct(s) => {
+                        if resources.contains_key(&s.ident.to_string()) {
+                            for field in &mut s.fields {
+                                field.vis = parse_quote!(pub(super));
+                            }
+                        }
+                        Some(&mut s.vis)
+                    }
+                    Item::Enum(e) => Some(&mut e.vis),
+                    Item::Fn(f) => Some(&mut f.vis),
+                    Item::Const(c) => Some(&mut c.vis),
+                    Item::Static(s) => Some(&mut s.vis),
+                    Item::Type(t) => Some(&mut t.vis),
+                    Item::Impl(block) if block.trait_.is_none() => {
+                        for member in &mut block.items {
+                            if let syn::ImplItem::Method(method) = member {
+                                method.vis = parse_quote!(pub(super));
+                            }
+                        }
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(visibility) = visibility {
+                    *visibility = parse_quote!(pub(super));
+                }
+            }
+            rendered.tokens(item.to_token_stream(), *fi);
+        }
+        if separated {
+            rendered.token("}", 0, Span::call_site(), false);
+            rendered.tokens(quote!(use #scope::*;), 0);
         }
     }
     Ok(rendered)
@@ -252,10 +316,11 @@ fn projection(files: &[syn::File]) -> Result<Render, (usize, syn::Error)> {
 pub(super) fn validate(
     files: &[syn::File],
     file_names: &[String],
+    domains: &HashMap<usize, usize>,
     options: &RustcCheck,
 ) -> Result<(), (usize, syn::Error)> {
     let fail = |message: String| (0, syn::Error::new(Span::call_site(), message));
-    let rendered = projection(files)?;
+    let rendered = projection(files, domains)?;
     std::fs::create_dir_all(&options.directory)
         .map_err(|e| fail(format!("rustc audit directory: {e}")))?;
     let dir = std::fs::canonicalize(&options.directory).map_err(|e| fail(e.to_string()))?;

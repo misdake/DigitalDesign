@@ -9,9 +9,22 @@ mod library;
 mod library_tests;
 mod methods;
 
+#[derive(Clone, Copy)]
 pub(super) struct Sources<'a> {
     pub(super) origins: &'a [Option<std::path::PathBuf>],
     pub(super) approved_roots: &'a [std::path::PathBuf],
+}
+
+pub(super) fn checked_domains(
+    files: &[syn::File],
+    names: &[String],
+    sources: Option<Sources<'_>>,
+) -> Result<HashMap<usize, usize>, (usize, syn::Error)> {
+    let owners = drop_syntax::markers(files)?
+        .values()
+        .map(|r| r.file)
+        .collect();
+    library::domains(files, names, sources, &owners)
 }
 
 #[derive(Clone)]
@@ -320,7 +333,8 @@ pub(super) fn lower(
             },
         );
     }
-    model.domains = library::domains(files, file_names, sources, &model.resources)?;
+    let owners = model.resources.values().map(|r| r.file).collect();
+    model.domains = library::domains(files, file_names, sources, &owners)?;
     if model.resources.is_empty() {
         return Ok(());
     }

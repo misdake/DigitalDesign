@@ -962,7 +962,7 @@ compilation. Primary rustc spans map back to the original RCC source and retain
 the rustc error code.
 
 The check projection preserves actual function bodies, calls, methods and control
-flow. It removes RCC-only markers and module/use declarations to match RCC's
+flow. It removes RCC-only markers and original module/use declarations to match RCC's
 existing flat name resolution, includes the real `dsl_rt` type signatures
 (using standard `LazyLock` for its host-only `Lazy`), and supplies type signatures
 for target-only intrinsics. Every resource remains a non-Copy Rust type with a
@@ -972,6 +972,18 @@ These fields and lifetimes never enter the target ABI. Rustc checks mutable
 aliasing, moves, parent borrows held through child destruction and local-parent
 escape. This is checking of the projection, not a general Rust memory-safety
 claim for unsafe `Ptr`/`Array`, DSEG windows, device protocols or trusted factories.
+For checked input, each protected resource/library domain is a separate
+check-only Rust module. The root and its explicitly approved helpers share that
+module, preserving their legitimate cross-file construction and field access.
+Ordinary value fields retain their declared visibility: an application or another
+domain cannot construct, read, write, borrow, update or destructure private fields.
+Normal rustc privacy diagnostics retain their original source mapping. Check-only
+imports preserve flat callable/type names; unprotected native files retain their
+existing common flat scope. This does not add general Rust module resolution.
+Resource identity fields, callable visibility and exact definition-file rules
+remain enforced by RCC's existing resource pass; the projection does not change
+target fields, instructions or runtime checks.
+
 Native source still has to satisfy RCC's existing restricted signatures,
 visibility, control-flow and ownership rules. In particular, passing rustc does
 not enable general stored references, explicit lifetimes, generics, runtime drop flags
@@ -1095,8 +1107,10 @@ supported; it does not replace a module-level declaration.
 
 ## 17. Checked values and packed byte data
 
-The checked entry accepts nongeneric inherent constructors and ordinary-struct
-methods. `Self` names the defining struct. Value receivers and ordinary struct/tuple
+The checked entry accepts nongeneric inherent constructors and methods on
+ordinary structs and the existing fieldless `repr(u16)` enums (§9d). `Self`
+names the defining nominal type; enum methods may be declared in another loaded
+file. Value receivers and ordinary struct/tuple
 parameters use caller-owned snapshots evaluated in argument order, before later
 arguments can modify their sources. Borrowed receivers use the original place
 through an internal view; shared and mutable receiver legality is checked by rustc
@@ -1104,6 +1118,17 @@ before lowering. Aggregate returns retain the existing hidden destination ABI.
 The unchecked legacy signature restrictions remain. Ordinary value structs may
 carry `Copy`/`Clone` markers; lexical owning resources remain noncopyable.
 Generated value entry names are reserved in every source entry path.
+
+Enums retain their one-word discriminant ABI in fields, arguments and returns;
+methods add no object header or hidden return pointer. Enum locals and parameters
+used as method receivers have a one-word frame place, so shared/mutable receivers
+borrow the original storage. Single-word enum rvalues (variants and enum-returning
+direct calls) are evaluated once into a temporary before later arguments. This uses the
+same internal view lowering; public `view_of`, aggregate temporary restrictions,
+and general reference support do not change. Rustc still checks mutability,
+aliasing, moves and unsafe calls before rewriting. Trait/generic impls and
+non-function impl members remain unsupported. The restrictions on enum payloads,
+representations, explicit discriminants, constants and tuples are unchanged.
 
 `u8` arithmetic, bitwise operations, writes and casts retain the low eight bits;
 registers and ordinary fields still occupy sixteen-bit words. Packed bytes are a

@@ -1,5 +1,5 @@
 //! Explicit, host-authorized library domains. No dependency-closure trust.
-use super::{error, Resource, Sources};
+use super::{error, Sources};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use syn::{spanned::Spanned, visit::Visit, Item};
@@ -42,9 +42,8 @@ pub(super) fn domains(
     files: &[syn::File],
     names: &[String],
     sources: Option<Sources<'_>>,
-    resources: &HashMap<String, Resource>,
+    owners: &HashSet<usize>,
 ) -> Result<HashMap<usize, usize>, (usize, syn::Error)> {
-    let owners: HashSet<usize> = resources.values().map(|r| r.file).collect();
     let mut domains: HashMap<usize, usize> = owners.iter().map(|&file| (file, file)).collect();
     let mut approvals = HashSet::new();
     if let Some(context) = &sources {
