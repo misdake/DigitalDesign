@@ -23,11 +23,17 @@ pub fn shared_forward(a:&mut Renderer)->u16{shared_pair(a,a)}
 pub fn event_count()->u16{COUNT}
 pub fn event_at(i:u16)->u16{EVENTS.as_array()[i]}
 impl Renderer{
+ pub fn new(word:u16)->Self{Self{word:word}}
+ pub fn relay(word:u16)->Self{Self::new(word)}
+ pub fn transfer(owner:Self)->Self{owner}
+ fn hidden()->Self{Self{word:9}}
  pub fn identity(&self)->u16{self.word}
  pub fn frame(&mut self)->Frame{Frame{word:self.word}}
  pub fn finish(self){event(70+self.word);resource_disarm(self);}
 }
 impl Frame{
+ pub fn from_parent(r:&mut Renderer)->Self{Self{word:r.word}}
+ pub fn relay(r:&mut Renderer)->Self{Self::from_parent(r)}
  pub fn pass(&mut self)->Pass{Pass{word:self.word}}
  pub fn finish(self){event(60+self.word);resource_disarm(self);}
 }
@@ -634,6 +640,13 @@ fn gpu_panic(code:u16)->!{remember_fault(code);uart_emit(b'F');uart_hex4(FIRST_F
  while (dev_recv(0,3)&1)!=0{}halt(FIRST_FAULT);}
 pub fn fixture_remember_first_fault(code:u16){remember_fault(code);}
 impl CommandBuffer{
+ pub fn new(word:u16)->Self{Self{word:word}}
+ pub fn explicit(word:u16)->CommandBuffer{CommandBuffer{word:word}}
+ fn secret_new(word:u16)->Self{Self{word:word}}
+ pub fn from_held(word:u16)->Self{let cb=Self::new(word);let held=Some(cb);
+  if let Some(value)=held{return value;}halt(0xbad);}
+ pub fn keep(owner:Self)->Self{let held=Some(owner);
+  if let Some(value)=held{return value;}halt(0xbad);}
  pub fn identity(&self)->u16{self.word}
  pub fn pass(&mut self)->RecordingPass{RecordingPass{word:self.word}}
  pub fn reset(&mut self){}
@@ -1206,4 +1219,189 @@ fn rustc_review_raw_cfg_is_rejected_before_host_selection() {
             assert!(error.to_string().contains("raw cfg/cfg_attr"), "{error}");
         }
     }
+}
+
+#[test]
+fn rustc_resource_associated_factory_executes() {
+    execute(
+        "associated-factory",
+        r#"#[rcc_resource]struct Gpu{word:u16}
+impl Drop for Gpu{fn drop(&mut self){}}
+impl Gpu{fn init()->Gpu{Gpu{word:0}}}
+fn main(){let gpu:Gpu=Gpu::init();halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_resource_associated_self_factories_preserve_parent_and_drop_order() {
+    execute(
+        "associated-self-factories",
+        r#"mod owner;
+fn forward()->Renderer{return Renderer::relay(4);}
+fn work(){let mut r:Renderer=Renderer::new(2);
+ {let f:Frame=Frame::relay(&mut r);}
+ let moved:Renderer=Renderer::transfer(r);drop(moved);}
+fn main(){work();{let r=Renderer::relay(3);}{let r=forward();}
+ if event_count()!=4||event_at(0)!=22||event_at(1)!=12||event_at(2)!=13||event_at(3)!=14{halt(0xbad);}
+ halt(0x600d);}"#,
+    );
+}
+
+#[test]
+fn rustc_resource_associated_factories_retain_affine_and_parent_checks() {
+    for (label, source, expected) in [
+        ("associated-double-move", "mod owner;fn main(){let r=Renderer::new(1);drop(r);drop(r);}", "E0382"),
+        ("associated-live-child", "mod owner;fn main(){let mut r=Renderer::new(1);let f=Frame::from_parent(&mut r);r.identity();drop(f);}", "E0502"),
+        ("associated-escaping-child", "mod owner;fn escape()->Frame{let mut r=Renderer::new(1);Frame::from_parent(&mut r)}fn main(){}", "E0515"),
+        ("associated-function-pointer", "mod owner;fn main(){let make=Renderer::new;let r=make(1);}", "direct calls"),
+        ("associated-private", "mod owner;fn main(){let r=Renderer::hidden();}", "not callable"),
+    ] {
+        let error = match parse(label, source) {
+            Ok(_) => panic!("accepted {label}"),
+            Err(e) => e.to_string(),
+        };
+        assert!(error.contains(expected), "{label}: expected {expected}, got {error}");
+    }
+}
+
+#[test]
+fn rustc_resource_associated_factories_compose_with_inferred_ownership_containers() {
+    for (label, body, events) in [
+        ("free-some", "let cb=cb_open(7);let held=Some(cb);", "graphics_count()==1&&graphics_event(0)==107"),
+        ("associated-some", "let cb=CommandBuffer::new(7);let held=Some(cb);", "graphics_count()==1&&graphics_event(0)==107"),
+        ("associated-some-explicit-return", "let cb=CommandBuffer::explicit(7);let held=Some(cb);", "graphics_count()==1&&graphics_event(0)==107"),
+        ("associated-some-carrier-annotated", "let cb=CommandBuffer::new(7);let held:Option<CommandBuffer>=Some(cb);", "graphics_count()==1&&graphics_event(0)==107"),
+        ("associated-some-owner-annotated", "let cb:CommandBuffer=CommandBuffer::new(7);let held=Some(cb);", "graphics_count()==1&&graphics_event(0)==107"),
+        ("free-pair", "let a=cb_open(3);let b=cb_open(4);let held=(a,b);", "graphics_count()==2&&graphics_event(0)==103&&graphics_event(1)==104"),
+        ("associated-pair", "let a=CommandBuffer::new(3);let b=CommandBuffer::new(4);let held=(a,b);", "graphics_count()==2&&graphics_event(0)==103&&graphics_event(1)==104"),
+        ("associated-pair-annotated", "let a=CommandBuffer::new(3);let b=CommandBuffer::new(4);let held:(CommandBuffer,CommandBuffer)=(a,b);", "graphics_count()==2&&graphics_event(0)==103&&graphics_event(1)==104"),
+        ("associated-self-body", "let cb=CommandBuffer::from_held(8);let held=Some(cb);", "graphics_count()==1&&graphics_event(0)==108"),
+        ("associated-self-parameter", "let cb=CommandBuffer::new(9);let moved=CommandBuffer::keep(cb);let held=Some(moved);", "graphics_count()==1&&graphics_event(0)==109"),
+    ] {
+        execute(&format!("factory-container-{label}"), &format!("mod graphics;fn work(){{{body}}}fn main(){{work();if !({events}){{halt(0xbad);}}halt(0x600d);}}"));
+    }
+}
+
+#[test]
+fn rustc_resource_associated_factory_containers_keep_move_and_parent_gates() {
+    for (label, body, expected) in [
+        (
+            "some-double-move",
+            "let cb=CommandBuffer::new(7);let held=Some(cb);drop(cb);",
+            "E0382",
+        ),
+        (
+            "pair-double-move",
+            "let a=CommandBuffer::new(3);let b=CommandBuffer::new(4);let held=(a,b);drop(a);",
+            "E0382",
+        ),
+        (
+            "some-live-child",
+            "let mut cb=CommandBuffer::new(7);let p=cb.pass();let held=Some(cb);drop(p);",
+            "E0505",
+        ),
+        (
+            "some-private-factory",
+            "let cb=CommandBuffer::secret_new(7);let held=Some(cb);",
+            "not callable",
+        ),
+    ] {
+        let source = format!("mod graphics;fn main(){{{body}}}");
+        let error = parse(&format!("factory-container-{label}"), &source)
+            .err()
+            .expect("ownership violation accepted")
+            .to_string();
+        assert!(error.contains(expected), "{label}: {error}");
+    }
+}
+
+#[test]
+fn rustc_unsafe_gpu_memory_constructor_executes_on_target() {
+    execute(
+        "unsafe-gpu-memory",
+        r#"struct GpuMemory{first_sector:u16,sector_count:u16}
+impl GpuMemory{pub unsafe fn from_sectors(first_sector:u16,sector_count:u16)->Self{
+GpuMemory{first_sector:first_sector,sector_count:sector_count}}}
+fn main(){let memory:GpuMemory=unsafe{GpuMemory::from_sectors(0x9800,512)};
+if memory.first_sector!=0x9800||memory.sector_count!=512{halt(0xbad);}halt(0x600d);}"#,
+    );
+}
+
+const UNSAFE_MEMORY: &str = r#"struct GpuMemory{first_sector:u16,sector_count:u16}
+impl GpuMemory{pub unsafe fn from_sectors(first_sector:u16,sector_count:u16)->Self{
+Self{first_sector:first_sector,sector_count:sector_count}}}
+unsafe fn unsafe_value(value:u16)->u16{value+1}
+"#;
+
+#[test]
+fn rustc_unsafe_direct_calls_preserve_existing_destinations_and_ownership() {
+    for (label, source) in [
+        (
+            "aggregate-handoff",
+            r#"fn forward()->GpuMemory{return unsafe{GpuMemory::from_sectors(9,10)};}
+fn main(){let mut memory=unsafe{GpuMemory::from_sectors(1,2)};
+if memory.first_sector!=1||memory.sector_count!=2{halt(0xbad);}
+memory=unsafe{GpuMemory::from_sectors(3,4)};
+if memory.first_sector!=3||memory.sector_count!=4{halt(0xbad);}
+let returned=forward();if returned.first_sector!=9||returned.sector_count!=10{halt(0xbad);}halt(0x600d);}"#,
+        ),
+        (
+            "scalar-unit-raw",
+            r#"static TOTAL:u16=0;
+unsafe fn set(value:u16){unsafe{addr_of(&TOTAL).write(0,value);}}
+fn main(){unsafe{set(3);}let value=unsafe{unsafe_value(TOTAL)};
+if value!=4||TOTAL!=3{halt(0xbad);}halt(0x600d);}"#,
+        ),
+        (
+            "once-only-arguments",
+            r#"static COUNT:u16=0;
+fn next()->u16{unsafe{addr_of(&COUNT).write(0,COUNT+1);}COUNT}
+fn main(){let memory=unsafe{GpuMemory::from_sectors(next(),next())};
+if memory.first_sector!=1||memory.sector_count!=2||COUNT!=2{halt(0xbad);}halt(0x600d);}"#,
+        ),
+        (
+            "resource-composition",
+            r#"mod graphics;
+fn work(){let cb=CommandBuffer::new(7);let held=Some(cb);
+let memory:GpuMemory=unsafe{GpuMemory::from_sectors(0x9800,512)};
+if memory.first_sector!=0x9800||memory.sector_count!=512{halt(0xbad);}}
+fn main(){work();if graphics_count()!=1||graphics_event(0)!=107{halt(0xbad);}halt(0x600d);}"#,
+        ),
+    ] {
+        execute(
+            &format!("unsafe-call-{label}"),
+            &format!("{UNSAFE_MEMORY}{source}"),
+        );
+    }
+}
+
+#[test]
+fn rustc_unsafe_calls_retain_original_rustc_gate_and_narrow_target_scope() {
+    for (label, source, expected) in [
+        ("aggregate-outside", "fn main(){let memory:GpuMemory=GpuMemory::from_sectors(1,2);}", "E0133"),
+        ("scalar-outside", "fn main(){let value=unsafe_value(1);}", "E0133"),
+        ("safe-wrapper", "fn wrap()->u16{unsafe_value(1)}fn main(){halt(wrap());}", "E0133"),
+        ("function-item", "fn main(){let call=unsafe_value;let value=unsafe{call(1)};}", "require direct calls"),
+        ("unsafe-fn-pointer", "fn apply(call:unsafe fn(u16)->u16)->u16{unsafe{call(1)}}fn main(){}", "unsafe function pointers"),
+        ("unneeded-scalar", "fn safe_value()->u16{7}fn main(){let value=unsafe{safe_value()};}", "unsafe block contains no raw Ptr"),
+        ("unneeded-aggregate", "fn safe_memory()->GpuMemory{GpuMemory{first_sector:1,sector_count:2}}fn main(){let memory:GpuMemory=unsafe{safe_memory()};}", "unsafe block contains no raw Ptr"),
+        ("aggregate-block", "fn main(){let memory:GpuMemory=unsafe{let value=GpuMemory::from_sectors(1,2);value};}", "single tail call"),
+        ("nested", "fn main(){let value=unsafe{unsafe{unsafe_value(1)}};}", "nested unsafe"),
+        ("implicit-unsafe-body", "unsafe fn wrap()->u16{unsafe_value(1)}fn main(){let value=unsafe{wrap()};}", "requires an unsafe block"),
+    ] {
+        let error=parse(&format!("unsafe-reject-{label}"),&format!("{UNSAFE_MEMORY}{source}"))
+            .err().expect("unsupported unsafe source accepted").to_string();
+        assert!(error.contains(expected), "{label}: expected {expected}, got {error}");
+    }
+    let source = "unsafe fn value()->u16{7}fn main(){halt(unsafe{value()});}";
+    let error = rcc::frontend::compile_program_named(
+        "unsafe-unchecked",
+        source,
+        &CompilerOptions::default(),
+        &mut |_| Err("no modules".into()),
+    )
+    .err()
+    .expect("unchecked unsafe declaration accepted")
+    .to_string();
+    assert!(error.contains("require checked compilation"), "{error}");
 }

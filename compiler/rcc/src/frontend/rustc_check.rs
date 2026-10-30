@@ -39,11 +39,22 @@ impl Projection<'_> {
     fn child(&self, name: &str) -> bool {
         self.resources.get(name).is_some_and(|r| r.parent.is_some())
     }
+    fn resolve_self(&self, name: String) -> String {
+        if name == "Self" {
+            if let Some(owner) = &self.receiver {
+                return owner.clone();
+            }
+        }
+        name
+    }
 }
 impl VisitMut for Projection<'_> {
     fn visit_type_path_mut(&mut self, p: &mut syn::TypePath) {
         if p.path.segments.len() == 1 {
             let seg = &mut p.path.segments[0];
+            if seg.ident == "Self" && self.child(&self.resolve_self("Self".into())) {
+                seg.ident = resource_ident(&self.resolve_self("Self".into()), seg.ident.span());
+            }
             if self.child(&seg.ident.to_string()) && seg.arguments.is_empty() {
                 seg.arguments = syn::PathArguments::AngleBracketed(parse_quote!(<'_>));
             }
@@ -64,7 +75,7 @@ impl VisitMut for Projection<'_> {
     }
     fn visit_signature_mut(&mut self, sig: &mut syn::Signature) {
         let result = match &sig.output {
-            ReturnType::Type(_, t) => resource_type(t),
+            ReturnType::Type(_, t) => resource_type(t).map(|n| self.resolve_self(n)),
             _ => None,
         };
         if let Some(result) = result.filter(|n| self.child(n)) {
@@ -111,6 +122,13 @@ impl VisitMut for Projection<'_> {
         syn::visit_mut::visit_signature_mut(self, sig);
     }
     fn visit_expr_struct_mut(&mut self, s: &mut syn::ExprStruct) {
+        if s.path.is_ident("Self") && self.child(&self.resolve_self("Self".into())) {
+            let owner = resource_ident(
+                &self.resolve_self("Self".into()),
+                s.path.segments[0].ident.span(),
+            );
+            s.path = parse_quote!(#owner);
+        }
         if s.path.segments.len() == 1 && self.child(&s.path.segments[0].ident.to_string()) {
             s.fields
                 .push(parse_quote!(__rcc_life: ::core::marker::PhantomData));

@@ -15,6 +15,8 @@ pub fn open()->Handle{Handle{word:1}}
 pub fn close(h:Handle){resource_disarm(h);}
 pub fn facade()->u16{raw_set(11);helper_value()}
 impl Handle {
+ pub fn new()->Self{Self{word:1}}
+ fn secret_new()->Self{Self{word:9}}
  pub fn finish(self){raw_set(12);resource_disarm(self);}
  pub fn read(&mut self)->u16{helper_value()}
  fn private(&mut self)->u16{self.word}
@@ -104,6 +106,30 @@ impl Drop for Fixture {
         assert_eq!(root.parent(), Some(base.as_path()));
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn resource_associated_factories_keep_definition_origin_and_library_visibility() {
+    let mut f = Fixture::new();
+    f.write(
+        "helper",
+        "lib/helper.rs",
+        &format!("{HELPER}pub fn helper_factory()->Handle{{Handle::new()}}"),
+    );
+    f.compile("mod owner;fn main(){let h=Handle::new();h.finish();halt(0);}")
+        .unwrap();
+    for (body, message) in [
+        ("let h=Handle::secret_new();", "not callable"),
+        ("let h=helper_factory();", "resource-library"),
+        ("let h=Handle{word:3};", "construction"),
+        ("let make=Handle::new;let h=make();", "direct calls"),
+    ] {
+        f.reject(&format!("mod owner;fn main(){{{body}}}"), message);
+    }
+    f.reject(
+        "mod owner;impl Handle{fn forged()->Self{Self{word:3}}}fn main(){}",
+        "definition file",
+    );
 }
 
 #[test]

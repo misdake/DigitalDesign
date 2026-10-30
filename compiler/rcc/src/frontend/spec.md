@@ -130,8 +130,22 @@ impl Ptr {
 
 `Ptr` remains the untyped interface at heap/MMIO/device boundaries. A dereference or raw-address
 cache-line command must appear in an `unsafe { ... }` block; empty/nested unsafe blocks and unsafe
-blocks without one of those operations are errors. Ordinary buffers and local values use
+blocks without a raw operation, cache command or direct unsafe-function call are errors. Ordinary buffers and local values use
 `Buf`/`Array`/`view_of` without unsafe. Struct memory layouts remain out of scope.
+
+Checked compilation also accepts nongeneric `unsafe fn` declarations, including
+ordinary value constructors. The original unsafe signature reaches rustc before
+lowering, so calling one from safe code fails with rustc E0133. Target calls need
+an explicit unsafe block, including calls written inside an unsafe function body;
+the declaration does not grant implicit target raw-access permission. Unchecked
+entries still reject unsafe declarations. Unsafe function items/pointers are not
+part of this direct-call subset. Const/async/extern/variadic restrictions remain.
+
+An aggregate initializer, assignment or return may wrap its existing direct sret
+call in `unsafe { call(...) }`, with one tail expression and no extra statements.
+The call writes through the same destination and evaluates arguments once; scalar
+and aggregate calls share the existing scope and required-operation checks. This
+does not admit arbitrary aggregate block expressions or add runtime checks/ABI state.
 
 ## 3. Function pointers
 
@@ -889,11 +903,39 @@ definition-file restrictions on fields, construction and disarm remain in force.
 No forwarding wrapper grants library or owner permissions. The internal
 `__rcc_method_` namespace is reserved in source, including attributes and aliases.
 
-This sugar excludes ordinary struct impls, traits, generics/where clauses,
-overloading (duplicate names on one resource), `Deref`, shared `&self`, explicit
-receiver types, lifetimes, associated constructors/functions/constants/types,
-`Self` type spelling, method pointers and method type arguments. Use the explicit
-resource type in signatures and existing free factories for construction.
+Receiverless associated factories use the same lowering and ownership checks:
+
+```rust
+impl Gpu {
+    pub fn init() -> Self { Self { word: 0 } }
+}
+impl View {
+    pub fn from_memory(gpu: &mut Gpu) -> Self { Self { word: gpu.word } }
+}
+// View is a resource with parent=Gpu, defined in the same file.
+// let mut gpu = Gpu::init();
+// let view = View::from_memory(&mut gpu);
+```
+
+These factories return their defining resource, spelled explicitly or as `Self`.
+Within a factory, `Self` also names that resource in construction, parameter types
+and calls to another associated factory. Calls use plain `Type::factory(args)`;
+they do not accept type arguments, qualified paths, method-call syntax or function
+pointers. A child result retains the existing sole borrowed-parent rule; the
+checked projection gives `Self` child results the same parent lifetime as explicit
+type results. Moving/returning an owner still transfers its one cleanup, and every
+factory retains its exact defining-file visibility and construction permissions.
+No extra runtime wrapper, identity, drop flag or target opcode is introduced.
+Factory result signatures are available before ownership-container inference;
+unannotated owners from either explicit or `Self` factories compose with the same
+supported `Some(owner)` and affine-pair forms as free factories. Annotations do
+not change ownership or cleanup behavior.
+
+This resource sugar excludes traits, generics/where clauses, overloading
+(duplicate names on one resource), `Deref`, explicit receiver types, lifetimes,
+associated constants/types, nonfactory associated functions and method type
+arguments. Receiver methods still use explicit resource types rather than `Self`.
+Ordinary value impls have their own checked lowering described in section 18.
 Fields, parenthesized expressions, temporaries and chained resource receivers
 are diagnosed; they are never implicitly copied or evaluated twice. Existing
 native `Ptr`, buffer, array and FPU methods retain their existing lowering.

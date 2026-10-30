@@ -1674,6 +1674,7 @@ impl Ty {
 struct Sig {
     params: Vec<Ty>,
     ret: Ty,
+    unsafe_call: bool,
 }
 
 /// `structs` is the nominal-type table (structs *and* enums): `ty_of` only needs to
@@ -1756,6 +1757,12 @@ fn ty_of(ty: &Type, structs: &TypeNames) -> Result<Ty, syn::Error> {
             }
         }
         Type::BareFn(bf) => {
+            if bf.unsafety.is_some() {
+                return Err(err(
+                    ty,
+                    "unsafe function pointers are not supported; call directly",
+                ));
+            }
             let params = bf
                 .inputs
                 .iter()
@@ -2139,6 +2146,12 @@ fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Resul
 
 /// the type a direct call returns when that type is an aggregate (sret, spec §14)
 fn sret_call_return(l: &FnLower, e: &Expr) -> Option<Ty> {
+    if let Expr::Unsafe(u) = e {
+        let [Stmt::Expr(tail)] = u.block.stmts.as_slice() else {
+            return None;
+        };
+        return sret_call_return(l, tail);
+    }
     if let Expr::MethodCall(method) = e {
         let call = value_methods::call(l, method)?;
         return sret_call_return(l, &Expr::Call(call));
@@ -2158,6 +2171,15 @@ fn sret_call_return(l: &FnLower, e: &Expr) -> Option<Ty> {
 /// hidden first parameter the caller supplies (spec §14). `Ok(false)` means `e`
 /// is not such a call, so the caller falls back to its usual path.
 fn sret_call_into(l: &mut FnLower, e: &Expr, dst: VReg, expected: &Ty) -> Result<bool, syn::Error> {
+    if let Expr::Unsafe(u) = e {
+        let [Stmt::Expr(tail)] = u.block.stmts.as_slice() else {
+            return Err(err(u, "aggregate unsafe scopes require a single tail call"));
+        };
+        if sret_call_return(l, tail).is_none() {
+            return Err(err(u, "aggregate unsafe scopes require a single tail call"));
+        }
+        return unsafe_scope(l, u, |l| sret_call_into(l, tail, dst, expected));
+    }
     if let Expr::MethodCall(method) = e {
         if let Some(call) = value_methods::call(l, method) {
             return sret_call_into(l, &Expr::Call(call), dst, expected);
@@ -2184,6 +2206,7 @@ fn sret_call_into(l: &mut FnLower, e: &Expr, dst: VReg, expected: &Ty) -> Result
             format!("expected {}, got {}", expected.display(), sig.ret.display()),
         ));
     }
+    check_unsafe_call(l, call, &sig)?;
     let args = call_arg_values(l, call)?;
     let arg_tys: Vec<Ty> = args.iter().map(|(_, t)| t.clone()).collect();
     check_call_args(call, &sig.params, &arg_tys, &name)?;
@@ -2388,11 +2411,11 @@ fn signature(
     if !f.sig.generics.params.is_empty() {
         return Err(err(&f.sig.generics, "generics are not supported"));
     }
-    if f.sig.constness.is_some() || f.sig.asyncness.is_some() || f.sig.unsafety.is_some() {
-        return Err(err(
-            &f.sig,
-            "const/async/unsafe functions are not supported",
-        ));
+    if f.sig.constness.is_some() || f.sig.asyncness.is_some() {
+        return Err(err(&f.sig, "const/async functions are not supported"));
+    }
+    if f.sig.unsafety.is_some() && !checked {
+        return Err(err(&f.sig, "unsafe functions require checked compilation"));
     }
     if f.sig.abi.is_some() || f.sig.variadic.is_some() {
         return Err(err(&f.sig, "extern/variadic functions are not supported"));
@@ -2427,7 +2450,11 @@ fn signature(
              pointer is a hidden first parameter (spec §14)",
         ));
     }
-    Ok(Sig { params, ret })
+    Ok(Sig {
+        params,
+        ret,
+        unsafe_call: f.sig.unsafety.is_some(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3868,7 +3895,11 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
 // expressions
 // ---------------------------------------------------------------------------
 
-fn unsafe_block_value(l: &mut FnLower, u: &syn::ExprUnsafe) -> Result<Val, syn::Error> {
+fn unsafe_scope<T>(
+    l: &mut FnLower,
+    u: &syn::ExprUnsafe,
+    lower: impl FnOnce(&mut FnLower) -> Result<T, syn::Error>,
+) -> Result<T, syn::Error> {
     if l.unsafe_depth != 0 {
         return Err(err(u, "nested unsafe blocks are not supported"));
     }
@@ -3877,7 +3908,23 @@ fn unsafe_block_value(l: &mut FnLower, u: &syn::ExprUnsafe) -> Result<Val, syn::
     l.scopes.push(HashMap::new());
     l.scope_ends.push(end_line_of(&u.block));
 
-    let result = (|| {
+    let result = lower(l);
+
+    l.scope_ends.pop();
+    l.scopes.pop();
+    l.unsafe_depth -= 1;
+    let value = result?;
+    if l.unsafe_ops == used_before {
+        return Err(err(
+            u,
+            "unsafe block contains no raw Ptr operation, cache-line command or direct unsafe call",
+        ));
+    }
+    Ok(value)
+}
+
+fn unsafe_block_value(l: &mut FnLower, u: &syn::ExprUnsafe) -> Result<Val, syn::Error> {
+    unsafe_scope(l, u, |l| {
         let stmts = &u.block.stmts;
         let (head, tail) = match stmts.split_last() {
             Some((Stmt::Expr(t), head)) => (head, Some(t)),
@@ -3893,19 +3940,7 @@ fn unsafe_block_value(l: &mut FnLower, u: &syn::ExprUnsafe) -> Result<Val, syn::
             Some(value) => expr(l, value),
             None => Ok(Val::Unit),
         }
-    })();
-
-    l.scope_ends.pop();
-    l.scopes.pop();
-    l.unsafe_depth -= 1;
-    let value = result?;
-    if l.unsafe_ops == used_before {
-        return Err(err(
-            u,
-            "unsafe block contains no raw Ptr operation or cache-line command",
-        ));
-    }
-    Ok(value)
+    })
 }
 
 fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
@@ -4029,7 +4064,10 @@ fn expr_inner(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                 let (addr, ty) = (*addr, ty.clone());
                 return Ok(Val::V(l.b.load_imm(addr), ty));
             }
-            if l.sigs.contains_key(&name) {
+            if let Some(sig) = l.sigs.get(&name) {
+                if sig.unsafe_call {
+                    return Err(err(p, "unsafe functions require direct calls"));
+                }
                 return Ok(Val::FnItem(intern(&name)));
             }
             Err(err(&p, format!("undefined name `{name}`")))
@@ -5074,6 +5112,16 @@ fn call_arg_values(l: &mut FnLower, call: &syn::ExprCall) -> Result<Vec<(VReg, T
         .collect::<Result<_, _>>()
 }
 
+fn check_unsafe_call(l: &mut FnLower, call: &syn::ExprCall, sig: &Sig) -> Result<(), syn::Error> {
+    if sig.unsafe_call {
+        if l.unsafe_depth == 0 {
+            return Err(err(call, "unsafe function call requires an unsafe block"));
+        }
+        l.unsafe_ops += 1;
+    }
+    Ok(())
+}
+
 fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     let Expr::Path(p) = call.func.as_ref() else {
         return Err(err(&call.func, "unsupported callee"));
@@ -5455,6 +5503,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     let arg_vregs: Vec<VReg> = args.iter().map(|(v, _)| *v).collect();
     let arg_tys: Vec<Ty> = args.iter().map(|(_, t)| t.clone()).collect();
     if let Some(sig) = l.sigs.get(name).cloned() {
+        check_unsafe_call(l, call, &sig)?;
         check_call_args(call, &sig.params, &arg_tys, name)?;
         if is_aggregate(&sig.ret) {
             return Err(err(

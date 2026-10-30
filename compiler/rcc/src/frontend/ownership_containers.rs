@@ -58,6 +58,14 @@ fn output(ret: &ReturnType) -> Type {
         ReturnType::Default => parse_quote!(()),
     }
 }
+fn resolve_self(ty: Type, owner: Option<&Type>) -> Type {
+    if plain(&ty).as_deref() == Some("Self") {
+        if let Some(owner) = owner {
+            return owner.clone();
+        }
+    }
+    ty
+}
 struct Normalize {
     required: HashSet<Kind>,
     error: Option<syn::Error>,
@@ -125,6 +133,27 @@ struct Rewrite<'a> {
     ret: Type,
 }
 impl Rewrite<'_> {
+    fn signature(&self, path: &syn::ExprPath, env: &Environment) -> Option<&Signature> {
+        if path.qself.is_some()
+            || path.path.leading_colon.is_some()
+            || path.path.segments.iter().any(|s| !s.arguments.is_empty())
+        {
+            return None;
+        }
+        if let Some(name) = path.path.get_ident() {
+            return self.signatures.get(&name.to_string());
+        }
+        if path.path.segments.len() != 2 {
+            return None;
+        }
+        let mut owner = path.path.segments[0].ident.to_string();
+        if owner == "Self" {
+            owner = plain(env.get("self")?)?;
+        }
+        self.methods
+            .get(&(owner, path.path.segments[1].ident.to_string()))
+    }
+
     fn option_constructor(&self, path: &syn::Path, variant: &str, env: &Environment) -> bool {
         let qualified = path.segments.len() == 2 && path.segments[0].ident == "Option";
         let unqualified = path.is_ident(variant)
@@ -178,9 +207,7 @@ impl Rewrite<'_> {
                         _ => None,
                     };
                 }
-                self.signatures
-                    .get(&p.path.get_ident()?.to_string())
-                    .map(|s| s.ret.clone())
+                self.signature(p, env).map(|s| s.ret.clone())
             }
             _ => None,
         }
@@ -201,10 +228,6 @@ impl Rewrite<'_> {
                 *e = parse_quote!(#f());
             }
             Expr::Call(c) => {
-                let name = match c.func.as_ref() {
-                    Expr::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
-                    _ => None,
-                };
                 if matches!(c.func.as_ref(),Expr::Path(p) if self.option_constructor(&p.path,"Some",env))
                 {
                     if c.args.len() != 1 {
@@ -223,7 +246,10 @@ impl Rewrite<'_> {
                     let f = k.ident("_some");
                     *c.func = parse_quote!(#f);
                 } else {
-                    let sig = name.and_then(|n| self.signatures.get(&n).cloned());
+                    let sig = match c.func.as_ref() {
+                        Expr::Path(p) => self.signature(p, env).cloned(),
+                        _ => None,
+                    };
                     for (i, arg) in c.args.iter_mut().enumerate() {
                         self.expression(arg, env, sig.as_ref().and_then(|s| s.params.get(i)))?;
                     }
@@ -693,7 +719,13 @@ pub(super) fn prepare(
                                             _ => None,
                                         })
                                         .collect(),
-                                    ret: output(&m.sig.output),
+                                    // Resource factory normalization runs later;
+                                    // infer from its original signature now, just
+                                    // as for a free factory or receiver method.
+                                    ret: resolve_self(
+                                        output(&m.sig.output),
+                                        Some(block.self_ty.as_ref()),
+                                    ),
                                 },
                             );
                         }
@@ -726,7 +758,7 @@ pub(super) fn prepare(
                            body: &mut syn::Block,
                            owner: Option<&Type>|
              -> Result<(), syn::Error> {
-                rewrite.ret = output(&sig.output);
+                rewrite.ret = resolve_self(output(&sig.output), owner);
                 let mut env = Environment::new();
                 if let Some(owner) = owner {
                     env.insert("self".into(), owner.clone());
@@ -738,7 +770,7 @@ pub(super) fn prepare(
                                 Type::Reference(r) => *r.elem.clone(),
                                 ty => ty.clone(),
                             };
-                            env.insert(name.ident.to_string(), ty);
+                            env.insert(name.ident.to_string(), resolve_self(ty, owner));
                         }
                     }
                 }
