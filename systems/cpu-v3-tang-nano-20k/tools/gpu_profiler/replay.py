@@ -6,15 +6,16 @@ import os
 from pathlib import Path
 import re
 import struct
+import subprocess
 import sys
-import zlib
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "hardware/vendor/gowin/tests"))
 from stream_contract import load_contract
 from capture import run as capture_run
-from identity import digest, load_build, preflight
+from identity import digest, input_preflight, load_build, preflight
 from model import build_capture, write_report
+from images import preview, build as build_images
 from snapshot import Abi, DEFAULT_ABI, SnapshotError, load_snapshot
 from layout import COLUMN, COMMAND_ABI, get_layout, header_layout
 
@@ -47,32 +48,6 @@ def seed_files(capture, output):
                 stream.write(f"{values[address]:0{width}x}\n")
                 previous = address
 
-
-def preview(plane, output, linear, layout=COLUMN):
-    """Native tiled RGB565 -> lossless PNG preview. Raw plane remains authoritative."""
-    if len(plane) != layout.plane_bytes:
-        raise SnapshotError("Unexpected output plane length")
-    rows = []
-    for y in range(240):
-        row = bytearray([0])
-        for x in range(400):
-            at = layout.offset(x, y)
-            word, = struct.unpack_from("<H", plane, at)
-            channels = [(word >> 11) / 31, ((word >> 5) & 63) / 63, (word & 31) / 31]
-            if linear:
-                # Viewing aid only; exact output comparisons use the raw plane.
-                channels = [12.92 * v if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
-                            for v in channels]
-            row.extend(round(max(0, min(1, v)) * 255) for v in channels)
-        rows.append(row)
-
-    def chunk(kind, data):
-        body = kind + data
-        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xffffffff)
-
-    Path(output).write_bytes(b"\x89PNG\r\n\x1a\n" +
-        chunk(b"IHDR", struct.pack(">IIBBBBB", 400, 240, 8, 2, 0, 0, 0)) +
-        chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))
 
 
 def export_layout(rtl, combined):
@@ -170,15 +145,25 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
 
 
 def execute(capture, manifest_path):
+    """A stopped/failed backend must never leave a successful replay receipt."""
     validate_command_abi(capture)
     manifest_path = Path(manifest_path)
     declared = json.loads(manifest_path.read_text())
     if declared.get('command_abi') != capture.header['command_abi']:
         raise SnapshotError('Prepared replay/header command ABI mismatch')
+    try:
+        return _execute(capture, manifest_path, declared)
+    except Exception as error:
+        (Path(manifest_path).parent / 'replay.json').write_text(json.dumps(dict(
+            complete=False, input_sha256=capture.manifest()['input_sha256'], error=str(error)
+        ), indent=2) + '\n')
+        raise
+
+
+def _execute(capture, manifest_path, declared):
     output = manifest_path.parent
     capture_run(manifest_path, output / "capture")
     profile = build_capture(output / "capture")
-    write_report(profile, output / "profile")
     log = (output / "capture/run.log").read_text(encoding="utf-8", errors="replace")
     match = re.search(r"REPLAY_COMPLETE cycles=(\d+) initialized_reads=checked", log)
     if not match:
@@ -213,8 +198,34 @@ def execute(capture, manifest_path):
         if allocation[:layout.plane_bytes] != (output / 'capture' / (role + '.bin')).read_bytes():
             raise SnapshotError('Plane and allocation dumps disagree')
         result[role + '_allocation_sha256'] = digest(path)
+    profile['images'] = build_images(capture, profile, output / 'capture/events.txt', output / 'images')
+    write_report(profile, output / 'profile')
+    result['command_images'] = dict(available=profile['images']['available'],
+                                  index=str(output / 'images/index.json') if profile['images']['available'] else None)
     (output / "replay.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
+
+
+def run(snapshot, rtl, out, max_cycles, timeout, *, abi=None, build=None, receipt=None, simulation_source=None):
+    rtl, out = Path(rtl), Path(out)
+    abi = abi or Abi(DEFAULT_ABI)
+    capture = load_snapshot(snapshot, abi)
+    if build is None:
+        if receipt is not None:
+            raise SnapshotError("A board receipt requires its build declaration")
+        identity = input_preflight(capture, simulation_source=simulation_source)
+    else:
+        identity = preflight(capture, build, receipt, simulation_source=simulation_source)
+    if build is not None:
+        build = load_build(build)
+        recorded = {entry["sha256"] for entry in build["files"]}
+        for name in [*json.loads((rtl / "rtl.json").read_text()), "rtl.json", "peer/stream-contract.json"]:
+            if digest(rtl / name) not in recorded:
+                raise SnapshotError("Unbound RTL export; generate a matching build declaration before firmware")
+        if (rtl / 'layout.json').is_file() and digest(rtl / 'layout.json') not in recorded:
+            raise SnapshotError('Replay layout descriptor is not bound to the firmware build')
+    path = prepare(capture, rtl, out, max_cycles, timeout, identity)
+    return execute(capture, path)
 
 
 def main():
@@ -222,28 +233,22 @@ def main():
     parser.add_argument("snapshot", type=Path)
     parser.add_argument("--abi", type=Path, default=DEFAULT_ABI)
     parser.add_argument("--rtl", type=Path, required=True)
-    parser.add_argument("--build", type=Path, required=True)
-    parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--build", type=Path)
+    origin = parser.add_mutually_exclusive_group()
+    origin.add_argument("--receipt", type=Path)
+    origin.add_argument("--simulation-source", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--max-cycles", type=int, required=True)
     parser.add_argument("--timeout", type=int, required=True)
     args = parser.parse_args()
-    capture = load_snapshot(args.snapshot, Abi(args.abi))
-    identity = preflight(capture, args.build, args.receipt)
-    build = load_build(args.build)
-    recorded = {entry["sha256"] for entry in build["files"]}
-    for name in [*json.loads((args.rtl / "rtl.json").read_text()), "rtl.json", "peer/stream-contract.json"]:
-        if digest(args.rtl / name) not in recorded:
-            raise SnapshotError("Unbound RTL export; generate a matching build declaration before firmware")
-    if (args.rtl / 'layout.json').is_file() and digest(args.rtl / 'layout.json') not in recorded:
-        raise SnapshotError('Replay layout descriptor is not bound to the firmware build')
-    path = prepare(capture, args.rtl, args.out, args.max_cycles, args.timeout, identity)
-    print(json.dumps(execute(capture, path), indent=2))
+    print(json.dumps(run(args.snapshot, args.rtl, args.out, args.max_cycles, args.timeout,
+                         abi=Abi(args.abi), build=args.build, receipt=args.receipt,
+                         simulation_source=args.simulation_source), indent=2))
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (SnapshotError, OSError, KeyError, ValueError, RuntimeError) as error:
+    except (SnapshotError, OSError, KeyError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         print("Replay refused: " + str(error), file=sys.stderr)
         raise SystemExit(1)

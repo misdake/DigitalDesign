@@ -111,18 +111,23 @@ def verify_receipt(path, build):
     return value
 
 
-def preflight(capture, build_path, receipt_path):
-    """Verify input extents up front; RTL additionally checks every physical read."""
-    build = load_build(build_path)
-    if capture.header["manifest_id"] != build["manifest_id"]:
-        raise SnapshotError("Frozen header does not identify this build/catalog")
-    receipt = verify_receipt(receipt_path, build)
+def simulation_provenance(capture, simulation_source):
+    source = json.loads(Path(simulation_source).read_text())
+    if (source.get('schema') != 1 or source.get('source') != 'system-simulation' or
+            source.get('boundary') != 'before-profiler-gate' or source.get('gpu_consumed') is not False or
+            source.get('input_sha256') != capture.manifest()['input_sha256']):
+        raise SnapshotError('System-simulation provenance does not identify these frozen inputs')
+    for key in ('compiled_program_sha256', 'recipe_sha256'):
+        value = source.get(key, '')
+        if not isinstance(value, str) or len(value) != 64 or any(c not in '0123456789abcdef' for c in value):
+            raise SnapshotError('Missing compiled-program identity: ' + key)
+    provenance = dict(source_kind='system-simulation', simulation_source_sha256=digest(simulation_source),
+                      compiled_program_sha256=source['compiled_program_sha256'])
+    return provenance
+
+
+def input_extents(capture, required_span, resources):
     header = capture.header
-    if header.get('command_abi') != build.get('command_abi'):
-        raise SnapshotError('Frozen descriptor and build use different command ABIs')
-    layout = header_layout(header)
-    if layout != build_layout(build):
-        raise SnapshotError('Frozen descriptor and source/firmware build use different layouts')
     reads = []
 
     def require(name, base, length, expected=None):
@@ -136,24 +141,61 @@ def preflight(capture, build_path, receipt_path):
     for prefix in ["object", "ui"]:
         if header[prefix + "_bytes"]:
             require(prefix, header[prefix + "_base"], header[prefix + "_bytes"])
-    # Every layout captures physical preimages, even for full CLEAR. The optional
-    # allocation tail is separate and is never presumed cleared.
-    guards = build.get('options', {}).get('capture_allocation_guards', False)
-    if type(guards) is not bool:
-        raise SnapshotError('capture_allocation_guards must be an explicit boolean')
-    required_span = layout.allocation_bytes if guards else layout.plane_bytes
     require("color-preimage", header["color_base"], required_span)
     require("depth-preimage", header["depth_base"], required_span)
     if header["front_base"]:
         require("old-front", header["front_base"], required_span)
-    for resource in build["resources"]:
+    for resource in resources:
         require(resource["name"], resource["address"], resource["bytes"],
                 resource.get("sha256") if resource.get("immutable", True) else None)
+    return reads
+
+
+def preflight(capture, build_path, receipt_path=None, *, simulation_source=None):
+    """Verify input extents up front; RTL additionally checks every physical read."""
+    build = load_build(build_path)
+    if capture.header["manifest_id"] != build["manifest_id"]:
+        raise SnapshotError("Frozen header does not identify this build/catalog")
+    if (receipt_path is None) == (simulation_source is None):
+        raise SnapshotError("Choose exactly one board receipt or system-simulation source")
+    if simulation_source is not None:
+        provenance = simulation_provenance(capture, simulation_source)
+    else:
+        receipt = verify_receipt(receipt_path, build)
+        provenance = dict(source_kind='board-uart', board_id=receipt['board_id'],
+                          programming_receipt_sha256=digest(receipt_path))
+    header = capture.header
+    if header.get('command_abi') != build.get('command_abi'):
+        raise SnapshotError('Frozen descriptor and build use different command ABIs')
+    layout = header_layout(header)
+    if layout != build_layout(build):
+        raise SnapshotError('Frozen descriptor and source/firmware build use different layouts')
+    guards = build.get('options', {}).get('capture_allocation_guards', False)
+    if type(guards) is not bool:
+        raise SnapshotError('capture_allocation_guards must be an explicit boolean')
+    required_span = layout.allocation_bytes if guards else layout.plane_bytes
+    reads = input_extents(capture, required_span, build["resources"])
     return dict(schema="digitaldesign.gpu-replay-preflight", version=1,
                 layout=layout.description(),
                 captured_plane_bytes=required_span, allocation_guards_required=guards,
                 manifest_id=build["manifest_id"], input_sha256=capture.manifest()["input_sha256"],
-                board_id=receipt["board_id"], programming_receipt_sha256=digest(receipt_path),
+                build_identity_verified=True, verified_board_identity=receipt_path is not None,
+                **provenance,
                 build_manifest_sha256=digest(build_path), extents=reads,
                 policy="cold GPU+production MC; no CPU/Display contention; initialized-read guard required",
                 dependency_closure="static extents verified; dynamic RTL reads must still complete")
+
+
+def input_preflight(capture, *, simulation_source=None):
+    """Replay complete frozen bytes without claiming firmware/bitstream qualification."""
+    layout = header_layout(capture.header)
+    provenance = (simulation_provenance(capture, simulation_source) if simulation_source is not None
+                  else dict(source_kind="frozen-input"))
+    return dict(schema="digitaldesign.gpu-replay-preflight", version=1,
+                manifest_id=capture.header["manifest_id"], input_sha256=capture.manifest()["input_sha256"],
+                verified_board_identity=False, build_identity_verified=False,
+                layout=layout.description(), captured_plane_bytes=layout.plane_bytes,
+                allocation_guards_required=False, extents=input_extents(capture, layout.plane_bytes, []),
+                **provenance,
+                policy="frozen bytes only; firmware/bitstream unverified; cold GPU+production MC; no CPU/Display contention",
+                dependency_closure="explicit preimages verified; dynamic RTL reads must still complete")

@@ -195,7 +195,12 @@ fn diagnostic_origin_and_manifest_are_explicit_and_do_not_override_normal_apps()
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let local = root.join("../../../target/gpu-capture-tests/origins");
     std::fs::create_dir_all(&local).unwrap();
-    for name in ["profiler_gate", "gpu_capture_abi", "gpu_capture_config"] {
+    for name in [
+        "profiler_gate",
+        "profiler_runtime",
+        "gpu_capture_abi",
+        "gpu_capture_config",
+    ] {
         std::fs::write(local.join(format!("{name}.rs")), "invalid local override").unwrap();
     }
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
@@ -209,7 +214,31 @@ fn diagnostic_origin_and_manifest_are_explicit_and_do_not_override_normal_apps()
         &mut |_| {},
     )
     .unwrap();
-    rcc_backend::try_compile(parsed, &options, "main").unwrap();
+    let enabled = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+    assert!(enabled
+        .debug
+        .globals
+        .iter()
+        .any(|g| g.name.ends_with("PROFILER_CRC")));
+    let disabled = resolver::compile_renderer_program_with_capture(
+        "hook disabled",
+        APP,
+        &options,
+        &local,
+        &root,
+        RENDERER_METADATA,
+        &[],
+        None,
+        &mut |_| {},
+    )
+    .unwrap();
+    let disabled = rcc_backend::try_compile(disabled, &options, "main").unwrap();
+    assert!(!disabled
+        .debug
+        .globals
+        .iter()
+        .any(|g| g.name.ends_with("PROFILER_CRC")));
+    assert!(enabled.words.len() > disabled.words.len());
     assert!(resolver::compile_renderer_program(
         "config constant shadow",
         &format!("const GPU_CAPTURE_CONFIG_ENABLED:u16=1;{APP}"),

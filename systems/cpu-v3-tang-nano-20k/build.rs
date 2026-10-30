@@ -38,7 +38,8 @@ fn compile(
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
     let source_dir = path.parent().unwrap();
-    let capture = if capture_enabled {
+    let hook_enabled = std::env::var("GPU_PROFILER_HOOK").as_deref() != Ok("0");
+    let capture = if capture_enabled && hook_enabled {
         let manifest_path = PathBuf::from(
             std::env::var_os("GPU_PROFILER_MANIFEST")
                 .expect("gpu_profiler_board requires GPU_PROFILER_MANIFEST"),
@@ -51,6 +52,24 @@ fn compile(
             )
             .expect("explicit GPU profiler identity"),
         )
+    } else if renderer && hook_enabled {
+        if let Some(path) = std::env::var_os("GPU_PROFILER_MANIFEST") {
+            let path = PathBuf::from(path);
+            println!("cargo:rerun-if-changed={}", path.display());
+            Some(
+                rcc_modules::RendererCaptureConfiguration::from_manifest(
+                    shared.join("profiler_gate.rs"),
+                    &path,
+                )
+                .expect("GPU profiler build identity"),
+            )
+        } else {
+            Some(
+                rcc_modules::RendererCaptureConfiguration::with_default_hook(
+                    rcc_modules::RendererLayoutProfile::Column16,
+                ),
+            )
+        }
     } else {
         None
     };
@@ -61,7 +80,10 @@ fn compile(
             } else {
                 vec![]
             };
-            if let Some(configuration) = capture.as_ref() {
+            let checked = rtt
+                || (source_dir.ends_with("gpu_renderer/rcc")
+                    && path.file_name().is_some_and(|name| name == "members.rs"));
+            if let Some(configuration) = capture.as_ref().filter(|_| !checked) {
                 rcc_modules::compile_renderer_program_with_capture_profile(
                     &path.display().to_string(),
                     &source,
@@ -74,10 +96,10 @@ fn compile(
                     &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("capture-rcc"),
                     dependency,
                 )
-            } else if rtt
-                || (source_dir.ends_with("gpu_renderer/rcc")
-                    && path.file_name().is_some_and(|name| name == "members.rs"))
-            {
+            } else if checked {
+                let disabled = rcc_modules::RendererCaptureConfiguration::without_capture(
+                    rcc_modules::RendererLayoutProfile::Column16,
+                );
                 rcc_modules::compile_renderer_program_checked_with_sources(
                     &path.display().to_string(),
                     &source,
@@ -86,9 +108,7 @@ fn compile(
                     shared,
                     constants,
                     &dirs,
-                    &rcc_modules::RendererCaptureConfiguration::without_capture(
-                        rcc_modules::RendererLayoutProfile::Column16,
-                    ),
+                    capture.as_ref().unwrap_or(&disabled),
                     &rcc::frontend::rustc_check::RustcCheck::new(
                         PathBuf::from(std::env::var_os("OUT_DIR").unwrap())
                             .join("member-ownership"),
@@ -140,6 +160,7 @@ fn main() {
         .expect("single application project");
     println!("cargo:rerun-if-env-changed=CPU_V3_BOOT_EXAMPLE");
     println!("cargo:rerun-if-env-changed=GPU_PROFILER_MANIFEST");
+    println!("cargo:rerun-if-env-changed=GPU_PROFILER_HOOK");
     let mut generated = String::new();
     let mut capture_enabled = false;
     let mut column16 = false;

@@ -82,7 +82,7 @@ while i<d[GPU_CAPTURE_H_RANGE_COUNT]{
    require(gpu_capture_read_word(i,65535,1)==0xa55a);sources+=1;
  }
  if (tag==GPU_CAPTURE_TAG_COLOR || tag==GPU_CAPTURE_TAG_DEPTH) && flags&GPU_CAPTURE_FULL_CLEAR==0 {
-   require(!consumer && flags==(GPU_CAPTURE_WRITE|GPU_CAPTURE_PREIMAGE));
+   require(!consumer && flags==(GPU_CAPTURE_READ|GPU_CAPTURE_PREIMAGE));
    require(gpu_capture_range_word(i,GPU_CAPTURE_R_BYTES)==57344);tails+=1;
  }
  i+=1;

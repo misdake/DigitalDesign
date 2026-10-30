@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import identity as i
@@ -78,6 +79,49 @@ class IdentityTests(unittest.TestCase):
             result = i.preflight(capture, build, receipt)
             self.assertEqual(len(result["extents"]), 5)
             self.assertIn("dynamic RTL", result["dependency_closure"])
+
+    def test_input_only_is_explicitly_unverified_and_still_checks_preimages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            capture, build, receipt = self.create(temp)
+            result = i.input_preflight(capture)
+            self.assertFalse(result['build_identity_verified'])
+            self.assertFalse(result['verified_board_identity'])
+            self.assertIn('firmware/bitstream unverified', result['policy'])
+            with patch.object(capture, 'read', side_effect=s.SnapshotError('missing preimage')):
+                with self.assertRaises(s.SnapshotError):
+                    i.input_preflight(capture)
+            # The explicit qualified route never falls back after a bad receipt.
+            Path(receipt).write_text('{}')
+            with self.assertRaises(s.SnapshotError):
+                i.preflight(capture, build, receipt)
+
+    def test_system_simulation_uses_bound_source_without_board_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            capture, build, receipt = self.create(temp)
+            source = Path(temp) / 'source.json'
+            record = dict(schema=1, source='system-simulation', boundary='before-profiler-gate',
+                          gpu_consumed=False, input_sha256=capture.manifest()['input_sha256'],
+                          compiled_program_sha256='a'*64, recipe_sha256='b'*64)
+            source.write_text(json.dumps(record))
+            result = i.preflight(capture, build, simulation_source=source)
+            self.assertEqual(result['source_kind'], 'system-simulation')
+            self.assertNotIn('board_id', result)
+            with self.assertRaises(s.SnapshotError):
+                i.preflight(capture, build, receipt, simulation_source=source)
+            record['input_sha256'] = 'c'*64
+            source.write_text(json.dumps(record))
+            with self.assertRaises(s.SnapshotError):
+                i.preflight(capture, build, simulation_source=source)
+
+    def test_interrupted_backend_writes_incomplete_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            capture, _, _ = self.create(temp)
+            manifest = Path(temp) / 'manifest.json'
+            manifest.write_text(json.dumps(dict(command_abi=COMMAND_ABI)))
+            with patch('replay.capture_run', side_effect=RuntimeError('bounded stop')):
+                with self.assertRaisesRegex(RuntimeError, 'bounded stop'):
+                    replay.execute(capture, manifest)
+            self.assertFalse(json.loads((Path(temp) / 'replay.json').read_text())['complete'])
 
     def test_missing_plane_cannot_be_assumed_cleared(self):
         with tempfile.TemporaryDirectory() as temp:

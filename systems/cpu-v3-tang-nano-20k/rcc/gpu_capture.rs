@@ -10,6 +10,8 @@ use gpu_capture_config::*;
 static GPU_CAPTURE_HEADER: Buf<u16, 64> = Buf::new([0; 64]);
 static GPU_CAPTURE_RANGES: Buf<u16, 512> = Buf::new([0; 512]);
 static GPU_CAPTURE_CACHE: Buf<u16, 64> = Buf::new([0; 64]);
+// DMA_LOCAL provenance for the fourteen legal native descriptor slots.
+static GPU_CAPTURE_LOCAL: Buf<u16, 42> = Buf::new([0; 42]);
 // live,error,token lo/hi,submitted lo/hi,cache range+1,offset lo/hi,count,
 // owner pointer,range count,input slot1/2.
 static GPU_CAPTURE_CONTROL: Buf<u16, 13> = Buf::new([0; 13]);
@@ -288,18 +290,18 @@ fn gpu_capture_begin(cb: Array<GpuBuffer>, slot: u16, frame: u16) -> bool {
     if writer != 0 {
         let target = gpu_rtt_buffer(writer);
         // FULL_CLEAR applies only to the physical plane span above.
-        // Allocation tails retain their preimage and are not declared cleared.
+        // Allocation tails are read-only preimages, never writable/cleared extents.
         let color_tail = target[4u16] - GPU_FRAMEBUFFER_PHYSICAL_SECTORS;
         let depth_tail = target[5u16] - GPU_FRAMEBUFFER_PHYSICAL_SECTORS;
         if !gpu_capture_range_add(
             GPU_CAPTURE_TAG_COLOR,
-            GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE,
+            GPU_CAPTURE_READ | GPU_CAPTURE_PREIMAGE,
             target[2u16] + GPU_FRAMEBUFFER_PHYSICAL_SECTORS,
             color_tail << 7,
             color_tail >> 9,
         ) || !gpu_capture_range_add(
             GPU_CAPTURE_TAG_DEPTH,
-            GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE,
+            GPU_CAPTURE_READ | GPU_CAPTURE_PREIMAGE,
             target[3u16] + GPU_FRAMEBUFFER_PHYSICAL_SECTORS,
             depth_tail << 7,
             depth_tail >> 9,
@@ -307,8 +309,155 @@ fn gpu_capture_begin(cb: Array<GpuBuffer>, slot: u16, frame: u16) -> bool {
             return false;
         }
     }
+    if !gpu_capture_copy_dependencies(cb) {
+        return false;
+    }
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_COUNT] = GPU_CAPTURE_CONTROL[11u16];
     return gpu_capture_health() == GPU_CAPTURE_OK;
+}
+// Return a containing range + 1; zero is an explicit failed closure.
+fn gpu_capture_depend(sector: u16, low: u16, high: u16, flags: u16) -> u16 {
+    let mut i: u16 = 0;
+    while i < GPU_CAPTURE_CONTROL[11u16] {
+        let at = i * GPU_CAPTURE_RANGE_WORDS;
+        let base = (GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BASE] >> 7)
+            | (GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BASE + 1] << 9);
+        if sector >= base && GPU_CAPTURE_RANGES[at] & flags == flags {
+            let offset = sector - base;
+            let begin = offset << 7;
+            let end = begin + low;
+            let mut upper = (offset >> 9) + high;
+            if end < begin {
+                upper += 1;
+            }
+            let available = GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BYTES];
+            let available_high = GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BYTES + 1];
+            if upper < available_high || (upper == available_high && end <= available) {
+                return i + 1;
+            }
+        }
+        i += 1;
+    }
+    let result = GPU_CAPTURE_CONTROL[11u16] + 1;
+    if !gpu_capture_range_add(GPU_CAPTURE_TAG_BUFFER, flags, sector, low, high) {
+        return 0;
+    }
+    result
+}
+fn gpu_capture_descriptor_word(slot: u16, word: u16) -> u16 {
+    let sector = GPU_CAPTURE_LOCAL[slot];
+    let range = gpu_capture_depend(sector, 128, 0, GPU_CAPTURE_READ);
+    if range == 0 {
+        return 0;
+    }
+    let at = (range - 1) * GPU_CAPTURE_RANGE_WORDS;
+    let base = (GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BASE] >> 7)
+        | (GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BASE + 1] << 9);
+    let offset = sector - base;
+    gpu_capture_read_value(
+        range - 1,
+        (offset << 6) + GPU_CAPTURE_LOCAL[slot + 14] + word,
+        offset >> 10,
+    )
+}
+fn gpu_capture_copy_dependencies(cb: Array<GpuBuffer>) -> bool {
+    gpu_zero(GPU_CAPTURE_LOCAL.as_ptr(), 42);
+    let mut word: u16 = 0;
+    while word < cb[0u16].command_words {
+        let low = gpu_capture_read_value(0, word, 0);
+        let high = gpu_capture_read_value(0, word + 1, 0);
+        if GPU_CAPTURE_CONTROL[1u16] != 0 {
+            return false;
+        }
+        let opcode = high >> 12;
+        if opcode == 1 {
+            let slot = (low >> 3) & 127;
+            let code = (low >> 1) & 3;
+            if code == 3 {
+                gpu_capture_fail(GPU_CAPTURE_DEPENDENCY);
+                return false;
+            }
+            let count: u16 = 1 << code;
+            if slot >= 66 && slot < 80 {
+                if slot + count > 80 {
+                    gpu_capture_fail(GPU_CAPTURE_DEPENDENCY);
+                    return false;
+                }
+                let sector = (low >> 12) | (high << 4);
+                // A descriptor loaded from mutable memory is data-dependent;
+                // refuse instead of guessing its post-write fields.
+                let mut i: u16 = 0;
+                while i < GPU_CAPTURE_CONTROL[11u16] {
+                    let at = i * GPU_CAPTURE_RANGE_WORDS;
+                    let base = (GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BASE] >> 7)
+                        | (GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BASE + 1] << 9);
+                    let bytes = GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BYTES];
+                    let sectors =
+                        (GPU_CAPTURE_RANGES[at + GPU_CAPTURE_R_BYTES + 1] << 9) | (bytes >> 7);
+                    if GPU_CAPTURE_RANGES[at] & GPU_CAPTURE_WRITE != 0
+                        && gpu_extents_overlap(sector, 1, base, sectors)
+                    {
+                        gpu_capture_fail(GPU_CAPTURE_DEPENDENCY);
+                        return false;
+                    }
+                    i += 1;
+                }
+                let mut n: u16 = 0;
+                while n < count {
+                    let index = slot + n - 66;
+                    GPU_CAPTURE_LOCAL[index] = sector;
+                    GPU_CAPTURE_LOCAL[index + 14] = ((low >> 6) & 48) + n * 16;
+                    GPU_CAPTURE_LOCAL[index + 28] = 1;
+                    n += 1;
+                }
+            }
+        } else if opcode == 12 {
+            let slot = low & 127;
+            if slot < 66 || slot >= 80 || GPU_CAPTURE_LOCAL[slot - 66 + 28] == 0 {
+                gpu_capture_fail(GPU_CAPTURE_DEPENDENCY);
+                return false;
+            }
+            let index = slot - 66;
+            let a = gpu_capture_descriptor_word(index, 0);
+            let b = gpu_capture_descriptor_word(index, 1);
+            let c = gpu_capture_descriptor_word(index, 2);
+            let source = (a & 16383) << 2;
+            let destination = ((a >> 12) & 12) | (b << 4);
+            let sectors = (((b >> 12) | ((c & 127) << 4)) + 1) << 2;
+            // Only the first eight bytes are the native descriptor. Remaining
+            // staging bytes have no semantic meaning and need not be zero.
+            let reserved = (c >> 7) | gpu_capture_descriptor_word(index, 3);
+            if reserved != 0
+                || !gpu_memcpy_valid(source, destination, sectors)
+                || gpu_extents_overlap(
+                    destination,
+                    sectors,
+                    cb[0u16].commands.sector,
+                    cb[0u16].commands.sectors,
+                )
+            {
+                gpu_capture_fail(GPU_CAPTURE_DEPENDENCY);
+                return false;
+            }
+            if gpu_capture_depend(
+                source,
+                sectors << 7,
+                sectors >> 9,
+                GPU_CAPTURE_READ | GPU_CAPTURE_PREIMAGE,
+            ) == 0
+                || gpu_capture_depend(
+                    destination,
+                    sectors << 7,
+                    sectors >> 9,
+                    GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE,
+                ) == 0
+            {
+                return false;
+            }
+        }
+        word += 2;
+    }
+    GPU_CAPTURE_CONTROL[1u16] == 0
 }
 fn gpu_capture_range_value(range: u16, field: u16) -> u16 {
     if gpu_capture_health() != GPU_CAPTURE_OK {

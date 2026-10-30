@@ -57,6 +57,7 @@ struct Resource {
 /// Fields are private so callers cannot select a second conflicting layout.
 pub struct RendererCaptureConfiguration {
     pub(super) capture: Option<CaptureConfiguration>,
+    pub(super) hook_enabled: bool,
     pub(super) profile: RendererLayoutProfile,
     resources: Vec<Resource>,
 }
@@ -64,9 +65,15 @@ impl RendererCaptureConfiguration {
     pub fn without_capture(profile: RendererLayoutProfile) -> Self {
         Self {
             capture: None,
+            hook_enabled: false,
             profile,
             resources: vec![],
         }
+    }
+    pub fn with_default_hook(profile: RendererLayoutProfile) -> Self {
+        let mut configuration = Self::without_capture(profile);
+        configuration.hook_enabled = true;
+        configuration
     }
     pub fn command_abi(&self) -> u16 {
         abi::GPU_CAPTURE_RTT400_COMMAND_ABI
@@ -168,6 +175,7 @@ impl RendererCaptureConfiguration {
         }
         Ok(Self {
             capture: Some(capture),
+            hook_enabled: true,
             profile,
             resources,
         })

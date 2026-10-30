@@ -29,6 +29,11 @@ def main():
     profile=json.loads((args.out/'profile/profile.json').read_text())
     copies=[c for c in profile['commands'] if c['opcode']==12]
     assert len(copies)==3 and all(c['end']>c['execute'] for c in copies)
+    assert profile['images']['available'] and len(profile['images']['commands'])==len(profile['commands'])
+    for command in copies:
+        image=profile['images']['commands'][str(command['id'])]
+        assert image['cycle']==command['complete_cycle']
+    assert profile['images']['final']['plane_sha256']==result['color_sha256']
     print('PASS RTT4 cold production replay: 3 copies, page crossing, live write/read lineage, exact planes and raw buffers',result['cold_submission_cycles'])
 
 

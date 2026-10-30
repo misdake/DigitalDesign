@@ -81,6 +81,10 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board
 capture. A run that passes `-ResetBl616` records
 `reset_bl616: true` in `evidence.json`.
 
+Capture coordinators may combine `-WriteTiming -ReadyFile <new-path>`. The helper
+writes that marker only after route selection and opening the live raw file;
+callers must wait for it before asking the operator to transmit.
+
 All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 233, 54 MHz designs use 468); pass `-Baud` only for nonstandard captures.
 

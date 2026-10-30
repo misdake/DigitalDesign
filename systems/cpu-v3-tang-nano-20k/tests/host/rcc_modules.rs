@@ -216,6 +216,7 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
         "device_abi",
         "gpu_capture_abi",
         "profiler_gate",
+        "profiler_runtime",
         "gamepad",
         "dualshock2",
         "stick",

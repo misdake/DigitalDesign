@@ -253,3 +253,27 @@ SDRAM pins, HDMI serialization, fitted timing, board behavior, RTT and checked
 member-call borrow rules. The retained flat caller does not qualify profiler pause
 behavior. Long native runs remain explicit; ordinary host tests do not launch
 them, and host peers do not substitute for them.
+
+## GPU profiling input parity
+
+`capture_draw::compiled_program_system_frontend` compiles a real RCC/CB06 scene
+and freezes the first Prepared gate in `CpuV3SystemSim`. The ordinary case stays
+small. `GPU_PROFILER_FULL_SCENE=1` selects the pinned canonical box/RGB/948-face
+rabbit source and its default camera; output uses `GPU_CAPTURE_FULL_SCENE_DIR`.
+Explicit `GPU_PROFILER_RTT=1`, `GPU_PROFILER_NATIVE_COPY=1` and
+`GPU_PROFILER_UART=1` add an owned offscreen target, a trusted fixture-only native
+encoder tail and the shared manual UART runtime. The tail uses existing native
+encoders and the required FLUSH; it adds no public graphics API. Copies cover a
+page crossing and a later read of a completed earlier write. Ignored staging
+padding is deliberately nonzero.
+`GPU_PROFILER_NATIVE_COPY=reserved` injects one reserved descriptor bit and checks
+sticky dependency error9 before the consumer or any GPU SEND.
+
+UART mode primes a settled debounce edge at that same first gate, then uses a
+functional GPIO/time/TX peer to pause, dump twice, remain paused and explicitly
+resume the same CB once. It checks that frozen resources remain unchanged and
+retains `uart-offline.bin` plus the peer assumptions. This is real RCC protocol
+execution, not physical button, serial timing or board evidence. The ordinary
+system frontend has a five-million-step bound; UART mode has explicit two-billion
+step and180-second wall bounds. The shared decoder checks both UART attempts
+against the system snapshot before the common cold backend is used.

@@ -1,7 +1,7 @@
 ---
 id: system-gpu-profiler
 status: active
-last-verified: 2026-10-29
+last-verified: 2026-10-30
 ---
 
 # GPU profiling sessions
@@ -11,6 +11,54 @@ bounded cold replay, passive simulation observer, correlator and offline viewer.
 Its [tool README](/systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/README.md)
 owns usage and verification commands. It changes no synthesized logic or Device4
 ABI. A render frame, a CPU recording interval and a GPU submission are distinct.
+
+## Compiled-program system capture
+
+`profiling_capture::capture_flash` runs an already compiled CB06 application and
+its COPY/ZERO resources in `CpuV3SystemSim`. `CapturePoint::from_program` obtains
+the unique `profiler_gate` function entry and capture header/range globals from
+that exact compilation's debug metadata. The host stops before executing the
+gate, after the driver's Prepared publication has finished and before either
+GPU SEND is consumed. Polling the header PUBLISHED bit alone is insufficient:
+the driver writes it while constructing the descriptor.
+
+The input recipe binds the CB06 SHA-256, metadata addresses, explicit initial
+memory seed, positive CPU-step limit and wall-time limit. The simulation advances
+functional vblank events only when the program waits for the frame index. It
+does not model CPU caches, Display contention or boot-loader RTL timing. This
+entry captures the first submission; a prior GPU submission is rejected because
+no executor is attached to the functional simulator.
+
+`system_dump.py` converts the frozen descriptor, range table and actual physical
+payload bytes through the same GPS1 encoder/decoder used by the UART path. The
+canonical snapshot retains the same descriptor/range/payload contract. Its
+`source.json` binds the input digest to the compiled-program and recipe digests,
+gate boundary, step count, memory seed and functional vblank count. Board dump
+duration is null for this source. Missing, short or rejected data never becomes
+a complete snapshot.
+
+With `--build`, `replay.py` takes exactly one of a verified board `--receipt` or a
+`--simulation-source`. Both paths validate build/layout/ABI, static resource
+extents and the bound RTL export, then use the same cold GPU+MC backend and
+dynamic initialized-read guard. Simulation provenance is not a programming
+receipt or board qualification. A failed or bounded backend run writes
+`replay.json` with `complete: false`; completion still requires the real GPU
+drain and complete output planes.
+
+Without `--build`, the same backend can replay complete explicit frozen bytes.
+It still checks descriptor/layout/ABI, preimages and every initialized physical
+read, but marks firmware/bitstream identity unverified in metadata and the viewer.
+An optional simulation source must still match the compiled-program/input hashes.
+Providing a build selects strict qualification; failures never fall back to the
+input-only route. A receipt without its build is rejected. Ordinary default hooks
+use this route with their zero manifest ID, or can bind a formal build manifest.
+
+`snapshot_cli.py receive` starts the existing BL616 capture helper with live raw
+recording. Only a marker written after route selection and raw-file opening
+produces the operator's ready notice. Failed/expired startup never announces
+readiness; transport completion precedes decoding. Optional `--rtl` sends each
+complete attempt through `replay.run`, with explicit cycle/wall bounds. Invalid
+or incomplete attempts retain their receive report and cannot be replayed.
 
 ## Identity and time
 
@@ -188,6 +236,70 @@ provenance. Scene-specific names survive import; new captures use metadata label
 or generic meshlet names. Unsupported format versions are rejected.
 
 ## Derived display
+
+The cold replay exports `images/final.png`, one `command-<id>.png` for every
+command, and `images/index.json`. Each entry binds the command occurrence,
+`complete_cycle`, byte target bases, target epoch, color interpretation and plane/
+PNG digests. The report embeds these PNGs, so the offline page remains portable.
+It starts with the final output thumbnail; hover enlarges it and selecting a
+command switches the same preview to that command's completion image. Right-click
+inside instruction flow clears selection, highlights and time selection and
+restores the final output. Other regions retain native context menus; middle or
+Shift-left drag pans the charts.
+
+The observer journals actual BSRAM A writes, valid/tag transitions, SET_TARGET
+generations and accepted framebuffer write payloads. Reconstruction combines
+physical word history with the latest eligible versions in valid resident cache
+slots. Slot replacement/invalidation discards resident deltas. Writeback archives
+each word's older cache owners before committing its latest physical value;
+otherwise a younger overwrite followed by eviction could erase an older DRAW's
+completion image. Snapshots exclude younger command owners even when they have
+already written overlapping pixels. Direct CLEAR, serial UI and MEMCPY payloads
+retain their own command identity rather than stealing the current DRAW owner.
+
+Same-cycle cache writes precede accepted writeback, directory lifecycle updates
+and the completion projection. A writeback victim remains owned through its real
+terminal response, so the valid-cache layer covers payload still in flight to
+memory. Stale target epochs and invalid lines cannot overlay a different target.
+Unexplained writeback or missing preimage fails reconstruction. Commands before
+the first target binding explicitly show the capture-declared output preimage.
+The pixel decoder is shared with the existing final RGB565/column preview. No
+extra flush, wait or GPU serialization is introduced.
+
+Borrowed render-target allocation tails are READ/PREIMAGE ranges. Only the
+204800-byte physical plane is writable/FULL_CLEAR; allocation capacity does not
+grant permission to overwrite guards.
+
+The passive observer samples RO, framebuffer-read and framebuffer-write master
+interfaces in the GPU logic clock domain. An accepted request counts as issued;
+each read response and write-data-ready strobe counts one actual 64-bit payload
+slot; LAST/error counts a completed transaction. The request count encodes
+32-byte lines minus one (legal values 0, 1 and 3). Request volume is not reported
+as completed payload. Current links have no byte-enable field: each slot carries
+eight bytes. Failed read payload contributes no effective bytes.
+
+`profile.json.memory` and `memory-transactions.csv` preserve transaction identity,
+source, halfword address, expected/actual beats and real terminal time. Reports
+include issued/completed/error counts, wire/effective bytes, total/read/write
+average rates and a 256-cycle sliding-window peak. Shorter selections have no
+full-window peak. Link utilization uses eight bytes per logic cycle; aggregate
+utilization sums the capacity of three independent links. These are RTL interface
+measurements, with no physical SDRAM pin-utilization or board-timing claim, and
+no downstream transfer is counted again.
+
+Sources follow the actual RO arbiter owner and DMA job kind, or the direct CLEAR
+mux. Shared framebuffer-cache traffic retains its component identity; it is not
+guessed to belong to whichever DRAW/UI/COPY command currently executes. Unknown
+sources remain unknown. The inspector shows full-capture statistics or actual
+traffic during the selected command's half-open interval, including overlapping
+work. Request backpressure, outstanding-without-data and write-terminal waits
+are link-cycle counts and can overlap. Older captures without memory events
+display unavailable statistics.
+
+`commands[].complete_cycle` includes every associated meshlet stage and ROP
+commit, plus owned DMA completion. `end` retains control release. Partial
+captures have no proven command completion time. CSV asynchronous ends and the
+inspector use this distinction rather than stopping DRAW at instruction release.
 
 RLE tracks retain exact sampled state; event-rate tracks retain accepted events.
 Time-bin occupancy and queues are time-weighted. Event bins count accepted events

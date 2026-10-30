@@ -47,7 +47,7 @@ assert.equal(view().lo,200000);assert.equal(view().hi,500000);assert.equal(view(
 context.window.gpuProfiler.fit();assert.equal(view().rangeSelected,false);
 evalValue('fitRange(200000,500000)');emit('overview','dblclick',{clientX:overviewX(350000)});assert.equal(view().rangeSelected,true);
 emit('overview','dblclick',{clientX:overviewX(700000)});assert.equal(view().rangeSelected,false);
-evalValue('fitRange(200000,500000)');emit('overview','pointerdown',{button:2});emit('overview','pointerup',{button:2});assert.equal(view().rangeSelected,false);
+evalValue('fitRange(200000,500000)');emit('overview','pointerdown',{button:2});emit('overview','pointerup',{button:2});assert.equal(view().rangeSelected,true);
 evalValue('fitRange(200000,500000)');emit('overview','pointerdown',{button:2});emit('overview','pointermove',{button:2,clientX:520});emit('overview','pointerup',{button:2,clientX:520});assert.equal(view().rangeSelected,true);
 emit('overview','pointerdown',{button:2});emit('overview','pointercancel',{button:2});assert.equal(view().rangeSelected,true);
 emit('mouse-help','pointerenter');assert.ok(element('tooltip').textContent.includes('Double-click outside selection'));assert.ok(element('tooltip').textContent.includes('Ctrl+wheel'));emit('mouse-help','pointerleave');assert.equal(element('tooltip').style.display,'none');
@@ -60,7 +60,7 @@ emit('commands','pointermove',{clientX:100,clientY:evalValue('rowOf.get(12).y+8'
 const liveX=264+.425*524;emit('commands','pointermove',{clientX:liveX,clientY:10});
 assert.ok(element('tooltip').textContent.includes('Alive commands'));assert.ok(element('tooltip').textContent.includes('Rabbit 02'));assert.ok(!element('tooltip').textContent.includes('Rabbit 03'));
 const hover=element('tooltip').textContent;emit('commands','pointermove',{clientX:liveX,clientY:150});assert.equal(element('tooltip').textContent,hover);
-for(const button of [1,2]){
+for(const button of [1]){
  context.window.gpuProfiler.focus(12);const before=view();
  element('command-scroll').scrollTop=300;
  emit('commands','pointerdown',{button});emit('commands','pointermove',{clientX:550,clientY:-90});const after=view();
@@ -86,7 +86,22 @@ emit('load','pointermove',{clientX:264+.4*524,clientY:9*47+10});
 assert.ok(element('tooltip').textContent.includes('Rendered bin'));assert.ok(element('tooltip').textContent.includes('2 accepted events'));
 context.window.gpuProfiler.focus(0); // Narrow enough for an exact-state binary rendering.
 evalValue('fitRange(300000,300064)');assert.equal(evalValue('binStats(D.metric_defs[0],300001).exact'),true);
-console.log('UI checks passed: type-only filters, empty/default, unselected overview first-drag selection and reset, label/plot hover separation, all-type alive lifetimes through DMA/cache commit, middle/right X/Y pan, wheel scroll/Ctrl zoom, overview move/resize, release/cancel, aggregate and exact-state hover.');
+// The same inspector switches between session and selected-command traffic.
+const traffic={start:0,end:256,average_wire_bytes_per_second:17000000,average_read_bytes_per_second:1000000,average_write_bytes_per_second:16000000,peak_wire_bytes_per_second:32000000,peak_window_cycles:256,issued_transactions:1,completed_transactions:1,data_beats:4,wire_bytes:32,effective_bytes:32,request_backpressure_link_cycles:2,outstanding_without_data_link_cycles:3,write_terminal_wait_link_cycles:1,utilization:.1,links:[],sources:[]};
+evalValue('D.memory='+JSON.stringify({available:true,complete:true,clock_hz:54000000,summary:traffic,commands:{0:{...traffic,average_wire_bytes_per_second:33000000}}}));
+context.window.gpuProfiler.focus(0);
+assert.ok(element('memory').innerHTML.includes('command interval'));assert.ok(element('memory').innerHTML.includes('33.00 MB/s'));
+evalValue('selectRow(null)');assert.ok(element('memory').innerHTML.includes('full capture'));assert.ok(element('memory').innerHTML.includes('17.00 MB/s'));
+assert.ok(!element('memory').innerHTML.includes('NaN'));
+// Inline image selection uses sentinels in this DOM-only adapter (no image decoding).
+const finalFrame={cycle:1000000,target_base_bytes:4456448,target_epoch:1,format:1,src:'data:image/png;base64,FINAL'};
+evalValue('D.images='+JSON.stringify({available:true,final:finalFrame,commands:{0:{...finalFrame,cycle:400000,src:'data:image/png;base64,COMMAND'}}}));
+evalValue('selectRow(null)');assert.equal(element('frame-label').textContent,'Final output');assert.equal(element('frame-image').src,finalFrame.src);
+context.window.gpuProfiler.focus(0);assert.ok(element('frame-label').textContent.includes('Command #0'));assert.ok(element('frame-image').src.endsWith('COMMAND'));
+let menuPrevented=false;emit('load','contextmenu',{preventDefault:()=>menuPrevented=true});assert.equal(menuPrevented,false);
+emit('overview','contextmenu',{preventDefault:()=>menuPrevented=true});assert.equal(menuPrevented,false);
+emit('commands','contextmenu',{button:2,preventDefault:()=>menuPrevented=true});assert.equal(menuPrevented,true);assert.equal(view().selected,null);assert.equal(view().rangeSelected,false);assert.equal(element('frame-image').src,finalFrame.src);
+console.log('UI checks passed: type-only filters, empty/default, unselected overview first-drag selection and reset, label/plot hover separation, all-type alive lifetimes through DMA/cache commit, middle X/Y pan, wheel scroll/Ctrl zoom, overview move/resize, release/cancel, aggregate and exact-state hover.');
 if(process.argv[2]){
  const session=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));elements.clear();
  const second={...context,window:{devicePixelRatio:1}};vm.createContext(second);

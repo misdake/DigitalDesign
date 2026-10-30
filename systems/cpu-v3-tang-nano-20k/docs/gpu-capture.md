@@ -3,7 +3,8 @@
 The resource renderer can call one synchronous diagnostic gate after successful
 cache publication, before Device4 COUNT/START. The preceding GPU is idle and
 Display continues reading old Front. This is not a pipeline checkpoint, second
-scheduler or recovery protocol. Normal applications use the shared no-op gate.
+scheduler or recovery protocol. Normal renderer builds temporarily enable the
+shared button/UART hook by default; `GPU_PROFILER_HOOK=0` disables it.
 
 ## Explicit consumer selection
 
@@ -21,10 +22,14 @@ no alternate layout-file substitution. POT and fixed framebuffer views are
 available in every production build. Hardware metadata uses`gpu_profile=production`.
 
 The selected gate is an ordinary module at its real canonical path, without
-authority over private driver state. Normal builds pin the shared no-op gate,
+authority over private driver state. Normal builds pin the shared gate/runtime,
 Device ABI, layout and capture ABI. Local replacements cannot override them or
 the generated, unprivileged `gpu_capture_config`. A disabled profile selection
-alone never enables capture.
+alone never enables capture. `with_default_hook` enables the ordinary shared
+consumer without a build catalog; its manifest ID is zero. `without_capture`
+and the explicit low-level `capture=None` entry retain the empty gate and omit
+the UART implementation. The normal runtime and diagnostic automatic wrapper
+use one `profiler_runtime.rs` implementation.
 
 A v2 catalog supplies typed `mesh`, `texture` and `atlas` roots with physical
 byte addresses/lengths inside the selected asset pool. Resources are nonempty,
@@ -40,8 +45,20 @@ hash validation and dependency closure remain the external consumer's job.
 entry. Its separate profiler-owned example supplies `rcc/main.rs`,
 `rcc/profiler_gate.rs` and the normal renderer asset-producer outputs. It uses the
 existing OUT_DIR/boot-assets path and requires `GPU_PROFILER_MANIFEST`, a JSON
-path with exactly 64 hex digits in `manifest_id`. Other applications cannot
-enable capture merely through a source filename or manifest environment variable.
+path with exactly 64 hex digits in `manifest_id`. Other normal renderer builds
+may bind that manifest through the same environment variable, or use the
+explicitly unverified zero-ID mode. Source filenames do not select a consumer.
+
+Prepared capture scans actual command bytes and tracks DMA_LOCAL origins for
+native MEMCPY descriptor slots66..79. Static descriptors add source READ/PREIMAGE
+and destination WRITE/PREIMAGE BUFFER extents, with containing-range reuse.
+These buffers obey the driver's existing owned GPU-domain/window restrictions.
+Copy results used by later copies are read during replay, never replaced by the
+initial preimage. Descriptors read from already declared mutable memory, missing
+slot provenance, reserved descriptor bits, invalid/overlapping copies and writes
+to command storage fail with sticky `GPU_CAPTURE_DEPENDENCY=9`. Capacity remains
+64 ranges. This bounded closure adds no public graphics operation and does not
+guess self-modifying descriptors; the backend still guards every physical read.
 
 The consumer implements `profiler_gate(descriptor: Array<u16>) -> u16`:
 

@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Out,
     [int]$StopAfterIdleSeconds = 0,
     [switch]$WriteTiming,
+    # Written only after the selected route and live raw recording are ready.
+    [string]$ReadyFile = "",
     # Reboot the BL616 bridge MCU before capturing. Its USB VCP drops and
     # re-enumerates, clearing any UART route state left stuck by an earlier
     # interrupted capture. Usually more reliable than unplugging USB, and it
@@ -14,6 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 if ($Seconds -le 0) { throw "capture duration must be positive" }
+if ($ReadyFile -and -not $WriteTiming) { throw "ReadyFile requires live WriteTiming recording" }
+if ($ReadyFile -and (Test-Path -LiteralPath $ReadyFile)) { throw "ReadyFile must be new" }
 if ($StopAfterIdleSeconds -lt 0 -or $StopAfterIdleSeconds -gt $Seconds) {
     throw "idle bound must be zero or no greater than capture duration"
 }
@@ -132,6 +136,7 @@ try {
             [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
         [System.IO.File]::WriteAllText($timingPath, "offset,count,utc`n")
     }
+    if ($ReadyFile) { [System.IO.File]::WriteAllText($ReadyFile, [DateTime]::UtcNow.ToString('o')) }
     while ((Get-Date) -lt $deadline) {
         $available = $serial.BytesToRead
         if ($available -le 0) {

@@ -12,6 +12,51 @@ resource freezing, publication and the sole later submission. The separate
 owns the button gate and TX-only transport. Remaining qualification and future
 extensions are listed in [TODO.md](TODO.md).
 
+## Compiled system-simulation input
+
+Build `cpu-v3-gpu-dump` with `scripts/run-cargo.ps1`. Compile a capture-enabled
+program and preserve `CapturePoint::from_program(&program)` alongside its CB06
+package; addresses are physical u16 words except the gate's CSEG word offset.
+The recipe has this shape (addresses and digest must come from that compilation):
+
+```json
+{"schema":1,"format":"cb06","program":{"file":"app-flash.bin","sha256":"<SHA-256>"},"capture_point":{"gate_pc":0,"header_word":0,"ranges_word":0},"memory_seed":0,"max_steps":5000000,"timeout_seconds":30}
+```
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/system_dump.py recipe.json --frontend target/release/cpu-v3-gpu-dump.exe --out target/system-dump
+python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/replay.py target/system-dump/snapshot --rtl target/profiler-rtl --build build.json --simulation-source target/system-dump/snapshot/source.json --out target/system-replay --max-cycles 1000000 --timeout 180
+```
+
+Output directories must be fresh. Export GPU+MC with the existing
+`gpu_profiler_export` example's `--mc` flag and bind its files in the build
+declaration before compiling the application. The existing `capture_draw`
+integration fixture accepts `GPU_PROFILER_RTL` to include this export in its
+declaration; its `compiled_program_system_frontend` case uses real compiled RCC
+and the system's devices, stops at the gate, and checks a CPU step-limit failure.
+The capture frontend supports the first submit only and makes explicit seed and
+functional vblank assumptions; it does not measure CPU/Display or board timing.
+The [implemented contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#compiled-program-system-capture)
+defines provenance and failure/completion boundaries.
+
+Ordinary renderer builds currently enable the shared Button2 pause/resume and
+Button1 dump hook. Set `GPU_PROFILER_HOOK=0` when building to omit it. An optional
+`GPU_PROFILER_MANIFEST` binds a formal build; otherwise the descriptor ID is zero
+and cold replay explicitly labels firmware/bitstream identity unverified.
+
+Start recording before pressing dump. The command below prints **Recorder ready**
+only after route selection and live raw recording, then decodes and replays each
+complete attempt through the same backend:
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/snapshot_cli.py receive --port COM5 --seconds 300 --out target/uart-capture --rtl target/profiler-rtl --max-cycles 1000000 --timeout 300
+```
+
+Omit `--rtl` to record/decode only. Supply `--build` and `--receipt` together for
+the strict qualified board route; omission never claims board qualification.
+Dump completion keeps the producer paused. A fresh Button2 edge resumes the
+same prepared CB once; receiver completion never sends a resume.
+
 ## Commands
 
 Run from the repository root:
@@ -26,6 +71,17 @@ python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py build target/
 
 Open the output directory's `profiler.html`. It embeds the data and works without
 a server. The JSON and submission/command/meshlet/CPU CSVs retain integer cycles.
+Cold replay also exports per-command PNGs and `images/index.json`, with command,
+actual completion cycle, target, format and image hashes. The page embeds these
+images: final thumbnail by default, hover enlargement and selected-command image.
+Right-click instruction flow clears selection/highlight and restores the final
+view; other regions retain the browser menu. Older activity-only captures have
+no image preview. Image observations never add cache flushes or waits.
+Captures with master-interface events also show full/selected-command memory
+traffic and export `memory-transactions.csv`. The scope is three 64-bit GPU links
+at the declared logic clock. Peak uses 256 cycles; wire/effective bytes, request
+acceptance, actual data strobes and terminal response remain separate. Missing
+events show unavailable statistics. See the [measurement contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#derived-display).
 `render` accepts schema v2 or converts the earlier single-frame v1 JSON; it does
 not need the old frozen RTL folder. Unsupported versions and invalid references
 are rejected. `build --allow-partial` is diagnostic and visibly marks incomplete

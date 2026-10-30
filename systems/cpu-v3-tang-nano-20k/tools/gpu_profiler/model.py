@@ -6,6 +6,9 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+from memory import build as build_memory
+from memory import validate as validate_memory
+from images import validate as validate_images
 
 SCHEMA = "digitaldesign.gpu-profile"
 VERSION = 2
@@ -324,6 +327,16 @@ def build_capture(folder, allow_partial=False):
         ensure([e[1] for e in events['Q_COMMIT']] == sorted((e[1] for e in events['Q_COMMIT'])), "Invalid capture: [e[1] for e in events['Q_COMMIT']] == sorted((e[1] for e in events['Q_COMMIT']))")
         summary=events["DONE"][-1][2:]
         ensure(summary == [len(quads), len(quads), len(quads), sum(('commit' in q for q in quads.values())), sum((q.get('empty', 0) for q in quads.values()))], "Invalid capture: summary == [len(quads), len(quads), len(quads), sum(('commit' in q for q in quads.values())), sum((q.get('empty', 0) for q in quads.values()))]")
+    for c in commands:
+        ends = [c['end'], *[j['end'] for j in jobs.values() if j['command'] == c['id'] and j['end'] is not None]]
+        for m in meshlets.values():
+            if m['command'] != c['id']:
+                continue
+            if m['vt_end'] is not None:
+                ends.append(m['vt_end'])
+            for field in ('vt', 'r', 'i', 'p', 'prepare', 'final', 'rop'):
+                ends.extend(span[1] for span in m[field])
+        c['complete_cycle'] = max(ends) if not partial else None
     data=dict(schema=SCHEMA,version=VERSION,partial=partial,clock_hz=metadata["clock_hz"],origin=origin,
         title=metadata.get("title","GPU profiling session"),start=0,end=max(stop-origin,last+1,max((s["end"] for s in cpu),default=0)),
         submit=submissions[0]["start"],gpu_end=max((s["end"] or stop-origin for s in submissions)),
@@ -331,6 +344,7 @@ def build_capture(folder, allow_partial=False):
         dma_transactions=list(transactions.values()),cpu=cpu,metric_defs=[dict(key=k,label=l,kind=t,capacity=c,peak=maxima[k],integral=integrals[k]) for k,l,t,c in METRICS],
         tracks=tracks,sample_start=first,sample_end=last+1,provenance=metadata,
         checks=dict(complete_capture=not partial,quad_conservation=not partial))
+    data['memory'] = build_memory(events, origin, stop, metadata['clock_hz'], not partial, commands, tracks)
     validate(data)
     return data
 
@@ -384,11 +398,19 @@ def write_report(data, folder):
     meshes = {m["id"]: m for m in data["meshlets"]}
     jobs = {j["id"]: j for j in data["jobs"]}
     def async_end(command):
+        if command.get('complete_cycle') is not None:
+            return command['complete_cycle']
         ends = [command["end"], *[jobs[j]["end"] or data["end"] for j in command["jobs"]]]
         mesh = meshes.get(command.get("meshlet"))
         if mesh and mesh["last_quad"]:
             ends.append(mesh["last_quad"]["end"])
         return max(ends)
+
+    if data.get('memory', {}).get('available'):
+        with (folder / 'memory-transactions.csv').open('w', newline='', encoding='utf-8') as stream:
+            fields = ['id', 'port', 'source', 'address_halfwords', 'expected_beats', 'start', 'end', 'last_data', 'beats', 'error']
+            writer = csv.DictWriter(stream, fields)
+            writer.writeheader(); writer.writerows(data['memory']['transactions'])
 
     for name, fields, rows in [
         ("submissions", ["id", "frame_id", "name", "base", "bytes", "start", "end"], data["submissions"]),
@@ -529,4 +551,8 @@ def validate(data):
             if metric["capacity"]:
                 require(v <= metric["capacity"], "Metric capacity")
             previous = t
+    if 'memory' in data:
+        validate_memory(data['memory'], data['clock_hz'], commands.keys(), data['end'])
+    if 'images' in data:
+        validate_images(data['images'], data)
     return data

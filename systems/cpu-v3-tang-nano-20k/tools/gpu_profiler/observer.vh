@@ -10,6 +10,9 @@
 `define PC @GPU@.core.back.sink.cache
 `define PD @GPU@.dma
 `define PP @GPU@.processor
+`define IMAGE_BANK(B) \
+ if(!`PC.ui_active&&`PC.banks[B].a_en&&`PC.banks[B].a_we) \
+  $fdisplay(pr_events,"IMAGE_CACHE_WRITE %0d %0d %0d %0d %0d %0d",@CYCLE@+1,`PC.banks[B].a_addr[7:5],B,`PC.banks[B].a_addr,`PC.banks[B].a_data,pr_ctx_owner[`PC.result_context]);
 integer pr_submission=0,pr_count=0,pr_max_submissions=1,pr_finish=0;
 reg pr_capturing=0;
 integer pr_events,pr_load,pr_n=0,pr_mesh=0,pr_prepare=0,pr_raster=0,pr_interp=0;
@@ -17,6 +20,8 @@ integer pr_tri_owner[0:15],pr_tri_live[0:15];
 integer pr_quad_owner[0:31],pr_quad_seq[0:31],pr_quad_live[0:31];
 integer pr_ctx_quad[0:1],pr_ctx_owner[0:1];
 integer pr_job_slot[0:1],pr_page_job[0:1],pr_ret_job[0:1],pr_ret_tx[0:1];
+integer pr_job_kind[0:1];
+integer pr_image_epoch=0,pr_image_valid[0:7],pr_image_tag[0:7];
 integer pr_job=0,pr_tx=0,pr_quad=0,pr_pub=0,pr_ret=0,pr_commit=0,pr_empty=0;
 integer pr_cmd_pc=-1,pr_cmd_start=0,pr_cmd_word=0,pr_cmd_exec=-1;
 integer pr_ltokens=0,pr_stokens=0,pr_i,pr_vkind,pr_limit=12000000;
@@ -32,10 +37,17 @@ initial begin
  if($value$plusargs("PROFILE_FINISH=%d",pr_finish))begin end
  if(pr_limit<1||pr_max_submissions<1)$fatal(1,"profiler requires bounds");
  for(pr_i=0;pr_i<16;pr_i=pr_i+1)begin pr_tri_owner[pr_i]=0;pr_tri_live[pr_i]=0;end
+ for(pr_i=0;pr_i<8;pr_i=pr_i+1)begin pr_image_valid[pr_i]=0;pr_image_tag[pr_i]=0;end
  for(pr_i=0;pr_i<32;pr_i=pr_i+1)begin pr_quad_owner[pr_i]=0;pr_quad_seq[pr_i]=0;pr_quad_live[pr_i]=0;end
- for(pr_i=0;pr_i<2;pr_i=pr_i+1)begin pr_ctx_quad[pr_i]=0;pr_ctx_owner[pr_i]=0;pr_job_slot[pr_i]=0;pr_page_job[pr_i]=0;pr_ret_job[pr_i]=0;pr_ret_tx[pr_i]=0;end
+ for(pr_i=0;pr_i<2;pr_i=pr_i+1)begin pr_ctx_quad[pr_i]=0;pr_ctx_owner[pr_i]=0;pr_job_slot[pr_i]=0;pr_job_kind[pr_i]=0;pr_page_job[pr_i]=0;pr_ret_job[pr_i]=0;pr_ret_tx[pr_i]=0;end
  $fdisplay(pr_load,"cycle,dma,vt_owned,vt_step,t_queue,r_busy,i_busy,quad_total,quad_producer,light_pending,sample_pending,light_tokens,sample_quads,final_wait,final_tokens,rop_contexts,r_quad,i_pixel,light_issue,sample_issue,final_issue,rop_lane,vt_owner,vt_kind,r_owner,i_owner,prepare_busy,prepare_owner,texture_work,texture_reserved,texture_public,fb_hint,fb_maintenance,ro_wait,fb_read_wait,fb_write_wait,ce,light_tick,sample_tick");
 end
+task profiler_image_target;begin
+ if(pr_cmd_word[31:28]==10)begin
+  pr_image_epoch=pr_image_epoch+1;
+  $fdisplay(pr_events,"IMAGE_TARGET %0d %0d %0d %0d %0d",@CYCLE@,pr_image_epoch,@GPU@.color_base*512,@GPU@.depth_base*512,`PP.target_valid);
+ end
+end endtask
 task profiler_cpu_begin;input integer span_id,frame_id;input[767:0]label;begin
  if(!pr_done)$fdisplay(pr_events,"CPU_BEGIN %0d %0d %0d %0s",@CYCLE@,span_id,frame_id,label);
 end endtask
@@ -46,7 +58,7 @@ always @(posedge @CLOCK@)begin
  if(@RESET@&&pr_capturing&&!pr_done)$fatal(1,"profiler reset needs a new session");
  if(!@RESET@&&!pr_done)begin
  if(pr_live&&pr_seen_busy&&!@GPU@.busy)begin
-  if(pr_cmd_pc>=0&&pr_cmd_exec>=0)$fdisplay(pr_events,"CMD_END %0d %0d %0d %0d %0d %h",@CYCLE@,pr_cmd_pc,pr_cmd_start,pr_cmd_exec,`PP.state,pr_cmd_word);
+  if(pr_cmd_pc>=0&&pr_cmd_exec>=0)begin profiler_image_target;$fdisplay(pr_events,"CMD_END %0d %0d %0d %0d %0d %h",@CYCLE@,pr_cmd_pc,pr_cmd_start,pr_cmd_exec,`PP.state,pr_cmd_word);end
   pr_cmd_pc=-1;pr_cmd_exec=-1;
    if(pr_quad!=pr_pub||pr_quad!=pr_ret||pr_quad!=pr_commit+pr_empty||pr_ltokens!=0||pr_stokens!=0)$fatal(1,"profiler final conservation");
    for(pr_i=0;pr_i<16;pr_i=pr_i+1)if(pr_tri_live[pr_i])$fatal(1,"profiler live T at end");
@@ -62,6 +74,32 @@ always @(posedge @CLOCK@)begin
   $fdisplay(pr_events,"SUBMIT %0d %0d %0d %0d",@CYCLE@,pr_submission,@GPU@.device_write_data*128,pr_count*4);
  end
  if(pr_capturing)begin
+  // One boundary only: three full-byte 64-bit GPU masters in the logic domain.
+  // Requests are issued work, data strobes are payload slots, LAST is completion.
+  if(@GPU@.ro_request_valid&&@GPU@.ro_request_ready)
+   $fdisplay(pr_events,"MEM_REQUEST %0d 0 %0d %0d %0d",@CYCLE@,@GPU@.ro_address,@GPU@.ro_count,
+    @GPU@.memory.offer_owner==1?4:(@GPU@.memory.offer_owner==0?(`PD.offer_cache?1:pr_job_kind[`PD.issued[0]]):0));
+  if(@GPU@.fb_r_request_valid&&@GPU@.fb_r_request_ready)
+   $fdisplay(pr_events,"MEM_REQUEST %0d 1 %0d %0d 5",@CYCLE@,@GPU@.fb_r_address,@GPU@.fb_r_count);
+  if(@GPU@.fb_w_request_valid&&@GPU@.fb_w_request_ready)
+   begin
+   $fdisplay(pr_events,"MEM_REQUEST %0d 2 %0d %0d %0d",@CYCLE@,@GPU@.fb_w_address,@GPU@.fb_w_count,@GPU@.clear_active?6:5);
+   $fdisplay(pr_events,"IMAGE_WRITE_OWNER %0d %0d %0d",@CYCLE@,`PP.diagnostic_pc,@GPU@.clear_active?1:(@GPU@.serial_active?(@GPU@.copy_active?3:2):0));
+   end
+  if(@GPU@.ro_response_valid)begin
+   $fdisplay(pr_events,"MEM_DATA %0d 0 255 %0d",@CYCLE@,@GPU@.ro_response_error);
+   if(@GPU@.ro_response_last||@GPU@.ro_response_error)$fdisplay(pr_events,"MEM_COMPLETE %0d 0 %0d",@CYCLE@+1,@GPU@.ro_response_error);
+  end
+  if(@GPU@.fb_r_response_valid)begin
+   $fdisplay(pr_events,"MEM_DATA %0d 1 255 %0d",@CYCLE@,@GPU@.fb_r_response_error);
+   if(@GPU@.fb_r_response_last||@GPU@.fb_r_response_error)$fdisplay(pr_events,"MEM_COMPLETE %0d 1 %0d",@CYCLE@+1,@GPU@.fb_r_response_error);
+  end
+  if(@GPU@.fb_w_data_ready)begin
+   $fdisplay(pr_events,"MEM_DATA %0d 2 255 0",@CYCLE@);
+   $fdisplay(pr_events,"IMAGE_WRITE_DATA %0d %0d %0d %0d %0d",@CYCLE@+1,@GPU@.fb_w_data[15:0],@GPU@.fb_w_data[31:16],@GPU@.fb_w_data[47:32],@GPU@.fb_w_data[63:48]);
+  end
+  if(@GPU@.fb_w_response_valid&&(@GPU@.fb_w_response_last||@GPU@.fb_w_response_error))
+   $fdisplay(pr_events,"MEM_COMPLETE %0d 2 %0d",@CYCLE@+1,@GPU@.fb_w_response_error);
   if(@GPU@.busy)pr_seen_busy=1;
   if(pr_state_old!==pr_state_now)begin
    $fdisplay(pr_events,"STATE %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d",@CYCLE@,`PP.diagnostic_pc,`PP.state,`PP.render_idle,`PP.work_busy,`PP.dma_idle,`PP.memory_busy,`PP.flush_complete,`PP.waits_done,@ENABLE@);
@@ -69,7 +107,7 @@ always @(posedge @CLOCK@)begin
   end
   // Command residency is separate from asynchronous work launched by it.
   if(pr_cmd_pc!=`PP.diagnostic_pc||!@GPU@.busy)begin
-   if(pr_cmd_pc>=0&&pr_cmd_exec>=0)$fdisplay(pr_events,"CMD_END %0d %0d %0d %0d %0d %h",@CYCLE@,pr_cmd_pc,pr_cmd_start,pr_cmd_exec,`PP.state,pr_cmd_word);
+   if(pr_cmd_pc>=0&&pr_cmd_exec>=0)begin profiler_image_target;$fdisplay(pr_events,"CMD_END %0d %0d %0d %0d %0d %h",@CYCLE@,pr_cmd_pc,pr_cmd_start,pr_cmd_exec,`PP.state,pr_cmd_word);end
    pr_cmd_pc=-1;pr_cmd_exec=-1;
    if(@GPU@.busy)begin pr_cmd_pc=`PP.diagnostic_pc;pr_cmd_start=@CYCLE@;end
   end
@@ -81,6 +119,16 @@ always @(posedge @CLOCK@)begin
    pr_mesh=pr_mesh+1;
    $fdisplay(pr_events,"DRAW %0d %0d %0d %0d %0d",@CYCLE@,pr_mesh,`PP.diagnostic_pc,@GPU@.slot,pr_page_job[@GPU@.slot]);
   end
+  for(pr_i=0;pr_i<8;pr_i=pr_i+1)begin
+   if(`PC.tvalid[pr_i]!==pr_image_valid[pr_i]||(`PC.tvalid[pr_i]&&`PC.tag[pr_i]!==pr_image_tag[pr_i]))begin
+    $fdisplay(pr_events,"IMAGE_CACHE_STATE %0d %0d %0d %0d %0d %0d %0d",@CYCLE@,pr_i,`PC.tvalid[pr_i],`PC.tag[pr_i],pr_image_epoch,@GPU@.color_base*512,@GPU@.depth_base*512);
+    pr_image_valid[pr_i]=`PC.tvalid[pr_i];pr_image_tag[pr_i]=`PC.tag[pr_i];
+   end
+  end
+  `IMAGE_BANK(0)
+  `IMAGE_BANK(1)
+  `IMAGE_BANK(2)
+  `IMAGE_BANK(3)
   if(@ENABLE@&&@GPU@.meshlet_done)$fdisplay(pr_events,"VT_END %0d %0d",@CYCLE@+1,pr_mesh);
   if(@ENABLE@&&`PV.publish)begin
    if(pr_tri_live[`PV.write_slot])$fatal(1,"profiler T slot overwrite");
@@ -138,6 +186,7 @@ always @(posedge @CLOCK@)begin
   // Logical DMA job ownership outlives request issue until the real LAST.
   if(`PD.accept_work)begin
    pr_job=pr_job+1;pr_job_slot[`PD.put[0]]=pr_job;
+   pr_job_kind[`PD.put[0]]=`PD.work_mesh?2:3;
    if(`PD.work_mesh)pr_page_job[`PD.work_slot]=pr_job;
    $fdisplay(pr_events,"DMA_JOB %0d %0d %0d %0d %0d %0d %0d",@CYCLE@,pr_job,`PP.diagnostic_pc,`PD.work_mesh,`PD.work_slot,`PD.work_source,`PD.work_size);
   end
@@ -193,3 +242,4 @@ end
 `undef PC
 `undef PD
 `undef PP
+`undef IMAGE_BANK

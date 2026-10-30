@@ -91,7 +91,7 @@ pub fn compile_renderer_program_with_sources(
     ordinary_dirs: &[PathBuf],
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    compile_renderer_program_with_capture(
+    compile_renderer_capture(
         main_name,
         source,
         options,
@@ -99,6 +99,8 @@ pub fn compile_renderer_program_with_sources(
         shared_dir,
         constants,
         ordinary_dirs,
+        None,
+        &RendererCaptureConfiguration::with_default_hook(RendererLayoutProfile::Column16),
         None,
         dependency,
     )
@@ -304,6 +306,14 @@ fn compile_renderer_capture(
             });
         }
         if name == "profiler_gate" {
+            if !configuration.hook_enabled && capture.is_none() {
+                return Ok(rcc::frontend::ModuleSource {
+                    source:
+                        "use crate::dsl_rt::*;pub fn profiler_gate(descriptor:Array<u16>)->u16{0}"
+                            .into(),
+                    origin: None,
+                });
+            }
             if let Some(capture) = capture {
                 dependency(&capture.gate_path);
                 let origin = std::fs::canonicalize(&capture.gate_path).map_err(|e| {
@@ -323,7 +333,10 @@ fn compile_renderer_capture(
         // This public constants module is shared with non-GPU clients;
         // it is not a private GPU domain member. Its hardware ABI still
         // comes from the system, never an application's local override.
-        let pinned = matches!(name, "device_abi" | "gpu_capture_abi" | "profiler_gate");
+        let pinned = matches!(
+            name,
+            "device_abi" | "gpu_capture_abi" | "profiler_gate" | "profiler_runtime"
+        );
         let local = if pinned { shared_dir } else { local_dir };
         let dirs = if pinned { &[][..] } else { ordinary_dirs };
         load_module_source_with_sources(local, shared_dir, constants, name, dirs, dependency)
@@ -358,7 +371,7 @@ fn capture_config_source(
 ) -> String {
     let mut source = format!(
         "pub const GPU_CAPTURE_CONFIG_ENABLED:u16={};\npub fn gpu_capture_manifest_word(index:u16)->u16{{\n",
-        u16::from(manifest.is_some())
+        u16::from(configuration.hook_enabled || manifest.is_some())
     );
     if let Some(words) = manifest {
         for (index, word) in words.iter().enumerate() {

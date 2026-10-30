@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
 };
+#[path = "support/capture_uart.rs"]
+mod capture_uart;
 #[path = "../build_support/rcc_modules.rs"]
 #[allow(dead_code)]
 mod resolver;
@@ -356,7 +358,7 @@ fn inspect_full_scene(
     assert_eq!(&glyphs[..4], b"OBS ");
     json!({"draws":draws,"triangle_count":triangles,"command_count":commands.len(),"render_bindings":renders,"global_bindings":globals,"ui_commands":ui_commands,"ui_glyphs":glyphs,"ui_cells_prefix":&ui[..16],"boundary":"Actual recorded DRAW topology, bindings and UI only; no raster/depth oracle or GPU execution."})
 }
-fn run(profile: &str, full_scene: bool) -> PathBuf {
+fn run(profile: &str, full_scene: bool, system_frontend: bool) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo = root.join("../..");
     let base = std::env::var_os(if full_scene {
@@ -366,13 +368,17 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
     })
     .map(PathBuf::from)
     .unwrap_or_else(|| {
-        std::env::temp_dir().join(format!(
+        repo.join("target/gpu-capture-fixtures").join(format!(
             "gpu-capture-{}-{}",
             if full_scene { "full-scene" } else { "draw" },
             std::process::id()
         ))
     });
-    let out = base.join(profile);
+    let out = base.join(if system_frontend {
+        "system-frontend"
+    } else {
+        profile
+    });
     let assets = out.join("assets");
     std::fs::create_dir_all(&out).unwrap();
     call(
@@ -387,31 +393,63 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
             assets.to_str().unwrap(),
         ],
     );
-    let app = if full_scene {
+    let mut app = if full_scene {
         include_str!("fixtures/capture_full_scene/full_scene.rs").to_owned()
             + "\nfn main(){profiler_run_full(3);if gpu_capture_error()!=1{halt(0xbad);}halt(0x600d);}\n"
     } else {
         APP.to_owned()
     };
-    let gate = if full_scene {
+    if system_frontend && !full_scene {
+        app = app
+            .replace(
+                "let zero=vec3::zero();",
+                "let mut label=renderer_text(&mut r,24,10,8);let zero=vec3::zero();",
+            )
+            .replace(
+                "pass_complete(p);",
+                "pass_observed_time(&mut p,&mut label);pass_complete(p);",
+            );
+        app = app.replace("pass_draw(&mut p,&mut mesh,&mut model,&mut material);",
+            "pass_draw(&mut p,&mut mesh,&mut model,&mut material);material_color(&mut material,0,0,255,255);model_pose(&mut model,vec3::new(fix32::from_words(32768,0),fix32::zero(),fix32::from_int(-4)),zero,vec3::new(one,one,one));pass_draw(&mut p,&mut mesh,&mut model,&mut material);");
+        if std::env::var_os("GPU_PROFILER_RTT").is_some() {
+            app = app.replace("let zero=vec3::zero();", "let mut memory:RenderBufferMemory=RenderBufferMemory{color_base_low:0,color_base_high:0x60,color_capacity_low:0,color_capacity_high:4,depth_base_low:0,depth_base_high:0x64,depth_capacity_low:0,depth_capacity_high:4};let mut buffer=renderer_render_buffer(&mut r,view_of(&mut memory));let zero=vec3::zero();")
+                .replace("renderer_frame(&mut r,0x0841+i)", "renderer_frame_to(&mut r,&mut buffer,0x0841+i)");
+        }
+    }
+    let uart = system_frontend && std::env::var_os("GPU_PROFILER_UART").is_some();
+    let native = system_frontend && std::env::var_os("GPU_PROFILER_NATIVE_COPY").is_some();
+    let reserved = native && std::env::var("GPU_PROFILER_NATIVE_COPY").as_deref() == Ok("reserved");
+    let gate = if uart {
+        include_str!("../rcc/profiler_gate.rs")
+    } else if full_scene {
         include_str!("fixtures/capture_full_scene/profiler_gate.rs")
     } else {
         GATE
     };
     std::fs::write(out.join("main.rs"), &app).unwrap();
     std::fs::write(out.join("profiler_gate.rs"), gate).unwrap();
-    call(
-        &repo,
-        &[
-            "systems/cpu-v3-tang-nano-20k/tools/capture_fixture.py",
-            "--output",
-            out.to_str().unwrap(),
-            "--assets",
-            assets.to_str().unwrap(),
-            "--version",
-            "2",
-        ],
-    );
+    let mut fixture_args = vec![
+        "systems/cpu-v3-tang-nano-20k/tools/capture_fixture.py",
+        "--output",
+        out.to_str().unwrap(),
+        "--assets",
+        assets.to_str().unwrap(),
+        "--version",
+        "2",
+    ];
+    let rtl = std::env::var_os("GPU_PROFILER_RTL");
+    if native {
+        fixture_args.push("--native-tail");
+    }
+    if reserved {
+        fixture_args.push("--native-reserved");
+    }
+    if system_frontend {
+        if let Some(rtl) = &rtl {
+            fixture_args.extend(["--rtl", rtl.to_str().unwrap()]);
+        }
+    }
+    call(&repo, &fixture_args);
     let catalog: Value =
         serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap()).unwrap();
     let mut config = String::from("format 2\nrenderer\napplication main.rs\n");
@@ -443,7 +481,11 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
         &app,
         &options,
         &out,
-        &root.join("rcc"),
+        &if native {
+            out.join("fixture-rcc")
+        } else {
+            root.join("rcc")
+        },
         &constants,
         &[],
         &selection,
@@ -462,6 +504,66 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
     )
     .unwrap();
     std::fs::write(out.join("producer.lst"), &program.listing).unwrap();
+    if system_frontend {
+        use cpu_v3_tang_nano_20k::{
+            boot,
+            profiling_capture::{capture_flash, CapturePoint},
+        };
+        let code: Vec<u8> = program.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let resources: Vec<_> = catalog["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                boot::BootResource::copy(
+                    r["address"].as_u64().unwrap() as usize,
+                    std::fs::read(assets.join(r["file"].as_str().unwrap())).unwrap(),
+                )
+            })
+            .collect();
+        let package =
+            boot::pack_application_resources(&code, boot::SINGLE_BOOT_STATIC_WORDS, &resources)
+                .unwrap();
+        std::fs::write(out.join("compiled-boot.bin"), &package).unwrap();
+        let point = CapturePoint::from_program(&program).unwrap();
+        if reserved {
+            capture_uart::reject_dependency(&package, &program, point, &out);
+            return out;
+        }
+        let frozen = capture_flash(&package, point, 0, 5_000_000).unwrap();
+        assert!(
+            matches!(capture_flash(&package, point, 0, 1), Err(message) if message.contains("incomplete"))
+        );
+        let raw = out.join("system-raw");
+        std::fs::create_dir_all(&raw).unwrap();
+        for (name, values) in [
+            ("header.bin", &frozen.header),
+            ("ranges.bin", &frozen.ranges),
+        ] {
+            std::fs::write(
+                raw.join(name),
+                values
+                    .iter()
+                    .flat_map(|w| w.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        }
+        for (index, data) in frozen.payloads.iter().enumerate() {
+            std::fs::write(raw.join(format!("range-{index:03}.bin")), data).unwrap();
+        }
+        std::fs::write(raw.join("origin.json"), serde_json::to_vec_pretty(&json!({"schema":1,"source":"system-simulation","boundary":"before-profiler-gate","gpu_consumed":false,"range_count":frozen.payloads.len(),"cpu_steps":frozen.cpu_steps,"vblank_events":frozen.vblank_events,"memory_seed":0})).unwrap()).unwrap();
+        std::fs::write(out.join("capture-point.json"), serde_json::to_vec_pretty(&json!({"gate_pc":point.gate_pc,"header_word":point.header_word,"ranges_word":point.ranges_word})).unwrap()).unwrap();
+        assert_eq!(
+            frozen.header[abi::GPU_CAPTURE_H_COMMAND_ABI as usize],
+            abi::GPU_CAPTURE_RTT400_COMMAND_ABI
+        );
+        assert!(!frozen.payloads.is_empty());
+        if uart {
+            capture_uart::exercise(&package, &program, point, &frozen, &out);
+        }
+        return out;
+    }
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&program.words);
     for at in 0x400000usize / 2..0x4e0000 / 2 {
@@ -755,9 +857,18 @@ fn run(profile: &str, full_scene: bool) -> PathBuf {
 }
 #[test]
 fn real_draw_three_gates_reuse_slots_with_distinct_inputs() {
-    run("column16", false);
+    run("column16", false, false);
 }
 #[test]
 fn real_full_scene_three_gates_resume_and_restore_stats() {
-    run("column16", true);
+    run("column16", true, false);
+}
+
+#[test]
+fn compiled_program_system_frontend_stops_before_actual_gate() {
+    run(
+        "column16",
+        std::env::var_os("GPU_PROFILER_FULL_SCENE").is_some(),
+        true,
+    );
 }

@@ -3,6 +3,9 @@
 This separate software application uses the formal renderer and its
 [published-input capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md).
 It adds no GPU/MC RTL, device register, BSRAM or hardware UART engine.
+The example gate is a small mode wrapper around the same shared
+`rcc/profiler_runtime.rs` used by ordinary renderer builds. Those builds currently
+enable the manual hook by default; `GPU_PROFILER_HOOK=0` omits it.
 
 The default scene is the canonical minimal triangle. The optional complete scene
 uses the existing box, RGB triangle and full948-face rabbit assets:24meshlets,

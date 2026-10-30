@@ -9,6 +9,7 @@ mod gpu_device;
 mod gpu_layout;
 pub mod hardware;
 mod layout;
+pub mod profiling_capture;
 pub mod system_sim;
 
 // System internals share the lower-layer types through this crate root. New
