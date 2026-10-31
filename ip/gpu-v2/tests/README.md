@@ -121,3 +121,15 @@ native submodule checks and physical board qualification have distinct coverage.
 multiplication in axis modes and nearest producer/consumer comparisons. Defaults
 remain255. `test_rtt400_command.py` also accepts black modulation: framebuffer
 coverage checks compare against zero without treating black pixels as missing.
+
+`frontend_diagnostics.py --exports <six-variant-directory> --output <fresh-directory>`
+checks each Raster/LOD/Compute diagnostic write site (3/1/4), both arithmetic
+backends, command monitors on/off and generic checked bits. Directed predicates
+are injected at the leaf; each bench has a 40-edge/500ns watchdog and each
+process a 30-second limit. Command checks distinguish a synchronous every-edge
+zero register from a constant signal and from a CE-gated clear. Generic bits
+must remain sticky during CE0. `--flow-only` reuses the bounded three-draw
+`current_texture_command.py` fixture and observes every output of all three
+leaves plus CE before/after each edge, with monitors on/off. This qualifies
+local diagnostics and legal data/cycle preservation, not new protocol recovery
+or physical timing.

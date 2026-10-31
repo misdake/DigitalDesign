@@ -335,7 +335,13 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
 
  always @(posedge clk)begin
   if(reset)begin
-   life<=IDLE;busy<=0;done<=0;error<=0;tau<=0;
+   life<=IDLE;busy<=0;done<=0;
+`ifdef GPU_V2_COMMAND_PORTS
+begin end
+`else
+error<=0;
+`endif
+tau<=0;
    w_pc<=0;w_edge<=0;s_edge<=0;prep_level<=0;level<=9;nx<=0;ny<=0;walk_done<=0;w_pass<=0;
    w_epoch<=0;row_first<=0;
    tile_head<=0;tile_tail<=0;tile_meta0<=0;tile_meta1<=0;scan_slot<=0;
@@ -364,7 +370,13 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
     s_sub<=!fetch_check&&raster_phase!=2&&lane==3;
    end
    if(packet_take)begin
-    life<=IMPORT;busy<=1;error<=0;
+    life<=IMPORT;busy<=1;
+`ifdef GPU_V2_COMMAND_PORTS
+begin end
+`else
+error<=0;
+`endif
+
     walk_done<=0;w_pc<=5;w_edge<=0;prep_level<=1;tau<=0;
     w_epoch<=0;row_first<=0;
     tile_head<=0;tile_tail<=0;scan_mode<=OFF;scan_inflight<=0;scan_qvalid<=0;prefetch_active<=0;scan_classify_pending<=0;
@@ -376,7 +388,17 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
     if(r_uop[19:18]==2&&r_uop[23])tau[r_edge]<=!((!work_q[29]&&(|work_q))||(work_q==0&&!step_q[29]&&(|step_q)));
    end
    if(tile_publish)begin
-    if(tile_full)error[1]<=1;
+    if(tile_full)
+`ifdef GPU_V2_COMMAND_PORTS
+begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: error");
+`endif
+ end
+`else
+error[1]<=1;
+`endif
+
     if(tile_tail[0])tile_meta1<={branch_all_pass,level,ny,nx};else tile_meta0<={branch_all_pass,level,ny,nx};
     tile_tail<=tile_tail+1'b1;
    end
@@ -458,8 +480,28 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
    if(reject_tail&&!start_tile)scan_mode<=OFF;
    if(raster_phase==3)scan_inflight<=0;
    if(life==EXEC&&walk_done&&tile_empty&&scanner_finishing&&!r_valid&&!s_valid)begin life<=IDLE;busy<=0;done<=1;end
-   if(scan_read&&row_issue)error[2]<=1;
-   if(tile_count>2)error[3]<=1;
+   if(scan_read&&row_issue)
+`ifdef GPU_V2_COMMAND_PORTS
+begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: error");
+`endif
+ end
+`else
+error[2]<=1;
+`endif
+
+   if(tile_count>2)
+`ifdef GPU_V2_COMMAND_PORTS
+begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: error");
+`endif
+ end
+`else
+error[3]<=1;
+`endif
+
   end
  end
 `ifndef SYNTHESIS
@@ -509,6 +551,10 @@ module rc_raster #(parameter INTERLEAVE=1,parameter EARLY_OUT=1)(
   if(!head_meta[22]&&head_meta[21:18]!=2)$fatal(1,"partial tile must be 4x4");
   if(({1'b0,head_meta[8:0]}&tile_mask)!=0||({1'b0,head_meta[17:9]}&tile_mask)!=0)$fatal(1,"tile起点没有按层级对齐");
  end
+`endif
+`ifdef GPU_V2_COMMAND_PORTS
+ // Command diagnostics remain a register cleared on every wall-clock edge.
+ always @(posedge clk)error<=0;
 `endif
 endmodule
 

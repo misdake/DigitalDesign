@@ -161,8 +161,7 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             );
             register(s, "error", false)?;
         }
-        "rc_raster" | "rc_lod" | "rp_prepare" => register(s, "error", false)?,
-        "rc_compute" => register(s, "compute_error", false)?,
+        "rp_prepare" => register(s, "error", false)?,
         "gpu_v2_vliw_backend_three_port" => register(s, "stopped", true)?,
         "gpu_v2_direct_coordinate_store" => check(s, "bad", "1'b0", "1'b1", false)?,
         "gpu_v2_final_ordered_two_cycle" => {
@@ -315,7 +314,7 @@ mod tests {
     }
     #[test]
     fn first_module_is_not_skipped_without_a_preamble() {
-        let source="module rc_lod(input clk,reset,ce,output reg[3:0]error);always @(posedge clk)if(ce)error[0]<=1;\nendmodule\nmodule unused(input clk);endmodule\n".to_owned();
+        let source="module rp_prepare(input clk,reset,ce,output reg[3:0]error);always @(posedge clk)if(ce)error[0]<=1;\nendmodule\nmodule unused(input clk);endmodule\n".to_owned();
         let result = lower(source).unwrap();
         assert!(result.contains("always @(posedge clk)error<=0;"));
         assert!(!result.contains("error[0]<=1"));

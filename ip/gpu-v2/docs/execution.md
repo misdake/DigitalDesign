@@ -824,6 +824,16 @@ state transitions; synthesis removes only the monitors. Normal backpressure
 and explicit abort remain functional. See
 [command diagnostics](/ip/gpu-v2/docs/commands.md#diagnostics-cancellation-and-scope).
 
+The `rc_raster`, `rc_lod` and `rc_compute` leaves own their command-profile
+observation policy behind `GPU_V2_COMMAND_PORTS`. Raster has three diagnostic
+write sites (bits 1/2/3), LOD one (bit 0), and Compute four (bits 0/3/1/2).
+Their original predicates report simulation failures on the same sampled edge.
+Command `error`/`compute_error` remain registers cleared by a nonblocking
+assignment on every posedge, independent of reset and CE; they are not
+combinational zero signals. Generic checked exports retain the original
+reset/start clears and diagnostic bit writes. No error observation changes
+ready, arithmetic, phase, payload or FIFO progression.
+
 | State | Compute CE0 | Fault/abort |
 | --- | --- | --- |
 | Scheduled arithmetic, phases, tokens and owned Q | Hold together | Stop new computation; suppress invalid result writes |

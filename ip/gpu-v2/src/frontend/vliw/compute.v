@@ -199,16 +199,62 @@ module rc_compute(
    d_acc<=0;d_zero<=0;negative_prefix<=0;fraction<=0;seed<=0;r<=0;clipped0<=0;weight0<=0;weight1<=0;
    hm0<=0;hm1<=0;hm_exponent<=0;hm_zero<=0;
    z_shift_early<=0;z_shift<=0;z_dzero_early<=0;z_dzero<=0;z_new<=0;z_new_pass<=0;z_early<=0;z_early_pass<=0;
-   wide_valid_pipe<=0;wide_tag0<=0;wide_tag1<=0;log_return_valid<=0;log_return_tag<=0;compute_error<=0;
+   wide_valid_pipe<=0;wide_tag0<=0;wide_tag1<=0;log_return_valid<=0;log_return_tag<=0;
+`ifdef GPU_V2_COMMAND_PORTS
+begin end
+`else
+compute_error<=0;
+`endif
+
   end else if(ce)begin
    phase<=phase+1'b1;
    wide_valid_pipe<={wide_valid_pipe[0],wide_issue};wide_tag1<=wide_tag0;if(wide_issue)wide_tag0<=wide_issue_tag;
    log_return_valid<=log_take;if(log_take)log_return_tag<=log_tag;
    if(cfg_valid)begin z_bias<=cfg_z_bias;far_z<=cfg_far;rgb<=cfg_rgb;shift0<=cfg_shift0;shift1<=cfg_shift1;shift2<=cfg_shift2;end
-   if(sample_valid&&phase!=0)compute_error[0]<=1;
-   if(quad_end_valid&&(phase!=2||!valid_pipe[0]||pid0[1:0]!=3||pid0[4:2]!=quad_end_qid))compute_error[3]<=1;
-   if(phase==2&&valid_pipe[0]&&sample_cover&&(negative_prefix||raw_h[29]))compute_error[1]<=1;
-   if(launch&&(cfg_valid||(param_valid&&write_bank==read_bank)))compute_error[2]<=1;
+   if(sample_valid&&phase!=0)
+`ifdef GPU_V2_COMMAND_PORTS
+begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: compute_error");
+`endif
+ end
+`else
+compute_error[0]<=1;
+`endif
+
+   if(quad_end_valid&&(phase!=2||!valid_pipe[0]||pid0[1:0]!=3||pid0[4:2]!=quad_end_qid))
+`ifdef GPU_V2_COMMAND_PORTS
+begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: compute_error");
+`endif
+ end
+`else
+compute_error[3]<=1;
+`endif
+
+   if(phase==2&&valid_pipe[0]&&sample_cover&&(negative_prefix||raw_h[29]))
+`ifdef GPU_V2_COMMAND_PORTS
+begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: compute_error");
+`endif
+ end
+`else
+compute_error[1]<=1;
+`endif
+
+   if(launch&&(cfg_valid||(param_valid&&write_bank==read_bank)))
+`ifdef GPU_V2_COMMAND_PORTS
+begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: compute_error");
+`endif
+ end
+`else
+compute_error[2]<=1;
+`endif
+
    if(phase==0)begin
     valid_pipe<={valid_pipe[2:0],launch};cover_pipe<={cover_pipe[2:0],1'b0};
     anchor_pipe<={anchor_pipe[2:0],1'b0};
@@ -253,5 +299,9 @@ module rc_compute(
   if(log_take&&phase!=3)$fatal(1,"M1 log calendar");
   if(wide_valid&&phase!=3)$fatal(1,"LOD occupied the Z phase");
  end
+`endif
+`ifdef GPU_V2_COMMAND_PORTS
+ // Command diagnostics remain a register cleared on every wall-clock edge.
+ always @(posedge clk)compute_error<=0;
 `endif
 endmodule

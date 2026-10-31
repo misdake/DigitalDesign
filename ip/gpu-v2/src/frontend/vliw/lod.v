@@ -101,7 +101,13 @@ module rc_lod(
    bias_base<=-16'sd3712;tex_u<=0;tex_v<=0;max_mip<=0;rgb<=0;
    log_context<=0;
    sampled_zero<=1;sampled_exp<=0;
-   maximum<=0;have_gradient<=0;lod_valid<=0;lod_id<=0;lod_value<=0;error<=0;
+   maximum<=0;have_gradient<=0;lod_valid<=0;lod_id<=0;lod_value<=0;
+`ifdef GPU_V2_COMMAND_PORTS
+begin end
+`else
+error<=0;
+`endif
+
   end else if(ce)begin
    lod_valid<=0;finish_pending<=0;
    // q34只归约score并捕获旧Q的offset；q35独立做公共校正与格式化。
@@ -145,7 +151,17 @@ module rc_lod(
    if(wide_valid)issue_live<=0;
    if(log_valid)begin sampled_zero<=norm_zero;sampled_exp<=norm_exp;end
    if(log_result_valid)begin maximum<=next_max;have_gradient<=next_have;end
-   if(quad_end_valid&&phase!=2)error[0]<=1;
+   if(quad_end_valid&&phase!=2)
+`ifdef GPU_V2_COMMAND_PORTS
+begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: error");
+`endif
+ end
+`else
+error[0]<=1;
+`endif
+
   end
  end
 `ifndef SYNTHESIS
@@ -180,5 +196,9 @@ module rc_lod(
   if(phase==0&&finish_valid[1]&&finish_run[1]&&(!log_result_valid||log_result_tag!={result_id,2'd3}))
    $fatal(1,"LOD完成日历与算术流水不一致");
  end
+`endif
+`ifdef GPU_V2_COMMAND_PORTS
+ // Command diagnostics remain a register cleared on every wall-clock edge.
+ always @(posedge clk)error<=0;
 `endif
 endmodule
