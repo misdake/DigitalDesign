@@ -215,8 +215,10 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
     for name in helpers.iter().copied().chain([
         "device_abi",
         "gpu_capture_abi",
+        "gpu_capture_access",
         "profiler_gate",
         "profiler_runtime",
+        "profiler_clock",
         "gamepad",
         "dualshock2",
         "stick",
@@ -246,7 +248,8 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
             &mut |_| {},
         )
     };
-    assert!(parse("mod gpu_pipeline;fn main(){halt(resolver_probe());}").is_ok());
+    parse("mod gpu_pipeline;fn main(){halt(resolver_probe());}")
+        .unwrap_or_else(|error| panic!("{error}"));
     std::fs::write(f.local.join("device_abi.rs"), "pub const GPU_DEVICE:u16=7;").unwrap();
     std::fs::write(
         f.local.join("gpu_render_profile.rs"),

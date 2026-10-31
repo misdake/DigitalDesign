@@ -64,6 +64,8 @@ pub struct BootProject {
     pub application: PathBuf,
     /// Host-approved GPU resource-library compilation; never inferred from imports.
     pub renderer: bool,
+    /// Explicit Gpu/CommandBuffer API root; mutually exclusive with renderer.
+    pub gpu_api: bool,
     /// (symbol, physical byte address, source path); paths are project-relative.
     pub copies: Vec<(String, usize, PathBuf)>,
     pub zeros: Vec<(usize, usize)>,
@@ -89,6 +91,7 @@ fn relative_source(text: &str) -> Result<PathBuf, SingleBootError> {
 pub fn parse_boot_project(text: &str) -> Result<BootProject, SingleBootError> {
     let (mut format, mut application, mut copies, mut zeros, mut renderer) =
         (false, None, Vec::new(), Vec::new(), false);
+    let mut gpu_api = false;
     for line in text
         .lines()
         .map(|l| l.split('#').next().unwrap().trim())
@@ -97,7 +100,8 @@ pub fn parse_boot_project(text: &str) -> Result<BootProject, SingleBootError> {
         let fields: Vec<_> = line.split_whitespace().collect();
         match fields.as_slice() {
             ["format", "2"] if !format => format = true,
-            ["renderer"] if !renderer => renderer = true,
+            ["renderer"] if !renderer && !gpu_api => renderer = true,
+            ["gpu-api"] if !renderer && !gpu_api => gpu_api = true,
             ["application", p] if application.is_none() => {
                 let p = relative_source(p)?;
                 if p.extension().and_then(|x| x.to_str()) != Some("rs") {
@@ -133,6 +137,7 @@ pub fn parse_boot_project(text: &str) -> Result<BootProject, SingleBootError> {
     Ok(BootProject {
         application: application.ok_or(SingleBootError("missing application source"))?,
         renderer,
+        gpu_api,
         copies,
         zeros,
     })

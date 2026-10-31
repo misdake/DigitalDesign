@@ -1,53 +1,60 @@
-# Minimal resource renderer
+# Minimal explicit GPU API caller
 
-The RCC application uses the production host-approved `gpu_pipeline` facade:
-one Renderer, Camera, Mesh, Model, Material and TextField, with one Frame/Pass per
-tick. It draws one two-sided triangle, displays the last observed successful
-submission duration as `OBS`, and integrates the held left stick on every frame.
-Motion uses the frame's elapsed-time snapshot, capped at 100 ms, and clamps the
-camera position. No new controller sample is required to continue moving.
+The main RCC application uses the approved `gpu_api` root. The application owns
+Gpu, CommandBuffer, Camera, Model, Mesh, Material, RenderState, TextureView,
+Color/Depth buffers, UI grids and Display. There is no Renderer or Frame wrapper.
+It reads gamepad/time itself, clamps elapsed movement to 100 ms and the eye to
++/-20, and records one textured, lit triangle plus an eight-cell OBS overlay.
+Native mesh/texture/atlas bytes remain the same validated boot assets.
 
 ```powershell
 & systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/build.ps1
 ```
 
-This selects `CPU_V3_BOOT_EXAMPLE=gpu_renderer` for child builds, enables explicit
-renderer compilation, materializes the exact Cargo OUT_DIR artifacts, and checks
-an independent CB06 repack. It does not synthesize, place/route or program a board.
-The default board application is unchanged.
+`CPU_V3_BOOT_EXAMPLE=gpu_renderer` explicitly selects the new approved root and
+checked frontend. A custom format-2 project uses the `gpu-api` directive instead
+of `renderer`; the two are mutually exclusive. Generated OUT_DIR assets and the
+independent CB06 repack must match. No second boot byte array is maintained.
+The default board application and hardware are unchanged.
 
-The packer produces one native meshlet/directory, a padded white 1x1 RGB565
-texture, and a complete native UI atlas. The classic font source is read without
-modification; this packer adds O/B for the OBS label. Allocation checks use the
-system's sole GPU layout. Mesh metadata, every vertex/index, padding and atlas
-slot255 are checked before emitting resources and generated RCC metadata.
+## Per-frame lifetime
 
-`renderer_three_frames` is the bounded caller entry used by host verification;
-`main` runs continuously. The host case executes this actual file and these
-actual assets, checks native command/object/UI bytes and explicit final drain.
-GPU/Display progress in that case is controlled; it does not qualify actual
-rasterization, scanout, cache timing, physical serial input or board behavior.
+Boot scanout starts at Color A. The first frame writes Back B without waiting
+for an unrelated vblank. Subsequent frames first confirm the preceding swap and
+old-read retirement, then reuse the old Front as the next Back. The application
+updates Camera and the selected external UI grid, resets/re-records its CB,
+sets Camera/State, draws, and ends Pass by scope. It submits by value, takes the
+same CB back from wait, and requests the next swap. Exit drains both GPU and
+Display before dropping descriptors. The two external UI pages alternate with
+the Back buffers; there is no CPU grid mirror. Texture invalidation is explicit
+once after the boot asset upload, rather than hidden in every Pass.
 
-The OBS interval includes final publication and delayed observation of GPU
-completion. It is not pure GPU execution time. Startup/invalid measurements show
-`OBS --.-`; valid sub-10-ms values omit the leading zero. See the
-[resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md).
+OBS shows the preceding completed submission interval including publication,
+capture gating and delayed observation. A resumed diagnostic pause marks that
+observation unavailable; application motion uses milliseconds excluding pauses.
+The observation is not pure GPU execution time.
+The first frame and saturated intervals show `OBS --.-`. Valid sub-10-ms values
+omit the leading zero. Statistics and formatting are application policy. RCC's
+current byte slices are immutable constants, so dynamic digits use single-cell
+writes; no compiler extension or persistent text mirror is introduced.
+
+The bounded host test uses the same source and packed assets. It redirects only
+main's stop policy to `renderer_three_frames`, preserving main's static byte
+initialization. It checks actual native commands, UI bytes, explicit GPU/Display
+retirement, equal healthy output in both check profiles and static/frame/stack
+budgets. Its progress peers do not qualify GPU pixels, scanout or timing. Captured
+execution uses the actual C parser; compiling a boot image alone is not a captured
+Draw/UI qualification. Board access is not part of these checks.
+
+The alternative callers use the same explicit Gpu/CommandBuffer root.
 
 ## Explicit members
 
-The explicit member caller is `rcc/members.rs`. Build it with
-`build.ps1 -Members` (mutually exclusive with `-Changes`). It records two draws
-through one mutable Pass, consumes Pass/Frame with `finish`, then explicitly
-submits and waits for both GPU and Display retirement. The build checks the
-actual library bodies with rustc before RCC lowering; the existing generated
-boot/independent CB06 comparison is retained. The `graphics_member` integration
-target executes its actual three-frame entry in row and column layouts with
-bounded CPU steps. The board selector uses explicit column16 assets/layout.
-Continuous mode emits an `M` byte after each 64 fully retired frames, and an `E`
-on a submit/wait failure when UART is writable; these are demo heartbeats, not a
-capture protocol or a GPU performance measurement. Controlled
-retirement peers do not qualify rendered pixels or board timing; see the
-[member API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md#explicit-member-calls).
+Build `rcc/members.rs` with `build.ps1 -Members` (mutually exclusive with
+`-Changes`). Each frame records two draws in a scoped Pass, moves the CB into
+Gpu, receives it from wait and explicitly confirms Display retirement. The
+three-frame entry is `renderer_member_three_frames`. The application uses
+column16 assets and the approved root's checked resource methods.
 
 ## Changing frames
 
@@ -56,17 +63,13 @@ retirement peers do not qualify rendered pixels or board timing; see the
 ```
 
 The selector `CPU_V3_BOOT_EXAMPLE=gpu_renderer_changes` builds `rcc/changes.rs`
-with the same immutable assets, into a separate default output directory and
-separate cargo log labels. `renderer_changed_frames` executes eleven frames;
-its normal entry cycles through the semantic changes continuously. The first
-3D Pass retains its Camera snapshot while setters prepare a later Pass. One Mesh
-is reused by two Models; old draw inputs remain copied snapshots. Alpha drawing
-keeps call order. A later UI Pass changes visibility and a five-digit value to
-one/two digits without packed glyph manipulation.
+with immutable assets and separate output/log names. `renderer_changed_frames`
+runs eleven frames; the normal entry repeats those changes continuously.
+Camera/State binding and draw arguments become snapshots. Model, material and
+camera edits affect subsequent recording; the application owns the external UI
+grid, its text formatting, command reset, submission and presentation order.
 
-Host tests check the actual stream and objects independently and journal actual
-production-core memory stores/cycles under fixed one-cycle peers. They cover
-completed sequential Passes, cancellation of a Frame after any abandoned Pass,
-held UI pages and zero UI writes once both pages converge. The cost windows and
-limits are described in the [API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md#actual-changing-caller-and-cpu-cost-fixture).
-They do not establish real cache/GPU/Display concurrency or board timing.
+Caller, diagnostic timing and RTT behavior are specified in
+[Explicit GPU application callers](/systems/cpu-v3-tang-nano-20k/docs/gpu-explicit-examples.md).
+CPU completion peers establish software protocol behavior. Production GPU/MC
+replay and system-level simulation have separate evidence and limits.

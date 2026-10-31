@@ -68,6 +68,7 @@ struct State {
     fail_publication: bool,
     scene_draw: bool,
     capture_dynamic: bool,
+    dynamic_ui: Option<usize>,
     object_snapshots: Vec<Vec<u16>>,
     valid_command_lengths: Vec<usize>,
     targets: Option<Vec<(u32, u32)>>,
@@ -188,11 +189,11 @@ impl cpu_v3::Device for Peer {
                     assert!(valid <= 16384);
                     s.valid_command_lengths.push(valid);
                     s.object_snapshots.push(image(memory, objects, 32768));
-                    let page = if number.is_multiple_of(2) {
+                    let page = s.dynamic_ui.unwrap_or(if number.is_multiple_of(2) {
                         0x7df800
                     } else {
                         0x7dfc00
-                    };
+                    });
                     s.ui_snapshots.push(image(memory, page, 512));
                 } else {
                     let mut expected = vec![

@@ -6,6 +6,8 @@ use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
 use rcc_modules::capture_profile::layout as gpu_layout;
 use std::path::{Path, PathBuf};
+#[path = "build_support/application_entry.rs"]
+mod application_entry;
 #[path = "build_support/rcc_modules.rs"]
 mod rcc_modules;
 enum ApplicationProfile {
@@ -16,15 +18,22 @@ enum ApplicationProfile {
     BloxorzCapture,
     BloxorzCaptureFull,
 }
+enum ApplicationFrontend {
+    Native,
+    LegacyRenderer,
+    ExplicitGpu,
+}
 fn compile(
     path: &Path,
     options: &CompilerOptions,
     constants: &str,
     shared: &Path,
-    renderer: bool,
+    frontend: ApplicationFrontend,
     capture_enabled: bool,
     profile: ApplicationProfile,
 ) -> (Vec<u16>, usize) {
+    let explicit_gpu = matches!(frontend, ApplicationFrontend::ExplicitGpu);
+    let renderer = !matches!(frontend, ApplicationFrontend::Native);
     let rtt = matches!(
         profile,
         ApplicationProfile::Rtt400x240
@@ -38,6 +47,12 @@ fn compile(
     };
     println!("cargo:rerun-if-changed={}", path.display());
     let source = std::fs::read_to_string(path).unwrap();
+    let source = if explicit_gpu {
+        application_entry::select(&source, entry).expect("explicit GPU application entry")
+    } else {
+        source
+    };
+    let entry = if explicit_gpu { "main" } else { entry };
     let source_dir = path.parent().unwrap();
     let hook_enabled = std::env::var("GPU_PROFILER_HOOK").as_deref() != Ok("0");
     let capture = if capture_enabled && hook_enabled {
@@ -124,7 +139,26 @@ fn compile(
             let checked = rtt
                 || (source_dir.ends_with("gpu_renderer/rcc")
                     && path.file_name().is_some_and(|name| name == "members.rs"));
-            if let Some(configuration) = capture.as_ref().filter(|_| !checked) {
+            if explicit_gpu {
+                let disabled = rcc_modules::RendererCaptureConfiguration::without_capture(
+                    rcc_modules::RendererLayoutProfile::Column16,
+                );
+                rcc_modules::compile_explicit_gpu_program_checked_with_sources(
+                    &path.display().to_string(),
+                    &source,
+                    options,
+                    source_dir,
+                    shared,
+                    constants,
+                    &dirs,
+                    capture.as_ref().unwrap_or(&disabled),
+                    &rcc::frontend::rustc_check::RustcCheck::new(
+                        PathBuf::from(std::env::var_os("OUT_DIR").unwrap())
+                            .join("explicit-gpu-ownership"),
+                    ),
+                    dependency,
+                )
+            } else if let Some(configuration) = capture.as_ref().filter(|_| !checked) {
                 rcc_modules::compile_renderer_program_with_capture_profile(
                     &path.display().to_string(),
                     &source,
@@ -211,6 +245,7 @@ fn main() {
     let mut capture_full = false;
     let mut extra_assets: Vec<String> = Vec::new();
     if let Some(example) = std::env::var_os("CPU_V3_BOOT_EXAMPLE") {
+        project.gpu_api = false;
         if example == "gpu_bench" {
             println!("cargo:rerun-if-env-changed=GPU_BENCH_SCENE");
             println!(
@@ -409,7 +444,8 @@ fn main() {
             } else {
                 "examples/gpu_renderer/rcc/main.rs"
             });
-            project.renderer = true;
+            project.gpu_api = true;
+            project.renderer = false;
             project.copies = manifest["resources"]
                 .as_array()
                 .unwrap()
@@ -432,7 +468,12 @@ fn main() {
             project.zeros.clear();
             generated = std::fs::read_to_string(assets.join("renderer_assets.rs")).unwrap();
             let mut repack = format!(
-                "format 2\nrenderer\napplication {}\n",
+                "format 2\n{}\napplication {}\n",
+                if project.gpu_api {
+                    "gpu-api"
+                } else {
+                    "renderer"
+                },
                 project.application.display()
             );
             for (name, address, path) in &project.copies {
@@ -545,7 +586,13 @@ fn main() {
         &options,
         &constants,
         &root.join("rcc"),
-        project.renderer,
+        if project.gpu_api {
+            ApplicationFrontend::ExplicitGpu
+        } else if project.renderer {
+            ApplicationFrontend::LegacyRenderer
+        } else {
+            ApplicationFrontend::Native
+        },
         capture_enabled,
         if native_memcpy {
             ApplicationProfile::ProfilerMemcpy

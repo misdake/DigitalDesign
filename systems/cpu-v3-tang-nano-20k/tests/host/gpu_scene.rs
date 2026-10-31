@@ -487,7 +487,7 @@ fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     let mut config =
-        String::from("format 2\nrenderer\napplication examples/gpu_renderer/rcc/main.rs\n");
+        String::from("format 2\ngpu-api\napplication examples/gpu_renderer/rcc/main.rs\n");
     for r in manifest["resources"].as_array().unwrap() {
         let name = r["file"].as_str().unwrap();
         config.push_str(&format!(
@@ -498,51 +498,120 @@ fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
         ));
     }
     let project = cpu_v3_tang_nano_20k::boot::parse_boot_project(&config).unwrap();
-    assert!(project.renderer);
+    assert!(project.gpu_api && !project.renderer);
     let constants =
         project.constants() + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
-    let opts = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let source = std::fs::read_to_string(example.join("rcc/main.rs")).unwrap();
-    let parsed = resolver::compile_renderer_program(
-        "minimal renderer app",
-        &source,
-        &opts,
-        &example.join("rcc"),
-        &root.join("rcc"),
-        &constants,
-        &mut |_| {},
-    )
-    .unwrap();
-    let program = rcc_backend::try_compile(parsed, &opts, "renderer_three_frames").unwrap();
-    let mut cpu = CpuV3Sim::default();
-    cpu.set_boot_window(&program.words);
-    for r in manifest["resources"].as_array().unwrap() {
-        let start = r["address"].as_u64().unwrap() as usize;
-        let data = std::fs::read(out.join(r["file"].as_str().unwrap())).unwrap();
-        for (i, byte) in data.into_iter().enumerate() {
-            let at = start + i;
-            let word = &mut cpu.physical_memory_mut()[at / 2];
-            *word = (*word & !(255 << ((at % 2) * 8))) | (u16::from(byte) << ((at % 2) * 8));
+    let mut baseline = None;
+    for debug in [false, true] {
+        let mut opts = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        opts.gpu_debug = debug;
+        let original_source = std::fs::read_to_string(example.join("rcc/main.rs"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        // RCC initializes byte literals at main. Keep that real initialization path;
+        // only redirect the application stop policy to its existing bounded entry.
+        let source =
+            crate::shared_application_entry::select(&original_source, "renderer_three_frames")
+                .unwrap();
+        assert_ne!(source, original_source);
+        std::fs::write(out.join("bounded-main.rs"), &source).unwrap();
+        let configuration = resolver::RendererCaptureConfiguration::without_capture(
+            resolver::RendererLayoutProfile::Column16,
+        );
+        let parsed = resolver::compile_explicit_gpu_program_checked(
+            "minimal renderer app",
+            &source,
+            &opts,
+            &example.join("rcc"),
+            &root.join("rcc"),
+            &constants,
+            &configuration,
+            &rcc::frontend::rustc_check::RustcCheck::new(out.join("public-ownership")),
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let static_words = parsed.debug.static_data_end;
+        let program = rcc_backend::try_compile(parsed, &opts, "main").unwrap();
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        for r in manifest["resources"].as_array().unwrap() {
+            let start = r["address"].as_u64().unwrap() as usize;
+            let data = std::fs::read(out.join(r["file"].as_str().unwrap())).unwrap();
+            for (i, byte) in data.into_iter().enumerate() {
+                let at = start + i;
+                let word = &mut cpu.physical_memory_mut()[at / 2];
+                *word = (*word & !(255 << ((at % 2) * 8))) | (u16::from(byte) << ((at % 2) * 8));
+            }
         }
-    }
-    let state = attach(&mut cpu, Some(vec![vec![(0, 8)]; 3]));
-    {
-        let mut s = state.borrow_mut();
-        s.automatic = true;
-        s.expected_depth = Some(65535);
-        s.scene_draw = true;
-    }
-    let result = cpu.run(5_000_000).unwrap();
-    assert!(
-        matches!(result, RunOutcome::Halted { signal: 0x600d, .. }),
-        "{result:?}"
-    );
-    assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
-    let s = state.borrow();
-    assert_eq!((s.starts.len(), s.swaps, s.maintenance), (3, 3, 3));
-    for (i, page) in s.ui_snapshots.iter().enumerate() {
-        let text: Vec<u8> = page[..4].iter().flat_map(|w| w.to_le_bytes()).collect();
-        assert_eq!(&text, if i < 2 { b"OBS --.-" } else { b"OBS 0.0\xff" });
+        let state = attach(&mut cpu, Some(vec![vec![(0, 8)]; 3]));
+        {
+            let mut s = state.borrow_mut();
+            s.automatic = true;
+            s.capture_dynamic = true;
+            s.expected_depth = Some(65535);
+            s.scene_draw = true;
+        }
+        let mut minimum_sp = 0xc000u16;
+        let mut halted = false;
+        for _ in 0..5_000_000 {
+            let outcome = cpu.step().unwrap();
+            let sp = cpu.registers()[13];
+            if sp != 0 {
+                minimum_sp = minimum_sp.min(sp);
+            }
+            if let StepOutcome::Halted { signal } = outcome {
+                assert_eq!(signal, 0x600d);
+                halted = true;
+                break;
+            }
+        }
+        assert!(halted, "bounded public caller timeout");
+        let stack_words = usize::from(0xc000 - minimum_sp);
+        assert!(static_words + stack_words <= 8192);
+        std::fs::write(out.join(format!("caller-budget-{debug}.json")),serde_json::to_vec_pretty(&serde_json::json!({"static_bytes":static_words*2,"observed_stack_bytes":stack_words*2,"max_frame_words":program.debug.functions.iter().map(|f|f.frame_size).max().unwrap_or(0)})).unwrap()).unwrap();
+        assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
+        let s = state.borrow();
+        assert_eq!((s.starts.len(), s.swaps, s.maintenance), (3, 3, 3));
+        for (index, (_, commands, _)) in s.starts.iter().enumerate() {
+            let valid = s.valid_command_lengths[index];
+            let native: Vec<_> = commands[..valid * 2]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|w| u32::from(w[0]) | (u32::from(w[1]) << 16))
+                .collect();
+            assert_eq!(*native.last().unwrap(), 15 << 28);
+            for opcode in [2, 3, 10, 11] {
+                assert_eq!(
+                    native.iter().filter(|word| *word >> 28 == opcode).count(),
+                    1
+                );
+            }
+            assert!(native.contains(&((8 << 28) | (0x1111 + index as u32))));
+            assert!(native.contains(&((8 << 28) | (1 << 16) | 65535)));
+        }
+        let final_a = cpu.physical_memory_mut()[0x7df800 / 2..0x7df800 / 2 + 4].to_vec();
+        let final_b = cpu.physical_memory_mut()[0x7dfc00 / 2..0x7dfc00 / 2 + 4].to_vec();
+        for (i, page) in s.ui_snapshots.iter().enumerate() {
+            let text: Vec<u8> = page[..4].iter().flat_map(|w| w.to_le_bytes()).collect();
+            assert_eq!(
+                &text,
+                if i == 0 { b"OBS --.-" } else { b"OBS 0.0\xff" },
+                "frame {i}, final grids {:?} {:?}",
+                final_a,
+                final_b
+            );
+        }
+        let actual = (
+            s.starts.clone(),
+            s.object_snapshots.clone(),
+            s.ui_snapshots.clone(),
+        );
+        if let Some(expected) = &baseline {
+            assert_eq!(&actual, expected, "debug changed healthy native bytes");
+        } else {
+            baseline = Some(actual);
+        }
     }
 }
 

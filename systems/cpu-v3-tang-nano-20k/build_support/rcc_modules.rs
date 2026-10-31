@@ -92,6 +92,7 @@ pub fn compile_renderer_program_with_sources(
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
     compile_renderer_capture(
+        "gpu_pipeline",
         main_name,
         source,
         options,
@@ -104,6 +105,73 @@ pub fn compile_renderer_program_with_sources(
         None,
         dependency,
     )
+}
+
+/// Explicit API recording uses its own approved root, never both facade domains.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_explicit_gpu_program_checked(
+    main_name: &str,
+    source: &str,
+    options: &impl rcc::RccConfig,
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    configuration: &RendererCaptureConfiguration,
+    check: &rcc::frontend::rustc_check::RustcCheck,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::Program, String> {
+    compile_explicit_gpu_program_checked_with_sources(
+        main_name,
+        source,
+        options,
+        local_dir,
+        shared_dir,
+        constants,
+        &[],
+        configuration,
+        check,
+        dependency,
+    )
+}
+
+/// Ordinary application directories add no resource-library trust.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_explicit_gpu_program_checked_with_sources(
+    main_name: &str,
+    source: &str,
+    options: &impl rcc::RccConfig,
+    local_dir: &Path,
+    shared_dir: &Path,
+    constants: &str,
+    ordinary_dirs: &[PathBuf],
+    configuration: &RendererCaptureConfiguration,
+    check: &rcc::frontend::rustc_check::RustcCheck,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<rcc::frontend::Program, String> {
+    if configuration.profile != RendererLayoutProfile::Column16 {
+        return Err("explicit GPU API requires column16 layout".into());
+    }
+    let actual_shared = materialize_renderer_sources(
+        shared_dir,
+        &check.directory.join("renderer-rcc"),
+        configuration.profile,
+        dependency,
+    )?;
+    compile_renderer_capture(
+        "gpu_api",
+        main_name,
+        source,
+        options,
+        local_dir,
+        &actual_shared,
+        constants,
+        ordinary_dirs,
+        configuration.capture.as_ref(),
+        configuration,
+        Some(check),
+        dependency,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Check actual approved library bodies with rustc before target ownership erasure.
@@ -154,6 +222,7 @@ pub fn compile_renderer_program_checked_with_sources(
         dependency,
     )?;
     compile_renderer_capture(
+        "gpu_pipeline",
         main_name,
         source,
         options,
@@ -217,6 +286,7 @@ pub fn compile_renderer_program_with_capture(
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
     compile_renderer_capture(
+        "gpu_pipeline",
         main_name,
         source,
         options,
@@ -252,6 +322,7 @@ pub fn compile_renderer_program_with_capture_profile(
         dependency,
     )?;
     compile_renderer_capture(
+        "gpu_pipeline",
         main_name,
         source,
         options,
@@ -268,6 +339,7 @@ pub fn compile_renderer_program_with_capture_profile(
 }
 #[allow(clippy::too_many_arguments)]
 fn compile_renderer_capture(
+    library_root: &str,
     main_name: &str,
     source: &str,
     options: &impl rcc::RccConfig,
@@ -290,6 +362,12 @@ fn compile_renderer_capture(
         if name == "gpu_capture_config" {
             return Ok(rcc::frontend::ModuleSource {
                 source: capture_config_source(capture.map(|c| &c.manifest_id), configuration),
+                origin: None,
+            });
+        }
+        if name == "gpu_capture_access" && library_root == "gpu_api" {
+            return Ok(rcc::frontend::ModuleSource {
+                source: "mod gpu_api;pub use gpu_api::{gpu_capture_error,gpu_capture_range_word,gpu_capture_read_word};".into(),
                 origin: None,
             });
         }
@@ -341,7 +419,7 @@ fn compile_renderer_capture(
         let dirs = if pinned { &[][..] } else { ordinary_dirs };
         load_module_source_with_sources(local, shared_dir, constants, name, dirs, dependency)
     };
-    let approved = [shared_dir.join("gpu_pipeline.rs")];
+    let approved = [shared_dir.join(format!("{library_root}.rs"))];
     match check {
         Some(check) => rcc::frontend::compile_program_named_with_libraries_checked(
             main_name,

@@ -53,3 +53,14 @@ Afterward the selected [Display diagnostic](system-display-test.md) owns LEDs
 and UART, reports DDHT 0x0b after actual target switches and keeps the GPU idle.
 Programming, UART observation and cold-power verification require their own
 authorized physical procedure; offline preparation does not perform them.
+
+
+## Explicit GPU API application selection
+
+Format-2 project files may declare `gpu-api` to select the host-approved explicit
+Gpu/CommandBuffer root and checked RCC frontend. The existing `renderer` directive
+continues to select the legacy renderer root. Neither is inferred from application
+imports, and duplicate or mixed directives are rejected. These are compilation
+policies only: they emit identical resource constants and do not change CB06.
+The `gpu_renderer` example selector sets `gpu-api`; its generated repack project
+uses the same directive. Other named legacy examples retain their existing root.

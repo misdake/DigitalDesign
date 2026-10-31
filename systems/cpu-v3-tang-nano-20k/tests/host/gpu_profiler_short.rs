@@ -43,7 +43,7 @@ fn repeated_rtt_reaches_only_consumer_runtime_with_pinned_source() {
     )
     .unwrap();
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let ir = resolver::compile_renderer_program_checked_with_sources(
+    let ir = resolver::compile_explicit_gpu_program_checked_with_sources(
         "actual repeated RTT profiler",
         &std::fs::read_to_string(board.join("rcc/rtt.rs")).unwrap(),
         &options,
@@ -122,8 +122,8 @@ fn repeated_rtt_reaches_only_consumer_runtime_with_pinned_source() {
                     .as_chunks::<8>()
                     .0
                     .iter()
-                    .any(|r| r[2] == 0 && r[3] == 0x60 && r[4] == 0 && r[5] == 4),
-                "missing actual RTT texture input"
+                    .any(|r| r[2] == 0 && r[3] == 0x60 && r[4] == 8192 && r[5] == 3),
+                "missing physical 204800-byte RTT texture input"
             );
             if calls == 3 {
                 break;

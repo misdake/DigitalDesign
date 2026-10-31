@@ -2,17 +2,15 @@
 use super::*;
 
 #[test]
-fn texture_views_keep_the_buffer_parent_and_are_consumed_once() {
+fn texture_views_own_their_description_and_are_consumed_once() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-    let prefix = r#"mod gpu_pipeline;fn main(){let mut r=renderer_open();
-let mut memory:RenderBufferMemory=RenderBufferMemory{
-color_base_low:0,color_base_high:0x60,color_capacity_low:0,color_capacity_high:4,
-depth_base_low:0,depth_base_high:0x64,depth_capacity_low:0,depth_capacity_high:4};
-let mut b=renderer_render_buffer(&mut r,view_of(&mut memory));
-let mut view=render_buffer_texture(&mut b,false);"#;
+    let prefix = r#"mod gpu_api;use gpu_api::*;
+fn consume_color(value:ColorBuffer){} fn consume_view(value:TextureView){}
+fn main(){let b=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0xc000,2048)});
+let view=b.texture_view();"#;
     let parse = |body: &str| {
-        resolver::compile_renderer_program_checked(
+        resolver::compile_explicit_gpu_program_checked(
             "RTT resource ownership",
             &format!("{prefix}{body}}}"),
             &options,
@@ -31,13 +29,17 @@ let mut view=render_buffer_texture(&mut b,false);"#;
             &mut |_| {},
         )
     };
-    let positive = parse("texture_view_close(view);render_buffer_close(b);renderer_close(r);");
-    assert!(positive.is_ok(), "{}", positive.err().unwrap_or_default());
+    // The descriptor owns a copy; the caller still owns the physical allocation.
     for body in [
-        "render_buffer_close(b);texture_view_close(view);",
-        "let f=renderer_frame_to(&mut r,&mut b,0);texture_view_close(view);",
-        "texture_view_close(view);texture_view_close(view);",
-        "let fabricated=TextureView{word:1};texture_view_close(view);",
+        "consume_color(b);consume_view(view);",
+        "consume_view(view);consume_color(b);",
+    ] {
+        let positive = parse(body);
+        assert!(positive.is_ok(), "{}", positive.err().unwrap_or_default());
+    }
+    for body in [
+        "consume_view(view);consume_view(view);",
+        "let fabricated=TextureView{slot:1};consume_view(fabricated);",
     ] {
         assert!(parse(body).is_err(), "accepted {body}");
     }
@@ -63,37 +65,46 @@ fn actual_two_stage_application_uses_typed_views_and_captures_mutable_sources() 
         vec![255; 512]
     );
     let gate = out.join("profiler_gate.rs");
-    std::fs::write(&gate, r#"use crate::dsl_rt::*;mod gpu_pipeline;use gpu_pipeline::*;
+    std::fs::write(&gate, r#"use crate::dsl_rt::*;mod gpu_api;use gpu_api::*;
 mod gpu_capture_abi;use gpu_capture_abi::*;
 static RTT_GATE_CALLS:u16=0;
 static RTT_GATE_CHECKS:u16=0;
 fn require(ok:bool){if !ok{halt(0xcb00+RTT_GATE_CHECKS);}unsafe{addr_of(&RTT_GATE_CHECKS).write(0,RTT_GATE_CHECKS+1);}}
 pub fn profiler_gate(d:Array<u16>)->u16{
 require(d[GPU_CAPTURE_H_LAYOUT_ABI]==2 && d[GPU_CAPTURE_H_COMMAND_ABI]==GPU_CAPTURE_RTT400_COMMAND_ABI);
-let consumer=(RTT_GATE_CALLS&1)!=0;let mut sources:u16=0;let mut tails:u16=0;let mut i:u16=0;
+let consumer=(RTT_GATE_CALLS&1)!=0;let mut sources:u16=0;let mut source_tails:u16=0;let mut tails:u16=0;let mut i:u16=0;
 while i<d[GPU_CAPTURE_H_RANGE_COUNT]{
  let tag=gpu_capture_range_word(i,GPU_CAPTURE_R_TAG);
  let flags=gpu_capture_range_word(i,GPU_CAPTURE_R_FLAGS);
  if tag==GPU_CAPTURE_TAG_TEXTURE && flags&GPU_CAPTURE_IMMUTABLE==0 {
    require(consumer && flags==(GPU_CAPTURE_READ|GPU_CAPTURE_PREIMAGE));
-   require(gpu_capture_range_word(i,GPU_CAPTURE_R_BASE)==0 && gpu_capture_range_word(i,GPU_CAPTURE_R_BASE+1)==0x60);
-   require(gpu_capture_range_word(i,GPU_CAPTURE_R_BYTES)==0 && gpu_capture_range_word(i,GPU_CAPTURE_R_BYTES+1)==4);
-   require(gpu_capture_range_word(i,GPU_CAPTURE_R_GENERATION)==RTT_GATE_CALLS/2+1);
-   require(gpu_capture_read_word(i,65535,1)==0xa55a);sources+=1;
+   require(gpu_capture_range_word(i,GPU_CAPTURE_R_BASE+1)==0x60 || gpu_capture_range_word(i,GPU_CAPTURE_R_BASE+1)==0x63);
+   let base=gpu_capture_range_word(i,GPU_CAPTURE_R_BASE);
+   require(gpu_capture_range_word(i,GPU_CAPTURE_R_GENERATION)==0 && gpu_capture_range_word(i,GPU_CAPTURE_R_GENERATION+1)==0);
+   if base==0 {
+     require(gpu_capture_range_word(i,GPU_CAPTURE_R_BASE+1)==0x60);
+     require(gpu_capture_range_word(i,GPU_CAPTURE_R_BYTES)==8192 && gpu_capture_range_word(i,GPU_CAPTURE_R_BYTES+1)==3);
+     require(gpu_capture_read_word(i,36863,1)==0xa55a);sources+=1;
+   }else{
+     require(gpu_capture_range_word(i,GPU_CAPTURE_R_BASE+1)==0x63);
+     require(base==8192 && gpu_capture_range_word(i,GPU_CAPTURE_R_BYTES)==57344 && gpu_capture_range_word(i,GPU_CAPTURE_R_BYTES+1)==0);
+     require(gpu_capture_read_word(i,0,0)==0xa55a);source_tails+=1;
+   }
  }
- if (tag==GPU_CAPTURE_TAG_COLOR || tag==GPU_CAPTURE_TAG_DEPTH) && flags&GPU_CAPTURE_FULL_CLEAR==0 {
-   require(!consumer && flags==(GPU_CAPTURE_READ|GPU_CAPTURE_PREIMAGE));
+ if (tag==GPU_CAPTURE_TAG_COLOR || tag==GPU_CAPTURE_TAG_DEPTH) && flags==(GPU_CAPTURE_READ|GPU_CAPTURE_PREIMAGE) {
    require(gpu_capture_range_word(i,GPU_CAPTURE_R_BYTES)==57344);tails+=1;
  }
  i+=1;
 }
-require(sources==if consumer{1}else{0});require(tails==if consumer{0}else{2});
+require(sources==if consumer{1}else{0});require(source_tails==if consumer{1}else{0});require(tails==2);
 require(gpu_capture_error()==0);signal(4,RTT_GATE_CALLS);
 unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
 }"#).unwrap();
     let capture_gate = gate;
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let source = std::fs::read_to_string(example.join("rcc/main.rs")).unwrap();
+    let source =
+        crate::shared_application_entry::select(&source, "renderer_rtt_two_updates").unwrap();
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     let mut boot =
@@ -123,7 +134,7 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
     let configuration =
         resolver::RendererCaptureConfiguration::from_manifest(capture_gate, &capture_manifest)
             .unwrap();
-    let ir = resolver::compile_renderer_program_checked(
+    let ir = resolver::compile_explicit_gpu_program_checked(
         "actual RTT application",
         &source,
         &options,
@@ -135,7 +146,7 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
         &mut |_| {},
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    let program = rcc_backend::try_compile(ir, &options, "renderer_rtt_two_updates").unwrap();
+    let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&program.words);
     for resource in manifest["resources"].as_array().unwrap() {
@@ -166,7 +177,7 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
         .globals
         .iter()
         .find_map(|g| match g.loc {
-            rcc::VarLoc::Global(a) if g.name == "GPU_PIPE_FAULT" => Some(usize::from(a)),
+            rcc::VarLoc::Global(a) if g.name == "GPU_API_FAULT" => Some(usize::from(a)),
             _ => None,
         })
         .unwrap();
@@ -179,7 +190,7 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
                 assert_eq!(
                     signal,
                     0x600d,
-                    "pipeline fault {:?}",
+                    "API fault {:?}",
                     &cpu.physical_memory_mut()[fault_address..fault_address + 5]
                 );
                 halted = true;
@@ -203,16 +214,13 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
             .iter()
             .map(|w| u32::from(w[0]) | (u32::from(w[1]) << 16))
             .collect();
-        assert_eq!(
-            &commands[..3],
-            &[Command::wait(true, true).0, Command::FLUSH.0, 0x90000000]
-        );
+        assert_eq!(&commands[..2], &[Command::wait(true, true).0, 0x90000000]);
         let mut local = vec![0u16; 1536];
         let mut render_words = Vec::new();
         for &command in &commands {
             match command >> 28 {
                 1 => {
-                    let object_base = if index % 2 == 0 { 0x4d0000 } else { 0x7f0000 };
+                    let object_base = 0x4d0000;
                     let at = ((((command >> 10) & 0x3ffff) * 32) as usize - object_base) / 2;
                     let destination = (((command >> 3) & 127) * 16) as usize;
                     let count = ((32 << ((command >> 1) & 3)) / 2) as usize;
@@ -230,7 +238,7 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
         assert_eq!(
             render_words,
             if index % 2 == 0 {
-                vec![0x00409c20]
+                vec![0x00009c20]
             } else {
                 vec![0x0089c000 | (((index / 2) as u32) << 21)]
             }
@@ -275,7 +283,7 @@ fn save_rtt_inputs(out: &Path, s: &State, program: &rcc_backend::CpuV3Program) {
         submissions.push(serde_json::json!({
             "command_file":command_file,"object_file":object_file,
             "command_base_bytes":u32::from(*base)*128,
-            "object_base_bytes":if index%2==0 {0x4d0000}else{0x7f0000},
+            "object_base_bytes":if *base==0x9800 {0x4d0000}else{0x7f0000},
             "valid_instructions":s.valid_command_lengths[index],
             "color_base_bytes":s.targets.as_ref().unwrap()[index].0,
             "depth_base_bytes":s.targets.as_ref().unwrap()[index].1,
@@ -404,7 +412,8 @@ fn actual_nearest_and_ordinary_bilinear_demo_inputs() {
             + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
         let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
         let source = std::fs::read_to_string(example.join("rcc/main.rs")).unwrap();
-        let ir = resolver::compile_renderer_program_checked(
+        let source = crate::shared_application_entry::select(&source, entry).unwrap();
+        let ir = resolver::compile_explicit_gpu_program_checked(
             "RTT demo",
             &source,
             &options,
@@ -418,7 +427,7 @@ fn actual_nearest_and_ordinary_bilinear_demo_inputs() {
             &mut |_| {},
         )
         .unwrap();
-        let program = rcc_backend::try_compile(ir, &options, entry).unwrap();
+        let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&program.words);
         for r in assets["resources"].as_array().unwrap() {

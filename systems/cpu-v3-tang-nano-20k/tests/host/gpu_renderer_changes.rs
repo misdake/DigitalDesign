@@ -36,17 +36,23 @@ fn application(name: &str) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>)
         project.constants() + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let source = std::fs::read_to_string(example.join("rcc/changes.rs")).unwrap();
-    let ir = resolver::compile_renderer_program(
+    let source =
+        crate::shared_application_entry::select(&source, "renderer_changed_frames").unwrap();
+    let ir = resolver::compile_explicit_gpu_program_checked(
         "actual renderer changes",
         &source,
         &options,
         &example.join("rcc"),
         &root.join("rcc"),
         &constants,
+        &resolver::RendererCaptureConfiguration::without_capture(
+            resolver::RendererLayoutProfile::Column16,
+        ),
+        &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),
         &mut |_| {},
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    let program = rcc_backend::try_compile(ir, &options, "renderer_changed_frames").unwrap();
+    let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
     (program, resources)
 }
 pub(super) fn preload(memory: &mut [u16], resources: &[(usize, Vec<u8>)]) {
@@ -71,33 +77,27 @@ fn actual_changed_application_records_completed_sequential_passes() {
         s.capture_dynamic = true;
         s.expected_depth = Some(65535);
     }
-    let meta = global(&program, "GPU_PUI_PAGES");
-    let work = global(&program, "GPU_SCENE_WORK");
-    let mut held: [Option<Vec<u16>>; 2] = [None, None];
+    let execution = global(&program, "GPU_EXECUTION");
+    state.borrow_mut().dynamic_ui = Some(PAGE * 2);
+    let mut held: Option<Vec<u16>> = None;
     let mut markers = Vec::new();
-    let mut counters = Vec::new();
     let mut halted = false;
     for _ in 0..10_000_000 {
         let result = cpu.step().unwrap();
         let memory = cpu.physical_memory_mut();
-        for (slot, snapshot) in held.iter_mut().enumerate() {
-            let page = &memory[PAGE + slot * 512..PAGE + (slot + 1) * 512];
-            if memory[meta + slot * 4] >= 2 {
-                if let Some(old) = snapshot {
-                    assert_eq!(page, old, "modified recorded/inflight UI page{slot}");
-                } else {
-                    *snapshot = Some(page.to_vec());
-                }
+        if matches!(memory[execution], 3 | 4) {
+            let page = &memory[PAGE..PAGE + 384];
+            if let Some(previous) = &held {
+                assert_eq!(page, previous, "application changed live GPU grid");
             } else {
-                *snapshot = None;
+                held = Some(page.to_vec());
             }
+        } else {
+            held = None;
         }
         match result {
             StepOutcome::Signaled(e) => {
                 markers.push((e.signal_type, e.value));
-                if e.signal_type == 3 {
-                    counters.push(memory[work..work + 8].to_vec());
-                }
             }
             StepOutcome::Halted { signal } => {
                 assert_eq!(signal, 0x600d);
@@ -113,17 +113,6 @@ fn actual_changed_application_records_completed_sequential_passes() {
         assert_eq!(
             events,
             &[(1, frame as u16), (2, frame as u16), (3, frame as u16)]
-        );
-    }
-    assert_eq!(counters[0], counters[1], "static scene recomputed");
-    assert_eq!(counters[2], [1, 2, 1, 1, 2, 4, 2, 1]);
-    assert_eq!(counters[3], counters[2]);
-    assert_eq!(counters[4], [3, 4, 2, 3, 3, 8, 6, 1]);
-    assert_eq!(counters[5], [3, 4, 2, 4, 3, 9, 7, 1]);
-    for counter in &counters[6..] {
-        assert_eq!(
-            counter, &counters[5],
-            "UI-only/static frame recomputed scene"
         );
     }
     assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
@@ -194,8 +183,16 @@ fn draw_case(frame: usize, right: bool, new_model: bool, new_view: bool) -> Draw
         } else {
             [255; 4]
         },
-        shininess: if !right && changed_material { 8 } else { 12 },
-        specular: if !right && changed_material {
+        shininess: if right {
+            8
+        } else if changed_material {
+            4
+        } else {
+            6
+        },
+        specular: if right {
+            0
+        } else if changed_material {
             0x804020
         } else {
             0xa0a0a0
@@ -226,7 +223,14 @@ fn check_draw(expected: &Draw, global: &[u16], render: &[u16], instance: &[u16])
     let r = words32(render);
     let i = words32(instance);
     assert_eq!(g[0], expected.far << 16);
-    assert_eq!(g[4], 64 | (192 << 16));
+    assert_eq!(
+        g[4],
+        if expected.rgba[3] == 128 {
+            128 | (128 << 16)
+        } else {
+            64 | (192 << 16)
+        }
+    );
     assert_eq!(g[5], 3 | (expected.shininess << 2));
     assert!(g[6..].iter().all(|x| *x == 0));
     let rotation = scene::rotation(expected.camera.camera);
@@ -247,11 +251,19 @@ fn check_draw(expected: &Draw, global: &[u16], render: &[u16], instance: &[u16])
     assert!((f64::from(global[5] as i16) + 100. / expected.camera.focal * 16384.).abs() < 3.);
     assert!((f64::from(global[6] as i16) + 60. / expected.camera.focal * 16384.).abs() < 3.);
     assert_eq!(global[7], 8192);
-    assert_eq!(r[0], 0x9c20 | (2 << 21));
+    assert_eq!(
+        r[0], 0x9c20,
+        "uniform-color material does not sample a texture"
+    );
     assert_eq!(r[1], expected.specular);
-    assert_eq!(r[2], if expected.rgba[3] == 255 { 9 } else { 17 });
+    assert_eq!(r[2], if expected.rgba[3] == 255 { 11 } else { 27 });
     assert!(r[3..].iter().all(|x| *x == 0));
-    let (position, normal) = scene::reference(expected.camera);
+    let (position, mut normal) = scene::reference(expected.camera);
+    for row in &mut normal {
+        for (column, value) in row.iter_mut().enumerate() {
+            *value /= expected.camera.scale[column];
+        }
+    }
     for row in 0..3 {
         for (column, value) in position[row].iter().enumerate() {
             let actual = scene::fixed(instance, 2 * (row * 4 + column));
@@ -277,7 +289,7 @@ fn check_native_frames(s: &State) {
     for frame in 0..11 {
         let (base, words, _) = &s.starts[frame];
         let object_base = if *base == 0x9800 { 0x4d0000 } else { 0x7f0000 };
-        let page = if frame % 2 == 0 { 0x7df800 } else { 0x7dfc00 };
+        let page = 0x7df800;
         let objects = &s.object_snapshots[frame];
         let ui = &s.ui_snapshots[frame];
         let valid = words32(words);
@@ -295,8 +307,8 @@ fn check_native_frames(s: &State) {
         );
         assert_eq!(
             commands.iter().filter(|w| **w >> 28 == 10).count(),
-            1,
-            "Pass reopened a target"
+            if frame == 4 { 3 } else { 2 },
+            "each explicit Pass keeps its own target"
         );
         assert_eq!(
             &commands[commands.len() - 3..],
@@ -316,7 +328,7 @@ fn check_native_frames(s: &State) {
         let expected = expected_draws(frame);
         let mut draws = 0;
         let mut ranges = Vec::new();
-        for (at, &command) in commands.iter().enumerate() {
+        for &command in commands {
             match command >> 28 {
                 1 => {
                     let source = (((command >> 10) & 0x3ffff) * 32) as usize;
@@ -331,11 +343,6 @@ fn check_native_frames(s: &State) {
                     };
                     if destination == 264 * 4 || destination == 272 * 4 {
                         assert!(render_wait);
-                        assert_eq!(
-                            commands[at - 1],
-                            Command::wait(true, true).0,
-                            "binding overwrite without full wait"
-                        );
                     }
                     local[destination..destination + size as usize].copy_from_slice(data);
                     dma_pending = true;
@@ -391,14 +398,7 @@ fn check_native_frames(s: &State) {
             }
         }
         assert_eq!(draws, expected.len());
-        assert_eq!(
-            ranges,
-            if frame == 5 {
-                vec![(10, 18)]
-            } else {
-                vec![(0, 8), (10, 18)]
-            }
-        );
+        assert_eq!(ranges, vec![(0, 18)]);
         let mut cells = vec![255u8; 750];
         let number: &[u8] = if frame < 4 {
             b"12345"
@@ -410,7 +410,7 @@ fn check_native_frames(s: &State) {
             b"42"
         };
         cells[..number.len()].copy_from_slice(number);
-        let stats: &[u8] = if frame < 2 { b"OBS --.-" } else { b"OBS 0.0" };
+        let stats: &[u8] = if frame == 0 { b"65535" } else { b"0" };
         cells[10..10 + stats.len()].copy_from_slice(stats);
         let packed: Vec<u16> = cells
             .as_chunks::<2>()
@@ -419,7 +419,7 @@ fn check_native_frames(s: &State) {
             .map(|p| u16::from_le_bytes([p[0], p[1]]))
             .collect();
         assert_eq!(&ui[..375], packed);
-        assert!(ui[375..384].iter().all(|x| *x == 65535));
+        assert!(ui[375..384].iter().all(|x| *x == 0));
     }
 }
 
@@ -471,13 +471,26 @@ pub(super) fn run_core(
     use digital_design_hardware::ModuleIo;
     let mut memory = vec![0u16; 1 << 22];
     preload(&mut memory, resources);
-    let meta = global(program, "GPU_PUI_PAGES");
-    let pipe = global(program, "GPU_PIPE");
-    let targets = global(program, "GPU_SLOT_TARGETS");
+    let execution = global(program, "GPU_EXECUTION");
+    fn input_write_allowed(memory: &[u16], execution: usize, address: usize, words: usize) {
+        if matches!(memory[execution], 3 | 4) {
+            let (begin, end) = match memory[execution + 1] {
+                1 => (0x4c0000 / 2, 0x4e0000 / 2),
+                2 => (0x7e0000 / 2, 0x800000 / 2),
+                0 => return, // retirement clears owner immediately before phase
+                owner => panic!("prepared/running GPU has invalid owner {owner}"),
+            };
+            assert!(
+                address + words <= begin || address >= end,
+                "CPU changed sealed GPU input"
+            );
+        }
+    }
     let state = Rc::new(RefCell::new(State {
         active: 0x200000,
         automatic: true,
         capture_dynamic: true,
+        dynamic_ui: Some(PAGE * 2),
         persistent_ranges: Some(vec![]),
         expected_depth: Some(65535),
         ..Default::default()
@@ -543,10 +556,18 @@ pub(super) fn run_core(
             halted = true;
             break;
         }
-        assert!(
-            !value.data_line_copy_valid && !value.data_line_clean_valid,
-            "fixed-port cost fixture does not model LCOPY/LCLEAN"
-        );
+        // Immediate functional memory has no resident cache: LCLEAN is a no-op.
+        // LCOPY still copies the accepted dual-address 16-word span exactly.
+        // These cycles do not model cache/DRAM completion latency.
+        if value.data_line_copy_valid {
+            let from = value.data_line_copy_source as usize;
+            let to = value.data_line_clean_address as usize;
+            assert_eq!((from | to) & 15, 0);
+            assert!(from + 16 <= memory.len() && to + 16 <= memory.len());
+            input_write_allowed(&memory, execution, to, 16);
+            memory.copy_within(from..from + 16, to);
+            stores += 16;
+        }
         if value.device_write_enable {
             peers[value.device_index as usize].write(
                 &mut memory,
@@ -562,39 +583,10 @@ pub(super) fn run_core(
             let address = value.data_address as usize;
             assert!(address < memory.len());
             if value.data_write {
-                for (slot, byte, bytes) in [
-                    (0, 0x4c0000, 65536),
-                    (0, 0x4d0000, 65536),
-                    (1, 0x7e0000, 65536),
-                    (1, 0x7f0000, 65536),
-                ] {
-                    if (byte / 2..(byte + bytes) / 2).contains(&address)
-                        && memory[meta + slot * 4] >= 2
-                    {
-                        // Recorded inputs permit only the builder's Target relocation,
-                        // after old GPU/Display retirement and before final publication.
-                        let target = memory[targets + slot];
-                        assert_eq!(memory[meta + slot * 4], 2);
-                        assert!(target != 0 && byte == if slot == 0 { 0x4d0000 } else { 0x7f0000 });
-                        let first = byte / 2 + usize::from(target) - 1;
-                        assert!((first..first + 16).contains(&address));
-                        assert_eq!(memory[pipe + 2], slot as u16 + 1);
-                        assert_eq!(memory[pipe + 3], 0);
-                        let s = state.borrow();
-                        assert_eq!(s.gpu, 0);
-                        assert!(!s.pending);
-                    }
-                }
-                if (PAGE..PAGE + 1024).contains(&address) {
-                    let slot = (address - PAGE) / 512;
-                    let word = (address - PAGE) % 512;
-                    assert_eq!(
-                        memory[meta + slot * 4],
-                        1,
-                        "core wrote a non-recording UI page"
-                    );
-                    assert_eq!(usize::from(memory[pipe + 1]), slot + 1);
-                    assert!(word < 400);
+                input_write_allowed(&memory, execution, address, 1);
+                if (PAGE..PAGE + 384).contains(&address) {
+                    assert_eq!(state.borrow().gpu, 0, "grid written while GPU reads it");
+                    assert!(address - PAGE < 375, "UI padding changed");
                     ui += 1;
                 }
                 memory[address] = value.data_write_data as u16;
@@ -642,10 +634,13 @@ fn actual_compiled_changes_run_on_the_production_core_and_report_bounded_recordi
         assert!(m.iter().all(|x| usize::from(x.frame) == frame));
         let word_stores = m[2].ui - m[0].ui;
         page_stores.push(word_stores);
-        rows.push(serde_json::json!({"frame":frame,"record_cycles":m[1].cycle-m[0].cycle,"seal_advance_cycles":m[2].cycle-m[1].cycle,"record_retired_words":m[1].retired-m[0].retired,"seal_advance_retired_words":m[2].retired-m[1].retired,"record_stores":m[1].stores-m[0].stores,"seal_advance_stores":m[2].stores-m[1].stores,"ui_stores":word_stores}));
+        rows.push(serde_json::json!({"frame":frame,"record_cycles":m[1].cycle-m[0].cycle,"submit_wait_present_cycles":m[2].cycle-m[1].cycle,"record_retired_words":m[1].retired-m[0].retired,"submit_wait_present_retired_words":m[2].retired-m[1].retired,"record_stores":m[1].stores-m[0].stores,"submit_wait_present_stores":m[2].stores-m[1].stores,"ui_stores":word_stores}));
     }
-    assert_eq!(page_stores, [400, 400, 2, 2, 3, 3, 1, 1, 0, 0, 0]);
+    assert_eq!(
+        page_stores, [0; 11],
+        "application formats its grid before the recording marker"
+    );
     let out = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/gpu-renderer-changes-validation/cpu-costs.json");
-    std::fs::write(out,serde_json::to_string_pretty(&serde_json::json!({"model":"production CPU/FPU core emulator; separate instruction ROM and one-cycle data/control peers; no caches/SDRAM/GPU/Display timing","window":"record: after renderer_frame to before frame_complete; seal_advance: frame_complete through its return; includes model-only SIGNAL markers","frames":rows})).unwrap()).unwrap();
+    std::fs::write(out,serde_json::to_string_pretty(&serde_json::json!({"model":"production CPU/FPU core emulator; separate instruction ROM and one-cycle data/control peers; no caches/SDRAM/GPU/Display timing","window":"record: after application UI formatting and before submit; submit_wait_present: submission through GPU/Display retirement; immediate functional LCOPY, no cache timing","frames":rows})).unwrap()).unwrap();
 }

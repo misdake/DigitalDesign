@@ -40,39 +40,47 @@ mod time_device;
 
 #[path = "host/gpu_api_bind.rs"]
 mod gpu_api_bind;
-
 #[path = "host/gpu_api_capture_source.rs"]
 mod gpu_api_capture_source;
-
 #[path = "host/gpu_api_config.rs"]
 mod gpu_api_config;
-
 #[path = "host/gpu_api_execute.rs"]
 mod gpu_api_execute;
-
 #[path = "host/gpu_api_fault.rs"]
 mod gpu_api_fault;
-
 #[path = "host/gpu_api_g0.rs"]
 mod gpu_api_g0;
-
 #[path = "host/gpu_api_maintenance.rs"]
 mod gpu_api_maintenance;
-
 #[path = "host/gpu_api_mesh.rs"]
 mod gpu_api_mesh;
-
 #[path = "host/gpu_api_packet.rs"]
 mod gpu_api_packet;
-
 #[path = "host/gpu_api_present.rs"]
 mod gpu_api_present;
-
 #[path = "host/gpu_api_projection_boundary.rs"]
 mod gpu_api_projection_boundary;
-
 #[path = "host/gpu_api_record.rs"]
 mod gpu_api_record;
-
+#[path = "host/gpu_api_resources.rs"]
+mod gpu_api_resources;
 #[path = "host/gpu_api_ui_packet.rs"]
 mod gpu_api_ui_packet;
+
+#[path = "host/gpu_api_integration.rs"]
+mod gpu_api_integration;
+
+#[path = "host/gpu_api_pixels.rs"]
+mod gpu_api_pixels;
+
+#[path = "host/gpu_api_scene.rs"]
+mod gpu_api_scene;
+
+#[path = "host/gpu_api_forwarding.rs"]
+mod gpu_api_forwarding;
+
+#[path = "../build_support/application_entry.rs"]
+mod shared_application_entry;
+
+#[path = "host/gpu_api_imports.rs"]
+mod gpu_api_imports;

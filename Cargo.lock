@@ -186,6 +186,7 @@ dependencies = [
  "minifb",
  "rcc",
  "serde_json",
+ "syn 1.0.109",
 ]
 
 [[package]]

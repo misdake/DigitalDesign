@@ -16,6 +16,15 @@ fn renderer_project_mode_is_explicit_host_policy_and_not_an_image_format_change(
     assert_eq!(native.application, renderer.application);
     assert_eq!(native.constants(), renderer.constants());
     assert!(parse_boot_project("format 2\nrenderer\nrenderer\napplication app.rs\n").is_err());
+    let explicit = parse_boot_project("format 2\ngpu-api\napplication app.rs\n").unwrap();
+    assert!(explicit.gpu_api && !explicit.renderer);
+    assert!(!renderer.gpu_api && !native.gpu_api);
+    assert_eq!(native.constants(), explicit.constants());
+    for directives in ["gpu-api\ngpu-api", "renderer\ngpu-api", "gpu-api\nrenderer"] {
+        assert!(
+            parse_boot_project(&format!("format 2\n{directives}\napplication app.rs\n")).is_err()
+        );
+    }
 }
 fn fixture() -> Vec<u8> {
     let source = include_str!("../../rcc/boot-contract.rs");
