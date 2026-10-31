@@ -4,8 +4,10 @@ This directory contains independent integer references, scene inputs and bounded
 replay drivers for the standalone GPU. The contracts are maintained in
 [geometry input](/ip/gpu-v2/docs/formats.md), [frontend](/ip/gpu-v2/docs/geometry.md),
 [pixel backend](/ip/gpu-v2/docs/execution.md), [framebuffer](/ip/gpu-v2/docs/framebuffer.md)
-and [memory transport](/ip/gpu-v2/docs/submission.md). Historical phase receipts do
-not replace those implemented contracts or define a CPU submission ABI.
+and [memory transport](/ip/gpu-v2/docs/submission.md). UI destination mapping is
+specified in [UI tile addresses](/ip/gpu-v2/docs/ui.md#destination-tile-addresses).
+Historical phase receipts do not replace those implemented contracts or define
+a CPU submission ABI.
 
 ## Entry points
 
@@ -19,7 +21,6 @@ not replace those implemented contracts or define a CPU submission ABI.
 | profile_prepare.py | Observer-only replay separating R-only/I-only/shared publication waits and an exclusive R lifetime partition; other activity counters overlap |
 | profile_triangle_queue.py | Observer-only per-meshlet T queue peak/full waits, last T completion and remaining frontend tail |
 | texture_layout_replay.py | Generated hierarchy lookup for native RTT observers; no layout conversion |
-| compare_texture_layout.py | Require matched complete-frame identities and compare parent misses,128B traffic and cycles |
 | fit_texture_layout.py | Matched registered cache-leaf fit; excludes packet producer and whole GPU |
 | replay_command.py | Canonical native command and descriptor encoders shared by bounded RTL fixtures |
 | tests/direct_global.py | Bounded paired native GPU runs across drained light/ray/mode/code/far replacements; compare exact shade results and framebuffer bytes under CE pauses and memory backpressure |

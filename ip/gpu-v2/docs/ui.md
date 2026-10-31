@@ -74,6 +74,25 @@ WAIT(all)/FLUSH before the next UI draw. No additional hardware state is needed.
 The original full-grid snapshot and begin/write/end convenience APIs remain
 compatible. See the [driver](/systems/cpu-v3-tang-nano-20k/docs/gpu-driver.md#in-place-ui-construction).
 
+## Destination tile addresses
+
+Each UI tile covers two horizontally adjacent 8x16 character cells. Logical
+tile indices remain row-major: `t=0..374`, with 25 tile columns and 15 rows.
+Framebuffer maintenance maps this index to the
+[column-ordered surface](/ip/gpu-v2/docs/framebuffer.md#surface-layout):
+
+```text
+tile_x = t % 25
+tile_y = t / 25                 // integer division
+physical_macro = (tile_x << 4) | tile_y
+```
+
+`column_ui_tile` implements the quotient/remainder using conditional
+subtractions of 200, 100, 50 and 25. Indices 0, 24, 25 and 374 map to macros 0,
+384, 1 and 398. The padding macro at row 15 of each column has no logical UI index.
+This conversion applies to framebuffer destinations; grid ID order and atlas
+encoding retain the formats above.
+
 ## Storage and pipeline
 
 The input scratchpad is reused without extra BSRAM: page0 holds the768-byte
