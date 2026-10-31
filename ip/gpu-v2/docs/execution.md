@@ -765,6 +765,16 @@ A miss reserves one line and presents an aligned 128-byte request. It receives
 READY; errors cannot publish partial data. Acceptance/first-beat and final-beat/
 ACK may coincide where the interface permits them. Refill runs on wall edges.
 
+The command closure selects `system/texture_cache16x8.v` as its cache owner.
+Its 15-bit physical line key, eight sets/four ways, two child transactions and
+paid-address/held-DO calendar are native to that source; generic factories keep
+their checked interfaces. The first successful child keeps the parent FILLING.
+Only the second successful terminal publishes READY. A failed child terminal
+invalidates the parent and ends that descriptor while explicit abort preserves
+the existing presented-request drain. Return framing monitors remain passive;
+monitor removal does not remove terminal-success qualification. There is no
+added sticky failure, retry prohibition or source-lifetime change.
+
 Color processes two RGB taps per edge with six small multipliers. On common CE,
 its accumulator Q writes the final Sample bank directly. The sink consumes old
 Q before a same-edge replacement. This parent contract requires no intermediate

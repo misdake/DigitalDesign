@@ -57,9 +57,35 @@ def value(address):
     return (((address>>1)*0x17e9)^(address>>6)^0xa35c)&65535
 
 
+def terminal_cases(source, out):
+    """Real failed child terminals invalidate/drain with monitors compiled out."""
+    rows=[]
+    identity=hashlib.sha256(source.read_bytes()).hexdigest()
+    for native in (0,1):
+        for failed in (0,1,2):
+            assert hashlib.sha256(source.read_bytes()).hexdigest()==identity
+            directory=out/f'terminal-{native}-{failed}';directory.mkdir()
+            fixture=Path(__file__).with_name('fixtures')/'command_cache_terminal_tb.v'
+            (directory/'tb.v').write_text(fixture.read_text().replace('@NATIVE@',str(native)))
+            execute([os.environ['IVERILOG_EXE'],'-g2012','-DSYNTHESIS','-s','tb','-o','sim.vvp',source,'tb.v',
+                     Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'],directory,'compile')
+            execute([os.environ['VVP_EXE'],'sim.vvp',f'+FAIL={failed}'],directory,'run')
+            assert hashlib.sha256(source.read_bytes()).hexdigest()==identity
+            log=(directory/'run.log').read_text()
+            summary=[line for line in log.splitlines() if line.startswith('PASS terminal')]
+            assert len(summary)==1,log[-1500:]
+            rows.append(dict(native=native,failed_sector=failed,summary=summary,
+                             trace_sha256=hashlib.sha256(('\n'.join(line for line in log.splitlines() if line.startswith('TRACE '))+'\n').encode()).hexdigest()))
+    return rows
+
+
 def main():
     ap=argparse.ArgumentParser(__doc__);ap.add_argument('--export',type=Path,required=True);ap.add_argument('--output',type=Path,required=True)
+    ap.add_argument('--terminal-only',action='store_true',help='Bounded success/failed-child checks with monitors off')
     args=ap.parse_args();source=args.export.resolve();out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
+    if args.terminal_only:
+        receipt=dict(status='pass',export_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),terminal_cases=terminal_cases(source,out))
+        (out/'receipt.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(receipt,indent=2));return
     here=Path(__file__).resolve().parent
     packet=load(here/'texture_packet.py');cache=load(here/'texture_registered_return.py')
     rows=vectors();packetdir=out/'packet';packetdir.mkdir()
@@ -181,6 +207,7 @@ end
         abort_cases.append(dict(stage=stage,summary=[s for s in (directory/'run.log').read_text().splitlines() if s.startswith('PASS ')]))
     receipt=dict(status='pass',column_major=True,packet_vectors=len(rows),cache_groups_per_mode=1536,cases=cases,
                  fifo_cases=fifo_cases,failed_child_cases=failures,lookahead_cases=lookahead_cases,abort_cases=abort_cases,
+                 terminal_cases=terminal_cases(source,out),
                  export_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                  coverage='All levels0..10; full/base mip; X/Y/XY boundaries; all128 local origins; six conflicting lines; four banks; CE/commit/output/refill pauses and held Q')
     (out/'receipt.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(receipt,indent=2))

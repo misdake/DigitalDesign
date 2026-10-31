@@ -52,7 +52,10 @@ fn verilog_column(
         surface,
         backend,
     )?;
-    let numerical = current_state::lower(current_texture::lower(numerical)?)?;
+    let numerical = current_state::lower(current_texture::lower(
+        numerical,
+        matches!(backend, super::pixel::quad_ingress::rtl::Backend::Native),
+    )?)?;
     let numerical = texture_layout16x8::lower(numerical)?;
     source.push_str(&ui_grid::lower(numerical)?);
     source.push_str(include_str!("command_processor.v"));
@@ -63,8 +66,7 @@ fn verilog_column(
         .next()
         .ok_or("memory router")?;
     source.push_str(router);
-    let source = simulation_checks::lower(source)?;
-    texture_layout16x8::protect_return_errors(source)
+    simulation_checks::lower(source)
 }
 
 /// Column RGB565 texture, either POT or a fixed 400x240 framebuffer view.

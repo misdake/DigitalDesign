@@ -201,26 +201,6 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             register(s, "stopped", true)?;
             check(s, "preflight_bad", "1'b0", "running&&!abort", false)?;
         }
-        "gpu_v2_texture_runtime_cache_unique" => {
-            monitor(
-                s,
-                "!abort&&((mem_resp_valid&&(!eff_started||desc_next>=16||mem_resp_index!=desc_next[3:0]))||(mem_resp_complete&&(!eff_started||eff_next!=16)))",
-                "texture return framing",
-            );
-            once(
-                s,
-                "wire beat_ok=beat_present&&eff_started&&desc_next<16&&mem_resp_index==desc_next[3:0];",
-                "wire beat_ok=beat_present;",
-            )?;
-            once(
-                s,
-                "wire term_ok=terminal&&mem_resp_ok&&eff_started&&eff_next==16;",
-                "wire term_ok=terminal;",
-            )?;
-            peer_error(s, "mem_resp_ok", true, "mem_resp_complete")?;
-            register(s, "fault", true)?;
-            check(s, "preflight_bad", "1'b0", "!abort", false)?;
-        }
         "gpu_v2_texture_runtime_color" => {
             register(s, "terminal", false)?;
             check(s, "preflight_fault", "1'b0", "1'b1", false)?;

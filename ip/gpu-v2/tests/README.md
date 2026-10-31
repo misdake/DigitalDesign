@@ -98,6 +98,14 @@ lookahead, child failures and abort drain. Each subprocess is bounded to60
 seconds and each bench has a finite cycle watchdog. The generic numerical
 sampler fixtures keep their own local format and are not native texture loaders.
 
+`test_texture16x8.py --terminal-only --export <command.v> --output <fresh-directory>`
+runs the bounded success and first/second child failure checks with `SYNTHESIS`
+set, for portable and native cache RAMs. Each case has a 300-cycle watchdog.
+Refills run with proposal CE disabled. The oracle checks parent FILLING/READY
+or invalidation, descriptor drain, publication/consumption counts, independent
+texel values and held DO. These cases also run in the normal script path;
+the existing monitor-on failure and three abort cases remain separate checks.
+
 The fixed-column RTT harnesses consume the same production`command` export.
 `test_rtt400.py` checks independent coordinate/packet references and native
 sampler pixels under stalls; `--exhaustive-axis` checks every 16-bit axis input.

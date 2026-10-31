@@ -138,7 +138,6 @@ pub fn lower(mut source: String) -> Result<String, String> {
             "wire[6:0]target_page=(mt_issue[1]?depth_base[13:7]:color_base[13:7])+{5'd0,mt_linear_tile[8:7]};\n assign mem_req_addr={9'd0,target_page,mt_linear_tile[6:0],mt_tile[5],mt_issue[0],7'd0};")
     })?;
     direct_global(&mut source)?;
-    registered_texture_return(&mut source)?;
     native_group_head(&mut source)?;
     for old in [
         "draw_bank",
@@ -356,109 +355,10 @@ fn direct_global(source: &mut String) -> Result<(), String> {
     })
 }
 
-/// The paid payload and line register drive the texel read on the next edge.
-/// Its synchronous DO is the result slot; no second 64-bit texel copy exists.
-/// The paid slot may prefetch while Color holds the previous native DO. The
-/// next texel read replaces DO only on its previous consumer's final edge.
-/// One pin protects the newest paid line; a held DO no longer reads that line.
-fn registered_texture_return(source: &mut String) -> Result<(), String> {
-    edit(source, "gpu_v2_texture_runtime_cache_unique", |s| {
-        once(s, "reg[15:0]res_tex[0:3];", "")?;
-        once(
-            s,
-            " (!rd_valid||!res_valid||out_ready)&&hit_ready;",
-            " !rd_valid&&hit_ready;",
-        )?;
-        once(s, "wire[15:0]data_di[0:3],data_do[0:3];", "")?;
-        once(
-            s,
-            "wire head_valid=in_valid;",
-            "wire[15:0]data_di[0:3],data_do[0:3];\n wire head_valid=in_valid;",
-        )?;
-        *s = s.replace("res_tex[", "data_do[");
-        once(s, "for(b=0;b<4;b=b+1)data_do[b]<=data_do[b];", "")?;
-        let begin = s
-            .find("  // Direct four address bits;")
-            .ok_or("Texture registered row begin")?;
-        let end = s[begin..]
-            .find(" wire data_write=")
-            .ok_or("Texture registered row end")?
-            + begin;
-        let rows = s[begin..end]
-            .replace("head_tlx", "data_tlx")
-            .replace("head_tly", "data_tly");
-        s.replace_range(
-            begin..end,
-            &format!(
-                " wire[2:0]data_tlx=paid_payload[18:16],data_tly=paid_payload[21:19];\n{rows}"
-            ),
-        );
-        for bank in 0..4 {
-            once(
-                s,
-                &format!("data_ra[{bank}]={{hit_line,bank_row{bank}}}"),
-                &format!("data_ra[{bank}]={{pin_line,bank_row{bank}}}"),
-            )?;
-        }
-        let begin = s
-            .find("genvar db;generate")
-            .ok_or("Texture data bank begin")?;
-        let end = s[begin..]
-            .find("end endgenerate")
-            .ok_or("Texture data bank end")?
-            + begin
-            + "end endgenerate".len();
-        let banks = s[begin..end]
-            .replace(".CEB(read_issue)", ".CEB(return_capture)")
-            .replace(
-                "else if(read_issue)q<=mem[data_ra[db]]",
-                "else if(return_capture)q<=mem[data_ra[db]]",
-            );
-        s.replace_range(begin..end, &banks);
-        Ok(())
-    })
-}
-
 fn native_group_head(source: &mut String) -> Result<(), String> {
     edit(source, "gpu_v2_packet_store_unique", |s| {
         *s = include_str!("texture_group_q.v").to_owned();
         Ok(())
     })?;
-    edit(source, "gpu_v2_texture_runtime_cache_unique", |s| {
-        // A miss keeps the Group head until refill completion and read_issue.
-        // Its registered sector already holds the request address throughout.
-        once(
-            s,
-            "reg[31:0]desc_addr;reg[4:0]desc_next;",
-            "reg[4:0]desc_next;",
-        )?;
-        once(
-            s,
-            "assign mem_req_addr=desc_addr;",
-            "assign mem_req_addr=hk_addr;",
-        )?;
-        once(
-            s,
-            "desc_line<=vic_line;desc_addr<=hk_addr;desc_started<=0;",
-            "desc_line<=vic_line;desc_started<=0;",
-        )?;
-        let end = s.rfind("endmodule").ok_or("missing cache end")?;
-        s.insert_str(
-            end,
-            r#"
-`ifndef SYNTHESIS
- reg descriptor_was_valid;reg[31:0]descriptor_address;
- always @(posedge clk)begin
-  if(reset)descriptor_was_valid<=0;
-  else begin
-   if(descriptor_was_valid&&hk_addr!==descriptor_address)
-    $fatal(1,"Group sector changed before its descriptor drained");
-   descriptor_was_valid<=desc_valid;descriptor_address<=hk_addr;
-  end
- end
-`endif
-"#,
-        );
-        Ok(())
-    })
+    Ok(())
 }
