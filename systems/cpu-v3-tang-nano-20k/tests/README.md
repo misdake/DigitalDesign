@@ -306,3 +306,10 @@ fixture observes the CPU's halted state and verifies that architectural HALT
 and command ready remain suppressed; it does not wait for a successful drain
 from a deliberately faulted cache. Existing reset/error ownership and DWAIT
 checks retain their behavior.
+
+## Explicit GPU storage interfaces
+
+The host gpu_api core modules exercise actual prepared/schema, arena, recording,
+CPU-owned transfer, execution and Display interfaces. Every simulated program is
+bounded. They do not require a scene helper, public resource root or C parser;
+scene/capture and actual callers have separate combination qualifications.

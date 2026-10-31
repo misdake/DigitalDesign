@@ -37,3 +37,42 @@ mod stick;
 mod system_display_board;
 #[path = "host/time_device.rs"]
 mod time_device;
+
+#[path = "host/gpu_api_bind.rs"]
+mod gpu_api_bind;
+
+#[path = "host/gpu_api_capture_source.rs"]
+mod gpu_api_capture_source;
+
+#[path = "host/gpu_api_config.rs"]
+mod gpu_api_config;
+
+#[path = "host/gpu_api_execute.rs"]
+mod gpu_api_execute;
+
+#[path = "host/gpu_api_fault.rs"]
+mod gpu_api_fault;
+
+#[path = "host/gpu_api_g0.rs"]
+mod gpu_api_g0;
+
+#[path = "host/gpu_api_maintenance.rs"]
+mod gpu_api_maintenance;
+
+#[path = "host/gpu_api_mesh.rs"]
+mod gpu_api_mesh;
+
+#[path = "host/gpu_api_packet.rs"]
+mod gpu_api_packet;
+
+#[path = "host/gpu_api_present.rs"]
+mod gpu_api_present;
+
+#[path = "host/gpu_api_projection_boundary.rs"]
+mod gpu_api_projection_boundary;
+
+#[path = "host/gpu_api_record.rs"]
+mod gpu_api_record;
+
+#[path = "host/gpu_api_ui_packet.rs"]
+mod gpu_api_ui_packet;

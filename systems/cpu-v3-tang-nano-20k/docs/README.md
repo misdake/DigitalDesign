@@ -32,6 +32,8 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [`system-display-test.md`](system-display-test.md): CPU-only cold-boot diagnostic,
   scratch/LCOPY ownership, continuous framebuffer presentation and UART results.
 
+- [Explicit GPU storage core](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md): prepared schema, bounded CPU transfers, native recording and execution/Display handoff.
+
 Update the owning specification whenever its implemented contract changes.
 Keep new verification output in the worktree's `target/`; the existing historical
 optimization records are not live ledgers and receive no new measurement rows.
