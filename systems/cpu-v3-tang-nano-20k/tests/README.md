@@ -1,5 +1,65 @@
 # System regression tests
 
+`graphics_api_b_modules` compiles actual B camera/model/material/state/view/UI helpers with
+checked RCC and executes CPU V3 in both `gpu_debug` profiles, with a 250,000-step
+limit per program. It checks final native encodings and independently compares
+the complete external UI allocation across a DSEG3 boundary. Two cameras share
+a nonuniformly scaled Model; independent oracles cover the entire 256-word
+native/scratch span, source matrices, light quantization and frozen input arrays.
+The oblique case independently multiplies host rotation matrices for full
+three-axis Model/Euler camera rotations, negative/nonuniform scaling and a
+non-axis look-at. It compares source world/normal/view and final native
+position/normal/light, with fixed Q16/Q14 tolerances, exact padding/scratch gaps
+and byte-identical healthy output across profiles.
+The binding case feeds the actual B preparation into A's actual arena, record,
+bind, mesh and UI packet modules. Independent complete command/push oracles
+check two CBs, six live Models, equal-value reuse, RGBA-only changes, 3D/UI/3D
+and freeing/reusing a Model after recording. It includes actual A execution,
+Display and fault storage. These helper fixtures carry no hypothetical C capture
+allocation and do not qualify the final A/B/C budget, public owners, capture or
+GPU pixels. The public fixture below measures actual composed globals instead.
+Both profiles must emit the same
+healthy command/push bytes. A sources are frozen per case across both profiles.
+During parallel
+G0 development, `GRAPHICS_API_A_RCC` selects A's actual dependency directory;
+after integration it defaults to this system's `rcc/`. Captured source inputs
+and reports stay in `target/graphics-api-b-modules`. Set `GRAPHICS_API_B_OUTPUT`
+to a fresh directory in this tree target to retain earlier qualification evidence;
+helper cases use its `modules/` and the value gate its `values/` subdirectory. These tests do not qualify
+the public resource factories, combined driver budget or GPU execution.
+
+`graphics_api_b_value_gate` is the positive frozen-API gate for the production
+`Shininess::nearest` / `exponent` methods. It requires real checked RCC lowering
+and CPU execution bounded to 250,000 steps in both `gpu_debug` profiles. All 17
+codes/exponents, lower-on-tie selection and the 0/65535 endpoints are checked.
+Both profiles use the same frozen production input bytes. This qualifies the
+value methods; A's resource adapters and approved-root registration still need
+their actual combined gates.
+
+`scripts/validate-graphics-api-b-public.ps1 -InputDirectory <fixed-A-package>
+-OutputDirectory target/<fresh-name>` qualifies the actual public scene root
+using its frozen System loader, B helpers and C implementation. The input must
+contain `manifest.json` and `sources.zip`; ZIP and every source hash are checked
+before compilation, and existing output directories are preserved. No source
+from an active A tree is loaded during execution. The script generates only a
+temporary Cargo harness, using this tree's accepted RCC/CPU backend.
+
+The checker and its source fixture are also copied into the output and hashed
+in `run-identity.json`, with the accepted dev, source commit and any WIP identity.
+The public fixture runs both `gpu_debug` profiles under a 5,000,000-step limit.
+It keeps six Models and two Cameras live, checks oblique Euler/look-at native
+matrices and light with independent matrix products, then mutates resources,
+Drops and reuses a Model slot and appends to one of two independent CBs.
+Full old command/push/fact snapshots must remain unchanged. Public texture and
+RTT views survive their source descriptor's Drop. A small atlas and odd/short
+UI write cross a DSEG3 boundary, preserving neighbor bytes and allocation tail.
+3D/UI/3D, DMA/full WAIT ordering, equal-value reuse and RGBA-only changes are
+checked in the emitted native stream. Healthy outputs match across profiles.
+Projection private-field access, a moved Model and private helper calls are
+negative checked cases. Static plus observed stack must fit 16 KiB, including
+the actual C globals; no hypothetical capture reservation is added. This is
+public recording qualification, without GPU pixels or captured DRAW/UI G3.
+
 The ignored `raster_phase_replica::export_raster_phase_inputs` test materializes
 the portable/native frontend, final production GPU leaf and inner command RTL
 under `target/raster-phase-native/native/input` when
@@ -48,6 +108,17 @@ and zero stores for unchanged contents. Separate cases cover field validation,
 capacity rejection, cancellation, version wrap and retained fault references.
 GPU/Display completion peers do not establish actual rendering, scanout, cache
 publication timing or concurrent hardware qualification.
+
+The `gpu_api_*` modules exercise the new explicit API work in progress, separately
+from the legacy pipeline. They compile real checked RCC for CPU V3 in both
+`gpu_debug` profiles and use bounded CPU/device peers. The implemented storage and
+recording scope is described in [API storage](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md).
+`gpu_api_resources` uses the actual approved root for factories, Pass/descriptor
+lifetimes, capacity rejection, reinitialization and Display retirement. Private
+execute tests do not establish public submission/capture or GPU pixel rendering.
+The required private-memory-field registration regression currently fails against
+the accepted frontend; positive-only development runs explicitly exclude that
+single test and are not full API acceptance.
 
 The `gamepad` module executes production RCC input code against an independent
 Device5 snapshot peer. It checks explicit edge accumulation/consumption,
@@ -287,6 +358,21 @@ the profiler Python suite. `capture_draw`'s explicit `GPU_PROFILER_NATIVE_COPY=1
 and `GPU_PROFILER_UART=1` modes reuse the same source generator for bounded actual
 UART runtime and system-front-end fixtures; cold GPU+MC replay remains separate.
 
+The `gpu_api_capture_source` tests qualify actual A fact/source/health exports,
+including optional Display observation and fixed publication counts. They do
+not install a C shim or establish public submit/capture combination acceptance.
+
+
+The `gpu_api_integration` tests use actual A/C modules and the approved public
+root for unique retirement, interleaved replay, the real diagnostic gate and
+fatal ownership retention. `gpu_api_scene` qualifies the public B adapters and
+records exact facts/native input; a separate case proves malformed capture
+dependencies issue no SEND and preserve the prepared owner.
+`gpu_api_pixels` is explicitly ignored by default and requires the native Gowin
+simulation library plus Icarus. It executes the public API submission on production
+GPU RTL, imports actual color pixels and permits retirement only after completion;
+all CPU, GPU and child-process runs are bounded. No board is used.
+
 ## Dual-address LCOPY and maintenance
 
 `system_cosim` covers independent source/destination DSEG translation, remapping
@@ -307,9 +393,7 @@ and command ready remain suppressed; it does not wait for a successful drain
 from a deliberately faulted cache. Existing reset/error ownership and DWAIT
 checks retain their behavior.
 
-## Explicit GPU storage interfaces
-
-The host gpu_api core modules exercise actual prepared/schema, arena, recording,
-CPU-owned transfer, execution and Display interfaces. Every simulated program is
-bounded. They do not require a scene helper, public resource root or C parser;
-scene/capture and actual callers have separate combination qualifications.
+The public recording gate is valid with the frozen A stage and C047 capture
+implementation on accepted ISA0.10. It measures actual C globals in each profile;
+it never uses the recording stack as capture/dump stack evidence. The final A
+root/loader/caller composition is a separate required input and qualification.
