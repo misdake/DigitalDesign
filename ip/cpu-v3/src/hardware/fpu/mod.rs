@@ -1803,12 +1803,48 @@ initial begin
     #[test]
     #[ignore = "bounded selected RF, one-product DSP and special-function calendars"]
     fn verify_selected_compute_leaves() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuRegisterRam>().unwrap();
         digital_design_hardware::verify_verilog_with_iverilog::<execution::CpuV3FpuExecRf>()
             .unwrap();
         digital_design_hardware::verify_verilog_with_iverilog::<execution::CpuV3FpuExecMul>()
             .unwrap();
         digital_design_hardware::verify_verilog_with_iverilog::<execution::CpuV3FpuExecSpecial>()
             .unwrap();
+
+        // Mutate the DUT, not the monitor: a permanently enabled B read must
+        // fail the same held-Q assertion used by the positive execution RF.
+        struct ForcedBRead;
+        impl HardwareIdentity for ForcedBRead {
+            const TARGET_RESOURCE_LEAF: bool = false;
+            fn verilog_identity() -> VerilogIdentity {
+                execution::CpuV3FpuExecRf::verilog_identity()
+            }
+        }
+        impl Module for ForcedBRead {
+            type Input = execution::CpuV3FpuExecRfInput;
+            type Output = CpuV3FpuRegisterRamOutput;
+            type EmuState = ();
+            const USES_MAIN_CLOCK: bool = true;
+            const EMU_AVAILABLE: bool = false;
+            fn verilog_source() -> Option<String> {
+                let source = execution::CpuV3FpuExecRf::verilog_source()?;
+                assert_eq!(source.matches("if (read_b_enable)").count(), 1);
+                Some(source.replace("if (read_b_enable)", "if (1'b1)"))
+            }
+            fn verilog_testbench() -> Option<String> {
+                execution::CpuV3FpuExecRf::verilog_testbench()
+            }
+        }
+        match digital_design_hardware::verify_verilog_with_iverilog::<ForcedBRead>() {
+            Err(digital_design_hardware::VerilogSimulationError::MissingPassMarker {
+                stdout,
+                ..
+            }) => assert!(
+                stdout.contains("B hold while address/write change"),
+                "{stdout}"
+            ),
+            other => panic!("forced B-read enable did not fail the hold check: {other:?}"),
+        }
     }
 
     /// The architecture `encoding` module is the public source of truth for

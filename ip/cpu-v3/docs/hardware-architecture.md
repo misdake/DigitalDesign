@@ -152,6 +152,14 @@ only for CMP. CEIL, half-up ROUND and TRUNC only need the
 integer half, so they share one 16-bit increment followed by sixteen zero bits.
 No execution or vector-lane stage is added, and the defined wrap boundaries remain.
 
+The ordinary RF synchronously reads both ports on every clock edge. The selected
+execution RF has a native `read_b_enable`: when low, B Q holds while A reads and
+writes to both 512x32 mirrors continue. Re-enabling B samples its current address
+on that edge; a simultaneous same-address write still returns the pre-write word.
+The execution RF expands its initialization region through the same LUT renderer
+as `fpu_lut_codegen`; it has no second maintained table or post-export port patch.
+The issuer's enable, addresses and commit calendar remain unchanged.
+
 The accepted `word0` already retains the parked architectural RF addresses. The
 common port issuer advances its cursors only for the scheduled vector/product
 reads; special-function LUT accesses and idle external accesses select those same

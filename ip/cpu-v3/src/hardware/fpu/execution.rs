@@ -40,26 +40,15 @@ impl Module for CpuV3FpuExecRf {
         vec![TargetResourceRequest::new(BsramBlocks::new(2))]
     }
     fn verilog_testbench() -> Option<String> {
-        Some(
-            CpuV3FpuRegisterRam::verilog_testbench()?
-                .replace("CpuV3FpuRegisterRam", "CpuV3FpuExecRf")
-                .replace("reg clk = 0;", "reg clk = 0; reg read_b_enable = 1;"),
-        )
+        Some(format!(
+            "`define CPU_V3_FPU_RF_EXEC_TEST\n{}",
+            include_str!("cpu_v3_fpu_register_ram_tb.v")
+        ))
     }
     fn verilog_source() -> Option<String> {
-        // Keep exactly one canonical RF/LUT initialization source.
-        let original = CpuV3FpuRegisterRam::verilog_source()?;
-        let read = "read_b_data_r <= mirror_1[read_b_address];";
-        assert!(original.contains(read));
-        Some(
-            original
-                .replace("CpuV3FpuRegisterRam", "CpuV3FpuExecRf")
-                .replace(
-                    "input wire [8:0] read_b_address,",
-                    "input wire [8:0] read_b_address,\n    input wire read_b_enable,",
-                )
-                .replace(read, &format!("if (read_b_enable) {read}")),
-        )
+        Some(crate::lut::replace_lut_init_region(include_str!(
+            "cpu_v3_fpu_exec_rf.v"
+        )))
     }
 }
 impl Module for CpuV3FpuExecMul {
