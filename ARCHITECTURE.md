@@ -65,8 +65,7 @@ CPU V2/V3 systems use physical addresses only. CPU V3 forms a 32-bit word addres
 device-channel allocation.
 
 `dev_send`/`dev_recv` are the control plane. Shared physical memory is the CPU/DMA data plane and
-the reserved GPU data plane. The former production GPU was retired during the v2 redesign; its
-earlier standalone cmodel remains at `systems/cpu-v3-tang-nano-20k/src/hardware/gpu/sim`.
+the reserved GPU data plane.
 New reusable development lives in `ip/gpu-v2`, with the generic framework in
 `modeling/audited`; see [GPU component ownership](ip/gpu-v2/docs/overview.md). Device4 binds the single-CB command GPU through the system target leaf; its
 two-SEND/busy-RECV ABI is specified in `/ip/gpu-v2/docs/commands.md`. The host

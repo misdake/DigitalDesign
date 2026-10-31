@@ -4,7 +4,7 @@ This document records the Stage 12 CPU system and its offline fitting evidence. 
 timing, raster, and framebuffer results from the former implementation below are historical,
 not measurements of the current GPU integration leaf. Device4 now binds the
 single-CB GPU command closure from `ip/gpu-v2` to the three system memory masters.
-The old GPU ABI is not supported. `src/hardware/gpu/sim/` remains historical.
+The old GPU ABI is not supported.
 The current Device4 protocol and completion boundary are specified in
 [GPU commands](/ip/gpu-v2/docs/commands.md). Bounded interface/RTL tests do not
 qualify a new full-board image. Historical Stage 12 timing tables below predate
