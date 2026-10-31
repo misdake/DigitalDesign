@@ -1,26 +1,24 @@
 //! Real CPU/GPU/Display with production shared-memory arbitration.
+use super::present_fixture;
 use cpu_v3::{rcc_backend, CpuV3Core, CpuV3DataCache};
 use cpu_v3_tang_nano_20k::{
     hardware::{CpuV3MemoryArbiter, SystemControlDevice},
     CpuV3Gpu, FramebufferHdmi,
 };
 use digital_design_hardware::{HardwareIdentity, VerilogProject};
+use present_fixture::draw_fixture;
+use present_fixture::{program as present_program, surface as present_surface};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
-#[allow(dead_code)]
-#[path = "support/gpu_rcc_present_fixture.rs"]
-mod present_fixture;
-use present_fixture::draw_fixture;
-use present_fixture::{fault_program as present_program, surface as present_surface};
 #[test]
 #[ignore = "real full-size scan + CPU/GPU arbitration; requires Python, Icarus and Gowin; accelerated pixel clock"]
-fn maintenance_error_stops_before_render_or_present() {
+fn real_cpu_gpu_display_swaps_after_old_scan_reads_drain() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = root.join("../../target/gpu-rcc-present-fault");
+    let out = root.join("../../target/gpu-rcc-present");
     std::fs::create_dir_all(&out).unwrap();
     assert_eq!(draw_fixture::expected_commands(16368).len(), 384);
     let source = present_program();
@@ -97,7 +95,7 @@ fn maintenance_error_stops_before_render_or_present() {
         std::fs::write(&path, source).unwrap();
         paths.push(path);
     }
-    let mut tb = include_str!("gpu_rcc_present_tb.v")
+    let mut tb = include_str!("../gpu_rcc_present_tb.v")
         .replace(
             "__FST_ADDRESS__",
             &present_fixture::fst_address(&program).to_string(),
@@ -128,7 +126,6 @@ fn maintenance_error_stops_before_render_or_present() {
     ] {
         tb = tb.replace(key, &out.join(name).to_string_lossy().replace('\\', "/"));
     }
-    tb = present_fixture::fault_testbench(tb);
     let tb_path = out.join("tb.v");
     std::fs::write(&tb_path, tb).unwrap();
     let models = PathBuf::from(std::env::var_os("GOWIN_HOME").expect("GOWIN_HOME"))
@@ -153,7 +150,7 @@ fn maintenance_error_stops_before_render_or_present() {
     let result = bounded(&mut sim, &out.join("run.log"));
     let stdout = String::from_utf8_lossy(&result.stdout);
     assert!(
-        result.status.success() && stdout.contains("RCC_PRESENT_FAULT_PASS"),
+        result.status.success() && stdout.contains("RCC_PRESENT_PASS"),
         "{stdout}\n{}",
         String::from_utf8_lossy(&result.stderr)
     );
@@ -168,7 +165,7 @@ fn bounded(command: &mut Command, log: &Path) -> Output {
         .unwrap();
     let start = Instant::now();
     while child.try_wait().unwrap().is_none() {
-        if start.elapsed() > Duration::from_secs(120) {
+        if start.elapsed() > Duration::from_secs(1800) {
             child.kill().unwrap();
             let result = child.wait_with_output().unwrap();
             panic!(

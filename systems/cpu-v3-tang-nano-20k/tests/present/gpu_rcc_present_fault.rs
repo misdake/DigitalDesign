@@ -1,26 +1,24 @@
 //! Real CPU/GPU/Display with production shared-memory arbitration.
+use super::present_fixture;
 use cpu_v3::{rcc_backend, CpuV3Core, CpuV3DataCache};
 use cpu_v3_tang_nano_20k::{
     hardware::{CpuV3MemoryArbiter, SystemControlDevice},
     CpuV3Gpu, FramebufferHdmi,
 };
 use digital_design_hardware::{HardwareIdentity, VerilogProject};
+use present_fixture::draw_fixture;
+use present_fixture::{fault_program as present_program, surface as present_surface};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
-#[allow(dead_code)]
-#[path = "support/gpu_rcc_ui_fixture.rs"]
-mod present_fixture;
-use present_fixture::present::draw_fixture;
-use present_fixture::{fault_program as present_program, surface as present_surface};
 #[test]
 #[ignore = "real full-size scan + CPU/GPU arbitration; requires Python, Icarus and Gowin; accelerated pixel clock"]
-fn ui_grid_writeback_failure_retains_cb_and_stops_render_and_present() {
+fn maintenance_error_stops_before_render_or_present() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = root.join("../../target/gpu-rcc-ui-fault");
+    let out = root.join("../../target/gpu-rcc-present-fault");
     std::fs::create_dir_all(&out).unwrap();
     assert_eq!(draw_fixture::expected_commands(16368).len(), 384);
     let source = present_program();
@@ -43,7 +41,7 @@ fn ui_grid_writeback_failure_retains_cb_and_stops_render_and_present() {
     )
     .unwrap();
     let mut assets: BTreeMap<u32, u64> = BTreeMap::new();
-    for (address, b) in present_fixture::assets() {
+    for (address, b) in draw_fixture::assets() {
         *assets.entry(address / 8).or_default() |= u64::from(b) << ((address % 8) * 8);
     }
     std::fs::write(
@@ -64,14 +62,6 @@ fn ui_grid_writeback_failure_retains_cb_and_stops_render_and_present() {
         )
         .unwrap();
     }
-    std::fs::write(
-        out.join("depth.hex"),
-        present_fixture::depth()
-            .iter()
-            .map(|v| format!("{v:04x}\n"))
-            .collect::<String>(),
-    )
-    .unwrap();
     let mut asset_encoder = Command::new("python");
     asset_encoder
         .arg(root.join("tests/support/gpu_rcc_asset_audit.py"))
@@ -105,10 +95,10 @@ fn ui_grid_writeback_failure_retains_cb_and_stops_render_and_present() {
         std::fs::write(&path, source).unwrap();
         paths.push(path);
     }
-    let mut tb = include_str!("gpu_rcc_ui_present_tb.v")
+    let mut tb = include_str!("../gpu_rcc_present_tb.v")
         .replace(
             "__FST_ADDRESS__",
-            &present_fixture::present::fst_address(&program).to_string(),
+            &present_fixture::fst_address(&program).to_string(),
         )
         .replace("__CORE__", &CpuV3Core::verilog_identity().module_name())
         .replace(
@@ -130,7 +120,6 @@ fn ui_grid_writeback_failure_retains_cb_and_stops_render_and_present() {
         );
     for (key, name) in [
         ("__PROGRAM__", "program.hex"),
-        ("__DEPTH_GOLD__", "depth.hex"),
         ("__ASSETS__", "assets.hex"),
         ("__GOLD1__", "gold1.hex"),
         ("__GOLD2__", "gold2.hex"),
@@ -162,7 +151,7 @@ fn ui_grid_writeback_failure_retains_cb_and_stops_render_and_present() {
     let result = bounded(&mut sim, &out.join("run.log"));
     let stdout = String::from_utf8_lossy(&result.stdout);
     assert!(
-        result.status.success() && stdout.contains("RCC_UI_FAULT_PASS"),
+        result.status.success() && stdout.contains("RCC_PRESENT_FAULT_PASS"),
         "{stdout}\n{}",
         String::from_utf8_lossy(&result.stderr)
     );
@@ -177,7 +166,7 @@ fn bounded(command: &mut Command, log: &Path) -> Output {
         .unwrap();
     let start = Instant::now();
     while child.try_wait().unwrap().is_none() {
-        if start.elapsed() > Duration::from_secs(1800) {
+        if start.elapsed() > Duration::from_secs(120) {
             child.kill().unwrap();
             let result = child.wait_with_output().unwrap();
             panic!(

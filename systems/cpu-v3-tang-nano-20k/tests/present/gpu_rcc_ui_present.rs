@@ -1,21 +1,19 @@
 //! Real CPU/GPU/Display with production shared-memory arbitration.
+use super::ui_fixture as present_fixture;
 use cpu_v3::{rcc_backend, CpuV3Core, CpuV3DataCache};
 use cpu_v3_tang_nano_20k::{
     hardware::{CpuV3MemoryArbiter, SystemControlDevice},
     CpuV3Gpu, FramebufferHdmi,
 };
 use digital_design_hardware::{HardwareIdentity, VerilogProject};
+use present_fixture::present::draw_fixture;
+use present_fixture::{program as present_program, surface as present_surface};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
-#[allow(dead_code)]
-#[path = "support/gpu_rcc_ui_fixture.rs"]
-mod present_fixture;
-use present_fixture::present::draw_fixture;
-use present_fixture::{program as present_program, surface as present_surface};
 #[test]
 #[ignore = "real full-size scan + CPU/GPU arbitration; requires Python, Icarus and Gowin; accelerated pixel clock"]
 fn real_cpu_records_ui_and_presents_two_complete_frames() {
@@ -105,7 +103,7 @@ fn real_cpu_records_ui_and_presents_two_complete_frames() {
         std::fs::write(&path, source).unwrap();
         paths.push(path);
     }
-    let mut tb = include_str!("gpu_rcc_ui_present_tb.v")
+    let mut tb = include_str!("../gpu_rcc_ui_present_tb.v")
         .replace(
             "__FST_ADDRESS__",
             &present_fixture::present::fst_address(&program).to_string(),

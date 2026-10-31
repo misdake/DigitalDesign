@@ -6,6 +6,34 @@ modules. Existing ownership, private-domain, capture-v1 and native assertions st
 active; production boot projects and explicit API callers cannot select this
 overlay.
 
+## Present and UI integration entry
+
+The four Present/UI success and fault cases share the `gpu_present` integration
+executable. Each remains independently filterable and ignored by default:
+
+| Former target | Module filter in `gpu_present` |
+| --- | --- |
+| `gpu_rcc_present` | `gpu_rcc_present::` |
+| `gpu_rcc_present_fault` | `gpu_rcc_present_fault::` |
+| `gpu_rcc_ui_present` | `gpu_rcc_ui_present::` |
+| `gpu_rcc_ui_fault` | `gpu_rcc_ui_fault::` |
+
+```powershell
+cargo test --release -p cpu-v3-tang-nano-20k --test gpu_present -- --list --ignored
+cargo test --release -p cpu-v3-tang-nano-20k --test gpu_present gpu_rcc_present:: -- --ignored --nocapture --test-threads=1
+```
+
+Run tool-backed cases serially to retain the former invocation order. Original
+DUT/oracle code, assertions, evidence directories, ignore reasons and watchdogs
+remain in their case modules and existing fixtures. Combining the executable
+reduces linking and process overhead; it does not reduce simulation coverage or
+case execution work. The Display simulator, GPU dump and pack CLI targets have
+no unit cases and omit empty test harnesses. Their ordinary binaries remain
+available; boot-assets and debugger unit tests remain enabled. Adding unit cases
+to those CLI sources requires re-enabling their Cargo test target.
+
+## Graphics API helpers
+
 `graphics_api_b_modules` compiles actual B camera/model/material/state/view/UI helpers with
 checked RCC and executes CPU V3 in both `gpu_debug` profiles, with a 250,000-step
 limit per program. It checks final native encodings and independently compares

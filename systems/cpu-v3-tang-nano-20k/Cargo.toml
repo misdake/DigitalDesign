@@ -27,3 +27,20 @@ rcc = { path = "../../compiler/rcc" }
 [dev-dependencies]
 syn = { version = "1", features = ["full"] }
 serde_json = "1"
+
+# These CLI targets have no unit tests; keep their ordinary binaries available.
+
+[[bin]]
+name = "cpu-v3-display-sim"
+path = "src/bin/cpu-v3-display-sim.rs"
+test = false
+
+[[bin]]
+name = "cpu-v3-gpu-dump"
+path = "src/bin/cpu-v3-gpu-dump.rs"
+test = false
+
+[[bin]]
+name = "cpu-v3-pack"
+path = "src/bin/cpu-v3-pack.rs"
+test = false
