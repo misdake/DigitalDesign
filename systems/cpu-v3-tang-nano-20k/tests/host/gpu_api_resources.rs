@@ -209,36 +209,46 @@ fn main(){
  let replacement:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});drop(replacement);
  display.wait_vblank();check(display.frame_index()!=before);display.wait_vblank();drop(display);drop(gpu);halt(0x600d);
 }"#;
-    for enabled in [false, true] {
-        let parsed =
-            parse(source, "public-display", enabled).unwrap_or_else(|error| panic!("{error}"));
-        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
-        options.gpu_debug = enabled;
-        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
-        let shared = peer_state(false);
-        let mut cpu = CpuV3Sim::default();
-        cpu.set_boot_window(&program.words);
-        cpu.attach_device(
-            3,
-            Box::new(Peer {
-                kind: 3,
-                state: shared.clone(),
-            }),
-        );
-        cpu.attach_device(4, Box::new(IdleGpu));
-        let mut halted = false;
-        for _ in 0..500_000 {
-            if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
-                assert_eq!(signal, 0x600d, "public Display/{enabled}");
-                halted = true;
-                break;
+    for format in [0, 1] {
+        let source = if format == 0 {
+            source.to_string()
+        } else {
+            source.replace(
+                "Display::open()",
+                "Display::open_with_format(DisplayFormat::LinearRgb565)",
+            )
+        };
+        for enabled in [false, true] {
+            let parsed = parse(&source, &format!("public-display-{format}"), enabled)
+                .unwrap_or_else(|error| panic!("{error}"));
+            let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+            options.gpu_debug = enabled;
+            let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+            let shared = peer_state(false);
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&program.words);
+            cpu.attach_device(
+                3,
+                Box::new(Peer {
+                    kind: 3,
+                    state: shared.clone(),
+                }),
+            );
+            cpu.attach_device(4, Box::new(IdleGpu));
+            let mut halted = false;
+            for _ in 0..500_000 {
+                if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
+                    assert_eq!(signal, 0x600d, "public Display/{enabled}");
+                    halted = true;
+                    break;
+                }
             }
+            assert!(halted, "bounded public Display timeout/{enabled}");
+            assert_eq!(
+                shared.borrow().events,
+                vec![(1, 0), (2, 0x22), (4, format), (3, 1)]
+            );
         }
-        assert!(halted, "bounded public Display timeout/{enabled}");
-        assert_eq!(
-            shared.borrow().events,
-            vec![(1, 0), (2, 0x22), (4, 0), (3, 1)]
-        );
     }
 }
 

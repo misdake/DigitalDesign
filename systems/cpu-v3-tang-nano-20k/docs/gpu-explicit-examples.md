@@ -22,6 +22,17 @@ a plane still being scanned or mutates a UI grid still used by its GPU work.
 | `gpu_profiler_board/rcc/full_scene.rs` | Six box meshlets, one RGB meshlet and seventeen rabbit meshlets; the RGB draw uses `draw_colored`. |
 | `gpu_renderer_bloxorz/rcc/main.rs` | Explicit input/time sampling, offscreen transition snapshots, ordinary/fade consumers and confirmed presentation before session advancement. |
 
+The full box/RGB/rabbit scene explicitly preserves the original controller
+`gpu_demo` scene contract: trilinear filtering (native code2), LESS with depth
+write (code1), rabbit shininess exponent32 (native code12), and linear-light
+RGB565 presentation (Device3 format1). The corresponding native Render word1
+is `0x0056` for the 64x64 full-mip texture; Render word4 low six bits are41 for
+unlit room/RGB and9 for the lit rabbit. Global word10 is `0x0033` for mode3 and
+shininess code12. `Shininess::S12` means exponent12/code6, so this scene uses
+`Shininess::S32`. Other demo factories retain their own defaults. The full
+profiler entry is static; the controller-operated scene entry remains
+`examples/gpu_demo/rcc/main.rs`, including its original input and camera loop.
+
 RTT planes occupy sector ranges `0xc000..0xc800` and `0xc800..0xd000`, each with
 2048 sectors of caller-owned capacity. The current packers exclude these ranges
 from assets. Display uses the ordinary demo planes. No CPU pixel conversion or

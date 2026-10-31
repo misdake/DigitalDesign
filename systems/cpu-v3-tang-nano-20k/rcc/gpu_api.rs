@@ -143,6 +143,13 @@ pub struct Display {
     identity: u16,
 }
 
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum DisplayFormat {
+    Rgb565,
+    LinearRgb565,
+}
+
 impl Gpu {
     pub fn init(config: GpuConfig) -> Self {
         if !gpu_config_init(config) {
@@ -376,7 +383,10 @@ impl Drop for Pass {
 }
 impl Display {
     pub fn open() -> Self {
-        if !gpu_present_open() {
+        Self::open_with_format(DisplayFormat::Rgb565)
+    }
+    pub fn open_with_format(format: DisplayFormat) -> Self {
+        if !gpu_present_open_with_format(format as u16) {
             gpu_api_fail(5, 1, 0, 0);
         }
         Display { identity: 1 }

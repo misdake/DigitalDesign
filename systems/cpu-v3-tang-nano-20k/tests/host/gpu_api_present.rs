@@ -7,6 +7,8 @@ pub(super) struct State {
     active: u32,
     shadow: u32,
     format: u16,
+    shadow_format: u16,
+    wrong_format: bool,
     frame: u16,
     pending: u16,
     remaining_reads: u16,
@@ -22,6 +24,8 @@ pub(super) fn peer_state(wrong_target: bool) -> Rc<RefCell<State>> {
         active: 0x8000 * 64,
         shadow: 0,
         format: 1,
+        shadow_format: 0,
+        wrong_format: false,
         frame: 65535,
         pending: 0,
         remaining_reads: 0,
@@ -56,7 +60,7 @@ impl Device for Peer {
                         } else {
                             s.shadow
                         };
-                        s.format = 0;
+                        s.format = s.shadow_format ^ u16::from(s.wrong_format);
                     }
                 }
                 s.pending
@@ -72,7 +76,10 @@ impl Device for Peer {
         match channel {
             1 => s.shadow = (s.shadow & 0xffff0000) | u32::from(value),
             2 => s.shadow = (s.shadow & 65535) | (u32::from(value) << 16),
-            4 => assert_eq!(value, 0),
+            4 => {
+                assert!(value <= 1);
+                s.shadow_format = value;
+            }
             3 => {
                 assert_eq!(value, 1);
                 assert_eq!(s.pending, 0);
@@ -87,16 +94,30 @@ impl Device for Peer {
     }
 }
 fn run(label: &str, body: &str, wrong_target: bool) -> Vec<(u8, u16)> {
+    run_format(label, body, wrong_target, false, 0)
+}
+fn run_format(
+    label: &str,
+    body: &str,
+    wrong_target: bool,
+    wrong_format: bool,
+    format: u16,
+) -> Vec<(u8, u16)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let out = std::env::var_os("RCC_RUSTC_TEST_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| root.join("../../../target/graphics-api-g0"))
         .join(format!("present-{label}"));
+    let open = if format == 0 {
+        "gpu_present_open()".to_owned()
+    } else {
+        format!("gpu_present_open_with_format({format})")
+    };
     let source = format!(
         r#"mod gpu_present;
 static STEP:u16=0;
 fn check(ok:bool){{if !ok{{halt(0xd000+STEP);}}unsafe{{addr_of(&STEP).write(0,STEP+1);}}}}
-fn main(){{check(gpu_present_open());{body}halt(0x600d);}}"#
+fn main(){{check({open});{body}halt(0x600d);}}"#
     );
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let parsed = compile_program_named_checked(
@@ -111,6 +132,7 @@ fn main(){{check(gpu_present_open());{body}halt(0x600d);}}"#
     .unwrap();
     let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
     let shared = peer_state(wrong_target);
+    shared.borrow_mut().wrong_format = wrong_format;
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&program.words);
     for kind in [3, 4] {
@@ -178,6 +200,40 @@ fn display_faults_do_not_drop_pending_or_emit_a_second_request() {
     let invalid = run(
         "unaligned",
         r#"check(!gpu_present_set_next(0x8801));"#,
+        false,
+    );
+    assert!(invalid.is_empty());
+}
+
+#[test]
+fn linear_format_is_staged_and_required_at_actual_retirement() {
+    let events = run_format(
+        "linear-retirement",
+        r#"
+ check(GPU_PRESENT[4u16]==1);
+ check(gpu_present_set_next(0x8800));check(gpu_present_poll()==1);
+ check(GPU_PRESENT[1u16]==1);check(gpu_present_wait_vblank());
+ check(GPU_PRESENT[1u16]==0);check(dev_recv(DISPLAY_DEVICE,DISPLAY_COLOR_FORMAT)==1);
+ "#,
+        false,
+        false,
+        1,
+    );
+    assert_eq!(events, vec![(1, 0), (2, 0x22), (4, 1), (3, 1)]);
+    let wrong = run_format(
+        "wrong-format",
+        r#"
+ check(gpu_present_set_next(0x8800));check(!gpu_present_wait_vblank());
+ check(GPU_PRESENT[1u16]==1&&GPU_PRESENT[3u16]==4);
+ "#,
+        false,
+        true,
+        1,
+    );
+    assert_eq!(wrong, vec![(1, 0), (2, 0x22), (4, 1), (3, 1)]);
+    let invalid = run(
+        "invalid-format",
+        "check(!gpu_present_open_with_format(2));",
         false,
     );
     assert!(invalid.is_empty());

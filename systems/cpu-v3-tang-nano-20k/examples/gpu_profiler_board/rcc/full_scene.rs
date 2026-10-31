@@ -15,7 +15,7 @@ pub fn profiler_run_full(limit: u16) {
     let color_a = demo_color_a();
     let color_b = demo_color_b();
     let depth = demo_depth();
-    let mut display = Display::open();
+    let mut display = Display::open_with_format(DisplayFormat::LinearRgb565);
     let mut camera = demo_camera();
     camera.set_pose(
         demo_point(
@@ -30,6 +30,8 @@ pub fn profiler_run_full(limit: u16) {
         ),
     );
     let mut state = demo_state();
+    state.set_depth(DepthFunc::Less, true);
+    state.set_filter(TextureFilter::Trilinear);
     state.set_lighting(demo_lighting(demo_point(
         fix32::from_words(36045, 65535),
         fix32::from_words(52429, 0),
@@ -48,7 +50,7 @@ pub fn profiler_run_full(limit: u16) {
             g: 160,
             b: 160,
         },
-        Shininess::S12,
+        Shininess::S32,
     );
     let texture = demo_texture();
     let view = texture.view();

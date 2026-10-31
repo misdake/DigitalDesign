@@ -5,7 +5,7 @@ use device_abi::*;
 mod gpu_schema;
 use gpu_schema::*;
 
-// ready, owned pending, requested sector, first error; four spare words.
+// ready, owned pending, requested sector, first error, chosen format; three spare words.
 static GPU_PRESENT: Buf<u16, 8> = Buf::new([0; 8]);
 fn gpu_present_fail(code: u16) -> bool {
     if GPU_PRESENT[3u16] == 0 {
@@ -51,6 +51,12 @@ fn gpu_present_capture_state(out: Array<u16>) -> u16 {
     2
 }
 fn gpu_present_open() -> bool {
+    gpu_present_open_with_format(DISPLAY_RGB565)
+}
+fn gpu_present_open_with_format(format: u16) -> bool {
+    if format > DISPLAY_LINEAR_RGB565 {
+        return gpu_present_fail(1);
+    }
     let s: Buf<u16, 4> = Buf::new([0; 4]);
     let mut status = gpu_present_snapshot(s.as_array());
     while status == 1 {
@@ -65,6 +71,7 @@ fn gpu_present_open() -> bool {
         i += 1;
     }
     GPU_PRESENT[0u16] = 1;
+    GPU_PRESENT[4u16] = format;
     true
 }
 fn gpu_present_set_next(sector: u16) -> bool {
@@ -88,7 +95,7 @@ fn gpu_present_set_next(sector: u16) -> bool {
     GPU_PRESENT[2u16] = sector;
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, sector << 6);
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, sector >> 10);
-    dev_send(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT, DISPLAY_RGB565);
+    dev_send(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT, GPU_PRESENT[4u16]);
     dev_send(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND, DISPLAY_NEXT_SWAP);
     true
 }
@@ -109,7 +116,7 @@ fn gpu_present_poll() -> u16 {
     }
     if GPU_PRESENT[1u16] != 0 {
         let sector = GPU_PRESENT[2u16];
-        if s[1u16] != sector << 6 || s[2u16] != sector >> 10 || s[3u16] != DISPLAY_RGB565 {
+        if s[1u16] != sector << 6 || s[2u16] != sector >> 10 || s[3u16] != GPU_PRESENT[4u16] {
             gpu_present_fail(4);
             return 65535;
         }

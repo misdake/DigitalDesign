@@ -211,6 +211,7 @@ struct TimingState {
     phase: u16,
     fail_gpu: bool,
     starts: usize,
+    command_count: u16,
     swaps: usize,
     captured: Vec<u16>,
     telemetry: Vec<u8>,
@@ -223,6 +224,50 @@ struct TimingState {
 struct TimingPeer {
     kind: u8,
     state: std::rc::Rc<std::cell::RefCell<TimingState>>,
+}
+// Decode the actual controller entry's published native inputs, not enum names.
+// timing_run retains one room and two rabbit meshlets to keep this CPU peer short.
+fn assert_classic_commands(memory: &[u16], sector: u16, count: u16) {
+    let base = usize::from(sector) * 64;
+    let code = &memory[base..base + (usize::from(count) + 1) * 2];
+    let mut scratch = [0u16; 1536];
+    let mut control = 0;
+    let mut draws = 0;
+    for words in code.as_chunks::<2>().0 {
+        let c = u32::from(words[0]) | (u32::from(words[1]) << 16);
+        match c >> 28 {
+            1 => {
+                let source = ((c >> 10) & 0x3ffff) as usize * 16;
+                let dest = (((c >> 3) & 127) * 16) as usize;
+                let length = (32usize << ((c >> 1) & 3)) / 2;
+                scratch[dest..dest + length].copy_from_slice(&memory[source..source + length]);
+            }
+            5 => {
+                let at = ((c & 127) * 16) as usize;
+                assert_eq!(
+                    scratch[at + 10],
+                    0x33,
+                    "controller mode3/shininess code12 (exponent32)"
+                );
+            }
+            6 => {
+                let at = ((c & 127) * 16) as usize;
+                assert_eq!(scratch[at + 1], 0x56, "controller exp6/full-mip/trilinear");
+                control = scratch[at + 4] & 63;
+            }
+            3 => {
+                assert_eq!(
+                    control,
+                    if draws < 2 { 41 } else { 9 },
+                    "controller LESS/depth-write and unlit/lit split"
+                );
+                draws += 1;
+            }
+            15 => break,
+            _ => {}
+        }
+    }
+    assert_eq!(draws, 4, "one room, one RGB and two rabbit meshlets");
 }
 impl cpu_v3::Device for TimingPeer {
     fn read(&mut self, _: &mut [u16], ch: u8) -> u16 {
@@ -261,7 +306,7 @@ impl cpu_v3::Device for TimingPeer {
             _ => 0,
         }
     }
-    fn write(&mut self, _: &mut [u16], ch: u8, value: u16) {
+    fn write(&mut self, memory: &mut [u16], ch: u8, value: u16) {
         let mut s = self.state.borrow_mut();
         match (self.kind, ch) {
             (0, 11) if value & 1 != 0 => s.clear = s.us,
@@ -272,13 +317,18 @@ impl cpu_v3::Device for TimingPeer {
                 s.uart_phases.push(phase);
                 s.telemetry.push(value as u8);
             }
+            (4, 0) => s.command_count = value,
             (4, 1) => {
+                assert_classic_commands(memory, value, s.command_count);
                 s.starts += 1;
                 s.gpu_until = s.us + s.gpu_delay;
             }
             (3, 1) => s.shadow = (s.shadow & 0xffff0000) | u32::from(value),
             (3, 2) => s.shadow = (s.shadow & 65535) | (u32::from(value) << 16),
-            (3, 4) => s.shadow_format = value,
+            (3, 4) => {
+                assert_eq!(value, 1, "controller demo must present linear RGB565");
+                s.shadow_format = value;
+            }
             (3, 3) => {
                 assert!(!s.pending);
                 assert_eq!(s.captured.len(), s.swaps + 1);

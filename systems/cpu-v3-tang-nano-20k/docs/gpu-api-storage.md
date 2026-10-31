@@ -275,9 +275,14 @@ idle/error-free GPU, nonzero otherwise, without state mutation or retirement.
 
 ## Display handoff
 
-`gpu_present` has eight words, including ready, owned-pending, requested sector
-and first error. It uses Device3 only. Open accepts an existing RGB565 or legacy
-linear RGB565 front; new requests always stage the column RGB565 format. A color
+`gpu_present` has eight words: ready, owned-pending, requested sector,
+first error, selected format and three spare words. It uses Device3 only.
+`Display::open()` selects ordinary RGB565/code0. The explicit
+`Display::open_with_format(DisplayFormat::LinearRgb565)` selects linear-light
+RGB565/code1; `DisplayFormat::Rgb565` selects code0. Open accepts either existing
+front format, saves the requested interpretation in the same owner, and leaves
+hardware unchanged until presentation. Every request stages that selection and
+retirement checks the actual active format against the saved selection. A color
 base is a 64-KiB-aligned sector address whose 1,600-sector effective span fits
 physical memory. Allocation/lifetime and GPU producer completion remain the
 application's explicit responsibility.

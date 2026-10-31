@@ -117,7 +117,12 @@ impl Device for Peer {
             }
             (3, 1) => s.shadow = (s.shadow & 0xffff0000) | u32::from(v),
             (3, 2) => s.shadow = (s.shadow & 65535) | (u32::from(v) << 16),
-            (3, 4) => s.shadow_format = v,
+            (3, 4) => {
+                if s.full_scene {
+                    assert_eq!(v, 1, "canonical scene requires linear RGB565 presentation");
+                }
+                s.shadow_format = v;
+            }
             (3, 3) => {
                 assert_eq!(s.gpu, 0);
                 assert!(!s.pending);
@@ -292,7 +297,7 @@ fn inspect_full_scene(
     let mut scratch = vec![0u16; 1536];
     let mut pages = [0u32; 2];
     let mut renders = vec![];
-    let mut globals = vec![];
+    let mut globals: Vec<Vec<u16>> = vec![];
     let mut draws = vec![];
     let mut render = vec![];
     let mut ui_commands = vec![];
@@ -328,9 +333,21 @@ fn inspect_full_scene(
                 let info = u32::from_le_bytes(mesh[at..at + 4].try_into().unwrap());
                 assert_eq!(
                     render[4] & 63,
-                    if index < 7 { 43 } else { 11 },
-                    "LESS_EQUAL/depth-write, white unlit room/RGB then lit full rabbit"
+                    if index < 7 { 41 } else { 9 },
+                    "historical LESS/depth-write, unlit room/RGB then lit rabbit"
                 );
+                // Historical native contract, independently decoded from source96eb7283:
+                // ordinary 64x64 full-mip view, trilinear; RGB-only draw has no view.
+                if index != 6 {
+                    assert_eq!(render[1], 0x56, "historical exp6/full-mip/trilinear");
+                }
+                if index >= 7 {
+                    assert_eq!(
+                        globals.last().unwrap()[10],
+                        0x33,
+                        "historical mode3/shininess code12 (exponent32)"
+                    );
+                }
                 draws.push(json!({"index":index,"name":expected["name"],"meshlet_address":address,"vertices":info&127,"triangles":(info>>8)&127,"render_words":render,"instance_words":scratch[1280..1344]}));
             }
             5 => {
