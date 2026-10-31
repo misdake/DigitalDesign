@@ -47,6 +47,14 @@ impl RendererLayoutProfile {
                 "slot1CB":[c1,o1],"slot1obj":[o1,0x800000]});
         v
     }
+    pub fn recorded_description(self) -> Value {
+        let mut v = self.description();
+        let fields = v.as_object_mut().unwrap();
+        fields.remove("memory_map");
+        fields.remove("allocation_bytes");
+        fields.insert("address_policy".into(), json!("record-ranges-v1"));
+        v
+    }
 }
 struct Resource {
     tag: u16,
@@ -87,12 +95,10 @@ impl RendererCaptureConfiguration {
                 .map_err(|e| format!("read capture manifest {}: {e}", path.display()))?,
         )
         .map_err(|e| e.to_string())?;
-        let version = 2;
+        let version = m["version"].as_u64().ok_or("capture manifest version")?;
         let profile = RendererLayoutProfile::Column16;
-        if m["version"].as_u64() != Some(version)
-            || m["schema"] != "digitaldesign.gpu-capture-build"
-        {
-            return Err("explicit v2 column capture manifest required".into());
+        if !matches!(version, 2 | 3) || m["schema"] != "digitaldesign.gpu-capture-build" {
+            return Err("explicit v2/v3 column capture manifest required".into());
         }
         if m["command_abi"].as_u64() != Some(u64::from(abi::GPU_CAPTURE_RTT400_COMMAND_ABI)) {
             return Err(
@@ -100,7 +106,12 @@ impl RendererCaptureConfiguration {
                     .into(),
             );
         }
-        if m["layout"] != profile.description() {
+        let description = if version == 3 {
+            profile.recorded_description()
+        } else {
+            profile.description()
+        };
+        if m["layout"] != description {
             return Err("mixed or unsupported capture layout description".into());
         }
         if m["options"]
@@ -115,11 +126,18 @@ impl RendererCaptureConfiguration {
         let capture = CaptureConfiguration::parse_id(gate_path, &m)?;
         let mut resources = vec![];
         let mut spans = vec![];
-        if version == 2 {
+        if matches!(version, 2 | 3) {
             let entries = m["resources"]
                 .as_array()
                 .ok_or("v2 capture requires resource catalog")?;
-            let (first, end) = (layout::GPU_ASSET_FIRST_SECTOR, layout::GPU_ASSET_END_SECTOR);
+            let (first, end) = if version == 3 {
+                (0u32, 65536u32)
+            } else {
+                (
+                    u32::from(layout::GPU_ASSET_FIRST_SECTOR),
+                    u32::from(layout::GPU_ASSET_END_SECTOR),
+                )
+            };
             for entry in entries {
                 let base = entry["address"].as_u64().ok_or("resource address")?;
                 let bytes = entry["bytes"].as_u64().ok_or("resource bytes")?;
@@ -148,8 +166,12 @@ impl RendererCaptureConfiguration {
                 {
                     return Err("texture footprint/layout does not match capture profile".into());
                 }
-                if kind == "atlas" && (base % 65536 != 0 || bytes != 65536) {
-                    return Err("UI atlas must retain its complete 64KiB ABI".into());
+                if kind == "atlas"
+                    && (base % 65536 != 0
+                        || (version == 2 && bytes != 65536)
+                        || (version == 3 && bytes < 256))
+                {
+                    return Err("UI atlas requires aligned glyph storage; v2 retains 64KiB".into());
                 }
                 spans.push((base, base + bytes));
                 resources.push(Resource {
@@ -162,13 +184,14 @@ impl RendererCaptureConfiguration {
             if spans.windows(2).any(|p| p[0].1 > p[1].0) {
                 return Err("overlapping capture resources".into());
             }
-            if [
-                abi::GPU_CAPTURE_TAG_MESH,
-                abi::GPU_CAPTURE_TAG_TEXTURE,
-                abi::GPU_CAPTURE_TAG_ATLAS,
-            ]
-            .into_iter()
-            .any(|tag| !resources.iter().any(|r| r.tag == tag))
+            if version == 2
+                && [
+                    abi::GPU_CAPTURE_TAG_MESH,
+                    abi::GPU_CAPTURE_TAG_TEXTURE,
+                    abi::GPU_CAPTURE_TAG_ATLAS,
+                ]
+                .into_iter()
+                .any(|tag| !resources.iter().any(|r| r.tag == tag))
             {
                 return Err("v2 catalog requires mesh, texture and atlas roots".into());
             }

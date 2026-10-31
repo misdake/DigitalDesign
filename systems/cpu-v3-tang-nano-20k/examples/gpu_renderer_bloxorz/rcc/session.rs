@@ -1,7 +1,9 @@
 //! Serial presentation phases over the unchanged deterministic integer rules.
 use crate::dsl_rt::*;
-mod gpu_pipeline;
-use gpu_pipeline::*;
+mod gpu_api;
+use gpu_api::*;
+mod gpu_demo_api;
+use gpu_demo_api::*;
 mod boot_resources;
 use boot_resources::*;
 mod bloxorz_core;
@@ -10,11 +12,14 @@ mod gamepad;
 use gamepad::*;
 pub static LEVEL: Buf<u16, 200> = Buf::new([0; 200]);
 pub static GAME: Buf<u16, 10> = Buf::new([0; 10]);
-static HISTORY: Buf<u16, 1536> = Buf::new([0; 1536]);
+// This presentation UI dispatches moves only, with no undo command. Reuse the
+// rule engine's one required scratch snapshot; its general 256-entry undo ring
+// remains unchanged for applications that actually expose undo.
+static HISTORY: Buf<u16, 6> = Buf::new([0; 6]);
 static HISTORY_STATE: Buf<u16, 2> = Buf::new([0; 2]);
 pub static MOTION: Buf<u16, 7> = Buf::new([0; 7]);
 // mode, elapsed, destination, capture-needed, captures, frozen-mode, goal x/z,
-// frozen-time, first-consumer flag. Capture/read ownership remains in RenderBuffer, not these words.
+// frozen-time, first-consumer flag. Offscreen storage and completion remain application-owned.
 pub static SESSION: Buf<u16, 10> = Buf::new([0; 10]);
 pub const PLAY: u16 = 0;
 pub const ROLL: u16 = 1;
@@ -166,6 +171,8 @@ pub fn session_tick(buttons: u16, elapsed: u16) {
     if mode == ROLL {
         MOTION[4u16] = SESSION[1u16];
         if SESSION[1u16] >= 220 {
+            HISTORY_STATE[0u16] = 0;
+            HISTORY_STATE[1u16] = 0;
             blox_dispatch(
                 LEVEL.as_array(),
                 GAME.as_array(),
@@ -293,14 +300,13 @@ pub fn block_pose(model: &mut Model) {
         let f = fraction(t, 600);
         vertical = -fix32::from_int(4) * f * f;
     }
-    model_pose(
-        model,
-        vec3::new(
+    model.set_pose(demo_pose(
+        demo_point(
             cx + fix32::from_int(x as i16) - fix32::from_int(4),
             cy + vertical,
             cz + fix32::from_int(z as i16) - fix32::from_words(32768, 1),
         ),
-        vec3::new(ax, zero, az),
-        vec3::new(sx * squeeze, sy, sz * squeeze),
-    );
+        demo_point(ax, zero, az),
+        demo_point(sx * squeeze, sy, sz * squeeze),
+    ));
 }

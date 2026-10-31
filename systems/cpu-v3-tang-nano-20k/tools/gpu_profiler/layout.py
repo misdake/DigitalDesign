@@ -40,6 +40,14 @@ class Layout:
         macro = (x // 16) * 16 + y // 16
         return macro * 512 + (y % 16) * 32 + (x % 16) * 2
 
+    def recorded_description(self):
+        """Same physical packing, without legacy allocation or address policy."""
+        value = self.description()
+        del value['memory_map']
+        del value['allocation_bytes']
+        value['address_policy'] = 'record-ranges-v1'
+        return value
+
     def coordinates(self, offset):
         if offset % 2 or not 0 <= offset < self.plane_bytes:
             raise ValueError('Offset is outside the physical word extent')
@@ -69,7 +77,7 @@ def declared_layout(description):
     if not isinstance(description, dict):
         raise ValueError('Explicit layout description is required')
     layout = get_layout(description.get('abi'))
-    if description != layout.description():
+    if description not in (layout.description(), layout.recorded_description()):
         raise ValueError('Mixed or unsupported layout description')
     return layout
 
@@ -78,8 +86,14 @@ def header_layout(header):
     layout = get_layout(header.get('layout_abi'))
     if header.get('command_abi') != COMMAND_ABI:
         raise ValueError('Unsupported production column/RTT command ABI')
-    if header['plane_bytes'] != layout.plane_bytes:
+    recorded = header.get('capture_version', 1) == 2
+    has_target = header.get('has_target', True) if recorded else True
+    if header['plane_bytes'] != (layout.plane_bytes if has_target else 0):
         raise ValueError('Header plane span does not match its layout ABI')
+    if recorded:
+        # Header validation supplies presence and physical bounds. Allocation
+        # extents belong to the range table, never the old slot/asset map.
+        return layout
     if layout.abi == 2:
         color, depth = header['color_base'], header['depth_base']
         fixed = color in (0x400000, 0x440000) and depth == 0x480000
@@ -98,3 +112,8 @@ def header_layout(header):
                                         for lo, hi in (COLUMN_MAP['UI0'], COLUMN_MAP['UI1'])):
             raise ValueError('Column UI range exceeds its declared page')
     return layout
+
+
+def capture_description(header):
+    layout = header_layout(header)
+    return layout.recorded_description() if header.get('capture_version', 1) == 2 else layout.description()

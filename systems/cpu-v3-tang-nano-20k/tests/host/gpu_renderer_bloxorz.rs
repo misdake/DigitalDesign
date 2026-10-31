@@ -6,7 +6,7 @@ use std::{any::Any, path::PathBuf};
 #[allow(dead_code)]
 #[path = "../../examples/bloxorz/geometry.rs"]
 mod geometry;
-fn check_block_pose(memory: &[u16], program: &rcc_backend::CpuV3Program) {
+fn check_block_pose(memory: &[u16], program: &rcc_backend::CpuV3Program, world: usize) {
     let m = global(program, "MOTION");
     let g = global(program, "GAME");
     let s = global(program, "SESSION");
@@ -15,8 +15,17 @@ fn check_block_pose(memory: &[u16], program: &rcc_backend::CpuV3Program) {
     let x = f64::from(memory[if moving { m } else { g }] as i16);
     let z = f64::from(memory[if moving { m + 1 } else { g + 1 }] as i16);
     let d = if moving { memory[m + 3] } else { 0 };
+    // FRECIP returns the Q16 reciprocal; retain that specified quantization
+    // before comparing the independently derived rolling geometry and matrix.
+    let fraction = |time: u16, duration: u16| {
+        if time >= duration {
+            1.0
+        } else {
+            f64::from(time) * (65536.0 / f64::from(duration)).floor() / 65536.0
+        }
+    };
     let f = if moving {
-        f64::from(memory[m + 4]) / 220.
+        fraction(memory[m + 4], 220)
     } else {
         0.
     };
@@ -34,17 +43,21 @@ fn check_block_pose(memory: &[u16], program: &rcc_backend::CpuV3Program) {
     let mut y = 0.;
     let mut squeeze = 1.;
     if mode == 3 {
-        let remain = 1. - (t / 380.).min(1.);
+        let remain = 1. - fraction(t as u16, 380);
         y = -2.08 * (0.4 * remain + 0.6 * remain * remain);
         squeeze = 1. - 0.08 * remain;
     }
     if (5..=7).contains(&mode) {
-        let fraction = if mode == 5 { (t / 420.).min(1.) } else { 1. };
+        let fraction = if mode == 5 {
+            fraction(t as u16, 420)
+        } else {
+            1.
+        };
         y = -2.08 * (0.4 * fraction + 0.6 * fraction * fraction);
         squeeze = 1. - 0.08 * fraction;
     }
     if mode == 8 {
-        y = -4. * (t / 600.).min(1.).powi(2);
+        y = -4. * fraction(t as u16, 600).powi(2);
     }
     let angle = std::f64::consts::FRAC_PI_2 * f * if d == 0 || d == 3 { -1. } else { 1. };
     let dimensions = match orient {
@@ -63,12 +76,21 @@ fn check_block_pose(memory: &[u16], program: &rcc_backend::CpuV3Program) {
         dimensions[1],
         dimensions[2] * squeeze,
     ];
-    let at = global(program, "GPU_SCENE_MODELS") + 116;
-    for (i, want) in expected.iter().enumerate() {
-        assert!(
-            (scene::fixed(&memory[at..at + 116], 2 + i * 2) - want).abs() < 0.005,
-            "mode{mode} field{i}"
-        );
+    let rotation = scene::rotation([expected[3], expected[4], expected[5]]);
+    for row in 0..3 {
+        for column in 0..4 {
+            let want = if column == 3 {
+                expected[row]
+            } else {
+                rotation[row][column] * expected[6 + column]
+            };
+            assert!(
+                (scene::fixed(&memory[world..world + 24], 2 * (row * 4 + column)) - want).abs()
+                    < 0.005,
+                "mode{mode} world[{row},{column}] actual={} expected={want}",
+                scene::fixed(&memory[world..world + 24], 2 * (row * 4 + column))
+            );
+        }
     }
 }
 
@@ -118,9 +140,17 @@ fn application(
     } else {
         "renderer_game_frames"
     };
+    // Test-only readonly instrumentation uses the public getter, never arena slot layout.
+    // Original marker12 is preserved for the independent input-transition trials.
+    source = source.replace(
+        "block_pose(model);",
+        "block_pose(model);world_probe(model);",
+    );
+    source += "\nfn world_probe(model:&Model){let world=model.world();let words:Buf<u16,24>=Buf::new([world.row0.x.lo_bits(),world.row0.x.hi_bits(),world.row0.y.lo_bits(),world.row0.y.hi_bits(),world.row0.z.lo_bits(),world.row0.z.hi_bits(),world.row0.w.lo_bits(),world.row0.w.hi_bits(),world.row1.x.lo_bits(),world.row1.x.hi_bits(),world.row1.y.lo_bits(),world.row1.y.hi_bits(),world.row1.z.lo_bits(),world.row1.z.hi_bits(),world.row1.w.lo_bits(),world.row1.w.hi_bits(),world.row2.x.lo_bits(),world.row2.x.hi_bits(),world.row2.y.lo_bits(),world.row2.y.hi_bits(),world.row2.z.lo_bits(),world.row2.z.hi_bits(),world.row2.w.lo_bits(),world.row2.w.hi_bits()]);signal(13,words.as_ptr().addr());}\n";
+    let source = crate::shared_application_entry::select(&source, entry).unwrap();
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let mut dependencies = vec![];
-    let ir = resolver::compile_renderer_program_checked_with_sources(
+    let ir = resolver::compile_explicit_gpu_program_checked_with_sources(
         "Bloxorz RTT",
         &source,
         &options,
@@ -137,7 +167,7 @@ fn application(
     .unwrap_or_else(|e| panic!("{e}"));
     assert!(dependencies.contains(&root.join("examples/bloxorz/rcc/bloxorz_core.rs")));
     (
-        rcc_backend::try_compile(ir, &options, entry).unwrap(),
+        rcc_backend::try_compile(ir, &options, "main").unwrap(),
         resources,
         out,
     )
@@ -189,7 +219,6 @@ struct Observed {
     boundary_button: u16,
     boundary_hold: bool,
     boundary_step: u8,
-    gamepad: usize,
     active: u32,
     staged: u32,
     pending: bool,
@@ -203,7 +232,7 @@ struct Observed {
     format: u16,
     staged_format: u16,
     session: usize,
-    registry: usize,
+    execution: usize,
     mode_at_launch: Vec<u16>,
     views: Vec<(u16, u16, u16)>,
     snapshots: Vec<(u16, Vec<u32>, Vec<u16>)>,
@@ -242,10 +271,7 @@ impl Device for Ports {
                             s.buttons = button;
                             s.fresh = true;
                             s.boundary_step = 1;
-                        } else if s.boundary_step == 1
-                            && m[s.gamepad + 2] == button
-                            && m[s.gamepad + 8] & button == button
-                        {
+                        } else if s.boundary_step == 1 {
                             if s.boundary_hold {
                                 s.boundary_step = 3;
                             } else {
@@ -253,18 +279,11 @@ impl Device for Ports {
                                 s.fresh = true;
                                 s.boundary_step = 2;
                             }
-                        } else if s.boundary_step == 2
-                            && m[s.gamepad + 2] == 0
-                            && m[s.gamepad + 8] & button == button
-                            && m[s.gamepad + 9] & button == button
-                        {
+                        } else if s.boundary_step == 2 {
                             s.boundary_step = 3;
                         }
-                        // Keep the real Display wait open until the coherent
-                        // press/release reports have entered the input layer.
-                        if s.boundary_step < 3 {
-                            return 1;
-                        }
+                        // Wire reports advance independently: Display.wait_vblank
+                        // does not own or implicitly capture application input.
                     }
                     s.display_left -= 1;
                     if s.display_left == 0 {
@@ -277,11 +296,16 @@ impl Device for Ports {
             }
             (4, 2) if s.gpu_left > 0 => {
                 s.gpu_left -= 1;
-                if s.views
-                    .last()
-                    .is_some_and(|v| v.2 == s.mode_at_launch.len() as u16)
-                {
-                    assert_ne!(m[s.registry + 8], 0, "source unpinned while GPU busy");
+                assert_eq!(m[s.execution + 1], 1, "driver released CB while GPU busy");
+                if let Some((sector, commands, push)) = s.snapshots.last() {
+                    let base = usize::from(*sector) * 64;
+                    for (i, word) in commands.iter().enumerate() {
+                        assert_eq!(
+                            &m[base + i * 2..base + i * 2 + 2],
+                            &[*word as u16, (*word >> 16) as u16]
+                        );
+                    }
+                    assert_eq!(&m[0x4d0000 / 2..0x4d0000 / 2 + push.len()], push);
                 }
                 1
             }
@@ -316,7 +340,7 @@ impl Device for Ports {
                     .iter()
                     .map(|w| u32::from(w[0]) | (u32::from(w[1]) << 16))
                     .collect::<Vec<_>>();
-                assert_eq!(&commands[..3], &[0x40000003, 0x70000000, 0x90000000]);
+                assert_eq!(&commands[..2], &[0x40000003, 0x90000000]);
                 assert_eq!(
                     &commands[commands.len() - 3..],
                     &[0x40000003, 0x70000000, 0xf0000000]
@@ -358,8 +382,7 @@ impl Device for Ports {
                                 view_draws += 1;
                                 assert_eq!(local[render], 0xc000);
                                 assert_eq!(local[render + 1], 137);
-                                assert_eq!((m[s.registry + 6], m[s.registry + 7]), (1, 0));
-                                assert_ne!(m[s.registry + 8], 0);
+                                assert_eq!(m[s.execution + 1], 1);
                                 let rgba = u32::from(local[1324]) | (u32::from(local[1325]) << 16);
                                 let shade = rgba as u8;
                                 assert_eq!(rgba, (u32::from(shade) * 0x010101) | 0xff000000);
@@ -382,7 +405,7 @@ impl Device for Ports {
                                         );
                                     }
                                 }
-                                let epoch = m[s.registry + 10];
+                                let epoch = m[s.session + 4];
                                 s.views.push((u16::from(shade), epoch, launch));
                             }
                         }
@@ -391,9 +414,7 @@ impl Device for Ports {
                 }
                 if color == 0x600000 {
                     assert_eq!(view_draws, 0);
-                    assert_eq!(m[s.registry + 6], 0);
-                    assert_ne!(m[s.registry + 7], 0);
-                    assert_eq!((m[s.registry + 8], m[s.registry + 9]), (0, 0));
+                    assert_eq!(m[s.execution + 1], 1);
                 } else {
                     assert!([0x400000, 0x440000].contains(&color));
                     assert_ne!(color / 2, s.active);
@@ -443,13 +464,13 @@ fn actual_caller(trial: Trial) {
     preload(cpu.physical_memory_mut(), &resources);
     cpu.physical_memory_mut()[0x600000 / 2..0x680000 / 2].fill(0xa55a);
     let session = global(&program, "SESSION");
-    let registry = global(&program, "GPU_RTT_BUFFERS");
+    let execution = global(&program, "GPU_EXECUTION");
     let state = Rc::new(RefCell::new(Observed {
         active: 0x200000,
         connected: true,
         fresh: true,
         session,
-        registry,
+        execution,
         ..Observed::default()
     }));
     for kind in [0, 3, 4, 5] {
@@ -498,14 +519,15 @@ fn actual_caller(trial: Trial) {
             StepOutcome::Signaled(e) if e.signal_type == 11 => {
                 let m = cpu.physical_memory_mut();
                 assert_eq!(
-                    (m[registry + 6], m[registry + 7], m[registry + 8]),
-                    (1, 0, 0)
+                    m[execution + 1],
+                    0,
+                    "offscreen capture announced before real retirement"
                 );
-                assert_eq!(m[registry + 10], e.value);
+                assert_eq!(m[session + 4], e.value);
                 state.borrow_mut().captures.push((e.value, m[session + 5]));
             }
-            StepOutcome::Signaled(e) if e.signal_type == 12 => {
-                check_block_pose(cpu.physical_memory_mut(), &program)
+            StepOutcome::Signaled(e) if e.signal_type == 13 => {
+                check_block_pose(cpu.physical_memory_mut(), &program, usize::from(e.value))
             }
             StepOutcome::Halted { signal } => {
                 assert_eq!(signal, 0x600d);
@@ -527,7 +549,7 @@ fn actual_caller(trial: Trial) {
         assert_eq!(m[global(&program, "CAPTURE_STIMULUS")], 3);
         assert_eq!(s.captures.len(), 1);
         assert_eq!(s.views.last().unwrap().0, if full { 255 } else { 128 });
-        assert_eq!((m[registry + 7], m[registry + 8]), (0, 0));
+        assert_eq!(m[execution + 1], 0);
         assert!(m[0x600000 / 2..0x680000 / 2].iter().all(|v| *v == 0xa55a));
         std::fs::write(out.join("observed.json"), serde_json::to_vec_pretty(&serde_json::json!({"captures":s.captures,"views":s.views,"submissions":s.snapshots.len(),"presents":s.swaps,"halt":24589,"mode":9,"elapsed":if full {0} else {160},"moves":1,"boundary":"Actual checked automatic capture caller; bounded peers, no rendered pixels"})).unwrap()).unwrap();
         return;
@@ -542,7 +564,7 @@ fn actual_caller(trial: Trial) {
         );
         assert_eq!(cpu.physical_memory_mut()[session], 0);
         assert_eq!(
-            cpu.physical_memory_mut()[global(&program, "GPU_RENDERER_INPUT")],
+            cpu.physical_memory_mut()[global(&program, "GAMEPAD_STATE")],
             0
         );
         return;
@@ -646,8 +668,7 @@ fn final_fade_wait_discards_start_and_triangle_edges_but_accepts_new_presses() {
             connected: true,
             fresh: true,
             session,
-            registry: global(&program, "GPU_RTT_BUFFERS"),
-            gamepad: global(&program, "GAMEPAD_STATE"),
+            execution: global(&program, "GPU_EXECUTION"),
             boundary_button: button,
             boundary_hold: held,
             ..Observed::default()

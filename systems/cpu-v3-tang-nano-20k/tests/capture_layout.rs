@@ -1,4 +1,6 @@
 //! Real RCC capture producer fixtures; controlled peers are not GPU/board proof.
+#[path = "host/gpu_api_capture.rs"]
+mod gpu_api_capture;
 use cpu_v3::{rcc_backend, CpuV3Sim, Device, StepOutcome};
 use serde_json::{json, Value};
 use std::{
@@ -482,6 +484,48 @@ fn strict_profile_manifest_selection() {
         &path
     )
     .is_ok());
+}
+
+#[test]
+fn recorded_manifest_keeps_the_physical_layout_and_explicit_address_policy() {
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/api-c/manifest-policy");
+    std::fs::create_dir_all(&out).unwrap();
+    let path = out.join("build.json");
+    let profile = resolver::RendererLayoutProfile::Column16;
+    let mut manifest = json!({"schema":"digitaldesign.gpu-capture-build","version":3,
+        "command_abi":4,"manifest_id":"34".repeat(32),"layout":profile.recorded_description(),
+        "resources":[],"options":{}});
+    std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(
+        resolver::RendererCaptureConfiguration::from_manifest(out.join("gate.rs"), &path).is_ok()
+    );
+    let valid = manifest.clone();
+    for (version, address, bytes, accepted) in [
+        (3, 0x80000, 768, true),
+        (3, 0x80000, 896, true),
+        (3, 0x80000, 128, false),
+        (3, 0x80000, 257, false),
+        (3, 0x80080, 768, false),
+        (2, 0x500000, 768, false),
+    ] {
+        let mut candidate = valid.clone();
+        candidate["version"] = json!(version);
+        if version == 2 {
+            candidate["layout"] = profile.description();
+        }
+        candidate["resources"] = json!([{"kind":"atlas","address":address,"bytes":bytes}]);
+        std::fs::write(&path, serde_json::to_vec(&candidate).unwrap()).unwrap();
+        assert_eq!(
+            resolver::RendererCaptureConfiguration::from_manifest(out.join("gate.rs"), &path)
+                .is_ok(),
+            accepted
+        );
+    }
+    manifest["layout"] = profile.description();
+    std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(
+        resolver::RendererCaptureConfiguration::from_manifest(out.join("gate.rs"), &path).is_err()
+    );
 }
 
 #[test]

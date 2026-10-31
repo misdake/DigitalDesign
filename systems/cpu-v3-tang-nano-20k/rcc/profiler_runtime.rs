@@ -4,8 +4,10 @@ mod device_abi;
 use device_abi::*;
 mod gpu_capture_abi;
 use gpu_capture_abi::*;
-mod gpu_pipeline;
-use gpu_pipeline::*;
+mod profiler_clock;
+use profiler_clock::*;
+mod gpu_capture_access;
+use gpu_capture_access::*;
 
 // initialized, candidate, stable, candidate_ms. Buttons are normalized high.
 static PROFILER_BUTTONS: Buf<u16, 4> = Buf::new([0; 4]);
@@ -328,6 +330,7 @@ pub fn profiler_gate_run(descriptor: Array<u16>, automatic_test: bool) -> u16 {
     } else if profiler_button_edges() & 2 == 0 {
         return GPU_CAPTURE_CONTINUE;
     }
+    let pause_begin = profiler_now();
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 2);
     profiler_notice(80); // P: producer paused before submission.
     if automatic {
@@ -355,6 +358,7 @@ pub fn profiler_gate_run(descriptor: Array<u16>, automatic_test: bool) -> u16 {
                 return GPU_CAPTURE_FATAL;
             }
             dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 0);
+            profiler_clock_record_resume(pause_begin, profiler_now());
             return GPU_CAPTURE_RESUMED;
         }
         profiler_buttons_reset();
@@ -372,6 +376,7 @@ pub fn profiler_gate_run(descriptor: Array<u16>, automatic_test: bool) -> u16 {
             if PROFILER_FLAGS.as_array()[0u16] != 0 {
                 return GPU_CAPTURE_FATAL;
             }
+            profiler_clock_record_resume(pause_begin, profiler_now());
             return GPU_CAPTURE_RESUMED;
         }
         if edges & 1 != 0 {

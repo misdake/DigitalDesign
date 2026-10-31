@@ -6,6 +6,10 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 ## Documents
 
+- [Explicit GPU API internal core](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md): public resources, native recording, capture-aware submission, unique retirement and Display handoff.
+- [Prepared scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md): source-world transforms, six-argument native conversion, material/state, independent texture views and persistent external UI updates.
+
+- [Explicit GPU application callers](/systems/cpu-v3-tang-nano-20k/docs/gpu-explicit-examples.md): migrated examples, application-owned completion, RTT, input and bounded caller qualification.
 - [Column scene firmware](/systems/cpu-v3-tang-nano-20k/docs/gpu-column-scene.md): explicit non-RTT serial scene profile, offline assets, physical spans and firmware receipt.
 - [GPU board throughput suite](/systems/cpu-v3-tang-nano-20k/examples/gpu_bench/README.md): static native workloads, headless timing, UART sample statistics and HDMI validation.
 - [`architecture.md`](architecture.md): current complete-system composition, clock and memory paths,
@@ -31,8 +35,6 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
   cold-loader LED and application reporting.
 - [`system-display-test.md`](system-display-test.md): CPU-only cold-boot diagnostic,
   scratch/LCOPY ownership, continuous framebuffer presentation and UART results.
-
-- [Explicit GPU storage core](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md): prepared schema, bounded CPU transfers, native recording and execution/Display handoff.
 
 Update the owning specification whenever its implemented contract changes.
 Keep new verification output in the worktree's `target/`; the existing historical

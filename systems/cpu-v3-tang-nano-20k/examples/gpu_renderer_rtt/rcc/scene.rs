@@ -1,104 +1,126 @@
-//! Two GPU stages; no CPU pixel reads, copies, conversion or staging texture.
+//! Explicit two-stage RTT; GPU completion precedes texture consumption and presentation.
 use crate::dsl_rt::*;
-mod gpu_pipeline;
-use gpu_pipeline::*;
+mod gpu_api;
+use gpu_api::*;
+mod gpu_demo_api;
+use gpu_demo_api::*;
 
+fn consume(
+    pass: &mut Pass,
+    camera: &Camera,
+    mesh: &Mesh,
+    model: &Model,
+    material: &Material,
+    texture: &TextureView,
+) {
+    pass.set_camera(camera);
+    pass.draw(mesh, model, material, texture);
+}
 fn rtt_run(first: u16, end: u16, ordinary: bool) {
-    let mut renderer = renderer_open();
-    // Caller-owned static reservation. The driver borrows it and never frees it.
-    let mut memory: RenderBufferMemory = RenderBufferMemory {
-        color_base_low: 0,
-        color_base_high: 0x60,
-        color_capacity_low: 0,
-        color_capacity_high: 4,
-        depth_base_low: 0,
-        depth_base_high: 0x64,
-        depth_capacity_low: 0,
-        depth_capacity_high: 4,
-    };
-    let mut buffer = renderer.render_buffer(view_of(&mut memory));
-    let zero = vec3::zero();
+    let mut gpu = Gpu::init(demo_config());
+    let mut buffer = gpu.command_buffer();
+    // These reservations belong to this application's asset placement.
+    let offscreen = ColorBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc000, 2048) });
+    let offscreen_depth =
+        DepthBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc800, 2048) });
+    let color_a = demo_color_a();
+    let color_b = demo_color_b();
+    let depth = demo_depth();
+    let mut display = Display::open();
+    let camera = demo_camera();
+    let pattern = demo_mesh_part(0, 1);
+    let screen = demo_mesh_part(1, 1);
+    let producer = Model::new(demo_pose(
+        demo_point(fix32::zero(), fix32::zero(), fix32::from_int(-3)),
+        demo_zero(),
+        demo_scale(),
+    ));
     let one = fix32::from_int(1);
-    let mut camera = renderer_camera(
-        &mut renderer,
-        zero,
-        zero,
-        fix32::from_int(200),
-        fix32::from_int(199),
-    );
-    let mut pattern = renderer_mesh_batch(&mut renderer, 0, 1);
-    let mut screen = renderer_mesh_batch(&mut renderer, 1, 1);
-    let mut producer = renderer_model(
-        &mut renderer,
-        vec3::new(fix32::zero(), fix32::zero(), fix32::from_int(-3)),
-        zero,
-        vec3::new(one, one, one),
-    );
-    let mut consumer = renderer_model(
-        &mut renderer,
-        vec3::new(fix32::zero(), fix32::zero(), fix32::from_int(-1)),
-        zero,
-        vec3::new(one, fix32::from_words(39322, 0), one),
-    );
-    let mut material = renderer_material(&mut renderer, 255, 255, 255, false);
+    let mut consumer = Model::new(demo_pose(
+        demo_point(fix32::zero(), fix32::zero(), -one),
+        demo_zero(),
+        demo_point(one, fix32::from_words(39322, 0), one),
+    ));
     if ordinary {
-        model_pose(
-            &mut consumer,
-            vec3::new(
+        consumer.set_pose(demo_pose(
+            demo_point(
                 fix32::from_words(8192, 0),
                 fix32::zero(),
-                -fix32::from_int(1) - fix32::from_words(16384, 0),
+                -one - fix32::from_words(16384, 0),
             ),
-            vec3::new(fix32::zero(), fix32::from_words(8192, 0), fix32::zero()),
-            vec3::new(
+            demo_point(fix32::zero(), fix32::from_words(8192, 0), fix32::zero()),
+            demo_point(
                 fix32::from_words(49152, 0),
                 fix32::from_words(32768, 0),
                 one,
             ),
-        );
+        ));
     }
+    let material = demo_material(demo_white(), true);
+    let texture = demo_texture();
+    let ordinary_view = texture.view();
+    let mut state = demo_state();
     let mut update = first;
     while end == 0 || update < end {
         let clear: u16 = if update == 0 { 0xf800 } else { 0x07e0 };
+        buffer.reset();
+        buffer.invalidate_textures();
         {
-            let mut frame = renderer.frame_to(&mut buffer, clear);
-            let mut pass = frame.pass(&mut camera);
-            pass.draw(&mut pattern, &mut producer, &mut material);
-            pass.finish();
-            frame.finish();
+            let mut pass = buffer.pass(
+                &offscreen,
+                &offscreen_depth,
+                ColorLoad::clear(Rgb565::from_raw(clear)),
+                DepthLoad::clear(65535),
+            );
+            pass.set_camera(&camera);
+            pass.set_state(&state);
+            pass.draw(&pattern, &producer, &material, &ordinary_view);
         }
-        if renderer.submit() != RENDERER_PENDING || renderer.wait(WAIT_GPU) != RENDERER_COMPLETED {
-            halt(0xe070);
+        gpu.submit(buffer);
+        buffer = gpu.wait();
+        buffer.reset();
+        buffer.invalidate_textures();
+        if update != 0 {
+            state.set_filter(TextureFilter::Bilinear);
         }
         {
-            let mut texture = buffer.texture(update != 0);
-            let mut frame = renderer.frame(0);
-            let mut pass = frame.pass(&mut camera);
-            pass.draw_texture(&mut screen, &mut consumer, &mut material, &mut texture);
-            pass.finish();
-            frame.finish();
-            if renderer.submit() != RENDERER_PENDING {
-                halt(0xe071);
+            let view = offscreen.texture_view();
+            if (update - first) & 1 == 0 {
+                let mut pass = buffer.pass(
+                    &color_b,
+                    &depth,
+                    ColorLoad::clear(Rgb565::from_raw(0)),
+                    DepthLoad::clear(65535),
+                );
+                pass.set_state(&state);
+                consume(&mut pass, &camera, &screen, &consumer, &material, &view);
+            } else {
+                let mut pass = buffer.pass(
+                    &color_a,
+                    &depth,
+                    ColorLoad::clear(Rgb565::from_raw(0)),
+                    DepthLoad::clear(65535),
+                );
+                pass.set_state(&state);
+                consume(&mut pass, &camera, &screen, &consumer, &material, &view);
             }
-            texture.close();
+            // The recorded descriptor outlives this CPU TextureView.
         }
-        // Dropping the CPU view did not release the submission's source pin.
-        if renderer.wait(WAIT_ALL) != RENDERER_COMPLETED {
-            halt(0xe071);
+        gpu.submit(buffer);
+        buffer = gpu.wait();
+        if (update - first) & 1 == 0 {
+            display.set_next_swap(&color_b);
+        } else {
+            display.set_next_swap(&color_a);
         }
+        display.wait_vblank();
         update += 1;
     }
-    if !buffer.close() {
-        halt(0xe072);
-    }
-    renderer.close();
 }
-
 pub fn renderer_rtt_two_updates() {
     rtt_run(0, 2, false);
     halt(0x600d);
 }
-
 pub fn renderer_rtt_profiler() {
     rtt_run(0, 0, false);
 }

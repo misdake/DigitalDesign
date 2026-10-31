@@ -1,7 +1,9 @@
-//! Static diagnostic inputs make adjacent frozen Front/output comparisons exact.
+//! Static diagnostic scene through the explicit public API and shared capture gate.
 use crate::dsl_rt::*;
-mod gpu_pipeline;
-use gpu_pipeline::*;
+mod gpu_api;
+use gpu_api::*;
+mod gpu_demo_api;
+use gpu_demo_api::*;
 mod device_abi;
 use device_abi::*;
 mod boot_resources;
@@ -32,38 +34,94 @@ fn profiler_marker(stage: u16) {
         i += 1;
     }
 }
-
 fn run(limit: u16) {
-    let mut renderer = renderer_open();
+    let mut gpu = Gpu::init(demo_config());
+    let mut buffer = gpu.command_buffer();
     profiler_marker(1);
-    let zero = vec3::zero();
-    let one = fix32::from_int(1);
-    let mut camera = renderer_camera(
-        &mut renderer, zero, zero, fix32::from_int(200), fix32::from_int(199),
+    let color_a = demo_color_a();
+    let color_b = demo_color_b();
+    let depth = demo_depth();
+    let mut display = Display::open();
+    let camera = demo_camera();
+    let mesh = demo_mesh();
+    let model = Model::new(demo_pose(
+        demo_point(fix32::zero(), fix32::zero(), fix32::from_int(-3)),
+        demo_zero(),
+        demo_scale(),
+    ));
+    let material = demo_material(
+        Rgba8 {
+            r: 240,
+            g: 180,
+            b: 90,
+            a: 255,
+        },
+        false,
     );
-    let mut mesh = renderer_mesh(&mut renderer);
-    let mut model = renderer_model(
-        &mut renderer,
-        vec3::new(fix32::zero(), fix32::zero(), fix32::from_int(-3)),
-        zero, vec3::new(one, one, one),
-    );
-    let mut material = renderer_material(&mut renderer, 240, 180, 90, true);
-    let mut label = renderer_text(&mut renderer, 0, 0, 8);
+    let state = demo_state();
+    let texture = demo_texture();
+    let view = texture.view();
+    let grid = demo_grid(false);
     let mut count: u16 = 0;
     profiler_marker(2);
     loop {
-        let mut frame = renderer_frame(&mut renderer, 0x1111);
+        buffer.reset();
+        if count == 0 {
+            buffer.invalidate_textures();
+        }
         if count < 4 {
             profiler_marker(3);
         }
-        let mut pass = frame_pass(&mut frame, &mut camera);
-        pass_draw(&mut pass, &mut mesh, &mut model, &mut material);
-        pass_text(&mut pass, &mut label);
+        if count & 1 == 0 {
+            let mut pass = buffer.pass(
+                &color_b,
+                &depth,
+                ColorLoad::clear(Rgb565::from_raw(0x1111)),
+                DepthLoad::clear(65535),
+            );
+            pass.set_camera(&camera);
+            pass.set_state(&state);
+            pass.draw(&mesh, &model, &material, &view);
+            pass.draw_ui(
+                &grid,
+                CellRect {
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 1,
+                },
+            );
+        } else {
+            let mut pass = buffer.pass(
+                &color_a,
+                &depth,
+                ColorLoad::clear(Rgb565::from_raw(0x1111)),
+                DepthLoad::clear(65535),
+            );
+            pass.set_camera(&camera);
+            pass.set_state(&state);
+            pass.draw(&mesh, &model, &material, &view);
+            pass.draw_ui(
+                &grid,
+                CellRect {
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 1,
+                },
+            );
+        }
         if count < 4 {
             profiler_marker(4);
         }
-        pass_complete(pass);
-        frame_complete(frame);
+        gpu.submit(buffer);
+        buffer = gpu.wait();
+        if count & 1 == 0 {
+            display.set_next_swap(&color_b);
+        } else {
+            display.set_next_swap(&color_a);
+        }
+        display.wait_vblank();
         if count < 4 {
             profiler_marker(5);
         }
@@ -72,7 +130,10 @@ fn run(limit: u16) {
             break;
         }
     }
-    renderer_close(renderer);
+}
+pub fn profiler_minimal_three_frames() {
+    run(3);
+    halt(0x600d);
 }
 fn main() {
     profiler_marker(0);

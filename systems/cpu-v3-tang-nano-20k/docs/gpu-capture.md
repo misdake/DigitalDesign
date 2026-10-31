@@ -1,5 +1,82 @@
 # Published GPU input capture bridge
 
+## Explicit-record integration entry
+
+`gpu_api_capture.rs` is a separate private entry consuming the agreed source12
+snapshot and A-owned facts4 allocation table. It copies the source, retains no
+facts pointer, and neither publishes memory nor sends or retires GPU work.
+The existing renderer continues to use its version1 bridge.
+
+The explicit entry emits **header version2**, with the existing64-word header,
+8-word ranges, native command ABI4 and column layout ABI2. This header version
+is separate from the existing manifest version. Addresses come from the actual
+record, native descriptors and allocation facts, without a fixed slot map.
+Header flags contain PUBLISHED and optional HAS_TARGET/HAS_FRONT/HAS_UI bits.
+Absent fields are zero; physical address0 remains legal when its presence bit
+is set. Frame0 means unspecified, and publication counters0 mean unavailable;
+PUBLISHED relies on the prepared-source health boundary, not those counters.
+Slot is only a diagnostic record index. The last SET_TARGET supplies the header
+target; the range table preserves all parsed targets.
+
+The native parser follows DMA_LOCAL provenance, installed Global/Render/Target,
+uniform/page initialization, DRAW, UI_GRID, MEMCPY, maintenance and terminal END.
+It checks valid/padded bounds, zero padding, allocation facts,64 ranges and a
+16-MiB aggregate serialized-byte limit. Native opcodes13/14 remain invalid.
+Each target plane spans1600
+sectors; allocation tails have READ|PREIMAGE only. Clear marks the selected
+physical plane FULL_CLEAR; Load preserves its input. Front is explicitly
+optional and omitted. Display observations do not open or wait for Display;
+an explicit Display error fails the lease. Each successful replay gets a new
+token/submission, while failures preserve the first capture error and lease.
+
+Mesh DMA captures the addressed record prefix and padded payload, not the whole
+asset pool. UV draws include the selected POT base/full mip chain or1600-sector
+fixed-view plane and its read-only allocation tail; RGB bypasses texture input.
+Render's texture fields are copied when SET_RENDER executes in the dependency
+scan, so later staging reuse cannot change the installed binding. Descriptor
+DMA from an earlier declared writable region is rejected as data dependent;
+ordinary uniform data and texture/payload contents may flow through GPU copies.
+UI records the intersecting grid sectors and the readable kind3 allocation
+beginning at the atlas base. It does not assume a64-KiB allocation: three glyphs
+can occupy six sectors. If fewer than510 sectors are available, each selected
+non-FF ID must have its complete256-byte glyph within that allocation. FF and
+masked neighboring cells cause no glyph read. A short grid span declared writable
+by earlier GPU work is rejected because its preimage cannot certify future IDs;
+510 or more atlas sectors cover every non-FF ID. Failures retain the error and
+lease before gate/submission. Optional manifest3 atlas catalogs retain64-KiB
+base alignment and describe the actual nonempty sector allocation, at least
+256 bytes; manifest2 retains its fixed64-KiB footprint. Header
+UI fields summarize the last UI call's grid read span; all calls remain in the
+range table, and UI_REFERENCE is zero. MEMCPY records both exact source and
+destination spans, requires declared access, and rejects command self-modification.
+
+The gate is a thin wrapper around the configured `profiler_gate`, followed by
+a health recheck. Unknown actions fail. Only A publishes again after Resumed
+and performs COUNT/START; `submitted` merely commits the prevalidated identity
+and closes the lease after both sends. Disabled capture returns
+true/CONTINUE/no-op. The shared UART runtime imports `gpu_capture_access`, whose
+legacy adapter re-exports the three public read-only renderer bridges. An
+explicit-root loader must select those same public bridges from `gpu_api`.
+
+PC consumers dispatch version1 using the original fixed map, and version2 using
+explicit recorded ranges. Build manifest3 declares `record-ranges-v1`, the same
+column packing without a fixed memory map or allocation size; manifest2 retains
+its original contract. Static catalogs may be empty for manifest3. Preflight
+requires every recorded payload, all targets and exact physical plane spans.
+Cold replay dumps every recorded writable range, including previous targets;
+no-target submissions produce no fabricated plane preview. The initialized-read
+and writable-byte guards still apply to actual GPU/MC transactions.
+
+The bounded C contract fixtures execute the actual bridge through RCC/CPU V3
+with small source/health/window peers. The actual shared UART runtime is tested
+through pause/dump/resume and busy responses, then decoded on the PC. Opt-in
+native GPU/stream-MC replays compare raw-copy bytes, Load preimages, dynamic UI
+pixels and multiple target outputs. Contract/control peers establish neither A
+ownership nor cache publication. These cold replays exclude CPU/Display
+contention and do not provide board or PVT qualification.
+
+## Resource-renderer boundary
+
 The resource renderer can call one synchronous diagnostic gate after successful
 cache publication, before Device4 COUNT/START. The preceding GPU is idle and
 Display continues reading old Front. This is not a pipeline checkpoint, second

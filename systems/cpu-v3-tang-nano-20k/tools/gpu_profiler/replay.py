@@ -17,7 +17,7 @@ from identity import digest, input_preflight, load_build, preflight
 from model import build_capture, write_report
 from images import preview, build as build_images
 from snapshot import Abi, DEFAULT_ABI, SnapshotError, load_snapshot
-from layout import COLUMN, COMMAND_ABI, get_layout, header_layout
+from layout import COLUMN, COMMAND_ABI, get_layout, header_layout, capture_description
 
 
 def physical(logical_word):
@@ -96,8 +96,9 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
     layout = header_layout(capture.header)
     if layout != export_layout(rtl, combined):
         raise SnapshotError('Frozen input and replay RTL have different storage layouts')
-    span=(preflight_result or {}).get('captured_plane_bytes', layout.plane_bytes)
-    if span not in (layout.plane_bytes, layout.allocation_bytes):
+    has_target = capture.header.get('has_target', True)
+    span=(preflight_result or {}).get('captured_plane_bytes', layout.plane_bytes if has_target else 0)
+    if span not in ((layout.plane_bytes, layout.allocation_bytes) if has_target else (0,)):
         raise SnapshotError('Unexpected physical output/guard comparison extent')
     contract = load_contract(rtl / "peer")
     expected_peer = {(rtl / "peer" / name).resolve() for name in contract["files"] if name.endswith(".v")}
@@ -116,12 +117,14 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
     header = capture.header
     for name, value in [("COUNT", header["count_minus_one"]), ("BASE_LINE", header["cb_base"] // 128),
                         ("COLOR_BASE", header["color_base"]), ("DEPTH_BASE", header["depth_base"]),
-                        ('PLANE_BYTES', layout.plane_bytes), ('ALLOCATION_BYTES', span)]:
+                        ('PLANE_BYTES', layout.plane_bytes if has_target else 0), ('ALLOCATION_BYTES', span)]:
         template = template.replace("@" + name + "@", str(value))
     buffers = [dict(index=r.index, address=r.address, bytes=r.length, file=f'buffer-{r.index}.bin')
                for r in capture.ranges if r.tag == capture.abi.constants.get('GPU_CAPTURE_TAG_BUFFER', -1) and r.flags & capture.abi['WRITE']]
+    writes = [dict(index=r.index, address=r.address, bytes=r.length, file=f'range-{r.index}.bin')
+              for r in capture.ranges if capture.header.get('capture_version') == 2 and r.flags & capture.abi['WRITE']]
     template = template.replace('@BUFFER_DUMPS@', '\n'.join(
-        f' dump_plane({r["address"]},{r["bytes"]},"{r["file"]}");' for r in buffers))
+        f' dump_plane({r["address"]},{r["bytes"]},"{r["file"]}");' for r in buffers + writes))
     bench = output / "replay-input-tb.v"
     bench.write_text(template, encoding="utf-8")
     manifest = dict(version=1, title="Frozen pre-submit cold GPU+MC replay", clock_hz=54_000_000,
@@ -130,9 +133,10 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
                     sources=[dict(path=str(p), sha256=digest(p)) for p in sources + [primitive]],
                     inputs={name: str(output / name) for name in ["memory.hex", "valid.hex", "marked.hex", 'writable.hex']},
                     input_sha256=capture.manifest()["input_sha256"], preflight=preflight_result,
-                    layout=layout.description(),
+                    layout=capture_description(header),
                     command_abi=COMMAND_ABI,
                     raw_buffers=buffers,
+                    write_ranges=writes, has_target=has_target,
                     captured_plane_bytes=span,
                     functional_pin_model=dict(cas=3, tac_ns=6, toh_ns=2, fixed_return_delay_ns=4,
                                               sdram_phase_degrees=157.5,
@@ -163,6 +167,12 @@ def execute(capture, manifest_path):
 def _execute(capture, manifest_path, declared):
     output = manifest_path.parent
     capture_run(manifest_path, output / "capture")
+    return _collect(capture, manifest_path, declared)
+
+
+def _collect(capture, manifest_path, declared):
+    """Check a completed native run; never synthesize a missing completion."""
+    output = manifest_path.parent
     profile = build_capture(output / "capture")
     log = (output / "capture/run.log").read_text(encoding="utf-8", errors="replace")
     match = re.search(r"REPLAY_COMPLETE cycles=(\d+) initialized_reads=checked", log)
@@ -173,11 +183,14 @@ def _execute(capture, manifest_path, declared):
     span=declared['captured_plane_bytes']
     if any(p.stat().st_size != capture.header["plane_bytes"] for p in [color, depth]):
         raise SnapshotError("Replay has incomplete output planes")
-    preview(color.read_bytes(), output / "color.png", capture.header["target_format"] == 1, layout)
+    has_target=capture.header.get('has_target',True)
+    if has_target:
+        preview(color.read_bytes(), output / "color.png", capture.header["target_format"] == 1, layout)
     result = dict(complete=True, input_sha256=capture.manifest()["input_sha256"],
-                  cold_submission_cycles=int(match.group(1)), color_sha256=digest(color),
-                  depth_sha256=digest(depth), profile=str(output / "profile/profiler.html"),
-                  layout=layout.description(),
+                  cold_submission_cycles=int(match.group(1)), color_sha256=digest(color) if has_target else None,
+                  depth_sha256=digest(depth) if has_target else None, has_target=has_target,
+                  profile=str(output / "profile/profiler.html"),
+                  layout=capture_description(capture.header),
                   command_abi=COMMAND_ABI,
                   captured_plane_bytes=span,
                   scope="No CPU/Display contention or warm cache; not board timing/PVT qualification")
@@ -187,7 +200,13 @@ def _execute(capture, manifest_path, declared):
         if path.stat().st_size != region['bytes']:
             raise SnapshotError('Replay has an incomplete raw-copy destination')
         result['raw_buffers'].append(dict(**region, sha256=digest(path)))
-    for role in ('color', 'depth'):
+    result['write_ranges'] = []
+    for region in declared.get('write_ranges', []):
+        path=output/'capture'/region['file']
+        if path.stat().st_size != region['bytes']:
+            raise SnapshotError('Incomplete recorded writable-range dump')
+        result['write_ranges'].append(dict(**region,sha256=digest(path)))
+    for role in (('color', 'depth') if has_target else ()):
         path = output / 'capture' / (role + '-allocation.bin')
         allocation = path.read_bytes()
         if len(allocation) != span:

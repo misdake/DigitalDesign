@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "reference": "ed03c63c49e59625cce3110771197750c1e6c3bb",
+  "reference_session_sha256": "8396fee0372d189bdfa20f6adb9fc312c6b8067184215fb63b56e694155beef9",
+  "scenario_sha256": "d3d4a20aa769e937d077843e2863c124c4497b0980d70e1de35c368f270ac02d",
+  "ticks": 3600,
+  "words_per_tick": 27,
+  "field_order": [
+    "GAME[0..10]",
+    "SESSION[0..10]",
+    "MOTION[0..7]"
+  ],
+  "trace_sha256": "8b4bcf2eeb1a7e13bc7bdc3d7e99d4a1de8419e292c9c591c5b735954aafdd80",
+  "scope": "actual baseline RCC/CPU trace, no pixel or board qualification"
+}

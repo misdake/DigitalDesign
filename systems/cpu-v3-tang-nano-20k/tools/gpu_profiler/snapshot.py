@@ -67,6 +67,9 @@ class Abi:
                           for m in re.finditer(
                               r"^pub const (GPU_CAPTURE_\w+): u16 = (0x[0-9a-fA-F_]+|[0-9_]+);$",
                               raw.decode("utf-8-sig").replace("\r\n", "\n"), re.M)}
+        limit = self.constants.get('GPU_CAPTURE_MAX_TOTAL_HIGH')
+        if limit is not None and limit << 16 != MAX_TOTAL_BYTES:
+            raise SnapshotError('Producer/consumer aggregate capture bounds disagree')
         if (self["VERSION"] != 1 or self["WORDS"] != 64 or self["RANGE_WORDS"] != 8 or
                 self['RTT400_COMMAND_ABI'] != COMMAND_ABI):
             raise SnapshotError("Unsupported driver capture ABI")
@@ -88,9 +91,16 @@ class Abi:
         if len(words) != self["WORDS"]:
             raise SnapshotError("Invalid driver descriptor length")
         words_to_bytes(words)
-        if (self.word(words, "H_VERSION") != self["VERSION"] or
+        version = self.word(words, "H_VERSION")
+        flags = self.word(words, "H_FLAGS")
+        recorded = version == self.constants.get('GPU_CAPTURE_EXPLICIT_VERSION')
+        flags_valid = flags == self['PUBLISHED']
+        if recorded:
+            allowed = self['PUBLISHED'] | self['HAS_TARGET'] | self['HAS_FRONT'] | self['HAS_UI']
+            flags_valid = bool(flags & self['PUBLISHED']) and not flags & ~allowed
+        if (not (version == self['VERSION'] or recorded) or
                 self.word(words, "H_WORDS") != self["WORDS"] or
-                self.word(words, "H_FLAGS") != self["PUBLISHED"] or
+                not flags_valid or
                 self.word(words, "H_BINDINGS") != self["BINDINGS_SELF_CONTAINED"]):
             raise SnapshotError("Unpublished, unsupported or non-self-contained descriptor")
         if self.word(words, "H_GPU_STATUS") != 0:
@@ -125,6 +135,11 @@ class Abi:
                                    self.word(words, "H_PUBLICATION_HIGH") << 16))
         result['layout_abi'] = layout.abi
         result['command_abi'] = self.word(words, "H_COMMAND_ABI")
+        if recorded:
+            result.update(capture_version=version, has_target=bool(flags & self['HAS_TARGET']),
+                          has_front=bool(flags & self['HAS_FRONT']), has_ui=bool(flags & self['HAS_UI']))
+            if result['frame'] or not result['submission']:
+                raise SnapshotError('Explicit capture requires unspecified Frame and a submission identity')
         at = self["H_MANIFEST"]
         result["manifest_id"] = words_to_bytes(words[at:at + self["MANIFEST_WORDS"]]).hex()
         valid, padded, base = result["cb_bytes"], result["cb_padded_bytes"], result["cb_base"]
@@ -134,17 +149,33 @@ class Abi:
                 padded % 128 or not (valid + 127) // 128 * 128 <= padded <= 65536 or
                 base + padded > MEMORY_BYTES):
             raise SnapshotError("Invalid CB, count, token or range bound")
-        if result["plane_bytes"] != layout.plane_bytes:
+        has_target = result.get('has_target', True)
+        if result["plane_bytes"] != (layout.plane_bytes if has_target else 0):
             raise SnapshotError("Unsupported target plane geometry")
         for key in ["color_base", "depth_base"]:
-            if result[key] % (65536 if layout.abi == 2 else 128) or result[key] + layout.allocation_bytes > MEMORY_BYTES:
+            span = layout.plane_bytes if recorded else layout.allocation_bytes
+            if has_target and (result[key] % 65536 or result[key] + span > MEMORY_BYTES):
                 raise SnapshotError("Invalid target plane address")
+        if recorded:
+            if not has_target and any(result[k] for k in ('color_base', 'depth_base', 'target_format')):
+                raise SnapshotError('Absent target has nonzero fields')
+            if has_target and abs(result['color_base']-result['depth_base']) < layout.plane_bytes:
+                raise SnapshotError('Target physical planes overlap')
+            if not result['has_front'] and (result['front_base'] or result['front_format']):
+                raise SnapshotError('Absent Front has nonzero fields')
+            if result['has_ui'] != bool(result['ui_bytes']):
+                raise SnapshotError('UI presence disagrees with its byte extent')
+            if not result['has_ui'] and result['ui_base']:
+                raise SnapshotError('Absent UI has a nonzero address')
+            if not result['object_bytes'] and result['object_base']:
+                raise SnapshotError('Absent push data has a nonzero address')
         for prefix in ["object", "ui"]:
             address, size = result[prefix + "_base"], result[prefix + "_bytes"]
             if size and (address % 2 or size % 2 or address + size > MEMORY_BYTES):
                 raise SnapshotError("Invalid optional input range")
         front = result["front_base"]
-        if front and (front % (32 if layout.abi == 2 else 128) or front + layout.allocation_bytes > MEMORY_BYTES):
+        if (result.get('has_front', bool(front)) and
+                (front % 32 or front + (layout.plane_bytes if recorded else layout.allocation_bytes) > MEMORY_BYTES)):
             raise SnapshotError("Invalid old Front address")
         if result["target_format"] not in [0, 1] or result["front_format"] not in [0, 1]:
             raise SnapshotError("Unknown Display encoding")
@@ -346,6 +377,15 @@ class Attempt:
             layout=header_layout(self.header)
             for item in self.ranges:
                 if item.tag in (self.abi['TAG_COLOR'],self.abi['TAG_DEPTH'],self.abi['TAG_FRONT']):
+                    if self.header.get('capture_version') == 2:
+                        plane = item.tag != self.abi['TAG_FRONT'] and bool(item.flags & self.abi['WRITE'])
+                        if plane and (item.address % 65536 or item.length != layout.plane_bytes):
+                            raise SnapshotError('Recorded writable plane is not its exact physical span')
+                        if item.flags & self.abi['FULL_CLEAR'] and not plane:
+                            raise SnapshotError('FULL_CLEAR cannot initialize a recorded allocation tail/Front')
+                        if not plane and item.flags != (self.abi['READ'] | self.abi['PREIMAGE']):
+                            raise SnapshotError('Recorded tail/Front must be read-only preimage')
+                        continue
                     base=self.header[{self.abi['TAG_COLOR']:'color_base',self.abi['TAG_DEPTH']:'depth_base',
                                       self.abi['TAG_FRONT']:'front_base'}[item.tag]]
                     if item.flags & self.abi['FULL_CLEAR'] and not base <= item.address < item.address+item.length <= base+layout.plane_bytes:

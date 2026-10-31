@@ -7,7 +7,10 @@ snapshot of the destination. Entry and goal animations run separately from the
 fade. Moves and connection status remain in the captured HUD.
 
 RIGHT/LEFT/DOWN/UP start a roll; START restarts and TRIANGLE changes fixture.
-All keys are ignored during a fade. Ordinary animation locks movement; restart
+All keys are ignored during a fade. The application captures input again after
+Display retirement, before releasing the final fade lock. A button held across
+that boundary requires a release and a new press before entry accepts it.
+Ordinary animation locks movement; restart
 can interrupt it. Disconnected input is ignored while presentation continues. Successful
 completion advances to the next fixture after the goal animation.
 

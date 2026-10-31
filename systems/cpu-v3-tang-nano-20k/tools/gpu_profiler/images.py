@@ -111,6 +111,8 @@ def empty_draw_ids(profile):
 
 def build(capture, profile, event_path, output):
     """Project each command at its real completion, with younger owners excluded."""
+    if not capture.header.get('has_target', True):
+        return dict(available=False, reason='This submission has no render target')
     if profile['partial'] or not profile.get('memory', {}).get('available'):
         return dict(available=False, reason='Complete memory/ownership trace required')
     rows = {}

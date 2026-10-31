@@ -1,5 +1,21 @@
 # GPU profiler
 
+Explicit `Gpu` captures use header2 and build manifest3. Their
+`record-ranges-v1` policy keeps the column pixel packing while deriving addresses
+and allocation bounds from the recorded range table. Legacy header1/manifest2
+retain their fixed-map validation. No-target streams have no fabricated plane
+preview; cold replay preserves outputs for every writable range, including
+targets preceding the header's final target. See the
+[capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md#explicit-record-integration-entry).
+
+`tests/test_recorded_replay.py` is an explicit native GPU/stream-MC tier. Set
+`GPU_API_CAPTURE_FIXTURE_DIR`, `GPU_API_CAPTURE_RTL_DIR` and
+`GPU_API_NATIVE_REPLAY_DIR` to retained C producer fixtures, production exports
+and a fresh output root. It checks raw MEMCPY, Load preimages, visible UI and
+all outputs of multiple targets. Each replay has a finite cycle/process limit;
+these controlled-input tests do not qualify A ownership, board timing or
+CPU/Display contention.
+
 Read-only RTL capture, frozen pre-submit memory snapshots, bounded cold replay
 and a self-contained offline viewer. Python uses the standard library. Node is needed for viewer
 regressions; Icarus and the Gowin simulation library are needed only for RTL capture.

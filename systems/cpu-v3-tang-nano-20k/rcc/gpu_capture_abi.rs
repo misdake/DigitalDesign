@@ -1,9 +1,17 @@
 //! Diagnostic lease descriptor. Addresses/lengths are physical bytes, low16 first.
 //! This is a software bridge ABI, never a header inside executable GPU commands.
 pub const GPU_CAPTURE_VERSION: u16 = 1;
+// Explicit-record captures retain the envelope shape, but have no fixed map.
+// Version1 consumers must reject them instead of guessing legacy slot addresses.
+pub const GPU_CAPTURE_EXPLICIT_VERSION: u16 = 2;
+pub const GPU_CAPTURE_HAS_TARGET: u16 = 2;
+pub const GPU_CAPTURE_HAS_FRONT: u16 = 4;
+pub const GPU_CAPTURE_HAS_UI: u16 = 8;
 pub const GPU_CAPTURE_WORDS: u16 = 64;
 pub const GPU_CAPTURE_RANGE_WORDS: u16 = 8;
 pub const GPU_CAPTURE_MAX_RANGES: u16 = 64;
+// Upper16 of the16-MiB aggregate capture bound, independent of physical spans.
+pub const GPU_CAPTURE_MAX_TOTAL_HIGH: u16 = 256;
 pub const GPU_CAPTURE_MANIFEST_WORDS: u16 = 16;
 
 pub const GPU_CAPTURE_H_VERSION: u16 = 0;

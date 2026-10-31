@@ -2,14 +2,20 @@
 use crate::dsl_rt::*;
 mod device_abi;
 use device_abi::*;
-mod gpu_pipeline;
-use gpu_pipeline::*;
+mod gpu_api;
+use gpu_api::*;
+mod gpu_demo_api;
+use gpu_demo_api::*;
+mod profiler_clock;
+use profiler_clock::*;
+mod gamepad;
+use gamepad::*;
 mod boot_resources;
 use boot_resources::*;
 mod session;
 use session::*;
 
-fn plane_floor(renderer: &mut Renderer) -> Mesh {
+fn plane_floor() -> Mesh {
     let first = if MOTION[6u16] == 0 {
         FLOOR0_FIRST
     } else {
@@ -20,26 +26,22 @@ fn plane_floor(renderer: &mut Renderer) -> Mesh {
     } else {
         FLOOR1_COUNT
     };
-    return renderer_mesh_batch(renderer, first, count);
+    return demo_mesh_part(first, count);
 }
 fn pad_box(
     pass: &mut Pass,
-    mesh: &mut Mesh,
+    mesh: &Mesh,
     model: &mut Model,
     material: &mut Material,
-    center: vec3,
-    size: vec3,
+    center: Vec3,
+    size: Vec3,
 ) {
-    model_pose(model, center, vec3::zero(), size);
-    pass.draw(mesh, model, material);
+    model.set_pose(demo_pose(center, demo_zero(), size));
+    let texture = demo_texture();
+    let view = texture.view();
+    pass.draw(mesh, model, material, &view);
 }
-fn draw_pad(
-    pass: &mut Pass,
-    mesh: &mut Mesh,
-    model: &mut Model,
-    material: &mut Material,
-    start: bool,
-) {
+fn draw_pad(pass: &mut Pass, mesh: &Mesh, model: &mut Model, material: &mut Material, start: bool) {
     let x = if start { LEVEL[2u16] } else { SESSION[6u16] };
     let z = if start { LEVEL[3u16] } else { SESSION[7u16] };
     if x == 65535 {
@@ -64,7 +66,12 @@ fn draw_pad(
     let cx = fix32::from_int(x as i16) - fix32::from_words(32768, 3);
     let cz = fix32::from_int(z as i16) - one;
     // Four opaque well walls, sharing one ordinary box and one Model slot.
-    material_color(material, 48, 64, 72, 255);
+    material.set_uniform_color(Rgba8 {
+        r: 48,
+        g: 64,
+        b: 72,
+        a: 255,
+    });
     let mut side: u16 = 0;
     while side < 4 {
         let along_x = side < 2;
@@ -74,12 +81,12 @@ fn draw_pad(
             mesh,
             model,
             material,
-            vec3::new(
+            demo_point(
                 cx + if along_x { sign } else { fix32::zero() },
                 -one,
                 cz + if along_x { fix32::zero() } else { sign },
             ),
-            vec3::new(
+            demo_point(
                 if along_x {
                     fix32::from_words(3932, 0)
                 } else {
@@ -96,9 +103,19 @@ fn draw_pad(
         side += 1;
     }
     if start {
-        material_color(material, 80, 255, 128, 255);
+        material.set_uniform_color(Rgba8 {
+            r: 80,
+            g: 255,
+            b: 128,
+            a: 255,
+        });
     } else {
-        material_color(material, 255, 64, 64, 255);
+        material.set_uniform_color(Rgba8 {
+            r: 255,
+            g: 64,
+            b: 64,
+            a: 255,
+        });
     }
     let width = (one - opening) * half;
     if width < fix32::from_words(256, 0) {
@@ -116,12 +133,12 @@ fn draw_pad(
                 mesh,
                 model,
                 material,
-                vec3::new(
+                demo_point(
                     cx + if along_x { offset } else { fix32::zero() },
                     fix32::from_words(1638, 0),
                     cz + if along_x { fix32::zero() } else { offset },
                 ),
-                vec3::new(
+                demo_point(
                     if along_x { width } else { opening },
                     fix32::from_words(3277, 0),
                     if along_x { one } else { width },
@@ -131,60 +148,36 @@ fn draw_pad(
         panel += 1;
     }
 }
-fn draw_floor(
-    frame: &mut Frame,
-    camera: &mut Camera,
-    floor: &mut Mesh,
-    bridge: &mut Mesh,
-    model: &mut Model,
-    material: &mut Material,
-) {
-    let mut pass = frame.pass(camera);
-    pass.draw(floor, model, material);
+fn draw_floor(pass: &mut Pass, floor: &Mesh, bridge: &Mesh, model: &Model, material: &Material) {
+    let texture = demo_texture();
+    let view = texture.view();
+    pass.draw(floor, model, material, &view);
     if MOTION[6u16] == 0 && GAME[3u16] & 1 != 0 {
-        pass.draw(bridge, model, material);
+        pass.draw(bridge, model, material, &view);
     }
-    pass.finish();
 }
-fn draw_pads(
-    frame: &mut Frame,
-    camera: &mut Camera,
-    block: &mut Mesh,
-    model: &mut Model,
-    material: &mut Material,
-) {
-    let mut pass = frame.pass(camera);
-    draw_pad(&mut pass, block, model, material, true);
-    draw_pad(&mut pass, block, model, material, false);
-    pass.finish();
+fn draw_pads(pass: &mut Pass, block: &Mesh, model: &mut Model, material: &mut Material) {
+    draw_pad(pass, block, model, material, true);
+    draw_pad(pass, block, model, material, false);
 }
-fn draw_block(
-    frame: &mut Frame,
-    camera: &mut Camera,
-    block: &mut Mesh,
-    model: &mut Model,
-    material: &mut Material,
-) {
+fn draw_block(pass: &mut Pass, block: &Mesh, model: &mut Model, material: &Material) {
     block_pose(model);
-    let mut pass = frame.pass(camera);
     if block_visible() {
-        pass.draw(block, model, material);
+        let texture = demo_texture();
+        let view = texture.view();
+        pass.draw(block, model, material, &view);
     }
-    pass.finish();
 }
-fn draw_hud(frame: &mut Frame, moves: &mut TextField, connection: &mut TextField) {
-    let input = frame_input(frame);
-    frame_number(frame, moves, GAME[5u16]);
-    frame_number(frame, connection, input.connected);
-    let mut pass = frame_ui_pass(frame);
-    pass_text(&mut pass, moves);
-    pass_text(&mut pass, connection);
-    pass.finish();
-}
-fn submit(renderer: &mut Renderer) {
-    if renderer.submit() != RENDERER_PENDING || renderer.wait(WAIT_ALL) != RENDERER_COMPLETED {
-        halt(0xe080);
-    }
+fn game_camera() -> Camera {
+    Camera::new(CameraDesc {
+        eye: demo_point(fix32::zero(), fix32::from_int(5), fix32::from_int(12)),
+        angles: demo_point(
+            fix32::from_words(32768, 65535),
+            fix32::zero(),
+            fix32::zero(),
+        ),
+        projection: Projection::from_focal_pixels(fix32::from_int(200), fix32::from_int(100)),
+    })
 }
 // Capture-only progress: ASCII stage, four hexadecimal digits and LF.
 // A=loop, B=source begin, C=source retired, D=consumer submit,
@@ -233,70 +226,56 @@ fn capture_buttons(elapsed: u16) -> u16 {
     }
     0
 }
-fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
-    let mut renderer = renderer_open();
-    let zero = fix32::zero();
-    let one = fix32::from_int(1);
-    let mut storage: RenderBufferMemory = RenderBufferMemory {
-        color_base_low: 0,
-        color_base_high: 0x60,
-        color_capacity_low: 0,
-        color_capacity_high: 4,
-        depth_base_low: 0,
-        depth_base_high: 0x64,
-        depth_capacity_low: 0,
-        depth_capacity_high: 4,
-    };
-    let mut buffer = renderer.render_buffer(view_of(&mut storage));
-    let mut camera = renderer_camera(
-        &mut renderer,
-        vec3::new(zero, fix32::from_int(5), fix32::from_int(12)),
-        vec3::new(fix32::from_words(32768, 65535), zero, zero),
-        fix32::from_int(200),
-        fix32::from_int(100),
-    );
-    let mut screen_camera = renderer_camera(
-        &mut renderer,
-        vec3::zero(),
-        vec3::zero(),
-        fix32::from_int(200),
-        fix32::from_int(199),
-    );
-    let mut bridge = renderer_mesh_batch(&mut renderer, BRIDGE_FIRST, BRIDGE_COUNT);
-    let mut block = renderer_mesh_batch(&mut renderer, BLOCK_FIRST, BLOCK_COUNT);
-    let mut screen = renderer_mesh_batch(&mut renderer, SCREEN_FIRST, SCREEN_COUNT);
+fn game_floor_model() -> Model {
     let half = fix32::from_words(32768, 0);
-    let mut floor_model = renderer_model(
-        &mut renderer,
-        vec3::zero(),
-        vec3::zero(),
-        vec3::new(half, half, half),
-    );
-    let mut block_model = renderer_model(
-        &mut renderer,
-        vec3::zero(),
-        vec3::zero(),
-        vec3::new(one, one, one),
-    );
-    let mut pad_model = renderer_model(
-        &mut renderer,
-        vec3::zero(),
-        vec3::zero(),
-        vec3::new(one, one, one),
-    );
-    let mut screen_model = renderer_model(
-        &mut renderer,
-        vec3::new(zero, zero, -one),
-        vec3::zero(),
-        vec3::new(one, fix32::from_words(39322, 0), one),
-    );
-    let mut material = renderer_material(&mut renderer, 255, 255, 255, true);
-    let mut pad_material = renderer_material(&mut renderer, 255, 255, 255, false);
-    let mut tint_material = renderer_material(&mut renderer, 255, 255, 255, false);
-    let mut moves = renderer_text(&mut renderer, 0, 0, 4);
-    let mut connection = renderer_text(&mut renderer, 6, 0, 1);
+    Model::new(demo_pose(
+        demo_zero(),
+        demo_zero(),
+        demo_point(half, half, half),
+    ))
+}
+fn game_plain_model() -> Model {
+    Model::new(demo_pose(demo_zero(), demo_zero(), demo_scale()))
+}
+fn game_screen_model() -> Model {
+    let one = fix32::from_int(1);
+    Model::new(demo_pose(
+        demo_point(fix32::zero(), fix32::zero(), -one),
+        demo_zero(),
+        demo_point(one, fix32::from_words(39322, 0), one),
+    ))
+}
+
+fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
+    let mut gpu = Gpu::init(demo_config());
+    let mut commands = gpu.command_buffer();
+    let offscreen = ColorBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc000, 2048) });
+    let offscreen_depth =
+        DepthBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc800, 2048) });
+    let color_a = demo_color_a();
+    let color_b = demo_color_b();
+    let depth = demo_depth();
+    let mut display = Display::open();
+    let camera = game_camera();
+    let screen_camera = demo_camera();
+    let state = demo_state();
+    let bridge = demo_mesh_part(BRIDGE_FIRST, BRIDGE_COUNT);
+    let block = demo_mesh_part(BLOCK_FIRST, BLOCK_COUNT);
+    let screen = demo_mesh_part(SCREEN_FIRST, SCREEN_COUNT);
+    let floor_model = game_floor_model();
+    let mut block_model = game_plain_model();
+    let mut pad_model = game_plain_model();
+    let screen_model = game_screen_model();
+    let material = demo_material(demo_white(), false);
+    let mut pad_material = demo_material(demo_white(), true);
+    let mut tint_material = demo_material(demo_white(), true);
+    let mut grid = demo_grid(false);
     session_init();
+    gamepad_init();
+    let mut previous = profiler_active_milliseconds();
+    let mut connected: u16 = 0;
     let mut number: u16 = 0;
+    let mut back_b = true;
     loop {
         signal(4, number);
         if automatic_capture {
@@ -306,38 +285,39 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             if automatic_capture {
                 capture_report(66, number);
             }
-            let mut floor = plane_floor(&mut renderer);
+            let floor = plane_floor();
+            demo_number(&mut grid, 0, 0, 4, GAME[5u16]);
+            demo_number(&mut grid, 6, 0, 1, connected);
+            commands.reset();
+            commands.invalidate_textures();
             {
-                let mut frame = renderer.frame_to(&mut buffer, 0x2222);
-                draw_floor(
-                    &mut frame,
-                    &mut camera,
-                    &mut floor,
-                    &mut bridge,
-                    &mut floor_model,
-                    &mut material,
+                let mut pass = commands.pass(
+                    &offscreen,
+                    &offscreen_depth,
+                    ColorLoad::clear(Rgb565::from_raw(0x2222)),
+                    DepthLoad::clear(65535),
                 );
-                draw_pads(
-                    &mut frame,
-                    &mut camera,
-                    &mut block,
-                    &mut pad_model,
-                    &mut pad_material,
+                pass.set_camera(&camera);
+                pass.set_state(&state);
+                draw_floor(&mut pass, &floor, &bridge, &floor_model, &material);
+                draw_pads(&mut pass, &block, &mut pad_model, &mut pad_material);
+                draw_block(&mut pass, &block, &mut block_model, &material);
+                pass.draw_ui(
+                    &grid,
+                    CellRect {
+                        x: 0,
+                        y: 0,
+                        width: 7,
+                        height: 1,
+                    },
                 );
-                draw_block(
-                    &mut frame,
-                    &mut camera,
-                    &mut block,
-                    &mut block_model,
-                    &mut material,
-                );
-                draw_hud(&mut frame, &mut moves, &mut connection);
-                frame.finish();
             }
-            if renderer.submit() != RENDERER_PENDING
-                || renderer.wait(WAIT_GPU) != RENDERER_COMPLETED
-            {
-                halt(0xe081);
+            let resume_before = profiler_resume_epoch();
+            gpu.submit(commands);
+            commands = gpu.wait();
+            if profiler_resume_epoch() != resume_before {
+                gamepad_capture();
+                gamepad_discard_edges();
             }
             if automatic_capture {
                 capture_report(67, number);
@@ -345,118 +325,174 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             session_captured();
             signal(11, SESSION[4u16]);
         }
-        {
-            let mut floor = plane_floor(&mut renderer);
-            let mut frame = renderer.frame(0x2222);
-            let input = frame_input(&mut frame);
-            let elapsed = frame_elapsed_ms(&mut frame);
-            let buttons = if automatic_capture {
-                capture_buttons(elapsed)
+        gamepad_capture();
+        let input = gamepad_take_frame();
+        connected = input.connected;
+        let now = profiler_active_milliseconds();
+        let elapsed = now - previous;
+        previous = now;
+        let buttons = if automatic_capture {
+            capture_buttons(elapsed)
+        } else {
+            input.pressed
+        };
+        session_tick(buttons, elapsed);
+        if automatic_capture && CAPTURE_STIMULUS[0u16] == 3 && SESSION[0u16] == FADE_OUT {
+            let stop_time = if capture_brightness == 255 {
+                0u16
             } else {
-                input.pressed
+                160u16
             };
-            session_tick(buttons, elapsed);
-            if automatic_capture && CAPTURE_STIMULUS[0u16] == 3 && SESSION[0u16] == FADE_OUT {
-                let stop_time = if capture_brightness == 255 {
-                    0u16
-                } else {
-                    160u16
-                };
-                if SESSION[1u16] > stop_time {
-                    SESSION[1u16] = stop_time;
-                }
+            if SESSION[1u16] > stop_time {
+                SESSION[1u16] = stop_time;
             }
-            if SESSION[3u16] == 0 {
-                if fading() {
-                    let color = tint();
-                    material_color(&mut tint_material, color, color, color, 255);
-                    let mut view = buffer.texture(false);
-                    let mut pass = frame.pass(&mut screen_camera);
-                    pass.draw_texture(
-                        &mut screen,
-                        &mut screen_model,
-                        &mut tint_material,
-                        &mut view,
-                    );
-                    pass.finish();
-                    if automatic_capture {
-                        frame_number(&mut frame, &mut moves, 1000 + color);
-                        let mut overlay = frame_ui_pass(&mut frame);
-                        pass_text(&mut overlay, &mut moves);
-                        overlay.finish();
-                    }
-                    frame.finish();
-                    if automatic_capture {
-                        capture_report(68, tint());
-                    }
-                    if renderer.submit() != RENDERER_PENDING {
-                        halt(0xe082);
-                    }
-                    view.close();
-                    if automatic_capture {
-                        capture_report(69, tint());
-                    }
-                    if renderer.wait(WAIT_ALL) != RENDERER_COMPLETED {
-                        halt(0xe083);
-                    }
-                } else {
-                    draw_floor(
-                        &mut frame,
-                        &mut camera,
-                        &mut floor,
-                        &mut bridge,
-                        &mut floor_model,
-                        &mut material,
-                    );
-                    draw_pads(
-                        &mut frame,
-                        &mut camera,
-                        &mut block,
-                        &mut pad_model,
-                        &mut pad_material,
-                    );
-                    draw_block(
-                        &mut frame,
-                        &mut camera,
-                        &mut block,
-                        &mut block_model,
-                        &mut material,
-                    );
-                    draw_hud(&mut frame, &mut moves, &mut connection);
-                    frame.finish();
-                    submit(&mut renderer);
-                }
-                signal(12, SESSION[0u16]);
-                if automatic_capture {
-                    capture_report(70, SESSION[0u16]);
-                }
-                if automatic_capture
-                    && CAPTURE_STIMULUS[0u16] == 3
-                    && SESSION[0u16] == FADE_OUT
-                    && tint() == capture_brightness
+        }
+        if SESSION[3u16] == 0 {
+            let floor = plane_floor();
+            let fade = fading();
+            let color = tint();
+            tint_material.set_uniform_color(Rgba8 {
+                r: color as u8,
+                g: color as u8,
+                b: color as u8,
+                a: 255,
+            });
+            demo_number(&mut grid, 0, 0, 4, GAME[5u16]);
+            demo_number(&mut grid, 6, 0, 1, connected);
+            if fade && automatic_capture {
+                demo_number(&mut grid, 0, 0, 4, 1000 + color);
+            }
+            commands.reset();
+            commands.invalidate_textures();
+            if back_b {
                 {
-                    capture_report(72, tint());
-                    capture_report(76, dev_recv(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW));
-                    capture_report(85, dev_recv(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH));
-                    capture_report(77, dev_recv(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT));
-                    capture_report(80, dev_recv(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND));
-                    capture_report(71, dev_recv(GPU_DEVICE, GPU_STATUS));
-                    halt(0x600d);
+                    let mut pass = commands.pass(
+                        &color_b,
+                        &depth,
+                        ColorLoad::clear(Rgb565::from_raw(0x2222)),
+                        DepthLoad::clear(65535),
+                    );
+                    pass.set_state(&state);
+                    if fade {
+                        let view = offscreen.texture_view();
+                        pass.set_camera(&screen_camera);
+                        pass.draw(&screen, &screen_model, &tint_material, &view);
+                        if automatic_capture {
+                            pass.draw_ui(
+                                &grid,
+                                CellRect {
+                                    x: 0,
+                                    y: 0,
+                                    width: 4,
+                                    height: 1,
+                                },
+                            );
+                        }
+                    } else {
+                        pass.set_camera(&camera);
+                        draw_floor(&mut pass, &floor, &bridge, &floor_model, &material);
+                        draw_pads(&mut pass, &block, &mut pad_model, &mut pad_material);
+                        draw_block(&mut pass, &block, &mut block_model, &material);
+                        pass.draw_ui(
+                            &grid,
+                            CellRect {
+                                x: 0,
+                                y: 0,
+                                width: 7,
+                                height: 1,
+                            },
+                        );
+                    }
                 }
-                session_presented();
             } else {
-                drop(frame);
+                {
+                    let mut pass = commands.pass(
+                        &color_a,
+                        &depth,
+                        ColorLoad::clear(Rgb565::from_raw(0x2222)),
+                        DepthLoad::clear(65535),
+                    );
+                    pass.set_state(&state);
+                    if fade {
+                        let view = offscreen.texture_view();
+                        pass.set_camera(&screen_camera);
+                        pass.draw(&screen, &screen_model, &tint_material, &view);
+                        if automatic_capture {
+                            pass.draw_ui(
+                                &grid,
+                                CellRect {
+                                    x: 0,
+                                    y: 0,
+                                    width: 4,
+                                    height: 1,
+                                },
+                            );
+                        }
+                    } else {
+                        pass.set_camera(&camera);
+                        draw_floor(&mut pass, &floor, &bridge, &floor_model, &material);
+                        draw_pads(&mut pass, &block, &mut pad_model, &mut pad_material);
+                        draw_block(&mut pass, &block, &mut block_model, &material);
+                        pass.draw_ui(
+                            &grid,
+                            CellRect {
+                                x: 0,
+                                y: 0,
+                                width: 7,
+                                height: 1,
+                            },
+                        );
+                    }
+                }
             }
+            if automatic_capture {
+                capture_report(68, tint());
+            }
+            let resume_before = profiler_resume_epoch();
+            gpu.submit(commands);
+            if automatic_capture {
+                capture_report(69, tint());
+            }
+            commands = gpu.wait();
+            if profiler_resume_epoch() != resume_before {
+                gamepad_capture();
+                gamepad_discard_edges();
+            }
+            if back_b {
+                display.set_next_swap(&color_b);
+            } else {
+                display.set_next_swap(&color_a);
+            }
+            display.wait_vblank();
+            // Capture reports received during the locked presentation interval.
+            // session_presented discards their edges before entry becomes active.
+            gamepad_capture();
+            signal(12, SESSION[0u16]);
+            if automatic_capture {
+                capture_report(70, SESSION[0u16]);
+            }
+            if automatic_capture
+                && CAPTURE_STIMULUS[0u16] == 3
+                && SESSION[0u16] == FADE_OUT
+                && tint() == capture_brightness
+            {
+                capture_report(72, tint());
+                // Read-only final diagnostic, after both public completion boundaries.
+                capture_report(76, dev_recv(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW));
+                capture_report(85, dev_recv(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH));
+                capture_report(77, dev_recv(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT));
+                capture_report(80, dev_recv(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND));
+                capture_report(71, dev_recv(GPU_DEVICE, GPU_STATUS));
+                halt(0x600d);
+            }
+            session_presented();
+            back_b = !back_b;
         }
         number += 1;
         if limit != 0 && number == limit {
             break;
         }
     }
-    if !buffer.close() {
-        halt(0xe084);
-    }
-    renderer.close();
 }
 pub fn renderer_game_frames() {
     run(120, false, 128);
@@ -465,13 +501,16 @@ pub fn renderer_game_frames() {
 fn main() {
     run(0, false, 128);
 }
-
 pub fn renderer_game_capture() {
     run(0, true, 128);
     halt(0x600d);
 }
-
 pub fn renderer_game_capture_full() {
     run(0, true, 255);
+    halt(0x600d);
+}
+
+pub fn renderer_game_three_frames() {
+    run(3, false, 128);
     halt(0x600d);
 }
