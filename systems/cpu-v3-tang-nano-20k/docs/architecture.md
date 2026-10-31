@@ -47,9 +47,9 @@ The full-system board uses the [DS2 left-port profile](/systems/cpu-v3-tang-nano
 with CLK/CMD/DAT/ATT on pins17/20/19/18 and only LED0/1 on pins15/16.
 Legacy six-LED target profiles remain available for other applications.
 
-The [eight-DPB C16/Z16 storage and quad owner](framebuffer-cache.md) describes the
-retired GPU implementation. The current leaf instead uses the production GPU framebuffer cache described in
-[GPU memory](/ip/gpu-v2/docs/memory.md).
+The production GPU framebuffer's storage, ROP ports and line ownership are
+specified in [GPU framebuffer](/ip/gpu-v2/docs/framebuffer.md). Transport and
+request retirement are specified in [GPU memory](/ip/gpu-v2/docs/memory.md).
 
 The production template groups twelve named CPU, cache, GPU, boot, device and
 Display instance declarations after its signal declarations and fixed glue.

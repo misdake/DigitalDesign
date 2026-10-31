@@ -1,6 +1,6 @@
 # CPU V3 optimization detail record
 
-Status: append-only detail record; normally read only when investigating an old decision
+Status: historical detail record; not a current-state handoff
 Repository: `../../../`
 Updated: 2026-10-09
 
@@ -8,29 +8,18 @@ The CPU V3 benchmark suite and runners referenced below were retired on
 2026-10-24. These entries preserve historical evidence; their benchmark commands
 are no longer active validation entry points.
 
-The concise milestone index lives in [`cpu-v3-optimization.md`](cpu-v3-optimization.md). This file
-preserves the former long-form roadmap, measurements, rejected alternatives, and validation notes.
-New milestones add one sentence to the concise index and append their detailed evidence here; old
-entries are not rewritten except to correct a factual error with an explicit superseding note.
+The [milestone index](/systems/cpu-v3-tang-nano-20k/docs/cpu-v3-optimization.md) and this file
+preserve the former roadmap, measurements, rejected alternatives, and validation notes.
+Historical numbers describe the exact runs and implementation baselines named by each Stage.
 
-This roadmap lives inside the CPU V3 system crate so it stays with the system it describes; it is
-maintained and committed together with each milestone. Benchmark workloads and runners live in the
-system crate; generated per-stage CSV and presentation artifacts remain local unless explicitly
-selected for the repository. Historical numbers below record the exact release-mode emulator runs
-described by each Stage.
+## Historical record boundary
 
-## Milestone workflow and document lifecycle
-
-- Keep this document permanently as the optimization history and current-state handoff.
-- Before and after each milestone, update the current implementation state here so another agent can
-  resume from the documented repository state.
-- Include the updated roadmap in the same commit that completes each milestone.
-- Never leave the current architecture, benchmark, validation, PnR, timing, or resource summary stale
-  after a CPU V3 optimization.
-- Scale validation to the risk of the change. Correctness-focused changes with little timing or
-  resource pressure may use a smaller targeted test set, provided the completed milestone records
-  what ran and what was intentionally skipped. Changes that affect timing, resource use, memory
-  geometry, clocks, or clock-domain crossings still require the corresponding hardware validation.
+Entries below describe their recorded baselines. Retired benchmark commands, pending-work
+statements and resource measurements are not current validation entry points or specifications.
+Current implementation contracts belong in the owning component documentation and
+[system architecture](/systems/cpu-v3-tang-nano-20k/docs/architecture.md), not this record.
+Do not append new milestones or resource/performance ledgers here or in the historical index.
+Current changes still require the validation appropriate to their affected implementation paths.
 
 ## Current implementation progress
 
@@ -1195,10 +1184,10 @@ left-span testing, and right-tail rejection. Both traversals have one- and
 two-pixel coverage-generation rates; there is no four-pixel/clock implementation.
 Tile is selected at both rates because scanline costs more raster Logic and its
 row-major sweep causes repeated refill/dirty eviction in the tile-linear cache.
-The faster tile choice is retained as default. Measured resources, producer
-averages, full-frame cache transactions, timing owners, rejected alternatives,
-whole-system attribution and reproduction are recorded once in
-[gpu-raster-comparison.md](gpu-raster-comparison.md).
+The faster tile choice was retained as default at this historical baseline.
+The retired raster comparison recorded measured resources, producer averages,
+full-frame cache transactions, timing owners, rejected alternatives,
+whole-system attribution and reproduction for that baseline.
 
 Actual memory inference matters more than register count. Coordinate simplification
 made automatic quad FIFO mapping expand into FFs; explicitly keeping BSRAM restores
@@ -1295,7 +1284,7 @@ that archive. Generated reports are evidence artifacts rather than maintained sp
 
 ## Accepted framebuffer component, 2026-09-27
 
-The [eight-DPB framebuffer contract](framebuffer-cache.md) replaces physical tile groups and
+The eight-DPB framebuffer contract replaces physical tile groups and
 a numerical color queue with fixed memory/render ports and source ownership through the final
 write. The independent component and reproducible vendor tests are committed together; its
 resource/throughput table is the sole home for these measurements. Earlier queue, shared-pool
@@ -1306,7 +1295,7 @@ integration and real depth/blend arithmetic remain pending; no new board validat
 
 ## Standalone framebuffer execution lanes, 2026-09-27
 
-The [framebuffer component](framebuffer-cache.md#measured-component-boundary) now executes
+The framebuffer component now executes
 pointwise operations in physical bank order. One latched lane-control bit converts the held
 RGBA8888/Z16 source and completion mask, removing wide old-value and render-write permutations.
 The matched full-source-width probe retains all alpha/color bits and preserves word-level
@@ -1323,7 +1312,7 @@ component change: no production GPU export, frozen CPU suite or board-validation
 
 ## Production framebuffer attachment to display work-1, 2026-09-27
 
-The [eight-DPB storage and quad owner](framebuffer-cache.md#production-attachment)
+The eight-DPB storage and quad owner
 is attached to the production GPU on work-1's four-row display/sRGB baseline.
 Whole covered quads retain the raster FIFO head through actual masked writes;
 the serial pixel splitter and former four-bank array are replaced. Existing tags,

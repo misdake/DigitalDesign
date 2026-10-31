@@ -99,11 +99,13 @@ The input scratchpad is reused without extra BSRAM: page0 holds the768-byte
 grid, while page1 holds two512-byte char-pair buffers. Two ordered task slots
 hold `{tile_index9,left_ID8,right_ID8}` and validity/readiness; each slot retains
 its associated buffer until the task's final write terminal. Initialization's
-grid-base field shares the low16 bits of the later scanner window because
-their lifetimes do not overlap.
+grid-base field shares the later 16-bit ID-pair register because their lifetimes
+do not overlap.
 
-The checker reads eight IDs per synchronous64-bit read, then examines one pair
-per enabled edge using fixed16-bit progression. FF/FF pairs produce no task or
+The checker retains one 16-bit ID pair, selected from a synchronous 64-bit read
+by a fixed slice indexed by `scan[1:0]`. An enabled `scan_step` consumes the pair
+when the next task slot is free and clears `pair_valid`; the next pair needs
+another read, which can reread the same qword. FF/FF pairs produce no task or
 framebuffer traffic. The two tasks cover the current and next tile. Atlas reads
 use the existing command DMA: two128-byte bursts per non-FF char, directly into
 the selected task's final buffer. If the next task is already queued or is

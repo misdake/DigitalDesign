@@ -35,6 +35,7 @@ one explicit matching application. Hardware profile, boot package and assets
 are separate identities and must all be audited before programming. Setting a
 profile does not constitute a successful board run.
 
-The absent/`production` hardware profile retains the ordinary factory. Existing
-`texture16x8-column16` selects the column layout without the RTT view extension;
-unknown profile names fail export. Cargo tracks this compile-time selection.
+An absent or `production` hardware profile selects the same production factory,
+including fixed 400x240 RTT views. Retired names such as `texture16x8-column16`
+and `rtt400x240-column16`, as well as unknown names, fail export. Cargo tracks
+this compile-time selection.

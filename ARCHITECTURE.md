@@ -70,8 +70,8 @@ New reusable development lives in `ip/gpu-v2`, with the generic framework in
 `modeling/audited`; see [GPU component ownership](ip/gpu-v2/docs/overview.md). Device4 binds the single-CB command GPU through the system target leaf; its
 two-SEND/busy-RECV ABI is specified in `/ip/gpu-v2/docs/commands.md`. The host
 control adapter requires a GPU executor; it never fabricates rendering completion. The CPU D-cache is
-write-back. When the new GPU is integrated, CPU-to-GPU ownership transfer requires a blocking full
-clean to make CPU writes visible in DRAM, and GPU completion must make its writes visible before CPU
+write-back. CPU-to-GPU ownership transfer requires a blocking full clean to make CPU writes visible
+in DRAM, and GPU completion must make its writes visible before CPU
 ownership resumes after system-control D-cache invalidation. There is no MMU, snooping, transaction
 ID, or multiple outstanding request support yet.
 

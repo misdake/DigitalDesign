@@ -1,9 +1,9 @@
 # Explicit column scene firmware
 
 `CPU_V3_BOOT_EXAMPLE=gpu_demo_column16` builds the existing serial `gpu_demo`
-application for `texture16x8-column16`. Its box, RGB triangle, complete 948-face
-rabbit, 24 meshlets, 1141 triangles, DS2 input, native precision and camera codes
-are unchanged. The application records one CB, submits it, waits for GPU drain,
+application using the production column-major framebuffer layout. Its box, RGB
+triangle, complete 948-face rabbit, 24 meshlets, 1141 triangles, DS2 input, native
+precision and camera codes are unchanged. The application records one CB, submits it, waits for GPU drain,
 presents, and waits for old Display reads before reuse. It enables no capture,
 RTT, CPU pixel conversion or additional submission scheduler. The default
 `boot-applications.conf` and ordinary `gpu_demo` profile remain unchanged.
@@ -27,10 +27,10 @@ refit/audit any changed image before programming.
 
 ## Memory layout and lifetime
 
-`rcc/gpu_layout_column16.rs` is the explicit software allocation authority.
-The native module resolver selects it only for this host-requested profile;
-ordinary module resolution and formal renderer/capture compilation keep their
-existing selection. Drivers use the selected plane capacity for alias checks.
+[gpu_layout.rs](/systems/cpu-v3-tang-nano-20k/rcc/gpu_layout.rs) is the shared
+software allocation authority. The native module resolver and capture-profile
+source materialization use this module. Drivers use its plane allocation
+capacity for alias checks.
 
 | Allocation | Start | Exclusive end |
 | --- | --- | --- |

@@ -1,14 +1,13 @@
 # CPU V3 optimization index
 
-Status: concise milestone index
+Status: historical milestone index
 Repository: `../../../`
 Updated: 2026-10-18
 
-Add exactly one short sentence here for each completed optimization; append implementation detail,
-measurements, rejected alternatives, and validation evidence to
-[`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Current architecture and fitted
-numbers belong in [`architecture.md`](architecture.md); exact resource and benchmark ledgers are
-generated outside this document.
+This index and the [detail record](/systems/cpu-v3-tang-nano-20k/docs/cpu-v3-optimization-record.md)
+preserve historical optimization decisions. Current implementation contracts belong in the owning
+component documentation and [system architecture](/systems/cpu-v3-tang-nano-20k/docs/architecture.md).
+Do not append new milestones or resource/benchmark ledgers to these historical documents.
 
 ## Completed milestones
 
@@ -95,7 +94,7 @@ Before the GPU v2 reset, the framebuffer storage/quad attachment to the display 
 completed full integration regression and routed resources recorded in
 [`architecture.md`](architecture.md#current-fitted-result-and-validation-boundary).
 
-The historical [eight-DPB framebuffer component](framebuffer-cache.md) reduces LUT use in a matched
+The historical eight-DPB framebuffer component reduces LUT use in a matched
 standalone comparison and removes the numerical color queue. Its contract and tests are complete;
 bank-order execution with one latched lane-control bit further reduces selection logic while
 preserving word-level memory/render concurrency. Production storage/quad integration retains
