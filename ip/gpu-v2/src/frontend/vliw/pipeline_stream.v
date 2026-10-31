@@ -2,6 +2,10 @@
 // attribute pages switch after old I returns drain. New R geometry and traversal
 // may overlap that tail; samples wait for the context switch.
 module gpu_v2_vliw_frontend(
+`ifdef GPU_V2_COMMAND_PORTS
+ input[31:0]mesh_color,output[31:0]quad_color,
+`endif
+
  input clk,reset,ce,start,slot,
 `ifdef GPU_V2_COMMAND_PORTS
  input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
@@ -49,6 +53,10 @@ module gpu_v2_vliw_frontend(
  assign raster_error=core_error|bridge_error;
  shared_meshlet meshlet(
 `ifdef GPU_V2_COMMAND_PORTS
+.mesh_color(mesh_color),
+`endif
+
+`ifdef GPU_V2_COMMAND_PORTS
  .cp_re(cp_re),.cp_addr(cp_addr),.cp_q(cp_q),.cp_ready(cp_ready),
 `endif
   .clk(clk),.reset(reset),.ce(ce),.start(start),.slot(slot),.drained(meshlet_drained),
@@ -65,6 +73,10 @@ module gpu_v2_vliw_frontend(
  .sample_valid(sample_valid),.sample_lane(sample_lane),.sample_cover(sample_cover),.sample_anchor(sample_anchor),.sample_h(sample_h),.quad_end_valid(quad_end_valid),
   .busy(raster_busy),.done(done_raster),.error(core_error));
  gpu_v2_vliw_interpolator interpolator(
+`ifdef GPU_V2_COMMAND_PORTS
+.pool_color(quad_color),
+`endif
+
  .bound_valid(bound_valid),.bound_empty(bound_empty),.bound_xlo(bound_xlo),.bound_xhi(bound_xhi),.bound_ylo(bound_ylo),.bound_yhi(bound_yhi),
   .clk(clk),.reset(reset),.ce(ce),
   .prepare_start(header_take),.execution_idle(!raster_busy),.raster_start(raster_start),.exec_idle(exec_idle),.descriptor(fd),.raw_valid(raw_word_valid),.raw_ready(bridge_input_ready),.raw_index(fwi),.raw_data(fwd),

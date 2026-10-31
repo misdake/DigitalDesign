@@ -160,15 +160,27 @@ def check_rom():
     source=path.read_text()
     generator=load('bounds_generator',path.with_name('bounds_program.py'))
     assert generator.render(source)==source
-    rows=re.findall(r"mem\[(\d+)\]=SP_COMPACT \? 72'h([0-9a-f]+) : 72'h([0-9a-f]+);",source)
-    assert [int(x[0]) for x in rows]==list(range(512))
+    def views(expression, bits):
+        # Equal compact/regular words are folded to a single literal by the producer.
+        single = re.fullmatch(rf"{bits}'h([0-9a-f]+)", expression)
+        if single:
+            value = int(single[1], 16)
+            return (value, value)
+        pair = re.fullmatch(rf"SP_COMPACT \? {bits}'h([0-9a-f]+) : {bits}'h([0-9a-f]+)", expression)
+        assert pair, expression
+        return (int(pair[1], 16), int(pair[2], 16))
+    rows = re.findall(r"mem\[(\d+)\]=(.*?);", source)
+    assert [int(x[0]) for x in rows] == list(range(512))
+    words = [views(expression, 72) for _, expression in rows]
     for bank in range(2):
         for group in range(64):
-            entries=re.findall(rf"\.INIT_RAM_{group:02X}\(SP_COMPACT \? 288'h([0-9a-f]+) : 288'h([0-9a-f]+)\)",source)
-            assert len(entries)==2
+            entries = re.findall(rf"\.INIT_RAM_{group:02X}\(([^)]+)\)", source)
+            assert len(entries) == 2
+            native = views(entries[bank], 288)
             for view in range(2):
-                want=sum(((int(rows[group*8+k][1+view],16)>>(bank*36))&((1<<36)-1))<<(36*k) for k in range(8))
-                assert int(entries[bank][view],16)==want,(bank,group,view)
+                want = sum(((words[group*8+k][view] >> (bank*36)) & ((1 << 36)-1)) << (36*k) for k in range(8))
+                assert native[view] == want, (bank, group, view)
+
 
 
 def check_overlap(export,out,oracle,native,command):

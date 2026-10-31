@@ -133,6 +133,8 @@ def main():
         leaf=ROOT/'systems/cpu-v3-tang-nano-20k/src/hardware/gpu/gpu.v'
         staged=out/'dut.v';staged.write_bytes(source.read_bytes()+b'\n'+leaf.read_bytes())
         source=staged;identity=hashlib.sha256(source.read_bytes()).hexdigest()
+    # The command Group head retains native SDPX9B even with portable arithmetic.
+    primitive_model = Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'
     declarations = []
     for p in ports['ports']:
         declarations.append(('reg ' if p['direction']=='input' else 'wire ')
@@ -159,7 +161,8 @@ def main():
             if rgb:
                 for v in range(3):struct.pack_into('<I', data, 128+v*12+8, 0xe07030 if mode==0 else 0xffffff)
             put(0xa000+i*0x500, data)
-        put(0x2000, struct.pack('<H', 0xf800)*512)
+        # Every mip from 16x16 through 1x1 occupies one padded 16x16 column macro.
+        put(0x2000, struct.pack('<H', 0xf800)*(5*256))
         put(0x4100, struct.pack('<8I', texture_word(0x2000,4,True,0),0,7|(1<<5),0,0,0,0,0))
         put(0x5600,target_params(*bases[:2]));put(0x5620,target_params(*bases[2:]))
         cb=CommandBuffer()
@@ -178,7 +181,7 @@ def main():
         cb.emit('END');program=cb.encode();put(0x1000,program+bytes((-len(program))%128))
         (case/'memory.hex').write_text(''.join(f'{int.from_bytes(memory[i:i+8],"little"):016x}\n' for i in range(0,len(memory),8)))
         (case/'colors.hex').write_text(''.join(f'{c:08x}\n' for c in colors))
-        tb=TB.replace('@PORTS@','\n'.join(declarations)).replace('@GSR@',"GSR GSR(.GSRI(1'b1));" if args.native else '').replace('@BYTES@',str(len(program)))
+        tb=TB.replace('@PORTS@','\n'.join(declarations)).replace('@GSR@',"GSR GSR(.GSRI(1'b1));").replace('@BYTES@',str(len(program)))
         for key, value in zip(('AC','AD','BC','BD'),bases):tb=tb.replace('@'+key+'@',str(value))
         from device_bus import bench as device_bench
         tb=device_bench(tb)
@@ -196,7 +199,7 @@ def main():
         (case/'tb.v').write_text(tb)
         commands=[('compile',[os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',case/'sim.vvp',source,case/'tb.v']),
                   ('run',[os.environ['VVP_EXE'],case/'sim.vvp',f'+MODE={mode}'])]
-        if args.native:commands[0][1].append(Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v')
+        commands[0][1].append(primitive_model)
         for label,command in commands:
             assert hashlib.sha256(source.read_bytes()).hexdigest()==identity
             with (case/(label+'.log')).open('wb') as log:

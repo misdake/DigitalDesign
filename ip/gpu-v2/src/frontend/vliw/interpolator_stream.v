@@ -3,6 +3,10 @@ module gpu_v2_vliw_interpolator(
 input clk,reset,ce,
  output bound_valid,bound_empty,output[4:0]bound_xlo,bound_xhi,output[3:0]bound_ylo,bound_yhi,
  
+`ifdef GPU_V2_COMMAND_PORTS
+ output reg[31:0]pool_color,
+`endif
+
  input prepare_start,execution_idle,output raster_start,exec_idle,input[31:0]descriptor,
  input raw_valid,output raw_ready,input[4:0]raw_index,input[53:0]raw_data,
  output geo_we,output[3:0]geo_wa,output[29:0]geo_wd,
@@ -21,6 +25,10 @@ input clk,reset,ce,
  wire pw_low_we,pw_low0_we,pw_low1_we,pw_high_we,pw_re,pw_acc_re;wire[3:0]pw_acc_ra;wire[3:0]pw_wa,pw_ra;wire[35:0]pw_low_wd;wire[53:0]pw_high_wd;wire[3:0]pw_high_wa;wire[89:0]pw_q;
  wire operand_we,operand_re,wide_valid,wide_asign;wire[3:0]operand_wa;wire[6:0]operand_ra;
  wire[17:0]operand_wd;wire[53:0]result_data;
+ 
+`ifdef GPU_V2_COMMAND_PORTS
+ reg[31:0]prepared_color;
+`endif
  wire cfg_apply,context_ready,sc_rgb;wire signed[7:0]sc_z_bias;wire[31:0]sc_far;
  wire sp_valid,sp_bank;wire[1:0]sp_index;wire[50:0]sp_data;
  wire[4:0]sc_shift0,sc_shift1,sc_shift2;
@@ -106,11 +114,30 @@ input clk,reset,ce,
  assign error={1'b0,p_error,s_error,4'b0};
 
  always @(posedge clk)begin
-  if(reset)begin rgb<=0;current_id<=0;active_bank<=0;raster_pending<=0;end
+  
+`ifdef GPU_V2_COMMAND_PORTS
+if(reset)begin pool_color<=32'hffffffff;prepared_color<=32'hffffffff;rgb<=0;
+`else
+if(reset)begin rgb<=0;
+`endif
+current_id<=0;active_bank<=0;raster_pending<=0;end
   else if(ce)begin
    if(raster_start)raster_pending<=1;
    if(cfg_apply)raster_pending<=0;
-   if(cfg_apply)begin rgb<=sc_rgb;active_bank<=!active_bank;end
+   
+`ifdef GPU_V2_COMMAND_PORTS
+   if(raw_valid&&raw_ready)begin
+    if(raw_index==10)prepared_color[17:0]<=raw_data[53:36];
+    if(raw_index==11)prepared_color[31:18]<=raw_data[49:36];
+   end
+`endif
+
+`ifdef GPU_V2_COMMAND_PORTS
+if(cfg_apply)begin pool_color<=prepared_color;rgb<=sc_rgb;
+`else
+if(cfg_apply)begin rgb<=sc_rgb;
+`endif
+active_bank<=!active_bank;end
    if(quad_take)current_id<=quad_id;
   end
  end

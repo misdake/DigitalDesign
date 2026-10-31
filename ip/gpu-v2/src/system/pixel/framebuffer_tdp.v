@@ -5,6 +5,10 @@ module gpu_v2_pixel_framebuffer_sink #(
  parameter [8:0] HEIGHT=9'd@HEIGHT@,
  parameter PREFETCH_ENABLE=@PREFETCH@,parameter PREFETCH_DIRTY=@PREFETCH_DIRTY@
 )(
+`ifdef GPU_V2_COMMAND_PORTS
+ input[7:0]depth_alpha,
+`endif
+
  input wire shade_phase,
  input wire [53:0] shared_rop_product, output wire shared_rop_offer,shared_rop_ce, output wire [26:0] shared_rop_a, output wire [7:0] shared_rop_b,
  input wire clk,reset,ce,commit_allow,
@@ -49,6 +53,10 @@ module gpu_v2_pixel_framebuffer_sink #(
  end
  gpu_v2_framebuffer_tdp #(.COLOR_BASE(COLOR_BASE),.DEPTH_BASE(DEPTH_BASE),
   .WIDTH(WIDTH),.HEIGHT(HEIGHT),.PREFETCH_ENABLE(PREFETCH_ENABLE),.PREFETCH_DIRTY(PREFETCH_DIRTY)) cache(
+
+`ifdef GPU_V2_COMMAND_PORTS
+.row_alpha(depth_alpha),
+`endif
   .shared_rop_product(shared_rop_product),.shared_rop_offer(shared_rop_offer),.shared_rop_ce(shared_rop_ce),.shared_rop_a(shared_rop_a),.shared_rop_b(shared_rop_b),
   .prefetch_abort(prefetch_abort),.prefetch_valid(prefetch_valid),.prefetch_tile(prefetch_tile),
   .shade_phase(shade_phase),.clk(clk),.reset(reset),.ce(ce&&!reset),.commit_allow(commit_allow),.preflight_bad(preflight_bad),

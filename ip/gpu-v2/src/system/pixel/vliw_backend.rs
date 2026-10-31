@@ -250,7 +250,7 @@ pub fn verilog_selected(
         &mut source,
         top,
         " gpu_v2_vliw_sampling front(",
-        " gpu_v2_vliw_sampling front(\n .prefetch_valid(framebuffer_prefetch_valid),.prefetch_tile(framebuffer_prefetch_tile),",
+        " gpu_v2_vliw_sampling front(\n`ifdef GPU_V2_COMMAND_PORTS\n.quad_color(quad_color),.issue_color(issue_color),\n`endif\n\n .prefetch_valid(framebuffer_prefetch_valid),.prefetch_tile(framebuffer_prefetch_tile),",
     )?;
     patch(
         &mut source,
@@ -281,6 +281,18 @@ pub fn verilog_selected(
     let (light_a, light_b) = span(&source, "gpu_v2_pixel_lighting_consumer")?;
     source.replace_range(light_a..light_b, include_str!("vliw_lighting_tuple.v"));
     lower_pool_layout(&mut source)?;
+    // Command colors are tied to the producer slot/depth Q, not live globals.
+    patch(&mut source, MODULE, "module gpu_v2_vliw_backend(",
+        "module gpu_v2_vliw_backend(\n`ifdef GPU_V2_COMMAND_PORTS\n input[31:0]quad_color,\n`endif\n")?;
+    patch(
+        &mut source,
+        MODULE,
+        "input wire[7:0]alpha,",
+        "\n`ifndef GPU_V2_COMMAND_PORTS\ninput wire[7:0]alpha,\n`endif\n",
+    )?;
+    patch(&mut source, MODULE, "wire[23:0]final_texture=input_bypass[1]?24'hffffff:sample_data;", "\n`ifdef GPU_V2_COMMAND_PORTS\nwire[23:0]final_texture=input_bypass[1]?basic_data:sample_data;\n`else\nwire[23:0]final_texture=input_bypass[1]?24'hffffff:sample_data;\n`endif\n")?;
+    patch(&mut source, MODULE, ".in_tint(basic_data),", "\n`ifdef GPU_V2_COMMAND_PORTS\n.in_tint(issue_color),\n`else\n.in_tint(basic_data),\n`endif\n")?;
+    patch(&mut source, MODULE, ".rgba({alpha,out_covered?final_RGB:24'd0})", "\n`ifdef GPU_V2_COMMAND_PORTS\n.rgba({8'd0,out_covered?final_RGB:24'd0})\n`else\n.rgba({alpha,out_covered?final_RGB:24'd0})\n`endif\n")?;
     let result = reachable(&source, MODULE)?;
     Ok(format!(
         "{}{}{}",
@@ -310,7 +322,7 @@ fn lower_pool_layout(source: &mut String) -> Result<(), String> {
     )?;
     patch(source, top, ".basic_return_valid(basic_valid),", "")?;
     patch(source, top, "wire[7:0]basic_address;wire[23:0]basic_data;",
-        "wire[6:0]basic_address;wire[23:0]basic_data;wire[15:0]depth_data;\n wire sink_color_accept;reg[1:0]out_lane;")?;
+        "\n`ifdef GPU_V2_COMMAND_PORTS\nwire[23:0]issue_color;\n`endif\nwire[6:0]basic_address;wire[23:0]basic_data;\n`ifdef GPU_V2_COMMAND_PORTS\nwire[23:0]depth_data;\n`else\nwire[15:0]depth_data;\n`endif\n\n wire sink_color_accept;reg[1:0]out_lane;")?;
     patch(source, top, ".basic_return_data(basic_data),.basic_collision(basic_collision),",
         ".basic_return_data(basic_data),.basic_collision(basic_collision),\n .depth_read(sink_color_accept),.depth_read_address({retire_slot,out_lane}),.depth_data(depth_data),")?;
     patch(source, top, "reg[2:0]state;reg[1:0]issue_lane,out_lane;\n reg paid;reg[3:0]depth_valid,depth_reserved;\n reg[15:0]depth_rows[0:3];\n reg depth_pending;reg[1:0]depth_tag,input_bypass;\n localparam J_READ=0,J_WAIT=1,J_ISSUE=2,J_DEPTH=3,J_DEPTH_WAIT=4,J_DRAIN=5;",
@@ -347,7 +359,7 @@ fn lower_pool_layout(source: &mut String) -> Result<(), String> {
         source,
         top,
         ".depth(depth_rows[out_lane])",
-        ".depth(depth_data)",
+        "\n`ifdef GPU_V2_COMMAND_PORTS\n.depth(depth_data[15:0]),.depth_alpha(depth_data[23:16])\n`else\n.depth(depth_data)\n`endif\n",
     )?;
     patch(source, top, "stopped<=0;active<=0;state<=J_READ;paid<=0;depth_valid<=0;color_paid<=0;issue_slot<=0;depth_reserved<=0;depth_pending<=0;depth_tag<=0;input_bypass<=0;",
         "stopped<=0;active<=0;state<=J_READ;color_paid<=0;issue_slot<=0;input_bypass<=0;")?;

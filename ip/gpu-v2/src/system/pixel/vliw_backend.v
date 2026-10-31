@@ -1,5 +1,9 @@
 // Producer-pool sampling path; no row ingress or duplicate Basic/Light/UV payload.
 module gpu_v2_vliw_sampling(
+`ifdef GPU_V2_COMMAND_PORTS
+ input[31:0]quad_color,output[23:0]issue_color,
+`endif
+
  input wire clk,reset,ce,light_compute_tick,
  input wire front_ce,input wire[1:0]producer_phase,input wire draw_bank,draw_unlit,
  input wire quad_valid,output wire quad_ready,output wire[2:0]quad_id,
@@ -17,7 +21,13 @@ module gpu_v2_vliw_sampling(
  input wire basic_read,input wire[6:0] basic_read_address,
  output wire[23:0] basic_return_data,
  output wire basic_collision,
- input wire depth_read,input wire[6:0]depth_read_address,output wire[15:0]depth_data,
+ input wire depth_read,input wire[6:0]depth_read_address,
+`ifdef GPU_V2_COMMAND_PORTS
+output wire[23:0]depth_data,
+`else
+output wire[15:0]depth_data,
+`endif
+
  input wire rop_row7_accepted,input wire[4:0] rop_slot,
  output wire[4:0] retire_slot,output wire[5:0] global_used,
  output wire[5:0]light_used,sample_used,producer_used,
@@ -74,6 +84,10 @@ module gpu_v2_vliw_sampling(
    1'b0,8'd0,sample_descriptor[18:11]};
  assign quad_bad=1'b0;
  gpu_v2_vliw_quad_pool quad(
+`ifdef GPU_V2_COMMAND_PORTS
+.quad_color(quad_color),.issue_color(issue_color),
+`endif
+
  .clk(clk),.reset(reset),.front_ce(front_ce&&!fault),.backend_ce(advance),.phase(producer_phase),
  .draw_bank(draw_bank),.draw_unlit(draw_unlit),
  .quad_valid(quad_valid),.quad_ready(quad_ready),.quad_id(quad_id),.quad_x(quad_x),.quad_y(quad_y),.quad_rgb(quad_rgb),

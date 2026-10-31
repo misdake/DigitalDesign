@@ -790,6 +790,15 @@ The depth-event write stores alpha beside D16 in the existing depth BSRAM; the
 paired late read delivers both directly to ROP. Final and ROP therefore read
 their own owners without a shared-port arbiter or whole-GPU wait between mesh colors.
 
+The owning frontend, interpolator, quad pool and selected framebuffer sources
+use the existing static `GPU_V2_COMMAND_PORTS` boundary for this color path;
+generic exports retain their ports. Under CE, the legal header's CHECK edge
+captures `epoch_color[!vertex_epoch]`. A bounds reject does not advance the
+epoch. T words 10/11 carry its 18/14 color bits; word 15 acceptance releases the
+descriptor. Accepted raw words fill `prepared_color`, and `cfg_apply` installs
+`pool_color` with the active I context. RGB remains owned by the descriptor slot
+until Final reads it; alpha remains paired with depth until late ROP acceptance.
+
 Texture coefficient metadata stays in its admission BSRAM row until retirement.
 Publication reads the current head; consumption reads a successor only when an
 already-ready row remains, or when that row publishes on the same edge. Popping

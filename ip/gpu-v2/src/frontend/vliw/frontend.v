@@ -2,6 +2,10 @@
 // 同一ROM、RF与双DSP，V/T分时；所有状态变更均采样旧值。
 module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,parameter SOURCE_READ=0,parameter BOUNDS_CULL=0,
  parameter TRIANGLE_SLOT_BITS=4)(
+`ifdef GPU_V2_COMMAND_PORTS
+ input[31:0]mesh_color,
+`endif
+
  input clk,reset,ce,start_v,start_t,meshlet_reset,
  input [6:0] vertex_count,input [5:0] uniform_base,input [8:0] config_base,
  input [9:0] vertex_base,input [31:0] triangle_descriptor,input cull_negative,
@@ -32,6 +36,11 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  wire queue_empty=produced==consumed;
  wire queue_full=(produced[TRIANGLE_SLOT_BITS]!=consumed[TRIANGLE_SLOT_BITS])&&write_slot==read_slot;
  reg vertex_epoch;wire export_epoch;
+`ifdef GPU_V2_COMMAND_PORTS
+ reg[31:0]epoch_color[0:1];
+ wire[31:0]export_color=epoch_color[export_epoch];
+`endif
+
  // At most two consecutive meshlets own attributes. FIFO order makes the
  // alternate epoch free once the head reaches this epoch, or the FIFO empties.
  assign meshlet_ready=!busy&&!reset&&(queue_empty||export_epoch==vertex_epoch);
@@ -211,7 +220,15 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  end
  if(q_can_retire)result_owner<=Q_EMPTY;
  if(result_owner==Q_DATA&&output_room)begin
- word_data<=response_index<10 ? {export_hi,export_q} : {18'd0,export_q};
+ 
+`ifdef GPU_V2_COMMAND_PORTS
+word_data<=response_index<10 ? {export_hi,export_q} :
+ response_index==10?{export_color[17:0],export_q}:
+ response_index==11?{4'd0,export_color[31:18],export_q}:{18'd0,export_q};
+`else
+word_data<=response_index<10 ? {export_hi,export_q} : {18'd0,export_q};
+`endif
+
  word_index<=response_index;export_valid<=1;
  end
  // 位置Q与导出Q各自消费旧态并发起下一读，不存在跨消费者所有权。
@@ -223,7 +240,13 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  // The meshlet controller only pulses this after admission and header checks.
  // Export can only free epochs during that interval; rechecking FIFO readiness
  // here would put its complete predicate into the count/epoch reset fanout.
- if(meshlet_reset)begin published_vertices<=0;error<=0;if(!BOUNDS_CULL)vertex_epoch<=!vertex_epoch;end
+ 
+`ifdef GPU_V2_COMMAND_PORTS
+if(meshlet_reset)begin epoch_color[!vertex_epoch]<=mesh_color;published_vertices<=0;
+`else
+if(meshlet_reset)begin published_vertices<=0;
+`endif
+error<=0;if(!BOUNDS_CULL)vertex_epoch<=!vertex_epoch;end
  if(launch_v)begin
  error<=0;triangle_mode<=0;
  if(compact_invalid)begin busy<=0;done_v<=1;error<=4;end

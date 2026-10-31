@@ -1,6 +1,10 @@
 // 本地SP中的32B metadata + 最大1KB V/index；先全部V，再按三个索引一组跑T。
 // 外部DMA负责把原始字送入SP；不实现SDRAM或Mesh目录的地址遍历。
 module shared_meshlet #(parameter BOUNDS_CULL=1)( 
+`ifdef GPU_V2_COMMAND_PORTS
+ input[31:0]mesh_color,
+`endif
+
  input clk,reset,ce,start,slot,
 `ifdef GPU_V2_COMMAND_PORTS
  input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
@@ -60,6 +64,10 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  wire invalid_header=vertices>64||triangles>96||uniform_base[5:2]!=4'd5||
                      (triangles!=0&&(vertices==0||index_cursor<vertex_rows));
  shared_frontend #(.RESULT_COMPACT(1),.SP_COMPACT(1),.SOURCE_READ(1),.BOUNDS_CULL(BOUNDS_CULL)) core(
+
+`ifdef GPU_V2_COMMAND_PORTS
+.mesh_color(mesh_color),
+`endif
   .clk(clk),.reset(reset),.ce(ce),.start_v(state==VSTART),.start_t(state==TSTART),
   .meshlet_reset(state==CHECK&&!invalid_header),.vertex_count(vertices),.uniform_base(uniform_base),
   .config_base(config_base),.vertex_base(vertex_base),.triangle_descriptor(triangle_descriptor),

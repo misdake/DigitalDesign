@@ -4,6 +4,10 @@ module gpu_v2_framebuffer_tdp #(
  parameter[9:0]WIDTH=400,parameter[8:0]HEIGHT=240,
  parameter PREFETCH_ENABLE=1,parameter PREFETCH_DIRTY=0
 )(
+`ifdef GPU_V2_COMMAND_PORTS
+ input[7:0]row_alpha,
+`endif
+
  input clk,reset,ce,commit_allow,shade_phase,
  input[53:0]shared_rop_product,output shared_rop_offer,shared_rop_ce,
  output[26:0]shared_rop_a,output[7:0]shared_rop_b,output preflight_bad,
@@ -38,7 +42,13 @@ module gpu_v2_framebuffer_tdp #(
  // Capture the directory's one-hot hit at binding; retain binary line for A addresses.
  (* syn_ramstyle="registers" *) reg[7:0]ctx_line_mask[0:1];
  reg tail,result_owner;reg[1:0]return_key;
- reg[31:0]source_rgba;reg[1:0]compare_bank;
+
+`ifdef GPU_V2_COMMAND_PORTS
+reg[23:0]source_rgb;
+`else
+reg[31:0]source_rgba;
+`endif
+reg[1:0]compare_bank;
  reg depth_pending,color_pending;reg[15:0]depth_data,color_data;
  reg[8:0]result_addr;reg[1:0]result_bank;reg result_depth_flag,result_color_flag,result_last,result_context;
  wire actual_ce=ce&&commit_allow;
@@ -83,8 +93,15 @@ module gpu_v2_framebuffer_tdp #(
  wire[15:0]leaf_old_color=(blend&&incoming_covered)?a_q[incoming_bank]:16'd0;
  gpu_v2_rop_tdp leaf(.clk(clk),.reset(reset||fault),.ce(leaf_ce),.shade_phase(shade_phase),
   .in_valid(depth_input_fire),.blend(blend),.depth_func(depth_func),.depth_write(depth_write),.covered(incoming_covered),
-  .old_color(leaf_old_color),.old_depth(a_q[compare_bank]),.src_r(source_rgba[7:0]),.src_g(source_rgba[15:8]),
-  .src_b(source_rgba[23:16]),.src_a(source_rgba[31:24]),.src_depth(row_data[15:0]),.in_ready(),
+  .old_color(leaf_old_color),.old_depth(a_q[compare_bank]),
+`ifdef GPU_V2_COMMAND_PORTS
+.src_r(source_rgb[7:0]),.src_g(source_rgb[15:8]),
+  .src_b(source_rgb[23:16]),.src_a(row_alpha)
+`else
+.src_r(source_rgba[7:0]),.src_g(source_rgba[15:8]),
+  .src_b(source_rgba[23:16]),.src_a(source_rgba[31:24])
+`endif
+,.src_depth(row_data[15:0]),.in_ready(),
   .out_valid(leaf_out_valid),.new_color(leaf_new_color),.new_depth(leaf_new_depth),.color_written(leaf_cw),.depth_written(leaf_dw),
   .shared_rop_product(shared_rop_product),.shared_mul_pending(shared_mul_pending),.shared_rop_ce(shared_rop_ce),.shared_rop_a(shared_rop_a),.shared_rop_b(shared_rop_b));
  assign shared_rop_offer=ce&&!reset&&!fault&&shared_mul_pending;
@@ -296,7 +313,13 @@ module gpu_v2_framebuffer_tdp #(
     depth_pending<=return_fire;color_pending<=depth_pending;
     if(row_accept)begin
      fill_row<=fill_row+3'd1;
-     if(!row_index[0])source_rgba<=row_data;
+     if(!row_index[0])
+`ifdef GPU_V2_COMMAND_PORTS
+source_rgb<=row_data[23:0];
+`else
+source_rgba<=row_data;
+`endif
+
      else begin compare_bank<=incoming_bank;if(row_index==7)tail<=!tail;end
      if(row0_fire)begin
       ctx_valid[tail]<=1;ctx_line[tail]<=hit_line;ctx_line_mask[tail]<=resident_hits;

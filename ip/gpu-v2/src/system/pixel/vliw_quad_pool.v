@@ -1,6 +1,10 @@
 // One authoritative producer pool. Physical32, active24, unpublished8.
 // Producer and consumers share a clock, not their enables. Empty slots are dense.
 module gpu_v2_vliw_quad_pool(
+`ifdef GPU_V2_COMMAND_PORTS
+ input[31:0]quad_color,output[23:0]issue_color,
+`endif
+
  input clk,reset,front_ce,backend_ce,input[1:0]phase,
  input draw_bank,draw_unlit,
  input quad_valid,output quad_ready,output[2:0]quad_id,
@@ -15,7 +19,13 @@ module gpu_v2_vliw_quad_pool(
  output[8:0]descriptor_head_tile,descriptor_next_tile,
  input basic_read,input[6:0]basic_read_address,
  output[23:0]basic_return_data,output basic_collision,
- input depth_read,input[6:0]depth_read_address,output[15:0]depth_data,
+ input depth_read,input[6:0]depth_read_address,
+`ifdef GPU_V2_COMMAND_PORTS
+output[23:0]depth_data,
+`else
+output[15:0]depth_data,
+`endif
+
  input light_ready,output light_valid,light_context_valid,
  output[35:0]light_normal,output[31:0]light_position,output reg[1:0]light_lane,
  output[9:0]light_descriptor,
@@ -59,7 +69,11 @@ module gpu_v2_vliw_quad_pool(
   ((depth_event_pass?4'b0001:4'd0)<<attr_pixel[1:0]);
  wire mask_write=depth_event&&attr_pixel[1:0]==3;
  wire[18:0]header_write={quad_y,quad_x,1'b0,quad_rgb,draw_unlit,draw_bank};
- wire[18:0]issue_meta,light_meta,publish_meta;wire[2:0]sample_meta;
+ wire[18:0]issue_meta,light_meta,publish_meta;
+`ifdef GPU_V2_COMMAND_PORTS
+ gpu_v2_vliw_pool_meta #(.WIDTH(24)) ci(clk,reset,allocate,allocated[4:0],quad_color[23:0],descriptor_issue_slot,issue_color);
+`endif
+wire[2:0]sample_meta;
  wire[18:0]head_meta,next_meta;
  wire[4:0]next_slot=retired[4:0]+5'd1;
  // Keep tile identity as {Y4,X5}; only B maintenance needs linear addresses.
@@ -149,7 +163,13 @@ module gpu_v2_vliw_quad_pool(
  assign basic_return_data={basic_q[25:18],basic_q[16:9],basic_q[7:0]};
  assign basic_collision=basic_re&&basic_write&&basic_wa=={2'd0,basic_read_address};
  // C acceptance pays this independent synchronous read. Q is held through D.
- gpu_v2_vliw_pool_depth_ram depth_bank(clk,reset,depth_event,attr_pixel[6:0],depth_event_z16,
+ gpu_v2_vliw_pool_depth_ram depth_bank(clk,reset,depth_event,
+`ifdef GPU_V2_COMMAND_PORTS
+attr_pixel[6:0],{quad_color[31:24],depth_event_z16},
+`else
+attr_pixel[6:0],depth_event_z16,
+`endif
+
   backend_ce&&depth_read&&!reset&&!fault,depth_read_address,depth_data);
  assign busy=allocated!=retired||light_state!=L_READ||sample_loaded;
  always @(posedge clk)begin
@@ -309,18 +329,54 @@ module gpu_v2_vliw_pool_ram #(parameter BASIC=0)(input clk,reset,we,input[3:0]wm
 `endif
 endmodule
 
-module gpu_v2_vliw_pool_depth_ram(input clk,reset,we,input[6:0]wa,input[15:0]wd,
- input re,input[6:0]ra,output[15:0]q);
+module gpu_v2_vliw_pool_depth_ram(input clk,reset,we,input[6:0]wa,
+`ifdef GPU_V2_COMMAND_PORTS
+input[23:0]wd,
+`else
+input[15:0]wd,
+`endif
+
+ input re,input[6:0]ra,
+`ifdef GPU_V2_COMMAND_PORTS
+output[23:0]q
+`else
+output[15:0]q
+`endif
+);
 `ifdef GPU_VLIW_POOL_PORTABLE
- reg[15:0]memory[0:127];reg[15:0]held;assign q=held;
+
+`ifdef GPU_V2_COMMAND_PORTS
+reg[23:0]memory[0:127];reg[23:0]held;assign q=held;
+`else
+reg[15:0]memory[0:127];reg[15:0]held;assign q=held;
+`endif
+
  always @(posedge clk)begin
   if(we&&!reset)memory[wa]<=wd;
   if(reset)held<=0;else if(re)held<=memory[ra];
  end
 `else
- wire[35:0]raw;assign q=raw[15:0];
- SDPX9B #(.BIT_WIDTH_0(18),.BIT_WIDTH_1(18),.READ_MODE(0),.RESET_MODE("SYNC")) ram(
-  .DO(raw),.DI({20'd0,wd}),.ADA({3'd0,wa,4'b0011}),.ADB({3'd0,ra,4'b0000}),.CLKA(clk),.CLKB(clk),
+
+`ifdef GPU_V2_COMMAND_PORTS
+wire[35:0]raw;assign q=raw[23:0];
+`else
+wire[35:0]raw;assign q=raw[15:0];
+`endif
+
+ SDPX9B #(
+`ifdef GPU_V2_COMMAND_PORTS
+.BIT_WIDTH_0(36),.BIT_WIDTH_1(36)
+`else
+.BIT_WIDTH_0(18),.BIT_WIDTH_1(18)
+`endif
+,.READ_MODE(0),.RESET_MODE("SYNC")) ram(
+  .DO(raw),
+`ifdef GPU_V2_COMMAND_PORTS
+.DI({12'd0,wd}),.ADA({2'd0,wa,1'b0,4'b1111}),.ADB({2'd0,ra,5'd0})
+`else
+.DI({20'd0,wd}),.ADA({3'd0,wa,4'b0011}),.ADB({3'd0,ra,4'b0000})
+`endif
+,.CLKA(clk),.CLKB(clk),
   .CEA(we&&!reset),.CEB(re&&!reset),.OCE(1'b1),.RESETA(1'b0),.RESETB(reset),.BLKSELA(3'd0),.BLKSELB(3'd0));
 `endif
 `ifndef SYNTHESIS

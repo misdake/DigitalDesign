@@ -1,4 +1,4 @@
-//! Runtime target and mesh color for the single-context command composition.
+//! Runtime target and remaining single-context command specializations.
 //! Generic leaf exporters retain their independently checked interfaces.
 
 fn once(s: &mut String, old: &str, new: &str) -> Result<(), String> {
@@ -39,118 +39,23 @@ const TARGET_PINS: &str = ".color_base(color_base),.depth_base(depth_base),";
 
 pub fn lower(mut source: String) -> Result<String, String> {
     edit(&mut source, "gpu_v2_vliw_three_port", |s| {
-        ports(s, &format!("{TARGET_PORTS}input[31:0]mesh_color,"))?;
-        once(
-            s,
-            " wire[3:0]frontend_error,raster_error;",
-            " wire[31:0]quad_color;\n wire[3:0]frontend_error,raster_error;",
-        )?;
-        link(
-            s,
-            "gpu_v2_vliw_backend_three_port back(",
-            &format!("{TARGET_PINS}.quad_color(quad_color),"),
-        )?;
-        link(
-            s,
-            "gpu_v2_vliw_frontend front(",
-            ".mesh_color(mesh_color),.quad_color(quad_color),",
-        )?;
+        ports(s, TARGET_PORTS)?;
+        link(s, "gpu_v2_vliw_backend_three_port back(", TARGET_PINS)?;
         once(s, "input draw_bank,draw_unlit,", "input draw_unlit,")?;
         *s = s
             .replace(".draw_bank(draw_bank),", "")
-            .replace("draw_bank,draw_unlit,", "draw_unlit,")
-            .replace("input[7:0]alpha,", "")
-            .replace(".alpha(alpha),", "")
-            .replace("specular,alpha,", "specular,");
+            .replace("draw_bank,draw_unlit,", "draw_unlit,");
         Ok(())
     })?;
-    edit(&mut source, "gpu_v2_vliw_frontend", |s| {
-        ports(s, "input[31:0]mesh_color,output[31:0]quad_color,")?;
-        link(s, "shared_meshlet meshlet(", ".mesh_color(mesh_color),")?;
-        link(
-            s,
-            "gpu_v2_vliw_interpolator interpolator(",
-            ".pool_color(quad_color),",
-        )
-    })?;
-    edit(&mut source, "shared_meshlet", |s| {
-        ports(s, "input[31:0]mesh_color,")?;
-        link(s, " core(\n", ".mesh_color(mesh_color),")
-    })?;
-    edit(&mut source, "shared_frontend", |s| {
-        ports(s, "input[31:0]mesh_color,")?;
-        once(
-            s,
-            "reg vertex_epoch;wire export_epoch;",
-            "reg vertex_epoch;wire export_epoch;\n reg[31:0]epoch_color[0:1];\n wire[31:0]export_color=epoch_color[export_epoch];",
-        )?;
-        once(
-            s,
-            "if(meshlet_reset)begin published_vertices<=0;",
-            "if(meshlet_reset)begin epoch_color[!vertex_epoch]<=mesh_color;published_vertices<=0;",
-        )?;
-        once(
-            s,
-            "word_data<=response_index<10 ? {export_hi,export_q} : {18'd0,export_q};",
-            "word_data<=response_index<10 ? {export_hi,export_q} :\n response_index==10?{export_color[17:0],export_q}:\n response_index==11?{4'd0,export_color[31:18],export_q}:{18'd0,export_q};",
-        )
-    })?;
-    edit(&mut source, "gpu_v2_vliw_interpolator", |s| {
-        ports(s, "output reg[31:0]pool_color,")?;
-        once(
-            s,
-            "wire cfg_apply,context_ready,sc_rgb;",
-            "reg[31:0]prepared_color;\n wire cfg_apply,context_ready,sc_rgb;",
-        )?;
-        once(
-            s,
-            "if(reset)begin rgb<=0;",
-            "if(reset)begin pool_color<=32'hffffffff;prepared_color<=32'hffffffff;rgb<=0;",
-        )?;
-        once(
-            s,
-            "if(cfg_apply)begin rgb<=sc_rgb;",
-            "if(raw_valid&&raw_ready)begin\n    if(raw_index==10)prepared_color[17:0]<=raw_data[53:36];\n    if(raw_index==11)prepared_color[31:18]<=raw_data[49:36];\n   end\n   if(cfg_apply)begin pool_color<=prepared_color;rgb<=sc_rgb;",
-        )
-    })?;
     edit(&mut source, "gpu_v2_vliw_backend_three_port", |s| {
-        ports(s, &format!("{TARGET_PORTS}input[31:0]quad_color,"))?;
+        ports(s, TARGET_PORTS)?;
         link(s, "gpu_v2_pixel_framebuffer_sink sink(", TARGET_PINS)?;
-        link(
-            s,
-            "gpu_v2_vliw_sampling front(",
-            ".quad_color(quad_color),.issue_color(issue_color),",
-        )?;
-        once(
-            s,
-            "wire[6:0]basic_address;",
-            "wire[23:0]issue_color;\n wire[6:0]basic_address;",
-        )?;
-        once(s, "wire[15:0]depth_data;", "wire[23:0]depth_data;")?;
-        once(
-            s,
-            ".depth(depth_data),",
-            ".depth(depth_data[15:0]),.depth_alpha(depth_data[23:16]),",
-        )?;
-        once(
-            s,
-            "wire[23:0]final_texture=input_bypass[1]?24'hffffff:sample_data;",
-            "wire[23:0]final_texture=input_bypass[1]?basic_data:sample_data;",
-        )?;
-        once(s, ".in_tint(basic_data),", ".in_tint(issue_color),")?;
-        once(
-            s,
-            ".rgba({alpha,out_covered?final_RGB:24'd0})",
-            ".rgba({8'd0,out_covered?final_RGB:24'd0})",
-        )?;
         once(
             s,
             "input wire draw_bank,draw_unlit,",
             "input wire draw_unlit,",
         )?;
-        *s = s
-            .replace(".draw_bank(draw_bank),", "")
-            .replace("input wire[7:0]alpha,", "");
+        *s = s.replace(".draw_bank(draw_bank),", "");
         once(
             s,
             ".light_bank(),.retire_valid(draw_rebind&&pipeline_idle),.retire_bank(1'b0),",
@@ -158,17 +63,6 @@ pub fn lower(mut source: String) -> Result<String, String> {
         )
     })?;
     edit(&mut source, "gpu_v2_vliw_sampling", |s| {
-        ports(s, "input[31:0]quad_color,output[23:0]issue_color,")?;
-        link(
-            s,
-            "gpu_v2_vliw_quad_pool quad(",
-            ".quad_color(quad_color),.issue_color(issue_color),",
-        )?;
-        once(
-            s,
-            "output wire[15:0]depth_data,",
-            "output wire[23:0]depth_data,",
-        )?;
         once(
             s,
             "input wire draw_bank,draw_unlit,",
@@ -189,36 +83,11 @@ pub fn lower(mut source: String) -> Result<String, String> {
         Ok(())
     })?;
     edit(&mut source, "gpu_v2_vliw_quad_pool", |s| {
-        ports(s, "input[31:0]quad_color,output[23:0]issue_color,")?;
         once(s, "input draw_bank,draw_unlit,", "input draw_unlit,")?;
         once(
             s,
             "quad_rgb,draw_unlit,draw_bank}",
             "quad_rgb,draw_unlit,1'b0}",
-        )?;
-        once(
-            s,
-            "wire[18:0]issue_meta,light_meta,publish_meta;",
-            "wire[18:0]issue_meta,light_meta,publish_meta;\n gpu_v2_vliw_pool_meta #(.WIDTH(24)) ci(clk,reset,allocate,allocated[4:0],quad_color[23:0],descriptor_issue_slot,issue_color);",
-        )?;
-        once(s, "output[15:0]depth_data,", "output[23:0]depth_data,")?;
-        once(
-            s,
-            "attr_pixel[6:0],depth_event_z16,",
-            "attr_pixel[6:0],{quad_color[31:24],depth_event_z16},",
-        )
-    })?;
-    edit(&mut source, "gpu_v2_vliw_pool_depth_ram", |s| {
-        *s = s.replace("[15:0]", "[23:0]");
-        once(
-            s,
-            ".BIT_WIDTH_0(18),.BIT_WIDTH_1(18)",
-            ".BIT_WIDTH_0(36),.BIT_WIDTH_1(36)",
-        )?;
-        once(
-            s,
-            ".DI({20'd0,wd}),.ADA({3'd0,wa,4'b0011}),.ADB({3'd0,ra,4'b0000})",
-            ".DI({12'd0,wd}),.ADA({2'd0,wa,1'b0,4'b1111}),.ADB({2'd0,ra,5'd0})",
         )
     })?;
     edit(&mut source, "gpu_v2_pixel_lighting_consumer", |s| {
@@ -248,7 +117,7 @@ pub fn lower(mut source: String) -> Result<String, String> {
         Ok(())
     })?;
     edit(&mut source, "gpu_v2_pixel_framebuffer_sink", |s| {
-        ports(s, &format!("{TARGET_PORTS}input[7:0]depth_alpha,"))?;
+        ports(s, TARGET_PORTS)?;
         let a = s
             .find(" parameter [31:0] COLOR_BASE=")
             .ok_or("Fixed target defaults")?;
@@ -259,27 +128,14 @@ pub fn lower(mut source: String) -> Result<String, String> {
             "gpu_v2_framebuffer_tdp #(.COLOR_BASE(COLOR_BASE),.DEPTH_BASE(DEPTH_BASE),",
             "gpu_v2_framebuffer_tdp #(",
         )?;
-        link(
-            s,
-            "cache(\n",
-            &format!("{TARGET_PINS}.row_alpha(depth_alpha),"),
-        )
+        link(s, "cache(\n", TARGET_PINS)
     })?;
     edit(&mut source, "gpu_v2_framebuffer_tdp", |s| {
-        ports(s, &format!("{TARGET_PORTS}input[7:0]row_alpha,"))?;
-        once(s, "reg[31:0]source_rgba;", "reg[23:0]source_rgb;")?;
-        *s = s
-            .replace("source_rgba[7:0]", "source_rgb[7:0]")
-            .replace("source_rgba[15:8]", "source_rgb[15:8]")
-            .replace("source_rgba[23:16]", "source_rgb[23:16]");
-        once(s, ".src_a(source_rgba[31:24])", ".src_a(row_alpha)")?;
-        once(s, "source_rgba<=row_data;", "source_rgb<=row_data[23:0];")?;
+        ports(s, TARGET_PORTS)?;
         once(s, " parameter[31:0]COLOR_BASE=0,DEPTH_BASE=16384,\n", "")?;
-        once(
-            s,
+        once(s,
             "assign mem_req_addr=(mt_issue[1]?DEPTH_BASE:COLOR_BASE)+{14'd0,mt_linear_tile,mt_tile[5],mt_issue[0],7'b0};",
-            "wire[6:0]target_page=(mt_issue[1]?depth_base[13:7]:color_base[13:7])+{5'd0,mt_linear_tile[8:7]};\n assign mem_req_addr={9'd0,target_page,mt_linear_tile[6:0],mt_tile[5],mt_issue[0],7'd0};",
-        )
+            "wire[6:0]target_page=(mt_issue[1]?depth_base[13:7]:color_base[13:7])+{5'd0,mt_linear_tile[8:7]};\n assign mem_req_addr={9'd0,target_page,mt_linear_tile[6:0],mt_tile[5],mt_issue[0],7'd0};")
     })?;
     direct_global(&mut source)?;
     registered_texture_return(&mut source)?;
