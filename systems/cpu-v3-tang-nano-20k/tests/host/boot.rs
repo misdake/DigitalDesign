@@ -8,24 +8,24 @@ use cpu_v3_tang_nano_20k::{
     system_sim::{CpuV3SystemSim, VBlankMode},
 };
 #[test]
-fn renderer_project_mode_is_explicit_host_policy_and_not_an_image_format_change() {
+fn explicit_gpu_project_mode_is_host_policy_and_retired_renderer_is_rejected() {
     let native = parse_boot_project("format 2\napplication app.rs\n").unwrap();
-    let renderer = parse_boot_project("format 2\nrenderer\napplication app.rs\n").unwrap();
-    assert!(!native.renderer);
-    assert!(renderer.renderer);
-    assert_eq!(native.application, renderer.application);
-    assert_eq!(native.constants(), renderer.constants());
-    assert!(parse_boot_project("format 2\nrenderer\nrenderer\napplication app.rs\n").is_err());
     let explicit = parse_boot_project("format 2\ngpu-api\napplication app.rs\n").unwrap();
-    assert!(explicit.gpu_api && !explicit.renderer);
-    assert!(!renderer.gpu_api && !native.gpu_api);
+    assert!(!native.gpu_api && explicit.gpu_api);
+    assert_eq!(native.application, explicit.application);
     assert_eq!(native.constants(), explicit.constants());
-    for directives in ["gpu-api\ngpu-api", "renderer\ngpu-api", "gpu-api\nrenderer"] {
+    for directives in [
+        "renderer",
+        "gpu-api\ngpu-api",
+        "renderer\ngpu-api",
+        "gpu-api\nrenderer",
+    ] {
         assert!(
             parse_boot_project(&format!("format 2\n{directives}\napplication app.rs\n")).is_err()
         );
     }
 }
+
 fn fixture() -> Vec<u8> {
     let source = include_str!("../../rcc/boot-contract.rs");
     let mut options = CompilerOptions::for_separate_code_and_data_segments(0);

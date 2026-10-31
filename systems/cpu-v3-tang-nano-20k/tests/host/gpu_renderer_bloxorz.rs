@@ -113,7 +113,7 @@ fn application(
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     assert_eq!(catalog["profile"], "production");
     let mut resources = vec![];
-    let mut config = String::from("format 2\nrenderer\napplication main.rs\n");
+    let mut config = String::from("format 2\ngpu-api\napplication main.rs\n");
     for r in catalog["resources"].as_array().unwrap() {
         let file = r["file"].as_str().unwrap();
         let base = r["address"].as_u64().unwrap() as usize;

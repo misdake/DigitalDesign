@@ -9,7 +9,8 @@ last-verified: 2026-10-30
 The approved `gpu_api` root connects resource preparation, recording, submission,
 retirement and Display to the CPU V3 storage core. Prepared scene adapters call
 `gpu_scene_*` and `gpu_ui_grid`; capture calls the separate explicit-record C
-implementation. The legacy renderer root remains separate during migration.
+implementation. The retired renderer is available only in explicit test-owned fixtures; no production
+loader or boot project selects it.
 Native commands, vertex arithmetic and hardware precision are unchanged.
 
 ## Configuration and public recording resources

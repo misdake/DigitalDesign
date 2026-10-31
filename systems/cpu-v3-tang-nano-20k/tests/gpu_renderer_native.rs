@@ -105,10 +105,21 @@ fn real_resource_frames_overlap_and_retire_independently() {
         .arg("--output")
         .arg(&assets);
     bounded(&mut producer, &out.join("producer"), 60);
-    let project = cpu_v3_tang_nano_20k::boot::parse_boot_project(
-        "format 2\nrenderer\napplication fixture.rs\ncopy GPU_RENDERER_ATLAS 0x4c0000 atlas.bin\n",
-    )
-    .unwrap();
+    let catalog: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap()).unwrap();
+    let mut config = String::from("format 2\napplication fixture.rs\n");
+    for resource in catalog["resources"].as_array().unwrap() {
+        let file = resource["file"].as_str().unwrap();
+        config.push_str(&format!(
+            "copy GPU_RENDERER_{} {} {}\n",
+            file.trim_end_matches(".bin").to_uppercase(),
+            resource["address"],
+            file
+        ));
+    }
+    // This test explicitly chooses the retired test-only compiler below;
+    // the project supplies real copy constants, never a production facade mode.
+    let project = cpu_v3_tang_nano_20k::boot::parse_boot_project(&config).unwrap();
     let constants =
         project.constants() + &std::fs::read_to_string(assets.join("renderer_assets.rs")).unwrap();
     let opts = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);

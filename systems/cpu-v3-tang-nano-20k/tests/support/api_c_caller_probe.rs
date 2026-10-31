@@ -32,6 +32,7 @@ struct Native {
     rtl: std::path::PathBuf,
     build: std::path::PathBuf,
     out: std::path::PathBuf,
+    timeout_seconds: u64,
 }
 fn native_run(memory: &mut [u16], native: &Native, index: usize) {
     let out = native.out.join(format!("native-{index}"));
@@ -58,6 +59,8 @@ fn native_run(memory: &mut [u16], native: &Native, index: usize) {
         .arg(&native.rtl)
         .arg("--out")
         .arg(&out)
+        .arg("--timeout")
+        .arg(native.timeout_seconds.to_string())
         .output()
         .unwrap();
     std::fs::write(
@@ -426,6 +429,7 @@ pub fn run() {
                         "release/build.json"
                     }),
                     out: out.clone(),
+                    timeout_seconds: args.get(12).map(|v| v.parse().unwrap()).unwrap_or(300),
                 }),
             );
         }

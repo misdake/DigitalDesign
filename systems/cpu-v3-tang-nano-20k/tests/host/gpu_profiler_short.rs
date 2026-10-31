@@ -24,7 +24,7 @@ fn repeated_rtt_reaches_only_consumer_runtime_with_pinned_source() {
         "resources":catalog["resources"],"options":{}
     })).unwrap()).unwrap();
     let mut project =
-        String::from("format 2\nrenderer\napplication examples/gpu_profiler_board/rcc/rtt.rs\n");
+        String::from("format 2\ngpu-api\napplication examples/gpu_profiler_board/rcc/rtt.rs\n");
     for resource in catalog["resources"].as_array().unwrap() {
         let name = resource["file"].as_str().unwrap();
         project.push_str(&format!(

@@ -62,8 +62,8 @@ def prepare(args):
         cargo.extend([str(args.capture_build_dir.resolve()),str(args.capture_gate.resolve())])
     if args.native_rtl:
         if not args.capture_build_dir: raise ValueError('native callback requires a capture build')
-        cargo.append(str(args.native_rtl.resolve()))
-    identity = dict(A_manifest_sha256=digest(stage/'manifest.json'),C_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),ordinary_sources=origins,driver_sha256=digest(driver),source_sha256=digest(args.source.resolve()),constants_sha256=digest(args.constants.resolve()),capture_enabled=bool(args.capture_build_dir),scope='fixed source caller qualification; controlled completion; not final G3')
+        cargo.extend([str(args.native_rtl.resolve()),str(args.native_timeout)])
+    identity = dict(A_manifest_sha256=digest(stage/'manifest.json'),C_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),ordinary_sources=origins,driver_sha256=digest(driver),source_sha256=digest(args.source.resolve()),constants_sha256=digest(args.constants.resolve()),capture_enabled=bool(args.capture_build_dir),native_timeout_seconds=args.native_timeout,wall_timeout_seconds=args.wall_timeout,scope='fixed source caller qualification; controlled completion; not final G3')
     if args.assets:
         catalog=json.loads(args.assets.read_text())
         for resource in catalog['resources']:
@@ -89,7 +89,15 @@ def main():
     parser.add_argument('--capture-build-dir',type=Path)
     parser.add_argument('--capture-gate',type=Path)
     parser.add_argument('--native-rtl',type=Path)
+    parser.add_argument('--native-timeout',type=int,default=300)
+    parser.add_argument('--wall-timeout',type=int)
     args=parser.parse_args()
+    if not 1 <= args.native_timeout <= 3600:
+        parser.error('native timeout must be 1..3600 seconds')
+    if args.wall_timeout is None:
+        args.wall_timeout=720 if args.native_rtl else 600
+    if not 1 <= args.wall_timeout <= 7200:
+        parser.error('wall timeout must be 1..7200 seconds')
     if bool(args.capture_build_dir)!=bool(args.capture_gate):
         parser.error('capture build and gate must be provided together')
     cargo,output=prepare(args)
@@ -97,9 +105,9 @@ def main():
     command="$ProgressPreference='SilentlyContinue'; & "+quote(ROOT/'scripts/run-cargo.ps1')+' -Subcommand run -Label '+quote('api-c-caller-'+args.entry)+' -CargoArgs @('+','.join(map(quote,cargo))+'); exit $LASTEXITCODE'
     environment=dict(os.environ,CARGO_TARGET_DIR=str(ROOT/'target'))
     encoded=base64.b64encode(command.encode('utf-16le')).decode('ascii')
-    # Two native profiles each have their own 300s limit; allow bounded
-    # compilation/report overhead outside those simulation intervals.
-    run_result=subprocess.run([shutil.which('pwsh') or 'powershell','-NoProfile','-NonInteractive','-OutputFormat','Text','-EncodedCommand',encoded],cwd=ROOT,env=environment,check=False,timeout=720 if args.native_rtl else 600)
+    # Per-replay and whole-command wall budgets are explicit and finite;
+    # callers can allow simulation overhead without changing the cycle bound.
+    run_result=subprocess.run([shutil.which('pwsh') or 'powershell','-NoProfile','-NonInteractive','-OutputFormat','Text','-EncodedCommand',encoded],cwd=ROOT,env=environment,check=False,timeout=args.wall_timeout)
     label='api-c-caller-'+args.entry+'-release'
     for suffix in ('.log','.json'):
         shutil.copy2(ROOT/'target/cargo-summaries'/f'{label}{suffix}',output/f'cargo{suffix}')

@@ -20,16 +20,12 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 - [`cpu-v3-optimization.md`](cpu-v3-optimization.md): concise one-sentence optimization index.
 - [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md): historical implementation,
   measurement, rejected-alternative, and validation detail normally consulted only for archaeology.
-- [`gpu-raster-comparison.md`](gpu-raster-comparison.md): historical raster measurements for the
-  retired GPU; its experiment tools and reproduction commands are no longer supported.
-- [`framebuffer-cache.md`](framebuffer-cache.md): historical eight-DPB component measurements;
-  current behavior belongs to [GPU framebuffer](/ip/gpu-v2/docs/framebuffer.md).
 - [`boot-image-format.md`](boot-image-format.md): CB06 COPY/ZERO stream, host layout checks, Display startup and completion contract.
-- [Resource renderer](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md): application entry, runnable call sequence, host-approved resources, prepared scene snapshots, persistent text, frame input and observed statistics.
-- [Borrowed render targets](/systems/cpu-v3-tang-nano-20k/docs/gpu-render-targets.md): external plane ownership, offscreen completion, fixed400x240 texture views and explicit experimental profile.
-- [GPU input pipeline](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md): internal double input slots, target relocation, persistent UI dirty pages and independent GPU/Display completion.
+- [Resource renderer](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md): retained test-only Renderer/Frame contract; current callers use the explicit API.
+- [Borrowed render targets](/systems/cpu-v3-tang-nano-20k/docs/gpu-render-targets.md): retained legacy target-registry regression contract.
+- [GPU input pipeline](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md): retained test-only double-slot scheduler and UI mirror contract.
 - [GPU capture bridge](/systems/cpu-v3-tang-nano-20k/docs/gpu-capture.md): published-input lease, optional diagnostic gate, bounded dependency reads and paused timing semantics.
-- [`gpu-driver.md`](gpu-driver.md): lower-level native encoding and single-CB facade, fixed high-memory ownership, scoped DSEG3 access and submission/fault semantics.
+- [`gpu-driver.md`](gpu-driver.md): native single-CB diagnostic library used by gpu_demo and dualshock2_ui, encoding, DSEG3 and submission/fault semantics.
 - [GPU profiler](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md): published-input snapshots, TX framing, cold GPU/MC replay, passive trace identities and offline viewing.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   cold-loader LED and application reporting.

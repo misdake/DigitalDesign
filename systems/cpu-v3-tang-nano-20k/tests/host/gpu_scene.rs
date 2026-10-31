@@ -498,7 +498,7 @@ fn minimal_application_uses_actual_packed_assets_and_public_renderer_calls() {
         ));
     }
     let project = cpu_v3_tang_nano_20k::boot::parse_boot_project(&config).unwrap();
-    assert!(project.gpu_api && !project.renderer);
+    assert!(project.gpu_api);
     let constants =
         project.constants() + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
     let mut baseline = None;

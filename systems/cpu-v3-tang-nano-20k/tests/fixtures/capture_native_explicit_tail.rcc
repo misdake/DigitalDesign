@@ -1,0 +1,54 @@
+// Trusted diagnostic specialization only; not a public recording API.
+// Append before seal/publication, with declared facts for every raw allocation.
+fn profiling_native_explicit_tail(slot: u16) -> bool {
+    let c = gpu_record_data(slot);
+    if c[GPU_RECORD_PHASE] == GPU_RECORD_SEALED { return true; }
+    let facts: Buf<u16, 12> = Buf::new([
+        0xe000, 36, GPU_FACT_BUFFER, GPU_FACT_READ,
+        0xe200, 8, GPU_FACT_BUFFER, GPU_FACT_READ | GPU_FACT_WRITE,
+        0xe400, 36, GPU_FACT_BUFFER, GPU_FACT_WRITE,
+    ]);
+    let start = gpu_record_push_offset(slot, 64, 64);
+    if start == 65535 || !gpu_record_room(slot, 14, 64, 64)
+        || !gpu_record_capture_room(slot, facts.as_array(), 3) {
+        return false;
+    }
+    let sources: Buf<u16, 3> = Buf::new([0xe000, 0xe200, 0xe01c]);
+    let destinations: Buf<u16, 3> = Buf::new([0xe200, 0xe400, 0xe41c]);
+    let mut payload: Buf<u16, 64> = Buf::new([0; 64]);
+    let mut i: u16 = 0;
+    while i < 3 {
+        let source = sources[i] >> 2;
+        let destination = destinations[i] >> 2;
+        payload[i * 16] = source | (destination << 14);
+        payload[i * 16 + 1] = (destination >> 2) | 0x1000;
+        i += 1;
+    }
+    // Ignored descriptor words stay recognizable in the captured bytes.
+    payload[4u16] = 0x6a6a;
+    payload[20u16] = 0x5b5b;
+    payload[36u16] = 0x4c4c;
+    let mut code: Buf<u16, 14> = Buf::new([
+        3, 0x4000, 0, 0x7000, 0, 0, 1, 0x4000,
+        66, 0xc000, 67, 0xc000, 68, 0xc000,
+    ]);
+    gpu_packet_dma(code.as_array(), 4, c, start, 66, 2);
+    let mut data: Buf<u16, 64> = Buf::new([0; 64]);
+    let mut sector: u16 = 0xe000;
+    while sector < 0xe024 {
+        i = 0;
+        while i < 64 {
+            data[i] = (sector - 0xe000) * 64 + i + 0x1234;
+            i += 1;
+        }
+        if !gpu_window_write_words(sector, 0, data.as_array(), 64) {
+            return false;
+        }
+        sector += 1;
+    }
+    if !gpu_record_append(slot, code.as_array(), 14, payload.as_array(), 64, 64) {
+        return false;
+    }
+    gpu_record_capture_commit(slot, facts.as_array(), 3);
+    true
+}

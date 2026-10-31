@@ -1,11 +1,12 @@
-# Resource renderer API
+# Retired resource renderer regression contract
 
-The system RCC root `gpu_pipeline.rs` exposes lexical Renderer, Frame, Pass,
-Camera, Model, Mesh, Material and TextField resources over the
-[existing two-input scheduler](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md).
-It retains one recording, one sealed successor and one running GPU; there is no
-second production scheduler. The native single-slot `gpu` facade remains a
-separate compilation mode and cannot be mixed with this root.
+This contract is implemented only by the byte-preserved
+[test fixtures](/systems/cpu-v3-tang-nano-20k/tests/fixtures/legacy_renderer/README.md).
+It describes the retained regression behavior, not a production frontend.
+Current applications use the explicit
+[Gpu/CommandBuffer API](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md)
+and [prepared values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
+Production has no Renderer/Frame successor scheduler, scene registry or UI mirror.
 
 ## Application flow
 
@@ -15,7 +16,7 @@ slots, publishes CPU writes and presents completed colors. Neither an input
 slot nor a command-buffer address is an application handle.
 
 The following is the inner loop used by the
-[minimal runnable application](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer/rcc/main.rs).
+[legacy regression fixture](/systems/cpu-v3-tang-nano-20k/tests/fixtures/gpu_renderer_minimal.rs).
 Camera, Mesh, Model, Material and TextField are created once before the loop:
 
 ```rust
@@ -135,27 +136,29 @@ can drain them. Desired UI content survives cancellation. Consumed Pass/Frame
 values do not execute cleanup again. Reverse-order early-return cleanup still
 cancels an abandoned recording, with no implicit submission or destructor wait.
 
-`compile_renderer_program_checked` uses the same canonical source loader,
-capture configuration and target ownership lowering as the ordinary renderer
-entry, with an explicit `RustcCheck` gate. It preserves library origin approval
-and private-domain checks. The
+The retained regression fixtures use the `cfg(test)`-only
+`compile_renderer_program` / `compile_renderer_program_checked` entries in
+`tests/support/legacy_renderer_loader.rs`. They explicitly approve the canonical
+legacy fixture overlay and preserve root/helper origin and private-domain checks;
+local overrides never inherit the approved identity. The checked entry adds an
+explicit `RustcCheck` gate. The
 [RCC subset](/compiler/rcc/src/frontend/spec.md#151-restricted-inherent-resource-methods)
 defines receiver/reborrow, lifetime and Drop lowering. General Rust references,
-async, arbitrary impls and allocator behavior are not added by this API.
+async, arbitrary impls and allocator behavior are not added by this contract.
 
-A format2 boot project may contain the standalone line `renderer`. The build
-then uses `compile_renderer_program`, always approving the actual shared
-`rcc/gpu_pipeline.rs` canonical path. Omitting the root is an error. The root
-names its direct helpers, including private `gpu_scene`, `gpu_capture` and
-`gpu_render_buffer`; application imports
-cannot expose their raw state/functions or construct/disarm resource identities.
-The source loader reports the selected file's actual canonical origin. Local
-root/helper overrides fail approval; they never inherit a shared identity.
+Production format2 boot projects select the explicit GPU API with the standalone
+line `gpu-api`. The build calls
+`compile_explicit_gpu_program_checked_with_sources`, approving the host-selected
+canonical `gpu_api` root. The retired `renderer` directive is rejected; neither
+legacy compiler entry nor the `gpu_pipeline` fixture overlay is a production
+boot option. The legacy root still declares private `gpu_scene`, `gpu_capture`
+and `gpu_render_buffer` helpers solely for the regression contracts below.
+
 Generated `boot_resources` has no filesystem origin or library authority.
-`device_abi` remains an ordinary shared module, but renderer compilation pins it
-to the system source, so an application-local override cannot redirect devices.
-Native diagnostics retain the String loader. Approval is an explicit host mode,
-not inferred from source text or recovered by falling back to native compilation.
+Resource compilation pins ordinary `device_abi` to the system source, so an
+application-local override cannot redirect devices. Native diagnostics retain
+the String loader. Approval is an explicit host mode, not inferred from source
+text or recovered by falling back to native compilation.
 
 `renderer_open` constructs the sole owner after initialization. A second open
 halts/faults before another owner is constructed. `renderer_frame` borrows it;

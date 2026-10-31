@@ -55,7 +55,7 @@ impl Fixture {
         );
         let catalog: serde_json::Value =
             serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap()).unwrap();
-        let mut config = String::from("format 2\nrenderer\napplication main.rs\n");
+        let mut config = String::from("format 2\ngpu-api\napplication main.rs\n");
         for resource in catalog["resources"].as_array().unwrap() {
             let file = resource["file"].as_str().unwrap();
             config.push_str(&format!(
@@ -525,24 +525,104 @@ fn real_library_borrows_moves_and_parent_escape_fail_in_rustc() {
 }
 #[test]
 fn actual_minimal_member_demo_runs_three_frames() {
-    for (label, profile) in [
-        ("demo", resolver::RendererLayoutProfile::Column16),
-        ("demo-column", resolver::RendererLayoutProfile::Column16),
-    ] {
-        let f = Fixture::profile(label, profile);
-        let source = include_str!("../../examples/gpu_renderer/rcc/members.rs");
-        let r = execute(
-            &f,
-            "three-frames",
-            source,
-            "renderer_member_three_frames",
-            Mode::Demo,
+    for (label, debug) in [("demo", false), ("demo-debug", true)] {
+        let f = Fixture::new(label);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source = include_str!("../../examples/gpu_renderer/rcc/members.rs")
+            .replace("fn main()", "fn interactive_main()")
+            + "\nfn main(){renderer_member_three_frames();}\n";
+        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.gpu_debug = debug;
+        let parsed = resolver::compile_explicit_gpu_program_checked(
+            "actual public member demo",
+            &source,
+            &options,
+            &root.join("examples/gpu_renderer/rcc"),
+            &root.join("rcc"),
+            &f.constants,
+            &resolver::RendererCaptureConfiguration::without_capture(f.profile),
+            &RustcCheck::new(f.out.join("public-rustc")),
+            &mut |_| {},
+        )
+        .unwrap();
+        let static_words = parsed.debug.static_data_end;
+        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        for resource in f.catalog["resources"].as_array().unwrap() {
+            let at = resource["address"].as_u64().unwrap() as usize / 2;
+            let data = std::fs::read(f.assets.join(resource["file"].as_str().unwrap())).unwrap();
+            for (i, word) in data.as_chunks::<2>().0.iter().enumerate() {
+                cpu.physical_memory_mut()[at + i] = u16::from_le_bytes(*word);
+            }
+        }
+        let mode = Mode::Demo;
+        let state = Rc::new(RefCell::new(State {
+            active: 0x200000,
+            hold_gpu: mode != Mode::Demo,
+            hold_display: mode != Mode::Demo,
+            ..State::default()
+        }));
+        for kind in [0, 3, 4, 5, 7] {
+            cpu.attach_device(
+                kind,
+                Box::new(Peer {
+                    kind,
+                    state: state.clone(),
+                }),
+            );
+        }
+        let mut halted = false;
+        let mut minimum_sp = 0xc000u16;
+        let mut captured = 0;
+        let mut streams = vec![];
+        for _ in 0..5_000_000 {
+            let outcome = cpu.step().unwrap();
+            let sp = cpu.registers()[13];
+            if sp != 0 {
+                minimum_sp = minimum_sp.min(sp);
+            }
+            let peer = state.borrow();
+            if peer.starts.len() > captured {
+                let at = usize::from(peer.starts[captured]) * 64;
+                let count = usize::from(peer.counts[captured]) + 1;
+                let stream: Vec<u32> = cpu.physical_memory_mut()[at..at + count * 2]
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|w| u32::from(w[0]) | (u32::from(w[1]) << 16))
+                    .collect();
+                assert_eq!(stream.iter().filter(|w| **w >> 28 == 3).count(), 2);
+                assert_eq!(stream.last(), Some(&0xf0000000));
+                streams.push(stream);
+                captured += 1;
+            }
+            drop(peer);
+            if let StepOutcome::Halted { signal } = outcome {
+                assert_eq!(signal, 0x600d);
+                halted = true;
+                break;
+            }
+        }
+        assert!(halted, "bounded member demo timeout");
+        assert_eq!(cpu.data_segments(), [0, 1, 2, 3]);
+        assert!(static_words + usize::from(0xc000 - minimum_sp) <= 8192);
+        let peer = state.borrow();
+        assert_eq!(
+            (peer.starts.len(), peer.swaps, peer.publications),
+            (3, 3, 3)
         );
-        assert_eq!((r.starts, r.swaps), (3, 3));
-        assert_eq!(calls(&r, "gpu_persistent_ui_retire"), 3);
-        assert_eq!(calls(&r, "pass_cleanup"), 0);
-        assert_eq!(calls(&r, "frame_cleanup"), 0);
-        assert_eq!(r.renderer, 4);
+        assert_eq!(peer.active, 0x220000);
+        assert_eq!(
+            global(&mut cpu, &program, "GPU_EXECUTION", 4)[1],
+            0,
+            "no outstanding owner"
+        );
+        std::fs::write(
+            f.out.join("public-streams.json"),
+            serde_json::to_vec_pretty(&streams).unwrap(),
+        )
+        .unwrap();
     }
 }
 #[test]

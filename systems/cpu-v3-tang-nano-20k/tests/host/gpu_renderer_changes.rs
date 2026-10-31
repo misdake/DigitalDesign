@@ -20,7 +20,7 @@ fn application(name: &str) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>)
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     let mut config =
-        String::from("format 2\nrenderer\napplication examples/gpu_renderer/rcc/changes.rs\n");
+        String::from("format 2\ngpu-api\napplication examples/gpu_renderer/rcc/changes.rs\n");
     let mut resources = Vec::new();
     for r in manifest["resources"].as_array().unwrap() {
         let name = r["file"].as_str().unwrap();

@@ -5,7 +5,7 @@
 `gpu_api_capture.rs` is a separate private entry consuming the agreed source12
 snapshot and A-owned facts4 allocation table. It copies the source, retains no
 facts pointer, and neither publishes memory nor sends or retires GPU work.
-The existing renderer continues to use its version1 bridge.
+The version1 bridge remains only in test-owned legacy regression fixtures.
 
 The explicit entry emits **header version2**, with the existing64-word header,
 8-word ranges, native command ABI4 and column layout ABI2. This header version
@@ -74,6 +74,34 @@ native GPU/stream-MC replays compare raw-copy bytes, Load preimages, dynamic UI
 pixels and multiple target outputs. Contract/control peers establish neither A
 ownership nor cache publication. These cold replays exclude CPU/Display
 contention and do not provide board or PVT qualification.
+
+For record-v3 builds the typed catalog binds complete source allocations while
+captures contain the actual packet dependency ranges. Unreferenced catalog
+allocations need not be captured. Referenced immutable fragments are compared
+byte for byte with a complete asset file bound by the same length and SHA256;
+without that file, the complete captured allocation must authenticate by hash.
+A recorded WRITE aliasing an immutable catalog allocation rejects. All declared
+capture ranges still require every byte, and native replay independently guards
+every physical read and write. Legacy fixed-address captures retain their whole
+catalog coverage rule.
+
+The trusted MEMCPY diagnostic selects `native_sources.py --explicit-api` for
+this root. Generated `gpu_packet` and `gpu_execute` sources append its three
+copies and READ/WRITE allocation facts before seal and initial publication.
+A sealed replay reuses that tail without appending again. Normal sources gain
+no public copy operation or additional owner. Capture still checks descriptor
+reserved bits and access extents before any COUNT/START; rejection retains the
+prepared owner. Boot artifacts include the two actual specialized source files
+and their generation identity rather than an unused legacy capture module.
+
+`tools/qualify_api_callers.py` checks the frozen source manifest and records the
+actual caller, driver and ordinary-module hashes. Its optional native callback
+waits for production GPU/MC completion and imports only the reported writable
+ranges before the CPU can retire. `--native-timeout` sets each replay's finite
+wall budget (default300 seconds, allowed1..3600); `--wall-timeout` bounds the
+whole command (default720 seconds with native replay,600 otherwise, allowed
+1..7200). These budgets are recorded separately from the replay cycle limit and
+do not change the captured inputs, completion condition or output comparisons.
 
 ## Resource-renderer boundary
 
@@ -284,38 +312,30 @@ ideal projected coordinates are producer checks, not a raster/depth oracle.
 The GPU consumer must independently replay each actual input, including the
 reused address, and verify coverage, color, depth and allowed writes.
 
-The same `capture_draw` test target has a separate complete-scene case,
-`real_full_scene_three_gates_resume_and_restore_stats`. It executes the exact
-formal profiler `full_scene.rs` snapshot pinned by
-`tests/fixtures/capture_full_scene/origin.json`; only the external entry wrapper
-selects three frames and a final drain. Each actual frame records all six box
-meshlets, one RGB meshlet, all 17 rabbit meshlets (948 faces), and OBS UI: 24 DRAWs
-and 1141 triangles. The fixed camera, model and light come from that example;
-camera preparation, frame input snapshots and observed-time UI use production
-calls. This fixture does not model camera motion from controller input.
+The same `capture_draw` target runs the current production
+`examples/gpu_profiler_board/rcc/full_scene.rs` through its bounded
+`profiler_full_three_frames` entry and the checked explicit GPU loader. Every
+frame records six box meshlets, one RGB meshlet, seventeen rabbit meshlets
+(948 faces) and OBS UI: 24 DRAWs and 1141 triangles. It uses the production
+camera/model/material preparation and an application-owned input snapshot.
 
-`tools/capture_full_assets.py` composes the existing classic scene packer and
-renderer font packer for either profile. It preserves native mesh and texture
-bytes, adds the OBS atlas glyphs, and supplies typed catalog roots and renderer
-metadata. Repository-relative source hashes bind the complete scene, texture,
-font and fixture origins into the portable identity manifest. No parallel native
-asset encoder, command construction or capture ABI is introduced.
+`tools/capture_full_assets.py` composes the canonical scene and font packers.
+It binds the current application source separately from the frozen geometry
+origin; the old source snapshot remains a geometry reference and is not compiled
+as the current caller. The packer preserves native asset bytes and supplies a
+typed mesh/texture/atlas catalog.
 
-Set `GPU_CAPTURE_FULL_SCENE_DIR` for the full-scene output root. Each profile
-retains the same three gate directories and payload contract, with an additional
-`ui.bin` convenience copy and actual renderer input/timing/statistics words in
-`producer.json`. `sequence.json` includes the final drained statistics. The
-second gate advances modeled wall time by 40000 ms and returns Resumed; the
-others Continue. Its paused submission has invalid observed intervals, the next
-tick excludes the pause, and the final submission restores valid statistics.
-Neutral analog packets travel through the real input path. The synthetic timer
-advances one modeled 54-MHz cycle per CPU instruction; its numeric intervals
-are control-test stimuli and supply no hardware performance measurement.
+`GPU_CAPTURE_FULL_SCENE_DIR` selects a fresh output root. Each gate preserves
+the whole recorded command/push/UI and physical target input. Each reserved
+262144-byte color/depth allocation is checked as an adjacent 204800-byte physical
+WRITE/PREIMAGE/CLEAR range and 57344-byte READ/PREIMAGE tail, including both
+endpoints and every payload byte. The tail is captured but is never writable.
 
-The recorder can seal a successor before observing the previous completion.
-Consequently, the third frame's OBS bytes show the first frame's valid duration,
-while its gate already observes the second frame's paused, invalid statistics.
-The first and third UI payloads actually differ at the reused A slot. Neither
-the test nor its metadata rewrites sealed UI to match later statistics. Full
-color/depth/old-Front preimages remain independent controlled-peer inputs;
-only independent GPU/MC replay can establish their rendered results.
+The fixture returns Resumed at its second gate and advances modeled wall time by
+40000 ms. The application-owned profiler clock excludes this interval and
+changes epoch once. UI observations are unavailable at startup and after resume;
+the intervening completed observation is valid. Publication is checked at the
+actual Device0 writes and GPU STARTs, including exactly one extra publication
+after resume. Unavailable header counters remain zero. These controlled peers
+neither rasterize nor scan out; frozen frames are independent GPU replay inputs
+and do not claim consecutive rendered outputs or hardware performance.

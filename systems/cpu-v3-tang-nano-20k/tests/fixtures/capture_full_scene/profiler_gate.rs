@@ -1,12 +1,17 @@
 //! Bounded producer gate: sample public ranges, resume the middle submission.
 use crate::dsl_rt::*;
-mod gpu_pipeline;
-use gpu_pipeline::*;
+mod gpu_api;
+use gpu_api::*;
+mod profiler_clock;
+use profiler_clock::*;
+mod time;
+use time::*;
 mod gpu_capture_abi;
 use gpu_capture_abi::*;
 
 static CAPTURE_FULL_GATES: Buf<u16, 1> = Buf::new([0; 1]);
 pub fn profiler_gate(d: Array<u16>) -> u16 {
+    let pause_begin = time_milliseconds();
     let mut i: u16 = 0;
     while i < GPU_CAPTURE_WORDS {
         signal(2, d[i]);
@@ -36,8 +41,9 @@ pub fn profiler_gate(d: Array<u16>) -> u16 {
     signal(6, gpu_capture_error());
     CAPTURE_FULL_GATES[0u16] += 1;
     if CAPTURE_FULL_GATES[0u16] == 2 {
-        1
-    } else {
-        0
+        // This diagnostic consumer owns the modeled pause and ordinary clock.
+        profiler_clock_record_resume(pause_begin, time_milliseconds());
+        return 1;
     }
+    0
 }

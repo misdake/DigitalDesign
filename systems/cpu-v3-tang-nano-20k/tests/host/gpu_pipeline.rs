@@ -447,7 +447,7 @@ fn run_with_globals(globals: &str, body: &str) -> (CpuV3Sim, Rc<RefCell<State>>)
 fn compile(globals: &str, body: &str) -> rcc_backend::CpuV3Program {
     let source = "mod gpu_pipeline;fn main(){pipeline_test_probe();}";
     let probe=format!("\n{globals}\nfn check(ok:bool){{if !ok{{halt(0xbad);}}}} pub fn pipeline_test_probe(){{{body}halt(0x600d);}}");
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
+    let root = resolver::legacy_test_sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc"));
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let parsed = rcc::frontend::compile_program_named_with_libraries(
         "internal GPU pipeline",
@@ -556,3 +556,6 @@ fn compiled_second_slot_ui_snapshot_crosses_window_without_touching_running_inpu
         gpu_v2::system::vliw_command::ui_params(at as u32, 0x4f0000).unwrap()
     );
 }
+
+#[path = "gpu_native_profile.rs"]
+mod native_profile;

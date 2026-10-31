@@ -195,7 +195,8 @@ fn source_loader_reports_the_selected_file_and_synthetic_modules_have_no_origin(
 #[test]
 fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
     let f = Fixture::new();
-    let production = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
+    let production =
+        resolver::legacy_test_sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc"));
     let helpers = [
         "gpu_device",
         "gpu_command_buffer",

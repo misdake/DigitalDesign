@@ -108,7 +108,7 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     let mut boot =
-        String::from("format 2\nrenderer\napplication examples/gpu_renderer_rtt/rcc/main.rs\n");
+        String::from("format 2\ngpu-api\napplication examples/gpu_renderer_rtt/rcc/main.rs\n");
     for resource in manifest["resources"].as_array().unwrap() {
         let name = resource["file"].as_str().unwrap();
         boot.push_str(&format!(
@@ -396,7 +396,7 @@ fn actual_nearest_and_ordinary_bilinear_demo_inputs() {
             .success());
         let assets: serde_json::Value =
             serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
-        let mut config = String::from("format 2\nrenderer\napplication main.rs\n");
+        let mut config = String::from("format 2\ngpu-api\napplication main.rs\n");
         for r in assets["resources"].as_array().unwrap() {
             let file = r["file"].as_str().unwrap();
             config.push_str(&format!(

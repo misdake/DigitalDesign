@@ -1,10 +1,13 @@
 # RCC GPU driver
 
-The application interface is `rcc/gpu.rs`. It manages one command buffer and a
-single Clear/Store Pass with ordered Mesh/Instance and UI draws and fixed A/B/Depth
-allocations. This legacy frontend still uses slot0; the separately tested
-[internal two-input scheduler](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md)
-backs the [resource API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md).
+The native diagnostic interface is `rcc/gpu.rs`, used by `gpu_demo` and
+`dualshock2_ui`. It manages one command buffer and one Clear/Store Pass with
+ordered Mesh/Instance and UI draws and fixed A/B/Depth allocations. It retains
+actual native control, publication and Display consumers. The former
+[two-input resource scheduler](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md)
+and [Renderer/Frame facade](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md)
+are now test-only regression sources. Current resource applications use the
+[explicit API](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md).
 Initialization reads actual Display active/pending/format; it can
 adopt either A or B as Front and chooses the other plane for rendering. The
 driver presents through one serialized entry point. Runtime recovery is separate. The default CPU

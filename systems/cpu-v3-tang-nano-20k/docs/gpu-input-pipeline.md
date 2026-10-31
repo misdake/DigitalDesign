@@ -1,11 +1,12 @@
-# Internal GPU input pipeline
+# Retired input scheduler regression contract
 
-The RCC module gpu_pipeline contains a private two-input scheduler using the
-existing builder, single GPU driver and Display ownership record. Its public
-[resource facade](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md) owns the host-approved
-library boundary; this document describes the private engine. The legacy
-gpu frontend and demo still use slot0. These frontends must not be mixed: slot
-initialization permanently associates each arena with its one descriptor.
+This contract is implemented only by the byte-preserved
+[test fixtures](/systems/cpu-v3-tang-nano-20k/tests/fixtures/legacy_renderer/README.md).
+It describes the retained regression behavior, not a production frontend.
+Current applications use the explicit
+[Gpu/CommandBuffer API](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md)
+and [prepared values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
+Production has no Renderer/Frame successor scheduler, scene registry or UI mirror.
 
 ## Storage and lifetimes
 

@@ -1,4 +1,12 @@
 //! System-owned application/local-first module lookup for the boot compiler.
+// Retired resource contracts are available only to regression targets.
+#[cfg(test)]
+#[path = "../tests/support/legacy_renderer_loader.rs"]
+mod legacy_renderer;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use legacy_renderer::*;
+
 use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -55,56 +63,6 @@ pub fn load_module_source_with_sources(
         })
         .transpose()?;
     Ok(rcc::frontend::ModuleSource { source, origin })
-}
-
-/// This explicit host entry always requires the shared GPU root, even when
-/// application text omits it. Native diagnostics keep the String-loader path.
-pub fn compile_renderer_program(
-    main_name: &str,
-    source: &str,
-    options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    compile_renderer_program_with_sources(
-        main_name,
-        source,
-        options,
-        local_dir,
-        shared_dir,
-        constants,
-        &[],
-        dependency,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn compile_renderer_program_with_sources(
-    main_name: &str,
-    source: &str,
-    options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    ordinary_dirs: &[PathBuf],
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    compile_renderer_capture(
-        "gpu_pipeline",
-        main_name,
-        source,
-        options,
-        local_dir,
-        shared_dir,
-        constants,
-        ordinary_dirs,
-        None,
-        &RendererCaptureConfiguration::with_default_hook(RendererLayoutProfile::Column16),
-        None,
-        dependency,
-    )
 }
 
 /// Explicit API recording uses its own approved root, never both facade domains.
@@ -174,70 +132,6 @@ pub fn compile_explicit_gpu_program_checked_with_sources(
     .map_err(|error| error.to_string())
 }
 
-/// Check actual approved library bodies with rustc before target ownership erasure.
-#[allow(clippy::too_many_arguments)]
-pub fn compile_renderer_program_checked(
-    main_name: &str,
-    source: &str,
-    options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    configuration: &RendererCaptureConfiguration,
-    check: &rcc::frontend::rustc_check::RustcCheck,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<rcc::frontend::Program, String> {
-    compile_renderer_program_checked_with_sources(
-        main_name,
-        source,
-        options,
-        local_dir,
-        shared_dir,
-        constants,
-        &[],
-        configuration,
-        check,
-        dependency,
-    )
-}
-
-/// Checked resource callers may import approved ordinary application modules.
-#[allow(clippy::too_many_arguments)]
-pub fn compile_renderer_program_checked_with_sources(
-    main_name: &str,
-    source: &str,
-    options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    ordinary_dirs: &[PathBuf],
-    configuration: &RendererCaptureConfiguration,
-    check: &rcc::frontend::rustc_check::RustcCheck,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<rcc::frontend::Program, String> {
-    let actual_shared = materialize_renderer_sources(
-        shared_dir,
-        &check.directory.join("renderer-rcc"),
-        configuration.profile,
-        dependency,
-    )?;
-    compile_renderer_capture(
-        "gpu_pipeline",
-        main_name,
-        source,
-        options,
-        local_dir,
-        &actual_shared,
-        constants,
-        ordinary_dirs,
-        configuration.capture.as_ref(),
-        configuration,
-        Some(check),
-        dependency,
-    )
-    .map_err(|e| e.to_string())
-}
-
 /// Only an explicit diagnostic host may replace the ordinary no-op consumer.
 /// It gains no resource-library membership or authority over private helpers.
 pub struct CaptureConfiguration {
@@ -273,70 +167,6 @@ impl CaptureConfiguration {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn compile_renderer_program_with_capture(
-    main_name: &str,
-    source: &str,
-    options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    ordinary_dirs: &[PathBuf],
-    capture: Option<&CaptureConfiguration>,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    compile_renderer_capture(
-        "gpu_pipeline",
-        main_name,
-        source,
-        options,
-        local_dir,
-        shared_dir,
-        constants,
-        ordinary_dirs,
-        capture,
-        &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Column16),
-        None,
-        dependency,
-    )
-}
-
-/// Explicit versioned producer; profile and capture identity are one host selection.
-#[allow(clippy::too_many_arguments)]
-pub fn compile_renderer_program_with_capture_profile(
-    main_name: &str,
-    source: &str,
-    options: &impl rcc::RccConfig,
-    local_dir: &Path,
-    shared_dir: &Path,
-    constants: &str,
-    ordinary_dirs: &[PathBuf],
-    configuration: &RendererCaptureConfiguration,
-    generated_sources: &Path,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<rcc::frontend::Program, String> {
-    let actual_shared = materialize_renderer_sources(
-        shared_dir,
-        generated_sources,
-        configuration.profile,
-        dependency,
-    )?;
-    compile_renderer_capture(
-        "gpu_pipeline",
-        main_name,
-        source,
-        options,
-        local_dir,
-        &actual_shared,
-        constants,
-        ordinary_dirs,
-        configuration.capture.as_ref(),
-        configuration,
-        None,
-        dependency,
-    )
-    .map_err(|e| e.to_string())
-}
 #[allow(clippy::too_many_arguments)]
 fn compile_renderer_capture(
     library_root: &str,

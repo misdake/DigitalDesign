@@ -164,7 +164,7 @@ fn run(label: &str, profile: &str, legacy: bool, finish: &str, wrong_root: bool)
     let manifest = out.join("build.json");
     let catalog: Value =
         serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap()).unwrap();
-    let mut config = String::from("format 2\nrenderer\napplication main.rs\n");
+    let mut config = String::from("format 2\ngpu-api\napplication main.rs\n");
     for r in catalog["resources"].as_array().unwrap() {
         config.push_str(&format!(
             "copy GPU_RENDERER_{} {} {}\n",

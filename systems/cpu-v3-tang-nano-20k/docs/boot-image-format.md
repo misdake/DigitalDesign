@@ -62,10 +62,11 @@ copy MESH 0x100000 assets/mesh.bin
 zero 0x4b0000 4096
 ~~~
 
-A standalone `renderer` line optionally selects the host-approved resource
-compiler described in the [renderer API](/systems/cpu-v3-tang-nano-20k/docs/gpu-renderer.md).
-It may appear once; default projects remain native. It changes host compilation
-authority only and adds no bytes or commands to CB06.
+A standalone `gpu-api` line selects the checked, host-approved
+[Gpu/CommandBuffer compiler](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md).
+It may appear once; default projects remain native. The retired `renderer`
+directive rejects. This changes host compilation authority only and adds no
+bytes or commands to CB06.
 
 Paths are relative to the project directory. COPY symbols are unique upper
 snake case. The build generates boot_resources.rs before compilation; an RCC

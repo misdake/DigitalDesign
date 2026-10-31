@@ -1,4 +1,12 @@
-# Borrowed render buffers and framebuffer views
+# Retired borrowed-target regression contract
+
+This contract is implemented only by the byte-preserved
+[test fixtures](/systems/cpu-v3-tang-nano-20k/tests/fixtures/legacy_renderer/README.md).
+It describes the retained regression behavior, not a production frontend.
+Current applications use the explicit
+[Gpu/CommandBuffer API](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md)
+and [prepared values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
+Production has no Renderer/Frame successor scheduler, scene registry or UI mirror.
 
 The renderer borrows caller-reserved physical storage for fixed400x240 RGB565/D16
 rendering. It owns four registry entries and submission references, not an

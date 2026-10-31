@@ -1,5 +1,11 @@
 # System regression tests
 
+Retired facade/scheduler sources live only in `tests/fixtures/legacy_renderer`.
+The test-only loader composes their byte-preserved contracts with current common
+modules. Existing ownership, private-domain, capture-v1 and native assertions stay
+active; production boot projects and explicit API callers cannot select this
+overlay.
+
 `graphics_api_b_modules` compiles actual B camera/model/material/state/view/UI helpers with
 checked RCC and executes CPU V3 in both `gpu_debug` profiles, with a 250,000-step
 limit per program. It checks final native encodings and independently compares

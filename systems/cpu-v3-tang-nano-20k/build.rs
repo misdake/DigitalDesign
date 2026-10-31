@@ -20,7 +20,6 @@ enum ApplicationProfile {
 }
 enum ApplicationFrontend {
     Native,
-    LegacyRenderer,
     ExplicitGpu,
 }
 fn compile(
@@ -33,7 +32,7 @@ fn compile(
     profile: ApplicationProfile,
 ) -> (Vec<u16>, usize) {
     let explicit_gpu = matches!(frontend, ApplicationFrontend::ExplicitGpu);
-    let renderer = !matches!(frontend, ApplicationFrontend::Native);
+    let renderer = explicit_gpu;
     let rtt = matches!(
         profile,
         ApplicationProfile::Rtt400x240
@@ -100,8 +99,12 @@ fn compile(
         println!("cargo:rerun-if-changed={}", helper.display());
         println!(
             "cargo:rerun-if-changed={}",
-            root.join("tests/fixtures/capture_native_tail.rcc")
-                .display()
+            root.join(if explicit_gpu {
+                "tests/fixtures/capture_native_explicit_tail.rcc"
+            } else {
+                "tests/fixtures/capture_native_tail.rcc"
+            })
+            .display()
         );
         for file in std::fs::read_dir(shared).unwrap().flatten() {
             if file.path().extension().is_some_and(|s| s == "rs") {
@@ -110,13 +113,18 @@ fn compile(
         }
         native_root =
             PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("profiler-memcpy-rcc");
-        let status = std::process::Command::new("python")
+        let mut producer = std::process::Command::new("python");
+        producer
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .arg(helper)
             .arg("--shared")
             .arg(shared)
             .arg("--output")
-            .arg(&native_root)
+            .arg(&native_root);
+        if explicit_gpu {
+            producer.arg("--explicit-api");
+        }
+        let status = producer
             .status()
             .expect("native diagnostic source producer");
         assert!(status.success(), "native diagnostic specialization failed");
@@ -124,88 +132,34 @@ fn compile(
     } else {
         shared
     };
-    let program = if renderer {
-        let compile_renderer = |dependency: &mut dyn FnMut(&Path)| {
-            let dirs = if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
-                vec![shared.parent().unwrap().join("examples/bloxorz/rcc")]
-            } else if source_dir.ends_with("gpu_profiler_board/rcc") && rtt {
-                vec![shared
-                    .parent()
-                    .unwrap()
-                    .join("examples/gpu_renderer_rtt/rcc")]
-            } else {
-                vec![]
-            };
-            let checked = rtt
-                || (source_dir.ends_with("gpu_renderer/rcc")
-                    && path.file_name().is_some_and(|name| name == "members.rs"));
-            if explicit_gpu {
-                let disabled = rcc_modules::RendererCaptureConfiguration::without_capture(
-                    rcc_modules::RendererLayoutProfile::Column16,
-                );
-                rcc_modules::compile_explicit_gpu_program_checked_with_sources(
-                    &path.display().to_string(),
-                    &source,
-                    options,
-                    source_dir,
-                    shared,
-                    constants,
-                    &dirs,
-                    capture.as_ref().unwrap_or(&disabled),
-                    &rcc::frontend::rustc_check::RustcCheck::new(
-                        PathBuf::from(std::env::var_os("OUT_DIR").unwrap())
-                            .join("explicit-gpu-ownership"),
-                    ),
-                    dependency,
-                )
-            } else if let Some(configuration) = capture.as_ref().filter(|_| !checked) {
-                rcc_modules::compile_renderer_program_with_capture_profile(
-                    &path.display().to_string(),
-                    &source,
-                    options,
-                    source_dir,
-                    shared,
-                    constants,
-                    &dirs,
-                    configuration,
-                    &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("capture-rcc"),
-                    dependency,
-                )
-            } else if checked {
-                let disabled = rcc_modules::RendererCaptureConfiguration::without_capture(
-                    rcc_modules::RendererLayoutProfile::Column16,
-                );
-                rcc_modules::compile_renderer_program_checked_with_sources(
-                    &path.display().to_string(),
-                    &source,
-                    options,
-                    source_dir,
-                    shared,
-                    constants,
-                    &dirs,
-                    capture.as_ref().unwrap_or(&disabled),
-                    &rcc::frontend::rustc_check::RustcCheck::new(
-                        PathBuf::from(std::env::var_os("OUT_DIR").unwrap())
-                            .join("member-ownership"),
-                    ),
-                    dependency,
-                )
-            } else {
-                rcc_modules::compile_renderer_program_with_capture(
-                    &path.display().to_string(),
-                    &source,
-                    options,
-                    source_dir,
-                    shared,
-                    constants,
-                    &dirs,
-                    None,
-                    dependency,
-                )
-                .map_err(|e| e.to_string())
-            }
+    let program = if explicit_gpu {
+        let dirs = if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
+            vec![shared.parent().unwrap().join("examples/bloxorz/rcc")]
+        } else if source_dir.ends_with("gpu_profiler_board/rcc") && rtt {
+            vec![shared
+                .parent()
+                .unwrap()
+                .join("examples/gpu_renderer_rtt/rcc")]
+        } else {
+            vec![]
         };
-        compile_renderer(&mut |module| println!("cargo:rerun-if-changed={}", module.display()))
+        let disabled = rcc_modules::RendererCaptureConfiguration::without_capture(
+            rcc_modules::RendererLayoutProfile::Column16,
+        );
+        rcc_modules::compile_explicit_gpu_program_checked_with_sources(
+            &path.display().to_string(),
+            &source,
+            options,
+            source_dir,
+            shared,
+            constants,
+            &dirs,
+            capture.as_ref().unwrap_or(&disabled),
+            &rcc::frontend::rustc_check::RustcCheck::new(
+                PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("member-ownership"),
+            ),
+            &mut |module| println!("cargo:rerun-if-changed={}", module.display()),
+        )
     } else {
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
             rcc_modules::load_module(source_dir, shared, constants, name, &mut |module| {
@@ -445,7 +399,6 @@ fn main() {
                 "examples/gpu_renderer/rcc/main.rs"
             });
             project.gpu_api = true;
-            project.renderer = false;
             project.copies = manifest["resources"]
                 .as_array()
                 .unwrap()
@@ -588,8 +541,6 @@ fn main() {
         &root.join("rcc"),
         if project.gpu_api {
             ApplicationFrontend::ExplicitGpu
-        } else if project.renderer {
-            ApplicationFrontend::LegacyRenderer
         } else {
             ApplicationFrontend::Native
         },
@@ -611,7 +562,8 @@ fn main() {
     if native_memcpy {
         for (source, destination) in [
             ("specialization.json", "profiler-source-specialization.json"),
-            ("gpu_capture.rs", "profiler-specialized-gpu-capture.rs"),
+            ("gpu_execute.rs", "profiler-specialized-gpu-execute.rs"),
+            ("gpu_packet.rs", "profiler-specialized-gpu-packet.rs"),
         ] {
             std::fs::copy(
                 output.join("profiler-memcpy-rcc").join(source),

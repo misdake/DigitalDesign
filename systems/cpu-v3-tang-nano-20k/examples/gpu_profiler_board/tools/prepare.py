@@ -39,10 +39,10 @@ def prepare(output, hardware, system_export, replay_export, automatic, primitive
     names = subprocess.check_output(["git", "ls-files", "compiler/rcc", "ip/cpu-v3", "ip/gpu-v2",
         "hardware/core", "hardware/common", "hardware/vendor/gowin", "circuit",
         "systems/cpu-v3-tang-nano-20k", "Cargo.toml", "Cargo.lock"], cwd=ROOT, text=True).splitlines()
-    paths = {ROOT / name for name in names if Path(name).suffix in
+    paths = {ROOT / name for name in names if (ROOT/name).is_file() and Path(name).suffix in
              {".rs", ".v", ".vh", ".py", ".ps1", ".toml", ".conf", ".lock", ".txt", ".rcc"}}
     # New implementation files may still be untracked during qualification.
-    for folder in [SYSTEM / "tools/gpu_profiler", SYSTEM / "examples/gpu_profiler_board"]:
+    for folder in [SYSTEM / "rcc", SYSTEM / "build_support", SYSTEM / "tools/gpu_profiler", SYSTEM / "examples/gpu_profiler_board"]:
         paths.update(p for p in folder.rglob("*") if p.is_file() and p.suffix in {".py", ".rs", ".rcc", ".v", ".vh"})
     files = [dict(name=p.relative_to(ROOT).as_posix(), path=str(p)) for p in sorted(paths)]
     files.append(dict(name="vendor-primitive/prim_sim.v", path=str(primitive.resolve())))
@@ -61,7 +61,7 @@ def prepare(output, hardware, system_export, replay_export, automatic, primitive
                 toolchain=dict(rustc=subprocess.check_output(["rustc", "--version"], text=True).strip(),
                                python=sys.version.split()[0], firmware_route="OUT_DIR + cpu-v3-boot-assets"),
                 source_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip())
-    spec['layout']=layout.description()
+    spec['layout']=layout.recorded_description()
     spec['command_abi']=COMMAND_ABI
     spec_path = output / "build-spec.json"
     spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")

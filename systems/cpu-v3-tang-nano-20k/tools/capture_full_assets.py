@@ -42,11 +42,17 @@ def pack(output):
     sources.update({(SYSTEM / name).relative_to(ROOT).as_posix(): sha
                     for name, sha in font_manifest['sources'].items()})
     source_paths = [Path(__file__), SYSTEM / 'tests/capture_draw.rs',
+                    SYSTEM / 'examples/gpu_profiler_board/rcc/full_scene.rs',
                     *sorted((SYSTEM / 'tests/fixtures/capture_full_scene').rglob('*'))]
     for path in source_paths:
         if path.is_file():
             sources[path.relative_to(ROOT).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
-    catalog.update(source_root='repository', sources=sources, application_origin=origin,
+    current_application = SYSTEM / 'examples/gpu_profiler_board/rcc/full_scene.rs'
+    application_origin = dict(source_path=current_application.relative_to(ROOT).as_posix(),
+                              sha256=hashlib.sha256(current_application.read_bytes()).hexdigest(),
+                              policy='Current explicit public caller; the host selects its bounded entry')
+    catalog.update(source_root='repository', sources=sources, application_origin=application_origin,
+                   geometry_origin=origin,
                    capture_scene='canonical-full-scene')
     scene = json.loads((SYSTEM / 'examples/gpu_demo/assets/scene.json').read_text())
     meshes = scene['meshes']

@@ -135,7 +135,7 @@ def simulation_provenance(capture, simulation_source):
     return provenance
 
 
-def input_extents(capture, required_span, resources):
+def input_extents(capture, required_span, resources, *, asset_files=()):
     header = capture.header
     reads = []
 
@@ -174,8 +174,42 @@ def input_extents(capture, required_span, resources):
                 elif region.flags != (capture.abi['READ'] | capture.abi['PREIMAGE']):
                     raise SnapshotError('Recorded allocation tail is not read-only preimage')
     for resource in resources:
-        require(resource["name"], resource["address"], resource["bytes"],
-                resource.get("sha256") if resource.get("immutable", True) else None)
+        name,base,length=resource["name"],resource["address"],resource["bytes"]
+        immutable=resource.get("immutable",True)
+        expected=resource.get("sha256") if immutable else None
+        if header.get('capture_version') != 2:
+            require(name,base,length,expected)
+            continue
+        # Recorded captures carry only reachable packet extents. An unused
+        # catalog allocation is not a missing GPU input. All recorded extents
+        # above remain mandatory and the RTL initialized-read guard is unchanged.
+        selected=[]
+        for region in capture.ranges:
+            lo,hi=max(base,region.address),min(base+length,region.address+region.length)
+            if lo>=hi:
+                continue
+            if immutable and region.flags & capture.abi['WRITE']:
+                raise SnapshotError('Write aliases immutable catalog allocation: '+name)
+            if region.flags & capture.abi['READ']:
+                selected.append((lo,hi))
+        if not selected:
+            continue
+        reference=None
+        if expected is not None:
+            entry=next((f for f in asset_files if f['bytes']==length and f['sha256']==expected),None)
+            if entry is None:
+                # A full capture can still authenticate the allocation by hash.
+                # Partial hashes cannot prove omitted bytes without bound input.
+                require(name,base,length,expected)
+                continue
+            reference=Path(entry['path']).read_bytes()
+            if len(reference)!=length or hashlib.sha256(reference).hexdigest()!=expected:
+                raise SnapshotError('Catalog asset file identity mismatch: '+name)
+        for lo,hi in sorted(set(selected)):
+            role=name+'+0x'+format(lo-base,'x')
+            require(role,lo,hi-lo)
+            if reference is not None and capture.read(lo,hi-lo)!=reference[lo-base:hi-base]:
+                raise SnapshotError('Immutable catalog mismatch: '+role)
     return reads
 
 
@@ -206,7 +240,9 @@ def preflight(capture, build_path, receipt_path=None, *, simulation_source=None)
     if header.get('capture_version') == 2 and guards:
         raise SnapshotError('Recorded allocations use explicit ranges, not a fixed allocation span')
     required_span = layout.allocation_bytes if guards else layout.plane_bytes
-    reads = input_extents(capture, required_span, build["resources"])
+    asset_files=[{**entry,'path':str((Path(build_path).resolve().parent/entry['path']).resolve())}
+                 for entry in build['files']]
+    reads = input_extents(capture, required_span, build["resources"],asset_files=asset_files)
     return dict(schema="digitaldesign.gpu-replay-preflight", version=1,
                 layout=capture_description(header),
                 captured_plane_bytes=required_span if header.get('has_target', True) else 0, allocation_guards_required=guards,
