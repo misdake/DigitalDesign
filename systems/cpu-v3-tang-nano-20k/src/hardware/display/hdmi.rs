@@ -82,12 +82,7 @@ fn verilog_source_for(config: &DisplayConfig) -> Option<String> {
     Some(
         include_str!("display_hdmi.v")
             .replace("__TMDS_PRECODE_BITS__", &TMDS_PRECODE_BITS.to_string())
-            .replace(
-                "__DISPLAY_CONFIG__",
-                &config
-                    .verilog_localparams()
-                    .replace("TILE_ROW_STRIDE=FB_WIDTH*16", "TILE_ROW_STRIDE=13'd256"),
-            )
+            .replace("__DISPLAY_CONFIG__", &config.verilog_localparams())
             .replace(
                 "__LINE_BUFFER__",
                 &DisplayLineBuffer::verilog_identity().module_name(),
@@ -98,12 +93,7 @@ fn verilog_source_for(config: &DisplayConfig) -> Option<String> {
 fn verilog_testbench_for(config: &DisplayConfig) -> Option<String> {
     Some(
         include_str!("display_hdmi_tb.v")
-            .replace(
-                "__DISPLAY_CONFIG__",
-                &config
-                    .verilog_localparams()
-                    .replace("TILE_ROW_STRIDE=FB_WIDTH*16", "TILE_ROW_STRIDE=13'd256"),
-            )
+            .replace("__DISPLAY_CONFIG__", &config.verilog_localparams())
             .replace(
                 "__PIXEL_HALF_PERIOD__",
                 &(500_000_000.0 / config.pixel_clock_hz as f64).to_string(),
@@ -116,8 +106,12 @@ fn verilog_testbench_for(config: &DisplayConfig) -> Option<String> {
 mod tests {
     #[test]
     fn production_display_uses_column_storage() {
+        let params = super::ACTIVE_DISPLAY_CONFIG.verilog_localparams();
+        assert!(params.contains("localparam [12:0] TILE_ROW_STRIDE=13'd256;"));
         let source = super::verilog_source_for(&super::ACTIVE_DISPLAY_CONFIG).unwrap();
-        assert!(source.contains("TILE_ROW_STRIDE=13'd256"));
+        let testbench = super::verilog_testbench_for(&super::ACTIVE_DISPLAY_CONFIG).unwrap();
+        assert!(source.contains(&params));
+        assert!(testbench.contains(&params));
         assert!(source.contains("{5'b0,burst_index,4'b0,local_y[3:1],fill_second}"));
     }
     use super::*;
