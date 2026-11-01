@@ -11,7 +11,7 @@ static DESIRED:Buf<u16,48>=Buf::new([0;48]);static COPY:Buf<u16,256>=Buf::new([0
 fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
 fn main(){gpu_record_init();check(gpu_arena_init(8192));check(gpu_record_configure(0,0x9800,8,0x9a00,16));
  check(gpu_record_configure(1,0xfc00,4,0xfe00,16));
- let mut native=GPU_NATIVE_SCRATCH.as_array();native[1u16]=199;native[3u16]=16384;
+ let mut native=gpu_native_scratch();native[1u16]=199;native[3u16]=16384;
  native[5u16]=57344;native[6u16]=60621;native[7u16]=8192;native[8u16]=128;native[9u16]=128;native[10u16]=33;
  native[36u16]=9;native[65u16]=1;native[75u16]=1;native[85u16]=1;native[89u16]=1;native[97u16]=1;
  native[105u16]=1;native[107u16]=1;native[108u16]=65535;native[109u16]=65535;

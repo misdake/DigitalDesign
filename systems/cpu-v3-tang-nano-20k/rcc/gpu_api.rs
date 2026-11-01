@@ -865,7 +865,7 @@ impl Pass {
         ]);
         gpu_api_checked(gpu_record_capture_room(self.slot, facts.as_array(), 2), 11);
         let native = unsafe {
-            GPU_NATIVE_SCRATCH
+            gpu_native_scratch()
                 .as_ptr()
                 .add(GPU_SCRATCH_UI as i16)
                 .as_u16_array()
@@ -905,7 +905,8 @@ fn gpu_api_draw(
         0,
     ]);
     let mut count: u16 = 1;
-    let mut view = GPU_NATIVE_SCRATCH.as_array();
+    let native = gpu_native_scratch();
+    let mut view = native;
     if textured {
         view = gpu_arena_data(view_slot);
         facts[4u16] = view[GPU_VIEW_BASE];
@@ -923,11 +924,11 @@ fn gpu_api_draw(
             gpu_arena_data(material_slot),
             view,
             textured,
-            GPU_NATIVE_SCRATCH.as_array(),
+            native,
         ),
         5,
     );
-    gpu_api_checked(gpu_mesh_draw(slot, mesh, GPU_NATIVE_SCRATCH.as_array()), 5);
+    gpu_api_checked(gpu_mesh_draw(slot, mesh, native), 5);
     gpu_record_capture_commit(slot, facts.as_array(), count);
 }
 

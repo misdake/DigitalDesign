@@ -15,7 +15,7 @@ fn main(){gpu_record_init();let saved=read_dseg_page(3);
  check(!gpu_mesh_subset(SUB.as_array(),MESH.as_array(),8,2));
  let mut i:u16=0;while i<9{ROW[i*2]=0xa010+i*4;ROW[i*2+1]=i%3+1;i+=1;}
  check(gpu_window_write_words(0xa0ff,63,ROW.as_array(),18));
- let mut native=GPU_NATIVE_SCRATCH.as_array();native[1u16]=199;native[3u16]=16384;
+ let mut native=gpu_native_scratch();native[1u16]=199;native[3u16]=16384;
  native[5u16]=57344;native[6u16]=60621;native[7u16]=8192;native[8u16]=128;native[9u16]=128;native[10u16]=33;
  native[36u16]=9;native[65u16]=1;native[75u16]=1;native[85u16]=1;native[89u16]=1;native[97u16]=1;
  native[105u16]=1;native[107u16]=1;native[108u16]=65535;native[109u16]=65535;

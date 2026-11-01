@@ -49,12 +49,12 @@ fn combo_draw(slot: u16, model: u16) {
             MATERIAL.as_array(),
             VIEW.as_array(),
             true,
-            GPU_NATIVE_SCRATCH.as_array(),
+            gpu_native_scratch(),
         ),
         92,
     );
     check(
-        gpu_mesh_draw(slot, COMBO_MESH.as_array(), GPU_NATIVE_SCRATCH.as_array()),
+        gpu_mesh_draw(slot, COMBO_MESH.as_array(), gpu_native_scratch()),
         93,
     );
 }

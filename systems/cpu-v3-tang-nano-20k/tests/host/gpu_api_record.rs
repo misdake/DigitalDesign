@@ -11,6 +11,11 @@ static STEP:u16=0;
 static CAPTURE_RESERVATION:Buf<u16,656>=Buf::new([0;656]);
 fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
 fn main(){
+ let mut scratch=gpu_native_scratch();let raw=GPU_NATIVE_SCRATCH.as_ptr().addr();let aligned=scratch.as_ptr().addr();
+ check(aligned&15==0&&aligned>=raw&&aligned+256<=raw+271);
+ scratch[0u16]=0xa11e;scratch[255u16]=0xb11e;
+ check(gpu_native_scratch()[0u16]==0xa11e&&gpu_native_scratch()[255u16]==0xb11e);
+ check(GPU_CB_CAPTURE_FACTS[0u16]==0&&GPU_CB_CAPTURE_FACTS[511u16]==0);
  let saved=read_dseg_page(3);gpu_record_init();check(gpu_arena_init(8192));
  check(!gpu_record_configure(2,0x9800,1,0x9a00,1));
  check(!gpu_record_configure(0,0x9800,0,0x9a00,1));

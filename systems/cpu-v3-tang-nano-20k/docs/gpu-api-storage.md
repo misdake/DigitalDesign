@@ -129,7 +129,14 @@ the publication boundary for CPU stores.
 ## Command records
 
 There are two independent 208-word records and one sequential 256-word native
-scratch. Each record has control words 0..31, Camera 32..63, State 64..79,
+scratch. Its private backing reserves 271 words; `gpu_native_scratch` rounds the
+backing address upward to a 16-word boundary. The full logical span remains
+inside that backing for any static layout, using at most 15 words of slack.
+Global, Render, Target, Instance, directory and code staging retain their existing
+offsets. Their complete aligned lines can use the existing owned-transfer path;
+partial spans still use scalar transfers. This alignment does not publish a CB
+or permit mutation of GPU-owned storage. Each record has control words 0..31,
+Camera 32..63, State 64..79,
 last Global 80..111, last Render 112..127, last UI 128..143 and last Instance
 144..207. The last values are CPU snapshots, not persistent object references.
 The scratch is not a binding cache. Prepared scene helpers write the canonical

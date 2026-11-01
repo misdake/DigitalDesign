@@ -54,7 +54,7 @@ fn gpu_packet_begin(slot: u16, color: u16, depth: u16, clear_mask: u16, cv: u16,
     if target == 65535 || !gpu_record_command_room(c, words, 6) {
         return false;
     }
-    let mut native = GPU_NATIVE_SCRATCH.as_array();
+    let mut native = gpu_native_scratch();
     let mut i: u16 = GPU_SCRATCH_TARGET;
     while i < GPU_SCRATCH_INSTANCE {
         native[i] = 0;
@@ -81,7 +81,7 @@ fn gpu_packet_begin(slot: u16, color: u16, depth: u16, clear_mask: u16, cv: u16,
         return false;
     }
     let payload = unsafe {
-        GPU_NATIVE_SCRATCH
+        gpu_native_scratch()
             .as_ptr()
             .add(GPU_SCRATCH_TARGET as i16)
             .as_u16_array()

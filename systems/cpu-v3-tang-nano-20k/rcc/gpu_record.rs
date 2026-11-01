@@ -6,9 +6,14 @@ mod gpu_storage;
 use gpu_storage::*;
 
 static GPU_CB_RECORDS: Buf<u16, 416> = Buf::new([0; 416]);
-static GPU_NATIVE_SCRATCH: Buf<u16, 256> = Buf::new([0; 256]);
+// The logical 256-word span stays line-aligned independently of static layout.
+static GPU_NATIVE_SCRATCH: Buf<u16, 271> = Buf::new([0; 271]);
 // Allocation facts survive descriptor Drop and execution until this CB resets.
 static GPU_CB_CAPTURE_FACTS: Buf<u16, 512> = Buf::new([0; 512]);
+
+fn gpu_native_scratch() -> Array<u16> {
+    unsafe { Ptr::from_addr((GPU_NATIVE_SCRATCH.as_ptr().addr() + 15) & 65520).as_u16_array() }
+}
 
 const GPU_RECORD_PHASE: u16 = 0;
 const GPU_RECORD_COMMAND_BASE: u16 = 1;

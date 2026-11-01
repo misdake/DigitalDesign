@@ -14,7 +14,7 @@ fn main(){gpu_record_init();check(gpu_record_configure(0,0x9800,4,0x9a00,16));
  check(gpu_ui_packet_draw(0,DESC.as_array(),10,4,5,1));check(c[GPU_RECORD_COMMAND_USED]==24);
  let invalid=unsafe{Ptr::from_addr(0xc000).as_u16_array()};check(gpu_ui_packet_draw(0,invalid,50,15,0,0));
  check(!gpu_ui_packet_draw(0,DESC.as_array(),49,14,2,1));check(c[GPU_RECORD_COMMAND_USED]==24);
- let mut native=GPU_NATIVE_SCRATCH.as_array();native[1u16]=199;native[3u16]=16384;
+ let mut native=gpu_native_scratch();native[1u16]=199;native[3u16]=16384;
  native[5u16]=57344;native[6u16]=60621;native[7u16]=8192;native[8u16]=128;native[9u16]=128;native[10u16]=33;
  native[36u16]=9;native[65u16]=1;native[75u16]=1;native[85u16]=1;native[89u16]=1;native[97u16]=1;
  native[105u16]=1;native[107u16]=1;native[108u16]=65535;native[109u16]=65535;
