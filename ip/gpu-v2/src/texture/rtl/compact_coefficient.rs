@@ -9,6 +9,9 @@
 //! without separate subtract pipeline registers. Same CE and edges as the emu.
 //! GPU_V2_GOWIN_DSP binds native MULT9X9 output registers; two explicit FF rows hold ready weights.
 //! Portable simulation retains the same two weight rows and synchronous metadata ports.
+//! Public verilog/source and Allocation describe that checked weight-row profile.
+//! The private command owner shares its arithmetic and metadata pipeline, but
+//! publishes eight mask bits and writes exact weights directly to the cache bank.
 
 /// Verilog module name emitted by [`verilog`].
 pub const MODULE: &str = "gpu_v2_texture_coefficient";
@@ -107,10 +110,29 @@ pub fn initiation_interval() -> usize {
 
 /// The complete synthesizable module. Fixed widths; no parameters.
 pub fn verilog() -> &'static str {
-    r#"module gpu_v2_texture_coefficient(
+    static GENERIC: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| emit(false) + MULTIPLIER_SOURCE);
+    GENERIC.as_str()
+}
+
+/// Complete private command producer; the composition already owns the shared mul9 leaf.
+pub(crate) const COMMAND_MODULE: &str = "gpu_v2_runtime_coefficient_directweight";
+
+pub(crate) fn command_direct_weight() -> String {
+    emit(true)
+}
+
+// Both owners use the same fixed arithmetic and metadata pipeline. Only their
+// boundary storage, public clock pins and diagnostic policy differ.
+fn emit(command: bool) -> String {
+    [
+        if command { r#"module gpu_v2_runtime_coefficient_directweight("# } else { r#"module gpu_v2_texture_coefficient("# },
+        r#"
   input  wire         clk,
   input  wire         reset,
-  input  wire         ce,
+"#,
+        if command { r#"  input wire proposal_ce,commit_allow,"# } else { r#"  input  wire         ce,"# },
+        r#"
   input  wire         in_valid,
   input  wire [161:0] in_payload,
   input  wire [7:0]   work_available,
@@ -121,8 +143,13 @@ pub fn verilog() -> &'static str {
   output wire [71:0]  out_weights,
   output wire [35:0]  out_meta,
   output wire [1:0]   work_reserved,
-  output reg          fault
+"#,
+        if command { r#"  output reg fault,output wire proposal_ready,preflight_bad,
+  output wire direct_weight_write,output wire[6:0] direct_weight_address,output wire[35:0] direct_weight_value
 );
+ wire ce=proposal_ce&&commit_allow;"# } else { r#"  output reg          fault
+);"# },
+        r#"
 
   // Explicit scalar input fields.
   wire        nearest = in_payload[0];
@@ -162,7 +189,11 @@ pub fn verilog() -> &'static str {
   reg [36:0] input_stage;
   reg [16:0] horizontal_delay;
   reg [17:0] row_totals;
-  reg [35:0] fine_corners;
+"#,
+        if command { r#"  wire [35:0] fine_corners=0;
+  reg [3:0] fine_mask;
+  reg [7:0] weight_key0,weight_key1;"# } else { r#"  reg [35:0] fine_corners;"# },
+        r#"
   wire [16:0] product [0:2];
   reg ph;
   reg [4:0] valid;
@@ -192,7 +223,11 @@ pub fn verilog() -> &'static str {
   wire [1:0] cost_in={1'b0,(p0!=0)}+{1'b0,(p1!=0)};
   wire [1:0] cost=in_valid?cost_in:2'd0;
   wire phase_even=~ph;
-  assign in_ready=advance && cohorts<3 && phase_even && work_available>={6'b0,cost};
+"#,
+        if command { r#"  assign proposal_ready=!reset&&!fault&&queued<2&&cohorts<3&&phase_even&&work_available>={6'b0,cost};
+ assign preflight_bad=1'b0;
+ assign in_ready=advance && cohorts<3 && phase_even && work_available>={6'b0,cost};"# } else { r#"  assign in_ready=advance && cohorts<3 && phase_even && work_available>={6'b0,cost};"# },
+        r#"
   wire accepted=in_valid && in_ready;
   wire do_consume=ce && !fault && out_ready && queued!=0;
   wire do_capture=advance && valid[4];
@@ -204,12 +239,39 @@ pub fn verilog() -> &'static str {
   // No extra public credit and no copied metadata in the ready-weight bank.
   wire ready_we=!reset && advance && v4 && !(accepted && (bad_input || work_available>16));
   wire [71:0] ready_value;
-  reg [71:0] ready_ff0,ready_ff1;
-  always @(posedge clk) begin
-    if(ready_we && !rwr) ready_ff0<=out_w;
-    if(ready_we && rwr) ready_ff1<=out_w;
+"#,
+        if command { r#"  reg [7:0] ready_ff0,ready_ff1;
+  wire [3:0] current_mask;
+  genvar weight_lane;
+  generate for(weight_lane=0;weight_lane<4;weight_lane=weight_lane+1)begin:nonzero_weights
+    assign current_mask[weight_lane]=|returning_corners[weight_lane*9+:9];
+    assign ready_value[weight_lane*9+:9]={8'b0,(rrd?ready_ff1[weight_lane]:ready_ff0[weight_lane])};
+    assign ready_value[36+weight_lane*9+:9]={8'b0,(rrd?ready_ff1[4+weight_lane]:ready_ff0[4+weight_lane])};
+  end endgenerate
+  wire[7:0] mask_out={current_mask,fine_mask};
+  assign direct_weight_write=!reset && advance && (v3 || (v4 && !weight_key1[7])) && !(accepted && (bad_input || work_available>16));
+  assign direct_weight_address={weight_key1[5:0],weight_key1[6]^(v4&&!weight_key1[7])};
+  assign direct_weight_value=returning_corners;
+  always@(posedge clk)begin
+    if(!reset && advance)begin
+      if(accepted)weight_key0<={(lv0==0),lv0[0],key_in[5:0]};
+      if(v2)weight_key1<=weight_key0;
+    end
   end
-  assign ready_value=rrd ? ready_ff1 : ready_ff0;
+
+"# } else { r#"  reg [71:0] ready_ff0,ready_ff1;
+"# },
+        r#"  always @(posedge clk) begin
+    if(ready_we && !rwr) "#,
+        if command { r#"ready_ff0<=mask_out;"# } else { r#"ready_ff0<=out_w;"# },
+        r#"
+    if(ready_we && rwr) "#,
+        if command { r#"ready_ff1<=mask_out;"# } else { r#"ready_ff1<=out_w;"# },
+        r#"
+  end
+"#,
+        if command { r#""# } else { r#"  assign ready_value=rrd ? ready_ff1 : ready_ff0;"# },
+        r#"
   wire input_fault=accepted && (bad_input || work_available>16);
   wire meta_we=!reset && !fault && accepted && !input_fault;
   // A pop from the sole ready row has no published successor to read.
@@ -245,11 +307,21 @@ pub fn verilog() -> &'static str {
   assign out_weights=ready_value; assign out_meta=meta_do[35:0];
   always @(posedge clk) begin
     if(reset) begin
-      input_stage<=0; horizontal_delay<=0; row_totals<=0; fine_corners<=0;
+      input_stage<=0; horizontal_delay<=0; "#,
+        if command { r#"row_totals<=0; fine_mask<=0;"# } else { r#"row_totals<=0; fine_corners<=0;"# },
+        r#"
       ph<=0; valid<=0; mrd<=0; cwr<=0; cohorts<=0;
-      rrd<=0; rwr<=0; queued<=0; fault<=0;
+      rrd<=0; rwr<=0; queued<=0; "#,
+        if command { r#"begin end "# } else { r#"fault<=0;"# },
+        r#"
     end else if(!fault) begin
-      if(accepted && (bad_input || work_available>16)) fault<=1;
+      if(accepted && (bad_input || work_available>16)) "#,
+        if command { r#"begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: fault");
+`endif
+ end "# } else { r#"fault<=1;"# },
+        r#"
       else begin
         queued<=queued+do_capture-do_consume;
         cohorts<=cohorts+accepted-do_capture;
@@ -264,15 +336,33 @@ pub fn verilog() -> &'static str {
           // Read fine row totals at age3, then replace them with coarse.
           // Age4 ready write reads coarse before the next cohort's fine write.
           if(v2 || v3) row_totals<={top_difference,product[0][16:8]};
-          if(v3) fine_corners<=returning_corners;
+          "#,
+        if command { r#"if(v3) fine_mask<=current_mask;"# } else { r#"if(v3) fine_corners<=returning_corners;"# },
+        r#"
           if(do_capture) rwr<=~rwr;
           valid<={valid[3:0],accepted}; ph<=~ph;
         end
       end
     end
   end
-endmodule
+"#,
+        if command { r#"
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&(meta_we&&meta_re&&cwr==meta_ra))$fatal(1,"GPU contract: coefficient metadata cross-port collision");
+`endif
 
+ always @(posedge clk)fault<=0;
+
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((1'b1)&&(!reset&&proposal_ce&&!fault&&in_valid&&proposal_ready&&(bad_input||work_available>16))))$fatal(1,"GPU contract: preflight_bad");
+`endif
+"# } else { r#""# },
+        r#"endmodule
+"#
+    ].concat()
+}
+
+const MULTIPLIER_SOURCE: &str = r#"
 module gpu_v2_texture_coefficient_mul9(input wire clk,ce,input wire [8:0] a,
  input wire [7:0] b,output wire [16:0] product);
 `ifdef GPU_V2_GOWIN_DSP
@@ -287,8 +377,8 @@ module gpu_v2_texture_coefficient_mul9(input wire clk,ce,input wire [8:0] a,
  assign product=q;
 `endif
 endmodule
-"#
-}
+"#;
+
 pub fn source() -> &'static str {
     verilog()
 }

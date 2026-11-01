@@ -146,15 +146,7 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             register(s, "stopped", true)?;
             check(s, "preflight_bad", "1'b0", "!abort", false)?;
         }
-        "gpu_v2_runtime_coefficient_directweight" => {
-            monitor(
-                s,
-                "meta_we&&meta_re&&cwr==meta_ra",
-                "coefficient metadata cross-port collision",
-            );
-            register(s, "fault", false)?;
-            check(s, "preflight_bad", "1'b0", "1'b1", false)?;
-        }
+
         "gpu_v2_texture_runtime_color" => {
             register(s, "terminal", false)?;
             check(s, "preflight_fault", "1'b0", "1'b1", false)?;

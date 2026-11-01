@@ -168,3 +168,53 @@ fn compact_checked_domain_preserves_independent_generic_acceptance() {
     };
     assert_eq!(compact::expand_result(compact::pack_result(o), 3), o);
 }
+
+#[test]
+fn command_direct_weights_use_the_owned_producer_and_original_bank_binding() {
+    use gpu_v2::{
+        framebuffer::ports::MaterializedSurface,
+        system::{pixel::quad_ingress::rtl::Backend, vliw_command},
+        texture::rtl::compact_coefficient,
+    };
+    let generic = compact_coefficient::verilog();
+    assert!(generic.contains("reg [71:0] ready_ff0,ready_ff1;"));
+    assert!(!generic.contains("direct_weight_write"));
+    let source = vliw_command::verilog(
+        MaterializedSurface {
+            color_base_bytes: 0x100000,
+            depth_base_bytes: 0x140000,
+            width: 400,
+            height: 240,
+        },
+        Backend::Portable,
+    )
+    .unwrap();
+    let producer = source
+        .split_once("module gpu_v2_runtime_coefficient_directweight(")
+        .unwrap()
+        .1
+        .split_once("endmodule")
+        .unwrap()
+        .0;
+    assert!(producer.contains("reg [7:0] ready_ff0,ready_ff1;"));
+    assert!(producer.contains("assign direct_weight_value=returning_corners;"));
+    assert!(producer.contains("coefficient metadata cross-port collision"));
+    assert!(producer.contains("always @(posedge clk)fault<=0;"));
+    assert!(producer.contains("assign preflight_bad=1'b0;"));
+    let wrapper = source
+        .split_once("module gpu_v2_texture_runtime_backend_unique(")
+        .unwrap()
+        .1
+        .split_once("endmodule")
+        .unwrap()
+        .0;
+    for pin in ["write", "address", "value"] {
+        assert_eq!(
+            wrapper
+                .matches(&format!(".direct_weight_{pin}(weight_{pin})"))
+                .count(),
+            1
+        );
+    }
+    assert!(!wrapper.contains("assign weight_write="));
+}

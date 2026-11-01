@@ -222,7 +222,6 @@ actual portable exports for the corresponding legal traces. This is bounded
 producer/consumer evidence, not a frame,
 physical-memory timing or board qualification.
 
-
 `maintenance_profiles.py --exports <eight-factory-exports> --baseline
 <frozen-accepted-exports> --output <fresh-directory> --diagnostics` checks complete
 ordered preprocessed tokens for command/full/sdram/backend, native/portable and
@@ -255,3 +254,14 @@ has a100000-cycle watchdog and each compile/run a60-second wall bound. This
 component sweep complements the real MC/pin pixel gold; it is not a frame or
 physical-memory qualification. Legacy generic-only fields are checked after
 actual preprocessing, because inactive alternatives remain in native sources.
+
+`command_direct_weight.py --rtl <actual-command.v> --baseline <accepted-command.v>
+--output <fresh-directory>` checks the actual coefficient producer through the
+unchanged cache weight-bank write port and native/portable storage. One compiled
+fixture per memory/monitor mode replays bounded POT/RTT cohorts with independent
+integer values, seven-bit addresses, E0/E2/E3/E4/E5 events and exact write counts.
+It covers zero-parent writes, masks-only publication, legal key reuse, metadata
+wrap, CE/commit/ready stalls and old-state credit/key overlap. Real DUT key,
+plane, value and extra bank-writer mutations must fail; forced metadata collision
+is diagnostic-only and is checked with monitors enabled and removed. The cache
+request/read/retirement lifecycle and full frames are outside this fixture.

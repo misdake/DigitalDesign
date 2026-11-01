@@ -124,7 +124,7 @@ fn sampling_physical_ports(source: &mut String) -> Result<(), String> {
     })
 }
 
-/// Select the six command owners as complete modules. No generic payload or
+/// Select the seven command owners as complete modules. No generic payload or
 /// diagnostic rewrite participates in their implementation.
 pub fn packet_group(mut source: String) -> Result<String, String> {
     for (name, rtl) in [
@@ -152,5 +152,16 @@ pub fn packet_group(mut source: String) -> Result<String, String> {
             Ok(())
         })?;
     }
+    edit(
+        &mut source,
+        crate::texture::rtl::compact_coefficient::COMMAND_MODULE,
+        |s| {
+            *s = crate::texture::rtl::compact_coefficient::command_direct_weight()
+                .trim_end()
+                .to_owned();
+            Ok(())
+        },
+    )?;
+
     Ok(source)
 }

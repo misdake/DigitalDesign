@@ -735,8 +735,11 @@ result state and queue storage hold when their effective CE is disabled. The
 command coordinate, DirectLOD and queue own passive diagnostics at those same
 edges; outer exporters select complete leaves without numerical-body patches.
 
-The command factory selects its Membership, Work16, Packet and two producer
-wrappers directly from `system/texture_membership16x8.v`, `texture_work16.v`,
+The command coefficient owner is emitted by
+`texture/rtl/compact_coefficient.rs` with the same arithmetic and metadata pipeline
+as the checked generic coefficient. The final command selection installs this
+complete direct-weight producer together with Membership, Work16, Packet and
+the two producer wrappers directly from `system/texture_membership16x8.v`, `texture_work16.v`,
 `texture_packet16x8.v`, `texture_packet_backend.v` and `texture_runtime_backend.v`.
 The selected Group owner is `system/texture_group_q.v`. Generic sampler factories
 retain their independent checked sources; command selection does not rewrite
@@ -753,7 +756,35 @@ tiles; the fixed400x240 view uses16 macro rows per column. Its descriptor and
 mode remain stable through drain. Packet monitors the original alignment,
 active-tap and RTT visible-column/half-row bounds on their original edges.
 
-These six command owners implement passive diagnostic policy in their source.
+The direct-weight write port is the only producer of the existing 128x36 weight
+bank. The runtime wrapper and sampling parent pass its write, address and value
+without another write enable or payload copy. Starting at accepted edge E0, the
+advancing-edge calendar is:
+
+| Edge | Effect |
+| --- | --- |
+| E0 | Capture input and key0, including original mip parity/minimum-level flag |
+| E2 | Transfer the old key0 to key1 |
+| E3 | Write the fine `returning_corners` word and capture its nonzero mask |
+| E4 | Write coarse unless the original fine level is zero; capture both masks |
+| E5 | Publish the ready row and synchronous metadata head |
+
+The seven-bit bank address is `{key1[5:0],key1[6]^(v4&&!key1[7])}`. A
+same-edge next admission or key transfer cannot replace the old key1 for coarse
+writeback. A zero parent or zero mask does not suppress an otherwise scheduled
+write; bank-write count is distinct from the number of reserved Work entries.
+The two ready rows retain eight mask bits, exposed as zero/one values in the
+original nine-bit coefficient lanes. The exact 36-bit weight words stay in the
+sole bank. Disabled advance holds arithmetic and key ages; a full ready queue
+may consume under CE but cannot use that same edge as new arithmetic credit.
+Metadata collision monitors observe the original read/write edge.
+
+Non-command II4 factories keep the checked direct-weight, weight-order and
+unique-weight adapters. Command construction still passes through that scaffold
+before replacing the final complete owners; those intermediate build dependencies
+are distinct from the final producer and have not been eliminated.
+
+These seven command owners implement passive diagnostic policy in their source.
 Leaf fault registers clear on every wall-clock edge, including CE0; wrapper
 terminal/stopped registers retain only explicit abort until reset. Readiness,
 commit and backpressure calendars are unchanged when monitors are removed.
