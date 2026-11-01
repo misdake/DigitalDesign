@@ -472,7 +472,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True, help="Independent directory below this worktree's target")
     parser.add_argument("--gates", type=Path, required=True, help="Passed normalisation/simulation receipt")
     parser.add_argument("--import-result", type=Path, action="append", default=[])
-    parser.add_argument("--workers", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--workers", type=int, choices=(1, 2, 4), default=2)
     parser.add_argument("--max-candidates", type=int, default=16)
     parser.add_argument("--minutes", type=float, default=90)
     parser.add_argument("--stagnation", type=int, default=8)
@@ -634,6 +634,7 @@ def main():
     print(json.dumps({"stop_reason": state["stop_reason"], "completed": len(state["results"]),
                       "best": state["best"]["score"] if state["best"] else None,
                       "reproduced": state.get("reproduced", False)}), flush=True)
+    lock.close()
 
 
 if __name__ == "__main__":

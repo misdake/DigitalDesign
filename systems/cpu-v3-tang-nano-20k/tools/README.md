@@ -40,6 +40,19 @@
     --max-candidates 16 --minutes 90 --stagnation 8 --seed 20261029
   ```
 
+  `--workers` accepts 1, 2 or 4; its default remains 2. Four workers permit
+  at most four candidate build jobs at once, so a16-candidate round can use four
+  batches instead of eight when runtimes and the wall budget permit. This is a
+  scheduler limit, not a statement about available RAM, CPU threads or Gowin
+  license capacity. Each Gowin process may itself use multiple threads. Confirm
+  the complete-system baseline's synthesis/PnR peak, host headroom, tool/license
+  availability and other owners' physical workloads before selecting four.
+  Resource or licensing failures must be reported; do not silently change worker
+  count, reset the deadline or start another round. Worker count is part of the
+  immutable checkpoint context. The round's candidate limit still applies to
+  all slots together, and the independent best-candidate reproduction runs only
+  after candidate jobs drain, within the same final20-minute reserve.
+
   The four initial orders are original, GPU first, GPU last and reversed. A pool
   of at most six routed, structurally valid parents retains the current best,
   area/margin frontier extremes, a near-feasible timing case and permutation
@@ -48,7 +61,7 @@
   after stagnation, bounded three-edit perturbations escape local repetition.
   Timeout/unrouted cases have no invented slack and do not become timing parents.
   Completion-first scheduling
-  registers each finished job and immediately refills its slot, with at most two
+  registers each finished job and immediately refills its slot, with at most the explicitly selected one, two or four
   active jobs. Each proposal, random state and actual completion order is saved.
   A fixed seed reproduces proposals for a given recorded history; asynchronous
   runtimes can change completion order in a fresh run. Invalid candidates never enter
