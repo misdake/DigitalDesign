@@ -97,7 +97,7 @@ pub fn verilog_selected(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    render_globals(slots, surface, backend, false)
+    render_globals(slots, surface, backend, false, FinalPolicy::Checked)
 }
 
 pub(crate) fn verilog_selected_command(
@@ -105,7 +105,24 @@ pub(crate) fn verilog_selected_command(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    render_globals(slots, surface, backend, true)
+    render_globals(slots, surface, backend, true, FinalPolicy::Command)
+}
+
+// Diagnostic ownership is independent of the live-global and port profiles.
+#[derive(Clone, Copy)]
+enum FinalPolicy {
+    Checked,
+    Command,
+}
+
+fn final_source(policy: FinalPolicy) -> String {
+    include_str!("vliw_backend_final.v").replace(
+        "// @FINAL_POLICY@",
+        match policy {
+            FinalPolicy::Checked => "",
+            FinalPolicy::Command => "`define GPU_V2_COMMAND_FINAL",
+        },
+    )
 }
 
 fn render_globals(
@@ -113,6 +130,7 @@ fn render_globals(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
     live_globals: bool,
+    final_policy: FinalPolicy,
 ) -> Result<String, String> {
     let native = matches!(backend, quad_ingress::rtl::Backend::Native);
     if surface.width != 400 || surface.height != 240 {
@@ -234,7 +252,7 @@ fn render_globals(
     // Replace the complete selected leaf, not just its ready expression. The
     // original shared Final reference remains unchanged for independent replay.
     let (final_a, final_b) = span(&source, "gpu_v2_final_ordered_two_cycle")?;
-    source.replace_range(final_a..final_b, include_str!("vliw_backend_final.v"));
+    source.replace_range(final_a..final_b, &final_source(final_policy));
     source = framebuffer_tdp::lower(source, surface, native)?;
     patch(
         &mut source,

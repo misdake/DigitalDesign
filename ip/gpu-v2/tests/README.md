@@ -325,3 +325,21 @@ wrap, CE/commit/ready stalls and old-state credit/key overlap. Real DUT key,
 plane, value and extra bank-writer mutations must fail; forced metadata collision
 is diagnostic-only and is checked with monitors enabled and removed. The cache
 request/read/retirement lifecycle and full frames are outside this fixture.
+
+`final_policy.py --exports <eight-factory-exports> --output <fresh-directory>
+--negatives` checks the actual selected Final, mul9 and shared Final/ROP bank.
+One compiled fixture per checked/command, native/fabric and monitor mode replays
+96 inputs with independent integer RGB gold, old two-slot credits, result order,
+CE/commit stalls, simultaneous old-Q replacement and CE0 abort/sticky reset.
+Illegal H and credit cases preserve checked rejection or command monitor edges;
+monitor-off command behavior is compared with the frozen baseline. Four real
+value, ACK-credit, compute-clock and abort-clock mutants must fail with production
+monitors removed. Benches have a3000-cycle limit; each process has a60-second bound.
+
+Add `--baseline <accepted-exports> --baseline-results <accepted-receipt.json>`
+for exact stimulus/fixture and per-edge numeric/diagnostic comparisons, private
+profile leakage checks and eight-profile simulation/synthesis preprocessing.
+Public and command-port-only checked streams must match completely. The command
+source has only two explicitly matched legacy no-op removals; every other token
+must match, without generic statement, alias or declaration filtering. This is
+local Final/shared-DSP evidence, not pool, TDP, frame or board qualification.

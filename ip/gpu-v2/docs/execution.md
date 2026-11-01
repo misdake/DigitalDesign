@@ -681,6 +681,16 @@ A nonempty queue supplies its old head; a direct arithmetic result can bypass
 only an empty queue. Shared multiplier phases and result reservations remain
 part of the schedule.
 
+The selected Final source owns its diagnostic policy. Public selected factories
+retain checked preflight rejection and sticky failure. The private command entry
+selects a complete Final owner with passive, simulation-only checks on the same
+proposal edges; those checks do not gate advance. Explicit abort remains a real
+sticky stop on wall-clock edges, including CE0, until reset. This private choice
+is independent of live globals and command-port shape. Its local source profile
+is closed before the next module, so later generic factories remain checked.
+The arithmetic, two reserved result slots, source-Q loans and shared DSP calendar
+are identical in the checked and command routes.
+
 ## Texture cache
 
 Sampling reserves public identity on the first covered sample lane, before an early hit

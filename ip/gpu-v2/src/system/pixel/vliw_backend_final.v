@@ -1,5 +1,7 @@
 // Two reserved Final result slots. Arithmetic/rounding and DSP sharing unchanged.
 module gpu_v2_final_ordered_two_cycle(
+`undef GPU_V2_COMMAND_FINAL
+// @FINAL_POLICY@
  input wire shade_phase,input wire clk,reset,ce,proposal_ce,commit_allow,abort,in_valid,
  input wire shared_rop_offer,input wire[50:0]shared_spec_product,output wire shared_spec_ce,output wire[8:0]shared_spec_a,output wire[23:0]shared_spec_b,
  input wire [23:0] in_tint,in_tex,in_spec,
@@ -25,7 +27,13 @@ module gpu_v2_final_ordered_two_cycle(
  assign fault=stopped||abort;
  assign proposal_ready=!shade_phase&&!reset&&!fault&&old_slot_free;
  assign in_ready=running&&proposal_ready;
+`ifdef GPU_V2_COMMAND_FINAL
+ // The command parent guarantees legal offers. Observe the original detector
+ // on its original edge without feeding it back into advance or readiness.
+ assign preflight_bad=1'b0;
+`else
  assign preflight_bad=proposal_ce&&!reset&&!fault&&(credit_bad||(proposal_ready&&in_valid&&(in_h>9'd256)));
+`endif
  assign advance=running&&commit_allow&&!preflight_bad;
  assign in_accept=advance&&in_valid&&proposal_ready;
  assign out_valid=!reset&&!fault&&(q_count!=0||base_valid);
@@ -71,9 +79,15 @@ module gpu_v2_final_ordered_two_cycle(
   end
  end endgenerate
  always @(posedge clk)begin
-  if(reset)begin stopped<=0;arithmetic_live<=0;q_count<=0;q_head<=0;q_tail<=0;end
+  if(reset)begin
+`ifndef GPU_V2_COMMAND_FINAL
+   stopped<=0;
+`endif
+   arithmetic_live<=0;q_count<=0;q_head<=0;q_tail<=0;end
   else begin
+`ifndef GPU_V2_COMMAND_FINAL
    if(abort||preflight_bad)stopped<=1;
+`endif
    if(advance)begin
     if(!shade_phase)arithmetic_live<=in_accept;
     if(queue_push)begin
@@ -106,4 +120,12 @@ module gpu_v2_final_ordered_two_cycle(
   if(queue_pop&&q_count==0)$fatal(1,"Final result queue underflow");
  end
 `endif
+`ifdef GPU_V2_COMMAND_FINAL
+ // Explicit abort remains sticky on wall edges, including CE0.
+ always @(posedge clk)if(reset)stopped<=0;else if(abort)stopped<=1;
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((!abort)&&(proposal_ce&&!reset&&!fault&&(credit_bad||(proposal_ready&&in_valid&&(in_h>9'd256))))))$fatal(1,"GPU contract: preflight_bad");
+`endif
+`endif
+`undef GPU_V2_COMMAND_FINAL
 endmodule

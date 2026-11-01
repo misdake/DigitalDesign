@@ -104,11 +104,6 @@ fn register(s: &mut String, name: &str, abort: bool) -> Result<(), String> {
 fn specialize(name: &str, s: &mut String) -> Result<(), String> {
     match name {
         "gpu_v2_vliw_backend_three_port" => register(s, "stopped", true)?,
-        "gpu_v2_final_ordered_two_cycle" => {
-            // The stop latch retains only explicit abort, not diagnostic feedback.
-            register(s, "stopped", true)?;
-            check(s, "preflight_bad", "1'b0", "!abort", false)?;
-        }
 
         "gpu_v2_texture_runtime_color" => {
             register(s, "terminal", false)?;
