@@ -12,6 +12,7 @@
     gpu_api_fault,
     gpu_api_capture,
     gpu_scene_math,
+    gpu_model_cache,
     gpu_scene_objects,
     gpu_scene_transforms,
     gpu_ui_grid,
@@ -49,6 +50,7 @@ use gpu_api_capture::*;
 const GPU_KIND_COLOR: u16 = 8;
 const GPU_KIND_DEPTH: u16 = 9;
 const GPU_KIND_MESH: u16 = 5;
+const GPU_KIND_MODEL_CACHE: u16 = 12;
 
 impl GpuMemory {
     /// Caller guarantees real allocation, lifetime, and no illegal aliasing.
@@ -435,6 +437,8 @@ mod gpu_scene_objects;
 use gpu_scene_objects::*;
 mod gpu_scene_transforms;
 use gpu_scene_transforms::*;
+mod gpu_model_cache;
+use gpu_model_cache::*;
 mod gpu_ui_grid;
 use gpu_ui_grid::*;
 mod gpu_ui_packet;
@@ -484,6 +488,7 @@ impl Camera {
     pub fn new(desc: CameraDesc) -> Self {
         let slot = gpu_api_object(true, 1);
         gpu_api_checked(gpu_scene_camera_init(gpu_arena_data(slot), desc), 1);
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), 1);
         Camera { slot: slot }
     }
 }
@@ -503,11 +508,22 @@ impl Model {
     pub fn new(transform: Transform) -> Self {
         let slot = gpu_api_object(true, 2);
         gpu_api_checked(gpu_scene_model_init(gpu_arena_data(slot), transform), 2);
+        let derived = gpu_arena_alloc(true, GPU_KIND_MODEL_CACHE);
+        if derived == 0 {
+            gpu_api_checked(gpu_arena_free(slot, true, 2), 2);
+            gpu_api_fail(7, 1, 2, 0);
+        }
+        gpu_model_cache_init(gpu_arena_data(derived));
+        gpu_arena_data(slot)[GPU_MODEL_DERIVED] = derived;
         Model { slot: slot }
     }
 }
 impl Drop for Model {
     fn drop(&mut self) {
+        let derived = gpu_arena_data(self.slot)[GPU_MODEL_DERIVED];
+        if !gpu_arena_free(derived, true, GPU_KIND_MODEL_CACHE) {
+            gpu_api_fail(7, 3, GPU_KIND_MODEL_CACHE, derived);
+        }
         if !gpu_arena_free(self.slot, true, 2) {
             gpu_api_fail(7, 3, 2, self.slot);
         }
@@ -660,6 +676,7 @@ impl Camera {
             gpu_scene_camera_init_look_at(gpu_arena_data(slot), eye, target, up, projection),
             1,
         );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(slot)), 1);
         Camera { slot: slot }
     }
     pub fn view(&self) -> Mat3x4 {
@@ -678,15 +695,20 @@ impl Camera {
             gpu_scene_camera_pose(gpu_arena_data(self.slot), eye, angles),
             1,
         );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
     }
 }
 
 impl Camera {
     pub fn set_projection(&mut self, projection: Projection) {
-        gpu_api_checked(
-            gpu_scene_camera_projection(gpu_arena_data(self.slot), projection),
-            1,
-        );
+        let data = gpu_arena_data(self.slot);
+        let focal = projection.focal_pixels();
+        let changed = data[GPU_CAMERA_FOCAL] != focal.lo_bits()
+            || data[GPU_CAMERA_FOCAL + 1] != focal.hi_bits();
+        gpu_api_checked(gpu_scene_camera_projection(data, projection), 1);
+        if changed {
+            gpu_api_checked(gpu_camera_revision(data), 1);
+        }
     }
 }
 
@@ -696,6 +718,7 @@ impl Camera {
             gpu_scene_camera_look_at(gpu_arena_data(self.slot), eye, target, up),
             1,
         );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
     }
 }
 
@@ -705,6 +728,7 @@ impl Camera {
             gpu_scene_camera_look_at_y_up(gpu_arena_data(self.slot), eye, target),
             1,
         );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
     }
 }
 
@@ -714,30 +738,34 @@ impl Camera {
             gpu_scene_camera_look_to(gpu_arena_data(self.slot), eye, direction, up),
             1,
         );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
     }
 }
 
 impl Camera {
     pub fn set_view(&mut self, view: Mat3x4) {
         gpu_api_checked(gpu_scene_camera_view(gpu_arena_data(self.slot), view), 1);
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
     }
 }
 
 impl Model {
     pub fn set_pose(&mut self, transform: Transform) {
-        gpu_api_checked(
-            gpu_scene_model_init(gpu_arena_data(self.slot), transform),
-            2,
-        );
+        let mut data = gpu_arena_data(self.slot);
+        let derived = data[GPU_MODEL_DERIVED];
+        gpu_api_checked(gpu_scene_model_init(data, transform), 2);
+        data[GPU_MODEL_DERIVED] = derived;
+        gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
     }
 }
 
 impl Model {
     pub fn set_matrices(&mut self, world: Mat3x4, normal: Mat3x3) {
-        gpu_api_checked(
-            gpu_scene_model_matrices(gpu_arena_data(self.slot), world, normal),
-            2,
-        );
+        let mut data = gpu_arena_data(self.slot);
+        let derived = data[GPU_MODEL_DERIVED];
+        gpu_api_checked(gpu_scene_model_matrices(data, world, normal), 2);
+        data[GPU_MODEL_DERIVED] = derived;
+        gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
     }
 }
 
@@ -824,9 +852,14 @@ impl UiGrid {
 
 impl Pass {
     pub fn set_camera(&mut self, camera: &Camera) {
-        gpu_api_checked(
-            gpu_bind_desired(self.slot, true, gpu_arena_data(camera.slot)),
-            1,
+        let data = gpu_arena_data(camera.slot);
+        gpu_api_checked(gpu_bind_desired(self.slot, true, data), 1);
+        gpu_bind_copy(
+            gpu_record_data(self.slot),
+            GPU_CB_CAMERA_REVISION,
+            data,
+            GPU_CAMERA_REVISION,
+            4,
         );
     }
     pub fn set_state(&mut self, state: &RenderState) {
@@ -917,18 +950,23 @@ fn gpu_api_draw(
     }
     gpu_api_checked(gpu_record_capture_room(slot, facts.as_array(), count), 5);
     let desired = unsafe { c.as_ptr().add(GPU_CB_CAMERA as i16).as_u16_array() };
+    let material = gpu_arena_data(material_slot);
     gpu_api_checked(
-        gpu_scene_draw_prepare(
-            desired,
-            gpu_arena_data(model_slot),
-            gpu_arena_data(material_slot),
-            view,
-            textured,
-            native,
-        ),
+        gpu_scene_draw_header(desired, material, view, textured, native),
         5,
     );
+    let model = gpu_arena_data(model_slot);
+    let revision = unsafe { c.as_ptr().add(GPU_CB_CAMERA_REVISION as i16).as_u16_array() };
+    gpu_model_matrix_prepare(
+        desired,
+        model,
+        native,
+        gpu_arena_data(model[GPU_MODEL_DERIVED]),
+        revision,
+    );
+    gpu_scene_draw_finish(material, native);
     gpu_api_checked(gpu_mesh_draw(slot, mesh, native), 5);
+
     gpu_record_capture_commit(slot, facts.as_array(), count);
 }
 

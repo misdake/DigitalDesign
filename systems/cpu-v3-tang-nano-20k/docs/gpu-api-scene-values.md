@@ -37,8 +37,11 @@ Model TRS preparation writes world=R*S and normal=R*inverse(S), with translation
 only in world. It computes the three inverse scales once. Zero scale fails
 before writing; input values and intermediate arithmetic must fit the native
 fixed-point domain. Explicit matrix input uses the caller's supplied normal
-matrix. The normal matrix is tightly packed at words 24..41, and words 42..47
-are zero. There is no per-camera Model cache or retained Euler copy.
+matrix. The normal matrix is tightly packed at words 24..41. Pure preparation
+zeros words 42..47. A public Model uses private word 42 to own a second48-word
+arena allocation; words 43..47 remain zero. Its setters preserve that owned handle
+across pure preparation and mark its derived data dirty. There is no retained
+Euler copy.
 
 ## Six-argument draw conversion
 
@@ -63,6 +66,44 @@ zero. Instance contains twelve position coefficients, nine normal coefficients,
 Q16.16 one at words 42/43, material RGBA at words 44/45 and zero tail padding.
 This stage performs no command emission or binding comparison. A failed
 conversion may have changed its scratch output; the adapter must reject it.
+
+## Model-owned derived matrices
+
+Every public Model owns a source allocation and a derived allocation, each 48
+CPU words. Its affine resource remains one private 16-bit handle. The derived
+allocation contains final position coefficients 0..23, final normal coefficients
+24..41, dirty 42, the captured four-word Camera revision 43..46 and zero padding 47.
+This is one result per Model, not a global last-result cache: drawing another
+Model cannot evict it. Multiple views of the same Model require recomputation
+when their view revisions differ.
+
+New Models start dirty. Successful `set_pose` and `set_matrices` mark only that
+Model dirty. Camera construction and successful view setters assign a fresh
+nonzero 64-bit revision in private Camera words 32..35. Projection changes assign
+one only when the focal value changes; far/ray changes leave matrix dependencies
+unchanged. `Pass::set_camera` copies the revision into reserved record control
+words 16..19 alongside the existing numeric Camera snapshot. Later Camera changes
+cannot change that Pass's inputs. At draw time a different snapshot revision
+marks that Model dirty; no full Model/Camera value comparison is performed.
+
+The light/material/render validation and Instance initialization run for every
+draw. A dirty Model then computes the 42 coefficients directly into its own
+allocation using the same scalar expression order as the pure conversion. The
+revision is captured and dirty clears only after the calculation completes.
+Clean Models skip that calculation. Every draw copies the coefficients into the
+current native Instance and writes its current material and fixed fields.
+Global/Render data, padding, binding comparison and push publication are unchanged.
+Empty draws and failed preparation do not compute or clear dirty; a later mesh
+or CB failure does not undo already calculated CPU values.
+
+The revision counter is never reset by arena/context reuse and fails before
+wrapping, so Camera Drop/reuse cannot revive an earlier snapshot identity. Model
+Drop frees both allocations; construction releases its source allocation if the
+second allocation cannot fit. A Model now consumes 96 arena words (192 bytes),
+96 bytes more than its source descriptor alone. The existing arena reservation
+and slot classes do not grow. Camera/CB revisions use their existing reserved
+space, and the global revision counter adds eight bytes. GPU commands retain
+only immutable push copies, not pointers or borrows into a Model's derived data.
 
 ## Material and render state
 

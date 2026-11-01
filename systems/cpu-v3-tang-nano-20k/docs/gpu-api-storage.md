@@ -64,18 +64,22 @@ Its caller still owns the external pixel-allocation lifetime.
 
 ## Public prepared scene adapters
 
-Camera and Model occupy 48-word slots; Material, RenderState, Texture,
+Camera occupies one 48-word slot; Model owns two 48-word slots (source and derived).
+Material, RenderState, Texture,
 TextureView, UiAtlas and UiGrid occupy 16-word slots. Their kinds are 1, 2, 3,
-4, 6, 7, 10 and 11 respectively. Drop frees only the descriptor slot.
+4, 6, 7, 10 and 11 respectively; Model derived data uses private kind 12.
+Model Drop releases both owned slots; other descriptor Drops release their slot.
 Projection construction uses B's six-word temporary, bool validation and value
 getter. Shininess's two public convenience methods live in the approved root;
 raw conversion helpers remain private. Named matrix rows and the numerical
 contracts are specified in [scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md).
 
 Pass set_camera/set_state copy prepared values into the CB desired snapshot.
-Later source-object changes do not alter that snapshot. A nonempty draw converts
-those desired values plus Model/Material/View into the one shared native scratch,
-then uses the existing whole-Mesh preflight and canonical binding emitter.
+Later source-object changes do not alter that snapshot. A nonempty draw validates current light/material/render fields and obtains the
+Model-owned derived matrices for that Camera snapshot, computing them only while
+dirty. It writes the one shared native scratch, then uses the existing whole-Mesh
+preflight and canonical binding emitter. The Model cache is specified in
+[scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md#model-owned-derived-matrices).
 Colored draw reads no View. Texture/View and Grid/Atlas descriptions are copied
 by value; descriptor Drop/reuse does not rewrite recorded descriptions or retain
 external allocations. Applications still own external-memory lifetime and ordering.
@@ -135,8 +139,9 @@ inside that backing for any static layout, using at most 15 words of slack.
 Global, Render, Target, Instance, directory and code staging retain their existing
 offsets. Their complete aligned lines can use the existing owned-transfer path;
 partial spans still use scalar transfers. This alignment does not publish a CB
-or permit mutation of GPU-owned storage. Each record has control words 0..31,
-Camera 32..63, State 64..79,
+or permit mutation of GPU-owned storage. Each record has control words 0..31 (including the four-word Camera snapshot
+revision at 16..19), Camera 32..63, State 64..79,
+
 last Global 80..111, last Render 112..127, last UI 128..143 and last Instance
 144..207. The last values are CPU snapshots, not persistent object references.
 The scratch is not a binding cache. Prepared scene helpers write the canonical
@@ -157,6 +162,7 @@ The implemented control words are:
 | 12 / 13 | UI-clean proof / last immutable UI descriptor push offset plus one |
 | 14 | Known completed terminal render fence in the recorded stream |
 | 15 | Recorded allocation-fact count, 0..64 |
+| 16..19 | Camera view/focal revision captured by public set_camera |
 
 Each configured extent has 1..512 sectors, fits physical memory, and is disjoint
 from the other extent in that record. Configuration is init-time only; Gpu's

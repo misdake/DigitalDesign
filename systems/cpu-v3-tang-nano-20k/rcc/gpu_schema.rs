@@ -16,10 +16,17 @@ pub const GPU_CAMERA_FOCAL: u16 = 24;
 pub const GPU_CAMERA_FAR: u16 = 26;
 pub const GPU_CAMERA_RAY: u16 = 28;
 pub const GPU_CAMERA_WORDS: u16 = 32;
+// Private Camera identity for view/focal dependencies; not part of native data.
+pub const GPU_CAMERA_REVISION: u16 = 32;
 // Model: source-world affine and inverse-transpose, tightly packed; zero tail.
 pub const GPU_MODEL_WORLD: u16 = 0;
 pub const GPU_MODEL_NORMAL: u16 = 24;
 pub const GPU_MODEL_WORDS: u16 = 42;
+// Public Model resource owns its second allocation through this private tail word.
+pub const GPU_MODEL_DERIVED: u16 = 42;
+// A second large allocation belongs to each Model: coefficients0..41 and state.
+pub const GPU_MODEL_DIRTY: u16 = 42;
+pub const GPU_MODEL_VIEW_REVISION: u16 = 43;
 // Material: packed RGBA, packed RGB, two fix32 responses, code, flags.
 pub const GPU_MATERIAL_RGBA: u16 = 0;
 pub const GPU_MATERIAL_SPECULAR: u16 = 2;
@@ -47,6 +54,7 @@ pub const GPU_VIEW_WIDTH: u16 = 4;
 pub const GPU_VIEW_HEIGHT: u16 = 5;
 // Per-CB recorder: 32 control words, then explicit snapshots and native caches.
 pub const GPU_CB_CONTROL: u16 = 0;
+pub const GPU_CB_CAMERA_REVISION: u16 = 16;
 pub const GPU_CB_CAMERA: u16 = 32;
 pub const GPU_CB_STATE: u16 = 64;
 pub const GPU_CB_GLOBAL: u16 = 80;

@@ -239,9 +239,9 @@ fn gpu_scene_light_encode(raw: vec3, mut native: Array<u16>) -> bool {
     false
 }
 
-pub fn gpu_scene_draw_prepare(
+// Shared preparation preserves the original failure and scratch-write boundaries.
+pub fn gpu_scene_draw_header(
     desired: Array<u16>,
-    model: Array<u16>,
     material: Array<u16>,
     view: Array<u16>,
     textured: bool,
@@ -280,6 +280,10 @@ pub fn gpu_scene_draw_prepare(
         native[instance + at] = 0;
         at += 1;
     }
+    true
+}
+// Writes only the42 coefficient words, without material/padding or ownership state.
+pub fn gpu_scene_matrix_prepare(desired: Array<u16>, model: Array<u16>, mut out: Array<u16>) {
     let k = gpu_scene_fix_read(desired, GPU_CAMERA_FOCAL) * fix32::from_words(256, 0);
     let mut row: u16 = 0;
     while row < 3 {
@@ -299,7 +303,7 @@ pub fn gpu_scene_draw_prepare(
             if col == 3 {
                 value = value + gpu_scene_fix_read(desired, GPU_CAMERA_VIEW + row * 8 + 6);
             }
-            gpu_scene_fix_write(native, instance + row * 8 + col * 2, value * factor);
+            gpu_scene_fix_write(out, row * 8 + col * 2, value * factor);
             col += 1;
         }
         col = 0;
@@ -313,13 +317,37 @@ pub fn gpu_scene_draw_prepare(
             if row == 0 {
                 value = -value;
             }
-            gpu_scene_fix_write(native, instance + 24 + (row * 3 + col) * 2, value);
+            gpu_scene_fix_write(out, 24 + (row * 3 + col) * 2, value);
             col += 1;
         }
         row += 1;
     }
+}
+pub fn gpu_scene_draw_finish(material: Array<u16>, mut native: Array<u16>) {
+    let instance = GPU_SCRATCH_INSTANCE;
     native[instance + 43] = 1;
     native[instance + 44] = material[GPU_MATERIAL_RGBA];
     native[instance + 45] = material[GPU_MATERIAL_RGBA + 1];
+}
+// The pure six-argument path retains no cache or object identity.
+pub fn gpu_scene_draw_prepare(
+    desired: Array<u16>,
+    model: Array<u16>,
+    material: Array<u16>,
+    view: Array<u16>,
+    textured: bool,
+    native: Array<u16>,
+) -> bool {
+    if !gpu_scene_draw_header(desired, material, view, textured, native) {
+        return false;
+    }
+    let instance = unsafe {
+        native
+            .as_ptr()
+            .add(GPU_SCRATCH_INSTANCE as i16)
+            .as_u16_array()
+    };
+    gpu_scene_matrix_prepare(desired, model, instance);
+    gpu_scene_draw_finish(material, native);
     true
 }

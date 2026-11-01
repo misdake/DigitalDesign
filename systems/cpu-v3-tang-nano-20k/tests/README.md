@@ -180,6 +180,11 @@ recording scope is described in [API storage](/systems/cpu-v3-tang-nano-20k/docs
 `gpu_api_resources` uses the actual approved root for factories, Pass/descriptor
 lifetimes, capacity rejection, reinitialization and Display retirement. Private
 execute tests do not establish public submission/capture or GPU pixel rendering.
+`gpu_api_model_cache` checks independent Model dirty data, Camera revision
+snapshots across interleaved CBs, descriptor reuse, two-allocation capacity
+failure, and revision carry/exhaustion. It compares complete recorded commands
+and push data with a forced-recompute run; historical-source and native-cycle
+qualification remain separate from this bounded functional regression.
 The required private-memory-field registration regression currently fails against
 the accepted frontend; positive-only development runs explicitly exclude that
 single test and are not full API acceptance.
