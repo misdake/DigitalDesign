@@ -379,3 +379,32 @@ premature-release and packet-gate mutations must hit their specific failures.
 The fixture stops at 10000 cycles and uses bounded compile/simulator processes.
 It complements the retained FIFO Color miter and independent public Color tests;
 it does not establish global D3 retirement, a frame or device qualification.
+
+`vliw_backend::export_join_q_profiles` is an ignored case in the existing `host`
+executable. Set `GPU_JOIN_Q_EXPORT_DIR` to a fresh absolute directory to export
+8 actual selected command/generic/full profiles and 4 public event-return banks.
+Freeze the accepted revision separately before changing its implementation.
+
+`join_q_policy.py --base-exports <accepted> --exports <current> --output <fresh>
+--negatives` compares 16 complete preprocessed streams, exact public bank bytes,
+private profile scope and default checked selection. Only the exact independent
+TOP abort process relocation and two empty native-bank processes may differ.
+The existing integer/whole-memory fixture supplies a 64-quad stream and all16
+masks, including independent producer CE,17-edge held Q, wrap, empty heads,
+backpressure and C-paid depth conservation. Both RAM backends and monitor modes
+must match the frozen accepted event trace. A direct observer checks legal raw
+retirement against paid D3; real masked-read, premature-Q, C-retirement and double
+empty-advance mutants must fail. The actual split command TOP separately checks
+wall-edge abort at CE0 and rejects a CE-gated abort-owner mutant with monitors off.
+Use `--fixtures <frozen-complete-fixtures>` to replay already captured accepted
+inputs rather than regenerate them. Baseline files are hashed and never used as
+an execution working directory. Simulations have a30,000-wall bound and each
+process a60-second limit. This is source/lifetime qualification, not a new
+physical timing, whole-frame, memory-controller or board result.
+
+The join fixture receives its hold setting before import and restores caller
+environment, argv and its temporary base-module binding after success/failure.
+The receipt checks actual seventeen-edge CE/advance and source-prefix trace
+windows, in addition to the unchanged DUT Q-hold assertions and executed count.
+`python -B ip/gpu-v2/tests/test_join_q_policy.py` covers import ordering, repeated
+independent calls, failure restoration and rejection of unexercised hold coverage.

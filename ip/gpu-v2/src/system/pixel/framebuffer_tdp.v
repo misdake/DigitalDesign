@@ -20,11 +20,11 @@ module gpu_v2_pixel_framebuffer_sink #(
  input wire clk,reset,ce,commit_allow,
  input wire prefetch_abort,prefetch_valid,input wire[9:0]prefetch_tile,
  output wire preflight_bad,
- input wire lane_valid,input wire[1:0]lane,
+ input wire lane_valid,output wire[1:0]active_lane,
  input wire[31:0]rgba,input wire[15:0]depth,
  input wire[8:0]sink_tile,x,input wire[7:0]y,input wire[3:0]mask,
  input wire[2:0]depth_func,input wire depth_write,blend,
- output wire raw_head_retire,
+ output wire depth_phase,raw_head_retire,
  output wire lane_ready,lane_accept,color_accept,color_ready,quad_accepted,
  output wire commit_valid,output wire[8:0]commit_x,
  output wire[7:0]commit_y,output wire[3:0]commit_mask,
@@ -35,24 +35,25 @@ module gpu_v2_pixel_framebuffer_sink #(
  input wire mem_write_ready,mem_complete_valid,mem_complete_ok
 );
  reg phase;
+ assign depth_phase=phase;
  reg[1:0]expected_lane;
  wire row_accept,row_ready,cache_idle;
- wire lane_matches=(lane==expected_lane);
- wire[2:0]row_index={lane,phase};
+ assign active_lane=expected_lane;
+ wire[2:0]row_index={expected_lane,phase};
  wire[31:0]row_data=phase?{16'd0,depth}:rgba;
  // A color ACK reserves its existing cache tail until the paired depth ACK.
  // Flush is only forwarded between whole quads, so it cannot block that ACK.
- assign lane_ready=!reset&&!fault&&phase&&lane_matches;
- assign lane_accept=row_accept&&phase&&lane_matches;
- assign color_accept=row_accept&&!phase&&lane_matches;
- assign color_ready=!shade_phase&&!reset&&!phase&&lane_matches&&row_ready;
+ assign lane_ready=!reset&&!fault&&phase;
+ assign lane_accept=row_accept&&phase;
+ assign color_accept=row_accept&&!phase;
+ assign color_ready=!shade_phase&&!reset&&!phase&&row_ready;
  assign quad_accepted=lane_accept&&(expected_lane==2'd3);
- assign raw_head_retire=ce&&!reset&&!fault&&lane_valid&&phase&&lane_matches&&(phase==shade_phase)&&row_ready&&(expected_lane==2'd3);
+ assign raw_head_retire=ce&&!reset&&!fault&&lane_valid&&phase&&(phase==shade_phase)&&row_ready&&(expected_lane==2'd3);
  wire flush_boundary=!lane_valid&&!phase&&(expected_lane==2'd0);
  assign idle=cache_idle&&!phase&&(expected_lane==2'd0);
  always @(posedge clk)begin
   if(reset||fault)begin phase<=1'b0;expected_lane<=2'd0;end
-  else if(row_accept&&lane_matches)begin
+  else if(row_accept)begin
    phase<=!phase;
    if(phase)expected_lane<=expected_lane+2'd1;
   end

@@ -539,6 +539,46 @@ its original edge update; this observation policy adds no rejection or recovery.
 Pool RAM ports retain their original enables. Their collision diagnostics are
 separate from the join result banks' functional read/write collision guards.
 
+### Selected join and paired depth
+
+The selected root is the complete
+[VLIW backend source](/ip/gpu-v2/src/system/pixel/vliw_backend_top.v).
+The renderer selects this root, its owned-Q banks and the TDP sink as complete
+modules. Its static policy record keeps Final, Join, Pool and Color choices
+independent; public data macros do not grant a diagnostic policy. All selected
+owners now supply their own diagnostics. The retained compatibility call only
+normalizes line endings and performs no RTL scanning or policy rewrite. The historical postquad factories remain independent references.
+The 23-bit active header stays registered; its tile is a combinational projection,
+not a second captured header. Existing issue/publication/retirement prefixes own
+the ordered progress; there is no separate paid-return ring or occupancy copy.
+
+| Boundary | Payload and ownership |
+| --- | --- |
+| Covered J_READ edge | Read Basic, Light and Sample together; READ_MODE0 updates their Q after the edge |
+| J_WAIT | Hold source Q through CE0/backpressure until Final input acceptance; preserve the existing subsequent arithmetic loan |
+| Masked issue lane | Advance its source prefix once, without operand reads or a Final token; retain the masked C/D row calendar |
+| Sink C acceptance | Consume the Final result when covered; pay depth Q at `{retire_slot,out_lane}` |
+| Paired sink D | Consume that depth Q; final-lane D releases pool/header/depth source ownership |
+
+An empty quad takes the existing safe empty-skip path after prior tokens and
+branch cursors have drained. It does not acquire a second retirement owner.
+For legal paired-D traffic the unchanged raw retirement proposal identifies D3;
+it is not substituted with a similarly named cache/completion signal. Cache
+owners and external memory transactions retain their later release boundaries.
+
+Light and Sample use 128-row banks of 18 and 24 bits. The shared row-store
+emitter's private owned-Q route omits return-valid storage; public event-return
+banks keep their interface and model. Native SDP36 READ_MODE0 and portable held-Q
+behavior are unchanged. Same-address collision suppresses both reading and
+writing, including builds with diagnostics removed. The sink's existing `phase`
+and `expected_lane` directly supply `depth_phase` and `active_lane`.
+
+The root's private command policy keeps diagnostics passive and explicit abort
+sticky on wall edges, including CE0. The checked entry remains the default;
+public command ports do not select policy. The private scope and abort process
+are inside the module before the legacy transport tail, so the independent
+three-port adapter preserves them when replacing that tail.
+
 ## Separate release boundaries
 
 ```mermaid

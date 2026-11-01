@@ -4,6 +4,62 @@ use gpu_v2::{
     texture::ports::Slot,
 };
 use std::{fs, path::PathBuf};
+
+/// Freeze this entry at the accepted revision before changing its implementation.
+#[test]
+#[ignore = "explicit eight-profile join/Q qualification export"]
+fn export_join_q_profiles() {
+    let out = std::env::var_os("GPU_JOIN_Q_EXPORT_DIR")
+        .map(PathBuf::from)
+        .expect("GPU_JOIN_Q_EXPORT_DIR must select a fresh output directory");
+    assert!(!out.exists(), "preserve previous exports");
+    fs::create_dir_all(&out).unwrap();
+    let slots = [Slot {
+        base_address: 0,
+        max_size_log2: 5,
+        has_full_mip: true,
+        valid: true,
+    }];
+    let surface = MaterializedSurface {
+        color_base_bytes: 0x100000,
+        depth_base_bytes: 0x200000,
+        width: 400,
+        height: 240,
+    };
+    for (mode, backend) in [
+        ("native", quad_ingress::rtl::Backend::Native),
+        ("portable", quad_ingress::rtl::Backend::Portable),
+    ] {
+        let generic = vliw_backend::verilog_selected(&slots, surface, backend).unwrap();
+        for (name, source) in [
+            ("generic", generic.clone()),
+            (
+                "generic-command-ports",
+                format!("`define GPU_V2_COMMAND_PORTS\n{generic}"),
+            ),
+            (
+                "command",
+                gpu_v2::system::vliw_command::verilog(surface, backend).unwrap(),
+            ),
+            (
+                "full",
+                gpu_v2::system::vliw::verilog(&slots, surface, backend).unwrap(),
+            ),
+        ] {
+            fs::write(out.join(format!("{name}-{mode}.v")), source).unwrap();
+        }
+        for width in [18, 24] {
+            let bank = if mode == "native" {
+                gpu_v2::system::pixel::row_store::verilog_sdp36(128, width)
+            } else {
+                gpu_v2::system::pixel::row_store::verilog(128, width)
+            }
+            .unwrap();
+            fs::write(out.join(format!("public-bank{width}-{mode}.v")), bank).unwrap();
+        }
+    }
+}
+
 #[test]
 fn emit_vliw_backend() {
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

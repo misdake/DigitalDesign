@@ -92,27 +92,46 @@ impl Bank {
 /// Matching behavioral 1R1W RTL. This is a bank leaf, not a pixel-controller
 /// implementation or proof of RAM inference/PnR.
 pub fn verilog(rows: usize, width: u32) -> Result<String, String> {
+    render(rows, width, false, false)
+}
+
+/// Selected join calendar owns the synchronous Q until consumer acceptance.
+/// Public event-return banks and their model retain their original contract.
+pub(super) fn verilog_owned_q(rows: usize, width: u32, native: bool) -> Result<String, String> {
+    if native {
+        render_sdp36(rows, width, true)
+    } else {
+        render(rows, width, true, false)
+    }
+}
+
+fn render(rows: usize, width: u32, owned_q: bool, native: bool) -> Result<String, String> {
     Bank::new(rows, width)?;
     let address_bits = rows.ilog2().max(1);
+    let valid_port = if owned_q {
+        ""
+    } else {
+        " output reg return_valid,\n"
+    };
+    let clock = if owned_q && native {
+        String::new()
+    } else {
+        format!(
+            " always @(posedge clk) begin\n  {}\n  else begin\n{}   if(read_en && !collision) return_data<=ram[read_address];\n   if(write_en && !collision) ram[write_address]<=write_data;\n  end\n end\n",
+            if owned_q { "if(reset)begin end" } else { "if(reset) return_valid<=1'b0;" },
+            if owned_q { "" } else { "   return_valid<=read_en && !collision;\n" },
+        )
+    };
     Ok(format!(
         r#"module gpu_v2_pixel_row_store(
  input wire clk,reset,read_en,write_en,
  input wire [{ab}:0] read_address,write_address,
  input wire [{db}:0] write_data,
- output reg return_valid,
- output reg [{db}:0] return_data,
+{valid_port} output reg [{db}:0] return_data,
  output wire collision);
  reg [{db}:0] ram[0:{last}];
  assign collision=read_en && write_en && read_address==write_address;
- always @(posedge clk) begin
-  if(reset) return_valid<=1'b0;
-  else begin
-   return_valid<=read_en && !collision;
-   if(read_en && !collision) return_data<=ram[read_address];
-   if(write_en && !collision) ram[write_address]<=write_data;
-  end
- end
-endmodule
+{clock}endmodule
 "#,
         ab = address_bits - 1,
         db = width - 1,
@@ -124,10 +143,14 @@ endmodule
 /// block is charged even for narrow payloads. Hard DO provides the read bank,
 /// with no additional behavioral payload array or return-data register.
 pub fn verilog_sdp36(rows: usize, width: u32) -> Result<String, String> {
+    render_sdp36(rows, width, false)
+}
+
+fn render_sdp36(rows: usize, width: u32, owned_q: bool) -> Result<String, String> {
     if rows > 512 {
         return Err("row store does not fit one SDP36 block".into());
     }
-    let mut source = verilog(rows, width)?;
+    let mut source = render(rows, width, owned_q, true)?;
     let address_bits = rows.ilog2().max(1);
     let data = format!("{{{}'d0,write_data}}", 36 - width);
     let prefix = if address_bits == 9 {

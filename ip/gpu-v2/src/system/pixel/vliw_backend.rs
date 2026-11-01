@@ -112,9 +112,12 @@ pub fn verilog_selected(
         surface,
         backend,
         false,
-        FinalPolicy::Checked,
-        PoolPolicy::Checked,
-        ColorPolicy::Checked,
+        SourcePolicies {
+            final_policy: FinalPolicy::Checked,
+            join_policy: JoinPolicy::Checked,
+            pool_policy: PoolPolicy::Checked,
+            color_policy: ColorPolicy::Checked,
+        },
     )
 }
 
@@ -128,9 +131,12 @@ pub(crate) fn verilog_selected_command(
         surface,
         backend,
         true,
-        FinalPolicy::Command,
-        PoolPolicy::Command,
-        ColorPolicy::Command,
+        SourcePolicies {
+            final_policy: FinalPolicy::Command,
+            join_policy: JoinPolicy::Command,
+            pool_policy: PoolPolicy::Command,
+            color_policy: ColorPolicy::Command,
+        },
     )
 }
 
@@ -151,15 +157,45 @@ fn final_source(policy: FinalPolicy) -> String {
     )
 }
 
+// Independent of the public command ports and the live-global data profile.
+#[derive(Clone, Copy)]
+enum JoinPolicy {
+    Checked,
+    Command,
+}
+
+fn top_source(policy: JoinPolicy) -> String {
+    include_str!("vliw_backend_top.v").replace(
+        "// @JOIN_POLICY@",
+        match policy {
+            JoinPolicy::Checked => "",
+            JoinPolicy::Command => "`define GPU_V2_COMMAND_JOIN",
+        },
+    )
+}
+
+// Static generator choices remain independent for each source owner.
+#[derive(Clone, Copy)]
+struct SourcePolicies {
+    final_policy: FinalPolicy,
+    join_policy: JoinPolicy,
+    pool_policy: PoolPolicy,
+    color_policy: ColorPolicy,
+}
+
 fn render_globals(
     slots: &[Slot],
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
     live_globals: bool,
-    final_policy: FinalPolicy,
-    pool_policy: PoolPolicy,
-    color_policy: ColorPolicy,
+    policies: SourcePolicies,
 ) -> Result<String, String> {
+    let SourcePolicies {
+        final_policy,
+        join_policy,
+        pool_policy,
+        color_policy,
+    } = policies;
     let native = matches!(backend, quad_ingress::rtl::Backend::Native);
     if surface.width != 400 || surface.height != 240 {
         return Err("VLIW pool NDC/tile contract requires400x240".into());
@@ -176,102 +212,10 @@ fn render_globals(
         PoolPolicy::Checked => pool::verilog(!native),
         PoolPolicy::Command => pool::verilog_command(!native),
     });
-    let top = "gpu_v2_postquad_direct_lod";
-    patch(
-        &mut source,
-        top,
-        "module gpu_v2_postquad_direct_lod(",
-        "module gpu_v2_vliw_backend(",
-    )?;
-    let top = MODULE;
-    patch(&mut source,top," input wire[7:0]in_lod,\n input wire in_valid,input wire[22:0]in_begin,\n input wire[31:0]in_basic,input wire[35:0]in_light,input wire[31:0]in_uv,\n output wire in_ready,output wire[2:0]in_row,",PRODUCER_PORTS)?;
-    patch(
-        &mut source,
-        top,
-        "wire[1:0]light_used;wire[3:0]sample_used;",
-        "wire[5:0]light_used,sample_used;",
-    )?;
-    patch(
-        &mut source,
-        top,
-        " gpu_v2_pixel_sampling_ingress front(",
-        " gpu_v2_vliw_sampling front(",
-    )?;
-    patch(&mut source,top," .in_lod(in_lod),.in_valid(in_valid),.in_begin(in_begin),.in_basic(in_basic),.in_light(in_light),.in_uv(in_uv),\n .in_ready(in_ready),.in_row(in_row),.advance(advance),.preflight_bad(front_bad),.fault(front_fault),",PRODUCER_CONNECTIONS)?;
-    patch(
-        &mut source,
-        top,
-        ".descriptor_head_slot(raw_head_retire?{1'b0,retire_slot[3:0]+4'd1}:retire_slot),",
-        "",
-    )?;
-    patch(&mut source,top,".global_used(global_used),.light_used(light_used),.sample_used(sample_used),",".global_used(global_used),.light_used(light_used),.sample_used(sample_used),.producer_used(producer_used),")?;
-    patch(
-        &mut source,
-        top,
-        "wire join_value_read=active&&state==J_READ&&issue_exists",
-        "wire join_value_read=active&&(|issue_header[3:0])&&state==J_READ&&issue_exists",
-    )?;
-    patch(
-        &mut source,
-        top,
-        "assign pipeline_idle=!active&&global_used==0&&in_row==0&&cache_drained&&!final_out_valid;",
-        "assign pipeline_idle=!active&&global_used==0&&cache_drained&&!final_out_valid;",
-    )?;
-    patch(
-        &mut source,
-        top,
-        "case({published,quad_accepted})",
-        "case({published,quad_accepted||empty_skip})",
-    )?;
-    patch(
-        &mut source,
-        top,
-        "if(!active&&published_count!=0)begin",
-        "if(!active&&published_count!=0&&!empty_head)begin",
-    )?;
-    patch(
-        &mut source,
-        top,
-        "issue_slot<={1'b0,issue_slot[3:0]+4'd1};",
-        "issue_slot<=issue_slot+5'd1;",
-    )?;
-    patch(&mut source,top,"if(published_count>1)begin active<=1;header<=head_descriptor;header_tile<=head_tile;end","if(published_count>1)begin active<=|next_descriptor[3:0];header<=next_descriptor;header_tile<=next_tile;end")?;
-    patch(
-        &mut source,
-        top,
-        "    if(sink_color_accept)color_paid<=1;",
-        "    if(empty_skip)issue_slot<=issue_slot+5'd1;\n    if(sink_color_accept)color_paid<=1;",
-    )?;
-    patch(
-        &mut source,
-        top,
-        " wire basic_read,basic_valid,basic_collision;",
-        EMPTY_CONTROL,
-    )?;
-    patch(&mut source, top, " reg color_paid;", EMPTY_ASSIGN)?;
-    patch(
-        &mut source,
-        top,
-        "wire coalition_allow=compute_ce&&!(front_bad||sink_bad||final_bad);",
-        "wire coalition_allow=compute_ce;",
-    )?;
-    patch(
-        &mut source,
-        top,
-        "assign fault=abort||stopped||front_fault||sink_fault||final_fault;",
-        "assign fault=abort||stopped;",
-    )?;
-    patch(&mut source,top,"if(light_collision||sample_collision||basic_collision||(draw_rebind&&!pipeline_idle))stopped<=1;",
-      "if(abort||front_bad||sink_bad||final_bad||front_fault||sink_fault||final_fault||light_collision||sample_collision||basic_collision||(draw_rebind&&!pipeline_idle))stopped<=1;")?;
-    patch(&mut source,top,"if(light_collision||sample_collision||basic_collision)stopped<=1;",
-      "if(abort||front_bad||sink_bad||final_bad||front_fault||sink_fault||final_fault||light_collision||sample_collision||basic_collision)stopped<=1;")?;
-    patch(
-        &mut source,
-        top,
-        "wire[22:0]issue_descriptor,head_descriptor;wire[8:0]head_tile;",
-        "wire[22:0]issue_descriptor,head_descriptor,next_descriptor;wire[8:0]head_tile,next_tile;",
-    )?;
-    patch(&mut source,top,".descriptor_head(head_descriptor),.descriptor_head_tile(head_tile),",".descriptor_head(head_descriptor),.descriptor_next(next_descriptor),.descriptor_head_tile(head_tile),.descriptor_next_tile(next_tile),")?;
+    // The root owns its complete final ports/calendar. Intermediate historical
+    // factories still supply independently selected numerical children.
+    let (a, b) = span(&source, direct_lod::MODULE)?;
+    source.replace_range(a..b, &top_source(join_policy));
     // Whole-GPU configuration drain includes the entire flush sequence, even
     // between two line transactions where no maintenance request is active.
     patch(
@@ -285,35 +229,6 @@ fn render_globals(
     let (final_a, final_b) = span(&source, "gpu_v2_final_ordered_two_cycle")?;
     source.replace_range(final_a..final_b, &final_source(final_policy));
     source = framebuffer_tdp::lower(source, surface, native)?;
-    patch(
-        &mut source,
-        top,
-        " wire basic_read,basic_valid,basic_collision;",
-        " wire framebuffer_prefetch_valid;wire[9:0]framebuffer_prefetch_tile;\n wire basic_read,basic_valid,basic_collision;",
-    )?;
-    patch(
-        &mut source,
-        top,
-        " gpu_v2_vliw_sampling front(",
-        " gpu_v2_vliw_sampling front(\n`ifdef GPU_V2_COMMAND_PORTS\n.quad_color(quad_color),.issue_color(issue_color),\n`endif\n\n .prefetch_valid(framebuffer_prefetch_valid),.prefetch_tile(framebuffer_prefetch_tile),",
-    )?;
-    patch(
-        &mut source,
-        top,
-        " gpu_v2_pixel_framebuffer_sink sink(",
-        " gpu_v2_pixel_framebuffer_sink sink(\n .prefetch_valid(framebuffer_prefetch_valid),.prefetch_tile(framebuffer_prefetch_tile),.prefetch_abort(abort||stopped),",
-    )?;
-    // The held XY header already contains the complete raw tile identity.
-    // Remove its duplicate register and both load paths after old lowering.
-    patch(
-        &mut source,
-        top,
-        "reg[8:0]header_tile;",
-        "wire[8:0]header_tile={header[22:19],header[15:11]};",
-    )?;
-    patch(&mut source, top, "header_tile<=0;", "")?;
-    patch(&mut source, top, "header_tile<=head_tile;", "")?;
-    patch(&mut source, top, "header_tile<=next_tile;", "")?;
     // The closed VLIW path accepts every completed Color pixel in its final bank.
     // Keep the generic buffered Color factory unchanged.
     let (color_a, color_b) = span(&source, "gpu_v2_texture_runtime_color_checked")?;
@@ -325,19 +240,14 @@ fn render_globals(
     // Replace the selected consumer as one unit; the independent Light2 reference remains.
     let (light_a, light_b) = span(&source, "gpu_v2_pixel_lighting_consumer")?;
     source.replace_range(light_a..light_b, include_str!("vliw_lighting_tuple.v"));
-    lower_pool_layout(&mut source)?;
-    // Command colors are tied to the producer slot/depth Q, not live globals.
-    patch(&mut source, MODULE, " input wire clk,reset,ce,abort,",
-        "`ifdef GPU_V2_COMMAND_PORTS\n input[31:0]quad_color,\n`endif\n input wire clk,reset,ce,abort,")?;
-    patch(
-        &mut source,
-        MODULE,
-        "input wire[7:0]alpha,",
-        "\n`ifndef GPU_V2_COMMAND_PORTS\ninput wire[7:0]alpha,\n`endif\n",
-    )?;
-    patch(&mut source, MODULE, "wire[23:0]final_texture=input_bypass[1]?24'hffffff:sample_data;", "\n`ifdef GPU_V2_COMMAND_PORTS\nwire[23:0]final_texture=input_bypass[1]?basic_data:sample_data;\n`else\nwire[23:0]final_texture=input_bypass[1]?24'hffffff:sample_data;\n`endif\n")?;
-    patch(&mut source, MODULE, ".in_tint(basic_data),", "\n`ifdef GPU_V2_COMMAND_PORTS\n.in_tint(issue_color),\n`else\n.in_tint(basic_data),\n`endif\n")?;
-    patch(&mut source, MODULE, ".rgba({alpha,out_covered?final_RGB:24'd0})", "\n`ifdef GPU_V2_COMMAND_PORTS\n.rgba({8'd0,out_covered?final_RGB:24'd0})\n`else\n.rgba({alpha,out_covered?final_RGB:24'd0})\n`endif\n")?;
+    // These banks lend their held Q directly; the join calendar owns the loan.
+    for (name, width) in [("light", 18), ("sample", 24)] {
+        let module = format!("gpu_v2_postquad_{name}_bank");
+        let bank = super::row_store::verilog_owned_q(128, width, native)?
+            .replace("gpu_v2_pixel_row_store", &module);
+        let (a, b) = span(&source, &module)?;
+        source.replace_range(a..b, &bank);
+    }
     let result = reachable(&source, MODULE)?;
     // Scope only after module reachability has selected the complete owners.
     let result = match color_policy {
@@ -366,247 +276,3 @@ fn render_globals(
         result
     ))
 }
-
-/// Replace the selected join calendar as a unit. Z is owned by the producer
-/// bank until the paired ROP depth acceptance; it never enters a staging ring.
-fn lower_pool_layout(source: &mut String) -> Result<(), String> {
-    let top = MODULE;
-    patch(
-        source,
-        top,
-        "wire basic_read,basic_valid,basic_collision;",
-        "wire basic_read,basic_collision;",
-    )?;
-    patch(source, top, ".basic_return_valid(basic_valid),", "")?;
-    patch(source, top, "wire[7:0]basic_address;wire[23:0]basic_data;",
-        "\n`ifdef GPU_V2_COMMAND_PORTS\nwire[23:0]issue_color;\n`endif\nwire[6:0]basic_address;wire[23:0]basic_data;\n`ifdef GPU_V2_COMMAND_PORTS\nwire[23:0]depth_data;\n`else\nwire[15:0]depth_data;\n`endif\n\n wire sink_color_accept;reg[1:0]out_lane;")?;
-    patch(source, top, ".basic_return_data(basic_data),.basic_collision(basic_collision),",
-        ".basic_return_data(basic_data),.basic_collision(basic_collision),\n .depth_read(sink_color_accept),.depth_read_address({retire_slot,out_lane}),.depth_data(depth_data),")?;
-    patch(source, top, "reg[2:0]state;reg[1:0]issue_lane,out_lane;\n reg paid;reg[3:0]depth_valid,depth_reserved;\n reg[15:0]depth_rows[0:3];\n reg depth_pending;reg[1:0]depth_tag,input_bypass;\n localparam J_READ=0,J_WAIT=1,J_ISSUE=2,J_DEPTH=3,J_DEPTH_WAIT=4,J_DRAIN=5;",
-        "reg state;reg[1:0]issue_lane;\n reg[1:0]input_bypass;\n localparam J_READ=0,J_WAIT=1;")?;
-    patch(
-        source,
-        top,
-        "wire lane_ready,lane_accept,sink_color_accept,sink_color_ready;",
-        "wire lane_ready,lane_accept,sink_color_ready;",
-    )?;
-    patch(source, top, "wire join_value_read=active&&(|issue_header[3:0])&&state==J_READ&&issue_exists&&issue_light_ready&&issue_sample_ready&&!depth_reserved[issue_lane];\n // Only old free rows pay reads. A retirement or publication on this edge\n // cannot fund a reservation. The producer never crosses a second quad.\n wire join_depth_read=active&&state==J_WAIT&&(paid||basic_valid)&&(!covered||final_in_ready)&&(!issue_ahead||issue_lane!=3);\n wire read_values=join_value_read;\n assign basic_read=join_value_read||join_depth_read;\n assign basic_address={issue_slot,issue_lane,state==J_WAIT};",
-        r#"wire source_exists=active&&(|issue_header[3:0])&&issue_exists;
- wire issue_room=!issue_ahead||issue_lane!=3;
- wire join_value_read=source_exists&&state==J_READ&&covered&&issue_light_ready&&issue_sample_ready;
- // READ_MODE0 updates all three Qs on the J_READ edge. J_WAIT itself
- // owns complete source Q until Final accepts; CE0 freezes state and Q.
- // The cursor may enter the next quad, but cannot cross its final lane.
- wire join_issue=active&&state==J_WAIT&&final_in_ready&&issue_room;
- // A masked lane owns no arithmetic operands: advance its ordered prefix
- // directly, with no source RAM read, paid return or J_WAIT transition.
- wire skip_issue=source_exists&&state==J_READ&&!covered&&issue_room;
- wire source_advance=join_issue||skip_issue;
- wire read_values=join_value_read;
- assign basic_read=join_value_read;
- assign basic_address=read_key;
- // This ordered prefix also covers lanes which produce no Final token.
- // A lane cannot reach ROP until its real source/issue cursor has passed it.
- wire output_issued=issue_ahead||(issue_lane>out_lane);"#)?;
-    patch(source, top, "issue_slot==retire_slot&&state==J_READ&&issue_lane==0&&!paid&&!depth_pending&&\n  depth_reserved==0&&depth_valid==0&&!color_paid&&!final_out_valid;",
-        "issue_slot==retire_slot&&state==J_READ&&issue_lane==0&&!color_paid&&!final_out_valid;")?;
-    patch(source, top, "wire lane_valid=active&&depth_valid[out_lane]&&(!out_covered||final_out_valid||color_paid);",
-        "wire lane_valid=active&&output_issued&&(!out_covered||final_out_valid||color_paid);")?;
-    patch(
-        source,
-        top,
-        ".depth(depth_rows[out_lane])",
-        "\n`ifdef GPU_V2_COMMAND_PORTS\n.depth(depth_data[15:0]),.depth_alpha(depth_data[23:16])\n`else\n.depth(depth_data)\n`endif\n",
-    )?;
-    patch(source, top, "stopped<=0;active<=0;state<=J_READ;paid<=0;depth_valid<=0;color_paid<=0;issue_slot<=0;depth_reserved<=0;depth_pending<=0;depth_tag<=0;input_bypass<=0;",
-        "stopped<=0;active<=0;state<=J_READ;color_paid<=0;issue_slot<=0;input_bypass<=0;")?;
-    patch(source, top, "// A paid depth return owns its tagged ring row even on CE0.\n   depth_pending<=advance&&join_depth_read;\n   if(advance&&join_depth_read)depth_tag<=issue_lane;\n   if(depth_pending&&basic_valid)begin\n    depth_rows[depth_tag]<=basic_data[15:0];depth_valid[depth_tag]<=1;\n   end\n   if(active&&state==J_WAIT&&basic_valid&&!depth_pending)paid<=1;",
-        "// J_WAIT owns synchronous RGB/GH/texture Q through CE0 and backpressure.")?;
-    patch(
-        source,
-        top,
-        "state<=J_WAIT;paid<=0;depth_reserved[issue_lane]<=1;",
-        "state<=J_WAIT;",
-    )?;
-    patch(source, top, "wire final_in_valid=active&&state==J_WAIT&&(paid||basic_valid)&&covered&&(!issue_ahead||issue_lane!=3);",
-        "wire final_in_valid=active&&state==J_WAIT&&issue_room;")?;
-    patch(
-        source,
-        top,
-        "    if(active)case(state)\n     J_READ:if(join_value_read)begin",
-        "    if(join_value_read)begin",
-    )?;
-    patch(source, top, "     end\n     J_WAIT:if(join_depth_read)begin\n      state<=J_READ;paid<=0;\n      if(issue_lane==3)begin issue_lane<=0;issue_slot<=issue_slot+5'd1;end\n      else issue_lane<=issue_lane+1'b1;\n     end\n    endcase\n    if(empty_skip)issue_slot<=issue_slot+5'd1;",
-        r#"    end
-    if(source_advance)state<=J_READ;
-    // Every source prefix step, including a whole empty quad, has one owner.
-    if(source_advance||empty_skip)begin
-     if(empty_skip||issue_lane==3)begin issue_lane<=0;issue_slot<=issue_slot+5'd1;end
-     else issue_lane<=issue_lane+1'b1;
-    end"#)?;
-    patch(source, top, "if(lane_accept)begin out_lane<=out_lane+1'b1;color_paid<=0;depth_valid[out_lane]<=0;depth_reserved[out_lane]<=0;end",
-        "if(lane_accept)begin out_lane<=out_lane+1'b1;color_paid<=0;end")?;
-    patch(
-        source,
-        top,
-        "wire light_return,sample_return,light_collision,sample_collision;",
-        "wire light_collision,sample_collision;",
-    )?;
-    patch(source, top, ".return_valid(light_return),", "")?;
-    patch(source, top, ".return_valid(sample_return),", "")?;
-    // These selected banks have exactly the same synchronous Q ownership.
-    // Remove their unused validity pipelines too, in both physical backends.
-    for bank in ["gpu_v2_postquad_light_bank", "gpu_v2_postquad_sample_bank"] {
-        patch(source, bank, " output reg return_valid,\n", "")?;
-        patch(
-            source,
-            bank,
-            "if(reset) return_valid<=1'b0;",
-            "if(reset)begin end",
-        )?;
-        patch(
-            source,
-            bank,
-            "   return_valid<=read_en && !collision;\n",
-            "",
-        )?;
-    }
-    // Occupancy below32 makes the existing publish cursor unambiguous. The
-    // parent does not need another increment/decrement copy of that interval.
-    patch(source, top, "reg[5:0]published_count;", "")?;
-    patch(
-        source,
-        top,
-        "wire issue_exists=published_count>{5'd0,issue_ahead};",
-        "wire issue_exists=issue_slot!=published_slot;",
-    )?;
-    patch(source, top, "published_count!=0&&empty_head", "empty_head")?;
-    patch(source, top, "published_count<=0;", "")?;
-    patch(source, top, "    case({published,quad_accepted||empty_skip})\n     2'b10:published_count<=published_count+1'b1;\n     2'b01:published_count<=published_count-1'b1;\n    endcase\n", "")?;
-    patch(
-        source,
-        top,
-        "if(!active&&published_count!=0&&!empty_head)begin",
-        "if(!active&&retire_slot!=published_slot&&!empty_head)begin",
-    )?;
-    patch(
-        source,
-        top,
-        "if(published_count>1)begin",
-        "if((retire_slot+5'd1)!=published_slot)begin",
-    )?;
-    // The sink's registered C/D phase already is the C-paid fact. On a sink
-    // fault it resets while the global sticky stop suppresses every consumer.
-    patch(source, top, "reg color_paid;", "wire color_paid;")?;
-    patch(
-        source,
-        top,
-        "state<=J_READ;color_paid<=0;issue_slot",
-        "state<=J_READ;issue_slot",
-    )?;
-    patch(source, top, "    if(sink_color_accept)color_paid<=1;\n    if(lane_accept)begin out_lane<=out_lane+1'b1;color_paid<=0;end",
-        "    if(lane_accept)out_lane<=out_lane+1'b1;")?;
-    patch(
-        source,
-        top,
-        " gpu_v2_pixel_framebuffer_sink sink(",
-        " gpu_v2_pixel_framebuffer_sink sink(\n`ifdef GPU_V2_COMMAND_MAINTENANCE\n .ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_lower_ready(ui_lower_ready),.ui_tile(ui_tile),.copy_active(copy_active),.copy_address(copy_address),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),.ui_pixel_valid(ui_pixel_valid),.ui_pixel_half(ui_pixel_half),.ui_pixel_word(ui_pixel_word),.ui_pixels(ui_pixels),\n .color_base(color_base),.depth_base(depth_base),\n`endif\n .depth_phase(color_paid),",
-    )?;
-    let sink = "gpu_v2_pixel_framebuffer_sink";
-    patch(
-        source,
-        sink,
-        " output wire raw_head_retire,",
-        " output wire depth_phase,raw_head_retire,",
-    )?;
-    patch(
-        source,
-        sink,
-        " reg phase;",
-        " reg phase;\n assign depth_phase=phase;",
-    )?;
-    // The same paired-D acceptance advances both former lane registers.
-    // Use the sink's canonical lane directly; no independent lane can mismatch.
-    patch(source, top, "reg[1:0]out_lane;", "wire[1:0]out_lane;")?;
-    patch(
-        source,
-        top,
-        "issue_lane<=0;out_lane<=0;light_complete",
-        "issue_lane<=0;light_complete",
-    )?;
-    patch(
-        source,
-        top,
-        "active<=1;header<=head_descriptor;out_lane<=0;",
-        "active<=1;header<=head_descriptor;",
-    )?;
-    patch(
-        source,
-        top,
-        "    if(lane_accept)out_lane<=out_lane+1'b1;\n",
-        "",
-    )?;
-    patch(source, top, ".lane(out_lane),", ".active_lane(out_lane),")?;
-    patch(
-        source,
-        sink,
-        " input wire lane_valid,input wire[1:0]lane,",
-        " input wire lane_valid,output wire[1:0]active_lane,",
-    )?;
-    patch(
-        source,
-        sink,
-        " wire lane_matches=(lane==expected_lane);",
-        " assign active_lane=expected_lane;",
-    )?;
-    patch(
-        source,
-        sink,
-        "wire[2:0]row_index={lane,phase};",
-        "wire[2:0]row_index={expected_lane,phase};",
-    )?;
-    let (a, b) = span(source, sink)?;
-    let body = &source[a..b];
-    if body.matches("&&lane_matches").count() != 6 {
-        return Err("selected sink lane-match ownership anchors changed".into());
-    }
-    let body = body.replace("&&lane_matches", "");
-    source.replace_range(a..b, &body);
-    Ok(())
-}
-const PRODUCER_PORTS: &str = r#" input wire front_ce,input wire[1:0]phase,
-`ifdef GPU_V2_LIVE_GLOBALS
-input wire draw_unlit,
-`else
-input wire draw_bank,draw_unlit,
-`endif
-
- input wire quad_valid,output wire quad_ready,output wire[2:0]quad_id,
- input wire[7:0]quad_x,input wire[6:0]quad_y,input wire quad_rgb,
- input wire quad_end_valid,input wire[2:0]quad_end_id,input wire[3:0]quad_end_mask,
- input wire result_we,input wire[6:0]result_wa,input wire[35:0]result_wd,
- input wire depth_event_valid,input wire[4:0]depth_event_pid,input wire[15:0]depth_event_z16,input wire depth_event_pass,
- input wire lod_valid,input wire[2:0]lod_id,input wire[7:0]lod_value,
- output wire empty_skipped,output wire[5:0]producer_used,"#;
-const PRODUCER_CONNECTIONS: &str = r#" .front_ce(front_ce&&!fault),.producer_phase(phase),
-`ifndef GPU_V2_LIVE_GLOBALS
-.draw_bank(draw_bank),
-`endif
-.draw_unlit(draw_unlit),
- .quad_valid(quad_valid),.quad_ready(quad_ready),.quad_id(quad_id),.quad_x(quad_x),.quad_y(quad_y),.quad_rgb(quad_rgb),
- .quad_end_valid(quad_end_valid),.quad_end_id(quad_end_id),.quad_end_mask(quad_end_mask),
- .result_we(result_we),.result_wa(result_wa),.result_wd(result_wd),
- .depth_event_valid(depth_event_valid),.depth_event_pid(depth_event_pid),.depth_event_z16(depth_event_z16),.depth_event_pass(depth_event_pass),
- .lod_valid(lod_valid),.lod_id(lod_id),.lod_value(lod_value),
- .empty_skip(empty_skip),.empty_head(empty_head),.empty_skip_ready(empty_skip_ready),
- .advance(advance),.preflight_bad(front_bad),.fault(front_fault),"#;
-const EMPTY_CONTROL: &str = r#" wire basic_read,basic_valid,basic_collision;
- wire empty_head,empty_skip_ready;
- // No lookahead Basic/Light/Sample read is allowed for a zero-mask slot.
- // The empty head retires only after all previous head tokens have drained.
- wire empty_skip;
- assign empty_skipped=empty_skip;"#;
-const EMPTY_ASSIGN: &str = r#" reg color_paid;
- assign empty_skip=advance&&!active&&published_count!=0&&empty_head&&empty_skip_ready&&
-  issue_slot==retire_slot&&state==J_READ&&issue_lane==0&&!paid&&!depth_pending&&
-  depth_reserved==0&&depth_valid==0&&!color_paid&&!final_out_valid;"#;
