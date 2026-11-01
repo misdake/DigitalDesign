@@ -119,6 +119,8 @@ def main():
     p.add_argument('--case',choices=['sparse','empty','dense','numeric'],default='sparse');p.add_argument('--modes',nargs='+',type=int,choices=[0,1,2,3],default=[0,1]);p.add_argument('--repeat',type=int,choices=[1,2],default=1)
     p.add_argument('--ranges',nargs='+',help='Consecutive independent UI calls, each first:end (exclusive end)')
     p.add_argument('--rcc-records',type=Path,help='Exact compiled-CPU records from GPU_RCC_UI_RANGE_FIXTURE')
+    p.add_argument('--trace',action='store_true',help='Record every command/TDP/router edge')
+    p.add_argument('--no-monitors',action='store_true')
     a=p.parse_args()
     ranges=[tuple(map(int,r.split(':'))) for r in a.ranges] if a.ranges else None
     if ranges is not None and (a.repeat!=1 or any(len(r)!=2 or not 0<=r[0]<r[1]<=750 for r in ranges)):
@@ -206,10 +208,13 @@ endmodule
     if record:
         for old,key in [('40000','command_base'),('100000','color_base'),('140000','depth_base')]:
             tb=tb.replace("32'h"+old,"32'h"+format(record[key],'x'))
+    if a.trace:
+        from maintenance_profiles import trace_tb
+        tb=trace_tb(tb)
     (out/'tb.v').write_text(tb)
     contract=load_contract(a.peer)
     files=stage_peer(a.peer,out)
-    commands=[('compile',[os.environ['IVERILOG_EXE'],'-g2012','-D__ICARUS__','-I',out,'-s','tb','-o',out/'sim.vvp',out/'dut.v',*files,out/'tb.v',Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'])]
+    commands=[('compile',[os.environ['IVERILOG_EXE'],'-g2012',*(['-DSYNTHESIS'] if a.no_monitors else []),'-D__ICARUS__','-I',out,'-s','tb','-o',out/'sim.vvp',out/'dut.v',*files,out/'tb.v',Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'])]
     commands += [(f'run-{mode}',[os.environ['VVP_EXE'],out/'sim.vvp',f'+MODE={mode}']) for mode in a.modes]
     passes=[]
     for name,cmd in commands:

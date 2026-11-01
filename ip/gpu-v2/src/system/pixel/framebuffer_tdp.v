@@ -1,10 +1,16 @@
 // Complete selected TDP sink; source lifetime ends at D, cache lifetime at C.
 module gpu_v2_pixel_framebuffer_sink #(
+`ifndef GPU_V2_COMMAND_MAINTENANCE
  parameter [31:0] COLOR_BASE=32'd@COLOR@,DEPTH_BASE=32'd@DEPTH@,
+`endif
  parameter [9:0] WIDTH=10'd@WIDTH@,
  parameter [8:0] HEIGHT=9'd@HEIGHT@,
  parameter PREFETCH_ENABLE=@PREFETCH@,parameter PREFETCH_DIRTY=@PREFETCH_DIRTY@
 )(
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ input ui_active,ui_cmd_valid,ui_cmd_write,ui_lower_ready,input[8:0]ui_tile,input copy_active,input[13:0]copy_address,output ui_cmd_ready,ui_cmd_done,input ui_pixel_valid,ui_pixel_half,input[4:0]ui_pixel_word,input[63:0]ui_pixels,
+ input[13:0]color_base,depth_base,
+`endif
 `ifdef GPU_V2_COMMAND_PORTS
  input[7:0]depth_alpha,
 `endif
@@ -51,8 +57,15 @@ module gpu_v2_pixel_framebuffer_sink #(
    if(phase)expected_lane<=expected_lane+2'd1;
   end
  end
- gpu_v2_framebuffer_tdp #(.COLOR_BASE(COLOR_BASE),.DEPTH_BASE(DEPTH_BASE),
+ gpu_v2_framebuffer_tdp #(
+`ifndef GPU_V2_COMMAND_MAINTENANCE
+.COLOR_BASE(COLOR_BASE),.DEPTH_BASE(DEPTH_BASE),
+`endif
   .WIDTH(WIDTH),.HEIGHT(HEIGHT),.PREFETCH_ENABLE(PREFETCH_ENABLE),.PREFETCH_DIRTY(PREFETCH_DIRTY)) cache(
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ .ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_lower_ready(ui_lower_ready),.ui_tile(ui_tile),.copy_active(copy_active),.copy_address(copy_address),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),.ui_pixel_valid(ui_pixel_valid),.ui_pixel_half(ui_pixel_half),.ui_pixel_word(ui_pixel_word),.ui_pixels(ui_pixels),
+ .color_base(color_base),.depth_base(depth_base),
+`endif
 
 `ifdef GPU_V2_COMMAND_PORTS
 .row_alpha(depth_alpha),

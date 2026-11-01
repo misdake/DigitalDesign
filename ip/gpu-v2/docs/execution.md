@@ -917,6 +917,16 @@ ports cannot overlap at the same address. No bypass, extra owner state or
 pipeline bubble is required. This contract also applies to the independent
 generic and compact execution models.
 
+The framebuffer TDP source owns its command diagnostic policy together with
+runtime-target/UI/MEMCPY maintenance. The command factory selects the private
+`GPU_V2_COMMAND_MAINTENANCE` profile only for that closure; generic factories
+retain fixed targets and their original checked behavior. No final scanner
+specializes this owner's completion-error, source-error or fault-register
+statements. Request/data/retire counters, held native Q, CE-independent service,
+UI half-completions and the final write response retain their existing owners.
+The [UI contract](/ip/gpu-v2/docs/ui.md#native-command-maintenance-ownership)
+describes the forwarding and bank-port boundary.
+
 The command factory removes diagnostic feedback from the independently checked
 components below. Its simulation monitors never control CE, writes, ready or
 state transitions; synthesis removes only the monitors. Normal backpressure

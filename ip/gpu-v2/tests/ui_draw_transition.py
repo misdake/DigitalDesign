@@ -304,6 +304,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--layout', choices=['high-grid', 'high-atlas'], default='high-atlas')
     parser.add_argument('--modes', type=int, nargs='+', choices=[0, 1, 2], default=[0, 1, 2])
+    parser.add_argument('--trace', action='store_true', help='Record every command/TDP/router edge')
+    parser.add_argument('--no-monitors', action='store_true')
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -322,6 +324,9 @@ def main():
     tb = continuation.TB[:continuation.TB.index('integer cycle=0')]
     tb = tb.replace('@PORTS@', '\n'.join(declarations)).replace('gpu_v2_vliw_command dut(.*);', TASKS+'\ngpu_v2_vliw_command dut(.*);')
     tb += TB.replace('@BYTES@', str(meta['command_bytes'])).replace('@PROTECTED@', str(meta['protected']))
+    if args.trace:
+        from maintenance_profiles import trace_tb
+        tb = trace_tb(tb)
     (out / 'tb.v').write_text(tb)
     load_contract(args.peer)
     files, peers = [], {}
@@ -339,7 +344,7 @@ def main():
             shutil.copyfile(source, out / name)
         if name.endswith('.v'):
             files.append(out / name)
-    commands = [('compile', [os.environ['IVERILOG_EXE'], '-g2012', '-D__ICARUS__', '-I', out, '-s', 'tb', '-o', out / 'sim.vvp', out / 'dut.v', *files, out / 'tb.v', Path(os.environ['GOWIN_HOME']) / 'IDE/simlib/gw2a/prim_sim.v'])]
+    commands = [('compile', [os.environ['IVERILOG_EXE'], '-g2012', *(['-DSYNTHESIS'] if args.no_monitors else []), '-D__ICARUS__', '-I', out, '-s', 'tb', '-o', out / 'sim.vvp', out / 'dut.v', *files, out / 'tb.v', Path(os.environ['GOWIN_HOME']) / 'IDE/simlib/gw2a/prim_sim.v'])]
     commands += [(f'run-{mode}', [os.environ['VVP_EXE'], out / 'sim.vvp', f'+MODE={mode}']) for mode in args.modes]
     passes = []
     for name, command in commands:

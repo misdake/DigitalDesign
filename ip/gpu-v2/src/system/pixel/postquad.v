@@ -1,5 +1,9 @@
 // One actual post-quad chain. Draw pins remain immutable until pipeline_idle.
 module gpu_v2_postquad(
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ input ui_active,ui_cmd_valid,ui_cmd_write,ui_lower_ready,input[8:0]ui_tile,input copy_active,input[13:0]copy_address,output ui_cmd_ready,ui_cmd_done,input ui_pixel_valid,ui_pixel_half,input[4:0]ui_pixel_word,input[63:0]ui_pixels,
+ input[13:0]color_base,depth_base,
+`endif
  input wire clk,reset,ce,abort,
  input wire in_valid,input wire[22:0]in_begin,
  input wire[31:0]in_basic,input wire[35:0]in_light,in_uv,

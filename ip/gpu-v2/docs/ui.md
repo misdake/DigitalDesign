@@ -159,6 +159,25 @@ accepted DMA/maintenance work without reporting successful CB completion.
 Each alpha bit gates an entire independent 16-bit bank write. Transparency does
 not use a partial native BSRAM write or require a read-modify-write of a pixel.
 
+## Native command maintenance ownership
+
+The command factory scopes `GPU_V2_COMMAND_MAINTENANCE` around its numerical
+closure and undefines it before emitting the remaining control modules. The
+top and selected postquad wrapper declare the runtime color/depth and serial
+UI/copy ports; the TDP sink forwards them to the cache source. The source owns
+`column_ui_tile`, color-only UI addressing, the raw-copy bypass, alpha/RGB565
+bank writes, lower-half gating and temporary-line nonpublication. These paths
+are declarations of the existing owners, with one shared maintenance FSM.
+No command-source text pass inserts or rewrites their ports or statements.
+
+This private profile is independent of the public color-port profile.
+Standalone checked factories retain fixed target parameters and functional
+error latches, even when their caller selects command color ports. In the
+command profile, failed memory ACKs and malformed source events are passive
+simulation obligations; their zero-valued diagnostic registers continue to
+update on every clock edge. Disabling monitors adds no recovery protocol.
+Presented/accepted transport and explicit abort retain their drain boundaries.
+
 ## Focused verification
 
 `tests/ui_grid.py` compares the entire color plane to independent screen-space
@@ -208,3 +227,14 @@ the native Windows Fixedsys 8x15 raster strike in an 8x16 cell. Neither path
 resizes, antialiases or thresholds a vector-font rendering. Python Pillow,
 fontTools and the Windows `vgafix.fon` resource are test prerequisites; font
 binaries and rendered images remain generated artifacts.
+
+`tests/maintenance_profiles.py` compares the complete ordered preprocessed
+factory token streams with a supplied frozen baseline, with native/portable
+arithmetic and monitors on/off. Its bounded diagnostic probes distinguish
+command failed-ACK/source/readiness assertions from generic sticky rejection.
+The UI, transition and MEMCPY pin fixtures accept `--trace` to observe every
+command/TDP/router request, payload, terminal, descriptor-Q and bank-port edge;
+`--no-monitors` selects the same datapath without simulation assertions.
+`--trace-pair BASE CANDIDATE` on the profile checker compares the saved traces
+byte for byte. These are bounded interface/transport checks, not new physical
+SDRAM, Display, full-scene or board qualifications.

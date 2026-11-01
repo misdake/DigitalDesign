@@ -2,6 +2,10 @@
 // Global configuration is immutable until pipeline_idle. T-local drain is not
 // coupled to old quads in the backend. Memory return/drain is independent of CE.
 module gpu_v2_vliw(
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ input ui_active,ui_cmd_valid,ui_cmd_write,ui_lower_ready,input[8:0]ui_tile,input copy_active,input[13:0]copy_address,output ui_cmd_ready,ui_cmd_done,input ui_pixel_valid,ui_pixel_half,input[4:0]ui_pixel_word,input[63:0]ui_pixels,
+ input[13:0]color_base,depth_base,
+`endif
 `ifdef GPU_V2_COMMAND_PORTS
  input[31:0]mesh_color,
 `endif
@@ -66,6 +70,10 @@ blend,draw_rebind,
  wire[4:0]depth_pid;wire[15:0]depth_z;
  assign quad_admitted=front_ce&&qvalid&&qready;
  gpu_v2_vliw_backend back(
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ .ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_lower_ready(ui_lower_ready),.ui_tile(ui_tile),.copy_active(copy_active),.copy_address(copy_address),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),.ui_pixel_valid(ui_pixel_valid),.ui_pixel_half(ui_pixel_half),.ui_pixel_word(ui_pixel_word),.ui_pixels(ui_pixels),
+ .color_base(color_base),.depth_base(depth_base),
+`endif
 `ifdef GPU_V2_COMMAND_PORTS
 .quad_color(quad_color),
 `endif

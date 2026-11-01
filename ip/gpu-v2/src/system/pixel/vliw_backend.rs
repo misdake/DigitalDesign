@@ -278,8 +278,8 @@ fn render_globals(
     source.replace_range(light_a..light_b, include_str!("vliw_lighting_tuple.v"));
     lower_pool_layout(&mut source)?;
     // Command colors are tied to the producer slot/depth Q, not live globals.
-    patch(&mut source, MODULE, "module gpu_v2_vliw_backend(",
-        "module gpu_v2_vliw_backend(\n`ifdef GPU_V2_COMMAND_PORTS\n input[31:0]quad_color,\n`endif\n")?;
+    patch(&mut source, MODULE, " input wire clk,reset,ce,abort,",
+        "`ifdef GPU_V2_COMMAND_PORTS\n input[31:0]quad_color,\n`endif\n input wire clk,reset,ce,abort,")?;
     patch(
         &mut source,
         MODULE,
@@ -454,7 +454,7 @@ fn lower_pool_layout(source: &mut String) -> Result<(), String> {
         source,
         top,
         " gpu_v2_pixel_framebuffer_sink sink(",
-        " gpu_v2_pixel_framebuffer_sink sink(\n .depth_phase(color_paid),",
+        " gpu_v2_pixel_framebuffer_sink sink(\n`ifdef GPU_V2_COMMAND_MAINTENANCE\n .ui_active(ui_active),.ui_cmd_valid(ui_cmd_valid),.ui_cmd_write(ui_cmd_write),.ui_lower_ready(ui_lower_ready),.ui_tile(ui_tile),.copy_active(copy_active),.copy_address(copy_address),.ui_cmd_ready(ui_cmd_ready),.ui_cmd_done(ui_cmd_done),.ui_pixel_valid(ui_pixel_valid),.ui_pixel_half(ui_pixel_half),.ui_pixel_word(ui_pixel_word),.ui_pixels(ui_pixels),\n .color_base(color_base),.depth_base(depth_base),\n`endif\n .depth_phase(color_paid),",
     )?;
     let sink = "gpu_v2_pixel_framebuffer_sink";
     patch(

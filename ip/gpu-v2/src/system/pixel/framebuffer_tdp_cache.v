@@ -1,9 +1,15 @@
 // Eight 16x8 half-tile lines, four TDP banks with fixed zero padding. A compute clock-enable never gates B maintenance.
 module gpu_v2_framebuffer_tdp #(
+`ifndef GPU_V2_COMMAND_MAINTENANCE
  parameter[31:0]COLOR_BASE=0,DEPTH_BASE=16384,
+`endif
  parameter[9:0]WIDTH=400,parameter[8:0]HEIGHT=240,
  parameter PREFETCH_ENABLE=1,parameter PREFETCH_DIRTY=0
 )(
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ input ui_active,ui_cmd_valid,ui_cmd_write,ui_lower_ready,input[8:0]ui_tile,input copy_active,input[13:0]copy_address,output ui_cmd_ready,ui_cmd_done,input ui_pixel_valid,ui_pixel_half,input[4:0]ui_pixel_word,input[63:0]ui_pixels,
+ input[13:0]color_base,depth_base,
+`endif
 `ifdef GPU_V2_COMMAND_PORTS
  input[7:0]row_alpha,
 `endif
@@ -22,12 +28,18 @@ module gpu_v2_framebuffer_tdp #(
  output mem_write_valid,output[63:0]mem_write_data,input mem_write_ready,mem_complete_valid,mem_complete_ok
 );
  // One maintenance context; request, payload and retirement advance independently.
+ // The private command profile directly owns runtime targets and serial UI/raw-copy
+ // maintenance; the generic profile keeps fixed targets and functional diagnostics.
  // Segment index is {plane,sector}; no payload queue or per-sector owner table.
  reg mt_active,mt_tvalid,mt_write;reg[2:0]mt_line;
  reg[9:0]mt_target;reg[1:0]mt_remaining;
  reg[2:0]mt_issue,mt_retire;reg[6:0]mt_data;
  reg wr_beat_valid,flushing,mt_cancel,mt_request;
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ wire[2:0]mt_end=(mt_write&&!mt_remaining[1]&&!ui_active)?3'd2:3'd4;
+`else
  wire[2:0]mt_end=mt_write&&!mt_remaining[1]?3'd2:3'd4;
+`endif
  wire[6:0]mt_data_end={mt_end,4'd0};
  reg[9:0]tag[0:7];reg tvalid[0:7],dirc[0:7],dird[0:7];reg[2:0]victim;
  // Lossy wall-clock hints never reserve a ROP context or a public credit.
@@ -71,7 +83,11 @@ reg[1:0]compare_bank;
  wire leaf_out_valid,leaf_cw,leaf_dw,shared_mul_pending;
  wire[15:0]leaf_new_color,leaf_new_depth;
  wire return_bad=ce&&!reset&&!fault&&leaf_out_valid&&(!ctx_valid[result_owner]||depth_pending||!shade_phase);
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ wire source_bad=1'b0;
+`else
  wire source_bad=ingress_error||extra_read||return_bad;
+`endif
  assign preflight_bad=!reset&&source_bad;
  assign row_ready=!reset&&!fault&&row_credit&&source_ready&&!source_bad;
  assign row_accept=actual_ce&&row_valid&&row_ready;
@@ -107,7 +123,11 @@ reg[1:0]compare_bank;
  assign shared_rop_offer=ce&&!reset&&!fault&&shared_mul_pending;
  // Payload never passes issue; only equality means no accepted sector.
  wire data_owned=mt_data[6:4]!=mt_issue||req_accept;
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ wire only_color=mt_write&&!mt_remaining[1]&&!ui_active;
+`else
  wire only_color=mt_write&&!mt_remaining[1];
+`endif
  wire data_left=only_color?!mt_data[5]:!mt_data[6];
  wire data_last=(&mt_data[4:0])&&(mt_data[5]||only_color);
  wire retire_last=mt_retire[0]&&(mt_retire[1]||only_color);
@@ -117,14 +137,45 @@ reg[1:0]compare_bank;
  wire refill_write=rbeat;
  // A successful old-Q consumption launches the following word, including across
  // a 128B boundary. CE affects only ROP; B maintenance never freezes with it.
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+`else
  wire m_rd_issue=mt_active&&mt_write&&data_left&&(!wr_beat_valid||(wbeat&&!data_last));
+`endif
  wire[6:0]maintenance_read_word=mt_data+{6'd0,wbeat};
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ wire m_rd_issue=mt_active&&mt_write&&data_left&&(!wr_beat_valid||(wbeat&&!data_last))&&(!ui_active||!maintenance_read_word[5]||ui_lower_ready);
+ wire[9:0]maintenance_read_addr=ui_active?{4'd0,maintenance_read_word[5:0]}:{maintenance_read_word[5],1'b0,mt_line,maintenance_read_word[4:0]};
+ wire[9:0]maintenance_write_addr=ui_active?{4'd0,mt_data[5:0]}:{mt_data[5],1'b0,mt_line,mt_data[4:0]};
+`else
  wire[9:0]maintenance_read_addr={maintenance_read_word[5],1'b0,mt_line,maintenance_read_word[4:0]};
  wire[9:0]maintenance_write_addr={mt_data[5],1'b0,mt_line,mt_data[4:0]};
+`endif
  wire stop_publication=fault||source_bad;
  wire[9:0]mt_tile=mt_write?tag[mt_line]:mt_target;
  // Raw {Y/8[4:0],X/16[4:0]} key is shared by the queue/cache. Linearize
  // the held victim/new 16x16 tile, retaining key bit5 as its half selector.
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+ // Raw half-tile tag remains unchanged. UI keeps its logical row-order ABI.
+ function[8:0]column_ui_tile;
+  input[8:0]logical_tile;reg[8:0]remainder;reg[3:0]row;
+  begin
+   remainder=logical_tile;row=0;
+   if(remainder>=9'd200)begin remainder=remainder-9'd200;row[3]=1;end
+   if(remainder>=9'd100)begin remainder=remainder-9'd100;row[2]=1;end
+   if(remainder>=9'd50)begin remainder=remainder-9'd50;row[1]=1;end
+   if(remainder>=9'd25)begin remainder=remainder-9'd25;row[0]=1;end
+   column_ui_tile={remainder[4:0],row};
+  end
+ endfunction
+ wire[8:0]mt_linear_tile=ui_active?column_ui_tile(ui_tile):{mt_tile[4:0],mt_tile[9:6]};
+ wire mt_half=ui_active?mt_issue[1]:mt_tile[5];
+ assign ui_cmd_ready=ui_active&&!mt_active&&!flushing;
+ assign ui_cmd_done=ui_active&&mt_active&&mem_complete_valid&&(mt_write?retire_last:mt_retire[0]);
+ assign mem_req_valid=mt_request&&!reset&&(!ui_active||!mt_write||!mt_issue[1]||ui_lower_ready);assign mem_req_write=mt_write;
+ wire[6:0]target_page=((mt_issue[1]&&!ui_active)?depth_base[13:7]:color_base[13:7])+{5'd0,mt_linear_tile[8:7]};
+ // Serial memcpy bypasses target geometry, bank conversion and plane bases.
+ assign mem_req_addr=copy_active?{9'd0,copy_address,mt_issue[1:0],7'd0}:{9'd0,target_page,mt_linear_tile[6:0],mt_half,mt_issue[0],7'd0};
+`else
  wire[8:0]mt_tile_y={5'd0,mt_tile[9:6]};
  // WIDTH is elaboration-time constant. Explicit constant shifts keep this
  // address conversion in fabric rather than spending a DSP on multiply-add.
@@ -136,6 +187,7 @@ reg[1:0]compare_bank;
  wire[8:0]mt_linear_tile=mt_linear_sum[6];
  assign mem_req_valid=mt_request&&!reset;assign mem_req_write=mt_write;
  assign mem_req_addr=(mt_issue[1]?DEPTH_BASE:COLOR_BASE)+{14'd0,mt_linear_tile,mt_tile[5],mt_issue[0],7'b0};
+`endif
  assign mem_write_valid=wr_beat_valid&&!reset;
  // B's native Q is the single held beat: next read occurs only when old beat fires.
  assign mem_write_data=mt_data[2]?{b_q[1],b_q[0],b_q[3],b_q[2]}:{b_q[3],b_q[2],b_q[1],b_q[0]};
@@ -143,10 +195,19 @@ reg[1:0]compare_bank;
   wire a_write_d=depth_fire&&result_depth_flag&&result_bank==n;
   wire a_write_c=color_fire_write&&result_color_flag&&result_bank==n;
   wire a_read=rop_read&&incoming_bank==n;
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+  wire[15:0]up=ui_pixels[n*16+:16];
+  wire uw=ui_pixel_valid&&up[0];
+  wire a_en=ui_active?uw:(a_read||a_write_d||a_write_c);
+  wire a_we=ui_active?uw:(a_write_d||a_write_c);
+  wire[9:0]a_addr=ui_active?{4'd0,ui_pixel_half,ui_pixel_word}:(a_we?{a_write_d,result_addr}:incoming_addr);
+  wire[15:0]a_data=ui_active?{up[15:11],up[10:6],up[10],up[5:1]}:(depth_pending?depth_data:color_data);
+`else
   wire a_en=a_read||a_write_d||a_write_c;
   wire a_we=a_write_d||a_write_c;
   wire[9:0]a_addr=a_we?{a_write_d,result_addr}:incoming_addr;
   wire[15:0]a_data=depth_pending?depth_data:color_data;
+`endif
   wire b_en=m_rd_issue||refill_write;wire b_we=refill_write;
   wire[9:0]b_addr=refill_write?maintenance_write_addr:maintenance_read_addr;
   wire[15:0]b_data=mt_data[2]?mem_read_data[(n^2)*16+:16]:mem_read_data[n*16+:16];
@@ -154,6 +215,10 @@ reg[1:0]compare_bank;
    .b_en(b_en),.b_we(b_we),.b_addr(b_addr),.b_data(b_data),.b_q(b_q[n]));
 `ifndef SYNTHESIS
   always @(posedge clk)if(!reset)begin
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+   if(ui_active&&a_we&&b_en&&a_addr==b_addr)$fatal(1,"UI half-buffer collision");
+   if(ui_active&&mt_active&&mt_write&&mt_issue>=3&&!ui_lower_ready)$fatal(1,"UI lower readiness withdrew after publication");
+`endif
    if(a_read&&(a_write_d||a_write_c))$fatal(1,"TDP A static calendar collision");
    if(a_write_d&&a_write_c)$fatal(1,"TDP D/C write collision");
   end
@@ -224,7 +289,11 @@ reg[1:0]compare_bank;
   if(reset)begin
    mt_active<=0;mt_cancel<=0;mt_request<=0;mt_issue<=0;mt_retire<=0;mt_data<=0;wr_beat_valid<=0;mt_remaining<=0;
    mt_write<=0;mt_line<=0;mt_tvalid<=0;mt_target<=0;
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+   flushing<=0;flush_complete<=0;begin end begin end commit_valid<=0;victim<=0;
+`else
    flushing<=0;flush_complete<=0;fault_c<=0;fault_m<=0;commit_valid<=0;victim<=0;
+`endif
    cal<=0;fill_row<=0;tail<=0;result_owner<=0;return_key<=0;depth_pending<=0;color_pending<=0;
    ctx_valid[0]<=0;ctx_valid[1]<=0;compare_bank<=0;
    mt_prefetch<=0;prefetch_protect_valid<=0;prefetch_protect_line<=0;
@@ -235,8 +304,21 @@ reg[1:0]compare_bank;
    // published by maintenance on this edge. Publication below has priority.
    if(row0_fire&&prefetch_protect_valid&&prefetch_protect_line==hit_line)
     prefetch_protect_valid<=0;
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+   if(ingress_error||return_bad)begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: fault_c");
+`endif
+ end
+   if(extra_read)begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: fault_m");
+`endif
+ end
+`else
    if(ingress_error||return_bad)fault_c<=1;
    if(extra_read)fault_m<=1;
+`endif
    if(mt_active)begin
     if(mt_prefetch&&prefetch_abort)mt_cancel<=1;
     // The offered descriptor itself is the hold state. Its address advances
@@ -252,11 +334,23 @@ reg[1:0]compare_bank;
     if(m_rd_issue)wr_beat_valid<=1;
     if(wbeat||rbeat)begin
      mt_data<=mt_data+7'd1;
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+     if(data_last||(mt_write&&!m_rd_issue))wr_beat_valid<=0;
+`else
      if(data_last)wr_beat_valid<=0;
+`endif
     end
     if(mem_complete_valid)begin
      mt_retire<=mt_retire+3'd1;
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+     if(!1'b1)begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: fault_m");
+`endif
+ end
+`else
      if(!mem_complete_ok)fault_m<=1;
+`endif
      if(mt_write&&mt_retire[0])begin
       if(mt_retire[1])dird[mt_line]<=0;else dirc[mt_line]<=0;
      end
@@ -267,7 +361,11 @@ reg[1:0]compare_bank;
        mt_request<=0;wr_beat_valid<=0;tvalid[mt_line]<=0;
       end else begin
        mt_active<=0;mt_request<=0;
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+       if(!ui_active&&!mt_write&&!stop_publication&&!mt_cancel)begin
+`else
        if(!mt_write&&!stop_publication&&!mt_cancel)begin
+`endif
         tag[mt_line]<=mt_target;tvalid[mt_line]<=1;
         if(mt_prefetch&&!prefetch_abort)begin prefetch_protect_valid<=1;prefetch_protect_line<=mt_line;end
        end
@@ -279,7 +377,14 @@ reg[1:0]compare_bank;
    if(flush_request&&!flushing&&!flush_complete&&!fault)begin flushing<=1;flush_complete<=0;end
    if(fault)begin ctx_valid[0]<=0;ctx_valid[1]<=0;fill_row<=0;depth_pending<=0;color_pending<=0;end
    if(!mt_active&&!fault&&!source_bad)begin
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+    if(ui_cmd_valid&&ui_cmd_ready)begin
+     mt_active<=1;mt_cancel<=0;mt_request<=0;mt_prefetch<=0;mt_line<=0;mt_tvalid<=0;mt_write<=ui_cmd_write;
+     mt_remaining<=1;mt_issue<=0;mt_retire<=0;mt_data<=0;wr_beat_valid<=0;
+    end else if(flushing)begin
+`else
     if(flushing)begin
+`endif
      if(dirty_found)begin
       mt_active<=1;mt_cancel<=0;mt_request<=0;mt_prefetch<=0;mt_line<=dirty_line;mt_tvalid<=0;mt_write<=1;
       mt_remaining<={dird[dirty_line],dirc[dirty_line]};
@@ -377,5 +482,19 @@ source_rgba<=row_data;
   if(row0_fire&&ctx_valid[tail])$fatal(1,"new owner overwrote a pinned context");
   if(leaf_ce&&fill_row[0]&&!depth_input_fire)$fatal(1,"paired source D missing after accepted C");
  end
+`endif
+`ifdef GPU_V2_COMMAND_MAINTENANCE
+
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((mt_active&&mem_complete_valid)&&!(mem_complete_ok)))$fatal(1,"GPU contract: mem_complete_ok");
+`endif
+
+ always @(posedge clk)fault_c<=0;
+
+ always @(posedge clk)fault_m<=0;
+
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((1'b1)&&(ingress_error||extra_read||return_bad)))$fatal(1,"GPU contract: source_bad");
+`endif
 `endif
 endmodule

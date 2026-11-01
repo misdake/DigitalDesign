@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--bytes', type=int, default=1536)
     parser.add_argument('--modes', type=int, nargs='+', default=[0, 1, 2, 3, 4, 5])
+    parser.add_argument('--trace', action='store_true', help='Record every command/TDP/router edge')
+    parser.add_argument('--no-monitors', action='store_true')
     args = parser.parse_args()
     assert 512 <= args.bytes <= 0x100000 and args.bytes % 512 == 0
     assert all(0 <= mode <= 5 for mode in args.modes)
@@ -135,10 +137,13 @@ endmodule
 '''
     copied = sum(job[2] for job in jobs)
     tb = tb.replace('@BYTES@', str(len(commands))).replace('@SECTORS@', str(copied//128)).replace('@COPIED@', str(copied)).replace('@FIRST_SECTORS@', str(args.bytes//128))
+    if args.trace:
+        from maintenance_profiles import trace_tb
+        tb = trace_tb(tb)
     (out / 'tb.v').write_text(tb)
     contract = load_contract(args.peer)
     files = stage_peer(args.peer, out)
-    run = [('compile', [os.environ['IVERILOG_EXE'], '-g2012', '-D__ICARUS__', '-I', out, '-s', 'tb', '-o', out/'sim.vvp', out/'dut.v', *files, out/'tb.v', Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'])]
+    run = [('compile', [os.environ['IVERILOG_EXE'], '-g2012', *(['-DSYNTHESIS'] if args.no_monitors else []), '-D__ICARUS__', '-I', out, '-s', 'tb', '-o', out/'sim.vvp', out/'dut.v', *files, out/'tb.v', Path(os.environ['GOWIN_HOME'])/'IDE/simlib/gw2a/prim_sim.v'])]
     run += [(f'run-{mode}', [os.environ['VVP_EXE'], out/'sim.vvp', f'+MODE={mode}']) for mode in args.modes]
     passes = []
     for name, command in run:

@@ -29,6 +29,8 @@ fn module_span(source: &str, name: &str) -> Result<(usize, usize), String> {
 
 /// Whole-module substitution after historical source lowering has finished.
 /// No operand, state-machine or arithmetic textual anchors are patched here.
+/// The sources own their command-maintenance branches. Only the command factory
+/// scopes that private profile; generic callers keep fixed targets and diagnostics.
 pub fn lower(
     source: String,
     surface: MaterializedSurface,

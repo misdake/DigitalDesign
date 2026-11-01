@@ -221,3 +221,37 @@ these focused subsets. `--portable-export` and `--portable-baseline` bind the
 actual portable exports for the corresponding legal traces. This is bounded
 producer/consumer evidence, not a frame,
 physical-memory timing or board qualification.
+
+
+`maintenance_profiles.py --exports <eight-factory-exports> --baseline
+<frozen-accepted-exports> --output <fresh-directory> --diagnostics` checks complete
+ordered preprocessed tokens for command/full/sdram/backend, native/portable and
+simulation/synthesis profiles. Each preprocessing process has a60-second bound.
+The private command-maintenance define must be closed after its factory output.
+Twenty-eight directed checks cover real failed ACKs, original source write-site
+errors and UI lower-readiness withdrawal: command monitors stop simulation while
+monitor-off diagnostic feedback stays zero, and standalone generic components
+retain sticky CE0 rejection, including the public command-color-port profile.
+Diagnostic benches are bounded to25cycles; compile/run limits are45/20seconds.
+The generic `framebuffer_tdp_prefetch.py`'s `+BAD_ACK` replay separately checks
+premature completion before payload; it is not failed-ACK recovery evidence.
+
+`ui_grid.py`, `ui_draw_transition.py` and `memcpy.py` accept `--trace` and
+`--no-monitors`. Tracing only observes the actual CP, wrapper, TDP bank ports and
+router transport every edge; it does not drive the DUT. Use repeatable frozen
+inputs and `maintenance_profiles.py --trace-pair <baseline-run> <candidate-run>`
+(repeatable option) for byte-exact edge comparison. The existing independent
+screen-space, neighbor/depth/padding and raw-byte golden checks remain active.
+Their finite cycle/process bounds are unchanged. `memcpy_counter.py` retains
+its separate100000-cycle/60-second2048-block cursor check.
+
+`maintenance_mapping.py --exports <factory-exports> --output <fresh-directory>`
+runs the actual command TDP for every375logical UI tile and seven raw-copy
+boundary blocks, through actual accepted requests, held descriptors,64data beats
+and two half-tile terminals per operation. CE stays zero throughout. Independent
+integer addresses, no depth/other-line bank writes and no temporary resident
+publication are checked in all four native/portable monitor modes. Every case
+has a100000-cycle watchdog and each compile/run a60-second wall bound. This
+component sweep complements the real MC/pin pixel gold; it is not a frame or
+physical-memory qualification. Legacy generic-only fields are checked after
+actual preprocessing, because inactive alternatives remain in native sources.

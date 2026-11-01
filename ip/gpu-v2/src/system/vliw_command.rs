@@ -1,15 +1,11 @@
 //! Explicit 32-bit command stream; all input storage is the existing scratchpad.
 use crate::{framebuffer::ports::MaterializedSurface, texture::ports::Slot};
-#[path = "current_state.rs"]
-mod current_state;
 #[path = "current_texture.rs"]
 mod current_texture;
 #[path = "rtt400x240.rs"]
 mod rtt400x240;
 #[path = "simulation_checks.rs"]
 mod simulation_checks;
-#[path = "ui_grid.rs"]
-mod ui_grid;
 pub const MODULE: &str = "gpu_v2_vliw_command";
 pub fn verilog(
     surface: MaterializedSurface,
@@ -50,11 +46,13 @@ fn verilog_column(
         surface,
         backend,
     )?;
-    let numerical = current_state::lower(current_texture::lower(
+    let numerical = current_texture::lower(
         numerical,
         matches!(backend, super::pixel::quad_ingress::rtl::Backend::Native),
-    )?)?;
-    source.push_str(&ui_grid::lower(numerical)?);
+    )?;
+    source.push_str(&format!(
+        "`define GPU_V2_COMMAND_MAINTENANCE\n{numerical}\n`undef GPU_V2_COMMAND_MAINTENANCE\n"
+    ));
     source.push_str(include_str!("command_processor.v"));
     source.push_str(include_str!("command_dma.v"));
     source.push_str(include_str!("ui_grid.v"));
@@ -479,12 +477,6 @@ mod tests {
             "slot_max_f",
             "slot_valid_f",
             "draw_config",
-            "draw_bank",
-            "loaded_bank",
-            "COLOR_BASE",
-            "DEPTH_BASE",
-            "draw_rebind",
-            "reg[31:0]far_z",
         ] {
             assert!(
                 !s.contains(legacy),
@@ -515,6 +507,9 @@ mod tests {
         assert!(!light.contains("configured"));
         assert!(!light.contains("context_valid"));
         assert!(!light.contains("context_ready"));
-        assert!(!s.contains("L_CONTEXT"));
+        // Generic alternatives remain in the source. The bounded maintenance
+        // profile gate checks these identifiers after actual preprocessing.
+        assert_eq!(s.matches("`define GPU_V2_COMMAND_MAINTENANCE").count(), 1);
+        assert_eq!(s.matches("`undef GPU_V2_COMMAND_MAINTENANCE").count(), 1);
     }
 }
