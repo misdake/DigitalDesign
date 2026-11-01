@@ -1,7 +1,7 @@
 ---
 id: system-gpu-profiler
 status: active
-last-verified: 2026-10-30
+last-verified: 2026-11-01
 ---
 
 # GPU profiling sessions
@@ -21,6 +21,15 @@ that exact compilation's debug metadata. The host stops before executing the
 gate, after the driver's Prepared publication has finished and before either
 GPU SEND is consumed. Polling the header PUBLISHED bit alone is insufficient:
 the driver writes it while constructing the descriptor.
+
+The host accepts both the published-only v1 lease and the explicit v2 lease.
+Version 2 requires PUBLISHED and permits only the declared TARGET/FRONT/UI flags;
+unknown bits and missing publication are rejected. Both versions require the
+64-word envelope, self-contained binding, current range-table shape/version,
+an idle GPU descriptor, and a bounded nonempty range table. Every physical range
+must have known flags, read/write access, compatible immutable access, even
+nonempty extents and an in-memory span; the aggregate ABI byte limit also applies.
+Full command, layout and memory-consistency checks remain in the shared decoder.
 
 The input recipe binds the CB06 SHA-256, metadata addresses, explicit initial
 memory seed, positive CPU-step limit and wall-time limit. The simulation advances

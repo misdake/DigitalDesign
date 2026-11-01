@@ -391,6 +391,13 @@ them, and host peers do not substitute for them.
 
 ## GPU profiling input parity
 
+`profiling_capture::tests` checks recorded real v1/v2 pre-gate envelopes and
+range rows, plus malformed length/version/publication/binding/flags and physical
+extent boundaries. `fixtures/prepared_capture_descriptors.json` records the
+compiled-image identities and actual capture points; positive descriptors/counts
+are producer output, while negative tests mutate copies. The system frontend
+and GPS1 decoder remain separate gates; these tests do not render GPU work.
+
 `capture_draw::compiled_program_system_frontend` compiles a real RCC/CB06 scene
 and freezes the first Prepared gate in `CpuV3SystemSim`. The ordinary case stays
 small. `GPU_PROFILER_FULL_SCENE=1` selects the pinned canonical box/RGB/948-face
