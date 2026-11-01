@@ -535,7 +535,11 @@ fn scalar_shareable(frame: &LoweredFrame, instructions: &[Instruction]) -> bool 
     })
 }
 
+// Existing II4 split-square allocation: coordinate, prescaled Q, correction DSP.
+const II4_SQUARE_BOUNDARIES: [(&str, usize, usize); 2] = [("z", 12, 24), ("y", 11, 28)];
+
 struct Emitter {
+    ii4_physical: bool,
     power_mask: Option<power_masks::Rewrite>,
     live_globals: bool,
     rsqrt_q13: bool,
@@ -1219,7 +1223,17 @@ impl Emitter {
             writeln!(self.sequential, "`ifndef GPU_V2_GOWIN_DSP").unwrap();
         }
         for stage in 0..latency {
-            writeln!(self.body, "reg [{}:0] unit{lane}_p{stage};", width - 1).unwrap();
+            if let Some((coordinate, _, _)) = II4_SQUARE_BOUNDARIES
+                .iter()
+                .find(|(_, producer, _)| self.ii4_physical && *producer == lane)
+            {
+                assert!(width == 16 && latency == 1 && !dsp);
+                // Both square halves must use this Q, never the current D.
+                // Gowin needs both the register and the low-bit net preserved.
+                writeln!(self.body, "(* syn_preserve=1, syn_keep=1 *) reg [15:0] unit{lane}_p0;\n(* syn_keep=1 *) wire [6:0] square_{coordinate}_tail_q=unit{lane}_p0[6:0];").unwrap();
+            } else {
+                writeln!(self.body, "reg [{}:0] unit{lane}_p{stage};", width - 1).unwrap();
+            }
             let source = if stage == 0 {
                 calc.to_owned()
             } else {
@@ -1238,6 +1252,7 @@ impl Emitter {
         if matches!(kind, LaneKind::PairMultiplyAdd) {
             assert!(matches!(latency, 1 | 4));
             let registered = u8::from(latency == 4);
+            let output_registered = u8::from(latency == 4 || self.ii4_physical);
             let c = if latency == 4 {
                 format!("unit{lane}_c_delay")
             } else {
@@ -1246,14 +1261,30 @@ impl Emitter {
             // The four-edge version's product PIPE registers are parallel;
             // delay C before CREG to align it. The one-edge version bypasses
             // every internal register and captures the complete MAC in tail.
+            // II4 instead owns that same enabled edge in the hard OUT register.
+            let (tail_kind, tail_binding, tail_update) = if self.ii4_physical {
+                assert_eq!(latency, 1);
+                (
+                    "wire",
+                    format!(" assign unit{lane}_tail=unit{lane}_dsp_out;"),
+                    String::new(),
+                )
+            } else {
+                (
+                    "reg",
+                    String::new(),
+                    format!("unit{lane}_tail<=unit{lane}_dsp_out;\n"),
+                )
+            };
             writeln!(
                 self.body,
-                "reg [53:0] unit{lane}_tail;\nwire [53:0] unit{lane}_dsp_out;"
+                // Keep the continuous binding with its hoisted declaration.
+                "{tail_kind} [53:0] unit{lane}_tail;\nwire [53:0] unit{lane}_dsp_out;{tail_binding}"
             )
             .unwrap();
             writeln!(
                 self.sequential,
-                "`ifdef GPU_V2_GOWIN_DSP\nunit{lane}_tail<=unit{lane}_dsp_out;\n`endif"
+                "`ifdef GPU_V2_GOWIN_DSP\n{tail_update}`endif"
             )
             .unwrap();
             if latency == 4 {
@@ -1268,7 +1299,7 @@ impl Emitter {
                 self.body,
                 r#"MULTADDALU18X18 #(
  .A0REG(1'b{registered}),.B0REG(1'b{registered}),.A1REG(1'b{registered}),.B1REG(1'b{registered}),.CREG(1'b{registered}),
- .PIPE0_REG(1'b{registered}),.PIPE1_REG(1'b{registered}),.OUT_REG(1'b{registered}),
+ .PIPE0_REG(1'b{registered}),.PIPE1_REG(1'b{registered}),.OUT_REG(1'b{output_registered}),
  .ASIGN0_REG(1'b{registered}),.ASIGN1_REG(1'b{registered}),.BSIGN0_REG(1'b{registered}),.BSIGN1_REG(1'b{registered}),
  .ACCLOAD_REG0(1'b0),.ACCLOAD_REG1(1'b0),.SOA_REG(1'b0),
  .B_ADD_SUB(1'b0),.C_ADD_SUB(1'b0),.MULTADDALU18X18_MODE(0),.MULT_RESET_MODE("SYNC")
@@ -1298,6 +1329,15 @@ assign unit{lane}_result=unit{lane}_tail;
             assert!((1..=3).contains(&latency));
             let input_reg = u8::from(latency >= 2);
             let pipe_reg = u8::from(latency == 3);
+            let b = if let Some((coordinate, _, _)) = II4_SQUARE_BOUNDARIES
+                .iter()
+                .find(|(_, _, consumer)| self.ii4_physical && *consumer == lane)
+            {
+                assert!(bits == 9 && latency == 1);
+                format!("{{2'b00,square_{coordinate}_tail_q}}")
+            } else {
+                format!("unit{lane}_a1[{top}:0]")
+            };
             writeln!(
                 self.body,
                 r#"MULT{bits}X{bits} #(
@@ -1305,7 +1345,7 @@ assign unit{lane}_result=unit{lane}_tail;
  .ASIGN_REG(1'b{input_reg}),.BSIGN_REG(1'b{input_reg}),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")
 ) dsp{lane}(
  .DOUT(unit{lane}_result),.SOA(),.SOB(),
- .A(unit{lane}_a0[{top}:0]),.B(unit{lane}_a1[{top}:0]),
+ .A(unit{lane}_a0[{top}:0]),.B({b}),
  .ASIGN(unit{lane}_a0[{bits}]),.BSIGN(unit{lane}_a1[{bits}]),
  .SIA({bits}'d0),.SIB({bits}'d0),.ASEL(1'b0),.BSEL(1'b0),
  .CLK(clk),.CE(datapath_ce),.RESET(1'b0)
@@ -1971,7 +2011,7 @@ pub fn generate_with_options(
     profile: LightingProfile,
     options: LightingRtlOptions,
 ) -> Result<LightingVerilog, String> {
-    generate_with_optional_plans(profile, options, None, false)
+    generate_with_optional_plans(profile, options, None, false, false)
 }
 /// Explicit offline candidate; defaults never consume these edited calendars.
 pub fn generate_with_schedule_plans(
@@ -1979,16 +2019,22 @@ pub fn generate_with_schedule_plans(
     options: LightingRtlOptions,
     plans: &[super::sim::workbench::SchedulePlan; 2],
 ) -> Result<LightingVerilog, String> {
-    generate_with_optional_plans(profile, options, Some(plans), false)
+    generate_with_optional_plans(profile, options, Some(plans), false, false)
 }
-/// Closed command parent owns raw globals until drain and guarantees compute_tick
-/// implies out_ready. Generic installed-context APIs never select this profile.
-pub(crate) fn generate_command_with_schedule_plans(
-    profile: LightingProfile,
+/// Existing II4 physical boundary, independently of installed or live globals.
+/// Only the closed command parent selects live globals and owns compute_tick.
+pub(crate) fn generate_ii4_with_schedule_plans(
     options: LightingRtlOptions,
     plans: &[super::sim::workbench::SchedulePlan; 2],
+    live_globals: bool,
 ) -> Result<LightingVerilog, String> {
-    generate_with_optional_plans(profile, options, Some(plans), true)
+    generate_with_optional_plans(
+        LightingProfile::Fast,
+        options,
+        Some(plans),
+        live_globals,
+        true,
+    )
 }
 
 fn generate_with_optional_plans(
@@ -1996,6 +2042,7 @@ fn generate_with_optional_plans(
     options: LightingRtlOptions,
     plans: Option<&[super::sim::workbench::SchedulePlan; 2]>,
     live_globals: bool,
+    ii4_physical: bool,
 ) -> Result<LightingVerilog, String> {
     if live_globals
         && (profile != LightingProfile::Fast
@@ -2117,6 +2164,7 @@ fn generate_with_optional_plans(
         BTreeSet::new()
     };
     let mut e = Emitter {
+        ii4_physical,
         power_mask,
         live_globals,
         rsqrt_q13: options.rsqrt_q13,
@@ -2169,6 +2217,22 @@ fn generate_with_optional_plans(
             _ => (),
         }
         e.lane(lane, kind, ids)?;
+    }
+    if ii4_physical
+        && (pair != 1
+            || e.lanes
+                .iter()
+                .any(|lane| lane.kind == "PairMultiplyAdd" && lane.latency != 1)
+            || II4_SQUARE_BOUNDARIES.iter().any(|(_, producer, consumer)| {
+                !e.lanes
+                    .iter()
+                    .any(|lane| lane.lane == *producer && lane.width == 16 && lane.latency == 1)
+                    || !e.lanes.iter().any(|lane| {
+                        lane.lane == *consumer && lane.kind == "SmallMultiply" && lane.latency == 1
+                    })
+            }))
+    {
+        return Err("II4 physical allocation changed its checked register boundary".into());
     }
     if options.rsqrt_q13 {
         let ports: Vec<_> = lanes
@@ -2754,10 +2818,17 @@ fn hoist(input: &str) -> (String, String) {
         if line.starts_with("function ") {
             in_function = true;
         }
-        if !in_function && (line.starts_with("wire ") || line.starts_with("reg ")) {
-            if let Some((declaration, expr)) = line.split_once(" = ") {
-                writeln!(declarations, "{declaration};").unwrap();
-                let name = declaration.split_whitespace().last().unwrap();
+        let declaration = line
+            .strip_prefix("(* ")
+            .and_then(|attributed| attributed.split_once(" *) ").map(|(_, decl)| decl))
+            .unwrap_or(line);
+        if !in_function && (declaration.starts_with("wire ") || declaration.starts_with("reg ")) {
+            if let Some((decl, expr)) = declaration.split_once(" = ") {
+                // Attribute assignments precede the declaration; only the
+                // declaration itself can contain this net's initializer.
+                let attributes = &line[..line.len() - declaration.len()];
+                writeln!(declarations, "{attributes}{decl};").unwrap();
+                let name = decl.split_whitespace().last().unwrap();
                 writeln!(body, "assign {name} = {expr}").unwrap();
             } else {
                 writeln!(declarations, "{line}").unwrap();
@@ -2770,6 +2841,163 @@ fn hoist(input: &str) -> (String, String) {
         }
     }
     (declarations, body)
+}
+
+#[cfg(test)]
+mod declaration_tests {
+    use super::*;
+
+    #[test]
+    fn context_and_physical_profiles_are_independent() {
+        let (options, plans) = crate::lighting::dsp_sharing::four_cycle_shared_roms(9).unwrap();
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/rb09/context-rebase/matrix");
+        std::fs::create_dir_all(&out).unwrap();
+        for live in [false, true] {
+            for physical in [false, true] {
+                let core = generate_with_optional_plans(
+                    LightingProfile::Fast,
+                    options,
+                    Some(&plans),
+                    live,
+                    physical,
+                )
+                .unwrap();
+                let body = core.source.split_once("endmodule").unwrap().0;
+                assert_eq!(body.contains("reg configured;"), !live);
+                assert_eq!(body.contains("input wire context_valid"), !live);
+                assert_eq!(body.contains("square_z_tail_q"), physical);
+                let mac = body.split_once("MULTADDALU18X18 #(").unwrap().1;
+                let (parameters, instance) = mac.split_once(") dsp").unwrap();
+                assert!(parameters.contains(if physical {
+                    ".OUT_REG(1'b1)"
+                } else {
+                    ".OUT_REG(1'b0)"
+                }));
+                let lane = instance.split_once('(').unwrap().0;
+                assert!(body.contains(&format!(
+                    "{} [53:0] unit{lane}_tail;",
+                    if physical { "wire" } else { "reg" }
+                )));
+                std::fs::write(
+                    out.join(format!(
+                        "live{}-physical{}.v",
+                        u8::from(live),
+                        u8::from(physical)
+                    )),
+                    core.source,
+                )
+                .unwrap();
+            }
+        }
+        let mut ram = options;
+        ram.ram_retained = true;
+        std::fs::write(
+            out.join("public-h9-ram.v"),
+            generate_with_schedule_plans(LightingProfile::Fast, ram, &plans)
+                .unwrap()
+                .source,
+        )
+        .unwrap();
+        for physical in [false, true] {
+            assert!(generate_with_optional_plans(
+                LightingProfile::SystemFast,
+                options,
+                Some(&plans),
+                true,
+                physical
+            )
+            .is_err());
+            assert!(generate_with_optional_plans(
+                LightingProfile::Fast,
+                options,
+                None,
+                true,
+                physical
+            )
+            .is_err());
+            let mut invalid = options;
+            invalid.smooth_h9 = false;
+            assert!(generate_with_optional_plans(
+                LightingProfile::Fast,
+                invalid,
+                Some(&plans),
+                true,
+                physical
+            )
+            .is_err());
+            invalid = options;
+            invalid.unified_lit = false;
+            assert!(generate_with_optional_plans(
+                LightingProfile::Fast,
+                invalid,
+                Some(&plans),
+                true,
+                physical
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn attributed_declarations_keep_their_initializer_boundary() {
+        let ram = "(* syn_ramstyle = \"block_ram\" *) reg [8:0] token_ram [0:15];\n";
+        let kept = "(* syn_preserve=1, syn_keep=1 *) reg [15:0] prescaled;\n";
+        let initialized = "(* syn_keep = 1 *) wire [3:0] tail = prescaled[3:0];\n";
+        let (declarations, body) = hoist(&format!("{ram}{kept}{initialized}"));
+        assert_eq!(
+            declarations,
+            format!("{ram}{kept}(* syn_keep = 1 *) wire [3:0] tail;\n")
+        );
+        assert_eq!(body, "assign tail = prescaled[3:0];\n");
+    }
+
+    #[test]
+    #[ignore = "requires Icarus; compile-only public retained-RAM regression"]
+    fn generic_retained_ram_compiles_with_iverilog() {
+        use std::{fs::File, process::Command, time::Duration, time::Instant};
+        let source = generate_with_options(
+            LightingProfile::Fast,
+            LightingRtlOptions {
+                ram_retained: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .source;
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/gpu-lighting-retained-ram");
+        std::fs::create_dir_all(&directory).unwrap();
+        let rtl = directory.join("generic.v");
+        std::fs::write(&rtl, source).unwrap();
+        let log_path = directory.join("compile.log");
+        let log = File::create(&log_path).unwrap();
+        let mut child =
+            Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()))
+                .args(["-g2012", "-tnull", "-s", "gpu_v2_lighting"])
+                .arg(rtl)
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
+                .spawn()
+                .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(
+                    status.success(),
+                    "Icarus {status}; see {}",
+                    log_path.display()
+                );
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("Icarus compile watchdog; see {}", log_path.display());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 /// The output bypass is synchronous; CE freezes both address/data capture.

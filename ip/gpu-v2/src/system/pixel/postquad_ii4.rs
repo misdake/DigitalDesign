@@ -3,7 +3,7 @@
 use super::postquad;
 use crate::{
     framebuffer::ports::MaterializedSurface,
-    lighting::{dsp_sharing, rtl, LightingProfile},
+    lighting::{dsp_sharing, rtl},
     system::pixel::quad_ingress,
     texture::ports::Slot,
 };
@@ -152,73 +152,6 @@ fn direct_weights(source: &mut String) -> Result<(), String> {
     Ok(())
 }
 
-fn mac_register(source: &mut String) -> Result<(), String> {
-    let mut body = module(source, "gpu_v2_lighting")?;
-    let old = body.clone();
-    let mut units = Vec::new();
-    for chunk in body.split("MULTADDALU18X18 #(").skip(1) {
-        let (parameters, rest) = chunk.split_once(") dsp").ok_or("II4 MAC instance")?;
-        if !parameters.contains(".OUT_REG(1'b0)") {
-            return Err("II4 MAC output already registered".into());
-        }
-        units.push(rest.split('(').next().ok_or("II4 MAC number")?.to_owned());
-    }
-    if units.len() != 1 {
-        return Err("II4 expects one shared dot MAC".into());
-    }
-    for unit in units {
-        replace(
-            &mut body,
-            &format!("reg [53:0] unit{unit}_tail;"),
-            &format!("wire [53:0] unit{unit}_tail;"),
-        )?;
-        replace(
-            &mut body,
-            &format!("wire [53:0] unit{unit}_dsp_out;"),
-            &format!("wire [53:0] unit{unit}_dsp_out;\nassign unit{unit}_tail=unit{unit}_dsp_out;"),
-        )?;
-        replace(
-            &mut body,
-            &format!("unit{unit}_tail<=unit{unit}_dsp_out;\n"),
-            "",
-        )?;
-    }
-    let start = body.find("MULTADDALU18X18 #(").unwrap();
-    let tail = body[start..].replacen(".OUT_REG(1'b0)", ".OUT_REG(1'b1)", 1);
-    body.replace_range(start.., &tail);
-    replace(source, &old, &body)
-}
-
-fn square_operand_boundary(source: &mut String) -> Result<(), String> {
-    let old = module(source, "gpu_v2_lighting")?;
-    let mut body = old.clone();
-    // The split-square correction must sample the high and low parts of the
-    // same prescaled Q. Full-system Gowin mapping substituted current D for
-    // only the low seven bits without these explicit register/net boundaries.
-    for (coordinate, producer, consumer) in [("z", 12, 24), ("y", 11, 28)] {
-        replace(
-            &mut body,
-            &format!("reg [15:0] unit{producer}_p0;"),
-            &format!(
-                "(* syn_preserve=1, syn_keep=1 *) reg [15:0] unit{producer}_p0;\n\
-                 (* syn_keep=1 *) wire [6:0] square_{coordinate}_tail_q=unit{producer}_p0[6:0];"
-            ),
-        )?;
-        let begin = body
-            .find(&format!(") dsp{consumer}("))
-            .ok_or("II4 split-square DSP")?;
-        let end = begin + body[begin..].find("\n);").ok_or("II4 DSP end")?;
-        let mut instance = body[begin..end].to_owned();
-        replace(
-            &mut instance,
-            &format!(".B(unit{consumer}_a1[8:0])"),
-            &format!(".B({{2'b00,square_{coordinate}_tail_q}})"),
-        )?;
-        body.replace_range(begin..end, &instance);
-    }
-    replace(source, &old, &body)
-}
-
 fn private_lighting(source: &mut String, live_globals: bool) -> Result<(), String> {
     // Only this closed parent guarantees compute_tick => core.out_ready.
     // Public acknowledgments and result writes still use the common commit CE.
@@ -347,11 +280,7 @@ fn render_globals(
     } else {
         dsp_sharing::four_cycle(wide_pool)?
     };
-    let light = if live_globals {
-        rtl::generate_command_with_schedule_plans(LightingProfile::Fast, options, &plans)?
-    } else {
-        rtl::generate_with_schedule_plans(LightingProfile::Fast, options, &plans)?
-    };
+    let light = rtl::generate_ii4_with_schedule_plans(options, &plans, live_globals)?;
     replace_modules(&mut source, &format!("\n{}", light.source))?;
     replace_modules(
         &mut source,
@@ -360,8 +289,6 @@ fn render_globals(
     global16(&mut source)?;
     metadata(&mut source)?;
     direct_weights(&mut source)?;
-    mac_register(&mut source)?;
-    square_operand_boundary(&mut source)?;
     tile_address(&mut source, surface.width)?;
     private_lighting(&mut source, live_globals)?;
     Ok(source)

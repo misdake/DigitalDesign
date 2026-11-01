@@ -625,8 +625,9 @@ Mode changes wait until all old returns drain.
 
 ## Lighting and Final schedules
 
-Lighting fetches normal/X, captures X and reads Y, offers context, then offers
-the pixel, over four enabled phases. Normal Q and NDC Y stay owned until actual
+Installed-context Lighting fetches normal/X, captures X and reads Y, offers
+context, then offers the pixel, over four enabled phases. The command profile
+borrows live CP globals and omits that context-install transaction. Normal Q and NDC Y stay owned until actual
 pixel acceptance. The selected core comes from
 `dsp_sharing::four_cycle_shared_roms(9)`: arithmetic latency 34 enabled edges,
 admission interval 4. These describe the local calendar, not scene throughput.
@@ -640,8 +641,38 @@ The Y/Z split-square corrections take their high and low parts from the same
 prescaled register Q. Those two registers have explicit synthesis preservation;
 kept seven-bit Q nets feed the native DSP B ports directly. Current combinational
 D must not replace only one operand half. This changes neither arithmetic nor
-latency. `tests/lighting_square_boundary.py --netlist <post-PnR.vo> --output <dir>`
-checks that the fourteen low operand bits are driven by registered outputs.
+latency. The Lighting emitter owns these boundaries through the private II4
+factory, including the MAC's `OUT_REG(1)` and direct wire result without a second
+fabric tail register. Both existing II4 ROM configurations use this factory;
+public standalone Lighting generators retain their original physical defaults.
+
+The two generator choices are independent:
+
+| Route | Live globals | II4 physical boundaries |
+| --- | --- | --- |
+| Public standalone/default or explicit schedule | No | No |
+| Installed II4, widths 7 through 11, either ROM configuration | No | Yes |
+| Final command II4 | Yes | Yes |
+| Internal H9 schedule generation only, no final factory caller | Yes | No |
+
+The internal H9 schedule accepts all four pairs. Live generation still requires
+Fast, smooth H9, unified lighting and explicit plans; missing plans or any other
+profile returns an error. This does not add a public profile switch or permit
+unsupported live configurations. Public retained-token RAM remains supported.
+
+`tests/lighting_square_boundary.py --netlist <post-PnR.vo> --output <dir>` checks
+the selected mapped shape: both preserved 16-bit register owners, high/sign and
+low operand provenance, the hard MAC output register, and common DSP clock/CE.
+Kept low-bit aliases may rename the Q nets; the preserved FF instance still
+identifies their producer. The source replay separately checks CE0 Q hold. Adding `--qualify` to the mapped
+check also rejects wrong registered low/high owners and an unregistered MAC.
+`--rtl <command.v> --qualify --output <dir>` keeps the bounded 12-token native
+and fabric replay together with MAC-register and Y/Z current-D negative controls.
+The Y port-age assertion also catches wrong inputs whose rounded final value
+happens to match. Local postquad timing wrappers must define
+`GPU_V2_GOWIN_DSP` before the first module to qualify the native Lighting path;
+a later macro definition does not qualify earlier modules. These local mapped
+checks do not establish whole-system timing or board behavior.
 
 Final's three source banks return after one enabled edge. Its wait phase owns
 all Q values until consumed. Two old-state result credits admit arithmetic only
