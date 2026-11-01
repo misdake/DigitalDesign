@@ -20,7 +20,13 @@ module rc_compute(
 );
  reg[3:0]valid_pipe,cover_pipe,anchor_pipe;
  reg[4:0]pid0,pid1,pid2,pid3;
- reg signed[7:0]z_bias;reg[31:0]far_z;reg rgb;
+ reg signed[7:0]z_bias;
+`ifdef GPU_V2_LIVE_GLOBALS
+wire[31:0]far_z=cfg_far;
+`else
+reg[31:0]far_z;
+`endif
+reg rgb;
  reg[4:0]shift0,shift1,shift2;
  reg[31:0]d_acc;reg d_zero;
  reg[8:0]fraction;reg[17:0]seed,r,weight0,weight1;reg[16:0]clipped0;
@@ -195,7 +201,11 @@ module rc_compute(
  always @(posedge clk)begin
   if(reset)begin
    phase<=0;valid_pipe<=0;cover_pipe<=0;anchor_pipe<=0;pid0<=0;pid1<=0;pid2<=0;pid3<=0;
-   z_bias<=0;far_z<=32'd13041664;rgb<=0;shift0<=0;shift1<=0;shift2<=0;
+   z_bias<=0;
+`ifndef GPU_V2_LIVE_GLOBALS
+far_z<=32'd13041664;
+`endif
+rgb<=0;shift0<=0;shift1<=0;shift2<=0;
    d_acc<=0;d_zero<=0;negative_prefix<=0;fraction<=0;seed<=0;r<=0;clipped0<=0;weight0<=0;weight1<=0;
    hm0<=0;hm1<=0;hm_exponent<=0;hm_zero<=0;
    z_shift_early<=0;z_shift<=0;z_dzero_early<=0;z_dzero<=0;z_new<=0;z_new_pass<=0;z_early<=0;z_early_pass<=0;
@@ -210,7 +220,11 @@ compute_error<=0;
    phase<=phase+1'b1;
    wide_valid_pipe<={wide_valid_pipe[0],wide_issue};wide_tag1<=wide_tag0;if(wide_issue)wide_tag0<=wide_issue_tag;
    log_return_valid<=log_take;if(log_take)log_return_tag<=log_tag;
-   if(cfg_valid)begin z_bias<=cfg_z_bias;far_z<=cfg_far;rgb<=cfg_rgb;shift0<=cfg_shift0;shift1<=cfg_shift1;shift2<=cfg_shift2;end
+   if(cfg_valid)begin z_bias<=cfg_z_bias;
+`ifndef GPU_V2_LIVE_GLOBALS
+far_z<=cfg_far;
+`endif
+rgb<=cfg_rgb;shift0<=cfg_shift0;shift1<=cfg_shift1;shift2<=cfg_shift2;end
    if(sample_valid&&phase!=0)
 `ifdef GPU_V2_COMMAND_PORTS
 begin

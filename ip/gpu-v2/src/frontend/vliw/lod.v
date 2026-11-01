@@ -27,7 +27,13 @@ module rc_lod(
  reg[4:0]issue_tag;
  reg[1:0]finish_valid,finish_run;reg[2:0]result_id;
  reg finish_pending,pending_run;reg signed[15:0]finish_offset;
- reg signed[15:0]bias_base;reg[4:0]tex_u,tex_v,max_mip;reg rgb;
+ reg signed[15:0]bias_base;
+`ifdef GPU_V2_LIVE_GLOBALS
+wire[4:0]tex_u=cfg_tex_u,tex_v=cfg_tex_v,max_mip=cfg_max_mip;
+`else
+reg[4:0]tex_u,tex_v,max_mip;
+`endif
+reg rgb;
  // 系数指数Nc与覆盖D的E相同，公共校正不再减E。
  // quad公共校正在倒数产生时形成，结束前按完成编号只读一次。
  reg[4:0]log_context;
@@ -98,7 +104,11 @@ module rc_lod(
    arrival<=0;arrival_run<=0;calendar_valid<=0;calendar_run<=0;
    kernel_valid<=0;kernel_run<=0;kernel_id<=0;axis<=0;issue_live<=0;issue_tag<=0;
    finish_valid<=0;finish_run<=0;result_id<=0;finish_pending<=0;pending_run<=0;finish_offset<=0;
-   bias_base<=-16'sd3712;tex_u<=0;tex_v<=0;max_mip<=0;rgb<=0;
+   bias_base<=-16'sd3712;
+`ifndef GPU_V2_LIVE_GLOBALS
+tex_u<=0;tex_v<=0;max_mip<=0;
+`endif
+rgb<=0;
    log_context<=0;
    sampled_zero<=1;sampled_exp<=0;
    maximum<=0;have_gradient<=0;lod_valid<=0;lod_id<=0;lod_value<=0;
@@ -119,7 +129,11 @@ error<=0;
    if(wide_result_valid)log_context<=wide_result_tag;
    if(cfg_take)begin
     bias_base<=-16'sd3712+$signed({{4{cfg_bias[7]}},cfg_bias,4'd0});
-    tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;rgb<=cfg_rgb;
+
+`ifndef GPU_V2_LIVE_GLOBALS
+tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;
+`endif
+rgb<=cfg_rgb;
    end
    if(phase==2)begin
     arrival<=quad_end_valid&&!rgb;arrival_run<=quad_end_mask!=0;

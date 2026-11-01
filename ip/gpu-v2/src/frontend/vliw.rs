@@ -4,11 +4,22 @@
 /// Vertex arithmetic and its control ROM retain the recorded origin.
 /// Output transport stores S12F10 normals in one N36 row and exports 16 T items.
 pub fn verilog(portable: bool) -> String {
+    render(portable, false)
+}
+
+pub(crate) fn verilog_command(portable: bool) -> String {
+    render(portable, true)
+}
+
+fn render(portable: bool, live_globals: bool) -> String {
     let mut source = if portable {
         "`define PORTABLE\n".to_owned()
     } else {
         String::new()
     };
+    if live_globals {
+        source.push_str("`define GPU_V2_LIVE_GLOBALS\n");
+    }
     source.push_str(&super::vliw_numeric::verilog());
     for part in [
         include_str!("vliw/primitives/dsp.v"),
@@ -41,5 +52,8 @@ pub fn verilog(portable: bool) -> String {
         include_str!("vliw/vertex/control_fields.vh"),
     ));
     source.push_str("\n`undef GPU_V2_TRUSTED_FRONTEND\n");
+    if live_globals {
+        source.push_str("`undef GPU_V2_LIVE_GLOBALS\n");
+    }
     source
 }

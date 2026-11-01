@@ -97,11 +97,33 @@ pub fn verilog_selected(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
+    render_globals(slots, surface, backend, false)
+}
+
+pub(crate) fn verilog_selected_command(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+) -> Result<String, String> {
+    render_globals(slots, surface, backend, true)
+}
+
+fn render_globals(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+    live_globals: bool,
+) -> Result<String, String> {
     let native = matches!(backend, quad_ingress::rtl::Backend::Native);
     if surface.width != 400 || surface.height != 240 {
         return Err("VLIW pool NDC/tile contract requires400x240".into());
     }
-    let mut source = direct_lod::verilog_source_q(slots, surface, backend)?.replace("\r\n", "\n");
+    let mut source = (if live_globals {
+        direct_lod::verilog_source_q_command(slots, surface, backend)?
+    } else {
+        direct_lod::verilog_source_q(slots, surface, backend)?
+    })
+    .replace("\r\n", "\n");
     let (a, b) = span(&source, "gpu_v2_pixel_sampling_ingress")?;
     source.replace_range(a..b, SOURCE);
     source.push_str(&pool::verilog(!native));
@@ -192,6 +214,8 @@ pub fn verilog_selected(
     )?;
     patch(&mut source,top,"if(light_collision||sample_collision||basic_collision||(draw_rebind&&!pipeline_idle))stopped<=1;",
       "if(abort||front_bad||sink_bad||final_bad||front_fault||sink_fault||final_fault||light_collision||sample_collision||basic_collision||(draw_rebind&&!pipeline_idle))stopped<=1;")?;
+    patch(&mut source,top,"if(light_collision||sample_collision||basic_collision)stopped<=1;",
+      "if(abort||front_bad||sink_bad||final_bad||front_fault||sink_fault||final_fault||light_collision||sample_collision||basic_collision)stopped<=1;")?;
     patch(
         &mut source,
         top,
@@ -266,6 +290,11 @@ pub fn verilog_selected(
     patch(&mut source, MODULE, ".in_tint(basic_data),", "\n`ifdef GPU_V2_COMMAND_PORTS\n.in_tint(issue_color),\n`else\n.in_tint(basic_data),\n`endif\n")?;
     patch(&mut source, MODULE, ".rgba({alpha,out_covered?final_RGB:24'd0})", "\n`ifdef GPU_V2_COMMAND_PORTS\n.rgba({8'd0,out_covered?final_RGB:24'd0})\n`else\n.rgba({alpha,out_covered?final_RGB:24'd0})\n`endif\n")?;
     let result = reachable(&source, MODULE)?;
+    let result = if live_globals {
+        format!("`define GPU_V2_LIVE_GLOBALS\n{result}\n`undef GPU_V2_LIVE_GLOBALS\n")
+    } else {
+        result
+    };
     Ok(format!(
         "{}{}{}",
         if native {
@@ -489,7 +518,13 @@ fn lower_pool_layout(source: &mut String) -> Result<(), String> {
     source.replace_range(a..b, &body);
     Ok(())
 }
-const PRODUCER_PORTS: &str = r#" input wire front_ce,input wire[1:0]phase,input wire draw_bank,draw_unlit,
+const PRODUCER_PORTS: &str = r#" input wire front_ce,input wire[1:0]phase,
+`ifdef GPU_V2_LIVE_GLOBALS
+input wire draw_unlit,
+`else
+input wire draw_bank,draw_unlit,
+`endif
+
  input wire quad_valid,output wire quad_ready,output wire[2:0]quad_id,
  input wire[7:0]quad_x,input wire[6:0]quad_y,input wire quad_rgb,
  input wire quad_end_valid,input wire[2:0]quad_end_id,input wire[3:0]quad_end_mask,
@@ -497,7 +532,11 @@ const PRODUCER_PORTS: &str = r#" input wire front_ce,input wire[1:0]phase,input 
  input wire depth_event_valid,input wire[4:0]depth_event_pid,input wire[15:0]depth_event_z16,input wire depth_event_pass,
  input wire lod_valid,input wire[2:0]lod_id,input wire[7:0]lod_value,
  output wire empty_skipped,output wire[5:0]producer_used,"#;
-const PRODUCER_CONNECTIONS: &str = r#" .front_ce(front_ce&&!fault),.producer_phase(phase),.draw_bank(draw_bank),.draw_unlit(draw_unlit),
+const PRODUCER_CONNECTIONS: &str = r#" .front_ce(front_ce&&!fault),.producer_phase(phase),
+`ifndef GPU_V2_LIVE_GLOBALS
+.draw_bank(draw_bank),
+`endif
+.draw_unlit(draw_unlit),
  .quad_valid(quad_valid),.quad_ready(quad_ready),.quad_id(quad_id),.quad_x(quad_x),.quad_y(quad_y),.quad_rgb(quad_rgb),
  .quad_end_valid(quad_end_valid),.quad_end_id(quad_end_id),.quad_end_mask(quad_end_mask),
  .result_we(result_we),.result_wa(result_wa),.result_wd(result_wd),

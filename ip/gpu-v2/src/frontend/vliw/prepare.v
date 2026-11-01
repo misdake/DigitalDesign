@@ -25,7 +25,7 @@ module rp_prepare(
  output[4:0]stream_cfg_shift0,stream_cfg_shift1,stream_cfg_shift2,
  output stream_param_valid,output[1:0]stream_param_index,
  output stream_param_bank,output[50:0]stream_param_data,
- 
+
  output[4:0]lod_cfg_tex_u,lod_cfg_tex_v,lod_cfg_max_mip,output signed[7:0]lod_cfg_bias,
  output operand_we,output[3:0]operand_wa,output[17:0]operand_wd,
  output operand_re,output[6:0]operand_ra,
@@ -58,7 +58,19 @@ module rp_prepare(
  wire negative=quant_negative1;
  reg[3:0]edge_exp;reg[5:0]exp0,exp1,exp2,common_e,raw_exponent;
  reg[30:0]depth_mantissa;reg sigma,rgb;
- reg[31:0]far_z;reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
+
+`ifdef GPU_V2_LIVE_GLOBALS
+wire[31:0]far_z=cfg_far_z;
+`else
+reg[31:0]far_z;
+`endif
+
+`ifdef GPU_V2_LIVE_GLOBALS
+wire[4:0]tex_u=cfg_tex_u,tex_v=cfg_tex_v,max_mip=cfg_max_mip;wire signed[7:0]bias=cfg_bias;
+`else
+reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
+`endif
+
  wire[52:0]delta={depth_mantissa,22'd0};reg[6:0]delta_e;
 
  reg[2:0]seed_sign_x,seed_sign_y;
@@ -122,7 +134,7 @@ module rp_prepare(
  assign stream_cfg_shift2=difference_exp2[5]?5'd31:difference_exp2[4:0];
  assign stream_param_valid=core_attr_send&&!reset;
  assign stream_param_index=core_attr_index;assign stream_param_bank=core_attr_bank;
- 
+
  assign lod_cfg_tex_u=tex_u;assign lod_cfg_tex_v=tex_v;assign lod_cfg_max_mip=max_mip;assign lod_cfg_bias=bias;
  wire seed_take=geo_we&&quant_field<2;
  // Component selection also identifies the UV return slots.
@@ -308,7 +320,15 @@ module rp_prepare(
   if(reset)begin
    edge_no<=0;field<=0;edge_exp<=0;
    exp0<=0;exp1<=0;exp2<=0;common_e<=0;raw_exponent<=0;sigma<=0;rgb<=0;
-   far_z<=0;tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;
+
+`ifndef GPU_V2_LIVE_GLOBALS
+far_z<=0;
+`endif
+
+`ifndef GPU_V2_LIVE_GLOBALS
+tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;
+`endif
+
    delta_e<=0;
    seed_sign_x<=0;seed_sign_y<=0;`PREPARE_CLEAR_ERROR
   end else if(ce)begin
@@ -318,7 +338,15 @@ module rp_prepare(
      edge_no<=0;field<=0;edge_exp<=0;
      exp0<=0;exp1<=0;exp2<=0;common_e<=0;`PREPARE_CLEAR_ERROR
      sigma<=descriptor[18];rgb<=descriptor[19];
-     far_z<=cfg_far_z;tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;bias<=cfg_bias;
+
+`ifndef GPU_V2_LIVE_GLOBALS
+far_z<=cfg_far_z;
+`endif
+
+`ifndef GPU_V2_LIVE_GLOBALS
+tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;bias<=cfg_bias;
+`endif
+
     end
    end else begin
     if(quant_read)begin if(field==2)field<=0;else field<=field+1'b1;end

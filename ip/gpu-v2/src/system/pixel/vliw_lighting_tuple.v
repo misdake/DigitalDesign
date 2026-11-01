@@ -2,28 +2,80 @@
 // Context work starts on the old normal-row edge; the pixel issues one CE later.
 module gpu_v2_pixel_lighting_consumer(
  input wire clk,reset,ce,compute_tick,
- input wire source_context_valid,source_valid,output wire source_ready,
+
+`ifdef GPU_V2_LIVE_GLOBALS
+input wire source_valid,
+`else
+input wire source_context_valid,source_valid,
+`endif
+output wire source_ready,
  input wire[1:0]source_lane,input wire[35:0]source_normal,input wire[31:0]source_position,
- input wire[4:0]source_slot,input wire[3:0]source_mask,input wire source_bank,
+ input wire[4:0]source_slot,
+`ifdef GPU_V2_LIVE_GLOBALS
+input wire[3:0]source_mask,
+`else
+input wire[3:0]source_mask,input wire source_bank,
+`endif
+
+
+`ifndef GPU_V2_LIVE_GLOBALS
  input wire retire_valid,retire_bank,
+`endif
+
  input wire[15:0]context_epoch,input wire[1:0]context_mode,input wire[4:0]context_code,
  input wire signed[15:0]light_x,light_y,light_z,
  input wire[8:0]ambient,directional,input wire signed[15:0]ray_x,ray_y,ray_k,
- output wire context_wait,context_accepted,pixel_accepted,
+
+`ifdef GPU_V2_LIVE_GLOBALS
+output wire pixel_accepted,
+`else
+output wire context_wait,context_accepted,pixel_accepted,
+`endif
+
  output wire out_valid,input wire out_ready,output wire[6:0]out_key,output wire out_quad_last,
  output wire[15:0]out_epoch,output wire[8:0]out_g,out_h
 );
+
+`ifndef GPU_V2_LIVE_GLOBALS
  reg loaded_valid,loaded_bank;
+`endif
+
  wire covered=source_mask[source_lane];
+
+`ifndef GPU_V2_LIVE_GLOBALS
  wire switching=source_context_valid&&covered&&(!loaded_valid||loaded_bank!=source_bank);
- wire core_context_ready,core_in_ready;
- wire core_in_valid=source_valid&&covered&&!switching;
+`endif
+
+
+`ifdef GPU_V2_LIVE_GLOBALS
+wire core_in_ready;
+`else
+wire core_context_ready,core_in_ready;
+`endif
+
+
+`ifdef GPU_V2_LIVE_GLOBALS
+wire core_in_valid=source_valid&&covered;
+`else
+wire core_in_valid=source_valid&&covered&&!switching;
+`endif
+
  wire last_lane=(source_mask>>({1'b0,source_lane}+3'd1))==0;
  wire[31:0]token={24'd0,last_lane,source_slot,source_lane};
  wire[31:0]core_out_id;
+
+`ifndef GPU_V2_LIVE_GLOBALS
  assign context_wait=switching;
  assign context_accepted=ce&&switching&&core_context_ready;
- assign source_ready=ce&&!reset&&source_valid&&(!covered||(!switching&&core_in_ready));
+`endif
+
+ assign source_ready=ce&&!reset&&source_valid&&
+`ifdef GPU_V2_LIVE_GLOBALS
+(!covered||core_in_ready)
+`else
+(!covered||(!switching&&core_in_ready))
+`endif
+;
  assign pixel_accepted=ce&&core_in_valid&&core_in_ready;
  assign out_key=core_out_id[6:0];assign out_quad_last=core_out_id[7];
  // The arithmetic core has simultaneous operand ports, never a row collector.
@@ -33,6 +85,8 @@ module gpu_v2_pixel_lighting_consumer(
  wire[35:0]row0={4'd0,ny,nx};
  wire[35:0]row1={4'd0,source_position[15:0],nz};
  wire[35:0]row2={20'd0,source_position[31:16]};
+
+`ifndef GPU_V2_LIVE_GLOBALS
  always @(posedge clk)begin
   if(reset)begin loaded_valid<=0;loaded_bank<=0;end
   else if(ce)begin
@@ -40,9 +94,15 @@ module gpu_v2_pixel_lighting_consumer(
    if(context_accepted)begin loaded_valid<=1;loaded_bank<=source_bank;end
   end
  end
+
+`endif
  gpu_v2_lighting core(
  .clk(clk),.reset(reset),.ce(compute_tick),
+
+`ifndef GPU_V2_LIVE_GLOBALS
  .context_valid(switching),.context_ready(core_context_ready),
+`endif
+
  .context_epoch(context_epoch),.context_mode(context_mode),.context_code(context_code),
  .light_x(light_x),.light_y(light_y),.light_z(light_z),.ambient(ambient),.directional(directional),
  .ray_x(ray_x),.ray_y(ray_y),.ray_k(ray_k),

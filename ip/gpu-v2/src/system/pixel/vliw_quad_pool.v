@@ -6,7 +6,13 @@ module gpu_v2_vliw_quad_pool(
 `endif
 
  input clk,reset,front_ce,backend_ce,input[1:0]phase,
- input draw_bank,draw_unlit,
+
+`ifdef GPU_V2_LIVE_GLOBALS
+input draw_unlit,
+`else
+input draw_bank,draw_unlit,
+`endif
+
  input quad_valid,output quad_ready,output[2:0]quad_id,
  input[7:0]quad_x,input[6:0]quad_y,input quad_rgb,
  input quad_end_valid,input[2:0]quad_end_id,input[3:0]quad_end_mask,
@@ -26,7 +32,13 @@ output[23:0]depth_data,
 output[15:0]depth_data,
 `endif
 
- input light_ready,output light_valid,light_context_valid,
+ input light_ready,output
+`ifdef GPU_V2_LIVE_GLOBALS
+light_valid,
+`else
+light_valid,light_context_valid,
+`endif
+
  output[35:0]light_normal,output[31:0]light_position,output reg[1:0]light_lane,
  output[9:0]light_descriptor,
  input sample_ready,output sample_valid,output[35:0]sample_data,output[1:0]sample_row,
@@ -68,7 +80,13 @@ output[15:0]depth_data,
  wire[3:0]next_depth_mask=(attr_pixel[1:0]==0?4'd0:depth_mask)|
   ((depth_event_pass?4'b0001:4'd0)<<attr_pixel[1:0]);
  wire mask_write=depth_event&&attr_pixel[1:0]==3;
- wire[18:0]header_write={quad_y,quad_x,1'b0,quad_rgb,draw_unlit,draw_bank};
+ wire[18:0]header_write={quad_y,quad_x,1'b0,
+`ifdef GPU_V2_LIVE_GLOBALS
+quad_rgb,draw_unlit,1'b0}
+`else
+quad_rgb,draw_unlit,draw_bank}
+`endif
+;
  wire[18:0]issue_meta,light_meta,publish_meta;
 `ifdef GPU_V2_COMMAND_PORTS
  gpu_v2_vliw_pool_meta #(.WIDTH(24)) ci(clk,reset,allocate,allocated[4:0],quad_color[23:0],descriptor_issue_slot,issue_color);
@@ -113,7 +131,13 @@ wire[2:0]sample_meta;
  wire skip_empty=backend_ce&&empty_skip&&empty_skip_ready;
  wire regular_retire=backend_ce&&retire_valid&&!reset&&!fault;
 
- localparam L_READ=0,L_X=1,L_CONTEXT=2,L_PIXEL=3;
+
+`ifdef GPU_V2_LIVE_GLOBALS
+localparam L_READ=0,L_X=1,L_PIXEL=2;
+`else
+localparam L_READ=0,L_X=1,L_CONTEXT=2,L_PIXEL=3;
+`endif
+
  reg[1:0]light_state,sample_lane;reg[15:0]ndc_x;reg sample_loaded;
  wire light_exists=light_cursor!=publish_ptr;
  wire light_skip=light_state==L_READ&&light_exists&&(light_mask==0||light_meta[1]);
@@ -126,7 +150,11 @@ wire[2:0]sample_meta;
  gpu_v2_vliw_pool_ram normal_bank(clk,reset,normal_write,normal_mask,{2'd0,attr_pixel[6:0]},
   normal_wd,light_read,{2'd0,light_cursor[4:0],light_lane},normal_q);
  // NormalQ and Y-ROM Q remain owned by this pixel through its acceptance.
+
+`ifndef GPU_V2_LIVE_GLOBALS
  assign light_context_valid=!reset&&!fault&&(light_state==L_CONTEXT||light_state==L_PIXEL);
+`endif
+
  assign light_valid=!reset&&!fault&&light_state==L_PIXEL;
  assign light_normal=normal_q;
  assign light_descriptor=light_descriptor_q;
@@ -198,8 +226,14 @@ attr_pixel[6:0],depth_event_z16,
     if(light_skip)light_cursor<=light_cursor+1'b1;
     else case(light_state)
      L_READ:if(light_fetch)light_state<=L_X;
-     L_X:begin ndc_x<=light_lane[0]?ndc_q[31:16]:ndc_q[15:0];light_state<=L_CONTEXT;end
+     L_X:begin ndc_x<=light_lane[0]?ndc_q[31:16]:ndc_q[15:0];
+`ifdef GPU_V2_LIVE_GLOBALS
+light_state<=L_PIXEL;end
+`else
+light_state<=L_CONTEXT;end
      L_CONTEXT:light_state<=L_PIXEL;
+`endif
+
      L_PIXEL:if(light_take)begin
       light_state<=L_READ;light_lane<=light_lane+1'b1;
       if(light_lane==3)light_cursor<=light_cursor+1'b1;

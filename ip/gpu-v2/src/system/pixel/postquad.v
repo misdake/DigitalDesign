@@ -5,7 +5,13 @@ module gpu_v2_postquad(
  input wire[31:0]in_basic,input wire[35:0]in_light,in_uv,
  output wire in_ready,output wire[2:0]in_row,
  input wire[26:0]draw_config,input wire[23:0]specular,input wire[7:0]alpha,
- input wire[2:0]depth_func,input wire depth_write,blend,draw_rebind,
+ input wire[2:0]depth_func,input wire depth_write,
+`ifdef GPU_V2_LIVE_GLOBALS
+blend,
+`else
+blend,draw_rebind,
+`endif
+
  input wire[15:0]context_epoch,input wire[1:0]context_mode,input wire[4:0]context_code,
  input wire signed[15:0]light_x,light_y,light_z,ray_x,ray_y,ray_k,
  input wire[8:0]ambient,directional,
@@ -53,7 +59,11 @@ module gpu_v2_postquad(
  .mem_req_valid(txreq),.mem_req_addr(txaddr),.mem_req_ready(txready),
  .mem_resp_valid(txbeat),.mem_resp_index(txindex),.mem_resp_data(mem_read_data),
  .mem_resp_complete(txcomplete),.mem_resp_ok(mem_complete_ok),.cache_drained(cache_drained),
+
+`ifndef GPU_V2_LIVE_GLOBALS
  .light_bank(),.retire_valid(draw_rebind&&pipeline_idle),.retire_bank(1'b0),
+`endif
+
  .context_epoch(context_epoch),.context_mode(context_mode),.context_code(context_code),
  .light_x(light_x),.light_y(light_y),.light_z(light_z),.ambient(ambient),.directional(directional),
  .ray_x(ray_x),.ray_y(ray_y),.ray_k(ray_k),
@@ -120,7 +130,13 @@ module gpu_v2_postquad(
    stopped<=0;active<=0;state<=J_READ;paid<=0;depth_valid<=0;
    issue_lane<=0;out_lane<=0;light_done<=0;sample_done<=0;published_count<=0;
   end else begin
-   if(light_collision||sample_collision||basic_collision||(draw_rebind&&!pipeline_idle))stopped<=1;
+
+`ifdef GPU_V2_LIVE_GLOBALS
+if(light_collision||sample_collision||basic_collision)stopped<=1;
+`else
+if(light_collision||sample_collision||basic_collision||(draw_rebind&&!pipeline_idle))stopped<=1;
+`endif
+
    // Paid synchronous read returns are captured regardless of compute CE.
    if(active&&state==J_WAIT&&basic_valid)paid<=1;
    if(active&&state==J_DEPTH_WAIT&&basic_valid)begin

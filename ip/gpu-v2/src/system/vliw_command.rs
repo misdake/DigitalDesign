@@ -40,7 +40,7 @@ fn verilog_column(
     source.push_str(include_str!("vliw_command.v"));
     // Generic numerical exporters also serve the fixed-resource leaf profiles.
     // Specialize their selected closure completely; no Slot table reaches RTL.
-    let numerical = super::vliw_sdram::compute_verilog(
+    let numerical = super::vliw_sdram::compute_verilog_command(
         &[Slot {
             base_address: 0,
             max_size_log2: 0,

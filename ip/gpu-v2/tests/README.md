@@ -13,6 +13,46 @@ ignored-test entry points. Tests whose private fixture depends on its original
 crate-root context also remain separate. Shared host fixtures are loaded once
 by `host.rs`, rather than compiled independently in every component module.
 
+`live_global_gold::export_live_global_profiles` writes ten actual native/portable
+factory exports to `GPU_LIVE_GLOBAL_EXPORT_DIR`. Run it through
+`scripts/run-cargo.ps1` with `-p gpu-v2 --test live_global_gold
+export_live_global_profiles -- --ignored --nocapture`. Export a fixed accepted
+revision separately when making an equivalence comparison; do not use current
+source as its own baseline.
+
+`live_global_profiles.py --exports <current> --base-exports <accepted> --output
+<fresh-directory>` compares every ordered module token in simulation and
+`SYNTHESIS` modes, checks private-profile scope including a subsequent generic
+export, and checks generic installed-context/CE0/held-result behavior on both
+backends. It explicitly restores the older caller-visible command-port/DSP
+defines before selecting the standalone generic profile, while leaving the
+private live-global/trusted-frontend scope under test. Each context simulation
+has an 800-clock watchdog and each tool process a 60-second limit.
+
+`direct_global.py --base <accepted-command.v> --candidate <current-command.v>
+--backend native|portable --output <fresh-directory>` checks four successive
+contexts through the real SEND/CP/frontend/Lighting/Final/memory path. It compares
+every captured wall-cycle event, accepted Lighting input/result and framebuffer
+byte, with CE, output and memory stalls. `--interrupt reset|abort-reset` checks
+owned work and subsequent resubmission. The default original signed16 projection
+inputs remain a DUT-equivalence case: CP does not reject those magnitudes.
+`--projection-fixture oracle-domain` supplies a separate, narrower-domain family
+for `live_global_gold::actual_live_global_samples_match_independent_stage_oracle`,
+whose `GPU_LIVE_GLOBAL_GOLD_INPUT` points to its captured `base` or `candidate`
+directory. That oracle uses independent stage arithmetic and mathematical H9
+endpoints, without reading RTL or generated ROM values and without relaxing its
+domain or numerical assertions. Program and memory hashes distinguish the
+families even when their command words coincide.
+
+`--early-global` expects the existing CP monitor to reject a missing-WAIT update
+at the same edge in both exports. `--synthesis --mutation far|clock` instead
+changes one actual candidate data/clock owner and requires result-conservation
+or watchdog rejection with production monitors disabled. These are test-only
+mutations; the ordinary candidate must pass. `--reuse-base <previous/base>` is
+optional and requires byte-identical RTL, bench, memory and compile mode plus a
+previous PASS. All four-context simulations have a 20,000-clock watchdog and
+60-second compile/run limits; short fixtures do not qualify a full scene or board.
+
 The lighting corpus uses pairwise normal/position/direction combinations and
 shininess endpoints. Dedicated scalar/system checks retain every shininess code,
 signed and prescale boundaries, degenerate half vectors, normal/light

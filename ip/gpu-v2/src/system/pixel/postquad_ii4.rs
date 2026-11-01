@@ -219,7 +219,7 @@ fn square_operand_boundary(source: &mut String) -> Result<(), String> {
     replace(source, &old, &body)
 }
 
-fn private_lighting(source: &mut String) -> Result<(), String> {
+fn private_lighting(source: &mut String, live_globals: bool) -> Result<(), String> {
     // Only this closed parent guarantees compute_tick => core.out_ready.
     // Public acknowledgments and result writes still use the common commit CE.
     for (name, edits) in [
@@ -242,6 +242,7 @@ fn private_lighting(source: &mut String) -> Result<(), String> {
             "// Actual closed parent proves ce implies out_ready.\nwire advance = ce && configured;",
         )]),
     ] {
+        if live_globals && name == "gpu_v2_lighting" { continue; }
         let old = module(source, name)?;
         let mut new = old.clone();
         for (a, b) in edits {
@@ -319,13 +320,38 @@ pub fn verilog_profile(
     wide_pool: usize,
     shared_roms: bool,
 ) -> Result<String, String> {
+    render_globals(slots, surface, backend, wide_pool, shared_roms, false)
+}
+
+pub(crate) fn verilog_profile_command(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+    wide_pool: usize,
+    shared_roms: bool,
+) -> Result<String, String> {
+    render_globals(slots, surface, backend, wide_pool, shared_roms, true)
+}
+
+fn render_globals(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+    wide_pool: usize,
+    shared_roms: bool,
+    live_globals: bool,
+) -> Result<String, String> {
     let mut source = postquad::verilog_combined_group48_pool64_candidate(slots, surface, backend)?;
     let (options, plans) = if shared_roms {
         dsp_sharing::four_cycle_shared_roms(wide_pool)?
     } else {
         dsp_sharing::four_cycle(wide_pool)?
     };
-    let light = rtl::generate_with_schedule_plans(LightingProfile::Fast, options, &plans)?;
+    let light = if live_globals {
+        rtl::generate_command_with_schedule_plans(LightingProfile::Fast, options, &plans)?
+    } else {
+        rtl::generate_with_schedule_plans(LightingProfile::Fast, options, &plans)?
+    };
     replace_modules(&mut source, &format!("\n{}", light.source))?;
     replace_modules(
         &mut source,
@@ -337,6 +363,6 @@ pub fn verilog_profile(
     mac_register(&mut source)?;
     square_operand_boundary(&mut source)?;
     tile_address(&mut source, surface.width)?;
-    private_lighting(&mut source)?;
+    private_lighting(&mut source, live_globals)?;
     Ok(source)
 }

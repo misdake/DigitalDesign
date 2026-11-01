@@ -11,7 +11,7 @@ one live version even though several identity fields travel with work.
 | Host descriptor tag (8 bits) | Returned unchanged with the loader job completion |
 | Input page (1 bit) | Selects payload/metadata and locks the current source page |
 | Metadata sequence (7 bits) / generation (4 bits) | T descriptor identity; sequence advances per triangle modulo 128 |
-| Draw-bank bit | Copied into each quad header; not a second live global configuration |
+| Draw-bank bit | Reserved zero in command headers; generic installed-context headers retain their bank field |
 | Lighting epoch (16 bits) | Context identity returned with Lighting results |
 | Pool physical slot5 | One of 32 result-storage positions, with wrap-aware ordered cursors |
 | Producer quad tag (3 bits) | Identifies at most 8 unpublished producers while fixed returns are live |
@@ -837,6 +837,30 @@ original compute CE. The quad reader requests X/normal and then Y; the Y return
 feeds L_PIXEL directly, without the former context-only wait state. The four-edge
 arithmetic initiation interval and every pixel valid/identity remain unchanged.
 Global replacement still requires full render drain before CP writes any field.
+`SET_GLOBAL` itself does not wait for that drain: the command stream must first
+issue `WAIT` for the outstanding DMA and compute owners. Its existing state
+command monitor rejects replacement without the required fence. CP's
+`render_idle` input is compute-idle, including backend cache/output/sink drain;
+it is distinct from the outer pipeline-idle predicate that also covers memory,
+DMA, clear and serial work. No implicit wait or recovery is added.
+
+The crate-private command factory carries this ownership choice from the system
+through the frontend, source-Q backend and Lighting generator. Frontend and
+backend templates select their ports/state through scoped
+`GPU_V2_LIVE_GLOBALS`; Lighting emits its live aliases, reset-only token/identity
+state and free-running calendar directly. Global replacement does not restart
+the calendar, phase or identities. Computed LOD bias, packed widths/reserved bits,
+ROP retirement, empty-quad skip and sink drain remain in their existing owners.
+The final state binder handles target bases; the command texture factory
+selects native Packet/Group owners separately. Neither rewrites global/context
+registers after export.
+
+Public generic factories retain installed-context ports and capture semantics.
+An installation requires CE and an empty token pipeline; external field changes
+without an accepted installation do not replace the old context. Their
+configured flag and context-triggered calendar/token reset remain local to that
+profile. The private live-global define is closed before another factory's RTL.
+
 Mesh uniform RGBA is separate from that live context: it follows retained V/T
 attribute epochs, prepares beside the next triangle and switches with the active
 I context. Quad allocation copies RGB into a24-bit distributed-RAM issue view.

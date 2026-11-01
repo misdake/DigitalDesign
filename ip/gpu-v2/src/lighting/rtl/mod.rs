@@ -537,6 +537,7 @@ fn scalar_shareable(frame: &LoweredFrame, instructions: &[Instruction]) -> bool 
 
 struct Emitter {
     power_mask: Option<power_masks::Rewrite>,
+    live_globals: bool,
     rsqrt_q13: bool,
     one_hot_dsp: bool,
     dsp_input_csv: String,
@@ -814,7 +815,12 @@ impl Emitter {
                 let words = (long + 1).next_power_of_two();
                 let pointer_bits = words.trailing_zeros();
                 writeln!(self.body,"// Token RAM v{value}: {words}x{}, remote tap {long}, one-edge pre-read.\n(* syn_ramstyle = \"block_ram\" *) reg {} token_ram{value} [0:{}];\nreg [{}:0] token_ptr{value};\nreg {} v{value}_d{long};",f.bits,decl(f),words-1,pointer_bits-1,decl(f)).unwrap();
-                writeln!(self.body,"always @(posedge clk) begin\n if(reset || (ce && context_valid && context_ready)) token_ptr{value}<=0;\n else if(datapath_ce && {}) token_ptr{value}<=token_ptr{value}+1'b1;\nend\nalways @(posedge clk) if(datapath_ce) begin\n if {} token_ram{value}[token_ptr{value}]<=v{value}_d0;",self.program.phase(root,ready),self.program.phase(root,ready)).unwrap();
+                let context_reset = if self.live_globals {
+                    "reset"
+                } else {
+                    "reset || (ce && context_valid && context_ready)"
+                };
+                writeln!(self.body,"always @(posedge clk) begin\n if({context_reset}) token_ptr{value}<=0;\n else if(datapath_ce && {}) token_ptr{value}<=token_ptr{value}+1'b1;\nend\nalways @(posedge clk) if(datapath_ce) begin\n if {} token_ram{value}[token_ptr{value}]<=v{value}_d0;",self.program.phase(root,ready),self.program.phase(root,ready)).unwrap();
                 let mut phases = BTreeSet::new();
                 for &age in uses {
                     if (age - ready).div_ceil(ii) != long {
@@ -1965,7 +1971,7 @@ pub fn generate_with_options(
     profile: LightingProfile,
     options: LightingRtlOptions,
 ) -> Result<LightingVerilog, String> {
-    generate_with_optional_plans(profile, options, None)
+    generate_with_optional_plans(profile, options, None, false)
 }
 /// Explicit offline candidate; defaults never consume these edited calendars.
 pub fn generate_with_schedule_plans(
@@ -1973,13 +1979,38 @@ pub fn generate_with_schedule_plans(
     options: LightingRtlOptions,
     plans: &[super::sim::workbench::SchedulePlan; 2],
 ) -> Result<LightingVerilog, String> {
-    generate_with_optional_plans(profile, options, Some(plans))
+    generate_with_optional_plans(profile, options, Some(plans), false)
 }
+/// Closed command parent owns raw globals until drain and guarantees compute_tick
+/// implies out_ready. Generic installed-context APIs never select this profile.
+pub(crate) fn generate_command_with_schedule_plans(
+    profile: LightingProfile,
+    options: LightingRtlOptions,
+    plans: &[super::sim::workbench::SchedulePlan; 2],
+) -> Result<LightingVerilog, String> {
+    generate_with_optional_plans(profile, options, Some(plans), true)
+}
+
 fn generate_with_optional_plans(
     profile: LightingProfile,
     options: LightingRtlOptions,
     plans: Option<&[super::sim::workbench::SchedulePlan; 2]>,
+    live_globals: bool,
 ) -> Result<LightingVerilog, String> {
+    if live_globals
+        && (profile != LightingProfile::Fast
+            || !options.smooth_h9
+            || !options.unified_lit
+            || plans.is_none())
+    {
+        return Err("Live globals require the explicit closed unified Fast H9 calendar".into());
+    }
+    let context_reset = if live_globals {
+        "reset"
+    } else {
+        "reset || (ce && context_valid && context_ready)"
+    };
+
     if options.rsqrt_q13
         && (profile != LightingProfile::Fast
             || !options.unified_lit
@@ -2087,6 +2118,7 @@ fn generate_with_optional_plans(
     };
     let mut e = Emitter {
         power_mask,
+        live_globals,
         rsqrt_q13: options.rsqrt_q13,
         one_hot_dsp: options.one_hot_dsp,
         dsp_input_csv: String::from("lane,kind,full,phase,port,bits,signed,source\n"),
@@ -2328,6 +2360,9 @@ fn generate_with_optional_plans(
         (full_id_depth + diff_id_depth + 2) * 32
     };
     e.register_bits += latency + 1 + 16 + 3 * 16 + 3 * 16 + 2 * 9 + 2 + 5 + context_width + 2;
+    if live_globals {
+        e.register_bits -= 16 + 3 * 16 + 3 * 16 + 2 * 9 + 2 + 5 + context_width + 1;
+    }
     // Declare all module nets before use. In particular, declaration-assignment
     // syntax otherwise creates implicit nets before later retained registers.
     let (declarations, body) = hoist(&e.body);
@@ -2376,7 +2411,7 @@ end endgenerate"#
             r#"// Independent one-write/one-read synchronous FIFO. Each accepted ID is
 // read one advancing edge before its ordered result; no age-indexed multi-read.
 always @(posedge clk) begin
- if(reset || (ce && context_valid && context_ready)) begin id_write<=0;id_read<=0;end
+ if({context_reset}) begin id_write<=0;id_read<=0;end
  else if(datapath_ce) begin
   if(in_valid && in_ready) id_write<=id_write+1'b1;
   if((full_mode && valid_pipe[{}]) || (!full_mode && valid_pipe[{}])) id_read<=id_read+1'b1;
@@ -2497,7 +2532,14 @@ end
     .unwrap();
     writeln!(
         storage_csv,
-        "context,latched_uniform,180,0,{latency},1,1,180"
+        "context,{},{},0,{latency},1,1,{}",
+        if live_globals {
+            "borrowed_uniform"
+        } else {
+            "latched_uniform"
+        },
+        if live_globals { 0 } else { 180 },
+        if live_globals { 0 } else { 180 }
     )
     .unwrap();
     writeln!(
@@ -2528,13 +2570,64 @@ end
     } else {
         e.sequential
     };
+    let context_ports = if live_globals {
+        ""
+    } else {
+        " input wire context_valid, output wire context_ready,\n"
+    };
+    let configured_decl = if live_globals { "" } else { "reg configured;" };
+    let context_declarations = if live_globals {
+        format!("wire[1:0]ctx_mode=context_mode;wire[4:0]ctx_code=context_code;wire[15:0]ctx_epoch=context_epoch;\nwire signed[15:0]ctx_l0=light_x,ctx_l1=light_y,ctx_l2=light_z,ctx_p0=ray_x,ctx_p1=ray_y,ctx_p2=ray_k;\nwire[8:0]ctx_i0=ambient,ctx_i1=directional;wire[{}:0]ctx_power;", context_width-1)
+    } else {
+        format!("reg [1:0] ctx_mode; reg [4:0] ctx_code; reg [15:0] ctx_epoch;\nreg signed [15:0] ctx_l0,ctx_l1,ctx_l2,ctx_p0,ctx_p1,ctx_p2;\nreg [8:0] ctx_i0,ctx_i1; reg [{}:0] ctx_power;", context_width-1)
+    };
+    let context_power_assign = if live_globals {
+        "assign ctx_power=context_rom[context_code];\n"
+    } else {
+        ""
+    };
+    let advance_condition = if live_globals {
+        "ce"
+    } else {
+        "ce && configured && !(out_valid && !out_ready)"
+    };
+    let datapath_condition = if live_globals {
+        "advance && !reset"
+    } else {
+        "advance && !reset && !(context_valid && context_ready)"
+    };
+    let context_ready_assign = if live_globals {
+        ""
+    } else {
+        "assign context_ready = ce && !reset && !(|valid_pipe);\n"
+    };
+    let input_condition = if live_globals {
+        "advance && !reset && phase==0"
+    } else {
+        "advance && !reset && phase==0 && !context_valid"
+    };
+    let reset_context = if live_globals { "" } else { "configured<=0; " };
+    let reset_calendar = if live_globals { "4'b0001" } else { "0" };
+    let context_install = if live_globals {
+        "  if(advance) begin".to_owned()
+    } else {
+        format!(
+            r#"  if(context_valid && context_ready) begin
+   configured<=1; phase<=0;
+   if(context_mode==3) calendar<={full_initial};else calendar<={diff_initial};
+   ctx_mode<=context_mode; ctx_code<=context_code; ctx_epoch<=context_epoch;
+   ctx_l0<=light_x; ctx_l1<=light_y; ctx_l2<=light_z;
+   ctx_p0<=ray_x; ctx_p1<=ray_y; ctx_p2<=ray_k;
+   ctx_i0<=ambient; ctx_i1<=directional; ctx_power<=context_rom[context_code];
+  end else if(advance) begin"#
+        )
+    };
     let source = format!(
         r#"// Generated by gpu_v2::lighting::rtl::generate. Do not hand edit.
 // Full II={specular_ii}, latency={latency}; diffuse II={diffuse_ii}, latency={diffuse_latency}.
 module gpu_v2_lighting(
  input wire clk, reset, ce,
- input wire context_valid, output wire context_ready,
- input wire [15:0] context_epoch,
+{context_ports} input wire [15:0] context_epoch,
  input wire [1:0] context_mode, input wire [4:0] context_code,
  input wire signed [15:0] light_x,light_y,light_z,
  input wire [8:0] ambient,directional,
@@ -2547,21 +2640,18 @@ module gpu_v2_lighting(
  output reg [8:0] out_g,out_h
 );
 // Registered one-hot calendars remove mode/phase decoding from lane mux paths.
-reg configured;reg [1:0] phase;reg [{calendar_top}:0] calendar;
-reg [1:0] ctx_mode; reg [4:0] ctx_code; reg [15:0] ctx_epoch;
-reg signed [15:0] ctx_l0,ctx_l1,ctx_l2,ctx_p0,ctx_p1,ctx_p2;
-reg [8:0] ctx_i0,ctx_i1; reg [{context_top}:0] ctx_power;
+{configured_decl}reg [1:0] phase;reg [{calendar_top}:0] calendar;
+{context_declarations}
 reg [{latency}:0] valid_pipe;
 {id_declarations}
 wire full_mode;
 {id_retime}
 {declarations}
-assign full_mode = {mode_select};
+{context_power_assign}assign full_mode = {mode_select};
 wire [1:0] last_phase = full_mode ? 2'd{full_last_phase} : 2'd{diff_last_phase};
-wire advance = ce && configured && !(out_valid && !out_ready);
-wire datapath_ce = advance && !reset && !(context_valid && context_ready);
-assign context_ready = ce && !reset && !(|valid_pipe);
-assign in_ready = advance && !reset && phase==0 && !context_valid;
+wire advance = {advance_condition};
+wire datapath_ce = {datapath_condition};
+{context_ready_assign}assign in_ready = {input_condition};
 assign out_valid = full_mode ? valid_pipe[{latency}] : valid_pipe[{diffuse_latency}];
 assign out_id = {id_result};
 assign out_epoch = ctx_epoch;
@@ -2576,16 +2666,9 @@ end
 {body}
 integer token_stage;
 always @(posedge clk) begin
- if(reset) begin configured<=0; phase<=0; calendar<=0; valid_pipe<=0; end
+ if(reset) begin {reset_context}phase<=0; calendar<={reset_calendar}; valid_pipe<=0; end
  else if(ce) begin
-  if(context_valid && context_ready) begin
-   configured<=1; phase<=0;
-   if(context_mode==3) calendar<={full_initial};else calendar<={diff_initial};
-   ctx_mode<=context_mode; ctx_code<=context_code; ctx_epoch<=context_epoch;
-   ctx_l0<=light_x; ctx_l1<=light_y; ctx_l2<=light_z;
-   ctx_p0<=ray_x; ctx_p1<=ray_y; ctx_p2<=ray_k;
-   ctx_i0<=ambient; ctx_i1<=directional; ctx_power<=context_rom[context_code];
-  end else if(advance) begin
+{context_install}
    if(phase==last_phase) phase<=0;else phase<=phase+1'b1;
    if(full_mode) calendar<={full_calendar_next};else calendar<={diff_calendar_next};
    valid_pipe[0]<=in_valid && in_ready;
@@ -2602,7 +2685,6 @@ end
 endmodule
 "#,
         body = body,
-        context_top = context_width - 1,
         mode_select = if options.unified_lit {
             "1'b1"
         } else {

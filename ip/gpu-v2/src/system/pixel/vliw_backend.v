@@ -5,7 +5,13 @@ module gpu_v2_vliw_sampling(
 `endif
 
  input wire clk,reset,ce,light_compute_tick,
- input wire front_ce,input wire[1:0]producer_phase,input wire draw_bank,draw_unlit,
+ input wire front_ce,input wire[1:0]producer_phase,
+`ifdef GPU_V2_LIVE_GLOBALS
+input wire draw_unlit,
+`else
+input wire draw_bank,draw_unlit,
+`endif
+
  input wire quad_valid,output wire quad_ready,output wire[2:0]quad_id,
  input wire[7:0]quad_x,input wire[6:0]quad_y,input wire quad_rgb,
  input wire quad_end_valid,input wire[2:0]quad_end_id,input wire[3:0]quad_end_mask,
@@ -54,13 +60,23 @@ output wire[15:0]depth_data,
  output wire d_issue,l_issue,c_issue,d_return,l_return,c_return,
  output wire uv_write,uv_read,
  output wire[4:0] uv_write_address,uv_read_address,
- output wire light_bank,input wire retire_valid,retire_bank,
+
+`ifndef GPU_V2_LIVE_GLOBALS
+output wire light_bank,input wire retire_valid,retire_bank,
+`endif
+
  input wire[15:0] context_epoch,
  input wire[1:0] context_mode,input wire[4:0] context_code,
  input wire signed[15:0] light_x,light_y,light_z,
  input wire[8:0] ambient,directional,
  input wire signed[15:0] ray_x,ray_y,ray_k,
- output wire context_wait,context_accepted,pixel_accepted,
+
+`ifdef GPU_V2_LIVE_GLOBALS
+output wire pixel_accepted,
+`else
+output wire context_wait,context_accepted,pixel_accepted,
+`endif
+
  output wire out_valid,input wire out_ready,
  output wire[6:0] out_key,output wire out_quad_last,
  output wire[15:0] out_epoch,output wire[8:0] out_g,out_h
@@ -74,10 +90,20 @@ output wire[15:0]depth_data,
  assign preflight_bad=quad_bad||sampling_bad||backend_bad||cache_bad||color_bad;
  assign fault=abort||quad_fault||sampling_fault||backend_fault||cache_fault||color_fault;
  assign advance=ce&&!reset&&allow;
- wire light_ready,light_valid,light_context_valid,sample_last;
+ wire light_ready,
+`ifdef GPU_V2_LIVE_GLOBALS
+light_valid,
+`else
+light_valid,light_context_valid,
+`endif
+sample_last;
  wire[35:0]light_normal;wire[31:0]light_position;wire[1:0]light_lane;
  wire[9:0] light_descriptor;
+
+`ifndef GPU_V2_LIVE_GLOBALS
  assign light_bank=light_descriptor[9];
+`endif
+
  assign sample_fire=advance&&sample_valid&&sample_ready;
  assign raw_metadata={draw_config[26:25],draw_config[24],draw_config[23:20],
    draw_config[19:16],sample_descriptor[8:5],sample_descriptor[3:0],
@@ -89,7 +115,11 @@ output wire[15:0]depth_data,
 `endif
 
  .clk(clk),.reset(reset),.front_ce(front_ce&&!fault),.backend_ce(advance),.phase(producer_phase),
- .draw_bank(draw_bank),.draw_unlit(draw_unlit),
+
+`ifndef GPU_V2_LIVE_GLOBALS
+.draw_bank(draw_bank),
+`endif
+.draw_unlit(draw_unlit),
  .quad_valid(quad_valid),.quad_ready(quad_ready),.quad_id(quad_id),.quad_x(quad_x),.quad_y(quad_y),.quad_rgb(quad_rgb),
  .quad_end_valid(quad_end_valid),.quad_end_id(quad_end_id),.quad_end_mask(quad_end_mask),
  .prefetch_valid(prefetch_valid),.prefetch_tile(prefetch_tile),
@@ -102,7 +132,11 @@ output wire[15:0]depth_data,
  .basic_read(basic_read),.basic_read_address(basic_read_address),
  .basic_return_data(basic_return_data),.basic_collision(basic_collision),
  .depth_read(depth_read),.depth_read_address(depth_read_address),.depth_data(depth_data),
- .light_ready(light_ready),.sample_ready(sample_ready),.light_valid(light_valid),.light_context_valid(light_context_valid),.sample_valid(sample_valid),
+ .light_ready(light_ready),.sample_ready(sample_ready),.light_valid(light_valid),
+`ifndef GPU_V2_LIVE_GLOBALS
+.light_context_valid(light_context_valid),
+`endif
+.sample_valid(sample_valid),
  .light_normal(light_normal),.light_position(light_position),.light_lane(light_lane),.sample_data(sample_data),.sample_row(sample_row),
  .sample_last(sample_last),.light_descriptor(light_descriptor),.sample_descriptor(sample_descriptor),
  .retire_valid(rop_row7_accepted),.retire_id(rop_slot),.empty_skip(empty_skip),.empty_head(empty_head),.empty_skip_ready(empty_skip_ready),
@@ -126,14 +160,30 @@ output wire[15:0]depth_data,
  .phase(coordinate_phase),.issue(c_issue),.returned(c_return),.occupied(c_occupied),.completed(c_completed));
  gpu_v2_pixel_lighting_consumer light(
  .clk(clk),.reset(reset),.ce(advance),.compute_tick(light_compute_tick),
- .source_context_valid(light_context_valid),.source_valid(light_valid),.source_ready(light_ready),
+
+`ifndef GPU_V2_LIVE_GLOBALS
+.source_context_valid(light_context_valid),
+`endif
+.source_valid(light_valid),.source_ready(light_ready),
  .source_lane(light_lane),.source_normal(light_normal),.source_position(light_position),
- .source_slot(light_descriptor[4:0]),.source_mask(light_descriptor[8:5]),.source_bank(light_bank),
- .retire_valid(retire_valid),.retire_bank(retire_bank),
+ .source_slot(light_descriptor[4:0]),.source_mask(light_descriptor[8:5]),
+`ifndef GPU_V2_LIVE_GLOBALS
+.source_bank(light_bank),
+`endif
+
+
+`ifndef GPU_V2_LIVE_GLOBALS
+.retire_valid(retire_valid),.retire_bank(retire_bank),
+`endif
+
  .context_epoch(context_epoch),.context_mode(context_mode),.context_code(context_code),
  .light_x(light_x),.light_y(light_y),.light_z(light_z),.ambient(ambient),.directional(directional),
  .ray_x(ray_x),.ray_y(ray_y),.ray_k(ray_k),
- .context_wait(context_wait),.context_accepted(context_accepted),.pixel_accepted(pixel_accepted),
+
+`ifndef GPU_V2_LIVE_GLOBALS
+.context_wait(context_wait),.context_accepted(context_accepted),
+`endif
+.pixel_accepted(pixel_accepted),
  .out_valid(out_valid),.out_ready(out_ready),.out_key(out_key),.out_quad_last(out_quad_last),
  .out_epoch(out_epoch),.out_g(out_g),.out_h(out_h));
 

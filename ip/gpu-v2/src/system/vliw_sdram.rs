@@ -28,7 +28,28 @@ pub(super) fn compute_verilog(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    let source = super::vliw::verilog(slots, surface, backend)?;
+    render_globals(slots, surface, backend, false)
+}
+
+pub(crate) fn compute_verilog_command(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+) -> Result<String, String> {
+    render_globals(slots, surface, backend, true)
+}
+
+fn render_globals(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+    live_globals: bool,
+) -> Result<String, String> {
+    let source = if live_globals {
+        super::vliw::verilog_command(slots, surface, backend)?
+    } else {
+        super::vliw::verilog(slots, surface, backend)?
+    };
     let mut source = super::vliw_memory::split_backend(&source)?;
     // Bind only the enclosing geometry/backend module. A private cache may
     // legitimately expose the same memory-port spelling as this wrapper.

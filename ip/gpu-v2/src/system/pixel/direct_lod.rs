@@ -100,7 +100,7 @@ pub fn verilog_selected(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    verilog_coordinate(slots, surface, backend, false)
+    verilog_coordinate(slots, surface, backend, false, false)
 }
 /// The producer-pool backend owns source Q through the coordinate V edge.
 pub fn verilog_source_q(
@@ -108,16 +108,31 @@ pub fn verilog_source_q(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    verilog_coordinate(slots, surface, backend, true)
+    verilog_coordinate(slots, surface, backend, true, false)
 }
+
+pub(crate) fn verilog_source_q_command(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+) -> Result<String, String> {
+    verilog_coordinate(slots, surface, backend, true, true)
+}
+
 fn verilog_coordinate(
     slots: &[Slot],
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
     source_q: bool,
+    live_globals: bool,
 ) -> Result<String, String> {
     let native = matches!(backend, quad_ingress::rtl::Backend::Native);
-    let mut source = postquad_ii4::verilog(slots, surface, backend, 9)?.replace("\r\n", "\n");
+    let mut source = (if live_globals {
+        postquad_ii4::verilog_profile_command(slots, surface, backend, 9, true)?
+    } else {
+        postquad_ii4::verilog(slots, surface, backend, 9)?
+    })
+    .replace("\r\n", "\n");
     for name in ["gpu_v2_postquad", "gpu_v2_pixel_sampling_ingress"] {
         patch(
             &mut source,
