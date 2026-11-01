@@ -50,6 +50,18 @@ no unit cases and omit empty test harnesses. Their ordinary binaries remain
 available; boot-assets and debugger unit tests remain enabled. Adding unit cases
 to those CLI sources requires re-enabling their Cargo test target.
 
+## Control peers and maintenance wiring
+
+The builder and UI host suites share only the control peers in
+`support/gpu_control_peer.rs`: Display status, CPU publication and GPU START
+counts. Their compilers, assets, fixtures and independent command/memory checks
+remain separate. `cache_maintenance_wiring` reads the production board template's
+named instance endpoints, including the private SystemControl-to-CPU hold net
+and the independent GPU/cache/MC/Display clocks. Wrong producer, CPU, GPU, MC,
+Display and alias connections are negative controls. This structural check does
+not replace the fourteen bounded RTL scenarios in `cache_maintenance_protocol`
+or qualify new device execution or board timing.
+
 ## Graphics API helpers
 
 `graphics_api_b_modules` compiles actual B camera/model/material/state/view/UI helpers with

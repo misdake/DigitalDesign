@@ -30,6 +30,8 @@ mod rcc_modules;
 #[path = "../build_support/rcc_modules.rs"]
 #[allow(dead_code)]
 mod shared_build_support_rcc_modules;
+#[path = "support/gpu_control_peer.rs"]
+mod shared_support_gpu_control_peer;
 #[path = "support/gpu_rcc_d2.rs"]
 #[allow(dead_code)]
 mod shared_support_gpu_rcc_d2;

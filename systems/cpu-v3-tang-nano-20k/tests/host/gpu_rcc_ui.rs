@@ -1,6 +1,6 @@
 //! Compiled UI records and ownership controls; peers do not render.
 use cpu_v3::{rcc_backend, CpuV3Sim, PhysicalWordAddress, RunOutcome};
-use std::{any::Any, cell::RefCell, path::Path, rc::Rc};
+use std::path::Path;
 fn compile(source: &str) -> Vec<u16> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
@@ -19,43 +19,10 @@ fn compile(source: &str) -> Vec<u16> {
         .unwrap()
         .words
 }
-struct Peer {
-    kind: u8,
-    state: Rc<RefCell<(usize, usize)>>,
-}
-impl cpu_v3::Device for Peer {
-    fn read(&mut self, _: &mut [u16], channel: u8) -> u16 {
-        if self.kind == 3 && channel == 2 {
-            0x20
-        } else {
-            0
-        }
-    }
-    fn write(&mut self, _: &mut [u16], channel: u8, _: u16) {
-        if self.kind == 0 && channel == 1 {
-            self.state.borrow_mut().0 += 1;
-        }
-        if self.kind == 4 && channel == 1 {
-            self.state.borrow_mut().1 += 1;
-        }
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 fn run(source: &str) -> (CpuV3Sim, usize) {
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(&compile(source));
-    let count = Rc::new(RefCell::new((0, 0)));
-    for kind in [0, 3, 4] {
-        cpu.attach_device(
-            kind,
-            Box::new(Peer {
-                kind,
-                state: count.clone(),
-            }),
-        );
-    }
+    let count = super::shared_support_gpu_control_peer::attach(&mut cpu);
     let r = cpu.run(8_000_000).unwrap();
     assert!(
         matches!(r, RunOutcome::Halted { signal: 0x600d, .. }),
