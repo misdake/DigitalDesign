@@ -3,7 +3,7 @@ module gpu_v2_packet_store_unique #(parameter MODE=1,NATIVE=1)(
  input clk,reset,ce,input reserve_valid,input[5:0]reserve_owner,
  input write_valid,input[34:0]write_payload,input owner_request,consume,
  output producer_ready,front_valid,output[34:0]front_payload,
- output next_valid,output[15:0]next_key,
+ output next_valid,output[14:0]next_key,
  output reg fault,output bad,
  output[4:0]producer_count,unwritten_count,output[5:0]group_count,row_count,
  output[5:0]allocate_row,write_row,transfer_row,read_row,reclaim_row,
@@ -17,8 +17,7 @@ module gpu_v2_packet_store_unique #(parameter MODE=1,NATIVE=1)(
  wire[5:0]alloc=reclaimed+used,missing=alloc-wptr;
  wire[5:0]written=wptr-reclaimed;
  wire running=ce&&!reset&&!fault;
- assign bad=running&&((reserve_valid&&used==48)||
-  (write_valid&&missing==0)||(consume&&!head_valid));
+ assign bad=1'b0;
  wire commit=running&&!bad;
  wire transfer=commit&&write_valid;
  wire take=commit&&consume;
@@ -32,7 +31,7 @@ module gpu_v2_packet_store_unique #(parameter MODE=1,NATIVE=1)(
  assign front_valid=head_valid;assign front_payload=head_payload;
  // The next key is already visible before consumption. Tag lookup overlaps
  // promotion of native Q into the copied head and the following payload read.
- assign next_valid=q_valid;assign next_key=data_do[15:0];
+ assign next_valid=q_valid;assign next_key=data_do[14:0];
  assign producer_count=missing[4:0];assign unwritten_count=missing[4:0];
  assign group_count=written;assign row_count=used;
  assign allocate_row=alloc;assign write_row=wptr;assign transfer_row=wptr;
@@ -42,9 +41,13 @@ module gpu_v2_packet_store_unique #(parameter MODE=1,NATIVE=1)(
  assign head_valid_out={q_valid,head_valid};assign pending_out=pending;
  assign owner_value=0;assign returned_payload=data_do;
  always @(posedge clk)begin
-  if(reset)begin wptr<=0;rptr<=0;used<=0;head_valid<=0;q_valid<=0;pending<=0;fault<=0;end
+  if(reset)begin wptr<=0;rptr<=0;used<=0;head_valid<=0;q_valid<=0;pending<=0;begin end end
   else if(running)begin
-   if(bad)fault<=1;
+   if(bad)begin
+`ifndef SYNTHESIS
+ if(!reset&&((1)!=0))$fatal(1,"GPU contract: fault");
+`endif
+ end
    else begin
     if(pw)wptr<=wptr+1'b1;
     if(pr)rptr<=rptr+1'b1;
@@ -83,5 +86,12 @@ module gpu_v2_packet_store_unique #(parameter MODE=1,NATIVE=1)(
    held<=front_valid&&!take;held_payload<=front_payload;
   end
  end
+`endif
+
+ always @(posedge clk)fault<=0;
+
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((1'b1)&&(running&&((reserve_valid&&used==48)||
+  (write_valid&&missing==0)||(consume&&!head_valid)))))$fatal(1,"GPU contract: bad");
 `endif
 endmodule

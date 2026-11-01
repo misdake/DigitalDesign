@@ -93,7 +93,7 @@ pub fn lower(mut source: String, native: bool) -> Result<String, String> {
             .replace("@NATIVE@", if native { "1" } else { "0" });
         Ok(())
     })?;
-    physical_groups(&mut source)?;
+    sampling_physical_ports(&mut source)?;
     for forbidden in [
         "slot_base_f",
         "slot_valid_f",
@@ -111,45 +111,11 @@ pub fn lower(mut source: String, native: bool) -> Result<String, String> {
     Ok(source)
 }
 
-/// Retire logical addressing at the producer, before the ordered Group RAM.
-/// All consumers share the stored physical sector; no address work feeds ready.
-fn physical_groups(source: &mut String) -> Result<(), String> {
-    edit(source, "packet_leaf_unique", |s| {
-        *s = include_str!("texture_packet.v").to_owned();
-        Ok(())
-    })?;
-    for name in [
-        "gpu_v2_texture_runtime_backend_unique",
-        "gpu_v2_runtime_packet_backend_unique",
-        "gpu_v2_packet_store_unique",
-    ] {
-        edit(source, name, |s| {
-            *s = s
-                .replace("[33:0]", "[34:0]")
-                .replace("[17:0] next_key", "[15:0] next_key")
-                .replace("[17:0]next_key", "[15:0]next_key");
-            if name == "gpu_v2_packet_store_unique" {
-                once(s, "head0[17:0]:head1[17:0]", "head0[15:0]:head1[15:0]")?;
-                once(s, "data_do[17:0]", "data_do[15:0]")?;
-                once(s, ".DI({2'd0,write_payload})", ".DI({1'b0,write_payload})")?;
-            } else {
-                once(
-                    s,
-                    " input wire clk,",
-                    " input wire[15:0]texture_base,input wire texture_mip,\n input wire clk,",
-                )?;
-                if name == "gpu_v2_texture_runtime_backend_unique" {
-                    once(s," .issue_enable(packet_enable),", " .texture_base(texture_base),.texture_mip(texture_mip),.issue_enable(packet_enable),")?;
-                } else {
-                    once(s,".ce(advance),.in_valid(issue),", ".ce(advance),.texture_base(texture_base),.texture_mip(texture_mip),.in_valid(issue),")?;
-                }
-            }
-            Ok(())
-        })?;
-    }
+/// Bind the sampling parent to the native Group35/H15 command interface.
+fn sampling_physical_ports(source: &mut String) -> Result<(), String> {
     edit(source, "gpu_v2_vliw_sampling", |s| {
         once(s, "[33:0]packet_out_payload", "[34:0]packet_out_payload")?;
-        once(s, "[17:0]packet_next_key", "[15:0]packet_next_key")?;
+        once(s, "[17:0]packet_next_key", "[14:0]packet_next_key")?;
         once(s,".ce(ce),.commit_allow(allow),.abort(1'b0),", ".ce(ce),.commit_allow(allow),.abort(1'b0),.texture_base(texture_base),.texture_mip(texture_mip),")?;
         once(s,".texture_base(texture_base),.texture_mip(texture_mip),.texture_invalidate(texture_invalidate),", ".texture_invalidate(texture_invalidate),")
     })?;
@@ -160,4 +126,35 @@ fn physical_groups(source: &mut String) -> Result<(), String> {
             "wire packet_bad=1'b0; // Physical groups have no redundant level field.",
         )
     })
+}
+
+/// Select the six command owners as complete modules. No generic payload or
+/// diagnostic rewrite participates in their implementation.
+pub fn packet_group(mut source: String) -> Result<String, String> {
+    for (name, rtl) in [
+        ("membership_leaf", include_str!("texture_membership16x8.v")),
+        (
+            "gpu_v2_texture_work_unique",
+            include_str!("texture_work16.v"),
+        ),
+        ("packet_leaf_unique", include_str!("texture_packet16x8.v")),
+        (
+            "gpu_v2_packet_store_unique",
+            include_str!("texture_group_q.v"),
+        ),
+        (
+            "gpu_v2_runtime_packet_backend_unique",
+            include_str!("texture_packet_backend.v"),
+        ),
+        (
+            "gpu_v2_texture_runtime_backend_unique",
+            include_str!("texture_runtime_backend.v"),
+        ),
+    ] {
+        edit(&mut source, name, |s| {
+            *s = rtl.trim_end().to_owned();
+            Ok(())
+        })?;
+    }
+    Ok(source)
 }

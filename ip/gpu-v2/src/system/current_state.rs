@@ -138,7 +138,6 @@ pub fn lower(mut source: String) -> Result<String, String> {
             "wire[6:0]target_page=(mt_issue[1]?depth_base[13:7]:color_base[13:7])+{5'd0,mt_linear_tile[8:7]};\n assign mem_req_addr={9'd0,target_page,mt_linear_tile[6:0],mt_tile[5],mt_issue[0],7'd0};")
     })?;
     direct_global(&mut source)?;
-    native_group_head(&mut source)?;
     for old in [
         "draw_bank",
         "loaded_bank",
@@ -353,12 +352,4 @@ fn direct_global(source: &mut String) -> Result<(), String> {
             "",
         )
     })
-}
-
-fn native_group_head(source: &mut String) -> Result<(), String> {
-    edit(source, "gpu_v2_packet_store_unique", |s| {
-        *s = include_str!("texture_group_q.v").to_owned();
-        Ok(())
-    })?;
-    Ok(())
 }

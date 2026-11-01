@@ -97,38 +97,5 @@ pub fn lower(mut source: String) -> Result<String, String> {
             Ok(())
         })?;
     }
-    for name in [
-        "gpu_v2_texture_runtime_backend_unique",
-        "gpu_v2_runtime_packet_backend_unique",
-        "packet_leaf_unique",
-    ] {
-        edit(&mut source, name, |s| {
-            once(
-                s,
-                "input texture_mip,",
-                "input texture_mip,input texture_fb400240,",
-            )
-            .or_else(|_| {
-                once(
-                    s,
-                    "input wire texture_mip,",
-                    "input wire texture_mip,input wire texture_fb400240,",
-                )
-            })?;
-            if name != "packet_leaf_unique" {
-                once(s,".texture_base(texture_base),.texture_mip(texture_mip),",
-                     ".texture_base(texture_base),.texture_mip(texture_mip),.texture_fb400240(texture_fb400240),")?;
-            } else {
-                once(
-                    s,
-                    "wire[3:0]pitch_y_log2=(level<4)?4'd0:(level-4'd4);",
-                    "wire[3:0]pitch_y_log2=texture_fb400240?4'd4:((level<4)?4'd0:(level-4'd4));",
-                )?;
-                let end = s.rfind("endmodule").ok_or("RTT packet end")?;
-                s.insert_str(end,"`ifndef SYNTHESIS\n always@(posedge clk)if(!reset&&ce&&valid[0]&&texture_fb400240&&(tx>=25||ty>=30))$fatal(1,\"RTT400 Group bounds\");\n`endif\n");
-            }
-            Ok(())
-        })?;
-    }
     Ok(source)
 }

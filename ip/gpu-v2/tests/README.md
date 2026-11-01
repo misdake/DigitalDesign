@@ -164,3 +164,20 @@ a 20,000-cycle watchdog, each negative a 1,000ns bound, and each process a 45-se
 limit. `--baseline <prior-output>` compares the complete sampled data/address/
 control trace to a frozen run. This is a bounded leaf qualification, not a frame,
 physical SDRAM or board test.
+
+`command_packet_group.py --export <command.v> --baseline <fixed-command.v>
+--output <fresh-directory>` binds the selected Membership/Work/Packet/Group
+owners. Independent POT/RTT vectors check Member76, metadata/masks, Packet35
+publication edges, owner conservation and H15 lookahead with48-credit saturation.
+Portable/native Group RAM and monitor on/off traces must match the fixed source.
+The existing RTT sampler/oracle supplies a64-pixel two-filter closed chain from
+coefficient weight pins through actual cache `read_issue`, with CE/refill stalls.
+Twenty-eight directed detector alternatives check the original failure edge and
+monitor-off state; explicit abort stays sticky without CE until reset. Four
+source mutants break Membership X seams, RTT pitch, H15 or native Q OCE and must
+fail their independent oracle. Each bench has a30,000-cycle or smaller bound and
+each subprocess a60-second limit. `--negative-only` and `--sampler-only` select
+these focused subsets. `--portable-export` and `--portable-baseline` bind the
+actual portable exports for the corresponding legal traces. This is bounded
+producer/consumer evidence, not a frame,
+physical-memory timing or board qualification.

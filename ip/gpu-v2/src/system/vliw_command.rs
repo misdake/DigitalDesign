@@ -8,8 +8,6 @@ mod current_texture;
 mod rtt400x240;
 #[path = "simulation_checks.rs"]
 mod simulation_checks;
-#[path = "texture_layout16x8.rs"]
-mod texture_layout16x8;
 #[path = "ui_grid.rs"]
 mod ui_grid;
 pub const MODULE: &str = "gpu_v2_vliw_command";
@@ -56,7 +54,6 @@ fn verilog_column(
         numerical,
         matches!(backend, super::pixel::quad_ingress::rtl::Backend::Native),
     )?)?;
-    let numerical = texture_layout16x8::lower(numerical)?;
     source.push_str(&ui_grid::lower(numerical)?);
     source.push_str(include_str!("command_processor.v"));
     source.push_str(include_str!("command_dma.v"));
@@ -66,7 +63,7 @@ fn verilog_column(
         .next()
         .ok_or("memory router")?;
     source.push_str(router);
-    simulation_checks::lower(source)
+    simulation_checks::lower(current_texture::packet_group(source)?)
 }
 
 /// Column RGB565 texture, either POT or a fixed 400x240 framebuffer view.

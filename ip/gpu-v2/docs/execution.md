@@ -704,6 +704,29 @@ result state and queue storage hold when their effective CE is disabled. The
 command coordinate, DirectLOD and queue own passive diagnostics at those same
 edges; outer exporters select complete leaves without numerical-body patches.
 
+The command factory selects its Membership, Work16, Packet and two producer
+wrappers directly from `system/texture_membership16x8.v`, `texture_work16.v`,
+`texture_packet16x8.v`, `texture_packet_backend.v` and `texture_runtime_backend.v`.
+The selected Group owner is `system/texture_group_q.v`. Generic sampler factories
+retain their independent checked sources; command selection does not rewrite
+their payload widths, packing or diagnostic assignments.
+
+Membership publishes Member76 after two enabled edges. Its low36 bits carry
+nonzero coefficient masks; emit is39:36 and metadata is75:40. Work16 retains
+only metadata36 (immutable slot bits cleared) in distributed RAM and emit/cursor
+in two small heads. Exact weights stay in the existing direct-weight bank.
+Packet captures member/tap/base on one enabled edge and publishes Group35 on the
+next. Group35 packs H14:0, local X18:15, local Y21:19, owner29:22, mip parity30
+and coverage34:31. H15 names a256-byte line. POT layers use complete16x16 macro
+tiles; the fixed400x240 view uses16 macro rows per column. Its descriptor and
+mode remain stable through drain. Packet monitors the original alignment,
+active-tap and RTT visible-column/half-row bounds on their original edges.
+
+These six command owners implement passive diagnostic policy in their source.
+Leaf fault registers clear on every wall-clock edge, including CE0; wrapper
+terminal/stopped registers retain only explicit abort until reset. Readiness,
+commit and backpressure calendars are unchanged when monitors are removed.
+
 The command Group queue is one48-entry FIFO in64 physical RAM rows. Packet
 capture acquires a FIFO credit; its fixed two-edge write advances the published
 prefix. Reads use only that prefix, never a same-edge producer write. The former

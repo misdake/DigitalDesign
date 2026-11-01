@@ -152,10 +152,6 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             register(s, "fault_m", false)?;
             check(s, "source_bad", "1'b0", "1'b1", false)?;
         }
-        "gpu_v2_packet_store_unique" => {
-            register(s, "fault", false)?;
-            check(s, "bad", "1'b0", "1'b1", false)?;
-        }
         "gpu_v2_runtime_coefficient_directweight" => {
             monitor(
                 s,
@@ -165,46 +161,12 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             register(s, "fault", false)?;
             check(s, "preflight_bad", "1'b0", "1'b1", false)?;
         }
-        "gpu_v2_runtime_packet_backend_unique" => {
-            register(s, "terminal", true)?;
-            check(s, "preflight_bad", "1'b0", "!abort", false)?;
-        }
-        "gpu_v2_texture_runtime_backend_unique" => {
-            register(s, "stopped", true)?;
-            check(s, "preflight_bad", "1'b0", "running&&!abort", false)?;
-        }
         "gpu_v2_texture_runtime_color" => {
             register(s, "terminal", false)?;
             check(s, "preflight_fault", "1'b0", "1'b1", false)?;
         }
         "gpu_v2_texture_runtime_color_checked" => register(s, "fault", false)?,
-        "gpu_v2_texture_work_unique" => {
-            register(s, "fault", false)?;
-            check(s, "bad", "1'b0", "ce", false)?;
-        }
         "gpu_v2_vliw_quad_pool" => register(s, "fault", false)?,
-        "membership_leaf" => {
-            once(
-                s,
-                "if(in_valid&&(in_level>10 || !(|{in_w0,in_w1,in_w2,in_w3})))fault<=1;\n   else begin",
-                "begin",
-            )?;
-            monitor(
-                s,
-                "ce&&in_valid&&(in_level>10||!(|{in_w0,in_w1,in_w2,in_w3}))",
-                "texture membership",
-            );
-            register(s, "fault", false)?;
-        }
-        "packet_leaf_unique" => {
-            once(
-                s,
-                "if(in_valid&&!active[in_tap])fault<=1;\n   else begin",
-                "begin",
-            )?;
-            monitor(s, "ce&&in_valid&&!active[in_tap]", "physical packet tap");
-            register(s, "fault", false)?;
-        }
         "gpu_command_dma" => {
             peer_error(
                 s,

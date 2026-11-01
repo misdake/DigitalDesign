@@ -2,7 +2,7 @@
 // Each mip owns complete16x16 tiles; small mips repeat periodically in padding.
 module packet_leaf_unique #(parameter SHORT_ALIGNMENT=1)(
  input clk,reset,ce,in_valid,input[75:0]in_member,input[1:0]in_tap,
- input[15:0]texture_base,input texture_mip,
+ input[15:0]texture_base,input texture_mip,input texture_fb400240,
  output in_ready,out_valid,output[34:0]out_packet,output reg fault
 );
  reg[40:0]capture0;reg[14:0]level_base;reg[34:0]word0;reg[1:0]valid;
@@ -23,7 +23,7 @@ module packet_leaf_unique #(parameter SHORT_ALIGNMENT=1)(
  wire[6:0]ymask=(level<=3)?7'd0:(7'd127>>(4'd10-level));
  wire[5:0]tx=(capture0[8:3]+{5'd0,(x&&!sx)})&xmask;
  wire[6:0]ty=(capture0[15:9]+{6'd0,(y&&!sy)})&ymask;
- wire[3:0]pitch_y_log2=(level<4)?4'd0:(level-4'd4);
+ wire[3:0]pitch_y_log2=texture_fb400240?4'd4:((level<4)?4'd0:(level-4'd4));
  wire[11:0]macro_column={6'd0,tx}<<pitch_y_log2;
  wire[11:0]macro_tile=macro_column|{6'd0,ty[6:1]};
  wire[14:0]half_line=level_base+{2'd0,macro_tile,ty[0]};
@@ -35,10 +35,9 @@ module packet_leaf_unique #(parameter SHORT_ALIGNMENT=1)(
   capture0[22:20],capture0[19:16],half_line};
  wire[3:0]active=in_member[39:36];
  always@(posedge clk)begin
-  if(reset)begin valid<=0;fault<=0;end
+  if(reset)begin valid<=0;begin end end
   else if(ce&&!fault)begin
-   if(in_valid&&!active[in_tap])fault<=1;
-   else begin
+   begin
     valid<={valid[0],in_valid};
     if(in_valid)begin
      capture0<={in_tap,in_member[75:37]};level_base<=texture_base[15:1]+prefix;
@@ -49,5 +48,14 @@ module packet_leaf_unique #(parameter SHORT_ALIGNMENT=1)(
  end
 `ifndef SYNTHESIS
  always@(posedge clk)if(!reset&&ce&&in_valid&&texture_base[0])$fatal(1,"Texture16x8 base must be256B aligned");
+`endif
+
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&(ce&&in_valid&&!active[in_tap]))$fatal(1,"GPU contract: physical packet tap");
+`endif
+
+ always @(posedge clk)fault<=0;
+`ifndef SYNTHESIS
+ always@(posedge clk)if(!reset&&ce&&valid[0]&&texture_fb400240&&(tx>=25||ty>=30))$fatal(1,"RTT400 Group bounds");
 `endif
 endmodule
