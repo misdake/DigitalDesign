@@ -116,3 +116,8 @@ fn canonical_source_with_contract(
         source.replace(" || owner_bad);", ");")
     })
 }
+
+/// Command-only six-row queue. Generic capacity/checked factories remain independent.
+pub fn command_six_source(native: bool) -> String {
+    include_str!("direct_coordinate_store.v").replace("@NATIVE@", if native { "1" } else { "0" })
+}

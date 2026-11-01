@@ -73,14 +73,18 @@ pub fn lower(mut source: String, native: bool) -> Result<String, String> {
             ".next_key(packet_next_key)",
         )
     })?;
+    // Select complete command-owned leaves; generic factories keep their contracts.
     edit(&mut source, "gpu_v2_texture_direct_lod", |s| {
-        once(s, "in_quad,in_mask,in_slot,", "in_quad,in_mask,")?;
-        once(
-            s,
-            "in_max_n>10||in_filter>2||!in_mask[in_lane]",
-            "!in_mask[in_lane]",
-        )?;
-        once(s, "in_quad,in_lane,in_slot,", "in_quad,in_lane,4'd0,")
+        *s = crate::texture::rtl::direct_lod::command_body();
+        Ok(())
+    })?;
+    edit(&mut source, "gpu_v2_texture_serial_coord", |s| {
+        *s = crate::texture::rtl::compact_coordinate::verilog_command().to_owned();
+        Ok(())
+    })?;
+    edit(&mut source, "gpu_v2_direct_coordinate_store", |s| {
+        *s = crate::texture::rtl::coordinate_store::command_six_source(native);
+        Ok(())
     })?;
     // Select the actual command cache owner; generic cache factories stay checked.
     edit(&mut source, "gpu_v2_texture_runtime_cache_unique", |s| {

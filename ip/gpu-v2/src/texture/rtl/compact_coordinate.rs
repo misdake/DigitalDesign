@@ -133,3 +133,20 @@ module gpu_v2_texture_serial_coord(
 endmodule
 "#
 }
+
+/// Immutable command descriptor and RTT/POT source-Q arithmetic, with passive diagnostics.
+pub fn verilog_command() -> &'static str {
+    include_str!("command_coordinate.v")
+}
+
+/// Sampling-scope normalization for the command owner, before its UV16 kernel pins.
+pub const COMMAND_SAMPLING_INPUTS: &str = r#" function[15:0]view_clamp_uv;
+  input[17:0]raw_uv;
+  begin
+   if(raw_uv[17])view_clamp_uv=16'd0;
+   else if(raw_uv[16])view_clamp_uv=16'hffff;
+   else view_clamp_uv=raw_uv[15:0];
+  end
+ endfunction
+ wire[31:0]view_uv={view_clamp_uv(sample_data[35:18]),view_clamp_uv(sample_data[17:0])};
+"#;

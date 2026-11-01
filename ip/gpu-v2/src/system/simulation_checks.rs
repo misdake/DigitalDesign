@@ -141,7 +141,6 @@ fn peer_error(s: &mut String, name: &str, good: bool, event: &str) -> Result<(),
 fn specialize(name: &str, s: &mut String) -> Result<(), String> {
     match name {
         "gpu_v2_vliw_backend_three_port" => register(s, "stopped", true)?,
-        "gpu_v2_direct_coordinate_store" => check(s, "bad", "1'b0", "1'b1", false)?,
         "gpu_v2_final_ordered_two_cycle" => {
             // The stop latch retains only explicit abort, not diagnostic feedback.
             register(s, "stopped", true)?;
@@ -170,10 +169,6 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             register(s, "terminal", true)?;
             check(s, "preflight_bad", "1'b0", "!abort", false)?;
         }
-        "gpu_v2_texture_direct_lod" => {
-            register(s, "stopped", false)?;
-            check(s, "preflight_bad", "1'b0", "running", false)?;
-        }
         "gpu_v2_texture_runtime_backend_unique" => {
             register(s, "stopped", true)?;
             check(s, "preflight_bad", "1'b0", "running&&!abort", false)?;
@@ -183,7 +178,6 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
             check(s, "preflight_fault", "1'b0", "1'b1", false)?;
         }
         "gpu_v2_texture_runtime_color_checked" => register(s, "fault", false)?,
-        "gpu_v2_texture_serial_coord" => check(s, "fault", "1'b0", "1'b1", false)?,
         "gpu_v2_texture_work_unique" => {
             register(s, "fault", false)?;
             check(s, "bad", "1'b0", "ce", false)?;

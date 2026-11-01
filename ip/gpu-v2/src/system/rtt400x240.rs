@@ -77,16 +77,7 @@ pub fn lower(mut source: String) -> Result<String, String> {
                     ".texture_filter(texture_filter),.texture_fb400240(texture_fb400240),",
                 )?;
             } else {
-                let uv = r#" function[15:0]view_clamp_uv;
-  input[17:0]raw_uv;
-  begin
-   if(raw_uv[17])view_clamp_uv=16'd0;
-   else if(raw_uv[16])view_clamp_uv=16'hffff;
-   else view_clamp_uv=raw_uv[15:0];
-  end
- endfunction
- wire[31:0]view_uv={view_clamp_uv(sample_data[35:18]),view_clamp_uv(sample_data[17:0])};
-"#;
+                let uv = crate::texture::rtl::compact_coordinate::COMMAND_SAMPLING_INPUTS;
                 once(
                     s,
                     " gpu_v2_texture_direct_lod sampling(",
@@ -139,70 +130,5 @@ pub fn lower(mut source: String) -> Result<String, String> {
             Ok(())
         })?;
     }
-    edit(&mut source, "gpu_v2_texture_direct_lod", |s| {
-        once(
-            s,
-            "input in_valid,input[31:0]in_uv,",
-            "input texture_fb400240,input in_valid,input[31:0]in_uv,",
-        )?;
-        once(s,".in_nearest(in_filter==0),.in_size_log2(physical),",
-             ".texture_fb400240(texture_fb400240),.in_nearest(in_filter==0),.in_size_log2(physical),")
-    })?;
-    edit(&mut source, "gpu_v2_texture_serial_coord", |s| {
-        once(
-            s,
-            "input in_nearest,input[3:0]in_size_log2,",
-            "input texture_fb400240,input in_nearest,input[3:0]in_size_log2,",
-        )?;
-        once(
-            s,
-            " wire signed[18:0]fine=$signed({1'b0,scaled_uv})-(in_nearest?19'sd0:19'sd128);",
-            "",
-        )?;
-        let arithmetic = r#" // U=25*q=q+8*q+16*q; V=15*q=16*q-q. Compress the
- // three operands before one carry-propagating add; no DSP or stage is added.
- wire view_subtract=!phase[0];
- wire[20:0]view_a={5'd0,axis_uv}^{21{view_subtract}};
- wire[20:0]view_b={2'd0,axis_uv,3'd0}&{21{phase[0]}};
- wire[20:0]view_c={1'b0,axis_uv,4'd0};
- wire[20:0]view_sum=view_a^view_b^view_c;
- wire[20:0]view_majority=(view_a&view_b)|(view_a&view_c)|(view_b&view_c);
- wire[20:0]view_carry={view_majority[19:0],view_subtract};
- wire[20:0]view_product=view_sum+view_carry;
- wire[16:0]view_scaled=view_product[20:4];
- // Select the scale before the one signed half-texel subtractor. Both modes
- // use the existing U/V phases and freeze all operands on a disabled CE.
- wire[17:0]shared_scaled=texture_fb400240?{1'b0,view_scaled}:scaled_uv;
- wire signed[18:0]fine=$signed({1'b0,shared_scaled})-(in_nearest?19'sd0:19'sd128);
- wire view_negative=fine[18];
- wire[16:0]view_fine=fine[16:0];
- wire[8:0]view_last=phase[0]?9'd399:9'd239;
- reg[17:0]view_result;
- always@*begin
-  if(view_negative)view_result=18'd0;
-  // A16-bit preclamped UV gives floor(400*q/65536)<=399 (V<=239).
-  // Negative fine is handled above; only equality can reach the last texel.
-  else if(view_fine[16:8]==view_last)view_result={1'b0,view_last,8'd0};
-  else view_result={1'b0,view_fine};
- end
- wire[17:0]axis_result=texture_fb400240?view_result:{fine[17:8]&mask0,fine[7:0]};"#;
-        once(
-            s,
-            " wire[17:0]axis_result={fine[17:8]&mask0,fine[7:0]};",
-            arithmetic,
-        )?;
-        once(s, "reg[20:0]source_guard;", "reg[21:0]source_guard;")?;
-        if s.matches("{in_wrapped_uv_1,in_size_log2,in_nearest}")
-            .count()
-            != 2
-        {
-            return Err("RTT400 coord source guard".into());
-        }
-        *s = s.replace(
-            "{in_wrapped_uv_1,in_size_log2,in_nearest}",
-            "{in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240}",
-        );
-        Ok(())
-    })?;
     Ok(source)
 }

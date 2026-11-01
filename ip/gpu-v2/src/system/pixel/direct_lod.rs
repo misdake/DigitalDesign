@@ -100,6 +100,22 @@ pub fn verilog_selected(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
+    verilog_coordinate(slots, surface, backend, false)
+}
+/// The producer-pool backend owns source Q through the coordinate V edge.
+pub fn verilog_source_q(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+) -> Result<String, String> {
+    verilog_coordinate(slots, surface, backend, true)
+}
+fn verilog_coordinate(
+    slots: &[Slot],
+    surface: MaterializedSurface,
+    backend: quad_ingress::rtl::Backend,
+    source_q: bool,
+) -> Result<String, String> {
     let native = matches!(backend, quad_ingress::rtl::Backend::Native);
     let mut source = postquad_ii4::verilog(slots, surface, backend, 9)?.replace("\r\n", "\n");
     for name in ["gpu_v2_postquad", "gpu_v2_pixel_sampling_ingress"] {
@@ -250,7 +266,13 @@ pub fn verilog_selected(
     );
     source.replace_range(a..b, &wrapper);
     // The old C definition is shared by both emitters; append only new modules.
-    let direct = rtl::direct_lod::verilog(native)?;
+    let direct = if source_q {
+        let (a, b) = span(&source, "gpu_v2_texture_serial_coord")?;
+        source.replace_range(a..b, rtl::compact_coordinate::verilog_source_q());
+        rtl::direct_lod::verilog_source_q(native)?
+    } else {
+        rtl::direct_lod::verilog(native)?
+    };
     let (a, b) = span(&direct, "gpu_v2_texture_serial_coord")?;
     let direct = format!("{}{}", &direct[..a], &direct[b..]);
     source.push_str(&direct);

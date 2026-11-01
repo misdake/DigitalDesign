@@ -683,6 +683,27 @@ calculation borrows the producer's UV and descriptor Q through the next enabled
 edge; a successor fetch changes those Qs only after that edge. There is no
 second V-input/configuration register bank. Simulation monitors this lifetime.
 
+The coordinate owner emits command sampling-input normalization and its native
+POT/RTT kernel. Ordinary POT views wrap the low16 UV bits and use the physical
+mip exponent. Fixed400x240 input normalization clamps signed18 UV to0..65535
+in the sampling scope; the kernel selects400/240 scaling on the U/V phase and
+shares the signed19 half-texel subtractor. Nearest subtracts zero;
+filtered sampling subtracts128 before the fixed-view endpoint clamp. The
+command DirectLOD source owns its installed descriptor pins; the CP still
+installs and checks fixed-view descriptors and freezes them until whole drain.
+The checked standalone and generic source-Q factories retain their own inputs
+and diagnostic feedback.
+
+Completed coordinates enter the existing six-row queue: physical owner24 and
+result36 storage reconstruct the unchanged owner38 output. `proposal_ce`
+observes old-state admission/return/consume legality; `commit_allow` gates RAM
+writes, pointer updates and both counts. There is no same-edge credit bypass:
+a full queue cannot issue using a concurrent consume, a return requires an old
+outstanding item, and consumption requires an old completed item. U/V phase,
+result state and queue storage hold when their effective CE is disabled. The
+command coordinate, DirectLOD and queue own passive diagnostics at those same
+edges; outer exporters select complete leaves without numerical-body patches.
+
 The command Group queue is one48-entry FIFO in64 physical RAM rows. Packet
 capture acquires a FIFO credit; its fixed two-edge write advances the published
 prefix. Reads use only that prefix, never a same-edge producer write. The former

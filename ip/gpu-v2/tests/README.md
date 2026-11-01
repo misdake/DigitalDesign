@@ -150,3 +150,17 @@ Run `cargo test --release -p gpu-v2 --test frontend_control_profiles -- --ignore
 factory exports for full ordered preprocessed-token and per-cycle comparisons.
 Each DUT has a 12000-cycle watchdog; each compile/run and the Rust parent have
 wall limits. This gate does not replace scene or physical board qualification.
+
+`coordinate_lod_native.py --exports <directory> --output <fresh-directory>`
+connects the actual command export's coordinate, DirectLOD and six-row queue.
+The directory supplies `command-native.v` and `command-portable.v`. Independent
+integer gold covers POT mip/filter decoding and signed fixed400x240 clamp;
+CE0, commit stalls, source-Q lifetime, full/wrap and simultaneous issue/return/take
+are checked under both arithmetic backends and monitor settings. Six injected
+DUT violations cover phase, queue overflow/return/consume, inactive lane and
+premature V-source changes. Monitor-off checks diagnostic feedback stays absent;
+it does not promise recovery from invalid trusted input. Each legal bench has
+a 20,000-cycle watchdog, each negative a 1,000ns bound, and each process a 45-second
+limit. `--baseline <prior-output>` compares the complete sampled data/address/
+control trace to a frozen run. This is a bounded leaf qualification, not a frame,
+physical SDRAM or board test.
