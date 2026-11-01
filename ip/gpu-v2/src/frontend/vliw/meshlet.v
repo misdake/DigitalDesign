@@ -1,3 +1,20 @@
+// The command factory selects trusted inputs explicitly; standalone exports stay checked.
+`ifdef GPU_V2_TRUSTED_FRONTEND
+`define MESHLET_CLEAR_ERROR begin end
+`ifndef SYNTHESIS
+`define MESHLET_WRITE_ERROR(value) begin if(!reset&&((value)!=0))$fatal(1,"GPU contract: error");end
+`else
+`define MESHLET_WRITE_ERROR(value) begin end
+`endif
+`else
+`define MESHLET_CLEAR_ERROR error<=0;
+`define MESHLET_WRITE_ERROR(value) error<=value;
+`endif
+`ifdef GPU_V2_TRUSTED_FRONTEND
+`define MESHLET_INDEX_INVALID 1'b0
+`else
+`define MESHLET_INDEX_INVALID index_cursor[7]
+`endif
 // 本地SP中的32B metadata + 最大1KB V/index；先全部V，再按三个索引一组跑T。
 // 外部DMA负责把原始字送入SP；不实现SDRAM或Mesh目录的地址遍历。
 module shared_meshlet #(parameter BOUNDS_CULL=1)( 
@@ -61,8 +78,12 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  assign dma_ready=core_dma_ready&&write_safe;
  wire [8:0] vertex_words={2'd0,vertices}+{1'd0,vertices,1'b0}+9'd1;
  wire [7:0] vertex_rows=vertex_words[8:1];
+`ifdef GPU_V2_TRUSTED_FRONTEND
+ wire invalid_header=1'b0;
+`else
  wire invalid_header=vertices>64||triangles>96||uniform_base[5:2]!=4'd5||
                      (triangles!=0&&(vertices==0||index_cursor<vertex_rows));
+`endif
  shared_frontend #(.RESULT_COMPACT(1),.SP_COMPACT(1),.SOURCE_READ(1),.BOUNDS_CULL(BOUNDS_CULL)) core(
 
 `ifdef GPU_V2_COMMAND_PORTS
@@ -82,14 +103,14 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
  );
  always @(posedge clk)begin
   if(reset)begin
-   state<=IDLE;ready<=0;done<=0;error<=0;active_slot<=0;vertices<=0;triangles<=0;
+   state<=IDLE;ready<=0;done<=0;`MESHLET_CLEAR_ERROR active_slot<=0;vertices<=0;triangles<=0;
    uniform_base<=0;index_cursor<=0;group_position<=0;index_group<=0;
    generation<=0;attr_mode<=0;normal_mode<=0;cull_negative<=0;sequence_id<=0;
   end else if(ce)begin
    done<=0;
    if(state==IDLE&&core_meshlet_ready)ready<=1;
    case(state)
-    IDLE:if(start&&ready)begin ready<=0;active_slot<=slot;error<=0;state<=META0;end
+    IDLE:if(start&&ready)begin ready<=0;active_slot<=slot;`MESHLET_CLEAR_ERROR state<=META0;end
     META0:if(source_ready)state<=META0_Q;
     META0_Q:begin
      vertices<=source_data[6:0];triangles<=source_data[14:8];uniform_base<=source_data[21:16];
@@ -102,18 +123,18 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
     end
     META3:if(source_ready)state<=META3_Q;
     META3_Q:begin normal_mode<=source_data[40];state<=CHECK;end
-    CHECK:if(invalid_header)begin error<=5;done<=1;state<=IDLE;end else state<=VSTART;
+    CHECK:if(invalid_header)begin `MESHLET_WRITE_ERROR(5) done<=1;state<=IDLE;end else state<=VSTART;
     VSTART:state<=VWAIT;
     VWAIT:if(done_v)begin
-     if(core_error!=0)begin error<={1'b0,core_error};done<=1;state<=IDLE;end
+     if(core_error!=0)begin `MESHLET_WRITE_ERROR({1'b0,core_error}) done<=1;state<=IDLE;end
      else if(triangles==0||published_vertices==0)begin done<=1;state<=IDLE;end else state<=INDEX;
     end
-    INDEX:if(index_cursor[7])begin error<=6;done<=1;state<=IDLE;end
+    INDEX:if(`MESHLET_INDEX_INVALID)begin `MESHLET_WRITE_ERROR(6) done<=1;state<=IDLE;end
           else if(source_ready)begin index_cursor<=index_cursor+1'b1;state<=INDEX_Q;end
     INDEX_Q:begin index_group<=source_data[53:0];group_position<=0;state<=TSTART;end
     TSTART:if(triangle_ready)state<=TWAIT;
     TWAIT:if(done_t)begin
-     if(core_error!=0)begin error<={1'b0,core_error};done<=1;state<=IDLE;end
+     if(core_error!=0)begin `MESHLET_WRITE_ERROR({1'b0,core_error}) done<=1;state<=IDLE;end
      else if(triangles==1)begin triangles<=0;done<=1;state<=IDLE;end
      else begin
       triangles<=triangles-1'b1;sequence_id<=sequence_id+1'b1;
@@ -126,4 +147,16 @@ module shared_meshlet #(parameter BOUNDS_CULL=1)(
    endcase
   end
  end
+`ifdef GPU_V2_TRUSTED_FRONTEND
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((ce&&state==CHECK)&&(vertices>64||triangles>96||uniform_base[5:2]!=4'd5||
+                     (triangles!=0&&(vertices==0||index_cursor<vertex_rows)))))$fatal(1,"GPU contract: invalid_header");
+ always @(posedge clk)if(!reset&&(ce&&state==INDEX&&index_cursor[7]))$fatal(1,"GPU contract: index cursor");
+`endif
+ always @(posedge clk)error<=0;
+`endif
 endmodule
+`undef MESHLET_CLEAR_ERROR
+`undef MESHLET_WRITE_ERROR
+`undef MESHLET_INDEX_INVALID
+

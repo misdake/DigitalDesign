@@ -133,3 +133,20 @@ must remain sticky during CE0. `--flow-only` reuses the bounded three-draw
 leaves plus CE before/after each edge, with monitors on/off. This qualifies
 local diagnostics and legal data/cycle preservation, not new protocol recovery
 or physical timing.
+
+
+`frontend_control_profiles` is an ignored, bounded RTL gate exported through the
+actual frontend, generic system and command factories (native and portable).
+It checks private-profile scope, real queued meshlet CE/backpressure traces,
+malformed header/index/reference/capacity/compact/DMA decisions, and prepare's
+sticky ready/core-CE stop. Two mutations remove the actual prepare gates and
+must fail hardware observations with simulation monitors disabled. The command
+cases check its original simulation fatal edges and synthesized continuation.
+
+Run `cargo test --release -p gpu-v2 --test frontend_control_profiles -- --ignored
+--nocapture --test-threads=1` with `IVERILOG_EXE`, `VVP_EXE` and `GOWIN_HOME` set.
+`GPU_FRONTEND_CONTROL_OUTPUT` chooses a fresh output root;
+`GPU_FRONTEND_CONTROL_BASELINE` optionally supplies the same eight accepted
+factory exports for full ordered preprocessed-token and per-cycle comparisons.
+Each DUT has a 12000-cycle watchdog; each compile/run and the Rust parent have
+wall limits. This gate does not replace scene or physical board qualification.

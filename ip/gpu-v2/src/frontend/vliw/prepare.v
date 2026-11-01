@@ -1,3 +1,15 @@
+// The command factory selects trusted inputs explicitly; standalone exports stay checked.
+`ifdef GPU_V2_TRUSTED_FRONTEND
+`define PREPARE_CLEAR_ERROR begin end
+`ifndef SYNTHESIS
+`define PREPARE_WRITE_ERROR(bit) begin if(!reset&&((1)!=0))$fatal(1,"GPU contract: error");end
+`else
+`define PREPARE_WRITE_ERROR(bit) begin end
+`endif
+`else
+`define PREPARE_CLEAR_ERROR error<=0;
+`define PREPARE_WRITE_ERROR(bit) error[bit]<=1;
+`endif
 // 统一准备生产链：几何/权重直接驻留最终物理银行，属性发布/bbox/N/S/G仅一套ROM。
 module rp_prepare(
  input clk,reset,ce,start,execute_grant,input[31:0]descriptor,
@@ -298,13 +310,13 @@ module rp_prepare(
    exp0<=0;exp1<=0;exp2<=0;common_e<=0;raw_exponent<=0;sigma<=0;rgb<=0;
    far_z<=0;tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;
    delta_e<=0;
-   seed_sign_x<=0;seed_sign_y<=0;error<=0;
+   seed_sign_x<=0;seed_sign_y<=0;`PREPARE_CLEAR_ERROR
   end else if(ce)begin
    if(start)begin
-    if(busy)begin error[3]<=1;end
+    if(busy)begin `PREPARE_WRITE_ERROR(3) end
     else begin
      edge_no<=0;field<=0;edge_exp<=0;
-     exp0<=0;exp1<=0;exp2<=0;common_e<=0;error<=0;
+     exp0<=0;exp1<=0;exp2<=0;common_e<=0;`PREPARE_CLEAR_ERROR
      sigma<=descriptor[18];rgb<=descriptor[19];
      far_z<=cfg_far_z;tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;bias<=cfg_bias;
     end
@@ -315,12 +327,12 @@ module rp_prepare(
      else seed_sign_y[quant_edge]<=negative^sigma;
     end
     if(input_take)begin
-     if(in_index!=expected)error[0]<=1;
+     if(in_index!=expected)`PREPARE_WRITE_ERROR(0)
      else if(collecting)begin
       if(expected==0||expected==3||expected==6)raw_exponent<=in_data[53:48];
       edge_exp<=next_exp;
       if(is_c)begin
-       if(next_exp>11)error[1]<=1;
+       if(next_exp>11)`PREPARE_WRITE_ERROR(1)
        case(edge_no)
         0:exp0<={2'd0,next_exp}+raw_exponent;1:exp1<={2'd0,next_exp}+raw_exponent;
         default:begin
@@ -332,7 +344,7 @@ module rp_prepare(
        edge_exp<=0;edge_no<=edge_no+1'b1;
       end
      end else if(expected==9)begin
-      if(in_data==0||in_data[53])error[1]<=1;
+      if(in_data==0||in_data[53])`PREPARE_WRITE_ERROR(1)
       delta_e<=in_data[37:31];
      end
     end
@@ -351,5 +363,11 @@ module rp_prepare(
   if(math_phase&&core_c_we&&core_cw>=8&&core_cw!=11)$fatal(1,"packed lifetime overwritten");
  end
 `endif
+`ifdef GPU_V2_TRUSTED_FRONTEND
+ always @(posedge clk)error<=0;
+`endif
 endmodule
+`undef PREPARE_CLEAR_ERROR
+`undef PREPARE_WRITE_ERROR
+
 

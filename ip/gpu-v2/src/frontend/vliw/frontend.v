@@ -1,3 +1,20 @@
+// The command factory selects trusted inputs explicitly; standalone exports stay checked.
+`ifdef GPU_V2_TRUSTED_FRONTEND
+`define FRONTEND_CLEAR_ERROR begin end
+`ifndef SYNTHESIS
+`define FRONTEND_WRITE_ERROR(value) begin if(!reset&&((value)!=0))$fatal(1,"GPU contract: error");end
+`else
+`define FRONTEND_WRITE_ERROR(value) begin end
+`endif
+`else
+`define FRONTEND_CLEAR_ERROR error<=0;
+`define FRONTEND_WRITE_ERROR(value) error<=value;
+`endif
+`ifdef GPU_V2_TRUSTED_FRONTEND
+`define FRONTEND_CAPACITY_INVALID 1'b0
+`else
+`define FRONTEND_CAPACITY_INVALID vertex_count+published_vertices>64
+`endif
 // Original V/T arithmetic calendar; normals travel once as packed S12F10.
 // 同一ROM、RF与双DSP，V/T分时；所有状态变更均采样旧值。
 module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,parameter SOURCE_READ=0,parameter BOUNDS_CULL=0,
@@ -55,9 +72,17 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  wire packet_take=ce&&packet_valid&&packet_ready;
  wire word_take=ce&&word_valid&&word_ready;
  wire release_slot=word_take&&word_index==15;
+`ifdef GPU_V2_TRUSTED_FRONTEND
+ wire refs_valid=1'b1;
+`else
  wire refs_valid=triangle_descriptor[5:0]<published_vertices && triangle_descriptor[11:6]<published_vertices && triangle_descriptor[17:12]<published_vertices;
+`endif
  wire [10:0] vertex_last_word={vertex_base,1'b0}+{4'd0,vertex_count}+{3'd0,vertex_count,1'b0};
+`ifdef GPU_V2_TRUSTED_FRONTEND
+ wire compact_invalid=1'b0;
+`else
  wire compact_invalid=SP_COMPACT&&(uniform_base[5]||config_base[8]||vertex_base[9]||vertex_last_word>1024);
+`endif
  wire launch_v=ce&&start_v&&!busy&&!reset;
  wire launch_t=ce&&start_t&&!busy&&!start_v&&!queue_full&&!reset;
  wire launch=launch_v||(launch_t&&refs_valid);
@@ -200,13 +225,13 @@ module shared_frontend #(parameter RESULT_COMPACT=0,parameter SP_COMPACT=0,param
  always @(posedge clk)begin
  if(reset)begin
  busy<=0;done_v<=0;done_t<=0;bounds_safe<=0;
- error<=0;published_vertices<=0;pc<=0;remaining<=0;ub<=0;cb<=0;vp<=0;op<=0;vid<=0;vfield<=0;triangle_mode<=0;
+ `FRONTEND_CLEAR_ERROR published_vertices<=0;pc<=0;remaining<=0;ub<=0;cb<=0;vp<=0;op<=0;vid<=0;vfield<=0;triangle_mode<=0;
  refs<=0;cull<=0;building_desc<=0;
  produced<=0;consumed<=0;vertex_epoch<=0;import_state<=0;word_index<=0;word_data<=0;
  result_owner<=Q_EMPTY;response_index<=0;fetch_index<=0;export_valid<=0;
  origin_x<=0;origin_y<=0;origin_z<=0;quant_shift<=0;normal18<=0;unpacked<=0;unpack_kind<=0;phase<=0;acc<=0;packed_buffer<=0;
  end else if(ce)begin
- if(SP_COMPACT&&dma_we&&dma_addr[9])error<=4;
+ if(SP_COMPACT&&dma_we&&dma_addr[9])`FRONTEND_WRITE_ERROR(4)
  done_v<=0;done_t<=0;
  if(step)begin
   if(t32_active&&t32_accwe)acc<=t32_accwd;
@@ -246,19 +271,19 @@ if(meshlet_reset)begin epoch_color[!vertex_epoch]<=mesh_color;published_vertices
 `else
 if(meshlet_reset)begin published_vertices<=0;
 `endif
-error<=0;if(!BOUNDS_CULL)vertex_epoch<=!vertex_epoch;end
+`FRONTEND_CLEAR_ERROR if(!BOUNDS_CULL)vertex_epoch<=!vertex_epoch;end
  if(launch_v)begin
- error<=0;triangle_mode<=0;
- if(compact_invalid)begin busy<=0;done_v<=1;error<=4;end
- else if(vertex_count+published_vertices>64)begin busy<=0;done_v<=1;error<=3;end
+ `FRONTEND_CLEAR_ERROR triangle_mode<=0;
+ if(compact_invalid)begin busy<=0;done_v<=1;`FRONTEND_WRITE_ERROR(4) end
+ else if(`FRONTEND_CAPACITY_INVALID)begin busy<=0;done_v<=1;`FRONTEND_WRITE_ERROR(3) end
  else begin
  busy<=vertex_count!=0;done_v<=vertex_count==0;pc<=BOUNDS_CULL?9'd256:9'd0;bounds_safe<=1;remaining<=vertex_count;ub<=uniform_base;cb<=config_base;
  vp<={vertex_base,1'b0};op<=0;vid<=published_vertices[5:0];vfield<=0;
 
  end
  end else if(launch_t)begin
- error<=0;triangle_mode<=1;
- if(!refs_valid)begin done_t<=1;error<=2;end
+ `FRONTEND_CLEAR_ERROR triangle_mode<=1;
+ if(!refs_valid)begin done_t<=1;`FRONTEND_WRITE_ERROR(2) end
  else begin busy<=1;pc<=128;refs<=triangle_descriptor[17:0];cull<=cull_negative;
  building_desc<=triangle_descriptor;end
  end else if(step&&t32_active)begin
@@ -338,5 +363,17 @@ error<=0;if(!BOUNDS_CULL)vertex_epoch<=!vertex_epoch;end
   if(export_read&&!q_can_retire)$fatal(1,"导出Q被未消费的后继读覆盖");
  end
 `endif
+`ifdef GPU_V2_TRUSTED_FRONTEND
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((launch_v)&&(SP_COMPACT&&(uniform_base[5]||config_base[8]||vertex_base[9]||vertex_last_word>1024))))$fatal(1,"GPU contract: compact_invalid");
+ always @(posedge clk)if(!reset&&((launch_t)&&(!(triangle_descriptor[5:0]<published_vertices && triangle_descriptor[11:6]<published_vertices && triangle_descriptor[17:12]<published_vertices))))$fatal(1,"GPU contract: refs_valid");
+ always @(posedge clk)if(!reset&&(launch_v&&(vertex_count+published_vertices>64)))$fatal(1,"GPU contract: vertex capacity");
+`endif
+ always @(posedge clk)error<=0;
+`endif
 endmodule
+`undef FRONTEND_CLEAR_ERROR
+`undef FRONTEND_WRITE_ERROR
+`undef FRONTEND_CAPACITY_INVALID
+
 

@@ -853,3 +853,28 @@ Implementation anchors: [pool](/ip/gpu-v2/src/system/pixel/vliw_quad_pool.v),
 [Final](/ip/gpu-v2/src/system/pixel/vliw_backend_final.v),
 [Lighting schedule](/ip/gpu-v2/src/lighting/dsp_sharing.rs),
 [texture cache](/ip/gpu-v2/src/texture/rtl/cache.rs).
+
+
+## Frontend control profiles
+
+The native `shared_meshlet`, `shared_frontend` and `rp_prepare` sources own their
+checked-component and trusted-command control policies. The command factory
+explicitly selects the private `GPU_V2_TRUSTED_FRONTEND` profile; the frontend
+factory undefines it after the last owner. `GPU_V2_COMMAND_PORTS` selects ports
+and does not select these three modules' error policy. A standalone frontend
+with command ports therefore retains checked behavior.
+
+Checked meshlets reject malformed metadata and exhausted index cursors on the
+original enabled CHECK/INDEX edges. Checked vertex/triangle launch preserves
+compact-address, vertex-capacity and published-reference rejection. CE0 holds
+these decisions. `rp_prepare.error[3]` (start while busy) and `error[0]` (unexpected
+input index) remain sticky functional latches: either deasserts `in_ready` and
+disables the arithmetic core CE. Its numeric error bit retains its original
+independent lifetime. Reset and a legal new start retain their existing roles.
+
+The trusted command composition keeps its existing constant detectors, disabled
+rejection branches and zero-valued error outputs. Simulation observes the
+original predicates and error-write events on their original edges; `SYNTHESIS`
+removes these monitors without selecting another datapath. This profile adds no
+new malformed-input recovery policy. The source includes both policies before
+export; no final text scanner rewrites these owners' detectors or error writes.

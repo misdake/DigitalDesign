@@ -38,7 +38,7 @@ fn verilog_column(
     surface: MaterializedSurface,
     backend: super::pixel::quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    let mut source = "`define GPU_V2_COMMAND_PORTS\n".to_owned();
+    let mut source = "`define GPU_V2_COMMAND_PORTS\n`define GPU_V2_TRUSTED_FRONTEND\n".to_owned();
     source.push_str(include_str!("vliw_command.v"));
     // Generic numerical exporters also serve the fixed-resource leaf profiles.
     // Specialize their selected closure completely; no Slot table reaches RTL.

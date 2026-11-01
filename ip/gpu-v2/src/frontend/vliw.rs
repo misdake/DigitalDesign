@@ -40,5 +40,6 @@ pub fn verilog(portable: bool) -> String {
         "`include \"control_fields.vh\"",
         include_str!("vliw/vertex/control_fields.vh"),
     ));
+    source.push_str("\n`undef GPU_V2_TRUSTED_FRONTEND\n");
     source
 }
