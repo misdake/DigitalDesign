@@ -513,4 +513,89 @@ mod tests {
         assert_eq!(s.matches("`define GPU_V2_COMMAND_MAINTENANCE").count(), 1);
         assert_eq!(s.matches("`undef GPU_V2_COMMAND_MAINTENANCE").count(), 1);
     }
+    #[test]
+    #[ignore = "requires Icarus preprocessor; validates active native profile in simulation and synthesis"]
+    fn dependency_closed_native_profile() {
+        use std::{
+            process::{Command, Stdio},
+            time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        };
+        let source = verilog(
+            MaterializedSurface {
+                color_base_bytes: 0x100000,
+                depth_base_bytes: 0x140000,
+                width: 400,
+                height: 240,
+            },
+            super::super::pixel::quad_ingress::rtl::Backend::Portable,
+        )
+        .unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "gpu-command-closure-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        let input = root.join("command.v");
+        std::fs::write(&input, source).unwrap();
+        for synthesis in [false, true] {
+            let output = root.join(if synthesis {
+                "synthesis.pp"
+            } else {
+                "simulation.pp"
+            });
+            let log = std::fs::File::create(output.with_extension("log")).unwrap();
+            let mut command =
+                Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()));
+            command.args(["-g2012", "-E", "-D__ICARUS__"]);
+            if synthesis {
+                command.arg("-DSYNTHESIS");
+            }
+            let mut child = command
+                .arg("-o")
+                .arg(&output)
+                .arg(&input)
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(log))
+                .spawn()
+                .unwrap();
+            let started = Instant::now();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(
+                        status.success(),
+                        "preprocessor failed: {}",
+                        output.display()
+                    );
+                    break;
+                }
+                if started.elapsed() > Duration::from_secs(10) {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("native profile preprocessor exceeded10 seconds");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let s = std::fs::read_to_string(output).unwrap();
+            for legacy in [
+                "draw_bank",
+                "loaded_bank",
+                "COLOR_BASE",
+                "DEPTH_BASE",
+                "draw_rebind",
+                "reg[31:0]far_z",
+            ] {
+                assert!(
+                    !s.contains(legacy),
+                    "old texture configuration survived: {legacy}"
+                );
+            }
+            assert!(!s.contains("L_CONTEXT"));
+        }
+    }
 }

@@ -33,12 +33,19 @@ def main():
                         "-p", "test_*.py", "-v"], check=True, timeout=30)
         with tempfile.TemporaryDirectory() as temp:
             write_report(build_capture(root / "tests/fixtures/pingpong"), temp)
-            for script, extra in [("math_checks.js", []), ("viewer_checks.js", [str(Path(temp) / "profile.json")])]:
+            for script, extra in [("math_checks.js", []), ("viewer_checks.js", [str(Path(temp) / "profile.json")]), ("result_viewer_checks.js", [])]:
                 subprocess.run([args.node, str(root / "tests" / script), *extra], check=True, timeout=20)
     elif args.command == "capture":
         from capture import run
         run(args.manifest, args.out, args.compile_only)
     else:
+        if args.command == 'render':
+            raw = json.loads(args.profile.read_text())
+            if raw.get('schema') == 'digitaldesign.gpu-result':
+                from simulator import write_result
+                write_result(raw, args.out, args.profile.parent)
+                print(json.dumps(dict(out=str(args.out.resolve()), backend='sim', complete=True)))
+                return
         data = (build_capture(args.folder, args.allow_partial) if args.command == "build"
                 else load_profile(args.profile))
         out = args.out or args.folder

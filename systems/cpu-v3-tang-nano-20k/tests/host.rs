@@ -72,6 +72,8 @@ mod gpu_api_integration;
 
 #[path = "host/gpu_api_pixels.rs"]
 mod gpu_api_pixels;
+#[path = "host/gpu_functional.rs"]
+mod gpu_functional;
 
 #[path = "host/gpu_api_scene.rs"]
 mod gpu_api_scene;

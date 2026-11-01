@@ -62,7 +62,8 @@ fn main() -> Result<(), String> {
         0xd00d,
         VBlankMode::Manual,
     )
-    .map_err(|error| format!("cannot cold-boot display application: {error}"))?;
+    .map_err(|error| format!("cannot cold-boot display application: {error}"))?
+    .with_functional_gpu();
 
     #[cfg(feature = "display-window")]
     let mut window = options.window.then(|| {

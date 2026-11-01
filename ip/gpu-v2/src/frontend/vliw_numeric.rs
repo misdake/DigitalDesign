@@ -6,7 +6,7 @@ fn round_ratio(n: u64, d: u64) -> u64 {
     q + u64::from(2 * r > d || (2 * r == d && q & 1 != 0))
 }
 
-fn words() -> [u64; 256] {
+pub(crate) fn words() -> [u64; 256] {
     std::array::from_fn(|j| {
         let seed = round_ratio(1 << 25, 256 + j as u64);
         let next = round_ratio(1 << 25, 257 + j as u64);

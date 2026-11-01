@@ -78,15 +78,8 @@ pub(super) fn execute(directory: &Path, memory: &mut [u16], base: u16, count: u1
     }
 }
 
-#[test]
-#[ignore = "bounded production GPU pixel test requires Icarus and GOWIN_HOME"]
-fn public_clear_retires_only_after_production_rtl_pixels() {
-    use super::gpu_api_integration::{Peer, Trace, APPLICATION};
-    let directory = std::env::var_os("RCC_RUSTC_TEST_DIR")
-        .map(PathBuf::from)
-        .expect("RCC_RUSTC_TEST_DIR")
-        .join("public-g1-pixels");
-    std::fs::create_dir_all(&directory).unwrap();
+pub(super) fn compile_clear_fixture(directory: &Path) {
+    std::fs::create_dir_all(directory).unwrap();
     let directory = directory.canonicalize().unwrap();
     let project = VerilogProject::generate::<CpuV3Gpu>().unwrap();
     project.write_to(&directory).unwrap();
@@ -110,6 +103,17 @@ fn public_clear_retires_only_after_production_rtl_pixels() {
         .args(project.files.keys().map(|path| directory.join(path)))
         .arg(directory.join("tb.v"));
     bounded(&mut command, &directory, "compile");
+}
+
+#[test]
+#[ignore = "bounded production GPU pixel test requires Icarus and GOWIN_HOME"]
+fn public_clear_retires_only_after_production_rtl_pixels() {
+    use super::gpu_api_integration::{Peer, Trace, APPLICATION};
+    let directory = std::env::var_os("RCC_RUSTC_TEST_DIR")
+        .map(PathBuf::from)
+        .expect("RCC_RUSTC_TEST_DIR")
+        .join("public-g1-pixels");
+    compile_clear_fixture(&directory);
     let prefix = APPLICATION.split(" gpu.submit(first);").next().unwrap();
     let application=format!("{prefix}gpu.submit(first);first=gpu.wait();drop(first);drop(second);drop(color);drop(depth);drop(gpu);halt(0x600d);}}");
     let parsed = super::gpu_api_resources::parse(&application, "public-g1", false)

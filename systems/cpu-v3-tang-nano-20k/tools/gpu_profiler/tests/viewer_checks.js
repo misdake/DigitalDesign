@@ -25,10 +25,11 @@ const context={document:{getElementById:element,documentElement:{},querySelector
 vm.createContext(context);
 const html=fs.readFileSync(path.join(__dirname,'../viewer.html'),'utf8');
 const script=html.split('<script>')[1].split('</script>')[0].replace('/*PROFILE_DATA*/null',JSON.stringify(data));
-vm.runInContext(script,context,{timeout:10000});
+// Inspect private renderer state from its actual conditional lexical scope.
+vm.runInContext(script.replace('const $=','globalThis.viewerTestEval=code=>eval(code);\nconst $='),context,{timeout:10000});
 function emit(id,type,args={}){for(const fn of element(id).listeners[type]??[])fn({type,button:0,pointerId:7,clientX:500,clientY:10,preventDefault:noop,...args});}
 function view(){return context.window.gpuProfiler.getView();}
-function evalValue(s){return vm.runInContext(s,context,{timeout:5000});}
+function evalValue(s){return context.viewerTestEval(s);}
 assert.ok(!element('instruction').innerHTML.includes('>0004 WAIT'));
 assert.ok(!element('instruction').innerHTML.includes('DMA_LOCAL'));
 assert.ok(element('instruction').innerHTML.includes('DRAW'));
@@ -106,8 +107,8 @@ console.log('UI checks passed: type-only filters, empty/default, unselected over
 if(process.argv[2]){
  const session=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));elements.clear();
  const second={...context,window:{devicePixelRatio:1}};vm.createContext(second);
- vm.runInContext(html.split('<script>')[1].split('</script>')[0].replace('/*PROFILE_DATA*/null',JSON.stringify(session)),second,{timeout:10000});
- const run=s=>vm.runInContext(s,second,{timeout:5000});
+ vm.runInContext(html.split('<script>')[1].split('</script>')[0].replace('/*PROFILE_DATA*/null',JSON.stringify(session)).replace('const $=','globalThis.viewerTestEval=code=>eval(code);\nconst $='),second,{timeout:10000});
+ const run=s=>second.viewerTestEval(s);
  assert.equal(run('cmd.size'),9);assert.equal(run('rowOf.size'),6);
  for(const id of [2,5,8]){second.window.gpuProfiler.focus(id);assert.equal(second.window.gpuProfiler.getView().selected,id);assert.ok(element('detail').innerHTML.includes('command #'+id));}
  assert.equal(run('duration(1000)'),'1.0000 ms');

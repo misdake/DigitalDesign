@@ -29,7 +29,7 @@ verification claims.
 | Document | Purpose |
 | --- | --- |
 | [Frontend models](/ip/gpu-v2/docs/references/frontend.md) | Typed commands, scratchpad, Vertex and owned source capture |
-| [Rendering models](/ip/gpu-v2/docs/references/rendering.md) | Triangle oracle, functional renderer, Sampling/pixel models and recovery leaf |
+| [Rendering models](/ip/gpu-v2/docs/references/rendering.md) | Independent Triangle/ROP oracles, Sampling/pixel models and recovery leaf |
 | [Record ownership](/ip/gpu-v2/docs/references/record-ownership.md) | Two-slot opaque transport, read-return credit and cancellation |
 | [Memory models](/ip/gpu-v2/docs/references/memory.md) | GPU burst facade, shared service adapters and explicit service options |
 

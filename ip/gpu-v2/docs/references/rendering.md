@@ -62,48 +62,6 @@ power-of-two scale. Basis/Planes are explicit numerical alternatives. Integer
 stepping and point evaluation share these equations; independent linear solves
 provide another comparison. These alternatives do not freeze hardware widths.
 
-## Functional mesh-to-image renderer
-
-`system::oracle::render(Scene,Config)` composes component oracles and returns
-materialized RGB565. Input is an immutable Rust mesh. Each render owns its own
-queues and cache state; it executes no timed/emulator/RTL engine.
-
-| Step | Reference contract |
-| --- | --- |
-| Fetch | Ideal f64 vertices or PackedVertex v6: meshlet grid, S8F7 normal, UNORM12 UV, RGB565 tint |
-| Vertex | Continuous matrix or quantized S16F16 position/Q14 normal matrix; optional normal transport comparison |
-| Triangle | The clipping, snapping, coverage and shared fields above; four helper lanes |
-| Shading | Component Lighting oracle, conserved UNORM9 Sampling, functional cache |
-| Final | `base=nearest(tint*texture/255)`; saturated RNE of `(base*g+specular*h)/256` |
-| Framebuffer | Materialized depth/blend oracle, atomic dirty eviction/writeback, final flush |
-
-Continuous Vertex still enters a bounded Q28 backend with clip range[-32,32]
-to bound homogeneous i128 products. Q16 remains a separate entry. Nonfinite or
-range-invalid input fails.
-
-Six configurable FIFOs cover fetch/Vertex/setup/raster/shader/Final/ROP
-handoffs, each with capacity 1..64. Setup/raster retains one active report.
-A downstream-first pump preserves triangle order and finite backpressure.
-Overflow or max_steps exhaustion fails rather than returning a successful
-partial frame. Host vectors/f64 fields are not hardware FIFO layouts.
-
-Invalid covered W or UV fails. Only invalid-W or out-of-domain uncovered
-helpers can use a benign substitute with a separate force-coarsest marker.
-The marker survives bias; it cannot repair covered invalid data. Derivatives
-precede repeat wrapping.
-
-The functional texture cache has 16 sets/four ways with real RAW565 payloads.
-The framebuffer oracle uses eight direct-mapped16 × 16 lines and atomic dirty
-eviction/writeback. That replacement policy is distinct from the selected TDP
-cache calendar and supplies no memory timing.
-
-The native optional `parallel` feature uses ordered Rayon passes for referenced
-vertices, setup, coverage and per-quad arithmetic. Final/cache/ROP commit remains
-ordered through the same pump. There are no floating reductions or racing depth
-winners. Precomputation bounds are 1,000,000 scanned quad candidates and 65,536
-covered quad results/frame, in addition to scene/pump bounds. Exhaustion fails.
-Default and WASM builds need no Rayon. Parallel runtime is not hardware cycles.
-
 ## Sampling preparation and Color components
 
 Functional/counted/serial preparation captures all four unwrapped S18F16 UV
@@ -167,7 +125,7 @@ saturation or fallback execution. It is an opt-in arithmetic API.
 
 Implementation anchors: [triangle oracle](/ip/gpu-v2/src/triangle/sim/oracle.rs),
 [owned Vertex ports](/ip/gpu-v2/src/vertex/ports.rs),
-[functional renderer](/ip/gpu-v2/src/system/oracle/mod.rs),
+[numerical raster adapter](/ip/gpu-v2/src/system/pixel/raster_input.rs),
 [texture APIs](/ip/gpu-v2/src/texture/mod.rs),
 [pixel Model](/ip/gpu-v2/src/system/pixel/model.rs),
 [recovery](/ip/gpu-v2/src/triangle/recovery.rs).

@@ -85,6 +85,9 @@ def main():
     receive.add_argument("--out", type=Path, required=True)
     receive.add_argument("--baud", type=int, default=115200)
     receive.add_argument("--rtl", type=Path, help="Replay each complete attempt through the shared cold backend")
+    receive.add_argument("--backend", choices=['rtl', 'sim'], default='rtl')
+    receive.add_argument("--simulator", type=Path)
+    receive.add_argument("--max-work", type=int, default=64_000_000)
     receive.add_argument("--build", type=Path)
     receive.add_argument("--receipt", type=Path)
     receive.add_argument("--max-cycles", type=int)
@@ -106,17 +109,23 @@ def main():
     if args.command == "decode":
         decode_file(args.raw, args.out, abi)
     elif args.command == "receive":
-        if args.rtl is not None and (args.max_cycles is None or args.timeout is None or args.max_cycles <= 0 or args.timeout <= 0):
+        if args.backend == 'rtl' and args.rtl is not None and (args.max_cycles is None or args.timeout is None or args.max_cycles <= 0 or args.timeout <= 0):
             raise SnapshotError("Automatic replay requires explicit --max-cycles and --timeout")
-        if args.rtl is None and any(value is not None for value in (args.build, args.receipt, args.max_cycles, args.timeout)):
+        if args.backend == 'rtl' and args.rtl is None and any(value is not None for value in (args.build, args.receipt, args.max_cycles, args.timeout, args.simulator)):
             raise SnapshotError("Replay options require --rtl")
+        if args.backend == 'sim':
+            if args.rtl is not None or args.max_cycles is not None or args.max_work < 1 or (args.timeout is not None and args.timeout <= 0):
+                raise SnapshotError('Sim backend uses positive --max-work/--timeout, without RTL/cycle options')
+            from simulator import executable_path
+            executable_path(args.simulator)  # Fail before opening a physical port.
         report = receive_uart(args.port, args.seconds, args.baud, args.out, abi)
-        if args.rtl is not None:
+        if args.rtl is not None or args.backend == 'sim':
             from replay import run
             for attempt in report["attempts"]:
                 run(args.out / "decoded" / attempt["directory"], args.rtl,
                     args.out / "replay" / attempt["directory"], args.max_cycles, args.timeout,
-                    abi=abi, build=args.build, receipt=args.receipt)
+                    abi=abi, build=args.build, receipt=args.receipt, backend=args.backend,
+                    simulator=args.simulator, maximum_work=args.max_work)
     elif args.command == "preflight":
         result = preflight(load_snapshot(args.snapshot, abi), args.build, args.receipt)
         if args.out.exists():

@@ -1,5 +1,50 @@
 # GPU profiler
 
+## Result-only simulator backend
+
+The existing dump frontends support a second backend for fast software/game
+feedback. In project terminology **sim** executes a CB to its final memory result;
+**emu** would reproduce module effects every RTL cycle. Sim does not create a
+profiling session or estimate cycles, queues or utilization.
+
+Build the native core's CLI once:
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand build -Label "native GPU sim" -CargoArgs @("-p", "gpu-v2", "--bin", "gpu-v2-sim")
+python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/replay.py path/to/snapshot --backend sim --out target/gpu-sim-result --timeout 60
+```
+
+The default executable is `target/release/gpu-v2-sim[.exe]`; `--simulator` selects
+an explicit binary. `--max-work` defaults to64000000. Sim uses finite work and
+process bounds rather than `--max-cycles`/`--rtl`. RTL remains the default backend
+with its existing explicit exports/cycle/timeout requirements.
+
+System-program dumps continue through `system_dump.py` into the same GPS1
+snapshot. UART capture can select `snapshot_cli.py receive ... --backend sim`
+and the same process/work options; decoding and pause/resume ownership are
+unchanged. It validates the executable before opening a port. There is no new
+main frontend or capture protocol.
+
+`result.json` uses `digitaldesign.gpu-result` version1. `profiler.html` reuses
+the existing viewer in final-result mode: image plus raw color/depth and every
+writable recorded range, including no-target and multiple-target streams.
+`profiler.py render result.json --out <directory>` verifies/copies the raw results
+and produces that same view. No `profile.json`, trace or performance statistics
+are fabricated. Raw tiled RGB565/D16 remains authoritative; PNG is a viewing aid
+using the captured target's color interpretation.
+
+Capture reads check known physical bytes, writes check declared writable bytes,
+and writes make bytes known for later GPU commands. Physical aliases must agree;
+partial glyph atlases and copy dependencies do not require fabricated preimages.
+Failure produces diagnostics and preserves any native partial-memory/access
+files for inspection, without publishing a successful result/frame/viewer.
+Input provenance and executable hashes identify the software result; a qualified
+input receipt does not make sim output a board timing measurement.
+
+The CPU/system simulator uses the same native core through a thin Device4
+adapter and shared memory. Its interface and completion/error effects are in
+the [GPU simulator specification](/ip/gpu-v2/docs/functional.md).
+
 Explicit `Gpu` captures use header2 and build manifest3. Their
 `record-ranges-v1` policy keeps the column pixel packing while deriving addresses
 and allocation bounds from the recorded range table. Legacy header1/manifest2

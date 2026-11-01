@@ -3,10 +3,53 @@
 use super::dispatch::{ContextId, Dispatcher, Input};
 use super::Basic;
 use crate::{
-    framebuffer::ports::Header,
-    lighting::ports::CompactPixelInput,
-    system::oracle::ports::{NormalFormat, RasterQuad},
+    framebuffer::ports::Header, lighting::ports::CompactPixelInput, triangle::ports::Sample,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NormalFormat {
+    Q14,
+    S12F10,
+    Snorm12,
+}
+impl NormalFormat {
+    pub fn quantize(self, normal: [f64; 3]) -> Result<[f64; 3], String> {
+        if normal.iter().any(|v| !v.is_finite()) {
+            return Err("nonfinite normal".into());
+        }
+        let (scale, lo, hi) = match self {
+            Self::Q14 => (16384.0, -32768.0, 32767.0),
+            Self::S12F10 => (1024.0, -2048.0, 2047.0),
+            Self::Snorm12 => (2047.0, -2047.0, 2047.0),
+        };
+        // Explicit representable-range clamp; rare large/extrapolated values
+        // remain observable through per-stage saturation counters.
+        Ok(normal.map(|v| (v * scale).round_ties_even().clamp(lo, hi) / scale))
+    }
+    pub fn clipped(self, normal: [f64; 3]) -> bool {
+        let (scale, lo, hi) = match self {
+            Self::Q14 => (16384.0, -32768.0, 32767.0),
+            Self::S12F10 => (1024.0, -2048.0, 2047.0),
+            Self::Snorm12 => (2047.0, -2047.0, 2047.0),
+        };
+        normal.iter().any(|v| {
+            let code = (v * scale).round_ties_even();
+            code < lo || code > hi
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RasterQuad {
+    pub triangle: u32,
+    pub xy: [u16; 2],
+    pub mask: u8,
+    /// Includes uncovered helper lanes; derivatives must not use zero fill.
+    pub samples: [Sample; 4],
+    /// Uncovered lanes whose projective extrapolation has no positive finite W.
+    /// Sampling conservatively selects the coarsest mip for this quad.
+    pub invalid_helpers: u8,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Quantization {

@@ -272,7 +272,7 @@ fn connected_case(raster_scene: bool) {
     );
 }
 
-use gpu_v2::system::oracle::ports::RasterQuad;
+use gpu_v2::system::pixel::raster_input::RasterQuad;
 use std::collections::BTreeMap;
 fn backend_raster() -> Vec<RasterQuad> {
     let report = gpu_v2::triangle::sim::oracle::run_continuous(

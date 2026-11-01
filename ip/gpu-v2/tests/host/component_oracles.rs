@@ -7,7 +7,6 @@ use gpu_v2::{
         ports::*,
         sim::{counted, oracle as lighting},
     },
-    system::oracle::{self, ports::*, scene},
     triangle::{ports as tp, sim::oracle as triangle},
 };
 
@@ -178,84 +177,4 @@ fn functional_framebuffer_eviction_and_blend_match_direct_surface() {
     }
     assert_eq!(cache.materialize(), direct);
     assert!(cache.writebacks > 8);
-}
-
-#[test]
-fn chain_capacity_changes_preserve_pixels_and_fails_with_short_budget() {
-    let scene = scene::build(scene::Parameters {
-        scene: 1,
-        width: 200,
-        ..Default::default()
-    })
-    .unwrap();
-    let config = Config {
-        fetch: Fetch::CompactV6,
-        vertex: VertexMath::S16F16,
-        vertex_normal: NormalFormat::S12F10,
-        pixel_normal: NormalFormat::S12F10,
-        fifo: [1; 6],
-        ..Default::default()
-    };
-    let a = oracle::render(&scene, config).unwrap();
-    let b = oracle::render(
-        &scene,
-        Config {
-            fifo: [8; 6],
-            ..config
-        },
-    )
-    .unwrap();
-    assert_eq!(a.color, b.color);
-    assert_eq!(a.depth, b.depth);
-    assert_eq!(a.lighting, b.lighting);
-    assert!(a.stats.fragments > 1000);
-    assert!(a.stats.fifo_peak.iter().all(|&p| p <= 1));
-    assert!(oracle::render(
-        &scene,
-        Config {
-            max_steps: 1,
-            ..config
-        }
-    )
-    .is_err());
-    assert!(oracle::render(
-        &scene,
-        Config {
-            fifo: [0; 6],
-            ..config
-        }
-    )
-    .is_err());
-}
-
-#[test]
-fn every_scene_and_frontend_option_is_bounded_and_nonempty() {
-    for scene_id in 0..4 {
-        let s = scene::build(scene::Parameters {
-            scene: scene_id,
-            width: 200,
-            ..Default::default()
-        })
-        .unwrap();
-        for (fetch, vertex) in [
-            (Fetch::Ideal, VertexMath::Continuous),
-            (Fetch::CompactV6, VertexMath::S16F16),
-        ] {
-            let frame = oracle::render(
-                &s,
-                Config {
-                    fetch,
-                    vertex,
-                    pixel_normal: NormalFormat::S12F10,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert!(frame.stats.fragments > 100);
-            assert_eq!(frame.color.len(), 24000);
-            if scene_id == 2 {
-                assert!(frame.stats.texture_refills > 0);
-            }
-        }
-    }
 }

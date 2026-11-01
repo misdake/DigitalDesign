@@ -1,6 +1,8 @@
 //! Bounded host regressions in one integration executable.
 #[path = "host/basecolor_uv12.rs"]
 mod basecolor_uv12;
+#[path = "host/component_oracles.rs"]
+mod component_oracles;
 #[path = "host/direct_lod.rs"]
 mod direct_lod;
 #[path = "host/framebuffer.rs"]
@@ -41,10 +43,6 @@ mod lighting_two_cycle;
 mod logic_cones;
 #[path = "host/memory_burst.rs"]
 mod memory_burst;
-#[path = "host/oracle_chain.rs"]
-mod oracle_chain;
-#[path = "host/oracle_parallel.rs"]
-mod oracle_parallel;
 #[path = "host/physical.rs"]
 mod physical;
 #[path = "host/pixel_backend_shared_mc.rs"]

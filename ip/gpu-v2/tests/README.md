@@ -1,5 +1,35 @@
 # GPU regression tests
 
+## Native functional backend
+
+`cargo test -p gpu-v2 --test functional` checks bounded current-CB memory/UI/error
+execution. The preserved `host/component_oracles.rs` tests compare independent
+Lighting, Triangle and framebuffer references; they do not execute the retired
+whole-renderer composition.
+
+Build `--bin gpu-v2-sim` and export the actual GPU+MC with the system
+`gpu_profiler_export <directory> --mc` example. Then run
+`python ip/gpu-v2/tests/functional_replay.py --rtl <exports> --executable <exe>
+--out <fresh-directory> --cases <names>`. Use the repository cargo wrapper for
+build/test commands. Run RTL serially to keep finite wall limits meaningful.
+
+Each vector freezes an independent native CB and full physical pre-memory,
+executes both backends, and compares409600 raw color/depth bytes including
+padding, declared copy outputs and other-memory guards. Negative/half normal16
+and normal18, vertex MAC wrap, Q6 alpha endpoints, all eight depth functions,
+POT/full-mip/fixed-framebuffer Sampling and native UI ordering have separate
+vectors. `classic-floor-two-bunny` uses the current production asset packer,
+scene.json camera0, one floor and the first two bunny meshlets. These are explicit
+fixtures, not captured CPU submissions or historical/board frame acceptance.
+
+The GPU watchdog is2000000 clocks; tool wall limits are180 seconds for short
+vectors and600 for the dense classic input and32-draw depth matrix. Native work
+is bounded at64000000 with a120-second process limit. `--reuse-rtl <previous>`
+rechecks saved actual outputs only after the original input and exported-source
+SHA checks; it does not claim a new DUT run. Public RCC submit/wait/CB replay,
+three UI frames and host-vblank/Display interpretation are tested in the system
+crate's `host/gpu_functional.rs`.
+
 Pure host regressions share the `host` integration executable. Their component
 modules remain independently filterable, for example:
 

@@ -33,6 +33,18 @@
 <script>
 "use strict";
 const D=/*PROFILE_DATA*/null;
+if(D.schema==='digitaldesign.gpu-result'){
+ if(D.version!==1||D.backend!=='sim'||D.complete!==true||!Array.isArray(D.outputs))throw Error('Incomplete simulator result');
+ const node=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
+ const header=document.querySelector('header');header.replaceChildren(node('h1','GPU simulator'),node('span','Final result · no profiling'));
+ const main=document.querySelector('.layout');main.replaceChildren();main.style.display='block';main.style.height='auto';main.style.padding='24px';
+ main.append(node('p',D.scope),node('p','Input SHA256: '+D.input_sha256));
+ if(D.has_target){const image=node('img');image.src=D.final.color.image;image.alt='Final GPU color buffer';image.width=800;image.style.maxWidth='100%';image.style.imageRendering='pixelated';main.append(image);}
+ else main.append(node('p','This command stream has no framebuffer target. Final writable buffers are listed below.'));
+ const table=node('table');for(const output of D.outputs){const row=node('tr');row.append(node('td',output.role),node('td','0x'+output.address.toString(16)),node('td',String(output.bytes)+' bytes'));const cell=node('td'),link=node('a',output.file);link.href=output.file;cell.append(link);row.append(cell,node('td',output.sha256));table.append(row);}main.append(table);
+ window.gpuResult={data:D};
+}else{
+
 const $=id=>document.getElementById(id), css=getComputedStyle(document.documentElement);
 const C={};for(const k of ['bg','panel','text','muted','line','grid','dma','v','t','r','i','p','wait','set','clear','selection'])C[k]=css.getPropertyValue('--'+k).trim();
 let lo=D.start,hi=D.end,rangeSelected=false,selected=null,unit='ms',cursor=null,pan=null,brush=null,loadBins=null,suppressClick=false,lastHover=null;
@@ -213,5 +225,6 @@ $('identity').textContent=`${D.title} · ${D.submissions.length} CB · ${D.clock
 let timer;new ResizeObserver(()=>{clearTimeout(timer);timer=setTimeout(render,80);}).observe(document.querySelector('.main'));
 detail();render();if(selected!==null)$('command-scroll').scrollTop=Math.max(0,rowOf.get(selected).y-90);
 window.gpuProfiler={data:D,getView:()=>({lo,hi,rangeSelected,selected,unit}),focus:id=>{const c=cmd.get(id);if(!c||!rowOf.has(id))return;selectRow(rowOf.get(id));const [a,b]=bounds(c);fitRange(a,b);const row=rowOf.get(id);$('command-scroll').scrollTop=Math.max(0,row.y-80);},fit:()=>fitRange(D.start,D.end)};
+}
 </script>
 </body></html>

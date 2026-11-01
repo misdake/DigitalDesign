@@ -394,9 +394,17 @@ compatible DSP macro placements. The existing
 physical-resource audit can then reject a build whose GPU was swept, rather
 than treating the CPU/Display-only claim as the complete board allocation.
 
-The host `GpuDevice` models only this control-plane ownership. A host executor
+The default host `GpuDevice` models this control-plane ownership. A host executor
 must take the accepted descriptor and call `complete` after actual memory drain;
-without such an executor busy remains asserted. The Rust circuit emulator has
+without such an executor busy remains asserted. `CpuV3SystemSim::with_functional_gpu`
+selects a synchronous [native functional executor](/ip/gpu-v2/docs/functional.md)
+that writes the actual shared memory before completing. Unsupported native
+commands fail with sticky transport error and a retained command diagnostic.
+The debugger and display runner select this backend; Prepared capture keeps the
+control-only default. GPU raw RGB565/depth bytes and Display interpretation remain
+separate. In `PauseOnFrameIndexWait` mode, either a pending Display swap or a
+repeated FrameIndex wait yields to an explicit host vblank; status reads and GPU
+completion do not acknowledge a swap. The Rust circuit emulator has
 no GPU executor and explicitly fails on GPU launch, rather than reporting false
 rendering success. The production rendering reference remains the bounded RTL
 harness (`vliw_command.py --system-leaf`) and the full GPU/MC replay.

@@ -15,7 +15,7 @@ pub enum VBlankMode {
     /// Frame-index reads never pause the CPU; the host advances vblank explicitly.
     #[default]
     Manual,
-    /// A repeated frame-index read marks a wait that a host event must release.
+    /// A repeated frame-index read or pending swap yields to a host vblank event.
     PauseOnFrameIndexWait,
 }
 
@@ -24,7 +24,7 @@ pub struct DisplayState {
     pub active_base: u32,
     pub frame_index: u16,
     pub swap_pending: bool,
-    /// The CPU observed the same frame index again and is waiting for a host vblank.
+    /// A display wait or pending swap needs an explicit host vblank event.
     pub waiting_for_vblank: bool,
 }
 
@@ -73,6 +73,15 @@ impl CpuV3SystemSim {
         &self.cpu
     }
 
+    /// Select synchronous GPU execution before starting an application.
+    /// The default remains control-only for Prepared captures and protocol peers.
+    pub fn with_functional_gpu(mut self) -> Self {
+        assert!(!self.gpu().busy(), "cannot replace an active GPU executor");
+        self.cpu
+            .attach_device(GPU_DEVICE, Box::new(GpuDevice::functional()));
+        self
+    }
+
     pub fn cpu_mut(&mut self) -> &mut CpuV3Sim {
         &mut self.cpu
     }
@@ -113,12 +122,14 @@ impl CpuV3SystemSim {
             active_base: display.active_base(),
             frame_index: display.frame_index(),
             swap_pending: display.swap_pending(),
-            waiting_for_vblank: display.waiting_for_vblank(),
+            waiting_for_vblank: self.waiting_for_vblank(),
         }
     }
 
     pub fn waiting_for_vblank(&self) -> bool {
         self.display().waiting_for_vblank()
+            || (self.vblank_mode == VBlankMode::PauseOnFrameIndexWait
+                && self.display().swap_pending())
             || (self.vblank_mode == VBlankMode::PauseOnFrameIndexWait
                 && self
                     .cpu

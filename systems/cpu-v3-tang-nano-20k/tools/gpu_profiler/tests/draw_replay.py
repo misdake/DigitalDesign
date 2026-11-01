@@ -19,19 +19,20 @@ from test_snapshot import fixture
 from test_draw_oracle import SyntheticCapture
 
 
-def synthetic_snapshot(layout):
+def synthetic_snapshot(layout, source=None):
     abi = s.Abi()
-    source = SyntheticCapture(layout, tint=0xff4080ff)
+    source = source if source is not None else SyntheticCapture(layout, tint=0xff4080ff)
     header, _, _ = fixture(abi)
+    padded = (source.header['cb_bytes']+127)//128*128
     pairs = dict(COMMAND_BASE=source.header['cb_base'], COMMAND_BYTES=source.header['cb_bytes'],
-                 COMMAND_PADDED_BYTES=128, OBJECT_BASE=0x4d0000, OBJECT_BYTES=256,
+                 COMMAND_PADDED_BYTES=padded, OBJECT_BASE=0x4d0000, OBJECT_BYTES=len(source.memory[0x4d0000]),
                  COLOR_BASE=source.header['color_base'], DEPTH_BASE=source.header['depth_base'],
                  FRONT_BASE=0x400000, PLANE_BYTES=layout.plane_bytes)
     for name, value in pairs.items():
         at = abi['H_'+name]; header[at:at+2] = [value & 65535, value >> 16]
     header[abi['H_COUNT']] = source.header['cb_bytes']//4-1
     header[abi['H_LAYOUT_ABI']] = layout.abi
-    source.put(0x4c0000, source.memory[0x4c0000]+bytes(128-source.header['cb_bytes']))
+    source.put(0x4c0000, source.memory[0x4c0000]+bytes(padded-source.header['cb_bytes']))
     source.put(0x400000, bytes(layout.plane_bytes))
     tags = {0x4c0000: 'COMMANDS', 0x4d0000: 'OBJECTS', 0x4e0000: 'MESH',
             0x4f0000: 'TEXTURE', 0x440000: 'COLOR', 0x480000: 'DEPTH', 0x400000: 'FRONT'}

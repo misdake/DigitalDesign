@@ -225,8 +225,11 @@ def _collect(capture, manifest_path, declared):
     return result
 
 
-def run(snapshot, rtl, out, max_cycles, timeout, *, abi=None, build=None, receipt=None, simulation_source=None):
-    rtl, out = Path(rtl), Path(out)
+def run(snapshot, rtl, out, max_cycles, timeout, *, abi=None, build=None, receipt=None, simulation_source=None,
+        backend='rtl', simulator=None, maximum_work=64_000_000):
+    if backend not in ('rtl', 'sim'):
+        raise SnapshotError('Unknown replay backend')
+    out = Path(out)
     abi = abi or Abi(DEFAULT_ABI)
     capture = load_snapshot(snapshot, abi)
     if build is None:
@@ -235,6 +238,17 @@ def run(snapshot, rtl, out, max_cycles, timeout, *, abi=None, build=None, receip
         identity = input_preflight(capture, simulation_source=simulation_source)
     else:
         identity = preflight(capture, build, receipt, simulation_source=simulation_source)
+    if backend == 'sim':
+        if rtl is not None or max_cycles is not None:
+            raise SnapshotError('Sim backend does not use RTL exports or cycle bounds')
+        from simulator import run as simulate
+        identity = dict(identity, policy='Native result simulation; captured reads/writes checked; no profiling',
+                        dependency_closure='Static input checks and dynamic native byte access validation')
+        return simulate(capture, out, identity, executable=simulator, maximum_work=maximum_work,
+                        timeout=60 if timeout is None else timeout)
+    if rtl is None or max_cycles is None or timeout is None or max_cycles < 1 or timeout <= 0:
+        raise SnapshotError('RTL backend requires --rtl, positive --max-cycles and --timeout')
+    rtl = Path(rtl)
     if build is not None:
         build = load_build(build)
         recorded = {entry["sha256"] for entry in build["files"]}
@@ -251,18 +265,27 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("snapshot", type=Path)
     parser.add_argument("--abi", type=Path, default=DEFAULT_ABI)
-    parser.add_argument("--rtl", type=Path, required=True)
+    parser.add_argument("--backend", choices=['rtl', 'sim'], default='rtl')
+    parser.add_argument("--rtl", type=Path)
+    parser.add_argument("--simulator", type=Path)
+    parser.add_argument("--max-work", type=int, default=64_000_000)
     parser.add_argument("--build", type=Path)
     origin = parser.add_mutually_exclusive_group()
     origin.add_argument("--receipt", type=Path)
     origin.add_argument("--simulation-source", type=Path)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--max-cycles", type=int, required=True)
-    parser.add_argument("--timeout", type=int, required=True)
+    parser.add_argument("--max-cycles", type=int)
+    parser.add_argument("--timeout", type=int)
     args = parser.parse_args()
-    print(json.dumps(run(args.snapshot, args.rtl, args.out, args.max_cycles, args.timeout,
+    result = run(args.snapshot, args.rtl, args.out, args.max_cycles, args.timeout,
                          abi=Abi(args.abi), build=args.build, receipt=args.receipt,
-                         simulation_source=args.simulation_source), indent=2))
+                         simulation_source=args.simulation_source, backend=args.backend,
+                         simulator=args.simulator, maximum_work=args.max_work)
+    if args.backend == 'sim':
+        print(json.dumps(dict(complete=result['complete'], backend='sim', input_sha256=result['input_sha256'],
+                              result=str((args.out/'result.json').resolve()), viewer=str((args.out/'profiler.html').resolve())), indent=2))
+    else:
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

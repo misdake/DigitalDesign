@@ -5,6 +5,7 @@ mod datapath;
 pub mod dsp_sharing;
 pub mod emu;
 mod format;
+pub(crate) use format::{RSQRT_Q13_BIASES, RSQRT_Q13_RAW};
 pub(crate) mod h9;
 pub mod ports;
 pub mod rsqrt;

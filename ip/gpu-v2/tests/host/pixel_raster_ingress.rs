@@ -3,9 +3,9 @@
 use gpu_v2::{
     framebuffer::ports::{Blend, Context, DepthFunc},
     lighting::ports::{Light, LightingContext, Material, Projection},
-    system::{
-        oracle::ports::RasterQuad,
-        pixel::{dispatch::*, raster_input},
+    system::pixel::{
+        dispatch::*,
+        raster_input::{self, RasterQuad},
     },
     texture::ports::Filter,
     triangle::{ports, sim::oracle},

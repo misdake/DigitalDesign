@@ -69,7 +69,9 @@ the reserved GPU data plane.
 New reusable development lives in `ip/gpu-v2`, with the generic framework in
 `modeling/audited`; see [GPU component ownership](ip/gpu-v2/docs/overview.md). Device4 binds the single-CB command GPU through the system target leaf; its
 two-SEND/busy-RECV ABI is specified in `/ip/gpu-v2/docs/commands.md`. The host
-control adapter requires a GPU executor; it never fabricates rendering completion. The CPU D-cache is
+default control adapter requires a GPU executor; the selected functional backend
+executes supported native commands against the same physical memory before
+completion and explicitly rejects unsupported work. The CPU D-cache is
 write-back. CPU-to-GPU ownership transfer requires a blocking full clean to make CPU writes visible
 in DRAM, and GPU completion must make its writes visible before CPU
 ownership resumes after system-control D-cache invalidation. There is no MMU, snooping, transaction

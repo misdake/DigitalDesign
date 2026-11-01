@@ -7,3 +7,4 @@ pub mod vliw;
 pub mod vliw_dma;
 
 mod vliw_numeric;
+pub(crate) use vliw_numeric::words as interpolation_constants;

@@ -113,7 +113,8 @@ impl V3DebugSession {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        let mut system = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait);
+        let mut system =
+            CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
         load_machine(system.cpu_mut(), code_base, &words);
         let disasm = build_disasm(&words, code_base, &program.debug);
 
@@ -135,7 +136,7 @@ impl V3DebugSession {
 
     pub fn reset(&mut self) {
         let mode = self.system.vblank_mode();
-        let mut system = CpuV3SystemSim::new(mode);
+        let mut system = CpuV3SystemSim::new(mode).with_functional_gpu();
         load_machine(system.cpu_mut(), self.code_base, &self.words);
         self.system = system;
         self.last_halt = None;
@@ -1197,14 +1198,15 @@ mod tests {
         ]);
         let mut session = session(words);
         let (_, halt) = session.continue_run(16);
-        assert_eq!(halt, Some(0));
+        assert_eq!(halt, None);
         let state = session.state_json(None);
         assert!(state.contains(&format!(
-            "\"display\":{{\"width\":{},\"height\":{},\"active_base\":{FRAMEBUFFER_A_BASE_WORD},\"frame_index\":0,\"swap_pending\":true,\"waiting_for_vblank\":false}}",
+            "\"display\":{{\"width\":{},\"height\":{},\"active_base\":{FRAMEBUFFER_A_BASE_WORD},\"frame_index\":0,\"swap_pending\":true,\"waiting_for_vblank\":true}}",
             crate::FRAMEBUFFER_WIDTH, crate::FRAMEBUFFER_HEIGHT
         )));
 
-        session.system.advance_vblank();
+        assert!(session.system.advance_vblank());
+        assert_eq!(session.continue_run(16).1, Some(0));
         let state = session.state_json(None);
         assert!(state.contains(&format!(
             "\"active_base\":{FRAMEBUFFER_B_BASE_WORD},\"frame_index\":1,\"swap_pending\":false"
@@ -1280,6 +1282,10 @@ mod tests {
         ]);
         let mut session = session(words);
         let base = FRAMEBUFFER_A_BASE_WORD as usize;
+        // Exercise a host publishing the final image after CPU halt. The normal
+        // debugger mode instead yields at the pending swap before reaching HALT.
+        session.system = CpuV3SystemSim::new(VBlankMode::Manual).with_functional_gpu();
+        load_machine(session.system.cpu_mut(), session.code_base, &session.words);
         session.system.cpu_mut().physical_memory_mut()[base] = 0xf800;
         session.continue_run(16);
         assert_eq!(session.halted(), Some(0));
