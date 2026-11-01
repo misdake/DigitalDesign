@@ -4,8 +4,6 @@ use crate::{framebuffer::ports::MaterializedSurface, texture::ports::Slot};
 mod current_texture;
 #[path = "rtt400x240.rs"]
 mod rtt400x240;
-#[path = "simulation_checks.rs"]
-mod simulation_checks;
 pub const MODULE: &str = "gpu_v2_vliw_command";
 pub fn verilog(
     surface: MaterializedSurface,
@@ -61,7 +59,7 @@ fn verilog_column(
     ));
     source.push_str(include_str!("ui_grid.v"));
     source.push_str(&super::vliw_memory::command_verilog());
-    simulation_checks::lower(current_texture::packet_group(source)?)
+    current_texture::packet_group(source).map(|source| source.replace("\r\n", "\n"))
 }
 
 /// Column RGB565 texture, either POT or a fixed 400x240 framebuffer view.

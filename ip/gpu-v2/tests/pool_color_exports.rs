@@ -7,8 +7,6 @@ use gpu_v2::{
     },
     texture::{ports::Slot, rtl::runtime_color},
 };
-#[path = "../src/system/simulation_checks.rs"]
-mod simulation_checks;
 
 #[test]
 #[ignore = "writes dependency-closed RTL to POOL_COLOR_EXPORT_DIR"]
@@ -36,9 +34,14 @@ fn export_pool_color_policy_factories() {
         // Exercise the selected direct component before the physical Group35
         // adapter removes its level field. The full command export below also
         // traverses that adapter, so these are distinct interface contracts.
-        let raw_command=simulation_checks::lower(if checked.contains("`ifdef GPU_V2_VLIW_COLOR_COMMAND") {
-            format!("`define GPU_V2_VLIW_COLOR_COMMAND\n{checked}\n`undef GPU_V2_VLIW_COLOR_COMMAND\n")
-        } else { checked.clone() }).unwrap();
+        assert!(
+            checked.contains("`ifdef GPU_V2_VLIW_COLOR_COMMAND"),
+            "raw Color qualification requires the private owner policy"
+        );
+        let raw_command = format!(
+            "`define GPU_V2_VLIW_COLOR_COMMAND\n{checked}\n`undef GPU_V2_VLIW_COLOR_COMMAND\n"
+        )
+        .replace("\r\n", "\n");
         for (kind, source) in [
             (
                 "command",

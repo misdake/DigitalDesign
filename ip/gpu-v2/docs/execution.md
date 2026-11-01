@@ -546,8 +546,10 @@ The selected root is the complete
 The renderer selects this root, its owned-Q banks and the TDP sink as complete
 modules. Its static policy record keeps Final, Join, Pool and Color choices
 independent; public data macros do not grant a diagnostic policy. All selected
-owners now supply their own diagnostics. The retained compatibility call only
-normalizes line endings and performs no RTL scanning or policy rewrite. The historical postquad factories remain independent references.
+owners now supply their own diagnostics. Command assembly normalizes line endings
+directly after packet/Group binding, before RTT specialization; no diagnostic
+scanner or compatibility call remains. The historical postquad factories remain
+independent references.
 The 23-bit active header stays registered; its tile is a combinational projection,
 not a second captured header. Existing issue/publication/retirement prefixes own
 the ordered progress; there is no separate paid-return ring or occupancy copy.

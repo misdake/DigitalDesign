@@ -7,7 +7,6 @@ PRIVATE=['GPU_V2_VLIW_POOL_COMMAND','GPU_V2_POOL_CLEAR','GPU_V2_POOL_BAD','GPU_V
 def main():
  p=argparse.ArgumentParser(__doc__);p.add_argument('--baseline',type=Path,required=True);p.add_argument('--candidate',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--trace-pair',nargs=2,type=Path,action='append',default=[]);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=False);rows=[]
  for base in sorted(a.baseline.glob('*.v')):
-  if base.name.startswith('raw-command'):continue
   for monitors in [True,False]:
    streams=[]
    for name,src in [('baseline',base),('candidate',a.candidate/base.name)]:

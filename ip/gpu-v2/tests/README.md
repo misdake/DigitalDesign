@@ -348,7 +348,11 @@ local Final/shared-DSP evidence, not pool, TDP, frame or board qualification.
 for dependency-closed native/portable command, backend, full, SDRAM and public
 component RTL. Set `POOL_COLOR_EXPORT_DIR` to a fresh directory and run that
 exact test with `--ignored --exact`. The pre-physical Color component entry is
-separate from the final command Group35 adapter.
+separate from the final command Group35 adapter: `raw-command` explicitly selects
+the private Color policy before that adapter; `command` exercises the physical
+Group interface. Neither replaces the other. These exports use slot max0/no-mip
+and depth0x140000, while the join exporter uses max5/full-mip and depth0x200000;
+keep their inputs and output directories separate.
 
 `pool_policy.py --exports <exports> --output <fresh-directory> --mutations`
 replays the existing independent Pool scoreboard on actual selected modules.
@@ -363,6 +367,9 @@ scoreboard checks. Every simulation has a cycle bound and a process timeout.
 --output <fresh-directory> [--trace-pair <before> <after>]` compares every ordered
 preprocessed token of the complete factories in both monitor modes, checks
 private profile scope, and compares the frozen actual ownership edge traces.
+The comparison includes both `raw-command` exports and preserves string literals;
+it has no statement-removal allowance. Scanner-adapter retirement keeps complete
+raw factory output identical, including the existing line-ending normalization.
 These checks do not establish a new physical fit or full-frame result.
 
 `color_ownership.py --exports <exports> --output <fresh-directory> --mutations`
