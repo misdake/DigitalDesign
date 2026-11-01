@@ -32,12 +32,28 @@ pub fn ndc_words() -> [u32; 320] {
 }
 
 pub fn verilog(portable: bool) -> String {
+    render(portable, false)
+}
+
+/// Selected only by the closed command owner, independently of payload ports.
+pub(crate) fn verilog_command(portable: bool) -> String {
+    render(portable, true)
+}
+
+fn render(portable: bool, command: bool) -> String {
     let mut s = if portable {
         "`define GPU_VLIW_POOL_PORTABLE\n".to_owned()
     } else {
         String::new()
     };
-    s.push_str(SOURCE);
+    s.push_str(&SOURCE.replace(
+        "// @POOL_POLICY@",
+        if command {
+            "`define GPU_V2_VLIW_POOL_COMMAND"
+        } else {
+            ""
+        },
+    ));
     s.push_str("\nmodule gpu_v2_vliw_ndc_rom(input clk,reset,re,input[8:0]ra,output[31:0]q);\n");
     let rows = ndc_words();
     if portable {

@@ -28,6 +28,19 @@ module gpu_v2_texture_runtime_color(
  output wire fault,
  output wire [15:0] public_live
 );
+// Only the private closed command owner selects passive diagnostics.
+`ifdef GPU_V2_VLIW_COLOR_COMMAND
+`define GPU_V2_COLOR_TERMINAL_CLEAR begin end
+`ifndef SYNTHESIS
+`define GPU_V2_COLOR_TERMINAL_BAD begin if(!reset&&((1)!=0))$fatal(1,"GPU contract: terminal");end
+`else
+`define GPU_V2_COLOR_TERMINAL_BAD begin end
+`endif
+`else
+`define GPU_V2_COLOR_TERMINAL_CLEAR terminal<=0;
+`define GPU_V2_COLOR_TERMINAL_BAD terminal<=1;
+`endif
+
  reg terminal;
  reg [15:0] live;
  reg [1:0] last_lane [0:15];
@@ -44,7 +57,11 @@ module gpu_v2_texture_runtime_color(
  wire input_bad=input_proposal && !live[in_payload[69:66]];
  wire pop_proposal=color_valid && out_ready;
  wire result_bad=pop_proposal && !live[color_key[5:2]];
+`ifdef GPU_V2_VLIW_COLOR_COMMAND
+ assign preflight_fault=1'b0;
+`else
  assign preflight_fault=attempted && (publish_bad || input_bad || result_bad || color_bad);
+`endif
  assign eligible=attempted && !preflight_fault;
  assign advance=eligible && commit_allow;
  // Terminal status and raw offers do not depend on this edge's proposal bad.
@@ -67,9 +84,9 @@ module gpu_v2_texture_runtime_color(
   .in_ready(color_ready),.out_ready(out_ready),.out_valid(color_valid),
   .out_key(color_key),.out_r(color_r),.out_g(color_g),.out_b(color_b),.fault(color_fault));
  always @(posedge clk) begin
-  if(reset) begin terminal<=0;live<=0;end
+  if(reset) begin `GPU_V2_COLOR_TERMINAL_CLEAR live<=0;end
   else begin
-   if(preflight_fault) terminal<=1;
+   if(preflight_fault) `GPU_V2_COLOR_TERMINAL_BAD
    if(advance) begin
     if(result_fire && quad_last) live[color_key[5:2]]<=0;
     if(publish_fire) begin
@@ -82,4 +99,13 @@ module gpu_v2_texture_runtime_color(
    end
   end
  end
+
+`ifdef GPU_V2_VLIW_COLOR_COMMAND
+ always @(posedge clk)terminal<=0;
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((1'b1)&&(attempted && (publish_bad || input_bad || result_bad || color_bad))))$fatal(1,"GPU contract: preflight_fault");
+`endif
+`endif
+`undef GPU_V2_COLOR_TERMINAL_CLEAR
+`undef GPU_V2_COLOR_TERMINAL_BAD
 endmodule

@@ -8,6 +8,16 @@ use std::collections::{BTreeMap, BTreeSet};
 mod framebuffer_tdp;
 pub const MODULE: &str = "gpu_v2_vliw_backend";
 pub const SOURCE: &str = include_str!("vliw_backend.v");
+#[derive(Clone, Copy)]
+enum PoolPolicy {
+    Checked,
+    Command,
+}
+#[derive(Clone, Copy)]
+enum ColorPolicy {
+    Checked,
+    Command,
+}
 fn span(source: &str, name: &str) -> Result<(usize, usize), String> {
     let marker = format!("module {name}");
     let starts: Vec<_> = source
@@ -97,7 +107,15 @@ pub fn verilog_selected(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    render_globals(slots, surface, backend, false, FinalPolicy::Checked)
+    render_globals(
+        slots,
+        surface,
+        backend,
+        false,
+        FinalPolicy::Checked,
+        PoolPolicy::Checked,
+        ColorPolicy::Checked,
+    )
 }
 
 pub(crate) fn verilog_selected_command(
@@ -105,7 +123,15 @@ pub(crate) fn verilog_selected_command(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    render_globals(slots, surface, backend, true, FinalPolicy::Command)
+    render_globals(
+        slots,
+        surface,
+        backend,
+        true,
+        FinalPolicy::Command,
+        PoolPolicy::Command,
+        ColorPolicy::Command,
+    )
 }
 
 // Diagnostic ownership is independent of the live-global and port profiles.
@@ -131,6 +157,8 @@ fn render_globals(
     backend: quad_ingress::rtl::Backend,
     live_globals: bool,
     final_policy: FinalPolicy,
+    pool_policy: PoolPolicy,
+    color_policy: ColorPolicy,
 ) -> Result<String, String> {
     let native = matches!(backend, quad_ingress::rtl::Backend::Native);
     if surface.width != 400 || surface.height != 240 {
@@ -144,7 +172,10 @@ fn render_globals(
     .replace("\r\n", "\n");
     let (a, b) = span(&source, "gpu_v2_pixel_sampling_ingress")?;
     source.replace_range(a..b, SOURCE);
-    source.push_str(&pool::verilog(!native));
+    source.push_str(&match pool_policy {
+        PoolPolicy::Checked => pool::verilog(!native),
+        PoolPolicy::Command => pool::verilog_command(!native),
+    });
     let top = "gpu_v2_postquad_direct_lod";
     patch(
         &mut source,
@@ -308,6 +339,13 @@ fn render_globals(
     patch(&mut source, MODULE, ".in_tint(basic_data),", "\n`ifdef GPU_V2_COMMAND_PORTS\n.in_tint(issue_color),\n`else\n.in_tint(basic_data),\n`endif\n")?;
     patch(&mut source, MODULE, ".rgba({alpha,out_covered?final_RGB:24'd0})", "\n`ifdef GPU_V2_COMMAND_PORTS\n.rgba({8'd0,out_covered?final_RGB:24'd0})\n`else\n.rgba({alpha,out_covered?final_RGB:24'd0})\n`endif\n")?;
     let result = reachable(&source, MODULE)?;
+    // Scope only after module reachability has selected the complete owners.
+    let result = match color_policy {
+        ColorPolicy::Checked => result,
+        ColorPolicy::Command => format!(
+            "`define GPU_V2_VLIW_COLOR_COMMAND\n{result}\n`undef GPU_V2_VLIW_COLOR_COMMAND\n"
+        ),
+    };
     let result = if live_globals {
         format!("`define GPU_V2_LIVE_GLOBALS\n{result}\n`undef GPU_V2_LIVE_GLOBALS\n")
     } else {

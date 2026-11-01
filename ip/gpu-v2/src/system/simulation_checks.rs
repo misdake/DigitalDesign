@@ -1,9 +1,9 @@
 //! Production GPU diagnostics observe the datapath without controlling it.
 //!
-//! The independent checked component factories keep their reusable APIs. This
-//! specialization removes their diagnostic feedback from the command closure;
-//! assertions execute on the original sampling edges, including wall-time RAM
-//! returns. Both simulation and synthesis use the same specialized datapath.
+//! Only the selected join still uses this register adaptation. Other command
+//! owners select their diagnostic policy in their own sources. Independent
+//! checked component factories keep their reusable APIs; assertions observe
+//! original sampling edges in the same simulation/synthesis datapath.
 
 fn identifier(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'$'
@@ -44,35 +44,6 @@ fn assignments(s: &str, name: &str, sequential: bool) -> Vec<(usize, usize, Stri
     result
 }
 
-fn monitor(s: &mut String, condition: &str, label: &str) {
-    s.push_str(&format!("\n`ifndef SYNTHESIS\n always @(posedge clk)if(!reset&&({condition}))$fatal(1,\"GPU contract: {label}\");\n`endif\n"));
-}
-
-fn check(
-    s: &mut String,
-    name: &str,
-    replacement: &str,
-    gate: &str,
-    invert: bool,
-) -> Result<(), String> {
-    let sites = assignments(s, name, false);
-    if sites.len() != 1 {
-        return Err(format!(
-            "Expected one {name} detector, found {}",
-            sites.len()
-        ));
-    }
-    let (start, end, expression) = &sites[0];
-    s.replace_range(*start..*end, &format!("{name}={replacement};"));
-    let bad = if invert {
-        format!("!({expression})")
-    } else {
-        expression.clone()
-    };
-    monitor(s, &format!("({gate})&&({bad})"), name);
-    Ok(())
-}
-
 // Remove the diagnostic register and its feedback in both build modes. Keep
 // external abort as an explicit operation, with its original sticky lifetime.
 fn register(s: &mut String, name: &str, abort: bool) -> Result<(), String> {
@@ -102,16 +73,8 @@ fn register(s: &mut String, name: &str, abort: bool) -> Result<(), String> {
 }
 
 fn specialize(name: &str, s: &mut String) -> Result<(), String> {
-    match name {
-        "gpu_v2_vliw_backend_three_port" => register(s, "stopped", true)?,
-
-        "gpu_v2_texture_runtime_color" => {
-            register(s, "terminal", false)?;
-            check(s, "preflight_fault", "1'b0", "1'b1", false)?;
-        }
-        "gpu_v2_texture_runtime_color_checked" => register(s, "fault", false)?,
-        "gpu_v2_vliw_quad_pool" => register(s, "fault", false)?,
-        _ => (),
+    if name == "gpu_v2_vliw_backend_three_port" {
+        register(s, "stopped", true)?;
     }
     Ok(())
 }

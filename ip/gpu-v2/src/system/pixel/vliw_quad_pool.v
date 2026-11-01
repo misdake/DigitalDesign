@@ -1,6 +1,7 @@
 // One authoritative producer pool. Physical32, active24, unpublished8.
 // Producer and consumers share a clock, not their enables. Empty slots are dense.
 module gpu_v2_vliw_quad_pool(
+// @POOL_POLICY@
 `ifdef GPU_V2_COMMAND_PORTS
  input[31:0]quad_color,output[23:0]issue_color,
 `endif
@@ -48,6 +49,19 @@ light_valid,light_context_valid,
  output[5:0]global_used,producer_used,light_pending,sample_pending,
  output busy,output reg fault
 );
+// Private command policy observes the original writes without owning credit.
+`ifdef GPU_V2_VLIW_POOL_COMMAND
+`define GPU_V2_POOL_CLEAR begin end
+`ifndef SYNTHESIS
+`define GPU_V2_POOL_BAD begin if(!reset&&((1)!=0))$fatal(1,"GPU contract: fault");end
+`else
+`define GPU_V2_POOL_BAD begin end
+`endif
+`else
+`define GPU_V2_POOL_CLEAR fault<=0;
+`define GPU_V2_POOL_BAD fault<=1;
+`endif
+
  reg[5:0]allocated,publish_ptr,retired,complete_tail,light_cursor,sample_cursor;
  reg[7:0]attr_pixel;
  reg[9:0]light_descriptor_q;reg[18:0]sample_descriptor_q;
@@ -206,7 +220,7 @@ attr_pixel[6:0],depth_event_z16,
    light_cursor<=0;sample_cursor<=0;attr_pixel<=0;
    light_descriptor_q<=0;sample_descriptor_q<=0;
    normal_y_high<=0;depth_mask<=0;light_state<=L_READ;light_lane<=0;ndc_x<=0;
-   sample_loaded<=0;sample_lane<=0;fault<=0;
+   sample_loaded<=0;sample_lane<=0;`GPU_V2_POOL_CLEAR
   end else begin
    // Metadata pays the same read edge as its payload; cursor changes cannot
    // propagate through consumers' public-credit/preflight/CE on this edge.
@@ -249,11 +263,11 @@ light_state<=L_CONTEXT;end
    end
    if(regular_retire||skip_empty)begin
     if(retired==publish_ptr||(regular_retire&&retire_id!=retired[4:0])||
-     light_cursor==retired||sample_cursor==retired)fault<=1;
+     light_cursor==retired||sample_cursor==retired)`GPU_V2_POOL_BAD
     retired<=retired+1'b1;
    end
-   if(backend_ce&&empty_skip&&!empty_skip_ready)fault<=1;
-   if(regular_retire&&skip_empty||basic_collision)fault<=1;
+   if(backend_ce&&empty_skip&&!empty_skip_ready)`GPU_V2_POOL_BAD
+   if(regular_retire&&skip_empty||basic_collision)`GPU_V2_POOL_BAD
   end
  end
 `ifndef SYNTHESIS
@@ -333,6 +347,12 @@ light_state<=L_CONTEXT;end
   if(fault)$fatal(1,"pool protocol fault");
  end
 `endif
+`ifdef GPU_V2_VLIW_POOL_COMMAND
+ always @(posedge clk)fault<=0;
+`endif
+`undef GPU_V2_POOL_CLEAR
+`undef GPU_V2_POOL_BAD
+`undef GPU_V2_VLIW_POOL_COMMAND
 endmodule
 
 // Each instance is a real 1W1R bank. The caller gates its separate clock enables.

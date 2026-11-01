@@ -343,3 +343,39 @@ Public and command-port-only checked streams must match completely. The command
 source has only two explicitly matched legacy no-op removals; every other token
 must match, without generic statement, alias or declaration filtering. This is
 local Final/shared-DSP evidence, not pool, TDP, frame or board qualification.
+
+`pool_color_exports::export_pool_color_policy_factories` is an ignored exporter
+for dependency-closed native/portable command, backend, full, SDRAM and public
+component RTL. Set `POOL_COLOR_EXPORT_DIR` to a fresh directory and run that
+exact test with `--ignored --exact`. The pre-physical Color component entry is
+separate from the final command Group35 adapter.
+
+`pool_policy.py --exports <exports> --output <fresh-directory> --mutations`
+replays the existing independent Pool scoreboard on actual selected modules.
+Checked, command and public data-port/global profiles cover 24/8 saturation,
+32-slot wrap, sparse/empty masks, real retirement, independent enables, RGB/UV
+payloads, NDC and held Q, with native/portable RAM and monitors on/off. Bounded
+bad-retirement/unsafe-skip cases distinguish sticky feedback from observation;
+actual DUT capacity and retire-increment mutations must fail their specific
+scoreboard checks. Every simulation has a cycle bound and a process timeout.
+
+`pool_color_equivalence.py --baseline <frozen-exports> --candidate <exports>
+--output <fresh-directory> [--trace-pair <before> <after>]` compares every ordered
+preprocessed token of the complete factories in both monitor modes, checks
+private profile scope, and compares the frozen actual ownership edge traces.
+These checks do not establish a new physical fit or full-frame result.
+
+`color_ownership.py --exports <exports> --output <fresh-directory> --mutations`
+checks actual selected wrapper/direct modules and the actual Sample bank, with
+the production result-fire/address wiring verified in the complete factory.
+Independent integer RGB565 expansion and rounded products check sparse masks,
+one/two-group pixels, sixteen live public IDs, fifth-bit bank identity, legal
+ID reuse, old-state credits, final-write release, CE0/commit stalls and held Q.
+Physical command Group35 and raw selected component packet contracts are
+separate cases. Public data macros retain checked diagnostics. Unpublished
+input, bad raw packet and refused closed-bank completion distinguish checked
+feedback, command monitors and monitor-free functional behavior. Real DUT
+premature-release and packet-gate mutations must hit their specific failures.
+The fixture stops at 10000 cycles and uses bounded compile/simulator processes.
+It complements the retained FIFO Color miter and independent public Color tests;
+it does not establish global D3 retirement, a frame or device qualification.

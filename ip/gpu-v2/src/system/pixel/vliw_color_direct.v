@@ -6,6 +6,19 @@ module gpu_v2_texture_runtime_color_checked(
  output wire[5:0]out_key,output wire[7:0]out_r,out_g,out_b,
  output reg fault
 );
+// Packet validation below remains a functional gate in either policy.
+`ifdef GPU_V2_VLIW_COLOR_COMMAND
+`define GPU_V2_COLOR_CLEAR begin end
+`ifndef SYNTHESIS
+`define GPU_V2_COLOR_BAD begin if(!reset&&((1)!=0))$fatal(1,"GPU contract: fault");end
+`else
+`define GPU_V2_COLOR_BAD begin end
+`endif
+`else
+`define GPU_V2_COLOR_CLEAR fault<=0;
+`define GPU_V2_COLOR_BAD fault<=1;
+`endif
+
  wire[5:0]key_in={in_payload[69:66],in_payload[71:70]};
  wire first_in=in_payload[64],last_in=in_payload[65];
  wire last_offer=in_valid?last_in:1'b1;
@@ -43,9 +56,9 @@ module gpu_v2_texture_runtime_color_checked(
  color_packed_accumulator accumulator(.clk(clk),.ce(accum_ce),.add(accum_add),.a(packed_half),.q(packed_sum));
  assign sumv[0]=packed_sum[7:0];assign sumv[1]=packed_sum[23:16];assign sumv[2]=packed_sum[39:32];
  always@(posedge clk)begin
-  if(reset)begin busy<=0;done<=0;q_done<=0;fault<=0;end
+  if(reset)begin busy<=0;done<=0;q_done<=0;`GPU_V2_COLOR_CLEAR end
   else if(ce&&!fault)begin
-   if(packet_bad)fault<=1;
+   if(packet_bad)`GPU_V2_COLOR_BAD
    else begin
     busy<=start;done<=accepted;q_done<=done;
     if(done)begin q_key<=p_key;q_last<=p_last;end
@@ -60,4 +73,9 @@ module gpu_v2_texture_runtime_color_checked(
  always@(posedge clk)if(!reset&&advance&&out_valid&&!out_ready)
   $fatal(1,"closed Color result bank did not accept completion");
 `endif
+`ifdef GPU_V2_VLIW_COLOR_COMMAND
+ always @(posedge clk)fault<=0;
+`endif
+`undef GPU_V2_COLOR_CLEAR
+`undef GPU_V2_COLOR_BAD
 endmodule

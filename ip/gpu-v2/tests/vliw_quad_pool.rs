@@ -51,6 +51,12 @@ fn producer_pool_portable_and_native_protocol_qualification() {
     fs::create_dir_all(&out).unwrap();
     for (name, portable) in [("portable", true), ("native", false)] {
         fs::write(out.join(format!("{name}.v")), pool::verilog(portable)).unwrap();
+        // Preserve the explicit private entry beside the independent checked export.
+        fs::write(
+            out.join(format!("command-{name}.v")),
+            pool::verilog_command(portable),
+        )
+        .unwrap();
     }
     let mut child = std::process::Command::new("python")
         .arg(root.join("ip/gpu-v2/tests/vliw_quad_pool.py"))

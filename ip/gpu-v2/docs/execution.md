@@ -528,6 +528,17 @@ Numerically empty slots retain ordering. Neither optimization performs early-Z.
 The pool is specialized for complete, fixed-order producers; it is not an
 arbitrary missing-return/reordering transport.
 
+The pool source owns both diagnostic policies. Public component factories keep
+reset-cleared sticky `fault`; the private command factory clears it on every
+wall-clock edge and monitors each original write predicate in simulation.
+`GPU_V2_COMMAND_PORTS` and `GPU_V2_LIVE_GLOBALS` select data contracts only.
+They do not select diagnostic trust. Neither policy changes the 24 active,
+8 unpublished or 32 physical credits, completion prefixes, separate front/backend
+CE, retirement ID or safe-empty-skip condition. An invalid retirement retains
+its original edge update; this observation policy adds no rejection or recovery.
+Pool RAM ports retain their original enables. Their collision diagnostics are
+separate from the join result banks' functional read/write collision guards.
+
 ## Separate release boundaries
 
 ```mermaid
@@ -895,6 +906,28 @@ Color processes two RGB taps per edge with six small multipliers. On common CE,
 its accumulator Q writes the final Sample bank directly. The sink consumes old
 Q before a same-edge replacement. This parent contract requires no intermediate
 Color result FIFO; independent generic Color APIs retain their output credits.
+
+The selected Color sources own their diagnostic policy. An explicit private
+command selector, scoped around the reachable backend modules, removes only
+wrapper `terminal`/`preflight_fault` feedback and the direct leaf's diagnostic
+`fault` lifetime. Original predicates remain simulation monitors. Public data
+port/global macros select no trust; public buffered and reserved factories keep
+their checked defaults. Reserved publication still uses `publish_bad=0`, while
+old-state `publish_ready` and `publish_fire` remain functional.
+
+The raw selected direct component retains `packet_bad`, `preflight_bad`,
+`advance && !packet_bad` and its bad-versus-update branch in either policy.
+The complete command's physical Group35 adapter has no level field and retains
+its existing constant-zero level detector; this separate format specialization
+is not diagnostic removal. Reset, busy/done/Q ages, RGB565 expansion, product
+rounding and old accumulator-Q consumption are unchanged.
+
+`result_fire` writes Sample at `{saved_pool_bit4,out_key}`. Only that write with
+`quad_last` releases the low-four-bit public ID, where the stored highest
+covered lane defines the last result. No same-edge pop can fund an aliasing
+publication. The source pool/header/depth slot remains owned until D3. Closed
+Color still requires its parent to accept every completion; this policy adds
+no output queue or recovery for a refused result-bank write.
 
 ## Pause, fault and reset
 
