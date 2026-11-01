@@ -2,9 +2,10 @@
 from pathlib import Path
 import hashlib,json,os,subprocess,argparse
 R=Path(__file__).resolve().parents[3]
-p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser(__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--export',type=Path,help='Actual complete command factory export');p.add_argument('--no-monitors',action='store_true');p.add_argument('--trace',action='store_true');a=p.parse_args()
 o=a.output.resolve();o.mkdir(parents=True,exist_ok=False)
-s=R/'ip/gpu-v2/src/system/vliw_memory.v';(o/'dut.v').write_text(s.read_text().split('// Standalone factory:')[0])
+s=a.export.resolve() if a.export else R/'ip/gpu-v2/src/system/vliw_memory.v'
+(o/'dut.v').write_text(s.read_text())
 (o/'tb.v').write_text(r'''`timescale 1ns/1ps
 module tb;
 reg clk=0,reset=1,framebuffer_request_valid=0,framebuffer_request_write=1;
@@ -21,6 +22,15 @@ gpu_vliw_memory_router dut(.clk(clk),.reset(reset),.framebuffer_request_valid(fr
  .control_request_valid(1'b0),.control_request_address(22'd0),.control_request_count(2'd0),
  .texture_request_valid(1'b0),.texture_request_address(32'd0),
  .ro_request_ready(1'b0),.ro_response_valid(1'b0),.ro_response_last(1'b0),.ro_response_error(1'b0),.ro_data(64'd0));
+integer trace_fd=0;reg[2047:0]trace_path;
+initial if($value$plusargs("TRACE=%s",trace_path))trace_fd=$fopen(trace_path,"w");
+always @(posedge clk)if(!reset&&trace_fd)$fdisplay(trace_fd,"%h %h %h %h %h %h %h %h %h",
+ {framebuffer_request_valid,framebuffer_request_write,framebuffer_request_ready,framebuffer_write_valid,framebuffer_write_ready,framebuffer_read_valid,framebuffer_complete,framebuffer_ok,busy,fault},
+ framebuffer_request_address,framebuffer_write_data,framebuffer_read_data,
+ {fb_w_request_valid,fb_w_request_ready,fb_w_data_ready,fb_w_response_valid,fb_w_response_last,fb_w_response_error,fb_r_request_valid,fb_r_request_ready,fb_r_response_valid,fb_r_response_last,fb_r_response_error},
+ {fb_w_address,fb_w_count,fb_r_address,fb_r_count},fb_w_data,
+ {dut.fused,dut.f_error,dut.fdata_done,dut.fbeat,dut.fb_write,dut.fb_bad},
+ {dut.present,dut.rput,dut.rhead,dut.rb,dut.ro_bad});
 integer cycle=0,requests=0,terms=0,words=0,i;
 task tick;begin
  #2;
@@ -65,9 +75,9 @@ end
 endmodule
 ''')
 logs=[]
-for n,cmd in [('compile',[os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',o/'sim.vvp',o/'dut.v',o/'tb.v']),('run',[os.environ['VVP_EXE'],o/'sim.vvp'])]:
+for n,cmd in [('compile',[os.environ['IVERILOG_EXE'],*(['-DSYNTHESIS'] if a.no_monitors else []),'-g2012','-s','tb','-o',o/'sim.vvp',o/'dut.v',o/'tb.v']),('run',[os.environ['VVP_EXE'],o/'sim.vvp',*([f'+TRACE={o / "router.trace"}'] if a.trace else [])])]:
  z=subprocess.run(list(map(str,cmd)),cwd=o,capture_output=True,timeout=30);(o/(n+'.log')).write_bytes(z.stdout+z.stderr)
  assert z.returncode==0,(z.stdout+z.stderr).decode(errors='replace')[-1500:]
  logs+=[l for l in z.stdout.decode().splitlines() if l.startswith('PASS')]
-receipt=dict(status='pass',cases=logs,source_sha256=hashlib.sha256(s.read_bytes()).hexdigest(),test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+receipt=dict(status='pass',command=bool(a.export),monitors=not a.no_monitors,cases=logs,source_sha256=hashlib.sha256(s.read_bytes()).hexdigest(),test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
 (o/'receipt.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(receipt))

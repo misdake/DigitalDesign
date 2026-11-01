@@ -67,6 +67,20 @@ write in its independent checked component API. The production command closure
 specializes that diagnostic feedback out: passive simulation monitors check
 framing and peer errors without gating writes or progress. Its legal peer
 contract requires the complete declared burst and correctly placed LAST.
+`command_dma.v` and `vliw_memory.v` own these checked and passive policies.
+The command factories select a private `GPU_V2_COMMAND_TRANSPORT` scope around
+only their transport sources; the router source excludes its standalone loader
+wrapper in that scope. The public `GPU_V2_COMMAND_PORTS` macro does not select
+transport trust. Generic factories retain local descriptor rejection, error
+terminals and sticky faults. No final module scanner changes either transport.
+
+In the command profile, error without LAST reports a simulation contract
+failure but does not invent a terminal when monitors are removed. Missing LAST
+retains the return owner. Error at a real LAST retains the original LAST
+progress; the outer command Device4 status independently records raw transport
+errors until reset. Diagnostic registers are cleared on every wall-clock
+posedge, including CE0. This does not provide error recovery or rollback.
+
 Command DMA keeps only a scratchpad write cursor; burst length/framing remains
 in the router's return context, with no duplicate DMA return-length counter. See [command diagnostics](/ip/gpu-v2/docs/commands.md#diagnostics-cancellation-and-scope)
 for the production behavior and explicit-abort boundary.

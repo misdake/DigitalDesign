@@ -1,12 +1,8 @@
-// This candidate remains outside the active factory until Stage3 integration.
-mod frontend {
-    pub use gpu_v2::frontend::*;
-}
-use gpu_v2::system::pixel::{quad_ingress, vliw_backend as backend};
-use gpu_v2::{framebuffer, texture};
-#[path = "../src/system/vliw_memory.rs"]
-mod memory_boundary;
+// Exercise the actual reusable boundary rather than recompiling its source.
 use gpu_v2::frontend::vliw_dma::{self as dma, Descriptor, Segment};
+use gpu_v2::system::pixel::{quad_ingress, vliw_backend as backend};
+use gpu_v2::system::vliw_memory as memory_boundary;
+use gpu_v2::{framebuffer, texture};
 use memory_boundary::*;
 use std::{
     collections::BTreeMap,

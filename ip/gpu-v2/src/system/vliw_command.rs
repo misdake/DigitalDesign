@@ -54,13 +54,13 @@ fn verilog_column(
         "`define GPU_V2_COMMAND_MAINTENANCE\n{numerical}\n`undef GPU_V2_COMMAND_MAINTENANCE\n"
     ));
     source.push_str(include_str!("command_processor.v"));
-    source.push_str(include_str!("command_dma.v"));
+    source.push_str(concat!(
+        "`define GPU_V2_COMMAND_TRANSPORT\n",
+        include_str!("command_dma.v"),
+        "\n`undef GPU_V2_COMMAND_TRANSPORT\n"
+    ));
     source.push_str(include_str!("ui_grid.v"));
-    let router = super::vliw_memory::RTL
-        .split("module gpu_vliw_memory #")
-        .next()
-        .ok_or("memory router")?;
-    source.push_str(router);
+    source.push_str(&super::vliw_memory::command_verilog());
     simulation_checks::lower(current_texture::packet_group(source)?)
 }
 
@@ -468,7 +468,8 @@ mod tests {
         .unwrap();
         assert!(!s.contains("module gpu_command_store"));
         assert!(!s.contains("module gpu_command_mesh("));
-        assert!(!s.contains("module gpu_vliw_memory #"));
+        // Selected-profile exclusions are checked after preprocessing by
+        // tests/transport_equivalence.py; raw source keeps generic alternatives.
         assert!(!s.contains("module gpu_vliw_dma"));
         assert!(s.contains("module gpu_command_dma("));
         for legacy in [

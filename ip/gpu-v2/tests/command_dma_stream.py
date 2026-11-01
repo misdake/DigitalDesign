@@ -37,6 +37,21 @@ gpu_vliw_memory_router router(.clk(clk),.reset(reset),
  .fb_w_request_ready(1'b0),.fb_w_data_ready(1'b0),.fb_w_response_valid(1'b0),.fb_w_response_last(1'b0),.fb_w_response_error(1'b0),
  .busy(router_busy),.fault(router_fault));
 reg[63:0]expected[0:511];reg allowed[0:511],seen[0:511];
+integer trace_fd=0;reg[2047:0]trace_path;
+initial if($value$plusargs("TRACE=%s",trace_path))trace_fd=$fopen(trace_path,"w");
+always @(posedge clk)if(!reset&&trace_fd)$fdisplay(trace_fd,
+ "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
+ {ce,stop,request_valid,request_ready,response_valid,response_last,response_error,response_bad},
+ {request_address,request_count}, {ro_request_valid,ro_request_ready,ro_response_valid,ro_response_last,ro_response_error},
+ {ro_address,ro_count},ro_data,{dma_we,dma_addr},dma_data,
+ {cache_done,cache_done_bank,work_done,mesh_begin,mesh_done,uniform_done,uniform_bank,idle,work_busy,fault,router_fault},
+ {dma.put,dma.issued,dma.retired,dma.rp,dma.rh,dma.cursor,dma.next_destination},
+ {dma.offer,dma.offer_cache,dma.offer_last,dma.oa,dma.od,dma.oc},
+ {dma.rk[0],dma.rk[1],dma.rl[0],dma.rl[1]},
+ {router.present,router.offer_owner,router.prefer_owner,router.rput,router.rhead,router.rb,router.ro_bad},
+ {router.r_owner[0],router.r_owner[1],router.r_count[0],router.r_count[1],router.r_error[0],router.r_error[1]},
+ {router.fused,router.fdata_done,router.fbeat,router.fb_write,router.fb_bad},
+ {cache_valid,cache_ready,work_valid,work_ready},work_source,{work_destination,work_size,work_blocks});
 integer mode=0,cycle=0,pi=0,pn=0,pa=0,missing_hold=0,requests=0,terminals=0,writes=0;
 integer cache_events=0,work_events=0,mesh_events=0,uniform_events=0,ce0writes=0,missing_checks=0;
 integer job=0,k,n,target,source,expected_writes=0;
@@ -56,13 +71,13 @@ task expect_copy;
 endtask
 always @(negedge clk)begin
  ce=cycle%5!=2;
- ro_request_ready=!active&&cycle%4!=1&&(mode!=5||stop);
+ ro_request_ready=!active&&cycle%4!=1&&((mode!=5)||stop);
  ro_response_valid=active&&cycle%3!=1&&missing_hold==0;
  ro_response_last=pi==pn-1;ro_response_error=0;ro_data=source_qword(pa/4+pi);
  if(mode==1)ro_response_last=pi==2;
  if(mode==2)ro_response_last=pi==pn;
  if(mode==3&&pi==3)begin ro_response_error=1;ro_response_last=0;end
- if(mode==4&&active&&pi==3)stop=1;
+ if((mode==4&&active&&pi==3)||(mode==8&&active&&pi==0)||(mode==9&&active&&pi==pn-1))stop=1;
  if(mode==5&&ro_request_valid&&!ro_request_ready)stop=1;
  if(cache_injected&&!cache_accepted)cache_valid=1;
  if(cache_accepted)cache_valid=0;
@@ -139,7 +154,7 @@ initial begin
    $fatal(1,"maximum mesh/interleaved job conservation");
   for(k=0;k<512;k=k+1)if(allowed[k]&&!seen[k])$fatal(1,"missing interleaved target RAM write %0d",k);
  end else if(mode==0)begin
-  job=1;expect_copy(264,'h1000,16);expect_copy(464,'h3000,16);launch('h1000,66,0,0,2);drain;
+  job=1;expect_copy(264,'h1000,16);expect_copy(464,'h3000,16);launch('h1000,66,0,0,2);if(mode==7)stop=1;drain;
   if(cache_events!=1||work_events!=1||requests!=2)$fatal(1,"cache insertion conservation");
   job=2;expect_copy(280,'h1020,8);launch('h1020,70,0,0,1);drain;
   job=3;expect_copy(320,'h1000,16);launch('h1000,80,0,0,2);drain;
@@ -149,9 +164,9 @@ initial begin
    $fatal(1,"valid DMA conservation writes%0d expected%0d done%0d mesh%0d uniform%0d",writes,expected_writes,work_events,mesh_events,uniform_events);
   for(k=0;k<512;k=k+1)if(allowed[k]&&!seen[k])$fatal(1,"missing target RAM write %0d",k);
  end else begin
-  expect_copy(264,'h1000,mode==1?2:mode==2?15:mode==3||mode==4?3:0);
-  launch('h1000,66,0,0,2);drain;
-  if(requests!=1||terminals!=1||writes!=expected_writes||cache_events||work_events||mesh_events||uniform_events)
+  expect_copy(264,'h1000,mode==1?2:mode==2?15:mode==3||mode==4?3:mode==9?15:0);
+  launch('h1000,66,0,0,2);if(mode==7)stop=1;drain;
+  if(requests!=(mode==7?0:1)||terminals!=(mode==7?0:1)||writes!=expected_writes||cache_events||work_events||mesh_events||uniform_events)
    $fatal(1,"failed/stopped transaction published or escaped req%0d term%0d writes%0d expected%0d",requests,terminals,writes,expected_writes);
   if(mode<=3&&(!fault||!router_fault))$fatal(1,"framing/error did not fault");
   if(mode==2&&missing_checks<3)$fatal(1,"missing LAST hold not exercised");
@@ -167,22 +182,26 @@ endmodule
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--export', type=Path, help='Actual complete command factory export; legal/abort cases only')
+    parser.add_argument('--no-monitors', action='store_true')
+    parser.add_argument('--trace', action='store_true')
     args = parser.parse_args(); out = args.output.resolve(); out.mkdir(parents=True, exist_ok=False)
-    identities = {source.name: hashlib.sha256(source.read_bytes()).hexdigest() for source in SOURCES}
-    for source in SOURCES: (out / source.name).write_bytes(source.read_bytes())
+    sources = [args.export.resolve()] if args.export else SOURCES
+    identities = {source.name: hashlib.sha256(source.read_bytes()).hexdigest() for source in sources}
+    for source in sources: (out / source.name).write_bytes(source.read_bytes())
     (out / 'tb.v').write_text(TB)
     def run(name, command):
         with (out / (name + '.log')).open('w') as log:
             result = subprocess.run(list(map(str, command)), cwd=out, stdout=log, stderr=subprocess.STDOUT, timeout=20)
         assert result.returncode == 0, (out / (name + '.log')).read_text(errors='replace')[-1800:]
-    run('compile', [os.environ['IVERILOG_EXE'], '-g2012', '-s', 'tb', '-o', out / 'sim.vvp',
-                    *[out / source.name for source in SOURCES], out / 'tb.v'])
+    run('compile', [os.environ['IVERILOG_EXE'], *(['-DSYNTHESIS'] if args.no_monitors else []), '-g2012', '-s', 'tb', '-o', out / 'sim.vvp',
+                    *[out / source.name for source in sources], out / 'tb.v'])
     cases = []
-    for mode in range(7):
-        run(f'run-{mode}', [os.environ['VVP_EXE'], out / 'sim.vvp', f'+MODE={mode}'])
+    for mode in ([0, 4, 5, 6, 7, 8, 9] if args.export else range(10)):
+        run(f'run-{mode}', [os.environ['VVP_EXE'], out / 'sim.vvp', f'+MODE={mode}', *([f'+TRACE={out / f"mode-{mode}.trace"}'] if args.trace else [])])
         cases += [line for line in (out / f'run-{mode}.log').read_text().splitlines() if line.startswith('PASS ')]
-    assert all(hashlib.sha256(source.read_bytes()).hexdigest() == identities[source.name] for source in SOURCES), 'live source changed'
-    receipt = dict(status='pass', sources=identities, test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), cases=cases)
+    assert all(hashlib.sha256(source.read_bytes()).hexdigest() == identities[source.name] for source in sources), 'live source changed'
+    receipt = dict(status='pass', command=bool(args.export), monitors=not args.no_monitors, sources=identities, test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), cases=cases)
     (out / 'receipt.json').write_text(json.dumps(receipt, indent=2)); print(json.dumps(receipt))
 
 

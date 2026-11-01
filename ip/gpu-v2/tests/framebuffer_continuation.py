@@ -36,7 +36,11 @@ def main():
     peer=a.peer.resolve();load_contract(peer);sources=[]
     for n in ['bridge.v','combination.v','controller.v','cpu_v3_memory_arbiter.v','pins.v','shared_port.v','ports.vh']:
         d=out/n;d.write_bytes((peer/n).read_bytes());sources.append(d)
-    gpu=a.gpu.read_text()
+    # Resolve the factory's bounded source profiles before extracting leaves.
+    # A leaf cut from raw text loses its owning define/undef scope.
+    pp=out/'gpu-preprocessed.v'
+    run([os.environ['IVERILOG_EXE'],'-g2012','-E','-o',pp,a.gpu.resolve()],out,'preprocess-gpu')
+    gpu=pp.read_text()
     def module(name):
         i=re.search(r'\bmodule\s+'+name+r'(?=\s*[(#])',gpu).start()
         return gpu[i:gpu.index('endmodule',i)+9]
@@ -44,7 +48,7 @@ def main():
         src=(a.baseline/n) if a.baseline and n=='framebuffer_tdp_cache.v' else PIXEL/n
         d=out/n;d.write_text(module(m) if a.release else src.read_text());sources.append(d)
     src=(a.baseline/'vliw_memory.v') if a.baseline else ROOT/'ip/gpu-v2/src/system/vliw_memory.v'
-    d=out/'router.v';d.write_text(module('gpu_vliw_memory_router') if a.release else src.read_text().split('// Standalone factory:')[0]);sources.append(d)
+    d=out/'router.v';d.write_text(module('gpu_vliw_memory_router') if a.release else src.read_text());sources.append(d)
     d=out/'shared.v';d.write_text(module('gpu_v2_final_rop_bank'));sources.append(d)
     tb=TB.replace('@PAUSE@',str(int(a.pause))).replace('@DW@',str(int(not a.color_only))).replace('@START@',str(480 if a.refresh_boundary else 0)).replace('@NWRITE@',str(2 if a.color_only else 4))
     if a.release:
@@ -54,6 +58,9 @@ def main():
         ui_gate=".ui_lower_ready(1'b1)," if 'ui_lower_ready' in (out/'framebuffer_tdp_cache.v').read_text() else ".ui_cmd_half(1'b0),"
         tb=tb.replace('.clk(clk),.reset(reset),.ce(ce),.commit_allow',
             ".ui_active(1'b0),.ui_cmd_valid(1'b0),.ui_cmd_write(1'b0),"+ui_gate+".ui_tile(9'd0),.ui_pixel_valid(1'b0),.ui_pixel_half(1'b0),.ui_pixel_word(5'd0),.ui_pixels(64'd0),.clk(clk),.reset(reset),.ce(ce),.commit_allow",1)
+    if 'input copy_active' in (out/'framebuffer_tdp_cache.v').read_text():
+        tb=tb.replace('.clk(clk),.reset(reset),.ce(ce),.commit_allow',
+            ".copy_active(1'b0),.copy_address(14'd0),.clk(clk),.reset(reset),.ce(ce),.commit_allow",1)
     (out/'tb.v').write_text(tb)
     compile_files=[p for p in sources if p.suffix=='.v']
     run([os.environ['IVERILOG_EXE'],'-g2012','-s','tb','-o',out/'sim.vvp',

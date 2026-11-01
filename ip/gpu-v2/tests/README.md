@@ -74,6 +74,36 @@ mesh case queues a second job before retirement and inserts command-cache DMA
 between payload bursts. All128 payload qwords and both independent destinations
 are checked; each replay has a5,000-clock watchdog and a20-second process limit.
 
+`command_dma_stream.py --export <command.v>` and
+`framebuffer_router_stream.py --export <command.v>` bind the complete actual
+command factory rather than raw generic leaves. `--no-monitors` selects the
+same synthesis datapath; `--trace` saves wall-edge ports, return tags, cursors
+and completion events. DMA includes stop before an offer, while presented,
+before the first response, during data and on the final response. Earlier
+writes survive; no stopped operation publishes success. The generic entry
+retains malformed/error rejection cases.
+
+`transport_profiles.py --export <command.v> --output <new-directory>` checks
+command monitor failures and monitor-free ownership on error-only, real/early/
+missing/late LAST, orphan/wrong-direction responses, invalid descriptors,
+underprovided writes, premature ACKs and texture overrun. It also fills both RO
+credits with DMA/texture owners, holds a third offer, and accepts it on the old
+owner's terminal. `--generic --export <memory.v> --dma <command_dma.v>` retains
+the checked controls, including optional CONTROL=0/1. Each case has a250-clock
+watchdog and20-second process limit; compile processes have a30-second limit.
+
+`transport_equivalence.py --before <frozen-exports> --after <exports>
+--output <new-directory> --traces` compares every complete ordered preprocessed
+stream in monitor-on/off modes, verifies closed private scopes and public-port
+independence, and checks every qualified saved trace byte-for-byte. The input
+directories include native/portable command and generic DMA/memory exports;
+additional full/SDRAM/backend exports are compared too. Selected-profile
+exclusions run after preprocessing rather than rejecting inactive generic
+source branches. All eight exclusions have active/inactive declaration controls
+in both monitor modes, including a whitespace-formatted far_z declaration.
+The framebuffer continuation fixture likewise preprocesses
+its actual GPU export before extracting source-profile leaves.
+
 The ignored `texture_registered_return` Rust target exports the current command
 cache and connects its native DO directly to the production two-edge Color
 consumer. Eight bounded cases check native/portable RAM, one/two mip groups,

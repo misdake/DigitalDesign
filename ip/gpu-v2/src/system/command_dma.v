@@ -1,4 +1,20 @@
 // Two logical DMA jobs, independent request/return cursors, no payload storage.
+// Private factory scope: command peers are monitored; generic peers are checked.
+`ifdef GPU_V2_COMMAND_TRANSPORT
+ `define GPU_V2_DMA_ERROR 1'b0
+ `define GPU_V2_DMA_BAD 1'b0
+ `define GPU_V2_DMA_CLEAR begin end
+ `ifdef SYNTHESIS
+  `define GPU_V2_DMA_FAULT begin end
+ `else
+  `define GPU_V2_DMA_FAULT begin if(!reset&&((1)!=0))$fatal(1,"GPU contract: fault");end
+ `endif
+`else
+ `define GPU_V2_DMA_ERROR response_error
+ `define GPU_V2_DMA_BAD response_bad
+ `define GPU_V2_DMA_CLEAR fault<=0;
+ `define GPU_V2_DMA_FAULT fault<=1;
+`endif
 module gpu_command_dma(
  input clk,reset,ce,stop,
  input cache_valid,output cache_ready,input[21:0]cache_source,input cache_bank,
@@ -23,7 +39,7 @@ module gpu_command_dma(
  wire[1:0]returns=rp-rh;
  localparam IDLE=0,REQUEST=1,RESPONSE=2;
  wire[1:0]state=returns!=0?RESPONSE:offer?REQUEST:IDLE;
- wire terminal=response_valid&&(response_last||response_error);
+ wire terminal=response_valid&&(response_last||`GPU_V2_DMA_ERROR);
  wire take=offer&&request_ready;
  wire pop=returns!=0&&terminal;
  wire build=!offer&&returns<2&&!stop&&!fault;
@@ -35,12 +51,12 @@ module gpu_command_dma(
   (jobs==1||(jm[!retired[0]]&&jpage[!retired[0]]==jpage[retired[0]]));
  assign cache_ready=build&&cache_valid;
  assign request_valid=offer&&!reset;assign request_address={oa,4'd0};assign request_count=oc;
- assign dma_we=returns!=0&&response_valid&&!response_error&&!response_bad&&!fault&&!stop;
+ assign dma_we=returns!=0&&response_valid&&!`GPU_V2_DMA_ERROR&&!`GPU_V2_DMA_BAD&&!fault&&!stop;
  assign dma_addr=cursor;assign dma_data=response_data;
  assign idle=!offer&&returns==0&&jobs==0;
  always @(posedge clk)begin
   if(reset)begin
-   put<=0;issued<=0;retired<=0;rp<=0;rh<=0;offer<=0;cursor<=0;fault<=0;
+   put<=0;issued<=0;retired<=0;rp<=0;rh<=0;offer<=0;cursor<=0;`GPU_V2_DMA_CLEAR
    work_done<=0;mesh_begin<=0;mesh_done<=0;mesh_begin_slot<=0;mesh_done_slot<=0;
    uniform_done<=0;uniform_bank<=0;cache_done<=0;cache_done_bank<=0;
    js[0]<=0;js[1]<=0;jd[0]<=0;jd[1]<=0;jm[0]<=0;jm[1]<=0;jpage[0]<=0;jpage[1]<=0;
@@ -76,11 +92,11 @@ module gpu_command_dma(
    if(dma_we)cursor<=cursor+1'b1;
    if(take&&returns==0)cursor<=od;
    if(response_valid&&returns!=0)begin
-    if(response_bad||response_error)fault<=1;
+    if(`GPU_V2_DMA_BAD||`GPU_V2_DMA_ERROR)`GPU_V2_DMA_FAULT
     if(terminal)begin
      rh<=rh+1'b1;
      if(returns>1)cursor<={next_destination,2'd0};else if(take)cursor<=od;
-     if(!stop&&!fault&&!response_bad&&!response_error)begin
+     if(!stop&&!fault&&!`GPU_V2_DMA_BAD&&!`GPU_V2_DMA_ERROR)begin
       if(rk[rh[0]])begin cache_done<=1;cache_done_bank<=cursor[4];end
       else if(rl[rh[0]])begin
        work_done<=1;retired<=retired+1'b1;
@@ -103,4 +119,15 @@ module gpu_command_dma(
   if(cache_valid&&cache_ready&&(|cache_source[5:0]))$fatal(1,"CP command page is not 128-byte aligned");
  end
 `endif
+`ifdef GPU_V2_COMMAND_TRANSPORT
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((state==RESPONSE&&response_valid)&&(response_error)))$fatal(1,"GPU contract: response_error");
+ always @(posedge clk)if(!reset&&((state==RESPONSE&&response_valid)&&(response_bad)))$fatal(1,"GPU contract: response_bad");
+`endif
+ always @(posedge clk)fault<=0;
+`endif
 endmodule
+`undef GPU_V2_DMA_ERROR
+`undef GPU_V2_DMA_BAD
+`undef GPU_V2_DMA_CLEAR
+`undef GPU_V2_DMA_FAULT

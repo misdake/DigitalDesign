@@ -10,6 +10,12 @@ pub fn verilog() -> String {
     format!("{}\n{RTL}", dma::RTL)
 }
 
+// The source owns the command router profile and excludes its standalone wrapper.
+// This private scope must not be selected by the public command-port macro.
+pub(super) fn command_verilog() -> String {
+    format!("`define GPU_V2_COMMAND_TRANSPORT\n{RTL}\n`undef GPU_V2_COMMAND_TRANSPORT\n")
+}
+
 pub const BACKEND_MODULE: &str = "gpu_v2_vliw_backend_three_port";
 /// Replace the selected backend's complete texture/FB transport, rather than
 /// adding another arbiter after it. Input is a generated, dependency-closed

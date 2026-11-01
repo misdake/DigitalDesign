@@ -5,14 +5,6 @@
 //! assertions execute on the original sampling edges, including wall-time RAM
 //! returns. Both simulation and synthesis use the same specialized datapath.
 
-fn once(s: &mut String, old: &str, new: &str) -> Result<(), String> {
-    if s.matches(old).count() != 1 {
-        return Err(format!("Simulation monitor anchor changed: {old}"));
-    }
-    *s = s.replacen(old, new, 1);
-    Ok(())
-}
-
 fn identifier(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'$'
 }
@@ -109,35 +101,6 @@ fn register(s: &mut String, name: &str, abort: bool) -> Result<(), String> {
     Ok(())
 }
 
-// Inputs remain in the interface for compatibility, but error qualifiers never
-// gate the production write/advance path. The sampling condition is explicit.
-fn peer_error(s: &mut String, name: &str, good: bool, event: &str) -> Result<(), String> {
-    let header = s.find(");").ok_or("Module port boundary")? + 2;
-    let body = s[header..].to_owned();
-    let value = if good { "1'b1" } else { "1'b0" };
-    let mut rewritten = body.clone();
-    for (p, _) in body
-        .match_indices(name)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-    {
-        let end = p + name.len();
-        if (p == 0 || !identifier(body.as_bytes()[p - 1]))
-            && (end == body.len() || !identifier(body.as_bytes()[end]))
-        {
-            rewritten.replace_range(p..end, value);
-        }
-    }
-    s.replace_range(header.., &rewritten);
-    monitor(
-        s,
-        &format!("({event})&&{}({name})", if good { "!" } else { "" }),
-        name,
-    );
-    Ok(())
-}
-
 fn specialize(name: &str, s: &mut String) -> Result<(), String> {
     match name {
         "gpu_v2_vliw_backend_three_port" => register(s, "stopped", true)?,
@@ -153,42 +116,6 @@ fn specialize(name: &str, s: &mut String) -> Result<(), String> {
         }
         "gpu_v2_texture_runtime_color_checked" => register(s, "fault", false)?,
         "gpu_v2_vliw_quad_pool" => register(s, "fault", false)?,
-        "gpu_command_dma" => {
-            peer_error(
-                s,
-                "response_error",
-                false,
-                "state==RESPONSE&&response_valid",
-            )?;
-            peer_error(s, "response_bad", false, "state==RESPONSE&&response_valid")?;
-            register(s, "fault", false)?;
-        }
-        "gpu_vliw_memory_router" => {
-            // Keep ownership/last and request progress, not validation feedback.
-            peer_error(s, "ro_response_error", false, "ro_response_valid")?;
-            peer_error(s, "fb_r_response_error", false, "fb_r_response_valid")?;
-            peer_error(s, "fb_w_response_error", false, "fb_w_response_valid")?;
-            register(s, "fault", false)?;
-            register(s, "ro_bad", false)?;
-            register(s, "fb_bad", false)?;
-            check(s, "ro_malformed", "1'b0", "1'b1", false)?;
-            check(s, "f_malformed", "1'b0", "1'b1", false)?;
-            once(s, "&&rb<16&&!reset", "&&!reset")?;
-            // Request legality is already an explicit local predicate. Capture
-            // its sampled value only in the simulation monitor.
-            let sites = assignments(s, "ro_legal", true);
-            for (a, b, expression) in sites.into_iter().rev() {
-                let extra = if expression == "0" {
-                    String::new()
-                } else {
-                    format!(
-                        "\n`ifndef SYNTHESIS\n if(!({expression}))$fatal(1,\"GPU contract: RO request\");\n`endif\n"
-                    )
-                };
-                s.replace_range(a..b, &format!("begin ro_legal<=1;{extra}end "));
-            }
-            check(s, "fb_legal", "1'b1", "framebuffer_request_valid", true)?;
-        }
         _ => (),
     }
     Ok(())

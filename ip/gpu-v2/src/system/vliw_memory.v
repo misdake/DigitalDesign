@@ -1,5 +1,41 @@
 // Transaction boundary only: no compute CE, payload FIFO or SDRAM policy.
 // Geometry and texture share RO; framebuffer read/write use independent masters.
+// A private command export observes diagnostics without changing transport.
+// Generic factories retain error terminals, local rejects and sticky faults.
+`ifdef GPU_V2_COMMAND_TRANSPORT
+ `define GPU_V2_ROUTER_RO_ERROR 1'b0
+ `define GPU_V2_ROUTER_FR_ERROR 1'b0
+ `define GPU_V2_ROUTER_FW_ERROR 1'b0
+ `define GPU_V2_ROUTER_FB_LEGAL 1'b1
+ `define GPU_V2_ROUTER_RO_BAD 1'b0
+ `define GPU_V2_ROUTER_FB_BAD 1'b0
+ `define GPU_V2_ROUTER_READ_WINDOW
+ `define GPU_V2_ROUTER_CLEAR(name) begin end
+ `define GPU_V2_ROUTER_RESET_LEGAL begin ro_legal<=1;end
+ `ifdef SYNTHESIS
+  `define GPU_V2_ROUTER_FAULT(name) begin end
+  `define GPU_V2_ROUTER_LEGAL(expr) begin ro_legal<=1;end
+ `else
+  `define GPU_V2_ROUTER_FAULT(name) begin if(!reset&&((1)!=0))$fatal(1,`"GPU contract: name`");end
+  `define GPU_V2_ROUTER_LEGAL(expr) begin ro_legal<=1;if(!(expr))$fatal(1,"GPU contract: RO request");end
+ `endif
+`else
+ `define GPU_V2_ROUTER_RO_ERROR ro_response_error
+ `define GPU_V2_ROUTER_FR_ERROR fb_r_response_error
+ `define GPU_V2_ROUTER_FW_ERROR fb_w_response_error
+ `define GPU_V2_ROUTER_FB_LEGAL legal_byte_sector(framebuffer_request_address)
+ `define GPU_V2_ROUTER_RO_BAD `GPU_V2_ROUTER_RO_FRAMING
+ `define GPU_V2_ROUTER_FB_BAD `GPU_V2_ROUTER_FB_FRAMING
+ `define GPU_V2_ROUTER_READ_WINDOW &&rb<16
+ `define GPU_V2_ROUTER_CLEAR(name) name<=0;
+ `define GPU_V2_ROUTER_FAULT(name) name<=1;
+ `define GPU_V2_ROUTER_RESET_LEGAL ro_legal<=0;
+ `define GPU_V2_ROUTER_LEGAL(expr) ro_legal<=expr;
+`endif
+`define GPU_V2_ROUTER_RO_FRAMING ro_response_valid&&!`GPU_V2_ROUTER_RO_ERROR&& \
+  (rb>=ro_beats||(ro_response_last!=(rb==ro_beats-1'b1)))
+`define GPU_V2_ROUTER_FB_FRAMING (!fb_write&&fv&&!fe&&(fl!=(fbeat==15)))|| \
+  (fb_write&&((wbeat&&!framebuffer_write_valid)||(fv&&!fe&&(!fl||(fdata_done==0&&!(wbeat&&fbeat==15))))))
 module gpu_vliw_memory_router #(parameter CONTROL=0)(
  input clk,reset,
  input geometry_request_valid,output geometry_request_ready,
@@ -35,7 +71,7 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
  // Descriptor credit only. The cache owns address order and the sole BSRAM Q;
  // no payload or second copy of an address is stored at this boundary.
  reg[1:0]fused,f_error,fdata_done;reg fb_write;reg[3:0]fbeat;
- wire fb_legal=legal_byte_sector(framebuffer_request_address);
+ wire fb_legal=`GPU_V2_ROUTER_FB_LEGAL;
  wire fcapacity=fused<2&&(fused==0||framebuffer_request_write==fb_write);
  function legal_byte_sector;
   input[31:0]a;
@@ -73,9 +109,8 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
  wire[4:0]ro_beats=r_count[rhead[0]]==3?5'd16:r_count[rhead[0]]==1?5'd8:5'd4;
  wire local_ro_error=rused!=0&&r_error[rhead[0]];
  wire rv=rused!=0&&(local_ro_error||ro_response_valid);
- wire ro_terminal=local_ro_error||(ro_response_valid&&(ro_response_last||ro_response_error));
- wire ro_malformed=ro_response_valid&&!ro_response_error&&
-  (rb>=ro_beats||(ro_response_last!=(rb==ro_beats-1'b1)));
+ wire ro_terminal=local_ro_error||(ro_response_valid&&(ro_response_last||`GPU_V2_ROUTER_RO_ERROR));
+ wire ro_malformed=`GPU_V2_ROUTER_RO_BAD;
  assign ro_request_valid=present&&rused<2&&ro_legal&&!reset;
  assign ro_address=ra;assign ro_count=rc;
  wire offer_ready=present&&rused<2&&(ro_legal?ro_request_ready:1'b1)&&!reset;
@@ -84,16 +119,16 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
  assign control_request_ready=CONTROL&&offer_ready&&offer_owner==2;
  assign geometry_response_valid=!reset&&owner==0&&rv;
  assign geometry_response_last=local_ro_error||ro_response_last;
- assign geometry_response_error=local_ro_error||ro_response_error;
- assign geometry_response_bad=geometry_response_valid&&(local_ro_error||ro_response_error||ro_bad||ro_malformed);
+ assign geometry_response_error=local_ro_error||`GPU_V2_ROUTER_RO_ERROR;
+ assign geometry_response_bad=geometry_response_valid&&(local_ro_error||`GPU_V2_ROUTER_RO_ERROR||ro_bad||ro_malformed);
  assign geometry_response_data=ro_data;
- assign texture_read_valid=rused!=0&&owner==1&&ro_response_valid&&!ro_response_error&&rb<16&&!reset;
+ assign texture_read_valid=rused!=0&&owner==1&&ro_response_valid&&!`GPU_V2_ROUTER_RO_ERROR`GPU_V2_ROUTER_READ_WINDOW&&!reset;
  assign texture_read_index=rb[3:0];assign texture_read_data=ro_data;
  assign texture_complete=!reset&&owner==1&&rused!=0&&ro_terminal;
- assign texture_ok=!local_ro_error&&!ro_response_error&&!ro_bad&&!ro_malformed;
+ assign texture_ok=!local_ro_error&&!`GPU_V2_ROUTER_RO_ERROR&&!ro_bad&&!ro_malformed;
  assign control_response_valid=CONTROL&&!reset&&owner==2&&rv;
  assign control_response_last=local_ro_error||ro_response_last;
- assign control_response_error=local_ro_error||ro_response_error;
+ assign control_response_error=local_ro_error||`GPU_V2_ROUTER_RO_ERROR;
  assign control_response_data=ro_data;
 
  // Consecutive sectors may be accepted before the preceding terminal response.
@@ -110,12 +145,11 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
  wire local_fb_error=fused!=0&&f_error[0];
  wire fv=fb_write?fb_w_response_valid:fb_r_response_valid;
  wire fl=fb_write?fb_w_response_last:fb_r_response_last;
- wire fe=fb_write?fb_w_response_error:fb_r_response_error;
+ wire fe=fb_write?`GPU_V2_ROUTER_FW_ERROR:`GPU_V2_ROUTER_FR_ERROR;
  wire f_terminal=local_fb_error||(fused!=0&&fv&&(fl||fe));
  wire wbeat=fused!=0&&!local_fb_error&&fb_write&&fb_w_data_ready&&!reset;
  wire rbeat=fused!=0&&!local_fb_error&&!fb_write&&fv&&!fe&&!reset;
- wire f_malformed=(!fb_write&&fv&&!fe&&(fl!=(fbeat==15)))||
-  (fb_write&&((wbeat&&!framebuffer_write_valid)||(fv&&!fe&&(!fl||(fdata_done==0&&!(wbeat&&fbeat==15))))));
+ wire f_malformed=`GPU_V2_ROUTER_FB_BAD;
  assign framebuffer_write_ready=wbeat;
  assign framebuffer_read_valid=rbeat;
  assign framebuffer_read_data=fb_r_data;
@@ -124,32 +158,32 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
  assign busy=present||rused!=0||fused!=0;
  always @(posedge clk)begin
   if(reset)begin
-   present<=0;rput<=0;rhead<=0;offer_owner<=0;prefer_owner<=0;ro_legal<=0;
-   ra<=0;rc<=0;rb<=0;ro_bad<=0;fb_bad<=0;fault<=0;
+   present<=0;rput<=0;rhead<=0;offer_owner<=0;prefer_owner<=0;`GPU_V2_ROUTER_RESET_LEGAL
+   ra<=0;rc<=0;rb<=0;`GPU_V2_ROUTER_CLEAR(ro_bad) `GPU_V2_ROUTER_CLEAR(fb_bad) `GPU_V2_ROUTER_CLEAR(fault)
    fused<=0;fdata_done<=0;fbeat<=0;fb_write<=0;f_error<=0;
   end else begin
    if(!present&&rused<2&&(geometry_request_valid||texture_request_valid||(CONTROL&&control_request_valid)))begin
     present<=1;offer_owner<=choose_owner;
     case(choose_owner)
-     1:begin ra<=texture_request_address[22:1];rc<=3;ro_legal<=legal_byte_sector(texture_request_address);end
-     2:begin ra<=control_request_address;rc<=control_request_count;ro_legal<=legal_halfword_burst(control_request_address,control_request_count);end
-     default:begin ra<=geometry_request_address;rc<=geometry_request_count;ro_legal<=legal_halfword_burst(geometry_request_address,geometry_request_count);end
+     1:begin ra<=texture_request_address[22:1];rc<=3;`GPU_V2_ROUTER_LEGAL(legal_byte_sector(texture_request_address)) end
+     2:begin ra<=control_request_address;rc<=control_request_count;`GPU_V2_ROUTER_LEGAL(legal_halfword_burst(control_request_address,control_request_count)) end
+     default:begin ra<=geometry_request_address;rc<=geometry_request_count;`GPU_V2_ROUTER_LEGAL(legal_halfword_burst(geometry_request_address,geometry_request_count)) end
     endcase
    end
    if(offer_ready)begin
     present<=0;r_owner[rput[0]]<=offer_owner;r_count[rput[0]]<=rc;r_error[rput[0]]<=!ro_legal;rput<=rput+1'b1;
     if(CONTROL)prefer_owner<=offer_owner==2?2'd0:offer_owner+1'b1;
     else prefer_owner<=offer_owner==0?2'd1:2'd0;
-    if(!ro_legal)fault<=1;
+    if(!ro_legal)`GPU_V2_ROUTER_FAULT(fault)
    end
    if(rused!=0&&rv)begin
-    if(ro_malformed||ro_response_error)begin fault<=1;ro_bad<=1;end
-    if(ro_terminal)begin rhead<=rhead+1'b1;rb<=0;ro_bad<=0;end
+    if(ro_malformed||`GPU_V2_ROUTER_RO_ERROR)begin `GPU_V2_ROUTER_FAULT(fault) `GPU_V2_ROUTER_FAULT(ro_bad) end
+    if(ro_terminal)begin rhead<=rhead+1'b1;rb<=0;`GPU_V2_ROUTER_CLEAR(ro_bad) end
     else if(rb!=31)rb<=rb+1'b1;
    end
    if(f_accept)begin
     if(fused==0)fb_write<=framebuffer_request_write;
-    if(!fb_legal)fault<=1;
+    if(!fb_legal)`GPU_V2_ROUTER_FAULT(fault)
    end
    case({f_accept,f_terminal})
     2'b10:begin
@@ -167,17 +201,17 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
     2'b10:fdata_done<=fdata_done+1'b1;
     2'b01:fdata_done<=fdata_done-1'b1;
    endcase
-   if(fused!=0&&f_malformed)begin fault<=1;fb_bad<=1;end
-   if(fused!=0&&fv&&fe)fault<=1;
+   if(fused!=0&&f_malformed)begin `GPU_V2_ROUTER_FAULT(fault) `GPU_V2_ROUTER_FAULT(fb_bad) end
+   if(fused!=0&&fv&&fe)`GPU_V2_ROUTER_FAULT(fault)
    if(f_terminal)begin
-    fb_bad<=0;
+    `GPU_V2_ROUTER_CLEAR(fb_bad)
     if(local_fb_error)fbeat<=0;
     // Completion never resets the payload cursor; the following write
     // sector may already be supplying data from the same maintenance phase.
    end
-   if(ro_response_valid&&rused==0)fault<=1;
+   if(ro_response_valid&&rused==0)`GPU_V2_ROUTER_FAULT(fault)
    if((fb_r_response_valid&&(fused==0||fb_write))||
-      (fb_w_response_valid&&(fused==0||!fb_write)))fault<=1;
+      (fb_w_response_valid&&(fused==0||!fb_write)))`GPU_V2_ROUTER_FAULT(fault)
   end
  end
 `ifndef SYNTHESIS
@@ -197,8 +231,38 @@ module gpu_vliw_memory_router #(parameter CONTROL=0)(
    $fatal(1,"framebuffer direction changed before drain");
  end
 `endif
+`ifdef GPU_V2_COMMAND_TRANSPORT
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((ro_response_valid)&&(ro_response_error)))$fatal(1,"GPU contract: ro_response_error");
+ always @(posedge clk)if(!reset&&((fb_r_response_valid)&&(fb_r_response_error)))$fatal(1,"GPU contract: fb_r_response_error");
+ always @(posedge clk)if(!reset&&((fb_w_response_valid)&&(fb_w_response_error)))$fatal(1,"GPU contract: fb_w_response_error");
+`endif
+ always @(posedge clk)fault<=0;
+ always @(posedge clk)ro_bad<=0;
+ always @(posedge clk)fb_bad<=0;
+`ifndef SYNTHESIS
+ always @(posedge clk)if(!reset&&((1'b1)&&(`GPU_V2_ROUTER_RO_FRAMING)))$fatal(1,"GPU contract: ro_malformed");
+ always @(posedge clk)if(!reset&&((1'b1)&&(`GPU_V2_ROUTER_FB_FRAMING)))$fatal(1,"GPU contract: f_malformed");
+ always @(posedge clk)if(!reset&&((framebuffer_request_valid)&&(!(legal_byte_sector(framebuffer_request_address)))))$fatal(1,"GPU contract: fb_legal");
+`endif
+`endif
 endmodule
 
+`undef GPU_V2_ROUTER_RO_ERROR
+`undef GPU_V2_ROUTER_FR_ERROR
+`undef GPU_V2_ROUTER_FW_ERROR
+`undef GPU_V2_ROUTER_FB_LEGAL
+`undef GPU_V2_ROUTER_RO_BAD
+`undef GPU_V2_ROUTER_FB_BAD
+`undef GPU_V2_ROUTER_READ_WINDOW
+`undef GPU_V2_ROUTER_CLEAR
+`undef GPU_V2_ROUTER_FAULT
+`undef GPU_V2_ROUTER_RESET_LEGAL
+`undef GPU_V2_ROUTER_LEGAL
+`undef GPU_V2_ROUTER_RO_FRAMING
+`undef GPU_V2_ROUTER_FB_FRAMING
+
+`ifndef GPU_V2_COMMAND_TRANSPORT
 // Standalone factory: frozen geometry loader plus the three-master boundary.
 module gpu_vliw_memory #(parameter CONTROL=0)(
  input clk,reset,geometry_abort,
@@ -298,3 +362,5 @@ module gpu_vliw_memory #(parameter CONTROL=0)(
  .busy(router_busy),
  .fault(fault));
 endmodule
+
+`endif

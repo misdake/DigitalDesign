@@ -964,6 +964,15 @@ state transitions; synthesis removes only the monitors. Normal backpressure
 and explicit abort remain functional. See
 [command diagnostics](/ip/gpu-v2/docs/commands.md#diagnostics-cancellation-and-scope).
 
+The command DMA and memory router also own their passive policy in their
+Verilog sources. Their private factory scope preserves the same request/return
+state machines, two DMA job/return slots, two ordered RO tags and two
+same-direction framebuffer descriptors. It changes neither credits nor
+arbitration. Offered requests survive pause and stop until acceptance;
+accepted owners drain through actual LAST. Final write data and terminal ACK
+remain separate. The router factory selects its source without a module-tail
+string cut. See [memory ownership](/ip/gpu-v2/docs/memory.md#request-data-and-terminal-ownership).
+
 The `rc_raster`, `rc_lod` and `rc_compute` leaves own their command-profile
 observation policy behind `GPU_V2_COMMAND_PORTS`. Raster has three diagnostic
 write sites (bits 1/2/3), LOD one (bit 0), and Compute four (bits 0/3/1/2).
