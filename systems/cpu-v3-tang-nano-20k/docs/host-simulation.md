@@ -76,13 +76,43 @@ input; regain retries immediately. No automatic switch to another slot occurs.
 | A / B / X / Y | Cross / Circle / Square / Triangle |
 
 The mapped semantic button mask is inverted into active-low bytes. Reserved
-XInput button bits are ignored. Each signed 16-bit stick axis maps to an unsigned 8-bit
-axis with zero centered at 128. X increases right; Y is inverted before
-quantization so up produces a smaller raw Y. Endpoint arithmetic widens before
-negating `i16::MIN`. The adapter adds no second stick deadzone: the existing RCC
-calibration/radial processing remains authoritative. The software sample uses
-analog ID `0x73` and marker `0x5a`; these identify the existing format, not a serial reply.
-See Microsoft's [field contract](https://learn.microsoft.com/en-us/windows/win32/api/xinput/ns-xinput-xinput_gamepad).
+XInput button bits are ignored. The software sample uses analog ID `0x73` and
+marker `0x5a`; these identify the existing format, not a serial reply.
+
+### Circular source to shared DS2 geometry
+
+The adapter expands circular stick travel into the square domain expected by the
+existing RCC `stick_read`; UI, gamepad and demo camera keep that same DS2 code.
+Application source and Device5 ABI remain common to physical DS2 and XInput.
+For `u=(X,-Y)/32768` in RCC's right/down convention, let `r=length(u)` and
+`m=max(abs(u.x),abs(u.y))`. The adapter applies:
+
+```text
+v = 0                         when m=0
+v = u * min(r,1) / m          otherwise
+```
+
+The shared forward square-ray geometry maps `v` back to the original direction
+and radius `min(r,1)`, before application dead zones. Out-of-circle source points
+saturate radius at 1 without changing direction. This is a geometry inverse, not
+an inverse of dead-zone suppression or outer saturation.
+
+Expansion precedes the original signed 16-bit-to-byte offset/truncation. X increases
+right; Y is inverted before quantization so up produces a smaller raw Y. Zero
+maps to 128, negative and positive endpoints remain 0 and 255, and every cardinal
+axis value retains its original byte conversion. Endpoint arithmetic widens
+before negating `i16::MIN`. For example, `(23170,23170)` becomes DS2 bytes
+`(255,0)`; default RCC processing gives approximately `(0.707,-0.707)`.
+
+The default per-axis calibration is 0/128/255. Byte quantization, asymmetric
+positive/negative ranges and native FPU arithmetic prevent a lossless integer
+round trip. The adapter does not inspect or undo application center/min/max
+changes. Application inner/outer thresholds remain authoritative: with default
+`inner=24/256` and `outer=1`, the final strength remains
+`clamp((min(r,1)-24/256)/(1-24/256),0,1)`, subject to quantization. Suppressed
+positions are not expanded back out of the dead zone; small source jitter stays
+subject to it. Physical DS2 input, snapshot publication and button edges are
+unchanged. See Microsoft's [field contract](https://learn.microsoft.com/en-us/windows/win32/api/xinput/ns-xinput-xinput_gamepad).
 
 ## Display runner
 

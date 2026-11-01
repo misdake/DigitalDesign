@@ -35,18 +35,29 @@ pub fn map_xinput(sample: XInputSample) -> ControllerSnapshot {
     }
     buttons |= u16::from(sample.left_trigger > 30) << 8;
     buttons |= u16::from(sample.right_trigger > 30) << 9;
-    let axes = |[x, y]: [i16; 2]| {
-        [
-            ((32768 + i32::from(x)) >> 8) as u8,
-            ((32768 - i32::from(y)).clamp(0, 65535) >> 8) as u8,
-        ]
-    };
     ControllerSnapshot {
         mode: InputMode::Analog,
         buttons_active_low: !buttons,
-        left: axes(sample.left),
-        right: axes(sample.right),
+        left: ds2_axes(sample.left),
+        right: ds2_axes(sample.right),
     }
+}
+
+fn ds2_axes([x, y]: [i16; 2]) -> [u8; 2] {
+    let (x, y) = (f64::from(x), f64::from(y));
+    let travel = x.abs().max(y.abs());
+    // Invert only the shared RCC square-ray geometry. Its forward mapping is
+    // direction * max(abs(calibrated_axes)); inner/outer remain application policy.
+    // Outside the circular source domain, saturate radius without changing angle.
+    let scale = if travel == 0.0 {
+        1.0
+    } else {
+        x.hypot(y).min(32768.0) / travel
+    };
+    // Retain the original offset, truncation, Y direction and endpoint clipping.
+    // Quantize once, after expansion; cardinal axes are unchanged.
+    let byte = |value: f64| ((32768.0 + value).clamp(0.0, 65535.0) / 256.0) as u8;
+    [byte(x * scale), byte(-y * scale)]
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

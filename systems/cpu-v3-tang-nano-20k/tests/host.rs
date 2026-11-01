@@ -90,3 +90,6 @@ mod shared_application_entry;
 
 #[path = "host/gpu_api_imports.rs"]
 mod gpu_api_imports;
+
+#[path = "host/xinput_inverse.rs"]
+mod xinput_inverse;
