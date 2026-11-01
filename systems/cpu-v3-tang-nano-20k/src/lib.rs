@@ -8,6 +8,8 @@ mod gpu_device;
 #[path = "../rcc/gpu_layout.rs"]
 mod gpu_layout;
 pub mod hardware;
+pub mod host_io;
+pub mod input_device;
 mod layout;
 pub mod profiling_capture;
 pub mod system_sim;

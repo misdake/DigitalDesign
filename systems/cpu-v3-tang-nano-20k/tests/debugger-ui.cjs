@@ -28,3 +28,37 @@ assert.ok(context.varRow({ name: '<x>', ty: 'u16', value: { reg: 1, word: 42 } }
 assert.ok(context.fmtVal({ ty: 'i16', value: { addr: 0, words: [65535] } }).includes('-1 (ffff)'));
 assert.equal(context.fmtVal({ ty: 'Inner', value: null }), '<i>ssa</i>');
 console.log('Debugger aggregate rendering passed.');
+
+(async () => {
+  const requests = [];
+  const events = new Map();
+  const timers = [];
+  let focused = true;
+  const document = { hidden: false, hasFocus: () => focused,
+    addEventListener: (name, fn) => events.set(name, fn) };
+  const host = vm.createContext({
+    document, console,
+    window: { addEventListener: (name, fn) => events.set(name, fn) },
+    setInterval: (fn, ms) => timers.push({fn, ms}),
+    fetch: async (url, options) => { requests.push({url, options}); return {}; }
+  });
+  // No Display state or CPU instruction count is supplied to this event pump.
+  vm.runInContext(script.slice(script.indexOf('let hostPollPending'),
+    script.lastIndexOf('refresh(false, true);')), host);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].ms, 16);
+  assert.equal(requests[0].url, '/api/host?focused=1');
+  assert.equal(requests[0].options.method, 'POST');
+  focused = false;
+  await events.get('blur')();
+  assert.equal(requests.at(-1).url, '/api/host?focused=0');
+  focused = true;
+  document.hidden = true;
+  await events.get('visibilitychange')();
+  assert.equal(requests.at(-1).url, '/api/host?focused=0');
+  document.hidden = false;
+  await timers[0].fn();
+  assert.equal(requests.at(-1).url, '/api/host?focused=1');
+  console.log('Debugger independent host heartbeat/focus passed.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

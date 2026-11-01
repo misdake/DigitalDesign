@@ -8,6 +8,12 @@ packet/byte engines and requires matching gateware and application software.
 
 ## Device5 and final storage
 
+The [functional host adapter](/systems/cpu-v3-tang-nano-20k/docs/host-simulation.md)
+implements the same latest-snapshot software interface with injected samples or
+Windows XInput. It preserves valid/changed, raw channels and bounded RCC capture;
+serial acquisition and channels 9..12 wire/background diagnostics are unmodeled.
+It does not change this hardware receiver's schedule or the RCC ABI below.
+
 | Channel | RECV | SEND |
 |---|---|---|
 |0,1|left X, left Y, one raw byte in low8|Ignored|

@@ -73,6 +73,11 @@ advance time. Microsecond advancement also carries into the millisecond count an
 the interval; clearing the interval leaves wall time unchanged. Default construction starts at zero; constructing a new model
 resets it. This host model is not cycle-accurate performance evidence.
 
+The [whole-system host pump](/systems/cpu-v3-tang-nano-20k/docs/host-simulation.md)
+supplies explicit elapsed durations, including during CPU watches and debugger
+pauses. Display vblank and reads remain independent observations/events; neither
+is used as an implicit clock. Deterministic tests inject elapsed time directly.
+
 ## Verification boundary
 
 The production SystemControl tests check the exact 54 MHz divisor, a smaller

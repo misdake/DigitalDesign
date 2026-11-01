@@ -1,5 +1,23 @@
 # System regression tests
 
+## Host time and input
+
+`host::host_io` contains bounded real-RCC timer/watch and snapshot capture cases,
+including publication during payload reads, slow/latest replacement, disconnect,
+button edges and digital neutral axes. Pure tables check Device5 channels and
+XInput axes/buttons/trigger boundaries; an injected source checks focus and
+disconnected-slot polling without a real controller. Run the shared `host`
+target with filter `host_io::` through `scripts/run-cargo.ps1`. The existing
+independent `gamepad` and `dualshock2_ui` peers retain their own protocol and
+diagnostic coverage. No serial or GPU timing claim follows from these tests.
+
+The ignored Windows `host_io::windows_xinput_get_state_smoke` calls the official
+API and accepts a connected or disconnected result; it does not prove physical
+button mapping. `node systems/cpu-v3-tang-nano-20k/tests/debugger-ui.cjs` also
+checks the independent heartbeat/focus events. Normal `system_sim`/`debugger`
+library filters and debugger HTTP tests preserve the existing functional GPU,
+reset, breakpoint and explicit vblank boundaries.
+
 Retired facade/scheduler sources live only in `tests/fixtures/legacy_renderer`.
 The test-only loader composes their byte-preserved contracts with current common
 modules. Existing ownership, private-domain, capture-v1 and native assertions stay

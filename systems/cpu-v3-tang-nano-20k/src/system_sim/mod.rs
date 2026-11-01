@@ -5,10 +5,12 @@
 
 use crate::boot::{SystemControlDevice, SYSTEM_CONTROL_DEVICE};
 use crate::display::render_framebuffer_at;
+use crate::input_device::{ControllerSnapshot, InputSnapshotDevice, INPUT_DEVICE};
 use crate::{
     CpuV3Sim, DisplayDevice, Fault, GpuDevice, RunOutcome, StepOutcome, DISPLAY_DEVICE,
     FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, GPU_DEVICE,
 };
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum VBlankMode {
@@ -31,6 +33,7 @@ pub struct DisplayState {
 pub struct CpuV3SystemSim {
     cpu: CpuV3Sim,
     vblank_mode: VBlankMode,
+    host_submicro_nanos: u16,
 }
 
 impl Default for CpuV3SystemSim {
@@ -66,7 +69,12 @@ impl CpuV3SystemSim {
             )),
         );
         cpu.attach_device(GPU_DEVICE, Box::<GpuDevice>::default());
-        Self { cpu, vblank_mode }
+        cpu.attach_device(INPUT_DEVICE, Box::<InputSnapshotDevice>::default());
+        Self {
+            cpu,
+            vblank_mode,
+            host_submicro_nanos: 0,
+        }
     }
 
     pub fn cpu(&self) -> &CpuV3Sim {
@@ -88,6 +96,32 @@ impl CpuV3SystemSim {
 
     pub fn vblank_mode(&self) -> VBlankMode {
         self.vblank_mode
+    }
+
+    /// Explicit, microsecond-quantized host time, independent of CPU execution.
+    pub fn advance_host_time(&mut self, elapsed: Duration) {
+        let nanos = elapsed.as_nanos() + u128::from(self.host_submicro_nanos);
+        self.host_submicro_nanos = (nanos % 1000) as u16;
+        let mut micros = nanos / 1000;
+        let clock = self
+            .cpu
+            .device::<SystemControlDevice>(SYSTEM_CONTROL_DEVICE)
+            .expect("system control device must remain attached");
+        // One whole millisecond-counter period also saturates the interval.
+        // Reduce arbitrarily long host pauses without truncation or a large loop.
+        const PERIOD_US: u128 = 65_536_000;
+        if micros >= PERIOD_US {
+            clock.advance_microseconds(PERIOD_US as u32);
+            micros %= PERIOD_US;
+        }
+        clock.advance_microseconds(micros as u32);
+    }
+
+    pub fn publish_input(&mut self, snapshot: Option<ControllerSnapshot>) {
+        self.cpu
+            .device::<InputSnapshotDevice>(INPUT_DEVICE)
+            .expect("input snapshot device must remain attached")
+            .publish(snapshot);
     }
 
     pub fn step(&mut self) -> Result<StepOutcome, Fault> {

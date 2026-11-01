@@ -6,6 +6,8 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 ## Documents
 
+- [Host time and input](/systems/cpu-v3-tang-nano-20k/docs/host-simulation.md): explicit elapsed events, Device5 latest snapshots and Windows XInput adaptation.
+
 - [Explicit GPU API internal core](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md): public resources, native recording, capture-aware submission, unique retirement and Display handoff.
 - [Prepared scene values](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-scene-values.md): source-world transforms, six-argument native conversion, material/state, independent texture views and persistent external UI updates.
 

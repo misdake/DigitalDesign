@@ -79,7 +79,7 @@
   <button id="bstep">Instruction</button>
   <button id="bcont">Continue</button>
   <button id="breset">Reset</button>
-  <span class="badge" id="cycles">cycles: 0</span>
+  <span class="badge" id="cycles">steps: 0</span>
   <span class="badge" id="pc">pc: 0000</span>
   <span class="badge" id="cseg">cseg: 0000</span>
   <span class="badge" id="dseg">dseg: 0000</span>
@@ -242,7 +242,7 @@ function render({followPc = false} = {}) {
     pinnedLine = null;
     pinnedFile = null;
   }
-  $('cycles').textContent = 'cycles: ' + state.cycles;
+  $('cycles').textContent = 'steps: ' + state.cycles;
   $('pc').textContent = 'pc: ' + hx(state.pc);
   $('cseg').textContent = 'cseg: ' + hx(state.cseg);
   $('dseg').textContent = 'dseg: ' + hx(state.dseg);
@@ -496,6 +496,25 @@ function drawArrows() {
   });
   svg.setAttribute('height', Math.max(svg.parentElement.scrollHeight, 200));
 }
+
+// A host heartbeat is independent of Display waits and performs no CPU work.
+let hostPollPending = false;
+async function pollHost() {
+  if (hostPollPending) return;
+  hostPollPending = true;
+  try {
+    await fetch(`/api/host?focused=${document.hasFocus() && !document.hidden ? 1 : 0}`, {method: 'POST'});
+  } catch (error) {
+    console.error('host input/time event failed', error);
+  } finally {
+    hostPollPending = false;
+  }
+}
+setInterval(pollHost, 16);
+window.addEventListener('focus', pollHost);
+window.addEventListener('blur', pollHost);
+document.addEventListener('visibilitychange', pollHost);
+pollHost();
 
 refresh(false, true);
 </script>

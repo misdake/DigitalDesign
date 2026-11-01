@@ -23,6 +23,8 @@ mod gpu_rcc_driver;
 mod gpu_rcc_present_control;
 #[path = "host/gpu_rcc_ui.rs"]
 mod gpu_rcc_ui;
+#[path = "host/host_io.rs"]
+mod host_io;
 #[path = "host/rcc_modules.rs"]
 mod rcc_modules;
 #[path = "../build_support/rcc_modules.rs"]

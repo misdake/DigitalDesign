@@ -21,6 +21,7 @@ fn main() -> ExitCode {
     let mut code_base: Option<u16> = None;
     let mut stack_init: Option<u16> = None;
     let mut no_open = false;
+    let mut xinput_slot = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -58,8 +59,15 @@ fn main() -> ExitCode {
                 stack_init = Some(n);
             }
             "-h" | "--help" => {
-                println!("usage: cpu-v3-dbg <input.rs | input-dir> [--code-base N] [--stack-init N] [--port 8322] [--no-open]");
+                println!("usage: cpu-v3-dbg <input.rs | input-dir> [--code-base N] [--stack-init N] [--port 8322] [--no-open] [--xinput-slot 0..3]");
                 return ExitCode::SUCCESS;
+            }
+            "--xinput-slot" => {
+                let Some(slot) = args.next().and_then(|value| value.parse::<u32>().ok()) else {
+                    eprintln!("--xinput-slot needs a slot between 0 and 3");
+                    return ExitCode::FAILURE;
+                };
+                xinput_slot = Some(slot);
             }
             "--no-open" => no_open = true,
             _ if a.starts_with('-') => {
@@ -81,13 +89,18 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let session = match compile_input(&input, code_base, stack_init) {
+    let mut session = match compile_input(&input, code_base, stack_init) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("cpu-v3-dbg: {e}");
             return ExitCode::FAILURE;
         }
     };
+
+    if let Err(error) = session.enable_host_io(xinput_slot) {
+        eprintln!("cpu-v3-dbg: {error}");
+        return ExitCode::FAILURE;
+    }
 
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
@@ -112,7 +125,6 @@ fn main() -> ExitCode {
 
     // single-threaded on purpose: `CpuV3SystemSim` is not `Send` (its device trait
     // object is not thread-safe), and a debugger is single-user anyway.
-    let mut session = session;
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
@@ -253,6 +265,11 @@ fn route(
             let json = session.mem_json(addr, len);
             ("200 OK", "application/json", json.into_bytes())
         }
+        ("POST", "/api/host") => {
+            let q = parse_query(query);
+            session.poll_host(q.get("focused").is_some_and(|value| value == "1"));
+            ("200 OK", "application/json", b"{}".to_vec())
+        }
         ("POST", "/api/vblank") => {
             let swap_applied = session.system.advance_vblank();
             let display = session.system.display_state();
@@ -360,6 +377,19 @@ mod tests {
                 * cpu_v3_tang_nano_20k::FRAMEBUFFER_HEIGHT as usize
                 * 3
         );
+    }
+
+    #[test]
+    fn host_event_services_time_without_cpu_or_vblank_work() {
+        let mut session = session();
+        session.enable_host_io(None).unwrap();
+        let before = session.state_json(None);
+        let (status, _, payload) = route("POST", "/api/host?focused=0", &mut session);
+        assert_eq!(status, "200 OK");
+        assert_eq!(payload, b"{}");
+        let (_, _, observed) = route("GET", "/api/state", &mut session);
+        assert_eq!(String::from_utf8(observed).unwrap(), before);
+        assert_eq!(session.system.display_state().frame_index, 0);
     }
 
     #[test]

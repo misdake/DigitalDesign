@@ -25,6 +25,8 @@ const LIBRARY_STEP_LIMIT: usize = 10_000_000;
 
 pub struct V3DebugSession {
     pub system: CpuV3SystemSim,
+    host_io: Option<crate::host_io::RealtimeHostIo>,
+    host_focused: bool,
     pub debug: DebugInfo,
     pub breakpoints: HashSet<usize>,
     pub disasm: Vec<DisasmLine>,
@@ -40,7 +42,7 @@ pub struct V3DebugSession {
     pub fault: Option<Fault>,
     /// shadow call stack, maintained by watching call/return instructions
     pub call_stack: Vec<CallFrame>,
-    /// session step counter (displayed as cycles)
+    /// Functional step count; the legacy JSON field is named `cycles`.
     steps: u64,
 }
 
@@ -120,6 +122,8 @@ impl V3DebugSession {
 
         V3DebugSession {
             system,
+            host_io: None,
+            host_focused: false,
             debug: program.debug,
             breakpoints: HashSet::new(),
             disasm,
@@ -139,10 +143,36 @@ impl V3DebugSession {
         let mut system = CpuV3SystemSim::new(mode).with_functional_gpu();
         load_machine(system.cpu_mut(), self.code_base, &self.words);
         self.system = system;
+        if let Some(host) = self.host_io.as_mut() {
+            host.reset();
+        }
         self.last_halt = None;
         self.fault = None;
         self.call_stack.clear();
         self.steps = 0;
+    }
+
+    /// Standalone debugger host policy; library/test sessions stay deterministic.
+    pub fn enable_host_io(&mut self, slot: Option<u32>) -> Result<(), crate::host_io::XInputError> {
+        let io = if let Some(slot) = slot {
+            crate::host_io::HostIo::with_xinput(slot)?
+        } else {
+            crate::host_io::HostIo::default()
+        };
+        self.host_io = Some(crate::host_io::RealtimeHostIo::new(io));
+        Ok(())
+    }
+
+    /// Explicit host event, including while CPU execution is paused or waiting.
+    pub fn poll_host(&mut self, focused: bool) {
+        self.host_focused = focused;
+        self.pump_host();
+    }
+
+    fn pump_host(&mut self) {
+        if let Some(host) = self.host_io.as_mut() {
+            host.pump(&mut self.system, self.host_focused);
+        }
     }
 
     fn cpu(&self) -> &CpuV3Sim {
@@ -228,6 +258,7 @@ impl V3DebugSession {
     }
 
     fn machine_step(&mut self) {
+        self.pump_host();
         if self.system.waiting_for_vblank() {
             return;
         }
