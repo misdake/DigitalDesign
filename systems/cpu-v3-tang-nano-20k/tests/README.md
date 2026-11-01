@@ -391,6 +391,15 @@ them, and host peers do not substitute for them.
 
 ## GPU profiling input parity
 
+`host public_handheld::` executes the production public classic caller and its
+motion helper through real checked RCC compilation in both check profiles.
+Finite control-only peers observe the complete 24-draw/1141-triangle inputs,
+material/clear codes, B/A/B presentation and old-read retirement, input and UART
+ordering, rendering-interval promotion, visibility/saturation and wait deadlines.
+Separate CPU probes check the initial motion codes, dynamic limits and a public
+Camera view grid against independent trigonometry. They do not render pixels or
+qualify physical timing; native and static-profiler references stay separate.
+
 `profiling_capture::tests` checks recorded real v1/v2 pre-gate envelopes and
 range rows, plus malformed length/version/publication/binding/flags and physical
 extent boundaries. `fixtures/prepared_capture_descriptors.json` records the

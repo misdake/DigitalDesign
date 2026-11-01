@@ -1,7 +1,7 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-10-30
+last-verified: 2026-11-01
 ---
 
 # Explicit GPU API internal core
@@ -243,6 +243,13 @@ application owner, then prepares/seals/publishes, snapshots source12, calls C
 begin and gate, starts with an additional publication only for Resumed, and
 calls submitted after COUNT and START. A failed begin/gate retains the driver
 owner and capture error lease, emits no SEND and fail-stops.
+
+`Display::try_wait_swap` performs one coherent presentation poll. Pending or a
+torn observation returns false; stable idle or an applied swap whose old reads
+have retired returns true. A wrong target/format or hardware fault fail-stops
+through the same path as `wait_vblank`. It adds no owner or scheduling state.
+With no queued swap it reports idle immediately, rather than waiting for a new
+frame edge. The existing blocking `wait_vblank` semantics remain unchanged.
 
 ```mermaid
 flowchart LR

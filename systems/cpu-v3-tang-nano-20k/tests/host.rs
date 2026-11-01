@@ -25,6 +25,8 @@ mod gpu_rcc_present_control;
 mod gpu_rcc_ui;
 #[path = "host/host_io.rs"]
 mod host_io;
+#[path = "host/public_handheld.rs"]
+mod public_handheld;
 #[path = "host/rcc_modules.rs"]
 mod rcc_modules;
 #[path = "../build_support/rcc_modules.rs"]

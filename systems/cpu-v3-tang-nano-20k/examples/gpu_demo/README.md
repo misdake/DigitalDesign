@@ -234,6 +234,21 @@ serial/pin timing; the separate GPU/DS2 RTL qualifications own those boundaries.
 
 ## Explicit column hardware profile
 
+The public-API controller entry is selected separately with
+`CPU_V3_BOOT_EXAMPLE=gpu_demo_api_column16`. It compiles `rcc/public_main.rs`
+through the checked public GPU frontend, using `motion.rs`, unified `gamepad`
+input and the existing button/time policies. `tools/public_assets.py` delegates
+to the native asset producer and adds public root names without changing atlas,
+mesh or texture bytes. Capture hooks are disabled for this ordinary entry.
+`rcc/main.rs` and the native selectors below retain their own identities.
+
+Export with `cpu-v3-boot-assets` under that environment selection, then use
+`cpu-v3-pack application.v3bin --project renderer-repack.conf -o independent.bin`
+inside the exported directory for an independent CB06 reconstruction. Both are
+ordinary Cargo binaries; use `scripts/run-cargo.ps1` from the repository root.
+The package is still loaded at Flash0x100000; it does not qualify a matching FPGA
+configuration or physical controller behavior by itself.
+
 `build.ps1 -Profile column16 -OutputDirectory target/column-scene/firmware -LayoutContract <contract.json>`
 selects `gpu_demo_column16` without changing the default boot. It relocates the
 immutable roots and offline texture macros to the column contract while using

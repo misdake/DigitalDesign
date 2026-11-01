@@ -404,6 +404,15 @@ impl Display {
             gpu_api_fail(5, 3, 0, 0);
         }
     }
+    // One observation of the queued swap, including old-read retirement.
+    // With no owned request this reports stable/idle, not a new frame edge.
+    pub fn try_wait_swap(&mut self) -> bool {
+        let status = gpu_present_poll();
+        if status == 65535 {
+            gpu_api_fail(5, 3, 0, 0);
+        }
+        status != 1
+    }
 }
 impl Drop for Display {
     fn drop(&mut self) {}

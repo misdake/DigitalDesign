@@ -14,6 +14,7 @@ enum ApplicationProfile {
     Default,
     ProfilerMemcpy,
     Column16,
+    Handheld,
     Rtt400x240,
     BloxorzCapture,
     BloxorzCaptureFull,
@@ -53,7 +54,8 @@ fn compile(
     };
     let entry = if explicit_gpu { "main" } else { entry };
     let source_dir = path.parent().unwrap();
-    let hook_enabled = std::env::var("GPU_PROFILER_HOOK").as_deref() != Ok("0");
+    let hook_enabled = !matches!(profile, ApplicationProfile::Handheld)
+        && std::env::var("GPU_PROFILER_HOOK").as_deref() != Ok("0");
     let capture = if capture_enabled && hook_enabled {
         let manifest_path = PathBuf::from(
             std::env::var_os("GPU_PROFILER_MANIFEST")
@@ -193,6 +195,7 @@ fn main() {
     let mut generated = String::new();
     let mut capture_enabled = false;
     let mut column16 = false;
+    let mut handheld_enabled = false;
     let mut rtt_enabled = false;
     let mut native_memcpy = false;
     let mut automatic_capture = false;
@@ -295,7 +298,8 @@ fn main() {
                 "ds2-ui-assets/ui_layout.rs".to_owned(),
                 "ds2-ui-repack.conf".to_owned(),
             ]);
-        } else if example == "gpu_renderer"
+        } else if example == "gpu_demo_api_column16"
+            || example == "gpu_renderer"
             || example == "gpu_renderer_changes"
             || example == "gpu_renderer_members"
             || example == "gpu_renderer_bloxorz"
@@ -305,6 +309,8 @@ fn main() {
             || example == "gpu_renderer_rtt"
             || example == "gpu_renderer_rtt_bilinear"
         {
+            handheld_enabled = example == "gpu_demo_api_column16";
+            let handheld = handheld_enabled;
             capture_full = example == "gpu_renderer_bloxorz_capture_full";
             automatic_capture = capture_full || example == "gpu_renderer_bloxorz_capture";
             let game = automatic_capture || example == "gpu_renderer_bloxorz";
@@ -321,7 +327,9 @@ fn main() {
                 }
             }
             capture_enabled = profiler;
-            let example_dir = root.join(if profiler {
+            let example_dir = root.join(if handheld {
+                "examples/gpu_demo"
+            } else if profiler {
                 "examples/gpu_profiler_board"
             } else if rtt && !game {
                 "examples/gpu_renderer_rtt"
@@ -342,7 +350,13 @@ fn main() {
                     println!("cargo:rerun-if-changed={}", root.join(path).display());
                 }
             }
+            let producer = example_dir.join(if handheld {
+                "tools/public_assets.py"
+            } else {
+                "tools/assets.py"
+            });
             for input in [
+                producer.clone(),
                 example_dir.join("tools/assets.py"),
                 root.join("examples/gpu_demo/assets/font-8x16.txt"),
             ] {
@@ -351,7 +365,7 @@ fn main() {
             let assets = output.join("gpu-renderer-assets");
             let status = std::process::Command::new("python")
                 .env("PYTHONDONTWRITEBYTECODE", "1")
-                .arg(example_dir.join("tools/assets.py"))
+                .arg(&producer)
                 .arg("--output")
                 .arg(&assets)
                 .status()
@@ -360,6 +374,14 @@ fn main() {
             let manifest: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(assets.join("assets.json")).unwrap())
                     .unwrap();
+            if handheld {
+                for source in manifest["sources"].as_object().unwrap().keys() {
+                    println!(
+                        "cargo:rerun-if-changed={}",
+                        root.join("../..").join(source).display()
+                    );
+                }
+            }
             if profiler {
                 match manifest["profiler_short_case"].as_str().unwrap_or("none") {
                     "none" => {}
@@ -377,7 +399,9 @@ fn main() {
                 assert_eq!(manifest["profile"], "production");
                 assert_eq!(manifest["surface"], "column-major-16x16-pad16");
             }
-            project.application = PathBuf::from(if profiler {
+            project.application = PathBuf::from(if handheld {
+                "examples/gpu_demo/rcc/public_main.rs"
+            } else if profiler {
                 if rtt {
                     "examples/gpu_profiler_board/rcc/rtt.rs"
                 } else {
@@ -553,6 +577,8 @@ fn main() {
             ApplicationProfile::BloxorzCapture
         } else if rtt_enabled {
             ApplicationProfile::Rtt400x240
+        } else if handheld_enabled {
+            ApplicationProfile::Handheld
         } else if column16 {
             ApplicationProfile::Column16
         } else {

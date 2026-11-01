@@ -1,0 +1,259 @@
+{
+  "schema": 1,
+  "provenance": "Extracted actual recorded first frame; no constructed successful descriptor/command. Static public profiler reference, distinct from native baseline.",
+  "source_commit": "259b7c99de5394c1b1d8ba6b350a97c98ac8f5f4",
+  "compiled_app_sha256": "fc7c26ed038ea8d34a2d7b9f5536863fbfa644c99d425180ab4666fa436e02a8",
+  "snapshot_input_sha256": "e1a402a31e3746b18ee7bf2c774ff20ecbe9bc4f95cd25aa0b7f4f351f10dc3e",
+  "header_sha256": "09706a67fef25c09374edfb3d0ef08293d124705e21cf9c9f8ca7e69363587cd",
+  "ranges_sha256": "3d8d316114aedbbf590a7aa527865381f45b898ea21f77316c6b30991d944d36",
+  "payload_hashes": [
+    {
+      "file": "range-000.bin",
+      "sha256": "7fd01d535e28cfb946065e988da2e6d0282314cc08bfd8c1e13a3e9e713a6902"
+    },
+    {
+      "file": "range-001.bin",
+      "sha256": "6df3ffc9ee3fd52d2dbe60d7ff87adf64372fa723651df14c70350d8ed1b0c04"
+    },
+    {
+      "file": "range-002.bin",
+      "sha256": "8eafc7bd411c1f02b9e972a83d2b0a4164eefc5ef51e6b63ad7acc78be4ad44f"
+    },
+    {
+      "file": "range-003.bin",
+      "sha256": "4f81904a9b06c58572a0e5769b3b4ffb99e7bd4be88ee8c2b64a804f483d9dc6"
+    },
+    {
+      "file": "range-004.bin",
+      "sha256": "8eafc7bd411c1f02b9e972a83d2b0a4164eefc5ef51e6b63ad7acc78be4ad44f"
+    },
+    {
+      "file": "range-005.bin",
+      "sha256": "4f81904a9b06c58572a0e5769b3b4ffb99e7bd4be88ee8c2b64a804f483d9dc6"
+    },
+    {
+      "file": "range-006.bin",
+      "sha256": "17e9765f9f4618dc67d72caa3c15f6dffa1d4302a95fe6a86788af4fc375196b"
+    },
+    {
+      "file": "range-007.bin",
+      "sha256": "a755972793e12a7e6c97643fcec1b24f4c69ecc7dbe3bc25257cf297371a7699"
+    },
+    {
+      "file": "range-008.bin",
+      "sha256": "ff2cc6f3c87efc7fcaa89124bf76028e4638bceffea4b0845f611d4417fae174"
+    },
+    {
+      "file": "range-009.bin",
+      "sha256": "b1bb164fe86cda57310703128fa87631349399c75d4eb5edf74bb7d258052e40"
+    },
+    {
+      "file": "range-010.bin",
+      "sha256": "c6447656fc683ebd7097154f3b68380761171fa627c19d28a033d1d05fa75350"
+    },
+    {
+      "file": "range-011.bin",
+      "sha256": "050e359fa7354a415557b727cb60316f46a4d81f0a2e13e1af642bf5746b3f96"
+    },
+    {
+      "file": "range-012.bin",
+      "sha256": "48ef975b8d0ea8d929ad0167c8b16d45505c9da0599b5fa7ea3e5bc1ed29580e"
+    },
+    {
+      "file": "range-013.bin",
+      "sha256": "ba1a0c88f80cd7a6e0b95c898cb9a869d37ca0bd019199e8b72fe91e52a19351"
+    },
+    {
+      "file": "range-014.bin",
+      "sha256": "d722f353647dbc4b300d7b30b3e4826a43ca787a5e7045548dbfb24152048995"
+    },
+    {
+      "file": "range-015.bin",
+      "sha256": "efaa2a33cef6b6e7cff6e032fe90c00bbbfeb970e3f1284f39e7fcc6cf4d8582"
+    },
+    {
+      "file": "range-016.bin",
+      "sha256": "e45594d060b15f385b4d39986ace11b3582d8d9a37827c4a696c2e41f836584a"
+    },
+    {
+      "file": "range-017.bin",
+      "sha256": "5dab20cd9cc7bc90cdb237c7a85cebdfac0909a3df7514508cad826c6088be07"
+    },
+    {
+      "file": "range-018.bin",
+      "sha256": "a08809ae0b4b76fb11d0e612d23773a9a759d13c8b91d9e14dc92cbc6ec8ecf0"
+    },
+    {
+      "file": "range-019.bin",
+      "sha256": "9df4af26b1b5b4af2aa3c6b63c4eace133c1eedae510dd28c96fa6c281e11ea9"
+    },
+    {
+      "file": "range-020.bin",
+      "sha256": "4d92aca6ddfe663fa069fa0478b65a503046f2922a5ee536dddb604d94913d15"
+    },
+    {
+      "file": "range-021.bin",
+      "sha256": "fc448e10efd7468b2b7e37f89153de38a657a7951ee3eb26dba3eb27b1709a84"
+    },
+    {
+      "file": "range-022.bin",
+      "sha256": "b826c239ead4259fce68159e007266dc62ebfa78e2e1d863cc2ea8d242a1f593"
+    },
+    {
+      "file": "range-023.bin",
+      "sha256": "8db1897d26e5c0bc9f57b56a02ba5de127fd84fbf15df3324d95266a201c6f1a"
+    },
+    {
+      "file": "range-024.bin",
+      "sha256": "502e3aea9065ec28d8e6f343ea798b10e15895d1849acf8a1bf60d72d997a94d"
+    },
+    {
+      "file": "range-025.bin",
+      "sha256": "acd82ec5cc96793fd5f98389ed112e00c91524628d273ac7d4de19b384571521"
+    },
+    {
+      "file": "range-026.bin",
+      "sha256": "d7d737f9d441b0675db313d58adc011bee709314fd5769d41cbacabb3280fd92"
+    },
+    {
+      "file": "range-027.bin",
+      "sha256": "7a7987af4166d192d265646d0d8373f370a63f33ebaecfb9e4ad504d485e9592"
+    },
+    {
+      "file": "range-028.bin",
+      "sha256": "867d159f6a472ca3aff14a0128c6c387eb36284df81c243ad4a5381870a20893"
+    },
+    {
+      "file": "range-029.bin",
+      "sha256": "68beb33945733fb0e43f40c0e13bce8b746947fdee5bc9e111289e522fcb9d1b"
+    },
+    {
+      "file": "range-030.bin",
+      "sha256": "543591ab2e4d877b3d93b7b86e82aeed21ce4a380f271e2361c09d7f7cdbcf7b"
+    },
+    {
+      "file": "range-031.bin",
+      "sha256": "e31b917517e65497f62ac0a4b57f89200f9b9ed5ed3c19167a0baa3eba864c12"
+    },
+    {
+      "file": "range-032.bin",
+      "sha256": "3df30165a80b7620cffa363df6babb5c9ea14a1e47efa943c8b3c5bb34b97c2a"
+    }
+  ],
+  "phase0_instance": [
+    14336,
+    65535,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    14523,
+    65535,
+    4372,
+    0,
+    64514,
+    65535,
+    0,
+    0,
+    59939,
+    65535,
+    240,
+    65535,
+    52988,
+    2,
+    0,
+    65535,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    65296,
+    0,
+    59939,
+    65535,
+    0,
+    0,
+    5597,
+    0,
+    65296,
+    0
+  ],
+  "unlit_global": [
+    0,
+    199,
+    5147,
+    8041,
+    13315,
+    57344,
+    60621,
+    8192,
+    128,
+    128,
+    35,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "unlit_render": [
+    40960,
+    86,
+    0,
+    0,
+    41,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "lit_global": [
+    0,
+    199,
+    5147,
+    8041,
+    13315,
+    57344,
+    60621,
+    8192,
+    64,
+    192,
+    51,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "lit_render": [
+    40960,
+    86,
+    41120,
+    160,
+    9,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ]
+}

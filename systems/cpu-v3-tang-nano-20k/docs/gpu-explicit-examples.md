@@ -20,6 +20,7 @@ a plane still being scanned or mutates a UI grid still used by its GPU work.
 | `gpu_renderer_rtt/rcc/scene.rs` | A producer completes into caller-owned RTT planes before a consumer records their TextureView. The view may be dropped after recording. Texture invalidation is explicit between stages. |
 | `gpu_profiler_board/rcc/main.rs` | Static minimal diagnostic, bounded UART progress markers and explicit UI grid. |
 | `gpu_profiler_board/rcc/full_scene.rs` | Six box meshlets, one RGB meshlet and seventeen rabbit meshlets; the RGB draw uses `draw_colored`. |
+| `gpu_demo/rcc/public_main.rs` | The complete classic scene with continuous unified gamepad input, first-person camera, timing UI and explicit GPU/swap polling. |
 | `gpu_renderer_bloxorz/rcc/main.rs` | Explicit input/time sampling, offscreen transition snapshots, ordinary/fade consumers and confirmed presentation before session advancement. |
 
 The full box/RGB/rabbit scene explicitly preserves the original controller
@@ -27,11 +28,28 @@ The full box/RGB/rabbit scene explicitly preserves the original controller
 write (code1), rabbit shininess exponent32 (native code12), and linear-light
 RGB565 presentation (Device3 format1). The corresponding native Render word1
 is `0x0056` for the 64x64 full-mip texture; Render word4 low six bits are41 for
-unlit room/RGB and9 for the lit rabbit. Global word10 is `0x0033` for mode3 and
-shininess code12. `Shininess::S12` means exponent12/code6, so this scene uses
+unlit room/RGB and9 for the lit rabbit. The rabbit's Global word10 is `0x0033`
+for mode3 and shininess code12. The static profiler's unlit material retains
+S16/code8 (`0x0023`); the controller explicitly retains the native caller's S32
+and 64/192 material responses even for unlit draws. Unlit Final bypasses lighting
+with g=256/h=0, so the shininess field contributes no specular term there.
+`Shininess::S12` means exponent12/code6, so the lit rabbit uses
 `Shininess::S32`. Other demo factories retain their own defaults. The full
-profiler entry is static; the controller-operated scene entry remains
-`examples/gpu_demo/rcc/main.rs`, including its original input and camera loop.
+profiler entry has a fixed camera. `CPU_V3_BOOT_EXAMPLE=gpu_demo_api_column16`
+selects `examples/gpu_demo/rcc/public_main.rs` for the complete public-API
+controller scene. The earlier `gpu_demo_column16` entry at
+`examples/gpu_demo/rcc/main.rs` remains a separate native caller.
+
+The public controller caller consumes one `gamepad` frame before preparing any
+previous-frame UART report. It retains both-stick movement/look, L1/R1 vertical
+motion, the classic initial pose and bounded wall-time integration. It clears
+the rendering timer before input/preparation and locks it after GPU retirement,
+before presentation. `Gpu::try_wait` and `Display::try_wait_swap` let it service
+nonblocking telemetry and enforce the existing 2000ms wait budgets. UI shows
+only the previous successfully presented valid interval at row1,column2; the
+debounced board button toggles visibility. Its native asset producer is reused
+without the profiler wrapper's OBS atlas substitution. The default boot and
+fixed profiler selections are unchanged.
 
 RTT planes occupy sector ranges `0xc000..0xc800` and `0xc800..0xd000`, each with
 2048 sectors of caller-owned capacity. The current packers exclude these ranges
