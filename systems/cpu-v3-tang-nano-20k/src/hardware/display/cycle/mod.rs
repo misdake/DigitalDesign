@@ -1,6 +1,9 @@
 //! Edge-driven production Display components. These components own no system clock or MC.
 
+mod fill;
 mod line_buffer;
+
+pub use fill::{Fill, FillInput, FillOutput};
 
 pub use line_buffer::{LineBuffer, LineBufferInput, RamWord};
 
