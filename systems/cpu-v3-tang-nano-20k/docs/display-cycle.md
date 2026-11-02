@@ -1,7 +1,8 @@
 # Display cycle components
 
 The `hardware::display_cycle` module provides edge-driven Rust mirrors of the production
-`DisplayLineBuffer`, logic-domain fill/Device3 and pixel timing control cone. It owns no root clock,
+`DisplayLineBuffer`, logic-domain fill/Device3, pixel timing control and the source/color
+read calendar. It owns no root clock,
 backing memory, MC, or device callbacks.
 The existing functional Display and Verilog-only hardware wrapper retain their behavior.
 
@@ -19,11 +20,14 @@ Data cells 0..399 and unused cells 400..415 start unknown in this behavioral mod
 placeholder in an unknown `RamWord` is not a defined read value. There is no RAM reset port;
 a Display reset does not clear storage or regenerate the tables.
 
-`RamWord::known` records behavioral definedness. `collision` separately marks a same-address
-write/read on coincident edges in that bank; its numeric value still describes behavioral
-old-array RTL semantics. The flag does not promise a silicon read-during-write value.
+`RamWord::known` records behavioral definedness. The read-address sidebands
+`read_address_known` and `read_address_tainted` default to `[true; 2]` and `[false; 2]`;
+ordinary calls retain their original meaning. An unknown address produces unknown Q,
+even when its numeric placeholder indexes an initialized table cell. `collision` marks
+a same-address write/read on coincident edges, a possible collision at an unknown address,
+or taint propagated through the address. Numeric values still describe behavioral old Q. The flag does not promise a silicon read-during-write value.
 A valid consumer must independently exclude unknown or collision-tainted effective operands.
-This leaf does not model pixel consumption or make that whole-Display claim.
+These diagnostics do not stall reads, alter publication, or provide a whole-Display safety claim.
 
 ## Bounded qualification
 
@@ -172,3 +176,53 @@ The artifacts live under `target/display-cycle-timing`. This is a digital
 control-cone qualification with controlled memory responses. It does not establish
 color/TMDS output, native shared-MC contention, full-peripheral coverage,
 bootloader-end equivalence or silicon/PVT behavior.
+
+## Source and color read calendar
+
+`PixelRead` consumes old `PixelReadInput` Timing signals and old registered RAM Q.
+It owns no H/V counter, synchronizer, row-readiness latch, RAM, or MC. `outputs()` is
+pure; `clock()` commits one pixel rise. Both RAM read ports clock on every pixel
+rise, including blanking and unused lookahead. There is no read-enable port.
+
+The caller evaluates `PixelRead::outputs` before committing either the calendar or
+RAM, forwards its addresses/knownness/taint to the same `LineBuffer`, and commits both
+from the old snapshot. The address base is `slot*200 + second*100`. Source pairs alternate
+bank A/B at each issue; their address advances every two pairs. Red/blue linear indices
+replicate the original five-bit MSB: `(q<<1)|(q>>4)`. Encoded red/blue use cells 416..447;
+linear RGB use low-nine-bit codes in 448..511, while encoded green uses their high-nine-bit codes.
+No immediate color conversion bypasses these physical read ports.
+
+| Old phase | RAM address | Calendar capture at this rise |
+| --- | --- | --- |
+| 0 | Source qword | Lock source bank and advance pair cursor when issuing; consume old B Q when emitting |
+| 1 | Red lookup from old selected source Q | Capture that source Q in raw-pair |
+| 2 | Green lookup from raw-pair | Capture old red Q |
+| 3 | Blue lookup from raw-pair | Capture old green Q |
+
+The first source issue is four pixel rises before the active window. At its completion,
+red/green registers and old blue Q form one completed pair; its first pixel bypasses the
+holding register. Phases 0/1 select the first pixel and 2/3 the second. Final source issue
+is at `active_end-8`, final completion at `active_end-4`; raw/R/G captures are guarded
+at and after the latter. Default reads can subsequently reach unused cell 400 and produce
+unknown lookup indices. Such unused reads do not invalidate the completed output pair.
+
+Power-up initializes calendar data registers to zero. Pixel reset and H=0 clear only phase
+and fetch cursor: bank/raw/R/G/completed-pair retain their values and provenance. Unknownness
+and collision origin follow raw words, lookup addresses, codes and pair holding state;
+lookup in a known ROM cell cannot remove address taint. These flags are diagnostics and do
+not change scheduling. This component exposes selected precodes, not a registered visible
+RGB/sync or TMDS output. Timing ownership/deadline safety remains a separate contract.
+
+`tests/display_cycle_pixels.rs` projects the actual production declaration/address/capture
+body into a leaf with controlled Timing boundary inputs and the production line RAM. It
+retains source hashes, generated RTL, vectors, observations, commands and first differences
+under `target/display-cycle-pixels/c1-v2`. Bounds are 32768 total fixture instants and a
+30-second external-process watchdog. Complete rows cover both formats, both source banks,
+horizontal repeats and repeated source rows, first/last pairs, unused unknown lookahead and reset at each
+phase. An independent absolute-coordinate RGB oracle checks defined source pixels.
+A deliberate collision-poison profile checks propagation to the four affected output
+samples, rather than claiming that the controlled producer satisfies ownership safety.
+Real DUT copies reverse the source bank, skip old RAM Q, change the repeat phase, use the
+wrong packed green code, or clear a retained register; each must produce a finite port/data
+divergence. No full-machine checkpoint, native MC traffic, pixel/sync register pipeline,
+or digital/serialized TMDS qualification is implied.

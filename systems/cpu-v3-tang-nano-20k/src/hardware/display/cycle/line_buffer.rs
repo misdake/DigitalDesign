@@ -3,8 +3,8 @@
 use super::super::line_buffer::precode;
 use super::Edges;
 
-/// A registered RAM read. Collision marks the physical cross-port uncertainty;
-/// value/known describe the behavioral RTL's old-array result.
+/// A registered RAM read. Collision marks cross-port uncertainty or taint
+/// propagated through a lookup address; value/known retain behavioral old Q.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RamWord {
     pub value: u32,
@@ -12,7 +12,7 @@ pub struct RamWord {
     pub collision: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct LineBufferInput {
     pub write_enable: bool,
     /// Nine-bit qword address, truncated as at the hardware port.
@@ -20,6 +20,24 @@ pub struct LineBufferInput {
     pub write_data: u64,
     pub read_address_a: u16,
     pub read_address_b: u16,
+    /// Both addresses are concrete by default. False represents an RTL X index.
+    pub read_address_known: [bool; 2],
+    /// Diagnostic provenance of an address derived from collision-tainted Q.
+    pub read_address_tainted: [bool; 2],
+}
+
+impl Default for LineBufferInput {
+    fn default() -> Self {
+        Self {
+            write_enable: false,
+            write_address: 0,
+            write_data: 0,
+            read_address_a: 0,
+            read_address_b: 0,
+            read_address_known: [true; 2],
+            read_address_tainted: [false; 2],
+        }
+    }
 }
 
 /// Two 512x32 banks. Data/unused cells start unknown in the RTL model.
@@ -87,8 +105,11 @@ impl LineBuffer {
                 let address = usize::from(address & 511);
                 self.q[bank] = RamWord {
                     value: self.words[bank][address],
-                    known: self.known[bank][address],
-                    collision: edges.logic_rise && input.write_enable && address == write_address,
+                    known: input.read_address_known[bank] && self.known[bank][address],
+                    collision: input.read_address_tainted[bank]
+                        || (edges.logic_rise
+                            && input.write_enable
+                            && (!input.read_address_known[bank] || address == write_address)),
                 };
             }
         }

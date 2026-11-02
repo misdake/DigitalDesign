@@ -86,6 +86,7 @@ fn vectors() -> (String, usize, serde_json::Value) {
                         ^ (generation * 0x1111_2222_3333_4444),
                     read_address_a: address,
                     read_address_b: address,
+                    ..Default::default()
                 },
             );
         }
@@ -120,6 +121,7 @@ fn vectors() -> (String, usize, serde_json::Value) {
                     write_data: (u64::from(t) << 32) | u64::from(!t),
                     read_address_a: ((t / 60) % 512) as u16,
                     read_address_b: ((t / 60 + 199) % 512) as u16,
+                    ..Default::default()
                 },
             );
         }
@@ -149,6 +151,7 @@ fn registered_reads_hold_and_report_collisions_without_resetting_storage() {
         write_data: 0x1234_5678_9abc_def0,
         read_address_a: 7,
         read_address_b: 8,
+        ..Default::default()
     };
     ram.clock(
         Edges {
