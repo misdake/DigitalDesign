@@ -278,7 +278,7 @@ fn lighting(pixel: light::PixelInput, global: Global, render: RenderState) -> [u
     )
 }
 
-fn shade(
+pub(super) fn shade(
     memory: &super::Memory<'_>,
     xy: [usize; 2],
     fragment: &Fragment,
@@ -338,6 +338,13 @@ pub(super) struct PreparedFragment {
     work: usize,
     result: Result<([u8; 3], u16), String>,
 }
+#[cfg(feature = "functional-batch")]
+impl PreparedFragment {
+    pub(super) fn finish(self) -> Result<(usize, [u8; 3], u16), String> {
+        let (color, depth) = self.result?;
+        Ok((self.work, color, depth))
+    }
+}
 pub(super) fn prepare(
     memory: &super::Memory<'_>,
     xy: [usize; 2],
@@ -366,8 +373,21 @@ pub(super) fn commit(
     rop(memory, xy, depth, color, state)
 }
 
-fn rop(
-    memory: &mut super::Memory<'_>,
+pub(super) trait PixelMemory {
+    fn load(&self, address: usize) -> Result<u16, String>;
+    fn store(&mut self, address: usize, value: u16) -> Result<(), String>;
+}
+impl PixelMemory for super::Memory<'_> {
+    fn load(&self, address: usize) -> Result<u16, String> {
+        super::Memory::load(self, address)
+    }
+    fn store(&mut self, address: usize, value: u16) -> Result<(), String> {
+        super::Memory::store(self, address, value)
+    }
+}
+
+pub(super) fn rop<M: PixelMemory>(
+    memory: &mut M,
     [x, y]: [usize; 2],
     incoming_depth: u16,
     color: [u8; 3],

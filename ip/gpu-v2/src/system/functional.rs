@@ -11,6 +11,9 @@ mod lighting;
 #[path = "functional/shading.rs"]
 mod shading;
 
+#[cfg(feature = "functional-batch")]
+pub use geometry::batch::{BatchStats, RebinMode};
+
 pub const PLANE_WORDS: usize = 400 * 256;
 const MEMORY_WORDS: usize = 0x400000;
 
@@ -62,6 +65,10 @@ fn column_offset(x: usize, y: usize) -> usize {
 /// Work is counted in commands and halfwords touched, never GPU cycles.
 pub struct Executor {
     maximum_work: usize,
+    #[cfg(feature = "functional-batch")]
+    batch_stats: BatchStats,
+    #[cfg(feature = "functional-batch")]
+    rebin_mode: RebinMode,
 }
 impl Default for Executor {
     fn default() -> Self {
@@ -70,7 +77,23 @@ impl Default for Executor {
 }
 impl Executor {
     pub fn new(maximum_work: usize) -> Self {
-        Self { maximum_work }
+        Self {
+            maximum_work,
+            #[cfg(feature = "functional-batch")]
+            batch_stats: BatchStats::default(),
+            #[cfg(feature = "functional-batch")]
+            rebin_mode: RebinMode::default(),
+        }
+    }
+
+    #[cfg(feature = "functional-batch")]
+    pub fn batch_stats(&self) -> &BatchStats {
+        &self.batch_stats
+    }
+    #[cfg(feature = "functional-batch")]
+    pub fn with_rebin_mode(mut self, mode: RebinMode) -> Self {
+        self.rebin_mode = mode;
+        self
     }
 
     pub fn execute(
@@ -96,6 +119,10 @@ impl Executor {
         access: &mut [u8],
         submission: DeviceSubmission,
     ) -> Result<Report, ExecutionError> {
+        #[cfg(feature = "functional-batch")]
+        {
+            self.batch_stats = BatchStats::default();
+        }
         if access.len() != memory.len() * 2 || access.iter().any(|&flags| flags > 3) {
             return Err(ExecutionError {
                 byte_pc: 0,
@@ -119,6 +146,10 @@ impl Executor {
         memory: &mut Memory<'_>,
         submission: DeviceSubmission,
     ) -> Result<Report, ExecutionError> {
+        #[cfg(feature = "functional-batch")]
+        {
+            self.batch_stats = BatchStats::default();
+        }
         let outcome = self.execute_commands(memory, submission);
         match outcome {
             Ok(mut report) => {
@@ -149,12 +180,35 @@ impl Executor {
             .and_then(|_| bounds(memory, base, count.div_ceil(32) * 64).map(|_| ()))
             .map_err(|reason| error(0, 0, reason.into()))?;
         let mut state = State::default();
-        for pc in 0..count {
+        let mut pc = 0;
+        #[cfg(feature = "functional-batch")]
+        let mut batch_allowed = true;
+        while pc < count {
             let at = base + pc * 2;
             let instruction = memory
                 .read(at..at + 2)
                 .map_err(|reason| error((pc * 4) as u32, 0, reason))?;
             let word = u32::from(instruction[0]) | (u32::from(instruction[1]) << 16);
+            #[cfg(feature = "functional-batch")]
+            if batch_allowed && word >> 28 == 3 {
+                match geometry::batch::try_execute(
+                    memory,
+                    &state,
+                    base,
+                    pc..count,
+                    self.maximum_work,
+                    self.rebin_mode,
+                    &mut self.batch_stats,
+                ) {
+                    geometry::batch::Attempt::Applied(next, next_pc) => {
+                        state = *next;
+                        pc = next_pc;
+                        continue;
+                    }
+                    geometry::batch::Attempt::Fallback => batch_allowed = false,
+                    geometry::batch::Attempt::Skip => {}
+                }
+            }
             let result = state.command(memory, word, self.maximum_work);
             let end = result.map_err(|reason| error((pc * 4) as u32, word, reason))?;
             if end {
@@ -167,6 +221,7 @@ impl Executor {
                 }
                 return Ok(state.report);
             }
+            pc += 1;
         }
         Err(error((count * 4) as u32, 0, "missing final END".into()))
     }
@@ -267,6 +322,7 @@ fn bounds(
     Ok(start..end)
 }
 
+#[derive(Clone)]
 struct State {
     local: [u16; 2048],
     loaded: [bool; 128],
@@ -278,6 +334,8 @@ struct State {
     all_fence: bool,
     stored: bool,
     report: Report,
+    #[cfg(feature = "functional-batch")]
+    pending: Option<Vec<geometry::batch::DrawInput>>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -292,6 +350,8 @@ impl Default for State {
             all_fence: false,
             stored: false,
             report: Report::default(),
+            #[cfg(feature = "functional-batch")]
+            pending: None,
         }
     }
 }
@@ -408,6 +468,16 @@ impl State {
                     color: uniform[22],
                     rgb: mesh.rgb,
                 };
+                #[cfg(feature = "functional-batch")]
+                if let Some(pending) = &mut self.pending {
+                    pending.push(geometry::batch::DrawInput {
+                        mesh,
+                        uniform,
+                        state,
+                        pc: 0, // Collector installs the actual command PC.
+                    });
+                    return Ok(false);
+                }
                 geometry::draw(memory, &mesh, &uniform, state, &mut self.report, maximum)?;
             }
             4 if word & 0x0fff_fffc == 0 => {

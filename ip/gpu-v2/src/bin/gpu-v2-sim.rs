@@ -36,10 +36,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     let mut executor = Executor::new(parse(3)?);
+    #[cfg(feature = "functional-batch")]
+    if let Ok(mode) = std::env::var("GPU_SIM_REBIN") {
+        use gpu_v2::system::functional::RebinMode;
+        executor = executor.with_rebin_mode(match mode.as_str() {
+            "A" => RebinMode::TriangleTiles,
+            "B" => RebinMode::TileScan,
+            "C" => RebinMode::ParallelSort,
+            "D" => RebinMode::LocalBuckets,
+            _ => return Err("GPU_SIM_REBIN must be A, B, C or D".into()),
+        });
+    }
     let outcome = match &mut access {
         Some(flags) => executor.execute_captured(&mut memory, flags, submission),
         None => executor.execute(&mut memory, submission),
     };
+    #[cfg(feature = "functional-batch")]
+    if let Some(path) = std::env::var_os("GPU_SIM_BATCH_STATS") {
+        std::fs::write(PathBuf::from(path), executor.batch_stats().to_json())?;
+    }
     let effects = match &outcome {
         Ok(report) => report.effects,
         Err(error) => error.effects,

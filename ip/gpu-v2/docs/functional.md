@@ -179,6 +179,81 @@ locals, diagnostic string allocations on failure and thread stacks; it is not a
 process working-set measurement. No
 asynchronous GPU lifetime or completion behavior is introduced.
 
+## Experimental batch and tile executor
+
+The opt-in Cargo feature `functional-batch` adds a bounded batch prototype. The
+default build retains the accepted per-triangle executor above. With the feature
+enabled, `Executor::new` uses tile-scan rebinning; `with_rebin_mode` selects the
+other experimental strategies. One-thread pools still execute the batch pipeline
+when admitted, allowing its materialization overhead to be measured directly.
+
+A batch starts at DRAW and collects at most 128 draws sharing the current
+target. It snapshots each meshlet, selected Instance and native state. Rayon
+transforms meshlets, sets up the flattened triangle list, and rasterizes across
+all triangles in strips of up to eight row pairs. Every original 2x2 quad and
+first-covered-lane LOD anchor remain intact. Compact samples retain unquantized
+Final RGB8 and incoming D16; depth tests, blending and RGB565 packing happen only
+in the tile interpreter, using the same ROP calculation as ordinary execution.
+
+The prepared stream contains `StateChange` and `Pixels` enum messages. A
+`StateChange` binds an immutable effective Draw state ID, including its selected
+Instance, at that DRAW's original command PC. It is emitted even when the draw
+has no covered pixels. `Pixels` references tile-indexed sample pieces and retains
+the original command/triangle and stream-order keys; sample order inside each
+piece is the original quad/lane order. All tiles receive the state bindings.
+Rebinning preserves or restores the complete message order, including state
+bindings, rather than sorting only triangle IDs. State and sample storage remain
+owned until all tile interpreters join.
+
+| Native operation | Batch treatment and ownership |
+| --- | --- |
+| DMA_LOCAL / Instance | Validate and copy into private frontend state; selected values are snapshotted at DRAW. The effective tint/alpha binding is in its StateChange. A read overlapping either pending target plane ends the batch first. |
+| DMA_MESHLET | Validate and snapshot the page before parallel transformation/setup. Final input-page bindings are retained even without a later DRAW. A target-overlapping source ends the batch. |
+| SET_GLOBAL | Validate once in the frontend and bake projection/Lighting into prepared samples. No tile-side Global command is needed. A later change with no DRAW remains in the final frontend state. |
+| SET_RENDER | Bake texture, filtering and shading context into samples; depth/blend/write controls are part of the immutable Draw binding consumed by ROP. A later Render change with no DRAW is still retained. |
+| WAIT / FLUSH / TEX_INVALIDATE / NOP | Preserve frontend checks, flags and work charges without mechanically ending a batch. This result-level SIM has no retained Sampling cache or externally observable intermediate flush event. |
+| SET_TARGET / CLEAR / UI_GRID / MEMCPY / END | End the batch before this command. Target ownership, direct memory side effects and final command validation execute once through the ordinary path. |
+| CB fetch / texture feedback | A CB read overlapping pending output ends the batch. A non-RGB draw whose entire texture allocation overlaps either target uses the ordinary path. |
+
+Four rebin modes share the same prepared messages and sample pieces:
+
+| Mode | Registration |
+| --- | --- |
+| A, TriangleTiles | Sequential source triangle groups, parallel tile-owned insertion within each group |
+| B, TileScan | Parallel tiles, each scanning source groups in original order |
+| C, ParallelSort | Parallel source groups/pieces, mutex-protected insertion, then parallel sort by complete stream order |
+| D, LocalBuckets | Rayon-local partition buckets, tile-owned merge, then complete-order sort |
+
+Tiles own disjoint native 16x16 address ranges. Each interpreter copies its
+color/depth preimage and byte flags into private storage, interprets bindings and
+ordered samples, and checks only the actual ROP reads/writes. Copying an unknown
+preimage is not treated as a GPU read. No worker writes authoritative memory,
+access flags or Effects. After all stages succeed, the caller copies the private
+tiles back and merges the envelopes of actual ROP writes; unchanged staging
+bytes do not enlarge Effects.
+
+Any frontend, geometry, shading, tile-permission or work-budget failure discards
+the speculative state and tiles, then resumes the original execution from the
+first draw. Subsequent batch attempts in that submission are disabled after a
+failed trial. Thus the ordinary path supplies the original error PC, reason and
+partial-write/access/Effects prefix. Admission checks a conservative work upper
+bound before shading and a 512MiB prototype payload estimate; oversized batches
+also use the original path. There is no rollback after authoritative writes,
+unsafe shared pixel access, cross-submission queue or cycle model.
+
+`batch_stats()` exposes experimental phase wall times, successful batch sizes,
+fallback categories, message counts, worker participation/sample distribution
+and a capacity-based payload estimate. `raster_ns` includes sampling, Lighting
+and Final; a separate ignored diagnostic materializes interpolation output to
+measure geometry and shading independently, and is not an additive breakdown of
+that fused timer. Payload capacities exclude allocator overhead, thread stacks
+and unrelated input/output storage; process working-set measurements are a
+separate quantity. Worker participation does not prove full CPU utilization.
+
+The CLI keeps its completion/output protocol. In feature-enabled builds only,
+`GPU_SIM_REBIN=A|B|C|D` selects a mode and `GPU_SIM_BATCH_STATS=<path>` exports
+diagnostic JSON. The latter adds file I/O and should be disabled for CLI timing.
+
 ## System adapter and verification
 
 The system's default `GpuDevice` remains control-only. `GpuDevice::functional()`

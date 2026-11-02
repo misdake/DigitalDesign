@@ -3,6 +3,10 @@ use super::{shading, Report};
 use rayon::prelude::*;
 use std::sync::OnceLock;
 
+#[cfg(feature = "functional-batch")]
+#[path = "geometry/batch.rs"]
+pub(super) mod batch;
+
 pub(super) fn signed(value: i128, bits: u32) -> i128 {
     let shift = 128 - bits;
     (value << shift) >> shift

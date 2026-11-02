@@ -3,6 +3,9 @@ name = "gpu-v2"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+functional-batch = []
+
 [dependencies]
 audited = { path = "../../modeling/audited" }
 resource-scheduler = { path = "../../modeling/scheduler" }

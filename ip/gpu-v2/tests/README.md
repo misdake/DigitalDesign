@@ -45,6 +45,27 @@ one/four-thread pools.4096 deterministic quantized half-plane sets check that
 row bounds never exclude an original covered span, including horizontal,
 vertical, empty and top-left boundary cases.
 
+The opt-in `functional-batch` feature adds a true multi-draw tile prototype.
+Build both a separately frozen accepted CLI and a feature-enabled candidate.
+`functional_batch.py --baseline <accepted> --candidate <candidate> --input
+<full-scene-directory> --out <fresh-directory>` mutates the supplied105-command
+input into bounded budget/unknown-read/denied-write/state/feedback/CB-alias and
+DMA-target cases. It compares exit/diagnostics and all memory/access/completion
+bytes, and checks telemetry so a successful ordinary fallback is not mistaken
+for a normal batch success. Every process has a60-second wall limit.
+
+The feature's `empty_draw_events_and_later_pixel_free_state_are_both_preserved`
+unit checks two no-pixel DRAW bindings plus later Render/Global updates without
+another DRAW, including final frontend state and exact successful work count.
+Two explicit ignored diagnostics accept `GPU_SIM_SHARED_INPUT` (memory-before,
+access-before and expected memory-after), `GPU_SIM_SHARED_COUNT`, and a fresh
+output path. `shared_prepared_rebin_comparison` uses
+`GPU_SIM_SHARED_REBIN_OUT`; it reuses the same in-memory StateChange/Pixels input
+for A/B/C/D at1/2/4/8 threads and compares every tile message. The separate
+`isolated_stage_diagnostic` uses `GPU_SIM_STAGE_DIAGNOSTIC_OUT` and verifies its
+materialized geometry/shade output against fused samples. Both use64000000 work
+units; run only the named ignored test, not the entire ignored suite.
+
 Pure host regressions share the `host` integration executable. Their component
 modules remain independently filterable, for example:
 
