@@ -10,6 +10,8 @@ static GPU_CB_RECORDS: Buf<u16, 416> = Buf::new([0; 416]);
 static GPU_NATIVE_SCRATCH: Buf<u16, 271> = Buf::new([0; 271]);
 // Allocation facts survive descriptor Drop and execution until this CB resets.
 static GPU_CB_CAPTURE_FACTS: Buf<u16, 512> = Buf::new([0; 512]);
+// Never reset with a context: copied binding locations cannot regain an epoch.
+static GPU_RECORD_GENERATION: Buf<u16, 2> = Buf::new([0; 2]);
 
 fn gpu_native_scratch() -> Array<u16> {
     unsafe { Ptr::from_addr((GPU_NATIVE_SCRATCH.as_ptr().addr() + 15) & 65520).as_u16_array() }
@@ -31,6 +33,18 @@ const GPU_RECORD_UI_CLEAN: u16 = 12;
 const GPU_RECORD_UI_WORD: u16 = 13;
 const GPU_RECORD_TERMINAL: u16 = 14;
 const GPU_RECORD_FACT_COUNT: u16 = 15;
+const GPU_RECORD_GENERATION_LOW: u16 = 20;
+const GPU_RECORD_GENERATION_HIGH: u16 = 21;
+const GPU_RECORD_TARGET_WORD: u16 = 22;
+const GPU_RECORD_GLOBAL_WORD: u16 = 23;
+const GPU_RECORD_TARGET_BLOCKS: u16 = 24;
+const GPU_RECORD_GLOBAL_BLOCKS: u16 = 25;
+const GPU_RECORD_INSTANCE_BLOCKS: u16 = 26;
+const GPU_RECORD_COLOR_FACT: u16 = 27;
+const GPU_RECORD_DEPTH_FACT: u16 = 28;
+const GPU_RECORD_SCENE_MODEL: u16 = 29;
+const GPU_RECORD_SCENE_MATERIAL: u16 = 30;
+const GPU_RECORD_SCENE_CAMERA: u16 = 31;
 const GPU_RECORD_FACT_LIMIT: u16 = 64;
 const GPU_FACT_MESH: u16 = 1;
 const GPU_FACT_TEXTURE: u16 = 2;
@@ -53,6 +67,21 @@ fn gpu_record_data(slot: u16) -> Array<u16> {
             .add((slot * GPU_API_CB_WORDS) as i16)
             .as_u16_array()
     }
+}
+fn gpu_record_generation_available() -> bool {
+    GPU_RECORD_GENERATION[0u16] != 65535 || GPU_RECORD_GENERATION[1u16] != 65535
+}
+fn gpu_record_new_generation(mut c: Array<u16>) -> bool {
+    if !gpu_record_generation_available() {
+        return false;
+    }
+    GPU_RECORD_GENERATION[0u16] += 1;
+    if GPU_RECORD_GENERATION[0u16] == 0 {
+        GPU_RECORD_GENERATION[1u16] += 1;
+    }
+    c[GPU_RECORD_GENERATION_LOW] = GPU_RECORD_GENERATION[0u16];
+    c[GPU_RECORD_GENERATION_HIGH] = GPU_RECORD_GENERATION[1u16];
+    true
 }
 // Caller has validated slot; C reads exactly record.fact_count * 4 words.
 fn gpu_record_capture_facts(slot: u16) -> Array<u16> {
@@ -371,7 +400,7 @@ fn gpu_record_seal(slot: u16) -> bool {
     true
 }
 fn gpu_record_reset(slot: u16) -> bool {
-    if slot >= 2 {
+    if slot >= 2 || !gpu_record_generation_available() {
         return false;
     }
     let mut c = gpu_record_data(slot);
@@ -384,5 +413,5 @@ fn gpu_record_reset(slot: u16) -> bool {
         c[i] = 0;
         i += 1;
     }
-    true
+    gpu_record_new_generation(c)
 }

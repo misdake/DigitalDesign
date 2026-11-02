@@ -23,7 +23,7 @@ static PROFILER_FLAGS: Buf<u16, 2> = Buf::new([0; 2]);
 fn profiler_now() -> u16 {
     dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_MILLISECONDS)
 }
-fn profiler_buttons_reset() {
+pub fn profiler_buttons_reset() {
     let raw = dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_BUTTONS) & 3;
     let mut state = PROFILER_BUTTONS.as_array();
     state[0u16] = 1;
@@ -31,7 +31,7 @@ fn profiler_buttons_reset() {
     state[2u16] = raw;
     state[3u16] = profiler_now();
 }
-fn profiler_button_edges() -> u16 {
+pub fn profiler_button_edges() -> u16 {
     if PROFILER_BUTTONS.as_array()[0u16] == 0 {
         profiler_buttons_reset();
         return 0;
@@ -309,7 +309,12 @@ fn profiler_dump(descriptor: Array<u16>) -> bool {
     profiler_emit(descriptor, 5, 10);
     PROFILER_FLAGS.as_array()[0u16] == 0
 }
+pub fn profiler_gate_arm() {
+    // Bit1 is consumed at entry; bit0 retains the diagnostic serializer mode.
+    PROFILER_MODE.as_array()[0u16] |= 2;
+}
 pub fn profiler_gate_run(descriptor: Array<u16>, automatic_test: bool) -> u16 {
+    let requested = PROFILER_MODE.as_array()[0u16] & 2 != 0;
     PROFILER_MODE.as_array()[0u16] = if automatic_test { 1 } else { 0 };
     if PROFILER_FLAGS.as_array()[0u16] != 0 || gpu_capture_error() != GPU_CAPTURE_OK {
         return GPU_CAPTURE_FATAL;
@@ -327,8 +332,13 @@ pub fn profiler_gate_run(descriptor: Array<u16>, automatic_test: bool) -> u16 {
         if PROFILER_FLAGS.as_array()[1u16] == 1 {
             return GPU_CAPTURE_CONTINUE;
         }
-    } else if profiler_button_edges() & 2 == 0 {
+    } else if !requested && profiler_button_edges() & 2 == 0 {
         return GPU_CAPTURE_CONTINUE;
+    }
+    if requested {
+        // The pause edge was consumed by the driver's poll. A held button is
+        // the baseline here; only a fresh debounced edge may resume this lease.
+        profiler_buttons_reset();
     }
     let pause_begin = profiler_now();
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, 2);

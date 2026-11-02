@@ -292,6 +292,11 @@ fn capture_config_source(
         configuration.profile.layout_abi()
     ));
     source.push_str(&configuration.asset_check_source());
+    if configuration.hook_enabled || manifest.is_some() {
+        source.push_str("mod profiler_runtime;use profiler_runtime::*;\npub fn gpu_capture_input_poll()->u16{profiler_button_edges() & 2}\npub fn gpu_capture_input_reset(){profiler_buttons_reset();}\npub fn gpu_capture_input_arm(){profiler_gate_arm();}\n");
+    } else {
+        source.push_str("pub fn gpu_capture_input_poll()->u16{0}\npub fn gpu_capture_input_reset(){}\npub fn gpu_capture_input_arm(){}\n");
+    }
     source
 }
 

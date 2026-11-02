@@ -1,5 +1,35 @@
 # System regression tests
 
+## Persistent split controller
+
+The ordinary `host public_handheld::` cases retain input, deadlines, retirement,
+reporting and framebuffer alternation checks. Their delayed control peer verifies
+that dynamic recording occurs while static work is outstanding; its synthetic
+clock is not performance evidence. Static commands are recorded once and patched
+per frame; startup maintenance is counted separately from scene submissions.
+
+Three additional `public_handheld::stage2_` cases are ignored by default. The
+native-state comparison takes `STAGE2_UNSPLIT_SOURCE`, whose frozen original
+caller blob is checked, and compiles it with the current shared library. It
+produces controlled candidate/reference sources. The functional raw and A1 cases
+take `STAGE2_PREPARED_SOURCE` pointing to that candidate beside its reference.
+Both profiles use the same Camera movement/turn, independent rabbit Y rotation
+and complete fixed UI input. No image region is masked. Actual functional GPU
+runs compare each completed frame's color/depth and all allocation guards,
+as well as final A/B/depth allocations, within an eight-million-step bound.
+
+A1 uses the first real bound gate after an explicit test request following F1:
+submission5 is slot1 dynamic, including the initial maintenance START. It checks
+unissued START, actual completed static preimages against an independent static
+prefix, exact visible planes and read-only allocation tails. Front is observed
+in a sidecar because the existing wire protocol omits it. The application is
+compiled with the existing fixture build/catalog identity producer. The actual
+raw dump passes shared GPS1 decoding/materialization and four tail/alias semantic
+mutations must fail. This is not board/build-receipt verification. Outputs use
+fresh per-run directories; `STAGE2_QUALIFICATION_RUN` can name a run and rejects
+an existing output directory. No whole-frame RTL, board timing or speed claim is
+implied by these tests.
+
 ## Explicit RCC inline helper measurement
 
 The `rcc_inline` target copies the current production `gpu_scene_fix_read/write`
@@ -81,6 +111,24 @@ not replace the fourteen bounded RTL scenarios in `cache_maintenance_protocol`
 or qualify new device execution or board timing.
 
 ## Graphics API helpers
+
+`host::gpu_api_scene_patch` uses the checked public API and bounded CPU execution
+in both profiles. It compares the full patched push span and retargeted facts
+with a fresh ordinary recording, preserves the sealed command stream through
+actual control-peer retirement, and alternates targets without reset. Negative
+cases cover foreign/stale/context/reset bindings, projection/light rejection,
+generation carry/exhaustion, mixed equal-valued Models, invalid spans and driver
+ownership. Its storage-failure fixture preserves the production patch source
+and injects failure into the storage callee after one real copy; this qualifies
+poison/shadow/START boundaries, not a physical transport failure or GPU pixels.
+
+`host::gpu_api_submit_modes` checks the shared public driver in both profiles:
+ordinary/unarmed submissions skip the hook, pending requests survive ordinary
+work, and a stale header cannot overwrite real-START counts. Its counter cases
+cover low-word carry and failed START. A controlled hook observes prospective
+submission numbers; a separate case runs the real profiler runtime and requires
+held-button samples, a release and a fresh debounced resume before START.
+All cases stop within one million CPU instructions; their peers do not render.
 
 `graphics_api_b_modules` compiles actual B camera/model/material/state/view/UI helpers with
 checked RCC and executes CPU V3 in both `gpu_debug` profiles, with a 250,000-step

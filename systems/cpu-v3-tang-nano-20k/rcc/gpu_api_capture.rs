@@ -960,10 +960,45 @@ fn gpu_capture_gate() -> u16 {
     }
     action
 }
+// Pending request bit0, lazy input-baseline reset bit1. No frame scheduler.
+static GPU_CAPTURE_REQUEST: Buf<u16, 1> = Buf::new([0; 1]);
+fn gpu_snapshot_reset() {
+    GPU_CAPTURE_REQUEST[0u16] = 2;
+}
+fn gpu_snapshot_request() {
+    if GPU_CAPTURE_CONFIG_ENABLED != 0 {
+        GPU_CAPTURE_REQUEST[0u16] |= 1;
+    }
+}
+fn gpu_snapshot_poll() {
+    if GPU_CAPTURE_CONFIG_ENABLED != 0 {
+        if GPU_CAPTURE_REQUEST[0u16] & 2 != 0 {
+            gpu_capture_input_reset();
+            GPU_CAPTURE_REQUEST[0u16] &= 1;
+        }
+        if gpu_capture_input_poll() != 0 {
+            gpu_snapshot_request();
+        }
+    }
+}
+fn gpu_snapshot_take() -> bool {
+    if GPU_CAPTURE_CONFIG_ENABLED == 0 || GPU_CAPTURE_REQUEST[0u16] & 1 == 0 {
+        return false;
+    }
+    GPU_CAPTURE_REQUEST[0u16] &= 2;
+    gpu_capture_input_arm();
+    true
+}
+// Only the common driver calls this, once after an actual successful START.
+fn gpu_capture_started() {
+    GPU_CAPTURE_CONTROL[4u16] += 1;
+    if GPU_CAPTURE_CONTROL[4u16] == 0 {
+        GPU_CAPTURE_CONTROL[5u16] += 1;
+    }
+}
+// Lease-only finalization must never read a stale prospective header count.
 fn gpu_capture_submitted() {
     if GPU_CAPTURE_CONFIG_ENABLED != 0 {
-        GPU_CAPTURE_CONTROL[4u16] = GPU_CAPTURE_HEADER[GPU_CAPTURE_H_SUBMISSION];
-        GPU_CAPTURE_CONTROL[5u16] = GPU_CAPTURE_HEADER[GPU_CAPTURE_H_SUBMISSION + 1];
         GPU_CAPTURE_CONTROL[0u16] = 0;
         GPU_CAPTURE_CONTROL[6u16] = 0;
     }

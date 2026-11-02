@@ -25,7 +25,14 @@ pub fn demo_pose(position: Vec3, angles: Vec3, scale: Vec3) -> Transform {
     }
 }
 pub fn demo_config() -> GpuConfig {
-    let no_second_buffer: Option<CommandMemory> = None;
+    let second: CommandMemory = CommandMemory {
+        commands: unsafe {
+            GpuMemory::from_sectors(GPU_SLOT1_COMMAND_FIRST_SECTOR, GPU_COMMAND_CAPACITY_SECTORS)
+        },
+        push: unsafe {
+            GpuMemory::from_sectors(GPU_SLOT1_OBJECT_FIRST_SECTOR, GPU_OBJECT_CAPACITY_SECTORS)
+        },
+    };
     GpuConfig {
         object_arena_bytes: 8192,
         command_a: CommandMemory {
@@ -36,7 +43,7 @@ pub fn demo_config() -> GpuConfig {
                 GpuMemory::from_sectors(GPU_OBJECT_FIRST_SECTOR, GPU_OBJECT_CAPACITY_SECTORS)
             },
         },
-        command_b: no_second_buffer,
+        command_b: Some(second),
     }
 }
 pub fn demo_color_a() -> ColorBuffer {

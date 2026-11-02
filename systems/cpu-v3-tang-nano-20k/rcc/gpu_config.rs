@@ -102,6 +102,9 @@ fn gpu_config_take_buffer() -> u16 {
     while slot < GPU_EXECUTION[GPU_EXEC_CONFIGURED] {
         let mask: u16 = 1 << slot;
         if GPU_EXECUTION[GPU_EXEC_TAKEN] & mask == 0 {
+            if !gpu_record_new_generation(gpu_record_data(slot)) {
+                return 65535;
+            }
             GPU_EXECUTION[GPU_EXEC_TAKEN] |= mask;
             return slot;
         }

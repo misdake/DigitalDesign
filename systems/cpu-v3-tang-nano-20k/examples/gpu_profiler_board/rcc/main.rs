@@ -114,7 +114,10 @@ fn run(limit: u16) {
         if count < 4 {
             profiler_marker(4);
         }
-        gpu.submit(buffer);
+        if GPU_PROFILER_AUTOMATIC_TEST != 0 {
+            gpu.request_snapshot();
+        }
+        gpu.submit_capturable(buffer);
         buffer = gpu.wait();
         if count & 1 == 0 {
             display.set_next_swap(&color_b);
@@ -138,7 +141,7 @@ pub fn profiler_minimal_three_frames() {
 fn main() {
     profiler_marker(0);
     if GPU_PROFILER_FULL_SCENE != 0 {
-        profiler_run_full(0);
+        profiler_run_full(0, GPU_PROFILER_AUTOMATIC_TEST != 0);
     } else {
         run(0);
     }

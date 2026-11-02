@@ -13,6 +13,7 @@
     gpu_api_capture,
     gpu_scene_math,
     gpu_model_cache,
+    gpu_scene_patch,
     gpu_scene_objects,
     gpu_scene_transforms,
     gpu_ui_grid,
@@ -46,6 +47,16 @@ mod gpu_api_fault;
 use gpu_api_fault::*;
 mod gpu_api_capture;
 use gpu_api_capture::*;
+mod gpu_scene_patch;
+use gpu_scene_patch::*;
+
+/// Positions belong to a complete shared scene binding, not an individual draw.
+#[derive(Copy, Clone)]
+pub struct SceneBinding {
+    slot: u16,
+    generation_low: u16,
+    generation_high: u16,
+}
 
 const GPU_KIND_COLOR: u16 = 8;
 const GPU_KIND_DEPTH: u16 = 9;
@@ -157,6 +168,7 @@ impl Gpu {
         if !gpu_config_init(config) {
             gpu_api_fail(2, 1, 0, 0);
         }
+        gpu_snapshot_reset();
         Gpu { identity: 1 }
     }
     pub fn command_buffer(&mut self) -> CommandBuffer {
@@ -169,29 +181,21 @@ impl Gpu {
     pub fn submit(&mut self, buffer: CommandBuffer) {
         let slot = buffer.slot;
         resource_disarm(buffer);
-        if !gpu_execute_prepare(slot) {
-            gpu_api_fail(6, 1, GPU_EXECUTION[5u16], slot);
-        }
-        let mut source: Buf<u16, 12> = Buf::new([0; 12]);
-        if !gpu_execute_capture_source(slot, source.as_array()) {
-            gpu_execute_fail(8);
-            gpu_api_fail(6, 5, slot, 0);
-        }
-        if !gpu_capture_begin(source.as_array(), gpu_record_capture_facts(slot)) {
-            gpu_execute_fail(9);
-            gpu_api_fail(6, 6, slot, gpu_capture_health());
-        }
-        let action = gpu_capture_gate();
-        if action > 1 {
-            gpu_execute_fail(10);
-            gpu_api_fail(6, 7, action, gpu_capture_health());
-        }
-        if !gpu_execute_start(slot, action == 1) {
-            gpu_api_fail(6, 2, GPU_EXECUTION[5u16], slot);
-        }
-        gpu_capture_submitted();
+        gpu_api_submit(slot, false);
+    }
+    pub fn submit_capturable(&mut self, buffer: CommandBuffer) {
+        let slot = buffer.slot;
+        resource_disarm(buffer);
+        gpu_api_submit(slot, true);
+    }
+    pub fn request_snapshot(&mut self) {
+        gpu_snapshot_request();
+    }
+    pub fn poll_snapshot(&mut self) {
+        gpu_snapshot_poll();
     }
     pub fn try_wait(&mut self) -> Option<CommandBuffer> {
+        gpu_snapshot_poll();
         let completed = gpu_execute_poll();
         if completed == 65535 {
             gpu_api_fail(6, 3, GPU_EXECUTION[5u16], GPU_EXECUTION[1u16]);
@@ -213,6 +217,7 @@ impl Gpu {
         }
         let mut completed = gpu_execute_poll();
         while completed == 0 {
+            gpu_snapshot_poll();
             completed = gpu_execute_poll();
         }
         if completed == 65535 {
@@ -221,6 +226,37 @@ impl Gpu {
         CommandBuffer {
             slot: completed - 1,
         }
+    }
+}
+fn gpu_api_submit(slot: u16, capturable: bool) {
+    gpu_snapshot_poll();
+    if !gpu_execute_prepare(slot) {
+        gpu_api_fail(6, 1, GPU_EXECUTION[5u16], slot);
+    }
+    let capture = capturable && gpu_snapshot_take();
+    let mut action: u16 = 0;
+    if capture {
+        let mut source: Buf<u16, 12> = Buf::new([0; 12]);
+        if !gpu_execute_capture_source(slot, source.as_array()) {
+            gpu_execute_fail(8);
+            gpu_api_fail(6, 5, slot, 0);
+        }
+        if !gpu_capture_begin(source.as_array(), gpu_record_capture_facts(slot)) {
+            gpu_execute_fail(9);
+            gpu_api_fail(6, 6, slot, gpu_capture_health());
+        }
+        action = gpu_capture_gate();
+        if action > 1 {
+            gpu_execute_fail(10);
+            gpu_api_fail(6, 7, action, gpu_capture_health());
+        }
+    }
+    if !gpu_execute_start(slot, action == 1) {
+        gpu_api_fail(6, 2, GPU_EXECUTION[5u16], slot);
+    }
+    gpu_capture_started();
+    if capture {
+        gpu_capture_submitted();
     }
 }
 impl Drop for Gpu {
@@ -303,6 +339,39 @@ impl Drop for Mesh {
     }
 }
 impl CommandBuffer {
+    pub fn scene_binding(&mut self) -> SceneBinding {
+        gpu_api_checked(gpu_patch_binding(self.slot), 13);
+        let c = gpu_record_data(self.slot);
+        SceneBinding {
+            slot: self.slot,
+            generation_low: c[GPU_RECORD_GENERATION_LOW],
+            generation_high: c[GPU_RECORD_GENERATION_HIGH],
+        }
+    }
+    pub fn patch_scene(
+        &mut self,
+        binding: SceneBinding,
+        camera: &Camera,
+        model: &Model,
+        color: &ColorBuffer,
+        depth: &DepthBuffer,
+    ) {
+        gpu_api_checked(
+            self.slot == binding.slot
+                && gpu_patch_matches(self.slot, binding.generation_low, binding.generation_high),
+            13,
+        );
+        gpu_api_checked(
+            gpu_patch_scene(
+                self.slot,
+                gpu_arena_data(camera.slot),
+                gpu_arena_data(model.slot),
+                gpu_arena_data(color.slot),
+                gpu_arena_data(depth.slot),
+            ),
+            13,
+        );
+    }
     pub fn reset(&mut self) {
         if !gpu_record_reset(self.slot) {
             gpu_api_fail(4, 1, self.slot, 0);
@@ -497,6 +566,7 @@ impl Drop for Camera {
         if !gpu_arena_free(self.slot, true, 1) {
             gpu_api_fail(7, 3, 1, self.slot);
         }
+        gpu_patch_drop(GPU_RECORD_SCENE_CAMERA, self.slot);
     }
 }
 
@@ -527,6 +597,7 @@ impl Drop for Model {
         if !gpu_arena_free(self.slot, true, 2) {
             gpu_api_fail(7, 3, 2, self.slot);
         }
+        gpu_patch_drop(GPU_RECORD_SCENE_MODEL, self.slot);
     }
 }
 
@@ -546,6 +617,7 @@ impl Drop for Material {
         if !gpu_arena_free(self.slot, false, 3) {
             gpu_api_fail(7, 3, 3, self.slot);
         }
+        gpu_patch_drop(GPU_RECORD_SCENE_MATERIAL, self.slot);
     }
 }
 
@@ -854,6 +926,7 @@ impl Pass {
     pub fn set_camera(&mut self, camera: &Camera) {
         let data = gpu_arena_data(camera.slot);
         gpu_api_checked(gpu_bind_desired(self.slot, true, data), 1);
+        gpu_patch_note(self.slot, GPU_RECORD_SCENE_CAMERA, camera.slot);
         gpu_bind_copy(
             gpu_record_data(self.slot),
             GPU_CB_CAMERA_REVISION,
@@ -968,6 +1041,8 @@ fn gpu_api_draw(
     gpu_api_checked(gpu_mesh_draw(slot, mesh, native), 5);
 
     gpu_record_capture_commit(slot, facts.as_array(), count);
+    gpu_patch_note(slot, GPU_RECORD_SCENE_MODEL, model_slot);
+    gpu_patch_note(slot, GPU_RECORD_SCENE_MATERIAL, material_slot);
 }
 
 impl Shininess {

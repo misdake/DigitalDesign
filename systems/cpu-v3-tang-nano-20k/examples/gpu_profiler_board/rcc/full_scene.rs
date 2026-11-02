@@ -9,7 +9,7 @@ use profiler_clock::*;
 mod time;
 use time::*;
 
-pub fn profiler_run_full(limit: u16) {
+pub fn profiler_run_full(limit: u16, automatic: bool) {
     let mut gpu = Gpu::init(demo_config());
     let mut buffer = gpu.command_buffer();
     let color_a = demo_color_a();
@@ -108,7 +108,10 @@ pub fn profiler_run_full(limit: u16) {
         }
         let resume_before = profiler_resume_epoch();
         time_clear_microseconds();
-        gpu.submit(buffer);
+        if automatic {
+            gpu.request_snapshot();
+        }
+        gpu.submit_capturable(buffer);
         buffer = gpu.wait();
         observed = time_microseconds();
         if profiler_resume_epoch() != resume_before {
@@ -127,6 +130,6 @@ pub fn profiler_run_full(limit: u16) {
     }
 }
 pub fn profiler_full_three_frames() {
-    profiler_run_full(3);
+    profiler_run_full(3, true);
     halt(0x600d);
 }

@@ -16,7 +16,7 @@ fn main(){
  {let pass=second.pass(&color,&depth,ColorLoad::load(),DepthLoad::clear(0x2468));}
  gpu.submit(first);first=gpu.wait();let sealed=first.command_words();
  let absent:Option<CommandBuffer>=gpu.try_wait();if let Some(unexpected)=absent{drop(unexpected);halt(0xbad);}
- gpu.submit(second);second=gpu.wait();gpu.submit(first);first=gpu.wait();
+ gpu.submit(second);second=gpu.wait();if dev_recv(1,0)!=0{gpu.request_snapshot();}gpu.submit_capturable(first);first=gpu.wait();
  check(first.command_words()==sealed);first.reset();check(first.command_words()==0&&first.push_words()==0);
  drop(first);drop(second);drop(color);drop(depth);drop(gpu);halt(0x600d);
 }"#;
@@ -37,6 +37,9 @@ pub(super) struct Trace {
 pub(super) struct Peer(pub(super) u8, pub(super) Rc<RefCell<Trace>>);
 impl Device for Peer {
     fn read(&mut self, _: &mut [u16], channel: u8) -> u16 {
+        if self.0 == 1 && channel == 0 {
+            return u16::from(self.1.borrow().resume_test);
+        }
         if self.0 == 0 {
             let mut state = self.1.borrow_mut();
             if channel == 10 {

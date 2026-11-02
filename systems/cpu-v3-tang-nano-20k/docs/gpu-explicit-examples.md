@@ -51,6 +51,27 @@ debounced board button toggles visibility. Its native asset producer is reused
 without the profiler wrapper's OBS atlas substitution. The default boot and
 fixed profiler selections are unchanged.
 
+The public controller uses fixed CPU command-buffer roles: slot0 retains the
+room/RGB stream and slot1 records rabbit/UI work. Startup invalidates textures
+with one separate ordinary maintenance submission, then records slot0's clear,
+six room meshlets and RGB meshlet once. Each frame starts after the previous
+dynamic submission and Display swap retire. Input updates the Camera; the
+typed scene binding patches slot0's Target/Global/Instance for the current Back
+without resetting its commands, and ordinary submit starts that static work.
+While it runs, the CPU records slot1 with Load color/depth, a separate rabbit
+Model and the UI. It waits for static retirement, submits slot1 through
+`submit_capturable`, waits for dynamic retirement, then presents and confirms
+the swap. Back A/B alternates; CPU slot roles do not. The default rabbit Model
+remains stationary. Waits retain the existing deadline and telemetry handling.
+
+An armed dynamic capture stops after static retirement and dynamic publication,
+before dynamic START. Ordinary static and unarmed eligible work bypass the
+capture gate. The existing explicit-v2 wire format omits Front; a functional
+system qualification can observe Front separately without adding a wire range.
+The controlled two-frame test moves/turns Camera and independently rotates the
+rabbit only in its test source. Its full frame color/depth and guard comparison
+is functional evidence, not native CPU/GPU timing or board qualification.
+
 RTT planes occupy sector ranges `0xc000..0xc800` and `0xc800..0xd000`, each with
 2048 sectors of caller-owned capacity. The current packers exclude these ranges
 from assets. Display uses the ordinary demo planes. No CPU pixel conversion or

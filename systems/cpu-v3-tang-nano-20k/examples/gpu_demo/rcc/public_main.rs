@@ -119,11 +119,42 @@ fn prepare_ui(grid: &mut UiGrid) -> u16 {
     }
     4 - first
 }
+// Startup-only recording has its own bounded RCC frame. Descriptors are copied
+// into the sealed stream; the caller retains Camera/Model/Material ownership.
+fn demo_record_static(
+    buffer: &mut CommandBuffer,
+    camera: &Camera,
+    model: &Model,
+    material: &Material,
+    view: &TextureView,
+    state: &RenderState,
+) {
+    let color = demo_color_b();
+    let depth = demo_depth();
+    let room = demo_mesh_part(0, 6);
+    let rgb = demo_mesh_part(6, 1);
+    {
+        let mut pass = buffer.pass(
+            &color,
+            &depth,
+            ColorLoad::clear(Rgb565::from_raw(0)),
+            DepthLoad::clear(65535),
+        );
+        pass.set_camera(camera);
+        pass.set_state(state);
+        pass.draw(&room, model, material, view);
+        pass.draw_colored(&rgb, model, material);
+    }
+}
+fn demo_identity_model() -> Model {
+    Model::new(demo_pose(demo_zero(), demo_zero(), demo_scale()))
+}
 fn demo_run(limit: u16, budget: u16) {
     REPORT[11u16] = 11;
     frame_stats_reset(STATS.as_array());
     let mut gpu = Gpu::init(demo_config());
-    let mut buffer = gpu.command_buffer();
+    let mut static_buffer = gpu.command_buffer();
+    let mut dynamic_buffer = gpu.command_buffer();
     let color_a = demo_color_a();
     let color_b = demo_color_b();
     let depth = demo_depth();
@@ -139,10 +170,9 @@ fn demo_run(limit: u16, budget: u16) {
         fix32::from_words(52429, 0),
         fix32::from_words(6554, 1),
     )));
-    let room = demo_mesh_part(0, 6);
-    let rgb = demo_mesh_part(6, 1);
     let rabbit = demo_mesh_part(7, 17);
-    let model = Model::new(demo_pose(demo_zero(), demo_zero(), demo_scale()));
+    let box_model = demo_identity_model();
+    let rabbit_model = demo_identity_model();
     let mut unlit = demo_material(demo_white(), true);
     // Preserve the native global/render codes even while lighting is bypassed.
     unlit.set_response(fix32::from_words(16384, 0), fix32::from_words(49152, 0));
@@ -167,6 +197,20 @@ fn demo_run(limit: u16, budget: u16) {
     let texture = demo_texture();
     let view = texture.view();
     let mut grid = demo_grid(false);
+    // Cache invalidation is startup maintenance, never part of the reusable stream.
+    dynamic_buffer.invalidate_textures();
+    dev_send(7, 1, 9);
+    gpu.submit(dynamic_buffer);
+    dynamic_buffer = wait_gpu(&mut gpu, budget);
+    demo_record_static(
+        &mut static_buffer,
+        &camera,
+        &box_model,
+        &unlit,
+        &view,
+        &state,
+    );
+    let binding = static_buffer.scene_binding();
     gamepad_init();
     demo_buttons_init(
         BUTTONS.as_array(),
@@ -199,26 +243,27 @@ fn demo_run(limit: u16, budget: u16) {
         if motion.changed {
             camera.set_pose(motion.eye, demo_motion_angles(motion));
         }
+        // The persistent stream keeps geometry, Render, END and padding.
+        dev_send(7, 1, 10);
+        if frame & 1 == 0 {
+            static_buffer.patch_scene(binding, &camera, &box_model, &color_b, &depth);
+        } else {
+            static_buffer.patch_scene(binding, &camera, &box_model, &color_a, &depth);
+        }
+        gpu.submit(static_buffer);
+        dev_send(7, 1, 11);
+        // Only dynamic CPU storage is touched while the static GPU work runs.
         let mut glyphs: u16 = 0;
         if visible {
             glyphs = prepare_ui(&mut grid);
         }
-        buffer.reset();
-        if frame == 0 {
-            buffer.invalidate_textures();
-        }
+        dynamic_buffer.reset();
         if frame & 1 == 0 {
-            let mut pass = buffer.pass(
-                &color_b,
-                &depth,
-                ColorLoad::clear(Rgb565::from_raw(0)),
-                DepthLoad::clear(65535),
-            );
+            let mut pass =
+                dynamic_buffer.pass(&color_b, &depth, ColorLoad::load(), DepthLoad::load());
             pass.set_camera(&camera);
             pass.set_state(&state);
-            pass.draw(&room, &model, &unlit, &view);
-            pass.draw_colored(&rgb, &model, &unlit);
-            pass.draw(&rabbit, &model, &lit, &view);
+            pass.draw(&rabbit, &rabbit_model, &lit, &view);
             if glyphs != 0 {
                 pass.draw_ui(
                     &grid,
@@ -231,17 +276,11 @@ fn demo_run(limit: u16, budget: u16) {
                 );
             }
         } else {
-            let mut pass = buffer.pass(
-                &color_a,
-                &depth,
-                ColorLoad::clear(Rgb565::from_raw(0)),
-                DepthLoad::clear(65535),
-            );
+            let mut pass =
+                dynamic_buffer.pass(&color_a, &depth, ColorLoad::load(), DepthLoad::load());
             pass.set_camera(&camera);
             pass.set_state(&state);
-            pass.draw(&room, &model, &unlit, &view);
-            pass.draw_colored(&rgb, &model, &unlit);
-            pass.draw(&rabbit, &model, &lit, &view);
+            pass.draw(&rabbit, &rabbit_model, &lit, &view);
             if glyphs != 0 {
                 pass.draw_ui(
                     &grid,
@@ -255,9 +294,11 @@ fn demo_run(limit: u16, budget: u16) {
             }
         }
         dev_send(7, 1, 12);
-        gpu.submit(buffer);
+        dev_send(7, 1, 16);
+        static_buffer = wait_gpu(&mut gpu, budget);
+        gpu.submit_capturable(dynamic_buffer);
         dev_send(7, 1, 13);
-        buffer = wait_gpu(&mut gpu, budget);
+        dynamic_buffer = wait_gpu(&mut gpu, budget);
         observed = time_microseconds();
         dev_send(7, 4, observed);
         dev_send(7, 1, 14);

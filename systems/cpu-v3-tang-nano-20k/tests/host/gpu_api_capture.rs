@@ -36,9 +36,9 @@ s[1u16]=65535;s[2u16]=0;s[4u16]=0;f[0u16]=65535;f[2u16]=65535;
 if mode==22{check(gpu_capture_read_value(2,36864,1)==0);check(gpu_capture_health()==2);halt(0x600d);}
 if mode==23{check(!gpu_capture_begin(s.as_array(),f.as_array()));check(gpu_capture_health()==8);halt(0x600d);}
 check(gpu_capture_gate()==dev_recv(7,13));
-if dev_recv(7,13)!=2{gpu_capture_submitted();check(gpu_capture_health()==1);}
+if dev_recv(7,13)!=2{gpu_capture_started();gpu_capture_submitted();check(gpu_capture_health()==1);}
 if mode==28{s[1u16]=0;s[2u16]=0x7000;s[4u16]=20;f[0u16]=0x2000;f[2u16]=5;
- check(gpu_capture_begin(s.as_array(),f.as_array()));check(gpu_capture_gate()==0);gpu_capture_submitted();}
+ check(gpu_capture_begin(s.as_array(),f.as_array()));check(gpu_capture_gate()==0);gpu_capture_started();gpu_capture_submitted();}
 halt(0x600d);}"#;
 const GATE: &str = r#"use crate::dsl_rt::*;mod gpu_api_capture;use gpu_api_capture::*;
 pub fn profiler_gate(d:Array<u16>)->u16{
@@ -153,7 +153,7 @@ fn compile(enabled: bool, app: &str, gate: &str, debug: bool) -> rcc_backend::Cp
             "gpu_storage" | "gpu_present" => String::new(),
             "gpu_capture_access" => "mod gpu_api_capture;use gpu_api_capture::*;pub fn gpu_capture_error()->u16{gpu_capture_health()}pub fn gpu_capture_range_word(r:u16,f:u16)->u16{gpu_capture_range_value(r,f)}pub fn gpu_capture_read_word(r:u16,l:u16,h:u16)->u16{gpu_capture_read_value(r,l,h)}".into(),
             "profiler_gate" => gate.into(),
-            "gpu_capture_config" => format!("pub const GPU_CAPTURE_CONFIG_ENABLED:u16={};pub const GPU_CAPTURE_CONFIG_LAYOUT_ABI:u16=2;pub fn gpu_capture_manifest_word(index:u16)->u16{{0x3412}}",u16::from(enabled)),
+            "gpu_capture_config" => format!("pub const GPU_CAPTURE_CONFIG_ENABLED:u16={};pub const GPU_CAPTURE_CONFIG_LAYOUT_ABI:u16=2;pub fn gpu_capture_input_poll()->u16{{0}}pub fn gpu_capture_input_reset(){{}}pub fn gpu_capture_input_arm(){{}}pub fn gpu_capture_manifest_word(index:u16)->u16{{0x3412}}",u16::from(enabled)),
             _ => std::fs::read_to_string(root.join(format!("{name}.rs"))).map_err(|e|e.to_string())?,
         })
     }).unwrap();
@@ -318,7 +318,7 @@ fn thin_gate_rechecks_health_and_disabled_capture_has_no_io() {
             assert_ne!(c[1], 0);
         }
     }
-    let app="mod gpu_api_capture;fn main(){let s:Buf<u16,1>=Buf::new([0]);if !gpu_capture_begin(s.as_array(),s.as_array())||gpu_capture_gate()!=0{halt(0xbad);}gpu_capture_submitted();halt(0x600d);}";
+    let app="mod gpu_api_capture;fn main(){let s:Buf<u16,1>=Buf::new([0]);if !gpu_capture_begin(s.as_array(),s.as_array())||gpu_capture_gate()!=0{halt(0xbad);}gpu_capture_started();gpu_capture_submitted();halt(0x600d);}";
     let p = compile(false, app, GATE, false);
     let (_, s) = run(&p, fixture(0));
     assert_eq!((s.borrow().gates, s.borrow().reads), (0, 0));
@@ -342,7 +342,7 @@ fn main(){let mut s:Buf<u16,12>=Buf::new([1,0,0x7000,512,0,0,0x7300,1024,0,0,4,2
 s[4u16]=dev_recv(7,14);s[5u16]=(s[4u16]+63)&65472;s[8u16]=dev_recv(7,15);s[9u16]=dev_recv(7,8);
 let mut i:u16=0;while i<s[9u16]*4{CONTRACT_FACTS[i]=dev_recv(7,9);i+=1;}
 let ok=gpu_capture_begin(s.as_array(),CONTRACT_FACTS.as_array());
-if dev_recv(7,10)==0{if !ok||gpu_capture_gate()!=0{halt(0xbad);}gpu_capture_submitted();}
+if dev_recv(7,10)==0{if !ok||gpu_capture_gate()!=0{halt(0xbad);}gpu_capture_started();gpu_capture_submitted();}
 else{if ok||gpu_capture_health()==0||gpu_capture_gate()!=2{halt(0xbad);}}halt(0x600d);}"#;
 
 fn put(s: &mut State, address: usize, bytes: &[u8]) {
@@ -875,7 +875,7 @@ fn production_uart_runtime_pauses_dumps_v2_and_resumes_without_gpu_sends() {
         r#"{prefix}let mut round:u16=0;while round<3{{
 if !gpu_capture_begin(s.as_array(),CONTRACT_FACTS.as_array()){{halt(0xca01);}}
 let action=gpu_capture_gate();if (round<2&&action!=0)||(round==2&&action!=1){{halt(0xca10+round*4+action);}}
-gpu_capture_submitted();round+=1;}}halt(0x600d);}}"#
+gpu_capture_started();gpu_capture_submitted();round+=1;}}halt(0x600d);}}"#
     );
     let p = compile(
         true,

@@ -91,6 +91,8 @@ fn gpu_packet_begin(slot: u16, color: u16, depth: u16, clear_mask: u16, cv: u16,
     }
     c[GPU_RECORD_COLOR] = color;
     c[GPU_RECORD_DEPTH] = depth;
+    c[GPU_RECORD_TARGET_WORD] = target + 1;
+    c[GPU_RECORD_TARGET_BLOCKS] += 1;
     // Target DMA overwrites the shared UI descriptor staging slot69.
     c[GPU_RECORD_VALID] &= 65503;
     c[GPU_RECORD_UI_CLEAN] = 0;

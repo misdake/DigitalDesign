@@ -98,3 +98,9 @@ mod xinput_inverse;
 
 #[path = "host/gpu_api_model_cache.rs"]
 mod gpu_api_model_cache;
+
+#[path = "host/gpu_api_scene_patch.rs"]
+mod gpu_api_scene_patch;
+
+#[path = "host/gpu_api_submit_modes.rs"]
+mod gpu_api_submit_modes;

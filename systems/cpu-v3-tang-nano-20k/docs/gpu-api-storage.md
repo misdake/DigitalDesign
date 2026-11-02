@@ -1,7 +1,7 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-11-01
+last-verified: 2026-11-02
 ---
 
 # Explicit GPU API internal core
@@ -132,6 +132,42 @@ the publication boundary for CPU stores.
 
 ## Command records
 
+### Persistent scene binding
+
+`CommandBuffer::scene_binding` seals a CPU-owned recording and returns an opaque,
+copyable three-word `SceneBinding` (slot and a two-word generation). This minimal
+mode accepts one Target, Global and Instance allocation, no UI, and one shared
+Camera/Model/Material identity during recording. Distinct resources with equal
+native bytes do not establish a shared group. Dropping/reusing those descriptors
+before seal invalidates the group; after seal the recording retains snapshots,
+not descriptor references. Retirement preserves the binding. Reset and context
+reuse invalidate it. A non-resetting two-word counter rejects exhaustion instead
+of reissuing an old generation; it adds four static bytes without arena objects.
+
+`cb.patch_scene(binding, &camera, &model, &color, &depth)` updates that whole
+group while the CPU owns the CB. It rejects stale/foreign bindings, fixed
+projection changes, invalid spans, overlapping target allocations and any
+driver-held owner, including prepared, running and fault-retained states.
+The target allocations must retain the recorded sizes and remain disjoint
+from both command/push pairs and other registered asset extents. Display
+retirement and choosing the current Back remain the application's responsibility.
+
+The update preserves commands, mesh packets, Render blocks, word counts,
+END/padding and Instance words42..63. It replaces Target's16-word push block,
+recomputes Global view-light with the existing numerical order, and writes the
+42 position/normal coefficients using the Model-owned dependency cache. All
+preflight and light validation precede external writes. Successful writes commit
+Camera/revision, Global/Instance shadows and replace the existing color/depth
+fact addresses. It neither adds stale target facts nor submits work. The normal
+submission publication remains required for scalar stores.
+
+Preflight rejection leaves backing unchanged. A backing-helper failure after a
+partial copy poisons the CB and commits no record shadows or target facts; the
+computed Model cache may remain updated. Partial physical writes are not rolled
+back. Original draw-header initialization and alias behavior are unchanged.
+
+### Record layout
+
 There are two independent 208-word records and one sequential 256-word native
 scratch. Its private backing reserves 271 words; `gpu_native_scratch` rounds the
 backing address upward to a 16-word boundary. The full logical span remains
@@ -163,6 +199,11 @@ The implemented control words are:
 | 14 | Known completed terminal render fence in the recorded stream |
 | 15 | Recorded allocation-fact count, 0..64 |
 | 16..19 | Camera view/focal revision captured by public set_camera |
+| 20 / 21 | Binding generation low / high word |
+| 22 / 23 | Target / Global push word offset plus one |
+| 24..26 | Target / Global / Instance allocation counts |
+| 27 / 28 | Color / depth fact index plus one after binding |
+| 29..31 | Recording Model / Material / Camera identity; 65535 rejects a mixed/reused group |
 
 Each configured extent has 1..512 sectors, fits physical memory, and is disjoint
 from the other extent in that record. Configuration is init-time only; Gpu's
@@ -251,11 +292,30 @@ an in-flight/faulted context or an implicit wait.
 The public `Gpu::try_wait` wraps normal retirement in `Option<CommandBuffer>`;
 no current owner or unfinished work yields None, while an actual fault fail-stops
 rather than masquerading as None. `Gpu::wait` rejects a nonrunning context and
-otherwise polls until the same sole CB retires. Submit moves and disarms the
-application owner, then prepares/seals/publishes, snapshots source12, calls C
-begin and gate, starts with an additional publication only for Resumed, and
-calls submitted after COUNT and START. A failed begin/gate retains the driver
-owner and capture error lease, emits no SEND and fail-stops.
+otherwise polls until the same sole CB retires. Both submission entries move
+and disarm the application owner and use the same prepare/seal/publication,
+START and retirement driver. `Gpu::submit` is ordinary: it never builds capture
+source/ranges, enters a gate, or consumes a pending request.
+
+`Gpu::submit_capturable` behaves identically while unarmed. `request_snapshot`
+arms one pending request when capture is configured. `poll_snapshot`, ordinary
+submission and wait polling also collect the existing debounced pause-button
+edge. The first poll after context initialization establishes a held-button
+baseline; a held input does not arm repeatedly. Only an armed eligible submission
+consumes the request, after preparation, then snapshots source12 and enters C's
+begin/gate before either target SEND. An explicit diagnostic request uses the
+same path without a physical press. On entry the default runtime consumes the
+already-recorded pause request and resets its input baseline, so a held pause
+or old resume edge cannot resume the frozen lease. Resume requires a fresh
+debounced edge and republishes before the same START. These polls are not
+interrupts and cannot observe a press entirely between polls.
+
+One pending-request word replaces no execution owner or scheduler. The existing
+two-word submission counter advances once after every successful real START,
+including ordinary and unarmed eligible submissions. A capture header contains
+the prospective next value; lease finalization clears only lease/cache state
+and never overwrites that counter from an old header. A failed begin/gate retains
+the driver owner and capture error lease, emits no SEND and fail-stops.
 
 `Display::try_wait_swap` performs one coherent presentation poll. Pending or a
 torn observation returns false; stable idle or an applied swap whose old reads
