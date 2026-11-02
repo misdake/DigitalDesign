@@ -70,6 +70,7 @@ impl CpuV3SystemSim {
         );
         cpu.attach_device(GPU_DEVICE, Box::<GpuDevice>::default());
         cpu.attach_device(INPUT_DEVICE, Box::<InputSnapshotDevice>::default());
+        cpu.attach_device(7, Box::<crate::ObservationDevice>::default());
         Self {
             cpu,
             vblank_mode,
@@ -126,6 +127,13 @@ impl CpuV3SystemSim {
 
     pub fn step(&mut self) -> Result<StepOutcome, Fault> {
         self.cpu.step()
+    }
+    /// Observe an actual CPU write before the same functional device consumes it.
+    pub fn step_observing(
+        &mut self,
+        before_write: impl FnMut(cpu_v3::DeviceWrite, &[u16]) -> bool,
+    ) -> Result<Option<StepOutcome>, Fault> {
+        self.cpu.step_observing(before_write)
     }
 
     pub fn run(&mut self, maximum_steps: usize) -> Result<RunOutcome, Fault> {

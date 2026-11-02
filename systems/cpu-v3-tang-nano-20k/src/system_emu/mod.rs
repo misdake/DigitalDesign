@@ -1,9 +1,12 @@
 //! Persistent CPU/cache logic emulators with fitted native SDRAM edges.
-//! Device0 uses its hardware model; other devices are not yet connected.
+//! Device0 clocks its hardware model; external functional devices share physical RAM.
+use crate::input_device::{ControllerSnapshot, InputSnapshotDevice, INPUT_DEVICE};
+use crate::system_sim::{DisplayState, VBlankMode};
 use crate::{
     CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput, SystemControlDevice,
-    SystemControlDeviceInput, SystemControlDeviceOutput,
+    SystemControlDeviceInput, SystemControlDeviceOutput, SystemControlDeviceState,
 };
+use crate::{DisplayDevice, GpuDevice, DISPLAY_DEVICE, GPU_DEVICE};
 use cpu_v3::*;
 use digital_design_circuit::{
     build_circuit, external, input, Circuit, CircuitWires, External, Wire, Wires,
@@ -30,6 +33,25 @@ pub enum Error {
 // Match the fitted self_test.v frontend boundary, including terminal states.
 fn frontend_flush(system: &SystemControlDeviceOutput, core: &CpuV3CoreOutput) -> Wire {
     system.icache_invalidate | core.halted | core.fault
+}
+
+pub use cpu_v3::DeviceWrite;
+
+struct SharedModule<M: Module> {
+    state: Rc<RefCell<M::EmuState>>,
+    input: M::Input,
+    output: M::Output,
+}
+impl<M: Module> External for SharedModule<M> {
+    fn execute(&mut self, c: &mut CircuitWires) {
+        M::execute_emu(&mut self.state.borrow_mut(), c, &self.input, &self.output);
+    }
+    fn clock(&mut self, c: &mut CircuitWires) {
+        M::clock_emu(&mut self.state.borrow_mut(), c, &self.input, &self.output);
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 struct MemoryExternal {
@@ -111,6 +133,8 @@ struct Io {
     dcache_output: CpuV3DataCacheOutput,
     arbiter_output: CpuV3MemoryArbiterOutput,
     system_output: SystemControlDeviceOutput,
+    external_read_data: Wires<16>,
+    watch_read_data: Wires<16>,
 }
 /// One machine with persistent CPU/cache/native state and one physical backing.
 pub struct CpuV3SystemEmu {
@@ -120,14 +144,25 @@ pub struct CpuV3SystemEmu {
     port: Rc<RefCell<Port>>,
     error: Rc<RefCell<Option<memory::Error>>>,
     cycle: u64,
+    core_state: Rc<RefCell<CpuV3CoreState>>,
+    system_state: Rc<RefCell<SystemControlDeviceState>>,
+    devices: [Option<Box<dyn Device>>; 8],
+    vblank_mode: VBlankMode,
 }
 impl CpuV3SystemEmu {
     /// Preloaded physical image starting at reset PC/CSEG0; not Flash boot.
     pub fn new(backing: Vec<u16>) -> Self {
+        Self::with_initial_code_segment(backing, 0)
+    }
+    fn with_initial_code_segment(backing: Vec<u16>, segment: u16) -> Self {
         assert_eq!(backing.len(), 1 << 22, "fitted SDRAM has 4M 16-bit words");
         let backing = Rc::new(RefCell::new(backing));
         let port = Rc::new(RefCell::new(Port::default()));
         let error = Rc::new(RefCell::new(None));
+        let core_state = Rc::new(RefCell::new(CpuV3CoreState::with_initial_code_segment(
+            segment,
+        )));
+        let system_state = Rc::new(RefCell::new(SystemControlDeviceState::default()));
         let (circuit, io) = build_circuit(|| {
             let reset = input();
             let initialized = input();
@@ -143,6 +178,8 @@ impl CpuV3SystemEmu {
             let arbiter_output = CpuV3MemoryArbiterOutput::allocate();
             let mut system_input = SystemControlDeviceInput::allocate();
             let system_output = SystemControlDeviceOutput::allocate();
+            let external_read_data = digital_design_circuit::input_w::<16>();
+            let watch_read_data = system_input.watch_read_data;
             // Core and fetch share the production request/response handshake.
             fetch_input.core_request_valid = core_output.instruction_request_valid;
             fetch_input.core_address = core_output.instruction_address;
@@ -213,7 +250,7 @@ impl CpuV3SystemEmu {
             system_input.device_read_enable = core_output.device_read_enable;
             system_input.device_write_enable = core_output.device_write_enable;
             system_input.device_write_data = core_output.device_write_data;
-            core_input.device_read_data = system_output.device_read_data;
+            core_input.device_read_data = system_output.device_read_data | external_read_data;
             system_input.dcache_maintenance_ready = dcache_output.maintenance_ready;
             system_input.dcache_maintenance_done = dcache_output.maintenance_done;
             system_input.dcache_maintenance_error = dcache_output.maintenance_error;
@@ -221,12 +258,20 @@ impl CpuV3SystemEmu {
             dcache_input.clean_all = system_output.dcache_clean;
             icache_input.invalidate_all = system_output.icache_invalidate;
             fetch_input.flush = frontend_flush(&system_output, &core_output);
-            CpuV3Core::emu_connect(&core_input, &core_output);
+            external(SharedModule::<CpuV3Core> {
+                state: core_state.clone(),
+                input: core_input.clone(),
+                output: core_output.clone(),
+            });
             CpuV3InstructionFetchQueue::emu_connect(&fetch_input, &fetch_output);
             CpuV3InstructionCache::emu_connect(&icache_input, &icache_output);
             CpuV3DataCache::emu_connect(&dcache_input, &dcache_output);
             CpuV3MemoryArbiter::emu_connect(&arbiter_input, &arbiter_output);
-            SystemControlDevice::<469>::emu_connect(&system_input, &system_output);
+            external(SharedModule::<SystemControlDevice<469>> {
+                state: system_state.clone(),
+                input: system_input,
+                output: system_output.clone(),
+            });
             external(MemoryExternal {
                 port: port.clone(),
                 backing: backing.clone(),
@@ -244,6 +289,8 @@ impl CpuV3SystemEmu {
                 dcache_output,
                 arbiter_output,
                 system_output,
+                external_read_data,
+                watch_read_data,
             }
         });
         Self {
@@ -253,6 +300,10 @@ impl CpuV3SystemEmu {
             port,
             error,
             cycle: 0,
+            core_state,
+            system_state,
+            devices: std::array::from_fn(|_| None),
+            vblank_mode: VBlankMode::Manual,
         }
     }
     pub fn physical_memory(&self) -> Ref<'_, [u16]> {
@@ -264,12 +315,145 @@ impl CpuV3SystemEmu {
     pub fn native_cycles(&self) -> u64 {
         self.port.borrow().native_cycle()
     }
-    /// Advance one logic edge and two native cycles. Errors stop this run.
-    pub fn step(&mut self) -> Result<CpuV3CoreOutputValue, Error> {
-        self.circuit
-            .set_wire(self.io.reset, (self.cycle < 2).into());
+    /// Install the same CB06 COPY/ZERO package used by instruction simulation.
+    /// Loading is functional; runtime starts at fitted CSEG7 with cold caches/MC.
+    pub fn from_single_flash(
+        package: &[u8],
+        memory_seed: u16,
+        vblank_mode: VBlankMode,
+    ) -> Result<Self, crate::boot::SingleBootError> {
+        let mut backing = vec![memory_seed; 1 << 22];
+        crate::boot::install_single_application(package, &mut backing)?;
+        let mut machine = Self::with_initial_code_segment(backing, 7);
+        machine.vblank_mode = vblank_mode;
+        machine.attach_device(
+            DISPLAY_DEVICE,
+            Box::new(DisplayDevice::with_pause_on_frame_index_wait(
+                vblank_mode == VBlankMode::PauseOnFrameIndexWait,
+            )),
+        );
+        machine.attach_device(GPU_DEVICE, Box::<GpuDevice>::default());
+        machine.attach_device(INPUT_DEVICE, Box::<InputSnapshotDevice>::default());
+        machine.attach_device(7, Box::<crate::ObservationDevice>::default());
+        Ok(machine)
+    }
+    pub fn attach_device(&mut self, index: u8, device: Box<dyn Device>) {
+        assert!(
+            index > 0 && index < 8,
+            "Device0 remains the clocked hardware owner"
+        );
+        self.devices[usize::from(index)] = Some(device);
+    }
+    pub fn device<T: 'static>(&self, index: u8) -> Option<&T> {
+        self.devices
+            .get(usize::from(index))?
+            .as_deref()?
+            .as_any()
+            .downcast_ref()
+    }
+    pub fn with_functional_gpu(mut self) -> Self {
+        assert!(!self.gpu().busy(), "cannot replace active GPU executor");
+        self.attach_device(GPU_DEVICE, Box::new(GpuDevice::functional()));
+        self
+    }
+    pub fn core(&self) -> Ref<'_, CpuV3CoreState> {
+        self.core_state.borrow()
+    }
+    pub fn gpu(&self) -> &GpuDevice {
+        self.device(GPU_DEVICE)
+            .expect("GPU device must remain attached")
+    }
+    fn display(&self) -> &DisplayDevice {
+        self.device(DISPLAY_DEVICE)
+            .expect("Display device must remain attached")
+    }
+    pub fn publish_input(&mut self, input: Option<ControllerSnapshot>) {
+        self.device::<InputSnapshotDevice>(INPUT_DEVICE)
+            .expect("input device must remain attached")
+            .publish(input);
+    }
+    pub fn advance_vblank(&mut self) -> bool {
+        self.display().advance_frame()
+    }
+    pub fn waiting_for_vblank(&self) -> bool {
+        self.display().waiting_for_vblank()
+            || (self.vblank_mode == VBlankMode::PauseOnFrameIndexWait
+                && (self.display().swap_pending()
+                    || self
+                        .system_state
+                        .borrow()
+                        .active_watch()
+                        .is_some_and(|(d, c, e)| {
+                            d == DISPLAY_DEVICE
+                                && c == crate::DISPLAY_FRAME_INDEX
+                                && self.display().frame_index() == e
+                        })))
+    }
+    pub fn display_state(&self) -> DisplayState {
+        let d = self.display();
+        DisplayState {
+            active_base: d.active_base(),
+            frame_index: d.frame_index(),
+            swap_pending: d.swap_pending(),
+            waiting_for_vblank: self.waiting_for_vblank(),
+        }
+    }
+    pub fn render_active_framebuffer(&self) -> Vec<u32> {
+        let d = self.display();
+        if d.front_valid() {
+            crate::display::render_framebuffer_words_at(
+                &self.physical_memory(),
+                d.active_base(),
+                d.linear_rgb565(),
+            )
+        } else {
+            vec![0; crate::FRAMEBUFFER_WIDTH as usize * crate::FRAMEBUFFER_HEIGHT as usize]
+        }
+    }
+    pub fn render_frame(&self) -> Vec<u32> {
+        let d = self.display();
+        let config = &crate::display::ACTIVE_DISPLAY_CONFIG;
+        if d.front_valid() {
+            crate::display::render_frame_words_at_config(
+                config,
+                &self.physical_memory(),
+                d.active_base(),
+                d.linear_rgb565(),
+            )
+        } else {
+            vec![0; config.hdmi_width * config.hdmi_height]
+        }
+    }
+    fn read_device(&mut self, index: u8, channel: u8) -> Result<u16, Error> {
+        if index == 0 {
+            return Ok(self.system_state.borrow().read_channel(channel));
+        }
+        let d = self
+            .devices
+            .get_mut(usize::from(index))
+            .and_then(Option::as_mut)
+            .ok_or(Error::UnsupportedDevice {
+                device: index,
+                channel,
+                writing: false,
+            })?;
+        Ok(d.read(&mut self.backing.borrow_mut(), channel))
+    }
+    fn write_device(&mut self, index: u8, channel: u8, value: u16) -> Result<(), Error> {
+        let d = self
+            .devices
+            .get_mut(usize::from(index))
+            .and_then(Option::as_mut)
+            .ok_or(Error::UnsupportedDevice {
+                device: index,
+                channel,
+                writing: true,
+            })?;
+        d.write(&mut self.backing.borrow_mut(), channel, value);
+        Ok(())
+    }
+    fn settle(&mut self) -> Result<(), Error> {
         let mut previous = None;
-        let mut settled = false;
         for _ in 0..8 {
             self.circuit.execute_gates();
             let current = (
@@ -282,36 +466,80 @@ impl CpuV3SystemEmu {
                 self.io.system_output.sample(&self.circuit),
             );
             if previous.as_ref() == Some(&current) {
-                settled = true;
-                break;
+                return Ok(());
             }
             previous = Some(current);
         }
-        if !settled {
-            return Err(Error::CombinationalLoop);
-        }
-        let o = self.io.core_output.sample(&self.circuit);
-        if o.device_index != 0 && (o.device_read_enable || o.device_write_enable) {
-            return Err(Error::UnsupportedDevice {
-                device: o.device_index as u8,
-                channel: o.device_channel as u8,
-                writing: o.device_write_enable,
-            });
-        }
+        Err(Error::CombinationalLoop)
+    }
+    /// Device side effects occur once after pure convergence, before this edge commits.
+    pub fn step(&mut self) -> Result<CpuV3CoreOutputValue, Error> {
+        Ok(self
+            .step_observing(|_, _| true)?
+            .expect("unconditional step advances"))
+    }
+    /// Return None to pause before an external write, without advancing any clock.
+    /// The callback borrows physical DRAM only; dirty CPU data stays in its cache.
+    pub fn step_observing(
+        &mut self,
+        mut before_write: impl FnMut(DeviceWrite, &[u16]) -> bool,
+    ) -> Result<Option<CpuV3CoreOutputValue>, Error> {
+        self.circuit
+            .set_wire(self.io.reset, (self.cycle < 2).into());
+        bits(&mut self.circuit, self.io.external_read_data, 0);
+        bits(&mut self.circuit, self.io.watch_read_data, 0);
+        self.settle()?;
         let watch = self.io.system_output.sample(&self.circuit);
         if watch.watch_read_enable {
-            return Err(Error::UnsupportedDevice {
-                device: watch.watch_device_index as u8,
-                channel: watch.watch_device_channel as u8,
-                writing: false,
-            });
+            let value = self.read_device(
+                watch.watch_device_index as u8,
+                watch.watch_device_channel as u8,
+            )?;
+            bits(&mut self.circuit, self.io.watch_read_data, u64::from(value));
+        }
+        let o = self.io.core_output.sample(&self.circuit);
+        if o.device_index != 0 && o.device_read_enable {
+            let value = self.read_device(o.device_index as u8, o.device_channel as u8)?;
+            bits(
+                &mut self.circuit,
+                self.io.external_read_data,
+                u64::from(value),
+            );
+            self.settle()?;
+        }
+        let o = self.io.core_output.sample(&self.circuit);
+        if o.device_index != 0 && o.device_write_enable {
+            let write = DeviceWrite {
+                device: o.device_index as u8,
+                channel: o.device_channel as u8,
+                value: o.device_write_data as u16,
+            };
+            if self.devices[usize::from(write.device)].is_none() {
+                return Err(Error::UnsupportedDevice {
+                    device: write.device,
+                    channel: write.channel,
+                    writing: true,
+                });
+            }
+            let advance = {
+                let memory = self.backing.borrow();
+                before_write(write, &memory)
+            };
+            if !advance {
+                return Ok(None);
+            }
+            self.write_device(
+                o.device_index as u8,
+                o.device_channel as u8,
+                o.device_write_data as u16,
+            )?;
         }
         self.circuit.clock_tick();
         self.cycle += 1;
         if let Some(e) = self.error.borrow_mut().take() {
             return Err(Error::NativeMemory(e));
         }
-        Ok(o)
+        Ok(Some(o))
     }
 }
 

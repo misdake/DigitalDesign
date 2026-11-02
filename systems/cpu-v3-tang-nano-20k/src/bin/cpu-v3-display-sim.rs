@@ -9,7 +9,10 @@ use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]
 use cpu_v3_tang_nano_20k::display::{ACTIVE_DISPLAY_CONFIG, HDMI_HEIGHT, HDMI_WIDTH};
 use cpu_v3_tang_nano_20k::host_io::{HostIo, RealtimeHostIo};
+use cpu_v3_tang_nano_20k::system_emu::{CpuV3SystemEmu, DeviceWrite};
 use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
+use cpu_v3_tang_nano_20k::{DeviceSubmission, GPU_COMMAND_COUNT, GPU_COMMAND_START, GPU_DEVICE};
+use std::io::{BufWriter, Write};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -33,8 +36,117 @@ fn window_focus(window: &mut Option<PreviewWindow>) -> bool {
 const GENERATED_APPLICATION_PACKAGE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.bin"));
 
+enum CpuBackend {
+    Instruction(Box<CpuV3SystemSim>),
+    Native(Box<CpuV3SystemEmu>),
+}
+#[derive(Default)]
+struct SubmissionPause {
+    target: Option<usize>,
+    seen: usize,
+    count: Option<u16>,
+    capture: Option<(DeviceWrite, Option<u16>, Vec<u16>)>,
+}
+impl SubmissionPause {
+    fn observe(&mut self, write: DeviceWrite, memory: &[u16]) -> bool {
+        if write.device != GPU_DEVICE {
+            return true;
+        }
+        if write.channel == GPU_COMMAND_COUNT {
+            self.count = Some(write.value);
+        }
+        if write.channel == GPU_COMMAND_START {
+            self.seen += 1;
+            let count = self.count.take();
+            if self.target == Some(self.seen) {
+                self.capture = Some((write, count, memory.to_vec()));
+                return false;
+            }
+        }
+        true
+    }
+}
+impl CpuBackend {
+    fn host_event(&mut self, host: &mut HostIo, elapsed: Duration, focused: bool) {
+        match self {
+            Self::Instruction(s) => host.advance(s, elapsed, focused),
+            Self::Native(s) => host.advance_input(s.as_mut(), elapsed, focused),
+        }
+    }
+    fn realtime_input(&mut self, host: &mut RealtimeHostIo, focused: bool) {
+        match self {
+            Self::Instruction(s) => host.pump(s, focused),
+            Self::Native(s) => host.pump_input(s.as_mut(), focused),
+        }
+    }
+    fn step(&mut self, pause: &mut SubmissionPause) -> Result<Option<bool>, String> {
+        match self {
+            Self::Instruction(s) => s
+                .step_observing(|w, m| pause.observe(w, m))
+                .map(|o| o.map(|o| matches!(o, StepOutcome::Halted { .. })))
+                .map_err(|e| format!("instruction CPU fault: {e:?}")),
+            Self::Native(s) => {
+                let Some(o) = s.step_observing(|w, m| pause.observe(w, m)).map_err(|e| {
+                    format!("native CPU fault at logic cycle {}: {e:?}", s.cycles())
+                })?
+                else {
+                    return Ok(None);
+                };
+                if o.fault {
+                    return Err(format!(
+                        "native core fault {} at logic cycle {}, PC {:#06x}",
+                        o.fault_code,
+                        s.cycles(),
+                        s.core().program_counter()
+                    ));
+                }
+                Ok(Some(o.halted))
+            }
+        }
+    }
+    fn gpu_error(&self) -> Option<String> {
+        match self {
+            Self::Instruction(s) => s.gpu().last_error().map(|e| format!("{e:?}")),
+            Self::Native(s) => s.gpu().last_error().map(|e| format!("{e:?}")),
+        }
+    }
+    fn vblank(&mut self) -> bool {
+        match self {
+            Self::Instruction(s) => s.advance_vblank(),
+            Self::Native(s) => s.advance_vblank(),
+        }
+    }
+    fn render(&self) -> Vec<u32> {
+        match self {
+            Self::Native(s) => s.render_frame(),
+            Self::Instruction(s) => {
+                if s.cpu()
+                    .device::<cpu_v3_tang_nano_20k::DisplayDevice>(
+                        cpu_v3_tang_nano_20k::DISPLAY_DEVICE,
+                    )
+                    .is_some_and(cpu_v3_tang_nano_20k::DisplayDevice::front_valid)
+                {
+                    render_frame_at(s.cpu(), s.display_state().active_base)
+                } else {
+                    vec![
+                        0;
+                        cpu_v3_tang_nano_20k::display::HDMI_WIDTH
+                            * cpu_v3_tang_nano_20k::display::HDMI_HEIGHT
+                    ]
+                }
+            }
+        }
+    }
+}
+
 struct Options {
-    max_cpu_steps: usize,
+    max_cpu_steps: Option<usize>,
+    max_cpu_cycles: Option<usize>,
+    native: bool,
+    package: Option<PathBuf>,
+    freeze_submit: Option<usize>,
+    stop_after_present: Option<usize>,
+    output: PathBuf,
     frames: usize,
     ppm: bool,
     window: bool,
@@ -45,7 +157,13 @@ struct Options {
 
 fn options() -> Result<Options, String> {
     let mut options = Options {
-        max_cpu_steps: 5_000_000,
+        max_cpu_steps: None,
+        max_cpu_cycles: None,
+        native: false,
+        package: None,
+        freeze_submit: None,
+        stop_after_present: None,
+        output: PathBuf::from("target/display-sim"),
         frames: 120,
         ppm: false,
         window: false,
@@ -57,11 +175,47 @@ fn options() -> Result<Options, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--max-cpu-steps" => {
-                options.max_cpu_steps = args
-                    .next()
-                    .ok_or("--max-cpu-steps requires a value")?
-                    .parse()
-                    .map_err(|_| "invalid --max-cpu-steps")?;
+                options.max_cpu_steps = Some(
+                    args.next()
+                        .ok_or("--max-cpu-steps requires a value")?
+                        .parse()
+                        .map_err(|_| "invalid --max-cpu-steps")?,
+                );
+            }
+            "--cpu-mode" => {
+                options.native = match args.next().as_deref() {
+                    Some("instruction") => false,
+                    Some("native") => true,
+                    _ => return Err("--cpu-mode requires instruction or native".into()),
+                }
+            }
+            "--max-cpu-cycles" => {
+                options.max_cpu_cycles = Some(
+                    args.next()
+                        .ok_or("--max-cpu-cycles requires a value")?
+                        .parse()
+                        .map_err(|_| "invalid --max-cpu-cycles")?,
+                )
+            }
+            "--package" => {
+                options.package = Some(args.next().ok_or("--package requires a path")?.into())
+            }
+            "--out-dir" => options.output = args.next().ok_or("--out-dir requires a path")?.into(),
+            "--freeze-submit" => {
+                options.freeze_submit = Some(
+                    args.next()
+                        .ok_or("--freeze-submit requires a one-based index")?
+                        .parse()
+                        .map_err(|_| "invalid --freeze-submit")?,
+                )
+            }
+            "--stop-after-present" => {
+                options.stop_after_present = Some(
+                    args.next()
+                        .ok_or("--stop-after-present requires a count")?
+                        .parse()
+                        .map_err(|_| "invalid --stop-after-present")?,
+                )
             }
             "--frames" => {
                 options.frames = args
@@ -95,7 +249,24 @@ fn options() -> Result<Options, String> {
             _ => return Err(format!("unknown argument `{arg}`")),
         }
     }
-    if options.max_cpu_steps == 0 || options.frames == 0 {
+    if options.native && options.max_cpu_steps.is_some()
+        || !options.native && options.max_cpu_cycles.is_some()
+    {
+        return Err(
+            "use --max-cpu-steps with instruction mode; --max-cpu-cycles with native mode".into(),
+        );
+    }
+    if options.stop_after_present == Some(0) {
+        return Err("--stop-after-present must be positive".into());
+    }
+    if options.stop_after_present.is_some() && options.freeze_submit.is_some() {
+        return Err("choose --stop-after-present or --freeze-submit".into());
+    }
+    if options.freeze_submit == Some(0) {
+        return Err("--freeze-submit is one-based".into());
+    }
+    if options.max_cpu_steps == Some(0) || options.max_cpu_cycles == Some(0) || options.frames == 0
+    {
         return Err("step and frame limits must be non-zero".into());
     }
     if options.host_tick_us == 0 || options.host_tick_us > 1_000_000 {
@@ -106,19 +277,43 @@ fn options() -> Result<Options, String> {
 
 fn main() -> Result<(), String> {
     let options = options()?;
-    let mut system = CpuV3SystemSim::from_single_flash(
-        GENERATED_APPLICATION_PACKAGE,
-        0xd00d,
-        VBlankMode::Manual,
-    )
-    .map_err(|error| format!("cannot cold-boot display application: {error}"))?
-    .with_functional_gpu();
+    let package = options
+        .package
+        .as_ref()
+        .map(std::fs::read)
+        .transpose()
+        .map_err(|e| format!("read application package: {e}"))?
+        .unwrap_or_else(|| GENERATED_APPLICATION_PACKAGE.to_vec());
+    let mut system = if options.native {
+        CpuBackend::Native(Box::new(
+            CpuV3SystemEmu::from_single_flash(&package, 0xd00d, VBlankMode::Manual)
+                .map_err(|e| format!("load native application: {e}"))?
+                .with_functional_gpu(),
+        ))
+    } else {
+        CpuBackend::Instruction(Box::new(
+            CpuV3SystemSim::from_single_flash(&package, 0xd00d, VBlankMode::Manual)
+                .map_err(|e| format!("load application: {e}"))?
+                .with_functional_gpu(),
+        ))
+    };
+    let budget = if options.native {
+        options.max_cpu_cycles
+    } else {
+        options.max_cpu_steps
+    }
+    .unwrap_or(5_000_000);
+    let mut pause = SubmissionPause {
+        target: options.freeze_submit,
+        ..Default::default()
+    };
+    let started = Instant::now();
 
     #[cfg(feature = "display-window")]
     let mut window = options.window.then(|| {
         minifb::Window::new(
             &format!(
-                "CPU V3 320x240 framebuffer ({} HDMI preview)",
+                "CPU V3 400x240 framebuffer ({} HDMI preview)",
                 ACTIVE_DISPLAY_CONFIG.name
             ),
             HDMI_WIDTH,
@@ -143,55 +338,52 @@ fn main() -> Result<(), String> {
     // This explicit deterministic event schedule is independent of CPU progress.
     // The per-event CPU budget is a work limit, never a clock conversion.
     let mut deterministic = HostIo::default();
-    let chunk = options.max_cpu_steps.div_ceil(options.frames);
+    let chunk = budget.div_ceil(options.frames);
     let mut pixels = Vec::new();
     let mut executed = 0_usize;
     let mut halted = false;
     let mut samples = 0;
+    let mut presented = 0;
     let mut focus_checked = Instant::now();
-    for _ in 0..options.frames {
+    'samples: for _ in 0..options.frames {
         let mut focused = window_focus(&mut window);
         if let Some(host) = realtime.as_mut() {
-            host.pump(&mut system, focused);
+            system.realtime_input(host, focused);
         } else {
-            deterministic.advance(
-                &mut system,
+            system.host_event(
+                &mut deterministic,
                 Duration::from_micros(u64::from(options.host_tick_us)),
                 focused,
             );
         }
-        let next = executed.saturating_add(chunk).min(options.max_cpu_steps);
+        let next = executed.saturating_add(chunk).min(budget);
         while executed < next && !halted {
             if let Some(host) = realtime.as_mut() {
                 if focus_checked.elapsed() >= Duration::from_millis(8) {
                     focused = window_focus(&mut window);
                     focus_checked = Instant::now();
                 }
-                host.pump(&mut system, focused);
+                system.realtime_input(host, focused);
             }
-            halted = matches!(
-                system
-                    .step()
-                    .map_err(|error| format!("CPU fault after {executed} steps: {error:?}"))?,
-                StepOutcome::Halted { .. }
-            );
+            let Some(stopped) = system.step(&mut pause)? else {
+                break 'samples;
+            };
+            halted = stopped;
+            if options.freeze_submit.is_some() {
+                if let Some(error) = system.gpu_error() {
+                    return Err(format!(
+                        "GPU prefix failed after {executed} CPU advances: {error}"
+                    ));
+                }
+            }
             executed += 1;
         }
-        let _ = system.advance_vblank();
+        presented += usize::from(system.vblank());
         samples += 1;
-        pixels = if system
-            .cpu()
-            .device::<cpu_v3_tang_nano_20k::DisplayDevice>(cpu_v3_tang_nano_20k::DISPLAY_DEVICE)
-            .is_some_and(cpu_v3_tang_nano_20k::DisplayDevice::front_valid)
-        {
-            render_frame_at(system.cpu(), system.display_state().active_base)
-        } else {
-            vec![
-                0;
-                cpu_v3_tang_nano_20k::display::HDMI_WIDTH
-                    * cpu_v3_tang_nano_20k::display::HDMI_HEIGHT
-            ]
-        };
+        pixels = system.render();
+        if options.stop_after_present.is_some_and(|n| presented >= n) {
+            break;
+        }
         #[cfg(feature = "display-window")]
         if let Some(window) = window.as_mut() {
             if !window.is_open() {
@@ -202,11 +394,172 @@ fn main() -> Result<(), String> {
                 .map_err(|error| format!("window update failed: {error}"))?;
         }
     }
+    if let Some(target) = options.stop_after_present {
+        if presented < target {
+            return Err(format!(
+                "only {presented} real swaps within {executed} CPU advances; requested {target}"
+            ));
+        }
+    }
+    if let Some((write, count, memory)) = pause.capture.as_ref() {
+        std::fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
+        let count = count.ok_or("target START has no preceding COUNT")?;
+        let descriptor =
+            DeviceSubmission::new(u32::from(write.value) * 128, (u32::from(count) + 1) * 4)?;
+        let raw = options.output.join("physical-pre-submit.bin");
+        let mut writer = BufWriter::new(std::fs::File::create(&raw).map_err(|e| e.to_string())?);
+        for word in memory {
+            writer
+                .write_all(&word.to_le_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        writer.flush().map_err(|e| e.to_string())?;
+        std::fs::write(options.output.join("application.cb06"), &package)
+            .map_err(|e| e.to_string())?;
+        // Diagnostic architectural registers are not a resumable CPU/cache checkpoint.
+        let architecture=match &system{
+            CpuBackend::Instruction(s)=>format!("{{\"pc\":{},\"code_segment\":{},\"gprs\":{:?},\"data_segments\":{:?},\"retired_words\":{}}}",s.cpu().pc(),s.cpu().code_segment(),s.cpu().registers(),s.cpu().data_segments(),s.cpu().retired_words()),
+            CpuBackend::Native(s)=>{let c=s.core();format!("{{\"pc\":{},\"code_segment\":{},\"gprs\":{:?},\"data_segments\":{:?},\"retired_words\":{}}}",c.program_counter(),c.segments().0,c.architectural_gprs(),c.data_segments(),c.retired_words())}
+        };
+        std::fs::write(options.output.join("cpu-architecture.json"), architecture)
+            .map_err(|e| e.to_string())?;
+        let (mode, logic, native) = match &system {
+            CpuBackend::Native(s) => (
+                "native",
+                s.cycles().to_string(),
+                s.native_cycles().to_string(),
+            ),
+            CpuBackend::Instruction(_) => ("instruction", "null".into(), "null".into()),
+        };
+        let metadata = format!(
+            r#"{{
+ "kind":"physical-gpu-preimage","boundary":"before-external-device-write",
+ "cpu_checkpoint":false,"implicit_cache_maintenance":false,"backend":"{}",
+ "submission_ordinal":{},"functional_prefix_submissions":{},"cpu_step_calls":{},
+ "logic_cycles":{},"native_cycles":{},"device":{},"channel":{},"value":{},
+ "base_sector":{},"count_minus_one":{},"memory_words":{},"byte_order":"little-endian",
+ "gpu_display":"functional-without-memory-competition"
+}}"#,
+            mode,
+            pause.seen,
+            pause.seen - 1,
+            executed,
+            logic,
+            native,
+            write.device,
+            write.channel,
+            write.value,
+            descriptor.base_sector,
+            descriptor.count_minus_one,
+            memory.len()
+        );
+        std::fs::write(options.output.join("pre-submit.json"), metadata)
+            .map_err(|e| e.to_string())?;
+        pixels = system.render();
+        println!(
+            "paused before GPU START {} after {} CPU advances, wrote {}",
+            pause.seen,
+            executed,
+            raw.display()
+        );
+    } else if let Some(target) = options.freeze_submit {
+        return Err(format!("GPU START {target} not reached within {executed} CPU advances; observed {} START writes",pause.seen));
+    }
     if options.ppm {
-        let path = PathBuf::from("target/display-sim/frame-final.ppm");
+        let path = options.output.join("frame-final.ppm");
         write_ppm(&path, &pixels).map_err(|error| format!("write {}: {error}", path.display()))?;
         println!("wrote {}", path.display());
     }
-    println!("simulated {executed} CPU step calls and {samples} explicit display samples");
+    match &system{
+        CpuBackend::Instruction(_)=>println!("simulated {executed} CPU step calls and {samples} explicit display samples"),
+        CpuBackend::Native(s)=>println!("simulated {} CPU logic cycles / {} native SDRAM cycles, {} retired words and {samples} explicit display samples; CSEG {}, PC {:#06x}; GPU/Display functional without memory competition; host wall {:.3}s",s.cycles(),s.native_cycles(),s.core().retired_words(),s.core().segments().0,s.core().program_counter(),started.elapsed().as_secs_f64()),
+    }
+    if let CpuBackend::Native(s) = &system {
+        let display = s
+            .device::<cpu_v3_tang_nano_20k::DisplayDevice>(cpu_v3_tang_nano_20k::DISPLAY_DEVICE)
+            .unwrap();
+        let markers = s
+            .device::<cpu_v3_tang_nano_20k::ObservationDevice>(7)
+            .unwrap();
+        let accepted = pause.seen - usize::from(pause.capture.is_some());
+        let stop = if pause.capture.is_some() {
+            "pre-submit"
+        } else if options.stop_after_present.is_some() {
+            "present-limit"
+        } else if halted {
+            "halt"
+        } else {
+            "cycle-limit"
+        };
+        std::fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
+        std::fs::write(options.output.join("application.cb06"), &package)
+            .map_err(|e| e.to_string())?;
+        let summary = format!(
+            r#"{{
+ "backend":"native","logic_cycles":{},"native_cycles":{},"retired_words":{},
+ "accepted_gpu_submissions":{},"gpu_busy":{},"gpu_error":{},
+ "front_valid":{},"presented_swaps":{},"active_base_word":{},"linear_rgb565":{},
+ "samples":{},"host_wall_seconds":{},"stop_reason":"{}","observation_phase":{},"observation_frame":{},
+ "gpu_display":"functional-without-memory-competition","flash_install":"preloaded-cb06-not-spi-time","input":"no-controller-unless-explicit-xinput"
+}}"#,
+            s.cycles(),
+            s.native_cycles(),
+            s.core().retired_words(),
+            accepted,
+            s.gpu().busy(),
+            system.gpu_error().is_some(),
+            display.front_valid(),
+            presented,
+            s.display_state().active_base,
+            display.linear_rgb565(),
+            samples,
+            started.elapsed().as_secs_f64(),
+            stop,
+            markers.last(1).unwrap_or(0),
+            markers.last(2).unwrap_or(0)
+        );
+        std::fs::write(options.output.join("summary-native.json"), summary)
+            .map_err(|e| e.to_string())?;
+        println!("accepted GPU submissions {accepted}, valid front {}, real swaps {presented}, stop {stop}",display.front_valid());
+    }
+    if let CpuBackend::Instruction(s) = &system {
+        let display = s
+            .cpu()
+            .device::<cpu_v3_tang_nano_20k::DisplayDevice>(cpu_v3_tang_nano_20k::DISPLAY_DEVICE)
+            .unwrap();
+        let accepted = pause.seen - usize::from(pause.capture.is_some());
+        let stop = if pause.capture.is_some() {
+            "pre-submit"
+        } else if options.stop_after_present.is_some() {
+            "present-limit"
+        } else if halted {
+            "halt"
+        } else {
+            "step-limit"
+        };
+        std::fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
+        std::fs::write(options.output.join("application.cb06"), &package)
+            .map_err(|e| e.to_string())?;
+        let summary = format!(
+            r#"{{"backend":"instruction","cpu_step_calls":{},"logic_cycles":null,"native_cycles":null,"accepted_gpu_submissions":{},"gpu_busy":{},"gpu_error":{},"front_valid":{},"presented_swaps":{},"active_base_word":{},"linear_rgb565":{},"samples":{},"host_wall_seconds":{},"stop_reason":"{}","flash_install":"preloaded-cb06-not-spi-time","input":"no-controller-unless-explicit-xinput","gpu_display":"functional-without-memory-competition"}}"#,
+            executed,
+            accepted,
+            s.gpu().busy(),
+            system.gpu_error().is_some(),
+            display.front_valid(),
+            presented,
+            s.display_state().active_base,
+            display.linear_rgb565(),
+            samples,
+            started.elapsed().as_secs_f64(),
+            stop
+        );
+        std::fs::write(options.output.join("summary-instruction.json"), summary)
+            .map_err(|e| e.to_string())?;
+        println!("accepted GPU submissions {accepted}, valid front {}, real swaps {presented}, stop {stop}; instruction host wall {:.3}s",display.front_valid(),started.elapsed().as_secs_f64());
+    }
+    if let Some(error) = system.gpu_error() {
+        println!("GPU retained execution error: {error}");
+    }
     Ok(())
 }

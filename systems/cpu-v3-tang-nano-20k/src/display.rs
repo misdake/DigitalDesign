@@ -1,8 +1,11 @@
 //! Host-side reference model for framebuffer scanout and line buffering.
 
+#[cfg(test)]
+use crate::PhysicalWordAddress;
+
 use crate::{
-    framebuffer_word_at, rgb565_to_rgb888, CpuV3Sim, PhysicalWordAddress, FRAMEBUFFER_A_BASE_WORD,
-    FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH,
+    framebuffer_word_at, rgb565_to_rgb888, CpuV3Sim, FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_HEIGHT,
+    FRAMEBUFFER_WIDTH,
 };
 
 /// Fixed HDMI timing shared by the scanout RTL, host renderer and board PLL.
@@ -131,14 +134,23 @@ pub fn render_frame(machine: &CpuV3Sim) -> Vec<u32> {
 
 /// Renders the logical 400x240 RGB565 framebuffer as packed 0x00RRGGBB pixels.
 pub fn render_framebuffer_at(machine: &CpuV3Sim, framebuffer_base: u32) -> Vec<u32> {
-    let mut frame = vec![0; FRAMEBUFFER_WIDTH as usize * FRAMEBUFFER_HEIGHT as usize];
     let linear = machine
         .device::<crate::DisplayDevice>(crate::DISPLAY_DEVICE)
         .is_some_and(crate::DisplayDevice::linear_rgb565);
+    render_framebuffer_words_at(machine.physical_memory_slice(), framebuffer_base, linear)
+}
+
+/// Same Display1 pixel conversion over a caller-owned physical memory view.
+pub fn render_framebuffer_words_at(
+    memory: &[u16],
+    framebuffer_base: u32,
+    linear: bool,
+) -> Vec<u32> {
+    let mut frame = vec![0; FRAMEBUFFER_WIDTH as usize * FRAMEBUFFER_HEIGHT as usize];
     for y in 0..FRAMEBUFFER_HEIGHT {
         for x in 0..FRAMEBUFFER_WIDTH {
             let address = framebuffer_word_at(framebuffer_base, x, y);
-            let pixel = machine.physical_memory(PhysicalWordAddress::new(address));
+            let pixel = memory[address as usize];
             let (red, green, blue) = if linear {
                 linear_rgb565_to_srgb888(pixel)
             } else {
@@ -163,7 +175,24 @@ pub fn render_frame_at_config(
     machine: &CpuV3Sim,
     framebuffer_base: u32,
 ) -> Vec<u32> {
-    let framebuffer = render_framebuffer_at(machine, framebuffer_base);
+    let linear = machine
+        .device::<crate::DisplayDevice>(crate::DISPLAY_DEVICE)
+        .is_some_and(crate::DisplayDevice::linear_rgb565);
+    render_frame_words_at_config(
+        config,
+        machine.physical_memory_slice(),
+        framebuffer_base,
+        linear,
+    )
+}
+
+pub fn render_frame_words_at_config(
+    config: &DisplayConfig,
+    memory: &[u16],
+    framebuffer_base: u32,
+    linear: bool,
+) -> Vec<u32> {
+    let framebuffer = render_framebuffer_words_at(memory, framebuffer_base, linear);
     let mut frame = vec![0; config.hdmi_width * config.hdmi_height];
     for output_y in 0..config.hdmi_height {
         let source_y = output_y / config.scale;

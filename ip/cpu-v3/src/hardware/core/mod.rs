@@ -298,6 +298,7 @@ pub struct CpuV3CoreState {
     pub(crate) gpr_write_data: u16,
     pc: u16,
     code_segment: u16,
+    initial_code_segment: u16,
     data_segments: [u16; 4],
     prefix: Option<Prefix>,
     /// Transient result of the last CMP-class instruction; mirrors the
@@ -364,6 +365,7 @@ impl Default for CpuV3CoreState {
             gpr_write_data: 0,
             pc: 0,
             code_segment: 0,
+            initial_code_segment: 0,
             data_segments: [0, 1, 2, 3],
             prefix: None,
             pending_test: None,
@@ -406,6 +408,16 @@ impl Default for CpuV3CoreState {
 }
 
 impl CpuV3CoreState {
+    /// Match the existing RTL INITIAL_CODE_SEGMENT parameter, including reset.
+    /// Generic core construction retains segment zero.
+    pub fn with_initial_code_segment(segment: u16) -> Self {
+        Self {
+            code_segment: segment,
+            initial_code_segment: segment,
+            ..Self::default()
+        }
+    }
+
     /// Read-only architectural view for the system harness: the 16 GPRs, the 64
     /// FPU registers, the shared accumulator, the PC and the segment registers.
     /// Used to compare the cycle model against the naive `CpuV3Sim` directly
@@ -1172,7 +1184,15 @@ impl Module for CpuV3Core {
     ) {
         let input = input.sample(circuit);
         if input.reset {
-            *state = CpuV3CoreState::default();
+            let instruction = state.instruction;
+            let instruction_pc = state.instruction_pc;
+            let halt_signal = state.halt_signal;
+            *state = CpuV3CoreState::with_initial_code_segment(state.initial_code_segment);
+            // These source RTL latches are not reset; even invalid device
+            // decoder outputs continue to reflect the retained instruction.
+            state.instruction = instruction;
+            state.instruction_pc = instruction_pc;
+            state.halt_signal = halt_signal;
             // The RTL reset walks the scalar register file back to zero over
             // 16 cycles; mirror that instead of clearing it in one step.
             state.phase = Phase::ResetClear;
@@ -1611,3 +1631,7 @@ fn is_prefix_consumer(instruction: u16) -> bool {
 fn full_cache_command(instruction: u16) -> bool {
     instruction & 0xff00 == 0x7800 && matches!(field(instruction, 4), 1 | 4)
 }
+
+#[cfg(test)]
+#[path = "initial_segment_tests.rs"]
+mod initial_segment_tests;

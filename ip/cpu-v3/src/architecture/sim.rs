@@ -71,6 +71,14 @@ pub trait Device {
     fn observe_cpu_hold(&mut self, _value: Word) {}
 }
 
+/// A pending DEVSEND, before architectural state or the device is changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceWrite {
+    pub device: u8,
+    pub channel: u8,
+    pub value: Word,
+}
+
 pub struct CpuV3Sim {
     registers: [Word; 16],
     fpu_registers: [i32; FPU_REGISTER_COUNT],
@@ -207,6 +215,11 @@ impl CpuV3Sim {
         self.memory.len()
     }
 
+    /// Borrowed physical storage for shared renderers and observation tools.
+    pub fn physical_memory_slice(&self) -> &[Word] {
+        &self.memory
+    }
+
     /// Mutable view of the physical memory, for DMA-style host models.
     pub fn physical_memory_mut(&mut self) -> &mut [Word] {
         &mut self.memory
@@ -284,10 +297,20 @@ impl CpuV3Sim {
     }
 
     pub fn step(&mut self) -> Result<StepOutcome, Fault> {
+        Ok(self
+            .step_observing(|_, _| true)?
+            .expect("unconditional step advances"))
+    }
+    /// A false result pauses before DEVSEND without changing PC, retirement,
+    /// pending prefix/test or physical memory. Existing device holds still run.
+    pub fn step_observing(
+        &mut self,
+        mut before_write: impl FnMut(DeviceWrite, &[Word]) -> bool,
+    ) -> Result<Option<StepOutcome>, Fault> {
         if self.halted {
-            return Ok(StepOutcome::Halted {
+            return Ok(Some(StepOutcome::Halted {
                 signal: self.halt_signal,
-            });
+            }));
         }
 
         if let Some((owner, device, channel)) =
@@ -305,7 +328,7 @@ impl CpuV3Sim {
             if let Some(handler) = self.devices[owner].as_mut() {
                 handler.observe_cpu_hold(value);
             }
-            return Ok(StepOutcome::Running);
+            return Ok(Some(StepOutcome::Running));
         }
 
         let address = self.pc;
@@ -321,6 +344,16 @@ impl CpuV3Sim {
             address,
             instruction: 0,
         })?;
+        if instruction >> 12 == 7 && instruction & 0x800 != 0 {
+            let write = DeviceWrite {
+                device: ((instruction >> 8) & 7) as u8,
+                channel: ((instruction >> 4) & 15) as u8,
+                value: self.registers[usize::from(instruction & 15)],
+            };
+            if !before_write(write, &self.memory) {
+                return Ok(None);
+            }
+        }
         self.pc = self.pc.wrapping_add(1);
         let opcode = instruction >> 12;
 
@@ -332,7 +365,7 @@ impl CpuV3Sim {
                 address,
                 payload: instruction & 0xfff,
             });
-            return Ok(StepOutcome::Running);
+            return Ok(Some(StepOutcome::Running));
         }
 
         // FPU v2 (major 0xC / 0xD / 0xE) is a 32-bit instruction fetched as two
@@ -360,7 +393,7 @@ impl CpuV3Sim {
             return match self.execute_fpu_pair(instruction, word1, fpu_opcode) {
                 Ok(outcome) => {
                     self.retired_words += 2;
-                    Ok(outcome)
+                    Ok(Some(outcome))
                 }
                 Err(kind) => {
                     // Neither half retires; rewind to the first word.
@@ -411,7 +444,7 @@ impl CpuV3Sim {
         match result {
             Ok(outcome) => {
                 self.retired_words += retire_words;
-                Ok(outcome)
+                Ok(Some(outcome))
             }
             // The faulting word does not retire, so the increment above is
             // undone by rewinding the program counter to the fault address.

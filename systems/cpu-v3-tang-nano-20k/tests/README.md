@@ -570,3 +570,42 @@ new value. `system_emu::flush_tests` separately exercises the production fronten
 flush wiring for SystemControl invalidate, halted and faulted, with a warm BTC,
 genuinely pending captured old responses and fresh data afterward. It performs
 no core/cache reset after setup and keeps late-response ownership intact.
+
+
+## Native functional-device composition
+
+`native_devices` uses finite CPU bounds and one backing per instance. It covers
+actual CPU cache publication, deliberate missing clean/invalidate, a functional
+GPU partial error, CSEG7 CB06 startup, hardware timer/watch release, Device5 input,
+Device7 observation and Display publication only at explicit vblank. Two prefix
+cases execute CLEAR then memcpy before pausing a third dependent memcpy: both
+CPU modes match the complete defined8MiB preimage, repeated pause changes no
+memory, PC/retirement or native clocks, and resume executes the target once.
+The fast case also retains an unused prefix until the paused write retires.
+
+The ignored CPU library tests
+`instruction_wrapper_matches_rtl_for_held_error_refill_and_invalidation` and
+`fitted_initial_segment_survives_reset_and_executes_from_cseg7` compare the actual
+unchanged RTL boundaries. They retain bounded source/TB/output and reject real
+DUT address/parameter mutations. The wrapper checks all public outputs, including
+invalid payload, for held errors, misses/hits and invalidation during refill.
+The CSEG replay covers configured cold and post-halt reset with hold; it does not
+qualify every warm-reset phase. Existing CPU/system mandatory cosimulations and
+Prepared-gate capture regressions remain required for affected paths.
+
+The display runner can test an exact generated package without regenerating a
+second boot image:
+
+```powershell
+cargo run --release -p cpu-v3-tang-nano-20k --bin cpu-v3-display-sim -- --cpu-mode native --max-cpu-cycles 3000000 --frames 120 --stop-after-present 1 --ppm --package target/application.cb06
+```
+
+Use `instruction` with `--max-cpu-steps` for the fast backend, or replace the stop
+option with `--freeze-submit 2` for raw physical pre-submit capture. A CLI exit0
+alone does not prove rendering: check accepted GPU execution, error/busy, a valid
+front, an actual applied swap and nontrivial pixel output. Compare raw physical
+allocations separately from Display1-converted PPMs. Different timer schedules can
+legitimately change statistical UI commands and CPU-private dirty/dead stack data;
+record exact differences rather than hiding them or claiming full-image equality.
+These host runs do not qualify GPU/Display bus competition, full-board FPS,
+physical SDRAM timing, a fitted RTL frame or arbitrary warm reset.

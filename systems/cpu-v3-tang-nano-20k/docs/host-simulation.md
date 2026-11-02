@@ -1,7 +1,7 @@
 # Host time and controller input
 
 `CpuV3SystemSim` combines functional CPU/GPU results with explicit host events.
-It installs Device0, Display3, GPU4 and the latest-only input Device5. CPU steps,
+It installs Device0, Display3, GPU4, latest-only input Device5 and an observation-only Device7. CPU steps,
 device reads, watch probes, state queries and vblank do not advance Device0 time.
 This simulator supplies software results, not RTL cycles or cache timing.
 
@@ -116,24 +116,74 @@ unchanged. See Microsoft's [field contract](https://learn.microsoft.com/en-us/wi
 
 ## Display runner
 
-`cpu-v3-display-sim` defaults to deterministic host events:
-`--host-tick-us 16667` advances that duration at each explicit display sample.
-`--frames` and `--max-cpu-steps` bound the host schedule and CPU work separately;
-the work budget is not converted into physical cycles. `--realtime`, `--window`
-or an explicit XInput slot selects real elapsed time, serviced during CPU work
-as well as at display samples. A window reports its actual focus; explicitly
-enabled headless input has no window-focus gate. Display samples are explicit
-events, not a claim of fitted HDMI refresh timing. A halt stops further CPU step
-calls while the bounded host display loop can show the final image.
+`cpu-v3-display-sim` defaults to `--cpu-mode instruction`, the existing fast
+architectural interpreter. `--max-cpu-steps` bounds its step calls; there are no
+caches, memory-controller delays or instruction-to-clock conversion. Explicit
+`--cpu-mode native` selects the composed core/cache/native-memory model and uses
+`--max-cpu-cycles` instead. Both default bounds are 5000000; a bound for the wrong
+mode is rejected. `--package PATH` selects an exact CB06 package; otherwise the
+runner uses its build-generated package. Both backends use the same installer,
+functional devices, event loop and Display1 RGB565/linear-RGB565 renderer.
 
+The deterministic default `--host-tick-us 16667` supplies an elapsed event at each
+explicit display sample. Instruction mode advances its functional Device0 timer;
+native mode uses that event only for input polling. Native Device0 time advances
+with actual logic edges, including hardware initialization and CPU holds.
+`--frames` bounds display events independently of the CPU work budget. Events
+are not fitted HDMI timing. `--realtime`, `--window` or `--xinput-slot` polls
+monotonic host time/input during work; native timers still use modeled clocks.
+A window supplies focus; explicitly enabled headless input has no focus gate.
+The default does not query XInput. Halt stops further CPU work while remaining
+bounded host samples can show the image.
+
+`--stop-after-present N` stops after N actual pending swaps become active fronts,
+not after N host samples. `--ppm` writes the current HDMI-sized Display1-converted
+`frame-final.ppm` under `--out-dir` (default `target/display-sim`). `summary-*`
+receipts distinguish steps from available clock counts, actual accepted GPU
+submissions, valid front, applied swaps, GPU error/busy and stop reason. Internal
+host wall time starts after package loading/construction and includes execution,
+functional GPU work, host samples, rendering and requested output writes. It is
+not hardware elapsed time. A caller measuring process spawn-to-exit also includes
+package loading, construction and process overhead.
+
+### Exact pre-submit observation
+
+`--freeze-submit N` pauses before the Nth CPU Device4 START is consumed. Earlier
+START writes execute the same functional GPU exactly once; the target does not
+execute. It is mutually exclusive with `--stop-after-present`. The same observer
+is available through `CpuV3Sim::step_observing`, `CpuV3SystemSim::step_observing`
+and `CpuV3SystemEmu::step_observing`. A false callback returns `None`; no pending
+write retires and no native clock advances. Repeating the pause then resuming
+executes the write once. For the interpreter, the hook precedes PC advancement,
+prefix/test expiration and device execution. Device holds remain the existing
+step behavior. For native, combinational settle/read sampling precede the write
+hook; committed CPU/FPU/cache and memory state stays live in the same instance.
+
+The runner writes `physical-pre-submit.bin` as the complete raw little-endian
+physical DRAM image, `application.cb06`, and `pre-submit.json` containing the
+observed COUNT/START descriptor and backend-specific counters. Instruction clock
+counts are null. `cpu-architecture.json` records diagnostic registers. These files
+are a GPU preimage, not a resumable CPU/cache checkpoint. Dirty CPU lines, stale
+cache copies, native responses in flight and device ownership are not serialized
+or cleaned. No output transform is applied to memory; only PPM uses Display1's
+color conversion. Existing Prepared-gate capture remains separate and keeps its
+original driver ABI/gate, without bypassing UART or application control flow.
+
+Device7 records the last value and write count for each diagnostic channel.
+CPU reads return zero, matching the old unattached interpreter behavior. It
+creates no memory requests or CPU delay. Native uninstalled devices still return
+an explicit unsupported-device error; this does not make every unknown device
+silently succeed.
 
 ## Native-edge CPU composition
 
 `system_emu::CpuV3SystemEmu` runs the existing core/FPU, fetch, read-only I-cache,
 D-cache, memory arbiter and hardware SystemControl emulators against the fitted
 Gowin native stream/gear/controller/pin models. Construction consumes one 4M-word
-physical `Vec<u16>` preloaded for reset PC/CSEG0. Both cache clients and physical
-pin commits borrow that same backing; there is no architectural CPU executor,
+physical `Vec<u16>`. `new` accepts a preloaded reset PC/CSEG0 image;
+`from_single_flash` installs the generated CB06 application and configures the
+existing core's fitted initial CSEG7. This preload is not SPI boot time. Both
+cache clients, physical pin commits and functional device callbacks borrow that same backing; there is no architectural CPU executor,
 private DRAM copy, implicit clean or synthetic memory-delay mode.
 
 ```mermaid
@@ -146,6 +196,8 @@ flowchart LR
   D --> A
   A --> P[Native stream port and edge models]
   P <-->|Physical reads and writes| M[Only backing image]
+  C -->|One accepted external write| G[Existing functional GPU / Display / input]
+  G <-->|Direct functional access| M
 ```
 
 `step` settles the combinational interfaces with a bounded convergence check,
@@ -159,12 +211,21 @@ I-cache invalidate, core halt and core fault also flush fetch/BTC, using the
 same frontend predicate as the fitted top. Already accepted lower responses
 retain their provenance and drain without reaching the new instruction stream.
 
-This entry runs preloaded CPU programs only. External device access and watch
-probes return an explicit unsupported-device error. It does not install a Flash
-application, execute GPU/Display, provide host controller input or supply a
-production application runner. Errors terminate the current run. `cycles` and
-`native_cycles` count modeled edges; host elapsed time measures only this
-implementation, not a fitted-board measurement.
+External Device3/4/5/7 accesses and hardware watch probes use their existing
+functional devices. A device read is sampled once, and a write executes once
+after pure convergence, before the logic edge commits. Functional GPU errors
+retain partial writes, effects and actual status. GPU/Display add no simulated
+memory requests, competition or invented wait time; native counters qualify only
+CPU memory traffic without that competition. Renderers borrow read-only physical
+slices and preserve the existing tile layout, active format and Display1 LUT.
+Vblank publication and input replacement remain explicit host events.
+
+`CpuV3CoreState::with_initial_code_segment` mirrors the existing RTL parameter;
+generic default remains0. Reset retains RTL's unreset instruction/instruction-PC
+and halt-signal latches while restarting the configured segment and clear phase.
+The focused parameter replay does not qualify arbitrary interrupted warm reset,
+FPU recovery or a whole-board reset workflow. Native errors terminate the run;
+modeled edges and host wall time do not establish fitted-board performance.
 
 The bounded `native_system_emu` test executes scalar FLD/ADD/FST and dependent
 integer load through the real caches. Without a clean, the CPU sees 3.0 while

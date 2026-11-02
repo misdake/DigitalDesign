@@ -3042,3 +3042,7 @@ mod tests {
 #[cfg(test)]
 #[path = "icache_held_error_tests.rs"]
 mod held_error_tests;
+
+#[cfg(test)]
+#[path = "instruction_emu_tests.rs"]
+mod instruction_emu_tests;

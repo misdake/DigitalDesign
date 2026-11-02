@@ -134,6 +134,25 @@ impl Default for SystemControlDeviceState {
     }
 }
 
+impl SystemControlDeviceState {
+    pub(crate) fn read_channel(&self, channel: u8) -> u16 {
+        match channel {
+            SYSTEM_CONTROL_CHANNEL_UART => u16::from(self.uart_busy),
+            SYSTEM_CONTROL_CHANNEL_CACHE_MAINTENANCE_STATUS => self.cache_maintenance_status,
+            SYSTEM_CONTROL_CHANNEL_MILLISECONDS => self.milliseconds,
+            SYSTEM_CONTROL_CHANNEL_MICROSECONDS => self.microseconds,
+            _ => 0,
+        }
+    }
+    pub(crate) fn active_watch(&self) -> Option<(u8, u8, u16)> {
+        self.watch_active.then_some((
+            self.watch_device_index,
+            self.watch_device_channel,
+            self.watch_expected,
+        ))
+    }
+}
+
 fn validate<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16>() {
     assert!(
         CLOCKS_PER_BIT > 0,
@@ -185,13 +204,7 @@ impl<const CLOCKS_PER_BIT: u16, const CLOCKS_PER_MS: u16> Module
         let selected =
             input.device_read_enable && input.device_index == u64::from(SYSTEM_CONTROL_DEVICE);
         let read_data = if selected {
-            match input.device_channel as u8 {
-                SYSTEM_CONTROL_CHANNEL_UART => u16::from(state.uart_busy),
-                SYSTEM_CONTROL_CHANNEL_CACHE_MAINTENANCE_STATUS => state.cache_maintenance_status,
-                SYSTEM_CONTROL_CHANNEL_MILLISECONDS => state.milliseconds,
-                SYSTEM_CONTROL_CHANNEL_MICROSECONDS => state.microseconds,
-                _ => 0,
-            }
+            state.read_channel(input.device_channel as u8)
         } else {
             0
         };
