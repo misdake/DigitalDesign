@@ -1,5 +1,8 @@
 //! Small, gate-exportable helpers used by the multi-clock display RTL.
 
+#[path = "cycle/mod.rs"]
+pub mod display_cycle;
+
 mod hdmi;
 mod line_buffer;
 mod pair_fifo;

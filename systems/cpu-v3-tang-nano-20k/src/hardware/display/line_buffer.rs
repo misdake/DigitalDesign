@@ -4,7 +4,7 @@ use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{BsramBlocks, Hardware, Module, ModuleIo, TargetResourceRequest};
 
 #[path = "precode_table.rs"]
-mod precode;
+pub(super) mod precode;
 #[cfg(test)]
 use precode::tmds_precode;
 pub(super) use precode::TMDS_PRECODE_BITS;
