@@ -7,6 +7,11 @@ ownership. The shared `rcc/gpu_schema.rs` defines all prepared field offsets;
 counts and offsets are 16-bit CPU words, and external extents use 128-byte
 sectors. These helpers do not implement the public resource factories.
 
+Numeric vec3 reads and writes touch exactly six words: the low then high halves
+of each Q16.16 x/y/z lane. They use direct lane/word intrinsics without nested
+scalar helper calls. They do not access an eight-word vec4 span; offsets retain
+the ordinary unchecked 16-bit Array indexing behavior.
+
 ## Source-world transforms
 
 `Vec3` stores three `fix32` fields. `Mat3x4` has three named `Vec4` rows and

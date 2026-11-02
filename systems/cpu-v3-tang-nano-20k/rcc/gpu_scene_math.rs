@@ -22,16 +22,19 @@ pub fn gpu_scene_zero(mut data: Array<u16>, count: u16) {
 
 pub fn gpu_scene_vec_read(data: Array<u16>, at: u16) -> vec3 {
     vec3::new(
-        gpu_scene_fix_read(data, at),
-        gpu_scene_fix_read(data, at + 2),
-        gpu_scene_fix_read(data, at + 4),
+        fix32::from_words(data[at], data[at + 1]),
+        fix32::from_words(data[at + 2], data[at + 3]),
+        fix32::from_words(data[at + 4], data[at + 5]),
     )
 }
 
-pub fn gpu_scene_vec_write(data: Array<u16>, at: u16, value: vec3) {
-    gpu_scene_fix_write(data, at, value.x());
-    gpu_scene_fix_write(data, at + 2, value.y());
-    gpu_scene_fix_write(data, at + 4, value.z());
+pub fn gpu_scene_vec_write(mut data: Array<u16>, at: u16, value: vec3) {
+    data[at] = value.x().lo_bits();
+    data[at + 1] = value.x().hi_bits();
+    data[at + 2] = value.y().lo_bits();
+    data[at + 3] = value.y().hi_bits();
+    data[at + 4] = value.z().lo_bits();
+    data[at + 5] = value.z().hi_bits();
 }
 
 pub fn gpu_scene_normalize(raw: vec3) -> vec3 {

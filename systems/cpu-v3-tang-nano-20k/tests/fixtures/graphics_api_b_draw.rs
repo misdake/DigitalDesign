@@ -26,6 +26,41 @@ fn check(ok: bool, code: u16) {
         halt(code);
     }
 }
+fn vector_word_span_checks() {
+    let bits: Buf<u16, 6> = Buf::new([65535, 32767, 0, 32768, 1, 65535]);
+    let mut input: Buf<u16, 40> = Buf::new([0xa55a; 40]);
+    let output: Buf<u16, 40> = Buf::new([0xa55a; 40]);
+    let mut at: u16 = 0;
+    while at < 6 {
+        input[7 + at] = bits[at];
+        at += 1;
+    }
+    let source = unsafe { input.as_array().as_ptr().add(8).as_u16_array() };
+    let value = gpu_scene_vec_read(source, 65535);
+    check(
+        value.x().lo_bits() == 65535 && value.x().hi_bits() == 32767,
+        60,
+    );
+    check(value.y().lo_bits() == 0 && value.y().hi_bits() == 32768, 61);
+    check(value.z().lo_bits() == 1 && value.z().hi_bits() == 65535, 62);
+    // Odd, line-crossing and wrapping offsets must still touch only six words.
+    gpu_scene_vec_write(output.as_array(), 15, value);
+    let destination = unsafe { output.as_array().as_ptr().add(8).as_u16_array() };
+    gpu_scene_vec_write(destination, 65535, value);
+    at = 0;
+    while at < 40 {
+        let mut expected: u16 = 0xa55a;
+        if at >= 7 && at < 13 {
+            expected = bits[at - 7];
+        }
+        check(input[at] == expected, 63);
+        if at >= 15 && at < 21 {
+            expected = bits[at - 15];
+        }
+        check(output[at] == expected, 64);
+        at += 1;
+    }
+}
 fn bind() {
     let mut at: u16 = 0;
     while at < 32 {
@@ -459,6 +494,7 @@ fn mutate_after_draw() {
     gpu_scene_state_depth(STATE.as_array(), DepthFunc::Never, false);
 }
 fn run_cases() {
+    vector_word_span_checks();
     model_initial();
     material_state();
     camera_a();

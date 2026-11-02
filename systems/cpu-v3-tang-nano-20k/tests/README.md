@@ -76,7 +76,10 @@ non-axis look-at. It compares source world/normal/view and final native
 position/normal/light, with fixed Q16/Q14 tolerances, exact padding/scratch gaps
 and byte-identical healthy output across profiles.
 The binding case feeds the actual B preparation into A's actual arena, record,
-bind, mesh and UI packet modules. Independent complete command/push oracles
+bind, mesh and UI packet modules. Its existing fixture also checks six-word
+vector I/O with extreme bit patterns, odd/line-crossing and wrapping offsets,
+unchanged input and complete neighboring-word guards.
+Independent complete command/push oracles
 check two CBs, six live Models, equal-value reuse, RGBA-only changes, 3D/UI/3D
 and freeing/reusing a Model after recording. It includes actual A execution,
 Display and fault storage. These helper fixtures carry no hypothetical C capture
