@@ -30,6 +30,21 @@ SHA checks; it does not claim a new DUT run. Public RCC submit/wait/CB replay,
 three UI frames and host-vblank/Display interpretation are tested in the system
 crate's `host/gpu_functional.rs`.
 
+`functional_parallel.py --baseline <frozen-accepted-sim> --candidate <new-sim>
+--out <fresh-directory>` reuses these20 independent inputs without running RTL.
+It compares all8MiB, access flags, completion effects and diagnostics at1/2/4/8
+threads. Both binaries and each input are hashed; successful physical results
+are compressed, while failures keep their loose diagnostic files. Each process
+has a30-second wall bound and64000000 work units.
+
+The native geometry unit tests separately compare optimized execution with the
+original240-row traversal, including overlapping blended triangles, framebuffer
+texture feedback, unknown reads, denied writes and work exhaustion. They compare
+full memory/access, errors, partial effects and successful work counts in local
+one/four-thread pools.4096 deterministic quantized half-plane sets check that
+row bounds never exclude an original covered span, including horizontal,
+vertical, empty and top-left boundary cases.
+
 Pure host regressions share the `host` integration executable. Their component
 modules remain independently filterable, for example:
 

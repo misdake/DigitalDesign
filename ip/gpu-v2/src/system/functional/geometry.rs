@@ -1,5 +1,6 @@
 //! Selected V96/F16 -> N27 -> h30 arithmetic. No clipping or floating vertices.
 use super::{shading, Report};
+use rayon::prelude::*;
 use std::sync::OnceLock;
 
 pub(super) fn signed(value: i128, bits: u32) -> i128 {
@@ -186,7 +187,9 @@ struct Triangle {
     vertices: [Vertex; 3],
     edges: [[i128; 3]; 3],
     exponents: [i32; 3],
-    determinant: i128,
+    common_exponent: i32,
+    depth_mantissa: i128,
+    depth_shift: i32,
 }
 impl Triangle {
     fn new(vertices: [Vertex; 3], cull: bool) -> Result<Option<Self>, String> {
@@ -228,11 +231,16 @@ impl Triangle {
             edges[i] = coefficients.map(|v| determinant.signum() * trunc_scale(v, shift));
             exponents[i] += shift;
         }
+        let common_exponent = *exponents.iter().max().unwrap();
+        let determinant = determinant.abs();
+        let depth_exponent = bits(determinant) - 1;
         Ok(Some(Self {
             vertices,
             edges,
             exponents,
-            determinant: determinant.abs(),
+            common_exponent,
+            depth_mantissa: floor_scale(determinant, depth_exponent - 30),
+            depth_shift: common_exponent + 38 - depth_exponent,
         }))
     }
 
@@ -257,8 +265,46 @@ impl Triangle {
         }
     }
 
+    fn rows(&self) -> Option<std::ops::Range<usize>> {
+        // Eliminate x between each lower/upper half-plane constraint. Every
+        // covered integer pixel satisfies these continuous bounds; fractional
+        // intersections may retain extra rows but can never remove coverage.
+        let mut lower = [(0, 0, 1); 4];
+        let mut upper = [(399, 0, 1); 4];
+        let (mut lower_count, mut upper_count) = (1, 1);
+        let (mut lo, mut hi) = (0i128, 239i128);
+        let constrain = |a: i128, b: i128, lo: &mut i128, hi: &mut i128| {
+            if a > 0 {
+                *hi = (*hi).min(b.div_euclid(a));
+            } else if a < 0 {
+                *lo = (*lo).max(-b.div_euclid(-a));
+            } else if b < 0 {
+                *hi = -1;
+            }
+        };
+        for &[nx, ny, c] in &self.edges {
+            let a = 2 * nx;
+            let tau = i128::from(!(a > 0 || a == 0 && ny > 0));
+            if a > 0 {
+                lower[lower_count] = (tau - c, -2 * ny, a);
+                lower_count += 1;
+            } else if a < 0 {
+                upper[upper_count] = (c - tau, 2 * ny, -a);
+                upper_count += 1;
+            } else {
+                constrain(-2 * ny, c - tau, &mut lo, &mut hi);
+            }
+        }
+        for &(a, b, d) in &lower[..lower_count] {
+            for &(c, e, f) in &upper[..upper_count] {
+                constrain(b * f - e * d, c * d - a * f, &mut lo, &mut hi);
+            }
+        }
+        (lo <= hi).then_some(lo as usize / 2..hi as usize / 2 + 1)
+    }
+
     fn fragment(&self, x: usize, y: usize, far: u32) -> Result<Fragment, String> {
-        let common = *self.exponents.iter().max().unwrap();
+        let common = self.common_exponent;
         let mut h = [0; 3];
         for (i, value) in h.iter_mut().enumerate() {
             let [nx, ny, c] = self.edges[i];
@@ -305,9 +351,7 @@ impl Triangle {
         });
         let normal =
             std::array::from_fn(|c| interpolate(self.vertices.map(|v| v.normal[c])) as i16);
-        let ed = bits(self.determinant) - 1;
-        let k = floor_scale(self.determinant, ed - 30);
-        let depth_full = floor_scale(r * k, e + common + 38 - ed);
+        let depth_full = floor_scale(r * self.depth_mantissa, e + self.depth_shift);
         Ok(Fragment {
             uv,
             rgb,
@@ -322,7 +366,7 @@ impl Triangle {
         if !state.texture.full_mip {
             return 0;
         }
-        let common = *self.exponents.iter().max().unwrap();
+        let common = self.common_exponent;
         let mut maximum = None;
         for channel in 0..2 {
             for axis in 0..2 {
@@ -366,6 +410,73 @@ pub(super) struct Fragment {
     denominator: i128,
 }
 
+#[derive(Clone, Copy)]
+struct Quad {
+    x: usize,
+    y: usize,
+    mask: u8,
+}
+impl Quad {
+    fn new(x: usize, y: usize, spans: [Option<(usize, usize)>; 2]) -> Self {
+        let mut mask = 0;
+        for lane in 0..4 {
+            if spans[lane >> 1].is_some_and(|(lo, hi)| (lo..=hi).contains(&(x + (lane & 1)))) {
+                mask |= 1 << lane;
+            }
+        }
+        Self { x, y, mask }
+    }
+    fn xy(self, lane: usize) -> [usize; 2] {
+        [self.x + (lane & 1), self.y + (lane >> 1)]
+    }
+    fn fragments(self, triangle: &Triangle, far: u32) -> Result<[Option<Fragment>; 4], String> {
+        let mut result = std::array::from_fn(|_| None);
+        for (lane, slot) in result.iter_mut().enumerate() {
+            if self.mask & (1 << lane) != 0 {
+                let [x, y] = self.xy(lane);
+                *slot = Some(triangle.fragment(x, y, far)?);
+            }
+        }
+        Ok(result)
+    }
+}
+type Spans = [Option<(usize, usize)>; 2];
+type PreparedQuad = Result<[Option<shading::PreparedFragment>; 4], String>;
+
+fn span_range(spans: Spans) -> Option<std::ops::RangeInclusive<usize>> {
+    let lo = spans.iter().flatten().map(|span| span.0).min()?;
+    let hi = spans.iter().flatten().map(|span| span.1).max().unwrap();
+    Some((lo & !1)..=hi)
+}
+fn prepare_quad(
+    memory: &super::Memory<'_>,
+    triangle: &Triangle,
+    quad: Quad,
+    state: shading::DrawState,
+) -> PreparedQuad {
+    let fragments = quad.fragments(triangle, state.global.far)?;
+    let lod = fragments.iter().flatten().next().map_or(0, |first| {
+        if state.rgb {
+            0
+        } else {
+            triangle.lod(first, state.render)
+        }
+    });
+    let mut prepared = std::array::from_fn(|_| None);
+    for (lane, fragment) in fragments.into_iter().enumerate() {
+        if let Some(fragment) = fragment.filter(|f| f.valid) {
+            prepared[lane] = Some(shading::prepare(
+                memory,
+                quad.xy(lane),
+                fragment,
+                &state,
+                lod,
+            ));
+        }
+    }
+    Ok(prepared)
+}
+
 pub(super) fn draw(
     memory: &mut super::Memory<'_>,
     mesh: &Meshlet,
@@ -376,40 +487,92 @@ pub(super) fn draw(
 ) -> Result<(), String> {
     report.charge(mesh.vertices.len(), maximum)?;
     let vertices = mesh.transform(uniform)?;
+    let independent = mesh.rgb || !state.render.texture.overlaps_target(state.target);
     for indices in &mesh.triangles {
         report.charge(1, maximum)?;
         let Some(triangle) = Triangle::new(indices.map(|i| vertices[i]), mesh.cull)? else {
             continue;
         };
-        for y in (0..240).step_by(2) {
-            report.charge(2, maximum)?;
-            let spans = [triangle.span(y), triangle.span(y + 1)];
-            let Some(lo) = spans.iter().flatten().map(|span| span.0).min() else {
-                continue;
-            };
-            let hi = spans.iter().flatten().map(|span| span.1).max().unwrap();
-            for x in ((lo & !1)..=hi).step_by(2) {
-                report.charge(4, maximum)?;
-                let mut fragments = Vec::with_capacity(4);
-                for lane in 0..4 {
-                    let (px, py) = (x + (lane & 1), y + (lane >> 1));
-                    if spans[lane >> 1].is_some_and(|(lo, hi)| (lo..=hi).contains(&px)) {
-                        fragments.push((px, py, triangle.fragment(px, py, state.global.far)?));
+        let Some(active_rows) = triangle.rows() else {
+            report.charge(240, maximum)?;
+            continue;
+        };
+        report.charge(active_rows.start * 2, maximum)?;
+        let rows: [Spans; 120] = std::array::from_fn(|row| {
+            if active_rows.contains(&row) {
+                [triangle.span(row * 2), triangle.span(row * 2 + 1)]
+            } else {
+                [None, None]
+            }
+        });
+        let mut prepared = independent
+            .then(|| {
+                let count: usize = rows
+                    .iter()
+                    .filter_map(|&spans| span_range(spans))
+                    .map(|range| (*range.end() - *range.start()) / 2 + 1)
+                    .sum();
+                // Four fragments and at most eight nonzero texture taps per quad.
+                // Small remaining budgets stay serial to retain the failure prefix.
+                if count < 256
+                    || count * 40 + 240 > maximum.saturating_sub(report.work)
+                    || rayon::current_num_threads() == 1
+                {
+                    return None;
+                }
+                let mut jobs = Vec::with_capacity(count);
+                for (row, &spans) in rows.iter().enumerate() {
+                    if let Some(range) = span_range(spans) {
+                        jobs.extend(range.step_by(2).map(|x| Quad::new(x, row * 2, spans)));
                     }
                 }
-                if fragments.is_empty() {
+                let shared = &*memory;
+                let result: Vec<_> = jobs
+                    .par_iter()
+                    .with_min_len(64)
+                    .map(|&quad| prepare_quad(shared, &triangle, quad, state))
+                    .collect();
+                Some(result.into_iter())
+            })
+            .flatten();
+        for y in (active_rows.start * 2..active_rows.end * 2).step_by(2) {
+            report.charge(2, maximum)?;
+            let spans = rows[y / 2];
+            let Some(range) = span_range(spans) else {
+                continue;
+            };
+            for x in range.step_by(2) {
+                report.charge(4, maximum)?;
+                let quad = Quad::new(x, y, spans);
+                if let Some(prepared) = &mut prepared {
+                    for (lane, fragment) in prepared.next().unwrap()?.into_iter().enumerate() {
+                        if let Some(fragment) = fragment {
+                            shading::commit(
+                                memory,
+                                quad.xy(lane),
+                                fragment,
+                                &state,
+                                report,
+                                maximum,
+                            )?;
+                        }
+                    }
                     continue;
                 }
+                let fragments = quad.fragments(&triangle, state.global.far)?;
+                let Some(first) = fragments.iter().flatten().next() else {
+                    continue;
+                };
                 let lod = if mesh.rgb {
                     0
                 } else {
-                    triangle.lod(&fragments[0].2, state.render)
+                    triangle.lod(first, state.render)
                 };
-                for (px, py, fragment) in fragments {
-                    if fragment.valid {
+                for (lane, fragment) in fragments.into_iter().enumerate() {
+                    if let Some(fragment) = fragment.filter(|f| f.valid) {
                         shading::fragment(
                             memory,
-                            [px, py],
+                            quad.xy(lane),
                             fragment,
                             &state,
                             lod,
@@ -420,6 +583,11 @@ pub(super) fn draw(
                 }
             }
         }
+        report.charge((120 - active_rows.end) * 2, maximum)?;
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "geometry_tests.rs"]
+mod tests;

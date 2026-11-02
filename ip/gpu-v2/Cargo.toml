@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 audited = { path = "../../modeling/audited" }
 resource-scheduler = { path = "../../modeling/scheduler" }
+rayon = "1.12"
 
 [dev-dependencies]
 digital-design-circuit = { path = "../../circuit" }

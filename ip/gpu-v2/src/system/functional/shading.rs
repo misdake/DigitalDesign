@@ -100,13 +100,20 @@ impl Texture {
         }
     }
     pub fn validate_extent(self, memory: &super::Memory<'_>) -> Result<(), String> {
-        let length = if self.framebuffer {
+        bounds(memory, self.base, self.word_count())?;
+        Ok(())
+    }
+    fn word_count(self) -> usize {
+        if self.framebuffer {
             PLANE_WORDS
         } else {
             self.prefix(self.size_log2) + (1usize << (2 * self.size_log2.max(4)))
-        };
-        bounds(memory, self.base, length)?;
-        Ok(())
+        }
+    }
+    pub fn overlaps_target(self, target: [usize; 2]) -> bool {
+        target
+            .into_iter()
+            .any(|base| self.base < base + PLANE_WORDS && base < self.base + self.word_count())
     }
     fn texel(
         self,
@@ -271,22 +278,22 @@ fn lighting(pixel: light::PixelInput, global: Global, render: RenderState) -> [u
     )
 }
 
-pub(super) fn fragment(
-    memory: &mut super::Memory<'_>,
+fn shade(
+    memory: &super::Memory<'_>,
     xy: [usize; 2],
-    fragment: Fragment,
+    fragment: &Fragment,
     state: &DrawState,
     lod: u8,
     report: &mut Report,
     maximum: usize,
-) -> Result<(), String> {
+) -> Result<[u8; 3], String> {
     let [x, y] = xy;
     let DrawState {
         global,
         render,
-        target,
         color: uniform,
         rgb: rgb_mode,
+        ..
     } = *state;
     report.charge(1, maximum)?;
     let source = if rgb_mode {
@@ -309,23 +316,83 @@ pub(super) fn fragment(
         (((base * u32::from(g)) >> 8) + ((u32::from(render.specular[c]) * u32::from(h)) >> 8))
             .min(255) as u8
     });
+    Ok(color)
+}
+
+pub(super) fn fragment(
+    memory: &mut super::Memory<'_>,
+    xy: [usize; 2],
+    fragment: Fragment,
+    state: &DrawState,
+    lod: u8,
+    report: &mut Report,
+    maximum: usize,
+) -> Result<(), String> {
+    let color = shade(memory, xy, &fragment, state, lod, report, maximum)?;
+    rop(memory, xy, fragment.depth, color, state)
+}
+
+// Workers only read immutable memory. Work charges and failures are retired by
+// the caller in the original quad/lane order, before each actual ROP operation.
+pub(super) struct PreparedFragment {
+    work: usize,
+    result: Result<([u8; 3], u16), String>,
+}
+pub(super) fn prepare(
+    memory: &super::Memory<'_>,
+    xy: [usize; 2],
+    fragment: Fragment,
+    state: &DrawState,
+    lod: u8,
+) -> PreparedFragment {
+    let mut report = Report::default();
+    let result = shade(memory, xy, &fragment, state, lod, &mut report, usize::MAX)
+        .map(|color| (color, fragment.depth));
+    PreparedFragment {
+        work: report.work,
+        result,
+    }
+}
+pub(super) fn commit(
+    memory: &mut super::Memory<'_>,
+    xy: [usize; 2],
+    prepared: PreparedFragment,
+    state: &DrawState,
+    report: &mut Report,
+    maximum: usize,
+) -> Result<(), String> {
+    report.charge(prepared.work, maximum)?;
+    let (color, depth) = prepared.result?;
+    rop(memory, xy, depth, color, state)
+}
+
+fn rop(
+    memory: &mut super::Memory<'_>,
+    [x, y]: [usize; 2],
+    incoming_depth: u16,
+    color: [u8; 3],
+    state: &DrawState,
+) -> Result<(), String> {
+    let target = state.target;
+    let render = state.render;
+    let uniform = state.color;
     let offset = super::column_offset(x, y);
     let depth = memory.load(target[1] + offset)?;
     let passing = match render.control & 7 {
         0 => false,
-        1 => fragment.depth < depth,
-        2 => fragment.depth == depth,
-        3 => fragment.depth <= depth,
-        4 => fragment.depth > depth,
-        5 => fragment.depth != depth,
-        6 => fragment.depth >= depth,
+        1 => incoming_depth < depth,
+        2 => incoming_depth == depth,
+        3 => incoming_depth <= depth,
+        4 => incoming_depth > depth,
+        5 => incoming_depth != depth,
+        6 => incoming_depth >= depth,
         _ => true,
     };
     if !passing {
         return Ok(());
     }
     if render.control & 8 != 0 {
-        memory.store(target[1] + offset, fragment.depth)?;
+        memory.store(target[1] + offset, incoming_depth)?;
     }
     let alpha = if render.control & 16 != 0 {
         ((uniform >> 24) + 2) / 4

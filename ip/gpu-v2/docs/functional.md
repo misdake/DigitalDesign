@@ -134,6 +134,51 @@ composition are retired. Independent compact Lighting, continuous Triangle,
 Sampling, framebuffer and direct-ROP references remain available for component
 verification. Raster adapter input types belong to `system::pixel::raster_input`.
 
+## Local preparation and ordered writes
+
+The native executor uses fixed four-lane quad storage and precomputes each
+triangle's common edge exponent and determinant-derived depth constants. It
+eliminates x from the quantized edge half-planes to bound the potentially covered
+row pairs. These conservative integer bounds keep the original top-left rule;
+the ordinary span test still decides coverage. Skipped empty rows retain their
+original work charges, including exhaustion before later pixel writes.
+
+For a triangle with at least 256 quad jobs and sufficient remaining work, Rayon
+may prepare geometry, texture reads and Lighting in parallel. The workers borrow
+immutable physical memory and return ordered per-quad results. They never write
+color, depth, access facts or completion effects. After all workers join, the
+caller retires each result in original triangle/row/quad/lane order and performs
+the original depth test, blend and stores. A geometry failure still precedes all
+shading in its quad; a shading failure is reported at its original lane after
+earlier writes. First-covered-lane LOD selection and integer arithmetic stay
+unchanged.
+
+```mermaid
+flowchart LR
+  T[Triangle and spans] --> A{Independent reads and enough work?}
+  A -->|yes| P[Rayon read-only quad preparation]
+  P -->|join and ordered results| R[Original-order depth / blend / writes]
+  A -->|no| S[Serial quad preparation]
+  S --> R
+  R -->|writes finished or partial error| C[Core return and effects]
+```
+
+The entire texture allocation is conservatively checked against both current
+target planes. Any overlap uses serial execution, preserving within-draw texture
+feedback. Small jobs, one-thread pools and budgets below the conservative bound
+also use serial execution. Admission reserves at most 40 work units per quad
+(four quad units and four fragments with up to eight nonzero taps each), plus 240
+row units. This keeps budget failures on the original serial path. Small jobs
+do not initialize the Rayon global pool. The default Rayon pool or a caller's
+installed pool is reused; `RAYON_NUM_THREADS` controls the default pool size.
+
+At most 24000 quad jobs exist for a 400x240 target. On a 64-bit host, job and result
+vectors together require at most 3648000 payload bytes, plus 5760 bytes of span
+storage. This is a queue storage bound, excluding allocator overhead, worker
+locals, diagnostic string allocations on failure and thread stacks; it is not a
+process working-set measurement. No
+asynchronous GPU lifetime or completion behavior is introduced.
+
 ## System adapter and verification
 
 The system's default `GpuDevice` remains control-only. `GpuDevice::functional()`
