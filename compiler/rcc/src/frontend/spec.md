@@ -559,8 +559,8 @@ them unchanged (a struct local is just an address plus offsets).
 ## 12. Out of scope for now
 
 General `&x` references (outside §15), fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
-allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
-inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
+allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), automatic/forced
+function inlining (`#[inline(always)]`), and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
 aggregate-returning fn pointers, general `impl` (except §15.1), `vecN` fields, arbitrary static FPU expressions, recursive layouts, enum payloads,
 and enum statics).
 
@@ -614,6 +614,73 @@ passed by value:
    a single `init_heap(heap_begin, heap_size)` call is inserted at the start of `main`; if it
    reaches `vec_*`, a single `init_vec(vec_init_cap)` call follows. each init runs exactly once
    per program, with parameters from `CompilerOptions`.
+
+### 13.1.1 Explicit CPU V3 inlining
+
+Ordinary functions and supported value/resource inherent methods accept `#[inline]`
+(best-effort hint) and `#[inline(never)]` (do not expand this callee). Unannotated
+functions remain ordinary calls; `never` does not disable eligible calls inside
+that function. Malformed, duplicate/conflicting attributes and `#[inline(always)]`
+are errors. Attributes on `impl Drop` and its method retain their existing
+restrictions. These hints do not change Rust ownership, privacy, library approval,
+unsafe checks, argument limits or the target ABI.
+
+The CPU V3 backend expands loaded-source direct calls on typed SSA/CFG, after
+frontend checks, Drop/method lowering and automatic initialization, before diamond
+conversion, ordinary optimization and ABI shims. It maps all blocks and SSA values
+before rewriting loop phis, branches and uses. Unused metadata tail entries
+reserved by automatic initialization are trimmed only in the candidate before
+fresh SSA allocation; occupied types and the baseline are unchanged. Evaluated arguments and aggregate
+snapshots stay in their original order; every normal return joins the continuation
+with typed moves or result phis. It preserves nonreturning branches and explicit
+cleanup/effect instructions. The function table is retained; target reachability
+still owns emission, including entry and function-address roots.
+
+Candidates exclude recursive SCC members, indirect calls/callees containing them,
+entry, special terminal transfers, functions without a normal return, entry phis or
+backedges, and source frame-local/addressed objects (`local_slots`/local access IR).
+Ordinary SSA locals and subsequent allocator-generated spills remain supported.
+Default expansion depth is two; depth one restricts callees to leaves. No binary
+LTO, automatic std/library annotation, indirect-call devirtualization or new loader
+is implied. Cross-module source calls obey the same checks and budgets.
+
+`CompilerOptions.inline` holds the policy; `--no-inline` disables only this pass
+and requires `--target cpu-v3`. `--no-opt` also disables it. `gpu_debug` remains an
+independent source-check configuration. A program without usable hints takes one
+normal backend lowering. A program with expansions lowers an independent baseline
+and one candidate from the same checked source snapshot; frontend/rustc are not
+rerun. Candidate failure with an identified allocation/layout capacity error can
+select the baseline. Invalid IR, unknown functions, invalid instructions and
+unclassified allocation nonconvergence remain errors. There is no panic catcher or
+iterative trial-compilation search.
+
+The default compilation limits are 32 reachable instruction/phi/terminator nodes,
+eight blocks and 48 source vregs per callee; two expansion levels; cumulative
+introduced clone/glue nodes at most `max(32, ceil(original caller nodes / 4))` per
+caller and 512 per program. Removed calls, DCE and dead original bodies do not
+refund these cumulative costs. Final code is the whole linked application's word
+span after relaxation, including retained functions, generated instructions and
+internal padding, excluding data, heap and separate boot/Flash applications.
+
+A candidate is selected only when code growth is at most
+`max(64 words, ceil(baseline code words / 10))`, changed-caller frame growth is at
+most 16 words and FPU spill-area growth at most eight words (including alignment).
+`max` selects the larger allowance, not simultaneous fixed and percentage caps.
+These are soft heuristics, not semantic or hardware guarantees; independent frame,
+spill-index and code/data/heap capacity limits always apply. Soft-budget rejection
+is normal product selection, not recovery from an arbitrary compiler error.
+
+`try_compile_with_inline_report` returns site decisions and source/callsite origins,
+cumulative cost, attempted versus retained expansions, baseline/candidate words,
+changed-caller frame/spill costs, target-lowering durations and the single fallback
+reason/count. The CLI prints this report for requested sites. It never reports
+abandoned candidate expansions as retained. Speed remains workload-dependent.
+
+Debug info remains version 2. Cloned instructions, returns and glue map to the
+caller's call-site file/line; a missing call-site line remains absent. Logical
+callee/source origins are reported separately. The compiler does not invent inline
+stack frames, callee stepping or cloned-local frame locations. `--no-inline` (or
+`--no-opt`) keeps the original function boundaries.
 
 ### 13.2 `CompilerOptions`
 

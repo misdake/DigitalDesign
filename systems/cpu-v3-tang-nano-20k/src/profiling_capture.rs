@@ -370,7 +370,11 @@ mod tests {
     }
 
     fn all_words(payload: &[u8], expected: u16) -> bool {
-        payload.chunks_exact(2).all(|v| v == expected.to_le_bytes())
+        payload
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|v| *v == expected.to_le_bytes())
     }
 
     #[test]

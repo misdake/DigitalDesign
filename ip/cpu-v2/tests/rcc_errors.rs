@@ -311,7 +311,51 @@ fn test_allow_attribute_is_ignored() {
 
 #[test]
 fn test_attribute_macro_rejected() {
-    expect_error("#[inline] fn f() {}", "attribute");
+    expect_error("#[unknown_rcc_attribute] fn f() {}", "attribute");
+}
+
+#[test]
+fn test_function_inline_hints_are_metadata_only_on_cpu_v2() {
+    let plain =
+        "fn small(x:u16)->u16{x+1} fn blocked(x:u16)->u16{x+2} fn main(){halt(blocked(small(4)));}";
+    let hinted = plain
+        .replace("fn small", "#[inline] fn small")
+        .replace("fn blocked", "#[inline(never)] fn blocked");
+    let program = cpu_v2::frontend::parse_source(&hinted).unwrap();
+    assert_eq!(
+        program
+            .funcs
+            .iter()
+            .find(|f| f.name == "small")
+            .unwrap()
+            .inline_hint,
+        rcc::InlineHint::Hint
+    );
+    assert_eq!(
+        program
+            .funcs
+            .iter()
+            .find(|f| f.name == "blocked")
+            .unwrap()
+            .inline_hint,
+        rcc::InlineHint::Never
+    );
+    let lower = |source: &str| {
+        let mut compiler = cpu_v2::Compiler::new();
+        for f in cpu_v2::frontend::parse_source(source).unwrap().funcs {
+            compiler.add_func(f);
+        }
+        let (instructions, listing) = compiler.finish("main");
+        (
+            instructions
+                .iter()
+                .map(|instruction| instruction.encode())
+                .collect::<Vec<_>>(),
+            listing,
+        )
+    };
+    assert_eq!(lower(plain), lower(&hinted));
+    assert_eq!(run(&hinted), Some(7));
 }
 
 #[test]
@@ -405,8 +449,11 @@ fn test_struct_restrictions() {
         "no field `y`",
     );
     expect_error("static A: (u16, u16) = (1, 2, 3);", "expected 2");
-    // attributes other than repr/allow are still rejected
-    expect_error("struct P { x: u16 }\n#[inline] fn f() {}", "attribute");
+    // Forced inlining remains unsupported; ordinary function hints are metadata.
+    expect_error(
+        "struct P { x: u16 }\n#[inline(always)] fn f() {}",
+        "inline(always)",
+    );
 }
 
 #[test]

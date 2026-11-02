@@ -16,6 +16,7 @@ usage: rcc <input.rs> [options]
   --target <target>    cpu-v2 (default) or cpu-v3
   -o <file>           binary output (default: <input>.bin)
   --lst <file>        disassembly listing (default: <input>.lst)
+  --no-inline         disable explicit inlining (cpu-v3 only)
   --no-opt            disable all optimization passes
   --function-table <mode>
                       call_abs table: auto (default), none, all, or name,...
@@ -69,6 +70,12 @@ fn main() -> ExitCode {
             "--no-opt" => {
                 opts.opt = rcc::Opts::disabled();
                 v3_opts.opt = rcc::Opts::disabled();
+            }
+            "--no-inline" => {
+                if target != Target::CpuV3 {
+                    die("--no-inline requires --target cpu-v3");
+                }
+                v3_opts.inline.enabled = false;
             }
             "--function-table" => {
                 if target == Target::CpuV3 {
@@ -157,8 +164,12 @@ fn main() -> ExitCode {
             compile_program_named(&input.display().to_string(), &src, &v3_opts, &mut loader)
                 .unwrap_or_else(|error| die(&error.to_string()));
         let n_funcs = program.funcs.len();
-        let program = cpu_v3_backend::try_compile(program, &v3_opts, "main")
-            .unwrap_or_else(|error| die(&error.to_string()));
+        let (program, inline_report) =
+            cpu_v3_backend::try_compile_with_inline_report(program, &v3_opts, "main")
+                .unwrap_or_else(|error| die(&error.to_string()));
+        if !inline_report.ir.sites.is_empty() {
+            eprint!("{inline_report}");
+        }
         std::fs::write(&out, encode_cpu_v3_words(&program.words))
             .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", out.display())));
         std::fs::write(&lst, &program.listing)

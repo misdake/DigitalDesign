@@ -1,5 +1,23 @@
 # System regression tests
 
+## Explicit RCC inline helper measurement
+
+The `rcc_inline` target copies the current production `gpu_scene_fix_read/write`
+function bodies into a test loader and adds attributes only in that copy. It runs
+32 dynamic iterations with output guards, the same inputs/options and a fixed
+stack top, comparing inline off/on on both the architectural interpreter and the
+clocked core's one-cycle instruction/data peer. It reports steps separately from
+core cycles, plus words, retired words, minimum SP and actual frame/spill costs.
+One shared frontend snapshot also supplies the whole-backend host wall-time A/B;
+inline-on includes analysis, cloning and both target lowerings. Timing observations
+are reported, not used as a host speed guarantee or acceptance threshold.
+Both models have finite execution bounds. This does not measure caches, MC, a
+complete renderer frame or a board. The production renderer source is unchanged.
+
+```powershell
+cargo test --release -p cpu-v3-tang-nano-20k --test rcc_inline -- --nocapture --test-threads=1
+```
+
 ## Host time and input
 
 `host::host_io` contains bounded real-RCC timer/watch and snapshot capture cases,

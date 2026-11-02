@@ -21,6 +21,43 @@ mod ownership_containers;
 mod resource;
 pub mod rustc_check;
 mod value_methods;
+/// Parse once on the ordinary function produced by method/resource lowering.
+fn inline_hint(function: &ItemFn) -> Result<crate::InlineHint, syn::Error> {
+    let mut hint = None;
+    for attr in &function.attrs {
+        if attr.path.is_ident("allow") || attr.path.is_ident("doc") {
+            continue;
+        }
+        if !attr.path.is_ident("inline") {
+            return Err(err(
+                attr,
+                "attributes are not supported (except #[allow], #[doc], #[inline])",
+            ));
+        }
+        if hint.is_some() {
+            return Err(err(attr, "duplicate or conflicting inline attributes"));
+        }
+        let value = match attr.parse_meta()? {
+            syn::Meta::Path(_) => crate::InlineHint::Hint,
+            syn::Meta::List(list) if list.nested.len() == 1 => match list.nested.first() {
+                Some(syn::NestedMeta::Meta(syn::Meta::Path(path))) if path.is_ident("never") => {
+                    crate::InlineHint::Never
+                }
+                Some(syn::NestedMeta::Meta(syn::Meta::Path(path))) if path.is_ident("always") => {
+                    return Err(err(
+                        attr,
+                        "#[inline(always)] is not supported; use best-effort #[inline]",
+                    ))
+                }
+                _ => return Err(err(attr, "expected #[inline] or #[inline(never)]")),
+            },
+            _ => return Err(err(attr, "expected #[inline] or #[inline(never)]")),
+        };
+        hint = Some(value);
+    }
+    Ok(hint.unwrap_or_default())
+}
+
 fn typed_pattern(pattern: Pat, ty: Type) -> Pat {
     Pat::Type(syn::PatType {
         attrs: Vec::new(),
@@ -42,7 +79,7 @@ pub struct Program {
 
 /// debug data collected by the frontend (the driver adds addresses and the
 /// pc->line table to complete the picture)
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FrontendDebug {
     /// Check profile of the actual selected source.
     pub gpu_debug: bool,
@@ -57,6 +94,7 @@ pub struct FrontendDebug {
     pub types: Vec<crate::DebugType>,
 }
 
+#[derive(Clone)]
 pub struct FnDebug {
     pub name: String,
     pub file: u16,
@@ -498,14 +536,7 @@ fn parse_files(
             for item in &file.items {
                 match item {
                     Item::Fn(f) => {
-                        for attr in &f.attrs {
-                            if !attr.path.is_ident("allow") && !attr.path.is_ident("doc") {
-                                return Err(err(
-                                    attr,
-                                    "attributes are not supported (except #[allow])",
-                                ));
-                            }
-                        }
+                        inline_hint(f)?;
                         fns.push((fi, f))
                     }
                     Item::Use(_) => { /* ignored: for the IDE only */ }
@@ -602,7 +633,7 @@ fn parse_files(
         ..FrontendDebug::default()
     };
     for (name, (fi, f)) in names.into_iter().zip(fns) {
-        let (ir, fdbg) = lower_fn(
+        let (mut ir, fdbg) = lower_fn(
             name,
             f,
             &sigs,
@@ -612,6 +643,7 @@ fn parse_files(
             materialize_debug_locals,
         )
         .map_err(|error| (fi, error))?;
+        ir.inline_hint = inline_hint(f).map_err(|error| (fi, error))?;
         out.push(ir);
         debug.funcs.push(fdbg);
     }

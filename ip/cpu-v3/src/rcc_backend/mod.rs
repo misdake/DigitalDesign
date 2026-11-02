@@ -7,7 +7,12 @@
 
 #[cfg(test)]
 mod enum_method_tests;
+mod inline;
 mod options;
+pub use inline::{
+    try_compile_with_inline_report, InlineCompilationReport, InlineFrameCost, InlineOutcome,
+    InlineRejection, InlineSourceOrigin,
+};
 #[cfg(test)]
 mod privacy_tests;
 #[cfg(test)]
@@ -214,6 +219,9 @@ pub enum BackendError {
     UnknownFunction(String),
     /// The linked code image violated an encoding requirement.
     Validation(ProgramValidationError),
+    Allocation(AllocationError),
+    Inline(InlineError),
+    Resource(BackendResourceError),
 }
 
 impl std::fmt::Display for BackendError {
@@ -221,8 +229,39 @@ impl std::fmt::Display for BackendError {
         match self {
             Self::UnknownFunction(name) => write!(f, "unknown function `{name}`"),
             Self::Validation(error) => write!(f, "{error}"),
+            Self::Allocation(error) => write!(f, "{error}"),
+            Self::Inline(error) => write!(f, "{error}"),
+            Self::Resource(error) => f.write_str(&error.message),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackendResourceKind {
+    CodeWindow,
+    CodeDataOverlap,
+    CodeStackOverlap,
+    HeapRange,
+    HeapStackOverlap,
+    StaticCodeOverlap,
+    StaticHeapOverlap,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackendResourceError {
+    pub kind: BackendResourceKind,
+    pub message: String,
+}
+impl BackendError {
+    fn is_resource_limit(&self) -> bool {
+        match self {
+            Self::Resource(_) => true,
+            Self::Allocation(e) => e.is_resource_limit(),
+            _ => false,
+        }
+    }
+}
+fn resource(kind: BackendResourceKind, message: String) -> BackendError {
+    BackendError::Resource(BackendResourceError { kind, message })
 }
 
 impl std::error::Error for BackendError {}
@@ -251,13 +290,7 @@ pub fn try_compile(
     options: &CompilerOptions,
     main: FuncName,
 ) -> Result<CpuV3Program, BackendError> {
-    let debug = program.debug;
-    let functions = program
-        .funcs
-        .into_iter()
-        .map(|function| (function.name, function))
-        .collect();
-    compile_ir(functions, options, main, debug)
+    try_compile_with_inline_report(program, options, main).map(|(program, _)| program)
 }
 
 fn compile_ir(
@@ -266,6 +299,21 @@ fn compile_ir(
     main: FuncName,
     debug: rcc::frontend::FrontendDebug,
 ) -> Result<CpuV3Program, BackendError> {
+    compile_ir_with_allocations(functions, options, main, debug).map(|(program, _)| program)
+}
+
+#[derive(Clone, Debug)]
+struct AllocationCost {
+    frame: usize,
+    gpr_spill: usize,
+    fpu_spill: usize,
+}
+fn compile_ir_with_allocations(
+    functions: HashMap<FuncName, IrFunc>,
+    options: &CompilerOptions,
+    main: FuncName,
+    debug: rcc::frontend::FrontendDebug,
+) -> Result<(CpuV3Program, HashMap<FuncName, AllocationCost>), BackendError> {
     let reachable = reachable_functions(&functions, main)?;
     let mut order = vec![main];
     let mut rest = reachable
@@ -277,6 +325,7 @@ fn compile_ir(
     order.extend(rest);
 
     let mut lowered = Vec::with_capacity(order.len());
+    let mut costs = HashMap::new();
     for name in order {
         let mut function = functions
             .get(name)
@@ -291,11 +340,23 @@ fn compile_ir(
             convert_diamonds(&mut function);
         }
         optimize(&mut function, &options.opt);
-        let (function, mut allocation) =
-            allocate_with_convention(&function, options.opt.coalesce, CPU_V3_REGISTER_CONVENTION);
+        let (function, mut allocation) = try_allocate_with_convention(
+            &function,
+            options.opt.coalesce,
+            CPU_V3_REGISTER_CONVENTION,
+        )
+        .map_err(BackendError::Allocation)?;
         if name == main {
             allocation.callee_saved.clear();
         }
+        costs.insert(
+            name,
+            AllocationCost {
+                frame: allocation.frame_size(),
+                gpr_spill: allocation.spill_slots as usize,
+                fpu_spill: allocation.fpu_area_words(),
+            },
+        );
         lowered.push(lower_function(
             &function,
             &allocation,
@@ -304,7 +365,7 @@ fn compile_ir(
         ));
     }
 
-    link(lowered, options, debug).map_err(BackendError::from)
+    Ok((link(lowered, options, debug)?, costs))
 }
 
 fn reachable_functions(
@@ -1695,7 +1756,7 @@ fn link(
     mut functions: Vec<LoweredFunction>,
     options: &CompilerOptions,
     frontend_debug: rcc::frontend::FrontendDebug,
-) -> Result<CpuV3Program, ProgramValidationError> {
+) -> Result<CpuV3Program, BackendError> {
     let code_base = usize::from(options.code_base);
     relax_branches(&mut functions, code_base);
     let mut function_addresses = HashMap::new();
@@ -1704,42 +1765,53 @@ fn link(
         function_addresses.insert(function.name, cursor);
         cursor += function.lines.iter().map(Line::size).sum::<usize>() + 1;
     }
-    assert!(
-        cursor <= 1 << 16,
-        "CpuV3 program at code_base {:#06x} exceeds the 64K code-segment window",
-        options.code_base
-    );
-    if !options.separate_code_data_segments {
-        assert!(
-            cursor <= usize::from(options.data_base),
-            "CpuV3 unified-memory image uses {cursor} code words and crosses data_base {:#06x}",
-            options.data_base
-        );
+    if cursor > 1 << 16 {
+        return Err(resource(
+            BackendResourceKind::CodeWindow,
+            format!(
+                "CpuV3 program at code_base {:#06x} exceeds the 64K code-segment window",
+                options.code_base
+            ),
+        ));
+    }
+    if !options.separate_code_data_segments && cursor > usize::from(options.data_base) {
+        return Err(resource(
+            BackendResourceKind::CodeDataOverlap,
+            format!(
+                "CpuV3 unified-memory image uses {cursor} code words and crosses data_base {:#06x}",
+                options.data_base
+            ),
+        ));
     }
     let stack_limit = if options.stack_init == 0 {
         1 << 16
     } else {
         usize::from(options.stack_init)
     };
-    if !options.separate_code_data_segments {
-        assert!(
-            cursor <= stack_limit,
-            "CpuV3 unified-memory image uses {cursor} code words and crosses stack top {stack_limit:#07x}"
-        );
+    if !options.separate_code_data_segments && cursor > stack_limit {
+        return Err(resource(BackendResourceKind::CodeStackOverlap, format!("CpuV3 unified-memory image uses {cursor} code words and crosses stack top {stack_limit:#07x}")));
     }
     let heap_end = options
         .heap_begin
         .checked_add(options.heap_size)
-        .expect("CpuV3 heap range wraps the address space");
-    assert!(
-        usize::from(heap_end) <= stack_limit,
-        "CpuV3 heap {:#06x}..{heap_end:#06x} overlaps the stack top {stack_limit:#07x}",
-        options.heap_begin
-    );
-
+        .ok_or_else(|| {
+            resource(
+                BackendResourceKind::HeapRange,
+                "CpuV3 heap range wraps the address space".into(),
+            )
+        })?;
+    if usize::from(heap_end) > stack_limit {
+        return Err(resource(
+            BackendResourceKind::HeapStackOverlap,
+            format!(
+                "CpuV3 heap {:#06x}..{heap_end:#06x} overlaps the stack top {stack_limit:#07x}",
+                options.heap_begin
+            ),
+        ));
+    }
     let static_addresses = functions
         .iter()
-        .flat_map(|function| function.static_addresses.iter().copied())
+        .flat_map(|f| f.static_addresses.iter().copied())
         .collect::<Vec<_>>();
     if !options.separate_code_data_segments {
         if let Some(address) = static_addresses
@@ -1747,9 +1819,7 @@ fn link(
             .copied()
             .find(|address| usize::from(*address) < cursor)
         {
-            panic!(
-                "CpuV3 unified-memory image uses {cursor} code words but static data starts at {address:#06x}; select a non-overlapping data_base"
-            );
+            return Err(resource(BackendResourceKind::StaticCodeOverlap,format!("CpuV3 unified-memory image uses {cursor} code words but static data starts at {address:#06x}; select a non-overlapping data_base")));
         }
     }
     if let Some(address) = static_addresses
@@ -1757,10 +1827,13 @@ fn link(
         .copied()
         .find(|address| *address >= options.heap_begin)
     {
-        panic!(
-            "CpuV3 static data reaches {address:#06x}, overlapping heap_begin {:#06x}",
-            options.heap_begin
-        );
+        return Err(resource(
+            BackendResourceKind::StaticHeapOverlap,
+            format!(
+                "CpuV3 static data reaches {address:#06x}, overlapping heap_begin {:#06x}",
+                options.heap_begin
+            ),
+        ));
     }
 
     let mut words = Vec::with_capacity(cursor - code_base);

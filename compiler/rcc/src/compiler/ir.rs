@@ -766,8 +766,18 @@ pub struct Block {
     pub preds: Vec<BlockId>,
 }
 
+/// Source-requested, best-effort inlining policy. Targets may leave hints unused.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InlineHint {
+    #[default]
+    Default,
+    Hint,
+    Never,
+}
+
 #[derive(Clone, Debug)]
 pub struct IrFunc {
+    pub inline_hint: InlineHint,
     pub name: FuncName,
     /// vregs holding the parameters at function entry (defined by the ABI)
     pub params: Vec<VReg>,

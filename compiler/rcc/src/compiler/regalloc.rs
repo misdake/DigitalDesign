@@ -12,6 +12,7 @@
 //! 4. frame layout: [callee-save saves][spill slots], sized by actual need.
 
 use crate::compiler::ir::*;
+use crate::FuncName;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Register roles used by ABI shim insertion and linear scan.
@@ -88,11 +89,65 @@ impl Allocation {
     }
 }
 
+/// Narrow allocation failures needed by speculative optimizations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AllocationError {
+    FrameCapacity {
+        function: FuncName,
+        words: usize,
+        maximum: usize,
+    },
+    SpillCapacity {
+        function: FuncName,
+        class: RegClass,
+    },
+    NonConvergence {
+        function: FuncName,
+    },
+}
+impl AllocationError {
+    pub fn is_resource_limit(&self) -> bool {
+        !matches!(self, Self::NonConvergence { .. })
+    }
+}
+impl std::fmt::Display for AllocationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FrameCapacity {
+                function,
+                words,
+                maximum,
+            } => write!(
+                f,
+                "function {function} needs {words} frame slots, max {maximum}"
+            ),
+            Self::SpillCapacity { function, class } => write!(
+                f,
+                "function {function} exhausts {class:?} spill slot capacity"
+            ),
+            Self::NonConvergence { function } => {
+                write!(f, "register allocation for {function} did not converge")
+            }
+        }
+    }
+}
+impl std::error::Error for AllocationError {}
+
 pub fn allocate_with_convention(
     func: &IrFunc,
     coalesce: bool,
     convention: RegisterConvention,
 ) -> (IrFunc, Allocation) {
+    try_allocate_with_convention(func, coalesce, convention)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Fallible capacity checking; malformed IR and ABI invariants are not recovered.
+pub fn try_allocate_with_convention(
+    func: &IrFunc,
+    coalesce: bool,
+    convention: RegisterConvention,
+) -> Result<(IrFunc, Allocation), AllocationError> {
     validate_convention(convention);
     if convention.fpu.is_none() {
         assert!(
@@ -140,23 +195,23 @@ pub fn allocate_with_convention(
                 fpu_spill_slots,
             };
             collapse_redundant_phi_trampolines(&mut f, &alloc.reg);
-            assert!(
-                alloc.frame_size() <= convention.maximum_frame_words,
-                "function {} needs {} frame slots, max {}",
-                f.name,
-                alloc.frame_size(),
-                convention.maximum_frame_words
-            );
-            return (f, alloc);
+            if alloc.frame_size() > convention.maximum_frame_words {
+                return Err(AllocationError::FrameCapacity {
+                    function: f.name,
+                    words: alloc.frame_size(),
+                    maximum: convention.maximum_frame_words,
+                });
+            }
+            return Ok((f, alloc));
         }
         rewrite_spills(
             &mut f,
             &scan.spilled,
             &mut spill_slots,
             &mut fpu_spill_slots,
-        );
+        )?;
     }
-    panic!("register allocation for {} did not converge", f.name)
+    Err(AllocationError::NonConvergence { function: f.name })
 }
 
 #[cfg(test)]
@@ -1392,20 +1447,35 @@ fn scan_class(
 /// counter and each FPU value a fresh 4-word-aligned spill slot from
 /// `next_fpu_slot` (monotonic across fixpoint iterations, so earlier slots are
 /// not clobbered). TODO(M5): pack slots of non-overlapping spills.
-fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu_slot: &mut u8) {
+fn rewrite_spills(
+    f: &mut IrFunc,
+    spilled: &[VReg],
+    next_slot: &mut u8,
+    next_fpu_slot: &mut u8,
+) -> Result<(), AllocationError> {
     let mut slot_of: HashMap<VReg, u8> = HashMap::new();
     let mut fpu_slot_of: HashMap<VReg, u8> = HashMap::new();
     for &v in spilled {
         match f.class_of(v) {
             RegClass::Gpr => {
                 slot_of.insert(v, *next_slot);
-                *next_slot += 1;
+                *next_slot = next_slot
+                    .checked_add(1)
+                    .ok_or(AllocationError::SpillCapacity {
+                        function: f.name,
+                        class: RegClass::Gpr,
+                    })?;
             }
             RegClass::Fpu => {
                 fpu_slot_of.insert(v, *next_fpu_slot);
                 // a spill slot is a 4-word unit; a vector needs 2 words per
                 // lane, so a vec2 uses one unit, a vec3/vec4 two
-                *next_fpu_slot += f.lanes(v).div_ceil(2);
+                *next_fpu_slot = next_fpu_slot.checked_add(f.lanes(v).div_ceil(2)).ok_or(
+                    AllocationError::SpillCapacity {
+                        function: f.name,
+                        class: RegClass::Fpu,
+                    },
+                )?;
             }
         }
     }
@@ -1607,6 +1677,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu
         let line = f.blocks[b].term_line;
         f.blocks[b].lines.extend(std::iter::repeat_n(line, n));
     }
+    Ok(())
 }
 
 /// if `v` is spilled, load it from its frame slot into a fresh vreg (GPR:
@@ -1710,7 +1781,7 @@ fn spill_store(
     }
 }
 
-fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
+pub(crate) fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
     match inst {
         Instr::Bin { dst, .. }
         | Instr::Mul { dst, .. }
@@ -1764,5 +1835,29 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.iter_mut().collect(),
+    }
+}
+
+#[cfg(test)]
+mod spill_capacity_tests {
+    use super::*;
+    #[test]
+    fn spilled_slot_counters_cannot_wrap_before_frame_check() {
+        for (class, lanes, start) in [(RegClass::Gpr, 1, 255), (RegClass::Fpu, 4, 254)] {
+            let (mut builder, _) = crate::FuncBuilder::new("overflow", 0, 0);
+            builder.ret(&[]);
+            let mut f = builder.finish();
+            let v = f.fresh_vreg_lanes(class, lanes);
+            let mut gpr = if class == RegClass::Gpr { start } else { 0 };
+            let mut fpu = if class == RegClass::Fpu { start } else { 0 };
+            let error = rewrite_spills(&mut f, &[v], &mut gpr, &mut fpu).unwrap_err();
+            assert_eq!(
+                error,
+                AllocationError::SpillCapacity {
+                    function: "overflow",
+                    class
+                }
+            );
+        }
     }
 }

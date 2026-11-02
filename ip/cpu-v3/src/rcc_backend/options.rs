@@ -5,6 +5,8 @@ use rcc::{Opts, RccConfig};
 pub struct CompilerOptions {
     pub gpu_debug: bool,
     pub opt: Opts,
+    /// Explicit pre-ABI inlining policy and bounded compilation costs.
+    pub inline: rcc::InlineOptions,
     pub stack_init: u16,
     pub data_base: u16,
     pub code_base: u16,
@@ -21,6 +23,7 @@ impl Default for CompilerOptions {
         Self {
             gpu_debug: false,
             opt: Opts::default(),
+            inline: rcc::InlineOptions::default(),
             stack_init: crate::DEFAULT_STACK_TOP,
             data_base: crate::DEFAULT_DATA_BASE,
             code_base: 0,
