@@ -10,6 +10,17 @@ No full GPU command/compute/Display implementation is claimed; CPU and Display
 masters are idle and board GPU request-slot stages are outside the native fixture.
 See the [implemented contract](/ip/gpu-v2/docs/references/cycle-transport.md).
 
+## Production command-control subset
+
+`cargo test --release -p gpu-v2 --test vliw_cycle_command -- --include-ignored --nocapture --test-threads=1`
+checks CE0 Device4 submission, two CBs without ACK, native DMA/cache-bank reuse,
+synchronous RAM, WAIT/FLUSH/END, abort/reset and malformed input contracts.
+The explicit ignored qualification compares the original small production
+control cone and detects actual DUT mutations, with isolated Device4 sticky
+checks. Render/flush/source-ready peers are controlled; no DRAW/full GPU,
+CPU submission path, Display or board timing is qualified.
+See the [subset contract](/ip/gpu-v2/docs/references/cycle-command.md).
+
 ## Native functional backend
 
 `cargo test -p gpu-v2 --test functional` checks bounded current-CB memory/UI/error

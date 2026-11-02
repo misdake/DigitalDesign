@@ -11,7 +11,7 @@ use digital_design_hardware_gowin::sdram_memory_controller::{
 };
 use digital_design_hardware_gowin::{Module, ModuleIo};
 
-struct Memory {
+pub(crate) struct Memory {
     circuit: Circuit,
     input: CpuV3MemoryArbiterInput,
     output: CpuV3MemoryArbiterOutput,
@@ -22,7 +22,7 @@ struct Memory {
     first_write_accept: bool,
 }
 impl Memory {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (circuit, (input, output)) = build_circuit(|| {
             let i = CpuV3MemoryArbiterInput::allocate();
             let o = CpuV3MemoryArbiter::emu(&i);
@@ -59,7 +59,7 @@ impl Memory {
             response_ready: o.memory_response_ready,
         }
     }
-    fn feedback(
+    pub(crate) fn feedback(
         &mut self,
         gpu: gpu_v2::system::vliw_cycle::router::Output,
         reset: bool,
@@ -165,7 +165,7 @@ impl Memory {
         }
         panic!("GPU/native/arbiter combinational convergence exceeded16");
     }
-    fn clock(&mut self) {
+    pub(crate) fn clock(&mut self) {
         let before = self.backing[0x4000..0x4100].to_vec();
         let first = !self.first_write_accept
             && self.sampled.request_valid
@@ -184,6 +184,14 @@ impl Memory {
         if before != self.backing[0x4000..0x4100] {
             self.write_logic_edges += 1;
         }
+    }
+    /// Explicit fixture preload; does not claim loader-final equivalence.
+    #[allow(dead_code)] // Used by the separate command-control integration target.
+    pub(crate) fn preload(&mut self, address_halfword: usize, words: &[u16]) {
+        self.backing[address_halfword..address_halfword + words.len()].copy_from_slice(words);
+    }
+    pub(crate) fn native_cycles(&self) -> u64 {
+        self.port.native_cycle()
     }
 }
 
@@ -227,7 +235,7 @@ pub(super) fn run() -> Run {
                 assert_eq!(value, written(beat), "physical raw framebuffer beat{beat}");
             }
             actor.check_ram();
-            run.native_cycles = memory.port.native_cycle();
+            run.native_cycles = memory.native_cycles();
             run.backing_write_logic_edges = memory.write_logic_edges;
             return run;
         }

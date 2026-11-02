@@ -1,12 +1,12 @@
 use super::*;
-pub(super) struct Pin {
+pub(crate) struct Pin {
     pub name: &'static str,
     pub width: usize,
     pub value: u64,
     pub output: bool,
     pub care: bool,
 }
-pub(super) fn fields(e: Edge) -> Vec<Pin> {
+pub(crate) fn fields(e: Edge) -> Vec<Pin> {
     let i = e.input;
     let d = e.output.dma;
     let r = e.output.router;
@@ -141,7 +141,7 @@ pub(super) fn fields(e: Edge) -> Vec<Pin> {
     p
 }
 
-pub(super) fn wrapper() -> String {
+pub(crate) fn wrapper() -> String {
     let mut source = String::from("module p1a(input clk");
     for f in fields(Edge {
         input: Input::default(),

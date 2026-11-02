@@ -5,6 +5,7 @@
 //! Invalid peers return a contract violation at the monitored edge; they do
 //! not acquire the checked standalone profile's recovery/rollback semantics.
 
+pub mod command;
 pub mod command_dma;
 pub mod router;
 

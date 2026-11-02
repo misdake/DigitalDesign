@@ -11,8 +11,8 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-mod native;
-mod pins;
+pub(crate) mod native;
+pub(crate) mod pins;
 
 #[derive(Clone, Copy)]
 pub struct Edge {
