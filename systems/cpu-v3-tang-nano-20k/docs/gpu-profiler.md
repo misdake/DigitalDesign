@@ -1,7 +1,7 @@
 ---
 id: system-gpu-profiler
 status: active
-last-verified: 2026-11-01
+last-verified: 2026-11-02
 ---
 
 # GPU profiling sessions
@@ -35,8 +35,28 @@ The input recipe binds the CB06 SHA-256, metadata addresses, explicit initial
 memory seed, positive CPU-step limit and wall-time limit. The simulation advances
 functional vblank events only when the program waits for the frame index. It
 does not model CPU caches, Display contention or boot-loader RTL timing. This
-entry captures the first submission; a prior GPU submission is rejected because
-no executor is attached to the functional simulator.
+default entry freezes the first reached bound gate and rejects prior GPU
+submissions because no executor is attached. The explicit
+`capture_flash_with_functional_prefix` entry (recipe `prefix_gpu: "functional"`,
+dump CLI `--prefix-gpu functional`) instead executes preceding submissions through
+the existing synchronous functional GPU against the same physical memory. Their
+writes are retained before the target gate; any GPU execution error stops capture,
+including errors after partial writes. No simulated GPU bus traffic or latency is
+introduced. The default `reject` mode and legacy recipes remain unchanged.
+
+Both modes stop at the first arrival at the supplied compiled gate PC. They do
+not bypass gates, fabricate gate returns, or select the Nth invocation. Earlier
+gates requiring unavailable UART/input still stop at the CPU/wall-time bound.
+A later consumer can be bound to an existing compiled gate it naturally reaches;
+`CapturePoint::from_program` continues to bind the unique `profiler_gate` entry.
+This does not introduce a second renderer submission API.
+
+In functional-prefix output, `gpu_consumed:false` refers to the frozen target;
+`source.json` additionally retains `prefix_gpu:"functional"`. A selected prefix
+mode mismatch is rejected before snapshot publication. Full physical memory uses
+the recipe's explicit initial seed; this is not the captured replay's known-byte
+mask. Existing GPU page/encoding errors remain errors, and the shared snapshot
+decoder still rejects missing captured payload bytes.
 
 `system_dump.py` converts the frozen descriptor, range table and actual physical
 payload bytes through the same GPS1 encoder/decoder used by the UART path. The

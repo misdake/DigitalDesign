@@ -89,6 +89,16 @@ python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/system_dump.py recipe.
 python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/replay.py target/system-dump/snapshot --rtl target/profiler-rtl --build build.json --simulation-source target/system-dump/snapshot/source.json --out target/system-replay --max-cycles 1000000 --timeout 180
 ```
 
+The optional recipe field `"prefix_gpu":"functional"` enables real synchronous
+functional execution of CBs before the bound gate; the CLI equivalent is
+`--prefix-gpu functional`. Omitted or `"reject"` preserves the original behavior.
+Prior writes enter the target preimage; a prefix error prevents a complete dump.
+The target itself is still unconsumed. The source records this mode separately
+from `gpu_consumed:false`, which describes that target. No GPU bus cycles are
+modeled. This stops at the first reached supplied gate PC; it neither skips an
+earlier UART gate nor selects a later invocation. Bind it to the consumer's
+actual compiled gate; the default `CapturePoint` lookup is unchanged.
+
 Output directories must be fresh. Export GPU+MC with the existing
 `gpu_profiler_export` example's `--mc` flag and bind its files in the build
 declaration before compiling the application. The existing `capture_draw`

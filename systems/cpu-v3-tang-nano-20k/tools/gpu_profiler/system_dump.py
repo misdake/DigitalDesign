@@ -16,7 +16,8 @@ def materialize(raw, output, provenance, abi=None):
     origin = json.loads((raw / "origin.json").read_text())
     if (origin.get("schema") != 1 or origin.get("source") != "system-simulation"
             or origin.get("boundary") != "before-profiler-gate"
-            or origin.get("gpu_consumed") is not False):
+            or origin.get("gpu_consumed") is not False
+            or origin.get("prefix_gpu", "reject") not in ("reject", "functional")):
         raise SnapshotError("System dump has no pre-consumption boundary")
     header = bytes_to_words((raw / "header.bin").read_bytes())
     decoded = abi.header(header)
@@ -50,6 +51,9 @@ def capture(recipe_path, frontend, output):
     recipe = json.loads(recipe_path.read_text())
     if recipe.get("schema") != 1 or recipe.get("format") != "cb06":
         raise SnapshotError("Unsupported compiled-program capture recipe")
+    prefix_gpu = recipe.get("prefix_gpu", "reject")
+    if prefix_gpu not in ("reject", "functional"):
+        raise SnapshotError("prefix_gpu must be reject or functional")
     program = (recipe_path.parent / recipe["program"]["file"]).resolve()
     digest = hashlib.sha256(program.read_bytes()).hexdigest()
     if digest != recipe["program"]["sha256"]:
@@ -66,11 +70,16 @@ def capture(recipe_path, frontend, output):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise SnapshotError("Invalid capture recipe integer: " + argument)
         args += ["--" + argument, str(value)]
+    if prefix_gpu == "functional":
+        args += ["--prefix-gpu", "functional"]
     try:
         with (output / "frontend.log").open("wb") as log:
             result = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         if result.returncode:
             raise SnapshotError("System frontend failed; see frontend.log")
+        origin = json.loads((output / "raw" / "origin.json").read_text())
+        if origin.get("prefix_gpu", "reject") != prefix_gpu:
+            raise SnapshotError("System frontend prefix GPU mode differs from recipe")
         return materialize(output / "raw", output / "snapshot", dict(
             compiled_program_sha256=digest,
             recipe_sha256=hashlib.sha256(recipe_path.read_bytes()).hexdigest(),

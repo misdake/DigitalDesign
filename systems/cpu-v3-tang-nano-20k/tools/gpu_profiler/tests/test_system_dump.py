@@ -1,9 +1,14 @@
 """Shared transport contract checks; synthetic bytes are not a GPU run."""
 import json
+import hashlib
+import os
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import snapshot
@@ -61,6 +66,90 @@ class SystemDumpTests(unittest.TestCase):
         with self.assertRaisesRegex(snapshot.SnapshotError, "identity"):
             system_dump.capture(recipe, self.root / "missing.exe", self.root / "output")
         self.assertFalse((self.root / "output").exists())
+
+    def test_prefix_mode_reaches_frontend_and_preserves_origin(self):
+        for mode in (None, "reject", "functional"):
+            with self.subTest(mode=mode):
+                name = str(mode)
+                program = self.root / "program.bin"
+                program.write_bytes(b"identity-only: frontend is mocked")
+                recipe = dict(schema=1, format="cb06", program=dict(file=program.name,
+                              sha256=hashlib.sha256(program.read_bytes()).hexdigest()),
+                              capture_point=dict(gate_pc=10, header_word=100, ranges_word=200),
+                              memory_seed=0, max_steps=256, timeout_seconds=5)
+                if mode is not None:
+                    recipe["prefix_gpu"] = mode
+                path = self.root / (name + ".json")
+                path.write_text(json.dumps(recipe))
+                actual_mode = mode or "reject"
+                def frontend(args, **kwargs):
+                    self.assertEqual("--prefix-gpu" in args, actual_mode == "functional")
+                    if actual_mode == "functional":
+                        self.assertEqual(args[-2:], ["--prefix-gpu", "functional"])
+                    raw = Path(args[args.index("--out") + 1])
+                    shutil.copytree(self.raw, raw)
+                    if actual_mode == "functional":
+                        origin = dict(self.origin, prefix_gpu="functional")
+                        (raw / "origin.json").write_text(json.dumps(origin))
+                    return subprocess.CompletedProcess(args, 0)
+                out = self.root / ("out-" + name)
+                with patch.object(system_dump.subprocess, "run", side_effect=frontend):
+                    system_dump.capture(path, self.root / "frontend.exe", out)
+                source = json.loads((out / "snapshot/source.json").read_text())
+                self.assertEqual(source.get("prefix_gpu", "reject"), actual_mode)
+                self.assertFalse(source["gpu_consumed"])
+
+    def test_unknown_or_mismatched_prefix_mode_cannot_publish_snapshot(self):
+        program = self.root / "program.bin"
+        program.write_bytes(b"identity-only")
+        recipe = dict(schema=1, format="cb06", program=dict(file=program.name,
+                      sha256=hashlib.sha256(program.read_bytes()).hexdigest()),
+                      prefix_gpu="guess", capture_point=dict(gate_pc=1, header_word=2, ranges_word=3),
+                      memory_seed=0, max_steps=256, timeout_seconds=5)
+        path = self.root / "recipe.json"
+        path.write_text(json.dumps(recipe))
+        with self.assertRaisesRegex(snapshot.SnapshotError, "prefix_gpu"):
+            system_dump.capture(path, self.root / "missing.exe", self.root / "bad-mode")
+        self.assertFalse((self.root / "bad-mode").exists())
+        recipe["prefix_gpu"] = "functional"
+        path.write_text(json.dumps(recipe))
+        def stale_frontend(args, **kwargs):
+            shutil.copytree(self.raw, Path(args[args.index("--out") + 1]))
+            return subprocess.CompletedProcess(args, 0)
+        out = self.root / "stale-mode"
+        with patch.object(system_dump.subprocess, "run", side_effect=stale_frontend):
+            with self.assertRaisesRegex(snapshot.SnapshotError, "differs"):
+                system_dump.capture(path, self.root / "frontend.exe", out)
+        self.assertFalse((out / "snapshot").exists())
+
+    @unittest.skipUnless(os.environ.get("GPU_DUMP_FRONTEND") and os.environ.get("CPU_PREFIX_CAPTURE_TEST_OUT"),
+                         "requires built dump CLI and current Rust-generated prefix fixture")
+    def test_actual_cli_keeps_prefix_writes_and_freezes_before_target(self):
+        fixture = Path(os.environ["CPU_PREFIX_CAPTURE_TEST_OUT"])
+        point = json.loads((fixture / "point.json").read_text())
+        base = [os.environ["GPU_DUMP_FRONTEND"], "--flash", str(fixture / "prefix.bin"),
+                "--memory-seed", str(0xa55a)]
+        for key in ("gate_pc", "header_word", "ranges_word"):
+            base += ["--" + key.replace("_", "-"), str(point[key])]
+        for mode, steps in (("reject", 256), ("functional", 256), ("functional", 1), ("guess", 256)):
+            with self.subTest(mode=mode, steps=steps):
+                out = self.root / f"actual-{mode}-{steps}"
+                args = base + ["--out", str(out), "--max-steps", str(steps)]
+                # Exercise the legacy CLI with its mode flag absent.
+                if mode != "reject":
+                    args += ["--prefix-gpu", mode]
+                result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+                if mode != "functional" or steps == 1:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(out.exists(), "failed capture must not create a dump")
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                origin = json.loads((out / "origin.json").read_text())
+                self.assertEqual(origin["prefix_gpu"], "functional")
+                self.assertFalse(origin["gpu_consumed"])
+                self.assertEqual(origin["gate_pc"], point["gate_pc"])
+                self.assertEqual((out / "range-000.bin").read_bytes(), b"\x57\x13" * (400 * 256))
+                self.assertEqual((out / "range-001.bin").read_bytes(), b"\x5a\xa5" * (400 * 256))
 
 
 if __name__ == "__main__":
