@@ -1,11 +1,12 @@
 //! Freeze an already compiled program at its real Prepared capture gate.
-//! This is functional CPU/system simulation, not cache or board timing.
+//! Both CPU backends share descriptor validation and physical GPU payloads.
+//! GPU/Display remain functional; native CPU counts exclude their competition.
 use crate::system_sim::{CpuV3SystemSim, VBlankMode};
 use cpu_v3::StepOutcome;
 
 #[allow(dead_code)]
 #[path = "../rcc/gpu_capture_abi.rs"]
-mod abi;
+pub(crate) mod abi;
 
 /// Locations from the exact compiled program's debug metadata, never guesses.
 #[derive(Clone, Copy, Debug)]
@@ -64,10 +65,26 @@ pub struct FrozenInputs {
     pub vblank_events: usize,
 }
 
-fn words(sim: &mut CpuV3SystemSim, start: usize, count: usize) -> Result<Vec<u16>, String> {
+/// Immutable GPU inputs. Only the producer-owned header/table use a CPU view;
+/// every payload remains the raw physical image consumed by the GPU.
+pub struct FrozenData {
+    pub header: Vec<u16>,
+    pub ranges: Vec<u16>,
+    pub payloads: Vec<Vec<u8>>,
+}
+pub struct NativeFrozenInputs {
+    pub data: FrozenData,
+    /// Raw GPU memory, without the CPU-private metadata overlay.
+    pub physical_memory: Vec<u16>,
+    pub display_state: crate::system_sim::DisplayState,
+    pub logic_cycles: u64,
+    pub native_cycles: u64,
+    pub vblank_events: usize,
+}
+
+fn copy_words(memory: &[u16], start: usize, count: usize) -> Result<Vec<u16>, String> {
     let end = start.checked_add(count).ok_or("Capture address overflow")?;
-    sim.cpu_mut()
-        .physical_memory_mut()
+    memory
         .get(start..end)
         .map(<[u16]>::to_vec)
         .ok_or_else(|| "Capture range exceeds physical memory".into())
@@ -143,6 +160,106 @@ fn payload_span(row: &[u16], memory_words: usize) -> Result<(usize, usize), Stri
     Ok((start, count))
 }
 
+pub(crate) fn freeze_data(
+    point: CapturePoint,
+    mut metadata: impl FnMut(usize, usize) -> Result<Vec<u16>, String>,
+    physical: &[u16],
+) -> Result<FrozenData, String> {
+    let header = metadata(point.header_word, usize::from(abi::GPU_CAPTURE_WORDS))?;
+    let count = range_count(&header)?;
+    let ranges = metadata(
+        point.ranges_word,
+        count * usize::from(abi::GPU_CAPTURE_RANGE_WORDS),
+    )?;
+    let mut payloads = Vec::new();
+    let mut total_bytes = 0;
+    for row in ranges.chunks_exact(usize::from(abi::GPU_CAPTURE_RANGE_WORDS)) {
+        let (start, count) = payload_span(row, physical.len())?;
+        total_bytes += count * 2;
+        if total_bytes > usize::from(abi::GPU_CAPTURE_MAX_TOTAL_HIGH) << 16 {
+            return Err("Capture exceeds aggregate byte bound".into());
+        }
+        payloads.push(
+            copy_words(physical, start, count)?
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        );
+    }
+    Ok(FrozenData {
+        header,
+        ranges,
+        payloads,
+    })
+}
+
+/// Execute real functional prefix submissions, then stop before the first
+/// instruction of the actual compiled Prepared gate executes. No UART bypass.
+/// CPU-private header/table reads do not publish their dirty words into DRAM.
+pub fn capture_native_flash_with_functional_prefix(
+    flash: &[u8],
+    point: CapturePoint,
+    memory_seed: u16,
+    maximum_cycles: usize,
+) -> Result<NativeFrozenInputs, String> {
+    if maximum_cycles == 0 {
+        return Err("Capture requires a positive native CPU cycle bound".into());
+    }
+    let mut sim = crate::system_emu::CpuV3SystemEmu::from_single_flash(
+        flash,
+        memory_seed,
+        VBlankMode::PauseOnFrameIndexWait,
+    )
+    .map_err(|e| e.to_string())?
+    .with_functional_gpu();
+    let mut vblank_events = 0;
+    for _ in 0..maximum_cycles {
+        if let Some(error) = sim.gpu().last_error() {
+            return Err(format!("GPU prefix execution failed: {error:?}"));
+        }
+        if sim.gpu().busy() {
+            return Err("Functional GPU prefix has not completed".into());
+        }
+        if sim.core().executing_instruction_address() == Some((7, point.gate_pc)) {
+            let data = freeze_data(
+                point,
+                |start, count| sim.metadata_words(start, count),
+                &sim.physical_memory(),
+            )?;
+            return Ok(NativeFrozenInputs {
+                data,
+                physical_memory: sim.physical_memory().to_vec(),
+                display_state: sim.display_state(),
+                logic_cycles: sim.cycles(),
+                native_cycles: sim.native_cycles(),
+                vblank_events,
+            });
+        }
+        if sim.waiting_for_vblank() {
+            sim.advance_vblank();
+            vblank_events += 1;
+        }
+        let out = sim
+            .step()
+            .map_err(|e| format!("Native CPU failed before capture: {e:?}"))?;
+        if out.fault {
+            return Err(format!(
+                "Native CPU fault {} before capture",
+                out.fault_code
+            ));
+        }
+        if out.halted {
+            return Err(format!(
+                "Program halted before native capture: {:#06x}",
+                out.halt_signal
+            ));
+        }
+    }
+    Err(format!(
+        "CPU logic cycle bound {maximum_cycles} reached before capture; incomplete"
+    ))
+}
+
 /// Stop before executing the gate and before either GPU SEND can be consumed.
 /// No GPU executor is attached: an earlier submission is an explicit error.
 pub fn capture_flash(
@@ -191,29 +308,16 @@ fn capture(
             return Err("GPU submission preceded the Prepared capture gate".into());
         }
         if sim.cpu().pc() == point.gate_pc {
-            let header = words(
-                &mut sim,
-                point.header_word,
-                usize::from(abi::GPU_CAPTURE_WORDS),
+            let physical = sim.cpu().physical_memory_slice();
+            let FrozenData {
+                header,
+                ranges,
+                payloads,
+            } = freeze_data(
+                point,
+                |start, count| copy_words(physical, start, count),
+                physical,
             )?;
-            let count = range_count(&header)?;
-            let ranges = words(
-                &mut sim,
-                point.ranges_word,
-                count * usize::from(abi::GPU_CAPTURE_RANGE_WORDS),
-            )?;
-            let mut payloads = Vec::new();
-            let memory_words = sim.cpu_mut().physical_memory_mut().len();
-            let mut total_bytes = 0usize;
-            for row in ranges.chunks_exact(usize::from(abi::GPU_CAPTURE_RANGE_WORDS)) {
-                let (start, words_count) = payload_span(row, memory_words)?;
-                total_bytes += words_count * 2;
-                if total_bytes > usize::from(abi::GPU_CAPTURE_MAX_TOTAL_HIGH) << 16 {
-                    return Err("Capture exceeds aggregate byte bound".into());
-                }
-                let data = words(&mut sim, start, words_count)?;
-                payloads.push(data.into_iter().flat_map(u16::to_le_bytes).collect());
-            }
             return Ok(FrozenInputs {
                 header,
                 ranges,

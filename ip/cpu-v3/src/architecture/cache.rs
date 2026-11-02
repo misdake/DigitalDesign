@@ -276,6 +276,13 @@ impl Default for DataCache {
 }
 
 impl DataCache {
+    /// Read the resident CPU view without replacement, allocation or dirty changes.
+    pub(crate) fn cached_word(&self, address: PhysicalWordAddress) -> Option<Word> {
+        let d = decode(address);
+        self.store
+            .hit_way(address)
+            .map(|way| self.store.words[way][d.set][d.word])
+    }
     /// Addressed metadata view for a cycle model's synchronous maintenance
     /// scan. Invalid records never produce a write-back candidate.
     pub(crate) fn dirty_line_address(&self, way: usize, set: usize) -> Option<PhysicalWordAddress> {

@@ -1246,6 +1246,12 @@ impl Default for CpuV3DataCacheState {
 }
 
 impl CpuV3DataCacheState {
+    /// Resident cache data only; this is not the physical GPU memory view.
+    pub fn cached_word(&self, address: crate::PhysicalWordAddress) -> Option<u16> {
+        (address.get() >> 22 == 0)
+            .then(|| self.cache.cached_word(address))
+            .flatten()
+    }
     fn next_request_valid(&self) -> bool {
         self.full_maintenance
             && matches!(

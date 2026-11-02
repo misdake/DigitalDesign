@@ -1598,3 +1598,6 @@ j+=1;}i+=1;}halt(0x600d);}
         );
     }
 }
+
+#[path = "public_handheld_native.rs"]
+mod native_cpu;

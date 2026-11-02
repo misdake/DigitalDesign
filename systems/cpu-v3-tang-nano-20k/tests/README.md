@@ -609,3 +609,38 @@ legitimately change statistical UI commands and CPU-private dirty/dead stack dat
 record exact differences rather than hiding them or claiming full-image equality.
 These host runs do not qualify GPU/Display bus competition, full-board FPS,
 physical SDRAM timing, a fitted RTL frame or arbitrary warm reset.
+
+
+## Stage2 native Prepared capture
+
+`public_handheld::native_cpu::controlled_camera_rabbit_and_first_eligible_native_capture`
+is an opt-in bounded actual application test. It compiles the current canonical
+Stage2 caller with explicit test-only changes: two frames, fixed UI, a controlled
+frame2 Camera change, an independent rabbit Y rotation and a snapshot request
+after frame1. Production application and normal timer semantics stay unchanged.
+Each control/capture package is shared byte-for-byte between the two CPU modes.
+The unchanged firmware gate is selected by real eligibility, not by skipping to
+the fifth raw START. All preceding CBs execute on the existing functional GPU.
+
+The test compares complete consumed mesh/global/render/instance/UI traces, both
+retired frame allocations, final color A/B/depth slots and full unused tails. It
+checks ordinary static submission retains the request, dynamic slot1 is the
+first reached Prepared gate, every metadata/payload range matches, active Front
+is the completed first frame, and Back already contains the second static prefix.
+Replaying the unconsumed dynamic target must match the complete second-frame
+control output, preserve Front and all unrelated physical words/guards. This
+uses functional GPU/Display without memory competition, not fitted-frame timing.
+Artifacts go under `target/public-handheld/test-assets/native-eligible-*`;
+`STAGE2_QUALIFICATION_RUN` supplies a unique output suffix. Run just this test:
+
+```powershell
+cargo test --release -p cpu-v3-tang-nano-20k --test host controlled_camera_rabbit_and_first_eligible_native_capture -- --ignored --nocapture --test-threads=1
+```
+
+`system_emu::metadata_tests` separately checks pending scalar metadata, dirty
+resident metadata, cache-miss fallback and a real functional GPU memcpy behind a
+stale CPU line. Repeated capture reads must retain the unpublished raw Header,
+return the new GPU physical payload rather than stale cache data, preserve all
+memory/clocks/registers, and allow normal explicit clean/invalidate afterward.
+This does not qualify arbitrary FPU producer stores, a serialized CPU checkpoint,
+all interrupted resets, real input, GPU bus competition or board performance.

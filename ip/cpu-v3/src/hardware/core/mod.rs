@@ -438,6 +438,16 @@ impl CpuV3CoreState {
         self.pc
     }
 
+    /// The actual scalar instruction awaiting its execute edge, not a fetch PC.
+    pub fn executing_instruction_address(&self) -> Option<(u16, u16)> {
+        (self.phase == Phase::Execute).then_some((self.code_segment, self.instruction_pc))
+    }
+    /// Ordinary scalar producer stores may still be draining at an observation.
+    pub fn pending_scalar_store_word(&self, address: crate::PhysicalWordAddress) -> Option<u16> {
+        (self.async_store.valid && self.async_store.address == address.get())
+            .then_some(self.async_store.write_data)
+    }
+
     pub fn retired_words(&self) -> u32 {
         self.retired_words
     }

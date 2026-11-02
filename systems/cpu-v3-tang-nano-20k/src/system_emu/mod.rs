@@ -145,6 +145,7 @@ pub struct CpuV3SystemEmu {
     error: Rc<RefCell<Option<memory::Error>>>,
     cycle: u64,
     core_state: Rc<RefCell<CpuV3CoreState>>,
+    dcache_state: Rc<RefCell<CpuV3DataCacheState>>,
     system_state: Rc<RefCell<SystemControlDeviceState>>,
     devices: [Option<Box<dyn Device>>; 8],
     vblank_mode: VBlankMode,
@@ -163,6 +164,7 @@ impl CpuV3SystemEmu {
             segment,
         )));
         let system_state = Rc::new(RefCell::new(SystemControlDeviceState::default()));
+        let dcache_state = Rc::new(RefCell::new(CpuV3DataCacheState::default()));
         let (circuit, io) = build_circuit(|| {
             let reset = input();
             let initialized = input();
@@ -265,7 +267,11 @@ impl CpuV3SystemEmu {
             });
             CpuV3InstructionFetchQueue::emu_connect(&fetch_input, &fetch_output);
             CpuV3InstructionCache::emu_connect(&icache_input, &icache_output);
-            CpuV3DataCache::emu_connect(&dcache_input, &dcache_output);
+            external(SharedModule::<CpuV3DataCache> {
+                state: dcache_state.clone(),
+                input: dcache_input.clone(),
+                output: dcache_output.clone(),
+            });
             CpuV3MemoryArbiter::emu_connect(&arbiter_input, &arbiter_output);
             external(SharedModule::<SystemControlDevice<469>> {
                 state: system_state.clone(),
@@ -301,6 +307,7 @@ impl CpuV3SystemEmu {
             error,
             cycle: 0,
             core_state,
+            dcache_state,
             system_state,
             devices: std::array::from_fn(|_| None),
             vblank_mode: VBlankMode::Manual,
@@ -308,6 +315,25 @@ impl CpuV3SystemEmu {
     }
     pub fn physical_memory(&self) -> Ref<'_, [u16]> {
         Ref::map(self.backing.borrow(), |m| &m[..])
+    }
+    /// Only producer metadata uses the CPU-private view. GPU payload capture
+    /// always borrows physical_memory directly, including GPU-updated stale lines.
+    pub(crate) fn metadata_words(&self, start: usize, count: usize) -> Result<Vec<u16>, String> {
+        let memory = self.physical_memory();
+        let end = start
+            .checked_add(count)
+            .filter(|&end| end <= memory.len())
+            .ok_or("metadata range exceeds physical memory")?;
+        let core = self.core_state.borrow();
+        let cache = self.dcache_state.borrow();
+        Ok((start..end)
+            .map(|word| {
+                let address = PhysicalWordAddress::new(word as u32);
+                core.pending_scalar_store_word(address)
+                    .or_else(|| cache.cached_word(address))
+                    .unwrap_or(memory[word])
+            })
+            .collect())
     }
     pub fn cycles(&self) -> u64 {
         self.cycle
@@ -545,3 +571,6 @@ impl CpuV3SystemEmu {
 
 #[cfg(test)]
 mod flush_tests;
+
+#[cfg(test)]
+mod metadata_tests;
