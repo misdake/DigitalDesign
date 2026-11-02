@@ -704,3 +704,13 @@ the four-lane schedule and adds no `k` metadata or architectural state.
 The lane pipeline is primarily a latency/throughput optimization. Registered
 FPR issue addresses and the two unary boundaries are the changes that removed
 the original Fmax bottlenecks.
+
+
+## Read-only cache emulator boundary
+
+`CpuV3InstructionCache::emu` delegates to the same `CpuV3TwoWayCache` state and
+edge functions as its RTL child. CPU write and write-data are tied to zero;
+the three unused memory write outputs terminate on private wires. The wrapper
+stores static port wiring beside the single cache state, with no second tag,
+valid or refill store. Bidirectional ready/valid wires can be allocated before
+attaching the module. Its RTL identity and implementation are unchanged.

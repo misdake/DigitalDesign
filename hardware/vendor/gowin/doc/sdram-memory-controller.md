@@ -312,3 +312,144 @@ co-simulation additionally checks pipeline, cache and handshake behavior. Its
 abstract memory peer does not qualify the fitted SDRAM schedule. Production
 export and default boot identities are compared separately; no prior PnR or
 board result is promoted to a changed image by source normalization.
+
+
+## Native bridge edge mirror
+
+`cycle::gear::Gear` mirrors the numeric state of the registered-return
+`TangNano20KSdramNativeBridge108M54M` profile. It owns no memory and does not
+schedule SDRAM commands: callers supply controller feedback explicitly. The
+abstract service under `sim` remains a separate interface.
+
+The fitted 2:1 clock relation has four events per logic cycle:
+
+| Event | Native clock | Logic clock | Bridge state sampled |
+| --- | --- | --- | --- |
+| 0 | Rising | Rising | Mailbox, pair queue, read return and native offer |
+| 1 | Falling | High | Write selection/pop, visible events, stable read pair |
+| 2 | Rising | Falling | Native offer and controller feedback |
+| 3 | Falling | Low | Write selection/pop, visible events, stable read pair |
+
+`clock(Edges, Input, Feedback)` computes all coincident edges from one old
+snapshot. Native feedback at event 0 cannot observe that event's new mailbox
+or pair push. The forwarded SDRAM clock is a passthrough and owns no bridge
+state; no pad timing is inferred from this mirror.
+
+```mermaid
+flowchart LR
+    L[Logic descriptor] -->|Accepted request| M[Immutable mailbox]
+    M -->|Native snapshot| O[Native offer]
+    H[Published next hint] -->|Generation retained on continuation| O
+    W[Logic 64-bit pair queue] -->|Falling-edge selection| D[Native 32-bit write data]
+    N[Native read words] --> P[Completed pair and event]
+    P -->|Falling-edge snapshot| R[Registered logic return]
+    T[Native terminal event] -->|Visible toggle then logic pulse| F[Write completion]
+```
+
+Logic inputs use 21-bit native 32-bit-word addresses, six-bit word counts,
+four byte-mask bits (one disables the byte), and 64-bit write pairs. State
+captures truncate descriptors to these RTL widths. A scalar consumes its low
+word and releases the unused half at write completion. Ordinary write launch
+requires two buffered pairs; scalar launch requires one. Continuation credit
+is the registered native sample of nonempty supply, independent of descriptor
+ownership. Read chaining does not require write credit.
+
+`Gear::default()` selects cold-only transport. Raw reset is still forwarded to
+the controller. With cold-only disabled, each edge clears exactly its source
+registers: the unconditional falling-edge write selection and stable read-pair
+sample continue during reset. Cold-only transport retains its state on raw
+reset; this is not an in-flight transaction recovery contract.
+
+The bounded `native_gear` test replays the production bridge body and passive
+assertions with a deterministic controller feedback peer. It compares all 21
+logic/native-drive fields after each event, including invalid payloads, in both
+reset modes and both related-clock divider origins. All sixteen byte masks
+are exercised. Directed traffic covers queued descriptors, read/write chaining,
+hint promotion, scalar and 8/16/32-word groups, launch credit stalls,
+simultaneous pair push/pop, terminal retirement and a mid-read raw reset.
+Independent word/pair scoreboards check completed traffic. A test-only DUT
+mutation of request readiness must produce a named first-field mismatch.
+The peer is not the SDRAM controller, a memory model or MC performance
+qualification; this test establishes only the bridge edge contract.
+
+
+## Native controller and borrowed memory closure
+
+`cycle::controller::Controller` implements only the fitted profile: BANK_BIT5,
+CL3, RCD/RP3, RFC9, rising-edge capture latency 3, free-running input capture,
+tagged next-row lookup, pipelined request resolution, read/write continuation
+and other-bank preparation. Initialization defaults to 21600 native clocks;
+`new(init_cycles)` permits a positive 16-bit test duration without changing the
+remaining profile. Standalone Verilog defaults and disabled parameter branches
+are not alternate runtime modes.
+
+`Controller::output` evaluates current combinational readiness/chain predicates.
+`clock` commits one native rising edge from the old snapshot, including command,
+pad address/bank/DQM/OE, input/output data capture, row records and refresh
+lookahead. Descriptor replacement after request acceptance does not change the
+saved row resolution. The public phase and stream statistics retain the RTL
+encodings and wrapping widths. Reset has source-specific priority and retains
+unreset payload/address registers rather than reconstructing a fresh instance.
+
+`Sample32` carries value and known-bit mask at the consumed DQ boundary. Floating
+unowned capture is distinct from a known zero; a newly owned unknown return
+stops the composed model. Stable injected DQ is compared in full, including
+invalid input-capture payload, by the standalone controller RTL replay.
+
+`cycle::pins::Pins` owns only device bank/column state, two queued read addresses
+and pending/visible return values. It borrows the caller's physical `u16` backing
+slice for each late SDRAM edge. Native bank/row/column addresses are inverted to
+logical word addresses before accessing that same slice. Byte masks preserve
+disabled bytes. Writes commit at the pin edge, not request acceptance. The read
+address stages and return-value stage reproduce owned samples at the fitted
+native rising edges; they do not model arbitrary pad transitions or SDF/PVT.
+
+`cycle::memory::Memory` composes this sequencer with the gear and controller:
+
+```mermaid
+flowchart LR
+    L[Logic request and pair input] --> G[Gear]
+    G -->|Old native drive| C[Controller]
+    C -->|Old feedback| G
+    C -->|Registered pin command after falling edge| P[Pin sequencer]
+    P -->|Consumed DQ and known bits| C
+    P <-->|Only physical commits and sampled reads| B[Caller-owned backing]
+```
+
+`output` is sampled before the logic edge. `clock_logic` advances the four
+related-clock events from that input, preserving concurrent old-state behavior.
+`clock_half` exposes the same calendar for bounded tests. Every native falling
+edge precedes its late SDRAM command sample; queued return values remain stable
+until the corresponding consumed capture. `native_cycle` counts actual modeled
+native rising edges. No average delay, implicit cache maintenance, background
+GPU/Display request or private memory image is introduced.
+
+The standalone controller replay checks all feedback/pin-drive fields against
+unchanged production RTL, including real initialization length, row hit/conflict,
+preparation, tagged lookup, continuation acceptance/refusal, masks and refresh.
+The composed replay uses the actual bridge/controller and existing board-corner
+pin fixture, comparing every applied logic input and all registered bridge
+outputs. Independent expected physical write address/mask/value records and
+final words check data and completion ordering. Intentional DUT readiness and
+write-data mutations must fail those comparisons. These component tests do not
+qualify a CPU/device composition, software throughput or routed physical timing.
+
+
+## Native stream endpoint composition
+
+`cycle::port::Port` connects the existing two-descriptor `sim::endpoint::State`
+to `cycle::memory::Memory`; its CPU side uses logical 16-bit-word addresses.
+Addresses, line count and chain class truncate to the actual 22/2/2-bit ports.
+`output` has no side effects. `clock` captures both owners' old logic inputs,
+commits the endpoint once, then advances the native edge calendar against the
+borrowed backing. Default initialization retains the fitted 21600 native clocks.
+Cold-only transport does not support aborting an in-flight transaction by reset.
+
+The bounded `native_port` differential uses the unchanged SharedSdramPort,
+native bridge/controller and board-corner pin fixture. Mixed scalar and
+32/64/128-byte transactions exercise two descriptor slots, payload credit,
+continuation, scalar-response hold and alignment-error retirement. Every
+control output and every owned successful response bit is compared each logic
+cycle; invalid/error payload has no owner. Applied input rows, physical write
+address/mask/value records and final memory words are checked independently.
+An injected controller write-data mutation must change physical commits.

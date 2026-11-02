@@ -503,3 +503,22 @@ The public recording gate is valid with the frozen A stage and C047 capture
 implementation on accepted ISA0.10. It measures actual C globals in each profile;
 it never uses the recording stack as capture/dump stack evidence. The final A
 root/loader/caller composition is a separate required input and qualification.
+
+
+## Native-edge CPU smoke
+
+`native_system_emu.rs` checks the public native-edge CPU composition using the
+existing core/FPU, fetch, read-only I-cache, D-cache, arbiter and hardware
+SystemControl. Its two bounded runs distinguish dirty cache visibility from
+explicit Device0 clean after FST, retain fitted initialization and check the
+2:1 native/logic calendar. It does not reuse this directory's abstract
+`system_emu` memory peer. The Gowin vendor `native_port` ignored test independently
+checks the full stream/gear/controller/pin chain against production RTL.
+These are not GPU/Display application, Flash-boot or routed timing qualifications.
+
+The native self-modifying-code case warms a BTC target, updates its opcode via
+D-cache, explicitly cleans and invalidates instructions, then must execute the
+new value. `system_emu::flush_tests` separately exercises the production frontend
+flush wiring for SystemControl invalidate, halted and faulted, with a warm BTC,
+genuinely pending captured old responses and fresh data afterward. It performs
+no core/cache reset after setup and keeps late-response ownership intact.

@@ -1,6 +1,7 @@
 //! Reusable shared SDRAM service. Board clocks/pads remain target-owned.
 pub mod arbiter;
 pub mod combination;
+pub mod cycle;
 pub mod ports;
 pub mod profile;
 pub mod sim;

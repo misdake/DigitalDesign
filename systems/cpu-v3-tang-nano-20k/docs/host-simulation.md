@@ -125,3 +125,49 @@ as well as at display samples. A window reports its actual focus; explicitly
 enabled headless input has no window-focus gate. Display samples are explicit
 events, not a claim of fitted HDMI refresh timing. A halt stops further CPU step
 calls while the bounded host display loop can show the final image.
+
+
+## Native-edge CPU composition
+
+`system_emu::CpuV3SystemEmu` runs the existing core/FPU, fetch, read-only I-cache,
+D-cache, memory arbiter and hardware SystemControl emulators against the fitted
+Gowin native stream/gear/controller/pin models. Construction consumes one 4M-word
+physical `Vec<u16>` preloaded for reset PC/CSEG0. Both cache clients and physical
+pin commits borrow that same backing; there is no architectural CPU executor,
+private DRAM copy, implicit clean or synthetic memory-delay mode.
+
+```mermaid
+flowchart LR
+  C[Existing CPU and FPU] --> F[Fetch and read-only I-cache]
+  C --> D[Write-back D-cache]
+  C --> S[Hardware SystemControl]
+  S -->|Retained maintenance and CPU hold| D
+  F --> A[Existing arbiter]
+  D --> A
+  A --> P[Native stream port and edge models]
+  P <-->|Physical reads and writes| M[Only backing image]
+```
+
+`step` settles the combinational interfaces with a bounded convergence check,
+then commits all logic owners once and advances two native clocks. Initial
+reset occupies two logic cycles; native initialization and valid-array sweep
+hold the core while memory and device clocks continue. Device0 timers count
+logic edges. Maintenance follows the actual core drain, retained command,
+acceptance and done/error handshake. `physical_memory` observes DRAM directly,
+including stale words while newer CPU data remains dirty in D-cache.
+I-cache invalidate, core halt and core fault also flush fetch/BTC, using the
+same frontend predicate as the fitted top. Already accepted lower responses
+retain their provenance and drain without reaching the new instruction stream.
+
+This entry runs preloaded CPU programs only. External device access and watch
+probes return an explicit unsupported-device error. It does not install a Flash
+application, execute GPU/Display, provide host controller input or supply a
+production application runner. Errors terminate the current run. `cycles` and
+`native_cycles` count modeled edges; host elapsed time measures only this
+implementation, not a fitted-board measurement.
+
+The bounded `native_system_emu` test executes scalar FLD/ADD/FST and dependent
+integer load through the real caches. Without a clean, the CPU sees 3.0 while
+physical destination words retain their seed. An adjacent Device0 clean must
+drain FST halves, execute once, finish through native memory and expose the
+correct physical words before CPU halt. No post-halt cleanup is added.

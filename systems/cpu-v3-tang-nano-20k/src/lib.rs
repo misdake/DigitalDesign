@@ -12,6 +12,7 @@ pub mod host_io;
 pub mod input_device;
 mod layout;
 pub mod profiling_capture;
+pub mod system_emu;
 pub mod system_sim;
 
 // System internals share the lower-layer types through this crate root. New

@@ -1,0 +1,57 @@
+`timescale 1ns/1ps
+module tb;
+reg logic_clk=0,controller_clk=0,sdram_clk=0,reset=0;
+wire request_valid,request_continuation,writing;
+wire[20:0]address,next_address;wire[5:0]words;wire[3:0]write_mask;wire[63:0]write_data;
+wire write_data_valid,next_valid;
+reg cpu_request_valid=0,cpu_write=0,cpu_line=0,cpu_response_ready=0;reg[21:0]cpu_address=0;reg[1:0]cpu_line_count_minus_1=0,cpu_chain_class=0;reg[63:0]cpu_write_data=0;
+wire cpu_request_ready,cpu_lookahead_window,cpu_write_data_ready,cpu_response_valid,cpu_response_last,cpu_error;wire[63:0]cpu_read_data;
+wire request_ready,stream_active,write_data_ready,read_valid,write_done,initialized;wire[63:0]read_data;
+wire O_sdram_clk,O_sdram_cke,O_sdram_cs_n,O_sdram_cas_n,O_sdram_ras_n,O_sdram_wen_n;
+wire[3:0]O_sdram_dqm;wire[10:0]O_sdram_addr;wire[1:0]O_sdram_ba;wire[31:0]IO_sdram_dq;
+always #4.629629 controller_clk=~controller_clk;
+always @(posedge controller_clk)logic_clk=~logic_clk;
+initial begin #12.430556;forever begin sdram_clk=~sdram_clk;#4.629629;end end
+TangNano20KSdramNativeBridge108M54M #(.COLD_START_ONLY(1),.INIT_CYCLES(32))dut(.*);
+SharedSdramPort port(.clk(logic_clk),.reset(reset),.cpu_request_valid(cpu_request_valid),.cpu_write(cpu_write),.cpu_line(cpu_line),.cpu_address(cpu_address),.cpu_line_count_minus_1(cpu_line_count_minus_1),.cpu_chain_class(cpu_chain_class),.cpu_write_data(cpu_write_data),.cpu_response_ready(cpu_response_ready),
+.cpu_request_ready(cpu_request_ready),.cpu_lookahead_window(cpu_lookahead_window),.cpu_write_data_ready(cpu_write_data_ready),.cpu_response_valid(cpu_response_valid),.cpu_read_data(cpu_read_data),.cpu_response_last(cpu_response_last),.cpu_error(cpu_error),
+.controller_read_data(read_data),.controller_read_valid(read_valid),.controller_init_done(initialized),.controller_request_ready(request_ready),.controller_stream_active(stream_active),.controller_write_done(write_done),.controller_write_data_ready(write_data_ready),
+.controller_request_valid(request_valid),.controller_next_valid(next_valid),.controller_next_address(next_address),.controller_request_continuation(request_continuation),.controller_write(writing),.controller_address(address),.controller_write_mask(write_mask),.controller_write_data(write_data),.controller_write_data_valid(write_data_valid),.controller_words(words));
+LabPinModel #(.PERIOD_NS(9.259259),.CAS_LATENCY(3),.RCD_MIN(3),.RP_MIN(3),.RETURN_MIN(1),.RETURN_MAX(4))pin(
+ .sclk(O_sdram_clk),.reset(reset),.cke(O_sdram_cke),.cs(O_sdram_cs_n),.ras(O_sdram_ras_n),.cas(O_sdram_cas_n),.we(O_sdram_wen_n),
+ .dqm(O_sdram_dqm),.a(O_sdram_addr),.ba(O_sdram_ba),.dq(IO_sdram_dq),.cycle(),.refreshes());
+function[20:0]native;input[20:0]a;begin native={a[6:5],a[20:7],a[4:0]};end endfunction
+function[20:0]logical;input[20:0]a;begin logical={a[18:5],a[20:19],a[4:0]};end endfunction
+integer fd,code,loaded=0,seen=0,n,write_log,final_log;reg[20:0]committed;
+task load_row;begin
+ if(loaded<__COUNT__)begin
+ code=$fscanf(fd,"%h %h %h %h %h %h %h %h %h\n",reset,cpu_request_valid,cpu_write,cpu_line,cpu_address,cpu_line_count_minus_1,cpu_chain_class,cpu_write_data,cpu_response_ready);
+ if(code!=9)$fatal(1,"input row %d",loaded);loaded=loaded+1;
+ end
+end endtask
+initial begin
+ fd=$fopen("input.txt","r");if(!fd)$fatal(1,"input missing");write_log=$fopen("writes.txt","w");
+ for(n=0;n<4096;n=n+1)pin.seed_word(native(n),32'h10000000|n);
+ load_row;
+end
+// Change a descriptor only after the preceding full logic cycle's native/pin events.
+always @(negedge controller_clk)if(seen>0&&!logic_clk)begin #1.5;load_row;end
+always @(posedge O_sdram_clk)begin
+ #0.001;
+ if(!reset&&pin_cke&&!pin_cs&&pin.writing_bus)begin
+  committed={pin.burst_bank,pin.rows[pin.burst_bank],(pin.col-8'd1)};
+  $fdisplay(write_log,"%h %h %h",logical(committed),pin_dqm,pin.physical_word(committed));
+ end
+end
+always @(posedge logic_clk)begin
+ $display("INPUT %h %h %h %h %h %h %h %h %h",reset,cpu_request_valid,cpu_write,cpu_line,cpu_address,cpu_line_count_minus_1,cpu_chain_class,cpu_write_data,cpu_response_ready);
+ #0.001;
+ $display("TRACE %h %h %h %h %h %h %h",cpu_request_ready,cpu_lookahead_window,cpu_write_data_ready,cpu_response_valid,cpu_read_data,cpu_response_last,cpu_error);
+ seen=seen+1;
+ if(seen==__COUNT__)begin
+  #16;final_log=$fopen("final.txt","w");for(n=0;n<4096;n=n+1)$fdisplay(final_log,"%h",pin.physical_word(native(n)));
+  $display("COMPLETE %0d",seen);$finish;
+ end
+end
+initial begin #100000;$fatal(1,"native closure watchdog");end
+endmodule

@@ -530,18 +530,60 @@ impl HardwareIdentity for CpuV3InstructionCache {
 impl Module for CpuV3InstructionCache {
     type Input = CpuV3InstructionCacheInput;
     type Output = CpuV3InstructionCacheOutput;
-    type EmuState = ();
-
+    // The wrapper owns only static wiring; its sole mutable cache is the same engine.
+    type EmuState = (
+        CpuV3TwoWayCacheState,
+        CpuV3TwoWayCacheInput,
+        CpuV3TwoWayCacheOutput,
+    );
     const USES_MAIN_CLOCK: bool = true;
-    const EMU_AVAILABLE: bool = false;
-
+    fn create_emu(input: &Self::Input, output: &Self::Output) -> Self::EmuState {
+        let child_input = CpuV3TwoWayCacheInput {
+            reset: input.reset,
+            invalidate_all: input.invalidate_all,
+            cpu_request_valid: input.cpu_request_valid,
+            cpu_write: digital_design_circuit::input_const(0),
+            cpu_address: input.cpu_address,
+            cpu_write_data: digital_design_circuit::input_w_const(0),
+            cpu_response_ready: input.cpu_response_ready,
+            memory_request_ready: input.memory_request_ready,
+            memory_response_valid: input.memory_response_valid,
+            memory_read_data: input.memory_read_data,
+            memory_error: input.memory_error,
+        };
+        let child_output = CpuV3TwoWayCacheOutput {
+            cpu_request_ready: output.cpu_request_ready,
+            cpu_response_valid: output.cpu_response_valid,
+            cpu_read_data: output.cpu_read_data,
+            cpu_error: output.cpu_error,
+            memory_request_valid: output.memory_request_valid,
+            memory_address: output.memory_address,
+            memory_response_ready: output.memory_response_ready,
+            memory_write: digital_design_circuit::input(),
+            memory_line: digital_design_circuit::input(),
+            memory_write_data: digital_design_circuit::input_w(),
+        };
+        (
+            CpuV3TwoWayCache::create_emu(&child_input, &child_output),
+            child_input,
+            child_output,
+        )
+    }
     fn execute_emu(
-        _state: &mut Self::EmuState,
-        _circuit: &mut CircuitWires,
-        _input: &Self::Input,
-        _output: &Self::Output,
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        _: &Self::Input,
+        _: &Self::Output,
     ) {
-        panic!("the production I-cache wrapper is Verilog-only")
+        CpuV3TwoWayCache::execute_emu(&mut state.0, circuit, &state.1, &state.2);
+    }
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        _: &Self::Input,
+        _: &Self::Output,
+    ) {
+        CpuV3TwoWayCache::clock_emu(&mut state.0, circuit, &state.1, &state.2);
     }
 
     fn verilog_source() -> Option<String> {
