@@ -128,6 +128,10 @@ impl Default for Fill {
 }
 
 impl Fill {
+    pub(super) fn memory_error_sticky(&self) -> bool {
+        self.memory_error
+    }
+
     fn allowed(&self, input: &FillInput) -> bool {
         input.boot_enable
             && !input.boot_failed

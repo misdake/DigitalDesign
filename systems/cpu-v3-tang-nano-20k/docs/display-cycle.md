@@ -1,7 +1,7 @@
 # Display cycle components
 
 The `hardware::display_cycle` module provides edge-driven Rust mirrors of the production
-`DisplayLineBuffer` and the logic-domain fill/Device3 controller. It owns no root clock,
+`DisplayLineBuffer`, logic-domain fill/Device3 and pixel timing control cone. It owns no root clock,
 backing memory, MC, or device callbacks.
 The existing functional Display and Verilog-only hardware wrapper retain their behavior.
 
@@ -91,3 +91,84 @@ and the trace has a 150000-row cap. Sources, traces and exact commands remain un
 This qualifies the logic-domain leaf with a real RTL consumer and controlled memory
 response peer. It does not qualify a Rust pixel consumer, color/TMDS conversion,
 native MC competition, actual bootloader-end equivalence, or a complete system.
+## Pixel timing and Display control cone
+
+`Timing` owns the production pixel-domain counters, ownership and crossings.
+Its inputs are reset/lock/boot flags and old logic-domain publication/format/valid
+metadata plus the raw sticky memory error. Its outputs include raw H/V timing,
+release/frame/started/underflow feedback, line readiness/format and diagnostic
+synchronizer registers. These are control signals, not converted pixel colors.
+
+The pixel reset uses the old third synchronizer bit. Publication, enable/failure
+and reset chains advance independently of the reset branch. Timing starts only
+at a complete frame origin after both groups are available; real content has a
+separate two-real-group gate. Readiness and format latch at H=0 for the whole row.
+Two vertical repeats and the second source row complete a group release.
+Underflow is sticky; it does not itself enter the failure synchronizer.
+The failure input is `boot_failed | memory_error_sticky`, with two pixel stages.
+`startup_error` also contains synchronized underflow and is a different signal.
+
+`DisplayControl` combines Fill, Timing and captured RAM writes. `ControlInput`
+contains external boot/lock/reset, MC and Device3 pins; `outputs()` is pure.
+`clock(Edges, &ControlInput)` samples both domains before committing either.
+A simultaneous logic/pixel rise therefore sees old publication, release and raw
+memory error even if a logic error becomes sticky at that instant.
+The raw getter is read-only and creates no second error latch.
+
+```mermaid
+flowchart LR
+  R["Root: sampled pins and edge mask"] --> F["Fill"]
+  R --> P["Timing"]
+  F -->|"old publication / format / valid / raw error"| P
+  P -->|"old release / frame / started / underflow"| F
+  F -->|"direct 64-bit fill writes"| B["Line RAM write capture"]
+```
+
+The root owns time, MC progression and backing. This component clocks its RAM
+write side; scanout color reads, the source/R/G/B calendar and TMDS are outside
+the control-cone implementation. `line_word()` is a passive diagnostic of
+captured writes. The separate LineBuffer read API and its old-Q contract remain
+available independently.
+
+## Timing qualification and replay provenance
+
+`tests/display_cycle_timing.rs` runs fresh production RTL for 1200 pixel edges
+at two phases and compares every logic/pixel event, including counters and all
+crossing registers. Real DUT copies release pixel reset early, shorten publication
+CDC, or feed a raw error pin on a coincident edge instead of the old sticky flag;
+all must be rejected. A second short fixture extracts the production failure
+crossing always block verbatim: boot/raw error delays and exclusion of an
+underflow-only input are checked, and actually OR-ing underflow into that DUT
+must fail. External processes have a 30-second watchdog.
+
+The eight qualified Fill pin tapes are independent RTL evidence captured before
+Timing was implemented. The replay importer validates their manifests and any
+sealed SHA256s, copies only required inputs to this tree's target and records new
+bindings without writing the source directory. Current generated production RTL
+and RAM source must equal the saved sources; imported blob hashes are checked.
+Replay starts from declaration cold state, applies pins at their original logic
+falling edges and executes every logic/pixel rise, including coincidences.
+No warm state or checkpoint is injected. Ports, all returned pixel feedback and
+RAM contents are compared, with the original 4000000-logic-edge cap per tape.
+
+From the legal underflow prefix, a bounded continuation keeps the real 54/33.3
+clock ratio: underflow-only leaves failure_sync clear, boot failure enters after
+two pixel stages, and a terminal error for an accepted pending request becomes
+sticky on a coincident logic/pixel rise while the pixel still samples the old
+flag. These are controlled feedback assertions, not additional full-system RTL.
+
+Run the qualified Fill producer first if its evidence bundle is unavailable,
+then point the explicit replay test at that bundle. Python 3.10+ is needed for
+hash-checked import:
+
+```powershell
+$env:DISPLAY_CYCLE_FILL_EVIDENCE = '<qualified-fill-tree>/target/display-cycle-fill'
+& scripts/run-cargo.ps1 -Subcommand test -Label display-cycle-timing -CargoArgs @(
+  '-p','cpu-v3-tang-nano-20k','--test','display_cycle_timing',
+  '--','--include-ignored','--nocapture','--test-threads=1')
+```
+
+The artifacts live under `target/display-cycle-timing`. This is a digital
+control-cone qualification with controlled memory responses. It does not establish
+color/TMDS output, native shared-MC contention, full-peripheral coverage,
+bootloader-end equivalence or silicon/PVT behavior.

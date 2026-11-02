@@ -1,6 +1,11 @@
 //! Edge-driven production Display components. These components own no system clock or MC.
 
+mod control;
 mod fill;
+mod timing;
+
+pub use control::{ControlInput, ControlOutput, DisplayControl};
+pub use timing::{Timing, TimingInput, TimingOutput};
 mod line_buffer;
 
 pub use fill::{Fill, FillInput, FillOutput};
