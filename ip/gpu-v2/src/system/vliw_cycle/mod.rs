@@ -8,6 +8,7 @@
 pub mod command;
 pub mod command_dma;
 pub mod router;
+pub mod vertex;
 
 use std::fmt;
 

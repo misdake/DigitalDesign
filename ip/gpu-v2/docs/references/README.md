@@ -34,6 +34,7 @@ verification claims.
 | [Memory models](/ip/gpu-v2/docs/references/memory.md) | GPU burst facade, shared service adapters and explicit service options |
 | [Command transport cycle model](/ip/gpu-v2/docs/references/cycle-transport.md) | Production DMA/router wall-edge ownership and native-memory differential fixtures |
 | [Command-control cycle subset](/ip/gpu-v2/docs/references/cycle-command.md) | Device4 submission, synchronous command fetch, fence/flush/END and bounded subset qualification |
+| [Input and Vertex cycle subset](/ip/gpu-v2/docs/references/cycle-vertex.md) | Production input pages, metadata, bounds/V-mode, old-state storage and explicit T boundary |
 
 All simulator entry points require finite cycle/step/work bounds. Host vector
 sizes, operation counts and fixture intervals do not define hardware ABI,

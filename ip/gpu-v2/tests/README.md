@@ -21,6 +21,17 @@ checks. Render/flush/source-ready peers are controlled; no DRAW/full GPU,
 CPU submission path, Display or board timing is qualified.
 See the [subset contract](/ip/gpu-v2/docs/references/cycle-command.md).
 
+## Production input and Vertex cycle subset
+
+`cargo test --release -p gpu-v2 --test vliw_cycle_vertex -- --include-ignored --nocapture --test-threads=1`
+checks compact V96 storage and metadata, old ROM/RF/MAC/Q, all-vertex result
+writes, bounds, ownership, warm reset, explicit unsupported T, and native
+Memory-fed double-page/cache overlap. The ignored short qualification requires
+`IVERILOG_EXE` and `VVP_EXE`; it replays production Vertex and DMA/router cones,
+compares known bits, and detects compiled DUT mutations and illegal peers.
+No complete DRAW/T pipeline, CPU/Display contention or board timing is claimed.
+See the [subset contract](/ip/gpu-v2/docs/references/cycle-vertex.md).
+
 ## Native functional backend
 
 `cargo test -p gpu-v2 --test functional` checks bounded current-CB memory/UI/error
