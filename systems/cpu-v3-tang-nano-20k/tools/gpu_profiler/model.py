@@ -344,7 +344,8 @@ def build_capture(folder, allow_partial=False):
         dma_transactions=list(transactions.values()),cpu=cpu,metric_defs=[dict(key=k,label=l,kind=t,capacity=c,peak=maxima[k],integral=integrals[k]) for k,l,t,c in METRICS],
         tracks=tracks,sample_start=first,sample_end=last+1,provenance=metadata,
         checks=dict(complete_capture=not partial,quad_conservation=not partial))
-    data['memory'] = build_memory(events, origin, stop, metadata['clock_hz'], not partial, commands, tracks)
+    data['memory'] = build_memory(events, origin, stop, metadata['clock_hz'], not partial, commands, tracks,
+                                 sample_interval=(first, last + 1))
     validate(data)
     return data
 

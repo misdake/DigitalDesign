@@ -3,10 +3,35 @@ from pathlib import Path
 import base64
 import hashlib
 import json
+import re
+from functools import lru_cache
 import struct
 import zlib
 from layout import COLUMN, header_layout
 from snapshot import MEMORY_BYTES, SnapshotError
+
+
+@lru_cache(maxsize=1)
+def display_reference():
+    """Read the same owning Rust LUT used to initialize Display1 RTL."""
+    source = Path(__file__).resolve().parents[2] / 'src/display.rs'
+    raw = source.read_bytes()
+    match = re.search(r'pub const LINEAR6_TO_SRGB8:\s*\[u8;\s*64\]\s*=\s*\[([0-9,\s]+)\];', raw.decode())
+    if not match:
+        raise SnapshotError('Display1 LUT source is unavailable or changed')
+    table = tuple(int(value) for value in re.findall(r'\d+', match[1]))
+    if len(table) != 64 or any(not 0 <= value <= 255 for value in table):
+        raise SnapshotError('Display1 LUT has invalid width')
+    return table, dict(mode='display1-linear6-to-srgb8-v1', encoding='srgb', display_format=1,
+                      source='systems/cpu-v3-tang-nano-20k/src/display.rs',
+                      source_sha256=hashlib.sha256(raw).hexdigest(),
+                      table_sha256=hashlib.sha256(bytes(table)).hexdigest())
+
+
+def display_rgb565(pixel):
+    table, _ = display_reference()
+    red, green, blue = (pixel >> 11) & 31, (pixel >> 5) & 63, pixel & 31
+    return table[(red << 1) | (red >> 4)], table[green], table[(blue << 1) | (blue >> 4)]
 
 
 class History:
@@ -109,7 +134,20 @@ def empty_draw_ids(profile):
             and meshes.get(c.get('meshlet'), {}).get('quads') == 0}
 
 
-def build(capture, profile, event_path, output):
+def preview_policy(mode, target_format, capture_format_known):
+    """Presentation is explicit; a zero/unknown capture field selects no LUT."""
+    if mode not in ('display1', 'raw', 'capture'):
+        raise SnapshotError('Unknown preview policy: '+str(mode))
+    linear = mode == 'display1' or (mode == 'capture' and capture_format_known and target_format == 1)
+    metadata = (dict(display_reference()[1]) if linear else
+                dict(mode='raw-rgb565-channel-view', encoding='raw', display_format=0))
+    metadata.update(preview_policy=mode, capture_format=target_format,
+                    capture_format_known=capture_format_known, requested_override=mode != 'capture')
+    return linear, metadata
+
+
+def build(capture, profile, event_path, output, *, display_preview=False, capture_format_known=True,
+          preview_mode=None, include_depth=False):
     """Project each command at its real completion, with younger owners excluded."""
     if not capture.header.get('has_target', True):
         return dict(available=False, reason='This submission has no render target')
@@ -125,6 +163,8 @@ def build(capture, profile, event_path, output):
     if not rows:
         return dict(available=False, reason='Capture has no image journal')
     layout = header_layout(capture.header)
+    linear, presentation = preview_policy(preview_mode or ('display1' if display_preview else 'capture'),
+                                           capture.header['target_format'], capture_format_known)
     initial, known = bytearray(MEMORY_BYTES), bytearray(MEMORY_BYTES)
     for region in capture.ranges:
         initial[region.address:region.address+region.length] = capture.data[region.index]
@@ -195,12 +235,13 @@ def build(capture, profile, event_path, output):
         if sha in rendered:
             file.write_bytes(rendered[sha])
         else:
-            preview(plane, file, capture.header['target_format'] == 1, layout)
+            preview(plane, file, linear, layout)
             rendered[sha] = file.read_bytes()
         png = file.read_bytes()
         return dict(command=command, cycle=cycle, target_base_bytes=target['color'],
                     depth_base_bytes=target['depth'], target_epoch=target['epoch'], binding=target['binding'],
                     format=capture.header['target_format'], cache_override_words=overrides,
+                    preview=dict(presentation),
                     plane_sha256=sha, png_sha256=hashlib.sha256(png).hexdigest(), file=name,
                     src='data:image/png;base64,'+base64.b64encode(png).decode('ascii'))
     final = None
@@ -220,10 +261,13 @@ def build(capture, profile, event_path, output):
             images[str(args)] = render(cycle, args, target, f'command-{args:06}.png', args)
         else:
             target = target_at(cycle)
-            if target['color'] != capture.header['color_base']:
+            if target['color'] != capture.header['color_base'] or target['depth'] != capture.header['depth_base']:
                 target = dict(epoch=None, color=capture.header['color_base'], depth=capture.header['depth_base'],
                               binding='capture-declared final output')
             final = render(cycle, None, target, 'final.png', max(commands))
+            if include_depth:
+                depth, _ = history.plane(target['depth'], target['epoch'], max(commands))
+                final['depth_plane_sha256'] = hashlib.sha256(depth).hexdigest()
     result = dict(available=True, complete=True, scope='Historical memory plus valid cache; younger command owners excluded',
                   final=final, commands=images)
     portable = dict(result, final={k:v for k,v in final.items() if k != 'src'},
@@ -274,12 +318,11 @@ def preview(plane, output, linear, layout=COLUMN):
         for x in range(400):
             at = layout.offset(x, y)
             word, = struct.unpack_from("<H", plane, at)
-            channels = [(word >> 11) / 31, ((word >> 5) & 63) / 63, (word & 31) / 31]
             if linear:
-                # Viewing aid only; exact output comparisons use the raw plane.
-                channels = [12.92 * v if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
-                            for v in channels]
-            row.extend(round(max(0, min(1, v)) * 255) for v in channels)
+                row.extend(display_rgb565(word))
+            else:
+                channels = [(word >> 11) / 31, ((word >> 5) & 63) / 63, (word & 31) / 31]
+                row.extend(round(v * 255) for v in channels)
         rows.append(row)
 
     def chunk(kind, data):
@@ -288,4 +331,5 @@ def preview(plane, output, linear, layout=COLUMN):
 
     Path(output).write_bytes(b"\x89PNG\r\n\x1a\n" +
         chunk(b"IHDR", struct.pack(">IIBBBBB", 400, 240, 8, 2, 0, 0, 0)) +
+        (chunk(b"sRGB", b"\0") if linear else b"") +
         chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))

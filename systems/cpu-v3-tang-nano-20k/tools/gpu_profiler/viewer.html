@@ -11,10 +11,13 @@
 #memory{margin-top:20px;border-top:1px solid var(--line);padding-top:14px;font-size:12px}#memory h3{font-size:13px;font-weight:500}#memory dl{display:grid;grid-template-columns:1fr auto;gap:6px}#memory table{width:100%;border-collapse:collapse;font-size:11px;margin-top:10px}#memory th,#memory td{text-align:right;padding:5px 2px;border-bottom:1px solid var(--line)}#memory th:first-child,#memory td:first-child{text-align:left}#memory th{color:var(--muted);font-weight:400}
 #frame-preview{margin:0 0 18px}#frame-preview h3{font-weight:500;font-size:13px;margin:0 0 8px}.frame-wrap{display:inline-block}.frame-wrap img{display:block;width:160px;height:96px;object-fit:contain;image-rendering:auto;border:1px solid var(--line);background:#080a0c}.frame-wrap .frame-large{display:none;position:fixed;right:310px;top:65px;width:400px;height:240px;z-index:5;box-shadow:0 8px 35px #000a}.frame-wrap:hover .frame-large,.frame-wrap:focus-visible .frame-large{display:block}@media(max-width:950px){.frame-wrap .frame-large{right:260px}}@media(max-width:700px){.frame-wrap .frame-large{right:14px;top:70px;max-width:calc(100vw - 28px);height:auto}}
 .gpu-memory-metrics{display:flex;flex-wrap:wrap;gap:8px 24px;margin:0}.gpu-memory-metrics>div{min-width:140px}.gpu-memory-metrics dd{margin:3px 0 0;font-weight:600}
+#frame-wrap[hidden]{display:none}
 </style>
 <style>#mouse-help{padding:5px 0;border:0;border-bottom:1px dotted var(--muted);background:transparent;color:var(--muted);cursor:help}#memory{margin-top:20px;border-top:1px solid var(--line);padding-top:14px;font-size:12px}#memory h3{font-size:13px;font-weight:500}#memory dl{display:grid;grid-template-columns:1fr auto;gap:6px}#memory table{width:100%;border-collapse:collapse;font-size:11px;margin-top:10px}#memory th,#memory td{text-align:right;padding:5px 2px;border-bottom:1px solid var(--line)}#memory th:first-child,#memory td:first-child{text-align:left}#memory th{color:var(--muted);font-weight:400}
 #frame-preview{margin:0 0 18px}#frame-preview h3{font-weight:500;font-size:13px;margin:0 0 8px}.frame-wrap{display:inline-block}.frame-wrap img{display:block;width:160px;height:96px;object-fit:contain;image-rendering:auto;border:1px solid var(--line);background:#080a0c}.frame-wrap .frame-large{display:none;position:fixed;right:310px;top:65px;width:400px;height:240px;z-index:5;box-shadow:0 8px 35px #000a}.frame-wrap:hover .frame-large,.frame-wrap:focus-visible .frame-large{display:block}@media(max-width:950px){.frame-wrap .frame-large{right:260px}}@media(max-width:700px){.frame-wrap .frame-large{right:14px;top:70px;max-width:calc(100vw - 28px);height:auto}}
 .gpu-memory-metrics{display:flex;flex-wrap:wrap;gap:8px 24px;margin:0}.gpu-memory-metrics>div{min-width:140px}.gpu-memory-metrics dd{margin:3px 0 0;font-weight:600}
+#gpu-memory-summary{min-width:0;margin:0;font-size:12px;overflow-wrap:anywhere}#gpu-memory-summary .gpu-memory-metrics{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}#gpu-memory-summary .gpu-memory-metrics>div{min-width:0}#gpu-memory-summary dd{text-align:left}
+.inspector-section{min-width:0;margin:0 0 14px;padding-bottom:14px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.inspector-section>summary{cursor:pointer;font-weight:500;margin-bottom:12px}.inspector-section>summary:focus-visible{outline:2px solid var(--r);outline-offset:3px}.inspector-section:not([open])>summary{margin-bottom:0}#bin-section #cursor{border-top:0;margin-top:0;padding-top:0}
 </style>
 </head>
 <body>
@@ -26,9 +29,9 @@
   </div>
   <div class="overview"><canvas id="overview" aria-label="Session overview: top VT occupancy, bottom backend occupancy. Drag to select the shared time range."></canvas></div>
   <section class="pane" aria-label="Instruction flow"><div class="panehead"><h2>Instruction flow · DMA / VT + R / I / P</h2><span id="command-summary" class="quiet" aria-live="polite"></span></div><canvas id="cmd-axis" class="axis" aria-label="Instruction time axis"></canvas><div class="scroll" id="command-scroll"><div class="plot" id="command-plot"><canvas id="commands" aria-label="Every command and its asynchronous work, with two lanes per draw"></canvas><div class="guide"></div><div id="command-empty" class="empty-state" hidden>No commands match these filters.</div></div></div></section>
-  <section class="pane" aria-label="GPU Activity and Memory Throughput"><div class="panehead"><h2>GPU Activity &amp; Memory Throughput</h2><span id="resolution" class="quiet"></span></div><section id="gpu-memory-summary" aria-label="GPU memory throughput summary" style="padding:8px 16px"></section><canvas id="load-axis" class="axis" aria-label="GPU load time axis"></canvas><div class="scroll" id="load-scroll"><div class="plot" id="load-plot"><canvas id="load" aria-label="GPU unit occupancy, throughput and exact queue inventories"></canvas><div class="guide"></div></div></div></section>
+  <section class="pane" aria-label="GPU Activity and Memory Throughput"><div class="panehead"><h2>GPU Activity &amp; Memory Throughput</h2><span id="resolution" class="quiet"></span></div><canvas id="load-axis" class="axis" aria-label="GPU load time axis"></canvas><div class="scroll" id="load-scroll"><div class="plot" id="load-plot"><canvas id="load" aria-label="GPU memory byte histograms, outstanding requests, waits and unit activity"></canvas><div class="guide"></div></div></div></section>
  </main>
- <aside class="inspector"><section id="frame-preview" aria-label="Rendered frame"><h3 id="frame-label">Final output</h3><div class="frame-wrap" tabindex="0"><img id="frame-image" alt="Rendered output thumbnail"><img id="frame-large" class="frame-large" alt="Enlarged rendered output"></div><p id="frame-caption" class="note"></p></section><label class="quiet">Inspect instruction <select id="instruction" style="width:100%;margin:5px 0 15px" aria-label="Inspect instruction"></select></label><div id="detail"></div><div class="legend"><span><b style="background:var(--dma)"></b>DMA</span><span><b style="background:var(--v)"></b>V</span><span><b style="background:var(--t)"></b>T</span><span><b style="background:var(--r)"></b>R</span><span><b style="background:var(--i)"></b>I</span><span><b style="background:var(--p)"></b>P</span><span><b style="background:var(--wait)"></b>Wait / control</span></div><div class="note">Top: instruction residency and work attributed to that instruction. Lower: independent hardware state, queue inventory and accepted throughput. All tracks share the time range and cursor.</div><div class="note">P = published quad to final ROP cache commit, or ordered empty skip. Dirty cache writeback belongs to FLUSH. R/I filled marks are actual occupied intervals; faint spans show first-to-last elapsed time.</div><div id="cursor" class="mono quiet">Move over either timeline to inspect a cycle.</div></aside>
+ <aside class="inspector"><section id="frame-preview" aria-label="Rendered frame"><h3 id="frame-label">Final output</h3><div id="frame-wrap" class="frame-wrap" tabindex="0"><img id="frame-image" alt="Rendered output thumbnail"><img id="frame-large" class="frame-large" alt="Enlarged rendered output"></div><p id="frame-caption" class="note"></p></section><details id="inspect-section" class="inspector-section" open><summary>Inspect Instruction</summary><label class="quiet">Inspect instruction <select id="instruction" style="width:100%;margin:5px 0 15px" aria-label="Inspect instruction"></select></label><div id="detail"></div></details><details id="legend-section" class="inspector-section" open><summary>Legend</summary><div class="legend"><span><b style="background:var(--dma)"></b>DMA</span><span><b style="background:var(--v)"></b>V</span><span><b style="background:var(--t)"></b>T</span><span><b style="background:var(--r)"></b>R</span><span><b style="background:var(--i)"></b>I</span><span><b style="background:var(--p)"></b>P</span><span><b style="background:var(--wait)"></b>Wait / control</span></div><div class="note">Top: instruction residency and work attributed to that instruction. Lower: independent hardware state, queue inventory and accepted throughput. All tracks share the time range and cursor.</div><div class="note">P = published quad to final ROP cache commit, or ordered empty skip. Dirty cache writeback belongs to FLUSH. R/I filled marks are actual occupied intervals; faint spans show first-to-last elapsed time.</div></details><details id="bin-section" class="inspector-section" open><summary>Bin cycles</summary><div id="cursor" class="mono quiet"></div></details><details id="memory-section" class="inspector-section" open><summary>GPU memory summary</summary><section id="gpu-memory-summary" aria-label="GPU memory throughput summary"></section></details></aside>
 </div><div id="tooltip" role="tooltip"></div>
 <script>
 "use strict";
@@ -47,6 +50,7 @@ if(D.schema==='digitaldesign.gpu-result'){
 
 const $=id=>document.getElementById(id), css=getComputedStyle(document.documentElement);
 const C={};for(const k of ['bg','panel','text','muted','line','grid','dma','v','t','r','i','p','wait','set','clear','selection'])C[k]=css.getPropertyValue('--'+k).trim();
+let statsSource='frame';
 let lo=D.start,hi=D.end,rangeSelected=false,selected=null,unit='ms',cursor=null,pan=null,brush=null,loadBins=null,suppressClick=false,lastHover=null;
 const mesh=new Map(D.meshlets.map(m=>[m.id,m])),jobs=new Map(D.jobs.map(j=>[j.id,j])),cmd=new Map(D.commands.map(c=>[c.id,c]));
 const submissions=new Map(D.submissions.map(s=>[s.id,s]));
@@ -63,7 +67,58 @@ commandHeight=Math.max(y,rowOf.size?y:110);if(selected!==null&&!rowOf.has(select
 $('instruction').innerHTML='<option value="">Session overview</option>'+D.commands.filter(c=>rowOf.has(c.id)).map(c=>`<option value="${c.id}">CB${c.submission} · ${c.pc.toString(16).padStart(4,'0')} ${escape(c.name)}${c.meshlet?' · '+escape(mesh.get(c.meshlet).name):''}</option>`).join('');$('instruction').value=selected===null?'':String(selected);
 $('filter-count').textContent=`(${rowOf.size}/${D.commands.length})`;$('command-summary').textContent=`${rowOf.size} / ${D.commands.length} commands · shaded columns: drain`;$('command-empty').hidden=rowOf.size!==0;
 for(const [op]of types)$('filter-type-count-'+op).textContent=D.commands.filter(c=>c.opcode===op).length;}
-const metricHeight=47,loadHeight=D.metric_defs.length*metricHeight;
+// Optional precise memory timing. Legacy summaries never become synthetic beats.
+function memoryViewFor(report){
+ const t=report?.timeline,available=!!(report?.available&&t?.available&&t.version===1);
+ const reason=t?.reason||'Exact MEM_DATA timeline was not saved; rebuild from preserved events.txt if available.';
+ const range=available?[t.start,t.end]:null,tracks={};
+ const prefix=points=>{let total=0;const sums=[0];for(const p of points){total+=p[1];sums.push(total);}return {points,sums};};
+ const sum=(p,a,b)=>p.sums[lowerBound(p.points,b)]-p.sums[lowerBound(p.points,a)];
+ const reads=[],writes=[],requests=[],requestedReads=[],requestedWrites=[];
+ if(available){
+  for(const [c,r,w]of t.data){if(r)reads.push([c,r]);if(w)writes.push([c,w]);}
+  for(const tx of report.transactions){requests.push([tx.start,1]);(tx.port===2?requestedWrites:requestedReads).push([tx.start,tx.expected_beats*8]);}
+ }
+ const counts=[reads,writes,requests,requestedReads,requestedWrites].map(prefix);
+ Object.assign(tracks,{mem_read:reads,mem_write:writes,mem_outstanding:t?.states?.outstanding||[],mem_wait:t?.states?.waiting||[],mem_backpressure:t?.backpressure?.track||[]});
+ const definitions=[
+  ['mem_read','GPU memory read','bytes',0,'actual 64-bit payload · bytes/bin'],
+  ['mem_write','GPU memory write','bytes',0,'actual 64-bit payload · bytes/bin'],
+  ['mem_outstanding','Outstanding requests','queue',0,'accepted, not completed · mean + peak'],
+  ['mem_wait','Live links without data','queue',3,'live links with no beat · mean + peak'],
+  ['mem_backpressure','Request backpressure','queue',3,'valid and not ready · mean + peak']
+ ].map(([key,label,kind,capacity,note])=>({key,label,kind,capacity,note,memory:true,
+  available:available&&(key!=='mem_backpressure'||!!t.backpressure?.available),
+  reason:key==='mem_backpressure'&&available?t.backpressure?.reason||'Outside saved valid/ready samples':reason,
+  coverage:key==='mem_backpressure'&&t?.backpressure?.available?[t.backpressure.start,t.backpressure.end]:range}));
+ const coverage=(d,a,b)=>{if(!d.available)return null;const x=Math.max(a,d.coverage[0]),y=Math.min(b,d.coverage[1]);return y>x?{a:x,b:y,partial:x>a||y<b}:null;};
+ const covered=(d,a,b)=>!!coverage(d,a,b)&&a>=d.coverage[0]&&b<=d.coverage[1];
+ const state=(points,a,b)=>{const q=aggregate(points,'queue',a,b,1);return {mean:q.mean[0],peak:q.peak[0],cycles:q.total[0]};};
+ let peakKey=null,peakValue=null;
+ const peakBytes=(a,b,width)=>{
+  const c=coverage(definitions[0],a,b);
+  if(!available||!c||c.partial||b-a<width||width<=0)return null;
+  const key=`${a}:${b}:${width}`;if(key===peakKey)return peakValue;
+  const data=t.data,begin=lowerBound(data,a),end=lowerBound(data,b),last=b-width;
+  let left=begin,right=begin,total=0,maximum=0;
+  const scan=start=>{while(right<end&&data[right][0]<start+width){total+=data[right][1]+data[right][2];right++;}
+   while(left<right&&data[left][0]<start){total-=data[left][1]+data[left][2];left++;}maximum=Math.max(maximum,total);};
+  scan(a);for(let k=begin;k<end;k++){const start=Math.min(data[k][0],last);if(start>a)scan(start);if(start===last)break;}
+  peakKey=key;peakValue=maximum;return maximum;
+ };
+ return {available,reason,tracks,definitions,covered,coverage,peakBytes,interval(a,b){
+  if(!available||a>b)return {available:false,reason};
+  if(a===b)return {available:true,empty:true,read:0,write:0};
+  const c=coverage(definitions[0],a,b);
+  if(!c)return {available:false,reason:`Outside saved memory interval [${range[0]}, ${range[1]})`};
+  const values=counts.map(p=>sum(p,c.a,c.b)),bp=coverage(definitions[4],a,b);
+  return {available:true,coverage:c,read:values[0],write:values[1],requests:values[2],requestedRead:values[3],requestedWrite:values[4],
+   outstanding:state(tracks.mem_outstanding,c.a,c.b),waiting:state(tracks.mem_wait,c.a,c.b),terminal:state(t.states.terminal_wait,c.a,c.b),
+   backpressure:bp?{...state(tracks.mem_backpressure,bp.a,bp.b),coverage:bp}:null};
+ }};
+}
+const memoryView=memoryViewFor(D.memory),loadMetrics=[...memoryView.definitions,...D.metric_defs];
+const metricHeight=47,loadHeight=loadMetrics.length*metricHeight;
 const spans=D.commands.filter(c=>c.opcode===7||c.opcode===15||c.opcode===4&&(parseInt(c.word,16)&2)).map(c=>[c.execute,c.end,c]);
 const left=()=>parseInt(getComputedStyle(document.documentElement).getPropertyValue('--left'));
 const duration=n=>unit==='cycles'?`${Math.round(n).toLocaleString()} cy`:unit==='us'?`${(n*1e6/D.clock_hz).toFixed(2)} µs`:`${(n*1e3/D.clock_hz).toFixed(4)} ms`;
@@ -96,26 +151,50 @@ const sel=cmd.get(selected);if(sel)for(const dep of sel.dependencies){const r=ro
 for(const row of rows){if(selected===row.c?.id){g.fillStyle=C.selection;g.globalAlpha=.18;g.fillRect(0,row.y,o.L,row.height);g.globalAlpha=1;}g.fillStyle=C.text;label(o,row.label,row.y+(row.m?10:14));if(row.m){g.fillStyle=C.muted;g.fillText('DMA / VT',25,row.y+21);g.fillText('R / I / P',25,row.y+39);}g.strokeStyle=C.grid;g.beginPath();g.moveTo(0,row.y+row.height);g.lineTo(o.w,row.y+row.height);g.stroke();}}
 function lowerBound(a,t){let l=0,r=a.length;while(l<r){let m=(l+r)>>1;if(a[m][0]<t)l=m+1;else r=m;}return l;}
 function valueAt(points,t,rate=false){let k=lowerBound(points,t);if(k<points.length&&points[k][0]===t)return points[k][1];return rate?0:k?points[k-1][1]:0;}
-function aggregate(points,kind,a,b,n){const dt=(b-a)/n,tot=new Float64Array(n),peak=new Float64Array(n);let pos=lowerBound(points,a);if(kind==='rate'){for(let j=pos;j<points.length&&points[j][0]<b;j++){const k=Math.min(n-1,Math.floor((points[j][0]-a)/dt));tot[k]+=points[j][1];peak[k]=Math.max(peak[k],points[j][1]);}return {mean:Array.from(tot),peak,dt};}
+function binIndex(t,a,dt,n){let k=Math.max(0,Math.min(n-1,Math.floor((t-a)/dt)));while(k+1<n&&t>=a+(k+1)*dt)k++;while(k>0&&t<a+k*dt)k--;return k;}
+function aggregate(points,kind,a,b,n){const dt=(b-a)/n,tot=new Float64Array(n),peak=new Float64Array(n);let pos=lowerBound(points,a);if(kind==='rate'||kind==='bytes'){for(let j=pos;j<points.length&&points[j][0]<b;j++){const k=binIndex(points[j][0],a,dt,n);tot[k]+=points[j][1];peak[k]=Math.max(peak[k],points[j][1]);}return {mean:Array.from(tot),peak,dt};}
 let t=a,v=valueAt(points,a);while(t<b){while(pos<points.length&&points[pos][0]<=t){v=points[pos][1];pos++;}const end=Math.min(b,pos<points.length?points[pos][0]:b);let k=Math.min(n-1,Math.floor((t-a)/dt));while(t<end){const e=Math.min(end,a+(k+1)*dt);if(e<=t){k++;continue;}tot[k]+=(e-t)*v;peak[k]=Math.max(peak[k],v);t=e;if(k<n-1&&t>=a+(k+1)*dt-1e-7)k++;}if(end===b)break;}
-return {mean:Array.from(tot,v=>v/dt),peak,dt};}
+return {mean:Array.from(tot,v=>v/dt),peak,dt,total:Array.from(tot)};}
 function activityUnion(tracks){const events=new Map();for(const points of tracks){let was=false;for(const [t,v]of points){const active=v>0;if(active!==was){events.set(t,(events.get(t)??0)+(active?1:-1));was=active;}}}const out=[];let count=0,previous=0;for(const [t,delta]of [...events].sort((a,b)=>a[0]-b[0])){count+=delta;const active=Number(count>0);if(active!==previous){out.push([t,active]);previous=active;}}return out;}
 function drawLoad(){const o=setup($('load'),loadHeight),g=o.g;grid(o);const n=Math.max(2,Math.min(Math.floor(hi-lo),Math.floor((o.R-o.L)/3))),bin=(hi-lo)/n;const detailed=bin<=32;
-loadBins={lo,hi,n,dt:bin,binaryExact:detailed,stats:new Map()};
-$('resolution').textContent=detailed?`Exact binary states · ${duration(bin)} queue / throughput bins`:`Bars: ${duration(bin)} bins · queue mean + peak · busy fraction`;
-cut(g,o,()=>{drain(o);const chosen=cmd.get(selected);if(chosen)bar(o,chosen.execute,chosen.end,0,o.h,C.selection,.1);
-for(let index=0;index<D.metric_defs.length;index++){const d=D.metric_defs[index],cy=index*metricHeight,base=cy+36,hh=27,points=D.tracks[d.key],agg=aggregate(points,d.kind,lo,hi,n);loadBins.stats.set(d.key,{mean:agg.mean.slice(),peak:agg.peak});if(d.kind==='rate')agg.mean=agg.mean.map(v=>v*1024/agg.dt);const max=d.capacity||Math.max(1,...agg.mean,...(d.kind==='rate'?[]:agg.peak)),bw=(o.R-o.L)/n;g.fillStyle=colorFor(d,index);
-if(d.kind==='binary'&&detailed){let k=Math.max(0,lowerBound(points,lo)-1);for(;k<points.length&&points[k][0]<=hi;k++){if(points[k][1])bar(o,points[k][0],k+1<points.length?points[k+1][0]:D.sample_end,base-hh,hh,colorFor(d),.8);}}
-else for(let k=0;k<n;k++){const h=Math.min(hh,agg.mean[k]/max*hh),xx=o.L+k*bw;g.globalAlpha=d.kind==='binary'?.8:.75;g.fillRect(xx,base-h,Math.max(.5,bw-.6),h);if(d.kind==='queue'&&agg.peak[k]>agg.mean[k]+.02){g.globalAlpha=.65;g.fillRect(xx,base-agg.peak[k]/max*hh,Math.max(.5,bw-.6),1);}}g.globalAlpha=1;
-g.strokeStyle=C.grid;g.beginPath();g.moveTo(o.L,base);g.lineTo(o.R,base);g.stroke();g.fillStyle=C.muted;g.textAlign='right';g.fillText(d.kind==='binary'?'100%':d.kind==='rate'?`${Math.ceil(max)} / kcy`:String(max),o.R-2,cy+8);g.textAlign='left';}});
-for(let index=0;index<D.metric_defs.length;index++){const d=D.metric_defs[index],cy=index*metricHeight;g.fillStyle=C.text;label(o,d.label,cy+13);g.fillStyle=C.muted;g.fillText(d.kind==='binary'?`0/100 · capture mean ${(100*d.integral/(D.sample_end-D.sample_start)).toFixed(1)}%`:d.kind==='rate'?'accepted / 1024 cycles':`inventory · peak ${d.peak}${d.capacity?' / '+d.capacity:''}`,10,cy+30);g.strokeStyle=C.grid;g.beginPath();g.moveTo(0,cy+metricHeight);g.lineTo(o.w,cy+metricHeight);g.stroke();}}
-function colorFor(d){return d.key.startsWith('light')?C.i:d.key.startsWith('sample')||d.key.startsWith('texture')?C.t:d.key.startsWith('vt')?C.v:d.key.startsWith('rop')||d.key.startsWith('final')?C.p:d.key==='dma'?C.dma:C.r;}
+ loadBins={lo,hi,n,dt:bin,binaryExact:detailed,stats:new Map()};
+ $('resolution').textContent=`${duration(bin)} shared bins · memory bytes/bin · queue mean + peak${detailed?' · exact binary states':''}`;
+ cut(g,o,()=>{drain(o);const chosen=cmd.get(selected);if(chosen)bar(o,chosen.execute,chosen.end,0,o.h,C.selection,.1);
+ for(let index=0;index<loadMetrics.length;index++){
+  const d=loadMetrics[index],cy=index*metricHeight,base=cy+36,hh=27,points=d.memory?memoryView.tracks[d.key]:D.tracks[d.key];
+  if(d.memory&&!d.available){loadBins.stats.set(d.key,null);g.fillStyle=C.muted;g.fillText('Unavailable · exact trace data not saved',o.L+8,cy+20);continue;}
+  const agg=aggregate(points,d.kind,lo,hi,n);
+  if(d.memory&&d.kind!=='bytes')for(let k=0;k<n;k++){
+   const a=lo+k*bin,b=k+1===n?hi:lo+(k+1)*bin,c=memoryView.coverage(d,a,b);
+   if(!c){agg.mean[k]=0;agg.peak[k]=0;}else if(c.partial){const q=aggregate(points,d.kind,c.a,c.b,1);agg.mean[k]=q.mean[0];agg.peak[k]=q.peak[0];}
+  }
+  loadBins.stats.set(d.key,{mean:agg.mean.slice(),peak:agg.peak});
+  if(d.kind==='rate')agg.mean=agg.mean.map(v=>v*1024/agg.dt);
+  const max=d.capacity||Math.max(1,...agg.mean,...(d.kind==='rate'||d.kind==='bytes'?[]:agg.peak)),bw=(o.R-o.L)/n;g.fillStyle=colorFor(d,index);
+  if(d.kind==='binary'&&detailed){let k=Math.max(0,lowerBound(points,lo)-1);for(;k<points.length&&points[k][0]<=hi;k++)if(points[k][1])bar(o,points[k][0],k+1<points.length?points[k+1][0]:D.sample_end,base-hh,hh,colorFor(d),.8);}
+  else for(let k=0;k<n;k++){
+   const a=lo+k*bin,b=Math.min(hi,lo+(k+1)*bin),xx=o.L+k*bw;
+   const coverage=d.memory?memoryView.coverage(d,a,b):null;
+   if(d.memory&&!coverage){g.fillStyle=C.line;g.fillRect(xx,base-hh,Math.max(.5,bw-.6),hh);g.fillStyle=colorFor(d,index);continue;}
+   const h=Math.min(hh,agg.mean[k]/max*hh);g.globalAlpha=d.kind==='binary'?.8:.75;g.fillRect(xx,base-h,Math.max(.5,bw-.6),h);
+   if(d.kind==='queue'&&agg.peak[k]>agg.mean[k]+.02){g.globalAlpha=.65;g.fillRect(xx,base-agg.peak[k]/max*hh,Math.max(.5,bw-.6),1);}
+   if(coverage?.partial){g.globalAlpha=.7;g.fillStyle=C.line;if(coverage.a>a)g.fillRect(xx,base-hh,Math.max(.7,bw*(coverage.a-a)/bin),hh);if(coverage.b<b)g.fillRect(xx+bw*(coverage.b-a)/bin,base-hh,Math.max(.7,bw*(b-coverage.b)/bin),hh);g.fillStyle=colorFor(d,index);}
+  }g.globalAlpha=1;g.strokeStyle=C.grid;g.beginPath();g.moveTo(o.L,base);g.lineTo(o.R,base);g.stroke();
+  g.fillStyle=C.muted;g.textAlign='right';g.fillText(d.kind==='binary'?'100%':d.kind==='rate'?`${Math.ceil(max)} / kcy`:d.kind==='bytes'?`${max} B/bin`:String(max),o.R-2,cy+8);g.textAlign='left';
+ }});
+ for(let index=0;index<loadMetrics.length;index++){
+  const d=loadMetrics[index],cy=index*metricHeight;g.fillStyle=C.text;label(o,d.label,cy+13);g.fillStyle=C.muted;
+  g.fillText(d.memory?d.note:d.kind==='binary'?`0/100 · capture mean ${(100*d.integral/(D.sample_end-D.sample_start)).toFixed(1)}%`:d.kind==='rate'?'accepted / 1024 cycles':`inventory · peak ${d.peak}${d.capacity?' / '+d.capacity:''}`,10,cy+30);
+  g.strokeStyle=C.grid;g.beginPath();g.moveTo(0,cy+metricHeight);g.lineTo(o.w,cy+metricHeight);g.stroke();
+ }
+}
+function colorFor(d){if(d.memory)return d.key==='mem_read'?C.r:d.key==='mem_write'?C.p:d.key==='mem_backpressure'?C.dma:C.wait;return d.key.startsWith('light')?C.i:d.key.startsWith('sample')||d.key.startsWith('texture')?C.t:d.key.startsWith('vt')?C.v:d.key.startsWith('rop')||d.key.startsWith('final')?C.p:d.key==='dma'?C.dma:C.r;}
 const overviewBackend=activityUnion(['r_busy','i_busy','quad_total','rop_contexts'].map(key=>D.tracks[key]));
 function drawOverview(){const o=setup($('overview'),60),g=o.g,L=o.L,R=o.R,xx=t=>L+(t-D.start)/(D.end-D.start)*(R-L),n=Math.max(2,Math.floor((R-L)/2));
 for(const [points,text,color,base]of [[D.tracks.vt_owned,'VT occupancy',C.v,25],[overviewBackend,'Backend occupancy',C.p,51]]){g.fillStyle=color;g.fillRect(10,base-17,4,13);g.fillStyle=C.text;g.fillText(text,22,base-10);const load=aggregate(points,'binary',D.start,D.end,n);g.fillStyle=color;load.mean.forEach((v,k)=>g.fillRect(L+k*(R-L)/n,base-v*18,(R-L)/n,18*v));g.fillStyle=C.grid;g.fillRect(L,base,R-L,1);}
 if(rangeSelected){g.fillStyle=C.bg;g.globalAlpha=.65;g.fillRect(L,0,xx(lo)-L,60);g.fillRect(xx(hi),0,R-xx(hi),60);g.globalAlpha=1;g.fillStyle=C.selection;g.globalAlpha=.12;g.fillRect(xx(lo),2,xx(hi)-xx(lo),54);g.globalAlpha=1;g.strokeStyle=C.text;g.strokeRect(xx(lo),2,Math.max(1,xx(hi)-xx(lo)),54);}}
-function render(){axis('cmd-axis');axis('load-axis');drawCommands();drawLoad();drawOverview();$('range').textContent=rangeSelected?`Selected · ${stamp(lo)} – ${stamp(hi)} ${unit} · Δ ${duration(hi-lo)}`:`Full session · no selection · ${duration(hi-lo)}`;showCursor(cursor);}
-function fitRange(a,b){const width=Math.max(64,Math.min(D.end-D.start,b-a));lo=Math.max(D.start,Math.min(a,D.end-width));hi=lo+width;rangeSelected=lo>D.start||hi<D.end;render();}
+function render(){memoryOverview();axis('cmd-axis');axis('load-axis');drawCommands();drawLoad();drawOverview();rangeDetail();$('range').textContent=rangeSelected?`Selected · ${stamp(lo)} – ${stamp(hi)} ${unit} · Δ ${duration(hi-lo)}`:`Full session · no selection · ${duration(hi-lo)}`;showCursor(cursor);}
+function fitRange(a,b,viewportOnly=false){const full=D.end-D.start,width=Math.min(full,Math.max(Math.min(64,full),Math.round(b-a))),start=Math.max(D.start,Math.min(a,D.end-width));lo=Math.round(start);hi=lo+width;rangeSelected=lo>D.start||hi<D.end;if(!viewportOnly)statsSource=rangeSelected?'view':'frame';render();}
 function bounds(c){let a=c.start,b=c.complete_cycle??c.end;const m=mesh.get(c.meshlet);if(m){const j=jobs.get(m.dma);if(j)a=Math.min(a,j.start);if(m.last_quad)b=Math.max(b,m.last_quad.end);}for(const jid of c.jobs){const j=jobs.get(jid);if(j&&j.end!==null)b=Math.max(b,j.end);}return [a,b];}
 function intervalAt(intervals,t){let a=0,b=intervals.length;while(a<b){const m=(a+b)>>1;if(intervals[m][0]<=t)a=m+1;else b=m;}const span=intervals[a-1];return span&&t<span[1]?span:null;}
 function aliveAt(t){return D.commands.filter(c=>{const [a,b]=bounds(c);return a<=t&&t<b;});}
@@ -127,20 +206,48 @@ function aliveText(t){const live=aliveAt(t);return `Alive commands at ${duration
 function frameDetail(c){
  const images=D.images, empty=c?.opcode===3&&mesh.get(c.meshlet)?.quads===0;
  const image=!empty&&images?.available?(c?images.commands[String(c.id)]:images.final):null;
- $('frame-preview').hidden=!image;
- if(!image)return;
+ $('frame-preview').hidden=false;$('frame-wrap').hidden=!image;
+ if(!image){for(const id of ['frame-image','frame-large'])$(id).removeAttribute('src');$('frame-label').textContent=c?`Command #${c.id}`:'Final output';
+  $('frame-caption').textContent=empty?'This DRAW emitted no quads; no instruction image.':images?.reason||'Frame images were not saved in this report.';return;}
  $('frame-label').textContent=c?`Command #${c.id} · completion`:'Final output';
  for(const id of ['frame-image','frame-large'])$(id).src=image.src;
- $('frame-caption').textContent=`${stamp(image.cycle)} ${unit} · target 0x${image.target_base_bytes.toString(16)} · ${image.format===1?'linear ':''}RGB565. ${c?'Later command writes excluded.':'Includes valid cache contents.'}${image.target_epoch===null?' '+image.binding+'.':''}`;
+ $('frame-caption').textContent=`${stamp(image.cycle)} ${unit} · target 0x${image.target_base_bytes.toString(16)} · ${image.preview?.encoding==='srgb'?'Display1 sRGB preview · ':''}RGB565 · ${image.preview?.capture_format_known===false?'capture format unspecified (stored '+image.format+')':'capture format '+image.format}. ${c?'Later command writes excluded.':'Includes valid cache contents.'}${image.target_epoch===null?' '+image.binding+'.':''}`;
+}
+function memoryRangeText(a,b){
+ const m=memoryView.interval(a,b);
+ if(!m.available)return `Memory timing unavailable · ${m.reason}`;
+ if(m.empty)return 'Empty interval · 0 transferred bytes; no duration for state means';
+ const f=n=>Number.isInteger(n)?String(n):n.toFixed(3);
+ return `${m.coverage.partial?'Known memory interval ['+m.coverage.a+', '+m.coverage.b+'); remainder unknown\n':''}Actual read ${m.read} B · write ${m.write} B\nAccepted requests ${m.requests}: read ${m.requestedRead} B / write ${m.requestedWrite} B (requested, not transferred)\nOutstanding mean ${f(m.outstanding.mean)} / peak ${m.outstanding.peak} · without-data wait ${f(m.waiting.cycles)} link-cycles · write-terminal wait ${f(m.terminal.cycles)} link-cycles\nRequest backpressure ${m.backpressure?f(m.backpressure.cycles)+' link-cycles'+(m.backpressure.coverage.partial?' in ['+m.backpressure.coverage.a+', '+m.backpressure.coverage.b+'); remainder unknown':''):'unavailable outside saved valid/ready samples'}`;
+}
+function activeRange(){
+ const c=cmd.get(selected);
+ if(statsSource==='draw'&&c?.opcode===3){const [a,b]=bounds(c);return {a:Math.floor(a),b:Math.ceil(b),selected:true,source:'draw',label:`DRAW #${c.id}`};}
+ if(statsSource==='frame')return {a:D.start,b:D.end,selected:false,source:'frame',label:'Full frame'};
+ return {a:lo,b:hi,selected:rangeSelected,source:'range',label:rangeSelected?'Selected':'Full frame'};
+}
+function memoryRangeStats(a,b){
+ const m=memoryView.interval(a,b),width=D.memory?.summary?.peak_window_cycles??256;
+ if(!m.available)return {...m,a,b,peakWindow:width};
+ const complete=m.empty||!m.coverage.partial,duration=b-a;
+ const rate=bytes=>complete&&duration>0?bytes*D.clock_hz/duration:null;
+ const peak=complete?memoryView.peakBytes(a,b,width):null;
+ return {...m,a,b,complete,averageRead:rate(m.read),averageWrite:rate(m.write),averageTotal:rate(m.read+m.write),peak:peak===null?null:peak*D.clock_hz/width,peakWindow:width};
 }
 function memoryOverview(){
- const section=$('gpu-memory-summary'),m=D.memory;
- if(!m?.available){section.innerHTML='<p class="quiet">GPU memory traffic unavailable for this capture.</p>';return;}
- const s=m.summary,rate=n=>n===null?'—':(n/1e6).toFixed(2)+' MB/s',count=n=>n.toLocaleString();
- section.innerHTML=`<dl class="gpu-memory-metrics"><div><dt>GPU read bytes</dt><dd>${count(s.read_wire_bytes)} B</dd></div><div><dt>GPU write bytes</dt><dd>${count(s.write_wire_bytes)} B</dd></div>
- <div><dt>Average read / write</dt><dd>${rate(s.average_read_bytes_per_second)} / ${rate(s.average_write_bytes_per_second)}</dd></div>
- <div><dt>Average total</dt><dd>${rate(s.average_wire_bytes_per_second)}</dd></div><div><dt>Peak · ${s.peak_window_cycles} cycles</dt><dd>${rate(s.peak_wire_bytes_per_second)}</dd></div></dl>
- <p class="note">Full capture: ${stamp(s.start)} – ${stamp(s.end)} ${unit}. Accepted 64-bit payload beats at GPU RO, framebuffer-read and framebuffer-write interfaces, counted once (8 bytes/beat); requests and completion acknowledgements add no bytes. Excludes CPU and Display traffic. Includes transferred masked/error beats, not just useful bytes. Rates use the full captured interval at ${(m.clock_hz/1e6).toFixed(0)} MHz; peak needs a full ${s.peak_window_cycles}-cycle window. RTL simulation${m.complete?'':' · incomplete'}; physical SDRAM utilization and board bandwidth are unmeasured.</p>`;
+ const section=$('gpu-memory-summary'),report=D.memory,{a,b,label,source}=activeRange(),s=memoryRangeStats(a,b);
+ section.dataset.rangeStart=String(a);section.dataset.rangeEnd=String(b);section.dataset.rangeSource=source;
+ const rate=n=>Number.isFinite(n)?(n/1e6).toFixed(2)+' MB/s':'—',count=n=>Number.isFinite(n)?n.toLocaleString():'—';
+ const bytes=n=>s.available?count(n)+' B'+(s.complete?'':' known'):'Unknown';
+ const average=n=>s.available&&s.complete?rate(n):'Unknown';
+ const reference=report?.available?`Full capture reference: read ${count(report.summary.read_wire_bytes)} B · write ${count(report.summary.write_wire_bytes)} B · average total ${rate(report.summary.average_wire_bytes_per_second)} · peak ${rate(report.summary.peak_wire_bytes_per_second)}.`:'';
+ section.innerHTML=`<p class="mono">${label} cycles [${a}, ${b})</p>
+ <dl class="gpu-memory-metrics"><div><dt>GPU read bytes</dt><dd>${bytes(s.read)}</dd></div><div><dt>GPU write bytes</dt><dd>${bytes(s.write)}</dd></div>
+ <div><dt>Average read / write</dt><dd>${average(s.averageRead)} / ${average(s.averageWrite)}</dd></div>
+ <div><dt>Average total</dt><dd>${average(s.averageTotal)}</dd></div><div><dt>Peak · ${s.peakWindow} cycles</dt><dd>${s.available&&s.complete?rate(s.peak):'Unknown'}</dd></div></dl>
+ <p class="mono">${escape(memoryRangeText(a,b)).replaceAll('\n',' · ')}</p>
+ <p class="note">${s.available?(s.empty?'Empty interval; rates have no duration.':s.complete?'Rates use this entire selected interval. Peak requires a full window within it.':'Only the stated saved interval is known; selected-range rates and peak are unknown.'):'Exact range statistics are unavailable; no traffic is estimated.'} Accepted 64-bit GPU payloads count once (8 bytes/beat), including transferred masked/error beats. Requests and completion acknowledgements add no bytes. Excludes CPU and Display. Physical SDRAM utilization and board bandwidth are unmeasured.</p>
+ <p class="note">${reference}</p>`;
 }
 
 function detail(){const c=cmd.get(selected);frameDetail(c);memoryOverview();if(!c){$('detail').innerHTML='<h3>Session · independent views</h3><p>Select an instruction to inspect its wall time, waits and asynchronous work. DRAW rows retain their own DMA and final quad even across later commands.</p><dl><dt>Session</dt><dd>'+duration(D.end)+'</dd><dt>First GPU submit</dt><dd>'+duration(D.submit)+'</dd><dt>GPU submission time</dt><dd>'+duration(D.submissions.reduce((n,s)=>n+(s.end??D.end)-s.start,0))+'</dd><dt>Commands / meshlets</dt><dd>'+D.commands.length+' / '+D.meshlets.length+'</dd></dl><p>GPU submissions: '+D.submissions.map(s=>'CB '+s.id+' / F'+(s.frame_id??'?')+' '+escape(s.name)).join(' · ')+'</p><p>CPU spans (may overlap GPU submissions)</p><table><tbody>'+D.cpu.map(s=>`<tr><td>F${s.frame_id??'?'} · ${escape(s.name??('CPU span '+s.id))}${s.partial?' (cropped)':''}</td><td>${duration(s.end-s.start)}</td></tr>`).join('')+'</tbody></table>';return;}
@@ -153,20 +260,36 @@ if(c.waits.length){let kinds=[...new Set(c.waits.map(w=>w[2]))];out+='<p>Observe
 if(c.dependencies.length){out+='<p>Wait dependencies</p>';for(const dep of c.dependencies)out+=`<p class="mono">${escape(dep.kind)}<br>${dep.pc===null?'':`CB +0x${dep.pc.toString(16)} · `}${duration(dep.time)}</p>`;}
 for(const jid of c.jobs){const j=jobs.get(jid);out+=`<dl><dt>DMA ${j.mesh?'meshlet':'local'} job</dt><dd>#${jid}</dd><dt>Accept → true LAST</dt><dd>${j.end===null?'live':duration(j.end-j.start)}</dd><dt>Read bytes</dt><dd>${j.transactions.reduce((n,t)=>n+t.bytes,0)}</dd><dt>Source (halfword)</dt><dd class="mono">0x${j.source.toString(16)}</dd></dl>`;}
 $('detail').innerHTML=out;}
-function selectRow(row){selected=row?.c?.id??null;$('instruction').value=selected===null?'':String(selected);detail();drawCommands();drawLoad();}
+function selectRow(row){selected=row?.c?.id??null;statsSource=row?.c?.opcode===3?'draw':rangeSelected?'view':'frame';$('instruction').value=selected===null?'':String(selected);detail();drawCommands();drawLoad();rangeDetail();}
 function cycleFrom(canvas,e){const rect=canvas.getBoundingClientRect(),L=left(),R=rect.width-12;return lo+(e.clientX-rect.left-L)/(R-L)*(hi-lo);}
+function renderedBin(t){const k=binIndex(t,loadBins.lo,loadBins.dt,loadBins.n);return {k,a:loadBins.lo+k*loadBins.dt,b:k+1===loadBins.n?loadBins.hi:loadBins.lo+(k+1)*loadBins.dt};}
 function binStats(d,t){
- if(d.kind==='binary'&&loadBins.binaryExact){const a=Math.floor(t),v=valueAt(D.tracks[d.key],a);return {a,b:a+1,mean:v,peak:v,exact:true};}
- const k=Math.max(0,Math.min(loadBins.n-1,Math.floor((t-loadBins.lo)/loadBins.dt))),s=loadBins.stats.get(d.key);
- return {a:loadBins.lo+k*loadBins.dt,b:Math.min(loadBins.hi,loadBins.lo+(k+1)*loadBins.dt),mean:s.mean[k],peak:s.peak[k],exact:false};
+ if(d.kind==='binary'&&loadBins.binaryExact){const a=Math.floor(t),v=valueAt(D.tracks[d.key],a);return {a,b:a+1,mean:v,peak:v,exact:true,available:true};}
+ const {k,a,b}=renderedBin(t),s=loadBins.stats.get(d.key);
+ const coverage=d.memory?memoryView.coverage(d,a,b):null;
+ if(d.memory&&!coverage)return {a,b,available:false,reason:d.available?`Outside saved samples [${d.coverage[0]}, ${d.coverage[1]})`:d.reason};
+ return {a,b,mean:s.mean[k],peak:s.peak[k],exact:false,available:true,coverage};
 }
 function statText(d,s){const width=s.b-s.a;
+ if(s.available===false)return `Unavailable · ${s.reason}`;
+ const known=s.coverage?.partial?`Known [${s.coverage.a}, ${s.coverage.b}) only; remainder unknown · `:'';
+ if(d.kind==='bytes')return `${known}${s.mean.toLocaleString()} actual bytes in this bin (8 B/full slot)`;
  if(d.kind==='binary')return `${(100*s.mean).toFixed(2)}% occupied · ${(s.mean*width).toFixed(2)} / ${width.toFixed(2)} cycles`;
  if(d.kind==='rate')return `${s.mean.toLocaleString()} accepted events · ${(s.mean*1024/width).toFixed(2)} / 1024 cycles`;
- return `mean ${s.mean.toFixed(3)} · peak ${s.peak}${d.capacity?' / '+d.capacity:''}`;
+ return `${known}mean ${s.mean.toFixed(3)} · peak ${s.peak}${d.capacity?' / '+d.capacity:''}`;
 }
-function showCursor(t){cursor=t;for(const id of ['command-plot','load-plot']){const p=$(id),line=p.querySelector('.guide'),w=p.clientWidth,L=left(),x=L+(t-lo)/(hi-lo)*(w-12-L);line.style.display=t===null||t<lo||t>hi?'none':'block';line.style.left=x+'px';}
-if(t!==null&&t>=lo&&t<=hi&&loadBins){const keys=['dma','vt_owned','t_queue','quad_total','light_tokens','sample_quads','final_wait','final_tokens','rop_contexts'];const sample=binStats(D.metric_defs.find(d=>d.kind==='queue'),t);$('cursor').innerHTML=`Bin cycles [${sample.a.toFixed(2)}, ${sample.b.toFixed(2)})<br>`+keys.map(k=>{const d=D.metric_defs.find(d=>d.key===k);return `${escape(d.label)}: ${statText(d,binStats(d,t))}`;}).join('<br>');}}
+function rangeDetail(){
+ const {a,b,label,source}=activeRange(),section=$('cursor');section.dataset.rangeStart=String(a);section.dataset.rangeEnd=String(b);section.dataset.rangeSource=source;
+ const keys=['dma','vt_owned','t_queue','quad_total','light_tokens','sample_quads','final_wait','final_tokens','rop_contexts'];
+ section.innerHTML=`${label} cycles [${a}, ${b})<br>`+keys.map(k=>{
+  const d=D.metric_defs.find(d=>d.key===k),x=Math.max(a,D.sample_start??D.start),y=Math.min(b,D.sample_end??D.end);
+  if(!d)return '';
+  if(y<=x)return `${escape(d.label)}: unavailable outside saved samples`;
+  const v=aggregate(D.tracks[k],d.kind,x,y,1),coverage={a:x,b:y,partial:x>a||y<b};
+  return `${escape(d.label)}: ${statText(d,{a:x,b:y,mean:v.mean[0],peak:v.peak[0],exact:false,available:true,coverage})}`;
+ }).filter(Boolean).join('<br>');
+}
+function showCursor(t){cursor=t;for(const id of ['command-plot','load-plot']){const p=$(id),line=p.querySelector('.guide'),w=p.clientWidth,L=left(),x=L+(t-lo)/(hi-lo)*(w-12-L);line.style.display=t===null||t<lo||t>hi?'none':'block';line.style.left=x+'px';}}
 function hitRow(e){const rect=$('commands').getBoundingClientRect(),y=e.clientY-rect.top;return rows.find(r=>y>=r.y&&y<r.y+r.height);}
 function tip(e,text){const el=$('tooltip');el.textContent=text;el.style.display='block';el.style.left=Math.min(innerWidth-350,Math.max(8,e.clientX+12))+'px';el.style.top=Math.min(innerHeight-el.offsetHeight-10,e.clientY+15)+'px';}
 function beginPan(canvas,e){e.preventDefault();suppressClick=false;const scroller=$(canvas.id==='commands'?'command-scroll':'load-scroll');pan={pointer:e.pointerId,x:e.clientX,y:e.clientY,lo,hi,width:canvas.clientWidth-left()-12,scroller,scrollTop:scroller.scrollTop};canvas.style.cursor='grabbing';canvas.setPointerCapture(e.pointerId);$('tooltip').style.display='none';}
@@ -179,24 +302,24 @@ function inspectPointer(canvas,id,e){
  if(id==='commands'&&e.clientX<canvas.getBoundingClientRect().left+left()){showCursor(null);const row=hitRow(e);if(row?.c){const {c,m}=row;tip(e,`${row.label}\nExecute ${duration(c.execute)} → release ${duration(c.end)}\n${m?.last_quad?'Last quad '+duration(m.last_quad.end):'Instruction '+duration(c.end-c.execute)}`);}else $('tooltip').style.display='none';return;}
  const t=cycleFrom(canvas,e);if(t<lo||t>hi){showCursor(null);$('tooltip').style.display='none';return;}showCursor(t);
  if(id==='commands')tip(e,aliveText(t));
- else{const rect=canvas.getBoundingClientRect(),i=Math.floor((e.clientY-rect.top)/metricHeight),d=D.metric_defs[i];if(d){const s=binStats(d,t);tip(e,`${d.label}\n${s.exact?'Exact cycle':'Rendered bin'} [${s.a.toFixed(2)}, ${s.b.toFixed(2)})\n${duration(s.b-s.a)}\n${statText(d,s)}`);}}
+ else{const rect=canvas.getBoundingClientRect(),i=Math.floor((e.clientY-rect.top)/metricHeight),d=loadMetrics[i];if(d){const s=binStats(d,t),m=renderedBin(t);tip(e,`${d.label}\n${s.exact?'Exact cycle':'Rendered bin'} [${s.a.toFixed(2)}, ${s.b.toFixed(2)})\n${duration(s.b-s.a)}\n${statText(d,s)}\nMemory shared bin [${m.a.toFixed(2)}, ${m.b.toFixed(2)})\n${memoryRangeText(m.a,m.b)}`);}}
 }
 for(const id of ['commands','load']){
  const canvas=$(id);
  if(id==='commands')canvas.addEventListener('contextmenu',e=>{e.preventDefault();lastHover=null;showCursor(null);$('tooltip').style.display='none';selectRow(null);fitRange(D.start,D.end);});
  canvas.addEventListener('auxclick',e=>{if(e.button===1)e.preventDefault();});
- canvas.addEventListener('wheel',e=>{lastHover={id,clientX:e.clientX,clientY:e.clientY};if(!e.ctrlKey)return;if(e.clientX<canvas.getBoundingClientRect().left+left())return;e.preventDefault();const t=cycleFrom(canvas,e),f=Math.exp(e.deltaY*.002),w=Math.max(64,Math.min(D.end-D.start,(hi-lo)*f)),a=t-(t-lo)/(hi-lo)*w;fitRange(a,a+w);inspectPointer(canvas,id,e);},{passive:false});
+ canvas.addEventListener('wheel',e=>{lastHover={id,clientX:e.clientX,clientY:e.clientY};if(!e.ctrlKey)return;if(e.clientX<canvas.getBoundingClientRect().left+left())return;e.preventDefault();const t=cycleFrom(canvas,e),f=Math.exp(e.deltaY*.002),w=Math.max(64,Math.min(D.end-D.start,(hi-lo)*f)),a=t-(t-lo)/(hi-lo)*w;fitRange(a,a+w,statsSource==='draw');inspectPointer(canvas,id,e);},{passive:false});
  canvas.addEventListener('pointerdown',e=>{if(e.button===1||(e.button===0&&e.shiftKey))beginPan(canvas,e);else suppressClick=false;});
  for(const event of ['pointerup','pointercancel','lostpointercapture'])canvas.addEventListener(event,e=>endDrag(canvas,e));
  canvas.addEventListener('pointermove',e=>{
   lastHover={id,clientX:e.clientX,clientY:e.clientY};
-  if(pan&&pan.pointer===e.pointerId){if(Math.hypot(e.clientX-pan.x,e.clientY-pan.y)>3)suppressClick=true;const dt=-(e.clientX-pan.x)/pan.width*(pan.hi-pan.lo);if(Math.abs(lo-pan.lo-dt)>1e-8)fitRange(pan.lo+dt,pan.hi+dt);pan.scroller.scrollTop=Math.max(0,pan.scrollTop-(e.clientY-pan.y));return;}
+  if(pan&&pan.pointer===e.pointerId){if(Math.hypot(e.clientX-pan.x,e.clientY-pan.y)>3)suppressClick=true;const dt=-(e.clientX-pan.x)/pan.width*(pan.hi-pan.lo);if(Math.abs(lo-pan.lo-dt)>1e-8)fitRange(pan.lo+dt,pan.hi+dt,statsSource==='draw');pan.scroller.scrollTop=Math.max(0,pan.scrollTop-(e.clientY-pan.y));return;}
   inspectPointer(canvas,id,e);
  });
  canvas.addEventListener('pointerleave',()=>{$('tooltip').style.display='none';if(!pan){lastHover=null;showCursor(null);}});
  const scroller=$(id==='commands'?'command-scroll':'load-scroll');scroller.style.overscrollBehavior='contain';scroller.addEventListener('scroll',()=>{if(!pan&&lastHover?.id===id)inspectPointer(canvas,id,lastHover);});
 }
-$('commands').addEventListener('click',e=>{if(e.button===0&&!e.shiftKey&&!suppressClick)selectRow(hitRow(e));});$('commands').addEventListener('dblclick',e=>{if(e.button!==0||suppressClick)return;const row=hitRow(e);if(row?.c){const [a,b]=bounds(row.c),p=(b-a)*.08;fitRange(a-p,b+p);}});
+$('commands').addEventListener('click',e=>{if(e.button===0&&!e.shiftKey&&!suppressClick)selectRow(hitRow(e));});$('commands').addEventListener('dblclick',e=>{if(e.button!==0||suppressClick)return;const row=hitRow(e);if(row?.c){const [a,b]=bounds(row.c),p=(b-a)*.08;fitRange(a-p,b+p,row.c.opcode===3);}});
 function overviewTime(e){const canvas=$('overview'),rect=canvas.getBoundingClientRect();return D.start+(e.clientX-rect.left-left())/(rect.width-12-left())*(D.end-D.start);}
 const overview=$('overview');overview.addEventListener('auxclick',e=>{if(e.button===1)e.preventDefault();});
 overview.addEventListener('pointerdown',e=>{
@@ -214,7 +337,7 @@ overview.addEventListener('pointermove',e=>{const t=overviewTime(e);if(!brush){c
 });
 overview.addEventListener('dblclick',e=>{if(e.button!==0)return;const t=overviewTime(e);if(!rangeSelected||t<lo||t>hi)fitRange(D.start,D.end);});
 for(const event of ['pointerup','pointercancel','lostpointercapture'])overview.addEventListener(event,e=>endDrag(overview,e));
-$('fit').addEventListener('click',()=>fitRange(D.start,D.end));$('focus').addEventListener('click',()=>{const c=cmd.get(selected);if(c){const [a,b]=bounds(c),p=(b-a)*.08;fitRange(a-p,b+p);}});$('unit').addEventListener('change',()=>{unit=$('unit').value;detail();render();});
+$('fit').addEventListener('click',()=>fitRange(D.start,D.end));$('focus').addEventListener('click',()=>{const c=cmd.get(selected);if(c){const [a,b]=bounds(c),p=(b-a)*.08;fitRange(a-p,b+p,c.opcode===3);}});$('unit').addEventListener('change',()=>{unit=$('unit').value;detail();render();});
 $('instruction').addEventListener('change',()=>{const value=$('instruction').value;selectRow(value===''?null:rowOf.get(Number(value)));if(selected!==null)$('command-scroll').scrollTop=Math.max(0,rowOf.get(selected).y-90);});
 const types=[...new Map(D.commands.map(c=>[c.opcode,c.name])).entries()].sort((a,b)=>a[0]-b[0]);
 $('filter-options').innerHTML=types.map(([op,name])=>`<label><input id="filter-type-${op}" type="checkbox" value="${op}" ${visibleOps.has(op)?'checked':''}>${escape(name)} (<span id="filter-type-count-${op}"></span>)</label>`).join('');
@@ -224,7 +347,7 @@ rebuildRows();
 $('identity').textContent=`${D.title} · ${D.submissions.length} CB · ${D.clock_hz/1e6} MHz`;$('status').textContent=D.partial?'PARTIAL TRACE — NOT ACCEPTED':D.provenance?.synthetic?'Synthetic fixture · not a performance measurement':D.provenance?.imported_v1_sha256?'Imported capture · original evidence retained':D.provenance?.preflight?.build_identity_verified===false?'Cold replay · firmware / bitstream unverified':'RTL capture · lifetimes / conservation checked';
 let timer;new ResizeObserver(()=>{clearTimeout(timer);timer=setTimeout(render,80);}).observe(document.querySelector('.main'));
 detail();render();if(selected!==null)$('command-scroll').scrollTop=Math.max(0,rowOf.get(selected).y-90);
-window.gpuProfiler={data:D,getView:()=>({lo,hi,rangeSelected,selected,unit}),focus:id=>{const c=cmd.get(id);if(!c||!rowOf.has(id))return;selectRow(rowOf.get(id));const [a,b]=bounds(c);fitRange(a,b);const row=rowOf.get(id);$('command-scroll').scrollTop=Math.max(0,row.y-80);},fit:()=>fitRange(D.start,D.end)};
+window.gpuProfiler={data:D,getView:()=>({lo,hi,rangeSelected,selected,unit}),focus:id=>{const c=cmd.get(id);if(!c||!rowOf.has(id))return;selectRow(rowOf.get(id));const [a,b]=bounds(c);fitRange(a,b,c.opcode===3);const row=rowOf.get(id);$('command-scroll').scrollTop=Math.max(0,row.y-80);},fit:()=>fitRange(D.start,D.end)};
 }
 </script>
 </body></html>

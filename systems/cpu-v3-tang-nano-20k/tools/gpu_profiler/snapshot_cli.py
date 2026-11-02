@@ -92,6 +92,8 @@ def main():
     receive.add_argument("--receipt", type=Path)
     receive.add_argument("--max-cycles", type=int)
     receive.add_argument("--timeout", type=int)
+    from reporting import image_options
+    image_options(receive, snapshot=False)
     check = commands.add_parser("preflight")
     check.add_argument("snapshot", type=Path)
     check.add_argument("--build", type=Path, required=True)
@@ -109,6 +111,8 @@ def main():
     if args.command == "decode":
         decode_file(args.raw, args.out, abi)
     elif args.command == "receive":
+        if args.require_images and (args.backend == 'sim' or args.rtl is None):
+            raise SnapshotError('--require-images needs automatic RTL replay with command history')
         if args.backend == 'rtl' and args.rtl is not None and (args.max_cycles is None or args.timeout is None or args.max_cycles <= 0 or args.timeout <= 0):
             raise SnapshotError("Automatic replay requires explicit --max-cycles and --timeout")
         if args.backend == 'rtl' and args.rtl is None and any(value is not None for value in (args.build, args.receipt, args.max_cycles, args.timeout, args.simulator)):
@@ -125,7 +129,8 @@ def main():
                 run(args.out / "decoded" / attempt["directory"], args.rtl,
                     args.out / "replay" / attempt["directory"], args.max_cycles, args.timeout,
                     abi=abi, build=args.build, receipt=args.receipt, backend=args.backend,
-                    simulator=args.simulator, maximum_work=args.max_work)
+                    simulator=args.simulator, maximum_work=args.max_work, preview=args.preview,
+                    capture_format=args.capture_format, require_images=args.require_images)
     elif args.command == "preflight":
         result = preflight(load_snapshot(args.snapshot, abi), args.build, args.receipt)
         if args.out.exists():

@@ -1,5 +1,5 @@
 """Actual payload accounting at the three 64-bit GPU master interfaces."""
-from collections import deque
+from collections import defaultdict, deque
 import math
 
 LINKS = ('ro', 'fb_read', 'fb_write')
@@ -80,7 +80,66 @@ def summarize(transactions, beats, start, end, clock, ports=(0, 1, 2), tracks=No
                 write_terminal_wait_link_cycles=response_waits, request_backpressure_link_cycles=stalls)
 
 
-def build(events, origin, stop, clock, complete, commands, tracks):
+def temporal_data(transactions, beats, end, tracks, sample_interval, data_observed):
+    """Exact event bytes and sampled states; never allocate burst bytes over time."""
+    if not data_observed:
+        return dict(available=False, reason='No MEM_DATA events saved; exact transfer timing is unavailable')
+    slots = defaultdict(lambda: [0, 0])
+    payload = set()
+    changes = defaultdict(lambda: [0, 0, 0, 0])
+    boundaries = {0, end}
+    for beat in beats:
+        t, port = beat['cycle'], beat['port']
+        slots[t][int(port == 2)] += beat['wire_bytes']
+        payload.add((t, port))
+        boundaries.update((t, min(t + 1, end)))
+    for tx in transactions:
+        changes[tx['start']][tx['port']] += 1
+        boundaries.add(tx['start'])
+        if tx['end'] is not None:
+            changes[tx['end']][tx['port']] -= 1
+            boundaries.add(tx['end'])
+        if tx['port'] == 2 and tx['last_data'] is not None and tx['beats'] == tx['expected_beats']:
+            a = tx['last_data'] + 1
+            changes[a][3] += 1
+            boundaries.add(a)
+            if tx['end'] is not None:
+                changes[tx['end']][3] -= 1
+    states = dict(outstanding=[], waiting=[], terminal_wait=[])
+    live = [0, 0, 0, 0]
+    for t in sorted(boundaries):
+        live = [a + b for a, b in zip(live, changes[t])]
+        if t >= end:
+            continue
+        values = dict(outstanding=sum(live[:3]),
+                      waiting=sum(live[p] > 0 and (t, p) not in payload for p in range(3)),
+                      terminal_wait=int(live[3] > 0))
+        for key, value in values.items():
+            if not states[key] or states[key][-1][1] != value:
+                states[key].append([t, value])
+    backpressure = dict(available=False, reason='Request valid/ready samples are not saved')
+    names = ('ro_wait', 'fb_read_wait', 'fb_write_wait')
+    if sample_interval is not None and all(tracks.get(k) for k in names):
+        a, b = max(0, sample_interval[0]), min(end, sample_interval[1])
+        if a < b:
+            delta = defaultdict(int)
+            for name in names:
+                before = 0
+                for t, value in tracks[name]:
+                    delta[t] += value - before
+                    before = value
+            value, points = 0, []
+            for t in sorted(set(delta) | {a}):
+                value += delta[t]
+                if a <= t < b and (not points or points[-1][1] != value):
+                    points.append([t, value])
+            backpressure = dict(available=True, start=a, end=b, track=points)
+    return dict(available=True, version=1, start=0, end=end,
+                data=[[t, *values] for t, values in sorted(slots.items())],
+                states=states, backpressure=backpressure)
+
+
+def build(events, origin, stop, clock, complete, commands, tracks, sample_interval=None):
     if not events.get('MEM_REQUEST'):
         return dict(available=False, reason='Capture has no master-interface events')
     timeline = []
@@ -143,6 +202,8 @@ def build(events, origin, stop, clock, complete, commands, tracks):
                 clock_hz=clock, clock_domain='GPU logic', byte_enable='No byte-enable field; full eight-byte payload slots',
                 utilization_denominator='8 bytes/link/logic-cycle; aggregate sums three independent link capacities',
                 complete=complete, transactions=transactions, summary=scope(0, end),
+                timeline=temporal_data(transactions, beats, end, tracks, sample_interval,
+                                       bool(events.get('MEM_DATA'))),
                 commands={str(c['id']): scope(c['start'], c.get('complete_cycle') or end) for c in commands})
 
 
@@ -177,3 +238,49 @@ def validate(report, clock, command_ids, end):
         for field in ('wire_bytes', 'effective_bytes', 'data_beats', 'issued_transactions', 'completed_transactions'):
             if any(sum(s[field] for s in scope[group]) != scope[field] for group in ('links', 'sources')):
                 raise ValueError('Memory totals do not conserve link/source payloads')
+    timeline = report.get('timeline')
+    if timeline is None:  # Previously saved profiles did not retain beat cycles.
+        return
+    if type(timeline.get('available')) is not bool:
+        raise ValueError('Invalid memory timeline availability')
+    if not timeline['available']:
+        if not isinstance(timeline.get('reason'), str):
+            raise ValueError('Unavailable memory timeline needs a reason')
+        return
+    if timeline.get('version') != 1 or timeline.get('start') != 0 or timeline.get('end') != report['summary']['end']:
+        raise ValueError('Memory timeline range/version mismatch')
+    previous, totals = -1, [0, 0]
+    for row in timeline['data']:
+        if (len(row) != 3 or any(type(v) is not int for v in row) or not previous < row[0] < timeline['end']
+                or row[1] not in (0, 8, 16) or row[2] not in (0, 8) or row[1] + row[2] == 0):
+            raise ValueError('Invalid memory data timeline')
+        previous = row[0]
+        totals = [totals[i] + row[i + 1] for i in range(2)]
+    if totals != [report['summary']['read_wire_bytes'], report['summary']['write_wire_bytes']]:
+        raise ValueError('Memory timeline bytes do not conserve summary totals')
+    def state(points, a, b, maximum=None):
+        previous = a - 1
+        if not points or points[0][0] != a:
+            raise ValueError('Memory state timeline needs its first sample')
+        for t, value in points:
+            if (type(t) is not int or type(value) is not int or not previous < t < b or value < 0
+                    or (maximum is not None and value > maximum)):
+                raise ValueError('Invalid memory state timeline')
+            previous = t
+        return sum(value * ((points[i + 1][0] if i + 1 < len(points) else b) - t)
+                   for i, (t, value) in enumerate(points))
+    for name, cap in [('outstanding', None), ('waiting', 3), ('terminal_wait', 1)]:
+        integral = state(timeline['states'][name], 0, timeline['end'], cap)
+        expected = (sum((t['end'] if t['end'] is not None else timeline['end']) - t['start']
+                        for t in report['transactions']) if name == 'outstanding' else
+                    report['summary']['outstanding_without_data_link_cycles'] if name == 'waiting' else
+                    report['summary']['write_terminal_wait_link_cycles'])
+        if integral != expected:
+            raise ValueError('Memory state timeline does not conserve captured link/request cycles')
+    bp = timeline['backpressure']
+    if type(bp.get('available')) is not bool:
+        raise ValueError('Invalid backpressure availability')
+    if bp['available']:
+        if not 0 <= bp['start'] < bp['end'] <= timeline['end']:
+            raise ValueError('Invalid backpressure sample interval')
+        state(bp['track'], bp['start'], bp['end'], 3)

@@ -324,16 +324,74 @@ no downstream transfer is counted again.
 Sources follow the actual RO arbiter owner and DMA job kind, or the direct CLEAR
 mux. Shared framebuffer-cache traffic retains its component identity; it is not
 guessed to belong to whichever DRAW/UI/COPY command currently executes. Unknown
-sources remain unknown. The GPU Activity & Memory Throughput pane shows full-capture
-GPU read/write wire-byte totals, average read/write and combined rates, and the
-256-cycle peak combined rate. Command selection and filters do not change these
-totals. Each accepted read or write payload beat contributes eight bytes once;
-requests and terminal acknowledgements contribute no bytes. CPU/Display traffic
-is excluded. Masked/error beats still occupy wire bytes; these are not useful-byte
-or physical SDRAM throughput claims. Per-command interval accounting remains in
-the report data, without a second Memory inspector. Request backpressure, outstanding-without-data and write-terminal waits
-are link-cycle counts and can overlap. Older captures without memory events
-display unavailable statistics.
+sources remain unknown. The right inspector has four native, initially open
+collapsible groups: Inspect Instruction plus detail, Legend plus its two notes,
+Bin cycles, and GPU memory summary. The frame preview is above these groups and
+explains missing saved images or zero-own-quad DRAWs. Redraw updates group bodies,
+retaining native keyboard operation and each group's collapsed state.
+
+Bin cycles and the memory summary share one active time range. A selected DRAW
+uses `bounds(c)`: command start or earlier associated DMA through proven command/
+job completion and last-quad completion. Viewport focus padding and subsequent
+pan/zoom do not expand DRAW statistics. An explicit overview range takes
+precedence; clearing restores the full frame. Non-DRAW selection uses the time
+range. View range start/duration round to integer cycles; DRAW bounds round
+outward to preserve the complete lifetime. Hover tooltips keep the original chart bin
+semantics and do not replace inspector range statistics. Read/write totals query
+raw saved event timestamps with half-open boundaries. Average read/write/combined
+rates use that interval's duration and clock. Peak combined throughput uses a
+complete 256-cycle sliding window within the selected range; shorter windows
+have no peak. Partial coverage labels known counts and unknown full-range rates;
+empty ranges have zero bytes and no rate. Old captures without exact memory events
+cannot supply selected-range estimates. Full-capture totals remain a separately
+labelled reference.
+
+Each accepted payload beat contributes eight bytes once; requests and terminal
+acknowledgements contribute no bytes. CPU/Display traffic is excluded. Masked/error
+beats still occupy wire bytes, not useful bytes or physical SDRAM utilization.
+Backpressure, outstanding-without-data and write-terminal waits count link-cycles
+and may overlap; unavailable sample coverage remains explicit. Histograms and wait
+rows stay in the existing GPU pane on its shared axis, with no separate Memory
+panel. On narrow screens the inspector stacks below the plots.
+
+Saved display previews default to the same 64-entry `LINEAR6_TO_SRGB8` table as
+`display.rs` and Display1 RTL. Red/blue 5-bit values first replicate to 6 bits;
+green 6-bit values index directly. Gamma is applied once before PNG compression
+and an sRGB tag identifies the encoded result; the viewer directly embeds it.
+Image metadata keeps the captured `format`, raw `plane_sha256`, and separately
+records preview encoding, display-format override and LUT/source identities.
+Presentation policy is separate from captured format. The CLI defaults to
+`--preview display1 --capture-format unknown`; an unspecified stored zero remains
+unknown. Explicit diagnostic `raw` bypasses the LUT, and `capture` uses it only
+when the caller declares the field known and its value is 1. Raw color/depth
+buffers remain authoritative and unchanged.
+
+The shared reporting backend serves `profiler.py build/capture` and RTL replay.
+Replay saves its frozen snapshot and automatically produces command PNGs and a
+self-contained HTML report. Offline `build --snapshot GPS1_DIRECTORY` regenerates
+history from original trace bytes: it verifies snapshot identity, reproduces and
+compares all four seed files with the production generator, checks the command
+stream and binds separate raw outputs to the identical trace/source capture.
+Historical final color and depth hashes must match the same-run raw outputs.
+`report-inputs.json` records dependency hashes, preview policy and LUT identity;
+`--binding` checks that record on repeat builds.
+The record names external dependencies; rebuilding requires those files.
+Explicit capture, `--snapshot` and `--raw` paths can relocate them while the
+original `--binding` continues checking their content hashes.
+`render` validates and exports
+the embedded PNG bytes directly, with no second conversion. Timing-only captures
+remain supported with explicit images-unavailable reasons; `--require-images`
+rejects incomplete image reports. SIM remains final-result-only.
+
+New/empty report outputs are the default. `build` and profiling `render` accept
+`--replace-report` for a stable generated report entry. A verified sibling stage
+is published only after the prior directory has been archived and its hashes
+checked. The new `report-replacement.json` maps original paths to the archive and
+records previous file hashes. Unknown content, reparse points and mismatched
+generated HTML/profile data refuse replacement. Failed staging preserves the
+published entry; old archives and external historical image folders remain.
+The preview wrapper has an explicit author hidden rule, and no-image/empty-DRAW
+transitions remove both image sources while keeping their explanations visible.
 
 `commands[].complete_cycle` includes every associated meshlet stage and ROP
 commit, plus owned DMA completion. `end` retains control release. Partial
@@ -352,3 +410,33 @@ The viewer embeds validated JSON safely, has no CDN or server dependency and
 formats all time using `clock_hz`. CSVs preserve submission IDs and command IDs
 alongside PC. Raw capture, generated HTML/CSV and large replay data belong in
 `target`; the small synthetic regression fixture lives beside the tool tests.
+
+### Optional exact transfer timeline
+
+Profile v2 may contain `memory.timeline` version1. `available:true` includes its
+half-open `start/end`, sparse `data` rows `[cycle,read_wire_bytes,write_wire_bytes]`,
+and RLE `states.outstanding`, `states.waiting`, `states.terminal_wait`. Rows merge
+concurrent master slots: reads0/8/16B and writes0/8B, with each64-bit
+GPU-master payload slot counted once. Timeline bytes must equal existing summary totals;
+state integrals must equal captured request/link-cycle totals. No byte-enable
+field or physical SDRAM pin measurement is introduced.
+
+`backpressure` has independent availability, start/end and an RLE `track`, because
+valid/not-ready is observed by load samples rather than request acceptance events.
+Missing samples remain unknown, including uncovered beginning/end fragments.
+Outstanding means accepted/uncompleted request inventory; waiting means the
+number of live links without a data slot during a sample. Terminal write wait
+covers complete data delivery until acknowledgement. None is inferred from zero
+throughput, and these waits may overlap.
+
+The same activity canvas adds actual read/write bytes/bin and request/wait rows.
+All use the shared time coordinate and adaptive bins. Hover distinguishes nominal
+accepted-request bytes from transferred bytes; a binary cycle detail still shows
+the common memory bin. Selection/zoom sums exact timestamped bytes in `[a,b)`;
+RLE states integrate overlap of `[cycle,cycle+1)` and may have fractional covered
+cycles. Partial bins display known bytes/state means and mark unknown coverage,
+rather than discarding a bucket or filling missing samples with zero. Legacy
+profiles without the optional timeline still load with temporal rows unavailable;
+their valid full-capture totals are retained. Saved MEM events can reconstruct
+this optional data without a new hardware run. Provenance and cold/warm labels
+are preserved, and no second Memory panel or frontend is created.

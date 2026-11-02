@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "hardware/vendor/go
 from stream_contract import load_contract
 from capture import run as capture_run
 from identity import digest, input_preflight, load_build, preflight
-from model import build_capture, write_report
-from images import preview, build as build_images
+from model import build_capture
+from reporting import build_report, image_options
+from images import preview  # Existing direct raw-plane export API.
 from snapshot import Abi, DEFAULT_ABI, SnapshotError, load_snapshot
 from layout import COLUMN, COMMAND_ABI, get_layout, header_layout, capture_description
 
@@ -113,6 +114,7 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
     if not primitive.is_file():
         raise SnapshotError("Required vendor primitive model is missing")
     seed_files(capture, output)
+    capture.save(output / 'snapshot')
     template = Path(__file__).with_name("replay_tb.v").read_text(encoding="utf-8")
     header = capture.header
     for name, value in [("COUNT", header["count_minus_one"]), ("BASE_LINE", header["cb_base"] // 128),
@@ -133,6 +135,7 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
                     sources=[dict(path=str(p), sha256=digest(p)) for p in sources + [primitive]],
                     inputs={name: str(output / name) for name in ["memory.hex", "valid.hex", "marked.hex", 'writable.hex']},
                     input_sha256=capture.manifest()["input_sha256"], preflight=preflight_result,
+                    report_snapshot='../snapshot',
                     layout=capture_description(header),
                     command_abi=COMMAND_ABI,
                     raw_buffers=buffers,
@@ -148,7 +151,7 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
     return path
 
 
-def execute(capture, manifest_path):
+def execute(capture, manifest_path, *, preview='display1', capture_format='unknown', require_images=False):
     """A stopped/failed backend must never leave a successful replay receipt."""
     validate_command_abi(capture)
     manifest_path = Path(manifest_path)
@@ -156,7 +159,8 @@ def execute(capture, manifest_path):
     if declared.get('command_abi') != capture.header['command_abi']:
         raise SnapshotError('Prepared replay/header command ABI mismatch')
     try:
-        return _execute(capture, manifest_path, declared)
+        return _execute(capture, manifest_path, declared, preview=preview,
+                        capture_format=capture_format, require_images=require_images)
     except Exception as error:
         (Path(manifest_path).parent / 'replay.json').write_text(json.dumps(dict(
             complete=False, input_sha256=capture.manifest()['input_sha256'], error=str(error)
@@ -164,13 +168,13 @@ def execute(capture, manifest_path):
         raise
 
 
-def _execute(capture, manifest_path, declared):
+def _execute(capture, manifest_path, declared, **image_policy):
     output = manifest_path.parent
     capture_run(manifest_path, output / "capture")
-    return _collect(capture, manifest_path, declared)
+    return _collect(capture, manifest_path, declared, **image_policy)
 
 
-def _collect(capture, manifest_path, declared):
+def _collect(capture, manifest_path, declared, *, preview='display1', capture_format='unknown', require_images=False):
     """Check a completed native run; never synthesize a missing completion."""
     output = manifest_path.parent
     profile = build_capture(output / "capture")
@@ -184,8 +188,6 @@ def _collect(capture, manifest_path, declared):
     if any(p.stat().st_size != capture.header["plane_bytes"] for p in [color, depth]):
         raise SnapshotError("Replay has incomplete output planes")
     has_target=capture.header.get('has_target',True)
-    if has_target:
-        preview(color.read_bytes(), output / "color.png", capture.header["target_format"] == 1, layout)
     result = dict(complete=True, input_sha256=capture.manifest()["input_sha256"],
                   cold_submission_cycles=int(match.group(1)), color_sha256=digest(color) if has_target else None,
                   depth_sha256=digest(depth) if has_target else None, has_target=has_target,
@@ -217,8 +219,11 @@ def _collect(capture, manifest_path, declared):
         if allocation[:layout.plane_bytes] != (output / 'capture' / (role + '.bin')).read_bytes():
             raise SnapshotError('Plane and allocation dumps disagree')
         result[role + '_allocation_sha256'] = digest(path)
-    profile['images'] = build_images(capture, profile, output / 'capture/events.txt', output / 'images')
-    write_report(profile, output / 'profile')
+    profile = build_report(output/'capture', output/'profile', snapshot=output/'snapshot', abi=capture.abi,
+                           preview=preview, capture_format=capture_format, require_images=require_images,
+                           image_output=output/'images', _profile=profile)
+    if profile['images']['available']:
+        (output/'color.png').write_bytes((output/'images/final.png').read_bytes())
     result['command_images'] = dict(available=profile['images']['available'],
                                   index=str(output / 'images/index.json') if profile['images']['available'] else None)
     (output / "replay.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -226,9 +231,12 @@ def _collect(capture, manifest_path, declared):
 
 
 def run(snapshot, rtl, out, max_cycles, timeout, *, abi=None, build=None, receipt=None, simulation_source=None,
-        backend='rtl', simulator=None, maximum_work=64_000_000):
+        backend='rtl', simulator=None, maximum_work=64_000_000,
+        preview='display1', capture_format='unknown', require_images=False):
     if backend not in ('rtl', 'sim'):
         raise SnapshotError('Unknown replay backend')
+    if preview not in ('display1', 'raw', 'capture') or capture_format not in ('known', 'unknown'):
+        raise SnapshotError('Unknown replay preview policy or capture-format declaration')
     out = Path(out)
     abi = abi or Abi(DEFAULT_ABI)
     capture = load_snapshot(snapshot, abi)
@@ -239,13 +247,16 @@ def run(snapshot, rtl, out, max_cycles, timeout, *, abi=None, build=None, receip
     else:
         identity = preflight(capture, build, receipt, simulation_source=simulation_source)
     if backend == 'sim':
+        if require_images:
+            raise SnapshotError('Sim backend has final results only; --require-images requires RTL command history')
         if rtl is not None or max_cycles is not None:
             raise SnapshotError('Sim backend does not use RTL exports or cycle bounds')
         from simulator import run as simulate
         identity = dict(identity, policy='Native result simulation; captured reads/writes checked; no profiling',
                         dependency_closure='Static input checks and dynamic native byte access validation')
         return simulate(capture, out, identity, executable=simulator, maximum_work=maximum_work,
-                        timeout=60 if timeout is None else timeout)
+                        timeout=60 if timeout is None else timeout, preview_mode=preview,
+                        capture_format_known=capture_format == 'known')
     if rtl is None or max_cycles is None or timeout is None or max_cycles < 1 or timeout <= 0:
         raise SnapshotError('RTL backend requires --rtl, positive --max-cycles and --timeout')
     rtl = Path(rtl)
@@ -258,7 +269,7 @@ def run(snapshot, rtl, out, max_cycles, timeout, *, abi=None, build=None, receip
         if (rtl / 'layout.json').is_file() and digest(rtl / 'layout.json') not in recorded:
             raise SnapshotError('Replay layout descriptor is not bound to the firmware build')
     path = prepare(capture, rtl, out, max_cycles, timeout, identity)
-    return execute(capture, path)
+    return execute(capture, path, preview=preview, capture_format=capture_format, require_images=require_images)
 
 
 def main():
@@ -276,11 +287,13 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--max-cycles", type=int)
     parser.add_argument("--timeout", type=int)
+    image_options(parser, snapshot=False)
     args = parser.parse_args()
     result = run(args.snapshot, args.rtl, args.out, args.max_cycles, args.timeout,
                          abi=Abi(args.abi), build=args.build, receipt=args.receipt,
                          simulation_source=args.simulation_source, backend=args.backend,
-                         simulator=args.simulator, maximum_work=args.max_work)
+                         simulator=args.simulator, maximum_work=args.max_work, preview=args.preview,
+                         capture_format=args.capture_format, require_images=args.require_images)
     if args.backend == 'sim':
         print(json.dumps(dict(complete=result['complete'], backend='sim', input_sha256=result['input_sha256'],
                               result=str((args.out/'result.json').resolve()), viewer=str((args.out/'profiler.html').resolve())), indent=2))

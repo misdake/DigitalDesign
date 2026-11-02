@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 
-from images import preview
+from images import preview, preview_policy
 from layout import COMMAND_ABI, capture_description, header_layout
 from snapshot import SnapshotError
 
@@ -84,7 +84,8 @@ def seed(capture):
     return memory, access
 
 
-def run(capture, out, identity, *, executable=None, maximum_work=DEFAULT_WORK, timeout=60):
+def run(capture, out, identity, *, executable=None, maximum_work=DEFAULT_WORK, timeout=60,
+        preview_mode='capture', capture_format_known=True):
     if maximum_work < 1 or timeout <= 0:
         raise SnapshotError('Simulator requires positive work and process bounds')
     if capture.header['command_abi'] != COMMAND_ABI:
@@ -140,7 +141,9 @@ def run(capture, out, identity, *, executable=None, maximum_work=DEFAULT_WORK, t
             for role in ('color', 'depth'):
                 result['final'][role] = dict(export(capture.header[role+'_base'], layout.plane_bytes, role+'.bin', role))
             png = out/'color.png'
-            preview((output_dir/'color.bin').read_bytes(), png, capture.header['target_format'] == 1, layout)
+            linear, presentation = preview_policy(preview_mode, capture.header['target_format'], capture_format_known)
+            preview((output_dir/'color.bin').read_bytes(), png, linear, layout)
+            result['final']['color']['preview'] = presentation
             result['final']['color']['image'] = 'data:image/png;base64,'+base64.b64encode(png.read_bytes()).decode()
         for region in capture.ranges:
             if region.flags & capture.abi['WRITE']:

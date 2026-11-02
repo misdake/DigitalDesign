@@ -137,7 +137,8 @@ python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py check --node 
 python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py build systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/tests/fixtures/pingpong --out target/profiler-example
 python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py render path/to/profile.json --out target/profiler-view
 python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py capture path/to/manifest.json --out target/profiler-capture
-python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py build target/profiler-capture
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py build target/replay/capture --snapshot target/replay/snapshot --out target/profiler --require-images
+python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py build target/replay/capture --binding target/profiler/report-inputs.json --out target/profiler --replace-report --require-images
 ```
 
 Open the output directory's `profiler.html`. It embeds the data and works without
@@ -148,6 +149,39 @@ images: final thumbnail by default, hover enlargement and selected-command image
 Right-click instruction flow clears selection/highlight and restores the final
 view; other regions retain the browser menu. Older activity-only captures have
 no image preview. Image observations never add cache flushes or waits.
+
+`capture` automatically builds `OUT/profile/profiler.html` after a successful run;
+add `--snapshot GPS1_DIRECTORY --require-images` for a complete image report.
+RTL replay saves its input snapshot and automatically produces `profile/profiler.html`,
+`images/index.json`, command PNGs and `color.png`. The offline `build` command above
+regenerates the same images from the snapshot, four verified seed files, observer
+trace and same-run raw color/depth, without executing RTL or reading old PNGs.
+`--raw DIRECTORY` supplies raw outputs from a separate copy of that same capture.
+`report-inputs.json` binds trace/source/seed/snapshot/raw file hashes and the actual
+Display1 LUT; `--binding` verifies them on another rebuild.
+This manifest declares external dependencies: keep those files available for a
+rebuild. The HTML and PNG exports are self-contained for viewing. After moving
+inputs, pass their new capture directory and explicit `--snapshot`/`--raw`
+directories together with the original `--binding`; hashes are still checked.
+
+Saved images default to the actual Display1 sRGB conversion before PNG compression.
+`--preview raw` is an explicit diagnostic export; `--preview capture` follows the
+capture field only with `--capture-format known`. The default declaration is
+`unknown`: a stored zero does not prove a color format. Raw planes and their
+capture metadata stay unchanged. `render` saves the validated embedded PNG bytes
+directly and never converts them again. Missing snapshot, image journal or raw
+evidence yields an explicit unavailable reason; `--require-images` refuses such
+a report. The SIM backend remains final-result-only and refuses that strict
+command-history option.
+
+Output directories must be new or empty. `build` and profiling `render` support
+`--replace-report` to update a stable report entry: they first validate a new
+report in a sibling staging directory, archive the previous generated directory,
+verify every archived file hash, then publish at the original path.
+`report-replacement.json` records the original path, archive path and previous
+hashes. Unknown files, links/reparse points or mismatched HTML/profile data refuse
+replacement; a failed rebuild leaves the published report intact. Archives and
+other historical image directories are retained.
 Captures with master-interface events also show full/selected-command memory
 traffic and export `memory-transactions.csv`. The scope is three 64-bit GPU links
 at the declared logic clock. Peak uses 256 cycles; wire/effective bytes, request
@@ -468,9 +502,79 @@ detailed metric.
 The versioned contract is in the
 [system profiler specification](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md).
 
-The GPU Activity & Memory Throughput pane includes full-capture GPU read/write
-wire-byte totals, average read/write/combined throughput and a 256-cycle combined
-peak. It counts accepted payload beats once at the GPU masters, excludes CPU and
-Display, and remains unchanged when selecting a command. It does not measure
-physical SDRAM utilization. Empty DRAWs with zero own quads have no screenshot;
-nonempty DRAW images retain their own final-quad/cache-commit boundary.
+The right inspector has four independently collapsible, initially open groups:
+Inspect Instruction and detail; Legend and its notes; Bin cycles; GPU memory
+summary. The frame preview stays visible above these groups. Missing saved images
+and zero-quad DRAWs show an explanation instead of an unexplained disappearing
+preview. Complete replay reports include the final image and each nonempty
+command image; a timing-only JSON does not manufacture them.
+
+Bin cycles and the main memory numbers use one active half-open cycle range.
+Selecting a DRAW uses its complete existing lifetime, including associated DMA,
+asynchronous jobs and last-quad completion. Focus padding, viewport pan/zoom and
+hover do not enlarge that DRAW accounting range. An explicit overview range
+replaces DRAW accounting; clearing the range restores the full frame. Non-DRAW
+selection retains time-range accounting. View ranges round their actual start
+and duration to native cycles, preserving pan width; DRAW lifetime bounds round
+outward so no work is truncated. Fractional boundaries remain supported by the
+internal exact-event query. Chart hover continues to inspect its rendered bin without replacing
+the right inspector range. Instruction selection and redraw preserve each
+section's collapsed state.
+
+Read/write bytes use exact saved payload-event timestamps, including fractional
+range boundaries. Average rates divide by this range's duration and clock; the
+combined peak uses a complete 256-cycle sliding window entirely inside it.
+Incomplete coverage keeps known byte counts explicitly marked, with unknown
+range rates/peak. Empty ranges have zero bytes and no rate. Legacy timing absence
+stays unavailable; the separately labelled full-capture reference is not selected
+range accounting. CPU/Display are excluded and 64-bit payload beats count once,
+including transferred masked/error beats. These are not physical SDRAM rates.
+Byte histograms and wait rows remain in GPU Activity & Memory Throughput on the
+shared axis. Narrow screens stack the inspector below the plots. Nonempty DRAW
+images retain their own final-quad/cache-commit boundary. For display previews,
+`images.preview(..., linear=True)` consumes the owning Display1 Rust LUT:
+R/B5 expand to6bits by bit replication, G6 indexes directly, then the fixed64-entry
+`LINEAR6_TO_SRGB8` table produces saved sRGB bytes. There is no floating gamma
+substitute or browser-side second conversion. `images.build(...,
+display_preview=True)` explicitly requests this mode for all images in one report;
+it keeps the captured target format and raw plane hashes, while recording the
+preview override/LUT identity separately. Historical raw PNGs and binary color/
+depth references remain unchanged. Rebuilding from the same raw planes is
+repeatable; re-rendering a report only embeds those already converted PNGs.
+
+### Exact memory timeline in the activity pane
+
+Read/write histogram rows use the same adaptive time bins and axis as GPU metrics,
+with actual full-slot **bytes/bin** rather than burst sizes distributed over time.
+The boundary is GPU RO, framebuffer-read and framebuffer-write logical64-bit
+links; it is not physical SDRAM pins and excludes CPU/Display traffic. Each
+observed payload slot contributes8B once, including masked/error slots. Accepted
+request count and requested bytes are shown separately in the shared-bin hover.
+
+Outstanding counts accepted requests until their exclusive completion edge.
+Live-links-without-data counts links with outstanding work but no payload slot
+in that clock sample; write-terminal wait begins after the last full burst beat
+and ends at the terminal acknowledgement. Request backpressure is valid/not-ready,
+only over the saved `load.csv` sample interval. These link-cycle quantities can
+overlap and do not measure an unobserved queue depth or physical bus idle time.
+
+Optional `memory.timeline` version1 retains sparse `[cycle,read_bytes,write_bytes]`
+data events, RLE outstanding/wait states and separately bounded backpressure.
+Its absence in older v2 profiles means timing unavailable, not zero traffic.
+Rebuild from preserved `events.txt`/`load.csv` to obtain timing without rerunning RTL.
+Missing MEM_DATA events remain unavailable. The v2 profile version is unchanged;
+existing totals, commands, provenance and cold/warm metadata remain authoritative.
+
+Bytes belong to half-open event-time bins `[a,b)` and are never fractionally
+allocated. State samples cover `[cycle,cycle+1)` and integrate exact overlap;
+means use the known covered duration. Partial boundary bins retain known bytes
+with shaded unknown portions; header/hover spell out missing coverage. In
+particular, a GPU/load sample may extend one cycle beyond the memory trace.
+Full-capture overview totals remain separate from the selected/zoomed interval.
+Binary exact-cycle hover also includes the common rendered memory bin.
+
+`tests/test_memory.py` checks trace/schema/conservation boundaries;
+`tests/viewer_checks.js` checks actual histogram draw calls, shared hover/zoom/
+selection, old-profile unavailability and optional real-profile totals. Pass an
+existing pingpong profile followed by an exact-memory profile as its two optional
+positional arguments. These tests and report rendering do not execute RTL.
