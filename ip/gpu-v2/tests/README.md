@@ -1,5 +1,15 @@
 # GPU regression tests
 
+## Production command transport cycle model
+
+`cargo test --release -p gpu-v2 --test vliw_cycle_transport -- --include-ignored --nocapture --test-threads=1`
+runs the bounded two-job DMA/router checks, native arbiter/endpoint/gear/MC
+closure, short production RTL replay, actual DUT mutations and finite host
+fixture samples. Set `IVERILOG_EXE` and `VVP_EXE` for the explicit ignored checks.
+No full GPU command/compute/Display implementation is claimed; CPU and Display
+masters are idle and board GPU request-slot stages are outside the native fixture.
+See the [implemented contract](/ip/gpu-v2/docs/references/cycle-transport.md).
+
 ## Native functional backend
 
 `cargo test -p gpu-v2 --test functional` checks bounded current-CB memory/UI/error

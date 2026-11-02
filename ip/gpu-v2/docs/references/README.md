@@ -32,6 +32,7 @@ verification claims.
 | [Rendering models](/ip/gpu-v2/docs/references/rendering.md) | Independent Triangle/ROP oracles, Sampling/pixel models and recovery leaf |
 | [Record ownership](/ip/gpu-v2/docs/references/record-ownership.md) | Two-slot opaque transport, read-return credit and cancellation |
 | [Memory models](/ip/gpu-v2/docs/references/memory.md) | GPU burst facade, shared service adapters and explicit service options |
+| [Command transport cycle model](/ip/gpu-v2/docs/references/cycle-transport.md) | Production DMA/router wall-edge ownership and native-memory differential fixtures |
 
 All simulator entry points require finite cycle/step/work bounds. Host vector
 sizes, operation counts and fixture intervals do not define hardware ABI,
