@@ -31,12 +31,16 @@ must have known flags, read/write access, compatible immutable access, even
 nonempty extents and an in-memory span; the aggregate ABI byte limit also applies.
 Full command, layout and memory-consistency checks remain in the shared decoder.
 
-The input recipe binds the CB06 SHA-256, metadata addresses, explicit initial
-memory seed, positive CPU-step limit and wall-time limit. The simulation advances
-functional vblank events only when the program waits for the frame index. It
-does not model CPU caches, Display contention or boot-loader RTL timing. This
-default entry freezes the first reached bound gate and rejects prior GPU
-submissions because no executor is attached. The explicit
+The input recipe binds the CB06 SHA-256, compilation metadata addresses,
+explicit initial memory seed, a positive backend-specific work budget and a
+wall-time limit. Optional `cpu_mode` defaults to `instruction`, using `max_steps`
+and the original fast CPU without modeled cache or MC timing. Explicit `native`
+uses `max_cycles` for CPU logic edges, runs the existing CPU/FPU/cache/gear/MC
+composition, and reports logic/native clocks separately from CPU steps. A budget
+for the other mode is rejected. Both advance functional vblank only when needed;
+neither adds GPU/Display bus competition or models SPI-loader elapsed time.
+The default reject-prefix entry freezes the first reached compiled gate and
+refuses an earlier GPU submission. The explicit
 `capture_flash_with_functional_prefix` entry (recipe `prefix_gpu: "functional"`,
 dump CLI `--prefix-gpu functional`) instead executes preceding submissions through
 the existing synchronous functional GPU against the same physical memory. Their
@@ -51,8 +55,16 @@ A later consumer can be bound to an existing compiled gate it naturally reaches;
 `CapturePoint::from_program` continues to bind the unique `profiler_gate` entry.
 This does not introduce a second renderer submission API.
 
-In functional-prefix output, `gpu_consumed:false` refers to the frozen target;
-`source.json` additionally retains `prefix_gpu:"functional"`. A selected prefix
+In capture output, `gpu_consumed:false` refers to the frozen target.
+`source.json` records `cpu_mode`; native origin has `cpu_steps:null`,
+`cpu_logic_cycles` and `native_cycles`. Only producer Header/table use the native
+read-only CPU-private view; every GPU payload stays physical. Native raw export
+also preserves `physical.bin` without that metadata overlay. The same GPS1/v2
+range decoder and replay backends consume both modes. Budget, prefix, missing
+payload, unknown mode and stale-frontend provenance errors cannot publish a
+complete snapshot. The raw display CLI ordinal pause remains a separate contract.
+
+Functional-prefix `source.json` also retains `prefix_gpu:"functional"`. A selected prefix
 mode mismatch is rejected before snapshot publication. Full physical memory uses
 the recipe's explicit initial seed; this is not the captured replay's known-byte
 mask. Existing GPU page/encoding errors remain errors, and the shared snapshot

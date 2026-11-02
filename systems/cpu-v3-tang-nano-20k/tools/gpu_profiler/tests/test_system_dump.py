@@ -122,6 +122,88 @@ class SystemDumpTests(unittest.TestCase):
                 system_dump.capture(path, self.root / "frontend.exe", out)
         self.assertFalse((out / "snapshot").exists())
 
+    def test_native_recipe_selects_clock_budget_and_preserves_backend(self):
+        program = self.root / "native-program.bin"
+        program.write_bytes(b"mocked native frontend identity")
+        recipe = dict(schema=1, format="cb06", cpu_mode="native", prefix_gpu="functional",
+                      program=dict(file=program.name, sha256=hashlib.sha256(program.read_bytes()).hexdigest()),
+                      capture_point=dict(gate_pc=10, header_word=100, ranges_word=200),
+                      memory_seed=0, max_cycles=20000, timeout_seconds=5)
+        path = self.root / "native.json"
+        path.write_text(json.dumps(recipe))
+        def frontend(args, **kwargs):
+            self.assertNotIn("--max-steps", args)
+            self.assertEqual(args[args.index("--max-cycles")+1], "20000")
+            self.assertEqual(args[args.index("--cpu-mode")+1], "native")
+            raw = Path(args[args.index("--out")+1])
+            shutil.copytree(self.raw, raw)
+            origin = dict(self.origin, cpu_mode="native", cpu_steps=None,
+                          cpu_logic_cycles=12000, native_cycles=24000, prefix_gpu="functional")
+            (raw / "origin.json").write_text(json.dumps(origin))
+            return subprocess.CompletedProcess(args, 0)
+        out = self.root / "native-output"
+        with patch.object(system_dump.subprocess, "run", side_effect=frontend):
+            system_dump.capture(path, self.root / "frontend.exe", out)
+        origin = json.loads((out / "snapshot/source.json").read_text())
+        self.assertEqual(origin["cpu_mode"], "native")
+        self.assertIsNone(origin["cpu_steps"])
+        self.assertEqual(origin["cpu_logic_cycles"], 12000)
+
+    def test_unknown_backend_wrong_budget_and_stale_native_origin_are_refused(self):
+        program = self.root / "program.bin"
+        program.write_bytes(b"identity-only")
+        base = dict(schema=1, format="cb06", cpu_mode="native",
+                    program=dict(file=program.name, sha256=hashlib.sha256(program.read_bytes()).hexdigest()),
+                    capture_point=dict(gate_pc=1, header_word=2, ranges_word=3),
+                    memory_seed=0, max_cycles=20000, timeout_seconds=5)
+        path = self.root / "backend.json"
+        for change in [dict(cpu_mode="guess"), dict(max_steps=100), dict(max_cycles=0), dict(max_cycles=True)]:
+            with self.subTest(change=change):
+                path.write_text(json.dumps(dict(base, **change)))
+                with self.assertRaises(snapshot.SnapshotError):
+                    system_dump.capture(path, self.root / "missing.exe", self.root / "bad-backend")
+                self.assertFalse((self.root / "bad-backend").exists())
+        path.write_text(json.dumps(base))
+        def stale(args, **kwargs):
+            shutil.copytree(self.raw, Path(args[args.index("--out")+1]))
+            return subprocess.CompletedProcess(args, 0)
+        with patch.object(system_dump.subprocess, "run", side_effect=stale):
+            with self.assertRaisesRegex(snapshot.SnapshotError, "backend differs"):
+                system_dump.capture(path, self.root / "frontend.exe", self.root / "stale-backend")
+        self.assertFalse((self.root / "stale-backend/snapshot").exists())
+        for origin in [dict(cpu_mode="native", cpu_steps=1, cpu_logic_cycles=10, native_cycles=20),
+                       dict(cpu_mode="native", cpu_steps=None, cpu_logic_cycles=0, native_cycles=20)]:
+            self.origin.update(origin)
+            self.save_origin()
+            with self.assertRaisesRegex(snapshot.SnapshotError, "modeled clocks"):
+                system_dump.materialize(self.raw, self.root / "bad-native-origin", {}, self.abi)
+
+    @unittest.skipUnless(os.environ.get("GPU_DUMP_FRONTEND") and os.environ.get("CPU_NATIVE_PREPARED_RECIPE"),
+                         "requires built frontend and actual compiled Prepared recipe")
+    def test_actual_prepared_recipe_uses_both_backends_and_same_input(self):
+        path = Path(os.environ["CPU_NATIVE_PREPARED_RECIPE"]).resolve()
+        original = json.loads(path.read_text())
+        manifests = []
+        for mode in ("instruction", "native"):
+            recipe = dict(original)
+            recipe["program"] = dict(original["program"], file=str((path.parent/original["program"]["file"]).resolve()))
+            recipe["cpu_mode"] = mode
+            recipe.pop("max_steps", None)
+            recipe.pop("max_cycles", None)
+            recipe["max_cycles" if mode == "native" else "max_steps"] = 4_000_000
+            recipe_path = self.root / (mode + "-recipe.json")
+            recipe_path.write_text(json.dumps(recipe))
+            out = self.root / mode
+            manifests.append(system_dump.capture(recipe_path, Path(os.environ["GPU_DUMP_FRONTEND"]), out))
+            origin = json.loads((out/"snapshot/source.json").read_text())
+            self.assertEqual(origin["cpu_mode"], mode)
+            self.assertFalse(origin["gpu_consumed"])
+            if mode == "native":
+                self.assertIsNone(origin["cpu_steps"])
+                self.assertGreater(origin["cpu_logic_cycles"], 0)
+                self.assertEqual((out/"raw/physical.bin").stat().st_size, 0x800000)
+        self.assertEqual(manifests[0]["input_sha256"], manifests[1]["input_sha256"])
+
     @unittest.skipUnless(os.environ.get("GPU_DUMP_FRONTEND") and os.environ.get("CPU_PREFIX_CAPTURE_TEST_OUT"),
                          "requires built dump CLI and current Rust-generated prefix fixture")
     def test_actual_cli_keeps_prefix_writes_and_freezes_before_target(self):

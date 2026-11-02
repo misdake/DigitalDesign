@@ -19,6 +19,13 @@ def materialize(raw, output, provenance, abi=None):
             or origin.get("gpu_consumed") is not False
             or origin.get("prefix_gpu", "reject") not in ("reject", "functional")):
         raise SnapshotError("System dump has no pre-consumption boundary")
+    cpu_mode = origin.get("cpu_mode", "instruction")
+    if cpu_mode not in ("instruction", "native"):
+        raise SnapshotError("Unknown system CPU backend")
+    if cpu_mode == "native" and (origin.get("cpu_steps") is not None
+            or any(type(origin.get(key)) is not int or origin[key] <= 0
+                   for key in ("cpu_logic_cycles", "native_cycles"))):
+        raise SnapshotError("Native system dump requires modeled clocks, not CPU steps")
     header = bytes_to_words((raw / "header.bin").read_bytes())
     decoded = abi.header(header)
     ranges = bytes_to_words((raw / "ranges.bin").read_bytes())
@@ -54,10 +61,19 @@ def capture(recipe_path, frontend, output):
     prefix_gpu = recipe.get("prefix_gpu", "reject")
     if prefix_gpu not in ("reject", "functional"):
         raise SnapshotError("prefix_gpu must be reject or functional")
+    cpu_mode = recipe.get("cpu_mode", "instruction")
+    if cpu_mode not in ("instruction", "native"):
+        raise SnapshotError("cpu_mode must be instruction or native")
     program = (recipe_path.parent / recipe["program"]["file"]).resolve()
     digest = hashlib.sha256(program.read_bytes()).hexdigest()
     if digest != recipe["program"]["sha256"]:
         raise SnapshotError("Compiled program identity differs from capture recipe")
+    budget_key = "max_cycles" if cpu_mode == "native" else "max_steps"
+    wrong_budget = "max_steps" if cpu_mode == "native" else "max_cycles"
+    if wrong_budget in recipe:
+        raise SnapshotError("CPU backend and work budget differ: " + wrong_budget)
+    if type(recipe.get(budget_key)) is not int or recipe[budget_key] <= 0:
+        raise SnapshotError("System capture needs a positive " + budget_key)
     timeout = recipe["timeout_seconds"]
     if not isinstance(timeout, (int, float)) or timeout <= 0:
         raise SnapshotError("System capture needs a positive wall-time bound")
@@ -66,10 +82,13 @@ def capture(recipe_path, frontend, output):
     for argument, value in [("gate-pc", recipe["capture_point"]["gate_pc"]),
                             ("header-word", recipe["capture_point"]["header_word"]),
                             ("ranges-word", recipe["capture_point"]["ranges_word"]),
-                            ("memory-seed", recipe["memory_seed"]), ("max-steps", recipe["max_steps"])]:
+                            ("memory-seed", recipe["memory_seed"]),
+                            ("max-cycles" if cpu_mode == "native" else "max-steps", recipe[budget_key])]:
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise SnapshotError("Invalid capture recipe integer: " + argument)
         args += ["--" + argument, str(value)]
+    if cpu_mode == "native":
+        args += ["--cpu-mode", "native"]
     if prefix_gpu == "functional":
         args += ["--prefix-gpu", "functional"]
     try:
@@ -78,6 +97,8 @@ def capture(recipe_path, frontend, output):
         if result.returncode:
             raise SnapshotError("System frontend failed; see frontend.log")
         origin = json.loads((output / "raw" / "origin.json").read_text())
+        if origin.get("cpu_mode", "instruction") != cpu_mode:
+            raise SnapshotError("System frontend CPU backend differs from recipe")
         if origin.get("prefix_gpu", "reject") != prefix_gpu:
             raise SnapshotError("System frontend prefix GPU mode differs from recipe")
         return materialize(output / "raw", output / "snapshot", dict(

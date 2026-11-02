@@ -193,6 +193,16 @@ pub(crate) fn freeze_data(
     })
 }
 
+/// Native counterpart of the legacy reject-prefix frontend.
+pub fn capture_native_flash(
+    flash: &[u8],
+    point: CapturePoint,
+    memory_seed: u16,
+    maximum_cycles: usize,
+) -> Result<NativeFrozenInputs, String> {
+    capture_native(flash, point, memory_seed, maximum_cycles, false)
+}
+
 /// Execute real functional prefix submissions, then stop before the first
 /// instruction of the actual compiled Prepared gate executes. No UART bypass.
 /// CPU-private header/table reads do not publish their dirty words into DRAM.
@@ -202,6 +212,15 @@ pub fn capture_native_flash_with_functional_prefix(
     memory_seed: u16,
     maximum_cycles: usize,
 ) -> Result<NativeFrozenInputs, String> {
+    capture_native(flash, point, memory_seed, maximum_cycles, true)
+}
+fn capture_native(
+    flash: &[u8],
+    point: CapturePoint,
+    memory_seed: u16,
+    maximum_cycles: usize,
+    functional_prefix: bool,
+) -> Result<NativeFrozenInputs, String> {
     if maximum_cycles == 0 {
         return Err("Capture requires a positive native CPU cycle bound".into());
     }
@@ -210,15 +229,17 @@ pub fn capture_native_flash_with_functional_prefix(
         memory_seed,
         VBlankMode::PauseOnFrameIndexWait,
     )
-    .map_err(|e| e.to_string())?
-    .with_functional_gpu();
+    .map_err(|e| e.to_string())?;
+    if functional_prefix {
+        sim = sim.with_functional_gpu();
+    }
     let mut vblank_events = 0;
     for _ in 0..maximum_cycles {
         if let Some(error) = sim.gpu().last_error() {
             return Err(format!("GPU prefix execution failed: {error:?}"));
         }
         if sim.gpu().busy() {
-            return Err("Functional GPU prefix has not completed".into());
+            return Err("GPU submission preceded the Prepared capture gate".into());
         }
         if sim.core().executing_instruction_address() == Some((7, point.gate_pc)) {
             let data = freeze_data(
@@ -528,21 +549,41 @@ mod tests {
         let new = capture_flash_with_functional_prefix(&flash, point, 0x5a5a, 256).unwrap();
         assert_eq!(
             (
-                old.header,
-                old.ranges,
-                old.payloads,
+                &old.header,
+                &old.ranges,
+                &old.payloads,
                 old.cpu_steps,
                 old.vblank_events
             ),
             (
-                new.header,
-                new.ranges,
-                new.payloads,
+                &new.header,
+                &new.ranges,
+                &new.payloads,
                 new.cpu_steps,
                 new.vblank_events
             )
         );
+        let native = capture_native_flash(&flash, point, 0x5a5a, 40000).unwrap();
+        assert_eq!(native.data.header, new.header);
+        assert_eq!(native.data.ranges, new.ranges);
+        assert_eq!(native.data.payloads, new.payloads);
         let (flash, point) = prefix_program(&[clear_cb(0x1357)]);
+        assert!(capture_native_flash(&flash, point, 0, 40000)
+            .err()
+            .unwrap()
+            .contains("GPU submission preceded"));
+        assert!(
+            capture_native_flash_with_functional_prefix(&flash, point, 0, 1)
+                .err()
+                .unwrap()
+                .contains("incomplete")
+        );
+        assert!(
+            capture_native_flash_with_functional_prefix(&flash, point, 0, 0)
+                .err()
+                .unwrap()
+                .contains("positive")
+        );
         assert!(capture_flash_with_functional_prefix(&flash, point, 0, 1)
             .err()
             .unwrap()
@@ -571,6 +612,13 @@ mod tests {
             producer[at..at + 4].copy_from_slice(&bad.encode());
             let (flash, point) = prefix_program(&[producer]);
             let error = capture_flash_with_functional_prefix(&flash, point, 0, 256)
+                .err()
+                .unwrap();
+            assert!(
+                error.contains("GPU prefix execution failed") && error.contains(reason),
+                "{error}"
+            );
+            let error = capture_native_flash_with_functional_prefix(&flash, point, 0, 40000)
                 .err()
                 .unwrap();
             assert!(

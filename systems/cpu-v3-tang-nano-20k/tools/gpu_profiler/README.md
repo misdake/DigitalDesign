@@ -89,6 +89,30 @@ python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/system_dump.py recipe.
 python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/replay.py target/system-dump/snapshot --rtl target/profiler-rtl --build build.json --simulation-source target/system-dump/snapshot/source.json --out target/system-replay --max-cycles 1000000 --timeout 180
 ```
 
+To select native CPU/cache/MC execution, add `"cpu_mode":"native"` and replace
+`max_steps` with positive `max_cycles`. The ordinary command above is unchanged;
+for example a native recipe contains:
+
+```json
+{"schema":1,"format":"cb06","cpu_mode":"native","prefix_gpu":"functional","program":{"file":"app-flash.bin","sha256":"<SHA-256>"},"capture_point":{"gate_pc":0,"header_word":0,"ranges_word":0},"memory_seed":0,"max_cycles":4000000,"timeout_seconds":40}
+```
+
+The direct Rust CLI equivalents are `--cpu-mode native --max-cycles 4000000`;
+omitted/instruction mode keeps `--max-steps`. Do not mix their budget flags.
+Use actual compilation metadata in the recipe, not the placeholder zero addresses.
+Native captures use coherent producer metadata but physical GPU payloads and
+preserve raw `physical.bin`. Their origin reports modeled clocks, not fake CPU
+steps; neither these clocks nor result-only replay are board frame timing. Both
+modes pass through the same materializer, lease validation and replay pipeline.
+For a short result-only run, use the existing replay command with `--backend sim`
+and its `--simulator` executable instead of selecting the RTL backend.
+
+The optional real-backend regression in `tests/test_system_dump.py` uses
+`GPU_DUMP_FRONTEND` and `CPU_NATIVE_PREPARED_RECIPE` (a valid compiled recipe).
+It runs that same package through both CPU modes and compares input identities.
+`GPU_SIM_EXE` enables the bounded simulator success/error/access regressions in
+`tests/test_simulator.py`, including valid dense bytes with absent read access.
+
 The optional recipe field `"prefix_gpu":"functional"` enables real synchronous
 functional execution of CBs before the bound gate; the CLI equivalent is
 `--prefix-gpu functional`. Omitted or `"reject"` preserves the original behavior.
@@ -105,8 +129,12 @@ declaration before compiling the application. The existing `capture_draw`
 integration fixture accepts `GPU_PROFILER_RTL` to include this export in its
 declaration; its `compiled_program_system_frontend` case uses real compiled RCC
 and the system's devices, stops at the gate, and checks a CPU step-limit failure.
-The capture frontend supports the first submit only and makes explicit seed and
-functional vblank assumptions; it does not measure CPU/Display or board timing.
+The capture frontend stops at the first reached bound Prepared gate, which may
+follow real functional prefix submissions. Firmware still owns ordinary versus
+eligible selection; raw START ordinal pause is not that gate. Seed and functional
+vblank are explicit. Native counters exclude GPU/Display memory competition and
+are not board frame timing. Failed GPU prefixes or missing captured reads remain
+errors, without an uncaptured-memory/zero fallback.
 The [implemented contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#compiled-program-system-capture)
 defines provenance and failure/completion boundaries.
 

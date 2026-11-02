@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import simulator
@@ -72,6 +73,19 @@ class NativeBackendTests(unittest.TestCase):
         self.assertFalse((self.root/'failure/result.json').exists())
         self.assertFalse((self.root/'failure/profiler.html').exists())
         self.assertFalse(json.loads((self.root/'failure/failure.json').read_text())['complete'])
+
+    def test_uncaptured_read_never_falls_back_to_valid_dense_bytes(self):
+        capture = synthetic_snapshot(COLUMN)
+        memory, access = simulator.seed(capture)
+        address = capture.header['cb_base']
+        self.assertTrue(access[address] & 1)
+        access[address] = 0
+        with patch.object(simulator, 'seed', return_value=(memory, access)):
+            with self.assertRaisesRegex(SnapshotError, 'uncaptured'):
+                simulator.run(capture, self.root/'missing-read', {}, executable=self.executable, timeout=30)
+        self.assertFalse((self.root/'missing-read/result.json').exists())
+        self.assertFalse((self.root/'missing-read/profiler.html').exists())
+        self.assertFalse(json.loads((self.root/'missing-read/failure.json').read_text())['complete'])
 
     def test_work_limit_is_explicit_and_bounded(self):
         capture = synthetic_snapshot(COLUMN)
