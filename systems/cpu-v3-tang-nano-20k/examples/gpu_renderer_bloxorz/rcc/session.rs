@@ -1,4 +1,4 @@
-//! Serial presentation phases over the unchanged deterministic integer rules.
+//! First-two-stage rules, input and independent animation/veil clocks.
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
@@ -10,17 +10,24 @@ mod bloxorz_core;
 use bloxorz_core::*;
 mod gamepad;
 use gamepad::*;
-pub static LEVEL: Buf<u16, 200> = Buf::new([0; 200]);
+pub static LEVEL_GENERATION: Buf<u16, 1> = Buf::new([0]);
+pub static LEVEL: Buf<u16, 728> = Buf::new([0; 728]);
 pub static GAME: Buf<u16, 10> = Buf::new([0; 10]);
-// This presentation UI dispatches moves only, with no undo command. Reuse the
-// rule engine's one required scratch snapshot; its general 256-entry undo ring
-// remains unchanged for applications that actually expose undo.
+// The shared rule engine writes its single pre-move snapshot here. Only this
+// two-stage UI compacts valid, unsplit PLAY snapshots to two words per move.
 static HISTORY: Buf<u16, 6> = Buf::new([0; 6]);
 static HISTORY_STATE: Buf<u16, 2> = Buf::new([0; 2]);
-pub static MOTION: Buf<u16, 7> = Buf::new([0; 7]);
-// mode, elapsed, destination, capture-needed, captures, frozen-mode, goal x/z,
-// frozen-time, first-consumer flag. Offscreen storage and completion remain application-owned.
-pub static SESSION: Buf<u16, 10> = Buf::new([0; 10]);
+static UNDO: Buf<u16, 176> = Buf::new([0; 176]);
+static UNDO_STATE: Buf<u16, 2> = Buf::new([0; 2]);
+// from x/z/orient, direction, roll/mask elapsed, moving, level,
+// old mask, fall kind(0 release/1 tip), release threshold, first support.
+pub static MOTION: Buf<u16, 11> = Buf::new([0; 11]);
+// animation/time, destination, held lock, source-render count, fall notified,
+// goal x/z, most-recent-direction stack. Rendering completion owns resets.
+pub static SESSION: Buf<u16, 9> = Buf::new([0; 9]);
+// Previous visual mask and the two channel press ages.
+static SWITCH_FX: Buf<u16, 3> = Buf::new([0, 260, 260]);
+pub static TRANSITION: Buf<u16, 2> = Buf::new([0; 2]);
 pub const PLAY: u16 = 0;
 pub const ROLL: u16 = 1;
 pub const ENTRY_OPEN: u16 = 2;
@@ -33,17 +40,55 @@ pub const FALL: u16 = 8;
 pub const FADE_OUT: u16 = 9;
 pub const HOLD: u16 = 10;
 pub const FADE_IN: u16 = 11;
+pub const TIP: u16 = 12;
+#[derive(Copy, Clone)]
+struct FallState {
+    position: Vec3,
+    velocity: Vec3,
+    scale: Vec3,
+    angle: fix32,
+    spin: fix32,
+    axis: u16,
+}
+static FALL_STATE: Buf<FallState, 1> = Buf::new([FallState {
+    position: Vec3 {
+        x: fix32::zero(),
+        y: fix32::zero(),
+        z: fix32::zero(),
+    },
+    velocity: Vec3 {
+        x: fix32::zero(),
+        y: fix32::zero(),
+        z: fix32::zero(),
+    },
+    scale: Vec3 {
+        x: fix32::zero(),
+        y: fix32::zero(),
+        z: fix32::zero(),
+    },
+    angle: fix32::zero(),
+    spin: fix32::zero(),
+    axis: 0,
+}]);
 pub fn level_reset(which: u16) {
+    LEVEL_GENERATION[0u16] += 1;
     blox_fixture_level(which, LEVEL.as_array());
     blox_reset(LEVEL.as_array(), GAME.as_array(), HISTORY_STATE.as_array());
+    UNDO_STATE[0u16] = 0;
+    UNDO_STATE[1u16] = 0;
+    SWITCH_FX[0u16] = GAME[3u16];
+    SWITCH_FX[1u16] = 260;
+    SWITCH_FX[2u16] = 260;
+    MOTION[4u16] = 220;
     MOTION[5u16] = 0;
     MOTION[6u16] = which;
+    SESSION[5u16] = 0;
     SESSION[6u16] = 65535;
     SESSION[7u16] = 65535;
     let mut i: u16 = 0;
     while i < LEVEL[6u16] {
         if LEVEL[8 + i * 8] == 6 {
-            SESSION[6u16] = rem_u16(i, LEVEL[0u16]);
+            SESSION[6u16] = i % LEVEL[0u16];
             SESSION[7u16] = div_u16(i, LEVEL[0u16]);
         }
         i += 1;
@@ -55,143 +100,344 @@ pub fn session_init() {
     SESSION[1u16] = 0;
     SESSION[3u16] = 0;
     SESSION[4u16] = 0;
+    SESSION[8u16] = 0;
+    TRANSITION[0u16] = 0;
+    TRANSITION[1u16] = 0;
 }
 pub fn fading() -> bool {
-    SESSION[0u16] >= FADE_OUT
+    TRANSITION[0u16] != 0
 }
 pub fn visual_mode() -> u16 {
-    if fading() {
-        SESSION[5u16]
-    } else {
-        SESSION[0u16]
-    }
+    SESSION[0u16]
 }
 pub fn visual_time() -> u16 {
-    if fading() {
-        SESSION[8u16]
+    SESSION[1u16]
+}
+pub fn visual_mask() -> u16 {
+    if MOTION[4u16] < 154 {
+        MOTION[7u16]
     } else {
-        SESSION[1u16]
+        GAME[3u16]
     }
+}
+fn ratio(t: u16, duration: u16) -> fix32 {
+    // Exact power-of-two normalization keeps the reciprocal in a useful range.
+    fix32::from_words(t << 8, t >> 8) * frcp(fix32::from_words(duration << 8, duration >> 8))
 }
 pub fn fraction(t: u16, duration: u16) -> fix32 {
     if t >= duration {
-        return fix32::from_int(1);
+        fix32::from_int(1)
+    } else {
+        ratio(t, duration)
     }
-    fix32::from_int(t as i16) * frcp(fix32::from_int(duration as i16))
 }
 pub fn begin_fade(destination: u16) {
-    SESSION[5u16] = SESSION[0u16];
-    SESSION[8u16] = SESSION[1u16];
-    SESSION[0u16] = FADE_OUT;
-    SESSION[1u16] = 0;
+    if fading() {
+        return;
+    }
     SESSION[2u16] = destination;
     SESSION[3u16] = 1;
+    SESSION[8u16] = 0;
+    TRANSITION[0u16] = FADE_OUT;
+    TRANSITION[1u16] = 0;
 }
 pub fn tint() -> u16 {
-    if SESSION[0u16] == FADE_OUT {
-        return 255 - div_u16(SESSION[1u16] * 51, 64);
+    if TRANSITION[0u16] == FADE_OUT {
+        return 255 - div_u16(TRANSITION[1u16] * 51, 64);
     }
-    if SESSION[0u16] == HOLD {
+    if TRANSITION[0u16] == HOLD {
         return 0;
     }
-    if SESSION[0u16] == FADE_IN {
-        return div_u16(SESSION[1u16] * 51, 76);
+    if TRANSITION[0u16] == FADE_IN {
+        return div_u16(TRANSITION[1u16] * 51, 76);
     }
     255
 }
 pub fn session_captured() {
-    SESSION[3u16] = 0;
     SESSION[4u16] += 1;
-    SESSION[9u16] = 1;
 }
-// Called only after successful consumer WAIT_ALL: the fully black frame is Front.
+// Invoked after consumer WAIT_ALL and actual Display retirement.
 pub fn session_presented() {
-    if SESSION[0u16] == FADE_OUT && SESSION[1u16] == 320 {
+    if TRANSITION[0u16] == FADE_OUT && TRANSITION[1u16] == 320 {
         level_reset(SESSION[2u16]);
-        SESSION[0u16] = HOLD;
-        SESSION[1u16] = 0;
-        SESSION[3u16] = 1;
-        SESSION[5u16] = ENTRY_OPEN;
-        SESSION[8u16] = 0;
-    } else if SESSION[0u16] == FADE_IN && SESSION[1u16] == 380 {
-        // WAIT_ALL also captures input. Discard its locked-period edges before
-        // entry can interpret START/TRIANGLE again; keep held-button history.
-        gamepad_discard_edges();
         SESSION[0u16] = ENTRY_OPEN;
         SESSION[1u16] = 0;
+        TRANSITION[0u16] = HOLD;
+        TRANSITION[1u16] = 0;
+    } else if TRANSITION[0u16] == FADE_IN && TRANSITION[1u16] == 380 {
+        TRANSITION[0u16] = 0;
+        TRANSITION[1u16] = 0;
+        SESSION[0u16] = ENTRY_OPEN;
+        SESSION[1u16] = 0;
+        SESSION[8u16] = 0;
+        gamepad_discard_edges();
+        let input = gamepad_take_frame();
+        SESSION[3u16] = if input.buttons & 240 != 0 { 1u16 } else { 0u16 };
     }
 }
-pub fn session_tick(buttons: u16, elapsed: u16) {
-    let mode = SESSION[0u16];
-    let dt = if elapsed > 50 { 50u16 } else { elapsed };
-    if mode < FADE_OUT {
-        if buttons & 4096 != 0 {
-            begin_fade(MOTION[6u16] ^ 1);
-            return;
-        }
-        if buttons & 8 != 0 {
-            begin_fade(MOTION[6u16]);
-            return;
+fn presentation_support(x: i16, z: i16, mask: u16) -> bool {
+    if x < 0 || z < 0 || x as u16 >= LEVEL[0u16] || z as u16 >= LEVEL[1u16] {
+        return false;
+    }
+    let at = 8 + ((z as u16) * LEVEL[0u16] + x as u16) * 8;
+    let kind = LEVEL[at];
+    kind != 0 && !(kind == 5 && mask & LEVEL[at + 1] == 0)
+}
+pub fn session_move(direction: u16) -> bool {
+    if fading() || SESSION[0u16] != PLAY || direction >= 4 {
+        return false;
+    }
+    MOTION[0u16] = GAME[0u16];
+    MOTION[1u16] = GAME[1u16];
+    MOTION[2u16] = GAME[2u16];
+    MOTION[3u16] = direction;
+    MOTION[7u16] = GAME[3u16];
+    HISTORY_STATE[0u16] = 0;
+    HISTORY_STATE[1u16] = 0;
+    if !blox_dispatch(
+        LEVEL.as_array(),
+        GAME.as_array(),
+        HISTORY.as_array(),
+        HISTORY_STATE.as_array(),
+        direction,
+    ) {
+        return false;
+    }
+    // First-two-stage valid anchors fit4+3 bits, orient/bridge mask fit2+2.
+    let bits = UNDO_STATE[0u16] * 11;
+    let at = bits >> 4;
+    let shift = bits & 15;
+    let packed = HISTORY[0u16] | (HISTORY[1u16] << 4) | ((HISTORY[2u16] & 15) << 7);
+    UNDO[at] = (UNDO[at] & !(2047u16 << shift)) | (packed << shift);
+    if shift > 5 {
+        let mask = (1u16 << (shift - 5)) - 1;
+        UNDO[at + 1] = (UNDO[at + 1] & !mask) | (packed >> (16 - shift));
+    }
+    UNDO_STATE[0u16] = (UNDO_STATE[0u16] + 1) & 255;
+    if UNDO_STATE[1u16] < 256 {
+        UNDO_STATE[1u16] += 1;
+    }
+    SESSION[0u16] = ROLL;
+    SESSION[1u16] = 0;
+    SESSION[5u16] = 0;
+    MOTION[4u16] = 0;
+    MOTION[5u16] = 1;
+    MOTION[8u16] = 0;
+    MOTION[9u16] = 79;
+    if MOTION[2u16] != 0 {
+        MOTION[9u16] = 124;
+        if (MOTION[2u16] == 1 && direction < 2) || (MOTION[2u16] == 2 && direction >= 2) {
+            MOTION[9u16] = 169;
         }
     }
-    if SESSION[9u16] != 0 {
-        SESSION[9u16] = 0;
+    if GAME[4u16] == 2 && GAME[2u16] != 0 {
+        let x = GAME[0u16] as i16;
+        let z = GAME[1u16] as i16;
+        let first = presentation_support(x, z, GAME[3u16]);
+        let second = presentation_support(
+            x + if GAME[2u16] == 1 { 1i16 } else { 0i16 },
+            z + if GAME[2u16] == 2 { 1i16 } else { 0i16 },
+            GAME[3u16],
+        );
+        if (first && !second) || (!first && second) {
+            MOTION[8u16] = 1;
+            MOTION[10u16] = if first { 1u16 } else { 0u16 };
+        }
+    }
+    if GAME[4u16] != 0 {
+        SESSION[3u16] = 1;
+        SESSION[8u16] = 0;
+    }
+    true
+}
+fn session_undo() {
+    SESSION[3u16] = 1;
+    SESSION[8u16] = 0;
+    if UNDO_STATE[1u16] == 0 {
         return;
     }
-    if mode == PLAY {
-        let mut direction: u16 = 4;
-        if buttons & 32 != 0 {
-            direction = 0;
+    UNDO_STATE[0u16] = (UNDO_STATE[0u16] + 255) & 255;
+    UNDO_STATE[1u16] -= 1;
+    let bits = UNDO_STATE[0u16] * 11;
+    let at = bits >> 4;
+    let shift = bits & 15;
+    let mut packed = UNDO[at] >> shift;
+    if shift > 5 {
+        packed |= UNDO[at + 1] << (16 - shift);
+    }
+    packed &= 2047;
+    GAME[0u16] = packed & 15;
+    GAME[1u16] = (packed >> 4) & 7;
+    GAME[2u16] = (packed >> 7) & 3;
+    GAME[3u16] = (packed >> 9) & 3;
+    GAME[4u16] = 0;
+    // Every successful core move increments once and rejects65535; no wrap or
+    // other action changes the count while this ring survives.
+    GAME[5u16] -= 1;
+    GAME[6u16] = 0;
+    GAME[7u16] = 0;
+    GAME[8u16] = 0;
+    GAME[9u16] = 0;
+    SESSION[0u16] = PLAY;
+    SESSION[1u16] = 0;
+    SESSION[5u16] = 0;
+    MOTION[4u16] = 220;
+    MOTION[5u16] = 0;
+}
+fn direction_button(direction: u16) -> u16 {
+    if direction == 0 {
+        32
+    } else {
+        if direction == 1 {
+            128
+        } else {
+            if direction == 2 {
+                64
+            } else {
+                16
+            }
         }
-        if buttons & 128 != 0 {
-            direction = 1;
-        }
-        if buttons & 64 != 0 {
-            direction = 2;
-        }
-        if buttons & 16 != 0 {
-            direction = 3;
-        }
-        if direction < 4 && GAME[4u16] == 0 && GAME[9u16] == 0 {
-            MOTION[0u16] = GAME[0u16];
-            MOTION[1u16] = GAME[1u16];
-            MOTION[2u16] = GAME[2u16];
-            MOTION[3u16] = direction;
-            MOTION[4u16] = 0;
-            MOTION[5u16] = 1;
-            SESSION[0u16] = ROLL;
-            SESSION[1u16] = 0;
-        }
+    }
+}
+fn held_update(pressed: u16, held: u16) {
+    if fading() {
+        SESSION[3u16] = 1;
+        SESSION[8u16] = 0;
         return;
     }
     if SESSION[3u16] != 0 {
+        if held & 240 == 0 {
+            SESSION[3u16] = 0;
+        } else {
+            return;
+        }
+    }
+    // Remove released keys and old copies of any re-pressed key before pushing.
+    // A release/re-press captured within one frame must not evict another held key.
+    let mut stack = SESSION[8u16];
+    let mut compact: u16 = 0;
+    let mut shift: u16 = 0;
+    let mut seen: u16 = 0;
+    while stack != 0 {
+        let code = stack & 15;
+        let bit = direction_button(code - 1);
+        if held & bit != 0 && pressed & bit == 0 && seen & bit == 0 {
+            compact |= code << shift;
+            shift += 4;
+            seen |= bit;
+        }
+        stack >>= 4;
+    }
+    SESSION[8u16] = compact;
+    if pressed & 240 != 0 {
+        let mut i: u16 = 0;
+        while i < 4 {
+            let bit = direction_button(i);
+            if pressed & held & bit != 0 {
+                SESSION[8u16] = (SESSION[8u16] << 4) | (i + 1);
+            }
+            i += 1;
+        }
+    }
+}
+
+pub fn session_tick(pressed: u16, held: u16, elapsed: u16) {
+    let dt = if elapsed > 50 { 50u16 } else { elapsed };
+    held_update(pressed, held);
+    if !fading() {
+        if pressed & (4096 | 1024 | 2048) != 0 {
+            begin_fade(MOTION[6u16] ^ 1);
+        } else if pressed & 8 != 0 {
+            begin_fade(MOTION[6u16]);
+        } else if pressed & 32768 != 0 {
+            session_undo();
+        }
+    }
+    let phase = TRANSITION[0u16];
+    if phase == 0 || phase == FADE_OUT {
+        animation_tick(dt);
+    }
+    if TRANSITION[0u16] == FADE_OUT {
+        TRANSITION[1u16] += dt;
+        if TRANSITION[1u16] > 320 {
+            TRANSITION[1u16] = 320;
+        }
+    } else if TRANSITION[0u16] == HOLD {
+        TRANSITION[1u16] += dt;
+        if TRANSITION[1u16] >= 80 {
+            TRANSITION[0u16] = FADE_IN;
+            TRANSITION[1u16] = 0;
+        }
+    } else if TRANSITION[0u16] == FADE_IN {
+        TRANSITION[1u16] += dt;
+        if TRANSITION[1u16] > 380 {
+            TRANSITION[1u16] = 380;
+        }
+    }
+    switch_tick(dt);
+    if !fading() && SESSION[0u16] == PLAY && SESSION[3u16] == 0 && SESSION[8u16] != 0 {
+        session_move((SESSION[8u16] & 15) - 1);
+    }
+}
+pub fn switch_fraction(channel: u16) -> fix32 {
+    fraction(SWITCH_FX[channel + 1], 260)
+}
+fn switch_tick(dt: u16) {
+    let mask = visual_mask();
+    let old = SWITCH_FX[0u16];
+    let mut channel: u16 = 0;
+    while channel < 2 {
+        let bit = 1 << channel;
+        if mask & bit != 0 {
+            if old & bit == 0 {
+                SWITCH_FX[channel + 1] = 0;
+            }
+            SWITCH_FX[channel + 1] += dt;
+            if SWITCH_FX[channel + 1] > 260 {
+                SWITCH_FX[channel + 1] = 260;
+            }
+        } else {
+            SWITCH_FX[channel + 1] = 260;
+        }
+        channel += 1;
+    }
+    SWITCH_FX[0u16] = mask;
+}
+fn animation_tick(dt: u16) {
+    let mode = SESSION[0u16];
+    if mode == PLAY {
         return;
+    }
+    if mode != ROLL && MOTION[4u16] < 154 {
+        MOTION[4u16] += dt;
+        if MOTION[4u16] > 154 {
+            MOTION[4u16] = 154;
+        }
     }
     SESSION[1u16] += dt;
     if mode == ROLL {
+        if SESSION[1u16] > 220 {
+            SESSION[1u16] = 220;
+        }
         MOTION[4u16] = SESSION[1u16];
-        if SESSION[1u16] >= 220 {
-            HISTORY_STATE[0u16] = 0;
-            HISTORY_STATE[1u16] = 0;
-            blox_dispatch(
-                LEVEL.as_array(),
-                GAME.as_array(),
-                HISTORY.as_array(),
-                HISTORY_STATE.as_array(),
-                MOTION[3u16],
-            );
+        if GAME[4u16] == 2 && MOTION[8u16] == 0 && SESSION[1u16] >= MOTION[9u16] {
+            release_pivot();
+        } else if SESSION[1u16] == 220 {
             MOTION[5u16] = 0;
             SESSION[1u16] = 0;
             SESSION[0u16] = if GAME[4u16] == 1 {
                 GOAL_OPEN
             } else {
                 if GAME[4u16] == 2 {
-                    FALL
+                    TIP
                 } else {
                     PLAY
                 }
             };
         }
+    } else if mode == TIP && SESSION[1u16] >= 360 {
+        SESSION[1u16] = 360;
+        release_pivot();
     } else if mode == ENTRY_OPEN && SESSION[1u16] >= 200 {
         SESSION[0u16] = ENTRY_RISE;
         SESSION[1u16] = 0;
@@ -207,84 +453,195 @@ pub fn session_tick(buttons: u16, elapsed: u16) {
     } else if mode == GOAL_LAND && SESSION[1u16] >= 80 {
         SESSION[0u16] = GOAL_CLOSE;
         SESSION[1u16] = 0;
-    } else if mode == GOAL_CLOSE && SESSION[1u16] >= 200 {
-        SESSION[1u16] = 200;
         begin_fade(MOTION[6u16] ^ 1);
-    } else if mode == FALL && SESSION[1u16] >= 600 {
-        SESSION[1u16] = 600;
+    } else if mode == GOAL_CLOSE && SESSION[1u16] > 200 {
+        SESSION[1u16] = 200;
+    } else if mode == FALL && SESSION[1u16] >= 600 && SESSION[5u16] == 0 {
+        SESSION[5u16] = 1;
         begin_fade(MOTION[6u16]);
-    } else if mode == FADE_OUT && SESSION[1u16] > 320 {
-        SESSION[1u16] = 320;
-    } else if mode == HOLD && SESSION[1u16] >= 80 {
-        SESSION[0u16] = FADE_IN;
-        SESSION[1u16] = 0;
-    } else if mode == FADE_IN && SESSION[1u16] > 380 {
-        SESSION[1u16] = 380;
     }
 }
 pub fn block_visible() -> bool {
-    let mode = visual_mode();
-    mode != ENTRY_OPEN && !(mode == GOAL_CLOSE && visual_time() >= 200)
+    SESSION[0u16] != ENTRY_OPEN && !(SESSION[0u16] == GOAL_CLOSE && SESSION[1u16] >= 200)
 }
-pub fn block_pose(model: &mut Model) {
+fn release_pivot() {
+    let pose = block_transform();
+    let half = fix32::from_words(32768, 0);
+    let tipping = SESSION[0u16] == TIP;
+    let axis = if tipping {
+        if GAME[2u16] == 1 {
+            1u16
+        } else {
+            0u16
+        }
+    } else {
+        if MOTION[3u16] < 2 {
+            1u16
+        } else {
+            0u16
+        }
+    };
+    let mut spin = fix32::from_words(9174, 7);
+    if tipping {
+        spin = fix32::from_words(47621, 8);
+        if (axis == 1 && MOTION[10u16] != 0) || (axis == 0 && MOTION[10u16] == 0) {
+            spin = -spin;
+        }
+    } else if MOTION[3u16] == 0 || MOTION[3u16] == 3 {
+        spin = -spin;
+    }
+    let mut pivot = fix32::zero();
+    if axis == 1 {
+        if tipping {
+            pivot = fix32::from_int(GAME[0u16] as i16) + fix32::from_int(1);
+        } else {
+            pivot = fix32::from_int(MOTION[0u16] as i16);
+            if MOTION[3u16] == 0 {
+                pivot = pivot
+                    + if MOTION[2u16] == 1 {
+                        fix32::from_int(2)
+                    } else {
+                        fix32::from_int(1)
+                    };
+            }
+        }
+        pivot = pivot - fix32::from_int(LEVEL[0u16] as i16) * half;
+    } else {
+        if tipping {
+            pivot = fix32::from_int(GAME[1u16] as i16) + fix32::from_int(1);
+        } else {
+            pivot = fix32::from_int(MOTION[1u16] as i16);
+            if MOTION[3u16] == 2 {
+                pivot = pivot
+                    + if MOTION[2u16] == 2 {
+                        fix32::from_int(2)
+                    } else {
+                        fix32::from_int(1)
+                    };
+            }
+        }
+        pivot = pivot - fix32::from_int(LEVEL[1u16] as i16) * half;
+    }
+    let mut velocity = demo_zero();
+    if axis == 1 {
+        velocity = demo_point(
+            -spin * pose.position.y,
+            spin * (pose.position.x - pivot),
+            fix32::zero(),
+        );
+    } else {
+        velocity = demo_point(
+            fix32::zero(),
+            -spin * (pose.position.z - pivot),
+            spin * pose.position.y,
+        );
+    }
+    FALL_STATE[0u16] = FallState {
+        position: pose.position,
+        velocity: velocity,
+        scale: pose.scale,
+        angle: if axis == 1 {
+            pose.angles.z
+        } else {
+            pose.angles.x
+        },
+        spin: spin,
+        axis: axis,
+    };
+    MOTION[5u16] = 0;
+    SESSION[0u16] = FALL;
+    SESSION[1u16] = 0;
+}
+pub fn block_transform() -> Transform {
+    let mode = SESSION[0u16];
+    let t = SESSION[1u16];
+    let zero = fix32::zero();
+    let one = fix32::from_int(1);
+    let two = fix32::from_int(2);
+    let half = fix32::from_words(32768, 0);
+    if mode == FALL {
+        let state = FALL_STATE[0u16];
+        let seconds = ratio(t, 1000);
+        let f = ratio(t, 600);
+        let angle = state.angle + state.spin * seconds;
+        return demo_pose(
+            demo_point(
+                state.position.x + state.velocity.x * seconds,
+                state.position.y + state.velocity.y * seconds - fix32::from_int(16) * f * f,
+                state.position.z + state.velocity.z * seconds,
+            ),
+            demo_point(
+                if state.axis == 0 { angle } else { zero },
+                zero,
+                if state.axis == 1 { angle } else { zero },
+            ),
+            state.scale,
+        );
+    }
     let moving = MOTION[5u16] != 0;
     let orient = if moving { MOTION[2u16] } else { GAME[2u16] };
     let x = if moving { MOTION[0u16] } else { GAME[0u16] };
     let z = if moving { MOTION[1u16] } else { GAME[1u16] };
-    let one = fix32::from_int(1);
-    let two = fix32::from_int(2);
-    let half = fix32::from_words(32768, 0);
-    let zero = fix32::zero();
     let sx = if orient == 1 { two } else { one };
     let sy = if orient == 0 { two } else { one };
     let sz = if orient == 2 { two } else { one };
-    let mut px = zero;
-    let mut pz = half;
+    let mut cx = sx * half;
+    let mut cy = sy * half;
+    let mut cz = sz * half;
     let mut ax = zero;
     let mut az = zero;
     let mut angle = zero;
+    let mut axis: u16 = 0;
+    let mut pivot = zero;
     if moving {
         angle = fraction(MOTION[4u16], 220) * fix32::from_words(37408, 1);
         if MOTION[3u16] == 0 || MOTION[3u16] == 3 {
             angle = -angle;
         }
         if MOTION[3u16] < 2 {
-            px = if MOTION[3u16] == 0 { sx } else { zero };
-            az = angle;
+            axis = 1;
+            pivot = if MOTION[3u16] == 0 { sx } else { zero };
         } else {
-            px = half;
-            pz = if MOTION[3u16] == 2 { sz } else { zero };
-            ax = angle;
+            pivot = if MOTION[3u16] == 2 { sz } else { zero };
         }
-    } else {
-        px = half;
+    } else if mode == TIP {
+        let f = fraction(t, 360);
+        angle = fix32::from_words(37408, 1) * f * f;
+        if orient == 1 {
+            axis = 1;
+            pivot = one;
+            if MOTION[10u16] != 0 {
+                angle = -angle;
+            }
+        } else {
+            pivot = one;
+            if MOTION[10u16] == 0 {
+                angle = -angle;
+            }
+        }
     }
-    let mut cx = sx * half;
-    let mut cy = sy * half;
-    let mut cz = sz * half;
-    if moving {
+    if moving || mode == TIP {
         let sc = fsincos(angle);
         let c = sc.y();
         let s = sc.x();
-        if MOTION[3u16] < 2 {
-            cx = px + c * (sx * half - px) - s * sy * half;
-            cy = s * (sx * half - px) + c * sy * half;
+        if axis == 1 {
+            az = angle;
+            cx = pivot + c * (sx * half - pivot) - s * sy * half;
+            cy = s * (sx * half - pivot) + c * sy * half;
         } else {
-            cy = c * sy * half - s * (sz * half - pz);
-            cz = pz + s * sy * half + c * (sz * half - pz);
+            ax = angle;
+            cy = c * sy * half - s * (sz * half - pivot);
+            cz = pivot + s * sy * half + c * (sz * half - pivot);
         }
     }
-    let mode = visual_mode();
-    let t = visual_time();
     let mut vertical = zero;
     let mut squeeze = one;
     if mode == ENTRY_RISE {
-        let f = fraction(t, 380);
-        let remaining = one - f;
-        vertical = -fix32::from_words(5243, 2)
-            * (remaining * fix32::from_words(26214, 0)
-                + remaining * remaining * fix32::from_words(39322, 0));
-        squeeze = one - fix32::from_words(5243, 0) * remaining;
+        let remain = one - fraction(t, 380);
+        let e =
+            remain * fix32::from_words(26214, 0) + remain * remain * fix32::from_words(39322, 0);
+        vertical = -fix32::from_words(5243, 2) * e;
+        squeeze = one - fix32::from_words(6554, 0) * e;
     }
     if mode == GOAL_DROP || mode == GOAL_LAND || mode == GOAL_CLOSE {
         let f = if mode == GOAL_DROP {
@@ -294,19 +651,18 @@ pub fn block_pose(model: &mut Model) {
         };
         vertical = -fix32::from_words(5243, 2)
             * (f * fix32::from_words(26214, 0) + f * f * fix32::from_words(39322, 0));
-        squeeze = one - fix32::from_words(5243, 0) * f;
+        squeeze = one - fix32::from_words(6554, 0) * f;
     }
-    if mode == FALL {
-        let f = fraction(t, 600);
-        vertical = -fix32::from_int(4) * f * f;
-    }
-    model.set_pose(demo_pose(
+    demo_pose(
         demo_point(
-            cx + fix32::from_int(x as i16) - fix32::from_int(4),
+            cx + fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half,
             cy + vertical,
-            cz + fix32::from_int(z as i16) - fix32::from_words(32768, 1),
+            cz + fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half,
         ),
         demo_point(ax, zero, az),
         demo_point(sx * squeeze, sy, sz * squeeze),
-    ));
+    )
+}
+pub fn block_pose(model: &mut Model) {
+    model.set_pose(block_transform());
 }

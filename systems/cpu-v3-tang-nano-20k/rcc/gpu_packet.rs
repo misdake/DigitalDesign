@@ -2,6 +2,51 @@
 use crate::dsl_rt::*;
 mod gpu_record;
 use gpu_record::*;
+mod gpu_memcpy;
+use gpu_memcpy::*;
+
+fn gpu_packet_copy_color(slot: u16, source: u16, destination: u16) -> bool {
+    if slot >= 2
+        || source & 511 != 0
+        || destination & 511 != 0
+        || !gpu_memcpy_native_valid(source, destination, GPU_API_PLANE_SECTORS)
+    {
+        return false;
+    }
+    let mut c = gpu_record_data(slot);
+    if c[GPU_RECORD_PHASE] != GPU_RECORD_READY {
+        return false;
+    }
+    let cb = c[GPU_RECORD_COMMAND_BASE];
+    let cn = c[GPU_RECORD_COMMAND_CAPACITY] >> 6;
+    let pb = c[GPU_RECORD_PUSH_BASE];
+    let pn = c[GPU_RECORD_PUSH_CAPACITY] >> 6;
+    if gpu_record_overlap(cb, cn, source, GPU_API_PLANE_SECTORS)
+        || gpu_record_overlap(pb, pn, source, GPU_API_PLANE_SECTORS)
+        || gpu_record_overlap(cb, cn, destination, GPU_API_PLANE_SECTORS)
+        || gpu_record_overlap(pb, pn, destination, GPU_API_PLANE_SECTORS)
+    {
+        return false;
+    }
+    let target = gpu_record_push_offset(slot, 16, 16);
+    if target == 65535 || !gpu_record_command_room(c, 10, 6) {
+        return false;
+    }
+    let payload = gpu_native_scratch();
+    if !gpu_memcpy_native(payload, source, destination, GPU_API_PLANE_SECTORS) {
+        return false;
+    }
+    // Prior draws finish/flush before reads. The following Pass or seal supplies
+    // the completion fence; this is ordinary native MEMCPY, without a second ABI.
+    let mut code: Buf<u16, 10> = Buf::new([3, 0x4000, 0, 0x7000, 0, 0, 1, 0x4000, 70, 0xc000]);
+    gpu_packet_dma(code.as_array(), 4, c, target, 70, 0);
+    if !gpu_record_append(slot, code.as_array(), 10, payload, 16, 16) {
+        return false;
+    }
+    c[GPU_RECORD_VALID] |= GPU_RECORD_HAS_COPY;
+    c[GPU_RECORD_TERMINAL] = 0;
+    true
+}
 
 fn gpu_packet_invalidate_textures(slot: u16) -> bool {
     let code: Buf<u16, 4> = Buf::new([3, 0x4000, 0, 0x9000]);

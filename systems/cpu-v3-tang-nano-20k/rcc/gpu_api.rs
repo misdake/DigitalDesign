@@ -5,6 +5,7 @@
     gpu_record,
     gpu_storage,
     gpu_packet,
+    gpu_memcpy,
     gpu_bind,
     gpu_mesh,
     gpu_execute,
@@ -36,6 +37,7 @@ use gpu_storage::*;
 mod gpu_packet;
 use gpu_packet::*;
 mod gpu_bind;
+mod gpu_memcpy;
 use gpu_bind::*;
 mod gpu_mesh;
 use gpu_mesh::*;
@@ -339,6 +341,34 @@ impl Drop for Mesh {
     }
 }
 impl CommandBuffer {
+    /// Copy the 400x256 physical RGB565 plane between nonoverlapping surfaces.
+    /// Records source-read/destination-write ownership; allocation tails remain
+    /// untouched. Call between passes. Submission publication/leases are shared
+    /// with drawing, and this fixed-target command disables scene patching.
+    pub fn copy_color(&mut self, source: &ColorBuffer, destination: &ColorBuffer) {
+        let s = gpu_arena_data(source.slot);
+        let d = gpu_arena_data(destination.slot);
+        if gpu_record_overlap(s[0u16], s[1u16], d[0u16], d[1u16]) {
+            gpu_api_fail(4, 2, self.slot, 0);
+        }
+        let facts: Buf<u16, 8> = Buf::new([
+            s[0u16],
+            s[1u16],
+            GPU_FACT_COLOR,
+            GPU_FACT_READ,
+            d[0u16],
+            d[1u16],
+            GPU_FACT_COLOR,
+            GPU_FACT_WRITE,
+        ]);
+        if !gpu_record_capture_room(self.slot, facts.as_array(), 2) {
+            gpu_api_fail(4, 6, self.slot, 0);
+        }
+        if !gpu_packet_copy_color(self.slot, s[0u16], d[0u16]) {
+            gpu_api_fail(4, 2, self.slot, 0);
+        }
+        gpu_record_capture_commit(self.slot, facts.as_array(), 2);
+    }
     pub fn scene_binding(&mut self) -> SceneBinding {
         gpu_api_checked(gpu_patch_binding(self.slot), 13);
         let c = gpu_record_data(self.slot);

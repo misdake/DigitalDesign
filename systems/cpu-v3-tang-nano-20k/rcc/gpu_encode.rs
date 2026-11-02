@@ -6,6 +6,8 @@ mod gpu_memory;
 use gpu_memory::*;
 mod gpu_render_profile;
 use gpu_render_profile::*;
+mod gpu_memcpy;
+use gpu_memcpy::*;
 
 pub struct GpuGlobal {
     pub far_low: u16,
@@ -262,14 +264,7 @@ pub fn gpu_encode_target(s: Array<GpuStorage>, word: u16, color: u16, depth: u16
 
 /// Sector units are 128 bytes. Cache ownership/fences belong to the caller.
 pub fn gpu_memcpy_valid(source: u16, destination: u16, sectors: u16) -> bool {
-    source & 3 == 0
-        && destination & 3 == 0
-        && sectors >= 4
-        && sectors <= 8192
-        && sectors & 3 == 0
-        && gpu_extent_valid(source, sectors)
-        && gpu_extent_valid(destination, sectors)
-        && !gpu_extents_overlap(source, sectors, destination, sectors)
+    gpu_memcpy_native_valid(source, destination, sectors)
 }
 
 pub fn gpu_encode_memcpy(
@@ -282,17 +277,8 @@ pub fn gpu_encode_memcpy(
     if !gpu_storage_room(s, word, 16, 16) || !gpu_memcpy_valid(source, destination, sectors) {
         return false;
     }
-    let p = s[0u16].cpu.add(word as i16);
-    let src = source >> 2;
-    let dst = destination >> 2;
-    let count = (sectors >> 2) - 1;
-    gpu_zero(p, 16);
-    unsafe {
-        p.write(0, src | (dst << 14));
-        p.write(1, (dst >> 2) | (count << 12));
-        p.write(2, count >> 4);
-    }
-    true
+    let out = unsafe { s[0u16].cpu.add(word as i16).as_u16_array() };
+    gpu_memcpy_native(out, source, destination, sectors)
 }
 
 /// Write one command naming a 32-byte local staging slot (66 through 79).

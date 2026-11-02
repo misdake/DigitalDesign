@@ -4,6 +4,94 @@ use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
 use std::path::Path;
 
 #[test]
+fn color_copy_preflights_ranges_capacity_phase_and_disables_partial_scene_patch() {
+    let source = r#"mod gpu_packet;mod gpu_scene_patch;
+static STEP:u16=0;
+fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
+fn main(){
+ gpu_record_init();check(gpu_record_configure(0,0x9800,1,0x9a00,4));
+ let mut c=gpu_record_data(0);
+ check(!gpu_packet_copy_color(0,0xb001,0x8000));
+ check(!gpu_packet_copy_color(0,0xb000,0x8001));
+ check(!gpu_packet_copy_color(0,0x8000,0x8000));
+ check(!gpu_packet_copy_color(0,0x8200,0x8000));
+ check(!gpu_packet_copy_color(0,0xfe00,0x8000));
+ check(!gpu_packet_copy_color(0,0x9800,0x8000));
+ check(!gpu_packet_copy_color(0,0xb000,0x9a00));
+ c[GPU_RECORD_COMMAND_USED]=56;check(!gpu_packet_copy_color(0,0xb000,0x8000));
+ check(c[GPU_RECORD_COMMAND_USED]==56&&c[GPU_RECORD_PUSH_USED]==0&&c[GPU_RECORD_TERMINAL]==0);
+ c[GPU_RECORD_COMMAND_USED]=0;c[GPU_RECORD_PUSH_USED]=256;
+ check(!gpu_packet_copy_color(0,0xb000,0x8000));check(c[GPU_RECORD_COMMAND_USED]==0);
+ c[GPU_RECORD_PUSH_USED]=0;c[GPU_RECORD_PHASE]=GPU_RECORD_PASS;
+ check(!gpu_packet_copy_color(0,0xb000,0x8000));
+ c[GPU_RECORD_PHASE]=GPU_RECORD_SEALED;check(!gpu_packet_copy_color(0,0xb000,0x8000));
+ c[GPU_RECORD_PHASE]=GPU_RECORD_READY;
+ check(gpu_packet_copy_color(0,0xb000,0x8000));
+ check(c[GPU_RECORD_COMMAND_USED]==10&&c[GPU_RECORD_PUSH_USED]==16);
+ check(c[GPU_RECORD_VALID]&GPU_RECORD_HAS_COPY!=0);
+ check(gpu_packet_begin(0,0x8000,0x9000,2,0,65535));
+ check(gpu_record_close_pass(0));check(gpu_record_seal(0));
+ // A copied fixed target cannot be silently left behind by patch_scene.
+ c[GPU_RECORD_PUSH_USED]=128;c[GPU_RECORD_GLOBAL_WORD]=33;c[GPU_RECORD_INSTANCE_WORD]=65;
+ c[GPU_RECORD_GLOBAL_BLOCKS]=1;c[GPU_RECORD_INSTANCE_BLOCKS]=1;
+ c[GPU_RECORD_SCENE_MODEL]=1;c[GPU_RECORD_SCENE_MATERIAL]=2;c[GPU_RECORD_SCENE_CAMERA]=3;c[GPU_RECORD_GENERATION_LOW]=1;
+ check(!gpu_patch_group(c));c[GPU_RECORD_VALID]&=32767;check(gpu_patch_group(c));
+ check(gpu_record_reset(0));check(c[GPU_RECORD_VALID]&GPU_RECORD_HAS_COPY==0);
+ halt(0x600d);
+}"#;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rcc");
+    let output = root.join("../../../target/bloxorz-web/api-copy");
+    let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let parsed = compile_program_named_checked(
+        "color-copy-packet",
+        source,
+        &options,
+        &RustcCheck::new(output),
+        &mut |name| {
+            std::fs::read_to_string(root.join(format!("{name}.rs"))).map_err(|e| e.to_string())
+        },
+    )
+    .unwrap();
+    let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&program.words);
+    let outcome = cpu.run(500_000).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Halted { signal: 0x600d, .. }),
+        "{outcome:?}"
+    );
+    let memory = cpu.physical_memory_mut();
+    let words = [
+        0x40000003u32,
+        0x70000000,
+        0x19a00230,
+        0x40000001,
+        0xc0000046,
+        0x40000003,
+        0x70000000,
+        0x19a00628,
+        0x40000001,
+        0xa0000045,
+        0x8001ffff,
+        0x40000003,
+        0x70000000,
+        0xf0000000,
+    ];
+    let expected = words
+        .iter()
+        .flat_map(|w| [*w as u16, (*w >> 16) as u16])
+        .collect::<Vec<_>>();
+    assert_eq!(&memory[0x9800 * 64..0x9800 * 64 + expected.len()], expected);
+    assert_eq!(
+        &memory[0x9a00 * 64..0x9a00 * 64 + 3],
+        &[0x2c00, 0xf800, 0x18]
+    );
+    assert!(memory[0x9a00 * 64 + 3..0x9a00 * 64 + 16]
+        .iter()
+        .all(|w| *w == 0));
+}
+
+#[test]
 fn pass_prefix_bytes_match_native_abi_for_each_independent_load_op() {
     let source = r#"mod gpu_packet;
 static STEP:u16=0;

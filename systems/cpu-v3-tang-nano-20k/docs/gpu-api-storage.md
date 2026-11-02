@@ -1,7 +1,7 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-11-02
+last-verified: 2026-11-03
 ---
 
 # Explicit GPU API internal core
@@ -61,6 +61,33 @@ vertices or indices. Public draw consumption uses the prepared scene adapters be
 struct syntax. `Display` wraps the independent presentation protocol below;
 `set_next_swap` copies the color address and does not retain its descriptor.
 Its caller still owns the external pixel-allocation lifetime.
+
+### Color-plane copy
+
+`CommandBuffer::copy_color(&source, &destination)` records the existing native
+MEMCPY between two `ColorBuffer` allocations, only between Passes. It copies
+exactly the 1,600-sector physical 400x256 RGB565 plane, including the 16 padded
+rows, without copying allocation tails. Source and destination keep the surface
+alignment/capacity contract above; their registered allocations must not overlap.
+Neither copied span may overlap this CB's command or push storage. Invalid
+phase, range or capacity is rejected before record/fact/backing mutation.
+
+The CB retains a source-read and destination-write allocation fact. The normal
+prepare/submit publication, Display write protection and retirement pins apply;
+the call neither submits nor releases ownership. The source must remain stable
+until retirement. Native WAIT/FLUSH precedes the source read, then DMA_LOCAL,
+transfer wait and MEMCPY use one shared descriptor encoder with the raw native
+interface. The next Pass or CB seal supplies the completion fence. A partial
+backing transport failure poisons the CB under the existing append contract.
+Texture invalidation remains explicit when a copied destination is sampled.
+
+For background restoration, copy into the actual chosen Back or offscreen color,
+then begin its Pass with `ColorLoad::load()` and an independent depth clear.
+Both alternating Back allocations require their own copy. Copy-bearing CBs
+reject scene binding and patching, including a binding obtained before the copy;
+patching a Target alone cannot silently leave an earlier MEMCPY destination fixed.
+Reset clears this restriction along with the record metadata. Native encoding,
+capture MEMCPY dependency discovery and replay formats are unchanged.
 
 ## Public prepared scene adapters
 

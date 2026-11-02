@@ -4,6 +4,84 @@ use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
 use gpu_v2::system::functional::PLANE_WORDS;
 
 #[test]
+fn public_color_copy_restores_both_targets_without_touching_source_depth_or_allocation_tails() {
+    let application = r#"mod gpu_api;use gpu_api::*;
+fn main(){
+ let a:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_sectors(0x9800,512)},push:unsafe{GpuMemory::from_sectors(0x9a00,512)}};
+ let absent:Option<CommandMemory>=None;
+ let mut gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:a,command_b:absent});
+ let mut commands=gpu.command_buffer();
+ let color_a=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
+ let color_b=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
+ let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
+ let source=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0xb000,2048)});
+ let mut display=Display::open();let mut frame:u16=0;
+ while frame<3 {
+  commands.reset();
+  if frame&1==0 {
+   {let pass=commands.pass(&color_a,&depth,ColorLoad::clear(Rgb565::from_raw(0)),DepthLoad::clear(8));}
+   commands.copy_color(&source,&color_a);
+   {let pass=commands.pass(&color_a,&depth,ColorLoad::load(),DepthLoad::clear(0x4567));}
+  } else {
+   {let pass=commands.pass(&color_b,&depth,ColorLoad::clear(Rgb565::from_raw(0)),DepthLoad::clear(8));}
+   commands.copy_color(&source,&color_b);
+   {let pass=commands.pass(&color_b,&depth,ColorLoad::load(),DepthLoad::clear(0x4567));}
+  }
+  gpu.submit(commands);commands=gpu.wait();
+  if frame&1==0 {display.set_next_swap(&color_a);} else {display.set_next_swap(&color_b);}
+  display.wait_vblank();frame+=1;
+ }
+ halt(0x600d);
+}"#;
+    let parsed =
+        super::gpu_api_resources::parse(application, "functional-color-copy", false).unwrap();
+    let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+    let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
+    sim.cpu_mut().set_boot_window(&program.words);
+    let words = 2048 * 64;
+    let visible = 1600 * 64;
+    let pattern = (0..words)
+        .map(|i| ((i * 37 + i / 256) & 65535) as u16)
+        .collect::<Vec<_>>();
+    let memory = sim.cpu_mut().physical_memory_mut();
+    memory[0xb000 * 64..0xb000 * 64 + words].copy_from_slice(&pattern);
+    for first in [0x8000, 0x8800, 0x9000] {
+        memory[first * 64..first * 64 + words].fill(0x1d3b);
+    }
+    let mut halted = false;
+    for _ in 0..2_000_000 {
+        if sim.waiting_for_vblank() {
+            sim.advance_vblank();
+        }
+        if let StepOutcome::Halted { signal } = sim.step().unwrap() {
+            assert_eq!(signal, 0x600d, "GPU error: {:?}", sim.gpu().last_error());
+            halted = true;
+            break;
+        }
+    }
+    assert!(halted, "bounded color-copy timeout");
+    assert!(sim.gpu().last_error().is_none());
+    let memory = sim.cpu_mut().physical_memory_mut();
+    assert_eq!(&memory[0xb000 * 64..0xb000 * 64 + words], &pattern);
+    for first in [0x8000, 0x8800] {
+        assert_eq!(
+            &memory[first * 64..first * 64 + visible],
+            &pattern[..visible]
+        );
+        assert!(memory[first * 64 + visible..first * 64 + words]
+            .iter()
+            .all(|w| *w == 0x1d3b));
+    }
+    assert!(memory[0x9000 * 64..0x9000 * 64 + visible]
+        .iter()
+        .all(|w| *w == 0x4567));
+    assert!(memory[0x9000 * 64 + visible..0x9000 * 64 + words]
+        .iter()
+        .all(|w| *w == 0x1d3b));
+}
+
+#[test]
 #[ignore = "requires GPU_SIM_COMPARE_REQUEST from a retained shared-frontend result"]
 fn captured_submission_matches_independent_package_result_through_thin_device() {
     use cpu_v3_tang_nano_20k::{GpuDevice, GPU_COMMAND_COUNT, GPU_COMMAND_START, GPU_STATUS};

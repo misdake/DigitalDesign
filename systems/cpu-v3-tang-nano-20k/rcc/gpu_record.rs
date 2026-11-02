@@ -26,6 +26,8 @@ const GPU_RECORD_COMMAND_USED: u16 = 5;
 const GPU_RECORD_PUSH_USED: u16 = 6;
 const GPU_RECORD_PADDED: u16 = 7;
 const GPU_RECORD_VALID: u16 = 8;
+// Copy targets are fixed commands, outside the single-scene patch contract.
+const GPU_RECORD_HAS_COPY: u16 = 32768;
 const GPU_RECORD_COLOR: u16 = 9;
 const GPU_RECORD_DEPTH: u16 = 10;
 const GPU_RECORD_INSTANCE_WORD: u16 = 11;

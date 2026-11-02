@@ -54,7 +54,8 @@ fn gpu_patch_span(c: Array<u16>, at: u16, words: u16) -> bool {
         && c[GPU_RECORD_PUSH_USED] <= c[GPU_RECORD_PUSH_CAPACITY]
 }
 fn gpu_patch_group(c: Array<u16>) -> bool {
-    c[GPU_RECORD_TARGET_BLOCKS] == 1
+    c[GPU_RECORD_VALID] & GPU_RECORD_HAS_COPY == 0
+        && c[GPU_RECORD_TARGET_BLOCKS] == 1
         && c[GPU_RECORD_GLOBAL_BLOCKS] == 1
         && c[GPU_RECORD_INSTANCE_BLOCKS] == 1
         && c[GPU_RECORD_UI_WORD] == 0
