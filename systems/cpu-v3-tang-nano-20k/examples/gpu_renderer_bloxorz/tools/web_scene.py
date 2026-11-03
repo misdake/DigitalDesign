@@ -1,7 +1,6 @@
-"""Portable geometry and low atlas for the first two Bloxorz Web stages."""
+"""Portable shared Bloxorz geometry, fixed cameras and the retained low atlas."""
 import math
 import colorsys
-from collections import defaultdict
 
 from PIL import Image
 
@@ -28,6 +27,22 @@ def camera(width, depth):
                 target=[0, .6, 0], focal=120 / tan_v, distance=distance)
 
 
+def conservative_far(level):
+    # Whole-block release: centre-to-pivot <=sqrt(1.25), |spin|<8.727,
+    # |velocity component|<9.76. Fall notifies at600ms (tick <=50ms), then
+    # a320ms fade reaches the presented reset; total fall time is <1 second.
+    # Bounds include failed off-board rolls, all rotated extents, entry/goal
+    # drops and wells. Extra vertical headroom also bounds the linear velocity
+    # term without relying on gravity reducing the upper extremum.
+    bounds=[(-level['width']/2-14,level['width']/2+14),(-60,14),
+            (-level['depth']/2-14,level['depth']/2+14)]
+    cam=camera(level['width'],level['depth'])
+    back=[cam['eye'][i]-cam['target'][i] for i in range(3)]
+    length=math.sqrt(sum(v*v for v in back));back=[v/length for v in back]
+    maximum=sum((cam['eye'][i]-bounds[i][0 if back[i]>=0 else 1])*back[i] for i in range(3))
+    return math.ceil(maximum)+4,bounds
+
+
 def uv_rect(which):
     if isinstance(which, int):
         return ((which % 2) * .25 + 16 / 1024,
@@ -37,7 +52,7 @@ def uv_rect(which):
             'side-b': (.5 + 16 / 1024, 16 / 1024, 480 / 1024, 480 / 1024)}[which]
 
 
-def mesh(name, quads):
+def mesh(name, quads, cull_negative=False):
     # Native unsigned delta10, Q16 positions at 1/128 source-unit resolution.
     step = 512
     positions = [[round(v * 65536 / step) * step for v in point]
@@ -46,6 +61,11 @@ def mesh(name, quads):
     vertices, triangles = [], []
     cursor = 0
     for points, normal, rect in quads:
+        if cull_negative:
+            a=[points[1][i]-points[0][i] for i in range(3)]
+            b=[points[2][i]-points[0][i] for i in range(3)]
+            cross=[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]
+            assert sum(cross[i]*normal[i] for i in range(3))<0
         first = len(vertices)
         for uv in [(0, 1), (1, 1), (1, 0), (0, 0)]:
             xyz = positions[cursor]
@@ -60,7 +80,7 @@ def mesh(name, quads):
         triangles += [[first, first + 1, first + 2], [first, first + 2, first + 3]]
     assert len(vertices) <= 64 and len(triangles) <= 96
     return dict(name=name, group=name, vertices=vertices, triangles=triangles,
-                config=origins + [9 | 256], color_mode=0, cull_negative=False)
+                config=origins + [9 | 256], color_mode=0, cull_negative=cull_negative)
 
 
 def floor(level, cells, name, variant=None):
@@ -75,14 +95,52 @@ def floor(level, cells, name, variant=None):
     return mesh(name, quads)
 
 
-def floors(level, name):
-    buckets = defaultdict(list)
-    for i, cell in enumerate(level['cells']):
-        x, z = i % level['width'], i // level['width']
-        if cell[0] not in (0, 3, 4, 5, 6) and [x, z] != level['start'][:2]:
-            buckets[(x // 3, z // 3)].append((x, z))
-    return [floor(level, cells[i:i + 5], name) for cells in buckets.values()
-            for i in range(0, len(cells), 5)]
+
+
+def unit_floor_face(face, variant):
+    # The same per-tile three visible quad definitions as floor(), plus the
+    # opposite sides for exact per-camera visibility on larger boards.
+    faces = [
+        ([(-1,0,-1),(1,0,-1),(1,0,1),(-1,0,1)], (0,511,0)),
+        ([(1,0,1),(1,0,-1),(1,-.4,-1),(1,-.4,1)], (511,0,0)),
+        ([(-1,0,1),(1,0,1),(1,-.4,1),(-1,-.4,1)], (0,0,511)),
+        ([(-1,0,-1),(-1,0,1),(-1,-.4,1),(-1,-.4,-1)], (-511,0,0)),
+        ([(1,0,-1),(-1,0,-1),(-1,-.4,-1),(1,-.4,-1)], (0,0,-511))]
+    points, normal = faces[face]
+    return mesh(f'shared-floor-{variant}-{face}', [(points,normal,uv_rect(variant))])
+
+def visible_floor_faces(level):
+    width,depth=level['width'],level['depth'];eye=camera(width,depth)['eye']
+    def fixed(x,z):
+        return 0<=x<width and 0<=z<depth and level['cells'][z*width+x][0] in (1,7) and [x,z]!=level['start'][:2]
+    result=[]
+    for i,cell in enumerate(level['cells']):
+        x,z=i%width,i//width
+        if not fixed(x,z):continue
+        variant=(x*3+z*5)%4
+        faces=[0]
+        # Dynamic bridges, switches and open goal/start cells never suppress a
+        # static boundary face. A 1/Q16 margin conservatively keeps edge-on faces.
+        for face,nx,nz,visible in [(1,x+1,z,eye[0]>=x+1-width/2-1/65536),(2,x,z+1,eye[2]>=z+1-depth/2-1/65536),(3,x-1,z,eye[0]<=x-width/2+1/65536),(4,x,z-1,eye[2]<=z-depth/2+1/65536)]:
+            if not fixed(nx,nz) and visible:faces.append(face)
+        result.extend(x|(z<<5)|(face<<10)|(variant<<13) for face in faces)
+    return result
+
+
+def unit_tile(variant,untextured=False):
+    parts=[unit_floor_face(f,variant) for f in range(5)]
+    # Build the same five quads as the shared faces in a single native meshlet.
+    vertices=[];triangles=[]
+    origin=[min(p['config'][i] for p in parts) for i in range(3)]
+    for part in parts:
+        first=len(vertices)
+        for pos,normal,uv in part['vertices']:
+            values=[((pos>>(10*i))&1023)+(part['config'][i]-origin[i])//512 for i in range(3)]
+            vertices.append([sum(v<<(10*i) for i,v in enumerate(values)),normal,0xffffff if untextured else uv])
+        triangles.extend([[first+t for t in tri] for tri in part['triangles']])
+    return dict(name=f'unit-tile-{variant}',group='unit-tile',vertices=vertices,triangles=triangles,config=origin+[9|256],color_mode=int(untextured),cull_negative=False)
+
+
 
 
 def block():
@@ -97,11 +155,11 @@ def block():
         normal = [0, 0, 0]
         normal[axis] = sign * 511
         quads.append(([tuple(c * .49 for c in p) for p in face], normal, uv_rect(rect_name)))
-    return mesh('block', quads)
+    return mesh('block', quads, cull_negative=True)
 
 
 def plain(name, quads):
-    result = mesh(name, quads)
+    result = mesh(name, quads, cull_negative=True)
     result['color_mode'] = 1
     for vertex in result['vertices']:
         vertex[2] = 0xffffff
@@ -126,31 +184,22 @@ def box_quads(center, size):
 
 
 def well():
-    quads = box_quads((0, -2.14, 0), (1, .12, 1))
-    for width, height, y in [(.99, .195, -.1025), (1, 1.88, -1.14)]:
-        offset = (width - .03) / 2
-        for sign in [-1, 1]:
-            quads += box_quads((0, y, sign * offset), (width, height, .03))
-            quads += box_quads((sign * offset, y, 0), (.03, height, .94 if height < 1 else 1))
-    return [plain('well', quads[i:i + 15]) for i in range(0, len(quads), 15)]
-
-
-def soft_glyph():
-    quads = []
-    for i in range(8):
-        a, b = i * math.pi / 4, (i + 1) * math.pi / 4
-        points = [(math.cos(t) * r, 0, math.sin(t) * r)
-                  for t, r in [(a, .15), (b, .15), (b, .25), (a, .25)]]
-        quads.append((points, (0, 511, 0), uv_rect(0)))
-    return plain('soft-glyph', quads)
+    # A cavity owns its interior, not overlapping closed boxes and hidden caps.
+    a=.47;top=-.005;bottom=-2.08;rect=uv_rect(0)
+    quads=[
+        ([(-a,bottom,-a),(a,bottom,-a),(a,bottom,a),(-a,bottom,a)],(0,511,0),rect),
+        ([(-a,top,-a),(a,top,-a),(a,bottom,-a),(-a,bottom,-a)],(0,0,511),rect),
+        ([(a,top,a),(-a,top,a),(-a,bottom,a),(a,bottom,a)],(0,0,-511),rect),
+        ([(-a,top,a),(-a,top,-a),(-a,bottom,-a),(-a,bottom,a)],(511,0,0),rect),
+        ([(a,top,-a),(a,top,a),(a,bottom,a),(a,bottom,-a)],(-511,0,0),rect),
+    ]
+    return [plain('well',quads)]
 
 
 def heavy_base():
     return plain('heavy-base', box_quads((0, 0, 0), (.44, .05, .44)))
 
 
-def heavy_glyph():
-    return plain('heavy-glyph', box_quads((0, 0, 0), (.26, .06, .26)))
 
 
 def palette(hex_rgb):

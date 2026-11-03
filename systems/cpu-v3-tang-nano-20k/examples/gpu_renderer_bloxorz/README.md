@@ -1,17 +1,17 @@
 # Bloxorz RTT presentation
 
-This continuous CPU V3 application uses the first two original Bloxorz stages,
+This continuous CPU V3 application uses all33 imported Bloxorz stages,
 ordinary GPU meshes and the resource renderer. The 400×240 pixel-mode Camera,
 low atlas, wells, textured floors/player, switches and projected shadow follow
-the Web scene. Native lighting and RGB565 quantization remain documented differences.
+the Web scene. Native lighting, RGB565 quantization and the flat animated goal inlay on ordinary-floor neighborhoods remain documented differences.
 
 RIGHT/LEFT/DOWN/UP roll and repeat after settlement; the most recently pressed
-held direction wins. START restarts, TRIANGLE/L1/R1 change stage, and Square
-undoes. SELECT toggles the original dither background and solid #2c2620.
+held direction wins. START restarts, TRIANGLE/R1 select the next stage, L1 the previous stage, and
+Square undoes. Cross swaps split cubes; Circle toggles frame statistics. SELECT toggles the original dither background and solid #2c2620.
 Outgoing roll/tip/fall and goal closing continue behind a live RTT veil colored
 #142238. A presented opaque endpoint gates reset; the presented transparent
 endpoint starts entry. Locked-period edges are discarded and held directions
-require release. Ordinary rendering omits the diagnostic HUD.
+require release. Ordinary rendering always shows the current level; optional DRAW/MS values describe the previous completed frame. MS measures vblank return through the final GPU wait, with cold-start dashes until that interval is available.
 
 ```powershell
 & systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/build.ps1
@@ -19,23 +19,26 @@ require release. Ordinary rendering omits the diagnostic HUD.
 ```
 
 The explicit `gpu_renderer_bloxorz` selector pins column layout and RGB565 column
-layout ABI2, checks actual RCC library bodies with rustc, and compares generated boot
-bytes against independent CB06 packaging. Products stay under this worktree's
+layout ABI2; diagnostic command versions come from the canonical capture ABI
+definitions rather than an application-local number. It checks actual RCC library
+bodies with rustc and compares generated boot bytes against independent CB06 packaging. Products stay under this worktree's
 `target/`. This does not change the default boot application or program a board;
 matching `production` GPU and Display hardware is required.
 
 See the [presentation documents](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/README.md) for phase ordering, live source ownership, veil arithmetic and verification.
 
-The current entry contains only the first two original stages. Their rules,
-256-entry compact undo timeline, bridge synchronization, tipping/release,
-entry/goal motion and colored RTT transitions are connected. This does not
-claim all 33 stages, split/fragile presentation or Web PBR equivalence.
+All33 levels,256-entry complete undo, nine bridge channels, fragile cracking/drop,
+split/swap/merge, tipping/release, entry/goal motion and live transitions are
+connected. Special-tile marks use a deterministic128KiB RGB atlas, preserving the
+necessary moving bodies. Inactive bridge hints use alpha60. The imported reference
+leaves stage23 unverified; this does not claim all33 levels solvable or Web PBR
+equivalence. CPU/GPU/Display correctness tests do not establish hardware FPS.
 
 Background bytes and their transfer/Display contract are described with the
 [asset](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/assets/README.md).
 The [ground shadow](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/shadow.md) follows the prepared player matrix through clipped unit-triangle Instances.
-Static well components share native mesh groups; the caller retains a packed
-one-word resting block key so unchanged poses preserve the driver's existing derived
+Static floors are generated into a stable heap package at stage load and drawn in material groups; moving and transparent objects retain their own paths. Static well components share native mesh groups; the caller retains a packed
+two-word resting block key so unchanged poses preserve the driver's existing derived
 matrix cache. Animation poses still update, and Camera revisions independently
 invalidate that driver cache.
 
@@ -75,3 +78,9 @@ CB06 application/resources at 0x100000. `profile.json` binds all three hashes.
 The recipe remains offline. Application-only output is suitable for later
 updates only when the stored FPGA configuration already supports this profile;
 an application write can return the board to its stored FPGA configuration.
+
+The HUD uses the frozen native 16px Vonwaon ASCII bitmap described in
+[asset provenance](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/assets/README.md).
+The generated `hud-font-atlas-1x1.png` decodes the actual Native UI lookup without
+scaling or smoothing. A local TTF is needed only to deliberately regenerate the
+frozen source, never for the normal build.

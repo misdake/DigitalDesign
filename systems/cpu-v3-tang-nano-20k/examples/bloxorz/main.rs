@@ -37,17 +37,46 @@ struct Case {
     steps: Vec<[u16; 8]>,
 }
 
+#[cfg(test)]
 fn cases() -> Vec<Case> {
+    cases_schema(false)
+}
+fn cases_schema(compact: bool) -> Vec<Case> {
+    let text = if compact {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let path = root.join(format!(
+            "../../target/bloxorz-compact-reference/{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(std::process::Command::new("python")
+            .arg("-B")
+            .arg(root.join("examples/gpu_renderer_bloxorz/tools/assets.py"))
+            .arg("--compact-reference")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::read_to_string(path).unwrap()
+    } else {
+        include_str!("assets/reference.txt").to_owned()
+    };
     let mut result: Vec<Case> = Vec::new();
-    for line in include_str!("assets/reference.txt").lines() {
+    for line in text.lines() {
         let mut words = line.split_whitespace();
         match words.next() {
             Some("level") => {
                 let name = words.next().unwrap().to_owned();
                 let _unverified = words.next().unwrap();
                 let level: Vec<u16> = words.map(|v| v.parse().unwrap()).collect();
-                assert_eq!(level[7], 1);
-                assert_eq!(level.len(), 8 + usize::from(level[6]) * 8);
+                assert_eq!(level[7], if compact { 2 } else { 1 });
+                assert_eq!(
+                    level.len(),
+                    8 + usize::from(level[6]) * if compact { 2 } else { 8 }
+                );
                 assert_eq!(level[6], level[0] * level[1]);
                 assert!(level[6] <= 256);
                 result.push(Case {
@@ -95,10 +124,14 @@ fn compile(source: &str) -> Vec<u16> {
         .words
 }
 
+#[cfg(test)]
 fn replay() -> usize {
+    replay_schema(false)
+}
+fn replay_schema(compact: bool) -> usize {
     let code = compile(PROGRAM);
     let mut total = 0;
-    for case in cases() {
+    for case in cases_schema(compact) {
         let mut cpu = CpuV3Sim::default();
         cpu.set_boot_window(&code);
         assert!(case.steps.len() <= 512);
@@ -138,7 +171,7 @@ fn main() {
     }
     println!(
         "Bloxorz CPU rule replay: {} reference transitions passed",
-        replay()
+        replay_schema(std::env::args().any(|arg| arg == "--compact"))
     );
 }
 
@@ -201,6 +234,10 @@ fn main(){
             matches!(result, super::RunOutcome::Halted { signal: 2, .. }),
             "{result:?}"
         );
+    }
+    #[test]
+    fn compact_rules_match_original_game_step_by_step() {
+        assert_eq!(super::replay_schema(true), 7705);
     }
     #[test]
     fn rcc_rules_match_original_game_step_by_step() {

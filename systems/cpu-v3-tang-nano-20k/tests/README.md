@@ -707,3 +707,11 @@ return the new GPU physical payload rather than stale cache data, preserve all
 memory/clocks/registers, and allow normal explicit clean/invalidate afterward.
 This does not qualify arbitrary FPU producer stores, a serialized CPU checkpoint,
 all interrupted resets, real input, GPU bus competition or board performance.
+
+
+Bloxorz's `gpu_renderer_bloxorz.rs` also checks the load-time heap builder against
+independently decoded legacy native vertices for33 stages, current-address
+capture after level1->2->1 rebuilds, and vblank-to-final-GPU-wait HUD boundaries
+including wrap/cold startup. The sibling `gpu_renderer_bloxorz_batch_cost.rs`
+contains the explicit ignored stage8 legacy/batch CPU+functional-GPU comparison;
+its logic cycles are not whole-system GPU/display performance.

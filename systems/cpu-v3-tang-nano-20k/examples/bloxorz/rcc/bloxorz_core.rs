@@ -3,26 +3,72 @@ use crate::dsl_rt::*;
 
 // State words: x,z,orientation,bridge mask,phase,moves,other x/z,active,split.
 // Phases: playing=0, success=1, fall=2. Commands: +X,-X,+Z,-Z,restart,undo,swap.
-// Level: eight header words, then eight words per cell. See docs/core.md.
+// Level: eight header words; schema1 eight words/cell, schema2 two words/cell.
 pub const BLOX_HISTORY: u16 = 256;
 
 fn blox_cell(level: Array<u16>, x: i16, z: i16) -> u16 {
     if x < 0 || z < 0 || x as u16 >= level[0u16] || z as u16 >= level[1u16] {
         return 0;
     }
-    8 + ((z as u16) * level[0u16] + x as u16) * 8
+    1 + (z as u16) * level[0u16] + x as u16
+}
+// Schema1 preserves the public reference format; schema2 is the compact
+// renderer-resident representation. Cell0 is the out-of-board sentinel.
+pub fn blox_field(level: Array<u16>, cell: u16, field: u16) -> u16 {
+    let compact = level[7u16] == 2;
+    let at = 8 + (cell - 1) * (if compact { 2u16 } else { 8u16 });
+    if !compact {
+        return level[at + field];
+    }
+    let first = level[at];
+    let second = level[at + 1];
+    let kind = first & 7;
+    if field == 0 {
+        return kind;
+    }
+    if field == 1 {
+        return 1u16 << (second >> 12);
+    }
+    if field == 2 {
+        return if kind == 3 || kind == 4 {
+            (first >> 3) & 4095
+        } else {
+            4095u16
+        };
+    }
+    if field == 3 {
+        return if kind == 3 || kind == 4 {
+            second & 4095
+        } else {
+            0u16
+        };
+    }
+    if field == 4 {
+        return if kind == 7 && second & 32768 != 0 {
+            (first >> 3) & 31
+        } else {
+            65535u16
+        };
+    }
+    if field == 5 {
+        return (first >> 8) & 31;
+    }
+    if field == 6 {
+        return second & 31;
+    }
+    (second >> 5) & 31
 }
 fn blox_tile(level: Array<u16>, x: i16, z: i16) -> u16 {
     let cell = blox_cell(level, x, z);
     if cell == 0 {
         return 0;
     }
-    level[cell]
+    blox_field(level, cell, 0)
 }
 fn blox_switch(level: Array<u16>, mut state: Array<u16>, x: i16, z: i16) {
     let cell = blox_cell(level, x, z);
     if cell != 0 {
-        state[3u16] = (state[3u16] & level[cell + 2]) ^ level[cell + 3];
+        state[3u16] = (state[3u16] & blox_field(level, cell, 2)) ^ blox_field(level, cell, 3);
     }
 }
 fn blox_support(level: Array<u16>, x: i16, z: i16, mask: u16, heavy: bool) -> bool {
@@ -30,8 +76,8 @@ fn blox_support(level: Array<u16>, x: i16, z: i16, mask: u16, heavy: bool) -> bo
     if cell == 0 {
         return false;
     }
-    let tile = level[cell];
-    tile != 0 && !(tile == 2 && heavy) && !(tile == 5 && mask & level[cell + 1] == 0)
+    let tile = blox_field(level, cell, 0);
+    tile != 0 && !(tile == 2 && heavy) && !(tile == 5 && mask & blox_field(level, cell, 1) == 0)
 }
 fn blox_whole_rest(level: Array<u16>, mut state: Array<u16>) {
     let x = state[0u16] as i16;
@@ -49,11 +95,11 @@ fn blox_whole_rest(level: Array<u16>, mut state: Array<u16>) {
     state[4u16] = 0;
     if orient == 0 && blox_tile(level, x, z) == 7 {
         let cell = blox_cell(level, x, z);
-        if level[cell + 4] != 65535 {
-            state[0u16] = level[cell + 4];
-            state[1u16] = level[cell + 5];
-            state[6u16] = level[cell + 6];
-            state[7u16] = level[cell + 7];
+        if blox_field(level, cell, 4) != 65535 {
+            state[0u16] = blox_field(level, cell, 4);
+            state[1u16] = blox_field(level, cell, 5);
+            state[6u16] = blox_field(level, cell, 6);
+            state[7u16] = blox_field(level, cell, 7);
             state[8u16] = 0;
             state[9u16] = 1;
             return;

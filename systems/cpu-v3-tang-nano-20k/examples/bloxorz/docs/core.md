@@ -23,6 +23,28 @@ without walking an operation list on CPU. A maximum-size level occupies4112 byte
 the imported set's largest board occupies2416 bytes. These are ordinary CPU game
 data, separate from GPU physical Mesh/Texture allocations.
 
+## Compact renderer-resident level format
+
+Schema2 keeps the same eight-word header, with header word7=2 and two words per
+cell. The rule engine accepts both schemas; the original reference serialization
+and snapshot/command contracts remain unchanged. The renderer validates its
+imported set at at most150 cells and uses308 resident words.
+
+| Kind | Word0 | Word1 |
+| --- | --- | --- |
+| All | kind in bits2:0 | kind-specific payload |
+| Soft/heavy switch | keep mask14:3 | xor mask11:0, primary colour-channel index15:12 |
+| Bridge | kind | channel index15:12 |
+| Splitter | first X7:3, first Z12:8 | second X4:0, second Z9:5, destination-valid15 |
+| Other | kind only | zero |
+
+The colour-channel index is not the switch action mask; ordered switch keep/xor
+transforms retain their full12-bit semantics. Splitter coordinates are five bits.
+The shared CPU implementation decodes fields at their point of use. The asset
+producer's `--compact-reference` path converts the retained original input while
+leaving all independently captured expected steps intact; the example's
+`--compact` replay and test run those same transitions on the compiled CPU.
+
 ## Rules and storage
 
 `blox_dispatch` accepts +X0, -X1, +Z2, -Z3, restart4, undo5 and swap6. Normal

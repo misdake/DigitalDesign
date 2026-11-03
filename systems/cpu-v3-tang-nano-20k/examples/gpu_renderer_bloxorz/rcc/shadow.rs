@@ -6,6 +6,8 @@ mod gpu_demo_api;
 use gpu_demo_api::*;
 mod session;
 use session::*;
+mod render_stats;
+use render_stats::*;
 
 #[derive(Copy, Clone)]
 struct ShadowScalar {
@@ -69,6 +71,9 @@ fn shadow_receivers() -> u16 {
     }
     if mode > GOAL_OPEN && mode <= GOAL_CLOSE {
         flags |= 2;
+    }
+    if FRACTURE[0u16] != 65535 && SESSION[0u16] == FALL {
+        flags |= 4;
     }
     flags
 }
@@ -416,7 +421,7 @@ fn shadow_draw(
     );
     let texture = demo_texture();
     let view = texture.view();
-    pass.draw(mesh, model, material, &view);
+    counted_draw(pass, mesh, model, material, &view);
     SHADOW_INFO[2u16] += 1;
 }
 
@@ -501,13 +506,13 @@ pub fn draw_shadow(
     while i < LEVEL[6u16] {
         let x = rem_u16(i, LEVEL[0u16]);
         let z = div_u16(i, LEVEL[0u16]);
-        let at = 8 + i * 8;
-        let kind = LEVEL[at];
+        let kind = level_field(i, 0);
         let left = fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half;
         let top = fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half;
         let start = x == LEVEL[2u16] && z == LEVEL[3u16];
         let receiving = kind != 0
-            && !(kind == 5 && mask & LEVEL[at + 1] == 0)
+            && !fragile_dropped(i)
+            && !(kind == 5 && mask & level_field(i, 1) == 0)
             && !(start && (mode == ENTRY_OPEN || mode == ENTRY_RISE))
             && !(kind == 6 && mode > GOAL_OPEN && mode <= GOAL_CLOSE);
         if receiving && left + one >= min_x && left <= max_x && top + one >= min_z && top <= max_z {
