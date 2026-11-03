@@ -1,13 +1,29 @@
-//! Cycle models of the production command-profile transport, not a full GPU.
+//! Cycle models of the production command GPU and its transport components.
 //!
 //! `outputs` observes old state. `clock` commits one wall edge, independently
-//! of compute CE. The caller owns all RAM, clocks and physical memory traffic.
+//! of compute CE. The caller owns physical memory backing, clocks and traffic;
+//! composed GPU owners retain the production source, pool and cache RAM banks.
 //! Invalid peers return a contract violation at the monitored edge; they do
 //! not acquire the checked standalone profile's recovery/rollback semantics.
 
 pub mod command;
 pub mod command_dma;
+pub mod compute;
+pub mod draw;
+pub mod frontend;
+pub mod interpolator;
+pub mod lighting;
+pub mod pixel_math;
+pub mod pool;
+pub mod postquad;
+pub mod prepare;
+pub mod producer;
+pub mod raster;
+pub mod render;
 pub mod router;
+pub mod sampling;
+pub mod tdp;
+pub mod ui;
 pub mod vertex;
 
 use std::fmt;

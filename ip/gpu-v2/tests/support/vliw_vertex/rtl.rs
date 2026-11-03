@@ -6,14 +6,14 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-struct Pin {
-    name: String,
-    width: u32,
-    value: u128,
-    known: u128,
-    output: bool,
+pub(crate) struct Pin {
+    pub name: String,
+    pub width: u32,
+    pub value: u128,
+    pub known: u128,
+    pub output: bool,
 }
-fn schema(e: &Edge) -> Vec<Pin> {
+pub(crate) fn schema(e: &Edge) -> Vec<Pin> {
     let mut p = Vec::new();
     let i = e.input;
     let o = e.output;
@@ -105,7 +105,7 @@ fn schema(e: &Edge) -> Vec<Pin> {
     }
     p
 }
-fn wrapper(p: &[Pin]) -> String {
+pub(crate) fn wrapper(p: &[Pin]) -> String {
     let mut s = String::from("module g2a(input clk");
     for f in p {
         write!(
@@ -192,7 +192,7 @@ pub fn root() -> PathBuf {
     fs::create_dir_all(&p).unwrap();
     p
 }
-fn tool(mut c: Command, dir: &Path, label: &str) -> std::process::ExitStatus {
+fn tool(mut c: Command, dir: &Path, label: &str, limit: u64) -> std::process::ExitStatus {
     let mut child = c
         .current_dir(dir)
         .stdout(Stdio::from(
@@ -208,10 +208,10 @@ fn tool(mut c: Command, dir: &Path, label: &str) -> std::process::ExitStatus {
         if let Some(s) = child.try_wait().unwrap() {
             return s;
         }
-        if start.elapsed() > Duration::from_secs(30) {
+        if start.elapsed() > Duration::from_secs(limit) {
             child.kill().unwrap();
             child.wait().unwrap();
-            panic!("{label} exceeded30s");
+            panic!("{label} exceeded{limit}s");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -220,13 +220,67 @@ pub fn compare(root: &Path, label: &str, run: &Run) {
     qualify(root, label, run, None, false);
 }
 pub fn qualify(root: &Path, label: &str, run: &Run, mutation: Option<&str>, contract: bool) {
-    let dir = root.join(label);
-    fs::create_dir(&dir).unwrap();
     let p = schema(&run.trace[0]);
     let mut source = production(&p);
     if let Some(m) = mutation {
         source = mutate(source, m);
     }
+    let expected = if contract {
+        Some(match label.strip_prefix("contract-").unwrap() {
+            "bad_header" | "bad_uniform" => "GPU contract: invalid_header",
+            "cp_owner" => "CP read while V/T owns input Q",
+            "collision" => "iz_ram36跨口同址冲突",
+            "bad_dma" | "active_payload" | "active_metadata" | "active_uniform" => {
+                "DMA sink lost its statically independent write port"
+            }
+            _ => panic!("unknown contract {label}"),
+        })
+    } else {
+        None
+    };
+    replay(
+        root,
+        label,
+        run.trace.iter().map(schema).collect(),
+        source,
+        mutation.is_some(),
+        expected,
+    );
+}
+pub(crate) fn replay(
+    root: &Path,
+    label: &str,
+    rows: Vec<Vec<Pin>>,
+    source: String,
+    difference: bool,
+    expected: Option<&str>,
+) {
+    replay_bounded(root, label, rows, source, difference, expected, 30);
+}
+/// Whole DRAW has a separately approved sixty-second simulator budget.
+#[allow(dead_code)] // Shared leaf test binaries intentionally use replay only.
+pub(crate) fn replay_whole(
+    root: &Path,
+    label: &str,
+    rows: Vec<Vec<Pin>>,
+    source: String,
+    difference: bool,
+    expected: Option<&str>,
+) {
+    replay_bounded(root, label, rows, source, difference, expected, 60);
+}
+fn replay_bounded(
+    root: &Path,
+    label: &str,
+    rows: Vec<Vec<Pin>>,
+    source: String,
+    difference: bool,
+    expected: Option<&str>,
+    limit: u64,
+) {
+    let dir = root.join(label);
+    fs::create_dir(&dir).unwrap();
+    let p = &rows[0];
     fs::write(dir.join("dut.v"), source).unwrap();
     let mut tb = String::from(
         "`timescale 1ns/1ps\nmodule tb;reg clk=0;always #5 clk=~clk;integer fd,n,k,b;\n",
@@ -234,7 +288,7 @@ pub fn qualify(root: &Path, label: &str, run: &Run, mutation: Option<&str>, cont
     let mut fmt = String::new();
     let mut names = String::new();
     let mut checks = String::new();
-    for f in &p {
+    for f in p {
         if f.output {
             writeln!(
                 tb,
@@ -256,16 +310,16 @@ pub fn qualify(root: &Path, label: &str, run: &Run, mutation: Option<&str>, cont
         }
     }
     tb.push_str("g2a top(.clk(clk)");
-    for f in &p {
+    for f in p {
         write!(tb, ",.{}({})", f.name, f.name).unwrap();
     }
     tb.push_str(");initial begin fd=$fopen(\"vectors.txt\",\"r\");if(!fd)$fatal;\n");
     let columns: usize = p.iter().map(|p| if p.output { 2 } else { 1 }).sum();
-    writeln!(tb,"for(n=0;n<{};n=n+1)begin @(negedge clk);k=$fscanf(fd,\"{fmt}\\n\"{names});if(k!={columns})$fatal(1,\"vectors\");#1;if(n>0)begin {checks} end @(posedge clk);#1;end $display(\"G2A_PASS edges={}\");$finish;end initial begin #{};$fatal(1,\"watchdog\");end endmodule",run.trace.len(),run.trace.len(),run.trace.len()*10+1000).unwrap();
+    writeln!(tb,"for(n=0;n<{};n=n+1)begin @(negedge clk);k=$fscanf(fd,\"{fmt}\\n\"{names});if(k!={columns})$fatal(1,\"vectors\");#1;if(n>0)begin {checks} end @(posedge clk);#1;end $display(\"G2A_PASS edges={}\");$finish;end initial begin #{};$fatal(1,\"watchdog\");end endmodule",rows.len(),rows.len(),rows.len()*10+1000).unwrap();
     fs::write(dir.join("tb.v"), tb).unwrap();
     let mut vectors = String::new();
-    for e in &run.trace {
-        for f in schema(e) {
+    for row in &rows {
+        for f in row {
             write!(vectors, "{:x} ", f.value).unwrap();
             if f.output {
                 write!(vectors, "{:x} ", f.known).unwrap();
@@ -278,16 +332,17 @@ pub fn qualify(root: &Path, label: &str, run: &Run, mutation: Option<&str>, cont
         Command::new(std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into()));
     compile.args(["-g2012", "-s", "tb", "-o", "test.vvp", "dut.v", "tb.v"]);
     assert!(
-        tool(compile, &dir, "compile").success(),
+        tool(compile, &dir, "compile", 30).success(),
         "{}",
         fs::read_to_string(dir.join("compile.err")).unwrap()
     );
     let mut execute = Command::new(std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into()));
     execute.arg("test.vvp");
-    let status = tool(execute, &dir, "run");
+    let status = tool(execute, &dir, "run", limit);
     let text = fs::read_to_string(dir.join("run.out")).unwrap();
-    let success = mutation.is_none() && !contract;
-    fs::write(dir.join("verdict.json"),format!("{{\"label\":\"{label}\",\"edges\":{},\"expected_success\":{success},\"actual_success\":{},\"contract_rejection\":{contract}}}\n",run.trace.len(),status.success())).unwrap();
+    let contract = expected.is_some();
+    let success = !difference && !contract;
+    fs::write(dir.join("verdict.json"),format!("{{\"label\":\"{label}\",\"edges\":{},\"expected_success\":{success},\"actual_success\":{},\"contract_rejection\":{contract}}}\n",rows.len(),status.success())).unwrap();
     assert_eq!(status.success(), success, "{label}: {text}");
     if success {
         assert!(text.contains("G2A_PASS"));
@@ -296,18 +351,9 @@ pub fn qualify(root: &Path, label: &str, run: &Run, mutation: Option<&str>, cont
             !text.contains("DIFF") && !text.contains("KNOWN"),
             "monitor must reject first: {text}"
         );
-        let expected = match label.strip_prefix("contract-").unwrap() {
-            "bad_header" | "bad_uniform" => "GPU contract: invalid_header",
-            "cp_owner" => "CP read while V/T owns input Q",
-            "collision" => "iz_ram36跨口同址冲突",
-            "bad_dma" | "active_payload" | "active_metadata" | "active_uniform" => {
-                "DMA sink lost its statically independent write port"
-            }
-            _ => panic!("missing exact production contract expectation {label}"),
-        };
         assert!(
-            text.contains(expected),
-            "{label} expected {expected}: {text}"
+            text.contains(expected.unwrap()),
+            "{label} expected {expected:?}: {text}"
         );
     } else {
         assert!(

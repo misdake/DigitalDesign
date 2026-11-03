@@ -1,12 +1,17 @@
-//! Production compact input/bounds/Vertex subset. Triangle execution is explicit
-//! Unsupported, before any new Vertex result is written for that meshlet.
+//! Selected production input/bounds/V and explicitly enabled indexed T16 modes.
+//! Default constructors retain the V-only unsupported-T boundary. The explicit
+//! `with_triangles` constructors share the same RF/MAC/ROM and physical storage.
 mod core;
+mod export;
 mod input;
 mod meshlet;
+mod triangle;
 use super::{require, ContractError};
 pub use core::{Core, CoreInput, CoreOutput, Registers};
+pub use export::Export;
 pub use input::{Bits, InputRam, RamPorts};
 pub use meshlet::{Input, Meshlet, Output, Phase};
+pub use triangle::Triangle;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {

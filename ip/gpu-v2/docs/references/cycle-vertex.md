@@ -1,6 +1,6 @@
 # Production input, bounds and Vertex cycle subset
 
-`system::vliw_cycle::vertex` models the selected compact command-profile input
+Default constructors of `system::vliw_cycle::vertex` model the selected compact command-profile input
 storage, meshlet metadata controller, bounds prologue and complete V-mode.
 It consumes V96 and writes the production five-field result layout. It does
 not use the independent PackedVertex v6 schedule or its seven serial rows.
@@ -11,6 +11,11 @@ Neither object owns Memory, an arbiter, physical clocks or a functional GPU.
 A caller samples all participants before advancing them. DMA writes are wall
 edge events, including CE0; compute, metadata reads and source requests use CE.
 An error terminates the run at its declared boundary; recovery is unspecified.
+
+`Core::with_triangles()` and `Meshlet::with_triangles()` explicitly enable the
+[indexed T16 extension](/ip/gpu-v2/docs/references/cycle-triangle.md), using the
+same RF/MAC/ROM and result storage. The unsupported-T statements below describe
+the default V-only constructors.
 
 ## Storage and ownership
 

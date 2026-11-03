@@ -1,5 +1,14 @@
 # GPU regression tests
 
+## Complete command GPU cycle composition
+
+`vliw_cycle_aux_control`, `vliw_cycle_aux_ui`, `vliw_cycle_aux_tdp` and
+`vliw_cycle_aux_native` qualify CLEAR, UI_GRID/range and MEMCPY against actual
+production modules and one native backing. Explicit ignored tests compile real
+DUT mutations and whole GPU roots; set Icarus/Gowin paths. `vliw_cycle_draw_uv`
+adds full-command mixed RGB/UV/lit/UI/copy runs. See the
+[implemented composition and bounds](/ip/gpu-v2/docs/references/cycle-auxiliary.md).
+
 ## Production command transport cycle model
 
 `cargo test --release -p gpu-v2 --test vliw_cycle_transport -- --include-ignored --nocapture --test-threads=1`
@@ -31,6 +40,91 @@ Memory-fed double-page/cache overlap. The ignored short qualification requires
 compares known bits, and detects compiled DUT mutations and illegal peers.
 No complete DRAW/T pipeline, CPU/Display contention or board timing is claimed.
 See the [subset contract](/ip/gpu-v2/docs/references/cycle-vertex.md).
+
+## Production indexed T16 cycle extension
+
+`cargo test --release -p gpu-v2 --test vliw_cycle_triangle -- --include-ignored --nocapture --test-threads=1`
+checks real index reads, shared production T32 arithmetic, all sixteen exported
+fields, default16-slot fill/wrap and old-full credit, three-meshlet epoch lifetime,
+reset, illegal peers, actual DUT mutations and native Memory-fed inputs.
+Set `IVERILOG_EXE`/`VVP_EXE` for explicit ignored RTL qualification. The sink only
+provides ready and checks accepted offers; no functional rendering fallback,
+complete GPU/CPU/Display composition or board timing is claimed.
+See the [extension contract](/ip/gpu-v2/docs/references/cycle-triangle.md).
+
+## Production DRAW preparation and interpolation
+
+`vliw_cycle_draw` qualifies explicitly enabled installed-state/DRAW command
+control using controlled render/flush peers; see its [contract](/ip/gpu-v2/docs/references/cycle-draw-control.md).
+
+`cargo test --release -p gpu-v2 --test vliw_cycle_prepare --test vliw_cycle_context --test vliw_cycle_compute --test vliw_cycle_interpolator -- --include-ignored --nocapture --test-threads=1`
+checks private PA/PB/PC and DSP arithmetic, empty bounds, geometry replay,
+inactive-page writes, old-I drain and actual four-phase interpolation/analytic
+LOD. Explicit ignored RTL entries require `IVERILOG_EXE`/`VVP_EXE` and include
+actual DUT mutations and the original sample-before-switch monitor. Raster and
+pool remain controlled peers in this fixture. No complete DRAW, native-memory
+rendering, pixel backend or board timing is claimed. See the
+[implemented contract](/ip/gpu-v2/docs/references/cycle-draw-interpolation.md).
+
+`vliw_cycle_raster` and `vliw_cycle_pool` provide the explicit ignored portable
+RTL qualification for the actual walker/scanner and command pool. Run with
+`--include-ignored --nocapture --test-threads=1`; they require `IVERILOG_EXE`/`VVP_EXE`.
+`vliw_cycle_frontend` and `vliw_cycle_producer` check the live indexed G3-to-pool
+Rust wiring with finite downstream peers. Their scope is described in the
+[producer contract](/ip/gpu-v2/docs/references/cycle-draw-producer.md); none of
+these entries executes a complete pixel backend or physical framebuffer write.
+
+`vliw_cycle_pixel_math` and `vliw_cycle_tdp` compare the selected shared
+Final/ROP arithmetic, four-bank framebuffer storage and wall maintenance with
+production RTL. Their explicit ignored cases include actual DUT mutations and
+original contract monitors. `vliw_cycle_render` connects real G3/R/I/pool,
+join, Final and TDP for a small RGB/unlit triangle, with independent constant
+color/coverage and whole-backing checks. Its ignored case replays the actual
+current GPU compute root, including the vendor model for the fixed native
+Group35 bank. Set `IVERILOG_EXE`, `VVP_EXE` and `GOWIN_HOME`; all entries have
+finite edge/process bounds. CP, DMA loading and framebuffer sector transport
+remain peers here. See the [pixel contract](/ip/gpu-v2/docs/references/cycle-draw-pixel.md).
+
+`vliw_cycle_gpu` drives two real CP/DMA RGB command buffers through one native
+arbiter/controller/pins model and checks partial physical writes and the full
+backing after each END. Its ignored positive case compares the actual command
+GPU RTL root with that native feedback tape; the MC stays outside the RTL DUT.
+Its ignored negative case checks target wiring, second-submission validity and
+the original busy COUNT monitor. Its RGB/lit case connects actual pool tuples
+and Lighting with installed ambient mode and compares the whole command root;
+Sampling remains a peer. `vliw_cycle_lighting` separately checks full H9 against
+independent stage integers and portable/vendor-DSP RTL, including live globals,
+stalls, masked lanes, warm reset and three compiled mutations. See its
+[contract](/ip/gpu-v2/docs/references/cycle-draw-lighting.md).
+
+`vliw_cycle_sampling_direct` checks POT/RTT source-Q coordinates and six-row
+credit/lifetime against independent integer layout and both actual factories.
+`vliw_cycle_sampling_coefficient` checks the selected three-product arithmetic,
+sole-bank weight write ports and mask/metadata publication. Both include finite
+compiled mutations and original monitor rejections. See the
+[Sampling leaf boundary](/ip/gpu-v2/docs/references/cycle-draw-sampling.md).
+`vliw_cycle_sampling_packet` covers actual Member/Work16/two-edge Packet and
+registered native Group35/H15 transport. Geometric references cover POT/coarse
+and RTT, full old credits, ring wrap and warm reset; finite mutations and
+original monitors exercise its last-consumer and physical-address boundaries.
+`vliw_cycle_sampling_color` checks independent per-tap half-up RAW565 sums,
+the two-edge cache DO loan, Public16 credit/reuse and direct result-bank writes.
+Portable and vendor six-DSP/ALU54D RTL expose all retained known bits; finite
+mutations and original completion/ownership monitors cover the boundaries.
+`vliw_cycle_sampling_cache` checks physical32-line/two-sector fills, the sole
+128-row weight bank, paid pins, wall returns and borrowed texel DO. Independent
+memory geometry, both RAM profiles, five abort phases and invalidation with a
+held paid pin have bounded RTL checks; five mutations and three original
+monitors exercise these resource boundaries.
+`vliw_cycle_sampling` connects all selected sampler owners and compares
+independent integer pixels for both RAM profiles, all three filters/full mip
+fractions, periodic small mip padding, RTT and Work16 pressure.
+`vliw_cycle_draw_uv` executes two Device4 CBs with actual RGB then UV/lit,
+nonidentity H9, crossing texture fills, depth and Q6; full native backing checks
+include both planes and guards. Repeated draws exercise the fifth source bit
+and public31-to0 wrap. Complete production CP-to-router DUTs use native feedback;
+their separate60-second simulator budget complements leaf30-second bounds.
+The CE0 abort case observes physical drain while logical pool tokens remain.
 
 ## Native functional backend
 

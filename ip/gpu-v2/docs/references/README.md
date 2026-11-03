@@ -35,6 +35,14 @@ verification claims.
 | [Command transport cycle model](/ip/gpu-v2/docs/references/cycle-transport.md) | Production DMA/router wall-edge ownership and native-memory differential fixtures |
 | [Command-control cycle subset](/ip/gpu-v2/docs/references/cycle-command.md) | Device4 submission, synchronous command fetch, fence/flush/END and bounded subset qualification |
 | [Input and Vertex cycle subset](/ip/gpu-v2/docs/references/cycle-vertex.md) | Production input pages, metadata, bounds/V-mode, old-state storage and explicit T boundary |
+| [Indexed T16 cycle extension](/ip/gpu-v2/docs/references/cycle-triangle.md) | Shared production T32/index, sixteen-slot ownership, epoch lifetime and synchronous T16 export |
+| [Installed-state and DRAW control](/ip/gpu-v2/docs/references/cycle-draw-control.md) | Explicit CP object/DMA/DRAW control; controlled-peer qualification, with the rendering pipeline still external |
+| [Complete command GPU composition](/ip/gpu-v2/docs/references/cycle-auxiliary.md) | CLEAR bypass, UI source-Q/DMA ownership, raw MEMCPY and full command/native-memory qualification |
+| [Preparation and interpolation cycle models](/ip/gpu-v2/docs/references/cycle-draw-interpolation.md) | Private preparation, context replay and actual four-phase compute/LOD; Raster and pool remain external |
+| [Recursive Raster and producer pool](/ip/gpu-v2/docs/references/cycle-draw-producer.md) | Physical walker/scanner, authoritative 32-quad pool and live indexed frontend composition; pixel consumers remain external |
+| [Selected Final and framebuffer TDP](/ip/gpu-v2/docs/references/cycle-draw-pixel.md) | Two-credit/shared arithmetic, four-bank maintenance and installed CP/DMA RGB composition, including native-MC qualification; Sampling remains external |
+| [Selected live-global Lighting](/ip/gpu-v2/docs/references/cycle-draw-lighting.md) | II4 scheduled H9 arithmetic, pool tuple loans, live globals and actual CP/DMA RGB/lit composition; Sampling remains external |
+| [Command Sampling cycle owners](/ip/gpu-v2/docs/references/cycle-draw-sampling.md) | Source-Q C6, direct weights and Member/Work16/Packet/native Group48; texture/weight banks and Color are external |
 
 All simulator entry points require finite cycle/step/work bounds. Host vector
 sizes, operation counts and fixture intervals do not define hardware ABI,

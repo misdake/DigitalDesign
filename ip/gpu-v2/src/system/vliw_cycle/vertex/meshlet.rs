@@ -14,6 +14,10 @@ pub enum Phase {
     Check = 7,
     VStart = 9,
     VWait = 10,
+    Index = 11,
+    IndexQ = 12,
+    TStart = 13,
+    TWait = 14,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Input {
@@ -26,6 +30,8 @@ pub struct Input {
     pub dma_address: u16,
     pub dma_data: u64,
     pub output_ready: bool,
+    pub packet_ready: bool,
+    pub word_ready: bool,
     pub cp_read: bool,
     pub cp_address: u16,
 }
@@ -47,6 +53,8 @@ pub struct Meshlet {
     pub active_slot: bool,
     pub vertices: u8,
     pub triangles: u8,
+    pub group_position: u8,
+    pub index_group: u64,
     pub uniform_base: u8,
     pub index_cursor: u8,
     pub attribute_mode: bool,
@@ -61,9 +69,17 @@ pub struct Meshlet {
     pub monitored_page: bool,
 }
 impl Meshlet {
+    pub fn with_triangles() -> Self {
+        Self {
+            core: Core::with_triangles(),
+            ..Self::default()
+        }
+    }
     fn connect(&self, i: Input) -> (CoreInput, bool) {
         let cp = self.phase == Phase::Idle && !i.start;
-        let source_read = matches!(self.phase, Phase::Meta0 | Phase::Meta1 | Phase::Meta3);
+        let index_read = self.phase == Phase::Index && self.index_cursor & 128 == 0;
+        let source_read =
+            matches!(self.phase, Phase::Meta0 | Phase::Meta1 | Phase::Meta3) || index_read;
         let word = match self.phase {
             Phase::Meta0 => 0,
             Phase::Meta1 => 1,
@@ -81,7 +97,15 @@ impl Meshlet {
                 reset: i.reset,
                 ce: i.ce,
                 start_v: self.phase == Phase::VStart,
-                start_t: false,
+                start_t: self.phase == Phase::TStart,
+                triangle_descriptor: u32::from(self.generation) << 28
+                    | u32::from(self.sequence) << 21
+                    | u32::from(self.normal_mode) << 20
+                    | u32::from(self.attribute_mode) << 19
+                    | (self.index_group as u32 & 0x3ffff),
+                cull_negative: self.cull_negative,
+                packet_ready: i.packet_ready,
+                word_ready: i.word_ready,
                 meshlet_reset: self.phase == Phase::Check,
                 vertex_count: self.vertices,
                 uniform_base: self.uniform_base,
@@ -95,6 +119,8 @@ impl Meshlet {
                 source_read: source_read || cp && i.cp_read,
                 source_address: if cp {
                     i.cp_address & 511
+                } else if index_read {
+                    u16::from(self.active_slot) * 128 + u16::from(self.index_cursor & 127)
                 } else {
                     256 + u16::from(self.active_slot) * 4 + word
                 },
@@ -150,6 +176,8 @@ impl Meshlet {
             self.generation,
             self.ready,
             self.done,
+            self.group_position,
+            self.index_group,
         );
         if i.reset {
             next = (
@@ -166,6 +194,8 @@ impl Meshlet {
                 0,
                 false,
                 false,
+                0,
+                0,
             );
         } else if i.ce {
             next.12 = false;
@@ -182,7 +212,7 @@ impl Meshlet {
                 Phase::Meta0Q => {
                     let v = o.core.source_data.get(64, "meshlet header0")?;
                     let triangles = ((v >> 8) & 127) as u8;
-                    if triangles != 0 {
+                    if triangles != 0 && !self.core.supports_triangles() {
                         return Err(Error::UnsupportedTriangles {
                             count: triangles,
                             slot: self.active_slot,
@@ -215,15 +245,55 @@ impl Meshlet {
                 }
                 Phase::Check => {
                     check(
-                        self.vertices <= 64 && self.uniform_base >> 2 == 5,
+                        self.vertices <= 64
+                            && self.triangles <= 96
+                            && self.uniform_base >> 2 == 5
+                            && (self.triangles == 0
+                                || self.vertices != 0
+                                    && u16::from(self.index_cursor)
+                                        >= (u16::from(self.vertices) * 3).div_ceil(2)),
                         "invalid meshlet header",
                     )?;
                     next.0 = Phase::VStart;
                 }
                 Phase::VStart => next.0 = Phase::VWait,
                 Phase::VWait if o.core.done_v => {
-                    next.12 = true;
-                    next.0 = Phase::Idle;
+                    if self.triangles == 0 || o.core.published_vertices == 0 {
+                        next.12 = true;
+                        next.0 = Phase::Idle;
+                    } else {
+                        next.0 = Phase::Index;
+                    }
+                }
+                Phase::Index => {
+                    check(self.index_cursor & 128 == 0, "index cursor")?;
+                    if o.core.source_ready {
+                        next.5 = self.index_cursor.wrapping_add(1);
+                        next.0 = Phase::IndexQ;
+                    }
+                }
+                Phase::IndexQ => {
+                    next.14 = o.core.source_data.get(54, "index group")?;
+                    next.13 = 0;
+                    next.0 = Phase::TStart;
+                }
+                Phase::TStart if o.core.triangle_ready => next.0 = Phase::TWait,
+                Phase::TWait if o.core.done_t => {
+                    if self.triangles == 1 {
+                        next.3 = 0;
+                        next.12 = true;
+                        next.0 = Phase::Idle;
+                    } else {
+                        next.3 = self.triangles - 1;
+                        next.9 = self.sequence.wrapping_add(1) & 127;
+                        next.14 = self.index_group >> 18;
+                        if self.group_position == 2 {
+                            next.0 = Phase::Index;
+                        } else {
+                            next.13 = self.group_position + 1;
+                            next.0 = Phase::TStart;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -255,6 +325,8 @@ impl Meshlet {
             self.generation,
             self.ready,
             self.done,
+            self.group_position,
+            self.index_group,
         ) = next;
         Ok(())
     }

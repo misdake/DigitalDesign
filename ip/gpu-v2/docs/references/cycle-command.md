@@ -8,6 +8,10 @@ opcodes return `UnsupportedOpcode`; invalid selected encodings return the
 corresponding production `ContractError`. No functional renderer fallback is
 used. This is a command-control subset, not the complete production GPU.
 
+These boundaries describe the default constructors. Explicit
+`with_all_commands` constructors select the implemented
+[complete command composition](/ip/gpu-v2/docs/references/cycle-auxiliary.md).
+
 ## Device and ownership
 
 | Interface | Implemented contract |

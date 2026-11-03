@@ -1,7 +1,7 @@
 //! Pixel lighting ports, three numerical models, cycle emulator and static RTL.
 
 pub mod calendars;
-mod datapath;
+pub(crate) mod datapath;
 pub mod dsp_sharing;
 pub mod emu;
 mod format;

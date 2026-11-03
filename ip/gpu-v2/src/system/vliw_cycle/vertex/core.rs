@@ -1,4 +1,7 @@
+use super::export::{ExportComb, ExportWrite};
+use super::triangle::{TComb, TInput};
 use super::{check, mask, signed, Bits, Error, InputRam, RamPorts};
+use super::{Export, Triangle};
 use std::{collections::BTreeMap, sync::OnceLock};
 
 fn rom() -> &'static [u128; 512] {
@@ -110,6 +113,10 @@ pub struct CoreInput {
     pub ce: bool,
     pub start_v: bool,
     pub start_t: bool,
+    pub triangle_descriptor: u32,
+    pub cull_negative: bool,
+    pub packet_ready: bool,
+    pub word_ready: bool,
     pub meshlet_reset: bool,
     pub vertex_count: u8,
     pub uniform_base: u8,
@@ -127,6 +134,24 @@ pub struct CoreInput {
 pub struct CoreOutput {
     pub busy: bool,
     pub done_v: bool,
+    pub done_t: bool,
+    pub triangle_ready: bool,
+    pub packet_valid: bool,
+    pub descriptor: Bits,
+    pub word_valid: bool,
+    pub word_index: u8,
+    pub word_data: Bits,
+    pub coefficient_write: bool,
+    pub coefficient_address: u16,
+    pub coefficient_data: Bits,
+    pub publish: bool,
+    pub packet_take: bool,
+    pub word_take: bool,
+    pub release_slot: bool,
+    pub export_read: bool,
+    pub export_address: u16,
+    pub position_read: bool,
+    pub position_read_address: u16,
     pub meshlet_ready: bool,
     pub drained: bool,
     pub dma_ready: bool,
@@ -145,6 +170,11 @@ pub struct CoreOutput {
 pub struct Registers {
     pub busy: bool,
     pub done_v: bool,
+    pub done_t: bool,
+    pub triangle_mode: bool,
+    pub refs: u32,
+    pub cull: bool,
+    pub building_descriptor: u32,
     pub bounds_safe: bool,
     pub published_vertices: u8,
     pub pc: u16,
@@ -173,6 +203,11 @@ impl Default for Registers {
         Self {
             busy: false,
             done_v: false,
+            done_t: false,
+            triangle_mode: false,
+            refs: 0,
+            cull: false,
+            building_descriptor: 0,
             bounds_safe: false,
             published_vertices: 0,
             pc: 0,
@@ -202,6 +237,10 @@ impl Default for Registers {
 pub struct Core {
     pub regs: Registers,
     pub input: InputRam,
+    pub triangle: Triangle,
+    pub export: Export,
+    pub position_q: Bits,
+    triangles_enabled: bool,
     rf: [Bits; 16],
     positions: [Bits; 512],
     attributes: [Bits; 512],
@@ -212,6 +251,10 @@ impl Default for Core {
         Self {
             regs: Registers::default(),
             input: InputRam::default(),
+            triangle: Triangle::default(),
+            export: Export::default(),
+            position_q: Bits::default(),
+            triangles_enabled: false,
             rf: [Bits::new(0, 32); 16],
             positions: [Bits::default(); 512],
             attributes: [Bits::default(); 512],
@@ -224,6 +267,10 @@ struct Comb {
     ports: RamPorts,
     step: bool,
     launch: bool,
+    launch_t: bool,
+    t: TComb,
+    tin: TInput,
+    export: ExportComb,
     next_pc: u16,
     left: Bits,
     pack_value: Bits,
@@ -234,6 +281,15 @@ struct Comb {
     normal12: Bits,
 }
 impl Core {
+    pub fn with_triangles() -> Self {
+        Self {
+            triangles_enabled: true,
+            ..Self::default()
+        }
+    }
+    pub fn supports_triangles(&self) -> bool {
+        self.triangles_enabled
+    }
     pub fn rom_word(address: u16) -> u128 {
         rom()[(address & 511) as usize]
     }
@@ -254,7 +310,16 @@ impl Core {
         mac(
             self.regs.pl,
             self.regs.ph,
-            if c.field("acc_op") == 1 {
+            if self.regs.triangle_mode && c.bit(70) {
+                Bits::new(
+                    if self.triangle.align_negative {
+                        mask(26)
+                    } else {
+                        0
+                    },
+                    54,
+                )
+            } else if c.field("acc_op") == 1 {
                 Bits::new(0, 54)
             } else {
                 self.regs.acc
@@ -267,7 +332,7 @@ impl Core {
         let l = c.field("l_src");
         let rr = c.field("r_src");
         let emit = c.field("emit");
-        let vertex_emit = emit != 0 && !(r.field == 3 && emit == 1);
+        let vertex_emit = !r.triangle_mode && emit != 0 && !(r.field == 3 && emit == 1);
         let step = i.ce && r.busy && !i.reset && (!vertex_emit || i.output_ready);
         let source_ready =
             !r.busy && !i.reset && !i.start_v && !i.start_t && i.source_address & 512 == 0;
@@ -322,6 +387,22 @@ impl Core {
             _ => r.unpacked,
         };
         let y = self.mac_y();
+        let tin = TInput {
+            reset: i.reset,
+            active: r.triangle_mode,
+            pc: r.pc,
+            ins: r.control,
+            cull: r.cull,
+            refs: r.refs,
+            work: self.input.right_q(),
+            unpacked: r.unpacked,
+            acc: r.acc,
+            y,
+        };
+        let t = self.triangle.comb(tin);
+        let export = self
+            .export
+            .comb(i.reset, i.ce, i.packet_ready, i.word_ready);
         let rf_write = match c.field("rf_wsrc") {
             1 => unpacked,
             3 => Bits::new(
@@ -355,13 +436,40 @@ impl Core {
             4 => next_pc = r.pc,
             _ => {}
         }
+        if r.triangle_mode {
+            next_pc = t.next_pc;
+        }
         let write = step && vertex_emit;
         Comb {
             o: CoreOutput {
                 busy: r.busy,
                 done_v: r.done_v,
-                meshlet_ready: !r.busy && !i.reset,
-                drained: !r.busy && !i.reset,
+                done_t: r.done_t,
+                triangle_ready: !r.busy && !i.reset && !self.export.full(),
+                packet_valid: export.packet_valid,
+                descriptor: self.export.head().slice(0, 32),
+                word_valid: self.export.valid && !i.reset,
+                word_index: self.export.index,
+                word_data: self.export.data,
+                coefficient_write: step && t.coefficient_write,
+                coefficient_address: u16::from(t.coefficient_row) * 16
+                    + u16::from(self.export.produced & 15),
+                coefficient_data: t.coefficient_data,
+                publish: step && t.publish,
+                packet_take: export.packet_take,
+                word_take: export.word_take,
+                release_slot: export.release,
+                export_read: export.read,
+                export_address: export.address,
+                position_read: step && t.pos_read,
+                position_read_address: t.pos_address,
+                meshlet_ready: !r.busy
+                    && !i.reset
+                    && (self.export.empty() || ((self.export.head().value >> 32) != 0) == r.epoch),
+                drained: !r.busy
+                    && !i.reset
+                    && self.export.empty()
+                    && self.export.import_state == 0,
                 dma_ready: !i.reset && i.dma_address & 512 == 0,
                 source_ready,
                 source_data: self.input.source_q(),
@@ -372,32 +480,74 @@ impl Core {
                 position_write: write && r.field < 3,
                 position_address: (u16::from(r.field & 3) << 6) | u16::from(r.vertex_id),
                 attribute_write: write && r.field >= 3,
-                attribute_address: 256
-                    | (u16::from(r.field >> 2) << 7)
-                    | (u16::from(r.epoch) << 6)
-                    | u16::from(r.vertex_id),
+                attribute_address: if r.triangle_mode {
+                    u16::from(t.coefficient_row) * 16 + u16::from(self.export.produced & 15)
+                } else {
+                    256 | (u16::from(r.field >> 2) << 7)
+                        | (u16::from(r.epoch) << 6)
+                        | u16::from(r.vertex_id)
+                },
             },
             ports: RamPorts {
                 reset: i.reset,
                 dma_write: i.dma_write && !i.reset && i.dma_address & 512 == 0,
                 dma_address: i.dma_address,
                 dma_data: i.dma_data,
-                left_read: source_take || step && l != 0,
-                right_read: source_take || step && (rr != 0 || c.field("work_en") != 0),
+                left_read: source_take || step && !r.triangle_mode && l != 0,
+                right_read: source_take
+                    || step
+                        && if r.triangle_mode {
+                            t.work_read
+                        } else {
+                            rr != 0 || c.field("work_en") != 0
+                        },
                 left_address: if source_take { i.source_address } else { la },
-                right_address: if source_take { i.source_address } else { ra },
-                work_write: step && c.field("work_we") != 0,
-                work_address: ra,
-                work_data: r.packed.slice(0, 36),
+                right_address: if source_take {
+                    i.source_address
+                } else if r.triangle_mode {
+                    384 | t.work_ra
+                } else {
+                    ra
+                },
+                work_write: step
+                    && if r.triangle_mode {
+                        t.work_write
+                    } else {
+                        c.field("work_we") != 0
+                    },
+                work_address: if r.triangle_mode { 384 | t.work_wa } else { ra },
+                work_data: if r.triangle_mode {
+                    t.work_data
+                } else {
+                    r.packed.slice(0, 36)
+                },
             },
             step,
             launch: i.ce && i.start_v && !r.busy && !i.reset,
+            launch_t: self.triangles_enabled
+                && i.ce
+                && i.start_t
+                && !r.busy
+                && !i.start_v
+                && !self.export.full()
+                && !i.reset,
+            t,
+            tin,
+            export,
             next_pc,
             left,
             pack_value: pack,
             rf_write,
-            mac_a: a,
-            mac_b: right,
+            mac_a: if t.mac_constant { t.mac_a } else { a },
+            mac_b: if r.triangle_mode {
+                if c.bit(3) {
+                    pack.slice(0, 27).extend(27, 36)
+                } else {
+                    self.input.right_q().slice(0, 30).extend(30, 36)
+                }
+            } else {
+                right
+            },
             mac_y: y,
             normal12: packed_normal,
         }
@@ -412,9 +562,25 @@ impl Core {
         if i.reset {
             self.input.clock(x.ports)?;
             self.regs = Registers::default();
+            self.triangle = Triangle::default();
+            self.position_q = Bits::new(0, 36);
+            self.export.clock(
+                true,
+                i.ce,
+                x.export,
+                ExportWrite {
+                    publish: false,
+                    descriptor: Bits::default(),
+                    coefficient: false,
+                    address: 0,
+                    data: Bits::default(),
+                },
+                &self.attributes,
+                &self.colors,
+            )?;
             return Ok(());
         }
-        if i.ce && i.start_t && !r.busy && !i.start_v {
+        if !self.triangles_enabled && i.ce && i.start_t && !r.busy && !i.start_v {
             return Err(Error::UnsupportedStartT);
         }
         if x.launch {
@@ -431,26 +597,87 @@ impl Core {
                 "Vertex capacity",
             )?;
         }
+        if x.launch_t {
+            check(
+                (0..3).all(|n| {
+                    ((i.triangle_descriptor >> (n * 6)) & 63) < u32::from(r.published_vertices)
+                }),
+                "refs_valid",
+            )?;
+        }
+        if i.ce && i.meshlet_reset {
+            check(
+                x.o.meshlet_ready,
+                "attribute epoch reused before final indexed export",
+            )?;
+        }
+        if x.step && r.triangle_mode && c.field("rf_wsrc") == 1 {
+            let u = r.unpacked.get(32, "T position")?;
+            check(
+                (-(1 << 25)..(1 << 25)).contains(&signed(u, 32)),
+                "triangle position exceeds bounded F16 range",
+            )?;
+        }
+        if x.step && r.triangle_mode && ((r.control >> 6) & 7) != 0 {
+            r.acc.get(54, "T normalization")?;
+        }
+        if x.o.coefficient_write {
+            x.o.coefficient_data.get(54, "T coefficient")?;
+        }
+        if x.o.attribute_write && !self.export.empty() {
+            check(
+                ((self.export.head().value >> 32) != 0) != r.epoch,
+                "V writes an attribute epoch still owned by queued T",
+            )?;
+        }
+        check(
+            !(x.o.position_read
+                && x.o.position_write
+                && x.o.position_read_address == x.o.position_address),
+            "position cross-port collision",
+        )?;
+        check(
+            !(x.export.read && x.o.attribute_write && x.export.address == x.o.attribute_address),
+            "attribute cross-port collision",
+        )?;
         if x.o.position_write || x.o.attribute_write {
             x.o.emit_data.get(36, "valid Vertex result")?;
         }
         let mut n = r.clone();
-        if x.launch || x.step {
-            n.control = Self::rom_word(if x.launch { 256 } else { x.next_pc });
+        if x.launch || x.launch_t || x.step {
+            n.control = Self::rom_word(if x.launch {
+                256
+            } else if x.launch_t {
+                128
+            } else {
+                x.next_pc
+            });
         }
-        if x.step && c.field("mul_en") != 0 {
+        if x.step
+            && if r.triangle_mode {
+                x.t.mac_enable
+            } else {
+                c.field("mul_en") != 0
+            }
+        {
             n.pl = product(x.mac_a, x.mac_b, false);
             n.ph = product(x.mac_a, x.mac_b, true);
         }
         if i.ce {
             n.done_v = false;
-            if x.step && c.field("acc_op") != 0 {
-                n.acc = x.mac_y;
+            n.done_t = false;
+            if x.step {
+                if r.triangle_mode && x.t.acc_write {
+                    n.acc = x.t.acc_data;
+                } else if c.field("acc_op") != 0 {
+                    n.acc = x.mac_y;
+                }
             }
             if i.meshlet_reset {
                 n.published_vertices = 0;
             }
             if x.launch {
+                n.triangle_mode = false;
                 n.busy = i.vertex_count & 127 != 0;
                 n.done_v = i.vertex_count & 127 == 0;
                 n.pc = 256;
@@ -462,6 +689,23 @@ impl Core {
                 n.emit_pointer = 0;
                 n.vertex_id = r.published_vertices & 63;
                 n.field = 0;
+            } else if x.launch_t {
+                n.triangle_mode = true;
+                n.busy = true;
+                n.pc = 128;
+                n.refs = i.triangle_descriptor & 0x3ffff;
+                n.cull = i.cull_negative;
+                n.building_descriptor = i.triangle_descriptor;
+            } else if x.step && r.triangle_mode {
+                n.pc = x.next_pc;
+                if c.push() == 4 || c.push() == 5 {
+                    n.unpacked = self.position_q.slice(0, 32);
+                    n.unpack_kind = c.push();
+                }
+                if x.t.done {
+                    n.busy = false;
+                    n.done_t = true;
+                }
             } else if x.step {
                 n.pc = x.next_pc;
                 if r.pc & 256 != 0 {
@@ -580,6 +824,40 @@ impl Core {
                 }
             }
         }
+        let descriptor = Bits::concat(
+            Bits::new(u64::from(r.epoch), 1),
+            Bits::new(
+                u64::from(
+                    (r.building_descriptor & !(1 << 18))
+                        | (u32::from(self.triangle.negative) << 18),
+                ),
+                32,
+            ),
+            32,
+        );
+        self.export.clock(
+            false,
+            i.ce,
+            x.export,
+            ExportWrite {
+                publish: x.o.publish,
+                descriptor,
+                coefficient: x.o.coefficient_write,
+                address: x.o.coefficient_address,
+                data: x.o.coefficient_data,
+            },
+            &self.attributes,
+            &self.colors,
+        )?;
+        if x.o.position_read {
+            check(
+                x.o.position_read_address >> 6 < 3,
+                "T position read outside planes",
+            )?;
+            self.position_q = self.positions[x.o.position_read_address as usize];
+        }
+        self.triangle
+            .clock(x.tin, x.t, x.launch_t, i.ce && (x.step || x.launch_t));
         self.input.clock(x.ports)?;
         if x.step && c.field("rf_wsrc") != 0 {
             self.rf[c.field("rf_dst") as usize] = x.rf_write.slice(0, 32);
@@ -589,6 +867,9 @@ impl Core {
         }
         if x.o.attribute_write {
             self.attributes[x.o.attribute_address as usize] = x.o.emit_data;
+        }
+        if x.o.coefficient_write {
+            self.attributes[x.o.coefficient_address as usize] = x.o.coefficient_data.slice(0, 36);
         }
         if i.ce && i.meshlet_reset {
             self.colors[usize::from(!r.epoch)] = Bits::new(u64::from(i.mesh_color), 32);

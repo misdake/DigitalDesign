@@ -1,8 +1,15 @@
 //! Production command-control subset. Render and RAM remain explicit peers.
 use super::{
-    command_dma::Cache, require, ContractError, Input as TransportInput, Output as TransportOutput,
-    Physical, Transport,
+    command_dma::{Cache, Work},
+    require, ContractError, Input as TransportInput, Output as TransportOutput, Physical,
+    Transport,
 };
+#[path = "command_aux.rs"]
+mod auxiliary;
+#[path = "command_draw.rs"]
+mod draw;
+pub use auxiliary::{Input as AuxiliaryInput, Output as AuxiliaryOutput};
+pub use draw::{Bindings, Input as DrawInput};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeviceBus {
@@ -51,11 +58,25 @@ pub enum Phase {
     Idle = 0,
     Fetch = 1,
     Exec = 2,
+    DrawWait = 3,
+    ApplyRead = 4,
+    ApplyWrite = 5,
     Waiting = 7,
     Flushing = 8,
     Ending = 9,
     Failed = 10,
     Latch = 11,
+    ClearRequest = 12,
+    ClearWait = 13,
+    ClearDone = 14,
+    ColorRead = 15,
+    ColorWrite = 16,
+    DrawStart = 17,
+    UiWait = 18,
+    CopyAddress = 19,
+    CopyRequest = 20,
+    CopyWait = 21,
+    CopyDone = 22,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProcessorInput {
@@ -75,6 +96,8 @@ pub struct ProcessorInput {
     pub cache_ready: bool,
     pub cache_done: bool,
     pub cache_done_bank: bool,
+    pub draw: DrawInput,
+    pub auxiliary: AuxiliaryInput,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProcessorOutput {
@@ -85,6 +108,12 @@ pub struct ProcessorOutput {
     pub ram_address: u16,
     pub cache: Cache,
     pub flush_request: bool,
+    pub work: Work,
+    pub start: bool,
+    pub draw_slot: bool,
+    pub texture_invalidate: bool,
+    pub bindings: Bindings,
+    pub auxiliary: AuxiliaryOutput,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -123,8 +152,40 @@ pub struct Processor {
     diagnostic_pc: u32,
     limit: u32,
     count_seen: bool,
+    draw: Option<draw::Draw>,
+    auxiliary: Option<auxiliary::Auxiliary>,
 }
 impl Processor {
+    /// Explicit production DRAW/config control. Render and source ports must
+    /// still be connected by the caller; this constructor is not a whole GPU.
+    pub fn with_draws() -> Self {
+        Self {
+            draw: Some(draw::Draw::default()),
+            ..Self::default()
+        }
+    }
+    /// All production command opcodes, with explicit physical auxiliary peers.
+    pub fn with_all_commands() -> Self {
+        Self {
+            auxiliary: Some(Default::default()),
+            ..Self::with_draws()
+        }
+    }
+    /// Register observations: global/render/target validity, page/uniform masks,
+    /// metadata uniform selectors, and the current object row.
+    pub fn draw_status(&self) -> Option<(bool, bool, bool, u8, u8, u8, u8)> {
+        self.draw.as_ref().map(|d| {
+            (
+                d.global_valid,
+                d.render_valid,
+                d.target_valid,
+                d.pages,
+                d.uniforms,
+                d.page_uniform,
+                d.object_index,
+            )
+        })
+    }
     pub fn phase(&self) -> Phase {
         self.phase
     }
@@ -136,7 +197,7 @@ impl Processor {
     }
     pub fn outputs(&self, i: ProcessorInput) -> ProcessorOutput {
         let stop = i.abort || self.failed;
-        ProcessorOutput {
+        let mut o = ProcessorOutput {
             submit_ready: !self.busy && !self.failed && !i.abort,
             busy: self.busy,
             stop,
@@ -155,7 +216,21 @@ impl Processor {
                 bank: self.fetch_bank,
             },
             flush_request: self.phase == Phase::Flushing && !stop,
+            ..Default::default()
+        };
+        if let Some(d) = &self.draw {
+            d.outputs(self, i, &mut o);
         }
+        if let Some(a) = &self.auxiliary {
+            o.cache.valid &= self.phase != Phase::UiWait
+                && !(self.command >> 28 == 11
+                    && matches!(
+                        self.phase,
+                        Phase::Exec | Phase::ApplyRead | Phase::ApplyWrite
+                    ));
+            o.auxiliary = a.outputs(self, i, o);
+        }
+        o
     }
     fn advance(&mut self, old: &Self) {
         if old.pc & 31 == 31 {
@@ -167,7 +242,17 @@ impl Processor {
     }
     pub fn clock(&mut self, i: ProcessorInput) -> Result<(), Error> {
         if i.reset {
-            *self = Self::default();
+            let retained = self.auxiliary.as_ref().map(|a| a.copy_address);
+            *self = if self.auxiliary.is_some() {
+                Self::with_all_commands()
+            } else if self.draw.is_some() {
+                Self::with_draws()
+            } else {
+                Self::default()
+            };
+            if let Some(address) = retained {
+                self.auxiliary.as_mut().unwrap().copy_address = address;
+            }
             return Ok(());
         }
         let o = self.outputs(i);
@@ -209,10 +294,21 @@ impl Processor {
                     "CP END contract",
                 )?,
                 13 | 14 => check(false, "CP opcode contract")?,
+                1 | 2 | 3 | 5 | 6 | 9 | 10 if self.draw.is_some() => {}
+                8 | 11 | 12 if self.auxiliary.is_some() => {}
                 op => return Err(Error::UnsupportedOpcode(op as u8)),
             }
         }
+        if let Some(d) = &self.draw {
+            d.check(self, i)?;
+        }
+        if let Some(a) = &self.auxiliary {
+            a.check(self, i, o)?;
+        }
         let mut n = self.clone();
+        if let Some(d) = &mut n.draw {
+            d.wall(i.draw);
+        }
         if i.bus.count() && o.submit_ready {
             n.fetch_left = ((i.bus.data & 0x3fff) >> 5) + 1;
             n.limit = u32::from(i.bus.data & 0x3fff) * 4 + 4;
@@ -244,6 +340,9 @@ impl Processor {
             n.cache_pages = 0;
             n.all_fence = false;
             n.stored = false;
+            if let Some(d) = &mut n.draw {
+                d.new_submission();
+            }
             n.phase = Phase::Fetch;
         } else if i.ce && !o.stop {
             match self.phase {
@@ -262,8 +361,35 @@ impl Processor {
                 }
                 Phase::Exec => match self.command >> 28 {
                     0 => n.advance(self),
+                    1 | 2 => {
+                        if i.draw.work_ready {
+                            n.advance(self);
+                        }
+                    }
+                    3 => {
+                        if self.draw.as_ref().unwrap().inputs(self, i) {
+                            n.phase = Phase::ColorRead;
+                        }
+                    }
                     4 => n.phase = Phase::Waiting,
+                    5 | 6 | 10 => {
+                        n.draw.as_mut().unwrap().object_index = 0;
+                        n.phase = Phase::ApplyRead;
+                    }
                     7 => n.phase = Phase::Flushing,
+                    8 => {
+                        let a = n.auxiliary.as_mut().unwrap();
+                        a.clear_flight = 0;
+                        a.clear_offer = false;
+                        n.phase = Phase::ClearRequest;
+                    }
+                    11 | 12 => {
+                        if i.dma_idle {
+                            n.draw.as_mut().unwrap().object_index = 0;
+                            n.phase = Phase::ApplyRead;
+                        }
+                    }
+                    9 => n.advance(self),
                     15 => {
                         n.fetch_left = 0;
                         n.phase = Phase::Ending;
@@ -284,12 +410,58 @@ impl Processor {
                     n.stored = true;
                     n.advance(self);
                 }
+                Phase::ApplyRead | Phase::ColorRead if i.ram_ready => {
+                    n.phase = if self.phase == Phase::ApplyRead {
+                        Phase::ApplyWrite
+                    } else {
+                        Phase::ColorWrite
+                    };
+                }
+                Phase::ApplyWrite => {
+                    if self.command >> 28 == 12 {
+                        n.phase = Phase::CopyAddress;
+                    } else if self.command >> 28 == 11 {
+                        n.draw.as_mut().unwrap().pages = 0;
+                        n.phase = Phase::UiWait;
+                    } else {
+                        let index = self.draw.as_ref().unwrap().object_index;
+                        if n.draw
+                            .as_mut()
+                            .unwrap()
+                            .apply(self.command >> 28, index, i.ram_q)
+                        {
+                            if self.command >> 28 == 10 {
+                                n.stored = false;
+                            }
+                            n.advance(self);
+                        } else {
+                            n.phase = Phase::ApplyRead;
+                        }
+                    }
+                }
+                Phase::ClearDone | Phase::CopyDone => n.advance(self),
+                Phase::UiWait if i.auxiliary.ui_done => n.advance(self),
+                Phase::ColorWrite => {
+                    n.draw.as_mut().unwrap().config.mesh_color = i.ram_q as u32;
+                    n.phase = Phase::DrawStart;
+                }
+                Phase::DrawStart if o.start && i.draw.meshlet_ready => {
+                    n.all_fence = false;
+                    n.stored = false;
+                    n.phase = Phase::DrawWait;
+                }
+                Phase::DrawWait if i.draw.meshlet_done => n.advance(self),
                 _ => {}
             }
         }
+        if let Some(a) = &self.auxiliary {
+            a.wall(self, &mut n, i, o);
+        }
         if self.busy && i.abort {
             n.failed = true;
-            n.phase = Phase::Failed;
+            if !o.auxiliary.clear_active && !o.auxiliary.copy_active {
+                n.phase = Phase::Failed;
+            }
             n.fetch_left = 0;
         }
         *self = n;
@@ -309,6 +481,14 @@ pub struct Input {
     pub render_fault: bool,
     pub flush_complete: bool,
     pub physical: [Physical; 3],
+    pub draw: DrawInput,
+    pub auxiliary: AuxiliaryInput,
+    pub texture: super::router::Texture,
+    pub framebuffer: super::router::Framebuffer,
+    /// Root UI owns the existing DMA work port while active.
+    pub auxiliary_work: Option<super::command_dma::Work>,
+    /// CLEAR owns physical FB write feedback; Device 4 still observes the pins.
+    pub clear_active: bool,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Output {
@@ -324,6 +504,18 @@ pub struct Control {
     pub device: Device4,
 }
 impl Control {
+    pub fn with_all_commands() -> Self {
+        Self {
+            processor: Processor::with_all_commands(),
+            ..Self::default()
+        }
+    }
+    pub fn with_draws() -> Self {
+        Self {
+            processor: Processor::with_draws(),
+            ..Self::default()
+        }
+    }
     fn connect(&self, i: Input) -> (ProcessorInput, TransportInput) {
         let mut p = ProcessorInput {
             reset: i.reset,
@@ -335,17 +527,26 @@ impl Control {
             ram_ready: i.ram_ready,
             ram_q: i.ram_q,
             flush_complete: i.flush_complete,
+            draw: i.draw,
+            auxiliary: i.auxiliary,
             ..Default::default()
         };
         let o = self.processor.outputs(p);
-        let t = TransportInput {
+        let mut t = TransportInput {
             reset: i.reset,
             ce: i.ce,
             stop: o.stop || i.render_fault,
             cache: o.cache,
+            work: i.auxiliary_work.unwrap_or(o.work),
+            texture: i.texture,
+            framebuffer: i.framebuffer,
             physical: i.physical,
-            ..Default::default()
         };
+        if i.clear_active {
+            t.physical[2].request_ready = false;
+            t.physical[2].write_ready = false;
+            t.physical[2].response.valid = false;
+        }
         let q = self.transport.outputs(t);
         p.memory_busy = q.router.busy;
         p.work_busy = q.dma.work_busy;
@@ -354,6 +555,19 @@ impl Control {
         p.cache_ready = q.dma.cache_ready;
         p.cache_done = q.dma.cache_done;
         p.cache_done_bank = q.dma.cache_done_bank;
+        p.draw.work_ready = q.dma.work_ready;
+        p.draw.mesh_loading = q.dma.mesh_loading;
+        p.draw.mesh_slot = q.dma.mesh_slot;
+        p.draw.mesh_begin = q.dma.mesh_begin;
+        p.draw.mesh_begin_slot = q.dma.mesh_begin_slot;
+        p.draw.mesh_done = q.dma.mesh_done;
+        p.draw.mesh_done_slot = q.dma.mesh_done_slot;
+        p.draw.uniform_done = q.dma.uniform_done;
+        p.draw.uniform_bank = q.dma.uniform_bank;
+        p.draw.header_write =
+            q.dma.ram_write && q.dma.ram_address >> 3 == 32 && q.dma.ram_address & 3 == 0;
+        p.draw.header_slot = q.dma.ram_address & 4 != 0;
+        p.draw.header_data = q.dma.ram_data;
         (p, t)
     }
     pub fn outputs(&self, i: Input) -> Output {
