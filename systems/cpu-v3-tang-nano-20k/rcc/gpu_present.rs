@@ -126,6 +126,14 @@ fn gpu_present_poll() -> u16 {
     }
     0
 }
+fn gpu_present_watch(channel: u16, expected: u16) {
+    dev_send(
+        SYSTEM_CONTROL_DEVICE,
+        SYSCTL_WATCH_TARGET,
+        sysctl_watch_target(DISPLAY_DEVICE, channel),
+    );
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_WATCH_EXPECTED, expected);
+}
 fn gpu_present_wait_vblank() -> bool {
     if GPU_PRESENT[0u16] == 0 || GPU_PRESENT[3u16] != 0 {
         return gpu_present_fail(3);
@@ -133,6 +141,11 @@ fn gpu_present_wait_vblank() -> bool {
     if GPU_PRESENT[1u16] != 0 {
         let mut status = gpu_present_poll();
         while status == 1 {
+            // A torn snapshot can also return retry. Sleep only on actual Pending;
+            // the next poll still checks errors, target, format and read retirement.
+            if dev_recv(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND) == 1 {
+                gpu_present_watch(DISPLAY_SWAP_COMMAND, 1);
+            }
             status = gpu_present_poll();
         }
         return status == 2;
@@ -140,7 +153,10 @@ fn gpu_present_wait_vblank() -> bool {
     let before = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
     while true {
         let after = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
-        if after != before {
+        if after == before {
+            // A change between this read and arming releases the watch immediately.
+            gpu_present_watch(DISPLAY_FRAME_INDEX, before);
+        } else {
             let status = gpu_present_poll();
             if status == 65535 {
                 return false;

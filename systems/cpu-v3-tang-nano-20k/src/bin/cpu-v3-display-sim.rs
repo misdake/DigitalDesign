@@ -116,6 +116,12 @@ impl CpuBackend {
             Self::Native(s) => s.advance_vblank(),
         }
     }
+    fn can_yield_vblank(&self) -> bool {
+        // Only the architectural backend has an explicit host-event time base.
+        // Native Device0 and memory need every clock; a CPU hold is insufficient
+        // proof that those owners can be skipped.
+        matches!(self, Self::Instruction(s) if s.blocked_on_vblank())
+    }
     fn render(&self) -> Vec<u32> {
         match self {
             Self::Native(s) => s.render_frame(),
@@ -140,6 +146,7 @@ impl CpuBackend {
 }
 
 struct Options {
+    vblank_fast_forward: bool,
     max_cpu_steps: Option<usize>,
     max_cpu_cycles: Option<usize>,
     native: bool,
@@ -157,6 +164,7 @@ struct Options {
 
 fn options() -> Result<Options, String> {
     let mut options = Options {
+        vblank_fast_forward: true,
         max_cpu_steps: None,
         max_cpu_cycles: None,
         native: false,
@@ -174,6 +182,7 @@ fn options() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--no-vblank-fast-forward" => options.vblank_fast_forward = false,
             "--max-cpu-steps" => {
                 options.max_cpu_steps = Some(
                     args.next()
@@ -344,6 +353,7 @@ fn main() -> Result<(), String> {
     let mut halted = false;
     let mut samples = 0;
     let mut presented = 0;
+    let mut vblank_yields = 0_usize;
     let mut focus_checked = Instant::now();
     'samples: for _ in 0..options.frames {
         let mut focused = window_focus(&mut window);
@@ -358,6 +368,10 @@ fn main() -> Result<(), String> {
         }
         let next = executed.saturating_add(chunk).min(budget);
         while executed < next && !halted {
+            if options.vblank_fast_forward && system.can_yield_vblank() {
+                vblank_yields += 1;
+                break;
+            }
             if let Some(host) = realtime.as_mut() {
                 if focus_checked.elapsed() >= Duration::from_millis(8) {
                     focused = window_focus(&mut window);
@@ -534,6 +548,8 @@ fn main() -> Result<(), String> {
             "present-limit"
         } else if halted {
             "halt"
+        } else if executed < budget {
+            "sample-limit"
         } else {
             "step-limit"
         };
@@ -541,7 +557,7 @@ fn main() -> Result<(), String> {
         std::fs::write(options.output.join("application.cb06"), &package)
             .map_err(|e| e.to_string())?;
         let summary = format!(
-            r#"{{"backend":"instruction","cpu_step_calls":{},"logic_cycles":null,"native_cycles":null,"accepted_gpu_submissions":{},"gpu_busy":{},"gpu_error":{},"front_valid":{},"presented_swaps":{},"active_base_word":{},"linear_rgb565":{},"samples":{},"host_wall_seconds":{},"stop_reason":"{}","flash_install":"preloaded-cb06-not-spi-time","input":"no-controller-unless-explicit-xinput","gpu_display":"functional-without-memory-competition"}}"#,
+            r#"{{"backend":"instruction","cpu_step_calls":{},"logic_cycles":null,"native_cycles":null,"accepted_gpu_submissions":{},"gpu_busy":{},"gpu_error":{},"front_valid":{},"presented_swaps":{},"active_base_word":{},"linear_rgb565":{},"samples":{},"host_wall_seconds":{},"stop_reason":"{}","vblank_yields":{},"vblank_fast_forward":{},"flash_install":"preloaded-cb06-not-spi-time","input":"no-controller-unless-explicit-xinput","gpu_display":"functional-without-memory-competition"}}"#,
             executed,
             accepted,
             s.gpu().busy(),
@@ -552,7 +568,9 @@ fn main() -> Result<(), String> {
             display.linear_rgb565(),
             samples,
             started.elapsed().as_secs_f64(),
-            stop
+            stop,
+            vblank_yields,
+            options.vblank_fast_forward
         );
         std::fs::write(options.output.join("summary-instruction.json"), summary)
             .map_err(|e| e.to_string())?;

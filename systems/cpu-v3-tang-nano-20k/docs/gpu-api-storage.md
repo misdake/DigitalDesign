@@ -351,6 +351,13 @@ through the same path as `wait_vblank`. It adds no owner or scheduling state.
 With no queued swap it reports idle immediately, rather than waiting for a new
 frame edge. The existing blocking `wait_vblank` semantics remain unchanged.
 
+The blocking wait sleeps through the existing Device0 change watch instead of
+busy-polling a stable Display value. Pending waits arm only for an actual
+CONTROL value of 1 and revalidate the complete snapshot after waking, including
+target, format and old-read retirement. A no-pending wait watches FrameIndex;
+changes before arm are observed without requiring another vblank. This adds no
+GPU wait and does not turn a frame-counter change alone into swap completion.
+
 ```mermaid
 flowchart LR
   CB[Application CB owner] -->|move / disarm| P[prepare and publication]

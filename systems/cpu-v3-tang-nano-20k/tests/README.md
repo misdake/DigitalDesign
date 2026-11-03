@@ -630,6 +630,16 @@ record exact differences rather than hiding them or claiming full-image equality
 These host runs do not qualify GPU/Display bus competition, full-board FPS,
 physical SDRAM timing, a fitted RTL frame or arbitrary warm reset.
 
+`vblank_fast_forward.rs` uses the real RCC Display wait and Device0 watches.
+Its bounded instruction comparison checks the full physical image, registers,
+retirement, explicit timer/input events, UART and Display state against empty
+watch stepping. Cases cover read-to-arm races for both CONTROL and FrameIndex,
+frame wrap, already-completed swaps, error/changed values and unrelated watches.
+The actual display CLI is checked with and without `--no-vblank-fast-forward`,
+including step/sample bounds. A native fixture verifies that both real clock
+counts keep advancing during a watch while CPU retirement remains held. This is
+host wait-overhead qualification, not physical vblank latency or whole-system FPS.
+
 
 ## Stage2 native Prepared capture
 

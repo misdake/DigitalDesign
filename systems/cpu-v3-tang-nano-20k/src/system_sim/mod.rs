@@ -171,17 +171,19 @@ impl CpuV3SystemSim {
     pub fn waiting_for_vblank(&self) -> bool {
         self.display().waiting_for_vblank()
             || (self.vblank_mode == VBlankMode::PauseOnFrameIndexWait
-                && self.display().swap_pending())
-            || (self.vblank_mode == VBlankMode::PauseOnFrameIndexWait
-                && self
-                    .cpu
-                    .device::<SystemControlDevice>(SYSTEM_CONTROL_DEVICE)
-                    .and_then(SystemControlDevice::active_watch)
-                    .is_some_and(|(device, channel, expected)| {
-                        device == DISPLAY_DEVICE
-                            && channel == crate::DISPLAY_FRAME_INDEX
-                            && self.display().frame_index() == expected
-                    }))
+                && (self.display().swap_pending() || self.blocked_on_vblank()))
+    }
+
+    /// CPU execution is held on an unchanged Display frame/Pending watch.
+    /// A host may yield its remaining instruction work budget to its next
+    /// explicit event. This does not advance time, clocks or the frame itself.
+    pub fn blocked_on_vblank(&self) -> bool {
+        self.cpu
+            .device::<SystemControlDevice>(SYSTEM_CONTROL_DEVICE)
+            .and_then(SystemControlDevice::active_watch)
+            .is_some_and(|(device, channel, expected)| {
+                device == DISPLAY_DEVICE && self.display().watch_needs_vblank(channel, expected)
+            })
     }
 
     pub fn render_active_framebuffer(&self) -> Vec<u32> {

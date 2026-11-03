@@ -146,6 +146,45 @@ functional GPU work, host samples, rendering and requested output writes. It is
 not hardware elapsed time. A caller measuring process spawn-to-exit also includes
 package loading, construction and process overhead.
 
+### Cooperative vblank waits
+
+The RCC Display blocking wait uses the existing Device0 value-watch protocol.
+For an owned pending swap it watches Device3 CONTROL only after reading exactly
+Pending (1); a torn snapshot alone does not arm a watch. The wake-up path repeats
+the normal snapshot and validates errors, active target, format and old-read
+retirement. With no owned swap it watches the unchanged FrameIndex. A value
+changing between read and arm releases the watch on its first observation;
+the waiter does not require another frame edge. The 16-bit frame index wraps
+naturally. Nonblocking `try_wait_swap` retains its ordinary polling behavior.
+
+`blocked_on_vblank()` on both CPU compositions is a passive, precise observation
+of that real watch. It rejects non-Display watches, changed values, unrelated
+Display channels and non-Pending/error CONTROL values. A queued swap or two
+ordinary frame reads alone is insufficient. The older `waiting_for_vblank()`
+PauseOnFrameIndexWait policy remains available to existing debugger/capture
+callers; it is not a proof that a clocked composition is globally idle.
+
+The display runner's instruction backend yields its remaining per-sample work
+budget when `blocked_on_vblank()` is true. The runner then supplies its existing
+explicit vblank and subsequent elapsed/input events. It does not execute the
+empty watch observations, change PC, fabricate step counts, convert steps to
+elapsed time or add a timer/input publication. Device0 time still comes only
+from explicit host elapsed events; functional UART writes remain synchronous.
+This backend has no asynchronous interrupts or autonomous GPU/MC transactions
+to skip. Its synchronous GPU executes at START before that call returns.
+
+`--no-vblank-fast-forward` restores the per-sample unskipped reference. The
+instruction summary reports `vblank_fast_forward`, `vblank_yields` and actual
+`cpu_step_calls`; exhausting host samples before the CPU budget reports
+`sample-limit`. Step and frame limits remain independent hard bounds.
+
+The native backend does not bulk-skip clocks or use that flag to shorten its
+cycle budget: SystemControl timers/UART, FPU, caches, in-flight responses and the
+native memory service continue on every modeled edge. Its Display remains an
+explicit host event without a physical vblank deadline. No whole-system
+physical-time jump is supplied: that requires a proven peripheral/memory event
+boundary, which a CPU watch alone does not establish.
+
 ### Exact pre-submit observation
 
 `--freeze-submit N` pauses before the Nth CPU Device4 START is consumed. Earlier

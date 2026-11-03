@@ -108,6 +108,15 @@ impl DisplayDevice {
         self.waiting_for_vblank.get()
     }
 
+    /// Pure test of a real SystemControl watch, not ordinary polling reads.
+    pub(crate) fn watch_needs_vblank(&self, channel: u8, expected: u16) -> bool {
+        match channel {
+            DISPLAY_FRAME_INDEX => self.frame_index.get() == expected,
+            DISPLAY_CONTROL => expected == DISPLAY_STATUS_PENDING && self.status() == expected,
+            _ => false,
+        }
+    }
+
     /// Advances through one vblank event and atomically applies a pending base.
     pub fn advance_frame(&self) -> bool {
         self.frame_index.set(self.frame_index.get().wrapping_add(1));

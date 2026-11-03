@@ -404,16 +404,17 @@ impl CpuV3SystemEmu {
     pub fn waiting_for_vblank(&self) -> bool {
         self.display().waiting_for_vblank()
             || (self.vblank_mode == VBlankMode::PauseOnFrameIndexWait
-                && (self.display().swap_pending()
-                    || self
-                        .system_state
-                        .borrow()
-                        .active_watch()
-                        .is_some_and(|(d, c, e)| {
-                            d == DISPLAY_DEVICE
-                                && c == crate::DISPLAY_FRAME_INDEX
-                                && self.display().frame_index() == e
-                        })))
+                && (self.display().swap_pending() || self.blocked_on_vblank()))
+    }
+    /// Passive watch observation only. Native clocks must keep advancing until
+    /// the caller supplies its explicit functional Display event.
+    pub fn blocked_on_vblank(&self) -> bool {
+        self.system_state
+            .borrow()
+            .active_watch()
+            .is_some_and(|(device, channel, expected)| {
+                device == DISPLAY_DEVICE && self.display().watch_needs_vblank(channel, expected)
+            })
     }
     pub fn display_state(&self) -> DisplayState {
         let d = self.display();
