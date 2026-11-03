@@ -126,7 +126,7 @@ fn source12_and_prepared_health_are_read_only_and_replay_stable() {
  check(gpu_record_begin_pass(0));check(gpu_record_append(0,code.as_array(),2,code.as_array(),0,1));check(gpu_record_close_pass(0));
  check(gpu_execute_init());check(gpu_execute_prepare(0));
  check(gpu_execute_capture_source(0,out.as_array()));check(out[0u16]==1&&out[1u16]==0&&out[2u16]==0x9800&&out[3u16]==64);
- check(out[4u16]==8&&out[5u16]==64&&out[6u16]==0x9a00&&out[7u16]==64&&out[8u16]==0&&out[9u16]==0&&out[10u16]==4&&out[11u16]==2);
+ check(out[4u16]==8&&out[5u16]==64&&out[6u16]==0x9a00&&out[7u16]==64&&out[8u16]==0&&out[9u16]==0&&out[10u16]==GPU_CAPTURE_RTT400_COMMAND_ABI&&out[11u16]==2);
  check(gpu_execute_capture_health(0)==0&&GPU_EXECUTION[0u16]==GPU_EXEC_PREPARED&&GPU_EXECUTION[1u16]==1);
  check(!gpu_execute_capture_source(1,out.as_array())&&out[2u16]==0x9800);
  let saved=read_dseg_page(3);unsafe{write_dseg_page(3,saved+1);}check(gpu_execute_capture_health(0)!=0);

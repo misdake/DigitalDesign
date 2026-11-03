@@ -68,6 +68,7 @@ pub struct RendererCaptureConfiguration {
     pub(super) hook_enabled: bool,
     pub(super) profile: RendererLayoutProfile,
     resources: Vec<Resource>,
+    command_abi: u16,
 }
 impl RendererCaptureConfiguration {
     pub fn without_capture(profile: RendererLayoutProfile) -> Self {
@@ -76,6 +77,7 @@ impl RendererCaptureConfiguration {
             hook_enabled: false,
             profile,
             resources: vec![],
+            command_abi: abi::GPU_CAPTURE_RTT400_COMMAND_ABI,
         }
     }
     pub fn with_default_hook(profile: RendererLayoutProfile) -> Self {
@@ -84,7 +86,7 @@ impl RendererCaptureConfiguration {
         configuration
     }
     pub fn command_abi(&self) -> u16 {
-        abi::GPU_CAPTURE_RTT400_COMMAND_ABI
+        self.command_abi
     }
     pub fn profile(&self) -> RendererLayoutProfile {
         self.profile
@@ -100,7 +102,10 @@ impl RendererCaptureConfiguration {
         if !matches!(version, 2 | 3) || m["schema"] != "digitaldesign.gpu-capture-build" {
             return Err("explicit v2/v3 column capture manifest required".into());
         }
-        if m["command_abi"].as_u64() != Some(u64::from(abi::GPU_CAPTURE_RTT400_COMMAND_ABI)) {
+        let command_abi = m["command_abi"].as_u64();
+        if command_abi != Some(u64::from(abi::GPU_CAPTURE_RTT400_COMMAND_ABI))
+            && command_abi != Some(u64::from(abi::GPU_CAPTURE_UNIFORM_RTT400_COMMAND_ABI))
+        {
             return Err(
                 "unsupported capture command ABI; production requires framebuffer-view support"
                     .into(),
@@ -201,6 +206,7 @@ impl RendererCaptureConfiguration {
             hook_enabled: true,
             profile,
             resources,
+            command_abi: command_abi.unwrap() as u16,
         })
     }
     pub(super) fn asset_check_source(&self) -> String {

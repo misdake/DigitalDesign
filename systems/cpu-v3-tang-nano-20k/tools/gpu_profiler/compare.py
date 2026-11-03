@@ -22,7 +22,7 @@ def compare(previous, following, replay, output):
         raise SnapshotError("Snapshots are not adjacent leases with the prior output retired into Front")
     replay, output = Path(replay), Path(output)
     metadata = json.loads((replay / "replay.json").read_text())
-    if metadata.get('command_abi') != COMMAND_ABI:
+    if metadata.get('command_abi') != a['command_abi']:
         raise SnapshotError('Replay command ABI does not describe a production column/RTT combination')
     if declared_layout(metadata.get('layout')) != layout:
         raise SnapshotError('Replay metadata and frozen leases use different layouts')

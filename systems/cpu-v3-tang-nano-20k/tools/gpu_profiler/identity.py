@@ -4,12 +4,12 @@ import json
 from pathlib import Path
 
 from snapshot import SnapshotError
-from layout import COMMAND_ABI, declared_layout, header_layout, capture_description, COLUMN_MAP
+from layout import COMMAND_ABI, RTT_COMMAND_ABIS, declared_layout, header_layout, capture_description, COLUMN_MAP
 
 
 def build_layout(value):
     try:
-        if value['version'] not in (2, 3) or value.get('command_abi') != COMMAND_ABI:
+        if value['version'] not in (2, 3) or value.get('command_abi') not in RTT_COMMAND_ABIS:
             raise ValueError('Explicit production column/RTT build ABI required')
         layout = declared_layout(value['layout'])
         expected = layout.recorded_description() if value['version'] == 3 else layout.description()
@@ -171,7 +171,7 @@ def input_extents(capture, required_span, resources, *, asset_files=()):
                 if region.flags & capture.abi['WRITE']:
                     if region.length != required_span or region.address % 65536:
                         raise SnapshotError('Recorded target plane has an invalid physical extent')
-                elif region.flags != (capture.abi['READ'] | capture.abi['PREIMAGE']):
+                elif region.flags & ~capture.abi['DEPTH_SHIFT_MASK'] != (capture.abi['READ'] | capture.abi['PREIMAGE']):
                     raise SnapshotError('Recorded allocation tail is not read-only preimage')
     for resource in resources:
         name,base,length=resource["name"],resource["address"],resource["bytes"]

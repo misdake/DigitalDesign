@@ -12,7 +12,7 @@ import struct
 import numpy as np
 
 from draw_oracle import signed,cross,dot
-from layout import header_layout
+from layout import header_layout, depth_configuration
 
 
 def expand(words):
@@ -184,7 +184,7 @@ class SceneResult:
                                         for shift,mask in ((11,31),(5,63),(0,31))])
         coverage_error = expected_coverage != actual_coverage
         report = dict(reference='Frozen commands/resources -> exact V windows, float64 direct rays, perspective attributes and ideal Blinn-Phong; documented texture/Final quantizers',
-                      budgets=dict(depth_q8_8_codes=2, unlit_rgb565_channel_codes=1, texture_rgb8=24, lit_rgb8=16,
+                      budgets=dict(depth_d16_codes=2, unlit_rgb565_channel_codes=1, texture_rgb8=24, lit_rgb8=16,
                                    texture_and_lighting_mean_rgb8=2,
                                    edge_pixels=1, depth_tie_codes=2),
                       stats=self.stats, logical_pixels=96000, stable_pixels=int(stable.sum()),
@@ -263,7 +263,10 @@ def render(capture):
             pages[word & 1] = (memory.read(address,32),memory.read(address+128,(((word >> 1) & 7)+1)*128))
         elif opcode in (5,6,10):
             at = (word & 127)*32
-            if opcode == 5: context = struct.unpack_from('<16I',scratch,at)
+            if opcode == 5:
+                context = struct.unpack_from('<16I',scratch,at)
+                depth_shift, mapped_far = depth_configuration(context[0], h['command_abi'])
+                stats['depth_shift'] = depth_shift
             elif opcode == 6:
                 material = struct.unpack_from('<8I',scratch,at)
                 if material[2] & 31 != 9: raise ValueError('Scene reference requires opaque LESS and depth writes')
@@ -377,8 +380,8 @@ def render(capture):
                 sign=1 if determinant>0 else -1
                 inclusive=np.array([n[0]*sign>0 or (n[0]==0 and n[1]*sign>0) for n in cofactors])
                 valid=np.all((cc>1e-12)|((abs(cc)<=1e-12)&inclusive),axis=-1)&(d>0)
-                z=1/np.maximum(d,1e-30); zword=np.minimum(65536,np.floor(z*256)).astype(np.int64)
-                valid &= zword <= (context[0] >> 8)
+                z=1/np.maximum(d,1e-30); zword=np.minimum(65536,np.floor(z*(256 << depth_shift))).astype(np.int64)
+                valid &= zword <= (mapped_far >> 8)
                 distances=cc/np.maximum(np.linalg.norm(inverse[:,:2]*2/512,axis=1),1e-30)
                 near=(distances.min(axis=-1)>=-1)&(distances.min(axis=-1)<=1)&(d>0)&(zword<depth[sl]+3)
                 ambiguity[sl] |= near

@@ -1,5 +1,7 @@
 #![rcc_resource_library(
     gpu_schema,
+    gpu_depth,
+    gpu_depth_state,
     gpu_config,
     gpu_arena,
     gpu_record,
@@ -26,6 +28,9 @@ mod gpu_api_values;
 use gpu_api_values::*;
 mod gpu_schema;
 use gpu_schema::*;
+mod gpu_depth;
+mod gpu_depth_state;
+use gpu_depth_state::*;
 mod gpu_config;
 use gpu_config::*;
 mod gpu_arena;
@@ -273,6 +278,9 @@ fn gpu_api_new_surface(memory: GpuMemory, kind: u16) -> u16 {
     if !gpu_surface_init(gpu_arena_data(slot), memory) {
         gpu_api_fail(3, 2, memory.first_sector(), memory.sector_count());
     }
+    if kind == GPU_KIND_DEPTH && !gpu_depth_surface_register(slot) {
+        gpu_api_fail(3, 2, memory.first_sector(), memory.sector_count());
+    }
     slot
 }
 impl ColorBuffer {
@@ -298,6 +306,9 @@ impl Drop for ColorBuffer {
 }
 impl Drop for DepthBuffer {
     fn drop(&mut self) {
+        if !gpu_depth_surface_unregister(self.slot) {
+            gpu_api_fail(3, 3, GPU_KIND_DEPTH, self.slot);
+        }
         if !gpu_arena_free(self.slot, false, GPU_KIND_DEPTH) {
             gpu_api_fail(3, 3, GPU_KIND_DEPTH, self.slot);
         }
@@ -431,7 +442,7 @@ impl CommandBuffer {
             d[0u16],
             d[1u16],
             GPU_FACT_DEPTH,
-            GPU_FACT_READ | GPU_FACT_WRITE,
+            GPU_FACT_READ | GPU_FACT_WRITE | GPU_DEPTH_REF,
         ]);
         if !gpu_record_capture_room(self.slot, facts.as_array(), 2) {
             gpu_api_fail(4, 6, self.slot, 0);
@@ -447,6 +458,9 @@ impl CommandBuffer {
             gpu_api_fail(4, 2, self.slot, mask);
         }
         gpu_record_capture_commit(self.slot, facts.as_array(), 2);
+        if mask & 2 != 0 {
+            gpu_record_depth_clear(self.slot);
+        }
         Pass { slot: self.slot }
     }
     pub fn invalidate_textures(&mut self) {
@@ -1056,6 +1070,10 @@ fn gpu_api_draw(
     let material = gpu_arena_data(material_slot);
     gpu_api_checked(
         gpu_scene_draw_header(desired, material, view, textured, native),
+        5,
+    );
+    gpu_api_checked(
+        gpu_record_depth_format(slot, desired[GPU_CAMERA_DEPTH_SHIFT]),
         5,
     );
     let model = gpu_arena_data(model_slot);

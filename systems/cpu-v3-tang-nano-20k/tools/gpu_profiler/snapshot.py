@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import struct
 import zlib
-from layout import COMMAND_ABI, get_layout, header_layout
+from layout import COMMAND_ABI, RTT_COMMAND_ABIS, get_layout, header_layout
 
 
 MAGIC = b"GPS1"
@@ -26,6 +26,12 @@ MAX_CHUNK_BYTES = 1024
 MEMORY_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = MEMORY_BYTES * 2
 DEFAULT_ABI = Path(__file__).resolve().parents[2] / "rcc/gpu_capture_abi.rs"
+# Accepted ABI4/range1 source at the feature base, in Git LF and Windows CRLF.
+# The old hash is provenance, not permission to extend its numerical format.
+LEGACY_ABI4_SHA256 = (
+    '9f2e20af855e72aa0909f8e87ff004375abe12bc6055a060fe3ba9c30e55a731',
+    'ec9e86305f21bc0e518fa5e00d8e179c7c9a496ba2224687ed30d3c3b908db15',
+)
 
 
 class SnapshotError(ValueError):
@@ -70,9 +76,16 @@ class Abi:
         limit = self.constants.get('GPU_CAPTURE_MAX_TOTAL_HIGH')
         if limit is not None and limit << 16 != MAX_TOTAL_BYTES:
             raise SnapshotError('Producer/consumer aggregate capture bounds disagree')
+        legacy_definition = self.sha256 in LEGACY_ABI4_SHA256
         if (self["VERSION"] != 1 or self["WORDS"] != 64 or self["RANGE_WORDS"] != 8 or
-                self['RTT400_COMMAND_ABI'] != COMMAND_ABI):
+                (self['RTT400_COMMAND_ABI'] != COMMAND_ABI and not legacy_definition)):
             raise SnapshotError("Unsupported driver capture ABI")
+        self.command_abis = (4,) if legacy_definition else RTT_COMMAND_ABIS
+        self.range_versions = (1,) if legacy_definition else (1, self['RANGE_VERSION'])
+        # Old definitions have no precision flags. Keep those bits reserved,
+        # retaining the file's original hash and FLAGS_ALL rather than relabeling it.
+        if legacy_definition:
+            self.constants['GPU_CAPTURE_DEPTH_SHIFT_MASK'] = 0
 
     def __getitem__(self, name):
         try:
@@ -109,8 +122,8 @@ class Abi:
             layout = get_layout(self.word(words, "H_LAYOUT_ABI"))
         except ValueError as error:
             raise SnapshotError(str(error)) from error
-        if (self.word(words, "H_COMMAND_ABI") != self["RTT400_COMMAND_ABI"] or
-                self.word(words, "H_RANGE_VERSION") != self["RANGE_VERSION"] or
+        if (self.word(words, "H_COMMAND_ABI") not in self.command_abis or
+                self.word(words, "H_RANGE_VERSION") not in self.range_versions or
                 self.word(words, "H_RANGE_WORDS") != self["RANGE_WORDS"]):
             raise SnapshotError("Incompatible layout/command/range ABI")
         if self.word(words, "H_MANIFEST_WORDS") != self["MANIFEST_WORDS"]:
@@ -373,6 +386,12 @@ class Attempt:
         return bytes(result)
 
     def validate_memory(self):
+        shift_mask = self.abi['DEPTH_SHIFT_MASK']
+        for item in self.ranges:
+            if item.flags & shift_mask and (
+                    item.tag != self.abi['TAG_DEPTH'] or self.header['command_abi'] <= 4 or
+                    self.abi.word(self.descriptor, 'H_RANGE_VERSION') == 1):
+                raise SnapshotError('Depth precision requires a depth range, range ABI2 and command ABI5/6')
         if self.header.get('layout_abi') == 2:
             layout=header_layout(self.header)
             for item in self.ranges:
@@ -383,7 +402,7 @@ class Attempt:
                             raise SnapshotError('Recorded writable plane is not its exact physical span')
                         if item.flags & self.abi['FULL_CLEAR'] and not plane:
                             raise SnapshotError('FULL_CLEAR cannot initialize a recorded allocation tail/Front')
-                        if not plane and item.flags != (self.abi['READ'] | self.abi['PREIMAGE']):
+                        if not plane and item.flags & ~shift_mask != (self.abi['READ'] | self.abi['PREIMAGE']):
                             raise SnapshotError('Recorded tail/Front must be read-only preimage')
                         continue
                     base=self.header[{self.abi['TAG_COLOR']:'color_base',self.abi['TAG_DEPTH']:'depth_base',
@@ -553,15 +572,19 @@ def load_snapshot(path, abi):
     if path.is_dir():
         path /= "snapshot.json"
     metadata = json.loads(path.read_text(encoding="utf-8"))
+    old_abi = metadata.get('abi_sha256') in LEGACY_ABI4_SHA256
     if (metadata.get("schema") != "digitaldesign.gpu-snapshot" or
             metadata.get("version") != 1 or metadata.get("complete") is not True or
-            metadata.get("abi_sha256") != abi.sha256 or
+            (metadata.get("abi_sha256") != abi.sha256 and not old_abi) or
             metadata.get("cache_state") != "not_captured" or
             metadata.get("replay_policy") != "cold_only"):
         raise SnapshotError("Unknown, partial or ABI-mismatched snapshot")
     first = Frame(Kind.BEGIN, metadata["snapshot"], metadata["attempt"], 0,
                   words_to_bytes(metadata["descriptor_words"]))
     result = Attempt(first, abi)
+    if old_abi and (result.header['command_abi'] != 4 or
+                    abi.word(result.descriptor, 'H_RANGE_VERSION') != 1):
+        raise SnapshotError('Legacy ABI source cannot describe depth-shift input')
     ranges = metadata["ranges"]
     if len(ranges) != result.header["range_count"]:
         raise SnapshotError("Incomplete saved range table")

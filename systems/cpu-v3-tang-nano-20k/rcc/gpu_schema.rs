@@ -15,6 +15,7 @@ pub const GPU_CAMERA_VIEW: u16 = 0;
 pub const GPU_CAMERA_FOCAL: u16 = 24;
 pub const GPU_CAMERA_FAR: u16 = 26;
 pub const GPU_CAMERA_RAY: u16 = 28;
+pub const GPU_CAMERA_DEPTH_SHIFT: u16 = 31;
 pub const GPU_CAMERA_WORDS: u16 = 32;
 // Private Camera identity for view/focal dependencies; not part of native data.
 pub const GPU_CAMERA_REVISION: u16 = 32;

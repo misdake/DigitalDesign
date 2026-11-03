@@ -31,8 +31,8 @@ fn edit(
 pub fn lower(mut source: String, native: bool) -> Result<String, String> {
     source = source.replace("\r\n", "\n");
     edit(&mut source, "gpu_v2_vliw_three_port", |s| {
-        once(s, "input[31:0]cfg_far_z,input[4:0]cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed[7:0]cfg_lod_bias,",
-            &format!("input[31:0]cfg_far_z,input signed[7:0]cfg_lod_bias,\n {PORTS}"))?;
+        once(s, "input[1:0]cfg_depth_shift,input[31:0]cfg_far_z,input[4:0]cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed[7:0]cfg_lod_bias,",
+            &format!("input[1:0]cfg_depth_shift,input[31:0]cfg_far_z,input signed[7:0]cfg_lod_bias,\n {PORTS}"))?;
         once(s, "draw_unlit,input[26:0]draw_config,", "draw_unlit,")?;
         once(s, " wire[3:0]frontend_error,raster_error;",
             " // Both LOD axes and the sampler derive from the one installed descriptor.\n wire[4:0]cfg_tex_w_log2={1'b0,texture_n},cfg_tex_h_log2={1'b0,texture_n};\n wire[4:0]cfg_max_mip=texture_mip?{1'b0,texture_n}:5'd0;\n wire[3:0]frontend_error,raster_error;")?;

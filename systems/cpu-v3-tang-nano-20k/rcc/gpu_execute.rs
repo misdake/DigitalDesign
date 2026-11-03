@@ -4,6 +4,8 @@ mod device_abi;
 use device_abi::*;
 mod gpu_record;
 use gpu_record::*;
+mod gpu_capture_abi;
+use gpu_capture_abi::*;
 
 // phase/owner/base/count/page/error; configured/taken; sealed capacities,
 // padding, push bounds and fact count. Words14/15 remain spare.
@@ -53,6 +55,14 @@ fn gpu_execute_prepare(slot: u16) -> bool {
         return gpu_execute_fail(4);
     }
     let c = gpu_record_data(slot);
+    if c[GPU_RECORD_VALID] & GPU_RECORD_NEEDS_DEPTH_SHIFT != 0
+        && dev_recv(GPU_DEVICE, GPU_CAPABILITIES) & GPU_CAP_DEPTH_SHIFT == 0
+    {
+        return gpu_execute_fail(9);
+    }
+    if !gpu_record_depth_prepare(slot) {
+        return gpu_execute_fail(10);
+    }
     let words = c[GPU_RECORD_COMMAND_USED];
     if words < 2 || words > 32768 || words & 1 != 0 {
         return gpu_execute_fail(4);
@@ -109,6 +119,10 @@ fn gpu_execute_capture_health(slot: u16) -> u16 {
     }
     0
 }
+// Read-only managed depth provenance, kept on A's side of the capture bridge.
+fn gpu_execute_capture_depth_shift(flags: u16, first: u16, count: u16) -> u16 {
+    gpu_depth_capture_shift(flags, first, count)
+}
 // Caller supplies twelve stable low-memory words; failure leaves them untouched.
 fn gpu_execute_capture_source(slot: u16, mut out: Array<u16>) -> bool {
     if gpu_execute_capture_health(slot) != 0 {
@@ -125,7 +139,7 @@ fn gpu_execute_capture_source(slot: u16, mut out: Array<u16>) -> bool {
     out[7u16] = c[GPU_RECORD_PUSH_CAPACITY];
     out[8u16] = c[GPU_RECORD_PUSH_USED];
     out[9u16] = c[GPU_RECORD_FACT_COUNT];
-    out[10u16] = 4;
+    out[10u16] = GPU_CAPTURE_RTT400_COMMAND_ABI;
     out[11u16] = 2;
     true
 }
@@ -139,6 +153,10 @@ fn gpu_execute_start(slot: u16, republish: bool) -> bool {
     if dev_recv(GPU_DEVICE, GPU_STATUS) & (GPU_STATUS_BUSY | GPU_STATUS_TRANSPORT_ERROR) != 0 {
         return gpu_execute_fail(3);
     }
+    if !gpu_record_depth_prepare(slot) {
+        return gpu_execute_fail(10);
+    }
+    gpu_record_depth_start(slot);
     GPU_EXECUTION[0u16] = GPU_EXEC_RUNNING;
     dev_send(GPU_DEVICE, GPU_COMMAND_COUNT, GPU_EXECUTION[3u16]);
     dev_send(GPU_DEVICE, GPU_COMMAND_START, GPU_EXECUTION[2u16]);
@@ -164,6 +182,7 @@ fn gpu_execute_poll() -> u16 {
         return 0;
     }
     let completed = GPU_EXECUTION[1u16];
+    gpu_record_depth_complete(completed - 1);
     GPU_EXECUTION[1u16] = 0;
     GPU_EXECUTION[0u16] = GPU_EXEC_IDLE;
     completed

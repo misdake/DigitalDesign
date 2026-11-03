@@ -18,7 +18,7 @@ from model import build_capture
 from reporting import build_report, image_options
 from images import preview  # Existing direct raw-plane export API.
 from snapshot import Abi, DEFAULT_ABI, SnapshotError, load_snapshot
-from layout import COLUMN, COMMAND_ABI, get_layout, header_layout, capture_description
+from layout import COLUMN, get_layout, header_layout, capture_description, depth_configuration
 
 
 def physical(logical_word):
@@ -75,14 +75,26 @@ def validate_rtl_layout(layout, combined):
 def validate_command_abi(capture):
     """A newer RTL export must not extend the frozen stream's declared ABI."""
     abi = capture.header.get('command_abi')
-    if abi not in (1, 2, 3, 4):
+    if abi not in (1, 2, 3, 4, 5, 6):
         raise SnapshotError(f'Unsupported replay command ABI{abi}')
-    last = 12 if abi in (3, 4) else 11
+    last = 12 if abi >= 3 else 11
+    scratch = bytearray(4096)
     words = capture.read(capture.header['cb_base'], capture.header['cb_bytes'])
     for pc, (word,) in enumerate(struct.iter_unpack('<I', words)):
         opcode = word >> 28
         if opcode > last and opcode != 15:
             raise SnapshotError(f'Command ABI{abi} does not support opcode{opcode} at byte PC0x{pc*4:x}')
+        if opcode == 1:
+            code = (word >> 1) & 3
+            at, count = ((word >> 3) & 127) * 32, 32 << code
+            if code == 3 or at + count > len(scratch):
+                raise SnapshotError('Invalid replay local DMA span')
+            scratch[at:at+count] = capture.read(((word >> 10) & 0x3ffff) * 32, count)
+        elif opcode == 5:
+            try:
+                depth_configuration(struct.unpack_from('<I', scratch, (word & 127) * 32)[0], abi)
+            except ValueError as error:
+                raise SnapshotError(str(error)) from error
 
 
 def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
@@ -137,7 +149,7 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
                     input_sha256=capture.manifest()["input_sha256"], preflight=preflight_result,
                     report_snapshot='../snapshot',
                     layout=capture_description(header),
-                    command_abi=COMMAND_ABI,
+                    command_abi=header['command_abi'],
                     raw_buffers=buffers,
                     write_ranges=writes, has_target=has_target,
                     captured_plane_bytes=span,
@@ -193,7 +205,7 @@ def _collect(capture, manifest_path, declared, *, preview='display1', capture_fo
                   depth_sha256=digest(depth) if has_target else None, has_target=has_target,
                   profile=str(output / "profile/profiler.html"),
                   layout=capture_description(capture.header),
-                  command_abi=COMMAND_ABI,
+                  command_abi=capture.header['command_abi'],
                   captured_plane_bytes=span,
                   scope="No CPU/Display contention or warm cache; not board timing/PVT qualification")
     result['raw_buffers'] = []
@@ -240,6 +252,9 @@ def run(snapshot, rtl, out, max_cycles, timeout, *, abi=None, build=None, receip
     out = Path(out)
     abi = abi or Abi(DEFAULT_ABI)
     capture = load_snapshot(snapshot, abi)
+    # Both backends execute the declared stream; final-result simulation must
+    # not reinterpret commands rejected by the RTL preparation entry.
+    validate_command_abi(capture)
     if build is None:
         if receipt is not None:
             raise SnapshotError("A board receipt requires its build declaration")

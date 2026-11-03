@@ -36,8 +36,8 @@ module gpu_v2_vliw_command(
           (fb_r_response_valid&&fb_r_response_error)||
           (fb_w_response_valid&&fb_w_response_error))transport_error<=1;
  end
- assign device_read_data=device_selected&&device_read_enable&&device_channel==2?
-  {14'd0,transport_error,busy}:16'd0;
+ assign device_read_data=device_selected&&device_read_enable?
+  (device_channel==2?{14'd0,transport_error,busy}:device_channel==3?16'd1:16'd0):16'd0;
  wire start,slot,stop,cp_re,cp_ready;wire[8:0]cp_addr;wire[63:0]cp_q;
  wire processor_cp_re;wire[8:0]processor_cp_addr;
  wire processor_work_valid,processor_work_mesh,processor_work_slot;
@@ -59,7 +59,7 @@ module gpu_v2_vliw_command(
  wire cache_valid,cache_ready,cache_bank,cache_done,cache_done_bank;wire[21:0]cache_source;
  wire mesh_begin,mesh_done,mesh_slot,mesh_begin_slot,mesh_done_slot,uniform_done;wire[1:0]uniform_bank;
  wire header_we=dma_we&&dma_addr[8:3]==6'd32&&dma_addr[1:0]==0;
- wire[31:0]cfg_far_z;wire signed[7:0]cfg_lod_bias;
+ wire[1:0]cfg_depth_shift;wire[31:0]cfg_far_z;wire signed[7:0]cfg_lod_bias;
  wire[15:0]texture_base;wire[3:0]texture_n;wire texture_mip;wire[1:0]texture_filter;
  wire draw_unlit;wire[23:0]specular;
  wire[13:0]color_base,depth_base;wire[31:0]mesh_color;
@@ -95,7 +95,7 @@ module gpu_v2_vliw_command(
  .work_valid(processor_work_valid),.work_ready(work_ready),.work_mesh(processor_work_mesh),.work_source(processor_work_source),.work_destination(processor_work_destination),.work_size(processor_work_size),.work_blocks(processor_work_blocks),.work_slot(processor_work_slot),
  .work_busy(work_busy),.dma_idle(dma_idle),.dma_fault(dma_fault),.mesh_loading(mesh_loading),.mesh_begin(mesh_begin),.mesh_done(mesh_done),.mesh_slot(mesh_slot),.mesh_begin_slot(mesh_begin_slot),.mesh_done_slot(mesh_done_slot),
  .uniform_done(uniform_done),.uniform_bank(uniform_bank),.header_we(header_we),.header_slot(dma_addr[2]),.header_data(dma_data),
- .cfg_far_z(cfg_far_z),.cfg_lod_bias(cfg_lod_bias),
+ .cfg_depth_shift(cfg_depth_shift),.cfg_far_z(cfg_far_z),.cfg_lod_bias(cfg_lod_bias),
  .texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_filter(texture_filter),
  .color_base(color_base),.depth_base(depth_base),.mesh_color(mesh_color),
  .draw_unlit(draw_unlit),.specular(specular),.depth_func(depth_func),.depth_write(depth_write),.blend(blend),.texture_invalidate(texture_invalidate),
@@ -162,7 +162,7 @@ module gpu_v2_vliw_command(
  .dma_addr(dma_addr),
  .dma_data(dma_data),
  .output_ready(output_ready),
- .cfg_far_z(cfg_far_z),
+ .cfg_depth_shift(cfg_depth_shift),.cfg_far_z(cfg_far_z),
  .texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_filter(texture_filter),.texture_invalidate(texture_invalidate),
  .cfg_lod_bias(cfg_lod_bias),
  .color_base(color_base),.depth_base(depth_base),.mesh_color(mesh_color),

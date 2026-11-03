@@ -65,7 +65,8 @@ class RawCopyTests(unittest.TestCase):
         capture, _ = make(s.Abi()); scratch = bytearray(4096)
         scratch[272*8:272*8+128] = capture.read(0x4d0000,128)
         self.assertEqual(descriptor(0xc0000044,scratch,3), descriptor(0xc0000044,scratch,4))
-        for abi in (0,1,2,5):
+        self.assertEqual(descriptor(0xc0000044,scratch,4), descriptor(0xc0000044,scratch,6))
+        for abi in (0,1,2,7):
             with self.assertRaises(ValueError): descriptor(0xc0000044,scratch,abi)
         for value in (1<<39,0,0x3fff|(1<<28)):
             struct.pack_into('<Q',scratch,68*32,value)

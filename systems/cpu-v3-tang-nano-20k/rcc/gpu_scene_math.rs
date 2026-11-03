@@ -2,6 +2,8 @@
 use crate::dsl_rt::*;
 mod gpu_schema;
 use gpu_schema::*;
+mod gpu_depth;
+use gpu_depth::*;
 
 pub fn gpu_scene_fix_read(data: Array<u16>, at: u16) -> fix32 {
     fix32::from_words(data[at], data[at + 1])
@@ -250,6 +252,13 @@ pub fn gpu_scene_draw_header(
     textured: bool,
     mut native: Array<u16>,
 ) -> bool {
+    let depth_shift = desired[GPU_CAMERA_DEPTH_SHIFT];
+    let far_low = desired[GPU_CAMERA_FAR];
+    let far_high = desired[GPU_CAMERA_FAR + 1];
+    if !gpu_depth_valid(far_low, far_high, depth_shift) {
+        return false;
+    }
+    let depth = gpu_depth_encode(far_low, far_high, depth_shift);
     let state = unsafe {
         desired
             .as_ptr()
@@ -271,8 +280,8 @@ pub fn gpu_scene_draw_header(
     if !gpu_scene_render_prepare(state, material, view, textured, native) {
         return false;
     }
-    native[0u16] = desired[GPU_CAMERA_FAR];
-    native[1u16] = desired[GPU_CAMERA_FAR + 1];
+    native[0u16] = depth.low;
+    native[1u16] = depth.high;
     native[5u16] = desired[GPU_CAMERA_RAY];
     native[6u16] = desired[GPU_CAMERA_RAY + 1];
     native[7u16] = desired[GPU_CAMERA_RAY + 2];

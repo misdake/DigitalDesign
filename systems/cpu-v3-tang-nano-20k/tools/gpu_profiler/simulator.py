@@ -9,7 +9,7 @@ import shutil
 import subprocess
 
 from images import preview, preview_policy
-from layout import COMMAND_ABI, capture_description, header_layout
+from layout import RTT_COMMAND_ABIS, capture_description, header_layout
 from snapshot import SnapshotError
 
 MEMORY_BYTES = 0x800000
@@ -88,7 +88,7 @@ def run(capture, out, identity, *, executable=None, maximum_work=DEFAULT_WORK, t
         preview_mode='capture', capture_format_known=True):
     if maximum_work < 1 or timeout <= 0:
         raise SnapshotError('Simulator requires positive work and process bounds')
-    if capture.header['command_abi'] != COMMAND_ABI:
+    if capture.header['command_abi'] not in RTT_COMMAND_ABIS:
         raise SnapshotError('Simulator requires the current native command ABI')
     executable = executable_path(executable)
     out = Path(out).resolve()

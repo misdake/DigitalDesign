@@ -1,7 +1,7 @@
 //! Public resource adapters consume the fixed B production helpers.
 use cpu_v3::{rcc_backend, CpuV3Sim, StepOutcome};
 use std::any::Any;
-const SOURCE: &str = r#"mod gpu_api;use gpu_api::*;
+pub(super) const SOURCE: &str = r#"mod gpu_api;use gpu_api::*;
 fn check(ok:bool){if !ok{halt(0xbad);}}
 fn v(x:i16,y:i16,z:i16)->Vec3{Vec3{x:fix32::from_int(x),y:fix32::from_int(y),z:fix32::from_int(z)}}
 fn make_camera()->Camera{
@@ -186,6 +186,7 @@ fn malformed_native_dependency_fails_before_send_and_preserves_sealed_inputs() {
         .split(" check(cb.command_words()>20&&cb.push_words()>80);")
         .next()
         .unwrap();
+    let prefix = prefix.replace("DepthLoad::load()", "DepthLoad::clear(65535)");
     let source = format!("{prefix}gpu.request_snapshot();gpu.submit_capturable(cb);halt(0xbad);}}");
     for debug in [false, true] {
         let parsed = super::gpu_api_resources::parse(&source, "actual-abc-stage-boundary", debug)

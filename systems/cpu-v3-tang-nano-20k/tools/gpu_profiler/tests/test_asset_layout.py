@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from layout import COLUMN
+from layout import COLUMN, COMMAND_ABI
 from identity import create_build, load_build
 
 source=Path(__file__).resolve().parents[3]/'examples/gpu_profiler_board/tools/assets.py'
@@ -46,7 +46,7 @@ class AssetLayoutTests(unittest.TestCase):
             self.assertEqual(catalog['capture_layout'],COLUMN.description())
             self.assertEqual(build['version'],3)
             self.assertEqual(build['layout'],COLUMN.recorded_description())
-            self.assertEqual(build['command_abi'],4)
+            self.assertEqual(build['command_abi'],COMMAND_ABI)
             self.assertTrue(build['options']['full_scene'])
             self.assertEqual({r['kind'] for r in build['resources']},{'mesh','texture','atlas'})
             spans=[]

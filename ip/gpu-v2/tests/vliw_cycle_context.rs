@@ -59,6 +59,7 @@ fn run() -> Vec<Edge> {
             raw_data: Bits::new(words[cursor.min(15)], 54),
             params: Params {
                 far_z: 100 << 16,
+                depth_shift: 0,
                 tex_u: 6,
                 tex_v: 5,
                 max_mip: 4,

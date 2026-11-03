@@ -5,7 +5,7 @@ MEMORY_BYTES = 8 * 1024 * 1024
 
 
 def descriptor(command, scratch, command_abi):
-    if command_abi not in (3, 4):
+    if command_abi not in (3, 4, 5, 6):
         raise ValueError('MEMCPY requires native command ABI3 or RTT4')
     slot = command & 127
     if command >> 28 != 12 or command & 0x0fffff80 or not 66 <= slot < 80:

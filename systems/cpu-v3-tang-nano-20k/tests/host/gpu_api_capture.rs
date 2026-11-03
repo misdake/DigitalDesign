@@ -5,6 +5,7 @@ use std::{any::Any, cell::RefCell, collections::BTreeMap, path::Path, rc::Rc};
 
 const SHIM: &str = r#"use crate::dsl_rt::*;
 pub fn gpu_execute_capture_health(slot:u16)->u16{dev_recv(7,0)}
+pub fn gpu_execute_capture_depth_shift(flags:u16,first:u16,count:u16)->u16{(flags>>2)&3}
 pub fn gpu_present_capture_state(out:Array<u16>)->u16{dev_recv(7,1)}
 pub fn gpu_window_read_words(sector:u16,word:u16,mut dst:Array<u16>,count:u16)->bool{
  if count>64{return false;}if dev_recv(7,12)!=0{return false;}
@@ -70,6 +71,7 @@ struct State {
     facts: Vec<u16>,
     fact_cursor: usize,
     fail_expected: u16,
+    command_abi: u16,
 }
 struct Peer(Rc<RefCell<State>>);
 impl Device for Peer {
@@ -113,6 +115,13 @@ impl Device for Peer {
             13 => s.expected,
             14 => s.commands,
             15 => s.push_words,
+            4 => {
+                if s.command_abi == 0 {
+                    4
+                } else {
+                    s.command_abi
+                }
+            }
             _ => panic!("unexpected contract read {channel}"),
         }
     }
@@ -339,7 +348,7 @@ if gpu_capture_range_add(10,1,0x6000,128,0)!=0||gpu_capture_health()!=7{halt(0xb
 const NATIVE_APP: &str = r#"mod gpu_api_capture;
 static CONTRACT_FACTS:Buf<u16,256>=Buf::new([0;256]);
 fn main(){let mut s:Buf<u16,12>=Buf::new([1,0,0x7000,512,0,0,0x7300,1024,0,0,4,2]);
-s[4u16]=dev_recv(7,14);s[5u16]=(s[4u16]+63)&65472;s[8u16]=dev_recv(7,15);s[9u16]=dev_recv(7,8);
+s[4u16]=dev_recv(7,14);s[5u16]=(s[4u16]+63)&65472;s[8u16]=dev_recv(7,15);s[9u16]=dev_recv(7,8);s[10u16]=dev_recv(7,4);
 let mut i:u16=0;while i<s[9u16]*4{CONTRACT_FACTS[i]=dev_recv(7,9);i+=1;}
 let ok=gpu_capture_begin(s.as_array(),CONTRACT_FACTS.as_array());
 if dev_recv(7,10)==0{if !ok||gpu_capture_gate()!=0{halt(0xbad);}gpu_capture_started();gpu_capture_submitted();}
@@ -444,6 +453,23 @@ fn native_fixture(case: &str) -> State {
         }
     } else {
         let rgb = case == "draw_rgb";
+        // SET_GLOBAL must carry an admitted numerical far, even in a peer
+        // fixture whose original scope only checked native dependencies.
+        let mut global = 100u32 << 16;
+        if case.starts_with("depth2") {
+            global = (31u32 << 18) | (2 << 24);
+            s.command_abi = 6;
+            s.facts[7] |= 16 | (2 << 2);
+            if case == "depth2_mismatch" {
+                s.facts[7] = 2 | 16 | (1 << 2);
+                s.fail_expected = 1;
+            }
+            if case == "depth2_legacy" {
+                s.command_abi = 4;
+                s.fail_expected = 1;
+            }
+        }
+        put(&mut s, 0x398040, &global.to_le_bytes());
         let texture_flags = match case {
             "mip_chain" => 5 | 16 | 64,
             "rtt" => 9 | 128 | 32,
@@ -707,6 +733,9 @@ fn native_draw_rtt_ui_and_memcpy_dependencies_are_ordered_and_bounded() {
         for case in [
             "draw_uv",
             "draw_rgb",
+            "depth2",
+            "depth2_mismatch",
+            "depth2_legacy",
             "mip_chain",
             "rtt",
             "ui",

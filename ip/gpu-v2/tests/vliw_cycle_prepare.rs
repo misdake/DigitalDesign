@@ -27,6 +27,9 @@ struct UnitEdge {
     p: Prepare,
 }
 fn unit_run(shape: u8, rgb: bool) -> (u32, [u64; 16], Vec<UnitEdge>) {
+    unit_run_depth(shape, rgb, 0)
+}
+fn unit_run_depth(shape: u8, rgb: bool, depth_shift: u8) -> (u32, [u64; 16], Vec<UnitEdge>) {
     let data = triangle_support::data(triangle_support::Case {
         shape,
         rgb,
@@ -47,7 +50,8 @@ fn unit_run(shape: u8, rgb: bool) -> (u32, [u64; 16], Vec<UnitEdge>) {
             raw_index: cursor as u8,
             raw_data: Bits::new(words[cursor.min(15)], 54),
             params: Params {
-                far_z: 100 << 16,
+                far_z: (31 << 16) << depth_shift,
+                depth_shift,
                 tex_u: 6,
                 tex_v: 6,
                 max_mip: 6,
@@ -68,6 +72,26 @@ fn unit_run(shape: u8, rgb: bool) -> (u32, [u64; 16], Vec<UnitEdge>) {
         }
     }
     panic!("private prepare exceeded100000 edges: shape{shape}/rgb{rgb}");
+}
+
+#[test]
+fn depth_shift_preserves_prepare_calendar_storage_and_far_completion() {
+    let (_, _, baseline) = unit_run_depth(0, false, 0);
+    for shift in 1..=3 {
+        let (_, _, candidate) = unit_run_depth(0, false, shift);
+        assert_eq!(baseline.len(), candidate.len());
+        for (a, b) in baseline.iter().zip(&candidate) {
+            assert_eq!(
+                (a.o.done, a.o.cfg_apply, a.o.param_valid, a.o.bound_valid),
+                (b.o.done, b.o.cfg_apply, b.o.param_valid, b.o.bound_valid)
+            );
+            if a.o.cfg_apply {
+                assert_eq!(b.o.z_bias, a.o.z_bias - shift as i8);
+                assert_eq!(b.o.far_z, a.o.far_z << shift);
+            }
+            assert_eq!(a.o.param_data, b.o.param_data);
+        }
+    }
 }
 #[test]
 fn private_prepare_reduces_t16_and_publishes_packed_parameters() {
@@ -200,12 +224,18 @@ fn private_prepare_storage_and_dsp_match_production_edges() {
                 .as_nanos()
         ));
     fs::create_dir_all(&root).unwrap();
-    for (shape, rgb) in [(0, false), (0, true), (3, false), (9, false), (10, true)] {
-        let (_, _, rows) = unit_run(shape, rgb);
+    for (shape, rgb, shift) in [
+        (0, false, 0),
+        (0, true, 1),
+        (3, false, 2),
+        (9, false, 3),
+        (10, true, 0),
+    ] {
+        let (_, _, rows) = unit_run_depth(shape, rgb, shift);
         let pins = unit_fixture::fields(&rows[0]);
         rtl::replay(
             &root,
-            &format!("shape{shape}-rgb{rgb}"),
+            &format!("shape{shape}-rgb{rgb}-depth{shift}"),
             rows.iter().map(unit_fixture::fields).collect(),
             unit_fixture::production(&pins),
             false,

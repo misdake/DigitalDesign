@@ -6,6 +6,7 @@ use crate::system::vliw_cycle::require;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bindings {
     pub far_z: u32,
+    pub depth_shift: u8,
     pub texture_base: u16,
     pub texture_n: u8,
     pub texture_mip: bool,
@@ -33,6 +34,7 @@ impl Default for Bindings {
     fn default() -> Self {
         Self {
             far_z: 0,
+            depth_shift: 0,
             texture_base: 0,
             texture_n: 0,
             texture_mip: false,
@@ -244,7 +246,15 @@ impl Draw {
             }
         } else {
             match self.object_index {
-                0 => q as u32 == 0 || q as u32 >= 200 * 65536,
+                0 => {
+                    let mapped = q as u32 & 0x00ff_ffff;
+                    let shift = (q >> 24) as u8 & 3;
+                    q as u32 >> 26 != 0
+                        || mapped == 0
+                        || mapped >= 65535 * 256
+                        || mapped >> shift >= 200 * 65536
+                        || mapped & ((1 << shift) - 1) != 0
+                }
                 1 => false,
                 2 => {
                     q & 0xfe00_fe00 != 0
@@ -284,7 +294,8 @@ impl Draw {
                 return true;
             }
             (5, 0) => {
-                c.far_z = q as u32;
+                c.far_z = q as u32 & 0x00ff_ffff;
+                c.depth_shift = (q >> 24) as u8 & 3;
                 c.light[0] = (q >> 32) as i16;
                 c.light[1] = (q >> 48) as i16;
             }

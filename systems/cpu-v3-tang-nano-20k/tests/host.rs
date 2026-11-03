@@ -84,6 +84,9 @@ mod gpu_functional;
 #[path = "host/gpu_api_scene.rs"]
 mod gpu_api_scene;
 
+#[path = "host/gpu_depth.rs"]
+mod gpu_depth;
+
 #[path = "host/gpu_api_forwarding.rs"]
 mod gpu_api_forwarding;
 

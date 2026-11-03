@@ -16,6 +16,8 @@ mod gpu_model_cache;
 use gpu_model_cache::*;
 mod gpu_arena;
 use gpu_arena::*;
+mod gpu_depth_state;
+use gpu_depth_state::*;
 
 // Identity matters even when two unrelated draws deduplicate to equal bytes.
 fn gpu_patch_note(slot: u16, field: u16, identity: u16) {
@@ -91,7 +93,7 @@ fn gpu_patch_binding(slot: u16) -> bool {
             color = i + 1;
         }
         if facts[at + 2] == GPU_FACT_DEPTH {
-            if depth != 0 || facts[at] != c[GPU_RECORD_DEPTH] || facts[at + 3] != 3 {
+            if depth != 0 || facts[at] != c[GPU_RECORD_DEPTH] || facts[at + 3] & 3 != 3 {
                 return false;
             }
             depth = i + 1;
@@ -131,7 +133,12 @@ fn gpu_patch_targets(slot: u16, color: Array<u16>, depth: Array<u16>) -> bool {
         || facts[(ci - 1) * 4 + 1] != color[1u16]
         || facts[(di - 1) * 4 + 1] != depth[1u16]
         || facts[(ci - 1) * 4 + 3] != 3
-        || facts[(di - 1) * 4 + 3] != 3
+        || facts[(di - 1) * 4 + 3] & 3 != 3
+        || !gpu_depth_input_compatible(
+            (facts[(di - 1) * 4 + 3] & 127) | GPU_DEPTH_REF,
+            depth[0u16],
+            depth[1u16],
+        )
         || gpu_record_overlap(color[0u16], color[1u16], depth[0u16], depth[1u16])
     {
         return false;
@@ -274,6 +281,8 @@ fn gpu_patch_scene(
     let mut facts = gpu_record_capture_facts(slot);
     facts[(c[GPU_RECORD_COLOR_FACT] - 1) * 4] = color[0u16];
     facts[(c[GPU_RECORD_DEPTH_FACT] - 1) * 4] = depth[0u16];
+    let depth_flags = (c[GPU_RECORD_DEPTH_FACT] - 1) * 4 + 3;
+    facts[depth_flags] = (facts[depth_flags] & 127) | GPU_DEPTH_REF;
     c[GPU_RECORD_COLOR] = color[0u16];
     c[GPU_RECORD_DEPTH] = depth[0u16];
     true

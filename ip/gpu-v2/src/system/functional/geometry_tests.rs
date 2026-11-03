@@ -2,6 +2,106 @@ use super::*;
 use crate::system::functional::{Effects, Memory};
 
 #[test]
+fn every_depth_key_preserves_unsigned_comparisons_and_write_enable() {
+    struct Words([u16; 3]);
+    impl shading::PixelMemory for Words {
+        fn load(&self, address: usize) -> Result<u16, String> {
+            Ok(self.0[address])
+        }
+        fn store(&mut self, address: usize, value: u16) -> Result<(), String> {
+            self.0[address] = value;
+            Ok(())
+        }
+    }
+    for shift in 0..=3 {
+        let mut global = [0u8; 64];
+        for (i, word) in [
+            (31u32 << (16 + shift)) | (shift << 24),
+            0,
+            16384 | (8192 << 16),
+            4915 | (10486 << 16),
+            256,
+            0,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            global[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let global = shading::Global::decode(global).unwrap();
+        for function in 0..8 {
+            for write in [false, true] {
+                let mut bytes = [0u8; 32];
+                bytes[8] = function | if write { 8 } else { 0 };
+                let state = shading::DrawState {
+                    global,
+                    render: shading::RenderState::decode(bytes).unwrap(),
+                    target: [0, 2],
+                    color: 0xffffffff,
+                    rgb: true,
+                };
+                for (old, incoming) in [
+                    (0u16, 65534u16),
+                    (32767, 32768),
+                    (65535, 0),
+                    (60000, 59999),
+                    (1234, 1234),
+                ] {
+                    let pass = [
+                        false,
+                        incoming < old,
+                        incoming == old,
+                        incoming <= old,
+                        incoming > old,
+                        incoming != old,
+                        incoming >= old,
+                        true,
+                    ][usize::from(function)];
+                    let mut memory = Words([0x1234, 0, old]);
+                    shading::rop(&mut memory, [0, 0], incoming, [255, 0, 0], &state).unwrap();
+                    assert_eq!(memory.0[0], if pass { 0xf800 } else { 0x1234 });
+                    assert_eq!(memory.0[2], if pass && write { incoming } else { old });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn depth_shift_recovers_fraction_before_d16_cut_and_keeps_quantized_far_inclusive() {
+    let vertices = [(-65536, -65536), (65536, -65536), (0, 65536)].map(|(x, y)| Vertex {
+        position: [x, y, 196675],
+        normal: [0, 0, 0],
+        attribute: 0,
+    });
+    let triangle = Triangle::new(vertices, false).unwrap().unwrap();
+    let mut recovered = false;
+    for (x, y) in [(199, 119), (200, 120), (190, 115)] {
+        let finest = triangle.fragment(x, y, 31 << 19, 3).unwrap();
+        assert!(finest.valid);
+        let coarse = triangle.fragment(x, y, 31 << 16, 0).unwrap();
+        for shift in 0..=3 {
+            let fragment = triangle.fragment(x, y, 31 << (16 + shift), shift).unwrap();
+            assert_eq!(fragment.depth, finest.depth >> (3 - shift));
+            assert!(fragment.valid);
+            recovered |= shift > 0 && fragment.depth > coarse.depth << shift;
+            let same_bin_far = u32::from(fragment.depth) << 8;
+            assert!(triangle.fragment(x, y, same_bin_far, shift).unwrap().valid);
+            assert!(
+                !triangle
+                    .fragment(x, y, same_bin_far - 256, shift)
+                    .unwrap()
+                    .valid
+            );
+        }
+    }
+    assert!(
+        recovered,
+        "precision must recover bits discarded by legacy D16 output"
+    );
+}
+
+#[test]
 fn row_bounds_keep_every_original_span() {
     eprintln!(
         "workspace bytes: quad={}, prepared_quad={}, spans={}",
@@ -99,7 +199,16 @@ fn reference_draw(
                 for lane in 0..4 {
                     let (px, py) = (x + (lane & 1), y + (lane >> 1));
                     if spans[lane >> 1].is_some_and(|(lo, hi)| (lo..=hi).contains(&px)) {
-                        fragments.push((px, py, triangle.fragment(px, py, state.global.far)?));
+                        fragments.push((
+                            px,
+                            py,
+                            triangle.fragment(
+                                px,
+                                py,
+                                state.global.mapped_far(),
+                                state.global.depth_shift,
+                            )?,
+                        ));
                     }
                 }
                 let Some((_, _, first)) = fragments.first() else {

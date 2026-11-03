@@ -38,6 +38,7 @@ pub fn fields(e: &UnitEdge) -> Vec<Pin> {
     pin!("in_valid", 1, i.raw_valid, false);
     pin!("in_index", 5, i.raw_index, false);
     pin!("in_data", 54, i.raw_data.value, false);
+    pin!("cfg_depth_shift", 2, i.params.depth_shift, false);
     pin!("cfg_far_z", 32, i.params.far_z, false);
     pin!("cfg_tex_u", 5, i.params.tex_u, false);
     pin!("cfg_tex_v", 5, i.params.tex_v, false);

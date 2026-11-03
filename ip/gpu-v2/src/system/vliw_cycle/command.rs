@@ -34,8 +34,12 @@ pub struct Device4 {
 }
 impl Device4 {
     pub fn read(&self, bus: DeviceBus, busy: bool) -> u16 {
-        if bus.index & 7 == 4 && bus.channel & 15 == 2 && bus.read {
-            u16::from(busy) | u16::from(self.transport_error) << 1
+        if bus.index & 7 == 4 && bus.read {
+            match bus.channel & 15 {
+                2 => u16::from(busy) | u16::from(self.transport_error) << 1,
+                3 => 1,
+                _ => 0,
+            }
         } else {
             0
         }

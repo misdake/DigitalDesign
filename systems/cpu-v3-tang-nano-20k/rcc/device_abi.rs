@@ -36,5 +36,7 @@ pub const GPU_DEVICE: u16 = 4;
 pub const GPU_COMMAND_COUNT: u16 = 0;
 pub const GPU_COMMAND_START: u16 = 1;
 pub const GPU_STATUS: u16 = 2;
+pub const GPU_CAPABILITIES: u16 = 3;
+pub const GPU_CAP_DEPTH_SHIFT: u16 = 1;
 pub const GPU_STATUS_BUSY: u16 = 1;
 pub const GPU_STATUS_TRANSPORT_ERROR: u16 = 2;

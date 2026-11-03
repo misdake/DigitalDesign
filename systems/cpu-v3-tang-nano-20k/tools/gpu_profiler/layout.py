@@ -6,6 +6,17 @@ from pathlib import Path
 
 COMMAND_ABI = int(re.search(r"pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = ([0-9]+);",
     (Path(__file__).resolve().parents[2] / "rcc/gpu_capture_abi.rs").read_text()).group(1))
+RTT_COMMAND_ABIS = (4, COMMAND_ABI)
+
+
+def depth_configuration(word, command_abi):
+    """Decode the native far/shift pair without losing fractional far bits."""
+    shift, mapped = (word >> 24) & 3, word & 0xffffff
+    if (word >> 26 or not 0 < mapped < 0xffff00 or
+            mapped & ((1 << shift) - 1) or (mapped >> shift) >= 200 * 65536 or
+            shift and command_abi not in (5, 6)):
+        raise ValueError('Invalid native depth configuration for declared command ABI')
+    return shift, mapped
 
 COLUMN_MAP = dict(colorA=(0x400000, 0x440000), colorB=(0x440000, 0x480000),
                   depth=(0x480000, 0x4c0000), slot0CB=(0x4c0000, 0x4d0000),
@@ -84,7 +95,7 @@ def declared_layout(description):
 
 def header_layout(header):
     layout = get_layout(header.get('layout_abi'))
-    if header.get('command_abi') != COMMAND_ABI:
+    if header.get('command_abi') not in RTT_COMMAND_ABIS:
         raise ValueError('Unsupported production column/RTT command ABI')
     recorded = header.get('capture_version', 1) == 2
     has_target = header.get('has_target', True) if recorded else True

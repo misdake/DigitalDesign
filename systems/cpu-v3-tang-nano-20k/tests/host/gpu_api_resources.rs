@@ -443,7 +443,7 @@ fn main(){
         assert_eq!(memory[records + 208 + 15], 0);
         assert_eq!(
             &memory[facts..facts + 12],
-            &[0x8000, 2048, 5, 3, 0x9000, 1600, 6, 3, 0x8800, 1600, 5, 3]
+            &[0x8000, 2048, 5, 3, 0x9000, 1600, 6, 0x8043, 0x8800, 1600, 5, 3]
         );
         assert_eq!(memory[records + 9], 0x8000);
         assert_eq!(memory[records + 10], 0x9000);

@@ -307,7 +307,7 @@ impl Triangle {
         (lo <= hi).then_some(lo as usize / 2..hi as usize / 2 + 1)
     }
 
-    fn fragment(&self, x: usize, y: usize, far: u32) -> Result<Fragment, String> {
+    fn fragment(&self, x: usize, y: usize, far: u32, precision: u8) -> Result<Fragment, String> {
         let common = self.common_exponent;
         let mut h = [0; 3];
         for (i, value) in h.iter_mut().enumerate() {
@@ -355,7 +355,10 @@ impl Triangle {
         });
         let normal =
             std::array::from_fn(|c| interpolate(self.vertices.map(|v| v.normal[c])) as i16);
-        let depth_full = floor_scale(r * self.depth_mantissa, e + self.depth_shift);
+        let depth_full = floor_scale(
+            r * self.depth_mantissa,
+            e + self.depth_shift - i32::from(precision),
+        );
         Ok(Fragment {
             uv,
             rgb,
@@ -433,12 +436,17 @@ impl Quad {
     fn xy(self, lane: usize) -> [usize; 2] {
         [self.x + (lane & 1), self.y + (lane >> 1)]
     }
-    fn fragments(self, triangle: &Triangle, far: u32) -> Result<[Option<Fragment>; 4], String> {
+    fn fragments(
+        self,
+        triangle: &Triangle,
+        far: u32,
+        precision: u8,
+    ) -> Result<[Option<Fragment>; 4], String> {
         let mut result = std::array::from_fn(|_| None);
         for (lane, slot) in result.iter_mut().enumerate() {
             if self.mask & (1 << lane) != 0 {
                 let [x, y] = self.xy(lane);
-                *slot = Some(triangle.fragment(x, y, far)?);
+                *slot = Some(triangle.fragment(x, y, far, precision)?);
             }
         }
         Ok(result)
@@ -458,7 +466,11 @@ fn prepare_quad(
     quad: Quad,
     state: shading::DrawState,
 ) -> PreparedQuad {
-    let fragments = quad.fragments(triangle, state.global.far)?;
+    let fragments = quad.fragments(
+        triangle,
+        state.global.mapped_far(),
+        state.global.depth_shift,
+    )?;
     let lod = fragments.iter().flatten().next().map_or(0, |first| {
         if state.rgb {
             0
@@ -563,7 +575,11 @@ pub(super) fn draw(
                     }
                     continue;
                 }
-                let fragments = quad.fragments(&triangle, state.global.far)?;
+                let fragments = quad.fragments(
+                    &triangle,
+                    state.global.mapped_far(),
+                    state.global.depth_shift,
+                )?;
                 let Some(first) = fragments.iter().flatten().next() else {
                     continue;
                 };

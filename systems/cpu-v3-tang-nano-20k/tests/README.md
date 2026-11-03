@@ -1,5 +1,25 @@
 # System regression tests
 
+## Depth precision
+
+The bounded `host gpu_depth::` cases compile production RCC, compare physical
+far/encoded tag limits with a full-width host oracle, and exercise all four
+depth keys. They cover completed clear versus START, matching/mismatching Load
+across CBs, failed writers, active aliases and descriptor reuse. Public Camera
+recording checks the actual native Global/push bytes in both debug profiles.
+One real public RCC triangle executes on CPU instruction sim plus functional GPU;
+k0/k2 color planes match exactly, depth retains finer bits, and allocation tails
+remain unchanged. This is functional image evidence, not a cycle/performance run.
+`gpu_api_execute::depth_shift_requires_hardware_capability_before_publication_or_start`
+requires old hardware to fail without publication or SEND. These control peers
+do not render or qualify board timing.
+
+GPU geometry tests verify low-bit recovery before the D16 cut and inclusive
+quantized far admission. Prepare model/actual RTL and CP differential fixtures
+exercise the selected shift while preserving CE, stalls, row import and
+completion calendars. Profiler depth tests preserve ABI4/range1 inputs while
+checking ABI6/range2 depth flags. No default full-frame run is added.
+
 ## Persistent split controller
 
 The ordinary `host public_handheld::` cases retain input, deadlines, retirement,

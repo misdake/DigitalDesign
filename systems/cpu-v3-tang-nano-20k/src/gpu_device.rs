@@ -11,6 +11,8 @@ pub const GPU_DEVICE: u8 = 4;
 pub const GPU_COMMAND_COUNT: u8 = 0;
 pub const GPU_COMMAND_START: u8 = 1;
 pub const GPU_STATUS: u8 = 2;
+pub const GPU_CAPABILITIES: u8 = 3;
+pub const GPU_CAP_DEPTH_SHIFT: u16 = 1;
 pub const GPU_STATUS_BUSY: u16 = 1;
 pub const GPU_STATUS_TRANSPORT_ERROR: u16 = 2;
 
@@ -59,10 +61,10 @@ impl GpuDevice {
 }
 impl Device for GpuDevice {
     fn read(&mut self, _memory: &mut [Word], channel: u8) -> Word {
-        if channel == GPU_STATUS {
-            u16::from(self.busy) | (u16::from(self.transport_error) << 1)
-        } else {
-            0
+        match channel {
+            GPU_STATUS => u16::from(self.busy) | (u16::from(self.transport_error) << 1),
+            GPU_CAPABILITIES => GPU_CAP_DEPTH_SHIFT,
+            _ => 0,
         }
     }
     fn write(&mut self, memory: &mut [Word], channel: u8, value: Word) {

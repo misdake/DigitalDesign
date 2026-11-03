@@ -23,6 +23,7 @@ resources. There is no pending submission, hardware token, held result or ACK.
 | SEND device4 channel0 | bits13:0 instruction count minus1; bits15:14 zero | Stage length while idle |
 | SEND device4 channel1 | byte base/128, u16 | Accept base and launch on this wall-clock edge |
 | RECV device4 channel2 | bit0 busy, bit1 sticky transport error; others zero | Pure status query, no read side effects |
+| RECV device4 channel3 | bit0 depth-shift k0..3 support; others zero | Static capability, no read side effects |
 
 Base is128 B aligned, valid length is4 B aligned, nonzero and at most64 KiB.
 The allocation includes readable padding through the final128 B sector and
@@ -30,6 +31,9 @@ lies below8 MiB. `DeviceSubmission::new` validates these driver contracts.
 The driver serializes both SENDs, sends only while idle, and keeps the CB plus
 all referenced input/target allocations alive while busy. An idle staged length
 is not an accepted CB. A different selected device or channel reads zero.
+Older implementations return0 on channel3; the software checks bit0 before
+submitting a stream with nonzero depth shift. Global row0 installs mapped far
+and its k tag together; the original three-row Global import schedule is retained.
 
 SEND is independent of GPU CE: a one-cycle CPU write during CE0 is accepted,
 and busy is immediately visible on the following RECV. GPU execution may wait

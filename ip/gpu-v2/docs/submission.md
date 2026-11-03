@@ -26,7 +26,8 @@ Configuration changes wait for `pipeline_idle` and their local ready conditions.
 
 | Runtime configuration | Width and meaning |
 | --- | --- |
-| `cfg_far_z` | u32 F16 far depth; depth admission compares bits 23:8 |
+| `cfg_far_z` | u32 Q16.16 far in selected depth units; depth admission compares bits23:8 |
+| `cfg_depth_shift` | Two-bit k0..3; changes the existing pre-cut depth exponent bias |
 | `cfg_tex_w_log2`, `cfg_tex_h_log2`, `cfg_max_mip` | Three 5-bit exponents/limit used in analytic LOD |
 | `cfg_lod_bias` | Signed 8-bit F4 bias applied by geometry |
 | `draw_bank`, `draw_unlit` | One-bit draw identity; independent Lighting bypass |

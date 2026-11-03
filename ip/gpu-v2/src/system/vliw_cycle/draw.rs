@@ -151,6 +151,7 @@ impl Gpu {
                         },
                         params: Params {
                             far_z: c.far_z,
+                            depth_shift: c.depth_shift,
                             tex_u: c.texture_n,
                             tex_v: c.texture_n,
                             max_mip: if c.texture_mip { c.texture_n } else { 0 },

@@ -109,6 +109,7 @@ fn run(profile: Profile) -> Vec<Edge> {
                         output_ready: true,
                         params: Params {
                             far_z: 100 << 16,
+                            depth_shift: 0,
                             tex_u: 6,
                             tex_v: 6,
                             max_mip: 6,

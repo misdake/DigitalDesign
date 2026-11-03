@@ -32,10 +32,15 @@ pub struct Run {
     pub completions: usize,
 }
 pub fn run(case: Case) -> Run {
+    run_depth(case, 0)
+}
+pub fn run_depth(case: Case, depth_shift: u8) -> Run {
     let mut cp = Processor::with_draws();
     let mut cells = [None; 512];
     cells[264] = Some(2048 | (2560u64 << 14));
-    cells[272] = Some((100u64 << 16) | (0x1234u64 << 32) | (0xabcd_u64 << 48));
+    let far = (if depth_shift == 0 { 100u64 } else { 31u64 }) << (16 + depth_shift);
+    cells[272] =
+        Some(far | (u64::from(depth_shift) << 24) | (0x1234u64 << 32) | (0xabcd_u64 << 48));
     cells[273] = Some(0x4000 | (0x1111u64 << 16) | (0xeeefu64 << 32) | (0x2800u64 << 48));
     cells[274] = Some(129 | (200u64 << 16) | (1u64 << 32) | (12u64 << 34) | (0x789au64 << 48));
     cells[280] = Some(
@@ -188,7 +193,8 @@ pub fn run(case: Case) -> Run {
         }
         if i.ce && o.start && d.meshlet_ready {
             assert_eq!(o.bindings.mesh_color, 0xc0507090);
-            assert_eq!(o.bindings.far_z, 100 << 16);
+            assert_eq!(o.bindings.far_z, far as u32);
+            assert_eq!(o.bindings.depth_shift, depth_shift);
             assert_eq!(o.bindings.light, [0x1234, -21555, 0x4000]);
             assert_eq!(o.bindings.ray, [0x1111, -4369, 0x2800]);
             assert_eq!(
@@ -295,6 +301,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     pin!("work_size", 2, o.work.size, true);
     pin!("work_blocks", 3, o.work.blocks, true);
     pin!("work_slot", 1, o.work.slot, true);
+    pin!("cfg_depth_shift", 2, c.depth_shift, true);
     pin!("cfg_far_z", 32, c.far_z, true);
     pin!("texture_base", 16, c.texture_base, true);
     pin!("texture_n", 4, c.texture_n, true);

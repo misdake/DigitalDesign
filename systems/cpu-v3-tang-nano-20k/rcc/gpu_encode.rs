@@ -8,6 +8,8 @@ mod gpu_render_profile;
 use gpu_render_profile::*;
 mod gpu_memcpy;
 use gpu_memcpy::*;
+mod gpu_depth;
+use gpu_depth::*;
 
 pub struct GpuGlobal {
     pub far_low: u16,
@@ -125,15 +127,27 @@ fn gpu_global_valid(g: Array<GpuGlobal>) -> bool {
     true
 }
 pub fn gpu_encode_global(s: Array<GpuStorage>, word: u16, g: Array<GpuGlobal>) -> bool {
-    if !gpu_storage_room(s, word, 32, 32) || !gpu_global_valid(g) {
+    gpu_encode_global_depth(s, word, g, 0)
+}
+pub fn gpu_encode_global_depth(
+    s: Array<GpuStorage>,
+    word: u16,
+    g: Array<GpuGlobal>,
+    shift: u16,
+) -> bool {
+    if !gpu_storage_room(s, word, 32, 32)
+        || !gpu_global_valid(g)
+        || !gpu_depth_valid(g[0u16].far_low, g[0u16].far_high, shift)
+    {
         return false;
     }
+    let depth = gpu_depth_encode(g[0u16].far_low, g[0u16].far_high, shift);
     let p = s[0u16].cpu.add(word as i16);
     // Validation completes before destination writes. Source parameters must
     // be separate from the caller-reserved object allocation.
     unsafe {
-        p.write(0, g[0u16].far_low);
-        p.write(1, g[0u16].far_high);
+        p.write(0, depth.low);
+        p.write(1, depth.high);
         p.write(2, g[0u16].light_x as u16);
         p.write(3, g[0u16].light_y as u16);
         p.write(4, g[0u16].light_z as u16);

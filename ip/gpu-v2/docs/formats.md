@@ -90,13 +90,26 @@ NativeGlobal64 is sixteen u32 words:
 
 | Word | Encoding |
 | --- | --- |
-| 0 | F16 `far_z`, strictly between zero and 200 |
+| 0 | bits23:0: mapped Q16.16 far (`physical_far_raw << k`); bits25:24: depth shift `k=0..3`; bits31:26: zero |
 | 1 | Signed F14 light_x low16, light_y high16 |
 | 2 | Signed light_z low16, ray_x high16 |
 | 3 | Signed ray_y low16, ray_k high16 |
 | 4 | ambient bits8:0; directional bits24:16; each 0..256; other bits zero |
 | 5 | mode bits1:0; shininess code bits6:2 (0..16); epoch bits31:16; other bits zero |
 | 6..15 | Zero |
+
+Physical far remains strictly between zero and 200. The encoder validates before
+shifting: the full mapped value must be nonzero and less than `0x00ffff00`.
+Mapped low `k` bits are zero. This prevents a finite far threshold from admitting
+the conventional clear code65535; the largest admitted code is65534. Word5's
+reserved bits are unchanged. With k0, native Global bytes retain their old meaning.
+
+| k | D16 interpretation | World-space step | Physical far upper bound |
+| --- | --- | --- | --- |
+| 0 | U8F8 | 1/256 | 200 exclusive |
+| 1 | U7F9 | 1/512 | 65535/512 exclusive |
+| 2 | U6F10 | 1/1024 | 65535/1024 exclusive |
+| 3 | U5F11 | 1/2048 | 65535/2048 exclusive |
 
 NativeRender32 is eight u32 words:
 

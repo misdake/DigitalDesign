@@ -15,7 +15,7 @@ module rp_prepare(
  input clk,reset,ce,start,execute_grant,input[31:0]descriptor,
  input[17:0]operand_value,output[17:0]dsp_a,output dsp_asign,
  output[35:0]dsp_b,output[53:0]dsp_c,
- input[31:0]cfg_far_z,input[4:0]cfg_tex_u,cfg_tex_v,cfg_max_mip,input signed[7:0]cfg_bias,
+ input[1:0]cfg_depth_shift,input[31:0]cfg_far_z,input[4:0]cfg_tex_u,cfg_tex_v,cfg_max_mip,input signed[7:0]cfg_bias,
  input in_valid,output in_ready,input[4:0]in_index,input[53:0]in_data,
  output geo_we,output[3:0]geo_wa,output[29:0]geo_wd,
  output pw_low_we,output reg pw_low0_we,pw_low1_we,pw_high_we,output reg[3:0]pw_wa,output reg[35:0]pw_low_wd,output reg[53:0]pw_high_wd,output reg[3:0]pw_high_wa,
@@ -60,9 +60,9 @@ module rp_prepare(
  reg[30:0]depth_mantissa;reg sigma,rgb;
 
 `ifdef GPU_V2_LIVE_GLOBALS
-wire[31:0]far_z=cfg_far_z;
+wire[31:0]far_z=cfg_far_z;wire[1:0]depth_shift=cfg_depth_shift;
 `else
-reg[31:0]far_z;
+reg[31:0]far_z;reg[1:0]depth_shift;
 `endif
 
 `ifdef GPU_V2_LIVE_GLOBALS
@@ -126,7 +126,11 @@ reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
  assign context_ready=commit_phase&&!reset;
  assign cfg_apply=context_ready&&execute_grant&&!bound_empty;
  wire[30:0]depth_k=delta[52:22];
- assign stream_cfg_z_bias=8'sd38+$signed({2'd0,common_e})-$signed({1'b0,delta_e});
+ // Fold the game scale into the triangle constant, retaining the pixel exponent.
+ // Every intermediate fits signed8: 35..38 + E0..63 - ed0..127 = -92..101.
+ wire signed[7:0]depth_constant=8'sd38-$signed({6'd0,depth_shift});
+ assign stream_cfg_z_bias=depth_constant+$signed({2'd0,common_e})-$signed({1'b0,delta_e});
+ // Native Global already encodes far in the selected depth units.
  assign stream_cfg_far=far_z;assign stream_cfg_rgb=rgb;
  wire[5:0]difference_exp0=common_e-exp0,difference_exp1=common_e-exp1,difference_exp2=common_e-exp2;
  assign stream_cfg_shift0=difference_exp0[5]?5'd31:difference_exp0[4:0];
@@ -322,7 +326,7 @@ reg[4:0]tex_u,tex_v,max_mip;reg signed[7:0]bias;
    exp0<=0;exp1<=0;exp2<=0;common_e<=0;raw_exponent<=0;sigma<=0;rgb<=0;
 
 `ifndef GPU_V2_LIVE_GLOBALS
-far_z<=0;
+far_z<=0;depth_shift<=0;
 `endif
 
 `ifndef GPU_V2_LIVE_GLOBALS
@@ -340,7 +344,7 @@ tex_u<=0;tex_v<=0;max_mip<=0;bias<=0;
      sigma<=descriptor[18];rgb<=descriptor[19];
 
 `ifndef GPU_V2_LIVE_GLOBALS
-far_z<=cfg_far_z;
+far_z<=cfg_far_z;depth_shift<=cfg_depth_shift;
 `endif
 
 `ifndef GPU_V2_LIVE_GLOBALS
@@ -384,6 +388,9 @@ tex_u<=cfg_tex_u;tex_v<=cfg_tex_v;max_mip<=cfg_max_mip;bias<=cfg_bias;
  always @(posedge clk)if(ce&&!reset&&geo_we)begin
   if(quant_field<2&&canonical[35:17]!={19{canonical[17]}})$fatal(1,"几何N不能精确存入18位");
   if(quant_field==2&&canonical[35:27]!={9{canonical[27]}})$fatal(1,"几何C不能精确存入28位");
+ end
+ always @(posedge clk)if(ce&&!reset&&cfg_apply)begin
+  if(far_z>=32'h00ffff00)$fatal(1,"depth shift exceeds D16 far range");
  end
  always @(posedge clk)if(ce&&!reset)begin
   if(packed_write&&(in_index!=expected||pw_high_wa<8))$fatal(1,"packed import layout");
