@@ -12,11 +12,13 @@ module PixelLeaf(
 __CONFIG__
 localparam integer PRECODE_BITS=9;
 wire [8:0] display_slot_base=(display_slot?9'd200:9'd0)+(display_second?9'd100:9'd0);
+__PIXEL_DECLARATIONS__
 __DECLARATIONS__
 always @(posedge pixel_clock) begin
  if (pixel_reset) begin
 __RESET__
  end else begin
+__PIXEL_BODY__
   if (h_count==0) begin
 __H0__
 __BODY__
@@ -50,12 +52,16 @@ initial begin
   #1;
   $write("R %0d %h %h %h %h %h %h %h ",index,line_read_address_a,line_read_address_b,line_read_data_a,line_read_data_b,
    dut.current_precode[26:18],dut.current_precode[17:9],dut.current_precode[8:0]);
+  $write("%h %h %h %h %h %h %h ",dut.precode_pipe[26:18],dut.precode_pipe[17:9],dut.precode_pipe[8:0],
+   dut.visible_pipe3,dut.framebuffer_pipe3,dut.hsync_pipe3,dut.vsync_pipe3);
   write_clock=le;pixel_clock=pe;
   #1;
-  $display("%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",dut.read_phase,dut.fetch_pair,dut.pair_bank,dut.raw_pair,
+  $write("%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h ",dut.read_phase,dut.fetch_pair,dut.pair_bank,dut.raw_pair,
    dut.r0,dut.r1,dut.g0,dut.g1,
    dut.output_pair[26:18],dut.output_pair[17:9],dut.output_pair[8:0],dut.output_pair[53:45],dut.output_pair[44:36],dut.output_pair[35:27],
    line_read_data_a,line_read_data_b);
+  $display("%h %h %h %h %h %h %h %h %h %h",dut.precode_pipe[26:18],dut.precode_pipe[17:9],dut.precode_pipe[8:0],
+   dut.rgb_pipe[23:16],dut.rgb_pipe[15:8],dut.rgb_pipe[7:0],dut.visible_pipe3,dut.framebuffer_pipe3,dut.hsync_pipe3,dut.vsync_pipe3);
   write_clock=0;pixel_clock=0;#1;
   count=count+1;if(count>32768)$fatal(1,"read edge cap");
  end

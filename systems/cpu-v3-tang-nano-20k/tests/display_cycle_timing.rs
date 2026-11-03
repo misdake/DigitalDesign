@@ -1,5 +1,4 @@
-//! Timing/control qualification: short production RTL plus preserved pre-candidate
-//! fill pin tapes, replayed from declaration cold state with every real edge.
+//! Timing/control qualification with fresh tracked Fill inputs and real RTL edges.
 use cpu_v3_tang_nano_20k::hardware::display_cycle::{
     ControlInput, DisplayControl, Edges, FillOutput, Timing, TimingInput, TimingOutput,
 };
@@ -12,6 +11,11 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+
+#[path = "support/display_fill_qualification.rs"]
+mod fill_qualification;
+#[path = "support/display_test_output.rs"]
+mod test_output;
 
 fn decode(word: u128) -> ControlInput {
     let mut shift = 97u32;
@@ -89,6 +93,9 @@ fn pixel(o: TimingOutput) -> u64 {
     .fold(0, |v, (p, w)| (v << w) | p)
 }
 fn run(command: &mut Command, out: &Path, name: &str) -> bool {
+    run_bounded(command, out, name, 30)
+}
+fn run_bounded(command: &mut Command, out: &Path, name: &str, seconds: u64) -> bool {
     let argv: Vec<_> = std::iter::once(command.get_program())
         .chain(command.get_args())
         .map(|s| s.to_string_lossy().into_owned())
@@ -111,10 +118,10 @@ fn run(command: &mut Command, out: &Path, name: &str) -> bool {
         if let Some(status) = child.try_wait().unwrap() {
             return status.success();
         }
-        if start.elapsed() > Duration::from_secs(30) {
+        if start.elapsed() > Duration::from_secs(seconds) {
             child.kill().unwrap();
             let _ = child.wait();
-            panic!("{name} 30s wall cap");
+            panic!("{name} {seconds}s wall cap");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -183,8 +190,7 @@ fn no_edges_leave_control_state_and_cold_ram_unchanged() {
 #[test]
 #[ignore = "bounded full production pixel timing/CDC and same-edge error RTL"]
 fn production_timing_short_edges_and_mutants() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let out = root.join("target/display-cycle-timing");
+    let out = test_output::fresh_output("display-cycle-timing");
     fs::create_dir_all(&out).unwrap();
     fs::write(
         out.join("line.v"),
@@ -263,6 +269,11 @@ struct Replay {
     next_logic: u64,
     next_pixel: u64,
     phase: u64,
+    video_expected: std::collections::VecDeque<(u64, u64)>,
+    video_samples: usize,
+    video_source: usize,
+    tmds_expected: std::collections::VecDeque<(u64, [u16; 3], [u8; 3])>,
+    tmds_samples: usize,
 }
 impl Replay {
     fn new(phase: u64) -> Self {
@@ -272,16 +283,80 @@ impl Replay {
             next_logic: 37,
             next_pixel: 60 + phase,
             phase,
+            video_expected: Default::default(),
+            video_samples: 0,
+            video_source: 0,
+            tmds_expected: Default::default(),
+            tmds_samples: 0,
         }
+    }
+    fn commit(&mut self, edges: Edges, t: u64) {
+        if edges.pixel_rise && self.video_expected.front().is_some_and(|v| v.0 <= t) {
+            let (expected_t, expected) = self.video_expected.pop_front().unwrap();
+            assert_eq!(expected_t, t, "video clock calendar");
+            let video = self.control.outputs(&self.pins).video;
+            assert!(
+                video
+                    .precode
+                    .channels
+                    .iter()
+                    .all(|v| v.known && !v.collision),
+                "effective video provenance at {t}"
+            );
+            let codes = video
+                .precode
+                .channels
+                .into_iter()
+                .fold(0u64, |v, c| (v << 9) | u64::from(c.value));
+            let rgb = video
+                .rgb888
+                .into_iter()
+                .fold(0u64, |v, c| (v << 8) | u64::from(c));
+            let flags = (u64::from(video.de) << 3)
+                | (u64::from(video.framebuffer) << 2)
+                | (u64::from(video.hsync) << 1)
+                | u64::from(video.vsync);
+            let actual = (codes << 28) | (rgb << 4) | flags;
+            assert_eq!(
+                actual, expected,
+                "VIDEO_COLD tick={t} sample={}",
+                self.video_samples
+            );
+            self.video_samples += 1;
+            self.video_source += usize::from(video.effective_source);
+        }
+        if edges.pixel_rise && self.tmds_expected.front().is_some_and(|v| v.0 <= t) {
+            let (expected_t, symbols, disparities) = self.tmds_expected.pop_front().unwrap();
+            assert_eq!(expected_t, t, "symbol clock calendar");
+            let out = self.control.outputs(&self.pins).tmds;
+            assert!(
+                out.lanes
+                    .iter()
+                    .all(|v| v.symbol_defined && v.disparity_defined && !v.tainted),
+                "TMDS_COLD definedness {t}"
+            );
+            assert_eq!(
+                out.lanes.map(|v| v.symbol),
+                symbols,
+                "TMDS_COLD symbols tick={t}"
+            );
+            assert_eq!(
+                out.lanes.map(|v| v.disparity as u8 & 63),
+                disparities,
+                "TMDS_COLD disparity tick={t}"
+            );
+            self.tmds_samples += 1;
+        }
+        self.control.clock(edges, &self.pins);
     }
     fn pixels_before(&mut self, t: u64) {
         while self.next_pixel < t {
-            self.control.clock(
+            self.commit(
                 Edges {
                     logic_rise: false,
                     pixel_rise: true,
                 },
-                &self.pins,
+                self.next_pixel,
             );
             self.next_pixel += 120;
         }
@@ -292,7 +367,7 @@ impl Replay {
             logic_rise: t == self.next_logic,
             pixel_rise: t == self.next_pixel,
         };
-        self.control.clock(edges, &self.pins);
+        self.commit(edges, t);
         if edges.logic_rise {
             self.next_logic += 74;
         }
@@ -329,7 +404,17 @@ fn feedback(control: &DisplayControl, pins: &ControlInput, raw: u128, expected: 
     }
 }
 fn replay(path: &Path, phase: u64) -> Replay {
+    replay_observed(path, phase, Default::default(), Default::default())
+}
+fn replay_observed(
+    path: &Path,
+    phase: u64,
+    video: std::collections::VecDeque<(u64, u64)>,
+    tmds: std::collections::VecDeque<(u64, [u16; 3], [u8; 3])>,
+) -> Replay {
     let mut r = Replay::new(phase);
+    r.video_expected = video;
+    r.tmds_expected = tmds;
     let mut n = 0usize;
     let mut cells = 0;
     let mut finals = 0;
@@ -350,12 +435,12 @@ fn replay(path: &Path, phase: u64) -> Replay {
                     r.pixels_before(rise);
                     feedback(&r.control, &r.pins, raw, expected, n);
                     let together = r.next_pixel == rise;
-                    r.control.clock(
+                    r.commit(
                         Edges {
                             logic_rise: true,
                             pixel_rise: together,
                         },
-                        &r.pins,
+                        rise,
                     );
                     if together {
                         r.next_pixel += 120;
@@ -468,50 +553,64 @@ fn failure_feedback(mut r: Replay) {
     assert_eq!(next_pixel(&mut error).failure_sync, 3);
 }
 #[test]
-#[ignore = "requires DISPLAY_CYCLE_FILL_EVIDENCE qualified eight-case source bundle"]
+#[ignore = "generates eight bounded production Fill cases, then cold-replays every edge"]
 fn cold_control_replay_and_underflow_failure_feedback() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let out = root.join("target/display-cycle-timing");
+    let out = test_output::fresh_output("display-cycle-timing");
     fs::create_dir_all(&out).unwrap();
-    let origin = PathBuf::from(
-        std::env::var("DISPLAY_CYCLE_FILL_EVIDENCE")
-            .expect("point to qualified fill target directory"),
+    let producer = out.join("producer");
+    assert!(
+        !producer.exists(),
+        "fresh replay cannot reuse a prior producer"
     );
-    let imported = out.join("imported");
-    let mut c = Command::new("python");
-    c.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/display_cycle_timing_import.py"))
-        .arg("--source")
-        .arg(&origin)
-        .arg("--out")
-        .arg(&imported);
-    assert!(run(&mut c, &out, "import"));
+    fill_qualification::qualification(&producer, "normal");
     assert_eq!(
-        fs::read_to_string(imported.join("production.v")).unwrap(),
+        fs::read_to_string(producer.join("production.v")).unwrap(),
         source()
     );
     assert_eq!(
-        fs::read_to_string(imported.join("line.v")).unwrap(),
+        fs::read_to_string(producer.join("line.v")).unwrap(),
         DisplayLineBuffer::verilog_source().unwrap()
     );
-    let binding: serde_json::Value =
-        serde_json::from_slice(&fs::read(imported.join("binding.json")).unwrap()).unwrap();
-    for (name, value) in binding["files"].as_object().unwrap() {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(producer.join("manifest-normal.json")).unwrap()).unwrap();
+    let cases = manifest["results"].as_array().unwrap();
+    assert_eq!(cases.len(), 8);
+    assert!(cases.iter().all(|case| case["pass"] == true));
+    let mut names = vec![
+        "production.v".to_string(),
+        "line.v".into(),
+        "tb.v".into(),
+        "manifest-normal.json".into(),
+    ];
+    for case in cases {
+        let label = case["case"].as_str().unwrap();
+        names.extend([format!("{label}.trace"), format!("{label}.stdout")]);
+    }
+    let mut hashes = serde_json::Map::new();
+    for name in names {
         let hash = Command::new("git")
             .args(["hash-object", "--no-filters"])
-            .arg(imported.join(name))
+            .arg(producer.join(&name))
             .output()
             .unwrap();
         assert!(hash.status.success());
-        assert_eq!(
-            String::from_utf8(hash.stdout).unwrap().trim(),
-            value["git_blob"].as_str().unwrap()
-        );
+        hashes.insert(name, String::from_utf8(hash.stdout).unwrap().trim().into());
     }
+    fs::write(
+        out.join("fresh-inputs.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "kind":"fresh production Fill qualification from tracked generator/testbench",
+            "producer":producer,"cases":cases,"input_git_blobs":hashes,
+            "historical_bundle_used":false,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let mut results = Vec::new();
-    for case in binding["cases"].as_array().unwrap() {
+    for case in cases {
         let label = case["case"].as_str().unwrap();
         let phase = label.rsplit('-').next().unwrap().parse().unwrap();
-        let r = replay(&imported.join(format!("{label}.trace")), phase);
+        let r = replay(&producer.join(format!("{label}.trace")), phase);
         if label == "production-2-17" {
             failure_feedback(r.clone());
         }
@@ -519,7 +618,8 @@ fn cold_control_replay_and_underflow_failure_feedback() {
             .push(serde_json::json!({"case":label,"logic_edges":(r.next_logic-37)/74,"pass":true}));
     }
     fs::write(out.join("replay-manifest.json"),serde_json::to_string_pretty(&serde_json::json!({
-        "scope":"cold control-cone replay of preserved real RTL pin tapes, no native MC or color/TMDS",
+        "scope":"cold control-cone replay of freshly generated real RTL pin tapes, no native MC or color/TMDS",
+        "input_generation":"shared tracked Fill qualification, all eight cases",
         "each_logic_and_pixel_edge_executed":true,"max_logic_edges_per_tape":4000000,
         "feedback_assertions":"underflow only stays clear; boot/raw error two pixel stages; coincident raw error reads old sticky",
         "results":results
@@ -529,8 +629,7 @@ fn cold_control_replay_and_underflow_failure_feedback() {
 #[test]
 #[ignore = "verbatim production failure crossing and underflow-only DUT mutation"]
 fn production_failure_feedback_leaf() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let out = root.join("target/display-cycle-timing");
+    let out = test_output::fresh_output("display-cycle-timing");
     fs::create_dir_all(&out).unwrap();
     fs::write(
         out.join("line.v"),
@@ -592,5 +691,99 @@ fn production_failure_feedback_leaf() {
         "cases":["underflow-only excluded","boot_failed two pixel stages","raw memory error two pixel stages"],
         "real_dut_mutation":"OR underflow_sync into failure input: rejected at edge0",
         "max_pixel_edges":11,"wall_seconds_per_process":30
+    })).unwrap()).unwrap();
+}
+
+#[test]
+#[ignore = "bounded Display-only fresh cold video window and same-input Rust replay"]
+fn production_cold_video_window_replays_through_real_control() {
+    let out = test_output::fresh_output("display-cycle-pipeline-cold");
+    fs::create_dir_all(&out).unwrap();
+    fs::write(
+        out.join("line.v"),
+        DisplayLineBuffer::verilog_source().unwrap(),
+    )
+    .unwrap();
+    let observer = r#"
+integer vf,tf,video_pixels=0,video_samples=0,video_real=0;
+reg [2047:0] video_path,tmds_path;
+wire [63:0] video_view={dut.precode_pipe,dut.rgb_pipe,dut.visible_pipe3,dut.framebuffer_pipe3,dut.hsync_pipe3,dut.vsync_pipe3};
+initial begin
+ if(!$value$plusargs("video=%s",video_path))$fatal(1,"missing video path");
+ vf=$fopen(video_path,"w");if(!vf)$fatal(1,"video open");
+ if(!$value$plusargs("tmds=%s",tmds_path))$fatal(1,"tmds path");
+ tf=$fopen(tmds_path,"w");if(!tf)$fatal(1,"tmds open");
+end
+always @(posedge pixel_clock) begin
+ #0;
+ video_pixels=video_pixels+1;
+ if(video_pixels>4*1056*525)$fatal(1,"video cycle cap");
+ // Fixed raw H/V windows include preroll, first/last active pixels and postroll.
+ // They are not selected by observed pixel value or scan readiness.
+ if(dut.v_count>=32&&dut.v_count<34&&dut.h_count>=212&&dut.h_count<=1020)begin
+  $fwrite(vf,"V %0d %016h\n",video_pixels,video_view);
+  $fwrite(tf,"T %0d %h %h %h %h %h %h\n",video_pixels,dut.red_symbol,dut.green_symbol,dut.blue_symbol,
+   dut.u_red.disparity,dut.u_green.disparity,dut.u_blue.disparity);
+  video_samples=video_samples+1;
+  if(dut.scan_valid&&dut.scan_line_ready&&dut.h_count>=217&&dut.h_count<=1016)video_real=video_real+1;
+ end
+end
+"#;
+    let tb = include_str!("display_cycle_fill_tb.v");
+    let marker = "  finish_trace;\n  $display(\"PASS case=";
+    assert!(tb.contains(marker));
+    let tb=tb.replace(marker,"  if(video_samples<3000||video_real<1600)$fatal(1,\"video coverage\");\n  $fclose(vf);$fclose(tf);\n  finish_trace;\n  $display(\"PASS case=");
+    let tb = tb.replacen(
+        "always @(posedge clk) begin",
+        &format!("{observer}\nalways @(posedge clk) begin"),
+        1,
+    );
+    let exe = compile(&out, "production-cold", &tb, &source());
+    let pin_trace = out.join("pins.trace");
+    let video_trace = out.join("video.trace");
+    let tmds_trace = out.join("tmds.trace");
+    let mut command = Command::new(std::env::var("VVP_EXE").unwrap_or_else(|_| "vvp".into()));
+    command
+        .arg(exe)
+        .arg("+case=0")
+        .arg("+phase=17")
+        .arg(format!("+trace={}", pin_trace.display()))
+        .arg(format!("+video={}", video_trace.display()))
+        .arg(format!("+tmds={}", tmds_trace.display()));
+    assert!(run_bounded(&mut command, &out, "production-cold", 90));
+    let mut expected = std::collections::VecDeque::new();
+    for line in BufReader::new(fs::File::open(&video_trace).unwrap()).lines() {
+        let line = line.unwrap();
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(fields.len(), 3);
+        let ordinal = fields[1].parse::<u64>().unwrap();
+        expected.push_back((
+            77 + (ordinal - 1) * 120,
+            u64::from_str_radix(fields[2], 16).unwrap(),
+        ));
+    }
+    let mut symbols = std::collections::VecDeque::new();
+    for line in BufReader::new(fs::File::open(&tmds_trace).unwrap()).lines() {
+        let line = line.unwrap();
+        let v = line.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(v.len(), 8);
+        let ordinal = v[1].parse::<u64>().unwrap();
+        symbols.push_back((
+            77 + (ordinal - 1) * 120,
+            std::array::from_fn(|i| u16::from_str_radix(v[i + 2], 16).unwrap()),
+            std::array::from_fn(|i| u8::from_str_radix(v[i + 5], 16).unwrap()),
+        ));
+    }
+    let replay = replay_observed(&pin_trace, 17, expected, symbols);
+    assert!(replay.tmds_expected.is_empty() && replay.tmds_samples == replay.video_samples);
+    assert!(
+        replay.video_expected.is_empty()
+            && replay.video_samples >= 3000
+            && replay.video_source >= 1600
+    );
+    fs::write(out.join("results.json"),serde_json::to_string_pretty(&serde_json::json!({
+        "scope":"fresh production Display-only video windows and cold Rust Control replay; controlled MC response peer",
+        "video_samples":replay.video_samples,"real_source_samples":replay.video_source,"tmds_samples":replay.tmds_samples,
+        "max_logic_edges":4000000,"max_frames":4,"wall_seconds":90,"phase":17
     })).unwrap()).unwrap();
 }

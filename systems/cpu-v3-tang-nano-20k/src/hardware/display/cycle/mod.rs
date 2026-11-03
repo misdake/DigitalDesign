@@ -7,12 +7,16 @@ mod timing;
 pub use control::{ControlInput, ControlOutput, DisplayControl};
 pub use timing::{Timing, TimingInput, TimingOutput};
 mod line_buffer;
+mod pixel_pipe;
 mod pixels;
+mod tmds;
 
 pub use fill::{Fill, FillInput, FillOutput};
 
 pub use line_buffer::{LineBuffer, LineBufferInput, RamWord};
+pub use pixel_pipe::{PixelPipe, PixelPipeOutput};
 pub use pixels::{ColorPrecode, PixelRead, PixelReadInput, PixelReadOutput, Precode};
+pub use tmds::{Tmds, TmdsInput, TmdsLaneOutput, TmdsOutput};
 
 /// Rising edges sampled at one root-scheduler instant.
 /// Coincident edges must see the same pre-edge state.

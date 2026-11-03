@@ -1,7 +1,8 @@
-//! Production pixel-read projection with controlled Timing boundary inputs.
+//! Production read/pixel-register projection with controlled Timing boundary inputs.
 //! No warm checkpoint, root time, backing-store bypass or complete Display claim.
 use cpu_v3_tang_nano_20k::hardware::display_cycle::{
-    ColorPrecode, Edges, LineBuffer, LineBufferInput, PixelRead, PixelReadInput, Precode, RamWord,
+    ColorPrecode, ControlInput, DisplayControl, Edges, LineBuffer, LineBufferInput, PixelPipe,
+    PixelRead, PixelReadInput, Precode, RamWord, Timing, TimingOutput,
 };
 use cpu_v3_tang_nano_20k::{display::ACTIVE_DISPLAY_CONFIG, DisplayLineBuffer};
 use digital_design_hardware::Module;
@@ -94,20 +95,40 @@ fn expected_rgb(pixel: u16, linear: bool) -> [u8; 3] {
 struct Fixture {
     ram: LineBuffer,
     read: PixelRead,
+    pipe: PixelPipe,
+    active_black: usize,
+    blank: usize,
     vectors: String,
     expected: Vec<Vec<Sample>>,
     valid: usize,
     tainted: usize,
     unused_unknown: usize,
     pixels: usize,
+    rows: u16,
 }
 impl Fixture {
     fn step(&mut self, edges: Edges, input: PixelReadInput, write: Option<(u16, u64)>) {
         let index = self.expected.len();
         assert!(index < 32768);
         let q = self.ram.outputs();
-        let old = self.read.outputs(&input, q);
-        assert_eq!(old, self.read.outputs(&input, q));
+        let c = ACTIVE_DISPLAY_CONFIG;
+        let mut timing = Timing::default().outputs();
+        timing.pixel_reset = input.pixel_reset;
+        timing.h_count = input.h_count;
+        timing.v_count = input.v_count;
+        timing.started = input.scan_enabled;
+        timing.scan_valid = input.scan_valid;
+        timing.scan_line_ready = input.scan_line_ready;
+        timing.scan_linear = input.scan_linear;
+        timing.slot = input.slot;
+        timing.second = input.second;
+        timing.hsync = u32::from(input.h_count) < c.h_sync_end;
+        timing.vsync = u32::from(input.v_count) < c.v_sync_end;
+        timing.active = (c.h_active_start..c.h_active_end).contains(&u32::from(input.h_count))
+            && (c.v_active_start..c.v_active_end).contains(&u32::from(input.v_count));
+        let adapted = PixelReadInput::from(timing);
+        let old = self.read.outputs(&adapted, q);
+        assert_eq!(old, self.read.outputs(&adapted, q));
         let mut samples = Vec::new();
         for bank in 0..2 {
             samples.push(Sample {
@@ -120,6 +141,15 @@ impl Fixture {
         samples.push(word("oldQa", q[0]));
         samples.push(word("oldQb", q[1]));
         samples.extend(color_samples("selected", old.selected));
+        let encoder_input = self.pipe.outputs();
+        assert_eq!(encoder_input, self.pipe.outputs());
+        samples.extend(color_samples("encoder_old", encoder_input.precode));
+        samples.extend([
+            plain("old_de", u8::from(encoder_input.de)),
+            plain("old_fb", u8::from(encoder_input.framebuffer)),
+            plain("old_hs", u8::from(encoder_input.hsync)),
+            plain("old_vs", u8::from(encoder_input.vsync)),
+        ]);
         if edges.pixel_rise {
             self.pixels += 1;
             let c = ACTIVE_DISPLAY_CONFIG;
@@ -137,7 +167,7 @@ impl Fixture {
                 );
                 self.tainted += usize::from(old.selected.channels.iter().any(|c| c.collision));
                 let x = (input.h_count - c.h_active_start as u16) / 2;
-                let y = u16::from(input.slot) * 2 + u16::from(input.second);
+                let y = (input.v_count - c.v_active_start as u16) / c.scale as u16;
                 assert_eq!(
                     old.selected.channels.map(|c| decode(c.value)),
                     expected_rgb(pattern(x, y), input.scan_linear),
@@ -147,7 +177,34 @@ impl Fixture {
             if input.h_count == 1013 && !old.read_address_known[0] {
                 self.unused_unknown += 1;
             }
-            self.read.clock(&input, q);
+            self.pipe.clock(&timing, old.selected);
+            let video = self.pipe.outputs();
+            assert_eq!(video.de, !input.pixel_reset && timing.active);
+            assert_eq!(
+                video.framebuffer,
+                !input.pixel_reset && timing.active && input.scan_enabled && input.scan_valid
+            );
+            let source = !input.pixel_reset
+                && timing.active
+                && input.scan_enabled
+                && input.scan_valid
+                && input.scan_line_ready;
+            assert_eq!(video.effective_source, source);
+            if source {
+                let x = (input.h_count - c.h_active_start as u16) / 2;
+                let y = (input.v_count - c.v_active_start as u16) / c.scale as u16;
+                assert_eq!(video.rgb888, expected_rgb(pattern(x, y), input.scan_linear));
+            } else {
+                assert_eq!(video.rgb888, [0; 3]);
+                assert!(video
+                    .precode
+                    .channels
+                    .iter()
+                    .all(|c| c.known && !c.collision));
+                self.active_black += usize::from(video.de);
+                self.blank += usize::from(!video.de);
+            }
+            self.read.clock(&adapted, q);
         }
         self.ram.clock(
             edges,
@@ -161,7 +218,7 @@ impl Fixture {
                 read_address_tainted: old.read_address_tainted,
             },
         );
-        let post = self.read.outputs(&input, self.ram.outputs());
+        let post = self.read.outputs(&adapted, self.ram.outputs());
         samples.extend([
             plain("phase", post.phase),
             plain("fetch", post.fetch_pair),
@@ -183,6 +240,22 @@ impl Fixture {
         let q = self.ram.outputs();
         samples.push(word("newQa", q[0]));
         samples.push(word("newQb", q[1]));
+        let video = self.pipe.outputs();
+        samples.extend(color_samples("pipe", video.precode));
+        for lane in 0..3 {
+            samples.push(Sample {
+                name: format!("rgb{lane}"),
+                value: video.rgb888[lane].into(),
+                known: video.precode.channels[lane].known,
+                tainted: video.precode.channels[lane].collision,
+            });
+        }
+        samples.extend([
+            plain("de", u8::from(video.de)),
+            plain("fb", u8::from(video.framebuffer)),
+            plain("hs", u8::from(video.hsync)),
+            plain("vs", u8::from(video.vsync)),
+        ]);
         writeln!(
             self.vectors,
             "{index} {} {} {} {:x} {:016x} {} {} {} {} {} {} {} {} {}",
@@ -208,7 +281,7 @@ impl Fixture {
         for h in 0..1056 {
             let input = PixelReadInput {
                 h_count: h,
-                v_count: 32,
+                v_count: 32 + (u16::from(slot) * 2 + u16::from(second)) * 2 + (self.rows & 1),
                 scan_enabled: true,
                 scan_line_ready: true,
                 scan_valid: true,
@@ -235,6 +308,7 @@ impl Fixture {
                 self.step(Edges::default(), input, None);
             }
         }
+        self.rows += 1;
     }
 }
 fn vectors() -> Fixture {
@@ -252,10 +326,12 @@ fn vectors() -> Fixture {
     for (slot, second, linear) in [
         (false, false, false),
         (false, false, false),
+        (false, true, true),
+        (false, true, true),
+        (true, false, false),
+        (true, false, false),
         (true, true, true),
         (true, true, true),
-        (false, false, true),
-        (false, false, false),
     ] {
         f.row(slot, second, linear, false);
     }
@@ -291,7 +367,33 @@ fn vectors() -> Fixture {
         );
     }
     f.row(true, true, true, true);
+    for (enabled, valid, ready, v) in [
+        (false, false, false, 32),
+        (true, false, true, 33),
+        (true, true, false, 34),
+        (true, true, true, 0),
+        (true, true, true, 512),
+    ] {
+        for h in 0..1056 {
+            f.step(
+                Edges {
+                    pixel_rise: true,
+                    logic_rise: false,
+                },
+                PixelReadInput {
+                    h_count: h,
+                    v_count: v,
+                    scan_enabled: enabled,
+                    scan_valid: valid,
+                    scan_line_ready: ready,
+                    ..Default::default()
+                },
+                None,
+            );
+        }
+    }
     assert!(f.valid > 5000 && f.tainted == 4 && f.unused_unknown >= 2);
+    assert!(f.active_black >= 2400 && f.blank >= 2000);
     f
 }
 
@@ -333,6 +435,11 @@ fn leaf() -> String {
         "g0",
         "g1",
         "output_pair",
+        "visible_pipe3",
+        "framebuffer_pipe3",
+        "hsync_pipe3",
+        "vsync_pipe3",
+        "precode_pipe",
     ];
     let reset = source
         .split_once("    if (pixel_reset) begin")
@@ -355,7 +462,36 @@ fn leaf() -> String {
         .split_once("        if (scan_enabled && (scan_valid || !group_valid")
         .unwrap()
         .0;
+    let pixel_declarations = source
+        .split_once("reg visible_pipe3=0")
+        .unwrap()
+        .1
+        .split_once("// Independent bank addresses")
+        .unwrap()
+        .0;
+    let pixel_body = source
+        .split_once("        visible_pipe3<=active;")
+        .unwrap()
+        .1
+        .split_once("        if (h_count==0) begin")
+        .unwrap()
+        .0;
+    let sync = source
+        .split_once("wire hsync =")
+        .unwrap()
+        .1
+        .split_once("wire line_ready =")
+        .unwrap()
+        .0;
     include_str!("display_cycle_pixels_tb.v")
+        .replace(
+            "__PIXEL_DECLARATIONS__",
+            &format!("wire hsync ={sync}\nreg visible_pipe3=0{pixel_declarations}"),
+        )
+        .replace(
+            "__PIXEL_BODY__",
+            &format!("visible_pipe3<=active;{pixel_body}"),
+        )
         .replace("__CONFIG__", &ACTIVE_DISPLAY_CONFIG.verilog_localparams())
         .replace(
             "__DECLARATIONS__",
@@ -437,7 +573,7 @@ fn read_calendar_knownness_and_numeric_pixels() {
 #[ignore = "bounded production pixel-read projection and real DUT mutations"]
 fn production_read_calendar_and_real_mutations() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let out = root.join("target/display-cycle-pixels/c1-v2");
+    let out = root.join("target/display-cycle-pixels/c2-v3");
     std::fs::create_dir_all(&out).unwrap();
     let f = vectors();
     std::fs::write(out.join("vectors.txt"), &f.vectors).unwrap();
@@ -494,6 +630,43 @@ fn production_read_calendar_and_real_mutations() {
             false,
         ),
     ];
+    let mut cases = cases.to_vec();
+    cases.extend([
+        (
+            "de_ready",
+            source.replace(
+                "visible_pipe3<=active;",
+                "visible_pipe3<=active && scan_line_ready;",
+            ),
+            DisplayLineBuffer::verilog_source().unwrap(),
+            false,
+            false,
+        ),
+        (
+            "early_hsync",
+            source.replace("hsync_pipe3<=hsync;", "hsync_pipe3<=h_count+1<H_SYNC_END;"),
+            DisplayLineBuffer::verilog_source().unwrap(),
+            false,
+            false,
+        ),
+        (
+            "old_pair_emit",
+            source.replace("emit_pair ? converted_pair : output_pair", "output_pair"),
+            DisplayLineBuffer::verilog_source().unwrap(),
+            false,
+            false,
+        ),
+        (
+            "hold_blank",
+            source.replace(
+                "precode_pipe<=BLACK_PRECODE;",
+                "precode_pipe<=precode_pipe;",
+            ),
+            DisplayLineBuffer::verilog_source().unwrap(),
+            false,
+            false,
+        ),
+    ]);
     let mut results = Vec::new();
     for (name, source, ram, positive, poisoned) in cases {
         std::fs::write(out.join(format!("{name}.v")), source).unwrap();
@@ -537,6 +710,8 @@ fn production_read_calendar_and_real_mutations() {
     let mut hashes = serde_json::Map::new();
     for relative in [
         "systems/cpu-v3-tang-nano-20k/src/hardware/display/cycle/pixels.rs",
+        "systems/cpu-v3-tang-nano-20k/src/hardware/display/cycle/pixel_pipe.rs",
+        "systems/cpu-v3-tang-nano-20k/src/hardware/display/cycle/control.rs",
         "systems/cpu-v3-tang-nano-20k/src/hardware/display/cycle/line_buffer.rs",
         "systems/cpu-v3-tang-nano-20k/src/hardware/display/cycle/mod.rs",
         "systems/cpu-v3-tang-nano-20k/src/hardware/display/display_hdmi.v",
@@ -581,5 +756,54 @@ fn production_read_calendar_and_real_mutations() {
         serde_json::to_string_pretty(&hashes).unwrap(),
     )
     .unwrap();
-    std::fs::write(out.join("results.json"),serde_json::to_string_pretty(&serde_json::json!({"rows":f.expected.len(),"pixels":f.pixels,"valid":f.valid,"tainted_valid":f.tainted,"unused_unknown":f.unused_unknown,"results":results})).unwrap()).unwrap();
+    std::fs::write(out.join("results.json"),serde_json::to_string_pretty(&serde_json::json!({"rows":f.expected.len(),"pixels":f.pixels,"valid":f.valid,"tainted_valid":f.tainted,"unused_unknown":f.unused_unknown,"active_black":f.active_black,"blank":f.blank,"results":results})).unwrap()).unwrap();
+}
+
+#[test]
+fn control_cold_black_uses_old_timing_and_keeps_encoder_input_registered() {
+    let mut display = DisplayControl::default();
+    let input = ControlInput {
+        video_locked: true,
+        boot_enable: true,
+        ..Default::default()
+    };
+    let mut active_black = 0;
+    let mut coincident = 0;
+    for t in 0..2_400_000u32 {
+        let edges = Edges {
+            logic_rise: t % 37 == 0,
+            pixel_rise: t % 60 == 0,
+        };
+        if !edges.logic_rise && !edges.pixel_rise {
+            continue;
+        }
+        let old = display.outputs(&input);
+        assert_eq!(old, display.outputs(&input));
+        assert!(!old.logic.memory_request_valid);
+        display.clock(edges, &input);
+        let video = display.outputs(&input).video;
+        assert_eq!(video.rgb888, [0; 3]);
+        assert!(!video.effective_source);
+        assert!(video
+            .precode
+            .channels
+            .iter()
+            .all(|c| c.known && !c.collision));
+        if edges.pixel_rise {
+            assert_eq!(video.de, !old.pixel.pixel_reset && old.pixel.active);
+            assert_eq!(video.hsync, !old.pixel.pixel_reset && old.pixel.hsync);
+            assert_eq!(video.vsync, !old.pixel.pixel_reset && old.pixel.vsync);
+            active_black += usize::from(video.de);
+            coincident += usize::from(edges.logic_rise);
+        } else {
+            assert_eq!(video, old.video);
+        }
+    }
+    assert!(active_black > 4000 && coincident > 1000);
+    let mut timing: TimingOutput = Timing::default().outputs();
+    timing.started = true;
+    timing.failure_sync = 2;
+    assert!(!PixelReadInput::from(timing).scan_enabled);
+    timing.failure_sync = 1;
+    assert!(PixelReadInput::from(timing).scan_enabled);
 }

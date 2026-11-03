@@ -1,9 +1,10 @@
-//! Display control cone: Fill + pixel timing + captured line writes.
-//! Pixel color reads/conversion are not implemented by this control component.
+//! Display control and pixel cone: Fill + Timing + one line RAM/read calendar.
+//! Registered pixels feed three digital TMDS lanes from the same old snapshot.
 
 use super::{
-    Edges, Fill, FillInput, FillOutput, LineBuffer, LineBufferInput, RamWord, Timing, TimingInput,
-    TimingOutput,
+    Edges, Fill, FillInput, FillOutput, LineBuffer, LineBufferInput, PixelPipe, PixelPipeOutput,
+    PixelRead, PixelReadInput, PixelReadOutput, RamWord, Timing, TimingInput, TimingOutput, Tmds,
+    TmdsInput, TmdsOutput,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -27,12 +28,17 @@ pub struct ControlInput {
 pub struct ControlOutput {
     pub logic: FillOutput,
     pub pixel: TimingOutput,
+    pub video: PixelPipeOutput,
+    pub tmds: TmdsOutput,
 }
 #[derive(Clone, Debug, Default)]
 pub struct DisplayControl {
     fill: Fill,
     timing: Timing,
     ram: LineBuffer,
+    read: PixelRead,
+    pipe: PixelPipe,
+    tmds: Tmds,
 }
 impl DisplayControl {
     fn fill_input(&self, input: &ControlInput) -> FillInput {
@@ -61,10 +67,22 @@ impl DisplayControl {
         ControlOutput {
             logic: self.fill.outputs(&self.fill_input(input)),
             pixel: self.timing.outputs(),
+            video: self.pipe.outputs(),
+            tmds: self.tmds.outputs(),
         }
     }
     pub fn line_word(&self, bank: usize, address: u16) -> RamWord {
         self.ram.peek(bank, address)
+    }
+    /// Passive current read ports. These never advance the RAM or pixel calendar.
+    pub fn read_ports(&self) -> PixelReadOutput {
+        self.read.outputs(
+            &PixelReadInput::from(self.timing.outputs()),
+            self.ram.outputs(),
+        )
+    }
+    pub fn line_read_q(&self) -> [RamWord; 2] {
+        self.ram.outputs()
     }
     /// A pure old-state view of the actual failure input to the pixel domain.
     pub fn memory_error_sticky(&self) -> bool {
@@ -75,6 +93,11 @@ impl DisplayControl {
     pub fn clock(&mut self, edges: Edges, input: &ControlInput) {
         let fill_input = self.fill_input(input);
         let old = self.fill.outputs(&fill_input);
+        let old_pixel = self.timing.outputs();
+        let old_q = self.ram.outputs();
+        let old_video = self.pipe.outputs();
+        let read_input = PixelReadInput::from(old_pixel);
+        let read_ports = self.read.outputs(&read_input, old_q);
         let timing_input = TimingInput {
             reset: input.reset,
             video_locked: input.video_locked,
@@ -89,20 +112,23 @@ impl DisplayControl {
             self.fill.clock(&fill_input);
         }
         if edges.pixel_rise {
+            self.tmds
+                .clock(&TmdsInput::from_video(old_pixel.pixel_reset, old_video));
+            self.pipe.clock(&old_pixel, read_ports.selected);
+            self.read.clock(&read_input, old_q);
             self.timing.clock(&timing_input);
         }
-        // Capture the production fill writes. The independent dual-clock RAM
-        // leaf retains its read API; scanout's color read calendar is absent here.
+        // Both read and write ports commit from the same pre-edge snapshot.
         self.ram.clock(
-            Edges {
-                logic_rise: edges.logic_rise,
-                pixel_rise: false,
-            },
+            edges,
             &LineBufferInput {
                 write_enable: old.line_write,
                 write_address: old.line_write_address,
                 write_data: old.line_write_data,
-                ..Default::default()
+                read_address_a: read_ports.read_address[0],
+                read_address_b: read_ports.read_address[1],
+                read_address_known: read_ports.read_address_known,
+                read_address_tainted: read_ports.read_address_tainted,
             },
         );
     }
