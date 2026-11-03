@@ -101,6 +101,63 @@ readiness; transport completion precedes decoding. Optional `--rtl` sends each
 complete attempt through `replay.run`, with explicit cycle/wall bounds. Invalid
 or incomplete attempts retain their receive report and cannot be replayed.
 
+## Full-system cycle source
+
+`cpu-v3-system-emu --profile-out` supplies a third profiling origin, alongside
+the existing RTL observer and result-only functional simulator. It runs the
+complete CPU/GPU/Display/shared-memory composition; it does not use the
+`system_dump.py` freeze-and-isolated-replay execution path. The source is always
+`system-cycle-emu`, with synthetic preload and fixed input/limited device scope
+declared by the [system cycle contract](/systems/cpu-v3-tang-nano-20k/docs/system-cycle-emu.md#passive-full-system-profiling).
+
+`capture.json` schema `digitaldesign.system-emu-capture` version1 describes a
+bounded `system-events.jsonl`. Each ordered line is `[absolute_tick,kind,data]`;
+equal-time lines retain file order. The integer timebase is 7,992,000,000Hz,
+with logic period148, native half-period37 and pixel period240. Sparse state
+changes describe held values until the next change or coverage boundary.
+Events include CPU counters, CP phase, actual descriptor acceptance, payload,
+terminal, submit/drain and present request/application. A descriptor's optional
+requested-beat count is distinct from measured payload; absent counts remain
+unavailable. Same-port write payload is assigned to the earliest accepted write
+that still needs data, independently of the oldest pending terminal response.
+
+Build and render share transaction validation against the saved payload events.
+Successful closed transactions with known requested sizes must transfer exactly
+that size in the declared direction. Error terminals may retain a short payload;
+open transactions require partial coverage and no terminal error. Neither case
+permits excess payload, conflicting ownership or a fabricated `last_data_tick`.
+That timestamp must equal the last payload event assigned to the transaction.
+`end_tick` is exclusive: a terminal sampled at tick `t` stores `t+148`.
+Payload and terminal on the same logic edge are legal (`last_data_tick+148 ==
+end_tick`); closing at the payload timestamp itself is not. This validation
+replays metadata ownership only and never executes the simulated application.
+
+The existing `digitaldesign.gpu-profile` v2 format retains its original GPU-only
+semantics. Full-system reports add a strictly source-dispatched `system`
+version1 object containing exact-tick state/retirement/phase tracks, separate
+client64 and native-model32 data events, accepted transactions, submissions,
+present events, scanouts, coverage and capabilities. The integer logic-cycle
+axis encloses the trace; pixel/native source timestamps are never rounded to
+logic cycles. Zero-submission intervals are legal only for this source. Detailed
+legacy command/meshlet histories remain unavailable rather than fabricated.
+
+The common viewer uses shared time bins, zoom and hover for CPU/GPU activity,
+three-way pending requests, per-client bytes/request backpressure, accepted
+counts/requested bytes, mean outstanding and write-terminal waiting. Data events
+belong wholly to half-open bins; state durations integrate exact overlap.
+Client64 and native-model32 are separate rows and CSV boundaries and must not
+be summed as independent traffic. Both explicitly disclaim physical board pin
+bandwidth. Masked native write slots count4B; unmasked bytes are shown separately.
+Missing tail coverage is shaded and cannot become zero traffic.
+
+`system-memory.csv`, `system-state.csv` and `system-transactions.csv` retain these
+boundaries and raw ticks. The existing report generator binds capture/program/
+executable/trace/raster SHA-256 identities in `report-inputs.json`; `--binding`
+checks those exact dependencies on rebuild. The same `render` entry validates
+the optional extension, copies bound PNG bytes and embeds the same viewer.
+Images are complete live registered scanouts, separate from command-end cache
+history previews; no implicit flush or second gamma conversion occurs.
+
 ## Identity and time
 
 `profile.json` has `schema: "digitaldesign.gpu-profile"` and `version: 2`.

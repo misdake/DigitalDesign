@@ -390,9 +390,13 @@ def write_report(data, folder):
     validate(data)
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
+    if 'system' in data:
+        from system_emu import write_outputs
+        write_outputs(data, folder)
     payload = json.dumps(data, separators=(",", ":"), ensure_ascii=True)
     (folder / "profile.json").write_text(payload + "\n", encoding="utf-8")
     template = Path(__file__).with_name("viewer.html").read_text(encoding="utf-8")
+    template = template.replace('/*SYSTEM_VIEWER*/', Path(__file__).with_name('system_viewer.js').read_text(encoding='utf-8'))
     safe = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     (folder / "profiler.html").write_text(template.replace("/*PROFILE_DATA*/null", safe), encoding="utf-8")
     (folder / "validation.json").write_text(json.dumps(data["checks"], indent=2) + "\n", encoding="utf-8")
@@ -426,6 +430,9 @@ def write_report(data, folder):
 
 
 def validate(data):
+    if 'system' in data:
+        from system_emu import validate as validate_system
+        return validate_system(data)
     def require(condition, message):
         if not condition:
             raise ValueError(message)

@@ -35,6 +35,7 @@
 </div><div id="tooltip" role="tooltip"></div>
 <script>
 "use strict";
+/*SYSTEM_VIEWER*/
 const D=/*PROFILE_DATA*/null;
 if(D.schema==='digitaldesign.gpu-result'){
  if(D.version!==1||D.backend!=='sim'||D.complete!==true||!Array.isArray(D.outputs))throw Error('Incomplete simulator result');
@@ -46,6 +47,8 @@ if(D.schema==='digitaldesign.gpu-result'){
  else main.append(node('p','This command stream has no framebuffer target. Final writable buffers are listed below.'));
  const table=node('table');for(const output of D.outputs){const row=node('tr');row.append(node('td',output.role),node('td','0x'+output.address.toString(16)),node('td',String(output.bytes)+' bytes'));const cell=node('td'),link=node('a',output.file);link.href=output.file;cell.append(link);row.append(cell,node('td',output.sha256));table.append(row);}main.append(table);
  window.gpuResult={data:D};
+}else if(D.system){
+ renderSystemProfile(D);
 }else{
 
 const $=id=>document.getElementById(id), css=getComputedStyle(document.documentElement);

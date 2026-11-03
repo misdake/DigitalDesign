@@ -3,8 +3,8 @@
 use crate::input_device::{ControllerSnapshot, InputSnapshotDevice, INPUT_DEVICE};
 use crate::system_sim::{DisplayState, VBlankMode};
 use crate::{
-    CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput, SystemControlDevice,
-    SystemControlDeviceInput, SystemControlDeviceOutput, SystemControlDeviceState,
+    CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput,
+    SystemControlDeviceOutput, SystemControlDeviceState,
 };
 use crate::{DisplayDevice, GpuDevice, DISPLAY_DEVICE, GPU_DEVICE};
 use cpu_v3::*;
@@ -36,6 +36,10 @@ fn frontend_flush(system: &SystemControlDeviceOutput, core: &CpuV3CoreOutput) ->
 }
 
 pub use cpu_v3::DeviceWrite;
+
+pub mod wiring;
+#[cfg(test)]
+use crate::{SystemControlDevice, SystemControlDeviceInput};
 
 struct SharedModule<M: Module> {
     state: Rc<RefCell<M::EmuState>>,
@@ -160,74 +164,48 @@ impl CpuV3SystemEmu {
         let backing = Rc::new(RefCell::new(backing));
         let port = Rc::new(RefCell::new(Port::default()));
         let error = Rc::new(RefCell::new(None));
-        let core_state = Rc::new(RefCell::new(CpuV3CoreState::with_initial_code_segment(
-            segment,
-        )));
-        let system_state = Rc::new(RefCell::new(SystemControlDeviceState::default()));
-        let dcache_state = Rc::new(RefCell::new(CpuV3DataCacheState::default()));
+        let states = wiring::States::new(segment);
+        let core_state = states.core.clone();
+        let system_state = states.system.clone();
+        let dcache_state = states.dcache.clone();
         let (circuit, io) = build_circuit(|| {
             let reset = input();
             let initialized = input();
-            let mut core_input = CpuV3CoreInput::allocate();
-            let core_output = CpuV3CoreOutput::allocate();
-            let mut fetch_input = CpuV3InstructionFetchQueueInput::allocate();
-            let fetch_output = CpuV3InstructionFetchQueueOutput::allocate();
-            let mut icache_input = CpuV3InstructionCacheInput::allocate();
-            let icache_output = CpuV3InstructionCacheOutput::allocate();
-            let mut dcache_input = CpuV3DataCacheInput::allocate();
-            let dcache_output = CpuV3DataCacheOutput::allocate();
             let mut arbiter_input = CpuV3MemoryArbiterInput::allocate();
             let arbiter_output = CpuV3MemoryArbiterOutput::allocate();
-            let mut system_input = SystemControlDeviceInput::allocate();
-            let system_output = SystemControlDeviceOutput::allocate();
             let external_read_data = digital_design_circuit::input_w::<16>();
-            let watch_read_data = system_input.watch_read_data;
-            // Core and fetch share the production request/response handshake.
-            fetch_input.core_request_valid = core_output.instruction_request_valid;
-            fetch_input.core_address = core_output.instruction_address;
-            fetch_input.core_response_ready = core_output.instruction_response_ready;
-            core_input.instruction_request_ready = fetch_output.core_request_ready;
-            core_input.instruction_response_valid = fetch_output.core_response_valid;
-            core_input.instruction_data = fetch_output.core_read_data;
-            core_input.instruction_error = fetch_output.core_error;
-            // fetch queue -> I-cache
-            icache_input.cpu_request_valid = fetch_output.memory_request_valid;
-            icache_input.cpu_address = fetch_output.memory_address;
-            icache_input.cpu_response_ready = fetch_output.memory_response_ready;
-            fetch_input.memory_request_ready = icache_output.cpu_request_ready;
-            fetch_input.memory_response_valid = icache_output.cpu_response_valid;
-            fetch_input.memory_read_data = icache_output.cpu_read_data;
-            fetch_input.memory_error = icache_output.cpu_error;
-
-            // core <-> D-cache
-            dcache_input.cpu_request_valid = core_output.data_request_valid;
-            dcache_input.cpu_write = core_output.data_write;
-            dcache_input.cpu_address = core_output.data_address;
-            dcache_input.cpu_write_data = core_output.data_write_data;
-            dcache_input.cpu_response_ready = core_output.data_response_ready;
-            core_input.data_request_ready = dcache_output.cpu_request_ready;
-            core_input.data_response_valid = dcache_output.cpu_response_valid;
-            core_input.data_read_data = dcache_output.cpu_read_data;
-            core_input.data_error = dcache_output.cpu_error;
-            dcache_input.line_copy_start = core_output.data_line_copy_valid;
-            dcache_input.line_copy_source = core_output.data_line_copy_source;
-            dcache_input.line_clean_start = core_output.data_line_clean_valid;
-            dcache_input.line_clean_address = core_output.data_line_clean_address;
-            core_input.data_line_copy_ready = dcache_output.line_copy_ready;
-            core_input.data_cache_command_error = dcache_output.maintenance_error;
-            // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
-            // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
-            core_input.hold = dcache_output.valid_sweep | system_output.cpu_hold | !initialized;
-
+            let watch_read_data = digital_design_circuit::input_w::<16>();
+            let cpu = wiring::connect(
+                &wiring::Boundary {
+                    reset,
+                    startup_hold: digital_design_circuit::input_const(0),
+                    memory_initialized: initialized,
+                    instruction_request_ready: arbiter_output.instruction_request_ready,
+                    instruction_response_valid: arbiter_output.instruction_response_valid,
+                    instruction_read_data: arbiter_output.instruction_read_data,
+                    instruction_error: arbiter_output.instruction_error,
+                    data_request_ready: arbiter_output.data_request_ready,
+                    data_write_data_ready: arbiter_output.data_write_data_ready,
+                    data_response_valid: arbiter_output.data_response_valid,
+                    data_read_data: arbiter_output.data_read_data,
+                    data_error: arbiter_output.data_error,
+                    external_device_read_data: external_read_data,
+                    watch_read_data,
+                },
+                &states,
+            );
+            let wiring::Connected {
+                core_input,
+                core_output,
+                fetch_output,
+                icache_output,
+                dcache_output,
+                system_output,
+            } = cpu;
             // I-cache <-> arbiter
             arbiter_input.instruction_request_valid = icache_output.memory_request_valid;
             arbiter_input.instruction_address = icache_output.memory_address;
             arbiter_input.instruction_response_ready = icache_output.memory_response_ready;
-            icache_input.memory_request_ready = arbiter_output.instruction_request_ready;
-            icache_input.memory_response_valid = arbiter_output.instruction_response_valid;
-            icache_input.memory_read_data = arbiter_output.instruction_read_data;
-            icache_input.memory_error = arbiter_output.instruction_error;
-
             // D-cache <-> arbiter
             arbiter_input.data_request_valid = dcache_output.memory_request_valid;
             arbiter_input.data_write = dcache_output.memory_write;
@@ -235,49 +213,8 @@ impl CpuV3SystemEmu {
             arbiter_input.data_address = dcache_output.memory_address;
             arbiter_input.data_write_data = dcache_output.memory_write_data;
             arbiter_input.data_response_ready = dcache_output.memory_response_ready;
-            dcache_input.memory_request_ready = arbiter_output.data_request_ready;
-            dcache_input.memory_write_data_ready = arbiter_output.data_write_data_ready;
-            dcache_input.memory_response_valid = arbiter_output.data_response_valid;
-            dcache_input.memory_read_data = arbiter_output.data_read_data;
-            dcache_input.memory_error = arbiter_output.data_error;
-
-            core_input.reset = reset;
-            fetch_input.reset = reset;
-            icache_input.reset = reset;
-            dcache_input.reset = reset;
             arbiter_input.reset = reset;
-            system_input.reset = reset;
-            system_input.device_index = core_output.device_index;
-            system_input.device_channel = core_output.device_channel;
-            system_input.device_read_enable = core_output.device_read_enable;
-            system_input.device_write_enable = core_output.device_write_enable;
-            system_input.device_write_data = core_output.device_write_data;
-            core_input.device_read_data = system_output.device_read_data | external_read_data;
-            system_input.dcache_maintenance_ready = dcache_output.maintenance_ready;
-            system_input.dcache_maintenance_done = dcache_output.maintenance_done;
-            system_input.dcache_maintenance_error = dcache_output.maintenance_error;
-            dcache_input.invalidate_all = system_output.dcache_invalidate;
-            dcache_input.clean_all = system_output.dcache_clean;
-            icache_input.invalidate_all = system_output.icache_invalidate;
-            fetch_input.flush = frontend_flush(&system_output, &core_output);
-            external(SharedModule::<CpuV3Core> {
-                state: core_state.clone(),
-                input: core_input.clone(),
-                output: core_output.clone(),
-            });
-            CpuV3InstructionFetchQueue::emu_connect(&fetch_input, &fetch_output);
-            CpuV3InstructionCache::emu_connect(&icache_input, &icache_output);
-            external(SharedModule::<CpuV3DataCache> {
-                state: dcache_state.clone(),
-                input: dcache_input.clone(),
-                output: dcache_output.clone(),
-            });
             CpuV3MemoryArbiter::emu_connect(&arbiter_input, &arbiter_output);
-            external(SharedModule::<SystemControlDevice<469>> {
-                state: system_state.clone(),
-                input: system_input,
-                output: system_output.clone(),
-            });
             external(MemoryExternal {
                 port: port.clone(),
                 backing: backing.clone(),
@@ -575,3 +512,6 @@ mod flush_tests;
 
 #[cfg(test)]
 mod metadata_tests;
+
+#[cfg(test)]
+mod wiring_tests;

@@ -13,6 +13,7 @@ pub mod input_device;
 mod layout;
 mod observation_device;
 pub mod profiling_capture;
+pub mod system_cycle_emu;
 pub mod system_emu;
 pub mod system_sim;
 

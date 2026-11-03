@@ -10,6 +10,13 @@ pub enum Error {
     Pins(pins::Error),
     UnknownRead { native_cycle: u64, known: u32 },
 }
+/// Actual native model transfers; this is not a measurement of board DQ pins.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Activity {
+    pub read_bytes: u8,
+    pub write_slot_bytes: u8,
+    pub write_unmasked_bytes: u8,
+}
 #[derive(Clone, Debug)]
 pub struct Memory {
     gear: Gear,
@@ -40,6 +47,14 @@ impl Memory {
         self.native_cycle
     }
     pub fn clock_half(&mut self, input: &Input, backing: &mut [u16]) -> Result<(), Error> {
+        self.clock_half_observing(input, backing).map(|_| ())
+    }
+    /// Observes the same old controller snapshot and actual Pins write branch.
+    pub fn clock_half_observing(
+        &mut self,
+        input: &Input,
+        backing: &mut [u16],
+    ) -> Result<Activity, Error> {
         let edges = Edges {
             logic_rise: self.phase == 0,
             native_rise: self.phase == 0 || self.phase == 2,
@@ -47,6 +62,7 @@ impl Memory {
         };
         let drive = self.gear.controller_input(input);
         let controller = self.controller.output(&drive);
+        let mut activity = Activity::default();
         if edges.native_rise && controller.feedback.read_valid && controller.read_known != u32::MAX
         {
             return Err(Error::UnknownRead {
@@ -56,16 +72,22 @@ impl Memory {
         }
         self.gear.clock(edges, input, &controller.feedback);
         if edges.native_rise {
+            activity.read_bytes = u8::from(controller.feedback.read_valid) * 4;
             self.controller
                 .clock(&drive, false, self.pins.sample(&controller));
             self.native_cycle += 1;
         } else {
-            self.pins
-                .clock(input.reset, &controller, backing)
-                .map_err(Error::Pins)?;
+            if let Some(bytes) = self
+                .pins
+                .clock_observing(input.reset, &controller, backing)
+                .map_err(Error::Pins)?
+            {
+                activity.write_slot_bytes = 4;
+                activity.write_unmasked_bytes = bytes;
+            }
         }
         self.phase = (self.phase + 1) & 3;
-        Ok(())
+        Ok(activity)
     }
     /// Callers sample output and clock their logic from that same old snapshot.
     /// Physical writes commit during these four events, not on request accept.

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+serde_json = "1"
 gpu-v2 = { path = "../../ip/gpu-v2" }
 cpu-v3 = { path = "../../ip/cpu-v3" }
 rcc = { path = "../../compiler/rcc" }
@@ -46,4 +47,9 @@ test = false
 [[bin]]
 name = "cpu-v3-pack"
 path = "src/bin/cpu-v3-pack.rs"
+test = false
+
+[[bin]]
+name = "cpu-v3-system-emu"
+path = "src/bin/cpu-v3-system-emu.rs"
 test = false

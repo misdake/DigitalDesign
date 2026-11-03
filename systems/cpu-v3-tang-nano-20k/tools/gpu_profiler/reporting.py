@@ -42,7 +42,7 @@ def _replace_report(output, build):
         raise SnapshotError('Replacement requires an existing ordinary report directory')
     names = {'profile.json', 'profiler.html', 'validation.json', 'commands.csv', 'cpu.csv',
              'meshlets.csv', 'submissions.csv', 'memory-transactions.csv', 'report-inputs.json',
-             'report-replacement.json'}
+             'report-replacement.json', 'system-memory.csv', 'system-state.csv', 'system-transactions.csv'}
     paths = list(output.rglob('*'))
     for path in [output, *paths]:
         if path.is_symlink() or getattr(path.lstat(), 'st_file_attributes', 0) & 0x400:
@@ -50,7 +50,7 @@ def _replace_report(output, build):
         relative = path.relative_to(output)
         if path == output:
             continue
-        allowed = (len(relative.parts) == 1 and path.name in names and path.is_file()) or (
+        allowed = (len(relative.parts) == 1 and path.is_file() and (path.name in names or re.fullmatch(r'scanout-\d{6}\.png', path.name))) or (
             relative.parts[0] == 'images' and (relative == Path('images') and path.is_dir() or
                 len(relative.parts) == 2 and path.is_file() and
                 re.fullmatch(r'(?:index\.json|final\.png|command-\d{6}\.png)', path.name)))
@@ -173,6 +173,11 @@ def build_report(folder, output, *, snapshot=None, raw=None, binding=None, abi=N
             capture_format=capture_format, require_images=require_images, _profile=_profile))
     folder = Path(folder).resolve()
     output = fresh_output(output, folder)
+    if json.loads((folder/'capture.json').read_text()).get('schema') == 'digitaldesign.system-emu-capture':
+        if snapshot is not None or raw is not None or abi is not None or _profile is not None:
+            raise SnapshotError('Full-system emu consumes its own live trace and registered scanout, not a GPU replay snapshot')
+        from system_emu import build
+        return build(folder, output, allow_partial=allow_partial, binding=binding, require_images=require_images)
     if capture_format not in ('known', 'unknown'):
         raise SnapshotError('Unknown capture-format declaration')
     if preview not in ('display1', 'raw', 'capture'):
@@ -266,7 +271,7 @@ def render_report(profile, output, *, require_images=False, replace_report=False
     output = fresh_output(output)
     data = load_profile(profile)
     available = data.get('images', {}).get('available', False)
-    if require_images and not available:
+    if require_images and not available and not data.get('system', {}).get('scanouts'):
         raise SnapshotError('Complete report unavailable: profile has no image history')
     output.mkdir(parents=True, exist_ok=True)
     if available:
@@ -290,6 +295,13 @@ def render_report(profile, output, *, require_images=False, replace_report=False
 
 def summary(data, output):
     output = Path(output).resolve()
+    if 'system' in data:
+        s=data['system']
+        return dict(out=str(output), profile=str(output/'profile.json'), html=str(output/'profiler.html'),
+                    source_kind='system-cycle-emu', submissions=len(s['submissions']), commands=None,
+                    instruction_owner_lineage='unavailable', partial=data['partial'],
+                    images_available=bool(s['scanouts']), image_count=len(s['scanouts']),
+                    client_boundary=s['client_boundary'], native_boundary=s['native_boundary'])
     images = data.get('images', {})
     return dict(out=str(output), profile=str(output/'profile.json'), html=str(output/'profiler.html'),
                 submissions=len(data['submissions']), commands=len(data['commands']), partial=data['partial'],

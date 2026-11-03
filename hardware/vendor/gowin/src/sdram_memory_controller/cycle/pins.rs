@@ -58,10 +58,20 @@ impl Pins {
     /// The two device address stages precede a return-value stage; native rising
     /// capture observes the first READ value four native edges after command.
     pub fn clock(&mut self, reset: bool, p: &Output, backing: &mut [u16]) -> Result<(), Error> {
+        self.clock_observing(reset, p, backing).map(|_| ())
+    }
+    /// Returns the unmasked bytes of the actual write branch on this edge.
+    /// `Some(0)` is a fully masked 32-bit slot, distinct from no write slot.
+    pub fn clock_observing(
+        &mut self,
+        reset: bool,
+        p: &Output,
+        backing: &mut [u16],
+    ) -> Result<Option<u8>, Error> {
         // Like the existing pin fixture, reset suppresses commands but preserves
         // memory/bank state until the controller's real initialization PRE.
         if reset || !p.cke {
-            return Ok(());
+            return Ok(None);
         }
         match p.command {
             3 => {
@@ -105,6 +115,7 @@ impl Pins {
         let location = u32::from(self.bank) << 19
             | u32::from(self.rows[self.bank as usize]) << 8
             | u32::from(self.column);
+        let mut written = None;
         if self.writing {
             let old = read(backing, location)?;
             let mut mask = 0u32;
@@ -117,6 +128,7 @@ impl Pins {
             let word = logical(location) * 2;
             backing[word] = value as u16;
             backing[word + 1] = (value >> 16) as u16;
+            written = Some((!p.dqm & 15).count_ones() as u8);
             self.column = self.column.wrapping_add(1);
         }
         let push = if self.reading {
@@ -130,6 +142,6 @@ impl Pins {
         self.pending_value = emitted;
         self.addresses[1] = self.addresses[0];
         self.addresses[0] = push;
-        Ok(())
+        Ok(written)
     }
 }

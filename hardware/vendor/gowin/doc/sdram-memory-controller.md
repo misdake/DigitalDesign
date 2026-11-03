@@ -453,3 +453,14 @@ control output and every owned successful response bit is compared each logic
 cycle; invalid/error payload has no owner. Applied input rows, physical write
 address/mask/value records and final memory words are checked independently.
 An injected controller write-data mutation must change physical commits.
+
+`cycle::memory::Memory::clock_half_observing` advances exactly the same half-edge
+as `clock_half` and returns passive `Activity`. A native rising-edge old
+controller `read_valid` contributes 4 read bytes. A native falling-edge actual
+`Pins::clock_observing` write branch contributes 4 write-slot bytes and 0..4
+DQM-unmasked bytes. `None` from Pins means no write slot; `Some(0)` is a fully
+masked slot. Held DQ and the other half-edge do not transfer another slot.
+The model has 32-bit DQ (`Sample32`) and four DQM lanes; these observations do
+not divide client64 payload into estimated native16 beats. They measure model
+transfers, not electrical or board pin bandwidth. There is no additional clock,
+backing copy, write, cache clean or mutable state exposed by observation.

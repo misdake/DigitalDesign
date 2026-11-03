@@ -6,6 +6,8 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 ## Documents
 
+- [Full-system cycle composition](/systems/cpu-v3-tang-nano-20k/docs/system-cycle-emu.md): exact clocks, unique native memory ownership, CPU/GPU/Display wiring, explicit preloaded cold entry and passive scanout.
+
 - [Display cycle components](/systems/cpu-v3-tang-nano-20k/docs/display-cycle.md): edge-driven line RAM ports, source/color read calendar, registered pixel/sync and digital TMDS outputs, knownness, collision diagnostics and bounded RTL qualification.
 
 - [Host time and input](/systems/cpu-v3-tang-nano-20k/docs/host-simulation.md): explicit elapsed events, Device5 latest snapshots, Windows XInput adaptation and the preloaded native-edge CPU composition.

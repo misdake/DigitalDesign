@@ -1,5 +1,28 @@
 # GPU profiler
 
+## Full-system cycle emu
+
+Build and run in the feature checkout, using its own `target` (never the main
+checkout's target). Add `--profile-out <new-directory>` to the existing
+`cpu-v3-system-emu` command; retain explicit entry, logic/present and host bounds.
+`--profile-max-events` defaults to2000000, maximum10000000;
+`--profile-max-frames` defaults to2, maximum1024 (zero disables images).
+
+Pass that capture directory to this same `profiler.py build <capture> --out
+<new-report>` command, then `profiler.py render <report>/profile.json --out
+<new-render>`. `--allow-partial` is required for bounded, truncated or undrained
+captures; `--require-images` requires a saved complete scanout. `--binding
+<report>/report-inputs.json` checks exact input identities on rebuild. This path
+consumes live system events, not a Prepared snapshot or a functional GPU replay.
+
+The common webpage displays real CPU retirement/holds, GPU phase/stage activity,
+submit/drain/present, shared memory competition and registered scanouts. Client
+64-bit payload and directly observed native model32 slots have separate bins,
+labels and CSV boundaries; neither is physical board pin bandwidth. Unknown
+timing or detailed GPU owner lineage stays unavailable. PNGs retain registered
+RGB unchanged. See the [source contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#full-system-cycle-source)
+for time, masking, synthetic startup and device coverage.
+
 ## Result-only simulator backend
 
 The existing dump frontends support a second backend for fast software/game

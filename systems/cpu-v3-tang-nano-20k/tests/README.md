@@ -1,5 +1,26 @@
 # System regression tests
 
+## Full-system cycle composition
+
+`system_cycle_components` checks the exact integer clock calendar, production
+GPU descriptor registers and a single real native memory service under competing
+CPU-style line write, GPU read and Display fill. It checks all data, one terminal,
+no same-edge slot credit and physical write visibility on native falling edges.
+Its ignored slot test compiles the actual board RTL and a credit-borrowing
+mutation; timeout or compilation failure is not accepted as mutation detection.
+
+`system_cycle_root` runs the real request-side CPU, full command GPU and Display
+against that service. The cold-prefix case checks real MC initialization/cache
+sweep/black scanout/ack and CSEG7 release. The RCC application checks an initial
+complete CB/wait/present, a second submission with CPU/GPU/Display contention,
+two complete independent-color 800x480 registered rasters, full color/depth
+physical spans and padding/guards, CPU dirty publication, SP and segments.
+Descriptor/terminal and payload counts are separate from simultaneous-pending
+counts. The bounds are one million logic edges for cold startup, 3.8 million for
+the two-present application, and 600 host seconds. Artifacts are in this tree's
+`target/c4/`. This entry is synthetic cold preload, not real SPI/loader-state or
+board-timing qualification. See the [composition contract](/systems/cpu-v3-tang-nano-20k/docs/system-cycle-emu.md).
+
 ## Depth precision
 
 The bounded `host gpu_depth::` cases compile production RCC, compare physical
@@ -666,6 +687,18 @@ Artifacts go under `target/public-handheld/test-assets/native-eligible-*`;
 ```powershell
 cargo test --release -p cpu-v3-tang-nano-20k --test host controlled_camera_rabbit_and_first_eligible_native_capture -- --ignored --nocapture --test-threads=1
 ```
+
+`system_cycle_profile` compares capture on/off at every scheduler instant through
+a bounded cold-start CPU application: core output, Display, native activity,
+final registers, counters, full backing and scanout bytes remain identical.
+`hardware/vendor/gowin/tests/native_activity.rs` separately checks actual native32
+read/write slots, all DQM masks and no opposite-half-edge double counting.
+Profiler Python/Node tests cover zero-submit/partial sources, transaction/data
+ownership, separate memory boundaries, bound scanout PNGs, shared time bins and
+compatibility with the older source types. These are model/report checks, not
+electrical or board qualification.
+Public render tests reject closed payload-size/timing mismatches and preserve
+legal same-edge payload/terminal, error-terminal and open partial prefixes.
 
 `system_emu::metadata_tests` separately checks pending scalar metadata, dirty
 resident metadata, cache-miss fallback and a real functional GPU memcpy behind a

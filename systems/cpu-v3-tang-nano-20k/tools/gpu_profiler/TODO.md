@@ -8,8 +8,10 @@ Detailed pending architecture remains in the local project design area.
 - [ ] Extend physical-button qualification to initially held and simultaneous
   buttons. These cases must remain separate from automatic software stimulus;
   a completed transfer must never serve as a resume request.
-- [ ] Preserve explicit cold-only/no-CPU-or-Display scope. Warm internal state or
-  actual contention needs additional reconstructable state/workload evidence.
+- [ ] Preserve the isolated RTL replay's explicit cold-only/no-CPU-or-Display
+  scope. Its warm checkpoint reconstruction remains unqualified. The separate
+  full-system cycle source observes live CPU/GPU/Display contention directly;
+  it does not extend the isolated replay's coverage.
 - [ ] Separate memory-read, codec/CRC and UART-line cost before increasing baud.
   Hardware stays at the qualified115200-baud configuration; faster dividers and
   sustained CPU/host feeding remain unqualified.
