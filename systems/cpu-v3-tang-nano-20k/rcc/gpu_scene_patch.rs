@@ -1,4 +1,4 @@
-//! CPU-owned, single-group persistent scene bindings. No START or publication.
+//! CPU-owned scene/group and target-only bindings. No START or publication.
 use crate::dsl_rt::*;
 mod gpu_schema;
 use gpu_schema::*;
@@ -18,6 +18,10 @@ mod gpu_arena;
 use gpu_arena::*;
 mod gpu_depth_state;
 use gpu_depth_state::*;
+mod gpu_memcpy;
+use gpu_memcpy::*;
+mod gpu_present;
+use gpu_present::*;
 
 // Identity matters even when two unrelated draws deduplicate to equal bytes.
 fn gpu_patch_note(slot: u16, field: u16, identity: u16) {
@@ -285,5 +289,168 @@ fn gpu_patch_scene(
     facts[depth_flags] = (facts[depth_flags] & 127) | GPU_DEPTH_REF;
     c[GPU_RECORD_COLOR] = color[0u16];
     c[GPU_RECORD_DEPTH] = depth[0u16];
+    true
+}
+
+// Target-only bindings never alter any camera, model or material payload.
+fn gpu_target_shape(c: Array<u16>) -> bool {
+    if c[GPU_RECORD_TARGET_BLOCKS] != 1
+        || c[GPU_RECORD_UI_WORD] != 0
+        || (c[GPU_RECORD_GENERATION_LOW] | c[GPU_RECORD_GENERATION_HIGH]) == 0
+        || !gpu_patch_span(c, c[GPU_RECORD_TARGET_WORD], 16)
+        || c[GPU_RECORD_COPY_COUNT] > 1
+    {
+        return false;
+    }
+    if c[GPU_RECORD_COPY_COUNT] == 0 {
+        return c[GPU_RECORD_VALID] & GPU_RECORD_HAS_COPY == 0;
+    }
+    c[GPU_RECORD_VALID] & GPU_RECORD_HAS_COPY != 0
+        && gpu_patch_span(c, c[GPU_RECORD_COPY_WORD], 16)
+        && c[GPU_RECORD_COPY_WORD] < c[GPU_RECORD_TARGET_WORD]
+        && c[GPU_RECORD_TARGET_WORD] - c[GPU_RECORD_COPY_WORD] >= 16
+        && c[GPU_RECORD_COPY_DESTINATION] == c[GPU_RECORD_COLOR]
+        && gpu_memcpy_native_valid(
+            c[GPU_RECORD_COPY_SOURCE],
+            c[GPU_RECORD_COLOR],
+            GPU_API_PLANE_SECTORS,
+        )
+}
+fn gpu_target_binding(slot: u16) -> bool {
+    if !gpu_patch_owned(slot) {
+        return false;
+    }
+    let mut c = gpu_record_data(slot);
+    if !gpu_target_shape(c) || c[GPU_RECORD_FACT_COUNT] > GPU_RECORD_FACT_LIMIT {
+        return false;
+    }
+    let facts = gpu_record_capture_facts(slot);
+    let mut color: u16 = 0;
+    let mut depth: u16 = 0;
+    let mut source = false;
+    let mut i: u16 = 0;
+    while i < c[GPU_RECORD_FACT_COUNT] {
+        let at = i * 4;
+        if facts[at + 2] == GPU_FACT_COLOR {
+            if facts[at + 3] & GPU_FACT_WRITE != 0 {
+                if color != 0 || facts[at] != c[GPU_RECORD_COLOR] || facts[at + 3] != 3 {
+                    return false;
+                }
+                color = i + 1;
+            } else if facts[at + 3] != GPU_FACT_READ {
+                return false;
+            }
+            if facts[at] == c[GPU_RECORD_COPY_SOURCE]
+                && facts[at + 3] == GPU_FACT_READ
+                && facts[at + 1] >= GPU_API_PLANE_SECTORS
+            {
+                source = true;
+            }
+        }
+        if facts[at + 2] == GPU_FACT_DEPTH {
+            if depth != 0 || facts[at] != c[GPU_RECORD_DEPTH] || facts[at + 3] & 3 != 3 {
+                return false;
+            }
+            depth = i + 1;
+        }
+        i += 1;
+    }
+    if color == 0
+        || depth == 0
+        || (c[GPU_RECORD_COPY_COUNT] != 0 && !source)
+        || !gpu_record_seal(slot)
+    {
+        return false;
+    }
+    c[GPU_RECORD_COLOR_FACT] = color;
+    c[GPU_RECORD_DEPTH_FACT] = depth;
+    true
+}
+fn gpu_target_matches(slot: u16, low: u16, high: u16) -> bool {
+    if !gpu_patch_owned(slot) {
+        return false;
+    }
+    let c = gpu_record_data(slot);
+    gpu_target_shape(c)
+        && c[GPU_RECORD_GENERATION_LOW] == low
+        && c[GPU_RECORD_GENERATION_HIGH] == high
+}
+// Observation only: no poll/retire, no waiting and no sticky Display mutation.
+fn gpu_target_front_safe(color: Array<u16>, depth: Array<u16>) -> bool {
+    let snapshot: Buf<u16, 4> = Buf::new([0; 4]);
+    let status = gpu_present_capture_state(snapshot.as_array());
+    if status == 65535 || status == 1 {
+        return false;
+    }
+    if status == 2 {
+        if GPU_PRESENT[1u16] != 0 || snapshot[0u16] != 0 {
+            return false;
+        }
+        let front = (snapshot[1u16] >> 6) | (snapshot[2u16] << 10);
+        if gpu_record_overlap(color[0u16], color[1u16], front, GPU_API_PLANE_SECTORS)
+            || gpu_record_overlap(depth[0u16], depth[1u16], front, GPU_API_PLANE_SECTORS)
+        {
+            return false;
+        }
+    }
+    true
+}
+fn gpu_target_retarget(slot: u16, color: Array<u16>, depth: Array<u16>) -> bool {
+    if !gpu_patch_owned(slot) {
+        return false;
+    }
+    let mut c = gpu_record_data(slot);
+    if !gpu_target_shape(c)
+        || !gpu_patch_targets(slot, color, depth)
+        || !gpu_target_front_safe(color, depth)
+    {
+        return false;
+    }
+    let native = gpu_native_scratch();
+    let copy = unsafe { native.as_ptr().add(16).as_u16_array() };
+    if c[GPU_RECORD_COPY_COUNT] != 0
+        && !gpu_memcpy_native(
+            copy,
+            c[GPU_RECORD_COPY_SOURCE],
+            color[0u16],
+            GPU_API_PLANE_SECTORS,
+        )
+    {
+        return false;
+    }
+    let mut target = native;
+    let mut i: u16 = 0;
+    while i < 16 {
+        target[i] = 0;
+        i += 1;
+    }
+    target[0u16] = (color[0u16] >> 2) | (depth[0u16] << 12);
+    target[1u16] = depth[0u16] >> 4;
+    if !gpu_window_write_words(
+        c[GPU_RECORD_PUSH_BASE],
+        c[GPU_RECORD_TARGET_WORD] - 1,
+        target,
+        16,
+    ) || (c[GPU_RECORD_COPY_COUNT] != 0
+        && !gpu_window_write_words(
+            c[GPU_RECORD_PUSH_BASE],
+            c[GPU_RECORD_COPY_WORD] - 1,
+            copy,
+            16,
+        ))
+    {
+        c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
+        return false;
+    }
+    let mut facts = gpu_record_capture_facts(slot);
+    facts[(c[GPU_RECORD_COLOR_FACT] - 1) * 4] = color[0u16];
+    facts[(c[GPU_RECORD_DEPTH_FACT] - 1) * 4] = depth[0u16];
+    let flags = (c[GPU_RECORD_DEPTH_FACT] - 1) * 4 + 3;
+    facts[flags] = (facts[flags] & 127) | GPU_DEPTH_REF;
+    c[GPU_RECORD_COLOR] = color[0u16];
+    c[GPU_RECORD_DEPTH] = depth[0u16];
+    if c[GPU_RECORD_COPY_COUNT] != 0 {
+        c[GPU_RECORD_COPY_DESTINATION] = color[0u16];
+    }
     true
 }

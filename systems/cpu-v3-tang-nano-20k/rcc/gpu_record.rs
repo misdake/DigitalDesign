@@ -40,6 +40,12 @@ const GPU_RECORD_UI_CLEAN: u16 = 12;
 const GPU_RECORD_UI_WORD: u16 = 13;
 const GPU_RECORD_TERMINAL: u16 = 14;
 const GPU_RECORD_FACT_COUNT: u16 = 15;
+// Target-only streams forbid UI: reuse four words of their inactive UI cache.
+// Camera revision owns control16..19; never overlay it.
+const GPU_RECORD_COPY_WORD: u16 = 128;
+const GPU_RECORD_COPY_SOURCE: u16 = 129;
+const GPU_RECORD_COPY_DESTINATION: u16 = 130;
+const GPU_RECORD_COPY_COUNT: u16 = 131;
 const GPU_RECORD_GENERATION_LOW: u16 = 20;
 const GPU_RECORD_GENERATION_HIGH: u16 = 21;
 const GPU_RECORD_TARGET_WORD: u16 = 22;

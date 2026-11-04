@@ -65,6 +65,14 @@ pub struct SceneBinding {
     generation_high: u16,
 }
 
+/// A sealed single-frame target, independent of model/material preparation.
+#[derive(Copy, Clone)]
+pub struct TargetBinding {
+    slot: u16,
+    generation_low: u16,
+    generation_high: u16,
+}
+
 const GPU_KIND_COLOR: u16 = 8;
 const GPU_KIND_DEPTH: u16 = 9;
 const GPU_KIND_MESH: u16 = 5;
@@ -379,6 +387,40 @@ impl CommandBuffer {
             gpu_api_fail(4, 2, self.slot, 0);
         }
         gpu_record_capture_commit(self.slot, facts.as_array(), 2);
+    }
+    /// Seal one target block, with any immutable draw groups and at most one
+    /// leading color copy. No matrices, state or source objects are patched.
+    pub fn target_binding(&mut self) -> TargetBinding {
+        gpu_api_checked(gpu_target_binding(self.slot), 14);
+        let c = gpu_record_data(self.slot);
+        TargetBinding {
+            slot: self.slot,
+            generation_low: c[GPU_RECORD_GENERATION_LOW],
+            generation_high: c[GPU_RECORD_GENERATION_HIGH],
+        }
+    }
+    /// Change a CPU-owned frame's target and optional copy destination together.
+    /// A pending Display swap or overlap with its current Front rejects before
+    /// any payload/fact change. Submission still publishes and validates leases.
+    pub fn retarget_target(
+        &mut self,
+        binding: TargetBinding,
+        color: &ColorBuffer,
+        depth: &DepthBuffer,
+    ) {
+        gpu_api_checked(
+            self.slot == binding.slot
+                && gpu_target_matches(self.slot, binding.generation_low, binding.generation_high),
+            14,
+        );
+        gpu_api_checked(
+            gpu_target_retarget(
+                self.slot,
+                gpu_arena_data(color.slot),
+                gpu_arena_data(depth.slot),
+            ),
+            14,
+        );
     }
     pub fn scene_binding(&mut self) -> SceneBinding {
         gpu_api_checked(gpu_patch_binding(self.slot), 13);

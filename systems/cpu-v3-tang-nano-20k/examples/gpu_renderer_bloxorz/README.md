@@ -8,8 +8,9 @@ the Web scene. Native lighting, RGB565 quantization and the flat animated goal i
 RIGHT/LEFT/DOWN/UP roll and repeat after settlement; the most recently pressed
 held direction wins. START restarts, TRIANGLE/R1 select the next stage, L1 the previous stage, and
 Square undoes. Cross swaps split cubes; Circle toggles frame statistics. SELECT toggles the original dither background and solid #2c2620.
-Outgoing roll/tip/fall and goal closing continue behind a live RTT veil colored
-#142238. A presented opaque endpoint gates reset; the presented transparent
+Outgoing rule/animation clocks continue behind a cached RTT veil colored
+#142238. Out and incoming Hold/In each retain one completed 3D snapshot; ordinary
+frames draw directly to Back. A presented opaque endpoint gates reset; the presented transparent
 endpoint starts entry. Locked-period edges are discarded and held directions
 require release. Ordinary rendering always shows the current level; optional DRAW/MS values describe the previous completed frame. MS measures vblank return through the final GPU wait, with cold-start dashes until that interval is available.
 
@@ -25,10 +26,10 @@ bodies with rustc and compares generated boot bytes against independent CB06 pac
 `target/`. This does not change the default boot application or program a board;
 matching `production` GPU and Display hardware is required.
 
-See the [presentation documents](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/README.md) for phase ordering, live source ownership, veil arithmetic and verification.
+See the [presentation documents](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/README.md) for phase ordering, snapshot source ownership, veil arithmetic and verification.
 
 All33 levels,256-entry complete undo, nine bridge channels, fragile cracking/drop,
-split/swap/merge, tipping/release, entry/goal motion and live transitions are
+split/swap/merge, tipping/release, entry/goal motion and cached transitions are
 connected. Special-tile marks use a deterministic128KiB RGB atlas, preserving the
 necessary moving bodies. Inactive bridge hints use alpha60. The imported reference
 leaves stage23 unverified; this does not claim all33 levels solvable or Web PBR
@@ -37,7 +38,9 @@ equivalence. CPU/GPU/Display correctness tests do not establish hardware FPS.
 Background bytes and their transfer/Display contract are described with the
 [asset](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/assets/README.md).
 The [ground shadow](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/shadow.md) follows the prepared player matrix through clipped unit-triangle Instances.
-Static floors are generated into a stable heap package at stage load and drawn in material groups; moving and transparent objects retain their own paths. Static well components share native mesh groups; the caller retains a packed
+Static floors are generated into a stable heap package at stage load and drawn in material groups; moving and transparent objects retain their own paths. Static well components share native mesh groups. Entrance/goal parts retain
+separate Models and stable pose/texture caches, with twelve metadata words
+allocated once on the heap. The caller retains a packed
 two-word resting block key so unchanged poses preserve the driver's existing derived
 matrix cache. Animation poses still update, and Camera revisions independently
 invalidate that driver cache.

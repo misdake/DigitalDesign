@@ -1,7 +1,7 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-11-03
+last-verified: 2026-11-04
 ---
 
 # Explicit GPU API internal core
@@ -85,9 +85,38 @@ For background restoration, copy into the actual chosen Back or offscreen color,
 then begin its Pass with `ColorLoad::load()` and an independent depth clear.
 Both alternating Back allocations require their own copy. Copy-bearing CBs
 reject scene binding and patching, including a binding obtained before the copy;
-patching a Target alone cannot silently leave an earlier MEMCPY destination fixed.
+the separate target-only binding below changes both payloads together.
 Reset clears this restriction along with the record metadata. Native encoding,
 capture MEMCPY dependency discovery and replay formats are unchanged.
+
+### Target-only replay binding
+
+`target_binding()` seals one target block independently of Camera, Model and
+Material identity. It accepts immutable draw groups and at most one leading
+full-plane color copy, but no UI commands. `retarget_target(binding, color, depth)`
+changes Target32 and that copy's destination together; its source remains fixed.
+`SceneBinding` / `patch_scene` retain their single-group, no-copy contract.
+
+The binding stores the slot and full generation. Only a CPU-owned Ready/Sealed
+CB accepts it; reset/reissue, an active execution owner, invalid payload spans,
+multiple copies or a copy aimed at another target reject. Color/depth allocation
+extents must match their recorded facts. Existing target alignment, depth-format
+provenance, plane/command/push/read-source alias guards apply. Display observation
+rejects a pending/torn/faulted swap or a new plane overlapping Front; it neither
+waits nor retires Display. Callers explicitly complete presentation first.
+
+All logical guards run before external stores. Target32 and optional MEMCPY
+payload are written before committing their color/depth allocation facts and
+record addresses. A transport failure can leave partial bytes and poisons the CB;
+it never commits replacement facts or permits submission. Camera/model/material
+payloads, command words and native opcodes stay fixed. Ordinary submission still
+publishes stores and validates capture leases.
+
+The existing 208-word record is unchanged. Non-UI streams use inactive UI-cache
+words128..131 for copy payload offset-plus-one, source, destination and count.
+Camera revision retains words16..19. Recording UI makes target-only binding
+ineligible; reset clears both caches. No command, capture or replay ABI changes:
+parsers consume the same published Target32/MEMCPY bytes and updated facts.
 
 ## Public prepared scene adapters
 

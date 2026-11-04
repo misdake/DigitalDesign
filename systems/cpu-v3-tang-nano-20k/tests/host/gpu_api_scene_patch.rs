@@ -132,7 +132,7 @@ pub(super) fn compile(source: &str, debug: bool, label: &str) -> rcc_backend::Cp
     let directory = output.join(format!("scene-patch-{label}-{debug}"));
     let local = directory.join("application");
     std::fs::create_dir_all(&local).unwrap();
-    if label == "storage-failure" || label == "submit-modes" {
+    if label.starts_with("storage-failure") || label == "submit-modes" {
         // Test-only callee failure. The scene patch itself remains byte-exact
         // production source; this does not qualify a hardware transport error.
         let copy = directory.join("library");
@@ -143,7 +143,7 @@ pub(super) fn compile(source: &str, debug: bool, label: &str) -> rcc_backend::Cp
                 std::fs::copy(&path, copy.join(path.file_name().unwrap())).unwrap();
             }
         }
-        if label == "storage-failure" {
+        if label.starts_with("storage-failure") {
             let storage = copy.join("gpu_storage.rs");
             let original = std::fs::read_to_string(&storage).unwrap();
             let needle = "    gpu_storage_copy_owned(src, sector, word, count, false)";
@@ -314,7 +314,9 @@ fn reset_generation_carries_and_exhaustion_does_not_mutate_the_record() {
         .split(" a.patch_scene(binding,&cam,&model,&color_b,&depth);")
         .next()
         .unwrap();
-    let source = format!("{prefix}a.reset();dev_send(7,1,5);drop(mesh);drop(depth);drop(color_b);drop(color_a);drop(state);drop(material);drop(model);drop(cam);drop(a);drop(b);drop(gpu);halt(0x600d);}}");
+    let source = format!(
+        "{prefix}a.reset();dev_send(7,1,5);drop(mesh);drop(depth);drop(color_b);drop(color_a);drop(state);drop(material);drop(model);drop(cam);drop(a);drop(b);drop(gpu);halt(0x600d);}}"
+    );
     for debug in [false, true] {
         let code = compile(&source, debug, "generation");
         let (signal, seen, _) = run(&code, Inject::Carry);
@@ -380,9 +382,18 @@ fn foreign_binding_projection_and_actual_reset_reject_before_patch_writes() {
  let current=a.scene_binding();dev_send(7,1,6);
  a.patch_scene(binding,&cam,&model,&color_b,&depth);"#;
     for (label, replacement) in [
-        ("foreign", "b.patch_scene(binding,&cam,&model,&color_b,&depth);"),
-        ("projection", "cam.set_projection(Projection::from_focal_pixels(fix32::from_int(220),fix32::from_int(120)));a.patch_scene(binding,&cam,&model,&color_b,&depth);"),
-        ("light-range", "let mut view=cam.view();view.row0.z=fix32::from_int(2);cam.set_view(view);a.patch_scene(binding,&cam,&model,&color_b,&depth);"),
+        (
+            "foreign",
+            "b.patch_scene(binding,&cam,&model,&color_b,&depth);",
+        ),
+        (
+            "projection",
+            "cam.set_projection(Projection::from_focal_pixels(fix32::from_int(220),fix32::from_int(120)));a.patch_scene(binding,&cam,&model,&color_b,&depth);",
+        ),
+        (
+            "light-range",
+            "let mut view=cam.view();view.row0.z=fix32::from_int(2);cam.set_view(view);a.patch_scene(binding,&cam,&model,&color_b,&depth);",
+        ),
         ("reset-stale", rerecord),
     ] {
         for debug in [false, true] {
@@ -407,7 +418,9 @@ fn binding_from_a_dropped_context_cannot_match_reused_slots() {
         .next()
         .unwrap();
     let drops = "drop(mesh);drop(depth);drop(color_b);drop(color_a);drop(state);drop(material);drop(model);drop(cam);drop(a);drop(b);drop(gpu);";
-    let source = format!("{preamble}fn previous()->SceneBinding{{{prefix}let token=a.scene_binding();{drops}token}}\nfn main(){{let old=previous();{prefix}let current=a.scene_binding();dev_send(7,1,0);a.patch_scene(old,&cam,&model,&color_b,&depth);{drops}halt(0x600d);}}");
+    let source = format!(
+        "{preamble}fn previous()->SceneBinding{{{prefix}let token=a.scene_binding();{drops}token}}\nfn main(){{let old=previous();{prefix}let current=a.scene_binding();dev_send(7,1,0);a.patch_scene(old,&cam,&model,&color_b,&depth);{drops}halt(0x600d);}}"
+    );
     for debug in [false, true] {
         let code = compile(&source, debug, "context-reuse");
         let (signal, seen, mut cpu) = run(&code, Inject::None);
@@ -443,3 +456,6 @@ fn numerically_equal_unrelated_models_are_not_a_shared_patch_group() {
         assert_eq!(c[29], 65535, "the distinct models remain distinguishable");
     }
 }
+
+#[path = "gpu_api_target_patch.rs"]
+mod target_patch;

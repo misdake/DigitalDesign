@@ -4,7 +4,7 @@ status: implemented
 last-verified: 2026-11-04
 ---
 
-# Game animation and live RTT veil
+# Game animation and cached RTT veil
 
 The example owns all33 imported stages, integer rules, animation and input. The shared `bloxorz_core` remains timer-free. The reference is the Web 400×240 pixel mode:20-degree vertical field of view,5:3 aspect,512×512 low atlas and MSAA off. Its corner-fit Camera targets(0,.6,0) and fits each stage independently. A local view-axis adapter accounts for the existing native renderer reflection. Native material/lighting and RGB565 quantization remain visible differences from Web PBR.
 
@@ -12,32 +12,45 @@ Animation and transition use independent clocks. Restart can begin the veil whil
 
 ```mermaid
 flowchart LR
-    A[Tick rules and animation] --> B[Replay retained static scene CB: background and depth clear, floor and wells]
-    B -->|submit and WAIT_ALL| C[Dynamic CB: Load source color and depth; bridges, switches, pads, shadow and player]
-    C --> D{Veil active?}
-    D -->|yes: submit and WAIT_ALL| E[Reuse dynamic CB; invalidate sampler; sample source over veil clear]
-    D -->|no| F[Append fenced source-to-Back copy and UI pass]
-    E --> G[Consumer WAIT_ALL then Display retirement]
-    F --> G
-    G --> H[Opaque endpoint may reset; transparent endpoint may start entry]
+    A[Tick rules and animation] --> B{Ordinary frame or missing boundary snapshot?}
+    B -->|yes| C[Submit retained static CB to Back or RTT]
+    C --> D[CPU records dynamic 3D in other CB while static runs]
+    D -->|static WAIT_ALL| E{Veil active?}
+    E -->|yes| F[Submit dynamic source and WAIT_ALL; snapshot ready]
+    E -->|no| G[Append Back UI; submit and WAIT_ALL]
+    B -->|cached fade| H[Record alpha-only RTT consumer and Back HUD]
+    F --> H
+    H --> I[Consumer submit and WAIT_ALL]
+    I --> J[Display retirement]
+    G --> J
+    J --> K[Opaque may reset; transparent may start entry]
 ```
 
-Each arrow into a consumer follows the producer completion boundary. Both command
-buffers have independent command and immutable push storage. The static CB is
-recorded on first use, level-generation change or background selection change; it
-is replayed on every frame. Camera is fixed within a level. Mutable bridge masks,
-switch effects, hatch/ring animation and player/shadow geometry belong to the
-dynamic CB and do not invalidate the static recording. A same-level restart still
-increments the generation and records the scene again.
+Static submit transfers one CB to the driver. CPU recording uses the other
+exclusively owned CB; static WAIT_ALL returns its owner before any dynamic
+submission. Depth Load compatibility is checked during submission, after that
+producer completes. Resume-epoch/input recovery remains immediately after waits.
 
-The source color is application-owned and is never a Display Front. Static and
-dynamic passes share scene depth. The fullscreen/UI consumers load that depth and
-never write it. Nonfading frames append an ordinary color copy, whose native
-WAIT/FLUSH orders the source draws before its reads. Fading frames retire the
-dynamic source first, reuse that CB for the consumer, then retire the consumer.
-This gives two submissions in an ordinary frame and three during a veil, using
-two CB identities. The source can be reused only after the final `gpu.wait`.
-A fault halts without manufacturing a reset. Color A/B alternate through Display.
+The static CB is recorded on first use, level-generation change or background
+change. It retains background restoration, depth clear, floor and wells. The
+public target-only binding switches Back A/B/RTT and an optional background copy
+destination together without redoing scene math. Camera is fixed within a level;
+dynamic bridges, switches, hatches, player and shadow do not invalidate it.
+
+Ordinary 3D and HUD target the selected Back directly: two submissions, no RTT
+source-to-Back copy. On the first fading frame the static/dynamic pair completes
+one outgoing RTT snapshot without the normal HUD; later out frames only sample
+it. Opaque presentation retires before level reset. Its new generation forces
+one incoming closed-entry snapshot, reused during Hold/In. Thus each capture
+frame has three submissions, later fading frames one. The RTT source is never
+Display Front and stays immutable between captures; texture invalidation occurs
+only after a new source is written. Tint changes only when its alpha changes.
+
+Rules and outgoing animation clocks still advance, while fade visuals deliberately
+freeze at those two boundaries. Ordinary entry/goal/fall animation remains live.
+Only completed RTT captures increment `session_captured`. Every consumer retains
+scene depth without writing it; the HUD is drawn separately on Back. Final GPU
+wait, Display retirement and fault-held ownership preserve their existing roles.
 
 ## Rules and animation
 
@@ -72,7 +85,7 @@ and does not reproduce Web PBR emissive response exactly.
 
 ## Transition arithmetic and lifetime
 
-The veil color is CSS #142238, quantized to encoded RGB565 word 0x1107 (expanded 16,32,57). Source and Display stay in ordinary encoded RGB565 mode; no second gamma transfer is applied. The full-screen quad uses nearest sampling, white uniform RGB, transmittance alpha, SrcOver and no depth write. Its target color is freshly cleared to the veil color; shared scene depth is loaded and preserved. Every fading frame redraws the current source before sampling it.
+The veil color is CSS #142238, quantized to encoded RGB565 word 0x1107 (expanded 16,32,57). Source and Display stay in ordinary encoded RGB565 mode; no second gamma transfer is applied. The full-screen quad uses nearest sampling, white uniform RGB, transmittance alpha, SrcOver and no depth write. Its target color is freshly cleared to the veil color; shared scene depth is loaded and preserved. Fading frames sample their completed boundary snapshot; only alpha and the independent Back HUD need recording between captures.
 
 | Transition | Time | Uniform transmittance |
 | --- | --- | --- |
@@ -80,7 +93,7 @@ The veil color is CSS #142238, quantized to encoded RGB565 word 0x1107 (expanded
 | Hold | 80ms | 0 |
 | In | 380ms | floor(51t/76) |
 
-The products fit u16. Native ROP quantizes alpha to Q6 with `(alpha8+2)>>2`, performs half-up/64 blending and rounds to RGB565. At alpha 128 the encoded channels are the half-up average of source and quantized veil. The opaque consumer is a real Frame; only its successful GPU wait and Display retirement reset rules, undo history, level generation and incoming animation. Hold/fade-in keep entry at its closed state. Successful presentation of the final transparent consumer releases the entry animation. Outgoing animation continues during out; incoming entry starts afterward.
+The products fit u16. Native ROP quantizes alpha to Q6 with `(alpha8+2)>>2`, performs half-up/64 blending and rounds to RGB565. At alpha 128 the encoded channels are the half-up average of source and quantized veil. The opaque consumer is a real Frame; only its successful GPU wait and Display retirement reset rules, undo history, level generation and incoming animation. Hold/fade-in keep entry at its closed state. Successful presentation of the final transparent consumer releases the entry animation. Outgoing animation state continues during out behind its frozen snapshot; incoming entry starts afterward.
 
 ## Storage and verification
 
@@ -152,7 +165,7 @@ The completed interval is shown on the next frame; no extra submission is made
 for an immediately updated number. Cold F1 has no preceding vblank timestamp,
 so its MS value is unknown, independent of the available DRAW count. The HUD
 shows dashes until a complete interval exists (normally visible in F3).
-Functional simulation checks known2/3-CB intervals, timer wrap and excluded
+Functional simulation checks known1/2/3-CB intervals, timer wrap and excluded
 present waits using the real simulator timer; those injected values are not
 hardware frame-time or FPS measurements.
 The application uses frozen VonwaonBitmap16pxLite1.02 ASCII at native16px,
@@ -163,7 +176,7 @@ or extra row spacing. Source identity and regeneration are described in the
 Tests use actual instruction CPU, functional GPU and Display pixels. They check
 all33 imported headers, all33 actual stage views, split/swap/merge/undo, fragile
 crack/drop, navigation wrap, both original solutions, entry/tip/release matrices,
-retained-versus-fresh static recording and shadow-cache invalidation. Live veil
+retained-versus-fresh static recording and shadow-cache invalidation. Cached veil
 checks preserve all non-HUD pixels and shared depth; the exact64×16 default HUD
 region is checked separately. Actual command counts, real Circle edges and an
 injected17ms clock verify the HUD. These finite cases do not prove all imported
@@ -273,3 +286,20 @@ Capture facts/ranges are rebuilt from the new command stream and current native
 bytes, not inferred from an old catalog solely by address. The standard allocator
 halts on allocation failure; bounds reject excess records rather than truncating
 or using the protected static arena.
+
+## Stable pad preparation
+
+Entrance hatch/four strips, goal hatch/carrier/four fallback strips have eleven
+independent Model owners. Five immutable role materials and shared texture/views
+persist for the run; the carrier view is recreated only on level change. No
+resource handles are embedded in ordinary buffers. A 12-word heap allocation
+stores generation, normalized entry/goal opening keys, initialized/dirty/visible
+masks, selected goal aperture and exact Q16 opening values. It is zeroed once,
+retained through the run and freed after both CBs retire/drop at finite exit.
+
+Opening math runs only when its actual geometry key changes. Stable role poses
+skip `set_pose`, leaving Camera-revision invalidation to the existing Model cache.
+Entrance and goal have separate keys, so entry animation does not dirty a stable
+goal. The original draw order, exact easing, hatch scale, quantized carrier
+selection and levels15/17 four-strip fallback remain unchanged. Hidden players
+skip pose preparation and invalidate their resting key before becoming visible.

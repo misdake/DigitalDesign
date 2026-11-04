@@ -735,3 +735,24 @@ capture after level1->2->1 rebuilds, and vblank-to-final-GPU-wait HUD boundaries
 including wrap/cold startup. The sibling `gpu_renderer_bloxorz_batch_cost.rs`
 contains the explicit ignored stage8 legacy/batch CPU+functional-GPU comparison;
 its logic cycles are not whole-system GPU/display performance.
+
+
+`gpu_api_target_patch.rs` compares multi-group target-only replay, with/without
+background MEMCPY, against fresh native payload/facts after Display retirement.
+Its bounded peers check stale generation, payload spans, active owners, source/
+asset/plane aliases, Front/pending presentation and partial-I/O poisoning; these
+are software protocol tests. Existing single-scene patch tests remain separate.
+`gpu_renderer_bloxorz_frame_schedule.rs` freezes both accepted and pre-batch
+candidate Git source blobs for its explicitly historical exact multi-frame
+entrance/goal/fallback and native shadow-cost controls. These controls do not
+qualify the current receiver-cell batch raster. The ordinary batch lifecycle
+test instead uses the actual caller, checks two live split slots and public
+storage facts over three frames, observes stack/heap separation, and verifies
+complete heap coalescing at finite exit. The explicit historical native cost
+test uses stationary PLAY and actual rolling ticks with per-arm instruction
+publication and full pixel oracles.
+Signal wrappers time total shadow preparation and nested projection/hull/clipping/
+triangle recording. CPU/native-memory cycles exclude functional GPU cost and
+scanout contention; wrapper overhead remains included. Cached-veil tests check
+one snapshot per boundary, immutable source reuse, alpha arithmetic, real HUD
+command counts and presentation/input endpoints.

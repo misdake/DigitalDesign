@@ -43,6 +43,10 @@ fn gpu_packet_copy_color(slot: u16, source: u16, destination: u16) -> bool {
     if !gpu_record_append(slot, code.as_array(), 10, payload, 16, 16) {
         return false;
     }
+    c[GPU_RECORD_COPY_WORD] = target + 1;
+    c[GPU_RECORD_COPY_SOURCE] = source;
+    c[GPU_RECORD_COPY_DESTINATION] = destination;
+    c[GPU_RECORD_COPY_COUNT] += 1;
     c[GPU_RECORD_VALID] |= GPU_RECORD_HAS_COPY;
     c[GPU_RECORD_TERMINAL] = 0;
     true

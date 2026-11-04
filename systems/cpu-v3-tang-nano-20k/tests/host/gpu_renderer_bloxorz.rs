@@ -7,21 +7,28 @@ fn application(
     name: &str,
     probe: Option<&str>,
 ) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>, PathBuf) {
+    application_from_sources(name, probe, None)
+}
+fn application_from_sources(
+    name: &str,
+    probe: Option<&str>,
+    frozen_sources: Option<&Path>,
+) -> (rcc_backend::CpuV3Program, Vec<(usize, Vec<u8>)>, PathBuf) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let sources = frozen_sources.unwrap_or(root);
+    let source_example = sources.join("examples/gpu_renderer_bloxorz");
     let example = root.join("examples/gpu_renderer_bloxorz");
     let out = std::env::var_os("BLOXORZ_SIM_OUTPUT_ROOT")
         .map_or_else(|| root.join("../../target/bloxorz-rtt"), PathBuf::from)
         .join(name);
-    assert!(
-        std::process::Command::new("python")
-            .arg("-B")
-            .arg(example.join("tools/assets.py"))
-            .arg("--output")
-            .arg(&out)
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(std::process::Command::new("python")
+        .arg("-B")
+        .arg(example.join("tools/assets.py"))
+        .arg("--output")
+        .arg(&out)
+        .status()
+        .unwrap()
+        .success());
     let catalog: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     assert_eq!(catalog["profile"], "production");
@@ -51,7 +58,46 @@ fn application(
         .unwrap()
         .constants()
         + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
-    let mut source = std::fs::read_to_string(example.join("rcc/main.rs")).unwrap();
+    let mut source = std::fs::read_to_string(source_example.join("rcc/main.rs")).unwrap();
+    // This independent Web oracle decodes the exact unit-triangle control.
+    // Receiver-cell packing is qualified separately by bloxorz_shadow_batch.
+    if name.starts_with("web-shadow-") {
+        source = source
+            .replace("    let shadow_owner = shadow_batch_begin();\n", "")
+            .replace("        shadow_batch_frame();\n", "")
+            .replace("    shadow_batch_end(shadow_owner);\n", "");
+    }
+    if name.starts_with("frame-schedule-") {
+        let level = if name.contains("split-lifetime") {
+            7
+        } else if name.contains("fallback15") {
+            14
+        } else if name.contains("fallback17") {
+            16
+        } else if name.contains("goal") {
+            1
+        } else {
+            0
+        };
+        let initial = if name.contains("entry") {
+            "ENTRY_OPEN"
+        } else {
+            "PLAY"
+        };
+        source = source.replace("session_init();", &format!("session_init();level_reset({level});SESSION[0u16]={initial};SESSION[1u16]=0;BACKGROUND[0u16]=0;"));
+        let tick = if name.contains("split-lifetime") {
+            "if number==0 {GAME[0u16]=2;GAME[1u16]=4;GAME[2u16]=1;session_move(0);let mut ticks:u16=0;while ticks<10 {session_tick(0,0,50);ticks+=1;}}session_tick(0,0,0);"
+        } else if name.contains("entry") {
+            "session_tick(buttons,held,0);SESSION[0u16]=ENTRY_OPEN;SESSION[1u16]=if number<2 {50u16}else{100u16};"
+        } else if name.contains("goal") || name.contains("fallback") {
+            "session_tick(buttons,held,0);TRANSITION[0u16]=0;SESSION[0u16]=if number<2 {GOAL_OPEN}else{GOAL_CLOSE};SESSION[1u16]=100;"
+        } else if name.contains("moving") {
+            "if number==0 {session_move(0);}session_tick(buttons,held,40);"
+        } else {
+            "session_tick(buttons,held,0);"
+        };
+        source = source.replace("session_tick(buttons, held, elapsed);", tick);
+    }
     if name.starts_with("web-stage") {
         let level = u16::from(name.contains("stage2"));
         let background = u16::from(name.ends_with("gradient"));
@@ -68,6 +114,13 @@ fn application(
             } else {
                 "run(1, false, 128);"
             },
+        );
+    }
+    if name == "web-stage1-warm-cached-diagnostic" {
+        source = source.replace("run(3, false, 128);", "run(5, true, 128);");
+        source = source.replace(
+            "session_init();",
+            "session_init();TRANSITION[0u16]=FADE_OUT;TRANSITION[1u16]=0;CAPTURE_STIMULUS[0u16]=3;",
         );
     }
     if name.ends_with("warm-rerecord") {
@@ -170,28 +223,26 @@ fn gallery_pose(which:u16){
         }
     }
     if let Some(variant) = name.strip_prefix("opt-shadow-") {
-        assert!(
-            [
-                "baseline",
-                "always",
-                "no-shadow",
-                "no-block",
-                "far64",
-                "far64-always",
-                "goal-always",
-                "bridge-off-always",
-                "bridge-on-always",
-                "production",
-                "right-standing",
-                "carrier-play",
-                "carrier-open",
-                "carrier-drop",
-                "carrier-close",
-                "carrier-soft-fallback",
-                "carrier-heavy-fallback"
-            ]
-            .contains(&variant)
-        );
+        assert!([
+            "baseline",
+            "always",
+            "no-shadow",
+            "no-block",
+            "far64",
+            "far64-always",
+            "goal-always",
+            "bridge-off-always",
+            "bridge-on-always",
+            "production",
+            "right-standing",
+            "carrier-play",
+            "carrier-open",
+            "carrier-drop",
+            "carrier-close",
+            "carrier-soft-fallback",
+            "carrier-heavy-fallback"
+        ]
+        .contains(&variant));
         assert_eq!(source.matches("session_init();").count(), 1);
         if variant == "far64" || variant == "far64-always" {
             assert_eq!(source.matches("let far = level_far(which);").count(), 1);
@@ -327,6 +378,10 @@ fn gallery_pose(which:u16){
             "gpu.submit(commands);",
             "gpu.request_snapshot();gpu.submit_capturable(commands);",
         );
+        source = source.replace(
+            "gpu.submit(scene_commands);",
+            "gpu.request_snapshot();gpu.submit_capturable(scene_commands);",
+        );
         source=source.replace("ground_rebuild();","signal(9,scene_commands.command_words());signal(10,commands.command_words());ground_rebuild();");
     }
     let entry = if let Some(body) = probe {
@@ -337,6 +392,7 @@ fn gallery_pose(which:u16){
     } else if name == "all-stage-gallery"
         || name.starts_with("opt-shadow-")
         || name.starts_with("web-stage")
+        || name.starts_with("frame-schedule-")
         || name.starts_with("web-shadow-")
         || name.starts_with("web-cache-")
         || name == "web-goal-mid"
@@ -388,25 +444,58 @@ pub fn profiler_gate(d:Array<u16>)->u16 {
         let manifest = out.join("capture-manifest.json");
         std::fs::write(&manifest,serde_json::to_vec_pretty(&serde_json::json!({"version":3,"schema":"digitaldesign.gpu-capture-build","command_abi":6,"manifest_id":"0000000000000000000000000000000000000000000000000000000000000000","layout":profile.recorded_description(),"resources":[],"options":{"capture_allocation_guards":false}})).unwrap()).unwrap();
         resolver::RendererCaptureConfiguration::from_manifest(gate, &manifest).unwrap()
-    } else if name.contains("-cpu-cost-") {
+    } else if name.contains("-cpu-cost-") || name.starts_with("frame-schedule-") {
         resolver::RendererCaptureConfiguration::with_default_hook(profile)
     } else {
         resolver::RendererCaptureConfiguration::without_capture(profile)
     };
+    let mut application_rcc = source_example.join("rcc");
+    if name.ends_with("-cpu-shadow-cost") {
+        let local = out.join("instrumented-rcc");
+        std::fs::create_dir_all(&local).unwrap();
+        for entry in std::fs::read_dir(&application_rcc).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|x| x == "rs") {
+                std::fs::copy(&path, local.join(path.file_name().unwrap())).unwrap();
+            }
+        }
+        let path = local.join("shadow.rs");
+        let mut shadow = std::fs::read_to_string(&path).unwrap();
+        for name in [
+            "draw_shadow",
+            "shadow_project",
+            "shadow_hull",
+            "shadow_clip",
+            "shadow_draw",
+        ] {
+            let needle = format!("fn {name}(");
+            assert_eq!(shadow.matches(&needle).count(), 1);
+            shadow = shadow.replace(&needle, &format!("fn measured_body_{name}("));
+        }
+        shadow += r#"
+pub fn draw_shadow(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,b:&Model){signal(5,0);measured_body_draw_shadow(p,m,o,a,b);signal(6,0);}
+fn shadow_project(w:Mat3x4)->u16{signal(7,1);let n=measured_body_shadow_project(w);signal(8,1);n}
+fn shadow_hull(c:u16)->u16{signal(7,2);let n=measured_body_shadow_hull(c);signal(8,2);n}
+fn shadow_clip(a:Array<ShadowScalar>,b:Array<ShadowScalar>,c:u16,d:fix32,e:u16)->u16{signal(7,3);let n=measured_body_shadow_clip(a,b,c,d,e);signal(8,3);n}
+fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){signal(7,4);measured_body_shadow_draw(p,m,o,a,t);signal(8,4);}
+"#;
+        std::fs::write(path, shadow).unwrap();
+        application_rcc = local;
+    }
     let ir = resolver::compile_explicit_gpu_program_checked_with_sources(
         "Bloxorz RTT",
         &source,
         &options,
-        &example.join("rcc"),
-        &root.join("rcc"),
+        &application_rcc,
+        &sources.join("rcc"),
         &constants,
-        &[root.join("examples/bloxorz/rcc")],
+        &[sources.join("examples/bloxorz/rcc")],
         &capture,
         &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),
         &mut |p| dependencies.push(p.to_owned()),
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    assert!(dependencies.contains(&root.join("examples/bloxorz/rcc/bloxorz_core.rs")));
+    assert!(dependencies.contains(&sources.join("examples/bloxorz/rcc/bloxorz_core.rs")));
     let frontend_static_words = ir.debug.static_data_end;
     let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
     std::fs::write(
@@ -774,12 +863,12 @@ fn expanded565(c: u16) -> [u32; 3] {
     ]
 }
 #[test]
-fn live_veil_uses_current_offscreen_pixels_and_discards_locked_boundary_input() {
+fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
     use cpu_v3_tang_nano_20k::{
         input_device::{ControllerSnapshot, InputMode},
         system_sim::{CpuV3SystemSim, VBlankMode},
     };
-    let (program, resources, out) = application("web-live-veil", None);
+    let (program, resources, out) = application("web-cached-veil", None);
     let session = global(&program, "SESSION");
     let transition = global(&program, "TRANSITION");
     let motion = global(&program, "MOTION");
@@ -807,6 +896,7 @@ fn live_veil_uses_current_offscreen_pixels_and_discards_locked_boundary_input() 
     let mut static_replays = 0;
     let mut consumer_depth: Option<Vec<u16>> = None;
     let mut sources = 0;
+    let mut source_dirty = false;
     let mut consumers = 0;
     let mut ordinary = [false; 2];
     let mut source_images = vec![];
@@ -892,7 +982,12 @@ fn live_veil_uses_current_offscreen_pixels_and_discards_locked_boundary_input() 
                     assert_eq!(depth, 0x480000);
                     if fixed {
                         consumers += 1;
-                        assert!(invalidate && !copy);
+                        assert_eq!(
+                            invalidate, source_dirty,
+                            "invalidate exactly after source writes"
+                        );
+                        source_dirty = false;
+                        assert!(!copy);
                         assert_eq!(clear, Some(0x1107));
                         assert!(
                             depth_clear.is_none(),
@@ -907,12 +1002,19 @@ fn live_veil_uses_current_offscreen_pixels_and_discards_locked_boundary_input() 
                             assert_eq!(depth_clear, Some(65535));
                         } else {
                             sources += 1;
+                            source_dirty = true;
                             assert!(depth_clear.is_none());
                         }
                     } else {
-                        assert!(copy && clear.is_none() && depth_clear.is_none());
                         assert!(target == 0x400000 || target == 0x440000);
-                        ordinary[usize::from(target == 0x440000)] = true;
+                        if depth_clear.is_some() {
+                            static_replays += 1;
+                            assert_eq!(depth_clear, Some(65535));
+                            assert!(copy || clear == Some(0x2924));
+                        } else {
+                            assert!(!copy && clear.is_none());
+                            ordinary[usize::from(target == 0x440000)] = true;
+                        }
                     }
                 }
                 true
@@ -987,6 +1089,13 @@ fn live_veil_uses_current_offscreen_pixels_and_discards_locked_boundary_input() 
                 observed_draws = 0;
                 assert_eq!(m[hud], 0);
                 assert_eq!(&actual_hud_cells(m, 0)[..6], b"LEVEL ");
+                if m[transition] != 0 {
+                    assert_eq!(
+                        source_images.last().unwrap().as_slice(),
+                        &m[0x600000 / 2..0x632000 / 2],
+                        "cached RTT must stay immutable between captures"
+                    );
+                }
                 let phase = m[transition];
                 let time = m[transition + 1];
                 if phase == 0 {
@@ -1068,7 +1177,7 @@ fn live_veil_uses_current_offscreen_pixels_and_discards_locked_boundary_input() 
                 }
             }
             StepOutcome::Halted { signal } => panic!(
-                "unexpected live-veil halt {signal:#x}, moved={moved} restarted={restarted} boundary={boundary} held_play={held_play}"
+                "unexpected cached-veil halt {signal:#x}, moved={moved} restarted={restarted} boundary={boundary} held_play={held_play}"
             ),
             _ => {}
         }
@@ -1086,18 +1195,21 @@ fn live_veil_uses_current_offscreen_pixels_and_discards_locked_boundary_input() 
     assert!(ordinary.iter().all(|v| *v));
     assert!(goal_checks > 10);
     assert!(static_replays > sources);
-    assert_eq!(sources, consumers);
-    assert!(sources > 10);
+    assert_eq!(
+        sources, 3,
+        "outgoing, incoming, then the next explicit restart"
+    );
+    assert!(consumers > sources);
     assert!(
         source_images.windows(2).any(|w| w[0] != w[1]),
-        "outgoing rolling scene froze during fade"
+        "outgoing and incoming boundaries must have different content"
     );
     assert_eq!(
         &sim.cpu().physical_memory_slice()[0x580000 / 2..0x5b2000 / 2],
         initial_background
     );
     assert!(sim.gpu().last_error().is_none());
-    std::fs::write(out.join("qualification.json"),serde_json::to_vec_pretty(&serde_json::json!({"functional_gpu_actual_display":true,"live_sources":sources,"consumers":consumers,"goal_neighbor_invariant_normal_frames":goal_checks,"initial_closed_entry_without_input":initial_closed,"full_half_veil_formula_matches":half,"opaque_color_matches":opaque,"boundary_held_dpad_start_triangle_suppressed":true,"fresh_start_accepted":accepted,"both_normal_back_targets":ordinary,"source_immutable":true,"scope":"instruction CPU + functional GPU/Display; explicit40ms host ticks; no board, scanout timing or native CPU performance claim"})).unwrap()).unwrap();
+    std::fs::write(out.join("qualification.json"),serde_json::to_vec_pretty(&serde_json::json!({"functional_gpu_actual_display":true,"boundary_snapshots":sources,"consumers":consumers,"goal_neighbor_invariant_normal_frames":goal_checks,"initial_closed_entry_without_input":initial_closed,"full_half_veil_formula_matches":half,"opaque_color_matches":opaque,"boundary_held_dpad_start_triangle_suppressed":true,"fresh_start_accepted":accepted,"both_normal_back_targets":ordinary,"source_immutable":true,"scope":"instruction CPU + functional GPU/Display; explicit40ms host ticks; no board, scanout timing or native CPU performance claim"})).unwrap()).unwrap();
 }
 
 #[test]
@@ -2058,13 +2170,24 @@ fn retained_static_scene_matches_fresh_recording_and_reuses_immutable_commands()
             assert_eq!(pair[0].0, 0xfc00);
             assert_eq!(pair[1].0, 0x9800);
         }
-        for i in [2, 4] {
+        for (frame, i) in [2, 4].into_iter().enumerate() {
+            assert_eq!(submissions[0].0, submissions[i].0);
             assert_eq!(
-                submissions[0], submissions[i],
-                "{name}: static native commands/push bytes changed"
+                submissions[0].1, submissions[i].1,
+                "static command words stay immutable"
+            );
+            let mut expected = submissions[0].2.clone();
+            expected[0] = if frame == 0 {
+                0x8000u16 >> 2
+            } else {
+                0x8800u16 >> 2
+            };
+            assert_eq!(
+                expected, submissions[i].2,
+                "{name}: only Target32 color address may change"
             );
         }
-        std::fs::write(out.join("static-scene.json"),serde_json::to_vec_pretty(&serde_json::json!({"max_steps":8000000,"present_steps":marks,"submissions":submissions.iter().map(|(base,code,_)|serde_json::json!({"sector":base,"commands_u32":code.len()/2})).collect::<Vec<_>>(),"static_commands_and_push_equal":true,"limits":"instruction CPU steps; functional GPU is not hardware cycle timing"})).unwrap()).unwrap();
+        std::fs::write(out.join("static-scene.json"),serde_json::to_vec_pretty(&serde_json::json!({"max_steps":8000000,"present_steps":marks,"submissions":submissions.iter().map(|(base,code,_)|serde_json::json!({"sector":base,"commands_u32":code.len()/2})).collect::<Vec<_>>(),"static_commands_immutable_payload_diff_only_target":true,"limits":"instruction CPU steps; functional GPU is not hardware cycle timing"})).unwrap()).unwrap();
         costs.push(marks);
         runs.push(frames);
     }
@@ -2483,18 +2606,16 @@ free(owner);
 "#;
     let (program, resources, out) = application("ground-batch-builder", Some(body));
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/gpu_renderer_bloxorz");
-    assert!(
-        std::process::Command::new("python")
-            .arg("-B")
-            .arg(example.join("tools/check_ground_batches.py"))
-            .arg("--assets")
-            .arg(out.join("assets.json"))
-            .arg("--output")
-            .arg(out.join("ground-reference.json"))
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(std::process::Command::new("python")
+        .arg("-B")
+        .arg(example.join("tools/check_ground_batches.py"))
+        .arg("--assets")
+        .arg(out.join("assets.json"))
+        .arg("--output")
+        .arg(out.join("ground-reference.json"))
+        .status()
+        .unwrap()
+        .success());
     let expected: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("ground-reference.json")).unwrap()).unwrap();
     let mut cpu = cpu_v3::CpuV3Sim::default();
@@ -2642,6 +2763,7 @@ fn render_ms_uses_last_gpu_wait_excludes_present_and_handles_cold_and_wrap() {
         let mut frames = vec![];
         let mut halted = false;
         let mut wrapped = false;
+        let mut render_wrapped = false;
         for _ in 0..8_000_000 {
             if sim.waiting_for_vblank() {
                 sim.advance_host_time(Duration::from_millis(50));
@@ -2661,19 +2783,30 @@ fn render_ms_uses_last_gpu_wait_excludes_present_and_handles_cold_and_wrap() {
             if started {
                 let delta = [3u64, 5, 7][starts];
                 sim.advance_host_time(Duration::from_millis(delta));
+                let low_before = clock as u16;
                 clock += delta;
+                render_wrapped |= (clock as u16) < low_before;
                 starts += 1;
             }
             if let StepOutcome::Signaled(e) = outcome {
                 if e.signal_type == 8 && e.value == 0 {
-                    let delta = 65528u16.wrapping_sub(clock as u16);
+                    let delta = 65534u16.wrapping_sub(clock as u16);
                     sim.advance_host_time(Duration::from_millis(u64::from(delta)));
                     clock += u64::from(delta);
                     wrapped = true;
                 }
                 if e.signal_type == 12 {
-                    assert_eq!(starts, if fade { 3 } else { 2 });
-                    let expected = if fade { 15u16 } else { 8u16 };
+                    let expected_starts = if fade {
+                        if frames.is_empty() {
+                            3
+                        } else {
+                            1
+                        }
+                    } else {
+                        2
+                    };
+                    assert_eq!(starts, expected_starts);
+                    let expected = if fade { 3u16 } else { 8u16 };
                     let m = sim.cpu().physical_memory_slice();
                     let row = actual_hud_cells(m, 2);
                     if frames.is_empty() {
@@ -2696,7 +2829,7 @@ fn render_ms_uses_last_gpu_wait_excludes_present_and_handles_cold_and_wrap() {
                 break;
             }
         }
-        assert!(halted && wrapped);
+        assert!(halted && wrapped && render_wrapped);
         assert_eq!(frames.len(), 3);
         assert!(sim.gpu().last_error().is_none());
         std::fs::write(out.join("timing-qualification.json"),serde_json::to_vec_pretty(&serde_json::json!({"fade":fade,"max_steps":8000000,"clock":"real simulator timer advanced at actual GPU starts and vblank boundaries; test-only signal8 before the real start read","frames":frames,"initial_interval_unknown":true,"mod65536_wrap_tested":true,"hardware_frame_time_claim":false})).unwrap()).unwrap();
@@ -2810,3 +2943,69 @@ fn same_heap_address_rebuilds_only_after_retirement_and_capture_reads_new_record
 
 #[path = "gpu_renderer_bloxorz_batch_cost.rs"]
 mod batch_cost;
+
+#[path = "gpu_renderer_bloxorz_frame_schedule.rs"]
+mod frame_schedule;
+
+#[test]
+fn cached_veil_diagnostic_updates_transmittance_overlay_on_every_consumer() {
+    use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
+    let (program, resources, out) = application("web-stage1-warm-cached-diagnostic", None);
+    let session = global(&program, "SESSION");
+    let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
+    sim.cpu_mut().set_boot_window(&program.words);
+    preload(sim.cpu_mut().physical_memory_mut(), &resources);
+    let mut overlays = vec![];
+    let mut snapshots = 0;
+    let mut starts = 0;
+    let mut halted = false;
+    let mut frozen = None;
+    for _ in 0..4_000_000 {
+        if sim.waiting_for_vblank() {
+            sim.advance_vblank();
+        }
+        match sim
+            .step_observing(|w, _| {
+                if w.device == 4 && w.channel == 1 {
+                    starts += 1;
+                }
+                true
+            })
+            .unwrap()
+            .unwrap()
+        {
+            StepOutcome::Signaled(e) if e.signal_type == 4 && e.value != 0 => {
+                sim.advance_host_time(std::time::Duration::from_millis(40))
+            }
+            StepOutcome::Signaled(e) if e.signal_type == 11 => snapshots += 1,
+            StepOutcome::Signaled(e) if e.signal_type == 12 => {
+                let m = sim.cpu().physical_memory_slice();
+                assert_eq!(m[session + 4], 1);
+                let image = m[0x600000 / 2..0x632000 / 2].to_vec();
+                if let Some(old) = &frozen {
+                    assert_eq!(old, &image);
+                } else {
+                    frozen = Some(image);
+                }
+                overlays.push(actual_hud_number(&actual_hud_cells(m, 0)[..4]));
+            }
+            StepOutcome::Halted { signal } => {
+                assert_eq!(signal, 0x600d);
+                halted = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(halted, "bounded4M diagnostic timeout");
+    assert_eq!(snapshots, 1);
+    assert_eq!(starts, 7);
+    assert_eq!(overlays, [1255, 1224, 1192, 1160, 1128]);
+    assert!(!sim.display_state().swap_pending);
+    assert!(sim.gpu().last_error().is_none());
+    write_display_ppm(
+        &out.join("half-diagnostic-display.ppm"),
+        &sim.render_active_framebuffer(),
+    );
+    std::fs::write(out.join("diagnostic-qualification.json"),serde_json::to_vec_pretty(&serde_json::json!({"overlays":overlays,"snapshots":snapshots,"submissions":starts,"maximum_steps":4000000,"snapshot_immutable":true,"selected_128_halt_after_retired_present":true})).unwrap()).unwrap();
+}
