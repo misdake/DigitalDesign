@@ -203,7 +203,6 @@ fn approved_resolver_protects_actual_gpu_helpers_and_requires_the_root() {
         "gpu_builder",
         "gpu_display",
         "gpu_encode",
-        "gpu_depth",
         "gpu_memcpy",
         "gpu_memory",
         "gpu_layout",

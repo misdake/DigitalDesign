@@ -18,7 +18,7 @@ from model import build_capture
 from reporting import build_report, image_options
 from images import preview  # Existing direct raw-plane export API.
 from snapshot import Abi, DEFAULT_ABI, SnapshotError, load_snapshot
-from layout import COLUMN, get_layout, header_layout, capture_description, depth_configuration
+from layout import COLUMN, get_layout, header_layout, capture_description, fixed_far, require_runtime_depth
 
 
 def physical(logical_word):
@@ -75,7 +75,11 @@ def validate_rtl_layout(layout, combined):
 def validate_command_abi(capture):
     """A newer RTL export must not extend the frozen stream's declared ABI."""
     abi = capture.header.get('command_abi')
-    if abi not in (1, 2, 3, 4, 5, 6):
+    try:
+        require_runtime_depth(abi)
+    except ValueError as error:
+        raise SnapshotError(str(error)) from error
+    if abi not in (1, 2, 3, 4, 7, 8):
         raise SnapshotError(f'Unsupported replay command ABI{abi}')
     last = 12 if abi >= 3 else 11
     scratch = bytearray(4096)
@@ -92,7 +96,7 @@ def validate_command_abi(capture):
             scratch[at:at+count] = capture.read(((word >> 10) & 0x3ffff) * 32, count)
         elif opcode == 5:
             try:
-                depth_configuration(struct.unpack_from('<I', scratch, (word & 127) * 32)[0], abi)
+                fixed_far(struct.unpack_from('<I', scratch, (word & 127) * 32)[0], abi)
             except ValueError as error:
                 raise SnapshotError(str(error)) from error
 

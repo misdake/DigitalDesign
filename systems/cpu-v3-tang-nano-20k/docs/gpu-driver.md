@@ -1,43 +1,5 @@
 # RCC GPU driver
 
-## Configurable D16 depth
-
-The explicit API takes precision from `Projection::set_depth_shift(k)`; k0 is
-the default. The physical far limit and native encoding are specified in
-[formats](/ip/gpu-v2/docs/formats.md). The low-level `GpuGlobal` value keeps its
-existing fields and `gpu_encode_global` retains k0; callers explicitly needing
-another encoding use `gpu_encode_global_depth`.
-
-Device4 RECV channel3 bit0 advertises k0..3. The driver requires this bit before
-publication/START whenever a recorded CB contains k>0. Old hardware returns0;
-ordinary k0 work does not require the capability read.
-
-Exact DepthBuffer aliases at the same physical start share one content key;
-partially overlapping 1600-sector planes are rejected. Spare descriptor words
-hold content state and a live-list link, with one CPU head word and no FPGA table.
-Recorded depth facts retain managed-plane provenance, selected k, whether a Load
-needs prior content, and whether a full clear precedes geometry. One physical
-plane uses one k within a CB. Changing far alone does not change this content key.
-
-Recording and preparation do not initialize depth. START makes a written plane
-unknown; successful GPU completion (including the terminal flush) commits its
-encoding. A fault leaves it unknown. Load requires a completed matching k or a
-completed full raw clear. Clear-only completion is format-neutral. To change k,
-wait for ownership retirement and record a full depth clear before new geometry.
-Descriptor Drop removes that live alias. Completion updates remaining live aliases
-by physical plane; it cannot mark an unrelated reused descriptor valid. If every
-alias is dropped, recreating a descriptor starts unknown. Scene retargeting
-rechecks the replacement depth key.
-
-At START existing aliases enter a private writing state. An alias created during
-that write begins unknown; completion cannot certify it or a new descriptor
-lifetime after the original aliases were dropped. A subsequent qualified full
-clear establishes contents again. Public fresh-depth Load has no implicit
-initialization; legacy raw k0 facts retain their caller-supplied preimage contract.
-
-The raw clear value remains unchanged, normally65535. Comparison functions and
-depth-write control retain their unsigned D16 semantics.
-
 The native diagnostic interface is `rcc/gpu.rs`, used by `gpu_demo` and
 `dualshock2_ui`. It manages one command buffer and one Clear/Store Pass with
 ordered Mesh/Instance and UI draws and fixed A/B/Depth allocations. It retains

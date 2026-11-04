@@ -20,6 +20,8 @@ def dot(a, b):
 
 
 def exact(row):
+    if row.get('global_depth_shift', 0):
+        raise ValueError('Historical selectable-depth records require their frozen analyzer')
     p=row['position_q16']
     x,y=row['xy']
     ray=[2*x-399,2*y-239,512]
@@ -35,7 +37,7 @@ def exact(row):
     z_q16=Fraction(abs(determinant)*512,denominator)
     result=dict(row)
     result.update(exact_z=float(z_q16/65536),
-                  exact_depth_code=float(z_q16/256*(1<<row.get('global_depth_shift',0))),
+                  exact_depth_code=float(z_q16/256),
                   exact_front=determinant>0,
                   exact_covered=all(value>=tau for value,tau in zip(h,taus)))
     return result,z_q16

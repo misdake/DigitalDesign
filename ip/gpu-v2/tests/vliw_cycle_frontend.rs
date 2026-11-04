@@ -99,7 +99,6 @@ fn indexed_t16_drives_real_prepare_raster_and_interpolation() {
                 output_ready: true,
                 params: Params {
                     far_z: 100 << 16,
-                    depth_shift: 0,
                     tex_u: 6,
                     tex_v: 5,
                     max_mip: 6,

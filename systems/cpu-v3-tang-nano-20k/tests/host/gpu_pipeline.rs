@@ -44,6 +44,7 @@ struct State {
     input_status: u16,
     input_bytes: [u16; 8],
     now_ms: u16,
+    board_buttons: u16,
     gpu: u16,
     active: u32,
     staged: u32,
@@ -100,6 +101,7 @@ impl cpu_v3::Device for Peer {
         }
         match (self.kind, channel) {
             (0, 10) => s.now_ms,
+            (0, 8) => s.board_buttons,
             (5, 8) => s.input_status,
             (5, c) if c < 8 => s.input_bytes[usize::from(c)],
             (0, 5) => {

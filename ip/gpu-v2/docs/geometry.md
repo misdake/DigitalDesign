@@ -319,21 +319,12 @@ defines the independent stored-data lifetime after input acceptance.
 
 Depth derives from the positive determinant and the same aligned denominator.
 Let `ed=floor(log2(abs(delta)))`, `K=floor(abs(delta)*2^(30-ed))`, and
-`right=e+E+38-ed-k`, where the installed Global selects `k=0..3`.
-Form `Z_full=floor(r*K*2^-right)` under the admitted
+`right=e+E+38-ed`. Form `Z_full=floor(r*K*2^-right)` under the admitted
 integer widths; the output is `Z16=(Z_full>>8)&65535`. Live depth additionally
 requires nonzero D, `Z_full < 2^32` (no arithmetic overflow),
 `Z_full < 2^24` (upper depth-word bits zero), and
 `Z16 <= cfg_far_z[23:8]`. A positive value quantizing to zero is allowed; this
 depth check does not introduce a near plane.
-
-The shift modifies the existing pre-cut exponent bias; it does not shift an
-already quantized D16 result. Prepare stores `38-k+E-ed` as signed8 and Compute
-adds e in signed9. Their admitted bounds are respectively [-92,101] and
-[-92,132]. No arithmetic phase or DSP is added. CP imports mapped far and k
-together from Global row0; Prepare passes mapped far to the existing comparison.
-Depth comparison remains unsigned for every comparison function. A full plane
-clear still writes the caller's raw16 constant; it does not rescale that constant.
 
 UV quads select the first geometrically covered lane as the LOD anchor. Using
 that lane's interpolated U/V, align Nx/Ny coefficients to E with truncation

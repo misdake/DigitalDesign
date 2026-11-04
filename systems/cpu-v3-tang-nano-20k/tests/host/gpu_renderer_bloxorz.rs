@@ -442,7 +442,7 @@ pub fn profiler_gate(d:Array<u16>)->u16 {
         )
         .unwrap();
         let manifest = out.join("capture-manifest.json");
-        std::fs::write(&manifest,serde_json::to_vec_pretty(&serde_json::json!({"version":3,"schema":"digitaldesign.gpu-capture-build","command_abi":6,"manifest_id":"0000000000000000000000000000000000000000000000000000000000000000","layout":profile.recorded_description(),"resources":[],"options":{"capture_allocation_guards":false}})).unwrap()).unwrap();
+        std::fs::write(&manifest,serde_json::to_vec_pretty(&serde_json::json!({"version":3,"schema":"digitaldesign.gpu-capture-build","command_abi":8,"manifest_id":"0000000000000000000000000000000000000000000000000000000000000000","layout":profile.recorded_description(),"resources":[],"options":{"capture_allocation_guards":false}})).unwrap()).unwrap();
         resolver::RendererCaptureConfiguration::from_manifest(gate, &manifest).unwrap()
     } else if name.contains("-cpu-cost-") || name.starts_with("frame-schedule-") {
         resolver::RendererCaptureConfiguration::with_default_hook(profile)

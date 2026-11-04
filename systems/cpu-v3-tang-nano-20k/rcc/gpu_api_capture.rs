@@ -12,8 +12,6 @@ mod gpu_storage;
 use gpu_storage::*;
 mod profiler_gate;
 use profiler_gate::*;
-mod gpu_depth;
-use gpu_depth::*;
 
 static GPU_CAPTURE_HEADER: Buf<u16, 64> = Buf::new([0; 64]);
 static GPU_CAPTURE_RANGES: Buf<u16, 512> = Buf::new([0; 512]);
@@ -79,13 +77,6 @@ fn gpu_capture_range_add(tag: u16, flags: u16, sector: u16, low: u16, high: u16)
             && GPU_CAPTURE_RANGES[at + 4] == low
             && GPU_CAPTURE_RANGES[at + 5] == high
         {
-            if tag == GPU_CAPTURE_TAG_DEPTH
-                && (GPU_CAPTURE_RANGES[at] & GPU_CAPTURE_DEPTH_SHIFT_MASK)
-                    != (flags & GPU_CAPTURE_DEPTH_SHIFT_MASK)
-            {
-                gpu_capture_fail(GPU_CAPTURE_DEPENDENCY);
-                return 0;
-            }
             GPU_CAPTURE_RANGES[at] |= flags;
             return i + 1;
         }
@@ -211,7 +202,6 @@ fn gpu_capture_read_value(range: u16, offset_low: u16, offset_high: u16) -> u16 
 fn gpu_capture_plane(facts: Array<u16>, kind: u16, sector: u16) -> u16 {
     let mut i: u16 = 0;
     let mut allocation: u16 = 0;
-    let mut depth_flags: u16 = 0;
     while i < GPU_CAPTURE_SOURCE[9u16] {
         let at = i * 4;
         if facts[at] == sector
@@ -221,10 +211,6 @@ fn gpu_capture_plane(facts: Array<u16>, kind: u16, sector: u16) -> u16 {
         {
             if facts[at + 1] > allocation {
                 allocation = facts[at + 1];
-            }
-            if kind == 6 {
-                depth_flags =
-                    gpu_execute_capture_depth_shift(facts[at + 3], facts[at], facts[at + 1]) << 5;
             }
         }
         i += 1;
@@ -250,7 +236,7 @@ fn gpu_capture_plane(facts: Array<u16>, kind: u16, sector: u16) -> u16 {
     let tag = kind + 2;
     let range = gpu_capture_range_add(
         tag,
-        GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE | depth_flags,
+        GPU_CAPTURE_WRITE | GPU_CAPTURE_PREIMAGE,
         sector,
         8192,
         3,
@@ -262,7 +248,7 @@ fn gpu_capture_plane(facts: Array<u16>, kind: u16, sector: u16) -> u16 {
         let tail = allocation - 1600;
         if gpu_capture_range_add(
             tag,
-            GPU_CAPTURE_READ | GPU_CAPTURE_PREIMAGE | depth_flags,
+            GPU_CAPTURE_READ | GPU_CAPTURE_PREIMAGE,
             sector + 1600,
             tail << 7,
             tail >> 9,
@@ -739,10 +725,6 @@ fn gpu_capture_commands(facts: Array<u16>) -> bool {
             if GPU_CAPTURE_CONTROL[18 + low] & 16 != 0 && !gpu_capture_texture(facts) {
                 return false;
             }
-            let depth_flags = GPU_CAPTURE_RANGES[(GPU_CAPTURE_CONTROL[15u16] - 1) * 8];
-            if (depth_flags >> 5) & 3 != (GPU_CAPTURE_CONTROL[12u16] >> 2) & 3 {
-                return gpu_capture_reject(GPU_CAPTURE_DEPENDENCY);
-            }
         } else if opcode == 5 || opcode == 6 {
             if high & 4095 != 0 || low < 66 || low >= 80 || GPU_CAPTURE_LOCAL[low - 66 + 28] == 0 {
                 return gpu_capture_reject(GPU_CAPTURE_DEPENDENCY);
@@ -751,16 +733,13 @@ fn gpu_capture_commands(facts: Array<u16>) -> bool {
                 if low >= 79 || GPU_CAPTURE_LOCAL[low - 66 + 29] == 0 {
                     return gpu_capture_reject(GPU_CAPTURE_DEPENDENCY);
                 }
+                // Full Q16.16 far; retired k tags must never be masked away.
                 let far_low = gpu_capture_descriptor_word(low - 66, 0);
                 let far_high = gpu_capture_descriptor_word(low - 66, 1);
-                if !gpu_depth_native_valid(far_low, far_high)
-                    || (GPU_CAPTURE_HEADER[GPU_CAPTURE_H_COMMAND_ABI]
-                        == GPU_CAPTURE_UNIFORM_RTT400_COMMAND_ABI
-                        && far_high & 768 != 0)
-                {
+                if far_high >= 200 || (far_high == 0 && far_low == 0) {
                     return gpu_capture_reject(GPU_CAPTURE_DEPENDENCY);
                 }
-                GPU_CAPTURE_CONTROL[12u16] = 1 | (((far_high >> 8) & 3) << 2);
+                GPU_CAPTURE_CONTROL[12u16] = 1;
             } else {
                 GPU_CAPTURE_CONTROL[13u16] = 1;
                 GPU_CAPTURE_CONTROL[20u16] = gpu_capture_descriptor_word(low - 66, 0);
@@ -881,8 +860,8 @@ fn gpu_capture_begin(source: Array<u16>, facts: Array<u16>) -> bool {
         if !gpu_capture_extent(facts[at], facts[at + 1])
             || facts[at + 2] == 0
             || facts[at + 2] > 7
-            || (facts[at + 2] == 6 && !gpu_depth_fact_flags_valid(facts[at + 3]))
-            || (facts[at + 2] != 6 && (facts[at + 3] == 0 || facts[at + 3] > 3))
+            || facts[at + 3] == 0
+            || facts[at + 3] > 3
         {
             return gpu_capture_reject(GPU_CAPTURE_DEPENDENCY);
         }
@@ -935,7 +914,7 @@ fn gpu_capture_begin(source: Array<u16>, facts: Array<u16>) -> bool {
         );
     }
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_WORDS] = 8;
-    GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_VERSION] = GPU_CAPTURE_RANGE_VERSION;
+    GPU_CAPTURE_HEADER[GPU_CAPTURE_H_RANGE_VERSION] = 1;
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_LAYOUT_ABI] = 2;
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_COMMAND_ABI] = source[10u16];
     GPU_CAPTURE_HEADER[GPU_CAPTURE_H_MANIFEST_WORDS] = 16;

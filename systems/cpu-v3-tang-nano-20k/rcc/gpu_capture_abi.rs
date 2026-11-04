@@ -53,16 +53,16 @@ pub const GPU_CAPTURE_H_MANIFEST: u16 = 48;
 pub const GPU_CAPTURE_PUBLISHED: u16 = 1;
 pub const GPU_CAPTURE_BINDINGS_SELF_CONTAINED: u16 = 1;
 pub const GPU_CAPTURE_LEGACY_NATIVE_COMMAND_ABI: u16 = 1;
+// ABI3/4 encode the same fixed D16 commands. ABI5/6 are historical only.
 pub const GPU_CAPTURE_UNIFORM_NATIVE_COMMAND_ABI: u16 = 3;
-pub const GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 5;
+pub const GPU_CAPTURE_NATIVE_COMMAND_ABI: u16 = 7;
 pub const GPU_CAPTURE_LEGACY_RTT400_COMMAND_ABI: u16 = 2;
 pub const GPU_CAPTURE_UNIFORM_RTT400_COMMAND_ABI: u16 = 4;
-pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = 6;
+pub const GPU_CAPTURE_RTT400_COMMAND_ABI: u16 = 8;
 pub const GPU_CAPTURE_LAYOUT_ABI: u16 = 2;
 // Storage selection is independent of the native command version.
 pub const GPU_CAPTURE_LAYOUT_COLUMN_ABI: u16 = 2;
-pub const GPU_CAPTURE_LEGACY_RANGE_VERSION: u16 = 1;
-pub const GPU_CAPTURE_RANGE_VERSION: u16 = 2;
+pub const GPU_CAPTURE_RANGE_VERSION: u16 = 1;
 
 pub const GPU_CAPTURE_R_FLAGS: u16 = 0;
 pub const GPU_CAPTURE_R_TAG: u16 = 1;
@@ -74,9 +74,7 @@ pub const GPU_CAPTURE_WRITE: u16 = 2;
 pub const GPU_CAPTURE_IMMUTABLE: u16 = 4;
 pub const GPU_CAPTURE_PREIMAGE: u16 = 8;
 pub const GPU_CAPTURE_FULL_CLEAR: u16 = 16;
-pub const GPU_CAPTURE_DEPTH_SHIFT_MASK: u16 = 96;
-pub const GPU_CAPTURE_LEGACY_FLAGS_ALL: u16 = 31;
-pub const GPU_CAPTURE_FLAGS_ALL: u16 = 127;
+pub const GPU_CAPTURE_FLAGS_ALL: u16 = 31;
 pub const GPU_CAPTURE_TAG_COMMANDS: u16 = 1;
 pub const GPU_CAPTURE_TAG_OBJECTS: u16 = 2;
 pub const GPU_CAPTURE_TAG_UI: u16 = 3;

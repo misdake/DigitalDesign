@@ -1,5 +1,20 @@
 # Published GPU input capture bridge
 
+## Fixed depth and historical inputs
+
+Current producers declare native command ABI7 or framebuffer-view ABI8, range
+version1 and range flag bits0..4 (mask31). Native command bytes use the original fixed D16
+format: Global word0 is positive Q16.16 far below200; no k tag or depth precision
+range bits exist. ABI3/4 use those same command bytes, so ABI4 captures can be
+replayed after ordinary input validation. The version advance identifies removal
+of selectable depth and its content-provenance rules without reusing ABI5/6.
+
+The host snapshot reader imports sealed ABI6/range2 captures with their original
+flags and exact ABI-source hash, including the original CRLF form. This is a
+historical reading path only: current sim, RTL replay and scene oracle reject ABI6
+before rendering or creating output. No historical snapshot/report is rewritten
+or relabeled. Current live capture rejects retired tagged Global far values.
+
 ## Explicit-record integration entry
 
 `gpu_api_capture.rs` is a separate private entry consuming the agreed source12
@@ -8,7 +23,7 @@ facts pointer, and neither publishes memory nor sends or retires GPU work.
 The version1 bridge remains only in test-owned legacy regression fixtures.
 
 The explicit entry emits **header version2**, with the existing64-word header,
-8-word ranges, native command ABI6 and column layout ABI2. This header version
+8-word ranges, fixed-depth RTT command ABI8 and column layout ABI2. This header version
 is separate from the existing manifest version. Addresses come from the actual
 record, native descriptors and allocation facts, without a fixed slot map.
 Header flags contain PUBLISHED and optional HAS_TARGET/HAS_FRONT/HAS_UI bits.
@@ -17,26 +32,6 @@ is set. Frame0 means unspecified, and publication counters0 mean unavailable;
 PUBLISHED relies on the prepared-source health boundary, not those counters.
 Slot is only a diagnostic record index. The last SET_TARGET supplies the header
 target; the range table preserves all parsed targets.
-
-Range ABI2 uses flags bits6:5 for the depth shift k0..3, only on DEPTH ranges;
-bits4:0 retain their previous meanings. Depth allocation tails carry the same
-key and remain read-only preimages. The parser checks each geometry draw's
-Global key against its bound depth range. Old range ABI1 has no shift bits;
-command ABI4 remains readable with k0. Native command versions5/6 add the
-Global word0 depth tag to the former3/4 formats, without changing MEMCPY or
-the wire/header sizes. Replay preserves the captured version in its output
-metadata and rejects nonzero shift in old command/range declarations.
-The public replay entry applies the same command-version and native-depth
-admission before selecting either the RTL or final-result simulator backend.
-Materialized baseline ABI4 snapshots retain their original metadata and input
-identity. The decoder recognizes the accepted ABI4 constants file's Git LF and
-Windows CRLF hashes, restricted to command4/range1; unknown ABI-source hashes
-remain errors. Wire ABI4 input is still validated by its declared fields.
-The public `--abi` option also accepts those exact legacy definition files and
-retains their original hash. Selecting a legacy definition permits only command4
-and range1; it does not enable newer precision fields or versions. The old file's
-absent depth-shift mask means zero supported precision bits, leaving its original
-range flag restrictions intact.
 
 The native parser follows DMA_LOCAL provenance, installed Global/Render/Target,
 uniform/page initialization, DRAW, UI_GRID, MEMCPY, maintenance and terminal END.
@@ -136,8 +131,7 @@ shared button/UART hook by default; `GPU_PROFILER_HOOK=0` disables it.
 `RendererCaptureConfiguration::from_manifest(gate_path, manifest_path)` binds
 an explicit v2 manifest, capture ID, exact column layout/map and typed resource
 catalog. Production uses the framebuffer-view command ABI named by
-`GPU_CAPTURE_RTT400_COMMAND_ABI` (currently6), with layout ABI2. ABI4 captures
-and build declarations remain supported. Missing/v1/row
+`GPU_CAPTURE_RTT400_COMMAND_ABI` (currently4), with layout ABI2. Missing/v1/row
 layouts, old command ABI1 and mixed metadata are rejected. Wire/header/range
 versions remain1. The low-level `CaptureConfiguration::from_identity` entry
 only injects IDs for host tests; it is not production manifest validation.

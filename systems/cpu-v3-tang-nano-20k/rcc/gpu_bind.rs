@@ -170,9 +170,6 @@ fn gpu_bind_emit(slot: u16, native: Array<u16>, plan: Array<u16>) -> bool {
     }
     // Commit CPU last-bound values only after all backing writes succeeded.
     if changes & 1 != 0 {
-        if native[1u16] & 768 != 0 {
-            c[GPU_RECORD_VALID] |= GPU_RECORD_NEEDS_DEPTH_SHIFT;
-        }
         gpu_bind_copy(c, GPU_CB_GLOBAL, native, GPU_SCRATCH_GLOBAL, 32);
         c[GPU_RECORD_GLOBAL_WORD] = plan[1u16] + 1;
         c[GPU_RECORD_GLOBAL_BLOCKS] += 1;

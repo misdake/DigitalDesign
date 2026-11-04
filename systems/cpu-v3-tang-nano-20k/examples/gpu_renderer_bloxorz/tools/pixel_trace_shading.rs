@@ -58,7 +58,7 @@ pub(super) fn trace_before(
     };
     let context = crate::trace::context();
     for (key,value) in serde_json::json!({
-        "context":context, "global_far_q16":state.global.far, "global_depth_shift": 0,"xy":xy,"target_byte":state.target.map(|v|v*2),
+        "context":context, "global_far_q16":state.global.far,"xy":xy,"target_byte":state.target.map(|v|v*2),
         "uv_q16":fragment.uv,"normal":fragment.normal,"incoming_depth":fragment.depth,
         "old_depth":old_depth,"depth_passing":passing,"old_rgb565":old_color,
         "color_shaded":shaded,"expected_rgb565":expected_color,"expected_depth":expected_depth,

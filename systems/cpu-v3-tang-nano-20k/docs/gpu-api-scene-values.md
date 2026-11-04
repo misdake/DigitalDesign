@@ -20,13 +20,6 @@ These ordinary values do not embed intrinsic vector registers or owning
 handles. Scalar fields convert to intrinsic vectors only during computation.
 
 Projection preparation uses a six-word temporary output and returns bool.
-`Projection::depth_shift()` returns k0..3 (default0).
-`set_depth_shift(k)->bool` checks both k and the Projection's physical far;
-failure leaves the prior value unchanged. Camera snapshots k in private word31.
-Depth-only changes do not revise the view/focal matrix cache dependency.
-The final Global encoder validates the full physical far and packs
-`(far_raw<<k)|(k<<24)` into native u32 word0. It does not introduce a second
-far approximation or change the physical Camera distance.
 `gpu_scene_projection_focal` checks the existing native far/ray limits and
 quantizes the two Q14 ray components once. `gpu_scene_projection_fov` accepts
 radians and derives focal pixels as 120*cot(vertical_fov/2) or
@@ -204,3 +197,11 @@ the helpers do not promise rollback of earlier external writes.
 CPU/GPU ownership remains explicit: the caller must retire prior GPU use before
 changing a live grid, and submission publishes CPU stores. These helpers neither
 invalidate GPU caches nor publish globally after each row.
+
+## Fixed depth projection
+
+Projection stores focal length, physical far and ray scales. The driver records
+far directly as positive Q16.16 below200; D16 depth has eight fractional bits.
+There is no selectable depth-shift API, Device4 capability query or per-surface
+precision provenance. Clear, Load, depth comparisons/writes and existing command
+retirement and target ownership retain their usual boundaries.

@@ -119,10 +119,7 @@ fn range_count(header: &[u16]) -> Result<usize, String> {
     }
     if header[usize::from(abi::GPU_CAPTURE_H_BINDINGS)] != abi::GPU_CAPTURE_BINDINGS_SELF_CONTAINED
         || header[usize::from(abi::GPU_CAPTURE_H_RANGE_WORDS)] != abi::GPU_CAPTURE_RANGE_WORDS
-        || !matches!(
-            header[usize::from(abi::GPU_CAPTURE_H_RANGE_VERSION)],
-            abi::GPU_CAPTURE_LEGACY_RANGE_VERSION | abi::GPU_CAPTURE_RANGE_VERSION
-        )
+        || header[usize::from(abi::GPU_CAPTURE_H_RANGE_VERSION)] != abi::GPU_CAPTURE_RANGE_VERSION
     {
         return Err("Incompatible capture binding or range ABI".into());
     }
@@ -144,8 +141,6 @@ fn payload_span(row: &[u16], memory_words: usize) -> Result<(usize, usize), Stri
     if flags & !abi::GPU_CAPTURE_FLAGS_ALL != 0
         || flags & (abi::GPU_CAPTURE_READ | abi::GPU_CAPTURE_WRITE) == 0
         || flags & abi::GPU_CAPTURE_IMMUTABLE != 0 && flags & abi::GPU_CAPTURE_WRITE != 0
-        || flags & abi::GPU_CAPTURE_DEPTH_SHIFT_MASK != 0
-            && row[usize::from(abi::GPU_CAPTURE_R_TAG)] != abi::GPU_CAPTURE_TAG_DEPTH
     {
         return Err("Invalid capture range flags".into());
     }
@@ -179,13 +174,6 @@ pub(crate) fn freeze_data(
     let mut payloads = Vec::new();
     let mut total_bytes = 0;
     for row in ranges.chunks_exact(usize::from(abi::GPU_CAPTURE_RANGE_WORDS)) {
-        if (header[usize::from(abi::GPU_CAPTURE_H_RANGE_VERSION)]
-            == abi::GPU_CAPTURE_LEGACY_RANGE_VERSION
-            || header[usize::from(abi::GPU_CAPTURE_H_COMMAND_ABI)] <= 4)
-            && row[usize::from(abi::GPU_CAPTURE_R_FLAGS)] & abi::GPU_CAPTURE_DEPTH_SHIFT_MASK != 0
-        {
-            return Err("Legacy capture cannot declare a depth shift".into());
-        }
         let (start, count) = payload_span(row, physical.len())?;
         total_bytes += count * 2;
         if total_bytes > usize::from(abi::GPU_CAPTURE_MAX_TOTAL_HIGH) << 16 {
@@ -684,7 +672,7 @@ mod tests {
                 (abi::GPU_CAPTURE_H_BINDINGS, 0, "binding"),
                 (abi::GPU_CAPTURE_H_BINDINGS, 2, "binding"),
                 (abi::GPU_CAPTURE_H_RANGE_WORDS, 7, "range ABI"),
-                (abi::GPU_CAPTURE_H_RANGE_VERSION, 3, "range ABI"),
+                (abi::GPU_CAPTURE_H_RANGE_VERSION, 2, "range ABI"),
                 (abi::GPU_CAPTURE_H_RANGE_COUNT, 0, "range count"),
                 (abi::GPU_CAPTURE_H_RANGE_COUNT, 65, "range count"),
                 (abi::GPU_CAPTURE_H_GPU_STATUS, 1, "busy or faulted"),

@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from snapshot import SnapshotError
+from snapshot import SnapshotError, HISTORICAL_DEPTH_SHIFT_MASK
 from layout import COMMAND_ABI, RTT_COMMAND_ABIS, declared_layout, header_layout, capture_description, COLUMN_MAP
 
 
@@ -171,7 +171,7 @@ def input_extents(capture, required_span, resources, *, asset_files=()):
                 if region.flags & capture.abi['WRITE']:
                     if region.length != required_span or region.address % 65536:
                         raise SnapshotError('Recorded target plane has an invalid physical extent')
-                elif region.flags & ~capture.abi['DEPTH_SHIFT_MASK'] != (capture.abi['READ'] | capture.abi['PREIMAGE']):
+                elif region.flags & ~HISTORICAL_DEPTH_SHIFT_MASK != (capture.abi['READ'] | capture.abi['PREIMAGE']):
                     raise SnapshotError('Recorded allocation tail is not read-only preimage')
     for resource in resources:
         name,base,length=resource["name"],resource["address"],resource["bytes"]

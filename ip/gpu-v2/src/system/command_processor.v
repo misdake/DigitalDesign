@@ -12,7 +12,7 @@ module gpu_command_processor(
  input work_busy,dma_idle,dma_fault,mesh_loading,mesh_begin,mesh_done,mesh_slot,mesh_begin_slot,mesh_done_slot,
  input uniform_done,input[1:0]uniform_bank,
  input header_we,header_slot,input[63:0]header_data,
- output reg[31:0]cfg_far_z,output reg[1:0]cfg_depth_shift,output reg[15:0]texture_base,output reg[3:0]texture_n,
+ output reg[31:0]cfg_far_z,output reg[15:0]texture_base,output reg[3:0]texture_n,
  output reg texture_mip,output reg[1:0]texture_filter,
  output reg signed[7:0]cfg_lod_bias,output reg draw_unlit,
  output reg[13:0]color_base,depth_base,output reg[31:0]mesh_color,
@@ -112,9 +112,7 @@ module gpu_command_processor(
    1:object_bad=cp_q[31:6]!=0||cp_q[63:40]!=0;
    default:object_bad=cp_q!=0;
   endcase else case(object_index)
-   0:object_bad=cp_q[31:26]!=0||cp_q[23:0]==0||cp_q[23:0]>=24'hffff00||
-      (({8'd0,cp_q[23:0]}>>cp_q[25:24])>=32'd13107200)||
-      ((cp_q[23:0]&((24'd1<<cp_q[25:24])-24'd1))!=0);
+   0:object_bad=cp_q[31:0]==0||cp_q[31:0]>=200*65536;
    1:begin end
    2:object_bad=(cp_q[31:0]&32'hfe00fe00)!=0||cp_q[8:0]>256||cp_q[24:16]>256||cp_q[47:39]!=0||cp_q[38:34]>16;
    default:object_bad=cp_q!=0;
@@ -140,7 +138,7 @@ module gpu_command_processor(
    color_base<=0;depth_base<=0;mesh_color<=32'hffffffff;
    fetch_line<=0;fetch_left<=0;fetch_bank<=0;cache_inflight<=0;cache_pages<=0;page_valid<=0;
    uniform_valid<=0;page_uniform<=0;object_index<=0;
-   cfg_far_z<=0;cfg_depth_shift<=0;texture_base<=0;texture_n<=0;texture_mip<=0;texture_filter<=0;cfg_lod_bias<=0;
+   cfg_far_z<=0;texture_base<=0;texture_n<=0;texture_mip<=0;texture_filter<=0;cfg_lod_bias<=0;
    draw_unlit<=0;specular<=0;depth_func<=0;depth_write<=0;blend<=0;
    context_epoch<=0;context_mode<=0;context_code<=0;light_x<=0;light_y<=0;light_z<=0;
    ray_x<=0;ray_y<=0;ray_k<=0;ambient<=0;directional<=0;
@@ -203,7 +201,7 @@ module gpu_command_processor(
        cfg_lod_bias<=cp_q[39:32];end
       default:begin end
      endcase else case(object_index)
-      0:begin cfg_far_z<={8'd0,cp_q[23:0]};cfg_depth_shift<=cp_q[25:24];light_x<=cp_q[47:32];light_y<=cp_q[63:48];end
+      0:begin cfg_far_z<=cp_q[31:0];light_x<=cp_q[47:32];light_y<=cp_q[63:48];end
       1:begin light_z<=cp_q[15:0];ray_x<=cp_q[31:16];ray_y<=cp_q[47:32];ray_k<=cp_q[63:48];end
       2:begin ambient<=cp_q[8:0];directional<=cp_q[24:16];context_mode<=cp_q[33:32];context_code<=cp_q[38:34];context_epoch<=cp_q[63:48];end
       default:begin end

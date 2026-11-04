@@ -186,7 +186,6 @@ fn malformed_native_dependency_fails_before_send_and_preserves_sealed_inputs() {
         .split(" check(cb.command_words()>20&&cb.push_words()>80);")
         .next()
         .unwrap();
-    let prefix = prefix.replace("DepthLoad::load()", "DepthLoad::clear(65535)");
     let source = format!("{prefix}gpu.request_snapshot();gpu.submit_capturable(cb);halt(0xbad);}}");
     for debug in [false, true] {
         let parsed = super::gpu_api_resources::parse(&source, "actual-abc-stage-boundary", debug)

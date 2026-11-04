@@ -19,7 +19,7 @@ fn repeated_rtt_reaches_only_consumer_runtime_with_pinned_source() {
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     let manifest = out.join("build.json");
     std::fs::write(&manifest, serde_json::to_vec(&serde_json::json!({
-        "schema":"digitaldesign.gpu-capture-build", "version":2,"command_abi":4,
+        "schema":"digitaldesign.gpu-capture-build", "version":2,"command_abi":8,
         "manifest_id":"5254".repeat(16), "layout":resolver::RendererLayoutProfile::Column16.description(),
         "resources":catalog["resources"],"options":{}
     })).unwrap()).unwrap();
@@ -105,8 +105,19 @@ fn repeated_rtt_reaches_only_consumer_runtime_with_pinned_source() {
         ]);
     }
     let mut calls = 0;
-    for _ in 0..12_000_000 {
+    let mut gate_step = None;
+    for step in 0..12_000_000 {
+        // A real requested lease waits for a fresh debounced resume edge.
+        // Advance this controlled clock and release/repress the board button;
+        // do not spend the control test serializing a framebuffer dump.
+        {
+            let mut peer = state.borrow_mut();
+            peer.now_ms = (step / 64) as u16;
+            peer.board_buttons = u16::from(gate_step.is_some_and(|at| step - at >= 1024)) * 2;
+        }
         if cpu.pc() == runtime {
+            gate_step = Some(step);
+            state.borrow_mut().board_buttons = 0;
             calls += 1;
             assert_eq!(
                 state.borrow().starts.len(),
@@ -115,7 +126,7 @@ fn repeated_rtt_reaches_only_consumer_runtime_with_pinned_source() {
             );
             let memory = cpu.physical_memory_mut();
             let h = &memory[header..header + 64];
-            assert_eq!((h[39], h[40]), (2, 4));
+            assert_eq!((h[39], h[40]), (2, 8));
             assert_ne!(h[27], 0x60);
             assert!(
                 memory[ranges..ranges + usize::from(h[36]) * 8]

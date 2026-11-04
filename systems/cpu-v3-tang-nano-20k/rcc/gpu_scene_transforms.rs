@@ -6,8 +6,6 @@ mod gpu_scene_objects;
 use gpu_scene_objects::*;
 mod gpu_scene_math;
 use gpu_scene_math::*;
-mod gpu_depth;
-use gpu_depth::*;
 
 #[derive(Copy, Clone)]
 pub struct Vec4 {
@@ -40,21 +38,10 @@ pub struct Projection {
     far: fix32,
     ray_x: u16,
     ray_y: u16,
-    depth_shift: u16,
 }
 impl Projection {
     pub fn focal_pixels(&self) -> fix32 {
         self.focal_pixels
-    }
-    pub fn depth_shift(&self) -> u16 {
-        self.depth_shift
-    }
-    pub fn set_depth_shift(&mut self, shift: u16) -> bool {
-        if !gpu_depth_valid(self.far.lo_bits(), self.far.hi_bits(), shift) {
-            return false;
-        }
-        self.depth_shift = shift;
-        true
     }
 }
 #[derive(Copy, Clone)]
@@ -94,7 +81,6 @@ pub fn gpu_scene_projection_value(input: Array<u16>) -> Projection {
         far: gpu_scene_fix_read(input, 2),
         ray_x: input[4u16],
         ray_y: input[5u16],
-        depth_shift: 0,
     }
 }
 
@@ -164,19 +150,11 @@ fn gpu_scene_rotation(out: Array<u16>, angles: Vec3) {
 }
 
 pub fn gpu_scene_camera_projection(mut out: Array<u16>, projection: Projection) -> bool {
-    if !gpu_depth_valid(
-        projection.far.lo_bits(),
-        projection.far.hi_bits(),
-        projection.depth_shift,
-    ) {
-        return false;
-    }
     gpu_scene_fix_write(out, GPU_CAMERA_FOCAL, projection.focal_pixels);
     gpu_scene_fix_write(out, GPU_CAMERA_FAR, projection.far);
     out[GPU_CAMERA_RAY] = projection.ray_x;
     out[GPU_CAMERA_RAY + 1] = projection.ray_y;
     out[GPU_CAMERA_RAY + 2] = 8192;
-    out[GPU_CAMERA_DEPTH_SHIFT] = projection.depth_shift;
     true
 }
 

@@ -4,10 +4,6 @@ mod gpu_schema;
 use gpu_schema::*;
 mod gpu_storage;
 use gpu_storage::*;
-mod gpu_depth_state;
-use gpu_depth_state::*;
-mod gpu_depth;
-use gpu_depth::*;
 
 static GPU_CB_RECORDS: Buf<u16, 416> = Buf::new([0; 416]);
 // The logical 256-word span stays line-aligned independently of static layout.
@@ -30,7 +26,6 @@ const GPU_RECORD_COMMAND_USED: u16 = 5;
 const GPU_RECORD_PUSH_USED: u16 = 6;
 const GPU_RECORD_PADDED: u16 = 7;
 const GPU_RECORD_VALID: u16 = 8;
-const GPU_RECORD_NEEDS_DEPTH_SHIFT: u16 = 64;
 // Copy targets are fixed commands, outside the single-scene patch contract.
 const GPU_RECORD_HAS_COPY: u16 = 32768;
 const GPU_RECORD_COLOR: u16 = 9;
@@ -108,12 +103,6 @@ fn gpu_record_capture_facts(slot: u16) -> Array<u16> {
 fn gpu_record_fact_equal(a: Array<u16>, ai: u16, b: Array<u16>, bi: u16) -> bool {
     a[ai] == b[bi] && a[ai + 1] == b[bi + 1] && a[ai + 2] == b[bi + 2]
 }
-fn gpu_record_fact_flags_valid(kind: u16, flags: u16) -> bool {
-    if kind != GPU_FACT_DEPTH {
-        return flags != 0 && flags <= 3;
-    }
-    gpu_depth_fact_flags_valid(flags)
-}
 // Whole-group preflight; no record/fact/payload mutation, including rejection.
 fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16) -> bool {
     if slot >= 2 || count > GPU_RECORD_FACT_LIMIT {
@@ -133,7 +122,8 @@ fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16) -> bool {
         if !gpu_memory_extent_valid(input[at], input[at + 1])
             || input[at + 2] == 0
             || input[at + 2] > GPU_FACT_BUFFER
-            || !gpu_record_fact_flags_valid(input[at + 2], input[at + 3])
+            || input[at + 3] == 0
+            || input[at + 3] > 3
         {
             return false;
         }
@@ -190,105 +180,9 @@ fn gpu_record_capture_commit(slot: u16, input: Array<u16>, count: u16) {
     }
 }
 fn gpu_record_init() {
-    gpu_depth_state_init();
     let mut i: u16 = 0;
     while i < 416 {
         GPU_CB_RECORDS[i] = 0;
-        i += 1;
-    }
-}
-// Facts survive descriptor Drop; managed contents resolve by live physical plane.
-fn gpu_record_depth_clear(slot: u16) {
-    let c = gpu_record_data(slot);
-    let mut facts = gpu_record_capture_facts(slot);
-    let mut i: u16 = 0;
-    while i < c[GPU_RECORD_FACT_COUNT] {
-        let at = i * 4;
-        if facts[at + 2] == GPU_FACT_DEPTH && facts[at] == c[GPU_RECORD_DEPTH] {
-            facts[at + 3] |= GPU_DEPTH_CLEAR;
-        }
-        i += 1;
-    }
-}
-fn gpu_record_depth_format(slot: u16, shift: u16) -> bool {
-    if shift > 3 {
-        return false;
-    }
-    let c = gpu_record_data(slot);
-    let mut facts = gpu_record_capture_facts(slot);
-    let first = c[GPU_RECORD_DEPTH];
-    let mut found = false;
-    let mut prior: u16 = 0;
-    let mut i: u16 = 0;
-    while i < c[GPU_RECORD_FACT_COUNT] {
-        let at = i * 4;
-        if facts[at + 2] == GPU_FACT_DEPTH {
-            if facts[at] == first {
-                let flags = facts[at + 3];
-                if flags & GPU_DEPTH_SEEN != 0 && (flags >> 2) & 3 != shift {
-                    return false;
-                }
-                found = true;
-                prior |= flags;
-            } else if !gpu_depth_planes_disjoint(first, facts[at]) {
-                return false;
-            }
-        }
-        i += 1;
-    }
-    if !found {
-        return false;
-    }
-    let mut required = prior & GPU_DEPTH_LOAD;
-    if prior & (GPU_DEPTH_SEEN | GPU_DEPTH_CLEAR) == 0 {
-        required |= GPU_DEPTH_LOAD;
-    }
-    i = 0;
-    while i < c[GPU_RECORD_FACT_COUNT] {
-        let at = i * 4;
-        if facts[at + 2] == GPU_FACT_DEPTH && facts[at] == first {
-            facts[at + 3] |= GPU_DEPTH_SEEN | (shift << 2) | required;
-        }
-        i += 1;
-    }
-    true
-}
-fn gpu_record_depth_prepare(slot: u16) -> bool {
-    let c = gpu_record_data(slot);
-    let facts = gpu_record_capture_facts(slot);
-    let mut i: u16 = 0;
-    while i < c[GPU_RECORD_FACT_COUNT] {
-        let at = i * 4;
-        if facts[at + 2] == GPU_FACT_DEPTH
-            && !gpu_depth_input_compatible(facts[at + 3], facts[at], facts[at + 1])
-        {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-fn gpu_record_depth_start(slot: u16) {
-    let c = gpu_record_data(slot);
-    let facts = gpu_record_capture_facts(slot);
-    let mut i: u16 = 0;
-    while i < c[GPU_RECORD_FACT_COUNT] {
-        let at = i * 4;
-        if facts[at + 2] == GPU_FACT_DEPTH {
-            gpu_depth_content_start(facts[at + 3], facts[at], facts[at + 1]);
-        }
-        i += 1;
-    }
-}
-fn gpu_record_depth_complete(slot: u16) {
-    let c = gpu_record_data(slot);
-    let facts = gpu_record_capture_facts(slot);
-    let mut i: u16 = 0;
-    while i < c[GPU_RECORD_FACT_COUNT] {
-        let at = i * 4;
-        if facts[at + 2] == GPU_FACT_DEPTH {
-            gpu_depth_content_complete(facts[at + 3], facts[at], facts[at + 1]);
-        }
         i += 1;
     }
 }

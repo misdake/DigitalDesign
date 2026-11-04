@@ -59,7 +59,6 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
         ("mesh_color", 32, u64::from(f.mesh_color)),
         ("dma_addr", 10, f.dma_address.into()),
         ("dma_data", 64, f.dma_data),
-        ("cfg_depth_shift", 2, f.params.depth_shift.into()),
         ("cfg_far_z", 32, f.params.far_z.into()),
         ("texture_n", 4, f.params.tex_u.into()),
         ("cfg_lod_bias", 8, u64::from(f.params.bias as u8)),

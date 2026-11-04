@@ -8,38 +8,27 @@ fn words<const N: usize>(bytes: &[u8]) -> [u32; N] {
 #[derive(Clone, Copy)]
 pub(super) struct Global {
     pub far: u32,
-    pub depth_shift: u8,
     light: light::Light,
     projection: light::Projection,
     mode: u8,
     code: u8,
 }
 impl Global {
-    pub fn mapped_far(self) -> u32 {
-        self.far << self.depth_shift
-    }
     pub fn decode(bytes: [u8; 64]) -> Result<Self, String> {
         let w = words::<16>(&bytes);
-        let depth_shift = ((w[0] >> 24) & 3) as u8;
-        let far_depth = w[0] & 0x00ff_ffff;
-        let far = far_depth >> depth_shift;
-        if w[0] >> 26 != 0
-            || far_depth == 0
-            || far >= 200 * 65536
-            || far_depth & ((1 << depth_shift) - 1) != 0
+        if w[0] == 0
+            || w[0] >= 200 * 65536
             || w[4] & 0xfe00fe00 != 0
             || w[4] & 511 > 256
             || (w[4] >> 16) & 511 > 256
             || w[5] & 0xff80 != 0
             || (w[5] >> 2) & 31 > 16
-            || far_depth >= 65535 * 256
             || w[6..].iter().any(|&v| v != 0)
         {
             return Err("NativeGlobal64 fields/reserved data".into());
         }
         let value = Self {
-            far,
-            depth_shift,
+            far: w[0],
             light: light::Light {
                 direction: [w[1] as i16, (w[1] >> 16) as i16, w[2] as i16],
                 ambient: (w[4] & 511) as u16,

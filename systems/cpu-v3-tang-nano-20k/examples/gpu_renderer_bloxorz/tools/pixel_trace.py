@@ -50,11 +50,6 @@ def generate(root, output, deps):
         let mut prepared = independent""")
     g = replace_once(g, '        report.charge((120 - active_rows.end) * 2, maximum)?;',
         '        for observation in observations { shading::trace_after(memory, observation)?; }\n        report.charge((120 - active_rows.end) * 2, maximum)?;')
-    if 'pub depth_shift: u8' in original['functional/shading.rs']:
-        g=g.replace('triangle.fragment(x, y, state.global.far)?',
-            'triangle.fragment(x, y, state.global.mapped_far(), state.global.depth_shift)?')
-        g=g.replace('quad.fragments(&triangle, state.global.far)?',
-            'quad.fragments(&triangle, state.global.mapped_far(), state.global.depth_shift)?')
     changed['functional/geometry.rs'] = g
     s = changed['functional/shading.rs']
     s = replace_once(s, '        Ok(expand(\n            memory.load(self.base + self.prefix(level) + offset)?,\n        ))',
@@ -67,8 +62,6 @@ def generate(root, output, deps):
                 let color =
                     self.texel(memory, level, x + (tap & 1) as i128, y + (tap >> 1) as i128)?;""")
     helpers=Path(__file__).with_name('pixel_trace_shading.rs').read_text(encoding='utf-8')
-    if 'pub depth_shift: u8' in original['functional/shading.rs']:
-        helpers=helpers.replace('"global_depth_shift": 0','"global_depth_shift": state.global.depth_shift')
     s += helpers
     changed['functional/shading.rs'] = s
     output.mkdir(parents=True,exist_ok=True)

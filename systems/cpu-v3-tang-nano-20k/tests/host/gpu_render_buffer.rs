@@ -123,7 +123,7 @@ unsafe{addr_of(&RTT_GATE_CALLS).write(0,RTT_GATE_CALLS+1);}0
     std::fs::write(
         &capture_manifest,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema":"digitaldesign.gpu-capture-build", "version":2, "command_abi":4,
+            "schema":"digitaldesign.gpu-capture-build", "version":2, "command_abi":8,
             "manifest_id":"5254".repeat(16),
             "layout":resolver::RendererLayoutProfile::Column16.description(),
             "resources":manifest["resources"], "options":{}

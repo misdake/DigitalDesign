@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import struct
 import zlib
-from layout import COMMAND_ABI, RTT_COMMAND_ABIS, get_layout, header_layout
+from layout import COMMAND_ABI, READABLE_RTT_COMMAND_ABIS, get_layout, header_layout
 
 
 MAGIC = b"GPS1"
@@ -32,6 +32,10 @@ LEGACY_ABI4_SHA256 = (
     '9f2e20af855e72aa0909f8e87ff004375abe12bc6055a060fe3ba9c30e55a731',
     'ec9e86305f21bc0e518fa5e00d8e179c7c9a496ba2224687ed30d3c3b908db15',
 )
+
+# Exact former ABI definition hashes; only historical import is supported.
+HISTORICAL_ABI6_SHA256 = ('7ce237550ad7fd53e372af84a6de36ae0027dae023b885093818d5de653a7afa', '61213d2f55359e9291e47457c0a4a77f7404b390d704d400c4949ce1d9398adf')
+HISTORICAL_DEPTH_SHIFT_MASK = 96
 
 
 class SnapshotError(ValueError):
@@ -77,15 +81,12 @@ class Abi:
         if limit is not None and limit << 16 != MAX_TOTAL_BYTES:
             raise SnapshotError('Producer/consumer aggregate capture bounds disagree')
         legacy_definition = self.sha256 in LEGACY_ABI4_SHA256
+        historical_definition = self.sha256 in HISTORICAL_ABI6_SHA256
         if (self["VERSION"] != 1 or self["WORDS"] != 64 or self["RANGE_WORDS"] != 8 or
-                (self['RTT400_COMMAND_ABI'] != COMMAND_ABI and not legacy_definition)):
+                (self['RTT400_COMMAND_ABI'] != COMMAND_ABI and not (legacy_definition or historical_definition))):
             raise SnapshotError("Unsupported driver capture ABI")
-        self.command_abis = (4,) if legacy_definition else RTT_COMMAND_ABIS
-        self.range_versions = (1,) if legacy_definition else (1, self['RANGE_VERSION'])
-        # Old definitions have no precision flags. Keep those bits reserved,
-        # retaining the file's original hash and FLAGS_ALL rather than relabeling it.
-        if legacy_definition:
-            self.constants['GPU_CAPTURE_DEPTH_SHIFT_MASK'] = 0
+        self.command_abis = (4,) if legacy_definition else ((4, 6) if historical_definition else READABLE_RTT_COMMAND_ABIS)
+        self.range_versions = (1,) if legacy_definition else (1, 2)
 
     def __getitem__(self, name):
         try:
@@ -209,7 +210,7 @@ class Abi:
                            self.pair(words, "R_GENERATION"), tuple(words))
         if (not 0 <= index < self["MAX_RANGES"] or not item.length or
                 item.address % 2 or item.length % 2 or item.address + item.length > MEMORY_BYTES or
-                item.flags & ~self["FLAGS_ALL"] or not item.flags & (self["READ"] | self["WRITE"]) or
+                item.flags & ~(31 if self.sha256 in LEGACY_ABI4_SHA256 else 127) or not item.flags & (self["READ"] | self["WRITE"]) or
                 (item.flags & self["IMMUTABLE"] and item.flags & self["WRITE"])):
             raise SnapshotError("Invalid range flags/address/length")
         return item
@@ -297,6 +298,7 @@ class Attempt:
     def __init__(self, first, abi):
         self.abi = abi
         self.snapshot, self.attempt = first.snapshot, first.attempt
+        self.source_abi_sha256 = abi.sha256
         self.sequence = 0
         self.descriptor = bytes_to_words(first.payload)
         self.header = abi.header(self.descriptor)
@@ -386,10 +388,13 @@ class Attempt:
         return bytes(result)
 
     def validate_memory(self):
-        shift_mask = self.abi['DEPTH_SHIFT_MASK']
+        if (self.header['command_abi'] == COMMAND_ABI and
+                self.abi.word(self.descriptor, 'H_RANGE_VERSION') != 1):
+            raise SnapshotError('Fixed-depth ABI requires range version1')
+        shift_mask = HISTORICAL_DEPTH_SHIFT_MASK
         for item in self.ranges:
             if item.flags & shift_mask and (
-                    item.tag != self.abi['TAG_DEPTH'] or self.header['command_abi'] <= 4 or
+                    item.tag != self.abi['TAG_DEPTH'] or self.header['command_abi'] != 6 or
                     self.abi.word(self.descriptor, 'H_RANGE_VERSION') == 1):
                 raise SnapshotError('Depth precision requires a depth range, range ABI2 and command ABI5/6')
         if self.header.get('layout_abi') == 2:
@@ -441,7 +446,7 @@ class Attempt:
                 "snapshot": self.snapshot, "attempt": self.attempt, "complete": True,
                 "cache_state": "not_captured", "replay_policy": "cold_only",
                 "descriptor_words": self.descriptor, "header": self.header,
-                "abi_sha256": self.abi.sha256, "input_sha256": identity.hexdigest(),
+                "abi_sha256": self.source_abi_sha256, "input_sha256": identity.hexdigest(),
                 "ranges": ranges, "chunks": self.chunk_count, "decoded_bytes": self.total,
                 "board_dump_ms": self.elapsed_ms,
                 "identity_note": "Header ID is a declaration; actual firmware/bitstream require a host programming receipt."}
@@ -572,10 +577,11 @@ def load_snapshot(path, abi):
     if path.is_dir():
         path /= "snapshot.json"
     metadata = json.loads(path.read_text(encoding="utf-8"))
+    historical_abi = metadata.get('abi_sha256') in HISTORICAL_ABI6_SHA256
     old_abi = metadata.get('abi_sha256') in LEGACY_ABI4_SHA256
     if (metadata.get("schema") != "digitaldesign.gpu-snapshot" or
             metadata.get("version") != 1 or metadata.get("complete") is not True or
-            (metadata.get("abi_sha256") != abi.sha256 and not old_abi) or
+            (metadata.get("abi_sha256") != abi.sha256 and not (old_abi or historical_abi)) or
             metadata.get("cache_state") != "not_captured" or
             metadata.get("replay_policy") != "cold_only"):
         raise SnapshotError("Unknown, partial or ABI-mismatched snapshot")
@@ -585,6 +591,8 @@ def load_snapshot(path, abi):
     if old_abi and (result.header['command_abi'] != 4 or
                     abi.word(result.descriptor, 'H_RANGE_VERSION') != 1):
         raise SnapshotError('Legacy ABI source cannot describe depth-shift input')
+    if historical_abi and result.header['command_abi'] not in (4, 6):
+        raise SnapshotError('Historical ABI source cannot describe current commands')
     ranges = metadata["ranges"]
     if len(ranges) != result.header["range_count"]:
         raise SnapshotError("Incomplete saved range table")
@@ -610,6 +618,7 @@ def load_snapshot(path, abi):
     if result.total > MAX_TOTAL_BYTES:
         raise SnapshotError("Saved snapshot exceeds the aggregate bound")
     result.complete = True
+    result.source_abi_sha256 = metadata["abi_sha256"]
     result.chunk_count = metadata["chunks"]
     result.elapsed_ms = metadata["board_dump_ms"]
     result.validate_memory()

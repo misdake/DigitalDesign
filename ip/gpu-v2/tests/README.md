@@ -1,15 +1,9 @@
 # GPU regression tests
 
-## Configurable depth precision
-
-Functional geometry checks recover fractional bits before the D16 cut, retain
-inclusive quantized far admission, and exercise all eight unsigned depth
-comparisons with writes enabled/disabled for every key. CP tests observe mapped
-far and k together, including repeated submission and backpressure. Prepare and
-combined interpolator fixtures select k0..3 across CE stalls, context drain and
-real RAM/DSP/Compute RTL; their existing cycle and wall-clock bounds remain.
-System public-RCC recording, capability and content-lifetime checks are listed
-in the [system test guide](/systems/cpu-v3-tang-nano-20k/tests/README.md#depth-precision).
+Fixed D16 geometry checks retain all unsigned comparisons, depth write gating,
+inclusive quantized far and rejection of retired Global selection tags. CP and
+Prepare use the original full far and fixed bias; their existing bounded RTL
+checks retain completion, CE and stall coverage.
 
 ## Complete command GPU cycle composition
 

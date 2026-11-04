@@ -48,9 +48,9 @@ fn explicit_native_diagnostic_seals_once_replays_and_rejects_reserved_fields_bef
         .join(std::process::id().to_string());
     let source = r#"mod gpu_api;use gpu_api::*;mod gpu_demo_api;use gpu_demo_api::*;
  fn main(){let mut gpu=Gpu::init(demo_config());let mut commands=gpu.command_buffer();
- commands.invalidate_textures();gpu.submit(commands);commands=gpu.wait();
- gpu.submit(commands);commands=gpu.wait();
- commands.reset();commands.invalidate_textures();gpu.submit(commands);commands=gpu.wait();halt(0x600d);}"#;
+ commands.invalidate_textures();gpu.request_snapshot();gpu.submit_capturable(commands);commands=gpu.wait();
+ gpu.request_snapshot();gpu.submit_capturable(commands);commands=gpu.wait();
+ commands.reset();commands.invalidate_textures();gpu.request_snapshot();gpu.submit_capturable(commands);commands=gpu.wait();halt(0x600d);}"#;
     for debug in [false, true] {
         for reserved in [false, true] {
             let folder = output.join(format!("{debug}-{reserved}"));
@@ -79,7 +79,7 @@ fn explicit_native_diagnostic_seals_once_replays_and_rejects_reserved_fields_bef
             )
             .unwrap();
             let manifest = folder.join("build.json");
-            std::fs::write(&manifest,serde_json::to_vec_pretty(&serde_json::json!({"schema":"digitaldesign.gpu-capture-build","version":3,"command_abi":4,"manifest_id":"42".repeat(32),"resources":[],"layout":resolver::RendererLayoutProfile::Column16.recorded_description(),"options":{}})).unwrap()).unwrap();
+            std::fs::write(&manifest,serde_json::to_vec_pretty(&serde_json::json!({"schema":"digitaldesign.gpu-capture-build","version":3,"command_abi":8,"manifest_id":"42".repeat(32),"resources":[],"layout":resolver::RendererLayoutProfile::Column16.recorded_description(),"options":{}})).unwrap()).unwrap();
             let configuration =
                 resolver::RendererCaptureConfiguration::from_manifest(gate, &manifest).unwrap();
             let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);

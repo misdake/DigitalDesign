@@ -11,7 +11,7 @@ module gpu_v2_vliw_frontend(
  input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
 `endif
  input dma_we,output dma_ready,input [9:0] dma_addr,input [63:0] dma_data,input output_ready,
- input[1:0]cfg_depth_shift,input[31:0]cfg_far_z,input [4:0] cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed [7:0] cfg_lod_bias,
+ input [31:0] cfg_far_z,input [4:0] cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed [7:0] cfg_lod_bias,
  output quad_valid,input quad_ready,input[2:0]quad_id,
  output[7:0]quad_x,output[6:0]quad_y,output quad_rgb,output[1:0]phase,
  output quad_end_valid,output[2:0]quad_end_id,output[3:0]quad_end_mask,
@@ -81,7 +81,7 @@ module gpu_v2_vliw_frontend(
   .clk(clk),.reset(reset),.ce(ce),
   .prepare_start(header_take),.execution_idle(!raster_busy),.raster_start(raster_start),.exec_idle(exec_idle),.descriptor(fd),.raw_valid(raw_word_valid),.raw_ready(bridge_input_ready),.raw_index(fwi),.raw_data(fwd),
   .geo_we(geo_we),.geo_wa(geo_wa),.geo_wd(geo_wd),
-  .cfg_depth_shift(cfg_depth_shift),.cfg_far_z(cfg_far_z),.cfg_tex_u(cfg_tex_w_log2),.cfg_tex_v(cfg_tex_h_log2),.cfg_max_mip(cfg_max_mip),.cfg_bias(cfg_lod_bias),
+  .cfg_far_z(cfg_far_z),.cfg_tex_u(cfg_tex_w_log2),.cfg_tex_v(cfg_tex_h_log2),.cfg_max_mip(cfg_max_mip),.cfg_bias(cfg_lod_bias),
   .prepare_import_busy(bridge_busy),.prepare_error(bridge_error),
   .quad_valid(rqv),.quad_ready(rqr),.quad_x(qx),.quad_y(qy),.phase(phase),.run_enable(run_enable),
  .sample_valid(sample_valid),.sample_lane(sample_lane),.sample_cover(sample_cover),.sample_anchor(sample_anchor),.sample_h(sample_h),.quad_end_valid(quad_end_valid),.quad_mask(qm),

@@ -37,7 +37,6 @@ pub fn fields(e: &StreamEdge) -> Vec<Pin> {
     pin!("descriptor", 32, c.descriptor, false);
     pin!("raw_index", 5, c.raw_index, false);
     pin!("raw_data", 54, c.raw_data.value, false);
-    pin!("cfg_depth_shift", 2, c.params.depth_shift, false);
     pin!("cfg_far_z", 32, c.params.far_z, false);
     pin!("cfg_tex_u", 5, c.params.tex_u, false);
     pin!("cfg_tex_v", 5, c.params.tex_v, false);

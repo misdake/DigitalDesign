@@ -40,13 +40,8 @@ pub(super) fn stage_isolation(
                             if let Some(range) = span_range(spans) {
                                 for x in range.step_by(2) {
                                     let quad = Quad::new(x, row * 2, spans);
-                                    let fragments = quad
-                                        .fragments(
-                                            triangle,
-                                            state.global.mapped_far(),
-                                            state.global.depth_shift,
-                                        )
-                                        .unwrap();
+                                    let fragments =
+                                        quad.fragments(triangle, state.global.far).unwrap();
                                     let lod =
                                         fragments.iter().flatten().next().map_or(0, |first| {
                                             if state.rgb {

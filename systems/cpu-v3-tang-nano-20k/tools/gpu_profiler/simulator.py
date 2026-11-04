@@ -9,7 +9,7 @@ import shutil
 import subprocess
 
 from images import preview, preview_policy
-from layout import RTT_COMMAND_ABIS, capture_description, header_layout
+from layout import RTT_COMMAND_ABIS, require_runtime_depth, capture_description, header_layout
 from snapshot import SnapshotError
 
 MEMORY_BYTES = 0x800000
@@ -88,8 +88,12 @@ def run(capture, out, identity, *, executable=None, maximum_work=DEFAULT_WORK, t
         preview_mode='capture', capture_format_known=True):
     if maximum_work < 1 or timeout <= 0:
         raise SnapshotError('Simulator requires positive work and process bounds')
+    try:
+        require_runtime_depth(capture.header['command_abi'])
+    except ValueError as error:
+        raise SnapshotError(str(error)) from error
     if capture.header['command_abi'] not in RTT_COMMAND_ABIS:
-        raise SnapshotError('Simulator requires the current native command ABI')
+        raise SnapshotError('Simulator requires fixed-depth RTT command ABI4/8')
     executable = executable_path(executable)
     out = Path(out).resolve()
     memory, access = seed(capture)

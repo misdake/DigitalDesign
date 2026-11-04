@@ -109,8 +109,7 @@ fn run() -> Vec<StreamEdge> {
             raw_index: cursor as u8,
             raw_data: Bits::new(words[cursor.min(15)], 54),
             params: Params {
-                far_z: (31 << 16) << packet.min(3),
-                depth_shift: packet.min(3) as u8,
+                far_z: 100 << 16,
                 tex_u: 6,
                 tex_v: 5,
                 max_mip: 6,

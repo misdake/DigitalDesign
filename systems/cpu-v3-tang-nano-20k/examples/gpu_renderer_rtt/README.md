@@ -18,7 +18,7 @@ renderer_rtt_two_updates regression entry checks source reuse and capture epochs
 ```
 
 Selectors gpu_renderer_rtt and gpu_renderer_rtt_bilinear check actual approved
-library bodies with rustc, pin Column16+command ABI2 and compare generated boot
+library bodies with rustc, pin column layout ABI2 and the current fixed-depth command ABI8 and compare generated boot
 bytes with independent CB06 packaging. Outputs stay in this worktree target.
 Packaging does not program a board or qualify timing.
 
@@ -32,3 +32,8 @@ The production hardware includes fixed400x240 views; see the
 Only use an audited matching bitstream/firmware/assets combination after explicit
 device assignment. Receipts distinguish CPU peers, native sampler/micro-scenes
 and the selected full-pipeline replay backend.
+
+When capture is configured, each stage explicitly requests a snapshot and uses
+`submit_capturable`; the profiler gate can filter producer jobs before its runtime.
+Ordinary builds disable that hook. Plain `Gpu::submit` keeps its non-capturing
+behavior. Both stages still retire before source reuse or Display handoff.

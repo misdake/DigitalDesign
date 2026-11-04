@@ -21,25 +21,21 @@ the two-present application, and 600 host seconds. Artifacts are in this tree's
 `target/c4/`. This entry is synthetic cold preload, not real SPI/loader-state or
 board-timing qualification. See the [composition contract](/systems/cpu-v3-tang-nano-20k/docs/system-cycle-emu.md).
 
-## Depth precision
+## Fixed D16 depth
 
-The bounded `host gpu_depth::` cases compile production RCC, compare physical
-far/encoded tag limits with a full-width host oracle, and exercise all four
-depth keys. They cover completed clear versus START, matching/mismatching Load
-across CBs, failed writers, active aliases and descriptor reuse. Public Camera
-recording checks the actual native Global/push bytes in both debug profiles.
-One real public RCC triangle executes on CPU instruction sim plus functional GPU;
-k0/k2 color planes match exactly, depth retains finer bits, and allocation tails
-remain unchanged. This is functional image evidence, not a cycle/performance run.
-`gpu_api_execute::depth_shift_requires_hardware_capability_before_publication_or_start`
-requires old hardware to fail without publication or SEND. These control peers
-do not render or qualify board timing.
+`host fixed_depth::` compiles the real public RCC application with both GPU debug
+profiles, executes a triangle on CPU instruction sim plus functional GPU, compares
+complete color/depth planes and preserves allocation tails. GPU geometry tests
+retain all eight unsigned comparisons, write-enable behavior and inclusive
+quantized far admission. The Global far is full positive Q16.16 below200; retired
+selection tags are rejected, never truncated. Normal CP/Prepare/interpolator RTL
+fixtures retain their stall, CE and completion checks.
 
-GPU geometry tests verify low-bit recovery before the D16 cut and inclusive
-quantized far admission. Prepare model/actual RTL and CP differential fixtures
-exercise the selected shift while preserving CE, stalls, row import and
-completion calendars. Profiler depth tests preserve ABI4/range1 inputs while
-checking ABI6/range2 depth flags. No default full-frame run is added.
+Capture producers declare native7/RTT8, range1 and flags31. ABI4 remains fixed-depth
+replay-compatible. ABI6 is historical import-only: exact former ABI definitions,
+range flags, metadata and source hashes remain readable without enabling runtime
+precision selection. The profiler historical-capture tests check import identity
+and rejection before sim/RTL dispatch; these are not new board evidence.
 
 ## Persistent split controller
 
@@ -567,7 +563,9 @@ against the system snapshot before the common cold backend is used.
 The `host gpu_pipeline::profiler_short` case runs the actual repeated RTT board
 application and its consumer-only gate through three consumer boundaries, with
 five submitted stages and two Display retirements. It checks mutable source
-closure and proves the control peer leaves RTT pixels untouched. Canonical short
+closure and proves the control peer leaves RTT pixels untouched. The controlled
+peer advances wall time and supplies fresh debounced resume edges after explicit
+snapshot requests; this test does not serialize framebuffer dumps. Canonical short
 asset/mode binding and deterministic native MEMCPY specialization are checked by
 the profiler Python suite. `capture_draw`'s explicit `GPU_PROFILER_NATIVE_COPY=1`
 and `GPU_PROFILER_UART=1` modes reuse the same source generator for bounded actual

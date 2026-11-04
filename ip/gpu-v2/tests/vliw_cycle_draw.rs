@@ -16,15 +16,6 @@ fn selected_cp_reads_object_rows_and_submits_twice() {
             .any(|e| !e.input.ce && e.input.draw.uniform_done));
     }
 }
-
-#[test]
-fn selected_cp_installs_mapped_far_and_shift_on_the_same_row() {
-    for shift in 0..=3 {
-        let run = support::run_depth(support::Case::default(), shift);
-        assert!(run.error.is_none());
-        assert_eq!(run.completions, 2);
-    }
-}
 #[test]
 fn cp_rejects_state_objects_on_the_original_monitor_edge() {
     for (bad, expected) in [
@@ -115,7 +106,7 @@ fn final_profile_and_cp_objects_match_selected_rtl() {
             )
         }),
     ) {
-        let run = support::run_depth(case, if name == "view" { 3 } else { 0 });
+        let run = support::run(case);
         let (schema, rows) = support::vectors(&run);
         fs::write(root.join("schema.txt"), schema).unwrap();
         fs::write(root.join(format!("{name}.txt")), rows).unwrap();

@@ -37,9 +37,9 @@ Use a current dependency build from the same worktree and an existing JSON array
 of integer[x,y] points. The generator records original/observed source hashes,
 generated support hashes and exact compiler/rlib identities. It fails if its
 expected insertion points or immutable constant sets do not match, rather than
-silently interpreting an unsupported implementation. Both original depth and
-the accepted depth-shift implementation are recognized; the global shift is
-included in the record. A new run should use a new output directory to retain
+silently interpreting an unsupported implementation. Current generation supports
+the fixed D16 implementation. Historical depth-shift records remain sealed
+historical evidence and are not regenerated or reinterpreted. A new run should use a new output directory to retain
 prior inputs and failures.
 
 Each cover records submission/command/draw/triangle identity, source indices,

@@ -15,7 +15,7 @@ module gpu_v2_vliw(
  input cp_re,input[8:0]cp_addr,output[63:0]cp_q,output cp_ready,
 `endif
  input dma_we,output dma_ready,input[9:0]dma_addr,input[63:0]dma_data,input output_ready,
- input[1:0]cfg_depth_shift,input[31:0]cfg_far_z,input[4:0]cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed[7:0]cfg_lod_bias,
+ input[31:0]cfg_far_z,input[4:0]cfg_tex_w_log2,cfg_tex_h_log2,cfg_max_mip,input signed[7:0]cfg_lod_bias,
 
 input
 `ifndef GPU_V2_LIVE_GLOBALS
@@ -118,7 +118,7 @@ blend,draw_rebind,
 `endif
  .clk(clk),.reset(reset),.ce(front_ce),.start(start&&!fault),.slot(slot),
  .dma_we(dma_we),.dma_ready(dma_ready),.dma_addr(dma_addr),.dma_data(dma_data),.output_ready(output_ready),
- .cfg_depth_shift(cfg_depth_shift),.cfg_far_z(cfg_far_z),.cfg_tex_w_log2(cfg_tex_w_log2),.cfg_tex_h_log2(cfg_tex_h_log2),.cfg_max_mip(cfg_max_mip),.cfg_lod_bias(cfg_lod_bias),
+ .cfg_far_z(cfg_far_z),.cfg_tex_w_log2(cfg_tex_w_log2),.cfg_tex_h_log2(cfg_tex_h_log2),.cfg_max_mip(cfg_max_mip),.cfg_lod_bias(cfg_lod_bias),
  .quad_valid(qvalid),.quad_ready(qready),.quad_id(qid),.quad_x(qx),.quad_y(qy),.quad_rgb(qrgb),.phase(phase),
  .quad_end_valid(qend),.quad_end_id(qend_id),.quad_end_mask(qmask),
  .result_we(result_we),.result_wa(result_wa),.result_wd(result_wd),

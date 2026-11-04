@@ -286,13 +286,18 @@ actual READ continuation and both payloads, and rejects an uncaptured successor:
 python systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/tests/read_chain_guard.py --peer path/to/fresh-export/peer --out path/to/new-test-output
 ```
 
-Production uses column layout ABI2 and RTT command ABI4, including the native
-ABI3 MEMCPY encoding. GPS1 wire/header/range versions remain1. Every new build
-v2 binds the exact `production` layout, memory map and typed resources. Old row,
-missing-layout and old command captures are rejected without repacking.
-Before either replay preparation or execution, the declared command ABI is
-checked against every opcode: ABI1/2 cannot enable MEMCPY; ABI3/4 include it;
-reserved13/14 remain unsupported. Production snapshots themselves declare4.
+Production uses column layout ABI2 and fixed-depth RTT command ABI8, including
+native ABI7 MEMCPY encoding. GPS1 wire and range versions remain1; explicit
+headers remain2. ABI4 uses the same fixed-depth command bytes and remains
+replay-compatible. All opcode and Global far checks run before backend dispatch;
+reserved13/14 remain unsupported. New snapshots declare8, range1 and flags31.
+
+Sealed ABI6/range2 snapshots can be imported with their original ABI definition
+or the current reader. Source hashes, flags and saved metadata are preserved.
+They are historical inputs only: current sim, RTL replay and scene oracle refuse
+ABI6 execution. Historical rendering results remain viewable without rerunning
+or changing their numerical interpretation. Row and missing-layout inputs stay
+unsupported.
 
 Column addressing is `base+512*((x>>4)*16+(y>>4))+32*(y&15)+2*(x&15)`.
 A plane has 96000 logical pixels and 6400 distributed padding words, totaling

@@ -53,7 +53,6 @@ fn live_indexed_frontend_and_authoritative_pool_close_under_credit_pressure() {
                 output_ready: true,
                 params: Params {
                     far_z: 100 << 16,
-                    depth_shift: 0,
                     tex_u: 6,
                     tex_v: 5,
                     max_mip: 6,

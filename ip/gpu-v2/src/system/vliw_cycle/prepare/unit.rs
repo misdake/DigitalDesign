@@ -7,9 +7,7 @@ use super::{
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Params {
-    /// Q16.16 in the selected depth units; native encoding maps physical far.
     pub far_z: u32,
-    pub depth_shift: u8,
     pub tex_u: u8,
     pub tex_v: u8,
     pub max_mip: u8,
@@ -390,10 +388,7 @@ impl Prepare {
                 geo_write,
                 geo_address,
                 geo_data,
-                z_bias: 38u8
-                    .wrapping_sub(i.params.depth_shift & 3)
-                    .wrapping_add(s.common_e)
-                    .wrapping_sub(s.delta_e) as i8,
+                z_bias: 38u8.wrapping_add(s.common_e).wrapping_sub(s.delta_e) as i8,
                 shifts,
                 rgb: s.rgb,
                 far_z: i.params.far_z,
@@ -447,13 +442,6 @@ impl Prepare {
             return Ok(());
         }
         let check = |ok, rule| require(ok, "prepare", rule);
-        check(i.params.depth_shift < 4, "depth shift encoding")?;
-        if o.cfg_apply {
-            check(
-                i.params.far_z < 65535 * 256,
-                "depth shift exceeds D16 far range",
-            )?;
-        }
         check(
             !(i.start && o.busy),
             "GPU contract: error (start while busy)",
