@@ -106,11 +106,11 @@ fn architectural_steps(program: &CpuV3Program) -> (u16, usize, u16) {
 
 #[test]
 fn scene_fix_helpers_reduce_clocked_core_cycles_with_guarded_memory() {
-    // Exact current production bodies; annotations exist only in the loader copy.
+    // Exact annotated production helpers, without duplicating inline attributes.
     let math = include_str!("../rcc/gpu_scene_math.rs");
     let helpers = &math[math.find("pub fn gpu_scene_fix_read(").unwrap()
         ..math.find("pub fn gpu_scene_zero(").unwrap()];
-    let helpers = helpers.replace("pub fn gpu_scene_fix_", "#[inline]\npub fn gpu_scene_fix_");
+    let helpers = format!("#[inline]\n{helpers}");
     let source = r#"
         mod scene;
         static DATA:Buf<u16,4>=Buf::new([0,1,0,2]);
@@ -175,3 +175,6 @@ fn scene_fix_helpers_reduce_clocked_core_cycles_with_guarded_memory() {
     println!("host backend wall time from one frontend snapshot (one noisy observation, not a timing guarantee): inline off {:?}, inline on {:?}; on includes analysis and both lowerings", baseline_host_backend, candidate_host_backend);
     println!("{report}");
 }
+
+#[path = "support/scene_matrix.rs"]
+mod scene_matrix;

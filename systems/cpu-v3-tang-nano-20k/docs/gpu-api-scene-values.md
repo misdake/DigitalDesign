@@ -79,6 +79,16 @@ Q16.16 one at words 42/43, material RGBA at words 44/45 and zero tail padding.
 This stage performs no command emission or binding comparison. A failed
 conversion may have changed its scratch output; the adapter must reject it.
 
+The matrix kernel reads the three Camera rows and the world rows with existing
+four-lane imports. Three overlapping imports at Model words 24, 30 and 34 read
+the normal matrix without crossing word 41. It transposes in FPU registers and
+finishes normals before loading world rows; one position basis is live at a time.
+Five four-lane exports and one scalar write cover exactly the 42 coefficient
+words. Each original three-product dot narrows once before translation addition,
+projection multiplication or the row-zero normal negation; arithmetic precision
+and wrapping remain unchanged. Scalar and six-word vector helpers carry explicit
+best-effort inline hints. No compiler policy or cache dependency changes.
+
 ## Model-owned derived matrices
 
 Every public Model owns a source allocation and a derived allocation, each 48

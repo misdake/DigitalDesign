@@ -5,10 +5,12 @@ use gpu_schema::*;
 mod gpu_depth;
 use gpu_depth::*;
 
+#[inline]
 pub fn gpu_scene_fix_read(data: Array<u16>, at: u16) -> fix32 {
     fix32::from_words(data[at], data[at + 1])
 }
 
+#[inline]
 pub fn gpu_scene_fix_write(mut data: Array<u16>, at: u16, value: fix32) {
     data[at] = value.lo_bits();
     data[at + 1] = value.hi_bits();
@@ -22,6 +24,7 @@ pub fn gpu_scene_zero(mut data: Array<u16>, count: u16) {
     }
 }
 
+#[inline]
 pub fn gpu_scene_vec_read(data: Array<u16>, at: u16) -> vec3 {
     vec3::new(
         fix32::from_words(data[at], data[at + 1]),
@@ -30,6 +33,7 @@ pub fn gpu_scene_vec_read(data: Array<u16>, at: u16) -> vec3 {
     )
 }
 
+#[inline]
 pub fn gpu_scene_vec_write(mut data: Array<u16>, at: u16, value: vec3) {
     data[at] = value.x().lo_bits();
     data[at + 1] = value.x().hi_bits();
@@ -294,46 +298,75 @@ pub fn gpu_scene_draw_header(
     }
     true
 }
-// Writes only the42 coefficient words, without material/padding or ownership state.
-pub fn gpu_scene_matrix_prepare(desired: Array<u16>, model: Array<u16>, mut out: Array<u16>) {
-    let k = gpu_scene_fix_read(desired, GPU_CAMERA_FOCAL) * fix32::from_words(256, 0);
-    let mut row: u16 = 0;
-    while row < 3 {
-        let basis = gpu_scene_vec_read(desired, GPU_CAMERA_VIEW + row * 8);
-        let mut factor = -k;
-        if row == 2 {
-            factor = -fix32::from_int(1);
-        }
-        let mut col: u16 = 0;
-        while col < 4 {
-            let world = vec3::new(
-                gpu_scene_fix_read(model, GPU_MODEL_WORLD + col * 2),
-                gpu_scene_fix_read(model, GPU_MODEL_WORLD + 8 + col * 2),
-                gpu_scene_fix_read(model, GPU_MODEL_WORLD + 16 + col * 2),
-            );
-            let mut value = fdot(basis, world);
-            if col == 3 {
-                value = value + gpu_scene_fix_read(desired, GPU_CAMERA_VIEW + row * 8 + 6);
-            }
-            gpu_scene_fix_write(out, row * 8 + col * 2, value * factor);
-            col += 1;
-        }
-        col = 0;
-        while col < 3 {
-            let normal = vec3::new(
-                gpu_scene_fix_read(model, GPU_MODEL_NORMAL + col * 2),
-                gpu_scene_fix_read(model, GPU_MODEL_NORMAL + 6 + col * 2),
-                gpu_scene_fix_read(model, GPU_MODEL_NORMAL + 12 + col * 2),
-            );
-            let mut value = fdot(basis, normal);
-            if row == 0 {
-                value = -value;
-            }
-            gpu_scene_fix_write(out, 24 + (row * 3 + col) * 2, value);
-            col += 1;
-        }
-        row += 1;
-    }
+// Writes exactly 42 coefficient words. Inputs and output must be disjoint.
+// Transpose packed rows in F registers. Finish normals before loading world rows
+// and form one camera basis at a time to bound live vectors and allocator spills.
+pub fn gpu_scene_matrix_prepare(desired: Array<u16>, model: Array<u16>, out: Array<u16>) {
+    let camera = desired.as_ptr();
+    let source = model.as_ptr();
+    let target = out.as_ptr();
+    let a = vec4::import(camera);
+    let b = vec4::import(camera.add(8));
+    let c = vec4::import(camera.add(16));
+    // The final overlapping load ends at word 41, never at cache word 42.
+    let nx = vec4::import(source.add(24));
+    let ny = vec4::import(source.add(30));
+    let nz = vec4::import(source.add(34));
+    let n0 = vec3::new(nx.x(), ny.x(), nz.y());
+    let n1 = vec3::new(nx.y(), ny.y(), nz.z());
+    let n2 = vec3::new(nx.z(), ny.z(), nz.w());
+    let r0 = vec3::new(a.x(), a.y(), a.z());
+    let n00 = -fdot(r0, n0);
+    let n01 = -fdot(r0, n1);
+    let n02 = -fdot(r0, n2);
+    let r1 = vec3::new(b.x(), b.y(), b.z());
+    let n10 = fdot(r1, n0);
+    vec4::export(vec4::new(n00, n01, n02, n10), target.add(24));
+    let n11 = fdot(r1, n1);
+    let n12 = fdot(r1, n2);
+    let r2 = vec3::new(c.x(), c.y(), c.z());
+    let n20 = fdot(r2, n0);
+    let n21 = fdot(r2, n1);
+    vec4::export(vec4::new(n11, n12, n20, n21), target.add(32));
+    gpu_scene_fix_write(out, 40, fdot(r2, n2));
+    let k = -(gpu_scene_fix_read(desired, GPU_CAMERA_FOCAL) * fix32::from_words(256, 0));
+    let x = vec4::import(source);
+    let y = vec4::import(source.add(8));
+    let z = vec4::import(source.add(16));
+    let w0 = vec3::new(x.x(), y.x(), z.x());
+    let w1 = vec3::new(x.y(), y.y(), z.y());
+    let w2 = vec3::new(x.z(), y.z(), z.z());
+    let w3 = vec3::new(x.w(), y.w(), z.w());
+    let p0 = vec3::new(a.x(), a.y(), a.z());
+    vec4::export(
+        vec4::new(
+            fdot(p0, w0) * k,
+            fdot(p0, w1) * k,
+            fdot(p0, w2) * k,
+            (fdot(p0, w3) + a.w()) * k,
+        ),
+        target.add(0),
+    );
+    let p1 = vec3::new(b.x(), b.y(), b.z());
+    vec4::export(
+        vec4::new(
+            fdot(p1, w0) * k,
+            fdot(p1, w1) * k,
+            fdot(p1, w2) * k,
+            (fdot(p1, w3) + b.w()) * k,
+        ),
+        target.add(8),
+    );
+    let p2 = vec3::new(c.x(), c.y(), c.z());
+    vec4::export(
+        vec4::new(
+            fdot(p2, w0) * -fix32::from_int(1),
+            fdot(p2, w1) * -fix32::from_int(1),
+            fdot(p2, w2) * -fix32::from_int(1),
+            (fdot(p2, w3) + c.w()) * -fix32::from_int(1),
+        ),
+        target.add(16),
+    );
 }
 pub fn gpu_scene_draw_finish(material: Array<u16>, mut native: Array<u16>) {
     let instance = GPU_SCRATCH_INSTANCE;

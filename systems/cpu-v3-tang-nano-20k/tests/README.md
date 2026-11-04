@@ -74,7 +74,7 @@ implied by these tests.
 ## Explicit RCC inline helper measurement
 
 The `rcc_inline` target copies the current production `gpu_scene_fix_read/write`
-function bodies into a test loader and adds attributes only in that copy. It runs
+function bodies with their production inline hints into a test loader. It runs
 32 dynamic iterations with output guards, the same inputs/options and a fixed
 stack top, comparing inline off/on on both the architectural interpreter and the
 clocked core's one-cycle instruction/data peer. It reports steps separately from
@@ -83,10 +83,30 @@ One shared frontend snapshot also supplies the whole-backend host wall-time A/B;
 inline-on includes analysis, cloning and both target lowerings. Timing observations
 are reported, not used as a host speed guarantee or acceptance threshold.
 Both models have finite execution bounds. This does not measure caches, MC, a
-complete renderer frame or a board. The production renderer source is unchanged.
+complete renderer frame or a board.
 
 ```powershell
 cargo test --release -p cpu-v3-tang-nano-20k --test rcc_inline -- --nocapture --test-threads=1
+```
+
+The same target's matrix tests freeze the accepted pre-optimization function in
+`fixtures/scene_matrix_before.rs`. They compare all 42 output words for 96
+fixed-seed signed/fractional/overflow cases with inline on and off, preserve both
+inputs and check an unaligned output span's guards. A six-call experiment compares the original,
+inline-only and reordered production kernel on the same bounded clocked peer.
+
+The ignored `bloxorz_one_play_frame` experiment compiles the actual Bloxorz main
+and shared library, replacing only the matrix/helper implementation for its
+baseline. Both variants select the same first stage PLAY pose, solid background,
+neutral input and one-frame stop. It compares the complete color/depth spans and
+Display pixels without masks, and records matrix instruction residency and calls.
+CPU/cache/native-memory logic cycles are measured with synchronous functional GPU
+execution and immediate host vblank. GPU/Display timing, their contention, FPS,
+steady-state/fade behavior and hardware are outside that experiment's scope.
+Set `MATRIX_EVIDENCE_DIR` to retain listings, inline reports and measurements.
+
+```powershell
+cargo test --release -p cpu-v3-tang-nano-20k --test rcc_inline bloxorz_one_play_frame -- --ignored --nocapture
 ```
 
 ## Host time and input
