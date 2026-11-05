@@ -1,5 +1,17 @@
 # System regression tests
 
+`system_runner` is a bounded actual-System input/watch/ch11/CPU-cache-inspection
+fixture. Observer-on/off systems match every scheduler output and final backing;
+real right/release reads and a4KiB GPU MEMCPY are checked. It supplies short host
+and event-rate evidence, not ordinary game FPS. Small runner/recorder unit tests
+check selection, consumption guards and byte truncation; Python tests cover
+later-group history, frame/sidecar binding, exact timer epochs and total-wall
+watchdog behavior. No browser or ordinary application result is inferred.
+The return-site variant includes a real PFX+LOAD miss: each first Execute
+arrival is observed once although neither retires there, and completion occurs
+with no Execute PC. Retained-r10 final/intermediate discrimination and explicit
+return/MMIO offsets have separate small checks.
+
 ## Full-system cycle composition
 
 `system_cycle_components` checks the exact integer clock calendar, production
@@ -709,12 +721,23 @@ cargo test --release -p cpu-v3-tang-nano-20k --test host controlled_camera_rabbi
 `system_cycle_profile` compares capture on/off at every scheduler instant through
 a bounded cold-start CPU application: core output, Display, native activity,
 final registers, counters, full backing and scanout bytes remain identical.
+Its CPU submits an actual NOP/WAIT/FLUSH/END CB and checks the formal Recorder's
+submit/latch/Exec/issue/release/drain events. The limit is 1000000 logic edges
+and a 300-second host watchdog. The capture keeps one initial backing preimage.
 `hardware/vendor/gowin/tests/native_activity.rs` separately checks actual native32
 read/write slots, all DQM masks and no opposite-half-edge double counting.
 Profiler Python/Node tests cover zero-submit/partial sources, transaction/data
 ownership, separate memory boundaries, bound scanout PNGs, shared time bins and
 compatibility with the older source types. These are model/report checks, not
 electrical or board qualification.
+The profiler suite also checks presentation-owned F1/F2 exports, exact window
+bytes/carry, missing legacy facts, source identities and archived replacement of
+generated frame bundles. `check_system_capture_import.py <actual-gpu-fixture>
+<new-output>` exercises official build/render/native-asset replacement using the
+bounded real GPU/native-MC journal in an explicitly synthetic importer envelope;
+it makes no CPU/Display or application performance claim. The actual system
+Recorder test remains a separate source. Native-history checks compare full
+400x240 RGB565/D16 planes, cache overlays, same-address overwrites and raw hashes.
 Public render tests reject closed payload-size/timing mismatches and preserve
 legal same-edge payload/terminal, error-terminal and open partial prefixes.
 

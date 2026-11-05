@@ -304,6 +304,14 @@ impl CpuSide {
     pub fn core(&self) -> Ref<'_, CpuV3CoreState> {
         self.states.core.borrow()
     }
+    /// Passive CPU-visible data inspection; never issues a modeled request.
+    pub fn inspected_word(&self, address: PhysicalWordAddress) -> Option<u16> {
+        self.states
+            .core
+            .borrow()
+            .pending_scalar_store_word(address)
+            .or_else(|| self.states.dcache.borrow().cached_word(address))
+    }
     pub fn read_system_channel(&self, channel: u8) -> u16 {
         self.states.system.borrow().read_channel(channel)
     }

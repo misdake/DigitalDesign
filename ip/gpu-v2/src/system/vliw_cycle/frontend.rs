@@ -90,6 +90,44 @@ struct Eval {
     s_busy: bool,
 }
 impl Frontend {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::trace::Trace) {
+        let e = self.evaluate(i);
+        let o = e.o;
+        self.meshlet.observe(e.mi, trace);
+        trace.load[4] = u64::from(o.raster.busy);
+        trace.load[5] = u64::from(o.interpolation.compute.busy);
+        trace.load[15] = u64::from(o.raster.quad_take);
+        trace.load[16] = u64::from(i.ce && o.interpolation.compute.depth_valid);
+        trace.load[25] = u64::from(e.s_busy);
+        if i.reset {
+            return;
+        }
+        let export = &self.meshlet.core.export;
+        if i.ce && i.start && o.meshlet.ready {
+            trace.event("draw", [u64::from(i.slot)]);
+        }
+        if i.ce && o.meshlet.done {
+            trace.event("vt_end", []);
+        }
+        if o.meshlet.core.publish {
+            trace.event("t_publish", [u64::from(export.produced & 15)]);
+        }
+        if o.header_take {
+            trace.event("prepare", [u64::from(export.consumed & 15)]);
+        }
+        if o.meshlet.core.release_slot {
+            trace.event("t_release", [u64::from(export.consumed & 15)]);
+        }
+        if i.ce && o.interpolation.context.raster_start {
+            trace.event("r_start", []);
+        }
+        if i.ce && o.raster.done {
+            trace.event("r_end", []);
+        }
+        if i.ce && o.interpolation.context.prepare.cfg_apply {
+            trace.event("i_context", []);
+        }
+    }
     /// Keep the inherited V-only default constructor's explicit T boundary.
     pub fn with_triangles() -> Self {
         Self {

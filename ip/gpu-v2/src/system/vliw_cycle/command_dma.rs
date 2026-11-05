@@ -86,6 +86,51 @@ pub struct Dma {
     pulses: Output,
 }
 impl Dma {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::trace::Trace) {
+        if i.reset {
+            return;
+        }
+        let o = self.outputs(i);
+        let returns = self.occupancy().1;
+        if i.response.valid && returns != 0 && i.response.last {
+            trace.event("dma_return", [u64::from(self.rh & 1)]);
+            if !i.stop
+                && !self.cache_return[usize::from(self.rh & 1)]
+                && self.last_return[usize::from(self.rh & 1)]
+            {
+                trace.event("dma_done", [u64::from(self.retired & 1)]);
+            }
+        }
+        if i.ce && i.work.valid && o.work_ready {
+            let w = i.work;
+            trace.event(
+                "dma_job",
+                [
+                    u64::from(self.put & 1),
+                    u64::from(w.mesh),
+                    u64::from(w.slot),
+                    u64::from(w.source_halfword),
+                    u64::from(w.size),
+                    u64::from(w.blocks),
+                ],
+            );
+        }
+        if self.offer.valid && i.request_ready {
+            trace.event(
+                "dma_request",
+                [
+                    u64::from(self.rp & 1),
+                    if self.offer.cache {
+                        2
+                    } else {
+                        u64::from(self.issued & 1)
+                    },
+                    u64::from(o.request.address_halfword),
+                    u64::from(o.request.count),
+                ],
+            );
+        }
+    }
     pub fn occupancy(&self) -> (u8, u8) {
         (
             self.put.wrapping_sub(self.retired) & 3,

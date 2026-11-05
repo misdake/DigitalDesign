@@ -192,6 +192,44 @@ struct Evaluation {
     hint_push: bool,
 }
 impl Cache {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::trace::Trace, quad_slot: u8) {
+        let e = self.evaluate(i);
+        let s = &self.state;
+        trace.cache = Some(super::trace::Cache {
+            valid: s.valid,
+            tags: s.tag,
+            color_base: i.color_base,
+            depth_base: i.depth_base,
+        });
+        trace.load[14] = s.ctx_valid.into_iter().map(u64::from).sum();
+        trace.load[30] = u64::from(s.hint_count);
+        trace.load[31] = u64::from(s.mt_active);
+        if i.reset {
+            return;
+        }
+        if e.row0_fire {
+            trace.event("rop_begin", [u64::from(s.tail), u64::from(quad_slot)]);
+        }
+        if !i.serial.active {
+            for (bank, a) in e.a.into_iter().enumerate() {
+                if a.en && a.we {
+                    trace.event(
+                        "cache_write",
+                        [
+                            bank as u64,
+                            u64::from(a.address),
+                            a.data.value & 65535,
+                            a.data.known & 65535,
+                            u64::from(s.result_context),
+                        ],
+                    );
+                }
+            }
+        }
+        if e.color_fire_write && s.result_last {
+            trace.event("q_commit", [u64::from(s.result_context)]);
+        }
+    }
     pub fn outputs(&self, i: Input) -> Output {
         self.evaluate(i).o
     }

@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import struct
@@ -43,6 +44,22 @@ def _replace_report(output, build):
     names = {'profile.json', 'profiler.html', 'validation.json', 'commands.csv', 'cpu.csv',
              'meshlets.csv', 'submissions.csv', 'memory-transactions.csv', 'report-inputs.json',
              'report-replacement.json', 'system-memory.csv', 'system-state.csv', 'system-transactions.csv'}
+    names |= {'frame-summary.json', 'system-submissions.csv', 'scanout-selected.png'}
+    previous = load_profile(output/'profile.json')
+    reports = {Path('.'): previous}
+    frame_index = output/'frames/index.json'
+    if frame_index.is_file():
+        records = json.loads(frame_index.read_text())
+        for record in records:
+            number = record['presentation']
+            if type(number) is not int or number < 1:
+                raise SnapshotError('Replacement requires generated frame identities')
+            relative = Path('frames')/f'frame-{number}'
+            frame = load_profile(output/relative/'profile.json')
+            if relative in reports or record != dict(presentation=number, html=f'frame-{number}/profiler.html',
+                                                     frame=frame['system']['frame_view']):
+                raise SnapshotError('Replacement requires matching generated frame index')
+            reports[relative] = frame
     paths = list(output.rglob('*'))
     for path in [output, *paths]:
         if path.is_symlink() or getattr(path.lstat(), 'st_file_attributes', 0) & 0x400:
@@ -50,17 +67,35 @@ def _replace_report(output, build):
         relative = path.relative_to(output)
         if path == output:
             continue
-        allowed = (len(relative.parts) == 1 and path.is_file() and (path.name in names or re.fullmatch(r'scanout-\d{6}\.png', path.name))) or (
-            relative.parts[0] == 'images' and (relative == Path('images') and path.is_dir() or
-                len(relative.parts) == 2 and path.is_file() and
-                re.fullmatch(r'(?:index\.json|final\.png|command-\d{6}\.png)', path.name)))
+        allowed = frame_index.is_file() and relative in (Path('frames'), Path('frames/index.json'))
+        for root, profile in reports.items():
+            if relative == root and path.is_dir():
+                allowed = True
+            if not relative.is_relative_to(root):
+                continue
+            local = relative.relative_to(root)
+            allowed |= len(local.parts) == 1 and path.is_file() and (
+                path.name in names or bool(re.fullmatch(r'scanout-\d{6}\.png', path.name)))
+            allowed |= local == Path('images') and path.is_dir()
+            if len(local.parts) == 2 and local.parts[0] == 'images' and path.is_file():
+                allowed |= bool(re.fullmatch(r'(?:index\.json|final\.png|command-\d{6}\.png)', path.name))
+                images = profile.get('images', {})
+                if path.name in images.get('assets', {}):
+                    identity = images['assets'][path.name]
+                    if digest(path) != identity['sha256'] or path.stat().st_size != identity['bytes']:
+                        raise SnapshotError('Replacement requires matching native raw assets')
+                    allowed = True
+                allowed |= path.name == 'native-index.json' and 'preimage_sha256' in images
+                allowed |= any(path.name == image['file'] and digest(path) == image['png_sha256']
+                               for image in images.get('commands', {}).values() if 'png_sha256' in image)
         if not allowed:
             raise SnapshotError('Replacement refuses unknown report content: '+str(relative))
-    previous = load_profile(output/'profile.json')
-    html = (output/'profiler.html').read_text(encoding='utf-8')
-    embedded = re.search(r'^const D=(.*);$', html, re.MULTILINE)
-    if not embedded or json.loads(embedded[1]) != previous:
-        raise SnapshotError('Replacement requires matching generated HTML/profile data')
+    for root, profile in reports.items():
+        html = (output/root/'profiler.html').read_text(encoding='utf-8')
+        embedded = re.search(r'^const D=(.*);$', html, re.MULTILINE)
+        from model import viewer_model
+        if not embedded or json.loads(embedded[1]) not in (profile,viewer_model(profile)):
+            raise SnapshotError('Replacement requires matching generated HTML/profile data')
     hashes = {str(p.relative_to(output)):digest(p) for p in paths if p.is_file()}
     token = uuid.uuid4().hex
     stage = output.with_name(output.name+'.stage-'+token)
@@ -163,21 +198,32 @@ def _verify_input(capture, data, folder, scratch):
 
 def build_report(folder, output, *, snapshot=None, raw=None, binding=None, abi=None,
                  allow_partial=False, preview='display1', capture_format='unknown', require_images=False,
-                 image_output=None, _profile=None, replace_report=False):
+                 image_output=None, _profile=None, replace_report=False, frames=(), source_identity=None):
     """Rebuild from original evidence; never take image pixels from old reports."""
     if replace_report:
         if image_output is not None:
             raise SnapshotError('Replacement images must stay within the report output')
         return _replace_report(output, lambda stage: build_report(folder, stage, snapshot=snapshot,
             raw=raw, binding=binding, abi=abi, allow_partial=allow_partial, preview=preview,
-            capture_format=capture_format, require_images=require_images, _profile=_profile))
+            capture_format=capture_format, require_images=require_images, _profile=_profile,
+            frames=frames, source_identity=source_identity))
     folder = Path(folder).resolve()
     output = fresh_output(output, folder)
-    if json.loads((folder/'capture.json').read_text()).get('schema') == 'digitaldesign.system-emu-capture':
+    metadata=json.loads((folder/'capture.json').read_text())
+    if metadata.get('schema') in ('digitaldesign.system-emu-capture','digitaldesign.profiling-capture'):
+        if metadata.get('source_kind')=='gpu-rtl' and snapshot is not None:
+            captured=load_snapshot(snapshot,abi or Abi(DEFAULT_ABI))
+            if captured.manifest()['input_sha256']!=metadata.get('input_sha256'):
+                raise SnapshotError('Common RTL capture belongs to another snapshot')
+            snapshot=None;abi=None
+        if raw is not None and Path(raw).resolve()==folder:raw=None
         if snapshot is not None or raw is not None or abi is not None or _profile is not None:
-            raise SnapshotError('Full-system emu consumes its own live trace and registered scanout, not a GPU replay snapshot')
+            raise SnapshotError('This capture consumes its self-contained event/preimage evidence')
         from system_emu import build
-        return build(folder, output, allow_partial=allow_partial, binding=binding, require_images=require_images)
+        return build(folder, output, allow_partial=allow_partial, binding=binding, require_images=require_images,
+                     frames=frames, source_identity=source_identity, preview=preview)
+    if frames or source_identity is not None:
+        raise SnapshotError('Application frame export/identity requires a full system capture')
     if capture_format not in ('known', 'unknown'):
         raise SnapshotError('Unknown capture-format declaration')
     if preview not in ('display1', 'raw', 'capture'):
@@ -264,23 +310,42 @@ def build_report(folder, output, *, snapshot=None, raw=None, binding=None, abi=N
     return data
 
 
-def render_report(profile, output, *, require_images=False, replace_report=False):
+def render_report(profile, output, *, require_images=False, replace_report=False, frames=(), source_identity=None):
     """Materialize the validated inline PNG bytes; never apply a second LUT."""
     if replace_report:
-        return _replace_report(output, lambda stage: render_report(profile, stage, require_images=require_images))
+        return _replace_report(output, lambda stage: render_report(profile, stage, require_images=require_images,
+                                                               frames=frames, source_identity=source_identity))
     output = fresh_output(output)
     data = load_profile(profile)
+    if 'system' in data:
+        from system_emu import prepare_report
+        data=prepare_report(data)
+    if data.get('system', {}).get('frame_view'):
+        # Re-rendering a frame elsewhere must retain a usable canonical link.
+        frame = dict(data['system']['frame_view'])
+        session = (Path(profile).parent / frame['session_report']).resolve()
+        frame['session_report'] = os.path.relpath(session, output).replace('\\', '/')
+        data = dict(data, system=dict(data['system'], frame_view=frame))
+    if frames or source_identity is not None:
+        if 'system' not in data:
+            raise SnapshotError('Application frame export/identity requires a full system profile')
+        from system_frames import attach_identity
+        data = attach_identity(data, source_identity)
     available = data.get('images', {}).get('available', False)
     if require_images and not available and not data.get('system', {}).get('scanouts'):
         raise SnapshotError('Complete report unavailable: profile has no image history')
     output.mkdir(parents=True, exist_ok=True)
+    if 'system' in data:
+        from system_images import copy_assets
+        copy_assets(data,Path(profile).parent,output)
     if available:
         image_dir = output/'images'
-        image_dir.mkdir()
+        image_dir.mkdir(exist_ok=True)
         images = data['images']
         for image in [images['final'], *images['commands'].values()]:
             name = image['file']
-            if not re.fullmatch(r'(?:final|command-\d{6})\.png', name):
+            pattern=r'native-[0-9a-f]{64}\.png' if 'system' in data else r'(?:final|command-\d{6})\.png'
+            if not re.fullmatch(pattern, name):
                 raise SnapshotError('Unsafe embedded image filename')
             png = base64.b64decode(image['src'].split(',', 1)[1], validate=True)
             (image_dir/name).write_bytes(png)
@@ -290,6 +355,9 @@ def render_report(profile, output, *, require_images=False, replace_report=False
     write_report(data, output)
     if data['provenance'].get('report_inputs'):
         (output/'report-inputs.json').write_text(json.dumps(data['provenance']['report_inputs'], indent=2)+'\n')
+    if frames:
+        from system_frames import write_reports
+        write_reports(data, output, frames)
     return data
 
 
@@ -297,10 +365,14 @@ def summary(data, output):
     output = Path(output).resolve()
     if 'system' in data:
         s=data['system']
+        frame=s.get('frame_view');commands=[c for c in data['commands'] if not frame or c['submission'] in frame['owned_submission_ids']]
+        native=data.get('images',{})
         return dict(out=str(output), profile=str(output/'profile.json'), html=str(output/'profiler.html'),
-                    source_kind='system-cycle-emu', submissions=len(s['submissions']), commands=None,
-                    instruction_owner_lineage='unavailable', partial=data['partial'],
-                    images_available=bool(s['scanouts']), image_count=len(s['scanouts']),
+                    source_kind=data['provenance']['source_kind'], submissions=len(frame['owned_submission_ids']) if frame else len(s['submissions']),
+                    commands=len(commands) if s['capabilities'].get('command_control_lineage') else None,
+                    instruction_owner_lineage='observed' if s['capabilities'].get('gpu_signal_journal') else 'unavailable',partial=data['partial'],
+                    images_available=bool(s['scanouts']) or native.get('available',False), image_count=1 if frame else len(s['scanouts']),
+                    native_images_available=native.get('available',False),native_image_count=len(native.get('commands',{})),
                     client_boundary=s['client_boundary'], native_boundary=s['native_boundary'])
     images = data.get('images', {})
     return dict(out=str(output), profile=str(output/'profile.json'), html=str(output/'profiler.html'),

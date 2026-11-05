@@ -20,6 +20,31 @@ def burst(port=0, source=1):
 
 
 class MemoryTests(unittest.TestCase):
+    def test_indexed_command_scopes_equal_unindexed_interval_oracle(self):
+        e=defaultdict(list);beats=[]
+        specs=[(0,0,1,[1,2,3,4],5),(2,2,6,[3,4,5,6],9),
+               (6,1,5,[7,8,9,10],12),(8,0,4,[9,10,11,12],14),
+               (20,2,6,[21,22],None)]
+        for start,port,source,times,end in specs:
+            e['MEM_REQUEST'].append([start,port,0x200000+start*32,0,source])
+            e['MEM_DATA'] += [[t,port,255,0] for t in times]
+            if end is not None:e['MEM_COMPLETE'].append([end,port,0])
+            beats += [dict(cycle=t,port=port,source=memory.SOURCES[source],wire_bytes=8,effective_bytes=8) for t in times]
+        beats.sort(key=lambda b:(b['cycle'],b['port']))
+        tracks={'ro_wait':[[0,0],[2,1],[4,0],[10,1],[12,0]],
+                'fb_read_wait':[[0,0],[5,1],[9,0]],'fb_write_wait':[[0,1],[1,0],[8,1],[10,0]]}
+        commands=[dict(id=i+1,start=a,complete_cycle=b) for i,(a,b) in enumerate([(0,3),(2,8),(5,11),(10,None),(0,512)])]
+        r=memory.build(e,0,512,CLOCK,False,commands,tracks)
+        for c in commands:
+            a,b=c['start'],c['complete_cycle'] or 512;actual=r['commands'][str(c['id'])]
+            direct=memory.summarize(r['transactions'],beats,a,b,CLOCK,tracks=tracks)
+            self.assertEqual({k:v for k,v in actual.items() if k not in ('links','sources')},direct)
+            for p,name in enumerate(memory.LINKS):
+                self.assertEqual(actual['links'][p],dict(name=name,**memory.summarize(r['transactions'],beats,a,b,CLOCK,(p,),tracks)))
+            for source in actual['sources']:
+                name=source['name'];self.assertEqual(source,dict(name=name,**memory.summarize(
+                    [t for t in r['transactions'] if t['source']==name],[v for v in beats if v['source']==name],a,b,CLOCK)))
+
     def test_exact_timeline_combines_slots_and_conserves_wait_states(self):
         e = defaultdict(list)
         for port in range(3):

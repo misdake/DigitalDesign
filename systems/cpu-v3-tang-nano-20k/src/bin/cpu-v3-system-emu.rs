@@ -120,6 +120,11 @@ fn run() -> Result<bool, String> {
         })
         .transpose()
         .map_err(|e| format!("profile setup: {e}"))?;
+    if let Some(recorder) = &mut recorder {
+        recorder
+            .initialize_memory(&system)
+            .map_err(|e| format!("profile preimage: {e}"))?;
+    }
     let capture_setup_seconds = capture_started.elapsed().as_secs_f64();
     let step_started = Instant::now();
     let mut raster = Scanout::default();
@@ -128,19 +133,18 @@ fn run() -> Result<bool, String> {
     let mut reached = false;
     let mut reason = "logic-bound";
     while system.clock().logic_edges - prefix_logic < limit {
-        let step = system
-            .step_observing(|o| {
-                if let Some(r) = &mut recorder {
-                    r.observe(o);
-                }
-            })
-            .map_err(|e| {
-                format!(
-                    "logic {} tick {}: {e:?}",
-                    system.clock().logic_edges,
-                    system.clock().peek().ticks
-                )
-            })?;
+        let result = if let Some(r) = &mut recorder {
+            system.step_observing(|o| r.observe(o))
+        } else {
+            system.step()
+        };
+        let step = result.map_err(|e| {
+            format!(
+                "logic {} tick {}: {e:?}",
+                system.clock().logic_edges,
+                system.clock().peek().ticks
+            )
+        })?;
         if let Some(r) = &mut recorder {
             r.after_step(&step, &system);
         }

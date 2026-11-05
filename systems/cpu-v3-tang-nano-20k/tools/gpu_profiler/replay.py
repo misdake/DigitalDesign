@@ -130,6 +130,12 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
     if not primitive.is_file():
         raise SnapshotError("Required vendor primitive model is missing")
     seed_files(capture, output)
+    preimage=bytearray(8388608);known=bytearray(8388608)
+    for region in capture.ranges:
+        preimage[region.address:region.address+region.length]=capture.data[region.index]
+        known[region.address:region.address+region.length]=b'\1'*region.length
+    (output/'initial-memory.bin').write_bytes(preimage)
+    (output/'initial-known.bin').write_bytes(known)
     capture.save(output / 'snapshot')
     template = Path(__file__).with_name("replay_tb.v").read_text(encoding="utf-8")
     header = capture.header
@@ -149,7 +155,10 @@ def prepare(capture, rtl, output, max_cycles, timeout, preflight_result=None):
                     max_cycles=max_cycles, timeout_seconds=timeout, submissions=1, top="tb",
                     finish_on_complete=False, testbench=str(bench),
                     sources=[dict(path=str(p), sha256=digest(p)) for p in sources + [primitive]],
-                    inputs={name: str(output / name) for name in ["memory.hex", "valid.hex", "marked.hex", 'writable.hex']},
+                    inputs={name: str(output / name) for name in ["memory.hex", "valid.hex", "marked.hex", 'writable.hex','initial-memory.bin','initial-known.bin']},
+                    image_journal=dict(available=True,preimage='initial-memory.bin',known_preimage='initial-known.bin',
+                                       boundary='native32-write',completed_target_budget=2),
+                    physical_write=True,
                     input_sha256=capture.manifest()["input_sha256"], preflight=preflight_result,
                     report_snapshot='../snapshot',
                     layout=capture_description(header),
@@ -235,13 +244,19 @@ def _collect(capture, manifest_path, declared, *, preview='display1', capture_fo
         if allocation[:layout.plane_bytes] != (output / 'capture' / (role + '.bin')).read_bytes():
             raise SnapshotError('Plane and allocation dumps disagree')
         result[role + '_allocation_sha256'] = digest(path)
-    profile = build_report(output/'capture', output/'profile', snapshot=output/'snapshot', abi=capture.abi,
-                           preview=preview, capture_format=capture_format, require_images=require_images,
-                           image_output=output/'images', _profile=profile)
+    common='system' in profile
+    profile = build_report(output/'capture', output/'profile',
+                           **({} if common else dict(snapshot=output/'snapshot',abi=capture.abi,image_output=output/'images',_profile=profile)),
+                           preview=preview, capture_format=capture_format, require_images=require_images)
     if profile['images']['available']:
-        (output/'color.png').write_bytes((output/'images/final.png').read_bytes())
+        if common:
+            image=profile['images']['final'];image_root=output/'profile/images'
+            if image['plane_sha256']!=digest(color) or image['depth_plane_sha256']!=digest(depth):
+                raise SnapshotError('Common historical final planes differ from same-run native outputs')
+            (output/'color.png').write_bytes((image_root/image['file']).read_bytes())
+        else:(output/'color.png').write_bytes((output/'images/final.png').read_bytes())
     result['command_images'] = dict(available=profile['images']['available'],
-                                  index=str(output / 'images/index.json') if profile['images']['available'] else None)
+                                  index=str(output / ('profile/images/native-index.json' if common else 'images/index.json')) if profile['images']['available'] else None)
     (output / "replay.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 

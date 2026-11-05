@@ -52,6 +52,11 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 impl Producer {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::trace::Trace) {
+        let (fi, pi, _) = self.connect(i);
+        self.frontend.observe(fi, trace);
+        self.pool.observe(pi, trace);
+    }
     pub fn with_triangles() -> Self {
         Self {
             frontend: Frontend::with_triangles(),

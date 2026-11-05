@@ -464,3 +464,11 @@ The model has 32-bit DQ (`Sample32`) and four DQM lanes; these observations do
 not divide client64 payload into estimated native16 beats. They measure model
 transfers, not electrical or board pin bandwidth. There is no additional clock,
 backing copy, write, cache clean or mutable state exposed by observation.
+
+`Pins::clock_journaling` executes that same write branch and returns
+`Option<Write>` with `address_bytes`, original 32-bit `data` and four-bit
+`unmasked`. `clock_observing` remains a compatibility wrapper returning the
+unmasked-byte count. `Activity.write` exposes the exact committed write alongside
+the byte counters; it is absent on other edges. All sixteen DQM masks preserve
+the original backing update and clock state. Consumers may journal these fields
+for historical images without another memory read or pin clock.

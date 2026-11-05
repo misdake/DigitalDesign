@@ -1,17 +1,83 @@
 # GPU profiler
 
+Open the generated `profiler.html` beside its `profile.json` to view a report.
+The source file `viewer.html` is a template; opened directly, it displays an
+empty-data explanation instead of a report.
+
+New RTL and cycle-emu capture output is the same `capture.json` + `events.jsonl`
+protocol (`digitaldesign.profiling-capture`, version2), consumed by the same
+parser/model/validator/report builder. GPU logic events use148 quantum ticks per
+cycle; native writes retain exact rational timestamps at their actual backing
+mutation edge. Optional CPU/Display/service/native domains are declared, not
+filled with zeros. Legacy raw files remain importable with their original point
+coverage. See the [common point contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#common-collector-protocol).
+
+Finite point comparisons live in `tests/check_common_events.py` and
+`tests/check_native_points.py`; the latter compares actual native byte writes and
+completion planes without asserting identical timings for different clock/init
+configurations. `tests/common_native_replay.py` exercises the actual cold
+GPU+MC input/build/image path with a saved tiny input fixture.
+
 ## Full-system cycle emu
+
+For an exact ordinary application plan, the separate runner entry is:
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/ordinary_runner.py path/to/verified-plan.json
+```
+
+The plan schema is `digitaldesign.ordinary-profile-plan`, version1. It binds
+`runtime`/`program` and nonempty source/resource `bindings` by file/bytes/SHA256,
+new `output`/`report_output` directories, `max_logic_cycles`, `max_events`,
+`max_host_seconds` and `max_total_host_seconds`. The total deadline is at most
+7200s and includes identity checks, capture and report export; reserve at least
+60s beyond the stepping bound. There is no automatic retry. `words` names
+CPU-visible physical halfword addresses: phase, moving, level(zero-based), x, z,
+orientation, mask, transition, motion_age, epoch and switch_age_1..9. `gates`
+contains before_input/consumed/sample segment+Execute-PC pairs from the exact
+linked ordinary program. `sites` contains vblank_return/final_wait_return pairs.
+These source mappings must be audited before execution; they are not guessed
+from a different program's symbols. The runner binary is
+`cpu-v3-profile-runner`, with its own frozen executable SHA.
+The current runner additionally requires
+`site_observation: "first-unheld-execute"`. Logical return sites are deduplicated
+unheld Execute arrivals, including non-retiring prefixes/LOADs; the three action
+gates still require retirement. Supply `clock_sites.clear/read` with code_segment
+and pc from the linked map. The shared final wait is qualified by saved finish
+r10; its actual started r8 and startEpoch r9 are retained at the read. Return
+and MMIO intervals and offsets are exported separately.
+All model stepping runs on one host worker with an explicit8MiB stack; the
+application stack and model clocks are unchanged. This bound is captured as
+`host_worker_stack_bytes`. A failed launch receipt is preserved and blocks an
+automatic ordinary-package retry.
+
+The runner retains F1/F2 and later stable-A/rolling-B presentations, preserving
+their actual phase, age and ordinals. The native budget is explicitly four
+presentation groups, with all pre-window journals retained; registered images
+remain at most12. The separate tier allows at most112M events and4GiB of main
+JSONL, plus100K sidecar events. Legacy CLI/recorders retain10M. A partial tail
+may coexist with completed selected frames and stays labelled partial. The
+launcher exports only actually complete scoped rasters and records missing
+required scopes. Source overlay manifests remain separate from the optional
+Git-only `--source-identity` mapping.
+`max_native_command_images` is additionally required and at most2048. Native
+raw planes are204800B each; the worst case for2048 distinct color/depth pairs
+is838860800B before PNG/HTML. Exceeding the explicit image count rejects export
+with a budget error and preserves the raw session, rather than dropping images.
 
 Build and run in the feature checkout, using its own `target` (never the main
 checkout's target). Add `--profile-out <new-directory>` to the existing
 `cpu-v3-system-emu` command; retain explicit entry, logic/present and host bounds.
 `--profile-max-events` defaults to2000000, maximum10000000;
-`--profile-max-frames` defaults to2, maximum1024 (zero disables images).
+`--profile-max-frames` defaults to2, maximum1024 (zero disables registered
+scanout images; native history has its separate two-target budget).
 
 Pass that capture directory to this same `profiler.py build <capture> --out
 <new-report>` command, then `profiler.py render <report>/profile.json --out
 <new-render>`. `--allow-partial` is required for bounded, truncated or undrained
-captures; `--require-images` requires a saved complete scanout. `--binding
+captures; `--require-images` requires a complete saved scanout or a proven native
+command image. `--frames` additionally requires a complete matching application
+scanout for every selected presentation. `--binding
 <report>/report-inputs.json` checks exact input identities on rebuild. This path
 consumes live system events, not a Prepared snapshot or a functional GPU replay.
 
@@ -19,9 +85,46 @@ The common webpage displays real CPU retirement/holds, GPU phase/stage activity,
 submit/drain/present, shared memory competition and registered scanouts. Client
 64-bit payload and directly observed native model32 slots have separate bins,
 labels and CSV boundaries; neither is physical board pin bandwidth. Unknown
-timing or detailed GPU owner lineage stays unavailable. PNGs retain registered
-RGB unchanged. See the [source contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#full-system-cycle-source)
+timing stays unavailable. New captures include committed CB latch/issue/release,
+DMA/VT/T/quad/ROP ownership, all GPU load tracks and native color/D16 history.
+Every profiling source uses the same full GPU viewer as RTL replay by default;
+`?view=system` explicitly selects CPU/shared-memory context in the same HTML.
+Legacy captures keep their real submission rows, recorded GPU service memory
+histograms and registered preview in that common layout, with missing instruction
+and fine stage histories marked unavailable. Legacy memory acceptance is at the
+arbiter after board descriptor slots, labelled separately from new GPU-master
+timing. No unknown source or missing request size is guessed. Registered RGB PNGs
+remain unchanged. See the
+[source contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#full-system-cycle-source)
 for time, masking, synthetic startup and device coverage.
+
+For application F1/F2 exports, use the production entry:
+
+```powershell
+python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py build path/to/capture --out target/frame-report --frames 1,2 --source-identity path/to/identity.json --require-images
+python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/profiler.py render target/frame-report/profile.json --out target/frame-render --frames 1,2 --require-images
+```
+
+The identity JSON contains `source`/`tree` (or
+`application_source`/`application_tree`), `boot_sha256` (or `package_sha256`)
+and optional `runtime_sha256`/`executable_sha256`. Program/executable hashes must
+match the saved capture. The canonical session links to generated
+`frames/frame-N/profiler.html`; frame lists, Fit, statistics and CSVs use its
+presentation/window scope rather than the entire session. CPU semantic frame
+ownership is not inferred. Complete scanout selection excludes boot black
+rasters, so the default two-raster capture budget may be insufficient; an
+explicit budget such as 12 can retain two application presentations. Select
+capture bounds deliberately; event limits still cap at 10000000.
+
+Native history takes one 8MiB preimage and real masked writes/cache events.
+Its independent budget covers two target groups and proven completed prefixes.
+400x240 tiled RGB565/D16 downloads are separate from 800x480 registered scanouts.
+Open owners and truncated image tails remain explicit. Old raw captures cannot
+gain absent PC/owner/cache facts through rebuilding.
+
+`--replace-report` stages and validates a generated report bundle, archives its
+original bytes/hashes, then replaces it. Generated frame directories and native
+assets are supported; unrelated user files and links still refuse replacement.
 
 ## Result-only simulator backend
 

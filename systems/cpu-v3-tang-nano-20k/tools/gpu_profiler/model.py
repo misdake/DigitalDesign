@@ -77,6 +77,11 @@ def ensure(condition, message):
 def build_capture(folder, allow_partial=False):
     folder=Path(folder)
     metadata=json.loads((folder/"capture.json").read_text(encoding="utf-8"))
+    if metadata.get('schema')=='digitaldesign.profiling-capture':
+        # The new collectors share the parser and correlation path. Legacy
+        # FORMAT2 files below retain their original, explicitly older importer.
+        from system_emu import build
+        return build(folder,None,allow_partial=allow_partial)
     for group in ("source_sha256", "inputs_sha256"):
         for name, expected in metadata.get(group, {}).items():
             ensure(Path(name).name == name, "Capture evidence filename")
@@ -386,8 +391,62 @@ def load_profile(path):
     return validate(data)
 
 
-def write_report(data, folder):
-    validate(data)
+def viewer_model(data):
+    """Compact only browser data; canonical JSON/CSV keep every source fact."""
+    if 'system' not in data:return data
+    s=data['system'];frame=s.get('frame_view');result=dict(data);view=dict(s)
+    # Both browser renderers use normalized fields, not these validation journals.
+    for key in ('gpu_journal','physical_writes','native_source_times','command_events','gpu'):view.pop(key,None)
+    if frame:
+        lo,hi=frame['start_tick'],frame['end_tick'];axis=s['axis_origin_tick']
+        a,b=(lo-axis)/148,(hi-axis)/148;owned=set(frame['owned_submission_ids'])
+        for key in ('submissions','commands','meshlets','jobs','dma_transactions'):
+            result[key]=[x for x in data[key] if (x['id'] if key=='submissions' else x['submission']) in owned]
+        def steps(points,left,right):
+            before=None;inside=[];after=None
+            for p in points:
+                if p[0]<left:before=p
+                elif p[0]<right:inside.append(p)
+                else:after=p;break
+            return ([] if before is None else [before])+inside+([] if after is None else [after])
+        kinds={d['key']:d['kind'] for d in data['metric_defs']}
+        result['tracks']={k:([p for p in v if a<=p[0]<b] if kinds[k] in ('rate','bytes') else steps(v,a,b)) for k,v in data['tracks'].items()}
+        for key in ('states','phases','retires'):view[key]=steps(s[key],lo,hi)
+        for key in ('client_payload','native_model32'):view[key]=[p for p in s[key] if lo<=p[0]<hi]
+        view['transactions']=[t for t in s['transactions'] if t['start_tick']<hi and
+                              (t['end_tick'] if t['end_tick'] is not None else s['coverage_end_tick'])>lo]
+        memory=data.get('memory')
+        if memory and memory.get('available'):
+            timeline=memory['timeline'];back=timeline['backpressure']
+            result['memory']=dict(memory,transactions=[t for t in memory['transactions'] if a<=t['start']<b],
+                timeline=dict(timeline,data=[p for p in timeline['data'] if a<=p[0]<b],
+                              states={k:steps(v,a,b) for k,v in timeline['states'].items()},
+                              backpressure=dict(back,track=steps(back.get('track',[]),a,b))))
+    result['system']=view
+    images=data.get('images');sources={}
+    if images and images.get('available'):
+        def image_ref(im):
+            key=im['png_sha256'];sources[key]=im['src']
+            return dict({k:v for k,v in im.items() if k!='src'},src_ref=key)
+        result['images']=dict(images,commands={k:image_ref(v) for k,v in images['commands'].items()},
+                              final=image_ref(images['final']) if images.get('final') else None)
+        result['viewer_image_sources']=sources
+    result['viewer_projection']=dict(canonical='profile.json',raw_validation_journals_embedded=False,
+                                    scope='selected frame with real crossing lifetimes' if frame else 'full session',
+                                    native_pngs='shared by exact PNG hash; raw color/depth bindings unchanged')
+    return result
+
+
+def write_viewer(data, folder):
+    payload=json.dumps(viewer_model(data),separators=(',',':'),ensure_ascii=True)
+    template=Path(__file__).with_name('viewer.html').read_text(encoding='utf-8')
+    template=template.replace('/*SYSTEM_VIEWER*/',Path(__file__).with_name('system_viewer.js').read_text(encoding='utf-8'))
+    safe=payload.replace('<',chr(92)+'u003c').replace('>',chr(92)+'u003e').replace('&',chr(92)+'u0026')
+    (Path(folder)/'profiler.html').write_text(template.replace('/*PROFILE_DATA*/null',safe),encoding='utf-8')
+
+
+def write_report(data, folder, *, validated=False):
+    if not validated:validate(data)
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     if 'system' in data:
@@ -395,14 +454,18 @@ def write_report(data, folder):
         write_outputs(data, folder)
     payload = json.dumps(data, separators=(",", ":"), ensure_ascii=True)
     (folder / "profile.json").write_text(payload + "\n", encoding="utf-8")
-    template = Path(__file__).with_name("viewer.html").read_text(encoding="utf-8")
-    template = template.replace('/*SYSTEM_VIEWER*/', Path(__file__).with_name('system_viewer.js').read_text(encoding='utf-8'))
-    safe = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    (folder / "profiler.html").write_text(template.replace("/*PROFILE_DATA*/null", safe), encoding="utf-8")
+    del payload
+    write_viewer(data,folder)
     (folder / "validation.json").write_text(json.dumps(data["checks"], indent=2) + "\n", encoding="utf-8")
     meshes = {m["id"]: m for m in data["meshlets"]}
     jobs = {j["id"]: j for j in data["jobs"]}
     def async_end(command):
+        if 'system' in data:
+            # An open asynchronous owner must stay open even after CP release.
+            # New journals carry an independently proven completion field.
+            if data['system']['capabilities'].get('gpu_signal_journal'):
+                return command.get('complete_cycle')
+            return None # CP release alone does not establish asynchronous completion.
         if command.get('complete_cycle') is not None:
             return command['complete_cycle']
         ends = [command["end"], *[jobs[j]["end"] or data["end"] for j in command["jobs"]]]
@@ -411,18 +474,40 @@ def write_report(data, folder):
             ends.append(mesh["last_quad"]["end"])
         return max(ends)
 
+    frame = data.get('system', {}).get('frame_view')
+    observed_submissions=data['submissions']
+    if 'system' in data and not observed_submissions:
+        s=data['system'];axis=s['axis_origin_tick']
+        observed_submissions=[dict(id=sub['id'],start=(sub['start_tick']-axis)/148,
+            end=None if sub['end_tick'] is None else (sub['end_tick']-axis)/148,
+            base=None,bytes=None,frame_id=frame['presentation'] if frame else None,
+            name='Observed GPU submission; CB descriptor not captured') for sub in s['submissions']]
     if data.get('memory', {}).get('available'):
         with (folder / 'memory-transactions.csv').open('w', newline='', encoding='utf-8') as stream:
             fields = ['id', 'port', 'source', 'address_halfwords', 'expected_beats', 'start', 'end', 'last_data', 'beats', 'error']
+            rows=data['memory']['transactions']
+            if frame:
+                s=data['system'];axis=s['axis_origin_tick'];lo=(frame['start_tick']-axis)/148;hi=(frame['end_tick']-axis)/148
+                owned=[sub for sub in observed_submissions if sub['id'] in frame['owned_submission_ids']]
+                fields+=['visible_start','visible_end','carry_in','carry_out','beats_scope']
+                rows=[dict(t,visible_start=max(t['start'],lo),visible_end=min(t['end'] if t['end'] is not None else hi,hi),
+                    carry_in=t['start']<lo,carry_out=t['end'] is None or t['end']>hi,
+                    beats_scope='full transaction lifetime; window bytes are calculated from actual payload events')
+                    for t in rows if any(sub['start']<=t['start']<(sub['end'] if sub['end'] is not None else data['end']) for sub in owned)
+                    and max(t['start'],lo)<min(t['end'] if t['end'] is not None else hi,hi)]
             writer = csv.DictWriter(stream, fields)
-            writer.writeheader(); writer.writerows(data['memory']['transactions'])
+            writer.writeheader(); writer.writerows(rows)
 
+    export_source=dict(data,submissions=observed_submissions)
+    exported = export_source if not frame else {key: [row for row in export_source[key]
+        if (row['id'] if key == 'submissions' else row.get('submission')) in frame['owned_submission_ids']]
+        for key in ('submissions', 'commands', 'meshlets', 'cpu')}
     for name, fields, rows in [
-        ("submissions", ["id", "frame_id", "name", "base", "bytes", "start", "end"], data["submissions"]),
+        ("submissions", ["id", "frame_id", "name", "base", "bytes", "start", "end"], exported["submissions"]),
         ("commands", ["id", "submission", "pc", "opcode", "name", "word", "start", "execute", "end", "async_end"],
-         [{**c, "async_end": async_end(c)} for c in data["commands"]]),
-        ("meshlets", ["id", "submission", "command", "pc", "name", "start", "vt_end", "quads", "triangles"], data["meshlets"]),
-        ("cpu", ["id", "frame_id", "name", "start", "end"], data["cpu"]),
+         [{**c, "async_end": async_end(c)} for c in exported["commands"]]),
+        ("meshlets", ["id", "submission", "command", "pc", "name", "start", "vt_end", "quads", "triangles"], exported["meshlets"]),
+        ("cpu", ["id", "frame_id", "name", "start", "end"], exported["cpu"]),
     ]:
         with (folder / (name + ".csv")).open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fields, extrasaction="ignore")

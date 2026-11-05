@@ -221,6 +221,30 @@ struct Eval {
     regular_retire: bool,
 }
 impl Pool {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::trace::Trace) {
+        let e = self.evaluate(i);
+        let o = e.o;
+        trace.load[6] = u64::from(o.global_used);
+        trace.load[7] = u64::from(o.producer_used);
+        trace.load[8] = u64::from(o.light_pending);
+        trace.load[9] = u64::from(o.sample_pending);
+        trace.load[15] = u64::from(e.allocate);
+        if e.regular_retire || e.skip_empty {
+            trace.event(
+                "q_retire",
+                [u64::from(o.retire_slot), u64::from(e.skip_empty)],
+            );
+        }
+        if e.allocate {
+            trace.event("q_alloc", [u64::from(self.state.allocated & 31)]);
+        }
+        if o.published {
+            trace.event(
+                "q_publish",
+                [u64::from(o.published_slot), o.published_begin.value & 15],
+            );
+        }
+    }
     pub fn outputs(&self, i: Input) -> Output {
         self.evaluate(i).o
     }

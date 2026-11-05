@@ -69,6 +69,28 @@ pub struct Meshlet {
     pub monitored_page: bool,
 }
 impl Meshlet {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::super::trace::Trace) {
+        let (ci, _) = self.connect(i);
+        let core = self.core.observe(ci, trace);
+        trace.load[1] = u64::from(self.phase != Phase::Idle);
+        trace.load[2] = u64::from(core);
+        trace.load[3] = u64::from(self.core.export.count());
+        trace.load[22] = if self.phase == Phase::Idle {
+            0
+        } else if !i.ce {
+            5
+        } else if core {
+            if self.core.regs.triangle_mode {
+                2
+            } else {
+                1
+            }
+        } else if self.phase == Phase::TStart && !self.core.outputs(ci).triangle_ready {
+            3
+        } else {
+            4
+        };
+    }
     pub fn with_triangles() -> Self {
         Self {
             core: Core::with_triangles(),

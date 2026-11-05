@@ -1,0 +1,9 @@
+{
+  "schema": "digitaldesign.profiling-capture",
+  "version": 2,
+  "events_file": "events.jsonl",
+  "logic_period": 148,
+  "sampling": "old-state-at-logic-rise; committed handshakes; endpoints exclusive at tick+148",
+  "supported_points": ["cb_submit", "cb_latch", "cb_execute", "cb_issue", "cb_release", "cb_drain", "cb_abort", "cb_reset", "gpu_control", "gpu_load", "gpu_cache", "gpu_event"],
+  "gpu_event_points": ["dma_job", "dma_request", "dma_return", "dma_done", "draw", "vt_end", "t_publish", "prepare", "t_release", "r_start", "r_end", "i_context", "q_alloc", "q_publish", "q_retire", "final", "rop_begin", "cache_write", "q_commit", "sample_publish", "sample_last", "master_request", "master_payload", "master_terminal", "texture_request", "write_owner", "target", "target_unbind", "vt_step", "vt_rf_write", "t_word", "light_accept", "light_result", "sample_accept", "sample_result"]
+}

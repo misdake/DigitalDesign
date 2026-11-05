@@ -130,3 +130,26 @@ Finite host samples include initialization, settling, scheduling, assertions
 and in-memory traces; build, RTL and export are excluded. Host contention is
 uncontrolled and RSS unmeasured. Samples measure fixture cost, not GPU/frame
 throughput, a speedup or hardware-cycle equivalence.
+
+## Passive committed command observation
+
+`Processor::clock_observing` and `Control::clock_observing` return a
+`CommandEdge` after the same original transition commits. Accepted submit
+records the byte base/count; latch records the actual RAM word and relative byte
+PC. Enabled Exec observation, accepted issue and CP release are separate edges.
+Release carries the PC: CLEAR/MEMCPY mutate their live control word as a progress
+counter, so observers retain the original RAM latch instead of mislabelling that
+counter as an instruction. END drain, abort, reset and committed SET_TARGET are
+explicit. A busy fall after failure is not a successful drain.
+
+The ordinary clock path delegates to the same transition and adds no state.
+`Gpu::clock_observing` optionally gathers pure connected old-state signals from
+the command/DMA, producer, frontend, T storage, post-quad and sink/cache layers.
+Its `trace::Trace` contains load samples, control/cache state and sparse ownership
+events; it does not allocate DUT ownership or change scheduling. Consumer-side
+slot generations and CB/meshlet/quad identities correlate actual transfers.
+Accepted submit/reset target validity loss is observable even when target
+registers retain their old addresses. No child is clocked twice and no memory
+request is inserted by observation. Bounded on/off fixtures compare every
+original output, final state and full native backing, including CE stalls,
+PC wrap, UV publication wrap, mixed command progress and abort/reset.

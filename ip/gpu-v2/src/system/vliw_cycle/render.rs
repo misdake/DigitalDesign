@@ -50,6 +50,87 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 impl Renderer {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::trace::Trace) {
+        let (pi, bi, li, si, o) = self.connect(i);
+        self.producer.observe(pi, trace);
+        self.backend.observe(bi, trace);
+        trace.load[12] = u64::from(
+            self.producer
+                .pool
+                .state
+                .publish_ptr
+                .wrapping_sub(self.backend.state.issue_slot)
+                & 31,
+        );
+        if let Some(l) = o.light {
+            trace.load[10] = u64::from(l.valid_pipe.count_ones());
+            trace.load[17] = u64::from(l.pixel_accepted);
+            trace.load[36] = u64::from(li.is_some_and(|i| i.compute_tick) && l.valid_pipe != 0);
+            if let Some(input) = li {
+                if l.pixel_accepted {
+                    trace.event(
+                        "light_accept",
+                        [
+                            u64::from(input.source_slot),
+                            u64::from(input.source_lane),
+                            u64::from(input.source_mask),
+                        ],
+                    );
+                }
+                if l.result.valid && input.out_ready {
+                    trace.event(
+                        "light_result",
+                        [
+                            u64::from(l.result.key),
+                            u64::from(l.result.last),
+                            l.result.g.value & l.result.g.known,
+                            l.result.g.known,
+                            l.result.h.value & l.result.h.known,
+                            l.result.h.known,
+                        ],
+                    );
+                }
+            }
+        }
+        if let Some(s) = o.sampling {
+            trace.load[11] = u64::from(s.color.live.count_ones());
+            trace.load[18] = u64::from(s.source_fire);
+            trace.load[27] = u64::from(s.packets.work.materialized);
+            trace.load[28] = u64::from(s.reserved);
+            trace.load[29] = u64::from(s.color.live.count_ones());
+            trace.load[37] = u64::from(s.direct.issue);
+            if let Some(slot) = s.publication {
+                trace.event("sample_publish", [u64::from(slot)]);
+            }
+            if let Some(input) = si {
+                if s.source_fire {
+                    trace.event(
+                        "sample_accept",
+                        [
+                            u64::from(input.source_descriptor & 15),
+                            u64::from(input.source_row),
+                        ],
+                    );
+                }
+                if input.commit_allow && s.color.result_fire {
+                    trace.event(
+                        "sample_result",
+                        [
+                            u64::from(s.result.key),
+                            u64::from(s.result.last),
+                            s.result.rgb.value & s.result.rgb.known,
+                            s.result.rgb.known,
+                        ],
+                    );
+                }
+            }
+            // The publication/return handshakes are recorded as well as the
+            // physical inventory, so the importer can verify conservation.
+            if si.is_some_and(|i| i.commit_allow) && s.color.result_fire && s.result.last {
+                trace.event("sample_last", [u64::from(s.result.key >> 2)]);
+            }
+        }
+    }
     pub fn with_triangles(profile: Profile) -> Self {
         Self {
             producer: Producer::with_triangles(),

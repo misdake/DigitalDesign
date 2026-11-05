@@ -1,7 +1,7 @@
 ---
 id: system-cycle-emu
 status: active
-last-verified: 2026-11-03
+last-verified: 2026-11-05
 ---
 
 # Full-system cycle composition
@@ -171,6 +171,13 @@ registered raster.
 
 ## Passive full-system profiling
 
+New recorder output shares the RTL collector's `capture.json`/`events.jsonl`
+version2 protocol, point catalog, parser and report path described by the
+[common profiling contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#common-collector-protocol).
+Native times are exact rational logic-quantum values. Original legacy captures
+remain readable without adding unobserved points. The collector remains passive;
+trace-disabled and trace-enabled clocks must produce identical modeled state.
+
 `--profile-out DIR` records this same live composition into a new directory.
 `--profile-max-events N` defaults to 2,000,000 and permits 1..10,000,000;
 `--profile-max-frames N` defaults to two and permits 0..1024. Capture starts at
@@ -187,8 +194,28 @@ the report input hashes. It records the entry, seed, fixed input, synthetic
 startup boundary, stop reason, coverage and separate host setup/preparation/
 capture setup/stepping/export costs. CPU retirement counters, actual hold flags,
 GPU CP phase and producer/backend activity are passive old-state observations.
-Detailed instruction/meshlet/quad owner lineage is unavailable; those events and
-conservation checks are not reconstructed from command bytes.
+The observed GPU clock returns committed command edges and passive connected
+signals through `Step.gpu_commands` and `Step.gpu_trace`; ordinary stepping keeps
+the original clock path. The recorder correlates real latch/issue/release and
+DMA/VT/T/quad/ROP owners without adding model state, memory reads or clocks.
+The immutable RAM-latched instruction and mutable CLEAR/MEMCPY control progress
+are distinct fields. Abort/reset close the protocol busy interval with a stop
+reason, leaving uncompleted semantic owners open. Legacy captures without these
+capabilities keep their detailed lineage unavailable.
+Accepted GPU master descriptors are recorded before the real board request
+slots. Shared-service descriptors are recorded after those slots at arbiter
+acceptance. Their times can differ; the report verifies per-port FIFO and exact
+fields rather than assigning an asynchronous response to the current CP.
+
+Before the first observed edge or GPU submission/present, `initialize_memory`
+copies one read-only 8MiB backing preimage to `initial-memory.bin`. Subsequent
+native physical writes record actual byte address, 32-bit data and four unmasked
+byte lanes; GPU cache/tag writes and target invalidation provide the remaining
+native history inputs. No command-boundary full-memory copy, MC service,
+implicit flush or second GPU execution occurs. The two-target native history
+budget is independent of the registered-raster budget and event limit. Event
+overflow preserves a partial prefix with open owners and explicit image
+unavailability at an unclosed final edge.
 
 There are two independent memory boundaries:
 
@@ -212,8 +239,54 @@ applied-present counts accompany each image. Submission, completion, present
 request and applied-present counters are separate identities. A raster does not
 claim an unproven one-to-one present association. Image limits select a bounded
 subset; absent images and incomplete timing coverage remain explicit.
+The default two-raster budget can include startup black frames; requesting two
+application presentation reports therefore requires sufficient saved rasters.
+Native command history is separately 400x240 RGB565/D16 with hash-bound raw
+planes, never a resized registered raster. The profiler owns its target selection,
+cache overlay, completed-prefix policy and image identity validation.
 
 The existing profiler's `build`/`render` commands and single offline viewer
 consume this source. The [profiler contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#full-system-cycle-source)
 owns the report extension. Physical/loader/device qualification remains limited
 as above even when a profile is complete.
+
+### Ordinary application runner
+
+`cpu-v3-profile-runner` uses this same System/Recorder with a separately identified
+runtime. Its exact-program plan supplies word addresses and Execute PCs. Passive
+CPU inspection selects pending scalar-store data, resident D-cache data, then
+physical RAM; it performs no request, cache replacement or clock. Observation
+exposes the actual scalar Execute address and already-selected CPU device read
+mux. Core device enables identify unheld executed MMIO; watch probes remain
+separate and do not become CPU reads.
+The executable runs the complete model on one host worker with an explicit8MiB
+stack, avoiding the smaller Windows main-thread default. This is host storage,
+not an application stack change or parallel simulated execution. Capture records
+the host stack bound; the existing total-wall watchdog covers the worker.
+Return sites use the first unheld scalar Execute arrival with consecutive-Execute
+deduplication, independently of retirement. PFX and cache-miss LOAD instructions
+may not retire at that edge; a later MemoryWait retirement is not their return
+arrival. Non-logic observations do not reset deduplication. Action gates still
+require actual same-edge retirement. The ordinary wait ABI's pre-edge r8/r9/r10
+(started/startEpoch/finish) is observed passively; only finish!=0 enables the
+shared final-wait-return site. These retained register meanings belong to the
+exact ordinary program map, not to the hardware device ABI.
+
+The runner publishes connected digital neutral input through `publish_input`.
+After normal PLAY29/start(7,3)/orientation0/mask25, no fade/motion and settled
+switch ages, it warms one ordinary frame and selects the next presentation A.
+Only after A's complete stable registered raster does a following input gate
+publish right (`0xffdf`). A real Device5 low-byte read, acknowledge and the
+compiled normal input-consumption gate permit one neutral release. B selects a
+real ROLL toward(8,3)/orientation1/mask25 at its first observed age in[100,220)ms;
+the age is retained rather than forced. F1/F2 keep their actual startup phases.
+No app RAM, timer, entry animation or simulated time is changed by these gates.
+
+The separate runner tier caps application logic at80M, host stepping at7200s,
+main events at112M and4GiB, sidecar events at100K, native presentation groups at4
+and registered images at12. A run plan specifies smaller exact bounds. Hitting
+a journal cap stops the runner with a partial prefix; existing recorder callers
+retain their10M ceiling. The Python launcher checks exact runtime/program/source
+bindings, writes a no-retry receipt and applies one total wall deadline to both
+capture and report subprocesses, including their exports. A deadline may leave
+partial files; it does not prove report completeness.

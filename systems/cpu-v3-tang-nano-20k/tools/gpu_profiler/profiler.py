@@ -12,6 +12,16 @@ from reporting import build_report, render_report, summary, image_options
 from snapshot import SnapshotError
 
 
+def frame_ordinals(value):
+    try:
+        frames = [int(v) for v in value.split(',')]
+        if not frames or min(frames) < 1 or len(frames) != len(set(frames)):
+            raise ValueError()
+        return frames
+    except ValueError:
+        raise argparse.ArgumentTypeError('Expected distinct positive presentation ordinals, e.g.1,2')
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -25,18 +35,22 @@ def main():
     build.add_argument("--out", type=Path)
     build.add_argument("--allow-partial", action="store_true")
     image_options(build, replace=True)
+    build.add_argument('--frames', type=frame_ordinals, default=[], help='Generate presentation-specific system reports, e.g.1,2')
+    build.add_argument('--source-identity', type=Path, help='Source mapping JSON; captured program/executable hashes must match')
     render = commands.add_parser("render", help="Validate v2 or import legacy v1 JSON, then render")
     render.add_argument("profile", type=Path)
     render.add_argument("--out", type=Path, required=True)
     render.add_argument('--require-images', action='store_true')
     render.add_argument('--replace-report', action='store_true')
+    render.add_argument('--frames', type=frame_ordinals, default=[])
+    render.add_argument('--source-identity', type=Path)
     check = commands.add_parser("check", help="Bounded format, statistics and viewer regression")
     check.add_argument("--node", default="node")
     args = parser.parse_args()
     if args.command == "check":
         root = Path(__file__).resolve().parent
         subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", str(root / "tests"),
-                        "-p", "test_*.py", "-v"], check=True, timeout=90)
+                        "-p", "test_*.py", "-v"], check=True, timeout=180)
         with tempfile.TemporaryDirectory() as temp:
             write_report(build_capture(root / "tests/fixtures/pingpong"), temp)
             for script, extra in [("math_checks.js", []), ("viewer_checks.js", [str(Path(temp) / "profile.json")]), ("result_viewer_checks.js", [])]:
@@ -53,7 +67,7 @@ def main():
         if args.command == 'render':
             raw = json.loads(args.profile.read_text())
             if raw.get('schema') == 'digitaldesign.gpu-result':
-                if args.require_images or args.replace_report:
+                if args.require_images or args.replace_report or args.frames or args.source_identity:
                     raise SnapshotError('Result-only render has no command history or generated profiling report replacement')
                 from simulator import write_result
                 write_result(raw, args.out, args.profile.parent)
@@ -63,9 +77,9 @@ def main():
         data = (build_report(args.folder, out, snapshot=args.snapshot, raw=args.raw, binding=args.binding,
                             allow_partial=args.allow_partial, preview=args.preview,
                             capture_format=args.capture_format, require_images=args.require_images,
-                            replace_report=args.replace_report)
+                            replace_report=args.replace_report, frames=args.frames, source_identity=args.source_identity)
                 if args.command == 'build' else render_report(args.profile, out, require_images=args.require_images,
-                                                             replace_report=args.replace_report))
+                                                             replace_report=args.replace_report, frames=args.frames, source_identity=args.source_identity))
         print(json.dumps(summary(data, out)))
 
 

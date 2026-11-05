@@ -16,6 +16,7 @@ pub struct Activity {
     pub read_bytes: u8,
     pub write_slot_bytes: u8,
     pub write_unmasked_bytes: u8,
+    pub write: Option<pins::Write>,
 }
 #[derive(Clone, Debug)]
 pub struct Memory {
@@ -77,13 +78,14 @@ impl Memory {
                 .clock(&drive, false, self.pins.sample(&controller));
             self.native_cycle += 1;
         } else {
-            if let Some(bytes) = self
+            if let Some(write) = self
                 .pins
-                .clock_observing(input.reset, &controller, backing)
+                .clock_journaling(input.reset, &controller, backing)
                 .map_err(Error::Pins)?
             {
                 activity.write_slot_bytes = 4;
-                activity.write_unmasked_bytes = bytes;
+                activity.write_unmasked_bytes = write.unmasked.count_ones() as u8;
+                activity.write = Some(write);
             }
         }
         self.phase = (self.phase + 1) & 3;

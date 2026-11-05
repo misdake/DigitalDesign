@@ -9,7 +9,7 @@ import subprocess
 
 RESERVED_NAMES = frozenset({
     "profiler_tb.v", "capture.json", "capture.vvp", "compile.log", "run.log",
-    "events.txt", "load.csv",
+    "events.txt", "load.csv", "events.jsonl",
 })
 
 
@@ -59,8 +59,7 @@ def run(manifest_path, out, compile_only=False):
             raise ValueError("Bindings must be explicit HDL identifiers")
     observer_path = Path(__file__).with_name("observer.vh")
     observer = observer_path.read_text(encoding="utf-8")
-    for key, value in {**bindings, "EVENTS": (out / "events.txt").as_posix(),
-                       "LOAD": (out / "load.csv").as_posix()}.items():
+    for key, value in {**bindings, "EVENTS": (out / "events.jsonl").as_posix()}.items():
         if '"' in value or "\n" in value:
             raise ValueError("Invalid observer path")
         observer = observer.replace("@" + key + "@", value)
@@ -74,6 +73,17 @@ def run(manifest_path, out, compile_only=False):
     metadata = {**config, "manifest_sha256": sha(manifest_path),
                 "source_sha256": {p.name: sha(p) for p in sources},
                 "observer_sha256": sha(observer_path), "inputs_sha256": inputs}
+    from event_protocol import contract
+    from system_gpu import LOAD_COLUMNS
+    from system_emu import PORTS
+    metadata.update(contract(config['clock_hz'],dict(gpu=True,cpu=False,display=False,
+                         shared_service64=False,native_model32=False,cpu_markers=True,physical_write=config.get('physical_write',False))))
+    metadata.update(source_kind='gpu-rtl',ports=PORTS,gpu_load_columns=LOAD_COLUMNS,
+                    evidence_files=[*metadata['source_sha256'],*inputs],scanouts=[],
+                    image_journal=config.get('image_journal',dict(available=False)),event_limit=112000000,
+                    capabilities=dict(client_payload64=False,native_model32=False,shared_service64=False,
+                         pin_electrical=False,command_control_lineage=True,gpu_signal_journal=True,
+                         gpu_master_requests=True,gpu_master_payloads=True,instruction_owner_lineage=True))
     (out / "capture.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     command = [os.environ.get("IVERILOG_EXE", "iverilog"), "-g2012", "-D__ICARUS__",
                "-s", config.get("top", "tb"), "-o", str(out / "capture.vvp"), *map(str, sources)]
@@ -90,4 +100,12 @@ def run(manifest_path, out, compile_only=False):
             cwd=out, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
     if result.returncode:
         raise RuntimeError("RTL capture failed; see " + str(out / "run.log"))
+    count=0;last=None
+    with (out/'events.jsonl').open() as stream:
+        for line in stream:count+=1;last=json.loads(line)
+    if not last or last[1]!='capture_end':
+        raise RuntimeError('RTL collector did not publish a bounded capture end')
+    metadata.update(origin_tick=0,end_tick=last[0],coverage_end_tick=last[0],events=count,
+                    reached=last[2],truncated=not last[2],event_bytes=(out/'events.jsonl').stat().st_size)
+    (out/'capture.json').write_text(json.dumps(metadata,indent=2)+'\n',encoding='utf-8')
     print("Capture saved: " + str(out))

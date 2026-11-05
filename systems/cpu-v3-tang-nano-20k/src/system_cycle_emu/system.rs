@@ -45,6 +45,13 @@ pub struct Statistics {
 #[derive(Clone, Copy)]
 pub struct Observation<'a> {
     pub instant: Instant,
+    /// Old-state scalar execute address; distinct from the fetch/output PC.
+    pub executing_pc: Option<(u16, u16)>,
+    /// Already-selected CPU read mux. Reading this value has no side effects.
+    pub device_read_data: u16,
+    /// Passive pre-edge r8/r9/r10. The audited ordinary wait retains started,
+    /// start_epoch and finish here across its complete wait/return/read path.
+    pub cpu_wait_abi: [u16; 3],
     pub cpu: Option<&'a wiring::Output>,
     pub gpu: Option<&'a GpuOutput>,
     pub memory: Option<&'a Sample>,
@@ -57,6 +64,8 @@ pub struct Step {
     pub instant: Instant,
     pub cpu: Option<cpu_v3::CpuV3CoreOutputValue>,
     pub display: ControlOutput,
+    pub gpu_commands: Option<gpu_v2::system::vliw_cycle::command::CommandEdge>,
+    pub gpu_trace: Option<gpu_v2::system::vliw_cycle::trace::Trace>,
     pub native:
         Option<digital_design_hardware_gowin::sdram_memory_controller::cycle::memory::Activity>,
 }
@@ -108,6 +117,17 @@ impl System {
     }
     pub fn backing(&self) -> &[u16] {
         self.memory.backing()
+    }
+    /// Host inspection of CPU-visible RAM, including pending store/cache data.
+    /// No clock, cache replacement, MMIO read or memory transaction is issued.
+    pub fn inspect_cpu_word(&self, address: u32) -> Option<u16> {
+        if address >= self.backing().len() as u32 {
+            return None;
+        }
+        let physical = cpu_v3::PhysicalWordAddress::new(address);
+        self.cpu
+            .inspected_word(physical)
+            .or_else(|| self.backing().get(address as usize).copied())
     }
     pub fn clock(&self) -> &Clock {
         &self.clock
@@ -356,10 +376,14 @@ impl System {
         }
     }
     pub fn step(&mut self) -> Result<Step, Error> {
-        self.step_observing(|_| {})
+        self.step_inner(false, |_| {})
     }
-    pub fn step_observing(
+    pub fn step_observing(&mut self, observe: impl FnMut(Observation<'_>)) -> Result<Step, Error> {
+        self.step_inner(true, observe)
+    }
+    fn step_inner(
         &mut self,
+        observing: bool,
         mut observe: impl FnMut(Observation<'_>),
     ) -> Result<Step, Error> {
         let e = self.clock.peek();
@@ -376,6 +400,14 @@ impl System {
             .map_or_else(|| self.display.outputs(&di), |s| s.display);
         observe(Observation {
             instant: e,
+            executing_pc: self.cpu.core().executing_instruction_address(),
+            device_read_data: logic.as_ref().map_or(0, |s| {
+                (s.cpu.system.device_read_data as u16) | s.ci.external_device_read_data
+            }),
+            cpu_wait_abi: {
+                let registers = self.cpu.core().architectural_gprs();
+                [registers[8], registers[9], registers[10]]
+            },
             cpu: logic.as_ref().map(|s| &s.cpu),
             gpu: logic.as_ref().map(|s| &s.gpu),
             memory: logic.as_ref().map(|s| &s.memory),
@@ -385,6 +417,8 @@ impl System {
             gpu_phase: self.gpu.control.processor.phase() as u8,
         });
         let mut cpu_out = None;
+        let mut gpu_commands = None;
+        let mut gpu_trace = None;
         let old_pending = self.display_register(3) & 1 != 0;
         let old_ready = self.cold.cold_ready;
         let old_done = self.cold.boot_done;
@@ -405,7 +439,13 @@ impl System {
             let actual = self.cpu.clock(&s.ci).map_err(Error::Cpu)?;
             debug_assert_eq!(actual, s.cpu);
             cpu_out = Some(s.cpu.core.clone());
-            self.gpu.clock(s.gi).map_err(Error::Gpu)?;
+            if observing {
+                let gpu_edge = self.gpu.clock_observing(s.gi).map_err(Error::Gpu)?;
+                gpu_commands = Some(gpu_edge.command);
+                gpu_trace = Some(gpu_edge.trace);
+            } else {
+                self.gpu.clock(s.gi).map_err(Error::Gpu)?;
+            }
             let ready = [
                 s.memory.arbiter.gpu_ro_request_ready,
                 s.memory.arbiter.gpu_fb_r_request_ready,
@@ -451,6 +491,8 @@ impl System {
         }
         assert_eq!(self.clock.advance(), e);
         Ok(Step {
+            gpu_commands,
+            gpu_trace,
             native,
             instant: e,
             cpu: cpu_out,

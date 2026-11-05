@@ -3,6 +3,8 @@
 mod fixture;
 #[path = "support/vliw_gpu_native.rs"]
 mod memory;
+#[path = "support/profiling_journal.rs"]
+mod profiling_journal;
 #[path = "support/vliw_tiny.rs"]
 mod tiny;
 #[allow(dead_code)]
@@ -36,6 +38,12 @@ struct Run {
     rows: Vec<Edge>,
     setup_us: u128,
     step_us: u128,
+    preimage: Vec<u16>,
+    journal: Vec<(
+        u64,
+        digital_design_hardware_gowin::sdram_memory_controller::cycle::pins::Write,
+    )>,
+    image_oracles: Vec<(usize, Vec<u8>, Vec<u8>)>,
 }
 fn store(backing: &mut [u16], address: usize, bytes: &[u8]) {
     assert!(address.is_multiple_of(2) && bytes.len().is_multiple_of(2));
@@ -149,6 +157,8 @@ fn run() -> Run {
 fn run_mode(lit: bool) -> Run {
     let setup_start = std::time::Instant::now();
     let (backing, submissions, coverage) = input_image(lit);
+    let preimage = backing.clone();
+    let mut image_oracles = Vec::new();
     let mut expected = backing.clone();
     let mut native = memory::Memory::new(backing);
     let mut gpu = Gpu::with_draws(Profile::Native);
@@ -246,6 +256,13 @@ fn run_mode(lit: bool) -> Run {
                     panic!("CB{job} physical byte{:x}: {a:04x}!={b:04x}", at * 2);
                 }
                 completed += 1;
+                let plane = |base: usize| {
+                    expected[base / 2..base / 2 + 102400]
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect()
+                };
+                image_oracles.push((wall, plane(0x100000), plane(0x140000)));
                 if job == 0 {
                     job = 1;
                     phase = 0;
@@ -291,6 +308,9 @@ fn run_mode(lit: bool) -> Run {
                 rows,
                 setup_us,
                 step_us,
+                preimage,
+                journal: native.journal,
+                image_oracles,
             };
         }
     }
@@ -304,6 +324,177 @@ fn device4_cp_dma_draw_and_flush_use_one_native_pin_backing() {
 fn actual_pool_lighting_and_final_use_installed_live_globals() {
     run_mode(true);
 }
+#[test]
+fn passive_gpu_journal_matches_every_original_edge_and_final_state() {
+    let run = run_mode(true); // Existing independent physical color/guard oracle.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/frame-reports/actual-gpu");
+    std::fs::create_dir_all(&root).unwrap();
+    profiling_journal::memory(&root, &run.preimage, &run.journal, &run.image_oracles);
+    let kinds = profiling_journal::record(
+        &root.join("gpu-signals.jsonl"),
+        Gpu::with_draws(Profile::Native),
+        run.rows.iter().map(|e| (e.i, e.o)),
+    );
+    assert_eq!(kinds["draw"], 2);
+    assert_eq!(kinds["q_alloc"], kinds["q_publish"]);
+    assert_eq!(kinds["q_alloc"], kinds["q_retire"]);
+    assert_eq!(kinds["rop_begin"], kinds["q_commit"]);
+    assert!(kinds["cache_write"] >= 12 && kinds["dma_request"] > 2);
+    println!("PASSIVE_GPU_JOURNAL {:?} {:?}", root, kinds);
+}
+#[test]
+#[ignore = "bounded same-input RTL/emu common profiling event comparison"]
+fn common_profiling_collectors_observe_the_same_draw_edges() {
+    let run = run_mode(true);
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/common-protocol")
+        .join(format!("same-input-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let emu = root.join("emu");
+    let rtl = root.join("rtl-capture");
+    std::fs::create_dir(&emu).unwrap();
+    std::fs::create_dir(&rtl).unwrap();
+    std::fs::write(
+        emu.join("initial-memory.bin"),
+        run.preimage
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    profiling_journal::record_common_native(
+        &emu.join("events.jsonl"),
+        Gpu::with_draws(Profile::Native),
+        run.rows.iter().map(|e| (e.i, e.o)),
+        &run.journal,
+    );
+    let observer = profiling_journal::observer(&rtl.join("events.jsonl"), 2, run.rows.len() - 1);
+    let pins = fixture::fields(&run.rows[0]);
+    vertex_support::rtl::replay_profile(
+        &root,
+        "rtl",
+        run.rows.iter().map(fixture::fields).collect(),
+        fixture::production(&pins),
+        &observer,
+    );
+    let raw = std::fs::read_to_string(rtl.join("events.jsonl")).unwrap();
+    let last = raw.lines().last().unwrap();
+    assert!(last.ends_with(",\"capture_end\",true]"));
+    let end = last
+        .trim_start_matches('[')
+        .split(',')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    profiling_journal::common_metadata(&rtl, end, "gpu-rtl", true);
+    println!("COMMON_PROFILING_ROOT {}", root.display());
+    // Stop on the real first DRAW release, while its T/result owners remain
+    // live. Both collectors see precisely this finite prefix, with no drain.
+    let cut = run.rows.iter().position(|e| e.pc == 12).unwrap();
+    let prefix = &run.rows[..cut];
+    let partial = root.join("draw-release-prefix");
+    let emu = partial.join("emu");
+    let rtl = partial.join("rtl-capture");
+    std::fs::create_dir_all(&emu).unwrap();
+    std::fs::create_dir(&rtl).unwrap();
+    profiling_journal::record_common(
+        &emu.join("events.jsonl"),
+        Gpu::with_draws(Profile::Native),
+        prefix.iter().map(|e| (e.i, e.o)),
+    );
+    let observer = profiling_journal::observer(&rtl.join("events.jsonl"), 2, prefix.len() - 1);
+    vertex_support::rtl::replay_profile(
+        &partial,
+        "rtl",
+        prefix.iter().map(fixture::fields).collect(),
+        fixture::production(&pins),
+        &observer,
+    );
+    let raw = std::fs::read_to_string(rtl.join("events.jsonl")).unwrap();
+    let last = raw.lines().last().unwrap();
+    assert!(last.ends_with(",\"capture_end\",false]"));
+    let end = last
+        .trim_start_matches('[')
+        .split(',')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    profiling_journal::common_metadata(&rtl, end, "gpu-rtl", false);
+    println!("COMMON_PROFILING_ROOT {}", partial.display());
+}
+#[test]
+#[ignore = "bounded actual reset with live T owners in both common collectors"]
+fn common_profiling_reset_preserves_the_same_stop_boundary() {
+    let run = run_mode(true);
+    let cut = run.rows.iter().position(|e| e.pc == 12).unwrap();
+    let mut rows = run.rows[..cut].to_vec();
+    let mut gpu = Gpu::with_draws(Profile::Native);
+    for e in &rows {
+        gpu.clock(e.i).unwrap();
+    }
+    {
+        let i = Input {
+            reset: true,
+            ce: false,
+            physical: [Physical {
+                request_ready: true,
+                write_ready: true,
+                response: gpu_v2::system::vliw_cycle::Response {
+                    valid: true,
+                    last: true,
+                    data: 0x1234,
+                    ..Default::default()
+                },
+            }; 3],
+            ..Default::default()
+        };
+        rows.push(Edge {
+            i,
+            o: gpu.outputs(i),
+            phase: gpu.control.processor.phase() as u8,
+            pc: gpu.control.processor.pc(),
+            pages: gpu.control.processor.cache_pages(),
+            installed: gpu.control.processor.draw_status().unwrap(),
+        });
+        gpu.clock(i).unwrap();
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/common-protocol")
+        .join(format!("reset-{}", std::process::id()));
+    let emu = root.join("emu");
+    let rtl = root.join("rtl-capture");
+    std::fs::create_dir_all(&emu).unwrap();
+    std::fs::create_dir(&rtl).unwrap();
+    profiling_journal::record_common(
+        &emu.join("events.jsonl"),
+        Gpu::with_draws(Profile::Native),
+        rows.iter().map(|e| (e.i, e.o)),
+    );
+    let observer = profiling_journal::observer(&rtl.join("events.jsonl"), 1, rows.len() - 1);
+    vertex_support::rtl::replay_profile(
+        &root,
+        "rtl",
+        rows.iter().map(fixture::fields).collect(),
+        fixture::production(&fixture::fields(&rows[0])),
+        &observer,
+    );
+    let raw = std::fs::read_to_string(rtl.join("events.jsonl")).unwrap();
+    let last = raw.lines().last().unwrap();
+    assert!(last.ends_with(",\"capture_end\",false]"));
+    let end = last
+        .trim_start_matches('[')
+        .split(',')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    profiling_journal::common_metadata(&rtl, end, "gpu-rtl", false);
+    println!("COMMON_PROFILING_ROOT {}", root.display());
+}
+
 #[test]
 #[ignore = "one actual whole command GPU with covered Lighting tuples and native feedback"]
 fn entire_lit_rgb_gpu_matches_native_feedback() {

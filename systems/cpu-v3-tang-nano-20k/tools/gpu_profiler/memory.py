@@ -1,5 +1,6 @@
 """Actual payload accounting at the three 64-bit GPU master interfaces."""
 from collections import defaultdict, deque
+from bisect import bisect_left, bisect_right
 import math
 
 LINKS = ('ro', 'fb_read', 'fb_write')
@@ -190,13 +191,28 @@ def build(events, origin, stop, clock, complete, commands, tracks, sample_interv
     if complete and any(live):
         raise ValueError('Complete capture contains outstanding memory requests')
     end = stop-origin
+    # Each master's FIFO produces monotone starts and terminal times. Restrict
+    # each command query before summarizing; do not rescan the full capture for
+    # every instruction. Crossing transactions retain their original endpoints.
+    by_port=[[t for t in transactions if t['port']==p] for p in range(3)]
+    starts=[[t['start'] for t in rows] for rows in by_port]
+    ends=[[t['end'] if t['end'] is not None else end for t in rows] for rows in by_port]
+    beat_times=[b['cycle'] for b in beats]
+    track_times={k:[p[0] for p in v] for k,v in (tracks or {}).items()}
+    sources={t['source'] for t in transactions}
     def scope(start, finish):
-        summary = summarize(transactions, beats, start, finish, clock, tracks=tracks)
-        summary['links'] = [dict(name=name, **summarize(transactions, beats, start, finish, clock, (port,), tracks))
+        tx=[t for p,rows in enumerate(by_port)
+            for t in rows[bisect_right(ends[p],start):bisect_left(starts[p],finish)]]
+        data=beats[bisect_left(beat_times,start):bisect_left(beat_times,finish)]
+        sampled=None if tracks is None else {
+            k:v[max(0,bisect_right(track_times[k],start)-1):bisect_left(track_times[k],finish)+1]
+            for k,v in tracks.items()}
+        summary = summarize(tx, data, start, finish, clock, tracks=sampled)
+        summary['links'] = [dict(name=name, **summarize(tx, data, start, finish, clock, (port,), sampled))
                             for port, name in enumerate(LINKS)]
-        summary['sources'] = [dict(name=source, **summarize([t for t in transactions if t['source'] == source],
-                                [b for b in beats if b['source'] == source], start, finish, clock))
-                              for source in SOURCES if any(t['source'] == source for t in transactions)]
+        summary['sources'] = [dict(name=source, **summarize([t for t in tx if t['source'] == source],
+                                [b for b in data if b['source'] == source], start, finish, clock))
+                              for source in SOURCES if source in sources]
         return summary
     return dict(available=True, boundary='Three full-byte 64-bit GPU master links; not physical SDRAM pins',
                 clock_hz=clock, clock_domain='GPU logic', byte_enable='No byte-enable field; full eight-byte payload slots',

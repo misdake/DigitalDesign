@@ -5,6 +5,8 @@ mod aux_fixture;
 mod fixture;
 #[path = "support/vliw_gpu_native.rs"]
 mod memory;
+#[path = "support/profiling_journal.rs"]
+mod profiling_journal;
 #[path = "support/vliw_draw_reference.rs"]
 mod reference;
 #[path = "support/vliw_tiny.rs"]
@@ -43,6 +45,12 @@ struct Run {
     setup_us: u128,
     step_us: u128,
     total_us: u128,
+    preimage: Vec<u16>,
+    journal: Vec<(
+        u64,
+        digital_design_hardware_gowin::sdram_memory_controller::cycle::pins::Write,
+    )>,
+    image_oracles: Vec<(usize, Vec<u8>, Vec<u8>)>,
 }
 const TINT: [u32; 2] = [0x8192_ad31, 0x4280_5020];
 type Coverage = [BTreeSet<(usize, usize)>; 2];
@@ -216,6 +224,8 @@ fn run_case(uv_repeats: usize, stop: bool) -> Run {
 fn run_case_with_auxiliary(uv_repeats: usize, stop: bool, auxiliary: u8) -> Run {
     let setup_start = std::time::Instant::now();
     let (backing, submissions, coverage) = image(uv_repeats, auxiliary);
+    let preimage = backing.clone();
+    let mut image_oracles = Vec::new();
     let mut expected = backing.clone();
     let light = reference::light();
     assert!(light[0] != 256 && light[1] > 0);
@@ -383,6 +393,13 @@ fn run_case_with_auxiliary(uv_repeats: usize, stop: bool, auxiliary: u8) -> Run 
                 {
                     panic!("CB{job} physical byte{:x}: {got:04x}!={want:04x}", at * 2);
                 }
+                let plane = |base: usize| {
+                    expected[base / 2..base / 2 + 102400]
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect()
+                };
+                image_oracles.push((wall, plane(0x100000), plane(0x140000)));
                 if job == 0 {
                     job = 1;
                     phase = 0;
@@ -412,6 +429,9 @@ fn run_case_with_auxiliary(uv_repeats: usize, stop: bool, auxiliary: u8) -> Run 
                     setup_us,
                     step_us: step_start.elapsed().as_micros(),
                     total_us: setup_start.elapsed().as_micros(),
+                    preimage,
+                    journal: native.journal,
+                    image_oracles,
                 };
             }
         }
@@ -445,6 +465,9 @@ fn run_case_with_auxiliary(uv_repeats: usize, stop: bool, auxiliary: u8) -> Run 
                 setup_us,
                 step_us: step_start.elapsed().as_micros(),
                 total_us: setup_start.elapsed().as_micros(),
+                preimage,
+                journal: native.journal,
+                image_oracles,
             };
         }
     }
@@ -626,4 +649,80 @@ fn whole_draw_ce0_abort_releases_only_physical_owners() {
         true,
         None,
     );
+}
+
+#[test]
+fn passive_uv_wrap_and_abort_journal_preserves_real_outputs() {
+    for (name, repeats, stop, auxiliary) in [
+        ("uv-wrap", 5, false, 0),
+        ("uv-abort", 1, true, 0),
+        ("mixed", 1, false, 1),
+    ] {
+        let r = run_case_with_auxiliary(repeats, stop, auxiliary);
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/frame-reports")
+            .join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        profiling_journal::memory(&folder, &r.preimage, &r.journal, &r.image_oracles);
+        let gpu = if auxiliary > 0 {
+            Gpu::with_all_commands(Profile::Native)
+        } else {
+            Gpu::with_draws(Profile::Native)
+        };
+        let kinds = profiling_journal::record(
+            &folder.join("gpu-signals.jsonl"),
+            gpu,
+            r.rows.iter().map(|e| (e.i, e.o)),
+        );
+        assert!(kinds["sample_publish"] > 0);
+        let returned = kinds.get("sample_last").copied().unwrap_or(0);
+        if !stop {
+            assert_eq!(kinds["sample_publish"], returned);
+        } else {
+            assert!(
+                kinds["sample_publish"] > returned,
+                "abort must retain an open Sampling owner"
+            );
+        }
+        println!("PASSIVE_UV_JOURNAL {name} {kinds:?}");
+    }
+}
+
+#[test]
+#[ignore = "bounded same-input Sampling/ring/abort common profiling events"]
+fn common_profiling_uv_and_abort_collectors_use_identical_points() {
+    for (name, repeats, stop) in [("uv-wrap", 5, false), ("uv-abort", 1, true)] {
+        let r = run_case(repeats, stop);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/common-protocol")
+            .join(format!("{name}-{}", std::process::id()));
+        let emu = root.join("emu");
+        let rtl = root.join("rtl-capture");
+        std::fs::create_dir_all(&emu).unwrap();
+        std::fs::create_dir(&rtl).unwrap();
+        profiling_journal::record_common(
+            &emu.join("events.jsonl"),
+            Gpu::with_draws(Profile::Native),
+            r.rows.iter().map(|e| (e.i, e.o)),
+        );
+        let observer = profiling_journal::observer(&rtl.join("events.jsonl"), 2, r.rows.len() - 1);
+        vertex_support::rtl::replay_profile(
+            &root,
+            "rtl",
+            r.rows.iter().map(fixture::fields).collect(),
+            fixture::production(&fixture::fields(&r.rows[0])),
+            &observer,
+        );
+        let raw = std::fs::read_to_string(rtl.join("events.jsonl")).unwrap();
+        let last = raw.lines().last().unwrap();
+        let end = last
+            .trim_start_matches('[')
+            .split(',')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        profiling_journal::common_metadata(&rtl, end, "gpu-rtl", !stop);
+        println!("COMMON_PROFILING_ROOT {}", root.display());
+    }
 }

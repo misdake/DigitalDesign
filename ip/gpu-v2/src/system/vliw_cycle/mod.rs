@@ -23,6 +23,7 @@ pub mod render;
 pub mod router;
 pub mod sampling;
 pub mod tdp;
+pub mod trace;
 pub mod ui;
 pub mod vertex;
 
@@ -92,6 +93,18 @@ pub struct Transport {
     pub router: router::Router,
 }
 impl Transport {
+    pub(crate) fn observe(&self, i: Input, trace: &mut trace::Trace) {
+        let (di, ri) = self.connect(i);
+        self.dma.observe(di, trace);
+        let ro = self.router.outputs(ri);
+        trace.load[0] = u64::from(!self.dma.outputs(di).idle);
+        for (index, port) in ro.physical.into_iter().enumerate() {
+            trace.load[32 + index] = u64::from(port.valid && !i.physical[index].request_ready);
+        }
+        if ro.texture_ready {
+            trace.event("texture_request", []);
+        }
+    }
     fn connect(&self, i: Input) -> (command_dma::Input, router::Input) {
         let mut di = command_dma::Input {
             reset: i.reset,

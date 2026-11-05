@@ -28,6 +28,11 @@ pub struct Output {
     pub physical: [Request; 3],
     pub write_data: u64,
 }
+#[derive(Clone, Debug, Default)]
+pub struct Edge {
+    pub command: command::CommandEdge,
+    pub trace: super::trace::Trace,
+}
 #[derive(Clone, Debug)]
 pub struct Gpu {
     pub control: Control,
@@ -306,7 +311,68 @@ impl Gpu {
         self.connect(i).3
     }
     pub fn clock(&mut self, i: Input) -> Result<(), Error> {
+        self.clock_inner(i, false).map(|_| ())
+    }
+    pub fn clock_observing(&mut self, i: Input) -> Result<Edge, Error> {
+        self.clock_inner(i, true)
+    }
+    fn clock_inner(&mut self, i: Input, observing: bool) -> Result<Edge, Error> {
         let (ci, ri, ui, output) = self.connect(i);
+        let target_was_valid = self.control.processor.draw_status().is_some_and(|s| s.2);
+        let mut trace = super::trace::Trace::default();
+        if observing {
+            self.control.observe(ci, &mut trace);
+            self.render.observe(ri, &mut trace);
+            trace.load[35] = u64::from(i.ce);
+            trace.load[38] = u64::from(i.reset);
+            for (n, port) in output.physical.into_iter().enumerate() {
+                trace.load[32 + n] = u64::from(port.valid && !i.physical[n].request_ready);
+                if port.valid && i.physical[n].request_ready {
+                    trace.event(
+                        "master_request",
+                        [
+                            n as u64,
+                            u64::from(port.address_halfword),
+                            u64::from(port.count),
+                        ],
+                    );
+                }
+                let response = i.physical[n].response;
+                if !i.reset && (n < 2 && response.valid || n == 2 && i.physical[n].write_ready) {
+                    let data = if n == 2 {
+                        output.write_data
+                    } else {
+                        response.data
+                    };
+                    trace.event(
+                        "master_payload",
+                        [
+                            n as u64,
+                            data as u32 as u64,
+                            data >> 32,
+                            255,
+                            u64::from(n < 2 && response.error),
+                        ],
+                    );
+                }
+                if !i.reset && response.valid && (response.last || response.error) {
+                    trace.event("master_terminal", [n as u64, u64::from(response.error)]);
+                }
+            }
+            if output.physical[2].valid && i.physical[2].request_ready {
+                let a = output.control.processor.auxiliary;
+                let mode = if a.clear_active {
+                    1
+                } else if a.copy_active {
+                    3
+                } else if output.ui.is_some_and(|u| u.active) {
+                    2
+                } else {
+                    0
+                };
+                trace.event("write_owner", [mode]);
+            }
+        }
         if !i.reset && ci.clear_active {
             super::require(
                 output.render.idle && !ci.framebuffer.valid,
@@ -315,7 +381,7 @@ impl Gpu {
             )
             .map_err(Error::Auxiliary)?;
         }
-        let control = self.control.clock(ci);
+        let control = self.control.clock_observing(ci);
         let render = self.render.clock(ri);
         let auxiliary = self
             .ui
@@ -323,9 +389,27 @@ impl Gpu {
             .zip(ui)
             .map(|(engine, input)| engine.clock(input))
             .transpose();
-        control.map_err(Error::Control)?;
+        let edge = control.map_err(Error::Control)?;
         render.map_err(Error::Render)?;
         auxiliary.map_err(Error::Auxiliary)?;
-        Ok(())
+        if observing {
+            if target_was_valid && !self.control.processor.draw_status().is_some_and(|s| s.2) {
+                trace.event("target_unbind", [u64::from(i.reset)]);
+            }
+            if let Some((color, depth, valid)) = edge.target {
+                trace.event(
+                    "target",
+                    [
+                        u64::from(color) * 512,
+                        u64::from(depth) * 512,
+                        u64::from(valid),
+                    ],
+                );
+            }
+        }
+        Ok(Edge {
+            command: edge,
+            trace,
+        })
     }
 }

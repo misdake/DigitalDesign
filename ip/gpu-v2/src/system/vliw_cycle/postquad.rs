@@ -170,6 +170,22 @@ struct Wiring {
     sample_collision: bool,
 }
 impl Join {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::trace::Trace) {
+        let e = self.connect(i);
+        trace.load[13] = u64::from(e.o.final_stage.credits);
+        trace.load[19] = u64::from(e.o.final_issue);
+        trace.load[20] = u64::from(e.o.sink.lane_accept);
+        self.sink.observe(e.si, trace, i.pool.retire_slot);
+        if e.o.final_issue {
+            trace.event(
+                "final",
+                [
+                    u64::from(self.state.issue_slot & 31),
+                    u64::from(self.state.issue_lane),
+                ],
+            );
+        }
+    }
     pub fn native() -> Self {
         Self {
             profile: Profile::Native,

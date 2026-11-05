@@ -281,6 +281,49 @@ struct Comb {
     normal12: Bits,
 }
 impl Core {
+    pub(crate) fn observe(&self, i: CoreInput, trace: &mut super::super::trace::Trace) -> bool {
+        let x = self.comb(i);
+        if x.step {
+            let c = self.regs.control;
+            trace.event(
+                "vt_step",
+                [
+                    u64::from(self.regs.pc),
+                    u64::from(self.regs.triangle_mode),
+                    c as u32 as u64,
+                    (c >> 32) as u32 as u64,
+                    (c >> 64) as u64,
+                ],
+            );
+            let ins = Ins(c);
+            if ins.field("rf_wsrc") != 0 {
+                let bits = x.rf_write;
+                trace.event(
+                    "vt_rf_write",
+                    [
+                        u64::from(ins.field("rf_dst")),
+                        (bits.value & bits.known) & 0xffffffff,
+                        bits.known & 0xffffffff,
+                    ],
+                );
+            }
+        }
+        if x.o.word_take {
+            let bits = x.o.word_data;
+            trace.event(
+                "t_word",
+                [
+                    u64::from(self.export.consumed & 15),
+                    u64::from(x.o.word_index),
+                    (bits.value & bits.known) as u32 as u64,
+                    (bits.value & bits.known) >> 32,
+                    bits.known as u32 as u64,
+                    bits.known >> 32,
+                ],
+            );
+        }
+        x.step
+    }
     pub fn with_triangles() -> Self {
         Self {
             triangles_enabled: true,

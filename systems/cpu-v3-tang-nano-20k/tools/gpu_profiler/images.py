@@ -52,14 +52,19 @@ class History:
             values.append(version)
 
     def state(self, slot, valid, tag, epoch, color, depth):
+        if valid and epoch != self.epoch:
+            raise SnapshotError('Cache binding belongs to a stale target epoch')
+        old = self.lines.get(slot)
+        if valid and old and (old['tag'],old['epoch'],old['color'],old['depth']) == (tag,epoch,color,depth):
+            # A full cache-state snapshot can repeat unchanged slots while a
+            # different slot changes. It must not erase their write history.
+            return
         old = self.lines.pop(slot, None)
         if old:
             for address, values in old['words'].items():
                 if self.resident.get(address) is values:
                     del self.resident[address]
         if valid:
-            if epoch != self.epoch:
-                raise SnapshotError('Cache binding belongs to a stale target epoch')
             self.lines[slot] = dict(tag=tag, epoch=epoch, color=color, depth=depth, words={})
 
     def cache(self, cycle, slot, bank, address, value, owner):

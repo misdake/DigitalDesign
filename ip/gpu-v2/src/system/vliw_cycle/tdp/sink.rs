@@ -27,6 +27,15 @@ pub struct Sink {
     pub lane: u8,
 }
 impl Sink {
+    pub(crate) fn observe(
+        &self,
+        i: SinkInput,
+        trace: &mut super::super::trace::Trace,
+        quad_slot: u8,
+    ) {
+        let (ci, _) = self.connect(i);
+        self.cache.observe(ci, trace, quad_slot);
+    }
     fn connect(&self, i: SinkInput) -> (Input, SinkOutput) {
         let mut ci = i.cache;
         ci.row_valid = i.lane_valid && !ci.reset && self.phase == ci.shade_phase;

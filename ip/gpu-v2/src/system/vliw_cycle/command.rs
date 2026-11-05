@@ -115,6 +115,20 @@ pub struct ProcessorOutput {
     pub bindings: Bindings,
     pub auxiliary: AuxiliaryOutput,
 }
+/// Facts from one successful physical edge, never from an outputs/settle read.
+/// PCs are submission-relative byte offsets, not the wrapping 64-word RAM PC.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CommandEdge {
+    pub submit: Option<(u32, u32)>,  // physical byte base, byte length
+    pub latched: Option<(u32, u32)>, // PC, actual RAM word
+    pub execute: Option<(u32, u32)>, // enabled Exec observation (may retry)
+    pub issued: Option<(u32, u32)>,  // Exec consumed, not fetch/prefetch
+    pub released: Option<u32>,       // PC; origin word belongs to the observed RAM latch
+    pub drained: bool,
+    pub aborted: bool,
+    pub reset: bool,
+    pub target: Option<(u16, u16, bool)>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Contract(ContractError),
@@ -241,7 +255,13 @@ impl Processor {
         self.diagnostic_pc = (old.diagnostic_pc + 4) & 0x1ffff;
     }
     pub fn clock(&mut self, i: ProcessorInput) -> Result<(), Error> {
+        self.clock_observing(i).map(|_| ())
+    }
+    /// Execute the existing transition once and return its committed facts.
+    /// No observer state participates in command acceptance or scheduling.
+    pub fn clock_observing(&mut self, i: ProcessorInput) -> Result<CommandEdge, Error> {
         if i.reset {
+            let reset = self.busy || self.failed;
             let retained = self.auxiliary.as_ref().map(|a| a.copy_address);
             *self = if self.auxiliary.is_some() {
                 Self::with_all_commands()
@@ -253,7 +273,10 @@ impl Processor {
             if let Some(address) = retained {
                 self.auxiliary.as_mut().unwrap().copy_address = address;
             }
-            return Ok(());
+            return Ok(CommandEdge {
+                reset,
+                ..Default::default()
+            });
         }
         let o = self.outputs(i);
         let check = |ok, rule| require(ok, "command_processor", rule);
@@ -464,8 +487,29 @@ impl Processor {
             }
             n.fetch_left = 0;
         }
+        let command = (self.diagnostic_pc, self.command);
+        let enabled = i.ce && !o.stop;
+        let execute = enabled && self.phase == Phase::Exec;
+        let advanced = self.busy && !i.bus.submit() && n.diagnostic_pc != self.diagnostic_pc;
+        let edge = CommandEdge {
+            submit: (i.bus.submit() && o.submit_ready)
+                .then_some((u32::from(i.bus.data) * 128, self.limit)),
+            latched: (enabled && self.phase == Phase::Latch)
+                .then_some((self.diagnostic_pc, n.command)),
+            execute: execute.then_some(command),
+            issued: (execute && (advanced || n.phase != Phase::Exec)).then_some(command),
+            released: (enabled && (advanced || execute && n.phase == Phase::Ending))
+                .then_some(self.diagnostic_pc),
+            drained: self.busy && !n.busy && !n.failed,
+            aborted: !self.failed && n.failed,
+            reset: false,
+            target: (advanced && self.command >> 28 == 10).then(|| {
+                let d = n.draw.as_ref().unwrap();
+                (d.config.color_base, d.config.depth_base, d.target_valid)
+            }),
+        };
         *self = n;
-        Ok(())
+        Ok(edge)
     }
 }
 
@@ -504,6 +548,23 @@ pub struct Control {
     pub device: Device4,
 }
 impl Control {
+    pub(crate) fn observe(&self, i: Input, trace: &mut super::trace::Trace) {
+        let (p, t) = self.connect(i);
+        let q = self.processor.outputs(p);
+        trace.control = Some([
+            u64::from(self.processor.diagnostic_pc),
+            self.processor.phase as u64,
+            u64::from(p.render_idle),
+            u64::from(p.work_busy),
+            u64::from(p.dma_idle),
+            u64::from(p.memory_busy),
+            u64::from(p.flush_complete),
+            u64::from(p.ce),
+            u64::from(q.busy),
+        ]);
+        trace.control_word = Some(self.processor.command);
+        self.transport.observe(t, trace);
+    }
     pub fn with_all_commands() -> Self {
         Self {
             processor: Processor::with_all_commands(),
@@ -580,12 +641,15 @@ impl Control {
         }
     }
     pub fn clock(&mut self, i: Input) -> Result<(), Error> {
+        self.clock_observing(i).map(|_| ())
+    }
+    pub fn clock_observing(&mut self, i: Input) -> Result<CommandEdge, Error> {
         let (p, t) = self.connect(i);
         let mut n = self.clone();
-        n.processor.clock(p)?;
+        let edge = n.processor.clock_observing(p)?;
         n.transport.clock(t)?;
         n.device.clock(i.reset, i.physical);
         *self = n;
-        Ok(())
+        Ok(edge)
     }
 }

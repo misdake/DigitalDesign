@@ -5,6 +5,7 @@ pub mod input;
 pub mod memory;
 pub mod profiling;
 pub mod request_slot;
+pub mod runner;
 pub mod scanout;
 pub mod startup;
 mod system;

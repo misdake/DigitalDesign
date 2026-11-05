@@ -31,6 +31,22 @@ class ImageHistoryTests(unittest.TestCase):
         self.assertEqual(self.pixel(h, 1), 0xf800)
         self.assertEqual(self.pixel(h, 2), 0x001f)
 
+    def test_repeated_full_slot_snapshot_preserves_dirty_word_provenance(self):
+        h = self.history()
+        h.cache(1, 0, 0, 0, 0x1234, 7)
+        h.state(0, 1, 0, 1, 0, 262144)
+        h.state(1, 1, 1, 1, 0, 262144)
+        h.bus(3, 0, 0x1234)
+        h.state(0, 0, 0, 1, 0, 262144)
+        self.assertEqual(self.pixel(h, 7), 0x1234)
+        self.assertEqual(self.pixel(h, 6), 0)
+        with self.assertRaisesRegex(SnapshotError, 'provenance'):
+            h.bus(4, 2, 0x5678)
+        h.state(0, 1, 0, 1, 0, 262144)
+        h.epoch=2
+        with self.assertRaisesRegex(SnapshotError,'stale'):
+            h.state(0, 1, 0, 1, 0, 262144)
+
     def test_invalid_wrong_epoch_and_reused_slot_cannot_overlay_old_pixels(self):
         h = self.history()
         h.cache(1, 0, 0, 0, 0xf800, 1)

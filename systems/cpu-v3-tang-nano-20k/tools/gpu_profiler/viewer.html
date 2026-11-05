@@ -37,7 +37,11 @@
 "use strict";
 /*SYSTEM_VIEWER*/
 const D=/*PROFILE_DATA*/null;
-if(D.schema==='digitaldesign.gpu-result'){
+if(D===null){
+ document.getElementById('status').textContent='No report data';
+ const main=document.querySelector('.layout');main.replaceChildren();main.style.display='block';main.style.height='auto';main.style.padding='24px';
+ const note=document.createElement('p');note.textContent='This viewer.html is the report template. Open the generated profiler.html next to profile.json to view a captured report.';main.append(note);
+}else if(D.schema==='digitaldesign.gpu-result'){
  if(D.version!==1||D.backend!=='sim'||D.complete!==true||!Array.isArray(D.outputs))throw Error('Incomplete simulator result');
  const node=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
  const header=document.querySelector('header');header.replaceChildren(node('h1','GPU simulator'),node('span','Final result · no profiling'));
@@ -47,9 +51,24 @@ if(D.schema==='digitaldesign.gpu-result'){
  else main.append(node('p','This command stream has no framebuffer target. Final writable buffers are listed below.'));
  const table=node('table');for(const output of D.outputs){const row=node('tr');row.append(node('td',output.role),node('td','0x'+output.address.toString(16)),node('td',String(output.bytes)+' bytes'));const cell=node('td'),link=node('a',output.file);link.href=output.file;cell.append(link);row.append(cell,node('td',output.sha256));table.append(row);}main.append(table);
  window.gpuResult={data:D};
-}else if(D.system){
+}else if(D.system&&/(?:^\?|&)view=system(?:&|$)/.test(window.location?.search??'')){
  renderSystemProfile(D);
 }else{
+ renderGpuProfile(D);
+}
+
+function renderGpuProfile(source){
+const D=source.system?systemGpuView(source):source;
+if(D.system){
+ const link=document.createElement('a');link.href='?view=system';link.textContent='CPU / shared memory / registered scanout';document.querySelector('header').append(link);
+ const info=document.createElement('section');info.className='inspector-section note';info.setAttribute('id','system-source-scope');
+ const frame=D.system.frame_view,identity=D.provenance.application_identity;
+ info.textContent=`${D.system.scope} ${frame?'Application frame '+frame.presentation+' · ticks ['+frame.start_tick+', '+frame.end_tick+'). '+frame.window_scope+' '+frame.ownership_scope:'Full capture.'} ${D.pipeline_trace_available?'Actual committed GPU instruction / DMA / meshlet / quad / ROP observations.':'Detailed DMA / meshlet / quad / ROP histories were not captured. Missing tracks are unavailable, not zero.'} ${D.instruction_trace_available?'Actual CB instruction words and control boundaries recorded.':'CB instruction details: not captured by this legacy system source.'} CPU frame ownership and exact HUD wait-return ticks are not recorded; CPU activity is concurrent where available. App source SHA ${identity?.source??'not supplied'} · program SHA256 ${D.provenance.report_inputs?.files?.['program.bin']??'not supplied'}. ${D.images?.selection_scope??''}`;
+ document.querySelector('.inspector').append(info);
+ if(frame){const full=document.createElement('a');full.href=frame.session_report;full.textContent='Separate full-session report';info.append(full);}
+ document.querySelector('h1').textContent=frame?'Application frame '+frame.presentation+' · GPU pipeline':'System emu · GPU pipeline';
+ document.getElementById('fit').textContent=frame?'Fit frame':'Fit session';
+}
 
 const $=id=>document.getElementById(id), css=getComputedStyle(document.documentElement);
 const C={};for(const k of ['bg','panel','text','muted','line','grid','dma','v','t','r','i','p','wait','set','clear','selection'])C[k]=css.getPropertyValue('--'+k).trim();
@@ -62,13 +81,13 @@ function syncTypeControls(){for(const [op]of types)$('filter-type-'+op).checked=
 function refreshFilters(){lastHover=null;$('tooltip').style.display='none';rebuildRows();$('command-scroll').scrollTop=0;detail();render();}
 const rows=[],rowOf=new Map();let commandHeight=0;
 function rebuildRows(){rows.length=0;rowOf.clear();let y=0;
-rows.push({type:'cpu',label:'CPU spans / recording',y,height:34,spans:D.cpu});y+=34;
+rows.push({type:'cpu',label:D.system?'CPU activity: system view':'CPU spans / recording',y,height:34,spans:D.cpu});y+=34;
 rows.push({type:'cpu',label:'GPU submissions',y,height:34,spans:D.submissions});y+=34;
 if(visibleOps.has(1)||visibleOps.has(2)){rows.push({type:'prefetch',label:'CB instruction prefetch',y,height:29});y+=29;}
 for(const c of D.commands){if(!visibleOps.has(c.opcode))continue;const m=mesh.get(c.meshlet),row={type:'command',label:`CB${c.submission} · ${c.pc.toString(16).padStart(4,'0')}  ${c.name}${m?' · '+m.name:''}`,y,height:m?53:29,c,m};rows.push(row);rowOf.set(c.id,row);y+=row.height;}
 commandHeight=Math.max(y,rowOf.size?y:110);if(selected!==null&&!rowOf.has(selected))selected=null;
 $('instruction').innerHTML='<option value="">Session overview</option>'+D.commands.filter(c=>rowOf.has(c.id)).map(c=>`<option value="${c.id}">CB${c.submission} · ${c.pc.toString(16).padStart(4,'0')} ${escape(c.name)}${c.meshlet?' · '+escape(mesh.get(c.meshlet).name):''}</option>`).join('');$('instruction').value=selected===null?'':String(selected);
-$('filter-count').textContent=`(${rowOf.size}/${D.commands.length})`;$('command-summary').textContent=`${rowOf.size} / ${D.commands.length} commands · shaded columns: drain`;$('command-empty').hidden=rowOf.size!==0;
+$('filter-count').textContent=`(${rowOf.size}/${D.commands.length})`;$('command-summary').textContent=D.system&&!D.instruction_trace_available?`Instruction trace not captured · ${D.submissions.length} observed submissions`:`${rowOf.size} / ${D.commands.length} commands · shaded columns: drain`;$('command-empty').hidden=rowOf.size!==0;if(D.system&&!D.instruction_trace_available)$('command-empty').textContent='Instruction / meshlet trace not captured by this legacy system source.';
 for(const [op]of types)$('filter-type-count-'+op).textContent=D.commands.filter(c=>c.opcode===op).length;}
 // Optional precise memory timing. Legacy summaries never become synthetic beats.
 function memoryViewFor(report){
@@ -121,11 +140,15 @@ function memoryViewFor(report){
  }};
 }
 const memoryView=memoryViewFor(D.memory),loadMetrics=[...memoryView.definitions,...D.metric_defs];
+if(D.memory?.observation_boundary==='arbiter-service64'){
+ for(const d of memoryView.definitions)d.note+=' · arbiter service after descriptor slots';
+ document.querySelector('#memory-section summary').textContent='GPU arbiter service memory';
+}
 const metricHeight=47,loadHeight=loadMetrics.length*metricHeight;
 const spans=D.commands.filter(c=>c.opcode===7||c.opcode===15||c.opcode===4&&(parseInt(c.word,16)&2)).map(c=>[c.execute,c.end,c]);
 const left=()=>parseInt(getComputedStyle(document.documentElement).getPropertyValue('--left'));
 const duration=n=>unit==='cycles'?`${Math.round(n).toLocaleString()} cy`:unit==='us'?`${(n*1e6/D.clock_hz).toFixed(2)} µs`:`${(n*1e3/D.clock_hz).toFixed(4)} ms`;
-const stamp=n=>unit==='cycles'?Math.round(n).toLocaleString():unit==='us'?(n*1e6/D.clock_hz).toFixed(2):(n*1e3/D.clock_hz).toFixed(3);
+const stamp=n=>{n-=D.view_axis_origin??0;return unit==='cycles'?(D.system?n.toFixed(2):Math.round(n).toLocaleString()):unit==='us'?(n*1e6/D.clock_hz).toFixed(2):(n*1e3/D.clock_hz).toFixed(3);};
 const escape=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 function setup(canvas,height){const w=canvas.parentElement.clientWidth,dpr=window.devicePixelRatio||1;canvas.width=Math.round(w*dpr);canvas.height=Math.round(height*dpr);canvas.style.height=height+'px';const g=canvas.getContext('2d');g.scale(dpr,dpr);g.font='12px system-ui';g.textBaseline='middle';return {g,w,h:height,L:left(),R:w-12};}
 function mapper(o){return t=>o.L+(t-lo)/(hi-lo)*(o.R-o.L);}
@@ -192,13 +215,13 @@ function drawLoad(){const o=setup($('load'),loadHeight),g=o.g;grid(o);const n=Ma
  }
 }
 function colorFor(d){if(d.memory)return d.key==='mem_read'?C.r:d.key==='mem_write'?C.p:d.key==='mem_backpressure'?C.dma:C.wait;return d.key.startsWith('light')?C.i:d.key.startsWith('sample')||d.key.startsWith('texture')?C.t:d.key.startsWith('vt')?C.v:d.key.startsWith('rop')||d.key.startsWith('final')?C.p:d.key==='dma'?C.dma:C.r;}
-const overviewBackend=activityUnion(['r_busy','i_busy','quad_total','rop_contexts'].map(key=>D.tracks[key]));
+const overviewBackend=activityUnion(['r_busy','i_busy','quad_total','rop_contexts'].map(key=>D.tracks[key]??[]));
 function drawOverview(){const o=setup($('overview'),60),g=o.g,L=o.L,R=o.R,xx=t=>L+(t-D.start)/(D.end-D.start)*(R-L),n=Math.max(2,Math.floor((R-L)/2));
-for(const [points,text,color,base]of [[D.tracks.vt_owned,'VT occupancy',C.v,25],[overviewBackend,'Backend occupancy',C.p,51]]){g.fillStyle=color;g.fillRect(10,base-17,4,13);g.fillStyle=C.text;g.fillText(text,22,base-10);const load=aggregate(points,'binary',D.start,D.end,n);g.fillStyle=color;load.mean.forEach((v,k)=>g.fillRect(L+k*(R-L)/n,base-v*18,(R-L)/n,18*v));g.fillStyle=C.grid;g.fillRect(L,base,R-L,1);}
+for(const [points,text,color,base]of [[D.tracks.vt_owned??[],'VT occupancy',C.v,25],[overviewBackend,'Backend occupancy',C.p,51]]){g.fillStyle=color;g.fillRect(10,base-17,4,13);g.fillStyle=C.text;g.fillText(text,22,base-10);if(D.system&&!D.pipeline_trace_available){g.fillStyle=C.muted;g.fillText('Unavailable · detailed stage trace not captured',L+8,base-10);continue;}const load=aggregate(points,'binary',D.start,D.end,n);g.fillStyle=color;load.mean.forEach((v,k)=>g.fillRect(L+k*(R-L)/n,base-v*18,(R-L)/n,18*v));g.fillStyle=C.grid;g.fillRect(L,base,R-L,1);}
 if(rangeSelected){g.fillStyle=C.bg;g.globalAlpha=.65;g.fillRect(L,0,xx(lo)-L,60);g.fillRect(xx(hi),0,R-xx(hi),60);g.globalAlpha=1;g.fillStyle=C.selection;g.globalAlpha=.12;g.fillRect(xx(lo),2,xx(hi)-xx(lo),54);g.globalAlpha=1;g.strokeStyle=C.text;g.strokeRect(xx(lo),2,Math.max(1,xx(hi)-xx(lo)),54);}}
-function render(){memoryOverview();axis('cmd-axis');axis('load-axis');drawCommands();drawLoad();drawOverview();rangeDetail();$('range').textContent=rangeSelected?`Selected · ${stamp(lo)} – ${stamp(hi)} ${unit} · Δ ${duration(hi-lo)}`:`Full session · no selection · ${duration(hi-lo)}`;showCursor(cursor);}
-function fitRange(a,b,viewportOnly=false){const full=D.end-D.start,width=Math.min(full,Math.max(Math.min(64,full),Math.round(b-a))),start=Math.max(D.start,Math.min(a,D.end-width));lo=Math.round(start);hi=lo+width;rangeSelected=lo>D.start||hi<D.end;if(!viewportOnly)statsSource=rangeSelected?'view':'frame';render();}
-function bounds(c){let a=c.start,b=c.complete_cycle??c.end;const m=mesh.get(c.meshlet);if(m){const j=jobs.get(m.dma);if(j)a=Math.min(a,j.start);if(m.last_quad)b=Math.max(b,m.last_quad.end);}for(const jid of c.jobs){const j=jobs.get(jid);if(j&&j.end!==null)b=Math.max(b,j.end);}return [a,b];}
+function render(){memoryOverview();axis('cmd-axis');axis('load-axis');drawCommands();drawLoad();drawOverview();rangeDetail();$('range').textContent=rangeSelected?`Selected · ${stamp(lo)} – ${stamp(hi)} ${unit} · Δ ${duration(hi-lo)}`:`${D.system?.frame_view?'Frame '+D.system.frame_view.presentation+' window':'Full session'} · no selection · ${duration(hi-lo)}`;showCursor(cursor);}
+function fitRange(a,b,viewportOnly=false){const full=D.end-D.start,width=Math.min(full,Math.max(Math.min(64,full),D.system?b-a:Math.round(b-a))),start=Math.max(D.start,Math.min(a,D.end-width));lo=D.system?start:Math.round(start);hi=lo+width;rangeSelected=lo>D.start||hi<D.end;if(!viewportOnly)statsSource=rangeSelected?'view':'frame';render();}
+function bounds(c){let a=c.start,b=c.complete_cycle??c.end;const m=mesh.get(c.meshlet);if(m){const j=jobs.get(m.dma);if(j)a=Math.min(a,j.start);if(m.last_quad)b=Math.max(b,m.last_quad.end);}for(const jid of c.jobs){const j=jobs.get(jid);if(j&&j.end!==null)b=Math.max(b,j.end);}if(c.asynchronous_open)b=Math.max(b,D.sample_end);return [a,b];}
 function intervalAt(intervals,t){let a=0,b=intervals.length;while(a<b){const m=(a+b)>>1;if(intervals[m][0]<=t)a=m+1;else b=m;}const span=intervals[a-1];return span&&t<span[1]?span:null;}
 function aliveAt(t){return D.commands.filter(c=>{const [a,b]=bounds(c);return a<=t&&t<b;});}
 function commandPhases(c,t){const phases=[],m=mesh.get(c.meshlet);if(c.start<=t&&t<c.execute)phases.push('fetch / admission');if(c.execute<=t&&t<c.end)phases.push('command');
@@ -207,14 +230,22 @@ function commandPhases(c,t){const phases=[],m=mesh.get(c.meshlet);if(c.start<=t&
  return phases.length?phases.join(' + '):t<c.start?'awaiting command':'backend pending';}
 function aliveText(t){const live=aliveAt(t);return `Alive commands at ${duration(t)} · ${live.length} (all types)\n`+(live.length?live.map(c=>{const m=mesh.get(c.meshlet);return `CB${c.submission} · ${c.pc.toString(16).padStart(4,'0')} ${c.name}${m?' · '+m.name:''} — ${commandPhases(c,t)}${visibleOps.has(c.opcode)?'':' [hidden type]'}`;}).join('\n'):'No live commands');}
 function frameDetail(c){
- const images=D.images, empty=c?.opcode===3&&mesh.get(c.meshlet)?.quads===0;
+ const images=D.images, empty=c?.opcode===3&&mesh.get(c.meshlet)?.quads===0&&c.complete_cycle!==null;
  const image=!empty&&images?.available?(c?images.commands[String(c.id)]:images.final):null;
+ if(!c&&!image&&D.system?.scanouts.length){
+  const S=D.system,F=S.frame_view,index=F?F.scanout_index:S.scanouts.reduce((best,f,i)=>f.effective_pixels>0?i:best,0),raster=S.scanouts[index];
+  $('frame-preview').hidden=false;$('frame-wrap').hidden=false;$('frame-label').textContent=F?'Presentation '+F.presentation+' · registered scanout':'Registered scanout';
+  for(const id of ['frame-image','frame-large'])$(id).src=raster.src;
+  $('frame-caption').textContent=`Raster ${raster.frame} · ${raster.effective_pixels} effective pixels · ticks ${raster.start_tick}–${raster.end_tick}. Registered 800×480 RGB; native command color/D16 history is unavailable. No second color conversion.`;
+  const link=document.createElement('a');link.href=F?'scanout-selected.png':`scanout-${String(index).padStart(6,'0')}.png`;link.textContent='Registered PNG';$('frame-caption').append(document.createElement('br'),link);return;
+ }
  $('frame-preview').hidden=false;$('frame-wrap').hidden=!image;
  if(!image){for(const id of ['frame-image','frame-large'])$(id).removeAttribute('src');$('frame-label').textContent=c?`Command #${c.id}`:'Final output';
-  $('frame-caption').textContent=empty?'This DRAW emitted no quads; no instruction image.':images?.reason||'Frame images were not saved in this report.';return;}
- $('frame-label').textContent=c?`Command #${c.id} · completion`:'Final output';
+  $('frame-caption').textContent=empty?'This DRAW emitted no quads; no instruction image.':images?.unavailable_commands?.[String(c?.id)]||images?.reason||'Frame images were not saved in this report.';return;}
+ $('frame-label').textContent=c?`Command #${c.id} · completion`:D.system?'Last selected native target':'Final output';
  for(const id of ['frame-image','frame-large'])$(id).src=image.src;
  $('frame-caption').textContent=`${stamp(image.cycle)} ${unit} · target 0x${image.target_base_bytes.toString(16)} · ${image.preview?.encoding==='srgb'?'Display1 sRGB preview · ':''}RGB565 · ${image.preview?.capture_format_known===false?'capture format unspecified (stored '+image.format+')':'capture format '+image.format}. ${c?'Later command writes excluded.':'Includes valid cache contents.'}${image.target_epoch===null?' '+image.binding+'.':''}`;
+ if(D.system){$('frame-caption').append(document.createElement('br'));for(const [label,file]of [['Native RGB565',image.color_file],['Native D16',image.depth_file]]){const link=document.createElement('a');link.href='images/'+file;link.textContent=label+' · 204800 bytes ';$('frame-caption').append(link);}}
 }
 function memoryRangeText(a,b){
  const m=memoryView.interval(a,b);
@@ -225,7 +256,7 @@ function memoryRangeText(a,b){
 }
 function activeRange(){
  const c=cmd.get(selected);
- if(statsSource==='draw'&&c?.opcode===3){const [a,b]=bounds(c);return {a:Math.floor(a),b:Math.ceil(b),selected:true,source:'draw',label:`DRAW #${c.id}`};}
+ if(statsSource==='draw'&&c?.opcode===3){let [a,b]=bounds(c);if(D.system?.frame_view){a=Math.min(D.end,Math.max(a,D.start));b=Math.max(a,Math.min(b,D.end));}return {a:D.system?a:Math.floor(a),b:D.system?b:Math.ceil(b),selected:true,source:'draw',label:`DRAW #${c.id}${D.system?.frame_view?' · frame window intersection':''}`};}
  if(statsSource==='frame')return {a:D.start,b:D.end,selected:false,source:'frame',label:'Full frame'};
  return {a:lo,b:hi,selected:rangeSelected,source:'range',label:rangeSelected?'Selected':'Full frame'};
 }
@@ -243,20 +274,22 @@ function memoryOverview(){
  const rate=n=>Number.isFinite(n)?(n/1e6).toFixed(2)+' MB/s':'—',count=n=>Number.isFinite(n)?n.toLocaleString():'—';
  const bytes=n=>s.available?count(n)+' B'+(s.complete?'':' known'):'Unknown';
  const average=n=>s.available&&s.complete?rate(n):'Unknown';
- const reference=report?.available?`Full capture reference: read ${count(report.summary.read_wire_bytes)} B · write ${count(report.summary.write_wire_bytes)} B · average total ${rate(report.summary.average_wire_bytes_per_second)} · peak ${rate(report.summary.peak_wire_bytes_per_second)}.`:'';
+ const reference=report?.available&&!D.system?.frame_view?`Full capture reference: read ${count(report.summary.read_wire_bytes)} B · write ${count(report.summary.write_wire_bytes)} B · average total ${rate(report.summary.average_wire_bytes_per_second)} · peak ${rate(report.summary.peak_wire_bytes_per_second)}.`:'';
  section.innerHTML=`<p class="mono">${label} cycles [${a}, ${b})</p>
  <dl class="gpu-memory-metrics"><div><dt>GPU read bytes</dt><dd>${bytes(s.read)}</dd></div><div><dt>GPU write bytes</dt><dd>${bytes(s.write)}</dd></div>
  <div><dt>Average read / write</dt><dd>${average(s.averageRead)} / ${average(s.averageWrite)}</dd></div>
  <div><dt>Average total</dt><dd>${average(s.averageTotal)}</dd></div><div><dt>Peak · ${s.peakWindow} cycles</dt><dd>${s.available&&s.complete?rate(s.peak):'Unknown'}</dd></div></dl>
  <p class="mono">${escape(memoryRangeText(a,b)).replaceAll('\n',' · ')}</p>
  <p class="note">${s.available?(s.empty?'Empty interval; rates have no duration.':s.complete?'Rates use this entire selected interval. Peak requires a full window within it.':'Only the stated saved interval is known; selected-range rates and peak are unknown.'):'Exact range statistics are unavailable; no traffic is estimated.'} Accepted 64-bit GPU payloads count once (8 bytes/beat), including transferred masked/error beats. Requests and completion acknowledgements add no bytes. Excludes CPU and Display. Physical SDRAM utilization and board bandwidth are unmeasured.</p>
- <p class="note">${reference}</p>`;
+ <p class="note">${report?.boundary?escape(report.boundary):''} ${reference}</p>`;
 }
 
-function detail(){const c=cmd.get(selected);frameDetail(c);memoryOverview();if(!c){$('detail').innerHTML='<h3>Session · independent views</h3><p>Select an instruction to inspect its wall time, waits and asynchronous work. DRAW rows retain their own DMA and final quad even across later commands.</p><dl><dt>Session</dt><dd>'+duration(D.end)+'</dd><dt>First GPU submit</dt><dd>'+duration(D.submit)+'</dd><dt>GPU submission time</dt><dd>'+duration(D.submissions.reduce((n,s)=>n+(s.end??D.end)-s.start,0))+'</dd><dt>Commands / meshlets</dt><dd>'+D.commands.length+' / '+D.meshlets.length+'</dd></dl><p>GPU submissions: '+D.submissions.map(s=>'CB '+s.id+' / F'+(s.frame_id??'?')+' '+escape(s.name)).join(' · ')+'</p><p>CPU spans (may overlap GPU submissions)</p><table><tbody>'+D.cpu.map(s=>`<tr><td>F${s.frame_id??'?'} · ${escape(s.name??('CPU span '+s.id))}${s.partial?' (cropped)':''}</td><td>${duration(s.end-s.start)}</td></tr>`).join('')+'</tbody></table>';return;}
-const m=mesh.get(c.meshlet);let out=`<h3>${escape(c.name)}${m?' · '+escape(m.name):''}</h3><div class="mono quiet">CB ${c.submission} · command #${c.id}<br>base ${submissions.get(c.submission).base===null?'unknown':'0x'+submissions.get(c.submission).base.toString(16)} · PC +0x${c.pc.toString(16)} · ${c.word}</div><dl><dt>Fetch → release</dt><dd>${duration(c.end-c.start)}</dd><dt>Execute → release</dt><dd>${duration(c.end-c.execute)}</dd><dt>Start</dt><dd>${duration(c.execute)}</dd><dt>Instruction released</dt><dd>${duration(c.end)}</dd></dl>`;
-if(m){out+=`<dl><dt>Pre-start control / admission</dt><dd>${duration(m.start-c.execute)}</dd><dt>Published triangles</dt><dd>${m.triangles}</dd><dt>Allocated quads</dt><dd>${m.quads.toLocaleString()}</dd><dt>VT front complete</dt><dd>${duration(m.vt_end??m.start)}</dd></dl><table><thead><tr><th>Stage</th><th>Occupied</th><th>First → last</th></tr></thead><tbody>`;for(const k of ['r','i','p']){const s=m.stats[k];out+=`<tr><td>${k.toUpperCase()}</td><td>${duration(s.active)}</td><td>${s.first===null?'—':duration(s.last-s.first)}</td></tr>`;}out+='</tbody></table>';out+='<p>Occupied intervals overlap across stages. P includes dependency waits while published quads are live; it is lifetime, not arithmetic utilization.</p><table><tbody>';for(const [k,v]of Object.entries(m.stats.vt))out+=`<tr><td>${escape(k)}</td><td>${duration(v)}</td></tr>`;out+='</tbody></table>';
-if(m.last_quad){const q=m.last_quad;out+=`<dl><dt>Last quad</dt><dd>#${q.id}</dd><dt>Pool released</dt><dd>${duration(q.pool_retire)}</dd><dt>${q.empty?'Empty skip':'Cache committed'}</dt><dd>${duration(q.end)}</dd></dl>`;}else out+='<p>No quads emitted. Bounds rejection / empty geometry.</p>';
+function detail(){const c=cmd.get(selected);frameDetail(c);memoryOverview();if(!c){$('detail').innerHTML='<h3>Session · independent views</h3><p>Select an instruction to inspect its wall time, waits and asynchronous work. DRAW rows retain their own DMA and final quad even across later commands.</p><dl><dt>Session</dt><dd>'+duration(D.end-D.start)+'</dd><dt>First GPU submit</dt><dd>'+duration(D.submit-(D.view_axis_origin??0))+'</dd><dt>GPU submission time</dt><dd>'+duration(D.submissions.reduce((n,s)=>n+(s.end??D.end)-s.start,0))+'</dd><dt>Commands / meshlets</dt><dd>'+((D.system&&!D.instruction_trace_available?'unavailable':D.commands.length)+' / '+(D.system&&!D.pipeline_trace_available?'unavailable':D.meshlets.length))+'</dd></dl><p>GPU submissions: '+D.submissions.map(s=>'CB '+s.id+' / F'+(s.frame_id??'?')+' '+escape(s.name)).join(' · ')+'</p><p>CPU spans (may overlap GPU submissions)</p><table><tbody>'+D.cpu.map(s=>`<tr><td>F${s.frame_id??'?'} · ${escape(s.name??('CPU span '+s.id))}${s.partial?' (cropped)':''}</td><td>${duration(s.end-s.start)}</td></tr>`).join('')+'</tbody></table>';return;}
+const m=mesh.get(c.meshlet);let out=`<h3>${escape(c.name)}${m?' · '+escape(m.name):''}</h3><div class="mono quiet">CB ${c.submission} · command #${c.id}<br>base ${submissions.get(c.submission).base===null?'unknown':'0x'+submissions.get(c.submission).base.toString(16)} · PC +0x${c.pc.toString(16)} · ${c.word}</div><dl><dt>${c.observed_open?'Observed residency · OPEN':'Fetch → release'}</dt><dd>${duration(c.end-c.start)}</dd><dt>Execute → release</dt><dd>${duration(c.end-c.execute)}</dd><dt>Start</dt><dd>${duration(c.execute)}</dd><dt>Instruction released</dt><dd>${c.observed_open?'OPEN':duration(c.end)}</dd></dl>`;
+if(D.system)out+=`<p>Actual quantum ticks: RAM latch ${c.latch_tick}; first enabled Exec ${c.execute_tick??'not observed'}; accepted issue ${c.issue_tick??'OPEN'}; CP release ${c.release_tick??'OPEN'}. ${c.asynchronous_open?'Asynchronous owner remains OPEN.':'Asynchronous completion is proven separately.'}</p>`;
+if(c.control_word_updates?.length>1)out+='<details><summary>Actual control-word progress ('+c.control_word_updates.length+' updates)</summary><p>The RAM instruction word above stays the command identity. CLEAR/MEMCPY use a mutable sector counter internally.</p><table><tbody>'+c.control_word_updates.map(([t,w])=>'<tr><td>tick '+t+'</td><td>0x'+w.toString(16).padStart(8,'0')+'</td></tr>').join('')+'</tbody></table></details>';
+if(m){out+=`<dl><dt>Pre-start control / admission</dt><dd>${duration(m.start-c.execute)}</dd><dt>Published triangles</dt><dd>${m.triangles}</dd><dt>Allocated quads</dt><dd>${m.quads.toLocaleString()}</dd><dt>VT front complete</dt><dd>${m.vt_end===null?'OPEN':duration(m.vt_end)}</dd></dl><table><thead><tr><th>Stage</th><th>Occupied</th><th>First → last</th></tr></thead><tbody>`;for(const k of ['r','i','p']){const s=m.stats[k];out+=`<tr><td>${k.toUpperCase()}</td><td>${duration(s.active)}</td><td>${s.first===null?'—':duration(s.last-s.first)}</td></tr>`;}out+='</tbody></table>';out+='<p>Occupied intervals overlap across stages. P includes dependency waits while published quads are live; it is lifetime, not arithmetic utilization.</p><table><tbody>';for(const [k,v]of Object.entries(m.stats.vt))out+=`<tr><td>${escape(k)}</td><td>${duration(v)}</td></tr>`;out+='</tbody></table>';
+if(m.last_quad){const q=m.last_quad;out+=`<dl><dt>Last quad</dt><dd>#${q.id}</dd><dt>Pool released</dt><dd>${duration(q.pool_retire)}</dd><dt>${q.empty?'Empty skip':'Cache committed'}</dt><dd>${duration(q.end)}</dd></dl>`;}else out+=D.partial?'<p>No completed quad observed in this prefix.</p>':'<p>No quads emitted. Bounds rejection / empty geometry.</p>';if(m.open_triangle_ids?.length)out+='<p>OPEN T-slot owners: '+m.open_triangle_ids.join(', ')+'.</p>';if(m.open_quad_ids?.length)out+='<p>OPEN quad owners: '+m.open_quad_ids.join(', ')+'. Shown activity ends at observed coverage, not retirement.</p>';
 const j=jobs.get(m.dma);if(j)out+=`<dl><dt>Meshlet DMA job</dt><dd>#${j.id}</dd><dt>Accept → true LAST</dt><dd>${j.end===null?'live':duration(j.end-j.start)}</dd><dt>Source (halfword)</dt><dd class="mono">0x${j.source.toString(16)}</dd></dl>`;
 }
 if(c.waits.length){let kinds=[...new Set(c.waits.map(w=>w[2]))];out+='<p>Observed wait predicates</p><table><tbody>';for(const k of kinds){let intervals=c.waits.filter(w=>w[2]===k);out+=`<tr><td>${escape(k)}</td><td>${duration(intervals.reduce((n,w)=>n+w[1]-w[0],0))}</td></tr>`;}out+='</tbody></table>';}
@@ -347,7 +380,7 @@ $('filter-options').innerHTML=types.map(([op,name])=>`<label><input id="filter-t
 $('filter-options').addEventListener('change',e=>{const op=Number(e.target.value);if(e.target.checked)visibleOps.add(op);else visibleOps.delete(op);refreshFilters();});
 for(const [id,accept]of [['filter-all',()=>true],['filter-none',()=>false],['filter-default',op=>![1,2,4].includes(op)]])$(id).addEventListener('click',()=>{visibleOps.clear();for(const [op]of types)if(accept(op))visibleOps.add(op);syncTypeControls();refreshFilters();});
 rebuildRows();
-$('identity').textContent=`${D.title} · ${D.submissions.length} CB · ${D.clock_hz/1e6} MHz`;$('status').textContent=D.partial?'PARTIAL TRACE — NOT ACCEPTED':D.provenance?.synthetic?'Synthetic fixture · not a performance measurement':D.provenance?.imported_v1_sha256?'Imported capture · original evidence retained':D.provenance?.preflight?.build_identity_verified===false?'Cold replay · firmware / bitstream unverified':'RTL capture · lifetimes / conservation checked';
+$('identity').textContent=`${D.title} · ${D.submissions.length} CB · ${D.clock_hz/1e6} MHz`;$('status').textContent=D.partial?'PARTIAL TRACE — NOT ACCEPTED':D.provenance?.synthetic?'Synthetic fixture · not a performance measurement':D.system?(D.pipeline_trace_available?'System cycle emu · passive owner lineage · no board qualification':'Legacy system capture · detailed GPU lineage unavailable'):D.provenance?.imported_v1_sha256?'Imported capture · original evidence retained':D.provenance?.preflight?.build_identity_verified===false?'Cold replay · firmware / bitstream unverified':'RTL capture · lifetimes / conservation checked';
 let timer;new ResizeObserver(()=>{clearTimeout(timer);timer=setTimeout(render,80);}).observe(document.querySelector('.main'));
 detail();render();if(selected!==null)$('command-scroll').scrollTop=Math.max(0,rowOf.get(selected).y-90);
 window.gpuProfiler={data:D,getView:()=>({lo,hi,rangeSelected,selected,unit}),focus:id=>{const c=cmd.get(id);if(!c||!rowOf.has(id))return;selectRow(rowOf.get(id));const [a,b]=bounds(c);fitRange(a,b,c.opcode===3);const row=rowOf.get(id);$('command-scroll').scrollTop=Math.max(0,row.y-80);},fit:()=>fitRange(D.start,D.end)};

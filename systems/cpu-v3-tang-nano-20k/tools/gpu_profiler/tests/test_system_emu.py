@@ -48,6 +48,35 @@ class SystemEmuTests(unittest.TestCase):
         self.assertEqual((self.root/'report/system-memory.csv').read_bytes(),(self.root/'render/system-memory.csv').read_bytes())
         self.assertIn('not physical pin bandwidth',d['system']['client_boundary'])
 
+    def test_legacy_service_memory_uses_real_bytes_and_keeps_its_boundary(self):
+        state=[0]*10;state[5]=1;state[8]=16;state[9]=16
+        self.rows=[[0,'state',state],[0,'cpu',[0,0]],[0,'submit',1],
+                   [148,'state',[0]*10],[148,'accept',[4,4096,False,4]],
+                   *[[tick,'payload',[4,8,0]] for tick in (296,444,592,740)],
+                   [740,'terminal',[4,False]],[888,'gpu_done',1]]
+        self.meta.update(end_tick=1036,coverage_end_tick=1036);self.save()
+        data=reporting.build_report(self.source,self.root/'service')
+        self.assertEqual(data['commands'],[])
+        memory=data['memory'];self.assertEqual(memory['observation_boundary'],'arbiter-service64')
+        self.assertIn('master acceptance and DMA/texture owners unavailable',memory['boundary'])
+        self.assertEqual(memory['summary']['read_wire_bytes'],32)
+        self.assertEqual(memory['summary']['request_backpressure_link_cycles'],1)
+        self.assertEqual(memory['transactions'][0]['source'],'unknown')
+        self.assertEqual(memory['transactions'][0]['start'],1)
+        bad=copy.deepcopy(data);bad['memory']['summary']['read_wire_bytes']=40
+        with self.assertRaisesRegex(ValueError,'differs from saved arbiter facts'):s.validate(bad)
+        rendered=reporting.render_report(self.root/'service/profile.json',self.root/'service-render')
+        self.assertEqual(rendered,data)
+        import csv
+        with (self.root/'service/submissions.csv').open() as stream:rows=list(csv.DictReader(stream))
+        self.assertEqual(len(rows),1);self.assertEqual(rows[0]['id'],'1');self.assertEqual(rows[0]['base'],'')
+        run=subprocess.run(['node',str(ROOT/'tests/gpu_system_viewer_checks.js'),str(self.root/'service/profiler.html')],
+                           capture_output=True,text=True,timeout=20)
+        self.assertEqual(run.returncode,0,run.stderr)
+        self.rows[4][2].pop();self.save() # Older formats do not carry requested size.
+        missing=reporting.build_report(self.source,self.root/'unknown-size')
+        self.assertFalse(missing['memory']['available'])
+
     def test_no_terminal_payload_and_hash_binding(self):
         d=reporting.build_report(self.source,self.root/'report')
         self.assertEqual(sum(x[3] for x in d['system']['client_payload']),8)

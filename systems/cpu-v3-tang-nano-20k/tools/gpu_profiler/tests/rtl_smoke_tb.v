@@ -25,7 +25,7 @@ gpu_v2_vliw_command gpu(.clk(clk),.reset(reset),.ce(ce),.abort(1'b0),
  .ro_response_valid(rov),.ro_response_last(rol),.ro_response_error(1'b0),.ro_data(rod),
  .fb_r_request_ready(1'b1),.fb_r_response_valid(1'b0),.fb_r_response_last(1'b0),
  .fb_r_response_error(1'b0),.fb_r_data(64'd0),
- .fb_w_request_ready(1'b1),.fb_w_data_ready(1'b1),.fb_w_response_valid(1'b0),
+ .fb_w_request_ready(1'b1),.fb_w_data_ready(1'b0),.fb_w_response_valid(1'b0),
  .fb_w_response_last(1'b0),.fb_w_response_error(1'b0));
 task tick;begin @(negedge clk);#1;end endtask
 task send;input[3:0]channel;input[15:0]value;begin

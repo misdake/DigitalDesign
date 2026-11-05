@@ -1,5 +1,18 @@
 # GPU regression tests
 
+The ignored `common_profiling_collectors_observe_the_same_draw_edges` and
+`common_profiling_reset_preserves_the_same_stop_boundary` in
+`vliw_cycle_gpu` and `common_profiling_uv_and_abort_collectors_use_identical_points`
+in `vliw_cycle_draw_uv` feed the same finite real GPU inputs to the emu and RTL
+collectors. They retain every-edge DUT output checks and observation-on/off state
+parity. The profiling bench uses the same nominal54MHz clock as its manifests;
+the generic functional replay bench remains unchanged. The system profiler's
+`check_common_events.py` verifies that bench clock and compares timestamps,
+handshake fields, generations and shared model ownership, including CE/retries,
+Sampling wrap and stopped/open owners. `check_native_points.py` separately
+compares actual backing mutations and raw completion planes; different MC init
+or pin-clock phases are not silently shifted into timing equivalence.
+
 Fixed D16 geometry checks retain all unsigned comparisons, depth write gating,
 inclusive quantized far and rejection of retired Global selection tags. CP and
 Prepare use the original full far and fixed bias; their existing bounded RTL
@@ -101,6 +114,18 @@ Sampling remains a peer. `vliw_cycle_lighting` separately checks full H9 against
 independent stage integers and portable/vendor-DSP RTL, including live globals,
 stalls, masked lanes, warm reset and three compiled mutations. See its
 [contract](/ip/gpu-v2/docs/references/cycle-draw-lighting.md).
+
+The unignored `passive_` cases in `vliw_cycle_gpu` and `vliw_cycle_draw_uv`
+repeat finite captured inputs through ordinary and observed clocks, comparing
+every original output and final state with a 200000-edge limit. They export one
+preimage, exact native writes, sparse GPU facts and independent completed-plane
+oracles under `target/frame-reports`. RGB, UV publication wrap, abort, mixed
+UI/copy/clear and reset target invalidation are covered. The system profiler's
+`check_actual_gpu_journal.py` checks owners/conservation and lossless RLE;
+`check_actual_native_images.py` checks full native color/D16 and re-rendered assets.
+These are finite component facts, not whole-system frame timings.
+`vliw_cycle_command_trace` separately checks actual command latch/Exec retries,
+accepted issue/CP release/drain, physical PC wrap and abort/reset boundaries.
 
 `vliw_cycle_sampling_direct` checks POT/RTT source-Q coordinates and six-row
 credit/lifetime against independent integer layout and both actual factories.

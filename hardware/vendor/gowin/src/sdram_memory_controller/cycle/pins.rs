@@ -68,6 +68,17 @@ impl Pins {
         p: &Output,
         backing: &mut [u16],
     ) -> Result<Option<u8>, Error> {
+        self.clock_journaling(reset, p, backing)
+            .map(|write| write.map(|w| w.unmasked.count_ones() as u8))
+    }
+    /// The address/data/mask of the same committed backing write, with no read
+    /// request or second pin edge. Mask bits mean physically written bytes.
+    pub fn clock_journaling(
+        &mut self,
+        reset: bool,
+        p: &Output,
+        backing: &mut [u16],
+    ) -> Result<Option<Write>, Error> {
         // Like the existing pin fixture, reset suppresses commands but preserves
         // memory/bank state until the controller's real initialization PRE.
         if reset || !p.cke {
@@ -128,7 +139,11 @@ impl Pins {
             let word = logical(location) * 2;
             backing[word] = value as u16;
             backing[word + 1] = (value >> 16) as u16;
-            written = Some((!p.dqm & 15).count_ones() as u8);
+            written = Some(Write {
+                address_bytes: (word * 2) as u32,
+                data: p.dq_out,
+                unmasked: !p.dqm & 15,
+            });
             self.column = self.column.wrapping_add(1);
         }
         let push = if self.reading {
@@ -143,5 +158,70 @@ impl Pins {
         self.addresses[1] = self.addresses[0];
         self.addresses[0] = push;
         Ok(written)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Write {
+    pub address_bytes: u32,
+    pub data: u32,
+    pub unmasked: u8,
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+    #[test]
+    fn actual_masked_pin_writes_have_exact_address_value_and_no_observer_effect() {
+        let mut plain = Pins::default();
+        let mut observed = plain.clone();
+        let mut a = vec![0xa55a; 8192];
+        let mut b = a.clone();
+        let mut p = Output {
+            cke: true,
+            bank: 2,
+            address: 3,
+            command: 3,
+            ..Default::default()
+        };
+        plain.clock(false, &p, &mut a).unwrap();
+        assert_eq!(observed.clock_journaling(false, &p, &mut b).unwrap(), None);
+        // Bank2,row3,column4 maps to physical byte12560 in the fitted map.
+        for mask in 0..16u8 {
+            p.command = 4;
+            p.address = 4;
+            p.dqm = !mask & 15;
+            p.dq_out = 0x10203040 + u32::from(mask);
+            let before = u32::from(b[6280]) | (u32::from(b[6281]) << 16);
+            let write = observed
+                .clock_journaling(false, &p, &mut b)
+                .unwrap()
+                .unwrap();
+            plain.clock(false, &p, &mut a).unwrap();
+            assert_eq!(
+                write,
+                Write {
+                    address_bytes: 12560,
+                    data: p.dq_out,
+                    unmasked: mask
+                }
+            );
+            let mut expected = before;
+            for byte in 0..4 {
+                if mask & (1 << byte) != 0 {
+                    expected = (expected & !(255 << (8 * byte))) | (p.dq_out & (255 << (8 * byte)));
+                }
+            }
+            assert_eq!(u32::from(b[6280]) | (u32::from(b[6281]) << 16), expected);
+            assert_eq!(a, b);
+            assert!(b
+                .iter()
+                .enumerate()
+                .all(|(i, &v)| (6280..6282).contains(&i) || v == 0xa55a));
+            p.command = 6;
+            assert_eq!(observed.clock_journaling(false, &p, &mut b).unwrap(), None);
+            plain.clock(false, &p, &mut a).unwrap();
+            assert_eq!(format!("{plain:?}"), format!("{observed:?}"));
+        }
     }
 }

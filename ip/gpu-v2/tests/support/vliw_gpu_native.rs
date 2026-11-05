@@ -28,6 +28,10 @@ pub struct Memory {
     pub changed_halfwords: usize,
     pub write_accepts: usize,
     pub logic_edges: usize,
+    pub journal: Vec<(
+        u64,
+        digital_design_hardware_gowin::sdram_memory_controller::cycle::pins::Write,
+    )>,
 }
 impl Memory {
     pub fn new(backing: Vec<u16>) -> Self {
@@ -50,6 +54,7 @@ impl Memory {
             changed_halfwords: 0,
             write_accepts: 0,
             logic_edges: 0,
+            journal: Vec::new(),
         }
     }
     fn port_input(&self, i: MemoryInput) -> PortInput {
@@ -233,7 +238,14 @@ impl Memory {
                 .iter()
                 .map(|&(a, n)| self.backing[a..a + n].to_vec())
                 .collect();
-            self.memory.clock_half(&drive, &mut self.backing).unwrap();
+            let activity = self
+                .memory
+                .clock_half_observing(&drive, &mut self.backing)
+                .unwrap();
+            if let Some(write) = activity.write {
+                self.journal
+                    .push((self.logic_edges as u64 * 148 + half as u64 * 37, write));
+            }
             let changed: usize = regions
                 .iter()
                 .zip(before)

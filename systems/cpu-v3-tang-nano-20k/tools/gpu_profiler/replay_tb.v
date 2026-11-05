@@ -65,6 +65,8 @@ always @(posedge controller_clk)if(!reset&&(mc.bridge.take||mc.bridge.read_chain
  end
 end
 integer write_location;
+integer logical_write_word;
+reg[63:0]write_time_fs;
 reg[7:0]last_col;
 always @(posedge mclk)begin
  #0;
@@ -75,6 +77,9 @@ always @(posedge mclk)begin
    $fatal(1,"Write outside the captured writable extent: physical=%h mask=%h",write_location,~dqm);
   if(valid_bytes[write_location]===4'bxxxx)valid_bytes[write_location]=0;
   valid_bytes[write_location]=valid_bytes[write_location]|(~dqm);
+  logical_write_word=(write_location&31)|(((write_location>>19)&3)<<5)|(((write_location>>5)&16383)<<7);
+  write_time_fs=$realtime*1000000;
+  profiler_physical_write(write_time_fs,64'd18518520,logical_write_word*4,dq,~dqm);
  end
 end
 task tick;begin @(negedge clk);#1;end endtask

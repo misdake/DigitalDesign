@@ -32,7 +32,13 @@ def validate_scene(reference):
 def runtime_activity(path, expected_commands, command_bytes=None):
     counts = Counter(); opcodes = Counter()
     for line in path.read_text().splitlines():
-        fields = line.split()
+        if line.startswith('['):
+            _,kind,value=json.loads(line)
+            if kind=='gpu_event':fields=[value[1].upper()]
+            elif kind=='cb_execute':fields=['CMD_EXEC','0',str(value[1]),format(value[2],'x')]
+            elif kind=='cb_drain':fields=['DONE']
+            else:continue
+        else:fields = line.split()
         if not fields: continue
         counts[fields[0]] += 1
         if fields[0] == 'CMD_EXEC':
@@ -69,7 +75,9 @@ def check_outputs(capture,reference,folder):
     for group,minimum in [('unlit_rgb',100),('texture',10000),('lighting',500)]:
         if comparison['groups'][group]['pixels']<minimum:
             raise AssertionError('Too few independently checked '+group+' pixels')
-    activity=runtime_activity(folder/'replay/capture/events.txt',reference.stats['commands'],
+    event_file=folder/'replay/capture/events.jsonl'
+    if not event_file.exists():event_file=folder/'replay/capture/events.txt'
+    activity=runtime_activity(event_file,reference.stats['commands'],
                                capture.read(capture.header['cb_base'],capture.header['cb_bytes']))
     return dict(comparison=comparison,activity=activity,physical_padding_words_checked=padding_words)
 

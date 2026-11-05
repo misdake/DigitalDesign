@@ -255,7 +255,17 @@ pub(crate) fn replay(
     difference: bool,
     expected: Option<&str>,
 ) {
-    replay_bounded(root, label, rows, source, difference, expected, 30);
+    replay_bounded(root, label, rows, source, difference, expected, (30, None));
+}
+#[allow(dead_code)]
+pub(crate) fn replay_profile(
+    root: &Path,
+    label: &str,
+    rows: Vec<Vec<Pin>>,
+    source: String,
+    observer: &str,
+) {
+    replay_bounded(root, label, rows, source, false, None, (60, Some(observer)));
 }
 /// Whole DRAW has a separately approved sixty-second simulator budget.
 #[allow(dead_code)] // Shared leaf test binaries intentionally use replay only.
@@ -267,7 +277,7 @@ pub(crate) fn replay_whole(
     difference: bool,
     expected: Option<&str>,
 ) {
-    replay_bounded(root, label, rows, source, difference, expected, 60);
+    replay_bounded(root, label, rows, source, difference, expected, (60, None));
 }
 fn replay_bounded(
     root: &Path,
@@ -276,8 +286,9 @@ fn replay_bounded(
     source: String,
     difference: bool,
     expected: Option<&str>,
-    limit: u64,
+    options: (u64, Option<&str>),
 ) {
+    let (limit, observer) = options;
     let dir = root.join(label);
     fs::create_dir(&dir).unwrap();
     let p = &rows[0];
@@ -316,6 +327,19 @@ fn replay_bounded(
     tb.push_str(");initial begin fd=$fopen(\"vectors.txt\",\"r\");if(!fd)$fatal;\n");
     let columns: usize = p.iter().map(|p| if p.output { 2 } else { 1 }).sum();
     writeln!(tb,"for(n=0;n<{};n=n+1)begin @(negedge clk);k=$fscanf(fd,\"{fmt}\\n\"{names});if(k!={columns})$fatal(1,\"vectors\");#1;if(n>0)begin {checks} end @(posedge clk);#1;end $display(\"G2A_PASS edges={}\");$finish;end initial begin #{};$fatal(1,\"watchdog\");end endmodule",rows.len(),rows.len(),rows.len()*10+1000).unwrap();
+    if let Some(observer) = observer {
+        // Profiling timestamps use the target's nominal54MHz logic period,
+        // rather than the generic functional replay bench's100MHz clock.
+        tb = tb
+            .replace("`timescale 1ns/1ps", "`timescale 1ns/1fs")
+            .replace("always #5 clk=~clk", "always #9.259260 clk=~clk")
+            .replace(
+                &format!("#{};$fatal", rows.len() * 10 + 1000),
+                &format!("#{};$fatal", rows.len() * 19 + 1000),
+            );
+        let end = tb.rfind("endmodule").unwrap();
+        tb.insert_str(end, observer);
+    }
     fs::write(dir.join("tb.v"), tb).unwrap();
     let mut vectors = String::new();
     for row in &rows {
