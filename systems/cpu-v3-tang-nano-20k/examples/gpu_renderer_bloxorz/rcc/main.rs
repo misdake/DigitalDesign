@@ -284,9 +284,6 @@ fn sync_bridge_group(commands: &mut CommandBuffer) {
 }
 // Part14 is available in every shipped stage (at most13 buttons).
 fn begin_pad_group(pass: &mut Pass, mut cache: Array<u16>) -> bool {
-    if button_cache_data()[0u16] > 13 {
-        return true;
-    }
     if pass.prepared_part_ready(14)
         && cache[11u16] == cache[1u16]
         && cache[12u16] == cache[2u16]
@@ -304,10 +301,8 @@ fn begin_pad_group(pass: &mut Pass, mut cache: Array<u16>) -> bool {
     true
 }
 fn end_pad_group(pass: &mut Pass, mut cache: Array<u16>) {
-    if button_cache_data()[0u16] <= 13 {
-        pass.end_prepared_group();
-        cache[14u16] = DRAW_CALLS[0u16] - cache[14u16];
-    }
+    pass.end_prepared_group();
+    cache[14u16] = DRAW_CALLS[0u16] - cache[14u16];
 }
 // Two independent command parts keep opaque depth ahead of alpha blending.
 // Shipped stages use at most13 buttons: parts1..13, pads14, hints15.

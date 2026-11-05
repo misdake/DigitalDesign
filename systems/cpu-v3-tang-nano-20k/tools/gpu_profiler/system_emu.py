@@ -256,7 +256,9 @@ def build(folder, output, *, allow_partial=False, binding=None, require_images=F
         if selection is not None:data=project(data,data['system']['frame_view']['owned_submission_ids'])
         validate_native_images(data)
         data['checks']['native_history']='available' if data['images']['available'] else 'unavailable'
-    require(not require_images or (data['system']['frame_view']['scanout_index'] is not None if selection is not None else bool(sys['scanouts'])) or data.get('images',{}).get('available'),
+    frame = data['system'].get('frame_view')
+    raster_available = frame['scanout_index'] is not None if frame else bool(sys['scanouts'])
+    require(not require_images or raster_available or data.get('images',{}).get('available'),
             'no complete scanout or native image saved')
     write_report(data, output,validated=True)
     (output/'report-inputs.json').write_text(json.dumps(record,indent=2)+'\n')
