@@ -777,3 +777,41 @@ triangle recording. CPU/native-memory cycles exclude functional GPU cost and
 scanout contention; wrapper overhead remains included. Cached-veil tests check
 one snapshot per boundary, immutable source reuse, alpha arithmetic, real HUD
 command counts and presentation/input endpoints.
+
+
+`gpu_renderer_bloxorz_fragile_batch.rs` independently decodes all33 heap-built
+fragile layouts and all153 cell hide/restore operations, preserving neighbor
+indices, padding and complete restored payloads. Bounded peers reject inflight
+patch/rebuild/free, replay one retained CB against changed same-address mesh data
+and check zero degenerate coverage, and exercise ordinary restart/next-stage
+presentation resets, shadow identity and finite heap release. The actual native
+Instance normal matrix for compact floors matches the original half-scale axial
+basis and stays inside normal18 range. Representative stage8/15/17/30/1 color and
+depth outputs retain every accepted-source difference. The explicit ignored
+stage4 PLAY CPU-cost test uses default capture hooks, neutral input, visible
+shadow, actual CRACK/FALL/undo and separate per-arm instruction/native publication
+and full-image oracles. It measures CPU/native-memory cycles with synchronous
+functional GPU, excluding GPU timing, physical contention and FPS. A previously
+qualified accepted arm may be read-only reused via `BLOXORZ_REUSE_ACCEPTED_COST`;
+its original source/data labels remain recorded rather than relabeled as a run.
+
+`gpu_renderer_bloxorz_atlas.rs` contains explicit ignored, bounded seven-frame
+atlas comparisons (stationary level4 twice,30/15/17/8, then a real110ms roll),
+freezes actual before-START physical inputs and requires all full depth planes
+to equal the frozen8235 source. Select `BLOXORZ_ATLAS_ARM=before|candidate` and an
+explicit `BLOXORZ_SIM_OUTPUT_ROOT`; the before tree is `<root>/source-8235`.
+Candidate dimensions use `BLOXORZ_ATLAS_SIZES=6x7|7x7|6x8` (main/marker exponents).
+The short replay test compares bilinear code1 and trilinear code2 at base-only
+LOD0 on two real warm submissions, restoring only their explicit descriptor
+input differences before requiring every physical output word to match.
+An explicit `control-identity.json` identifies controls that retain the8235
+application while using an accepted newer driver; these do not relabel the old
+native6 evidence. The native two-frame cost test reuses the saved exact programs,
+checks full color/depth against their instruction outputs, and stops after
+frames0/1 with observed SP recorded. It excludes physical GPU/scanout timing;
+the separate finite lifecycle test checks release after normal execution.
+For a current fixed-depth control, extract the accepted driver tree and overlay
+only the8235 application directory, recording both identities in that file.
+`check_atlas_borders.py` additionally checks all67 packed rings/UV guards and33
+camera geometries; the observation-only `atlas_trace.py` reports actual versus
+diagnostic unclamped LOD and weighted taps without editing production GPU code.

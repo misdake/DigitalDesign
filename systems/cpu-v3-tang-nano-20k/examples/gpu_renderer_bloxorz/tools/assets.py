@@ -22,6 +22,7 @@ M = module("blox_markers", Path(__file__).with_name("markers.py"))
 H = module("blox_hud_font", Path(__file__).with_name("hud_font.py"))
 C = module("blox_goal_carrier", Path(__file__).with_name("goal_carrier.py"))
 F = module("blox_ground_batches", Path(__file__).with_name("ground_batches.py"))
+import atlas_borders as A
 
 def compact_level(words):
     assert len(words)==8+words[6]*8 and words[6]<=150 and words[5]<512
@@ -40,7 +41,9 @@ def compact_level(words):
         result.extend([first,second])
     return result
 
-def pack(output):
+def pack(output,main_log2=8,marker_log2=8):
+    assert main_log2 in (6,7,8) and marker_log2 in (7,8)
+    A.LOG2=main_log2;M.SIZE=1<<marker_log2
     R.pack(output)
     manifest=json.loads((output/'assets.json').read_text())
     BASE=next(r['address'] for r in manifest['resources'] if r['kind']=='mesh')
@@ -71,17 +74,23 @@ def pack(output):
     assert all(any(ui[g*256:(g+1)*256]) for g in set(b'LEVEL DRAW MS')-{32})
     (output/'atlas.bin').write_bytes(ui)
     H.preview(ui).save(output/'hud-font-atlas-1x1.png')
-    marker_data,marker_image,marker_groups=M.prepare(SYSTEM,W)
+    marker_data,marker_image,marker_groups,marker_items=M.prepare(SYSTEM,W)
     (output/'markers.bin').write_bytes(marker_data);marker_image.save(output/'markers-atlas.png')
     R.validate_asset_range(0x740000,len(marker_data))
     manifest['resources'].append(dict(kind='markers',file='markers.bin',address=0x740000,bytes=len(marker_data)))
-    manifest['marker_atlas']=dict(size=M.SIZE,slots=60,rectangles=[M.slot_rect(i) for i in range(60)],fragile_inner=44,gutter='2 except constant-color patches1',full_mip=False,uv='inner texel centres, periodic base layer only')
+    manifest['marker_atlas']=dict(size=M.SIZE,slots=60,rectangles=[M.slot_rect(i) for i in range(60)],items=marker_items,fragile_inner=M.slot_rect(48)[2]-4,gutter='2 except constant-color patches1',full_mip=False,uv='inner texel centres, periodic base layer only')
+    from PIL import Image
+    masks=Image.new('L',(M.SIZE,M.SIZE))
+    for item in marker_items:
+        x,y,edge,gutter=item['rect'];masks.paste(M.glyph_mask(item['pattern'],item['inner']),(x+gutter,y+gutter))
+    masks.save(output/'marker-masks.png')
     levels = B.levels()
     chosen = [levels[n] for n in ["b1", "b2"]]
     groups = []
     groups.append([W.block()])
     groups.append(W.well())
-    groups.append([W.floor(dict(width=1,depth=1),[(0,0)],'tile0',0)])
+    hatch=W.unit_tile(0);hatch['name']=hatch['group']='pad-hatch';hatch['cull_negative']=True
+    groups.append([hatch])
     groups.append([W.floor(dict(width=1,depth=1),[(0,0)],'tile1',1)])
     pad = W.plain("pad", W.box_quads((0,0,0),(1,1,1)))
     groups.append([pad])
@@ -134,7 +143,7 @@ def pack(output):
     R.validate_asset_range(BASE,len(memory))
     (output/'mesh.bin').write_bytes(memory)
     constants=(output/'renderer_assets.rs').read_text()
-    for key,value in dict(GPU_RENDERER_MESH_COUNT=count,GPU_RENDERER_MESH_SECTORS=len(memory)//128,GPU_RENDERER_TEXTURE=texture//128,GPU_RENDERER_TEXTURE_SECTORS=(output/'texture.bin').stat().st_size//128,GPU_RENDERER_TEXTURE_LOG2=9,GPU_RENDERER_TEXTURE_MIP=1).items():
+    for key,value in dict(GPU_RENDERER_MESH_COUNT=count,GPU_RENDERER_MESH_SECTORS=len(memory)//128,GPU_RENDERER_TEXTURE=texture//128,GPU_RENDERER_TEXTURE_SECTORS=(output/'texture.bin').stat().st_size//128,GPU_RENDERER_TEXTURE_LOG2=main_log2,GPU_RENDERER_TEXTURE_MIP=0).items():
         constants=re.sub(rf'(pub const {key}:u16=)\d+;',rf'\g<1>{value};',constants)
     # Conservative shared package bounds, including all floors and unit block.
     for axis,lo,hi in [('X',-16*65536,16*65536),('Y',-65536,65536),('Z',-6*65536,6*65536)]:
@@ -143,6 +152,7 @@ def pack(output):
                 key=f'GPU_RENDERER_{label}_{axis}_{part}'
                 constants=re.sub(rf'(pub const {key}:u16=)\d+;',rf'\g<1>{n};',constants)
     constants += 'pub const BLOX_BACKGROUND_SECTOR:u16=45056;\npub const BLOX_MARKER_SECTOR:u16=59392;\n'
+    constants+=f'pub const BLOX_MARKER_LOG2:u16={marker_log2};\npub const BLOX_MARKER_SECTORS:u16={M.SIZE*M.SIZE//64};\n'
     for c in catalog:
         constants+=f"pub const {c['name']}_FIRST:u16={c['first']};\n"+f"pub const {c['name']}_COUNT:u16={c['count']};\n"
     constants += 'use crate::dsl_rt::*;\n'
@@ -172,6 +182,8 @@ def pack(output):
     constants+=f'pub const BLOX_PALETTE_WORD:u16={palette_word};\n'
     ground_template_word=len(archive);archive.extend(F.templates(W,marker_groups[-1]))
     constants+=f'pub const BLOX_GROUND_TEMPLATE_WORD:u16={ground_template_word};\n'
+    fragile_template_word=len(archive);archive.extend(F.fragile_templates(marker_groups[-2]))
+    constants+=f'pub const BLOX_FRAGILE_TEMPLATE_WORD:u16={fragile_template_word};\n'
     assert len(archive)<65536
     binary=struct.pack('<'+'H'*len(archive),*archive);binary+=bytes((-len(binary))%128)
     assert 0x5b2000+len(binary)<=0x600000
@@ -210,10 +222,22 @@ pub fn blox_ground_template(which:u16,mut out:Array<u16>){
     dcache_wait();unsafe{write_dseg_page(3,saved);}
 }
 pub fn blox_scene_face_count(which:u16)->u16 {blox_level_meta(which,3)}
+pub fn blox_fragile_template(variant:u16,face:u16,mut out:Array<u16>){
+    let start=BLOX_FRAGILE_TEMPLATE_WORD+variant*100+face*20;
+    let saved=read_dseg_page(3);dcache_wait();
+    let mut page:u16=65535;let mut i:u16=0;
+    while i<20 {
+        let word=start+i;let sector=BLOX_LEVEL_DATA_SECTOR+(word>>6);
+        if sector>>8!=page {dcache_wait();page=sector>>8;unsafe{write_dseg_page(3,page);}}
+        out[i]=unsafe{Ptr::from_addr(0xc000|((sector&255)<<6)|(word&63)).read(0)};
+        i+=1;
+    }
+    dcache_wait();unsafe{write_dseg_page(3,saved);}
+}
 pub fn blox_scene_face(which:u16,index:u16)->u16 {blox_asset_word(blox_level_meta(which,2)+index)}
 """
     manifest['stage_archive']=archive_meta
-    manifest['goal_carrier']=dict(apertures=48,step=.02,plane_y=0,texture_phases=4,fallback_levels=[i+1 for i,l in enumerate(all_levels) if not C.applicable(l)],baked_floor_g=232,baked_floor_lod_q3=27,continuous_state_animation=True)
+    manifest['goal_carrier']=dict(apertures=48,step=.02,plane_y=0,texture_phases=4,fallback_levels=[i+1 for i,l in enumerate(all_levels) if not C.applicable(l)],baked_floor_g=232,baked_floor_lod_q3=0,continuous_state_animation=True)
     (output/'renderer_assets.rs').write_text(constants)
     for r in manifest['resources']:
         data=(output/r['file']).read_bytes();r.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
@@ -223,13 +247,15 @@ pub fn blox_scene_face(which:u16,index:u16)->u16 {blox_asset_word(blox_level_met
     manifest.update(profile='production',surface='column-major-16x16-pad16',
         borrowed=dict(color=0x600000,depth=0x480000,plane_capacity=262144),catalog=catalog,meshes=meshes,levels=chosen,
         triangles=sum(len(m["triangles"]) for m in meshes),vertices=sum(len(m["vertices"]) for m in meshes),
-        bounds=[[-16,-1,-6],[16,1,6]], cameras=[W.camera(l["width"],l["depth"]) for l in chosen], pixel_reference=dict(aspect="5:3", atlas_sha256=hashlib.sha256((SYSTEM/"examples/bloxorz/assets/atlas-low.png").read_bytes()).hexdigest(), background_srgb="#2c2620"))
-    for path in [Path(__file__).resolve(),Path(__file__).with_name("web_scene.py"),Path(__file__).with_name("markers.py"),Path(__file__).with_name("hud_font.py"),Path(__file__).with_name("goal_carrier.py"),Path(__file__).with_name("ground_batches.py"),hud_font,base_font_provenance,background,SYSTEM/'examples/bloxorz/assets/atlas-low.png',SYSTEM/'tools/gpu_texture_layout.py',SYSTEM/'examples/bloxorz/tools/batch-scene.py',SYSTEM/'examples/bloxorz/tools/static-scene.py',SYSTEM/'examples/bloxorz/assets/reference.txt',SYSTEM/'examples/bloxorz/rcc/bloxorz_core.rs',SYSTEM/'examples/bloxorz/geometry.rs',SYSTEM/'examples/gpu_demo/tools/assets.py']:
+        bounds=[[-16,-1,-6],[16,1,6]], cameras=[W.camera(l["width"],l["depth"]) for l in chosen], pixel_reference=dict(aspect="5:3", texture_sha256=hashlib.sha256((output/'texture.bin').read_bytes()).hexdigest(), background_srgb="#2c2620"))
+    from atlas_borders import contract
+    manifest['main_atlas']=contract()
+    for path in [Path(__file__).resolve(),Path(__file__).with_name("web_scene.py"),Path(__file__).with_name("atlas_borders.py"),Path(__file__).with_name("source_photos.py"),Path(__file__).with_name("markers.py"),Path(__file__).with_name("hud_font.py"),Path(__file__).with_name("goal_carrier.py"),Path(__file__).with_name("ground_batches.py"),hud_font,base_font_provenance,background,*A.source.ROOT.glob('*.jpg'),SYSTEM/'tools/gpu_texture_layout.py',SYSTEM/'examples/bloxorz/tools/batch-scene.py',SYSTEM/'examples/bloxorz/tools/static-scene.py',SYSTEM/'examples/bloxorz/assets/reference.txt',SYSTEM/'examples/bloxorz/rcc/bloxorz_core.rs',SYSTEM/'examples/bloxorz/geometry.rs',SYSTEM/'examples/gpu_demo/tools/assets.py']:
         manifest['sources'][str(path.relative_to(SYSTEM))]=hashlib.sha256(path.read_bytes()).hexdigest()
     (output/'assets.json').write_text(json.dumps(manifest,indent=2)+'\n')
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path);parser.add_argument('--compact-reference',type=Path);parser.add_argument('--profile',choices=['column16'],default='column16')
+    parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path);parser.add_argument('--compact-reference',type=Path);parser.add_argument('--profile',choices=['column16'],default='column16');parser.add_argument('--main-atlas-log2',type=int,choices=[6,7,8],default=8);parser.add_argument('--marker-atlas-log2',type=int,choices=[7,8],default=8)
     args=parser.parse_args()
     if args.compact_reference:
         rows=[]
@@ -241,4 +267,4 @@ if __name__=='__main__':
         args.compact_reference.write_text('\n'.join(rows)+'\n')
     else:
         assert args.output is not None
-        pack(args.output)
+        pack(args.output,args.main_atlas_log2,args.marker_atlas_log2)

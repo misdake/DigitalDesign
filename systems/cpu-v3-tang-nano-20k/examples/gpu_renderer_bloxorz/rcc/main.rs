@@ -20,6 +20,8 @@ mod render_stats;
 use render_stats::*;
 mod ground_batches;
 use ground_batches::*;
+mod fragile_batches;
+use fragile_batches::*;
 mod pad_cache;
 use pad_cache::*;
 pub static HUD: Buf<u16, 3> = Buf::new([0; 3]);
@@ -74,11 +76,43 @@ fn tile_pose(index: u16, y: fix32) -> Transform {
 
 fn draw_ground_batches(pass: &mut Pass, model: &mut Model, material: &mut Material) {
     let half = fix32::from_words(32768, 0);
+    let y_scale = if ground_global_quantization() {
+        fix32::from_words(8192, 0)
+    } else {
+        half
+    };
     model.set_pose(demo_pose(
         demo_zero(),
         demo_zero(),
-        demo_point(half, half, half),
+        demo_point(half, y_scale, half),
     ));
+    if ground_global_quantization() {
+        // All source face normals are axial. This normalized inverse-transpose
+        // has the original directions/magnitudes without overflowing normal18.
+        let zero = fix32::zero();
+        let normal = frcp(half);
+        let world = model.world();
+        model.set_matrices(
+            world,
+            Mat3x3 {
+                row0: Vec3 {
+                    x: normal,
+                    y: zero,
+                    z: zero,
+                },
+                row1: Vec3 {
+                    x: zero,
+                    y: normal,
+                    z: zero,
+                },
+                row2: Vec3 {
+                    x: zero,
+                    y: zero,
+                    z: normal,
+                },
+            },
+        );
+    }
     material.set_unlit(false);
     let atlas = demo_texture();
     let view = atlas.view();
@@ -244,26 +278,27 @@ fn draw_bridges(
 }
 fn marker_texture() -> Texture {
     Texture::from_native(TextureDesc {
-        memory: unsafe { GpuMemory::from_sectors(BLOX_MARKER_SECTOR, 1024) },
-        size_log2: 8,
+        memory: unsafe { GpuMemory::from_sectors(BLOX_MARKER_SECTOR, BLOX_MARKER_SECTORS) },
+        size_log2: BLOX_MARKER_LOG2,
         full_mip: false,
     })
 }
-fn draw_fragile(pass: &mut Pass, model: &mut Model, material: &mut Material) {
+fn draw_fragile_batches(pass: &mut Pass, model: &mut Model, material: &mut Material, owner: Ptr) {
+    if fragile_count(owner) == 0 {
+        return;
+    }
     let texture = marker_texture();
     let view = texture.view();
     material.set_unlit(false);
     material.set_uniform_color(demo_white());
-    let mut i: u16 = 0;
-    while i < LEVEL[6u16] {
-        if level_field(i, 0) == 2 {
-            let variant = ((i % LEVEL[0u16]) * 3 + div_u16(i, LEVEL[0u16]) * 5) % 4;
-            let mesh = demo_mesh_part(MARKED_FRAGILE_FIRST + variant, 1);
-            model.set_pose(tile_pose(i, fragile_height(i)));
-            counted_draw(pass, &mesh, model, material, &view);
-        }
-        i += 1;
-    }
+    let half = fix32::from_words(32768, 0);
+    model.set_pose(demo_pose(
+        demo_zero(),
+        demo_zero(),
+        demo_point(half, half, half),
+    ));
+    let mesh = fragile_mesh(owner);
+    counted_draw(pass, &mesh, model, material, &view);
 }
 fn draw_switches(pass: &mut Pass, model: &mut Model, material: &mut Material) {
     let texture = demo_texture();
@@ -482,7 +517,7 @@ fn game_solid_state() -> RenderState {
         depth: DepthFunc::Less,
         depth_write: true,
         blend: BlendMode::Replace,
-        filter: TextureFilter::Trilinear,
+        filter: TextureFilter::Bilinear,
         lighting: demo_lighting(demo_point(
             fix32::from_words(16711, 0),
             fix32::from_words(33422, 0),
@@ -496,7 +531,7 @@ fn game_hint_state() -> RenderState {
         depth: DepthFunc::Less,
         depth_write: false,
         blend: BlendMode::SrcOver,
-        filter: TextureFilter::Trilinear,
+        filter: TextureFilter::Bilinear,
         lighting: demo_lighting(demo_point(
             fix32::from_words(16711, 0),
             fix32::from_words(33422, 0),
@@ -550,8 +585,9 @@ fn record_static_scene(
     depth: &DepthBuffer,
     background: &ColorBuffer,
     camera: &Camera,
-    state: &RenderState,
+    fragile: Ptr,
 ) {
+    let state = game_solid_state();
     let mut floor_model = game_floor_model();
     let mut floor_material = demo_material(demo_white(), false);
     let mut pad_model = game_plain_model();
@@ -559,10 +595,11 @@ fn record_static_scene(
     let load = scene_color_load(commands, background, color);
     let mut pass = commands.pass(color, depth, load, DepthLoad::clear(65535));
     pass.set_camera(camera);
-    pass.set_state(state);
+    pass.set_state(&state);
     draw_floor(&mut pass, &mut floor_model, &mut floor_material);
     draw_pad_well(&mut pass, &mut pad_model, &mut pad_material, true);
     draw_pad_well(&mut pass, &mut pad_model, &mut pad_material, false);
+    draw_fragile_batches(&mut pass, &mut floor_model, &mut floor_material, fragile);
 }
 
 fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
@@ -683,6 +720,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let mut scene_commands = gpu.command_buffer();
     let ground_owner = ground_begin();
     let shadow_owner = shadow_batch_begin();
+    let fragile_owner = fragile_begin();
     let mut scene_generation: u16 = 0;
     let mut scene_background: u16 = 2;
     let mut static_draws: u16 = 0;
@@ -843,13 +881,17 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     commands.reset();
                     ground_rebuild();
                 }
+                if !fragile_matches_level(fragile_owner) {
+                    commands.reset();
+                    fragile_rebuild(fragile_owner);
+                }
                 record_static_scene(
                     &mut scene_commands,
                     target,
                     &depth,
                     &background,
                     &camera,
-                    &state,
+                    fragile_owner,
                 );
                 static_draws = DRAW_CALLS[0u16];
                 scene_generation = LEVEL_GENERATION[0u16];
@@ -860,6 +902,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 scene_commands.retarget_target(binding, target, &depth);
                 scene_target = target_key;
             }
+            fragile_sync(fragile_owner);
             DRAW_CALLS[0u16] = static_draws;
             let scene_resume = profiler_resume_epoch();
             gpu.submit(scene_commands);
@@ -879,7 +922,6 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     &state,
                     &hint_state,
                 );
-                draw_fragile(&mut pass, &mut pad_model, &mut hatch_material);
                 draw_switches(&mut pass, &mut pad_model, &mut hatch_material);
                 draw_pad_part(
                     &mut pass,
@@ -1159,6 +1201,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     drop(commands);
     ground_end(ground_owner);
     shadow_batch_end(shadow_owner);
+    fragile_end(fragile_owner);
     free(pad_owner);
 }
 

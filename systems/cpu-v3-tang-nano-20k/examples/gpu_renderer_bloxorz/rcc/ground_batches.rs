@@ -10,6 +10,10 @@ use gpu_api::*;
 pub static GROUND_BATCH_MODE: Buf<u16, 1> = Buf::new([1]);
 static GROUND_BASE: u16 = 0;
 
+pub fn ground_global_quantization() -> bool {
+    LEVEL[0u16] <= 15 && LEVEL[1u16] <= 15
+}
+
 pub fn ground_face_key(face: u16) -> u16 {
     let x = face & 31;
     let z = (face >> 5) & 31;
@@ -18,10 +22,14 @@ pub fn ground_face_key(face: u16) -> u16 {
     if level_field(z * LEVEL[0u16] + x, 0) == 7 {
         material = if direction == 0 { 1u16 } else { 2u16 };
     }
-    let bucket = if direction == 0 {
-        0u16
+    let bucket = if ground_global_quantization() {
+        if direction == 0 {
+            0u16
+        } else {
+            1u16
+        }
     } else {
-        1 + x / 3 + (z / 3) * 5
+        1 + x / 3 + (z / 3) * ((LEVEL[0u16] + 2) / 3)
     };
     material * 32 + bucket
 }
@@ -59,6 +67,7 @@ pub fn ground_meshlet(first: u16, mut words: Array<u16>, mut info: Array<u16>) {
     let key = ground_face_key(blox_ground_face(base, first + 1));
     let material = key >> 5;
     let bucket = key & 31;
+    let global = ground_global_quantization();
     let mut i: u16 = 0;
     while i < 512 {
         words[i] = 0;
@@ -87,12 +96,12 @@ pub fn ground_meshlet(first: u16, mut words: Array<u16>, mut info: Array<u16>) {
         let mut corner: u16 = 0;
         while corner < 4 {
             let bits = template[corner * 5];
-            let dx = if bucket == 0 {
+            let dx = if bucket == 0 || global {
                 x * 64 + (bits & 1) * 64
             } else {
                 (x % 3) * 256 + (bits & 1) * 256
             };
-            let dz = if bucket == 0 {
+            let dz = if bucket == 0 || global {
                 z * 64 + ((bits >> 2) & 1) * 64
             } else {
                 (z % 3) * 256 + ((bits >> 2) & 1) * 256
@@ -124,23 +133,27 @@ pub fn ground_meshlet(first: u16, mut words: Array<u16>, mut info: Array<u16>) {
     }
     words[0u16] = quads * 4 | (triangles << 8);
     words[1u16] = 20 | ((quads * 6) << 8);
-    let bx = if bucket == 0 {
+    let bx = if bucket == 0 || global {
         0u16
     } else {
-        ((bucket - 1) % 5) * 6
+        ((bucket - 1) % ((LEVEL[0u16] + 2) / 3)) * 6
     };
-    let bz = if bucket == 0 {
+    let bz = if bucket == 0 || global {
         0u16
     } else {
-        ((bucket - 1) / 5) * 6
+        ((bucket - 1) / ((LEVEL[0u16] + 2) / 3)) * 6
     };
     words[9u16] = (bx as i16 - LEVEL[0u16] as i16) as u16;
     words[13u16] = (bz as i16 - LEVEL[1u16] as i16) as u16;
     if bucket != 0 {
-        words[10u16] = 39424;
-        words[11u16] = 65535;
+        words[10u16] = if global { 26624u16 } else { 39424u16 };
+        words[11u16] = if global { 65534u16 } else { 65535u16 };
     }
-    words[14u16] = if bucket == 0 { 267u16 } else { 265u16 };
+    words[14u16] = if bucket == 0 || global {
+        267u16
+    } else {
+        265u16
+    };
     info[0u16] = cursor;
     info[1u16] = (index_base + ((triangles + 2) / 3) * 4 + 63) >> 6;
     info[2u16] = material;
@@ -177,6 +190,14 @@ pub fn ground_matches_level() -> bool {
 // Both caller-owned CBs have retired and been reset before this mutation.
 // Storage remains allocated and unmoved until ground_end, after CB Drop.
 pub fn ground_rebuild() {
+    if LEVEL[0u16] == 0
+        || LEVEL[1u16] == 0
+        || LEVEL[0u16] > 31
+        || LEVEL[1u16] > 31
+        || ((LEVEL[0u16] + 2) / 3) * ((LEVEL[1u16] + 2) / 3) > 31
+    {
+        halt(0xb13);
+    }
     let mut metadata = ground_metadata();
     let mut i: u16 = 0;
     while i < 128 {

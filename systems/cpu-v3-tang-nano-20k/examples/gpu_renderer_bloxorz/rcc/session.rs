@@ -348,7 +348,11 @@ fn direction_button(direction: u16) -> u16 {
         if direction == 1 {
             128
         } else {
-            if direction == 2 { 64 } else { 16 }
+            if direction == 2 {
+                64
+            } else {
+                16
+            }
         }
     }
 }
@@ -554,9 +558,17 @@ fn release_pivot() {
     let half = fix32::from_words(32768, 0);
     let tipping = SESSION[0u16] == TIP;
     let axis = if tipping {
-        if GAME[2u16] == 1 { 1u16 } else { 0u16 }
+        if GAME[2u16] == 1 {
+            1u16
+        } else {
+            0u16
+        }
     } else {
-        if MOTION[3u16] < 2 { 1u16 } else { 0u16 }
+        if MOTION[3u16] < 2 {
+            1u16
+        } else {
+            0u16
+        }
     };
     let mut spin = fix32::from_words(9174, 7);
     if tipping {
@@ -701,7 +713,7 @@ pub fn idle_cube_transform() -> Transform {
     )
 }
 pub fn fragile_dropped(index: u16) -> bool {
-    FRACTURE[0u16] == index && SESSION[0u16] == FALL
+    FRACTURE[0u16] == index && (SESSION[0u16] == CRACK || SESSION[0u16] == FALL)
 }
 pub fn fragile_height(index: u16) -> fix32 {
     if FRACTURE[0u16] != index {

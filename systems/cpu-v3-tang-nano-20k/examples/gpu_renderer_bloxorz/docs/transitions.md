@@ -32,7 +32,9 @@ submission. Depth Load compatibility is checked during submission, after that
 producer completes. Resume-epoch/input recovery remains immediately after waits.
 
 The static CB is recorded on first use, level-generation change or background
-change. It retains background restoration, depth clear, floor and wells. The
+change. It retains background restoration, depth clear, floor, wells and the
+separate fragile-cell batch. Only an actual fragile visibility change patches
+its heap indices after retirement; stable frames do not re-record that group. The
 public target-only binding switches Back A/B/RTT and an optional background copy
 destination together without redoing scene math. Camera is fixed within a level;
 dynamic bridges, switches, hatches, player and shadow do not invalidate it.
@@ -105,7 +107,7 @@ Each record uses word-relative offsets: level offset/count at0/1, face offset/co
 at2/3, Q16 eye XYZ at4..9, focal at10/11, far at12/13, the planar-carrier applicability flag at14 and the sorted static-face schedule offset at15.
 Face words pack X4:0, Z9:5, face12:10 and atlas variant14:13. The five face codes
 are top,+X,+Z,-X,-Z. Static-neighbor interior sides are omitted; camera-facing
-boundary sides are retained, including boundaries beside dynamic surfaces. Fragile cells are dynamic; splitter top faces use the marker atlas while their sides use the original floor texture.
+boundary sides are retained, including boundaries beside dynamic surfaces. Fragile cells use a separate retained batch with reversible index visibility; splitter top faces use the marker atlas while their sides use the original floor texture.
 Twenty immutable native templates cover five faces and four UV variants. Their original per-face path remains available for controlled diagnostics; normal static floors use the load-time batches described below. No second baked per-stage floor geometry is retained.
 The generated app loader reads this archive through DSEG3, waits before mapping
 and before restoring its saved page, and never returns a window pointer.
@@ -192,15 +194,28 @@ surface. Current application transforms use positive scales and rotations;
 left/right roll, entry compression, tip and released fall preserve orientation.
 Negative-scale transforms are not generated. Pad boxes use the same six-face
 constructor for both axis signs instead of a sign-independent winding template.
-The well is a cavity with four non-overlapping interior walls and one bottom,
-not overlapping closed boxes with hidden caps. Its interior width is0.94, top
-is-0.005 and bottom-2.08 before native position quantization.
+Each well uses one meshlet with exactly four side quads: the far -X/-Z interior
+walls and the near +X/+Z exterior walls for the fixed game view. There is no
+bottom, top cap or runtime camera-dependent variant. Interior width is0.94,
+exterior width0.99, top-0.005 and lower edge-2.08 before native quantization.
+Opening strips and the planar goal carrier own the aperture boundary. The
+ordinary entrance/fallback hatch has its top and all four sides, with local
+back-face culling, so its geometry includes either X side without a winding flip.
 
 Opaque geometry retains Less with depth writes. Culling removes invisible back
 faces that could otherwise win a low-precision comparison; it is not a substitute
 for depth precision. Thin visible rim triangles can still lose against a farther
 hatch or floor after native N18/C28 transport rounding. The application does not
 hide this remaining numerical limitation with Always or an added depth offset.
+
+
+`tools/check_pad_surfaces.py <asset-directory>` audits native wall planes,
+triangle winding, absence of bottom/top caps and the five-face hatch. The opt-in
+`pad_surface_fixed_controls_and_candidate` host diagnostic compares frozen
+controls with candidate assets through real entry/goal session actions and
+representative marker stages. It saves full Display/color/depth outputs, actual
+session clocks and bounded submission inputs. These are offline instruction-CPU
+and functional-GPU checks, without a physical visibility or timing claim.
 
 
 ## Planar goal and live aperture
@@ -243,19 +258,34 @@ selected stage changes. They are grouped in ordinary-floor, split-marker-top
 and split-floor-side material order. Atlas variants remain per-vertex UV values;
 light response, packed signed normals, winding and triangle topology are copied
 from the existing native templates. Only faces already owned by `draw_floor`
-are included. Moving bridges, buttons, fragile surfaces, split player cubes,
+are included. Moving bridges, buttons, split player cubes,
 wells/hatches, goal/entrance animation, ghosts, shadows and HUD keep their
 existing paths and relative ordering.
 
 The33 imported boards are at most15x10. Native positions are unsigned delta10
-plus signed Q16 origins, not signed10 coordinates. Source coordinates bake in
-twice the world grid, preserving the existing half-scale Model. Top meshlets
-use quant_shift11 (world step1/64), covering a whole board with maximum X/Z
-deltas960/640; all grid vertices are exact. Side meshlets retain the existing
-source bottom-26112/65536 (world-51/256) using quant_shift9 and at most3x3-cell
-buckets. This avoids rounding that bottom to the coarser top grid. Each job
-contains up to16 independent quads:64 vertices and32 triangles,896 payload bytes
-plus128 metadata bytes, within the native64V/96T/1024-byte-payload limits.
+plus signed F16 origins, not signed10 coordinates. On boards up to15 in both
+axes, X/Z source positions are twice the world grid and Y is eight times world
+height, with a common Model scale(1/2,1/8,1/2). Both tops and sides then use
+quant_shift11: maximum X/Z deltas960/640, and side thickness51 codes. The side
+source bottom is-104448/65536, retaining world-51/256 exactly. Sorting material,
+then top/side, fills records across the whole board instead of closing a record
+at every3x3 boundary. Stage4's54 quads occupy16+12 top and16+10 side quads: four
+meshlets, not twelve.
+
+All source normals are signed coordinate axes, checked by the asset producer.
+The Model receives the original half-scale normal basis through `set_matrices`:
+it is parallel to the inverse transpose on each supported axis, with its
+per-axis magnitude normalized back to the original value. This preserves the
+original normal18 input range instead of sending an eightfold Y normal into
+signed18 transport. Non-axial templates are rejected. The bounded native
+Instance test compares the normal matrix against the original half-scale
+Model and checks each axial MAC result's range.
+
+Larger coordinate ranges use local3x3 buckets for both top and side quads,
+quant_shift9 and the original half scale. Unsupported coordinate/key ranges
+halt rather than wrap. Each record contains up to16 independent quads:64
+vertices and32 triangles,856 live payload bytes padded to896, plus128 metadata
+bytes. Native limits remain64V/96T/1024-byte payload; metadata is additional.
 
 The archive retains its original face list and adds a material/bucket-sorted
 face schedule at header word15, plus immutable corner/normal/UV templates.

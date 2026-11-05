@@ -1,51 +1,38 @@
 """Read-only planar goal apertures and baked ordinary-floor material phases."""
-import math
-import struct
 
 
 def prepare(w, system, output):
-    from gpu_texture_layout import level_offset, pack_levels
-    texture = (output / 'texture.bin').read_bytes()
-
-    def expand(value):
-        r, g, b = value >> 11, (value >> 5) & 63, value & 31
-        return [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)]
-
-    def sample(uv):
-        result = [0, 0, 0]
-        for exponent, parent in [(6, 319), (5, 192)]:
-            xy = [((int(v * 65535) & 65535) * (1 << exponent) >> 8) - 128 for v in uv]
-            x, y = [v >> 8 for v in xy]
-            fx, fy = [v & 255 for v in xy]
-            bottom = parent * fy >> 8
-            top = parent - bottom
-            rt, rb = top * fx >> 8, bottom * fx >> 8
-            for tap, weight in enumerate([top - rt, rt, bottom - rb, rb]):
-                address = sum(2 * max(16, 1 << e) ** 2 for e in range(exponent))
-                address += level_offset(exponent, (x + (tap & 1)) & ((1 << exponent) - 1), (y + (tap >> 1)) & ((1 << exponent) - 1))
-                color = expand(struct.unpack_from('<H', texture, address)[0])
-                for c in range(3):
-                    result[c] += (color[c] * weight + 256) >> 9
-        return result
+    from gpu_texture_layout import pack_levels
+    from PIL import Image
+    import source_photos as source
+    from atlas_borders import extrude
 
     binary = bytearray()
     for phase in range(4):
-        pixels = []
-        for y in range(128):
-            for x in range(128):
-                wx, wz = [(min(123, max(0, v - 2)) / 123 * 3 - 1.5) for v in [x, y]]
-                if abs(wx) <= .5 and abs(wz) <= .5:
-                    rgb = [224, 88, 88]
+        # Build the planar material directly from original photo crops. Each
+        # final cell is sampled once; no quantized main atlas is resampled.
+        content=Image.new('RGB',(124,124))
+        boundaries=[round(i*124/3) for i in range(4)]
+        for row in range(3):
+            for col in range(3):
+                x0,x1=boundaries[col:col+2];y0,y1=boundaries[row:row+2]
+                if row==1 and col==1:
+                    tile=Image.new('RGB',(x1-x0,y1-y0),(224,88,88))
                 else:
-                    dx, dz = [min(1, max(-1, math.floor(v + .5))) for v in [wx, wz]]
-                    fx, fz = [min(1, max(0, v - d + .5)) for v, d in [(wx, dx), (wz, dz)]]
-                    u, v, s, t = w.uv_rect((phase + dx * 3 + dz * 5) % 4)
-                    rgb = sample([u + fx * s, 1 - v - t + fz * t])
-                    for c, tint in enumerate([82, 100, 121]):
-                        value = rgb[c] * tint + 128
-                        rgb[c] = (((value + (value >> 8)) >> 8) * 232) >> 8
-                channels = [(v * maximum + 127) // 255 for v, maximum in zip(rgb, [31, 63, 31])]
-                pixels.append((channels[0] << 11) | (channels[1] << 5) | channels[2])
+                    tile=source.stone((phase+(col-1)*3+(row-1)*5)%4,(x1-x0,y1-y0))
+                    def lit(rgb):
+                        result=[]
+                        for value,tint in zip(rgb,[82,100,121]):
+                            value=value*tint+128
+                            result.append((((value+(value>>8))>>8)*232)>>8)
+                        return tuple(result)
+                    tile.putdata([lit(rgb) for rgb in tile.getdata()])
+                content.paste(tile,(x0,y0))
+        image=extrude(content,128,2)
+        pixels = []
+        for rgb in image.getdata():
+            channels = [(v * maximum + 127) // 255 for v, maximum in zip(rgb, [31, 63, 31])]
+            pixels.append((channels[0] << 11) | (channels[1] << 5) | channels[2])
         binary.extend(pack_levels({7: pixels}))
     assert len(binary) == 4 * 32768
     (output / 'goal_carrier.bin').write_bytes(binary)

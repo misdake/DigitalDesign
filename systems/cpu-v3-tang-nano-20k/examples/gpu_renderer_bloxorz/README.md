@@ -28,7 +28,7 @@ matching `production` GPU and Display hardware is required.
 
 See the [presentation documents](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/README.md) for phase ordering, snapshot source ownership, veil arithmetic and verification.
 
-All33 levels,256-entry complete undo, nine bridge channels, fragile cracking/drop,
+All33 levels,256-entry complete undo, nine bridge channels, immediate fragile-tile disappearance at crack start,
 split/swap/merge, tipping/release, entry/goal motion and cached transitions are
 connected. Special-tile marks use a deterministic128KiB RGB atlas, preserving the
 necessary moving bodies. Inactive bridge hints use alpha60. The imported reference

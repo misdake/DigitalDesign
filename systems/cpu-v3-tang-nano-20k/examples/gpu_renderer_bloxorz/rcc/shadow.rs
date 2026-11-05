@@ -77,8 +77,8 @@ fn shadow_receivers() -> u16 {
     if mode > GOAL_OPEN && mode <= GOAL_CLOSE {
         flags |= 2;
     }
-    if FRACTURE[0u16] != 65535 && SESSION[0u16] == FALL {
-        flags |= 4;
+    if FRACTURE[0u16] != 65535 && fragile_dropped(FRACTURE[0u16]) {
+        flags |= 4 | (FRACTURE[0u16] << 3);
     }
     flags
 }

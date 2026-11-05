@@ -17,18 +17,28 @@ fn application_from_sources(
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let sources = frozen_sources.unwrap_or(root);
     let source_example = sources.join("examples/gpu_renderer_bloxorz");
-    let example = root.join("examples/gpu_renderer_bloxorz");
+    let example = if name.starts_with("fragile-accepted-") {
+        source_example.clone()
+    } else {
+        root.join("examples/gpu_renderer_bloxorz")
+    };
     let out = std::env::var_os("BLOXORZ_SIM_OUTPUT_ROOT")
         .map_or_else(|| root.join("../../target/bloxorz-rtt"), PathBuf::from)
         .join(name);
-    assert!(std::process::Command::new("python")
+    let mut producer = std::process::Command::new("python");
+    producer
         .arg("-B")
         .arg(example.join("tools/assets.py"))
         .arg("--output")
-        .arg(&out)
-        .status()
-        .unwrap()
-        .success());
+        .arg(&out);
+    if let Some(sizes) = name
+        .strip_prefix("fragile-atlas-candidate-")
+        .or_else(|| name.strip_prefix("fragile-pad-candidate-"))
+    {
+        let (main, marker) = sizes.split('-').next().unwrap().split_once('x').unwrap();
+        producer.args(["--main-atlas-log2", main, "--marker-atlas-log2", marker]);
+    }
+    assert!(producer.status().unwrap().success());
     let catalog: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
     assert_eq!(catalog["profile"], "production");
@@ -59,6 +69,47 @@ fn application_from_sources(
         .constants()
         + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
     let mut source = std::fs::read_to_string(source_example.join("rcc/main.rs")).unwrap();
+    if name.starts_with("fragile-accepted-pad-") || name.starts_with("fragile-pad-candidate-") {
+        source = source
+            .replace("session_init();", "session_init();HUD[0u16]=0;")
+            .replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .replace(
+                "session_tick(buttons, held, elapsed);",
+                "pad_surface_pose(number);",
+            );
+        source += r#"
+fn pad_surface_ticks(total:u16){let mut remain=total;while remain!=0 {let dt=if remain>50 {50u16}else{remain};session_tick(0,0,dt);remain-=dt;}}
+fn pad_surface_pose(which:u16){
+ let level:u16=if which<5 {0u16}else{if which<9 {1u16}else{if which==9 {14u16}else{if which==10 {16u16}else{if which==11 {3u16}else{7u16}}}}};
+ level_reset(level);SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;SESSION[8u16]=0;TRANSITION[0u16]=0;HUD[0u16]=0;
+ if which==0 {session_move(0);pad_surface_ticks(220);}
+ else if which<5 {SESSION[0u16]=ENTRY_OPEN;SESSION[1u16]=0;if which==2 {pad_surface_ticks(100);}else if which==3 {pad_surface_ticks(390);}else if which==4 {pad_surface_ticks(580);}}
+ else if which>=6 && which<=8 {GAME[0u16]=13;GAME[1u16]=2;GAME[2u16]=2;session_move(3);pad_surface_ticks(if which==6 {320u16}else{if which==7 {630u16}else{1020u16}});}
+}
+"#;
+    }
+    if name.contains("-atlas-") {
+        source = source.replace("session_init();", "session_init();HUD[0u16]=0;")
+            .replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .replace("session_tick(buttons, held, elapsed);", "let stage:u16=if number<2 || number==6 {3u16}else{if number==2 {29u16}else{if number==3 {14u16}else{if number==4 {16u16}else{7u16}}}};if MOTION[6u16]!=stage {level_reset(stage);}SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;SESSION[8u16]=0;TRANSITION[0u16]=0;if number==6 {GAME[0u16]=3;GAME[1u16]=0;GAME[2u16]=1;session_move(0);session_tick(0,0,50);session_tick(0,0,50);session_tick(0,0,10);}else{session_tick(0,0,0);}");
+    }
+    if name == "fragile-flow-restart-next" {
+        source = source.replace("session_init();", "session_init();level_reset(3);SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;TRANSITION[0u16]=0;")
+            .replace("let fragile_owner = fragile_begin();", "let fragile_owner = fragile_begin();signal(14,fragile_owner.addr());")
+            .replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .replace("session_tick(buttons, held, elapsed);", "if number==1 {GAME[0u16]=3;GAME[1u16]=0;GAME[2u16]=1;session_move(0);let mut ticks:u16=0;while ticks<5 {session_tick(0,0,50);ticks+=1;}}else if number==2 {session_tick(8,0,0);TRANSITION[1u16]=320;}else if number==3 || number==6 {TRANSITION[1u16]=80;session_tick(0,0,0);}else if number==4 || number==7 {TRANSITION[1u16]=380;session_tick(0,0,0);}else if number==5 {session_tick(4096,0,0);TRANSITION[1u16]=320;}else {session_tick(buttons,held,elapsed);}");
+    }
+    if name.starts_with("fragile-") && name.contains("-representative-") {
+        source = source.replace("session_init();", "session_init();HUD[0u16]=0;")
+            .replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .replace("session_tick(buttons, held, elapsed);", "let stage:u16=if number==0 {7u16}else{if number==1 {14u16}else{if number==2 {16u16}else{if number==3 {29u16}else{0u16}}}};if MOTION[6u16]!=stage {level_reset(stage);}SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;SESSION[8u16]=0;TRANSITION[0u16]=0;session_tick(0,0,0);");
+    }
+    if name.starts_with("fragile-") && name.contains("-play-") {
+        source = source
+            .replace("session_init();", "session_init();level_reset(3);SESSION[0u16]=PLAY;SESSION[1u16]=0;SESSION[3u16]=0;SESSION[8u16]=0;TRANSITION[0u16]=0;HUD[0u16]=0;")
+            .replace("let elapsed = now - previous;", "let elapsed:u16=0;")
+            .replace("session_tick(buttons, held, elapsed);", "if number==3 {GAME[0u16]=3;GAME[1u16]=0;GAME[2u16]=1;session_move(0);let mut ticks:u16=0;while ticks<5 {session_tick(0,0,50);ticks+=1;}}else if number==4 {session_tick(0,0,50);session_tick(0,0,50);session_tick(0,0,40);}else if number==5 {session_tick(32768,0,0);}else {session_tick(buttons,held,elapsed);}");
+    }
     // This independent Web oracle decodes the exact unit-triangle control.
     // Receiver-cell packing is qualified separately by bloxorz_shadow_batch.
     if name.starts_with("web-shadow-") {
@@ -359,7 +410,7 @@ fn gallery_pose(which:u16){
             "signal(8,number);render_start = profiler_active_milliseconds();",
         );
     }
-    if name.contains("-cpu-cost-") {
+    if name.contains("-cpu-cost-") && !name.starts_with("fragile-") {
         assert_eq!(source.matches("level_reset(0);").count(), 1);
         source = source.replace("level_reset(0);", "level_reset(7);");
         let mode = if name.ends_with("-legacy") { 2 } else { 1 };
@@ -405,7 +456,10 @@ fn gallery_pose(which:u16){
     } else {
         "renderer_game_frames"
     };
-    if name.starts_with("opt-shadow-") || name == "all-stage-gallery" {
+    if name.starts_with("opt-shadow-")
+        || name == "all-stage-gallery"
+        || name.starts_with("fragile-")
+    {
         std::fs::write(out.join("instrumented-main.rs"), &source).unwrap();
     }
     // Test-only readonly instrumentation uses the public getter, never arena slot layout.
@@ -444,7 +498,10 @@ pub fn profiler_gate(d:Array<u16>)->u16 {
         let manifest = out.join("capture-manifest.json");
         std::fs::write(&manifest,serde_json::to_vec_pretty(&serde_json::json!({"version":3,"schema":"digitaldesign.gpu-capture-build","command_abi":8,"manifest_id":"0000000000000000000000000000000000000000000000000000000000000000","layout":profile.recorded_description(),"resources":[],"options":{"capture_allocation_guards":false}})).unwrap()).unwrap();
         resolver::RendererCaptureConfiguration::from_manifest(gate, &manifest).unwrap()
-    } else if name.contains("-cpu-cost-") || name.starts_with("frame-schedule-") {
+    } else if name.contains("-cpu-cost-")
+        || name.starts_with("frame-schedule-")
+        || name.starts_with("fragile-")
+    {
         resolver::RendererCaptureConfiguration::with_default_hook(profile)
     } else {
         resolver::RendererCaptureConfiguration::without_capture(profile)
@@ -2255,7 +2312,7 @@ session_tick(32768,0,0);check(GAME[9u16]==1&&GAME[8u16]==1&&GAME[1u16]==2&&GAME[
 level_reset(3);SESSION[0u16]=PLAY;SESSION[1u16]=0;TRANSITION[0u16]=0;SESSION[3u16]=0;
 GAME[0u16]=3;GAME[1u16]=0;GAME[2u16]=1;check(session_move(0));check(GAME[4u16]==2&&GAME[0u16]==5&&GAME[5u16]==1);
 n=0;while n<5 {session_tick(0,0,50);n+=1;}
-check(SESSION[0u16]==CRACK&&FRACTURE[0u16]==5&&!fragile_dropped(5));
+check(SESSION[0u16]==CRACK&&FRACTURE[0u16]==5&&fragile_dropped(5));
 session_tick(0,0,50);session_tick(0,0,50);session_tick(0,0,40);check(SESSION[0u16]==FALL&&SESSION[1u16]==0&&fragile_dropped(5));
 session_tick(0,0,50);session_tick(0,0,50);session_tick(0,0,50);let falling=block_transform();
 check(falling.position.y>-fix32::from_words(16,0)&&falling.position.y<fix32::from_words(16,0));
@@ -2695,6 +2752,12 @@ free(owner);
                     }
                     let offset = usize::from((words[1] >> 8) & 127);
                     assert_eq!(offset * 4, 24 * q);
+                    for index in 0..t.div_ceil(3) {
+                        let at = 64 + offset * 4 + index * 4;
+                        let bits =
+                            (0..4).fold(0u64, |a, i| a | (u64::from(words[at + i]) << (16 * i)));
+                        assert_eq!(bits >> ((t - index * 3).min(3) * 18), 0);
+                    }
                     for tri in 0..t {
                         let at = 64 + offset * 4 + (tri / 3) * 4;
                         let packed = (0..4)
@@ -2944,8 +3007,14 @@ fn same_heap_address_rebuilds_only_after_retirement_and_capture_reads_new_record
 #[path = "gpu_renderer_bloxorz_batch_cost.rs"]
 mod batch_cost;
 
+#[path = "gpu_renderer_bloxorz_atlas.rs"]
+mod atlas;
+#[path = "gpu_renderer_bloxorz_fragile_batch.rs"]
+mod fragile_batch;
 #[path = "gpu_renderer_bloxorz_frame_schedule.rs"]
 mod frame_schedule;
+#[path = "gpu_renderer_bloxorz_pad_surface.rs"]
+mod pad_surface;
 
 #[test]
 fn cached_veil_diagnostic_updates_transmittance_overlay_on_every_consumer() {

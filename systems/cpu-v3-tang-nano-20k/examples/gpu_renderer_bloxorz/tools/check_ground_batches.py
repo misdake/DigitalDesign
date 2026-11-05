@@ -47,13 +47,16 @@ def reference(assets_path):
                 continue
             split = level['cells'][z * width + x][0] == 7
             material = 1 if split and direction == 0 else 2 if split else 0
-            bucket = 0 if direction == 0 else 1 + x // 3 + z // 3 * 5
+            global_quant = width <= 15 and depth <= 15
+            bucket = (0 if direction == 0 else 1) if global_quant else 1 + x // 3 + z // 3 * ((width + 2) // 3)
             variant = face >> 13
             index = catalog['MARKED_SPLIT']['first'] + variant if material == 1 else catalog['SHARED_FLOOR']['first'] + variant * 5 + direction
             vertices = decode(index)
             for vertex in vertices:
                 vertex[0] += (2 * x - width + 1) * 65536
                 vertex[2] += (2 * z - depth + 1) * 65536
+                if global_quant:
+                    vertex[1] *= 4
             keep.append(dict(face=face, material=material, bucket=bucket, vertices=vertices))
         keep.sort(key=lambda row: (row['material'], row['bucket']))
         assert [row['face'] for row in keep] == a.F.schedule(level, old_faces, carrier)

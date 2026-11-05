@@ -44,12 +44,8 @@ def conservative_far(level):
 
 
 def uv_rect(which):
-    if isinstance(which, int):
-        return ((which % 2) * .25 + 16 / 1024,
-                .5 + (which // 2) * .25 + 16 / 1024, 224 / 1024, 224 / 1024)
-    return {'side-a': (.5 + 16 / 1024, .5 + 16 / 1024, 480 / 1024, 480 / 1024),
-            'top': (16 / 1024, 16 / 1024, 480 / 1024, 480 / 1024),
-            'side-b': (.5 + 16 / 1024, 16 / 1024, 480 / 1024, 480 / 1024)}[which]
+    from atlas_borders import uv_rect as bordered_uv
+    return bordered_uv(which)
 
 
 def mesh(name, quads, cull_negative=False):
@@ -184,16 +180,15 @@ def box_quads(center, size):
 
 
 def well():
-    # A cavity owns its interior, not overlapping closed boxes and hidden caps.
-    a=.47;top=-.005;bottom=-2.08;rect=uv_rect(0)
-    quads=[
-        ([(-a,bottom,-a),(a,bottom,-a),(a,bottom,a),(-a,bottom,a)],(0,511,0),rect),
-        ([(-a,top,-a),(a,top,-a),(a,bottom,-a),(-a,bottom,-a)],(0,0,511),rect),
-        ([(a,top,a),(-a,top,a),(-a,bottom,a),(a,bottom,a)],(0,0,-511),rect),
-        ([(-a,top,a),(-a,top,-a),(-a,bottom,-a),(-a,bottom,a)],(511,0,0),rect),
-        ([(a,top,-a),(a,top,a),(a,bottom,a),(a,bottom,-a)],(-511,0,0),rect),
-    ]
-    return [plain('well',quads)]
+    # Fixed game view: two far interior walls and two near exterior walls.
+    # The aperture has no bottom or overlapping top caps.
+    inner=.47;outer=.495;top=-.005;bottom=-2.08;rect=uv_rect(0)
+    walls=[
+        ([(-inner,top,inner),(-inner,top,-inner),(-inner,bottom,-inner),(-inner,bottom,inner)],(511,0,0),rect),
+        ([(-inner,top,-inner),(inner,top,-inner),(inner,bottom,-inner),(-inner,bottom,-inner)],(0,0,511),rect),
+        ([(outer,top,outer),(outer,top,-outer),(outer,bottom,-outer),(outer,bottom,outer)],(511,0,0),rect),
+        ([(-outer,top,outer),(outer,top,outer),(outer,bottom,outer),(-outer,bottom,outer)],(0,0,511),rect)]
+    return [plain('well',walls)]
 
 
 def heavy_base():
@@ -218,12 +213,9 @@ def texture(system):
     import sys
     sys.path.insert(0, str(system / 'tools'))
     from gpu_texture_layout import pack_levels
-    atlas = Image.open(system / 'examples/bloxorz/assets/atlas-low.png').convert('RGB')
-    assert atlas.size == (512, 512)
-    levels = {}
-    for exponent in range(10):
-        image = atlas.resize((1 << exponent, 1 << exponent), Image.Resampling.BOX)
-        levels[exponent] = [((r * 31 + 127) // 255 << 11) |
+    from atlas_borders import base, LOG2
+    image = base()
+    pixels = [((r * 31 + 127) // 255 << 11) |
                             ((g * 63 + 127) // 255 << 5) | ((b * 31 + 127) // 255)
                             for r, g, b in image.getdata()]
-    return pack_levels(levels)
+    return pack_levels({LOG2: pixels})

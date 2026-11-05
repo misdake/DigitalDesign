@@ -15,7 +15,15 @@ The producer reserves byte 0x580000 for this immutable source and excludes the
 0x600000 offscreen color allocation and the shared scene depth at0x480000. Every scene restoration uses
 the current public `copy_color`, then color Load and independent depth Clear.
 SELECT toggles this intentional gradient and the Web pixel-mode solid #2c2620.
-The original low atlas comes from the existing Bloxorz asset directory. The small deterministic marker atlas and application-only HUD glyphs are generated as described in [marker textures](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/markers.md); neither overwrites its UV space.
+The main and marker textures start directly from the original1024×1024 photos in
+`source/`, using the source identities/crops described in [base textures](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/textures.md).
+The photos are declared CC0 by the original BloxorzClone builder, from Poly Haven
+[marble_01](https://polyhaven.com/a/marble_01) and
+[rusty_metal_sheet](https://polyhaven.com/a/rusty_metal_sheet).
+Procedural marker masks and application-only HUD glyphs remain native sources;
+their PNG previews are output artifacts. The old512 atlas is not a build source
+for these materials. Source SHA256 values and the declared license are emitted
+in the asset manifest from `source_photos.py`.
 
 `web-shadow-reference.json` is an independent, generated Web geometry fixture:
 actual world matrices and clipped receiver polygons for standing, rising,
@@ -45,8 +53,8 @@ No preview-only glyphs or rescaling are used.
 
 `tools/goal_carrier.py`, invoked by the normal asset producer, generates48 native
 annulus meshes and their matching hatch tops, plus `goal_carrier.bin`: four
-128x128 RGB565 base-only textures,128KiB total. It uses existing stone atlas
-variants and a flat red inlay, with two-pixel gutters. Unused red center texels
+128x128 RGB565 base-only textures,128KiB total. It resizes the original stone
+photo crops directly into final planar cells and adds a flat red inlay, with two-pixel gutters. Unused red center texels
 are not a fake hole: the center is removed from the mesh until it closes.
 The native mesh directory and all records share the existing mesh resource;
 resource disjointness and its0x4f0000 upper boundary are checked. The archive's
