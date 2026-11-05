@@ -1,5 +1,16 @@
 # Bloxorz input assets
 
+The generated native mesh catalog contains two visible-side variants for opaque
+dynamic tiles, bridges and soft markers. Original channel/state indices
+form the positive-X prefix; the negative-X family follows. The producer preserves
+packed vertex/UV values, remaps indices and enables native backface culling.
+Transparent hints preserve their full original two-sided geometry. See the
+[marker layout](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/markers.md)
+for camera selection and coverage limits. Consumers resolve groups through the
+generated catalog rather than relying on literal mesh indices.
+Heavy buttons have a single four-face native tile per channel/state; the flat
+marked top and reused side-atlas regions replace the separate raised body.
+
 `background-rgb565-column16.bin` is the original ordered-dither background,
 204800 bytes, SHA256
 `5f4be20a8bf7708d54ff2bde923210964c147eeb53c43c0b2e6ded71f9dc8047`.

@@ -326,6 +326,21 @@ fn draw_bridge_group(
         BRIDGE_COMMANDS[2u16] = DRAW_CALLS[0u16] - before;
     }
 }
+fn visible_tile_side(i: u16) -> u16 {
+    let eye = fix32::from_words(
+        blox_level_meta(MOTION[6u16], 4),
+        blox_level_meta(MOTION[6u16], 5),
+    );
+    let half = fix32::from_words(32768, 0);
+    let center = fix32::from_int((i % LEVEL[0u16]) as i16)
+        - fix32::from_int(LEVEL[0u16] as i16) * half
+        + half;
+    if eye < center {
+        1u16
+    } else {
+        0u16
+    }
+}
 fn draw_bridges(
     pass: &mut Pass,
     model: &mut Model,
@@ -343,7 +358,7 @@ fn draw_bridges(
             let variant = ((i % LEVEL[0u16]) * 3 + div_u16(i, LEVEL[0u16]) * 5) % 4;
             let mesh = demo_mesh_part(
                 if active {
-                    BRIDGE_TILE_FIRST + variant
+                    BRIDGE_TILE_FIRST + variant + visible_tile_side(i) * 4
                 } else {
                     HINT_TILE_FIRST
                 },
@@ -390,35 +405,39 @@ fn draw_fragile_batches(pass: &mut Pass, model: &mut Model, material: &mut Mater
     let mesh = fragile_mesh(owner);
     counted_draw(pass, &mesh, model, material, &view);
 }
-fn draw_switch_tile(pass: &mut Pass, model: &mut Model, material: &mut Material, i: u16) {
-    let texture = demo_texture();
-    let view = texture.view();
+fn draw_switch_tile(
+    pass: &mut Pass,
+    model: &mut Model,
+    material: &mut Material,
+    i: u16,
+    kind: u16,
+    channel: u16,
+) {
     let marked = marker_texture();
     let marked_view = marked.view();
     material.set_unlit(false);
     let one = fix32::from_int(1);
-    let kind = level_field(i, 0);
     if kind == 3 || kind == 4 {
-        let bit = level_field(i, 1);
-        let channel = bit_channel(bit);
+        let bit = 1u16 << channel;
         let active = visual_mask() & bit != 0;
-        let mut pulse = one;
         let mut sink = fix32::zero();
-        if active {
+        if kind == 3 && active {
             sink = fix32::from_words(3277, 0);
             let f = switch_fraction(channel);
             if f < one {
                 let sc = fsincos(f * fix32::from_words(9280, 3));
                 let wave = sc.x();
                 let remain = one - f;
-                pulse = one + fix32::from_words(16384, 0) * wave;
                 sink = fix32::from_words(3277, 0) * (one - remain * remain * remain)
                     + fix32::from_words(1311, 0) * wave;
             }
         }
         if kind == 3 {
             let mesh = demo_mesh_part(
-                MARKED_SOFT_FIRST + (channel & 7) * 2 + if active { 1u16 } else { 0u16 },
+                MARKED_SOFT_FIRST
+                    + (channel & 7) * 2
+                    + if active { 1u16 } else { 0u16 }
+                    + visible_tile_side(i) * 16,
                 1,
             );
             let mut y = fix32::from_words(2621, 0) - sink;
@@ -429,22 +448,12 @@ fn draw_switch_tile(pass: &mut Pass, model: &mut Model, material: &mut Material,
             model.set_pose(tile_pose(i, y));
             counted_draw(pass, &mesh, model, material, &marked_view);
         } else {
-            let tile = demo_mesh_part(TILE1_FIRST, TILE1_COUNT);
-            material.set_uniform_color(channel_color(channel, if active { 1u16 } else { 0u16 }));
-            let tile_transform = tile_pose(i, fix32::zero());
-            model.set_pose(tile_transform);
-            counted_draw(pass, &tile, model, material, &view);
-            let base = demo_mesh_part(MARKED_HEAVY_FIRST + (channel & 7), 1);
-            let mut y = fix32::from_words(2294, 0) - sink;
-            if y < fix32::from_words(983, 0) {
-                y = fix32::from_words(983, 0);
-            }
+            let base = demo_mesh_part(
+                MARKED_HEAVY_FIRST + (channel & 7) * 2 + if active { 1u16 } else { 0u16 },
+                1,
+            );
             material.set_uniform_color(demo_white());
-            model.set_pose(demo_pose(
-                demo_point(tile_transform.position.x, y, tile_transform.position.z),
-                demo_zero(),
-                demo_point(pulse, pulse, pulse),
-            ));
+            model.set_pose(tile_pose(i, fix32::zero()));
             counted_draw(pass, &base, model, material, &marked_view);
         }
     }
@@ -457,12 +466,15 @@ fn draw_switches(
     state: &RenderState,
 ) {
     let mut cache = button_cache_data();
+    let mask = visual_mask();
     let mut j: u16 = 0;
     while j < cache[0u16] {
         let i = cache[1 + j * 3];
+        let kind = level_field(i, 0);
         let bit = level_field(i, 1);
-        let key = if visual_mask() & bit != 0 {
-            32768 + switch_age(bit_channel(bit))
+        let channel = bit_channel(bit);
+        let key = if mask & bit != 0 {
+            32768 + if kind == 4 { 0u16 } else { switch_age(channel) }
         } else {
             0u16
         };
@@ -473,7 +485,7 @@ fn draw_switches(
         } else {
             let before = DRAW_CALLS[0u16];
             pass.begin_prepared_part(part);
-            draw_switch_tile(pass, model, material, i);
+            draw_switch_tile(pass, model, material, i, kind, channel);
             pass.end_prepared_group();
             cache[2 + j * 3] = key;
             cache[3 + j * 3] = DRAW_CALLS[0u16] - before;

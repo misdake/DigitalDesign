@@ -68,7 +68,9 @@ fn application_from_sources(
         .unwrap()
         .constants()
         + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
-    let mut source = std::fs::read_to_string(source_example.join("rcc/main.rs")).unwrap();
+    let mut source = std::fs::read_to_string(source_example.join("rcc/main.rs"))
+        .unwrap()
+        .replace("\r\n", "\n");
     if name.starts_with("button-parts-") {
         source = source
             .replace(
@@ -96,10 +98,27 @@ fn button_test_pose(n:u16){
  let mut i:u16=0;let mut bit:u16=0;
  while i<LEVEL[6u16] && bit==0 {let k=level_field(i,0);if k==3 || k==4 {bit=level_field(i,1);}i+=1;}
  if n==2 || n==11 {GAME[3u16]=bit;}
+ if n==16 {
+  let mut cell:u16=0;while level_field(cell,0)!=3 {cell+=1;}
+  LEVEL[9+cell*2]=(LEVEL[9+cell*2]&4095)|32768;
+  LEVEL_GENERATION[0u16]+=1;GAME[3u16]=256;
+ }
  if n==7 {GAME[3u16]=0;}
- session_tick(0,0,if n==3 || n==12 {50u16}else{if n==5 {210u16}else{0u16}});
+ session_tick(0,0,if n==3 || n==12 || n==17 {50u16}else{if n==5 {210u16}else{0u16}});
 }
 "#;
+    }
+    if name == "cpu-shadow-stage29" {
+        source = source
+            .replace(
+                "session_init();",
+                "session_init();level_reset(28);SESSION[0u16]=PLAY;SESSION[1u16]=0;HUD[0u16]=0;",
+            )
+            .replace(
+                "session_tick(buttons, held, elapsed);",
+                "session_tick(buttons, held, if number==2 {17u16}else{0u16});",
+            );
+        std::fs::write(out.join("compiled-main.rs"), &source).unwrap();
     }
     if name == "moving-cache-stage29" {
         source = source.replace(
@@ -640,6 +659,8 @@ fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){si
 
 #[path = "gpu_renderer_bloxorz_buttons.rs"]
 mod buttons;
+#[path = "gpu_renderer_bloxorz_cpu_emu.rs"]
+mod cpu_emu;
 #[path = "gpu_renderer_bloxorz_moving.rs"]
 mod moving;
 #[path = "gpu_renderer_bloxorz_static_cache.rs"]

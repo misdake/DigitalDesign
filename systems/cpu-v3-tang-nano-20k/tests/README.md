@@ -6,14 +6,27 @@ including all untouched guard words. It has a2M-step CPU bound.
 
 ## Bloxorz prepared command parts
 
+`host gpu_pipeline::bloxorz::cpu_emu::level29_shadow_frame_cpu_cycles_and_instruction_oracle`
+is an opt-in CPU cycle measurement with synchronous functional GPU. Set
+`BLOXORZ_CPU_ARM` and `BLOXORZ_SIM_OUTPUT_ROOT` to distinct run labels/roots.
+Real Device5 right/release input and test-only deltas0/0/17ms produce the same
+level29 ROLL shadow pose. All three complete physical color/depth planes and
+actual Display images must match a CPU instruction-simulator oracle. Bounds
+are24M CPU cycles,240 host seconds and12M oracle steps. `cpu-frame.json` records
+signal4-to-signal12 CPU cycles, submissions and the checked pose. This backend
+excludes physical GPU execution, shared contention and scanout; its numbers are
+CPU-only comparisons within this fixture, not whole-system frame time or FPS.
+The test source loader normalizes CRLF before exact multiline fixture edits.
+
 `gpu_prepared_group` runs the real RCC core in both GPU debug modes. It checks fixed-part snapshots, independent replacement, complete
 entry-state prefix omission, command capacity, reference/rebuild exclusion,
 resource facts, reset and dirty-line same-page LCOPY behavior.
 
-`host gpu_pipeline::bloxorz::buttons::` compares16 controlled session frames
+`host gpu_pipeline::bloxorz::buttons::` compares18 controlled session frames
 against forced full re-recording. It checks complete physical color/depth and
 actual Display, plus exactly which button parts are rebuilt during press,
-animation, settlement, release, level33's13-button layout and restart. The
+soft animation, heavy state-only changes, settlement, release, level33's13-button
+layout, restart and ninth-channel press/animation. The
 fixture controls state/delta; it does not claim physical-key or cycle timing.
 `static_cache::prepared_bridge_capture_reads_fixed_push_after_reset_and_normal_retirement`
 checks actual published capture reads and retained push data over three frames.

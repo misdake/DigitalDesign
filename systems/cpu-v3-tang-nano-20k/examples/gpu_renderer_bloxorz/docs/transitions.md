@@ -90,8 +90,9 @@ Fully unsupported rolls release at the Web balance threshold, evaluated at the a
 
 Switch synchronization updates the shared visual mask. Nine channel ages run for
 260ms, with a cubic sink and sine overshoot. The textured soft tile keeps its X/Z
-extent and sinks from .04 toward .015 world units. The raised heavy base retains
-its scale pulse and sink; its dark top is part of its texture. The eight reference
+extent and sinks from .04 toward .015 world units. Heavy buttons use a flat
+marked tile whose texture changes with the visual mask, without pulse or sink.
+The eight reference
 palettes cycle for the ninth channel. Multi-channel switch actions remain the
 core's keep/XOR rules. Inactive bridge hints use SrcOver alpha60/255, Less and no
 depth writes; active bridges remain opaque. Shadow alpha87 and idle-cube alpha255
@@ -337,16 +338,17 @@ or using the protected static arena.
 The dynamic CB enables the slot-private bank specified in
 [GPU API storage](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md).
 Part0 records all bridge draws in their original order, including opaque tiles
-and alpha60 hints. Parts1..15 each record one button, preserving its original
-box/mark meshes, material order, pulse and sink arithmetic. Replaying a part
+and alpha60 hints. Parts1..15 each record one button, retaining soft-tile sink
+and selecting a flat heavy tile by channel/state. Replaying a part
 copies aligned commands and keeps its fixed native parameter snapshots; it
 skips texture/Mesh descriptor creation, pose/matrix work, material updates and
 meshlet expansion. DRAW statistics add the saved actual meshlet count.
 
 Level generation clears the entire bank and rebuilds a compact ascending-cell
 button list. Generation also covers camera changes. The delayed visual bridge
-mask invalidates only part0. A button key is zero when inactive, or32768 plus
-its channel's clamped0..260ms animation age when active. Only changed keys
+mask invalidates only part0. A button key is zero when inactive. An active soft
+button uses32768 plus its channel's clamped0..260ms animation age; a flat heavy
+button uses32768 independent of age. Only changed keys
 re-record their private part; unchanged buttons and bridges remain reusable.
 Current stages have at most13 buttons, within the15-part limit. Bounds reject
 excess buttons. Empty bridge groups are legal. Camera/state are reinstalled at
@@ -356,7 +358,9 @@ Pads, shadows, player and HUD follow in their original immediate-recorded order.
 The bank uses the existing64KiB command and64KiB push reservations, with fixed
 part partitions rather than a growing prefix. No persistent per-button Model or
 new GPU command is introduced. A47-word heap allocation holds button count and
-up to15 triples of cell index, saved animation key and actual draw count; one
+up to15 triples of cell index, saved key and actual draw count. Kind and channel
+come from the canonical level data; no second descriptor table or cell/channel
+bit packing is used. One
 additional CPU control word retains its owner. It is allocated once, rebuilt
 only on level changes, and freed after both CBs retire/drop at finite exit.
 Part replacement is allowed only before that part is referenced in the current
