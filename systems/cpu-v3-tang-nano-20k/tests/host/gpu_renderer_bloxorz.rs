@@ -69,6 +69,65 @@ fn application_from_sources(
         .constants()
         + &std::fs::read_to_string(out.join("renderer_assets.rs")).unwrap();
     let mut source = std::fs::read_to_string(source_example.join("rcc/main.rs")).unwrap();
+    if name.starts_with("button-parts-") {
+        source = source
+            .replace(
+                "session_init();",
+                "session_init();level_reset(28);SESSION[0u16]=PLAY;SESSION[1u16]=0;HUD[0u16]=0;",
+            )
+            .replace(
+                "session_tick(buttons, held, elapsed);",
+                "button_test_pose(number);",
+            )
+            .replace(
+                "pass.begin_prepared_part(part);",
+                "signal(14,part);pass.begin_prepared_part(part);",
+            );
+        if name.ends_with("fresh") {
+            source = source.replace(
+                "sync_bridge_group(&mut commands);",
+                "sync_bridge_group(&mut commands);commands.clear_prepared_group();",
+            );
+        }
+        source += r#"
+fn button_test_pose(n:u16){
+ if n==9 || n==14 {level_reset(32);SESSION[0u16]=PLAY;SESSION[1u16]=0;GAME[3u16]=0;}
+ if n==0 {GAME[3u16]=0;}
+ let mut i:u16=0;let mut bit:u16=0;
+ while i<LEVEL[6u16] && bit==0 {let k=level_field(i,0);if k==3 || k==4 {bit=level_field(i,1);}i+=1;}
+ if n==2 || n==11 {GAME[3u16]=bit;}
+ if n==7 {GAME[3u16]=0;}
+ session_tick(0,0,if n==3 || n==12 {50u16}else{if n==5 {210u16}else{0u16}});
+}
+"#;
+    }
+    if name == "moving-cache-stage29" {
+        source = source.replace(
+            "session_init();",
+            "session_init();level_reset(28);SESSION[0u16]=PLAY;SESSION[1u16]=0;HUD[0u16]=0;",
+        );
+        // Physical Device5 input and the real millisecond clock drive the roll.
+        std::fs::write(out.join("compiled-main.rs"), &source).unwrap();
+    }
+    if name.starts_with("static-cache-") {
+        let level = std::env::var("BLOXORZ_CACHE_LEVEL")
+            .unwrap_or_else(|_| "29".into())
+            .parse::<u16>()
+            .unwrap();
+        assert!((1..=33).contains(&level));
+        source = source.replace(
+            "session_init();",
+            &format!(
+                "session_init();level_reset({});SESSION[0u16]=PLAY;SESSION[1u16]=0;HUD[0u16]=0;",
+                level - 1
+            ),
+        );
+        source = source.replace(
+            "session_tick(buttons, held, elapsed);",
+            "session_tick(buttons, held, 0);",
+        );
+        std::fs::write(out.join("compiled-main.rs"), &source).unwrap();
+    }
     if name.starts_with("fragile-accepted-pad-") || name.starts_with("fragile-pad-candidate-") {
         source = source
             .replace("session_init();", "session_init();HUD[0u16]=0;")
@@ -423,6 +482,12 @@ fn gallery_pose(which:u16){
             "signal(9,0);ground_rebuild();signal(10,0);",
         );
     }
+    if name == "static-cache-prepared-capture" {
+        source = source.replace(
+            "gpu.submit(commands);",
+            "gpu.request_snapshot();gpu.submit_capturable(commands);",
+        );
+    }
     if name.ends_with("-heap-reload-capture") {
         source=source.replace("session_tick(buttons, held, elapsed);","if number==1 {level_reset(1);SESSION[0u16]=PLAY;}if number==2 {level_reset(0);SESSION[0u16]=PLAY;}session_tick(buttons,held,elapsed);");
         source = source.replace(
@@ -476,7 +541,9 @@ fn gallery_pose(which:u16){
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let mut dependencies = vec![];
     let profile = resolver::RendererLayoutProfile::Column16;
-    let capture = if name.ends_with("-heap-reload-capture") {
+    let capture = if name.ends_with("-heap-reload-capture")
+        || name == "static-cache-prepared-capture"
+    {
         let gate = out.join("capture-gate.rs");
         std::fs::write(
             &gate,
@@ -495,6 +562,13 @@ pub fn profiler_gate(d:Array<u16>)->u16 {
 }"#,
         )
         .unwrap();
+        if name == "static-cache-prepared-capture" {
+            let text = std::fs::read_to_string(&gate).unwrap().replace(
+                "gpu_capture_range_word(r,1)==4 && gpu_capture_range_word(r,3)<2",
+                "gpu_capture_range_word(r,1)==2",
+            );
+            std::fs::write(&gate, text).unwrap();
+        }
         let manifest = out.join("capture-manifest.json");
         std::fs::write(&manifest,serde_json::to_vec_pretty(&serde_json::json!({"version":3,"schema":"digitaldesign.gpu-capture-build","command_abi":8,"manifest_id":"0000000000000000000000000000000000000000000000000000000000000000","layout":profile.recorded_description(),"resources":[],"options":{"capture_allocation_guards":false}})).unwrap()).unwrap();
         resolver::RendererCaptureConfiguration::from_manifest(gate, &manifest).unwrap()
@@ -563,6 +637,13 @@ fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){si
     .unwrap();
     (program, resources, out)
 }
+
+#[path = "gpu_renderer_bloxorz_buttons.rs"]
+mod buttons;
+#[path = "gpu_renderer_bloxorz_moving.rs"]
+mod moving;
+#[path = "gpu_renderer_bloxorz_static_cache.rs"]
+mod static_cache;
 
 #[test]
 fn first_two_stage_solutions_undo_and_overlapping_fade_follow_real_rules() {
@@ -1036,8 +1117,18 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
                             _ => {}
                         }
                     }
-                    assert_eq!(depth, 0x480000);
-                    if fixed {
+                    assert_eq!(
+                        depth,
+                        if target == 0x500000 {
+                            0x540000
+                        } else {
+                            0x480000
+                        }
+                    );
+                    if target == 0x500000 {
+                        assert_eq!(depth_clear, Some(65535));
+                        assert!(copy || clear == Some(0x2924));
+                    } else if fixed {
                         consumers += 1;
                         assert_eq!(
                             invalidate, source_dirty,
@@ -1056,7 +1147,7 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
                         assert!(clear.is_none());
                         if copy {
                             static_replays += 1;
-                            assert_eq!(depth_clear, Some(65535));
+                            assert!(depth_clear.is_none(), "restoration loads the copied depth");
                         } else {
                             sources += 1;
                             source_dirty = true;
@@ -1064,10 +1155,9 @@ fn cached_veil_captures_each_boundary_once_and_discards_locked_input() {
                         }
                     } else {
                         assert!(target == 0x400000 || target == 0x440000);
-                        if depth_clear.is_some() {
+                        if copy {
                             static_replays += 1;
-                            assert_eq!(depth_clear, Some(65535));
-                            assert!(copy || clear == Some(0x2924));
+                            assert!(depth_clear.is_none() && clear.is_none());
                         } else {
                             assert!(!copy && clear.is_none());
                             ordinary[usize::from(target == 0x440000)] = true;
@@ -1620,7 +1710,7 @@ fn submitted_shadow_triangles(
     let mut local = vec![0u16; 2048];
     let mut records = [0usize; 2];
     let mut result = vec![];
-    let commands = &memory[0x9800 * 64..0x9800 * 64 + usize::from(command_words)];
+    let commands = &memory[0x9880 * 64..0x9880 * 64 + usize::from(command_words)];
     for words in commands.as_chunks::<2>().0 {
         let c = u32::from(words[0]) | (u32::from(words[1]) << 16);
         match c >> 28 {
@@ -1789,7 +1879,7 @@ fn native_triangle_instances_match_independent_web_shadow_clipping_samples() {
             serde_json::from_slice(&std::fs::read(out.join("assets.json")).unwrap()).unwrap();
         std::fs::write(
             out.join("submission-commands.bin"),
-            memory[0x9800 * 64..0x9800 * 64 + usize::from(command_words)]
+            memory[0x9880 * 64..0x9880 * 64 + usize::from(command_words)]
                 .iter()
                 .flat_map(|v| v.to_le_bytes())
                 .collect::<Vec<_>>(),
@@ -1947,7 +2037,7 @@ fn shadow_geometry_cache_matches_fresh_instances_across_real_inputs() {
                 }
                 StepOutcome::Signaled(e) if e.signal_type == 15 => {
                     let m = sim.cpu().physical_memory_slice();
-                    commands = m[0x9800 * 64..0x9800 * 64 + usize::from(e.value)].to_vec();
+                    commands = m[0x9880 * 64..0x9880 * 64 + usize::from(e.value)].to_vec();
                     push = m[0x9a00 * 64..0x9a00 * 64 + push_words].to_vec();
                 }
                 StepOutcome::Signaled(e) if e.signal_type == 12 => {
@@ -2146,120 +2236,8 @@ check(GAME[0u16]==3&&GAME[1u16]==3&&GAME[2u16]==0&&GAME[3u16]==256&&GAME[4u16]==
 
 #[test]
 fn retained_static_scene_matches_fresh_recording_and_reuses_immutable_commands() {
-    use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
-    let mut runs = vec![];
-    let mut costs = vec![];
-    for name in ["web-stage1-native-warm", "web-stage1-native-warm-rerecord"] {
-        let (program, resources, out) = application(name, None);
-        let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
-        sim.cpu_mut().set_boot_window(&program.words);
-        preload(sim.cpu_mut().physical_memory_mut(), &resources);
-        let hud = global(&program, "HUD");
-        let mut frames = vec![];
-        let mut submissions = vec![];
-        let mut count = 0;
-        let mut marks = vec![];
-        let mut halted = false;
-        for step in 1..=8_000_000 {
-            if sim.waiting_for_vblank() {
-                sim.advance_vblank();
-            }
-            let outcome = sim
-                .step_observing(|write, m| {
-                    if write.device == 4 && write.channel == 0 {
-                        count = write.value;
-                    }
-                    if write.device == 4 && write.channel == 1 {
-                        let base = usize::from(write.value) * 64;
-                        let code = m[base..base + (usize::from(count) + 1) * 2].to_vec();
-                        let push = if write.value == 0xfc00 {
-                            m[0xfe00 * 64..0x10000 * 64].to_vec()
-                        } else {
-                            vec![]
-                        };
-                        submissions.push((write.value, code, push));
-                    }
-                    true
-                })
-                .unwrap()
-                .unwrap();
-            if let StepOutcome::Signaled(event) = outcome {
-                if event.signal_type == 12 {
-                    let m = sim.cpu().physical_memory_slice();
-                    let actual = submissions[frames.len() * 2..]
-                        .iter()
-                        .map(|(_, code, _)| {
-                            code.as_chunks::<2>()
-                                .0
-                                .iter()
-                                .filter(|p| {
-                                    let op = p[1] >> 12;
-                                    op == 3 || op == 11
-                                })
-                                .count()
-                        })
-                        .sum::<usize>();
-                    assert_eq!(
-                        usize::from(m[hud + 1]),
-                        actual,
-                        "retained static draws cannot count as zero"
-                    );
-                    let active = sim.display_state().active_base as usize;
-                    frames.push((
-                        m[active..active + 102400].to_vec(),
-                        m[0x480000 / 2..0x480000 / 2 + 102400].to_vec(),
-                        sim.render_active_framebuffer(),
-                    ));
-                    marks.push(step);
-                }
-            }
-            if let StepOutcome::Halted { signal } = outcome {
-                assert_eq!(signal, 0x600d, "{name}: {:?}", sim.gpu().last_error());
-                halted = true;
-                break;
-            }
-        }
-        assert!(halted, "{name}: bounded static scene test timed out");
-        assert!(sim.gpu().last_error().is_none());
-        assert_eq!(frames.len(), 3);
-        assert_eq!(submissions.len(), 6);
-        for pair in submissions.as_chunks::<2>().0 {
-            assert_eq!(pair[0].0, 0xfc00);
-            assert_eq!(pair[1].0, 0x9800);
-        }
-        for (frame, i) in [2, 4].into_iter().enumerate() {
-            assert_eq!(submissions[0].0, submissions[i].0);
-            assert_eq!(
-                submissions[0].1, submissions[i].1,
-                "static command words stay immutable"
-            );
-            let mut expected = submissions[0].2.clone();
-            expected[0] = if frame == 0 {
-                0x8000u16 >> 2
-            } else {
-                0x8800u16 >> 2
-            };
-            assert_eq!(
-                expected, submissions[i].2,
-                "{name}: only Target32 color address may change"
-            );
-        }
-        std::fs::write(out.join("static-scene.json"),serde_json::to_vec_pretty(&serde_json::json!({"max_steps":8000000,"present_steps":marks,"submissions":submissions.iter().map(|(base,code,_)|serde_json::json!({"sector":base,"commands_u32":code.len()/2})).collect::<Vec<_>>(),"static_commands_immutable_payload_diff_only_target":true,"limits":"instruction CPU steps; functional GPU is not hardware cycle timing"})).unwrap()).unwrap();
-        costs.push(marks);
-        runs.push(frames);
-    }
-    assert_eq!(
-        runs[0], runs[1],
-        "retained recording differs from fresh full surfaces/Display"
-    );
-    for i in 1..3 {
-        assert!(
-            costs[0][i] - costs[0][i - 1] < costs[1][i] - costs[1][i - 1],
-            "warm static reuse must remove CPU recording work"
-        );
-    }
+    static_cache::retained_static_scene_regression();
 }
-
 #[test]
 fn all_stage_loading_split_swap_merge_fragile_and_navigation_follow_reference_rules() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2844,7 +2822,7 @@ fn render_ms_uses_last_gpu_wait_excludes_present_and_handles_cold_and_wrap() {
                 .unwrap()
                 .unwrap();
             if started {
-                let delta = [3u64, 5, 7][starts];
+                let delta = [3u64, 5, 7, 11][starts];
                 sim.advance_host_time(Duration::from_millis(delta));
                 let low_before = clock as u16;
                 clock += delta;
@@ -2861,10 +2839,12 @@ fn render_ms_uses_last_gpu_wait_excludes_present_and_handles_cold_and_wrap() {
                 if e.signal_type == 12 {
                     let expected_starts = if fade {
                         if frames.is_empty() {
-                            3
+                            4
                         } else {
                             1
                         }
+                    } else if frames.is_empty() {
+                        3
                     } else {
                         2
                     };
@@ -2986,7 +2966,10 @@ fn same_heap_address_rebuilds_only_after_retirement_and_capture_reads_new_record
     assert_eq!(images.len(), 3);
     assert_eq!(images[0], images[2]);
     assert_ne!(images[0], images[1]);
-    assert_eq!(submissions, 6);
+    assert_eq!(
+        submissions, 9,
+        "each of the three level generations builds a new cache"
+    );
     assert!(heap_bases.iter().all(|b| *b == heap_bases[0]));
     assert!(!captures.is_empty());
     let first_sector = captures[0]["sector"].as_u64().unwrap();
@@ -3068,7 +3051,7 @@ fn cached_veil_diagnostic_updates_transmittance_overlay_on_every_consumer() {
     }
     assert!(halted, "bounded4M diagnostic timeout");
     assert_eq!(snapshots, 1);
-    assert_eq!(starts, 7);
+    assert_eq!(starts, 8, "one cache build precedes the boundary snapshot");
     assert_eq!(overlays, [1255, 1224, 1192, 1160, 1128]);
     assert!(!sim.display_state().swap_pending);
     assert!(sim.gpu().last_error().is_none());

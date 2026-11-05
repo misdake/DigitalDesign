@@ -1,7 +1,7 @@
 ---
 id: bloxorz-fragile-batches
 status: implemented
-last-verified: 2026-11-04
+last-verified: 2026-11-05
 ---
 
 # Fragile cells: retained geometry and reversible index visibility
@@ -16,12 +16,16 @@ It no longer renders a shaking or falling tile. Player crack/fall timing and
 other animations remain unchanged. Undo cancels the fracture; restart and stage
 replacement restore every cell through the normal presentation-owned reset.
 
-The application pre-records fragile geometry in its retained static CB. This
+The application records fragile geometry when rebuilding its static pixel cache. This
 opaque Less/depth-write/Replace group precedes the dynamic bridge/button/pad,
 shadow and player path. It is separate from colored bridge materials, alpha
 hints, shadow blending and UI. No transparent material or depth state is merged
-into this group. GPU geometry still executes on every replay; skipping CPU
-recording does not skip GPU vertices or triangles.
+into this group. Stable frames restore cached color and depth rather than
+executing this group's vertices and triangles. A changed hidden-cell identity
+invalidates both cached planes: patching the indices alone cannot erase an
+already cached pixel or its depth. Rebuild completes before the new pair is
+restored; undo similarly rebuilds the restored geometry. There is no local
+color eraser, depth repair or per-frame index patch.
 
 ## Exact source geometry and storage
 
@@ -76,7 +80,7 @@ recorded CB remains usable. A stable hidden index causes no mesh writes.
 ## Retirement and visibility
 
 At the start of scene preparation, after the preceding GPU work has retired and
-before submitting the static CB, the caller applies a visibility change. A busy
+before rebuilding the static cache, the caller applies a visibility change. A busy
 or transport-error Device4 status stops patch/rebuild/free before mutation. Level
 replacement resets both retired CBs before freeing/rebuilding geometry. Finite
 exit drops both CBs after their last wait before freeing geometry and context.

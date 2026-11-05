@@ -5,7 +5,7 @@ use gpu_record::*;
 mod gpu_memcpy;
 use gpu_memcpy::*;
 
-fn gpu_packet_copy_color(slot: u16, source: u16, destination: u16) -> bool {
+fn gpu_packet_copy_plane(slot: u16, source: u16, destination: u16) -> bool {
     if slot >= 2
         || source & 511 != 0
         || destination & 511 != 0

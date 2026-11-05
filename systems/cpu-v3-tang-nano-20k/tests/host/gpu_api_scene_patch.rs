@@ -84,7 +84,7 @@ impl Device for Peer {
         } else if self.kind == 7 {
             assert_eq!(channel, 1);
             let slot = usize::from(value == 2);
-            let c = memory[self.records + slot * 208..self.records + slot * 208 + 208].to_vec();
+            let c = memory[self.records + slot * 224..self.records + slot * 224 + 224].to_vec();
             let command = usize::from(c[1]) * 64;
             let push = usize::from(c[3]) * 64;
             s.snapshots.push((
@@ -331,7 +331,7 @@ fn reset_generation_carries_and_exhaustion_does_not_mutate_the_record() {
         let before = &s.snapshots.last().unwrap().1;
         assert_eq!(s.starts, 1);
         let at = global(&code, "GPU_CB_RECORDS");
-        assert_eq!(&cpu.physical_memory_mut()[at..at + 208], before.control);
+        assert_eq!(&cpu.physical_memory_mut()[at..at + 224], before.control);
     }
 }
 
@@ -346,7 +346,7 @@ fn partial_storage_failure_poison_preserves_shadows_and_blocks_start() {
         let before = &s.snapshots.last().unwrap().1;
         let records = global(&code, "GPU_CB_RECORDS");
         let memory = cpu.physical_memory_mut();
-        let c = &memory[records..records + 208];
+        let c = &memory[records..records + 224];
         assert_eq!(c[0], 4, "failed storage poisons the CB");
         assert_eq!(
             &c[1..],
@@ -451,7 +451,7 @@ fn numerically_equal_unrelated_models_are_not_a_shared_patch_group() {
         assert_eq!(signal, 0xe001);
         assert_eq!(seen.borrow().starts, 0);
         let at = global(&code, "GPU_CB_RECORDS");
-        let c = &cpu.physical_memory_mut()[at..at + 208];
+        let c = &cpu.physical_memory_mut()[at..at + 224];
         assert_eq!(c[26], 1, "the two equal instances really deduplicated");
         assert_eq!(c[29], 65535, "the distinct models remain distinguishable");
     }

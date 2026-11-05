@@ -13,7 +13,13 @@ Applying the linear-RGB565 Display lookup would apply an extra transfer curve.
 
 The producer reserves byte 0x580000 for this immutable source and excludes the
 0x600000 offscreen color allocation and the shared scene depth at0x480000. Every scene restoration uses
-the current public `copy_color`, then color Load and independent depth Clear.
+the current public `copy_color` when building the static scene, with independent
+depth Clear. Runtime-only static color and depth reserve respectively
+`[0x500000,0x540000)` and `[0x540000,0x580000)`. The producer records these
+reservations separately from boot payloads and rejects overlap with assets;
+neither plane is a second Flash image. Each ordinary restoration copies their
+204800-byte physical spans into the selected color target and shared work depth,
+then uses color/depth Load. Allocation tails remain untouched.
 SELECT toggles this intentional gradient and the Web pixel-mode solid #2c2620.
 The main and marker textures start directly from the original1024×1024 photos in
 `source/`, using the source identities/crops described in [base textures](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/textures.md).

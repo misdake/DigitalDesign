@@ -181,7 +181,7 @@ impl Device for Peer {
             }
         }
         let slot = usize::from(value == 2);
-        let c = m[self.records + slot * 208..self.records + slot * 208 + 208].to_vec();
+        let c = m[self.records + slot * 224..self.records + slot * 224 + 224].to_vec();
         let cb = usize::from(c[1]) * 64;
         let pb = usize::from(c[3]) * 64;
         s.snapshots.push((

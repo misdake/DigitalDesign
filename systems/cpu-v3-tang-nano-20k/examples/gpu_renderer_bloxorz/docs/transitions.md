@@ -1,7 +1,7 @@
 ---
 id: bloxorz-live-transitions
 status: implemented
-last-verified: 2026-11-04
+last-verified: 2026-11-05
 ---
 
 # Game animation and cached RTT veil
@@ -13,8 +13,11 @@ Animation and transition use independent clocks. Restart can begin the veil whil
 ```mermaid
 flowchart LR
     A[Tick rules and animation] --> B{Ordinary frame or missing boundary snapshot?}
-    B -->|yes| C[Submit retained static CB to Back or RTT]
-    C --> D[CPU records dynamic 3D in other CB while static runs]
+    B -->|yes| L{Static pixels valid?}
+    L -->|no| M[Build static color and depth; WAIT_ALL; publish pair]
+    M --> C[Submit color and depth restoration to Back or RTT]
+    L -->|yes| C
+    C --> D[CPU records dynamic 3D in other CB while restoration runs]
     D -->|static WAIT_ALL| E{Veil active?}
     E -->|yes| F[Submit dynamic source and WAIT_ALL; snapshot ready]
     E -->|no| G[Append Back UI; submit and WAIT_ALL]
@@ -26,27 +29,38 @@ flowchart LR
     J --> K[Opaque may reset; transparent may start entry]
 ```
 
-Static submit transfers one CB to the driver. CPU recording uses the other
-exclusively owned CB; static WAIT_ALL returns its owner before any dynamic
-submission. Depth Load compatibility is checked during submission, after that
-producer completes. Resume-epoch/input recovery remains immediately after waits.
+The application reserves independent static color/depth at0x500000/0x540000,
+each256KiB. A rebuild restores the selected background, clears depth, and draws
+floor, fixed well walls and visible fragile cells. Only normal GPU completion
+publishes the pair. Generation, background, changed fragile visibility or the
+application's per-level camera update invalidate it. Source geometry is patched
+or rebuilt only with both preceding CBs retired. Dynamic bridges, switches,
+opening strips/hatches, goal carrier, shadow and players stay outside the cache.
 
-The static CB is recorded on first use, level-generation change or background
-change. It retains background restoration, depth clear, floor, wells and the
-separate fragile-cell batch. Only an actual fragile visibility change patches
-its heap indices after retirement; stable frames do not re-record that group. The
-public target-only binding switches Back A/B/RTT and an optional background copy
-destination together without redoing scene math. Camera is fixed within a level;
-dynamic bridges, switches, hatches, player and shadow do not invalidate it.
+Every scene frame records a short restoration CB: color copy to the selected
+Back/RTT, depth copy to shared work depth, and an empty Load/Load Pass installing
+the actual target. Both copies cover204800 physical bytes, including padding,
+and leave allocation tails untouched. The static cache stays immutable while
+dynamic work changes the work planes. This dual-copy CB is re-recorded rather
+than using the API's single-color-copy target binding.
 
-Ordinary 3D and HUD target the selected Back directly: two submissions, no RTT
-source-to-Back copy. On the first fading frame the static/dynamic pair completes
-one outgoing RTT snapshot without the normal HUD; later out frames only sample
-it. Opaque presentation retires before level reset. Its new generation forces
-one incoming closed-entry snapshot, reused during Hold/In. Thus each capture
-frame has three submissions, later fading frames one. The RTT source is never
-Display Front and stays immutable between captures; texture invalidation occurs
-only after a new source is written. Tint changes only when its alpha changes.
+Restoration submit transfers one CB to the driver. CPU dynamic recording uses
+the other exclusively owned CB; restoration WAIT_ALL returns its owner before
+dynamic submission. Load dependencies are consumed only after that producer
+completes. Resume-epoch/input recovery remains immediately after waits. The
+frame's rules/animation state stays consistent across static and dynamic work;
+input sampled while waiting is consumed by a subsequent application tick.
+
+Warm ordinary frames use two submissions; a cache rebuild adds one. Ordinary
+3D/HUD still target Back directly, without an RTT snapshot-to-Back copy. The
+first fading frame restores static pixels then completes dynamic drawing into
+the outgoing RTT snapshot; later out frames only sample it. Opaque presentation
+retires before level reset. The new generation rebuilds static pixels and
+captures one incoming closed-entry snapshot, reused during Hold/In. A boundary
+capture uses three submissions with a valid static cache, four if it rebuilds;
+later fading frames use one. RTT and static color are independent allocations.
+RTT is never Display Front and remains immutable between captures; texture
+invalidation occurs only after a new snapshot write. Tint changes only with alpha.
 
 Rules and outgoing animation clocks still advance, while fade visuals deliberately
 freeze at those two boundaries. Ordinary entry/goal/fall animation remains live.
@@ -99,7 +113,7 @@ The products fit u16. Native ROP quantizes alpha to Q6 with `(alpha8+2)>>2`, per
 
 ## Storage and verification
 
-Color A/B/depth remain at 0x400000/0x440000/0x480000, commands/push at 0x4c0000/0x4d0000. The second command/push pair occupies 0x7e0000/0x7f0000. Original immutable background is 0x580000 (204800 bytes), the read-only level archive begins at 0x5b2000, offscreen color is 0x600000, and the full 512 atlas mip chain starts at 0x680000. The marker atlas occupies0x740000..0x760000 and four goal-carrier base textures occupy0x760000..0x780000. The asset tool checks disjoint allocations and generates mesh directories and the archive. It copies those assets through the normal CB06 boot-resource path; no instruction/Flash array is maintained separately.
+Color A/B/depth remain at 0x400000/0x440000/0x480000, dynamic templates at 0x4c0000..0x4c4000, active commands at 0x4c4000..0x4c8000 and push at 0x4d0000. The second command/push pair occupies 0x7e0000/0x7f0000. Original immutable background is 0x580000 (204800 bytes), the read-only level archive begins at 0x5b2000, offscreen color is 0x600000, and the full 512 atlas mip chain starts at 0x680000. The marker atlas occupies0x740000..0x760000 and four goal-carrier base textures occupy0x760000..0x780000. The asset tool checks disjoint allocations and generates mesh directories and the archive. It copies those assets through the normal CB06 boot-resource path; no instruction/Flash array is maintained separately.
 
 The archive contains all33 compact source levels and precomputed visible floor
 faces/cameras, plus the eight channel palettes; all33 stages are selectable. Its four-u16 header is magic0x424c, format1, count33 and record-size16.
@@ -147,8 +161,9 @@ input is unlocked; the capture-card diagnostic keeps its separate existing UI.
 Statistics describe the previous completed frame and show dashes before one is
 available. `DRAW` counts every actual native DRAW plus native UI range: mesh
 calls add their public meshlet count, each partial-width UI row adds one, and a
-full-width UI range adds one. Copy, clear and maintenance are excluded. A retained
-static CB contributes its saved draw count on every replay; dynamic source,
+full-width UI range adds one. Copy, clear and maintenance are excluded. A static
+cache rebuild contributes its actual draws on that frame; warm restoration
+contributes none. Dynamic source,
 optional veil consumer and final UI all contribute. Counts are saved only after
 successful GPU completion. They are checked against actual submitted opcodes.
 
@@ -317,12 +332,43 @@ bytes, not inferred from an old catalog solely by address. The standard allocato
 halts on allocation failure; bounds reject excess records rather than truncating
 or using the protected static arena.
 
+## Bridge and button command assembly
+
+The dynamic CB enables the slot-private bank specified in
+[GPU API storage](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md).
+Part0 records all bridge draws in their original order, including opaque tiles
+and alpha60 hints. Parts1..15 each record one button, preserving its original
+box/mark meshes, material order, pulse and sink arithmetic. Replaying a part
+copies aligned commands and keeps its fixed native parameter snapshots; it
+skips texture/Mesh descriptor creation, pose/matrix work, material updates and
+meshlet expansion. DRAW statistics add the saved actual meshlet count.
+
+Level generation clears the entire bank and rebuilds a compact ascending-cell
+button list. Generation also covers camera changes. The delayed visual bridge
+mask invalidates only part0. A button key is zero when inactive, or32768 plus
+its channel's clamped0..260ms animation age when active. Only changed keys
+re-record their private part; unchanged buttons and bridges remain reusable.
+Current stages have at most13 buttons, within the15-part limit. Bounds reject
+excess buttons. Empty bridge groups are legal. Camera/state are reinstalled at
+each part boundary; native Global/Render equality can omit redundant bindings.
+Pads, shadows, player and HUD follow in their original immediate-recorded order.
+
+The bank uses the existing64KiB command and64KiB push reservations, with fixed
+part partitions rather than a growing prefix. No persistent per-button Model or
+new GPU command is introduced. A47-word heap allocation holds button count and
+up to15 triples of cell index, saved animation key and actual draw count; one
+additional CPU control word retains its owner. It is allocated once, rebuilt
+only on level changes, and freed after both CBs retire/drop at finite exit.
+Part replacement is allowed only before that part is referenced in the current
+recording. This path does not patch GPU-owned Instances or reuse the whole
+dynamic CB.
+
 ## Stable pad preparation
 
 Entrance hatch/four strips, goal hatch/carrier/four fallback strips have eleven
 independent Model owners. Five immutable role materials and shared texture/views
 persist for the run; the carrier view is recreated only on level change. No
-resource handles are embedded in ordinary buffers. A 12-word heap allocation
+resource handles are embedded in ordinary buffers. A 15-word heap allocation
 stores generation, normalized entry/goal opening keys, initialized/dirty/visible
 masks, selected goal aperture and exact Q16 opening values. It is zeroed once,
 retained through the run and freed after both CBs retire/drop at finite exit.
@@ -333,3 +379,13 @@ Entrance and goal have separate keys, so entry animation does not dirty a stable
 goal. The original draw order, exact easing, hatch scale, quantized carrier
 selection and levels15/17 four-strip fallback remain unchanged. Hidden players
 skip pose preparation and invalidate their resting key before becoming visible.
+
+The prepared bank uses part14 for the complete entrance/goal dynamic sequence
+when the stage has at most13 buttons; otherwise these parts use their immediate
+path. The saved entry key, goal key, visibility mask and actual draw count occupy
+cache words11..14. Level generation clears the bank. Unchanged keys append the
+saved sequence; a changed key re-records all eleven role calls in their original
+order. Camera/state are reinstalled after the bank boundary. Carrier texture,
+mesh variant and camera changes remain covered by level generation and the
+existing goal key. This uses one existing2-KiB push partition and one1-KiB
+template; no new resource Model or static record is introduced.

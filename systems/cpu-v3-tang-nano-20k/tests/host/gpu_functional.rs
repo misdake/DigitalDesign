@@ -4,6 +4,64 @@ use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
 use gpu_v2::system::functional::PLANE_WORDS;
 
 #[test]
+fn typed_depth_copy_preserves_values_padding_and_tail_and_rejects_overlap() {
+    for overlap in [false, true] {
+        let destination = if overlap { 0xa000 } else { 0x9000 };
+        let source = format!(
+            r#"mod gpu_api;use gpu_api::*;
+fn main(){{
+ let memory:CommandMemory=CommandMemory{{commands:unsafe{{GpuMemory::from_sectors(0x9800,512)}},push:unsafe{{GpuMemory::from_sectors(0x9a00,512)}}}};
+ let absent:Option<CommandMemory>=None;
+ let mut gpu=Gpu::init(GpuConfig{{object_arena_bytes:8192,command_a:memory,command_b:absent}});
+ let mut cb=gpu.command_buffer();
+ let source=DepthBuffer::from_memory(unsafe{{GpuMemory::from_sectors(0xa000,2048)}});
+ let target=DepthBuffer::from_memory(unsafe{{GpuMemory::from_sectors({destination},2048)}});
+ cb.copy_depth(&source,&target);gpu.submit(cb);cb=gpu.wait();drop(cb);halt(0x600d);
+}}"#
+        );
+        let ir = super::gpu_api_resources::parse(&source, "typed-depth-copy", false).unwrap();
+        let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
+        let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait).with_functional_gpu();
+        sim.cpu_mut().set_boot_window(&program.words);
+        let pattern = (0..131072)
+            .map(|i| ((i * 103 + i / 257) ^ 0x735a) as u16)
+            .collect::<Vec<_>>();
+        let memory = sim.cpu_mut().physical_memory_mut();
+        memory[0xa000 * 64..0xa800 * 64].copy_from_slice(&pattern);
+        memory[0x9000 * 64..0x9800 * 64].fill(0x129b);
+        let mut halted = false;
+        for _ in 0..1_000_000 {
+            if let StepOutcome::Halted { signal } = sim.step().unwrap() {
+                if overlap {
+                    assert_ne!(signal, 0x600d);
+                } else {
+                    assert_eq!(signal, 0x600d);
+                }
+                halted = true;
+                break;
+            }
+        }
+        assert!(halted, "typed depth copy bound");
+        let memory = sim.cpu_mut().physical_memory_mut();
+        assert_eq!(&memory[0xa000 * 64..0xa800 * 64], &pattern);
+        if overlap {
+            assert!(memory[0x9000 * 64..0x9800 * 64]
+                .iter()
+                .all(|w| *w == 0x129b));
+        } else {
+            assert_eq!(
+                &memory[0x9000 * 64..0x9000 * 64 + 102400],
+                &pattern[..102400]
+            );
+            assert!(memory[0x9000 * 64 + 102400..0x9800 * 64]
+                .iter()
+                .all(|w| *w == 0x129b));
+        }
+    }
+}
+
+#[test]
 fn public_color_copy_restores_both_targets_without_touching_source_depth_or_allocation_tails() {
     let application = r#"mod gpu_api;use gpu_api::*;
 fn main(){

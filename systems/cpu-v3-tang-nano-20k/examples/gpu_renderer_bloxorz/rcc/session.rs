@@ -440,6 +440,9 @@ pub fn session_tick(pressed: u16, held: u16, elapsed: u16) {
         session_move((SESSION[8u16] & 15) - 1);
     }
 }
+pub fn switch_age(channel: u16) -> u16 {
+    SWITCH_FX[channel + 1]
+}
 pub fn switch_fraction(channel: u16) -> fix32 {
     fraction(SWITCH_FX[channel + 1], 260)
 }

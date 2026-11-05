@@ -443,7 +443,7 @@ fn ordinary_batch_slots_publish_after_retirement_and_free_on_finite_exit() {
                 let base=usize::from(m[batch]);
                 assert_ne!(base,0,"ordinary caller must allocate the batch owner");
                 assert_eq!(base&63,0);
-                if w.value==0x9800 {
+                if w.value==0x9880 {
                     dynamic+=1;
                     assert_eq!(m[base],2,"two visible split shadows must use distinct slots");
                     let count=usize::from(m[records+15]);
@@ -492,7 +492,7 @@ fn ordinary_batch_slots_publish_after_retirement_and_free_on_finite_exit() {
         }
     }
     assert!(halted, "bounded10M ordinary batch lifetime timeout");
-    assert_eq!((starts, dynamic, frames), (6, 3, 3));
+    assert_eq!((starts, dynamic, frames), (7, 3, 3));
     assert!(sim.gpu().last_error().is_none());
     let m = sim.cpu().physical_memory_slice();
     assert_eq!(m[batch], 0, "release clears original owner registration");

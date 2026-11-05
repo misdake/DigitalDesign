@@ -100,12 +100,11 @@ fn passive_capture_preserves_every_edge_cpu_scanout_and_memory() {
     assert_eq!(cap["truncated"], true);
     assert_eq!(cap["end_tick"], observed.clock().peek().ticks);
     r.finish(serde_json::json!({"entry":"cold-preloaded","reached":true,"stop_reason":"cpu-halt","host_step_seconds":started.elapsed().as_secs_f64(),"host_export_seconds":0.0}),&observed).unwrap();
-    let events: Vec<serde_json::Value> =
-        std::fs::read_to_string(folder.join("system-events.jsonl"))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+    let events: Vec<serde_json::Value> = std::fs::read_to_string(folder.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     for kind in ["cb_submit", "cb_drain", "gpu_done"] {
         assert_eq!(events.iter().filter(|row| row[1] == kind).count(), 1);
     }

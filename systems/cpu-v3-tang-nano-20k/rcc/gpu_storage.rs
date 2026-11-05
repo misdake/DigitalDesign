@@ -88,3 +88,63 @@ fn gpu_window_read_words(sector: u16, word: u16, dst: Array<u16>, count: u16) ->
 fn gpu_window_write_words(sector: u16, word: u16, src: Array<u16>, count: u16) -> bool {
     gpu_storage_copy_owned(src, sector, word, count, false)
 }
+
+// Complete, disjoint lines in one physical DSEG3 page. Neither pointer escapes.
+fn gpu_window_copy_lines(
+    source: u16,
+    source_word: u16,
+    target: u16,
+    target_word: u16,
+    count: u16,
+) -> bool {
+    if count == 0 {
+        return true;
+    }
+    if source >> 8 != target >> 8
+        || (source_word | target_word | count) & 15 != 0
+        || source_word > 16384
+        || target_word > 16384
+    {
+        return false;
+    }
+    let from = ((source & 255) << 6) + source_word;
+    let to = ((target & 255) << 6) + target_word;
+    if from < source_word
+        || to < target_word
+        || from >= 16384
+        || to >= 16384
+        || count > 16384 - from
+        || count > 16384 - to
+    {
+        return false;
+    }
+    if (from <= to && count > to - from) || (to < from && count > from - to) {
+        return false;
+    }
+    let saved = read_dseg_page(3);
+    dcache_wait();
+    unsafe {
+        write_dseg_page(3, source >> 8);
+    }
+    if read_dseg_page(3) != source >> 8 {
+        unsafe {
+            write_dseg_page(3, saved);
+        }
+        return false;
+    }
+    let mut at: u16 = 0;
+    while at < count {
+        unsafe {
+            dcache_line_copy(
+                Ptr::from_addr(0xc000 | (from + at)),
+                Ptr::from_addr(0xc000 | (to + at)),
+            );
+        }
+        dcache_wait();
+        at += 16;
+    }
+    unsafe {
+        write_dseg_page(3, saved);
+    }
+    read_dseg_page(3) == saved
+}

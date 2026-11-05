@@ -811,7 +811,8 @@ fn ordinary_restart_next_stage_shadow_and_finite_heap_lifetimes_close() {
     }
     assert!(halted, "bounded24M ordinary restart/next timeout");
     assert_eq!(frames.len(), 8);
-    assert_eq!(starts, 16);
+    // Initial level, crack hide, undo restore and next level each rebuild once.
+    assert_eq!(starts, 20);
     assert!(sim.gpu().last_error().is_none());
     let m = sim.cpu().physical_memory_slice();
     let begin = usize::from(m[global(&program, "HEAP_BEGIN")]);

@@ -41,12 +41,15 @@ for(const syntheticFrame of !canonical.system.frame_view&&canonical.system.submi
  assert.equal(ui.data.cpu.length,0);
  if(!data.images?.available&&data.system.scanouts.length){assert.ok(el('frame-label').textContent.includes('registered scanout')||el('frame-label').textContent==='Registered scanout');assert.ok(el('frame-image').src.startsWith('data:image/png;base64,'));}
  emit('filter-all','click');assert.ok(el('command-summary').textContent.includes(data.system.capabilities.command_control_lineage?expected.length+' / '+expected.length:'Instruction trace not captured'));
- const draw=expected.find(c=>c.opcode===3)??expected[0];if(draw){ui.focus(draw.id);
+ // An explicit native-image budget may omit every warm-up draw. Focus an
+ // actually captured image when one belongs to this view; absence is valid.
+ const nativeDraw=expected.find(c=>c.opcode===3&&data.images?.commands?.[String(c.id)]?.depth_file);
+ const draw=nativeDraw??expected.find(c=>c.opcode===3)??expected[0];if(draw){ui.focus(draw.id);
  assert.equal(ui.getView().selected,draw.id);
  assert.ok(el('detail').innerHTML.includes('Actual quantum ticks'));
  if(draw.opcode===3)assert.ok(el('detail').innerHTML.includes('Published triangles'));
  }
- if(data.images?.available)assert.ok(el('frame-caption').children.some(n=>n.textContent?.includes('Native D16')));
+ if(nativeDraw)assert.ok(el('frame-caption').children.some(n=>n.textContent?.includes('Native D16')));
  if(!data.system.capabilities.gpu_signal_journal){assert.ok(el('system-source-scope').textContent.includes('Missing tracks are unavailable, not zero'));assert.ok(el('detail').innerHTML.includes('unavailable'));}
  const lo=((frame?data.system.frame_view.start_tick:data.system.origin_tick)-data.system.axis_origin_tick)/148,
        hi=((frame?data.system.frame_view.end_tick:data.system.end_tick)-data.system.axis_origin_tick)/148;
