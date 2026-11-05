@@ -1,7 +1,7 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-11-04
+last-verified: 2026-11-05
 ---
 
 # Explicit GPU API internal core
@@ -47,7 +47,8 @@ plane. Descriptor Drop returns only its arena slot; it does not release pixels.
 their target addresses into immutable push storage. The returned `Pass` retains
 the exclusive CB parent. Pass Drop records the already-reserved closing fence.
 Descriptor reuse therefore cannot change an earlier recording. Reset clears
-CPU cursors/cache metadata and leaves external backing bytes untouched.
+CPU cursors/cache metadata and leaves external backing bytes untouched. An enabled
+immutable draw group additionally preserves its private metadata and push prefix.
 
 `Mesh::from_native`, `subset` and `meshlet_count` wrap the trusted directory
 descriptor core in small arena slots of kind5. A subset is an independent
@@ -62,7 +63,80 @@ struct syntax. `Display` wraps the independent presentation protocol below;
 `set_next_swap` copies the color address and does not retain its descriptor.
 Its caller still owns the external pixel-allocation lifetime.
 
-### Color-plane copy
+### Prepared command parts
+
+`CommandBuffer::enable_prepared_group()` partitions an existing nonzero,
+32-KiB-aligned 64-KiB command reservation. The first16KiB holds sixteen1KiB
+command templates; the next16KiB is the active stream, in the same physical
+DSEG3 page. The upper32KiB holds private metadata and remains GPU-unfetched.
+Ordinary CBs retain their configured capacities. An enabled CB also requires
+64KiB push backing: part0 owns its first16KiB, parts1..15 own2KiB each, and
+ordinary immediate recording uses the remaining18KiB. No external allocation
+or larger CPU record is required. The explicit
+`enable_prepared_parts(PreparedPartsLayout::SplitWide)` alternative divides the
+original wide area into two8KiB partitions: part0 at push words[0,4096), part15
+at[4096,8192). Parts1..14 retain their original2KiB partitions. The old part15
+area remains unused; the46KiB fixed prefix and18KiB transient tail do not move.
+`SingleWide` and the no-argument entry retain the original layout. Layout is
+chosen before recording, persists across reset/clear and does not change leases.
+
+Inside a Pass, install camera/state, call `begin_prepared_part(part)`, record
+mesh draws and their camera/state choices, then call `end_prepared_group()`.
+Part IDs are0..15; the no-argument group methods select part0. UI and texture
+invalidation are rejected while a part is open; Pass close rejects unfinished
+parts. Begin saves the transient cursor/capacity and selects that part's fixed
+push partition. Rebuilding a part cannot overwrite another part's snapshots.
+A referenced-part mask prevents replacement after that part has been copied or
+recorded into the current stream. Reset clears this mask after normal ownership
+has returned to the CPU.
+
+Begin invalidates native bindings so the first mesh draw emits complete Global
+and Render bindings. A NOP pads this initial prefix to32bytes. Later draws use
+ordinary canonical-state deduplication and meshlet ping-pong commands. Legal
+NOPs align template boundaries to32bytes; templates contain no Target or END.
+End copies command lines into the selected template, saves canonical entry/exit
+Global/Render states and Mesh/Texture allocation facts, and restores the
+transient push cursor/capacity. Separate draws retain separate immutable
+Instances even when one temporary Model is reused. Source descriptors need not
+survive, but referenced resource backing must remain valid and stable.
+
+`prepared_part_ready(part)` tests the valid mask. `append_prepared_part(part)`
+preflights command/fact capacity, aligns the cursor and LCOPYs the template.
+When both current Global/Render states equal the entire saved entry state,
+append skips the initial32-byte binding prefix. It then restores the saved
+canonical exit state for subsequent binding comparisons. Both append and end
+invalidate Instance, desired camera/state and scene identities; callers reinstall
+camera/state before the next part or immediate draw. This retains only proved
+native bindings and avoids redundant render drains. Single-scene patch bindings
+reject part-bearing streams. No mutable Instance patch API is exposed.
+
+`reset()` retains all valid parts and restores the transient cursor to the fixed
+46-KiB prefix end. `invalidate_prepared_part(part)` clears one valid bit between
+recordings, retaining all other templates and snapshots. `clear_prepared_group()`
+clears the bank and resets the CB, retaining the reserved partitions. Reset/clear
+advance the ordinary binding generation, invalidating old TargetBinding and
+SceneBinding values. Slot/context ownership, scalar publication, capture leases,
+submit and wait remain unchanged. Templates, metadata and push snapshots cannot
+change while the GPU owns the CB.
+
+Metadata begins256sectors after the original command base. Each part uses384
+16-bit words: header0..7, entry Global/Render48 at16, exit48 at64, and up to64
+four-word Mesh/Texture facts at128. Header words0..3 contain executable words,
+fact count, native-state flag and actual private push end; words4..7 are zero.
+The table occupies12KiB of the upper32KiB. End/append reuse existing native
+scratch for transfer and fact merging; old surface facts are excluded. Each
+1KiB template and the active16KiB stream include their own padding; the active
+stream also includes ordinary commands and terminal/fetch reservations. Bounds
+reject overflows before append writes; partial transport failures poison the CB.
+
+The private same-page copy helper rejects misalignment, overlap and window overflow
+before remapping. It saves/restores DSEG3 and waits around LCOPY and mapping changes,
+reads the newest dirty source line, and discards obsolete dirty destination aliases.
+It does not remap stack/global segments. Submit still publishes scalar writes.
+GPU commands, capture decoding and replay ABI are unchanged: only command-stream
+start and valid length differ.
+
+### Color and depth plane copies
 
 `CommandBuffer::copy_color(&source, &destination)` records the existing native
 MEMCPY between two `ColorBuffer` allocations, only between Passes. It copies
@@ -71,6 +145,14 @@ rows, without copying allocation tails. Source and destination keep the surface
 alignment/capacity contract above; their registered allocations must not overlap.
 Neither copied span may overlap this CB's command or push storage. Invalid
 phase, range or capacity is rejected before record/fact/backing mutation.
+
+`CommandBuffer::copy_depth(&source, &destination)` accepts two `DepthBuffer`
+descriptors and copies the same physical extent without converting stored depth
+values. Both typed calls share the allocation preflight and native plane-copy
+encoder. Depth copies declare Depth source-read/destination-write facts; color
+copies declare Color facts. A depth allocation is never cast to a color surface.
+Callers retain completed, compatible source contents until the recorded reads
+retire. Copying does not create an implicit clear or a separate validity owner.
 
 The CB retains a source-read and destination-write allocation fact. The normal
 prepare/submit publication, Display write protection and retirement pins apply;
@@ -85,7 +167,10 @@ For background restoration, copy into the actual chosen Back or offscreen color,
 then begin its Pass with `ColorLoad::load()` and an independent depth clear.
 Both alternating Back allocations require their own copy. Copy-bearing CBs
 reject scene binding and patching, including a binding obtained before the copy;
-the separate target-only binding below changes both payloads together.
+the separate target-only binding below changes a single color copy and its
+target together. Multiple copies, or a depth copy aimed at the depth target,
+remain outside that binding's contract; callers can reset and record a short
+restoration CB instead.
 Reset clears this restriction along with the record metadata. Native encoding,
 capture MEMCPY dependency discovery and replay formats are unchanged.
 
@@ -112,7 +197,7 @@ it never commits replacement facts or permits submission. Camera/model/material
 payloads, command words and native opcodes stay fixed. Ordinary submission still
 publishes stores and validates capture leases.
 
-The existing 208-word record is unchanged. Non-UI streams use inactive UI-cache
+The original 208-word fields retain their offsets. Non-UI streams use inactive UI-cache
 words128..131 for copy payload offset-plus-one, source, destination and count.
 Camera revision retains words16..19. Recording UI makes target-only binding
 ineligible; reset clears both caches. No command, capture or replay ABI changes:
@@ -224,7 +309,7 @@ back. Original draw-header initialization and alias behavior are unchanged.
 
 ### Record layout
 
-There are two independent 208-word records and one sequential 256-word native
+There are two independent 224-word records and one sequential 256-word native
 scratch. Its private backing reserves 271 words; `gpu_native_scratch` rounds the
 backing address upward to a 16-word boundary. The full logical span remains
 inside that backing for any static layout, using at most 15 words of slack.
@@ -236,6 +321,11 @@ revision at 16..19), Camera 32..63, State 64..79,
 
 last Global 80..111, last Render 112..127, last UI 128..143 and last Instance
 144..207. The last values are CPU snapshots, not persistent object references.
+Words208..223 are private group management, adding 64 bytes across both CBs.
+Canonical CPU copies and comparisons advance bounded pointers eight words at
+a time, with a scalar tail. Copies keep forward store order; comparisons retain
+every native word, including padding. This reduces scalar address/control work
+without changing push bytes, binding decisions or the command ABI.
 The scratch is not a binding cache. Prepared scene helpers write the canonical
 Global, Render and Instance spans before the recorder compares and appends them.
 
@@ -260,6 +350,16 @@ The implemented control words are:
 | 24..26 | Target / Global / Instance allocation counts |
 | 27 / 28 | Color / depth fact index plus one after binding |
 | 29..31 | Recording Model / Material / Camera identity; 65535 rejects a mixed/reused group |
+| 208 | Template first sector, zero when disabled |
+| 209 / 210 | Valid-part bit mask / most recently used aligned fragment words |
+| 211 / 212 | Fixed persistent push end / most recent part Mesh/Texture fact count |
+| 213 / 214 | Open part ID plus one / active command start while recording |
+| 215 / 216 | Saved transient push cursor / capacity while recording a part |
+| 217 / 218 | First part Global / Render push offset plus one |
+| 219 | Prepared push layout:0 original single-wide,1 split-wide |
+| 219 | Reserved, zero |
+| 220 | Parts already referenced by the current recording |
+| 221..223 | Reserved, zero |
 
 Each configured extent has 1..512 sectors, fits physical memory, and is disjoint
 from the other extent in that record. Configuration is init-time only; Gpu's

@@ -287,6 +287,7 @@ struct State {
     us: u64,
     clear: u64,
     last_us_sample: u16,
+    counter_samples: Vec<[u64; 5]>,
     prep_ticks: u64,
     phase: u16,
     uart_until: u64,
@@ -339,6 +340,8 @@ impl Device for Peer {
             (0, 11) => {
                 let sample = (s.us - s.clear).min(65535) as u16;
                 s.last_us_sample = sample;
+                let trace = [1, s.us, s.prep_ticks, u64::from(s.phase), u64::from(sample)];
+                s.counter_samples.push(trace);
                 sample
             }
             (3, 0) => (s.us / 1000) as u16, // Can change before old reads retire.
@@ -382,6 +385,8 @@ impl Device for Peer {
         let mut s = self.1.borrow_mut();
         match (self.0, channel) {
             (0, 11) => {
+                let trace = [0, s.us, s.prep_ticks, u64::from(s.phase), 0];
+                s.counter_samples.push(trace);
                 s.clear = s.us;
                 s.prep_ticks = 0;
             }
@@ -660,10 +665,35 @@ fn actual_public_classic_input_recording_retirement_and_deadlines_both_profiles(
             },
             0x600d,
         );
-        assert_eq!(
-            baseline.observed, slow.observed,
-            "presentation excluded from interval"
-        );
+        std::fs::write(
+            out.join(format!("presentation-clock-{debug}.json")),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "baseline":baseline.observed,"slow":slow.observed,
+                "baseline_counter_samples":baseline.counter_samples,
+                "slow_counter_samples":slow.counter_samples,
+                "clock":"1us per100 preparation steps;10us per waiting step",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for sample in baseline.counter_samples.iter().chain(&slow.counter_samples) {
+            if sample[0] == 1 {
+                assert_eq!(
+                    sample[3], 13,
+                    "timer sampled before the presentation phase14"
+                );
+            }
+        }
+        assert_eq!(baseline.observed.len(), slow.observed.len());
+        // Present polling has discrete10us steps. Changed absolute phase can
+        // move the following1us-quantized endpoint by one tick. Exact Device0
+        // sample/report equality is independently checked by Peer::write.
+        for (normal, delayed) in baseline.observed.iter().zip(&slow.observed) {
+            assert!(
+                normal.abs_diff(*delayed) <= 1,
+                "presentation excluded from interval: {normal} vs {delayed}"
+            );
+        }
         let moved = run(
             &program,
             &out,

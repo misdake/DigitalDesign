@@ -10,6 +10,8 @@ mod bloxorz_core;
 use bloxorz_core::*;
 mod gamepad;
 use gamepad::*;
+mod orientation;
+use orientation::*;
 pub static LEVEL_GENERATION: Buf<u16, 1> = Buf::new([0]);
 pub static LEVEL: Buf<u16, 308> = Buf::new([0; 308]);
 pub static GAME: Buf<u16, 10> = Buf::new([0; 10]);
@@ -78,6 +80,7 @@ pub fn level_field(index: u16, field: u16) -> u16 {
     blox_field(LEVEL.as_array(), index + 1, field)
 }
 pub fn level_reset(which: u16) {
+    rotation_reset();
     LEVEL_GENERATION[0u16] += 1;
     FRACTURE[0u16] = 65535;
     MOTION[11u16] = 0;
@@ -108,6 +111,7 @@ pub fn level_reset(which: u16) {
     }
 }
 pub fn session_init() {
+    rotation_begin();
     level_reset(0);
     SESSION[0u16] = ENTRY_OPEN;
     SESSION[1u16] = 0;
@@ -116,6 +120,9 @@ pub fn session_init() {
     SESSION[8u16] = 0;
     TRANSITION[0u16] = 0;
     TRANSITION[1u16] = 0;
+}
+pub fn session_end() {
+    rotation_end();
 }
 pub fn fading() -> bool {
     TRANSITION[0u16] != 0
@@ -226,6 +233,7 @@ pub fn session_move(direction: u16) -> bool {
         HISTORY[2u16] & 3
     };
     let mask = (HISTORY[2u16] >> 2) & 511;
+    rotation_save(UNDO_STATE[0u16]);
     let at = UNDO_STATE[0u16] * 2;
     UNDO[at] =
         (HISTORY[0u16] & 31) | ((HISTORY[1u16] & 31) << 5) | (mode << 10) | ((mask & 7) << 13);
@@ -249,6 +257,7 @@ pub fn session_move(direction: u16) -> bool {
                 pose = idle_cube_transform();
             }
             MOTION[12u16] = falling;
+            rotation_start(falling);
             FALL_STATE[0u16] = FallState {
                 position: pose.position,
                 velocity: demo_zero(),
@@ -265,6 +274,11 @@ pub fn session_move(direction: u16) -> bool {
         }
         return true;
     }
+    rotation_start(if MOTION[11u16] != 0 {
+        MOTION[12u16]
+    } else {
+        0u16
+    });
     SESSION[0u16] = ROLL;
     SESSION[1u16] = 0;
     SESSION[5u16] = 0;
@@ -319,6 +333,7 @@ fn session_undo() {
     }
     UNDO_STATE[0u16] = (UNDO_STATE[0u16] + 255) & 255;
     UNDO_STATE[1u16] -= 1;
+    rotation_undo(UNDO_STATE[0u16]);
     let at = UNDO_STATE[0u16] * 2;
     let first = UNDO[at];
     let second = UNDO[at + 1];
@@ -440,6 +455,9 @@ pub fn session_tick(pressed: u16, held: u16, elapsed: u16) {
         session_move((SESSION[8u16] & 15) - 1);
     }
 }
+pub fn switch_age(channel: u16) -> u16 {
+    SWITCH_FX[channel + 1]
+}
 pub fn switch_fraction(channel: u16) -> fix32 {
     fraction(SWITCH_FX[channel + 1], 260)
 }
@@ -484,6 +502,12 @@ fn animation_tick(dt: u16) {
         if GAME[4u16] == 2 && MOTION[8u16] == 0 && SESSION[1u16] >= MOTION[9u16] {
             release_pivot();
         } else if SESSION[1u16] == 220 {
+            rotation_finish(
+                MOTION[3u16],
+                MOTION[11u16] != 0,
+                GAME[9u16] != 0,
+                MOTION[12u16],
+            );
             if MOTION[11u16] == 0 && GAME[9u16] != 0 {
                 let landing = block_transform();
                 let half = fix32::from_words(32768, 0);
@@ -542,9 +566,11 @@ fn animation_tick(dt: u16) {
     } else if mode == GOAL_LAND && SESSION[1u16] >= 80 {
         SESSION[0u16] = GOAL_CLOSE;
         SESSION[1u16] = 0;
-        begin_fade((MOTION[6u16] + 1) % BLOX_LEVEL_COUNT);
-    } else if mode == GOAL_CLOSE && SESSION[1u16] > 200 {
+    } else if mode == GOAL_CLOSE && SESSION[1u16] >= 200 {
         SESSION[1u16] = 200;
+        if !fading() {
+            begin_fade((MOTION[6u16] + 1) % BLOX_LEVEL_COUNT);
+        }
     } else if mode == FALL && SESSION[1u16] >= 600 && SESSION[5u16] == 0 {
         SESSION[5u16] = 1;
         begin_fade(MOTION[6u16]);
@@ -712,6 +738,11 @@ pub fn idle_cube_transform() -> Transform {
         demo_point(scale, scale, scale),
     )
 }
+pub fn idle_cube_pose(model: &mut Model) {
+    let old = (SESSION[0u16] == ROLL || SESSION[0u16] == FALL) && MOTION[11u16] != 0;
+    let active = if old { MOTION[12u16] } else { GAME[8u16] };
+    rotation_pose(model, idle_cube_transform(), rotation_current(1 - active));
+}
 pub fn fragile_dropped(index: u16) -> bool {
     FRACTURE[0u16] == index && (SESSION[0u16] == CRACK || SESSION[0u16] == FALL)
 }
@@ -877,5 +908,12 @@ pub fn block_transform() -> Transform {
     )
 }
 pub fn block_pose(model: &mut Model) {
-    model.set_pose(block_transform());
+    rotation_pose(model, block_transform(), block_orientation());
+}
+pub fn block_orientation() -> u16 {
+    if MOTION[5u16] != 0 || SESSION[0u16] == FALL {
+        rotation_animation()
+    } else {
+        rotation_current(if split_visual() { GAME[8u16] } else { 0u16 })
+    }
 }

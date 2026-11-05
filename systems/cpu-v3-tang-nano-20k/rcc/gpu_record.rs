@@ -5,7 +5,7 @@ use gpu_schema::*;
 mod gpu_storage;
 use gpu_storage::*;
 
-static GPU_CB_RECORDS: Buf<u16, 416> = Buf::new([0; 416]);
+static GPU_CB_RECORDS: Buf<u16, 448> = Buf::new([0; 448]);
 // The logical 256-word span stays line-aligned independently of static layout.
 static GPU_NATIVE_SCRATCH: Buf<u16, 271> = Buf::new([0; 271]);
 // Allocation facts survive descriptor Drop and execution until this CB resets.
@@ -181,7 +181,7 @@ fn gpu_record_capture_commit(slot: u16, input: Array<u16>, count: u16) {
 }
 fn gpu_record_init() {
     let mut i: u16 = 0;
-    while i < 416 {
+    while i < 448 {
         GPU_CB_RECORDS[i] = 0;
         i += 1;
     }
@@ -227,6 +227,9 @@ fn gpu_record_command_room(c: Array<u16>, add: u16, tail: u16) -> bool {
         return false;
     }
     let end = used + add + tail;
+    if c[GPU_GROUP_RECORDING] != 0 && end - c[GPU_GROUP_START] > GPU_GROUP_CODE_WORDS {
+        return false;
+    }
     ((end + 63) & 65472) <= capacity
 }
 // 65535 is an internal failure sentinel; valid offsets include 32768.
@@ -333,7 +336,10 @@ fn gpu_record_close_pass(slot: u16) -> bool {
         return false;
     }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS || !gpu_record_command_room(c, 4, 2) {
+    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS
+        || c[GPU_GROUP_RECORDING] != 0
+        || !gpu_record_command_room(c, 4, 2)
+    {
         return false;
     }
     let code: Buf<u16, 4> = Buf::new([3, 0x4000, 0, 0x7000]);
@@ -417,9 +423,11 @@ fn gpu_record_reset(slot: u16) -> bool {
     }
     c[GPU_RECORD_PHASE] = GPU_RECORD_READY;
     let mut i: u16 = GPU_RECORD_COMMAND_USED;
-    while i < GPU_API_CB_WORDS {
+    while i < GPU_GROUP_BASE {
         c[i] = 0;
         i += 1;
     }
+    c[GPU_RECORD_PUSH_USED] = c[GPU_GROUP_PUSH_END];
+    c[GPU_GROUP_REFERENCED] = 0;
     gpu_record_new_generation(c)
 }

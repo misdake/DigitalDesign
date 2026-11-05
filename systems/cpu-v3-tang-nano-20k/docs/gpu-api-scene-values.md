@@ -46,7 +46,9 @@ matrix. The normal matrix is tightly packed at words 24..41. Pure preparation
 zeros words 42..47. A public Model uses private word 42 to own a second48-word
 arena allocation; words 43..47 remain zero. Its setters preserve that owned handle
 across pure preparation and mark its derived data dirty. There is no retained
-Euler copy.
+Euler copy. `Model::world()` and `Model::normal()` return the exact current
+source matrices without modifying source or derived-cache state. The normal
+getter reads all nine tightly packed Q16 coefficients.
 
 ## Six-argument draw conversion
 
@@ -92,8 +94,11 @@ This is one result per Model, not a global last-result cache: drawing another
 Model cannot evict it. Multiple views of the same Model require recomputation
 when their view revisions differ.
 
-New Models start dirty. Successful `set_pose` and `set_matrices` mark only that
-Model dirty. Camera construction and successful view setters assign a fresh
+New Models start dirty. Successful `set_pose` marks only that Model dirty.
+`set_matrices` compares all24 world and18 normal source words, including both
+halves of each Q16.16 value. An exact match preserves the current dirty/cache
+state; any changed word marks that Model dirty. The plain matrix aggregates use
+the same canonical row layout as those source spans. Camera construction and successful view setters assign a fresh
 nonzero 64-bit revision in private Camera words 32..35. Projection changes assign
 one only when the focal value changes; far/ray changes leave matrix dependencies
 unchanged. `Pass::set_camera` copies the revision into reserved record control

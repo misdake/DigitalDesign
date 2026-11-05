@@ -705,3 +705,31 @@ profiles without the optional timeline still load with temporal rows unavailable
 their valid full-capture totals are retained. Saved MEM events can reconstruct
 this optional data without a new hardware run. Provenance and cold/warm labels
 are preserved, and no second Memory panel or frontend is created.
+
+## One GPU frame
+
+`cpu-v3-system-emu ... --profile-out CAPTURE --profile-frame N` selects a
+positive application presentation ordinal, starting at1. It defaults the stop
+presentation to N; an explicit `--presents` must reach N. Existing cycle, host,
+event and image budgets still apply. Warmup executes unchanged and its raw
+physical/cache journal is retained from the original preimage. No cache flush,
+cold replay or synthetic checkpoint changes the measured workload.
+
+The ordinary report build automatically honors capture `profile_frame`; existing
+captures can use `profiler.py build CAPTURE --out REPORT --only-frame N`.
+`render PROFILE --out REPORT --only-frame N` also supports an existing profile
+whose native history covers the selected group. The selection cannot be combined
+with `--frames`; a conflicting capture selection or unreached frame is rejected.
+One frame includes every CB between its previous and current presentation
+requests, retaining original IDs. The group must complete before the request.
+
+The GPU window spans its first START through its last completion. It does not
+claim CPU frame ownership or include the subsequent present/scanout wait. This
+mode needs no applied present or complete HDMI raster; native command images
+remain available. The previous `--frames` applied-to-applied reports retain their
+strict matching-raster requirement. Browser data, CSV and image reconstruction
+select only the requested group; canonical JSON/raw evidence retain warmup facts
+for validation and faithful cache history. Opening `profiler.html` does not load
+those raw journals. This setting is passive and never changes emulated timing. The CLI runs the
+model on one8MiB host worker, avoiding the smaller Windows main-thread stack;
+modeled stack memory and all emulated clocks remain unchanged.

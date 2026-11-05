@@ -19,9 +19,9 @@ assert.equal(sums()[0],expectedClient);assert.equal(sums()[1],expectedNative);
 assert.ok(el('load').draws.length>0);assert.ok(el('detail').append);assert.ok(el('identity').textContent.includes(F?'Presentation':'Display'));
 if(F){
  assert.equal(ui.bins()[0].start,a);assert.equal(ui.bins().at(-1).end,b);
- const selector=el('frame-preview').children.find(n=>n['aria-label']==='Registered scanout frame');assert.equal(selector.children.length,1);
+ const selector=el('frame-preview').children.find(n=>n['aria-label']==='Registered scanout frame');assert.equal(selector.children.length,F.scanout_index===null?0:1);
  assert.ok(el('command-summary').textContent.includes(F.owned_submission_ids.length+' frame-owned submits'));
- assert.ok(el('frame-caption').textContent.includes('Presentation '+F.presentation));
+ assert.ok(el('frame-caption').textContent.includes(F.scanout_index===null?'No complete registered raster':'Presentation '+F.presentation));
  for(const fn of resized)fn();assert.equal(ui.bins()[0].start,a);assert.equal(ui.bins().at(-1).end,b);
  ui.fit(S.origin_tick,S.end_tick);assert.equal(ui.bins()[0].start,a);assert.equal(ui.bins().at(-1).end,b);
  assert.ok(ui.commands().every(c=>F.owned_submission_ids.includes(c.submission)));

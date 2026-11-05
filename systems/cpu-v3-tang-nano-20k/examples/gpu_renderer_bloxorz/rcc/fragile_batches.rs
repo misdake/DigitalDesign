@@ -248,6 +248,9 @@ pub fn fragile_mesh(owner: Ptr) -> Mesh {
 pub fn fragile_count(owner: Ptr) -> u16 {
     data(owner)[3u16]
 }
+pub fn fragile_hidden(owner: Ptr) -> u16 {
+    data(owner)[5u16]
+}
 pub fn fragile_end(owner: Ptr) {
     idle();
     let c = data(owner);

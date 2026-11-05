@@ -1,5 +1,73 @@
 # System regression tests
 
+`bloxorz_shadow_pack` compiles the actual fan-packing function and decodes all
+484 fan/triangle-slot combinations against the native six-bit wire format,
+including all untouched guard words. It has a2M-step CPU bound.
+
+## Bloxorz prepared command parts
+
+`host gpu_pipeline::bloxorz::cpu_emu::level29_shadow_frame_cpu_cycles_and_instruction_oracle`
+is an opt-in CPU cycle measurement with synchronous functional GPU. Set
+`BLOXORZ_CPU_ARM` and `BLOXORZ_SIM_OUTPUT_ROOT` to distinct run labels/roots.
+Real Device5 right/release input and test-only deltas0/0/17ms produce the same
+level29 ROLL shadow pose. All three complete physical color/depth planes and
+actual Display images must match a CPU instruction-simulator oracle. Bounds
+are24M CPU cycles,240 host seconds and12M oracle steps. `cpu-frame.json` records
+signal4-to-signal12 CPU cycles, submissions and the checked pose. This backend
+excludes physical GPU execution, shared contention and scanout; its numbers are
+CPU-only comparisons within this fixture, not whole-system frame time or FPS.
+The test source loader normalizes CRLF before exact multiline fixture edits.
+
+`gpu_prepared_group` runs the real RCC core in both GPU debug modes. It checks fixed-part snapshots, independent replacement, complete
+entry-state prefix omission, command capacity, reference/rebuild exclusion,
+resource facts, reset and dirty-line same-page LCOPY behavior.
+
+`host gpu_pipeline::bloxorz::buttons::` compares18 controlled session frames
+against forced full re-recording. It checks complete physical color/depth and
+actual Display, plus exactly which button parts are rebuilt during press,
+soft animation, heavy state-only changes, settlement, release, level33's13-button
+layout, restart and ninth-channel press/animation. The
+fixture controls state/delta; it does not claim physical-key or cycle timing.
+`static_cache::prepared_bridge_capture_reads_fixed_push_after_reset_and_normal_retirement`
+checks actual published capture reads and retained push data over three frames.
+The separate warm and physical-input cycle fixtures supply performance evidence.
+`BLOXORZ_MOVING_CAPTURE=0` disables only the passive common GPU journal and host
+scanout reconstruction in the physical-input fixture. The System clock/model,
+input protocol, CPU observation, stopping condition and raw-plane outputs remain
+identical. The default retains the complete journal; timing-only runs do not
+claim a GPU report. A same-image comparison qualifies identical event ticks,
+CPU call intervals and complete color/depth with either setting.
+
+## Bloxorz static pixel cache
+
+`host gpu_pipeline::bloxorz::static_cache::warm_second_frame_system_timing`
+is an explicitly invoked, bounded production full-system cycle measurement.
+`BLOXORZ_SIM_OUTPUT_ROOT` selects this checkout's output root and
+`BLOXORZ_CACHE_ARM` labels a new run. It compiles a test-only level29 PLAY entry,
+neutral input, zero animation delta and HUD off; the second application frame
+follows a completed first-frame warm-up. The existing signal4 instruction's
+unique linked PC identifies first unheld Execute arrival. Actual Device4 START
+and GPU busy-to-idle edges provide both CB issue/completion times. These five
+points use the model's exact integer timebase, not host wall time. The run stops
+at the second dynamic GPU completion, before subsequent presentation.
+
+`BLOXORZ_CACHE_IMAGE` optionally reuses a previously saved `cpu-v3-boot.bin` and
+its adjacent listing, without recompiling the old application or restoring an
+old source tree. The output preserves the actual image/listing and raw physical
+color/depth. Bounds are12M logic edges and1800 host seconds; incomplete results
+are explicit failures. The synthetic cold-preloaded startup remains distinct
+from real SPI-loader or board qualification. CPU issue intervals can include
+producer waits and must not be described as pure active CPU execution.
+
+`retained_static_scene_matches_fresh_recording_and_reuses_immutable_commands`
+compares warm restoration with forced full static rebuilds, including complete
+color/depth/Display, immutable cache allocations/tails and3/2/2 versus3/3/3
+submission counts. Typed depth-copy tests preserve distinct patterns, physical
+padding and allocation tails, and reject overlap. The existing52-scene gallery
+covers all33 stages and representative animation states. `cache_compare.py`
+exports full RGB, raw and8x difference images, contact sheets and timing JSON;
+pixel agreement does not establish GPU cycle timing or physical FPS.
+
 `system_runner` is a bounded actual-System input/watch/ch11/CPU-cache-inspection
 fixture. Observer-on/off systems match every scheduler output and final backing;
 real right/release reads and a4KiB GPU MEMCPY are checked. It supplies short host
@@ -815,3 +883,11 @@ only the8235 application directory, recording both identities in that file.
 `check_atlas_borders.py` additionally checks all67 packed rings/UV guards and33
 camera geometries; the observation-only `atlas_trace.py` reports actual versus
 diagnostic unclamped LOD and weighted taps without editing production GPU code.
+
+Bloxorz orientation qualification covers all24 signed-axis orientations and all96
+world quarter turns, exact world/normal column permutations, roll-to-rest local
+face continuity, inverse moves, split/swap/merge and undo/reset lifetimes.
+Functional GPU/Display fixtures save complete endpoint RGB and compare four
+heights over an inactive bridge against an explicit early-alpha control; opaque
+depth must remain identical. Goal closing is rendered before transition freeze.
+All cases have finite instruction-step bounds.

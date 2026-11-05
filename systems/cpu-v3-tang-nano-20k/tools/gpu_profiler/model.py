@@ -400,6 +400,8 @@ def viewer_model(data):
     if frame:
         lo,hi=frame['start_tick'],frame['end_tick'];axis=s['axis_origin_tick']
         a,b=(lo-axis)/148,(hi-axis)/148;owned=set(frame['owned_submission_ids'])
+        view['submissions']=[x for x in s['submissions'] if x['id'] in owned]
+        if frame.get('boundary')=='gpu-completion':view['scanouts']=[]
         for key in ('submissions','commands','meshlets','jobs','dma_transactions'):
             result[key]=[x for x in data[key] if (x['id'] if key=='submissions' else x['submission']) in owned]
         def steps(points,left,right):

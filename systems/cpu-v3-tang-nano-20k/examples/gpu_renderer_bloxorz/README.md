@@ -10,7 +10,11 @@ held direction wins. START restarts, TRIANGLE/R1 select the next stage, L1 the p
 Square undoes. Cross swaps split cubes; Circle toggles frame statistics. SELECT toggles the original dither background and solid #2c2620.
 Outgoing rule/animation clocks continue behind a cached RTT veil colored
 #142238. Out and incoming Hold/In each retain one completed 3D snapshot; ordinary
-frames draw directly to Back. A presented opaque endpoint gates reset; the presented transparent
+frames restore independent static color/depth into Back before drawing dynamic
+content. Cache invalidation follows level, background, camera and fragile
+visibility changes; the transfer schedule and storage are specified in
+[transitions](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/transitions.md).
+A presented opaque endpoint gates reset; the presented transparent
 endpoint starts entry. Locked-period edges are discarded and held directions
 require release. Ordinary rendering always shows the current level; optional DRAW/MS values describe the previous completed frame. MS measures vblank return through the final GPU wait, with cold-start dashes until that interval is available.
 
@@ -39,7 +43,7 @@ Background bytes and their transfer/Display contract are described with the
 [asset](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/assets/README.md).
 The [ground shadow](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/shadow.md) follows the prepared player matrix through clipped unit-triangle Instances.
 Static floors are generated into a stable heap package at stage load and drawn in material groups; moving and transparent objects retain their own paths. Static well components share native mesh groups. Entrance/goal parts retain
-separate Models and stable pose/texture caches, with twelve metadata words
+separate Models and stable pose/texture caches, with fifteen metadata words
 allocated once on the heap. The caller retains a packed
 two-word resting block key so unchanged poses preserve the driver's existing derived
 matrix cache. Animation poses still update, and Camera revisions independently

@@ -9,7 +9,7 @@ def slot_rect_128(slot):
     if slot<32:return ((slot%8)*16,(slot//8)*16,16,2)
     if slot<48:
         channel=(slot-32)//2
-        return (channel*16,64,16,2) if slot%2==0 else (channel*4,80,4,1)
+        return (channel*16,64,16,2) if slot%2==0 else (channel*8,80,8,1)
     if slot<56:
         variant=(slot-48)//2
         return (variant*24,88,24,2) if slot%2==0 else (variant*16,112,16,2)
@@ -54,6 +54,7 @@ def glyph_mask(pattern,inner):
             dots=pattern=='split' and abs(z)<=.065 and any(abs(x-d)<=.065 for d in (-.16,.16))
             return ring or dots
         if pattern=='heavy':return abs(x)<=.13/.44 and abs(z)<=.13/.44
+        if pattern=='heavy-flat':return abs(x)<=.13 and abs(z)<=.13
         if pattern=='fragile':
             return any(abs(math.cos(a)*x-math.sin(a)*z)<=.33 and abs(math.sin(a)*x+math.cos(a)*z)<=.04 for a in (-math.pi/4,math.pi/4))
         return False
@@ -91,8 +92,20 @@ def prepare(system,web):
             background=floor(0,palette[active]);top=tile(background,'soft',palette[3],kind='soft',channel=channel,active=bool(active),surface='top');side=tile(background,kind='soft',channel=channel,active=bool(active),surface='side')
             soft.append(mapped(web.unit_tile(0),top,side))
     for channel,palette in enumerate(palettes):
-        background=tuple(palette[0]);top=tile(background,'heavy',palette[3],kind='heavy',channel=channel,surface='top');side=tile(background,kind='heavy',channel=channel,surface='side')
-        heavy.append(mapped(web.heavy_base(),top,side,2))
+        for active in range(2):
+            def background(inner):
+                image=floor(1,palette[active])(inner)
+                image.putdata([tuple(palette[0]) if abs((x+.5)/inner-.5)<=.22 and abs((y+.5)/inner-.5)<=.22 else image.getpixel((x,y)) for y in range(inner) for x in range(inner)])
+                return image
+            top=tile(background,'heavy-flat',palette[3],kind='heavy',channel=channel,active=bool(active),surface='top')
+            mesh=mapped(web.unit_tile(1),top,channel*4+active*2+1)
+            # Keep both X sides in one native record; culling selects the eye side.
+            vertices=[];triangles=[]
+            for face in range(5):
+                if ((mesh['vertices'][face*4][1]>>20)&1023)>511:continue
+                first=len(vertices);vertices.extend(mesh['vertices'][face*4:face*4+4]);triangles.extend([[first,first+1,first+2],[first,first+2,first+3]])
+            mesh.update(vertices=vertices,triangles=triangles,cull_negative=True)
+            heavy.append(mesh)
     for variant in range(4):
         background=floor(variant,(176,141,87));top=tile(background,'fragile',(63,42,18),kind='fragile',variant=variant,surface='top');side=tile(background,kind='fragile',variant=variant,surface='side')
         fragile.append(mapped(web.unit_tile(variant),top,side))

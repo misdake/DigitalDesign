@@ -1,5 +1,6 @@
 """Bloxorz column-layout scene and fullscreen RTT mesh, using the existing Bloxorz geometry without rendering."""
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -9,6 +10,24 @@ import struct
 import sys
 sys.dont_write_bytecode = True
 SYSTEM = Path(__file__).resolve().parents[3]
+def visible_side_mesh(source, side):
+    mesh = copy.deepcopy(source)
+    vertices, triangles, kept = [], [], []
+    for face in range(len(source['vertices']) // 4):
+        normal = source['vertices'][face * 4][1]
+        xyz = [(normal >> (axis * 10)) & 1023 for axis in range(3)]
+        x, y, z = [value if value < 512 else value - 1024 for value in xyz]
+        if y > 0 or z > 0 or (x > 0 if side == 0 else x < 0):
+            first = len(vertices)
+            vertices.extend(source['vertices'][face * 4:face * 4 + 4])
+            triangles.extend([[first, first + 1, first + 2], [first, first + 2, first + 3]])
+            kept.append(face)
+    mesh.update(vertices=vertices, triangles=triangles, cull_negative=True,
+                name=source['name'] + f'-visible-{side}', visibility_side=side)
+    if 'marker_slots' in mesh:
+        mesh['marker_slots']['top_face'] = kept.index(mesh['marker_slots']['top_face'])
+    return mesh
+
 def module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     result = importlib.util.module_from_spec(spec)
@@ -78,7 +97,7 @@ def pack(output,main_log2=8,marker_log2=8):
     (output/'markers.bin').write_bytes(marker_data);marker_image.save(output/'markers-atlas.png')
     R.validate_asset_range(0x740000,len(marker_data))
     manifest['resources'].append(dict(kind='markers',file='markers.bin',address=0x740000,bytes=len(marker_data)))
-    manifest['marker_atlas']=dict(size=M.SIZE,slots=60,rectangles=[M.slot_rect(i) for i in range(60)],items=marker_items,fragile_inner=M.slot_rect(48)[2]-4,gutter='2 except constant-color patches1',full_mip=False,uv='inner texel centres, periodic base layer only')
+    manifest['marker_atlas']=dict(size=M.SIZE,slots=60,rectangles=[M.slot_rect(i) for i in range(60)],items=marker_items,fragile_inner=M.slot_rect(48)[2]-4,gutter='2 except active-heavy patches1',full_mip=False,uv='inner texel centres, periodic base layer only')
     from PIL import Image
     masks=Image.new('L',(M.SIZE,M.SIZE))
     for item in marker_items:
@@ -91,7 +110,7 @@ def pack(output,main_log2=8,marker_log2=8):
     groups.append(W.well())
     hatch=W.unit_tile(0);hatch['name']=hatch['group']='pad-hatch';hatch['cull_negative']=True
     groups.append([hatch])
-    groups.append([W.floor(dict(width=1,depth=1),[(0,0)],'tile1',1)])
+    groups.append([W.unit_tile(1)])
     pad = W.plain("pad", W.box_quads((0,0,0),(1,1,1)))
     groups.append([pad])
     groups.append([dict(name='shadow-triangle',group='shadow-triangle',vertices=[[0,511<<10,0xffffff],[128,511<<10,0xffffff],[128<<20,511<<10,0xffffff]],triangles=[[0,1,2]],config=[0,0,0,9|256],color_mode=1,cull_negative=False)])
@@ -106,10 +125,15 @@ def pack(output,main_log2=8,marker_log2=8):
     groups += [[W.unit_tile(v) for v in range(4)],[W.unit_tile(0,True)]]+marker_groups
     groups += C.prepare(W,SYSTEM,output)
     manifest['resources'].append(dict(kind='goal_carrier',file='goal_carrier.bin',address=0x760000))
-    count = sum(map(len,groups))
-    memory = bytearray((count*4+127)//128*128)
     names = ['BLOCK','WELL','TILE0','TILE1','PAD','SHADOW','SCREEN','SHARED_FLOOR','BRIDGE_TILE','HINT_TILE','MARKED_SOFT','MARKED_HEAVY','MARKED_FRAGILE','MARKED_SPLIT','GOAL_CARRIER','GOAL_HATCH']
     assert len(names)==len(groups)
+    for index, name in enumerate(names):
+        if name in {'TILE1', 'BRIDGE_TILE', 'MARKED_SOFT'}:
+            groups[index] = [visible_side_mesh(mesh, side) for side in (0, 1) for mesh in groups[index]]
+    for level in levels.values():
+        assert W.camera(level['width'], level['depth'])['eye'][2] > level['depth'] / 2
+    count = sum(map(len,groups))
+    memory = bytearray((count*4+127)//128*128)
     catalog = []
     meshes = []
     entry = 0
@@ -152,6 +176,7 @@ def pack(output,main_log2=8,marker_log2=8):
                 key=f'GPU_RENDERER_{label}_{axis}_{part}'
                 constants=re.sub(rf'(pub const {key}:u16=)\d+;',rf'\g<1>{n};',constants)
     constants += 'pub const BLOX_BACKGROUND_SECTOR:u16=45056;\npub const BLOX_MARKER_SECTOR:u16=59392;\n'
+    constants += 'pub const BLOX_STATIC_COLOR_SECTOR:u16=40960;\npub const BLOX_STATIC_DEPTH_SECTOR:u16=43008;\n'
     constants+=f'pub const BLOX_MARKER_LOG2:u16={marker_log2};\npub const BLOX_MARKER_SECTORS:u16={M.SIZE*M.SIZE//64};\n'
     for c in catalog:
         constants+=f"pub const {c['name']}_FIRST:u16={c['first']};\n"+f"pub const {c['name']}_COUNT:u16={c['count']};\n"
@@ -243,6 +268,13 @@ pub fn blox_scene_face(which:u16,index:u16)->u16 {blox_asset_word(blox_level_met
         data=(output/r['file']).read_bytes();r.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
         assert r['address']+len(data)<=0x600000 or 0x680000<=r['address']<r['address']+len(data)<=0x7df800
     extents=sorted((r['address'],r['address']+r['bytes'],r['file']) for r in manifest['resources'])
+    reservations=[dict(kind='static_color',address=0x500000,bytes=262144),dict(kind='static_depth',address=0x540000,bytes=262144)]
+    manifest['runtime_reservations']=reservations
+    for reservation in reservations:
+        first=reservation['address'];end=first+reservation['bytes']
+        R.validate_asset_range(first,reservation['bytes'])
+        assert first%65536==0 and all(end<=a or b<=first for a,b,_ in extents)
+        assert end<=0x600000 or first>=0x640000
     assert all(a[1] <= b[0] for a,b in zip(extents,extents[1:]))
     manifest.update(profile='production',surface='column-major-16x16-pad16',
         borrowed=dict(color=0x600000,depth=0x480000,plane_capacity=262144),catalog=catalog,meshes=meshes,levels=chosen,

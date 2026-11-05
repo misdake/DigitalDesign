@@ -4,29 +4,29 @@ use rcc::frontend::{compile_program_named_checked, rustc_check::RustcCheck};
 use std::path::Path;
 
 #[test]
-fn color_copy_preflights_ranges_capacity_phase_and_disables_partial_scene_patch() {
+fn plane_copy_preflights_ranges_capacity_phase_and_disables_partial_scene_patch() {
     let source = r#"mod gpu_packet;mod gpu_scene_patch;
 static STEP:u16=0;
 fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
 fn main(){
  gpu_record_init();check(gpu_record_configure(0,0x9800,1,0x9a00,4));
  let mut c=gpu_record_data(0);
- check(!gpu_packet_copy_color(0,0xb001,0x8000));
- check(!gpu_packet_copy_color(0,0xb000,0x8001));
- check(!gpu_packet_copy_color(0,0x8000,0x8000));
- check(!gpu_packet_copy_color(0,0x8200,0x8000));
- check(!gpu_packet_copy_color(0,0xfe00,0x8000));
- check(!gpu_packet_copy_color(0,0x9800,0x8000));
- check(!gpu_packet_copy_color(0,0xb000,0x9a00));
- c[GPU_RECORD_COMMAND_USED]=56;check(!gpu_packet_copy_color(0,0xb000,0x8000));
+ check(!gpu_packet_copy_plane(0,0xb001,0x8000));
+ check(!gpu_packet_copy_plane(0,0xb000,0x8001));
+ check(!gpu_packet_copy_plane(0,0x8000,0x8000));
+ check(!gpu_packet_copy_plane(0,0x8200,0x8000));
+ check(!gpu_packet_copy_plane(0,0xfe00,0x8000));
+ check(!gpu_packet_copy_plane(0,0x9800,0x8000));
+ check(!gpu_packet_copy_plane(0,0xb000,0x9a00));
+ c[GPU_RECORD_COMMAND_USED]=56;check(!gpu_packet_copy_plane(0,0xb000,0x8000));
  check(c[GPU_RECORD_COMMAND_USED]==56&&c[GPU_RECORD_PUSH_USED]==0&&c[GPU_RECORD_TERMINAL]==0);
  c[GPU_RECORD_COMMAND_USED]=0;c[GPU_RECORD_PUSH_USED]=256;
- check(!gpu_packet_copy_color(0,0xb000,0x8000));check(c[GPU_RECORD_COMMAND_USED]==0);
+ check(!gpu_packet_copy_plane(0,0xb000,0x8000));check(c[GPU_RECORD_COMMAND_USED]==0);
  c[GPU_RECORD_PUSH_USED]=0;c[GPU_RECORD_PHASE]=GPU_RECORD_PASS;
- check(!gpu_packet_copy_color(0,0xb000,0x8000));
- c[GPU_RECORD_PHASE]=GPU_RECORD_SEALED;check(!gpu_packet_copy_color(0,0xb000,0x8000));
+ check(!gpu_packet_copy_plane(0,0xb000,0x8000));
+ c[GPU_RECORD_PHASE]=GPU_RECORD_SEALED;check(!gpu_packet_copy_plane(0,0xb000,0x8000));
  c[GPU_RECORD_PHASE]=GPU_RECORD_READY;
- check(gpu_packet_copy_color(0,0xb000,0x8000));
+ check(gpu_packet_copy_plane(0,0xb000,0x8000));
  check(c[GPU_RECORD_COMMAND_USED]==10&&c[GPU_RECORD_PUSH_USED]==16);
  check(c[GPU_RECORD_VALID]&GPU_RECORD_HAS_COPY!=0);
  check(gpu_packet_begin(0,0x8000,0x9000,2,0,65535));

@@ -58,7 +58,7 @@ def evidence(folder, meta):
 
 
 def build(folder, output, *, allow_partial=False, binding=None, require_images=False,
-          frames=(), source_identity=None, preview='display1'):
+          frames=(), source_identity=None, only_frame=None, preview='display1'):
     from model import write_report
     folder, output = Path(folder), None if output is None else Path(output)
     meta = json.loads((folder/'capture.json').read_text())
@@ -226,6 +226,16 @@ def build(folder, output, *, allow_partial=False, binding=None, require_images=F
     data=prepare_report(data)
     from system_frames import attach_identity, write_reports
     data = attach_identity(data, source_identity)
+    selection=only_frame if only_frame is not None else meta.get('profile_frame')
+    if only_frame is not None and meta.get('profile_frame') is not None:
+        require(only_frame==meta['profile_frame'],'frame option differs from capture selection')
+    if selection is not None:
+        require(not frames,'--only-frame and --frames are mutually exclusive')
+        from system_frames import make_gpu
+        data=make_gpu(data,selection)
+        sys=data['system']
+        if 'image_journal' in sys:
+            sys['image_journal']=dict(sys['image_journal'],selected_presentations=[selection])
     validate(data)
     if output is None:return data
     output.mkdir(parents=True, exist_ok=True)
@@ -242,10 +252,13 @@ def build(folder, output, *, allow_partial=False, binding=None, require_images=F
                                           physical_writes,output/'images',preview_mode=preview,
                                           known_preimage=(folder/meta['image_journal']['known_preimage']).read_bytes()
                                           if meta['image_journal'].get('known_preimage') else None)
-        from system_images import validate as validate_native_images
+        from system_images import validate as validate_native_images, project
+        if selection is not None:data=project(data,data['system']['frame_view']['owned_submission_ids'])
         validate_native_images(data)
         data['checks']['native_history']='available' if data['images']['available'] else 'unavailable'
-    require(not require_images or bool(sys['scanouts']) or data.get('images',{}).get('available'),
+    frame = data['system'].get('frame_view')
+    raster_available = frame['scanout_index'] is not None if frame else bool(sys['scanouts'])
+    require(not require_images or raster_available or data.get('images',{}).get('available'),
             'no complete scanout or native image saved')
     write_report(data, output,validated=True)
     (output/'report-inputs.json').write_text(json.dumps(record,indent=2)+'\n')

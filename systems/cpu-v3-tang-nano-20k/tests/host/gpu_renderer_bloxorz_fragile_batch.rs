@@ -110,7 +110,15 @@ fragile_end(owner);
                     let x = cell % width;
                     let z = cell / width;
                     let variant = (x * 3 + z * 5) % 4;
-                    let reference = &catalog["meshes"][56 + variant];
+                    let first = catalog["catalog"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|entry| entry["name"] == "MARKED_FRAGILE")
+                        .unwrap()["first"]
+                        .as_u64()
+                        .unwrap() as usize;
+                    let reference = &catalog["meshes"][first + variant];
                     let u32at = |i| u32::from(words[i]) | (u32::from(words[i + 1]) << 16);
                     for vertex in 0..20 {
                         let at = 64 + (slot * 20 + vertex) * 6;
@@ -811,7 +819,8 @@ fn ordinary_restart_next_stage_shadow_and_finite_heap_lifetimes_close() {
     }
     assert!(halted, "bounded24M ordinary restart/next timeout");
     assert_eq!(frames.len(), 8);
-    assert_eq!(starts, 16);
+    // Initial level, crack hide, undo restore and next level each rebuild once.
+    assert_eq!(starts, 20);
     assert!(sim.gpu().last_error().is_none());
     let m = sim.cpu().physical_memory_slice();
     let begin = usize::from(m[global(&program, "HEAP_BEGIN")]);

@@ -8,6 +8,7 @@
     gpu_memcpy,
     gpu_bind,
     gpu_mesh,
+    gpu_group,
     gpu_execute,
     gpu_present,
     gpu_api_fault,
@@ -41,6 +42,8 @@ mod gpu_memcpy;
 use gpu_bind::*;
 mod gpu_mesh;
 use gpu_mesh::*;
+mod gpu_group;
+use gpu_group::*;
 mod gpu_execute;
 use gpu_execute::*;
 mod gpu_present;
@@ -348,34 +351,67 @@ impl Drop for Mesh {
         }
     }
 }
+fn gpu_api_copy_plane(slot: u16, source: u16, destination: u16, kind: u16) {
+    let s = gpu_arena_data(source);
+    let d = gpu_arena_data(destination);
+    if gpu_record_overlap(s[0u16], s[1u16], d[0u16], d[1u16]) {
+        gpu_api_fail(4, 2, slot, 0);
+    }
+    let facts: Buf<u16, 8> = Buf::new([
+        s[0u16],
+        s[1u16],
+        kind,
+        GPU_FACT_READ,
+        d[0u16],
+        d[1u16],
+        kind,
+        GPU_FACT_WRITE,
+    ]);
+    if !gpu_record_capture_room(slot, facts.as_array(), 2) {
+        gpu_api_fail(4, 6, slot, 0);
+    }
+    if !gpu_packet_copy_plane(slot, s[0u16], d[0u16]) {
+        gpu_api_fail(4, 2, slot, 0);
+    }
+    gpu_record_capture_commit(slot, facts.as_array(), 2);
+}
+/// Push partition choices; command, metadata and total push budgets are unchanged.
+#[repr(u16)]
+#[derive(Copy, Clone)]
+pub enum PreparedPartsLayout {
+    SingleWide,
+    SplitWide,
+}
 impl CommandBuffer {
+    /// Reserve a slot-private 16 KiB template and 16 KiB active command area
+    /// inside this CB's existing aligned 64 KiB command allocation.
+    pub fn enable_prepared_group(&mut self) {
+        gpu_api_checked(gpu_group_enable(self.slot), 15);
+    }
+    /// SplitWide gives parts0/15 4096 words each; parts1..14 retain1024.
+    /// SingleWide preserves the original8192-word part0 and1024-word tail.
+    pub fn enable_prepared_parts(&mut self, layout: PreparedPartsLayout) {
+        gpu_api_checked(gpu_group_enable_layout(self.slot, layout as u16), 15);
+    }
+    /// Clear all saved parts and reset the active stream, retaining partitions.
+    pub fn clear_prepared_group(&mut self) {
+        gpu_api_checked(gpu_group_clear(self.slot), 15);
+    }
+    /// Invalidate one part between recordings, retaining every other part.
+    pub fn invalidate_prepared_part(&mut self, part: u16) {
+        gpu_api_checked(gpu_group_invalidate(self.slot, part), 15);
+    }
     /// Copy the 400x256 physical RGB565 plane between nonoverlapping surfaces.
     /// Records source-read/destination-write ownership; allocation tails remain
     /// untouched. Call between passes. Submission publication/leases are shared
     /// with drawing, and this fixed-target command disables scene patching.
     pub fn copy_color(&mut self, source: &ColorBuffer, destination: &ColorBuffer) {
-        let s = gpu_arena_data(source.slot);
-        let d = gpu_arena_data(destination.slot);
-        if gpu_record_overlap(s[0u16], s[1u16], d[0u16], d[1u16]) {
-            gpu_api_fail(4, 2, self.slot, 0);
-        }
-        let facts: Buf<u16, 8> = Buf::new([
-            s[0u16],
-            s[1u16],
-            GPU_FACT_COLOR,
-            GPU_FACT_READ,
-            d[0u16],
-            d[1u16],
-            GPU_FACT_COLOR,
-            GPU_FACT_WRITE,
-        ]);
-        if !gpu_record_capture_room(self.slot, facts.as_array(), 2) {
-            gpu_api_fail(4, 6, self.slot, 0);
-        }
-        if !gpu_packet_copy_color(self.slot, s[0u16], d[0u16]) {
-            gpu_api_fail(4, 2, self.slot, 0);
-        }
-        gpu_record_capture_commit(self.slot, facts.as_array(), 2);
+        gpu_api_copy_plane(self.slot, source.slot, destination.slot, GPU_FACT_COLOR);
+    }
+    /// Copy the physical depth plane without changing its stored values.
+    /// The caller retains a completed source until this CB retires.
+    pub fn copy_depth(&mut self, source: &DepthBuffer, destination: &DepthBuffer) {
+        gpu_api_copy_plane(self.slot, source.slot, destination.slot, GPU_FACT_DEPTH);
     }
     /// Seal one target block, with any immutable draw groups and at most one
     /// leading color copy. No matrices, state or source objects are patched.
@@ -511,7 +547,37 @@ impl Drop for CommandBuffer {
     }
 }
 impl Pass {
+    /// Test whether this slot has a completed part in the range 0..16.
+    pub fn prepared_part_ready(&self, part: u16) -> bool {
+        gpu_group_part_ready(self.slot, part)
+    }
+    /// Record or replace a CPU-owned part not yet referenced by this recording.
+    pub fn begin_prepared_part(&mut self, part: u16) {
+        gpu_api_checked(gpu_group_part_begin(self.slot, part), 15);
+    }
+    /// Append a saved part; reinstall camera/state before subsequent draws.
+    pub fn append_prepared_part(&mut self, part: u16) {
+        gpu_api_checked(gpu_group_part_append(self.slot, part), 15);
+    }
+    pub fn prepared_group_ready(&self) -> bool {
+        gpu_group_ready(self.slot)
+    }
+    /// Record only mesh draws and their camera/state choices until end.
+    /// Native parameter snapshots persist; source objects need not persist.
+    pub fn begin_prepared_group(&mut self) {
+        gpu_api_checked(gpu_group_begin(self.slot), 15);
+    }
+    /// Finish the open part. Reinstall camera and state before drawing.
+    pub fn end_prepared_group(&mut self) {
+        gpu_api_checked(gpu_group_end(self.slot), 15);
+    }
+    /// Append via LCOPY without scene math, parameter uploads or mesh expansion.
+    /// Reinstall camera and state before subsequent immediate draws.
+    pub fn append_prepared_group(&mut self) {
+        gpu_api_checked(gpu_group_append(self.slot), 15);
+    }
     pub fn invalidate_textures(&mut self) {
+        gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);
         if !gpu_packet_invalidate_textures(self.slot) {
             gpu_api_fail(4, 3, self.slot, 0);
         }
@@ -831,6 +897,9 @@ impl Model {
     pub fn world(&self) -> Mat3x4 {
         gpu_scene_model_world(gpu_arena_data(self.slot))
     }
+    pub fn normal(&self) -> Mat3x3 {
+        gpu_scene_model_normal(gpu_arena_data(self.slot))
+    }
 }
 
 impl Camera {
@@ -904,8 +973,15 @@ impl Model {
 }
 
 impl Model {
-    pub fn set_matrices(&mut self, world: Mat3x4, normal: Mat3x3) {
+    pub fn set_matrices(&mut self, mut world: Mat3x4, mut normal: Mat3x3) {
         let mut data = gpu_arena_data(self.slot);
+        let world_words = unsafe { view_of(&mut world).as_ptr().as_u16_array() };
+        let normal_words = unsafe { view_of(&mut normal).as_ptr().as_u16_array() };
+        if gpu_bind_equal(data, GPU_MODEL_WORLD, world_words, 0, 24)
+            && gpu_bind_equal(data, GPU_MODEL_NORMAL, normal_words, 0, 18)
+        {
+            return;
+        }
         let derived = data[GPU_MODEL_DERIVED];
         gpu_api_checked(gpu_scene_model_matrices(data, world, normal), 2);
         data[GPU_MODEL_DERIVED] = derived;
@@ -1027,6 +1103,7 @@ impl Pass {
         gpu_api_draw(self.slot, mesh.slot, model.slot, material.slot, 0, false);
     }
     pub fn draw_ui(&mut self, grid: &UiGrid, clip: CellRect) {
+        gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);
         if clip.width == 0 || clip.height == 0 {
             return;
         }

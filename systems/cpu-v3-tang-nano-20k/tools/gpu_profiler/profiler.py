@@ -22,6 +22,12 @@ def frame_ordinals(value):
         raise argparse.ArgumentTypeError('Expected distinct positive presentation ordinals, e.g.1,2')
 
 
+def positive_frame(value):
+    number=int(value)
+    if number<1:raise argparse.ArgumentTypeError('Expected a positive application frame ordinal')
+    return number
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -44,6 +50,8 @@ def main():
     render.add_argument('--replace-report', action='store_true')
     render.add_argument('--frames', type=frame_ordinals, default=[])
     render.add_argument('--source-identity', type=Path)
+    for command in (build,render):
+        command.add_argument('--only-frame',type=positive_frame,help='Only the selected presentation GPU group; warmup state is retained')
     check = commands.add_parser("check", help="Bounded format, statistics and viewer regression")
     check.add_argument("--node", default="node")
     args = parser.parse_args()
@@ -67,7 +75,7 @@ def main():
         if args.command == 'render':
             raw = json.loads(args.profile.read_text())
             if raw.get('schema') == 'digitaldesign.gpu-result':
-                if args.require_images or args.replace_report or args.frames or args.source_identity:
+                if args.require_images or args.replace_report or args.frames or args.source_identity or args.only_frame is not None:
                     raise SnapshotError('Result-only render has no command history or generated profiling report replacement')
                 from simulator import write_result
                 write_result(raw, args.out, args.profile.parent)
@@ -77,9 +85,9 @@ def main():
         data = (build_report(args.folder, out, snapshot=args.snapshot, raw=args.raw, binding=args.binding,
                             allow_partial=args.allow_partial, preview=args.preview,
                             capture_format=args.capture_format, require_images=args.require_images,
-                            replace_report=args.replace_report, frames=args.frames, source_identity=args.source_identity)
+                            replace_report=args.replace_report, frames=args.frames, source_identity=args.source_identity, only_frame=args.only_frame)
                 if args.command == 'build' else render_report(args.profile, out, require_images=args.require_images,
-                                                             replace_report=args.replace_report, frames=args.frames, source_identity=args.source_identity))
+                                                             replace_report=args.replace_report, frames=args.frames, source_identity=args.source_identity, only_frame=args.only_frame))
         print(json.dumps(summary(data, out)))
 
 

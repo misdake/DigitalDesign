@@ -4,7 +4,7 @@ function renderSystemProfile(D) {
  const F=S.frame_view,boundLo=F?.start_tick??S.origin_tick,boundHi=F?.end_tick??S.end_tick,axisOrigin=F?boundLo:S.axis_origin_tick;
  const submissions=F?S.submissions.filter(s=>F.owned_submission_ids.includes(s.id)):S.submissions;
  const presents=F?S.presents.filter(p=>(p[1]==='present_request'?p[2]:p[2][0])===F.presentation):S.presents;
- const scanouts=F?[S.scanouts[F.scanout_index]]:S.scanouts;
+ const scanouts=F?(F.scanout_index===null?[]:[S.scanouts[F.scanout_index]]):S.scanouts;
  const commands=F?D.commands.filter(c=>F.owned_submission_ids.includes(c.submission)):D.commands;
  const visibleOps=new Set(commands.map(c=>c.opcode).filter(op=>![1,2,4].includes(op)));
  let selected=null;
@@ -47,7 +47,7 @@ function renderSystemProfile(D) {
   info.textContent=`Frame ${F.presentation} · ticks [${boundLo}, ${boundHi}). App source SHA: ${app}. Program SHA256: ${program}. ${F.window_scope} ${F.ownership_scope} CPU frame owner and exact HUD wait-return ticks: unavailable.`;$('detail').append(info);
   const counts=document.createElement('p');counts.className='note';counts.setAttribute('id','frame-statistics');
   const c=F.summary.cpu_counter;counts.textContent=`Selected GPU jobs: ${submissions.length}; window accepted ${F.summary.accepted_in_window}, terminal events ${F.summary.terminal_events_in_window}, carry-in ${F.summary.carry_in}, carry-out ${F.summary.carry_out}. CPU counter delta ${c?c.retired_words+' words from saved baseline tick '+c.baseline_tick:'unavailable'}; concurrent window activity, frame ownership unavailable.`;$('detail').append(counts);
-  const link=document.createElement('a');link.href=F.session_report;link.textContent='Open separate full-session report';$('detail').append(link);
+  if(F.session_report){const link=document.createElement('a');link.href=F.session_report;link.textContent='Open separate full-session report';$('detail').append(link);}
  }
  const hostSeconds=v=>Number.isFinite(v)?v.toFixed(3)+'s':'unavailable';
  const host=document.createElement('p');host.className='note';host.textContent=`Host: step ${hostSeconds(D.provenance.host_step_seconds)}, export ${hostSeconds(D.provenance.host_export_seconds)}. Host elapsed is separate from simulated time.`;$('detail').append(host);

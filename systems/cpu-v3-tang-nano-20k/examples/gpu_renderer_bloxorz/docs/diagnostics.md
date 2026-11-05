@@ -1,10 +1,44 @@
 ---
 id: bloxorz-pixel-diagnostics
 status: implemented
-last-verified: 2026-11-03
+last-verified: 2026-11-05
 ---
 
 # Native pixel diagnostics
+
+## Moving-frame system profiling
+
+The ignored `moving_right_frame_system_profile` host test starts level29 in PLAY,
+keeps the real animation clock, and publishes a physical Digital Device5 right
+press before the second frame's normal input capture. It releases after the
+snapshot acknowledgement, right-byte read and final coherent status read. The
+third frame must have one accepted move, ROLL phase, nonzero animation age,
+expected destination/orientation and unchanged bridge mask. Passive Execute-PC
+and saved link-register return observations must show fresh shadow projection
+and a completed shadow call; no timing instructions are added to those functions.
+The existing test-only read-only world-matrix probe remains outside the shadow
+call. Function intervals include cache/memory stalls and nested calls.
+
+`BLOXORZ_SIM_OUTPUT_ROOT` selects a new directory under the main checkout's target.
+The fixture writes its exact CB06, listing/debug map, input/state/timing sidecar,
+moving command/pre-submit physical memory and completed color/depth planes.
+The production cycle CPU/GPU/Display/shared-SDRAM composition uses synthetic cold
+preload, not a physical SPI-loader checkpoint. Bounds are18M logic edges,
+2400 host seconds and10M common profiling events on an8MiB host worker stack.
+Capture ends after the third dynamic CB drains and its presentation is requested;
+the requested raster need not have completed. This is a GPU completion interval,
+not sustained FPS or physical-board qualification.
+
+The `capture/` directory uses the existing common version2 profiling protocol,
+including its original preimage and every preceding native/cache write. Its
+explicit native-image selection is presentation3. Build it through the standard
+`tools/gpu_profiler/profiler.py build` command, with `--allow-partial` to retain any
+bounded tail and `--require-images` to require real image evidence. The standard
+viewer includes all warm-up submissions; the sidecar identifies the measured
+frame and the actual restore/dynamic submission IDs. A complete registered raster
+is required before requesting a presentation-specific `--frames` report.
+
+## Functional pixel replay
 
 The bounded host tests use the actual RCC application, instruction CPU, functional
 GPU and Display conversion. `web_first_two_stage_play_frames_use_functional_gpu_and_actual_display`

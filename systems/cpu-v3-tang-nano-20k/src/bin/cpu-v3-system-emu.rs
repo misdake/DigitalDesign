@@ -18,7 +18,17 @@ use std::{
 };
 const HELP:&str="cpu-v3-system-emu <CB06-image> --entry preloaded-post-boot|cold-preloaded --max-logic-cycles N [--max-host-seconds N] [--presents N] [--frame-ppm PATH] [--memory-out PATH]\nRuns the production CPU/GPU/Display and one native SDRAM service at exact clock edges. cold-preloaded is a synthetic configuration-state prefix, qualified separately from real bootloader handoff. --presents waits for N applied presents and a subsequent complete scanout raster. Host deadline defaults to 600s. preloaded-post-boot completes the bounded cold preparation before starting the application cycle budget; it does not import real SPI-loader state.";
 fn main() -> ExitCode {
-    match run() {
+    let result = match std::thread::Builder::new()
+        .name("system-cycle-emu".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(run)
+    {
+        Ok(worker) => worker
+            .join()
+            .unwrap_or_else(|_| Err("system worker panicked".into())),
+        Err(error) => Err(format!("start system worker: {error}")),
+    };
+    match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(2),
         Err(e) => {
@@ -36,10 +46,11 @@ fn run() -> Result<bool, String> {
     let mut profile_out = None;
     let mut profile_events = 2_000_000;
     let mut profile_frames = 2;
+    let mut profile_frame = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                println!("{HELP}\n--fixed-input digital|analog|pressure selects a fixed neutral snapshot peer; the default is disconnected.\n--profile-out DIR enables bounded passive full-system capture in a new directory. --profile-max-events N defaults to 2000000 (maximum 10000000); --profile-max-frames N defaults to 2 (0 disables images, maximum 1024). Event overflow marks partial coverage and leaves simulation budgets unchanged. Client64 and actual native-model32 slots have separate boundaries; neither is board pin bandwidth.");
+                println!("{HELP}\n--fixed-input digital|analog|pressure selects a fixed neutral snapshot peer; the default is disconnected.\n--profile-out DIR enables bounded passive full-system capture in a new directory. --profile-frame N selects one application presentation GPU group (all CBs); warmup still runs and its raw state journal is retained. Defaults --presents to N. --profile-max-events N defaults to 2000000 (maximum 10000000); --profile-max-frames N defaults to 2 (0 disables images, maximum 1024). Event overflow marks partial coverage and leaves simulation budgets unchanged. Client64 and actual native-model32 slots have separate boundaries; neither is board pin bandwidth.");
                 return Ok(true);
             }
             "--entry" => entry = Some(next(&mut args, &arg)?),
@@ -59,6 +70,7 @@ fn run() -> Result<bool, String> {
             "--profile-out" => profile_out = Some(PathBuf::from(next(&mut args, &arg)?)),
             "--profile-max-events" => profile_events = number(&next(&mut args, &arg)?)?,
             "--profile-max-frames" => profile_frames = number(&next(&mut args, &arg)?)?,
+            "--profile-frame" => profile_frame = Some(number(&next(&mut args, &arg)?)?),
             x if x.starts_with('-') => return Err(format!("unknown option {x}")),
             x if input.is_none() => input = Some(PathBuf::from(x)),
             x => return Err(format!("unexpected argument {x}")),
@@ -75,6 +87,15 @@ fn run() -> Result<bool, String> {
     let limit = limit.ok_or("--max-logic-cycles is required")?;
     if limit == 0 || host_seconds == 0 || presents == Some(0) {
         return Err("cycle, host and present bounds must be positive".into());
+    }
+    if let Some(number) = profile_frame {
+        if number == 0 || profile_out.is_none() {
+            return Err("--profile-frame requires a positive ordinal and --profile-out".into());
+        }
+        if presents.is_some_and(|limit| limit < number) {
+            return Err("--presents must reach --profile-frame".into());
+        }
+        presents = Some(presents.unwrap_or(number));
     }
     let input = input.ok_or("missing CB06 image")?;
     let bytes = std::fs::read(&input).map_err(|e| format!("read {}: {e}", input.display()))?;
@@ -121,6 +142,11 @@ fn run() -> Result<bool, String> {
         .transpose()
         .map_err(|e| format!("profile setup: {e}"))?;
     if let Some(recorder) = &mut recorder {
+        if let Some(number) = profile_frame {
+            recorder
+                .select_frame(number)
+                .map_err(|e| format!("profile frame: {e}"))?;
+        }
         recorder
             .initialize_memory(&system)
             .map_err(|e| format!("profile preimage: {e}"))?;

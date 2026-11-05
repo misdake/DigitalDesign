@@ -81,6 +81,37 @@ def describe(data, number, session_report='../../profiler.html'):
                 cpu_frame_owner='unavailable', hud_wait_return_ticks='unavailable')
 
 
+def describe_gpu(data, number):
+    """Complete presentation GPU group; no applied present or raster required."""
+    s=data['system']
+    require(type(number) is int and number>0, 'positive presentation ordinal required')
+    requests=[r for r in s['presents'] if r[1]=='present_request']
+    require([r[2] for r in requests]==list(range(1,len(requests)+1)), 'request sequence')
+    require(number<=len(requests), 'selected presentation has not been requested')
+    request=requests[number-1]
+    previous=requests[number-2][0] if number>1 else s['origin_tick']-1
+    owned=[r for r in s['submissions'] if previous<r['start_tick']<=request[0]]
+    require(owned and all(r['end_tick'] is not None and r['end_tick']<=request[0] for r in owned),
+            'submission group must drain before presentation request')
+    lo=min(r['start_tick'] for r in owned);hi=max(r['end_tick'] for r in owned)
+    require(lo<hi<=s['coverage_end_tick'], 'GPU window outside captured coverage')
+    return dict(version=1,boundary='gpu-completion',presentation=number,
+                start_tick=lo,end_tick=hi,request_tick=request[0],
+                owned_submission_ids=[r['id'] for r in owned],scanout_index=None,session_report=None,
+                window_scope='First GPU START through last GPU completion of the selected presentation; warmup excluded. '
+                             'Concurrent CPU/memory activity is not CPU frame ownership.',
+                ownership_scope='All CBs between the prior and selected presentation requests; original IDs retained.',
+                cpu_frame_owner='unavailable',hud_wait_return_ticks='unavailable')
+
+
+def make_gpu(data, number):
+    frame=describe_gpu(data,number)
+    frame['summary']=summary(data,frame)
+    result=dict(data,title=f'Application frame {number} GPU',system=dict(data['system'],frame_view=frame))
+    from system_images import project
+    return project(result,frame['owned_submission_ids'])
+
+
 def summary(data, frame):
     s = data['system']; lo, hi = frame['start_tick'], frame['end_tick']
     clients = [[0, 0] for _ in range(7)]; native = [0, 0, 0]
@@ -127,7 +158,8 @@ def validate(data):
     frame = data['system'].get('frame_view')
     if frame is None:
         return
-    expected = describe(data, frame.get('presentation'), frame.get('session_report'))
+    expected = (describe_gpu(data, frame.get('presentation')) if frame.get('boundary')=='gpu-completion'
+                else describe(data, frame.get('presentation'), frame.get('session_report')))
     expected['summary'] = summary(data, expected)
     require(frame == expected, 'frame identity/window/summary differs from saved events')
 
@@ -193,5 +225,6 @@ def write_outputs(data, folder):
         for t in s['submissions']:
             if t['id'] in f['owned_submission_ids']:
                 writer.writerow([t['id'],t['start_tick'],t['end_tick'],'selected presentation GPU group'])
-    raster = s['scanouts'][f['scanout_index']]
-    (folder/'scanout-selected.png').write_bytes(base64.b64decode(raster['src'].split(',',1)[1],validate=True))
+    if f['scanout_index'] is not None:
+        raster = s['scanouts'][f['scanout_index']]
+        (folder/'scanout-selected.png').write_bytes(base64.b64decode(raster['src'].split(',',1)[1],validate=True))
