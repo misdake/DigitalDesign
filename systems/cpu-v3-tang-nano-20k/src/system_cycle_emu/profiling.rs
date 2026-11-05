@@ -33,6 +33,7 @@ pub struct Recorder {
     presents: u64,
     applied: u64,
     frame_limit: u64,
+    profile_frame: Option<u64>,
     frames: Vec<Value>,
     origin: u64,
     last_tick: u64,
@@ -111,6 +112,7 @@ impl Recorder {
             presents: 0,
             applied: 0,
             frame_limit: max_frames,
+            profile_frame: None,
             frames: Vec::new(),
             origin,
             last_tick: origin,
@@ -129,6 +131,17 @@ impl Recorder {
             latched_command: None,
             gpu_control_word: None,
         })
+    }
+    /// Select one application presentation, retaining its complete warmup journal.
+    /// Call before observing; no modeled state, cache or timing is changed.
+    pub fn select_frame(&mut self, number: u64) -> io::Result<()> {
+        if number == 0 || self.count != 0 || !self.frames.is_empty() {
+            return Err(io::Error::other(
+                "select a positive frame before observation",
+            ));
+        }
+        self.profile_frame = Some(number);
+        Ok(())
     }
     /// One host-side copy of the unique model backing, before any observation.
     /// No modeled memory request, clock, flush or cache mutation is performed.
@@ -483,6 +496,13 @@ impl Recorder {
     /// every raster start and every write from the original preimage onward.
     pub fn frame_selected(&mut self, frame: &Frame, tick: u64, selected: bool) -> io::Result<()> {
         self.frames_seen += 1;
+        let selected = selected
+            && self.profile_frame.is_none_or(|number| {
+                self.applied == number
+                    && self
+                        .raster_start
+                        .is_some_and(|(_, count, _)| count == number)
+            });
         if !selected || self.frames.len() as u64 >= self.frame_limit || self.truncated {
             return Ok(());
         }
@@ -543,6 +563,10 @@ impl Recorder {
             metadata["image_journal"]["completed_target_budget"] = json!(4);
             metadata["image_journal"]["max_command_images"] =
                 metadata["runner_max_native_command_images"].clone();
+        }
+        if let Some(number) = self.profile_frame {
+            metadata["profile_frame"] = json!(number);
+            metadata["image_journal"]["selected_presentations"] = json!([number]);
         }
         metadata["capabilities"] = json!({"client_payload64":true,"native_model32":true,"shared_service64":true,"pin_electrical":false,"command_control_lineage":true,"gpu_signal_journal":true,"gpu_master_requests":true,"gpu_master_payloads":true,"instruction_owner_lineage":true,"device5":"fixed-snapshot-peer","loader":"synthetic-preload"});
         if metadata.get("runner_version").is_some() {

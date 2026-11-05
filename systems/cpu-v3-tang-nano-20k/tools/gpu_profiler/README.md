@@ -737,3 +737,11 @@ Binary exact-cycle hover also includes the common rendered memory bin.
 selection, old-profile unavailability and optional real-profile totals. Pass an
 existing pingpong profile followed by an exact-memory profile as its two optional
 positional arguments. These tests and report rendering do not execute RTL.
+
+## One GPU frame
+
+Capture with `cpu-v3-system-emu ... --profile-out CAPTURE --profile-frame N`.
+For saved captures use `profiler.py build CAPTURE --out REPORT --only-frame N`.
+N is the application presentation ordinal; all its CBs are included. Warmup
+still executes and its raw state journal remains available, while the browser
+and CSV select only N. See [frame scope and bounds](/systems/cpu-v3-tang-nano-20k/docs/gpu-profiler.md#one-gpu-frame).

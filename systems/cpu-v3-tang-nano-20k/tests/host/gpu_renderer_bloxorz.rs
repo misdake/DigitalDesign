@@ -83,7 +83,7 @@ fn application_from_sources(
             )
             .replace(
                 "pass.begin_prepared_part(part);",
-                "signal(14,part);pass.begin_prepared_part(part);",
+                "if part>0 && part<14 {signal(14,part);}pass.begin_prepared_part(part);",
             );
         if name.ends_with("fresh") {
             source = source.replace(
@@ -227,7 +227,10 @@ fn pad_surface_pose(which:u16){
         };
         source = source.replace("session_tick(buttons, held, elapsed);", tick);
     }
-    if name.starts_with("web-stage") {
+    if name.starts_with("web-stage")
+        && name != "web-stage-orientation-continuity"
+        && !name.starts_with("web-stage-hint-order-")
+    {
         let level = u16::from(name.contains("stage2"));
         let background = u16::from(name.ends_with("gradient"));
         let pose = if name == "web-stage2-right-standing" {
@@ -262,6 +265,83 @@ fn pad_surface_pose(which:u16){
         assert!(["23", "60", "64", "96"].contains(&alpha.as_str()));
         assert_eq!(source.matches("color.a = 60;").count(), 1);
         source = source.replace("color.a = 60;", &format!("color.a = {alpha};"));
+    }
+    if name == "web-goal-close" {
+        source = source
+            .replace("run(3, false, 128);", "run(5, false, 128);")
+            .replace(
+                "session_tick(buttons, held, elapsed);",
+                "goal_close_frame(number);",
+            );
+        source += r#"
+fn goal_close_frame(n:u16){
+ if n==0 {
+ level_reset(0);SESSION[0u16]=PLAY;SESSION[1u16]=0;TRANSITION[0u16]=0;
+ let route:Buf<u16,7>=Buf::new([0,0,2,0,0,0,2]);let mut i:u16=0;
+ while i<7 {if !session_move(route[i]) {halt(0xbad);}let mut k:u16=0;while k<5 {session_tick(0,0,50);k+=1;}i+=1;}
+ let mut ticks:u16=0;while SESSION[0u16]!=GOAL_CLOSE && ticks<100 {session_tick(0,0,10);ticks+=1;}
+ if SESSION[0u16]!=GOAL_CLOSE || fading() {halt(0xbad);}
+ } else {session_tick(0,0,50);}
+ HUD[0u16]=0;BACKGROUND[0u16]=0;
+ if n<4 && fading() {halt(0xbad);}
+ if n==4 && (!fading() || SESSION[1u16]!=200 || block_visible()) {halt(0xbad);}
+}
+"#;
+    }
+    if name == "web-stage-orientation-continuity" {
+        source = source
+            .replace("run(3, false, 128);", "run(4, false, 128);")
+            .replace(
+                "session_tick(buttons, held, elapsed);",
+                "orientation_frame(number);",
+            );
+        source += r#"
+fn orientation_frame(n:u16){
+ BACKGROUND[0u16]=0;HUD[0u16]=0;
+ if n==0 {level_reset(0);SESSION[0u16]=PLAY;SESSION[1u16]=0;check(session_move(0));}
+ if n==2 {check(session_move(1));}
+ if n==0 || n==2 {SESSION[1u16]=220;MOTION[4u16]=220;}
+ else {session_tick(0,0,0);}
+}
+fn check(ok:bool){if !ok {halt(0xbad);}}
+"#;
+    }
+    if name.starts_with("web-stage-hint-order-") {
+        source = source
+            .replace("run(3, false, 128);", "run(4, false, 128);")
+            .replace(
+                "session_tick(buttons, held, elapsed);",
+                "hint_order_frame(number);",
+            );
+        source += r#"
+fn hint_order_frame(n:u16){
+ if n==0 {level_reset(28);}
+ BACKGROUND[0u16]=0;HUD[0u16]=0;TRANSITION[0u16]=0;
+ let mut i:u16=0;while i<LEVEL[6u16] && !(level_field(i,0)==5 && (GAME[3u16]&level_field(i,1))==0) {i+=1;}
+ if i==LEVEL[6u16] {halt(0xbad);}
+ let half=fix32::from_words(32768,0);let one=fix32::from_int(1);
+ SESSION[0u16]=FALL;SESSION[1u16]=0;MOTION[5u16]=0;
+ FALL_STATE[0u16]=FallState{position:demo_point(fix32::from_int((i%LEVEL[0u16]) as i16)-fix32::from_int(LEVEL[0u16] as i16)*half+half,
+ fix32::from_int(2)-fix32::from_int(n as i16),
+ fix32::from_int((i/LEVEL[0u16]) as i16)-fix32::from_int(LEVEL[1u16] as i16)*half+half),velocity:demo_zero(),scale:demo_point(one,fix32::from_int(2),one),angle:fix32::zero(),spin:fix32::zero(),axis:0};
+}
+"#;
+        if name.ends_with("early") {
+            let start = source.rfind("                draw_bridge_group(").unwrap();
+            let end = start + source[start..].find("                );").unwrap() + 19;
+            let call = source[start..end].to_string();
+            assert!(call.contains("true,"));
+            source.replace_range(start..end, "");
+            let at = source
+                .find("                draw_block(&mut pass, &block, &mut block_model")
+                .unwrap();
+            source.insert_str(
+                at,
+                &format!(
+                    "{call}\n                pass.set_camera(&camera);pass.set_state(&state);\n"
+                ),
+            );
+        }
     }
     if name == "all-stage-gallery" {
         source = source
@@ -531,6 +611,7 @@ fn gallery_pose(which:u16){
         || name.starts_with("web-shadow-")
         || name.starts_with("web-cache-")
         || name == "web-goal-mid"
+        || name == "web-goal-close"
     {
         "renderer_game_three_frames"
     } else if name == "automatic-capture-full-application" {
@@ -663,6 +744,8 @@ mod buttons;
 mod cpu_emu;
 #[path = "gpu_renderer_bloxorz_moving.rs"]
 mod moving;
+#[path = "gpu_renderer_bloxorz_orientation.rs"]
+mod orientation;
 #[path = "gpu_renderer_bloxorz_static_cache.rs"]
 mod static_cache;
 
@@ -907,12 +990,38 @@ check(SESSION[0u16]==FALL && SESSION[1u16]==150);block_pose(&mut model);world_pr
     ))
     .unwrap();
     let mut errors = vec![];
-    for (words, case) in matrices.iter().zip(reference["cases"].as_array().unwrap()) {
+    for (index, (words, case)) in matrices
+        .iter()
+        .zip(reference["cases"].as_array().unwrap())
+        .enumerate()
+    {
         let mut error = 0f64;
         for r in 0..3 {
             for c in 0..4 {
                 let actual = scene::fixed(words, (r * 4 + c) * 2);
-                let expected = case["world"][c * 4 + r].as_f64().unwrap();
+                // The Web oracle uses canonical occupancy axes. Preserve its physical
+                // transform while independently restoring the traveled local axes.
+                let (column, sign) = if c == 3 {
+                    (3, 1.)
+                } else {
+                    match index {
+                        2 => (
+                            if c == 0 {
+                                1
+                            } else {
+                                if c == 1 {
+                                    0
+                                } else {
+                                    2
+                                }
+                            },
+                            if c == 1 { -1. } else { 1. },
+                        ),
+                        3 => (c, if c < 2 { -1. } else { 1. }),
+                        _ => (c, 1.),
+                    }
+                };
+                let expected = sign * case["world"][column * 4 + r].as_f64().unwrap();
                 error = error.max((actual - expected).abs());
             }
         }
@@ -2323,7 +2432,7 @@ level_reset(0);SESSION[0u16]=PLAY;SESSION[1u16]=0;TRANSITION[0u16]=0;
 session_tick(1024,0,0);check(SESSION[2u16]==32&&MOTION[6u16]==0);n=0;while n<7 {session_tick(0,0,50);n+=1;}
 check(MOTION[6u16]==0);session_presented();check(MOTION[6u16]==32);
 TRANSITION[0u16]=0;SESSION[0u16]=GOAL_LAND;SESSION[1u16]=79;
-session_tick(0,0,1);check(SESSION[2u16]==0&&fading());signal(6,6);
+session_tick(0,0,1);check(SESSION[0u16]==GOAL_CLOSE&&!fading());n=0;while n<4 {session_tick(0,0,50);n+=1;}check(SESSION[2u16]==0&&fading());signal(6,6);
 "#);
     let (program, resources, _) = application("all-stage-session", Some(&body));
     let mut cpu = CpuV3Sim::default();

@@ -102,6 +102,41 @@ class FrameReports(unittest.TestCase):
     def build(self, name='report', **kwargs):
         return reporting.build_report(self.capture,self.root/name,**kwargs)
 
+    def test_only_gpu_frame_needs_no_applied_present_or_scanout(self):
+        canonical=self.build('full')
+        d=self.build('only',only_frame=3)
+        f=d['system']['frame_view']
+        self.assertEqual(f['owned_submission_ids'],[3])
+        self.assertEqual((f['start_tick'],f['end_tick']),(1332,1480))
+        self.assertIsNone(f['scanout_index'])
+        with self.assertRaisesRegex(ValueError,'no complete scanout or native image'):self.build('no-images',only_frame=3,require_images=True)
+        self.assertEqual(d['system']['transactions'],canonical['system']['transactions'])
+        from model import viewer_model
+        v=viewer_model(d)
+        self.assertEqual([s['id'] for s in v['system']['submissions']],[3])
+        self.assertTrue(all(c['submission']==3 for c in v['commands']))
+        self.assertFalse((self.root/'only/scanout-selected.png').exists())
+        out=self.root/'rerender'
+        reporting.render_report(self.root/'only/profile.json',out)
+        result=subprocess.run(['node',str(ROOT/'tests/system_viewer_checks.js'),str(out/'profile.json')],
+                              capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        with self.assertRaisesRegex(ValueError,'not applied'):self.build('strict',frames=[3])
+        for number in (0,-1,True,4):
+            with self.assertRaises(ValueError):system_frames.make_gpu(canonical,number)
+        d['system']['frame_view']['owned_submission_ids']=[2]
+        with self.assertRaisesRegex(ValueError,'differs'):system_emu.validate(d)
+
+    def test_only_frame_metadata_and_multiple_cbs(self):
+        self.rows.insert(-1,[1480,'submit',4])
+        self.rows.insert(-1,[1628,'gpu_done',4])
+        self.rows[-1][0]=1628
+        self.meta['profile_frame']=3;self.save()
+        d=self.build('selected')
+        self.assertEqual(d['system']['frame_view']['owned_submission_ids'],[3,4])
+        with self.assertRaisesRegex(ValueError,'differs'):self.build('conflict',only_frame=2)
+        with self.assertRaisesRegex(ValueError,'mutually exclusive'):self.build('both',frames=[1],only_frame=3)
+
     def test_frame_scope_keeps_raw_context_but_filters_output_and_statistics(self):
         canonical=self.build(frames=[1,2],source_identity=self.identity)
         self.assertNotIn('frame_view',canonical['system'])

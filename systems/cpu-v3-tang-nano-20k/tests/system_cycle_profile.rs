@@ -41,6 +41,8 @@ fn passive_capture_preserves_every_edge_cpu_scanout_and_memory() {
             .as_millis()
     ));
     let mut r = Recorder::create(&folder, &package, 0, 10000, 2).unwrap();
+    assert!(r.select_frame(0).is_err());
+    r.select_frame(1).unwrap();
     r.initialize_memory(&observed).unwrap();
     let limited_folder = folder.with_extension("limited");
     let mut limited = Recorder::create(&limited_folder, &package, 0, 3, 0).unwrap();
@@ -75,6 +77,7 @@ fn passive_capture_preserves_every_edge_cpu_scanout_and_memory() {
         }
     }
     assert!(halted);
+    assert!(r.select_frame(2).is_err());
     assert_eq!(observed.backing(), plain.backing());
     assert_eq!(
         observed.core().architectural_gprs(),
@@ -100,6 +103,13 @@ fn passive_capture_preserves_every_edge_cpu_scanout_and_memory() {
     assert_eq!(cap["truncated"], true);
     assert_eq!(cap["end_tick"], observed.clock().peek().ticks);
     r.finish(serde_json::json!({"entry":"cold-preloaded","reached":true,"stop_reason":"cpu-halt","host_step_seconds":started.elapsed().as_secs_f64(),"host_export_seconds":0.0}),&observed).unwrap();
+    let selected: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(folder.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(selected["profile_frame"], 1);
+    assert_eq!(
+        selected["image_journal"]["selected_presentations"],
+        serde_json::json!([1])
+    );
     let events: Vec<serde_json::Value> = std::fs::read_to_string(folder.join("events.jsonl"))
         .unwrap()
         .lines()

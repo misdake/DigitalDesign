@@ -64,7 +64,14 @@ fn incremental_button_parts_match_fresh_color_depth_and_display() {
                     by_frame.push(std::mem::take(&mut rebuilt));
                 }
                 StepOutcome::Halted { signal } => {
-                    assert_eq!(signal, 0x600d);
+                    assert_eq!(
+                        signal,
+                        0x600d,
+                        "mode {mode}, frames {}, rebuilt {:?}, GPU {:?}",
+                        frames.len(),
+                        rebuilt,
+                        sim.gpu().last_error()
+                    );
                     halted = true;
                     break;
                 }

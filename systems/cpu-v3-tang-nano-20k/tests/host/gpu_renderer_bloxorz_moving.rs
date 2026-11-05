@@ -125,6 +125,9 @@ fn measure() {
     let mut recorder = capture_enabled.then(|| {
         let mut recorder =
             Recorder::create_runner(&out.join("capture"), &image, 0, 10_000_000).unwrap();
+        if let Ok(frame) = std::env::var("BLOXORZ_PROFILE_FRAME") {
+            recorder.select_frame(frame.parse().unwrap()).unwrap();
+        }
         recorder.initialize_memory(&system).unwrap();
         recorder
     });

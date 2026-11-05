@@ -340,3 +340,25 @@ pub fn gpu_scene_model_world(input: Array<u16>) -> Mat3x4 {
         row2: gpu_scene_row_read(input, GPU_MODEL_WORLD + 16),
     }
 }
+pub fn gpu_scene_model_normal(input: Array<u16>) -> Mat3x3 {
+    let a = gpu_scene_vec_read(input, GPU_MODEL_NORMAL);
+    let b = gpu_scene_vec_read(input, GPU_MODEL_NORMAL + 6);
+    let c = gpu_scene_vec_read(input, GPU_MODEL_NORMAL + 12);
+    Mat3x3 {
+        row0: Vec3 {
+            x: a.x(),
+            y: a.y(),
+            z: a.z(),
+        },
+        row1: Vec3 {
+            x: b.x(),
+            y: b.y(),
+            z: b.z(),
+        },
+        row2: Vec3 {
+            x: c.x(),
+            y: c.y(),
+            z: c.z(),
+        },
+    }
+}

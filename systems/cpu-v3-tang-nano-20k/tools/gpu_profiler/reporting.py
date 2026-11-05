@@ -198,7 +198,7 @@ def _verify_input(capture, data, folder, scratch):
 
 def build_report(folder, output, *, snapshot=None, raw=None, binding=None, abi=None,
                  allow_partial=False, preview='display1', capture_format='unknown', require_images=False,
-                 image_output=None, _profile=None, replace_report=False, frames=(), source_identity=None):
+                 image_output=None, _profile=None, replace_report=False, frames=(), source_identity=None, only_frame=None):
     """Rebuild from original evidence; never take image pixels from old reports."""
     if replace_report:
         if image_output is not None:
@@ -206,7 +206,7 @@ def build_report(folder, output, *, snapshot=None, raw=None, binding=None, abi=N
         return _replace_report(output, lambda stage: build_report(folder, stage, snapshot=snapshot,
             raw=raw, binding=binding, abi=abi, allow_partial=allow_partial, preview=preview,
             capture_format=capture_format, require_images=require_images, _profile=_profile,
-            frames=frames, source_identity=source_identity))
+            frames=frames, source_identity=source_identity, only_frame=only_frame))
     folder = Path(folder).resolve()
     output = fresh_output(output, folder)
     metadata=json.loads((folder/'capture.json').read_text())
@@ -221,8 +221,8 @@ def build_report(folder, output, *, snapshot=None, raw=None, binding=None, abi=N
             raise SnapshotError('This capture consumes its self-contained event/preimage evidence')
         from system_emu import build
         return build(folder, output, allow_partial=allow_partial, binding=binding, require_images=require_images,
-                     frames=frames, source_identity=source_identity, preview=preview)
-    if frames or source_identity is not None:
+                     frames=frames, source_identity=source_identity, only_frame=only_frame, preview=preview)
+    if frames or source_identity is not None or only_frame is not None:
         raise SnapshotError('Application frame export/identity requires a full system capture')
     if capture_format not in ('known', 'unknown'):
         raise SnapshotError('Unknown capture-format declaration')
@@ -310,29 +310,35 @@ def build_report(folder, output, *, snapshot=None, raw=None, binding=None, abi=N
     return data
 
 
-def render_report(profile, output, *, require_images=False, replace_report=False, frames=(), source_identity=None):
+def render_report(profile, output, *, require_images=False, replace_report=False, frames=(), source_identity=None, only_frame=None):
     """Materialize the validated inline PNG bytes; never apply a second LUT."""
     if replace_report:
         return _replace_report(output, lambda stage: render_report(profile, stage, require_images=require_images,
-                                                               frames=frames, source_identity=source_identity))
+                                                               frames=frames, source_identity=source_identity, only_frame=only_frame))
     output = fresh_output(output)
     data = load_profile(profile)
     if 'system' in data:
         from system_emu import prepare_report
         data=prepare_report(data)
-    if data.get('system', {}).get('frame_view'):
+    if data.get('system', {}).get('frame_view',{}).get('session_report'):
         # Re-rendering a frame elsewhere must retain a usable canonical link.
         frame = dict(data['system']['frame_view'])
         session = (Path(profile).parent / frame['session_report']).resolve()
         frame['session_report'] = os.path.relpath(session, output).replace('\\', '/')
         data = dict(data, system=dict(data['system'], frame_view=frame))
-    if frames or source_identity is not None:
+    if frames or source_identity is not None or only_frame is not None:
         if 'system' not in data:
             raise SnapshotError('Application frame export/identity requires a full system profile')
         from system_frames import attach_identity
         data = attach_identity(data, source_identity)
+    if only_frame is not None:
+        if frames:raise SnapshotError('--only-frame and --frames are mutually exclusive')
+        from system_frames import make_gpu
+        data=make_gpu(data,only_frame)
     available = data.get('images', {}).get('available', False)
-    if require_images and not available and not data.get('system', {}).get('scanouts'):
+    frame=data.get('system',{}).get('frame_view')
+    raster_available=frame['scanout_index'] is not None if frame else bool(data.get('system',{}).get('scanouts'))
+    if require_images and not available and not raster_available:
         raise SnapshotError('Complete report unavailable: profile has no image history')
     output.mkdir(parents=True, exist_ok=True)
     if 'system' in data:
@@ -371,7 +377,7 @@ def summary(data, output):
                     source_kind=data['provenance']['source_kind'], submissions=len(frame['owned_submission_ids']) if frame else len(s['submissions']),
                     commands=len(commands) if s['capabilities'].get('command_control_lineage') else None,
                     instruction_owner_lineage='observed' if s['capabilities'].get('gpu_signal_journal') else 'unavailable',partial=data['partial'],
-                    images_available=bool(s['scanouts']) or native.get('available',False), image_count=1 if frame else len(s['scanouts']),
+                    images_available=(frame['scanout_index'] is not None if frame else bool(s['scanouts'])) or native.get('available',False), image_count=int(frame['scanout_index'] is not None) if frame else len(s['scanouts']),
                     native_images_available=native.get('available',False),native_image_count=len(native.get('commands',{})),
                     client_boundary=s['client_boundary'], native_boundary=s['native_boundary'])
     images = data.get('images', {})

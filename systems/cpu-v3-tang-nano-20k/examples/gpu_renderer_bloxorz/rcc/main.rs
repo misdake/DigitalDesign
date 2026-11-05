@@ -28,7 +28,7 @@ pub static HUD: Buf<u16, 3> = Buf::new([0; 3]);
 
 pub static BACKGROUND: Buf<u16, 1> = Buf::new([1]);
 // One caller-owned block Model lives for this run; retain only its resting key.
-static BLOCK_POSE_KEY: Buf<u16, 2> = Buf::new([0; 2]);
+static BLOCK_POSE_KEY: Buf<u16, 3> = Buf::new([0; 3]);
 fn scene_color_load(
     commands: &mut CommandBuffer,
     source: &ColorBuffer,
@@ -236,8 +236,8 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
     ));
 }
 
-// Generation, bridge mask/draw count, and the per-level button-list owner.
-static BRIDGE_COMMANDS: Buf<u16, 4> = Buf::new([0, 65535, 0, 0]);
+// Generation, bridge mask, opaque count, button-list owner, transparent count.
+static BRIDGE_COMMANDS: Buf<u16, 5> = Buf::new([0, 65535, 0, 0, 0]);
 fn button_cache_begin() {
     let owner = malloc(47);
     BRIDGE_COMMANDS[3u16] = owner.addr();
@@ -258,7 +258,7 @@ fn button_cache_rebuild() {
     while i < LEVEL[6u16] {
         let kind = level_field(i, 0);
         if kind == 3 || kind == 4 {
-            if count >= 15 {
+            if count >= 13 {
                 halt(0xbad);
             }
             cache[1 + count * 3] = i;
@@ -278,6 +278,7 @@ fn sync_bridge_group(commands: &mut CommandBuffer) {
         BRIDGE_COMMANDS[1u16] = visual_mask();
     } else if BRIDGE_COMMANDS[1u16] != visual_mask() {
         commands.invalidate_prepared_part(0);
+        commands.invalidate_prepared_part(15);
         BRIDGE_COMMANDS[1u16] = visual_mask();
     }
 }
@@ -308,24 +309,36 @@ fn end_pad_group(pass: &mut Pass, mut cache: Array<u16>) {
         cache[14u16] = DRAW_CALLS[0u16] - cache[14u16];
     }
 }
+// Two independent command parts keep opaque depth ahead of alpha blending.
+// Shipped stages use at most13 buttons: parts1..13, pads14, hints15.
 fn draw_bridge_group(
     pass: &mut Pass,
     model: &mut Model,
     material: &mut Material,
     state: &RenderState,
     hint_state: &RenderState,
+    transparent: bool,
 ) {
-    if pass.prepared_group_ready() {
-        pass.append_prepared_group();
-        DRAW_CALLS[0u16] += BRIDGE_COMMANDS[2u16];
+    let part = if transparent { 15u16 } else { 0u16 };
+    let count = if transparent { 4u16 } else { 2u16 };
+    if pass.prepared_part_ready(part) {
+        pass.append_prepared_part(part);
+        DRAW_CALLS[0u16] += BRIDGE_COMMANDS[count];
     } else {
         let before = DRAW_CALLS[0u16];
-        pass.begin_prepared_group();
-        draw_bridges(pass, model, material, state, hint_state);
+        pass.begin_prepared_part(part);
+        if transparent {
+            pass.set_state(hint_state);
+        } else {
+            pass.set_state(state);
+        }
+        draw_bridges(pass, model, material, transparent);
+        pass.set_state(state);
         pass.end_prepared_group();
-        BRIDGE_COMMANDS[2u16] = DRAW_CALLS[0u16] - before;
+        BRIDGE_COMMANDS[count] = DRAW_CALLS[0u16] - before;
     }
 }
+
 fn visible_tile_side(i: u16) -> u16 {
     let eye = fix32::from_words(
         blox_level_meta(MOTION[6u16], 4),
@@ -341,18 +354,17 @@ fn visible_tile_side(i: u16) -> u16 {
         0u16
     }
 }
-fn draw_bridges(
-    pass: &mut Pass,
-    model: &mut Model,
-    material: &mut Material,
-    state: &RenderState,
-    hint_state: &RenderState,
-) {
+fn draw_bridges(pass: &mut Pass, model: &mut Model, material: &mut Material, transparent: bool) {
     let texture = demo_texture();
     let view = texture.view();
     let mut i: u16 = 0;
     while i < LEVEL[6u16] {
-        if level_field(i, 0) == 5 {
+        let selected = if transparent {
+            visual_mask() & level_field(i, 1) == 0
+        } else {
+            visual_mask() & level_field(i, 1) != 0
+        };
+        if level_field(i, 0) == 5 && selected {
             let bit = level_field(i, 1);
             let active = visual_mask() & bit != 0;
             let variant = ((i % LEVEL[0u16]) * 3 + div_u16(i, LEVEL[0u16]) * 5) % 4;
@@ -370,13 +382,7 @@ fn draw_bridges(
             }
             material.set_uniform_color(color);
             model.set_pose(tile_pose(i, fix32::zero()));
-            if !active {
-                pass.set_state(hint_state);
-            }
             counted_draw(pass, &mesh, model, material, &view);
-            if !active {
-                pass.set_state(state);
-            }
         }
         i += 1;
     }
@@ -506,6 +512,7 @@ fn prepare_block(model: &mut Model) {
         || !resting
         || BLOCK_POSE_KEY[0u16] != key
         || BLOCK_POSE_KEY[1u16] != LEVEL_GENERATION[0u16]
+        || BLOCK_POSE_KEY[2u16] != block_orientation()
     {
         block_pose(model);
     }
@@ -515,6 +522,7 @@ fn prepare_block(model: &mut Model) {
         0u16
     };
     BLOCK_POSE_KEY[1u16] = LEVEL_GENERATION[0u16];
+    BLOCK_POSE_KEY[2u16] = block_orientation();
 }
 
 fn draw_block(pass: &mut Pass, block: &Mesh, model: &mut Model, material: &Material) {
@@ -848,7 +856,7 @@ fn game_floor_material() -> Material {
 fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let mut gpu = Gpu::init(demo_config());
     let mut commands = gpu.command_buffer();
-    commands.enable_prepared_group();
+    commands.enable_prepared_parts(PreparedPartsLayout::SplitWide);
     let mut scene_commands = gpu.command_buffer();
     button_cache_begin();
     BRIDGE_COMMANDS[0u16] = 0;
@@ -1070,6 +1078,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     &mut floor_material,
                     &state,
                     &hint_state,
+                    false,
                 );
                 pass.set_camera(&camera);
                 pass.set_state(&state);
@@ -1214,7 +1223,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     &block_model,
                 );
                 if split_visual() {
-                    idle_model.set_pose(idle_cube_transform());
+                    idle_cube_pose(&mut idle_model);
                     draw_shadow(
                         &mut pass,
                         &shadow_mesh,
@@ -1228,6 +1237,16 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 if split_visual() {
                     draw_block(&mut pass, &block, &mut idle_model, &idle_material);
                 }
+                // Opaque geometry and receiver shadows are complete. Inactive
+                // bridge hints now test opaque depth without writing it.
+                draw_bridge_group(
+                    &mut pass,
+                    &mut floor_model,
+                    &mut floor_material,
+                    &state,
+                    &hint_state,
+                    true,
+                );
                 if automatic_capture {
                     counted_ui(
                         &mut pass,
@@ -1365,6 +1384,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     fragile_end(fragile_owner);
     free(pad_owner);
     button_cache_end();
+    session_end();
 }
 
 pub fn renderer_game_frames() {

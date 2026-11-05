@@ -375,11 +375,23 @@ fn gpu_api_copy_plane(slot: u16, source: u16, destination: u16, kind: u16) {
     }
     gpu_record_capture_commit(slot, facts.as_array(), 2);
 }
+/// Push partition choices; command, metadata and total push budgets are unchanged.
+#[repr(u16)]
+#[derive(Copy, Clone)]
+pub enum PreparedPartsLayout {
+    SingleWide,
+    SplitWide,
+}
 impl CommandBuffer {
     /// Reserve a slot-private 16 KiB template and 16 KiB active command area
     /// inside this CB's existing aligned 64 KiB command allocation.
     pub fn enable_prepared_group(&mut self) {
         gpu_api_checked(gpu_group_enable(self.slot), 15);
+    }
+    /// SplitWide gives parts0/15 4096 words each; parts1..14 retain1024.
+    /// SingleWide preserves the original8192-word part0 and1024-word tail.
+    pub fn enable_prepared_parts(&mut self, layout: PreparedPartsLayout) {
+        gpu_api_checked(gpu_group_enable_layout(self.slot, layout as u16), 15);
     }
     /// Clear all saved parts and reset the active stream, retaining partitions.
     pub fn clear_prepared_group(&mut self) {
@@ -884,6 +896,9 @@ impl Camera {
 impl Model {
     pub fn world(&self) -> Mat3x4 {
         gpu_scene_model_world(gpu_arena_data(self.slot))
+    }
+    pub fn normal(&self) -> Mat3x3 {
+        gpu_scene_model_normal(gpu_arena_data(self.slot))
     }
 }
 

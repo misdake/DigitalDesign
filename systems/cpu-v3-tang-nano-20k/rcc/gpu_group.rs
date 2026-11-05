@@ -46,14 +46,25 @@ fn gpu_group_transfer(
     }
     true
 }
-fn gpu_group_push_begin(group: u16) -> u16 {
+fn gpu_group_push_begin(group: u16, layout: u16) -> u16 {
+    if layout == 1 && group == 15 {
+        return 4096;
+    }
     if group == 0 {
         0
     } else {
         8192 + (group - 1) * 1024
     }
 }
-fn gpu_group_push_end(group: u16) -> u16 {
+fn gpu_group_push_end(group: u16, layout: u16) -> u16 {
+    if layout == 1 {
+        if group == 0 {
+            return 4096;
+        }
+        if group == 15 {
+            return 8192;
+        }
+    }
     if group == 0 {
         8192
     } else {
@@ -61,7 +72,10 @@ fn gpu_group_push_end(group: u16) -> u16 {
     }
 }
 fn gpu_group_enable(slot: u16) -> bool {
-    if slot >= 2 {
+    gpu_group_enable_layout(slot, 0)
+}
+fn gpu_group_enable_layout(slot: u16, layout: u16) -> bool {
+    if slot >= 2 || layout > 1 {
         return false;
     }
     let mut c = gpu_record_data(slot);
@@ -76,6 +90,7 @@ fn gpu_group_enable(slot: u16) -> bool {
     {
         return false;
     }
+    c[GPU_GROUP_LAYOUT] = layout;
     c[GPU_GROUP_TEMPLATE] = c[GPU_RECORD_COMMAND_BASE];
     c[GPU_RECORD_COMMAND_BASE] += 128;
     c[GPU_RECORD_COMMAND_CAPACITY] = 8192;
@@ -155,8 +170,8 @@ fn gpu_group_part_begin(slot: u16, group: u16) -> bool {
     c[GPU_GROUP_START] = c[GPU_RECORD_COMMAND_USED];
     c[GPU_GROUP_SAVED_PUSH] = c[GPU_RECORD_PUSH_USED];
     c[GPU_GROUP_SAVED_CAPACITY] = c[GPU_RECORD_PUSH_CAPACITY];
-    c[GPU_RECORD_PUSH_USED] = gpu_group_push_begin(group);
-    c[GPU_RECORD_PUSH_CAPACITY] = gpu_group_push_end(group);
+    c[GPU_RECORD_PUSH_USED] = gpu_group_push_begin(group, c[GPU_GROUP_LAYOUT]);
+    c[GPU_RECORD_PUSH_CAPACITY] = gpu_group_push_end(group, c[GPU_GROUP_LAYOUT]);
     c[GPU_GROUP_FIRST_GLOBAL] = 0;
     c[GPU_GROUP_FIRST_RENDER] = 0;
     c[GPU_GROUP_RECORDING] = group + 1;

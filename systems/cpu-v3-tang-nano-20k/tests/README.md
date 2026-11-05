@@ -883,3 +883,11 @@ only the8235 application directory, recording both identities in that file.
 `check_atlas_borders.py` additionally checks all67 packed rings/UV guards and33
 camera geometries; the observation-only `atlas_trace.py` reports actual versus
 diagnostic unclamped LOD and weighted taps without editing production GPU code.
+
+Bloxorz orientation qualification covers all24 signed-axis orientations and all96
+world quarter turns, exact world/normal column permutations, roll-to-rest local
+face continuity, inverse moves, split/swap/merge and undo/reset lifetimes.
+Functional GPU/Display fixtures save complete endpoint RGB and compare four
+heights over an inactive bridge against an explicit early-alpha control; opaque
+depth must remain identical. Goal closing is rendered before transition freeze.
+All cases have finite instruction-step bounds.

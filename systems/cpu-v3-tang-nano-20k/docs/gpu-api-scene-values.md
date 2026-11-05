@@ -46,7 +46,9 @@ matrix. The normal matrix is tightly packed at words 24..41. Pure preparation
 zeros words 42..47. A public Model uses private word 42 to own a second48-word
 arena allocation; words 43..47 remain zero. Its setters preserve that owned handle
 across pure preparation and mark its derived data dirty. There is no retained
-Euler copy.
+Euler copy. `Model::world()` and `Model::normal()` return the exact current
+source matrices without modifying source or derived-cache state. The normal
+getter reads all nine tightly packed Q16 coefficients.
 
 ## Six-argument draw conversion
 

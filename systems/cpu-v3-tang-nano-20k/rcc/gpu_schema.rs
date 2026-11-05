@@ -74,6 +74,7 @@ pub const GPU_GROUP_SAVED_PUSH: u16 = 215;
 pub const GPU_GROUP_SAVED_CAPACITY: u16 = 216;
 pub const GPU_GROUP_FIRST_GLOBAL: u16 = 217;
 pub const GPU_GROUP_FIRST_RENDER: u16 = 218;
+pub const GPU_GROUP_LAYOUT: u16 = 219;
 pub const GPU_GROUP_REFERENCED: u16 = 220;
 pub const GPU_GROUP_COUNT: u16 = 16;
 pub const GPU_GROUP_CODE_WORDS: u16 = 512;

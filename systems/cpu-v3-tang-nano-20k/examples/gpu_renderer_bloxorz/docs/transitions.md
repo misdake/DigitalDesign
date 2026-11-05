@@ -1,14 +1,14 @@
 ---
 id: bloxorz-live-transitions
 status: implemented
-last-verified: 2026-11-05
+last-verified: 2026-11-06
 ---
 
 # Game animation and cached RTT veil
 
 The example owns all33 imported stages, integer rules, animation and input. The shared `bloxorz_core` remains timer-free. The reference is the Web 400×240 pixel mode:20-degree vertical field of view,5:3 aspect,512×512 low atlas and MSAA off. Its corner-fit Camera targets(0,.6,0) and fits each stage independently. A local view-axis adapter accounts for the existing native renderer reflection. Native material/lighting and RGB565 quantization remain visible differences from Web PBR.
 
-Animation and transition use independent clocks. Restart can begin the veil while a roll continues. A released block keeps its pose, tangent velocity, spin and gravity throughout fade-out. Goal closing begins together with fade-out after the landed pause. Rendering completion, rather than a stale animation callback, authorizes level replacement.
+Animation and transition use independent clocks. Restart can begin the veil while a roll continues. A released block keeps its pose, tangent velocity, spin and gravity throughout fade-out. Goal closing runs visibly for200ms after the landed pause; fade-out starts only after the aperture is closed. Rendering completion, rather than a stale animation callback, authorizes level replacement.
 
 ```mermaid
 flowchart LR
@@ -80,7 +80,7 @@ An accepted move commits its future integer state immediately and retains its or
 | Goal opening | 200ms | Opening .86→.94; hatch remains visible |
 | Goal drop | 420ms | Downward 2.08×(.4f+.6f²), width 1→.9 |
 | Goal landed | 80ms | Brief pause at the bottom |
-| Goal closing | 200ms | Closes while the 320ms veil proceeds; covered block then hides |
+| Goal closing | 200ms | Closes before the320ms veil starts; covered block then hides |
 | Split arrival | 280ms after roll | First70ms squash the whole block into the pad; two cubes then pop at the target coordinates |
 | Fragile cracking | 140ms after roll | Brief tile tremble, then block and marked tile drop without initial velocity/spin |
 | Half-supported tip | 360ms | Quadratic quarter turn about the supported cell edge |
@@ -95,10 +95,26 @@ marked tile whose texture changes with the visual mask, without pulse or sink.
 The eight reference
 palettes cycle for the ninth channel. Multi-channel switch actions remain the
 core's keep/XOR rules. Inactive bridge hints use SrcOver alpha60/255, Less and no
-depth writes; active bridges remain opaque. Shadow alpha87 and idle-cube alpha255
+depth writes; active bridges remain opaque. Hints are drawn after all opaque
+bridges, pads, receiver shadows and both players, before HUD/veil composition.
+They test the completed opaque depth, blending over a player behind them and
+failing over a player in front; the hints never enter the static pixel cache. Shadow alpha87 and idle-cube alpha255
 are independent. [Marker textures](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/markers.md)
 describes the packed surfaces. Native shading approximates reference materials
 and does not reproduce Web PBR emissive response exactly.
+
+The renderer tracks24 exact right-handed signed-axis orientations independently
+of the three occupancy modes. Each completed roll composes one world-space
+quarter turn. Animated world/normal matrices use the starting orientation;
+settled matrices use the accumulated orientation, preserving local faces and UVs.
+The orientation postmultiplies the canonical world and normal source matrices;
+translation, support pivots and occupied bounds remain canonical. Split cubes
+inherit the parent orientation and then track each actor independently; swapping
+changes selection only, merging adopts the moving actor's landed orientation.
+Undo retains both actor orientations in an additional512-word heap ring, freed
+on finite exit; resets restore identity. Resting Model cache keys include this
+orientation. Early free fall retains its release orientation without adding an
+uncompleted quarter turn.
 
 ## Transition arithmetic and lifetime
 
@@ -337,8 +353,9 @@ or using the protected static arena.
 
 The dynamic CB enables the slot-private bank specified in
 [GPU API storage](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md).
-Part0 records all bridge draws in their original order, including opaque tiles
-and alpha60 hints. Parts1..15 each record one button, retaining soft-tile sink
+Part0 records opaque bridge draws; part15 records alpha60 hints, appended
+after both players. The bank selects SplitWide: each bridge part has4096 push
+words, retaining the original total reservation. Parts1..13 each record one button, retaining soft-tile sink
 and selecting a flat heavy tile by channel/state. Replaying a part
 copies aligned commands and keeps its fixed native parameter snapshots; it
 skips texture/Mesh descriptor creation, pose/matrix work, material updates and
@@ -346,14 +363,14 @@ meshlet expansion. DRAW statistics add the saved actual meshlet count.
 
 Level generation clears the entire bank and rebuilds a compact ascending-cell
 button list. Generation also covers camera changes. The delayed visual bridge
-mask invalidates only part0. A button key is zero when inactive. An active soft
+mask invalidates both bridge parts0/15. A button key is zero when inactive. An active soft
 button uses32768 plus its channel's clamped0..260ms animation age; a flat heavy
 button uses32768 independent of age. Only changed keys
 re-record their private part; unchanged buttons and bridges remain reusable.
-Current stages have at most13 buttons, within the15-part limit. Bounds reject
+Current stages have at most13 buttons; parts14/15 are reserved. Bounds reject
 excess buttons. Empty bridge groups are legal. Camera/state are reinstalled at
 each part boundary; native Global/Render equality can omit redundant bindings.
-Pads, shadows, player and HUD follow in their original immediate-recorded order.
+Pads, shadows and players follow the opaque bridges; hints then precede HUD.
 
 The bank uses the existing64KiB command and64KiB push reservations, with fixed
 part partitions rather than a growing prefix. No persistent per-button Model or

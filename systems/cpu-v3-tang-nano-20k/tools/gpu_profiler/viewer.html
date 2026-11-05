@@ -65,7 +65,7 @@ if(D.system){
  const frame=D.system.frame_view,identity=D.provenance.application_identity;
  info.textContent=`${D.system.scope} ${frame?'Application frame '+frame.presentation+' · ticks ['+frame.start_tick+', '+frame.end_tick+'). '+frame.window_scope+' '+frame.ownership_scope:'Full capture.'} ${D.pipeline_trace_available?'Actual committed GPU instruction / DMA / meshlet / quad / ROP observations.':'Detailed DMA / meshlet / quad / ROP histories were not captured. Missing tracks are unavailable, not zero.'} ${D.instruction_trace_available?'Actual CB instruction words and control boundaries recorded.':'CB instruction details: not captured by this legacy system source.'} CPU frame ownership and exact HUD wait-return ticks are not recorded; CPU activity is concurrent where available. App source SHA ${identity?.source??'not supplied'} · program SHA256 ${D.provenance.report_inputs?.files?.['program.bin']??'not supplied'}. ${D.images?.selection_scope??''}`;
  document.querySelector('.inspector').append(info);
- if(frame){const full=document.createElement('a');full.href=frame.session_report;full.textContent='Separate full-session report';info.append(full);}
+ if(frame&&frame.session_report){const full=document.createElement('a');full.href=frame.session_report;full.textContent='Separate full-session report';info.append(full);}
  document.querySelector('h1').textContent=frame?'Application frame '+frame.presentation+' · GPU pipeline':'System emu · GPU pipeline';
  document.getElementById('fit').textContent=frame?'Fit frame':'Fit session';
 }
@@ -232,7 +232,7 @@ function aliveText(t){const live=aliveAt(t);return `Alive commands at ${duration
 function frameDetail(c){
  const images=D.images, empty=c?.opcode===3&&mesh.get(c.meshlet)?.quads===0&&c.complete_cycle!==null;
  const image=!empty&&images?.available?(c?images.commands[String(c.id)]:images.final):null;
- if(!c&&!image&&D.system?.scanouts.length){
+ if(!c&&!image&&D.system?.scanouts.length&&D.system.frame_view?.scanout_index!==null){
   const S=D.system,F=S.frame_view,index=F?F.scanout_index:S.scanouts.reduce((best,f,i)=>f.effective_pixels>0?i:best,0),raster=S.scanouts[index];
   $('frame-preview').hidden=false;$('frame-wrap').hidden=false;$('frame-label').textContent=F?'Presentation '+F.presentation+' · registered scanout':'Registered scanout';
   for(const id of ['frame-image','frame-large'])$(id).src=raster.src;

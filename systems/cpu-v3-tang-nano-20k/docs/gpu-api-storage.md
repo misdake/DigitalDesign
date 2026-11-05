@@ -72,7 +72,13 @@ DSEG3 page. The upper32KiB holds private metadata and remains GPU-unfetched.
 Ordinary CBs retain their configured capacities. An enabled CB also requires
 64KiB push backing: part0 owns its first16KiB, parts1..15 own2KiB each, and
 ordinary immediate recording uses the remaining18KiB. No external allocation
-or larger CPU record is required.
+or larger CPU record is required. The explicit
+`enable_prepared_parts(PreparedPartsLayout::SplitWide)` alternative divides the
+original wide area into two8KiB partitions: part0 at push words[0,4096), part15
+at[4096,8192). Parts1..14 retain their original2KiB partitions. The old part15
+area remains unused; the46KiB fixed prefix and18KiB transient tail do not move.
+`SingleWide` and the no-argument entry retain the original layout. Layout is
+chosen before recording, persists across reset/clear and does not change leases.
 
 Inside a Pass, install camera/state, call `begin_prepared_part(part)`, record
 mesh draws and their camera/state choices, then call `end_prepared_group()`.
@@ -350,6 +356,7 @@ The implemented control words are:
 | 213 / 214 | Open part ID plus one / active command start while recording |
 | 215 / 216 | Saved transient push cursor / capacity while recording a part |
 | 217 / 218 | First part Global / Render push offset plus one |
+| 219 | Prepared push layout:0 original single-wide,1 split-wide |
 | 219 | Reserved, zero |
 | 220 | Parts already referenced by the current recording |
 | 221..223 | Reserved, zero |
