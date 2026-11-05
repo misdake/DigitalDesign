@@ -7,8 +7,9 @@ fn pose(x:i16)->Transform{Transform{position:v(x,0,-3),angles:v(0,0,0),scale:v(1
 fn projection(f:i16,far:i16)->Projection{Projection::from_focal_pixels(fix32::from_int(f),fix32::from_int(far))}
 fn camera()->Camera{Camera::new(CameraDesc{eye:v(0,0,0),angles:v(0,0,0),projection:projection(200,100)})}
 fn make_model(x:i16)->Model{Model::new(pose(x))}
-fn set_model(model:&mut Model,x:i16){model.set_pose(pose(x));}
+fn set_model(model:&mut Model,x:i16){let mut world=model.world();world.row0.w=fix32::from_int(x);let normal:Mat3x3=Mat3x3{row0:v(1,0,0),row1:v(0,1,0),row2:v(0,0,1)};model.set_matrices(world,normal);}
 fn set_normal(model:&mut Model){let world=model.world();let normal:Mat3x3=Mat3x3{row0:v(1,0,0),row1:v(0,1,0),row2:v(0,0,1)};model.set_matrices(world,normal);}
+fn change_normal_tail(model:&mut Model){let world=model.world();let normal:Mat3x3=Mat3x3{row0:v(1,0,0),row1:v(0,1,0),row2:v(0,0,2)};model.set_matrices(world,normal);}
 fn move_camera(cam:&mut Camera){cam.set_pose(v(1,0,0),v(0,0,0));}
 fn reproject(cam:&mut Camera,f:i16,far:i16){cam.set_projection(projection(f,far));}
 fn relight(state:&mut RenderState){state.set_lighting(Lighting{direction:v(1,0,0),ambient:fix32::from_int(1),directional:fix32::from_int(1)});}
@@ -27,7 +28,8 @@ fn main(){let first:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_
  {let mut p=a.pass(&color,&depth,ColorLoad::load(),DepthLoad::load());p.set_camera(&cam);p.set_state(&state);
   p.draw_colored(&mesh,&one,&material);note(1);p.draw_colored(&mesh,&two,&material);note(2);p.draw_colored(&mesh,&one,&material);note(2);
   set_model(&mut one,1);p.draw_colored(&mesh,&one,&material);note(3);p.draw_colored(&mesh,&two,&material);note(3);
-  set_normal(&mut one);p.draw_colored(&mesh,&one,&material);note(4);
+  set_normal(&mut one);p.draw_colored(&mesh,&one,&material);note(3);
+  change_normal_tail(&mut one);p.draw_colored(&mesh,&one,&material);note(4);
   material.set_uniform_color(Rgba8{r:80,g:160,b:240,a:255});relight(&mut state);p.set_state(&state);p.draw_colored(&mesh,&one,&material);note(4);
   reproject(&mut cam,200,120);p.set_camera(&cam);p.draw_colored(&mesh,&one,&material);note(4);
   reproject(&mut cam,220,120);p.set_camera(&cam);p.draw_colored(&mesh,&one,&material);note(5);
@@ -155,7 +157,7 @@ fn models_own_dirty_matrices_and_camera_snapshot_dependencies() {
                 }
             }
             assert!(halted, "model dirty2M step bound");
-            assert_eq!(state.borrow().markers.len(), 24);
+            assert_eq!(state.borrow().markers.len(), 25);
             let memory = cpu.physical_memory_mut();
             let snapshots: Vec<Vec<u16>> = (0..2)
                 .map(|slot| {

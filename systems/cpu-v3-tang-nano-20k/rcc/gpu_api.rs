@@ -958,8 +958,15 @@ impl Model {
 }
 
 impl Model {
-    pub fn set_matrices(&mut self, world: Mat3x4, normal: Mat3x3) {
+    pub fn set_matrices(&mut self, mut world: Mat3x4, mut normal: Mat3x3) {
         let mut data = gpu_arena_data(self.slot);
+        let world_words = unsafe { view_of(&mut world).as_ptr().as_u16_array() };
+        let normal_words = unsafe { view_of(&mut normal).as_ptr().as_u16_array() };
+        if gpu_bind_equal(data, GPU_MODEL_WORLD, world_words, 0, 24)
+            && gpu_bind_equal(data, GPU_MODEL_NORMAL, normal_words, 0, 18)
+        {
+            return;
+        }
         let derived = data[GPU_MODEL_DERIVED];
         gpu_api_checked(gpu_scene_model_matrices(data, world, normal), 2);
         data[GPU_MODEL_DERIVED] = derived;

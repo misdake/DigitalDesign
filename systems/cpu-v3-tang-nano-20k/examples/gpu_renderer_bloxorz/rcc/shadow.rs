@@ -569,21 +569,52 @@ pub fn draw_shadow(
                 && top + one >= min_z
                 && top <= max_z
             {
-                let a = SHADOW_CLIP_A.as_array();
-                let b = SHADOW_CLIP_B.as_array();
-                let mut n = shadow_clip(SHADOW_HULL.as_array(), a, count, left, 0);
-                n = shadow_clip(a, b, n, left + one, 1);
-                n = shadow_clip(b, a, n, top, 2);
-                n = shadow_clip(a, b, n, top + one, 3);
+                let mut points = SHADOW_HULL.as_array();
+                let mut destination = SHADOW_CLIP_A.as_array();
+                let mut n = count;
+                if min_x < left {
+                    n = shadow_clip(points, destination, n, left, 0);
+                    points = destination;
+                    destination =
+                        if points.as_ptr().addr() == SHADOW_CLIP_A.as_array().as_ptr().addr() {
+                            SHADOW_CLIP_B.as_array()
+                        } else {
+                            SHADOW_CLIP_A.as_array()
+                        };
+                }
+                if max_x > left + one {
+                    n = shadow_clip(points, destination, n, left + one, 1);
+                    points = destination;
+                    destination =
+                        if points.as_ptr().addr() == SHADOW_CLIP_A.as_array().as_ptr().addr() {
+                            SHADOW_CLIP_B.as_array()
+                        } else {
+                            SHADOW_CLIP_A.as_array()
+                        };
+                }
+                if min_z < top {
+                    n = shadow_clip(points, destination, n, top, 2);
+                    points = destination;
+                    destination =
+                        if points.as_ptr().addr() == SHADOW_CLIP_A.as_array().as_ptr().addr() {
+                            SHADOW_CLIP_B.as_array()
+                        } else {
+                            SHADOW_CLIP_A.as_array()
+                        };
+                }
+                if max_z > top + one {
+                    n = shadow_clip(points, destination, n, top + one, 3);
+                    points = destination;
+                }
                 if n >= 3 {
                     SHADOW_INFO[1u16] += 1;
                 }
                 if shadow_batch_enabled() {
-                    SHADOW_INFO[2u16] += shadow_batch_cell(b, n, left, top);
+                    SHADOW_INFO[2u16] += shadow_batch_cell(points, n, left, top);
                 } else {
                     let mut triangle: u16 = 2;
                     while triangle < n {
-                        shadow_triangle(pass, mesh, model, material, b, triangle);
+                        shadow_triangle(pass, mesh, model, material, points, triangle);
                         triangle += 1;
                     }
                 }
@@ -687,17 +718,17 @@ fn shadow_batch_restore() {
     SHADOW_INFO[2u16] = data[3u16];
 }
 fn shadow_batch_index(mut words: Array<u16>, base: u16, triangle: u16, fan: u16) {
-    let mut corner: u16 = 0;
-    while corner < 3 {
-        let value = if corner == 0 { 0u16 } else { fan - 2 + corner };
-        let bit = (triangle % 3) * 18 + corner * 6;
-        let at = base + (triangle / 3) * 4 + (bit >> 4);
-        let shift = bit & 15;
-        words[at] |= value << shift;
-        if shift > 10 {
-            words[at + 1] |= value >> (16 - shift);
-        }
-        corner += 1;
+    let at = base + (triangle / 3) * 4;
+    let slot = triangle % 3;
+    if slot == 0 {
+        words[at] |= ((fan - 1) << 6) | (fan << 12);
+        words[at + 1] |= fan >> 4;
+    } else if slot == 1 {
+        words[at + 1] |= ((fan - 1) << 8) | (fan << 14);
+        words[at + 2] |= fan >> 2;
+    } else {
+        words[at + 2] |= (fan - 1) << 10;
+        words[at + 3] |= fan;
     }
 }
 fn shadow_batch_cell(points: Array<ShadowScalar>, count: u16, left: fix32, top: fix32) -> u16 {
@@ -710,8 +741,11 @@ fn shadow_batch_cell(points: Array<ShadowScalar>, count: u16, left: fix32, top: 
     assert(record < 16, 0x5b03);
     let offset = 128 + record * 256;
     let mut words = unsafe { data.as_ptr().add(offset as i16).as_u16_array() };
+    let index_base = 64 + ((count * 6 + 3) >> 2) * 4;
+    // Header plus every potentially fetched payload sector, including padding.
+    let clear_words = 64 + ((index_base - 64 + (count / 3) * 4 + 63) >> 6) * 64;
     let mut i: u16 = 0;
-    while i < 256 {
+    while i < clear_words {
         words[i] = 0;
         i += 1;
     }
@@ -757,7 +791,6 @@ fn shadow_batch_cell(points: Array<ShadowScalar>, count: u16, left: fix32, top: 
         }
         data[36u16] += count;
     }
-    let index_base = 64 + ((count * 6 + 3) >> 2) * 4;
     let mut triangles: u16 = 0;
     i = 2;
     while i < count {

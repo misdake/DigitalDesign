@@ -1,5 +1,9 @@
 # System regression tests
 
+`bloxorz_shadow_pack` compiles the actual fan-packing function and decodes all
+484 fan/triangle-slot combinations against the native six-bit wire format,
+including all untouched guard words. It has a2M-step CPU bound.
+
 ## Bloxorz prepared command parts
 
 `gpu_prepared_group` runs the real RCC core in both GPU debug modes. It checks fixed-part snapshots, independent replacement, complete

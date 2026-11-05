@@ -1,7 +1,7 @@
 ---
 id: bloxorz-ground-shadow
 status: implemented
-last-verified: 2026-11-04
+last-verified: 2026-11-05
 ---
 
 # Ground shadow
@@ -9,6 +9,14 @@ last-verified: 2026-11-04
 The application draws the Web box shadow through an immutable unit-triangle mesh and ordinary public `Model::set_matrices` / `Pass::draw_colored` calls. Its CPU geometry consumes the already prepared player world matrix; floor, switch, well and player rendering use the same session state. The shadow is drawn after receivers and before the player, with depth test Always, depth writes disabled and SrcOver alpha 87/255, color (10,13,18). Its plane is y=393/65536. The unit mesh has a +Y normal, RGB white and no face culling. Its independent Y matrix column preserves that normal for each nondegenerate X/Z fan. The CPU receiver clipping gates the shadow to supported cells and excludes open start/goal cells. Using Always avoids rejecting coplanar shadow fragments through D16 quantization; the shadow never changes depth. Both ordinary and RTT source paths restore the opaque Less/depth-write state before drawing the player. The configured far value is an admission threshold, not a rescaling of interpolated D16 precision.
 
 The CPU clips the eight box corners and twelve edges against y>=0, projects along (.5,1,.5), forms a convex hull, then clips it against each receiving unit cell. The box half-size is .49. Void, inactive bridges and fragile tiles hidden at CRACK start do not receive; the start opening excludes its cell during entry, and the goal excludes its cell during drop/land/close. Receiver traversal is restricted to a conservative integer hull bounding rectangle, clamped to the level dimensions. It retains inclusive boundary admission and row-major cell order, with the original exact overlap and receiver checks before clipping. Lower bounds are floored after subtracting one cell; the possible extra cell is rejected by the exact check. Row/column counters avoid per-cell division and remainder. Each cell emits a triangle fan; absolute doubled areas below 2/65536 are omitted. Sutherland–Hodgman derives the previous index from the current index. Near-zero crossing denominators scale both operands before reciprocal, and the interpolation parameter stays within [0,1].
+
+For each receiver, the original hull extrema identify clipping planes that
+already contain the entire polygon. Those planes are skipped; remaining planes
+retain left/right/top/bottom order, inclusive boundaries and the same Q16
+intersection arithmetic. Output alternates between the two clipping buffers;
+the original hull is never a destination. Fan generation consumes the actual
+last output buffer, including the unchanged hull when no clipping is needed.
+This preserves vertex order and coverage while avoiding redundant polygon copies.
 
 The immutable mesh uses white vertex colors without texture UVs. Colored draws therefore preserve the material and coverage while avoiding temporary Texture/TextureView resources and texture capture facts for each triangle. The draw counter still records the same meshlet count. No dynamic mesh upload is required. One Model is reused while each draw publishes its own Instance128 coefficients into the command buffer. Those coefficients remain valid through the normal submission/capture lifetime even after the Model changes for the next triangle. Camera changes continue through the existing renderer preparation cache.
 
@@ -27,6 +35,13 @@ The ordinary application uses the owned receiver-cell path. After `ground_begin`
 The allocation contains64 private words and two4224-word slots. Each slot has one CPU-private cache sector, one directory sector and16 fixed four-sector record slots. Split cubes select distinct slots in call order; neither directory nor payload of the first shadow can be overwritten by the second before submission. Each slot independently keys all twelve world coefficients, level generation, visual bridge mask and receiver flags, and retains hull/cell/triangle counts. Hidden calls invalidate their selected slot; explicit `shadow_invalidate` invalidates both slots. Batch rebuilds do not maintain or reuse the separate exact-triangle cache. A hit reuses packed world geometry; Camera changes still pass through ordinary Model preparation.
 
 Every receiving polygon uses one meshlet, with the same row-major receiver and fan order as the exact path. Up to24 polygon entries and22 triangles fit the existing clipping buffers and one record. Original near-zero fan triangles are omitted before packing. A cell origin is exact Q16.16; X/Z vertices round to the nearest1/512 world unit (`quant_shift=7`, half-way upward), and the plane remains exactly393/65536. Grid boundaries lie on that lattice. An individual coordinate can move by at most1/1024 world unit. Using one identity Model also changes transform/narrowing grouping relative to individual affine triangle Instances, so equal source positions alone do not establish identical coverage. Tiny silhouette pixel changes are an accepted boundary of this batching path; depth writes remain disabled.
+
+Rebuilding a record clears its header and every whole payload sector that the
+maximum fan for that polygon could publish, including vertex/index padding.
+The remaining tail of the fixed256-word capacity is not read by the GPU and may
+retain older bytes. Fan indices use the existing six-bit native layout: vertex0
+is implicit zero, and each triangle writes only its two nonzero index fields.
+Three triangles still occupy one64-bit index word, with unused bits zero.
 
 One public `Mesh::from_native` and `Pass::draw_colored` call publishes all cell meshlets in a shadow. Only the65-sector directory/record region is published as GPU storage; cache tags stay outside GPU read facts. It uses normal managed mesh validation, immutable push Instances, storage facts and submission retirement; the command ABI and profile decoder remain unchanged. The DRAW statistic counts actual meshlets. No vertices from separate cubes are unioned, and alpha order remains both shadows before either opaque cube. Record capacity and delta10 bounds are checked before publication. The supported rigid/cardinal box envelope intersects at most16 cells; the24-entry clipping bound is retained. Diagnostic quantization counters are compiled out by default and enabled only by the exploratory fixture.
 
