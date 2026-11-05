@@ -1,5 +1,12 @@
 # System regression tests
 
+`boot_address_spaces` installs the same maximum-size CB06 code/static package
+in CPU instruction sim and native CPU emu. It executes PC0, PC0x8000 and PC0xffff,
+checks reads/writes at both ends of all four data pages, and verifies complete
+code preservation and untouched data/outer guards. Bounds are 200 instruction
+steps and 20,000 native CPU cycles. It qualifies independent 128-KiB address
+windows, not 128 KiB of statics or SPI-loader timing.
+
 `bloxorz_shadow_pack` compiles the actual fan-packing function and decodes all
 484 fan/triangle-slot combinations against the native six-bit wire format,
 including all untouched guard words. It has a2M-step CPU bound.
