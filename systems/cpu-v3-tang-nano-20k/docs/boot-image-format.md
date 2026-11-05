@@ -32,6 +32,42 @@ not duplicate these checks. A corrupted payload can execute incorrectly, and a
 hand-made stream missing required code can reach END: trusted host-generated
 input and programmer Verify are the intended workflow.
 
+## Independent instruction and data windows
+
+The fitted cold entry is CSEG7:PC0 with DSEG pages [0,1,2,3]. It is already
+an independent-code/data layout; no application prologue needs to move DSEG.
+Instruction word addresses are `(CSEG << 16) | PC`, whereas data word addresses
+are `(DSEG[address >> 14] << 14) | (address & 0x3fff)`.
+
+| CPU window | Physical DRAM bytes at cold entry | Capacity |
+| --- | --- | --- |
+| PC [0,0x10000), CSEG7 | [0xe0000,0x100000) | 128 KiB instruction window |
+| Data [0,0xc000), DSEG0/1/2 | [0,0x18000) | 96 KiB resident ordinary data |
+| Data [0xc000,0x10000), DSEG3 | [0x18000,0x20000) | 32 KiB remappable data window |
+
+All 65536 code words are available regardless of the ordinary data offsets.
+The four data pages likewise cover 128 KiB independently of code, but the
+application ABI divides that address space: statics occupy at most words
+[0,0x2000), the boundary-tag heap is [0x2000,0x9fff), and the stack grows down
+from word 0xc000 toward the heap. The heap length is 0x7fff words; the remaining
+0x2001 words below SP form the initial stack budget. These are data-allocation
+limits, not instruction-space reservations. In particular, the 16-KiB static
+limit does not restrict code capacity, and the 128-KiB data window does not mean
+128 KiB of application statics.
+
+GPU/external-memory access temporarily remaps DSEG3, with cache completion and
+mapping restoration owned by the access helper. Ordinary statics, heap and
+stack stay below 0xc000 and do not depend on that transient page. Moving all
+DSEG pages would also require changing static initialization and physical GPU
+address publication; it would not enlarge either 16-bit address window.
+
+`boot_address_spaces` exercises a maximum-size code COPY together with the
+maximum static ZERO prefix in both instruction simulation and native CPU
+emulation. It executes code at the beginning, middle and last word, writes the
+first and last data word of every page, and checks that the complete code and
+all unused data retain their expected contents. The host package installation
+is functional in these tests; they do not simulate SPI cold-loader timing.
+
 ## Host layout and resources
 
 | DRAM byte range | Ownership |
