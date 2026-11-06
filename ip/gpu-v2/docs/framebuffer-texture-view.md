@@ -4,6 +4,15 @@ The production `gpu-v2-vliw-export OUTPUT command [portable]` supports both
 ordinary column POT textures and fixed400x240 framebuffer views. The system uses
 this same command composition with no layout or RTT hardware variant.
 
+The command processor owns bit23 validation, reset and SET_RENDER installation
+directly in `system/command_processor.v`. The production compute, backend and
+sampling interfaces live in `system/command/compute.v`, `backend.v` and
+`sampling.v`. They include the framebuffer-view bit, immutable-draw snapshot,
+view-coordinate connection and physical texture/framebuffer ports in their
+complete source. The command factory selects these owners directly; it does
+not add RTT ports or rewrite those parents after generation. Standalone checked
+compositions retain their own interfaces and reuse the numerical components.
+
 ## Descriptor and storage
 
 SET_RENDER's first little-endian u32 has these fields. Other fields retain the

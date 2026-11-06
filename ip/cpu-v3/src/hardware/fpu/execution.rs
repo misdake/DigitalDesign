@@ -428,7 +428,7 @@ impl CpuV3FpuState {
         } else if issue && !d.product && !d.cmp {
             Some((
                 destination as usize & 63,
-                CpuV3FpuScalarPathState::alu(a, b, d.alu).0,
+                scalar_alu::evaluate(a, b, d.alu).0,
             ))
         } else if own_return && d.multiply {
             Some((

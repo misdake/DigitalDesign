@@ -10,7 +10,7 @@ use std::{
 
 fn tool(out: &Path, args: &[&str]) {
     let mut c = Command::new("python");
-    c.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/bloxorz/tools/batch-scene.py"));
+    c.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("applications/bloxorz/tools/batch-scene.py"));
     c.arg(args[0]).arg(out).args(&args[1..]);
     bounded(&mut c, &out.join(format!("{}.log", args[0])));
 }

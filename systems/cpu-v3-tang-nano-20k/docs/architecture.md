@@ -27,6 +27,12 @@ in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable pr
 
 ## Composition boundary
 
+The production board factory and complete RTL top live in
+[`board/mod.rs`](/systems/cpu-v3-tang-nano-20k/board/mod.rs) and
+[`board/top.v`](/systems/cpu-v3-tang-nano-20k/board/top.v). The
+`cpu_v3_system` Cargo example is the stable export/build/program CLI. Hardware
+module namespaces and generated source paths retain their established identity.
+
 `CpuV3System` is the final composition boundary for the Tang Nano 20K target. It connects:
 
 - the revision 0.9 `CpuV3Core` at the Stage 12 microarchitecture level;

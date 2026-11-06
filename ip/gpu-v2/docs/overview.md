@@ -2,7 +2,8 @@
 
 ## The delivered unit
 
-The standalone GPU consumes one explicitly addressed meshlet at a time. It
+The production command GPU consumes native command buffers. Each DRAW processes
+one explicitly addressed meshlet at a time. The geometry pipeline
 transforms all its vertices, visits its indexed triangles, generates fragments,
 shades them, and updates cached color/depth tiles. An explicit flush makes dirty
 tiles visible in external memory. The selected viewport is 400 × 240.
@@ -15,8 +16,8 @@ arbitrary matrix; the actual integer limits still apply at each stage.
 The IP owns the loader, geometry and fragment processing, caches and three
 memory masters. The vendor owns the shared arbiter, bridge, physical SDRAM
 controller and pins. A board system owns CPU submission, memory allocation,
-Display and clocks. The current CPU system's GPU leaf is a placeholder; the
-standalone host interface is the implemented submission boundary.
+Display and clocks. The CPU system's Device4 leaf binds the production command
+factory; standalone checked constructors retain their explicit host interfaces.
 
 ## Follow one meshlet
 
@@ -107,11 +108,21 @@ recollection. Admission reserves return capacity first. Synchronous read owners
 hold their data through stalls. Static calendars share arithmetic and RAM ports;
 wall-clock maintenance preserves accepted external work while compute is paused.
 
-The selected factory is `system::vliw_sdram::verilog`, emitting
+The production factory is `system::command::verilog`, emitting
+`gpu_v2_vliw_command`. Its command ABI lives in `system::command::abi`;
+`system::vliw_command` forwards the previous public path. Complete compute,
+three-port backend and sampling parents live under `src/system/command`.
+Their child libraries are assembled at module boundaries without passing
+through postquad candidate, II4-composition, direct-LOD-parent, texture or RTT
+rewriting factories. Component arithmetic and native/portable bindings stay
+with their owning factories.
+
+The checked standalone factory `system::vliw_sdram::verilog` emits
 `gpu_v2_vliw_sdram`. The lower-level `system::vliw::verilog` emits
 `gpu_v2_vliw` with raw local DMA writes and a byte-addressed backend memory port.
 The following chapters use the descriptor/three-master factory unless stated.
 
-Implementation anchors: [standalone wrapper](/ip/gpu-v2/src/system/vliw_sdram.v),
+Implementation anchors: [production composition](/ip/gpu-v2/src/system/command/mod.rs),
+[standalone wrapper](/ip/gpu-v2/src/system/vliw_sdram.v),
 [composition](/ip/gpu-v2/src/system/vliw.rs),
 [CPU integration boundary](/systems/cpu-v3-tang-nano-20k/src/hardware/gpu/mod.rs).

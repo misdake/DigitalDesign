@@ -1,5 +1,5 @@
 //! CPU boundary tests use an explicitly controlled read peer, not an MC model.
-use super::wiring::{CpuSide, DataResponse, Input, InstructionResponse};
+use super::{CpuSide, DataResponse, Input, InstructionResponse};
 use cpu_v3::{device_receive, device_send, halt, load, load_immediate16};
 use std::collections::{BTreeMap, VecDeque};
 

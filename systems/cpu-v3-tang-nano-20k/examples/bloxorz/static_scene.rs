@@ -103,7 +103,10 @@ pub(super) fn bounded(command: &mut Command, log: &Path) -> Output {
 fn python(mode: &str, out: &Path) {
     let mut command = Command::new("python");
     command
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/bloxorz/tools/static-scene.py"))
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("applications/bloxorz/tools/static-scene.py"),
+        )
         .arg(mode)
         .arg(out);
     bounded(&mut command, &out.join(format!("{mode}.log")));

@@ -253,17 +253,7 @@ pub fn verilog_profile(
     wide_pool: usize,
     shared_roms: bool,
 ) -> Result<String, String> {
-    render_globals(slots, surface, backend, wide_pool, shared_roms, false)
-}
-
-pub(crate) fn verilog_profile_command(
-    slots: &[Slot],
-    surface: MaterializedSurface,
-    backend: quad_ingress::rtl::Backend,
-    wide_pool: usize,
-    shared_roms: bool,
-) -> Result<String, String> {
-    render_globals(slots, surface, backend, wide_pool, shared_roms, true)
+    render_globals(slots, surface, backend, wide_pool, shared_roms)
 }
 
 fn render_globals(
@@ -272,7 +262,6 @@ fn render_globals(
     backend: quad_ingress::rtl::Backend,
     wide_pool: usize,
     shared_roms: bool,
-    live_globals: bool,
 ) -> Result<String, String> {
     let mut source = postquad::verilog_combined_group48_pool64_candidate(slots, surface, backend)?;
     let (options, plans) = if shared_roms {
@@ -280,7 +269,7 @@ fn render_globals(
     } else {
         dsp_sharing::four_cycle(wide_pool)?
     };
-    let light = rtl::generate_ii4_with_schedule_plans(options, &plans, live_globals)?;
+    let light = rtl::generate_ii4_with_schedule_plans(options, &plans, false)?;
     replace_modules(&mut source, &format!("\n{}", light.source))?;
     replace_modules(
         &mut source,
@@ -290,6 +279,6 @@ fn render_globals(
     metadata(&mut source)?;
     direct_weights(&mut source)?;
     tile_address(&mut source, surface.width)?;
-    private_lighting(&mut source, live_globals)?;
+    private_lighting(&mut source, false)?;
     Ok(source)
 }

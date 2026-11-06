@@ -1,7 +1,7 @@
 //! Write directly into the final native UI object; no full-screen CPU snapshot.
 use crate::dsl_rt::*;
-mod gpu;
-use gpu::*;
+mod gpu_legacy;
+use gpu_legacy::*;
 mod stick;
 use stick::*;
 mod stick_controls;

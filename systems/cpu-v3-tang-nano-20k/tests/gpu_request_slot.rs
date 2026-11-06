@@ -8,7 +8,7 @@ fn gpu_descriptor_slot_preserves_order_and_holds() {
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("../../target/gpu-request-slot"));
     fs::create_dir_all(&out).unwrap();
-    let top = include_str!("../examples/cpu_v3_system/self_test.v");
+    let top = include_str!("../board/top.v");
     let (_, body) = top.split_once("module CpuV3GpuMemoryRequestSlot(").unwrap();
     fs::write(
         out.join("slot.v"),

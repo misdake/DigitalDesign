@@ -10,6 +10,26 @@ use super::color;
 pub const MODULE: &str = "gpu_v2_texture_runtime_color";
 pub const PUBLIC_OWNER_BITS: usize = 16 * 3;
 
+/// The direct result-bank Color leaf owns its packet-layout policy.
+pub(crate) fn direct_source(command: bool) -> String {
+    include_str!("direct_color.v").replace(
+        "@PACKET_CHECK@",
+        if command {
+            "1'b0; // Physical groups have no redundant level field."
+        } else {
+            "accepted&&(in_payload[7:4]>4'd10);"
+        },
+    )
+}
+
+/// Complete ordered public-result owner with its statically reserved UV tail.
+pub(crate) fn public_source_reserved() -> String {
+    let value = include_str!("runtime_color.v");
+    let old = "wire publish_bad=publish_valid && !publish_ready;";
+    assert_eq!(value.matches(old).count(), 1, "reserved publication anchor");
+    value.replace(old, "wire publish_bad=1'b0;")
+}
+
 /// A sole parent UV tail reserves a free public ID at accepted row0 and
 /// exclusively publishes it at row3. No other writer can allocate that ID
 /// during the partial tail. Under that closed contract, the row3 publication

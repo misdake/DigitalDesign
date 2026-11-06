@@ -541,14 +541,14 @@ separate from the join result banks' functional read/write collision guards.
 
 ### Selected join and paired depth
 
-The selected root is the complete
-[VLIW backend source](/ip/gpu-v2/src/system/pixel/vliw_backend_top.v).
-The renderer selects this root, its owned-Q banks and the TDP sink as complete
-modules. Its static policy record keeps Final, Join, Pool and Color choices
-independent; public data macros do not grant a diagnostic policy. All selected
-owners now supply their own diagnostics. Command assembly normalizes line endings
-directly after packet/Group binding, before RTT specialization; no diagnostic
-scanner or compatibility call remains. The historical postquad factories remain
+The production root is the complete
+[command backend](/ip/gpu-v2/src/system/command/backend.v).
+Its [factory](/ip/gpu-v2/src/system/command/backend.rs) assembles this parent,
+Sampling, owned-Q banks, the TDP sink and numerical children at module boundaries.
+Each owner supplies its own diagnostics. Public data macros do not grant a
+diagnostic policy. The command factory normalizes line endings after assembly;
+it does not rewrite a standalone backend or specialize an RTT parent afterward.
+The checked standalone backend and historical postquad factories remain
 independent references.
 The 23-bit active header stays registered; its tile is a combinational projection,
 not a second captured header. Existing issue/publication/retirement prefixes own

@@ -285,7 +285,7 @@ fn execute_frozen_fixture() {
         .parse::<u32>()
         .unwrap();
     let submission =
-        crate::system::vliw_command::DeviceSubmission::new(4980736, (count + 1) * 4).unwrap();
+        crate::system::command::DeviceSubmission::new(4980736, (count + 1) * 4).unwrap();
     let mut executor = crate::system::functional::Executor::new(64_000_000);
     executor
         .execute_captured(&mut words, &mut flags, submission)

@@ -33,7 +33,7 @@ def module(name, path):
     result = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(result)
     return result
-B = module("blox_batch", SYSTEM / "examples/bloxorz/tools/batch-scene.py")
+B = module("blox_batch", SYSTEM / "applications/bloxorz/tools/batch-scene.py")
 R = module("minimal_renderer", SYSTEM / "examples/gpu_renderer/tools/assets.py")
 G = module("native_assets", SYSTEM / "examples/gpu_demo/tools/assets.py")
 W = module("blox_web_scene", Path(__file__).with_name("web_scene.py"))
@@ -182,7 +182,7 @@ def pack(output,main_log2=8,marker_log2=8):
         constants+=f"pub const {c['name']}_FIRST:u16={c['first']};\n"+f"pub const {c['name']}_COUNT:u16={c['count']};\n"
     constants += 'use crate::dsl_rt::*;\n'
     original={}
-    for line in (SYSTEM/'examples/bloxorz/assets/reference.txt').read_text().splitlines():
+    for line in (SYSTEM/'applications/bloxorz/assets/reference.txt').read_text().splitlines():
         if line.startswith('level '):
             fields=line.split();original[fields[1]]=list(map(int,fields[3:]))
     all_levels=[levels[f'b{i}'] for i in range(1,34)]
@@ -282,7 +282,7 @@ pub fn blox_scene_face(which:u16,index:u16)->u16 {blox_asset_word(blox_level_met
         bounds=[[-16,-1,-6],[16,1,6]], cameras=[W.camera(l["width"],l["depth"]) for l in chosen], pixel_reference=dict(aspect="5:3", texture_sha256=hashlib.sha256((output/'texture.bin').read_bytes()).hexdigest(), background_srgb="#2c2620"))
     from atlas_borders import contract
     manifest['main_atlas']=contract()
-    for path in [Path(__file__).resolve(),Path(__file__).with_name("web_scene.py"),Path(__file__).with_name("atlas_borders.py"),Path(__file__).with_name("source_photos.py"),Path(__file__).with_name("markers.py"),Path(__file__).with_name("hud_font.py"),Path(__file__).with_name("goal_carrier.py"),Path(__file__).with_name("ground_batches.py"),hud_font,base_font_provenance,background,*A.source.ROOT.glob('*.jpg'),SYSTEM/'tools/gpu_texture_layout.py',SYSTEM/'examples/bloxorz/tools/batch-scene.py',SYSTEM/'examples/bloxorz/tools/static-scene.py',SYSTEM/'examples/bloxorz/assets/reference.txt',SYSTEM/'examples/bloxorz/rcc/bloxorz_core.rs',SYSTEM/'examples/bloxorz/geometry.rs',SYSTEM/'examples/gpu_demo/tools/assets.py']:
+    for path in [Path(__file__).resolve(),Path(__file__).with_name("web_scene.py"),Path(__file__).with_name("atlas_borders.py"),Path(__file__).with_name("source_photos.py"),Path(__file__).with_name("markers.py"),Path(__file__).with_name("hud_font.py"),Path(__file__).with_name("goal_carrier.py"),Path(__file__).with_name("ground_batches.py"),hud_font,base_font_provenance,background,*A.source.ROOT.glob('*.jpg'),SYSTEM/'tools/gpu_texture_layout.py',SYSTEM/'applications/bloxorz/tools/batch-scene.py',SYSTEM/'applications/bloxorz/tools/static-scene.py',SYSTEM/'applications/bloxorz/assets/reference.txt',SYSTEM/'applications/bloxorz/rcc/bloxorz_core.rs',SYSTEM/'applications/bloxorz/geometry.rs',SYSTEM/'examples/gpu_demo/tools/assets.py']:
         manifest['sources'][str(path.relative_to(SYSTEM))]=hashlib.sha256(path.read_bytes()).hexdigest()
     (output/'assets.json').write_text(json.dumps(manifest,indent=2)+'\n')
 
@@ -291,7 +291,7 @@ if __name__=='__main__':
     args=parser.parse_args()
     if args.compact_reference:
         rows=[]
-        for line in (SYSTEM/'examples/bloxorz/assets/reference.txt').read_text().splitlines():
+        for line in (SYSTEM/'applications/bloxorz/assets/reference.txt').read_text().splitlines():
             if line.startswith('level '):
                 fields=line.split();line=' '.join(fields[:3]+list(map(str,compact_level(list(map(int,fields[3:]))))))
             rows.append(line)

@@ -35,7 +35,7 @@ for prefix,port in [('ro','gpu_ro'),('fr','gpu_fb_r'),('fw','gpu_fb_w')]:
  for suffix,signal in [('request_valid',prefix+'q'),('request_ready',ready),('address',prefix+'a'),('line_count_minus_1',prefix+'c')]:
   inst=inst.replace(f'.{port}_{suffix}({signal})',f'.{port}_{suffix}({signal}_s)')
  slots+=f'wire {prefix}q_s,{ready}_s;wire[21:0]{prefix}a_s;wire[1:0]{prefix}c_s;\nCpuV3GpuMemoryRequestSlot {prefix}_slot(.clk(clk),.reset(reset),.in_valid({prefix}q),.in_ready({ready}),.in_write(1\'b{int(prefix=="fw")}),.in_address({prefix}a),.in_count({prefix}c),.out_valid({prefix}q_s),.out_ready({ready}_s),.out_write(),.out_address({prefix}a_s),.out_count({prefix}c_s));\n'
-slot=(root/'systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system/self_test.v').read_text().split('module CpuV3GpuMemoryRequestSlot',1)[1]
+slot=(root/'systems/cpu-v3-tang-nano-20k/board/top.v').read_text().split('module CpuV3GpuMemoryRequestSlot',1)[1]
 (out/'slots.v').write_text('module CpuV3GpuMemoryRequestSlot'+slot)
 files.append(out/'slots.v')
 pins='''wire O_sdram_clk,O_sdram_cke,O_sdram_cs_n,O_sdram_cas_n,O_sdram_ras_n,O_sdram_wen_n;

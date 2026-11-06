@@ -194,7 +194,7 @@ fn real_resource_frames_overlap_and_retire_independently() {
             }
         }
     }
-    let top = include_str!("../examples/cpu_v3_system/self_test.v");
+    let top = include_str!("../board/top.v");
     let (_, body) = top.split_once("module CpuV3GpuMemoryRequestSlot(").unwrap();
     sources.insert(
         "production-request-slot.v".into(),

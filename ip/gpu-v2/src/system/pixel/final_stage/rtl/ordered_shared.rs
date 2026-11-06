@@ -9,7 +9,12 @@ pub const INITIATION_INTERVAL: usize = 3;
 /// acceptance; no parent payload-stability loan is required after acceptance.
 /// Native contains three unsigned MULT9X9 cells with registered outputs.
 pub fn source(native: bool) -> String {
-    let implementation = if native {
+    let implementation = multiplier_body(native);
+    include_str!("ordered_shared.v").replace("@MULTIPLIER@", implementation)
+}
+
+fn multiplier_body(native: bool) -> &'static str {
+    if native {
         r#"wire [17:0] raw;
  MULT9X9 #(.AREG(1'b0),.BREG(1'b0),.PIPE_REG(1'b0),.OUT_REG(1'b1),
  .ASIGN_REG(1'b0),.BSIGN_REG(1'b0),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")) dsp(
@@ -18,8 +23,12 @@ pub fn source(native: bool) -> String {
  assign product=raw[16:0];"#
     } else {
         "reg [16:0] q; always @(posedge clk) if(ce) q<=a*b;\n assign product=q;"
-    };
-    include_str!("ordered_shared.v").replace("@MULTIPLIER@", implementation)
+    }
+}
+
+/// The production multiplier leaf shares the same arithmetic/primitive binding.
+pub(crate) fn two_cycle_mul9_source(native: bool) -> String {
+    include_str!("two_cycle_mul9.v").replace("@MULTIPLIER@", multiplier_body(native))
 }
 
 pub const SINGLE_MODULE: &str = "gpu_v2_final_ordered_single";
@@ -32,16 +41,7 @@ pub const SINGLE_MODULE: &str = "gpu_v2_final_ordered_single";
 /// are consumed only at acceptance. The captured variant has no such loan.
 /// The default shared factory and its eight-credit contract are unchanged.
 pub fn source_single(native: bool, borrow_inputs: bool) -> String {
-    let implementation = if native {
-        r#"wire [17:0] raw;
- MULT9X9 #(.AREG(1'b0),.BREG(1'b0),.PIPE_REG(1'b0),.OUT_REG(1'b1),
- .ASIGN_REG(1'b0),.BSIGN_REG(1'b0),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")) dsp(
- .DOUT(raw),.SOA(),.SOB(),.A(a),.B({1'b0,b}),.SIA(9'd0),.SIB(9'd0),
- .ASEL(1'b0),.BSEL(1'b0),.ASIGN(1'b0),.BSIGN(1'b0),.CLK(clk),.CE(ce),.RESET(1'b0));
- assign product=raw[16:0];"#
-    } else {
-        "reg [16:0] q; always @(posedge clk) if(ce) q<=a*b;\n assign product=q;"
-    };
+    let implementation = multiplier_body(native);
     include_str!("ordered_single.v")
         .replace("@MULTIPLIER@", implementation)
         .replace(

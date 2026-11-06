@@ -22,6 +22,29 @@ ISA revision and implementation Stage are independent. Revision 0.10 defines the
 instruction and ABI contract. Stage 12 names the current microarchitecture optimization level and
 does not change the ISA encoding.
 
+## Implementation owners
+
+Public type names remain available through the existing IP modules. Source
+ownership follows state and physical ports:
+
+| Owner | Responsibility |
+| --- | --- |
+| `rcc_backend/mod.rs` | Reachability, optimization/allocation and compilation orchestration |
+| `rcc_backend/abi.rs`, `lowering.rs` | Target register convention and symbolic instruction selection |
+| `rcc_backend/linker.rs`, `program.rs` | Branch relaxation, image/debug layout, validation and result/error types |
+| `hardware/cache/storage.rs` | Parity-split data BSRAM, tags, valid/victim and dirty metadata leaves |
+| `hardware/cache/instruction.rs`, `data.rs` | Read-only instruction/refill owner and independent write-allocate/maintenance owner |
+| `hardware/fpu/execution.rs` | Selected RF/compute calendar and instruction state |
+| `hardware/fpu/frontend.rs`, `register_file.rs`, `scalar_alu.rs`, `multiplier.rs` | Shared frontend, architectural/LUT state, arithmetic and physical multiplier boundary |
+| `hardware/fpu/standalone.rs` | Independent standalone path implementations used for qualification |
+
+Cache geometry/address helpers remain with the cache module. FPU instruction
+encoding and special-function port contracts have explicit homes; selected
+execution does not call a standalone scalar model to evaluate its ALU. Unit and
+co-simulation harnesses live in separate test files beside their owners. These
+boundaries preserve instruction/CB formats, memory layout, physical module
+identities, cycle behavior and independent oracles.
+
 ## Co-simulation replay files
 
 The production FPU owner replay retains every input beat, CE pause and abort

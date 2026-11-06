@@ -46,7 +46,9 @@ systems/
   machinery, and source debug data. CPU ABI, legalization, encoding, linking, and target debug
   finalization belong to each CPU's `rcc_backend`.
 - A `system` is the final composition boundary. It owns fitted memory/device layouts, board-level
-  top modules, host tools used only by that system, firmware, applications, and boot packaging.
+  top modules, host tools used only by that system, firmware, applications, and boot packaging. Shared application rules, imported
+  data and asset producers live under the system-owned `applications/` directory;
+  executable examples and production renderers consume those shared owners.
 
 Dependencies point upward through this document: a later layer may use an earlier layer, never the
 reverse. In particular, `compiler/rcc` cannot depend on a CPU and `hardware/core` cannot depend on

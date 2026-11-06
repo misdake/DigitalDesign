@@ -2,7 +2,7 @@
 //!
 //! Uses physical halfwords directly; successful completion means every write is
 //! done. Geometry and shading follow the selected native integer contracts.
-use super::vliw_command::{self as abi, Command, DeviceSubmission};
+use super::command::{self as abi, Command, DeviceSubmission};
 use std::fmt;
 #[path = "functional/geometry.rs"]
 mod geometry;

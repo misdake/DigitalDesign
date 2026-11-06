@@ -713,6 +713,12 @@ fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){si
         std::fs::write(path, shadow).unwrap();
         application_rcc = local;
     }
+    // Immutable accepted fixtures retain their original shared-source home.
+    let rule_sources = if sources.join("applications/bloxorz/rcc").is_dir() {
+        sources.join("applications/bloxorz/rcc")
+    } else {
+        sources.join("examples/bloxorz/rcc")
+    };
     let ir = resolver::compile_explicit_gpu_program_checked_with_sources(
         "Bloxorz RTT",
         &source,
@@ -720,13 +726,13 @@ fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){si
         &application_rcc,
         &sources.join("rcc"),
         &constants,
-        &[sources.join("examples/bloxorz/rcc")],
+        std::slice::from_ref(&rule_sources),
         &capture,
         &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),
         &mut |p| dependencies.push(p.to_owned()),
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    assert!(dependencies.contains(&sources.join("examples/bloxorz/rcc/bloxorz_core.rs")));
+    assert!(dependencies.contains(&rule_sources.join("bloxorz_core.rs")));
     let frontend_static_words = ir.debug.static_data_end;
     let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
     std::fs::write(
@@ -2372,7 +2378,7 @@ fn retained_static_scene_matches_fresh_recording_and_reuses_immutable_commands()
 fn all_stage_loading_split_swap_merge_fragile_and_navigation_follow_reference_rules() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let reference =
-        std::fs::read_to_string(root.join("examples/bloxorz/assets/reference.txt")).unwrap();
+        std::fs::read_to_string(root.join("applications/bloxorz/assets/reference.txt")).unwrap();
     let mut body = String::from("session_init();");
     let mut levels = 0;
     for line in reference.lines().filter(|l| l.starts_with("level b")) {

@@ -196,7 +196,7 @@ fn board_slot_model_matches_original_rtl_and_detects_borrowed_credit() {
                 .as_nanos()
         ));
     fs::create_dir_all(&root).unwrap();
-    let top = include_str!("../examples/cpu_v3_system/self_test.v");
+    let top = include_str!("../board/top.v");
     let (_, tail) = top.split_once("module CpuV3GpuMemoryRequestSlot(").unwrap();
     let original = format!("module CpuV3GpuMemoryRequestSlot({tail}");
     let mut tb=String::from("module tb;reg clk=0,reset,in_valid,in_write,out_ready;reg[21:0]in_address;reg[1:0]in_count;wire in_ready,out_valid,out_write;wire[21:0]out_address;wire[1:0]out_count;CpuV3GpuMemoryRequestSlot dut(.*);initial begin\n");

@@ -21,7 +21,7 @@ no source offset, section table, section count, image-length field, checksum,
 compression, relocation, dynamic entry or runtime loader command.
 
 The hardware checks the signature, command shape, even alignment, DRAM capacity
-and exclusion of Depth byte [0x460000,0x490000). High bits are checked before
+and exclusion of Depth byte [0x480000,0x4c0000). High bits are checked before
 narrowing to the 22-bit word address, and the end calculation retains its carry.
 The existing SPI reader rejects commands exceeding the 8-MiB Flash capacity.
 A malformed stream can fail after partial writes; there is no rollback.
@@ -77,15 +77,15 @@ is functional in these tests; they do not simulate SPI cold-loader timing.
 | [0x20000,0xe0000) | Resource allocations |
 | [0xe0000,0x100000) | One code COPY at 0xe0000; unused tail remains reserved |
 | [0x100000,0x400000) | Resource allocations |
-| [0x400000,0x460000) | Reserved framebuffer slots; boot leaves both untouched |
-| [0x460000,0x490000) | Reserved Depth; never initialized by boot |
-| [0x490000,0x4b0000) | Driver-owned command/object arena; optional COPY/ZERO resources rejected |
-| [0x4b0000,0x7df800) | Fixed GPU asset allocations |
+| [0x400000,0x480000) | Reserved framebuffer slots; boot leaves both untouched |
+| [0x480000,0x4c0000) | Reserved Depth; never initialized by boot |
+| [0x4c0000,0x4e0000) | Driver-owned command/object arena; optional COPY/ZERO resources rejected |
+| [0x4e0000,0x7df800) | Fixed GPU asset allocations |
 | [0x7df800,0x7e0000) | Reserved UI pages; optional resources rejected |
 | [0x7e0000,0x800000) | Second driver command/object arena; optional resources rejected |
 
-Code is nonempty, even, and at most 128 KiB. A=0x400000 and B=0x430000, with
-0x30000 bytes per slot. Depth is cleared by each GPU Pass. Optional resource
+Code is nonempty, even, and at most 128 KiB. A=0x400000 and B=0x440000, with
+0x40000 bytes per slot. Depth is cleared by each GPU Pass. Optional resource
 COPY/ZERO commands must fit one resource interval and cannot overlap.
 Odd-byte files acquire one zero pad byte as part of their allocation.
 
@@ -95,7 +95,7 @@ The project file retains format 2 and one application, with optional entries:
 format 2
 application rcc/system-display-test.rs
 copy MESH 0x100000 assets/mesh.bin
-zero 0x4b0000 4096
+zero 0x4e0000 4096
 ~~~
 
 A standalone `gpu-api` line selects the checked, host-approved
@@ -105,7 +105,10 @@ directive rejects. This changes host compilation authority only and adds no
 bytes or commands to CB06.
 
 Paths are relative to the project directory. COPY symbols are unique upper
-snake case. The build generates boot_resources.rs before compilation; an RCC
+snake case. Application selection, asset generation and compilation policy belong to
+`build_support/applications.rs` and `application_compile.rs`. The common
+`build.rs` consumes that description, compiles one application and packages its
+resources. The build generates boot_resources.rs before compilation; an RCC
 application can import mod boot_resources and use NAME_BYTE_ADDRESS_LOW/HIGH
 and NAME_WORD_ADDRESS_LOW/HIGH u16 constants. Full addresses are split explicitly
 because this RCC frontend has no u32 type; no compiler or far-pointer ISA is added.

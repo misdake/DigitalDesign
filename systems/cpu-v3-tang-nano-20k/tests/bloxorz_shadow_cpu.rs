@@ -150,7 +150,7 @@ fn shadow_draw(p:&mut Pass,m:&Mesh,o:&mut Model,a:&Material,t:ShadowTriangle){si
         &local,
         &root.join("rcc"),
         &constants,
-        &[root.join("examples/bloxorz/rcc")],
+        &[root.join("applications/bloxorz/rcc")],
         &resolver::RendererCaptureConfiguration::with_default_hook(profile),
         &rcc::frontend::rustc_check::RustcCheck::new(out.join("checked")),
         &mut |_| {},
