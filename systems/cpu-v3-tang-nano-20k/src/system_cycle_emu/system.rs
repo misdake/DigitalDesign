@@ -7,8 +7,8 @@ use super::{
     startup::{self, ColdGate, ImageReport, Release},
 };
 use crate::{
+    cpu_subsystem::{self as wiring, CpuSide},
     hardware::display_cycle::{ControlInput, ControlOutput, DisplayControl, Edges},
-    system_emu::wiring::{self, CpuSide},
 };
 use gpu_v2::system::vliw_cycle::{
     command::DeviceBus,
@@ -18,7 +18,7 @@ use gpu_v2::system::vliw_cycle::{
 #[derive(Debug)]
 pub enum Error {
     Boot(crate::boot::SingleBootError),
-    Cpu(crate::system_emu::Error),
+    Cpu(crate::cpu_subsystem::Error),
     Gpu(gpu_v2::system::vliw_cycle::draw::Error),
     Memory(digital_design_hardware_gowin::sdram_memory_controller::cycle::memory::Error),
     UnsupportedDevice { device: u8, channel: u8 },

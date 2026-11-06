@@ -55,13 +55,16 @@ holds while the selected value equals its configured expected value.
 
 ## CPU boundary and old modes
 
-`system_emu::wiring::CpuSide` owns one persistent request-side circuit. Its
+`cpu_subsystem::CpuSide` owns one persistent request-side circuit. Its
 `settle(&Input)` has no edge, backing mutation or device callback; `clock(&Input)`
 returns that edge's pre-commit output and commits one logic edge. Physical I/D
 responses retain all 64 bits. The existing core, cache and SystemControl output
 types expose requests, MMIO, maintenance, fault/halt and retired words.
 
-The old native root reuses the same wiring helper inside its original circuit,
+The compatibility path `system_emu::wiring` re-exports the public CPU boundary.
+The full-system and old native roots import the neutral owner directly. Its
+error type describes only CPU-side combinational convergence, without an MC
+dependency. The old native root reuses the same wiring helper inside its original circuit,
 retaining its existing arbiter and `MemoryExternal`. The architectural
 instruction simulator remains separate. Neither old execution mode embeds this
 new system or changes its device semantics.

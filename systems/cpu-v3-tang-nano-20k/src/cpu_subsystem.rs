@@ -1,13 +1,12 @@
 //! Request-side CPU composition shared by legacy native and full-system roots.
 //! This owner has no arbiter, memory controller, physical backing or device callbacks.
-use super::{bits, frontend_flush, Error, SharedModule};
 use crate::{
     SystemControlDevice, SystemControlDeviceInput, SystemControlDeviceOutput,
     SystemControlDeviceOutputValue, SystemControlDeviceState,
 };
 use cpu_v3::*;
 use digital_design_circuit::{
-    build_circuit, external, input, input_w, Circuit, CircuitWires, Wire, Wires,
+    build_circuit, external, input, input_w, Circuit, CircuitWires, External, Wire, Wires,
 };
 use digital_design_hardware::{Module, ModuleIo};
 use std::{
@@ -15,6 +14,38 @@ use std::{
     rc::Rc,
 };
 
+#[derive(Debug)]
+pub enum Error {
+    CombinationalLoop,
+}
+
+// Match the fitted self_test.v frontend boundary, including terminal states.
+fn frontend_flush(system: &SystemControlDeviceOutput, core: &CpuV3CoreOutput) -> Wire {
+    system.icache_invalidate | core.halted | core.fault
+}
+
+struct SharedModule<M: Module> {
+    state: Rc<RefCell<M::EmuState>>,
+    input: M::Input,
+    output: M::Output,
+}
+impl<M: Module> External for SharedModule<M> {
+    fn execute(&mut self, c: &mut CircuitWires) {
+        M::execute_emu(&mut self.state.borrow_mut(), c, &self.input, &self.output);
+    }
+    fn clock(&mut self, c: &mut CircuitWires) {
+        M::clock_emu(&mut self.state.borrow_mut(), c, &self.input, &self.output);
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+pub(crate) fn bits<const N: usize>(c: &mut CircuitWires, w: Wires<N>, v: u64) {
+    for (k, b) in w.wires.iter().enumerate() {
+        c.set_wire(*b, ((v >> k) & 1) as u8);
+    }
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InstructionResponse {
     pub request_ready: bool,
@@ -49,7 +80,7 @@ pub struct Output {
     pub system: SystemControlDeviceOutputValue,
 }
 
-pub(super) struct States {
+pub(crate) struct States {
     pub core: Rc<RefCell<CpuV3CoreState>>,
     pub dcache: Rc<RefCell<CpuV3DataCacheState>>,
     pub system: Rc<RefCell<SystemControlDeviceState>>,
@@ -67,7 +98,7 @@ impl States {
 }
 // Boundary wires are supplied before registering any external module. Legacy
 // roots can therefore retain their original single-Circuit memory feedback.
-pub(super) struct Boundary {
+pub(crate) struct Boundary {
     pub reset: Wire,
     pub startup_hold: Wire,
     pub memory_initialized: Wire,
@@ -130,7 +161,7 @@ impl Boundary {
         bits(c, self.watch_read_data, u64::from(i.watch_read_data));
     }
 }
-pub(super) struct Connected {
+pub(crate) struct Connected {
     pub core_input: CpuV3CoreInput,
     pub core_output: CpuV3CoreOutput,
     pub fetch_output: CpuV3InstructionFetchQueueOutput,
@@ -138,7 +169,7 @@ pub(super) struct Connected {
     pub dcache_output: CpuV3DataCacheOutput,
     pub system_output: SystemControlDeviceOutput,
 }
-pub(super) fn connect(boundary: &Boundary, states: &States) -> Connected {
+pub(crate) fn connect(boundary: &Boundary, states: &States) -> Connected {
     let mut core_input = CpuV3CoreInput::allocate();
     let core_output = CpuV3CoreOutput::allocate();
     let mut fetch_input = CpuV3InstructionFetchQueueInput::allocate();
@@ -316,3 +347,11 @@ impl CpuSide {
         self.states.system.borrow().read_channel(channel)
     }
 }
+
+#[cfg(test)]
+#[path = "cpu_subsystem_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "cpu_frontend_tests.rs"]
+mod frontend_tests;

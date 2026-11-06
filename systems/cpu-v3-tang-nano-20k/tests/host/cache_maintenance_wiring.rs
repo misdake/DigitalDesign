@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, ops::Range};
 
-const SYSTEM: &str = include_str!("../../examples/cpu_v3_system/self_test.v");
+const SYSTEM: &str = include_str!("../../board/top.v");
 
 // Read only the production template's named-port connections. This deliberately
 // does not elaborate Verilog or model any device's state machine.

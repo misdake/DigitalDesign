@@ -116,7 +116,7 @@ def main():
     ap.add_argument('--output', required=True, type=Path)
     ap.add_argument('--native', action='store_true')
     ap.add_argument('--production-cold', action='store_true')
-    ap.add_argument('--production-top', type=Path, default=ROOT/'systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system/self_test.v')
+    ap.add_argument('--production-top', type=Path, default=ROOT/'systems/cpu-v3-tang-nano-20k/board/top.v')
     args = ap.parse_args()
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=False)
     spec = importlib.util.spec_from_file_location('state_fixture', Path(__file__).with_name('vliw_clear.py'))

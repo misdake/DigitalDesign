@@ -30,33 +30,15 @@ pub enum Error {
         writing: bool,
     },
 }
-// Match the fitted self_test.v frontend boundary, including terminal states.
-fn frontend_flush(system: &SystemControlDeviceOutput, core: &CpuV3CoreOutput) -> Wire {
-    system.icache_invalidate | core.halted | core.fault
-}
-
 pub use cpu_v3::DeviceWrite;
 
-pub mod wiring;
-#[cfg(test)]
-use crate::{SystemControlDevice, SystemControlDeviceInput};
-
-struct SharedModule<M: Module> {
-    state: Rc<RefCell<M::EmuState>>,
-    input: M::Input,
-    output: M::Output,
+/// Compatibility path for the shared request-side CPU composition.
+pub mod wiring {
+    pub use crate::cpu_subsystem::{
+        CpuSide, DataResponse, Error, Input, InstructionResponse, Output,
+    };
 }
-impl<M: Module> External for SharedModule<M> {
-    fn execute(&mut self, c: &mut CircuitWires) {
-        M::execute_emu(&mut self.state.borrow_mut(), c, &self.input, &self.output);
-    }
-    fn clock(&mut self, c: &mut CircuitWires) {
-        M::clock_emu(&mut self.state.borrow_mut(), c, &self.input, &self.output);
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
+use crate::cpu_subsystem::{self as cpu, bits};
 
 struct MemoryExternal {
     port: Rc<RefCell<Port>>,
@@ -89,11 +71,6 @@ impl MemoryExternal {
             write_data: o.memory_write_data,
             response_ready: o.memory_response_ready,
         }
-    }
-}
-fn bits<const N: usize>(c: &mut CircuitWires, w: Wires<N>, v: u64) {
-    for (k, b) in w.wires.iter().enumerate() {
-        c.set_wire(*b, ((v >> k) & 1) as u8);
     }
 }
 impl External for MemoryExternal {
@@ -164,7 +141,7 @@ impl CpuV3SystemEmu {
         let backing = Rc::new(RefCell::new(backing));
         let port = Rc::new(RefCell::new(Port::default()));
         let error = Rc::new(RefCell::new(None));
-        let states = wiring::States::new(segment);
+        let states = cpu::States::new(segment);
         let core_state = states.core.clone();
         let system_state = states.system.clone();
         let dcache_state = states.dcache.clone();
@@ -175,8 +152,8 @@ impl CpuV3SystemEmu {
             let arbiter_output = CpuV3MemoryArbiterOutput::allocate();
             let external_read_data = digital_design_circuit::input_w::<16>();
             let watch_read_data = digital_design_circuit::input_w::<16>();
-            let cpu = wiring::connect(
-                &wiring::Boundary {
+            let cpu = cpu::connect(
+                &cpu::Boundary {
                     reset,
                     startup_hold: digital_design_circuit::input_const(0),
                     memory_initialized: initialized,
@@ -194,7 +171,7 @@ impl CpuV3SystemEmu {
                 },
                 &states,
             );
-            let wiring::Connected {
+            let cpu::Connected {
                 core_input,
                 core_output,
                 fetch_output,
@@ -508,10 +485,4 @@ impl CpuV3SystemEmu {
 }
 
 #[cfg(test)]
-mod flush_tests;
-
-#[cfg(test)]
 mod metadata_tests;
-
-#[cfg(test)]
-mod wiring_tests;
