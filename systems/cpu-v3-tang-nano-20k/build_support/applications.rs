@@ -194,10 +194,10 @@ pub fn prepare(root: &Path, output: &Path) -> Application {
             });
             if game {
                 for path in [
-                    "examples/bloxorz/tools/batch-scene.py",
-                    "examples/bloxorz/tools/static-scene.py",
-                    "examples/bloxorz/assets/reference.txt",
-                    "examples/bloxorz/geometry.rs",
+                    "applications/bloxorz/tools/batch-scene.py",
+                    "applications/bloxorz/tools/static-scene.py",
+                    "applications/bloxorz/assets/reference.txt",
+                    "applications/bloxorz/geometry.rs",
                     "examples/gpu_demo/tools/assets.py",
                     "examples/gpu_renderer/tools/assets.py",
                 ] {

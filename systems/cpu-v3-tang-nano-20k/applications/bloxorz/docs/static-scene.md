@@ -4,7 +4,7 @@ The example has a minimal 400x240 RGB scene: eight floor tiles on a 3x3 board,
 one missing corner, and a standing block. `rcc/bloxorz_static.rs` uses the normal
 GPU CB/Pass API to record two identical frames into fixed Back B and Depth. It
 uses the fixed-point camera and instance preparation described in
-[RCC scene geometry](/systems/cpu-v3-tang-nano-20k/examples/bloxorz/docs/rcc-scene.md).
+[RCC scene geometry](/systems/cpu-v3-tang-nano-20k/applications/bloxorz/docs/rcc-scene.md).
 It does not present or write Front A.
 
 ## Static assets and coordinates

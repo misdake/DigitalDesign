@@ -1,6 +1,6 @@
 use crate::dsl_rt::*;
-mod gpu;
-use gpu::*;
+mod gpu_legacy;
+use gpu_legacy::*;
 mod dualshock2;
 mod panel;
 mod stick_controls;

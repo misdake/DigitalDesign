@@ -118,7 +118,7 @@ pub(super) fn compile_program(
     };
     let program = if explicit_gpu {
         let dirs = if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
-            vec![shared.parent().unwrap().join("examples/bloxorz/rcc")]
+            vec![shared.parent().unwrap().join("applications/bloxorz/rcc")]
         } else if source_dir.ends_with("gpu_profiler_board/rcc") && rtt {
             vec![shared
                 .parent()

@@ -61,7 +61,7 @@ fn rcc_fixed_camera_and_roll_match_original_geometry() {
     let code = compile(PROGRAM);
     let mut cameras = Vec::new();
     let mut poses = Vec::new();
-    for line in include_str!("assets/geometry-reference.txt").lines() {
+    for line in include_str!("../../applications/bloxorz/assets/geometry-reference.txt").lines() {
         let mut words = line.split_whitespace();
         match words.next().unwrap() {
             "camera" => {

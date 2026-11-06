@@ -262,7 +262,7 @@ fn bloxorz_one_play_frame_has_identical_color_depth_and_lower_matrix_cost() {
             &app,
             &library,
             &constants,
-            &[root.join("examples/bloxorz/rcc")],
+            &[root.join("applications/bloxorz/rcc")],
             &configuration,
             &rcc::frontend::rustc_check::RustcCheck::new(work.join("checked")),
             &mut |_| {},

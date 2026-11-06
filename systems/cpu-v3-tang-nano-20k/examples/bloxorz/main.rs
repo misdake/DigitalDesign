@@ -2,6 +2,7 @@
 use cpu_v3::{rcc_backend, CpuV3Sim, PhysicalWordAddress, RunOutcome};
 #[cfg(test)]
 mod batch_scene;
+#[path = "../../applications/bloxorz/geometry.rs"]
 mod geometry;
 #[cfg(test)]
 mod rcc_geometry;
@@ -62,7 +63,7 @@ fn cases_schema(compact: bool) -> Vec<Case> {
             .success());
         std::fs::read_to_string(path).unwrap()
     } else {
-        include_str!("assets/reference.txt").to_owned()
+        include_str!("../../applications/bloxorz/assets/reference.txt").to_owned()
     };
     let mut result: Vec<Case> = Vec::new();
     for line in text.lines() {
@@ -104,7 +105,7 @@ fn compile(source: &str) -> Vec<u16> {
     let parsed =
         rcc::frontend::compile_program_named("Bloxorz rules", source, &options, &mut |name| {
             if name == "bloxorz_core" {
-                Ok(include_str!("rcc/bloxorz_core.rs").to_owned())
+                Ok(include_str!("../../applications/bloxorz/rcc/bloxorz_core.rs").to_owned())
             } else if name == "bloxorz_scene" {
                 Ok(include_str!("rcc/bloxorz_scene.rs").to_owned())
             } else if name == "gpu_transform" {

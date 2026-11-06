@@ -114,7 +114,7 @@ def pack(output):
         assert 0<=x<x+len(text)<=50 and 0<=y<15 and set(text)<=FONT.keys()
         at=len(ids);ids.extend(map(ord,text))
         calls.append(f'gpu_pass_ui_write(ui,{y*50+x},unsafe{{DS2_LABELS.as_ptr().add({at}).as_u16_array()}},{len(text)})')
-    source='use crate::dsl_rt::*;\nmod gpu;\nuse gpu::*;\n'
+    source='use crate::dsl_rt::*;\nmod gpu_legacy;\nuse gpu_legacy::*;\n'
     atlas_base = sectors()['GPU_ASSET_FIRST_SECTOR'] * 128
     source+=f'pub const DS2_UI_ATLAS:u16={atlas_base//128};\n'
     source+=f'static DS2_LABELS:Buf<u16,{len(ids)}>=Buf::new([{",".join(map(str,ids))}]);\n'

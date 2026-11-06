@@ -1,7 +1,8 @@
 # RCC GPU driver
 
-The native diagnostic interface is `rcc/gpu.rs`, used by `gpu_demo` and
-`dualshock2_ui`. It manages one command buffer and one Clear/Store Pass with
+The native snapshot interface is owned by `rcc/gpu_legacy.rs`, used explicitly
+by `dualshock2_ui`; `rcc/gpu.rs` remains a thin compatibility import for native
+diagnostics and regression fixtures. It manages one command buffer and one Clear/Store Pass with
 ordered Mesh/Instance and UI draws and fixed A/B/Depth allocations. It retains
 actual native control, publication and Display consumers. The former
 [two-input resource scheduler](/systems/cpu-v3-tang-nano-20k/docs/gpu-input-pipeline.md)
@@ -12,6 +13,13 @@ Initialization reads actual Display active/pending/format; it can
 adopt either A or B as Front and chooses the other plane for rendering. The
 driver presents through one serialized entry point. Runtime recovery is separate. The default CPU
 Display diagnostic remains selected in the boot config.
+
+The snapshot interface keeps per-draw UI cells in the command buffer arena.
+It also supports dynamic word-valued glyph sources. The resource API uses
+persistent external UiGrid objects and byte-slice writes instead. These are
+different caller lifetime contracts; the snapshot implementation remains active
+until its consumers migrate with matching capabilities and visual qualification.
+Neither interface defines a second device command ABI.
 
 ## Application calls
 
