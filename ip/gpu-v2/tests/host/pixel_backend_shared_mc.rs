@@ -263,7 +263,8 @@ fn connected_case(raster_scene: bool) {
     assert_eq!(stats.fb_write_beats, stats.fb_writes * 16);
     assert_eq!(stats.fb_terminals, stats.fb_reads + stats.fb_writes);
     hub.save(
-        std::path::Path::new("target/gpu-overnight-20261006"),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/gpu-overnight-20261006"),
         if raster_scene {
             "backend-raster"
         } else {

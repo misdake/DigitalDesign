@@ -611,7 +611,10 @@ fn bounded_mixed_descriptor_domain_and_inactive_dontcare() {
     d.stream(&[recovery::packet([0.0, -1.0, 1.0], 127, p)], true);
     let root = std::env::var_os("RECOVERY_QUAL_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or("target/recovery-mixed-qualification".into());
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/recovery-mixed-qualification")
+        });
     let dir = root.join("config-domain");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("trace.txt"), &d.trace).unwrap();
@@ -623,7 +626,10 @@ fn bounded_mixed_descriptor_domain_and_inactive_dontcare() {
 fn bounded_mixed_recovery_steady_ii2_and_dual_rtl() {
     let root = std::env::var_os("RECOVERY_QUAL_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or("target/recovery-mixed-qualification".into());
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/recovery-mixed-qualification")
+        });
     {
         let exact_uv = true;
         let p = Params {

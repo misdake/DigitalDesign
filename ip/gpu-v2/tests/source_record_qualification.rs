@@ -429,7 +429,10 @@ fn source_record_qualified_ownership_native_portable() {
     );
     let dir = std::env::var_os("SOURCE_RECORD_QUAL_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or("target/source-record-qualification".into());
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/source-record-qualification")
+        });
     std::fs::create_dir_all(&dir).unwrap();
     rtl(&dir, &d, false);
     rtl(&dir, &d, true);

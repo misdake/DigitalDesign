@@ -511,7 +511,10 @@ fn parameterized_fraction_and_decoded_delta_bound() {
 fn bounded_fixed_lane_recovery_steady_ii2_and_dual_rtl() {
     let root = std::env::var_os("RECOVERY_QUAL_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or("target/recovery-qualification".into());
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/recovery-qualification")
+        });
     {
         let exact_uv = true;
         let p = Params {

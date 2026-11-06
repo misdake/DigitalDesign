@@ -54,3 +54,9 @@ verification claims.
 All simulator entry points require finite cycle/step/work bounds. Host vector
 sizes, operation counts and fixture intervals do not define hardware ABI,
 physical storage capacity or whole-system throughput.
+
+Bounded source-record, recovery and shared-MC qualifications place their default
+artifacts in the workspace `target/`, resolved from `CARGO_MANIFEST_DIR` rather
+than the test process current directory. `SOURCE_RECORD_QUAL_DIR` and
+`RECOVERY_QUAL_DIR` retain their explicit output overrides. These paths hold
+replay inputs, RTL executables and reports; they do not change modeled timing.
