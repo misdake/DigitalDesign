@@ -29,7 +29,7 @@ module gpu_v2_texture_runtime_color_checked(
  assign in_ready=proposal_ce&&!fault&&busy;
  wire accepted=in_valid&&in_ready;
  wire start=in_valid&&proposal_ce&&!fault&&!busy;
- wire packet_bad=accepted&&(in_payload[7:4]>4'd10);
+ wire packet_bad=@PACKET_CHECK@
  assign preflight_bad=packet_bad;
  wire advance=ce&&!fault&&!packet_bad;
  wire mul_ce=advance&&(accepted||start);

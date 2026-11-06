@@ -60,6 +60,17 @@ pub fn lower_with_prefetch(
         let (a, b) = module_span(&source, name)?;
         source.replace_range(a..b, "");
     }
+    source.push_str(&sources(surface, enable, dirty)?);
+    Ok(source)
+}
+
+/// Complete physical framebuffer owners, independent of a historical parent.
+pub(crate) fn sources(
+    surface: MaterializedSurface,
+    enable: bool,
+    dirty: bool,
+) -> Result<String, String> {
+    surface.validate()?;
     let sink = include_str!("framebuffer_tdp.v")
         .replace("@COLOR@", &surface.color_base_bytes.to_string())
         .replace("@DEPTH@", &surface.depth_base_bytes.to_string())
@@ -67,6 +78,5 @@ pub fn lower_with_prefetch(
         .replace("@HEIGHT@", &surface.height.to_string())
         .replace("@PREFETCH@", if enable { "1" } else { "0" })
         .replace("@PREFETCH_DIRTY@", if dirty { "1" } else { "0" });
-    source.push_str(&format!("\n{sink}\n{CACHE}\n{LEAF}\n{BANK}\n"));
-    Ok(source)
+    Ok(format!("\n{sink}\n{CACHE}\n{LEAF}\n{BANK}\n"))
 }

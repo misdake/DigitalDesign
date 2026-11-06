@@ -355,3 +355,10 @@ The shared fitter's `--system-binding` selects the real system constants
 Its CE input gates the measurement boundary only. The default fit preserves
 the independently pausable, fully observed component boundary. Neither scope
 includes CPU/Display engines or qualifies a complete board image.
+
+The production command top is `system/vliw_command.v`. Its compute, three-port
+backend and sampling parents are the complete sources under `system/command/`.
+Their command descriptor, RTT and transport wiring are owned by those modules;
+the standalone checked wrappers remain available through their separate
+factories. Numerical child factories are shared without changing command bits,
+module identities or transaction ownership.

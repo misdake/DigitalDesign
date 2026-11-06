@@ -97,7 +97,7 @@ pub fn verilog(rows: usize, width: u32) -> Result<String, String> {
 
 /// Selected join calendar owns the synchronous Q until consumer acceptance.
 /// Public event-return banks and their model retain their original contract.
-pub(super) fn verilog_owned_q(rows: usize, width: u32, native: bool) -> Result<String, String> {
+pub(crate) fn verilog_owned_q(rows: usize, width: u32, native: bool) -> Result<String, String> {
     if native {
         render_sdp36(rows, width, true)
     } else {

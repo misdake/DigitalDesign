@@ -2,17 +2,20 @@
 
 GPU components and standalone composition live in this crate. Board systems own
 CPU/device submission, physical memory integration, clocks, firmware and Display.
-The CPU system's GPU integration point remains a placeholder.
+The CPU system binds the production command GPU through its Device4 leaf.
 
 The [specification index](/ip/gpu-v2/docs/README.md) follows a render from host submission
 to memory-visible output. Start with the [overview](/ip/gpu-v2/docs/overview.md) and
 [submission sequence](/ip/gpu-v2/docs/submission.md), then consult encodings, arithmetic
 and execution details as needed. The selected standalone factory is
-`system::vliw_sdram::verilog`.
+`system::command::verilog`. It directly assembles the command, frontend,
+producer-pool, sampling, lighting and framebuffer owners. The checked
+`system::vliw_sdram::verilog` interface remains a separate standalone composition.
 
 [Independent reference APIs](/ip/gpu-v2/docs/references/README.md) have explicitly different
-formats and execution scopes. CPU command ABI, resource handles and Display
-ownership remain project design work.
+formats and execution scopes. `system::functional` and `system::vliw_cycle`
+provide current command result-level and cycle execution respectively. CPU
+resource handles and Display ownership belong to the system firmware.
 
 Unimplemented top-level, module and software designs stay outside Git in the
 local project design directory. After a part is implemented and verified, its

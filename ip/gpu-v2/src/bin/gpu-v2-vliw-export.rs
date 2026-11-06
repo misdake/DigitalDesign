@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "full" => gpu_v2::system::vliw::verilog(&slots, surface, backend)?,
         "sdram" => gpu_v2::system::vliw_sdram::verilog(&slots, surface, backend)?,
-        "command" => gpu_v2::system::vliw_command::verilog(surface, backend)?,
+        "command" => gpu_v2::system::command::verilog(surface, backend)?,
         "frontend" => gpu_v2::frontend::vliw::verilog(portable),
         _ => return Err("unknown VLIW profile".into()),
     };

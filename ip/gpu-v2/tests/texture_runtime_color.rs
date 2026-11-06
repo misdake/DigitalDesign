@@ -3,11 +3,9 @@
 use gpu_v2::texture::{
     emu::color::{ColorEmu, Input, Output, Tick},
     ports::{Filter, Group4, QuadInput, Slot, TileKey},
-    rtl::color,
+    rtl::runtime_color,
     sim::counted,
 };
-#[path = "../src/texture/rtl/runtime_color.rs"]
-mod runtime_color;
 use std::{
     collections::VecDeque,
     fmt::Write,

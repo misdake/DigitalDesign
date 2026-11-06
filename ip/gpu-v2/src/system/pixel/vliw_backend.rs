@@ -1,23 +1,12 @@
 //! Complete selected backend consuming the authoritative VLIW producer pool.
 //! No eight-row/13-word ingress adapter and no duplicated source payload banks.
+use super::framebuffer_tdp;
 use super::vliw_quad_pool as pool;
 use super::{direct_lod, quad_ingress};
 use crate::{framebuffer::ports::MaterializedSurface, texture::ports::Slot};
 use std::collections::{BTreeMap, BTreeSet};
-#[path = "framebuffer_tdp.rs"]
-mod framebuffer_tdp;
 pub const MODULE: &str = "gpu_v2_vliw_backend";
 pub const SOURCE: &str = include_str!("vliw_backend.v");
-#[derive(Clone, Copy)]
-enum PoolPolicy {
-    Checked,
-    Command,
-}
-#[derive(Clone, Copy)]
-enum ColorPolicy {
-    Checked,
-    Command,
-}
 fn span(source: &str, name: &str) -> Result<(usize, usize), String> {
     let marker = format!("module {name}");
     let starts: Vec<_> = source
@@ -107,115 +96,34 @@ pub fn verilog_selected(
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
 ) -> Result<String, String> {
-    render_globals(
-        slots,
-        surface,
-        backend,
-        false,
-        SourcePolicies {
-            final_policy: FinalPolicy::Checked,
-            join_policy: JoinPolicy::Checked,
-            pool_policy: PoolPolicy::Checked,
-            color_policy: ColorPolicy::Checked,
-        },
-    )
+    render_globals(slots, surface, backend)
 }
 
-pub(crate) fn verilog_selected_command(
-    slots: &[Slot],
-    surface: MaterializedSurface,
-    backend: quad_ingress::rtl::Backend,
-) -> Result<String, String> {
-    render_globals(
-        slots,
-        surface,
-        backend,
-        true,
-        SourcePolicies {
-            final_policy: FinalPolicy::Command,
-            join_policy: JoinPolicy::Command,
-            pool_policy: PoolPolicy::Command,
-            color_policy: ColorPolicy::Command,
-        },
-    )
+fn final_source() -> String {
+    include_str!("vliw_backend_final.v").replace("// @FINAL_POLICY@", "")
 }
 
-// Diagnostic ownership is independent of the live-global and port profiles.
-#[derive(Clone, Copy)]
-enum FinalPolicy {
-    Checked,
-    Command,
-}
-
-fn final_source(policy: FinalPolicy) -> String {
-    include_str!("vliw_backend_final.v").replace(
-        "// @FINAL_POLICY@",
-        match policy {
-            FinalPolicy::Checked => "",
-            FinalPolicy::Command => "`define GPU_V2_COMMAND_FINAL",
-        },
-    )
-}
-
-// Independent of the public command ports and the live-global data profile.
-#[derive(Clone, Copy)]
-enum JoinPolicy {
-    Checked,
-    Command,
-}
-
-fn top_source(policy: JoinPolicy) -> String {
-    include_str!("vliw_backend_top.v").replace(
-        "// @JOIN_POLICY@",
-        match policy {
-            JoinPolicy::Checked => "",
-            JoinPolicy::Command => "`define GPU_V2_COMMAND_JOIN",
-        },
-    )
-}
-
-// Static generator choices remain independent for each source owner.
-#[derive(Clone, Copy)]
-struct SourcePolicies {
-    final_policy: FinalPolicy,
-    join_policy: JoinPolicy,
-    pool_policy: PoolPolicy,
-    color_policy: ColorPolicy,
+fn top_source() -> String {
+    include_str!("vliw_backend_top.v").replace("// @JOIN_POLICY@", "")
 }
 
 fn render_globals(
     slots: &[Slot],
     surface: MaterializedSurface,
     backend: quad_ingress::rtl::Backend,
-    live_globals: bool,
-    policies: SourcePolicies,
 ) -> Result<String, String> {
-    let SourcePolicies {
-        final_policy,
-        join_policy,
-        pool_policy,
-        color_policy,
-    } = policies;
     let native = matches!(backend, quad_ingress::rtl::Backend::Native);
     if surface.width != 400 || surface.height != 240 {
         return Err("VLIW pool NDC/tile contract requires400x240".into());
     }
-    let mut source = (if live_globals {
-        direct_lod::verilog_source_q_command(slots, surface, backend)?
-    } else {
-        direct_lod::verilog_source_q(slots, surface, backend)?
-    })
-    .replace("\r\n", "\n");
+    let mut source = direct_lod::verilog_source_q(slots, surface, backend)?.replace("\r\n", "\n");
     let (a, b) = span(&source, "gpu_v2_pixel_sampling_ingress")?;
     source.replace_range(a..b, SOURCE);
-    source.push_str(&match pool_policy {
-        PoolPolicy::Checked => pool::verilog(!native),
-        PoolPolicy::Command => pool::verilog_command(!native),
-    });
+    source.push_str(&pool::verilog(!native));
     // The root owns its complete final ports/calendar. Intermediate historical
     // factories still supply independently selected numerical children.
     let (a, b) = span(&source, direct_lod::MODULE)?;
-    source.replace_range(a..b, &top_source(join_policy));
+    source.replace_range(a..b, &top_source());
     // Whole-GPU configuration drain includes the entire flush sequence, even
     // between two line transactions where no maintenance request is active.
     patch(
@@ -227,14 +135,14 @@ fn render_globals(
     // Replace the complete selected leaf, not just its ready expression. The
     // original shared Final reference remains unchanged for independent replay.
     let (final_a, final_b) = span(&source, "gpu_v2_final_ordered_two_cycle")?;
-    source.replace_range(final_a..final_b, &final_source(final_policy));
+    source.replace_range(final_a..final_b, &final_source());
     source = framebuffer_tdp::lower(source, surface, native)?;
     // The closed VLIW path accepts every completed Color pixel in its final bank.
     // Keep the generic buffered Color factory unchanged.
     let (color_a, color_b) = span(&source, "gpu_v2_texture_runtime_color_checked")?;
     source.replace_range(
         color_a..color_b,
-        include_str!("vliw_color_direct.v").trim_end(),
+        crate::texture::rtl::runtime_color::direct_source(false).trim_end(),
     );
     // The VLIW pool owns Normal/NDC Q through the complete pixel handshake.
     // Replace the selected consumer as one unit; the independent Light2 reference remains.
@@ -249,18 +157,6 @@ fn render_globals(
         source.replace_range(a..b, &bank);
     }
     let result = reachable(&source, MODULE)?;
-    // Scope only after module reachability has selected the complete owners.
-    let result = match color_policy {
-        ColorPolicy::Checked => result,
-        ColorPolicy::Command => format!(
-            "`define GPU_V2_VLIW_COLOR_COMMAND\n{result}\n`undef GPU_V2_VLIW_COLOR_COMMAND\n"
-        ),
-    };
-    let result = if live_globals {
-        format!("`define GPU_V2_LIVE_GLOBALS\n{result}\n`undef GPU_V2_LIVE_GLOBALS\n")
-    } else {
-        result
-    };
     Ok(format!(
         "{}{}{}",
         if native {

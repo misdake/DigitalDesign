@@ -16,6 +16,7 @@ pub mod foundation_live;
 pub mod framebuffer_native;
 pub mod framebuffer_quantization;
 pub mod framebuffer_sink;
+pub(crate) mod framebuffer_tdp;
 pub mod lighting_consumer;
 mod live;
 mod model;

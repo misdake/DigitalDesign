@@ -138,7 +138,7 @@ impl Module for CpuV3Gpu {
 // One production layout serves POT textures and fixed 400x240 framebuffer views.
 fn source_for_profile(profile: Option<&str>) -> Result<String, String> {
     let export = match profile {
-        None | Some("production") => gpu_v2::system::vliw_command::verilog,
+        None | Some("production") => gpu_v2::system::command::verilog,
         Some(value) => return Err(format!("unsupported GPU hardware profile: {value}")),
     };
     let mut source = include_str!("gpu.v").to_owned();

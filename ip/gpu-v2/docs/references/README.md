@@ -4,6 +4,13 @@ These implemented APIs provide numerical answers, bounded execution models or
 reusable ownership controllers. Select their constructor and profile explicitly.
 The standalone GPU specification is [one level above](/ip/gpu-v2/docs/README.md).
 
+Current command result-level execution (`system::functional`) and complete
+production cycle execution (`system::vliw_cycle`) are also documented here by
+their verification boundaries. They are active backends used by the CPU system,
+not retired alternatives. Production RTL assembly starts at
+`system::command`; explicit postquad/geometry experiment exporters and standalone
+checked factories do not select the board's command implementation.
+
 ## Choose the intended contract
 
 | Topic | Selected standalone GPU | Independent API described here |

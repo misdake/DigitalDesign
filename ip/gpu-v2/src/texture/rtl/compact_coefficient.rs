@@ -116,8 +116,6 @@ pub fn verilog() -> &'static str {
 }
 
 /// Complete private command producer; the composition already owns the shared mul9 leaf.
-pub(crate) const COMMAND_MODULE: &str = "gpu_v2_runtime_coefficient_directweight";
-
 pub(crate) fn command_direct_weight() -> String {
     emit(true)
 }

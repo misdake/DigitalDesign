@@ -167,5 +167,5 @@ be compared only with the corresponding profile selected explicitly.
 Implementation anchors: [Lighting ports](/ip/gpu-v2/src/lighting/ports.rs),
 [selected Lighting lowering](/ip/gpu-v2/src/system/pixel/postquad_ii4.rs),
 [Sampling](/ip/gpu-v2/src/texture/rtl/direct_lod.rs),
-[Color](/ip/gpu-v2/src/system/pixel/vliw_color_direct.v),
+[Color](/ip/gpu-v2/src/texture/rtl/direct_color.v),
 [Final](/ip/gpu-v2/src/system/pixel/vliw_backend_final.v).
