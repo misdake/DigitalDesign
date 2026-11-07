@@ -2,9 +2,12 @@
 
 The member, semantic-change, RTT, profiler and Bloxorz callers use public
 `Gpu`, `CommandBuffer`, scene resources and `Display` directly.
-`gpu_demo_api.rs` is an ordinary application module: it constructs values,
+`applications/rendering/rcc/gpu_demo_api.rs` is an ordinary application module: it constructs values,
 formats UI digits and imports the boot package's fixed asset extents. It has
 no driver state, frame owner, hidden submission or retirement loop.
+`rcc/gpu_board.rs` separately constructs the System's fixed command slots,
+color/depth planes and UI page allocations. Application support uses those
+public values; the GPU driver has no demo assets, glyphs or Bloxorz rules.
 
 Each application owns one command buffer, two display color planes and a depth
 plane. It records into Back B first, submits by value, gets the buffer back from

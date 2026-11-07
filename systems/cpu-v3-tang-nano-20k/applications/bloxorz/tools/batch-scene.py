@@ -10,7 +10,7 @@ spec = importlib.util.spec_from_file_location("blox_static", Path(__file__).with
 S = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(S)
 O = S.O
-BASE = 0x4B0000
+BASE = 0x4E0000
 STEP = 512
 
 
@@ -140,8 +140,9 @@ def assets(out, level, mode):
             struct.pack_into('<HH',memory,entry*4,(BASE+len(memory))//128,padded//128)
             memory.extend(record);entry+=1
         g['meshlets']=indices
+    memory.extend(bytes((-len(memory)) % 256))
     texture_sector=(BASE+len(memory))//128
-    memory.extend(b'\xff\xff'+bytes(126))
+    memory.extend(b'\xff\xff'+bytes(510))
     assert len(memory)<=0x350000
     manifest=dict(level=level,mode=mode,groups=groups,draws=draws,meshes=meshes,asset_sectors=len(memory)//128,
                   texture_sector=texture_sector,validation=validation,native_draws=sum(groups[d['group']]['count'] for d in draws))

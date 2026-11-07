@@ -136,9 +136,11 @@ layouts, old command ABI1 and mixed metadata are rejected. Wire/header/range
 versions remain1. The low-level `CaptureConfiguration::from_identity` entry
 only injects IDs for host tests; it is not production manifest validation.
 
-`gpu_layout.rs` is the sole allocation source. The approved derived renderer
-root copies these canonical sources and records their real origins; there is
-no alternate layout-file substitution. POT and fixed framebuffer views are
+`gpu_layout.rs` is the sole allocation source. Normal checked compilation uses
+the canonical shared root directly, without copying its modules. `ColumnLayout`
+describes the single fitted layout; capture configuration stores capture and
+resource facts rather than a selectable layout profile. There is no alternate
+layout-file substitution. POT and fixed framebuffer views are
 available in every production build. Hardware metadata uses`gpu_profile=production`.
 
 The selected gate is an ordinary module at its real canonical path, without
@@ -160,6 +162,13 @@ storage without authorizing a known root. Before the gate runs, actual exported
 Mesh/Texture/Atlas ranges must exactly match their typed catalog roots; a
 mismatch becomes sticky `GPU_CAPTURE_IDENTITY_ERROR` and prevents SEND. Catalog
 hash validation and dependency closure remain the external consumer's job.
+
+The frozen v2 fixed map retains its original high-bank asset pool. Captures
+using the additional low asset bank use the existing v3 recorded-address build
+declaration and explicit captured ranges. That path validates the fitted physical
+extent and declared root identity rather than widening the old fixed map or
+changing an archived manifest's meaning. Pixel/command and ownership contracts
+remain the same.
 
 `CPU_V3_BOOT_EXAMPLE=gpu_profiler_board` registers the diagnostic integration
 entry. Its separate profiler-owned example supplies `rcc/main.rs`,

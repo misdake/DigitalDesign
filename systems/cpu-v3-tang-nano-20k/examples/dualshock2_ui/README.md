@@ -69,11 +69,11 @@ From the repository root:
 & systems/cpu-v3-tang-nano-20k/examples/dualshock2_ui/build.ps1
 ```
 
-The script selects `CPU_V3_BOOT_EXAMPLE=dualshock2_ui` for its child builds,
-restores the prior environment, materializes the authoritative Cargo OUT_DIR
-assets below `target/dualshock2-ui-boot`, independently repacks CB06 and compares
-it byte for byte by SHA256. It also exports hardware for source comparison;
-it does not synthesize, place/route, access the board or program Flash.
+The script uses the common application command to select the owned recipe and
+validate a fresh authoritative snapshot below `target/dualshock2-ui-boot`.
+The caller's environment is unchanged. `-ExportHardware` explicitly requests
+hardware source export; normal application builds do not export it. Neither
+action synthesizes, places/routes, accesses a board or programs Flash.
 
 `tools/assets.py` generates an original geometric5x7 font resampled to5x10,
 centered in8x16 cells with three transparent rows above and below. Consecutive

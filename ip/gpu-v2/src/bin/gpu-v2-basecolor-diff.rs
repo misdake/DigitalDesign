@@ -3,7 +3,7 @@ use gpu_v2::{
     material_color::ColorSource as Mode,
     triangle::basecolor_threefield::{PreparedBasis, Profile},
 };
-#[path = "../../tests/common/basecolor_fixture.rs"]
+#[path = "../../tests/fixtures/basecolor_fixture.rs"]
 mod common;
 use std::{fs, path::PathBuf};
 #[derive(Clone, Debug, Default)]

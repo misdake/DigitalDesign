@@ -465,6 +465,11 @@ mod tests {
     fn explicit_verilog_requires_a_testbench() {
         let error = VerilogProject::generate::<UntestedVerilog>().unwrap_err();
         assert!(matches!(error, ProjectError::MissingVerilogTestbench(_)));
+        assert!(VerilogProject::generate_for_synthesis::<UntestedVerilog>().is_ok());
+        assert!(matches!(
+            VerilogProject::generate_for_synthesis::<BadSignature>(),
+            Err(ProjectError::InvalidHandwrittenVerilog(_))
+        ));
     }
 
     #[derive(Hardware)]

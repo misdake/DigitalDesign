@@ -49,8 +49,8 @@ fn record(level: &str, mode: &str, code: &[u16]) -> (PathBuf, Stats) {
     let mut cpu = CpuV3Sim::default();
     cpu.set_boot_window(code);
     cpu.physical_memory_mut()[0x7000..0x7000 + params.len()].copy_from_slice(&params);
-    cpu.physical_memory_mut()[0x4b0000 / 2..0x4b0000 / 2 + assets.len()].copy_from_slice(&assets);
-    cpu.physical_memory_mut()[0x4a0000 / 2..0x4b0000 / 2].fill(0xa55a);
+    cpu.physical_memory_mut()[0x4e0000 / 2..0x4e0000 / 2 + assets.len()].copy_from_slice(&assets);
+    cpu.physical_memory_mut()[0x4d0000 / 2..0x4e0000 / 2].fill(0xa55a);
     let state = Rc::new(RefCell::new(State::default()));
     for device in [0, 3, 4, 7] {
         cpu.attach_device(
@@ -94,7 +94,7 @@ fn record(level: &str, mode: &str, code: &[u16]) -> (PathBuf, Stats) {
     .unwrap();
     std::fs::write(out.join("submit-count.txt"), s.counts[0].to_string()).unwrap();
     let mut seed = String::new();
-    for (address, values) in [(0x490000, &s.commands[0]), (0x4a0000, &s.objects[0])] {
+    for (address, values) in [(0x4c0000, &s.commands[0]), (0x4d0000, &s.objects[0])] {
         seed += &format!("@{:x}\n", address / 8);
         for q in values.chunks_exact(4) {
             let v = q
@@ -160,6 +160,7 @@ fn batched_levels_record_less_cpu_work() {
         }
         tool(&out, &["golden"]);
         tool(&out, &["compare"]);
+        super::functional_scene::replay(&out, 1);
     }
     let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/bloxorz-batch");
     std::fs::write(out.join("comparison.csv"), &summary).unwrap();

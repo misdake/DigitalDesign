@@ -16,7 +16,7 @@ spec = importlib.util.spec_from_file_location(
 O = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(O)
 OUT = None
-BASE = 0x4B0000
+BASE = 0x4E0000
 
 
 def box(name, half, faces, shift):
@@ -61,7 +61,7 @@ def assets():
         uniform[i] = 65536
     uniform[11] = 20 * 65536
     uniform[22] = 0xFFFFFFFF
-    memory = bytearray(4224)
+    memory = bytearray(4608)
     cursor = 128
     for index, mesh in enumerate(meshes):
         record, padded, _, _ = image_record(mesh, OUT / f"asset-{index}", uniform)

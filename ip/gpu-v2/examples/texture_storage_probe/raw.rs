@@ -595,7 +595,11 @@ pub(crate) fn run_sink(
         local_ff.tick(t)?;
     }
     if next != programs.len()
-        || stats.captured != qs.iter().map(|q| q.mask.count_ones() as usize).sum()
+        || stats.captured
+            != qs
+                .iter()
+                .map(|q| q.mask.count_ones() as usize)
+                .sum::<usize>()
     {
         return Err("raw study did not drain".into());
     }

@@ -22,7 +22,7 @@ foreach($file in $manifest.files) {
 $package=Join-Path $repo 'systems/cpu-v3-tang-nano-20k'
 $system=Join-Path $source 'systems/cpu-v3-tang-nano-20k/build_support/rcc_modules.rs'
 # Freeze the checker and its source fixture as well as the production inputs.
-$checkerFiles=@('graphics_api_b/public.rs','fixtures/graphics_api_b_public.rs')
+$checkerFiles=@('compiler/graphics_api_b/public.rs','fixtures/graphics_api_b_public.rs')
 $checkerIdentity=@()
 foreach($relative in $checkerFiles) {
     $original=Join-Path (Join-Path $package 'tests') $relative
@@ -40,12 +40,14 @@ $identity=[ordered]@{
     script_sha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant()
     checker_files=$checkerIdentity
     worktree_files=@(& git -C $repo diff --name-only HEAD | ForEach-Object {
-        @{path=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $repo $_)).Hash.ToLowerInvariant()}
+        $path=Join-Path $repo $_
+        $hash=if (Test-Path -LiteralPath $path -PathType Leaf) { (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() } else { $null }
+        @{path=$_;sha256=$hash}
     })
     scope='Recording only; capture/dump and final A caller composition require their own execution'
 }
 $identity | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $output 'run-identity.json') -Encoding utf8NoBOM
-$checker=Join-Path $output 'checker/graphics_api_b/public.rs'
+$checker=Join-Path $output 'checker/compiler/graphics_api_b/public.rs'
 $main=@'
 #[path = "@SYSTEM@"]
 #[allow(dead_code)]
@@ -59,7 +61,7 @@ fn main() {
         let local=folder.join("application");std::fs::create_dir_all(&local).unwrap();
         std::fs::write(local.join("app.rs"),source).unwrap();
         system::compile_explicit_gpu_program_checked(label,source,options,&local,&sources,"",
-            &system::RendererCaptureConfiguration::with_default_hook(system::RendererLayoutProfile::Column16),
+            &system::RendererCaptureConfiguration::with_default_hook(),
             &rcc::frontend::rustc_check::RustcCheck::new(folder),&mut |_| {})
     },&root.join("results"));
 }

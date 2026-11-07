@@ -31,7 +31,9 @@ try {
     $env:CPU_V3_SPI_HALF_PERIOD = '2'
     if ($BootExample -eq '') { Remove-Item Env:CPU_V3_BOOT_EXAMPLE -ErrorAction SilentlyContinue }
     else { $env:CPU_V3_BOOT_EXAMPLE = $BootExample }
-    $cargoArgs = @('-p', 'cpu-v3-tang-nano-20k', '--example', 'cpu_v3_system', '--', $outputPath)
+    $cargoArgs = if ($Mode -eq 'Audit') {
+        @('-p', 'digital-design-hardware-gowin', '--bin', 'gowin-artifact', '--', $outputPath)
+    } else { @('-p', 'cpu-v3-tang-nano-20k', '--bin', 'cpu-v3-system', '--', $outputPath) }
     if ($Mode -eq 'Build') { $cargoArgs += '--build' }
     if ($Mode -eq 'Audit') { $cargoArgs += '--check-existing' }
     & scripts/run-cargo.ps1 -Subcommand run -Label $Label -CargoArgs $cargoArgs
@@ -41,7 +43,7 @@ try {
     $failure = $_.Exception.Message
     throw
 } finally {
-    if (Test-Path -LiteralPath $outputPath) {
+    if ($Mode -ne 'Audit' -and (Test-Path -LiteralPath $outputPath)) {
         $hashes = [ordered]@{}
         foreach ($name in @('gowin-build.manifest', 'impl/pnr/cpu_v3_system.fs', 'impl/pnr/cpu_v3_system.rpt.txt', 'impl/pnr/cpu_v3_system.tr')) {
             $path = Join-Path $outputPath $name

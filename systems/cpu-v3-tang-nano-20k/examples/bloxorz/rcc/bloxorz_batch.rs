@@ -17,12 +17,12 @@ fn main() {
         directory_sector: 0,
         directory_word: 0,
         count: 0,
-        first_sector: 0x9600,
+        first_sector: 0x9c00,
         sectors: params[7u16],
     };
     let mut texture: GpuTexture = GpuTexture {
         sector: params[6u16],
-        sectors: 1,
+        sectors: 4,
         size_log2: 0,
         full_mip: 0,
     };

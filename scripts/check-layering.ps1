@@ -36,7 +36,13 @@ foreach ($owner in $metadata.packages) {
             $errors += "$($owner.name) ($($ownerLayer.Name)) must not depend upward on $($target.name) ($($targetLayer.Name))"
         }
         if ($ownerLayer.Name -eq "systems" -and $targetLayer.Name -eq "systems") {
-            $errors += "$($owner.name) must compose lower layers, not another complete system $($target.name)"
+            $ownerSystem = ($ownerLayer.Path.Split('/')[0..1] -join '/')
+            $targetSystem = ($targetLayer.Path.Split('/')[0..1] -join '/')
+            # Internal support packages share one final-system owner. They may
+            # not depend back on its complete composition or cross to another.
+            if ($ownerSystem -ne $targetSystem -or $targetLayer.Path -eq "$targetSystem/Cargo.toml") {
+                $errors += "$($owner.name) must not depend on complete system $($target.name)"
+            }
         }
     }
 }

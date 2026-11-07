@@ -112,8 +112,11 @@ pub fn level_reset(which: u16) {
 }
 pub fn session_init() {
     rotation_begin();
-    level_reset(0);
+    level_reset(BLOXORZ_INITIAL_LEVEL);
     SESSION[0u16] = ENTRY_OPEN;
+    if BLOXORZ_INITIAL_PLAY != 0 {
+        SESSION[0u16] = PLAY;
+    }
     SESSION[1u16] = 0;
     SESSION[3u16] = 0;
     SESSION[4u16] = 0;

@@ -76,11 +76,11 @@ is functional in these tests; they do not simulate SPI cold-loader timing.
 | [0x4000,0x20000) | Protected low heap/stack window |
 | [0x20000,0xe0000) | Resource allocations |
 | [0xe0000,0x100000) | One code COPY at 0xe0000; unused tail remains reserved |
-| [0x100000,0x400000) | Resource allocations |
+| [0x100000,0x400000) | Shared low immutable asset bank |
 | [0x400000,0x480000) | Reserved framebuffer slots; boot leaves both untouched |
 | [0x480000,0x4c0000) | Reserved Depth; never initialized by boot |
 | [0x4c0000,0x4e0000) | Driver-owned command/object arena; optional COPY/ZERO resources rejected |
-| [0x4e0000,0x7df800) | Fixed GPU asset allocations |
+| [0x4e0000,0x7df800) | Shared high immutable asset bank |
 | [0x7df800,0x7e0000) | Reserved UI pages; optional resources rejected |
 | [0x7e0000,0x800000) | Second driver command/object arena; optional resources rejected |
 
@@ -88,6 +88,11 @@ Code is nonempty, even, and at most 128 KiB. A=0x400000 and B=0x440000, with
 0x40000 bytes per slot. Depth is cleared by each GPU Pass. Optional resource
 COPY/ZERO commands must fit one resource interval and cannot overlap.
 Odd-byte files acquire one zero pad byte as part of their allocation.
+The low/high bank bounds and framebuffer/depth constants derive from the same
+`rcc/gpu_layout.rs` authority. Existing CB06 commands already encode low-bank
+addresses; the stream version, boot instructions and physical memory ports
+do not change. The host decoder rejects writes anywhere in the current Depth
+allocation, including its reserved tail.
 
 The project file retains format 2 and one application, with optional entries:
 
@@ -139,9 +144,12 @@ a nonexistent local file on every successful build. The default project and
 application selection are unchanged; examples select their own project explicitly.
 
 The build emits application.v3bin, application.static-words, cpu-v3-boot.bin, cpu-v3-boot.map and
-boot_resources.rs only in Cargo OUT_DIR. cpu-v3-boot-assets materializes these
-exact artifacts. cpu-v3-pack application.v3bin --project boot-applications.conf
-independently reproduces the package, using the same resource files and the
+boot_resources.rs only in Cargo OUT_DIR. It also retains the same build's
+linked debug/listing and source/resource descriptor, as specified in
+[application artifacts](/systems/cpu-v3-tang-nano-20k/docs/application-build-artifact.md).
+cpu-v3-boot-assets materializes these exact artifacts.
+cpu-v3-pack application.v3bin --project boot-applications.conf
+reconstructs the package with the same packing implementation, using exported resource files and the
 adjacent application.static-words file (a decimal word count followed by a newline).
 For externally compiled binaries, --static-words N supplies that count explicitly.
 Missing or malformed metadata is an error; raw instructions do not encode the

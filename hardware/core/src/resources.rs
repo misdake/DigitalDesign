@@ -4,6 +4,7 @@
 //! transactional: either every requirement fits or none of them is applied.
 
 use crate::{HardwareTarget, TargetResourceRequest};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
@@ -149,7 +150,7 @@ pub trait TargetComponent: Sized + 'static {
 pub struct ResourceAllocation {
     pub id: u64,
     pub label: String,
-    pub component: &'static str,
+    pub component: Cow<'static, str>,
     pub resources: Vec<ResourceAmount>,
 }
 
@@ -319,7 +320,7 @@ impl<T: HardwareTarget> TargetResources<T> {
         self.allocations.push(ResourceAllocation {
             id,
             label,
-            component,
+            component: component.into(),
             resources: requirements,
         });
         Ok(id)

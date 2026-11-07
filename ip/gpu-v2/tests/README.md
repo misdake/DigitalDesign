@@ -1,5 +1,41 @@
 # GPU regression tests
 
+## Placement and entry points
+
+Small assertions that need only private implementation state stay beside the
+implementation. Longer suites and RTL/process harnesses use adjacent private
+`#[cfg(test)]` files. External contracts use the directories below; `Cargo.toml`
+owns their explicit `[[test]]` paths, with `autotests = false`. RTL and other isolated qualification targets retain their names. Pure value and
+model contracts run through `--test host <module>::` (command_payload_binding,
+source_capture, ui_grid_layout, frontend, frontend_runtime and functional). Add new external
+Rust targets to that manifest rather than relying on root-file discovery.
+
+| Directory | Contract |
+| --- | --- |
+| `command/` | Command encoding, payload binding, installed state and UI layout |
+| `cycle/` | Bounded production cycle composition and explicit RTL qualification |
+| `geometry/` | Vertex/front-end, records and preparation |
+| `lighting/`, `texture/` | Lighting arithmetic and texture storage/sampling |
+| `pixel/`, `framebuffer/` | Raster/pixel contracts and framebuffer ownership |
+| `memory/` | Native SDRAM, DMA and memory transport |
+| `integration/` | Functional and persistent front-end/pixel composition |
+| `host/` | One host target, with case modules grouped by the same responsibilities |
+| `support/` | Shared drivers, memory peers and comparison helpers |
+| `fixtures/` | Fixed input/reference data and RTL benches, including basecolor scenes |
+
+Support modules do not register the same self-test in every importing target.
+Their private-state checks stay with the helper as callable qualifications;
+`host/support_contracts.rs` registers them once. Distinct RTL, numerical and
+functional/cycle checks retain separate oracles and run boundaries.
+
+Standalone Python qualification entry points and their existing root benches
+retain their paths: they are also called directly by examples and tools. The
+Rust contract directories do not change those CLI interfaces. Use the target
+and contract descriptions below to select the required backend; an ordinary
+functional run does not imply an ignored RTL qualification ran.
+
+## Qualification contracts
+
 The ignored `common_profiling_collectors_observe_the_same_draw_edges` and
 `common_profiling_reset_preserves_the_same_stop_boundary` in
 `vliw_cycle_gpu` and `common_profiling_uv_and_abort_collectors_use_identical_points`
@@ -158,7 +194,7 @@ The CE0 abort case observes physical drain while logical pool tokens remain.
 
 ## Native functional backend
 
-`cargo test -p gpu-v2 --test functional` checks bounded current-CB memory/UI/error
+`cargo test -p gpu-v2 --test host functional::` checks bounded current-CB memory/UI/error
 execution. The preserved `host/component_oracles.rs` tests compare independent
 Lighting, Triangle and framebuffer references; they do not execute the retired
 whole-renderer composition.

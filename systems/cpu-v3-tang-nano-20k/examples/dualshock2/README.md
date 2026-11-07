@@ -16,10 +16,11 @@ Run from the repository root:
 & systems/cpu-v3-tang-nano-20k/examples/dualshock2/build.ps1
 ```
 
-This sets `CPU_V3_BOOT_EXAMPLE=dualshock2` only for its child Cargo commands,
-restores the previous environment, materializes authoritative OUT_DIR artifacts
-in `target/dualshock2-boot`, independently repacks using `boot.conf`, compares
-SHA256 and exports `gateware/`. It does not run synthesis, PnR or programming.
+This uses the common application command to materialize and validate the
+authoritative OUT_DIR snapshot in a fresh `target/dualshock2-boot` directory.
+The caller's environment is unchanged. Add `-ExportHardware` to request the
+separate gateware export; normal application builds export no hardware.
+Neither action runs synthesis, PnR or programming.
 The configured default application in `boot-applications.conf` is unchanged.
 The same environment selects this application for a later approved full build.
 

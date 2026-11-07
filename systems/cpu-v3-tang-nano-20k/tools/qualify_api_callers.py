@@ -36,7 +36,7 @@ def prepare(args):
     (crate/'src').mkdir(parents=True, exist_ok=True)
     local.mkdir(exist_ok=True)
     origins = []
-    inputs = [SYSTEM/'rcc/gpu_demo_api.rs', SYSTEM/'rcc/profiler_clock.rs']
+    inputs = [SYSTEM/'applications/rendering/rcc/gpu_demo_api.rs', SYSTEM/'rcc/gpu_board.rs', SYSTEM/'rcc/profiler_clock.rs']
     for directory in [args.source.resolve().parent, *args.extra_dir]:
         inputs.extend(sorted(directory.glob('*.rs')))
     for source in inputs:

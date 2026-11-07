@@ -11,13 +11,14 @@ import xml.etree.ElementTree as ET
 def run(project, assets, output, selected, compile_only=False):
     output.mkdir(parents=True, exist_ok=False)
     manifest = json.loads((assets/'assets.json').read_text())
-    resource = manifest['resources'][0]
-    payload = (assets/resource['file']).read_bytes()
-    assert hashlib.sha256(payload).hexdigest() == resource['sha256']
     with (output/'bench.hex').open('w') as f:
-        f.write(f'@{resource["address"]//8:x}\n')
-        for at in range(0, len(payload), 8):
-            f.write(f'{int.from_bytes(payload[at:at+8], "little"):016x}\n')
+        for resource in manifest['resources']:
+            payload = (assets/resource['file']).read_bytes()
+            assert len(payload) == resource['bytes']
+            assert hashlib.sha256(payload).hexdigest() == resource['sha256']
+            f.write(f'@{resource["address"]//8:x}\n')
+            for at in range(0, len(payload), 8):
+                f.write(f'{int.from_bytes(payload[at:at+8], "little"):016x}\n')
     xml = ET.parse(project/'cpu_v3_system.gprj')
     sources = [(project/n.attrib['path']).resolve() for n in xml.findall('.//File')
                if n.attrib['type'] == 'file.verilog']
@@ -59,7 +60,8 @@ def run(project, assets, output, selected, compile_only=False):
         print(records[-1]['result'], flush=True)
     (output/'summary.json').write_text(json.dumps(dict(
         purpose='functional correctness only, independent delayed memory peer, not MC timing',
-        asset_sha256=resource['sha256'],
+        assets=[dict(address=r['address'], bytes=r['bytes'], sha256=r['sha256'])
+                for r in manifest['resources']],
         source_sha256=source_hashes,
         max_cycles=3000000, wall_seconds_per_case=90, cases=records), indent=2)+'\n')
 

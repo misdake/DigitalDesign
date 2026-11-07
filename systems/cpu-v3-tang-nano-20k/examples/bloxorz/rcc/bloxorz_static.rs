@@ -13,22 +13,22 @@ fn check(ok: bool) {
 }
 fn main() {
     let mut floor: GpuMesh = GpuMesh {
-        directory_sector: 0x9600,
+        directory_sector: 0x9c00,
         directory_word: 0,
         count: 1,
-        first_sector: 0x9600,
+        first_sector: 0x9c00,
         sectors: 32,
     };
     let mut block: GpuMesh = GpuMesh {
-        directory_sector: 0x9600,
+        directory_sector: 0x9c00,
         directory_word: 2,
         count: 1,
-        first_sector: 0x9600,
+        first_sector: 0x9c00,
         sectors: 32,
     };
     let mut texture: GpuTexture = GpuTexture {
-        sector: 0x9620,
-        sectors: 1,
+        sector: 0x9c20,
+        sectors: 4,
         size_log2: 0,
         full_mip: 0,
     };

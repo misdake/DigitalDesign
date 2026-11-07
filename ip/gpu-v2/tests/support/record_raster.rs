@@ -11,3 +11,6 @@ pub const MAX_WALL: u64 = 120_000;
 pub const MAX_SOURCES: u64 = 6;
 pub const MAX_RECORDS: u64 = 12;
 pub const MAX_COVERAGE: u64 = 16_384;
+
+#[cfg(test)]
+pub(crate) use cursor::qualification::ndc_signed_ties;

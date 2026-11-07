@@ -13,8 +13,9 @@ Native mesh/texture/atlas bytes remain the same validated boot assets.
 
 `CPU_V3_BOOT_EXAMPLE=gpu_renderer` explicitly selects the new approved root and
 checked frontend. A custom format-2 project uses the `gpu-api` directive instead
-of `renderer`; the two are mutually exclusive. Generated OUT_DIR assets and the
-independent CB06 repack must match. No second boot byte array is maintained.
+of the retired `renderer` directive. The common application command validates
+the exact OUT_DIR snapshot in a fresh directory. Explicit reconstruction checks
+exported inputs through the same CB06 encoder. No second boot byte array is maintained.
 The default board application and hardware are unchanged.
 
 ## Per-frame lifetime

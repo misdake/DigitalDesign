@@ -644,10 +644,10 @@ impl Reader {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod qualification {
     use super::rne;
-    #[test]
-    fn ndc_signed_ties() {
+
+    pub(crate) fn ndc_signed_ties() {
         assert_eq!(
             [rne(3, 2), rne(5, 2), rne(-3, 2), rne(-5, 2)],
             [2, 2, -2, -2]

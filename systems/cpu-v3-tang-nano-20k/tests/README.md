@@ -1,5 +1,79 @@
 # System regression tests
 
+## Placement and entry points
+
+Small private unit assertions stay with their implementation; larger unit or
+RTL/process suites use adjacent private `#[cfg(test)]` files. Cross-component
+tests and application consumers live here. `Cargo.toml` explicitly registers
+their paths with `autotests = false`. Isolated qualification names stay valid;
+the pure boot address-space contract runs with `--test host boot_address_spaces::`. A new external Rust target must be added to that manifest.
+
+| Directory | Contract |
+| --- | --- |
+| `boot/`, `cpu_memory/` | Boot images/address spaces and CPU/cache/native-memory integration |
+| `display/`, `input/` | Display/scanout and controller input |
+| `gpu/` | CPU submission, GPU control and presentation, with present cases beside their target |
+| `compiler/` | RCC graphics API, inline and member/value contracts |
+| `apps/`, `capture/` | Application execution and capture/replay |
+| `rtl/`, `system/` | Physical RAM/raster checks and whole-system orchestration |
+| `host/` | One host target with application, compiler, GPU, input and platform submodules |
+| `support/` | Shared loaders, bounded drivers and independent test peers |
+| `fixtures/` | Pinned input programs, historical snapshots and independent reference data |
+
+`support/cpu_memory` is an independent CPU/memory test peer, not the production
+`src/system_emu` backend. Its native-service timing check is registered once in
+`host/support_contracts.rs`; the system co-simulation can reuse the peer without
+duplicating that test. Bloxorz host cases live in `host/apps/bloxorz`: rules,
+transitions, rendering, shadow, goal and HUD cases share a bounded `harness`,
+while mathematical `reference` and native-output `inspection` keep distinct
+owners. Larger specialized Bloxorz suites remain separate sibling modules.
+
+Standalone Python entry points and raw benches retain their existing paths.
+The Bloxorz ordinary-profile codec/launcher tests live under the application's
+`tests/`, with their command in its profiling document. Selection assertions
+run with the application-owned `bloxorz-profile-runner` binary target; the
+actual-System observation/input/timer/cache parity contract remains `system_runner`.
+`ram_collision/` is a self-contained Python/Verilog qualification bundle used
+by the Rust RTL target. It stays together with its local model and reference.
+Example-local qualifications remain with their example. In particular, the
+[legacy Bloxorz example](/systems/cpu-v3-tang-nano-20k/examples/bloxorz/README.md)
+has two failing static/batch recording checks; `--all-targets` includes them,
+while ordinary library/integration targets have a separate run boundary.
+
+`apps/gpu_bench_banks.rs` belongs to the existing `gpu_bench` target. Its two
+opt-in contracts consume explicit frozen inputs, run bounded complete workloads
+and preserve the ordinary protocol test. The application README owns their
+commands and qualification boundary; small allocator contracts stay beside the
+Python producer.
+
+The backend is part of each test's contract: instruction sim checks functional
+CPU behavior, native CPU emu adds CPU/memory cycles, functional GPU sim checks
+images, and whole-system cycle/RTL qualification checks actual integration.
+Do not treat a result from one boundary as evidence for another. Existing
+ignored RTL, mutation and performance entries remain opt-in and bounded.
+
+`cpu-v3-application --test application_artifact` exports the actual build through `cpu-v3-boot-assets`,
+then checks it with the independent Python reader. Its six contracts cover
+relocation with export-only reads, linked symbols, changed code/source/origin,
+package/segment mismatch and escaping file locators. Test outputs stay under
+the workspace `target/application-artifact`; no alternate compiler or checkout
+supplies the expected program.
+
+The pure CB06 unit tests and existing-input pack CLI contract belong to the
+`cpu-v3-boot-format` package. CPU execution stays here and shares one RCC fixture
+with that CLI contract in `support/boot_contract.rs`. `cpu-v3-tools` checks the
+catalog/option namespace and no-build help/list/error/output-policy behavior.
+The System exporter rejects nonempty directories without changing their contents.
+
+For a complete host run, set `RCC_RUSTC_TEST_DIR` to a disposable directory under
+the main `target/`, `RCC_GRAPHICS_API_RCC` and `RCC_GRAPHICS_SCHEMA_RCC` to this
+system's `rcc/`, and `BLOXORZ_SIM_OUTPUT_ROOT` to a run directory under `target/`.
+Set process-local `TEMP`/`TMP` there as well. Icarus qualifications use
+`IVERILOG_EXE` and `VVP_EXE`. The detailed contracts below retain their specific
+environment, stopping conditions and backend limits.
+
+## Qualification contracts
+
 `boot_address_spaces` installs the same maximum-size CB06 code/static package
 in CPU instruction sim and native CPU emu. It executes PC0, PC0x8000 and PC0xffff,
 checks reads/writes at both ends of all four data pages, and verifies complete
@@ -212,9 +286,18 @@ reset, breakpoint and explicit vblank boundaries.
 
 Retired facade/scheduler sources live only in `tests/fixtures/legacy_renderer`.
 The test-only loader composes their byte-preserved contracts with current common
-modules. Existing ownership, private-domain, capture-v1 and native assertions stay
+modules in one approved snapshot and records each actual origin in
+`source-origins.json`. Normal explicit-API compilation reads the canonical shared
+directory directly. Existing ownership, private-domain, capture-v1 and native assertions stay
 active; production boot projects and explicit API callers cannot select this
 overlay.
+
+Bloxorz `host/apps/bloxorz/scenarios` owns explicit entry, source edits, atlas
+dimensions, asset provenance and capture settings, grouped by scene contract.
+The harness only loads, prepares and compiles these inputs; its output label
+chooses a directory. Required scenario edits fail when their source anchor is
+missing. Independent geometry fixtures may replace the native pose function;
+the optional world observer instruments retained native calls only.
 
 ## Present and UI integration entry
 
@@ -323,6 +406,8 @@ temporary Cargo harness, using this tree's accepted RCC/CPU backend.
 
 The checker and its source fixture are also copied into the output and hashed
 in `run-identity.json`, with the accepted dev, source commit and any WIP identity.
+The checker reads the command-record stride from the exact compiled debug
+constants; independent native arithmetic and recording assertions stay fixed.
 The public fixture runs both `gpu_debug` profiles under a 5,000,000-step limit.
 It keeps six Models and two Cameras live, checks oblique Euler/look-at native
 matrices and light with independent matrix products, then mutates resources,
@@ -453,6 +538,8 @@ Core/cache/arbiter emulator-vs-RTL comparison remains the independent
 `system_cosim` target. Its functional machine and checkpoint support lives in
 `system_emu`; it is not a benchmark harness. The former benchmark directory,
 image exporter, calibration and folder-driven suite are removed.
+`scripts/validate-hardware.ps1 -Mode iverilog` (and `all`) includes this target
+in addition to the system library's component RTL qualifications.
 
 Input, first-person camera, retained-control, board-application
 and fetch/pause regressions also run in `host`; their module names remain filters.
@@ -898,3 +985,9 @@ Functional GPU/Display fixtures save complete endpoint RGB and compare four
 heights over an inactive bridge against an explicit early-alpha control; opaque
 depth must remain identical. Goal closing is rendered before transition freeze.
 All cases have finite instruction-step bounds.
+
+The authoritative image producer lives in `applications/image`; its generated
+asset unit contract and the `application_artifact` Rust/Python qualification
+belong to that package. Complete-System board/application tests consume its
+exact generated-asset library through a dev dependency. Existing-image model
+binaries do not acquire that dependency or run an application build.

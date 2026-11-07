@@ -3,13 +3,14 @@ use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
 mod gpu_demo_api;
+mod gpu_board;use gpu_board::*;
 use gpu_demo_api::*;
 
 pub fn ui_capture_once() {
-    let mut gpu = Gpu::init(demo_config());
+    let mut gpu = Gpu::init(board_gpu_config());
     let mut commands = gpu.command_buffer();
-    let color = demo_color_b();
-    let depth = demo_depth();
+    let color = board_color_b();
+    let depth = board_depth();
     let mut display = Display::open();
     let mut grid = demo_grid(false);
     demo_number(&mut grid, 0, 0, 1, 7);

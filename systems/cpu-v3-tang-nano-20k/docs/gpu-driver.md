@@ -78,17 +78,27 @@ submissions use the same sequence. Addresses below are physical **bytes**, with 
 
 | Range | Owner |
 |---|---|
+| 0x100000..0x400000 | Low immutable asset bank, 3 MiB |
 | 0x400000..0x440000 | Fixed Color A, boot's initial Front |
 | 0x440000..0x480000 | Fixed Color B, alternating output/Front |
 | 0x480000..0x4c0000 | Fixed Depth |
 | 0x4c0000..0x4d0000 | Driver command allocation, 64 KiB |
 | 0x4d0000..0x4e0000 | Driver object allocation, 64 KiB |
-| 0x4e0000..0x7df800 | Fixed GPU asset allocations |
+| 0x4e0000..0x7df800 | High immutable asset bank, 3 MiB minus 2 KiB |
 | 0x7df800..0x7e0000 | Two reserved 1-KiB UI pages |
 | 0x7e0000..0x7f0000 | Second command allocation, 64 KiB |
 | 0x7f0000..0x800000 | Second object allocation, 64 KiB |
 
-The entire high 4 MiB domain is Shared in `TangNano20kMemoryLayout`, never Main.
+Both asset banks and the entire high 4 MiB domain are Shared in
+`TangNano20kMemoryLayout`, never Main. General Main ends at byte `0x100000`;
+CPU data/heap/stack and CSEG7 stay below that boundary. Asset capacity totals
+6 MiB minus 2 KiB. Each allocation fits wholly inside one bank; it cannot span
+the framebuffer/depth/input hole between them. `gpu_asset_bank_end` supplies
+the bank boundary for RCC extent checks and immutable CPU window reads.
+Low-bank immutable reads restore DSEG3 just like high-bank reads; this does
+not authorize command/object uploads into assets. Applications must reserve
+any diagnostic scratch ranges separately from their own asset allocations.
+
 Boot leaves both framebuffers untouched, and optional COPY/ZERO resources cannot
 occupy either command/object allocation or the reserved UI pages. No hardware decoder,
 PLL, CL3 memory timing, ordinary heap or FPGA image configuration is changed.

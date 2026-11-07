@@ -14,9 +14,7 @@ use std::{
 
 #[path = "capture_profile.rs"]
 pub(crate) mod capture_profile;
-pub use capture_profile::{
-    materialize_renderer_sources, RendererCaptureConfiguration, RendererLayoutProfile,
-};
+pub use capture_profile::RendererCaptureConfiguration;
 
 pub fn load_module(
     local_dir: &Path,
@@ -106,30 +104,21 @@ pub fn compile_explicit_gpu_program_checked_with_sources(
     check: &rcc::frontend::rustc_check::RustcCheck,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, String> {
-    if configuration.profile != RendererLayoutProfile::Column16 {
-        return Err("explicit GPU API requires column16 layout".into());
-    }
-    let actual_shared = materialize_renderer_sources(
+    GpuSources {
+        local_dir,
         shared_dir,
-        &check.directory.join("renderer-rcc"),
-        configuration.profile,
-        dependency,
-    )?;
-    compile_renderer_capture(
-        "gpu_api",
+        constants,
+        ordinary_dirs,
+        configuration,
+    }
+    .compile_checked(
         main_name,
         source,
         options,
-        local_dir,
-        &actual_shared,
-        constants,
-        ordinary_dirs,
-        configuration.capture.as_ref(),
-        configuration,
-        Some(check),
+        check,
         dependency,
+        &mut |_, _| {},
     )
-    .map_err(|error| error.to_string())
 }
 
 /// Only an explicit diagnostic host may replace the ordinary no-op consumer.
@@ -167,6 +156,7 @@ impl CaptureConfiguration {
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn compile_renderer_capture(
     library_root: &str,
@@ -182,7 +172,77 @@ fn compile_renderer_capture(
     check: Option<&rcc::frontend::rustc_check::RustcCheck>,
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
-    let mut loader = |name: &str| {
+    GpuSources {
+        local_dir,
+        shared_dir,
+        constants,
+        ordinary_dirs,
+        configuration,
+    }
+    .compile(
+        library_root,
+        main_name,
+        source,
+        options,
+        capture,
+        check,
+        dependency,
+        &mut |_, _| {},
+    )
+}
+
+/// System module lookup and approved root; observers cannot change source authority.
+#[derive(Clone, Copy)]
+pub struct GpuSources<'a> {
+    pub local_dir: &'a Path,
+    pub shared_dir: &'a Path,
+    pub constants: &'a str,
+    pub ordinary_dirs: &'a [PathBuf],
+    pub configuration: &'a RendererCaptureConfiguration,
+}
+impl GpuSources<'_> {
+    pub fn compile_checked(
+        &self,
+        main_name: &str,
+        source: &str,
+        options: &impl rcc::RccConfig,
+        check: &rcc::frontend::rustc_check::RustcCheck,
+        dependency: &mut dyn FnMut(&Path),
+        observe: &mut dyn FnMut(&str, &rcc::frontend::ModuleSource),
+    ) -> Result<rcc::frontend::Program, String> {
+        let shared = std::fs::canonicalize(self.shared_dir)
+            .map_err(|error| format!("GPU library root {}: {error}", self.shared_dir.display()))?;
+        let sources = GpuSources {
+            shared_dir: &shared,
+            ..*self
+        };
+        sources
+            .compile(
+                "gpu_api",
+                main_name,
+                source,
+                options,
+                self.configuration.capture.as_ref(),
+                Some(check),
+                dependency,
+                observe,
+            )
+            .map_err(|error| error.to_string())
+    }
+    fn load(
+        &self,
+        library_root: &str,
+        name: &str,
+        capture: Option<&CaptureConfiguration>,
+        dependency: &mut dyn FnMut(&Path),
+    ) -> Result<rcc::frontend::ModuleSource, String> {
+        let Self {
+            local_dir,
+            shared_dir,
+            constants,
+            ordinary_dirs,
+            configuration,
+        } = *self;
         if name == "gpu_render_profile" {
             return Ok(rcc::frontend::ModuleSource {
                 source: render_profile_source(),
@@ -197,9 +257,9 @@ fn compile_renderer_capture(
         }
         if name == "gpu_capture_access" && library_root == "gpu_api" {
             return Ok(rcc::frontend::ModuleSource {
-                source: "mod gpu_api;pub use gpu_api::{gpu_capture_error,gpu_capture_range_word,gpu_capture_read_word};".into(),
-                origin: None,
-            });
+            source: "mod gpu_api;pub use gpu_api::{gpu_capture_error,gpu_capture_range_word,gpu_capture_read_word};".into(),
+            origin: None,
+        });
         }
         if name == "gpu_layout" {
             let path = shared_dir.join("gpu_layout.rs");
@@ -248,24 +308,42 @@ fn compile_renderer_capture(
         let local = if pinned { shared_dir } else { local_dir };
         let dirs = if pinned { &[][..] } else { ordinary_dirs };
         load_module_source_with_sources(local, shared_dir, constants, name, dirs, dependency)
-    };
-    let approved = [shared_dir.join(format!("{library_root}.rs"))];
-    match check {
-        Some(check) => rcc::frontend::compile_program_named_with_libraries_checked(
-            main_name,
-            source,
-            options,
-            &approved,
-            check,
-            &mut loader,
-        ),
-        None => rcc::frontend::compile_program_named_with_libraries(
-            main_name,
-            source,
-            options,
-            &approved,
-            &mut loader,
-        ),
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn compile(
+        &self,
+        library_root: &str,
+        main_name: &str,
+        source: &str,
+        options: &impl rcc::RccConfig,
+        capture: Option<&CaptureConfiguration>,
+        check: Option<&rcc::frontend::rustc_check::RustcCheck>,
+        dependency: &mut dyn FnMut(&Path),
+        observe: &mut dyn FnMut(&str, &rcc::frontend::ModuleSource),
+    ) -> Result<rcc::frontend::Program, rcc::frontend::CompileError> {
+        let mut loader = |name: &str| {
+            let module = self.load(library_root, name, capture, dependency)?;
+            observe(&format!("{name}.rs"), &module);
+            Ok(module)
+        };
+        let approved = [self.shared_dir.join(format!("{library_root}.rs"))];
+        match check {
+            Some(check) => rcc::frontend::compile_program_named_with_libraries_checked(
+                main_name,
+                source,
+                options,
+                &approved,
+                check,
+                &mut loader,
+            ),
+            None => rcc::frontend::compile_program_named_with_libraries(
+                main_name,
+                source,
+                options,
+                &approved,
+                &mut loader,
+            ),
+        }
     }
 }
 
@@ -289,7 +367,7 @@ fn capture_config_source(
     source.push_str("0\n}\n");
     source.push_str(&format!(
         "pub const GPU_CAPTURE_CONFIG_LAYOUT_ABI:u16={};\n",
-        configuration.profile.layout_abi()
+        configuration.layout().layout_abi()
     ));
     source.push_str(&configuration.asset_check_source());
     if configuration.hook_enabled || manifest.is_some() {
@@ -323,10 +401,7 @@ fn resolve_module_with_sources(
     }
     if name == "gpu_capture_config" {
         return Ok((
-            capture_config_source(
-                None,
-                &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Column16),
-            ),
+            capture_config_source(None, &RendererCaptureConfiguration::without_capture()),
             None,
         ));
     }
@@ -339,14 +414,7 @@ fn resolve_module_with_sources(
             dependency(&local);
             return Ok((text, Some(local)));
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            if local_dir == shared_dir && ordinary_dirs.is_empty() {
-                return Err(format!(
-                    "read module {name} at {}: {error}",
-                    local.display()
-                ));
-            }
-        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => {
             dependency(&local);
             return Err(format!(
@@ -359,13 +427,16 @@ fn resolve_module_with_sources(
     // file. Watch its existing directory, not a nonexistent file (always dirty).
     dependency(local_dir);
     let shared = shared_dir.join(format!("{name}.rs"));
-    dependency(&shared);
     let result = std::fs::read_to_string(&shared);
+    dependency(if result.is_ok() { &shared } else { shared_dir });
     if result
         .as_ref()
         .is_err_and(|e| e.kind() == ErrorKind::NotFound)
     {
-        for dir in ordinary_dirs {
+        // System application support is ordinary source, never GPU-library trust.
+        // Production recipes also declare this root in their exported context.
+        let common = shared_dir.join("../applications/rendering/rcc");
+        for dir in ordinary_dirs.iter().chain(std::iter::once(&common)) {
             dependency(shared_dir);
             let path = dir.join(format!("{name}.rs"));
             match std::fs::read_to_string(&path) {
@@ -374,7 +445,9 @@ fn resolve_module_with_sources(
                     return Ok((text, Some(path)));
                 }
                 Err(e) if e.kind() == ErrorKind::NotFound => {
-                    dependency(dir);
+                    if let Some(existing) = dir.ancestors().find(|path| path.is_dir()) {
+                        dependency(existing);
+                    }
                 }
                 Err(e) => {
                     dependency(&path);

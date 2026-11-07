@@ -2,8 +2,10 @@
 name = "cpu-v3-tang-nano-20k"
 version = "0.1.0"
 edition = "2021"
+autotests = false
 
 [dependencies]
+cpu-v3-boot-format = { path = "boot-format" }
 serde_json = "1"
 gpu-v2 = { path = "../../ip/gpu-v2" }
 cpu-v3 = { path = "../../ip/cpu-v3" }
@@ -22,15 +24,15 @@ display-window = ["dep:minifb"]
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.48", features = ["Win32_UI_Input_XboxController"] }
 
-[build-dependencies]
-syn = { version = "1", features = ["full"] }
-serde_json = "1"
-cpu-v3 = { path = "../../ip/cpu-v3" }
-rcc = { path = "../../compiler/rcc" }
-
 [dev-dependencies]
+cpu-v3-application = { path = "applications/image" }
 syn = { version = "1", features = ["full"] }
 serde_json = "1"
+
+[[bin]]
+name = "cpu-v3-system"
+path = "src/bin/cpu-v3-system.rs"
+test = false
 
 # These CLI targets have no unit tests; keep their ordinary binaries available.
 
@@ -45,11 +47,208 @@ path = "src/bin/cpu-v3-gpu-dump.rs"
 test = false
 
 [[bin]]
-name = "cpu-v3-pack"
-path = "src/bin/cpu-v3-pack.rs"
-test = false
-
-[[bin]]
 name = "cpu-v3-system-emu"
 path = "src/bin/cpu-v3-system-emu.rs"
 test = false
+
+[[bin]]
+name = "bloxorz-profile-runner"
+path = "applications/bloxorz/tools/profile_runner.rs"
+
+# apps test contracts; target names remain stable.
+
+[[test]]
+name = "bloxorz_shadow_batch"
+path = "tests/apps/bloxorz_shadow_batch.rs"
+
+[[test]]
+name = "bloxorz_shadow_cpu"
+path = "tests/apps/bloxorz_shadow_cpu.rs"
+
+[[test]]
+name = "bloxorz_shadow_pack"
+path = "tests/apps/bloxorz_shadow_pack.rs"
+
+[[test]]
+name = "gpu_bench"
+path = "tests/apps/gpu_bench.rs"
+
+[[test]]
+name = "gpu_demo_camera"
+path = "tests/apps/gpu_demo_camera.rs"
+
+[[test]]
+name = "gpu_demo_column16"
+path = "tests/apps/gpu_demo_column16.rs"
+
+[[test]]
+name = "gpu_demo_direct_fault"
+path = "tests/apps/gpu_demo_direct_fault.rs"
+
+[[test]]
+name = "gpu_demo_native"
+path = "tests/apps/gpu_demo_native.rs"
+
+[[test]]
+name = "gpu_demo_profile"
+path = "tests/apps/gpu_demo_profile.rs"
+
+[[test]]
+name = "gpu_renderer_native"
+path = "tests/apps/gpu_renderer_native.rs"
+
+# boot test contracts; target names remain stable.
+
+# capture test contracts; target names remain stable.
+
+[[test]]
+name = "capture_draw"
+path = "tests/capture/capture_draw.rs"
+
+[[test]]
+name = "capture_layout"
+path = "tests/capture/capture_layout.rs"
+
+# compiler test contracts; target names remain stable.
+
+[[test]]
+name = "graphics_api_b_modules"
+path = "tests/compiler/graphics_api_b_modules.rs"
+
+[[test]]
+name = "graphics_api_b_value_gate"
+path = "tests/compiler/graphics_api_b_value_gate.rs"
+
+[[test]]
+name = "graphics_member"
+path = "tests/compiler/graphics_member.rs"
+
+[[test]]
+name = "rcc_inline"
+path = "tests/compiler/rcc_inline.rs"
+
+# cpu memory test contracts; target names remain stable.
+
+[[test]]
+name = "cache_maintenance_protocol"
+path = "tests/cpu_memory/cache_maintenance_protocol.rs"
+
+[[test]]
+name = "dcache_continuation"
+path = "tests/cpu_memory/dcache_continuation.rs"
+
+[[test]]
+name = "native_system_emu"
+path = "tests/cpu_memory/native_system_emu.rs"
+
+[[test]]
+name = "system_cosim"
+path = "tests/cpu_memory/system_cosim.rs"
+
+# display test contracts; target names remain stable.
+
+[[test]]
+name = "display_cycle_fill"
+path = "tests/display/display_cycle_fill.rs"
+
+[[test]]
+name = "display_cycle_pixels"
+path = "tests/display/display_cycle_pixels.rs"
+
+[[test]]
+name = "display_cycle_ram"
+path = "tests/display/display_cycle_ram.rs"
+
+[[test]]
+name = "display_cycle_timing"
+path = "tests/display/display_cycle_timing.rs"
+
+[[test]]
+name = "display_cycle_tmds"
+path = "tests/display/display_cycle_tmds.rs"
+
+# gpu test contracts; target names remain stable.
+
+[[test]]
+name = "gpu_dcache_clean_trace"
+path = "tests/gpu/gpu_dcache_clean_trace.rs"
+
+[[test]]
+name = "gpu_device_rtl"
+path = "tests/gpu/gpu_device_rtl.rs"
+
+[[test]]
+name = "gpu_prepared_group"
+path = "tests/gpu/gpu_prepared_group.rs"
+
+[[test]]
+name = "gpu_present"
+path = "tests/gpu/gpu_present.rs"
+
+[[test]]
+name = "gpu_rcc_evidence"
+path = "tests/gpu/gpu_rcc_evidence.rs"
+
+[[test]]
+name = "gpu_rcc_present_evidence"
+path = "tests/gpu/gpu_rcc_present_evidence.rs"
+
+[[test]]
+name = "gpu_rcc_submit"
+path = "tests/gpu/gpu_rcc_submit.rs"
+
+[[test]]
+name = "gpu_rcc_ui_evidence"
+path = "tests/gpu/gpu_rcc_ui_evidence.rs"
+
+[[test]]
+name = "gpu_request_slot"
+path = "tests/gpu/gpu_request_slot.rs"
+
+# host test contracts; target names remain stable.
+
+[[test]]
+name = "host"
+path = "tests/host/mod.rs"
+
+# input test contracts; target names remain stable.
+
+[[test]]
+name = "dualshock2"
+path = "tests/input/dualshock2.rs"
+
+# rtl test contracts; target names remain stable.
+
+[[test]]
+name = "ram_collision_consumption"
+path = "tests/rtl/ram_collision_consumption.rs"
+
+[[test]]
+name = "raster_phase_replica"
+path = "tests/rtl/raster_phase_replica.rs"
+
+# system test contracts; target names remain stable.
+
+[[test]]
+name = "native_devices"
+path = "tests/system/native_devices.rs"
+
+[[test]]
+name = "system_cycle_components"
+path = "tests/system/system_cycle_components.rs"
+
+[[test]]
+name = "system_cycle_profile"
+path = "tests/system/system_cycle_profile.rs"
+
+[[test]]
+name = "system_cycle_root"
+path = "tests/system/system_cycle_root.rs"
+
+[[test]]
+name = "system_runner"
+path = "tests/system/system_runner.rs"
+
+[[test]]
+name = "vblank_fast_forward"
+path = "tests/system/vblank_fast_forward.rs"

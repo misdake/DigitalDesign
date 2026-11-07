@@ -9,3 +9,7 @@ the harness owns independent state/geometry replay and legacy GPU fixtures.
 The shared specifications are indexed in [docs](/systems/cpu-v3-tang-nano-20k/applications/bloxorz/docs/README.md).
 Generated assets stay in Cargo OUT_DIR or target; imported reference data remains
 tracked input. Refresh tools require an explicit reference source.
+
+The level-29 profiling scenario, host runner and sidecar codec also belong here,
+under `tools/`; scenario qualification lives beside the selector and in `tests/`.
+The shared system runner helpers and passive model contain no game policy.

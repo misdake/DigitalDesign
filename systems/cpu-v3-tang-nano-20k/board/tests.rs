@@ -128,20 +128,23 @@ fn single_application_assets_repack_exactly() {
     .unwrap();
     assert_eq!(
         cpu_v3_tang_nano_20k::boot::pack_application_resources(
-            include_bytes!(concat!(env!("OUT_DIR"), "/application.v3bin")),
-            include_str!(concat!(env!("OUT_DIR"), "/application.static-words"))
+            cpu_v3_application::asset("application.v3bin").unwrap(),
+            std::str::from_utf8(cpu_v3_application::asset("application.static-words").unwrap())
+                .unwrap()
                 .trim()
                 .parse()
                 .unwrap(),
             &project.resources(root).unwrap()
         )
         .unwrap(),
-        GENERATED_APPLICATION_PACKAGE
+        cpu_v3_application::package()
     );
 }
 #[test]
 fn application_updates_do_not_change_gateware() {
     let before = VerilogProject::generate::<CpuV3System>().unwrap().files;
+    let synthesis = VerilogProject::generate_for_synthesis::<CpuV3System>().unwrap();
+    assert_eq!(before, synthesis.files);
     TEST_IMAGE.with(|x| *x.borrow_mut() = Some((fixture(), false, 0x5a35)));
     let after = VerilogProject::generate::<CpuV3System>().unwrap().files;
     TEST_IMAGE.with(|x| *x.borrow_mut() = None);

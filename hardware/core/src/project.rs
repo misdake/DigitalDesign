@@ -100,7 +100,7 @@ struct ModuleDescriptor {
     instance_stem: String,
     relative_path: PathBuf,
     target_resource_leaf: bool,
-    build: fn() -> RawModule,
+    build: fn(bool) -> RawModule,
 }
 
 struct RecordedInstance {
@@ -217,7 +217,7 @@ fn ports(bindings: Vec<IoBinding>) -> Vec<VerilogPort> {
         .collect()
 }
 
-fn build_raw<M: Module>() -> RawModule {
+fn build_raw<M: Module>(include_testbench: bool) -> RawModule {
     let recording = RecordingGuard::start();
 
     let handwritten_source = M::verilog_source();
@@ -251,7 +251,7 @@ fn build_raw<M: Module>() -> RawModule {
         dependencies: M::verilog_dependencies(),
         base_clocked,
         resources: M::target_resources(),
-        testbench: M::verilog_testbench(),
+        testbench: include_testbench.then(M::verilog_testbench).flatten(),
     }
 }
 
@@ -307,9 +307,25 @@ pub struct VerilogProject;
 
 impl VerilogProject {
     pub fn generate<M: Module>() -> Result<GeneratedVerilogProject, ProjectError> {
+        Self::generate_with_testbenches::<M>(true)
+    }
+
+    /// Synthesis source closure only: do not construct simulation fixtures.
+    /// Explicit HDL signatures, dependencies and resource ownership remain checked.
+    /// Simulation qualification still uses `generate` and its required testbenches.
+    pub fn generate_for_synthesis<M: Module>() -> Result<GeneratedVerilogProject, ProjectError> {
+        Self::generate_with_testbenches::<M>(false)
+    }
+
+    fn generate_with_testbenches<M: Module>(
+        include_testbenches: bool,
+    ) -> Result<GeneratedVerilogProject, ProjectError> {
         let root = descriptor::<M>();
         let top_module = root.module_name.clone();
-        let mut resolver = Resolver::default();
+        let mut resolver = Resolver {
+            synthesis_only: !include_testbenches,
+            ..Resolver::default()
+        };
         let summary = resolver.visit(root)?;
         Ok(GeneratedVerilogProject {
             top_module,
@@ -325,6 +341,7 @@ impl VerilogProject {
 
 #[derive(Default)]
 struct Resolver {
+    synthesis_only: bool,
     visiting: HashSet<TypeId>,
     completed: HashMap<TypeId, ModuleSummary>,
     module_names: HashSet<String>,
@@ -343,7 +360,7 @@ impl Resolver {
             ));
         }
 
-        let raw = (descriptor.build)();
+        let raw = (descriptor.build)(!self.synthesis_only);
         if raw.source.is_none() && !raw.dependencies.is_empty() {
             return Err(ProjectError::VerilogDependenciesRequireHandwrittenSource(
                 raw.descriptor.rust_name.to_string(),
@@ -411,7 +428,7 @@ impl Resolver {
 
         let source = if let Some(source) = raw.source.as_deref() {
             validate_explicit_verilog_source(&raw, source, clocked)?;
-            if raw.testbench.is_none() {
+            if !self.synthesis_only && raw.testbench.is_none() {
                 return Err(ProjectError::MissingVerilogTestbench(
                     raw.descriptor.module_name.clone(),
                 ));
@@ -481,7 +498,7 @@ pub(crate) struct ExplicitVerilogSourceTest {
 
 pub(crate) fn explicit_verilog_source_test<M: Module>(
 ) -> Result<ExplicitVerilogSourceTest, ProjectError> {
-    let raw = build_raw::<M>();
+    let raw = build_raw::<M>(true);
     let source = raw.source.as_deref().ok_or_else(|| {
         ProjectError::InvalidHandwrittenVerilog(format!(
             "module `{}` has no explicit Verilog source to simulate",

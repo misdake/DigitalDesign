@@ -30,14 +30,9 @@ try {
     $env:CPU_V3_BOOT_EXAMPLE = 'gpu_bench'
     if ($Scene -eq 'full') { $env:GPU_BENCH_SCENE = 'full' }
     else { Remove-Item Env:GPU_BENCH_SCENE -ErrorAction SilentlyContinue }
-    Invoke-BenchCargo 'gpu-bench-assets' @('-p','cpu-v3-tang-nano-20k','--bin','cpu-v3-boot-assets','--',"$out/boot")
-    Invoke-BenchCargo 'gpu-bench-repack' @('-p','cpu-v3-tang-nano-20k','--bin','cpu-v3-pack','--',
-        "$out/boot/application.v3bin",'--project',"$out/boot/bench-repack.conf",'-o',"$out/boot/independent.bin")
-    if ((Get-FileHash "$out/boot/cpu-v3-boot.bin").Hash -ne (Get-FileHash "$out/boot/independent.bin").Hash) {
-        throw 'Generated and independent boot packages differ'
-    }
+    & systems/cpu-v3-tang-nano-20k/tools/build-application.ps1 -Application 'gpu-bench' -OutputDirectory "$out/boot" -BuildArguments @('--scene', $Scene) -Label "$runLabel-application"
     if ($BuildHardware) {
-        Invoke-BenchCargo 'gpu-bench-hardware-build' @('-p','cpu-v3-tang-nano-20k','--example','cpu_v3_system','--',$HardwareDirectory,'--build')
+        Invoke-BenchCargo 'gpu-bench-hardware-build' @('-p','cpu-v3-tang-nano-20k','--bin','cpu-v3-system','--',$HardwareDirectory,'--build')
     }
     if (-not $Program) { return }
     # The profiler owns this shared implementation. Never restore the old JSON
@@ -48,24 +43,16 @@ try {
         -not $captureParameters.ContainsKey('StopAfterIdleSeconds')) {
         throw 'Board capture requires the delivered profiler live-CSV capture interface; integrate it first'
     }
-    Invoke-BenchCargo 'gpu-bench-hardware-audit' @('-p','cpu-v3-tang-nano-20k','--example','cpu_v3_system','--',$HardwareDirectory,'--check-existing')
+    & python -B systems/cpu-v3-tang-nano-20k/tools/hardware.py assemble $HardwareDirectory "$out/boot" --out "$out/deployment"
+    if ($LASTEXITCODE -ne 0) { throw 'Hardware/application deployment assembly failed' }
+    $deployment = Get-Content -Raw "$out/deployment/deployment.json" | ConvertFrom-Json
     $hw = (Resolve-Path -LiteralPath $HardwareDirectory).Path
-    # Keep one generated code authority. Compose only the audited configuration
-    # prefix, erased padding and the build-script-generated boot package.
-    [byte[]]$configuration = [IO.File]::ReadAllBytes("$hw/impl/pnr/cpu_v3_system.bin")
-    [byte[]]$boot = [IO.File]::ReadAllBytes("$out/boot/cpu-v3-boot.bin")
-    if ($configuration.Length -gt 0x100000) { throw 'Configuration overlaps the fixed boot offset' }
-    $image = [byte[]]::new(0x100000 + $boot.Length)
-    [Array]::Fill[byte]($image, 255)
-    [Array]::Copy($configuration, 0, $image, 0, $configuration.Length)
-    [Array]::Copy($boot, 0, $image, 0x100000, $boot.Length)
-    [IO.File]::WriteAllBytes("$out/complete-flash.bin", $image)
     $assets = Get-Content -LiteralPath "$out/boot/gpu-bench-assets/assets.json" -Raw | ConvertFrom-Json
     $sourceHashes = [ordered]@{}
     $sourceFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File |
         Where-Object { $_.Extension -in @('.py', '.v', '.rs', '.ps1', '.md') })
-    $sourceFiles += Get-Item 'systems/cpu-v3-tang-nano-20k/build.rs',
-        'systems/cpu-v3-tang-nano-20k/src/bin/cpu-v3-boot-assets.rs', $captureScript
+    $sourceFiles += Get-Item 'systems/cpu-v3-tang-nano-20k/applications/image/build.rs',
+        'systems/cpu-v3-tang-nano-20k/applications/image/src/bin/cpu-v3-boot-assets.rs', $captureScript
     foreach ($sourceFile in ($sourceFiles | Sort-Object FullName)) {
         $relative = [IO.Path]::GetRelativePath($repo, $sourceFile.FullName).Replace('\', '/')
         $sourceHashes[$relative] = (Get-FileHash -LiteralPath $sourceFile.FullName).Hash.ToLowerInvariant()
@@ -73,10 +60,10 @@ try {
     $identity = [ordered]@{
         commit = (& git rev-parse HEAD).Trim()
         dirty = [bool](& git status --porcelain)
-        configuration_sha256 = (Get-FileHash "$hw/impl/pnr/cpu_v3_system.bin").Hash
+        configuration_sha256 = $deployment.files.'configuration.bin'.sha256
         bitstream_sha256 = (Get-FileHash "$hw/impl/pnr/cpu_v3_system.fs").Hash
         boot_sha256 = (Get-FileHash "$out/boot/cpu-v3-boot.bin").Hash
-        full_flash_sha256 = (Get-FileHash "$out/complete-flash.bin").Hash
+        full_flash_sha256 = $deployment.files.'complete-flash.bin'.sha256
         asset_token = $assets.token
         cases = $assets.cases.Count
         cpu_clock_hz = 54000000
@@ -87,8 +74,8 @@ try {
         timing_interface = 'profiler live CSV: offset,count,utc'
     }
     $identity | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$out/identity.json" -Encoding utf8
-    Invoke-BenchCargo 'gpu-bench-program-flash' @('-p','cpu-v3-tang-nano-20k','--example','cpu_v3_system','--',
-        $HardwareDirectory,'--program-flash','0',"$out/complete-flash.bin")
+    & python -B systems/cpu-v3-tang-nano-20k/tools/hardware.py program-flash $HardwareDirectory "$out/deployment" --kind complete --receipt "$out/program-flash.json"
+    if ($LASTEXITCODE -ne 0) { throw 'Flash programming failed' }
     $jobs += Start-Job -ScriptBlock {
         param($root,$com,$seconds,$destination)
         $ErrorActionPreference = 'Stop'
@@ -105,8 +92,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'HDMI capture failed; see video.log' }
     } -ArgumentList $Ffmpeg,$CaptureSeconds,$out
     Start-Sleep -Seconds 3
-    Invoke-BenchCargo 'gpu-bench-program-sram' @('-p','cpu-v3-tang-nano-20k','--example','cpu_v3_system','--',
-        $HardwareDirectory,'--program-existing')
+    & python -B systems/cpu-v3-tang-nano-20k/tools/hardware.py program-sram $HardwareDirectory "$out/deployment" --receipt "$out/program-sram.json"
+    if ($LASTEXITCODE -ne 0) { throw 'SRAM programming failed' }
     $identity.programmed = $true
     $identity | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$out/identity.json" -Encoding utf8
     $null = Wait-Job -Job $jobs -Timeout ($CaptureSeconds+30)

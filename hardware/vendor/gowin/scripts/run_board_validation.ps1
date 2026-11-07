@@ -147,66 +147,32 @@ Push-Location $repoRoot
 try {
     if ($Mode -ne "Observe") {
         Invoke-CargoStage "audit existing bitstream" "run" @(
-            "-p", $configuration.Package, "--example", $configuration.Example,
-            "--", "--check-existing"
+            "-p", "digital-design-hardware-gowin", "--bin", "gowin-artifact",
+            "--", (Join-Path $repoRoot $configuration.Output)
         )
     }
 
     if ($WriteBootFlash -or $WriteCompleteFlash) {
-        $bootAssetsDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
+        $bootAssetsDirectory = Join-Path $runDirectory "boot"
         $bootPackagePath = Join-Path $bootAssetsDirectory "cpu-v3-boot.bin"
-        $applicationPath = Join-Path $bootAssetsDirectory "application.v3bin"
-        $repackedPackagePath = Join-Path $runDirectory "cpu-v3-boot.repacked.bin"
-        $repackedMapPath = Join-Path $runDirectory "cpu-v3-boot.repacked.map"
-        Invoke-CargoStage "materialize generated boot package" "run" @(
-            "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets",
-            "--", $bootAssetsDirectory
+        Invoke-CargoStage "build selected application" "run" @(
+            "-p", "cpu-v3-tools", "--bin", "cpu-v3-app", "--", "build", "default", "--out", $bootAssetsDirectory
         )
-        Invoke-CargoStage "independently pack generated single application" "run" @(
-            "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
-            $applicationPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
-            "--project", (Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/boot-applications.conf")
-        )
-        $generatedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash
-        $repackedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $repackedPackagePath).Hash
-        if ($generatedPackageHash -ne $repackedPackageHash) {
-            throw "independently repacked boot package does not match the generated package"
-        }
-        if ($WriteBootFlash) {
-            Invoke-CargoStage "program external boot Flash once" "run" @(
-                "-p", $configuration.Package, "--example", $configuration.Example,
-                "--", "--program-flash", "0x100000", $bootPackagePath
-            )
-        }
-    }
-
-    if ($WriteCompleteFlash) {
-        $artifactDirectory = Join-Path $repoRoot $configuration.Output
-        $artifactManifestPath = Join-Path $artifactDirectory "gowin-build.manifest"
-        $artifactManifest = Read-KeyValueFile $artifactManifestPath
-        $bitstreamPath = Join-Path $artifactDirectory $artifactManifest["bitstream_path"]
-        $configurationBinPath = [System.IO.Path]::ChangeExtension($bitstreamPath, ".bin")
-        if (-not (Test-Path -LiteralPath $configurationBinPath)) {
-            throw "Gowin configuration binary is missing beside the audited bitstream: $configurationBinPath"
-        }
-
-        $completeFlashPath = Join-Path $runDirectory "cpu-v3-complete-flash.bin"
-        Invoke-CargoStage "build complete power-on Flash image" "run" @(
-            "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
-            $applicationPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
-            "--project", (Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/boot-applications.conf"),
-            "--configuration-bin", $configurationBinPath, "--flash-image", $completeFlashPath
-        )
-        Invoke-CargoStage "program complete power-on Flash image once" "run" @(
-            "-p", $configuration.Package, "--example", $configuration.Example,
-            "--", "--program-flash", "0x000000", $completeFlashPath
-        )
+        $deployment = Join-Path $runDirectory "deployment"
+        $hardware = Join-Path $repoRoot $configuration.Output
+        $frontDoor = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/tools/hardware.py"
+        Invoke-Stage "assemble audited deployment" "python" @("-B", $frontDoor, "assemble", $hardware, $bootAssetsDirectory, "--out", $deployment)
+        $kind = if ($WriteBootFlash) { "application" } else { "complete" }
+        $stage = if ($WriteBootFlash) { "program external boot Flash once" } else { "program complete power-on Flash image once" }
+        $completeFlashPath = Join-Path $deployment "complete-flash.bin"
+        Invoke-Stage $stage "python" @("-B", $frontDoor, "program-flash", $hardware, $deployment, "--kind", $kind,
+            "--receipt", (Join-Path $runDirectory "program-flash.json"))
     }
 
     if ($Mode -eq "Program" -or $Mode -eq "Full") {
         Invoke-CargoStage "program audited SRAM bitstream once" "run" @(
-            "-p", $configuration.Package, "--example", $configuration.Example,
-            "--", "--program-existing"
+            "-p", "digital-design-hardware-gowin", "--bin", "gowin-artifact",
+            "--", (Join-Path $repoRoot $configuration.Output), "--program-existing"
         )
     }
 

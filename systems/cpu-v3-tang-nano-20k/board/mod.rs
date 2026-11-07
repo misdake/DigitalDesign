@@ -1,4 +1,4 @@
-//! Production board composition; the Cargo example is only its stable CLI.
+// Production board composition, shared by the normal CLI and qualification entry.
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
 use cpu_v3_tang_nano_20k::display::ACTIVE_DISPLAY_CONFIG;
 use cpu_v3_tang_nano_20k::{
@@ -13,8 +13,6 @@ use digital_design_hardware_gowin::{
     TangNano20KBootHdmiStreamDs2Inputs, TangNano20KBootHdmiStreamDs2Outputs, TangNano20KVideoMode,
 };
 use std::cell::{Cell, RefCell};
-const GENERATED_APPLICATION_PACKAGE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.bin"));
 // The sealed board baseline stays at 2. Set 1 only for the 27 MHz candidate.
 const SPI_HALF_PERIOD: u64 = match option_env!("CPU_V3_SPI_HALF_PERIOD") {
     None => 2,
@@ -108,11 +106,12 @@ impl Module for CpuV3System {
             VerilogDependency::new::<FramebufferHdmi>("u_display"),
         ]
     }
+    #[cfg(test)]
     fn verilog_testbench() -> Option<String> {
         if BOARD_APPLICATION_TEST.with(Cell::get) {
             let fixture = TEST_IMAGE.with(|x| x.borrow().clone());
             let (package, _, halt) =
-                fixture.unwrap_or_else(|| (GENERATED_APPLICATION_PACKAGE.to_vec(), false, 0));
+                fixture.unwrap_or_else(|| (cpu_v3_application::package().to_vec(), false, 0));
             let mut init = String::new();
             for (index, byte) in package.iter().enumerate() {
                 init.push_str(&format!(" flash_image[{index}]=8'h{byte:02x};\n"));
@@ -150,7 +149,7 @@ impl Module for CpuV3System {
         }
         let fixture = TEST_IMAGE.with(|x| x.borrow().clone());
         let (package, error, halt) =
-            fixture.unwrap_or_else(|| (GENERATED_APPLICATION_PACKAGE.to_vec(), false, 0));
+            fixture.unwrap_or_else(|| (cpu_v3_application::package().to_vec(), false, 0));
         let mut flash_init = String::new();
         let mut code_init = String::new();
         if package.len() <= 65536 {
@@ -286,6 +285,3 @@ pub(crate) fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
     TangNano20K::cold_boot_hdmi_stream_ds2_memory_project::<CpuV3System>("cpu_v3_system", mode)
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
 }
-
-#[cfg(test)]
-mod tests;

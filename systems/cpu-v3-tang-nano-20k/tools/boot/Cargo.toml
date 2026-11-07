@@ -1,0 +1,8 @@
+[package]
+name = "cpu-v3-tools"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpu-v3-boot-format = { path = "../../boot-format" }
+serde_json = "1"

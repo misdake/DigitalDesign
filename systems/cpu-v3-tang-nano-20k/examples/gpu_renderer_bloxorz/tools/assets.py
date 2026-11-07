@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
 from pathlib import Path
 import struct
@@ -214,6 +215,15 @@ def pack(output,main_log2=8,marker_log2=8):
     assert 0x5b2000+len(binary)<=0x600000
     (output/'blox_levels.bin').write_bytes(binary)
     manifest['resources'].append(dict(kind='blox_levels',file='blox_levels.bin',address=0x5b2000,bytes=len(binary)))
+    initial = int(os.environ.get('BLOXORZ_START_LEVEL', '1'))
+    if not 1 <= initial <= 33:
+        raise ValueError('BLOXORZ_START_LEVEL must be in 1..33')
+    constants += f'pub const BLOXORZ_INITIAL_LEVEL:u16={initial-1};\n'
+    manifest['initial_level'] = initial
+    phase = os.environ.get('BLOXORZ_START_PHASE', 'entry')
+    assert phase in ('entry', 'play'), 'BLOXORZ_START_PHASE must be entry or play'
+    constants += f'pub const BLOXORZ_INITIAL_PLAY:u16={int(phase == "play")};\n'
+    manifest['initial_phase'] = phase
     constants += 'pub const BLOX_LEVEL_COUNT:u16=33;\npub const BLOX_LEVEL_DATA_SECTOR:u16=46656;\n'
     constants += r"""
 // Read-only app assets. Restore DSEG3 before renderer calls; no pointer escapes.

@@ -28,9 +28,15 @@ def sectors():
     return values
 
 
-def validate_asset_range(address, length):
+def asset_regions():
+    """Prefer the original high bank; each allocation must fit one whole bank."""
     bounds = sectors()
-    first = bounds["GPU_ASSET_FIRST_SECTOR"] * 128
-    end = bounds["GPU_ASSET_END_SECTOR"] * 128
-    if not (length > 0 and first <= address < address + length <= end):
+    return [(bounds[first] * 128, bounds[end] * 128) for first, end in [
+        ('GPU_ASSET_FIRST_SECTOR', 'GPU_ASSET_END_SECTOR'),
+        ('GPU_ASSET_LOW_FIRST_SECTOR', 'GPU_ASSET_LOW_END_SECTOR')]]
+
+
+def validate_asset_range(address, length):
+    if not any(length > 0 and first <= address < address + length <= end
+               for first, end in asset_regions()):
         raise ValueError(f"asset {address:#x}+{length:#x} overlaps reserved GPU storage")

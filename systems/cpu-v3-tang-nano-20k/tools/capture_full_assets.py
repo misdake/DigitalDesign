@@ -41,7 +41,7 @@ def pack(output):
     sources = dict(catalog['sources'])
     sources.update({(SYSTEM / name).relative_to(ROOT).as_posix(): sha
                     for name, sha in font_manifest['sources'].items()})
-    source_paths = [Path(__file__), SYSTEM / 'tests/capture_draw.rs',
+    source_paths = [Path(__file__), SYSTEM / 'tests/capture/capture_draw.rs',
                     SYSTEM / 'examples/gpu_profiler_board/rcc/full_scene.rs',
                     *sorted((SYSTEM / 'tests/fixtures/capture_full_scene').rglob('*'))]
     for path in source_paths:

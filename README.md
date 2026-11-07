@@ -25,7 +25,7 @@ verification evidence live at the same commit.
   - **CPU V1**: pilot processor with assembler, core, reference model, and an
     abstract device bus; runs Sokoban in `cpu-v1-sim`.
   - **CPU V2**: 16-bit Harvard CPU, ISA 2.6, cycle model, and rcc backend.
-  - **CPU V3**: current ISA (revision 0.9) plus the two-word FPU v2
+  - **CPU V3**: current ISA (revision 0.10) plus the two-word FPU v2
     (`F0..F63` signed Q16.16, `vec2/3/4` as consecutive ranges, opcodes
     `0xC/0xD/0xE`), Stage 12 microarchitecture with overlapped integer
     execution, fetch queue, two-way I-cache, write-back D-cache with
@@ -33,10 +33,10 @@ verification evidence live at the same commit.
 - **`rcc` compiler** (`compiler/rcc`): a tiny strict subset of Rust syntax —
   every valid rcc program is also valid Rust, so rust-analyzer works on it with
   no plugin. It compiles through target-independent IR, optimization, and
-  register allocation to CPU V2 or CPU V3 binaries, with listings and debug
-  info.
-- **Fitted FPGA system** (`systems/cpu-v3-tang-nano-20k`): 22-bit physical
-  memory map, 320x240 HDMI framebuffer, system-control/boot/display device
+  register allocation for CPU V3, with listings and debug info. The CPU V2
+  backend remains available for existing programs.
+- **Fitted FPGA system** (`systems/cpu-v3-tang-nano-20k`): 22-bit physical word
+  memory map, 400x240 source framebuffer with HDMI scaling, system-control/boot/display device
   channels, single-application cold Flash boot, and the boot package. Simulator tools and
   a single-page web debugger (`cpu-v3-dbg`) target the same sources the build
   script compiles into boot images.
@@ -138,16 +138,18 @@ cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v3 --code-base 0x
 cargo run -p cpu-v2-sim --bin rcc-run -- input.bin 1000000
 cargo run -p cpu-v2-sim --bin rcc-dbg -- input.bin
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-dbg -- input.rs
-cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- application.v3bin
-cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- list
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bloxorz --out target/bloxorz-build
+cargo run --release -p cpu-v3-boot-format --bin cpu-v3-pack -- application.v3bin
 ```
 
-The FPGA system selects one RCC application in
-`systems/cpu-v3-tang-nano-20k/boot-applications.conf`. Cargo `OUT_DIR` is the sole
-byte authority; `cpu-v3-boot-assets` exports that application and its CB06
-COPY/ZERO Flash image. `cpu-v3-pack application.v3bin --project
-systems/cpu-v3-tang-nano-20k/boot-applications.conf` independently reproduces it,
-reading the adjacent generated `application.static-words` length file.
+The application command selects an application-owned recipe, compiles through
+the sole Cargo `OUT_DIR` byte authority and validates a fresh exported snapshot.
+The `default` recipe reads `systems/cpu-v3-tang-nano-20k/boot-applications.conf`.
+Existing-input `cpu-v3-pack` runs independently of application compilation,
+reading adjacent `application.static-words` and optional `--project` resource
+inputs. It shares the build's CB06 encoder, so reconstruction is an input
+consistency check. See the [application workflow](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md).
 The hardware loader accepts application-only Flash updates without rebuilding
 the FPGA; a cold configuration/power cycle starts the updated image.
 

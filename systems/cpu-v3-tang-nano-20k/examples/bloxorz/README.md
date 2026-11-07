@@ -13,6 +13,15 @@ its actual command bytes on native GPU RTL. It is not a boot-image selection yet
 
 All RCC fixtures use the CPU V3 compiler's default optimization settings.
 
+The 400x240 static/batch callers use the current column layout: command sector
+`0x9800`, object sector `0x9a00` and immutable asset sector `0x9c00`. The native
+white texture has its complete aligned 512-byte allocation. CPU recording keeps
+the independent geometry/image oracle and its submission, immutability and
+batch-work assertions. Native RTL replay remains an explicit bounded test.
+Ordinary recording tests replay the actual uploaded CB/object/asset bytes on
+the bounded functional GPU and compare every RGB565 pixel, depth (tolerance 1)
+and all immutable inputs/allocation guards with the independent oracle.
+
 | Location | Contents |
 | --- | --- |
 | `applications/bloxorz/rcc/bloxorz_core.rs` | Integer rules, compact snapshots and bounded undo |

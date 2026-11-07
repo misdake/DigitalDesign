@@ -10,10 +10,8 @@ pub(crate) mod abi;
 pub(crate) mod layout;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RendererLayoutProfile {
-    Column16,
-}
-impl RendererLayoutProfile {
+pub struct ColumnLayout;
+impl ColumnLayout {
     pub fn layout_abi(self) -> u16 {
         abi::GPU_CAPTURE_LAYOUT_COLUMN_ABI
     }
@@ -22,9 +20,6 @@ impl RendererLayoutProfile {
     }
     pub fn allocation_bytes(self) -> u32 {
         u32::from(layout::GPU_PLANE_SECTORS) * 128
-    }
-    pub fn layout_path(self, shared: &Path) -> PathBuf {
-        shared.join("gpu_layout.rs")
     }
     fn texture_layout(self) -> &'static str {
         "pot-column-macro16x16-min512-cache16x8"
@@ -61,35 +56,32 @@ struct Resource {
     base: u32,
     bytes: u32,
 }
-/// One immutable selection drives layout origin, manifest and generated hook data.
-/// Fields are private so callers cannot select a second conflicting layout.
+/// Validated capture identity and resources for the fixed column layout.
 pub struct RendererCaptureConfiguration {
     pub(super) capture: Option<CaptureConfiguration>,
     pub(super) hook_enabled: bool,
-    pub(super) profile: RendererLayoutProfile,
     resources: Vec<Resource>,
     command_abi: u16,
 }
 impl RendererCaptureConfiguration {
-    pub fn without_capture(profile: RendererLayoutProfile) -> Self {
+    pub fn without_capture() -> Self {
         Self {
             capture: None,
             hook_enabled: false,
-            profile,
             resources: vec![],
             command_abi: abi::GPU_CAPTURE_RTT400_COMMAND_ABI,
         }
     }
-    pub fn with_default_hook(profile: RendererLayoutProfile) -> Self {
-        let mut configuration = Self::without_capture(profile);
+    pub fn with_default_hook() -> Self {
+        let mut configuration = Self::without_capture();
         configuration.hook_enabled = true;
         configuration
     }
     pub fn command_abi(&self) -> u16 {
         self.command_abi
     }
-    pub fn profile(&self) -> RendererLayoutProfile {
-        self.profile
+    pub fn layout(&self) -> ColumnLayout {
+        ColumnLayout
     }
     pub fn from_manifest(gate_path: PathBuf, path: &Path) -> Result<Self, String> {
         let m: Value = serde_json::from_slice(
@@ -98,7 +90,7 @@ impl RendererCaptureConfiguration {
         )
         .map_err(|e| e.to_string())?;
         let version = m["version"].as_u64().ok_or("capture manifest version")?;
-        let profile = RendererLayoutProfile::Column16;
+        let profile = ColumnLayout;
         if !matches!(version, 2 | 3) || m["schema"] != "digitaldesign.gpu-capture-build" {
             return Err("explicit v2/v3 column capture manifest required".into());
         }
@@ -166,8 +158,7 @@ impl RendererCaptureConfiguration {
                 };
                 if kind == "texture"
                     && (entry["layout"] != profile.texture_layout()
-                        || (profile == RendererLayoutProfile::Column16
-                            && (base % 256 != 0 || bytes < 512)))
+                        || (base % 256 != 0 || bytes < 512))
                 {
                     return Err("texture footprint/layout does not match capture profile".into());
                 }
@@ -204,7 +195,6 @@ impl RendererCaptureConfiguration {
         Ok(Self {
             capture: Some(capture),
             hook_enabled: true,
-            profile,
             resources,
             command_abi: command_abi.unwrap() as u16,
         })
@@ -229,49 +219,4 @@ impl RendererCaptureConfiguration {
         s.push_str("false\n}\n");
         s
     }
-}
-
-/// Materialize a host-selected approved source root; origins remain real files.
-/// All files retain their exact source bytes except gpu_layout.rs, whose bytes
-/// come from the selected system layout. This is not an ordinary module search dir.
-pub fn materialize_renderer_sources(
-    shared: &Path,
-    generated: &Path,
-    profile: RendererLayoutProfile,
-    dependency: &mut dyn FnMut(&Path),
-) -> Result<PathBuf, String> {
-    let source = std::fs::canonicalize(shared).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(generated).map_err(|e| e.to_string())?;
-    let generated = std::fs::canonicalize(generated).map_err(|e| e.to_string())?;
-    if generated.starts_with(&source) || source.starts_with(&generated) {
-        return Err("generated capture root must be separate from source root".into());
-    }
-    let mut origins = std::collections::BTreeMap::new();
-    for entry in std::fs::read_dir(&source).map_err(|e| e.to_string())? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if path.extension().is_none_or(|ext| ext != "rs") {
-            continue;
-        }
-        let input = if path.file_name().is_some_and(|n| n == "gpu_layout.rs") {
-            profile.layout_path(&source)
-        } else {
-            path.clone()
-        };
-        dependency(&input);
-        let bytes = std::fs::read(&input).map_err(|e| e.to_string())?;
-        let dest = generated.join(path.file_name().unwrap());
-        if std::fs::read(&dest).ok().as_deref() != Some(&bytes) {
-            std::fs::write(&dest, bytes).map_err(|e| e.to_string())?;
-        }
-        origins.insert(
-            path.file_name().unwrap().to_string_lossy().into_owned(),
-            input,
-        );
-    }
-    let bytes = serde_json::to_vec_pretty(&origins).map_err(|e| e.to_string())?;
-    let map = generated.join("source-origins.json");
-    if std::fs::read(&map).ok().as_deref() != Some(&bytes) {
-        std::fs::write(map, bytes).map_err(|e| e.to_string())?;
-    }
-    Ok(generated)
 }

@@ -1,5 +1,6 @@
 //! Approved application source loading, entry and diagnostic specialization.
-use super::{ApplicationFrontend, ApplicationProfile};
+use super::{ApplicationFrontend, ApplicationSource, CapturePolicy, SourceSpecialization};
+use crate::artifact::Inputs;
 use crate::{application_entry, rcc_modules};
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
@@ -11,23 +12,12 @@ pub(super) fn compile_program(
     constants: &str,
     shared: &Path,
     frontend: ApplicationFrontend,
-    capture_enabled: bool,
-    profile: ApplicationProfile,
-) -> (Vec<u16>, usize) {
+    policy: &ApplicationSource,
+    inputs: &mut Inputs,
+) -> (rcc_backend::CpuV3Program, usize) {
     let explicit_gpu = matches!(frontend, ApplicationFrontend::ExplicitGpu);
-    let renderer = explicit_gpu;
-    let rtt = matches!(
-        profile,
-        ApplicationProfile::Rtt400x240
-            | ApplicationProfile::BloxorzCapture
-            | ApplicationProfile::BloxorzCaptureFull
-    );
-    let entry = match profile {
-        ApplicationProfile::BloxorzCapture => "renderer_game_capture",
-        ApplicationProfile::BloxorzCaptureFull => "renderer_game_capture_full",
-        _ => "main",
-    };
-    println!("cargo:rerun-if-changed={}", path.display());
+    let entry = policy.entry;
+    inputs.watch(path);
     let source = std::fs::read_to_string(path).unwrap();
     let source = if explicit_gpu {
         application_entry::select(&source, entry).expect("explicit GPU application entry")
@@ -36,14 +26,15 @@ pub(super) fn compile_program(
     };
     let entry = if explicit_gpu { "main" } else { entry };
     let source_dir = path.parent().unwrap();
-    let hook_enabled = !matches!(profile, ApplicationProfile::Handheld)
-        && std::env::var("GPU_PROFILER_HOOK").as_deref() != Ok("0");
-    let capture = if capture_enabled && hook_enabled {
+    let hook_enabled = policy
+        .capture
+        .hook_enabled(std::env::var("GPU_PROFILER_HOOK").ok().as_deref());
+    let capture = if policy.capture == CapturePolicy::Diagnostic && hook_enabled {
         let manifest_path = PathBuf::from(
             std::env::var_os("GPU_PROFILER_MANIFEST")
                 .expect("gpu_profiler_board requires GPU_PROFILER_MANIFEST"),
         );
-        println!("cargo:rerun-if-changed={}", manifest_path.display());
+        inputs.watch(&manifest_path);
         Some(
             rcc_modules::RendererCaptureConfiguration::from_manifest(
                 source_dir.join("profiler_gate.rs"),
@@ -51,10 +42,10 @@ pub(super) fn compile_program(
             )
             .expect("explicit GPU profiler identity"),
         )
-    } else if renderer && hook_enabled {
+    } else if explicit_gpu && hook_enabled {
         if let Some(path) = std::env::var_os("GPU_PROFILER_MANIFEST") {
             let path = PathBuf::from(path);
-            println!("cargo:rerun-if-changed={}", path.display());
+            inputs.watch(&path);
             Some(
                 rcc_modules::RendererCaptureConfiguration::from_manifest(
                     shared.join("profiler_gate.rs"),
@@ -63,36 +54,24 @@ pub(super) fn compile_program(
                 .expect("GPU profiler build identity"),
             )
         } else {
-            Some(
-                rcc_modules::RendererCaptureConfiguration::with_default_hook(
-                    rcc_modules::RendererLayoutProfile::Column16,
-                ),
-            )
+            Some(rcc_modules::RendererCaptureConfiguration::with_default_hook())
         }
     } else {
         None
     };
     let native_root;
-    let shared = if matches!(profile, ApplicationProfile::ProfilerMemcpy) {
+    let shared = if matches!(policy.specialization, SourceSpecialization::ProfilerMemcpy) {
         assert!(
-            capture_enabled,
-            "MEMCPY specialization requires the explicit diagnostic"
+            policy.capture == CapturePolicy::Diagnostic && explicit_gpu,
+            "MEMCPY specialization requires the explicit GPU diagnostic"
         );
-        let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+        let root = shared.parent().expect("system RCC source directory");
         let helper = root.join("examples/gpu_profiler_board/tools/native_sources.py");
-        println!("cargo:rerun-if-changed={}", helper.display());
-        println!(
-            "cargo:rerun-if-changed={}",
-            root.join(if explicit_gpu {
-                "tests/fixtures/capture_native_explicit_tail.rcc"
-            } else {
-                "tests/fixtures/capture_native_tail.rcc"
-            })
-            .display()
-        );
+        inputs.watch(&helper);
+        inputs.watch(&root.join("tests/fixtures/capture_native_explicit_tail.rcc"));
         for file in std::fs::read_dir(shared).unwrap().flatten() {
             if file.path().extension().is_some_and(|s| s == "rs") {
-                println!("cargo:rerun-if-changed={}", file.path().display());
+                inputs.watch(&file.path());
             }
         }
         native_root =
@@ -104,10 +83,8 @@ pub(super) fn compile_program(
             .arg("--shared")
             .arg(shared)
             .arg("--output")
-            .arg(&native_root);
-        if explicit_gpu {
-            producer.arg("--explicit-api");
-        }
+            .arg(&native_root)
+            .arg("--explicit-api");
         let status = producer
             .status()
             .expect("native diagnostic source producer");
@@ -116,46 +93,53 @@ pub(super) fn compile_program(
     } else {
         shared
     };
+    inputs.entry(
+        &path.display().to_string(),
+        &rcc::frontend::ModuleSource {
+            source: source.clone(),
+            origin: Some(path.to_owned()),
+        },
+    );
+    inputs.embedded_standard_library();
+    let mut dependencies = vec![];
     let program = if explicit_gpu {
-        let dirs = if source_dir.ends_with("gpu_renderer_bloxorz/rcc") {
-            vec![shared.parent().unwrap().join("applications/bloxorz/rcc")]
-        } else if source_dir.ends_with("gpu_profiler_board/rcc") && rtt {
-            vec![shared
-                .parent()
-                .unwrap()
-                .join("examples/gpu_renderer_rtt/rcc")]
-        } else {
-            vec![]
-        };
-        let disabled = rcc_modules::RendererCaptureConfiguration::without_capture(
-            rcc_modules::RendererLayoutProfile::Column16,
-        );
-        rcc_modules::compile_explicit_gpu_program_checked_with_sources(
+        let disabled = rcc_modules::RendererCaptureConfiguration::without_capture();
+        rcc_modules::GpuSources {
+            local_dir: source_dir,
+            shared_dir: shared,
+            constants,
+            ordinary_dirs: &policy.ordinary_dirs,
+            configuration: capture.as_ref().unwrap_or(&disabled),
+        }
+        .compile_checked(
             &path.display().to_string(),
             &source,
             options,
-            source_dir,
-            shared,
-            constants,
-            &dirs,
-            capture.as_ref().unwrap_or(&disabled),
             &rcc::frontend::rustc_check::RustcCheck::new(
                 PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("member-ownership"),
             ),
-            &mut |module| println!("cargo:rerun-if-changed={}", module.display()),
+            &mut |module| dependencies.push(module.to_owned()),
+            &mut |name, module| inputs.module(name, module),
         )
     } else {
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-            rcc_modules::load_module(source_dir, shared, constants, name, &mut |module| {
-                println!("cargo:rerun-if-changed={}", module.display());
-            })
+            let module = rcc_modules::load_module_source(
+                source_dir,
+                shared,
+                constants,
+                name,
+                &mut |module| dependencies.push(module.to_owned()),
+            )?;
+            inputs.module(&format!("{name}.rs"), &module);
+            Ok(module.source)
         })
         .map_err(|e| e.to_string())
     }
     .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
     let static_words = program.debug.static_data_end;
-    let words = rcc_backend::try_compile(program, options, entry)
-        .unwrap()
-        .words;
-    (words, static_words)
+    for path in dependencies {
+        inputs.watch(&path);
+    }
+    let program = rcc_backend::try_compile(program, options, entry).unwrap();
+    (program, static_words)
 }

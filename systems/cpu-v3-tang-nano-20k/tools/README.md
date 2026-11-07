@@ -102,3 +102,11 @@
   ```powershell
   python -m unittest discover -s systems/cpu-v3-tang-nano-20k/tools -p test_instance_order_search.py
   ```
+# Application and hardware workflows
+
+Build one application with `build-application.ps1`; its [artifact](/systems/cpu-v3-tang-nano-20k/docs/application-build-artifact.md)
+is the input to `profile.py run|plan|report|compare`. Backend, selected frame and
+budget are explicit; see [application profiling](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md).
+`hardware.py audit|assemble|verify` consumes frozen fits and application snapshots;
+only its `program-sram|program-flash` commands access a device. See the
+[Flash workflow](/systems/cpu-v3-tang-nano-20k/docs/flash-layout.md).

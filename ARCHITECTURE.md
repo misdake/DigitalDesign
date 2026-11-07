@@ -50,6 +50,12 @@ systems/
   data and asset producers live under the system-owned `applications/` directory;
   executable examples and production renderers consume those shared owners.
 
+  A system can contain internal Cargo support packages, such as its pure boot
+  format and host application tools. They share that system's ownership and may
+  use lower layers and sibling support packages. A support package cannot depend
+  back on the complete system composition; dependencies across final systems
+  remain forbidden. The CPU V3 boot format's normal dependency graph is std-only.
+
 Dependencies point upward through this document: a later layer may use an earlier layer, never the
 reverse. In particular, `compiler/rcc` cannot depend on a CPU and `hardware/core` cannot depend on
 a processor or a system.
@@ -98,10 +104,12 @@ is maintained in parallel. The CB06 stream carries sequential COPY/ZERO commands
 with fixed CSEG7/DSEG0/SP0xc000 layout. The hardware loader owns code copy and
 zeroing only the compiler-allocated static prefix within its protected 16-KiB
 arena before CPU release. The materialized application.static-words metadata
-lets the independent packer reproduce that extent without inspecting instructions.
+lets the command-line repacker reproduce that extent without inspecting instructions.
 The former software Boot/673-word ROM
 contract is superseded by this explicitly authorized single-application change.
-An independent packer recreates the generated package byte for byte.
+The command-line repacker reconstructs the generated package from exported inputs
+using the same packing implementation as the build script. Byte equality checks
+input/export consistency; boot decoding and RTL tests provide separate validation.
 
 ## Board bring-up and diagnostics
 

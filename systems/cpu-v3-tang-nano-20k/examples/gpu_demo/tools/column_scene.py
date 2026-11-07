@@ -139,7 +139,7 @@ def audit(output, contract):
     assert copies.pop(0xe0000)==(output/'application.v3bin').read_bytes()
     for r in resources: assert copies.pop(r['address'])==(assets/r['file']).read_bytes()
     assert not copies
-    assert (output/'independent.bin').read_bytes()==package
+    assert (output/'repacked.bin').read_bytes()==package
 
     files={p.relative_to(output).as_posix():dict(bytes=p.stat().st_size,sha256=sha(p)) for p in output.rglob('*') if p.is_file() and p.name!='column-firmware-receipt.json'}
     tracked=subprocess.check_output(['git','ls-files'],cwd=ROOT,text=True).splitlines()

@@ -1,8 +1,4 @@
-//! Host display simulator for the configured single application.
-//!
-//! `boot-applications.conf` selects the source. The build script generates the
-//! same CB06 Flash package as the FPGA; the default CPU-only diagnostic fills
-//! and presents alternating RGB565 surfaces.
+//! Host display simulator consuming an explicit, already built CB06 package.
 
 use cpu_v3::StepOutcome;
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
@@ -32,9 +28,6 @@ fn window_focus(window: &mut Option<PreviewWindow>) -> bool {
     let _ = window;
     true
 }
-
-const GENERATED_APPLICATION_PACKAGE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.bin"));
 
 enum CpuBackend {
     Instruction(Box<CpuV3SystemSim>),
@@ -67,6 +60,18 @@ impl SubmissionPause {
     }
 }
 impl CpuBackend {
+    fn frame_counters(&self, presentation: usize, advances: usize) -> serde_json::Value {
+        let (retired, logic, native) = match self {
+            Self::Instruction(s) => (s.cpu().retired_words(), None, None),
+            Self::Native(s) => (
+                s.core().retired_words() as u64,
+                Some(s.cycles()),
+                Some(s.native_cycles()),
+            ),
+        };
+        serde_json::json!({"presentation":presentation,"cpu_advances":advances,
+            "retired_words":retired,"logic_cycles":logic,"native_cycles":native})
+    }
     fn host_event(&mut self, host: &mut HostIo, elapsed: Duration, focused: bool) {
         match self {
             Self::Instruction(s) => host.advance(s, elapsed, focused),
@@ -285,14 +290,19 @@ fn options() -> Result<Options, String> {
 }
 
 fn main() -> Result<(), String> {
+    if std::env::args()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        println!("cpu-v3-display-sim --package EXISTING-CB06 [--cpu-mode instruction|native] [--frames N] [--max-cpu-steps N | --max-cpu-cycles N] [--out-dir DIR] [--ppm] [--window]");
+        return Ok(());
+    }
     let options = options()?;
-    let package = options
-        .package
-        .as_ref()
-        .map(std::fs::read)
-        .transpose()
-        .map_err(|e| format!("read application package: {e}"))?
-        .unwrap_or_else(|| GENERATED_APPLICATION_PACKAGE.to_vec());
+    let package_path = options.package.as_ref().ok_or(
+        "--package requires an existing CB06 image; build one with cpu-v3-app build APPLICATION --out NEW-DIRECTORY",
+    )?;
+    let package =
+        std::fs::read(package_path).map_err(|e| format!("read application package: {e}"))?;
     let mut system = if options.native {
         CpuBackend::Native(Box::new(
             CpuV3SystemEmu::from_single_flash(&package, 0xd00d, VBlankMode::Manual)
@@ -353,6 +363,7 @@ fn main() -> Result<(), String> {
     let mut halted = false;
     let mut samples = 0;
     let mut presented = 0;
+    let mut frame_counters = vec![system.frame_counters(0, 0)];
     let mut vblank_yields = 0_usize;
     let mut focus_checked = Instant::now();
     'samples: for _ in 0..options.frames {
@@ -392,7 +403,10 @@ fn main() -> Result<(), String> {
             }
             executed += 1;
         }
-        presented += usize::from(system.vblank());
+        if system.vblank() {
+            presented += 1;
+            frame_counters.push(system.frame_counters(presented, executed));
+        }
         samples += 1;
         pixels = system.render();
         if options.stop_after_present.is_some_and(|n| presented >= n) {
@@ -579,5 +593,10 @@ fn main() -> Result<(), String> {
     if let Some(error) = system.gpu_error() {
         println!("GPU retained execution error: {error}");
     }
+    std::fs::write(
+        options.output.join("frame-counters.json"),
+        serde_json::to_vec_pretty(&frame_counters).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }

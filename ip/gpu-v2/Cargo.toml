@@ -2,6 +2,7 @@
 name = "gpu-v2"
 version = "0.1.0"
 edition = "2021"
+autotests = false
 
 [features]
 functional-batch = []
@@ -14,3 +15,455 @@ rayon = "1.12"
 [dev-dependencies]
 digital-design-circuit = { path = "../../circuit" }
 digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }
+
+# command test contracts; target names remain stable.
+
+[[test]]
+name = "command_control_cosim"
+path = "tests/command/command_control_cosim.rs"
+
+[[test]]
+name = "command_payload_cosim"
+path = "tests/command/command_payload_cosim.rs"
+
+[[test]]
+name = "live_global_gold"
+path = "tests/command/live_global_gold.rs"
+
+# cycle test contracts; target names remain stable.
+
+[[test]]
+name = "vliw_cycle_aux_control"
+path = "tests/cycle/vliw_cycle_aux_control.rs"
+
+[[test]]
+name = "vliw_cycle_aux_native"
+path = "tests/cycle/vliw_cycle_aux_native.rs"
+
+[[test]]
+name = "vliw_cycle_aux_tdp"
+path = "tests/cycle/vliw_cycle_aux_tdp.rs"
+
+[[test]]
+name = "vliw_cycle_aux_ui"
+path = "tests/cycle/vliw_cycle_aux_ui.rs"
+
+[[test]]
+name = "vliw_cycle_command"
+path = "tests/cycle/vliw_cycle_command.rs"
+
+[[test]]
+name = "vliw_cycle_command_trace"
+path = "tests/cycle/vliw_cycle_command_trace.rs"
+
+[[test]]
+name = "vliw_cycle_compute"
+path = "tests/cycle/vliw_cycle_compute.rs"
+
+[[test]]
+name = "vliw_cycle_context"
+path = "tests/cycle/vliw_cycle_context.rs"
+
+[[test]]
+name = "vliw_cycle_draw"
+path = "tests/cycle/vliw_cycle_draw.rs"
+
+[[test]]
+name = "vliw_cycle_draw_uv"
+path = "tests/cycle/vliw_cycle_draw_uv.rs"
+
+[[test]]
+name = "vliw_cycle_frontend"
+path = "tests/cycle/vliw_cycle_frontend.rs"
+
+[[test]]
+name = "vliw_cycle_gpu"
+path = "tests/cycle/vliw_cycle_gpu.rs"
+
+[[test]]
+name = "vliw_cycle_interpolator"
+path = "tests/cycle/vliw_cycle_interpolator.rs"
+
+[[test]]
+name = "vliw_cycle_lighting"
+path = "tests/cycle/vliw_cycle_lighting.rs"
+
+[[test]]
+name = "vliw_cycle_pixel_math"
+path = "tests/cycle/vliw_cycle_pixel_math.rs"
+
+[[test]]
+name = "vliw_cycle_pool"
+path = "tests/cycle/vliw_cycle_pool.rs"
+
+[[test]]
+name = "vliw_cycle_prepare"
+path = "tests/cycle/vliw_cycle_prepare.rs"
+
+[[test]]
+name = "vliw_cycle_producer"
+path = "tests/cycle/vliw_cycle_producer.rs"
+
+[[test]]
+name = "vliw_cycle_raster"
+path = "tests/cycle/vliw_cycle_raster.rs"
+
+[[test]]
+name = "vliw_cycle_render"
+path = "tests/cycle/vliw_cycle_render.rs"
+
+[[test]]
+name = "vliw_cycle_sampling"
+path = "tests/cycle/vliw_cycle_sampling.rs"
+
+[[test]]
+name = "vliw_cycle_sampling_cache"
+path = "tests/cycle/vliw_cycle_sampling_cache.rs"
+
+[[test]]
+name = "vliw_cycle_sampling_coefficient"
+path = "tests/cycle/vliw_cycle_sampling_coefficient.rs"
+
+[[test]]
+name = "vliw_cycle_sampling_color"
+path = "tests/cycle/vliw_cycle_sampling_color.rs"
+
+[[test]]
+name = "vliw_cycle_sampling_direct"
+path = "tests/cycle/vliw_cycle_sampling_direct.rs"
+
+[[test]]
+name = "vliw_cycle_sampling_packet"
+path = "tests/cycle/vliw_cycle_sampling_packet.rs"
+
+[[test]]
+name = "vliw_cycle_tdp"
+path = "tests/cycle/vliw_cycle_tdp.rs"
+
+[[test]]
+name = "vliw_cycle_transport"
+path = "tests/cycle/vliw_cycle_transport.rs"
+
+[[test]]
+name = "vliw_cycle_triangle"
+path = "tests/cycle/vliw_cycle_triangle.rs"
+
+[[test]]
+name = "vliw_cycle_vertex"
+path = "tests/cycle/vliw_cycle_vertex.rs"
+
+# framebuffer test contracts; target names remain stable.
+
+[[test]]
+name = "framebuffer_cache_actual_rtl"
+path = "tests/framebuffer/framebuffer_cache_actual_rtl.rs"
+
+[[test]]
+name = "framebuffer_leaf_actual_rtl"
+path = "tests/framebuffer/framebuffer_leaf_actual_rtl.rs"
+
+# geometry test contracts; target names remain stable.
+
+[[test]]
+name = "frontend_control_profiles"
+path = "tests/geometry/frontend_control_profiles.rs"
+
+[[test]]
+name = "source_record_qualification"
+path = "tests/geometry/source_record_qualification.rs"
+
+[[test]]
+name = "vertex_leaf_qualification"
+path = "tests/geometry/vertex_leaf_qualification.rs"
+
+[[test]]
+name = "vertex_single_edge_qualification"
+path = "tests/geometry/vertex_single_edge_qualification.rs"
+
+[[test]]
+name = "vertex_wide_do_loan_qualification"
+path = "tests/geometry/vertex_wide_do_loan_qualification.rs"
+
+[[test]]
+name = "vertex_wide_do_loan_reference_qualification"
+path = "tests/geometry/vertex_wide_do_loan_reference_qualification.rs"
+
+[[test]]
+name = "vliw_prepare_chain"
+path = "tests/geometry/vliw_prepare_chain.rs"
+
+# host test contracts; target names remain stable.
+
+[[test]]
+name = "host"
+path = "tests/host/mod.rs"
+
+# integration test contracts; target names remain stable.
+
+[[test]]
+name = "persistent_frontend_pixel"
+path = "tests/integration/persistent_frontend_pixel.rs"
+
+# lighting test contracts; target names remain stable.
+
+[[test]]
+name = "lighting_cycles"
+path = "tests/lighting/lighting_cycles.rs"
+
+[[test]]
+name = "lighting_dsp_sharing_qualification"
+path = "tests/lighting/lighting_dsp_sharing_qualification.rs"
+
+[[test]]
+name = "lighting_weighted_view"
+path = "tests/lighting/lighting_weighted_view.rs"
+
+[[test]]
+name = "vliw_light_tuple"
+path = "tests/lighting/vliw_light_tuple.rs"
+
+# memory test contracts; target names remain stable.
+
+[[test]]
+name = "sdram_display_rtl"
+path = "tests/memory/sdram_display_rtl.rs"
+
+[[test]]
+name = "sdram_integration"
+path = "tests/memory/sdram_integration.rs"
+
+[[test]]
+name = "sdram_memory_controller"
+path = "tests/memory/sdram_memory_controller.rs"
+
+[[test]]
+name = "vliw_dma"
+path = "tests/memory/vliw_dma.rs"
+
+[[test]]
+name = "vliw_memory"
+path = "tests/memory/vliw_memory.rs"
+
+# pixel test contracts; target names remain stable.
+
+[[test]]
+name = "pixel_final_compact"
+path = "tests/pixel/pixel_final_compact.rs"
+
+[[test]]
+name = "pixel_final_forwarded"
+path = "tests/pixel/pixel_final_forwarded.rs"
+
+[[test]]
+name = "pixel_final_precision"
+path = "tests/pixel/pixel_final_precision.rs"
+
+[[test]]
+name = "pixel_final_shared"
+path = "tests/pixel/pixel_final_shared.rs"
+
+[[test]]
+name = "pixel_final_single"
+path = "tests/pixel/pixel_final_single.rs"
+
+[[test]]
+name = "pixel_final_stage_rtl"
+path = "tests/pixel/pixel_final_stage_rtl.rs"
+
+[[test]]
+name = "pixel_final_two_cycle"
+path = "tests/pixel/pixel_final_two_cycle.rs"
+
+[[test]]
+name = "pixel_foundation"
+path = "tests/pixel/pixel_foundation.rs"
+
+[[test]]
+name = "pixel_foundation_live"
+path = "tests/pixel/pixel_foundation_live.rs"
+
+[[test]]
+name = "pixel_framebuffer_sink"
+path = "tests/pixel/pixel_framebuffer_sink.rs"
+
+[[test]]
+name = "pixel_ingress"
+path = "tests/pixel/pixel_ingress.rs"
+
+[[test]]
+name = "pixel_lighting_consumer"
+path = "tests/pixel/pixel_lighting_consumer.rs"
+
+[[test]]
+name = "pixel_origin"
+path = "tests/pixel/pixel_origin.rs"
+
+[[test]]
+name = "pixel_postquad_descriptor"
+path = "tests/pixel/pixel_postquad_descriptor.rs"
+
+[[test]]
+name = "pixel_postquad_descriptor_control"
+path = "tests/pixel/pixel_postquad_descriptor_control.rs"
+
+[[test]]
+name = "pixel_postquad_join_overlap"
+path = "tests/pixel/pixel_postquad_join_overlap.rs"
+
+[[test]]
+name = "pixel_postquad_join_pipeline"
+path = "tests/pixel/pixel_postquad_join_pipeline.rs"
+
+[[test]]
+name = "pixel_preparation_ingress"
+path = "tests/pixel/pixel_preparation_ingress.rs"
+
+[[test]]
+name = "pixel_quad_ingress"
+path = "tests/pixel/pixel_quad_ingress.rs"
+
+[[test]]
+name = "pixel_quad_lighting_ingress"
+path = "tests/pixel/pixel_quad_lighting_ingress.rs"
+
+[[test]]
+name = "pixel_quad_sampling_ingress"
+path = "tests/pixel/pixel_quad_sampling_ingress.rs"
+
+[[test]]
+name = "pixel_rop_quantization"
+path = "tests/pixel/pixel_rop_quantization.rs"
+
+[[test]]
+name = "pixel_row_store"
+path = "tests/pixel/pixel_row_store.rs"
+
+[[test]]
+name = "pixel_runtime_ingress"
+path = "tests/pixel/pixel_runtime_ingress.rs"
+
+[[test]]
+name = "pixel_runtime_profiles"
+path = "tests/pixel/pixel_runtime_profiles.rs"
+
+[[test]]
+name = "pixel_sample_owner"
+path = "tests/pixel/pixel_sample_owner.rs"
+
+[[test]]
+name = "pixel_sampling_ingress"
+path = "tests/pixel/pixel_sampling_ingress.rs"
+
+[[test]]
+name = "pixel_spsc"
+path = "tests/pixel/pixel_spsc.rs"
+
+[[test]]
+name = "pool_color_exports"
+path = "tests/pixel/pool_color_exports.rs"
+
+[[test]]
+name = "postquad_performance"
+path = "tests/pixel/postquad_performance.rs"
+
+[[test]]
+name = "quad_authority_cosim"
+path = "tests/pixel/quad_authority_cosim.rs"
+
+[[test]]
+name = "vliw_color_direct"
+path = "tests/pixel/vliw_color_direct.rs"
+
+[[test]]
+name = "vliw_quad_pool"
+path = "tests/pixel/vliw_quad_pool.rs"
+
+# texture test contracts; target names remain stable.
+
+[[test]]
+name = "basecolor_threefield"
+path = "tests/texture/basecolor_threefield.rs"
+
+[[test]]
+name = "texture_cache_actual_rtl"
+path = "tests/texture/texture_cache_actual_rtl.rs"
+
+[[test]]
+name = "texture_cache_fault_rtl"
+path = "tests/texture/texture_cache_fault_rtl.rs"
+
+[[test]]
+name = "texture_calendar_rtl"
+path = "tests/texture/texture_calendar_rtl.rs"
+
+[[test]]
+name = "texture_coefficient_rtl"
+path = "tests/texture/texture_coefficient_rtl.rs"
+
+[[test]]
+name = "texture_color_rtl"
+path = "tests/texture/texture_color_rtl.rs"
+
+[[test]]
+name = "texture_coordinate_canonical"
+path = "tests/texture/texture_coordinate_canonical.rs"
+
+[[test]]
+name = "texture_coordinate_rtl"
+path = "tests/texture/texture_coordinate_rtl.rs"
+
+[[test]]
+name = "texture_derivative_lod"
+path = "tests/texture/texture_derivative_lod.rs"
+
+[[test]]
+name = "texture_lod_rtl"
+path = "tests/texture/texture_lod_rtl.rs"
+
+[[test]]
+name = "texture_registered_return"
+path = "tests/texture/texture_registered_return.rs"
+
+[[test]]
+name = "texture_runtime_backend"
+path = "tests/texture/texture_runtime_backend.rs"
+
+[[test]]
+name = "texture_runtime_backend_canonical"
+path = "tests/texture/texture_runtime_backend_canonical.rs"
+
+[[test]]
+name = "texture_runtime_cache"
+path = "tests/texture/texture_runtime_cache.rs"
+
+[[test]]
+name = "texture_runtime_color"
+path = "tests/texture/texture_runtime_color.rs"
+
+[[test]]
+name = "texture_runtime_rows"
+path = "tests/texture/texture_runtime_rows.rs"
+
+[[test]]
+name = "texture_sampler_rtl"
+path = "tests/texture/texture_sampler_rtl.rs"
+
+[[test]]
+name = "texture_serial_preparation_rtl"
+path = "tests/texture/texture_serial_preparation_rtl.rs"
+
+[[test]]
+name = "texture_uv_rows"
+path = "tests/texture/texture_uv_rows.rs"
+
+[[test]]
+name = "texture_work_direct"
+path = "tests/texture/texture_work_direct.rs"
+
+[[test]]
+name = "threefield_recovery"
+path = "tests/texture/threefield_recovery.rs"
+
+[[test]]
+name = "threefield_recovery_mixed"
+path = "tests/texture/threefield_recovery_mixed.rs"

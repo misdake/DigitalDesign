@@ -1,8 +1,8 @@
 //! Selected fixed-stage execution. No calendar addresses or retained whole input.
 //! The generic packed-bank emulator remains an independent reference.
 use super::{
-    CAPTURE_AGE, Event, Fault, MetadataAccess, Output, ReadyAccess, Site, Snapshot, Step, Tick,
-    VALID_MASK, pack_metadata, unpack_metadata, validate,
+    pack_metadata, unpack_metadata, validate, Event, Fault, MetadataAccess, Output, ReadyAccess,
+    Site, Snapshot, Step, Tick, CAPTURE_AGE, VALID_MASK,
 };
 pub use super::{
     COHORT_CAPACITY, METADATA_ROWS, READY_CAPACITY, READY_RAM16_BITS, READY_SDP4_CELLS,

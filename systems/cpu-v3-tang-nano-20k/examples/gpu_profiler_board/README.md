@@ -62,9 +62,7 @@ GPU+streaming MC into new directories, then bind the selected qualified hardware
 cargo run --release -p cpu-v3-tang-nano-20k --example cpu_v3_system -- target/profiler-system-export
 cargo run --release -p cpu-v3-tang-nano-20k --example gpu_profiler_export -- target/profiler-replay-export --mc
 python systems/cpu-v3-tang-nano-20k/examples/gpu_profiler_board/tools/prepare.py --out target/profiler-prepared --hardware path/to/qualified-hardware --system-export target/profiler-system-export --replay-export target/profiler-replay-export --primitive path/to/gw2a/prim_sim.v --full-scene
-$env:CPU_V3_BOOT_EXAMPLE = 'gpu_profiler_board'
-$env:GPU_PROFILER_MANIFEST = (Resolve-Path target/profiler-prepared/build.json).Path
-cargo run --release -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets -- target/profiler-prepared/boot
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build gpu-profiler --manifest target/profiler-prepared/build.json --out target/profiler-prepared/boot
 ```
 
 `prepare.py` requires all32exported hardware/constraint files to match the selected

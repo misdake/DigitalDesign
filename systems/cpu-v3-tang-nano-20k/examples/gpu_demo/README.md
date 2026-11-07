@@ -21,7 +21,7 @@ The texture is room-tiles.png with its real mip chain, not diagnostic mip colors
 - `tools/assets.py`: the single native resource producer.
 - `main.rs`: bounded packed-cell/font component checks, including0/9/10 formatting.
 - `tools/preview.py`: optional conversion of captured framebuffer words.
-- `build.ps1`: OUT_DIR export and independent CB06 repacking.
+- `build.ps1`: common application build and offline snapshot validation; explicit column qualification also reconstructs package inputs.
 
 ## Runtime and layout
 
@@ -93,10 +93,10 @@ phase0 at initialization. Records occupy128 bytes; generated roots own lengths.
 & systems/cpu-v3-tang-nano-20k/examples/gpu_demo/build.ps1
 ```
 
-The script temporarily selects CPU_V3_BOOT_EXAMPLE=gpu_demo and restores its
-previous value. Application/resources originate in Cargo OUT_DIR and are
-exported by cpu-v3-boot-assets. Independent cpu-v3-pack reconstruction must
-match CB06 SHA-256. The fixed loader uses Flash0x100000; Maintainer composes the
+The script delegates to the common application command, without changing the
+caller environment. Application/resources originate in Cargo OUT_DIR and are
+validated as a fresh snapshot. Explicit package reconstruction uses the same
+CB06 encoder and qualifies exported inputs. The fixed loader uses Flash0x100000; Maintainer composes the
 accepted FPGA configuration with this package for persistent programming.
 
 The predecessor room regression is retained independently: frozen application,
@@ -118,7 +118,7 @@ low-to-high transition of bit0 toggles the timing overlay; releasing only rearms
 it. The timer, camera and rendering continue while hidden. The next recorded
 frame omits UI_GRID when hidden. No CPU/GPU reset is tied to this input.
 
-`tests/gpu_demo_profile.rs` runs one production classic-scene frame through real
+`tests/apps/gpu_demo_profile.rs` runs one production classic-scene frame through real
 CPU/D-cache/GPU/Display RTL and the production arbiter. It records CPU stage
 wall cycles/retired16-bit words, CP command spans and each meshlet's V/T enabled
 steps and wall time. It has a12-million-cycle/3600-second watchdog and does not
@@ -242,10 +242,11 @@ to the native asset producer and adds public root names without changing atlas,
 mesh or texture bytes. Capture hooks are disabled for this ordinary entry.
 `rcc/main.rs` and the native selectors below retain their own identities.
 
-Export with `cpu-v3-boot-assets` under that environment selection, then use
-`cpu-v3-pack application.v3bin --project renderer-repack.conf -o independent.bin`
-inside the exported directory for an independent CB06 reconstruction. Both are
-ordinary Cargo binaries; use `scripts/run-cargo.ps1` from the repository root.
+Build with `cpu-v3-app build handheld --out NEW-DIRECTORY` from the
+`cpu-v3-tools` package. Existing-input `cpu-v3-pack` belongs to the std-only
+`cpu-v3-boot-format` package; reconstruction is a separate qualification using
+the shared encoder. The common application command already validates the exact
+snapshot, including package/input agreement.
 The package is still loaded at Flash0x100000; it does not qualify a matching FPGA
 configuration or physical controller behavior by itself.
 

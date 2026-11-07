@@ -30,12 +30,14 @@ in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable pr
 The production board factory and complete RTL top live in
 [`board/mod.rs`](/systems/cpu-v3-tang-nano-20k/board/mod.rs) and
 [`board/top.v`](/systems/cpu-v3-tang-nano-20k/board/top.v). The
-`cpu_v3_system` Cargo example is the stable export/build/program CLI. Hardware
+`cpu-v3-system` normal binary is the export/build CLI; it shares the same board
+source and Rust crate namespace as the `cpu_v3_system` qualification example.
+Existing-artifact audit/programming uses the standalone vendor consumer. Hardware
 module namespaces and generated source paths retain their established identity.
 
 `CpuV3System` is the final composition boundary for the Tang Nano 20K target. It connects:
 
-- the revision 0.9 `CpuV3Core` at the Stage 12 microarchitecture level;
+- the revision 0.10 `CpuV3Core` at the Stage 12 microarchitecture level;
 - a two-slot instruction payload queue with two request slots and a four-entry, two-word resolved-target BTC;
 - separate 4-KiB I-cache and D-cache with initialized invalid metadata;
 - the seven-owner CPU V3 memory arbiter, fixed boot loader, and reserved GPU ports;
@@ -674,7 +676,7 @@ publish both groups and reach its natural frame origin. This short fixture is
 not full-scene or physical-pin evidence; the native controller/pad and full
 Display pixel/fault tests qualify their separate boundaries.
 
-The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
+The system-level emulator-vs-RTL co-simulation `tests/cpu_memory/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus
 against the cycle-accurate Rust system model shared with the fetch/checkpoint regressions, comparing the core
 ports cycle by cycle and the post-flush SDRAM contents exactly. It is ignored by default; run it

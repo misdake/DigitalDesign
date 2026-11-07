@@ -765,11 +765,10 @@ impl MemoryPort for FbView {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod qualification {
     use super::*;
 
-    #[test]
-    fn one_parent_and_one_edge_sink_reject_double_admission_or_tick() {
+    pub(crate) fn one_parent_and_one_edge_sink_reject_double_admission_or_tick() {
         let s = Shared::new(
             OracleImage::filled::<0x57>(0, 0x20000).unwrap(),
             (0x10000, 0x10100),
@@ -829,8 +828,7 @@ mod tests {
         assert!(s.model_edges() > 0);
     }
 
-    #[test]
-    fn source_underrun_after_ro_presentation_poison_prevents_retry() {
+    pub(crate) fn source_underrun_after_ro_presentation_poison_prevents_retry() {
         let s = Shared::new(
             OracleImage::filled::<0x57>(0, 0x20000).unwrap(),
             (0x10000, 0x10080),
@@ -891,8 +889,7 @@ mod tests {
         assert_eq!(s.stats().ro_delivered_complete, 0);
     }
 
-    #[test]
-    fn reference_tick_failure_poison_prevents_retry() {
+    pub(crate) fn reference_tick_failure_poison_prevents_retry() {
         let s = Shared::new(
             OracleImage::filled::<0x57>(0, 0x20000).unwrap(),
             (0x10000, 0x10080),

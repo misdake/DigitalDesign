@@ -49,9 +49,9 @@ pub struct Observation<'a> {
     pub executing_pc: Option<(u16, u16)>,
     /// Already-selected CPU read mux. Reading this value has no side effects.
     pub device_read_data: u16,
-    /// Passive pre-edge r8/r9/r10. The audited ordinary wait retains started,
-    /// start_epoch and finish here across its complete wait/return/read path.
-    pub cpu_wait_abi: [u16; 3],
+    /// Passive architectural GPR snapshot before this scheduler edge.
+    /// Register meanings and calling conventions belong to the application.
+    pub cpu_registers: [u16; 16],
     pub cpu: Option<&'a wiring::Output>,
     pub gpu: Option<&'a GpuOutput>,
     pub memory: Option<&'a Sample>,
@@ -404,10 +404,7 @@ impl System {
             device_read_data: logic.as_ref().map_or(0, |s| {
                 (s.cpu.system.device_read_data as u16) | s.ci.external_device_read_data
             }),
-            cpu_wait_abi: {
-                let registers = self.cpu.core().architectural_gprs();
-                [registers[8], registers[9], registers[10]]
-            },
+            cpu_registers: self.cpu.core().architectural_gprs(),
             cpu: logic.as_ref().map(|s| &s.cpu),
             gpu: logic.as_ref().map(|s| &s.gpu),
             memory: logic.as_ref().map(|s| &s.memory),

@@ -42,7 +42,7 @@ def freeze():
     manifest['source_head'] = head
     manifest['source_inputs'] = {}
     files = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard',
-        'ip/gpu-v2/src', 'ip/gpu-v2/tests/vliw_cycle_draw.rs', 'ip/gpu-v2/tests/vliw_cycle_draw.py',
+        'ip/gpu-v2/src', 'ip/gpu-v2/tests/cycle/vliw_cycle_draw.rs', 'ip/gpu-v2/tests/vliw_cycle_draw.py',
         'ip/gpu-v2/tests/support/vliw_draw'], cwd=REPO).decode().splitlines()
     for name in files:
         raw = (REPO / name).read_bytes()

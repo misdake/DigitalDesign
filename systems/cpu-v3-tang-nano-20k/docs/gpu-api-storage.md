@@ -1,7 +1,7 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-11-05
+last-verified: 2026-11-06
 ---
 
 # Explicit GPU API internal core
@@ -21,8 +21,9 @@ constructors in a public value module. The module contains no device access or
 mutable driver state. `gpu_config` remains a private helper of the approved
 `gpu_api` root; its raw initialization/take/drop functions are not application APIs.
 The System `compile_explicit_gpu_program_checked` host entry selects only this
-root and the fixed column layout, retaining the existing source materializer,
-origin checks, capture configuration and rustc check. Legacy renderer entry points
+root and the fixed column layout. It reads the canonical shared source directory
+directly, retaining actual file origins, dependency tracking, capture validation
+and the rustc check. Local overrides gain no approved-library identity. Legacy renderer entry points
 still approve only `gpu_pipeline`; approving both requires loading both domains
 and is incompatible with their distinct resource definitions.
 

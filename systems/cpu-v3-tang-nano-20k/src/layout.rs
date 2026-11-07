@@ -57,10 +57,16 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
     const PHYSICAL_ADDRESS_BITS: u8 = 22;
     const REGIONS: &'static [MemoryRegion] = &[
         MemoryRegion {
-            name: "main-before-framebuffer",
+            name: "main-before-assets",
             base: PhysicalWordAddress::new(0),
-            words: FRAMEBUFFER_BASE_WORD,
+            words: GPU_ASSET_LOW_FIRST_SECTOR as u32 * 64,
             kind: MemoryRegionKind::Main,
+        },
+        MemoryRegion {
+            name: "gpu-low-assets",
+            base: PhysicalWordAddress::new(GPU_ASSET_LOW_FIRST_SECTOR as u32 * 64),
+            words: (GPU_ASSET_LOW_END_SECTOR - GPU_ASSET_LOW_FIRST_SECTOR) as u32 * 64,
+            kind: MemoryRegionKind::Shared,
         },
         MemoryRegion {
             name: "framebuffer",
@@ -203,13 +209,22 @@ mod tests {
 
     #[test]
     fn fixed_gpu_domain_is_excluded_from_general_memory() {
-        let first = u32::from(GPU_DOMAIN_FIRST_SECTOR) * 64;
+        let first = u32::from(GPU_ASSET_LOW_FIRST_SECTOR) * 64;
         for region in TangNano20kMemoryLayout::REGIONS {
             if region.kind == MemoryRegionKind::Main {
                 assert!(region.base.get() + region.words <= first);
             }
         }
         assert_eq!(u32::from(GPU_COMMAND_FIRST_SECTOR) * 128, 0x4c0000);
+        assert_eq!(first * 2, 0x100000);
+        assert_eq!(GPU_ASSET_LOW_END_SECTOR, GPU_COLOR_A_SECTOR);
+        assert_eq!(
+            u32::from(
+                (GPU_ASSET_LOW_END_SECTOR - GPU_ASSET_LOW_FIRST_SECTOR)
+                    + (GPU_ASSET_END_SECTOR - GPU_ASSET_FIRST_SECTOR)
+            ) * 128,
+            6 * 1024 * 1024 - 2048
+        );
         assert_eq!(u32::from(GPU_COMMAND_CAPACITY_SECTORS) * 128, 65536);
         assert_eq!(u32::from(GPU_OBJECT_FIRST_SECTOR) * 128, 0x4d0000);
         assert_eq!(u32::from(GPU_OBJECT_CAPACITY_SECTORS) * 128, 65536);

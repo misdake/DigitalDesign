@@ -10,6 +10,8 @@ import math
 import struct
 import zlib
 
+from application_sidecar import codec
+
 SOURCE = 'digitaldesign.system-emu-capture'
 PORTS = ['display', 'instruction', 'data', 'dma', 'gpu_ro', 'gpu_fb_r', 'gpu_fb_w']
 LIMIT = (1 << 53) - 1
@@ -204,8 +206,7 @@ def build(folder, output, *, allow_partial=False, binding=None, require_images=F
         sys['image_journal'] = meta['image_journal']
     else: require(not physical_writes,'physical image writes without preimage')
     if meta.get('runner_version')==1:
-        from ordinary_runner import import_sidecar
-        sys['runner']=import_sidecar(folder,meta)
+        sys['runner']=codec(meta['runner_version']).import_sidecar(folder,meta)
     for f in meta['scanouts']:
         require(integer(f['start_tick']) and origin <= f['start_tick'] <= f['end_tick'] <= meta['end_tick'], 'scanout interval')
         require(integer(f['effective_pixels']) and f['effective_pixels'] <= 384000, 'scanout pixels')
@@ -372,8 +373,7 @@ def validate(data):
     s=data.get('system',{})
     ceiling=112000000 if s.get('runner') else 10000000
     if 'runner' in s:
-        from ordinary_runner import validate_report
-        validate_report(data)
+        codec(data['provenance']['runner_version']).validate_report(data)
     require(s.get('version') == 1 and s.get('quantum_hz') == data['clock_hz']*148 and s.get('logic_period') == 148, 'system timebase')
     require(integer(data.get('end'),1) and type(data.get('partial')) is bool, 'profile range/status')
     require(all(integer(s.get(k)) for k in ('origin_tick','axis_origin_tick','coverage_end_tick','end_tick')), 'system bounds')
@@ -435,8 +435,7 @@ def write_outputs(data, folder):
     """Extra outputs share the existing write_report/render path."""
     s=data['system']; folder=Path(folder)
     if 'runner' in s:
-        from ordinary_runner import timing_report
-        timing=timing_report(data)
+        timing=codec(data['provenance']['runner_version']).timing_report(data)
         if 'frame_view' in s:
             n=s['frame_view']['presentation']
             timing=dict(timing,intervals=[r for r in timing['intervals'] if r['presentation']==n],

@@ -18,8 +18,10 @@ renderer_rtt_two_updates regression entry checks source reuse and capture epochs
 ```
 
 Selectors gpu_renderer_rtt and gpu_renderer_rtt_bilinear check actual approved
-library bodies with rustc, pin column layout ABI2 and the current fixed-depth command ABI8 and compare generated boot
-bytes with independent CB06 packaging. Outputs stay in this worktree target.
+library bodies with rustc and pin column layout ABI2 and the current fixed-depth
+command ABI8. The common application command exports and validates a fresh
+snapshot. Input reconstruction remains an explicit qualification of the shared
+encoder. Outputs stay in this worktree target.
 Packaging does not program a board or qualify timing.
 
 The shared column asset packer supplies a white POT texture, atlas, RGB meshlet

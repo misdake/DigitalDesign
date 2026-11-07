@@ -140,8 +140,8 @@ Build once, then use the runner above or these lower-level commands to program
 the audited image without rerunning synthesis or place-and-route:
 
 ```powershell
-cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_system -- --build
-cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_system -- --check-existing
+cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-system -- target/cpu_v3_system_gowin --build
+cargo run -p digital-design-hardware-gowin --bin gowin-artifact -- target/cpu_v3_system_gowin
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
     -Profile cpu-v3-system -Mode Full -Port COM8
 ```

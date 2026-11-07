@@ -43,13 +43,13 @@ impl cpu_v3::Device for Peer {
             (0, 1) | (0, 4) => s.maintenance += 1,
             (4, 0) => s.counts.push(value),
             (4, 1) => {
-                assert_eq!(value, 0x9200);
+                assert_eq!(value, 0x9800);
                 s.starts += 1;
                 let words = (usize::from(*s.counts.last().unwrap()) + 1) * 2;
                 let padded_words = words.next_multiple_of(64);
                 s.commands
-                    .push(memory[0x490000 / 2..0x490000 / 2 + padded_words].to_vec());
-                s.objects.push(memory[0x4a0000 / 2..0x4b0000 / 2].to_vec());
+                    .push(memory[0x4c0000 / 2..0x4c0000 / 2 + padded_words].to_vec());
+                s.objects.push(memory[0x4d0000 / 2..0x4e0000 / 2].to_vec());
             }
             (7, 2) => s.kind = value,
             (7, 1) => {
@@ -119,7 +119,7 @@ fn record(out: &Path) -> Vec<u16> {
     cpu.set_boot_window(&code);
     let assets = std::fs::read(out.join("assets.bin")).unwrap();
     for (i, w) in assets.chunks_exact(2).enumerate() {
-        cpu.physical_memory_mut()[0x4b0000 / 2 + i] = u16::from_le_bytes([w[0], w[1]]);
+        cpu.physical_memory_mut()[0x4e0000 / 2 + i] = u16::from_le_bytes([w[0], w[1]]);
     }
     let state = Rc::new(RefCell::new(State::default()));
     for device in [0, 3, 4, 7] {
@@ -165,7 +165,7 @@ fn record(out: &Path) -> Vec<u16> {
     .unwrap();
     let bytes = (usize::from(s.counts[0]) + 1) * 4;
     let padded = bytes.next_multiple_of(128);
-    let cb = &cpu.physical_memory_mut()[0x490000 / 2..(0x490000 + padded) / 2];
+    let cb = &cpu.physical_memory_mut()[0x4c0000 / 2..(0x4c0000 + padded) / 2];
     assert_eq!(cb, s.commands[0]);
     assert!(cb[bytes / 2..].iter().all(|w| *w == 0));
     std::fs::write(
@@ -179,7 +179,7 @@ fn record(out: &Path) -> Vec<u16> {
     )
     .unwrap();
     std::fs::write(out.join("submit-count.txt"), s.counts[0].to_string()).unwrap();
-    let mut seed = format!("@{:x}\n", 0x490000 / 8);
+    let mut seed = format!("@{:x}\n", 0x4c0000 / 8);
     for q in cb.chunks_exact(4) {
         let value = q
             .iter()
@@ -188,7 +188,7 @@ fn record(out: &Path) -> Vec<u16> {
             .sum::<u64>();
         seed += &format!("{value:016x}\n");
     }
-    seed += &format!("@{:x}\n", 0x4a0000 / 8);
+    seed += &format!("@{:x}\n", 0x4d0000 / 8);
     for q in s.objects[0].chunks_exact(4) {
         let value = q
             .iter()
@@ -200,6 +200,7 @@ fn record(out: &Path) -> Vec<u16> {
     std::fs::write(out.join("cpu-gpu-input.hex"), seed).unwrap();
     std::fs::write(out.join("cpu-recording.txt"),format!("{result:?}\ncode_words={} commands_bytes={bytes} padded_bytes={padded} draws=18\ndefault optimizer; control peer does not render\n",code.len())).unwrap();
     python("golden", out);
+    super::functional_scene::replay(out, 2);
     std::fs::write(
         out.join("program.hex"),
         code.iter()
@@ -213,24 +214,24 @@ fn record(out: &Path) -> Vec<u16> {
 const SURFACE: &str = r#"
 task check_surface;input[15:0]frame;integer q,x,y,off,half,cd,dd,diff,fc,fd;reg[63:0]expected;reg[15:0]actual,want;begin
  cd=0;dd=0;
- for(q='h400000/8-16;q<'h4b0000/8+16;q=q+1)begin
+ for(q='h400000/8-16;q<'h4e0000/8+16;q=q+1)begin
    expected=64'h55aa55aa55aa55aa;
-   if(q>='h430000/8&&q<('h430000+192000)/8)expected=mem[q];
-   else if(q>='h460000/8&&q<('h460000+192000)/8)expected=mem[q];
-   else if((q>='h490000/8&&q<('h490000+((cb_bytes+127)/128)*128)/8)||(q>='h4a0000/8&&q<'h4b0000/8))expected=mem[q];
-   if(q>='h4b0000/8)expected=asset_initial[q-'h4b0000/8];
+   if(q>='h440000/8&&q<('h440000+204800)/8)expected=mem[q];
+   else if(q>='h480000/8&&q<('h480000+204800)/8)expected=mem[q];
+   else if((q>='h4c0000/8&&q<('h4c0000+((cb_bytes+127)/128)*128)/8)||(q>='h4d0000/8&&q<'h4e0000/8))expected=mem[q];
+   if(q>='h4e0000/8)expected=asset_initial[q-'h4e0000/8];
    if(mem[q]!==expected)$fatal(1,"Front/padding/neighbour mismatch q=%h",q);
  end
- for(q=0;q<528;q=q+1)if(mem['h4b0000/8+q]!==asset_initial[q])$fatal(1,"Immutable asset changed");
+ for(q=0;q<528;q=q+1)if(mem['h4e0000/8+q]!==asset_initial[q])$fatal(1,"Immutable asset changed");
  for(q=0;q<((cb_bytes+127)/128)*128;q=q+2)
-   if(mem[('h490000+q)/8][(q%8)*8+:16]!==goldcb[q/2])$fatal(1,"Submitted CPU CB changed at byte %0d",q);
+   if(mem[('h4c0000+q)/8][(q%8)*8+:16]!==goldcb[q/2])$fatal(1,"Submitted CPU CB changed at byte %0d",q);
  fc=$fopen("__ACTUAL_COLOR__","w");fd=$fopen("__ACTUAL_DEPTH__","w");
  for(y=0;y<240;y=y+1)for(x=0;x<400;x=x+1)begin
-   off=((y/16)*25+x/16)*512+(y%16)*32+(x%16)*2;half=off%8*8;
-   actual=mem[('h430000+off)/8]>>half;want=frame==1?gold1[y*400+x]:gold2[y*400+x];
+   off=((x/16)*16+y/16)*512+(y%16)*32+(x%16)*2;half=off%8*8;
+   actual=mem[('h440000+off)/8]>>half;want=frame==1?gold1[y*400+x]:gold2[y*400+x];
    $fdisplay(fc,"%04h",actual);
    if(actual!==want)begin if(cd<8)$display("COLOR_DIFF x=%0d y=%0d actual=%h expected=%h",x,y,actual,want);cd=cd+1;end
-   actual=mem[('h460000+off)/8]>>half;want=frame==1?depth1[y*400+x]:depth2[y*400+x];
+   actual=mem[('h480000+off)/8]>>half;want=frame==1?depth1[y*400+x]:depth2[y*400+x];
    $fdisplay(fd,"%04h",actual);diff=actual>want?actual-want:want-actual;
    if((^actual===1'bx)||(want==16'hffff&&actual!==want)||(want!=16'hffff&&diff>1))begin if(dd<8)$display("DEPTH_DIFF x=%0d y=%0d actual=%h expected=%h",x,y,actual,want);dd=dd+1;end
  end
@@ -266,14 +267,14 @@ task send;input[3:0]channel;input[15:0]value;begin
  @(negedge clk);wen=0;ren=1;ch=2;
 end endtask
 initial begin
- for(idx='h400000/8-16;idx<'h4b1080/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
+ for(idx='h400000/8-16;idx<'h4e1200/8+16;idx=idx+1)mem[idx]=64'h55aa55aa55aa55aa;
  $readmemh("__ASSETS__",mem);$readmemh("__CPU_INPUT__",mem);
- for(idx=0;idx<528;idx=idx+1)asset_initial[idx]=mem['h4b0000/8+idx];
+ for(idx=0;idx<528;idx=idx+1)asset_initial[idx]=mem['h4e0000/8+idx];
  $readmemh("__GOLD1__",gold1);$readmemh("__GOLD2__",gold2);$readmemh("__DEPTH1__",depth1);$readmemh("__DEPTH2__",depth2);$readmemh("__GOLD_CB__",goldcb,0,((cb_bytes+127)/128)*64-1);
  repeat(3)@(posedge clk);@(negedge clk);reset=0;
  repeat(5)@(posedge clk);
  for(frame=1;frame<=2;frame=frame+1)begin
-  send(0,cb_bytes/4-1);send(1,'h9200);
+  send(0,cb_bytes/4-1);send(1,'h9800);
   #1;if(!gdata[0])$fatal(1,"GPU did not accept captured CPU submission");
   while(gdata[0])begin @(posedge clk);#1;end
   if(gdata[1])$fatal(1,"GPU transport error");
@@ -295,8 +296,8 @@ endmodule
         .replace("q<528", &format!("q<{}", assets / 8))
         .replace("idx<528", &format!("idx<{}", assets / 8))
         .replace(
-            "idx<'h4b1080/8+16",
-            &format!("idx<('h4b0000+{assets})/8+16"),
+            "idx<'h4e1200/8+16",
+            &format!("idx<('h4e0000+{assets})/8+16"),
         )
         .replace("frame<=2", &format!("frame<={frames}"))
         .replace("draws!=frame*9", &format!("draws!=frame*{draws}"))

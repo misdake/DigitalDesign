@@ -6,6 +6,12 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 ## Documents
 
+- [Application profiling](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md): bounded backend/scene/frame runs, offline reports and comparable sealed measurements.
+
+- [Application builds and existing artifacts](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md): explicit application selection, owned recipes, pure packing and fresh snapshot publication.
+
+- [Same-build application artifacts](/systems/cpu-v3-tang-nano-20k/docs/application-build-artifact.md): final linked debug/listing, source and resource identities, relocatable exports and offline symbol lookup.
+
 - [Full-system cycle composition](/systems/cpu-v3-tang-nano-20k/docs/system-cycle-emu.md): exact clocks, unique native memory ownership, CPU/GPU/Display wiring, explicit preloaded cold entry and passive scanout.
 
 - [Display cycle components](/systems/cpu-v3-tang-nano-20k/docs/display-cycle.md): edge-driven line RAM ports, source/color read calendar, registered pixel/sync and digital TMDS outputs, knownness, collision diagnostics and bounded RTL qualification.

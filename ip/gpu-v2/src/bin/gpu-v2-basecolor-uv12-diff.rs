@@ -6,7 +6,7 @@ use gpu_v2::{
         basecolor_uv12::recover,
     },
 };
-#[path = "../../tests/common/basecolor_uv12_fixture.rs"]
+#[path = "../../tests/fixtures/basecolor_uv12_fixture.rs"]
 mod common;
 use std::{fs, path::PathBuf};
 #[derive(Clone, Debug, Default)]

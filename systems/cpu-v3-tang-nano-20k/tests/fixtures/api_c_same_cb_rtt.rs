@@ -3,14 +3,15 @@ use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
 mod gpu_demo_api;
+mod gpu_board;use gpu_board::*;
 use gpu_demo_api::*;
 pub fn same_cb_rtt_once() {
-    let mut gpu = Gpu::init(demo_config());
+    let mut gpu = Gpu::init(board_gpu_config());
     let mut commands = gpu.command_buffer();
     let source = ColorBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc000, 2048) });
     let source_depth = DepthBuffer::from_memory(unsafe { GpuMemory::from_sectors(0xc800, 2048) });
-    let color = demo_color_b();
-    let depth = demo_depth();
+    let color = board_color_b();
+    let depth = board_depth();
     let mut display = Display::open();
     let camera = demo_camera();
     let state = demo_state();

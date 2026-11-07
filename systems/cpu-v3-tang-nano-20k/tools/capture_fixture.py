@@ -35,8 +35,14 @@ def identity(output, assets, version, rtl=None, native_tail=False, native_reserv
             source=source_root/'gpu_layout.rs' if p.name=='gpu_layout.rs' else p
             shutil.copy2(source,generated/p.name)
     inputs={str(p.relative_to(SYSTEM)).replace('\\','/'):p for p in (SYSTEM/'rcc').glob('*.rs')}
+    inputs.update({p.relative_to(SYSTEM).as_posix(): p for p in (SYSTEM/'applications/rendering/rcc').glob('*.rs')})
     for p in (SYSTEM/'build_support').glob('*.rs'):inputs[str(p.relative_to(SYSTEM)).replace('\\','/')]=p
-    for p in [SYSTEM/"build.rs",SYSTEM/"Cargo.toml",Path(__file__),SYSTEM/'tools/capture_layout.py',SYSTEM/'tools/gpu_layout.py',SYSTEM/'examples/gpu_renderer/tools/assets.py',*sorted((SYSTEM/'tests').glob('capture_*.rs'))]:
+    for p in [SYSTEM/"applications/image/build.rs",SYSTEM/"applications/image/Cargo.toml",
+              SYSTEM/"applications/build/mod.rs",SYSTEM/"boot-format/src/lib.rs",SYSTEM/"boot-format/Cargo.toml",
+              SYSTEM/"tools/boot/src/lib.rs",SYSTEM/"tools/boot/Cargo.toml",
+              SYSTEM/"Cargo.toml",Path(__file__),SYSTEM/'tools/capture_layout.py',SYSTEM/'tools/gpu_layout.py',
+              SYSTEM/'examples/gpu_renderer/tools/assets.py',*sorted((SYSTEM/'examples').glob('*/application.rs')),
+              *sorted((SYSTEM/'tests/capture').glob('*.rs'))]:
         inputs[str(p.relative_to(SYSTEM)).replace('\\','/')]=p
     for p in assets.iterdir():
         if p.is_file():inputs['assets/'+p.name]=p

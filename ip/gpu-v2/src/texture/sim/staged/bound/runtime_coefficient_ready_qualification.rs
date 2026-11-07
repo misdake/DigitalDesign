@@ -1,7 +1,7 @@
 //! Ready weights: independent semantic lifetime scoreboard and actual Runtime replay.
 use super::{qualification as q, *};
 use crate::texture::{
-    emu::coefficient::{self as c, Input, Output, Tick, fixed_stage::FixedCoefficientEmu},
+    emu::coefficient::{self as c, fixed_stage::FixedCoefficientEmu, Input, Output, Tick},
     ports::Filter,
     rtl,
 };

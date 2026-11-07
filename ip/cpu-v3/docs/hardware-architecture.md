@@ -168,8 +168,8 @@ the special leaf receives operation fields and returns only a relative destinati
 ALU results and final DOTSTORE values share their mutually exclusive next-edge
 commit storage. Ordinary products and special-function results still write the RF
 directly on their scheduled return beat. Write events form one mutually exclusive
-final bus, with no new queue or arbitration state. Standalone ALU/ProductPath
-leaves remain test references and are absent from the production dependency graph.
+final bus, with no new queue or arbitration state. Standalone ALU and arithmetic
+qualification paths are absent from the production dependency graph.
 The independent value model commits the old scalar/vector write registers after
 sampling RF reads; new results become eligible on the following edge. Its strict
 mixed-owner replay checks RF/ACC after each enabled edge and during clock holds.

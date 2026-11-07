@@ -5,6 +5,7 @@ Device/tool versions and validation boundaries are recorded in each document.
 
 | Document | Purpose |
 | --- | --- |
+| [hardware-artifacts.md](hardware-artifacts.md) | Frozen source/fit closure, read-only audit, explicit migration and programming. |
 | [tang-nano-20k-clock-constraints.md](tang-nano-20k-clock-constraints.md) | PLL/SDC agreement, optional 49.5/99 MHz parameters, total setup/hold uncertainty and delayed DQ monitoring. |
 | [gowin-bsram-timing.md](gowin-bsram-timing.md) | BSRAM geometry, SDP/TDP ports, edge timing, CE/OCE, writes, collisions, and reset. |
 | [gowin-dsp-coexistence.md](gowin-dsp-coexistence.md) | Measured GW2AR-18 DSP macro packing, fused primitives, control sets, and budget counting. |

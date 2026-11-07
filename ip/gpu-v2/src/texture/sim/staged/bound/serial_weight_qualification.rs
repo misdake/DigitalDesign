@@ -96,7 +96,7 @@ fn every_split_is_bounded_and_membership_partitions_each_nonzero_tap_once() {
                         }
                     }
                     assert_eq!(visits, weights.map(|w| u8::from(w != 0)));
-                    assert_eq!(total, weights.map(u32::from).iter().sum());
+                    assert_eq!(total, weights.map(u32::from).iter().sum::<u32>());
                     cases += 1;
                 }
             }

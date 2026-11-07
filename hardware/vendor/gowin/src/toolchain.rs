@@ -13,8 +13,11 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output};
 
+#[path = "toolchain/artifact.rs"]
+mod artifact;
 #[path = "toolchain/build_manifest.rs"]
 mod build_manifest;
+pub use artifact::{inspect_gowin_artifact, run_gowin_artifact_cli};
 
 /// Canonicalize like [`fs::canonicalize`] but strip the Windows verbatim
 /// (`\\?\`) prefix: the Gowin Tcl console and Programmer cannot open such
@@ -847,7 +850,7 @@ impl<T: GowinTarget> GowinProject<T> {
             });
         }
         validate_verilog_identifier(&self.project_name).map_err(ProjectError::from)?;
-        let verilog = VerilogProject::generate::<M>()?;
+        let verilog = VerilogProject::generate_for_synthesis::<M>()?;
         let mut resources = TargetResources::<T>::new();
         if let Some(binding) = &self.board_binding {
             for (index, request) in binding.resources.iter().enumerate() {
@@ -971,6 +974,7 @@ pub struct GeneratedGowinProject {
 impl GeneratedGowinProject {
     pub fn write_to(&self, directory: impl AsRef<Path>) -> Result<(), GowinError> {
         write_generated_files(directory.as_ref(), &self.files)?;
+        artifact::write(directory.as_ref(), self)?;
         Ok(())
     }
 }
@@ -1180,6 +1184,8 @@ struct GowinCliOptions {
     build: bool,
     program: bool,
     check_existing: bool,
+    audit_current: bool,
+    seal_existing: bool,
     program_existing: bool,
     program_flash: Option<(u32, PathBuf)>,
     gowin_home: Option<PathBuf>,
@@ -1202,6 +1208,15 @@ fn parse_gowin_cli_args(
             }
             Some("--program-existing") => options.program_existing = true,
             Some("--check-existing") => options.check_existing = true,
+            Some("--audit-current") => {
+                options.check_existing = true;
+                options.audit_current = true;
+            }
+            Some("--seal-existing") => {
+                options.check_existing = true;
+                options.audit_current = true;
+                options.seal_existing = true;
+            }
             Some("--gowin-home") => {
                 options.gowin_home = Some(PathBuf::from(arguments.next().ok_or_else(|| {
                     GowinCliError::Argument("`--gowin-home` requires a directory".to_string())
@@ -1259,7 +1274,14 @@ fn parse_gowin_cli_args(
             "`--program-existing` cannot be combined with `--build` or `--program`".to_string(),
         ));
     }
-    if options.check_existing && (options.build || options.program_existing) {
+    if options.program_flash.is_some() && (options.program_existing || options.program) {
+        return Err(GowinCliError::Argument(
+            "select only one programming operation".to_string(),
+        ));
+    }
+    if options.check_existing
+        && (options.build || options.program_existing || options.program_flash.is_some())
+    {
         return Err(GowinCliError::Argument(
             "`--check-existing` cannot be combined with a build or program operation".to_string(),
         ));
@@ -1321,9 +1343,11 @@ where
             "Usage: {} [OUTPUT] [--build] [--program] [--check-existing] [--program-existing] [--program-flash OFFSET FILE] [--gowin-home PATH] [--cable-index N]\n\n\
              --build          Export and run Gowin synthesis/place-and-route\n\
              --program        Build, then program volatile FPGA SRAM\n\
-             --check-existing  Validate the existing build manifest, reports, and bitstream\n\
+             --check-existing  Audit the frozen snapshot, reports and bitstream without export\n\
+             --audit-current  Also compare existing files with the current module; never export\n\
+             --seal-existing  Qualify a legacy build against current source and seal its snapshot\n\
              --program-existing  Program the previously audited bitstream without rebuilding;\n\
-             \x20                 rejects stale sources, target metadata, or bitstream bytes\n\
+             \x20                 rejects changed frozen sources, reports or bitstream bytes\n\
              --program-flash  Program FILE to external SPI flash at byte OFFSET;\n\
              \x20                 can run without --build\n\
              --gowin-home     Gowin installation root; overrides GOWIN_HOME and PATH\n\
@@ -1334,8 +1358,23 @@ where
     }
 
     let output = options.output.unwrap_or_else(|| default_output.into());
-    let generated = project.export(&output)?;
-    println!("Exported Gowin project to {}", output.display());
+    let existing = !options.build
+        && (options.check_existing || options.program_existing || options.program_flash.is_some());
+    let generated = if existing {
+        if options.audit_current {
+            let current = project.generate()?;
+            artifact::verify_sources(&output, &current)?;
+            current
+        } else {
+            let saved = artifact::load::<T>(&output)?;
+            artifact::verify_fit(&output, &saved)?;
+            saved
+        }
+    } else {
+        let generated = project.export(&output)?;
+        println!("Exported Gowin project to {}", output.display());
+        generated
+    };
     if !options.build
         && !options.check_existing
         && !options.program_existing
@@ -1344,11 +1383,15 @@ where
         return Ok(());
     }
 
-    let toolchain = options
-        .gowin_home
-        .map(GowinToolchain::from_home)
-        .map(Ok)
-        .unwrap_or_else(GowinToolchain::discover)?;
+    let toolchain = if options.check_existing {
+        GowinToolchain::from_home("")
+    } else {
+        options
+            .gowin_home
+            .map(GowinToolchain::from_home)
+            .map(Ok)
+            .unwrap_or_else(GowinToolchain::discover)?
+    };
     if options.build {
         let result = toolchain.build(&output, &generated)?;
         println!("Built {}", result.bitstream.display());
@@ -1367,10 +1410,11 @@ where
     }
     if options.check_existing {
         let bitstream = toolchain.validate_existing_build(&output, &generated)?;
-        println!(
-            "Existing Gowin build is current and audited: {}",
-            bitstream.display()
-        );
+        if options.seal_existing {
+            artifact::write(&output, &generated)?;
+            artifact::seal_fit(&output, &generated)?;
+        }
+        println!("Existing Gowin build is audited: {}", bitstream.display());
     }
     if options.program_existing {
         let bitstream = toolchain.validate_existing_build(&output, &generated)?;
@@ -1387,6 +1431,9 @@ where
         )?;
     }
     if let Some((offset, binary)) = &options.program_flash {
+        if !options.build {
+            toolchain.validate_existing_build(&output, &generated)?;
+        }
         let capacity_bits = T::inventory()
             .fitted_device_capacity_bits(ResourceKind::SpiFlashDevice)
             .ok_or_else(|| {
@@ -1513,6 +1560,7 @@ impl GowinToolchain {
             project.bsram_expectation,
         )?;
         build_manifest::write(directory, project, &result.bitstream)?;
+        artifact::seal_fit(directory, project)?;
         Ok(result)
     }
 

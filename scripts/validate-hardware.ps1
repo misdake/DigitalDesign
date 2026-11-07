@@ -51,17 +51,17 @@ function Invoke-Cargo {
 }
 
 function Invoke-BootArtifactValidation {
-    $bootDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
+    $bootDirectory = Join-Path $evidenceDirectory ("boot-" + [guid]::NewGuid().ToString("N"))
     $application = Join-Path $bootDirectory "application.v3bin"
     $generatedPackage = Join-Path $bootDirectory "cpu-v3-boot.bin"
     $repackedPackage = Join-Path $bootDirectory "cpu-v3-boot.repacked.bin"
     $repackedMap = Join-Path $bootDirectory "cpu-v3-boot.repacked.map"
 
     Invoke-Cargo "materialize generated CPU V3 boot assets" "run" @(
-        "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets", "--", $bootDirectory
+        "-p", "cpu-v3-application", "--bin", "cpu-v3-boot-assets", "--", $bootDirectory
     )
     Invoke-Cargo "pack CPU V3 single application" "run" @(
-        "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
+        "-p", "cpu-v3-boot-format", "--bin", "cpu-v3-pack", "--",
         $application, "-o", $repackedPackage, "--map", $repackedMap
         "--project", (Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/boot-applications.conf")
     )
@@ -125,6 +125,9 @@ function Invoke-IverilogValidation {
     Invoke-Cargo "CPU V3 system RTL Icarus" "test" @(
         "-p", "cpu-v3-tang-nano-20k", "--lib", "--", "--ignored", "--nocapture"
     )
+    Invoke-Cargo "CPU V3 system co-simulation" "test" @(
+        "-p", "cpu-v3-tang-nano-20k", "--test", "system_cosim", "--", "--ignored", "--nocapture", "--test-threads=1"
+    )
     $systemExampleArgs = @(
         "-p", "cpu-v3-tang-nano-20k", "--example", "cpu_v3_system", "--", "--ignored", "--nocapture"
     )
@@ -134,16 +137,15 @@ function Invoke-IverilogValidation {
 
 function Invoke-GowinBuild {
     param([string]$Package, [string]$Example)
-    Invoke-Cargo "$Example Gowin build" "run" @(
-        "-p", $Package, "--example", $Example, "--", "--build"
-    )
+    $target = if ($Package -eq "cpu-v3-tang-nano-20k") { @("--bin", "cpu-v3-system") } else { @("--example", $Example) }
+    Invoke-Cargo "$Example Gowin build" "run" (@("-p", $Package) + $target + @("--", "target/$($Example)_gowin", "--build"))
     Invoke-GowinAudit $Package $Example
 }
 
 function Invoke-GowinAudit {
     param([string]$Package, [string]$Example)
     Invoke-Cargo "$Example artifact audit" "run" @(
-        "-p", $Package, "--example", $Example, "--", "--check-existing"
+        "-p", "digital-design-hardware-gowin", "--bin", "gowin-artifact", "--", "target/$($Example)_gowin"
     )
 }
 

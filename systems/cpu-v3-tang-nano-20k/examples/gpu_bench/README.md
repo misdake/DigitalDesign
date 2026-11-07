@@ -5,6 +5,20 @@ production GPU and MC. No GPU, CPU, timer or memory-controller RTL is added.
 The asset producer reads the system's GPU allocation authority; the build script
 packs the exact application and DRAM resources into the normal CB06 boot image.
 
+The current catalog is version 2, suite revision `asset-banks-v2`. A complete
+56-case micro suite fits in one boot image. The allocator prefers the original
+high asset bank, then places an entire allocation in the low bank when it cannot
+fit high; it never splits a texture, mesh, descriptor or CB across banks. Each
+bank exports one resource file (`bench.bin`, optionally `bench_low.bin`). Boot
+loads all resources before measurement; no measured-run upload is introduced.
+The 16-bit wire token binds the ordered bank addresses, lengths and contents;
+the artifact/catalog SHA identities retain the complete input identity.
+
+This is a suite revision: physical references, resource files and token differ
+from the previous high-only catalog. Case order, dimensions, options, work
+counts, three warmups and 31 samples remain unchanged. Previous board results
+keep their original identities and are not a performance baseline for this revision.
+
 ## Workloads and measurement boundary
 
 The catalog in the generated `gpu-bench-assets/assets.json` records every input,
@@ -185,9 +199,20 @@ and the controlled probe together when interpreting the board results.
 This software suite is separate from the default boot application and does not
 modify GPU/MC RTL or the formal driver. Build selection uses
 `CPU_V3_BOOT_EXAMPLE=gpu_bench`; generated constants, asset copies and the package
-come through the existing OUT_DIR and `cpu-v3-boot-assets` authority. The only
-shared build changes are that explicit selection branch and the extra asset
-whitelist in the boot-materializer test.
+come through the existing OUT_DIR and `cpu-v3-boot-assets` authority. The
+application-owned recipe is exposed by `cpu-v3-app build gpu-bench`; `--scene full`
+selects the six-case complete-scene catalog.
+
+`python -B systems/cpu-v3-tang-nano-20k/examples/gpu_bench/tools/test_assets.py`
+checks whole-bank allocation, failed-request preservation and protected ranges.
+The `gpu_bench` Rust target retains its protocol check and has two explicit,
+bounded bank qualifications. With `GPU_BENCH_QUALIFICATION_ROOT` bound to frozen
+inputs, `cargo test --release -p cpu-v3-tang-nano-20k --test gpu_bench banks:: -- --ignored`
+checks all 56 raw workload outputs, a six-case low/high full-scene pair, and a
+complete CB06 CPU/functional-GPU epoch including every real START and CRC packet.
+Its controlled host clock skips the initial UART attachment delay; these tests
+make no timing claim. The original overflowing raw micro reference is a GPU
+workload oracle only and is never accepted or installed as a boot package.
 
 Run default-image tests with the default selection. In particular,
 `application_instruction_boundaries_are_safe` and

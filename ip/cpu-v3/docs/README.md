@@ -5,6 +5,8 @@ display, device allocation, and fitted timing belong to the Tang Nano 20K system
 
 ## Documents
 
+- [`testing.md`](testing.md): private unit-suite ownership, grouped core/backend
+  cases and the boundary to system qualification.
 - [`isa.md`](isa.md): normative ISA, architectural addressing, fault, and ABI specification for
   revision 0.10. [`isa.html`](isa.html) is the self-contained visual encoding reference. Neither
   document defines Cache or fitted-system policy.
@@ -52,8 +54,9 @@ age. Every beat checks the public outputs, accumulator and all 68 observed RF
 words; a local Verilog loop compares a packed expected snapshot instead of
 generating one assertion statement per word per beat. The selected execution
 RF, multiply and special-function leaves and the end-to-end core regressions
-remain separate checks. The standalone ProductPath implementation remains a
-reference, without a migration comparison against the older separate issuers.
+remain separate checks. Standalone scalar, vector and special-function paths
+have their own bounded qualifications; the selected product calendar is checked
+through the actual execution owner.
 
 SINCOS numerical accuracy is checked once by `sincos_full_range_accuracy`: its
 dense sweep covers every raw input in ±45 radians, including the ±2π rotation

@@ -868,26 +868,3 @@ impl Module for CpuV3FpuDotPath {
         Some(include_str!("cpu_v3_fpu_dot_path_tb.v").to_string())
     }
 }
-
-/// One physical product issuer, shared by ordinary multiply and dot modes.
-/// Its actual register execution model lives in CpuV3FpuState.
-pub struct CpuV3FpuProductPath;
-impl HardwareIdentity for CpuV3FpuProductPath {
-    const TARGET_RESOURCE_LEAF: bool = true;
-    fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuProductPath").namespace(["components", "cpu", "cpu_v3"])
-    }
-}
-impl Module for CpuV3FpuProductPath {
-    type Input = CpuV3FpuDotPathInput;
-    type Output = CpuV3FpuDotPathOutput;
-    type EmuState = ();
-    const USES_MAIN_CLOCK: bool = true;
-    const EMU_AVAILABLE: bool = false;
-    fn target_resources() -> Vec<TargetResourceRequest> {
-        Vec::new()
-    }
-    fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_product_path.v").to_string())
-    }
-}

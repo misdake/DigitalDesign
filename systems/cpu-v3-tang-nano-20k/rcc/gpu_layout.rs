@@ -1,4 +1,6 @@
 //! System-owned column RGB565 layout, in 128-byte sectors; shared by every producer and consumer.
+pub const GPU_ASSET_LOW_FIRST_SECTOR: u16 = 0x2000;
+pub const GPU_ASSET_LOW_END_SECTOR: u16 = 0x8000;
 pub const GPU_DOMAIN_FIRST_SECTOR: u16 = 0x8000;
 pub const GPU_COLOR_A_SECTOR: u16 = GPU_DOMAIN_FIRST_SECTOR;
 pub const GPU_PLANE_SECTORS: u16 = 2048;
@@ -25,3 +27,16 @@ pub const GPU_TEXTURE_MACRO_LOG2: u16 = 4;
 pub const GPU_TEXTURE_MIN_LEVEL_SECTORS: u16 = 4;
 pub const GPU_TEXTURE_ALIGNMENT_SECTORS: u16 = 2;
 pub const GPU_FRAMEBUFFER_PHYSICAL_SECTORS: u16 = 1600;
+
+/// Exclusive end of the immutable bank containing `first`, or zero outside assets.
+// RCC's target language has no host Range::contains implementation.
+#[allow(clippy::manual_range_contains)]
+pub fn gpu_asset_bank_end(first: u16) -> u16 {
+    if first >= GPU_ASSET_FIRST_SECTOR && first < GPU_ASSET_END_SECTOR {
+        return GPU_ASSET_END_SECTOR;
+    }
+    if first >= GPU_ASSET_LOW_FIRST_SECTOR && first < GPU_ASSET_LOW_END_SECTOR {
+        return GPU_ASSET_LOW_END_SECTOR;
+    }
+    0
+}

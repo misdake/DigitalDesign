@@ -28,18 +28,19 @@ refit/audit any changed image before programming.
 ## Memory layout and lifetime
 
 [gpu_layout.rs](/systems/cpu-v3-tang-nano-20k/rcc/gpu_layout.rs) is the shared
-software allocation authority. The native module resolver and capture-profile
-source materialization use this module. Drivers use its plane allocation
+software allocation authority. The native module resolver and host capture
+description use this module directly. Drivers use its plane allocation
 capacity for alias checks.
 
 | Allocation | Start | Exclusive end |
 | --- | --- | --- |
+| Low immutable assets | `0x100000` | `0x400000` |
 | Color A | `0x400000` | `0x440000` |
 | Color B | `0x440000` | `0x480000` |
 | Depth | `0x480000` | `0x4c0000` |
 | Slot 0 CB | `0x4c0000` | `0x4d0000` |
 | Slot 0 objects | `0x4d0000` | `0x4e0000` |
-| Immutable assets | `0x4e0000` | `0x7df800` |
+| High immutable assets | `0x4e0000` | `0x7df800` |
 | UI page 0 | `0x7df800` | `0x7dfc00` |
 | UI page 1 | `0x7dfc00` | `0x7e0000` |
 | Slot 1 CB | `0x7e0000` | `0x7f0000` |

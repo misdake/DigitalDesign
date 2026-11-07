@@ -20,50 +20,20 @@ GPU+MC input/build/image path with a saved tiny input fixture.
 
 ## Full-system cycle emu
 
-For an exact ordinary application plan, the separate runner entry is:
+The ordinary level-29 runner is application-owned:
 
 ```powershell
-python -B systems/cpu-v3-tang-nano-20k/tools/gpu_profiler/ordinary_runner.py path/to/verified-plan.json
+python -B systems/cpu-v3-tang-nano-20k/applications/bloxorz/tools/profile.py path/to/verified-plan.json
 ```
 
-The plan schema is `digitaldesign.ordinary-profile-plan`, version1. It binds
-`runtime`/`program` and nonempty source/resource `bindings` by file/bytes/SHA256,
-new `output`/`report_output` directories, `max_logic_cycles`, `max_events`,
-`max_host_seconds` and `max_total_host_seconds`. The total deadline is at most
-7200s and includes identity checks, capture and report export; reserve at least
-60s beyond the stepping bound. There is no automatic retry. `words` names
-CPU-visible physical halfword addresses: phase, moving, level(zero-based), x, z,
-orientation, mask, transition, motion_age, epoch and switch_age_1..9. `gates`
-contains before_input/consumed/sample segment+Execute-PC pairs from the exact
-linked ordinary program. `sites` contains vblank_return/final_wait_return pairs.
-These source mappings must be audited before execution; they are not guessed
-from a different program's symbols. The runner binary is
-`cpu-v3-profile-runner`, with its own frozen executable SHA.
-The current runner additionally requires
-`site_observation: "first-unheld-execute"`. Logical return sites are deduplicated
-unheld Execute arrivals, including non-retiring prefixes/LOADs; the three action
-gates still require retirement. Supply `clock_sites.clear/read` with code_segment
-and pc from the linked map. The shared final wait is qualified by saved finish
-r10; its actual started r8 and startEpoch r9 are retained at the read. Return
-and MMIO intervals and offsets are exported separately.
-All model stepping runs on one host worker with an explicit8MiB stack; the
-application stack and model clocks are unchanged. This bound is captured as
-`host_worker_stack_bytes`. A failed launch receipt is preserved and blocks an
-automatic ordinary-package retry.
-
-The runner retains F1/F2 and later stable-A/rolling-B presentations, preserving
-their actual phase, age and ordinals. The native budget is explicitly four
-presentation groups, with all pre-window journals retained; registered images
-remain at most12. The separate tier allows at most112M events and4GiB of main
-JSONL, plus100K sidecar events. Legacy CLI/recorders retain10M. A partial tail
-may coexist with completed selected frames and stays labelled partial. The
-launcher exports only actually complete scoped rasters and records missing
-required scopes. Source overlay manifests remain separate from the optional
-Git-only `--source-identity` mapping.
-`max_native_command_images` is additionally required and at most2048. Native
-raw planes are204800B each; the worst case for2048 distinct color/depth pairs
-is838860800B before PNG/HTML. Exceeding the explicit image count rejects export
-with a budget error and preserves the raw session, rather than dropping images.
+The [Bloxorz profiling specification](/systems/cpu-v3-tang-nano-20k/applications/bloxorz/docs/profiling.md)
+owns exact-plan fields, selection/input rules, wait-register interpretation,
+budgets and qualifications. Build its `bloxorz-profile-runner` target and bind
+the new executable's actual SHA; retired runner command names are not aliases.
+`application_sidecar.py` explicitly resolves the published runner v1 format to
+the application codec. Old raw captures and reports keep their original format
+and derived semantics. `interval_activity.py` provides common model accounting,
+independent of application conditions or thresholds.
 
 Build and run in the feature checkout, using its own `target` (never the main
 checkout's target). Add `--profile-out <new-directory>` to the existing

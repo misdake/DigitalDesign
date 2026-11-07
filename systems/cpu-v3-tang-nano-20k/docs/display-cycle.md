@@ -31,7 +31,7 @@ These diagnostics do not stall reads, alter publication, or provide a whole-Disp
 
 ## Bounded qualification
 
-`tests/display_cycle_ram.rs` compares each registered read against the production
+`tests/display/display_cycle_ram.rs` compares each registered read against the production
 `DisplayLineBuffer::verilog_source()`, including unknown values, all table addresses, Q holds,
 two relative clock phases, and simultaneous read/write edges. Test copies with a wrong bank
 write and a combinational read replace the real DUT behavior; both must fail at a RAM-Q oracle.
@@ -72,7 +72,7 @@ a new MMIO NEXT_SWAP remains pending for the next eligible frame event.
 Runtime reset preserves the unreset release/started synchronizers and RAM storage,
 matching the RTL; it clears the logic registers that have explicit reset assignments.
 
-`tests/display_cycle_fill.rs` uses the unmodified production pixel timing/ownership
+`tests/display/display_cycle_fill.rs` uses the unmodified production pixel timing/ownership
 domain as a controlled consumer, with exact 54/33.3-MHz edge ratio and two pixel phases.
 At each logic edge, before production NBA commits, it compares the boundary ports;
 run-length encoding compresses the recording, never skips emulated edges.
@@ -143,7 +143,7 @@ without advancing them. `.logic` and `.pixel` retain their control contracts;
 
 ## Timing qualification and replay provenance
 
-`tests/display_cycle_timing.rs` runs fresh production RTL for 1200 pixel edges
+`tests/display/display_cycle_timing.rs` runs fresh production RTL for 1200 pixel edges
 at two phases and compares every logic/pixel event, including counters and all
 crossing registers. Real DUT copies release pixel reset early, shorten publication
 CDC, or feed a raw error pin on a coincident edge instead of the old sticky flag;
@@ -347,7 +347,7 @@ integer-model result does not assert that every corresponding RTL bit is X.
 
 ### Bounded symbol qualification
 
-`tests/display_cycle_tmds.rs` extracts the actual production encoder and three lane
+`tests/display/display_cycle_tmds.rs` extracts the actual production encoder and three lane
 connections. A registered controlled producer uses C2's old-pipe boundary; an
 independent `DisplayTmdsReference` recomputes precodes/running disparity from original
 RGB bytes. A settle event initializes the reference combinational producer before

@@ -382,9 +382,7 @@ pub fn run() {
             )
             .unwrap()
         } else {
-            resolver::RendererCaptureConfiguration::without_capture(
-                resolver::RendererLayoutProfile::Column16,
-            )
+            resolver::RendererCaptureConfiguration::without_capture()
         };
         let ir = resolver::compile_explicit_gpu_program_checked(
             "C actual caller",

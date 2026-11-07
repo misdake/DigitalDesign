@@ -94,7 +94,6 @@ fn gpu_window_parts_mode(
     let tail = unsafe { parts[0u16].tail.as_u16_array() };
     let tail_count = parts[0u16].tail_count;
     if gpu_memory_faulted()
-        || sector < GPU_DOMAIN_FIRST_SECTOR
         || count == 0
         || count > 32768
         || tail_count > 32768 - count
@@ -108,6 +107,14 @@ fn gpu_window_parts_mode(
     let total = count + tail_count;
     if ((word & 63) + (total - 1)) >> 6 > 65535 - first {
         return false;
+    }
+    if sector < GPU_DOMAIN_FIRST_SECTOR {
+        // Only immutable reads can enter the extra low bank. Input uploads
+        // remain in their caller-owned high-memory allocations.
+        let end = gpu_asset_bank_end(first);
+        if !read || end == 0 || ((word & 63) + (total - 1)) >> 6 >= end - first {
+            return false;
+        }
     }
     let mut page = first >> 8;
     let mut offset = ((first & 255) << 6) | (word & 63);
@@ -172,16 +179,12 @@ fn gpu_window_parts_mode(
 }
 
 fn gpu_window_asset_read(low: Array<u16>, sector: u16, word: u16, count: u16) -> bool {
-    if sector < GPU_ASSET_FIRST_SECTOR
-        || sector >= GPU_ASSET_END_SECTOR
-        || count == 0
-        || count > 32768
-        || word >> 6 >= GPU_ASSET_END_SECTOR - sector
-    {
+    let end = gpu_asset_bank_end(sector);
+    if end == 0 || count == 0 || count > 32768 || word >> 6 >= end - sector {
         return false;
     }
     let first = sector + (word >> 6);
-    if ((word & 63) + (count - 1)) >> 6 >= GPU_ASSET_END_SECTOR - first {
+    if ((word & 63) + (count - 1)) >> 6 >= end - first {
         return false;
     }
     let mut parts: GpuWindowParts = GpuWindowParts {

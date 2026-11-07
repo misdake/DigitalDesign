@@ -2,6 +2,8 @@
 use cpu_v3::{rcc_backend, CpuV3Sim, PhysicalWordAddress, RunOutcome};
 #[cfg(test)]
 mod batch_scene;
+#[cfg(test)]
+mod functional_scene;
 #[path = "../../applications/bloxorz/geometry.rs"]
 mod geometry;
 #[cfg(test)]

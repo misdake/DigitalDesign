@@ -11,7 +11,7 @@ import sys
 sys.dont_write_bytecode = True
 SYSTEM = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(SYSTEM / "tools"))
-from gpu_layout import sectors, validate_asset_range
+from gpu_layout import asset_regions, sectors, validate_asset_range
 
 WIDTH, HEIGHT = 400, 240
 WARMUP, SAMPLES = 3, 31
@@ -123,14 +123,20 @@ def dma(address, qword, size):
 
 
 class Arena:
-    def __init__(self, base):
-        self.base, self.data = base, bytearray()
+    def __init__(self, regions):
+        self.banks = [(first, end, bytearray()) for first, end in regions]
 
     def put(self, data):
-        self.data += bytes((-len(self.data)) % 256)
-        address = self.base + len(self.data)
-        self.data += data
-        return address
+        if not data:
+            raise ValueError('empty GPU allocation')
+        for first, end, storage in self.banks:
+            padding = (-len(storage)) % 256
+            if first + len(storage) + padding + len(data) <= end:
+                storage += bytes(padding)
+                address = first + len(storage)
+                storage += data
+                return address
+        raise ValueError(f'no asset bank has room for {len(data)} contiguous bytes')
 
     def commands(self, words):
         assert 0 < len(words) <= 16384 and words[-1] == 0xf0000000
@@ -141,7 +147,7 @@ class Arena:
 def generate(output):
     output.mkdir(parents=True, exist_ok=True)
     layout = sectors()
-    arena = Arena(layout['GPU_ASSET_FIRST_SECTOR'] * 128)
+    arena = Arena(asset_regions())
     texture_defs = {'small': (5, True), 'medium': (8, True), 'large': (10, False),
                     'mip_ids': (8, True), 'wide_mip': (9, True)}
     textures = {name: arena.put(texture(n, mip, name == 'mip_ids'))
@@ -286,11 +292,20 @@ def generate(output):
 
 
 def finish(output, arena, cases, layout):
-    arena.data += bytes((-len(arena.data)) % 128)
-    validate_asset_range(arena.base, len(arena.data))
-    blob = output / 'bench.bin'
-    blob.write_bytes(arena.data)
-    token = int.from_bytes(hashlib.sha256(arena.data).digest()[:2], 'little')
+    resources = []
+    identity = hashlib.sha256(b'gpu-bench:asset-banks-v2\0')
+    for index, (first, end, storage) in enumerate(arena.banks):
+        if not storage:
+            continue
+        storage += bytes((-len(storage)) % 128)
+        validate_asset_range(first, len(storage))
+        name = 'bench.bin' if index == 0 else 'bench_low.bin'
+        (output / name).write_bytes(storage)
+        identity.update(struct.pack('<II', first, len(storage)))
+        identity.update(storage)
+        resources.append(dict(file=name, address=first, bytes=len(storage),
+                              sha256=hashlib.sha256(storage).hexdigest()))
+    token = int.from_bytes(identity.digest()[:2], 'little')
     table = []
     for c in cases:
         table += [c['setup_base']//128, c['setup_instructions']-1,
@@ -303,15 +318,16 @@ def finish(output, arena, cases, layout):
                  f'pub const BENCH_PREVIEW_SECTOR:u16={layout["GPU_COLOR_B_SECTOR"]};\n'
                  f'pub static BENCH_TABLE:Buf<u16,{len(table)}>=Buf::new([' + ','.join(map(str, table)) + ']);\n')
     (output / 'bench_assets.rs').write_text(constants, encoding='utf8')
-    manifest = dict(version=1, clock_hz=54000000, width=WIDTH, height=HEIGHT, token=token,
+    manifest = dict(version=2, suite_revision='asset-banks-v2',
+                    asset_banks=[dict(first=first, end=end) for first, end in asset_regions()],
+                    clock_hz=54000000, width=WIDTH, height=HEIGHT, token=token,
                     warmup=WARMUP, samples=SAMPLES, cases=cases,
                     targets=dict(color_base=layout['GPU_COLOR_B_SECTOR']*128,
                                  depth_base=layout['GPU_DEPTH_SECTOR']*128),
                     timing='SEND to completed END/FLUSH; setup separate; headless before first present',
-                    resources=[dict(file='bench.bin', address=arena.base, bytes=len(arena.data),
-                                    sha256=hashlib.sha256(arena.data).hexdigest())])
+                    resources=resources)
     (output / 'assets.json').write_text(json.dumps(manifest, indent=2)+'\n', encoding='utf8')
-    print(json.dumps(dict(cases=len(cases), bytes=len(arena.data), token=token)))
+    print(json.dumps(dict(cases=len(cases), bytes=sum(r['bytes'] for r in resources), token=token)))
 
 
 def generate_full_scene(output):
@@ -325,7 +341,7 @@ def generate_full_scene(output):
     meshes, camera = scene['meshes'], scene['cameras'][0]
     assert len(meshes) == 24 and sum(len(m['triangles']) for m in meshes) == 1141
     output.mkdir(parents=True, exist_ok=True)
-    layout = sectors(); arena = Arena(layout['GPU_ASSET_FIRST_SECTOR']*128)
+    layout = sectors(); arena = Arena(asset_regions())
     tex = arena.put(demo.texture())
     records = [(arena.put(record), len(record)) for record in map(demo.native_record, meshes)]
     light = camera['light']

@@ -116,7 +116,8 @@ unchanged. See Microsoft's [field contract](https://learn.microsoft.com/en-us/wi
 
 ## Display runner
 
-`cpu-v3-display-sim` defaults to `--cpu-mode instruction`, the existing fast
+`cpu-v3-display-sim` consumes an explicit `--package EXISTING-CB06`; it does not
+compile or embed a default application. It defaults to `--cpu-mode instruction`, the existing fast
 architectural interpreter. `--max-cpu-steps` bounds its step calls; there are no
 caches, memory-controller delays or instruction-to-clock conversion. Explicit
 `--cpu-mode native` selects the composed core/cache/native-memory model and uses

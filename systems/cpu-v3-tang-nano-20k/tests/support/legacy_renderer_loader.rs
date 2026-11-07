@@ -17,19 +17,60 @@ pub fn legacy_test_sources(shared: &Path) -> PathBuf {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-    std::fs::create_dir_all(&target).unwrap();
-    for folder in [
-        shared.to_path_buf(),
-        system.join("tests/fixtures/legacy_renderer"),
-    ] {
-        for entry in std::fs::read_dir(folder).unwrap() {
-            let source = entry.unwrap().path();
-            if source.extension().is_some_and(|e| e == "rs") {
-                std::fs::copy(&source, target.join(source.file_name().unwrap())).unwrap();
-            }
+    snapshot_legacy_sources(shared, &target, &mut |_| {}).unwrap()
+}
+
+/// Snapshot only retired contracts that need a physical approved overlay.
+/// Ordinary production compilation reads its canonical source root directly.
+pub fn snapshot_legacy_sources(
+    shared: &Path,
+    generated: &Path,
+    dependency: &mut dyn FnMut(&Path),
+) -> Result<PathBuf, String> {
+    let shared = std::fs::canonicalize(shared).map_err(|error| error.to_string())?;
+    let mut roots = vec![shared.clone()];
+    if !shared.join("gpu_pipeline.rs").is_file() {
+        roots.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy_renderer"));
+    }
+    let application_support = shared.join("../applications/rendering/rcc");
+    if application_support.is_dir() {
+        roots.push(application_support);
+    }
+    std::fs::create_dir_all(generated).map_err(|error| error.to_string())?;
+    let generated = std::fs::canonicalize(generated).map_err(|error| error.to_string())?;
+    let roots = roots
+        .into_iter()
+        .map(std::fs::canonicalize)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    for root in &roots {
+        if generated.starts_with(root) || root.starts_with(&generated) {
+            return Err("legacy snapshot must be separate from source authority".into());
         }
     }
-    target
+    let mut origins = std::collections::BTreeMap::new();
+    for root in roots {
+        for entry in std::fs::read_dir(root).map_err(|error| error.to_string())? {
+            let input = entry.map_err(|error| error.to_string())?.path();
+            if input.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            dependency(&input);
+            let name = input.file_name().unwrap();
+            let destination = generated.join(name);
+            let bytes = std::fs::read(&input).map_err(|error| error.to_string())?;
+            if std::fs::read(&destination).ok().as_deref() != Some(&bytes) {
+                std::fs::write(destination, bytes).map_err(|error| error.to_string())?;
+            }
+            origins.insert(name.to_string_lossy().into_owned(), input);
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&origins).map_err(|error| error.to_string())?;
+    let map = generated.join("source-origins.json");
+    if std::fs::read(&map).ok().as_deref() != Some(&bytes) {
+        std::fs::write(map, bytes).map_err(|error| error.to_string())?;
+    }
+    Ok(generated)
 }
 
 /// This explicit host entry always requires the shared GPU root, even when
@@ -80,7 +121,7 @@ pub fn compile_renderer_program_with_sources(
         constants,
         ordinary_dirs,
         None,
-        &RendererCaptureConfiguration::with_default_hook(RendererLayoutProfile::Column16),
+        &RendererCaptureConfiguration::with_default_hook(),
         None,
         dependency,
     )
@@ -128,12 +169,9 @@ pub fn compile_renderer_program_checked_with_sources(
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, String> {
     let from_shared = local_dir == shared_dir;
-    let legacy = legacy_test_sources(shared_dir);
-    let shared_dir = legacy.as_path();
-    let actual_shared = materialize_renderer_sources(
+    let actual_shared = snapshot_legacy_sources(
         shared_dir,
         &check.directory.join("renderer-rcc"),
-        configuration.profile,
         dependency,
     )?;
     let local_dir = if from_shared {
@@ -184,7 +222,7 @@ pub fn compile_renderer_program_with_capture(
         constants,
         ordinary_dirs,
         capture,
-        &RendererCaptureConfiguration::without_capture(RendererLayoutProfile::Column16),
+        &RendererCaptureConfiguration::without_capture(),
         None,
         dependency,
     )
@@ -205,14 +243,7 @@ pub fn compile_renderer_program_with_capture_profile(
     dependency: &mut dyn FnMut(&Path),
 ) -> Result<rcc::frontend::Program, String> {
     let from_shared = local_dir == shared_dir;
-    let legacy = legacy_test_sources(shared_dir);
-    let shared_dir = legacy.as_path();
-    let actual_shared = materialize_renderer_sources(
-        shared_dir,
-        generated_sources,
-        configuration.profile,
-        dependency,
-    )?;
+    let actual_shared = snapshot_legacy_sources(shared_dir, generated_sources, dependency)?;
     let local_dir = if from_shared {
         actual_shared.as_path()
     } else {

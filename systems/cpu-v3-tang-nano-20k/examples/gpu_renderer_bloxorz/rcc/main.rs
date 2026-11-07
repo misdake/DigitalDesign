@@ -5,6 +5,7 @@ use device_abi::*;
 mod gpu_api;
 use gpu_api::*;
 mod gpu_demo_api;
+mod gpu_board;use gpu_board::*;
 use gpu_demo_api::*;
 mod profiler_clock;
 use profiler_clock::*;
@@ -849,7 +850,7 @@ fn game_floor_material() -> Material {
     )
 }
 fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
-    let mut gpu = Gpu::init(demo_config());
+    let mut gpu = Gpu::init(board_gpu_config());
     let mut commands = gpu.command_buffer();
     commands.enable_prepared_parts(PreparedPartsLayout::SplitWide);
     let mut scene_commands = gpu.command_buffer();
@@ -870,9 +871,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let background =
         ColorBuffer::from_memory(unsafe { GpuMemory::from_sectors(BLOX_BACKGROUND_SECTOR, 1600) });
     let offscreen_view = offscreen.texture_view();
-    let color_a = demo_color_a();
-    let color_b = demo_color_b();
-    let depth = demo_depth();
+    let color_a = board_color_a();
+    let color_b = board_color_b();
+    let depth = board_depth();
     let static_color = ColorBuffer::from_memory(unsafe {
         GpuMemory::from_sectors(BLOX_STATIC_COLOR_SECTOR, 2048)
     });

@@ -5,3 +5,4 @@
 - [RCC fixed-point camera and whole-block poses](/systems/cpu-v3-tang-nano-20k/applications/bloxorz/docs/rcc-scene.md)
 - [Static native RGB scene and validation boundary](/systems/cpu-v3-tang-nano-20k/applications/bloxorz/docs/static-scene.md)
 - [Imported RGB level batching and exact grid](/systems/cpu-v3-tang-nano-20k/applications/bloxorz/docs/batched-levels.md)
+- [Ordinary level-29 profiling](/systems/cpu-v3-tang-nano-20k/applications/bloxorz/docs/profiling.md)

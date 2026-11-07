@@ -3,6 +3,7 @@ use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
 mod gpu_demo_api;
+mod gpu_board;use gpu_board::*;
 use gpu_demo_api::*;
 mod gamepad;
 use gamepad::*;
@@ -129,8 +130,8 @@ fn demo_record_static(
     view: &TextureView,
     state: &RenderState,
 ) {
-    let color = demo_color_b();
-    let depth = demo_depth();
+    let color = board_color_b();
+    let depth = board_depth();
     let room = demo_mesh_part(0, 6);
     let rgb = demo_mesh_part(6, 1);
     {
@@ -152,12 +153,12 @@ fn demo_identity_model() -> Model {
 fn demo_run(limit: u16, budget: u16) {
     REPORT[11u16] = 11;
     frame_stats_reset(STATS.as_array());
-    let mut gpu = Gpu::init(demo_config());
+    let mut gpu = Gpu::init(board_gpu_config());
     let mut static_buffer = gpu.command_buffer();
     let mut dynamic_buffer = gpu.command_buffer();
-    let color_a = demo_color_a();
-    let color_b = demo_color_b();
-    let depth = demo_depth();
+    let color_a = board_color_a();
+    let color_b = board_color_b();
+    let depth = board_depth();
     let mut display = Display::open_with_format(DisplayFormat::LinearRgb565);
     let mut camera = demo_camera();
     let mut motion = demo_motion_init(time_milliseconds());
