@@ -21,6 +21,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
         ("in_valid", i.valid),
         ("in_has_mip", i.mip),
         ("texture_fb400240", i.framebuffer),
+        ("texture_clamp", i.clamp),
         ("out_ready", i.out_ready),
     ] {
         pin!(n, 1, v, false);

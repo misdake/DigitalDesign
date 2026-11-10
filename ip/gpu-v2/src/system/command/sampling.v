@@ -36,7 +36,7 @@ output wire[15:0]depth_data,
  input wire rop_row7_accepted,input wire[4:0] rop_slot,
  output wire[4:0] retire_slot,output wire[5:0] global_used,
  output wire[5:0]light_used,sample_used,producer_used,
- output wire public_credit,input[15:0]texture_base,input[3:0]texture_n,input texture_mip,texture_rgba4444,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,
+ output wire public_credit,input[15:0]texture_base,input[3:0]texture_n,input texture_mip,texture_rgba4444,texture_clamp,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,
  output wire sample_valid,sample_ready,sample_fire,
  output wire[1:0] sample_row,output wire[18:0] sample_descriptor,
  output wire[35:0] sample_data,output wire[31:0]raw_metadata,
@@ -160,7 +160,7 @@ sample_last;
  wire[31:0]view_uv={view_clamp_uv(sample_data[35:18]),view_clamp_uv(sample_data[17:0])};
  gpu_v2_texture_direct_lod sampling(
  .clk(clk),.reset(reset),.ce(ce),.commit_allow(allow),
- .in_valid(sample_valid&&sample_admit),.in_uv(texture_fb400240?view_uv:{sample_data[33:18],sample_data[15:0]}),.texture_fb400240(texture_fb400240),
+ .in_valid(sample_valid&&sample_admit),.in_uv((texture_fb400240||texture_clamp)?view_uv:{sample_data[33:18],sample_data[15:0]}),.texture_fb400240(texture_fb400240),.texture_clamp(texture_clamp),
  .in_quad(sample_descriptor[3:0]),.in_mask(sample_descriptor[8:5]),.in_lane(sample_row),
  .in_lod(sample_descriptor[18:11]),.in_max_n(texture_n),.in_has_mip(texture_mip),.in_filter(texture_filter),
  .in_ready(coordinate_ready),.advance(),.preflight_bad(sampling_bad),.fault(sampling_fault),
@@ -199,7 +199,7 @@ sample_last;
  wire packet_next_valid;wire[14:0]packet_next_key;
  wire weight_write;wire[6:0]weight_address;wire[35:0]weight_value;
  gpu_v2_texture_runtime_backend_unique backend(
- .clk(clk),.reset(reset),.ce(ce),.commit_allow(allow),.abort(1'b0),.texture_base(texture_base),.texture_mip(texture_mip),.texture_fb400240(texture_fb400240),
+ .clk(clk),.reset(reset),.ce(ce),.commit_allow(allow),.abort(1'b0),.texture_base(texture_base),.texture_mip(texture_mip),.texture_fb400240(texture_fb400240),.texture_clamp(texture_clamp),
  .in_valid(sample_out_valid),.in_owner(sample_out_owner),.in_result(sample_out_result),
  .in_ready(sample_out_ready),.in_accept(coefficient_accept),.advance(),.preflight_bad(backend_bad),.fault(backend_fault),
  .packet_enable(packet_enable),.out_ready(packet_out_ready),.out_valid(packet_out_valid),.out_payload(packet_out_payload),

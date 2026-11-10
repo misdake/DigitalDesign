@@ -38,8 +38,8 @@ def nearest_even_div64(n):
 
 
 def texture_levels(capture, descriptor):
-    if descriptor & (1 << 24):
-        raise ValueError('Opaque scene reference supports only RGB565 textures')
+    if descriptor & ((1 << 24) | (1 << 25)):
+        raise ValueError('Opaque scene reference supports only Repeat RGB565 textures')
     n = (descriptor >> 16) & 15
     if n > 10 or ((descriptor >> 21) & 3) > 2:
         raise ValueError('Unsupported texture descriptor')

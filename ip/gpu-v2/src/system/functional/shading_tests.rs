@@ -56,8 +56,12 @@ fn rgba_format_and_mip_are_independent_and_fixed_views_stay_rgb565() {
             let decoded = Texture::decode(descriptor).unwrap();
             assert_eq!(decoded.full_mip, mip);
             assert!(decoded.rgba4444);
+            let clamped = Texture::decode(descriptor | (1 << 25)).unwrap();
+            assert!(clamped.clamp && clamped.rgba4444);
+            assert_eq!(clamped.full_mip, mip);
         }
     }
     assert!(Texture::decode((9 << 16) | (1 << 23) | (1 << 24)).is_err());
-    assert!(Texture::decode(1 << 25).is_err());
+    assert!(Texture::decode((9 << 16) | (1 << 23) | (1 << 25)).is_err());
+    assert!(Texture::decode(1 << 26).is_err());
 }

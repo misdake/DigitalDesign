@@ -24,7 +24,7 @@ module gpu_v2_texture_direct_lod(
  wire[3:0]fine=in_has_mip?(at_coarsest?4'd0:in_max_n-distance[3:0]):in_max_n;
  wire[2:0]frac=(in_has_mip&&!at_coarsest)?in_lod[2:0]:3'd0;
  wire[8:0]lambda=in_filter==2?{frac,6'b0}-(frac>4):9'd0;
- wire[3:0]physical=fine==0?4'd1:fine;
+ wire[3:0]physical=@PHYSICAL@;
  wire[7:0]fx,fy;wire[9:0]x,y;
  gpu_v2_texture_serial_coord coord(
  .clk(clk),.reset(reset),.ce(advance),.in_valid(in_valid&&in_ready),.in_ready(c_ready),.fault(c_fault),.out_valid(c_return),

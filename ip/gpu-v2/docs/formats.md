@@ -102,7 +102,7 @@ NativeRender32 is eight u32 words:
 
 | Word | Encoding |
 | --- | --- |
-| 0 | Current texture: base byte address/128 bits15:0; size_log2 bits19:16; full-mip20; filter bits22:21; fixed400x240 view bit23; RGBA4444 bit24 (zero selects RGB565); bits31:25 zero |
+| 0 | Current texture: base byte address/128 bits15:0; size_log2 bits19:16; full-mip20; filter bits22:21; fixed400x240 view bit23; RGBA4444 bit24 (zero selects RGB565); POT ClampToEdge bit25 (zero selects Repeat); bits31:26 zero |
 | 1 | RGB888 specular low24; high8 zero (alpha comes from mesh uniform and texture) |
 | 2 | depth_func bits2:0, depth_write3, blend4, unlit5; other bits zero |
 | 3 | Signed F4 lod_bias bits7:0; other bits zero |
@@ -114,12 +114,18 @@ Their arithmetic and direction requirements remain in
 legal column POT RGB565 or RGBA4444 texture, exponent0..10 and filter0/1/2, or the
 fixed400x240 view described in [framebuffer views](/ip/gpu-v2/docs/framebuffer-texture-view.md).
 Both use 256-byte base alignment and the same physical cache backend. POT uses
-normalized UV repeat and the selected mip level; fixed views use signed18 UV
+normalized UV Repeat or ClampToEdge and the selected mip level; fixed views use signed18 UV
 pre-clamp, true400/240 scaling, nearest/bilinear and base-only data. Exponent9
 on a fixed view is an encoding carrier, never a512-square footprint.
-NativeRender32 shape and format are part of state equality and the locked CP
-binding. Format is global alongside mip/filter and changes only after draining
-prior work. Fixed views remain RGB565 and reject bit24.
+NativeRender32 shape, format and address mode are part of state equality and the
+locked CP binding. They are global alongside mip/filter and change only after
+draining prior work. Fixed views remain RGB565 and reject bits24/25; their
+existing implicit clamp is unchanged. ClampToEdge clamps signed18 input UV to
+0..65535 before narrowing, then handles endpoints independently at each sampled
+mip. Nearest uses floor(u*N); filtered coordinates use u*N-0.5 clamped to
+0..N-1. Adjacent wrapped taps retain the original bank access pattern; an endpoint
+fraction of zero gives the wrapped neighbor zero weight. LOD uses the original
+UV differences. POT Repeat remains the default.
 
 Production POT mip levels use16x16 16-bit column macros,512 bytes each.
 RGBA4444 stores R15:12, G11:8, B7:4 and straight alpha A3:0. Both formats

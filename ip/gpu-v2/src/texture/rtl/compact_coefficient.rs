@@ -142,7 +142,8 @@ fn emit(command: bool) -> String {
   output wire [35:0]  out_meta,
   output wire [1:0]   work_reserved,
 "#,
-        if command { r#"  output reg fault,output wire proposal_ready,preflight_bad,
+        if command { r#"  input wire texture_clamp,
+  output reg fault,output wire proposal_ready,preflight_bad,
   output wire direct_weight_write,output wire[6:0] direct_weight_address,output wire[35:0] direct_weight_value
 );
  wire ce=proposal_ce&&commit_allow;"# } else { r#"  output reg          fault
@@ -171,8 +172,27 @@ fn emit(command: bool) -> String {
   wire [6:0]  key_in  = in_payload[160:154];
   wire        last_fine = in_payload[161];
 
+"#,
+        if command { r#"
+  wire [1:0] clamp_zero={texture_clamp&&(c02==0),texture_clamp&&(c00==0)};
+  reg [1:0] coarse_clamped;
+  function coarse_clamp_axis;
+    input [9:0] base; input [7:0] fraction; input [3:0] level;
+    reg [9:0] mask;
+    begin
+      mask={(level>9),(level>8),(level>7),(level>6),(level>5),
+            (level>4),(level>3),(level>2),(level>1),1'b1};
+      coarse_clamp_axis=(level<=1)||(base==0&&!fraction[7])||
+                        (base==mask)||(base==(mask^10'd1)&&fraction[7]);
+    end
+  endfunction
+"# } else { r#"
+  wire [1:0] clamp_zero=0,coarse_clamped=0;
+"# },
+        r#"
   wire [35:0] meta_in={key_in[5:0],slot_in[3:0],lv0,
-     (!c02[0] && !f0v[7]),(!c00[0] && !f0u[7]),c02[9:0],c00[9:0]};
+     (!c02[0] && !f0v[7] && !clamp_zero[1]),
+     (!c00[0] && !f0u[7] && !clamp_zero[0]),c02[9:0],c00[9:0]};
   // Input validation (mirrors the Rust limits; nearest forces fu=fv=0 on capture).
   wire [10:0] psum = {1'b0, p0} + {1'b0, p1};
   wire bad_input =
@@ -205,8 +225,10 @@ fn emit(command: bool) -> String {
   // replace the parent/fraction until after the current DSP reads.
   wire [8:0] mul0_a=ph ? input_stage[8:0] : input_stage[17:9];
   wire [7:0] fine_u=input_stage[25:18],fine_v=input_stage[33:26];
-  wire [7:0] coarse_u=input_stage[36]?{input_stage[34]^!fine_u[7],!fine_u[7],fine_u[6:1]}:fine_u;
-  wire [7:0] coarse_v=input_stage[36]?{input_stage[35]^!fine_v[7],!fine_v[7],fine_v[6:1]}:fine_v;
+  wire [7:0] coarse_u=coarse_clamped[0]?8'd0:
+    input_stage[36]?{input_stage[34]^!fine_u[7],!fine_u[7],fine_u[6:1]}:fine_u;
+  wire [7:0] coarse_v=coarse_clamped[1]?8'd0:
+    input_stage[36]?{input_stage[35]^!fine_v[7],!fine_v[7],fine_v[6:1]}:fine_v;
   wire [7:0] mul0_b=ph ? fine_v : coarse_v;
   gpu_v2_texture_coefficient_mul9 m0(.clk(clk),.ce(advance),.a(mul0_a),.b(mul0_b),.product(product[0]));
   wire [7:0] horizontal_u=ph ? horizontal_delay[16:9] : input_stage[25:18];
@@ -306,7 +328,7 @@ fn emit(command: bool) -> String {
   always @(posedge clk) begin
     if(reset) begin
       input_stage<=0; horizontal_delay<=0; "#,
-        if command { r#"row_totals<=0; fine_mask<=0;"# } else { r#"row_totals<=0; fine_corners<=0;"# },
+        if command { r#"row_totals<=0; fine_mask<=0; coarse_clamped<=0;"# } else { r#"row_totals<=0; fine_corners<=0;"# },
         r#"
       ph<=0; valid<=0; mrd<=0; cwr<=0; cohorts<=0;
       rrd<=0; rwr<=0; queued<=0; "#,
@@ -328,6 +350,11 @@ fn emit(command: bool) -> String {
           if(accepted) begin
             input_stage<={(lv0>1 && !nearest),c02[0],c00[0],
                           nearest?8'd0:f0v,nearest?8'd0:f0u,p1[8:0],p0[8:0]};
+"#,
+        if command { r#"            coarse_clamped<={2{texture_clamp&&!nearest}} &
+              {coarse_clamp_axis(c02[9:0],f0v,lv0),coarse_clamp_axis(c00[9:0],f0u,lv0)};
+"# } else { "" },
+        r#"
             cwr<=cwr+1'b1;
           end
           if(v2) horizontal_delay<={coarse_u,input_stage[17:9]};

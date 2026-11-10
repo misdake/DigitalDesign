@@ -7,6 +7,7 @@ pub struct Config {
     pub n: u8,
     pub mip: bool,
     pub rgba4444: bool,
+    pub clamp: bool,
     pub filter: u8,
     pub framebuffer: bool,
 }
@@ -96,13 +97,21 @@ impl Sampler {
         let first = i.source_descriptor & (1 << 10) != 0;
         let credit = !i.reset && self.color.live & (1 << quad) == 0;
         let admit = !first || credit;
+        let normalize = |offset: u32| {
+            let raw = i.source_data.slice(offset, 18).value as i32;
+            let signed = (raw << 14) >> 14;
+            if i.config.framebuffer || i.config.clamp {
+                signed.clamp(0, 65535) as u16
+            } else {
+                raw as u16
+            }
+        };
         let mut di = direct::Input {
             reset: i.reset,
             ce: i.ce,
             commit_allow: i.commit_allow,
             valid: i.source_valid && admit,
-            uv: (i.source_data.slice(18, 16).value as u32) << 16
-                | i.source_data.slice(0, 16).value as u32,
+            uv: u32::from(normalize(18)) << 16 | u32::from(normalize(0)),
             quad,
             lane: i.source_row,
             mask,
@@ -111,6 +120,7 @@ impl Sampler {
             mip: i.config.mip,
             filter: i.config.filter,
             framebuffer: i.config.framebuffer,
+            clamp: i.config.clamp,
             out_ready: false,
         };
         let d = self.direct.outputs(di);
@@ -121,6 +131,7 @@ impl Sampler {
             valid: d.valid,
             owner: d.owner,
             result: d.result,
+            clamp: i.config.clamp,
             available: 16u8.wrapping_sub(self.reserved),
             out_ready: false,
         };

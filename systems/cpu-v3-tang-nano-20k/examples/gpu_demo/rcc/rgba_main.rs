@@ -59,7 +59,8 @@ fn render_scene(pass: &mut Pass, camera: &Camera) {
         full_mip: true,
         format: TextureFormat::Rgba4444,
     });
-    let alpha_view = alpha.view();
+    let mut alpha_view = alpha.view();
+    alpha_view.set_address_mode(TextureAddressMode::ClampToEdge);
     let mut state = demo_state();
     state.set_depth(DepthFunc::Less, true);
     state.set_filter(TextureFilter::Trilinear);

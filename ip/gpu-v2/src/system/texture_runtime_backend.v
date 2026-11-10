@@ -1,6 +1,6 @@
 // Command coefficient consumer and reservations. Direct-weight production stays in its owner.
 module gpu_v2_texture_runtime_backend_unique(
- input wire[15:0]texture_base,input wire texture_mip,input wire texture_fb400240,
+ input wire[15:0]texture_base,input wire texture_mip,input wire texture_fb400240,texture_clamp,
  input wire clk,reset,ce,commit_allow,abort,
  input wire in_valid,input wire[37:0] in_owner,input wire[35:0] in_result,
  output wire in_ready,in_accept,advance,preflight_bad,fault,
@@ -65,7 +65,7 @@ module gpu_v2_texture_runtime_backend_unique(
   (member_return&&!work_ready)||(member_proposal&&!selected_active));
  assign preflight_bad=1'b0;
  gpu_v2_runtime_coefficient_directweight coefficient(
- .clk(clk),.reset(reset),.proposal_ce(ce&&!reset&&!fault),.commit_allow(allow),.in_valid(in_valid),.in_payload(coefficient_input),
+ .clk(clk),.reset(reset),.proposal_ce(ce&&!reset&&!fault),.commit_allow(allow),.texture_clamp(texture_clamp),.in_valid(in_valid),.in_payload(coefficient_input),
  .work_available(available),.in_ready(),.in_accept(in_accept),.out_ready(member_proposal&&finish),
  .out_valid(coefficient_valid),.out_weights(coefficient_weights),.out_meta(coefficient_meta),.work_reserved(reserved_cost),
  .fault(coefficient_fault),.proposal_ready(coefficient_ready),.preflight_bad(coefficient_bad),

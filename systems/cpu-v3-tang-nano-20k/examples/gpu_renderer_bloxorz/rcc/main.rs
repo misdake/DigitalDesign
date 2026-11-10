@@ -17,6 +17,8 @@ mod session;
 use session::*;
 mod shadow;
 use shadow::*;
+mod texture_views;
+use texture_views::*;
 mod render_stats;
 use render_stats::*;
 mod ground_batches;
@@ -116,9 +118,9 @@ fn draw_ground_batches(pass: &mut Pass, model: &mut Model, material: &mut Materi
     }
     material.set_unlit(false);
     let atlas = demo_texture();
-    let view = atlas.view();
+    let view = clamped_texture_view(&atlas);
     let marker = marker_texture();
-    let marker_view = marker.view();
+    let marker_view = clamped_texture_view(&marker);
     let mut group: u16 = 0;
     while group < 3 {
         if ground_count(group) != 0 {
@@ -161,9 +163,9 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
         a: 255,
     });
     let texture = demo_texture();
-    let view = texture.view();
+    let view = clamped_texture_view(&texture);
     let marker_texture = marker_texture();
-    let marker_view = marker_texture.view();
+    let marker_view = clamped_texture_view(&marker_texture);
     let half = fix32::from_words(32768, 0);
     let carrier = goal_carrier_enabled();
     let count = blox_scene_face_count(MOTION[6u16]);
@@ -352,7 +354,7 @@ fn visible_tile_side(i: u16) -> u16 {
 }
 fn draw_bridges(pass: &mut Pass, model: &mut Model, material: &mut Material, transparent: bool) {
     let texture = demo_texture();
-    let view = texture.view();
+    let view = clamped_texture_view(&texture);
     let mut i: u16 = 0;
     while i < LEVEL[6u16] {
         let selected = if transparent {
@@ -396,7 +398,7 @@ fn draw_fragile_batches(pass: &mut Pass, model: &mut Model, material: &mut Mater
         return;
     }
     let texture = marker_texture();
-    let view = texture.view();
+    let view = clamped_texture_view(&texture);
     material.set_unlit(false);
     material.set_uniform_color(demo_white());
     let half = fix32::from_words(32768, 0);
@@ -417,7 +419,7 @@ fn draw_switch_tile(
     channel: u16,
 ) {
     let marked = marker_texture();
-    let marked_view = marked.view();
+    let marked_view = clamped_texture_view(&marked);
     material.set_unlit(false);
     let one = fix32::from_int(1);
     if kind == 3 || kind == 4 {
@@ -525,7 +527,7 @@ fn prepare_block(model: &mut Model) {
 fn draw_block(pass: &mut Pass, block: &Mesh, model: &mut Model, material: &Material) {
     if block_visible() {
         let texture = demo_texture();
-        let view = texture.view();
+        let view = clamped_texture_view(&texture);
         counted_draw(pass, block, model, material, &view);
     }
 }
@@ -927,14 +929,14 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         cache_word += 1;
     }
     let pad_texture = demo_texture();
-    let pad_view = pad_texture.view();
+    let pad_view = clamped_texture_view(&pad_texture);
     let mut hatch_material = demo_material(demo_white(), false);
     let mut tint_material = demo_material(demo_white(), true);
     let mut grid = demo_grid(false);
     session_init();
     pad_cache_update(pad_cache);
     let mut carrier_texture = pad_carrier_texture();
-    let mut carrier_view = carrier_texture.view();
+    let mut carrier_view = clamped_texture_view(&carrier_texture);
     shadow_invalidate();
     BLOCK_POSE_KEY[0u16] = 0;
     gamepad_init();
@@ -1011,7 +1013,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 drop(carrier_view);
                 drop(carrier_texture);
                 carrier_texture = pad_carrier_texture();
-                carrier_view = carrier_texture.view();
+                carrier_view = clamped_texture_view(&carrier_texture);
             }
             pad_cache_update(pad_cache);
             if scene_generation != LEVEL_GENERATION[0u16] {

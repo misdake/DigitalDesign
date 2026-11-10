@@ -173,7 +173,7 @@ fn gpu_render_valid(r: Array<GpuRender>) -> bool {
 fn gpu_render_fields_valid(r: Array<GpuRender>) -> bool {
     if r[0u16].size_log2 > 10
         || r[0u16].texture_sector & (GPU_TEXTURE_ALIGNMENT_SECTORS - 1) != 0
-        || r[0u16].texture_flags > 3
+        || r[0u16].texture_flags > 7
         || r[0u16].filter > 2
         || r[0u16].specular_high > 255
         || r[0u16].depth_func > 7
@@ -228,7 +228,7 @@ fn gpu_encode_render_kind(
             1,
             r[0u16].size_log2
                 | ((r[0u16].texture_flags & 1) << 4)
-                | ((r[0u16].texture_flags & 2) << 7)
+                | ((r[0u16].texture_flags & 6) << 7)
                 | (r[0u16].filter << 5)
                 | view_bit,
         );

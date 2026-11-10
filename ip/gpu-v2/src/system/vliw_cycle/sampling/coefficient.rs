@@ -10,6 +10,7 @@ pub struct Input {
     pub owner: Bits,
     pub result: Bits,
     pub available: u8,
+    pub clamp: bool,
     pub out_ready: bool,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -36,6 +37,7 @@ pub struct Output {
 pub struct Coefficient {
     hard_dsp: bool,
     pub input_stage: Bits,
+    pub coarse_clamped: u8,
     pub horizontal: Bits,
     pub row_totals: Bits,
     pub fine_mask: Bits,
@@ -58,6 +60,7 @@ impl Default for Coefficient {
         Self {
             hard_dsp: false,
             input_stage: Bits::new(0, 37),
+            coarse_clamped: 0,
             horizontal: Bits::new(0, 17),
             row_totals: Bits::new(0, 18),
             fine_mask: Bits::new(0, 4),
@@ -132,8 +135,10 @@ impl Coefficient {
         let r = self.input_stage;
         let fine_u = r.slice(18, 8);
         let fine_v = r.slice(26, 8);
-        let coarse = |f: Bits, parity: Bits| {
-            if r.slice(36, 1).value == 0 {
+        let coarse = |f: Bits, parity: Bits, axis: u32| {
+            if self.coarse_clamped & (1 << axis) != 0 {
+                Bits::new(0, 8)
+            } else if r.slice(36, 1).value == 0 {
                 f
             } else if f.is_known(8) && parity.is_known(1) {
                 let half = u64::from(f.value & 128 == 0);
@@ -145,8 +150,8 @@ impl Coefficient {
                 Bits::default()
             }
         };
-        let cu = coarse(fine_u, r.slice(34, 1));
-        let cv = coarse(fine_v, r.slice(35, 1));
+        let cu = coarse(fine_u, r.slice(34, 1), 0);
+        let cv = coarse(fine_v, r.slice(35, 1), 1);
         let parent = if self.phase {
             self.horizontal.slice(0, 9)
         } else {
@@ -282,14 +287,15 @@ impl Coefficient {
             let meta = (owner >> 31 & 63) << 30
                 | (owner >> 27 & 15) << 26
                 | u64::from(n) << 22
-                | u64::from(y & 1 == 0 && fv & 128 == 0) << 21
-                | u64::from(x & 1 == 0 && fu & 128 == 0) << 20
+                | u64::from(y & 1 == 0 && fv & 128 == 0 && !(i.clamp && y == 0)) << 21
+                | u64::from(x & 1 == 0 && fu & 128 == 0 && !(i.clamp && x == 0)) << 20
                 | y << 10
                 | x;
             self.metadata[usize::from(self.cwr)] = Bits::new(meta, 36);
         }
         if i.reset {
             self.input_stage = Bits::new(0, 37);
+            self.coarse_clamped = 0;
             self.horizontal = Bits::new(0, 17);
             self.row_totals = Bits::new(0, 18);
             self.fine_mask = Bits::new(0, 4);
@@ -343,6 +349,16 @@ impl Coefficient {
                 self.fine_mask = returning.slice(36, 4);
             }
             if o.accepted {
+                let clipped = |base: u64, frac: u64| {
+                    let mask = (1u64 << n.max(1)) - 1;
+                    i.clamp
+                        && !nearest
+                        && (n <= 1
+                            || base == 0 && frac < 128
+                            || base == mask
+                            || base == (mask ^ 1) && frac >= 128)
+                };
+                self.coarse_clamped = u8::from(clipped(x, fu)) | (u8::from(clipped(y, fv)) << 1);
                 self.input_stage = Bits::new(
                     p0 | (p1 << 9)
                         | ((if nearest { 0 } else { fu }) << 18)

@@ -125,7 +125,7 @@ pub fn gpu_scene_render_prepare(
     if textured {
         base = view[GPU_VIEW_BASE];
         exponent = view[GPU_VIEW_EXPONENT];
-        texture_flags = (view[GPU_VIEW_FLAGS] & 1) | ((view[GPU_VIEW_FLAGS] >> 1) & 2);
+        texture_flags = (view[GPU_VIEW_FLAGS] & 1) | ((view[GPU_VIEW_FLAGS] >> 1) & 6);
         fixed = (view[GPU_VIEW_FLAGS] >> 1) & 1;
         filter = state[GPU_STATE_FILTER];
     }
@@ -141,7 +141,7 @@ pub fn gpu_scene_render_prepare(
     native[start] = base;
     native[start + 1] = exponent
         | ((texture_flags & 1) << 4)
-        | ((texture_flags & 2) << 7)
+        | ((texture_flags & 6) << 7)
         | (filter << 5)
         | (fixed << 7);
     native[start + 2] = material[GPU_MATERIAL_SPECULAR];

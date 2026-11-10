@@ -780,11 +780,24 @@ edge; a successor fetch changes those Qs only after that edge. There is no
 second V-input/configuration register bank. Simulation monitors this lifetime.
 
 The coordinate owner emits command sampling-input normalization and its native
-POT/RTT kernel. Ordinary POT views wrap the low16 UV bits and use the physical
-mip exponent. Fixed400x240 input normalization clamps signed18 UV to0..65535
-in the sampling scope; the kernel selects400/240 scaling on the U/V phase and
-shares the signed19 half-texel subtractor. Nearest subtracts zero;
-filtered sampling subtracts128 before the fixed-view endpoint clamp. The
+POT/RTT kernel. Repeat POT views wrap the low16 UV bits and use the physical
+mip exponent. POT ClampToEdge and fixed400x240 normalize signed18 UV to0..65535
+in the sampling scope; the kernel selects POT or400/240 scaling on the U/V phase
+and shares the signed19 half-texel subtractor. Nearest subtracts zero;
+filtered sampling subtracts128 before the endpoint clamp. Clamp POT retains
+logical exponent0 for1x1; Repeat retains the minimum physical2x2 footprint.
+Two coarse-edge flags in the existing coefficient stage zero each clipped
+coarse fraction. Lower-edge metadata suppresses the half-step borrow at base0,
+so coarse coordinates match an independent clamp of that mip. Virtual adjacent
+taps, raw16 cache data, the weight bank and the enabled-edge calendar are
+unchanged. Original UV differences still drive LOD. The
+coordinate output shares the masked index across Repeat and Clamp. A negative
+Clamp coordinate clears index and fraction; an upper endpoint only clears the
+fraction. POT endpoint detection reduces the active index bits against the
+existing size mask, avoiding a variable full-width endpoint comparator. The
+fixed endpoints399 (0x18f) and239 (0x0ef) share all bits except8,6,5; their
+comparison shares the common bits and uses the existing U/V phase for the rest.
+No endpoint state or enabled edge is added. The
 command DirectLOD source owns its installed descriptor pins; the CP still
 installs and checks fixed-view descriptors and freezes them until whole drain.
 The checked standalone and generic source-Q factories retain their own inputs

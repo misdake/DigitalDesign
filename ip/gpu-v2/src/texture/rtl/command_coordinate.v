@@ -1,7 +1,7 @@
 // Immutable-command POT/RTT source-Q coordinate owner.
 module gpu_v2_texture_serial_coord(
  input clk,ce,reset,in_valid,output in_ready,fault,out_valid,
- input texture_fb400240,input in_nearest,input[3:0]in_size_log2,
+ input texture_fb400240,texture_clamp,input in_nearest,input[3:0]in_size_log2,
  input[15:0]in_wrapped_uv_0,in_wrapped_uv_1,
  output[7:0]out_f0_0,out_f0_1,output[9:0]out_t0_0_0,out_t0_1_0
 );
@@ -11,7 +11,7 @@ module gpu_v2_texture_serial_coord(
  wire[3:0]distance=4'd10-in_size_log2;
  wire[9:0]mask0={(in_size_log2>9),(in_size_log2>8),(in_size_log2>7),
   (in_size_log2>6),(in_size_log2>5),(in_size_log2>4),(in_size_log2>3),
-  (in_size_log2>2),(in_size_log2>1),1'b1};
+  (in_size_log2>2),(in_size_log2>1),(in_size_log2!=0)};
  wire[15:0]axis_uv=phase[0]?in_wrapped_uv_0:in_wrapped_uv_1;
  wire[17:0]scaled_uv={axis_uv,2'b0}>>distance;
 
@@ -30,18 +30,16 @@ module gpu_v2_texture_serial_coord(
  // use the existing U/V phases and freeze all operands on a disabled CE.
  wire[17:0]shared_scaled=texture_fb400240?{1'b0,view_scaled}:scaled_uv;
  wire signed[18:0]fine=$signed({1'b0,shared_scaled})-(in_nearest?19'sd0:19'sd128);
- wire view_negative=fine[18];
- wire[16:0]view_fine=fine[16:0];
- wire[8:0]view_last=phase[0]?9'd399:9'd239;
- reg[17:0]view_result;
- always@*begin
-  if(view_negative)view_result=18'd0;
-  // A16-bit preclamped UV gives floor(400*q/65536)<=399 (V<=239).
-  // Negative fine is handled above; only equality can reach the last texel.
-  else if(view_fine[16:8]==view_last)view_result={1'b0,view_last,8'd0};
-  else view_result={1'b0,view_fine};
- end
- wire[17:0]axis_result=texture_fb400240?view_result:{fine[17:8]&mask0,fine[7:0]};
+ // Only virtual endpoint weights change; adjacent tap addresses remain intact.
+ wire clamp_mode=texture_fb400240||texture_clamp;
+ wire clamp_negative=clamp_mode&&fine[18];
+ wire[9:0]index=fine[17:8];
+ wire pot_last=&(index|~mask0);
+ // 399=0x18f and239=0x0ef share every bit except8,6,5.
+ wire view_last=!(index[9]||index[4])&&index[7]&&(&index[3:0])&&
+   (index[8]==phase[0])&&(index[6]==!phase[0])&&(index[5]==!phase[0]);
+ wire clamp_fraction=clamp_negative||(clamp_mode&&((texture_fb400240&&view_last)||(texture_clamp&&pot_last)));
+ wire[17:0]axis_result={(index&mask0)&{10{!clamp_negative}},fine[7:0]&{8{!clamp_fraction}}};
  assign out_f0_0=result_bank[7:0];assign out_f0_1=result_bank[15:8];
  assign out_t0_0_0=result_bank[25:16];assign out_t0_1_0=result_bank[35:26];
  always @(posedge clk)begin
@@ -53,10 +51,10 @@ module gpu_v2_texture_serial_coord(
   end
  end
 `ifndef SYNTHESIS
- reg[21:0]source_guard;
+ reg[22:0]source_guard;
  always @(posedge clk)if(ce&&!reset)begin
-  if(in_valid&&in_ready)source_guard<={in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240};
-  if(valid[1]&&source_guard!=={in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240})
+  if(in_valid&&in_ready)source_guard<={in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240,texture_clamp};
+  if(valid[1]&&source_guard!=={in_wrapped_uv_1,in_size_log2,in_nearest,texture_fb400240,texture_clamp})
    $fatal(1,"coordinate V input changed before its source-Q consumption");
  end
 `endif

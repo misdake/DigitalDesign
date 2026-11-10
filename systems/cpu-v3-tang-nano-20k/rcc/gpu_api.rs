@@ -852,6 +852,13 @@ impl Drop for TextureView {
         }
     }
 }
+impl TextureView {
+    pub fn set_address_mode(&mut self, mode: TextureAddressMode) {
+        let mut data = gpu_arena_data(self.slot);
+        gpu_api_checked(data[GPU_VIEW_FLAGS] & 2 == 0, 7);
+        data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 7) | ((mode as u16) << 3);
+    }
+}
 impl Texture {
     pub fn view(&self) -> TextureView {
         let slot = gpu_api_object(false, 7);

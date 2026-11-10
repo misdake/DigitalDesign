@@ -68,6 +68,7 @@ pub(super) struct Texture {
     pub size_log2: u8,
     pub full_mip: bool,
     rgba4444: bool,
+    clamp: bool,
     filter: u8,
     framebuffer: bool,
 }
@@ -78,15 +79,17 @@ impl Texture {
             size_log2: ((word >> 16) & 15) as u8,
             full_mip: word & (1 << 20) != 0,
             rgba4444: word & (1 << 24) != 0,
+            clamp: word & (1 << 25) != 0,
             filter: ((word >> 21) & 3) as u8,
             framebuffer: word & (1 << 23) != 0,
         };
-        if word >> 25 != 0 || value.base & 127 != 0 || value.size_log2 > 10 || value.filter > 2 {
+        if word >> 26 != 0 || value.base & 127 != 0 || value.size_log2 > 10 || value.filter > 2 {
             return Err("native texture descriptor".into());
         }
         if value.framebuffer
             && (value.size_log2 != 9
                 || value.rgba4444
+                || value.clamp
                 || value.full_mip
                 || value.filter > 1
                 || value.base & 32767 != 0
@@ -186,11 +189,18 @@ impl Texture {
                 let scaled = if self.framebuffer {
                     (uv[axis].clamp(0, 65535) * [400, 240][axis]) >> 8
                 } else {
-                    ((uv[axis] & 65535) * (1 << level)) >> 8
+                    ((if self.clamp {
+                        uv[axis].clamp(0, 65535)
+                    } else {
+                        uv[axis] & 65535
+                    }) * (1 << level))
+                        >> 8
                 };
                 let coordinate = scaled - if self.filter == 0 { 0 } else { 128 };
                 if self.framebuffer {
                     coordinate.clamp(0, [399, 239][axis] * 256)
+                } else if self.clamp {
+                    coordinate.clamp(0, ((1 << level) - 1) * 256)
                 } else {
                     coordinate
                 }

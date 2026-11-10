@@ -58,11 +58,11 @@ fn reference(p: Pixel, c: Config) -> u32 {
         let side = if c.framebuffer {
             [400, 240][a]
         } else {
-            1u32 << n.max(1)
+            1u32 << if c.clamp { n } else { n.max(1) }
         };
         let uv = (p.uv >> (16 * a)) as u16;
         let q = i64::from(u32::from(uv) * side / 256) - if c.filter == 0 { 0 } else { 128 };
-        let q = if c.framebuffer {
+        let q = if c.framebuffer || c.clamp {
             q.clamp(0, i64::from((side - 1) * 256))
         } else {
             q
@@ -78,10 +78,18 @@ fn reference(p: Pixel, c: Config) -> u32 {
             continue;
         }
         let level = n.saturating_sub(plane);
-        let side = 1i64 << level.max(1);
+        let side = 1i64 << if c.clamp { level } else { level.max(1) };
         let mut xy = origin;
         let mut uv = if c.filter == 0 { [0, 0] } else { fraction };
-        if plane == 1 && n > 1 {
+        if c.clamp {
+            for a in 0..2 {
+                let raw = i64::from((p.uv >> (16 * a)) as u16);
+                let q = raw * side / 256 - if c.filter == 0 { 0 } else { 128 };
+                let q = q.clamp(0, (side - 1) * 256);
+                xy[a] = q / 256;
+                uv[a] = if c.filter == 0 { 0 } else { (q % 256) as u32 };
+            }
+        } else if plane == 1 && n > 1 {
             for a in 0..2 {
                 let q = (origin[a] * 256 + i64::from(fraction[a]) + 128) / 2 - 128;
                 xy[a] = q.div_euclid(256).rem_euclid(side);
@@ -296,6 +304,7 @@ fn complete_sampler_matches_independent_integer_pixels() {
                     n: 6,
                     mip: true,
                     rgba4444: false,
+                    clamp: false,
                     filter,
                     framebuffer: false,
                 },
@@ -308,6 +317,7 @@ fn complete_sampler_matches_independent_integer_pixels() {
                 n: 9,
                 mip: false,
                 rgba4444: false,
+                clamp: false,
                 filter: 1,
                 framebuffer: true,
             },
@@ -326,6 +336,7 @@ fn rgba4444_sampler_keeps_cache_and_calendar_with_and_without_mips() {
                     n: 6,
                     mip,
                     rgba4444: false,
+                    clamp: false,
                     filter,
                     framebuffer: false,
                 };
@@ -343,5 +354,63 @@ fn rgba4444_sampler_keeps_cache_and_calendar_with_and_without_mips() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn clamp_sampler_matches_independent_per_mip_coordinates() {
+    for profile in [Profile::Portable, Profile::Native] {
+        for n in [0, 1, 2, 6] {
+            for filter in 0..3 {
+                run(
+                    Config {
+                        base: 0x200,
+                        n,
+                        mip: true,
+                        rgba4444: true,
+                        clamp: true,
+                        filter,
+                        framebuffer: false,
+                    },
+                    profile,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn clamp_uses_signed_source_uv_before_wrapping() {
+    for profile in [Profile::Portable, Profile::Native] {
+        let mut sampler = Sampler::new(profile);
+        let config = Config {
+            n: 6,
+            filter: 1,
+            clamp: true,
+            ..Default::default()
+        };
+        let data = Bits::new(0x3ffff | (65536u64 << 18), 36);
+        let mut seen = false;
+        for edge in 0..8 {
+            let input = Input {
+                reset: edge == 0,
+                ce: true,
+                commit_allow: true,
+                source_valid: edge == 1,
+                source_descriptor: (1 << 10) | (1 << 5),
+                source_data: data,
+                config,
+                packet_enable: true,
+                result_ready: true,
+                ..Default::default()
+            };
+            let output = sampler.outputs(input);
+            if output.direct.valid {
+                assert_eq!(output.direct.result.value, 63u64 << 26);
+                seen = true;
+            }
+            sampler.clock(input).unwrap();
+        }
+        assert!(seen);
     }
 }

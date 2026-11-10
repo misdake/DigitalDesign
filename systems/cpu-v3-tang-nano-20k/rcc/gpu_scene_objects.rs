@@ -373,6 +373,14 @@ pub enum TextureFormat {
     Rgba4444,
 }
 
+/// POT address policy. Framebuffer views have their existing fixed clamp.
+#[repr(u16)]
+#[derive(Copy, Clone)]
+pub enum TextureAddressMode {
+    Repeat,
+    ClampToEdge,
+}
+
 #[derive(Copy, Clone)]
 pub struct TextureDesc {
     pub memory: GpuMemory,

@@ -169,15 +169,21 @@ the lifetime of its external payload. A color view records fixed400x240 shape,
 64-KiB base alignment, exponent 9, no mip chain and the allocation's actual
 sector count; the physical image spans 1600 sectors.
 The prepared flags word keeps mip in bit0 and fixed shape in bit1, with
-RGBA4444 in bit2; the16-word description does not grow. Fixed color views
+RGBA4444 in bit2 and POT ClampToEdge in bit3; the16-word description does not grow. Fixed color views
 remain RGB565. The raw internal `GpuTexture`/`GpuRender.texture_flags` packs
-mip in bit0 and RGBA4444 in bit1, replacing the old mip-only word.
+mip in bit0, RGBA4444 in bit1 and ClampToEdge in bit2.
+
+`TextureView::set_address_mode(TextureAddressMode::ClampToEdge)` changes the
+view's copied POT description; `Repeat` is the default and can be restored with
+the same setter. Addressing is independent of format, mip and filter. Fixed
+color views reject this setter and retain their implicit framebuffer clamp.
 
 `gpu_scene_render_prepare` writes only scratch words 32..47. Fixed400 shape
 occupies Render word 1 bit 7, equivalently bit 23 of its first 32-bit word.
 RGBA4444 occupies that first32-bit word's bit24, alongside existing mip/filter
-bits. Recording equality includes format, so a format-only change installs
-new Render state and follows the same drain boundary.
+bits; POT ClampToEdge occupies bit25. Recording equality includes format and
+address mode, so either change installs new Render state and follows the same
+drain boundary without invalidating immutable cache data.
 Trilinear filtering of that shape fails before modifying output. The RGB
 bypass branch reads no view or texture payload and installs a deterministic
 base-zero, exponent-zero, nearest-filter description. Specular color and

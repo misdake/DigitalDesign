@@ -19,7 +19,9 @@ cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build rgba4444 --gpu-deb
 then two straight-alpha panels with SrcOver, depth testing and no depth writes.
 The same 128-square RGBA4444 texture has sixteen alpha bands, transparent circular
 holes, three color bands and all eight box-filtered mip levels. Trilinear sampling
-filters RGB and alpha together. The initial screen-left panel uses uniform alpha
+filters RGB and alpha together. The panel view explicitly selects ClampToEdge
+at each mip, preserving transparent borders without opposite-edge wrap. Classic
+periodic textures keep Repeat. The initial screen-left panel uses uniform alpha
 128 and screen-right uses 255, exposing uniform-times-texture alpha. DS2 camera
 controls are shared with `handheld`. That original application's source and assets
 remain unchanged. The example has 25 stored meshlets and 1145 submitted triangles

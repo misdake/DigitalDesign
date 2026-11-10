@@ -8,6 +8,8 @@ mod boot_resources;
 use boot_resources::*;
 mod session;
 use session::*;
+mod texture_views;
+use texture_views::*;
 mod render_stats;
 use render_stats::*;
 
@@ -235,7 +237,7 @@ pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material
     }
     let half = fix32::from_words(32768, 0);
     let texture = demo_texture();
-    let view = texture.view();
+    let view = clamped_texture_view(&texture);
     let mesh = demo_mesh_part(WELL_FIRST, WELL_COUNT);
     if start {
         material.set_uniform_color(Rgba8 {

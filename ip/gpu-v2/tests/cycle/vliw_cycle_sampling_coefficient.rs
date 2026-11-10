@@ -27,11 +27,29 @@ fn request(n: usize) -> Input {
         [0, 64, 256, 319, 511][n % 5]
     };
     let side = 1u64 << level.max(1);
-    let x = (n as u64 * 17 + 1) % side;
-    let y = (n as u64 * 29) % side;
-    let fu = [0, 1, 127, 128, 255][n / 3 % 5];
-    let fv = [255, 128, 127, 1, 0][n / 7 % 5];
+    let clamp = n % 3 == 1;
+    let x = if clamp && level == 0 {
+        0
+    } else {
+        (n as u64 * 17 + 1) % side
+    };
+    let y = if clamp && level == 0 {
+        0
+    } else {
+        (n as u64 * 29) % side
+    };
+    let fu = if clamp && (level == 0 || x == side - 1) {
+        0
+    } else {
+        [0, 1, 127, 128, 255][n / 3 % 5]
+    };
+    let fv = if clamp && (level == 0 || y == side - 1) {
+        0
+    } else {
+        [255, 128, 127, 1, 0][n / 7 % 5]
+    };
     Input {
+        clamp,
         owner: Bits::new(
             (511 - coarse)
                 | (coarse << 9)
@@ -57,8 +75,8 @@ fn golden(i: Input) -> (u64, [u64; 2], [(u8, u64); 2]) {
     let nearest = owner >> 18 & 1 != 0;
     let meta = (key << 30)
         | (n << 22)
-        | (u64::from(y.is_multiple_of(2) && fv < 128) << 21)
-        | (u64::from(x.is_multiple_of(2) && fu < 128) << 20)
+        | (u64::from(y.is_multiple_of(2) && fv < 128 && !(i.clamp && y == 0)) << 21)
+        | (u64::from(x.is_multiple_of(2) && fu < 128 && !(i.clamp && x == 0)) << 20)
         | (y << 10)
         | x;
     let mut masks = [0u64; 2];
@@ -72,6 +90,10 @@ fn golden(i: Input) -> (u64, [u64; 2], [(u8, u64); 2]) {
         let f = |coordinate: u64, fraction: u64| {
             if nearest {
                 0
+            } else if plane == 1 && i.clamp {
+                let coarse_side = 1i64 << n.saturating_sub(1);
+                let q = ((coordinate * 256 + fraction + 128) / 2) as i64 - 128;
+                q.clamp(0, (coarse_side - 1) * 256).rem_euclid(256) as u64
             } else if plane == 1 && n > 1 {
                 (((coordinate * 256 + fraction + 128) / 2) as i64 - 128).rem_euclid(256) as u64
             } else {

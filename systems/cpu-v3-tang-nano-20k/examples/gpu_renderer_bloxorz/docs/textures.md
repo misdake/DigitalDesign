@@ -1,7 +1,7 @@
 ---
 id: bloxorz-base-textures
 status: implemented
-last-verified: 2026-11-04
+last-verified: 2026-11-10
 ---
 
 # Base textures and source ownership
@@ -13,6 +13,14 @@ coarse-level weight and produces the same sampling result, but the application
 uses code1 explicitly. Shadows and the fullscreen presentation pass retain their
 own nearest filtering. The HUD is an independent native binary glyph lookup;
 the background is a raw color copy. Neither is a 3D atlas mip allocation.
+
+The main atlas, marker atlas and independent goal-carrier views explicitly use
+`TextureAddressMode::ClampToEdge` through the application-owned
+`texture_views::clamped_texture_view` helper. Carrier replacements reapply that
+policy. Their RGB565 storage, resource bytes and filter selection are unchanged.
+Clamp bounds the complete texture; the internal atlas slot rings and UV insets
+remain necessary to isolate neighboring items. RTT color-buffer views retain
+their existing implicit fixed-shape clamp.
 
 | Resource | Physical byte base | Logical size / bytes | Content and borders |
 | --- | --- | --- | --- |

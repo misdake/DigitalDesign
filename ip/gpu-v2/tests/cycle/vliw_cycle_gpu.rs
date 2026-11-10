@@ -65,6 +65,7 @@ fn color(tint: u32, lit: bool) -> u16 {
 #[derive(Clone, Copy, Debug)]
 struct TextureCase {
     rgba4444: bool,
+    clamp: bool,
     mip: bool,
     filter: u8,
 }
@@ -98,6 +99,7 @@ fn input_image(
             | (u64::from(t.mip) << 20)
             | (u64::from(t.filter) << 21)
             | (u64::from(t.rgba4444) << 24)
+            | (u64::from(t.clamp) << 25)
             | (0xabcdefu64 << 32);
         let mut prefix = 0usize;
         for level in 0..=6 {
@@ -136,10 +138,10 @@ fn input_image(
             .collect::<Vec<_>>(),
     );
     if texture.is_some() {
-        // The next CB changes only format, reusing raw resident cache lines.
+        // The next CB changes format and address mode, reusing raw cache lines.
         // This exercises both global reinstallation and the absence of a
         // format tag/invalidation requirement in the unchanged texel cache.
-        objects[16] ^= 1 << 24;
+        objects[16] ^= (1 << 24) | (1 << 25);
         store(
             &mut backing,
             0x20100,
@@ -759,6 +761,7 @@ fn rgb565_and_rgba4444_texture_mips_match_functional_gpu_on_the_same_native_memo
                     false,
                     Some(TextureCase {
                         rgba4444,
+                        clamp: false,
                         mip,
                         filter,
                     }),
@@ -779,11 +782,19 @@ fn rgba4444_texture_alpha_and_mips_match_native_rtl() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).unwrap();
-    for (mip, filter) in [(false, 0), (false, 1), (true, 2)] {
+    for (mip, filter, clamp) in [
+        (false, 0, false),
+        (false, 1, false),
+        (true, 2, false),
+        (false, 0, true),
+        (false, 1, true),
+        (true, 2, true),
+    ] {
         let run = run_scene(
             false,
             Some(TextureCase {
                 rgba4444: true,
+                clamp,
                 mip,
                 filter,
             }),
@@ -791,7 +802,7 @@ fn rgba4444_texture_alpha_and_mips_match_native_rtl() {
         let pins = fixture::fields(&run.rows[0]);
         vertex_support::rtl::replay(
             &root,
-            &format!("rgba4444-mip{mip}-filter{filter}"),
+            &format!("rgba4444-clamp{clamp}-mip{mip}-filter{filter}"),
             run.rows.iter().map(fixture::fields).collect(),
             fixture::production(&pins),
             false,

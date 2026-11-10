@@ -39,6 +39,7 @@ fn request(n: usize) -> Input {
         mip: !view && (n / 5).is_multiple_of(2),
         filter: (n / 2 % 3) as u8,
         framebuffer: view,
+        clamp: !view && n % 3 == 1,
         ..Default::default()
     }
 }
@@ -67,10 +68,10 @@ fn golden(i: Input) -> (u64, u64) {
         let side = if i.framebuffer {
             [400, 240][a]
         } else {
-            1u64 << n.max(1)
+            1u64 << if i.clamp { n } else { n.max(1) }
         };
         let q = (uv * side / 256) as i64 - if i.filter == 0 { 0 } else { 128 };
-        let (coordinate, fraction) = if i.framebuffer {
+        let (coordinate, fraction) = if i.framebuffer || i.clamp {
             let c = q.clamp(0, ((side - 1) * 256) as i64) as u64;
             (c / 256, c % 256)
         } else {

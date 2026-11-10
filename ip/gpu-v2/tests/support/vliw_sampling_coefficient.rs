@@ -19,6 +19,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
         ("proposal_ce", i.proposal_ce),
         ("commit_allow", i.commit_allow),
         ("in_valid", i.valid),
+        ("texture_clamp", i.clamp),
         ("out_ready", i.out_ready),
     ] {
         pin!(n, 1, v, false);

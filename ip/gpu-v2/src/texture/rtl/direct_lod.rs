@@ -49,11 +49,11 @@ fn source_q_body(command: bool) -> String {
     let (view_port, slot_port, input_contract, preflight, coord_view, owner_slot, stop) = if command
     {
         (
-            "input texture_fb400240,",
+            "input texture_fb400240,texture_clamp,",
             "",
             "!in_mask[in_lane]",
             "1'b0",
-            ".texture_fb400240(texture_fb400240),",
+            ".texture_fb400240(texture_fb400240),.texture_clamp(texture_clamp),",
             "4'd0",
             COMMAND_STOP,
         )
@@ -75,6 +75,14 @@ fn source_q_body(command: bool) -> String {
         .replace("@PREFLIGHT@", preflight)
         .replace("@COORD_VIEW@", coord_view)
         .replace("@OWNER_SLOT@", owner_slot)
+        .replace(
+            "@PHYSICAL@",
+            if command {
+                "texture_clamp?fine:(fine==0?4'd1:fine)"
+            } else {
+                "fine==0?4'd1:fine"
+            },
+        )
         .replace("@STOP_PROCESS@", stop)
 }
 

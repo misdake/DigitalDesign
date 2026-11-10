@@ -10,6 +10,7 @@ pub fn framebuffer_texture_word(base_sector: u16, filter: u8) -> Result<u32, &'s
         size_log2: 9,
         full_mip: false,
         rgba4444: false,
+        clamp: false,
         filter,
         framebuffer_view: true,
     }
@@ -26,6 +27,7 @@ pub struct TextureDescriptor {
     pub size_log2: u8,
     pub full_mip: bool,
     pub rgba4444: bool,
+    pub clamp: bool,
     pub filter: u8,
     pub framebuffer_view: bool,
 }
@@ -35,6 +37,7 @@ impl TextureDescriptor {
             | ((self.size_log2 as u32 & 15) << 16)
             | ((self.full_mip as u32) << 20)
             | ((self.rgba4444 as u32) << 24)
+            | ((self.clamp as u32) << 25)
             | ((self.filter as u32 & 3) << 21)
             | ((self.framebuffer_view as u32) << 23)
     }
@@ -311,6 +314,7 @@ mod tests {
                 size_log2: 6,
                 full_mip: true,
                 rgba4444: false,
+                clamp: false,
                 filter: 2,
                 framebuffer_view: false,
             }

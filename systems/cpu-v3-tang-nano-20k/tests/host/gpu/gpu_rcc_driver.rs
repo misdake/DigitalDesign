@@ -499,6 +499,7 @@ fn main() {
             size_log2: 10,
             full_mip: true,
             rgba4444: false,
+            clamp: false,
             filter: 2,
             framebuffer_view: false,
         }

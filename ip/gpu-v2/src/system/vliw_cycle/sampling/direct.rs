@@ -15,6 +15,7 @@ pub struct Input {
     pub mip: bool,
     pub filter: u8,
     pub framebuffer: bool,
+    pub clamp: bool,
     pub out_ready: bool,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -47,7 +48,7 @@ pub struct Direct {
     pub read: u8,
     pub occupied: u8,
     pub completed: u8,
-    source_guard: Option<(u16, u8, bool, bool)>,
+    source_guard: Option<(u16, u8, bool, bool, bool)>,
 }
 impl Default for Direct {
     fn default() -> Self {
@@ -134,6 +135,8 @@ fn axis(i: Input, u: bool, physical: u8) -> u32 {
         } else {
             fine as u32 & 0x1ffff
         }
+    } else if i.clamp {
+        fine.clamp(0, ((1i32 << physical) - 1) * 256) as u32
     } else {
         let mask = ((1u32 << physical) - 1) & 1023;
         ((fine as u32 >> 8 & mask) << 8) | (fine as u32 & 255)
@@ -176,7 +179,7 @@ impl Direct {
         let returned = self.valid & 4 != 0;
         let take = i.out_ready && o.valid;
         let (n, lambda) = context(i);
-        let physical = n.max(1);
+        let physical = if i.clamp { n } else { n.max(1) };
         if !i.reset {
             require(
                 !proposed || i.mask & (1 << (i.lane & 3)) != 0,
@@ -194,7 +197,13 @@ impl Direct {
             if o.advance && self.valid & 2 != 0 {
                 require(
                     self.source_guard
-                        == Some(((i.uv >> 16) as u16, physical, i.filter == 0, i.framebuffer)),
+                        == Some((
+                            (i.uv >> 16) as u16,
+                            physical,
+                            i.filter == 0,
+                            i.framebuffer,
+                            i.clamp,
+                        )),
                     "serial coordinate",
                     "coordinate V input changed before its source-Q consumption",
                 )?;
@@ -219,7 +228,13 @@ impl Direct {
             self.result_bank.set(0, 8, Bits::new(result.into(), 8));
             self.result_bank
                 .set(16, 10, Bits::new((result >> 8).into(), 10));
-            self.source_guard = Some(((i.uv >> 16) as u16, physical, i.filter == 0, i.framebuffer));
+            self.source_guard = Some((
+                (i.uv >> 16) as u16,
+                physical,
+                i.filter == 0,
+                i.framebuffer,
+                i.clamp,
+            ));
         }
         if self.valid & 2 != 0 {
             self.result_bank.set(8, 8, Bits::new(result.into(), 8));
