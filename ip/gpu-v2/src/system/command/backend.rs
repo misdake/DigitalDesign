@@ -27,7 +27,7 @@ pub(crate) fn verilog(
     let (options, plans) = dsp_sharing::four_cycle_shared_roms(9)?;
     components.add(&lighting::generate_ii4_with_schedule_plans(options, &plans, true)?.source)?;
     components.add(include_str!("../pixel/vliw_lighting_tuple.v"))?;
-    for (name, width) in [("light", 18), ("sample", 24)] {
+    for (name, width) in [("light", 18), ("sample", 32)] {
         components.add(&row_store::verilog_owned_q(128, width, native)?.replace(
             "gpu_v2_pixel_row_store",
             &format!("gpu_v2_postquad_{name}_bank"),

@@ -151,6 +151,7 @@ pub fn pad_part_material(role: u16) -> Material {
 pub fn pad_carrier_texture() -> Texture {
     let phase = (SESSION[6u16] * 3 + SESSION[7u16] * 5) & 3;
     Texture::from_native(TextureDesc {
+        format: TextureFormat::Rgb565,
         memory: unsafe { GpuMemory::from_sectors(60416 + phase * 256, 256) },
         size_log2: 7,
         full_mip: false,

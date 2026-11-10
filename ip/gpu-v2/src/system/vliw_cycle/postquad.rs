@@ -30,6 +30,7 @@ pub struct SampleResult {
     pub key: u8,
     pub last: bool,
     pub rgb: Bits,
+    pub alpha: Bits,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Input {
@@ -240,7 +241,12 @@ impl Join {
             shade_phase: s.shade_phase,
             in_valid: s.active && s.wait && room,
             tint: p.issue_color,
-            texture,
+            texture: texture.slice(0, 24),
+            texture_alpha: if s.bypass & 2 != 0 {
+                Bits::new(255, 8)
+            } else {
+                self.sample_bank.q.slice(24, 8)
+            },
             specular: Bits::new(i.specular.into(), 24),
             g,
             h,
@@ -285,7 +291,7 @@ impl Join {
             cache: ci,
             lane_valid,
             rgba: Bits::concat(
-                Bits::new(0, 8),
+                fo.texture_alpha,
                 if out_covered {
                     fo.rgb
                 } else {
@@ -447,12 +453,12 @@ impl Join {
         self.sample_bank.clock(LoanPorts {
             reset: i.reset,
             reset_q: self.profile == Profile::Native,
-            width: 24,
+            width: 32,
             read: o.advance && w.read,
             read_address: w.read_address,
             write: o.sample_result,
             write_address: w.sample_address,
-            data: i.sample.rgb,
+            data: Bits::concat(i.sample.alpha, i.sample.rgb, 24),
         });
         let final_result = self.final_stage.clock(w.fi);
         let sink_result = self.sink.clock(w.si);

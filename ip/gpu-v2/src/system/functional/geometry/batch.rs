@@ -137,7 +137,7 @@ struct Sample {
     y: u16,
     depth: u16,
     draw: u16,
-    color: [u8; 3],
+    color: [u8; 4],
 }
 struct Raster {
     pixels: Vec<Sample>,

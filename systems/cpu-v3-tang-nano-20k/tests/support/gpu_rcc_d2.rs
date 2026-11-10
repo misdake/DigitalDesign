@@ -93,9 +93,9 @@ fn main(){
  let mut mesh:GpuMesh=GpuMesh{directory_sector:0x9c00,directory_word:0,count:3,first_sector:0x9c00,sectors:32};
  let mut uv:GpuMesh=GpuMesh{directory_sector:0x9c00,directory_word:6,count:2,first_sector:0x9c00,sectors:32};
  let mut empty:GpuMesh=GpuMesh{directory_sector:0x9c00,directory_word:0,count:0,first_sector:0x9c00,sectors:32};
- let mut texture:GpuTexture=GpuTexture{sector:0x9c20,sectors:4,size_log2:0,full_mip:0};
+ let mut texture:GpuTexture=GpuTexture{sector:0x9c20,sectors:4,size_log2:0,texture_flags:0};
  let mut g:GpuGlobal=GpuGlobal{far_low:0,far_high:100,light_x:0,light_y:0,light_z:16384,ray_x:0,ray_y:0,ray_k:8192,ambient:256,directional:0,mode:0,shininess:0,epoch:0};
- let mut r:GpuRender=GpuRender{texture_sector:0,texture_sectors:0,size_log2:0,full_mip:0,filter:0,specular_low:0,specular_high:0,depth_func:7,depth_write:1,blend:0,unlit:1,lod_bias:0};
+ let mut r:GpuRender=GpuRender{texture_sector:0,texture_sectors:0,size_log2:0,texture_flags:0,filter:0,specular_low:0,specular_high:0,depth_func:7,depth_write:1,blend:0,unlit:1,lod_bias:0};
  let mut iteration:u16=0;
  while iteration<2 {
    let cb=gpu_cb_begin();check(cb==GPU_CB_HANDLE);

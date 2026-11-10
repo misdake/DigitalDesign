@@ -9,6 +9,7 @@ pub struct Bindings {
     pub texture_base: u16,
     pub texture_n: u8,
     pub texture_mip: bool,
+    pub texture_rgba4444: bool,
     pub texture_filter: u8,
     pub texture_framebuffer: bool,
     pub lod_bias: i8,
@@ -36,6 +37,7 @@ impl Default for Bindings {
             texture_base: 0,
             texture_n: 0,
             texture_mip: false,
+            texture_rgba4444: false,
             texture_filter: 0,
             texture_framebuffer: false,
             lod_bias: 0,
@@ -270,6 +272,7 @@ impl Draw {
                 c.texture_base = q as u16;
                 c.texture_n = (q >> 16) as u8 & 15;
                 c.texture_mip = q & (1 << 20) != 0;
+                c.texture_rgba4444 = q & (1 << 24) != 0;
                 c.texture_filter = (q >> 21) as u8 & 3;
                 c.texture_framebuffer = q & (1 << 23) != 0;
                 c.specular = (q >> 32) as u32 & 0xff_ffff;

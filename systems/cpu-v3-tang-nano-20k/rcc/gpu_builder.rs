@@ -327,7 +327,7 @@ fn gpu_builder_render_record(
     value.texture_sector = texture[0u16].sector;
     value.texture_sectors = texture[0u16].sectors;
     value.size_log2 = texture[0u16].size_log2;
-    value.full_mip = texture[0u16].full_mip;
+    value.texture_flags = texture[0u16].texture_flags;
     gpu_builder_render_value(cb, view_of(&mut value), false)
 }
 fn gpu_builder_render_value(
@@ -354,7 +354,7 @@ fn gpu_builder_render_value(
             && GPU_RENDER_PREVIOUS_KIND[0u16] == kind
             && value.texture_sector == GPU_RENDER_PREVIOUS.texture_sector
             && value.size_log2 == GPU_RENDER_PREVIOUS.size_log2
-            && value.full_mip == GPU_RENDER_PREVIOUS.full_mip
+            && value.texture_flags == GPU_RENDER_PREVIOUS.texture_flags
             && value.filter == GPU_RENDER_PREVIOUS.filter
             && value.specular_low == GPU_RENDER_PREVIOUS.specular_low
             && value.specular_high == GPU_RENDER_PREVIOUS.specular_high
@@ -862,7 +862,7 @@ static GPU_RENDER_PREVIOUS: GpuRender = GpuRender {
     texture_sector: 0,
     texture_sectors: 0,
     size_log2: 0,
-    full_mip: 0,
+    texture_flags: 0,
     filter: 0,
     specular_low: 0,
     specular_high: 0,

@@ -16,6 +16,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     }
     for (n, v) in [
         ("reset", i.reset),
+        ("texture_rgba4444", i.rgba4444),
         ("proposal_ce", i.proposal_ce),
         ("commit_allow", i.commit_allow),
         ("publish_valid", i.publish_valid),
@@ -31,13 +32,28 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     ] {
         pin!(n, w, v, false);
     }
-    pin!("in_payload", 72, i.payload.value, false);
+    p.push(Pin {
+        name: "in_payload".into(),
+        width: 72,
+        value: i.payload.value,
+        known: i.payload.known,
+        output: false,
+    });
     let tex = i
         .texels
         .iter()
         .enumerate()
         .fold(0, |v, (n, t)| v | (u64::from(t.value as u16) << (16 * n)));
-    pin!("in_texels", 64, tex, false);
+    let tex_known = i.texels.iter().enumerate().fold(0u128, |v, (n, t)| {
+        v | (u128::from(t.known & 65535) << (16 * n))
+    });
+    p.push(Pin {
+        name: "in_texels".into(),
+        width: 64,
+        value: tex.into(),
+        known: tex_known,
+        output: false,
+    });
     for (n, v) in [
         ("public_free", o.public_free),
         ("publish_ready", o.publish_ready),
@@ -68,6 +84,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     for (n, w, v) in [
         ("out_key", 6, o.key),
         ("out_rgb", 24, o.rgb),
+        ("out_alpha", 8, o.alpha),
         ("obs_p_key", 6, s.p_key),
         ("obs_p_last", 1, s.p_last),
         ("obs_q_key", 6, s.q_key),
@@ -115,7 +132,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     p
 }
 pub fn production(p: &[Pin], native: bool) -> String {
-    let mut s = String::from("`define GPU_V2_VLIW_COLOR_COMMAND\n");
+    let mut s = String::from("`define GPU_V2_COMMAND_PORTS\n`define GPU_V2_VLIW_COLOR_COMMAND\n");
     if native {
         s.push_str("`define GPU_V2_GOWIN_DSP\n");
         let gowin = std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").unwrap());

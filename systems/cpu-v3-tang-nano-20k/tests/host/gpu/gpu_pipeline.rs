@@ -325,6 +325,7 @@ fn scene_commands_and_objects(memory: &[u16], objects: usize) -> Vec<Command> {
         base_sector: 0x9c20,
         size_log2: 0,
         full_mip: false,
+        rgba4444: false,
         filter: 2,
         framebuffer_view: false,
     }

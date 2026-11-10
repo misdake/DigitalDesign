@@ -393,7 +393,7 @@ and pipeline state; tying its reset to the global constant-zero runtime reset
 does not initialize it. The gate releases once SDRAM is ready and never reasserts
 on buttons or later lock loss. CPU, boot and Display retain their existing cold
 contracts, and CPU device writes remain blocked until boot completes.
-The fixed native GPU leaf declares its 36 BSRAMs, 257 RAM16 cells and 38 aggregate
+The fixed native GPU leaf declares its 36 BSRAMs, 257 RAM16 cells and 39 aggregate
 18x18 multiplier lanes in the target resource model. The CPU contributes four
 more multiplier lanes; the complete system plans 46 BSRAMs. The audit counts
 MULTALU36X18 as two multiplier lanes and retains ALU54D as a recognized cell

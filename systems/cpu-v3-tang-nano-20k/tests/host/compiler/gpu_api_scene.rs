@@ -43,7 +43,8 @@ fn main(){
  let model=make_model();
  let material=make_material();
  let state=make_state();
- let texture=Texture::from_native(TextureDesc{memory:unsafe{GpuMemory::from_sectors(0xa800,128)},size_log2:6,full_mip:true});
+ let texture=Texture::from_native(TextureDesc{
+        format: TextureFormat::Rgb565,memory:unsafe{GpuMemory::from_sectors(0xa800,128)},size_log2:6,full_mip:true});
  let texture_view=texture.view();drop(texture);check(texture_view.width()==64&&texture_view.height()==64);
  let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
  let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
@@ -65,8 +66,13 @@ fn main(){
 
 #[test]
 fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
-    for debug in [false, true] {
-        let parsed = super::gpu_api_resources::parse(SOURCE, "public-b-scene", debug)
+    for (debug, rgba4444) in [(false, false), (true, false), (false, true), (true, true)] {
+        let source = if rgba4444 {
+            SOURCE.replace("TextureFormat::Rgb565", "TextureFormat::Rgba4444")
+        } else {
+            SOURCE.to_owned()
+        };
+        let parsed = super::gpu_api_resources::parse(&source, "public-b-scene", debug)
             .unwrap_or_else(|error| panic!("{error}"));
         let static_words = parsed.debug.static_data_end;
         assert!(static_words <= 8192);
@@ -138,8 +144,14 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
             .collect();
         assert_eq!(kinds, [5, 6, 1, 2, 4, 3]);
         let output = std::path::PathBuf::from(std::env::var_os("RCC_RUSTC_TEST_DIR").unwrap())
-            .join(format!("public-scene-budget-{debug}.json"));
+            .join(format!("public-scene-budget-{debug}-rgba{rgba4444}.json"));
         std::fs::write(output,serde_json::to_vec_pretty(&serde_json::json!({"static_bytes":static_words*2,"observed_stack_bytes":stack_words*2,"max_frame_words":program.debug.functions.iter().map(|function|function.frame_size).max().unwrap_or(0),"fact_words":&memory[facts..facts+24],"commands":&memory[0x9800*64..0x9800*64+usize::from(memory[record+5])],"push":&memory[0x9a00*64..0x9a00*64+usize::from(memory[record+6])]})).unwrap()).unwrap();
+        let push = &memory[0x9a00 * 64..0x9a00 * 64 + usize::from(memory[record + 6])];
+        let header = 0x36 | if rgba4444 { 0x100 } else { 0 };
+        assert!(
+            push.windows(4).any(|w| w == [0xa800, header, 0xffff, 0xff]),
+            "native format and mip/filter bits lost during public recording"
+        );
         let grid = &memory[0xb100 * 64..0xb100 * 64 + 375];
         assert_eq!(grid[25], 0x00ff);
         assert_eq!(grid[26], 0x0201);

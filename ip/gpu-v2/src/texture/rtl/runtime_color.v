@@ -14,6 +14,9 @@ module gpu_v2_texture_runtime_color(
  input wire in_valid,
  input wire [71:0] in_payload,
  input wire [63:0] in_texels,
+`ifdef GPU_V2_COMMAND_PORTS
+ input wire texture_rgba4444,output wire[7:0]out_alpha,
+`endif
  output wire in_ready,
  output wire input_fire,
  input wire out_ready,
@@ -79,6 +82,9 @@ module gpu_v2_texture_runtime_color(
  gpu_v2_texture_runtime_color_checked color(
   .clk(clk),.reset(reset),.ce(advance),.proposal_ce(attempted),.preflight_bad(color_bad),
   .in_valid(in_valid),.in_payload(in_payload),
+`ifdef GPU_V2_COMMAND_PORTS
+  .texture_rgba4444(texture_rgba4444),.out_a(out_alpha),
+`endif
   .in_tex0(in_texels[15:0]),.in_tex1(in_texels[31:16]),
   .in_tex2(in_texels[47:32]),.in_tex3(in_texels[63:48]),
   .in_ready(color_ready),.out_ready(out_ready),.out_valid(color_valid),

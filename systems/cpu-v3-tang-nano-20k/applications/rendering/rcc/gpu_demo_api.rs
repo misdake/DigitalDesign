@@ -40,6 +40,7 @@ pub fn demo_mesh_part(first: u16, count: u16) -> Mesh {
 }
 pub fn demo_texture() -> Texture {
     Texture::from_native(TextureDesc {
+        format: TextureFormat::Rgb565,
         memory: unsafe {
             GpuMemory::from_sectors(GPU_RENDERER_TEXTURE, GPU_RENDERER_TEXTURE_SECTORS)
         },

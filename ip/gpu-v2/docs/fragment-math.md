@@ -12,7 +12,7 @@ alpha input. Before command-profile uniform modulation, the two material routes 
 | Meshlet attribute | Tint | Sample branch |
 | --- | --- | --- |
 | RGB | Interpolated RGB888 | Bypass, using white `(255,255,255)` |
-| UV | White `(255,255,255)` | Filter the selected RGB565 texture |
+| UV | White `(255,255,255)` | Filter the selected RGB565 or RGBA4444 texture |
 
 `draw_unlit` independently replaces Lighting with `g=256,h=0`. A textured unlit
 fragment still samples; an RGB lit fragment still runs Lighting. Bypasses use
@@ -129,15 +129,27 @@ are defined once in [formats](/ip/gpu-v2/docs/formats.md#texture-assets).
 
 ## Selected Color accumulation
 
-Expand RGB565 texels by bit replication. For each 9-bit-weight × 8-bit-channel tap
+Expand RGB565 texels by bit replication, or repeat each RGBA4444 RGB nibble
+into both halves of its eight-bit channel. For each 9-bit-weight × 8-bit-channel tap
 product p, form `(p>>9)+p[8]`, a half-up right shift by 9. Store each two-tap pair
-sum in8 bits. Place pair values in the low 8 bits of separate 16-bit lanes of a
+sum in8 bits. Place pair values in the low 8 bits of separate 12-bit lanes of a
 guarded 54-bit accumulator. The first group starts the sample accumulator; later
 groups add. Expose each lane's low 8 bits, without further normalization or clamp.
 
 Conserved weights do not change this into exact division by 511: rounding occurs
 per tap, then the stated pair/accumulator bit widths apply. The selected Color
 and generic exact-normalization Color are distinct arithmetic profiles.
+
+RGBA4444 alpha uses the same conserved weights, without per-tap rounding:
+`raw = sum(weight9*A4)`, `texture_alpha8 = floor((17*raw+255)/511)`.
+The raw sum is at most7665; every constant A4, including0 and15, is preserved
+as A4*17 through every filter and mip transition. Two taps share their weight
+sum across four A4 bit planes, then register one13-bit pair on the original
+RGB product edge. ALU54 inputs A/B fuse pair*16+pair into its17-bit alpha lane
+at bits52:36; RGB occupies bits7:0,19:12,31:24 with carry guards. No alpha DSP,
+separate accumulator or extra edge is needed here. For P=17*raw, output is
+`q + [r+q>=256]`, where q=P>>9 and r=P&511, exactly the stated division.
+RGB565 and RGB-attribute mode supply opaque texture alpha255.
 
 ## Final RGBA
 
@@ -151,12 +163,17 @@ p = tint8 * texture8
 t = p + 128
 base = (t + (t >> 8)) >> 8
 color8 = min(255, floor(base*g/256) + floor(specular8*h/256))
-alpha8 = mesh uniform alpha (command profile; driver default255)
+alpha8 = floor((mesh_uniform_alpha8 * texture_alpha8 + 127)/255)
 ```
 
 The base step is exact nearest tint×texture/255. The diffuse and specular terms
-truncate separately before addition and saturation. In the command profile,
-alpha comes only from the mesh uniform, not the texture or Render state.
+truncate separately before addition and saturation. Final passes texture alpha
+through its existing two reserved result slots, without lighting or another
+arithmetic shadow. C acceptance stores texture alpha in the small DSP's input
+register. ROP multiplies that held operand by mesh uniform alpha on the existing
+depth-acceptance edge, retaining the DSP's output register; the next edge applies exact
+nearest /255 and Q6 quantization. RGB565 therefore retains the original uniform
+alpha exactly. Alpha does not participate in diffuse/specular lighting.
 RGB565 packing, alpha quantization and depth comparison happen
 later in [framebuffer](/ip/gpu-v2/docs/framebuffer.md#pixel-update).
 

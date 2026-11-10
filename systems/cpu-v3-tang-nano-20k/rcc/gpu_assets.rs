@@ -25,7 +25,7 @@ pub struct GpuTexture {
     pub sector: u16,
     pub sectors: u16,
     pub size_log2: u16,
-    pub full_mip: u16,
+    pub texture_flags: u16,
 }
 pub fn gpu_asset_extent(first: u16, sectors: u16) -> bool {
     let end = gpu_asset_bank_end(first);

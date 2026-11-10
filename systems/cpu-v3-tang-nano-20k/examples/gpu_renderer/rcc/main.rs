@@ -78,6 +78,7 @@ fn mesh() -> Mesh {
 }
 fn texture() -> Texture {
     Texture::from_native(TextureDesc {
+        format: TextureFormat::Rgb565,
         memory: unsafe {
             GpuMemory::from_sectors(GPU_RENDERER_TEXTURE, GPU_RENDERER_TEXTURE_SECTORS)
         },

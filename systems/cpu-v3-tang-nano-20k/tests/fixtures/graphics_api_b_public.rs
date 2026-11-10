@@ -134,6 +134,7 @@ fn main() {
         storage: unsafe { GpuMemory::from_sectors(0xa000, 16) },
     });
     let texture = Texture::from_native(TextureDesc {
+        format: TextureFormat::Rgb565,
         memory: unsafe { GpuMemory::from_sectors(0xa800, 128) },
         size_log2: 6,
         full_mip: true,

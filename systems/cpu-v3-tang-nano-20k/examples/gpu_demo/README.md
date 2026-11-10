@@ -7,6 +7,31 @@ then follow the autonomous DS2 input; the scene no longer advances an orbit. Roo
 are unlit; rabbit uses the original full-H9 diffuse/specular settings.
 The texture is room-tiles.png with its real mip chain, not diagnostic mip colors.
 
+## RGBA4444 example
+
+Build the independent `rgba4444` application with the ordinary application command:
+
+```powershell
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build rgba4444 --gpu-debug 0 --out target/rgba4444-example
+```
+
+`rcc/rgba_main.rs` uses the public API to draw the complete classic opaque scene,
+then two straight-alpha panels with SrcOver, depth testing and no depth writes.
+The same 128-square RGBA4444 texture has sixteen alpha bands, transparent circular
+holes, three color bands and all eight box-filtered mip levels. Trilinear sampling
+filters RGB and alpha together. The initial screen-left panel uses uniform alpha
+128 and screen-right uses 255, exposing uniform-times-texture alpha. DS2 camera
+controls are shared with `handheld`. That original application's source and assets
+remain unchanged. The example has 25 stored meshlets and 1145 submitted triangles
+because the extra two-triangle quad is drawn twice.
+
+`tools/rgba_assets.py` composes the original classic producer, appends the quad
+to its mesh resource, and emits the separate column-packed alpha texture and
+its generated roots. It records actual resource/source hashes and checks ranges
+and overlap; no command, instruction or Flash bytes are hand-maintained. This
+example requires the RGBA4444-capable gateware; the old RGB565-only gateware is
+not compatible with its material encoding.
+
 ## Files
 
 - `rcc/main.rs`: formal driver recording, 3D/UI, completion and A/B presentation.

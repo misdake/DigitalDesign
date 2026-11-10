@@ -27,6 +27,26 @@ const DEMO: Definition = Definition {
 pub const APPLICATIONS: &[Definition] = &[
     DEMO,
     Definition {
+        name: "rgba4444",
+        selection: Some("gpu_demo_rgba4444"),
+        source: Some("examples/gpu_demo/rcc/rgba_main.rs"),
+        gpu_api: true,
+        capture: CapturePolicy::Disabled,
+        owner: "examples/gpu_demo/application.rs",
+        assets: Some(Assets {
+            script: "examples/gpu_demo/tools/rgba_assets.py",
+            directory: "rgba4444-assets",
+            manifest_sources: true,
+            inputs: &[
+                "examples/gpu_demo/tools/public_assets.py",
+                "examples/gpu_demo/tools/assets.py",
+                "examples/gpu_demo/assets/font-8x16.txt",
+            ],
+            ..RENDERER_ASSETS
+        }),
+        ..DEFAULT
+    },
+    Definition {
         name: "demo-column16",
         selection: Some("gpu_demo_column16"),
         configure: |context, application, _| {

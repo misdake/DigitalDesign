@@ -299,6 +299,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     pin!("texture_base", 16, c.texture_base, true);
     pin!("texture_n", 4, c.texture_n, true);
     pin!("texture_mip", 1, c.texture_mip, true);
+    pin!("texture_rgba4444", 1, c.texture_rgba4444, true);
     pin!("texture_filter", 2, c.texture_filter, true);
     pin!("texture_fb400240", 1, c.texture_framebuffer, true);
     pin!("cfg_lod_bias", 8, c.lod_bias as u8, true);

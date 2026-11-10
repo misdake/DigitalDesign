@@ -29,7 +29,7 @@ struct Edge {
 fn mask(q: usize) -> u8 {
     [1, 5, 9, 15][q % 4]
 }
-fn data(epoch: usize) -> (Vec<Group>, Vec<(u8, u32)>) {
+fn data(epoch: usize, rgba4444: bool) -> (Vec<Group>, Vec<(u8, u32)>) {
     let mut groups = Vec::new();
     let mut expected = Vec::new();
     for q in 0..48 {
@@ -42,6 +42,7 @@ fn data(epoch: usize) -> (Vec<Group>, Vec<(u8, u32)>) {
             let split = id % 3 == 1;
             let mut pixel_groups = Vec::new();
             let mut total = [0u32; 3];
+            let mut alpha = 0u64;
             for plane in 0..2 {
                 let parent = if plane == 0 { 511 - coarse } else { coarse };
                 if parent == 0 {
@@ -59,11 +60,16 @@ fn data(epoch: usize) -> (Vec<Group>, Vec<(u8, u32)>) {
                         [(id + plane * 3 + t * 5 + epoch) % 8]
                 });
                 for (t, &raw) in texels.iter().enumerate() {
-                    let channels = [
-                        ((raw >> 11 & 31) << 3) | (raw >> 13),
-                        ((raw >> 5 & 63) << 2) | (raw >> 9 & 3),
-                        ((raw & 31) << 3) | (raw >> 2 & 7),
-                    ];
+                    let channels = if rgba4444 {
+                        std::array::from_fn(|c| ((raw >> (12 - 4 * c)) & 15) * 17)
+                    } else {
+                        [
+                            ((raw >> 11 & 31) << 3) | (raw >> 13),
+                            ((raw >> 5 & 63) << 2) | (raw >> 9 & 3),
+                            ((raw & 31) << 3) | (raw >> 2 & 7),
+                        ]
+                    };
+                    alpha += weights[t] * u64::from(raw & 15);
                     for (c, v) in channels.into_iter().enumerate() {
                         total[c] += ((weights[t] * u64::from(v) + 256) / 512) as u32;
                     }
@@ -103,7 +109,14 @@ fn data(epoch: usize) -> (Vec<Group>, Vec<(u8, u32)>) {
             assert!(total.iter().all(|v| *v <= 255));
             expected.push((
                 ((q % 16) * 4 + lane) as u8,
-                total[0] | (total[1] << 8) | (total[2] << 16),
+                total[0]
+                    | (total[1] << 8)
+                    | (total[2] << 16)
+                    | ((if rgba4444 {
+                        ((17 * alpha + 255) / 511) as u32
+                    } else {
+                        255
+                    }) << 24),
             ));
             groups.extend(pixel_groups);
         }
@@ -111,6 +124,9 @@ fn data(epoch: usize) -> (Vec<Group>, Vec<(u8, u32)>) {
     (groups, expected)
 }
 fn run(native: bool) -> Vec<Edge> {
+    run_format(native, false)
+}
+fn run_format(native: bool, rgba4444: bool) -> Vec<Edge> {
     let mut d = if native {
         Color::native()
     } else {
@@ -121,7 +137,7 @@ fn run(native: bool) -> Vec<Edge> {
     let mut pauses = 0;
     let mut total_results = 0;
     for epoch in 0..2 {
-        let (groups, expected) = data(epoch);
+        let (groups, expected) = data(epoch, rgba4444);
         let mut group = 0;
         let mut published = 0;
         let mut result = 0;
@@ -132,6 +148,7 @@ fn run(native: bool) -> Vec<Edge> {
             let commit_allow = wall % 11 != 4;
             let next = groups.get(group);
             let mut i = Input {
+                rgba4444,
                 reset,
                 proposal_ce,
                 commit_allow,
@@ -154,6 +171,11 @@ fn run(native: bool) -> Vec<Edge> {
                         o.rgb,
                         Bits::new(rgb.into(), 24),
                         "RGB epoch{epoch} wall{wall} key{k}"
+                    );
+                    assert_eq!(
+                        o.alpha,
+                        Bits::new(u64::from(rgb >> 24), 8),
+                        "alpha epoch{epoch} wall{wall} key{k}"
                     );
                     assert_eq!(
                         o.last,
@@ -206,8 +228,11 @@ fn result_quad(expected: &[(u8, u32)], at: usize) -> usize {
 }
 #[test]
 fn direct_color_matches_independent_per_tap_integer_rounding() {
-    run(false);
-    run(true);
+    for native in [false, true] {
+        for rgba4444 in [false, true] {
+            run_format(native, rgba4444);
+        }
+    }
 }
 #[test]
 fn publication_without_old_credit_is_not_accepted() {
@@ -245,16 +270,18 @@ fn source_loan_and_direct_result_match_actual_color() {
     let root = root("color6");
     println!("COLOR6_ROOT {}", root.display());
     for native in [false, true] {
-        let rows = run(native);
-        let p = fixture::fields(&rows[0]);
-        vertex_support::rtl::replay(
-            &root,
-            if native { "native" } else { "portable" },
-            rows.iter().map(fixture::fields).collect(),
-            fixture::production(&p, native),
-            false,
-            None,
-        );
+        for rgba4444 in [false, true] {
+            let rows = run_format(native, rgba4444);
+            let p = fixture::fields(&rows[0]);
+            vertex_support::rtl::replay(
+                &root,
+                &format!("native{native}-rgba{rgba4444}"),
+                rows.iter().map(fixture::fields).collect(),
+                fixture::production(&p, native),
+                false,
+                None,
+            );
+        }
     }
 }
 #[test]

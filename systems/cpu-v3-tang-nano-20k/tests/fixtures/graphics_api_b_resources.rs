@@ -99,6 +99,7 @@ fn main() {
         halt(4);
     }
     let desc: TextureDesc = TextureDesc {
+        format: TextureFormat::Rgb565,
         memory: GpuMemory {
             first_sector: 4096,
             sector_count: 36,
@@ -124,6 +125,7 @@ fn main() {
         halt(7);
     }
     let short: TextureDesc = TextureDesc {
+        format: TextureFormat::Rgb565,
         memory: GpuMemory {
             first_sector: 4096,
             sector_count: 35,

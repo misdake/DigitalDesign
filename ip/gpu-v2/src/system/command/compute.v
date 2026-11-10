@@ -16,7 +16,7 @@ module gpu_v2_vliw_three_port(
 `endif
  input dma_we,output dma_ready,input[9:0]dma_addr,input[63:0]dma_data,input output_ready,
  input[31:0]cfg_far_z,input signed[7:0]cfg_lod_bias,
- input[15:0]texture_base,input[3:0]texture_n,input texture_mip,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,
+ input[15:0]texture_base,input[3:0]texture_n,input texture_mip,texture_rgba4444,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,
 
 input
 `ifndef GPU_V2_LIVE_GLOBALS
@@ -96,7 +96,7 @@ blend,draw_rebind,
  .result_we(result_we),.result_wa(result_wa),.result_wd(result_wd),
  .depth_event_valid(depth_valid),.depth_event_pid(depth_pid),.depth_event_z16(depth_z),.depth_event_pass(depth_pass),
  .lod_valid(lod_valid),.lod_id(lod_id),.lod_value(lod_value),.empty_skipped(quad_empty_skipped),.producer_used(producer_used),
- .texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),.texture_invalidate(texture_invalidate),.specular(specular),
+ .texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_rgba4444(texture_rgba4444),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),.texture_invalidate(texture_invalidate),.specular(specular),
 `ifdef GPU_V2_COMMAND_PORTS
 
 `else

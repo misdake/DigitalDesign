@@ -248,6 +248,8 @@ def evaluate(capture):
                     raise ValueError('Transformed position outside the production signed26 contract')
                 colors.append(tuple((attr >> shift) & 255 for shift in (0, 8, 16)))
             if not q1 & 16:
+                if render[0] & (1 << 24):
+                    raise ValueError('Constant-texture reference supports only RGB565 textures')
                 if render[0] & (1 << 20):
                     raise ValueError('Constant-texture fixture must not use mips')
                 base = (render[0] & 65535)*128

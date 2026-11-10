@@ -62,8 +62,15 @@ fn color(tint: u32, lit: bool) -> u16 {
         p | ((((v * max * 2 + 255) / 510) as u16) << [11, 5, 0][c])
     })
 }
+#[derive(Clone, Copy, Debug)]
+struct TextureCase {
+    rgba4444: bool,
+    mip: bool,
+    filter: u8,
+}
 fn input_image(
     lit: bool,
+    texture: Option<TextureCase>,
 ) -> (
     Vec<u16>,
     [DeviceSubmission; 2],
@@ -81,7 +88,45 @@ fn input_image(
     objects[9] = 0x4000 | (0x1234u64 << 16) | (0xf500u64 << 32) | (0x4000u64 << 48);
     objects[10] = 129 | (127u64 << 16) | (1u64 << 32) | (12u64 << 34) | (7u64 << 48);
     objects[16] = (6 << 16) | (1 << 20) | (0xabcdefu64 << 32);
-    objects[17] = 7 | (u64::from(!lit) << 5) | (u64::from((-3i8) as u8) << 32);
+    if let Some(t) = texture {
+        // Unlike the legacy RGB arithmetic fixture, the functional decoder
+        // validates a unit light and positive projection even for unlit work.
+        objects[8] = 100u64 << 16;
+        objects[9] = 16384 | (8192u64 << 16) | (4915u64 << 32) | (10486u64 << 48);
+        objects[16] = 0xc00
+            | (6 << 16)
+            | (u64::from(t.mip) << 20)
+            | (u64::from(t.filter) << 21)
+            | (u64::from(t.rgba4444) << 24)
+            | (0xabcdefu64 << 32);
+        let mut prefix = 0usize;
+        for level in 0..=6 {
+            if !t.mip && level != 6 {
+                continue;
+            }
+            let side = 1usize << level;
+            let extent = side.max(16);
+            for y in 0..extent {
+                for x in 0..extent {
+                    let logical = (x % side) + (y % side) * side;
+                    let raw = (logical as u16)
+                        .wrapping_mul(0x5497)
+                        .wrapping_add((level as u16 + 1) * 23);
+                    let address = 0x30000
+                        + prefix
+                        + ((x / 16) * (extent / 16) + y / 16) * 256
+                        + (y % 16) * 16
+                        + x % 16;
+                    backing[address] = raw;
+                }
+            }
+            prefix += extent * extent;
+        }
+    }
+    objects[17] = 7
+        | (u64::from(!lit) << 5)
+        | (u64::from(texture.is_some()) << 4)
+        | (u64::from((-3i8) as u8) << 32);
     store(
         &mut backing,
         0x20000,
@@ -90,6 +135,20 @@ fn input_image(
             .flat_map(u64::to_le_bytes)
             .collect::<Vec<_>>(),
     );
+    if texture.is_some() {
+        // The next CB changes only format, reusing raw resident cache lines.
+        // This exercises both global reinstallation and the absence of a
+        // format tag/invalidation requirement in the unchanged texel cache.
+        objects[16] ^= 1 << 24;
+        store(
+            &mut backing,
+            0x20100,
+            &objects
+                .into_iter()
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+    }
     for (job, tint) in [0x927bad31u32, 0x42805020].into_iter().enumerate() {
         let mut uniform = [0u64; 16];
         for &(row, data) in &tiny.rows {
@@ -115,6 +174,18 @@ fn input_image(
             record[16 + usize::from(row)] = data;
         }
     }
+    if texture.is_some() {
+        record[1] &= !16;
+        for (v, uv) in [0x12345678u32, 0xabcd1234, 0x1122f345]
+            .into_iter()
+            .enumerate()
+        {
+            let word = v * 3 + 2;
+            let shift = (word % 2) * 32;
+            let at = 16 + word / 2;
+            record[at] = (record[at] & !(0xffff_ffffu64 << shift)) | (u64::from(uv) << shift);
+        }
+    }
     store(
         &mut backing,
         0x22000,
@@ -127,7 +198,16 @@ fn input_image(
         let mut cb = CommandBuffer::new();
         for c in [
             Command::dma_local(0x20000, 264, 128).unwrap(),
-            Command::dma_local(0x20080, 280, 32).unwrap(),
+            Command::dma_local(
+                if job == 1 && texture.is_some() {
+                    0x20180
+                } else {
+                    0x20080
+                },
+                280,
+                32,
+            )
+            .unwrap(),
             Command::dma_local(0x21000 + job as u32 * 256, 320, 128).unwrap(),
             Command::wait(true, true),
             Command::FLUSH,
@@ -142,7 +222,9 @@ fn input_image(
             Command::FLUSH,
             Command::END,
         ] {
-            cb.push(c);
+            if !(job == 1 && texture.is_some() && c == Command::TEX_INVALIDATE) {
+                cb.push(c);
+            }
         }
         let image = cb.image().unwrap();
         let base = 0x40000 + job as u32 * 256;
@@ -155,8 +237,11 @@ fn run() -> Run {
     run_mode(false)
 }
 fn run_mode(lit: bool) -> Run {
+    run_scene(lit, None)
+}
+fn run_scene(lit: bool, texture: Option<TextureCase>) -> Run {
     let setup_start = std::time::Instant::now();
-    let (backing, submissions, coverage) = input_image(lit);
+    let (backing, submissions, coverage) = input_image(lit, texture);
     let preimage = backing.clone();
     let mut image_oracles = Vec::new();
     let mut expected = backing.clone();
@@ -172,6 +257,7 @@ fn run_mode(lit: bool) -> Run {
     let mut light_returned = 0;
     let mut rows = Vec::new();
     let mut partial_visible = false;
+    let mut expected_word_changes = 0usize;
     let mut draw_active_ce0 = false;
     let mut ended = false;
     let setup_us = setup_start.elapsed().as_micros();
@@ -242,10 +328,29 @@ fn run_mode(lit: bool) -> Run {
             draw_active_ce0 |= !i.ce && o.render.producer.pool.global_used != 0;
             if phase == 2 && prior_busy && !o.control.processor.busy {
                 assert!(o.render.idle && o.physical_drained);
-                let packed = color([0x927bad31, 0x42805020][job], lit);
-                for &(x, y) in &coverage {
-                    expected[0x100000 / 2 + offset(x, y)] = packed;
+                let before_color: Vec<_> = coverage
+                    .iter()
+                    .map(|&(x, y)| expected[0x80000 + offset(x, y)])
+                    .collect();
+                if texture.is_some() {
+                    gpu_v2::system::functional::Executor::new(1_000_000)
+                        .execute(&mut expected, submissions[job])
+                        .unwrap();
+                } else {
+                    let packed = color([0x927bad31, 0x42805020][job], lit);
+                    for &(x, y) in &coverage {
+                        expected[0x100000 / 2 + offset(x, y)] = packed;
+                    }
                 }
+                expected_word_changes += coverage
+                    .iter()
+                    .zip(before_color)
+                    .filter(|&(&(x, y), before)| expected[0x80000 + offset(x, y)] != before)
+                    .count();
+                assert_eq!(
+                    native.changed_halfwords, expected_word_changes,
+                    "actual native changed words"
+                );
                 if let Some((at, (a, b))) = native
                     .backing()
                     .iter()
@@ -253,7 +358,10 @@ fn run_mode(lit: bool) -> Run {
                     .enumerate()
                     .find(|(_, (a, b))| a != b)
                 {
-                    panic!("CB{job} physical byte{:x}: {a:04x}!={b:04x}", at * 2);
+                    panic!(
+                        "CB{job} texture={texture:?} physical byte{:x}: {a:04x}!={b:04x}",
+                        at * 2
+                    );
                 }
                 completed += 1;
                 let plane = |base: usize| {
@@ -283,8 +391,12 @@ fn run_mode(lit: bool) -> Run {
         let matches = coverage
             .iter()
             .filter(|&&(x, y)| {
-                native.backing()[0x100000 / 2 + offset(x, y)]
-                    == color([0x927bad31, 0x42805020][job], lit)
+                let observed = native.backing()[0x100000 / 2 + offset(x, y)];
+                if texture.is_some() {
+                    observed != preimage[0x80000 + offset(x, y)]
+                } else {
+                    observed == color([0x927bad31, 0x42805020][job], lit)
+                }
             })
             .count();
         partial_visible |= matches > 0 && matches < coverage.len();
@@ -294,12 +406,14 @@ fn run_mode(lit: bool) -> Run {
                 (light_accepted, light_returned),
                 if lit { (12, 12) } else { (0, 0) }
             );
-            assert!(draw_active_ce0 && partial_visible);
-            assert!(
-                native.write_accepts >= 4
-                    && native.changed_half_edges >= 4
-                    && native.changed_halfwords >= 12
-            );
+            assert!(draw_active_ce0);
+            if texture.is_none() {
+                assert!(partial_visible);
+            }
+            assert!(native.write_accepts >= 4);
+            if texture.is_none() {
+                assert!(native.changed_half_edges >= 4 && native.changed_halfwords >= 12);
+            }
             println!("NATIVE_RGB_CP lit={lit} light_accept={light_accepted} light_return={light_returned} walls={} native={} starts={starts} pixels={final_pixels} changed_halves={} changed_words={} write_accepts={}",
                 wall+1,native.native_cycles(),native.changed_half_edges,native.changed_halfwords,native.write_accepts);
             let step_us = step_start.elapsed().as_micros();
@@ -634,4 +748,54 @@ fn command_gpu_wiring_mutations_and_busy_count_monitor() {
         Some("CP count SEND contract"),
     );
     println!("NATIVE_RGB_NEGATIVE_CHECKPOINT {}", root.display());
+}
+
+#[test]
+fn rgb565_and_rgba4444_texture_mips_match_functional_gpu_on_the_same_native_memory() {
+    for rgba4444 in [false, true] {
+        for mip in [false, true] {
+            for filter in 0..3 {
+                run_scene(
+                    false,
+                    Some(TextureCase {
+                        rgba4444,
+                        mip,
+                        filter,
+                    }),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "finite complete texture/alpha native RTL with real CP/DMA/memory, CE stalls and two draws"]
+fn rgba4444_texture_alpha_and_mips_match_native_rtl() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../target/rgba4444/whole-gpu-rtl-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    for (mip, filter) in [(false, 0), (false, 1), (true, 2)] {
+        let run = run_scene(
+            false,
+            Some(TextureCase {
+                rgba4444: true,
+                mip,
+                filter,
+            }),
+        );
+        let pins = fixture::fields(&run.rows[0]);
+        vertex_support::rtl::replay(
+            &root,
+            &format!("rgba4444-mip{mip}-filter{filter}"),
+            run.rows.iter().map(fixture::fields).collect(),
+            fixture::production(&pins),
+            false,
+            None,
+        );
+    }
 }

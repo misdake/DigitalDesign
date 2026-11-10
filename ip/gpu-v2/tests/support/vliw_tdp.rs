@@ -143,6 +143,7 @@ pub fn production(p: &[Pin]) -> String {
         "gpu_v2_framebuffer_tdp_bank",
         "gpu_v2_rop_tdp",
         "gpu_v2_final_rop_bank",
+        "gpu_v2_final_two_cycle_mul9",
     ] {
         s.push_str(source::module(name));
         s.push('\n');

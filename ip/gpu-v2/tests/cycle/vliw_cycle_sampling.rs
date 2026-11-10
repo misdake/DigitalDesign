@@ -71,6 +71,7 @@ fn reference(p: Pixel, c: Config) -> u32 {
         fraction[a] = q.rem_euclid(256) as u32;
     }
     let mut sums = [0u32; 3];
+    let mut alpha_sum = 0u32;
     for plane in 0..2 {
         let parent = if plane == 0 { 511 - lambda } else { lambda };
         if parent == 0 {
@@ -116,15 +117,23 @@ fn reference(p: Pixel, c: Config) -> u32 {
             let r = u32::from(raw >> 11);
             let g = u32::from(raw >> 5 & 63);
             let b = u32::from(raw & 31);
-            for (c, v) in [(r << 3 | r >> 2), (g << 2 | g >> 4), (b << 3 | b >> 2)]
-                .into_iter()
-                .enumerate()
-            {
+            let rgb = if c.rgba4444 {
+                std::array::from_fn(|channel| u32::from((raw >> (12 - channel * 4)) & 15) * 17)
+            } else {
+                [(r << 3 | r >> 2), (g << 2 | g >> 4), (b << 3 | b >> 2)]
+            };
+            alpha_sum += weight * u32::from(raw & 15);
+            for (c, v) in rgb.into_iter().enumerate() {
                 sums[c] += (weight * v + 256) / 512;
             }
         }
     }
-    (sums[0] & 255) | ((sums[1] & 255) << 8) | ((sums[2] & 255) << 16)
+    let alpha = if c.rgba4444 {
+        (alpha_sum * 17 + 255) / 511
+    } else {
+        255
+    };
+    (sums[0] & 255) | ((sums[1] & 255) << 8) | ((sums[2] & 255) << 16) | (alpha << 24)
 }
 fn pixels() -> Vec<Pixel> {
     let mut all = Vec::new();
@@ -156,7 +165,7 @@ struct Transfer {
     next: u8,
     terminal: usize,
 }
-fn run(config: Config, profile: Profile) {
+fn run(config: Config, profile: Profile) -> (usize, usize, usize) {
     let mut s = Sampler::new(profile);
     let source = pixels();
     let mut index = 0;
@@ -237,11 +246,16 @@ fn run(config: Config, profile: Profile) {
             assert_eq!(o.result.key, (wanted.slot & 15) * 4 + wanted.lane);
             assert_eq!(
                 o.result.rgb,
-                Bits::new(u64::from(rgb), 24),
+                Bits::new(u64::from(rgb & 0xffffff), 24),
                 "wall{wall} slot{} lane{} lod{} config{config:?}",
                 wanted.slot,
                 wanted.lane,
                 wanted.lod
+            );
+            assert_eq!(
+                o.result.alpha,
+                Bits::new(u64::from(rgb >> 24), 8),
+                "filtered alpha wall{wall}"
             );
             if o.color.result_fire {
                 returns.pop_front();
@@ -264,7 +278,7 @@ fn run(config: Config, profile: Profile) {
             assert_eq!(count, source.len());
             assert!(groups >= count && requests > 0);
             println!("SAMPLER profile={profile:?} config={config:?} walls={} pixels={count} groups={groups} sectors={requests} Work16_full={full}",wall+1);
-            return;
+            return (wall + 1, requests, groups);
         }
     }
     panic!(
@@ -281,6 +295,7 @@ fn complete_sampler_matches_independent_integer_pixels() {
                     base: 0x200,
                     n: 6,
                     mip: true,
+                    rgba4444: false,
                     filter,
                     framebuffer: false,
                 },
@@ -292,10 +307,41 @@ fn complete_sampler_matches_independent_integer_pixels() {
                 base: 0x400,
                 n: 9,
                 mip: false,
+                rgba4444: false,
                 filter: 1,
                 framebuffer: true,
             },
             profile,
         );
+    }
+}
+
+#[test]
+fn rgba4444_sampler_keeps_cache_and_calendar_with_and_without_mips() {
+    for profile in [Profile::Portable, Profile::Native] {
+        for mip in [false, true] {
+            for filter in 0..3 {
+                let original = Config {
+                    base: 0x200,
+                    n: 6,
+                    mip,
+                    rgba4444: false,
+                    filter,
+                    framebuffer: false,
+                };
+                let baseline = run(original, profile);
+                let candidate = run(
+                    Config {
+                        rgba4444: true,
+                        ..original
+                    },
+                    profile,
+                );
+                assert_eq!(
+                    baseline, candidate,
+                    "RGBA4444 added cycles or cache traffic"
+                );
+            }
+        }
     }
 }

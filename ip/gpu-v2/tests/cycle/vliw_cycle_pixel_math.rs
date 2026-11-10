@@ -83,7 +83,7 @@ impl Pixel {
             dw: !n.is_multiple_of(5),
         }
     }
-    fn reference(self) -> (u64, u64, u64, u64) {
+    fn reference(self, texture_alpha: u8) -> (u64, u64, u64, u64) {
         let depth_pass = match self.function {
             0 => false,
             1 => self.z < self.old_z,
@@ -103,7 +103,7 @@ impl Pixel {
             (bl << 3) | (bl >> 2),
         ];
         let alpha = if self.blend {
-            (u32::from(self.alpha) + 2) / 4
+            ((u32::from(self.alpha) * u32::from(texture_alpha) + 127) / 255 + 2) / 4
         } else {
             64
         };
@@ -159,6 +159,14 @@ fn run(case: usize) -> Vec<Edge> {
             in_valid: valid,
             tint: b(loan.tint.into(), 24),
             texture: b(loan.texture.into(), 24),
+            texture_alpha: b(
+                if case >= 2 {
+                    (offered as u64 * 71) & 255
+                } else {
+                    255
+                },
+                8,
+            ),
             specular: b(loan.specular.into(), 24),
             g: b(loan.g.into(), 9),
             h: b(loan.h.into(), 9),
@@ -167,6 +175,11 @@ fn run(case: usize) -> Vec<Edge> {
         };
         let fo = final_stage.outputs(fi);
         let p = Pixel::new(pixels + 1);
+        let texture_alpha = if case >= 2 {
+            (pixels as u64 * 193) & 255
+        } else {
+            255
+        };
         let ri = RopInput {
             reset,
             ce: fo.advance,
@@ -189,6 +202,16 @@ fn run(case: usize) -> Vec<Edge> {
             ),
             rgb: b(p.rgb.into(), 24),
             alpha: b(p.alpha.into(), 8),
+            // Only C owns this operand. Poison D to verify the DSP input hold.
+            texture_alpha: b(
+                if phase {
+                    texture_alpha ^ 0x5a
+                } else {
+                    texture_alpha
+                },
+                8,
+            ),
+            texture_capture: !phase,
             depth: b(p.z.into(), 16),
             shared_rop_product: shared.rop_product(),
         };
@@ -207,15 +230,21 @@ fn run(case: usize) -> Vec<Edge> {
             enabled = 0;
         } else {
             if fo.out_valid {
-                let &(value, ready_edge) = final_queue.front().expect("unowned Final result");
+                let &(value, alpha, ready_edge) =
+                    final_queue.front().expect("unowned Final result");
                 assert!(enabled >= ready_edge);
+                assert_eq!(
+                    fo.texture_alpha.get(8, "Final alpha").unwrap(),
+                    alpha,
+                    "alpha slot wall{wall}"
+                );
                 assert_eq!(fo.rgb.get(24, "Final result").unwrap(), value, "wall{wall}");
             }
             if fo.advance && fo.out_fire {
                 final_queue.pop_front();
             }
             if fo.in_accept {
-                final_queue.push_back((loan.reference(), enabled + 2));
+                final_queue.push_back((loan.reference(), fi.texture_alpha.value, enabled + 2));
                 offered += 1;
             }
             if ro.valid {
@@ -236,7 +265,7 @@ fn run(case: usize) -> Vec<Edge> {
                 }
             }
             if ri.ce && ri.valid {
-                rop_queue.push_back((p.reference(), enabled + 4));
+                rop_queue.push_back((p.reference(texture_alpha as u8), enabled + 4));
                 pixels += 1;
                 live_old_depth = p.old_z.into();
             }
@@ -266,12 +295,12 @@ fn run(case: usize) -> Vec<Edge> {
     }
     assert!(offered > 500 && pixels > 500 && final_queue.is_empty() && rop_queue.is_empty());
     assert!(old_full && direct && queued);
-    assert!(case == 0 || saw_abort_ce0);
+    assert!(case != 1 || saw_abort_ce0);
     rows
 }
 #[test]
 fn final_and_live_depth_rop_match_independent_integer_math() {
-    for case in 0..2 {
+    for case in 0..3 {
         run(case);
     }
 }
@@ -294,7 +323,7 @@ fn root(label: &str) -> std::path::PathBuf {
 #[ignore = "two bounded selected Final/ROP/shared-DSP production profiles"]
 fn every_shared_final_rop_edge_matches_production() {
     let root = root("pixel-math");
-    for case in 0..2 {
+    for case in 0..3 {
         let rows = run(case);
         let pins = fixture::fields(&rows[0]);
         vertex_support::rtl::replay(
@@ -316,7 +345,8 @@ fn shared_final_rop_negative_controls() {
     let pins = fixture::fields(&rows[0]);
     for (name,old,new) in [
         ("spec_truncation","if(phase==SPEC)sh<=spec_product[15:8];","if(phase==SPEC)sh<=spec_product[16:9];"),
-        ("alpha_q6","wire[8:0]alpha_sum={1'b0,sa1}+9'd2;","wire[8:0]alpha_sum={1'b0,sa1}+9'd0;"),
+        ("alpha_q6","(alpha_tail>=11'd383)","(alpha_tail>=11'd511)"),
+        ("texture_alpha_live_D","alpha_result<=alpha_texture*src_a;","alpha_result<=src_texture_alpha*src_a;"),
         ("live_depth","wire[15:0]compared_old_depth=old_depth;","reg[15:0]old_depth_delayed;always@(posedge clk)if(ce)old_depth_delayed<=old_depth;wire[15:0]compared_old_depth=old_depth_delayed;"),
     ] {
         let source=fixture::production(&pins); assert_eq!(source.matches(old).count(),1,"{name}");

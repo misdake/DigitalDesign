@@ -100,13 +100,22 @@ module color_serial_registered_mul9(input wire clk,ce,input wire[8:0]a,input wir
 `endif
 endmodule
 
-module color_packed_accumulator(input wire clk,ce,add,input wire[53:0]a,output wire[53:0]q);
+module color_packed_accumulator(input wire clk,ce,add,input wire[53:0]a,
+`ifdef GPU_V2_COMMAND_PORTS
+ input wire[53:0]b,
+`endif
+ output wire[53:0]q);
+`ifdef GPU_V2_COMMAND_PORTS
+ wire[53:0]other=b;
+`else
+ wire[53:0]other=54'd0;
+`endif
 `ifdef GPU_V2_GOWIN_DSP
  ALU54D #(.AREG(1'b0),.BREG(1'b0),.ASIGN_REG(1'b0),.BSIGN_REG(1'b0),.ACCLOAD_REG(1'b0),
  .OUT_REG(1'b1),.B_ADD_SUB(1'b0),.C_ADD_SUB(1'b0),.ALUD_MODE(0),.ALU_RESET_MODE("SYNC")) alu(
- .DOUT(q),.CASO(),.A(a),.B(54'd0),.CASI(55'd0),.ACCLOAD(add),.ASIGN(1'b0),.BSIGN(1'b0),.CLK(clk),.CE(ce),.RESET(1'b0));
+ .DOUT(q),.CASO(),.A(a),.B(other),.CASI(55'd0),.ACCLOAD(add),.ASIGN(1'b0),.BSIGN(1'b0),.CLK(clk),.CE(ce),.RESET(1'b0));
 `else
- reg[53:0]storage;always@(posedge clk)if(ce)begin if(add)storage<=storage+a;else storage<=a;end
+ reg[53:0]storage;always@(posedge clk)if(ce)begin if(add)storage<=storage+a+other;else storage<=a+other;end
  assign q=storage;
 `endif
 endmodule

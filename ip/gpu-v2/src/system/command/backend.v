@@ -23,7 +23,7 @@ input wire draw_bank,draw_unlit,
  input wire depth_event_valid,input wire[4:0]depth_event_pid,input wire[15:0]depth_event_z16,input wire depth_event_pass,
  input wire lod_valid,input wire[2:0]lod_id,input wire[7:0]lod_value,
  output wire empty_skipped,output wire[5:0]producer_used,
- input[15:0]texture_base,input[3:0]texture_n,input texture_mip,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,input wire[23:0]specular,
+ input[15:0]texture_base,input[3:0]texture_n,input texture_mip,texture_rgba4444,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,input wire[23:0]specular,
 `ifndef GPU_V2_COMMAND_PORTS
 input wire[7:0]alpha,
 `endif
@@ -72,7 +72,7 @@ blend,draw_rebind,
  // The empty head retires only after all previous head tokens have drained.
  wire empty_skip;
  assign empty_skipped=empty_skip;
- wire final_in_ready,final_out_valid;wire[23:0]final_RGB;
+ wire final_in_ready,final_out_valid;wire[23:0]final_RGB;wire[7:0]final_alpha;
 
 `ifdef GPU_V2_COMMAND_PORTS
 wire[23:0]issue_color;
@@ -87,7 +87,7 @@ wire[15:0]depth_data;
  wire sink_color_accept;wire[1:0]out_lane;
  reg[4:0]issue_slot;wire[22:0]issue_descriptor,head_descriptor,next_descriptor;wire[8:0]head_tile,next_tile;wire[4:0]retire_slot;wire[5:0]light_used,sample_used;
  wire lv,lr,ll;wire[6:0]lk;wire[8:0]lg,lh;
- wire sv,sr,sl,sfire,public_publish;wire[5:0]sk;wire[23:0]sRGB;
+ wire sv,sr,sl,sfire,public_publish;wire[5:0]sk;wire[23:0]sRGB;wire[7:0]sAlpha;
  wire[15:0]public_live;wire[18:0]sample_descriptor;
  wire sample_fire;wire[1:0]sample_row;
  wire txreq,txready;wire[31:0]txaddr;
@@ -118,9 +118,9 @@ wire[15:0]depth_data;
  .depth_read(sink_color_accept),.depth_read_address({retire_slot,out_lane}),.depth_data(depth_data),
  .rop_row7_accepted(raw_retire_proposal),.rop_slot(retire_slot),.retire_slot(retire_slot),
  .global_used(global_used),.light_used(light_used),.sample_used(sample_used),.producer_used(producer_used),
- .public_credit(public_credit),.texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),.texture_invalidate(texture_invalidate),
+ .public_credit(public_credit),.texture_base(texture_base),.texture_n(texture_n),.texture_mip(texture_mip),.texture_rgba4444(texture_rgba4444),.texture_filter(texture_filter),.texture_fb400240(texture_fb400240),.texture_invalidate(texture_invalidate),
  .sample_fire(sample_fire),.sample_row(sample_row),.sample_descriptor(sample_descriptor),
- .packet_enable(1'b1),.result_ready(sr),.result_valid(sv),.result_key(sk),.result_rgb(sRGB),
+ .packet_enable(1'b1),.result_ready(sr),.result_valid(sv),.result_key(sk),.result_rgb(sRGB),.result_alpha(sAlpha),
  .work_reserved(work_reserved),.work_count(work_count),
  .result_quad_last(sl),.result_fire(sfire),.public_publish(public_publish),.public_live(public_live),
  .mem_req_valid(txreq),.mem_req_addr(txaddr),.mem_req_ready(txready),
@@ -174,14 +174,14 @@ wire[15:0]depth_data;
  // A lane cannot reach ROP until its real source/issue cursor has passed it.
  wire output_issued=issue_ahead||(issue_lane>out_lane);
  wire light_collision,sample_collision;
- wire[17:0]light_data;wire[23:0]sample_data;
+ wire[17:0]light_data;wire[31:0]sample_data;
  gpu_v2_postquad_light_bank light_bank(
  .clk(clk),.reset(reset),.read_en(advance&&read_values),.read_address(read_key),
  .write_en(light_result),.write_address(lk),.write_data({lh,lg}),
  .return_data(light_data),.collision(light_collision));
  gpu_v2_postquad_sample_bank sample_bank(
  .clk(clk),.reset(reset),.read_en(advance&&read_values),.read_address(read_key),
- .write_en(sample_result),.write_address(sample_address),.write_data(sRGB),
+ .write_en(sample_result),.write_address(sample_address),.write_data({sAlpha,sRGB}),
  .return_data(sample_data),.collision(sample_collision));
 
  wire final_in_valid=active&&state==J_WAIT&&issue_room;
@@ -189,7 +189,7 @@ wire[15:0]depth_data;
  wire[8:0]final_h=input_bypass[0]?9'd0:light_data[17:9];
 
 `ifdef GPU_V2_COMMAND_PORTS
-wire[23:0]final_texture=input_bypass[1]?basic_data:sample_data;
+wire[23:0]final_texture=input_bypass[1]?basic_data:sample_data[23:0];
 `else
 wire[23:0]final_texture=input_bypass[1]?24'hffffff:sample_data;
 `endif
@@ -211,6 +211,9 @@ wire[23:0]final_texture=input_bypass[1]?24'hffffff:sample_data;
 `else
 .in_tint(basic_data),
 `endif
+`ifdef GPU_V2_COMMAND_PORTS
+.in_tex_alpha(input_bypass[1]?8'd255:sample_data[31:24]),.out_tex_alpha(final_alpha),
+`endif
 .in_tex(final_texture),.in_spec(specular),.in_g(final_g),.in_h(final_h),
  .out_valid(final_out_valid),.out_ready(final_out_ready),.out_rgb(final_RGB),.fault(final_fault));
  assign final_issue=advance&&final_in_valid&&final_in_ready;
@@ -228,7 +231,7 @@ wire[23:0]final_texture=input_bypass[1]?24'hffffff:sample_data;
  .clk(clk),.reset(reset),.ce(ce),.commit_allow(coalition_allow),.preflight_bad(sink_bad),.lane_valid(lane_valid),.active_lane(out_lane),
 
 `ifdef GPU_V2_COMMAND_PORTS
-.rgba({8'd0,out_covered?final_RGB:24'd0})
+.rgba({final_alpha,out_covered?final_RGB:24'd0})
 `else
 .rgba({alpha,out_covered?final_RGB:24'd0})
 `endif

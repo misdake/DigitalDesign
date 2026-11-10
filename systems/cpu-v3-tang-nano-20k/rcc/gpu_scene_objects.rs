@@ -366,11 +366,19 @@ pub fn gpu_scene_state_init(mut out: Array<u16>, desc: RenderStateDesc) -> bool 
     true
 }
 
+#[repr(u16)]
+#[derive(Copy, Clone)]
+pub enum TextureFormat {
+    Rgb565,
+    Rgba4444,
+}
+
 #[derive(Copy, Clone)]
 pub struct TextureDesc {
     pub memory: GpuMemory,
     pub size_log2: u16,
     pub full_mip: bool,
+    pub format: TextureFormat,
 }
 
 pub fn gpu_scene_texture_init(mut out: Array<u16>, desc: TextureDesc) -> bool {
@@ -400,7 +408,7 @@ pub fn gpu_scene_texture_init(mut out: Array<u16>, desc: TextureDesc) -> bool {
     out[GPU_VIEW_BASE] = desc.memory.first_sector();
     out[GPU_VIEW_COUNT] = desc.memory.sector_count();
     out[GPU_VIEW_EXPONENT] = desc.size_log2;
-    out[GPU_VIEW_FLAGS] = desc.full_mip as u16;
+    out[GPU_VIEW_FLAGS] = (desc.full_mip as u16) | ((desc.format as u16) << 2);
     out[GPU_VIEW_WIDTH] = 1 << desc.size_log2;
     out[GPU_VIEW_HEIGHT] = 1 << desc.size_log2;
     true

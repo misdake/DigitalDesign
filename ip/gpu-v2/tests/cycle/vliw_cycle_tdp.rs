@@ -218,7 +218,14 @@ fn run(case: usize) -> Vec<Edge> {
             y: y as u8,
             mask,
             row_index: row as u8,
-            data: Bits::new(if row & 1 == 0 { rgb.into() } else { z.into() }, 32),
+            data: Bits::new(
+                if row & 1 == 0 {
+                    u64::from(rgb) | (255 << 24)
+                } else {
+                    z.into()
+                },
+                32,
+            ),
             alpha: Bits::new(alpha.into(), 8),
             depth_func: if case == 0 { 7 } else { 3 },
             depth_write: case == 0,

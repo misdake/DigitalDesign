@@ -30,7 +30,7 @@ fn main() {
         sector: 0x9c20,
         sectors: 4,
         size_log2: 0,
-        full_mip: 0,
+        texture_flags: 0,
     };
     let mut global: GpuGlobal = GpuGlobal {
         far_low: 0,
@@ -51,7 +51,7 @@ fn main() {
         texture_sector: 0,
         texture_sectors: 0,
         size_log2: 0,
-        full_mip: 0,
+        texture_flags: 0,
         filter: 0,
         specular_low: 0,
         specular_high: 0,

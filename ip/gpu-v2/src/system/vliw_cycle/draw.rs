@@ -116,6 +116,7 @@ impl Gpu {
                     base: c.texture_base,
                     n: c.texture_n,
                     mip: c.texture_mip,
+                    rgba4444: c.texture_rgba4444,
                     filter: c.texture_filter,
                     framebuffer: c.texture_framebuffer,
                 },

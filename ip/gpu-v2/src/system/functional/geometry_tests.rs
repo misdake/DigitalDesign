@@ -57,7 +57,14 @@ fn fixed_depth_preserves_unsigned_comparisons_and_write_enable() {
                     true,
                 ][usize::from(function)];
                 let mut memory = Words([0x1234, 0, old]);
-                shading::rop(&mut memory, [0, 0], incoming, [255, 0, 0], &state).unwrap();
+                shading::rop(
+                    &mut memory,
+                    [0, 0],
+                    incoming,
+                    [255, 0, 0, (state.color >> 24) as u8],
+                    &state,
+                )
+                .unwrap();
                 assert_eq!(memory.0[0], if pass { 0xf800 } else { 0x1234 });
                 assert_eq!(memory.0[2], if pass && write { incoming } else { old });
             }

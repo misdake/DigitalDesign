@@ -385,6 +385,7 @@ fn draw_bridges(pass: &mut Pass, model: &mut Model, material: &mut Material, tra
 }
 fn marker_texture() -> Texture {
     Texture::from_native(TextureDesc {
+        format: TextureFormat::Rgb565,
         memory: unsafe { GpuMemory::from_sectors(BLOX_MARKER_SECTOR, BLOX_MARKER_SECTORS) },
         size_log2: BLOX_MARKER_LOG2,
         full_mip: false,

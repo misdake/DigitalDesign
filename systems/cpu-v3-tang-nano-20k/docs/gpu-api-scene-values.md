@@ -158,6 +158,8 @@ and specular response; there is no separate specular intensity.
 `TextureDesc` references A's shared `GpuMemory` value. Physical registration
 owns endpoint validation; texture construction checks the texture-specific
 alignment, exponent and required capacity once. POT exponents are 0..10.
+`TextureDesc.format` is `TextureFormat::Rgb565` or `TextureFormat::Rgba4444`,
+independent of `full_mip`. Both use the same16-bit storage and filters.
 Each mip occupies at least four sectors; larger levels use the native 16x16
 column-macro footprint. Full-mip descriptions cover all levels down to 1x1.
 
@@ -166,9 +168,16 @@ reference and survives reuse of the source description. This does not extend
 the lifetime of its external payload. A color view records fixed400x240 shape,
 64-KiB base alignment, exponent 9, no mip chain and the allocation's actual
 sector count; the physical image spans 1600 sectors.
+The prepared flags word keeps mip in bit0 and fixed shape in bit1, with
+RGBA4444 in bit2; the16-word description does not grow. Fixed color views
+remain RGB565. The raw internal `GpuTexture`/`GpuRender.texture_flags` packs
+mip in bit0 and RGBA4444 in bit1, replacing the old mip-only word.
 
 `gpu_scene_render_prepare` writes only scratch words 32..47. Fixed400 shape
 occupies Render word 1 bit 7, equivalently bit 23 of its first 32-bit word.
+RGBA4444 occupies that first32-bit word's bit24, alongside existing mip/filter
+bits. Recording equality includes format, so a format-only change installs
+new Render state and follows the same drain boundary.
 Trilinear filtering of that shape fails before modifying output. The RGB
 bypass branch reads no view or texture payload and installs a deterministic
 base-zero, exponent-zero, nearest-filter description. Specular color and

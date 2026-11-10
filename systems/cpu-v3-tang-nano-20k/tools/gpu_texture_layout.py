@@ -1,4 +1,4 @@
-"""Production POT RGB565 storage: column macros, complete 512-byte mip tails."""
+"""Production POT 16-bit RGB565/RGBA4444 storage: column macros, complete 512-byte mip tails."""
 import struct
 
 
@@ -33,3 +33,10 @@ def pack_levels(levels):
                 if actual != pixels[(y % size) * size + x % size]:
                     raise ValueError('Column texture or periodic padding mismatch')
     return bytes(result)
+
+
+def rgba4444(pixel):
+    """Quantize one straight-alpha RGBA8 pixel; layout R15:12/G11:8/B7:4/A3:0."""
+    if len(pixel) != 4 or any(type(v) is not int or not 0 <= v <= 255 for v in pixel):
+        raise ValueError('RGBA8 requires four integer channels in 0..255')
+    return sum(((v * 15 + 127) // 255) << (12 - 4 * c) for c, v in enumerate(pixel))

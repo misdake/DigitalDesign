@@ -75,7 +75,7 @@ origins use signed 32-bit F16 values.
 
 In the command profile, uniform RGB modulates the one selected vertex-color or
 texture source, with exact nearest UNORM8 multiplication in Final. Alpha is
-copied directly to ROP; vertices and textures have no alpha. No modulation
+multiplied by filtered texture alpha in ROP; RGB vertices supply opaque alpha. No modulation
 is encoded by the driver as white RGB and opaque alpha, with no enable
 flag or hardware default selection. Non-command component APIs retain their
 independent uniform contracts. `mesh_color_words` encodes words22/23.
@@ -102,8 +102,8 @@ NativeRender32 is eight u32 words:
 
 | Word | Encoding |
 | --- | --- |
-| 0 | Current texture: base byte address/128 bits15:0; size_log2 bits19:16; full-mip20; filter bits22:21; fixed400x240 view bit23; bits31:24 zero |
-| 1 | RGB888 specular low24; high8 zero (alpha belongs only to mesh uniform color) |
+| 0 | Current texture: base byte address/128 bits15:0; size_log2 bits19:16; full-mip20; filter bits22:21; fixed400x240 view bit23; RGBA4444 bit24 (zero selects RGB565); bits31:25 zero |
+| 1 | RGB888 specular low24; high8 zero (alpha comes from mesh uniform and texture) |
 | 2 | depth_func bits2:0, depth_write3, blend4, unlit5; other bits zero |
 | 3 | Signed F4 lod_bias bits7:0; other bits zero |
 | 4..7 | Zero |
@@ -111,15 +111,20 @@ NativeRender32 is eight u32 words:
 These are the current numerical pins, not floating-point source parameters.
 Their arithmetic and direction requirements remain in
 [fragment arithmetic](/ip/gpu-v2/docs/fragment-math.md). The host chooses a
-legal column POT RGB565 texture, exponent0..10 and filter0/1/2, or the
+legal column POT RGB565 or RGBA4444 texture, exponent0..10 and filter0/1/2, or the
 fixed400x240 view described in [framebuffer views](/ip/gpu-v2/docs/framebuffer-texture-view.md).
 Both use 256-byte base alignment and the same physical cache backend. POT uses
 normalized UV repeat and the selected mip level; fixed views use signed18 UV
 pre-clamp, true400/240 scaling, nearest/bilinear and base-only data. Exponent9
 on a fixed view is an encoding carrier, never a512-square footprint.
-NativeRender32 bit23 is part of state equality and the locked CP binding.
+NativeRender32 shape and format are part of state equality and the locked CP
+binding. Format is global alongside mip/filter and changes only after draining
+prior work. Fixed views remain RGB565 and reject bit24.
 
-Production POT mip levels use16x16 RGB565 column macros,512 bytes each.
+Production POT mip levels use16x16 16-bit column macros,512 bytes each.
+RGBA4444 stores R15:12, G11:8, B7:4 and straight alpha A3:0. Both formats
+support the same full mip chain and all three filters; raw cache lines carry
+no format tag and do not expand texels.
 For level n, pitch is `max(n-4,0)` and
 `address = level_base + 512*(((x>>4)<<pitch)+(y>>4)) + 32*(y&15) + 2*(x&15)`.
 Every small level still occupies512 bytes, with periodic padding. Full chains

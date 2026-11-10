@@ -16,6 +16,9 @@ module gpu_v2_rop_tdp (
     input      [7:0]  src_g,
     input      [7:0]  src_b,
     input      [7:0]  src_a,
+`ifdef GPU_V2_COMMAND_PORTS
+    input wire[7:0]src_texture_alpha,input wire texture_capture,
+`endif
     input      [15:0] src_depth,
     output wire       in_ready,
     output reg        out_valid,
@@ -99,7 +102,37 @@ module gpu_v2_rop_tdp (
     assign shared_mul_pending=v2;assign shared_rop_ce=ce&&v2;assign shared_rop_a={delta_b2,delta_g2,delta_r2};assign shared_rop_b=a2;
     // The BSRAM A read of D was issued on the preceding stage-1 edge.
     wire[15:0]compared_old_depth=old_depth;
+`ifdef GPU_V2_COMMAND_PORTS
+    wire[16:0]alpha_product;
+`ifdef GPU_V2_GOWIN_DSP
+    // C captures texture alpha in the multiplier's input register. D consumes
+    // that old A with the live uniform alpha, retaining the original output
+    // register and following-edge quantization. Empty C/D edges hold both Qs.
+    wire[17:0]alpha_raw;
+    MULT9X9 #(.AREG(1'b1),.BREG(1'b0),.PIPE_REG(1'b0),.OUT_REG(1'b1),
+      .ASIGN_REG(1'b0),.BSIGN_REG(1'b0),.SOA_REG(1'b0),.MULT_RESET_MODE("SYNC")) alpha_mul(
+      .DOUT(alpha_raw),.SOA(),.SOB(),.A({1'b0,src_texture_alpha}),.B({1'b0,src_a}),
+      .SIA(9'd0),.SIB(9'd0),.ASEL(1'b0),.BSEL(1'b0),.ASIGN(1'b0),.BSIGN(1'b0),
+      .CLK(clk),.CE(ce&&(texture_capture||in_valid)),.RESET(1'b0));
+    assign alpha_product=alpha_raw[16:0];
+`else
+    reg[7:0]alpha_texture;
+    reg[16:0]alpha_result;
+    always@(posedge clk)begin
+      if(ce&&texture_capture)alpha_texture<=src_texture_alpha;
+      if(ce&&(texture_capture||in_valid))alpha_result<=alpha_texture*src_a;
+    end
+    assign alpha_product=alpha_result;
+`endif
+    // Q6 is floor((nearest(P/255)+2)/4) = floor((P+637)/1020).
+    // P=1024*q+r, so only one correction is possible: r+4*q>=383.
+    // Form the consumed seven bits directly, without an intermediate A8.
+    wire[10:0]alpha_tail={1'b0,alpha_product[9:0]}+{3'd0,alpha_product[15:10],2'd0};
+    wire[6:0]alpha_q6={1'b0,alpha_product[15:10]}+{6'd0,(alpha_tail>=11'd383)};
+`else
     wire[8:0]alpha_sum={1'b0,sa1}+9'd2;
+    wire[6:0]alpha_q6=alpha_sum[8:2];
+`endif
     wire[13:0]nr3={dr2,6'd0}+delta_r3[13:0]+14'd32;
     wire[13:0]ng3={dg2,6'd0}+delta_g3[13:0]+14'd32;
     wire[13:0]nb3={db2,6'd0}+delta_b3[13:0]+14'd32;
@@ -118,7 +151,7 @@ module gpu_v2_rop_tdp (
           gate2<=covered1&&depth_pass(func1,sd1,compared_old_depth);dw2<=dw1;
           dr2<=expand5(oc1[15:11]);dg2<=expand6(oc1[10:5]);db2<=expand5(oc1[4:0]);
         end
-        a2<=blend1?alpha_sum[8:2]:7'd64;
+        a2<=blend1?alpha_q6:7'd64;
         delta_r2<=$signed({1'b0,sr1})-$signed({1'b0,expand5(oc1[15:11])});
         delta_g2<=$signed({1'b0,sg1})-$signed({1'b0,expand6(oc1[10:5])});
         delta_b2<=$signed({1'b0,sb1})-$signed({1'b0,expand5(oc1[4:0])});

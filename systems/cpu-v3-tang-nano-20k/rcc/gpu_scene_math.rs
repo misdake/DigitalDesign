@@ -119,13 +119,13 @@ pub fn gpu_scene_render_prepare(
 ) -> bool {
     let mut base: u16 = 0;
     let mut exponent: u16 = 0;
-    let mut mip: u16 = 0;
+    let mut texture_flags: u16 = 0;
     let mut fixed: u16 = 0;
     let mut filter: u16 = 0;
     if textured {
         base = view[GPU_VIEW_BASE];
         exponent = view[GPU_VIEW_EXPONENT];
-        mip = view[GPU_VIEW_FLAGS] & 1;
+        texture_flags = (view[GPU_VIEW_FLAGS] & 1) | ((view[GPU_VIEW_FLAGS] >> 1) & 2);
         fixed = (view[GPU_VIEW_FLAGS] >> 1) & 1;
         filter = state[GPU_STATE_FILTER];
     }
@@ -139,7 +139,11 @@ pub fn gpu_scene_render_prepare(
         at += 1;
     }
     native[start] = base;
-    native[start + 1] = exponent | (mip << 4) | (filter << 5) | (fixed << 7);
+    native[start + 1] = exponent
+        | ((texture_flags & 1) << 4)
+        | ((texture_flags & 2) << 7)
+        | (filter << 5)
+        | (fixed << 7);
     native[start + 2] = material[GPU_MATERIAL_SPECULAR];
     native[start + 3] = material[GPU_MATERIAL_SPECULAR + 1];
     native[start + 4] = state[GPU_STATE_CONTROL] | ((material[GPU_MATERIAL_FLAGS] & 1) << 5);

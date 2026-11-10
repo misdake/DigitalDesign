@@ -17,6 +17,7 @@ pub struct Input {
     pub valid: bool,
     pub payload: Word,
     pub texels: [Bits; 4],
+    pub rgba4444: bool,
     pub out_ready: bool,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,6 +30,7 @@ pub struct Output {
     pub valid: bool,
     pub key: Bits,
     pub rgb: Bits,
+    pub alpha: Bits,
     pub last: bool,
     pub result_fire: bool,
     pub advance: bool,
@@ -42,6 +44,7 @@ pub struct Output {
     pub packet_bad: bool,
     pub pair_sum: [Bits; 3],
     pub packed_half: Bits,
+    pub packed_low: Bits,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Color {
@@ -56,6 +59,7 @@ pub struct Color {
     pub q_key: Bits,
     pub q_last: Bits,
     pub products: [[Bits; 2]; 3],
+    pub alpha_pair: Bits,
     pub accumulator: Bits,
 }
 fn expand(t: Bits, c: usize) -> Bits {
@@ -107,9 +111,20 @@ impl Color {
         });
         let mut packed_half = Bits::new(0, 54);
         for (c, v) in pair_sum.iter().enumerate() {
-            packed_half.set(c as u32 * 16, 8, *v);
+            packed_half.set(c as u32 * 12, 8, *v);
         }
+        packed_half.set(40, 13, self.alpha_pair);
+        let mut packed_low = Bits::new(0, 54);
+        packed_low.set(36, 13, self.alpha_pair);
+        let alpha = if !i.rgba4444 {
+            Bits::new(255, 8)
+        } else if self.accumulator.slice(36, 17).is_known(17) {
+            Bits::new((self.accumulator.slice(36, 17).value + 255) / 511, 8)
+        } else {
+            Bits::default()
+        };
         Output {
+            alpha,
             public_free: !i.reset && self.live & (1 << (i.check_quad & 15)) == 0,
             publish_ready,
             publish_fire: advance && i.publish_valid && publish_ready,
@@ -118,9 +133,9 @@ impl Color {
             valid,
             key,
             rgb: Bits::concat(
-                self.accumulator.slice(32, 8),
+                self.accumulator.slice(24, 8),
                 Bits::concat(
-                    self.accumulator.slice(16, 8),
+                    self.accumulator.slice(12, 8),
                     self.accumulator.slice(0, 8),
                     8,
                 ),
@@ -139,6 +154,7 @@ impl Color {
             packet_bad,
             pair_sum,
             packed_half,
+            packed_low,
         }
     }
     pub fn clock(&mut self, i: Input) -> Result<(), ContractError> {
@@ -171,7 +187,13 @@ impl Color {
             for c in 0..3 {
                 for t in 0..2 {
                     let w = i.payload.slice(28 + 9 * (half + t) as u32, 9);
-                    let col = expand(i.texels[half + t], c);
+                    let tex = i.texels[half + t];
+                    let col = if i.rgba4444 {
+                        let n = tex.slice(12 - c as u32 * 4, 4);
+                        Bits::concat(n, n, 4)
+                    } else {
+                        expand(tex, c)
+                    };
                     self.products[c][t] = if self.hard_dsp
                         && ((w.is_known(9) && w.value == 0) || (col.is_known(8) && col.value == 0))
                     {
@@ -184,11 +206,42 @@ impl Color {
                 }
             }
         }
+        if o.mul_ce {
+            let half = if self.busy { 2 } else { 0 };
+            let tap = |t: usize| {
+                let w = i.payload.slice(28 + 9 * (half + t) as u32, 9);
+                let a = i.texels[half + t].slice(0, 4);
+                if (w.is_known(9) && w.value == 0) || (a.is_known(4) && a.value == 0) {
+                    Bits::new(0, 13)
+                } else if w.is_known(9) && a.is_known(4) {
+                    Bits::new(w.value * a.value, 13)
+                } else {
+                    Bits::default()
+                }
+            };
+            let a = tap(0);
+            let b = tap(1);
+            self.alpha_pair = if a.is_known(13) && b.is_known(13) {
+                Bits::new(a.value + b.value, 13)
+            } else {
+                Bits::default()
+            };
+        }
         if o.accum_ce {
-            self.accumulator = if !o.accum_add {
-                o.packed_half
-            } else if self.accumulator.is_known(54) && o.packed_half.is_known(54) {
-                Bits::new(self.accumulator.value.wrapping_add(o.packed_half.value), 54)
+            self.accumulator = if o.packed_half.is_known(54)
+                && o.packed_low.is_known(54)
+                && (!o.accum_add || self.accumulator.is_known(54))
+            {
+                Bits::new(
+                    o.packed_half.value
+                        + o.packed_low.value
+                        + if o.accum_add {
+                            self.accumulator.value
+                        } else {
+                            0
+                        },
+                    54,
+                )
             } else {
                 Bits::default()
             };

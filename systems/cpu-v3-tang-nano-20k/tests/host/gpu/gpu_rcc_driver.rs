@@ -448,7 +448,7 @@ fn main() {
  g.far_high=200;
  check(!gpu_record_global(view_of(&mut c),view_of(&mut g))); check(c.object_words==32);
  let mut r: GpuRender = GpuRender { texture_sector: 40000, texture_sectors: 21860, size_log2: 10,
- full_mip: 1, filter: 2, specular_low: 0x9876, specular_high: 0x54,
+ texture_flags: 1, filter: 2, specular_low: 0x9876, specular_high: 0x54,
  depth_func: 7, depth_write: 1, blend: 1, unlit: 1, lod_bias: -128 };
  check(gpu_record_render(view_of(&mut c),view_of(&mut r)));
  r.filter=3; check(!gpu_record_render(view_of(&mut c),view_of(&mut r)));check(c.object_words==48);
@@ -498,6 +498,7 @@ fn main() {
             base_sector: 40000,
             size_log2: 10,
             full_mip: true,
+            rgba4444: false,
             filter: 2,
             framebuffer_view: false,
         }
@@ -613,7 +614,7 @@ fn main() {
  g.light_y=182;check(!gpu_record_global(view_of(&mut cb),view_of(&mut g)));check(cb.object_words==32);
  g.light_x=16383;g.light_y=0;g.far_high=20;check(gpu_record_global(view_of(&mut cb),view_of(&mut g)));
  g.light_x=16382;check(!gpu_record_global(view_of(&mut cb),view_of(&mut g)));check(cb.object_words==64);
- let mut r:GpuRender=GpuRender { texture_sector:GPU_ASSET_FIRST_SECTOR,texture_sectors:4,size_log2:0,full_mip:0,filter:0,
+ let mut r:GpuRender=GpuRender { texture_sector:GPU_ASSET_FIRST_SECTOR,texture_sectors:4,size_log2:0,texture_flags:0,filter:0,
  specular_low:0x9876,specular_high:0x54,depth_func:1,depth_write:1,blend:0,unlit:1,lod_bias:127 };
  check(gpu_record_render(view_of(&mut cb),view_of(&mut r)));check(cb.object_words==80);
  let mut matrix:Buf<u16,42>=Buf::new([0;42]);let mut m=matrix.as_array();m[0u16]=0x1234;
@@ -694,8 +695,8 @@ fn main(){
  check(gpu_builder_global(view_of(&mut cb),view_of(&mut g)));
  check(cb.object_words==global_words&&cb.command_words==global_commands);
  g.ambient=257;check(!gpu_builder_global(view_of(&mut cb),view_of(&mut g)));g.ambient=256;
- let mut t:GpuTexture=GpuTexture{sector:GPU_ASSET_FIRST_SECTOR+256,sectors:4,size_log2:0,full_mip:0};
- let mut r:GpuRender=GpuRender{texture_sector:0,texture_sectors:0,size_log2:0,full_mip:0,filter:0,
+ let mut t:GpuTexture=GpuTexture{sector:GPU_ASSET_FIRST_SECTOR+256,sectors:4,size_log2:0,texture_flags:0};
+ let mut r:GpuRender=GpuRender{texture_sector:0,texture_sectors:0,size_log2:0,texture_flags:0,filter:0,
  specular_low:0,specular_high:0,depth_func:1,depth_write:1,blend:0,unlit:1,lod_bias:0};
  check(gpu_builder_render(view_of(&mut cb),view_of(&mut t),view_of(&mut r)));
  let render_words=cb.object_words;let render_commands=cb.command_words;

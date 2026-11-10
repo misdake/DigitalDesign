@@ -173,10 +173,19 @@ compiled mutations and original monitor rejections. See the
 registered native Group35/H15 transport. Geometric references cover POT/coarse
 and RTT, full old credits, ring wrap and warm reset; finite mutations and
 original monitors exercise its last-consumer and physical-address boundaries.
-`vliw_cycle_sampling_color` checks independent per-tap half-up RAW565 sums,
+`vliw_cycle_sampling_color` checks independent per-tap half-up RGB565/RGBA4444 sums,
 the two-edge cache DO loan, Public16 credit/reuse and direct result-bank writes.
 Portable and vendor six-DSP/ALU54D RTL expose all retained known bits; finite
 mutations and original completion/ownership monitors cover the boundaries.
+
+The selected sampler tests compare both formats with identical cache traffic and
+enabled-edge schedules for nearest, bilinear and trilinear, with and without mip.
+`vliw_cycle_gpu::rgba4444_texture_alpha_and_mips_match_native_rtl` replays three
+complete CP/DMA/texture/Final/ROP cases, checking native memory against the
+independent functional GPU after each of two draws. The second CB switches format
+on the same raw texture allocation without invalidating the cache. Each run is
+bounded to200000 wall edges. The Final/ROP arithmetic cases retain their original
+latencies and add varying texture alpha, paired-depth checks and Q6 mutations.
 `vliw_cycle_sampling_cache` checks physical32-line/two-sector fills, the sole
 128-row weight bank, paid pins, wall returns and borrowed texel DO. Independent
 memory geometry, both RAM profiles, five abort phases and invalidation with a

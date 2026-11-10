@@ -100,7 +100,7 @@ fn scene_texture() -> GpuTexture {
         sector: GPU_RENDERER_TEXTURE,
         sectors: GPU_RENDERER_TEXTURE_SECTORS,
         size_log2: GPU_RENDERER_TEXTURE_LOG2,
-        full_mip: GPU_RENDERER_TEXTURE_MIP,
+        texture_flags: GPU_RENDERER_TEXTURE_MIP,
     }
 }
 fn scene_render(slot: u16) -> GpuRender {
@@ -116,7 +116,7 @@ fn scene_render(slot: u16) -> GpuRender {
         texture_sector: texture.sector,
         texture_sectors: texture.sectors,
         size_log2: texture.size_log2,
-        full_mip: texture.full_mip,
+        texture_flags: texture.texture_flags,
         filter: 2,
         specular_low: m[6u16] | (m[7u16] << 8),
         specular_high: m[8u16],

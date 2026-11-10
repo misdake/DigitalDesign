@@ -28,7 +28,7 @@ pub struct GpuRender {
     pub texture_sector: u16,
     pub texture_sectors: u16,
     pub size_log2: u16,
-    pub full_mip: u16,
+    pub texture_flags: u16,
     pub filter: u16,
     pub specular_low: u16,
     pub specular_high: u16,
@@ -161,7 +161,7 @@ fn gpu_render_valid(r: Array<GpuRender>) -> bool {
         } else {
             GPU_TEXTURE_MIN_LEVEL_SECTORS << ((level - GPU_TEXTURE_MACRO_LOG2) << 1)
         };
-        if r[0u16].full_mip != 0 {
+        if r[0u16].texture_flags & 1 != 0 {
             sectors += size;
         } else {
             sectors = size;
@@ -173,7 +173,7 @@ fn gpu_render_valid(r: Array<GpuRender>) -> bool {
 fn gpu_render_fields_valid(r: Array<GpuRender>) -> bool {
     if r[0u16].size_log2 > 10
         || r[0u16].texture_sector & (GPU_TEXTURE_ALIGNMENT_SECTORS - 1) != 0
-        || r[0u16].full_mip > 1
+        || r[0u16].texture_flags > 3
         || r[0u16].filter > 2
         || r[0u16].specular_high > 255
         || r[0u16].depth_func > 7
@@ -195,7 +195,7 @@ fn gpu_render_view_valid(r: Array<GpuRender>) -> bool {
         && r[0u16].texture_sector <= 63488
         && r[0u16].texture_sectors >= GPU_PLANE_SECTORS
         && r[0u16].size_log2 == 9
-        && r[0u16].full_mip == 0
+        && r[0u16].texture_flags == 0
         && r[0u16].filter <= 1
         && r[0u16].lod_bias == 0
 }
@@ -226,7 +226,11 @@ fn gpu_encode_render_kind(
         p.write(0, r[0u16].texture_sector);
         p.write(
             1,
-            r[0u16].size_log2 | (r[0u16].full_mip << 4) | (r[0u16].filter << 5) | view_bit,
+            r[0u16].size_log2
+                | ((r[0u16].texture_flags & 1) << 4)
+                | ((r[0u16].texture_flags & 2) << 7)
+                | (r[0u16].filter << 5)
+                | view_bit,
         );
         p.write(2, r[0u16].specular_low);
         p.write(3, r[0u16].specular_high);

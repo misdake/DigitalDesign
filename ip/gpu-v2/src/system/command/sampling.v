@@ -36,7 +36,7 @@ output wire[15:0]depth_data,
  input wire rop_row7_accepted,input wire[4:0] rop_slot,
  output wire[4:0] retire_slot,output wire[5:0] global_used,
  output wire[5:0]light_used,sample_used,producer_used,
- output wire public_credit,input[15:0]texture_base,input[3:0]texture_n,input texture_mip,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,
+ output wire public_credit,input[15:0]texture_base,input[3:0]texture_n,input texture_mip,texture_rgba4444,input texture_fb400240,input[1:0]texture_filter,input texture_invalidate,
  output wire sample_valid,sample_ready,sample_fire,
  output wire[1:0] sample_row,output wire[18:0] sample_descriptor,
  output wire[35:0] sample_data,output wire[31:0]raw_metadata,
@@ -45,7 +45,7 @@ output wire[15:0]depth_data,
  output wire sample_out_valid,sample_out_ready,
  input wire packet_enable,abort,result_ready,coalition_allow,
  output wire packet_out_ready,result_valid,result_quad_last,result_fire,public_publish,
- output wire[5:0]result_key,output wire[23:0]result_rgb,output wire[15:0]public_live,
+ output wire[5:0]result_key,output wire[23:0]result_rgb,output wire[7:0]result_alpha,output wire[15:0]public_live,
  output wire mem_req_valid,output wire[31:0]mem_req_addr,
  input wire mem_req_ready,mem_resp_valid,input wire[3:0]mem_resp_index,
  input wire[63:0]mem_resp_data,input wire mem_resp_complete,mem_resp_ok,
@@ -212,7 +212,7 @@ sample_last;
 
  wire cache_valid,color_ready,color_valid,color_last,color_result;
  wire[71:0]cache_payload;wire[15:0]cache_tex0,cache_tex1,cache_tex2,cache_tex3;
- wire[5:0]color_key;wire[23:0]color_rgb;
+ wire[5:0]color_key;wire[23:0]color_rgb;wire[7:0]color_alpha;
  wire publish_proposal=ce&&!reset&&!fault&&sample_valid&&sample_ready&&sample_first;
  gpu_v2_texture_runtime_cache_unique demand(
  .clk(clk),.reset(reset),.proposal_ce(ce),.commit_allow(allow),
@@ -229,12 +229,22 @@ sample_last;
  .check_quad(sample_descriptor[3:0]),.public_free(public_credit),
  .publish_valid(publish_proposal),.publish_quad(sample_descriptor[3:0]),.publish_mask(sample_descriptor[8:5]),
  .publish_ready(),.publish_fire(public_publish),
+`ifdef GPU_V2_COMMAND_PORTS
+ .texture_rgba4444(texture_rgba4444),
+`endif
  .in_valid(cache_valid),.in_payload(cache_payload),.in_texels({cache_tex3,cache_tex2,cache_tex1,cache_tex0}),
  .in_ready(color_ready),.input_fire(),.out_ready(result_ready),.out_valid(color_valid),
- .out_key(color_key),.out_rgb(color_rgb),.quad_last(color_last),.result_fire(color_result),
+ .out_key(color_key),.out_rgb(color_rgb),
+`ifdef GPU_V2_COMMAND_PORTS
+ .out_alpha(color_alpha),
+`endif
+ .quad_last(color_last),.result_fire(color_result),
  .eligible(),.advance(),.preflight_fault(color_bad),.fault(color_fault),.public_live(public_live));
  assign result_valid=!reset&&!fault&&color_valid;
- assign result_key=color_key;assign result_rgb=color_rgb;
+`ifndef GPU_V2_COMMAND_PORTS
+ assign color_alpha=8'd255;
+`endif
+ assign result_key=color_key;assign result_rgb=color_rgb;assign result_alpha=color_alpha;
  assign result_quad_last=result_valid&&color_last;
  assign result_fire=color_result;
 endmodule

@@ -5,6 +5,9 @@ module gpu_v2_final_ordered_two_cycle(
  input wire shade_phase,input wire clk,reset,ce,proposal_ce,commit_allow,abort,in_valid,
  input wire shared_rop_offer,input wire[50:0]shared_spec_product,output wire shared_spec_ce,output wire[8:0]shared_spec_a,output wire[23:0]shared_spec_b,
  input wire [23:0] in_tint,in_tex,in_spec,
+`ifdef GPU_V2_COMMAND_PORTS
+ input wire[7:0]in_tex_alpha,output wire[7:0]out_tex_alpha,
+`endif
  input wire [8:0] in_g,in_h,
  output wire in_ready,proposal_ready,in_accept,advance,preflight_bad,fault,
  input wire out_ready,
@@ -16,6 +19,12 @@ module gpu_v2_final_ordered_two_cycle(
  reg arithmetic_live;
  wire [1:0] phase=!arithmetic_live?IDLE:(shade_phase?SPEC:BASE);
  reg[23:0]result0,result1;
+`ifdef GPU_V2_COMMAND_PORTS
+ // Alpha occupies the same two reserved result slots. It is written on
+ // admission and read at BASE/head; no third arithmetic-token shadow exists.
+ reg[7:0]alpha0,alpha1;
+ assign out_tex_alpha=q_count!=0?(q_head?alpha1:alpha0):(q_tail?alpha1:alpha0);
+`endif
  // g/h/spec are the parent's immutable live loan.
  wire running=ce&&!reset&&!fault;
  // Occupied capacity is the old queued results plus the one arithmetic
@@ -90,6 +99,11 @@ module gpu_v2_final_ordered_two_cycle(
 `endif
    if(advance)begin
     if(!shade_phase)arithmetic_live<=in_accept;
+`ifdef GPU_V2_COMMAND_PORTS
+    if(in_accept)begin
+     if(q_tail^queue_push)alpha1<=in_tex_alpha;else alpha0<=in_tex_alpha;
+    end
+`endif
     if(queue_push)begin
      if(q_tail)result1<=color;else result0<=color;
      q_tail<=!q_tail;

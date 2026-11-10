@@ -112,7 +112,7 @@ reg[1:0]compare_bank;
   .old_color(leaf_old_color),.old_depth(a_q[compare_bank]),
 `ifdef GPU_V2_COMMAND_PORTS
 .src_r(source_rgb[7:0]),.src_g(source_rgb[15:8]),
-  .src_b(source_rgb[23:16]),.src_a(row_alpha)
+  .src_b(source_rgb[23:16]),.src_a(row_alpha),.src_texture_alpha(row_data[31:24]),.texture_capture(color_fire)
 `else
 .src_r(source_rgba[7:0]),.src_g(source_rgba[15:8]),
   .src_b(source_rgba[23:16]),.src_a(source_rgba[31:24])

@@ -293,7 +293,7 @@ fn main(){
  check(!gpu_asset_extent(0x9700,1));
  GPU_RENDER_PREVIOUS.texture_sector=0xa000;
  GPU_RENDER_PREVIOUS.texture_sectors=99;
- GPU_RENDER_PREVIOUS.size_log2=6;GPU_RENDER_PREVIOUS.full_mip=1;
+ GPU_RENDER_PREVIOUS.size_log2=6;GPU_RENDER_PREVIOUS.texture_flags=1;
  check(!gpu_render_valid(view_of(&mut GPU_RENDER_PREVIOUS)));
  GPU_RENDER_PREVIOUS.texture_sectors=100;
  check(gpu_render_valid(view_of(&mut GPU_RENDER_PREVIOUS)));

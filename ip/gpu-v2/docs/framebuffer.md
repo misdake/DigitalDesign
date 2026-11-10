@@ -35,13 +35,22 @@ GREATER, NOT_EQUAL, GREATER_EQUAL, ALWAYS. A covered passing fragment writes
 color and optionally depth. Zero alpha does not disable a passing depth write.
 The depth test occurs here, after shading.
 
-In the command profile, the producer's depth result RAM stores `{alpha8,Z16}`
+In the command profile, the producer's depth result RAM stores `{uniform_alpha8,Z16}`
 in one36-bit BSRAM row. C acceptance requests that row; its synchronous Q is held
-through the paired D acceptance, when ROP consumes both fields. C carries RGB
-only, and its source register has no alpha. This reuses the existing ports and
-calendar without a separate quad-alpha memory or an additional read edge.
+through the paired D acceptance, when ROP consumes both fields. C carries
+`{texture_alpha8,RGB24}` in its existing32-bit row. C acceptance holds RGB24
+in the source register and texture alpha in the existing9x9 DSP's AREG.
+D acceptance multiplies that old AREG by the live uniform alpha and retains
+the original DSP output register. A compute pause or an edge without an
+accepted C/D holds both DSP registers. The following original edge applies
+the fused nearest /255 and Q6 quantization.
+RGB attributes and RGB565 supply texture alpha255. This reuses existing ports
+and the four-edge ROP calendar without another quad-alpha memory or read edge.
 
 With blending enabled, quantize source alpha to `a=floor((alpha8+2)/4)` in0..64.
+The implementation fuses both quantizers: for P=uniform8*texture8,
+`a=floor((P+637)/1020)`. With q=P>>10 and r=P&1023 this is
+`q+[r+4*q>=383]`; no intermediate normalized A8 needs to be formed.
 Without blending use a=64. Expand destination RGB565 to RGB888, then per channel:
 
 ```text
@@ -88,9 +97,9 @@ in each phase. Relative to a lane's actual C acceptance:
 
 | Enabled-edge offset | Action |
 | --- | --- |
-| 0 | Accept C; read old color if blending needs it |
-| 1 | Consume old C; accept D; read old depth if needed |
-| 2 | Consume old D and compare; another C may be accepted |
+| 0 | Accept C; capture texture alpha in DSP AREG; read old color if needed |
+| 1 | Consume old C; accept D; register uniform×texture alpha; read old depth if needed |
+| 2 | Consume old D and compare; quantize alpha; another C may be accepted |
 | 3 | Issue the shared ROP product |
 | 4 | Blend, quantize and pack |
 | 5 | Capture the fixed arithmetic return |

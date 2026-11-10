@@ -102,6 +102,7 @@ pub struct FinalInput {
     pub in_valid: bool,
     pub tint: Bits,
     pub texture: Bits,
+    pub texture_alpha: Bits,
     pub specular: Bits,
     pub g: Bits,
     pub h: Bits,
@@ -118,6 +119,7 @@ pub struct FinalOutput {
     pub out_valid: bool,
     pub out_fire: bool,
     pub rgb: Bits,
+    pub texture_alpha: Bits,
     pub credits: u8,
     pub queued: u8,
     pub shared_spec_ce: bool,
@@ -132,6 +134,7 @@ pub struct FinalState {
     pub q_tail: bool,
     pub arithmetic_live: bool,
     pub results: [Bits; 2],
+    pub alpha_results: [Bits; 2],
     pub products: [Bits; 3],
     pub spec_terms: [Bits; 3],
     pub expected_reservation: Option<u8>,
@@ -169,6 +172,8 @@ impl Final {
             } else {
                 channels(colors, 8)
             },
+            texture_alpha: s.alpha_results
+                [usize::from(if s.q_count != 0 { s.q_head } else { s.q_tail })],
             credits: s.q_count + u8::from(s.arithmetic_live),
             queued: s.q_count + u8::from(base),
             shared_spec_ce: advance && in_accept,
@@ -217,6 +222,9 @@ impl Final {
             if o.advance {
                 if !i.shade_phase {
                     n.arithmetic_live = o.in_accept;
+                }
+                if o.in_accept {
+                    n.alpha_results[usize::from(s.q_tail ^ push)] = i.texture_alpha;
                 }
                 if push {
                     n.results[usize::from(s.q_tail)] = channels(
@@ -278,6 +286,8 @@ pub struct RopInput {
     pub old_depth: Bits,
     pub rgb: Bits,
     pub alpha: Bits,
+    pub texture_alpha: Bits,
+    pub texture_capture: bool,
     pub depth: Bits,
     pub shared_rop_product: Bits,
 }
@@ -305,6 +315,8 @@ pub struct RopState {
     pub oc1: Bits,
     pub source1: [Bits; 3],
     pub alpha1: Bits,
+    pub alpha_product: Bits,
+    pub texture_alpha_latch: Bits,
     pub covered1: Bits,
     pub dw1: Bits,
     pub blend1: Bits,
@@ -399,6 +411,12 @@ impl Rop {
             }
             n.source1 = std::array::from_fn(|c| i.rgb.slice(c as u32 * 8, 8));
             n.alpha1 = i.alpha;
+            if i.texture_capture {
+                n.texture_alpha_latch = i.texture_alpha;
+            }
+            if i.texture_capture || i.valid {
+                n.alpha_product = binary(i.alpha, 8, s.texture_alpha_latch, 8, 17, |a, b| a * b);
+            }
             n.covered1 = i.covered;
             n.dw1 = Bits::new(u64::from(i.depth_write), 1);
             n.blend1 = Bits::new(u64::from(i.blend), 1);
@@ -414,7 +432,7 @@ impl Rop {
                 Bits::new(0, 1),
                 select(
                     s.blend1,
-                    unary(s.alpha1, 8, 7, |a| (a + 2) >> 2),
+                    unary(s.alpha_product, 17, 7, |p| (((p + 127) / 255) + 2) >> 2),
                     Bits::new(64, 7),
                     7,
                 ),

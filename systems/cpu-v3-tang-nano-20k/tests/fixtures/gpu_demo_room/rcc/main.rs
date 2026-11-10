@@ -78,7 +78,7 @@ fn demo_run(limit: u16, budget: u16) {
         sector: DEMO_TEXTURE,
         sectors: DEMO_TEXTURE_SECTORS,
         size_log2: 6,
-        full_mip: 1,
+        texture_flags: 1,
     };
     let mut atlas: GpuUiAtlas = GpuUiAtlas {
         sector: DEMO_ATLAS,
@@ -103,7 +103,7 @@ fn demo_run(limit: u16, budget: u16) {
         texture_sector: 0,
         texture_sectors: 0,
         size_log2: 0,
-        full_mip: 0,
+        texture_flags: 0,
         filter: 2,
         specular_low: 0,
         specular_high: 0,

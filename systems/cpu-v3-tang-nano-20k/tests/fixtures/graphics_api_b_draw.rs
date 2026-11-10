@@ -176,6 +176,7 @@ fn material_state() {
     };
     check(gpu_scene_state_init(STATE.as_array(), state), 5);
     let texture: TextureDesc = TextureDesc {
+        format: TextureFormat::Rgb565,
         memory: GpuMemory {
             first_sector: 32768,
             sector_count: 4,

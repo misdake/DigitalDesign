@@ -568,7 +568,9 @@ For legal paired-D traffic the unchanged raw retirement proposal identifies D3;
 it is not substituted with a similarly named cache/completion signal. Cache
 owners and external memory transactions retain their later release boundaries.
 
-Light and Sample use 128-row banks of 18 and 24 bits. The shared row-store
+Light and Sample use 128-row banks of 18 and 32 bits. Sample stores
+`{texture_alpha8,RGB24}` in the existing native SDP36, retaining its128 rows,
+ports, owned Q and read calendar. The shared row-store
 emitter's private owned-Q route omits return-valid storage; public event-return
 banks keep their interface and model. Native SDP36 READ_MODE0 and portable held-Q
 behavior are unchanged. Same-address collision suppresses both reading and
@@ -944,7 +946,9 @@ the existing presented-request drain. Return framing monitors remain passive;
 monitor removal does not remove terminal-success qualification. There is no
 added sticky failure, retry prohibition or source-lifetime change.
 
-Color processes two RGB taps per edge with six small multipliers. On common CE,
+Color processes two RGB taps per edge with six small multipliers. RGBA4444
+alpha shares the existing ALU54 accumulation; its13-bit pair register captures
+on the same edge as those RGB products. On common CE,
 its accumulator Q writes the final Sample bank directly. The sink consumes old
 Q before a same-edge replacement. This parent contract requires no intermediate
 Color result FIFO; independent generic Color APIs retain their output credits.
@@ -961,7 +965,7 @@ The raw selected direct component retains `packet_bad`, `preflight_bad`,
 `advance && !packet_bad` and its bad-versus-update branch in either policy.
 The complete command's physical Group35 adapter has no level field and retains
 its existing constant-zero level detector; this separate format specialization
-is not diagnostic removal. Reset, busy/done/Q ages, RGB565 expansion, product
+is not diagnostic removal. Reset, busy/done/Q ages, RGB565 numerical behavior, product
 rounding and old accumulator-Q consumption are unchanged.
 
 `result_fire` writes Sample at `{saved_pool_bit4,out_key}`. Only that write with

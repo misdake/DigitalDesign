@@ -2,6 +2,10 @@
 use super::{bounds, geometry::Fragment, Report, PLANE_WORDS};
 use crate::lighting::ports as light;
 
+#[cfg(test)]
+#[path = "shading_tests.rs"]
+mod tests;
+
 fn words<const N: usize>(bytes: &[u8]) -> [u32; N] {
     std::array::from_fn(|i| u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap()))
 }
@@ -63,6 +67,7 @@ pub(super) struct Texture {
     base: usize,
     pub size_log2: u8,
     pub full_mip: bool,
+    rgba4444: bool,
     filter: u8,
     framebuffer: bool,
 }
@@ -72,14 +77,16 @@ impl Texture {
             base: (word as usize & 65535) * 64,
             size_log2: ((word >> 16) & 15) as u8,
             full_mip: word & (1 << 20) != 0,
+            rgba4444: word & (1 << 24) != 0,
             filter: ((word >> 21) & 3) as u8,
             framebuffer: word & (1 << 23) != 0,
         };
-        if word >> 24 != 0 || value.base & 127 != 0 || value.size_log2 > 10 || value.filter > 2 {
+        if word >> 25 != 0 || value.base & 127 != 0 || value.size_log2 > 10 || value.filter > 2 {
             return Err("native texture descriptor".into());
         }
         if value.framebuffer
             && (value.size_log2 != 9
+                || value.rgba4444
                 || value.full_mip
                 || value.filter > 1
                 || value.base & 32767 != 0
@@ -121,7 +128,7 @@ impl Texture {
         level: u8,
         x: i128,
         y: i128,
-    ) -> Result<[u8; 3], String> {
+    ) -> Result<[u8; 4], String> {
         let (x, y, pitch) = if self.framebuffer {
             (x.clamp(0, 399) as usize, y.clamp(0, 239) as usize, 4)
         } else {
@@ -133,9 +140,15 @@ impl Texture {
             )
         };
         let offset = ((((x >> 4) << pitch) + (y >> 4)) * 256) + (y & 15) * 16 + (x & 15);
-        Ok(expand(
-            memory.load(self.base + self.prefix(level) + offset)?,
-        ))
+        let raw = memory.load(self.base + self.prefix(level) + offset)?;
+        if self.rgba4444 {
+            Ok(std::array::from_fn(|c| {
+                (((raw >> (12 - c * 4)) & 15) * 17) as u8
+            }))
+        } else {
+            let rgb = expand(raw);
+            Ok([rgb[0], rgb[1], rgb[2], 255])
+        }
     }
     fn sample(
         self,
@@ -144,7 +157,7 @@ impl Texture {
         lod: u8,
         report: &mut Report,
         maximum: usize,
-    ) -> Result<[u8; 3], String> {
+    ) -> Result<[u8; 4], String> {
         let lod = if self.full_mip {
             lod.min(self.size_log2 * 8)
         } else {
@@ -161,6 +174,7 @@ impl Texture {
             0
         };
         let mut result = [0u32; 3];
+        let mut alpha = 0u32;
         for (level, parent) in [
             (fine, 511 - coarse_parent),
             (fine.saturating_sub(1), coarse_parent),
@@ -206,12 +220,19 @@ impl Texture {
                 report.charge(1, maximum)?;
                 let color =
                     self.texel(memory, level, x + (tap & 1) as i128, y + (tap >> 1) as i128)?;
+                alpha += u32::from(color[3] / 17) * weight;
                 for channel in 0..3 {
                     result[channel] += (u32::from(color[channel]) * weight + 256) >> 9;
                 }
             }
         }
-        Ok(result.map(|v| v as u8))
+        let rgb = result.map(|v| v as u8);
+        let a = if self.rgba4444 {
+            ((alpha * 17 + 255) / 511) as u8
+        } else {
+            255
+        };
+        Ok([rgb[0], rgb[1], rgb[2], a])
     }
 }
 
@@ -286,7 +307,7 @@ pub(super) fn shade(
     lod: u8,
     report: &mut Report,
     maximum: usize,
-) -> Result<[u8; 3], String> {
+) -> Result<[u8; 4], String> {
     let [x, y] = xy;
     let DrawState {
         global,
@@ -297,7 +318,7 @@ pub(super) fn shade(
     } = *state;
     report.charge(1, maximum)?;
     let source = if rgb_mode {
-        fragment.rgb
+        [fragment.rgb[0], fragment.rgb[1], fragment.rgb[2], 255]
     } else {
         render
             .texture
@@ -316,7 +337,9 @@ pub(super) fn shade(
         (((base * u32::from(g)) >> 8) + ((u32::from(render.specular[c]) * u32::from(h)) >> 8))
             .min(255) as u8
     });
-    Ok(color)
+    let product = (uniform >> 24) * u32::from(source[3]);
+    let a = ((product + 127) / 255) as u8;
+    Ok([color[0], color[1], color[2], a])
 }
 
 pub(super) fn fragment(
@@ -336,11 +359,11 @@ pub(super) fn fragment(
 // the caller in the original quad/lane order, before each actual ROP operation.
 pub(super) struct PreparedFragment {
     work: usize,
-    result: Result<([u8; 3], u16), String>,
+    result: Result<([u8; 4], u16), String>,
 }
 #[cfg(feature = "functional-batch")]
 impl PreparedFragment {
-    pub(super) fn finish(self) -> Result<(usize, [u8; 3], u16), String> {
+    pub(super) fn finish(self) -> Result<(usize, [u8; 4], u16), String> {
         let (color, depth) = self.result?;
         Ok((self.work, color, depth))
     }
@@ -390,12 +413,11 @@ pub(super) fn rop<M: PixelMemory>(
     memory: &mut M,
     [x, y]: [usize; 2],
     incoming_depth: u16,
-    color: [u8; 3],
+    color: [u8; 4],
     state: &DrawState,
 ) -> Result<(), String> {
     let target = state.target;
     let render = state.render;
-    let uniform = state.color;
     let offset = super::column_offset(x, y);
     let depth = memory.load(target[1] + offset)?;
     let passing = match render.control & 7 {
@@ -415,7 +437,7 @@ pub(super) fn rop<M: PixelMemory>(
         memory.store(target[1] + offset, incoming_depth)?;
     }
     let alpha = if render.control & 16 != 0 {
-        ((uniform >> 24) + 2) / 4
+        (u32::from(color[3]) + 2) / 4
     } else {
         64
     };

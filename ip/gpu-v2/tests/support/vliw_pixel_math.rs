@@ -36,6 +36,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
         ("f_out_ready", i.out_ready),
         ("r_ce", r.ce),
         ("r_in_valid", r.valid),
+        ("r_texture_capture", r.texture_capture),
         ("r_blend", r.blend),
         ("r_depth_write", r.depth_write),
     ] {
@@ -45,6 +46,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     for (n, w, v) in [
         ("f_in_tint", 24, i.tint),
         ("f_in_tex", 24, i.texture),
+        ("f_in_tex_alpha", 8, i.texture_alpha),
         ("f_in_spec", 24, i.specular),
         ("f_in_g", 9, i.g),
         ("f_in_h", 9, i.h),
@@ -53,6 +55,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
         ("r_old_depth", 16, r.old_depth),
         ("r_src_rgb", 24, r.rgb),
         ("r_src_a", 8, r.alpha),
+        ("r_src_texture_alpha", 8, r.texture_alpha),
         ("r_src_depth", 16, r.depth),
     ] {
         assert!(v.is_known(w));
@@ -89,6 +92,7 @@ pub fn fields(e: &Edge) -> Vec<Pin> {
     );
     for (n, w, v) in [
         ("f_out_rgb", 24, o.rgb),
+        ("f_out_tex_alpha", 8, o.texture_alpha),
         ("f_shared_spec_a", 9, o.shared_spec_a),
         ("f_shared_spec_b", 24, o.shared_spec_b),
         ("r_new_color", 16, q.color),
@@ -130,7 +134,7 @@ pub fn production(p: &[Pin]) -> String {
         )
         .unwrap()
     });
-    let mut source = String::new();
+    let mut source = String::from("`define GPU_V2_COMMAND_PORTS\n");
     for name in [
         "gpu_v2_final_ordered_two_cycle",
         "gpu_v2_final_two_cycle_mul9",

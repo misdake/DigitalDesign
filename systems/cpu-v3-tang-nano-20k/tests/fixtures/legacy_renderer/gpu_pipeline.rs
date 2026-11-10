@@ -856,7 +856,7 @@ pub fn pass_draw_texture(
     render.texture_sector = buffer[2u16];
     render.texture_sectors = buffer[4u16];
     render.size_log2 = 9;
-    render.full_mip = 0;
+    render.texture_flags = 0;
     render.filter = buffer[13u16];
     render.lod_bias = 0;
     let mut root = scene_mesh_value(mesh.word);

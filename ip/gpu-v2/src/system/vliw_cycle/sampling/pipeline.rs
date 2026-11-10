@@ -6,6 +6,7 @@ pub struct Config {
     pub base: u16,
     pub n: u8,
     pub mip: bool,
+    pub rgba4444: bool,
     pub filter: u8,
     pub framebuffer: bool,
 }
@@ -193,6 +194,7 @@ impl Sampler {
         let source_ready = d.ready && admit;
         let fault = i.abort || self.cache.fault;
         let li = color::Input {
+            rgba4444: i.config.rgba4444,
             reset: i.reset,
             proposal_ce: color_ce,
             commit_allow: i.commit_allow,
@@ -223,6 +225,7 @@ impl Sampler {
                     key: lo.key.value as u8,
                     last: lo.last,
                     rgb: lo.rgb,
+                    alpha: lo.alpha,
                 },
                 drained: ko.drained,
                 fault,
