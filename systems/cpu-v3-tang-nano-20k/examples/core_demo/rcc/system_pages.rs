@@ -2,6 +2,8 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
+mod palette;
+use palette::*;
 mod cpu_canvas;
 use cpu_canvas::*;
 mod boot_resources;
@@ -26,7 +28,7 @@ pub fn color_page(grid: &mut UiGrid, canvas: CpuCanvas, state: DemoState) {
         (3 + state.color_cursor * 2) as i16 * 16,
         144,
         16,
-        0x0328,
+        SELECTION,
     );
     let mut option: u16 = 0;
     while option < 2 {

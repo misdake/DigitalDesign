@@ -68,6 +68,12 @@ The current hardware fixes the source at 400x240 and output at 800x480 with
 encoded RGB565 directly; LINEAR interprets the same stored RGB565 as linear
 light and enables the hardware sRGB transfer for scanout.
 UI atlas pixels are RGBA5551, converted by the GPU to the RGB565 framebuffer.
+
+The font producer uses the shared native source writer to emit native bytes, a
+typed const atlas description and icon IDs. Source declarations import
+those bytes with `include_bytes!`, request GPU storage aligned to 64 KiB, and
+construct a static atlas description. Address, capacity and glyph count follow
+the asset automatically; see [static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md).
 Display interpretation is then staged together with each swap. It returns to
 raw RGB565 when leaving page 4. The UI is a shared external grid updated only
 after its preceding GPU use finishes; scanout reads the completed framebuffer.
@@ -76,6 +82,7 @@ after its preceding GPU use finishes; scanout reads the completed framebuffer.
 
 | File | Responsibility |
 | --- | --- |
+| `rcc/working_set.rs` | Const application-owned surfaces, commands, push and UI storage |
 | `rcc/main.rs` | Resource ownership, page dispatch, GPU completion and Display handoff |
 | `rcc/state.rs` | Press-edge controls and modulo active-time state |
 | `rcc/graphics_pages.rs` | CPU triangle rasterization, wave/phase animation, controller illustrations and color bars |

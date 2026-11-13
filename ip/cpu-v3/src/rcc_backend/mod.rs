@@ -6,6 +6,8 @@
 //! is stable.
 
 #[cfg(test)]
+mod constant_tests;
+#[cfg(test)]
 mod enum_method_tests;
 mod inline;
 mod options;

@@ -3,6 +3,7 @@ use rcc::{Opts, RccConfig};
 /// CpuV3 target and ABI options.
 #[derive(Clone, Debug)]
 pub struct CompilerOptions {
+    pub asset_banks: Vec<rcc::frontend::static_assets::AssetBank>,
     pub gpu_debug: bool,
     pub opt: Opts,
     /// Explicit pre-ABI inlining policy and bounded compilation costs.
@@ -21,6 +22,7 @@ pub struct CompilerOptions {
 impl Default for CompilerOptions {
     fn default() -> Self {
         Self {
+            asset_banks: Vec::new(),
             gpu_debug: false,
             opt: Opts::default(),
             inline: rcc::InlineOptions::default(),
@@ -55,6 +57,9 @@ impl CompilerOptions {
 }
 
 impl RccConfig for CompilerOptions {
+    fn asset_banks(&self) -> &[rcc::frontend::static_assets::AssetBank] {
+        &self.asset_banks
+    }
     fn gpu_debug(&self) -> bool {
         self.gpu_debug
     }

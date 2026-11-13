@@ -121,3 +121,7 @@ selected application at compile time. The System model library and ordinary
 binaries no longer have an application build script. Its dev dependency on the
 image package retains exact board/application test fixtures; hardware example
 export/audit and testbench preparation remain their separate workflow.
+
+Source-declared external bytes and compile-time descriptions use the same build
+and pack flow; see [static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md).
+The export includes application.static-data and the complete application.repack.conf.

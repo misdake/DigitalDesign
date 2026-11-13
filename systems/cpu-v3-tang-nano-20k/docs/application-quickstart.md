@@ -13,8 +13,10 @@ Asset generation uses Python; it is part of the ordinary application build.
 The language uses Rust syntax with RCC restrictions. Ordinary value structs are
 passed/returned by value or through explicit `Array<T>` views. References to
 GPU resource objects are a separate checked facility; a normal Rust `&MyStruct`
-parameter is not supported. Application macros and `const fn` are also not
-currently supported. Do not infer support from what rust-analyzer accepts.
+parameter is not supported. Pure nongeneric `const fn`, value constructors,
+the decimal `fix!` macro and `include_bytes!` use the restricted [static expression subset](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md).
+General application macros remain unsupported. Use the [SDK value helpers](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md)
+for readable colors, transforms and resource descriptions.
 
 ## Build a known application
 
@@ -47,7 +49,7 @@ For live input, add Cargo feature `--features display-window` and runner options
 `--window --xinput-slot 0`, retaining explicit limits sized for the session.
 The simulator has no connected controller by default. See the
 [core demo controls](/systems/cpu-v3-tang-nano-20k/examples/core_demo/README.md#controls).
-To start a specific page, build another snapshot with `--page 5`, for example.
+To start a specific page, build another snapshot with `--page 4`, for example.
 
 ## Follow the source before creating a new application
 
@@ -80,11 +82,12 @@ a small complete example. Reuse the canonical `tools/gpu_layout.py` pool/range
 checks; do not duplicate the memory map. GPU addresses are bytes in the manifest,
 while `GpuMemory` descriptors use 128-byte sectors.
 
-The [UI atlas format](/ip/gpu-v2/docs/ui.md) uses 64 KiB at a 64-KiB-aligned base, with 256-byte glyph records and
+The [UI atlas format](/ip/gpu-v2/docs/ui.md) supports up to 256 glyph records
+at a 64-KiB-aligned base, with 256 bytes per glyph and
 glyph 255 reserved for skip. Each source pixel is R5:G5:B5:A1, alpha in bit 0;
 odd rows exchange the two pixel pairs within each four-pixel group. The producer
-implements this static layout; the application uses a generated address and an
-explicit unsafe resource binding. Mesh and texture producers have their own
+implements this static layout; the application declares the blob with `#[asset]`
+and binds it through `UiAtlasDesc::from_asset`. Only required glyphs need storage. Mesh and texture producers have their own
 documented formats; UI pixels are not RGBA4444 texture pixels.
 
 Use the shared [project font](/assets/fonts/README.md) for on-device text.

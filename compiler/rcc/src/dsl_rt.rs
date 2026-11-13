@@ -504,15 +504,15 @@ mod tests {
 /// Fractional bits of an architectural F register.
 pub const FIX32_FRACTION_BITS: u32 = 16;
 
-fn fix32_mul(a: i32, b: i32) -> i32 {
-    ((i64::from(a) * i64::from(b)) >> FIX32_FRACTION_BITS) as i32
+const fn fix32_mul(a: i32, b: i32) -> i32 {
+    (((a as i64) * (b as i64)) >> FIX32_FRACTION_BITS) as i32
 }
 
-fn fix32_floor(v: i32) -> i32 {
+const fn fix32_floor(v: i32) -> i32 {
     v & !0xffff
 }
 
-fn fix32_ceil(v: i32) -> i32 {
+const fn fix32_ceil(v: i32) -> i32 {
     if v & 0xffff == 0 {
         v
     } else {
@@ -520,11 +520,11 @@ fn fix32_ceil(v: i32) -> i32 {
     }
 }
 
-fn fix32_round(v: i32) -> i32 {
+const fn fix32_round(v: i32) -> i32 {
     v.wrapping_add(1 << (FIX32_FRACTION_BITS - 1)) & !0xffff
 }
 
-fn fix32_trunc(v: i32) -> i32 {
+const fn fix32_trunc(v: i32) -> i32 {
     if v < 0 {
         fix32_ceil(v)
     } else {
@@ -532,11 +532,11 @@ fn fix32_trunc(v: i32) -> i32 {
     }
 }
 
-fn fix32_abs(v: i32) -> i32 {
+const fn fix32_abs(v: i32) -> i32 {
     v.wrapping_abs()
 }
 
-fn fix32_neg(v: i32) -> i32 {
+const fn fix32_neg(v: i32) -> i32 {
     v.wrapping_neg()
 }
 
@@ -545,50 +545,116 @@ fn fix32_neg(v: i32) -> i32 {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct fix32(pub i32);
 
+/// Compile-time decimal Q16.16 literal, rounded to nearest with ties away from zero.
+#[macro_export]
+macro_rules! fix {
+    (- $value:literal $(,)?) => {
+        const { $crate::dsl_rt::__fix_literal(concat!("-", stringify!($value))) }
+    };
+    ($value:literal $(,)?) => {
+        const { $crate::dsl_rt::__fix_literal(stringify!($value)) }
+    };
+}
+pub use crate::fix;
+
+#[doc(hidden)]
+pub const fn __fix_literal(text: &str) -> fix32 {
+    match crate::fixed_constants::decimal(text) {
+        Ok(raw) => fix32(raw),
+        Err(_) => panic!("fix! requires a decimal literal within the Q16.16 range"),
+    }
+}
+
 #[allow(non_camel_case_types)]
 impl fix32 {
     /// integer value, shifted into the Q16.16 format
-    pub fn from_int(value: i16) -> fix32 {
-        fix32(i32::from(value) << FIX32_FRACTION_BITS)
+    pub const fn from_int(value: i16) -> fix32 {
+        fix32((value as i32) << FIX32_FRACTION_BITS)
     }
     pub const fn zero() -> fix32 {
         fix32(0)
     }
+    pub const fn one() -> fix32 {
+        fix32(1 << FIX32_FRACTION_BITS)
+    }
+    /// Compile-time ratio, rounded to the nearest representable Q16.16 value.
+    pub const fn from_ratio(numerator: i16, denominator: u16) -> fix32 {
+        match crate::fixed_constants::ratio(numerator, denominator) {
+            Some(value) => fix32(value),
+            None => panic!("fix32 ratio denominator must not be zero"),
+        }
+    }
+    /// Compile-time integer degrees, represented in radians on the target.
+    pub const fn degrees(value: i16) -> fix32 {
+        fix32(crate::fixed_constants::degrees(value))
+    }
     /// Builds a Q16.16 value from its two raw halves, low half first. This is
     /// the raw-move contract of `ILO2F`/`IHI2F`/`FLD`; it is deliberately
     /// distinct from the numeric `from_int`/`to_int` conversions.
-    pub fn from_words(lo: u16, hi: u16) -> fix32 {
-        fix32(((u32::from(hi) << 16) | u32::from(lo)) as i32)
+    pub const fn from_words(lo: u16, hi: u16) -> fix32 {
+        fix32((((hi as u32) << 16) | lo as u32) as i32)
+    }
+    /// Named const arithmetic; runtime operators retain the same target meaning.
+    pub const fn wrapping_add(self, rhs: Self) -> Self {
+        Self(self.0.wrapping_add(rhs.0))
+    }
+    pub const fn wrapping_sub(self, rhs: Self) -> Self {
+        Self(self.0.wrapping_sub(rhs.0))
+    }
+    pub const fn wrapping_mul(self, rhs: Self) -> Self {
+        Self(fix32_mul(self.0, rhs.0))
+    }
+    pub const fn wrapping_neg(self) -> Self {
+        Self(self.0.wrapping_neg())
+    }
+    pub const fn less_than(self, rhs: Self) -> bool {
+        self.0 < rhs.0
+    }
+    pub const fn less_or_equal(self, rhs: Self) -> bool {
+        self.0 <= rhs.0
+    }
+    pub const fn greater_than(self, rhs: Self) -> bool {
+        self.0 > rhs.0
+    }
+    pub const fn greater_or_equal(self, rhs: Self) -> bool {
+        self.0 >= rhs.0
+    }
+    pub const fn equals(self, rhs: Self) -> bool {
+        self.0 == rhs.0
+    }
+    /// Const conversion is quantized once; runtime uses the Q16.16 coefficient.
+    pub const fn to_radians(self) -> Self {
+        Self(crate::fixed_math::radians(self.0))
     }
     /// Low 16 bits as an unsigned word (`FLO2I`/`FST` half).
-    pub fn lo_bits(self) -> u16 {
+    pub const fn lo_bits(self) -> u16 {
         self.0 as u16
     }
     /// High 16 bits as an unsigned word (`FHI2I`/`FST` half).
-    pub fn hi_bits(self) -> u16 {
+    pub const fn hi_bits(self) -> u16 {
         (self.0 >> 16) as u16
     }
     /// Truncate toward zero (`FTOI16`); wraps on overflow.
-    pub fn to_int(self) -> i16 {
+    pub const fn to_int(self) -> i16 {
         (fix32_trunc(self.0) >> FIX32_FRACTION_BITS) as i16
     }
-    pub fn x(self) -> fix32 {
+    pub const fn x(self) -> fix32 {
         self
     }
-    pub fn abs(self) -> fix32 {
+    pub const fn abs(self) -> fix32 {
         fix32(fix32_abs(self.0))
     }
-    pub fn floor(self) -> fix32 {
+    pub const fn floor(self) -> fix32 {
         fix32(fix32_floor(self.0))
     }
-    pub fn ceil(self) -> fix32 {
+    pub const fn ceil(self) -> fix32 {
         fix32(fix32_ceil(self.0))
     }
-    pub fn round(self) -> fix32 {
+    pub const fn round(self) -> fix32 {
         fix32(fix32_round(self.0))
     }
     /// Truncate toward zero.
-    pub fn trunc(self) -> fix32 {
+    pub const fn trunc(self) -> fix32 {
         fix32(fix32_trunc(self.0))
     }
     /// Clamp to `[0.0, 1.0]`; a host helper only (v2 has no SAT01 subop).
@@ -648,7 +714,7 @@ macro_rules! fpu_vec {
                 }
                 $name(lanes)
             }
-            pub fn x(self) -> fix32 {
+            pub const fn x(self) -> fix32 {
                 self.0[0]
             }
             pub fn abs(self) -> $name {
@@ -739,39 +805,39 @@ fpu_vec!(vec4, 4);
 
 #[allow(non_camel_case_types)]
 impl vec2 {
-    pub fn new(x: fix32, y: fix32) -> vec2 {
+    pub const fn new(x: fix32, y: fix32) -> vec2 {
         vec2([x, y, fix32(0), fix32(0)])
     }
-    pub fn y(self) -> fix32 {
+    pub const fn y(self) -> fix32 {
         self.0[1]
     }
 }
 
 #[allow(non_camel_case_types)]
 impl vec3 {
-    pub fn new(x: fix32, y: fix32, z: fix32) -> vec3 {
+    pub const fn new(x: fix32, y: fix32, z: fix32) -> vec3 {
         vec3([x, y, z, fix32(0)])
     }
-    pub fn y(self) -> fix32 {
+    pub const fn y(self) -> fix32 {
         self.0[1]
     }
-    pub fn z(self) -> fix32 {
+    pub const fn z(self) -> fix32 {
         self.0[2]
     }
 }
 
 #[allow(non_camel_case_types)]
 impl vec4 {
-    pub fn new(x: fix32, y: fix32, z: fix32, w: fix32) -> vec4 {
+    pub const fn new(x: fix32, y: fix32, z: fix32, w: fix32) -> vec4 {
         vec4([x, y, z, w])
     }
-    pub fn y(self) -> fix32 {
+    pub const fn y(self) -> fix32 {
         self.0[1]
     }
-    pub fn z(self) -> fix32 {
+    pub const fn z(self) -> fix32 {
         self.0[2]
     }
-    pub fn w(self) -> fix32 {
+    pub const fn w(self) -> fix32 {
         self.0[3]
     }
     /// Load four consecutive Q16.16 values, two little-endian words each,
@@ -828,36 +894,29 @@ pub fn fdot<T: Fdot>(a: T, b: T) -> fix32 {
 
 // The special-function declarations below are target intrinsics lowered to
 // the two-word FPU v2 special subops (`RCP`, `RSQRT`, and `SINCOS`
-// modes 00/01/10), so `fsin`/`fcos` reuse the same `SINCOS` encoding as
-// `fsincos`. The bit-exact reference model (and its hidden BSRAM tables) lives
-// in the CPU V3 architecture crate. The host cannot reproduce it without
-// duplicating that table, so these shims panic on the Rust host exactly like
-// the other target-only intrinsics.
+// modes 00/01/10). Const/host evaluation uses a shared high-precision model;
+// target runtime still lowers these names to the native special instructions.
 
-/// Target special function `Fd = rcp(Fa)` (`SCALAR` subop `0x0C`).
-pub fn frcp(_x: fix32) -> fix32 {
-    unimplemented!("frcp is a target FPU special function without a host model")
+/// Reciprocal: host/const rounds to Q16.16; target uses its native LUT.
+pub const fn frcp(x: fix32) -> fix32 {
+    fix32(crate::fixed_math::reciprocal(x.0))
 }
-
-/// Target special function `Fd = rsqrt(Fa)` (`SCALAR` subop `0x0D`).
-pub fn frsqrt(_x: fix32) -> fix32 {
-    unimplemented!("frsqrt is a target FPU special function without a host model")
+/// Reciprocal square root; nonpositive inputs produce zero.
+pub const fn frsqrt(x: fix32) -> fix32 {
+    fix32(crate::fixed_math::reciprocal_sqrt(x.0))
 }
-
-/// Target special function `Fd = sin(Fa)` (`SINCOS` mode `01`).
-pub fn fsin(_x: fix32) -> fix32 {
-    unimplemented!("fsin is a target FPU special function without a host model")
+/// Sine of radians; const results may differ from target LUT low bits.
+pub const fn fsin(x: fix32) -> fix32 {
+    fix32(crate::fixed_math::sincos(x.0).0)
 }
-
-/// Target special function `Fd = cos(Fa)` (`SINCOS` mode `10`).
-pub fn fcos(_x: fix32) -> fix32 {
-    unimplemented!("fcos is a target FPU special function without a host model")
+/// Cosine of radians; const results may differ from target LUT low bits.
+pub const fn fcos(x: fix32) -> fix32 {
+    fix32(crate::fixed_math::sincos(x.0).1)
 }
-
-/// Target special function `Fd = sin(Fa)`, `Fd+1 = cos(Fa)` (`SINCOS` mode
-/// `00`); the pair is a contiguous `vec2` over two adjacent F registers.
-pub fn fsincos(_x: fix32) -> vec2 {
-    unimplemented!("fsincos is a target FPU special function without a host model")
+/// Contiguous sine/cosine pair, using the same const model as scalar calls.
+pub const fn fsincos(x: fix32) -> vec2 {
+    let pair = crate::fixed_math::sincos(x.0);
+    vec2::new(fix32(pair.0), fix32(pair.1))
 }
 
 // ---------------------------------------------------------------------------

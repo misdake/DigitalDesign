@@ -205,7 +205,9 @@ fn projection(
         "use once_cell::sync::Lazy;",
         "use std::sync::LazyLock as Lazy;",
     );
-    let prelude=format!("#![feature(generic_const_exprs)]\n#![allow(incomplete_features,dead_code,unused_imports,unused_variables,unused_mut,unused_assignments,unused_unsafe,static_mut_refs)]\nmod dsl_rt{{\n{shim}\n}}\nuse crate::dsl_rt::*;\nmod __rcc_check_intrinsics {{\npub fn signal(_:u16,_:u16){{unreachable!()}}\npub fn resource_disarm<T>(v:T){{std::mem::forget(v)}}\n}}\nuse __rcc_check_intrinsics::*;\n");
+    let fixed_constants = include_str!("../fixed_constants.rs");
+    let fixed_math = include_str!("../fixed_math.rs");
+    let prelude=format!("#![feature(generic_const_exprs)]\n#![allow(incomplete_features,dead_code,unused_imports,unused_variables,unused_mut,unused_assignments,unused_unsafe,static_mut_refs)]\nmod fixed_constants{{\n{fixed_constants}\n}}\nmod fixed_math{{\n{fixed_math}\n}}\nmod dsl_rt{{\n{shim}\n}}\nuse crate::dsl_rt::*;\nmod __rcc_check_intrinsics {{\npub fn signal(_:u16,_:u16){{unreachable!()}}\npub fn resource_disarm<T>(v:T){{std::mem::forget(v)}}\n}}\nuse __rcc_check_intrinsics::*;\n");
     let mut rendered = Render {
         lines: vec![None; prelude.lines().count()],
         text: prelude,
@@ -357,6 +359,8 @@ pub(super) fn validate(
             "--crate-type=lib",
             "--crate-name=rcc_ownership_check",
             "--emit=metadata",
+            // Static descriptions are checked in every target profile.
+            "-Cdebug-assertions=yes",
             "--error-format=json",
             "--out-dir",
         ])

@@ -1,9 +1,9 @@
 //! Pack existing fixed-destination inputs without compiling an application.
 use cpu_v3_boot_format::{
-    boot_image_map, pack_application_resources, parse_boot_project, SINGLE_BOOT_FLASH_BASE,
+    boot_image_map, pack_application_with_data, parse_boot_project, SINGLE_BOOT_FLASH_BASE,
 };
 use std::{path::PathBuf, process::ExitCode};
-const HELP:&str="cpu-v3-pack <application.v3bin> [--static-words N] [-o package.bin] [--map package.map] [--project boot-applications.conf] [--configuration-bin design.bin] [--flash-image complete.bin]; reads adjacent application.static-words unless --static-words is given";
+const HELP:&str="cpu-v3-pack <application.v3bin> [--static-words N] [-o package.bin] [--map package.map] [--project boot-applications.conf] [--configuration-bin design.bin] [--flash-image complete.bin]; reads adjacent application.static-words unless --static-words is given, and application.static-data when present";
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
         Ok(()) => ExitCode::SUCCESS,
@@ -70,8 +70,14 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     } else {
         Vec::new()
     };
-    let package =
-        pack_application_resources(&code, static_words, &resources).map_err(|e| e.to_string())?;
+    let data_path = input.with_extension("static-data");
+    let static_data = match std::fs::read(&data_path) {
+        Ok(data) => data,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(format!("read {}: {e}", data_path.display())),
+    };
+    let package = pack_application_with_data(&code, static_words, &static_data, &resources)
+        .map_err(|e| e.to_string())?;
     if flash_image.is_some() && configuration.is_none() {
         return Err("--flash-image requires --configuration-bin".into());
     }

@@ -175,6 +175,38 @@ impl<'ast> Visit<'ast> for Validate<'_> {
         }
     }
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        if node.path.is_ident("fix") {
+            if let Err(error) = super::fixed_literals::value(node) {
+                if self.error.is_none() {
+                    self.error = Some(error);
+                }
+            }
+            return;
+        }
+        if node.path.is_ident("include_bytes") {
+            if syn::parse2::<syn::LitStr>(node.tokens.clone()).is_err() {
+                self.fail(node, "include_bytes requires one literal path");
+            }
+            return;
+        }
+        if node.path.is_ident("assert") || node.path.is_ident("debug_assert") {
+            match syn::parse2::<Expr>(node.tokens.clone()) {
+                Ok(expression) => {
+                    let mut nested = Validate {
+                        cleanup: self.cleanup,
+                        protected: self.protected,
+                        conditional: self.conditional || node.path.is_ident("debug_assert"),
+                        error: None,
+                    };
+                    nested.visit_expr(&expression);
+                    if self.error.is_none() {
+                        self.error = nested.error;
+                    }
+                }
+                Err(_) => self.fail(node, "assert requires one boolean expression"),
+            }
+            return;
+        }
         self.fail(node, "macros are not supported, including inactive source");
     }
 }

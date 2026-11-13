@@ -210,8 +210,22 @@ pub fn pack_application_resources(
     static_words: usize,
     resources: &[BootResource],
 ) -> Result<Vec<u8>, SingleBootError> {
+    pack_application_with_data(code, static_words, &[], resources)
+}
+/// Pack a compiler-provided low-memory data image, separately from GPU resources.
+pub fn pack_application_with_data(
+    code: &[u8],
+    static_words: usize,
+    static_data: &[u8],
+    resources: &[BootResource],
+) -> Result<Vec<u8>, SingleBootError> {
     if static_words > SINGLE_BOOT_STATIC_WORDS {
         return Err(SingleBootError("statics exceed the 16-KiB arena"));
+    }
+    if !static_data.is_empty() && static_data.len() != static_words * 2 {
+        return Err(SingleBootError(
+            "static data image must match the allocated prefix",
+        ));
     }
     if code.is_empty() || code.len() & 1 != 0 || code.len() > SINGLE_BOOT_MAX_CODE_BYTES {
         return Err(SingleBootError(
@@ -227,7 +241,7 @@ pub fn pack_application_resources(
         return Err(SingleBootError("overlapping resources"));
     }
     let size = 4usize
-        .checked_add((2 + usize::from(static_words != 0)) * 8 + code.len())
+        .checked_add((2 + usize::from(static_words != 0)) * 8 + code.len() + static_data.len())
         .and_then(|n| {
             resources
                 .iter()
@@ -240,7 +254,8 @@ pub fn pack_application_resources(
     let mut image = Vec::with_capacity(size);
     image.extend_from_slice(MAGIC);
     if static_words != 0 {
-        append_command(&mut image, 0, static_words * 2, true);
+        append_command(&mut image, 0, static_words * 2, static_data.is_empty());
+        image.extend_from_slice(static_data);
     }
     append_command(&mut image, SINGLE_BOOT_CODE_WORD * 2, code.len(), false);
     image.extend_from_slice(code);
@@ -324,12 +339,16 @@ pub fn single_boot_code(package: &[u8]) -> Result<&[u8], SingleBootError> {
         .ok_or(SingleBootError("missing code"))
 }
 pub fn boot_image_map(code: &[u8], image: &[u8]) -> String {
-    let static_bytes = single_boot_commands(image)
+    let static_command = single_boot_commands(image)
         .expect("packer commands")
-        .iter()
-        .find(|c| c.address == 0 && c.payload.is_none())
+        .into_iter()
+        .find(|c| c.address == 0);
+    let static_bytes = static_command.as_ref().map_or(0, |c| c.length);
+    let zero_bytes = static_command
+        .as_ref()
+        .filter(|c| c.payload.is_none())
         .map_or(0, |c| c.length);
-    let mut map=format!("format=6\nsignature=CB06\ncode_segment=7\nentry=0\ndata_pages=0,1,2,3\nstack=0xc000\ncode_bytes={}\nstatic_zero_bytes={}\nflash_base=0x100000\nimage_bytes={}\n",code.len(),static_bytes,image.len());
+    let mut map=format!("format=6\nsignature=CB06\ncode_segment=7\nentry=0\ndata_pages=0,1,2,3\nstack=0xc000\ncode_bytes={}\nstatic_zero_bytes={}\nstatic_data_bytes={}\nflash_base=0x100000\nimage_bytes={}\n",code.len(),zero_bytes,static_bytes,image.len());
     for c in single_boot_commands(image).expect("packer commands") {
         map.push_str(&format!(
             "{} byte_address=0x{:06x} bytes={}\n",

@@ -127,6 +127,7 @@ type Environment = HashMap<String, Type>;
 struct Rewrite<'a> {
     signatures: HashMap<String, Signature>,
     methods: HashMap<(String, String), Signature>,
+    fields: HashMap<(String, String), Type>,
     value_names: HashSet<String>,
     required: &'a mut HashSet<Kind>,
     counter: usize,
@@ -439,8 +440,16 @@ impl Rewrite<'_> {
             Expr::Reference(r) => self.expression(&mut r.expr, env, None)?,
             Expr::Cast(c) => self.expression(&mut c.expr, env, None)?,
             Expr::Struct(s) => {
+                let owner = s.path.get_ident().map(ToString::to_string);
                 for field in &mut s.fields {
-                    self.expression(&mut field.expr, env, None)?;
+                    let ty = owner
+                        .as_ref()
+                        .and_then(|owner| {
+                            self.fields
+                                .get(&(owner.clone(), field.member.to_token_stream().to_string()))
+                        })
+                        .cloned();
+                    self.expression(&mut field.expr, env, ty.as_ref())?;
                 }
             }
             _ => {}
@@ -589,10 +598,10 @@ fn generate(
             *file,
             vec![
                 parse_quote!(struct #ty{present:u16,payload:CommandMemory}),
-                parse_quote!(pub fn #some(payload:CommandMemory)->#ty{#ty{present:1,payload:payload}}),
-                parse_quote!(pub fn #none()->#ty{#ty{present:0,payload:#empty}}),
-                parse_quote!(pub fn #inspect(value:#ty)->bool{value.present!=0}),
-                parse_quote!(pub fn #take(value:#ty)->CommandMemory{value.payload}),
+                parse_quote!(pub const fn #some(payload:CommandMemory)->#ty{#ty{present:1,payload:payload}}),
+                parse_quote!(pub const fn #none()->#ty{#ty{present:0,payload:#empty}}),
+                parse_quote!(pub const fn #inspect(value:#ty)->bool{value.present!=0}),
+                parse_quote!(pub const fn #take(value:#ty)->CommandMemory{value.payload}),
             ],
             None,
         ));
@@ -747,6 +756,20 @@ pub(super) fn prepare(
     let mut rewrite = Rewrite {
         signatures,
         methods,
+        fields: files
+            .iter()
+            .flat_map(|file| &file.items)
+            .filter_map(|item| {
+                let Item::Struct(s) = item else { return None };
+                Some(s.fields.iter().filter_map(move |field| {
+                    Some((
+                        (s.ident.to_string(), field.ident.as_ref()?.to_string()),
+                        field.ty.clone(),
+                    ))
+                }))
+            })
+            .flatten()
+            .collect(),
         value_names,
         required: &mut normalize.required,
         counter: 0,

@@ -2,6 +2,8 @@
 #![feature(generic_const_exprs)]
 
 pub mod dsl_rt;
+mod fixed_constants;
+mod fixed_math;
 pub mod frontend;
 pub mod rcc_std;
 
@@ -22,6 +24,9 @@ pub trait RccConfig {
     fn heap_begin(&self) -> u16;
     fn heap_size(&self) -> u16;
     fn vec_init_cap(&self) -> u16;
+    fn asset_banks(&self) -> &[frontend::static_assets::AssetBank] {
+        &[]
+    }
     fn static_data_limit(&self) -> usize {
         1 << 16
     }

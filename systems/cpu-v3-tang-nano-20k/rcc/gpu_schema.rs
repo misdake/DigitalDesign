@@ -2,7 +2,8 @@
 //! All offsets are 16-bit CPU words, not bytes or GPU local qwords.
 use crate::dsl_rt::*;
 
-pub const GPU_API_ARENA_BYTES: u16 = 8192;
+mod gpu_limits;
+pub use gpu_limits::*;
 pub const GPU_API_SMALL_WORDS: u16 = 16;
 pub const GPU_API_LARGE_WORDS: u16 = 48;
 pub const GPU_API_CB_WORDS: u16 = 224;

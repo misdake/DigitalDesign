@@ -1,5 +1,13 @@
 # System software tools
 
+- `native_asset_source.py` writes immutable source declarations and typed native
+  Texture/Mesh/UI-atlas descriptions from producer metadata. It leaves addresses
+  to placement and emits sector fixups for address-independent mesh packages;
+  see [static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md).
+- `gpu_mesh_layout.py` owns the shared V96/T64 meshlet record encoder;
+  `gpu_texture_layout.py` owns native 16-bit texture packing, including mip tails.
+
+
 - gpu_layout.py reads rcc/gpu_layout.rs for asset producer bounds.
   GPU addresses have one authority shared by RCC, Rust boot packing and Python
   asset producers; the reader rejects unsupported expressions and overflow.

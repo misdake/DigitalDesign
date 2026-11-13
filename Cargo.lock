@@ -209,6 +209,7 @@ dependencies = [
  "cpu-v3",
  "cpu-v3-application",
  "cpu-v3-boot-format",
+ "cpu-v3-tools",
  "digital-design-circuit",
  "digital-design-hardware",
  "digital-design-hardware-common",

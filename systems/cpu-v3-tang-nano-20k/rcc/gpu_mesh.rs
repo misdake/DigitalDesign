@@ -3,6 +3,7 @@ use crate::dsl_rt::*;
 mod gpu_bind;
 use gpu_bind::*;
 
+#[derive(Copy, Clone)]
 pub struct MeshDesc {
     pub directory_sector: u16,
     pub directory_word: u16,

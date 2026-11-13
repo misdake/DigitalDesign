@@ -63,18 +63,22 @@ impl Application {
         root: &Path,
         output: &Path,
         options: &CompilerOptions,
-    ) -> (cpu_v3::rcc_backend::CpuV3Program, usize) {
+        reserved: &[boot::BootResource],
+    ) -> compile::CompiledApplication {
         let result = compile_program(
-            &root.join(&self.project.application),
-            options,
-            &self.constants,
-            &root.join("rcc"),
-            if self.project.gpu_api {
-                ApplicationFrontend::ExplicitGpu
-            } else {
-                ApplicationFrontend::Native
+            compile::CompileRequest {
+                path: &root.join(&self.project.application),
+                constants: &self.constants,
+                shared: &root.join("rcc"),
+                frontend: if self.project.gpu_api {
+                    ApplicationFrontend::ExplicitGpu
+                } else {
+                    ApplicationFrontend::Native
+                },
+                policy: &self.source,
+                reserved,
             },
-            &self.source,
+            options,
             &mut self.inputs,
         );
         if matches!(

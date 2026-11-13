@@ -8,6 +8,13 @@ PROVENANCE = FONT.with_name('vonwaon-bitmap16-provenance.json')
 SOURCES = (Path(__file__).resolve(), FONT, PROVENANCE)
 
 
+def rgba5551(red: int, green: int, blue: int, alpha: int = 255) -> int:
+    """Pack native UI color: R15:11/G10:6/B5:1/A0, alpha high bit."""
+    if any(value < 0 or value > 255 for value in (red, green, blue, alpha)):
+        raise ValueError("RGBA channels must be bytes")
+    return ((red >> 3) << 11) | ((green >> 3) << 6) | ((blue >> 3) << 1) | (alpha >> 7)
+
+
 def load_rows():
     rows = {}
     for line in FONT.read_text().splitlines():

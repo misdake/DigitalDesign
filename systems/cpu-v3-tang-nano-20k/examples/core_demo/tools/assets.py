@@ -9,8 +9,8 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[5]
 TOOLS = ROOT / "systems/cpu-v3-tang-nano-20k/tools"
 sys.path.insert(0, str(TOOLS))
-from gpu_layout import sectors, validate_asset_range
 import ui_font
+import native_asset_source
 
 # Native 8x16 application icons, appended to the selected shared font asset.
 ICONS = {
@@ -99,27 +99,22 @@ def pack(output):
     atlas = ui_font.base_asset('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /->', extra_glyphs=extra)
     first_icon = len(atlas)//256-extra
     for index, rows in enumerate(ICONS.values()):
-        ui_font.write_glyph(atlas, first_icon+index, rows, foreground=0x53e9)
+        ui_font.write_glyph(atlas, first_icon+index, rows, foreground=ui_font.rgba5551(80, 120, 160))
     first_key = first_icon+len(ICONS)
     for index, rows in enumerate(keys.values()):
         for cell in range(3):
             bits = [(row >> ((2-cell)*8)) & 255 for row in rows]
-            ui_font.write_glyph(atlas, first_key+index*3+cell, bits, foreground=0xbebf)
-    base = sectors()['GPU_ASSET_FIRST_SECTOR']*128
-    base = (base+65535) & ~65535
-    validate_asset_range(base, len(atlas))
-    (output/'atlas.bin').write_bytes(atlas)
-    constants = (f'pub const CORE_ATLAS_SECTOR:u16={base//128};\n'
-                 f'pub const CORE_ATLAS_SECTORS:u16={len(atlas)//128};\n'
-                 f'pub const CORE_ATLAS_GLYPHS:u16={len(atlas)//256};\n')
+            ui_font.write_glyph(atlas, first_key+index*3+cell, bits, foreground=ui_font.rgba5551(184, 208, 248))
+    native = native_asset_source.Sources(output)
+    native.atlas('CORE_ATLAS', atlas)
+    constants = ''
     constants += ''.join(f'pub const ICON_{name}:u8={first_icon+index};\n'
                          for index,name in enumerate(ICONS))
     constants += ''.join(f'pub const KEY_{name}:u8={first_key+index*3};\n'
                          for index,name in enumerate(keys))
-    (output/'core_assets.rs').write_text(constants)
-    sources = [Path(__file__), TOOLS/'gpu_layout.py', *ui_font.SOURCES]
-    manifest = dict(source_root='repository', resources=[dict(file='atlas.bin', address=base, bytes=len(atlas),
-                                   sha256=hashlib.sha256(atlas).hexdigest())],
+    generated = native.write('core_assets.rs', constants)
+    sources = [Path(__file__), Path(native_asset_source.__file__), *ui_font.SOURCES]
+    manifest = dict(source_root='repository', **generated,
                     sources={p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources})
     (output/'assets.json').write_text(json.dumps(manifest, indent=2)+'\n')
 

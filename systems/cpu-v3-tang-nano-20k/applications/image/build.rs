@@ -17,7 +17,7 @@ fn main() {
     let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let mut application = applications::prepare(&root, &output);
     std::fs::write(output.join("boot_resources.rs"), &application.constants).unwrap();
-    let resources = application
+    let mut resources = application
         .project
         .resources(&root)
         .expect("boot resources");
@@ -30,16 +30,40 @@ fn main() {
         Ok(value) if value == "1" => true,
         _ => panic!("RCC_GPU_DEBUG must be 0 or 1"),
     };
-    let (program, static_words) = application.compile(&root, &output, &options);
+    let compiled = application.compile(&root, &output, &options, &resources);
+    let buffers: Vec<_> = compiled
+        .buffers
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "name": b.name, "address": b.address, "bytes": b.bytes, "alignment": b.alignment,
+            })
+        })
+        .collect();
+    std::fs::write(
+        output.join("application.buffers.json"),
+        serde_json::to_vec_pretty(&buffers).unwrap(),
+    )
+    .unwrap();
+    let options = compiled.options;
+    let program = compiled.program;
+    let static_words = compiled.static_words;
+    resources.extend(compiled.assets);
     let source = &application.project.application;
     let code: Vec<u8> = program
         .words
         .iter()
         .flat_map(|word| word.to_le_bytes())
         .collect();
-    let image = boot::pack_application_resources(&code, static_words, &resources)
-        .expect("single application image");
+    let image =
+        boot::pack_application_with_data(&code, static_words, &compiled.static_data, &resources)
+            .expect("single application image");
     std::fs::write(output.join("application.v3bin"), &code).unwrap();
+    std::fs::write(
+        output.join("application.static-data"),
+        &compiled.static_data,
+    )
+    .unwrap();
     std::fs::write(
         output.join("application.static-words"),
         format!("{static_words}\n"),
@@ -65,12 +89,35 @@ fn main() {
         "cpu-v3-boot.map",
         "boot_resources.rs",
         "application.static-words",
+        "application.static-data",
         "application.dbg",
         "application.asm",
+        "application.buffers.json",
     ]
     .into_iter()
     .map(str::to_owned)
     .collect();
+    // One complete existing-input recipe includes both declared and source assets.
+    let mut repack = String::from("format 2\napplication app.rs\n");
+    std::fs::create_dir_all(output.join("application.resources")).unwrap();
+    for (index, resource) in resources.iter().enumerate() {
+        if resource.zero_bytes != 0 {
+            repack.push_str(&format!(
+                "zero {:#x} {}\n",
+                resource.address, resource.zero_bytes
+            ));
+        } else {
+            let name = format!("application.resources/{index}.bin");
+            std::fs::write(output.join(&name), &resource.data).unwrap();
+            repack.push_str(&format!(
+                "copy RESOURCE_{index} {:#x} {name}\n",
+                resource.address
+            ));
+            assets.push(name);
+        }
+    }
+    std::fs::write(output.join("application.repack.conf"), repack).unwrap();
+    assets.push("application.repack.conf".into());
     assets.extend(application.extra_assets.iter().cloned());
     artifact::write(
         artifact::BuildRecord {

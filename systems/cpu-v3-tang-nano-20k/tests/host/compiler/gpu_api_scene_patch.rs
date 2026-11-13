@@ -129,7 +129,13 @@ pub(super) fn compile(source: &str, debug: bool, label: &str) -> rcc_backend::Cp
     let output = std::env::var_os("RCC_RUSTC_TEST_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| root.join("../../../target/renderer-stage2/checks"));
-    let directory = output.join(format!("scene-patch-{label}-{debug}"));
+    // Parallel consumers may inject different library files under the same label.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let instance = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let directory = output.join(format!(
+        "scene-patch-{label}-{debug}-{}-{instance}",
+        std::process::id()
+    ));
     let local = directory.join("application");
     std::fs::create_dir_all(&local).unwrap();
     if label.starts_with("storage-failure") || label == "submit-modes" {

@@ -107,8 +107,9 @@ the one application selected by `boot-applications.conf` from RCC and writes
 all executable/package bytes only to Cargo `OUT_DIR`; no checked-in byte array
 is maintained in parallel. The CB06 stream carries sequential COPY/ZERO commands,
 with fixed CSEG7/DSEG0/SP0xc000 layout. The hardware loader owns code copy and
-zeroing only the compiler-allocated static prefix within its protected 16-KiB
-arena before CPU release. The materialized application.static-words metadata
+initializing only the compiler-allocated static prefix within its protected 16-KiB
+arena before CPU release. Current image builds COPY compiler-provided static data;
+legacy inputs retain ZERO plus startup stores. The materialized application.static-words metadata
 lets the command-line repacker reproduce that extent without inspecting instructions.
 The former software Boot/673-word ROM
 contract is superseded by this explicitly authorized single-application change.

@@ -17,6 +17,7 @@ pub const APPLICATIONS: &[Definition] = &[Definition {
         if std::env::var("GPU_BENCH_SCENE").as_deref() == Ok("full") {
             context.inputs(&[
                 "examples/gpu_demo/tools/assets.py",
+                "tools/gpu_mesh_layout.py",
                 "examples/gpu_demo/assets/scene.json",
                 "../../ip/gpu-v2/examples/vliw_integration/material_scene.py",
                 "../../ip/gpu-v2/examples/vliw_integration/assets/room-tiles.png",

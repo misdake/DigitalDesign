@@ -14,12 +14,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
 
+mod aggregate_values;
 mod byte_slices;
 mod cfg;
+mod constants;
 mod diagnostics;
+mod fixed_literals;
 mod ownership_containers;
 mod resource;
 pub mod rustc_check;
+pub mod static_assets;
+pub mod static_buffers;
+mod storage;
 mod value_methods;
 /// Parse once on the ordinary function produced by method/resource lowering.
 fn inline_hint(function: &ItemFn) -> Result<crate::InlineHint, syn::Error> {
@@ -75,6 +81,33 @@ pub mod spec {}
 pub struct Program {
     pub funcs: Vec<IrFunc>,
     pub debug: FrontendDebug,
+    pub assets: static_assets::Assets,
+}
+
+impl Program {
+    /// Transfer startup stores to a loader-owned data image. The caller must load
+    /// these words before entry; ordinary simulator/legacy compilation keeps stores.
+    pub fn take_static_initializers(&mut self) -> Vec<(u16, u16)> {
+        let mut words = Vec::new();
+        for function in &mut self.funcs {
+            for block in &mut function.blocks {
+                let mut instructions = Vec::new();
+                let mut lines = Vec::new();
+                for (index, instruction) in block.insts.drain(..).enumerate() {
+                    if let Instr::StoreStatic { addr, value } = instruction {
+                        words.push((addr, value));
+                    } else {
+                        instructions.push(instruction);
+                        lines.push(block.lines.get(index).copied().flatten());
+                    }
+                }
+                block.insts = instructions;
+                block.lines = lines;
+            }
+        }
+        words.sort_unstable_by_key(|w| w.0);
+        words
+    }
 }
 
 /// debug data collected by the frontend (the driver adds addresses and the
@@ -122,7 +155,7 @@ pub fn parse_source_with_config(src: &str, opts: &impl RccConfig) -> Result<Prog
     let source_name = "<source>";
     let file =
         syn::parse_file(src).map_err(|error| CompileError::from_syn(source_name, src, error))?;
-    let (funcs, debug) = parse_files(
+    let (funcs, debug, assets) = parse_files(
         vec![file],
         opts.data_base(),
         opts.static_data_limit(),
@@ -135,7 +168,11 @@ pub fn parse_source_with_config(src: &str, opts: &impl RccConfig) -> Result<Prog
         },
     )
     .map_err(|(_, error)| CompileError::from_syn(source_name, src, error))?;
-    Ok(Program { funcs, debug })
+    Ok(Program {
+        funcs,
+        debug,
+        assets,
+    })
 }
 
 /// the rcc standard library, embedded and appended to every program compiled
@@ -292,7 +329,7 @@ fn compile_with_check(
             syn::parse_file(text).map_err(|error| CompileError::from_syn(name, text, error))?,
         );
     }
-    let (mut funcs, debug) = parse_files(
+    let (mut funcs, debug, assets) = parse_files(
         files,
         opts.data_base(),
         opts.static_data_limit(),
@@ -300,6 +337,7 @@ fn compile_with_check(
         &names,
         opts.optimizations().is_disabled(),
         ParseChecks {
+            asset_banks: opts.asset_banks(),
             resources: Some(resource::Sources {
                 origins: &origins,
                 approved_roots,
@@ -314,7 +352,11 @@ fn compile_with_check(
     })?;
     auto_init(&mut funcs, opts)
         .map_err(|error| CompileError::from_syn(&srcs[0].0, &srcs[0].1, error))?;
-    Ok(Program { funcs, debug })
+    Ok(Program {
+        funcs,
+        debug,
+        assets,
+    })
 }
 
 /// insert library initialization calls at the start of `main`, driven by
@@ -427,6 +469,7 @@ fn prepend_init_block(main: &mut IrFunc, insts: Vec<Instr>, detail: String) {
 
 #[derive(Default)]
 struct ParseChecks<'a> {
+    asset_banks: &'a [static_assets::AssetBank],
     gpu_debug: bool,
     resources: Option<resource::Sources<'a>>,
     rustc: Option<&'a rustc_check::RustcCheck>,
@@ -440,11 +483,25 @@ fn parse_files(
     file_names: &[String],
     materialize_debug_locals: bool,
     checks: ParseChecks<'_>,
-) -> Result<(Vec<IrFunc>, FrontendDebug), (usize, syn::Error)> {
+) -> Result<(Vec<IrFunc>, FrontendDebug, static_assets::Assets), (usize, syn::Error)> {
     if checks.rustc.is_some() {
         resource::drop_syntax::validate_attributes(&files)?;
     }
     cfg::prepare(&mut files, checks.gpu_debug)?;
+    let mut assets = static_assets::prepare(
+        &mut files,
+        file_names,
+        checks.resources.map_or(&[][..], |sources| sources.origins),
+        checks.asset_banks,
+    )?;
+    let domains = if checks.rustc.is_some() {
+        resource::checked_domains(&files, file_names, checks.resources)?
+    } else {
+        Default::default()
+    };
+    let storage =
+        static_buffers::prepare(&mut files, checks.asset_banks, &assets.placed, &domains)?;
+    assets.buffers = storage.buffers;
     if checks.rustc.is_none() {
         struct LegacyLiteral(Option<syn::Error>);
         impl<'ast> syn::visit::Visit<'ast> for LegacyLiteral {
@@ -463,8 +520,9 @@ fn parse_files(
         }
     }
     if let Some(check) = checks.rustc {
-        let domains = resource::checked_domains(&files, file_names, checks.resources)?;
         rustc_check::validate(&files, file_names, &domains, check)?;
+        fixed_literals::prepare(&mut files)?;
+        constants::runtime_assertions(&mut files, checks.gpu_debug, false);
     }
     resource::drop_syntax::lower(&mut files, checks.rustc.is_some())?;
     let value_methods = value_methods::prepare(&mut files, checks.rustc.is_some())?;
@@ -476,6 +534,14 @@ fn parse_files(
         checks.rustc.is_some(),
         &carriers,
     )?;
+    if checks.rustc.is_some() {
+        constants::prepare(
+            &mut files,
+            &value_methods,
+            checks.gpu_debug,
+            &storage.statics,
+        )?;
+    }
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
@@ -693,7 +759,7 @@ fn parse_files(
     for (name, (v, ty)) in &consts {
         debug.consts.push((name.clone(), ty.display(), *v));
     }
-    Ok((out, debug))
+    Ok((out, debug, assets))
 }
 
 /// initialize non-zero static words at the start of main (__data_init)
@@ -1138,6 +1204,7 @@ fn const_eval_inner(
         },
         Expr::Lit(lit) => match &lit.lit {
             Lit::Byte(byte) => Ok(u16::from(byte.value())),
+            Lit::Bool(boolean) => Ok(u16::from(boolean.value)),
             Lit::Int(i) => {
                 let v = lit_int_value(i)?;
                 if v > u16::MAX as u64 {
@@ -1339,7 +1406,15 @@ fn add_aggregate_static(
     let size = word_size(&ty, structs, s)?;
     let addr = reserve_static(g, size as usize, &s.ident)?;
     let mut words: Vec<(u16, u16)> = vec![];
-    const_words(&ty, s.expr.as_ref(), consts, structs, addr, &mut words)?;
+    const_words(
+        &ty,
+        s.expr.as_ref(),
+        consts,
+        structs,
+        &g.enums,
+        addr,
+        &mut words,
+    )?;
     g.data_words.extend(words);
     let name = s.ident.to_string();
     let duplicate = g.aggregates.contains_key(&name)
@@ -1357,10 +1432,32 @@ fn const_words(
     expr: &Expr,
     consts: &HashMap<String, (u16, Ty)>,
     structs: &StructTable,
+    enums: &EnumTable,
     base: u16,
     out: &mut Vec<(u16, u16)>,
 ) -> Result<(), syn::Error> {
     match ty {
+        Ty::Enum(name) => {
+            let Expr::Path(path) = expr else {
+                return Err(err(expr, "a static enum field needs a fieldless variant"));
+            };
+            let segments = &path.path.segments;
+            if segments.len() != 2 || segments[0].ident != name {
+                return Err(err(expr, "static enum type mismatch"));
+            }
+            let value = enums
+                .get(name)
+                .and_then(|definition| {
+                    definition
+                        .variants
+                        .iter()
+                        .find(|(variant, _)| segments[1].ident == variant)
+                })
+                .map(|(_, value)| *value)
+                .ok_or_else(|| err(expr, "unknown static enum variant"))?;
+            out.push((base, value));
+            Ok(())
+        }
         Ty::Struct(name) => {
             let def = structs
                 .get(name)
@@ -1388,6 +1485,7 @@ fn const_words(
                     &value.expr,
                     consts,
                     structs,
+                    enums,
                     base + field.offset,
                     out,
                 )?;
@@ -1409,7 +1507,7 @@ fn const_words(
                 ));
             }
             for (i, (e, elem)) in t.elems.iter().zip(elems).enumerate() {
-                const_words(elem, e, consts, structs, base + i as u16, out)?;
+                const_words(elem, e, consts, structs, enums, base + i as u16, out)?;
             }
             Ok(())
         }
@@ -1444,7 +1542,15 @@ fn const_words(
                 }
             };
             for (i, e) in elements.into_iter().enumerate() {
-                const_words(elem, e, consts, structs, base + (i as u16) * size, out)?;
+                const_words(
+                    elem,
+                    e,
+                    consts,
+                    structs,
+                    enums,
+                    base + (i as u16) * size,
+                    out,
+                )?;
             }
             Ok(())
         }
@@ -1452,7 +1558,7 @@ fn const_words(
             let Expr::Call(call) = expr else {
                 return Err(err(
                     expr,
-                    "a static fix32 needs zero(), from_int() or from_words()",
+                    "a static fix32 needs zero(), one(), from_int(), from_ratio(), degrees() or from_words()",
                 ));
             };
             let Expr::Path(path) = call.func.as_ref() else {
@@ -1464,6 +1570,21 @@ fn const_words(
             }
             let words = match (segments[1].ident.to_string().as_str(), call.args.len()) {
                 ("zero", 0) => (0, 0),
+                ("one", 0) => (0, 1),
+                ("from_ratio", 2) => {
+                    let raw = crate::fixed_constants::ratio(
+                        const_eval(&call.args[0], consts)? as i16,
+                        const_eval(&call.args[1], consts)?,
+                    )
+                    .ok_or_else(|| err(call, "fix32 ratio denominator must not be zero"))?;
+                    (raw as u16, (raw >> 16) as u16)
+                }
+                ("degrees", 1) => {
+                    let raw = crate::fixed_constants::degrees(
+                        const_eval(&call.args[0], consts)? as i16,
+                    );
+                    (raw as u16, (raw >> 16) as u16)
+                }
                 ("from_int", 1) => (0, const_eval(&call.args[0], consts)?),
                 ("from_words", 2) => (
                     const_eval(&call.args[0], consts)?,
@@ -1472,7 +1593,7 @@ fn const_words(
                 _ => {
                     return Err(err(
                         expr,
-                        "a static fix32 needs zero(), from_int() or from_words()",
+                        "a static fix32 needs zero(), one(), from_int(), from_ratio(), degrees() or from_words()",
                     ))
                 }
             };
@@ -1585,10 +1706,26 @@ fn add_static(
         )),
         t => {
             let ty = ty_of(t, &TypeNames::new())?;
-            if !matches!(ty, Ty::U8 | Ty::U16 | Ty::I16) {
+            if ty == Ty::Fix32 {
+                let addr = reserve_static(g, 2, &s.ident)?;
+                const_words(
+                    &ty,
+                    &s.expr,
+                    consts,
+                    &g.structs,
+                    &g.enums,
+                    addr,
+                    &mut g.data_words,
+                )?;
+                if g.scalars.insert(name.clone(), (addr, ty)).is_some() {
+                    return Err(err(&s.ident, format!("static `{name}` defined twice")));
+                }
+                return Ok(());
+            }
+            if !matches!(ty, Ty::U8 | Ty::U16 | Ty::I16 | Ty::Bool) {
                 return Err(err(
                     t,
-                    "static must be u16/i16 or a Buf of them (struct statics are not supported yet)",
+                    "static requires a supported scalar, struct, tuple or Buf",
                 ));
             }
             let v = const_eval(&s.expr, consts)?;
@@ -1966,7 +2103,7 @@ fn init_array_at(
     init: &Expr,
 ) -> Result<(), syn::Error> {
     // an aggregate-returning call writes straight into the destination
-    if sret_call_into(l, init, base, &Ty::Array(Box::new(elem.clone()), n))? {
+    if aggregate_expression_into(l, init, base, &Ty::Array(Box::new(elem.clone()), n))? {
         return Ok(());
     }
     let init = buf_initializer(init)?;
@@ -2085,7 +2222,7 @@ fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Resul
         .ok_or_else(|| err(init, format!("unknown struct `{name}`")))?;
     let Expr::Struct(se) = init else {
         // an aggregate-returning call writes straight into the destination
-        if sret_call_into(l, init, base, &Ty::Struct(name.to_string()))? {
+        if aggregate_expression_into(l, init, base, &Ty::Struct(name.to_string()))? {
             return Ok(());
         }
         // a copy from another value of the same struct type
@@ -2200,10 +2337,17 @@ fn sret_call_return(l: &FnLower, e: &Expr) -> Option<Ty> {
     is_aggregate(&sig.ret).then(|| sig.ret.clone())
 }
 
-/// A direct call to a function that returns an aggregate writes into `dst` — the
-/// hidden first parameter the caller supplies (spec §14). `Ok(false)` means `e`
-/// is not such a call, so the caller falls back to its usual path.
-fn sret_call_into(l: &mut FnLower, e: &Expr, dst: VReg, expected: &Ty) -> Result<bool, syn::Error> {
+/// Scoped/conditional values and sret calls write directly into `dst`.
+/// Literal/place initialization remains with the type-specific caller.
+fn aggregate_expression_into(
+    l: &mut FnLower,
+    e: &Expr,
+    dst: VReg,
+    expected: &Ty,
+) -> Result<bool, syn::Error> {
+    if aggregate_values::initialize(l, dst, expected, e)? {
+        return Ok(true);
+    }
     if let Expr::Unsafe(u) = e {
         let [Stmt::Expr(tail)] = u.block.stmts.as_slice() else {
             return Err(err(u, "aggregate unsafe scopes require a single tail call"));
@@ -2211,11 +2355,11 @@ fn sret_call_into(l: &mut FnLower, e: &Expr, dst: VReg, expected: &Ty) -> Result
         if sret_call_return(l, tail).is_none() {
             return Err(err(u, "aggregate unsafe scopes require a single tail call"));
         }
-        return unsafe_scope(l, u, |l| sret_call_into(l, tail, dst, expected));
+        return unsafe_scope(l, u, |l| aggregate_expression_into(l, tail, dst, expected));
     }
     if let Expr::MethodCall(method) = e {
         if let Some(call) = value_methods::call(l, method) {
-            return sret_call_into(l, &Expr::Call(call), dst, expected);
+            return aggregate_expression_into(l, &Expr::Call(call), dst, expected);
         }
     }
     let Expr::Call(call) = e else {
@@ -2298,7 +2442,7 @@ fn init_tuple_at(l: &mut FnLower, base: VReg, elems: &[Ty], init: &Expr) -> Resu
         return Ok(());
     }
     let tuple_ty = Ty::Tuple(elems.to_vec());
-    if sret_call_into(l, init, base, &tuple_ty)? {
+    if aggregate_expression_into(l, init, base, &tuple_ty)? {
         return Ok(());
     }
     let (src_base, src_offset, src_ty, _) = place_addr_of(l, init)?;
@@ -4095,7 +4239,7 @@ fn expr_inner(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             if let Some((addr, ty)) = l.globals.scalars.get(&name) {
                 let (addr, ty) = (*addr, ty.clone());
                 let base = l.b.load_imm(addr);
-                let v = l.b.load_mem(base, 0);
+                let v = load_field(l, base, 0, &ty);
                 return Ok(Val::V(v, ty));
             }
             if let Some(&(addr, _, _)) = l.globals.arrays.get(&name) {
@@ -4626,7 +4770,15 @@ fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
         Expr::Call(call) => {
             let name = path_ident(&call.func).ok()?;
             let ty = &l.sigs.get(&name)?.ret;
-            matches!(ty, Ty::Enum(_)).then(|| ty.clone())
+            (matches!(ty, Ty::Enum(_)) || l.globals.checked && matches!(ty, Ty::Struct(_)))
+                .then(|| ty.clone())
+        }
+        Expr::Struct(value) if l.globals.checked => {
+            let name = value.path.get_ident()?.to_string();
+            l.globals
+                .structs
+                .contains_key(&name)
+                .then_some(Ty::Struct(name))
         }
         Expr::MethodCall(method) => {
             let call = value_methods::call(l, method)?;
@@ -5237,12 +5389,25 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
                     "view_of expects a mutable reference: view_of(&mut x)",
                 ));
             }
-            if name == "__rcc_value_view" && value_methods::is_enum_temporary(l, &r.expr) {
-                // Borrow a checked one-word rvalue once, before later arguments.
-                // Public view_of and aggregate-temporary rules do not change.
-                let (value, ty) = expr(l, &r.expr)?.reg(l, &r.expr, "enum receiver")?;
-                let slot = l.b.alloc_local_slots(1);
-                l.b.store_local(slot, value);
+            if name == "__rcc_value_view" && value_methods::is_value_temporary(l, &r.expr) {
+                // Checked value methods may borrow a fresh temporary. Its storage
+                // stays in this frame and is initialized once before later args.
+                // The public view_of intrinsic still requires an existing place.
+                let ty = peek_type(l, &r.expr).expect("recognized value receiver");
+                let size = word_size(&ty, &l.globals.structs, &r.expr)?;
+                let slot = l.b.try_alloc_local_slots(size).ok_or_else(|| {
+                    err(
+                        &r.expr,
+                        "value receiver exceeds the 255-word local frame limit",
+                    )
+                })?;
+                if is_aggregate(&ty) {
+                    let destination = l.b.addr_of_local(slot);
+                    init_aggregate_at(l, destination, &ty, &r.expr)?;
+                } else {
+                    let (value, _) = expr(l, &r.expr)?.reg(l, &r.expr, "enum receiver")?;
+                    l.b.store_local(slot, value);
+                }
                 return Ok(Val::V(l.b.addr_of_local(slot), Ty::ArrayRef(Box::new(ty))));
             }
             let (base, offset, ty, mutable) = place_addr_of(l, &r.expr)?;
@@ -5774,6 +5939,42 @@ fn fpu_associated_call(
         _ => None,
     };
     match (ty_name, method) {
+        ("fix32", "one") => {
+            if !call.args.is_empty() {
+                return Err(err(call, "fix32::one() takes no arguments"));
+            }
+            let one = l.b.load_imm(1);
+            Ok(Val::V(l.b.fpu_from_int(one), Ty::Fix32))
+        }
+        ("fix32", "from_ratio") | ("fix32", "degrees") => {
+            let required = if method == "degrees" { 1 } else { 2 };
+            if call.args.len() != required {
+                return Err(err(call, "incorrect fixed-point constant argument count"));
+            }
+            let argument = |index: usize| {
+                const_eval(&call.args[index], l.consts).map_err(|_| {
+                    err(
+                        &call.args[index],
+                        "this fixed-point constructor requires constant arguments",
+                    )
+                })
+            };
+            let raw = if method == "degrees" {
+                crate::fixed_constants::degrees(argument(0)? as i16)
+            } else {
+                crate::fixed_constants::ratio(argument(0)? as i16, argument(1)?)
+                    .ok_or_else(|| err(call, "fix32 ratio denominator must not be zero"))?
+            };
+            let lo = l.b.load_imm(raw as u16);
+            let hi = l.b.load_imm((raw >> 16) as u16);
+            let value = if raw as u16 == 0 {
+                l.b.fpu_from_int(hi)
+            } else {
+                let value = l.b.fpu_from_lo(lo);
+                l.b.fpu_from_hi(value, hi)
+            };
+            Ok(Val::V(value, Ty::Fix32))
+        }
         ("fix32", "from_int") => {
             let (v, from) = exactly_args(l, &call.args, call, 1, "fix32::from_int")?[0]
                 .clone()
@@ -5855,6 +6056,52 @@ fn fpu_method(
     m: &syn::ExprMethodCall,
 ) -> Result<Val, syn::Error> {
     let method = m.method.to_string();
+    if *base_ty == Ty::Fix32
+        && matches!(
+            method.as_str(),
+            "wrapping_add"
+                | "wrapping_sub"
+                | "wrapping_mul"
+                | "less_than"
+                | "less_or_equal"
+                | "greater_than"
+                | "greater_or_equal"
+                | "equals"
+        )
+    {
+        if m.args.len() != 1 {
+            return Err(err(m, "fix32 binary method takes one operand"));
+        }
+        let (rhs, ty) = expr(l, &m.args[0])?.reg(l, &m.args[0], "fixed operand")?;
+        if ty != Ty::Fix32 {
+            return Err(err(m, "fix32 method requires a fix32 operand"));
+        }
+        let arithmetic = match method.as_str() {
+            "wrapping_add" => Some(FpuBinOp::Add),
+            "wrapping_sub" => Some(FpuBinOp::Sub),
+            "wrapping_mul" => Some(FpuBinOp::Mul),
+            _ => None,
+        };
+        if let Some(op) = arithmetic {
+            return Ok(Val::V(l.b.fpu_bin(op, base, rhs), Ty::Fix32));
+        }
+        let cond = match method.as_str() {
+            "less_than" => CompareOp::Less,
+            "less_or_equal" => CompareOp::LessEqual,
+            "greater_than" => CompareOp::Greater,
+            "greater_or_equal" => CompareOp::GreaterEqual,
+            _ => CompareOp::Equal,
+        };
+        return Ok(Val::V(
+            l.b.bool_value(Cmp {
+                lhs: base,
+                rhs: CmpRhs::Reg(rhs),
+                cond,
+                signed: true,
+            }),
+            Ty::Bool,
+        ));
+    }
     if *base_ty != Ty::Fix32 {
         let lanes = base_ty.fpu_lanes();
         let lane = match method.as_str() {
@@ -5930,6 +6177,20 @@ fn fpu_method(
                     return Err(err(&m.method, "to_int() takes no arguments"));
                 }
                 Ok(Val::V(l.b.fpu_to_int(base), Ty::I16))
+            }
+            "wrapping_neg" => {
+                if !m.args.is_empty() {
+                    return Err(err(m, "wrapping_neg takes no arguments"));
+                }
+                Ok(Val::V(l.b.fpu_un(FpuUnOp::Neg, base), Ty::Fix32))
+            }
+            "to_radians" => {
+                if !m.args.is_empty() {
+                    return Err(err(m, "to_radians takes no arguments"));
+                }
+                let coefficient = l.b.load_imm(1144);
+                let factor = l.b.fpu_from_lo(coefficient);
+                Ok(Val::V(l.b.fpu_bin(FpuBinOp::Mul, base, factor), Ty::Fix32))
             }
             "abs" | "floor" | "ceil" | "round" | "trunc" => {
                 if !m.args.is_empty() {

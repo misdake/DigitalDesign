@@ -26,6 +26,7 @@ windows-sys = { version = "0.48", features = ["Win32_UI_Input_XboxController"] }
 
 [dev-dependencies]
 cpu-v3-application = { path = "applications/image" }
+cpu-v3-tools = { path = "tools/boot" }
 syn = { version = "1", features = ["full"] }
 serde_json = "1"
 

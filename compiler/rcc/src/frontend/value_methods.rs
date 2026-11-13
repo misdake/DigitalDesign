@@ -12,15 +12,36 @@ enum Receiver {
     Value,
     Borrow { mutable: bool },
 }
+#[derive(Clone)]
 pub(super) struct Method {
-    function: syn::Ident,
+    pub(super) function: syn::Ident,
     receiver: Receiver,
 }
 pub(super) type Methods = HashMap<(String, String), Method>;
 
+pub(super) fn constant_value_function(
+    methods: &Methods,
+    owner: &str,
+    name: &str,
+) -> Option<syn::Ident> {
+    let method = methods.get(&(owner.to_owned(), name.to_owned()))?;
+    matches!(method.receiver, Receiver::Value).then(|| method.function.clone())
+}
+
 fn plain(ty: &Type) -> Option<String> {
     let Type::Path(path) = ty else { return None };
     path.path.get_ident().map(ToString::to_string)
+}
+
+// The supported assertion macro still contains source expressions, including
+// `self` and associated calls. Keep it in sync with ordinary method lowering.
+fn rewrite_assertion(mac: &mut syn::Macro, visit: impl FnOnce(&mut Expr)) {
+    if mac.path.is_ident("assert") || mac.path.is_ident("debug_assert") {
+        if let Ok(mut expression) = syn::parse2::<Expr>(mac.tokens.clone()) {
+            visit(&mut expression);
+            mac.tokens = expression.to_token_stream();
+        }
+    }
 }
 pub(super) fn reserved(tokens: TokenStream, prefix: &str) -> Option<syn::Ident> {
     for token in tokens {
@@ -159,6 +180,9 @@ pub(super) fn prepare(
                     receiver: Receiver,
                 }
                 impl VisitMut for Rename<'_> {
+                    fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+                        rewrite_assertion(mac, |expression| self.visit_expr_mut(expression));
+                    }
                     fn visit_path_mut(&mut self, path: &mut syn::Path) {
                         if let Some(segment) = path.segments.first_mut() {
                             if segment.ident == "Self" {
@@ -205,6 +229,9 @@ pub(super) fn prepare(
     }
     struct Associated<'a>(&'a Methods);
     impl VisitMut for Associated<'_> {
+        fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+            rewrite_assertion(mac, |expression| self.visit_expr_mut(expression));
+        }
         fn visit_expr_path_mut(&mut self, expression: &mut syn::ExprPath) {
             if expression.qself.is_none() && expression.path.segments.len() == 2 {
                 let key = (
@@ -266,12 +293,12 @@ pub(super) fn call(l: &FnLower, expression: &syn::ExprMethodCall) -> Option<syn:
     })
 }
 
-pub(super) fn is_enum_temporary(l: &FnLower, expression: &Expr) -> bool {
-    if !matches!(peek_type(l, expression), Some(Ty::Enum(_))) {
+pub(super) fn is_value_temporary(l: &FnLower, expression: &Expr) -> bool {
+    if !matches!(peek_type(l, expression), Some(Ty::Struct(_) | Ty::Enum(_))) {
         return false;
     }
     match expression {
-        Expr::Paren(paren) => is_enum_temporary(l, &paren.expr),
+        Expr::Paren(paren) => is_value_temporary(l, &paren.expr),
         Expr::Path(path) => {
             let Some(name) = path.path.get_ident() else {
                 return true;

@@ -4,6 +4,8 @@ mod cpu_canvas;
 use cpu_canvas::*;
 mod gpu_api;
 use gpu_api::*;
+mod palette;
+use palette::*;
 mod gamepad;
 use gamepad::*;
 mod state;
@@ -13,8 +15,13 @@ use ui::*;
 mod boot_resources;
 use boot_resources::*;
 
+// Nominal full rotation at one radian per second.
+const ROTATION_PERIOD_MS: u16 = 6283;
+// Q16.16 nearest representation of 2*pi/128; pinned for the raster illustration.
+const WAVE_SAMPLE_STEP: fix32 = fix32::from_words(3217, 0);
+
 fn phase(state: DemoState) -> fix32 {
-    fix32::from_int((state.elapsed % 6283) as i16) * fix32::from_words(66, 0)
+    fix32::from_int((state.elapsed % ROTATION_PERIOD_MS) as i16) * fix!(0.001)
 }
 fn edge(ax: i16, ay: i16, bx: i16, by: i16, x: i16, y: i16) -> i16 {
     (bx - ax) * (y - ay) - (by - ay) * (x - ax)
@@ -79,7 +86,7 @@ pub fn software_page(grid: &mut UiGrid, canvas: CpuCanvas, state: DemoState) {
     page_start(grid, state, b"TRIANGLES");
     text(grid, 7, 4, b"FILLED");
     text(grid, 31, 4, b"WIREFRAME");
-    let angle = phase(state) + fix32::from_int(state.parameter as i16) * fix32::from_words(8192, 0);
+    let angle = phase(state) + fix32::from_int(state.parameter as i16) * fix!(0.125);
     let sc = fsincos(angle);
     let ax = (sc.y() * fix32::from_int(-40) - sc.x() * fix32::from_int(-30))
         .round()
@@ -106,10 +113,10 @@ pub fn software_page(grid: &mut UiGrid, canvas: CpuCanvas, state: DemoState) {
             cy: 136 + cy,
         },
     );
-    canvas_circle(canvas, 292, 136, 56, 0x2108);
-    canvas_line(canvas, 292 + ax, 136 + ay, 292 + bx, 136 + by, 0xf800);
-    canvas_line(canvas, 292 + bx, 136 + by, 292 + cx, 136 + cy, 0x07e0);
-    canvas_line(canvas, 292 + cx, 136 + cy, 292 + ax, 136 + ay, 0x07ff);
+    canvas_circle(canvas, 292, 136, 56, GUIDE);
+    canvas_line(canvas, 292 + ax, 136 + ay, 292 + bx, 136 + by, RED);
+    canvas_line(canvas, 292 + bx, 136 + by, 292 + cx, 136 + cy, GREEN);
+    canvas_line(canvas, 292 + cx, 136 + cy, 292 + ax, 136 + ay, CYAN);
 }
 pub fn wave_page(grid: &mut UiGrid, canvas: CpuCanvas, state: DemoState) {
     page_start(grid, state, b"WAVES");
@@ -117,36 +124,36 @@ pub fn wave_page(grid: &mut UiGrid, canvas: CpuCanvas, state: DemoState) {
     text(grid, 4, 8, b"COS");
     let angle = phase(state);
     let amplitude = fix32::from_int((state.parameter % 24 + 8) as i16);
-    canvas_line(canvas, 32, 100, 272, 100, 0x2108);
-    canvas_line(canvas, 32, 164, 272, 164, 0x2108);
+    canvas_line(canvas, 32, 100, 272, 100, GUIDE);
+    canvas_line(canvas, 32, 164, 272, 164, GUIDE);
     let mut x: i16 = 32;
     while x < 273 {
-        let sc = fsincos(angle + fix32::from_int(x - 32) * fix32::from_words(3217, 0));
+        let sc = fsincos(angle + fix32::from_int(x - 32) * WAVE_SAMPLE_STEP);
         let sine = (sc.x() * amplitude).round().to_int();
         let cosine = (sc.y() * amplitude).round().to_int();
-        canvas_rect(canvas, x, 100 - sine, 2, 2, 0x07e0);
-        canvas_rect(canvas, x, 164 - cosine, 2, 2, 0x07ff);
+        canvas_rect(canvas, x, 100 - sine, 2, 2, GREEN);
+        canvas_rect(canvas, x, 164 - cosine, 2, 2, CYAN);
         x += 1;
     }
-    canvas_circle(canvas, 332, 136, 38, 0x39e7);
-    canvas_line(canvas, 292, 136, 372, 136, 0x2108);
-    canvas_line(canvas, 332, 96, 332, 176, 0x2108);
+    canvas_circle(canvas, 332, 136, 38, RING);
+    canvas_line(canvas, 292, 136, 372, 136, GUIDE);
+    canvas_line(canvas, 332, 96, 332, 176, GUIDE);
     let sc = fsincos(angle);
     let px = 332 + (sc.y() * fix32::from_int(38)).round().to_int();
     let py = 136 - (sc.x() * fix32::from_int(38)).round().to_int();
-    canvas_line(canvas, 332, 136, px, py, 0xffe0);
-    canvas_rect(canvas, px - 2, py - 2, 5, 5, 0xf800);
+    canvas_line(canvas, 332, 136, px, py, YELLOW);
+    canvas_rect(canvas, px - 2, py - 2, 5, 5, RED);
 }
 fn stick(canvas: CpuCanvas, cx: i16, x: fix32, y: fix32) {
-    canvas_circle(canvas, cx, 128, 30, 0x39e7);
-    canvas_circle(canvas, cx, 128, 6, 0x2108);
-    canvas_line(canvas, cx - 30, 128, cx + 30, 128, 0x2108);
-    canvas_line(canvas, cx, 98, cx, 158, 0x2108);
+    canvas_circle(canvas, cx, 128, 30, RING);
+    canvas_circle(canvas, cx, 128, 6, GUIDE);
+    canvas_line(canvas, cx - 30, 128, cx + 30, 128, GUIDE);
+    canvas_line(canvas, cx, 98, cx, 158, GUIDE);
     let px = cx + (x * fix32::from_int(28)).round().to_int();
     // Shared stick output is +Y down, matching native screen coordinates.
     let py = 128 + (y * fix32::from_int(28)).round().to_int();
-    canvas_line(canvas, cx, 128, px, py, 0x07ff);
-    canvas_rect(canvas, px - 2, py - 2, 5, 5, 0x07e0);
+    canvas_line(canvas, cx, 128, px, py, CYAN);
+    canvas_rect(canvas, px - 2, py - 2, 5, 5, GREEN);
 }
 pub fn controller_page(
     grid: &mut UiGrid,
@@ -168,9 +175,9 @@ pub fn controller_page(
     while button < 16 {
         let x = 264 + (button % 4) * 32;
         let y = 64 + (button / 4) * 32;
-        let mut color: u16 = 0x18c3;
+        let mut color: u16 = BUTTON_IDLE;
         if input.buttons & (1u16 << button) != 0 {
-            color = 0x048c;
+            color = BUTTON_ACTIVE;
         }
         canvas_rect(canvas, x as i16, y as i16, 30, 24, color);
         button += 1;
@@ -187,9 +194,9 @@ pub fn color_graphics(canvas: CpuCanvas) {
         canvas_rect(canvas, (32 + step * 8) as i16, 112, 8, 32, color);
         step += 1;
     }
-    canvas_rect(canvas, 32, 160, 56, 16, 0xf800);
-    canvas_rect(canvas, 96, 160, 56, 16, 0x07e0);
-    canvas_rect(canvas, 160, 160, 56, 16, 0x001f);
-    canvas_rect(canvas, 224, 160, 56, 16, 0x07ff);
-    canvas_rect(canvas, 288, 160, 56, 16, 0xffe0);
+    canvas_rect(canvas, 32, 160, 56, 16, RED);
+    canvas_rect(canvas, 96, 160, 56, 16, GREEN);
+    canvas_rect(canvas, 160, 160, 56, 16, BLUE);
+    canvas_rect(canvas, 224, 160, 56, 16, CYAN);
+    canvas_rect(canvas, 288, 160, 56, 16, YELLOW);
 }

@@ -72,7 +72,7 @@ is functional in these tests; they do not simulate SPI cold-loader timing.
 
 | DRAM byte range | Ownership |
 | --- | --- |
-| [0,0x4000) | Protected static arena; ZERO only the compiler-allocated prefix |
+| [0,0x4000) | Protected static arena; COPY static data or ZERO only the allocated prefix |
 | [0x4000,0x20000) | Protected low heap/stack window |
 | [0x20000,0xe0000) | Resource allocations |
 | [0xe0000,0x100000) | One code COPY at 0xe0000; unused tail remains reserved |
@@ -117,14 +117,16 @@ resources. The build generates boot_resources.rs before compilation; an RCC
 application can import mod boot_resources and use NAME_BYTE_ADDRESS_LOW/HIGH
 and NAME_WORD_ADDRESS_LOW/HIGH u16 constants. Full addresses are split explicitly
 because this RCC frontend has no u32 type; no compiler or far-pointer ISA is added.
-RCC still initializes nonzero statics and sets SP=0xc000.
+The image build loads compiler-provided nonzero static data through COPY; direct compiler callers may retain startup stores. RCC sets SP=0xc000.
 
 Device2 is unassigned. The cold loader has no software-programmable DMA register
 bank; it starts after PLL/SDRAM readiness and is controlled by the CB06 stream.
 
 The compiler publishes the exclusive end of its static allocation in words.
-With the system's fixed data base of zero, the packer emits one ZERO of twice
-that word count; a zero count omits the command. The count includes module and
+With the system's fixed data base of zero, current image builds emit one COPY of
+the adjacent application.static-data image, exactly twice that word count. Legacy
+inputs without static data emit ZERO and retain compiler startup stores. A zero
+count omits the command. The count includes module and
 standard-library statics and aggregate padding, including statics whose functions
 are later discarded by linking. The unused arena tail is left untouched and
 remains protected from resource allocations. The 8192-word capacity is unchanged.
@@ -150,11 +152,13 @@ linked debug/listing and source/resource descriptor, as specified in
 cpu-v3-boot-assets materializes these exact artifacts.
 cpu-v3-pack application.v3bin --project boot-applications.conf
 reconstructs the package with the same packing implementation, using exported resource files and the
-adjacent application.static-words file (a decimal word count followed by a newline).
+adjacent application.static-words file (a decimal word count followed by a newline),
+plus application.static-data when present. Current exports include a complete
+application.repack.conf for both fixed and source-declared resources.
 For externally compiled binaries, --static-words N supplies that count explicitly.
 Missing or malformed metadata is an error; raw instructions do not encode the
 static allocation extent. Keep each binary and its generated length file together.
-The CPU instruction bytes are unchanged by this packaging metadata. Omitting
+The existing-input packer does not modify CPU instruction bytes. Omitting
 --project packs code plus mandatory initialization only. Asset SHA-256
 identities can be recorded with the offline image bundle.
 

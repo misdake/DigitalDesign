@@ -127,7 +127,6 @@ fn rustc_enum_methods_preserve_checked_rejections() {
         ("trait","#[repr(u16)] enum E{A}impl core::convert::From<u16> for E{fn from(value:u16)->Self{Self::A}}fn main(){}","nongeneric inherent"),
         ("discriminant","#[repr(u16)] enum E{A=4}impl E{fn make()->Self{Self::A}}fn main(){}","explicit discriminants"),
         ("tuple","#[repr(u16)] enum E{A}impl E{fn code(&self)->u16{0}}fn main(){let (a,b)=(E::A,E::A);}","tuple elements"),
-        ("const","#[repr(u16)] enum E{A}const C:E=E::A;fn main(){}","const must be u16 or i16"),
         ("payload","#[repr(u16)] enum E{A(u16)}impl E{fn make()->Self{Self::A(1)}}fn main(){}","fieldless variants"),
         ("repr","#[repr(u8)] enum E{A}impl E{fn make()->Self{Self::A}}fn main(){}","repr(u16)"),
         ("associated-const","#[repr(u16)] enum E{A}impl E{const V:Self=Self::A;}fn main(){}","functions only"),

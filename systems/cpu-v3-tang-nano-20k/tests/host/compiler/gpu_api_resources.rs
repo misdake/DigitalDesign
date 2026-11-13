@@ -495,3 +495,79 @@ fn main(){
         assert_eq!(&uart.bytes[..10], &expected);
     }
 }
+
+#[test]
+fn public_value_builders_work_in_static_and_runtime_paths() {
+    let source = r#"mod gpu_api;use gpu_api::*;
+const POSE:Transform=Transform::identity().with_position(Vec3::new(fix32::from_int(1),fix32::zero(),fix32::zero()));
+static TEXTURE:TextureDesc=unsafe{TextureDesc::from_asset(AssetBytes{first_sector:0xa800,sector_count:100,byte_len_lo:12800,byte_len_hi:0},TextureLayout::square(64,TextureFormat::Rgba4444,Mipmaps::Full))};
+static MESH_DESC:MeshDesc=unsafe{MeshDesc::from_asset(AssetBytes{first_sector:0xa000,sector_count:16,byte_len_lo:2048,byte_len_hi:0},130,2)};
+static MATERIAL:MaterialDesc=MaterialDesc::diffuse(Rgba8::rgb(80,120,160)).with_response(fix32::from_ratio(1,2),fix32::one());
+static CONFIG:GpuConfig=GpuConfig::double(
+ CommandMemory::new(unsafe{GpuMemory::from_asset(AssetBytes{first_sector:0x9800,sector_count:512,byte_len_lo:0,byte_len_hi:1})},unsafe{GpuMemory::from_asset(AssetBytes{first_sector:0x9a00,sector_count:512,byte_len_lo:0,byte_len_hi:1})}),
+ CommandMemory::new(unsafe{GpuMemory::from_asset(AssetBytes{first_sector:0xfc00,sector_count:512,byte_len_lo:0,byte_len_hi:1})},unsafe{GpuMemory::from_asset(AssetBytes{first_sector:0xfe00,sector_count:512,byte_len_lo:0,byte_len_hi:1})}));
+fn config()->GpuConfig{CONFIG}
+fn mesh_desc()->MeshDesc{MESH_DESC}
+fn check(ok:bool){if !ok{halt(0xbad);}}
+fn layout(size:u16)->TextureLayout{TextureLayout::square(size,TextureFormat::Rgba4444,Mipmaps::Full)}
+fn material(color:Rgba8)->MaterialDesc{MaterialDesc::unlit(color).with_response(fix32::one(),fix32::zero())}
+fn main(){
+ check(TEXTURE.size_log2==6 && TEXTURE.full_mip);check(MESH_DESC.directory_sector==0xa001 && MESH_DESC.directory_word==1);
+ check(POSE.position.x==fix32::one());check(MATERIAL.ambient_response==fix32::from_ratio(1,2));
+ let configuration=config();check(configuration.command_a.commands.first_sector()==0x9800);
+ let copied=mesh_desc();check(copied.directory_word==1);
+ let view=layout(64);check(view.size_log2==6 && view.required_sectors()==100);
+ let color=Rgb565::rgb(8,8,24);check(color.raw==0x0843);
+ check(Rgba8::rgb(80,120,160).to_rgba5551()==0x53e9);
+ let value=material(Rgba8::rgb(1,2,3));check(value.uniform_color.g==2 && value.unlit);
+ let mesh=MeshDesc::from_memory(unsafe{GpuMemory::from_sectors(0xa000,16)},65,2);
+ check(mesh.directory_sector==0xa001 && mesh.directory_word==1);
+ let surface=unsafe{Rgb565Surface::from_sectors(0x8000,2048)};
+ check(GpuMemory::from_surface(surface).first_sector()==0x8000);
+ halt(0x600d);
+}"#;
+    for (label, bad) in [
+        (
+            "short-texture",
+            source.replace("byte_len_lo:12800", "byte_len_lo:12799"),
+        ),
+        ("odd-directory", source.replace("},130,2)", "},131,2)")),
+        ("short-directory", source.replace("},130,2)", "},2046,2)")),
+    ] {
+        let error = parse(&bad, &format!("builders-{label}"), false)
+            .err()
+            .expect("invalid static layout accepted");
+        assert!(error.contains("assertion failed"), "{error}");
+    }
+    // A dynamic invalid size must fail on the CPU, not silently under-allocate.
+    for (label, source, debug, expected) in [
+        ("valid-release", source.to_owned(), false, 0x600d),
+        ("valid-debug", source.to_owned(), true, 0x600d),
+        ("skip-release", "mod gpu_api; fn main(){debug_assert!(false);halt(0x600d);}".to_owned(), false, 0x600d),
+        ("assert-debug", "mod gpu_api; fn main(){debug_assert!(false);halt(0x600d);}".to_owned(), true, 0xffff),
+        ("basic-release", "mod gpu_api;use gpu_api::*;fn memory(count:u16)->GpuMemory{unsafe{GpuMemory::from_asset(AssetBytes{first_sector:65535,sector_count:count,byte_len_lo:0,byte_len_hi:0})}}fn main(){let value=memory(2);halt(0xbad);}".to_owned(), false, 0xffff),
+        (
+            "invalid",
+            source.replace("layout(64)", "layout(63)"),
+            true,
+            0xffff,
+        ),
+    ] {
+        let parsed = parse(&source, &format!("builders-{label}"), debug)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+        options.gpu_debug = debug;
+        let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+        let mut cpu = CpuV3Sim::default();
+        cpu.set_boot_window(&program.words);
+        let mut halted = false;
+        for _ in 0..500_000 {
+            if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
+                assert_eq!(signal, expected);
+                halted = true;
+                break;
+            }
+        }
+        assert!(halted, "bounded builder timeout");
+    }
+}

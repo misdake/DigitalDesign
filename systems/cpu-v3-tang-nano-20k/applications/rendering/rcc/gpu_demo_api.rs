@@ -7,6 +7,7 @@ use gpu_board::*;
 mod boot_resources;
 use boot_resources::*;
 
+// Legacy names stay direct to avoid adding another aggregate-return ABI layer.
 pub fn demo_point(x: fix32, y: fix32, z: fix32) -> Vec3 {
     Vec3 { x: x, y: y, z: z }
 }
@@ -25,85 +26,75 @@ pub fn demo_pose(position: Vec3, angles: Vec3, scale: Vec3) -> Transform {
     }
 }
 pub fn demo_mesh() -> Mesh {
-    Mesh::from_native(MeshDesc {
-        directory_sector: GPU_RENDERER_MESH_DIRECTORY,
-        directory_word: GPU_RENDERER_MESH_DIRECTORY_WORD,
-        meshlet_count: GPU_RENDERER_MESH_COUNT,
-        storage: unsafe {
-            GpuMemory::from_sectors(GPU_RENDERER_MESH_FIRST, GPU_RENDERER_MESH_SECTORS)
-        },
-    })
+    // Legacy boot-resource offsets stay at this compatibility boundary.
+    let storage =
+        unsafe { GpuMemory::from_sectors(GPU_RENDERER_MESH_FIRST, GPU_RENDERER_MESH_SECTORS) };
+    let directory = (GPU_RENDERER_MESH_DIRECTORY - GPU_RENDERER_MESH_FIRST) * 64
+        + GPU_RENDERER_MESH_DIRECTORY_WORD;
+    Mesh::from_native(MeshDesc::from_memory(
+        storage,
+        directory,
+        GPU_RENDERER_MESH_COUNT,
+    ))
 }
 pub fn demo_mesh_part(first: u16, count: u16) -> Mesh {
     let whole = demo_mesh();
     whole.subset(first, count)
 }
 pub fn demo_texture() -> Texture {
-    Texture::from_native(TextureDesc {
-        format: TextureFormat::Rgb565,
-        memory: unsafe {
-            GpuMemory::from_sectors(GPU_RENDERER_TEXTURE, GPU_RENDERER_TEXTURE_SECTORS)
-        },
-        size_log2: GPU_RENDERER_TEXTURE_LOG2,
-        full_mip: GPU_RENDERER_TEXTURE_MIP != 0,
-    })
+    let memory =
+        unsafe { GpuMemory::from_sectors(GPU_RENDERER_TEXTURE, GPU_RENDERER_TEXTURE_SECTORS) };
+    let mut mipmaps = Mipmaps::BaseOnly;
+    if GPU_RENDERER_TEXTURE_MIP != 0 {
+        mipmaps = Mipmaps::Full;
+    }
+    Texture::from_native(TextureDesc::from_memory(
+        memory,
+        TextureLayout::square(
+            1 << GPU_RENDERER_TEXTURE_LOG2,
+            TextureFormat::Rgb565,
+            mipmaps,
+        ),
+    ))
 }
 pub fn demo_camera() -> Camera {
-    Camera::new(CameraDesc {
-        eye: demo_zero(),
-        angles: demo_zero(),
-        projection: Projection::from_focal_pixels(fix32::from_int(200), fix32::from_int(199)),
-    })
+    Camera::new(CameraDesc::new(
+        Vec3::zero(),
+        Vec3::zero(),
+        Projection::from_focal_pixels(fix32::from_int(200), fix32::from_int(199)),
+    ))
 }
 pub fn demo_material(color: Rgba8, unlit: bool) -> Material {
-    Material::new(MaterialDesc {
-        uniform_color: color,
-        specular: Rgb8 { r: 0, g: 0, b: 0 },
-        ambient_response: fix32::from_words(32768, 0),
-        directional_response: fix32::from_words(32768, 0),
-        shininess: Shininess::S16,
-        unlit: unlit,
-    })
+    let half = fix!(0.5);
+    Material::new(
+        MaterialDesc::lit(color, Rgb8::black(), Shininess::S16)
+            .with_response(half, half)
+            .with_unlit(unlit),
+    )
 }
 pub fn demo_white() -> Rgba8 {
-    Rgba8 {
-        r: 255,
-        g: 255,
-        b: 255,
-        a: 255,
-    }
+    Rgba8::white()
 }
 pub fn demo_lighting(direction: Vec3) -> Lighting {
-    Lighting {
-        direction: direction,
-        ambient: fix32::from_int(1),
-        directional: fix32::from_int(1),
-    }
+    Lighting::directional(direction, fix32::one(), fix32::one())
 }
 pub fn demo_state() -> RenderState {
-    RenderState::new(RenderStateDesc {
-        depth: DepthFunc::LessEqual,
-        depth_write: true,
-        blend: BlendMode::Replace,
-        filter: TextureFilter::Nearest,
-        lighting: demo_lighting(demo_point(fix32::zero(), fix32::zero(), fix32::from_int(1))),
-    })
+    RenderState::new(
+        RenderStateDesc::opaque(demo_lighting(Vec3::unit_z()))
+            .with_depth(DepthFunc::LessEqual, true)
+            .with_filter(TextureFilter::Nearest),
+    )
 }
 pub fn demo_grid(second: bool) -> UiGrid {
     let atlas_sector =
         (GPU_RENDERER_ATLAS_BYTE_ADDRESS_HIGH << 9) | (GPU_RENDERER_ATLAS_BYTE_ADDRESS_LOW >> 7);
     let atlas = UiAtlas::from_native(unsafe { GpuMemory::from_sectors(atlas_sector, 512) }, 255);
     let mut grid = UiGrid::from_memory(board_ui_memory(second), &atlas);
-    grid.fill(255);
+    grid.clear();
     grid
 }
 pub fn demo_glyph(grid: &mut UiGrid, x: u16, y: u16, digit: u16) {
-    let cell: CellRect = CellRect {
-        x: x,
-        y: y,
-        width: 1,
-        height: 1,
-    };
+    let cell = CellRect::new(x, y, 1, 1);
     // RCC byte slices are packed constants; no persistent UI mirror is needed.
     if digit == 0 {
         grid.write(cell, b"0");

@@ -14,7 +14,7 @@ pub(super) fn slice(ty: &Type) -> bool {
     matches!(ty, Type::Reference(reference) if reference.mutability.is_none()
         && matches!(reference.elem.as_ref(), Type::Slice(slice) if byte(&slice.elem)))
 }
-fn constant_type(ty: &Type) -> bool {
+pub(super) fn constant_type(ty: &Type) -> bool {
     slice(ty) || matches!(ty, Type::Array(array) if byte(&array.elem))
 }
 

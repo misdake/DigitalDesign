@@ -7,6 +7,8 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 ## Documents
 
 - [Application quickstart](/systems/cpu-v3-tang-nano-20k/docs/application-quickstart.md): first build/frame, target language restrictions and application/static-content integration.
+- [Constructing SDK values](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md): readable numbers/colors, source-value builders and derived asset/framebuffer descriptions.
+- [Static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md): constant descriptions, source includes, external placement and loader-owned CPU data images.
 
 - [UI text helpers](/systems/cpu-v3-tang-nano-20k/docs/ui-text.md): stateless ASCII number formatting over the public GPU UI, separate from menu layout and driver ownership.
 - [CPU canvas](/systems/cpu-v3-tang-nano-20k/docs/cpu-canvas.md): CPU-owned RGB565 spans and simple shapes, with explicit GPU/Display handoff.

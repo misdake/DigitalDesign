@@ -40,7 +40,7 @@ pub struct Projection {
     ray_y: u16,
 }
 impl Projection {
-    pub fn focal_pixels(&self) -> fix32 {
+    pub const fn focal_pixels(self) -> fix32 {
         self.focal_pixels
     }
 }
@@ -51,30 +51,92 @@ pub struct CameraDesc {
     pub projection: Projection,
 }
 
-pub fn gpu_scene_projection_focal(mut out: Array<u16>, focal: fix32, far: fix32) -> bool {
-    // Below 100 pixels |ray_x| > 1, outside native Q14's narrower admissible
-    // interval. Reject before scaling to Q14, which could overflow fix32.
-    if focal < fix32::from_int(100) || far <= fix32::zero() || far >= fix32::from_int(200) {
+#[derive(Copy, Clone)]
+struct ProjectionResult {
+    valid: bool,
+    value: Projection,
+}
+const fn gpu_scene_projection_invalid(focal: fix32, far: fix32) -> ProjectionResult {
+    ProjectionResult {
+        valid: false,
+        value: Projection {
+            focal_pixels: focal,
+            far,
+            ray_x: 0,
+            ray_y: 0,
+        },
+    }
+}
+const fn gpu_scene_projection_focal_desc(focal: fix32, far: fix32) -> ProjectionResult {
+    if focal.less_than(fix32::from_int(100))
+        || !far.greater_than(fix32::zero())
+        || !far.less_than(fix32::from_int(200))
+    {
+        gpu_scene_projection_invalid(focal, far)
+    } else {
+        let inverse = frcp(focal.wrapping_mul(fix32::from_words(256, 0)));
+        let scale = fix32::from_int(16384);
+        let ray_x = fix32::from_words(25600, 0)
+            .wrapping_neg()
+            .wrapping_mul(inverse)
+            .wrapping_mul(scale)
+            .round()
+            .to_int();
+        let ray_y = fix32::from_words(15360, 0)
+            .wrapping_neg()
+            .wrapping_mul(inverse)
+            .wrapping_mul(scale)
+            .round()
+            .to_int();
+        ProjectionResult {
+            valid: ray_x >= -12288 && ray_x <= 12288 && ray_y >= -12288 && ray_y <= 12288,
+            value: Projection {
+                focal_pixels: focal,
+                far,
+                ray_x: ray_x as u16,
+                ray_y: ray_y as u16,
+            },
+        }
+    }
+}
+const fn gpu_scene_projection_fov_desc(
+    angle: fix32,
+    far: fix32,
+    horizontal: bool,
+) -> ProjectionResult {
+    if !angle.greater_than(fix32::zero()) || !angle.less_than(fix32::from_words(9279, 3)) {
+        gpu_scene_projection_invalid(fix32::zero(), far)
+    } else {
+        let pair = fsincos(angle.wrapping_mul(fix32::from_words(32768, 0)));
+        let pixels = if horizontal {
+            fix32::from_int(200)
+        } else {
+            fix32::from_int(120)
+        };
+        let numerator = pixels.wrapping_mul(pair.y());
+        if !pair.x().greater_than(fix32::zero())
+            || !numerator.greater_than(fix32::zero())
+            || numerator.greater_than(fix32::from_words(65535, 32767).wrapping_mul(pair.x()))
+        {
+            gpu_scene_projection_invalid(fix32::zero(), far)
+        } else {
+            gpu_scene_projection_focal_desc(numerator.wrapping_mul(frcp(pair.x())), far)
+        }
+    }
+}
+fn gpu_scene_projection_write(mut out: Array<u16>, result: ProjectionResult) -> bool {
+    if !result.valid {
         return false;
     }
-    let inverse = frcp(focal * fix32::from_words(256, 0));
-    let scale = fix32::from_int(16384);
-    let ray_x = (-fix32::from_words(25600, 0) * inverse * scale)
-        .round()
-        .to_int();
-    let ray_y = (-fix32::from_words(15360, 0) * inverse * scale)
-        .round()
-        .to_int();
-    if ray_x < -12288 || ray_x > 12288 || ray_y < -12288 || ray_y > 12288 {
-        return false;
-    }
-    gpu_scene_fix_write(out, 0, focal);
-    gpu_scene_fix_write(out, 2, far);
-    out[4u16] = ray_x as u16;
-    out[5u16] = ray_y as u16;
+    gpu_scene_fix_write(out, 0, result.value.focal_pixels);
+    gpu_scene_fix_write(out, 2, result.value.far);
+    out[4u16] = result.value.ray_x;
+    out[5u16] = result.value.ray_y;
     true
 }
-
+pub fn gpu_scene_projection_focal(out: Array<u16>, focal: fix32, far: fix32) -> bool {
+    gpu_scene_projection_write(out, gpu_scene_projection_focal_desc(focal, far))
+}
 pub fn gpu_scene_projection_value(input: Array<u16>) -> Projection {
     Projection {
         focal_pixels: gpu_scene_fix_read(input, 0),
@@ -83,27 +145,13 @@ pub fn gpu_scene_projection_value(input: Array<u16>) -> Projection {
         ray_y: input[5u16],
     }
 }
-
 pub fn gpu_scene_projection_fov(
     out: Array<u16>,
     angle: fix32,
     far: fix32,
     horizontal: bool,
 ) -> bool {
-    if angle <= fix32::zero() || angle >= fix32::from_words(9279, 3) {
-        return false;
-    }
-    let pair = fsincos(angle * fix32::from_words(32768, 0));
-    let mut pixels = fix32::from_int(120);
-    if horizontal {
-        pixels = fix32::from_int(200);
-    }
-    let numerator = pixels * pair.y();
-    let max_focal = fix32::from_words(65535, 32767);
-    if pair.x() <= fix32::zero() || numerator <= fix32::zero() || numerator > max_focal * pair.x() {
-        return false;
-    }
-    gpu_scene_projection_focal(out, numerator * frcp(pair.x()), far)
+    gpu_scene_projection_write(out, gpu_scene_projection_fov_desc(angle, far, horizontal))
 }
 
 fn gpu_scene_row_write(out: Array<u16>, at: u16, row: Vec4) {

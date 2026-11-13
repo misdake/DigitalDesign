@@ -3,6 +3,51 @@ use cpu_v3_boot_format::*;
 #[path = "../../tests/support/boot_contract.rs"]
 mod contract;
 use contract::fixture;
+
+#[test]
+fn static_data_copy_is_separate_from_resource_permissions_and_repackable() {
+    let code = single_boot_code(&fixture()).unwrap().to_vec();
+    let data = [0x34, 0x12, 0, 0, 0xcd, 0xab];
+    let package = pack_application_with_data(&code, 3, &data, &[]).unwrap();
+    let commands = single_boot_commands(&package).unwrap();
+    assert_eq!(commands[0].address, 0);
+    assert_eq!(commands[0].length, data.len());
+    assert_eq!(commands[0].payload, Some(data.as_slice()));
+    assert!(boot_image_map(&code, &package).contains("static_data_bytes=6"));
+    assert!(pack_application_with_data(&code, 3, &data[..4], &[]).is_err());
+    assert!(pack_application_with_data(&code, 8193, &[], &[]).is_err());
+    assert!(
+        pack_application_with_data(&code, 3, &data, &[BootResource::copy(0, vec![1, 2])]).is_err()
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../target/sdk-static-assets/repack");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("application.v3bin"), &code).unwrap();
+    std::fs::write(root.join("application.static-words"), "3\n").unwrap();
+    std::fs::write(root.join("application.static-data"), data).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cpu-v3-pack"))
+        .arg(root.join("application.v3bin"))
+        .arg("-o")
+        .arg(root.join("packed.bin"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(root.join("packed.bin")).unwrap(), package);
+    std::fs::write(root.join("application.static-data"), [1, 2]).unwrap();
+    assert!(
+        !std::process::Command::new(env!("CARGO_BIN_EXE_cpu-v3-pack"))
+            .arg(root.join("application.v3bin"))
+            .arg("-o")
+            .arg(root.join("bad.bin"))
+            .status()
+            .unwrap()
+            .success()
+    );
+}
 #[test]
 fn command_line_repack_uses_the_project_resource_files() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(

@@ -117,3 +117,9 @@ mod support_contracts;
 
 #[path = "../boot/boot_address_spaces.rs"]
 mod boot_address_spaces;
+
+#[path = "compiler/static_assets.rs"]
+mod static_assets;
+
+#[path = "compiler/const_math.rs"]
+mod const_math;

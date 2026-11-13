@@ -213,6 +213,8 @@ they are not part of this surface.
 |---|---|---|
 | zero | `fix32::zero()`, `vec2::zero()`, `vec3::zero()`, `vec4::zero()` | all lanes are Q16.16 zero |
 | numeric conversion | `fix32::from_int(x: i16) -> fix32`, `x.to_int() -> i16` | `I16TOF`; `FTOI16` truncates toward zero and wraps on overflow |
+| decimal literal | `fix!(0.125)`, `fix!(-1.25)`, `fix!(1e-3)` | unsuffixed decimal literal, optional trailing comma; exact compile-time decimal-to-Q16.16 quantization, nearest/ties away from zero, range errors in both profiles |
+| readable constants | `fix32::one()`, `fix32::from_ratio(n: i16, d: u16)`, `fix32::degrees(value: i16)` | compile-time arguments; nearest Q16.16, ties away from zero; ratio denominator must be nonzero |
 | raw construction | `fix32::from_words(lo: u16, hi: u16) -> fix32` | construct the exact 32-bit Q16.16 pattern, low half first (`ILO2F`, `IHI2F`); a compile-time zero low half uses one exact `I16TOF` |
 | raw extraction | `x.lo_bits() -> u16`, `x.hi_bits() -> u16` | extract the exact low/high half (`FLO2I`, `FHI2I`) |
 | vector construction | `vec2::new(x, y)`, `vec3::new(x, y, z)`, `vec4::new(x, y, z, w)` | build a consecutive F-register range from `fix32` lanes |
@@ -305,7 +307,8 @@ const HALF: i16 = -3;
 ```
 
 Inlined as immediates at every use; costs no memory. The initializer must be a constant
-expression (literals and arithmetic on other consts).
+expression (literals and arithmetic on other consts). Checked sources additionally
+support the pure values and constructors in §9.5.
 
 ### 9.2 `static NAME: Ty = expr;` — global scalars
 
@@ -314,8 +317,9 @@ static SCORE: u16 = 0;
 static TICK: i16 = -1;
 ```
 
-One word in data memory at a compiler-assigned address; the compiler emits a hidden
-`__data_init` routine at the start of `main` that stores each non-zero initializer.
+One word in data memory at a compiler-assigned address; the compiler normally emits hidden
+startup stores at the start of `main` for each non-zero initializer. A loader-owned
+data image can replace those stores (§9.5). Scalar bool statics occupy one word.
 The target startup must zero the allocated static range first. The frontend
 publishes its exclusive end word address as `Program.debug.static_data_end`;
 the start is the configured `data_base`. This includes imported-module and
@@ -354,6 +358,63 @@ The initializer must be a literal of that type built from constants (`const` val
 are not) and every field/element must be present. Aggregate statics are allocated **after** the
 scalar and `Buf<u16|i16, N>` statics, so adding one never moves an existing program's data.
 
+### 9.5 Checked constant values and pure functions
+
+After rustc validation, checked sources can use struct, tuple, fieldless-enum,
+array and boolean constants. Constants have no unique address; use `static` for
+stored values. Pure nongeneric `const fn`, associated constructors and by-value
+constant methods support
+immutable let bindings, tail values, fields/indexes, lengths, casts, conditions,
+short-circuit operators and single-condition `assert!` / `debug_assert!`. Forward constant
+references are resolved on demand. Array element context preserves intermediate
+integer width; shifts retain their source width and signed right shifts.
+
+Evaluation is bounded to 100,000 steps and 64 dependent calls/constants. Device
+operations, heap/pointer access, mutable locals, loops, early return, match and
+general references/macros are not part of this subset. Unsafe syntax retains
+rustc's gate and cannot enable side effects in constant evaluation. Helpers used
+only during compilation need no runtime ABI; runtime calls keep existing target
+ABI restrictions. Known pure calls in ordinary code are folded when all inputs
+are constant, preserving local shadowing. Static assertions are checked in both profiles. Runtime `debug_assert!`
+is removed before dependency analysis unless target `gpu_debug` is set; retained
+assertions use the runtime assert intrinsic with halt signal 0xffff. Compile-time sizes may
+use usize/u32 and explicit narrowing.
+
+The SDK's `fix!` is a genuine Rust macro backed by a shared const decimal parser.
+Checked sources retain the original invocation through rustc validation, then
+RCC expands it into `fix32::from_words`. It accepts a signed unsuffixed decimal
+integer/fraction/scientific literal, including separators. Expressions, binary/
+hex literals and numeric suffixes are rejected. The parser keeps five integer
+positions and seventeen fractional decimal positions: every Q16.16 half-step
+terminates within seventeen decimal places, so later digits cannot affect
+nearest/ties-away rounding. Wide intermediates exist only in the compiler/host
+shim. This adds no ordinary floating-point type or runtime parsing ABI.
+
+The full-program frontend expands `include_bytes!` from the trusted file origin
+and exposes included-file dependencies and placed assets in `Program.assets`.
+System-approved `RccConfig::asset_banks` supply external layout policy.
+`Program::take_static_initializers` transfers startup stores to a caller-owned
+loader image; callers must load every returned word before entry. Default
+compiler callers retain startup stores. See the system's
+[static assets](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md) for the
+AssetBytes declaration/sector encoding and native GPU consumers.
+
+`#[static_buffer]` marks immutable descriptions whose const evaluation may
+request zero-initialized external storage through `StaticBuffer::new`. The
+compiler uses the same approved banks and allocator as assets, with independent
+per-request alignment and an optional constant `align` minimum. Allocation is
+cached by declaration, not by function name or returned type. It follows actual
+const evaluation through ordinary helper calls; the frontend does not know
+surface/command/UI formats. Original initializer witnesses preserve rustc's
+existing checking contract before resolved descriptions enter target lowering.
+`Program.assets.buffers` reports placement for the system-owned ZERO/repack path.
+
+Const fixed arithmetic uses the real host shim's named wrapping/comparison
+methods; ordinary Rust operator traits remain non-const. RCP/RSQRT/SINCOS have
+a shared higher-precision rustc/RCC const model, while dynamic calls retain native
+target lowering. `static fix32` uses two words and typed FPU loads. Ordinary
+Vec/Mat structs remain the stored vector/matrix value ABI.
+
 ## 9b. Structs
 
 ```rust
@@ -377,7 +438,10 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   Point { .. };` allocates `sizeof` words through a frame slot; the literal — or another value of
   the same struct type, copied word by word — initializes it; `p.x` loads a field and `p.x = v` /
   `p.x += v` stores one; field chains (`p.inner.a`) and buffer fields (`p.flags[1u16] = v`) work.
-  The binding must be `mut` for any field write, and the type annotation is required.
+  The binding must be `mut` for any field write. Checked compilation can infer
+  a struct literal or constructor (including a folded constant result); a copy
+  of an existing struct variable still uses an explicit type annotation. The
+  unchecked legacy frontend requires the annotation for literals/copies.
 - A struct *name* is not a value: read a field, copy it with a typed `let`, or take its address.
 - **Returning structs**: `fn make(x: u16) -> Point` writes the result through a hidden destination
   pointer the caller supplies (§14), so `let p: Point = make(1u16);` fills `p`'s own frame slot —
@@ -398,8 +462,8 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   assignments, nested structs, struct buffers, copies and aggregate returns. Compound field
   assignments remain integer-only. Static fields accept constant `fix32::zero()`,
   `fix32::from_int(integer)` and `fix32::from_words(lo, hi)` constructors, emitted
-  as exact low/high data words. Arbitrary static FPU expressions and `Buf<fix32, N>`
-  are not supported. With optimization enabled, an uninterrupted full-vector lane
+  as exact low/high data words. Checked constant FPU computations fold to those raw
+  constructors. `Buf<fix32, N>` remains unsupported. With optimization enabled, an uninterrupted full-vector lane
   extract/store sequence to adjacent fields with the same base may use one FSTV;
   loads, calls or other writes between fields prevent this combination.
 - Out of scope for ordinary structs (§12): `impl` methods, `vecN` fields, and recursive layouts.
@@ -820,6 +884,13 @@ Static data initialization groups non-zero words by 256-word address page, tempo
 as the page base, and writes each value with `store_sp`'s full u8 offset. After the section it
 restores the main frame's stack pointer before any user or runtime code executes.
 
+Aggregate destinations also accept lazy `if`/`else` and scoped block values.
+Each selected branch initializes the caller-owned destination; block-local
+statements execute in their lexical scope before the tail value. No scalar phi
+or intermediate aggregate address escapes the branch. This covers explicitly
+typed bindings, arguments and aggregate returns; scalar if-expression rules are
+unchanged.
+
 ## 15. Lexical affine resources
 
 This opt-in target-language subset provides deterministic lexical cleanup without
@@ -1191,8 +1262,10 @@ methods add no object header or hidden return pointer. Enum locals and parameter
 used as method receivers have a one-word frame place, so shared/mutable receivers
 borrow the original storage. Single-word enum rvalues (variants and enum-returning
 direct calls) are evaluated once into a temporary before later arguments. This uses the
-same internal view lowering; public `view_of`, aggregate temporary restrictions,
-and general reference support do not change. Rustc still checks mutability,
+same internal view lowering. Checked struct value receivers likewise materialize
+a constructor result once in bounded local storage, supporting dynamic builder
+chains; public `view_of` still requires an existing place. General reference
+support does not change. Rustc still checks mutability,
 aliasing, moves and unsafe calls before rewriting. Trait/generic impls and
 non-function impl members remain unsupported. The restrictions on enum payloads,
 representations, explicit discriminants, constants and tuples are unchanged.

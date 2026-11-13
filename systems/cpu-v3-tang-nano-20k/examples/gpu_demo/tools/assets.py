@@ -14,6 +14,8 @@ sys.path.insert(0, str(ROOT / "systems/cpu-v3-tang-nano-20k/tools"))
 from gpu_layout import validate_asset_range, sectors
 from capture_layout import description as capture_description
 import ui_font
+import gpu_mesh_layout
+from gpu_mesh_layout import native_record
 SCENE = ROOT / "ip/gpu-v2/examples/vliw_integration"
 sys.path.insert(0, str(SCENE))
 import material_scene
@@ -33,28 +35,6 @@ def font():
     return bytes(ui_font.atlas(rows)), rows
 
 
-def native_record(mesh):
-    vertices, triangles = mesh["vertices"], mesh["triangles"]
-    assert 0 < len(vertices) <= 64 and 0 < len(triangles) <= 96
-    offset = (3 * len(vertices) + 1) // 2
-    payload_size = ((offset + (len(triangles) + 2) // 3) * 8 + 127) // 128 * 128
-    assert 128 <= payload_size <= 1024
-    record = bytearray(128 + payload_size)
-    origin = mesh["config"]
-    meta = [len(vertices) | (len(triangles) << 8) | (20 << 16) | (offset << 24) | (1 << 31),
-            mesh.get("color_mode", 0) << 4, (origin[0] & 0xFFFFFFFF) | ((origin[1] & 0xFFFFFFFF) << 32),
-            (origin[2] & 0xFFFFFFFF) | (origin[3] << 32)]
-    struct.pack_into("<4Q", record, 0, *meta)
-    for i, vertex in enumerate(vertices):
-        assert vertex[0] < 1 << 30 and vertex[1] < 1 << 30
-        struct.pack_into("<3I", record, 128 + i * 12, *vertex)
-    for i, triangle in enumerate(triangles):
-        assert len(triangle) == 3 and all(0 <= j < len(vertices) for j in triangle)
-        at = 128 + (offset + i // 3) * 8
-        value = struct.unpack_from("<Q", record, at)[0]
-        value |= sum(index << (6 * lane) for lane, index in enumerate(triangle)) << (18 * (i % 3))
-        struct.pack_into("<Q", record, at, value)
-    return bytes(record)
 
 
 def texture():
@@ -98,7 +78,7 @@ def pack(output):
         assert address % 128 == 0 and len(payload) % 128 == 0
         validate_asset_range(address, len(payload))
         (output/name).write_bytes(payload)
-    sources = [Path(__file__), EXAMPLE/"assets/scene.json", *ui_font.SOURCES,
+    sources = [Path(gpu_mesh_layout.__file__), Path(__file__), EXAMPLE/"assets/scene.json", *ui_font.SOURCES,
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_layout.py",
                ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_layout.rs",
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_texture_layout.py",

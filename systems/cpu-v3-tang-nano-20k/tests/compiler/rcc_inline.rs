@@ -146,6 +146,7 @@ fn scene_fix_helpers_reduce_clocked_core_cycles_with_guarded_memory() {
     let candidate_input = rcc::frontend::Program {
         funcs: frontend.funcs.clone(),
         debug: frontend.debug.clone(),
+        assets: frontend.assets.clone(),
     };
     let start = std::time::Instant::now();
     let (baseline, _) = try_compile_with_inline_report(frontend, &opts, "main").unwrap();

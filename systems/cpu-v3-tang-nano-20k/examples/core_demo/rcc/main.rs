@@ -2,8 +2,10 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
-mod gpu_board;
-use gpu_board::*;
+mod palette;
+use palette::*;
+mod working_set;
+use working_set::*;
 mod boot_resources;
 use boot_resources::*;
 mod gamepad;
@@ -16,8 +18,6 @@ mod ui;
 use ui::*;
 mod cpu_canvas;
 use cpu_canvas::*;
-mod gpu_layout;
-use gpu_layout::*;
 mod graphics_pages;
 use graphics_pages::*;
 mod system_pages;
@@ -30,35 +30,24 @@ fn record(
     depth: &DepthBuffer,
     overlay: bool,
 ) {
-    let mut load = ColorLoad::clear(Rgb565::from_raw(0x0843));
+    let mut load = ColorLoad::clear(Rgb565::rgb(8, 8, 24));
     if overlay {
         load = ColorLoad::load();
     }
     let mut pass = buffer.pass(color, depth, load, DepthLoad::load());
     if overlay {
-        pass.draw_ui(
-            grid,
-            CellRect {
-                x: 0,
-                y: 0,
-                width: 50,
-                height: 15,
-            },
-        );
+        pass.draw_ui(grid, CellRect::full_grid());
     }
 }
 fn main() {
-    let mut gpu = Gpu::init(board_gpu_config());
+    let mut gpu = Gpu::init(STORAGE.gpu);
     let mut buffer = gpu.command_buffer();
-    let color_a = board_color_a();
-    let color_b = board_color_b();
-    let depth = board_depth();
+    let color_a = ColorBuffer::from_surface(STORAGE.color_a);
+    let color_b = ColorBuffer::from_surface(STORAGE.color_b);
+    let depth = DepthBuffer::from_memory(GpuMemory::from_buffer(STORAGE.depth.storage));
     let mut display = Display::open();
-    let atlas = UiAtlas::from_native(
-        unsafe { GpuMemory::from_sectors(CORE_ATLAS_SECTOR, CORE_ATLAS_SECTORS) },
-        CORE_ATLAS_GLYPHS,
-    );
-    let mut grid = UiGrid::from_memory(board_ui_memory(false), &atlas);
+    let atlas = UiAtlas::from_desc(CORE_ATLAS);
+    let mut grid = UiGrid::from_memory(GpuMemory::from_buffer(STORAGE.ui.storage), &atlas);
     let mut state = initial_state(CORE_DEMO_PAGE);
     gamepad_init();
     loop {
@@ -77,11 +66,11 @@ fn main() {
         }
         gpu.submit(buffer);
         buffer = gpu.wait();
-        let mut base = GPU_COLOR_A_SECTOR;
+        let mut surface = COLOR_A;
         if state.frames & 1 == 0 {
-            base = GPU_COLOR_B_SECTOR;
+            surface = COLOR_B;
         }
-        let canvas = unsafe { canvas_from_sectors(base, GPU_PLANE_SECTORS) };
+        let canvas = unsafe { canvas_from_surface(surface) };
         if state.page == 0 {
             home_page(&mut grid, state);
             canvas_rect(
@@ -90,7 +79,7 @@ fn main() {
                 (3 + state.selection * 2) as i16 * 16,
                 352,
                 16,
-                0x0328,
+                SELECTION,
             );
         } else if state.page == 1 {
             software_page(&mut grid, canvas, state);

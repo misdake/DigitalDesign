@@ -256,6 +256,14 @@ The `gpu_debug` profile adds one type/live word per minimum slot; release remove
 that 256-word registry. Public adapters own allocation and Drop;
 scene helpers receive only a temporary payload span.
 
+Pure value constructors use `debug_assert!` for runtime layout diagnostics. The
+target `gpu_debug` setting, independent of host Cargo profile, retains these
+checks; release removes the condition and branch before runtime dependencies are
+selected. Constant descriptions are always checked, including in release.
+Nonempty external spans and physical sector endpoint guards remain unconditional.
+Existing essential command bounds, allocation failure and execution/retirement
+checks remain in release.
+
 ## External word transfers
 
 `gpu_window_read_words(sector, offset, destination, count)` and

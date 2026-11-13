@@ -23,8 +23,20 @@
 )]
 //! Explicit recording, submission, retirement and prepared scene resources.
 use crate::dsl_rt::*;
+mod static_assets;
+use static_assets::*;
+mod static_buffer;
+use static_buffer::*;
 mod gpu_api_values;
 use gpu_api_values::*;
+mod gpu_value_constructors;
+use gpu_value_constructors::*;
+mod gpu_transform_values;
+use gpu_transform_values::*;
+mod texture_layout;
+use texture_layout::*;
+mod surface;
+use surface::*;
 mod gpu_schema;
 use gpu_schema::*;
 mod gpu_config;
@@ -76,7 +88,39 @@ const GPU_KIND_DEPTH: u16 = 9;
 const GPU_KIND_MESH: u16 = 5;
 const GPU_KIND_MODEL_CACHE: u16 = 12;
 
+impl CommandMemory {
+    pub const fn allocate(command_bytes: usize, push_bytes: usize) -> Self {
+        assert!(command_bytes <= 65536 && push_bytes <= 65536);
+        let commands = StaticBuffer::new(command_bytes, 128);
+        let push = StaticBuffer::new(push_bytes, 128);
+        Self::new(
+            GpuMemory::from_buffer(commands),
+            GpuMemory::from_buffer(push),
+        )
+    }
+}
 impl GpuMemory {
+    pub const fn from_buffer(buffer: StaticBuffer) -> Self {
+        Self {
+            first_sector: buffer.first_sector(),
+            sector_count: buffer.sector_count(),
+        }
+    }
+    pub const fn from_surface(surface: Rgb565Surface) -> Self {
+        Self {
+            first_sector: surface.first_sector(),
+            sector_count: surface.sector_count(),
+        }
+    }
+    /// The caller preserves the placed external allocation and its access lifetime.
+    pub const unsafe fn from_asset(asset: AssetBytes) -> Self {
+        assert!(asset.sector_count != 0);
+        assert!(asset.sector_count - 1 <= 65535 - asset.first_sector);
+        Self {
+            first_sector: asset.first_sector,
+            sector_count: asset.sector_count,
+        }
+    }
     /// Caller guarantees real allocation, lifetime, and no illegal aliasing.
     pub unsafe fn from_sectors(first_sector: u16, sector_count: u16) -> Self {
         if !gpu_memory_extent_valid(first_sector, sector_count) {
@@ -88,13 +132,80 @@ impl GpuMemory {
         }
     }
 }
+impl TextureDesc {
+    pub const fn from_memory(memory: GpuMemory, layout: TextureLayout) -> Self {
+        debug_assert!(memory.first_sector & 1 == 0);
+        debug_assert!(memory.sector_count >= layout.required_sectors());
+        Self {
+            memory,
+            size_log2: layout.size_log2,
+            full_mip: layout.full_mip,
+            format: layout.format,
+        }
+    }
+    /// Bind immutable placed bytes. Layout validates the complete native footprint.
+    pub const unsafe fn from_asset(asset: AssetBytes, layout: TextureLayout) -> Self {
+        let required = layout.required_sectors();
+        let high = required >> 9;
+        let low = (required & 511) << 7;
+        debug_assert!(
+            asset.byte_len_hi > high || (asset.byte_len_hi == high && asset.byte_len_lo >= low)
+        );
+        let memory = unsafe { GpuMemory::from_asset(asset) };
+        Self::from_memory(memory, layout)
+    }
+}
+impl MeshDesc {
+    /// Word offset within the supplied native package, not an absolute address.
+    pub const fn from_memory(
+        memory: GpuMemory,
+        directory_offset_words: u16,
+        meshlets: u16,
+    ) -> Self {
+        debug_assert!(meshlets <= 5460);
+        let relative = directory_offset_words >> 6;
+        let word = directory_offset_words & 63;
+        debug_assert!(relative < memory.sector_count);
+        debug_assert!((word + meshlets * 2 + 63) >> 6 <= memory.sector_count - relative);
+        Self {
+            directory_sector: memory.first_sector + relative,
+            directory_word: word,
+            meshlet_count: meshlets,
+            storage: memory,
+        }
+    }
+    /// Compile-time byte offset supports directories anywhere in a placed package.
+    pub const unsafe fn from_asset(
+        asset: AssetBytes,
+        directory_offset_bytes: usize,
+        meshlets: u16,
+    ) -> Self {
+        let length = ((asset.byte_len_hi as usize) << 16) | asset.byte_len_lo as usize;
+        debug_assert!(meshlets <= 5460 && directory_offset_bytes & 1 == 0);
+        debug_assert!(directory_offset_bytes < length);
+        debug_assert!(directory_offset_bytes + (meshlets as usize) * 4 <= length);
+        let memory = unsafe { GpuMemory::from_asset(asset) };
+        Self {
+            directory_sector: memory.first_sector + (directory_offset_bytes / 128) as u16,
+            directory_word: ((directory_offset_bytes % 128) / 2) as u16,
+            meshlet_count: meshlets,
+            storage: memory,
+        }
+    }
+}
 #[derive(Copy, Clone)]
 pub struct Rgb565 {
     pub raw: u16,
 }
 impl Rgb565 {
-    pub fn from_raw(raw: u16) -> Self {
+    pub const fn from_raw(raw: u16) -> Self {
         Rgb565 { raw: raw }
+    }
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self::from_raw((((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3))
+    }
+    pub const fn gray(value: u8) -> Self {
+        Self::rgb(value, value, value)
     }
 }
 #[repr(u16)]
@@ -108,13 +219,13 @@ pub struct ColorLoad {
     pub value: Rgb565,
 }
 impl ColorLoad {
-    pub fn load() -> Self {
+    pub const fn load() -> Self {
         ColorLoad {
             op: LoadOp::Load,
             value: Rgb565 { raw: 0 },
         }
     }
-    pub fn clear(value: Rgb565) -> Self {
+    pub const fn clear(value: Rgb565) -> Self {
         ColorLoad {
             op: LoadOp::Clear,
             value: value,
@@ -126,13 +237,16 @@ pub struct DepthLoad {
     pub value: u16,
 }
 impl DepthLoad {
-    pub fn load() -> Self {
+    pub const fn clear_far() -> Self {
+        Self::clear(65535)
+    }
+    pub const fn load() -> Self {
         DepthLoad {
             op: LoadOp::Load,
             value: 0,
         }
     }
-    pub fn clear(value: u16) -> Self {
+    pub const fn clear(value: u16) -> Self {
         DepthLoad {
             op: LoadOp::Clear,
             value: value,
@@ -287,6 +401,9 @@ fn gpu_api_new_surface(memory: GpuMemory, kind: u16) -> u16 {
     slot
 }
 impl ColorBuffer {
+    pub fn from_surface(surface: Rgb565Surface) -> Self {
+        Self::from_memory(GpuMemory::from_surface(surface))
+    }
     pub fn from_memory(memory: GpuMemory) -> Self {
         ColorBuffer {
             slot: gpu_api_new_surface(memory, GPU_KIND_COLOR),
@@ -670,26 +787,20 @@ fn gpu_api_checked(ok: bool, kind: u16) {
     }
 }
 impl Projection {
-    pub fn from_focal_pixels(focal: fix32, far: fix32) -> Self {
-        let out: Buf<u16, 6> = Buf::new([0; 6]);
-        gpu_api_checked(gpu_scene_projection_focal(out.as_array(), focal, far), 1);
-        gpu_scene_projection_value(out.as_array())
+    pub const fn from_focal_pixels(focal: fix32, far: fix32) -> Self {
+        let result: ProjectionResult = gpu_scene_projection_focal_desc(focal, far);
+        assert!(result.valid);
+        result.value
     }
-    pub fn from_vertical_fov(angle: fix32, far: fix32) -> Self {
-        let out: Buf<u16, 6> = Buf::new([0; 6]);
-        gpu_api_checked(
-            gpu_scene_projection_fov(out.as_array(), angle, far, false),
-            1,
-        );
-        gpu_scene_projection_value(out.as_array())
+    pub const fn from_vertical_fov(angle: fix32, far: fix32) -> Self {
+        let result: ProjectionResult = gpu_scene_projection_fov_desc(angle, far, false);
+        assert!(result.valid);
+        result.value
     }
-    pub fn from_horizontal_fov(angle: fix32, far: fix32) -> Self {
-        let out: Buf<u16, 6> = Buf::new([0; 6]);
-        gpu_api_checked(
-            gpu_scene_projection_fov(out.as_array(), angle, far, true),
-            1,
-        );
-        gpu_scene_projection_value(out.as_array())
+    pub const fn from_horizontal_fov(angle: fix32, far: fix32) -> Self {
+        let result: ProjectionResult = gpu_scene_projection_fov_desc(angle, far, true);
+        assert!(result.valid);
+        result.value
     }
 }
 
@@ -722,15 +833,26 @@ impl Model {
     pub fn new(transform: Transform) -> Self {
         let slot = gpu_api_object(true, 2);
         gpu_api_checked(gpu_scene_model_init(gpu_arena_data(slot), transform), 2);
-        let derived = gpu_arena_alloc(true, GPU_KIND_MODEL_CACHE);
-        if derived == 0 {
-            gpu_api_checked(gpu_arena_free(slot, true, 2), 2);
-            gpu_api_fail(7, 1, 2, 0);
-        }
-        gpu_model_cache_init(gpu_arena_data(derived));
-        gpu_arena_data(slot)[GPU_MODEL_DERIVED] = derived;
-        Model { slot: slot }
+        gpu_api_finish_model(slot)
     }
+    pub fn from_matrices(world: Mat3x4, normal: Mat3x3) -> Self {
+        let slot = gpu_api_object(true, 2);
+        gpu_api_checked(
+            gpu_scene_model_matrices(gpu_arena_data(slot), world, normal),
+            2,
+        );
+        gpu_api_finish_model(slot)
+    }
+}
+fn gpu_api_finish_model(slot: u16) -> Model {
+    let derived = gpu_arena_alloc(true, GPU_KIND_MODEL_CACHE);
+    if derived == 0 {
+        gpu_api_checked(gpu_arena_free(slot, true, 2), 2);
+        gpu_api_fail(7, 1, 2, 0);
+    }
+    gpu_model_cache_init(gpu_arena_data(derived));
+    gpu_arena_data(slot)[GPU_MODEL_DERIVED] = derived;
+    Model { slot: slot }
 }
 impl Drop for Model {
     fn drop(&mut self) {
@@ -803,11 +925,34 @@ impl Drop for Texture {
     }
 }
 
+#[derive(Copy, Clone)]
+pub struct UiAtlasDesc {
+    pub memory: GpuMemory,
+    pub glyph_count: u16,
+}
+impl UiAtlasDesc {
+    /// Caller guarantees immutable, exclusive backing storage for the atlas.
+    /// Native records occupy 256 bytes; their base is 64-KiB aligned.
+    pub const unsafe fn from_asset(asset: AssetBytes) -> Self {
+        debug_assert!(asset.first_sector & 511 == 0);
+        debug_assert!(asset.byte_len_hi == 0);
+        debug_assert!(asset.byte_len_lo != 0 && asset.byte_len_lo & 255 == 0);
+        Self {
+            memory: unsafe { GpuMemory::from_asset(asset) },
+            glyph_count: asset.byte_len_lo / 256,
+        }
+    }
+}
+
 #[rcc_resource]
 pub struct UiAtlas {
     slot: u16,
 }
 impl UiAtlas {
+    /// Caller owns the immutable external allocation for the atlas's lifetime.
+    pub fn from_desc(desc: UiAtlasDesc) -> Self {
+        Self::from_native(desc.memory, desc.glyph_count)
+    }
     pub fn from_native(memory: GpuMemory, glyph_count: u16) -> Self {
         let slot = gpu_api_object(false, 10);
         gpu_api_checked(
@@ -830,6 +975,9 @@ pub struct UiGrid {
     slot: u16,
 }
 impl UiGrid {
+    pub fn clear(&mut self) {
+        self.fill(255);
+    }
     pub fn from_memory(memory: GpuMemory, atlas: &UiAtlas) -> Self {
         let slot = gpu_api_object(false, 11);
         gpu_api_checked(

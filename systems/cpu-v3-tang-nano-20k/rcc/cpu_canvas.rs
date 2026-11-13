@@ -1,9 +1,15 @@
 //! CPU-owned RGB565 column16 canvas. Drawing never submits GPU or Display work.
 use crate::dsl_rt::*;
+mod surface;
+use surface::*;
 
 #[derive(Copy, Clone)]
 pub struct CpuCanvas {
     sector: u16,
+}
+/// Caller owns this surface for CPU writes, with no GPU/display reader.
+pub unsafe fn canvas_from_surface(surface: Rgb565Surface) -> CpuCanvas {
+    unsafe { canvas_from_sectors(surface.first_sector(), surface.sector_count()) }
 }
 /// Caller owns the complete plane for CPU writes, with no GPU/Display reader.
 pub unsafe fn canvas_from_sectors(first_sector: u16, sector_count: u16) -> CpuCanvas {

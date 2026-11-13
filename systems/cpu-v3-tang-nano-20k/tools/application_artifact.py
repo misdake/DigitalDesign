@@ -78,8 +78,10 @@ class Artifact:
         package = self.files[m['package']]
         require(package[:4] == b'CB06', 'package signature')
         expected = []
+        data = self.files.get('application.static-data')
+        require(data is None or len(data) == target['static_words']*2, 'static data extent')
         if target['static_words']:
-            expected.append((0, target['static_words']*2, None))
+            expected.append((0, target['static_words']*2, data))
         expected.append((((target['code_segment'] << 16) | target['code_base_words'])*2, len(self.code), self.code))
         for resource in m['resources']:
             require(resource['kind'] in ('copy', 'zero'), 'resource operation')

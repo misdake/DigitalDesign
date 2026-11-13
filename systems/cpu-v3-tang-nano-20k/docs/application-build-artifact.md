@@ -1,7 +1,7 @@
 ---
 id: application-build-artifact
 status: active
-last-verified: 2026-11-06
+last-verified: 2026-11-10
 ---
 
 # Same-build application artifacts
@@ -27,7 +27,8 @@ flowchart LR
 Observation records the source text actually returned by lookup. It does not
 alter approved library roots, local-override identity or private-domain checks.
 Application preparation explicitly selects the entry, ordinary module roots,
-capture policy and specialization. Compilation does not infer these dependencies
+capture policy and specialization. Included binary files also become declared inputs.
+Compilation does not infer these dependencies
 from Bloxorz or RTT directory suffixes.
 
 ## Exported files
@@ -36,6 +37,8 @@ from Bloxorz or RTT directory suffixes.
 | --- | --- |
 | `application.v3bin` | Linked little-endian instruction words |
 | `application.static-words` | Frontend's exclusive static word extent |
+| `application.static-data` | Loader-owned little-endian initial CPU static prefix |
+| `application.repack.conf` | Complete existing-input recipe for fixed and source-declared resources |
 | `cpu-v3-boot.bin` | Exact generated CB06 COPY/ZERO image |
 | `cpu-v3-boot.map`, `boot_resources.rs` | Existing boot map and generated constants |
 | `application.dbg` | RCC debug v2, with final function/global/line locations |

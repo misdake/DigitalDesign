@@ -5,16 +5,43 @@ use crate::{application_entry, rcc_modules};
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
 use std::path::{Path, PathBuf};
+#[path = "asset_relocation.rs"]
+mod asset_relocation;
+
+pub struct CompiledApplication {
+    pub options: CompilerOptions,
+    pub program: rcc_backend::CpuV3Program,
+    pub static_words: usize,
+    pub static_data: Vec<u8>,
+    pub assets: Vec<crate::boot::BootResource>,
+    pub buffers: Vec<rcc::frontend::static_buffers::StaticBuffer>,
+}
+
+pub(super) struct CompileRequest<'a> {
+    pub path: &'a Path,
+    pub constants: &'a str,
+    pub shared: &'a Path,
+    pub frontend: ApplicationFrontend,
+    pub policy: &'a ApplicationSource,
+    pub reserved: &'a [crate::boot::BootResource],
+}
 
 pub(super) fn compile_program(
-    path: &Path,
+    request: CompileRequest<'_>,
     options: &CompilerOptions,
-    constants: &str,
-    shared: &Path,
-    frontend: ApplicationFrontend,
-    policy: &ApplicationSource,
     inputs: &mut Inputs,
-) -> (rcc_backend::CpuV3Program, usize) {
+) -> CompiledApplication {
+    let CompileRequest {
+        path,
+        constants,
+        shared,
+        frontend,
+        policy,
+        reserved,
+    } = request;
+    let mut options = options.clone();
+    options.asset_banks = asset_banks(reserved);
+    let options = &options;
     let explicit_gpu = matches!(frontend, ApplicationFrontend::ExplicitGpu);
     let entry = policy.entry;
     inputs.watch(path);
@@ -102,7 +129,7 @@ pub(super) fn compile_program(
     );
     inputs.embedded_standard_library();
     let mut dependencies = vec![];
-    let program = if explicit_gpu {
+    let mut program = if explicit_gpu {
         let disabled = rcc_modules::RendererCaptureConfiguration::without_capture();
         rcc_modules::GpuSources {
             local_dir: source_dir,
@@ -137,9 +164,89 @@ pub(super) fn compile_program(
     }
     .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
     let static_words = program.debug.static_data_end;
+    let mut static_data = vec![0; static_words * 2];
+    for (address, value) in program.take_static_initializers() {
+        static_data[address as usize * 2..address as usize * 2 + 2]
+            .copy_from_slice(&value.to_le_bytes());
+    }
+    for input in &program.assets.inputs {
+        inputs.watch(&input.path);
+        assert_eq!(
+            std::fs::read(&input.path).unwrap(),
+            input.data,
+            "included bytes changed during compilation"
+        );
+    }
+    asset_relocation::apply(&mut program.assets.placed, &policy.sector_relocations)
+        .expect("native asset sector relocation");
+    let assets = program
+        .assets
+        .placed
+        .iter()
+        .map(|asset| crate::boot::BootResource::copy(asset.address, asset.load_data()))
+        .chain(
+            program
+                .assets
+                .buffers
+                .iter()
+                .map(|buffer| crate::boot::BootResource::zero(buffer.address, buffer.bytes)),
+        )
+        .collect();
     for path in dependencies {
         inputs.watch(&path);
     }
+    let buffers = program.assets.buffers.clone();
     let program = rcc_backend::try_compile(program, options, entry).unwrap();
-    (program, static_words)
+    CompiledApplication {
+        options: options.clone(),
+        program,
+        static_words,
+        static_data,
+        assets,
+        buffers,
+    }
+}
+
+fn asset_banks(
+    reserved: &[crate::boot::BootResource],
+) -> Vec<rcc::frontend::static_assets::AssetBank> {
+    use crate::rcc_modules::capture_profile::layout;
+    let mut banks = Vec::new();
+    for (first, end) in [
+        (layout::GPU_ASSET_FIRST_SECTOR, layout::GPU_ASSET_END_SECTOR),
+        (
+            layout::GPU_ASSET_LOW_FIRST_SECTOR,
+            layout::GPU_ASSET_LOW_END_SECTOR,
+        ),
+    ] {
+        let mut ranges =
+            std::iter::once(first as usize * 128..end as usize * 128).collect::<Vec<_>>();
+        for resource in reserved {
+            let occupied =
+                resource.address..resource.address + resource.data.len().max(resource.zero_bytes);
+            ranges = ranges
+                .into_iter()
+                .flat_map(|range| {
+                    let mut free = Vec::new();
+                    if occupied.end <= range.start || occupied.start >= range.end {
+                        free.push(range);
+                    } else {
+                        if range.start < occupied.start {
+                            free.push(range.start..occupied.start);
+                        }
+                        if occupied.end < range.end {
+                            free.push(occupied.end..range.end);
+                        }
+                    }
+                    free
+                })
+                .collect();
+        }
+        banks.extend(
+            ranges
+                .into_iter()
+                .map(|bytes| rcc::frontend::static_assets::AssetBank { bytes }),
+        );
+    }
+    banks
 }

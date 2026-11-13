@@ -6,10 +6,6 @@ use cpu_v3_tang_nano_20k::{
 };
 use std::{path::Path, time::Duration};
 
-#[allow(dead_code)]
-#[path = "../../../rcc/gpu_layout.rs"]
-mod layout;
-
 #[test]
 fn cpu_canvas_clips_visible_pixels_and_restores_the_cpu_window() {
     use cpu_v3::{rcc_backend, CpuV3Sim};
@@ -106,6 +102,9 @@ struct Demo {
     minimum_sp: u16,
     static_words: usize,
     asset_ids: std::collections::BTreeMap<String, u8>,
+    colors: [u32; 2],
+    depth: usize,
+    ui: usize,
 }
 impl Demo {
     fn new() -> Self {
@@ -156,12 +155,41 @@ impl Demo {
                 Some((name.to_string(), value))
             })
             .collect();
+        let storage: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(Path::new(&artifact).join("application.buffers.json")).unwrap(),
+        )
+        .unwrap();
+        let base = |name: &str| {
+            let entry = storage
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["name"] == name)
+                .unwrap();
+            assert_eq!(entry["bytes"], 204800);
+            assert_eq!(entry["alignment"], 65536);
+            (entry["address"].as_u64().unwrap() / 2) as u32
+        };
+        let colors = [base("COLOR_A"), base("COLOR_B")];
+        let depth = base("DEPTH") as usize;
+        let ui = storage
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "UI_STORAGE")
+            .unwrap()["address"]
+            .as_u64()
+            .unwrap() as usize
+            / 2;
         let mut result = Self {
             sim,
             presents: 0,
             minimum_sp: 0xc000,
             static_words,
             asset_ids,
+            colors,
+            depth,
+            ui,
         };
         result.input(0, [128, 128]);
         result
@@ -185,14 +213,11 @@ impl Demo {
                 self.sim.advance_host_time(Duration::from_micros(16667));
                 if self.sim.advance_vblank() {
                     let expected = if self.presents.is_multiple_of(2) {
-                        layout::GPU_COLOR_B_SECTOR
+                        self.colors[1]
                     } else {
-                        layout::GPU_COLOR_A_SECTOR
+                        self.colors[0]
                     };
-                    assert_eq!(
-                        self.sim.display_state().active_base,
-                        u32::from(expected) * 64
-                    );
+                    assert_eq!(self.sim.display_state().active_base, expected);
                     assert!(self.sim.gpu().last_error().is_none());
                     assert_eq!(
                         self.sim.cpu().physical_memory_slice()[front..front + 102400],
@@ -225,7 +250,7 @@ impl Demo {
     }
     fn glyph(&self, x: usize, y: usize) -> u8 {
         let memory = self.sim.cpu().physical_memory_slice();
-        let base = usize::from(layout::GPU_UI_PAGE0_SECTOR) * 64;
+        let base = self.ui;
         let cell = y * 50 + x;
         (memory[base + cell / 2] >> ((cell & 1) * 8)) as u8
     }
@@ -535,8 +560,8 @@ fn graphical_pages_controls_and_present_from_exported_application() {
                     .all(|&v| v == 0x0843)
             );
         }
-        let depth = usize::from(layout::GPU_DEPTH_SECTOR) * 64;
-        assert!(memory[depth..depth + 102400].iter().all(|&v| v == 0xa55a));
+        let depth = demo.depth;
+        assert!(memory[depth..depth + 102400].iter().all(|&v| v == 0));
         demo.click(1 << 11);
     }
     assert_eq!(demo.text(2, 1, 14), "DEMONSTRATIONS");

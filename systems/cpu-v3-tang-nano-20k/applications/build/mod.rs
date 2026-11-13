@@ -2,6 +2,7 @@
 use cpu_v3_boot_format::{parse_boot_project, BootProject};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+pub mod asset_metadata;
 
 #[path = "../../examples/gpu_bench/application.rs"]
 mod bench;
@@ -42,6 +43,7 @@ impl CapturePolicy {
     }
 }
 pub struct ApplicationSource {
+    pub sector_relocations: Vec<asset_metadata::SectorRelocation>,
     pub entry: &'static str,
     pub ordinary_dirs: Vec<PathBuf>,
     pub capture: CapturePolicy,
@@ -226,6 +228,7 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
         constants: String::new(),
         extra_assets: vec![],
         source: ApplicationSource {
+            sector_relocations: vec![],
             entry: definition.entry,
             capture: definition.capture,
             ordinary_dirs: definition
@@ -263,6 +266,7 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
             .as_array()
             .unwrap()
             .iter()
+            .filter(|resource| resource["placement"] != "source")
             .map(|resource| {
                 let name = resource["file"].as_str().unwrap();
                 let symbol = match assets.names {
@@ -285,10 +289,21 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
                 .extra_assets
                 .push(format!("{}/{name}", assets.directory));
         }
+        for resource in manifest["resources"].as_array().unwrap() {
+            if resource["placement"] == "source" {
+                application.extra_assets.push(format!(
+                    "{}/{}",
+                    assets.directory,
+                    resource["file"].as_str().unwrap()
+                ));
+            }
+        }
         manifest
     } else {
         Value::Null
     };
+    application.source.sector_relocations =
+        asset_metadata::sector_relocations(&manifest).expect("producer sector relocation metadata");
     (definition.configure)(&mut context, &mut application, &manifest);
     if let Some(assets) = definition.assets {
         let mut repack = format!(
