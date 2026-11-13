@@ -39,6 +39,26 @@ pub struct InlineFrameCost {
     pub baseline_fpu_spill: usize,
     pub candidate_fpu_spill: usize,
 }
+impl InlineFrameCost {
+    /// A caller-local soft rejection; thresholds do not disable other callers.
+    pub fn rejection(&self) -> Option<InlineRejection> {
+        if self.candidate_frame > self.baseline_frame + 16 {
+            Some(InlineRejection::FrameGrowth {
+                function: self.function,
+                baseline: self.baseline_frame,
+                candidate: self.candidate_frame,
+            })
+        } else if self.candidate_fpu_spill > self.baseline_fpu_spill + 8 {
+            Some(InlineRejection::FpuSpillGrowth {
+                function: self.function,
+                baseline: self.baseline_fpu_spill,
+                candidate: self.candidate_fpu_spill,
+            })
+        } else {
+            None
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct InlineSourceOrigin {
     pub site: usize,
@@ -61,7 +81,7 @@ pub struct InlineCompilationReport {
 }
 impl std::fmt::Display for InlineCompilationReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f,"inline: {:?}; {} attempted expansions, {} retained, {} cumulative nodes, {} fallbacks; baseline {:?} words, candidate {:?} words",self.outcome,self.ir.expanded_sites(),self.retained_sites,self.ir.introduced_nodes,self.fallback_count,self.baseline_words,self.candidate_words)?;
+        writeln!(f,"inline: {:?}; {} attempted expansions ({} automatic), {} retained, {} cumulative nodes, {} fallbacks; baseline {:?} words, candidate {:?} words",self.outcome,self.ir.expanded_sites(),self.ir.automatic_expanded_sites(),self.retained_sites,self.ir.introduced_nodes,self.fallback_count,self.baseline_words,self.candidate_words)?;
         writeln!(
             f,
             "  target lowering: baseline {:?}, candidate {:?}",
@@ -79,10 +99,13 @@ impl std::fmt::Display for InlineCompilationReport {
                 cost.baseline_fpu_spill,
                 cost.candidate_fpu_spill
             )?;
+            if let Some(reason) = cost.rejection() {
+                writeln!(f, "    caller restored: {reason:?}")?;
+            }
         }
         for (index, site) in self.ir.sites.iter().enumerate() {
             let origin = self.origins.get(index);
-            writeln!(f,"  {} -> {}: {:?}; depth {}; source {} {:?}:{:?}; callee {:?}; physical caller {:?}:{:?}",site.caller,site.callee,site.decision,site.depth,site.source_function,origin.and_then(|o|o.source_file.as_deref()),site.line,origin.and_then(|o|o.callee_file.as_deref()),origin.and_then(|o|o.caller_file.as_deref()),site.callsite_line)?;
+            writeln!(f,"  {} -> {}: {:?}; automatic {}; depth {}; source {} {:?}:{:?}; callee {:?}; physical caller {:?}:{:?}",site.caller,site.callee,site.decision,site.automatic,site.depth,site.source_function,origin.and_then(|o|o.source_file.as_deref()),site.line,origin.and_then(|o|o.callee_file.as_deref()),origin.and_then(|o|o.caller_file.as_deref()),site.callsite_line)?;
         }
         Ok(())
     }
@@ -102,14 +125,15 @@ pub fn try_compile_with_inline_report(
         return Ok((compile_ir(functions, options, main, debug)?, report));
     }
     let live = reachable_functions(&functions, main)?;
-    if !live
-        .iter()
-        .any(|n| functions[n].inline_hint == InlineHint::Hint)
+    if !options.inline.automatic
+        && !live
+            .iter()
+            .any(|n| functions[n].inline_hint == InlineHint::Hint)
     {
         return Ok((compile_ir(functions, options, main, debug)?, report));
     }
     let mut candidate = functions.clone();
-    report.ir = inline_hints(
+    report.ir = inline_calls(
         &mut candidate,
         &live,
         &HashSet::from([main]),
@@ -141,13 +165,18 @@ pub fn try_compile_with_inline_report(
     }
     let start = Instant::now();
     let (baseline, baseline_costs) =
-        compile_ir_with_allocations(functions, options, main, debug.clone())?;
+        compile_ir_with_allocations(&functions, options, main, debug.clone())?;
     report.baseline_lowering = start.elapsed();
     report.baseline_words = Some(baseline.words.len());
     let start = Instant::now();
-    let result = compile_ir_with_allocations(candidate, options, main, debug);
+    let mut selection = InlineSelection {
+        originals: &functions,
+        baseline_costs: &baseline_costs,
+        frames: Vec::new(),
+    };
+    let result = compile_ir_selected(&candidate, options, main, debug, Some(&mut selection));
     report.candidate_lowering = start.elapsed();
-    let (candidate, costs) = match result {
+    let (candidate, _) = match result {
         Ok(value) => value,
         Err(error) if error.is_resource_limit() => {
             report.outcome = InlineOutcome::Baseline(InlineRejection::Resource(error.to_string()));
@@ -164,22 +193,18 @@ pub fn try_compile_with_inline_report(
         .filter(|s| s.decision == InlineDecision::Expanded)
         .map(|s| s.caller)
         .collect();
-    let mut names: Vec<_> = changed.into_iter().collect();
-    names.sort_unstable();
-    for name in names {
-        // A changed out-of-line caller may itself become unreachable.
-        if let (Some(before), Some(after)) = (baseline_costs.get(name), costs.get(name)) {
-            report.frames.push(InlineFrameCost {
-                function: name,
-                baseline_frame: before.frame,
-                candidate_frame: after.frame,
-                baseline_gpr_spill: before.gpr_spill,
-                candidate_gpr_spill: after.gpr_spill,
-                baseline_fpu_spill: before.fpu_spill,
-                candidate_fpu_spill: after.fpu_spill,
-            });
-        }
-    }
+    report.frames = selection
+        .frames
+        .into_iter()
+        .filter(|frame| changed.contains(&frame.function))
+        .collect();
+    report.frames.sort_by_key(|frame| frame.function);
+    let rejected: HashSet<_> = report
+        .frames
+        .iter()
+        .filter(|frame| frame.rejection().is_some())
+        .map(|frame| frame.function)
+        .collect();
     let allowance = 64.max(baseline.words.len().div_ceil(10));
     let rejection = if candidate.words.len() > baseline.words.len() + allowance {
         Some(InlineRejection::CodeGrowth {
@@ -188,30 +213,21 @@ pub fn try_compile_with_inline_report(
             allowance,
         })
     } else {
-        report.frames.iter().find_map(|f| {
-            if f.candidate_frame > f.baseline_frame + 16 {
-                Some(InlineRejection::FrameGrowth {
-                    function: f.function,
-                    baseline: f.baseline_frame,
-                    candidate: f.candidate_frame,
-                })
-            } else if f.candidate_fpu_spill > f.baseline_fpu_spill + 8 {
-                Some(InlineRejection::FpuSpillGrowth {
-                    function: f.function,
-                    baseline: f.baseline_fpu_spill,
-                    candidate: f.candidate_fpu_spill,
-                })
-            } else {
-                None
-            }
-        })
+        None
     };
     if let Some(reason) = rejection {
         report.outcome = InlineOutcome::Baseline(reason);
         report.fallback_count = 1;
         Ok((baseline, report))
     } else {
-        report.retained_sites = report.ir.expanded_sites();
+        report.retained_sites = report
+            .ir
+            .sites
+            .iter()
+            .filter(|site| {
+                site.decision == InlineDecision::Expanded && !rejected.contains(site.caller)
+            })
+            .count();
         report.outcome = InlineOutcome::Applied;
         Ok((candidate, report))
     }

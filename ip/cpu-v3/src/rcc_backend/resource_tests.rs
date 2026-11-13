@@ -452,18 +452,18 @@ fn resource_methods_reject_invalid_ownership_and_receivers() {
             "let mut r=renderer_open(1);r.query::<u16>();",
             "type arguments",
         ),
-        ("renderer_open(1).query();", "simple bound local"),
+        ("renderer_open(1).query();", "resource method receiver"),
         (
             "let mut r=renderer_open(1);(r).query();",
-            "simple bound local",
+            "resource method receiver",
         ),
         (
             "let mut r=renderer_open(1);r.word.query();",
-            "simple bound local",
+            "resource fields are private",
         ),
         (
             "let mut r=renderer_open(1);r.frame().finish(false);",
-            "simple bound local",
+            "resource method receiver",
         ),
         (
             "let r=renderer_open(1);r.finish();r.finish();",

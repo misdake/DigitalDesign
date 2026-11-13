@@ -453,7 +453,7 @@ fn vector_vmuls_emits_exact_two_word_words() {
 #[test]
 fn vector_spill_across_a_call_uses_full_width_fldv_fstv() {
     let source = r#"
-            fn keep(a: vec3, b: vec3) -> vec3 { a + b }
+            #[inline(never)] fn keep(a: vec3, b: vec3) -> vec3 { a + b }
             fn main() {
                 let v = vec3::new(fix32::from_int(1), fix32::from_int(2), fix32::from_int(3));
                 let w = keep(v, v);

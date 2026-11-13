@@ -16,7 +16,8 @@ usage: rcc <input.rs> [options]
   --target <target>    cpu-v2 (default) or cpu-v3
   -o <file>           binary output (default: <input>.bin)
   --lst <file>        disassembly listing (default: <input>.lst)
-  --no-inline         disable explicit inlining (cpu-v3 only)
+  --no-auto-inline    disable automatic inlining, retaining hints (cpu-v3 only)
+  --no-inline         disable all inlining (cpu-v3 only)
   --no-opt            disable all optimization passes
   --function-table <mode>
                       call_abs table: auto (default), none, all, or name,...
@@ -76,6 +77,12 @@ fn main() -> ExitCode {
                     die("--no-inline requires --target cpu-v3");
                 }
                 v3_opts.inline.enabled = false;
+            }
+            "--no-auto-inline" => {
+                if target != Target::CpuV3 {
+                    die("--no-auto-inline requires --target cpu-v3");
+                }
+                v3_opts.inline.automatic = false;
             }
             "--function-table" => {
                 if target == Target::CpuV3 {

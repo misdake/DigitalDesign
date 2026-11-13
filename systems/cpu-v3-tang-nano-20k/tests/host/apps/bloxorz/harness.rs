@@ -27,6 +27,7 @@ pub(super) struct ApplicationCase {
     pub capture: Option<CaptureProbe>,
     pub hook: bool,
     pub observe_pose: bool,
+    pub automatic_inline: Option<bool>,
     pub edit_modules: Option<fn(&Path, &Path)>,
 }
 impl Default for ApplicationCase {
@@ -39,6 +40,7 @@ impl Default for ApplicationCase {
             capture: None,
             hook: false,
             observe_pose: true,
+            automatic_inline: None,
             edit_modules: None,
         }
     }
@@ -152,7 +154,10 @@ pub(super) fn application_case(
         .replace("\r\n", "\n");
     let source = prepare_source(source, probe, case.entry, case.edit, case.observe_pose);
     std::fs::write(out.join("compiled-main.rs"), &source).unwrap();
-    let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let mut options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    if let Some(enabled) = case.automatic_inline {
+        options.inline.automatic = enabled;
+    }
     let mut dependencies = vec![];
     let profile = resolver::capture_profile::ColumnLayout;
     let capture = if case.capture.is_some() {
@@ -227,7 +232,11 @@ pub fn profiler_gate(d:Array<u16>)->u16 {
         .unwrap();
     }
     let frontend_static_words = ir.debug.static_data_end;
-    let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
+    let (program, inline) =
+        rcc_backend::try_compile_with_inline_report(ir, &options, "main").unwrap();
+    if !case.observe_pose {
+        std::fs::write(out.join("inline-report.txt"), inline.to_string()).unwrap();
+    }
     std::fs::write(
         out.join("budget.json"),
         serde_json::to_vec_pretty(&serde_json::json!({"static_words":frontend_static_words}))

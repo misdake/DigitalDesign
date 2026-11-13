@@ -25,7 +25,7 @@ pub(crate) mod rustc_tests;
 pub use options::CompilerOptions;
 
 use rcc::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Compile target-independent RCC IR for the CpuV3 ABI and ISA, panicking on a
 /// backend error. Compiler front ends should call [`try_compile`] and report
@@ -54,7 +54,7 @@ fn compile_ir(
     main: FuncName,
     debug: rcc::frontend::FrontendDebug,
 ) -> Result<CpuV3Program, BackendError> {
-    compile_ir_with_allocations(functions, options, main, debug).map(|(program, _)| program)
+    compile_ir_with_allocations(&functions, options, main, debug).map(|(program, _)| program)
 }
 
 #[derive(Clone, Debug)]
@@ -63,64 +63,125 @@ struct AllocationCost {
     gpr_spill: usize,
     fpu_spill: usize,
 }
+struct InlineSelection<'a> {
+    originals: &'a HashMap<FuncName, IrFunc>,
+    baseline_costs: &'a HashMap<FuncName, AllocationCost>,
+    frames: Vec<InlineFrameCost>,
+}
+impl InlineSelection<'_> {
+    fn retain(&mut self, name: FuncName, candidate: &AllocationCost) -> bool {
+        let Some(baseline) = self.baseline_costs.get(name) else {
+            return true;
+        };
+        let frame = InlineFrameCost {
+            function: name,
+            baseline_frame: baseline.frame,
+            candidate_frame: candidate.frame,
+            baseline_gpr_spill: baseline.gpr_spill,
+            candidate_gpr_spill: candidate.gpr_spill,
+            baseline_fpu_spill: baseline.fpu_spill,
+            candidate_fpu_spill: candidate.fpu_spill,
+        };
+        let retain = frame.rejection().is_none();
+        self.frames.push(frame);
+        retain
+    }
+}
+fn allocate_function(
+    mut function: IrFunc,
+    options: &CompilerOptions,
+    entry: bool,
+) -> Result<(IrFunc, Allocation), BackendError> {
+    // If-conversion precedes constant-arm hoisting, which can dissolve diamonds.
+    if !options.opt.is_disabled() {
+        convert_diamonds(&mut function);
+    }
+    optimize(&mut function, &options.opt);
+    let (function, mut allocation) =
+        try_allocate_with_convention(&function, options.opt.coalesce, CPU_V3_REGISTER_CONVENTION)
+            .map_err(BackendError::Allocation)?;
+    if entry {
+        allocation.callee_saved.clear();
+    }
+    Ok((function, allocation))
+}
+fn allocation_cost(allocation: &Allocation) -> AllocationCost {
+    AllocationCost {
+        frame: allocation.frame_size(),
+        gpr_spill: allocation.spill_slots as usize,
+        fpu_spill: allocation.fpu_area_words(),
+    }
+}
 fn compile_ir_with_allocations(
-    functions: HashMap<FuncName, IrFunc>,
+    functions: &HashMap<FuncName, IrFunc>,
     options: &CompilerOptions,
     main: FuncName,
     debug: rcc::frontend::FrontendDebug,
 ) -> Result<(CpuV3Program, HashMap<FuncName, AllocationCost>), BackendError> {
-    let reachable = reachable_functions(&functions, main)?;
-    let mut order = vec![main];
-    let mut rest = reachable
-        .iter()
-        .copied()
-        .filter(|name| *name != main)
-        .collect::<Vec<_>>();
-    rest.sort_unstable();
-    order.extend(rest);
-
-    let mut lowered = Vec::with_capacity(order.len());
+    compile_ir_selected(functions, options, main, debug, None)
+}
+fn compile_ir_selected(
+    functions: &HashMap<FuncName, IrFunc>,
+    options: &CompilerOptions,
+    main: FuncName,
+    debug: rcc::frontend::FrontendDebug,
+    mut selection: Option<&mut InlineSelection<'_>>,
+) -> Result<(CpuV3Program, HashMap<FuncName, AllocationCost>), BackendError> {
+    let mut pending = BTreeSet::from([main]);
+    let mut visited = HashSet::new();
+    let mut lowered = Vec::new();
     let mut costs = HashMap::new();
-    for name in order {
-        let mut function = functions
+    while let Some(name) = pending.pop_first() {
+        if !visited.insert(name) {
+            continue;
+        }
+        let mut source = functions
             .get(name)
-            .ok_or_else(|| BackendError::UnknownFunction(name.to_string()))?
-            .clone();
-        // Safe if-conversion (CpuV3): simple one-instruction diamonds become
-        // Boolean comparisons or conditional moves. It changes the CFG and
-        // debugger stepping shape, so it only runs with optimizations enabled;
-        // it runs before the optimizer's constant-arm hoisting, which would
-        // otherwise dissolve the diamond shape.
-        if !options.opt.is_disabled() {
-            convert_diamonds(&mut function);
+            .ok_or_else(|| BackendError::UnknownFunction(name.to_string()))?;
+        let (mut function, mut allocation) =
+            allocate_function(source.clone(), options, name == main)?;
+        if let Some(selector) = selection.as_deref_mut() {
+            if !selector.retain(name, &allocation_cost(&allocation)) {
+                source = selector
+                    .originals
+                    .get(name)
+                    .ok_or_else(|| BackendError::UnknownFunction(name.to_string()))?;
+                (function, allocation) = allocate_function(source.clone(), options, name == main)?;
+            }
         }
-        optimize(&mut function, &options.opt);
-        let (function, mut allocation) = try_allocate_with_convention(
-            &function,
-            options.opt.coalesce,
-            CPU_V3_REGISTER_CONVENTION,
-        )
-        .map_err(BackendError::Allocation)?;
-        if name == main {
-            allocation.callee_saved.clear();
+        // Only the selected body owns reachability. Restoring it can revive
+        // callees removed by inlining; rejected bodies must not retain theirs.
+        for callee in function_callees(source) {
+            if !visited.contains(callee) {
+                pending.insert(callee);
+            }
         }
-        costs.insert(
+        costs.insert(name, allocation_cost(&allocation));
+        lowered.push((
             name,
-            AllocationCost {
-                frame: allocation.frame_size(),
-                gpr_spill: allocation.spill_slots as usize,
-                fpu_spill: allocation.fpu_area_words(),
-            },
-        );
-        lowered.push(lower_function(
-            &function,
-            &allocation,
-            name == main,
-            options.stack_init,
+            lower_function(&function, &allocation, name == main, options.stack_init),
         ));
     }
-
-    Ok((link(lowered, options, debug)?, costs))
+    // Discovery order does not determine final code layout.
+    lowered.sort_by_key(|(name, _)| (*name != main, *name));
+    Ok((
+        link(
+            lowered.into_iter().map(|(_, body)| body).collect(),
+            options,
+            debug,
+        )?,
+        costs,
+    ))
+}
+fn function_callees(function: &IrFunc) -> impl Iterator<Item = FuncName> + '_ {
+    function
+        .rpo()
+        .into_iter()
+        .flat_map(|block| function.blocks[block].insts.iter())
+        .filter_map(|instruction| match instruction {
+            Instr::Call { func, .. } | Instr::LoadFuncAddr { func, .. } => Some(*func),
+            _ => None,
+        })
 }
 
 fn reachable_functions(
@@ -133,16 +194,12 @@ fn reachable_functions(
         let function = functions
             .get(name)
             .ok_or_else(|| BackendError::UnknownFunction(name.to_string()))?;
-        for block in function.rpo() {
-            for instruction in &function.blocks[block].insts {
-                if let Instr::Call { func, .. } | Instr::LoadFuncAddr { func, .. } = instruction {
-                    if !functions.contains_key(func) {
-                        return Err(BackendError::UnknownFunction(func.to_string()));
-                    }
-                    if reachable.insert(*func) {
-                        work.push(*func);
-                    }
-                }
+        for callee in function_callees(function) {
+            if !functions.contains_key(callee) {
+                return Err(BackendError::UnknownFunction(callee.to_string()));
+            }
+            if reachable.insert(callee) {
+                work.push(callee);
             }
         }
     }

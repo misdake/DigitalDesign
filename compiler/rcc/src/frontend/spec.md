@@ -682,11 +682,11 @@ Larger aggregates — structs (§9b), tuples (§9c) and `Buf<T, N>` (§10) — u
    reaches `vec_*`, a single `init_vec(vec_init_cap)` call follows. each init runs exactly once
    per program, with parameters from `CompilerOptions`.
 
-### 13.1.1 Explicit CPU V3 inlining
+### 13.1.1 CPU V3 inlining
 
 Ordinary functions and supported value/resource inherent methods accept `#[inline]`
 (best-effort hint) and `#[inline(never)]` (do not expand this callee). Unannotated
-functions remain ordinary calls; `never` does not disable eligible calls inside
+small functions are selected automatically by default; `never` does not disable eligible calls inside
 that function. Malformed, duplicate/conflicting attributes and `#[inline(always)]`
 are errors. Attributes on `impl Drop` and its method retain their existing
 restrictions. These hints do not change Rust ownership, privacy, library approval,
@@ -707,13 +707,19 @@ Candidates exclude recursive SCC members, indirect calls/callees containing them
 entry, special terminal transfers, functions without a normal return, entry phis or
 backedges, and source frame-local/addressed objects (`local_slots`/local access IR).
 Ordinary SSA locals and subsequent allocator-generated spills remain supported.
-Default expansion depth is two; depth one restricts callees to leaves. No binary
-LTO, automatic std/library annotation, indirect-call devirtualization or new loader
+Default expansion depth is two; depth one restricts callees to leaves. Automatic
+selection additionally limits callees to 24 reachable nodes and four blocks and
+excludes cyclic CFGs. Short branches and small nonleaf wrappers are eligible;
+explicit hints retain the existing bounded loop support. Loaded library functions
+use the same policy. No binary LTO, indirect-call devirtualization or new loader
 is implied. Cross-module source calls obey the same checks and budgets.
 
-`CompilerOptions.inline` holds the policy; `--no-inline` disables only this pass
-and requires `--target cpu-v3`. `--no-opt` also disables it. `gpu_debug` remains an
-independent source-check configuration. A program without usable hints takes one
+`CompilerOptions.inline` holds the policy: `automatic` defaults to true, with
+configurable `maximum_automatic_nodes` and `maximum_automatic_blocks` limits.
+`--no-auto-inline` disables automatic selection while retaining explicit hints;
+`--no-inline` disables the entire pass. Both flags require `--target cpu-v3`.
+`--no-opt` also disables it. `gpu_debug` remains an
+independent source-check configuration. A program without eligible calls takes one
 normal backend lowering. A program with expansions lowers an independent baseline
 and one candidate from the same checked source snapshot; frontend/rustc are not
 rerun. Candidate failure with an identified allocation/layout capacity error can
@@ -724,14 +730,32 @@ iterative trial-compilation search.
 The default compilation limits are 32 reachable instruction/phi/terminator nodes,
 eight blocks and 48 source vregs per callee; two expansion levels; cumulative
 introduced clone/glue nodes at most `max(32, ceil(original caller nodes / 4))` per
-caller and 512 per program. Removed calls, DCE and dead original bodies do not
-refund these cumulative costs. Final code is the whole linked application's word
+caller. There is no default program-wide node quota: adding expansions in other
+callers cannot spend this caller's allowance. `maximum_program_nodes` defaults to
+`None`; an explicit `Some(limit)` additionally caps cumulative introduced nodes
+as a compilation-work limit for constrained hosts. It is not a target memory or
+performance limit. Removed calls, DCE and dead original bodies do not refund
+these cumulative costs. Final code is the whole linked application's word
 span after relaxation, including retained functions, generated instructions and
 internal padding, excluding data, heap and separate boot/Flash applications.
+Explicit requests are considered across all callers before automatic selection
+uses the remaining budgets, preferring smaller automatic callees across the whole
+program. Equal-cost ties use stable function/source order. Pending sites retain
+their identity through block splits and their true expansion depth. Sites share
+charges only within their caller, unless an explicit program work limit is set.
 
-A candidate is selected only when code growth is at most
-`max(64 words, ceil(baseline code words / 10))`, changed-caller frame growth is at
-most 16 words and FPU spill-area growth at most eight words (including alignment).
+A changed caller retains its expanded body only when frame growth is at most
+16 words and FPU spill-area growth at most eight words (including alignment).
+Allocation costs are measured against that caller's independently lowered
+original. A soft rejection restores only that caller's original body; other
+callers keep their selections. Callee reachability follows selected bodies, so
+restoration revives required calls without retaining callees of discarded bodies.
+Each function is allocated once as a candidate, and a rejected caller is allocated
+again from its original IR; there is no third whole-program lowering or search.
+Final layout keeps the entry first and sorts remaining functions by name.
+
+The selected application must still keep whole-program code growth within
+`max(64 words, ceil(baseline code words / 10))`.
 `max` selects the larger allowance, not simultaneous fixed and percentage caps.
 These are soft heuristics, not semantic or hardware guarantees; independent frame,
 spill-index and code/data/heap capacity limits always apply. Soft-budget rejection
@@ -739,8 +763,11 @@ is normal product selection, not recovery from an arbitrary compiler error.
 
 `try_compile_with_inline_report` returns site decisions and source/callsite origins,
 cumulative cost, attempted versus retained expansions, baseline/candidate words,
-changed-caller frame/spill costs, target-lowering durations and the single fallback
-reason/count. The CLI prints this report for requested sites. It never reports
+changed-caller attempted frame/spill costs and caller-local restoration reasons,
+target-lowering durations and the whole-program fallback reason/count. IR site
+decisions describe attempted expansion; the retained count excludes restored
+callers. Sites distinguish automatic selection from explicit requests. The
+CLI prints this report for considered sites. It never reports
 abandoned candidate expansions as retained. Speed remains workload-dependent.
 
 Debug info remains version 2. Cloned instructions, returns and glue map to the

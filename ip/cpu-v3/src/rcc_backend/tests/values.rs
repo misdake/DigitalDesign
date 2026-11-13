@@ -445,7 +445,7 @@ fn destructive_operations_copy_the_source_when_both_remain_live() {
     // `a` is live across the shift and multiply, so the destructive forms
     // cannot reuse its register and must insert a MOV first.
     let source = r#"
-            fn mix(x: u16) -> u16 {
+            #[inline(never)] fn mix(x: u16) -> u16 {
                 let a = x & 0x00ff;
                 let b = a + 1;
                 let s = a << 1;
@@ -467,7 +467,7 @@ fn if_value_arms_with_one_simple_instruction_use_a_conditional_move() {
     // `c3 - 1` is a single pure instruction, so the else arm stays
     // if-convertible; the countdown wraps 0 -> 2.
     let source = r#"
-            fn countdown(c3: u16) -> u16 {
+            #[inline(never)] fn countdown(c3: u16) -> u16 {
                 if c3 == 0 { 2 } else { c3 - 1 }
             }
             fn main() {
@@ -490,8 +490,8 @@ fn if_value_arms_with_one_simple_instruction_use_a_conditional_move() {
 #[test]
 fn byte_sign_extend_and_leading_zero_count_use_their_instructions() {
     let source = r#"
-            fn extend(x: u16) -> i16 { sextb(x) }
-            fn bits(x: u16) -> u16 { clz(x) }
+            #[inline(never)] fn extend(x: u16) -> i16 { sextb(x) }
+            #[inline(never)] fn bits(x: u16) -> u16 { clz(x) }
             fn main() {
                 let a: i16 = extend(0x00ff); // -1
                 let b: u16 = bits(0x8000);   // 0

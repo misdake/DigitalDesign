@@ -6,7 +6,7 @@ pub struct CompilerOptions {
     pub asset_banks: Vec<rcc::frontend::static_assets::AssetBank>,
     pub gpu_debug: bool,
     pub opt: Opts,
-    /// Explicit pre-ABI inlining policy and bounded compilation costs.
+    /// Automatic/explicit pre-ABI inlining policy and bounded compilation costs.
     pub inline: rcc::InlineOptions,
     pub stack_init: u16,
     pub data_base: u16,

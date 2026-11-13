@@ -1261,13 +1261,20 @@ fn main(){
             .unwrap_or_else(|e| panic!("{e}"));
             assert_eq!(program.debug.gpu_debug, enabled);
             assert_eq!(program.funcs.iter().any(|f| f.name == "probe"), enabled);
+            let main = program.funcs.iter().find(|f| f.name == "main").unwrap();
+            assert_eq!(
+                main.blocks
+                    .iter()
+                    .flat_map(|b| &b.insts)
+                    .any(|i| matches!(i, rcc::Instr::Call{func,..} if *func == "argument")),
+                enabled
+            );
             sizes.push(program.debug.static_data_end);
             let code = try_compile(program, &options, "main").unwrap();
             assert_eq!(code.gpu_debug, enabled);
-            assert_eq!(
-                code.debug.functions.iter().any(|f| f.name == "argument"),
-                enabled
-            );
+            if !enabled {
+                assert!(!code.debug.functions.iter().any(|f| f.name == "argument"));
+            }
             let mut cpu = CpuV3Sim::default();
             cpu.set_boot_window(&code.words);
             assert!(matches!(

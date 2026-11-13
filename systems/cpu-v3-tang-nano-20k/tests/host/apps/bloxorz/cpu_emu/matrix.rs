@@ -36,8 +36,14 @@ fn held(level: u16, frame: usize) -> u16 {
 
 fn compile(arm: &str, level: u16) {
     let count = if level == 1 { 7 } else { 8 };
+    let automatic_inline = match std::env::var("BLOXORZ_CPU_AUTO_INLINE").as_deref() {
+        Ok("0") => false,
+        Ok("1") | Err(_) => true,
+        value => panic!("BLOXORZ_CPU_AUTO_INLINE must be 0 or 1: {value:?}"),
+    };
     let case = ApplicationCase {
         observe_pose: false,
+        automatic_inline: Some(automatic_inline),
         edit: Box::new(|source| {
             source.required_replace(
                 "session_tick(buttons, held, elapsed);",
@@ -117,6 +123,8 @@ fn compile(arm: &str, level: u16) {
     let compiler: BTreeMap<_, _> = [
         "compiler/rcc/src/frontend/mod.rs",
         "compiler/rcc/src/compiler/builder.rs",
+        "compiler/rcc/src/compiler/inline.rs",
+        "ip/cpu-v3/src/rcc_backend/inline.rs",
     ]
     .into_iter()
     .map(|name| (name, hash(&std::fs::read(repository.join(name)).unwrap())))
@@ -129,7 +137,7 @@ fn compile(arm: &str, level: u16) {
         "main_sha256":hash(&std::fs::read(out.join("compiled-main.rs")).unwrap()),
         "producer_sha256":hash(&std::fs::read(out.join("renderer_assets.rs")).unwrap()),
         "sources":sources,"compiler":compiler,"functions":functions,"globals":globals,"resources":resource_hashes,
-        "static_words":budget["static_words"],"pose_probe":false,
+        "static_words":budget["static_words"],"pose_probe":false,"automatic_inline":automatic_inline,
         "time_protocol":"PLAY from producer, dt=0 except frame8=17ms; neutral through frame6; frame7 Select(level1) or Right(level29), release at frame8"});
     std::fs::write(
         out.join("profile-input.json"),

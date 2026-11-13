@@ -526,9 +526,9 @@ fn dynamic_shifts_select_register_count_encodings() {
     // Parameters keep the operands unknown so the optimizer cannot fold
     // the operations into a single constant.
     let source = r#"
-            fn sh(a: u16, n: u16) -> u16 { a << n }
-            fn lsr(a: u16, n: u16) -> u16 { a >> n }
-            fn asr(a: i16, n: u16) -> i16 { a >> n }
+            #[inline(never)] fn sh(a: u16, n: u16) -> u16 { a << n }
+            #[inline(never)] fn lsr(a: u16, n: u16) -> u16 { a >> n }
+            #[inline(never)] fn asr(a: i16, n: u16) -> i16 { a >> n }
             fn main() {
                 let a: u16 = 3;
                 let n: u16 = 1;
@@ -548,9 +548,9 @@ fn dynamic_shifts_select_register_count_encodings() {
 #[test]
 fn constant_shifts_select_immediate_encodings() {
     let source = r#"
-            fn sh(a: u16) -> u16 { a << 2 }
-            fn shr(a: u16) -> u16 { a >> 1 }
-            fn asr(a: i16) -> i16 { a >> 1 }
+            #[inline(never)] fn sh(a: u16) -> u16 { a << 2 }
+            #[inline(never)] fn shr(a: u16) -> u16 { a >> 1 }
+            #[inline(never)] fn asr(a: i16) -> i16 { a >> 1 }
             fn main() {
                 let a: u16 = 3;
                 let s: i16 = -8;
@@ -568,7 +568,7 @@ fn constant_shifts_select_immediate_encodings() {
 #[test]
 fn immediate_arithmetic_families_select_short_and_wide_forms() {
     let source = r#"
-            fn calc(x: u16) -> u16 {
+            #[inline(never)] fn calc(x: u16) -> u16 {
                 let a = x + 5;
                 let b = a - 3;
                 let c = b & 0x00ff; // does not fit u4: wide PFX12 form
@@ -616,7 +616,7 @@ fn immediate_selection_runs_with_optimizations_disabled() {
 #[test]
 fn multiply_lowers_to_hardware_windows_and_muli() {
     let source = r#"
-            fn products(a: u16, b: u16) -> u16 {
+            #[inline(never)] fn products(a: u16, b: u16) -> u16 {
                 let lo = a * b;
                 let w8 = mul8(a, b);
                 let w16 = mul16(a, b);

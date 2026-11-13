@@ -322,7 +322,9 @@ A vector is a consecutive register-range view, not an architectural type:
 `VADD.3 F20, F4, F8` computes `F20=F4+F8`, `F21=F5+F9`, `F22=F6+F10`. Length
 `00/01/10` selects vec2/vec3/vec4 and `11` is reserved. Destination/source
 ranges must be exactly base-equal or fully disjoint; partial overlap is a
-software contract violation and is not checked by hardware.
+software contract violation and is not checked by hardware. This overlap rule
+applies to vector-valued destinations: DOT/DOTADD update ACC, and DOTSTORE writes
+the single scalar register Fd rather than a destination vector.
 
 `0xC` VECTOR subops: `00` VADD, `01` VSUB, `02` VMUL (`q16(A*B)`), `03` VMULS
 (`q16(A*B0)`), `04` VMIN, `05` VMAX, `06` VABS, `07` VNEG, `08..0B` reserved,

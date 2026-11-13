@@ -157,7 +157,25 @@ fn code_growth_soft_budget_selects_baseline_without_masking_errors() {
     assert_eq!(report.fallback_count, 1);
     assert_eq!(actual.words, baseline.words);
     assert_eq!(actual.debug.render(), baseline.debug.render());
-    assert!(report.ir.introduced_nodes <= 512);
+}
+
+#[test]
+fn automatic_small_wrappers_execute_equally_and_can_be_disabled_without_losing_hints() {
+    let source="static INPUT:u16=4; fn choose(x:u16)->u16{if x>7{x*2+1}else{x+3}} fn wrapper(x:u16)->u16{choose(x)+2} #[inline] fn hinted(x:u16)->u16{x+1} #[inline(never)] fn barrier(x:u16)->u16{x} fn main(){halt(barrier(hinted(wrapper(INPUT))));}";
+    let options = CompilerOptions::default();
+    let (on, report) = build(source, &options);
+    assert_eq!(run(&on).0, 10);
+    assert_eq!(report.outcome, InlineOutcome::Applied, "{report}");
+    assert!(report.ir.automatic_expanded_sites() > 0);
+    assert!(!on.debug.functions.iter().any(|f| f.name == "wrapper"));
+    assert!(on.debug.functions.iter().any(|f| f.name == "barrier"));
+    let mut hints_only = options;
+    hints_only.inline.automatic = false;
+    let (off, report) = build(source, &hints_only);
+    assert_eq!(run(&off).0, 10);
+    assert_eq!(report.ir.automatic_expanded_sites(), 0);
+    assert!(report.retained_sites > 0);
+    assert!(off.debug.functions.iter().any(|f| f.name == "wrapper"));
 }
 
 #[test]
@@ -258,7 +276,7 @@ fn signal_barriers_keep_dynamic_order_and_count() {
 }
 #[test]
 fn allocation_spills_after_inlining_are_not_source_stack_objects() {
-    let report=compare("#[inline] fn plus(x:fix32)->fix32{x+fix32::from_int(1)} fn external(x:u16)->u16{x+1} fn main(){let a=plus(fix32::from_int(3));let k=external(1);halt((a.to_int() as u16)+k);}",6);
+    let report=compare("#[inline] fn plus(x:fix32)->fix32{x+fix32::from_int(1)} #[inline(never)] fn external(x:u16)->u16{x+1} fn main(){let a=plus(fix32::from_int(3));let k=external(1);halt((a.to_int() as u16)+k);}",6);
     assert!(
         report
             .frames
@@ -394,9 +412,10 @@ fn automatic_heap_initialization_survives_wrapper_expansion() {
 }
 
 #[test]
-fn disabled_or_unannotated_paths_retain_exact_code_and_debug() {
+fn hints_only_unannotated_paths_retain_exact_code_and_debug() {
     let source = "fn plus(x:u16)->u16{x+1} fn main(){halt(plus(4));}";
     let mut opts = CompilerOptions::default();
+    opts.inline.automatic = false;
     let (a, r) = build(source, &opts);
     assert_eq!(r.outcome, InlineOutcome::NoExpansions);
     opts.inline.enabled = false;
@@ -406,6 +425,7 @@ fn disabled_or_unannotated_paths_retain_exact_code_and_debug() {
     assert_eq!(a.listing, b.listing);
     assert_eq!(a.debug.render(), b.debug.render());
     opts.inline.enabled = true;
+    opts.inline.automatic = true;
     opts.opt = Opts::disabled();
     let (c, r) = build(&source.replace("fn plus", "#[inline] fn plus"), &opts);
     assert_eq!(r.outcome, InlineOutcome::Disabled);
@@ -427,4 +447,76 @@ fn bounded_nested_calls_execute_equally_without_mutating_baseline() {
         .sites
         .iter()
         .any(|s| s.depth == 2 && s.decision == InlineDecision::Expanded));
+}
+
+#[test]
+fn caller_spill_rejection_keeps_other_bodies_and_rebuilds_selected_reachability() {
+    let options = CompilerOptions::default();
+    let shared = "static INPUT:u16=1; fn removed(x:u16)->u16{x+1} fn leaf(x:u16)->u16{x+3} fn external(x:u16)->u16{x}";
+    let original = format!("{shared} fn bad(x:u16)->u16{{removed(x)}} fn good(x:u16)->u16{{leaf(x)}} fn main(){{halt(bad(1)+good(1));}}");
+    // Model an expanded body with six FPU values live across a call. The
+    // selected original bad body instead needs the previously removed callee.
+    let expanded = format!(
+        "{shared} fn bad(x:u16)->u16{{
+        let a=fix32::from_int(INPUT as i16);
+        let b=a+fix32::from_int(1);let c=a+fix32::from_int(2);
+        let d=a+fix32::from_int(3);let e=a+fix32::from_int(4);let f=a+fix32::from_int(5);
+        let marker=external(x);(a+b+c+d+e+f).to_int() as u16+marker-20
+    }} fn good(x:u16)->u16{{x+3}} fn main(){{halt(bad(1)+good(1));}}"
+    );
+    let before = parse_source_with_config(&original, &options).unwrap();
+    let originals: HashMap<_, _> = before.funcs.into_iter().map(|f| (f.name, f)).collect();
+    let (baseline, costs) =
+        compile_ir_with_allocations(&originals, &options, "main", before.debug).unwrap();
+    let after = parse_source_with_config(&expanded, &options).unwrap();
+    let candidates: HashMap<_, _> = after.funcs.into_iter().map(|f| (f.name, f)).collect();
+    let (unselected, _) =
+        compile_ir_with_allocations(&candidates, &options, "main", after.debug.clone()).unwrap();
+    let mut selection = InlineSelection {
+        originals: &originals,
+        baseline_costs: &costs,
+        frames: Vec::new(),
+    };
+    let (selected, actual_costs) = compile_ir_selected(
+        &candidates,
+        &options,
+        "main",
+        after.debug,
+        Some(&mut selection),
+    )
+    .unwrap();
+    assert_eq!(run(&baseline).0, 6);
+    assert_eq!(run(&unselected).0, 6);
+    assert_eq!(run(&selected).0, 6);
+    let rejected = selection
+        .frames
+        .iter()
+        .find(|f| f.function == "bad")
+        .unwrap();
+    assert!(
+        matches!(
+            rejected.rejection(),
+            Some(InlineRejection::FpuSpillGrowth { .. })
+                | Some(InlineRejection::FrameGrowth { .. })
+        ),
+        "{rejected:?}"
+    );
+    assert!(selection
+        .frames
+        .iter()
+        .find(|f| f.function == "good")
+        .unwrap()
+        .rejection()
+        .is_none());
+    assert_eq!(actual_costs["bad"].frame, costs["bad"].frame);
+    let linked = |name| selected.debug.functions.iter().any(|f| f.name == name);
+    assert!(linked("removed"), "restored body must revive its callee");
+    assert!(
+        !linked("external"),
+        "discarded candidate must not retain its callee"
+    );
+    assert!(
+        !linked("leaf"),
+        "unrelated expanded body must remain selected"
+    );
 }

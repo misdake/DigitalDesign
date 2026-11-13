@@ -1,30 +1,38 @@
-//! Bounded, source-requested CFG inlining before ABI lowering.
+//! Bounded automatic and source-requested CFG inlining before ABI lowering.
 //! Original functions remain in the table; target reachability owns emission.
 
 use super::regalloc::{defs_mut, inst_defs};
 use super::*;
 use crate::FuncName;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub struct InlineOptions {
     pub enabled: bool,
+    /// Select small unannotated direct callees as well as explicit hints.
+    pub automatic: bool,
+    pub maximum_automatic_nodes: usize,
+    pub maximum_automatic_blocks: usize,
     pub maximum_depth: usize,
     pub maximum_callee_nodes: usize,
     pub maximum_callee_blocks: usize,
     pub maximum_callee_vregs: usize,
-    /// Cumulative introduced nodes, including glue; never refunded by DCE.
-    pub maximum_program_nodes: usize,
+    /// Optional compilation-work limit for cumulative clone/glue nodes.
+    /// None leaves selection to each caller's growth limit; DCE never refunds costs.
+    pub maximum_program_nodes: Option<usize>,
 }
 impl Default for InlineOptions {
     fn default() -> Self {
         Self {
             enabled: true,
+            automatic: true,
+            maximum_automatic_nodes: 24,
+            maximum_automatic_blocks: 4,
             maximum_depth: 2,
             maximum_callee_nodes: 32,
             maximum_callee_blocks: 8,
             maximum_callee_vregs: 48,
-            maximum_program_nodes: 512,
+            maximum_program_nodes: None,
         }
     }
 }
@@ -43,6 +51,8 @@ pub enum InlineDecision {
     NonLeaf,
     DepthBudget,
     CalleeBudget,
+    AutomaticBudget,
+    AutomaticCycle,
     CallerBudget,
     ProgramBudget,
 }
@@ -56,6 +66,7 @@ pub struct InlineSite {
     /// Physical caller line used by the current file-per-function debugger.
     pub callsite_line: Option<u32>,
     pub depth: usize,
+    pub automatic: bool,
     pub decision: InlineDecision,
 }
 #[derive(Clone, Debug, Default)]
@@ -68,6 +79,12 @@ impl InlineReport {
         self.sites
             .iter()
             .filter(|s| s.decision == InlineDecision::Expanded)
+            .count()
+    }
+    pub fn automatic_expanded_sites(&self) -> usize {
+        self.sites
+            .iter()
+            .filter(|s| s.automatic && s.decision == InlineDecision::Expanded)
             .count()
     }
 }
@@ -92,6 +109,46 @@ struct Site {
     source: FuncName,
     line: Option<u32>,
 }
+struct CallerWork {
+    name: FuncName,
+    budget: usize,
+    charged: usize,
+    sites: Vec<Option<Site>>,
+}
+/// Deterministic global priority: explicit requests, then cheaper automatic
+/// callees. Stable site indices survive block splitting; deterministic source
+/// order breaks equal-cost ties without depending on HashMap iteration.
+#[derive(Eq, PartialEq, Ord, PartialOrd)]
+struct PendingSite {
+    automatic: bool,
+    nodes: usize,
+    sequence: usize,
+    caller: usize,
+    site: usize,
+}
+impl CallerWork {
+    fn push(
+        &mut self,
+        site: Site,
+        callee: &IrFunc,
+        caller: usize,
+        sequence: &mut usize,
+    ) -> PendingSite {
+        let index = self.sites.len();
+        self.sites.push(Some(site));
+        let automatic = callee.inline_hint == InlineHint::Default;
+        let pending = PendingSite {
+            automatic,
+            nodes: if automatic { nodes(callee) } else { 0 },
+            sequence: *sequence,
+            caller,
+            site: index,
+        };
+        *sequence += 1;
+        pending
+    }
+}
+
 fn nodes(f: &IrFunc) -> usize {
     f.rpo()
         .iter()
@@ -107,6 +164,18 @@ fn calls(f: &IrFunc) -> Vec<FuncName> {
             _ => None,
         })
         .collect()
+}
+fn has_cycle(f: &IrFunc, order: &[BlockId]) -> bool {
+    // Reverse postorder is topological exactly when all reachable edges go forward.
+    let mut rank = vec![usize::MAX; f.blocks.len()];
+    for (position, &block) in order.iter().enumerate() {
+        rank[block] = position;
+    }
+    order.iter().any(|&block| {
+        f.successors(block)
+            .iter()
+            .any(|&next| rank[next] <= rank[block])
+    })
 }
 fn recursive(name: FuncName, originals: &HashMap<FuncName, IrFunc>) -> bool {
     let mut seen = HashSet::new();
@@ -126,7 +195,7 @@ fn recursive(name: FuncName, originals: &HashMap<FuncName, IrFunc>) -> bool {
 
 /// Transform only callers selected by the target's original live graph.
 /// `entries` cannot be cloned as callees; it does not replace emission roots.
-pub fn inline_hints(
+pub fn inline_calls(
     functions: &mut HashMap<FuncName, IrFunc>,
     callers: &HashSet<FuncName>,
     entries: &HashSet<FuncName>,
@@ -144,157 +213,202 @@ pub fn inline_hints(
         .copied()
         .filter(|n| recursive(n, &originals))
         .collect();
+    let mut states = Vec::new();
+    let mut pending = BTreeSet::new();
+    let mut sequence = 0;
     for name in order {
         let original = originals
             .get(&name)
             .ok_or_else(|| invalid(format!("missing inline caller {name}")))?;
-        let budget = 32.max(nodes(original).div_ceil(4));
-        let caller = functions.get_mut(&name).unwrap();
-        let mut charged = 0;
-        let mut work = VecDeque::new();
-        for block in caller.rpo() {
-            for (index, inst) in caller.blocks[block].insts.iter().enumerate() {
-                if matches!(inst, Instr::Call { .. }) {
-                    work.push_back(Site {
-                        block,
-                        index,
-                        depth: 1,
-                        source: name,
-                        line: caller.blocks[block].lines.get(index).copied().flatten(),
-                    });
+        let mut state = CallerWork {
+            name,
+            budget: 32.max(nodes(original).div_ceil(4)),
+            charged: 0,
+            sites: Vec::new(),
+        };
+        for block in original.rpo() {
+            for (index, inst) in original.blocks[block].insts.iter().enumerate() {
+                if let Instr::Call { func, .. } = inst {
+                    let callee = originals
+                        .get(func)
+                        .ok_or_else(|| invalid(format!("unknown inline callee {func}")))?;
+                    if callee.inline_hint == InlineHint::Default && !options.automatic {
+                        continue;
+                    }
+                    pending.insert(state.push(
+                        Site {
+                            block,
+                            index,
+                            depth: 1,
+                            source: name,
+                            line: original.blocks[block].lines.get(index).copied().flatten(),
+                        },
+                        callee,
+                        states.len(),
+                        &mut sequence,
+                    ));
                 }
             }
         }
-        while let Some(site) = work.pop_front() {
-            let Instr::Call { func, args, rets } =
-                caller.blocks[site.block].insts[site.index].clone()
-            else {
-                return Err(invalid("inline work item no longer names a call"));
-            };
-            let callee = originals
-                .get(&func)
-                .ok_or_else(|| invalid(format!("unknown inline callee {func}")))?;
-            if callee.inline_hint == InlineHint::Default {
-                continue;
-            }
-            let line = caller.blocks[site.block]
-                .lines
-                .get(site.index)
-                .copied()
-                .flatten();
-            let mut record = InlineSite {
-                caller: name,
-                callee: func,
-                source_function: site.source,
-                line: site.line,
-                callsite_line: line,
-                depth: site.depth,
-                decision: InlineDecision::Expanded,
-            };
-            let blocks = callee.rpo();
-            // Spill IR belongs to a later pipeline stage, not to source eligibility.
-            if blocks
+        states.push(state);
+    }
+    while let Some(queued) = pending.pop_first() {
+        let state = &mut states[queued.caller];
+        let name = state.name;
+        let site = state.sites[queued.site].take().unwrap();
+        let caller = functions.get_mut(&name).unwrap();
+        let Instr::Call { func, args, rets } = caller.blocks[site.block].insts[site.index].clone()
+        else {
+            return Err(invalid("inline work item no longer names a call"));
+        };
+        let callee = originals
+            .get(&func)
+            .ok_or_else(|| invalid(format!("unknown inline callee {func}")))?;
+        let automatic = callee.inline_hint == InlineHint::Default;
+        if automatic && !options.automatic {
+            continue;
+        }
+        let line = caller.blocks[site.block]
+            .lines
+            .get(site.index)
+            .copied()
+            .flatten();
+        let mut record = InlineSite {
+            caller: name,
+            callee: func,
+            source_function: site.source,
+            line: site.line,
+            callsite_line: line,
+            depth: site.depth,
+            automatic,
+            decision: InlineDecision::Expanded,
+        };
+        let blocks = callee.rpo();
+        // Spill IR belongs to a later pipeline stage, not to source eligibility.
+        if blocks
+            .iter()
+            .flat_map(|&b| &callee.blocks[b].insts)
+            .any(|i| {
+                matches!(
+                    i,
+                    Instr::LoadSp { .. } | Instr::StoreSp { .. } | Instr::AddrOfFpuSpill { .. }
+                )
+            })
+        {
+            return Err(invalid(format!(
+                "post-allocation IR supplied to inliner: {func}"
+            )));
+        }
+        let count = nodes(callee);
+        let cost = count + rets.len() + 1;
+        let decision = if callee.inline_hint == InlineHint::Never {
+            Some(InlineDecision::Never)
+        } else if entries.contains(&func) {
+            Some(InlineDecision::Entry)
+        } else if recursive.contains(&func) {
+            Some(InlineDecision::Recursive)
+        } else if callee.local_slots != 0
+            || blocks
                 .iter()
                 .flat_map(|&b| &callee.blocks[b].insts)
                 .any(|i| {
                     matches!(
                         i,
-                        Instr::LoadSp { .. } | Instr::StoreSp { .. } | Instr::AddrOfFpuSpill { .. }
+                        Instr::LoadLocal { .. }
+                            | Instr::StoreLocal { .. }
+                            | Instr::AddrOfLocal { .. }
                     )
                 })
-            {
-                return Err(invalid(format!(
-                    "post-allocation IR supplied to inliner: {func}"
-                )));
+        {
+            Some(InlineDecision::SourceFrame)
+        } else if blocks
+            .iter()
+            .flat_map(|&b| &callee.blocks[b].insts)
+            .any(|i| matches!(i, Instr::CallPtr { .. }))
+        {
+            Some(InlineDecision::Indirect)
+        } else if blocks.iter().any(|&b| {
+            matches!(
+                callee.blocks[b].term,
+                Some(Terminator::IcacheInvalidateDelayedAndJump { .. })
+            )
+        }) || blocks
+            .iter()
+            .flat_map(|&b| &callee.blocks[b].insts)
+            .any(|i| matches!(i, Instr::Jseg { .. }))
+        {
+            Some(InlineDecision::SpecialTransfer)
+        } else if !blocks
+            .iter()
+            .any(|&b| matches!(callee.blocks[b].term, Some(Terminator::Ret { .. })))
+        {
+            Some(InlineDecision::NoReturn)
+        } else if !callee.blocks[callee.entry].phis.is_empty()
+            || !callee.blocks[callee.entry].preds.is_empty()
+        {
+            Some(InlineDecision::EntryPhi)
+        } else if site.depth > options.maximum_depth {
+            Some(InlineDecision::DepthBudget)
+        } else if options.maximum_depth == 1 && !calls(callee).is_empty() {
+            Some(InlineDecision::NonLeaf)
+        } else if count > options.maximum_callee_nodes
+            || blocks.len() > options.maximum_callee_blocks
+            || callee.vreg_count as usize > options.maximum_callee_vregs
+        {
+            Some(InlineDecision::CalleeBudget)
+        } else if automatic
+            && (count > options.maximum_automatic_nodes
+                || blocks.len() > options.maximum_automatic_blocks)
+        {
+            Some(InlineDecision::AutomaticBudget)
+        } else if automatic && has_cycle(callee, &blocks) {
+            Some(InlineDecision::AutomaticCycle)
+        } else if state.charged + cost > state.budget {
+            Some(InlineDecision::CallerBudget)
+        } else if options
+            .maximum_program_nodes
+            .is_some_and(|limit| report.introduced_nodes + cost > limit)
+        {
+            Some(InlineDecision::ProgramBudget)
+        } else {
+            None
+        };
+        if let Some(reason) = decision {
+            record.decision = reason;
+            report.sites.push(record);
+            continue;
+        }
+        validate_inline_ir(callee)?;
+        if state.charged == 0 {
+            validate_inline_ir(caller)?;
+        }
+        let (continuation, suffix_offset, nested) =
+            clone_call(caller, &site, callee, &args, &rets, line)?;
+        for pending in state.sites.iter_mut().flatten() {
+            if pending.block == site.block && pending.index > site.index {
+                pending.block = continuation;
+                pending.index = pending.index - site.index - 1 + suffix_offset;
             }
-            let count = nodes(callee);
-            let cost = count + rets.len() + 1;
-            let decision = if callee.inline_hint == InlineHint::Never {
-                Some(InlineDecision::Never)
-            } else if entries.contains(&func) {
-                Some(InlineDecision::Entry)
-            } else if recursive.contains(&func) {
-                Some(InlineDecision::Recursive)
-            } else if callee.local_slots != 0
-                || blocks
-                    .iter()
-                    .flat_map(|&b| &callee.blocks[b].insts)
-                    .any(|i| {
-                        matches!(
-                            i,
-                            Instr::LoadLocal { .. }
-                                | Instr::StoreLocal { .. }
-                                | Instr::AddrOfLocal { .. }
-                        )
-                    })
-            {
-                Some(InlineDecision::SourceFrame)
-            } else if blocks
-                .iter()
-                .flat_map(|&b| &callee.blocks[b].insts)
-                .any(|i| matches!(i, Instr::CallPtr { .. }))
-            {
-                Some(InlineDecision::Indirect)
-            } else if blocks.iter().any(|&b| {
-                matches!(
-                    callee.blocks[b].term,
-                    Some(Terminator::IcacheInvalidateDelayedAndJump { .. })
-                )
-            }) || blocks
-                .iter()
-                .flat_map(|&b| &callee.blocks[b].insts)
-                .any(|i| matches!(i, Instr::Jseg { .. }))
-            {
-                Some(InlineDecision::SpecialTransfer)
-            } else if !blocks
-                .iter()
-                .any(|&b| matches!(callee.blocks[b].term, Some(Terminator::Ret { .. })))
-            {
-                Some(InlineDecision::NoReturn)
-            } else if !callee.blocks[callee.entry].phis.is_empty()
-                || !callee.blocks[callee.entry].preds.is_empty()
-            {
-                Some(InlineDecision::EntryPhi)
-            } else if site.depth > options.maximum_depth {
-                Some(InlineDecision::DepthBudget)
-            } else if options.maximum_depth == 1 && !calls(callee).is_empty() {
-                Some(InlineDecision::NonLeaf)
-            } else if count > options.maximum_callee_nodes
-                || blocks.len() > options.maximum_callee_blocks
-                || callee.vreg_count as usize > options.maximum_callee_vregs
-            {
-                Some(InlineDecision::CalleeBudget)
-            } else if charged + cost > budget {
-                Some(InlineDecision::CallerBudget)
-            } else if report.introduced_nodes + cost > options.maximum_program_nodes {
-                Some(InlineDecision::ProgramBudget)
-            } else {
-                None
+        }
+        for site in nested {
+            let Instr::Call { func, .. } = &caller.blocks[site.block].insts[site.index] else {
+                return Err(invalid("nested inline work item no longer names a call"));
             };
-            if let Some(reason) = decision {
-                record.decision = reason;
-                report.sites.push(record);
+            let callee = originals
+                .get(func)
+                .ok_or_else(|| invalid(format!("unknown inline callee {func}")))?;
+            if callee.inline_hint == InlineHint::Default && !options.automatic {
                 continue;
             }
-            validate_inline_ir(callee)?;
-            if charged == 0 {
-                validate_inline_ir(caller)?;
-            }
-            let (continuation, suffix_offset, nested) =
-                clone_call(caller, &site, callee, &args, &rets, line)?;
-            for pending in &mut work {
-                if pending.block == site.block && pending.index > site.index {
-                    pending.block = continuation;
-                    pending.index = pending.index - site.index - 1 + suffix_offset;
-                }
-            }
-            work.extend(nested);
-            charged += cost;
-            report.introduced_nodes += cost;
-            report.sites.push(record);
+            pending.insert(state.push(site, callee, queued.caller, &mut sequence));
         }
-        if charged != 0 {
-            validate_inline_ir(caller)?;
+        state.charged += cost;
+        report.introduced_nodes += cost;
+        report.sites.push(record);
+    }
+    for state in states {
+        if state.charged != 0 {
+            validate_inline_ir(&functions[&state.name])?;
         }
     }
     Ok(report)
@@ -651,7 +765,7 @@ mod tests {
     }
     fn apply(fs: &mut HashMap<FuncName, IrFunc>) -> InlineReport {
         let callers = fs.keys().copied().collect();
-        inline_hints(
+        inline_calls(
             fs,
             &callers,
             &HashSet::from(["main"]),
@@ -684,6 +798,182 @@ mod tests {
             .to_string();
             assert!(error.contains("inline"), "{error}");
         }
+    }
+    #[test]
+    fn automatic_policy_accepts_short_cfgs_and_respects_configuration() {
+        let source = "#[inline] fn hinted(x:u16)->u16{x+1} #[inline(never)] fn barrier(x:u16)->u16{x} fn choose(x:u16)->u16{if x>7{x*2+1}else{x+3}} fn main()->u16{barrier(hinted(choose(4)))}";
+        let run = |options: InlineOptions| {
+            let mut fs = functions(source);
+            let live = fs.keys().copied().collect();
+            let report = inline_calls(&mut fs, &live, &HashSet::from(["main"]), &options).unwrap();
+            validate_inline_ir(&fs["main"]).unwrap();
+            report
+        };
+        let default = run(InlineOptions::default());
+        assert!(default.sites.iter().any(|s| s.callee == "choose"
+            && s.automatic
+            && s.decision == InlineDecision::Expanded));
+        assert!(default
+            .sites
+            .iter()
+            .any(|s| s.callee == "barrier" && s.decision == InlineDecision::Never));
+        for options in [
+            InlineOptions {
+                automatic: false,
+                ..InlineOptions::default()
+            },
+            InlineOptions {
+                maximum_automatic_nodes: 1,
+                ..InlineOptions::default()
+            },
+        ] {
+            let report = run(options);
+            assert_eq!(report.automatic_expanded_sites(), 0);
+            assert!(report
+                .sites
+                .iter()
+                .any(|s| s.callee == "hinted" && s.decision == InlineDecision::Expanded));
+        }
+    }
+    #[test]
+    fn automatic_cycles_and_source_frames_are_kept_as_calls() {
+        let mut fs = functions("fn spin(input:u16)->u16{let mut x=input;while x<4{x+=1;}x} fn local(x:u16)->u16{x} fn main()->u16{local(spin(1))}");
+        fs.get_mut("local").unwrap().local_slots = 1;
+        let live = fs.keys().copied().collect();
+        let report = inline_calls(
+            &mut fs,
+            &live,
+            &HashSet::from(["main"]),
+            &InlineOptions::default(),
+        )
+        .unwrap();
+        assert!(report
+            .sites
+            .iter()
+            .any(|s| s.callee == "spin" && s.decision == InlineDecision::AutomaticCycle));
+        assert!(report
+            .sites
+            .iter()
+            .any(|s| s.callee == "local" && s.decision == InlineDecision::SourceFrame));
+        assert_eq!(report.expanded_sites(), 0);
+    }
+    #[test]
+    fn explicit_requests_precede_automatic_sites_without_resetting_clone_depth() {
+        let mut fs=functions("fn automatic(x:u16)->u16{x+2} fn a(x:u16)->u16{automatic(x)} #[inline] fn requested(x:u16)->u16{x+1} fn z(x:u16)->u16{requested(x)} fn main()->u16{a(1)+z(2)}");
+        let live = fs.keys().copied().collect();
+        let report = inline_calls(
+            &mut fs,
+            &live,
+            &HashSet::from(["main"]),
+            &InlineOptions {
+                maximum_program_nodes: Some(6),
+                ..InlineOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(report
+            .sites
+            .iter()
+            .any(|s| s.callee == "requested" && s.decision == InlineDecision::Expanded));
+        assert_eq!(report.automatic_expanded_sites(), 0);
+        let mut fs=functions("#[inline] fn leaf(x:u16)->u16{x+1} fn middle(x:u16)->u16{leaf(x)+2} #[inline] fn outer(x:u16)->u16{middle(x)+3} fn main()->u16{outer(4)}");
+        let live = fs.keys().copied().collect();
+        let report = inline_calls(
+            &mut fs,
+            &live,
+            &HashSet::from(["main"]),
+            &InlineOptions::default(),
+        )
+        .unwrap();
+        assert!(report.sites.iter().any(|s| s.caller == "main"
+            && s.callee == "leaf"
+            && s.depth == 3
+            && s.decision == InlineDecision::DepthBudget));
+        assert!(report
+            .sites
+            .iter()
+            .filter(|s| s.decision == InlineDecision::Expanded)
+            .all(|s| s.depth <= 2));
+    }
+    #[test]
+    fn cheaper_automatic_sites_receive_budget_before_earlier_large_calls() {
+        let mut fs=functions("fn cheap(x:u16)->u16{x} fn larger(x:u16)->u16{x+2} fn a(x:u16)->u16{larger(x)} fn z(x:u16)->u16{cheap(x)} fn main()->u16{a(1)+z(2)}");
+        let live = fs.keys().copied().collect();
+        let report = inline_calls(
+            &mut fs,
+            &live,
+            &HashSet::from(["main"]),
+            &InlineOptions {
+                maximum_program_nodes: Some(5),
+                ..InlineOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(report.sites.iter().any(|s| s.caller == "z"
+            && s.callee == "cheap"
+            && s.decision == InlineDecision::Expanded));
+        assert!(!report
+            .sites
+            .iter()
+            .any(|s| s.callee == "larger" && s.decision == InlineDecision::Expanded));
+        assert!(report.introduced_nodes <= 5);
+    }
+    #[test]
+    fn unrelated_explicit_expansions_do_not_displace_default_caller_decisions() {
+        let shared = "fn automatic(x:u16)->u16{x+1} #[inline] fn hinted(x:u16)->u16{x+2} #[inline(never)] fn focus(x:u16)->u16{automatic(x)}";
+        let mut small = functions(&format!("{shared} fn main()->u16{{focus(1)}}"));
+        let mut source = shared.to_owned();
+        for index in 0..600 {
+            source.push_str(&format!(
+                "#[inline(never)] fn extra_{index}(x:u16)->u16{{hinted(x)}}"
+            ));
+        }
+        source.push_str("fn main()->u16{let mut sum=focus(1);");
+        for index in 0..600 {
+            source.push_str(&format!("sum+=extra_{index}(1);"));
+        }
+        source.push_str("sum}");
+        let large = functions(&source);
+        let mut grown = large.clone();
+        let options = InlineOptions::default();
+        let apply = |fs: &mut HashMap<FuncName, IrFunc>, options: &InlineOptions| {
+            let live = fs.keys().copied().collect();
+            inline_calls(fs, &live, &HashSet::from(["main"]), options).unwrap()
+        };
+        let before = apply(&mut small, &options);
+        let after = apply(&mut grown, &options);
+        let focus_expanded = |r: &InlineReport| {
+            r.sites.iter().any(|s| {
+                s.caller == "focus"
+                    && s.callee == "automatic"
+                    && s.decision == InlineDecision::Expanded
+            })
+        };
+        assert!(focus_expanded(&before));
+        assert!(focus_expanded(&after));
+        assert!(
+            after.introduced_nodes > 2048,
+            "fixture must exceed the old global quota"
+        );
+        assert!(!after
+            .sites
+            .iter()
+            .any(|s| s.decision == InlineDecision::ProgramBudget));
+        assert_eq!(small["focus"].blocks, grown["focus"].blocks);
+        validate_inline_ir(&grown["focus"]).unwrap();
+
+        // An explicitly requested work limit retains the old cumulative policy.
+        let limited = apply(
+            &mut large.clone(),
+            &InlineOptions {
+                maximum_program_nodes: Some(2048),
+                ..options
+            },
+        );
+        assert!(limited.introduced_nodes <= 2048);
+        assert!(limited.sites.iter().any(|s| s.caller == "focus"
+            && s.callee == "automatic"
+            && s.decision == InlineDecision::ProgramBudget));
     }
     #[test]
     fn method_lowering_preserves_hint() {
@@ -761,13 +1051,13 @@ mod tests {
         let mut a = functions(source);
         let mut b = a.clone();
         let opts = InlineOptions {
-            maximum_program_nodes: 6,
+            maximum_program_nodes: Some(6),
             ..InlineOptions::default()
         };
         let live = a.keys().copied().collect();
         let entries = HashSet::from(["main"]);
-        let ra = inline_hints(&mut a, &live, &entries, &opts).unwrap();
-        let rb = inline_hints(&mut b, &live, &entries, &opts).unwrap();
+        let ra = inline_calls(&mut a, &live, &entries, &opts).unwrap();
+        let rb = inline_calls(&mut b, &live, &entries, &opts).unwrap();
         assert_eq!(ra.expanded_sites(), 1);
         assert_eq!(ra.introduced_nodes, rb.introduced_nodes);
         assert_eq!(a["main"].blocks, b["main"].blocks);
@@ -781,7 +1071,7 @@ mod tests {
         let mut fs = functions("#[inline] fn f(x:u16)->u16{x+1} fn main()->u16{f(2)}");
         fs.get_mut("f").unwrap().blocks[0].term = Some(Terminator::Ret { values: vec![1000] });
         let live = fs.keys().copied().collect();
-        assert!(inline_hints(
+        assert!(inline_calls(
             &mut fs,
             &live,
             &HashSet::from(["main"]),

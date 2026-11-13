@@ -167,6 +167,10 @@ sources, generated descriptions, resources and compiler source hashes, along
 with the linked code, package, function entries, stack frames and globals.
 Compare compiler variants only after confirming their application/resource
 closures match. Both packages can run under the same native emulator executable.
+`--no-auto-inline` disables only automatic inlining for a paired comparison;
+explicit hints remain active. Each input records that policy and saves the
+backend's `inline-report.txt`, including automatic/requested site decisions,
+retained expansions, linked code sizes, caller frames and spills.
 
 | Interval | Fixed workload |
 | --- | --- |

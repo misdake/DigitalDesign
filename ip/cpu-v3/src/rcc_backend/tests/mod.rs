@@ -3,13 +3,16 @@ use super::*;
 use crate as cpu_v3;
 use rcc::frontend::parse_source_with;
 
-/// Every emitted hardware VECTOR instruction obeys the design's section
+/// Every emitted vector-valued hardware instruction obeys the design's section
 /// 3.2 partial-overlap rule: a destination range either shares a source
 /// base exactly or is disjoint from it, and a `VMULS` scalar is never
 /// inside the destination range.
 fn assert_no_partial_overlap(program: &CpuV3Program) {
-    let mut index = 0;
-    while index + 1 < program.words.len() {
+    for line in disasm(program) {
+        let index = usize::from(line.address.wrapping_sub(program.code_base));
+        if !line.wide {
+            continue;
+        }
         if let cpu_v3::Instruction::FpuVector {
             fa,
             fb,
@@ -19,6 +22,10 @@ fn assert_no_partial_overlap(program: &CpuV3Program) {
             ..
         } = cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
         {
+            // DOT/DOTADD update ACC; DOTSTORE has a scalar destination.
+            if subop.uses_stride_mode() {
+                continue;
+            }
             let lanes = usize::from(len.lanes());
             let (fa, fb, fd) = (usize::from(fa), usize::from(fb), usize::from(fd));
             let overlap = |a: usize, b: usize, blen: usize| a != b && a < b + blen && b < a + lanes;
@@ -41,7 +48,6 @@ fn assert_no_partial_overlap(program: &CpuV3Program) {
                 );
             }
         }
-        index += 1;
     }
 }
 

@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--level', choices=('1', '29', 'all'), default='all')
     parser.add_argument('--label', default='local')
+    parser.add_argument('--no-auto-inline', action='store_true', help='Keep explicit hints, disable automatic inlining')
     parser.add_argument('--out', type=Path, help='New or empty output directory, relative to the repository')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.label):
@@ -30,7 +31,8 @@ def main():
     temporary.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(TEMP=str(temporary), TMP=str(temporary), BLOXORZ_SIM_OUTPUT_ROOT=str(output),
-               BLOXORZ_CPU_ARM=args.label, BLOXORZ_START_PHASE='play')
+               BLOXORZ_CPU_ARM=args.label, BLOXORZ_START_PHASE='play',
+               BLOXORZ_CPU_AUTO_INLINE='0' if args.no_auto_inline else '1')
     levels = (1, 29) if args.level == 'all' else (int(args.level),)
     command = ['cargo', 'test', '--release', '-p', 'cpu-v3-tang-nano-20k', '--test', 'host',
                'temporary_reuse_cpu_matrix', '--', '--ignored', '--nocapture', '--test-threads=1']
