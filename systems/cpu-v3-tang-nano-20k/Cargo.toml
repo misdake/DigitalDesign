@@ -252,3 +252,7 @@ path = "tests/system/system_runner.rs"
 [[test]]
 name = "vblank_fast_forward"
 path = "tests/system/vblank_fast_forward.rs"
+
+[[test]]
+name = "core_demo"
+path = "examples/core_demo/tests/pages.rs"

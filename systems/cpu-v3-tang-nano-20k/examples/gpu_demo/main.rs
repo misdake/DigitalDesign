@@ -88,7 +88,7 @@ fn main(){
 fn validate_font() {
     use gpu_v2::system::vliw_command::ui_char;
     let mut seen = [false; 255];
-    for line in include_str!("assets/font-8x16.txt").lines() {
+    for line in include_str!("../../../../assets/fonts/vonwaon-bitmap16-ascii.txt").lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
         }

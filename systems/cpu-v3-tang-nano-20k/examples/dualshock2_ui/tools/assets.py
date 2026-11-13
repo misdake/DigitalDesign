@@ -1,4 +1,4 @@
-"""Original diagnostic font/icons and the native UI atlas; no scene assets."""
+"""Project-font labels and app-owned diagnostic icons in a native UI atlas."""
 import argparse
 import hashlib
 import json
@@ -10,29 +10,9 @@ import sys
 EXAMPLE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EXAMPLE.parents[3] / "systems/cpu-v3-tang-nano-20k/tools"))
 from gpu_layout import validate_asset_range, sectors
-FONT = {
-    'A': [14,17,17,31,17,17,17], 'B': [30,17,17,30,17,17,30],
-    'C': [14,17,16,16,16,17,14], 'D': [30,17,17,17,17,17,30],
-    'E': [31,16,16,30,16,16,31], 'F': [31,16,16,30,16,16,16],
-    'G': [14,17,16,23,17,17,15], 'H': [17,17,17,31,17,17,17],
-    'I': [14,4,4,4,4,4,14], 'J': [7,2,2,2,2,18,12],
-    'K': [17,18,20,24,20,18,17], 'L': [16,16,16,16,16,16,31],
-    'M': [17,27,21,21,17,17,17], 'N': [17,25,21,19,17,17,17],
-    'O': [14,17,17,17,17,17,14], 'P': [30,17,17,30,16,16,16],
-    'Q': [14,17,17,17,21,18,13], 'R': [30,17,17,30,20,18,17],
-    'S': [15,16,16,14,1,1,30], 'T': [31,4,4,4,4,4,4],
-    'U': [17,17,17,17,17,17,14], 'V': [17,17,17,17,17,10,4],
-    'W': [17,17,17,21,21,21,10], 'X': [17,17,10,4,10,17,17],
-    'Y': [17,17,10,4,4,4,4], 'Z': [31,1,2,4,8,16,31],
-    '0': [14,17,19,21,25,17,14], '1': [4,12,4,4,4,4,14],
-    '2': [14,17,1,2,4,8,31], '3': [30,1,1,14,1,1,30],
-    '4': [2,6,10,18,31,2,2], '5': [31,16,16,30,1,1,30],
-    '6': [14,16,16,30,17,17,14], '7': [31,1,2,4,8,8,8],
-    '8': [14,17,17,14,17,17,14], '9': [14,17,17,15,1,1,14],
-    ' ': [0]*7, ':': [0,4,4,0,4,4,0], '-': [0,0,0,31,0,0,0],
-    '+': [0,4,4,31,4,4,0],
-    '/': [1,2,2,4,8,8,16], '.': [0,0,0,0,0,4,4],
-}
+import ui_font
+# IDs 96..251 are diagnostic icons, so only printable ASCII 32..95 is text here.
+FONT = {chr(code): rows for code, rows in ui_font.load_rows().items() if code < 96}
 LABELS = [
     (6,0,'DS2 YELLOW RAW / GREEN OUTPUT'), (1,1,'LINK:'), (22,1,'ID:'), (32,1,'SAMPLES:'),
     (1,2,'BUTTONS:'), (17,2,'PRESS:'), (33,2,'RELEASE:'),
@@ -52,13 +32,10 @@ def pack(output):
     output.mkdir(parents=True, exist_ok=True)
     pixels = [[[0]*8 for _ in range(16)] for _ in range(256)]
     for char, rows in FONT.items():
-        # Resample the seven source rows to ten, centered in the16px cell.
-        # Three transparent rows above/below leave a6px interline gap.
-        for y in range(10):
-            row = rows[y*7//10]
-            for x in range(5):
-                if row & (1<<(4-x)):
-                    pixels[ord(char)][3+y][x+1] = 0xffff
+        for y, bits in enumerate(rows):
+            for x in range(8):
+                if bits & (128 >> x):
+                    pixels[ord(char)][y][x] = 0xffff
     for id, color, solid in [(1,rgba(8,10,12),False),(2,rgba(8,31,12),True)]:
         for y in range(4,12):
             for x in range(8):
@@ -122,10 +99,12 @@ def pack(output):
     (output/'ui_layout.rs').write_text(source)
     validate_asset_range(atlas_base, len(atlas))
     (output/'atlas.bin').write_bytes(atlas)
-    manifest={'resources':[{'file':'atlas.bin','address':atlas_base,'bytes':len(atlas),
+    manifest={'source_root':'repository','resources':[{'file':'atlas.bin','address':atlas_base,'bytes':len(atlas),
                             'sha256':hashlib.sha256(atlas).hexdigest()}],
               'labels':[{'x':x,'y':y,'text':t} for x,y,t in LABELS],
               'font_ids':sorted(map(ord,FONT)), 'buttons':BUTTONS,
+              'sources':{p.relative_to(EXAMPLE.parents[3]).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
+                         for p in [Path(__file__), *ui_font.SOURCES]},
               'source_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     (output/'assets.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print('DS2 UI: 64KiB native atlas, labels,16 indicators and two64px stick panels')

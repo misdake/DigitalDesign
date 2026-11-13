@@ -49,21 +49,16 @@ it does not contain native shader output or a second level/Flash image.
 
 ## Native HUD font
 
-`hud-font.txt` freezes ASCII32..126 from VonwaonBitmap16pxLite1.02 by Haoyu Qiu,
-using the user-supplied16px Lite font. Native16px glyphs occupy8×16 cells with
-advance8 and baseline14. Native bearings and blank rows remain intact. There is
-no resize, antialiasing, grayscale or extra line spacing. The source TTF is not
-modified or required by ordinary builds. `hud-font-provenance.json` records its
-SHA256 and source identity. The author [declares CC0 1.0](https://timothyqiu.itch.io/vonwaon-bitmap)
-and separately notes uncertainty in upstream HZK/ASC mould rights; the provenance
-records that declaration without claiming those upstream rights are resolved.
+The HUD uses the shared [project font](/assets/fonts/README.md): native 8×16
+VonwaonBitmap16pxLite 1.02 ASCII32..126. The canonical glyphs, original source
+identity and extraction tool live in `/assets/fonts`, not in this application.
+The shared system packer preserves native bearings, baseline14 and advance8;
+there is no rescaling or added line spacing.
 
-`tools/hud_font.py` can deliberately freeze the matching TTF with `--ttf`,
-`--bitmap` and `--provenance`. The asset producer starts the Native UI atlas from
-zero and writes only these frozen binary glyphs. Its `hud-font-atlas-1x1.png`
-preview decodes all256 cells from the actual65536-byte atlas, including the
-row-bank XOR, into a128×256 RGBA image: white65535 is opaque and zero transparent.
-No preview-only glyphs or rescaling are used.
+The producer's `hud-font-atlas-1x1.png` decodes all256 cells of the actual
+65536-byte Native UI atlas, including row-bank XOR, into a128×256 RGBA preview.
+White65535 is opaque and zero transparent. The game atlas is byte-identical to
+the original Bloxorz HUD font atlas.
 
 
 ## Goal carrier assets

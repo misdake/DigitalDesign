@@ -49,6 +49,10 @@ asset pool. UV draws include the selected POT base/full mip chain or1600-sector
 fixed-view plane and its read-only allocation tail; RGB bypasses texture input.
 Render's texture fields are copied when SET_RENDER executes in the dependency
 scan, so later staging reuse cannot change the installed binding. Descriptor
+validation accepts the POT RGB565/RGBA4444 and Repeat/Clamp bits; both formats
+retain the same raw16 footprint. Fixed framebuffer views reject those bits and
+keep their implicit clamp and RGB565 interpretation. Reserved Render bits are
+still rejected before capture publication. Descriptor
 DMA from an earlier declared writable region is rejected as data dependent;
 ordinary uniform data and texture/payload contents may flow through GPU copies.
 UI records the intersecting grid sectors and the readable kind3 allocation

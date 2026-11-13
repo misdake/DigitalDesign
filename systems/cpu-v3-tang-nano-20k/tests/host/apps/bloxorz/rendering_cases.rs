@@ -770,7 +770,13 @@ fn same_heap_address_rebuilds_only_after_retirement_and_capture_reads_new_record
             }
         }
         if let StepOutcome::Halted { signal } = outcome {
-            assert_eq!(signal, 0x600d);
+            assert_eq!(
+                signal,
+                0x600d,
+                "GPU API fault {:?}",
+                &sim.cpu().physical_memory_slice()
+                    [global(&program, "GPU_API_FAULT")..global(&program, "GPU_API_FAULT") + 6]
+            );
             halted = true;
             break;
         }

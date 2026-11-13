@@ -506,12 +506,13 @@ fn gpu_capture_texture(facts: Array<u16>) -> bool {
     let first = GPU_CAPTURE_CONTROL[20u16];
     let flags = GPU_CAPTURE_CONTROL[21u16];
     let exponent = flags & 15;
-    if first & 1 != 0 || exponent > 10 || flags & 65280 != 0 || ((flags >> 5) & 3) > 2 {
+    // Native Render bits8/9 select RGBA4444 and POT Clamp; payloads remain raw16.
+    if first & 1 != 0 || exponent > 10 || flags & 64512 != 0 || ((flags >> 5) & 3) > 2 {
         return gpu_capture_reject(GPU_CAPTURE_DEPENDENCY);
     }
     let mut sectors: u16 = 0;
     if flags & 128 != 0 {
-        if exponent != 9 || flags & 16 != 0 || flags & 64 != 0 {
+        if exponent != 9 || flags & 16 != 0 || flags & 64 != 0 || flags & 768 != 0 {
             return gpu_capture_reject(GPU_CAPTURE_DEPENDENCY);
         }
         sectors = 1600;

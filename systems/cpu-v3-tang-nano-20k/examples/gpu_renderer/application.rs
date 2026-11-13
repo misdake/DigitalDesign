@@ -6,7 +6,7 @@ const RENDERER: Definition = Definition {
     source: Some("examples/gpu_renderer/rcc/main.rs"),
     gpu_api: true,
     assets: Some(Assets {
-        inputs: &["examples/gpu_demo/assets/font-8x16.txt"],
+        manifest_sources: true,
         ..RENDERER_ASSETS
     }),
     owner: "examples/gpu_renderer/application.rs",

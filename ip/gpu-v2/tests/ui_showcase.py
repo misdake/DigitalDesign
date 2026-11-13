@@ -23,30 +23,18 @@ def rgb565(p):return ((p>>11)<<11)|(((p>>6)&31)<<6)|(((p>>10)&1)<<5)|((p>>1)&31)
 def rgba5551(rgb):return ((rgb[0]>>3)<<11)|((rgb[1]>>3)<<6)|((rgb[2]>>3)<<1)|1
 def offset(x,y):return ((x//16)*16+y//16)*256+(y%16)*16+x%16
 
-def native_ascii(path):
-    """Read the Windows Fixedsys raster strike directly, without FreeType mapping.
+def native_ascii():
+    """Read the shared project's native 8x16 ASCII row masks without rendering."""
+    path=ROOT/'assets/fonts/vonwaon-bitmap16-ascii.txt'
+    masks={}
+    for line in path.read_text().splitlines():
+        if not line or line.startswith('#'):continue
+        fields=line.split();code=int(fields[0]);rows=[int(v,16) for v in fields[1:]]
+        assert len(rows)==16 and chr(code) not in masks and all(0<=v<256 for v in rows)
+        masks[chr(code)]=[bool(bits&(128>>x)) for bits in rows for x in range(8)]
+    assert set(masks)==set(map(chr,range(32,127)))
+    return masks,hashlib.sha256(path.read_bytes()).hexdigest()
 
-    Its native 8x15 pixels occupy the first 15 rows of an 8x16 cell. The FON
-    resource is an external test asset, never copied into repository sources.
-    """
-    data=path.read_bytes();ne=struct.unpack_from('<I',data,0x3c)[0]
-    p=ne+struct.unpack_from('<H',data,ne+0x24)[0]
-    shift=struct.unpack_from('<H',data,p)[0];p+=2
-    while True:
-        kind,count=struct.unpack_from('<HH',data,p)
-        if kind==0:raise ValueError('No native 8x15 raster font')
-        p+=8
-        for _ in range(count):
-            start,size=struct.unpack_from('<HH',data,p);p+=12
-            if kind!=0x8008:continue
-            f=data[start<<shift:(start+size)<<shift]
-            if struct.unpack_from('<H',f)[0]!=0x200 or struct.unpack_from('<HH',f,86)!=(8,15):continue
-            masks={}
-            for code in range(32,127):
-                width,base=struct.unpack_from('<HH',f,118+(code-f[95])*4)
-                assert width==8
-                masks[chr(code)]=[bool(f[base+y]&(128>>x)) if y<15 else False for y in range(16) for x in range(8)]
-            return masks,hashlib.sha256(data).hexdigest()
 
 def native_cjk(font,char):
     """Sample the original 100-font-unit bitmap cells, not a scaled TTF render."""
@@ -76,7 +64,7 @@ def assets(out,font_zip):
         name=next(n for n in z.namelist() if n.endswith('16px.ttf'))
         font_data=z.read(name);(out/'wqy16.ttf').write_bytes(font_data)
     cjk=TTFont(out/'wqy16.ttf')
-    ascii_masks,ascii_hash=native_ascii(Path(os.environ['WINDIR'])/'Fonts/vgafix.fon')
+    ascii_masks,ascii_hash=native_ascii()
     glyphs=[];lookup={};labels=[];grids=[];cjk_chars=set()
     white=(232,239,248);cyan=(72,216,240);yellow=(255,210,72);muted=(152,180,208)
     def add(image,label):
@@ -160,7 +148,7 @@ def assets(out,font_zip):
         (out/f'commands{frame}.txt').write_text(cb.text())
     (out/'seed.txt').write_text(''.join(f'{a:x} {v:08x}\n' for a,v in sorted(seed.items())))
     (out/'atlas-labels.json').write_text(json.dumps(labels,ensure_ascii=False,indent=2),encoding='utf8')
-    (out/'font-production.json').write_text(json.dumps(dict(cjk_grid_units=100,cjk_baseline_units=1400,cjk_size=[16,16],cjk_reference_glyphs=len(cjk_chars),cjk_reference_pixel_differences=0,ascii_size=[8,15],ascii_cell=[8,16],ascii_sha256=ascii_hash,antialias=False,resize=False),indent=2))
+    (out/'font-production.json').write_text(json.dumps(dict(cjk_grid_units=100,cjk_baseline_units=1400,cjk_size=[16,16],cjk_reference_glyphs=len(cjk_chars),cjk_reference_pixel_differences=0,ascii_size=[8,16],ascii_cell=[8,16],ascii_sha256=ascii_hash,antialias=False,resize=False),indent=2))
     return commands,counts,hashlib.sha256(font_data).hexdigest()
 
 def main():

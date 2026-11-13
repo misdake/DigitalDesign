@@ -608,6 +608,12 @@ impl Display {
             gpu_api_fail(5, 2, 0, 0);
         }
     }
+    /// Stage the pixel interpretation together with its completed framebuffer.
+    pub fn set_next_swap_with_format(&mut self, color: &ColorBuffer, format: DisplayFormat) {
+        if !gpu_present_set_next_with_format(gpu_arena_data(color.slot)[0u16], format as u16) {
+            gpu_api_fail(5, 2, 0, 0);
+        }
+    }
     pub fn wait_vblank(&mut self) {
         if !gpu_present_wait_vblank() {
             gpu_api_fail(5, 3, 0, 0);
@@ -1069,6 +1075,25 @@ impl UiGrid {
 }
 
 impl UiGrid {
+    /// Write one row without repeating its length in a CellRect.
+    pub fn write_text(&mut self, x: u16, y: u16, glyphs: &[u8]) {
+        self.write(
+            CellRect {
+                x: x,
+                y: y,
+                width: glyphs.len() as u16,
+                height: 1,
+            },
+            glyphs,
+        );
+    }
+    /// Replace exactly one cell, preserving the adjacent packed byte.
+    pub fn write_glyph(&mut self, x: u16, y: u16, glyph: u8) {
+        gpu_api_checked(
+            gpu_ui_grid_write_glyph(gpu_arena_data(self.slot), x, y, glyph),
+            11,
+        );
+    }
     pub fn write(&mut self, rect: CellRect, glyphs: &[u8]) {
         gpu_api_checked(
             gpu_ui_grid_write(gpu_arena_data(self.slot), rect, glyphs),

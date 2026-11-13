@@ -2,7 +2,6 @@
 import argparse
 import hashlib
 import json
-import struct
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
@@ -16,25 +15,6 @@ def extract(ttf):
         ImageDraw.Draw(im).text((0,14),chr(code),font=font,anchor='ls',fill=1)
         rows[code]=[sum((128>>x) for x in range(8) if im.getpixel((x,y))) for y in range(16)]
     return rows
-
-def atlas(rows):
-    data=bytearray(65536)
-    for code,bitmap in rows.items():
-        for y,bits in enumerate(bitmap):
-            for x in range(8):
-                struct.pack_into('<H',data,code*256+(y*8+(x^((y&1)*2)))*2,65535 if bits&(128>>x) else 0)
-    return bytes(data)
-
-def preview(data):
-    assert len(data)==65536
-    im=Image.new('RGBA',(128,256))
-    for code in range(256):
-        for y in range(16):
-            for x in range(8):
-                value=struct.unpack_from('<H',data,code*256+(y*8+(x^((y&1)*2)))*2)[0]
-                assert value in (0,65535)
-                im.putpixel(((code%16)*8+x,(code//16)*16+y),(255,255,255,255) if value else (0,0,0,0))
-    return im
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--ttf',type=Path,required=True);p.add_argument('--bitmap',type=Path,required=True);p.add_argument('--provenance',type=Path,required=True);a=p.parse_args()

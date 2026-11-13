@@ -46,6 +46,13 @@ and preserve the ordinary protocol test. The application README owns their
 commands and qualification boundary; small allocator contracts stay beside the
 Python producer.
 
+The `core_demo` target consumes a verified exported package through its explicit
+`CORE_DEMO_ARTIFACT` input. Its opt-in application test runs all CPU/input/time/Display
+pages with real controller snapshots and bounded functional GPU/Display; the
+[application README](/systems/cpu-v3-tang-nano-20k/examples/core_demo/README.md) owns the
+command and evidence boundary. Public numeric text and per-swap format contracts
+remain in the ordinary `host` target.
+
 The backend is part of each test's contract: instruction sim checks functional
 CPU behavior, native CPU emu adds CPU/memory cycles, functional GPU sim checks
 images, and whole-system cycle/RTL qualification checks actual integration.

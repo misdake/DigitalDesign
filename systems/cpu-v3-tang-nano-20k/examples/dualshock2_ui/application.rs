@@ -11,6 +11,7 @@ pub const APPLICATIONS: &[Definition] = &[Definition {
         constants: "ui_layout.rs",
         repack: "ds2-ui-repack.conf",
         names: ResourceNames::Fixed("DS2_UI_ATLAS"),
+        manifest_sources: true,
         ..RENDERER_ASSETS
     }),
     ..DEFAULT

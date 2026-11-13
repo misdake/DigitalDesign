@@ -31,6 +31,7 @@ const GAME: Definition = Definition {
     assets: Some(Assets {
         script: "examples/gpu_renderer_bloxorz/tools/assets.py",
         production_surface: true,
+        manifest_sources: true,
         inputs: &[
             "tools/gpu_texture_layout.py",
             "examples/gpu_renderer/tools/assets.py",
@@ -39,7 +40,6 @@ const GAME: Definition = Definition {
             "applications/bloxorz/assets/reference.txt",
             "applications/bloxorz/geometry.rs",
             "examples/gpu_demo/tools/assets.py",
-            "examples/gpu_demo/assets/font-8x16.txt",
         ],
         ..RENDERER_ASSETS
     }),

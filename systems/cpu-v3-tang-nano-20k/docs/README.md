@@ -6,6 +6,11 @@ live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.
 
 ## Documents
 
+- [Application quickstart](/systems/cpu-v3-tang-nano-20k/docs/application-quickstart.md): first build/frame, target language restrictions and application/static-content integration.
+
+- [UI text helpers](/systems/cpu-v3-tang-nano-20k/docs/ui-text.md): stateless ASCII number formatting over the public GPU UI, separate from menu layout and driver ownership.
+- [CPU canvas](/systems/cpu-v3-tang-nano-20k/docs/cpu-canvas.md): CPU-owned RGB565 spans and simple shapes, with explicit GPU/Display handoff.
+
 - [Application profiling](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md): bounded backend/scene/frame runs, offline reports and comparable sealed measurements.
 
 - [Application builds and existing artifacts](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md): explicit application selection, owned recipes, pure packing and fresh snapshot publication.

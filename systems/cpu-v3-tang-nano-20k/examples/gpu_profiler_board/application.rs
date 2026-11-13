@@ -11,7 +11,11 @@ pub const APPLICATIONS: &[Definition] = &[Definition {
     owner: "examples/gpu_profiler_board/application.rs",
     assets: Some(Assets {
         script: "examples/gpu_profiler_board/tools/assets.py",
-        inputs: &["examples/gpu_demo/assets/font-8x16.txt"],
+        inputs: &[
+            "tools/ui_font.py",
+            "../../assets/fonts/vonwaon-bitmap16-ascii.txt",
+            "../../assets/fonts/vonwaon-bitmap16-provenance.json",
+        ],
         ..RENDERER_ASSETS
     }),
     configure: |context, application, manifest| match manifest["profiler_short_case"]

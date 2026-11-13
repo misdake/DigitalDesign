@@ -114,7 +114,7 @@ def audit(output, contract):
 
     # UI alpha and bank-swizzle remain independent of ordinary texture macros.
     atlas=(assets/'atlas.bin').read_bytes()
-    for line in (SYSTEM/'examples/gpu_demo/assets/font-8x16.txt').read_text().splitlines():
+    for line in (ROOT/'assets/fonts/vonwaon-bitmap16-ascii.txt').read_text().splitlines():
         if not line or line.startswith('#'): continue
         words=line.split();glyph=int(words[0])
         for y,row in enumerate(words[1:]):

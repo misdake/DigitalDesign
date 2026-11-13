@@ -44,6 +44,9 @@ mod system_display_board;
 #[path = "gpu/time_device.rs"]
 mod time_device;
 
+#[path = "compiler/ui_text.rs"]
+mod ui_text;
+
 #[path = "compiler/gpu_api_bind.rs"]
 mod gpu_api_bind;
 #[path = "compiler/gpu_api_capture_source.rs"]

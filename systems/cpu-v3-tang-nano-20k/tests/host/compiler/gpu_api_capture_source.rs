@@ -46,7 +46,7 @@ fn run(label: &str, body: &str, enabled: bool, torn: bool) -> State {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| root.join("../../../target/graphics-api-g0"));
     let source = format!(
-        r#"mod gpu_execute;mod gpu_present;
+        r#"mod gpu_execute;mod gpu_present;mod gpu_api_capture;
 fn check(ok:bool){{if !ok{{halt(0xbad);}}}}
 fn main(){{gpu_record_init();{body}halt(0x600d);}}"#
     );
@@ -58,7 +58,19 @@ fn main(){{gpu_record_init();{body}halt(0x600d);}}"#
         &options,
         &RustcCheck::new(output.join(format!("capture-source-{label}-{enabled}"))),
         &mut |name| {
-            std::fs::read_to_string(root.join(format!("{name}.rs"))).map_err(|e| e.to_string())
+            if name == "profiler_gate" {
+                // These source/fact tests never run the transport consumer.
+                return Ok(
+                    "use crate::dsl_rt::*;pub fn profiler_gate(d:Array<u16>)->u16{0}".into(),
+                );
+            }
+            crate::shared_build_support_rcc_modules::load_module(
+                &root,
+                &root,
+                "",
+                name,
+                &mut |_| {},
+            )
         },
     )
     .unwrap_or_else(|error| panic!("{error}"));
@@ -86,6 +98,34 @@ fn main(){{gpu_record_init();{body}halt(0x600d);}}"#
     Rc::try_unwrap(state)
         .unwrap_or_else(|_| panic!("observer retained"))
         .into_inner()
+}
+
+#[test]
+fn capture_texture_accepts_pot_format_address_bits_and_rejects_fixed_view_bits() {
+    for debug in [false, true] {
+        run(
+            "texture-format-address",
+            r#"
+ let facts:Buf<u16,4>=Buf::new([0xa800,128,2,1]);GPU_CAPTURE_SOURCE[9u16]=1;
+ GPU_CAPTURE_CONTROL[20u16]=0xa800;
+ let mut mode:u16=0;
+ while mode<4{
+  GPU_CAPTURE_CONTROL[1u16]=0;GPU_CAPTURE_CONTROL[11u16]=0;
+  GPU_CAPTURE_CONTROL[21u16]=0x56|(mode<<8);
+  check(gpu_capture_texture(facts.as_array()));
+  check(GPU_CAPTURE_RANGES[4u16]==12800&&GPU_CAPTURE_RANGES[5u16]==0);
+  mode+=1;
+ }
+ GPU_CAPTURE_CONTROL[21u16]=0x456;check(!gpu_capture_texture(facts.as_array()));
+ GPU_CAPTURE_CONTROL[1u16]=0;
+ GPU_CAPTURE_CONTROL[21u16]=0x189;check(!gpu_capture_texture(facts.as_array()));
+ GPU_CAPTURE_CONTROL[1u16]=0;
+ GPU_CAPTURE_CONTROL[21u16]=0x289;check(!gpu_capture_texture(facts.as_array()));
+ "#,
+            debug,
+            false,
+        );
+    }
 }
 
 #[test]

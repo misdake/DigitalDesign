@@ -13,6 +13,7 @@ ROOT = EXAMPLE.parents[3]
 sys.path.insert(0, str(ROOT / "systems/cpu-v3-tang-nano-20k/tools"))
 from gpu_layout import validate_asset_range, sectors
 from capture_layout import description as capture_description
+import ui_font
 SCENE = ROOT / "ip/gpu-v2/examples/vliw_integration"
 sys.path.insert(0, str(SCENE))
 import material_scene
@@ -28,24 +29,8 @@ def sha(path):
 
 
 def font():
-    rows = {}
-    atlas = bytearray(65536)
-    for line in (EXAMPLE / "assets/font-8x16.txt").read_text().splitlines():
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split()
-        glyph = int(fields[0])
-        assert glyph not in rows and 0 <= glyph < 255 and len(fields) == 17
-        rows[glyph] = [int(v, 16) for v in fields[1:]]
-        for y, row in enumerate(rows[glyph]):
-            assert 0 <= row <= 255
-            for x in range(8):
-                # UI source-bank ordering is static; alpha controls a full word.
-                at = glyph * 256 + (y * 8 + (x ^ ((y & 1) * 2))) * 2
-                struct.pack_into("<H", atlas, at, 65535 if row & (128 >> x) else 0)
-    assert set(b"FRAME 0123456789-MS.") <= rows.keys()
-    assert atlas[255 * 256:] == bytes(256)
-    return bytes(atlas), rows
+    rows = ui_font.load_rows()
+    return bytes(ui_font.atlas(rows)), rows
 
 
 def native_record(mesh):
@@ -113,14 +98,14 @@ def pack(output):
         assert address % 128 == 0 and len(payload) % 128 == 0
         validate_asset_range(address, len(payload))
         (output/name).write_bytes(payload)
-    sources = [Path(__file__), EXAMPLE/"assets/scene.json", EXAMPLE/"assets/font-8x16.txt",
+    sources = [Path(__file__), EXAMPLE/"assets/scene.json", *ui_font.SOURCES,
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_layout.py",
                ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_layout.rs",
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/gpu_texture_layout.py",
                ROOT/"systems/cpu-v3-tang-nano-20k/tools/capture_layout.py",
                ROOT/"systems/cpu-v3-tang-nano-20k/rcc/gpu_capture_abi.rs",
                SCENE/"material_scene.py", SCENE/"solid_scene.py", SCENE/"assets/room-tiles.png"]
-    manifest = dict(hardware_profile="production",
+    manifest = dict(source_root='repository', hardware_profile="production",
         layout_identity="rgb565-macro16x16-column-major-pad16-cache16x8-8KiB",
         framebuffer=dict(physical_bytes=204800,reserved_bytes=262144,clear_sectors=1600),
         scene=scene["scene"], triangles=1141, provenance=scene["provenance"],

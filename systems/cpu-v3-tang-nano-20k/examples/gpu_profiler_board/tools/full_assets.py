@@ -3,7 +3,6 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
-import tempfile
 
 SYSTEM = Path(__file__).resolve().parents[3]
 
@@ -18,19 +17,8 @@ def module(name, path):
 def pack(output):
     demo = module("profiler_full_demo_assets", SYSTEM / "examples/gpu_demo/tools/assets.py")
     demo.pack(output)
-    minimal = module("profiler_full_font_assets", SYSTEM / "examples/gpu_renderer/tools/assets.py")
-    # The minimal packer adds the OBS glyphs using the same native atlas encoder.
-    with tempfile.TemporaryDirectory() as temp:
-        minimal.pack(Path(temp))
-        atlas = (Path(temp) / "atlas.bin").read_bytes()
-        font_manifest = json.loads((Path(temp) / "assets.json").read_text())
-    (output / "atlas.bin").write_bytes(atlas)
     manifest = json.loads((output / "assets.json").read_text())
-    for resource in manifest["resources"]:
-        if resource["file"] == "atlas.bin":
-            resource["sha256"] = hashlib.sha256(atlas).hexdigest()
-    manifest["atlas"]["glyphs"] = font_manifest["glyphs"]
-    manifest["sources"].update(font_manifest["sources"])
+    manifest["sources"][Path(__file__).resolve().relative_to(SYSTEM.parents[1]).as_posix()] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     (output / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     scene = json.loads((SYSTEM / "examples/gpu_demo/assets/scene.json").read_text())
     points = [tuple(mesh["config"][axis] +

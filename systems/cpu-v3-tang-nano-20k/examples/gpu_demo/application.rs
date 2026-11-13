@@ -13,8 +13,8 @@ const DEMO: Definition = Definition {
         constants: "demo_assets.rs",
         repack: "demo-repack.conf",
         names: ResourceNames::File(""),
+        manifest_sources: true,
         inputs: &[
-            "examples/gpu_demo/assets/font-8x16.txt",
             "examples/gpu_demo/assets/scene.json",
             "../../ip/gpu-v2/examples/vliw_integration/solid_scene.py",
             "../../ip/gpu-v2/examples/vliw_integration/material_scene.py",
@@ -40,7 +40,6 @@ pub const APPLICATIONS: &[Definition] = &[
             inputs: &[
                 "examples/gpu_demo/tools/public_assets.py",
                 "examples/gpu_demo/tools/assets.py",
-                "examples/gpu_demo/assets/font-8x16.txt",
             ],
             ..RENDERER_ASSETS
         }),
@@ -64,10 +63,7 @@ pub const APPLICATIONS: &[Definition] = &[
         assets: Some(Assets {
             script: "examples/gpu_demo/tools/public_assets.py",
             manifest_sources: true,
-            inputs: &[
-                "examples/gpu_demo/tools/assets.py",
-                "examples/gpu_demo/assets/font-8x16.txt",
-            ],
+            inputs: &["examples/gpu_demo/tools/assets.py"],
             ..RENDERER_ASSETS
         }),
         ..DEFAULT

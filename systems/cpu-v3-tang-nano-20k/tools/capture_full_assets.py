@@ -5,7 +5,6 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
-import tempfile
 
 sys.dont_write_bytecode = True
 SYSTEM = Path(__file__).resolve().parents[1]
@@ -27,20 +26,8 @@ def pack(output):
         raise ValueError('Formal full-scene source snapshot differs from its pinned origin')
     demo = module('capture_full_demo', SYSTEM / 'examples/gpu_demo/tools/assets.py')
     demo.pack(output)
-    minimal = module('capture_full_font', SYSTEM / 'examples/gpu_renderer/tools/assets.py')
-    with tempfile.TemporaryDirectory(dir=output) as temp:
-        minimal.pack(Path(temp))
-        atlas = (Path(temp) / 'atlas.bin').read_bytes()
-        font_manifest = json.loads((Path(temp) / 'assets.json').read_text())
-    (output / 'atlas.bin').write_bytes(atlas)
     catalog = json.loads((output / 'assets.json').read_text())
-    catalog['atlas']['glyphs'] = font_manifest['glyphs']
-    for resource in catalog['resources']:
-        resource['sha256'] = hashlib.sha256((output / resource['file']).read_bytes()).hexdigest()
-    # Normalize both canonical packers' source names to repository-relative paths.
     sources = dict(catalog['sources'])
-    sources.update({(SYSTEM / name).relative_to(ROOT).as_posix(): sha
-                    for name, sha in font_manifest['sources'].items()})
     source_paths = [Path(__file__), SYSTEM / 'tests/capture/capture_draw.rs',
                     SYSTEM / 'examples/gpu_profiler_board/rcc/full_scene.rs',
                     *sorted((SYSTEM / 'tests/fixtures/capture_full_scene').rglob('*'))]

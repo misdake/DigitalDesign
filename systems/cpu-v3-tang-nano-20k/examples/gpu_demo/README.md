@@ -44,7 +44,7 @@ not compatible with its material encoding.
 - `assets/scene.json`: native geometry and camera/light asset data from the
   existing audited fullscene producer, with source provenance hashes.
   It contains no commands, CPU instructions or Flash image.
-- `assets/font-8x16.txt`: original font under the repository MIT license.
+- [Project font](/assets/fonts/README.md): shared native 8×16 Vonwaon ASCII glyphs and provenance.
 - `tools/assets.py`: the single native resource producer.
 - `main.rs`: bounded packed-cell/font component checks, including0/9/10 formatting.
 - `tools/preview.py`: optional conversion of captured framebuffer words.

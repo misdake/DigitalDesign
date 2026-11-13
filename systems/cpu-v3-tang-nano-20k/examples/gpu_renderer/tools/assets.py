@@ -11,6 +11,7 @@ SYSTEM = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(SYSTEM / "tools"))
 from gpu_layout import validate_asset_range, sectors
 from capture_layout import description
+import ui_font
 
 def pack(output):
     bounds=sectors()
@@ -44,25 +45,8 @@ def pack(output):
     assert struct.unpack_from("<Q", mesh, 296)[0] == 0 | (1 << 6) | (2 << 12)
     assert mesh[304:] == bytes(80)
     texture = struct.pack("<H", 65535) * (texture_sectors*64)
-    atlas = bytearray(65536)
-    font = SYSTEM / "examples/gpu_demo/assets/font-8x16.txt"
-    rows = {}
-    for line in font.read_text().splitlines():
-        if line and not line.startswith("#"):
-            values = line.split()
-            rows[int(values[0])] = [int(x, 16) for x in values[1:]]
-    # New semantic OBS label, without changing the classic demo font.
-    for glyph, small in {79: [60, 102, 102, 102, 102, 102, 60, 0],
-                         66: [124, 102, 102, 124, 102, 102, 124, 0]}.items():
-        rows[glyph] = [v for v in small for _ in range(2)]
-    assert set(b"OBS --.0123456789") <= rows.keys()
-    for glyph, bitmap in rows.items():
-        assert 0 <= glyph < 255 and len(bitmap) == 16
-        for y, bits in enumerate(bitmap):
-            for x in range(8):
-                at = glyph * 256 + (y * 8 + (x ^ ((y & 1) * 2))) * 2
-                struct.pack_into("<H", atlas, at, 65535 if bits & (128 >> x) else 0)
-    assert atlas[255 * 256:] == bytes(256)
+    rows = ui_font.load_rows()
+    atlas = ui_font.atlas(rows)
     resources = [("mesh.bin", mesh_base, mesh), ("texture.bin", texture_base, texture),
                  ("atlas.bin", atlas_base, atlas)]
     for name, address, payload in resources:
@@ -80,13 +64,13 @@ def pack(output):
             constants[f"GPU_RENDERER_{label}_{axis}_HIGH"] = (value >> 16) & 65535
     (output / "renderer_assets.rs").write_text("".join(
         f"pub const {name}:u16={value};\n" for name, value in constants.items()))
-    manifest = dict(capture_layout=description(),resources=[dict(file=n, address=a, bytes=len(p),
+    manifest = dict(source_root='repository', capture_layout=description(),resources=[dict(file=n, address=a, bytes=len(p),
                     kind={"mesh.bin":"mesh","texture.bin":"texture","atlas.bin":"atlas"}[n],
                     **({"layout":description()["texture_layout"]} if n=="texture.bin" else {}),
                     sha256=hashlib.sha256(p).hexdigest()) for n, a, p in resources],
                     triangles=1, vertices=3, bounds=[[-1, -1, 0], [1, 1, 0]],
-                    glyphs=sorted(rows), sources={str(p.relative_to(SYSTEM)): hashlib.sha256(p.read_bytes()).hexdigest()
-                    for p in [Path(__file__).resolve(), font, SYSTEM / "tools/gpu_layout.py", SYSTEM / "rcc/gpu_layout.rs", SYSTEM / "tools/capture_layout.py", SYSTEM / "rcc/gpu_capture_abi.rs"]})
+                    glyphs=sorted(rows), sources={p.relative_to(SYSTEM.parents[1]).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                    for p in [Path(__file__).resolve(), *ui_font.SOURCES, SYSTEM / "tools/gpu_layout.py", SYSTEM / "rcc/gpu_layout.rs", SYSTEM / "tools/capture_layout.py", SYSTEM / "rcc/gpu_capture_abi.rs"]})
     (output / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 

@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 mod bench;
 #[path = "../../examples/gpu_renderer_bloxorz/application.rs"]
 mod bloxorz;
+#[path = "../../examples/core_demo/application.rs"]
+mod core_demo;
 #[path = "../../examples/gpu_demo/application.rs"]
 mod demo;
 #[path = "../../examples/dualshock2/application.rs"]
@@ -140,6 +142,7 @@ pub fn definitions() -> impl Iterator<Item = &'static Definition> {
     std::iter::once(&DEFAULT).chain(
         [
             bench::APPLICATIONS,
+            core_demo::APPLICATIONS,
             demo::APPLICATIONS,
             ds2::APPLICATIONS,
             ds2_ui::APPLICATIONS,

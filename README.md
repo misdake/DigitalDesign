@@ -11,6 +11,13 @@ microarchitecture, and compiler are version-controlled together, so the
 hardware-under-test, its emulator, the compiler that programs it, and the
 verification evidence live at the same commit.
 
+## Write an application
+
+Start with the [CPU V3 application guide](/systems/cpu-v3-tang-nano-20k/README.md)
+and its [core capability demo](/systems/cpu-v3-tang-nano-20k/examples/core_demo/README.md).
+The quickstart builds an ordinary application and displays its first frame in
+simulation before introducing hardware implementation and detailed references.
+
 ## Highlights
 
 - **Gate graph, simulation, and Verilog export** (`circuit`): wire/NAND-level
@@ -133,14 +140,19 @@ link resolving.
 ## Tools
 
 ```text
-cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v2
 cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v3 --code-base 0x200
-cargo run -p cpu-v2-sim --bin rcc-run -- input.bin 1000000
-cargo run -p cpu-v2-sim --bin rcc-dbg -- input.bin
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-dbg -- input.rs
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- list
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build bloxorz --out target/bloxorz-build
 cargo run --release -p cpu-v3-boot-format --bin cpu-v3-pack -- application.v3bin
+```
+
+Retained CPU V2 tools are separate from the CPU V3 application workflow:
+
+```text
+cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v2
+cargo run -p cpu-v2-sim --bin rcc-run -- input.bin 1000000
+cargo run -p cpu-v2-sim --bin rcc-dbg -- input.bin
 ```
 
 The application command selects an application-owned recipe, compiles through

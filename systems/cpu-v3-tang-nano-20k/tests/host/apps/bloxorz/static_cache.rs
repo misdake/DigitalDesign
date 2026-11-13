@@ -95,7 +95,13 @@ fn prepared_bridge_capture_reads_fixed_push_after_reset_and_normal_retirement() 
             }
         }
         if let StepOutcome::Halted { signal } = outcome {
-            assert_eq!(signal, 0x600d);
+            assert_eq!(
+                signal,
+                0x600d,
+                "GPU API fault {:?}",
+                &sim.cpu().physical_memory_slice()
+                    [global(&program, "GPU_API_FAULT")..global(&program, "GPU_API_FAULT") + 6]
+            );
             halted = true;
             break;
         }

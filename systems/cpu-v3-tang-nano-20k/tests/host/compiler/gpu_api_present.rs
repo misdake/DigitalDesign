@@ -238,3 +238,46 @@ fn linear_format_is_staged_and_required_at_actual_retirement() {
     );
     assert!(invalid.is_empty());
 }
+
+#[test]
+fn per_swap_format_is_atomic_and_pending_requests_keep_their_format() {
+    let events = run(
+        "per-swap",
+        r#"
+ check(gpu_present_set_next_with_format(0x8800,1));check(gpu_present_wait_vblank());
+ check(dev_recv(DISPLAY_DEVICE,DISPLAY_COLOR_FORMAT)==1);
+ check(gpu_present_set_next_with_format(0x9000,0));check(gpu_present_wait_vblank());
+ check(dev_recv(DISPLAY_DEVICE,DISPLAY_COLOR_FORMAT)==0);
+ "#,
+        false,
+    );
+    assert_eq!(
+        events,
+        vec![
+            (1, 0),
+            (2, 0x22),
+            (4, 1),
+            (3, 1),
+            (1, 0),
+            (2, 0x24),
+            (4, 0),
+            (3, 1)
+        ]
+    );
+    let pending = run(
+        "pending-format",
+        r#"
+ check(gpu_present_set_next_with_format(0x8800,1));
+ check(!gpu_present_set_next_with_format(0x9000,0));
+ check(GPU_PRESENT[4u16]==1&&GPU_PRESENT[1u16]==1);
+ "#,
+        false,
+    );
+    assert_eq!(pending.len(), 4);
+    assert!(run(
+        "invalid-per-swap",
+        "check(!gpu_present_set_next_with_format(0x8800,2));",
+        false
+    )
+    .is_empty());
+}

@@ -223,10 +223,11 @@ The second frame uses a different cell table and A/B target, verifies both
 materialized color planes and unchanged depth, and exports PNGs from actual
 SDRAM words. The producer reads WenQuanYi's original 100-unit bitmap grid
 directly into 16x16 pixels (its 18px EM is not a 16px raster scale). ASCII uses
-the native Windows Fixedsys 8x15 raster strike in an 8x16 cell. Neither path
-resizes, antialiases or thresholds a vector-font rendering. Python Pillow,
-fontTools and the Windows `vgafix.fon` resource are test prerequisites; font
-binaries and rendered images remain generated artifacts.
+the shared [project font](/assets/fonts/README.md), read as native 8x16 binary
+row masks. Neither path resizes, antialiases or thresholds a vector-font
+rendering. Python Pillow, fontTools and the external CJK zip are test
+prerequisites; there is no OS font dependency. Font binaries and rendered
+images remain generated artifacts.
 
 `tests/maintenance_profiles.py` compares the complete ordered preprocessed
 factory token streams with a supplied frozen baseline, with native/portable

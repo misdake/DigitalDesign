@@ -157,3 +157,23 @@ pub fn gpu_ui_grid_write(grid: Array<u16>, rect: CellRect, glyphs: &[u8]) -> boo
     }
     true
 }
+
+pub fn gpu_ui_grid_write_glyph(grid: Array<u16>, x: u16, y: u16, glyph: u8) -> bool {
+    #[cfg(gpu_debug)]
+    {
+        if x >= 50 || y >= 15 || !gpu_ui_glyph_valid(grid, glyph) {
+            return false;
+        }
+    }
+    let word = y * 25 + (x >> 1);
+    let mut cell: Buf<u16, 1> = Buf::new([0; 1]);
+    if !gpu_window_read_words(grid[GPU_UI_GRID_BASE], word, cell.as_array(), 1) {
+        return false;
+    }
+    if x & 1 == 0 {
+        cell[0u16] = (cell[0u16] & 0xff00) | glyph as u16;
+    } else {
+        cell[0u16] = (cell[0u16] & 0x00ff) | ((glyph as u16) << 8);
+    }
+    gpu_window_write_words(grid[GPU_UI_GRID_BASE], word, cell.as_array(), 1)
+}

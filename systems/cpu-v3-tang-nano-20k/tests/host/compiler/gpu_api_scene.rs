@@ -53,7 +53,8 @@ fn main(){
  let empty=mesh.subset(0,0);
  let atlas=UiAtlas::from_native(unsafe{GpuMemory::from_sectors(0xb000,6)},3);
  let mut grid=UiGrid::from_memory(unsafe{GpuMemory::from_sectors(0xb100,6)},&atlas);drop(atlas);
- grid.fill(255);grid.write(CellRect{x:1,y:1,width:3,height:1},b"\0\x01\x02");
+ grid.fill(255);grid.write_text(48,14,b"\x01\x02");grid.write_glyph(49,14,0);
+ grid.write(CellRect{x:1,y:1,width:3,height:1},b"\0\x01\x02");
  {let mut pass=cb.pass(&color,&depth,ColorLoad::load(),DepthLoad::load());
   pass.set_camera(&camera);pass.set_state(&state);
   pass.draw(&mesh,&model,&material,&texture_view);pass.draw_colored(&mesh,&model,&material);
@@ -169,6 +170,10 @@ fn public_scene_factories_bind_draw_and_live_ui_record_in_both_profiles() {
         let grid = &memory[0xb100 * 64..0xb100 * 64 + 375];
         assert_eq!(grid[25], 0x00ff);
         assert_eq!(grid[26], 0x0201);
+        assert_eq!(
+            grid[374], 0x0001,
+            "single glyph preserves its packed neighbour at the last cell"
+        );
         assert!(grid[..25].iter().all(|&word| word == 0xffff));
         let commands = &memory[0x9800 * 64..0x9800 * 64 + 128];
         assert_eq!(

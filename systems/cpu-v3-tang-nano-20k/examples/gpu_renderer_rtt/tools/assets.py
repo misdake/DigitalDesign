@@ -53,7 +53,7 @@ def pack(output):
     manifest.update(profile="production", surface="column-major-16x16-pad16",
                     triangles=3, vertices=7,
                     borrowed=dict(color=0x600000, depth=0x640000, plane_capacity=262144))
-    manifest["sources"].update({str(p.relative_to(SYSTEM)): hashlib.sha256(p.read_bytes()).hexdigest()
+    manifest["sources"].update({p.relative_to(SYSTEM.parents[1]).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                                 for p in [Path(__file__).resolve(), SYSTEM / "tools/gpu_layout.py"]})
     (output / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n")
 

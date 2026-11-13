@@ -75,9 +75,13 @@ fn gpu_present_open_with_format(format: u16) -> bool {
     true
 }
 fn gpu_present_set_next(sector: u16) -> bool {
+    gpu_present_set_next_with_format(sector, GPU_PRESENT[4u16])
+}
+fn gpu_present_set_next_with_format(sector: u16, format: u16) -> bool {
     if GPU_PRESENT[0u16] == 0
         || GPU_PRESENT[3u16] != 0
         || GPU_PRESENT[1u16] != 0
+        || format > DISPLAY_LINEAR_RGB565
         || sector & 511 != 0
         || GPU_API_PLANE_SECTORS - 1 > 65535 - sector
     {
@@ -93,6 +97,7 @@ fn gpu_present_set_next(sector: u16) -> bool {
     }
     GPU_PRESENT[1u16] = 1;
     GPU_PRESENT[2u16] = sector;
+    GPU_PRESENT[4u16] = format;
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, sector << 6);
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, sector >> 10);
     dev_send(DISPLAY_DEVICE, DISPLAY_COLOR_FORMAT, GPU_PRESENT[4u16]);

@@ -4,6 +4,7 @@ The workspace is organized by technical layer rather than by project age:
 
 ```text
 circuit/                         gate graph, simulation, Verilog rendering
+assets/fonts/                    shared native UI glyph data and provenance
 modeling/
   audited/                       closed numerical work, physical certificates and state contracts
   scheduler/                     bounded finite/modulo resource-constrained DAG search
@@ -30,6 +31,10 @@ systems/
 ```
 
 ## Ownership rules
+
+- `assets/fonts` owns the project-wide native UI glyph data, independently of
+  any application or hardware layout. Systems and IP demonstrations may read
+  it; Native UI atlas encoding remains with the consuming system or test.
 
 - `circuit` has no knowledge of hardware targets, processors, compilers, or systems.
 - `modeling/audited` and `modeling/scheduler` are independent tools with no workspace-package

@@ -75,10 +75,10 @@ The caller's environment is unchanged. `-ExportHardware` explicitly requests
 hardware source export; normal application builds do not export it. Neither
 action synthesizes, places/routes, accesses a board or programs Flash.
 
-`tools/assets.py` generates an original geometric5x7 font resampled to5x10,
-centered in8x16 cells with three transparent rows above and below. Consecutive
-text rows have a six-pixel vertical gap without changing the grid or panel layout.
-It also generates button icons, panel tiles and dot phases in one64KiB RGBA5551 atlas at
+`tools/assets.py` packs the [project font](/assets/fonts/README.md) at its native
+8×16 size. Text uses ASCII32..95; IDs96..251 belong to diagnostic icons rather
+than lowercase letters. No glyph is resized. The producer also generates
+button icons, panel tiles and dot phases in one64KiB RGBA5551 atlas at
 0x4b0000, including native odd-row pixel ordering. Generated compact label data
 is part of `boot_resources`; no duplicate executable/Flash array is maintained.
 The boot pack contains only code, actual static initialization and this atlas.

@@ -39,7 +39,7 @@ R = module("minimal_renderer", SYSTEM / "examples/gpu_renderer/tools/assets.py")
 G = module("native_assets", SYSTEM / "examples/gpu_demo/tools/assets.py")
 W = module("blox_web_scene", Path(__file__).with_name("web_scene.py"))
 M = module("blox_markers", Path(__file__).with_name("markers.py"))
-H = module("blox_hud_font", Path(__file__).with_name("hud_font.py"))
+import ui_font as H
 C = module("blox_goal_carrier", Path(__file__).with_name("goal_carrier.py"))
 F = module("blox_ground_batches", Path(__file__).with_name("ground_batches.py"))
 import atlas_borders as A
@@ -81,16 +81,8 @@ def pack(output,main_log2=8,marker_log2=8):
     assert hashlib.sha256(data).hexdigest() == '5f4be20a8bf7708d54ff2bde923210964c147eeb53c43c0b2e6ded71f9dc8047'
     (output/'background.bin').write_bytes(data)
     manifest['resources'].append(dict(kind='background',file='background.bin',address=0x580000,bytes=len(data)))
-    hud_font=Path(__file__).resolve().parents[1]/'assets/hud-font.txt'
-    base_font_provenance=hud_font.with_name('hud-font-provenance.json')
-    manifest['hud_font']=json.loads(base_font_provenance.read_text())
-    ui=bytearray(65536)
-    for line in hud_font.read_text().splitlines():
-        if not line or line.startswith('#'):continue
-        fields=line.split();glyph=int(fields[0]);rows=[int(v,16) for v in fields[1:]]
-        assert len(rows)==16 and 0<=glyph<255
-        for y,bits in enumerate(rows):
-            for x in range(8):struct.pack_into('<H',ui,glyph*256+(y*8+(x^((y&1)*2)))*2,65535 if bits&(128>>x) else 0)
+    manifest['hud_font']=json.loads(H.PROVENANCE.read_text())
+    ui=H.atlas(H.load_rows())
     assert all(any(ui[g*256:(g+1)*256]) for g in set(b'LEVEL DRAW MS')-{32})
     (output/'atlas.bin').write_bytes(ui)
     H.preview(ui).save(output/'hud-font-atlas-1x1.png')
@@ -292,8 +284,8 @@ pub fn blox_scene_face(which:u16,index:u16)->u16 {blox_asset_word(blox_level_met
         bounds=[[-16,-1,-6],[16,1,6]], cameras=[W.camera(l["width"],l["depth"]) for l in chosen], pixel_reference=dict(aspect="5:3", texture_sha256=hashlib.sha256((output/'texture.bin').read_bytes()).hexdigest(), background_srgb="#2c2620"))
     from atlas_borders import contract
     manifest['main_atlas']=contract()
-    for path in [Path(__file__).resolve(),Path(__file__).with_name("web_scene.py"),Path(__file__).with_name("atlas_borders.py"),Path(__file__).with_name("source_photos.py"),Path(__file__).with_name("markers.py"),Path(__file__).with_name("hud_font.py"),Path(__file__).with_name("goal_carrier.py"),Path(__file__).with_name("ground_batches.py"),hud_font,base_font_provenance,background,*A.source.ROOT.glob('*.jpg'),SYSTEM/'tools/gpu_texture_layout.py',SYSTEM/'applications/bloxorz/tools/batch-scene.py',SYSTEM/'applications/bloxorz/tools/static-scene.py',SYSTEM/'applications/bloxorz/assets/reference.txt',SYSTEM/'applications/bloxorz/rcc/bloxorz_core.rs',SYSTEM/'applications/bloxorz/geometry.rs',SYSTEM/'examples/gpu_demo/tools/assets.py']:
-        manifest['sources'][str(path.relative_to(SYSTEM))]=hashlib.sha256(path.read_bytes()).hexdigest()
+    for path in [Path(__file__).resolve(),Path(__file__).with_name("web_scene.py"),Path(__file__).with_name("atlas_borders.py"),Path(__file__).with_name("source_photos.py"),Path(__file__).with_name("markers.py"),Path(__file__).with_name("goal_carrier.py"),Path(__file__).with_name("ground_batches.py"),*H.SOURCES,background,*A.source.ROOT.glob('*.jpg'),SYSTEM/'tools/gpu_texture_layout.py',SYSTEM/'applications/bloxorz/tools/batch-scene.py',SYSTEM/'applications/bloxorz/tools/static-scene.py',SYSTEM/'applications/bloxorz/assets/reference.txt',SYSTEM/'applications/bloxorz/rcc/bloxorz_core.rs',SYSTEM/'applications/bloxorz/geometry.rs',SYSTEM/'examples/gpu_demo/tools/assets.py']:
+        manifest['sources'][path.relative_to(SYSTEM.parents[1]).as_posix()]=hashlib.sha256(path.read_bytes()).hexdigest()
     (output/'assets.json').write_text(json.dumps(manifest,indent=2)+'\n')
 
 if __name__=='__main__':

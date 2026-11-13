@@ -63,6 +63,16 @@ vertices or indices. Public draw consumption uses the prepared scene adapters be
 struct syntax. `Display` wraps the independent presentation protocol below;
 `set_next_swap` copies the color address and does not retain its descriptor.
 Its caller still owns the external pixel-allocation lifetime.
+`set_next_swap_with_format(color, format)` stages the pixel interpretation with
+that same request. It requires the previous swap to have retired; a rejected
+second request cannot change the pending request's format. The chosen format
+also becomes the default for subsequent `set_next_swap` calls. Both methods
+publish only after application-owned GPU completion; they do not wait for it.
+
+`UiGrid::write_text(x, y, glyphs)` writes one row with its width derived from
+the byte slice; it neither wraps nor clears trailing cells. `write_glyph`
+replaces one cell, preserving the neighbouring packed byte. They retain the
+ordinary grid/glyph debug checks and external-memory publication contract.
 
 ### Prepared command parts
 

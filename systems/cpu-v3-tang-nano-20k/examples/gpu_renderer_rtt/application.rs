@@ -9,10 +9,10 @@ const RTT: Definition = Definition {
     assets: Some(Assets {
         script: "examples/gpu_renderer_rtt/tools/assets.py",
         production_surface: true,
+        manifest_sources: true,
         inputs: &[
             "tools/gpu_texture_layout.py",
             "examples/gpu_renderer/tools/assets.py",
-            "examples/gpu_demo/assets/font-8x16.txt",
         ],
         ..RENDERER_ASSETS
     }),
