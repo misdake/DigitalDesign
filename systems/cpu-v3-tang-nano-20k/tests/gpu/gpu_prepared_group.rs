@@ -7,7 +7,7 @@ const SOURCE: &str = r#"mod gpu_group;mod gpu_mesh;mod gpu_arena;mod gpu_execute
 static STEP:u16=0;static ROW:Buf<u16,64>=Buf::new([0;64]);static MESH:Buf<u16,16>=Buf::new([0;16]);
 static FACTS:Buf<u16,8>=Buf::new([0xa000,32,1,1,0xa100,4,2,1]);
 fn check(ok:bool){if !ok{halt(0xd000+STEP);}unsafe{addr_of(&STEP).write(0,STEP+1);}}
-fn main(){gpu_record_init();let saved=read_dseg_page(3);
+fn main(){let fact_plan:Buf<u16,2>=Buf::new([0;2]);gpu_record_init();let saved=read_dseg_page(3);
  check(gpu_record_configure(0,0x9801,8,0x9a00,16));check(!gpu_group_enable(0));
  check(gpu_record_configure(0,0x9800,512,0x9a00,512));check(gpu_group_enable(0));check(!gpu_group_enable(0));
  check(gpu_record_configure(1,0xfc00,512,0xfe00,512));check(!gpu_group_ready(1));
@@ -32,7 +32,7 @@ fn main(){gpu_record_init();let saved=read_dseg_page(3);
  check(gpu_group_begin(0));check(!gpu_group_begin(0));check(!gpu_record_close_pass(0));
  check(gpu_mesh_draw(0,MESH.as_array(),native));native[36u16]=11;native[108u16]=0x4567;
  check(gpu_mesh_draw(0,MESH.as_array(),native));
- check(gpu_record_capture_room(0,FACTS.as_array(),2));gpu_record_capture_commit(0,FACTS.as_array(),2);
+ check(gpu_record_capture_room(0,FACTS.as_array(),2, fact_plan.as_array()));gpu_record_capture_commit(0,FACTS.as_array(),2, fact_plan.as_array());
  check(gpu_group_end(0));check(!gpu_group_end(0));check(gpu_group_ready(0));
  check(c[GPU_RECORD_VALID]&31==3&&c[GPU_GROUP_FACT_COUNT]==2);
  let prefix=c[GPU_GROUP_PUSH_END];let words=c[GPU_GROUP_WORDS];check(words!=0&&words&15==0);

@@ -19,11 +19,11 @@ fn main(){gpu_record_init();let saved=read_dseg_page(3);
  native[5u16]=57344;native[6u16]=60621;native[7u16]=8192;native[8u16]=128;native[9u16]=128;native[10u16]=33;
  native[36u16]=9;native[65u16]=1;native[75u16]=1;native[85u16]=1;native[89u16]=1;native[97u16]=1;
  native[105u16]=1;native[107u16]=1;native[108u16]=65535;native[109u16]=65535;
- let mut case:u16=0;while case<4{
+ let mut case:u16=0;while case<5{
  check(gpu_record_configure(0,0x9800+case*8,8,0x9a00+case*16,16));
  check(gpu_packet_begin(0,0x8000,0x9000,0,0,0));
  let mut first:u16=0;let mut count:u16=9;
- if case==0{count=1;}if case==1{first=3;count=2;}if case==3{first=9;count=0;}
+ if case==0{count=1;}if case==1{first=3;count=2;}if case==2{count=8;}if case==4{first=9;count=0;}
  check(gpu_mesh_subset(SUB.as_array(),MESH.as_array(),first,count));
  check(gpu_mesh_draw(0,SUB.as_array(),native));
  check(gpu_record_close_pass(0));check(gpu_record_seal(0));case+=1;
@@ -75,7 +75,7 @@ fn mesh_directory_expands_with_pingpong_prefetch_and_whole_draw_preflight() {
             RunOutcome::Halted { signal: 0x600d, .. }
         ));
         let memory = cpu.physical_memory_mut();
-        for (case, first, count) in [(0, 0, 1), (1, 3, 2), (2, 0, 9), (3, 9, 0)] {
+        for (case, first, count) in [(0, 0, 1), (1, 3, 2), (2, 0, 8), (3, 0, 9), (4, 9, 0)] {
             let push = 0x9a00 + case * 16;
             let mut code = vec![
                 0x40000003u32,
@@ -87,10 +87,10 @@ fn mesh_directory_expands_with_pingpong_prefetch_and_whole_draw_preflight() {
             if count != 0 {
                 code.extend([
                     0x40000003,
-                    dma(push, 32, 66, 1),
+                    dma(push, 64, 66, 1),
                     0x40000001,
                     0x50000042,
-                    dma(push, 64, 68, 0),
+                    dma(push, 96, 68, 0),
                     0x40000001,
                     0x60000044,
                     dma(push, 128, 80, 2),

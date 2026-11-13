@@ -133,7 +133,7 @@ pub fn gpu_scene_render_prepare(
         return false;
     }
     let start = GPU_SCRATCH_RENDER;
-    let mut at: u16 = 0;
+    let mut at: u16 = 5;
     while at < 16 {
         native[start + at] = 0;
         at += 1;
@@ -250,7 +250,7 @@ fn gpu_scene_light_encode(raw: vec3, mut native: Array<u16>) -> bool {
     false
 }
 
-// Shared preparation preserves the original failure and scratch-write boundaries.
+// Build final native fields; the coefficient producer owns Instance0..41.
 pub fn gpu_scene_draw_header(
     desired: Array<u16>,
     material: Array<u16>,
@@ -269,7 +269,11 @@ pub fn gpu_scene_draw_header(
     let row1 = gpu_scene_vec_read(desired, GPU_CAMERA_VIEW + 8);
     let row2 = gpu_scene_vec_read(desired, GPU_CAMERA_VIEW + 16);
     let view_light = vec3::new(-fdot(row0, light), fdot(row1, light), fdot(row2, light));
-    gpu_scene_zero(native, 32);
+    let mut padding: u16 = 11;
+    while padding < 32 {
+        native[padding] = 0;
+        padding += 1;
+    }
     if !gpu_scene_light_encode(view_light, native) {
         return false;
     }
@@ -286,7 +290,7 @@ pub fn gpu_scene_draw_header(
     native[7u16] = desired[GPU_CAMERA_RAY + 2];
     native[10u16] = 3 | (material[GPU_MATERIAL_SHININESS] << 2);
     let instance = GPU_SCRATCH_INSTANCE;
-    let mut at: u16 = 0;
+    let mut at: u16 = 42;
     while at < 64 {
         native[instance + at] = 0;
         at += 1;

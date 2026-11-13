@@ -132,23 +132,24 @@ fn capture_texture_accepts_pot_format_address_bits_and_rejects_fixed_view_bits()
 fn allocation_facts_group_preflight_deduplicates_and_survives_until_reset() {
     let body = r#"
  check(gpu_record_configure(0,0x9800,1,0x9a00,1));check(gpu_record_configure(1,0xfc00,1,0xfe00,1));
+ let fact_plan:Buf<u16,2>=Buf::new([0;2]);
  let mut input:Buf<u16,8>=Buf::new([0x8000,2048,5,1,0x8000,2048,5,2]);
- check(gpu_record_capture_room(0,input.as_array(),2));gpu_record_capture_commit(0,input.as_array(),2);
+ check(gpu_record_capture_room(0,input.as_array(),2, fact_plan.as_array()));gpu_record_capture_commit(0,input.as_array(),2, fact_plan.as_array());
  check(gpu_record_data(0)[GPU_RECORD_FACT_COUNT]==1);check(gpu_record_capture_facts(0)[3u16]==3);
  input[0u16]=0x9000;input[1u16]=1600;input[2u16]=6;input[3u16]=3;
- check(gpu_record_capture_room(0,input.as_array(),1));gpu_record_capture_commit(0,input.as_array(),1);
+ check(gpu_record_capture_room(0,input.as_array(),1, fact_plan.as_array()));gpu_record_capture_commit(0,input.as_array(),1, fact_plan.as_array());
  check(gpu_record_data(0)[GPU_RECORD_FACT_COUNT]==2&&gpu_record_data(1)[GPU_RECORD_FACT_COUNT]==0);
  let mut i:u16=0;while i<62{input[0u16]=100+i;input[1u16]=1;input[2u16]=1;input[3u16]=1;
- check(gpu_record_capture_room(0,input.as_array(),1));gpu_record_capture_commit(0,input.as_array(),1);i+=1;}
+ check(gpu_record_capture_room(0,input.as_array(),1, fact_plan.as_array()));gpu_record_capture_commit(0,input.as_array(),1, fact_plan.as_array());i+=1;}
  input[0u16]=0x8000;input[1u16]=2048;input[2u16]=5;input[3u16]=1;
  input[4u16]=300;input[5u16]=1;input[6u16]=1;input[7u16]=1;
- check(!gpu_record_capture_room(0,input.as_array(),2));check(gpu_record_data(0)[GPU_RECORD_FACT_COUNT]==64);
+ check(!gpu_record_capture_room(0,input.as_array(),2, fact_plan.as_array()));check(gpu_record_data(0)[GPU_RECORD_FACT_COUNT]==64);
  check(gpu_record_capture_facts(0)[0u16]==0x8000&&gpu_record_capture_facts(0)[3u16]==3);
- check(gpu_record_capture_room(0,input.as_array(),1));gpu_record_capture_commit(0,input.as_array(),1);
- check(gpu_record_capture_room(1,input.as_array(),2));gpu_record_capture_commit(1,input.as_array(),2);
+ check(gpu_record_capture_room(0,input.as_array(),1, fact_plan.as_array()));gpu_record_capture_commit(0,input.as_array(),1, fact_plan.as_array());
+ check(gpu_record_capture_room(1,input.as_array(),2, fact_plan.as_array()));gpu_record_capture_commit(1,input.as_array(),2, fact_plan.as_array());
  check(gpu_record_reset(1));check(gpu_record_data(1)[GPU_RECORD_FACT_COUNT]==0&&gpu_record_data(0)[GPU_RECORD_FACT_COUNT]==64);
  check(gpu_record_reset(0));check(gpu_record_data(0)[GPU_RECORD_FACT_COUNT]==0);
- input[1u16]=0;check(!gpu_record_capture_room(0,input.as_array(),1));
+ input[1u16]=0;check(!gpu_record_capture_room(0,input.as_array(),1, fact_plan.as_array()));
  check(gpu_record_data(0)[GPU_RECORD_FACT_COUNT]==0);
  "#;
     for enabled in [false, true] {

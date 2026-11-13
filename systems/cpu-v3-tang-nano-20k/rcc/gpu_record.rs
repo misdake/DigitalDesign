@@ -103,8 +103,9 @@ fn gpu_record_capture_facts(slot: u16) -> Array<u16> {
 fn gpu_record_fact_equal(a: Array<u16>, ai: u16, b: Array<u16>, bi: u16) -> bool {
     a[ai] == b[bi] && a[ai + 1] == b[bi + 1] && a[ai + 2] == b[bi + 2]
 }
-// Whole-group preflight; no record/fact/payload mutation, including rejection.
-fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16) -> bool {
+// Reserve each input's final table position without changing recorded facts.
+// The caller retains this local plan until its native operation succeeds.
+fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16, mut plan: Array<u16>) -> bool {
     if slot >= 2 || count > GPU_RECORD_FACT_LIMIT {
         return false;
     }
@@ -115,7 +116,7 @@ fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16) -> bool {
         return false;
     }
     let facts = gpu_record_capture_facts(slot);
-    let mut extra: u16 = 0;
+    let mut next = c[GPU_RECORD_FACT_COUNT];
     let mut i: u16 = 0;
     while i < count {
         let at = i * 4;
@@ -127,47 +128,43 @@ fn gpu_record_capture_room(slot: u16, input: Array<u16>, count: u16) -> bool {
         {
             return false;
         }
-        let mut found = false;
-        let mut j: u16 = 0;
-        while j < c[GPU_RECORD_FACT_COUNT] {
-            if gpu_record_fact_equal(input, at, facts, j * 4) {
-                found = true;
-            }
-            j += 1;
-        }
-        j = 0;
-        while j < i {
-            if gpu_record_fact_equal(input, at, input, j * 4) {
-                found = true;
-            }
-            j += 1;
-        }
-        if !found {
-            extra += 1;
-        }
-        i += 1;
-    }
-    extra <= GPU_RECORD_FACT_LIMIT - c[GPU_RECORD_FACT_COUNT]
-}
-// Only after successful group preflight/native append, without an intervening
-// fact mutation. This commit is CPU-only and cannot fail or perform external I/O.
-fn gpu_record_capture_commit(slot: u16, input: Array<u16>, count: u16) {
-    let mut c = gpu_record_data(slot);
-    let mut facts = gpu_record_capture_facts(slot);
-    let mut i: u16 = 0;
-    while i < count {
-        let at = i * 4;
         let mut found: u16 = 65535;
         let mut j: u16 = 0;
-        while j < c[GPU_RECORD_FACT_COUNT] {
+        while j < c[GPU_RECORD_FACT_COUNT] && found == 65535 {
             if gpu_record_fact_equal(input, at, facts, j * 4) {
                 found = j;
             }
             j += 1;
         }
+        j = 0;
+        while j < i && found == 65535 {
+            if gpu_record_fact_equal(input, at, input, j * 4) {
+                found = plan[j];
+            }
+            j += 1;
+        }
         if found == 65535 {
-            found = c[GPU_RECORD_FACT_COUNT];
-            j = 0;
+            if next == GPU_RECORD_FACT_LIMIT {
+                return false;
+            }
+            found = next;
+            next += 1;
+        }
+        plan[i] = found;
+        i += 1;
+    }
+    true
+}
+// No intervening fact mutation is permitted between reservation and commit.
+fn gpu_record_capture_commit(slot: u16, input: Array<u16>, count: u16, plan: Array<u16>) {
+    let mut c = gpu_record_data(slot);
+    let mut facts = gpu_record_capture_facts(slot);
+    let mut i: u16 = 0;
+    while i < count {
+        let at = i * 4;
+        let found = plan[i];
+        if found == c[GPU_RECORD_FACT_COUNT] {
+            let mut j: u16 = 0;
             while j < 4 {
                 facts[found * 4 + j] = input[at + j];
                 j += 1;
@@ -234,7 +231,7 @@ fn gpu_record_command_room(c: Array<u16>, add: u16, tail: u16) -> bool {
 }
 // 65535 is an internal failure sentinel; valid offsets include 32768.
 fn gpu_record_align_push(used: u16, count: u16, alignment: u16, capacity: u16) -> u16 {
-    if count > GPU_API_STORAGE_CHUNK_WORDS || used > capacity || capacity > 32768 {
+    if count > GPU_API_PUSH_CHUNK_WORDS || used > capacity || capacity > 32768 {
         return 65535;
     }
     if count == 0 {
@@ -323,7 +320,7 @@ fn gpu_record_append_reserved(
     #[cfg(gpu_debug)]
     {
         if command_words > GPU_API_STORAGE_CHUNK_WORDS
-            || push_words > GPU_API_STORAGE_CHUNK_WORDS
+            || push_words > GPU_API_PUSH_CHUNK_WORDS
             || start > 32768
             || push_words > 32768 - start
             || !gpu_record_preflight(slot, command_words, start + push_words)

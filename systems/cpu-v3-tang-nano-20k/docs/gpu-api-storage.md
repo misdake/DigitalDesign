@@ -163,18 +163,53 @@ scratch for transfer and fact merging; old surface facts are excluded. Each
 stream also includes ordinary commands and terminal/fetch reservations. Bounds
 reject overflows before append writes; partial transport failures poison the CB.
 Standalone appends compute one aligned payload offset and preflight their extent.
-Mesh/binding operations instead preflight their complete layout once and consume
-it through private reserved appends, without an intervening external append.
-Target debug builds recheck each reserved span; release relies on its parent
-operation's reservation. A zero-payload append retains the current push end even
-when it binds an older immutable payload. Transport still completes before
-metadata advances, and partial failures poison the CB.
+Mesh/binding operations preflight their complete layout once. They write one
+contiguous native payload span, assemble binding and meshlet commands together
+in scratch160..223, and append command chunks of at most64 words. Only successful
+writes commit canonical CPU bindings; any partial transport failure poisons the CB.
+Private reserved appends consume the complete reservation without intervening
+external appends. Target debug builds recheck each reserved span.
+
+Mixed changes including Instance reserve one128-word span aligned to64 words:
+Global occupies0..31, Render32..47 and Instance64..127, matching native scratch.
+The16-word gap and unchanged blocks may be copied but are not referenced by new
+commands. Instance-only changes use64 words; Global/Render-only changes use their
+32/16/48-word contiguous spans. These layouts trade bounded push padding for one
+upload and window save/restore, without changing the native GPU objects or ABI.
+A zero-payload command append advances to the operation's preflighted push end.
+
+Instance equality also proves residency in uniform block320 while VALID bit2 is
+set. Equal subsequent draws omit both its DMA and WAIT. Target, UI, Global and
+Render commands do not overwrite that block. Reset/configuration, and prepared
+part begin/end/append boundaries invalidate this proof; their next draw emits a
+complete Instance load. This is recorded-stream state, not residency across CB
+submissions.
 
 A mesh directory of at most eight entries remains in scratch144..159 after its
-whole-operation validation. Binding uses scratch0..111 and command staging starts
-at160, so emission reuses that validated snapshot without another read. Larger
-directories retain bounded rereads after complete validation. There is no cache
-across draws; source updates between CPU-owned operations remain visible.
+whole-operation validation. Binding payload covers scratch0..127 and commands
+start at160, so emission reuses that validated snapshot without another read.
+Larger directories retain bounded rereads after complete validation. There is no
+cache across draws; source updates between CPU-owned operations remain visible.
+
+```mermaid
+flowchart LR
+    A["Native fields and draw layout"] --> B["Whole-operation capacity and directory validation"]
+    B --> C["One immutable payload upload"]
+    C --> D["Binding and meshlet command chunks"]
+    D --> E["Commit CPU bindings and resource facts"]
+    C -->|transport failure| F["Poison CB"]
+    D -->|transport failure| F
+```
+
+The arrows describe sequential CPU recording while the CB is CPU-owned. They do
+not submit GPU work. Capacity rejection precedes external writes; successful
+recording remains subject to the later submission publication boundary.
+
+Native scene preparation initializes only padding and fixed fields before
+writing the final numerical fields. In particular Instance0..41 are written
+exactly by matrix generation or the Model coefficient cache; they are not first
+cleared. Instance42..63 retain the homogeneous constant, RGBA and zero-padding
+contract. Global/Render reserved fields are still explicitly zeroed.
 
 Public matrix operations retain value arguments and their isolated snapshots.
 Internal camera/model writers borrow those snapshots through typed CPU views:
@@ -312,7 +347,7 @@ checks remain in release.
 `gpu_window_read_words(sector, offset, destination, count)` and
 `gpu_window_write_words(sector, offset, source, count)` are the only new chunk
 entry points. Sector units are 128 bytes; offset/count units are 16-bit words.
-Offsets may cross sector and DSEG page boundaries. A nonzero count is at most 64.
+Offsets may cross sector and DSEG page boundaries. A nonzero count is at most128.
 Zero succeeds without inspecting pointers, accessing memory or changing DSEG3.
 
 The caller supplies a valid stable low-memory array. The helper rejects a span
@@ -367,7 +402,7 @@ submission publication remains required for scalar stores.
 Preflight rejection leaves backing unchanged. A backing-helper failure after a
 partial copy poisons the CB and commits no record shadows or target facts; the
 computed Model cache may remain updated. Partial physical writes are not rolled
-back. Original draw-header initialization and alias behavior are unchanged.
+back. Native object fields and public snapshot/alias behavior are unchanged.
 
 ### Record layout
 
@@ -419,7 +454,6 @@ The implemented control words are:
 | 215 / 216 | Saved transient push cursor / capacity while recording a part |
 | 217 / 218 | First part Global / Render push offset plus one |
 | 219 | Prepared push layout:0 original single-wide,1 split-wide |
-| 219 | Reserved, zero |
 | 220 | Parts already referenced by the current recording |
 | 221..223 | Reserved, zero |
 
@@ -436,7 +470,7 @@ without a known terminal fence reserves the same four words. Every recording
 also reserves two for END and rounds the resulting span to 128-byte fetch
 alignment. Word counts represent the full 64-KiB capacity without truncation.
 
-Individual append batches contain at most 64 command words and 64 push words.
+Individual append batches contain at most64 command words and128 push words.
 Nonempty payload alignment is 16, 32 or 64 words. Append first checks capacity,
 then writes push, then commands, and commits both cursors only after success.
 Capacity rejection writes nothing. A transport failure may already have written
@@ -459,9 +493,13 @@ CB and 1,024 bytes total. Each four-word fact is `{first_sector,
 allocation_sectors, kind, access}`. Kind1..7 means Mesh, Texture, Atlas, Grid,
 Color, Depth, Buffer; access bit0 declares reads and bit1 declares writes.
 These are allocation provenance, not wire capture flags or immutable evidence.
-Equal base/count/kind entries merge access. Group preflight counts both existing
-and intra-group duplicates before checking capacity; it performs no writes.
-After successful native emission, CPU-only commit cannot allocate or fail.
+Equal base/count/kind entries merge access. Group preflight resolves existing
+and intra-group duplicates into a caller-local array of final table positions,
+rejecting exhaustion before native emission. It changes neither input nor
+recorded facts. With no intervening fact mutation, successful native emission
+consumes these positions directly; CPU-only commit performs no second lookup,
+cannot allocate and cannot fail. Ordinary operations need one or two plan words;
+prepared append uses a bounded64-word local plan for its complete fact group.
 Pass construction records the full color/depth allocation, including distinct
 1,600/2,048-sector capacities, rather than retaining live descriptor references.
 Native rejection leaves facts unchanged; transport failure still poisons the
@@ -490,11 +528,15 @@ field independently represents slot zero correctly.
 Words6/7 hold configuration handout state. Words8..13 snapshot command capacity,
 padded words, push base/capacity/used words and fact count for the prepared lease.
 
-Prepare takes ownership before sealing or publishing. It seals the record,
+Both immediate submission and capture preparation share one checked publication
+operation. It takes ownership before sealing or publishing. It seals the record,
 checks the restored window and Device4 idle/error status, and blocks on CPU
-cache publication. Success leaves the driver prepared without starting GPU
-execution. The capture-owned hook attaches after this boundary and before
-start; the module does not implement a second hook or import the old driver.
+cache publication. An immediate submission then marks running and sends COUNT
+and START directly, without creating a mutable lease or repeating the same
+metadata/status checks. Capture preparation instead snapshots the sealed
+capacities and fact count and leaves the driver prepared without starting GPU
+execution. The capture-owned hook attaches after this boundary and before start;
+the module does not implement a second hook or import the old driver.
 
 Start checks the same prepared slot/base/count, sealed capacities, padding,
 push bounds, fact count and window mapping.
@@ -520,7 +562,7 @@ arms one pending request when capture is configured. `poll_snapshot`, ordinary
 submission and wait polling also collect the existing debounced pause-button
 edge. The first poll after context initialization establishes a held-button
 baseline; a held input does not arm repeatedly. Only an armed eligible submission
-consumes the request, after preparation, then snapshots source12 and enters C's
+selects and consumes the request before preparation, then snapshots source12 and enters C's
 begin/gate before either target SEND. An explicit diagnostic request uses the
 same path without a physical press. On entry the default runtime consumes the
 already-recorded pause request and resets its input baseline, so a held pause

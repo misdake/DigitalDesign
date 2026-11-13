@@ -9,7 +9,7 @@ fn gpu_storage_copy_owned(low: Array<u16>, sector: u16, word: u16, count: u16, r
         return true;
     }
     let address = low.as_ptr().addr();
-    if count > GPU_API_STORAGE_CHUNK_WORDS
+    if count > GPU_API_PUSH_CHUNK_WORDS
         || address >= 0xc000
         || count > 0xc000 - address
         || word >> 6 > 65535 - sector

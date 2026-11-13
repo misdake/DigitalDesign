@@ -122,9 +122,10 @@ fn gpu_mesh_draw(slot: u16, mesh: Array<u16>, native: Array<u16>) -> bool {
         }
         first += count;
     }
-    if !gpu_bind_emit(slot, native, plan.as_array()) {
+    if !gpu_bind_payload(slot, native, plan.as_array()) {
         return false;
     }
+    let mut at = gpu_bind_code(slot, plan.as_array(), code);
     first = 0;
     while first < total {
         let mut count = total - first;
@@ -139,8 +140,14 @@ fn gpu_mesh_draw(slot: u16, mesh: Array<u16>, native: Array<u16>) -> bool {
             return false;
         }
         let mut i: u16 = 0;
-        let mut at: u16 = 0;
         while i < count {
+            // Leave two words for the final DRAW after the last batch.
+            if at + 8 > GPU_API_STORAGE_CHUNK_WORDS {
+                if !gpu_record_append_reserved(slot, code, at, code, 0, plan[4u16]) {
+                    return false;
+                }
+                at = 0;
+            }
             let index = first + i;
             let record = entries[i * 2];
             let payload = entries[i * 2 + 1];
@@ -157,16 +164,14 @@ fn gpu_mesh_draw(slot: u16, mesh: Array<u16>, native: Array<u16>) -> bool {
             at += 2;
             i += 1;
         }
-        if !gpu_record_append_reserved(slot, code, at, code, 0, c[GPU_RECORD_PUSH_USED]) {
-            return false;
-        }
         first += count;
     }
-    code[0u16] = (total - 1) & 1;
-    code[1u16] = 0x3000;
-    if !gpu_record_append_reserved(slot, code, 2, code, 0, c[GPU_RECORD_PUSH_USED]) {
+    code[at] = (total - 1) & 1;
+    code[at + 1] = 0x3000;
+    if !gpu_record_append_reserved(slot, code, at + 2, code, 0, plan[4u16]) {
         return false;
     }
+    gpu_bind_commit(slot, native, plan.as_array());
     c[GPU_RECORD_UI_CLEAN] = 0;
     true
 }

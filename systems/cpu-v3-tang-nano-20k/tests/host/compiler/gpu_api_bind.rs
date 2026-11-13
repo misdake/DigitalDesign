@@ -21,30 +21,30 @@ fn main(){gpu_record_init();check(gpu_arena_init(8192));check(gpu_record_configu
  let state=unsafe{DESIRED.as_ptr().add(32).as_u16_array()};check(gpu_bind_desired(0,false,state));
  DESIRED[0u16]=0x3333;DESIRED[32u16]=0x4444;
  let mut c=gpu_record_data(0);check(c[GPU_CB_CAMERA]==0x1111&&c[GPU_CB_STATE]==0x2222);
- check(gpu_bind_plan(0,native,PLAN.as_array()));check(PLAN[0u16]==7&&PLAN[1u16]==32&&PLAN[2u16]==64&&PLAN[3u16]==128&&PLAN[4u16]==192&&PLAN[5u16]==18);
+ check(gpu_bind_plan(0,native,PLAN.as_array()));check(PLAN[0u16]==7&&PLAN[1u16]==64&&PLAN[2u16]==96&&PLAN[3u16]==128&&PLAN[4u16]==192&&PLAN[5u16]==18);
  check(gpu_record_preflight(0,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(0,native,PLAN.as_array()));check(c[GPU_RECORD_COMMAND_USED]==28&&c[GPU_RECORD_PUSH_USED]==192&&c[GPU_RECORD_VALID]==31);
- check(gpu_bind_install(0,native));check(c[GPU_RECORD_COMMAND_USED]==32&&c[GPU_RECORD_PUSH_USED]==192);
- native[108u16]=0x1234;check(gpu_bind_install(0,native));check(c[GPU_RECORD_COMMAND_USED]==36&&c[GPU_RECORD_PUSH_USED]==256);
+ check(gpu_bind_install(0,native));check(c[GPU_RECORD_COMMAND_USED]==28&&c[GPU_RECORD_PUSH_USED]==192);
+ native[108u16]=0x1234;check(gpu_bind_install(0,native));check(c[GPU_RECORD_COMMAND_USED]==32&&c[GPU_RECORD_PUSH_USED]==256);
  native[8u16]=64;native[36u16]=11;check(gpu_bind_plan(0,native,PLAN.as_array()));
- check(PLAN[0u16]==3&&PLAN[1u16]==256&&PLAN[2u16]==288&&PLAN[3u16]==192&&PLAN[4u16]==304&&PLAN[5u16]==18);
- check(gpu_record_preflight(0,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(0,native,PLAN.as_array()));check(c[GPU_RECORD_COMMAND_USED]==54&&c[GPU_RECORD_PUSH_USED]==304);
+ check(PLAN[0u16]==3&&PLAN[1u16]==256&&PLAN[2u16]==288&&PLAN[3u16]==192&&PLAN[4u16]==304&&PLAN[5u16]==14);
+ check(gpu_record_preflight(0,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(0,native,PLAN.as_array()));check(c[GPU_RECORD_COMMAND_USED]==46&&c[GPU_RECORD_PUSH_USED]==304);
  check(gpu_packet_begin(1,0x8800,0x9000,0,0,0));check(gpu_bind_install(1,native));
  let b=gpu_record_data(1);check(b[GPU_RECORD_COMMAND_USED]==28&&b[GPU_RECORD_PUSH_USED]==192);
- native[36u16]=9;check(gpu_bind_plan(1,native,PLAN.as_array()));check(PLAN[0u16]==2&&PLAN[5u16]==12);
- check(gpu_record_preflight(1,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(1,native,PLAN.as_array()));check(b[GPU_RECORD_COMMAND_USED]==40&&b[GPU_RECORD_PUSH_USED]==208);
- native[8u16]=96;check(gpu_bind_plan(1,native,PLAN.as_array()));check(PLAN[0u16]==1&&PLAN[5u16]==12);
- check(gpu_record_preflight(1,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(1,native,PLAN.as_array()));check(b[GPU_RECORD_COMMAND_USED]==52&&b[GPU_RECORD_PUSH_USED]==256);
+ native[36u16]=9;check(gpu_bind_plan(1,native,PLAN.as_array()));check(PLAN[0u16]==2&&PLAN[5u16]==8);
+ check(gpu_record_preflight(1,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(1,native,PLAN.as_array()));check(b[GPU_RECORD_COMMAND_USED]==36&&b[GPU_RECORD_PUSH_USED]==208);
+ native[8u16]=96;check(gpu_bind_plan(1,native,PLAN.as_array()));check(PLAN[0u16]==1&&PLAN[5u16]==8);
+ check(gpu_record_preflight(1,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(1,native,PLAN.as_array()));check(b[GPU_RECORD_COMMAND_USED]==44&&b[GPU_RECORD_PUSH_USED]==256);
  native[8u16]=64;native[36u16]=11;let mut i:u16=0;while i<256{COPY[i]=native[i];i+=1;}
- check(gpu_bind_install(0,COPY.as_array()));check(c[GPU_RECORD_COMMAND_USED]==58&&c[GPU_RECORD_PUSH_USED]==304);
+ check(gpu_bind_install(0,COPY.as_array()));check(c[GPU_RECORD_COMMAND_USED]==46&&c[GPU_RECORD_PUSH_USED]==304);
  // Synthetic capacity pressure: no cache, command, or push writes may commit.
  c[GPU_RECORD_COMMAND_USED]=500;native[8u16]=32;check(!gpu_bind_install(0,native));
  check(c[GPU_RECORD_COMMAND_USED]==500&&c[GPU_RECORD_PUSH_USED]==304&&c[GPU_CB_GLOBAL+8]==64);
  check(gpu_window_read_words(0x9800,500,PLAN.as_array(),1));check(PLAN[0u16]==0);
- c[GPU_RECORD_COMMAND_USED]=58;c[GPU_RECORD_PUSH_USED]=1000;check(!gpu_bind_install(0,native));
- check(c[GPU_RECORD_COMMAND_USED]==58&&c[GPU_RECORD_PUSH_USED]==1000&&c[GPU_CB_GLOBAL+8]==64);
+ c[GPU_RECORD_COMMAND_USED]=46;c[GPU_RECORD_PUSH_USED]=1000;check(!gpu_bind_install(0,native));
+ check(c[GPU_RECORD_COMMAND_USED]==46&&c[GPU_RECORD_PUSH_USED]==1000&&c[GPU_CB_GLOBAL+8]==64);
  c[GPU_RECORD_PUSH_USED]=304;native[8u16]=64;
- check(gpu_record_close_pass(0));check(gpu_record_seal(0));check(c[GPU_RECORD_COMMAND_USED]==64);
- check(gpu_record_close_pass(1));check(gpu_record_seal(1));check(b[GPU_RECORD_COMMAND_USED]==58);
+ check(gpu_record_close_pass(0));check(gpu_record_seal(0));check(c[GPU_RECORD_COMMAND_USED]==52);
+ check(gpu_record_close_pass(1));check(gpu_record_seal(1));check(b[GPU_RECORD_COMMAND_USED]==50);
  halt(0x600d);}"#;
 
 fn dma(base: u32, word: u32, local: u32, size: u32) -> u32 {
@@ -62,10 +62,10 @@ fn prefix(base: u32) -> Vec<u32> {
 fn first_binding(base: u32) -> Vec<u32> {
     vec![
         0x40000003,
-        dma(base, 32, 66, 1),
+        dma(base, 64, 66, 1),
         0x40000001,
         0x50000042,
-        dma(base, 64, 68, 0),
+        dma(base, 96, 68, 0),
         0x40000001,
         0x60000044,
         dma(base, 128, 80, 2),
@@ -128,12 +128,7 @@ fn canonical_bindings_share_drains_and_reuse_immutable_instance_payloads() {
         assert!(minimum_sp >= 0xa000);
         let mut a = prefix(0x9a00);
         a.extend(first_binding(0x9a00));
-        a.extend([
-            dma(0x9a00, 128, 80, 2),
-            0x40000001,
-            dma(0x9a00, 192, 80, 2),
-            0x40000001,
-        ]);
+        a.extend([dma(0x9a00, 192, 80, 2), 0x40000001]);
         a.extend([
             0x40000003,
             dma(0x9a00, 256, 66, 1),
@@ -142,16 +137,8 @@ fn canonical_bindings_share_drains_and_reuse_immutable_instance_payloads() {
             dma(0x9a00, 288, 68, 0),
             0x40000001,
             0x60000044,
-            dma(0x9a00, 192, 80, 2),
-            0x40000001,
         ]);
-        a.extend([
-            dma(0x9a00, 192, 80, 2),
-            0x40000001,
-            0x40000003,
-            0x70000000,
-            0xf0000000,
-        ]);
+        a.extend([0x40000003, 0x70000000, 0xf0000000]);
         let mut b = prefix(0xfe00);
         b.extend(first_binding(0xfe00));
         b.extend([
@@ -159,14 +146,10 @@ fn canonical_bindings_share_drains_and_reuse_immutable_instance_payloads() {
             dma(0xfe00, 192, 68, 0),
             0x40000001,
             0x60000044,
-            dma(0xfe00, 128, 80, 2),
-            0x40000001,
             0x40000003,
             dma(0xfe00, 224, 66, 1),
             0x40000001,
             0x50000042,
-            dma(0xfe00, 128, 80, 2),
-            0x40000001,
             0x40000003,
             0x70000000,
             0xf0000000,
@@ -185,11 +168,11 @@ fn canonical_bindings_share_drains_and_reuse_immutable_instance_payloads() {
             );
         }
         let push = 0x9a00 * 64;
-        assert_eq!(memory[push + 32 + 8], 128);
+        assert_eq!(memory[push + 64 + 8], 128);
         assert_eq!(memory[push + 256 + 8], 64);
         assert_eq!(memory[push + 128 + 44], 65535);
         assert_eq!(memory[push + 192 + 44], 0x1234);
-        assert_eq!(memory[push + 64 + 4], 9);
+        assert_eq!(memory[push + 96 + 4], 9);
         assert_eq!(memory[push + 288 + 4], 11);
         let directory = output.join(format!("bind-{enabled}"));
         let result = serde_json::json!({"gpu_debug":enabled,"static_bytes":static_words*2,

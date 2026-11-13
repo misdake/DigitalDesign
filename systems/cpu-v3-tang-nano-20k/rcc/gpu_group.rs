@@ -317,7 +317,8 @@ fn gpu_group_part_append(slot: u16, group: u16) -> bool {
         c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
         return false;
     }
-    if !gpu_record_capture_room(slot, scratch, count) {
+    let fact_plan: Buf<u16, 64> = Buf::new([0; 64]);
+    if !gpu_record_capture_room(slot, scratch, count, fact_plan.as_array()) {
         return false;
     }
     if !gpu_group_pad(slot)
@@ -333,7 +334,7 @@ fn gpu_group_part_append(slot: u16, group: u16) -> bool {
         return false;
     }
     c[GPU_RECORD_COMMAND_USED] += words - skip;
-    gpu_record_capture_commit(slot, scratch, count);
+    gpu_record_capture_commit(slot, scratch, count, fact_plan.as_array());
     if native {
         if !gpu_group_transfer(c, group, 64, scratch, 48, true) {
             c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;

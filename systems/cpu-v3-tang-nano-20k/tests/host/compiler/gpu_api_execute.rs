@@ -161,6 +161,16 @@ fn execution_peer_orders_publication_start_and_single_retirement() {
             "count", "start"
         ]
     );
+    let direct = run(
+        "immediate",
+        r#"
+ check(gpu_execute_submit(0));check(GPU_EXECUTION[0u16]==GPU_EXEC_RUNNING);
+ check(GPU_EXECUTION[8u16]==0);check(gpu_execute_poll()==1);
+ "#,
+        &[0, 0, 0, 0],
+        false,
+    );
+    assert_eq!(direct, [(0, 1, 1), (4, 0, 3), (4, 1, 0x9800)]);
 }
 
 #[test]

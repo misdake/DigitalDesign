@@ -9,6 +9,7 @@ pub const GPU_API_LARGE_WORDS: u16 = 48;
 pub const GPU_API_CB_WORDS: u16 = 224;
 pub const GPU_API_SCRATCH_WORDS: u16 = 256;
 pub const GPU_API_STORAGE_CHUNK_WORDS: u16 = 64;
+pub const GPU_API_PUSH_CHUNK_WORDS: u16 = 128;
 pub const GPU_API_PLANE_SECTORS: u16 = 1600;
 
 // Camera: unreflected source-world affine view, focal, far, native ray, zero.

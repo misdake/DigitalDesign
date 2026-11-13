@@ -357,34 +357,36 @@ impl Gpu {
 }
 fn gpu_api_submit(slot: u16, capturable: bool) {
     gpu_snapshot_poll();
+    let capture = capturable && gpu_snapshot_take();
+    if !capture {
+        if !gpu_execute_submit(slot) {
+            gpu_api_fail(6, 2, GPU_EXECUTION[5u16], slot);
+        }
+        gpu_capture_started();
+        return;
+    }
     if !gpu_execute_prepare(slot) {
         gpu_api_fail(6, 1, GPU_EXECUTION[5u16], slot);
     }
-    let capture = capturable && gpu_snapshot_take();
-    let mut action: u16 = 0;
-    if capture {
-        let mut source: Buf<u16, 12> = Buf::new([0; 12]);
-        if !gpu_execute_capture_source(slot, source.as_array()) {
-            gpu_execute_fail(8);
-            gpu_api_fail(6, 5, slot, 0);
-        }
-        if !gpu_capture_begin(source.as_array(), gpu_record_capture_facts(slot)) {
-            gpu_execute_fail(9);
-            gpu_api_fail(6, 6, slot, gpu_capture_health());
-        }
-        action = gpu_capture_gate();
-        if action > 1 {
-            gpu_execute_fail(10);
-            gpu_api_fail(6, 7, action, gpu_capture_health());
-        }
+    let mut source: Buf<u16, 12> = Buf::new([0; 12]);
+    if !gpu_execute_capture_source(slot, source.as_array()) {
+        gpu_execute_fail(8);
+        gpu_api_fail(6, 5, slot, 0);
+    }
+    if !gpu_capture_begin(source.as_array(), gpu_record_capture_facts(slot)) {
+        gpu_execute_fail(9);
+        gpu_api_fail(6, 6, slot, gpu_capture_health());
+    }
+    let action = gpu_capture_gate();
+    if action > 1 {
+        gpu_execute_fail(10);
+        gpu_api_fail(6, 7, action, gpu_capture_health());
     }
     if !gpu_execute_start(slot, action == 1) {
         gpu_api_fail(6, 2, GPU_EXECUTION[5u16], slot);
     }
     gpu_capture_started();
-    if capture {
-        gpu_capture_submitted();
-    }
+    gpu_capture_submitted();
 }
 impl Drop for Gpu {
     // No implicit wait, context reset or reclamation of a driver-owned CB.
@@ -488,13 +490,14 @@ fn gpu_api_copy_plane(slot: u16, source: u16, destination: u16, kind: u16) {
         kind,
         GPU_FACT_WRITE,
     ]);
-    if !gpu_record_capture_room(slot, facts.as_array(), 2) {
+    let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
+    if !gpu_record_capture_room(slot, facts.as_array(), 2, fact_plan.as_array()) {
         gpu_api_fail(4, 6, slot, 0);
     }
     if !gpu_packet_copy_plane(slot, s[0u16], d[0u16]) {
         gpu_api_fail(4, 2, slot, 0);
     }
-    gpu_record_capture_commit(slot, facts.as_array(), 2);
+    gpu_record_capture_commit(slot, facts.as_array(), 2, fact_plan.as_array());
 }
 /// Push partition choices; command, metadata and total push budgets are unchanged.
 #[repr(u16)]
@@ -632,7 +635,8 @@ impl CommandBuffer {
             GPU_FACT_DEPTH,
             GPU_FACT_READ | GPU_FACT_WRITE,
         ]);
-        if !gpu_record_capture_room(self.slot, facts.as_array(), 2) {
+        let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
+        if !gpu_record_capture_room(self.slot, facts.as_array(), 2, fact_plan.as_array()) {
             gpu_api_fail(4, 6, self.slot, 0);
         }
         if !gpu_packet_begin(
@@ -645,7 +649,7 @@ impl CommandBuffer {
         ) {
             gpu_api_fail(4, 2, self.slot, mask);
         }
-        gpu_record_capture_commit(self.slot, facts.as_array(), 2);
+        gpu_record_capture_commit(self.slot, facts.as_array(), 2, fact_plan.as_array());
         Pass { slot: self.slot }
     }
     pub fn invalidate_textures(&mut self) {
@@ -1269,7 +1273,11 @@ impl Pass {
             GPU_FACT_ATLAS,
             GPU_FACT_READ,
         ]);
-        gpu_api_checked(gpu_record_capture_room(self.slot, facts.as_array(), 2), 11);
+        let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
+        gpu_api_checked(
+            gpu_record_capture_room(self.slot, facts.as_array(), 2, fact_plan.as_array()),
+            11,
+        );
         let native = unsafe {
             gpu_native_scratch()
                 .as_ptr()
@@ -1281,7 +1289,7 @@ impl Pass {
             gpu_ui_packet_draw(self.slot, native, clip.x, clip.y, clip.width, clip.height),
             11,
         );
-        gpu_record_capture_commit(self.slot, facts.as_array(), 2);
+        gpu_record_capture_commit(self.slot, facts.as_array(), 2, fact_plan.as_array());
     }
 }
 fn gpu_api_draw(
@@ -1321,7 +1329,11 @@ fn gpu_api_draw(
         facts[7u16] = GPU_FACT_READ;
         count = 2;
     }
-    gpu_api_checked(gpu_record_capture_room(slot, facts.as_array(), count), 5);
+    let fact_plan: Buf<u16, 2> = Buf::new([0; 2]);
+    gpu_api_checked(
+        gpu_record_capture_room(slot, facts.as_array(), count, fact_plan.as_array()),
+        5,
+    );
     let desired = unsafe { c.as_ptr().add(GPU_CB_CAMERA as i16).as_u16_array() };
     let material = gpu_arena_data(material_slot);
     gpu_api_checked(
@@ -1340,7 +1352,7 @@ fn gpu_api_draw(
     gpu_scene_draw_finish(material, native);
     gpu_api_checked(gpu_mesh_draw(slot, mesh, native), 5);
 
-    gpu_record_capture_commit(slot, facts.as_array(), count);
+    gpu_record_capture_commit(slot, facts.as_array(), count, fact_plan.as_array());
     gpu_patch_note(slot, GPU_RECORD_SCENE_MODEL, model_slot);
     gpu_patch_note(slot, GPU_RECORD_SCENE_MATERIAL, material_slot);
 }

@@ -40,7 +40,7 @@ fn gpu_execute_init() -> bool {
     GPU_EXECUTION[0u16] = GPU_EXEC_IDLE;
     true
 }
-fn gpu_execute_prepare(slot: u16) -> bool {
+fn gpu_execute_publish(slot: u16) -> bool {
     if GPU_EXECUTION[0u16] != GPU_EXEC_IDLE || slot >= 2 {
         return gpu_execute_fail(2);
     }
@@ -61,12 +61,6 @@ fn gpu_execute_prepare(slot: u16) -> bool {
     }
     GPU_EXECUTION[2u16] = c[GPU_RECORD_COMMAND_BASE];
     GPU_EXECUTION[3u16] = (words >> 1) - 1;
-    GPU_EXECUTION[8u16] = c[GPU_RECORD_COMMAND_CAPACITY];
-    GPU_EXECUTION[9u16] = c[GPU_RECORD_PADDED];
-    GPU_EXECUTION[10u16] = c[GPU_RECORD_PUSH_BASE];
-    GPU_EXECUTION[11u16] = c[GPU_RECORD_PUSH_CAPACITY];
-    GPU_EXECUTION[12u16] = c[GPU_RECORD_PUSH_USED];
-    GPU_EXECUTION[13u16] = c[GPU_RECORD_FACT_COUNT];
     if read_dseg_page(3) != GPU_EXECUTION[4u16] {
         return gpu_execute_fail(5);
     }
@@ -79,6 +73,33 @@ fn gpu_execute_prepare(slot: u16) -> bool {
     GPU_EXECUTION[0u16] = GPU_EXEC_PREPARED;
     // C's pre-submit hook belongs here, after this function and before start.
     true
+}
+fn gpu_execute_prepare(slot: u16) -> bool {
+    if !gpu_execute_publish(slot) {
+        return false;
+    }
+    let c = gpu_record_data(slot);
+    GPU_EXECUTION[8u16] = c[GPU_RECORD_COMMAND_CAPACITY];
+    GPU_EXECUTION[9u16] = c[GPU_RECORD_PADDED];
+    GPU_EXECUTION[10u16] = c[GPU_RECORD_PUSH_BASE];
+    GPU_EXECUTION[11u16] = c[GPU_RECORD_PUSH_CAPACITY];
+    GPU_EXECUTION[12u16] = c[GPU_RECORD_PUSH_USED];
+    GPU_EXECUTION[13u16] = c[GPU_RECORD_FACT_COUNT];
+    true
+}
+// Immediate submission has no external lease or mutable hook between publish
+// and launch. The checked publication boundary owns all hardware validation.
+fn gpu_execute_submit(slot: u16) -> bool {
+    if !gpu_execute_publish(slot) {
+        return false;
+    }
+    gpu_execute_launch();
+    true
+}
+fn gpu_execute_launch() {
+    GPU_EXECUTION[0u16] = GPU_EXEC_RUNNING;
+    dev_send(GPU_DEVICE, GPU_COMMAND_COUNT, GPU_EXECUTION[3u16]);
+    dev_send(GPU_DEVICE, GPU_COMMAND_START, GPU_EXECUTION[2u16]);
 }
 fn gpu_execute_prepared_matches(slot: u16) -> bool {
     if slot >= 2 || GPU_EXECUTION[0u16] != GPU_EXEC_PREPARED || GPU_EXECUTION[1u16] != slot + 1 {
@@ -141,9 +162,7 @@ fn gpu_execute_start(slot: u16, republish: bool) -> bool {
     if dev_recv(GPU_DEVICE, GPU_STATUS) & (GPU_STATUS_BUSY | GPU_STATUS_TRANSPORT_ERROR) != 0 {
         return gpu_execute_fail(3);
     }
-    GPU_EXECUTION[0u16] = GPU_EXEC_RUNNING;
-    dev_send(GPU_DEVICE, GPU_COMMAND_COUNT, GPU_EXECUTION[3u16]);
-    dev_send(GPU_DEVICE, GPU_COMMAND_START, GPU_EXECUTION[2u16]);
+    gpu_execute_launch();
     true
 }
 // Internal result: 0=no completion, slot+1=retired, 65535=fault with owner retained.
