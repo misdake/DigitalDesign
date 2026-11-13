@@ -12,6 +12,21 @@ mod artifact;
 #[path = "../../build_support/rcc_modules.rs"]
 mod rcc_modules;
 fn main() {
+    // Recursive frontend passes handle imported syntax and bounded const calls.
+    // Windows' small main-thread stack must not limit ordinary application size.
+    let result = std::thread::Builder::new()
+        .name("application build".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(build)
+        .expect("start application compiler")
+        .join()
+        .unwrap_or_else(|failure| std::panic::resume_unwind(failure));
+    if let Err(error) = result {
+        error.report();
+        std::process::exit(1);
+    }
+}
+fn build() -> Result<(), cpu_v3_tools::diagnostics::BuildDiagnostic> {
     let package = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let root = package.parent().unwrap().parent().unwrap().to_owned();
     let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
@@ -30,7 +45,7 @@ fn main() {
         Ok(value) if value == "1" => true,
         _ => panic!("RCC_GPU_DEBUG must be 0 or 1"),
     };
-    let compiled = application.compile(&root, &output, &options, &resources);
+    let compiled = application.compile(&root, &output, &options, &resources)?;
     let buffers: Vec<_> = compiled
         .buffers
         .iter()
@@ -139,4 +154,5 @@ fn main() {
     }
     bindings.push_str("];\n");
     std::fs::write(output.join("boot_asset_bindings.rs"), bindings).unwrap();
+    Ok(())
 }

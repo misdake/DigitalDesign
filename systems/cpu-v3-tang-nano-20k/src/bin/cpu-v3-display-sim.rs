@@ -39,6 +39,8 @@ struct SubmissionPause {
     seen: usize,
     count: Option<u16>,
     capture: Option<(DeviceWrite, Option<u16>, Vec<u16>)>,
+    halt: Option<(u16, u16)>,
+    fault_pc: Option<u16>,
 }
 impl SubmissionPause {
     fn observe(&mut self, write: DeviceWrite, memory: &[u16]) -> bool {
@@ -86,10 +88,21 @@ impl CpuBackend {
     }
     fn step(&mut self, pause: &mut SubmissionPause) -> Result<Option<bool>, String> {
         match self {
-            Self::Instruction(s) => s
-                .step_observing(|w, m| pause.observe(w, m))
-                .map(|o| o.map(|o| matches!(o, StepOutcome::Halted { .. })))
-                .map_err(|e| format!("instruction CPU fault: {e:?}")),
+            Self::Instruction(s) => {
+                let pc = s.cpu().pc();
+                let result = s.step_observing(|w, m| pause.observe(w, m)).map_err(|e| {
+                    pause.fault_pc = Some(e.address);
+                    format!("instruction CPU fault: {e:?}")
+                })?;
+                Ok(result.map(|outcome| {
+                    if let StepOutcome::Halted { signal } = outcome {
+                        pause.halt = Some((signal, pc));
+                        true
+                    } else {
+                        false
+                    }
+                }))
+            }
             Self::Native(s) => {
                 let Some(o) = s.step_observing(|w, m| pause.observe(w, m)).map_err(|e| {
                     format!("native CPU fault at logic cycle {}: {e:?}", s.cycles())
@@ -98,6 +111,7 @@ impl CpuBackend {
                     return Ok(None);
                 };
                 if o.fault {
+                    pause.fault_pc = Some(o.fault_pc as u16);
                     return Err(format!(
                         "native core fault {} at logic cycle {}, PC {:#06x}",
                         o.fault_code,
@@ -105,9 +119,63 @@ impl CpuBackend {
                         s.core().program_counter()
                     ));
                 }
+                if o.halted {
+                    pause.halt = Some((o.halt_signal as u16, (o.pc as u16).wrapping_sub(1)));
+                }
                 Ok(Some(o.halted))
             }
         }
+    }
+    fn diagnostic_state(
+        &self,
+        halt: Option<(u16, u16)>,
+        logical: Option<u16>,
+        stack_top: u16,
+        fault: Option<&str>,
+        fault_pc: Option<u16>,
+    ) -> serde_json::Value {
+        let (pc, segment, dseg, registers) = match self {
+            Self::Instruction(s) => (
+                s.cpu().pc(),
+                s.cpu().code_segment(),
+                s.cpu().data_segments(),
+                s.cpu().registers().to_owned(),
+            ),
+            Self::Native(s) => (
+                s.core().program_counter(),
+                s.core().segments().0,
+                s.core().data_segments(),
+                s.core().architectural_gprs(),
+            ),
+        };
+        let read = |logical: u16, count: usize| -> Vec<u16> {
+            let mut words = Vec::new();
+            let mut address = usize::from(logical);
+            while words.len() < count && address < 65536 {
+                let chunk = (0x4000 - (address & 0x3fff)).min(count - words.len());
+                let physical = (usize::from(dseg[address >> 14]) << 14) | (address & 0x3fff);
+                let values = match self {
+                    Self::Instruction(s) => s
+                        .cpu()
+                        .physical_memory_slice()
+                        .get(physical..physical + chunk)
+                        .map(|w| w.to_vec()),
+                    Self::Native(s) => s.inspect_cpu_words(physical, chunk).ok(),
+                };
+                let Some(values) = values else {
+                    break;
+                };
+                words.extend(values);
+                address += chunk;
+            }
+            words
+        };
+        let sp = registers[13];
+        let stack_count = usize::from(stack_top.saturating_sub(sp)).min(4096);
+        serde_json::json!({"pc":pc,"code_segment":segment,"data_segments":dseg,
+            "halt_signal":halt.map(|h|h.0),"halt_pc":halt.map(|h|h.1),"fault_words":logical.map(|l|read(l,16)).unwrap_or_default(),
+            "sp":sp,"lr":registers[14],"stack_words":read(sp,stack_count),"stack_truncated":usize::from(stack_top.saturating_sub(sp))>stack_count,
+            "cpu_fault":fault,"fault_pc":fault_pc,"gpu_error":self.gpu_error()})
     }
     fn gpu_error(&self) -> Option<String> {
         match self {
@@ -156,6 +224,7 @@ struct Options {
     max_cpu_cycles: Option<usize>,
     native: bool,
     package: Option<PathBuf>,
+    artifact: Option<PathBuf>,
     freeze_submit: Option<usize>,
     stop_after_present: Option<usize>,
     output: PathBuf,
@@ -174,9 +243,10 @@ fn options() -> Result<Options, String> {
         max_cpu_cycles: None,
         native: false,
         package: None,
+        artifact: None,
         freeze_submit: None,
         stop_after_present: None,
-        output: PathBuf::from("target/display-sim"),
+        output: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/display-sim"),
         frames: 120,
         ppm: false,
         window: false,
@@ -210,6 +280,10 @@ fn options() -> Result<Options, String> {
                         .parse()
                         .map_err(|_| "invalid --max-cpu-cycles")?,
                 )
+            }
+            "--artifact" => {
+                options.artifact =
+                    Some(args.next().ok_or("--artifact requires a directory")?.into());
             }
             "--package" => {
                 options.package = Some(args.next().ok_or("--package requires a path")?.into())
@@ -289,7 +363,16 @@ fn options() -> Result<Options, String> {
     Ok(options)
 }
 
-fn main() -> Result<(), String> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+fn run() -> Result<(), String> {
     if std::env::args()
         .skip(1)
         .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
@@ -303,6 +386,20 @@ fn main() -> Result<(), String> {
     )?;
     let package =
         std::fs::read(package_path).map_err(|e| format!("read application package: {e}"))?;
+    std::fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
+    let frozen_package = options.output.join("application.cb06");
+    std::fs::write(&frozen_package, &package).map_err(|e| e.to_string())?;
+    let diagnostics = options
+        .artifact
+        .as_ref()
+        .map(|artifact| {
+            cpu_v3_tang_nano_20k::runtime_diagnostics::RuntimeDiagnostics::new(
+                artifact,
+                &frozen_package,
+                &options.output,
+            )
+        })
+        .transpose()?;
     let mut system = if options.native {
         CpuBackend::Native(Box::new(
             CpuV3SystemEmu::from_single_flash(&package, 0xd00d, VBlankMode::Manual)
@@ -361,6 +458,7 @@ fn main() -> Result<(), String> {
     let mut pixels = Vec::new();
     let mut executed = 0_usize;
     let mut halted = false;
+    let mut cpu_fault = None;
     let mut samples = 0;
     let mut presented = 0;
     let mut frame_counters = vec![system.frame_counters(0, 0)];
@@ -390,8 +488,13 @@ fn main() -> Result<(), String> {
                 }
                 system.realtime_input(host, focused);
             }
-            let Some(stopped) = system.step(&mut pause)? else {
-                break 'samples;
+            let stopped = match system.step(&mut pause) {
+                Ok(Some(stopped)) => stopped,
+                Ok(None) => break 'samples,
+                Err(error) => {
+                    cpu_fault = Some(error);
+                    break 'samples;
+                }
             };
             halted = stopped;
             if options.freeze_submit.is_some() {
@@ -422,13 +525,26 @@ fn main() -> Result<(), String> {
                 .map_err(|error| format!("window update failed: {error}"))?;
         }
     }
-    if let Some(target) = options.stop_after_present {
-        if presented < target {
-            return Err(format!(
+    let diagnostic = diagnostics
+        .as_ref()
+        .map(|diagnostics| {
+            diagnostics.finish(&system.diagnostic_state(
+                pause.halt,
+                diagnostics.fault_logical,
+                diagnostics.stack_top,
+                cpu_fault.as_deref(),
+                pause.fault_pc,
+            ))
+        })
+        .transpose()?;
+    let present_error = options
+        .stop_after_present
+        .filter(|&target| presented < target)
+        .map(|target| {
+            format!(
                 "only {presented} real swaps within {executed} CPU advances; requested {target}"
-            ));
-        }
-    }
+            )
+        });
     if let Some((write, count, memory)) = pause.capture.as_ref() {
         std::fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
         let count = count.ok_or("target START has no preceding COUNT")?;
@@ -512,7 +628,7 @@ fn main() -> Result<(), String> {
         let accepted = pause.seen - usize::from(pause.capture.is_some());
         let stop = if pause.capture.is_some() {
             "pre-submit"
-        } else if options.stop_after_present.is_some() {
+        } else if options.stop_after_present.is_some_and(|n| presented >= n) {
             "present-limit"
         } else if halted {
             "halt"
@@ -558,7 +674,7 @@ fn main() -> Result<(), String> {
         let accepted = pause.seen - usize::from(pause.capture.is_some());
         let stop = if pause.capture.is_some() {
             "pre-submit"
-        } else if options.stop_after_present.is_some() {
+        } else if options.stop_after_present.is_some_and(|n| presented >= n) {
             "present-limit"
         } else if halted {
             "halt"
@@ -590,6 +706,18 @@ fn main() -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         println!("accepted GPU submissions {accepted}, valid front {}, real swaps {presented}, stop {stop}; instruction host wall {:.3}s",display.front_valid(),started.elapsed().as_secs_f64());
     }
+    let summary_path = options.output.join(if options.native {
+        "summary-native.json"
+    } else {
+        "summary-instruction.json"
+    });
+    let mut summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&summary_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    summary["halt_signal"] = serde_json::json!(pause.halt.map(|h| h.0));
+    summary["cpu_fault"] = serde_json::json!(cpu_fault);
+    std::fs::write(summary_path, serde_json::to_vec_pretty(&summary).unwrap())
+        .map_err(|e| e.to_string())?;
     if let Some(error) = system.gpu_error() {
         println!("GPU retained execution error: {error}");
     }
@@ -598,5 +726,26 @@ fn main() -> Result<(), String> {
         serde_json::to_vec_pretty(&frame_counters).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(diagnostic) = diagnostic.as_ref() {
+        if matches!(
+            diagnostic["kind"].as_str(),
+            Some("assertion" | "gpu_fault" | "cpu_fault" | "gpu_error")
+        ) {
+            return Err(cpu_v3_tang_nano_20k::runtime_diagnostics::render(
+                diagnostic,
+            ));
+        }
+    }
+    if let Some(error) = cpu_fault.or_else(|| system.gpu_error()) {
+        return Err(error);
+    }
+    if let Some(error) = present_error {
+        let detail = diagnostic
+            .as_ref()
+            .filter(|d| d["kind"] == "halt")
+            .map(cpu_v3_tang_nano_20k::runtime_diagnostics::render)
+            .unwrap_or_default();
+        return Err(format!("{error}\n{detail}"));
+    }
     Ok(())
 }

@@ -112,7 +112,10 @@
   ```
 # Application and hardware workflows
 
-Build one application with `build-application.ps1`; its [artifact](/systems/cpu-v3-tang-nano-20k/docs/application-build-artifact.md)
+Use `cpu-v3-app preview APPLICATION` for a bounded first frame or `run APPLICATION`
+for a window with input. Both share the ordinary build authority; `--snapshot`
+consumes an existing export. See [commands and diagnostics](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md).
+Build without running with `build-application.ps1`; its [artifact](/systems/cpu-v3-tang-nano-20k/docs/application-build-artifact.md)
 is the input to `profile.py run|plan|report|compare`. Backend, selected frame and
 budget are explicit; see [application profiling](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md).
 `hardware.py audit|assemble|verify` consumes frozen fits and application snapshots;

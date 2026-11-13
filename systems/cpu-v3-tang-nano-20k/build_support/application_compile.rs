@@ -3,6 +3,7 @@ use super::{ApplicationFrontend, ApplicationSource, CapturePolicy, SourceSpecial
 use crate::artifact::Inputs;
 use crate::{application_entry, rcc_modules};
 use cpu_v3::rcc_backend::{self, CompilerOptions};
+use cpu_v3_tools::diagnostics::BuildDiagnostic;
 use rcc::frontend::compile_program_named;
 use std::path::{Path, PathBuf};
 #[path = "asset_relocation.rs"]
@@ -30,7 +31,7 @@ pub(super) fn compile_program(
     request: CompileRequest<'_>,
     options: &CompilerOptions,
     inputs: &mut Inputs,
-) -> CompiledApplication {
+) -> Result<CompiledApplication, BuildDiagnostic> {
     let CompileRequest {
         path,
         constants,
@@ -45,9 +46,9 @@ pub(super) fn compile_program(
     let explicit_gpu = matches!(frontend, ApplicationFrontend::ExplicitGpu);
     let entry = policy.entry;
     inputs.watch(path);
-    let source = std::fs::read_to_string(path).unwrap();
+    let source = std::fs::read_to_string(path).map_err(|e| BuildDiagnostic::new("source", e))?;
     let source = if explicit_gpu {
-        application_entry::select(&source, entry).expect("explicit GPU application entry")
+        application_entry::select(&source, entry).map_err(|e| BuildDiagnostic::new("entry", e))?
     } else {
         source
     };
@@ -138,16 +139,28 @@ pub(super) fn compile_program(
             ordinary_dirs: &policy.ordinary_dirs,
             configuration: capture.as_ref().unwrap_or(&disabled),
         }
-        .compile_checked(
+        .compile_checked_source(
             &path.display().to_string(),
             &source,
             options,
             &rcc::frontend::rustc_check::RustcCheck::new(
-                PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("member-ownership"),
+                std::env::var_os("CPU_V3_BUILD_DIAGNOSTIC")
+                    .and_then(|path| {
+                        PathBuf::from(path)
+                            .parent()
+                            .map(|parent| parent.join("rustc"))
+                    })
+                    .unwrap_or_else(|| {
+                        PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("member-ownership")
+                    }),
             ),
             &mut |module| dependencies.push(module.to_owned()),
             &mut |name, module| inputs.module(name, module),
         )
+        .map_err(|error| match error {
+            rcc_modules::GpuCompileError::Root(error) => BuildDiagnostic::new("source", error),
+            rcc_modules::GpuCompileError::Source(error) => source_failure(error),
+        })
     } else {
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
             let module = rcc_modules::load_module_source(
@@ -160,9 +173,8 @@ pub(super) fn compile_program(
             inputs.module(&format!("{name}.rs"), &module);
             Ok(module.source)
         })
-        .map_err(|e| e.to_string())
-    }
-    .unwrap_or_else(|error| panic!("compile {}: {error}", path.display()));
+        .map_err(source_failure)
+    }?;
     let static_words = program.debug.static_data_end;
     let mut static_data = vec![0; static_words * 2];
     for (address, value) in program.take_static_initializers() {
@@ -178,7 +190,7 @@ pub(super) fn compile_program(
         );
     }
     asset_relocation::apply(&mut program.assets.placed, &policy.sector_relocations)
-        .expect("native asset sector relocation");
+        .map_err(|e| BuildDiagnostic::new("asset relocation", e))?;
     let assets = program
         .assets
         .placed
@@ -196,15 +208,25 @@ pub(super) fn compile_program(
         inputs.watch(&path);
     }
     let buffers = program.assets.buffers.clone();
-    let program = rcc_backend::try_compile(program, options, entry).unwrap();
-    CompiledApplication {
+    let program = rcc_backend::try_compile(program, options, entry)
+        .map_err(|e| BuildDiagnostic::new("target compilation", e))?;
+    Ok(CompiledApplication {
         options: options.clone(),
         program,
         static_words,
         static_data,
         assets,
         buffers,
-    }
+    })
+}
+
+fn source_failure(error: rcc::frontend::CompileError) -> BuildDiagnostic {
+    let location = error
+        .location()
+        .map(|(file, line, column)| (file.to_owned(), line, column));
+    let mut result = BuildDiagnostic::new("compilation", error);
+    result.location = location;
+    result
 }
 
 fn asset_banks(

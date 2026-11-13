@@ -28,7 +28,7 @@ pub fn page_start(grid: &mut UiGrid, state: DemoState, title: &[u8]) {
         hint(grid, 44, KEY_CROSS, ICON_ACCEPT);
     } else {
         hint(grid, 44, KEY_START, ICON_HOME);
-        if state.page == 1 || state.page == 2 {
+        if state.page == 1 || state.page == 2 || state.page == 5 {
             hint(grid, 26, KEY_DPAD_H, ICON_ADJUST);
             if state.paused {
                 hint(grid, 32, KEY_CROSS, ICON_PLAY);
@@ -44,7 +44,7 @@ pub fn page_start(grid: &mut UiGrid, state: DemoState, title: &[u8]) {
 }
 pub fn menu_entry(grid: &mut UiGrid, index: u16, selected: u16, label: &[u8]) {
     if index == selected {
-        grid.write_glyph(3, 3 + index * 2, 62);
+        grid.write_glyph(3, 2 + index * 2, 62);
     }
-    text(grid, 6, 3 + index * 2, label);
+    text(grid, 6, 2 + index * 2, label);
 }

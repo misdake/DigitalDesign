@@ -112,3 +112,35 @@ Every query includes the artifact ID. Constants are queried with `--kind constan
 The descriptor binds a specific exported build; it is not a signature or a claim
 of algorithmically independent compilation. CB06 reconstruction, CPU execution
 and RTL qualifications keep their separate validation boundaries.
+
+## Runtime diagnostics
+
+`cpu-v3-display-sim --artifact SNAPSHOT --package EXISTING-CB06` enables host-side
+diagnostics for either instruction or native CPU simulation. The supplied
+package must exactly match the verified snapshot. The runner freezes its consumed
+bytes as `output/application.cb06` before binding diagnostics; no source checkout
+is used for symbolization. `cpu-v3-app preview|run` supplies this option directly.
+
+The canonical artifact reader validates the linked listing against executable
+words, maps halt/fault PCs through the snapshot's source map, and locates the
+existing `GPU_API_FAULT` record from same-build globals. After stopping, the runner
+stores `runtime-state.json` and `diagnostic.json` with the artifact ID, signal,
+source line, available call chain and raw fault words. Native inspection uses the
+CPU-visible cache/store view without advancing or publishing machine state.
+
+The 16-word `0xfa17` GPU fault record retains its existing site, code and detail
+fields. `tools/gpu_fault.py` supplies host names; unknown values remain numeric.
+Decoding requires halt signal `0xe001` and the matching record. CPU/GPU faults and
+recognized assertion failures return a failing process status after outputs are
+saved. A custom halt remains a halt; signal `0xffff` alone never means assertion.
+
+Assertion classification requires a verified linked HALT and an assertion AST
+span in the exact source snapshot. Multiline assertions are supported; ambiguous
+same-line direct halt calls remain generic halts. This host parsing does not
+add target checks, change debug/release behavior or modify the fault protocol.
+
+The optional halt call chain uses published frame sizes, recognized saved-link
+prologues and verified direct-call return addresses. It stops at an unknown,
+optimized or corrupt frame, at a segment mismatch, after 16 frames or beyond the
+4096-word stopped stack window. It is a partial diagnostic, not a general
+unwinder. No stack tracing runs in the per-instruction path.

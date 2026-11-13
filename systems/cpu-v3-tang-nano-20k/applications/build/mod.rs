@@ -4,24 +4,26 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 pub mod asset_metadata;
 
-#[path = "../../examples/gpu_bench/application.rs"]
-mod bench;
-#[path = "../../examples/gpu_renderer_bloxorz/application.rs"]
-mod bloxorz;
-#[path = "../../examples/core_demo/application.rs"]
-mod core_demo;
-#[path = "../../examples/gpu_demo/application.rs"]
-mod demo;
-#[path = "../../examples/dualshock2/application.rs"]
-mod ds2;
-#[path = "../../examples/dualshock2_ui/application.rs"]
-mod ds2_ui;
-#[path = "../../examples/gpu_profiler_board/application.rs"]
-mod profiler;
-#[path = "../../examples/gpu_renderer/application.rs"]
-mod renderer;
-#[path = "../../examples/gpu_renderer_rtt/application.rs"]
-mod rtt;
+// One explicit registration supplies both module loading and enumeration.
+macro_rules! application_catalog {
+    ($($name:ident => $path:literal),+ $(,)?) => {
+        $(#[path = $path] mod $name;)+
+        pub fn definitions() -> impl Iterator<Item = &'static Definition> {
+            std::iter::once(&DEFAULT).chain([$($name::APPLICATIONS),+].into_iter().flatten())
+        }
+    };
+}
+application_catalog! {
+    bench => "../../examples/gpu_bench/application.rs",
+    core_demo => "../../examples/core_demo/application.rs",
+    demo => "../../examples/gpu_demo/application.rs",
+    ds2 => "../../examples/dualshock2/application.rs",
+    ds2_ui => "../../examples/dualshock2_ui/application.rs",
+    renderer => "../../examples/gpu_renderer/application.rs",
+    bloxorz => "../../examples/gpu_renderer_bloxorz/application.rs",
+    rtt => "../../examples/gpu_renderer_rtt/application.rs",
+    profiler => "../../examples/gpu_profiler_board/application.rs",
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SourceSpecialization {
@@ -100,35 +102,8 @@ pub const DEFAULT: Definition = Definition {
     inputs: |_| {},
     configure: |_, _, _| {},
 };
-#[derive(Clone, Copy)]
-pub struct BuildOption {
-    pub flag: &'static str,
-    pub variable: &'static str,
-    pub values: OptionValues,
-}
-#[derive(Clone, Copy)]
-pub enum OptionValues {
-    Choices(&'static [&'static str]),
-    Integer { minimum: u16, maximum: u16 },
-    InputFile,
-}
-pub const COMMON_OPTIONS: &[BuildOption] = &[
-    BuildOption {
-        flag: "hook",
-        variable: "GPU_PROFILER_HOOK",
-        values: OptionValues::Choices(&["0", "1"]),
-    },
-    BuildOption {
-        flag: "gpu-debug",
-        variable: "RCC_GPU_DEBUG",
-        values: OptionValues::Choices(&["0", "1"]),
-    },
-    BuildOption {
-        flag: "manifest",
-        variable: "GPU_PROFILER_MANIFEST",
-        values: OptionValues::InputFile,
-    },
-];
+mod options;
+pub use options::{BuildOption, OptionValues, COMMON_OPTIONS};
 pub const RENDERER_ASSETS: Assets = Assets {
     script: "examples/gpu_renderer/tools/assets.py",
     directory: "gpu-renderer-assets",
@@ -140,23 +115,6 @@ pub const RENDERER_ASSETS: Assets = Assets {
     manifest_sources: false,
 };
 
-pub fn definitions() -> impl Iterator<Item = &'static Definition> {
-    std::iter::once(&DEFAULT).chain(
-        [
-            bench::APPLICATIONS,
-            core_demo::APPLICATIONS,
-            demo::APPLICATIONS,
-            ds2::APPLICATIONS,
-            ds2_ui::APPLICATIONS,
-            renderer::APPLICATIONS,
-            bloxorz::APPLICATIONS,
-            rtt::APPLICATIONS,
-            profiler::APPLICATIONS,
-        ]
-        .into_iter()
-        .flatten(),
-    )
-}
 pub fn find(name: &str) -> Result<&'static Definition, String> {
     definitions()
         .find(|d| d.name == name || d.selection == Some(name))
@@ -213,6 +171,16 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
         );
         (context.watch)(&path);
     }
+    let mut option_constants = String::new();
+    for option in COMMON_OPTIONS.iter().chain(definition.options) {
+        println!("cargo:rerun-if-env-changed={}", option.variable);
+        let value = std::env::var(option.variable).ok();
+        option_constants.push_str(
+            &option
+                .constant_source(value.as_deref())
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+    }
     (definition.inputs)(&mut context);
     let mut project =
         parse_boot_project(&std::fs::read_to_string(root.join("boot-applications.conf")).unwrap())
@@ -225,7 +193,7 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
     }
     let mut application = Prepared {
         project,
-        constants: String::new(),
+        constants: option_constants,
         extra_assets: vec![],
         source: ApplicationSource {
             sector_relocations: vec![],
@@ -283,7 +251,8 @@ pub fn prepare(root: &Path, output: &Path, name: &str, watch: &mut dyn FnMut(&Pa
             })
             .collect();
         application.project.zeros.clear();
-        application.constants = std::fs::read_to_string(directory.join(assets.constants)).unwrap();
+        application.constants +=
+            &std::fs::read_to_string(directory.join(assets.constants)).unwrap();
         for name in ["assets.json", assets.constants] {
             application
                 .extra_assets

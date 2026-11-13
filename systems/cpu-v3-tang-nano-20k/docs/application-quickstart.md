@@ -18,42 +18,51 @@ the decimal `fix!` macro and `include_bytes!` use the restricted [static express
 General application macros remain unsupported. Use the [SDK value helpers](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md)
 for readable colors, transforms and resource descriptions.
 
-## Build a known application
+## Preview a known application
 
 ```powershell
 cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- list
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build core-demo --help
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build core-demo --out target/core-demo/app
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo --help
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo
 ```
 
-`--out` names a new or empty directory. An existing snapshot is immutable; choose
-a new path for the next build. The recipe produces its static assets, compiles
+This builds a fresh snapshot, verifies it and writes a two-present headless
+preview under the repository's `target/apps/core-demo/`. The command prints the
+snapshot and `frame-final.ppm` paths. The recipe produces its static assets, compiles
 the program once through Cargo OUT_DIR, packs CB06 and verifies the exported
 snapshot. `application.build.json` binds code, resources, sources and debug info.
 `cpu-v3-boot.bin` is the application package; it is not an FPGA configuration.
 
-## See the first frame
+## Run with input, or reuse a snapshot
 
 ```powershell
-cargo run --release -p cpu-v3-tang-nano-20k --bin cpu-v3-display-sim -- --package target/core-demo/app/cpu-v3-boot.bin --cpu-mode instruction --stop-after-present 2 --frames 120 --max-cpu-steps 2000000 --out-dir target/core-demo/preview --ppm
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run core-demo
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo --snapshot target/core-demo/app
 ```
 
-This consumes existing bytes without building an application. It runs the CPU
-instruction model and functional GPU/Display, with a finite CPU budget and host
-sample limit, and writes the displayed frame and run receipt. These results
+`run` builds and opens a window with Windows XInput slot 0. `--snapshot` instead
+consumes a previously exported snapshot without building an application; replace
+the example path with the printed snapshot path. Both modes use the CPU
+instruction model and functional GPU/Display, with finite CPU, sample and host
+time limits, and write the displayed frame, diagnostic and run receipt. These results
 establish functional behavior; host elapsed time and instruction steps are not
 physical GPU/CPU performance. The [profiling guide](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md)
 explains the different backends when measurements are needed.
 
-For live input, add Cargo feature `--features display-window` and runner options
-`--window --xinput-slot 0`, retaining explicit limits sized for the session.
-The simulator has no connected controller by default. See the
+Use `--headless` for a run without a window, or `--xinput-slot 1` to select another
+controller. The [workflow guide](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md#preview-and-run)
+lists defaults and overrides. See the
 [core demo controls](/systems/cpu-v3-tang-nano-20k/examples/core_demo/README.md#controls).
-To start a specific page, build another snapshot with `--page 4`, for example.
+To start a specific page, use `preview core-demo --page 5`, for example.
+To export without running, use `build core-demo --out target/core-demo/app`;
+`build --out` requires a new or empty directory and never overwrites a snapshot.
+Build failures print the main diagnostic and full log directory; matching
+runtime failures resolve source lines through the snapshot's debug metadata.
 
 ## Follow the source before creating a new application
 
-Open `examples/core_demo/rcc/main.rs`, then `state.rs` and one page module.
+Open `examples/core_demo/rcc/main.rs`, then `common/state.rs` and one module
+under `pages/`.
 The page returns to the main loop after updating its UI grid. Main records into
 Back, submits, recovers the CB from GPU wait, requests that completed target and
 confirms the Display swap before reusing resources. Static memory is explicit;
@@ -62,12 +71,27 @@ no frame allocator or hidden renderer is required.
 The normal application addition has two pieces:
 
 1. An application directory with its RCC entry/modules and an owned
-   `application.rs` recipe. The recipe selects the source, checked GPU policy,
-   optional asset producer and startup options. Follow the compact core-demo
-   recipe; leave diagnostic capture disabled unless it is actually needed.
-2. Import that recipe and add its `APPLICATIONS` slice in
-   `applications/build/mod.rs`. The generic frontend then discovers the name
-   through `cpu-v3-app list` and exposes the declared options through `--help`.
+   `application.rs` recipe. Follow `examples/core_demo/application.rs`: it selects
+   the checked GPU source, producer and startup options. Diagnostic capture stays
+   disabled for an ordinary application.
+2. One entry in `application_catalog!` in `applications/build/mod.rs`, naming the
+   recipe path. That entry loads the module and registers its `APPLICATIONS`
+   slice; there is no second enumeration to update.
+
+Declare a numeric startup constant once in the recipe:
+
+```rust
+options: &[
+    BuildOption::integer_constant("page", "CORE_DEMO_PAGE", 0, 0, 5),
+],
+```
+
+The arguments name the CLI flag, environment/RCC constant, default, minimum and
+maximum. Shared preparation validates CLI and direct-build values, watches the
+variable for incremental builds, and emits the `u16` constant. No custom parser,
+`rerun-if-env-changed` or constant string is needed. Producer-specific choices
+and input files use `BuildOption::environment` and retain application-owned
+configuration.
 
 Plain app modules are loaded from their application directory. Shared resource
 implementations must use the approved GPU API; copying its internals into an
@@ -76,19 +100,54 @@ all loaded source origins for the artifact.
 
 ## Add static content
 
-An asset producer writes `assets.json`, resource payloads and named RCC constants
-into the build-owned directory supplied by `--output`. The core-demo producer is
-a small complete example. Reuse the canonical `tools/gpu_layout.py` pool/range
-checks; do not duplicate the memory map. GPU addresses are bytes in the manifest,
-while `GpuMemory` descriptors use 128-byte sectors.
+An asset producer writes `assets.json`, native payloads and typed RCC
+constants into its build-owned `--output` directory. Follow
+`examples/core_demo/tools/assets.py` and its small `geometry.py`: these are actual
+consumers of the shared font, mesh and texture encoders. `native_asset_source.Sources`
+emits `AssetBytes`, aligned `#[asset]` declarations and complete native descriptions;
+the system places the blobs and applies sector relocations. Do not repeat GPU
+addresses or manually rebuild those descriptions in the application.
 
-The [UI atlas format](/ip/gpu-v2/docs/ui.md) supports up to 256 glyph records
-at a 64-KiB-aligned base, with 256 bytes per glyph and
-glyph 255 reserved for skip. Each source pixel is R5:G5:B5:A1, alpha in bit 0;
-odd rows exchange the two pixel pairs within each four-pixel group. The producer
-implements this static layout; the application declares the blob with `#[asset]`
-and binds it through `UiAtlasDesc::from_asset`. Only required glyphs need storage. Mesh and texture producers have their own
-documented formats; UI pixels are not RGBA4444 texture pixels.
+```rust
+mod boot_resources;
+use boot_resources::*;
+
+// Producer-generated names; storage placement is resolved by the build.
+let mesh = Mesh::from_native(GEOMETRY_CUBE);
+let texture = Texture::from_native(GEOMETRY_CHECKER);
+let atlas = UiAtlas::from_desc(CORE_ATLAS);
+```
+
+The [static asset guide](/systems/cpu-v3-tang-nano-20k/docs/static-assets.md)
+describes source placement, producer metadata and native relocations. Manual
+`#[asset]` and unsafe bindings remain advanced interfaces. GPU descriptors use
+128-byte sectors; source blobs are outside the CPU static arena.
+
+Declare writable storage with the corresponding const descriptions:
+
+```rust
+#[static_buffer]
+const COLOR: Rgb565Surface = Rgb565Surface::allocate();
+#[static_buffer]
+const DEPTH: DepthSurface = DepthSurface::allocate();
+#[static_buffer]
+const GRID: UiGridStorage = UiGridStorage::allocate();
+#[static_buffer]
+const COMMANDS: CommandMemory = CommandMemory::allocate(4096, 4096);
+
+// In main, after opening the GPU:
+let color = ColorBuffer::from_surface(COLOR);
+let depth = DepthBuffer::from_surface(DEPTH);
+let mut grid = UiGrid::from_storage(GRID, &atlas);
+```
+
+Import `surface` and `gpu_api` as shown by `rcc/common/working_set.rs`. Storage is placed
+and zeroed by the build/loader; live resources are registered once at startup.
+`rcc/geometry_page.rs` then shows const world/normal preparation and projection
+alongside a dynamically updated model. The GPU branch in `rcc/main.rs` records
+actual geometry and UI, waits for completion and presents Back. Its source-world
+X basis is reflected at draw conversion; the example places the fixed model on
+the screen's left and the animated model on the right.
 
 Use the shared [project font](/assets/fonts/README.md) for on-device text.
 `tools/ui_font.py` packs selected native 8×16 glyphs with `base_asset`; see the

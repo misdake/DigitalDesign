@@ -33,6 +33,95 @@ environment is not changed. Legacy `CPU_V3_BOOT_EXAMPLE` names remain valid alia
 The `default` entry reads `boot-applications.conf`; other entries explicitly own
 their source, frontend, entry point, ordinary modules and asset recipe.
 
+## Preview and run
+
+```powershell
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo --page 5
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run core-demo
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo --snapshot target/core-demo/app
+```
+
+Both commands use the same application build and canonical artifact checker as
+`build`. Without `--snapshot`, they allocate a fresh immutable snapshot beneath
+repository-root `target/apps/<application>/snapshots/<id>`. Each run gets a
+separate `runs/<id>` directory. `--out NEW-RUN-DIRECTORY` changes the run directory,
+not the snapshot destination. No previous outputs are pruned or overwritten.
+`--snapshot` consumes a verified export with the requested application's source
+and entry point; application build options cannot accompany it.
+
+| Default | `preview` | `run` |
+| --- | --- | --- |
+| Backend | Instruction CPU + functional GPU/Display | Same |
+| Window/input | Headless, no controller | Window, realtime, Windows XInput slot 0 |
+| Requested presents | 2 | None |
+| Host samples | 120 | 3600 |
+| CPU instruction budget | 8,000,000 | 100,000,000 |
+| Runner wall deadline | 120 seconds | 120 seconds |
+
+Use `--headless` or `--window`, `--presents N`, `--samples N`, `--max-steps N`,
+`--seconds N` (1..7200) and `--xinput-slot 0..3` to override these defaults.
+All counts must be positive. Explicit XInput also enables realtime sampling in
+headless mode. An unmet present target fails after saving outputs.
+Host samples and instruction steps establish bounded functional execution;
+they are not measurements of hardware frame time. Use the
+[profiling workflow](/systems/cpu-v3-tang-nano-20k/docs/application-profiling.md)
+for CPU/GPU timing.
+
+The host builds the existing `cpu-v3-display-sim` executable independently and
+uses Cargo's reported executable path, including a custom Cargo target directory.
+Window mode enables its `display-window` feature. Application/runner build
+subprocesses have 600-second deadlines; artifact checks have 60 seconds.
+On Windows, a timeout terminates the spawned process tree; on other hosts it
+terminates the immediate child. The caller's environment is unchanged.
+
+Each run saves full subprocess stdout/stderr, command arguments and exit/timeout
+results under `logs/`; execution outputs go under `output/`. The final `run.json`
+binds their file hashes, configuration, runner identity, actual consumed package
+and artifact ID. Preparation failures also leave a sealed receipt and available
+logs. A timeout can leave partial simulator outputs. The snapshot's location is
+provenance; checking a moved run directory does not need that original path:
+
+```powershell
+python -X utf8 -B systems/cpu-v3-tang-nano-20k/tools/application_artifact.py check-run target/example-run
+```
+
+This verifies the receipt and its recorded files, including failed runs; it is
+not a signature or a claim that unrecorded files were produced by the simulator.
+
+## Build diagnostics
+
+Source/frontend failures retain their original filename, line and column through
+the image build boundary. `cpu-v3-app` prints the primary diagnostic once and the
+log directory. That directory retains the complete Cargo stdout/stderr and a
+versioned `diagnostic.json` when a typed source/entry/relocation/backend error is
+available. Unexpected producer or tool failures retain the original logs and a
+short stderr tail rather than a guessed classification.
+
+When the Rustc ownership gate runs, its projection, source map, JSON diagnostics
+and compiler identity are stored under the build log's `rustc/`. A cached
+successful image does not rerun the gate merely to populate logs. These host
+diagnostics are outside the application snapshot and do not change CB06 bytes.
+Standalone `build` logs live under `target/apps/<application>/builds/<id>`.
+
+Runtime source/fault interpretation is described in the
+[artifact specification](/systems/cpu-v3-tang-nano-20k/docs/application-build-artifact.md#runtime-diagnostics).
+
+## Application declarations
+
+Each application owns an `application.rs` recipe. Register that file once in
+`application_catalog!` under `applications/build/mod.rs`; the catalog supplies
+module loading and enumeration in declaration order. It does not scan directories
+or grant application code driver privileges.
+
+`BuildOption::integer_constant(flag, name, default, minimum, maximum)` declares a
+`u16` startup constant. The host CLI and image preparation share validation;
+preparation watches its environment variable and emits the constant even when
+its default is used. CLI help shows the range and default. `environment` options
+carry producer choices or input files without emitting RCC constants. Custom
+configuration remains with the owning recipe. The normal image build runs its
+recursive compiler passes on a 16-MiB host worker stack, avoiding the Windows
+main-thread stack limit; this does not change the target stack or compiler budgets.
+
 ## Ownership and dependency direction
 
 | Owner | Responsibility |

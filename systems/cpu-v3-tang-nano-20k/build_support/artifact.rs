@@ -134,7 +134,7 @@ pub struct BuildRecord<'a> {
     pub program: &'a cpu_v3::rcc_backend::CpuV3Program,
     pub static_words: usize,
     pub application: Value,
-    pub resources: &'a [crate::boot::BootResource],
+    pub resources: &'a [cpu_v3_boot_format::BootResource],
     pub options: &'a cpu_v3::rcc_backend::CompilerOptions,
 }
 
@@ -216,7 +216,7 @@ pub fn write(record: BuildRecord<'_>, assets: &mut Vec<String>) {
         .collect::<Vec<_>>();
     let mut manifest = json!({
         "schema":"digitaldesign.application-build","version":1,"application":application,
-        "target":{"isa":"cpu-v3","code_segment":crate::boot::SINGLE_BOOT_CODE_WORD >> 16,"data_segments":[0,1,2,3],
+        "target":{"isa":"cpu-v3","code_segment":cpu_v3_boot_format::SINGLE_BOOT_CODE_WORD >> 16,"data_segments":[0,1,2,3],
             "code_base_words":program.code_base,"static_words":static_words,"stack_top":options.stack_init,
             "heap_begin":options.heap_begin,"heap_words":options.heap_size,"gpu_debug":program.gpu_debug},
         "compiler_options":format!("{options:?}"),

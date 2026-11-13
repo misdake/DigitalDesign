@@ -11,6 +11,9 @@ TOOLS = ROOT / "systems/cpu-v3-tang-nano-20k/tools"
 sys.path.insert(0, str(TOOLS))
 import ui_font
 import native_asset_source
+import gpu_mesh_layout
+import gpu_texture_layout
+import geometry
 
 # Native 8x16 application icons, appended to the selected shared font asset.
 ICONS = {
@@ -107,13 +110,15 @@ def pack(output):
             ui_font.write_glyph(atlas, first_key+index*3+cell, bits, foreground=ui_font.rgba5551(184, 208, 248))
     native = native_asset_source.Sources(output)
     native.atlas('CORE_ATLAS', atlas)
+    geometry.add_geometry(native)
     constants = ''
     constants += ''.join(f'pub const ICON_{name}:u8={first_icon+index};\n'
                          for index,name in enumerate(ICONS))
     constants += ''.join(f'pub const KEY_{name}:u8={first_key+index*3};\n'
                          for index,name in enumerate(keys))
     generated = native.write('core_assets.rs', constants)
-    sources = [Path(__file__), Path(native_asset_source.__file__), *ui_font.SOURCES]
+    sources = [Path(__file__), Path(native_asset_source.__file__), Path(geometry.__file__),
+               Path(gpu_mesh_layout.__file__), Path(gpu_texture_layout.__file__), *ui_font.SOURCES]
     manifest = dict(source_root='repository', **generated,
                     sources={p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources})
     (output/'assets.json').write_text(json.dumps(manifest, indent=2)+'\n')

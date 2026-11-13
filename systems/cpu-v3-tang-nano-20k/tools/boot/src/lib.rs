@@ -1,6 +1,9 @@
 //! Host application descriptions and artifact consumers for this system.
 #[path = "../../../applications/build/mod.rs"]
 pub mod applications;
+pub mod diagnostics;
+pub mod process;
+pub mod workflow;
 
 /// A build/export creates one snapshot and never replaces an existing payload.
 pub fn require_empty_output(path: &std::path::Path) -> Result<(), String> {

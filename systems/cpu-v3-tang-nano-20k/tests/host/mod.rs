@@ -123,3 +123,6 @@ mod static_assets;
 
 #[path = "compiler/const_math.rs"]
 mod const_math;
+
+#[path = "compiler/workflow_diagnostics.rs"]
+mod workflow_diagnostics;

@@ -230,6 +230,11 @@ impl CpuV3SystemEmu {
     pub fn physical_memory(&self) -> Ref<'_, [u16]> {
         Ref::map(self.backing.borrow(), |m| &m[..])
     }
+    /// Read the architectural CPU view, including dirty cache lines, for host diagnostics.
+    /// This does not publish CPU stores to GPU/Display or advance the machine.
+    pub fn inspect_cpu_words(&self, start: usize, count: usize) -> Result<Vec<u16>, String> {
+        self.metadata_words(start, count)
+    }
     /// Only producer metadata uses the CPU-private view. GPU payload capture
     /// always borrows physical_memory directly, including GPU-updated stale lines.
     pub(crate) fn metadata_words(&self, start: usize, count: usize) -> Result<Vec<u16>, String> {

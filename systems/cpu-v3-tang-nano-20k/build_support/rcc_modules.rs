@@ -200,6 +200,19 @@ pub struct GpuSources<'a> {
     pub ordinary_dirs: &'a [PathBuf],
     pub configuration: &'a RendererCaptureConfiguration,
 }
+#[derive(Debug)]
+pub enum GpuCompileError {
+    Root(String),
+    Source(rcc::frontend::CompileError),
+}
+impl std::fmt::Display for GpuCompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Root(error) => f.write_str(error),
+            Self::Source(error) => error.fmt(f),
+        }
+    }
+}
 impl GpuSources<'_> {
     pub fn compile_checked(
         &self,
@@ -210,8 +223,24 @@ impl GpuSources<'_> {
         dependency: &mut dyn FnMut(&Path),
         observe: &mut dyn FnMut(&str, &rcc::frontend::ModuleSource),
     ) -> Result<rcc::frontend::Program, String> {
-        let shared = std::fs::canonicalize(self.shared_dir)
-            .map_err(|error| format!("GPU library root {}: {error}", self.shared_dir.display()))?;
+        self.compile_checked_source(main_name, source, options, check, dependency, observe)
+            .map_err(|error| error.to_string())
+    }
+    pub fn compile_checked_source(
+        &self,
+        main_name: &str,
+        source: &str,
+        options: &impl rcc::RccConfig,
+        check: &rcc::frontend::rustc_check::RustcCheck,
+        dependency: &mut dyn FnMut(&Path),
+        observe: &mut dyn FnMut(&str, &rcc::frontend::ModuleSource),
+    ) -> Result<rcc::frontend::Program, GpuCompileError> {
+        let shared = std::fs::canonicalize(self.shared_dir).map_err(|error| {
+            GpuCompileError::Root(format!(
+                "GPU library root {}: {error}",
+                self.shared_dir.display()
+            ))
+        })?;
         let sources = GpuSources {
             shared_dir: &shared,
             ..*self
@@ -227,7 +256,7 @@ impl GpuSources<'_> {
                 dependency,
                 observe,
             )
-            .map_err(|error| error.to_string())
+            .map_err(GpuCompileError::Source)
     }
     fn load(
         &self,

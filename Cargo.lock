@@ -219,6 +219,7 @@ dependencies = [
  "minifb",
  "rcc",
  "serde_json",
+ "sha2",
  "syn 1.0.109",
  "windows-sys 0.48.0",
 ]
@@ -229,6 +230,7 @@ version = "0.1.0"
 dependencies = [
  "cpu-v3-boot-format",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

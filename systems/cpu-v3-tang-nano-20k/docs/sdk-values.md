@@ -163,13 +163,18 @@ does not replace that promise.
 
 `CommandMemory::new(commands, push)` groups one recording slot. `GpuConfig::single`
 and `double` supply the 8192-byte default object arena; use the raw struct for a
-different arena budget. The board factories provide the normal fixed slots.
+different arena budget. Application-owned storage uses `CommandMemory::allocate` under `#[static_buffer]`.
+The optional board factories retain the normal fixed slots.
 
 `Rgb565Surface` describes a shared physical framebuffer span once. The unsafe
 `from_sectors` constructor checks 64-KiB base alignment, the padded physical
 framebuffer extent, and sector-address overflow. `ColorBuffer::from_surface` and
 `canvas_from_surface` consume that same description; CPU/GPU/Display handoff is
 still explicit. `BOARD_COLOR_A` and `BOARD_COLOR_B` are the board descriptions.
+`DepthBuffer::from_surface(DepthSurface)` and
+`UiGrid::from_storage(UiGridStorage, &atlas)` likewise consume their typed storage
+descriptions directly. These are runtime registrations with the same validation
+and lifetime rules as `from_memory`; the raw memory entry points remain available.
 The CPU canvas module imports only the shared value/layout, without a GPU driver.
 
 `CellRect::new` replaces repeated four-field literals; `full_grid()` is 50×15.
@@ -177,8 +182,9 @@ The CPU canvas module imports only the shared value/layout, without a GPU driver
 handle single-line text and individual cells. `DepthLoad::clear_far()` clears to
 65535; clear/load helpers remain explicit pass arguments.
 
-All constructors above are pure `const fn`. They work in static descriptions;
-constant value builders can also be chained. Runtime calls retain the target ABI
+Pure value constructors are `const fn`. They work in static descriptions;
+constant value builders can also be chained. Live GPU resource constructors run
+at runtime. Calls retain the target ABI
 and language limits. For size-dependent constructors, a failed static assertion
 is a compilation error in both profiles. Runtime layout diagnostics use
 `debug_assert!`: target `gpu_debug` retains them, release removes their conditions

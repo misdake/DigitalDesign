@@ -1,6 +1,6 @@
 # Core demonstration gallery
 
-One ordinary application with five navigable pages. The CPU draws animated
+One ordinary application with six navigable pages. The CPU draws animated
 triangles, waves and controller illustrations directly into the RGB565 Back
 plane; the GPU clears that plane and overlays text/icons. The screen is a
 visual gallery, with per-page titles, small corner controls and no development HUD.
@@ -13,20 +13,23 @@ for prerequisites, build, simulation and the source/asset recipe.
 From the repository root:
 
 ```powershell
-cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- build core-demo --out target/core-demo/app
-cargo run --release -p cpu-v3-tang-nano-20k --bin cpu-v3-display-sim -- --package target/core-demo/app/cpu-v3-boot.bin --cpu-mode instruction --stop-after-present 2 --frames 120 --max-cpu-steps 8000000 --out-dir target/core-demo/preview --ppm
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- preview core-demo
+cargo run --release -p cpu-v3-tools --bin cpu-v3-app -- run core-demo
 ```
 
-Use a new build directory for each snapshot. `--page 0..4` selects the initial
+Each command creates a fresh snapshot and separate run directory. `--snapshot`
+consumes an existing export; `build core-demo --out NEW-DIRECTORY` exports without
+running. `--page 0..5` selects the initial
 page. Build option `--frames N` stops after N confirmed application presents;
 zero, the default, runs continuously. Simulator `--frames` instead bounds host
 display samples, and `--max-cpu-steps` bounds CPU work. Simulation time is not
 physical CPU/GPU time. The simulator executes the actual package and functional
 GPU, including UI pixels and Display color interpretation.
 
-For an interactive simulator, build the runner with `--features display-window`
-and add `--window --xinput-slot 0`; increase the explicit sample/step limits for
-the desired session. The controller is disconnected unless XInput is selected.
+`run` opens a window with realtime input from XInput slot 0; use `--headless` or
+`--xinput-slot N` to change this. The direct simulator remains available with
+explicit backend, sample and CPU limits. See the
+[workflow guide](/systems/cpu-v3-tang-nano-20k/docs/application-workflow.md#preview-and-run).
 Physical firmware uses the ordinary DS2 input device.
 
 ## Controls
@@ -35,11 +38,11 @@ Physical firmware uses the ordinary DS2 input device.
 | --- | --- |
 | Up / down, Cross on home | Select / open a highlighted menu item |
 | L1 / R1 | Previous / next page, wrapping at the ends |
-| Left / right on triangles/waves | Change rotation/amplitude on a press edge |
-| Cross on triangles/waves | Pause / resume animation |
+| Left / right on triangles/waves/geometry | Change CPU rotation/amplitude or GPU focal length on a press edge |
+| Cross on triangles/waves/geometry | Pause / resume animation |
 | Up / down on color | Focus SRGB / LINEAR |
 | Cross on color | Apply the focused option |
-| Triangle on triangles/waves | Reset parameter and animation |
+| Triangle on triangles/waves/geometry | Reset parameter and animation |
 | Start | Return home |
 
 The page itself stays selected on reset. Navigation uses edges, so holding a
@@ -57,11 +60,12 @@ the same native project-font pixels inside their keycaps; there is no footer pro
 
 | Page | Demonstration |
 | --- | --- |
-| 0 | Four gallery entries and selection highlight |
+| 0 | Five gallery entries and selection highlight |
 | 1 | CPU-filled gradient triangle and RGB wireframe; active time rotates both, left/right changes their orientation |
 | 2 | CPU Q16.16 sine/cosine traces and a phase-circle pointer; left/right changes amplitude, Cross freezes motion |
 | 3 | Two calibrated stick plots, sixteen button panels and a connection icon |
 | 4 | Explicit SRGB / LINEAR radio options above gray and color swatches |
+| 5 | Two textured, depth-tested GPU cubes: fixed nonuniform world/normal matrices on the left, runtime TRS rotation on the right; left/right adjusts perspective |
 
 The current hardware fixes the source at 400x240 and output at 800x480 with
 2x scaling. The gallery does not change HDMI timings. SRGB presents already
@@ -80,16 +84,39 @@ after its preceding GPU use finishes; scanout reads the completed framebuffer.
 
 ## Source and static content
 
+```text
+rcc/
+  main.rs
+  pages/       six pages and CPU-page dispatch
+  common/      frame passes, state, UI, palette and static working set
+```
+
+The recipe declares `pages/` and `common/` as ordinary RCC source roots. Existing
+module names stay flat; the directories group application files by responsibility.
+
 | File | Responsibility |
 | --- | --- |
-| `rcc/working_set.rs` | Const application-owned surfaces, commands, push and UI storage |
-| `rcc/main.rs` | Resource ownership, page dispatch, GPU completion and Display handoff |
-| `rcc/state.rs` | Press-edge controls and modulo active-time state |
-| `rcc/graphics_pages.rs` | CPU triangle rasterization, wave/phase animation, controller illustrations and color bars |
-| `rcc/system_pages.rs` | Menu and Display page text |
-| `rcc/ui.rs` | Application-specific text layout and menu labels |
-| `tools/assets.py` | Selected project-font base asset and coordinated atlas constants |
+| `rcc/common/working_set.rs` | Const application-owned surfaces, commands, push and UI storage |
+| `rcc/main.rs` | Startup resource ownership, frame scheduling, GPU completion and Display handoff |
+| `rcc/common/state.rs` | Press-edge controls, modulo active time and shared animation phase |
+| `rcc/common/frame.rs` | Shared Back selection, CPU clear and color/depth pass construction |
+| `rcc/pages/cpu_pages.rs` | CPU page dispatch and Display-format selection |
+| `rcc/pages/home_page.rs` | Gallery entries and selection highlight |
+| `rcc/pages/triangles_page.rs` | CPU filled-gradient triangle and wireframe animation |
+| `rcc/pages/waves_page.rs` | CPU sine/cosine traces and phase-circle animation |
+| `rcc/pages/controller_page.rs` | Stick plots, button panels and connection indicator |
+| `rcc/pages/color_page.rs` | Color-option UI, swatches and Display interpretation |
+| `rcc/pages/geometry_page.rs` | Startup GPU resources, per-frame pose/labels and geometry pass state/draws |
+| `rcc/common/ui.rs`, `rcc/common/palette.rs` | Shared text/icon layout and colors |
+| `tools/assets.py` | Selected project-font base asset, typed resources and coordinated icon IDs |
+| `tools/geometry.py` | Small cube and mip texture through the shared native encoders |
 | `application.rs` | Application-owned build recipe and bounded startup options |
+
+Each page owns its content updates and drawing loops. Shared passes stay separate
+from page content; main retains submit/wait and Display ownership. Geometry
+preparation, pass state and drawing use separate borrowed-resource functions,
+within RCC's six-parameter function ABI. Live resource handles remain explicit
+borrowed parameters.
 
 The gallery uses the public `UiGrid` API for text and icons. Development-only
 numeric output is absent; [numeric text helpers](/systems/cpu-v3-tang-nano-20k/docs/ui-text.md)
@@ -106,10 +133,17 @@ only this payload. Applications can append icons through `ui_font.base_asset`.
 
 The shared ordinary [CPU canvas](/systems/cpu-v3-tang-nano-20k/docs/cpu-canvas.md)
 owns pixel addressing and temporary DSEG3 windows; this app owns geometry,
-page layout and state. Each frame retires a GPU clear, draws CPU graphics,
+page layout and state. Each CPU page frame retires a GPU clear, draws CPU graphics,
 submits a load/overlay pass (publishing cached CPU stores), waits for it, then
 presents the completed Back. Neither CPU nor GPU modifies Front. The extra
 clear/overlay boundary is explicit; there is no hidden frame scheduler.
+The GPU page records color/depth clear, both model draws and UI into one pass;
+models, texture, camera and state are registered once at startup and reused across
+page changes. Only the rotating pose and focal projection update each frame.
+The source-world X basis reflects at draw conversion, so screen-left uses +X.
+Pause freezes pose while retaining projection adjustment; Triangle restores the
+initial phase and focal setting. Native matrices apply the required reflection
+inside the driver, never in the application's world/normal values.
 
 ## Bounded qualification
 
@@ -123,7 +157,7 @@ cargo test --release -p cpu-v3-tang-nano-20k --test core_demo -- --ignored --noc
 ```
 
 Every present has an eight-million-step bound. The test checks key/action pairs
-and the pause/resume hint transition, plus five-page
+and the pause/resume hint transition, plus six-page
 navigation, actual triangle rotation and pause, sine/cosine pixels and phase
 marker, button colors and disconnect, all32
 gray values and both Display formats, including focus-before-confirm and the
@@ -134,8 +168,10 @@ and maximum-axis travel map full diagonals onto the circular gate instead of
 clipping a square. The rendering code reuses the `gamepad` → `stick_read`
 processing already used by the old DS2 diagnostic; it applies no second radial
 correction or Y inversion. Only the final screen coordinate is quantized.
-It also verifies that Front, depth and
-framebuffer padding are not overwritten, and checks static/observed-stack usage.
+The GPU page checks both cubes, static-side stability, actual rotating-side
+movement, pause, perspective adjustment, deterministic reset and repeated entry.
+It also verifies that Front, CPU-page depth and
+framebuffer padding are not overwritten by CPU drawings, and checks static/observed-stack usage.
 The regular canvas test compiles without a GPU library and independently checks
 clipped spans, borders, primitive pixels and DSEG3 restoration. PPM evidence is
 written below `target/core-demo/key-legends/pages`. These are correctness checks;

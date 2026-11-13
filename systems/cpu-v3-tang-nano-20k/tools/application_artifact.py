@@ -142,6 +142,25 @@ class Artifact:
         require(result, 'no linked instructions for '+function)
         return result
 
+    def location(self, pc):
+        scopes = [(name,f) for name,f in self.functions.items() if f['pc'] <= pc < f['end_pc']]
+        if len(scopes) != 1:
+            return None
+        name, scope = scopes[0]
+        instructions = self.instructions(name)
+        if not any(i['pc'] <= pc < i['pc']+i['words'] for i in instructions):
+            return None
+        locations = [(int(m[1],16),self.debug_files[int(m[2])],int(m[3])) for m in
+                     re.finditer(r'^line (0x[0-9a-f]+) (\d+) (\d+)$',self.files[self.manifest['debug']].decode(),re.M)]
+        locations = [loc for loc in locations if scope['pc'] <= loc[0] <= pc]
+        if not locations:
+            return None
+        _, file, line = max(locations)
+        source = self.files[self.manifest['source_map'][file]['file']].decode().splitlines()
+        if not 0 < line <= len(source):
+            return None
+        return dict(file=file,line=line,text=source[line-1],function=name,pc=pc)
+
     def source_line(self, function, statement):
         scope = self.symbol(function)
         source = self.files[self.manifest['source_map'][scope['file']]['file']].decode('utf-8').replace('\r\n', '\n')
@@ -180,6 +199,103 @@ class Artifact:
         return callers[0]
 
 
+def diagnostic_context(artifact, package):
+    require(Path(package).read_bytes() == artifact.files[artifact.manifest['package']], 'package does not match diagnostic artifact')
+    fault = artifact.globals.get('GPU_API_FAULT')
+    if fault:
+        require(fault['logical_word']+16 <= artifact.manifest['target']['static_words'], 'fault record extent')
+    return dict(artifact_id=artifact.manifest['artifact_id'],code_segment=artifact.manifest['target']['code_segment'],
+                fault_logical=None if fault is None else fault['logical_word'],stack_top=artifact.manifest['target']['stack_top'])
+
+
+def call_chain(artifact, state):
+    if state['code_segment'] != artifact.manifest['target']['code_segment']:
+        return []
+    pc, sp = state.get('halt_pc',state['pc']), state.get('sp')
+    if pc is None or sp is None:
+        return []
+    base, words = sp, state.get('stack_words',[])
+    result, seen = [], set()
+    for level in range(16):
+        if (pc,sp) in seen:
+            break
+        seen.add((pc,sp))
+        source = artifact.location(pc)
+        if source is None:
+            break
+        result.append(source)
+        scope = artifact.functions[source['function']]
+        instructions = artifact.instructions(source['function'])
+        saved = None
+        for instruction in instructions[:16]:
+            if instruction['text'].startswith(('jalrel ','jrel ','jreg ','call')):
+                break
+            match = re.fullmatch(r'store r14, \[r13 \+ (\d+)\]',instruction['text'])
+            if match:
+                saved = int(match[1]);break
+        if saved is not None:
+            index = sp-base+saved
+            if not 0 <= index < len(words):
+                break
+            link = words[index]
+        elif level == 0 and not any(i['text'].startswith(('jalrel ','call')) for i in instructions):
+            link = state.get('lr',0)
+        else:
+            break
+        callers = [(name,f) for name,f in artifact.functions.items() if f['pc'] <= link-1 < f['end_pc']]
+        if len(callers) != 1:
+            break
+        candidates = [i for i in artifact.instructions(callers[0][0]) if i['pc']+i['words']==link and i['text'].startswith('jalrel ')
+                      and (link+int(i['text'].split()[1])) & 65535 == scope['pc']]
+        if len(candidates) != 1:
+            break
+        pc = candidates[0]['pc']
+        sp += scope['frame_words']
+    return result
+
+
+def diagnose(artifact, package, state):
+    from gpu_fault import decode
+    context = diagnostic_context(artifact, package)
+    result = dict(schema='digitaldesign.runtime-diagnostic',version=1,artifact_id=context['artifact_id'],
+                  kind='running',signal=state.get('halt_signal'),pc=state['pc'],code_segment=state['code_segment'])
+    if state.get('cpu_fault'):
+        result.update(kind='cpu_fault',message=state['cpu_fault'])
+    elif state.get('gpu_error'):
+        result.update(kind='gpu_error',message=state['gpu_error'])
+    elif state.get('halt_signal') is not None:
+        result.update(kind='halt',message=f"Halt 0x{state['halt_signal']:04x}")
+    pc = state.get('halt_pc') if state.get('halt_signal') is not None else (state.get('fault_pc') if state.get('fault_pc') is not None else state['pc'])
+    if pc is not None and state['code_segment'] == context['code_segment']:
+        source = artifact.location(pc)
+        if source:
+            result['source']=source
+            instructions=artifact.instructions(source['function'])
+            instruction=next((i for i in instructions if i['pc'] <= pc < i['pc']+i['words']),None)
+            text=source['text']
+            if instruction and instruction['text'].startswith('halt') and result['kind']=='halt':
+                result['_assertion_source']=dict(line=source['line'],text=artifact.files[artifact.manifest['source_map'][source['file']]['file']].decode())
+    result['call_chain']=call_chain(artifact,state)
+    if state.get('halt_signal') == 0xe001 and context['fault_logical'] is not None:
+        fault = decode(state.get('fault_words',[]))
+        if fault:
+            result.update(kind='gpu_fault',fault=fault,message=f"GPU {fault['operation']}: {fault['reason']} (site {fault['site']}, code {fault['code']}, details {fault['detail0']}, {fault['detail1']})")
+    return result
+
+
+def check_run(directory):
+    root=Path(directory).resolve()
+    value=json.loads((root/'run.json').read_text())
+    require(value.get('schema')=='digitaldesign.application-run' and value.get('version')==1,'run schema/version')
+    require(value.get('run_id')==digest(canonical({k:v for k,v in value.items() if k!='run_id'})),'run identity')
+    for name,identity in value['files'].items():
+        require(not name.startswith('/') and ':' not in name and '\\' not in name
+                and all(p not in ('','.','..') for p in name.split('/')),'run relative locator')
+        path=(root/name).resolve();require(path.is_relative_to(root),'run file escapes root')
+        data=path.read_bytes();require(len(data)==identity['bytes'] and digest(data)==identity['sha256'],'run file identity: '+name)
+    return dict(run_id=value['run_id'],success=value['success'],verified_files=len(value['files']),artifact_id=value.get('artifact_id'))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -189,8 +305,20 @@ def main():
     symbol.add_argument('artifact', type=Path)
     symbol.add_argument('name')
     symbol.add_argument('--kind', choices=('function', 'global', 'constant'), default='function')
+    for name in ('context','diagnose'):
+        command=commands.add_parser(name)
+        command.add_argument('artifact',type=Path)
+        command.add_argument('--package',required=True,type=Path)
+        if name=='diagnose':command.add_argument('--state',required=True,type=Path)
+    run=commands.add_parser('check-run');run.add_argument('directory',type=Path)
     args = parser.parse_args()
+    if args.command=='check-run':
+        print(json.dumps(check_run(args.directory)));return
     artifact = Artifact(args.artifact)
+    if args.command=='context':
+        print(json.dumps(diagnostic_context(artifact,args.package)));return
+    if args.command=='diagnose':
+        print(json.dumps(diagnose(artifact,args.package,json.loads(args.state.read_text())),ensure_ascii=False));return
     result = (artifact.symbol(args.name, args.kind) if args.command == 'symbol' else
               dict(artifact_id=artifact.manifest['artifact_id'], verified_files=len(artifact.files),
                    functions=len(artifact.functions), globals=len(artifact.globals), source_files=len(artifact.debug_files)))

@@ -10,24 +10,20 @@ const GAME: Definition = Definition {
     ordinary_sources: &["applications/bloxorz/rcc"],
     owner: "examples/gpu_renderer_bloxorz/application.rs",
     options: &[
-        BuildOption {
-            flag: "start-level",
-            variable: "BLOXORZ_START_LEVEL",
-            values: OptionValues::Integer {
+        BuildOption::environment(
+            "start-level",
+            "BLOXORZ_START_LEVEL",
+            OptionValues::Integer {
                 minimum: 1,
                 maximum: 33,
             },
-        },
-        BuildOption {
-            flag: "start-phase",
-            variable: "BLOXORZ_START_PHASE",
-            values: OptionValues::Choices(&["entry", "play"]),
-        },
+        ),
+        BuildOption::environment(
+            "start-phase",
+            "BLOXORZ_START_PHASE",
+            OptionValues::Choices(&["entry", "play"]),
+        ),
     ],
-    inputs: |_| {
-        println!("cargo:rerun-if-env-changed=BLOXORZ_START_LEVEL");
-        println!("cargo:rerun-if-env-changed=BLOXORZ_START_PHASE");
-    },
     assets: Some(Assets {
         script: "examples/gpu_renderer_bloxorz/tools/assets.py",
         production_surface: true,

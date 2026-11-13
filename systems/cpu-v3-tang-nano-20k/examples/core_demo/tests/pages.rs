@@ -302,6 +302,7 @@ fn graphical_pages_controls_and_present_from_exported_application() {
         (4, 4, "SIN"),
         (5, 4, "LEFT"),
         (8, 3, "SRGB"),
+        (10, 12, "STATIC"),
     ];
     let titles = [
         "DEMONSTRATIONS",
@@ -309,6 +310,7 @@ fn graphical_pages_controls_and_present_from_exported_application() {
         "WAVES",
         "CONTROLLER",
         "COLOR",
+        "GEOMETRY",
     ];
     for (page, &(x, y, label)) in signatures.iter().enumerate() {
         assert_eq!(demo.text(2, 1, titles[page].len()), titles[page]);
@@ -332,7 +334,7 @@ fn graphical_pages_controls_and_present_from_exported_application() {
             demo.assert_hint(44, "CROSS", "ACCEPT");
         } else {
             demo.assert_hint(44, "START", "HOME");
-            if page == 1 || page == 2 {
+            if page == 1 || page == 2 || page == 5 {
                 demo.assert_hint(26, "DPAD_H", "ADJUST");
                 demo.assert_hint(32, "CROSS", "PAUSE");
                 demo.assert_hint(38, "TRIANGLE", "RESET");
@@ -343,7 +345,7 @@ fn graphical_pages_controls_and_present_from_exported_application() {
         }
         demo.save(&format!("page-{page}"));
         match page {
-            0 => assert_eq!(demo.pixel(24, 80), 0x0328),
+            0 => assert_eq!(demo.pixel(24, 72), 0x0328),
             1 => {
                 let filled = demo.region(36, 72, 128, 128);
                 assert!(
@@ -548,6 +550,59 @@ fn graphical_pages_controls_and_present_from_exported_application() {
                 demo.click(1 << 14);
                 assert_eq!(demo.sim.render_active_framebuffer()[sample], raw);
             }
+            5 => {
+                for x in [48, 208] {
+                    let pixels = demo.region(x, 60, 144, 128);
+                    assert!(
+                        pixels.iter().filter(|&&p| p != 0x0843).count() > 700,
+                        "real GPU cube must cover pixels"
+                    );
+                }
+                demo.click(1 << 14);
+                demo.assert_hint(32, "CROSS", "PLAY");
+                let frozen = demo.region(32, 55, 336, 130);
+                demo.sim.advance_host_time(Duration::from_millis(1000));
+                demo.present();
+                assert_eq!(demo.region(32, 55, 336, 130), frozen, "paused GPU geometry");
+                demo.save("geometry-paused");
+                demo.click(1 << 5);
+                assert_ne!(
+                    demo.region(32, 55, 336, 130),
+                    frozen,
+                    "focal adjustment changes projection"
+                );
+                demo.save("geometry-perspective");
+                demo.click(1 << 12);
+                demo.click(1 << 14);
+                let reset = demo.region(32, 55, 336, 130);
+                demo.click(1 << 12);
+                demo.click(1 << 14);
+                assert_eq!(
+                    demo.region(32, 55, 336, 130),
+                    reset,
+                    "reset is deterministic"
+                );
+                demo.save("geometry-reset");
+                // Re-enter the actual page repeatedly; resources are registered once at boot.
+                for _ in 0..4 {
+                    demo.click(1 << 11);
+                    demo.click(1 << 10);
+                }
+                assert_eq!(demo.text(2, 1, 8), "GEOMETRY");
+                let left = demo.region(48, 55, 144, 130);
+                let right = demo.region(208, 55, 144, 130);
+                demo.click(1 << 14);
+                assert_eq!(
+                    demo.region(48, 55, 144, 130),
+                    left,
+                    "STATIC label matches fixed model"
+                );
+                assert_ne!(
+                    demo.region(208, 55, 144, 130),
+                    right,
+                    "ROTATING label matches animated model"
+                );
+            }
             _ => {}
         }
         // Clear owns the padded physical plane; CPU canvas must not touch its guard or depth.
@@ -561,12 +616,19 @@ fn graphical_pages_controls_and_present_from_exported_application() {
             );
         }
         let depth = demo.depth;
-        assert!(memory[depth..depth + 102400].iter().all(|&v| v == 0));
+        if page == 5 {
+            assert!(
+                memory[depth..depth + 102400].iter().any(|&v| v != 65535),
+                "GPU writes real depth"
+            );
+        } else {
+            assert!(memory[depth..depth + 102400].iter().all(|&v| v == 0));
+        }
         demo.click(1 << 11);
     }
     assert_eq!(demo.text(2, 1, 14), "DEMONSTRATIONS");
     demo.click(1 << 10);
-    assert_eq!(demo.text(8, 3, 4), "SRGB");
+    assert_eq!(demo.text(2, 1, 8), "GEOMETRY");
     demo.click(1 << 3);
     demo.click(1 << 6);
     demo.click(1 << 14);

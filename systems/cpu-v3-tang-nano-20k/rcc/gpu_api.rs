@@ -411,6 +411,9 @@ impl ColorBuffer {
     }
 }
 impl DepthBuffer {
+    pub fn from_surface(surface: DepthSurface) -> Self {
+        Self::from_memory(GpuMemory::from_buffer(surface.storage))
+    }
     pub fn from_memory(memory: GpuMemory) -> Self {
         DepthBuffer {
             slot: gpu_api_new_surface(memory, GPU_KIND_DEPTH),
@@ -975,6 +978,9 @@ pub struct UiGrid {
     slot: u16,
 }
 impl UiGrid {
+    pub fn from_storage(storage: UiGridStorage, atlas: &UiAtlas) -> Self {
+        Self::from_memory(GpuMemory::from_buffer(storage.storage), atlas)
+    }
     pub fn clear(&mut self) {
         self.fill(255);
     }

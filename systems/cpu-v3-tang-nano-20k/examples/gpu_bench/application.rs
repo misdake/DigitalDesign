@@ -7,13 +7,12 @@ pub const APPLICATIONS: &[Definition] = &[Definition {
     selection: Some("gpu_bench"),
     source: Some("examples/gpu_bench/rcc/main.rs"),
     owner: "examples/gpu_bench/application.rs",
-    options: &[BuildOption {
-        flag: "scene",
-        variable: "GPU_BENCH_SCENE",
-        values: OptionValues::Choices(&["micro", "full"]),
-    }],
+    options: &[BuildOption::environment(
+        "scene",
+        "GPU_BENCH_SCENE",
+        OptionValues::Choices(&["micro", "full"]),
+    )],
     inputs: |context| {
-        println!("cargo:rerun-if-env-changed=GPU_BENCH_SCENE");
         if std::env::var("GPU_BENCH_SCENE").as_deref() == Ok("full") {
             context.inputs(&[
                 "examples/gpu_demo/tools/assets.py",

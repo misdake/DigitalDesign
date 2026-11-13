@@ -64,7 +64,7 @@ impl Application {
         output: &Path,
         options: &CompilerOptions,
         reserved: &[boot::BootResource],
-    ) -> compile::CompiledApplication {
+    ) -> Result<compile::CompiledApplication, cpu_v3_tools::diagnostics::BuildDiagnostic> {
         let result = compile_program(
             compile::CompileRequest {
                 path: &root.join(&self.project.application),
@@ -80,7 +80,7 @@ impl Application {
             },
             options,
             &mut self.inputs,
-        );
+        )?;
         if matches!(
             self.source.specialization,
             SourceSpecialization::ProfilerMemcpy
@@ -98,6 +98,6 @@ impl Application {
                 self.extra_assets.push(destination.to_owned());
             }
         }
-        result
+        Ok(result)
     }
 }

@@ -25,7 +25,7 @@ fn main() {
     let mut gpu = Gpu::init(GpuConfig::single(COMMANDS));
     let mut commands = gpu.command_buffer();
     let color = ColorBuffer::from_surface(COLOR);
-    let depth = DepthBuffer::from_memory(GpuMemory::from_buffer(DEPTH.storage));
+    let depth = DepthBuffer::from_surface(DEPTH);
     let mesh = Mesh::from_native(TRIANGLE);
     let texture = Texture::from_native(CHECKER);
     let mut view = texture.view();
@@ -35,7 +35,7 @@ fn main() {
     let material = Material::new(MaterialDesc::unlit(Rgba8::white()));
     let state = RenderState::new(RenderStateDesc::opaque(Lighting::ambient(fix!(1))));
     let atlas = UiAtlas::from_desc(FONT);
-    let mut grid = UiGrid::from_memory(GpuMemory::from_buffer(GRID.storage), &atlas);
+    let mut grid = UiGrid::from_storage(GRID, &atlas);
     grid.fill(255);
     grid.write_text(2, 1, b"SDK");
     {
