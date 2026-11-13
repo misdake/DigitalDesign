@@ -752,6 +752,9 @@ callers keep their selections. Callee reachability follows selected bodies, so
 restoration revives required calls without retaining callees of discarded bodies.
 Each function is allocated once as a candidate, and a rejected caller is allocated
 again from its original IR; there is no third whole-program lowering or search.
+Dependencies are collected from the selected body after ordinary optimization
+and allocation, including function-address references. Constant-disabled calls
+therefore do not retain their original callees.
 Final layout keeps the entry first and sorts remaining functions by name.
 
 The selected application must still keep whole-program code growth within
@@ -775,6 +778,45 @@ caller's call-site file/line; a missing call-site line remains absent. Logical
 callee/source origins are reported separately. The compiler does not invent inline
 stack frames, callee stepping or cloned-local frame locations. `--no-inline` (or
 `--no-opt`) keeps the original function boundaries.
+
+With `opt.const_prop`, memory addresses formed by single-definition copies and
+constant additions/subtractions fold into word load/store displacements after
+frontend type checking. Displacements wrap at sixteen bits before DSEG translation;
+mutable bases retain their earlier address snapshots. Named constants therefore
+use the same addressing modes as literal indices without bypassing type rules.
+
+With `opt.cse`, basic-block word-memory forwarding reuses an exact preceding
+load or stored value. Frame-address identities unify direct local accesses and
+constant-offset accesses through separately computed local pointers, without
+extending a pointer's register lifetime. Only single-definition values and bases
+are cached. A known frame-word store preserves other frame words; an unknown
+write clears saved local values. Raw-pointer stores clear other raw locations,
+even at different offsets: independent DSEG windows may alias physical memory.
+Calls, device/cache operations, DSEG changes, signals and other memory writes are
+barriers. This does not infer no-alias promises, eliminate stores or change
+argument snapshot timing.
+
+CPU V3 shares a function's callee-save/stack restoration tail between multiple
+returns when that tail exceeds the maximum two-word relative jump. The last
+return in block layout keeps the tail in place; earlier returns jump to it after
+their ABI return-value moves. This reduces code size at a possible extra branch
+on those paths, without changing cleanup or saved-register semantics.
+
+Register allocation reconstructs spilled single-definition GPR immediates at
+their uses instead of assigning stack homes. Phi/multiply-defined values and FPU
+spills retain ordinary homes; frame addresses are not reconstructed. After
+allocation, adjacent exact stack store/reloads become register copies, preserving
+the load's definition. Within a reachable block, repeated immediate definitions
+in an unchanged physical register also become copies (and emit no word when
+registers match). Calls, static-initialization scratch use and GPR definitions
+invalidate the relevant physical knowledge. These steps do not extend allocated
+live intervals or move memory operations across intervening instructions.
+
+Local scalar-word repeat initializers with more than 32 elements use an
+eight-word fill loop plus an exact tail; shorter repeats remain unrolled. The
+initializer expression is evaluated once, including its side effects. This is
+frontend lowering, independent of optional optimization flags; it does not
+change array layout, padding or static-data initialization.
 
 ### 13.2 `CompilerOptions`
 

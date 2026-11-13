@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn named_constant_indices_use_the_literal_addressing_mode() {
+    let source = "const FIELD:u16=5; #[inline(never)] fn literal(a:Array<u16>)->u16{a[5u16]} #[inline(never)] fn named(a:Array<u16>)->u16{a[FIELD]} #[inline(never)] fn expression(a:Array<u16>)->u16{a[FIELD+0u16]} fn main(){let a:Buf<u16,8>=Buf::new([1;8]);halt(literal(a.as_array())+named(a.as_array())+expression(a.as_array()));}";
+    let program = compile(source, CompilerOptions::default());
+    assert_eq!(execute_capped(program.clone(), 10_000).0, 3);
+    let sizes = ["literal", "named", "expression"].map(|name| {
+        let f = program
+            .debug
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap();
+        f.addr.1 - f.addr.0 + 1
+    });
+    assert_eq!(sizes, [3, 3, 3], "{}", program.listing);
+}
+
+#[test]
 fn integer_multiply_uses_the_hardware_mul() {
     let source = r#"
             fn main() {

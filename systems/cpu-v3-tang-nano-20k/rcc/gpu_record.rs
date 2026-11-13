@@ -280,13 +280,6 @@ fn gpu_record_preflight(slot: u16, command_words: u16, push_end: u16) -> bool {
         && push_end >= c[GPU_RECORD_PUSH_USED]
         && push_end <= c[GPU_RECORD_PUSH_CAPACITY]
 }
-fn gpu_record_room(slot: u16, command_words: u16, push_words: u16, alignment: u16) -> bool {
-    let start = gpu_record_push_offset(slot, push_words, alignment);
-    if start == 65535 {
-        return false;
-    }
-    gpu_record_preflight(slot, command_words, start + push_words)
-}
 fn gpu_record_begin_pass(slot: u16) -> bool {
     if slot >= 2 {
         return false;
@@ -308,13 +301,40 @@ fn gpu_record_append(
     push_words: u16,
     alignment: u16,
 ) -> bool {
-    if command_words > GPU_API_STORAGE_CHUNK_WORDS
-        || !gpu_record_room(slot, command_words, push_words, alignment)
-    {
+    if command_words > GPU_API_STORAGE_CHUNK_WORDS {
         return false;
     }
-    let mut c = gpu_record_data(slot);
     let start = gpu_record_push_offset(slot, push_words, alignment);
+    if start == 65535 || !gpu_record_preflight(slot, command_words, start + push_words) {
+        return false;
+    }
+    gpu_record_append_reserved(slot, commands, command_words, payload, push_words, start)
+}
+// Consume a private operation's preflighted layout without another reservation.
+// Callers preserve the phase, span and exclusive CPU ownership until completion.
+fn gpu_record_append_reserved(
+    slot: u16,
+    commands: Array<u16>,
+    command_words: u16,
+    payload: Array<u16>,
+    push_words: u16,
+    start: u16,
+) -> bool {
+    #[cfg(gpu_debug)]
+    {
+        if command_words > GPU_API_STORAGE_CHUNK_WORDS
+            || push_words > GPU_API_STORAGE_CHUNK_WORDS
+            || start > 32768
+            || push_words > 32768 - start
+            || !gpu_record_preflight(slot, command_words, start + push_words)
+        {
+            return false;
+        }
+        if start < gpu_record_data(slot)[GPU_RECORD_PUSH_USED] {
+            return false;
+        }
+    }
+    let mut c = gpu_record_data(slot);
     if !gpu_window_write_words(c[GPU_RECORD_PUSH_BASE], start, payload, push_words)
         || !gpu_window_write_words(
             c[GPU_RECORD_COMMAND_BASE],

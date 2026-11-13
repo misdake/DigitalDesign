@@ -716,7 +716,7 @@ impl CpuV3CoreState {
                 self.retire(retire_words);
             }
             8 | 9 => {
-                let offset = immediate4(instruction, prefix, true);
+                let offset = immediate4(instruction, prefix, false);
                 let logical = self.registers[usize::from(lhs)].wrapping_add(offset);
                 let pending = PendingData {
                     write: opcode == 9,

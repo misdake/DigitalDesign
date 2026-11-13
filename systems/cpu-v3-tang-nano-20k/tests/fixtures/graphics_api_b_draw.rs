@@ -244,7 +244,7 @@ fn camera_b() {
     let second: Projection = gpu_scene_projection_value(PROJECTION.as_array());
     check(second.focal_pixels() == fix32::from_int(512), 11);
     gpu_scene_camera_projection(CAMERA.as_array(), second);
-    let view: Mat3x4 = Mat3x4 {
+    let mut view: Mat3x4 = Mat3x4 {
         row0: Vec4 {
             x: zero,
             y: zero,
@@ -264,7 +264,10 @@ fn camera_b() {
             w: zero,
         },
     };
-    check(gpu_scene_camera_view(CAMERA.as_array(), view), 12);
+    check(
+        gpu_scene_camera_view(CAMERA.as_array(), view_of(&mut view)),
+        12,
+    );
     let source: Mat3x4 = gpu_scene_camera_get_view(CAMERA.as_array());
     check(source.row0.z == one && source.row2.x == -one, 13);
     bind();
@@ -316,7 +319,7 @@ fn look_at_checks() {
         check(CAMERA[at] == 0, 36);
         at += 1;
     }
-    let aligned: Mat3x4 = gpu_scene_camera_get_view(CAMERA.as_array());
+    let mut aligned: Mat3x4 = gpu_scene_camera_get_view(CAMERA.as_array());
     let tolerance = fix32::from_words(8, 0);
     check(
         (aligned.row0.x - one).abs() < tolerance
@@ -324,7 +327,10 @@ fn look_at_checks() {
             && (aligned.row2.z - one).abs() < tolerance,
         18,
     );
-    check(gpu_scene_camera_view(CAMERA.as_array(), aligned), 19);
+    check(
+        gpu_scene_camera_view(CAMERA.as_array(), view_of(&mut aligned)),
+        19,
+    );
 }
 fn projection_checks() {
     check(
@@ -426,8 +432,8 @@ fn model_matrix_checks() {
         },
     };
     check(gpu_scene_model_init(ROTATED_MODEL.as_array(), rotated), 25);
-    let world: Mat3x4 = gpu_scene_model_world(MODEL.as_array());
-    let normal: Mat3x3 = Mat3x3 {
+    let mut world: Mat3x4 = gpu_scene_model_world(MODEL.as_array());
+    let mut normal: Mat3x3 = Mat3x3 {
         row0: Vec3 {
             x: fix32::from_words(32768, 0),
             y: zero,
@@ -445,7 +451,7 @@ fn model_matrix_checks() {
         },
     };
     check(
-        gpu_scene_model_matrices(MODEL.as_array(), world, normal),
+        gpu_scene_model_matrices(MODEL.as_array(), view_of(&mut world), view_of(&mut normal)),
         26,
     );
     let singular: Transform = Transform {

@@ -2,6 +2,28 @@ use super::*;
 use crate::*;
 
 #[test]
+fn memory_offsets_render_unsigned_short_and_signed_wide() {
+    for offset in 0..=15 {
+        for word in [load(3, 4, offset), store(3, 4, offset)] {
+            let instruction = decode(word);
+            assert!(instruction
+                .text(None)
+                .ends_with(&format!("[r4 + {offset}]")));
+            for wide in [-32768i16, -16, -1, 0, 8, 15, 16, 32767] {
+                let pair = prefixed(word, wide as u16);
+                assert!(decode(pair[1])
+                    .text(Some(pair[0] & 0xfff))
+                    .ends_with(&format!("[r4 + {wide}]")));
+            }
+        }
+    }
+    for invalid in [-32768, -1, 16, 256, 32767] {
+        assert!(std::panic::catch_unwind(|| load(0, 0, invalid)).is_err());
+        assert!(std::panic::catch_unwind(|| store(0, 0, invalid)).is_err());
+    }
+}
+
+#[test]
 fn decode_renders_every_family() {
     assert_eq!(
         decode(alu(AluOp::Add, 3, 1, 2)).text(None),
@@ -20,7 +42,7 @@ fn decode_renders_every_family() {
         "mul16 r3, r4"
     );
     assert_eq!(decode(multiply_immediate(3, 9)).text(None), "muli r3, 9");
-    assert_eq!(decode(load(3, 4, -1)).text(None), "load r3, [r4 + -1]");
+    assert_eq!(decode(load(3, 4, 15)).text(None), "load r3, [r4 + 15]");
     assert_eq!(decode(store(3, 4, 7)).text(None), "store r3, [r4 + 7]");
     assert_eq!(
         decode(branch(TestCondition::NotEqual, -3)).text(None),

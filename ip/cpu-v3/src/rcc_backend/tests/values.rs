@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn large_repeat_initializers_evaluate_once_and_preserve_the_tail() {
+    for count in [1, 31, 32, 33, 35, 40, 64] {
+        let source = format!("static CALLS:u16=0; #[inline(never)] fn value()->u16{{unsafe{{addr_of(&CALLS).write(0,CALLS+1);}}7}} struct Frame{{before:u16,data:Buf<u16,{count}>,after:u16}} fn main(){{let f:Frame=Frame{{before:11,data:Buf::new([value();{count}]),after:13}};let mut i:u16=0;let mut sum:u16=0;while i<{count}{{sum+=f.data[i];i+=1;}}halt(sum+f.before+f.after+CALLS);}}");
+        assert_eq!(
+            execute_capped(compile(&source, CompilerOptions::default()), 30_000).0,
+            7 * count + 25,
+            "count {count}"
+        );
+    }
+}
+
 /// C2 lowers the contiguous-range vector surface: construction, vector
 /// arithmetic, scalar broadcast (VMULS), unary map and lane extraction all
 /// run through the two-word VECTOR ISA on the emulator.

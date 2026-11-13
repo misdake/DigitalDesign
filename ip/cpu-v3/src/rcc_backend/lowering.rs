@@ -162,6 +162,30 @@ pub(super) fn lower_function(
     }
 
     let layout = function.rpo();
+    let mut return_tail = Lines::new();
+    for (slot, &register) in allocation.callee_saved.iter().enumerate() {
+        emit_load(&mut return_tail, register, REG_SP, slot as i16);
+    }
+    if allocation.frame_size() != 0 {
+        emit_immediate(
+            &mut return_tail,
+            ImmediateOp::Add,
+            REG_SP,
+            allocation.frame_size() as u16,
+            true,
+        );
+    }
+    return_tail.word(cpu_v3::jump_register(REG_LINK));
+    let returns = layout
+        .iter()
+        .copied()
+        .filter(|&b| matches!(function.blocks[b].term, Some(Terminator::Ret { .. })))
+        .collect::<Vec<_>>();
+    // A relaxed jump costs at most two words. Share only longer tails, keeping
+    // the last return in place so that its ordinary path needs no extra jump.
+    let shared_return =
+        (returns.len() > 1 && return_tail.items.len() > 2).then(|| *returns.last().unwrap());
+    let return_label = function.blocks.len();
     for (layout_index, &block_id) in layout.iter().enumerate() {
         lines.label(block_id);
         let block = &function.blocks[block_id];
@@ -234,19 +258,14 @@ pub(super) fn lower_function(
                 }
             }
             Terminator::Ret { .. } => {
-                for (slot, &register) in allocation.callee_saved.iter().enumerate() {
-                    emit_load(&mut lines, register, REG_SP, slot as i16);
+                if shared_return.is_some_and(|b| b != block_id) {
+                    lines.jump(return_label);
+                } else {
+                    if shared_return.is_some() {
+                        lines.label(return_label);
+                    }
+                    lines.items.extend(return_tail.items.iter().cloned());
                 }
-                if allocation.frame_size() != 0 {
-                    emit_immediate(
-                        &mut lines,
-                        ImmediateOp::Add,
-                        REG_SP,
-                        allocation.frame_size() as u16,
-                        true,
-                    );
-                }
-                lines.word(cpu_v3::jump_register(REG_LINK));
             }
             Terminator::Halt { signal } => {
                 let signal = register(*signal);
@@ -1303,7 +1322,7 @@ fn emit_immediate(
 }
 
 fn emit_load(lines: &mut Lines, dst: u8, base: u8, offset: i16) {
-    if (-8..=7).contains(&offset) {
+    if (0..=15).contains(&offset) {
         lines.word(cpu_v3::load(dst, base, offset));
     } else {
         for word in cpu_v3::prefixed(cpu_v3::load(dst, base, 0), offset as u16) {
@@ -1313,7 +1332,7 @@ fn emit_load(lines: &mut Lines, dst: u8, base: u8, offset: i16) {
 }
 
 fn emit_store(lines: &mut Lines, src: u8, base: u8, offset: i16) {
-    if (-8..=7).contains(&offset) {
+    if (0..=15).contains(&offset) {
         lines.word(cpu_v3::store(src, base, offset));
     } else {
         for word in cpu_v3::prefixed(cpu_v3::store(src, base, 0), offset as u16) {

@@ -1,7 +1,7 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-11-11
+last-verified: 2026-11-12
 ---
 
 # Explicit GPU API internal core
@@ -162,6 +162,26 @@ scratch for transfer and fact merging; old surface facts are excluded. Each
 1KiB template and the active16KiB stream include their own padding; the active
 stream also includes ordinary commands and terminal/fetch reservations. Bounds
 reject overflows before append writes; partial transport failures poison the CB.
+Standalone appends compute one aligned payload offset and preflight their extent.
+Mesh/binding operations instead preflight their complete layout once and consume
+it through private reserved appends, without an intervening external append.
+Target debug builds recheck each reserved span; release relies on its parent
+operation's reservation. A zero-payload append retains the current push end even
+when it binds an older immutable payload. Transport still completes before
+metadata advances, and partial failures poison the CB.
+
+A mesh directory of at most eight entries remains in scratch144..159 after its
+whole-operation validation. Binding uses scratch0..111 and command staging starts
+at160, so emission reuses that validated snapshot without another read. Larger
+directories retain bounded rereads after complete validation. There is no cache
+across draws; source updates between CPU-owned operations remain visible.
+
+Public matrix operations retain value arguments and their isolated snapshots.
+Internal camera/model writers borrow those snapshots through typed CPU views:
+three vec4 imports/exports copy a 24-word world/view matrix, and two vec4 pairs
+plus two scalar word copies write exactly eighteen normal-matrix words. No row
+value snapshots, arithmetic, rounding or overread are introduced. Model padding
+initialization and derived-cache invalidation remain part of the operation.
 
 The private same-page copy helper rejects misalignment, overlap and window overflow
 before remapping. It saves/restores DSEG3 and waits around LCOPY and mapping changes,

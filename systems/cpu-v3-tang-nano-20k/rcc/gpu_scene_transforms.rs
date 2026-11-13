@@ -154,11 +154,14 @@ pub fn gpu_scene_projection_fov(
     gpu_scene_projection_write(out, gpu_scene_projection_fov_desc(angle, far, horizontal))
 }
 
-fn gpu_scene_row_write(out: Array<u16>, at: u16, row: Vec4) {
-    gpu_scene_fix_write(out, at, row.x);
-    gpu_scene_fix_write(out, at + 2, row.y);
-    gpu_scene_fix_write(out, at + 4, row.z);
-    gpu_scene_fix_write(out, at + 6, row.w);
+// Source matrices are borrowed CPU snapshots. Import/export preserves their
+// exact Q16.16 words and avoids by-value row temporaries between private helpers.
+fn gpu_scene_matrix_write(out: Array<u16>, at: u16, input: Array<Mat3x4>) {
+    let source = input.as_ptr();
+    let target = out.as_ptr().add(at as i16);
+    vec4::export(vec4::import(source), target);
+    vec4::export(vec4::import(source.add(8)), target.add(8));
+    vec4::export(vec4::import(source.add(16)), target.add(16));
 }
 fn gpu_scene_row_read(data: Array<u16>, at: u16) -> Vec4 {
     Vec4 {
@@ -224,10 +227,8 @@ pub fn gpu_scene_camera_pose(out: Array<u16>, eye: Vec3, angles: Vec3) -> bool {
     true
 }
 
-pub fn gpu_scene_camera_view(out: Array<u16>, view: Mat3x4) -> bool {
-    gpu_scene_row_write(out, GPU_CAMERA_VIEW, view.row0);
-    gpu_scene_row_write(out, GPU_CAMERA_VIEW + 8, view.row1);
-    gpu_scene_row_write(out, GPU_CAMERA_VIEW + 16, view.row2);
+pub fn gpu_scene_camera_view(out: Array<u16>, view: Array<Mat3x4>) -> bool {
+    gpu_scene_matrix_write(out, GPU_CAMERA_VIEW, view);
     true
 }
 
@@ -354,25 +355,21 @@ pub fn gpu_scene_model_init(mut out: Array<u16>, transform: Transform) -> bool {
     true
 }
 
-pub fn gpu_scene_model_matrices(mut out: Array<u16>, world: Mat3x4, normal: Mat3x3) -> bool {
-    gpu_scene_row_write(out, GPU_MODEL_WORLD, world.row0);
-    gpu_scene_row_write(out, GPU_MODEL_WORLD + 8, world.row1);
-    gpu_scene_row_write(out, GPU_MODEL_WORLD + 16, world.row2);
-    gpu_scene_vec_write(
-        out,
-        GPU_MODEL_NORMAL,
-        vec3::new(normal.row0.x, normal.row0.y, normal.row0.z),
-    );
-    gpu_scene_vec_write(
-        out,
-        GPU_MODEL_NORMAL + 6,
-        vec3::new(normal.row1.x, normal.row1.y, normal.row1.z),
-    );
-    gpu_scene_vec_write(
-        out,
-        GPU_MODEL_NORMAL + 12,
-        vec3::new(normal.row2.x, normal.row2.y, normal.row2.z),
-    );
+pub fn gpu_scene_model_matrices(
+    mut out: Array<u16>,
+    world: Array<Mat3x4>,
+    normal: Array<Mat3x3>,
+) -> bool {
+    gpu_scene_matrix_write(out, GPU_MODEL_WORLD, world);
+    let source = normal.as_ptr();
+    let target = out.as_ptr().add(GPU_MODEL_NORMAL as i16);
+    vec4::export(vec4::import(source), target);
+    vec4::export(vec4::import(source.add(8)), target.add(8));
+    // The normal matrix has exactly eighteen words; do not overread its tail.
+    unsafe {
+        target.write(16, source.read(16));
+        target.write(17, source.read(17));
+    }
     let mut at = GPU_MODEL_WORDS;
     while at < GPU_API_LARGE_WORDS {
         out[at] = 0;

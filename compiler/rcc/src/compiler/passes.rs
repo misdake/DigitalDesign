@@ -45,9 +45,11 @@ pub fn optimize(f: &mut IrFunc, opts: &Opts) {
         let mut changed = false;
         if opts.const_prop {
             changed |= const_prop(f);
+            changed |= fold_memory_addresses(f);
         }
         if opts.cse {
             changed |= cse(f);
+            changed |= forward_memory_values(f);
             changed |= combine_vector_lane_stores(f);
         }
         if opts.dce {
@@ -696,6 +698,252 @@ fn cse(f: &mut IrFunc) -> bool {
     changed
 }
 
+fn mutable_values(f: &IrFunc) -> HashSet<VReg> {
+    let mut definitions: HashSet<VReg> = f.params.iter().copied().collect();
+    let mut mutable = HashSet::new();
+    for block in &f.blocks {
+        for def in block.phis.iter().map(|p| p.dst).chain(
+            block
+                .insts
+                .iter()
+                .flat_map(crate::compiler::regalloc::inst_defs),
+        ) {
+            if !definitions.insert(def) {
+                mutable.insert(def);
+            }
+        }
+    }
+    mutable
+}
+
+// Address arithmetic and memory displacements both wrap at sixteen bits before
+// DSEG translation. Fold after type checking, so named constants and constant
+// expressions get the same addressing mode without bypassing frontend rules.
+fn fold_memory_addresses(f: &mut IrFunc) -> bool {
+    let mutable = mutable_values(f);
+    let definitions: HashMap<_, _> = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter_map(|inst| match inst {
+            Instr::LoadImm { dst, .. } | Instr::Mov { dst, .. } | Instr::Bin { dst, .. }
+                if !mutable.contains(dst) =>
+            {
+                Some((*dst, inst))
+            }
+            _ => None,
+        })
+        .collect();
+    let constant = |operand| match operand {
+        IntOperand::Imm(value) => Some(value),
+        IntOperand::Reg(value) => match definitions.get(&value) {
+            Some(Instr::LoadImm { value, .. }) => Some(*value),
+            _ => None,
+        },
+    };
+    let mut replacements = HashMap::new();
+    for block in &f.blocks {
+        for inst in &block.insts {
+            let (original, displacement) = match *inst {
+                Instr::LoadMem { base, offset, .. } | Instr::StoreMem { base, offset, .. } => {
+                    (base, offset)
+                }
+                _ => continue,
+            };
+            if mutable.contains(&original) {
+                continue;
+            }
+            let (mut base, mut offset) = (original, displacement as u16);
+            for _ in 0..f.vreg_count {
+                let next = match definitions.get(&base) {
+                    Some(Instr::Mov { src, .. }) => Some((*src, 0)),
+                    Some(Instr::Bin {
+                        op: BinOp::Add,
+                        lhs,
+                        rhs,
+                        ..
+                    }) => constant(*rhs).map(|value| (*lhs, value)).or_else(|| {
+                        let IntOperand::Reg(rhs) = rhs else {
+                            return None;
+                        };
+                        constant(IntOperand::Reg(*lhs)).map(|value| (*rhs, value))
+                    }),
+                    Some(Instr::Bin {
+                        op: BinOp::Sub,
+                        lhs,
+                        rhs,
+                        ..
+                    }) => constant(*rhs).map(|value| (*lhs, value.wrapping_neg())),
+                    _ => None,
+                };
+                let Some((next, add)) = next.filter(|(base, _)| !mutable.contains(base)) else {
+                    break;
+                };
+                base = next;
+                offset = offset.wrapping_add(add);
+            }
+            if (base, offset as i16) != (original, displacement) {
+                replacements.insert((original, displacement), (base, offset as i16));
+            }
+        }
+    }
+    for inst in f.blocks.iter_mut().flat_map(|b| &mut b.insts) {
+        if let Instr::LoadMem { base, offset, .. } | Instr::StoreMem { base, offset, .. } = inst {
+            if let Some(&(new_base, new_offset)) = replacements.get(&(*base, *offset)) {
+                (*base, *offset) = (new_base, new_offset);
+            }
+        }
+    }
+    !replacements.is_empty()
+}
+
+// Observable operations are also memory-value barriers: calls can write through
+// escaped pointers, and device/cache/segment operations can change visible data.
+fn has_observable_effect(inst: &Instr) -> bool {
+    matches!(
+        inst,
+        Instr::StoreMem { .. }
+            | Instr::StoreStatic { .. }
+            | Instr::StoreSp { .. }
+            | Instr::StoreLocal { .. }
+            | Instr::FpuStore { .. }
+            | Instr::FpuVecStore { .. }
+            | Instr::Call { .. }
+            | Instr::CallPtr { .. }
+            | Instr::DevSend { .. }
+            | Instr::DevRecv { .. }
+            | Instr::DcacheInvalidateAll
+            | Instr::DcacheLineCopy { .. }
+            | Instr::DcacheCleanLine { .. }
+            | Instr::DcacheWait
+            | Instr::MtsrDseg { .. }
+            | Instr::Jseg { .. }
+            | Instr::Signal { .. }
+    )
+}
+
+// Resolve frame-relative addresses without keeping a pointer live: this tracks
+// identities, not machine-register reuse. Only single-definition values qualify.
+fn frame_addresses(f: &IrFunc, mutable: &HashSet<VReg>) -> HashMap<VReg, u16> {
+    let mut addresses = HashMap::new();
+    let mut constants = HashMap::new();
+    for block in f.rpo() {
+        for inst in &f.blocks[block].insts {
+            let known = match *inst {
+                Instr::AddrOfLocal { dst, slot } => Some((dst, u16::from(slot))),
+                Instr::Mov { dst, src } => addresses.get(&src).map(|&slot| (dst, slot)),
+                Instr::Bin {
+                    dst,
+                    op: BinOp::Add | BinOp::Sub,
+                    lhs,
+                    rhs,
+                } => {
+                    let offset = match rhs {
+                        IntOperand::Imm(value) => Some(value),
+                        IntOperand::Reg(reg) => constants.get(&reg).copied(),
+                    };
+                    addresses.get(&lhs).zip(offset).map(|(&slot, offset)| {
+                        let slot = if matches!(inst, Instr::Bin { op: BinOp::Sub, .. }) {
+                            slot.wrapping_sub(offset)
+                        } else {
+                            slot.wrapping_add(offset)
+                        };
+                        (dst, slot)
+                    })
+                }
+                Instr::LoadImm { dst, value } if !mutable.contains(&dst) => {
+                    constants.insert(dst, value);
+                    None
+                }
+                _ => None,
+            };
+            if let Some((dst, slot)) = known.filter(|(dst, _)| !mutable.contains(dst)) {
+                addresses.insert(dst, slot);
+            }
+        }
+    }
+    addresses
+}
+
+// Forward only exact word locations within a block. Unknown writes invalidate
+// both maps: different logical addresses may alias through DSEG mappings, and a
+// raw pointer can name a frame local. No alias/disjointness promise is inferred.
+fn forward_memory_values(f: &mut IrFunc) -> bool {
+    let mutable = mutable_values(f);
+    let addresses = frame_addresses(f, &mutable);
+    let local = |base, offset: i16| {
+        addresses
+            .get(&base)
+            .map(|slot| slot.wrapping_add(offset as u16))
+            .filter(|slot| *slot < u16::from(f.local_slots))
+            .map(|slot| slot as u8)
+    };
+    let mut changed = false;
+    for block in &mut f.blocks {
+        let mut locals: HashMap<u8, VReg> = HashMap::new();
+        let mut memory: HashMap<(VReg, i16), VReg> = HashMap::new();
+        for inst in &mut block.insts {
+            match *inst {
+                Instr::LoadLocal { dst, slot } => {
+                    if let Some(&src) = locals.get(&slot) {
+                        *inst = Instr::Mov { dst, src };
+                        changed = true;
+                    } else if !mutable.contains(&dst) {
+                        locals.insert(slot, dst);
+                    }
+                }
+                Instr::LoadMem { dst, base, offset } if !mutable.contains(&base) => {
+                    if let Some(slot) = local(base, offset) {
+                        if let Some(&src) = locals.get(&slot) {
+                            *inst = Instr::Mov { dst, src };
+                            changed = true;
+                        } else if !mutable.contains(&dst) {
+                            locals.insert(slot, dst);
+                        }
+                        continue;
+                    }
+                    if let Some(&src) = memory.get(&(base, offset)) {
+                        *inst = Instr::Mov { dst, src };
+                        changed = true;
+                    } else if !mutable.contains(&dst) {
+                        memory.insert((base, offset), dst);
+                    }
+                }
+                Instr::StoreLocal { slot, src } => {
+                    memory.clear();
+                    locals.remove(&slot);
+                    if !mutable.contains(&src) {
+                        locals.insert(slot, src);
+                    }
+                }
+                Instr::StoreMem { base, offset, src } => {
+                    memory.clear();
+                    if let Some(slot) = local(base, offset) {
+                        locals.remove(&slot);
+                        if !mutable.contains(&src) {
+                            locals.insert(slot, src);
+                        }
+                    } else {
+                        locals.clear();
+                    }
+                    if local(base, offset).is_none()
+                        && !mutable.contains(&base)
+                        && !mutable.contains(&src)
+                    {
+                        memory.insert((base, offset), src);
+                    }
+                }
+                _ if has_observable_effect(inst) => {
+                    locals.clear();
+                    memory.clear();
+                }
+                _ => {}
+            }
+        }
+    }
+    changed
+}
+
 // Fold a full vector's adjacent lane-extract/store pairs into one FSTV.
 // Match only an uninterrupted sequence with the same base and increasing offsets:
 // no load/call/other store may move across this transformation. Keep lane defs for
@@ -776,26 +1024,7 @@ fn dce(f: &mut IrFunc) -> bool {
             }
             for inst in &b.insts {
                 // SIGNAL is an observable compiler barrier and never dies
-                let root = matches!(
-                    inst,
-                    Instr::StoreMem { .. }
-                        | Instr::StoreStatic { .. }
-                        | Instr::StoreSp { .. }
-                        | Instr::StoreLocal { .. }
-                        | Instr::FpuStore { .. }
-                        | Instr::FpuVecStore { .. }
-                        | Instr::Call { .. }
-                        | Instr::CallPtr { .. }
-                        | Instr::DevSend { .. }
-                        | Instr::DevRecv { .. }
-                        | Instr::DcacheInvalidateAll
-                        | Instr::DcacheLineCopy { .. }
-                        | Instr::DcacheCleanLine { .. }
-                        | Instr::DcacheWait
-                        | Instr::MtsrDseg { .. }
-                        | Instr::Jseg { .. }
-                        | Instr::Signal { .. }
-                );
+                let root = has_observable_effect(inst);
                 let defs = crate::compiler::regalloc::inst_defs(inst);
                 if root || defs.iter().any(|d| useful.contains(d)) {
                     for u in crate::compiler::regalloc::inst_uses(inst) {
@@ -1269,6 +1498,228 @@ mod tests {
             .filter(|i| matches!(i, Instr::Bin { .. }))
             .count();
         assert_eq!(adds, 2, "{}", f);
+    }
+
+    #[test]
+    fn constant_memory_addresses_fold_with_word_wrapping() {
+        let (mut b, args) = FuncBuilder::new("addresses", 1, 1);
+        let base = b.get(args[0]);
+        let minus_one = b.load_imm(65535);
+        let a = b.bin(BinOp::Add, minus_one, base);
+        let c = b.bin_imm(BinOp::Sub, a, 2);
+        let value = b.load_mem(c, 4);
+        b.store_mem(c, -7, value);
+        b.ret(&[value]);
+        let mut f = b.finish();
+        assert!(fold_memory_addresses(&mut f));
+        assert!(f.blocks[0]
+            .insts
+            .iter()
+            .any(|i| matches!(i, Instr::LoadMem { base: p, offset: 1, .. } if *p == base)));
+        assert!(f.blocks[0]
+            .insts
+            .iter()
+            .any(|i| matches!(i, Instr::StoreMem { base: p, offset: -10, .. } if *p == base)));
+    }
+
+    #[test]
+    fn address_folding_keeps_a_snapshot_of_a_redefined_base() {
+        let (mut b, args) = FuncBuilder::new("addresses", 1, 1);
+        let base = b.get(args[0]);
+        let address = b.bin_imm(BinOp::Add, base, 3);
+        let value = b.load_mem(address, 0);
+        b.ret(&[value]);
+        let mut f = b.finish();
+        f.blocks[0].insts.insert(
+            1,
+            Instr::LoadImm {
+                dst: base,
+                value: 123,
+            },
+        );
+        assert!(!fold_memory_addresses(&mut f));
+        assert!(
+            matches!(f.blocks[0].insts[2], Instr::LoadMem { base, offset: 0, .. } if base == address)
+        );
+    }
+
+    #[test]
+    fn frame_word_forwarding_unifies_separate_addresses_and_preserves_other_slots() {
+        let (mut b, args) = FuncBuilder::new("f", 1, 4);
+        let value = b.get(args[0]);
+        let slots = b.alloc_local_slots(3);
+        b.store_local(slots + 1, value);
+        let first = b.addr_of_local(slots);
+        let field = b.bin_imm(BinOp::Add, first, 1);
+        let a = b.load_mem(field, 0);
+        let second = b.addr_of_local(slots);
+        b.store_mem(second, 2, value);
+        let c = b.load_mem(second, 1);
+        let d = b.load_local(slots + 2);
+        b.call("opaque", &[second], 0);
+        let e = b.load_mem(second, 1);
+        b.ret(&[a, c, d, e]);
+        let mut f = b.finish();
+        assert!(forward_memory_values(&mut f));
+        let moves = f.blocks[0]
+            .insts
+            .iter()
+            .filter_map(|inst| match inst {
+                Instr::Mov { dst, src } => Some((*dst, *src)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(moves, vec![(a, value), (c, value), (d, value)]);
+        assert!(f.blocks[0]
+            .insts
+            .iter()
+            .any(|inst| matches!(inst, Instr::LoadMem { dst, .. } if *dst == e)));
+    }
+
+    #[test]
+    fn memory_values_forward_only_exact_locations_and_stable_definitions() {
+        let (mut b, args) = FuncBuilder::new("f", 2, 3);
+        let ptr = b.get(args[0]);
+        let value = b.get(args[1]);
+        let local = b.alloc_local_slots(1);
+        b.store_local(local, value);
+        let a = b.load_local(local);
+        b.store_mem(ptr, 0, a);
+        let c = b.load_mem(ptr, 0);
+        let d = b.load_mem(ptr, 1);
+        let e = b.load_mem(ptr, 1);
+        b.ret(&[c, d, e]);
+        let mut f = b.finish();
+        assert!(forward_memory_values(&mut f));
+        assert!(matches!(f.blocks[0].insts[1], Instr::Mov { dst, src }
+            if dst == a && src == value));
+        assert!(matches!(f.blocks[0].insts[3], Instr::Mov { dst, src }
+            if dst == c && src == a));
+        assert!(matches!(f.blocks[0].insts[4], Instr::LoadMem { .. }));
+        assert!(matches!(f.blocks[0].insts[5], Instr::Mov { dst, src }
+            if dst == e && src == d));
+
+        // Return-arm hoisting can introduce non-SSA values. A store snapshots
+        // its current value, so a later definition must not change the load.
+        f.blocks[0].insts.push(Instr::LoadImm {
+            dst: value,
+            value: 7,
+        });
+        f.blocks[0].insts.push(Instr::LoadImm {
+            dst: value,
+            value: 8,
+        });
+        f.blocks[0].insts[1] = Instr::LoadLocal {
+            dst: a,
+            slot: local,
+        };
+        assert!(!forward_memory_values(&mut f));
+        assert!(matches!(f.blocks[0].insts[1], Instr::LoadLocal { .. }));
+    }
+
+    #[test]
+    fn memory_forwarding_respects_aliases_and_external_barriers() {
+        let (mut b, args) = FuncBuilder::new("f", 2, 0);
+        let ptr = b.get(args[0]);
+        let value = b.get(args[1]);
+        let local = b.alloc_local_slots(1);
+        let barriers = [
+            Instr::StoreMem {
+                base: ptr,
+                offset: 16384,
+                src: value,
+            },
+            Instr::StoreLocal {
+                slot: local,
+                src: value,
+            },
+            Instr::FpuStore {
+                base_gpr: ptr,
+                offset: 0,
+                src: value,
+            },
+            Instr::FpuVecStore {
+                base_gpr: ptr,
+                offset: 0,
+                src: value,
+            },
+            Instr::Call {
+                func: "opaque",
+                args: vec![ptr],
+                rets: vec![],
+            },
+            Instr::CallPtr {
+                addr: ptr,
+                args: vec![],
+                rets: vec![],
+            },
+            Instr::DevRecv {
+                dst: value,
+                device: 0,
+                channel: 0,
+            },
+            Instr::DevSend {
+                device: 0,
+                channel: 0,
+                src: value,
+            },
+            Instr::DcacheInvalidateAll,
+            Instr::DcacheLineCopy {
+                source: ptr,
+                destination: ptr,
+            },
+            Instr::DcacheCleanLine { address: ptr },
+            Instr::DcacheWait,
+            Instr::MtsrDseg {
+                src: value,
+                index: Some(3),
+            },
+            Instr::Signal {
+                signal_type: 0,
+                value,
+            },
+        ];
+        let before = b.load_mem(ptr, 0);
+        let after = b.load_mem(ptr, 0);
+        let after_local = b.load_local(local);
+        b.ret(&[]);
+        let template = b.finish();
+        for barrier in barriers {
+            let mut f = template.clone();
+            f.blocks[0].insts = vec![
+                Instr::StoreLocal {
+                    slot: local,
+                    src: value,
+                },
+                Instr::LoadMem {
+                    dst: before,
+                    base: ptr,
+                    offset: 0,
+                },
+                barrier.clone(),
+                Instr::LoadMem {
+                    dst: after,
+                    base: ptr,
+                    offset: 0,
+                },
+                Instr::LoadLocal {
+                    dst: after_local,
+                    slot: local,
+                },
+            ];
+            forward_memory_values(&mut f);
+            assert!(
+                matches!(f.blocks[0].insts[3], Instr::LoadMem { .. }),
+                "{barrier:?}"
+            );
+            // A direct store to this local may forward its new value; every
+            // other barrier invalidates the saved local value as well.
+            assert_eq!(
+                matches!(f.blocks[0].insts[4], Instr::LoadLocal { .. }),
+                !matches!(barrier, Instr::StoreLocal { .. }),
+                "{barrier:?}"
+            );
+        }
     }
 
     #[test]

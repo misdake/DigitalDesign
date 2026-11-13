@@ -1,6 +1,6 @@
 # CPU V3 hardware structure and timing
 
-This document describes the revision 0.10 ISA running on the current Stage 12
+This document describes the revision 0.11 ISA running on the current Stage 12
 microarchitecture, not an intended future pipeline. The maintainable PlantUML source is in
 [`cpu_v3_structure.puml`](cpu_v3_structure.puml).
 

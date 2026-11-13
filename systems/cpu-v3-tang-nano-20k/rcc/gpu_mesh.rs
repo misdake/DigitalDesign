@@ -3,6 +3,9 @@ use crate::dsl_rt::*;
 mod gpu_bind;
 use gpu_bind::*;
 
+// Sixteen scratch words hold eight directory entries, before command staging.
+const GPU_MESH_BATCH_ENTRIES: u16 = 8;
+
 #[derive(Copy, Clone)]
 pub struct MeshDesc {
     pub directory_sector: u16,
@@ -109,8 +112,8 @@ fn gpu_mesh_draw(slot: u16, mesh: Array<u16>, native: Array<u16>) -> bool {
     let mut first: u16 = 0;
     while first < total {
         let mut count = total - first;
-        if count > 8 {
-            count = 8;
+        if count > GPU_MESH_BATCH_ENTRIES {
+            count = GPU_MESH_BATCH_ENTRIES;
         }
         if !gpu_mesh_batch(mesh, first, count, entries)
             || !gpu_mesh_entries_valid(mesh, entries, count)
@@ -125,10 +128,13 @@ fn gpu_mesh_draw(slot: u16, mesh: Array<u16>, native: Array<u16>) -> bool {
     first = 0;
     while first < total {
         let mut count = total - first;
-        if count > 8 {
-            count = 8;
+        if count > GPU_MESH_BATCH_ENTRIES {
+            count = GPU_MESH_BATCH_ENTRIES;
         }
-        if !gpu_mesh_batch(mesh, first, count, entries) {
+        // A complete single batch remains in entries across binding emission:
+        // bindings use scratch0..111, entries144..159 and commands160 onward.
+        // Larger directories still use bounded rereads after whole validation.
+        if total > GPU_MESH_BATCH_ENTRIES && !gpu_mesh_batch(mesh, first, count, entries) {
             c[GPU_RECORD_PHASE] = GPU_RECORD_POISON;
             return false;
         }
@@ -151,14 +157,14 @@ fn gpu_mesh_draw(slot: u16, mesh: Array<u16>, native: Array<u16>) -> bool {
             at += 2;
             i += 1;
         }
-        if !gpu_record_append(slot, code, at, code, 0, 1) {
+        if !gpu_record_append_reserved(slot, code, at, code, 0, c[GPU_RECORD_PUSH_USED]) {
             return false;
         }
         first += count;
     }
     code[0u16] = (total - 1) & 1;
     code[1u16] = 0x3000;
-    if !gpu_record_append(slot, code, 2, code, 0, 1) {
+    if !gpu_record_append_reserved(slot, code, 2, code, 0, c[GPU_RECORD_PUSH_USED]) {
         return false;
     }
     c[GPU_RECORD_UI_CLEAN] = 0;

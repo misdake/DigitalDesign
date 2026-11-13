@@ -149,7 +149,7 @@ fn gpu_bind_plan(slot: u16, native: Array<u16>, mut plan: Array<u16>) -> bool {
     }
     plan[4u16] = end;
     plan[5u16] = commands;
-    gpu_record_preflight(slot, commands, end)
+    true
 }
 // kind0=Global64, kind1=Render32, kind2=Instance128.
 fn gpu_bind_block(slot: u16, native: Array<u16>, plan: Array<u16>, kind: u16, drain: bool) -> bool {
@@ -158,14 +158,12 @@ fn gpu_bind_block(slot: u16, native: Array<u16>, plan: Array<u16>, kind: u16, dr
     let mut size: u16 = 1;
     let mut src: u16 = GPU_SCRATCH_GLOBAL;
     let mut count: u16 = 32;
-    let mut alignment: u16 = 32;
     let mut opcode: u16 = 0x5000;
     if kind == 1 {
         local = 68;
         size = 0;
         src = GPU_SCRATCH_RENDER;
         count = 16;
-        alignment = 16;
         opcode = 0x6000;
     }
     if kind == 2 {
@@ -173,10 +171,8 @@ fn gpu_bind_block(slot: u16, native: Array<u16>, plan: Array<u16>, kind: u16, dr
         size = 2;
         src = GPU_SCRATCH_INSTANCE;
         count = 64;
-        alignment = 64;
         if plan[0u16] & 4 == 0 {
             count = 0;
-            alignment = 1;
         }
     }
     let mut code: Buf<u16, 8> = Buf::new([0; 8]);
@@ -196,17 +192,15 @@ fn gpu_bind_block(slot: u16, native: Array<u16>, plan: Array<u16>, kind: u16, dr
         i += 2;
     }
     let payload = unsafe { native.as_ptr().add(src as i16).as_u16_array() };
-    gpu_record_append(slot, code.as_array(), i, payload, count, alignment)
+    let mut start = plan[kind + 1];
+    if count == 0 {
+        start = c[GPU_RECORD_PUSH_USED];
+    }
+    gpu_record_append_reserved(slot, code.as_array(), i, payload, count, start)
 }
 // Consume the immediately preceding local plan; no intervening append is permitted.
 fn gpu_bind_emit(slot: u16, native: Array<u16>, plan: Array<u16>) -> bool {
-    if !gpu_record_preflight(slot, plan[5u16], plan[4u16]) {
-        return false;
-    }
     let mut c = gpu_record_data(slot);
-    if c[GPU_RECORD_PHASE] != GPU_RECORD_PASS {
-        return false;
-    }
     let changes = plan[0u16];
     if changes & 1 != 0 && !gpu_bind_block(slot, native, plan, 0, true) {
         return false;
@@ -216,7 +210,16 @@ fn gpu_bind_emit(slot: u16, native: Array<u16>, plan: Array<u16>) -> bool {
     }
     if c[GPU_GROUP_RECORDING] != 0 && c[GPU_GROUP_FIRST_GLOBAL] == 0 {
         let nop: Buf<u16, 2> = Buf::new([0; 2]);
-        if changes & 3 != 3 || !gpu_record_append(slot, nop.as_array(), 2, nop.as_array(), 0, 1) {
+        if changes & 3 != 3
+            || !gpu_record_append_reserved(
+                slot,
+                nop.as_array(),
+                2,
+                nop.as_array(),
+                0,
+                c[GPU_RECORD_PUSH_USED],
+            )
+        {
             return false;
         }
         c[GPU_GROUP_FIRST_GLOBAL] = plan[1u16] + 1;
@@ -244,5 +247,7 @@ fn gpu_bind_emit(slot: u16, native: Array<u16>, plan: Array<u16>) -> bool {
 }
 fn gpu_bind_install(slot: u16, native: Array<u16>) -> bool {
     let plan: Buf<u16, 6> = Buf::new([0; 6]);
-    gpu_bind_plan(slot, native, plan.as_array()) && gpu_bind_emit(slot, native, plan.as_array())
+    gpu_bind_plan(slot, native, plan.as_array())
+        && gpu_record_preflight(slot, plan[5u16], plan[4u16])
+        && gpu_bind_emit(slot, native, plan.as_array())
 }

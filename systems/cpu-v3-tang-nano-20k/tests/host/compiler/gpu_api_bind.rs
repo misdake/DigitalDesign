@@ -22,18 +22,18 @@ fn main(){gpu_record_init();check(gpu_arena_init(8192));check(gpu_record_configu
  DESIRED[0u16]=0x3333;DESIRED[32u16]=0x4444;
  let mut c=gpu_record_data(0);check(c[GPU_CB_CAMERA]==0x1111&&c[GPU_CB_STATE]==0x2222);
  check(gpu_bind_plan(0,native,PLAN.as_array()));check(PLAN[0u16]==7&&PLAN[1u16]==32&&PLAN[2u16]==64&&PLAN[3u16]==128&&PLAN[4u16]==192&&PLAN[5u16]==18);
- check(gpu_bind_emit(0,native,PLAN.as_array()));check(c[GPU_RECORD_COMMAND_USED]==28&&c[GPU_RECORD_PUSH_USED]==192&&c[GPU_RECORD_VALID]==31);
+ check(gpu_record_preflight(0,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(0,native,PLAN.as_array()));check(c[GPU_RECORD_COMMAND_USED]==28&&c[GPU_RECORD_PUSH_USED]==192&&c[GPU_RECORD_VALID]==31);
  check(gpu_bind_install(0,native));check(c[GPU_RECORD_COMMAND_USED]==32&&c[GPU_RECORD_PUSH_USED]==192);
  native[108u16]=0x1234;check(gpu_bind_install(0,native));check(c[GPU_RECORD_COMMAND_USED]==36&&c[GPU_RECORD_PUSH_USED]==256);
  native[8u16]=64;native[36u16]=11;check(gpu_bind_plan(0,native,PLAN.as_array()));
  check(PLAN[0u16]==3&&PLAN[1u16]==256&&PLAN[2u16]==288&&PLAN[3u16]==192&&PLAN[4u16]==304&&PLAN[5u16]==18);
- check(gpu_bind_emit(0,native,PLAN.as_array()));check(c[GPU_RECORD_COMMAND_USED]==54&&c[GPU_RECORD_PUSH_USED]==304);
+ check(gpu_record_preflight(0,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(0,native,PLAN.as_array()));check(c[GPU_RECORD_COMMAND_USED]==54&&c[GPU_RECORD_PUSH_USED]==304);
  check(gpu_packet_begin(1,0x8800,0x9000,0,0,0));check(gpu_bind_install(1,native));
  let b=gpu_record_data(1);check(b[GPU_RECORD_COMMAND_USED]==28&&b[GPU_RECORD_PUSH_USED]==192);
  native[36u16]=9;check(gpu_bind_plan(1,native,PLAN.as_array()));check(PLAN[0u16]==2&&PLAN[5u16]==12);
- check(gpu_bind_emit(1,native,PLAN.as_array()));check(b[GPU_RECORD_COMMAND_USED]==40&&b[GPU_RECORD_PUSH_USED]==208);
+ check(gpu_record_preflight(1,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(1,native,PLAN.as_array()));check(b[GPU_RECORD_COMMAND_USED]==40&&b[GPU_RECORD_PUSH_USED]==208);
  native[8u16]=96;check(gpu_bind_plan(1,native,PLAN.as_array()));check(PLAN[0u16]==1&&PLAN[5u16]==12);
- check(gpu_bind_emit(1,native,PLAN.as_array()));check(b[GPU_RECORD_COMMAND_USED]==52&&b[GPU_RECORD_PUSH_USED]==256);
+ check(gpu_record_preflight(1,PLAN[5u16],PLAN[4u16]));check(gpu_bind_emit(1,native,PLAN.as_array()));check(b[GPU_RECORD_COMMAND_USED]==52&&b[GPU_RECORD_PUSH_USED]==256);
  native[8u16]=64;native[36u16]=11;let mut i:u16=0;while i<256{COPY[i]=native[i];i+=1;}
  check(gpu_bind_install(0,COPY.as_array()));check(c[GPU_RECORD_COMMAND_USED]==58&&c[GPU_RECORD_PUSH_USED]==304);
  // Synthetic capacity pressure: no cache, command, or push writes may commit.

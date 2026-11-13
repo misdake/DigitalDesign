@@ -149,9 +149,9 @@ fn compile_ir_selected(
                 (function, allocation) = allocate_function(source.clone(), options, name == main)?;
             }
         }
-        // Only the selected body owns reachability. Restoring it can revive
-        // callees removed by inlining; rejected bodies must not retain theirs.
-        for callee in function_callees(source) {
+        // Discover calls only after optimizing/allocating the selected body.
+        // Restored callees remain live; constant-disabled dependencies do not.
+        for callee in function_callees(&function) {
             if !visited.contains(callee) {
                 pending.insert(callee);
             }

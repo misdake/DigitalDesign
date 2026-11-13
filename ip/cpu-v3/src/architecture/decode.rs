@@ -1,4 +1,4 @@
-//! Disassembler for CpuV3 revision 0.10: word -> typed instruction + mnemonic text.
+//! Disassembler for CpuV3 revision 0.11: word -> typed instruction + mnemonic text.
 //!
 //! `decode` maps one physical word to an `Instruction`; `disassemble_words` walks
 //! a stream and merges a `PFX12` prefix with its consumer into one wide
@@ -359,12 +359,12 @@ pub fn decode(word: Word) -> Instruction {
         8 => Instruction::Load {
             dst: reg(n2.into()),
             base: reg(n1.into()),
-            offset: crate::sign_extend(n0.into(), 4) as i16,
+            offset: i16::from(n0),
         },
         9 => Instruction::Store {
             src: reg(n2.into()),
             base: reg(n1.into()),
-            offset: crate::sign_extend(n0.into(), 4) as i16,
+            offset: i16::from(n0),
         },
         0xa => {
             let op = match n2 {

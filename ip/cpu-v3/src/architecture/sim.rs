@@ -525,7 +525,7 @@ impl CpuV3Sim {
     fn execute_load(&mut self, instruction: Word, prefix: Option<Prefix>) -> ExecuteResult {
         let dst = field(instruction, 8);
         let base = self.registers[usize::from(field(instruction, 4))];
-        let address = base.wrapping_add(immediate4(instruction, prefix, true));
+        let address = base.wrapping_add(immediate4(instruction, prefix, false));
         let physical = self.data_address(address);
         self.registers[usize::from(dst)] = self.read_data(physical)?;
         Ok(StepOutcome::Running)
@@ -534,7 +534,7 @@ impl CpuV3Sim {
     fn execute_store(&mut self, instruction: Word, prefix: Option<Prefix>) -> ExecuteResult {
         let src = field(instruction, 8);
         let base = self.registers[usize::from(field(instruction, 4))];
-        let address = base.wrapping_add(immediate4(instruction, prefix, true));
+        let address = base.wrapping_add(immediate4(instruction, prefix, false));
         let physical = self.data_address(address);
         self.write_data(physical, self.registers[usize::from(src)])?;
         Ok(StepOutcome::Running)

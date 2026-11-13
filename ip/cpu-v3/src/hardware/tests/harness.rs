@@ -227,6 +227,48 @@ impl From<&CpuV3CoreOutputValue> for CoreCosimOut {
 /// relative/register call-return pair. Keeping both phases here means the
 /// Rust cycle model and the RTL stay compared on every new decoder and
 /// pipeline classification.
+pub(super) fn memory_offset_program() -> Vec<u16> {
+    let mut program = Vec::new();
+    program.extend(cpu_v3::load_immediate16(4, 0));
+    let cases = (0..=15)
+        .map(|offset| (0x4000u16, offset))
+        .chain(
+            [-32768, -16, -1, 16, 32767]
+                .into_iter()
+                .map(|offset| (0x4000, offset)),
+        )
+        .chain([(0xffff, 0x4001)]);
+    for (base, offset) in cases {
+        program.extend(cpu_v3::load_immediate16(0, 0x1234));
+        program.extend(cpu_v3::load_immediate16(1, base));
+        // Independent zero-offset access detects a wrong short displacement
+        // even if both STORE and LOAD make the same sign-extension mistake.
+        program.extend(cpu_v3::load_immediate16(
+            2,
+            base.wrapping_add(offset as u16),
+        ));
+        if (0..=15).contains(&offset) {
+            program.push(cpu_v3::store(0, 1, offset));
+        } else {
+            program.extend(cpu_v3::prefixed(cpu_v3::store(0, 1, 0), offset as u16));
+        }
+        program.push(cpu_v3::load(3, 2, 0));
+        program.push(cpu_v3::alu(AluOp::Xor, 3, 3, 0));
+        program.push(cpu_v3::alu(AluOp::Or, 4, 4, 3));
+        program.push(cpu_v3::store(0, 2, 0));
+        if (0..=15).contains(&offset) {
+            program.push(cpu_v3::load(3, 1, offset));
+        } else {
+            program.extend(cpu_v3::prefixed(cpu_v3::load(3, 1, 0), offset as u16));
+        }
+        program.push(cpu_v3::alu(AluOp::Xor, 3, 3, 0));
+        program.push(cpu_v3::alu(AluOp::Or, 4, 4, 3));
+    }
+    program.push(cpu_v3::move_register(0, 4));
+    program.push(cpu_v3::halt());
+    program
+}
+
 pub(super) fn core_cosim_program() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(cpu_v3::load_immediate16(0, 0)); // r0 = 0 (SETP + ADDIU, two physical words)

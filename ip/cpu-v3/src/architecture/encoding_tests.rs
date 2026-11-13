@@ -40,7 +40,7 @@ fn stable_reference_encodings_match_the_candidate_specification() {
     assert_eq!(jump_segment(3, 4), 0x6f34);
     assert_eq!(device_receive(3, 2, 1), 0x7213);
     assert_eq!(device_send(3, 2, 1), 0x7a13);
-    assert_eq!(load(3, 4, -1), 0x834f);
+    assert_eq!(load(3, 4, 15), 0x834f);
     assert_eq!(store(3, 4, 7), 0x9347);
     assert_eq!(immediate_unsigned(ImmediateOp::Add, 3, 15), 0xa03f);
     assert_eq!(

@@ -195,6 +195,8 @@ pub fn try_allocate_with_convention(
                 fpu_spill_slots,
             };
             collapse_redundant_phi_trampolines(&mut f, &alloc.reg);
+            forward_adjacent_stack_reloads(&mut f);
+            deduplicate_allocated_immediates(&mut f, &alloc.reg);
             if alloc.frame_size() > convention.maximum_frame_words {
                 return Err(AllocationError::FrameCapacity {
                     function: f.name,
@@ -212,6 +214,72 @@ pub fn try_allocate_with_convention(
         )?;
     }
     Err(AllocationError::NonConvergence { function: f.name })
+}
+
+// Spill rewriting runs after ordinary optimization. For adjacent exact stack
+// stores/loads, the stored value is still in its allocated register. A Mov
+// preserves the load's definition and lowers to nothing when registers match.
+fn forward_adjacent_stack_reloads(f: &mut IrFunc) {
+    for block in &mut f.blocks {
+        for i in 1..block.insts.len() {
+            let replacement = match (&block.insts[i - 1], &block.insts[i]) {
+                (Instr::StoreSp { src, slot: a }, Instr::LoadSp { dst, slot: b })
+                | (Instr::StoreLocal { src, slot: a }, Instr::LoadLocal { dst, slot: b })
+                    if a == b =>
+                {
+                    Some(Instr::Mov {
+                        dst: *dst,
+                        src: *src,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(inst) = replacement {
+                block.insts[i] = inst;
+            }
+        }
+    }
+}
+
+// Rebuilt constants can land in the same register repeatedly. Remember only
+// physical register contents within a block, invalidating every GPR definition
+// and every call. This does not extend any allocated live interval.
+fn deduplicate_allocated_immediates(f: &mut IrFunc, registers: &HashMap<VReg, u8>) {
+    let layout = f.rpo();
+    let classes = &f.vreg_class;
+    for block_id in layout {
+        let block = &mut f.blocks[block_id];
+        let mut known: HashMap<u8, (VReg, u16)> = HashMap::new();
+        for inst in &mut block.insts {
+            if matches!(
+                inst,
+                Instr::Call { .. } | Instr::CallPtr { .. } | Instr::StoreStatic { .. }
+            ) {
+                known.clear();
+            }
+            if let Instr::LoadImm { dst, value } = *inst {
+                if let Some(&(src, old)) = known.get(&registers[&dst]) {
+                    if old == value {
+                        *inst = Instr::Mov { dst, src };
+                        continue;
+                    }
+                }
+            }
+            if let Instr::Mov { dst, src } = *inst {
+                if registers[&dst] == registers[&src] {
+                    continue;
+                }
+            }
+            for def in inst_defs(inst) {
+                if classes[def as usize] == RegClass::Gpr {
+                    known.remove(&registers[&def]);
+                }
+            }
+            if let Instr::LoadImm { dst, value } = *inst {
+                known.insert(registers[&dst], (dst, value));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1441,24 +1509,64 @@ fn scan_class(
 // step 4: spill rewriting (returns number of frame slots used)
 // ---------------------------------------------------------------------------
 
-/// Rewrite spilled GPR vregs into explicit LoadSp/StoreSp frame traffic and
-/// spilled FPU vregs into `AddrOfFpuSpill` + FLD/FST through a fresh GPR address
-/// temporary. Each GPR gets a fresh slot from the persistent `next_slot`
-/// counter and each FPU value a fresh 4-word-aligned spill slot from
-/// `next_fpu_slot` (monotonic across fixpoint iterations, so earlier slots are
-/// not clobbered). TODO(M5): pack slots of non-overlapping spills.
+/// Stack homes and input-free recipes for one spill-rewrite round.
+struct SpillLocations {
+    gpr: HashMap<VReg, u8>,
+    fpu: HashMap<VReg, u8>,
+    rematerialized: HashMap<VReg, Instr>,
+}
+impl SpillLocations {
+    fn new(f: &IrFunc, spilled: &[VReg]) -> Self {
+        let spilled: HashSet<_> = spilled.iter().copied().collect();
+        let mut seen: HashSet<_> = f.params.iter().copied().collect();
+        let mut multiple = HashSet::new();
+        let mut recipes = HashMap::new();
+        for block in &f.blocks {
+            for def in block
+                .phis
+                .iter()
+                .map(|p| p.dst)
+                .chain(block.insts.iter().flat_map(inst_defs))
+            {
+                if !seen.insert(def) {
+                    multiple.insert(def);
+                }
+            }
+            for inst in &block.insts {
+                if let Instr::LoadImm { dst, .. } = inst {
+                    if spilled.contains(dst) {
+                        recipes.insert(*dst, inst.clone());
+                    }
+                }
+            }
+        }
+        recipes.retain(|value, _| !multiple.contains(value));
+        Self {
+            gpr: HashMap::new(),
+            fpu: HashMap::new(),
+            rematerialized: recipes,
+        }
+    }
+}
+
+/// Rebuild single-definition GPR constants at their uses. Other GPR values get
+/// explicit stack homes; FPU values use aligned FLD/FST slots. Slot counters are
+/// monotonic across rewrite rounds so earlier homes cannot be clobbered.
+/// TODO(M5): pack slots of non-overlapping spills.
 fn rewrite_spills(
     f: &mut IrFunc,
     spilled: &[VReg],
     next_slot: &mut u8,
     next_fpu_slot: &mut u8,
 ) -> Result<(), AllocationError> {
-    let mut slot_of: HashMap<VReg, u8> = HashMap::new();
-    let mut fpu_slot_of: HashMap<VReg, u8> = HashMap::new();
+    let mut locations = SpillLocations::new(f, spilled);
     for &v in spilled {
+        if locations.rematerialized.contains_key(&v) {
+            continue;
+        }
         match f.class_of(v) {
             RegClass::Gpr => {
-                slot_of.insert(v, *next_slot);
+                locations.gpr.insert(v, *next_slot);
                 *next_slot = next_slot
                     .checked_add(1)
                     .ok_or(AllocationError::SpillCapacity {
@@ -1467,7 +1575,7 @@ fn rewrite_spills(
                     })?;
             }
             RegClass::Fpu => {
-                fpu_slot_of.insert(v, *next_fpu_slot);
+                locations.fpu.insert(v, *next_fpu_slot);
                 // a spill slot is a 4-word unit; a vector needs 2 words per
                 // lane, so a vec2 uses one unit, a vec3/vec4 two
                 *next_fpu_slot = next_fpu_slot.checked_add(f.lanes(v).div_ceil(2)).ok_or(
@@ -1498,17 +1606,8 @@ fn rewrite_spills(
                     let app = edge_appends.entry(p).or_default();
                     let mut lines = vec![];
                     let mut v = v;
-                    reload(
-                        &mut v,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        app,
-                        &mut lines,
-                        None,
-                    );
-                    spill_store(v, phi.dst, &slot_of, &fpu_slot_of, f, app, &mut lines, None);
+                    reload(&mut v, &locations, &spilled, f, app, &mut lines, None);
+                    spill_store(v, phi.dst, &locations, f, app, &mut lines, None);
                 }
             } else {
                 for (p, v) in &mut phi.args {
@@ -1516,8 +1615,7 @@ fn rewrite_spills(
                         let mut lines = vec![];
                         reload(
                             v,
-                            &slot_of,
-                            &fpu_slot_of,
+                            &locations,
                             &spilled,
                             f,
                             edge_appends.entry(*p).or_default(),
@@ -1540,12 +1638,16 @@ fn rewrite_spills(
         let mut old_lines = old_lines.into_iter();
         for mut inst in std::mem::take(&mut f.blocks[b].insts) {
             let line = old_lines.next().unwrap_or(None);
+            // Cheap single-definition values are reconstructed at their uses.
+            if matches!(&inst, Instr::LoadImm { dst, .. } if locations.rematerialized.contains_key(dst))
+            {
+                continue;
+            }
             // uses first
             inst.for_each_use_mut(&mut |v| {
                 reload(
                     v,
-                    &slot_of,
-                    &fpu_slot_of,
+                    &locations,
                     &spilled,
                     f,
                     &mut new_insts,
@@ -1566,16 +1668,7 @@ fn rewrite_spills(
                             *dd = t;
                         }
                     }
-                    spill_store(
-                        t,
-                        d,
-                        &slot_of,
-                        &fpu_slot_of,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
+                    spill_store(t, d, &locations, f, &mut new_insts, &mut new_lines, line);
                 }
             }
         }
@@ -1596,8 +1689,7 @@ fn rewrite_spills(
                 Terminator::Br { cmp, .. } => {
                     reload(
                         &mut cmp.lhs,
-                        &slot_of,
-                        &fpu_slot_of,
+                        &locations,
                         &spilled,
                         f,
                         &mut pre,
@@ -1607,8 +1699,7 @@ fn rewrite_spills(
                     if let CmpRhs::Reg(r) = &mut cmp.rhs {
                         reload(
                             r,
-                            &slot_of,
-                            &fpu_slot_of,
+                            &locations,
                             &spilled,
                             f,
                             &mut pre,
@@ -1621,8 +1712,7 @@ fn rewrite_spills(
                     for v in values {
                         reload(
                             v,
-                            &slot_of,
-                            &fpu_slot_of,
+                            &locations,
                             &spilled,
                             f,
                             &mut pre,
@@ -1633,8 +1723,7 @@ fn rewrite_spills(
                 }
                 Terminator::Halt { signal } => reload(
                     signal,
-                    &slot_of,
-                    &fpu_slot_of,
+                    &locations,
                     &spilled,
                     f,
                     &mut pre,
@@ -1644,8 +1733,7 @@ fn rewrite_spills(
                 Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
                     reload(
                         cseg,
-                        &slot_of,
-                        &fpu_slot_of,
+                        &locations,
                         &spilled,
                         f,
                         &mut pre,
@@ -1654,8 +1742,7 @@ fn rewrite_spills(
                     );
                     reload(
                         target,
-                        &slot_of,
-                        &fpu_slot_of,
+                        &locations,
                         &spilled,
                         f,
                         &mut pre,
@@ -1685,8 +1772,7 @@ fn rewrite_spills(
 #[allow(clippy::too_many_arguments)]
 fn reload(
     v: &mut VReg,
-    slot_of: &HashMap<VReg, u8>,
-    fpu_slot_of: &HashMap<VReg, u8>,
+    locations: &SpillLocations,
     spilled: &HashSet<VReg>,
     f: &mut IrFunc,
     out: &mut Vec<Instr>,
@@ -1696,12 +1782,23 @@ fn reload(
     if !spilled.contains(v) {
         return;
     }
+    if let Some(recipe) = locations.rematerialized.get(v) {
+        let t = f.fresh_vreg(RegClass::Gpr);
+        let mut inst = recipe.clone();
+        for dst in defs_mut(&mut inst) {
+            *dst = t;
+        }
+        out.push(inst);
+        lines.push(line);
+        *v = t;
+        return;
+    }
     match f.class_of(*v) {
         RegClass::Gpr => {
             let t = f.fresh_vreg(RegClass::Gpr);
             out.push(Instr::LoadSp {
                 dst: t,
-                slot: slot_of[v],
+                slot: locations.gpr[v],
             });
             lines.push(line);
             *v = t;
@@ -1711,7 +1808,7 @@ fn reload(
             let addr = f.fresh_vreg(RegClass::Gpr);
             out.push(Instr::AddrOfFpuSpill {
                 dst: addr,
-                slot: fpu_slot_of[v],
+                slot: locations.fpu[v],
             });
             lines.push(line);
             let t = f.fresh_vreg_lanes(RegClass::Fpu, lanes);
@@ -1740,8 +1837,7 @@ fn reload(
 fn spill_store(
     t: VReg,
     orig: VReg,
-    slot_of: &HashMap<VReg, u8>,
-    fpu_slot_of: &HashMap<VReg, u8>,
+    locations: &SpillLocations,
     f: &mut IrFunc,
     out: &mut Vec<Instr>,
     lines: &mut Vec<Option<u32>>,
@@ -1750,7 +1846,7 @@ fn spill_store(
     match f.class_of(orig) {
         RegClass::Gpr => {
             out.push(Instr::StoreSp {
-                slot: slot_of[&orig],
+                slot: locations.gpr[&orig],
                 src: t,
             });
             lines.push(line);
@@ -1760,7 +1856,7 @@ fn spill_store(
             let addr = f.fresh_vreg(RegClass::Gpr);
             out.push(Instr::AddrOfFpuSpill {
                 dst: addr,
-                slot: fpu_slot_of[&orig],
+                slot: locations.fpu[&orig],
             });
             lines.push(line);
             if lanes > 1 {
@@ -1841,6 +1937,126 @@ pub(crate) fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
 #[cfg(test)]
 mod spill_capacity_tests {
     use super::*;
+    #[test]
+    fn allocated_constants_are_reused_only_until_their_register_is_written_or_called() {
+        let (mut b, _) = crate::FuncBuilder::new("constants", 0, 1);
+        let a = b.load_imm(7);
+        let c = b.load_imm(7);
+        let sum = b.bin(crate::BinOp::Add, c, c);
+        let d = b.load_imm(7);
+        b.call("opaque", &[], 0);
+        let e = b.load_imm(7);
+        b.ret(&[e]);
+        let mut f = b.finish();
+        let registers = HashMap::from([(a, 0), (c, 0), (sum, 0), (d, 0), (e, 0)]);
+        // Unreachable IR has no physical assignment and must remain untouched.
+        let dead = f.fresh_vreg(RegClass::Gpr);
+        f.blocks.push(Block {
+            insts: vec![Instr::LoadImm {
+                dst: dead,
+                value: 7,
+            }],
+            ..Block::default()
+        });
+        deduplicate_allocated_immediates(&mut f, &registers);
+        assert!(matches!(f.blocks[0].insts[1], Instr::Mov { dst, src } if dst == c && src == a));
+        for i in [3, 5] {
+            assert!(matches!(f.blocks[0].insts[i], Instr::LoadImm { .. }));
+        }
+    }
+
+    #[test]
+    fn stack_reload_cleanup_keeps_namespaces_slots_and_barriers_distinct() {
+        let (mut b, args) = crate::FuncBuilder::new("cleanup", 2, 1);
+        let a = b.get(args[0]);
+        let value = b.get(args[1]);
+        b.ret(&[value]);
+        let mut f = b.finish();
+        f.blocks[0].insts = vec![
+            Instr::StoreSp { slot: 0, src: a },
+            Instr::LoadSp {
+                slot: 0,
+                dst: value,
+            },
+            Instr::StoreSp { slot: 0, src: a },
+            Instr::LoadSp {
+                slot: 1,
+                dst: value,
+            },
+            Instr::StoreLocal { slot: 0, src: a },
+            Instr::LoadSp {
+                slot: 0,
+                dst: value,
+            },
+            Instr::StoreSp { slot: 0, src: a },
+            Instr::Call {
+                func: "opaque",
+                args: vec![],
+                rets: vec![],
+            },
+            Instr::LoadSp {
+                slot: 0,
+                dst: value,
+            },
+        ];
+        forward_adjacent_stack_reloads(&mut f);
+        assert!(
+            matches!(f.blocks[0].insts[1], Instr::Mov { dst, src } if dst == value && src == a)
+        );
+        for i in [3, 5, 8] {
+            assert!(matches!(f.blocks[0].insts[i], Instr::LoadSp { .. }));
+        }
+    }
+
+    #[test]
+    fn spilled_immediates_are_rebuilt_without_stack_homes() {
+        let (mut b, _) = crate::FuncBuilder::new("constant", 0, 1);
+        let value = b.load_imm(0x1234);
+        b.call("opaque", &[value], 0);
+        b.ret(&[value]);
+        let mut f = b.finish();
+        let (mut gpr, mut fpu) = (0, 0);
+        rewrite_spills(&mut f, &[value], &mut gpr, &mut fpu).unwrap();
+        assert_eq!((gpr, fpu), (0, 0));
+        let instructions = f.blocks.iter().flat_map(|b| &b.insts).collect::<Vec<_>>();
+        assert_eq!(
+            instructions
+                .iter()
+                .filter(|i| matches!(i, Instr::LoadImm { value: 0x1234, .. }))
+                .count(),
+            2
+        );
+        assert!(!instructions
+            .iter()
+            .any(|i| matches!(i, Instr::LoadSp { .. } | Instr::StoreSp { .. })));
+        assert!(f.blocks.iter().all(|b| b.insts.len() == b.lines.len()));
+    }
+
+    #[test]
+    fn redefined_values_keep_a_real_spill_home() {
+        let (mut b, _) = crate::FuncBuilder::new("mutable", 0, 1);
+        let value = b.load_imm(2);
+        b.call("opaque", &[value], 0);
+        b.ret(&[value]);
+        let mut f = b.finish();
+        f.blocks[0].insts.insert(
+            2,
+            Instr::LoadImm {
+                dst: value,
+                value: 9,
+            },
+        );
+        f.blocks[0].lines.insert(2, None);
+        let (mut gpr, mut fpu) = (0, 0);
+        rewrite_spills(&mut f, &[value], &mut gpr, &mut fpu).unwrap();
+        assert_eq!((gpr, fpu), (1, 0));
+        assert!(f
+            .blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| matches!(i, Instr::LoadSp { .. })));
+    }
+
     #[test]
     fn spilled_slot_counters_cannot_wrap_before_frame_check() {
         for (class, lanes, start) in [(RegClass::Gpr, 1, 255), (RegClass::Fpu, 4, 254)] {

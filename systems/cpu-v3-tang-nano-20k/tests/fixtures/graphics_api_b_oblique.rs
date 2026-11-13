@@ -98,8 +98,11 @@ fn main() {
         gpu_scene_camera_init_look_at(OB_LOOK.as_array(), eye, target, up, projection),
         85,
     );
-    let roundtrip: Mat3x4 = gpu_scene_camera_get_view(OB_LOOK.as_array());
-    check(gpu_scene_camera_view(OB_LOOK.as_array(), roundtrip), 86);
+    let mut roundtrip: Mat3x4 = gpu_scene_camera_get_view(OB_LOOK.as_array());
+    check(
+        gpu_scene_camera_view(OB_LOOK.as_array(), view_of(&mut roundtrip)),
+        86,
+    );
     oblique_prepare(OB_EULER.as_array(), OB_NATIVE_EULER.as_array());
     oblique_prepare(OB_LOOK.as_array(), OB_NATIVE_LOOK.as_array());
     halt(0x600d);

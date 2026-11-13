@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn unsigned_short_memory_offsets_and_signed_wide_offsets_execute() {
+    let program = memory_offset_program();
+    assert_eq!(run_program_signal(&program, 10_000), 0);
+    let emu = run_core_emu_trace(&program, 20_000);
+    let last = emu.last().unwrap();
+    assert!(last.halted && !last.fault, "{last:?}");
+    assert_eq!(last.halt_signal, 0);
+}
+
+#[test]
+#[ignore = "bounded memory-offset boundary replay against RTL"]
+fn unsigned_short_memory_offsets_match_rtl() {
+    let program = memory_offset_program();
+    let emu = run_core_emu_trace(&program, 20_000);
+    let tb = build_core_cosim_tb(
+        &program,
+        &CpuV3Core::verilog_identity().module_name(),
+        emu.len() + 100,
+    );
+    let rtl = run_core_rtl_trace(&tb);
+    assert_eq!(rtl.len(), emu.len());
+    for (cycle, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        assert!(
+            actual.equal_core(expected),
+            "offset trace differs at cycle {cycle}: {actual:?} vs {expected:?}"
+        );
+    }
+    let last = rtl.last().unwrap();
+    assert!(last.halted && !last.fault, "{last:?}");
+    assert_eq!(last.halt_signal, 0);
+}
+
+#[test]
 #[ignore = "explicit external simulation of the reusable CpuV3 core"]
 fn verify_verilog_with_iverilog() {
     digital_design_hardware::verify_verilog_with_iverilog::<CpuV3Core>().unwrap();

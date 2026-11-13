@@ -839,10 +839,14 @@ impl Model {
         gpu_api_checked(gpu_scene_model_init(gpu_arena_data(slot), transform), 2);
         gpu_api_finish_model(slot)
     }
-    pub fn from_matrices(world: Mat3x4, normal: Mat3x3) -> Self {
+    pub fn from_matrices(mut world: Mat3x4, mut normal: Mat3x3) -> Self {
         let slot = gpu_api_object(true, 2);
         gpu_api_checked(
-            gpu_scene_model_matrices(gpu_arena_data(slot), world, normal),
+            gpu_scene_model_matrices(
+                gpu_arena_data(slot),
+                view_of(&mut world),
+                view_of(&mut normal),
+            ),
             2,
         );
         gpu_api_finish_model(slot)
@@ -1407,8 +1411,11 @@ impl CameraPtr {
         );
         gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
     }
-    pub fn set_view(self, view: Mat3x4) {
-        gpu_api_checked(gpu_scene_camera_view(gpu_arena_data(self.slot), view), 1);
+    pub fn set_view(self, mut view: Mat3x4) {
+        gpu_api_checked(
+            gpu_scene_camera_view(gpu_arena_data(self.slot), view_of(&mut view)),
+            1,
+        );
         gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
     }
 }
@@ -1535,7 +1542,10 @@ impl ModelPtr {
             return;
         }
         let derived = data[GPU_MODEL_DERIVED];
-        gpu_api_checked(gpu_scene_model_matrices(data, world, normal), 2);
+        gpu_api_checked(
+            gpu_scene_model_matrices(data, view_of(&mut world), view_of(&mut normal)),
+            2,
+        );
         data[GPU_MODEL_DERIVED] = derived;
         gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
     }

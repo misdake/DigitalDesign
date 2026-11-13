@@ -374,7 +374,7 @@ always @(*) begin
         integer_subtract = field_d == 4'h1;
     end
     if (opcode == 4'h8 || opcode == 4'h9) begin
-        integer_right = immediate_signed(instruction);
+        integer_right = immediate_unsigned(instruction);
         integer_subtract = 1'b0;
     end
     if (opcode == 4'hB) begin

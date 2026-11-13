@@ -520,3 +520,20 @@ fn caller_spill_rejection_keeps_other_bodies_and_rebuilds_selected_reachability(
         "unrelated expanded body must remain selected"
     );
 }
+
+#[test]
+fn constant_disabled_dependencies_are_removed_after_body_selection() {
+    let source = "const ENABLED:u16=0; #[inline(never)] fn heavy()->u16{77} #[inline(never)] fn disabled()->u16{if ENABLED==0{return 3;}heavy()} #[inline(never)] fn addressed(x:u16)->u16{x+2} fn main(){let target:fn(u16)->u16=addressed;halt(disabled()+target(4));}";
+    for automatic in [false, true] {
+        let mut options = CompilerOptions::default();
+        options.inline.automatic = automatic;
+        let (program, _) = build(source, &options);
+        assert_eq!(run(&program).0, 9);
+        assert!(!program.debug.functions.iter().any(|f| f.name == "heavy"));
+        assert!(program
+            .debug
+            .functions
+            .iter()
+            .any(|f| f.name == "addressed"));
+    }
+}

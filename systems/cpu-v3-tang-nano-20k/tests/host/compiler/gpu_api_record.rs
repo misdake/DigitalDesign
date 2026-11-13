@@ -34,6 +34,10 @@ fn main(){
  check(gpu_window_write_words(0xfc00,64,DATA.as_array(),64));
  i=0;while i<64{DATA[i]=0x7000+i;i+=1;}
  check(gpu_record_begin_pass(0));check(!gpu_record_begin_pass(0));check(!gpu_record_reset(0));check(!gpu_record_seal(0));
+ #[cfg(gpu_debug)] {
+ check(!gpu_record_append_reserved(0,CODE.as_array(),66,DATA.as_array(),0,0));
+ check(!gpu_record_append_reserved(0,CODE.as_array(),2,DATA.as_array(),1,65535));
+ }
  check(gpu_record_append(0,CODE.as_array(),4,DATA.as_array(),16,16));
  check(gpu_record_push_offset(0,32,32)==32);
  check(gpu_record_append(0,CODE.as_array(),2,DATA.as_array(),32,32));

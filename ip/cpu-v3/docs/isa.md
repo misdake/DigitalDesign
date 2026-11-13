@@ -235,9 +235,11 @@ instructions carry no immediate and never consume a prefix.
 
 | Mnemonic | Encoding | Semantics | Prefix |
 | --- | --- | --- | --- |
-| `LOAD rd, [base + off]` | `8 rd base imm4` | `rd = memory[base + sext4(imm4)]` | with PFX12, `off = {payload12, imm4}` |
-| `STORE rs, [base + off]` | `9 rs base imm4` | `memory[base + sext4(imm4)] = rs` | same |
+| `LOAD rd, [base + off]` | `8 rd base imm4` | `rd = memory[base + zext4(imm4)]` | with PFX12, `off = {payload12, imm4}` |
+| `STORE rs, [base + off]` | `9 rs base imm4` | `memory[base + zext4(imm4)] = rs` | same |
 
+Unprefixed memory offsets are unsigned `0..15`; other offsets use `PFX12`.
+The prefixed 16-bit pattern still supports negative displacements.
 Address arithmetic wraps at 16 bits. The final offset selects one of `DSEG0..3`
 with its high two bits and a word within that physical page with its low 14 bits.
 
@@ -611,3 +613,14 @@ operand must be recompiled: an old page value128 would now mean pointer0x0080.
 Opcode2/function7 (formerly DCOPYL) is reserved/invalid; its resident-destination
 operation and compiler intrinsic are removed, without an alias. GPU native ABI
 is unchanged.
+
+
+## Revision 0.11
+
+Unprefixed `LOAD`/`STORE` offsets are zero-extended `u4` (`0..15`) instead of
+signed `i4` (`-8..7`). `PFX12` still supplies the high twelve bits of the full
+16-bit displacement; negative offsets require a prefix. All other immediate
+and addressing semantics are unchanged. Recompile old binaries containing
+unprefixed negative memory offsets; new short offsets 8..15 require matching
+revision 0.11 hardware. The core uses the existing unsigned immediate path,
+with no additional instruction cycle, register or architectural state.

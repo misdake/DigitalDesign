@@ -2210,8 +2210,36 @@ fn init_array_at(
             }
             let (v, _) = expr(l, &r.expr)?.reg(l, &r.expr, "array initializer")?;
             let (v, _) = coerce(l, v, elem, elem, &r.expr)?;
-            for i in 0..n as i16 {
-                l.b.store_mem(base, i, v);
+            if n > 32 {
+                // Keep large fills compact. Eight adjacent stores amortize the
+                // loop without growing code with the declared buffer length.
+                // The initializer above is still evaluated exactly once.
+                let full = (n & !7) as u16;
+                let index = l.b.new_var();
+                let zero = l.b.load_imm(0);
+                l.b.set(index, zero);
+                l.b.while_loop(
+                    |b| {
+                        let i = b.get(index);
+                        b.cmp(i, CmpRhs::Imm(full), CompareOp::Less)
+                    },
+                    |b| {
+                        let i = b.get(index);
+                        let address = b.bin(BinOp::Add, base, i);
+                        for offset in 0..8 {
+                            b.store_mem(address, offset, v);
+                        }
+                        let next = b.bin_imm(BinOp::Add, i, 8);
+                        b.set(index, next);
+                    },
+                );
+                for i in usize::from(full)..n {
+                    l.b.store_mem(base, i as i16, v);
+                }
+            } else {
+                for i in 0..n as i16 {
+                    l.b.store_mem(base, i, v);
+                }
             }
             Ok(())
         }

@@ -1,4 +1,4 @@
-//! Encoding helpers for CpuV3 revision 0.10.
+//! Encoding helpers for CpuV3 revision 0.11.
 
 pub type Word = u16;
 pub type Register = u8;
@@ -698,11 +698,19 @@ pub fn multiply_immediate(dst: Register, value: u8) -> Word {
 }
 
 pub fn load(dst: Register, base: Register, offset: i16) -> Word {
-    0x8000 | (register(dst) << 8) | (register(base) << 4) | signed4(offset)
+    0x8000 | (register(dst) << 8) | (register(base) << 4) | memory_offset4(offset)
 }
 
 pub fn store(src: Register, base: Register, offset: i16) -> Word {
-    0x9000 | (register(src) << 8) | (register(base) << 4) | signed4(offset)
+    0x9000 | (register(src) << 8) | (register(base) << 4) | memory_offset4(offset)
+}
+
+fn memory_offset4(offset: i16) -> Word {
+    assert!(
+        (0..=15).contains(&offset),
+        "CpuV3 short memory offset {offset} is outside 0..15"
+    );
+    offset as Word
 }
 
 pub fn immediate_signed(op: ImmediateOp, dst: Register, value: i16) -> Word {

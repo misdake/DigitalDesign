@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn multiple_returns_restore_saved_registers_and_stack_through_one_tail() {
+    let source = "#[inline(never)] fn child(x:u16)->u16{x+1} #[inline(never)] fn choose(x:u16)->u16{let a=child(x);if x==0{return a+3;}let b=child(x+4);if x==1{return b+a;}child(b)+a} fn main(){halt(choose(0)+choose(1)+choose(2));}";
+    let program = compile(source, CompilerOptions::default());
+    assert_eq!(execute_capped(program.clone(), 100_000).0, 23);
+    let function = program
+        .debug
+        .functions
+        .iter()
+        .find(|f| f.name == "choose")
+        .unwrap();
+    let returns = disasm(&program)
+        .into_iter()
+        .filter(|line| {
+            usize::from(line.address) >= function.addr.0
+                && usize::from(line.address) <= function.addr.1
+                && !line.wide
+                && program.words[usize::from(line.address - program.code_base)]
+                    == cpu_v3::jump_register(14)
+        })
+        .count();
+    assert_eq!(returns, 1, "{}", program.listing);
+}
+
+#[test]
 fn conditional_integer_values_survive_constant_propagation() {
     let conditional = r#"
             fn pick(x:u16)->u16 {let v:u16=if x==0{2}else{1};v+1}

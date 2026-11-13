@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CPU V3 ISA v0.10 — Encoding, ABI, and Addressing</title>
+<title>CPU V3 ISA v0.11 — Encoding, ABI, and Addressing</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -82,7 +82,7 @@
 <body><main>
 
 <section class="hero">
-  <h1>CPU V3 ISA v0.10</h1>
+  <h1>CPU V3 ISA v0.11</h1>
   <p class="subtitle">Instruction encoding, architectural behavior, segmented addressing, faults, and compiler ABI.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
@@ -249,10 +249,10 @@
 <h3>4.5 Memory — opcodes 8 and 9</h3>
 <table>
   <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Prefix</th></tr>
-  <tr><td class="mn">LOAD rd, [base + off]</td><td class="mono">8 rd base imm4</td><td class="sem">rd = memory[base + sext4(imm4)]</td><td>With PFX12, <code>off = {payload12, imm4}</code>.</td></tr>
-  <tr><td class="mn">STORE rs, [base + off]</td><td class="mono">9 rs base imm4</td><td class="sem">memory[base + sext4(imm4)] = rs</td><td>With PFX12, <code>off = {payload12, imm4}</code>.</td></tr>
+  <tr><td class="mn">LOAD rd, [base + off]</td><td class="mono">8 rd base imm4</td><td class="sem">rd = memory[base + zext4(imm4)]</td><td>With PFX12, <code>off = {payload12, imm4}</code>.</td></tr>
+  <tr><td class="mn">STORE rs, [base + off]</td><td class="mono">9 rs base imm4</td><td class="sem">memory[base + zext4(imm4)] = rs</td><td>With PFX12, <code>off = {payload12, imm4}</code>.</td></tr>
 </table>
-<p class="caption">Address arithmetic wraps at 16 bits. Every final offset is ordinary memory in <code>DSEG</code>.</p>
+<p class="caption">Unprefixed memory offsets are unsigned 0..15; PFX12 supplies a full 16-bit displacement, including negative offsets. Address arithmetic wraps at 16 bits. Every final offset is ordinary memory in <code>DSEG</code>.</p>
 
 <h3>4.6 Immediate — opcode A</h3>
 <table>
@@ -454,7 +454,8 @@ approximation make the ordinary-distance boundary approximate.</p>
 <h2 id="revision">9. Revision history</h2>
 <table>
   <tr><th>Revision</th><th>Change</th></tr>
-  <tr><td class="mono">0.10</td><td><b>Current.</b> LCOPY uses two mapped word pointers, supports independent offsets/sets and always writes DRAM, including same-row aliases. Old page-operand binaries require recompilation (128 now means pointer0x0080). Opcode2/function7 is invalid; DCOPYL has no compatibility alias.</td></tr>
+  <tr><td class="mono">0.11</td><td><b>Current.</b> Unprefixed LOAD/STORE offsets are unsigned 0..15. PFX12 retains full 16-bit displacements; negative offsets require a prefix. Other immediate forms are unchanged. Recompile old negative-short-offset binaries and use matching hardware for new offsets 8..15.</td></tr>
+  <tr><td class="mono">0.10</td><td> LCOPY uses two mapped word pointers, supports independent offsets/sets and always writes DRAM, including same-row aliases. Old page-operand binaries require recompilation (128 now means pointer0x0080). Opcode2/function7 is invalid; DCOPYL has no compatibility alias.</td></tr>
   <tr><td class="mono">0.9</td><td>Adds asynchronous 32-byte <code>LCOPY</code>, four independently mapped 32-KiB data pages with legacy bulk DSEG setup, and <code>DCLEANL</code>/<code>DWAIT</code>; function-E selector 7 remains reserved.</td></tr>
   <tr><td class="mono">0.8</td><td>Breaking integer rearrangement with no binary compatibility. Majors 0/1/3/4/5 keep <code>ADD</code>/<code>SUB</code>/<code>AND</code>/<code>OR</code>/<code>XOR</code>; the old three-register <code>MUL</code> (major 2) and register-count <code>SHL</code>/<code>ASR</code> (majors 6/7) move into the destructive shift/multiply family at major 2, joined by <code>SHR</code>, the immediate shifts <code>SHLI</code>/<code>SHRI</code>/<code>ASRI</code> and <code>MULI</code> (both moved from major A), and the unsigned product windows <code>MUL8</code>/<code>MUL16</code>. Major 6 becomes the extended/system family (unary, bit queries, <code>SEQ</code>, destructive <code>SLT</code>/<code>SLTU</code>, pending-test <code>CMPS</code>/<code>CMPU</code>, <code>SIGNAL</code>, special registers, <code>JSEG</code>); <code>NOP</code> is now <code>6000</code>. <code>SIGNAL rs, type4</code> replaces <code>HALT</code> (<code>SIGNAL r0, 0</code> = <code>6C00</code>). Device access moves from major C to major 7 with an unchanged field layout. Major A keeps arithmetic/logic, constant construction at functions 2/3, and comparisons, with <code>CMPEQI</code> renamed <code>SEQI</code>; functions 7/B are <code>LDC</code>/<code>ADDC</code>, indexing a shared symmetric 16-entry constant table (<code>MAG = [8, 16, 24, 32, 64, 128, 256, 512]</code>; indices 0..7 hold <code>MAG[k]</code>, indices 8..15 hold <code>-MAG[k - 8]</code>) that starts just past the <code>0..=15</code> range <code>ADDI</code>/<code>LDI</code>/<code>LDUI</code> already cover, and they never consume <code>PFX12</code>. Amendment (still revision 0.8): <code>ADDI</code>/<code>SUBI</code> read the unprefixed immediate as an unsigned u4 (<code>0..=15</code>) instead of a signed i4 — negative adjustments are <code>SUBI</code>'s job, so the signed range wasted half the encodings; the <code>PFX12</code>-widened forms still add/subtract the full 16-bit immediate pattern. Major B becomes the symmetric control family: six conditional branches (0..5), <code>JREL</code> (6), <code>JALREL</code> (7), six conditional moves (8..D), <code>JREG</code> (<code>B E 0 target</code>), and <code>JALR</code> (<code>B F E target</code>), with <code>JALREL</code>/<code>JALR</code> linking to the fixed <code>r14</code>. <code>IMMHI12</code> is renamed <code>PFX12</code> and carries a neutral 12-bit payload with the closed consumer set above. The FPU was subsequently replaced wholesale by the two-word Q16.16 FPU v2: majors C/D/E now start a 32-bit pair and the old single-word Q8.8 <code>Dxxx</code> encoding is invalid.</td></tr>
   <tr><td class="mono">0.7</td><td>Historical: introduced the blocking fix16 FPU in the <code>D fn a b</code> family; retired and replaced by the two-word Q16.16 FPU v2.</td></tr>

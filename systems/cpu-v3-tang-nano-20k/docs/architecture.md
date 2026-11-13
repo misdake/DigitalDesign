@@ -37,7 +37,7 @@ module namespaces and generated source paths retain their established identity.
 
 `CpuV3System` is the final composition boundary for the Tang Nano 20K target. It connects:
 
-- the revision 0.10 `CpuV3Core` at the Stage 12 microarchitecture level;
+- the revision 0.11 `CpuV3Core` at the Stage 12 microarchitecture level;
 - a two-slot instruction payload queue with two request slots and a four-entry, two-word resolved-target BTC;
 - separate 4-KiB I-cache and D-cache with initialized invalid metadata;
 - the seven-owner CPU V3 memory arbiter, fixed boot loader, and reserved GPU ports;
