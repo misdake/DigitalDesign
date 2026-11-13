@@ -26,6 +26,7 @@ pub(super) struct ApplicationCase {
     pub assets_from_sources: bool,
     pub capture: Option<CaptureProbe>,
     pub hook: bool,
+    pub observe_pose: bool,
     pub edit_modules: Option<fn(&Path, &Path)>,
 }
 impl Default for ApplicationCase {
@@ -37,6 +38,7 @@ impl Default for ApplicationCase {
             assets_from_sources: false,
             capture: None,
             hook: false,
+            observe_pose: true,
             edit_modules: None,
         }
     }
@@ -47,6 +49,7 @@ pub(super) fn prepare_source(
     probe: Option<&str>,
     entry: &str,
     edit: Box<dyn FnOnce(String) -> String>,
+    observe_pose: bool,
 ) -> String {
     source = edit(source);
     if let Ok(alpha) = std::env::var("BLOXORZ_HINT_ALPHA") {
@@ -66,11 +69,13 @@ pub(super) fn prepare_source(
     // Original marker12 is preserved for the independent input-transition trials.
     // Independent geometry fixtures may replace the entire pose function.
     // Observe retained native pose calls without requiring that implementation.
-    source = source.replace(
-        "block_pose(model);",
-        "block_pose(model);world_probe(model);",
-    );
-    source += "\nfn world_probe(model:&Model){let world=model.world();let words:Buf<u16,24>=Buf::new([world.row0.x.lo_bits(),world.row0.x.hi_bits(),world.row0.y.lo_bits(),world.row0.y.hi_bits(),world.row0.z.lo_bits(),world.row0.z.hi_bits(),world.row0.w.lo_bits(),world.row0.w.hi_bits(),world.row1.x.lo_bits(),world.row1.x.hi_bits(),world.row1.y.lo_bits(),world.row1.y.hi_bits(),world.row1.z.lo_bits(),world.row1.z.hi_bits(),world.row1.w.lo_bits(),world.row1.w.hi_bits(),world.row2.x.lo_bits(),world.row2.x.hi_bits(),world.row2.y.lo_bits(),world.row2.y.hi_bits(),world.row2.z.lo_bits(),world.row2.z.hi_bits(),world.row2.w.lo_bits(),world.row2.w.hi_bits()]);signal(13,words.as_ptr().addr());}\n";
+    if observe_pose {
+        source = source.replace(
+            "block_pose(model);",
+            "block_pose(model);world_probe(model);",
+        );
+        source += "\nfn world_probe(model:&Model){let world=model.world();let words:Buf<u16,24>=Buf::new([world.row0.x.lo_bits(),world.row0.x.hi_bits(),world.row0.y.lo_bits(),world.row0.y.hi_bits(),world.row0.z.lo_bits(),world.row0.z.hi_bits(),world.row0.w.lo_bits(),world.row0.w.hi_bits(),world.row1.x.lo_bits(),world.row1.x.hi_bits(),world.row1.y.lo_bits(),world.row1.y.hi_bits(),world.row1.z.lo_bits(),world.row1.z.hi_bits(),world.row1.w.lo_bits(),world.row1.w.hi_bits(),world.row2.x.lo_bits(),world.row2.x.hi_bits(),world.row2.y.lo_bits(),world.row2.y.hi_bits(),world.row2.z.lo_bits(),world.row2.z.hi_bits(),world.row2.w.lo_bits(),world.row2.w.hi_bits()]);signal(13,words.as_ptr().addr());}\n";
+    }
     crate::shared_application_entry::select(&source, entry).unwrap()
 }
 
@@ -145,7 +150,7 @@ pub(super) fn application_case(
     let source = std::fs::read_to_string(source_example.join("rcc/main.rs"))
         .unwrap()
         .replace("\r\n", "\n");
-    let source = prepare_source(source, probe, case.entry, case.edit);
+    let source = prepare_source(source, probe, case.entry, case.edit, case.observe_pose);
     std::fs::write(out.join("compiled-main.rs"), &source).unwrap();
     let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
     let mut dependencies = vec![];
@@ -214,6 +219,13 @@ pub fn profiler_gate(d:Array<u16>)->u16 {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert!(dependencies.contains(&rule_sources.join("bloxorz_core.rs")));
+    if !case.observe_pose {
+        std::fs::write(
+            out.join("source-paths.json"),
+            serde_json::to_vec_pretty(&dependencies).unwrap(),
+        )
+        .unwrap();
+    }
     let frontend_static_words = ir.debug.static_data_end;
     let program = rcc_backend::try_compile(ir, &options, "main").unwrap();
     std::fs::write(

@@ -265,6 +265,33 @@ pub fn blox_scene_face(which:u16,index:u16)->u16 {blox_asset_word(blox_level_met
 """
     manifest['stage_archive']=archive_meta
     manifest['goal_carrier']=dict(apertures=48,step=.02,plane_y=0,texture_phases=4,fallback_levels=[i+1 for i,l in enumerate(all_levels) if not C.applicable(l)],baked_floor_g=232,baked_floor_lod_q3=0,continuous_state_animation=True)
+    constants += r"""
+mod gpu_api;
+use gpu_api::*;
+pub const BLOX_MESH_BYTES:AssetBytes=AssetBytes{
+    first_sector:GPU_RENDERER_MESH_FIRST,sector_count:GPU_RENDERER_MESH_SECTORS,
+    byte_len_lo:(GPU_RENDERER_MESH_SECTORS&511)<<7,byte_len_hi:GPU_RENDERER_MESH_SECTORS>>9,
+};
+pub const BLOX_TEXTURE_BYTES:AssetBytes=AssetBytes{
+    first_sector:GPU_RENDERER_TEXTURE,sector_count:GPU_RENDERER_TEXTURE_SECTORS,
+    byte_len_lo:(GPU_RENDERER_TEXTURE_SECTORS&511)<<7,byte_len_hi:GPU_RENDERER_TEXTURE_SECTORS>>9,
+};
+pub const BLOX_UI_BYTES:AssetBytes=AssetBytes{
+    first_sector:(GPU_RENDERER_ATLAS_BYTE_ADDRESS_HIGH<<9)|(GPU_RENDERER_ATLAS_BYTE_ADDRESS_LOW>>7),
+    sector_count:512,byte_len_lo:65280,byte_len_hi:0,
+};
+pub const BLOX_MESH_DESC:MeshDesc=MeshDesc::from_memory(
+    unsafe{GpuMemory::from_asset(BLOX_MESH_BYTES)},
+    (GPU_RENDERER_MESH_DIRECTORY-GPU_RENDERER_MESH_FIRST)*64+GPU_RENDERER_MESH_DIRECTORY_WORD,
+    GPU_RENDERER_MESH_COUNT,
+);
+pub const BLOX_TEXTURE_DESC:TextureDesc=TextureDesc::from_memory(
+    unsafe{GpuMemory::from_asset(BLOX_TEXTURE_BYTES)},
+    TextureLayout::square(1<<GPU_RENDERER_TEXTURE_LOG2,TextureFormat::Rgb565,
+        if GPU_RENDERER_TEXTURE_MIP!=0 {Mipmaps::Full}else{Mipmaps::BaseOnly}),
+);
+pub const BLOX_UI_DESC:UiAtlasDesc=unsafe{UiAtlasDesc::from_asset(BLOX_UI_BYTES)};
+"""
     (output/'renderer_assets.rs').write_text(constants)
     for r in manifest['resources']:
         data=(output/r['file']).read_bytes();r.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())

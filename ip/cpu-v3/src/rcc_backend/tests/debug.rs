@@ -11,7 +11,7 @@ fn debug_info_covers_modules_lines_and_locals() {
         "#;
     let module = "fn double(v: u16) -> u16 { v + v }";
     let program = rcc::frontend::compile_program_named(
-        "main.rs",
+        "games/My  frame Demo.rs",
         source,
         &CompilerOptions::default(),
         &mut |name| {
@@ -46,5 +46,12 @@ fn debug_info_covers_modules_lines_and_locals() {
     // render/parse round-trip
     let parsed = rcc::parse_debug(&debug.render()).expect("debug info round-trips");
     assert_eq!(parsed.files.len(), debug.files.len());
+    assert_eq!(parsed.files, debug.files);
+    assert_eq!(parsed.functions.len(), debug.functions.len());
+    for (actual, expected) in parsed.functions.iter().zip(&debug.functions) {
+        assert_eq!(actual.name, expected.name);
+        assert_eq!(actual.file, expected.file);
+        assert_eq!(actual.frame_size, expected.frame_size);
+    }
     assert_eq!(parsed.lines.len(), debug.lines.len());
 }

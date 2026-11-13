@@ -26,6 +26,7 @@ pub mod rustc_check;
 pub mod static_assets;
 pub mod static_buffers;
 mod storage;
+mod temporaries;
 mod value_methods;
 /// Parse once on the ordinary function produced by method/resource lowering.
 fn inline_hint(function: &ItemFn) -> Result<crate::InlineHint, syn::Error> {
@@ -681,8 +682,14 @@ fn parse_files(
     let mut names = vec![];
     for (fi, f) in &fns {
         let name = f.sig.ident.to_string();
-        let sig = signature(f, &consts, &globals.type_names, checks.rustc.is_some())
-            .map_err(|error| (*fi, error))?;
+        let sig = signature(
+            f,
+            &consts,
+            &globals.type_names,
+            &globals.structs,
+            checks.rustc.is_some(),
+        )
+        .map_err(|error| (*fi, error))?;
         if sigs.insert(name.clone(), sig).is_some() {
             return Err((
                 *fi,
@@ -965,6 +972,27 @@ fn aggregate_size(
         ));
     }
     word_size(ty, structs, at)
+}
+
+/// One-word values use the ordinary GPR ABI, while retaining addressable
+/// aggregate storage inside a function.
+fn word_aggregate(ty: &Ty, structs: &StructTable) -> bool {
+    match ty {
+        Ty::Struct(name) => structs.get(name).is_some_and(|def| def.size == 1),
+        Ty::Tuple(elems) => elems.len() == 1,
+        Ty::Array(elem, 1) => match elem.as_ref() {
+            Ty::U8
+            | Ty::U16
+            | Ty::I16
+            | Ty::Ptr
+            | Ty::Bool
+            | Ty::ArrayRef(_)
+            | Ty::Enum(_)
+            | Ty::FnPtr { .. } => true,
+            elem => word_aggregate(elem, structs),
+        },
+        _ => false,
+    }
 }
 
 /// alignment of a value type in words: scalars are naturally aligned to one word,
@@ -2384,13 +2412,22 @@ fn aggregate_expression_into(
         ));
     }
     check_unsafe_call(l, call, &sig)?;
-    let args = call_arg_values(l, call)?;
-    let arg_tys: Vec<Ty> = args.iter().map(|(_, t)| t.clone()).collect();
-    check_call_args(call, &sig.params, &arg_tys, &name)?;
-    let mut all = vec![dst];
-    all.extend(args.iter().map(|(v, _)| *v));
-    l.b.call(intern(&name), &all, 0);
-    Ok(true)
+    let preserve = temporaries::carries_address(expected, &l.globals.structs);
+    temporaries::scope(l, preserve, |l| {
+        let args = call_arg_values(l, call)?;
+        let arg_tys: Vec<Ty> = args.iter().map(|(_, t)| t.clone()).collect();
+        check_call_args(call, &sig.params, &arg_tys, &name)?;
+        if word_aggregate(expected, &l.globals.structs) {
+            let registers: Vec<_> = args.iter().map(|(v, _)| *v).collect();
+            let result = l.b.call(intern(&name), &registers, 1)[0];
+            l.b.store_mem(dst, 0, result);
+            return Ok(true);
+        }
+        let mut all = vec![dst];
+        all.extend(args.iter().map(|(v, _)| *v));
+        l.b.call(intern(&name), &all, 0);
+        Ok(true)
+    })
 }
 
 /// initialize the aggregate `ty` at `dst` from `e`: a literal, a copy from
@@ -2583,6 +2620,7 @@ fn signature(
     f: &ItemFn,
     consts: &HashMap<String, (u16, Ty)>,
     structs: &TypeNames,
+    layouts: &StructTable,
     checked: bool,
 ) -> Result<Sig, syn::Error> {
     if !f.sig.generics.params.is_empty() {
@@ -2620,7 +2658,7 @@ fn signature(
         ));
     }
     // an aggregate return is written through a hidden first parameter (sret)
-    if is_aggregate(&ret) && params.len() > 5 {
+    if is_aggregate(&ret) && !word_aggregate(&ret, layouts) && params.len() > 5 {
         return Err(err(
             &f.sig,
             "a function returning an aggregate takes at most 5 parameters: the destination \
@@ -2662,6 +2700,7 @@ struct FnLower<'a> {
     /// Inclusive end line for each lexical scope in `scopes`.
     scope_ends: Vec<u32>,
     debug_locals: Vec<DebugVar>,
+    temporaries: Vec<crate::TemporaryLocal>,
     ret_ty: Ty,
     /// the hidden destination pointer of an aggregate return (sret, spec §14)
     sret_dst: Option<VarId>,
@@ -2914,7 +2953,7 @@ fn lower_fn(
     let sig = sigs.get(&f.sig.ident.to_string()).unwrap().clone();
     // An aggregate return is written through a hidden first parameter: the callee
     // takes one extra GPR argument and returns nothing in registers (spec §14).
-    let sret = is_aggregate(&sig.ret);
+    let sret = is_aggregate(&sig.ret) && !word_aggregate(&sig.ret, &globals.structs);
     let n_rets = if sig.ret == Ty::Unit || sret { 0 } else { 1 };
     let mut param_classes: Vec<crate::RegClass> = if sret {
         vec![crate::RegClass::Gpr]
@@ -2945,6 +2984,7 @@ fn lower_fn(
         scopes: vec![HashMap::new()],
         scope_ends: vec![end_line_of(&f.block)],
         debug_locals: vec![],
+        temporaries: vec![],
         ret_ty: sig.ret.clone(),
         sret_dst,
         dead: false,
@@ -2991,7 +3031,12 @@ fn lower_fn(
         }
         // an address-taken param is copied into a frame slot at entry
         let resident = l.residents.remove(&ident);
-        let kind = if is_aggregate(ty) {
+        let kind = if word_aggregate(ty, &globals.structs) {
+            let slot = l.b.alloc_local_slots(1);
+            let value = l.b.get(*var);
+            l.b.store_local(slot, value);
+            VarKind::Local { slot }
+        } else if is_aggregate(ty) {
             // The caller already owns this argument's isolated snapshot.
             VarKind::Ssa { var: *var }
         } else if scalar_resident(resident.as_ref(), ty) {
@@ -3064,6 +3109,14 @@ fn lower_fn(
         l.b.set_line_hint(line_of(t));
         // an aggregate tail is written into the caller's destination, not a register
         if is_aggregate(&sig.ret) {
+            if word_aggregate(&sig.ret, &globals.structs) {
+                let value = aggregate_word_value(&mut l, t, &sig.ret)?;
+                if !l.dead {
+                    l.b.ret(&[value]);
+                    l.dead = true;
+                }
+                return finish_fn(l, name, file);
+            }
             let dst = l.sret_dst_reg();
             let ret_ty = sig.ret.clone();
             init_aggregate_at(&mut l, dst, &ret_ty, t)
@@ -3153,7 +3206,9 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
             let aggregate = match (
                 &annotated,
                 sret_call_return(l, &init.1)
-                    .or_else(|| peek_type(l, &init.1).filter(|ty| *ty == Ty::ByteSlice))
+                    .or_else(|| {
+                        peek_type(l, &init.1).filter(|ty| l.globals.checked || *ty == Ty::ByteSlice)
+                    })
                     .filter(is_aggregate),
             ) {
                 (Some(ty), _) if is_aggregate(ty) => Some(ty.clone()),
@@ -3264,25 +3319,27 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     // Evaluate the complete RHS before the destination place.
                     // In particular, sret must not alias a view of the old value.
                     let size = aggregate_size(&ty, &l.globals.structs, &a.right)?;
-                    let slot = l.b.try_alloc_local_slots(size).ok_or_else(|| {
-                        err(
+                    return temporaries::scope(l, false, |l| {
+                        let slot = temporaries::allocate(
+                            l,
+                            size,
                             &a.right,
                             "aggregate assignment exceeds the 255-word local frame limit",
-                        )
-                    })?;
-                    let value = l.b.addr_of_local(slot);
-                    init_aggregate_at(l, value, &ty, &a.right)?;
-                    let (base, offset, _, mutable) = place_addr_of(l, &a.left)?;
-                    if !mutable {
-                        return Err(err(
-                            &a.left,
-                            "the aggregate is not mutable (declare it with `let mut`)",
-                        ));
-                    }
-                    let dst = place_addr(l, base, offset);
-                    let len = l.b.load_imm(size);
-                    l.b.call("mem_copy", &[dst, value, len], 0);
-                    return Ok(());
+                        )?;
+                        let value = l.b.addr_of_local(slot);
+                        init_aggregate_at(l, value, &ty, &a.right)?;
+                        let (base, offset, _, mutable) = place_addr_of(l, &a.left)?;
+                        if !mutable {
+                            return Err(err(
+                                &a.left,
+                                "the aggregate is not mutable (declare it with `let mut`)",
+                            ));
+                        }
+                        let dst = place_addr(l, base, offset);
+                        let len = l.b.load_imm(size);
+                        l.b.call("mem_copy", &[dst, value, len], 0);
+                        Ok(())
+                    });
                 }
             }
             if let Expr::Field(f) = a.left.as_ref() {
@@ -3535,6 +3592,12 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         format!("missing return value (expected {})", ret_ty.display()),
                     ));
                 };
+                if word_aggregate(&ret_ty, &l.globals.structs) {
+                    let value = aggregate_word_value(l, e, &ret_ty)?;
+                    l.b.ret(&[value]);
+                    l.dead = true;
+                    return Ok(());
+                }
                 let dst = l.sret_dst_reg();
                 init_aggregate_at(l, dst, &ret_ty, e)?;
                 l.b.ret(&[]);
@@ -5252,6 +5315,79 @@ fn false_cond(l: &mut FnLower) -> BoolExpr {
 // calls and intrinsics
 // ---------------------------------------------------------------------------
 
+/// Read a one-word aggregate at the argument's evaluation point. Direct calls
+/// and single-field constructors need no caller-frame snapshot.
+fn aggregate_word_value(l: &mut FnLower, e: &Expr, ty: &Ty) -> Result<VReg, syn::Error> {
+    match e {
+        Expr::Paren(paren) => return aggregate_word_value(l, &paren.expr, ty),
+        Expr::MethodCall(method) => {
+            if let Some(call) = value_methods::call(l, method) {
+                return aggregate_word_value(l, &Expr::Call(call), ty);
+            }
+        }
+        Expr::Call(call) => {
+            if let Expr::Path(path) = call.func.as_ref() {
+                if let Some((name, sig)) = path.path.get_ident().and_then(|name| {
+                    let name = name.to_string();
+                    l.sigs.get(&name).cloned().map(|sig| (name, sig))
+                }) {
+                    if sig.ret == *ty {
+                        check_unsafe_call(l, call, &sig)?;
+                        let preserve = temporaries::carries_address(ty, &l.globals.structs);
+                        return temporaries::scope(l, preserve, |l| {
+                            let args = call_arg_values(l, call)?;
+                            let types: Vec<_> = args.iter().map(|(_, ty)| ty.clone()).collect();
+                            check_call_args(call, &sig.params, &types, &name)?;
+                            let registers: Vec<_> = args.iter().map(|(value, _)| *value).collect();
+                            Ok(l.b.call(intern(&name), &registers, 1)[0])
+                        });
+                    }
+                }
+            }
+        }
+        Expr::Struct(value) if value.rest.is_none() && value.fields.len() == 1 => {
+            if let Ty::Struct(name) = ty {
+                let def = l.globals.structs[name].clone();
+                if value.path.is_ident(name) && def.fields.len() == 1 {
+                    let field = &def.fields[0];
+                    let initializer = &value.fields[0];
+                    if matches!(&initializer.member, syn::Member::Named(name) if *name == field.name)
+                    {
+                        if is_aggregate(&field.ty) {
+                            return aggregate_word_value(l, &initializer.expr, &field.ty);
+                        }
+                        let (value, from) =
+                            expr(l, &initializer.expr)?.reg(l, e, "struct field")?;
+                        return Ok(coerce(l, value, &from, &field.ty, e)?.0);
+                    }
+                }
+            }
+        }
+        Expr::Path(_) | Expr::Field(_) | Expr::Index(_) => {
+            let (base, offset, actual, _) = place_addr_of(l, e)?;
+            if actual != *ty {
+                return Err(err(
+                    e,
+                    format!("expected {}, got {}", ty.display(), actual.display()),
+                ));
+            }
+            return Ok(l.b.load_mem(base, offset));
+        }
+        _ => {}
+    }
+    temporaries::scope(l, false, |l| {
+        let slot = temporaries::allocate(
+            l,
+            1,
+            e,
+            "aggregate value exceeds the 255-word local frame limit",
+        )?;
+        let destination = l.b.addr_of_local(slot);
+        init_aggregate_at(l, destination, ty, e)?;
+        Ok(l.b.load_mem(destination, 0))
+    })
+}
+
 /// lower a call's arguments to (register, type) pairs, materializing function
 /// items passed as fn pointers
 fn call_arg_values(l: &mut FnLower, call: &syn::ExprCall) -> Result<Vec<(VReg, Ty)>, syn::Error> {
@@ -5277,15 +5413,18 @@ fn call_arg_values(l: &mut FnLower, call: &syn::ExprCall) -> Result<Vec<(VReg, T
                 .and_then(|params| params.get(index))
                 .filter(|ty| is_aggregate(ty))
             {
+                if word_aggregate(ty, &l.globals.structs) {
+                    return Ok((aggregate_word_value(l, a, ty)?, ty.clone()));
+                }
                 // Snapshot each value before evaluating the following argument.
                 // Copying at callee entry would expose later argument side effects.
                 let size = aggregate_size(ty, &l.globals.structs, a)?;
-                let slot = l.b.try_alloc_local_slots(size).ok_or_else(|| {
-                    err(
-                        a,
-                        "aggregate argument storage exceeds the 255-word local frame limit",
-                    )
-                })?;
+                let slot = temporaries::allocate(
+                    l,
+                    size,
+                    a,
+                    "aggregate argument storage exceeds the 255-word local frame limit",
+                )?;
                 let destination = l.b.addr_of_local(slot);
                 init_aggregate_at(l, destination, ty, a)?;
                 return Ok((destination, ty.clone()));
@@ -5323,6 +5462,19 @@ fn check_unsafe_call(l: &mut FnLower, call: &syn::ExprCall, sig: &Sig) -> Result
 }
 
 fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
+    // This generated view is an argument of the enclosing method. Its fresh
+    // receiver must survive through that method, not just this intrinsic.
+    if matches!(call.func.as_ref(), Expr::Path(path) if path.path.is_ident("__rcc_value_view")) {
+        return call_expr_inner(l, call);
+    }
+    let mark = l.temporaries.len();
+    let result = call_expr_inner(l, call);
+    let preserve = matches!(&result, Ok(Val::V(_, ty)) if temporaries::carries_address(ty, &l.globals.structs));
+    temporaries::finish(l, mark, preserve);
+    result
+}
+
+fn call_expr_inner(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     let Expr::Path(p) = call.func.as_ref() else {
         return Err(err(&call.func, "unsupported callee"));
     };
@@ -5391,16 +5543,16 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             }
             if name == "__rcc_value_view" && value_methods::is_value_temporary(l, &r.expr) {
                 // Checked value methods may borrow a fresh temporary. Its storage
-                // stays in this frame and is initialized once before later args.
+                // lasts through the enclosing method and is initialized before later args.
                 // The public view_of intrinsic still requires an existing place.
                 let ty = peek_type(l, &r.expr).expect("recognized value receiver");
                 let size = word_size(&ty, &l.globals.structs, &r.expr)?;
-                let slot = l.b.try_alloc_local_slots(size).ok_or_else(|| {
-                    err(
-                        &r.expr,
-                        "value receiver exceeds the 255-word local frame limit",
-                    )
-                })?;
+                let slot = temporaries::allocate(
+                    l,
+                    size,
+                    &r.expr,
+                    "value receiver exceeds the 255-word local frame limit",
+                )?;
                 if is_aggregate(&ty) {
                     let destination = l.b.addr_of_local(slot);
                     init_aggregate_at(l, destination, &ty, &r.expr)?;

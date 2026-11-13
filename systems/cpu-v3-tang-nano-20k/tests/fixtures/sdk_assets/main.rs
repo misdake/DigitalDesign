@@ -40,20 +40,20 @@ fn main() {
     grid.write_text(2, 1, b"SDK");
     {
         let mut pass = commands.pass(
-            &color,
-            &depth,
+            color.ptr(),
+            depth.ptr(),
             ColorLoad::clear(Rgb565::rgb(8, 8, 24)),
             DepthLoad::clear_far(),
         );
-        pass.set_camera(&camera);
-        pass.set_state(&state);
-        pass.draw(&mesh, &model, &material, &view);
-        pass.draw_ui(&grid, CellRect::full_grid());
+        pass.set_camera(camera.ptr());
+        pass.set_state(state.ptr());
+        pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
+        pass.draw_ui(grid.ptr(), CellRect::full_grid());
     }
     gpu.submit(commands);
     commands = gpu.wait();
     let mut display = Display::open();
-    display.set_next_swap(&color);
+    display.set_next_swap(color.ptr());
     display.wait_vblank();
     halt(0x600d);
 }

@@ -167,17 +167,27 @@ fn main() {
         b"\x00\x01\x02",
     );
     {
-        let mut pass = first.pass(&color, &depth, ColorLoad::load(), DepthLoad::load());
-        pass.set_camera(&euler);
-        pass.set_state(&state);
-        pass.draw_colored(&mesh, &m0, &material);
-        pass.draw_colored(&mesh, &m1, &material);
+        let mut pass = first.pass(
+            color.ptr(),
+            depth.ptr(),
+            ColorLoad::load(),
+            DepthLoad::load(),
+        );
+        pass.set_camera(euler.ptr());
+        pass.set_state(state.ptr());
+        pass.draw_colored(mesh.ptr(), m0.ptr(), material.ptr());
+        pass.draw_colored(mesh.ptr(), m1.ptr(), material.ptr());
     }
     {
-        let mut pass = second.pass(&color, &depth, ColorLoad::load(), DepthLoad::load());
-        pass.set_camera(&look);
-        pass.set_state(&state);
-        pass.draw_colored(&mesh, &m0, &material);
+        let mut pass = second.pass(
+            color.ptr(),
+            depth.ptr(),
+            ColorLoad::load(),
+            DepthLoad::load(),
+        );
+        pass.set_camera(look.ptr());
+        pass.set_state(state.ptr());
+        pass.draw_colored(mesh.ptr(), m0.ptr(), material.ptr());
     }
     mark(1);
     m0.set_pose(Transform {
@@ -207,13 +217,18 @@ fn main() {
     check(replacement_world.row0.w == fix32::from_int(11));
     mark(2);
     {
-        let mut pass = first.pass(&color, &depth, ColorLoad::load(), DepthLoad::load());
-        pass.set_camera(&euler);
-        pass.set_state(&state);
-        pass.draw(&mesh, &replacement, &material, &view);
-        pass.draw(&mesh, &replacement, &material, &rtt);
+        let mut pass = first.pass(
+            color.ptr(),
+            depth.ptr(),
+            ColorLoad::load(),
+            DepthLoad::load(),
+        );
+        pass.set_camera(euler.ptr());
+        pass.set_state(state.ptr());
+        pass.draw(mesh.ptr(), replacement.ptr(), material.ptr(), view.ptr());
+        pass.draw(mesh.ptr(), replacement.ptr(), material.ptr(), rtt.ptr());
         pass.draw_ui(
-            &grid,
+            grid.ptr(),
             CellRect {
                 x: 1,
                 y: 1,
@@ -221,14 +236,14 @@ fn main() {
                 height: 1,
             },
         );
-        pass.draw_colored(&mesh, &replacement, &material);
+        pass.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());
         material.set_uniform_color(Rgba8 {
             r: 1,
             g: 2,
             b: 3,
             a: 8,
         });
-        pass.draw_colored(&mesh, &replacement, &material);
+        pass.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());
     }
     mark(3);
     drop(replacement);

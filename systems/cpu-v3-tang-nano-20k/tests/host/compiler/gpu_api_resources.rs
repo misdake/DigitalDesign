@@ -63,6 +63,36 @@ pub(super) fn parse(
         &mut |_| {},
     )
 }
+
+#[test]
+fn copy_pointers_share_the_object_without_owning_its_lifetime() {
+    let source = r#"mod gpu_api;use gpu_api::*;
+#[derive(Copy,Clone)]pub struct Pointers{first:ModelPtr,second:ModelPtr}
+fn main(){
+ let memory=CommandMemory::new(unsafe{GpuMemory::from_sectors(0x9800,512)},unsafe{GpuMemory::from_sectors(0x9a00,512)});
+ let gpu=Gpu::init(GpuConfig::single(memory));
+ let model=Model::new(Transform::identity());
+ let pointer=model.ptr();let alias=pointer;
+ let pair=Pointers{first:pointer,second:alias};let another=pair;
+ another.second.set_pose(Transform::translation(Vec3::new(fix!(3),fix!(0),fix!(-4))));
+ let first_world=pair.first.world();let second_world=pointer.world();
+ assert!(first_world.row0.w==fix!(3));assert!(second_world.row2.w==fix!(-4));
+ model.release();drop(gpu);halt(0x600d);
+}"#;
+    let options = rcc_backend::CompilerOptions::for_separate_code_and_data_segments(0);
+    let parsed = parse(source, "copy-pointer-lifetime", false).unwrap_or_else(|e| panic!("{e}"));
+    let program = rcc_backend::try_compile(parsed, &options, "main").unwrap();
+    let mut cpu = CpuV3Sim::default();
+    cpu.set_boot_window(&program.words);
+    cpu.attach_device(4, Box::new(IdleGpu));
+    for _ in 0..200_000 {
+        if let StepOutcome::Halted { signal } = cpu.step().unwrap() {
+            assert_eq!(signal, 0x600d);
+            return;
+        }
+    }
+    panic!("copy pointer 200K step bound");
+}
 #[test]
 fn approved_root_value_and_resource_factories_compile() {
     for (label, body) in [
@@ -88,7 +118,7 @@ fn main(){
  let mut gpu:Gpu=Gpu::init(config);let mut first:CommandBuffer=gpu.command_buffer();let second:CommandBuffer=gpu.command_buffer();
  let color:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
  let depth:DepthBuffer=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
- {let pass:Pass=first.pass(&color,&depth,ColorLoad::clear(Rgb565::from_raw(0x1234)),DepthLoad::load());
+ {let pass:Pass=first.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1234)), DepthLoad::load());
  drop(color);drop(depth);
  let replacement:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});drop(replacement);}
  check(first.command_words()==16&&first.push_words()==16);first.invalidate_textures();check(first.command_words()==20);
@@ -203,7 +233,7 @@ fn main(){
  let gpu:Gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:a,command_b:absent});
  let color:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
  let mut display:Display=Display::open();let before=display.frame_index();check(before==65535);
- display.set_next_swap(&color);drop(color);
+ display.set_next_swap(color.ptr());drop(color);
  let replacement:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});drop(replacement);
  display.wait_vblank();check(display.frame_index()!=before);display.wait_vblank();drop(display);drop(gpu);halt(0x600d);
 }"#;
@@ -257,7 +287,7 @@ fn record(mut gpu:Gpu,code:u16){
  let mut cb:CommandBuffer=gpu.command_buffer();
  let color:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
  let depth:DepthBuffer=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
- {let pass:Pass=cb.pass(&color,&depth,ColorLoad::clear(Rgb565::from_raw(code)),DepthLoad::load());}
+ {let pass:Pass=cb.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(code)), DepthLoad::load());}
  drop(color);drop(depth);drop(cb);drop(gpu);
 }
 fn main(){
@@ -304,7 +334,7 @@ fn main(){
  let mut cb:CommandBuffer=gpu.command_buffer();
  let color:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
  let depth:DepthBuffer=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
- let mut i:u16=0;while i<4{let pass:Pass=cb.pass(&color,&depth,ColorLoad::clear(Rgb565::from_raw(0x1234+i)),DepthLoad::load());i+=1;}
+ let mut i:u16=0;while i<4{let pass:Pass=cb.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1234+i)), DepthLoad::load());i+=1;}
  halt(0xbad);
 }"#;
     for enabled in [false, true] {
@@ -399,11 +429,11 @@ fn main(){
  let mut gpu:Gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:a,command_b:absent});let mut cb:CommandBuffer=gpu.command_buffer();
  let depth:DepthBuffer=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,1600)});
  let color_a:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
- {let pass:Pass=cb.pass(&color_a,&depth,ColorLoad::clear(Rgb565::from_raw(0x1234)),DepthLoad::load());}drop(color_a);
+ {let pass:Pass=cb.pass(color_a.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1234)), DepthLoad::load());}drop(color_a);
  let color_b:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,1600)});
- {let pass:Pass=cb.pass(&color_b,&depth,ColorLoad::load(),DepthLoad::clear(0xffff));}drop(color_b);
+ {let pass:Pass=cb.pass(color_b.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::clear(0xffff));}drop(color_b);
  let again:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
- {let pass:Pass=cb.pass(&again,&depth,ColorLoad::load(),DepthLoad::load());}drop(again);drop(depth);drop(cb);drop(gpu);halt(0x600d);
+ {let pass:Pass=cb.pass(again.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());}drop(again);drop(depth);drop(cb);drop(gpu);halt(0x600d);
 }"#;
     for enabled in [false, true] {
         let parsed =

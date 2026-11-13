@@ -2,8 +2,9 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
+mod gpu_board;
 mod gpu_demo_api;
-mod gpu_board;use gpu_board::*;
+use gpu_board::*;
 use gpu_demo_api::*;
 pub fn same_cb_rtt_once() {
     let mut gpu = Gpu::init(board_gpu_config());
@@ -37,31 +38,36 @@ pub fn same_cb_rtt_once() {
     commands.invalidate_textures();
     {
         let mut pass = commands.pass(
-            &source,
-            &source_depth,
+            source.ptr(),
+            source_depth.ptr(),
             ColorLoad::clear(Rgb565::from_raw(0xf800)),
             DepthLoad::clear(65535),
         );
-        pass.set_camera(&camera);
-        pass.set_state(&state);
-        pass.draw(&pattern, &producer, &material, &ordinary);
+        pass.set_camera(camera.ptr());
+        pass.set_state(state.ptr());
+        pass.draw(
+            pattern.ptr(),
+            producer.ptr(),
+            material.ptr(),
+            ordinary.ptr(),
+        );
     }
     commands.invalidate_textures();
     {
         let view = source.texture_view();
         let mut pass = commands.pass(
-            &color,
-            &depth,
+            color.ptr(),
+            depth.ptr(),
             ColorLoad::clear(Rgb565::from_raw(0)),
             DepthLoad::clear(65535),
         );
-        pass.set_camera(&camera);
-        pass.set_state(&state);
-        pass.draw(&screen, &consumer, &material, &view);
+        pass.set_camera(camera.ptr());
+        pass.set_state(state.ptr());
+        pass.draw(screen.ptr(), consumer.ptr(), material.ptr(), view.ptr());
     }
     gpu.submit(commands);
     commands = gpu.wait();
-    display.set_next_swap(&color);
+    display.set_next_swap(color.ptr());
     display.wait_vblank();
     halt(0x600d);
 }

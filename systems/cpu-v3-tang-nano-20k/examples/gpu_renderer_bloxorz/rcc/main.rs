@@ -4,9 +4,14 @@ mod device_abi;
 use device_abi::*;
 mod gpu_api;
 use gpu_api::*;
-mod gpu_demo_api;
-mod gpu_board;use gpu_board::*;
-use gpu_demo_api::*;
+mod scene_resources;
+use scene_resources::*;
+mod ui_text;
+use ui_text::*;
+mod game_assets;
+use game_assets::*;
+mod gpu_board;
+use gpu_board::*;
 mod profiler_clock;
 use profiler_clock::*;
 mod gamepad;
@@ -38,7 +43,7 @@ fn scene_color_load(
     target: &ColorBuffer,
 ) -> ColorLoad {
     if BACKGROUND[0u16] != 0 {
-        commands.copy_color(source, target);
+        commands.copy_color(source.ptr(), target.ptr());
         return ColorLoad::load();
     }
     ColorLoad::clear(Rgb565::from_raw(0x2924))
@@ -61,9 +66,9 @@ fn bit_channel(mut bit: u16) -> u16 {
     channel
 }
 fn tile_pose(index: u16, y: fix32) -> Transform {
-    let half = fix32::from_words(32768, 0);
-    demo_pose(
-        demo_point(
+    let half = fix!(0.5);
+    Transform::new(
+        Vec3::new(
             fix32::from_int((index % LEVEL[0u16]) as i16)
                 - fix32::from_int(LEVEL[0u16] as i16) * half
                 + half,
@@ -72,22 +77,22 @@ fn tile_pose(index: u16, y: fix32) -> Transform {
                 - fix32::from_int(LEVEL[1u16] as i16) * half
                 + half,
         ),
-        demo_zero(),
-        demo_point(half, half, half),
+        Vec3::zero(),
+        Vec3::new(half, half, half),
     )
 }
 
 fn draw_ground_batches(pass: &mut Pass, model: &mut Model, material: &mut Material) {
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     let y_scale = if ground_global_quantization() {
-        fix32::from_words(8192, 0)
+        fix!(0.125)
     } else {
         half
     };
-    model.set_pose(demo_pose(
-        demo_zero(),
-        demo_zero(),
-        demo_point(half, y_scale, half),
+    model.set_pose(Transform::new(
+        Vec3::zero(),
+        Vec3::zero(),
+        Vec3::new(half, y_scale, half),
     ));
     if ground_global_quantization() {
         // All source face normals are axial. This normalized inverse-transpose
@@ -117,7 +122,7 @@ fn draw_ground_batches(pass: &mut Pass, model: &mut Model, material: &mut Materi
         );
     }
     material.set_unlit(false);
-    let atlas = demo_texture();
+    let atlas = game_texture();
     let view = clamped_texture_view(&atlas);
     let marker = marker_texture();
     let marker_view = clamped_texture_view(&marker);
@@ -133,7 +138,7 @@ fn draw_ground_batches(pass: &mut Pass, model: &mut Model, material: &mut Materi
                     a: 255,
                 });
             } else if group == 1 {
-                material.set_uniform_color(demo_white());
+                material.set_uniform_color(Rgba8::white());
             } else {
                 material.set_uniform_color(Rgba8 {
                     r: 139,
@@ -162,11 +167,11 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
         b: 121,
         a: 255,
     });
-    let texture = demo_texture();
+    let texture = game_texture();
     let view = clamped_texture_view(&texture);
     let marker_texture = marker_texture();
     let marker_view = clamped_texture_view(&marker_texture);
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     let carrier = goal_carrier_enabled();
     let count = blox_scene_face_count(MOTION[6u16]);
     let mut i: u16 = 0;
@@ -191,7 +196,7 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
             continue;
         }
         let top = ((face >> 10) & 7) == 0 && level_field(index, 0) == 7;
-        let mesh = demo_mesh_part(
+        let mesh = game_mesh_part(
             if top {
                 MARKED_SPLIT_FIRST + (face >> 13)
             } else {
@@ -199,18 +204,18 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
             },
             1,
         );
-        model.set_pose(demo_pose(
-            demo_point(
+        model.set_pose(Transform::new(
+            Vec3::new(
                 fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half + half,
                 fix32::zero(),
                 fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half + half,
             ),
-            demo_zero(),
-            demo_point(half, half, half),
+            Vec3::zero(),
+            Vec3::new(half, half, half),
         ));
         material.set_unlit(false);
         if top {
-            material.set_uniform_color(demo_white());
+            material.set_uniform_color(Rgba8::white());
             counted_draw(pass, &mesh, model, material, &marker_view);
         } else {
             if level_field(index, 0) == 7 {
@@ -232,10 +237,10 @@ fn draw_floor(pass: &mut Pass, model: &mut Model, material: &mut Material) {
         }
         i += 1;
     }
-    model.set_pose(demo_pose(
-        demo_zero(),
-        demo_zero(),
-        demo_point(half, half, half),
+    model.set_pose(Transform::new(
+        Vec3::zero(),
+        Vec3::zero(),
+        Vec3::new(half, half, half),
     ));
 }
 
@@ -326,12 +331,12 @@ fn draw_bridge_group(
         let before = DRAW_CALLS[0u16];
         pass.begin_prepared_part(part);
         if transparent {
-            pass.set_state(hint_state);
+            pass.set_state(hint_state.ptr());
         } else {
-            pass.set_state(state);
+            pass.set_state(state.ptr());
         }
         draw_bridges(pass, model, material, transparent);
-        pass.set_state(state);
+        pass.set_state(state.ptr());
         pass.end_prepared_group();
         BRIDGE_COMMANDS[count] = DRAW_CALLS[0u16] - before;
     }
@@ -342,7 +347,7 @@ fn visible_tile_side(i: u16) -> u16 {
         blox_level_meta(MOTION[6u16], 4),
         blox_level_meta(MOTION[6u16], 5),
     );
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     let center = fix32::from_int((i % LEVEL[0u16]) as i16)
         - fix32::from_int(LEVEL[0u16] as i16) * half
         + half;
@@ -353,7 +358,7 @@ fn visible_tile_side(i: u16) -> u16 {
     }
 }
 fn draw_bridges(pass: &mut Pass, model: &mut Model, material: &mut Material, transparent: bool) {
-    let texture = demo_texture();
+    let texture = game_texture();
     let view = clamped_texture_view(&texture);
     let mut i: u16 = 0;
     while i < LEVEL[6u16] {
@@ -366,7 +371,7 @@ fn draw_bridges(pass: &mut Pass, model: &mut Model, material: &mut Material, tra
             let bit = level_field(i, 1);
             let active = visual_mask() & bit != 0;
             let variant = ((i % LEVEL[0u16]) * 3 + div_u16(i, LEVEL[0u16]) * 5) % 4;
-            let mesh = demo_mesh_part(
+            let mesh = game_mesh_part(
                 if active {
                     BRIDGE_TILE_FIRST + variant + visible_tile_side(i) * 4
                 } else {
@@ -400,12 +405,12 @@ fn draw_fragile_batches(pass: &mut Pass, model: &mut Model, material: &mut Mater
     let texture = marker_texture();
     let view = clamped_texture_view(&texture);
     material.set_unlit(false);
-    material.set_uniform_color(demo_white());
-    let half = fix32::from_words(32768, 0);
-    model.set_pose(demo_pose(
-        demo_zero(),
-        demo_zero(),
-        demo_point(half, half, half),
+    material.set_uniform_color(Rgba8::white());
+    let half = fix!(0.5);
+    model.set_pose(Transform::new(
+        Vec3::zero(),
+        Vec3::zero(),
+        Vec3::new(half, half, half),
     ));
     let mesh = fragile_mesh(owner);
     counted_draw(pass, &mesh, model, material, &view);
@@ -438,7 +443,7 @@ fn draw_switch_tile(
             }
         }
         if kind == 3 {
-            let mesh = demo_mesh_part(
+            let mesh = game_mesh_part(
                 MARKED_SOFT_FIRST
                     + (channel & 7) * 2
                     + if active { 1u16 } else { 0u16 }
@@ -449,15 +454,15 @@ fn draw_switch_tile(
             if y < fix32::from_words(983, 0) {
                 y = fix32::from_words(983, 0);
             }
-            material.set_uniform_color(demo_white());
+            material.set_uniform_color(Rgba8::white());
             model.set_pose(tile_pose(i, y));
             counted_draw(pass, &mesh, model, material, &marked_view);
         } else {
-            let base = demo_mesh_part(
+            let base = game_mesh_part(
                 MARKED_HEAVY_FIRST + (channel & 7) * 2 + if active { 1u16 } else { 0u16 },
                 1,
             );
-            material.set_uniform_color(demo_white());
+            material.set_uniform_color(Rgba8::white());
             model.set_pose(tile_pose(i, fix32::zero()));
             counted_draw(pass, &base, model, material, &marked_view);
         }
@@ -495,8 +500,8 @@ fn draw_switches(
             cache[2 + j * 3] = key;
             cache[3 + j * 3] = DRAW_CALLS[0u16] - before;
         }
-        pass.set_camera(camera);
-        pass.set_state(state);
+        pass.set_camera(camera.ptr());
+        pass.set_state(state.ptr());
         j += 1;
     }
 }
@@ -526,13 +531,13 @@ fn prepare_block(model: &mut Model) {
 
 fn draw_block(pass: &mut Pass, block: &Mesh, model: &mut Model, material: &Material) {
     if block_visible() {
-        let texture = demo_texture();
+        let texture = game_texture();
         let view = clamped_texture_view(&texture);
         counted_draw(pass, block, model, material, &view);
     }
 }
 fn level_eye(which: u16) -> Vec3 {
-    demo_point(
+    Vec3::new(
         fix32::from_words(blox_level_meta(which, 4), blox_level_meta(which, 5)),
         fix32::from_words(blox_level_meta(which, 6), blox_level_meta(which, 7)),
         fix32::from_words(blox_level_meta(which, 8), blox_level_meta(which, 9)),
@@ -551,8 +556,8 @@ fn level_projection(which: u16) -> Projection {
 fn game_camera() -> Camera {
     let mut camera = Camera::look_at(
         level_eye(0),
-        demo_point(fix32::zero(), fix32::from_words(39322, 0), fix32::zero()),
-        demo_point(fix32::zero(), fix32::from_int(1), fix32::zero()),
+        Vec3::new(fix32::zero(), fix!(0.6), fix32::zero()),
+        Vec3::new(fix32::zero(), fix32::from_int(1), fix32::zero()),
         level_projection(0),
     );
     web_camera_axes(&mut camera);
@@ -620,74 +625,6 @@ fn capture_buttons(elapsed: u16) -> u16 {
     }
     0
 }
-fn game_floor_model() -> Model {
-    let half = fix32::from_words(32768, 0);
-    Model::new(demo_pose(
-        demo_zero(),
-        demo_zero(),
-        demo_point(half, half, half),
-    ))
-}
-fn game_plain_model() -> Model {
-    Model::new(demo_pose(demo_zero(), demo_zero(), demo_scale()))
-}
-fn game_screen_model() -> Model {
-    let one = fix32::from_int(1);
-    Model::new(demo_pose(
-        demo_point(fix32::zero(), fix32::zero(), -one),
-        demo_zero(),
-        demo_point(one, fix32::from_words(39322, 0), one),
-    ))
-}
-
-fn game_screen_state() -> RenderState {
-    let screen_state = RenderState::new(RenderStateDesc {
-        depth: DepthFunc::Always,
-        depth_write: false,
-        blend: BlendMode::SrcOver,
-        filter: TextureFilter::Nearest,
-        lighting: demo_lighting(demo_point(fix32::zero(), fix32::zero(), fix32::from_int(1))),
-    });
-    screen_state
-}
-fn game_solid_state() -> RenderState {
-    let state = RenderState::new(RenderStateDesc {
-        depth: DepthFunc::Less,
-        depth_write: true,
-        blend: BlendMode::Replace,
-        filter: TextureFilter::Bilinear,
-        lighting: demo_lighting(demo_point(
-            fix32::from_words(16711, 0),
-            fix32::from_words(33422, 0),
-            fix32::from_words(16711, 0),
-        )),
-    });
-    state
-}
-fn game_hint_state() -> RenderState {
-    let hint_state = RenderState::new(RenderStateDesc {
-        depth: DepthFunc::Less,
-        depth_write: false,
-        blend: BlendMode::SrcOver,
-        filter: TextureFilter::Bilinear,
-        lighting: demo_lighting(demo_point(
-            fix32::from_words(16711, 0),
-            fix32::from_words(33422, 0),
-            fix32::from_words(16711, 0),
-        )),
-    });
-    hint_state
-}
-fn game_shadow_state() -> RenderState {
-    let shadow_state = RenderState::new(RenderStateDesc {
-        depth: DepthFunc::Always,
-        depth_write: false,
-        blend: BlendMode::SrcOver,
-        filter: TextureFilter::Nearest,
-        lighting: demo_lighting(demo_point(fix32::zero(), fix32::zero(), fix32::from_int(1))),
-    });
-    shadow_state
-}
 
 fn submit_game(
     gpu: &mut Gpu,
@@ -727,13 +664,13 @@ fn record_static_scene(
 ) {
     let state = game_solid_state();
     let mut floor_model = game_floor_model();
-    let mut floor_material = demo_material(demo_white(), false);
+    let mut floor_material = game_material(Rgba8::white(), false);
     let mut pad_model = game_plain_model();
-    let mut pad_material = demo_material(demo_white(), false);
+    let mut pad_material = game_material(Rgba8::white(), false);
     let load = scene_color_load(commands, background, color);
-    let mut pass = commands.pass(color, depth, load, DepthLoad::clear(65535));
-    pass.set_camera(camera);
-    pass.set_state(&state);
+    let mut pass = commands.pass(color.ptr(), depth.ptr(), load, DepthLoad::clear(65535));
+    pass.set_camera(camera.ptr());
+    pass.set_state(state.ptr());
     draw_floor(&mut pass, &mut floor_model, &mut floor_material);
     draw_pad_well(&mut pass, &mut pad_model, &mut pad_material, true);
     draw_pad_well(&mut pass, &mut pad_model, &mut pad_material, false);
@@ -750,7 +687,7 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
         },
         b"LEVEL ",
     );
-    demo_number(grid, 6, 0, 2, MOTION[6u16] + 1);
+    text_u16_field(grid, 6, 0, 2, MOTION[6u16] + 1);
     if HUD[0u16] != 0 {
         grid.write(
             CellRect {
@@ -771,7 +708,7 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
             b"MS ",
         );
         if HUD[2u16] != 0 {
-            demo_number(grid, 5, 1, 4, HUD[1u16]);
+            text_u16_field(grid, 5, 1, 4, HUD[1u16]);
         } else {
             grid.write(
                 CellRect {
@@ -784,7 +721,7 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
             );
         }
         if FRAME_RENDER_MS[1u16] != 0 {
-            demo_number(grid, 3, 2, 5, FRAME_RENDER_MS[0u16]);
+            text_u16_field(grid, 3, 2, 5, FRAME_RENDER_MS[0u16]);
         } else {
             grid.write(
                 CellRect {
@@ -819,39 +756,7 @@ fn draw_hud(pass: &mut Pass, grid: &mut UiGrid) {
         );
     }
 }
-fn game_shadow_material() -> Material {
-    return demo_material(
-        Rgba8 {
-            r: 10,
-            g: 13,
-            b: 18,
-            a: 87,
-        },
-        true,
-    );
-}
-fn game_idle_material() -> Material {
-    demo_material(
-        Rgba8 {
-            r: 154,
-            g: 147,
-            b: 140,
-            a: 255,
-        },
-        false,
-    )
-}
-fn game_floor_material() -> Material {
-    demo_material(
-        Rgba8 {
-            r: 82,
-            g: 100,
-            b: 121,
-            a: 255,
-        },
-        false,
-    )
-}
+
 fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let mut gpu = Gpu::init(board_gpu_config());
     let mut commands = gpu.command_buffer();
@@ -874,8 +779,8 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
     let background =
         ColorBuffer::from_memory(unsafe { GpuMemory::from_sectors(BLOX_BACKGROUND_SECTOR, 1600) });
     let offscreen_view = offscreen.texture_view();
-    let color_a = board_color_a();
-    let color_b = board_color_b();
+    let color_a = ColorBuffer::from_surface(BOARD_COLOR_A);
+    let color_b = ColorBuffer::from_surface(BOARD_COLOR_B);
     let depth = board_depth();
     let static_color = ColorBuffer::from_memory(unsafe {
         GpuMemory::from_sectors(BLOX_STATIC_COLOR_SECTOR, 2048)
@@ -884,43 +789,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         GpuMemory::from_sectors(BLOX_STATIC_DEPTH_SECTOR, 2048)
     });
     let mut display = Display::open();
-    let mut camera = game_camera();
+    let camera = game_camera();
     let mut camera_level: u16 = 0;
-    let screen_camera = demo_camera();
-    let screen_state = game_screen_state();
-    let state = game_solid_state();
-    let hint_state = game_hint_state();
-    let block = demo_mesh_part(BLOCK_FIRST, BLOCK_COUNT);
-    let pad = demo_mesh_part(PAD_FIRST, PAD_COUNT);
-    let shadow_mesh = demo_mesh_part(SHADOW_FIRST, SHADOW_COUNT);
-    let mut shadow_model = game_plain_model();
-    let shadow_material = game_shadow_material();
-    let shadow_state = game_shadow_state();
-    let screen = demo_mesh_part(SCREEN_FIRST, SCREEN_COUNT);
-    let mut floor_model = game_floor_model();
-    let mut block_model = game_plain_model();
-    let mut idle_model = game_plain_model();
-    let idle_material = game_idle_material();
-    let mut pad_model = game_plain_model();
-    let screen_model = game_screen_model();
-    let material = demo_material(demo_white(), false);
-    let mut floor_material = game_floor_material();
-    let entry_hatch_material = pad_part_material(0);
-    let goal_hatch_material = pad_part_material(1);
-    let entry_ring_material = pad_part_material(3);
-    let goal_ring_material = pad_part_material(7);
-    let carrier_material = pad_part_material(2);
-    let mut entry_hatch_model = game_plain_model();
-    let mut goal_hatch_model = game_plain_model();
-    let mut carrier_model = game_plain_model();
-    let mut entry0 = game_plain_model();
-    let mut entry1 = game_plain_model();
-    let mut entry2 = game_plain_model();
-    let mut entry3 = game_plain_model();
-    let mut goal0 = game_plain_model();
-    let mut goal1 = game_plain_model();
-    let mut goal2 = game_plain_model();
-    let mut goal3 = game_plain_model();
+    let mut scene = SceneResources::new(camera);
     let pad_owner = malloc(15);
     let mut pad_cache = unsafe { pad_owner.as_u16_array() };
     let mut cache_word: u16 = 0;
@@ -928,11 +799,11 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         pad_cache[cache_word] = 0;
         cache_word += 1;
     }
-    let pad_texture = demo_texture();
+    let pad_texture = game_texture();
     let pad_view = clamped_texture_view(&pad_texture);
-    let mut hatch_material = demo_material(demo_white(), false);
-    let mut tint_material = demo_material(demo_white(), true);
-    let mut grid = demo_grid(false);
+    let mut hatch_material = game_material(Rgba8::white(), false);
+    let mut tint_material = game_material(Rgba8::white(), true);
+    let mut grid = game_ui_grid();
     session_init();
     pad_cache_update(pad_cache);
     let mut carrier_texture = pad_carrier_texture();
@@ -986,12 +857,12 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         if camera_level != MOTION[6u16] {
             scene_valid = false;
             camera_level = MOTION[6u16];
-            camera.set_look_at_y_up(
+            scene.camera.set_look_at_y_up(
                 level_eye(camera_level),
-                demo_point(fix32::zero(), fix32::from_words(39322, 0), fix32::zero()),
+                Vec3::new(fix32::zero(), fix!(0.6), fix32::zero()),
             );
-            camera.set_projection(level_projection(camera_level));
-            web_camera_axes(&mut camera);
+            scene.camera.set_projection(level_projection(camera_level));
+            web_camera_axes(&mut scene.camera);
         }
         let fade = fading();
         let color = if fade { tint() } else { 255u16 };
@@ -1004,8 +875,8 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         }
         DRAW_CALLS[0u16] = 0;
         if automatic_capture {
-            demo_number(&mut grid, 0, 0, 4, GAME[5u16]);
-            demo_number(&mut grid, 6, 0, 1, input.connected);
+            text_u16_field(&mut grid, 0, 0, 4, GAME[5u16]);
+            text_u16_field(&mut grid, 6, 0, 1, input.connected);
         }
         if prepare_scene {
             sync_bridge_group(&mut commands);
@@ -1042,7 +913,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     &static_color,
                     &static_depth,
                     &background,
-                    &camera,
+                    &scene.camera,
                     fragile_owner,
                 );
                 let build_resume = profiler_resume_epoch();
@@ -1054,11 +925,15 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                 scene_valid = true;
             }
             scene_commands.reset();
-            scene_commands.copy_color(&static_color, target);
-            scene_commands.copy_depth(&static_depth, &depth);
+            scene_commands.copy_color(static_color.ptr(), target.ptr());
+            scene_commands.copy_depth(static_depth.ptr(), depth.ptr());
             {
-                let pass =
-                    scene_commands.pass(target, &depth, ColorLoad::load(), DepthLoad::load());
+                let pass = scene_commands.pass(
+                    target.ptr(),
+                    depth.ptr(),
+                    ColorLoad::load(),
+                    DepthLoad::load(),
+                );
             }
             let scene_resume = profiler_resume_epoch();
             gpu.submit(scene_commands);
@@ -1067,33 +942,38 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             }
             commands.reset();
             {
-                let mut pass = commands.pass(target, &depth, ColorLoad::load(), DepthLoad::load());
-                pass.set_camera(&camera);
-                pass.set_state(&state);
-                prepare_block(&mut block_model);
+                let mut pass = commands.pass(
+                    target.ptr(),
+                    depth.ptr(),
+                    ColorLoad::load(),
+                    DepthLoad::load(),
+                );
+                pass.set_camera(scene.camera.ptr());
+                pass.set_state(scene.state.ptr());
+                prepare_block(&mut scene.block_model);
                 draw_bridge_group(
                     &mut pass,
-                    &mut floor_model,
-                    &mut floor_material,
-                    &state,
-                    &hint_state,
+                    &mut scene.floor_model,
+                    &mut scene.floor_material,
+                    &scene.state,
+                    &scene.hint_state,
                     false,
                 );
-                pass.set_camera(&camera);
-                pass.set_state(&state);
+                pass.set_camera(scene.camera.ptr());
+                pass.set_state(scene.state.ptr());
                 draw_switches(
                     &mut pass,
-                    &mut pad_model,
+                    &mut scene.pad_model,
                     &mut hatch_material,
-                    &camera,
-                    &state,
+                    &scene.camera,
+                    &scene.state,
                 );
                 if begin_pad_group(&mut pass, pad_cache) {
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut entry_hatch_model,
-                        &entry_hatch_material,
+                        &scene.pad,
+                        &mut scene.entry_hatch_model,
+                        &scene.entry_hatch_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1102,9 +982,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut entry0,
-                        &entry_ring_material,
+                        &scene.pad,
+                        &mut scene.entry0,
+                        &scene.entry_ring_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1113,9 +993,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut entry1,
-                        &entry_ring_material,
+                        &scene.pad,
+                        &mut scene.entry1,
+                        &scene.entry_ring_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1124,9 +1004,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut entry2,
-                        &entry_ring_material,
+                        &scene.pad,
+                        &mut scene.entry2,
+                        &scene.entry_ring_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1135,9 +1015,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut entry3,
-                        &entry_ring_material,
+                        &scene.pad,
+                        &mut scene.entry3,
+                        &scene.entry_ring_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1146,9 +1026,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut goal_hatch_model,
-                        &goal_hatch_material,
+                        &scene.pad,
+                        &mut scene.goal_hatch_model,
+                        &scene.goal_hatch_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1157,9 +1037,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut carrier_model,
-                        &carrier_material,
+                        &scene.pad,
+                        &mut scene.carrier_model,
+                        &scene.carrier_material,
                         &carrier_view,
                         PadPart {
                             cache: pad_cache,
@@ -1168,9 +1048,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut goal0,
-                        &goal_ring_material,
+                        &scene.pad,
+                        &mut scene.goal0,
+                        &scene.goal_ring_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1179,9 +1059,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut goal1,
-                        &goal_ring_material,
+                        &scene.pad,
+                        &mut scene.goal1,
+                        &scene.goal_ring_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1190,9 +1070,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut goal2,
-                        &goal_ring_material,
+                        &scene.pad,
+                        &mut scene.goal2,
+                        &scene.goal_ring_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1201,9 +1081,9 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     draw_pad_part(
                         &mut pass,
-                        &pad,
-                        &mut goal3,
-                        &goal_ring_material,
+                        &scene.pad,
+                        &mut scene.goal3,
+                        &scene.goal_ring_material,
                         &pad_view,
                         PadPart {
                             cache: pad_cache,
@@ -1212,38 +1092,48 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     );
                     end_pad_group(&mut pass, pad_cache);
                 }
-                pass.set_camera(&camera);
-                pass.set_state(&shadow_state);
+                pass.set_camera(scene.camera.ptr());
+                pass.set_state(scene.shadow_state.ptr());
                 draw_shadow(
                     &mut pass,
-                    &shadow_mesh,
-                    &mut shadow_model,
-                    &shadow_material,
-                    &block_model,
+                    &scene.shadow_mesh,
+                    &mut scene.shadow_model,
+                    &scene.shadow_material,
+                    &scene.block_model,
                 );
                 if split_visual() {
-                    idle_cube_pose(&mut idle_model);
+                    idle_cube_pose(&mut scene.idle_model);
                     draw_shadow(
                         &mut pass,
-                        &shadow_mesh,
-                        &mut shadow_model,
-                        &shadow_material,
-                        &idle_model,
+                        &scene.shadow_mesh,
+                        &mut scene.shadow_model,
+                        &scene.shadow_material,
+                        &scene.idle_model,
                     );
                 }
-                pass.set_state(&state);
-                draw_block(&mut pass, &block, &mut block_model, &material);
+                pass.set_state(scene.state.ptr());
+                draw_block(
+                    &mut pass,
+                    &scene.block,
+                    &mut scene.block_model,
+                    &scene.material,
+                );
                 if split_visual() {
-                    draw_block(&mut pass, &block, &mut idle_model, &idle_material);
+                    draw_block(
+                        &mut pass,
+                        &scene.block,
+                        &mut scene.idle_model,
+                        &scene.idle_material,
+                    );
                 }
                 // Opaque geometry and receiver shadows are complete. Inactive
                 // bridge hints now test opaque depth without writing it.
                 draw_bridge_group(
                     &mut pass,
-                    &mut floor_model,
-                    &mut floor_material,
-                    &state,
-                    &hint_state,
+                    &mut scene.floor_model,
+                    &mut scene.floor_material,
+                    &scene.state,
+                    &scene.hint_state,
                     true,
                 );
                 if automatic_capture {
@@ -1276,7 +1166,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         }
         if fade {
             if automatic_capture {
-                demo_number(&mut grid, 0, 0, 4, 1000 + color);
+                text_u16_field(&mut grid, 0, 0, 4, 1000 + color);
             }
             commands.reset();
             if capture {
@@ -1288,7 +1178,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
             color_load = ColorLoad::clear(Rgb565::from_raw(0x1107));
         }
         {
-            let mut pass = commands.pass(back, &depth, color_load, DepthLoad::load());
+            let mut pass = commands.pass(back.ptr(), depth.ptr(), color_load, DepthLoad::load());
             if fade {
                 if previous_tint != color {
                     tint_material.set_uniform_color(Rgba8 {
@@ -1299,12 +1189,12 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
                     });
                     previous_tint = color;
                 }
-                pass.set_camera(&screen_camera);
-                pass.set_state(&screen_state);
+                pass.set_camera(scene.screen_camera.ptr());
+                pass.set_state(scene.screen_state.ptr());
                 counted_draw(
                     &mut pass,
-                    &screen,
-                    &screen_model,
+                    &scene.screen,
+                    &scene.screen_model,
                     &tint_material,
                     &offscreen_view,
                 );
@@ -1347,7 +1237,7 @@ fn run(limit: u16, automatic_capture: bool, capture_brightness: u16) {
         }
         HUD[1u16] = DRAW_CALLS[0u16];
         HUD[2u16] = 1;
-        display.set_next_swap(back);
+        display.set_next_swap(back.ptr());
         display.wait_vblank();
         render_start = profiler_active_milliseconds();
         render_started = true;

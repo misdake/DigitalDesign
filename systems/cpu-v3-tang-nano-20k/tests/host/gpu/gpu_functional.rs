@@ -16,7 +16,7 @@ fn main(){{
  let mut cb=gpu.command_buffer();
  let source=DepthBuffer::from_memory(unsafe{{GpuMemory::from_sectors(0xa000,2048)}});
  let target=DepthBuffer::from_memory(unsafe{{GpuMemory::from_sectors({destination},2048)}});
- cb.copy_depth(&source,&target);gpu.submit(cb);cb=gpu.wait();drop(cb);halt(0x600d);
+ cb.copy_depth(source.ptr(), target.ptr());gpu.submit(cb);cb=gpu.wait();drop(cb);halt(0x600d);
 }}"#
         );
         let ir = super::gpu_api_resources::parse(&source, "typed-depth-copy", false).unwrap();
@@ -77,16 +77,16 @@ fn main(){
  while frame<3 {
   commands.reset();
   if frame&1==0 {
-   {let pass=commands.pass(&color_a,&depth,ColorLoad::clear(Rgb565::from_raw(0)),DepthLoad::clear(8));}
-   commands.copy_color(&source,&color_a);
-   {let pass=commands.pass(&color_a,&depth,ColorLoad::load(),DepthLoad::clear(0x4567));}
+   {let pass=commands.pass(color_a.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(8));}
+   commands.copy_color(source.ptr(), color_a.ptr());
+   {let pass=commands.pass(color_a.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::clear(0x4567));}
   } else {
-   {let pass=commands.pass(&color_b,&depth,ColorLoad::clear(Rgb565::from_raw(0)),DepthLoad::clear(8));}
-   commands.copy_color(&source,&color_b);
-   {let pass=commands.pass(&color_b,&depth,ColorLoad::load(),DepthLoad::clear(0x4567));}
+   {let pass=commands.pass(color_b.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0)), DepthLoad::clear(8));}
+   commands.copy_color(source.ptr(), color_b.ptr());
+   {let pass=commands.pass(color_b.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::clear(0x4567));}
   }
   gpu.submit(commands);commands=gpu.wait();
-  if frame&1==0 {display.set_next_swap(&color_a);} else {display.set_next_swap(&color_b);}
+  if frame&1==0 {display.set_next_swap(color_a.ptr());} else {display.set_next_swap(color_b.ptr());}
   display.wait_vblank();frame+=1;
  }
  halt(0x600d);
@@ -222,14 +222,14 @@ fn main(){
  while frame<3 {
   commands.reset();
   if frame&1==0 {
-   let mut pass=commands.pass(&color_a,&depth,ColorLoad::clear(Rgb565::from_raw(0x1111+frame)),DepthLoad::clear(65535));
-   pass.draw_ui(&grid,CellRect{x:0,y:0,width:1,height:1});
+   let mut pass=commands.pass(color_a.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1111+frame)), DepthLoad::clear(65535));
+   pass.draw_ui(grid.ptr(), CellRect{x:0,y:0,width:1,height:1});
   } else {
-   let mut pass=commands.pass(&color_b,&depth,ColorLoad::clear(Rgb565::from_raw(0x1111+frame)),DepthLoad::clear(65535));
-   pass.draw_ui(&grid,CellRect{x:0,y:0,width:1,height:1});
+   let mut pass=commands.pass(color_b.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1111+frame)), DepthLoad::clear(65535));
+   pass.draw_ui(grid.ptr(), CellRect{x:0,y:0,width:1,height:1});
   }
   gpu.submit(commands);commands=gpu.wait();
-  if frame&1==0 {display.set_next_swap(&color_a);} else {display.set_next_swap(&color_b);}
+  if frame&1==0 {display.set_next_swap(color_a.ptr());} else {display.set_next_swap(color_b.ptr());}
   display.wait_vblank();frame+=1;
  }
  halt(0x600d);

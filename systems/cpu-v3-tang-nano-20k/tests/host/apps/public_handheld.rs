@@ -826,8 +826,8 @@ fn stage2_identity()->Model{Model::new(demo_pose(demo_zero(),demo_zero(),demo_sc
             "let model=stage2_identity();let mut rabbit_model=stage2_identity();",
         )
         .replace(
-            "pass.draw(&rabbit, &model, &lit, &view);",
-            "pass.draw(&rabbit, &rabbit_model, &lit, &view);",
+            "pass.draw(rabbit.ptr(), model.ptr(), lit.ptr(), view.ptr());",
+            "pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());",
         );
     assert_eq!(reference.matches("let mut rabbit_model=").count(), 1);
     reference = reference.replace(
@@ -1078,14 +1078,14 @@ fn stage2_a1_first_gate_is_frame2_dynamic_with_completed_static_preimages() {
         std::fs::read_to_string(path.parent().unwrap().join("reference.rs")).unwrap();
     assert_eq!(
         static_reference
-            .matches("pass.draw(&rabbit, &rabbit_model, &lit, &view);")
+            .matches("pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());")
             .count(),
         2
     );
     let static_reference = static_reference
         .replace(
-            "pass.draw(&rabbit, &rabbit_model, &lit, &view);",
-            "if frame != 1 {pass.draw(&rabbit, &rabbit_model, &lit, &view);}",
+            "pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());",
+            "if frame != 1 {pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());}",
         )
         .replace("if glyphs != 0 {", "if frame != 1 && glyphs != 0 {");
     assert!(source.contains("stage2_camera(&mut camera)"));

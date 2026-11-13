@@ -2,8 +2,9 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
+mod gpu_board;
 mod gpu_demo_api;
-mod gpu_board;use gpu_board::*;
+use gpu_board::*;
 use gpu_demo_api::*;
 mod gamepad;
 use gamepad::*;
@@ -136,15 +137,15 @@ fn demo_record_static(
     let rgb = demo_mesh_part(6, 1);
     {
         let mut pass = buffer.pass(
-            &color,
-            &depth,
+            color.ptr(),
+            depth.ptr(),
             ColorLoad::clear(Rgb565::from_raw(0)),
             DepthLoad::clear(65535),
         );
-        pass.set_camera(camera);
-        pass.set_state(state);
-        pass.draw(&room, model, material, view);
-        pass.draw_colored(&rgb, model, material);
+        pass.set_camera(camera.ptr());
+        pass.set_state(state.ptr());
+        pass.draw(room.ptr(), model.ptr(), material.ptr(), view.ptr());
+        pass.draw_colored(rgb.ptr(), model.ptr(), material.ptr());
     }
 }
 fn demo_identity_model() -> Model {
@@ -247,9 +248,21 @@ fn demo_run(limit: u16, budget: u16) {
         // The persistent stream keeps geometry, Render, END and padding.
         dev_send(7, 1, 10);
         if frame & 1 == 0 {
-            static_buffer.patch_scene(binding, &camera, &box_model, &color_b, &depth);
+            static_buffer.patch_scene(
+                binding,
+                camera.ptr(),
+                box_model.ptr(),
+                color_b.ptr(),
+                depth.ptr(),
+            );
         } else {
-            static_buffer.patch_scene(binding, &camera, &box_model, &color_a, &depth);
+            static_buffer.patch_scene(
+                binding,
+                camera.ptr(),
+                box_model.ptr(),
+                color_a.ptr(),
+                depth.ptr(),
+            );
         }
         gpu.submit(static_buffer);
         dev_send(7, 1, 11);
@@ -260,14 +273,18 @@ fn demo_run(limit: u16, budget: u16) {
         }
         dynamic_buffer.reset();
         if frame & 1 == 0 {
-            let mut pass =
-                dynamic_buffer.pass(&color_b, &depth, ColorLoad::load(), DepthLoad::load());
-            pass.set_camera(&camera);
-            pass.set_state(&state);
-            pass.draw(&rabbit, &rabbit_model, &lit, &view);
+            let mut pass = dynamic_buffer.pass(
+                color_b.ptr(),
+                depth.ptr(),
+                ColorLoad::load(),
+                DepthLoad::load(),
+            );
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
+            pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());
             if glyphs != 0 {
                 pass.draw_ui(
-                    &grid,
+                    grid.ptr(),
                     CellRect {
                         x: 2,
                         y: 1,
@@ -277,14 +294,18 @@ fn demo_run(limit: u16, budget: u16) {
                 );
             }
         } else {
-            let mut pass =
-                dynamic_buffer.pass(&color_a, &depth, ColorLoad::load(), DepthLoad::load());
-            pass.set_camera(&camera);
-            pass.set_state(&state);
-            pass.draw(&rabbit, &rabbit_model, &lit, &view);
+            let mut pass = dynamic_buffer.pass(
+                color_a.ptr(),
+                depth.ptr(),
+                ColorLoad::load(),
+                DepthLoad::load(),
+            );
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
+            pass.draw(rabbit.ptr(), rabbit_model.ptr(), lit.ptr(), view.ptr());
             if glyphs != 0 {
                 pass.draw_ui(
-                    &grid,
+                    grid.ptr(),
                     CellRect {
                         x: 2,
                         y: 1,
@@ -304,9 +325,9 @@ fn demo_run(limit: u16, budget: u16) {
         dev_send(7, 4, observed);
         dev_send(7, 1, 14);
         if frame & 1 == 0 {
-            display.set_next_swap(&color_b);
+            display.set_next_swap(color_b.ptr());
         } else {
-            display.set_next_swap(&color_a);
+            display.set_next_swap(color_a.ptr());
         }
         wait_display(&mut display, budget);
         dev_send(7, 2, frame + 1);

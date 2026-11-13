@@ -28,15 +28,7 @@ fn main() {
     let mut display = Display::open();
     let atlas = UiAtlas::from_desc(CORE_ATLAS);
     let mut grid = UiGrid::from_storage(STORAGE.ui, &atlas);
-    let mesh = Mesh::from_native(GEOMETRY_CUBE);
-    let texture = Texture::from_native(GEOMETRY_CHECKER);
-    let mut view = texture.view();
-    view.set_address_mode(TextureAddressMode::ClampToEdge);
-    let fixed = geometry_fixed_model();
-    let mut rotating = geometry_rotating_model();
-    let mut camera = geometry_camera();
-    let material = Material::new(MaterialDesc::diffuse(Rgba8::white()));
-    let render_state = geometry_render_state();
+    let mut geometry = GeometryPage::new();
     let mut state = initial_state(CORE_DEMO_PAGE);
     gamepad_init();
     loop {
@@ -48,7 +40,7 @@ fn main() {
             buffer.invalidate_textures();
         }
         if state.page == 5 {
-            geometry_prepare(&mut rotating, &mut camera, &mut grid, state);
+            geometry.prepare(&mut grid, state);
         } else {
             // The CPU draws only after the GPU clear of Back has retired.
             clear_cpu_page(&mut buffer, &color_a, &color_b, &depth, state);
@@ -60,19 +52,18 @@ fn main() {
         {
             let mut pass = page_pass(&mut buffer, &color_a, &color_b, &depth, state);
             if state.page == 5 {
-                geometry_pass_state(&mut pass, &camera, &render_state);
-                geometry_draw(&mut pass, &mesh, &fixed, &rotating, &material, &view);
+                geometry.draw(&mut pass);
             }
             // submit publishes CPU pixels before this common text overlay.
-            pass.draw_ui(&grid, CellRect::full_grid());
+            pass.draw_ui(grid.ptr(), CellRect::full_grid());
         }
         gpu.submit(buffer);
         buffer = gpu.wait();
         let format = page_display_format(state);
         if state.frames & 1 == 0 {
-            display.set_next_swap_with_format(&color_b, format);
+            display.set_next_swap_with_format(color_b.ptr(), format);
         } else {
-            display.set_next_swap_with_format(&color_a, format);
+            display.set_next_swap_with_format(color_a.ptr(), format);
         }
         display.wait_vblank();
         state.frames += 1;

@@ -461,7 +461,8 @@ impl Mesh {
         Mesh { slot: slot }
     }
     pub fn meshlet_count(&self) -> u16 {
-        gpu_arena_data(self.slot)[GPU_MESH_COUNT]
+        let ptr = self.ptr();
+        ptr.meshlet_count()
     }
 }
 impl Drop for Mesh {
@@ -525,12 +526,12 @@ impl CommandBuffer {
     /// Records source-read/destination-write ownership; allocation tails remain
     /// untouched. Call between passes. Submission publication/leases are shared
     /// with drawing, and this fixed-target command disables scene patching.
-    pub fn copy_color(&mut self, source: &ColorBuffer, destination: &ColorBuffer) {
+    pub fn copy_color(&mut self, source: ColorBufferPtr, destination: ColorBufferPtr) {
         gpu_api_copy_plane(self.slot, source.slot, destination.slot, GPU_FACT_COLOR);
     }
     /// Copy the physical depth plane without changing its stored values.
     /// The caller retains a completed source until this CB retires.
-    pub fn copy_depth(&mut self, source: &DepthBuffer, destination: &DepthBuffer) {
+    pub fn copy_depth(&mut self, source: DepthBufferPtr, destination: DepthBufferPtr) {
         gpu_api_copy_plane(self.slot, source.slot, destination.slot, GPU_FACT_DEPTH);
     }
     /// Seal one target block, with any immutable draw groups and at most one
@@ -550,8 +551,8 @@ impl CommandBuffer {
     pub fn retarget_target(
         &mut self,
         binding: TargetBinding,
-        color: &ColorBuffer,
-        depth: &DepthBuffer,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
     ) {
         gpu_api_checked(
             self.slot == binding.slot
@@ -579,10 +580,10 @@ impl CommandBuffer {
     pub fn patch_scene(
         &mut self,
         binding: SceneBinding,
-        camera: &Camera,
-        model: &Model,
-        color: &ColorBuffer,
-        depth: &DepthBuffer,
+        camera: CameraPtr,
+        model: ModelPtr,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
     ) {
         gpu_api_checked(
             self.slot == binding.slot
@@ -607,8 +608,8 @@ impl CommandBuffer {
     }
     pub fn pass(
         &mut self,
-        color: &ColorBuffer,
-        depth: &DepthBuffer,
+        color: ColorBufferPtr,
+        depth: DepthBufferPtr,
         color_load: ColorLoad,
         depth_load: DepthLoad,
     ) -> Pass {
@@ -723,13 +724,13 @@ impl Display {
     pub fn frame_index(&self) -> u16 {
         dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX)
     }
-    pub fn set_next_swap(&mut self, color: &ColorBuffer) {
+    pub fn set_next_swap(&mut self, color: ColorBufferPtr) {
         if !gpu_present_set_next(gpu_arena_data(color.slot)[0u16]) {
             gpu_api_fail(5, 2, 0, 0);
         }
     }
     /// Stage the pixel interpretation together with its completed framebuffer.
-    pub fn set_next_swap_with_format(&mut self, color: &ColorBuffer, format: DisplayFormat) {
+    pub fn set_next_swap_with_format(&mut self, color: ColorBufferPtr, format: DisplayFormat) {
         if !gpu_present_set_next_with_format(gpu_arena_data(color.slot)[0u16], format as u16) {
             gpu_api_fail(5, 2, 0, 0);
         }
@@ -982,7 +983,8 @@ impl UiGrid {
         Self::from_memory(GpuMemory::from_buffer(storage.storage), atlas)
     }
     pub fn clear(&mut self) {
-        self.fill(255);
+        let ptr = self.ptr();
+        ptr.clear()
     }
     pub fn from_memory(memory: GpuMemory, atlas: &UiAtlas) -> Self {
         let slot = gpu_api_object(false, 11);
@@ -1014,9 +1016,8 @@ impl Drop for TextureView {
 }
 impl TextureView {
     pub fn set_address_mode(&mut self, mode: TextureAddressMode) {
-        let mut data = gpu_arena_data(self.slot);
-        gpu_api_checked(data[GPU_VIEW_FLAGS] & 2 == 0, 7);
-        data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 7) | ((mode as u16) << 3);
+        let ptr = self.ptr();
+        ptr.set_address_mode(mode)
     }
 }
 impl Texture {
@@ -1040,10 +1041,12 @@ impl ColorBuffer {
 }
 impl TextureView {
     pub fn width(&self) -> u16 {
-        gpu_scene_view_width(gpu_arena_data(self.slot))
+        let ptr = self.ptr();
+        ptr.width()
     }
     pub fn height(&self) -> u16 {
-        gpu_scene_view_height(gpu_arena_data(self.slot))
+        let ptr = self.ptr();
+        ptr.height()
     }
 }
 impl Camera {
@@ -1057,207 +1060,159 @@ impl Camera {
         Camera { slot: slot }
     }
     pub fn view(&self) -> Mat3x4 {
-        gpu_scene_camera_get_view(gpu_arena_data(self.slot))
+        let ptr = self.ptr();
+        ptr.view()
     }
 }
 impl Model {
     pub fn world(&self) -> Mat3x4 {
-        gpu_scene_model_world(gpu_arena_data(self.slot))
+        let ptr = self.ptr();
+        ptr.world()
     }
     pub fn normal(&self) -> Mat3x3 {
-        gpu_scene_model_normal(gpu_arena_data(self.slot))
+        let ptr = self.ptr();
+        ptr.normal()
     }
 }
 
 impl Camera {
     pub fn set_pose(&mut self, eye: Vec3, angles: Vec3) {
-        gpu_api_checked(
-            gpu_scene_camera_pose(gpu_arena_data(self.slot), eye, angles),
-            1,
-        );
-        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+        let ptr = self.ptr();
+        ptr.set_pose(eye, angles)
     }
 }
 
 impl Camera {
     pub fn set_projection(&mut self, projection: Projection) {
-        let data = gpu_arena_data(self.slot);
-        let focal = projection.focal_pixels();
-        let changed = data[GPU_CAMERA_FOCAL] != focal.lo_bits()
-            || data[GPU_CAMERA_FOCAL + 1] != focal.hi_bits();
-        gpu_api_checked(gpu_scene_camera_projection(data, projection), 1);
-        if changed {
-            gpu_api_checked(gpu_camera_revision(data), 1);
-        }
+        let ptr = self.ptr();
+        ptr.set_projection(projection)
     }
 }
 
 impl Camera {
     pub fn set_look_at(&mut self, eye: Vec3, target: Vec3, up: Vec3) {
-        gpu_api_checked(
-            gpu_scene_camera_look_at(gpu_arena_data(self.slot), eye, target, up),
-            1,
-        );
-        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+        let ptr = self.ptr();
+        ptr.set_look_at(eye, target, up)
     }
 }
 
 impl Camera {
     pub fn set_look_at_y_up(&mut self, eye: Vec3, target: Vec3) {
-        gpu_api_checked(
-            gpu_scene_camera_look_at_y_up(gpu_arena_data(self.slot), eye, target),
-            1,
-        );
-        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+        let ptr = self.ptr();
+        ptr.set_look_at_y_up(eye, target)
     }
 }
 
 impl Camera {
     pub fn set_look_to(&mut self, eye: Vec3, direction: Vec3, up: Vec3) {
-        gpu_api_checked(
-            gpu_scene_camera_look_to(gpu_arena_data(self.slot), eye, direction, up),
-            1,
-        );
-        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+        let ptr = self.ptr();
+        ptr.set_look_to(eye, direction, up)
     }
 }
 
 impl Camera {
     pub fn set_view(&mut self, view: Mat3x4) {
-        gpu_api_checked(gpu_scene_camera_view(gpu_arena_data(self.slot), view), 1);
-        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+        let ptr = self.ptr();
+        ptr.set_view(view)
     }
 }
 
 impl Model {
     pub fn set_pose(&mut self, transform: Transform) {
-        let mut data = gpu_arena_data(self.slot);
-        let derived = data[GPU_MODEL_DERIVED];
-        gpu_api_checked(gpu_scene_model_init(data, transform), 2);
-        data[GPU_MODEL_DERIVED] = derived;
-        gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
+        let ptr = self.ptr();
+        ptr.set_pose(transform)
     }
 }
 
 impl Model {
     pub fn set_matrices(&mut self, mut world: Mat3x4, mut normal: Mat3x3) {
-        let mut data = gpu_arena_data(self.slot);
-        let world_words = unsafe { view_of(&mut world).as_ptr().as_u16_array() };
-        let normal_words = unsafe { view_of(&mut normal).as_ptr().as_u16_array() };
-        if gpu_bind_equal(data, GPU_MODEL_WORLD, world_words, 0, 24)
-            && gpu_bind_equal(data, GPU_MODEL_NORMAL, normal_words, 0, 18)
-        {
-            return;
-        }
-        let derived = data[GPU_MODEL_DERIVED];
-        gpu_api_checked(gpu_scene_model_matrices(data, world, normal), 2);
-        data[GPU_MODEL_DERIVED] = derived;
-        gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
+        let ptr = self.ptr();
+        ptr.set_matrices(world, normal)
     }
 }
 
 impl Material {
     pub fn set_uniform_color(&mut self, color: Rgba8) {
-        gpu_api_checked(
-            gpu_scene_material_color(gpu_arena_data(self.slot), color),
-            3,
-        );
+        let ptr = self.ptr();
+        ptr.set_uniform_color(color)
     }
 }
 
 impl Material {
     pub fn set_specular(&mut self, color: Rgb8, shininess: Shininess) {
-        gpu_api_checked(
-            gpu_scene_material_specular(gpu_arena_data(self.slot), color, shininess),
-            3,
-        );
+        let ptr = self.ptr();
+        ptr.set_specular(color, shininess)
     }
 }
 
 impl Material {
     pub fn set_response(&mut self, ambient: fix32, directional: fix32) {
-        gpu_api_checked(
-            gpu_scene_material_response(gpu_arena_data(self.slot), ambient, directional),
-            3,
-        );
+        let ptr = self.ptr();
+        ptr.set_response(ambient, directional)
     }
 }
 
 impl Material {
     pub fn set_unlit(&mut self, unlit: bool) {
-        gpu_api_checked(
-            gpu_scene_material_unlit(gpu_arena_data(self.slot), unlit),
-            3,
-        );
+        let ptr = self.ptr();
+        ptr.set_unlit(unlit)
     }
 }
 
 impl RenderState {
     pub fn set_depth(&mut self, func: DepthFunc, write: bool) {
-        gpu_api_checked(
-            gpu_scene_state_depth(gpu_arena_data(self.slot), func, write),
-            4,
-        );
+        let ptr = self.ptr();
+        ptr.set_depth(func, write)
     }
 }
 
 impl RenderState {
     pub fn set_blend(&mut self, mode: BlendMode) {
-        gpu_api_checked(gpu_scene_state_blend(gpu_arena_data(self.slot), mode), 4);
+        let ptr = self.ptr();
+        ptr.set_blend(mode)
     }
 }
 
 impl RenderState {
     pub fn set_filter(&mut self, filter: TextureFilter) {
-        gpu_api_checked(gpu_scene_state_filter(gpu_arena_data(self.slot), filter), 4);
+        let ptr = self.ptr();
+        ptr.set_filter(filter)
     }
 }
 
 impl RenderState {
     pub fn set_lighting(&mut self, light: Lighting) {
-        gpu_api_checked(
-            gpu_scene_state_lighting(gpu_arena_data(self.slot), light),
-            4,
-        );
+        let ptr = self.ptr();
+        ptr.set_lighting(light)
     }
 }
 
 impl UiGrid {
     pub fn fill(&mut self, glyph: u8) {
-        gpu_api_checked(gpu_ui_grid_fill(gpu_arena_data(self.slot), glyph), 11);
+        let ptr = self.ptr();
+        ptr.fill(glyph)
     }
 }
 
 impl UiGrid {
     /// Write one row without repeating its length in a CellRect.
     pub fn write_text(&mut self, x: u16, y: u16, glyphs: &[u8]) {
-        self.write(
-            CellRect {
-                x: x,
-                y: y,
-                width: glyphs.len() as u16,
-                height: 1,
-            },
-            glyphs,
-        );
+        let ptr = self.ptr();
+        ptr.write_text(x, y, glyphs)
     }
     /// Replace exactly one cell, preserving the adjacent packed byte.
     pub fn write_glyph(&mut self, x: u16, y: u16, glyph: u8) {
-        gpu_api_checked(
-            gpu_ui_grid_write_glyph(gpu_arena_data(self.slot), x, y, glyph),
-            11,
-        );
+        let ptr = self.ptr();
+        ptr.write_glyph(x, y, glyph)
     }
     pub fn write(&mut self, rect: CellRect, glyphs: &[u8]) {
-        gpu_api_checked(
-            gpu_ui_grid_write(gpu_arena_data(self.slot), rect, glyphs),
-            11,
-        );
+        let ptr = self.ptr();
+        ptr.write(rect, glyphs)
     }
 }
 
 impl Pass {
-    pub fn set_camera(&mut self, camera: &Camera) {
+    pub fn set_camera(&mut self, camera: CameraPtr) {
         let data = gpu_arena_data(camera.slot);
         gpu_api_checked(gpu_bind_desired(self.slot, true, data), 1);
         gpu_patch_note(self.slot, GPU_RECORD_SCENE_CAMERA, camera.slot);
@@ -1269,13 +1224,19 @@ impl Pass {
             4,
         );
     }
-    pub fn set_state(&mut self, state: &RenderState) {
+    pub fn set_state(&mut self, state: RenderStatePtr) {
         gpu_api_checked(
             gpu_bind_desired(self.slot, false, gpu_arena_data(state.slot)),
             4,
         );
     }
-    pub fn draw(&mut self, mesh: &Mesh, model: &Model, material: &Material, view: &TextureView) {
+    pub fn draw(
+        &mut self,
+        mesh: MeshPtr,
+        model: ModelPtr,
+        material: MaterialPtr,
+        view: TextureViewPtr,
+    ) {
         gpu_api_draw(
             self.slot,
             mesh.slot,
@@ -1285,10 +1246,10 @@ impl Pass {
             true,
         );
     }
-    pub fn draw_colored(&mut self, mesh: &Mesh, model: &Model, material: &Material) {
+    pub fn draw_colored(&mut self, mesh: MeshPtr, model: ModelPtr, material: MaterialPtr) {
         gpu_api_draw(self.slot, mesh.slot, model.slot, material.slot, 0, false);
     }
-    pub fn draw_ui(&mut self, grid: &UiGrid, clip: CellRect) {
+    pub fn draw_ui(&mut self, grid: UiGridPtr, clip: CellRect) {
         gpu_api_checked(gpu_record_data(self.slot)[GPU_GROUP_RECORDING] == 0, 15);
         if clip.width == 0 || clip.height == 0 {
             return;
@@ -1386,5 +1347,330 @@ impl Shininess {
     }
     pub fn exponent(&self) -> u16 {
         gpu_scene_shininess_exponent(*self)
+    }
+}
+
+// Copy references do not own or release their referent. Keep its resource body alive.
+
+#[derive(Copy, Clone)]
+pub struct CameraPtr {
+    slot: u16,
+}
+impl Camera {
+    pub fn ptr(&self) -> CameraPtr {
+        CameraPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+impl CameraPtr {
+    pub fn view(self) -> Mat3x4 {
+        gpu_scene_camera_get_view(gpu_arena_data(self.slot))
+    }
+    pub fn set_pose(self, eye: Vec3, angles: Vec3) {
+        gpu_api_checked(
+            gpu_scene_camera_pose(gpu_arena_data(self.slot), eye, angles),
+            1,
+        );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+    }
+    pub fn set_projection(self, projection: Projection) {
+        let data = gpu_arena_data(self.slot);
+        let focal = projection.focal_pixels();
+        let changed = data[GPU_CAMERA_FOCAL] != focal.lo_bits()
+            || data[GPU_CAMERA_FOCAL + 1] != focal.hi_bits();
+        gpu_api_checked(gpu_scene_camera_projection(data, projection), 1);
+        if changed {
+            gpu_api_checked(gpu_camera_revision(data), 1);
+        }
+    }
+    pub fn set_look_at(self, eye: Vec3, target: Vec3, up: Vec3) {
+        gpu_api_checked(
+            gpu_scene_camera_look_at(gpu_arena_data(self.slot), eye, target, up),
+            1,
+        );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+    }
+    pub fn set_look_at_y_up(self, eye: Vec3, target: Vec3) {
+        gpu_api_checked(
+            gpu_scene_camera_look_at_y_up(gpu_arena_data(self.slot), eye, target),
+            1,
+        );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+    }
+    pub fn set_look_to(self, eye: Vec3, direction: Vec3, up: Vec3) {
+        gpu_api_checked(
+            gpu_scene_camera_look_to(gpu_arena_data(self.slot), eye, direction, up),
+            1,
+        );
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+    }
+    pub fn set_view(self, view: Mat3x4) {
+        gpu_api_checked(gpu_scene_camera_view(gpu_arena_data(self.slot), view), 1);
+        gpu_api_checked(gpu_camera_revision(gpu_arena_data(self.slot)), 1);
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct ColorBufferPtr {
+    slot: u16,
+}
+impl ColorBuffer {
+    pub fn ptr(&self) -> ColorBufferPtr {
+        ColorBufferPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct DepthBufferPtr {
+    slot: u16,
+}
+impl DepthBuffer {
+    pub fn ptr(&self) -> DepthBufferPtr {
+        DepthBufferPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct MaterialPtr {
+    slot: u16,
+}
+impl Material {
+    pub fn ptr(&self) -> MaterialPtr {
+        MaterialPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+impl MaterialPtr {
+    pub fn set_uniform_color(self, color: Rgba8) {
+        gpu_api_checked(
+            gpu_scene_material_color(gpu_arena_data(self.slot), color),
+            3,
+        );
+    }
+    pub fn set_specular(self, color: Rgb8, shininess: Shininess) {
+        gpu_api_checked(
+            gpu_scene_material_specular(gpu_arena_data(self.slot), color, shininess),
+            3,
+        );
+    }
+    pub fn set_response(self, ambient: fix32, directional: fix32) {
+        gpu_api_checked(
+            gpu_scene_material_response(gpu_arena_data(self.slot), ambient, directional),
+            3,
+        );
+    }
+    pub fn set_unlit(self, unlit: bool) {
+        gpu_api_checked(
+            gpu_scene_material_unlit(gpu_arena_data(self.slot), unlit),
+            3,
+        );
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct MeshPtr {
+    slot: u16,
+}
+impl Mesh {
+    pub fn ptr(&self) -> MeshPtr {
+        MeshPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+impl MeshPtr {
+    pub fn meshlet_count(self) -> u16 {
+        gpu_arena_data(self.slot)[GPU_MESH_COUNT]
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct ModelPtr {
+    slot: u16,
+}
+impl Model {
+    pub fn ptr(&self) -> ModelPtr {
+        ModelPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+impl ModelPtr {
+    pub fn world(self) -> Mat3x4 {
+        gpu_scene_model_world(gpu_arena_data(self.slot))
+    }
+    pub fn normal(self) -> Mat3x3 {
+        gpu_scene_model_normal(gpu_arena_data(self.slot))
+    }
+    pub fn set_pose(self, transform: Transform) {
+        let mut data = gpu_arena_data(self.slot);
+        let derived = data[GPU_MODEL_DERIVED];
+        gpu_api_checked(gpu_scene_model_init(data, transform), 2);
+        data[GPU_MODEL_DERIVED] = derived;
+        gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
+    }
+    pub fn set_matrices(self, mut world: Mat3x4, mut normal: Mat3x3) {
+        let mut data = gpu_arena_data(self.slot);
+        let world_words = unsafe { view_of(&mut world).as_ptr().as_u16_array() };
+        let normal_words = unsafe { view_of(&mut normal).as_ptr().as_u16_array() };
+        if gpu_bind_equal(data, GPU_MODEL_WORLD, world_words, 0, 24)
+            && gpu_bind_equal(data, GPU_MODEL_NORMAL, normal_words, 0, 18)
+        {
+            return;
+        }
+        let derived = data[GPU_MODEL_DERIVED];
+        gpu_api_checked(gpu_scene_model_matrices(data, world, normal), 2);
+        data[GPU_MODEL_DERIVED] = derived;
+        gpu_arena_data(derived)[GPU_MODEL_DIRTY] = 1;
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct RenderStatePtr {
+    slot: u16,
+}
+impl RenderState {
+    pub fn ptr(&self) -> RenderStatePtr {
+        RenderStatePtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+impl RenderStatePtr {
+    pub fn set_depth(self, func: DepthFunc, write: bool) {
+        gpu_api_checked(
+            gpu_scene_state_depth(gpu_arena_data(self.slot), func, write),
+            4,
+        );
+    }
+    pub fn set_blend(self, mode: BlendMode) {
+        gpu_api_checked(gpu_scene_state_blend(gpu_arena_data(self.slot), mode), 4);
+    }
+    pub fn set_filter(self, filter: TextureFilter) {
+        gpu_api_checked(gpu_scene_state_filter(gpu_arena_data(self.slot), filter), 4);
+    }
+    pub fn set_lighting(self, light: Lighting) {
+        gpu_api_checked(
+            gpu_scene_state_lighting(gpu_arena_data(self.slot), light),
+            4,
+        );
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct TexturePtr {
+    slot: u16,
+}
+impl Texture {
+    pub fn ptr(&self) -> TexturePtr {
+        TexturePtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct TextureViewPtr {
+    slot: u16,
+}
+impl TextureView {
+    pub fn ptr(&self) -> TextureViewPtr {
+        TextureViewPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+impl TextureViewPtr {
+    pub fn set_address_mode(self, mode: TextureAddressMode) {
+        let mut data = gpu_arena_data(self.slot);
+        gpu_api_checked(data[GPU_VIEW_FLAGS] & 2 == 0, 7);
+        data[GPU_VIEW_FLAGS] = (data[GPU_VIEW_FLAGS] & 7) | ((mode as u16) << 3);
+    }
+    pub fn width(self) -> u16 {
+        gpu_scene_view_width(gpu_arena_data(self.slot))
+    }
+    pub fn height(self) -> u16 {
+        gpu_scene_view_height(gpu_arena_data(self.slot))
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct UiAtlasPtr {
+    slot: u16,
+}
+impl UiAtlas {
+    pub fn ptr(&self) -> UiAtlasPtr {
+        UiAtlasPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct UiGridPtr {
+    slot: u16,
+}
+impl UiGrid {
+    pub fn ptr(&self) -> UiGridPtr {
+        UiGridPtr { slot: self.slot }
+    }
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+impl UiGridPtr {
+    pub fn clear(self) {
+        self.fill(255);
+    }
+    pub fn fill(self, glyph: u8) {
+        gpu_api_checked(gpu_ui_grid_fill(gpu_arena_data(self.slot), glyph), 11);
+    }
+    /// Write one row without repeating its length in a CellRect.
+    pub fn write_text(self, x: u16, y: u16, glyphs: &[u8]) {
+        self.write(
+            CellRect {
+                x: x,
+                y: y,
+                width: glyphs.len() as u16,
+                height: 1,
+            },
+            glyphs,
+        );
+    }
+    /// Replace exactly one cell, preserving the adjacent packed byte.
+    pub fn write_glyph(self, x: u16, y: u16, glyph: u8) {
+        gpu_api_checked(
+            gpu_ui_grid_write_glyph(gpu_arena_data(self.slot), x, y, glyph),
+            11,
+        );
+    }
+    pub fn write(self, rect: CellRect, glyphs: &[u8]) {
+        gpu_api_checked(
+            gpu_ui_grid_write(gpu_arena_data(self.slot), rect, glyphs),
+            11,
+        );
     }
 }

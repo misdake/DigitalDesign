@@ -439,11 +439,11 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   the same struct type, copied word by word — initializes it; `p.x` loads a field and `p.x = v` /
   `p.x += v` stores one; field chains (`p.inner.a`) and buffer fields (`p.flags[1u16] = v`) work.
   The binding must be `mut` for any field write. Checked compilation can infer
-  a struct literal or constructor (including a folded constant result); a copy
-  of an existing struct variable still uses an explicit type annotation. The
+  a struct literal, constructor (including a folded constant result), or copy
+  of an existing aggregate place. The
   unchecked legacy frontend requires the annotation for literals/copies.
 - A struct *name* is not a value: read a field, copy it with a typed `let`, or take its address.
-- **Returning structs**: `fn make(x: u16) -> Point` writes the result through a hidden destination
+- **Returning multiword structs**: `fn make(x: u16) -> Point` writes the result through a hidden destination
   pointer the caller supplies (§14), so `let p: Point = make(1u16);` fills `p`'s own frame slot —
   no copy at the call site. `return Point { .. };`, `return other;` and `return shifted(...)` all
   work, and a struct can be assigned wholesale (`p = make(1u16);`).
@@ -641,16 +641,19 @@ no effort goes into keeping the two in step. A feature that happens to work on C
 not a requirement. The CpuV2 backend keeps rejecting instructions it cannot lower with a clear panic
 (e.g. any FPU-class instruction).
 
-## 14. Calling convention: scalars in registers, aggregates by pointer
+## 14. Calling convention: register values and aggregate storage
 
 Scalar arguments (including `Array<T>` views and fn pointers) travel in the six argument registers
 (`r2`..`r7`) and scalar results come back in the return registers (`r0`/`r1`), with FPU values in
-the F registers. Aggregates — structs (§9b), tuples (§9c) and `Buf<T, N>` (§10) — are **not**
-passed by value:
+the F registers. A one-word aggregate also travels in a GPR and returns in a GPR;
+the callee gives its parameter an addressable local word. This preserves ordinary
+field access and isolated value semantics without retaining a caller snapshot
+for each small-value call. It does not relax the legacy signature restrictions.
+Larger aggregates — structs (§9b), tuples (§9c) and `Buf<T, N>` (§10) — use storage addresses:
 
 - **Parameters**: the legacy unchecked entry rejects aggregate parameters. Checked value parameters use isolated snapshots (§17). Otherwise pass `Array<T>` (a view of the aggregate, or
   of an array of them) or the fields.
-- **Returns (sret)**: the caller supplies a *hidden destination pointer* as the first argument and
+- **Multiword returns (sret)**: the caller supplies a *hidden destination pointer* as the first argument and
   the callee writes the result there, returning nothing in registers:
   - `let p: Point = make(1u16);` allocates `p`'s frame slot and passes its address, so the callee
     fills the variable directly (no copy);
@@ -659,10 +662,10 @@ passed by value:
     destination — including `return shifted(...)`, which forwards the same pointer;
   - a returned value in any other position (an argument, a field base, an operand) is an error:
     bind it with `let` first.
-  Because the destination occupies the first argument register, a function returning an aggregate
+  Because the destination occupies the first argument register, a function returning a multiword aggregate
   takes at most **five** declared parameters. A fn pointer cannot return an aggregate (there is no
   indirect sret), so such a function must be called directly.
-- `return` in an aggregate-returning function ends with a plain `ret`; the caller sees no result
+- `return` in a multiword aggregate-returning function ends with a plain `ret`; the caller sees no result
   register at all.
 
 ## 13. The toolchain
@@ -927,7 +930,8 @@ An owner is a simple initialized local or by-value function parameter. `let b=a`
 moves ownership; passing a resource by value moves it into the callee. Any later
 use of the old binding is rejected. Owned call arguments must name bound locals;
 bind factory results before passing them onward. This deliberately excludes
-untracked temporary siblings in nested calls. Resources cannot be embedded in another
+untracked temporary siblings in nested calls. The checked entry supports named
+owning structs (§18); otherwise resources cannot be embedded in another
 struct/tuple/array/static, converted to an ordinary type, address-taken, stored
 through `Ptr`/`Array`, or passed to a resource-signature function pointer. Such
 functions require direct calls. An ordinary value cannot initialize a resource.
@@ -1249,10 +1253,29 @@ The checked entry accepts nongeneric inherent constructors and methods on
 ordinary structs and the existing fieldless `repr(u16)` enums (§9d). `Self`
 names the defining nominal type; enum methods may be declared in another loaded
 file. Value receivers and ordinary struct/tuple
-parameters use caller-owned snapshots evaluated in argument order, before later
+parameters use isolated values evaluated in argument order, before later
 arguments can modify their sources. Borrowed receivers use the original place
 through an internal view; shared and mutable receiver legality is checked by rustc
-before lowering. Aggregate returns retain the existing hidden destination ABI.
+before lowering. One-word aggregates use registers; larger arguments use
+caller-owned snapshots and larger returns use the hidden destination ABI (§14).
+The snapshots are scratch with a call lifetime: all arguments remain isolated
+through evaluation of later arguments and nested calls, then their storage is
+available to subsequent calls. Whole-aggregate assignment similarly retains its
+scratch until the RHS is complete and copied into the destination. A fresh
+borrowed value receiver lives through its enclosing method, rather than only
+through the internal view construction. This allocation rule also applies with
+the optional optimization passes disabled.
+
+The builder returns completed scratch ranges to a first-fit free list, merges
+adjacent ranges and can grow a free tail in place. `local_slots` remains the
+physical frame high water mark, with the same 255-word limit. Named/addressable
+locals and sret output places are not reclaimed. If a call result contains Ptr,
+Array or packed-byte addresses, including nested aggregate fields, its call
+storage is conservatively retained for the function. This is not general escape
+analysis or stack-slot coloring; manually stored/cast raw addresses still obey
+the caller's storage-lifetime contract. There is no new runtime allocator,
+instruction, clearing pass or optional optimization flag.
+
 The unchecked legacy signature restrictions remain. Ordinary value structs may
 carry `Copy`/`Clone` markers; lexical owning resources remain noncopyable.
 Generated value entry names are reserved in every source entry path.
@@ -1330,6 +1353,25 @@ a fictitious return value. This does not add general per-variable runtime Drop
 flags, conditional live-owner joins, labeled exits or arbitrary partial moves.
 Rustc checks the original ownership source before the internal representation
 is generated; the affine pass then checks the selected target flow.
+
+Ordinary nongeneric named structs can own resource fields, including nested
+owning structs alongside ordinary value fields. They retain their native layout;
+resource leaves retain the existing identity ABI. Ordinary inherent constructors,
+shared/mutable methods, owned parameters and whole-value returns are supported.
+Borrowed aggregates use a typed view of the original place, so field writes
+update that storage rather than a detached copy. Whole moves, partial field
+moves, field/whole replacement and early exits transfer or clean the live
+resource leaves exactly once. Struct fields drop in declaration order; ordinary
+local bindings still drop in reverse binding order. Replacement evaluates the
+new value before cleaning the old live fields.
+
+Rustc checks the original struct, field visibility, moves and borrows first.
+The target checker additionally preserves resource-leaf privacy and parent
+locks. Borrowed child resources cannot be stored in a nongeneric owning struct.
+Generic/tuple owning aggregates, struct-update syntax and user-defined ordinary
+aggregate Drop are outside this subset. Copyable nonowning pointers and
+descriptions are ordinary values, not affine resources; they do not inherit
+the referent's cleanup obligation or extend its lifetime.
 
 CPU V3 compiler fixtures exercise a single active submission, explicit handoff,
 zero-valued identities, `wait`/`try_wait`, scoped Pass borrows and double-buffer

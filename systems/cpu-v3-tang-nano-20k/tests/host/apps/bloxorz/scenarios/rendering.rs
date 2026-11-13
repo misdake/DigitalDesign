@@ -173,9 +173,9 @@ fn hint_order_frame(n:u16){
  if i==LEVEL[6u16] {halt(0xbad);}
  let half=fix32::from_words(32768,0);let one=fix32::from_int(1);
  SESSION[0u16]=FALL;SESSION[1u16]=0;MOTION[5u16]=0;
- FALL_STATE[0u16]=FallState{position:demo_point(fix32::from_int((i%LEVEL[0u16]) as i16)-fix32::from_int(LEVEL[0u16] as i16)*half+half,
+ FALL_STATE[0u16]=FallState{position:Vec3::new(fix32::from_int((i%LEVEL[0u16]) as i16)-fix32::from_int(LEVEL[0u16] as i16)*half+half,
  fix32::from_int(2)-fix32::from_int(n as i16),
- fix32::from_int((i/LEVEL[0u16]) as i16)-fix32::from_int(LEVEL[1u16] as i16)*half+half),velocity:demo_zero(),scale:demo_point(one,fix32::from_int(2),one),angle:fix32::zero(),spin:fix32::zero(),axis:0};
+ fix32::from_int((i/LEVEL[0u16]) as i16)-fix32::from_int(LEVEL[1u16] as i16)*half+half),velocity:Vec3::zero(),scale:Vec3::new(one,fix32::from_int(2),one),angle:fix32::zero(),spin:fix32::zero(),axis:0};
 }
 "#;
         if early {
@@ -184,13 +184,11 @@ fn hint_order_frame(n:u16){
             let call = source[start..end].to_string();
             assert!(call.contains("true,"));
             source.replace_range(start..end, "");
-            let at = source
-                .find("                draw_block(&mut pass, &block, &mut block_model")
-                .unwrap();
+            let at = source.find("                draw_block(").unwrap();
             source.insert_str(
                 at,
                 &format!(
-                    "{call}\n                pass.set_camera(&camera);pass.set_state(&state);\n"
+                    "{call}\n                pass.set_camera(scene.camera.ptr());pass.set_state(scene.state.ptr());\n"
                 ),
             );
         }

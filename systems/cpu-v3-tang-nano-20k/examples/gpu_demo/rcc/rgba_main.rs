@@ -69,17 +69,17 @@ fn render_scene(pass: &mut Pass, camera: &Camera) {
         fix32::from_words(52429, 0),
         fix32::from_words(6554, 1),
     )));
-    pass.set_camera(camera);
-    pass.set_state(&state);
-    pass.draw(&room, &model, &unlit, &brick_view);
-    pass.draw_colored(&rgb, &model, &unlit);
-    pass.draw(&rabbit, &model, &lit, &brick_view);
+    pass.set_camera(camera.ptr());
+    pass.set_state(state.ptr());
+    pass.draw(room.ptr(), model.ptr(), unlit.ptr(), brick_view.ptr());
+    pass.draw_colored(rgb.ptr(), model.ptr(), unlit.ptr());
+    pass.draw(rabbit.ptr(), model.ptr(), lit.ptr(), brick_view.ptr());
     // Transparent geometry follows all opaque draws and never writes depth.
     state.set_depth(DepthFunc::Less, false);
     state.set_blend(BlendMode::SrcOver);
-    pass.set_state(&state);
-    pass.draw(&panel, &full_panel, &unlit, &alpha_view);
-    pass.draw(&panel, &half_panel, &half, &alpha_view);
+    pass.set_state(state.ptr());
+    pass.draw(panel.ptr(), full_panel.ptr(), unlit.ptr(), alpha_view.ptr());
+    pass.draw(panel.ptr(), half_panel.ptr(), half.ptr(), alpha_view.ptr());
 }
 
 fn run(limit: u16) {
@@ -106,16 +106,16 @@ fn run(limit: u16) {
         }
         if frame & 1 == 0 {
             let mut pass = buffer.pass(
-                &color_b,
-                &depth,
+                color_b.ptr(),
+                depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(0)),
                 DepthLoad::clear(65535),
             );
             render_scene(&mut pass, &camera);
         } else {
             let mut pass = buffer.pass(
-                &color_a,
-                &depth,
+                color_a.ptr(),
+                depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(0)),
                 DepthLoad::clear(65535),
             );
@@ -124,9 +124,9 @@ fn run(limit: u16) {
         gpu.submit(buffer);
         buffer = gpu.wait();
         if frame & 1 == 0 {
-            display.set_next_swap(&color_b);
+            display.set_next_swap(color_b.ptr());
         } else {
-            display.set_next_swap(&color_a);
+            display.set_next_swap(color_a.ptr());
         }
         display.wait_vblank();
         frame += 1;

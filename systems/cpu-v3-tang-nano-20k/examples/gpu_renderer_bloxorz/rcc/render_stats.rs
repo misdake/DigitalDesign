@@ -10,11 +10,11 @@ pub fn counted_draw(
     material: &Material,
     view: &TextureView,
 ) {
-    pass.draw(mesh, model, material, view);
+    pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
     DRAW_CALLS[0u16] += mesh.meshlet_count();
 }
 pub fn counted_ui(pass: &mut Pass, grid: &UiGrid, rect: CellRect) {
-    pass.draw_ui(grid, rect);
+    pass.draw_ui(grid.ptr(), rect);
     if rect.width != 0 && rect.height != 0 {
         DRAW_CALLS[0u16] += if rect.width == 50 { 1u16 } else { rect.height };
     }

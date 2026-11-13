@@ -18,6 +18,14 @@ the decimal `fix!` macro and `include_bytes!` use the restricted [static express
 General application macros remain unsupported. Use the [SDK value helpers](/systems/cpu-v3-tang-nano-20k/docs/sdk-values.md)
 for readable colors, transforms and resource descriptions.
 
+Resources can be grouped in an ordinary named owning struct, as in
+`GeometryPage`; its methods borrow the original page and clean its live fields
+at the end of its lifetime. `Mesh` and the other resource bodies own their
+registrations. Their copyable `*Ptr` values are passed to draw/update APIs, while
+copyable `*Desc` values describe creation or static storage. Keep each body alive
+until its last pointer use. Command buffers and passes retain their exclusive
+ownership protocol. See the [resource lifetime contract](/systems/cpu-v3-tang-nano-20k/docs/gpu-api-storage.md).
+
 ## Preview a known application
 
 ```powershell

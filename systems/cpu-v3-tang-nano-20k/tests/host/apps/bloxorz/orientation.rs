@@ -135,7 +135,7 @@ fn roll_completion_inverse_and_undo_keep_the_same_local_faces() {
     let body = r#"
 let memory:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_sectors(0x9800,512)},push:unsafe{GpuMemory::from_sectors(0x9a00,512)}};
 let absent:Option<CommandMemory>=None;let gpu=Gpu::init(GpuConfig{object_arena_bytes:8192,command_a:memory,command_b:absent});
-let mut model=Model::new(demo_pose(demo_zero(),demo_zero(),demo_point(fix32::from_int(1),fix32::from_int(1),fix32::from_int(1))));
+let mut model=Model::new(Transform::new(Vec3::zero(),Vec3::zero(),Vec3::new(fix32::from_int(1),fix32::from_int(1),fix32::from_int(1))));
 session_init();LEVEL[0u16]=15;LEVEL[1u16]=10;LEVEL[6u16]=150;LEVEL[7u16]=2;
 let mut i:u16=0;while i<150 {LEVEL[8+i*2]=1;LEVEL[9+i*2]=0;i+=1;}
 GAME[0u16]=5;GAME[1u16]=4;GAME[2u16]=0;GAME[3u16]=0;GAME[4u16]=0;GAME[5u16]=0;GAME[9u16]=0;SESSION[0u16]=PLAY;

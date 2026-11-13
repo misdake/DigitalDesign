@@ -2,8 +2,9 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
+mod gpu_board;
 mod gpu_demo_api;
-mod gpu_board;use gpu_board::*;
+use gpu_board::*;
 use gpu_demo_api::*;
 
 pub fn ui_capture_once() {
@@ -16,13 +17,13 @@ pub fn ui_capture_once() {
     demo_number(&mut grid, 0, 0, 1, 7);
     {
         let mut pass = commands.pass(
-            &color,
-            &depth,
+            color.ptr(),
+            depth.ptr(),
             ColorLoad::clear(Rgb565::from_raw(0x1111)),
             DepthLoad::clear(65535),
         );
         pass.draw_ui(
-            &grid,
+            grid.ptr(),
             CellRect {
                 x: 0,
                 y: 0,
@@ -33,7 +34,7 @@ pub fn ui_capture_once() {
     }
     gpu.submit(commands);
     commands = gpu.wait();
-    display.set_next_swap(&color);
+    display.set_next_swap(color.ptr());
     display.wait_vblank();
     halt(0x600d);
 }

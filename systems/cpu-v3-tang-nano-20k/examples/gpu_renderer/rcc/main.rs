@@ -238,16 +238,16 @@ fn run(limit: u16) {
         if back_b {
             text(&mut grid_b, stats.as_array());
             let mut pass = buffer.pass(
-                &color_b,
-                &depth,
+                color_b.ptr(),
+                depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(0x1111 + count)),
                 DepthLoad::clear(65535),
             );
-            pass.set_camera(&camera);
-            pass.set_state(&state);
-            pass.draw(&mesh, &model, &material, &view);
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
+            pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
             pass.draw_ui(
-                &grid_b,
+                grid_b.ptr(),
                 CellRect {
                     x: 0,
                     y: 0,
@@ -258,16 +258,16 @@ fn run(limit: u16) {
         } else {
             text(&mut grid_a, stats.as_array());
             let mut pass = buffer.pass(
-                &color_a,
-                &depth,
+                color_a.ptr(),
+                depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(0x1111 + count)),
                 DepthLoad::clear(65535),
             );
-            pass.set_camera(&camera);
-            pass.set_state(&state);
-            pass.draw(&mesh, &model, &material, &view);
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
+            pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
             pass.draw_ui(
-                &grid_a,
+                grid_a.ptr(),
                 CellRect {
                     x: 0,
                     y: 0,
@@ -286,9 +286,9 @@ fn run(limit: u16) {
         }
         completed = true;
         if back_b {
-            display.set_next_swap(&color_b);
+            display.set_next_swap(color_b.ptr());
         } else {
-            display.set_next_swap(&color_a);
+            display.set_next_swap(color_a.ptr());
         }
         back_b = !back_b;
         count += 1;

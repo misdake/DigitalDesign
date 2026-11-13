@@ -2,8 +2,9 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
-mod gpu_demo_api;
-use gpu_demo_api::*;
+mod game_assets;
+use game_assets::*;
+
 mod boot_resources;
 use boot_resources::*;
 mod session;
@@ -79,11 +80,11 @@ pub fn pad_cache_update(mut cache: Array<u16>) {
         cache[2u16] = goal_key;
         cache[9u16] = value.lo_bits();
         cache[10u16] = value.hi_bits();
-        cache[6u16] = (value * fix32::from_int(50) + fix32::from_words(32768, 0)).to_int() as u16;
+        cache[6u16] = (value * fix32::from_int(50) + fix!(0.5)).to_int() as u16;
         cache[4u16] |= 1920; // fallback exit strips7..10
     }
     let one = fix32::from_int(1);
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     let mut visible: u16 = 0;
     if mode != ENTRY_OPEN && mode != ENTRY_RISE {
         visible |= 1;
@@ -115,7 +116,7 @@ pub fn pad_cache_update(mut cache: Array<u16>) {
 }
 
 pub fn pad_part_material(role: u16) -> Material {
-    let mut color = demo_white();
+    let mut color = Rgba8::white();
     let mut unlit = true;
     if role == 0 {
         color = Rgba8 {
@@ -148,7 +149,7 @@ pub fn pad_part_material(role: u16) -> Material {
             a: 255,
         };
     }
-    demo_material(color, unlit)
+    game_material(color, unlit)
 }
 pub fn pad_carrier_texture() -> Texture {
     let phase = (SESSION[6u16] * 3 + SESSION[7u16] * 5) & 3;
@@ -178,7 +179,7 @@ pub fn draw_pad_part(
         let x = if start { LEVEL[2u16] } else { SESSION[6u16] };
         let z = if start { LEVEL[3u16] } else { SESSION[7u16] };
         let one = fix32::from_int(1);
-        let half = fix32::from_words(32768, 0);
+        let half = fix!(0.5);
         let cx = fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half + half;
         let cz = fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half + half;
         if role < 3 {
@@ -187,10 +188,10 @@ pub fn draw_pad_part(
             } else {
                 fix32::from_words(32604, 0)
             };
-            model.set_pose(demo_pose(
-                demo_point(cx, fix32::zero(), cz),
-                demo_zero(),
-                demo_point(scale, half, scale),
+            model.set_pose(Transform::new(
+                Vec3::new(cx, fix32::zero(), cz),
+                Vec3::zero(),
+                Vec3::new(scale, half, scale),
             ));
         } else {
             let panel = if start { role - 3 } else { role - 7 };
@@ -199,14 +200,14 @@ pub fn draw_pad_part(
             let sign = if panel & 1 == 0 { -one } else { one };
             let offset = sign * (one + value) * fix32::from_words(16384, 0);
             let width = (one - value) * half;
-            model.set_pose(demo_pose(
-                demo_point(
+            model.set_pose(Transform::new(
+                Vec3::new(
                     cx + if along_x { offset } else { fix32::zero() },
                     fix32::from_words(524, 0),
                     cz + if along_x { fix32::zero() } else { offset },
                 ),
-                demo_zero(),
-                demo_point(
+                Vec3::zero(),
+                Vec3::new(
                     if along_x { width } else { value },
                     fix32::from_words(1966, 0),
                     if along_x { one } else { width },
@@ -224,7 +225,7 @@ pub fn draw_pad_part(
         } else if role == 1 && goal_carrier_enabled() {
             first = GOAL_HATCH_FIRST + cache[6u16];
         }
-        let mesh = demo_mesh_part(first, 1);
+        let mesh = game_mesh_part(first, 1);
         counted_draw(pass, &mesh, model, material, view);
     }
 }
@@ -235,10 +236,10 @@ pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material
     if x == 65535 {
         return;
     }
-    let half = fix32::from_words(32768, 0);
-    let texture = demo_texture();
+    let half = fix!(0.5);
+    let texture = game_texture();
     let view = clamped_texture_view(&texture);
-    let mesh = demo_mesh_part(WELL_FIRST, WELL_COUNT);
+    let mesh = game_mesh_part(WELL_FIRST, WELL_COUNT);
     if start {
         material.set_uniform_color(Rgba8 {
             r: 36,
@@ -254,14 +255,14 @@ pub fn draw_pad_well(pass: &mut Pass, model: &mut Model, material: &mut Material
             a: 255,
         });
     }
-    model.set_pose(demo_pose(
-        demo_point(
+    model.set_pose(Transform::new(
+        Vec3::new(
             fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half + half,
             fix32::zero(),
             fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half + half,
         ),
-        demo_zero(),
-        demo_scale(),
+        Vec3::zero(),
+        Vec3::one(),
     ));
     counted_draw(pass, &mesh, model, material, &view);
 }

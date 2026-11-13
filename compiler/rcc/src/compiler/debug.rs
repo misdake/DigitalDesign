@@ -196,8 +196,19 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
         let mut parts = line.split_whitespace();
         match parts.next() {
             Some("file") => {
-                let idx: usize = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
-                let name = parts.next().ok_or_else(err)?;
+                let index = parts.next().ok_or_else(err)?;
+                let idx: usize = index.parse().map_err(|_| err())?;
+                let name = line
+                    .trim_start()
+                    .strip_prefix("file")
+                    .ok_or_else(err)?
+                    .trim_start()
+                    .strip_prefix(index)
+                    .ok_or_else(err)?
+                    .trim_start();
+                if name.is_empty() {
+                    return Err(err());
+                }
                 if idx != info.files.len() {
                     return Err(format!("line {}: file index out of order", ln + 1));
                 }
@@ -210,15 +221,25 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
                 let name = parts.next().ok_or_else(err)?.to_string();
                 let range_s = parts.next().ok_or_else(err)?;
                 let addr = parse_addr_range(range_s).ok_or_else(err)?;
-                let file_name = parts.next().ok_or_else(err)?;
+                let tail = line
+                    .trim_start()
+                    .strip_prefix("func")
+                    .ok_or_else(err)?
+                    .trim_start()
+                    .strip_prefix(name.as_str())
+                    .ok_or_else(err)?
+                    .trim_start()
+                    .strip_prefix(range_s)
+                    .ok_or_else(err)?
+                    .trim_start();
+                let (file_name, frame_size) = tail.rsplit_once(" frame ").ok_or_else(err)?;
                 let file = info
                     .files
                     .iter()
                     .position(|f| f == file_name)
                     .ok_or_else(|| format!("line {}: unknown file `{file_name}`", ln + 1))?
                     as u16;
-                let _kw = parts.next(); // "frame"
-                let frame_size: usize = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                let frame_size: usize = frame_size.parse().map_err(|_| err())?;
                 cur_func = Some(DebugFunc {
                     name,
                     file,

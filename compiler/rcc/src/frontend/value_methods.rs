@@ -78,14 +78,16 @@ pub(super) fn prepare(
     if !checked {
         return Ok(methods);
     }
+    let resource_aggregates = super::resource::aggregate_names(files)?;
     let values: HashSet<_> = files
         .iter()
         .flat_map(|file| &file.items)
         .filter_map(|item| match item {
-            Item::Struct(value) => (!value
-                .attrs
-                .iter()
-                .any(|attr| attr.path.is_ident("rcc_resource")))
+            Item::Struct(value) => (!resource_aggregates.contains(&value.ident.to_string())
+                && !value
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path.is_ident("rcc_resource")))
             .then(|| value.ident.to_string()),
             Item::Enum(value) => Some(value.ident.to_string()),
             _ => None,

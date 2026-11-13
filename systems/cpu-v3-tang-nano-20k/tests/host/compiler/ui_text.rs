@@ -12,6 +12,9 @@ fn main(){
  grid.fill(255);grid.write_glyph(0,0,65);
  text_u16(&mut grid,1,0,0);text_u16(&mut grid,3,0,65535);
  text_i16(&mut grid,0,1,-32767i16-1);text_i16(&mut grid,8,1,32767);
+ grid.write_text(0,2,b"ABCDEFGHIJKLM");
+ text_u16_field(&mut grid,1,2,4,7);text_u16_field(&mut grid,8,2,3,65535);
+ text_u16_field(&mut grid,12,2,0,0);
  text_hex16(&mut grid,46,14,0xabcd);halt(0x600d);
 }"#;
     for debug in [false, true] {
@@ -39,6 +42,9 @@ fn main(){
         assert_eq!(text(0, 1, 6), b"-32768");
         assert_eq!(text(8, 1, 5), b"32767");
         assert_eq!(text(46, 14, 4), b"ABCD");
+        assert_eq!(text(0, 2, 6), [b'A', b'7', 255, 255, 255, b'F']);
+        assert_eq!(text(8, 2, 3), b"655");
+        assert_eq!(text(12, 2, 1), b"M");
         assert_eq!(text(2, 0, 1), [255]);
     }
 }

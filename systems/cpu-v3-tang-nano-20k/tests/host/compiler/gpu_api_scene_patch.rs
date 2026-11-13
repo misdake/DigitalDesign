@@ -18,16 +18,16 @@ fn main(){
  let color_b=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
  let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
  let mesh=Mesh::from_native(MeshDesc{directory_sector:0xa000,directory_word:0,meshlet_count:1,storage:unsafe{GpuMemory::from_sectors(0xa000,16)}});
- {let mut p=a.pass(&color_a,&depth,ColorLoad::clear(Rgb565::from_raw(0x1234)),DepthLoad::clear(65535));p.set_camera(&cam);p.set_state(&state);p.draw_colored(&mesh,&model,&material);p.draw_colored(&mesh,&model,&material);}
+ {let mut p=a.pass(color_a.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1234)), DepthLoad::clear(65535));p.set_camera(cam.ptr());p.set_state(state.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());}
  let binding=a.scene_binding();dev_send(7,1,0);
  gpu.submit(a);a=gpu.wait();
  cam.set_pose(v(1,0,0),Vec3{x:fix32::from_int(0),y:fix32::from_words(8192,0),z:fix32::from_int(0)});
  dev_send(7,1,3);
- a.patch_scene(binding,&cam,&model,&color_b,&depth);dev_send(7,1,1);
+ a.patch_scene(binding, cam.ptr(), model.ptr(), color_b.ptr(), depth.ptr());dev_send(7,1,1);
  gpu.submit(a);a=gpu.wait();
- {let mut p=b.pass(&color_b,&depth,ColorLoad::clear(Rgb565::from_raw(0x1234)),DepthLoad::clear(65535));p.set_camera(&cam);p.set_state(&state);p.draw_colored(&mesh,&model,&material);p.draw_colored(&mesh,&model,&material);}
+ {let mut p=b.pass(color_b.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1234)), DepthLoad::clear(65535));p.set_camera(cam.ptr());p.set_state(state.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());}
  let other_binding=b.scene_binding();dev_send(7,1,2);
- a.patch_scene(binding,&cam,&model,&color_a,&depth);dev_send(7,1,4);
+ a.patch_scene(binding, cam.ptr(), model.ptr(), color_a.ptr(), depth.ptr());dev_send(7,1,4);
  drop(mesh);drop(depth);drop(color_b);drop(color_a);drop(state);drop(material);drop(model);drop(cam);drop(a);drop(b);drop(gpu);halt(0x600d);
 }"#;
 
@@ -313,7 +313,7 @@ fn stale_span_and_driver_owned_patch_fail_before_backing_mutation() {
 #[test]
 fn reset_generation_carries_and_exhaustion_does_not_mutate_the_record() {
     let prefix = SOURCE
-        .split(" a.patch_scene(binding,&cam,&model,&color_b,&depth);")
+        .split(" a.patch_scene(binding, cam.ptr(), model.ptr(), color_b.ptr(), depth.ptr());")
         .next()
         .unwrap();
     let source = format!(
@@ -378,23 +378,23 @@ fn partial_storage_failure_poison_preserves_shadows_and_blocks_start() {
 
 #[test]
 fn foreign_binding_projection_and_actual_reset_reject_before_patch_writes() {
-    let call = "a.patch_scene(binding,&cam,&model,&color_b,&depth);";
+    let call = "a.patch_scene(binding, cam.ptr(), model.ptr(), color_b.ptr(), depth.ptr());";
     let rerecord = r#"a.reset();
- {let mut p=a.pass(&color_b,&depth,ColorLoad::clear(Rgb565::from_raw(0x1234)),DepthLoad::clear(65535));p.set_camera(&cam);p.set_state(&state);p.draw_colored(&mesh,&model,&material);p.draw_colored(&mesh,&model,&material);}
+ {let mut p=a.pass(color_b.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1234)), DepthLoad::clear(65535));p.set_camera(cam.ptr());p.set_state(state.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());}
  let current=a.scene_binding();dev_send(7,1,6);
- a.patch_scene(binding,&cam,&model,&color_b,&depth);"#;
+ a.patch_scene(binding, cam.ptr(), model.ptr(), color_b.ptr(), depth.ptr());"#;
     for (label, replacement) in [
         (
             "foreign",
-            "b.patch_scene(binding,&cam,&model,&color_b,&depth);",
+            "b.patch_scene(binding, cam.ptr(), model.ptr(), color_b.ptr(), depth.ptr());",
         ),
         (
             "projection",
-            "cam.set_projection(Projection::from_focal_pixels(fix32::from_int(220),fix32::from_int(120)));a.patch_scene(binding,&cam,&model,&color_b,&depth);",
+            "cam.set_projection(Projection::from_focal_pixels(fix32::from_int(220),fix32::from_int(120)));a.patch_scene(binding, cam.ptr(), model.ptr(), color_b.ptr(), depth.ptr());",
         ),
         (
             "light-range",
-            "let mut view=cam.view();view.row0.z=fix32::from_int(2);cam.set_view(view);a.patch_scene(binding,&cam,&model,&color_b,&depth);",
+            "let mut view=cam.view();view.row0.z=fix32::from_int(2);cam.set_view(view);a.patch_scene(binding, cam.ptr(), model.ptr(), color_b.ptr(), depth.ptr());",
         ),
         ("reset-stale", rerecord),
     ] {
@@ -421,7 +421,7 @@ fn binding_from_a_dropped_context_cannot_match_reused_slots() {
         .unwrap();
     let drops = "drop(mesh);drop(depth);drop(color_b);drop(color_a);drop(state);drop(material);drop(model);drop(cam);drop(a);drop(b);drop(gpu);";
     let source = format!(
-        "{preamble}fn previous()->SceneBinding{{{prefix}let token=a.scene_binding();{drops}token}}\nfn main(){{let old=previous();{prefix}let current=a.scene_binding();dev_send(7,1,0);a.patch_scene(old,&cam,&model,&color_b,&depth);{drops}halt(0x600d);}}"
+        "{preamble}fn previous()->SceneBinding{{{prefix}let token=a.scene_binding();{drops}token}}\nfn main(){{let old=previous();{prefix}let current=a.scene_binding();dev_send(7,1,0);a.patch_scene(old, cam.ptr(), model.ptr(), color_b.ptr(), depth.ptr());{drops}halt(0x600d);}}"
     );
     for debug in [false, true] {
         let code = compile(&source, debug, "context-reuse");
@@ -445,8 +445,8 @@ fn binding_from_a_dropped_context_cannot_match_reused_slots() {
 #[test]
 fn numerically_equal_unrelated_models_are_not_a_shared_patch_group() {
     let source = SOURCE.replace("let material=", "let other=Model::new(Transform{position:v(0,0,-3),angles:v(0,0,0),scale:v(1,1,1)});let material=")
-        .replacen("p.draw_colored(&mesh,&model,&material);p.draw_colored(&mesh,&model,&material);",
-            "p.draw_colored(&mesh,&model,&material);p.draw_colored(&mesh,&other,&material);", 1);
+        .replacen("p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());",
+            "p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());p.draw_colored(mesh.ptr(), other.ptr(), material.ptr());", 1);
     for debug in [false, true] {
         let code = compile(&source, debug, "equal-foreign-model");
         let (signal, seen, mut cpu) = run(&code, Inject::None);

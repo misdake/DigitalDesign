@@ -83,6 +83,264 @@ fn execute(label: &str, source: &str) {
         "{label}: {outcome:?}"
     );
 }
+
+#[test]
+fn rustc_one_word_values_use_registers_and_preserve_argument_snapshots() {
+    let calls = "if read(identity(value))!=21{halt(0xbad);}".repeat(260);
+    execute(
+        "word-value-abi",
+        &format!(
+            r#"
+#[derive(Copy,Clone)]struct Word{{value:u16}}
+#[derive(Copy,Clone)]struct Nested{{word:Word}}
+fn identity(value:Word)->Word{{value}}
+fn read(value:Word)->u16{{value.value}}
+impl Word{{fn mutate(&mut self)->u16{{self.value=9;0}}}}
+fn snapshot(mut value:Word,ignored:u16)->u16{{value.value+=1;value.value}}
+fn six(a:u16,b:u16,c:u16,d:u16,e:u16,f:u16)->Word{{return Word{{value:a+b+c+d+e+f}};}}
+fn nested(value:Nested)->Nested{{Nested{{word:identity(value.word)}}}}
+fn tuple(value:(u16,))->(u16,){{value}}
+fn array()->Buf<u16,1>{{Buf::new([8u16;1])}}
+fn main(){{
+ let mut original=Word{{value:3}};
+ if snapshot(original,original.mutate())!=4||original.value!=9{{halt(0xbad);}}
+ let source=six(1,2,3,4,5,6);let value=source;
+ {calls}
+ let call:fn(Word)->u16=read;
+ if call(value)!=21{{halt(0xbad);}}
+ let result=nested(Nested{{word:value}});
+ let tuple_value=tuple((7u16,));
+ let array_value=array();
+ if result.word.value!=21||tuple_value.0!=7||array_value[0u16]!=8{{halt(0xbad);}}
+ halt(0x600d);
+}}
+"#
+        ),
+    );
+}
+
+#[test]
+fn rustc_temporary_storage_tracks_live_values_instead_of_call_count() {
+    for optimized in [true, false] {
+        let options = CompilerOptions {
+            opt: if optimized {
+                rcc::Opts::default()
+            } else {
+                rcc::Opts::disabled()
+            },
+            ..CompilerOptions::default()
+        };
+        let mut frames = Vec::new();
+        for count in [8u16, 160] {
+            let assignments = "value=bump(value,1);".repeat(usize::from(count / 2));
+            let calls =
+                format!("if read(bump(value,1),0)!={}{{halt(0xbad);}}", count + 4).repeat(32);
+            let source = format!(
+                r#"
+#[derive(Copy,Clone)]struct Pair{{left:u16,right:u16}}
+impl Pair{{fn mutate(&mut self)->u16{{self.left=9;0}}}}
+fn read(value:Pair,ignored:u16)->u16{{value.left+value.right}}
+fn bump(value:Pair,amount:u16)->Pair{{Pair{{left:value.left+amount,right:value.right}}}}
+fn combine(a:Pair,b:Pair)->Pair{{Pair{{left:a.left+b.left,right:a.right+b.right}}}}
+fn main(){{
+ let mut value=Pair{{left:1,right:2}};
+ if read(value,value.mutate())!=3||value.left!=9{{halt(0xbad);}}
+ value.left=1;
+ {assignments}
+ let mut marker=Pair{{left:100,right:200}};
+ let held=view_of(&mut marker);
+ {assignments}
+ let joined=combine(value,bump(value,3));
+ if joined.left!={}||joined.right!=4{{halt(0xbad);}}
+ {calls}
+ if value.left!={}||held[0u16].left!=100||held[0u16].right!=200{{halt(0xbad);}}
+ halt(0x600d);
+}}
+"#,
+                count * 2 + 5,
+                count + 1
+            );
+            let parsed = parse_with_options(
+                &format!("temporary-live-{count}-{optimized}"),
+                &source,
+                &options,
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+            frames.push(
+                parsed
+                    .funcs
+                    .iter()
+                    .find(|f| f.name == "main")
+                    .unwrap()
+                    .local_slots,
+            );
+            let code = try_compile(parsed, &options, "main").unwrap();
+            let mut cpu = CpuV3Sim::default();
+            cpu.set_boot_window(&code.words);
+            assert!(matches!(
+                cpu.run(100_000).unwrap(),
+                RunOutcome::Halted { signal: 0x600d, .. }
+            ));
+        }
+        assert_eq!(
+            frames[0], frames[1],
+            "scratch must depend on simultaneous live values"
+        );
+        println!(
+        "temporary storage (optimized={optimized}): 8 and 160 assignment sites both use {} local words",
+        frames[0]
+    );
+    }
+}
+
+#[test]
+fn rustc_temporary_receivers_and_address_results_keep_their_storage() {
+    let calls = "if Pair::new(1).total(bump(Pair::new(2),3))!=11{halt(0xbad);}".repeat(80);
+    execute(
+        "temporary-receiver-escape",
+        &format!(
+            r#"
+#[derive(Copy,Clone)]struct Pair{{left:u16,right:u16}}
+#[derive(Copy,Clone)]struct Reference{{view:Array<Pair>,tag:u16}}
+#[derive(Copy,Clone)]struct ReferenceWord{{view:Array<Pair>}}
+impl Pair{{
+ fn new(left:u16)->Self{{Self{{left:left,right:left+1}}}}
+ fn total(&self,other:Pair)->u16{{self.left+self.right+other.left+other.right}}
+ fn pointer(&self)->Ptr{{addr_of(&self.left)}}
+}}
+fn bump(value:Pair,amount:u16)->Pair{{Pair{{left:value.left+amount,right:value.right}}}}
+fn alias(mut value:Pair)->Array<Pair>{{view_of(&mut value)}}
+fn wrap(mut value:Pair)->Reference{{Reference{{view:view_of(&mut value),tag:3}}}}
+fn word_alias(mut value:Pair)->ReferenceWord{{ReferenceWord{{view:view_of(&mut value)}}}}
+fn choose(flag:bool,value:Pair)->Pair{{if flag{{return bump(value,7);}}bump(value,1)}}
+fn main(){{
+ let escaped=alias(Pair::new(10));let wrapped=wrap(Pair::new(20));
+ let pointer=Pair::new(30).pointer();let word=word_alias(Pair::new(40));
+ {calls}
+ let mut value=Pair::new(1);let mut index=0u16;
+ while index<3{{
+  if index==1{{value=bump(value,2);}}else{{value=bump(value,1);}}
+  index+=1;
+ }}
+ let yes=choose(true,value);let no=choose(false,value);
+ if yes.left!=12||no.left!=6||yes.right!=2{{halt(0xbad);}}
+ if escaped[0u16].left!=10||escaped[0u16].right!=11{{halt(0xbad);}}
+ if wrapped.view[0u16].left!=20||wrapped.view[0u16].right!=21||wrapped.tag!=3{{halt(0xbad);}}
+ if unsafe{{pointer.read(0)}}!=30||word.view[0u16].left!=40{{halt(0xbad);}}
+ halt(0x600d);
+}}
+"#
+        ),
+    );
+    let overflow = r#"
+struct Wide{values:Buf<u16,100>}
+fn wide()->Wide{Wide{values:Buf::new([0u16;100])}}
+fn read(a:Wide,b:Wide,c:Wide)->u16{a.values[0u16]+b.values[0u16]+c.values[0u16]}
+fn main(){halt(read(wide(),wide(),wide()));}
+"#;
+    let error = parse("temporary-real-overflow", overflow)
+        .err()
+        .expect("simultaneously live storage cannot exceed 255 words")
+        .to_string();
+    assert!(
+        error.contains("aggregate argument storage exceeds the 255-word"),
+        "{error}"
+    );
+}
+
+#[test]
+fn rustc_owned_struct_resources_borrow_fields_and_drop_in_declaration_order() {
+    execute(
+        "owned-struct-basic",
+        r#"mod owner;
+pub struct Scene{first:Renderer,second:Renderer,count:u16}
+impl Scene{
+ pub fn new()->Self{Self{first:open(1),second:open(2),count:0}}
+ pub fn update(&mut self){self.count=self.count+1;let a=self.first.identity();assert!(a==1);}
+ pub fn sum(&self)->u16{self.first.identity()+self.second.identity()+self.count}
+}
+fn main(){
+ {let mut scene=Scene::new();scene.update();assert!(scene.sum()==4);}
+ assert!(event_count()==2);assert!(event_at(0)==11);assert!(event_at(1)==12);halt(0x600d);
+}"#,
+    );
+}
+
+#[test]
+fn rustc_owned_struct_rejects_moves_and_aliased_field_borrows() {
+    for (label, body, expected) in [
+        (
+            "owned-struct-alias",
+            "let mut s=Scene{first:open(1),second:open(2)};pair(&mut s.first,&mut s.first);",
+            "E0499",
+        ),
+        (
+            "owned-struct-move",
+            "let s=Scene{first:open(1),second:open(2)};drop(s.first);drop(s);",
+            "E0382",
+        ),
+    ] {
+        let source = format!(
+            "mod owner;pub struct Scene{{first:Renderer,second:Renderer}}fn main(){{{body}}}"
+        );
+        let error = parse(label, &source).err().unwrap().to_string();
+        assert!(error.contains(expected), "{label}: {error}");
+    }
+}
+
+#[test]
+fn rustc_owned_struct_nested_moves_replacement_and_early_return_cleanup() {
+    execute(
+        "owned-struct-nested",
+        r#"mod owner;
+pub struct Scene{first:Renderer,second:Renderer,count:u16}
+pub struct Page{scene:Scene,last:Renderer}
+impl Scene{
+ pub fn new(a:u16,b:u16)->Self{Self{first:open(a),second:open(b),count:0}}
+ pub fn replace(&mut self){self.first=open(4);self.count+=1;}
+ pub fn identity(&self)->u16{self.first.identity()+self.count}
+}
+fn transfer(page:Page)->Page{page}
+fn work(){
+ let mut page=Page{scene:Scene::new(1,2),last:open(3)};
+ page.scene.replace();assert!(page.scene.identity()==5);
+ let moved=transfer(page);drop(moved.scene.first);return;
+}
+fn main(){work();assert!(event_count()==4);assert!(event_at(0)==11);
+ assert!(event_at(1)==14);assert!(event_at(2)==12);assert!(event_at(3)==13);halt(0x600d);}
+"#,
+    );
+}
+
+#[test]
+fn rustc_owned_struct_rejects_private_payload_access_and_child_storage() {
+    for (label, source, expected) in [
+        ("owned-struct-private", "mod owner;pub struct Scene{r:Renderer}fn main(){let s=Scene{r:open(1)};halt(s.r.word);}", "private"),
+        ("owned-struct-child", "mod owner;pub struct Scene{f:Frame}fn main(){halt(0x600d);}", "lifetime"),
+    ] {
+        let error=parse(label,source).err().unwrap().to_string();
+        assert!(error.contains(expected),"{label}: {error}");
+    }
+}
+
+#[test]
+fn rustc_owned_struct_reborrows_and_loop_replacements_keep_storage_and_cleanup() {
+    execute(
+        "owned-struct-loop-replace",
+        r#"mod owner;
+pub struct Scene{first:Renderer,second:Renderer}
+impl Scene{pub fn new(a:u16,b:u16)->Self{Self{first:open(a),second:open(b)}}}
+fn main(){
+ {let mut scene=Scene::new(1,2);scene=Scene::new(3,4);
+  {let view=&mut scene;view.first=open(5);assert!(view.first.identity()==5);}
+  let mut i:u16=0;while i<2{scene.first=open(6+i);i+=1;}
+ }
+ assert!(event_count()==7);assert!(event_at(0)==11);assert!(event_at(1)==12);
+ assert!(event_at(2)==13);assert!(event_at(3)==15);assert!(event_at(4)==16);
+ assert!(event_at(5)==17);assert!(event_at(6)==14);halt(0x600d);
+}"#,
+    );
+}
 #[test]
 fn rustc_drop_executes_real_method_chain_and_reverse_cleanup() {
     execute(

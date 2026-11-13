@@ -2,8 +2,9 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
+mod gpu_board;
 mod gpu_demo_api;
-mod gpu_board;use gpu_board::*;
+use gpu_board::*;
 use gpu_demo_api::*;
 mod profiler_clock;
 use profiler_clock::*;
@@ -161,33 +162,43 @@ fn run(limit: u16) {
         if tick & 1 == 0 {
             {
                 let mut pass = buffer.pass(
-                    &color_b,
-                    &depth,
+                    color_b.ptr(),
+                    depth.ptr(),
                     ColorLoad::clear(Rgb565::from_raw(0x1111 + tick)),
                     DepthLoad::clear(65535),
                 );
-                pass.set_camera(&camera);
-                pass.set_state(&state);
-                pass.draw(&mesh, &left, &opaque, &view);
-                pass.set_state(&alpha);
-                pass.draw(&mesh, &right, &glass, &view);
+                pass.set_camera(camera.ptr());
+                pass.set_state(state.ptr());
+                pass.draw(mesh.ptr(), left.ptr(), opaque.ptr(), view.ptr());
+                pass.set_state(alpha.ptr());
+                pass.draw(mesh.ptr(), right.ptr(), glass.ptr(), view.ptr());
                 if phase == 4 {
                     // This Pass keeps its installed Camera while its successor sees the edit.
                     edit_scene(&mut camera, &mut left, &mut opaque);
-                    pass.set_state(&state);
-                    pass.draw(&mesh, &left, &opaque, &view);
+                    pass.set_state(state.ptr());
+                    pass.draw(mesh.ptr(), left.ptr(), opaque.ptr(), view.ptr());
                 }
             }
             if phase == 4 {
-                let mut next = buffer.pass(&color_b, &depth, ColorLoad::load(), DepthLoad::load());
-                next.set_camera(&camera);
-                next.set_state(&alpha);
-                next.draw(&mesh, &right, &glass, &view);
+                let mut next = buffer.pass(
+                    color_b.ptr(),
+                    depth.ptr(),
+                    ColorLoad::load(),
+                    DepthLoad::load(),
+                );
+                next.set_camera(camera.ptr());
+                next.set_state(alpha.ptr());
+                next.draw(mesh.ptr(), right.ptr(), glass.ptr(), view.ptr());
             }
             {
-                let mut ui = buffer.pass(&color_b, &depth, ColorLoad::load(), DepthLoad::load());
+                let mut ui = buffer.pass(
+                    color_b.ptr(),
+                    depth.ptr(),
+                    ColorLoad::load(),
+                    DepthLoad::load(),
+                );
                 ui.draw_ui(
-                    &grid,
+                    grid.ptr(),
                     CellRect {
                         x: 0,
                         y: 0,
@@ -199,33 +210,43 @@ fn run(limit: u16) {
         } else {
             {
                 let mut pass = buffer.pass(
-                    &color_a,
-                    &depth,
+                    color_a.ptr(),
+                    depth.ptr(),
                     ColorLoad::clear(Rgb565::from_raw(0x1111 + tick)),
                     DepthLoad::clear(65535),
                 );
-                pass.set_camera(&camera);
-                pass.set_state(&state);
-                pass.draw(&mesh, &left, &opaque, &view);
-                pass.set_state(&alpha);
-                pass.draw(&mesh, &right, &glass, &view);
+                pass.set_camera(camera.ptr());
+                pass.set_state(state.ptr());
+                pass.draw(mesh.ptr(), left.ptr(), opaque.ptr(), view.ptr());
+                pass.set_state(alpha.ptr());
+                pass.draw(mesh.ptr(), right.ptr(), glass.ptr(), view.ptr());
                 if phase == 4 {
                     // This Pass keeps its installed Camera while its successor sees the edit.
                     edit_scene(&mut camera, &mut left, &mut opaque);
-                    pass.set_state(&state);
-                    pass.draw(&mesh, &left, &opaque, &view);
+                    pass.set_state(state.ptr());
+                    pass.draw(mesh.ptr(), left.ptr(), opaque.ptr(), view.ptr());
                 }
             }
             if phase == 4 {
-                let mut next = buffer.pass(&color_a, &depth, ColorLoad::load(), DepthLoad::load());
-                next.set_camera(&camera);
-                next.set_state(&alpha);
-                next.draw(&mesh, &right, &glass, &view);
+                let mut next = buffer.pass(
+                    color_a.ptr(),
+                    depth.ptr(),
+                    ColorLoad::load(),
+                    DepthLoad::load(),
+                );
+                next.set_camera(camera.ptr());
+                next.set_state(alpha.ptr());
+                next.draw(mesh.ptr(), right.ptr(), glass.ptr(), view.ptr());
             }
             {
-                let mut ui = buffer.pass(&color_a, &depth, ColorLoad::load(), DepthLoad::load());
+                let mut ui = buffer.pass(
+                    color_a.ptr(),
+                    depth.ptr(),
+                    ColorLoad::load(),
+                    DepthLoad::load(),
+                );
                 ui.draw_ui(
-                    &grid,
+                    grid.ptr(),
                     CellRect {
                         x: 0,
                         y: 0,
@@ -245,9 +266,9 @@ fn run(limit: u16) {
             observed = 65535;
         }
         if tick & 1 == 0 {
-            display.set_next_swap(&color_b);
+            display.set_next_swap(color_b.ptr());
         } else {
-            display.set_next_swap(&color_a);
+            display.set_next_swap(color_a.ptr());
         }
         display.wait_vblank();
         signal(3, tick);

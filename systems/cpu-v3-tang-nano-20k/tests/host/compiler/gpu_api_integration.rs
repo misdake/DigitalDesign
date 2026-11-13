@@ -12,8 +12,8 @@ fn main(){
  let mut first:CommandBuffer=gpu.command_buffer();let mut second:CommandBuffer=gpu.command_buffer();
  let color:ColorBuffer=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});
  let depth:DepthBuffer=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
- {let pass=first.pass(&color,&depth,ColorLoad::clear(Rgb565::from_raw(0x1357)),DepthLoad::load());}
- {let pass=second.pass(&color,&depth,ColorLoad::load(),DepthLoad::clear(0x2468));}
+ {let pass=first.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1357)), DepthLoad::load());}
+ {let pass=second.pass(color.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::clear(0x2468));}
  gpu.submit(first);first=gpu.wait();let sealed=first.command_words();
  let absent:Option<CommandBuffer>=gpu.try_wait();if let Some(unexpected)=absent{drop(unexpected);halt(0xbad);}
  gpu.submit(second);second=gpu.wait();if dev_recv(1,0)!=0{gpu.request_snapshot();}gpu.submit_capturable(first);first=gpu.wait();

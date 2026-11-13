@@ -2,8 +2,9 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
+mod gpu_board;
 mod gpu_demo_api;
-mod gpu_board;use gpu_board::*;
+use gpu_board::*;
 use gpu_demo_api::*;
 
 fn consume(
@@ -14,8 +15,8 @@ fn consume(
     material: &Material,
     texture: &TextureView,
 ) {
-    pass.set_camera(camera);
-    pass.draw(mesh, model, material, texture);
+    pass.set_camera(camera.ptr());
+    pass.draw(mesh.ptr(), model.ptr(), material.ptr(), texture.ptr());
 }
 fn rtt_run(first: u16, end: u16, ordinary: bool) {
     let mut gpu = Gpu::init(board_gpu_config());
@@ -68,14 +69,19 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
         buffer.invalidate_textures();
         {
             let mut pass = buffer.pass(
-                &offscreen,
-                &offscreen_depth,
+                offscreen.ptr(),
+                offscreen_depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(clear)),
                 DepthLoad::clear(65535),
             );
-            pass.set_camera(&camera);
-            pass.set_state(&state);
-            pass.draw(&pattern, &producer, &material, &ordinary_view);
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
+            pass.draw(
+                pattern.ptr(),
+                producer.ptr(),
+                material.ptr(),
+                ordinary_view.ptr(),
+            );
         }
         gpu.request_snapshot();
         gpu.submit_capturable(buffer);
@@ -89,21 +95,21 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
             let view = offscreen.texture_view();
             if (update - first) & 1 == 0 {
                 let mut pass = buffer.pass(
-                    &color_b,
-                    &depth,
+                    color_b.ptr(),
+                    depth.ptr(),
                     ColorLoad::clear(Rgb565::from_raw(0)),
                     DepthLoad::clear(65535),
                 );
-                pass.set_state(&state);
+                pass.set_state(state.ptr());
                 consume(&mut pass, &camera, &screen, &consumer, &material, &view);
             } else {
                 let mut pass = buffer.pass(
-                    &color_a,
-                    &depth,
+                    color_a.ptr(),
+                    depth.ptr(),
                     ColorLoad::clear(Rgb565::from_raw(0)),
                     DepthLoad::clear(65535),
                 );
-                pass.set_state(&state);
+                pass.set_state(state.ptr());
                 consume(&mut pass, &camera, &screen, &consumer, &material, &view);
             }
             // The recorded descriptor outlives this CPU TextureView.
@@ -112,9 +118,9 @@ fn rtt_run(first: u16, end: u16, ordinary: bool) {
         gpu.submit_capturable(buffer);
         buffer = gpu.wait();
         if (update - first) & 1 == 0 {
-            display.set_next_swap(&color_b);
+            display.set_next_swap(color_b.ptr());
         } else {
-            display.set_next_swap(&color_a);
+            display.set_next_swap(color_a.ptr());
         }
         display.wait_vblank();
         update += 1;

@@ -2,8 +2,7 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
-mod gpu_demo_api;
-use gpu_demo_api::*;
+
 mod session;
 use session::*;
 mod render_stats;
@@ -180,7 +179,7 @@ fn shadow_ratio(a: fix32, b: fix32) -> fix32 {
     t
 }
 fn shadow_project(world: Mat3x4) -> u16 {
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     let radius = fix32::from_words(32113, 0);
     let mut count: u16 = 0;
     let mut i: u16 = 0;
@@ -419,13 +418,13 @@ fn shadow_draw(
             },
         },
         Mat3x3 {
-            row0: demo_point(one, zero, zero),
-            row1: demo_point(zero, one, zero),
-            row2: demo_point(zero, zero, one),
+            row0: Vec3::new(one, zero, zero),
+            row1: Vec3::new(zero, one, zero),
+            row2: Vec3::new(zero, zero, one),
         },
     );
     // The immutable shadow mesh carries white vertex colors and no texture UVs.
-    pass.draw_colored(mesh, model, material);
+    pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());
     DRAW_CALLS[0u16] += mesh.meshlet_count();
     SHADOW_INFO[2u16] += 1;
 }
@@ -497,6 +496,18 @@ pub fn draw_shadow(
     SHADOW_INFO[2u16] = 0;
     let count = shadow_hull(shadow_project(world));
     SHADOW_INFO[0u16] = count;
+    draw_shadow_hull(pass, mesh, model, material, count, mask);
+}
+
+// Projection/cache selection is complete; clip the shared hull to receiver cells.
+fn draw_shadow_hull(
+    pass: &mut Pass,
+    mesh: &Mesh,
+    model: &mut Model,
+    material: &Material,
+    count: u16,
+    mask: u16,
+) {
     if count < 3 {
         shadow_batch_finish(pass, model, material);
         return;
@@ -523,7 +534,7 @@ pub fn draw_shadow(
         }
         i += 1;
     }
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     let one = fix32::from_int(1);
     let mode = visual_mode();
     // Inclusive overlap needs x >= min_x + half_width - 1 and
@@ -751,7 +762,7 @@ fn shadow_batch_cell(points: Array<ShadowScalar>, count: u16, left: fix32, top: 
     }
     let scale = fix32::from_int(512);
     let quantum = fix32::from_words(128, 0);
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     i = 0;
     while i < count {
         let px = points[i * 2].value;
@@ -860,12 +871,12 @@ fn shadow_batch_draw(pass: &mut Pass, model: &mut Model, material: &Material) {
             },
         },
         Mat3x3 {
-            row0: demo_point(one, zero, zero),
-            row1: demo_point(zero, one, zero),
-            row2: demo_point(zero, zero, one),
+            row0: Vec3::new(one, zero, zero),
+            row1: Vec3::new(zero, one, zero),
+            row2: Vec3::new(zero, zero, one),
         },
     );
-    pass.draw_colored(&mesh, model, material);
+    pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());
     DRAW_CALLS[0u16] += mesh.meshlet_count();
 }
 fn shadow_batch_finish(pass: &mut Pass, model: &mut Model, material: &Material) {

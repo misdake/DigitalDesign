@@ -26,16 +26,16 @@ fn main(){
 fn source(copy: bool) -> String {
     let record = |buffer: &str, target: &str| {
         format!(
-            "{}{{let mut p={buffer}.pass(&{target},&depth,ColorLoad::load(),DepthLoad::clear(65535));p.set_camera(&cam);p.set_state(&state);p.draw_colored(&mesh,&model,&material);p.draw_colored(&mesh,&model2,&material2);}}",
+            "{}{{let mut p={buffer}.pass({target}.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::clear(65535));p.set_camera(cam.ptr());p.set_state(state.ptr());p.draw_colored(mesh.ptr(), model.ptr(), material.ptr());p.draw_colored(mesh.ptr(), model2.ptr(), material2.ptr());}}",
             if copy {
-                format!("{buffer}.copy_color(&background,&{target});")
+                format!("{buffer}.copy_color(background.ptr(), {target}.ptr());")
             } else {
                 String::new()
             }
         )
     };
     format!(
-        "{PREFIX}{} let binding=a.target_binding();dev_send(7,1,0);gpu.submit(a);a=gpu.wait();let choice=dev_recv(7,2);dev_send(7,1,9);\nif choice==1 {{a.retarget_target(binding,&background,&depth);}}else if choice==2 {{a.retarget_target(binding,&asset_alias,&depth);}}else if choice==3 {{a.retarget_target(binding,&color_b,&depth_alias);}}else{{a.retarget_target(binding,&color_b,&depth);}}\ndev_send(7,1,1);gpu.submit(a);a=gpu.wait();{} let fresh=b.target_binding();dev_send(7,1,2);\ndrop(model);drop(model2);drop(material);drop(material2);display.set_next_swap(&color_b);display.wait_vblank();a.retarget_target(binding,&color_a,&depth);dev_send(7,1,3);drop(a);drop(b);halt(0x600d);}}",
+        "{PREFIX}{} let binding=a.target_binding();dev_send(7,1,0);gpu.submit(a);a=gpu.wait();let choice=dev_recv(7,2);dev_send(7,1,9);\nif choice==1 {{a.retarget_target(binding, background.ptr(), depth.ptr());}}else if choice==2 {{a.retarget_target(binding, asset_alias.ptr(), depth.ptr());}}else if choice==3 {{a.retarget_target(binding, color_b.ptr(), depth_alias.ptr());}}else{{a.retarget_target(binding, color_b.ptr(), depth.ptr());}}\ndev_send(7,1,1);gpu.submit(a);a=gpu.wait();{} let fresh=b.target_binding();dev_send(7,1,2);\ndrop(model);drop(model2);drop(material);drop(material2);display.set_next_swap(color_b.ptr());display.wait_vblank();a.retarget_target(binding, color_a.ptr(), depth.ptr());dev_send(7,1,3);drop(a);drop(b);halt(0x600d);}}",
         record("a", "color_a"),
         record("b", "color_b")
     )

@@ -8,6 +8,17 @@
 use crate::compiler::ir::*;
 use crate::{CompareOp, FuncName};
 use std::collections::HashMap;
+use std::ops::Range;
+
+/// Scratch with an explicit storage lifetime. Named locals receive no token.
+pub struct TemporaryLocal {
+    range: Range<u16>,
+}
+impl TemporaryLocal {
+    pub fn slot(&self) -> u8 {
+        self.range.start as u8
+    }
+}
 
 /// a frontend variable handle (DSL-level mutable variable)
 pub type VarId = usize;
@@ -44,6 +55,8 @@ struct LoopCtx {
 
 pub struct FuncBuilder {
     func: IrFunc,
+    /// Dead scratch, available to later permanent or temporary locals.
+    free_local_ranges: Vec<Range<u16>>,
     sealed: Vec<bool>,
     /// current SSA value of each variable, per block
     var_defs: Vec<HashMap<BlockId, VReg>>,
@@ -100,6 +113,7 @@ impl FuncBuilder {
                 vreg_lanes: vec![1; n_params],
             },
             sealed: vec![false],
+            free_local_ranges: vec![],
             var_defs: vec![],
             var_class: vec![],
             var_lanes: vec![],
@@ -227,17 +241,66 @@ impl FuncBuilder {
     /// allocate `n` frame-local slots (address-taken locals / local arrays),
     /// returning the base slot index
     pub fn alloc_local_slots(&mut self, n: u8) -> u8 {
-        let base = self.func.local_slots;
-        self.func.local_slots += n;
-        base
+        self.try_alloc_local_slots(u16::from(n))
+            .expect("local storage exceeds the 255-word frame limit")
     }
 
     /// Reserve aggregate storage without truncating or overflowing the frame.
     pub fn try_alloc_local_slots(&mut self, n: u16) -> Option<u8> {
         let n = u8::try_from(n).ok()?;
+        if let Some(index) = self
+            .free_local_ranges
+            .iter()
+            .position(|range| range.end - range.start >= u16::from(n))
+        {
+            let range = &mut self.free_local_ranges[index];
+            let base = range.start as u8;
+            range.start += u16::from(n);
+            if range.start == range.end {
+                self.free_local_ranges.remove(index);
+            }
+            return Some(base);
+        }
+        // A dead tail can grow in place. Appending after the historical peak
+        // would unnecessarily reject a larger replacement scratch allocation.
+        if let Some(tail) = self.free_local_ranges.last() {
+            if tail.end == u16::from(self.func.local_slots) {
+                let base = tail.start as u8;
+                let end = base.checked_add(n)?;
+                self.free_local_ranges.pop();
+                self.func.local_slots = end;
+                return Some(base);
+            }
+        }
         let base = self.func.local_slots;
         self.func.local_slots = base.checked_add(n)?;
         Some(base)
+    }
+
+    pub fn try_alloc_temporary(&mut self, words: u16) -> Option<TemporaryLocal> {
+        let start = u16::from(self.try_alloc_local_slots(words)?);
+        Some(TemporaryLocal {
+            range: start..start + words,
+        })
+    }
+
+    pub fn release_temporary(&mut self, allocation: TemporaryLocal) {
+        if allocation.range.start == allocation.range.end {
+            return;
+        }
+        let mut ranges = std::mem::take(&mut self.free_local_ranges);
+        ranges.push(allocation.range);
+        ranges.sort_by_key(|range| range.start);
+        for range in ranges {
+            if let Some(last) = self.free_local_ranges.last_mut() {
+                debug_assert!(last.end <= range.start);
+                if last.end == range.start {
+                    last.end = range.end;
+                    continue;
+                }
+            }
+            self.free_local_ranges.push(range);
+        }
     }
 
     pub fn load_local(&mut self, slot: u8) -> VReg {
@@ -1091,6 +1154,38 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporary_storage_coalesces_without_releasing_permanent_locals() {
+        let (mut b, _) = FuncBuilder::new("scratch", 0, 0);
+        assert_eq!(b.alloc_local_slots(32), 0);
+        let first = b.try_alloc_temporary(80).unwrap();
+        let second = b.try_alloc_temporary(80).unwrap();
+        b.release_temporary(first);
+        b.release_temporary(second);
+        let combined = b.try_alloc_temporary(160).expect("adjacent scratch merges");
+        assert_eq!(combined.slot(), 32);
+        assert!(
+            b.try_alloc_temporary(64).is_none(),
+            "live extents still exceed 255 words"
+        );
+        b.release_temporary(combined);
+        let larger = b
+            .try_alloc_temporary(200)
+            .expect("a dead tail can grow in place");
+        assert_eq!(larger.slot(), 32);
+        b.release_temporary(larger);
+        assert_eq!(b.alloc_local_slots(48), 32);
+        let scratch = b.try_alloc_temporary(112).unwrap();
+        assert_eq!(scratch.slot(), 80, "a permanent allocation stays reserved");
+        b.release_temporary(scratch);
+        b.ret(&[]);
+        assert_eq!(
+            b.finish().local_slots,
+            232,
+            "frame records the high water mark"
+        );
+    }
 
     #[test]
     fn test_build_add() {

@@ -3,11 +3,13 @@
 use std::collections::{HashMap, HashSet};
 use syn::{parse_quote, spanned::Spanned, visit::Visit, visit_mut::VisitMut};
 use syn::{Expr, FnArg, Item, Pat, ReturnType, Stmt, Type};
+mod aggregates;
 pub(super) mod drop_syntax;
 mod library;
 #[cfg(test)]
 mod library_tests;
 mod methods;
+pub(super) use aggregates::names as aggregate_names;
 
 #[derive(Clone, Copy)]
 pub(super) struct Sources<'a> {
@@ -58,6 +60,7 @@ struct Model {
     values: HashMap<String, (usize, bool)>,
     domains: HashMap<usize, usize>,
     methods: HashMap<(String, String), methods::Method>,
+    aggregates: HashMap<String, aggregates::Aggregate>,
 }
 impl Model {
     fn erased_type(&self, name: &str) -> Type {
@@ -155,6 +158,9 @@ fn error(node: &impl Spanned, message: impl std::fmt::Display) -> syn::Error {
 fn name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Path(p) if p.path.segments.len() == 1 => Some(p.path.segments[0].ident.to_string()),
+        Expr::Field(f) => name(&f.base)
+            .map(|base| format!("{base}.{}", quote::ToTokens::to_token_stream(&f.member))),
+        Expr::Paren(p) => name(&p.expr),
         _ => None,
     }
 }
@@ -225,6 +231,7 @@ pub(super) fn lower(
         values: HashMap::new(),
         domains: HashMap::new(),
         methods: HashMap::new(),
+        aggregates: HashMap::new(),
     };
     for (fi, file) in files.iter().enumerate() {
         for item in &file.items {
@@ -334,6 +341,7 @@ pub(super) fn lower(
         );
     }
     let owners = model.resources.values().map(|r| r.file).collect();
+    aggregates::prepare(files, &mut model)?;
     model.domains = library::domains(files, file_names, sources, &owners)?;
     if model.resources.is_empty() {
         return Ok(());
@@ -484,6 +492,19 @@ pub(super) fn lower(
             }
         }
         file.items.retain(|item| !matches!(item, Item::Struct(s) if model.resources.get(&s.ident.to_string()).is_some_and(|r| !r.native)));
+        for item in &mut file.items {
+            if let Item::Struct(s) = item {
+                if model.aggregates.contains_key(&s.ident.to_string()) {
+                    for field in &mut s.fields {
+                        if let Some(name) =
+                            type_name(&field.ty).filter(|n| model.resources.contains_key(n))
+                        {
+                            field.ty = model.erased_type(&name);
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -497,6 +518,7 @@ struct Value {
 #[derive(Clone, PartialEq, Eq)]
 struct Binding {
     name: String,
+    place: String,
     value: Value,
     live: bool,
     owned: bool,
@@ -598,8 +620,13 @@ impl<'a> Checker<'a> {
                 }
                 this.visible(n, &param.ty)?;
                 let value = this.value(n.clone(), None);
-                this.bindings.push(Binding {
+                this.bind(Binding {
                     name: p.ident.to_string(),
+                    place: if matches!(mode, Arg::Borrow(..)) && model.aggregates.contains_key(n) {
+                        format!("{}[0u16]", p.ident)
+                    } else {
+                        p.ident.to_string()
+                    },
                     value,
                     live: true,
                     owned: matches!(mode, Arg::Own(_)),
@@ -614,10 +641,12 @@ impl<'a> Checker<'a> {
                 // Reborrowing a mutable resource binding does not mutate the
                 // erased scalar identity. Keep owned/borrowed mutability in
                 // the ownership model, not in the native u16 parameter ABI.
-                if !model.checked || !matches!(mode, Arg::Own(_)) {
+                if (!model.checked || !matches!(mode, Arg::Own(_)))
+                    && !(matches!(mode, Arg::Borrow(_, true)) && model.aggregates.contains_key(n))
+                {
                     p.mutability = None;
                 }
-                *param.ty = model.erased_type(n);
+                *param.ty = model.binding_type(n, matches!(mode, Arg::Borrow(..)));
             }
         }
         if signature.result.is_some() && matches!(f.block.stmts.last(), Some(Stmt::Expr(_))) {
@@ -701,6 +730,7 @@ impl<'a> Checker<'a> {
             .find(|x| x.name == n)
             .unwrap()
             .live = false;
+        self.take_descendants(n);
         Ok(b.value)
     }
     fn cleanup(&self, start: usize) -> Vec<Stmt> {
@@ -713,7 +743,7 @@ impl<'a> Checker<'a> {
                     &self.model.resources[&b.value.ty].cleanup,
                     proc_macro2::Span::call_site(),
                 );
-                let local = syn::Ident::new(&b.name, proc_macro2::Span::call_site());
+                let local: Expr = syn::parse_str(&b.place).unwrap();
                 parse_quote!(#function(#local);)
             })
             .collect()
@@ -778,7 +808,7 @@ impl<'a> Checker<'a> {
                             _ => mutable,
                         };
                         let pat = if let Pat::Type(p) = &mut local.pat {
-                            *p.ty = parse_quote!(u16);
+                            *p.ty = self.model.binding_type(&value.ty, true);
                             p.pat.as_mut()
                         } else {
                             &mut local.pat
@@ -789,9 +819,33 @@ impl<'a> Checker<'a> {
                         if p.by_ref.is_some() || p.subpat.is_some() {
                             return Err(error(p, "resource references need a simple local name"));
                         }
-                        p.mutability = None;
-                        self.bindings.push(Binding {
+                        if self.model.aggregates.contains_key(&value.ty) {
+                            let pattern = local.pat.clone();
+                            if !matches!(pattern, Pat::Type(_)) {
+                                local.pat = super::typed_pattern(
+                                    pattern,
+                                    self.model.binding_type(&value.ty, true),
+                                );
+                            }
+                        }
+                        let pat = if let Pat::Type(t) = &mut local.pat {
+                            t.pat.as_mut()
+                        } else {
+                            &mut local.pat
+                        };
+                        let Pat::Ident(p) = pat else { unreachable!() };
+                        if !self.model.aggregates.contains_key(&value.ty) {
+                            p.mutability = None;
+                        } else if mutable {
+                            p.mutability = Some(Default::default());
+                        }
+                        self.bind(Binding {
                             name: p.ident.to_string(),
+                            place: if self.model.aggregates.contains_key(&value.ty) {
+                                format!("{}[0u16]", p.ident)
+                            } else {
+                                p.ident.to_string()
+                            },
                             value,
                             live: true,
                             owned: false,
@@ -828,8 +882,9 @@ impl<'a> Checker<'a> {
                                 return Err(error(p, "resource type mismatch"));
                             }
                         }
-                        self.bindings.push(Binding {
+                        self.bind(Binding {
                             name: p.ident.to_string(),
+                            place: p.ident.to_string(),
                             value: v,
                             live: true,
                             owned: true,
@@ -932,6 +987,9 @@ impl<'a> Checker<'a> {
                     .contains_key(&s.path.segments.last().unwrap().ident.to_string()) =>
             {
                 let ty = s.path.segments.last().unwrap().ident.to_string();
+                if self.model.aggregates.contains_key(&ty) {
+                    return self.aggregate_value(s, &ty).map(Kind::Resource);
+                }
                 let r = &self.model.resources[&ty];
                 if r.native {
                     if r.file != self.file || s.rest.is_some() {
@@ -991,6 +1049,23 @@ impl<'a> Checker<'a> {
                 Ok(Kind::Resource(self.value(ty, parent)))
             }
             Expr::Field(f) => {
+                if let Some(local) = name(&Expr::Field(f.clone()))
+                    .filter(|n| self.bindings.iter().any(|b| &b.name == n))
+                {
+                    let binding = self.lookup(&local, f)?.unwrap();
+                    let place = self.place(&local);
+                    let result = if binding.owned {
+                        Kind::Resource(self.take(&local, f)?)
+                    } else {
+                        Kind::Borrowed(binding.value, binding.mutable)
+                    };
+                    *expr = place;
+                    return Ok(result);
+                }
+                if let Some(place) = self.ordinary_field(&Expr::Field(f.clone())) {
+                    *expr = place;
+                    return Ok(Kind::Scalar);
+                }
                 if let Some(n) = name(&f.base) {
                     if let Some(b) = self.lookup(&n, f)? {
                         let r = &self.model.resources[&b.value.ty];
@@ -1006,7 +1081,7 @@ impl<'a> Checker<'a> {
                         {
                             return Err(error(f, "resource fields are private"));
                         }
-                        *expr = *f.base.clone();
+                        *expr = self.place(&n);
                         return Ok(Kind::Scalar);
                     }
                 }
@@ -1018,12 +1093,14 @@ impl<'a> Checker<'a> {
                         let local = name(&r.expr).ok_or_else(|| {
                             error(r, "resource reborrows need a simple bound local")
                         })?;
-                        let binding = self.lookup(&local, r)?.unwrap();
+                        let binding = self
+                            .lookup(&local, r)?
+                            .ok_or_else(|| error(r, "resource reborrows need a resource place"))?;
                         let mutable = r.mutability.is_some();
                         if mutable && !binding.mutable {
                             return Err(error(r, "mutable resource borrow needs a mutable owner"));
                         }
-                        *expr = *r.expr.clone();
+                        *expr = self.erase_borrow(&binding, mutable);
                         return Ok(Kind::Borrowed(binding.value, mutable));
                     }
                     return Err(error(
@@ -1037,13 +1114,21 @@ impl<'a> Checker<'a> {
                 Err(error(c, "cannot cast to a resource"))
             }
             Expr::Assign(a) => {
+                if !name(&a.left).is_some_and(|n| self.bindings.iter().any(|b| b.name == n)) {
+                    if let Some(place) = self.ordinary_field(&a.left) {
+                        self.scalar(&mut a.right)?;
+                        *a.left = place;
+                        return Ok(Kind::Unit);
+                    }
+                }
                 if place_root(&a.left).is_some_and(|n| self.bindings.iter().any(|b| b.name == n)) {
                     if self.model.checked {
                         let local = name(&a.left)
+                            .filter(|n| self.bindings.iter().any(|b| b.name == *n))
                             .ok_or_else(|| error(a, "resource fields cannot be reassigned"))?;
                         let index = self.bindings.iter().rposition(|b| b.name == local).unwrap();
                         let original = self.bindings[index].clone();
-                        if !original.owned || !original.mutable {
+                        if (!original.owned && !local.contains('.')) || !original.mutable {
                             return Err(error(a, "resource reassignment needs a mutable owner"));
                         }
                         let Kind::Resource(value) = self.expr(&mut a.right)? else {
@@ -1055,28 +1140,17 @@ impl<'a> Checker<'a> {
                         if value.ty != original.value.ty {
                             return Err(error(a, "resource reassignment type mismatch"));
                         }
-                        let old = &self.bindings[index];
-                        let cleanup = if old.live && old.cleanup {
-                            let function = drop_syntax::resource_ident(
-                                &self.model.resources[&old.value.ty].cleanup,
-                                proc_macro2::Span::call_site(),
-                            );
-                            let local = syn::Ident::new(&local, proc_macro2::Span::call_site());
-                            Some(parse_quote!(#function(#local);))
-                        } else {
-                            None::<Stmt>
-                        };
-                        self.bindings[index].value = value;
-                        self.bindings[index].live = true;
+                        let cleanup = self.cleanup_place(&local);
+                        let left = self.place(&local);
+                        self.replace_binding(index, value);
                         let temp = syn::Ident::new(
                             &format!("__rcc_resource_update_{}", self.next),
                             proc_macro2::Span::call_site(),
                         );
                         self.next += 1;
-                        let left = &a.left;
                         let right = &a.right;
                         let ty = self.model.erased_type(&original.value.ty);
-                        *expr = parse_quote!({ let #temp:#ty = #right; #cleanup #left=#temp; });
+                        *expr = parse_quote!({ let #temp:#ty = #right; #(#cleanup)* #left=#temp; });
                         return Ok(Kind::Unit);
                     }
                     return Err(error(
@@ -1085,6 +1159,14 @@ impl<'a> Checker<'a> {
                     ));
                 }
                 self.native(expr)
+            }
+            Expr::AssignOp(a)
+                if !name(&a.left).is_some_and(|n| self.bindings.iter().any(|b| b.name == n))
+                    && self.ordinary_field(&a.left).is_some() =>
+            {
+                self.scalar(&mut a.right)?;
+                *a.left = self.ordinary_field(&a.left).unwrap();
+                Ok(Kind::Unit)
             }
             Expr::AssignOp(a)
                 if place_root(&a.left)
@@ -1494,7 +1576,13 @@ impl<'a> Checker<'a> {
                     }
                     self.pending_borrows.push((b.value.clone(), *mutable));
                     borrowed.push(b.value.clone());
-                    *expr = erased;
+                    *expr = if self.model.aggregates.contains_key(expected) {
+                        self.erase_borrow(&b, *mutable)
+                    } else if local.contains('.') {
+                        self.place(&local)
+                    } else {
+                        erased
+                    };
                 }
             }
         }

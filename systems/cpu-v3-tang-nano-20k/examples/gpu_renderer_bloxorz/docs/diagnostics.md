@@ -150,3 +150,47 @@ synchronous functional callback and vblank is advanced immediately by the host.
 These CPU costs exclude GPU/Display bus competition, SPI loading and scanout
 latency and must not be reported as hardware FPS or GPU speedup. Test markers do
 not appear in the ordinary application.
+
+## Deterministic CPU profile
+
+From the repository root, the application-owned tool compiles and runs the
+fixed CPU fixture with a functional GPU:
+
+```powershell
+python systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/tools/cpu_profile.py --level all
+```
+
+`--level 1|29` selects one case; `--out` names a new or empty directory and
+`--label` tags its input. The tool uses the current compiler and never changes
+Git or compiler sources. Each input records the migrated main, all loaded RCC
+sources, generated descriptions, resources and compiler source hashes, along
+with the linked code, package, function entries, stack frames and globals.
+Compare compiler variants only after confirming their application/resource
+closures match. Both packages can run under the same native emulator executable.
+
+| Interval | Fixed workload |
+| --- | --- |
+| Cold initialization | Reset/cold caches through first completed application present, including static CB recording |
+| Warm frame | Mean of frames3..6, after frame2 warms the stable path |
+| Level1 invalidation | Frame7 receives a real Select press, toggling the background and re-recording static commands |
+| Level29 shadow update | Frame7 receives Right; frame8 releases it and advances the roll by17ms |
+
+The producer starts directly in PLAY at the requested level, without an extra
+level reset. Other frame deltas are zero. Existing signal4 and signal12 delimit
+frame CPU work; no pose probe is injected. Function intervals passively observe
+the first Execute at the linked entry and the first Execute at its saved r14
+return point. The fixture verifies expected call coverage, the actual roll state
+and cache misses. It retains per-frame CPU cycles, state, color/depth/RGB hashes,
+key images, submission points and minimum SP. `window-counts.json` also records
+passively observed DSEG3 writes, actual page changes, reads and cache-wait
+instructions by frame and linked function; these counts do not attribute all
+elapsed cycles to window maintenance. An instruction-simulation oracle
+checks the same package and its finite cleanup; native images match that oracle.
+
+CPU cycles include the native cache and SDRAM model and convert at54MHz.
+CB06 installation is functional before reset, GPU execution is synchronous
+functional work, and the host supplies vblank immediately. Physical GPU time,
+shared GPU/Display bus competition, SPI installation, scanout and host elapsed
+time are outside this measurement. The bounds are30M instruction steps for the
+oracle,60M CPU cycles and600 host seconds for native execution per case. These
+figures are CPU fixture costs rather than hardware frame rate.

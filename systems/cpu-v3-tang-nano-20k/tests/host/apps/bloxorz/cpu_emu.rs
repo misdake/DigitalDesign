@@ -9,6 +9,8 @@ use cpu_v3_tang_nano_20k::{
 };
 use serde_json::json;
 
+mod matrix;
+
 fn input(buttons: u16) -> Option<ControllerSnapshot> {
     Some(ControllerSnapshot {
         mode: InputMode::Digital,

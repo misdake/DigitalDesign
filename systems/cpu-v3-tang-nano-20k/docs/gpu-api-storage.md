@@ -1,7 +1,7 @@
 ---
 id: gpu-api-storage
 status: active
-last-verified: 2026-11-06
+last-verified: 2026-11-11
 ---
 
 # Explicit GPU API internal core
@@ -14,6 +14,29 @@ loader or boot project selects it.
 Native commands, vertex arithmetic and hardware precision are unchanged.
 
 ## Configuration and public recording resources
+
+`Mesh`, `Model`, `Camera`, `Material`, `RenderState`, `Texture`, `TextureView`,
+`UiAtlas`, `UiGrid`, `ColorBuffer` and `DepthBuffer` are resource bodies. Each
+owns its arena registration, supports consuming `release()`, and drops that
+registration at scope exit. External asset, pixel and working-storage bytes
+remain caller-owned. There is no separate `OwnedMesh` layer. Keeping a body
+alive for the application's whole run avoids ordinary frame-scope destruction;
+runtime registration is not a Rust static initializer.
+
+Each body exposes `ptr()` returning its matching `*Ptr`, an opaque one-word
+`Copy`/`Clone` value. These nonowning references support object reads/updates;
+draw, pass-target and Display methods accept them by value. Body convenience
+methods forward to the same pointer operations. Creating/copying a pointer
+allocates nothing and does not retain or release an arena slot. Every copy
+becomes invalid when its resource body is released, even if that slot is later
+reused; the application must preserve that lifetime. Creation/static `*Desc`
+values are also copyable and remain distinct from registered bodies.
+
+For example, `let mesh = Mesh::from_native(desc); let mesh_ptr = mesh.ptr();`
+creates one owner and a copyable reference. Calls to `pass.draw(mesh_ptr, ...)`
+reuse the reference; `mesh.release()` consumes the owner after its last use.
+`Gpu`, `Display`, `CommandBuffer` and `Pass` retain their existing ownership and
+borrowing protocols. In particular, submit still consumes the command buffer.
 
 `CommandMemory` and `GpuConfig` are pure public values in `gpu_api_values`, outside
 the private helper domain. This also places generated `Option<CommandMemory>`
@@ -44,7 +67,7 @@ configured count and issued mask, with no second queue or allocator.
 `ColorBuffer` and `DepthBuffer` use 16-word arena descriptors. Their registered
 extent must be 64-KiB aligned and contain at least the 1,600-sector physical
 plane. Descriptor Drop returns only its arena slot; it does not release pixels.
-`CommandBuffer::pass` borrows those descriptors only for the call and copies
+`CommandBuffer::pass` consumes copyable pointers for the call and copies
 their target addresses into immutable push storage. The returned `Pass` retains
 the exclusive CB parent. Pass Drop records the already-reserved closing fence.
 Descriptor reuse therefore cannot change an earlier recording. Reset clears

@@ -2,8 +2,9 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
+mod gpu_board;
 mod gpu_demo_api;
-mod gpu_board;use gpu_board::*;
+use gpu_board::*;
 use gpu_demo_api::*;
 mod device_abi;
 use device_abi::*;
@@ -21,7 +22,7 @@ fn draw_pair(
     material: &Material,
     texture: &TextureView,
 ) {
-    pass.set_camera(camera);
+    pass.set_camera(camera.ptr());
     let z = fix32::zero();
     let half = fix32::from_words(32768, 0);
     model.set_pose(demo_pose(
@@ -29,13 +30,13 @@ fn draw_pair(
         demo_zero(),
         demo_scale(),
     ));
-    pass.draw(mesh, model, material, texture);
+    pass.draw(mesh.ptr(), model.ptr(), material.ptr(), texture.ptr());
     model.set_pose(demo_pose(
         demo_point(half, z, fix32::from_int(-3)),
         demo_zero(),
         demo_scale(),
     ));
-    pass.draw(mesh, model, material, texture);
+    pass.draw(mesh.ptr(), model.ptr(), material.ptr(), texture.ptr());
 }
 fn run(limit: u16) {
     let mut gpu = Gpu::init(board_gpu_config());
@@ -59,29 +60,29 @@ fn run(limit: u16) {
         }
         if count & 1 == 0 {
             let mut pass = buffer.pass(
-                &color_b,
-                &depth,
+                color_b.ptr(),
+                depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(0x1111)),
                 DepthLoad::clear(65535),
             );
-            pass.set_state(&state);
+            pass.set_state(state.ptr());
             draw_pair(&mut pass, &camera, &mesh, &mut model, &material, &view);
         } else {
             let mut pass = buffer.pass(
-                &color_a,
-                &depth,
+                color_a.ptr(),
+                depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(0x1111)),
                 DepthLoad::clear(65535),
             );
-            pass.set_state(&state);
+            pass.set_state(state.ptr());
             draw_pair(&mut pass, &camera, &mesh, &mut model, &material, &view);
         }
         gpu.submit(buffer);
         buffer = gpu.wait();
         if count & 1 == 0 {
-            display.set_next_swap(&color_b);
+            display.set_next_swap(color_b.ptr());
         } else {
-            display.set_next_swap(&color_a);
+            display.set_next_swap(color_a.ptr());
         }
         display.wait_vblank();
         count += 1;

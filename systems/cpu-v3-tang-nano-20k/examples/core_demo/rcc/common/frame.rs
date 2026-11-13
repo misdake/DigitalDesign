@@ -14,15 +14,15 @@ pub fn clear_cpu_page(
 ) {
     if state.frames & 1 == 0 {
         let pass = buffer.pass(
-            color_b,
-            depth,
+            color_b.ptr(),
+            depth.ptr(),
             ColorLoad::clear(Rgb565::rgb(8, 8, 24)),
             DepthLoad::load(),
         );
     } else {
         let pass = buffer.pass(
-            color_a,
-            depth,
+            color_a.ptr(),
+            depth.ptr(),
             ColorLoad::clear(Rgb565::rgb(8, 8, 24)),
             DepthLoad::load(),
         );
@@ -40,7 +40,7 @@ fn page_color_pass(
         color_load = ColorLoad::clear(Rgb565::rgb(8, 8, 24));
         depth_load = DepthLoad::clear_far();
     }
-    buffer.pass(color, depth, color_load, depth_load)
+    buffer.pass(color.ptr(), depth.ptr(), color_load, depth_load)
 }
 pub fn page_pass(
     buffer: &mut CommandBuffer,

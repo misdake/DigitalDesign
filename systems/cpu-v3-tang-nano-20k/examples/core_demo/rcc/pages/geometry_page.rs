@@ -6,6 +6,8 @@ mod state;
 use state::*;
 mod ui;
 use ui::*;
+mod boot_resources;
+use boot_resources::*;
 
 const FIXED_POSE: Transform = Transform::translation(Vec3::new(fix!(1.4), fix!(0), fix!(-4.5)))
     .with_rotation(Vec3::new(
@@ -36,49 +38,64 @@ fn geometry_labels(grid: &mut UiGrid, state: DemoState) {
     text(grid, 30, 12, b"ROTATING");
 }
 
-pub fn geometry_draw(
-    pass: &mut Pass,
-    mesh: &Mesh,
-    fixed: &Model,
-    rotating: &Model,
-    material: &Material,
-    view: &TextureView,
-) {
-    pass.draw(mesh, fixed, material, view);
-    pass.draw(mesh, rotating, material, view);
+pub struct GeometryPage {
+    view: TextureView,
+    texture: Texture,
+    mesh: Mesh,
+    fixed: Model,
+    rotating: Model,
+    camera: Camera,
+    material: Material,
+    render_state: RenderState,
 }
-
-pub fn geometry_fixed_model() -> Model {
-    Model::from_matrices(FIXED_WORLD, FIXED_NORMAL)
-}
-pub fn geometry_rotating_model() -> Model {
-    Model::new(Transform::identity())
-}
-pub fn geometry_camera() -> Camera {
-    Camera::new(CameraDesc::new(
-        Vec3::zero(),
-        Vec3::zero(),
-        GEOMETRY_PROJECTION,
-    ))
-}
-pub fn geometry_render_state() -> RenderState {
-    RenderState::new(RenderStateDesc::opaque(Lighting::directional(
-        Vec3::new(fix!(-0.4), fix!(0.5), fix!(1)),
-        fix!(0.35),
-        fix!(0.65),
-    )))
-}
-
-pub fn geometry_prepare(
-    rotating: &mut Model,
-    camera: &mut Camera,
-    grid: &mut UiGrid,
-    state: DemoState,
-) {
-    geometry_update(rotating, camera, state);
-    geometry_labels(grid, state);
-}
-pub fn geometry_pass_state(pass: &mut Pass, camera: &Camera, state: &RenderState) {
-    pass.set_camera(camera);
-    pass.set_state(state);
+impl GeometryPage {
+    pub fn new() -> Self {
+        let mesh = Mesh::from_native(GEOMETRY_CUBE);
+        let texture = Texture::from_native(GEOMETRY_CHECKER);
+        let mut view = texture.view();
+        view.set_address_mode(TextureAddressMode::ClampToEdge);
+        let fixed = Model::from_matrices(FIXED_WORLD, FIXED_NORMAL);
+        let rotating = Model::new(Transform::identity());
+        let camera = Camera::new(CameraDesc::new(
+            Vec3::zero(),
+            Vec3::zero(),
+            GEOMETRY_PROJECTION,
+        ));
+        let material = Material::new(MaterialDesc::diffuse(Rgba8::white()));
+        let render_state = RenderState::new(RenderStateDesc::opaque(Lighting::directional(
+            Vec3::new(fix!(-0.4), fix!(0.5), fix!(1)),
+            fix!(0.35),
+            fix!(0.65),
+        )));
+        Self {
+            view: view,
+            texture: texture,
+            mesh: mesh,
+            fixed: fixed,
+            rotating: rotating,
+            camera: camera,
+            material: material,
+            render_state: render_state,
+        }
+    }
+    pub fn prepare(&mut self, grid: &mut UiGrid, state: DemoState) {
+        geometry_update(&mut self.rotating, &mut self.camera, state);
+        geometry_labels(grid, state);
+    }
+    pub fn draw(&self, pass: &mut Pass) {
+        pass.set_camera(self.camera.ptr());
+        pass.set_state(self.render_state.ptr());
+        pass.draw(
+            self.mesh.ptr(),
+            self.fixed.ptr(),
+            self.material.ptr(),
+            self.view.ptr(),
+        );
+        pass.draw(
+            self.mesh.ptr(),
+            self.rotating.ptr(),
+            self.material.ptr(),
+            self.view.ptr(),
+        );
+    }
 }

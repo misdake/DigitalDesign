@@ -2,8 +2,9 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
+mod gpu_board;
 mod gpu_demo_api;
-mod gpu_board;use gpu_board::*;
+use gpu_board::*;
 use gpu_demo_api::*;
 mod device_abi;
 use device_abi::*;
@@ -75,16 +76,16 @@ fn run(limit: u16) {
         }
         if count & 1 == 0 {
             let mut pass = buffer.pass(
-                &color_b,
-                &depth,
+                color_b.ptr(),
+                depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(0x1111)),
                 DepthLoad::clear(65535),
             );
-            pass.set_camera(&camera);
-            pass.set_state(&state);
-            pass.draw(&mesh, &model, &material, &view);
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
+            pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
             pass.draw_ui(
-                &grid,
+                grid.ptr(),
                 CellRect {
                     x: 0,
                     y: 0,
@@ -94,16 +95,16 @@ fn run(limit: u16) {
             );
         } else {
             let mut pass = buffer.pass(
-                &color_a,
-                &depth,
+                color_a.ptr(),
+                depth.ptr(),
                 ColorLoad::clear(Rgb565::from_raw(0x1111)),
                 DepthLoad::clear(65535),
             );
-            pass.set_camera(&camera);
-            pass.set_state(&state);
-            pass.draw(&mesh, &model, &material, &view);
+            pass.set_camera(camera.ptr());
+            pass.set_state(state.ptr());
+            pass.draw(mesh.ptr(), model.ptr(), material.ptr(), view.ptr());
             pass.draw_ui(
-                &grid,
+                grid.ptr(),
                 CellRect {
                     x: 0,
                     y: 0,
@@ -121,9 +122,9 @@ fn run(limit: u16) {
         gpu.submit_capturable(buffer);
         buffer = gpu.wait();
         if count & 1 == 0 {
-            display.set_next_swap(&color_b);
+            display.set_next_swap(color_b.ptr());
         } else {
-            display.set_next_swap(&color_a);
+            display.set_next_swap(color_a.ptr());
         }
         display.wait_vblank();
         if count < 4 {

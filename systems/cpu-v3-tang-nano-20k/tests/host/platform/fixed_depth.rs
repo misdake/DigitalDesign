@@ -22,7 +22,7 @@ fn main(){{
  let color=ColorBuffer::from_memory(unsafe{{GpuMemory::from_sectors(0x8000,2048)}});
  let depth=DepthBuffer::from_memory(unsafe{{GpuMemory::from_sectors(0x9000,2048)}});
  let mesh=Mesh::from_native(MeshDesc{{directory_sector:0xa000,directory_word:0,meshlet_count:1,storage:unsafe{{GpuMemory::from_sectors(0xa000,16)}}}});
- {{let mut pass=cb.pass(&color,&depth,ColorLoad::clear(Rgb565::from_raw(0x1234)),DepthLoad::clear(65535));pass.set_camera(&camera);pass.set_state(&state);pass.draw_colored(&mesh,&model,&material);}}
+ {{let mut pass=cb.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1234)), DepthLoad::clear(65535));pass.set_camera(camera.ptr());pass.set_state(state.ptr());pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());}}
  gpu.submit(cb);cb=gpu.wait();halt(0x600d);
 }}"#
         );

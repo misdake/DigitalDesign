@@ -1,5 +1,12 @@
 # Bloxorz presentation documents
 
+The application uses the public SDK value constructors and producer-generated
+Mesh/Texture/UI descriptions. `rcc/scene_resources.rs` owns the scene bodies for
+the run; rendering borrows their original fields and passes Copy Ptrs to the GPU.
+`rcc/game_assets.rs` contains the application's material style and registration
+factories. Asset bytes, physical layout, rules and presentation scheduling remain
+application-owned. Numeric HUD fields use the ordinary `ui_text` software layer.
+
 - [Base textures](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/textures.md): original photo generation, per-item rings, base-only filtering, dimensions and LOD diagnostics.
 
 - [Fragile batches](/systems/cpu-v3-tang-nano-20k/examples/gpu_renderer_bloxorz/docs/fragile-batches.md): per-level heap geometry, immediate fracture visibility, reversible native indices and retirement/cache ownership.

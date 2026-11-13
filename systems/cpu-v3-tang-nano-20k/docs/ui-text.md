@@ -7,6 +7,7 @@ or wait. Import `mod ui_text; use ui_text::*;` alongside `gpu_api`.
 | Function | Output |
 | --- | --- |
 | `text_u16(grid, x, y, value)` | Minimal unsigned ASCII decimal, including `0` |
+| `text_u16_field(grid, x, y, width, value)` | Left-aligned decimal, truncated to width; trailing cells become skip255 |
 | `text_i16(grid, x, y, value)` | Signed ASCII decimal, including `-32768` |
 | `text_hex16(grid, x, y, value)` | Exactly four uppercase ASCII hex digits |
 
@@ -17,8 +18,10 @@ offline Native UI atlas generation; app manifests include `ui_font.SOURCES`
 so glyph and provenance edits invalidate builds. The caller supplies an atlas
 covering ASCII digits, A..F and minus. Reserve up
 to five cells for unsigned decimal, six for signed decimal and four for hex.
-Functions do not wrap, pad or erase trailing cells; the caller clears changed
-fields or rebuilds its page. Grid/atlas memory and GPU synchronization retain
+The minimal decimal/signed/hex functions do not wrap, pad or erase trailing
+cells; the caller clears changed fields or rebuilds its page. The fixed-width
+unsigned field writes exactly `width` cells, including trailing skip255; zero
+width writes nothing. Grid/atlas memory and GPU synchronization retain
 their ordinary API contracts. No numeric string or framebuffer mirror is kept.
 
 Plain strings use `UiGrid::write_text`; arbitrary IDs use `write_glyph` or the

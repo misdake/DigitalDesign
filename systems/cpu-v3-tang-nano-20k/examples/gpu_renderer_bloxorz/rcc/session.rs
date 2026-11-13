@@ -2,8 +2,7 @@
 use crate::dsl_rt::*;
 mod gpu_api;
 use gpu_api::*;
-mod gpu_demo_api;
-use gpu_demo_api::*;
+
 mod boot_resources;
 use boot_resources::*;
 mod bloxorz_core;
@@ -263,7 +262,7 @@ pub fn session_move(direction: u16) -> bool {
             rotation_start(falling);
             FALL_STATE[0u16] = FallState {
                 position: pose.position,
-                velocity: demo_zero(),
+                velocity: Vec3::zero(),
                 scale: pose.scale,
                 angle: fix32::zero(),
                 spin: fix32::zero(),
@@ -513,7 +512,7 @@ fn animation_tick(dt: u16) {
             );
             if MOTION[11u16] == 0 && GAME[9u16] != 0 {
                 let landing = block_transform();
-                let half = fix32::from_words(32768, 0);
+                let half = fix!(0.5);
                 MOTION[15u16] = (landing.position.x + fix32::from_int(LEVEL[0u16] as i16) * half
                     - fix32::from_words(16384, 0))
                 .to_int() as u16;
@@ -543,7 +542,7 @@ fn animation_tick(dt: u16) {
         let pose = block_transform();
         FALL_STATE[0u16] = FallState {
             position: pose.position,
-            velocity: demo_zero(),
+            velocity: Vec3::zero(),
             scale: pose.scale,
             angle: fix32::zero(),
             spin: fix32::zero(),
@@ -584,7 +583,7 @@ pub fn block_visible() -> bool {
 }
 fn release_pivot() {
     let pose = block_transform();
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     let tipping = SESSION[0u16] == TIP;
     let axis = if tipping {
         if GAME[2u16] == 1 {
@@ -640,15 +639,15 @@ fn release_pivot() {
         }
         pivot = pivot - fix32::from_int(LEVEL[1u16] as i16) * half;
     }
-    let mut velocity = demo_zero();
+    let mut velocity = Vec3::zero();
     if axis == 1 {
-        velocity = demo_point(
+        velocity = Vec3::new(
             -spin * pose.position.y,
             spin * (pose.position.x - pivot),
             fix32::zero(),
         );
     } else {
-        velocity = demo_point(
+        velocity = Vec3::new(
             fix32::zero(),
             -spin * (pose.position.z - pivot),
             spin * pose.position.y,
@@ -729,16 +728,16 @@ pub fn idle_cube_transform() -> Transform {
             MOTION[1u16]
         };
     }
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     let scale = split_pop_scale();
-    demo_pose(
-        demo_point(
+    Transform::new(
+        Vec3::new(
             fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half + half,
             half,
             fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half + half,
         ),
-        demo_zero(),
-        demo_point(scale, scale, scale),
+        Vec3::zero(),
+        Vec3::new(scale, scale, scale),
     )
 }
 pub fn idle_cube_pose(model: &mut Model) {
@@ -770,19 +769,19 @@ pub fn block_transform() -> Transform {
     let zero = fix32::zero();
     let one = fix32::from_int(1);
     let two = fix32::from_int(2);
-    let half = fix32::from_words(32768, 0);
+    let half = fix!(0.5);
     if mode == FALL {
         let state = FALL_STATE[0u16];
         let seconds = ratio(t, 1000);
         let f = ratio(t, 600);
         let angle = state.angle + state.spin * seconds;
-        return demo_pose(
-            demo_point(
+        return Transform::new(
+            Vec3::new(
                 state.position.x + state.velocity.x * seconds,
                 state.position.y + state.velocity.y * seconds - fix32::from_int(16) * f * f,
                 state.position.z + state.velocity.z * seconds,
             ),
-            demo_point(
+            Vec3::new(
                 if state.axis == 0 { angle } else { zero },
                 zero,
                 if state.axis == 1 { angle } else { zero },
@@ -792,16 +791,16 @@ pub fn block_transform() -> Transform {
     }
     if mode == SPLIT_POP && t < 70 {
         let size = one - fraction(t, 70);
-        return demo_pose(
-            demo_point(
+        return Transform::new(
+            Vec3::new(
                 fix32::from_int(MOTION[15u16] as i16) - fix32::from_int(LEVEL[0u16] as i16) * half
                     + half,
                 size,
                 fix32::from_int(MOTION[16u16] as i16) - fix32::from_int(LEVEL[1u16] as i16) * half
                     + half,
             ),
-            demo_zero(),
-            demo_point(one, two * size, one),
+            Vec3::zero(),
+            Vec3::new(one, two * size, one),
         );
     }
     let moving = MOTION[5u16] != 0;
@@ -881,8 +880,7 @@ pub fn block_transform() -> Transform {
     let mut squeeze = one;
     if mode == ENTRY_RISE {
         let remain = one - fraction(t, 380);
-        let e =
-            remain * fix32::from_words(26214, 0) + remain * remain * fix32::from_words(39322, 0);
+        let e = remain * fix32::from_words(26214, 0) + remain * remain * fix!(0.6);
         vertical = -fix32::from_words(5243, 2) * e;
         squeeze = one - fix32::from_words(6554, 0) * e;
     }
@@ -892,18 +890,18 @@ pub fn block_transform() -> Transform {
         } else {
             one
         };
-        vertical = -fix32::from_words(5243, 2)
-            * (f * fix32::from_words(26214, 0) + f * f * fix32::from_words(39322, 0));
+        vertical =
+            -fix32::from_words(5243, 2) * (f * fix32::from_words(26214, 0) + f * f * fix!(0.6));
         squeeze = one - fix32::from_words(6554, 0) * f;
     }
-    demo_pose(
-        demo_point(
+    Transform::new(
+        Vec3::new(
             cx + fix32::from_int(x as i16) - fix32::from_int(LEVEL[0u16] as i16) * half,
             cy + vertical,
             cz + fix32::from_int(z as i16) - fix32::from_int(LEVEL[1u16] as i16) * half,
         ),
-        demo_point(ax, zero, az),
-        demo_point(
+        Vec3::new(ax, zero, az),
+        Vec3::new(
             sx * squeeze * split_pop_scale(),
             sy * split_pop_scale(),
             sz * squeeze * split_pop_scale(),

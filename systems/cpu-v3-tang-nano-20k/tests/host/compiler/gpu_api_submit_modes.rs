@@ -12,7 +12,7 @@ fn main(){
  let mut a=gpu.command_buffer();
  let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8800,2048)});
  let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
- {let p=a.pass(&color,&depth,ColorLoad::clear(Rgb565::from_raw(0x1234)),DepthLoad::clear(65535));}
+ {let p=a.pass(color.ptr(), depth.ptr(), ColorLoad::clear(Rgb565::from_raw(0x1234)), DepthLoad::clear(65535));}
  dev_send(7,1,0);gpu.submit_capturable(a);a=gpu.wait();
  dev_send(7,1,1);gpu.poll_snapshot();gpu.poll_snapshot();
  dev_send(7,1,2);gpu.request_snapshot();

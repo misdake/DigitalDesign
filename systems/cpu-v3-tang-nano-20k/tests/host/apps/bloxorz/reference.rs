@@ -44,7 +44,7 @@ pub(super) fn shadow_reference_prepare(case: &serde_json::Value) -> String {
             fixed(m[12 + row])
         ));
         normal.push(format!(
-            "row{row}:demo_point({},{},{})",
+            "row{row}:Vec3::new({},{},{})",
             fixed(c[row * 3] / determinant),
             fixed(c[row * 3 + 1] / determinant),
             fixed(c[row * 3 + 2] / determinant)

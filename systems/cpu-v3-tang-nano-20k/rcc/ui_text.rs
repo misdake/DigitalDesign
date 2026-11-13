@@ -18,6 +18,26 @@ pub fn text_u16(grid: &mut UiGrid, x: u16, y: u16, value: u16) {
         divisor /= 10;
     }
 }
+/// Left-aligned decimal field, truncating at width and clearing trailing glyphs.
+pub fn text_u16_field(grid: &mut UiGrid, x: u16, y: u16, width: u16, value: u16) {
+    let mut divisor: u16 = 1;
+    while value / divisor >= 10 {
+        divisor *= 10;
+    }
+    let mut column: u16 = 0;
+    while column < width {
+        grid.write_glyph(x + column, y, (48 + (value / divisor) % 10) as u8);
+        column += 1;
+        if divisor == 1 {
+            break;
+        }
+        divisor /= 10;
+    }
+    while column < width {
+        grid.write_glyph(x + column, y, 255);
+        column += 1;
+    }
+}
 pub fn text_i16(grid: &mut UiGrid, x: u16, y: u16, value: i16) {
     if value < 0 {
         grid.write_glyph(x, y, 45);

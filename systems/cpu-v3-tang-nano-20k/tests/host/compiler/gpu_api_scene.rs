@@ -55,11 +55,11 @@ fn main(){
  let mut grid=UiGrid::from_memory(unsafe{GpuMemory::from_sectors(0xb100,6)},&atlas);drop(atlas);
  grid.fill(255);grid.write_text(48,14,b"\x01\x02");grid.write_glyph(49,14,0);
  grid.write(CellRect{x:1,y:1,width:3,height:1},b"\0\x01\x02");
- {let mut pass=cb.pass(&color,&depth,ColorLoad::load(),DepthLoad::load());
-  pass.set_camera(&camera);pass.set_state(&state);
-  pass.draw(&mesh,&model,&material,&texture_view);pass.draw_colored(&mesh,&model,&material);
-  pass.draw_colored(&empty,&model,&material);
-  pass.draw_ui(&grid,CellRect{x:1,y:1,width:3,height:1});
+ {let mut pass=cb.pass(color.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());
+  pass.set_camera(camera.ptr());pass.set_state(state.ptr());
+  pass.draw(mesh.ptr(), model.ptr(), material.ptr(), texture_view.ptr());pass.draw_colored(mesh.ptr(), model.ptr(), material.ptr());
+  pass.draw_colored(empty.ptr(), model.ptr(), material.ptr());
+  pass.draw_ui(grid.ptr(), CellRect{x:1,y:1,width:3,height:1});
  }
  check(cb.command_words()>20&&cb.push_words()>80);
  drop(empty);drop(mesh);drop(grid);drop(texture_view);drop(camera);drop(model);drop(material);drop(state);drop(color);drop(depth);drop(cb);drop(gpu);halt(0x600d);

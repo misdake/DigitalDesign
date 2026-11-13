@@ -5,6 +5,10 @@ triangles, waves and controller illustrations directly into the RGB565 Back
 plane; the GPU clears that plane and overlays text/icons. The screen is a
 visual gallery, with per-page titles, small corner controls and no development HUD.
 
+The geometry page owns its registered scene resources in `GeometryPage`.
+Drawing passes their copyable `*Ptr` values; resource bodies retain allocation
+and destruction, while the main loop owns the page for the application's run.
+
 Start with the [application quickstart](/systems/cpu-v3-tang-nano-20k/docs/application-quickstart.md)
 for prerequisites, build, simulation and the source/asset recipe.
 
@@ -113,10 +117,10 @@ module names stay flat; the directories group application files by responsibilit
 | `application.rs` | Application-owned build recipe and bounded startup options |
 
 Each page owns its content updates and drawing loops. Shared passes stay separate
-from page content; main retains submit/wait and Display ownership. Geometry
-preparation, pass state and drawing use separate borrowed-resource functions,
-within RCC's six-parameter function ABI. Live resource handles remain explicit
-borrowed parameters.
+from page content; main retains submit/wait and Display ownership. GeometryPage
+groups the scene's owning resources, prepares their state, then passes copyable
+pointers to drawing. Its shared/mutable methods borrow the original page storage,
+within RCC's six-parameter function ABI.
 
 The gallery uses the public `UiGrid` API for text and icons. Development-only
 numeric output is absent; [numeric text helpers](/systems/cpu-v3-tang-nano-20k/docs/ui-text.md)

@@ -25,31 +25,31 @@ fn main(){let first:CommandMemory=CommandMemory{commands:unsafe{GpuMemory::from_
  let mut state=RenderState::new(RenderStateDesc{depth:DepthFunc::Less,depth_write:true,blend:BlendMode::Replace,filter:TextureFilter::Nearest,lighting:Lighting{direction:v(0,0,1),ambient:fix32::from_int(1),directional:fix32::from_int(1)}});
  let color=ColorBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x8000,2048)});let depth=DepthBuffer::from_memory(unsafe{GpuMemory::from_sectors(0x9000,2048)});
  let mesh=Mesh::from_native(MeshDesc{directory_sector:0xa000,directory_word:0,meshlet_count:1,storage:unsafe{GpuMemory::from_sectors(0xa000,16)}});
- {let mut p=a.pass(&color,&depth,ColorLoad::load(),DepthLoad::load());p.set_camera(&cam);p.set_state(&state);
-  p.draw_colored(&mesh,&one,&material);note(1);p.draw_colored(&mesh,&two,&material);note(2);p.draw_colored(&mesh,&one,&material);note(2);
-  set_model(&mut one,1);p.draw_colored(&mesh,&one,&material);note(3);p.draw_colored(&mesh,&two,&material);note(3);
-  set_normal(&mut one);p.draw_colored(&mesh,&one,&material);note(3);
-  change_normal_tail(&mut one);p.draw_colored(&mesh,&one,&material);note(4);
-  material.set_uniform_color(Rgba8{r:80,g:160,b:240,a:255});relight(&mut state);p.set_state(&state);p.draw_colored(&mesh,&one,&material);note(4);
-  reproject(&mut cam,200,120);p.set_camera(&cam);p.draw_colored(&mesh,&one,&material);note(4);
-  reproject(&mut cam,220,120);p.set_camera(&cam);p.draw_colored(&mesh,&one,&material);note(5);
-  move_camera(&mut cam);p.draw_colored(&mesh,&one,&material);note(5);
-  p.set_camera(&cam);p.draw_colored(&mesh,&one,&material);note(6);
-  let view=cam.view();cam.set_view(view);p.set_camera(&cam);p.draw_colored(&mesh,&one,&material);note(7);
-  p.set_camera(&other);p.draw_colored(&mesh,&one,&material);note(8);
-  p.set_camera(&cam);p.draw_colored(&mesh,&one,&material);note(9);p.draw_colored(&mesh,&two,&material);note(10);
+ {let mut p=a.pass(color.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());p.set_camera(cam.ptr());p.set_state(state.ptr());
+  p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(1);p.draw_colored(mesh.ptr(), two.ptr(), material.ptr());note(2);p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(2);
+  set_model(&mut one,1);p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(3);p.draw_colored(mesh.ptr(), two.ptr(), material.ptr());note(3);
+  set_normal(&mut one);p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(3);
+  change_normal_tail(&mut one);p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(4);
+  material.set_uniform_color(Rgba8{r:80,g:160,b:240,a:255});relight(&mut state);p.set_state(state.ptr());p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(4);
+  reproject(&mut cam,200,120);p.set_camera(cam.ptr());p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(4);
+  reproject(&mut cam,220,120);p.set_camera(cam.ptr());p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(5);
+  move_camera(&mut cam);p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(5);
+  p.set_camera(cam.ptr());p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(6);
+  let view=cam.view();cam.set_view(view);p.set_camera(cam.ptr());p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(7);
+  p.set_camera(other.ptr());p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(8);
+  p.set_camera(cam.ptr());p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(9);p.draw_colored(mesh.ptr(), two.ptr(), material.ptr());note(10);
  }
- {let mut p=a.pass(&color,&depth,ColorLoad::load(),DepthLoad::load());p.set_camera(&cam);p.set_state(&state);
-  let mut q=b.pass(&color,&depth,ColorLoad::load(),DepthLoad::load());q.set_camera(&other);q.set_state(&state);
-  p.draw_colored(&mesh,&one,&material);note(10);q.draw_colored(&mesh,&one,&material);note(11);p.draw_colored(&mesh,&one,&material);note(12);p.draw_colored(&mesh,&two,&material);note(12);
+ {let mut p=a.pass(color.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());p.set_camera(cam.ptr());p.set_state(state.ptr());
+  let mut q=b.pass(color.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());q.set_camera(other.ptr());q.set_state(state.ptr());
+  p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(10);q.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(11);p.draw_colored(mesh.ptr(), one.ptr(), material.ptr());note(12);p.draw_colored(mesh.ptr(), two.ptr(), material.ptr());note(12);
  }
  drop(one);let replacement=make_model(7);
- {let mut p=a.pass(&color,&depth,ColorLoad::load(),DepthLoad::load());p.set_camera(&cam);p.set_state(&state);p.draw_colored(&mesh,&replacement,&material);note(13);}
+ {let mut p=a.pass(color.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());p.set_camera(cam.ptr());p.set_state(state.ptr());p.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());note(13);}
  drop(cam);let mut reused=camera();
- {let mut p=a.pass(&color,&depth,ColorLoad::load(),DepthLoad::load());p.set_camera(&reused);p.set_state(&state);p.draw_colored(&mesh,&replacement,&material);note(14);
-  look(&mut reused,0);p.set_camera(&reused);p.draw_colored(&mesh,&replacement,&material);note(15);
-  look(&mut reused,1);p.set_camera(&reused);p.draw_colored(&mesh,&replacement,&material);note(16);
-  look(&mut reused,2);p.set_camera(&reused);p.draw_colored(&mesh,&replacement,&material);note(17);
+ {let mut p=a.pass(color.ptr(), depth.ptr(), ColorLoad::load(), DepthLoad::load());p.set_camera(reused.ptr());p.set_state(state.ptr());p.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());note(14);
+  look(&mut reused,0);p.set_camera(reused.ptr());p.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());note(15);
+  look(&mut reused,1);p.set_camera(reused.ptr());p.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());note(16);
+  look(&mut reused,2);p.set_camera(reused.ptr());p.draw_colored(mesh.ptr(), replacement.ptr(), material.ptr());note(17);
  }
  drop(replacement);drop(two);drop(reused);drop(other);drop(mesh);drop(material);drop(state);drop(color);drop(depth);drop(a);drop(b);drop(gpu);halt(0x600d);
 }"#;

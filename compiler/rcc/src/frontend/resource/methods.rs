@@ -204,7 +204,9 @@ pub(super) fn prepare(
                     }
                     let mut rename = Rename {
                         local: &local,
-                        owner: matches!(receiver, Receiver::Associated).then_some(&ty),
+                        owner: (matches!(receiver, Receiver::Associated)
+                            || model.aggregates.contains_key(&ty.to_string()))
+                        .then_some(&ty),
                         failure: None,
                     };
                     rename.visit_block_mut(&mut body);
@@ -309,7 +311,8 @@ impl Checker<'_> {
         if !self.bindings.iter().any(|b| b.name == local) {
             return Ok(None); // Native builtin methods retain the native path.
         }
-        if !matches!(call.receiver.as_ref(), Expr::Path(p)
+        if !matches!(call.receiver.as_ref(), Expr::Field(_))
+            && !matches!(call.receiver.as_ref(), Expr::Path(p)
             if p.qself.is_none() && p.path.leading_colon.is_none()
                 && matches!(p.path.segments[0].arguments, syn::PathArguments::None))
         {
